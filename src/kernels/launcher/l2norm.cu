@@ -11,7 +11,7 @@
 namespace qus::kernels::detail {
 
 void l2norm_launch(const Tensor& x, float eps, Tensor& out, cudaStream_t stream) {
-    constexpr int kBlock = 128;
+    constexpr int kBlock = 512;
     const std::int32_t d = x.ne[0];
     if (d <= 0) { throw std::invalid_argument("l2norm: ne[0] must be positive"); }
     const std::int64_t rows = out.numel() / d;
@@ -19,7 +19,9 @@ void l2norm_launch(const Tensor& x, float eps, Tensor& out, cudaStream_t stream)
         throw std::overflow_error("l2norm: row count exceeds CUDA grid limit");
     }
 
-    l2norm_kernel<<<static_cast<unsigned int>(rows), kBlock, 0, stream>>>(
+    constexpr int kRowsPerBlock = kBlock / 32;
+    const auto blocks = static_cast<unsigned int>((rows + kRowsPerBlock - 1) / kRowsPerBlock);
+    l2norm_kernel<<<blocks, kBlock, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<__nv_bfloat16*>(out.data), d,
         rows, eps);
     CUDA_CHECK(cudaGetLastError());
