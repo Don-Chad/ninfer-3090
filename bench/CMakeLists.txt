@@ -13,3 +13,4 @@ function(qus_add_bench name)
 endfunction()
 
 qus_add_bench(qus_silu_and_mul_bench SOURCES silu_and_mul_bench.cu)
+qus_add_bench(qus_residual_add_bench SOURCES residual_add_bench.cu)
