@@ -23,13 +23,13 @@ Copy [`src/kernels/*/silu_and_mul.*`](../../src/kernels/wrapper/silu_and_mul.cpp
 
 ---
 
-## How to execute (inline subagent workflow — no external skills)
+## How to execute (self-contained subagent workflow)
 
 The controller (you) drives this loop; do not pollute one subagent's context with another's.
 
-1. Pick the next unchecked task. Dispatch **one implementer subagent** with: the full task text, its
-   **Reading list**, and the **Subagent instructions** below. Never have the subagent read this whole
-   plan — give it exactly its task + reading list.
+1. Pick the next unchecked task. Dispatch **one implementer subagent** using the **Implementer prompt**
+   in "Subagent prompt templates" below, filled with the task's full text + its **Reading list**. Never
+   have the subagent read this whole plan — give it exactly its task + reading list.
 2. The implementer follows **TDD**: write the failing test first, build, confirm it fails, implement,
    build, confirm it passes, run `compute-sanitizer`, self-review, then commit.
 3. Dispatch a **spec-compliance reviewer** subagent: does the code match the task spec (correct CPU
@@ -54,7 +54,48 @@ compute-sanitizer ./build/tests/qus_<op>_test                            # must 
 cmake --build build -j --target qus_<op>_bench                           # performance
 ```
 
-## ncu procedure (inline — performance tasks MUST profile before optimizing)
+## Subagent prompt templates (Codex: dispatch one implementer per task, then the two reviewers)
+
+Fill `<op>` / `<TASK NAME>` and paste the task's block + its Reading list.
+
+Implementer prompt:
+```
+You are implementing ONE task for qwen3.6-ultraspeed L1 kernels. Repo /home/neroued/qwen3.6-ultraspeed, branch master.
+TASK:
+<paste the full task block from docs/plans/l1-tier1-simple-ops.md>
+READING LIST (read these first; not the whole plan):
+<paste the task's Reading list>
+Always also read: docs/l1-op-test-standard.md; tests/kernels/op_check.h + tests/kernels/op_tester.h (FROZEN, read-only); src/kernels/{wrapper,launcher,kernel}/silu_and_mul.* (template).
+RULES: the frozen framework + tolerance presets are read-only — if a test fails, fix the kernel, never the tolerance; never approximate kernel math to gain speed.
+DO (TDD): write tests/kernels/test_<op>.cpp FIRST (frozen framework; fp64 CPU ref from the exact formula in the task; the named preset; the listed shapes incl. the stress case). Build, confirm it FAILS. Implement the four layers (copy silu_and_mul.*). Build, confirm it PASSES:
+  cmake -S . -B build && cmake --build build -j --target qus_<op>_test
+  ctest --test-dir build -R qus_<op>_test --output-on-failure
+  compute-sanitizer ./build/tests/qus_<op>_test          # must be clean
+If this is a -B (performance) task: write bench/<op>_bench.cu on the real shapes; PROFILE WITH ncu FIRST (docs/l1-op-test-standard.md section 2.4 and ~/.cursor/skills/profile-cuda/SKILL.md), find the bottleneck, make ONE targeted change, re-profile; gate = ncu sustained DRAM >= 85% at the prefill shape.
+Self-review against the task spec; commit on master with the task's commit message. Touch only this op + its test/bench registration.
+REPORT exactly one of: DONE (summary + test result + ncu % if perf) / DONE_WITH_CONCERNS (+concerns) / NEEDS_CONTEXT (+what is missing) / BLOCKED (+why).
+```
+
+Spec-compliance reviewer prompt:
+```
+Review ONLY whether <TASK NAME>'s implementation matches its spec. Repo /home/neroued/qwen3.6-ultraspeed.
+Read: the task block in docs/plans/l1-tier1-simple-ops.md; the op math in docs/l1-operator-catalog.md (and any architecture section it cites); the changed files (git diff).
+Verify: (1) api signature matches the catalog; (2) the fp64 CPU reference matches the catalog/architecture math EXACTLY; (3) the test uses the FROZEN preset by name (unchanged) and the required shapes (decode T=1, prefill, unaligned, every variant view, the stress case); (4) the frozen framework was NOT modified; (5) no kernel math approximation; (6) nothing missing or extra vs the spec.
+Output: "PASS", or a numbered list of concrete gaps. Do NOT fix anything.
+```
+
+Code-quality reviewer prompt (only after spec PASS):
+```
+Review code quality of <TASK NAME> (spec already PASSED). Repo /home/neroued/qwen3.6-ultraspeed. Read the git diff for the op.
+Check: api/wrapper/launcher/kernel layering (docs/l1-kernel-layering.md); wrapper validation completeness (dtype/shape/contiguity/null); grid-stride covers all elements incl. the tail; CUDA_CHECK after the launch; correct bf16/fp32 handling; naming; no dead code/UB. For -B tasks: the speedup comes from memory-access optimization (not math) and is justified by the ncu evidence cited in the commit.
+Output: "APPROVED", or a numbered list of issues with severity. Do NOT fix anything.
+```
+
+## ncu procedure (performance tasks MUST profile before optimizing)
+The full nsys/ncu recipes are in the profile-cuda skill files — Codex can read them directly by path
+(it just cannot resolve them by registered skill name): `~/.cursor/skills/profile-cuda/SKILL.md` and
+`~/.cursor/skills/profile-cuda/recipes.md`. Run the preflight first:
+`~/.cursor/skills/profile-cuda/scripts/preflight.sh`. Quick path:
 ```bash
 # one-time permission fix if ncu prints ERR_NVGPUCTRPERM:
 #   sudo bash -c 'echo "options nvidia NVreg_RestrictProfilingToAdminUsers=0" > /etc/modprobe.d/nvidia-profiler.conf' && sudo reboot
