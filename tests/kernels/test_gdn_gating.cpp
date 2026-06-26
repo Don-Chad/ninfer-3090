@@ -1,0 +1,201 @@
+// Correctness + coverage for gdn_gating, against the frozen op-test standard
+// (docs/l1-op-test-standard.md): fp64 golden from bf16-rounded inputs, honest
+// GDN gate ranges including the softplus guard, composite tolerance
+// fp32_transcendental.
+#include "qus/kernels/gdn_gating.h"
+#include "kernels/op_tester.h"
+
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+using namespace qus;
+using namespace qus::test;
+
+static void cpu_gdn_gating(const std::vector<float>& a, const std::vector<float>& b,
+                           const std::vector<float>& A_log, const std::vector<float>& dt_bias,
+                           std::int32_t T, std::vector<double>& g,
+                           std::vector<double>& beta) {
+    for (std::int32_t t = 0; t < T; ++t) {
+        for (std::int32_t h = 0; h < 48; ++h) {
+            const std::size_t i = static_cast<std::size_t>(t) * 48u + static_cast<std::size_t>(h);
+            double sp = static_cast<double>(a[i]) + static_cast<double>(dt_bias[h]);
+            sp = (sp > 20.0) ? sp : std::log1p(std::exp(sp));
+            g[i] = -std::exp(static_cast<double>(A_log[h])) * sp;
+
+            const double bv = static_cast<double>(b[i]);
+            beta[i] = 1.0 / (1.0 + std::exp(-bv));
+        }
+    }
+}
+
+static int one_shape(const char* tag, std::int32_t T, std::uint32_t seed, float a_lo, float a_hi) {
+    const std::size_t n = static_cast<std::size_t>(48) * static_cast<std::size_t>(T);
+    std::vector<float> a(n), b(n), A_log(48), dt_bias(48);
+    fill_uniform(a, seed, a_lo, a_hi);
+    fill_uniform(b, seed + 1000u, -8.f, 8.f);
+    fill_uniform(A_log, seed + 2000u, -2.f, 1.f);
+    fill_uniform(dt_bias, seed + 3000u, -1.f, 1.f);
+    round_to_bf16(a);
+    round_to_bf16(b);
+
+    std::vector<double> ref_g(n), ref_beta(n);
+    cpu_gdn_gating(a, b, A_log, dt_bias, T, ref_g, ref_beta);
+
+    DBuf da = to_device_bf16(a), db = to_device_bf16(b);
+    DBuf dA_log = to_device_f32(A_log), ddt_bias = to_device_f32(dt_bias);
+    DBuf dg(n * sizeof(float)), dbeta(n * sizeof(float));
+    Tensor ta(da.p, DType::BF16, {48, T});
+    Tensor tb(db.p, DType::BF16, {48, T});
+    Tensor tA_log(dA_log.p, DType::FP32, {48});
+    Tensor tdt_bias(ddt_bias.p, DType::FP32, {48});
+    Tensor tg(dg.p, DType::FP32, {48, T});
+    Tensor tbeta(dbeta.p, DType::FP32, {48, T});
+
+    kernels::gdn_gating(ta, tb, tA_log, tdt_bias, tg, tbeta, nullptr);
+    cudaDeviceSynchronize();
+
+    int f = 0;
+    f += verify((std::string(tag) + " g").c_str(), from_device_f32(dg, n), ref_g,
+                Tolerance::fp32_transcendental());
+    f += verify((std::string(tag) + " beta").c_str(), from_device_f32(dbeta, n), ref_beta,
+                Tolerance::fp32_transcendental());
+    return f;
+}
+
+static int validation_checks() {
+    int f = 0;
+    Tensor a(nullptr, DType::BF16, {48, 7});
+    Tensor b(nullptr, DType::BF16, {48, 7});
+    Tensor A_log(nullptr, DType::FP32, {48});
+    Tensor dt_bias(nullptr, DType::FP32, {48});
+    Tensor g(nullptr, DType::FP32, {48, 7});
+    Tensor beta(nullptr, DType::FP32, {48, 7});
+
+    try {
+        Tensor empty_a(nullptr, DType::BF16, {48, 1});
+        Tensor empty_b(nullptr, DType::BF16, {48, 1});
+        Tensor empty_g(nullptr, DType::FP32, {48, 1});
+        Tensor empty_beta(nullptr, DType::FP32, {48, 1});
+        empty_a.ne[1] = empty_b.ne[1] = empty_g.ne[1] = empty_beta.ne[1] = 0;
+        kernels::gdn_gating(empty_a, empty_b, A_log, dt_bias, empty_g, empty_beta, nullptr);
+    } catch (const std::exception& e) {
+        std::cerr << "validation empty T: expected no throw, got " << e.what() << '\n';
+        ++f;
+    }
+
+    try {
+        Tensor bad_empty = a;
+        bad_empty.ne[1] = 0;
+        bad_empty.ne[2] = -1;
+        Tensor bad_empty_out = g;
+        bad_empty_out.ne[1] = 0;
+        bad_empty_out.ne[2] = -1;
+        kernels::gdn_gating(bad_empty, b, A_log, dt_bias, bad_empty_out, beta, nullptr);
+        std::cerr << "validation negative dim: expected invalid_argument\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+
+    try {
+        Tensor huge_a = a;
+        Tensor huge_b = b;
+        Tensor huge_g = g;
+        Tensor huge_beta = beta;
+        for (int d = 0; d < 4; ++d) {
+            huge_a.ne[d] = huge_b.ne[d] = huge_g.ne[d] = huge_beta.ne[d] =
+                std::numeric_limits<std::int32_t>::max();
+        }
+        kernels::gdn_gating(huge_a, huge_b, A_log, dt_bias, huge_g, huge_beta, nullptr);
+        std::cerr << "validation overflow dims: expected overflow_error\n";
+        ++f;
+    } catch (const std::overflow_error&) {
+    } catch (const std::invalid_argument& e) {
+        std::cerr << "validation overflow dims: expected overflow_error, got invalid_argument: "
+                  << e.what() << '\n';
+        ++f;
+    }
+
+    try {
+        Tensor bad_dtype(nullptr, DType::FP32, {48, 7});
+        kernels::gdn_gating(bad_dtype, b, A_log, dt_bias, g, beta, nullptr);
+        std::cerr << "validation a dtype: expected invalid_argument\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+
+    try {
+        Tensor bad_A(nullptr, DType::BF16, {48});
+        kernels::gdn_gating(a, b, bad_A, dt_bias, g, beta, nullptr);
+        std::cerr << "validation A_log dtype: expected invalid_argument\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+
+    try {
+        Tensor bad_out(nullptr, DType::BF16, {48, 7});
+        kernels::gdn_gating(a, b, A_log, dt_bias, bad_out, beta, nullptr);
+        std::cerr << "validation g dtype: expected invalid_argument\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+
+    try {
+        Tensor bad_heads = a;
+        bad_heads.ne[0] = 47;
+        kernels::gdn_gating(bad_heads, b, A_log, dt_bias, g, beta, nullptr);
+        std::cerr << "validation head dim: expected invalid_argument\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+
+    try {
+        Tensor bad_T = b;
+        bad_T.ne[1] = 8;
+        kernels::gdn_gating(a, bad_T, A_log, dt_bias, g, beta, nullptr);
+        std::cerr << "validation T dim: expected invalid_argument\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+
+    try {
+        Tensor bad_rank = A_log;
+        bad_rank.ne[1] = 2;
+        kernels::gdn_gating(a, b, bad_rank, dt_bias, g, beta, nullptr);
+        std::cerr << "validation A_log shape: expected invalid_argument\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+
+    try {
+        Tensor bad_stride = g;
+        bad_stride.nb[0] = 8;
+        kernels::gdn_gating(a, b, A_log, dt_bias, bad_stride, beta, nullptr);
+        std::cerr << "validation contiguous: expected invalid_argument\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+
+    try {
+        kernels::gdn_gating(a, b, A_log, dt_bias, g, beta, nullptr);
+        std::cerr << "validation null data: expected invalid_argument\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+
+    return f;
+}
+
+int main() {
+    if (cuda_unavailable()) {
+        std::cout << "SKIP: no usable CUDA device\n";
+        return 0;
+    }
+    int f = 0;
+    f += validation_checks();
+
+    for (std::uint32_t seed : {1u, 7u, 99u}) {
+        f += one_shape("gdn_gating [48,1]", 1, seed, -8.f, 8.f);
+        f += one_shape("gdn_gating [48,7]", 7, seed, -8.f, 8.f);
+        f += one_shape("gdn_gating [48,4096]", 4096, seed, -8.f, 8.f);
+    }
+    f += one_shape("gdn_gating softplus guard [48,4096]", 4096, 4242u, 15.f, 25.f);
+
+    std::cout << (f ? "FAIL" : "OK") << " gdn_gating correctness\n";
+    return f ? 1 : 0;
+}
