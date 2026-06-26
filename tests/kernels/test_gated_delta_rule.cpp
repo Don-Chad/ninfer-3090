@@ -5,6 +5,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -22,6 +23,7 @@ constexpr int S    = 128;
 constexpr int H_qk = 16;
 constexpr int H_v  = 48;
 constexpr int B    = 1;
+constexpr int BT   = 64;
 
 void fill_uniform_shared(std::vector<float>& buf, std::mt19937& gen, float lo, float hi) {
     std::uniform_real_distribution<float> d(lo, hi);
@@ -56,6 +58,90 @@ gdn_ref::Inputs make_inputs(int T, std::uint32_t seed, bool stress_g) {
     round_to_bf16(in.k);
     round_to_bf16(in.v);
     return in;
+}
+
+std::size_t align_up_size(std::size_t n, std::size_t align) {
+    return (n + align - 1) & ~(align - 1);
+}
+
+std::size_t chunked_workspace_bytes(int T_full) {
+    if (T_full <= 0) { return 0; }
+    const std::size_t T  = static_cast<std::size_t>(T_full);
+    const std::size_t NT = static_cast<std::size_t>((T_full + BT - 1) / BT);
+    std::size_t off      = 0;
+    auto reserve         = [&](std::size_t bytes) {
+        if (bytes == 0) { return; }
+        off = align_up_size(off + bytes, 256);
+    };
+    reserve(T * H_v * sizeof(float));          // g_cumsum
+    reserve(T * H_v * S * sizeof(float));      // W
+    reserve(T * H_v * S * sizeof(float));      // U
+    reserve(T * H_v * S * sizeof(float));      // v_new
+    reserve(NT * H_v * S * S * sizeof(float)); // h_chunk
+    return off;
+}
+
+std::size_t chunked_arena_bytes(int T) {
+    const std::size_t t      = static_cast<std::size_t>(T);
+    const std::size_t q_f32  = t * H_qk * S * sizeof(float);
+    const std::size_t k_f32  = t * H_qk * S * sizeof(float);
+    const std::size_t v_f32  = t * H_v * S * sizeof(float);
+    const std::size_t out32  = t * H_v * S * sizeof(float);
+    const int T_full         = (T / BT) * BT;
+    const std::size_t stages = chunked_workspace_bytes(T_full);
+    return q_f32 + k_f32 + v_f32 + out32 + stages + 4 * 1024 * 1024;
+}
+
+struct GpuResult {
+    std::vector<double> out;
+    std::vector<double> state;
+};
+
+GpuResult run_recurrent_gpu(const gdn_ref::Inputs& in) {
+    DBuf dq     = to_device_bf16(in.q);
+    DBuf dk     = to_device_bf16(in.k);
+    DBuf dv     = to_device_bf16(in.v);
+    DBuf dg     = to_device_f32(in.g);
+    DBuf dbeta  = to_device_f32(in.beta);
+    DBuf dstate = to_device_f32(in.state);
+    DBuf dout(in.v.size() * 2);
+
+    Tensor tq(dq.p, DType::BF16, {S, H_qk, static_cast<int>(in.T)});
+    Tensor tk(dk.p, DType::BF16, {S, H_qk, static_cast<int>(in.T)});
+    Tensor tv(dv.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
+    Tensor tg(dg.p, DType::FP32, {H_v, static_cast<int>(in.T)});
+    Tensor tbeta(dbeta.p, DType::FP32, {H_v, static_cast<int>(in.T)});
+    Tensor tstate(dstate.p, DType::FP32, {S, S, H_v});
+    Tensor tout(dout.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
+
+    kernels::gated_delta_rule_recurrent(tq, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), tstate,
+                                        tout, nullptr);
+    cudaDeviceSynchronize();
+    return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
+}
+
+GpuResult run_chunked_gpu(const gdn_ref::Inputs& in, int chunk_size = BT) {
+    DBuf dq     = to_device_bf16(in.q);
+    DBuf dk     = to_device_bf16(in.k);
+    DBuf dv     = to_device_bf16(in.v);
+    DBuf dg     = to_device_f32(in.g);
+    DBuf dbeta  = to_device_f32(in.beta);
+    DBuf dstate = to_device_f32(in.state);
+    DBuf dout(in.v.size() * 2);
+    WorkspaceArena ws(chunked_arena_bytes(static_cast<int>(in.T)));
+
+    Tensor tq(dq.p, DType::BF16, {S, H_qk, static_cast<int>(in.T)});
+    Tensor tk(dk.p, DType::BF16, {S, H_qk, static_cast<int>(in.T)});
+    Tensor tv(dv.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
+    Tensor tg(dg.p, DType::FP32, {H_v, static_cast<int>(in.T)});
+    Tensor tbeta(dbeta.p, DType::FP32, {H_v, static_cast<int>(in.T)});
+    Tensor tstate(dstate.p, DType::FP32, {S, S, H_v});
+    Tensor tout(dout.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
+
+    kernels::gated_delta_rule_chunked(tq, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), chunk_size,
+                                      ws, tstate, tout, nullptr);
+    cudaDeviceSynchronize();
+    return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
 }
 
 int recurrent_case(int T, std::uint32_t seed, bool stress_g, bool use_gdn_state = false) {
@@ -116,6 +202,38 @@ int recurrent_case(int T, std::uint32_t seed, bool stress_g, bool use_gdn_state 
     return failures;
 }
 
+int chunked_case(int T, std::uint32_t seed, bool compare_recurrent) {
+    const auto in      = make_inputs(T, seed, false);
+    const double scale = 1.0 / std::sqrt(static_cast<double>(S));
+    std::vector<double> ref_out(static_cast<std::size_t>(B * T * H_v * S));
+    std::vector<double> ref_state(static_cast<std::size_t>(B * H_v * S * S));
+    gdn_ref::forward_chunked(in.q.data(), in.k.data(), in.v.data(), in.g.data(), in.beta.data(),
+                             in.state.data(), ref_out.data(), ref_state.data(), S, H_qk, H_v, T, B,
+                             scale, BT);
+
+    int failures = 0;
+    try {
+        const GpuResult got   = run_chunked_gpu(in);
+        const std::string tag = std::string("gdn chunked T=") + std::to_string(T);
+        failures += verify((tag + " out").c_str(), got.out, ref_out, Tolerance::gdn_output_bf16());
+        failures +=
+            verify((tag + " state").c_str(), got.state, ref_state, Tolerance::gdn_state_fp32());
+
+        if (compare_recurrent) {
+            const GpuResult recurrent = run_recurrent_gpu(in);
+            failures += verify((tag + " vs recurrent out").c_str(), got.out, recurrent.out,
+                               Tolerance::gdn_output_bf16());
+            failures += verify((tag + " vs recurrent state").c_str(), got.state, recurrent.state,
+                               Tolerance::gdn_state_fp32());
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "gdn chunked T=" << T << ": unexpected exception: " << e.what() << '\n';
+        return 1;
+    }
+
+    return failures;
+}
+
 int validation_case() {
     try {
         Tensor q(nullptr, DType::BF16, {S, H_qk, 1});
@@ -130,6 +248,52 @@ int validation_case() {
     } catch (const std::invalid_argument&) { return 0; }
     std::cerr << "gdn recurrent null validation: expected invalid_argument\n";
     return 1;
+}
+
+int chunked_validation_case() {
+    const auto in = make_inputs(BT, 5028u, false);
+    DBuf dq       = to_device_bf16(in.q);
+    DBuf dk       = to_device_bf16(in.k);
+    DBuf dv       = to_device_bf16(in.v);
+    DBuf dg       = to_device_f32(in.g);
+    DBuf dbeta    = to_device_f32(in.beta);
+    DBuf dstate   = to_device_f32(in.state);
+    DBuf dout(in.v.size() * 2);
+    WorkspaceArena ws(chunked_arena_bytes(BT));
+
+    Tensor tq(dq.p, DType::BF16, {S, H_qk, BT});
+    Tensor tk(dk.p, DType::BF16, {S, H_qk, BT});
+    Tensor tv(dv.p, DType::BF16, {S, H_v, BT});
+    Tensor tg(dg.p, DType::FP32, {H_v, BT});
+    Tensor tbeta(dbeta.p, DType::FP32, {H_v, BT});
+    Tensor tstate(dstate.p, DType::FP32, {S, S, H_v});
+    Tensor tout(dout.p, DType::BF16, {S, H_v, BT});
+
+    int failures = 0;
+    try {
+        kernels::gated_delta_rule_chunked(tq, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), 32, ws,
+                                          tstate, tout, nullptr);
+        std::cerr << "gdn chunked bad chunk_size validation: expected invalid_argument\n";
+        ++failures;
+    } catch (const std::invalid_argument&) {
+    } catch (const std::exception& e) {
+        std::cerr << "gdn chunked bad chunk_size validation: wrong exception: " << e.what() << '\n';
+        ++failures;
+    }
+
+    try {
+        Tensor tq_bad(dq.p, DType::BF16, {S - 1, H_qk, BT});
+        kernels::gated_delta_rule_chunked(tq_bad, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), BT,
+                                          ws, tstate, tout, nullptr);
+        std::cerr << "gdn chunked bad shape validation: expected invalid_argument\n";
+        ++failures;
+    } catch (const std::invalid_argument&) {
+    } catch (const std::exception& e) {
+        std::cerr << "gdn chunked bad shape validation: wrong exception: " << e.what() << '\n';
+        ++failures;
+    }
+
+    return failures;
 }
 
 } // namespace
@@ -148,7 +312,14 @@ int main() {
     failures += recurrent_case(7, 3033u, true);
     failures += recurrent_case(2, 4028u, false, true);
     failures += validation_case();
+    failures += chunked_case(32, 4528u, true);
+    failures += chunked_case(64, 4090u, true);
+    failures += chunked_case(128, 4154u, true);
+    failures += chunked_case(200, 4226u, true);
+    failures += chunked_case(256, 4282u, true);
+    failures += chunked_case(4096, 8122u, false);
+    failures += chunked_validation_case();
 
-    std::cout << (failures ? "FAIL" : "OK") << " gated_delta_rule_recurrent correctness\n";
+    std::cout << (failures ? "FAIL" : "OK") << " gated_delta_rule correctness\n";
     return failures ? 1 : 0;
 }

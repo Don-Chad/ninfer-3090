@@ -4,6 +4,9 @@
 
 #include <cuda_runtime.h>
 
+#include <cstddef>
+#include <cstdint>
+
 namespace qus::kernels::detail {
 
 void gdn_cast_bf16_to_f32_launch(const Tensor& in, Tensor& out, cudaStream_t stream);
@@ -15,5 +18,12 @@ void gdn_cast_f32_to_bf16_launch(const Tensor& in, Tensor& out, cudaStream_t str
 void gated_delta_rule_recurrent_launch(const Tensor& q, const Tensor& k, const Tensor& v,
                                        const Tensor& g, const Tensor& beta, float scale,
                                        Tensor& ssm_state, Tensor& out, cudaStream_t stream);
+
+std::size_t gdn_chunked_workspace_bytes(std::int64_t T);
+
+void gated_delta_rule_chunked_launch(const Tensor& q, const Tensor& k, const Tensor& v,
+                                     const Tensor& g, const Tensor& beta, float scale,
+                                     Tensor& ssm_state, Tensor& out, void* workspace,
+                                     std::size_t workspace_bytes, cudaStream_t stream);
 
 } // namespace qus::kernels::detail
