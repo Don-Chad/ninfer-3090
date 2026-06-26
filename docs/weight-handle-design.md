@@ -194,23 +194,23 @@ variant** — i.e. `qtype` *is* the `_<variant>` axis. Dense is one variant
 ```cpp
 // include/qus/kernels/linear.h  (api) — one verb, precision-agnostic
 namespace qus::kernels {
-void linear(Tensor& out, const Tensor& x, const Weight& w, cudaStream_t stream);
+void linear(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream);
 }
 ```
 
 ```cpp
 // src/kernels/wrapper/linear.cpp  (validate + dispatch on qtype)
-void linear(Tensor& out, const Tensor& x, const Weight& w, cudaStream_t s) {
+void linear(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t s) {
     // validate out/x dtype + shape against w.n / w.k (host-side, fail fast) …
     switch (w.qtype) {
-        case QType::Q4G64_F16S:  detail::linear_q4_launch(out, x, w, s); break;
-        case QType::Q5G64_F16S:  detail::linear_q5_launch(out, x, w, s); break;
-        case QType::Q6G64_F16S:  detail::linear_q6_launch(out, x, w, s); break;
-        case QType::W8G128_F16S: detail::linear_w8_launch(out, x, w, s); break;
+        case QType::Q4G64_F16S:  detail::linear_q4_launch(x, w, out, s); break;
+        case QType::Q5G64_F16S:  detail::linear_q5_launch(x, w, out, s); break;
+        case QType::Q6G64_F16S:  detail::linear_q6_launch(x, w, out, s); break;
+        case QType::W8G128_F16S: detail::linear_w8_launch(x, w, out, s); break;
         case QType::BF16_CTRL:
         case QType::FP32_CTRL: {
             const Tensor wd = as_dense(w);
-            detail::linear_dense_launch(out, x, wd, s);                  // reuse the dense GEMV
+            detail::linear_dense_launch(x, wd, out, s);                  // reuse the dense GEMV
         } break;
         default: throw std::invalid_argument("linear: unsupported weight qtype");
     }
@@ -219,7 +219,7 @@ void linear(Tensor& out, const Tensor& x, const Weight& w, cudaStream_t s) {
 
 ```cpp
 // include/qus/kernels/embed_gather.h  (api) — table is a Weight; out/ids are Tensor
-void embed_gather(Tensor& out, const Tensor& ids, const Weight& table, cudaStream_t stream);
+void embed_gather(const Tensor& ids, const Weight& table, Tensor& out, cudaStream_t stream);
 // wrapper: Q6G64_F16S -> dequant-gather one row per id; BF16_CTRL -> plain row copy via as_dense(table)
 ```
 
