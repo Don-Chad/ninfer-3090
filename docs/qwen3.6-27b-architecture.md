@@ -171,9 +171,14 @@ MTP shares the main `embed_tokens` and `lm_head` (`mtp_use_dedicated_embeddings=
 | KV cache | bf16 (v1) |
 
 > **The single most error-prone detail:** *every* RMSNorm uses `(1+w)` **except** the GDN
-> `linear_attn.norm`. llama.cpp's converter encodes exactly this rule (adds `+1` to all
-> `*norm.weight` except `linear_attn.norm.weight`). Our offline packer will do the same, so
-> the runtime kernel can treat all loaded norm weights uniformly as a plain multiply.
+> `linear_attn.norm` (plain `w`, ones-init). **Authoritative source = the Python packer.**
+> Unlike llama.cpp — whose converter folds `+1` into all `*norm.weight` except
+> `linear_attn.norm.weight` — our offline packer stores **all norm weights verbatim**
+> (`tools/q5090_convert/layouts.py::encode_contiguous` is a pure dtype cast, no math). The
+> `+1` is therefore **NOT** baked into the file: the **runtime kernel** applies the convention
+> — `(1+w)` for the input/post/final and q/k norms, plain `w` for the GDN gated norm. The same
+> rule holds for every other model-semantic transform: `A_log` is stored raw and the runtime
+> computes `g = -exp(A_log)·softplus(a+dt_bias)`. See `design.md` §10 (packer folds nothing).
 
 ---
 
