@@ -120,6 +120,37 @@ GpuResult run_recurrent_gpu(const gdn_ref::Inputs& in) {
     return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
 }
 
+GpuResult run_recurrent_gpu_stepped(const gdn_ref::Inputs& in) {
+    DBuf dq     = to_device_bf16(in.q);
+    DBuf dk     = to_device_bf16(in.k);
+    DBuf dv     = to_device_bf16(in.v);
+    DBuf dg     = to_device_f32(in.g);
+    DBuf dbeta  = to_device_f32(in.beta);
+    DBuf dstate = to_device_f32(in.state);
+    DBuf dout(in.v.size() * 2);
+
+    Tensor tq(dq.p, DType::BF16, {S, H_qk, static_cast<int>(in.T)});
+    Tensor tk(dk.p, DType::BF16, {S, H_qk, static_cast<int>(in.T)});
+    Tensor tv(dv.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
+    Tensor tg(dg.p, DType::FP32, {H_v, static_cast<int>(in.T)});
+    Tensor tbeta(dbeta.p, DType::FP32, {H_v, static_cast<int>(in.T)});
+    Tensor tstate(dstate.p, DType::FP32, {S, S, H_v});
+    Tensor tout(dout.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
+
+    for (int t = 0; t < static_cast<int>(in.T); ++t) {
+        Tensor q_t    = tq.slice(2, t, 1);
+        Tensor k_t    = tk.slice(2, t, 1);
+        Tensor v_t    = tv.slice(2, t, 1);
+        Tensor g_t    = tg.slice(1, t, 1);
+        Tensor beta_t = tbeta.slice(1, t, 1);
+        Tensor out_t  = tout.slice(2, t, 1);
+        kernels::gated_delta_rule_recurrent(q_t, k_t, v_t, g_t, beta_t, 1.0f / std::sqrt(float(S)),
+                                            tstate, out_t, nullptr);
+    }
+    cudaDeviceSynchronize();
+    return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
+}
+
 GpuResult run_chunked_gpu(const gdn_ref::Inputs& in, int chunk_size = BT) {
     DBuf dq     = to_device_bf16(in.q);
     DBuf dk     = to_device_bf16(in.k);
@@ -202,22 +233,39 @@ int recurrent_case(int T, std::uint32_t seed, bool stress_g, bool use_gdn_state 
     return failures;
 }
 
-int chunked_case(int T, std::uint32_t seed, bool compare_recurrent) {
+int chunked_case(int T, std::uint32_t seed, bool compare_recurrent, bool compare_ar_golden) {
     const auto in      = make_inputs(T, seed, false);
     const double scale = 1.0 / std::sqrt(static_cast<double>(S));
-    std::vector<double> ref_out(static_cast<std::size_t>(B * T * H_v * S));
-    std::vector<double> ref_state(static_cast<std::size_t>(B * H_v * S * S));
+    std::vector<double> chunked_ref_out(static_cast<std::size_t>(B * T * H_v * S));
+    std::vector<double> chunked_ref_state(static_cast<std::size_t>(B * H_v * S * S));
     gdn_ref::forward_chunked(in.q.data(), in.k.data(), in.v.data(), in.g.data(), in.beta.data(),
-                             in.state.data(), ref_out.data(), ref_state.data(), S, H_qk, H_v, T, B,
-                             scale, BT);
+                             in.state.data(), chunked_ref_out.data(), chunked_ref_state.data(), S,
+                             H_qk, H_v, T, B, scale, BT);
+
+    std::vector<double> ar_ref_out;
+    std::vector<double> ar_ref_state;
+    if (compare_ar_golden) {
+        ar_ref_out.resize(static_cast<std::size_t>(B * T * H_v * S));
+        ar_ref_state.resize(static_cast<std::size_t>(B * H_v * S * S));
+        gdn_ref::forward_recurrent(in.q.data(), in.k.data(), in.v.data(), in.g.data(),
+                                   in.beta.data(), in.state.data(), ar_ref_out.data(),
+                                   ar_ref_state.data(), S, H_qk, H_v, T, B, scale);
+    }
 
     int failures = 0;
     try {
         const GpuResult got   = run_chunked_gpu(in);
         const std::string tag = std::string("gdn chunked T=") + std::to_string(T);
-        failures += verify((tag + " out").c_str(), got.out, ref_out, Tolerance::gdn_output_bf16());
-        failures +=
-            verify((tag + " state").c_str(), got.state, ref_state, Tolerance::gdn_state_fp32());
+        failures += verify((tag + " vs chunked-ref out").c_str(), got.out, chunked_ref_out,
+                           Tolerance::gdn_output_bf16());
+        failures += verify((tag + " vs chunked-ref state").c_str(), got.state, chunked_ref_state,
+                           Tolerance::gdn_state_fp32());
+        if (compare_ar_golden) {
+            failures += verify((tag + " vs AR-golden out").c_str(), got.out, ar_ref_out,
+                               Tolerance::gdn_output_bf16());
+            failures += verify((tag + " vs AR-golden state").c_str(), got.state, ar_ref_state,
+                               Tolerance::gdn_state_fp32());
+        }
 
         if (compare_recurrent) {
             const GpuResult recurrent = run_recurrent_gpu(in);
@@ -228,6 +276,27 @@ int chunked_case(int T, std::uint32_t seed, bool compare_recurrent) {
         }
     } catch (const std::exception& e) {
         std::cerr << "gdn chunked T=" << T << ": unexpected exception: " << e.what() << '\n';
+        return 1;
+    }
+
+    return failures;
+}
+
+int chunked_chain_equivalence_case(int T, std::uint32_t seed) {
+    const auto in = make_inputs(T, seed, false);
+
+    int failures = 0;
+    try {
+        const GpuResult chunked = run_chunked_gpu(in);
+        const GpuResult ar_step = run_recurrent_gpu_stepped(in);
+        const std::string tag = std::string("gdn chunked chain-equivalence T=") + std::to_string(T);
+        failures +=
+            verify((tag + " out").c_str(), chunked.out, ar_step.out, Tolerance::gdn_output_bf16());
+        failures += verify((tag + " state").c_str(), chunked.state, ar_step.state,
+                           Tolerance::gdn_state_fp32());
+    } catch (const std::exception& e) {
+        std::cerr << "gdn chunked chain-equivalence T=" << T
+                  << ": unexpected exception: " << e.what() << '\n';
         return 1;
     }
 
@@ -312,12 +381,14 @@ int main() {
     failures += recurrent_case(7, 3033u, true);
     failures += recurrent_case(2, 4028u, false, true);
     failures += validation_case();
-    failures += chunked_case(32, 4528u, true);
-    failures += chunked_case(64, 4090u, true);
-    failures += chunked_case(128, 4154u, true);
-    failures += chunked_case(200, 4226u, true);
-    failures += chunked_case(256, 4282u, true);
-    failures += chunked_case(4096, 8122u, false);
+    failures += chunked_case(32, 4528u, true, true);
+    failures += chunked_case(64, 4090u, true, true);
+    failures += chunked_case(128, 4154u, true, true);
+    failures += chunked_case(200, 4226u, true, true);
+    failures += chunked_case(256, 4282u, true, true);
+    failures += chunked_case(512, 8534u, true, false);
+    failures += chunked_chain_equivalence_case(128, 6122u);
+    failures += chunked_case(4096, 8122u, false, false);
     failures += chunked_validation_case();
 
     std::cout << (failures ? "FAIL" : "OK") << " gated_delta_rule correctness\n";

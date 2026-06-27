@@ -25,14 +25,20 @@ class Case:
     name: str
     layer: int
     helper: str
+    phase: str
     tolerance: str
 
 
 CASES = [
-    Case("prefill_t4_attn", 3, "attn_mix", "attention_bf16"),
-    Case("prefill_t4_gdn", 0, "gdn_mix", "linear_bf16"),
-    Case("prefill_t4_full_mlp", 3, "mlp_tail", "linear_bf16"),
-    Case("prefill_t4_gdn_mlp", 0, "mlp_tail", "linear_bf16"),
+    Case("decode_t1_attn", 3, "attn_mix", "decode", "attention_bf16"),
+    Case("decode_t1_gdn", 0, "gdn_mix", "decode", "linear_bf16"),
+    Case("decode_t1_full_mlp", 3, "mlp_tail", "decode", "linear_bf16"),
+    Case("decode_t1_gdn_mlp", 0, "mlp_tail", "decode", "linear_bf16"),
+    Case("prefill_t4_attn", 3, "attn_mix", "prefill", "attention_bf16"),
+    Case("prefill_t4_gdn", 0, "gdn_mix", "prefill", "linear_bf16"),
+    Case("prefill_t4_full_mlp", 3, "mlp_tail", "prefill", "linear_bf16"),
+    Case("prefill_t4_gdn_mlp", 0, "mlp_tail", "prefill", "linear_bf16"),
+    Case("prefill_t64_gdn", 0, "gdn_mix", "prefill", "linear_bf16"),
 ]
 
 
@@ -71,9 +77,9 @@ def cosine(a: torch.Tensor, b: torch.Tensor) -> float:
 def run_oracle(model: RefModel, case: Case, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
     model.reset_state()
     if case.helper == "attn_mix":
-        return model.attn_mix(case.layer, x, "prefill", positions)
+        return model.attn_mix(case.layer, x, case.phase, positions)
     if case.helper == "gdn_mix":
-        return model.gdn_mix(case.layer, x, "prefill")
+        return model.gdn_mix(case.layer, x, case.phase)
     if case.helper == "mlp_tail":
         return model.mlp_tail(case.layer, x)
     raise ValueError(case.helper)
@@ -155,7 +161,7 @@ def main() -> None:
             if not ok:
                 print(
                     f"first divergent block helper: {case.name} layer={case.layer} "
-                    f"helper={case.helper}",
+                    f"helper={case.helper} phase={case.phase}",
                     file=sys.stderr,
                 )
                 failed = True

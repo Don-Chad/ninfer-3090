@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
     qus::WeightStore store(expectations());
     store.load(fixture.string().c_str(), fixture_weight_arena, ctx);
 
-    qus::KVCache kv(cache_arena, qus::model::kCfg.n_full(), 8, qus::model::kCfg.n_kv,
+    qus::KVCache kv(cache_arena, qus::model::kCfg.n_full(), 64, qus::model::kCfg.n_kv,
                     qus::model::kCfg.head_dim);
     qus::GdnState state(cache_arena, qus::model::kCfg.n_gdn(), qus::model::kCfg.conv_dim,
                         qus::model::kCfg.gdn_conv_k, qus::model::kCfg.gdn_v_heads,
@@ -145,6 +145,19 @@ int main(int argc, char** argv) {
     const qus::model::FullLayerW& full = card.full_layer(0);
     const qus::model::GdnLayerW& gdn   = card.gdn_layer(0);
 
+    run_case(out_dir, "decode_t1_attn", card, workspace, x_arena, pos_arena, kv, state, io, 1,
+             4096u,
+             [&](qus::Tensor& x) { card.test_attn_mix(full, x, 0, qus::model::Phase::Decode); });
+    run_case(out_dir, "decode_t1_gdn", card, workspace, x_arena, pos_arena, kv, state, io, 1, 4097u,
+             [&](qus::Tensor& x) { card.test_gdn_mix(gdn, x, 0, qus::model::Phase::Decode); });
+    run_case(out_dir, "decode_t1_full_mlp", card, workspace, x_arena, pos_arena, kv, state, io, 1,
+             4098u, [&](qus::Tensor& x) {
+                 card.test_mlp_tail(full.post_attn_norm, full.mlp, x, qus::model::Phase::Decode);
+             });
+    run_case(out_dir, "decode_t1_gdn_mlp", card, workspace, x_arena, pos_arena, kv, state, io, 1,
+             4099u, [&](qus::Tensor& x) {
+                 card.test_mlp_tail(gdn.post_attn_norm, gdn.mlp, x, qus::model::Phase::Decode);
+             });
     run_case(out_dir, "prefill_t4_attn", card, workspace, x_arena, pos_arena, kv, state, io, 4,
              4104u,
              [&](qus::Tensor& x) { card.test_attn_mix(full, x, 0, qus::model::Phase::Prefill); });
@@ -159,5 +172,8 @@ int main(int argc, char** argv) {
              4107u, [&](qus::Tensor& x) {
                  card.test_mlp_tail(gdn.post_attn_norm, gdn.mlp, x, qus::model::Phase::Prefill);
              });
+    run_case(out_dir, "prefill_t64_gdn", card, workspace, x_arena, pos_arena, kv, state, io, 64,
+             4164u,
+             [&](qus::Tensor& x) { card.test_gdn_mix(gdn, x, 0, qus::model::Phase::Prefill); });
     return 0;
 }
