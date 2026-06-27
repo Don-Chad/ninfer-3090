@@ -135,6 +135,271 @@ def build_specs() -> List[FixtureTensor]:
     ]
 
 
+def build_model_bind_specs() -> List[FixtureTensor]:
+    no_layer = qt.NO_LAYER
+    specs = [
+        FixtureTensor(
+            "model.language_model.embed_tokens.weight",
+            qt.QT_Q6G64,
+            qt.LAYOUT_ROW_GROUPED_G64,
+            qt.MODULE_TEXT,
+            qt.SK_EMBED,
+            no_layer,
+            make_values((16, 8), 1.0),
+        )
+    ]
+
+    for layer in range(64):
+        p = f"model.language_model.layers.{layer}."
+        specs.append(
+            FixtureTensor(
+                p + "input_layernorm.weight",
+                qt.QT_BF16,
+                qt.LAYOUT_CONTIGUOUS,
+                qt.MODULE_TEXT,
+                qt.SK_INPUT_LAYERNORM,
+                layer,
+                make_values((5120,), 100.0 + layer),
+            )
+        )
+        if (layer + 1) % 4 == 0:
+            specs.extend(
+                [
+                    FixtureTensor(
+                        p + "self_attn.q_proj.q",
+                        qt.QT_Q4G64,
+                        qt.LAYOUT_TILE_N64_K64,
+                        qt.MODULE_TEXT,
+                        qt.SK_ATTN_Q,
+                        layer,
+                        make_values((8, 8), 200.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "self_attn.q_proj.gate",
+                        qt.QT_Q5G64,
+                        qt.LAYOUT_TILE_N64_K64,
+                        qt.MODULE_TEXT,
+                        qt.SK_ATTN_GATE,
+                        layer,
+                        make_values((8, 8), 300.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "self_attn.k_proj.weight",
+                        qt.QT_Q4G64,
+                        qt.LAYOUT_TILE_N64_K64,
+                        qt.MODULE_TEXT,
+                        qt.SK_ATTN_K,
+                        layer,
+                        make_values((8, 8), 400.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "self_attn.v_proj.weight",
+                        qt.QT_Q5G64,
+                        qt.LAYOUT_TILE_N64_K64,
+                        qt.MODULE_TEXT,
+                        qt.SK_ATTN_V,
+                        layer,
+                        make_values((8, 8), 500.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "self_attn.q_norm.weight",
+                        qt.QT_BF16,
+                        qt.LAYOUT_CONTIGUOUS,
+                        qt.MODULE_TEXT,
+                        qt.SK_ATTN_Q_NORM,
+                        layer,
+                        make_values((256,), 600.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "self_attn.k_norm.weight",
+                        qt.QT_BF16,
+                        qt.LAYOUT_CONTIGUOUS,
+                        qt.MODULE_TEXT,
+                        qt.SK_ATTN_K_NORM,
+                        layer,
+                        make_values((256,), 700.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "self_attn.o_proj.weight",
+                        qt.QT_Q5G64,
+                        qt.LAYOUT_TILE_N64_K64,
+                        qt.MODULE_TEXT,
+                        qt.SK_ATTN_O,
+                        layer,
+                        make_values((8, 8), 800.0 + layer),
+                    ),
+                ]
+            )
+        else:
+            specs.extend(
+                [
+                    FixtureTensor(
+                        p + "linear_attn.A_log",
+                        qt.QT_FP32,
+                        qt.LAYOUT_CONTIGUOUS,
+                        qt.MODULE_TEXT,
+                        qt.SK_GDN_A_LOG,
+                        layer,
+                        make_values((48,), 900.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "linear_attn.dt_bias",
+                        qt.QT_FP32,
+                        qt.LAYOUT_CONTIGUOUS,
+                        qt.MODULE_TEXT,
+                        qt.SK_GDN_DT_BIAS,
+                        layer,
+                        make_values((48,), 1000.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "linear_attn.conv1d.weight",
+                        qt.QT_BF16,
+                        qt.LAYOUT_CONTIGUOUS,
+                        qt.MODULE_TEXT,
+                        qt.SK_GDN_CONV1D,
+                        layer,
+                        make_values((10240, 1, 4), 1100.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "linear_attn.in_proj_a.weight",
+                        qt.QT_BF16,
+                        qt.LAYOUT_CONTIGUOUS,
+                        qt.MODULE_TEXT,
+                        qt.SK_GDN_IN_PROJ_A,
+                        layer,
+                        make_values((48, 8), 1200.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "linear_attn.in_proj_b.weight",
+                        qt.QT_BF16,
+                        qt.LAYOUT_CONTIGUOUS,
+                        qt.MODULE_TEXT,
+                        qt.SK_GDN_IN_PROJ_B,
+                        layer,
+                        make_values((48, 8), 1300.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "linear_attn.in_proj_qkv.q",
+                        qt.QT_Q4G64,
+                        qt.LAYOUT_TILE_N64_K64,
+                        qt.MODULE_TEXT,
+                        qt.SK_GDN_IN_PROJ_Q,
+                        layer,
+                        make_values((8, 8), 1400.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "linear_attn.in_proj_qkv.k",
+                        qt.QT_Q4G64,
+                        qt.LAYOUT_TILE_N64_K64,
+                        qt.MODULE_TEXT,
+                        qt.SK_GDN_IN_PROJ_K,
+                        layer,
+                        make_values((8, 8), 1500.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "linear_attn.in_proj_qkv.v",
+                        qt.QT_Q5G64,
+                        qt.LAYOUT_TILE_N64_K64,
+                        qt.MODULE_TEXT,
+                        qt.SK_GDN_IN_PROJ_V,
+                        layer,
+                        make_values((8, 8), 1600.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "linear_attn.in_proj_z.weight",
+                        qt.QT_Q5G64,
+                        qt.LAYOUT_TILE_N64_K64,
+                        qt.MODULE_TEXT,
+                        qt.SK_GDN_IN_PROJ_Z,
+                        layer,
+                        make_values((8, 8), 1700.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "linear_attn.norm.weight",
+                        qt.QT_BF16,
+                        qt.LAYOUT_CONTIGUOUS,
+                        qt.MODULE_TEXT,
+                        qt.SK_GDN_NORM,
+                        layer,
+                        make_values((128,), 1800.0 + layer),
+                    ),
+                    FixtureTensor(
+                        p + "linear_attn.out_proj.weight",
+                        qt.QT_Q5G64,
+                        qt.LAYOUT_TILE_N64_K64,
+                        qt.MODULE_TEXT,
+                        qt.SK_GDN_OUT_PROJ,
+                        layer,
+                        make_values((8, 8), 1900.0 + layer),
+                    ),
+                ]
+            )
+        specs.extend(
+            [
+                FixtureTensor(
+                    p + "post_attention_layernorm.weight",
+                    qt.QT_BF16,
+                    qt.LAYOUT_CONTIGUOUS,
+                    qt.MODULE_TEXT,
+                    qt.SK_POST_ATTN_LAYERNORM,
+                    layer,
+                    make_values((5120,), 2000.0 + layer),
+                ),
+                FixtureTensor(
+                    p + "mlp.gate_proj.weight",
+                    qt.QT_Q4G64,
+                    qt.LAYOUT_TILE_N64_K64,
+                    qt.MODULE_TEXT,
+                    qt.SK_MLP_GATE,
+                    layer,
+                    make_values((8, 8), 2100.0 + layer),
+                ),
+                FixtureTensor(
+                    p + "mlp.up_proj.weight",
+                    qt.QT_Q4G64,
+                    qt.LAYOUT_TILE_N64_K64,
+                    qt.MODULE_TEXT,
+                    qt.SK_MLP_UP,
+                    layer,
+                    make_values((8, 8), 2200.0 + layer),
+                ),
+                FixtureTensor(
+                    p + "mlp.down_proj.weight",
+                    qt.QT_Q5G64,
+                    qt.LAYOUT_TILE_N64_K64,
+                    qt.MODULE_TEXT,
+                    qt.SK_MLP_DOWN,
+                    layer,
+                    make_values((8, 8), 2300.0 + layer),
+                ),
+            ]
+        )
+
+    specs.extend(
+        [
+            FixtureTensor(
+                "model.language_model.norm.weight",
+                qt.QT_BF16,
+                qt.LAYOUT_CONTIGUOUS,
+                qt.MODULE_TEXT,
+                qt.SK_FINAL_NORM,
+                no_layer,
+                make_values((5120,), 2400.0),
+            ),
+            FixtureTensor(
+                "lm_head.weight",
+                qt.QT_Q6G64,
+                qt.LAYOUT_TILE_N64_K64,
+                qt.MODULE_TEXT,
+                qt.SK_LM_HEAD,
+                no_layer,
+                make_values((16, 8), 2500.0),
+            ),
+        ]
+    )
+    return specs
+
+
 def module_counts(specs: List[FixtureTensor]) -> list[tuple[int, int, int]]:
     result: list[tuple[int, int, int]] = []
     for kind, policy in (
@@ -148,8 +413,8 @@ def module_counts(specs: List[FixtureTensor]) -> list[tuple[int, int, int]]:
     return result
 
 
-def build_file(out_path: Path) -> None:
-    specs = build_specs()
+def build_file(out_path: Path, profile: str) -> None:
+    specs = build_model_bind_specs() if profile == "model-bind" else build_specs()
     entries = [
         fmt.TensorEntry(
             name=spec.name,
@@ -222,11 +487,15 @@ def build_file(out_path: Path) -> None:
         )
         begin += count
 
+    header_flags = 0
+    for kind, _, _ in modules:
+        header_flags |= 1 << kind
+
     header = fmt.FileHeaderFields(
         tensor_count=len(entries),
         module_count=len(records),
         layer_count=64,
-        flags=1 | 2 | 4,
+        flags=header_flags,
         module_index_offset=module_index_offset,
         module_index_bytes=module_index_bytes,
         tensor_index_offset=tensor_index_offset,
@@ -268,8 +537,9 @@ def build_file(out_path: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True)
+    parser.add_argument("--profile", choices=("default", "model-bind"), default="default")
     args = parser.parse_args()
-    build_file(Path(args.out))
+    build_file(Path(args.out), args.profile)
 
 
 if __name__ == "__main__":
