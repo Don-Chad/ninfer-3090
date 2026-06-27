@@ -397,5 +397,179 @@ class CompareReportTests(unittest.TestCase):
             self.assertEqual(value["status"], "fail")
 
 
+class BaselineSummaryTests(unittest.TestCase):
+    def test_make_smoke_summary_extracts_audit_fields(self) -> None:
+        from tools.bench import make_baseline_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = root / "report.json"
+            report_path.write_text(json.dumps(report()), encoding="utf-8")
+            summary = make_baseline_summary.make_summary(report_path, "smoke", decoded_manifest_path=None)
+            self.assertEqual(summary["artifact_type"], "qus_e2e_baseline_summary")
+            self.assertEqual(summary["schema_version"], 1)
+            self.assertEqual(summary["baseline_class"], "smoke")
+            self.assertEqual(summary["source_report_sha256"], common.sha256_file(report_path))
+            self.assertEqual(summary["q5090"]["sha256"], "weights-sha")
+            self.assertEqual(summary["workspace_lifetime_policy"], "step_reset")
+            self.assertFalse(summary["hidden_device_allocations"])
+            self.assertEqual([case["name"] for case in summary["cases"]], ["cn_short", "long_2k"])
+            self.assertEqual(summary["cases"][0]["eos_token_id"], -1)
+
+    def test_summary_rejects_missing_required_audit_fields(self) -> None:
+        from tools.bench import make_baseline_summary
+
+        mutations = {
+            "run.command": lambda value: value["run"].pop("command"),
+            "run.git_commit": lambda value: value["run"].pop("git_commit"),
+            "run.worktree_dirty": lambda value: value["run"].pop("worktree_dirty"),
+            "weights.q5090_sha256": lambda value: value["weights"].pop("q5090_sha256"),
+            "memory.hidden_device_allocations": (
+                lambda value: value["memory"].pop("hidden_device_allocations")
+            ),
+            "engine.workspace_lifetime_policy": (
+                lambda value: value["engine"].pop("workspace_lifetime_policy")
+            ),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, mutate in mutations.items():
+                with self.subTest(name=name):
+                    report_path = Path(tmp) / f"{name.replace('.', '_')}.json"
+                    bad = report()
+                    mutate(bad)
+                    report_path.write_text(json.dumps(bad), encoding="utf-8")
+                    with self.assertRaises(RuntimeError):
+                        make_baseline_summary.make_summary(
+                            report_path,
+                            "smoke",
+                            decoded_manifest_path=None,
+                        )
+
+    def test_m3_gate_summary_enforces_required_cases(self) -> None:
+        from tools.bench import make_baseline_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "report.json"
+            bad = report()
+            bad["cases"] = [bad["cases"][0]]
+            report_path.write_text(json.dumps(bad), encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                make_baseline_summary.make_summary(report_path, "m3_gate", decoded_manifest_path=None)
+
+    def test_m3_gate_summary_rejects_missing_actual_repeat_records(self) -> None:
+        from tools.bench import make_baseline_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "report.json"
+            bad = report()
+            bad["cases"][0]["repeats"].pop()
+            report_path.write_text(json.dumps(bad), encoding="utf-8")
+            with self.assertRaises(common.ReportValidationError):
+                make_baseline_summary.make_summary(report_path, "m3_gate", decoded_manifest_path=None)
+
+    def test_summary_includes_decoded_tokenizer_when_manifest_given(self) -> None:
+        from tools.bench import make_baseline_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = root / "report.json"
+            decoded_path = root / "decoded_manifest.json"
+            report_path.write_text(json.dumps(report()), encoding="utf-8")
+            decoded_path.write_text(
+                json.dumps(
+                    {
+                        "artifact_type": "qus_decoded_text_artifacts",
+                        "source_report": str(report_path),
+                        "readability_gate": "human_smoke_only",
+                        "tokenizer": {
+                            "tokenizer_source": "local_hf",
+                            "tokenizer_model_id": "Qwen/Qwen3.6-27B",
+                            "tokenizer_path": "",
+                            "tokenizer_json_sha256": "tok",
+                            "tokenizer_config_sha256": "cfg",
+                            "special_tokens_map_sha256": "special",
+                        },
+                        "artifacts": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            summary = make_baseline_summary.make_summary(report_path, "smoke", decoded_path)
+            self.assertEqual(summary["tokenizer"]["tokenizer_source"], "local_hf")
+            self.assertEqual(summary["readability_gate"], "human_smoke_only")
+            self.assertEqual(summary["decoded_manifest_path"], str(decoded_path))
+            self.assertEqual(summary["decoded_manifest_sha256"], common.sha256_file(decoded_path))
+
+    def test_decoded_manifest_requires_metadata(self) -> None:
+        from tools.bench import make_baseline_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = root / "report.json"
+            report_path.write_text(json.dumps(report()), encoding="utf-8")
+
+            missing_tokenizer = root / "missing_tokenizer.json"
+            missing_tokenizer.write_text(
+                json.dumps(
+                    {
+                        "artifact_type": "qus_decoded_text_artifacts",
+                        "readability_gate": "human_smoke_only",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(RuntimeError):
+                make_baseline_summary.make_summary(report_path, "smoke", missing_tokenizer)
+
+            empty_tokenizer = root / "empty_tokenizer.json"
+            empty_tokenizer.write_text(
+                json.dumps(
+                    {
+                        "artifact_type": "qus_decoded_text_artifacts",
+                        "readability_gate": "human_smoke_only",
+                        "tokenizer": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(RuntimeError):
+                make_baseline_summary.make_summary(report_path, "smoke", empty_tokenizer)
+
+            missing_gate = root / "missing_gate.json"
+            missing_gate.write_text(
+                json.dumps(
+                    {
+                        "artifact_type": "qus_decoded_text_artifacts",
+                        "tokenizer": {"tokenizer_source": "local_hf"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(RuntimeError):
+                make_baseline_summary.make_summary(report_path, "smoke", missing_gate)
+
+    def test_cli_writes_summary(self) -> None:
+        from tools.bench import make_baseline_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = root / "report.json"
+            output_path = root / "summary.json"
+            report_path.write_text(json.dumps(report()), encoding="utf-8")
+            rc = make_baseline_summary.main(
+                [
+                    "--report",
+                    str(report_path),
+                    "--output",
+                    str(output_path),
+                    "--baseline-class",
+                    "smoke",
+                ]
+            )
+            self.assertEqual(rc, 0)
+            value = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(value["artifact_type"], "qus_e2e_baseline_summary")
+
+
 if __name__ == "__main__":
     unittest.main()
