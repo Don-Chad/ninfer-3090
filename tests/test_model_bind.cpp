@@ -132,6 +132,11 @@ int main() {
 
     qus::WeightStore store(expectations());
     store.load(fixture_path.c_str(), weights_arena, ctx);
+    const qus::Tensor* stored_conv1d =
+        store.tensor(qus::ModuleKind::TextCore,
+                     static_cast<std::uint32_t>(qus::SourceKind::GdnConv1d), 0);
+    failures +=
+        expect_tensor(stored_conv1d, qus::DType::BF16, {10240, 4, 1}, "store.gdn.conv1d");
     qus::KVCache kv(cache_arena, qus::model::kCfg.n_full(), 1, qus::model::kCfg.n_kv,
                     qus::model::kCfg.head_dim);
     qus::GdnState state(cache_arena, qus::model::kCfg.n_gdn(), qus::model::kCfg.conv_dim,
@@ -182,6 +187,7 @@ int main() {
     failures += expect_weight(gdn.in_b, qus::SourceKind::GdnInProjB, 0, qus::QType::BF16_CTRL,
                               qus::QuantLayout::Contiguous, 48, 8, "gdn.in_b");
     failures += expect_tensor(gdn.conv1d, qus::DType::BF16, {10240, 4}, "gdn.conv1d");
+    failures += gdn.conv1d->data == stored_conv1d->data ? 0 : fail("gdn.conv1d must alias WeightStore");
     failures += expect_tensor(gdn.a_log, qus::DType::FP32, {48}, "gdn.a_log");
     failures += expect_tensor(gdn.dt_bias, qus::DType::FP32, {48}, "gdn.dt_bias");
     failures += expect_tensor(gdn.gdn_norm, qus::DType::BF16, {128}, "gdn.gdn_norm");

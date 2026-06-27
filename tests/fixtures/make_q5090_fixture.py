@@ -20,6 +20,7 @@ from tools.q5090_convert import format as fmt
 from tools.q5090_convert import qtypes as qt
 from tools.q5090_convert.layouts import encode_tensor
 from tools.q5090_convert.packing import pack_lowbit_groups
+from tools.q5090_convert.tensor_plan import runtime_native_gdn_conv1d
 
 
 @dataclass
@@ -50,6 +51,14 @@ def make_zero_values(shape: tuple[int, ...]) -> torch.Tensor:
 
 def make_constant_values(shape: tuple[int, ...], value: float) -> torch.Tensor:
     return torch.full(shape, value, dtype=torch.float32)
+
+
+def make_runtime_native_conv1d_values(shape: tuple[int, int, int], seed: int) -> torch.Tensor:
+    if len(shape) != 3 or shape[1] != 1 or shape[2] != 4:
+        raise ValueError(f"fixture conv1d source shape must be [C,1,4], got {shape}")
+    rng = np.random.default_rng(seed)
+    values = rng.uniform(-0.01, 0.01, size=shape).astype(np.float32)
+    return runtime_native_gdn_conv1d(torch.from_numpy(values).to(torch.bfloat16))
 
 
 def make_zero_spec(
@@ -450,15 +459,17 @@ def build_model_bind_specs(
                         layer,
                         control_values((48,), 1000.0 + layer),
                     ),
-                    sampled_spec(
+                    FixtureTensor(
                         p + "linear_attn.conv1d.weight",
                         qt.QT_BF16,
                         qt.LAYOUT_CONTIGUOUS,
                         qt.MODULE_TEXT,
                         qt.SK_GDN_CONV1D,
                         layer,
-                        (10240, 1, 4),
-                        10000 + layer * 101 + qt.SK_GDN_CONV1D,
+                        make_runtime_native_conv1d_values(
+                            (10240, 1, 4),
+                            10000 + layer * 101 + qt.SK_GDN_CONV1D,
+                        ),
                     ),
                     sampled_spec(
                         p + "linear_attn.in_proj_a.weight",

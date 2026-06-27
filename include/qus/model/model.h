@@ -199,7 +199,6 @@ private:
     std::array<Weight, ModelConfig::n_gdn()> gdn_in_a_{};
     std::array<Weight, ModelConfig::n_gdn()> gdn_in_b_{};
     std::array<Tensor, ModelConfig::n_gdn()> gdn_conv1d_views_{};
-    std::array<void*, ModelConfig::n_gdn()> gdn_conv1d_storage_{};
 };
 
 } // namespace qus::model

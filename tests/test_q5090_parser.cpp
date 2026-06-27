@@ -60,15 +60,35 @@ void write_u64(std::vector<std::byte>& bytes, std::uint64_t offset, std::uint64_
     std::memcpy(bytes.data() + offset, &value, sizeof(value));
 }
 
-std::filesystem::path make_fixture() {
-    const auto path = std::filesystem::temp_directory_path() / "qus_q5090_parser_fixture.qus";
+std::filesystem::path make_fixture(std::string_view profile = "default") {
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("qus_q5090_parser_fixture_" + std::string(profile) + ".qus");
     const std::filesystem::path script =
         std::filesystem::path(QUS_SOURCE_DIR) / "tests/fixtures/make_q5090_fixture.py";
-    const std::string command =
-        "python3 \"" + script.string() + "\" --out \"" + path.string() + "\"";
+    std::string command = "python3 \"" + script.string() + "\" --out \"" + path.string() + "\"";
+    if (profile != "default") { command += " --profile " + std::string(profile); }
     const int rc = std::system(command.c_str());
     if (rc != 0) { throw std::runtime_error("fixture generator failed"); }
     return path;
+}
+
+qus::Q5090Expectations expectations() {
+    qus::Q5090Expectations expected;
+    expected.layer_count             = 64;
+    expected.hidden_size             = 5120;
+    expected.intermediate_size       = 17408;
+    expected.vocab_size              = 248320;
+    expected.num_attention_heads     = 24;
+    expected.num_key_value_heads     = 4;
+    expected.head_dim                = 256;
+    expected.gdn_key_heads           = 16;
+    expected.gdn_value_heads         = 48;
+    expected.gdn_key_head_dim        = 128;
+    expected.gdn_value_head_dim      = 128;
+    expected.gdn_conv_width          = 4;
+    expected.full_attention_interval = 4;
+    expected.max_position_embeddings = 262144;
+    return expected;
 }
 
 const qus::ParsedQ5090Tensor& find_tensor(const qus::ParsedQ5090File& parsed,
@@ -92,22 +112,7 @@ int expect_parse_throws(const std::vector<std::byte>& valid, std::string_view la
 }
 
 int check_valid_parse(const std::vector<std::byte>& bytes) {
-    qus::Q5090Expectations expected;
-    expected.layer_count             = 64;
-    expected.hidden_size             = 5120;
-    expected.intermediate_size       = 17408;
-    expected.vocab_size              = 248320;
-    expected.num_attention_heads     = 24;
-    expected.num_key_value_heads     = 4;
-    expected.head_dim                = 256;
-    expected.gdn_key_heads           = 16;
-    expected.gdn_value_heads         = 48;
-    expected.gdn_key_head_dim        = 128;
-    expected.gdn_value_head_dim      = 128;
-    expected.gdn_conv_width          = 4;
-    expected.full_attention_interval = 4;
-    expected.max_position_embeddings = 262144;
-
+    qus::Q5090Expectations expected = expectations();
     const qus::ParsedQ5090File parsed = qus::parse_q5090_file(bytes, expected);
     int failures                      = 0;
     failures += parsed.header.tensor_count == 10 ? 0 : fail("tensor_count mismatch");
@@ -171,6 +176,32 @@ int check_valid_parse(const std::vector<std::byte>& bytes) {
     return failures;
 }
 
+int check_model_bind_conv1d_parse() {
+    const std::filesystem::path fixture_path = make_fixture("model-bind");
+    const std::vector<std::byte> bytes       = read_file(fixture_path);
+    const qus::ParsedQ5090File parsed        = qus::parse_q5090_file(bytes, expectations());
+    const auto& conv =
+        find_tensor(parsed, "model.language_model.layers.0.linear_attn.conv1d.weight");
+
+    int failures = 0;
+    failures += conv.qtype == qus::QType::BF16_CTRL ? 0 : fail("conv1d qtype mismatch");
+    failures += conv.layout == qus::QuantLayout::Contiguous ? 0 : fail("conv1d layout mismatch");
+    failures += conv.module_kind == qus::ModuleKind::TextCore ? 0 : fail("conv1d module mismatch");
+    failures += conv.source_kind == static_cast<std::uint32_t>(qus::SourceKind::GdnConv1d)
+                    ? 0
+                    : fail("conv1d source kind mismatch");
+    failures += conv.shape == std::array<std::uint32_t, 4>{10240, 4, 1, 1}
+                    ? 0
+                    : fail("conv1d canonical shape mismatch");
+    failures += conv.padded_shape == std::array<std::uint32_t, 4>{10240, 4, 1, 1}
+                    ? 0
+                    : fail("conv1d padded shape mismatch");
+    failures += conv.payload_bytes == 10240ULL * 4ULL * 2ULL
+                    ? 0
+                    : fail("conv1d payload bytes mismatch");
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -178,6 +209,7 @@ int main() {
     const std::filesystem::path fixture_path = make_fixture();
     const std::vector<std::byte> valid       = read_file(fixture_path);
     failures += check_valid_parse(valid);
+    failures += check_model_bind_conv1d_parse();
 
     const std::uint64_t module_offset       = read_u64(valid, 48);
     const std::uint64_t tensor_offset       = read_u64(valid, 64);

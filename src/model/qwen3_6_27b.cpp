@@ -70,25 +70,15 @@ Weight bind_dense_weight(const WeightStore& store, SourceKind kind, std::uint32_
 }
 
 Tensor bind_conv1d_view(const WeightStore& store, SourceKind kind, std::uint32_t layer,
-                        const char* field, void*& storage, cudaStream_t stream) {
+                        const char* field) {
     const Tensor* tensor = require_tensor(store, kind, layer, field);
-    if (tensor->ne[1] == 1 && tensor->ne[2] == kCfg.gdn_conv_k && tensor->is_contiguous()) {
-        const std::size_t elem_size = dtype_size(DType::BF16);
-        const std::size_t channels  = static_cast<std::size_t>(tensor->ne[0]);
-        const std::size_t bytes     = channels * kCfg.gdn_conv_k * elem_size;
-        CUDA_CHECK(cudaMalloc(&storage, bytes));
-        auto* dst       = static_cast<unsigned char*>(storage);
-        const auto* src = static_cast<const unsigned char*>(tensor->data);
-        for (int k = 0; k < kCfg.gdn_conv_k; ++k) {
-            CUDA_CHECK(cudaMemcpy2DAsync(dst + static_cast<std::size_t>(k) * channels * elem_size,
-                                         elem_size, src + static_cast<std::size_t>(k) * elem_size,
-                                         kCfg.gdn_conv_k * elem_size, elem_size, channels,
-                                         cudaMemcpyDeviceToDevice, stream));
-        }
-        return Tensor(storage, DType::BF16, {tensor->ne[0], kCfg.gdn_conv_k});
+    if (tensor->dtype == DType::BF16 && tensor->ne[0] == kCfg.conv_dim &&
+        tensor->ne[1] == kCfg.gdn_conv_k && tensor->ne[2] == 1 && tensor->ne[3] == 1 &&
+        tensor->is_contiguous()) {
+        return tensor->view({tensor->ne[0], kCfg.gdn_conv_k});
     }
-    if (tensor->ne[1] == kCfg.gdn_conv_k && tensor->ne[2] == 1) { return *tensor; }
-    throw std::runtime_error("unexpected q5090 conv1d shape: " + source_label(field, kind, layer));
+    throw std::runtime_error("expected q5090 canonical conv1d shape [10240,4,1]: " +
+                             source_label(field, kind, layer));
 }
 
 MlpW bind_mlp(const WeightStore& store, std::uint32_t layer) {
@@ -247,12 +237,7 @@ Qwen3_6_27B::Qwen3_6_27B(DeviceContext& ctx, WeightStore& weights, WorkspaceAren
     bind();
 }
 
-Qwen3_6_27B::~Qwen3_6_27B() {
-    (void)cudaSetDevice(ctx_.device);
-    for (void* ptr : gdn_conv1d_storage_) {
-        if (ptr != nullptr) { (void)cudaFree(ptr); }
-    }
-}
+Qwen3_6_27B::~Qwen3_6_27B() = default;
 
 void Qwen3_6_27B::bind() {
     embed_      = require_weight(weights_, SourceKind::Embed, kQ5090NoLayer, "embed");
@@ -294,8 +279,7 @@ void Qwen3_6_27B::bind() {
             out.in_a = &gdn_in_a_[gidx];
             out.in_b = &gdn_in_b_[gidx];
             gdn_conv1d_views_[gidx] =
-                bind_conv1d_view(weights_, SourceKind::GdnConv1d, source_layer, "gdn.conv1d",
-                                 gdn_conv1d_storage_[gidx], ctx_.stream);
+                bind_conv1d_view(weights_, SourceKind::GdnConv1d, source_layer, "gdn.conv1d");
             out.conv1d = &gdn_conv1d_views_[gidx];
             out.a_log  = require_tensor(weights_, SourceKind::GdnALog, source_layer, "gdn.a_log");
             out.dt_bias =
