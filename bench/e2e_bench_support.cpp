@@ -436,7 +436,8 @@ void write_raw_report(const std::string& path, const RawReport& report) {
         << "  },\n"
         << "  \"engine\": {\n"
         << "    \"max_context\": " << report.max_context << ",\n"
-        << "    \"workspace_lifetime_policy\": \"step_reset\",\n"
+        << "    \"workspace_lifetime_policy\": \"" << json_escape(report.workspace_lifetime_policy)
+        << "\",\n"
         << "    \"decode_metric\": \"decode_eager_tok_s\",\n"
         << "    \"sampling_location\": \"device_argmax\",\n"
         << "    \"token_readback\": \"per_step_sync_d2h\",\n"

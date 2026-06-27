@@ -30,6 +30,32 @@ int expect_present(const std::string& text, const char* needle, const char* mess
     return 1;
 }
 
+int expect_order_after(const std::string& text, const char* anchor, const char* first,
+                       const char* second, const char* message) {
+    const std::size_t anchor_pos = text.find(anchor);
+    if (anchor_pos == std::string::npos) {
+        std::cerr << message << ": missing anchor `" << anchor << "`\n";
+        return 1;
+    }
+    const std::size_t first_pos = text.find(first, anchor_pos);
+    const std::size_t second_pos = text.find(second, anchor_pos);
+    if (first_pos != std::string::npos && second_pos != std::string::npos &&
+        first_pos < second_pos) {
+        return 0;
+    }
+    std::cerr << message << ": expected `" << first << "` before `" << second << "` after `"
+              << anchor << "`\n";
+    return 1;
+}
+
+std::string slice_between(const std::string& text, const char* begin, const char* end) {
+    const std::size_t begin_pos = text.find(begin);
+    if (begin_pos == std::string::npos) { return {}; }
+    const std::size_t end_pos = text.find(end, begin_pos);
+    if (end_pos == std::string::npos) { return text.substr(begin_pos); }
+    return text.substr(begin_pos, end_pos - begin_pos);
+}
+
 struct MemoryTap {
     static constexpr bool enabled = true;
 
@@ -102,6 +128,35 @@ int main() {
     failures += expect_present(model, "TapId::AfterLogits", "tap hook must cover logits");
     failures +=
         expect_present(model, "layer_%02d.f32", "FileTap must keep legacy layer dump files");
+
+    failures += expect_present(model_h, "kWorkspaceLifetimePolicy",
+                               "model must expose workspace lifetime policy");
+    failures += expect_present(model_h, "block_scoped_mixer_mlp_rewind",
+                               "model header policy must be block scoped");
+
+    const std::string run_layers_body =
+        slice_between(model, "template <class Tap>\nvoid Qwen3_6_27B::run_layers",
+                      "\nvoid Qwen3_6_27B::run_layers(Tensor& x, Phase ph)");
+    failures += expect_present(run_layers_body, "const std::size_t mixer_mark = work_.mark();",
+                               "run_layers must mark before mixer");
+    failures += expect_present(run_layers_body, "work_.rewind(mixer_mark);",
+                               "run_layers must rewind after mixer tap");
+    failures += expect_present(run_layers_body, "const std::size_t mlp_mark = work_.mark();",
+                               "run_layers must mark before MLP");
+    failures += expect_present(run_layers_body, "work_.rewind(mlp_mark);",
+                               "run_layers must rewind after MLP tap");
+    failures += expect_order_after(run_layers_body, "attn_mix(full", "TapId::AfterMixer",
+                                   "work_.rewind(mixer_mark);",
+                                   "full-layer AfterMixer tap must run before mixer rewind");
+    failures += expect_order_after(run_layers_body, "gdn_mix(gdn", "TapId::AfterMixer",
+                                   "work_.rewind(mixer_mark);",
+                                   "GDN-layer AfterMixer tap must run before mixer rewind");
+    failures += expect_order_after(run_layers_body, "mlp_tail(full.post_attn_norm",
+                                   "TapId::AfterMlp", "work_.rewind(mlp_mark);",
+                                   "full-layer AfterMlp tap must run before MLP rewind");
+    failures += expect_order_after(run_layers_body, "mlp_tail(gdn.post_attn_norm",
+                                   "TapId::AfterMlp", "work_.rewind(mlp_mark);",
+                                   "GDN-layer AfterMlp tap must run before MLP rewind");
 
     const std::string layer_dump = read_file(QUS_SOURCE_DIR "/tools/parity/layer_dump.cpp");
     failures += expect_present(layer_dump, "qus::model::FileTap tap(out_dir)",

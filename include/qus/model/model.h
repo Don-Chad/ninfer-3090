@@ -16,6 +16,8 @@
 
 namespace qus::model {
 
+inline constexpr const char* kWorkspaceLifetimePolicy = "block_scoped_mixer_mlp_rewind";
+
 struct MlpW {
     const Weight* gate = nullptr;
     const Weight* up   = nullptr;

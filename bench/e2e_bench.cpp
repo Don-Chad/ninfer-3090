@@ -1,4 +1,5 @@
 #include "e2e_bench_support.h"
+#include "qus/model/model.h"
 #include "qus/runtime/engine.h"
 
 #include <cuda_runtime.h>
@@ -143,6 +144,7 @@ int main(int argc, char** argv) {
         report.q5090_file_size_bytes = qus::bench::e2e::file_size_or_zero(options.weights_path);
         report.q5090_sha256 = qus::bench::e2e::sha256_file_or_empty(options.weights_path);
         report.max_context = options.max_ctx;
+        report.workspace_lifetime_policy = qus::model::kWorkspaceLifetimePolicy;
         report.post_load_memory = engine.memory_stats();
 
         for (const qus::bench::e2e::CaseRunInput& input : case_inputs) {

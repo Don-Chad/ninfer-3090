@@ -1,5 +1,6 @@
 #pragma once
 
+#include "qus/model/model.h"
 #include "qus/runtime/engine.h"
 
 #include <cstddef>
@@ -100,6 +101,7 @@ struct RawReport {
     std::uint64_t q5090_file_size_bytes = 0;
     std::string q5090_sha256;
     std::uint32_t max_context = 0;
+    std::string workspace_lifetime_policy = qus::model::kWorkspaceLifetimePolicy;
     EngineMemoryStats post_load_memory;
     std::vector<CaseReport> cases;
 };

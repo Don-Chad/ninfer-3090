@@ -238,9 +238,11 @@ int test_raw_report_json_is_valid() {
     failures += text.find("\"gpu_name\": \"test gpu\"") != std::string::npos
                     ? 0
                     : fail("raw report environment missing");
-    failures += text.find("\"workspace_lifetime_policy\": \"step_reset\"") != std::string::npos &&
-                        text.find("\"token_readback\": \"per_step_sync_d2h\"") !=
-                            std::string::npos &&
+    failures += text.find("\"workspace_lifetime_policy\": \"block_scoped_mixer_mlp_rewind\"") !=
+                        std::string::npos
+                    ? 0
+                    : fail("raw report workspace lifetime policy missing");
+    failures += text.find("\"token_readback\": \"per_step_sync_d2h\"") != std::string::npos &&
                         text.find("\"includes_token_readback\": true") != std::string::npos
                     ? 0
                     : fail("raw report engine constants missing");

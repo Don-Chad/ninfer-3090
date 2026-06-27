@@ -432,17 +432,26 @@ void Qwen3_6_27B::run_layers(Tensor& x, Phase ph, Tap& tap) {
         if (ModelConfig::is_full(layer)) {
             const int fidx         = ModelConfig::full_idx(layer);
             const FullLayerW& full = full_.at(static_cast<std::size_t>(fidx));
+            const std::size_t mixer_mark = work_.mark();
             attn_mix(full, x, fidx, ph);
             if constexpr (Tap::enabled) { tap(TapId::AfterMixer, layer, ph, x, ctx_.stream); }
+            work_.rewind(mixer_mark);
+            const std::size_t mlp_mark = work_.mark();
             mlp_tail(full.post_attn_norm, full.mlp, x, ph);
+            if constexpr (Tap::enabled) { tap(TapId::AfterMlp, layer, ph, x, ctx_.stream); }
+            work_.rewind(mlp_mark);
         } else {
             const int gidx       = ModelConfig::gdn_idx(layer);
             const GdnLayerW& gdn = gdn_.at(static_cast<std::size_t>(gidx));
+            const std::size_t mixer_mark = work_.mark();
             gdn_mix(gdn, x, gidx, ph);
             if constexpr (Tap::enabled) { tap(TapId::AfterMixer, layer, ph, x, ctx_.stream); }
+            work_.rewind(mixer_mark);
+            const std::size_t mlp_mark = work_.mark();
             mlp_tail(gdn.post_attn_norm, gdn.mlp, x, ph);
+            if constexpr (Tap::enabled) { tap(TapId::AfterMlp, layer, ph, x, ctx_.stream); }
+            work_.rewind(mlp_mark);
         }
-        if constexpr (Tap::enabled) { tap(TapId::AfterMlp, layer, ph, x, ctx_.stream); }
     }
 }
 
