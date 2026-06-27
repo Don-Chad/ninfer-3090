@@ -155,15 +155,38 @@ metadata to audit the readiness decision from git alone.
 
 ## Report Comparison
 
-The planned M2.8 comparison tool is:
+Compare two local raw e2e reports with:
 
-```text
-tools/bench/compare_e2e_reports.py
+```bash
+python3 tools/bench/compare_e2e_reports.py \
+  --baseline profiles/e2e/baseline.json \
+  --candidate profiles/e2e/candidate.json \
+  --output-json profiles/e2e/compare.json
 ```
 
-Default hard failures include schema/artifact mismatches, missing required cases, changed fixture
-identity, non-ok status, and generated token id mismatch for fixed q5090 + fixed prompt + greedy config.
-Performance and memory regressions are warnings by default unless promoted by CLI flags.
+Default hard failures include schema/artifact mismatches, missing required cases, changed case identity
+including fixture or generation config fields, non-ok status, changed q5090 identity when token comparison
+is enabled, and generated token id mismatch for fixed q5090 + fixed prompt + greedy config.
+
+Performance and memory regressions are warnings by default. Promote them with:
+
+```bash
+python3 tools/bench/compare_e2e_reports.py \
+  --baseline profiles/e2e/baseline.json \
+  --candidate profiles/e2e/candidate.json \
+  --fail-on-performance-regression \
+  --fail-on-memory-regression
+```
+
+Create a committed baseline summary from a local raw report with:
+
+```bash
+python3 tools/bench/make_baseline_summary.py \
+  --report profiles/e2e/m3-gate.json \
+  --output docs/bench/baselines/m3-gate-summary.json \
+  --baseline-class m3_gate \
+  --decoded-manifest profiles/e2e/m3-gate.decoded/manifest.json
+```
 
 ## Performance Claims
 

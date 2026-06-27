@@ -10,6 +10,7 @@
 | `qus_e2e_benchmark_report` | Raw e2e benchmark JSON report. |
 | `qus_decoded_text_artifacts` | Sidecar manifest for decoded text files. |
 | `qus_e2e_baseline_summary` | Committed audit summary for an official smoke or M3-gate baseline. |
+| `qus_e2e_compare_result` | Optional structured result from comparing two raw e2e reports. |
 
 ## Raw E2E Report
 
@@ -156,6 +157,7 @@ memory/timing information:
   "prompt_ids_sha256": "",
   "prompt_tokens": 0,
   "requested_max_new_tokens": 128,
+  "eos_token_id": -1,
   "max_context": 0,
   "decode_loop_tokens_requested": 127,
   "required_max_context": 0,
@@ -288,11 +290,24 @@ Raw reports stay local under `profiles/e2e/`. Official smoke or M3-gate summarie
   "memory_summary": {},
   "hidden_device_allocations": false,
   "workspace_lifetime_policy": "step_reset",
-  "tokenizer": {}
+  "tokenizer": {},
+  "readability_gate": "not_run"
 }
 ```
 
 `baseline_class` is `smoke` or `m3_gate`. Smoke summaries do not satisfy M3 readiness.
+`decoded_manifest_path` and `decoded_manifest_sha256` are present only when
+`--decoded-manifest` is provided. `readability_gate` is `not_run` without decoded artifacts and
+`human_smoke_only` when decoded text sidecars are attached.
+
+With `--decoded-manifest`, the summary also includes:
+
+```json
+{
+  "decoded_manifest_path": "profiles/e2e/example.decoded/manifest.json",
+  "decoded_manifest_sha256": ""
+}
+```
 
 ## Comparison Identity Fields
 
@@ -303,9 +318,30 @@ Report comparison depends on stable identity fields:
 - git commit and dirty/clean state;
 - q5090 path, file size, and SHA256 for official baselines;
 - fixture set, manifest SHA256, case names, prompt ids path, prompt ids SHA256, and prompt token count;
-- generation config, including max_new_tokens and EOS policy;
+- generation config, including `requested_max_new_tokens` and `eos_token_id`;
 - workspace lifetime policy;
 - memory accounting scope.
 
 For fixed q5090 + fixed prompt ids + greedy generation config, generated token ids must match across
 measured repeats and across compared reports unless token comparison is explicitly disabled.
+
+## Compare Result
+
+`tools/bench/compare_e2e_reports.py` writes this optional JSON object when `--output-json` is passed:
+
+```json
+{
+  "artifact_type": "qus_e2e_compare_result",
+  "schema_version": 1,
+  "status": "ok",
+  "failures": [],
+  "warnings": []
+}
+```
+
+`status` is `ok`, `warning`, or `fail`. Warnings become failures only when the matching promotion flag is
+used.
+
+Baseline summary generation is handled by `tools/bench/make_baseline_summary.py`. It validates the raw
+report schema first and preserves the raw report path and SHA256 so the committed summary can be audited
+against the local artifact that produced it.
