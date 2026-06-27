@@ -57,6 +57,19 @@ bench/fixtures/prompts/m2.8-v1.manifest.json
 The manifest records tokenizer provenance, case names, prompt token counts, and hashes for each
 `.txt`/`.ids` pair. `qus_e2e_bench` reads `.ids` only and has no tokenizer dependency.
 
+Regenerate or check fixtures with:
+
+```bash
+python3 tools/bench/tokenize_prompts.py \
+  --tokenizer-path /path/to/local/Qwen3.6-27B/tokenizer \
+  --fixture-dir bench/fixtures/prompts
+
+python3 tools/bench/tokenize_prompts.py \
+  --tokenizer-path /path/to/local/Qwen3.6-27B/tokenizer \
+  --fixture-dir bench/fixtures/prompts \
+  --check
+```
+
 ## E2E CLI Contract
 
 The required M2.8 CLI is:
@@ -113,6 +126,16 @@ Decoded text sidecars are written beside a report:
 ```text
 profiles/e2e/<report-stem>.decoded/
 ```
+
+Generate decoded sidecars with:
+
+```bash
+python3 tools/bench/decode_e2e_report.py \
+  --tokenizer-path /path/to/local/Qwen3.6-27B/tokenizer \
+  --report profiles/e2e/example.json
+```
+
+Decoded text is for human smoke review only, not an automated correctness gate.
 
 Profiler outputs are local:
 
