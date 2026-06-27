@@ -23,6 +23,7 @@ struct EngineOptions {
     std::size_t cache_bytes  = 0;
     std::size_t work_bytes   = 2ULL * 1024ULL * 1024ULL * 1024ULL;
     Q5090Progress* progress  = nullptr;
+    int eos_token_id         = -1;
 };
 
 class Engine {
@@ -47,6 +48,7 @@ private:
 
     void require_loaded() const;
     [[nodiscard]] int read_token();
+    [[nodiscard]] bool is_eos_token(int token) const noexcept;
 
     EngineOptions options_;
     std::optional<DeviceContext> ctx_;

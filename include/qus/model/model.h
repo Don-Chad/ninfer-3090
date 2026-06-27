@@ -11,6 +11,7 @@
 
 #include <array>
 #include <cstddef>
+#include <filesystem>
 #include <span>
 
 namespace qus::model {
@@ -57,12 +58,36 @@ struct StepState {
     Tensor logits;
 };
 
-struct NullTap {};
-
 enum class Phase {
     Prefill,
     Decode,
 };
+
+enum class TapId {
+    AfterEmbed,
+    AfterMixer,
+    AfterMlp,
+    AfterFinalNorm,
+    AfterLogits,
+};
+
+struct NullTap {
+    static constexpr bool enabled = false;
+};
+
+class FileTap {
+public:
+    static constexpr bool enabled = true;
+
+    explicit FileTap(std::filesystem::path out_dir);
+
+    void operator()(TapId id, int layer, Phase phase, const Tensor& x, cudaStream_t stream);
+
+private:
+    std::filesystem::path out_dir_;
+};
+
+using TapCallback = void (*)(void*, TapId, int, Phase, const Tensor&, cudaStream_t);
 
 class Qwen3_6_27B {
 public:
@@ -86,7 +111,33 @@ public:
     [[nodiscard]] const GdnLayerW& gdn_layer(std::size_t i) const { return gdn_.at(i); }
 
     void prefill(std::span<const int> ids);
+
+    template <class Tap>
+    void prefill(std::span<const int> ids, Tap& tap) {
+        if constexpr (Tap::enabled) {
+            prefill_erased(ids, &tap,
+                           [](void* ctx, TapId id, int layer, Phase phase, const Tensor& x,
+                              cudaStream_t stream) {
+                               (*static_cast<Tap*>(ctx))(id, layer, phase, x, stream);
+                           });
+        } else {
+            prefill(ids);
+        }
+    }
+
     void decode_step();
+
+    template <class Tap>
+    void decode_step(Tap& tap) {
+        if constexpr (Tap::enabled) {
+            decode_step_erased(&tap, [](void* ctx, TapId id, int layer, Phase phase,
+                                        const Tensor& x, cudaStream_t stream) {
+                (*static_cast<Tap*>(ctx))(id, layer, phase, x, stream);
+            });
+        } else {
+            decode_step();
+        }
+    }
 
 #ifdef QUS_MODEL_TESTING
     struct TestScheduleEntry {
@@ -122,6 +173,14 @@ private:
     void attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph);
     void gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph);
     void mlp_tail(const Tensor* post_norm, const MlpW& m, Tensor& x, Phase ph);
+    void prefill_erased(std::span<const int> ids, void* tap, TapCallback callback);
+    void decode_step_erased(void* tap, TapCallback callback);
+    template <class Tap>
+    void prefill_impl(std::span<const int> ids, Tap& tap);
+    template <class Tap>
+    void decode_step_impl(Tap& tap);
+    template <class Tap>
+    void run_layers(Tensor& x, Phase ph, Tap& tap);
     void run_layers(Tensor& x, Phase ph);
 
     DeviceContext& ctx_;

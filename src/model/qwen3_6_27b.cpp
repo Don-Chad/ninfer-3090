@@ -19,10 +19,15 @@
 
 #include <cuda_runtime.h>
 
+#include <cstdio>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace qus::model {
 namespace {
@@ -141,7 +146,105 @@ private:
     const Tensor*& slot_;
 };
 
+struct ErasedTap {
+    static constexpr bool enabled = true;
+
+    void* ctx            = nullptr;
+    TapCallback callback = nullptr;
+
+    void operator()(TapId id, int layer, Phase phase, const Tensor& x, cudaStream_t stream) {
+        callback(ctx, id, layer, phase, x, stream);
+    }
+};
+
+float bf16_bits_to_f32(std::uint16_t bits) {
+    const std::uint32_t u = static_cast<std::uint32_t>(bits) << 16;
+    float out             = 0.0f;
+    std::memcpy(&out, &u, sizeof(out));
+    return out;
+}
+
+std::vector<float> tensor_to_f32(const Tensor& x, cudaStream_t stream) {
+    if (x.data == nullptr) { throw std::invalid_argument("FileTap: tensor data must be non-null"); }
+    if (!x.is_contiguous()) { throw std::invalid_argument("FileTap: tensor must be contiguous"); }
+    const std::int64_t n_i64 = x.numel();
+    if (n_i64 < 0) { throw std::overflow_error("FileTap: negative tensor size"); }
+    const auto n = static_cast<std::size_t>(n_i64);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    std::vector<float> out(n);
+    if (x.dtype == DType::BF16) {
+        std::vector<std::uint16_t> bits(n);
+        CUDA_CHECK(cudaMemcpy(bits.data(), x.data, bits.size() * sizeof(std::uint16_t),
+                              cudaMemcpyDeviceToHost));
+        for (std::size_t i = 0; i < bits.size(); ++i) { out[i] = bf16_bits_to_f32(bits[i]); }
+        return out;
+    }
+    if (x.dtype == DType::FP32) {
+        CUDA_CHECK(
+            cudaMemcpy(out.data(), x.data, out.size() * sizeof(float), cudaMemcpyDeviceToHost));
+        return out;
+    }
+    if (x.dtype == DType::I32) {
+        std::vector<std::int32_t> values(n);
+        CUDA_CHECK(cudaMemcpy(values.data(), x.data, values.size() * sizeof(std::int32_t),
+                              cudaMemcpyDeviceToHost));
+        for (std::size_t i = 0; i < values.size(); ++i) { out[i] = static_cast<float>(values[i]); }
+        return out;
+    }
+    if (x.dtype == DType::U8) {
+        std::vector<std::uint8_t> values(n);
+        CUDA_CHECK(cudaMemcpy(values.data(), x.data, values.size() * sizeof(std::uint8_t),
+                              cudaMemcpyDeviceToHost));
+        for (std::size_t i = 0; i < values.size(); ++i) { out[i] = static_cast<float>(values[i]); }
+        return out;
+    }
+    throw std::invalid_argument("FileTap: unsupported tensor dtype");
+}
+
+void write_f32_file(const std::filesystem::path& path, const std::vector<float>& values) {
+    std::ofstream file(path, std::ios::binary);
+    if (!file) { throw std::runtime_error("FileTap: failed to open " + path.string()); }
+    file.write(reinterpret_cast<const char*>(values.data()),
+               static_cast<std::streamsize>(values.size() * sizeof(float)));
+    if (!file) { throw std::runtime_error("FileTap: failed to write " + path.string()); }
+}
+
+std::string tap_file_name(TapId id, int layer) {
+    char name[64];
+    switch (id) {
+    case TapId::AfterEmbed:
+        return "embed.f32";
+    case TapId::AfterMixer:
+        std::snprintf(name, sizeof(name), "layer_%02d_mixer.f32", layer);
+        return name;
+    case TapId::AfterMlp:
+        std::snprintf(name, sizeof(name), "layer_%02d_mlp.f32", layer);
+        return name;
+    case TapId::AfterFinalNorm:
+        return "final_norm.f32";
+    case TapId::AfterLogits:
+        return "logits.f32";
+    }
+    throw std::invalid_argument("FileTap: unknown tap id");
+}
+
 } // namespace
+
+FileTap::FileTap(std::filesystem::path out_dir) : out_dir_(std::move(out_dir)) {
+    std::filesystem::create_directories(out_dir_);
+}
+
+void FileTap::operator()(TapId id, int layer, Phase phase, const Tensor& x, cudaStream_t stream) {
+    (void)phase;
+    const std::vector<float> values = tensor_to_f32(x, stream);
+    write_f32_file(out_dir_ / tap_file_name(id, layer), values);
+    if (id == TapId::AfterMlp) {
+        char legacy[32];
+        std::snprintf(legacy, sizeof(legacy), "layer_%02d.f32", layer);
+        write_f32_file(out_dir_ / legacy, values);
+    }
+}
 
 Qwen3_6_27B::Qwen3_6_27B(DeviceContext& ctx, WeightStore& weights, WorkspaceArena& work,
                          KVCache& kv, GdnState& state, StepState& io)
@@ -344,23 +447,33 @@ void Qwen3_6_27B::mlp_tail(const Tensor* post_norm, const MlpW& m, Tensor& x, Ph
     kernels::residual_add(d, x, s);
 }
 
-void Qwen3_6_27B::run_layers(Tensor& x, Phase ph) {
+template <class Tap>
+void Qwen3_6_27B::run_layers(Tensor& x, Phase ph, Tap& tap) {
     for (int layer = 0; layer < kCfg.n_layers; ++layer) {
         if (ModelConfig::is_full(layer)) {
             const int fidx         = ModelConfig::full_idx(layer);
             const FullLayerW& full = full_.at(static_cast<std::size_t>(fidx));
             attn_mix(full, x, fidx, ph);
+            if constexpr (Tap::enabled) { tap(TapId::AfterMixer, layer, ph, x, ctx_.stream); }
             mlp_tail(full.post_attn_norm, full.mlp, x, ph);
         } else {
             const int gidx       = ModelConfig::gdn_idx(layer);
             const GdnLayerW& gdn = gdn_.at(static_cast<std::size_t>(gidx));
             gdn_mix(gdn, x, gidx, ph);
+            if constexpr (Tap::enabled) { tap(TapId::AfterMixer, layer, ph, x, ctx_.stream); }
             mlp_tail(gdn.post_attn_norm, gdn.mlp, x, ph);
         }
+        if constexpr (Tap::enabled) { tap(TapId::AfterMlp, layer, ph, x, ctx_.stream); }
     }
 }
 
-void Qwen3_6_27B::prefill(std::span<const int> ids) {
+void Qwen3_6_27B::run_layers(Tensor& x, Phase ph) {
+    NullTap tap;
+    run_layers(x, ph, tap);
+}
+
+template <class Tap>
+void Qwen3_6_27B::prefill_impl(std::span<const int> ids, Tap& tap) {
     if (ids.empty()) { throw std::invalid_argument("Qwen3_6_27B::prefill requires tokens"); }
     if (ids.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
         throw std::overflow_error("Qwen3_6_27B::prefill token count exceeds int32");
@@ -379,12 +492,15 @@ void Qwen3_6_27B::prefill(std::span<const int> ids) {
 
     Tensor x = work_.alloc(DType::BF16, {kCfg.hidden, T});
     kernels::embed_gather(ids_device, *embed_, x, s);
-    run_layers(x, Phase::Prefill);
+    if constexpr (Tap::enabled) { tap(TapId::AfterEmbed, -1, Phase::Prefill, x, s); }
+    run_layers(x, Phase::Prefill, tap);
 
     Tensor xf = work_.alloc(DType::BF16, {kCfg.hidden, T});
     kernels::rmsnorm(x, *final_norm_, kCfg.rms_eps, true, nullptr, xf, s);
+    if constexpr (Tap::enabled) { tap(TapId::AfterFinalNorm, -1, Phase::Prefill, xf, s); }
     Tensor last = xf.slice(1, T - 1, 1);
     kernels::linear(last, *lm_head_, io_.logits, s);
+    if constexpr (Tap::enabled) { tap(TapId::AfterLogits, -1, Phase::Prefill, io_.logits, s); }
     kernels::argmax(io_.logits, io_.token, s);
 
     kv_.pos = static_cast<std::uint32_t>(T);
@@ -392,22 +508,48 @@ void Qwen3_6_27B::prefill(std::span<const int> ids) {
     work_.reset();
 }
 
-void Qwen3_6_27B::decode_step() {
+void Qwen3_6_27B::prefill(std::span<const int> ids) {
+    NullTap tap;
+    prefill_impl(ids, tap);
+}
+
+void Qwen3_6_27B::prefill_erased(std::span<const int> ids, void* tap, TapCallback callback) {
+    if (callback == nullptr) { throw std::invalid_argument("Qwen3_6_27B::prefill tap is null"); }
+    ErasedTap erased{tap, callback};
+    prefill_impl(ids, erased);
+}
+
+template <class Tap>
+void Qwen3_6_27B::decode_step_impl(Tap& tap) {
     cudaStream_t s = ctx_.stream;
     work_.reset();
 
     Tensor x = work_.alloc(DType::BF16, {kCfg.hidden, 1});
     kernels::embed_gather(io_.token, *embed_, x, s);
-    run_layers(x, Phase::Decode);
+    if constexpr (Tap::enabled) { tap(TapId::AfterEmbed, -1, Phase::Decode, x, s); }
+    run_layers(x, Phase::Decode, tap);
 
     Tensor xf = work_.alloc(DType::BF16, {kCfg.hidden, 1});
     kernels::rmsnorm(x, *final_norm_, kCfg.rms_eps, true, nullptr, xf, s);
+    if constexpr (Tap::enabled) { tap(TapId::AfterFinalNorm, -1, Phase::Decode, xf, s); }
     kernels::linear(xf, *lm_head_, io_.logits, s);
+    if constexpr (Tap::enabled) { tap(TapId::AfterLogits, -1, Phase::Decode, io_.logits, s); }
     kernels::argmax(io_.logits, io_.token, s);
 
     kv_.advance();
     detail::advance_pos(io_.pos, s);
     work_.reset();
+}
+
+void Qwen3_6_27B::decode_step() {
+    NullTap tap;
+    decode_step_impl(tap);
+}
+
+void Qwen3_6_27B::decode_step_erased(void* tap, TapCallback callback) {
+    if (callback == nullptr) { throw std::invalid_argument("Qwen3_6_27B::decode tap is null"); }
+    ErasedTap erased{tap, callback};
+    decode_step_impl(erased);
 }
 
 } // namespace qus::model

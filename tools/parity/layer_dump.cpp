@@ -3,32 +3,20 @@
 #include "qus/core/kv_cache.h"
 #include "qus/core/state_store.h"
 #include "qus/core/weight_store.h"
-#include "qus/kernels/embed_gather.h"
 #include "qus/model/config.h"
 #include "qus/model/model.h"
 
 #include <cuda_runtime.h>
 
-#include <cstdio>
 #include <cstdlib>
 #include <cstdint>
-#include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace {
-
-float bf16_to_f32(std::uint16_t h) {
-    const std::uint32_t u = static_cast<std::uint32_t>(h) << 16;
-    float f               = 0.0f;
-    std::memcpy(&f, &u, sizeof(f));
-    return f;
-}
 
 qus::Q5090Expectations expectations() {
     qus::Q5090Expectations expected;
@@ -47,52 +35,6 @@ qus::Q5090Expectations expectations() {
     expected.full_attention_interval = qus::model::kCfg.full_interval;
     expected.max_position_embeddings = 262144;
     return expected;
-}
-
-void copy_i32_to_device(std::span<const int> src, qus::Tensor& dst) {
-    CUDA_CHECK(cudaMemcpy(dst.data, src.data(), src.size_bytes(), cudaMemcpyHostToDevice));
-}
-
-void write_f32(const std::filesystem::path& path, const qus::Tensor& x) {
-    const std::size_t n = static_cast<std::size_t>(x.ne[0]) * static_cast<std::size_t>(x.ne[1]);
-    std::vector<std::uint16_t> bits(n);
-    CUDA_CHECK(cudaMemcpy(bits.data(), x.data, bits.size() * sizeof(std::uint16_t),
-                          cudaMemcpyDeviceToHost));
-    std::vector<float> out(bits.size());
-    for (std::size_t i = 0; i < bits.size(); ++i) { out[i] = bf16_to_f32(bits[i]); }
-    std::ofstream file(path, std::ios::binary);
-    if (!file) { throw std::runtime_error("failed to open output: " + path.string()); }
-    file.write(reinterpret_cast<const char*>(out.data()),
-               static_cast<std::streamsize>(out.size() * sizeof(float)));
-}
-
-void set_positions(qus::model::StepState& io, qus::DeviceArena& arena, int begin, int count) {
-    std::vector<int> host(static_cast<std::size_t>(count));
-    for (int i = 0; i < count; ++i) { host[static_cast<std::size_t>(i)] = begin + i; }
-    io.pos = arena.alloc(qus::DType::I32, {count});
-    CUDA_CHECK(
-        cudaMemcpy(io.pos.data, host.data(), host.size() * sizeof(int), cudaMemcpyHostToDevice));
-}
-
-void dump_layers(const std::filesystem::path& out_dir, qus::model::Qwen3_6_27B& card,
-                 qus::Tensor& x, qus::model::Phase phase) {
-    for (int layer = 0; layer < qus::model::kCfg.n_layers; ++layer) {
-        if (qus::model::ModelConfig::is_full(layer)) {
-            const int fidx                     = qus::model::ModelConfig::full_idx(layer);
-            const qus::model::FullLayerW& full = card.full_layer(static_cast<std::size_t>(fidx));
-            card.test_attn_mix(full, x, fidx, phase);
-            card.test_mlp_tail(full.post_attn_norm, full.mlp, x, phase);
-        } else {
-            const int gidx                   = qus::model::ModelConfig::gdn_idx(layer);
-            const qus::model::GdnLayerW& gdn = card.gdn_layer(static_cast<std::size_t>(gidx));
-            card.test_gdn_mix(gdn, x, gidx, phase);
-            card.test_mlp_tail(gdn.post_attn_norm, gdn.mlp, x, phase);
-        }
-        CUDA_CHECK(cudaDeviceSynchronize());
-        char name[32];
-        std::snprintf(name, sizeof(name), "layer_%02d.f32", layer);
-        write_f32(out_dir / name, x);
-    }
 }
 
 int parse_int(const char* text, const char* label) {
@@ -129,7 +71,6 @@ int main(int argc, char** argv) {
         qus::DeviceArena weight_arena(weight_bytes);
         qus::DeviceArena cache_arena(1024ULL * 1024ULL * 1024ULL);
         qus::WorkspaceArena work(2ULL * 1024ULL * 1024ULL * 1024ULL);
-        qus::DeviceArena pos_arena(64ULL * 1024ULL);
         qus::WeightStore store(expectations());
         store.load(weights_path.string().c_str(), weight_arena, ctx);
 
@@ -144,26 +85,18 @@ int main(int argc, char** argv) {
                                  cache_arena.alloc(qus::DType::I32, {1}),
                                  cache_arena.alloc(qus::DType::BF16, {qus::model::kCfg.vocab, 1})};
         qus::model::Qwen3_6_27B card(ctx, store, work, kv, state, io);
+        qus::model::FileTap tap(out_dir);
 
         kv.reset();
         state.reset(ctx.stream);
         if (target == 0) {
-            const int T     = static_cast<int>(prompt.size());
-            qus::Tensor ids = work.alloc(qus::DType::I32, {T});
-            copy_i32_to_device(prompt, ids);
-            set_positions(io, pos_arena, 0, T);
-            qus::Tensor x = work.alloc(qus::DType::BF16, {qus::model::kCfg.hidden, T});
-            qus::kernels::embed_gather(ids, *card.embed(), x, ctx.stream);
-            dump_layers(out_dir, card, x, qus::model::Phase::Prefill);
+            card.prefill(prompt, tap);
         } else {
             card.prefill(prompt);
             for (int step = 1; step < target; ++step) { card.decode_step(); }
-            work.reset();
-            pos_arena.reset();
-            qus::Tensor x = work.alloc(qus::DType::BF16, {qus::model::kCfg.hidden, 1});
-            qus::kernels::embed_gather(io.token, *card.embed(), x, ctx.stream);
-            dump_layers(out_dir, card, x, qus::model::Phase::Decode);
+            card.decode_step(tap);
         }
+        CUDA_CHECK(cudaDeviceSynchronize());
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << '\n';

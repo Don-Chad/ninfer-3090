@@ -31,6 +31,9 @@ std::size_t align_slack(std::size_t tensors) { return checked_mul(tensors, 256, 
 } // namespace
 
 Engine::Engine(EngineOptions options) : options_(options) {
+    if (options_.eos_token_id < -1) {
+        throw std::invalid_argument("Engine eos_token_id must be -1 or nonnegative");
+    }
     if (options_.max_ctx == 0) { throw std::invalid_argument("Engine max_ctx must be nonzero"); }
     if (options_.work_bytes == 0) {
         throw std::invalid_argument("Engine work_bytes must be nonzero");
@@ -145,6 +148,10 @@ int Engine::read_token() {
     return token;
 }
 
+bool Engine::is_eos_token(int token) const noexcept {
+    return options_.eos_token_id >= 0 && token == options_.eos_token_id;
+}
+
 int Engine::prefill(std::span<const int> ids) {
     require_loaded();
     if (ids.empty()) { throw std::invalid_argument("Engine::prefill requires tokens"); }
@@ -174,8 +181,14 @@ std::vector<int> Engine::generate(std::span<const int> prompt, int max_new_token
     std::vector<int> out;
     if (max_new_tokens == 0) { return out; }
     out.reserve(static_cast<std::size_t>(max_new_tokens));
-    out.push_back(prefill(prompt));
-    while (static_cast<int>(out.size()) < max_new_tokens) { out.push_back(decode_step()); }
+    int token = prefill(prompt);
+    out.push_back(token);
+    if (is_eos_token(token)) { return out; }
+    while (static_cast<int>(out.size()) < max_new_tokens) {
+        token = decode_step();
+        out.push_back(token);
+        if (is_eos_token(token)) { break; }
+    }
     return out;
 }
 
