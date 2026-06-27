@@ -1,6 +1,9 @@
 # L2 Model Card Design — qwen3.6-ultraspeed
 
-> Status: design (approved in brainstorm). Date: 2026-06-26.
+> Status: design (approved in brainstorm). Date: 2026-06-26; §4 schedule updated 2026-06-27 to the
+> implemented L1 op signatures. All 13 L1 ops are done; building this card
+> (`config.h`/`model.h`/`qwen3_6_27b.cpp` + the Engine) is the **M2 integration** work — see
+> [`docs/plans/l2-model-card-m2.md`](plans/l2-model-card-m2.md).
 > Scope: the **L2 model card** — the hand-written static forward schedule for Qwen3.6-27B that
 > issues L1 kernel calls in order, plus the prefill/decode drivers and KV/state lifecycle. It
 > sits above L1 kernels and L0 infra. See [`design.md`](design.md) §5/§6/§7 (system architecture
@@ -170,78 +173,112 @@ is reconciled at the boundary.
 
 ## 4. The schedule
 
-One dispatch per layer; the MLP tail is shared. `work_`, `kv_`, `st_`, `io_` are references the
-card holds to Engine-owned resources. (Sketches are illustrative; exact kernel signatures are L1.)
+One dispatch per layer; the MLP tail is shared. Shorthand: `s = ctx_.stream`; `scratch(shape)` and
+`scratch_f32(shape)` = `work_` bump-arena allocs (BF16 / FP32); `eps = kCfg.rms_eps`;
+`kAttnScale = 1/√256`, `kGdnScale = 1/√128`; bound weights are dereferenced (`*w.q_proj`). Calls use
+the **real L1 signatures** (`l1-operator-catalog.md` §3): out-param `(inputs…, out, stream)`; the
+phase-split ops pick the `_prefill` / `_decode`(`_recurrent`) entry by `ph`. `rmsnorm` / `l2norm` /
+`causal_conv1d` / `gated_delta_rule` write a **distinct** out (not in place); `rope` /
+`sigmoid_gate_mul` / `residual_add` are in place.
 
 ```cpp
 void attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
-  Tensor h    = gemma_rmsnorm(work_, x, w.input_norm);            // [T,5120], (1+w)
-  Tensor q    = linear(work_, h, w.q_proj);    // [T,6144]=24*256
-  Tensor gate = linear(work_, h, w.gate_proj); // [T,6144]
-  Tensor k    = linear(work_, h, w.k_proj);    // [T,1024]=4*256
-  Tensor v    = linear(work_, h, w.v_proj);    // [T,1024]
-  qk_norm(q, w.q_norm); qk_norm(k, w.k_norm);                     // per-head dh=256, (1+w)
-  rope_partial(q, k, io_.pos);                                    // first 64 dims; reads device pos
-  Tensor a    = attention(work_, q, k, v, kv_, fidx, io_.pos, ph);// GQA 24/4; append@pos (decode)
-  sigmoid_gate_mul(a, gate);                                      // attn ⊙ σ(gate)
-  residual_add(x, linear(work_, a, w.o_proj));                   // o_proj + residual
+  Tensor h = scratch({5120, T});
+  rmsnorm(x, *w.input_norm, eps, /*unit_offset=*/true, nullptr, h, s);          // input layernorm
+  Tensor q = scratch({256,24,T}), gate = scratch({256,24,T});
+  Tensor k = scratch({256,4,T}),  v    = scratch({256,4,T});
+  linear(h, *w.q_proj, q, s);   linear(h, *w.gate_proj, gate, s);
+  linear(h, *w.k_proj, k, s);   linear(h, *w.v_proj, v, s);
+  Tensor qn = scratch({256,24,T}), kn = scratch({256,4,T});
+  rmsnorm(q, *w.q_norm, eps, true, nullptr, qn, s);                             // q/k-norm, per head dh=256
+  rmsnorm(k, *w.k_norm, eps, true, nullptr, kn, s);
+  rope(io_.pos, kCfg.rotary_dim, kCfg.rope_theta, qn, kn, s);                   // partial NeoX, in place
+  Tensor a = scratch({256,24,T});
+  if (ph == Phase::Prefill) gqa_attention_prefill(qn, kn, v, kAttnScale, kv_, fidx, a, s);
+  else                      gqa_attention_decode (qn, kn, v, io_.pos, kAttnScale, kv_, fidx, a, s);
+  sigmoid_gate_mul(gate, a, s);                                                 // a *= σ(gate)
+  Tensor o = scratch({5120, T});
+  linear(a, *w.o_proj, o, s);
+  residual_add(o, x, s);                                                        // x += o
 }
 
 void gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
-  Tensor h   = gemma_rmsnorm(work_, x, w.input_norm);
-  Tensor qkv = work_.alloc(BF16,{T,10240});                      // contiguous q|k|v
-  linear_into(qkv.slice(0,2048),    h, w.in_q);                  // q  16*128
-  linear_into(qkv.slice(2048,2048), h, w.in_k);                  // k  16*128
-  linear_into(qkv.slice(4096,6144), h, w.in_v);                  // v  48*128
-  Tensor z = linear(work_, h, w.in_z);                           // [T,6144]
-  Tensor b = linear(work_, h, w.in_b), a = linear(work_, h, w.in_a); // [T,48] bf16 dense
-  causal_conv1d_silu(qkv, w.conv1d, st_.conv[gidx], ph);         // depthwise k=4 over 10240
-  Tensor g, beta;
-  gdn_gates(g, beta, a, b, w.a_log, w.dt_bias);                  // fp32: g=-exp(Alog)·softplus(a+dt); β=σ(b)
-  l2norm(q_of(qkv)); l2norm(k_of(qkv));                          // per-head dk=128
-  Tensor o = gated_delta(work_, qkv, g, beta, st_.ssm[gidx], ph);// recurrent(D) / chunked C=64 (P)
-  gated_rmsnorm(o, z, w.gdn_norm);                               // plain w · SiLU(z), dv=128
-  residual_add(x, linear(work_, flatten(o), w.out_proj));       // [T,6144]→[T,5120] + residual
+  Tensor h = scratch({5120, T});
+  rmsnorm(x, *w.input_norm, eps, true, nullptr, h, s);
+  Tensor qkv = scratch({10240, T});                                            // q|k|v contiguous
+  linear(h, *w.in_q, qkv.slice(0, 0,    2048), s);                             // [2048,T]
+  linear(h, *w.in_k, qkv.slice(0, 2048, 2048), s);
+  linear(h, *w.in_v, qkv.slice(0, 4096, 6144), s);
+  Tensor a = scratch({48,T}), b = scratch({48,T});
+  linear(h, *w.in_a, a, s);  linear(h, *w.in_b, b, s);                         // bf16 dense
+  Tensor qkv_c = scratch({10240, T});
+  if (ph == Phase::Prefill) causal_conv1d_prefill(qkv, *w.conv1d, st_.conv[gidx], qkv_c, s);
+  else                      causal_conv1d_decode (qkv, *w.conv1d, st_.conv[gidx], qkv_c, s);
+  Tensor g = scratch_f32({48,T}), beta = scratch_f32({48,T});
+  gdn_gating(a, b, *w.a_log, *w.dt_bias, g, beta, s);                          // fp32 g/beta
+  Tensor qn = scratch({128,16,T}), kn = scratch({128,16,T});
+  l2norm(qkv_c.slice(0, 0,    2048).view({128,16,T}), 1e-6f, qn, s);          // per-head dk=128
+  l2norm(qkv_c.slice(0, 2048, 2048).view({128,16,T}), 1e-6f, kn, s);
+  Tensor vv = qkv_c.slice(0, 4096, 6144).view({128,48,T});
+  Tensor o = scratch({128,48,T});
+  if (ph == Phase::Prefill) gated_delta_rule_chunked  (qn,kn,vv, g,beta, kGdnScale, 64, work_, st_.ssm[gidx], o, s);
+  else                      gated_delta_rule_recurrent(qn,kn,vv, g,beta, kGdnScale,         st_.ssm[gidx], o, s);
+  Tensor z = scratch({128,48,T}); linear(h, *w.in_z, z.view({6144,T}), s);     // gate z
+  Tensor on = scratch({128,48,T});
+  rmsnorm(o, *w.gdn_norm, eps, /*unit_offset=*/false, &z, on, s);             // gated norm: plain w · SiLU(z)
+  Tensor out = scratch({5120, T});
+  linear(on.view({6144,T}), *w.out_proj, out, s);
+  residual_add(out, x, s);
 }
 
 void mlp_tail(const Tensor* post_norm, const MlpW& m, Tensor& x, Phase ph) {
-  Tensor h = gemma_rmsnorm(work_, x, post_norm);
-  Tensor g = linear(work_, h, m.gate), u = linear(work_, h, m.up);
-  residual_add(x, linear(work_, silu_and_mul(work_, g, u), m.down)); // SwiGLU
+  Tensor h = scratch({5120, T});
+  rmsnorm(x, *post_norm, eps, true, nullptr, h, s);
+  Tensor g = scratch({17408, T}), u = scratch({17408, T});
+  linear(h, *m.gate, g, s);  linear(h, *m.up, u, s);
+  Tensor a = scratch({17408, T}); silu_and_mul(g, u, a, s);                     // SwiGLU
+  Tensor d = scratch({5120, T});  linear(a, *m.down, d, s);
+  residual_add(d, x, s);
 }
 
 void run_layers(Tensor& x, Phase ph) {
   for (int l = 0; l < 64; ++l) {
     if (ModelConfig::is_full(l)) attn_mix(full_[full_idx(l)], x, full_idx(l), ph);
     else                         gdn_mix (gdn_ [gdn_idx (l)], x, gdn_idx (l), ph);
-    const auto& [pn, mlp] = layer_tail(l);     // post_attn_norm + MlpW from the active struct
-    mlp_tail(pn, mlp, x, ph);
+    mlp_tail(layer_post_norm(l), layer_mlp(l), x, ph);   // post_attn_norm + MlpW from the active struct
   }
 }
 
-void prefill(span<const int> ids) {                   // T = ids.size()
-  Tensor x = embed_gather(work_, embed_, upload(ids)); // [T,D], Q6 dequant gather
+void prefill(span<const int> ids) {                       // T = ids.size()
+  Tensor x = scratch({5120, T}); embed_gather(upload(ids), *embed_, x, s);      // Q6 dequant gather
   run_layers(x, Phase::Prefill);
-  Tensor xf = gemma_rmsnorm(work_, x, final_norm_);
-  linear_into(io_.logits, xf.row(T-1), lm_head_);     // last position only
-  argmax(io_.logits, io_.token);                      // first token -> device cursor (on-device)
-  kv_.pos = T;  set_pos(io_.pos, T);  work_.reset();  // host + device position in lock-step
+  Tensor xf = scratch({5120, T}); rmsnorm(x, *final_norm_, eps, true, nullptr, xf, s);
+  linear(xf.slice(1, T-1, 1), lm_head_, io_.logits, s);   // last position only -> [vocab,1]
+  argmax(io_.logits, io_.token, s);                        // first token -> device cursor
+  kv_.pos = T; set_pos(io_.pos, T); work_.reset();         // host + device position in lock-step
 }
 
-void decode_step() {                                   // identical kernel sequence every call
-  Tensor x = embed_gather(work_, embed_, io_.token);  // reads device cursor
+void decode_step() {                                       // identical kernel sequence every call
+  Tensor x = scratch({5120, 1}); embed_gather(io_.token, *embed_, x, s);        // reads device cursor
   run_layers(x, Phase::Decode);
-  Tensor xf = gemma_rmsnorm(work_, x, final_norm_);
-  linear_into(io_.logits, xf, lm_head_);
-  argmax(io_.logits, io_.token);                      // next token -> same device cursor (on-device)
-  advance_pos(io_.pos); kv_.advance();  work_.reset();// pos += 1 (device authoritative; kv appended @pos inside)
+  Tensor xf = scratch({5120, 1}); rmsnorm(x, *final_norm_, eps, true, nullptr, xf, s);
+  linear(xf, lm_head_, io_.logits, s);
+  argmax(io_.logits, io_.token, s);                        // next token -> same cursor
+  advance_pos(io_.pos); kv_.advance(); work_.reset();      // pos += 1 (device authoritative; kv appended @pos inside)
 }
 ```
 
-Notes carried from the architecture reference: GVA mapping (v-head `h` uses k/q head `h//3`),
-conv is over the `[q;k;v]`=10240 channels only (not z/a/b), q/k are L2-normed then the kernel
-scales q by `1/√128`, attention scale is `1/√256`, MRoPE reduces to plain partial RoPE for
-text-only v1.
+Notes (aligned to the implemented L1 ops):
+- `linear(x[K,T], const Weight& w[N,K], out[N,T], s)`; `embed_`/`lm_head_` are `Weight` (Q6); every
+  projection goes through this one verb (§5).
+- `gated_delta_rule` takes **separate** q/k/v views (`[128,16,T]`,`[128,16,T]`,`[128,48,T]`) sliced
+  from the conv'd `qkv`; it updates `st_.ssm[gidx]` in place; `_chunked` also takes `chunk_size=64` +
+  `work_`. `causal_conv1d` updates `st_.conv[gidx]` in place and applies SiLU.
+- **`GdnState.ssm[gidx]` layout = `[dk=128, dv=128, Hv=48]` fp32, AR-transposed**, with the **grouped**
+  GVA head map `h_qk = h_v // (H_v/H_qk) = h_v // 3` (confirmed via vLLM; handled inside
+  `gated_delta_rule` — the card only slices q/k/v). Construct `GdnState` with this layout.
+- Scales: attention `1/√256`, GDN q-scale `1/√128`; norm convention `(1+w)` except the GDN gated norm
+  (`unit_offset=false` + `z`); MRoPE reduces to plain partial RoPE for text-only v1.
 
 ---
 
