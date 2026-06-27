@@ -273,11 +273,12 @@ BenchRow run_decode_public(const Options& opt) {
     Tensor tbeta(beta.p, DType::FP32, {kHv, T});
     Tensor tstate(state.p, DType::FP32, {kS, kS, kHv});
     Tensor tout(out.p, DType::BF16, {kS, kHv, T});
+    WorkspaceArena ws(wrapper_workspace_bytes(T));
 
     BenchRow row{"decode", "public-wrapper", T, {}};
     row.result = bench_loop(
         [&](cudaStream_t s) {
-            kernels::gated_delta_rule_recurrent(tq, tk, tv, tg, tbeta, kScale, tstate, tout, s);
+            kernels::gated_delta_rule_recurrent(tq, tk, tv, tg, tbeta, kScale, ws, tstate, tout, s);
         },
         estimate_user_bytes(T, sizeof(std::uint16_t)), opt.warmup, opt.repeat, opt.min_time_ms);
     return row;

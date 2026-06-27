@@ -113,9 +113,10 @@ GpuResult run_recurrent_gpu(const gdn_ref::Inputs& in) {
     Tensor tbeta(dbeta.p, DType::FP32, {H_v, static_cast<int>(in.T)});
     Tensor tstate(dstate.p, DType::FP32, {S, S, H_v});
     Tensor tout(dout.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
+    WorkspaceArena ws(chunked_arena_bytes(static_cast<int>(in.T)));
 
-    kernels::gated_delta_rule_recurrent(tq, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), tstate,
-                                        tout, nullptr);
+    kernels::gated_delta_rule_recurrent(tq, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), ws,
+                                        tstate, tout, nullptr);
     cudaDeviceSynchronize();
     return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
 }
@@ -136,6 +137,7 @@ GpuResult run_recurrent_gpu_stepped(const gdn_ref::Inputs& in) {
     Tensor tbeta(dbeta.p, DType::FP32, {H_v, static_cast<int>(in.T)});
     Tensor tstate(dstate.p, DType::FP32, {S, S, H_v});
     Tensor tout(dout.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
+    WorkspaceArena ws(chunked_arena_bytes(static_cast<int>(in.T)));
 
     for (int t = 0; t < static_cast<int>(in.T); ++t) {
         Tensor q_t    = tq.slice(2, t, 1);
@@ -145,7 +147,7 @@ GpuResult run_recurrent_gpu_stepped(const gdn_ref::Inputs& in) {
         Tensor beta_t = tbeta.slice(1, t, 1);
         Tensor out_t  = tout.slice(2, t, 1);
         kernels::gated_delta_rule_recurrent(q_t, k_t, v_t, g_t, beta_t, 1.0f / std::sqrt(float(S)),
-                                            tstate, out_t, nullptr);
+                                            ws, tstate, out_t, nullptr);
     }
     cudaDeviceSynchronize();
     return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
@@ -198,6 +200,7 @@ int recurrent_case(int T, std::uint32_t seed, bool stress_g, bool use_gdn_state 
     Tensor tg(dg.p, DType::FP32, {H_v, T});
     Tensor tbeta(dbeta.p, DType::FP32, {H_v, T});
     Tensor tout(dout.p, DType::BF16, {S, H_v, T});
+    WorkspaceArena ws(chunked_arena_bytes(T));
 
     Tensor tstate(dstate.p, DType::FP32, {S, S, H_v});
     std::optional<DeviceArena> state_arena;
@@ -210,8 +213,8 @@ int recurrent_case(int T, std::uint32_t seed, bool stress_g, bool use_gdn_state 
         tstate = gdn_state->ssm[0];
     }
 
-    kernels::gated_delta_rule_recurrent(tq, tk, tv, tg, tbeta, static_cast<float>(scale), tstate,
-                                        tout, nullptr);
+    kernels::gated_delta_rule_recurrent(tq, tk, tv, tg, tbeta, static_cast<float>(scale), ws,
+                                        tstate, tout, nullptr);
     cudaDeviceSynchronize();
 
     const std::string tag =
@@ -312,7 +315,8 @@ int validation_case() {
         Tensor beta(nullptr, DType::FP32, {H_v, 1});
         Tensor state(nullptr, DType::FP32, {S, S, H_v});
         Tensor out(nullptr, DType::BF16, {S, H_v, 1});
-        kernels::gated_delta_rule_recurrent(q, k, v, g, beta, 1.0f / std::sqrt(float(S)), state,
+        WorkspaceArena ws(1024 * 1024);
+        kernels::gated_delta_rule_recurrent(q, k, v, g, beta, 1.0f / std::sqrt(float(S)), ws, state,
                                             out, nullptr);
     } catch (const std::invalid_argument&) { return 0; }
     std::cerr << "gdn recurrent null validation: expected invalid_argument\n";

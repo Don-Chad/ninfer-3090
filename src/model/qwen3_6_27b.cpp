@@ -1,5 +1,6 @@
 #include "qus/model/model.h"
 
+#include "model/position.h"
 #include "qus/core/device.h"
 #include "qus/core/weight_store_parser.h"
 #include "qus/kernels/causal_conv1d.h"
@@ -22,7 +23,6 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 namespace qus::model {
 namespace {
@@ -308,7 +308,7 @@ void Qwen3_6_27B::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
         kernels::gated_delta_rule_chunked(qn, kn, vv, g, beta, kGdnScale, 64, work_, ssm_state, o,
                                           s);
     } else {
-        kernels::gated_delta_rule_recurrent(qn, kn, vv, g, beta, kGdnScale, ssm_state, o, s);
+        kernels::gated_delta_rule_recurrent(qn, kn, vv, g, beta, kGdnScale, work_, ssm_state, o, s);
     }
 
     Tensor z      = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
@@ -373,10 +373,8 @@ void Qwen3_6_27B::prefill(std::span<const int> ids) {
     Tensor ids_device = work_.alloc(DType::I32, {T});
     copy_i32_to_device(ids.data(), ids_device);
 
-    std::vector<int> positions_host(static_cast<std::size_t>(T));
-    for (int i = 0; i < T; ++i) { positions_host[static_cast<std::size_t>(i)] = i; }
     Tensor positions = work_.alloc(DType::I32, {T});
-    copy_i32_to_device(positions_host.data(), positions);
+    detail::fill_positions(positions, s);
     ScopedPositions scoped_positions(active_positions_, positions);
 
     Tensor x = work_.alloc(DType::BF16, {kCfg.hidden, T});
@@ -389,10 +387,8 @@ void Qwen3_6_27B::prefill(std::span<const int> ids) {
     kernels::linear(last, *lm_head_, io_.logits, s);
     kernels::argmax(io_.logits, io_.token, s);
 
-    kv_.pos     = static_cast<std::uint32_t>(T);
-    pos_upload_ = T;
-    CUDA_CHECK(cudaMemcpyAsync(io_.pos.data, &pos_upload_, sizeof(pos_upload_),
-                               cudaMemcpyHostToDevice, s));
+    kv_.pos = static_cast<std::uint32_t>(T);
+    detail::set_pos(io_.pos, T, s);
     work_.reset();
 }
 
@@ -410,9 +406,7 @@ void Qwen3_6_27B::decode_step() {
     kernels::argmax(io_.logits, io_.token, s);
 
     kv_.advance();
-    pos_upload_ = static_cast<int>(kv_.pos);
-    CUDA_CHECK(cudaMemcpyAsync(io_.pos.data, &pos_upload_, sizeof(pos_upload_),
-                               cudaMemcpyHostToDevice, s));
+    detail::advance_pos(io_.pos, s);
     work_.reset();
 }
 

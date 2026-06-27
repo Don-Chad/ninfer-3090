@@ -222,7 +222,7 @@ void gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
   Tensor vv = qkv_c.slice(0, 4096, 6144).view({128,48,T});
   Tensor o = scratch({128,48,T});
   if (ph == Phase::Prefill) gated_delta_rule_chunked  (qn,kn,vv, g,beta, kGdnScale, 64, work_, st_.ssm[gidx], o, s);
-  else                      gated_delta_rule_recurrent(qn,kn,vv, g,beta, kGdnScale,         st_.ssm[gidx], o, s);
+  else                      gated_delta_rule_recurrent(qn,kn,vv, g,beta, kGdnScale,     work_, st_.ssm[gidx], o, s);
   Tensor z = scratch({128,48,T}); linear(h, *w.in_z, z.view({6144,T}), s);     // gate z
   Tensor on = scratch({128,48,T});
   rmsnorm(o, *w.gdn_norm, eps, /*unit_offset=*/false, &z, on, s);             // gated norm: plain w · SiLU(z)
@@ -272,8 +272,9 @@ Notes (aligned to the implemented L1 ops):
 - `linear(x[K,T], const Weight& w[N,K], out[N,T], s)`; `embed_`/`lm_head_` are `Weight` (Q6); every
   projection goes through this one verb (§5).
 - `gated_delta_rule` takes **separate** q/k/v views (`[128,16,T]`,`[128,16,T]`,`[128,48,T]`) sliced
-  from the conv'd `qkv`; it updates `st_.ssm[gidx]` in place; `_chunked` also takes `chunk_size=64` +
-  `work_`. `causal_conv1d` updates `st_.conv[gidx]` in place and applies SiLU.
+  from the conv'd `qkv`; it updates `st_.ssm[gidx]` in place; `_recurrent` and `_chunked` take
+  `work_` for boundary cast scratch, and `_chunked` also takes `chunk_size=64`. `causal_conv1d`
+  updates `st_.conv[gidx]` in place and applies SiLU.
 - **`GdnState.ssm[gidx]` layout = `[dk=128, dv=128, Hv=48]` fp32, AR-transposed**, with the **grouped**
   GVA head map `h_qk = h_v // (H_v/H_qk) = h_v // 3` (confirmed via vLLM; handled inside
   `gated_delta_rule` — the card only slices q/k/v). Construct `GdnState` with this layout.

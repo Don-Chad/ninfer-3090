@@ -189,7 +189,7 @@ void l2norm(const Tensor& x, float eps, Tensor& out, cudaStream_t stream);
 // include/qus/kernels/gated_delta_rule.h (phase-split)
 void gated_delta_rule_recurrent(const Tensor& q, const Tensor& k, const Tensor& v,
                                 const Tensor& g, const Tensor& beta, float scale,
-                                Tensor& ssm_state, Tensor& out, cudaStream_t stream);
+                                WorkspaceArena& ws, Tensor& ssm_state, Tensor& out, cudaStream_t stream);
 void gated_delta_rule_chunked  (const Tensor& q, const Tensor& k, const Tensor& v,
                                 const Tensor& g, const Tensor& beta, float scale, int chunk_size,
                                 WorkspaceArena& ws, Tensor& ssm_state, Tensor& out, cudaStream_t stream);
@@ -198,7 +198,7 @@ void gated_delta_rule_chunked  (const Tensor& q, const Tensor& k, const Tensor& 
 - **`causal_conv1d`:** depthwise, causal, kernel-4, over the `[q;k;v]` = 10240 channels; **applies SiLU** (the model's fused convention — documented; parameterize to an `Activation` only if reused without it). `weight` is dense bf16; `conv_state` in-out (decode keeps a rolling width-3 state). Replaces arch §10 `causal_conv1d_prefill/decode`.
 - **`gdn_gating`:** `g = -exp(A_log)·softplus(a+dt_bias)`, `beta = σ(b)`, all fp32 (`a,b [48,T]`, `A_log/dt_bias [48]`). The `exp`/softplus are runtime (weights stored raw). Replaces arch §10 `gdn_gating`.
 - **`l2norm`:** per-head L2 normalize over `ne[0]=dk=128` (applied to `q`,`k`). Replaces arch §10 `l2norm_headwise`.
-- **`gated_delta_rule`:** the recurrence. `recurrent` (decode, `T=1`, §7.1) updates `ssm_state` in place; `chunked` (prefill, §7.2, chunk 64, WY/UT) needs `ws` scratch. `scale = 1/√128` (applied to `q`). GVA mapping (v-head `h` uses k/q head `h//3`) is internal. Replaces arch §10 `gated_delta_recurrent/chunked`.
+- **`gated_delta_rule`:** the recurrence. `recurrent` (decode, `T=1`, §7.1) updates `ssm_state` in place; both public wrappers use `ws` for bf16↔fp32 cast scratch, and `chunked` (prefill, §7.2, chunk 64, WY/UT) also uses it for stage scratch. `scale = 1/√128` (applied to `q`). GVA mapping (v-head `h` uses k/q head `h//3`) is internal. Replaces arch §10 `gated_delta_recurrent/chunked`.
 
 ### 3.8 `argmax` — greedy next-token (sampling)
 

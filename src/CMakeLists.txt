@@ -2,7 +2,7 @@
 file(GLOB_RECURSE QUS_SOURCES CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/core/*.cpp     ${CMAKE_CURRENT_SOURCE_DIR}/core/*.cu
   ${CMAKE_CURRENT_SOURCE_DIR}/kernels/*.cpp  ${CMAKE_CURRENT_SOURCE_DIR}/kernels/*.cu
-  ${CMAKE_CURRENT_SOURCE_DIR}/model/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/model/*.cpp    ${CMAKE_CURRENT_SOURCE_DIR}/model/*.cu
   ${CMAKE_CURRENT_SOURCE_DIR}/runtime/*.cpp)
 
 add_library(qus_core STATIC ${QUS_SOURCES})

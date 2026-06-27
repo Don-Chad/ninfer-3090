@@ -9,7 +9,6 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 
 namespace qus::kernels {
 namespace {
@@ -84,35 +83,6 @@ void validate_chunked(const Tensor& q, const Tensor& k, const Tensor& v, const T
     }
 }
 
-std::size_t checked_add(std::size_t a, std::size_t b) {
-    if (b > static_cast<std::size_t>(-1) - a) {
-        throw std::overflow_error("gated_delta_rule: scratch size overflow");
-    }
-    return a + b;
-}
-
-std::size_t transient_scratch_bytes(const Tensor& q, const Tensor& k, const Tensor& v,
-                                    const Tensor& out) {
-    std::size_t bytes = 0;
-    bytes             = checked_add(bytes, static_cast<std::size_t>(q.numel()) * sizeof(float));
-    bytes             = checked_add(bytes, static_cast<std::size_t>(k.numel()) * sizeof(float));
-    bytes             = checked_add(bytes, static_cast<std::size_t>(v.numel()) * sizeof(float));
-    bytes             = checked_add(bytes, static_cast<std::size_t>(out.numel()) * sizeof(float));
-    return checked_add(bytes, 4 * 256);
-}
-
-std::size_t align_up(std::size_t offset, std::size_t align) {
-    return (offset + align - 1) & ~(align - 1);
-}
-
-Tensor scratch_tensor(unsigned char* base, std::size_t& offset, DType dtype,
-                      std::initializer_list<std::int32_t> shape) {
-    offset = align_up(offset, 256);
-    Tensor t(base + offset, dtype, shape);
-    offset = checked_add(offset, t.bytes());
-    return t;
-}
-
 std::int32_t checked_arena_floats(std::size_t bytes) {
     const std::size_t floats = (bytes + sizeof(float) - 1) / sizeof(float);
     if (floats > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
@@ -133,64 +103,18 @@ struct ArenaScope {
     ArenaScope& operator=(const ArenaScope&) = delete;
 };
 
-struct ScratchBuffer {
-    void* ptr            = nullptr;
-    std::size_t capacity = 0;
-
-    ScratchBuffer() = default;
-
-    ~ScratchBuffer() {
-        if (ptr != nullptr) { cudaFree(ptr); }
-    }
-
-    ScratchBuffer(const ScratchBuffer&)            = delete;
-    ScratchBuffer& operator=(const ScratchBuffer&) = delete;
-
-    ScratchBuffer(ScratchBuffer&& other) noexcept : ptr(other.ptr), capacity(other.capacity) {
-        other.ptr      = nullptr;
-        other.capacity = 0;
-    }
-
-    ScratchBuffer& operator=(ScratchBuffer&& other) noexcept {
-        if (this != &other) {
-            if (ptr != nullptr) { cudaFree(ptr); }
-            ptr            = other.ptr;
-            capacity       = other.capacity;
-            other.ptr      = nullptr;
-            other.capacity = 0;
-        }
-        return *this;
-    }
-
-    void* get(std::size_t bytes) {
-        if (capacity >= bytes) { return ptr; }
-        if (ptr != nullptr) { CUDA_CHECK(cudaFree(ptr)); }
-        CUDA_CHECK(cudaMalloc(&ptr, bytes));
-        capacity = bytes;
-        return ptr;
-    }
-};
-
-ScratchBuffer& recurrent_scratch_for(cudaStream_t stream) {
-    thread_local std::unordered_map<cudaStream_t, ScratchBuffer> scratch_by_stream;
-    return scratch_by_stream[stream];
-}
-
 } // namespace
 
 void gated_delta_rule_recurrent(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& g,
-                                const Tensor& beta, float scale, Tensor& ssm_state, Tensor& out,
-                                cudaStream_t stream) {
+                                const Tensor& beta, float scale, WorkspaceArena& ws,
+                                Tensor& ssm_state, Tensor& out, cudaStream_t stream) {
     validate_recurrent(q, k, v, g, beta, scale, ssm_state, out);
 
-    auto* scratch_base = static_cast<unsigned char*>(
-        recurrent_scratch_for(stream).get(transient_scratch_bytes(q, k, v, out)));
-    std::size_t off = 0;
-    Tensor q_f32    = scratch_tensor(scratch_base, off, DType::FP32, {q.ne[0], q.ne[1], q.ne[2]});
-    Tensor k_f32    = scratch_tensor(scratch_base, off, DType::FP32, {k.ne[0], k.ne[1], k.ne[2]});
-    Tensor v_f32    = scratch_tensor(scratch_base, off, DType::FP32, {v.ne[0], v.ne[1], v.ne[2]});
-    Tensor out_f32 =
-        scratch_tensor(scratch_base, off, DType::FP32, {out.ne[0], out.ne[1], out.ne[2]});
+    ArenaScope arena_scope(ws);
+    Tensor q_f32   = ws.alloc(DType::FP32, {q.ne[0], q.ne[1], q.ne[2]});
+    Tensor k_f32   = ws.alloc(DType::FP32, {k.ne[0], k.ne[1], k.ne[2]});
+    Tensor v_f32   = ws.alloc(DType::FP32, {v.ne[0], v.ne[1], v.ne[2]});
+    Tensor out_f32 = ws.alloc(DType::FP32, {out.ne[0], out.ne[1], out.ne[2]});
 
     detail::gdn_cast_qkv_bf16_to_f32_launch(q, k, v, q_f32, k_f32, v_f32, stream);
     detail::gated_delta_rule_recurrent_launch(q_f32, k_f32, v_f32, g, beta, scale, ssm_state,

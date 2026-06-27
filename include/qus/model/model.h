@@ -131,7 +131,6 @@ private:
     GdnState& state_;
     StepState& io_;
     const Tensor* active_positions_ = nullptr;
-    int pos_upload_                 = 0;
 
     const Weight* embed_      = nullptr;
     const Tensor* final_norm_ = nullptr;
