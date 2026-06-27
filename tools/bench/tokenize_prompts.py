@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Regenerate or verify M2.8 prompt `.ids` files and fixture manifest."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import sys
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from tools.bench import tokenizer_common as common
+
+
+MANIFEST_NAME = f"{common.FIXTURE_SET}.manifest.json"
+
+
+def _encode(tokenizer: Any, text: str) -> list[int]:
+    ids = tokenizer.encode(text, add_special_tokens=False)
+    if not ids:
+        raise RuntimeError("tokenizer produced no ids")
+    if not all(isinstance(value, int) and value >= 0 for value in ids):
+        raise RuntimeError("tokenizer produced a non-integer or negative id")
+    return list(ids)
+
+
+def _expected_manifest(fixture_dir: Path, tokenizer_metadata: dict[str, str]) -> dict[str, Any]:
+    cases: list[dict[str, Any]] = []
+    for name in common.REQUIRED_CASES:
+        txt = fixture_dir / f"{name}.txt"
+        ids = fixture_dir / f"{name}.ids"
+        if not txt.exists():
+            raise RuntimeError(f"missing required prompt text: {txt}")
+        if not ids.exists():
+            raise RuntimeError(f"missing required prompt ids: {ids}")
+        token_ids = common.read_ids(ids)
+        cases.append(
+            {
+                "name": name,
+                "txt": txt.name,
+                "ids": ids.name,
+                "prompt_tokens": len(token_ids),
+                "txt_sha256": common.sha256_file(txt),
+                "ids_sha256": common.sha256_file(ids),
+            }
+        )
+    return {
+        "fixture_set": common.FIXTURE_SET,
+        "tokenizer": tokenizer_metadata,
+        "cases": cases,
+    }
+
+
+def _validate_manifest(manifest: dict[str, Any]) -> None:
+    names = [case["name"] for case in manifest["cases"]]
+    if names != list(common.REQUIRED_CASES):
+        raise RuntimeError(f"manifest case order mismatch: {names}")
+    token_counts = {case["name"]: int(case["prompt_tokens"]) for case in manifest["cases"]}
+    if token_counts["long_2k"] < 2048:
+        raise RuntimeError(f"long_2k must have at least 2048 tokens, got {token_counts['long_2k']}")
+
+
+def write_fixtures(
+    fixture_dir: Path,
+    tokenizer: Any,
+    tokenizer_metadata: dict[str, str],
+    check: bool,
+) -> dict[str, Any]:
+    fixture_dir.mkdir(parents=True, exist_ok=True)
+    generated: dict[str, list[int]] = {}
+    for name in common.REQUIRED_CASES:
+        txt = fixture_dir / f"{name}.txt"
+        if not txt.exists():
+            raise RuntimeError(f"missing required prompt text: {txt}")
+        generated[name] = _encode(tokenizer, txt.read_text(encoding="utf-8"))
+
+    if check:
+        for name, ids in generated.items():
+            ids_path = fixture_dir / f"{name}.ids"
+            if not ids_path.exists():
+                raise RuntimeError(f"missing ids file in check mode: {ids_path}")
+            if common.read_ids(ids_path) != ids:
+                raise RuntimeError(f"stale ids file: {ids_path}")
+    else:
+        for name, ids in generated.items():
+            common.write_ids(fixture_dir / f"{name}.ids", ids)
+
+    manifest = _expected_manifest(fixture_dir, tokenizer_metadata)
+    _validate_manifest(manifest)
+    manifest_path = fixture_dir / MANIFEST_NAME
+    if check:
+        if not manifest_path.exists():
+            raise RuntimeError(f"missing manifest in check mode: {manifest_path}")
+        existing = common.read_json(manifest_path)
+        if existing != manifest:
+            raise RuntimeError(f"stale fixture manifest: {manifest_path}")
+    else:
+        common.write_json(manifest_path, manifest)
+    return manifest
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--fixture-dir", type=Path, default=common.repo_root() / "bench/fixtures/prompts")
+    parser.add_argument("--tokenizer-path")
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+
+    tokenizer_path = common.resolve_tokenizer_path(args.tokenizer_path)
+    tokenizer = common.load_tokenizer(tokenizer_path)
+    metadata = common.tokenizer_metadata(tokenizer_path, redact_path=True)
+    manifest = write_fixtures(args.fixture_dir, tokenizer, metadata, check=args.check)
+    action = "checked" if args.check else "wrote"
+    print(f"{action} {args.fixture_dir / MANIFEST_NAME}")
+    for case in manifest["cases"]:
+        print(f"{case['name']}: {case['prompt_tokens']} tokens")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
