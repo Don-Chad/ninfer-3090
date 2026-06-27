@@ -153,5 +153,75 @@ class FixtureManifestTests(unittest.TestCase):
                 tokenize_prompts.write_fixtures(fixture_dir, fake, metadata, check=True)
 
 
+class DecodeReportTests(unittest.TestCase):
+    def test_decode_report_writes_sidecar_manifest_and_text(self) -> None:
+        from tools.bench import decode_e2e_report
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = root / "report.json"
+            report = {
+                "schema_version": 1,
+                "artifact_type": "qus_e2e_benchmark_report",
+                "status": "ok",
+                "cases": [
+                    {
+                        "name": "cn_short",
+                        "repeats": [
+                            {"repeat_index": 0, "generated_token_ids": [65, 66, 67]},
+                            {"repeat_index": 1, "generated_token_ids": [68, 69]},
+                        ],
+                    }
+                ],
+            }
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            metadata = {
+                "tokenizer_source": "local_hf",
+                "tokenizer_model_id": common.TOKENIZER_MODEL_ID,
+                "tokenizer_path": "/tmp/tokenizer",
+                "tokenizer_json_sha256": "tok",
+                "tokenizer_config_sha256": "cfg",
+                "special_tokens_map_sha256": "special",
+            }
+            manifest = decode_e2e_report.decode_report(
+                report_path=report_path,
+                tokenizer=FakeTokenizer(),
+                tokenizer_metadata=metadata,
+                output_dir=None,
+            )
+            self.assertEqual(manifest["artifact_type"], "qus_decoded_text_artifacts")
+            self.assertEqual(manifest["readability_gate"], "human_smoke_only")
+            self.assertEqual(manifest["source_report"], str(report_path))
+            self.assertEqual(len(manifest["artifacts"]), 2)
+            manifest_path = root / "report.decoded" / "manifest.json"
+            self.assertTrue(manifest_path.exists())
+            first = Path(manifest["artifacts"][0]["decoded_text_path"])
+            self.assertEqual(first.read_text(encoding="utf-8"), "ABC")
+
+    def test_decode_report_rejects_non_ok_report(self) -> None:
+        from tools.bench import decode_e2e_report
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "report.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "artifact_type": "qus_e2e_benchmark_report",
+                        "status": "error",
+                        "cases": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(RuntimeError):
+                decode_e2e_report.decode_report(
+                    report_path=report_path,
+                    tokenizer=FakeTokenizer(),
+                    tokenizer_metadata=common.tokenizer_metadata(Path(tmp), redact_path=True),
+                    output_dir=None,
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
