@@ -7,10 +7,10 @@
 > aligned to the real L1 op signatures). All 13 L1 ops are implemented and tested.
 
 **Goal:** Build the L2 model card (`config.h` + `model.h` + `qwen3_6_27b.cpp`) and the `Engine`, wiring
-every L1 op into the prefill/decode schedule, then **validate the whole forward graph**: per-layer
-numerical parity + end-to-end greedy token-match vs the reference. This is the M2 correctness baseline
-(`design.md` §12) — the first time the full pipeline runs and is proven correct. **Performance is M3+,
-not gated here.**
+every L1 op into the prefill/decode schedule, then **validate the wiring** against a self-contained
+oracle over our own dequantized weights: block parity + end-to-end greedy match (NOT vLLM/llama.cpp,
+which can't read q5090). This is the M2 correctness baseline (`design.md` §12) — the first time the full
+pipeline runs and is proven correct. **Performance is M3+, not gated here.**
 
 **Architecture:** The card is a thin `Qwen3_6_27B` object (bindings + schedule); the `Engine` owns the
 resources + outer loop (design §2). Straight-line C++ over `constexpr` dims; the §4 sketch is the
@@ -54,17 +54,22 @@ produces that layout; if not, fix the ctor (small L0 change) — the grouped GDN
 ---
 
 ## Validation (the M2 gate)
-1. **Wiring smoke (no real model):** unit-test `bind()` + each block helper on a fixture. Build a small
-   q5090 fixture (`tests/fixtures/make_q5090_fixture.py`, `--limit-text-layers` for a few layers) with
-   the real per-tensor dims; assert `bind()` resolves every pointer, and that `attn_mix`/`gdn_mix`/
-   `mlp_tail` run on one layer with correct output shapes and `compute-sanitizer` clean.
-2. **Per-layer parity (real weights):** with the `FileTap` build, dump our per-layer hidden states for
-   a **fixed prompt** and compare to reference dumps from vLLM/HF (`~/vllm`) for the same prompt:
-   **cosine ≥ 0.999 and max-abs within bf16 tolerance per layer**. First divergent layer localizes any
-   bug (e.g. head-map, schedule order, a transform).
-3. **Greedy token-match (real weights):** run `Engine::generate` greedy on the fixed prompt; it MUST
-   match vLLM (and/or llama.cpp) **token-for-token** for ≥ 128 generated tokens (greedy determinism
-   makes this near-free; `design.md` §12). This is the headline correctness gate.
+The L1 ops are already proven vs fp64, so M2 only proves the **wiring** (schedule order, grouped
+head-map, q/gate + qkv splits, scales, KV/state lifecycle, bindings). The reference is a small
+self-contained **oracle over our OWN dequantized weights** — NOT vLLM/llama.cpp (which cannot read the
+q5090 format, and would add quant noise + heavy internal hooks).
+
+1. **Wiring smokes (no real model):** `bind()` + each block helper run on a fixture (shapes / finite /
+   sanitizer) — m2-2 / m2-3.
+2. **Block parity (the primary, cheap gate):** each block (`attn_mix` / `gdn_mix` / `mlp_tail`) at the
+   real dims with **random weights** (synthesized via the q5090 packer helper) vs the oracle's matching
+   block — exact to bf16 tolerance since weights are identical. Catches head-map / order / split / scale
+   / KV-state bugs in milliseconds, with no 27B model.
+3. **End-to-end greedy match (real weights, bounded):** the oracle loads the **real** q5090 (reusing the
+   converter's `decode_tensor`), runs **one** short fixed prompt + a handful of decode steps with
+   inter-op activations rounded to bf16 (mirroring the engine); our `Engine::generate` must produce the
+   **same greedy tokens**. Per-layer cosine (≥ 0.999) is dumped only to **localize** a mismatch — not a
+   mandatory 64-layer gate. No vLLM, no 128-token CPU run, no 52 GB load (layers stream).
 
 ---
 
@@ -103,49 +108,57 @@ produces that layout; if not, fix the ctor (small L0 change) — the grouped GDN
   ids, no `cudaMalloc` per step (assert workspace arena reset), sanitizer clean.
 - **DoD:** smoke PASS, sanitizer clean, format clean. Commit `feat(runtime): Engine load + generate loop`.
 
-### Task m2-5 — reference generation (vLLM)
-- **Reading:** `~/vllm` Qwen3.5/Next runner; `out/manifest.json` (the q5090 file path + dims).
-- **Files:** `tools/parity/gen_reference.py` — load Qwen/Qwen3.6-27B in vLLM (or HF) on a **fixed prompt**
-  (commit the prompt + tokenizer ids), greedy-decode ≥128 tokens, dump: the output token ids and the
-  per-(layer,position) residual-stream hidden states (after each decoder layer) for the prompt's last
-  position, to `tools/parity/ref/*.npy` (+ a manifest). Document the exact prompt + dump points.
-- **DoD:** script runs, produces ref dumps + token ids; documented. Commit `feat(parity): vLLM reference dumps`.
+### Task m2-5 — the model oracle (`tools/parity/ref_model.py`)
+- **Reading:** `tools/q5090_convert/layouts.py::decode_tensor` (+ `qtypes.py`), `qwen3.6-27b-architecture.md`
+  §6/§7/§8/§9, the L1 CPU refs (`tests/kernels/gdn_ref.h`, the attention/linear refs) as the math spec,
+  `out/manifest.json`.
+- **Files:** `tools/parity/ref_model.py` — a from-scratch PyTorch/numpy forward of the Qwen3.6 schedule
+  that (a) loads weights from **our** q5090 via `decode_tensor` (dequant → fp32), **streaming one layer at
+  a time** to the GPU; (b) implements the §6/§9 schedule — grouped head-map `h_v//3`, the q/gate + qkv
+  splits, the `1/√256` / `1/√128` scales, GDN recurrence, partial RoPE, the `(1+w)` vs gated-norm
+  convention — **rounding inter-op activations to bf16** to mirror the engine; (c) exposes a `block(...)`
+  entry (for m2-6) and a `forward(prompt, n_decode)` returning greedy tokens + optional per-layer hidden
+  dumps. Commit the fixed prompt + its token ids.
+- **DoD:** runs on the real q5090 for a short prompt; documented. Commit `feat(parity): q5090 model oracle (ref_model.py)`.
 
-### Task m2-6 — per-layer parity gate
-- **Reading:** design §8 (Tap), m2-5 dumps.
-- **Files:** a `FileTap` (design §8) + `tools/parity/compare.py` (or a C++ `tests/test_parity.cpp`
-  gated on the real weight file + ref dumps via env var): load the **real** q5090, run prefill on the
-  fixed prompt with `FileTap`, compare each layer's hidden state to the ref (cosine + max-abs). Report
-  the first divergent layer.
-- **DoD:** **cosine ≥ 0.999 per layer** vs the reference (fix the kernel/card until it passes; the first
-  divergence localizes the bug — head-map, order, a transform). Commit `test(parity): per-layer parity passes`.
+### Task m2-6 — block parity (primary gate)
+- **Reading:** m2-5 oracle `block(...)`; design §4; the q5090 packer helper `tests/kernels/q5090_pack.h`.
+- **Files:** a parity harness (C++ `tests/test_model_blocks_parity.cpp`, or a small CLI driving the engine
+  + the Python oracle): build random per-layer weights (packer helper for quant + random dense/norms), run
+  `attn_mix` / `gdn_mix` / `mlp_tail` (decode `T=1` + prefill `T∈{4,64}`), compare to the oracle's matching
+  block.
+- **DoD:** every block matches the oracle within `attention_bf16` / `linear_bf16` tolerance; sanitizer
+  clean; format clean. The first failing block localizes the wiring bug. Commit `test(parity): block parity vs oracle`.
 
-### Task m2-7 — greedy token-match gate
-- **Reading:** m2-5 ids; `Engine::generate`.
-- **Files:** `tests/test_greedy_match.cpp` (gated on the real weights + ref ids): `generate` greedy on
-  the fixed prompt; assert **token-for-token equality** with the reference for ≥128 tokens.
-- **DoD:** exact token-match (the M2 headline gate); record the basic decode tok/s. Commit
-  `test(parity): end-to-end greedy token-match (M2 baseline)`.
+### Task m2-7 — end-to-end greedy match (real weights)
+- **Reading:** m2-5 oracle `forward`; `Engine::generate`.
+- **Files:** `tests/test_greedy_match.cpp` (gated on the real q5090 via env var; SKIP loudly if absent):
+  run `generate(prompt, N)` greedy (e.g. `N=16`) and assert **token-for-token equality** with the oracle.
+  On mismatch, dump per-layer cosine vs the oracle (the `FileTap`) to find the first divergent layer.
+- **DoD:** exact greedy match for the prompt; record a basic decode tok/s. Commit
+  `test(parity): end-to-end greedy match vs oracle (M2 baseline)`.
 
 ---
 
 ## Dependencies & notes
-- **Real weights:** the q5090 file (e.g. `out/qwen3_6_27b.q5090_w4g64_mixed_v1.qus`, per `out/manifest.json`).
-  Parity tasks (m2-6/7) require it + a GPU with ~24–26 GB free (`design.md` §8). If absent, those tests
-  must SKIP loudly (not silently pass).
-- **Reference:** vLLM in `~/vllm` (or llama.cpp in `~/llama.cpp`) running the same model + prompt, greedy.
-- **Head map:** the grouped GDN map (`h_v//3`) and the schedule order get their real proof here — a
-  per-layer parity failure at a GDN layer is the signal to recheck it.
+- **Real weights:** the q5090 file (e.g. `out/qwen3_6_27b.q5090_w4g64_mixed_v1.qus`, per `out/manifest.json`)
+  + a GPU with ~24–26 GB free. Only m2-7 needs it; SKIP loudly if absent. m2-1…m2-6 need only a fixture /
+  random weights.
+- **Oracle:** `tools/parity/ref_model.py` reuses the converter's `decode_tensor` (already validated by
+  `verify.py`) — **no vLLM/llama.cpp, no original safetensors, no 52 GB load** (weights stream per layer).
+- **Head map:** grouped GDN (`h_v//3`) + schedule order get their proof at **block parity (m2-6)**; a
+  failing block points straight at the bug.
 - Performance (decode tok/s → roofline, fusion, CUDA-graph) is **M3–M5**, not part of M2.
 
 ## Done criteria
-The card + Engine build; `bind()` + block + engine smokes pass (sanitizer clean); **per-layer parity
-≥0.999** and **greedy token-match** vs the reference both pass on the real weights; all code
-clang-format clean. At that point the v1 text forward compute graph is complete and correct.
+The card + Engine build; `bind()` / block / engine smokes pass (sanitizer clean); **block parity** vs the
+oracle passes for every block; **end-to-end greedy match** vs the oracle passes on the real weights; all
+code clang-format clean. At that point the v1 text forward compute graph is complete and correct.
 
 ## Self-review notes (author)
-- Tasks build bottom-up (config → bind → blocks → engine) with fixture smokes, then the real-model parity
-  gates (per-layer then token-match) — the correctness gate, not perf.
-- The schedule is implemented exactly per the (now signature-aligned) design §4; GdnState ssm layout +
-  grouped head-map are called out as the likely parity-failure suspects.
-- clang-format in every task DoD; reuses the Tier-1 subagent workflow/templates.
+- Reference is a self-contained oracle over OUR dequantized weights (`ref_model.py`), not vLLM/llama.cpp
+  (format-incompatible + heavy). Block parity (m2-6) is the cheap primary gate; end-to-end greedy match
+  (m2-7) is the bounded real-weights gate; per-layer cosine is a localize-on-failure aid.
+- Tasks build bottom-up (config → bind → blocks → engine), then oracle → block parity → greedy match.
+- The schedule is implemented exactly per design §4; GdnState ssm layout + grouped head-map are the likely
+  parity-failure suspects. clang-format in every task DoD; reuses the Tier-1 subagent workflow/templates.
