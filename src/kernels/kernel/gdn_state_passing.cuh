@@ -798,24 +798,22 @@ cudaError_t launch_typed(const gdn_chunked::state_passing_config& cfg,
         (cfg.k_stride_t_floats != 0) ? cfg.k_stride_t_floats : (int64_t)cfg.H_qk * cfg.S;
 
     state_passing_gdn_kernel<S><<<grid, block, smem_bytes, cfg.stream>>>(
-        cfg.W, cfg.U, cfg.k_or_kg, cfg.g_cumsum, cfg.state_in, cfg.v_new, cfg.h_chunk,
-        cfg.state_out, cfg.L, cfg.H_v, qk_map, k_stride_t, NT);
+        cfg.W, cfg.U, cfg.k, cfg.g_cumsum, cfg.state_in, cfg.v_new, cfg.h_chunk, cfg.state_out,
+        cfg.L, cfg.H_v, qk_map, k_stride_t, NT);
     return cudaGetLastError();
 }
 
 } // namespace
 
 cudaError_t launch_state_passing(const gdn_chunked::state_passing_config& cfg) {
-    gdn_chunked::stage_validator v{
-        "launch_state_passing", cfg.S, cfg.H_qk, cfg.H_v, cfg.L, cfg.B, cfg.kda};
+    gdn_chunked::stage_validator v{"launch_state_passing", cfg.S, cfg.H_qk, cfg.H_v, cfg.L, cfg.B};
     QUS_GDN_PROPAGATE(v.check_shape());
     QUS_GDN_PROPAGATE(v.check_gdn_full_chunks());
-    if (cfg.W == nullptr || cfg.U == nullptr || cfg.k_or_kg == nullptr || cfg.g_cumsum == nullptr ||
+    if (cfg.W == nullptr || cfg.U == nullptr || cfg.k == nullptr || cfg.g_cumsum == nullptr ||
         cfg.state_in == nullptr || cfg.v_new == nullptr || cfg.h_chunk == nullptr ||
         cfg.state_out == nullptr) {
         return cudaErrorInvalidValue;
     }
-    if (cfg.kda) return cudaErrorNotYetImplemented; // Phase C
 
     const auto qk_map = qus::kernels::head_map::of((int)cfg.H_qk, (int)cfg.H_v);
     const int64_t NT  = (cfg.L + BT - 1) / BT;

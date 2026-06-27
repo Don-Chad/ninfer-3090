@@ -45,8 +45,6 @@ void gated_delta_rule_chunked_launch(const Tensor& q, const Tensor& k, const Ten
     prepare.H_v          = v.ne[1];
     prepare.L            = q.ne[2];
     prepare.B            = kB;
-    prepare.kda          = false;
-    prepare.q            = static_cast<const float*>(q.data);
     prepare.k            = static_cast<const float*>(k.data);
     prepare.v            = static_cast<const float*>(v.data);
     prepare.g_in         = static_cast<const float*>(g.data);
@@ -63,10 +61,9 @@ void gated_delta_rule_chunked_launch(const Tensor& q, const Tensor& k, const Ten
     state.H_v       = v.ne[1];
     state.L         = q.ne[2];
     state.B         = kB;
-    state.kda       = false;
     state.W         = W;
     state.U         = U;
-    state.k_or_kg   = static_cast<const float*>(k.data);
+    state.k         = static_cast<const float*>(k.data);
     state.g_cumsum  = g_cumsum;
     state.state_in  = static_cast<const float*>(ssm_state.data);
     state.v_new     = v_new;
@@ -81,7 +78,6 @@ void gated_delta_rule_chunked_launch(const Tensor& q, const Tensor& k, const Ten
     output.H_v      = v.ne[1];
     output.L        = q.ne[2];
     output.B        = kB;
-    output.kda      = false;
     output.q        = static_cast<const float*>(q.data);
     output.k        = static_cast<const float*>(k.data);
     output.v_new    = v_new;

@@ -86,6 +86,7 @@ int main() {
     failures += expect_size(state.layer_count(), 3, "state.layer_count");
     failures += expect_size(state.conv.size(), 3, "state.conv.size");
     failures += expect_size(state.ssm.size(), 3, "state.ssm.size");
+    failures += expect_size(state.conv_width, 3, "state.conv_width");
     for (std::size_t layer = 0; layer < state.layer_count(); ++layer) {
         failures += check_shape(state.conv[layer], {10, 3, 1, 1}, "state.conv");
         failures += check_shape(state.ssm[layer], {6, 5, 4, 1}, "state.ssm");

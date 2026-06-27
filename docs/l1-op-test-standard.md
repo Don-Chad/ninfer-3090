@@ -64,6 +64,14 @@ Order: `atol, rtol, tail_frac, worst_ratio_max, rel_l2_tol`.
   `2e-3, 1.6e-2, 2e-3, 5.0, 8e-3`. (fp32 reduction + bf16 round; GPU vs CPU accumulation order differs.)
 - `fp32_transcendental` — `gdn_gating` (`g`,`beta` are fp32): `1e-6, 1e-5, 1e-4, 2.0, 1e-5`.
   (libm vs CUDA `expf`/`softplus`/`sigmoid` differ by a few ULP.)
+- `linear_bf16` — dense/quant `linear` and model linear parity:
+  `2e-3, 1.6e-2, 2e-3, 5.0, 8e-3`.
+- `attention_bf16` — GQA attention and attention block parity:
+  `2e-3, 1.6e-2, 2e-3, 5.0, 8e-3`.
+- `gdn_output_bf16` — GDN recurrent/chunked BF16 output:
+  `1e-3, 1.0e-2, 2e-3, 5.0, 8e-3`.
+- `gdn_state_fp32` — GDN recurrent/chunked FP32 state:
+  `5e-4, 5.0e-3, 2e-2, 5.0, 5e-3`.
 - `argmax` — **exact index match**, lowest-index tie-break; no tolerance preset.
 
 ### 1.4 Honest, seeded inputs (`op_tester.h`)

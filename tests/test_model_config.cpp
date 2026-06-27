@@ -23,6 +23,7 @@ int main() {
     static_assert(kCfg.vocab == 248320);
 
     static_assert(kCfg.gdn_conv_k == 4);
+    static_assert(kCfg.gdn_conv_state_width == 3);
     static_assert(kCfg.gdn_k_heads == 16);
     static_assert(kCfg.gdn_k_dim == 128);
     static_assert(kCfg.gdn_v_heads == 48);

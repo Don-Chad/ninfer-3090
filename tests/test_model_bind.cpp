@@ -135,7 +135,7 @@ int main() {
     qus::KVCache kv(cache_arena, qus::model::kCfg.n_full(), 1, qus::model::kCfg.n_kv,
                     qus::model::kCfg.head_dim);
     qus::GdnState state(cache_arena, qus::model::kCfg.n_gdn(), qus::model::kCfg.conv_dim,
-                        qus::model::kCfg.gdn_conv_k, qus::model::kCfg.gdn_v_heads,
+                        qus::model::kCfg.gdn_conv_state_width, qus::model::kCfg.gdn_v_heads,
                         qus::model::kCfg.gdn_v_dim, qus::model::kCfg.gdn_k_dim);
     qus::model::StepState io{io_arena.alloc(qus::DType::I32, {1}),
                              io_arena.alloc(qus::DType::I32, {1}),

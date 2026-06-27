@@ -1,7 +1,7 @@
 #pragma once
 
 // qus::kernels - sigmoid_gate_mul kernel: x *= sigmoid(gate), elementwise in place.
-// sigmoid(x) = 1 / (1 + e^-x), computed in fp32 with __expf (NOT a polynomial fit).
+// sigmoid(x) = 1 / (1 + e^-x), computed in fp32 with expf (NOT a polynomial fit).
 // Vectorized over bf16 pairs; included only by its launcher. See
 // docs/l1-kernel-layering.md section 6 and docs/l1-op-test-standard.md section 0.
 
@@ -13,9 +13,7 @@ namespace qus::kernels {
 
 inline constexpr int kSigmoidGateMulPairsPerThread = 4;
 
-__device__ __forceinline__ float sigmoid_f32(float x) {
-    return 1.0f / (1.0f + __expf(-x));
-}
+__device__ __forceinline__ float sigmoid_f32(float x) { return 1.0f / (1.0f + expf(-x)); }
 
 __device__ __forceinline__ __nv_bfloat162 sigmoid_gate_mul_pair(__nv_bfloat162 gate,
                                                                 __nv_bfloat162 x) {
@@ -26,12 +24,10 @@ __device__ __forceinline__ __nv_bfloat162 sigmoid_gate_mul_pair(__nv_bfloat162 g
 
 __global__ void sigmoid_gate_mul_scalar_kernel(const __nv_bfloat16* gate, __nv_bfloat16* x,
                                                std::int64_t n) {
-    const std::int64_t start =
-        blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x;
+    const std::int64_t start  = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x;
     const std::int64_t stride = static_cast<std::int64_t>(gridDim.x) * blockDim.x;
     for (std::int64_t i = start; i < n; i += stride) {
-        x[i] = __float2bfloat16_rn(__bfloat162float(x[i]) *
-                                   sigmoid_f32(__bfloat162float(gate[i])));
+        x[i] = __float2bfloat16_rn(__bfloat162float(x[i]) * sigmoid_f32(__bfloat162float(gate[i])));
     }
 }
 
@@ -48,16 +44,16 @@ __launch_bounds__(256) __global__
         const __nv_bfloat162 g0 = gate2[j];
         const __nv_bfloat162 x0 = x2[j];
         if (j + 3 < n2) {
-            const __nv_bfloat162 g1 = gate2[j + 1];
-            const __nv_bfloat162 x1 = x2[j + 1];
-            const __nv_bfloat162 g2 = gate2[j + 2];
+            const __nv_bfloat162 g1  = gate2[j + 1];
+            const __nv_bfloat162 x1  = x2[j + 1];
+            const __nv_bfloat162 g2  = gate2[j + 2];
             const __nv_bfloat162 x2v = x2[j + 2];
-            const __nv_bfloat162 g3 = gate2[j + 3];
-            const __nv_bfloat162 x3 = x2[j + 3];
-            x2[j]                   = sigmoid_gate_mul_pair(g0, x0);
-            x2[j + 1]               = sigmoid_gate_mul_pair(g1, x1);
-            x2[j + 2]               = sigmoid_gate_mul_pair(g2, x2v);
-            x2[j + 3]               = sigmoid_gate_mul_pair(g3, x3);
+            const __nv_bfloat162 g3  = gate2[j + 3];
+            const __nv_bfloat162 x3  = x2[j + 3];
+            x2[j]                    = sigmoid_gate_mul_pair(g0, x0);
+            x2[j + 1]                = sigmoid_gate_mul_pair(g1, x1);
+            x2[j + 2]                = sigmoid_gate_mul_pair(g2, x2v);
+            x2[j + 3]                = sigmoid_gate_mul_pair(g3, x3);
         } else {
             x2[j] = sigmoid_gate_mul_pair(g0, x0);
             if (j + 1 < n2) { x2[j + 1] = sigmoid_gate_mul_pair(gate2[j + 1], x2[j + 1]); }
@@ -67,8 +63,7 @@ __launch_bounds__(256) __global__
 
     if (tid == 0 && (n & 1) != 0) {
         const std::int64_t i = n - 1;
-        x[i] = __float2bfloat16_rn(__bfloat162float(x[i]) *
-                                   sigmoid_f32(__bfloat162float(gate[i])));
+        x[i] = __float2bfloat16_rn(__bfloat162float(x[i]) * sigmoid_f32(__bfloat162float(gate[i])));
     }
 }
 

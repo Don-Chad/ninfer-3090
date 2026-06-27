@@ -404,17 +404,14 @@ cudaError_t launch_typed(const gdn_chunked::chunk_output_config& cfg, dim3 grid,
 } // namespace
 
 cudaError_t launch_chunk_output(const gdn_chunked::chunk_output_config& cfg) {
-    gdn_chunked::stage_validator v{
-        "launch_chunk_output", cfg.S, cfg.H_qk, cfg.H_v, cfg.L, cfg.B, cfg.kda};
+    gdn_chunked::stage_validator v{"launch_chunk_output", cfg.S, cfg.H_qk, cfg.H_v, cfg.L, cfg.B};
     QUS_GDN_PROPAGATE(v.check_shape());
     QUS_GDN_PROPAGATE(v.check_gdn_full_chunks());
     if (cfg.q == nullptr || cfg.v_new == nullptr || cfg.g_cumsum == nullptr ||
         cfg.h_chunk == nullptr || cfg.attn_out == nullptr) {
         return cudaErrorInvalidValue;
     }
-    if (cfg.kda && cfg.Aqk == nullptr) return cudaErrorInvalidValue;
-    if (!cfg.kda && cfg.k == nullptr) return cudaErrorInvalidValue;
-    if (cfg.kda) return cudaErrorNotYetImplemented; // Phase C
+    if (cfg.k == nullptr) return cudaErrorInvalidValue;
 
     const auto qk_map = qus::kernels::head_map::of((int)cfg.H_qk, (int)cfg.H_v);
     const int64_t NT  = (cfg.L + BT - 1) / BT;

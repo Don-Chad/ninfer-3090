@@ -8,11 +8,12 @@ struct ModelConfig {
     static constexpr int intermediate = 17408;
     static constexpr int vocab        = 248320;
 
-    static constexpr int gdn_conv_k  = 4;
-    static constexpr int gdn_k_heads = 16;
-    static constexpr int gdn_k_dim   = 128;
-    static constexpr int gdn_v_heads = 48;
-    static constexpr int gdn_v_dim   = 128;
+    static constexpr int gdn_conv_k           = 4;
+    static constexpr int gdn_conv_state_width = gdn_conv_k - 1;
+    static constexpr int gdn_k_heads          = 16;
+    static constexpr int gdn_k_dim            = 128;
+    static constexpr int gdn_v_heads          = 48;
+    static constexpr int gdn_v_dim            = 128;
 
     static constexpr int n_q        = 24;
     static constexpr int n_kv       = 4;

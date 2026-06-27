@@ -121,11 +121,6 @@ void extract_bf16_block(const Tensor& src, int src_channel, Tensor& dst, cudaStr
                                  stream));
 }
 
-Tensor conv_state_for_kernel(Tensor& state) {
-    if (state.ne[1] == kCfg.gdn_conv_k) { return state.slice(1, 0, kCfg.gdn_conv_k - 1); }
-    return state;
-}
-
 void copy_i32_to_device(const int* src, Tensor& dst) {
     CUDA_CHECK(cudaMemcpy(dst.data, src, static_cast<std::size_t>(dst.ne[0]) * sizeof(int),
                           cudaMemcpyHostToDevice));
@@ -380,8 +375,8 @@ void Qwen3_6_27B::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
     kernels::linear(h, *w.in_a, a, s);
     kernels::linear(h, *w.in_b, b, s);
 
-    Tensor qkv_c      = work_.alloc(DType::BF16, {kCfg.conv_dim, T});
-    Tensor conv_state = conv_state_for_kernel(state_.conv.at(static_cast<std::size_t>(gidx)));
+    Tensor qkv_c       = work_.alloc(DType::BF16, {kCfg.conv_dim, T});
+    Tensor& conv_state = state_.conv.at(static_cast<std::size_t>(gidx));
     if (ph == Phase::Prefill) {
         kernels::causal_conv1d_prefill(qkv, *w.conv1d, conv_state, qkv_c, s);
     } else {

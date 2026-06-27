@@ -85,9 +85,7 @@ struct prepare_wy_wu_config {
     std::int64_t H_v  = 0;
     std::int64_t L    = 0;
     std::int64_t B    = 0;
-    bool kda          = false;
 
-    const float* q    = nullptr;
     const float* k    = nullptr;
     const float* v    = nullptr;
     const float* g_in = nullptr;
@@ -96,8 +94,6 @@ struct prepare_wy_wu_config {
     float* W            = nullptr;
     float* U            = nullptr;
     float* g_cumsum_out = nullptr;
-    float* Aqk          = nullptr;
-    float* kg           = nullptr;
 
     std::int64_t k_stride_t_floats = 0;
     std::int64_t v_stride_t_floats = 0;
@@ -111,11 +107,10 @@ struct state_passing_config {
     std::int64_t H_v  = 0;
     std::int64_t L    = 0;
     std::int64_t B    = 0;
-    bool kda          = false;
 
     const float* W        = nullptr;
     const float* U        = nullptr;
-    const float* k_or_kg  = nullptr;
+    const float* k        = nullptr;
     const float* g_cumsum = nullptr;
     const float* state_in = nullptr;
 
@@ -134,13 +129,11 @@ struct chunk_output_config {
     std::int64_t H_v  = 0;
     std::int64_t L    = 0;
     std::int64_t B    = 0;
-    bool kda          = false;
 
     const float* q        = nullptr;
     const float* k        = nullptr;
     const float* v_new    = nullptr;
     const float* g_cumsum = nullptr;
-    const float* Aqk      = nullptr;
     const float* h_chunk  = nullptr;
 
     float* attn_out = nullptr;
@@ -198,7 +191,6 @@ struct stage_validator {
     std::int64_t H_v;
     std::int64_t T;
     std::int64_t B;
-    bool kda;
     bool require_h_qk = true;
 
     cudaError_t check_shape() const {
@@ -227,7 +219,7 @@ struct stage_validator {
     }
 
     cudaError_t check_gdn_full_chunks() const {
-        if (!kda && (T % BT) != 0) {
+        if ((T % BT) != 0) {
             std::fprintf(stderr,
                          "%s: GDN chunked path requires T to be a multiple of %d; "
                          "route tail tokens through AR instead (T=%lld)\n",

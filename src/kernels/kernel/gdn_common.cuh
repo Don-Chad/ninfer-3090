@@ -35,29 +35,6 @@ inline uint3 init_fastdiv_values(std::uint64_t d64) {
     return make_uint3(mp, L, d);
 }
 
-struct gdn_sizes {
-    std::int64_t q_floats;
-    std::int64_t k_floats;
-    std::int64_t v_floats;
-    std::int64_t g_floats;
-    std::int64_t beta_floats;
-    std::int64_t state_floats;
-    std::int64_t attn_out_floats;
-};
-
-inline gdn_sizes compute_gdn_sizes(std::int64_t S, std::int64_t H_qk, std::int64_t H_v,
-                                   std::int64_t L, std::int64_t B, bool kda) {
-    gdn_sizes s{};
-    s.q_floats        = B * L * H_qk * S;
-    s.k_floats        = B * L * H_qk * S;
-    s.v_floats        = B * L * H_v * S;
-    s.g_floats        = B * L * H_v * (kda ? S : 1);
-    s.beta_floats     = B * L * H_v;
-    s.state_floats    = B * H_v * S * S;
-    s.attn_out_floats = B * L * H_v * S;
-    return s;
-}
-
 inline bool is_supported_gdn_head_dim(std::int64_t S) {
     return S == 16 || S == 32 || S == 64 || S == 128;
 }
@@ -110,10 +87,6 @@ static __device__ __forceinline__ std::uint32_t fastdiv(std::uint32_t n, uint3 f
 
 static __device__ __forceinline__ std::uint32_t fastdivide(std::uint32_t n, uint3 fastdiv_values) {
     return fastdiv(n, fastdiv_values);
-}
-
-static __device__ __forceinline__ std::uint32_t fastmodulo(std::uint32_t n, uint3 fastdiv_values) {
-    return n - fastdiv(n, fastdiv_values) * fastdiv_values.z;
 }
 
 template <int BLOCK_SIZE>

@@ -75,7 +75,7 @@ std::size_t Engine::default_cache_bytes(std::uint32_t max_ctx) {
 
     const std::size_t conv_elems =
         checked_mul(checked_mul(model::kCfg.n_gdn(), model::kCfg.conv_dim, "cache arena size"),
-                    model::kCfg.gdn_conv_k, "cache arena size");
+                    model::kCfg.gdn_conv_state_width, "cache arena size");
     const std::size_t conv_bytes =
         checked_mul(conv_elems, dtype_size(DType::BF16), "cache arena size");
 
@@ -125,8 +125,9 @@ void Engine::load(const std::string& path) {
                                                    : options_.cache_bytes);
     kv_.emplace(*cache_arena_, model::kCfg.n_full(), options_.max_ctx, model::kCfg.n_kv,
                 model::kCfg.head_dim);
-    state_.emplace(*cache_arena_, model::kCfg.n_gdn(), model::kCfg.conv_dim, model::kCfg.gdn_conv_k,
-                   model::kCfg.gdn_v_heads, model::kCfg.gdn_v_dim, model::kCfg.gdn_k_dim);
+    state_.emplace(*cache_arena_, model::kCfg.n_gdn(), model::kCfg.conv_dim,
+                   model::kCfg.gdn_conv_state_width, model::kCfg.gdn_v_heads, model::kCfg.gdn_v_dim,
+                   model::kCfg.gdn_k_dim);
     io_ = model::StepState{
         cache_arena_->alloc(DType::I32, {1}),
         cache_arena_->alloc(DType::I32, {1}),

@@ -8,9 +8,7 @@
 
 namespace qus::kernels {
 
-__device__ __forceinline__ float rmsnorm_silu_f32(float x) {
-    return x / (1.0f + __expf(-x));
-}
+__device__ __forceinline__ float rmsnorm_silu_f32(float x) { return x / (1.0f + expf(-x)); }
 
 __device__ __forceinline__ float rmsnorm_warp_sum(float v) {
     for (int offset = 16; offset > 0; offset >>= 1) {
@@ -20,15 +18,15 @@ __device__ __forceinline__ float rmsnorm_warp_sum(float v) {
 }
 
 __launch_bounds__(256) __global__
-    void rmsnorm_kernel(const __nv_bfloat16* x, const __nv_bfloat16* weight,
-                        const __nv_bfloat16* z, __nv_bfloat16* out, std::int32_t d,
-                        std::int64_t rows, float eps, bool unit_offset) {
+    void rmsnorm_kernel(const __nv_bfloat16* x, const __nv_bfloat16* weight, const __nv_bfloat16* z,
+                        __nv_bfloat16* out, std::int32_t d, std::int64_t rows, float eps,
+                        bool unit_offset) {
     const std::int64_t row = static_cast<std::int64_t>(blockIdx.x);
     if (row >= rows) { return; }
 
     const std::int64_t base = row * static_cast<std::int64_t>(d);
-    float sum = 0.0f;
-    const std::int64_t d64 = static_cast<std::int64_t>(d);
+    float sum               = 0.0f;
+    const std::int64_t d64  = static_cast<std::int64_t>(d);
     for (std::int64_t i = threadIdx.x; i < d64; i += blockDim.x) {
         const float xv = __bfloat162float(x[base + i]);
         sum += xv * xv;
@@ -46,7 +44,7 @@ __launch_bounds__(256) __global__
     const float inv = rsqrtf(scratch[0] / static_cast<float>(d) + eps);
     for (std::int64_t i = threadIdx.x; i < d64; i += blockDim.x) {
         const std::int64_t idx = base + i;
-        float w = __bfloat162float(weight[i]);
+        float w                = __bfloat162float(weight[i]);
         if (unit_offset) { w += 1.0f; }
         float v = __bfloat162float(x[idx]) * inv * w;
         if (z != nullptr) { v *= rmsnorm_silu_f32(__bfloat162float(z[idx])); }
@@ -56,19 +54,18 @@ __launch_bounds__(256) __global__
 
 __launch_bounds__(512) __global__
     void rmsnorm_d5120_kernel(const __nv_bfloat16* x, const __nv_bfloat16* weight,
-                              __nv_bfloat16* out, std::int64_t rows, float eps,
-                              bool unit_offset) {
-    constexpr int kD = 5120;
-    constexpr int kPairs = kD / 2;
-    constexpr int kBlock = 512;
+                              __nv_bfloat16* out, std::int64_t rows, float eps, bool unit_offset) {
+    constexpr int kD              = 5120;
+    constexpr int kPairs          = kD / 2;
+    constexpr int kBlock          = 512;
     constexpr int kPairsPerThread = kPairs / kBlock;
 
     const std::int64_t row = static_cast<std::int64_t>(blockIdx.x);
     if (row >= rows) { return; }
 
-    const auto* x2 = reinterpret_cast<const __nv_bfloat162*>(x);
-    const auto* weight2 = reinterpret_cast<const __nv_bfloat162*>(weight);
-    auto* out2 = reinterpret_cast<__nv_bfloat162*>(out);
+    const auto* x2          = reinterpret_cast<const __nv_bfloat162*>(x);
+    const auto* weight2     = reinterpret_cast<const __nv_bfloat162*>(weight);
+    auto* out2              = reinterpret_cast<__nv_bfloat162*>(out);
     const std::int64_t base = row * static_cast<std::int64_t>(kPairs);
 
     __nv_bfloat162 xs[kPairsPerThread];
@@ -76,10 +73,10 @@ __launch_bounds__(512) __global__
 
 #pragma unroll
     for (int k = 0; k < kPairsPerThread; ++k) {
-        const int j = threadIdx.x + k * kBlock;
+        const int j             = threadIdx.x + k * kBlock;
         const __nv_bfloat162 xv = x2[base + j];
-        const float2 xf = __bfloat1622float2(xv);
-        xs[k] = xv;
+        const float2 xf         = __bfloat1622float2(xv);
+        xs[k]                   = xv;
         sum += xf.x * xf.x + xf.y * xf.y;
     }
 
@@ -92,17 +89,15 @@ __launch_bounds__(512) __global__
     if (threadIdx.x < 32) { block_sum = rmsnorm_warp_sum(block_sum); }
 
     __shared__ float inv_shared;
-    if (threadIdx.x == 0) {
-        inv_shared = rsqrtf(block_sum / static_cast<float>(kD) + eps);
-    }
+    if (threadIdx.x == 0) { inv_shared = rsqrtf(block_sum / static_cast<float>(kD) + eps); }
     __syncthreads();
     const float inv = inv_shared;
 
 #pragma unroll
     for (int k = 0; k < kPairsPerThread; ++k) {
-        const int j = threadIdx.x + k * kBlock;
+        const int j     = threadIdx.x + k * kBlock;
         const float2 xf = __bfloat1622float2(xs[k]);
-        float2 wf = __bfloat1622float2(weight2[j]);
+        float2 wf       = __bfloat1622float2(weight2[j]);
         if (unit_offset) {
             wf.x += 1.0f;
             wf.y += 1.0f;

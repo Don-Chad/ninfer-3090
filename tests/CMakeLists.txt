@@ -34,6 +34,8 @@ qus_add_test(qus_graph_readiness_structure_test
              SOURCES test_graph_readiness_structure.cpp NEEDS_SOURCE_DIR)
 qus_add_test(qus_runtime_tap_structure_test
              SOURCES test_runtime_tap_structure.cpp NEEDS_SOURCE_DIR)
+qus_add_test(qus_hardening_cleanup_structure_test
+             SOURCES test_hardening_cleanup_structure.cpp NEEDS_SOURCE_DIR)
 
 add_executable(qus_block_dump ${PROJECT_SOURCE_DIR}/tools/parity/block_dump.cpp)
 target_link_libraries(qus_block_dump PRIVATE qus_core)
