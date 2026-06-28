@@ -34,6 +34,12 @@ int expect_string(const std::string& actual, std::string_view expected, std::str
     return 1;
 }
 
+int expect_contains(const std::string& actual, std::string_view expected, std::string_view label) {
+    if (actual.find(expected) != std::string::npos) { return 0; }
+    std::cerr << label << " expected to find `" << expected << "` in:\n" << actual << '\n';
+    return 1;
+}
+
 template <typename Exception, typename Fn>
 int expect_throws(Fn&& fn, std::string_view label) {
     try {
@@ -49,6 +55,13 @@ std::filesystem::path temp_file(std::string_view stem, std::string_view contents
     if (!out) { throw std::runtime_error("failed to create temp file"); }
     out << contents;
     return path;
+}
+
+qus::bench::e2e::RunOptions parse_args_for_test(std::vector<std::string> args) {
+    std::vector<char*> argv;
+    argv.reserve(args.size());
+    for (std::string& arg : args) { argv.push_back(arg.data()); }
+    return qus::bench::e2e::parse_args(static_cast<int>(argv.size()), argv.data());
 }
 
 int test_parse_ids_file() {
@@ -91,6 +104,66 @@ int test_parse_case_arg() {
     failures += expect_throws<std::invalid_argument>(
         [&] { (void)qus::bench::e2e::parse_case_arg("x:y.ids:not_int"); },
         "bad max_new_tokens");
+    return failures;
+}
+
+int test_parse_args_help() {
+    int failures = 0;
+    const qus::bench::e2e::RunOptions long_help =
+        parse_args_for_test({"qus_e2e_bench", "--help"});
+    failures += expect_bool(long_help.help_requested, "--help sets help_requested");
+    failures += expect_bool(long_help.weights_path.empty(), "--help does not require weights");
+    failures += expect_bool(long_help.output_json_path.empty(), "--help does not require output json");
+    failures += expect_bool(long_help.cases.empty(), "--help does not require cases");
+
+    const qus::bench::e2e::RunOptions short_help =
+        parse_args_for_test({"qus_e2e_bench", "-h"});
+    failures += expect_bool(short_help.help_requested, "-h sets help_requested");
+    failures += expect_u64(short_help.max_ctx, qus::EngineOptions{}.max_ctx,
+                           "help max_ctx default");
+    failures += expect_u64(short_help.repeats, 1, "help repeats default");
+    failures += expect_u64(short_help.warmup_repeats, 0, "help warmup default");
+    failures += expect_u64(short_help.device, 0, "help device default");
+    return failures;
+}
+
+int test_parse_args_errors_still_apply_without_help() {
+    int failures = 0;
+    failures += expect_throws<std::invalid_argument>(
+        [&] { (void)parse_args_for_test({"qus_e2e_bench"}); }, "missing weights");
+    failures += expect_throws<std::invalid_argument>(
+        [&] { (void)parse_args_for_test({"qus_e2e_bench", "--unknown"}); },
+        "unknown argument");
+    failures += expect_throws<std::invalid_argument>(
+        [&] { (void)parse_args_for_test({"qus_e2e_bench", "--weights"}); },
+        "missing weights value");
+    failures += expect_throws<std::invalid_argument>(
+        [&] {
+            (void)parse_args_for_test(
+                {"qus_e2e_bench", "--weights", "weights.qus", "--output-json", "out.json"});
+        },
+        "missing case");
+    return failures;
+}
+
+int test_usage_text() {
+    const std::string usage = qus::bench::e2e::usage_text("qus_e2e_bench");
+    int failures = 0;
+    failures += expect_contains(usage, "Usage:", "usage heading");
+    failures += expect_contains(usage, "--weights", "usage weights");
+    failures += expect_contains(usage, "--output-json", "usage output-json");
+    failures += expect_contains(usage, "--case <name>:<prompt-ids-path>:<max-new-tokens>",
+                                "usage case");
+    failures += expect_contains(usage, "--warmup-repeats", "usage warmup");
+    failures += expect_contains(usage, "--repeats", "usage repeats");
+    failures += expect_contains(usage, "--max-ctx", "usage max-ctx");
+    failures += expect_contains(usage, "--device", "usage device");
+    failures += expect_contains(usage, "--eos-token-id", "usage eos");
+    failures += expect_contains(usage, "default: " + std::to_string(qus::EngineOptions{}.max_ctx),
+                                "usage max_ctx default");
+    failures += expect_contains(usage, "default: 1", "usage repeats default");
+    failures += expect_contains(usage, "default: 0", "usage warmup or device default");
+    failures += expect_contains(usage, "default: -1, disabled", "usage eos default");
     return failures;
 }
 
@@ -304,6 +377,9 @@ int main() {
     int failures = 0;
     failures += test_parse_ids_file();
     failures += test_parse_case_arg();
+    failures += test_parse_args_help();
+    failures += test_parse_args_errors_still_apply_without_help();
+    failures += test_usage_text();
     failures += test_context_validation();
     failures += test_json_helpers();
     failures += test_error_report_json_is_valid();

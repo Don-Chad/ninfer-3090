@@ -63,7 +63,7 @@ Required fields:
 {
   "engine": {
     "max_context": 0,
-    "workspace_lifetime_policy": "step_reset",
+    "workspace_lifetime_policy": "block_scoped_mixer_mlp_rewind",
     "decode_metric": "decode_eager_tok_s",
     "sampling_location": "device_argmax",
     "token_readback": "per_step_sync_d2h",
@@ -72,6 +72,10 @@ Required fields:
   }
 }
 ```
+
+The current official/runtime workspace lifetime policy is `block_scoped_mixer_mlp_rewind`.
+Historical P6 short smoke artifacts may record `step_reset`; those are legacy smoke observations and do
+not represent the current M3-gate policy.
 
 ## Weights
 
@@ -289,7 +293,7 @@ Raw reports stay local under `profiles/e2e/`. Official smoke or M3-gate summarie
   "timing_summary": {},
   "memory_summary": {},
   "hidden_device_allocations": false,
-  "workspace_lifetime_policy": "step_reset",
+  "workspace_lifetime_policy": "block_scoped_mixer_mlp_rewind",
   "tokenizer": {},
   "readability_gate": "not_run"
 }
@@ -299,6 +303,8 @@ Raw reports stay local under `profiles/e2e/`. Official smoke or M3-gate summarie
 `decoded_manifest_path` and `decoded_manifest_sha256` are present only when
 `--decoded-manifest` is provided. `readability_gate` is `not_run` without decoded artifacts and
 `human_smoke_only` when decoded text sidecars are attached.
+Any decoded manifest referenced by a committed summary must be the redacted form: local tokenizer paths
+must be empty, and raw unredacted decoded manifests stay local.
 
 With `--decoded-manifest`, the summary also includes:
 

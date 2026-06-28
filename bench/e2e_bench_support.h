@@ -34,6 +34,7 @@ struct RunOptions {
     std::string weights_path;
     std::string output_json_path;
     std::vector<CaseSpec> cases;
+    bool help_requested = false;
     int warmup_repeats = 0;
     int repeats = 1;
     std::uint32_t max_ctx = qus::EngineOptions{}.max_ctx;
@@ -109,6 +110,7 @@ struct RawReport {
 std::vector<int> parse_ids_file(const std::string& path);
 CaseSpec parse_case_arg(const std::string& value);
 RunOptions parse_args(int argc, char** argv);
+std::string usage_text(std::string_view program);
 void validate_case_context(const CaseRunInput& input);
 
 std::string json_escape(std::string_view value);

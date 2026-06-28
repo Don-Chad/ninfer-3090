@@ -11,8 +11,8 @@ format offline; the runtime just loads one fixed file and runs.
 
 M2 correctness baseline is implemented. M2.5 hardening/documentation sync is mostly landed, with
 graph-readiness fixes, EOS handling, FileTap parity dumps, and hardening cleanup structure already
-present. M2.8 benchmark/I/O/memory observability is now the active pre-M3 gate; M3 per-kernel
-performance optimization follows after M2.8 readiness.
+present. The M2.8 benchmark/I/O/memory observability gate is complete; M3 planning may begin from
+[`docs/m3-readiness.md`](docs/m3-readiness.md).
 
 Current code includes L0 infrastructure, the q5090 `WeightStore`/loader and unified `Weight` handle,
 the 13 public L1 operator APIs and implementations, the L2 `Qwen3_6_27B` model card, the `Engine`,
@@ -36,11 +36,12 @@ attention** (16 layers), SwiGLU MLP, vocab 248320. v1 freezes to the **text deco
 ## Scope (v1)
 
 - Text-only; **token-ids in → token-ids out** (tokenizer runs in Python, outside the engine).
-- **Greedy** decoding, **128K** context, **bf16 KV**.
+- **Greedy** decoding, **bf16 KV**, current M2.8 official **max_ctx = 8192**.
 - **W4A16**: 4-bit weights, bf16 activations.
 - Single sequence (batch = 1), single GPU.
 
-Deferred (in order): MTP speculative decode → fp8/fp4 prefill → 256K/fp8-KV → full sampler →
+128K context is a later target, not part of the current M2.8 gate. Deferred (in order):
+MTP speculative decode → fp8/fp4 prefill → 128K/256K context and fp8-KV → full sampler →
 C++ tokenizer → vision → multi-GPU/batching.
 
 ## Architecture (3 layers)
@@ -80,10 +81,12 @@ NVIDIA RTX 5090 (Blackwell, sm_120, 32 GB) · CUDA 13.1 · gcc 13.3 · CMake 3.2
 
 - [`docs/design.md`](docs/design.md) — master design & goal document (scope, boundaries,
   architecture, data flow, memory, numerics, roadmap).
-- [`docs/m2.8-pre-m3-standard.md`](docs/m2.8-pre-m3-standard.md) — authoritative pre-M3
-  benchmark/I/O/memory/readiness standard and active gate before M3 optimization.
+- [`docs/m2.8-pre-m3-standard.md`](docs/m2.8-pre-m3-standard.md) — authoritative M2.8
+  benchmark/I/O/memory/readiness standard used to produce the completed pre-M3 gate artifacts.
 - [`docs/m2.8-pre-m3-standard.zh.md`](docs/m2.8-pre-m3-standard.zh.md) — Chinese review aid for
   the M2.8 standard; the English standard is authoritative.
+- [`docs/m3-readiness.md`](docs/m3-readiness.md) — completed M2.8 gate evidence and starting point
+  for M3 planning.
 - [`docs/qwen3.6-27b-architecture.md`](docs/qwen3.6-27b-architecture.md) — exact model
   architecture reference: per-layer parameters, computation flow, Gated-DeltaNet math,
   operator inventory, and runtime tensor-transform ownership.

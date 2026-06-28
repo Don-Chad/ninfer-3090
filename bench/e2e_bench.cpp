@@ -93,6 +93,10 @@ int main(int argc, char** argv) {
         std::cerr << "qus_e2e_bench: " << e.what() << '\n';
         return 2;
     }
+    if (options.help_requested) {
+        std::cout << qus::bench::e2e::usage_text(argc > 0 ? argv[0] : "qus_e2e_bench");
+        return 0;
+    }
 
     qus::EngineOptions engine_options;
     engine_options.device = options.device;

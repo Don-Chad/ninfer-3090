@@ -268,6 +268,34 @@ CaseSpec parse_case_arg(const std::string& value) {
     return spec;
 }
 
+std::string usage_text(std::string_view program) {
+    const RunOptions defaults;
+    if (program.empty()) { program = "qus_e2e_bench"; }
+
+    std::ostringstream out;
+    out << "Usage: " << program
+        << " --weights <q5090-path> --output-json <report-path>"
+        << " --case <name>:<prompt-ids-path>:<max-new-tokens> [options]\n"
+        << "\n"
+        << "Options:\n"
+        << "  --weights <q5090-path>                         required q5090 weights path\n"
+        << "  --output-json <report-path>                    required JSON report path\n"
+        << "  --case <name>:<prompt-ids-path>:<max-new-tokens>\n"
+        << "                                                 benchmark case; repeat for multiple cases\n"
+        << "  --warmup-repeats <n>                           warmup repeats (default: "
+        << defaults.warmup_repeats << ")\n"
+        << "  --repeats <n>                                  measured repeats (default: "
+        << defaults.repeats << ")\n"
+        << "  --max-ctx <tokens>                             max context tokens (default: "
+        << defaults.max_ctx << ")\n"
+        << "  --device <cuda-device>                         CUDA device ordinal (default: "
+        << defaults.device << ")\n"
+        << "  --eos-token-id <id>                            optional EOS token id "
+        << "(default: -1, disabled)\n"
+        << "  -h, --help                                     show this help\n";
+    return out.str();
+}
+
 RunOptions parse_args(int argc, char** argv) {
     RunOptions options;
     bool saw_weights = false;
@@ -278,7 +306,10 @@ RunOptions parse_args(int argc, char** argv) {
             if (i + 1 >= argc) { throw std::invalid_argument(std::string(flag) + " requires value"); }
             return argv[++i];
         };
-        if (arg == "--weights") {
+        if (arg == "--help" || arg == "-h") {
+            options.help_requested = true;
+            return options;
+        } else if (arg == "--weights") {
             options.weights_path = require_value("--weights");
             saw_weights = true;
         } else if (arg == "--output-json") {

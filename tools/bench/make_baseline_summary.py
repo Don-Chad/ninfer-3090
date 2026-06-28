@@ -104,6 +104,8 @@ def _decoded_manifest(decoded_manifest_path: Path | None) -> dict[str, Any]:
         "special_tokens_map_sha256",
     ):
         _require_key(tokenizer, field, "decoded manifest tokenizer")
+    if tokenizer["tokenizer_path"] != "":
+        raise RuntimeError("decoded manifest tokenizer_path must be redacted for committed summaries")
     readability_gate = _require_key(manifest, "readability_gate", "decoded manifest")
     if not isinstance(readability_gate, str):
         raise RuntimeError("decoded manifest readability_gate must be a string")
@@ -113,6 +115,53 @@ def _decoded_manifest(decoded_manifest_path: Path | None) -> dict[str, Any]:
         "decoded_manifest_path": str(decoded_manifest_path),
         "decoded_manifest_sha256": common.sha256_file(decoded_manifest_path),
     }
+
+
+def _require_int_at_least(
+    obj: dict[str, Any],
+    key: str,
+    label: str,
+    min_value: int,
+    message: str,
+) -> None:
+    value = _require_key(obj, key, label)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise RuntimeError(f"{label}.{key} must be an integer")
+    if value < min_value:
+        raise RuntimeError(message)
+
+
+def _enforce_smoke(report: dict[str, Any]) -> None:
+    cases = common.case_map(report)
+    if "cn_short" not in cases:
+        raise RuntimeError("smoke summary requires cn_short")
+
+    cn_short = cases["cn_short"]
+    _require_int_at_least(
+        cn_short,
+        "requested_max_new_tokens",
+        "cn_short",
+        8,
+        "cn_short max_new_tokens must be at least 8 for smoke",
+    )
+    _require_int_at_least(
+        cn_short,
+        "measured_repeats",
+        "cn_short",
+        1,
+        "cn_short smoke run requires repeats>=1",
+    )
+
+
+def _enforce_deterministic_token_ids(report: dict[str, Any], baseline_class: str) -> None:
+    for case in common.require_list(report["cases"], "cases"):
+        case_obj = common.require_mapping(case, "case")
+        case_name = str(case_obj["name"])
+        summary = common.require_mapping(case_obj["summary"], f"{case_name}.summary")
+        if summary.get("deterministic_token_ids") is not True:
+            raise RuntimeError(
+                f"{baseline_class} summary requires deterministic_token_ids=true for {case_name}"
+            )
 
 
 def _enforce_m3_gate(report: dict[str, Any]) -> None:
@@ -149,8 +198,11 @@ def make_summary(
         raise RuntimeError("baseline_class must be smoke or m3_gate")
     report = common.load_json(report_path)
     common.validate_report(report)
+    if baseline_class == "smoke":
+        _enforce_smoke(report)
     if baseline_class == "m3_gate":
         _enforce_m3_gate(report)
+        _enforce_deterministic_token_ids(report, baseline_class)
     decoded = _decoded_manifest(decoded_manifest_path)
     run = common.require_mapping(report["run"], "run")
     weights = common.require_mapping(report["weights"], "weights")

@@ -7,8 +7,8 @@ Offline, GPU-accelerated quantizing converter: original **Qwen3.6-27B** bf16 saf
 - Binary file contract: [`docs/q5090_packed_file_format_v1.md`](../../docs/q5090_packed_file_format_v1.md)
 
 The output **always contains all three segments** (TEXT_CORE + MTP_DRAFT + VISION_ENCODER) so
-it never needs regenerating; the runtime skips the segments it does not need. Weights are stored
-faithfully (no baked runtime transforms); the C++ runtime adapts to this format.
+it never needs regenerating; the runtime skips the segments it does not need. There are no runtime
+transforms: the converter may canonicalize documented TEXT_CORE shapes into q5090 runtime-native form.
 
 ## Layout
 

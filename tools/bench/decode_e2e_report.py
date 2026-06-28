@@ -89,7 +89,7 @@ def main() -> int:
 
     tokenizer_path = common.resolve_tokenizer_path(args.tokenizer_path)
     tokenizer = common.load_tokenizer(tokenizer_path)
-    metadata = common.tokenizer_metadata(tokenizer_path, redact_path=False)
+    metadata = common.tokenizer_metadata(tokenizer_path, redact_path=True)
     manifest = decode_report(args.report, tokenizer, metadata, args.output_dir)
     manifest_path = (
         args.output_dir if args.output_dir is not None else args.report.with_suffix(".decoded")

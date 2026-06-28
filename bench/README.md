@@ -180,6 +180,11 @@ python3 tools/bench/compare_e2e_reports.py \
 
 Create a committed baseline summary from a local raw report with:
 
+Use a redacted decoded manifest for committed summaries. Current decode tooling writes `tokenizer_path` as
+an empty string by default, so the generated `manifest.json` can be passed directly. If you are working with
+older or hand-written decoded manifests, verify that `tokenizer.tokenizer_path` is empty before summary
+generation; the summary tool rejects unredacted manifests.
+
 ```bash
 python3 tools/bench/make_baseline_summary.py \
   --report profiles/e2e/m3-gate.json \
