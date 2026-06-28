@@ -83,11 +83,25 @@ int test_resolve_stop_token_ids() {
     return failures;
 }
 
+int test_decode_stop_trimming_modes() {
+    const qus::text::QwenTokenizer tokenizer = make_tokenizer_with_stop_ids({1});
+    const std::vector<int> generated{0, 1};
+
+    int failures = 0;
+    failures += check(tokenizer.decode(generated, qus::text::DecodeOptions{false, {}}) == "ab",
+                      "raw decode did not preserve terminal stop id");
+    failures += check(tokenizer.decode(generated, qus::text::DecodeOptions{true, {1}}) == "a",
+                      "clean decode did not trim terminal stop id");
+    return failures;
+}
+
 } // namespace
 
 int main() {
     try {
-        const int failures = test_resolve_stop_token_ids();
+        int failures = 0;
+        failures += test_resolve_stop_token_ids();
+        failures += test_decode_stop_trimming_modes();
         return failures == 0 ? 0 : fail("qwen text runner test failed");
     } catch (const std::exception& ex) {
         std::cerr << "qwen text runner test failed: " << ex.what() << '\n';

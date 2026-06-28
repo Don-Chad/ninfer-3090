@@ -12,7 +12,6 @@ namespace qus::text {
 struct TextGenerationOptions {
     int max_new_tokens = 128;
     bool raw_output = false;
-    bool print_token_ids = false;
     std::vector<int> stop_token_ids;
 };
 
