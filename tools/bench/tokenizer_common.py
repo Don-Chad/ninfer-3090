@@ -14,6 +14,13 @@ TOKENIZER_MODEL_ID = "Qwen/Qwen3.6-27B"
 FIXTURE_SET = "m2.8-v1"
 REQUIRED_CASES = ("cn_short", "en_short", "code_short", "math_short", "long_2k")
 READABILITY_GATES = ("human_smoke_only", "not_run")
+PROMPT_FORMAT = "qwen3.6-chat-template"
+ADD_GENERATION_PROMPT = True
+ADD_SPECIAL_TOKENS = False
+CHAT_TEMPLATE_KWARGS = {"enable_thinking": False}
+STOP_TOKEN_IDS = [248046, 248044]
+STOP_TOKEN_NAMES = {"248046": "<|im_end|>", "248044": "<|endoftext|>"}
+MESSAGE_FILE_SUFFIX = ".messages.json"
 
 
 def repo_root() -> Path:
@@ -26,6 +33,10 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def resolve_tokenizer_path(cli_path: str | None) -> Path:
@@ -45,6 +56,10 @@ def _optional_hash(root: Path, name: str) -> str:
     return sha256_file(path) if path.exists() else ""
 
 
+def _chat_template_hash(tokenizer_path: Path) -> str:
+    return _optional_hash(tokenizer_path, "chat_template.jinja")
+
+
 def tokenizer_metadata(tokenizer_path: Path, redact_path: bool = False) -> dict[str, str]:
     return {
         "tokenizer_source": "local_hf",
@@ -53,6 +68,8 @@ def tokenizer_metadata(tokenizer_path: Path, redact_path: bool = False) -> dict[
         "tokenizer_json_sha256": _optional_hash(tokenizer_path, "tokenizer.json"),
         "tokenizer_config_sha256": _optional_hash(tokenizer_path, "tokenizer_config.json"),
         "special_tokens_map_sha256": _optional_hash(tokenizer_path, "special_tokens_map.json"),
+        "chat_template_jinja_sha256": _chat_template_hash(tokenizer_path),
+        "generation_config_sha256": _optional_hash(tokenizer_path, "generation_config.json"),
     }
 
 
@@ -111,6 +128,30 @@ def read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"expected JSON object in {path}")
     return value
+
+
+def read_messages(path: Path) -> list[dict[str, str]]:
+    with path.open("r", encoding="utf-8") as f:
+        value = json.load(f)
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"expected non-empty JSON array in {path}")
+    messages: list[dict[str, str]] = []
+    allowed_roles = {"system", "user", "assistant"}
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"message {index} in {path} must be an object")
+        if set(item.keys()) != {"role", "content"}:
+            raise ValueError(
+                f"message {index} in {path} must contain only role and string content"
+            )
+        role = item["role"]
+        content = item["content"]
+        if not isinstance(role, str) or role not in allowed_roles:
+            raise ValueError(f"message {index} in {path} has unsupported role: {role!r}")
+        if not isinstance(content, str) or not content:
+            raise ValueError(f"message {index} in {path} must have non-empty string content")
+        messages.append({"role": role, "content": content})
+    return messages
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:

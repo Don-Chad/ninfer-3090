@@ -1,2 +1,0 @@
-Explain in three concise paragraphs why an inference benchmark should separate model loading, prefill,
-and decode timing. Include one sentence about why repeated runs must record generated token ids.

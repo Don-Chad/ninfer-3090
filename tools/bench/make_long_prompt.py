@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
+from typing import Sequence
 
 
 PARAGRAPHS = [
@@ -49,15 +51,16 @@ def build_text(repeats: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--repeats", type=int, default=36)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.repeats < 1:
         raise SystemExit("--repeats must be positive")
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(build_text(args.repeats), encoding="utf-8")
+    messages = [{"role": "user", "content": build_text(args.repeats)}]
+    args.out.write_text(json.dumps(messages, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return 0
 
 

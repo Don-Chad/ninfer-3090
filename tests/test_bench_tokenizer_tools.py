@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
@@ -19,13 +20,39 @@ from tools.bench import tokenizer_common as common  # noqa: E402
 class FakeTokenizer:
     def __init__(self) -> None:
         self.encoded: dict[str, list[int]] = {}
+        self.chat_template_calls: list[dict[str, object]] = []
 
-    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
-        if add_special_tokens:
-            raise AssertionError("fixtures must not add special tokens implicitly")
-        if text in self.encoded:
-            return self.encoded[text]
-        return [ord(ch) for ch in text]
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tokenize: bool,
+        add_generation_prompt: bool,
+        enable_thinking: bool,
+        return_dict: bool,
+    ) -> str | list[int]:
+        if not add_generation_prompt:
+            raise AssertionError("fixtures must add a generation prompt")
+        if enable_thinking:
+            raise AssertionError("fixtures must disable thinking")
+        if return_dict:
+            raise AssertionError("fixtures must request raw ids/text")
+        self.chat_template_calls.append(
+            {
+                "messages": copy.deepcopy(messages),
+                "tokenize": tokenize,
+                "add_generation_prompt": add_generation_prompt,
+                "enable_thinking": enable_thinking,
+                "return_dict": return_dict,
+            }
+        )
+        rendered = "".join(f"<{message['role']}>{message['content']}" for message in messages)
+        rendered += "<assistant>"
+        if not tokenize:
+            return rendered
+        if rendered in self.encoded:
+            return self.encoded[rendered]
+        return [ord(ch) for ch in rendered]
 
     def decode(self, ids: list[int], skip_special_tokens: bool = False) -> str:
         if skip_special_tokens:
@@ -48,15 +75,22 @@ class TokenizerCommonTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             common.parse_ids_text("1 two 3")
 
-    def test_sha256_and_tokenizer_metadata(self) -> None:
+    def test_tokenizer_metadata_hashes_chat_template_jinja_file_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             tokenizer = root / "tokenizer.json"
             config = root / "tokenizer_config.json"
             special = root / "special_tokens_map.json"
+            generation = root / "generation_config.json"
+            chat_template = root / "chat_template.jinja"
             tokenizer.write_text("tokenizer\n", encoding="utf-8")
-            config.write_text("config\n", encoding="utf-8")
+            config.write_text(
+                json.dumps({"chat_template": "embedded template"}) + "\n",
+                encoding="utf-8",
+            )
             special.write_text("special\n", encoding="utf-8")
+            generation.write_text("generation\n", encoding="utf-8")
+            chat_template.write_text("file template\n", encoding="utf-8")
 
             metadata = common.tokenizer_metadata(root)
             self.assertEqual(metadata["tokenizer_source"], "local_hf")
@@ -65,6 +99,53 @@ class TokenizerCommonTests(unittest.TestCase):
             self.assertEqual(metadata["tokenizer_json_sha256"], common.sha256_file(tokenizer))
             self.assertEqual(metadata["tokenizer_config_sha256"], common.sha256_file(config))
             self.assertEqual(metadata["special_tokens_map_sha256"], common.sha256_file(special))
+            self.assertEqual(
+                metadata["chat_template_jinja_sha256"],
+                common.sha256_file(chat_template),
+            )
+            self.assertEqual(metadata["generation_config_sha256"], common.sha256_file(generation))
+
+    def test_tokenizer_metadata_leaves_chat_template_hash_empty_when_file_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tokenizer_config.json").write_text(
+                json.dumps({"chat_template": "embedded template"}) + "\n",
+                encoding="utf-8",
+            )
+            metadata = common.tokenizer_metadata(root)
+            self.assertEqual(metadata["chat_template_jinja_sha256"], "")
+
+    def test_read_messages_accepts_chat_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "prompt.messages.json"
+            messages = [
+                {"role": "system", "content": "You are concise."},
+                {"role": "user", "content": "Explain prefill."},
+                {"role": "assistant", "content": "Prefill processes prompt tokens."},
+                {"role": "user", "content": "Now summarize."},
+            ]
+            path.write_text(json.dumps(messages), encoding="utf-8")
+            self.assertEqual(common.read_messages(path), messages)
+
+    def test_read_messages_rejects_non_chat_content(self) -> None:
+        invalid_values = [
+            {},
+            [],
+            [{"role": ["user"], "content": "x"}],
+            [{"role": "tool", "content": "x"}],
+            [{"role": "user", "content": ""}],
+            [{"role": "user", "content": [{"type": "text", "text": "x"}]}],
+            [{"role": "user", "content": {"type": "text", "text": "x"}}],
+            [{"role": "user", "content": "x", "tool_calls": []}],
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index, value in enumerate(invalid_values):
+                path = root / f"bad_{index}.messages.json"
+                path.write_text(json.dumps(value), encoding="utf-8")
+                with self.subTest(value=value):
+                    with self.assertRaises(ValueError):
+                        common.read_messages(path)
 
     def test_resolve_tokenizer_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -96,20 +177,37 @@ class FixtureManifestTests(unittest.TestCase):
             fixture_dir = Path(tmp) / "prompts"
             fixture_dir.mkdir()
             fake = FakeTokenizer()
+            expected_messages: dict[str, list[dict[str, str]]] = {}
+            expected_ids: dict[str, list[int]] = {}
             for index, name in enumerate(common.REQUIRED_CASES):
-                text = f"{name} fixture text"
-                fake.encoded[text] = (
+                messages = [{"role": "user", "content": f"{name} fixture text"}]
+                rendered = fake.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                    return_dict=False,
+                )
+                expected_messages[name] = messages
+                expected_ids[name] = (
                     list(range(2050)) if name == "long_2k" else [index + 1, index + 2, index + 3]
                 )
-                (fixture_dir / f"{name}.txt").write_text(text, encoding="utf-8")
+                fake.encoded[str(rendered)] = expected_ids[name]
+                (fixture_dir / f"{name}.messages.json").write_text(
+                    json.dumps(messages),
+                    encoding="utf-8",
+                )
+            fake.chat_template_calls.clear()
 
             metadata = {
                 "tokenizer_source": "local_hf",
                 "tokenizer_model_id": common.TOKENIZER_MODEL_ID,
-                "tokenizer_path": "/tmp/tokenizer",
+                "tokenizer_path": "",
                 "tokenizer_json_sha256": "tok",
                 "tokenizer_config_sha256": "cfg",
                 "special_tokens_map_sha256": "special",
+                "chat_template_jinja_sha256": "chat",
+                "generation_config_sha256": "gen",
             }
             manifest = tokenize_prompts.write_fixtures(
                 fixture_dir=fixture_dir,
@@ -118,12 +216,43 @@ class FixtureManifestTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(manifest["fixture_set"], common.FIXTURE_SET)
+            self.assertEqual(manifest["tokenizer"], metadata)
+            self.assertEqual(
+                manifest["generation"],
+                {
+                    "stop_token_ids": common.STOP_TOKEN_IDS,
+                    "stop_token_names": common.STOP_TOKEN_NAMES,
+                    "sampling_policy": "Fixture ids are prompt-only chat-template inputs; decode sampling is configured by benchmark callers.",
+                },
+            )
             self.assertEqual([case["name"] for case in manifest["cases"]], list(common.REQUIRED_CASES))
             for case in manifest["cases"]:
-                ids = common.read_ids(fixture_dir / case["ids"])
+                name = case["name"]
+                ids = common.read_ids(fixture_dir / f"{name}.ids")
+                messages_path = fixture_dir / f"{name}.messages.json"
+                rendered = str(
+                    fake.apply_chat_template(
+                        expected_messages[name],
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        enable_thinking=False,
+                        return_dict=False,
+                    )
+                )
+                self.assertEqual(case["messages"], f"{name}{common.MESSAGE_FILE_SUFFIX}")
+                self.assertEqual(case["ids"], f"{name}.ids")
                 self.assertEqual(case["prompt_tokens"], len(ids))
-                self.assertEqual(case["txt_sha256"], common.sha256_file(fixture_dir / case["txt"]))
-                self.assertEqual(case["ids_sha256"], common.sha256_file(fixture_dir / case["ids"]))
+                self.assertEqual(case["messages_sha256"], common.sha256_file(messages_path))
+                self.assertEqual(case["rendered_prompt_sha256"], common.sha256_text(rendered))
+                self.assertEqual(case["ids_sha256"], common.sha256_file(fixture_dir / f"{name}.ids"))
+                self.assertEqual(case["prompt_format"], common.PROMPT_FORMAT)
+                self.assertIs(case["add_generation_prompt"], common.ADD_GENERATION_PROMPT)
+                self.assertIs(case["add_special_tokens"], common.ADD_SPECIAL_TOKENS)
+                self.assertEqual(case["chat_template_kwargs"], common.CHAT_TEMPLATE_KWARGS)
+            tokenizing_calls = [call for call in fake.chat_template_calls if call["tokenize"] is True]
+            rendering_calls = [call for call in fake.chat_template_calls if call["tokenize"] is False]
+            self.assertGreaterEqual(len(tokenizing_calls), len(common.REQUIRED_CASES))
+            self.assertGreaterEqual(len(rendering_calls), len(common.REQUIRED_CASES))
 
             checked = tokenize_prompts.write_fixtures(
                 fixture_dir=fixture_dir,
@@ -141,16 +270,72 @@ class FixtureManifestTests(unittest.TestCase):
             fixture_dir.mkdir()
             fake = FakeTokenizer()
             for index, name in enumerate(common.REQUIRED_CASES):
-                text = f"{name} fixture text"
-                fake.encoded[text] = (
+                messages = [{"role": "user", "content": f"{name} fixture text"}]
+                rendered = fake.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                    return_dict=False,
+                )
+                fake.encoded[str(rendered)] = (
                     list(range(2050)) if name == "long_2k" else [index + 10, index + 11]
                 )
-                (fixture_dir / f"{name}.txt").write_text(text, encoding="utf-8")
+                (fixture_dir / f"{name}.messages.json").write_text(
+                    json.dumps(messages),
+                    encoding="utf-8",
+                )
             metadata = common.tokenizer_metadata(Path(tmp), redact_path=True)
             tokenize_prompts.write_fixtures(fixture_dir, fake, metadata, check=False)
             (fixture_dir / "cn_short.ids").write_text("1 2 3\n", encoding="utf-8")
             with self.assertRaises(RuntimeError):
                 tokenize_prompts.write_fixtures(fixture_dir, fake, metadata, check=True)
+
+    def test_check_mode_rejects_stale_messages(self) -> None:
+        from tools.bench import tokenize_prompts
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture_dir = Path(tmp) / "prompts"
+            fixture_dir.mkdir()
+            fake = FakeTokenizer()
+            for index, name in enumerate(common.REQUIRED_CASES):
+                messages = [{"role": "user", "content": f"{name} fixture text"}]
+                rendered = fake.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                    return_dict=False,
+                )
+                fake.encoded[str(rendered)] = (
+                    list(range(2050)) if name == "long_2k" else [index + 20, index + 21]
+                )
+                (fixture_dir / f"{name}.messages.json").write_text(
+                    json.dumps(messages),
+                    encoding="utf-8",
+                )
+            metadata = common.tokenizer_metadata(Path(tmp), redact_path=True)
+            tokenize_prompts.write_fixtures(fixture_dir, fake, metadata, check=False)
+            (fixture_dir / "cn_short.messages.json").write_text(
+                json.dumps([{"role": "user", "content": "changed text"}]),
+                encoding="utf-8",
+            )
+            with self.assertRaises(RuntimeError):
+                tokenize_prompts.write_fixtures(fixture_dir, fake, metadata, check=True)
+
+
+class LongPromptGeneratorTests(unittest.TestCase):
+    def test_make_long_prompt_writes_user_messages_json(self) -> None:
+        from tools.bench import make_long_prompt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "long_2k.messages.json"
+            rc = make_long_prompt.main(["--out", str(out), "--repeats", "2"])
+            self.assertEqual(rc, 0)
+            messages = common.read_messages(out)
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(messages[0]["role"], "user")
+            self.assertIn("Long-context benchmark prompt for M2.8.", messages[0]["content"])
 
 
 class DecodeReportTests(unittest.TestCase):
