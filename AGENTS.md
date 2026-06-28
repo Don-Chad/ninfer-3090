@@ -39,6 +39,51 @@ Use the project layering deliberately:
 Do not add abstractions for hypothetical future models, generic runtime flexibility, legacy
 surfaces, or speculative reuse.
 
+## Implementation Plan Writing
+
+These rules apply to formal implementation plans under `docs/plans/**` and
+`docs/superpowers/plans/**`. They do not apply to design specs, roadmaps, milestone standards,
+historical notes, or informal chat plans unless the user explicitly says so.
+
+When writing a formal implementation plan, default to a subagent-driven execution target unless the
+user explicitly requests another mode. The plan should be executable by a coordinator that dispatches
+bounded work to fresh subagents, then integrates and verifies the results. If a plan should not use
+subagents, state the reason and the intended execution mode in the plan.
+
+Every formal implementation plan should include at least:
+
+- goal and non-goals;
+- execution mode, including whether subagent-driven development is required, recommended, or
+  intentionally not used;
+- scope and ownership, including files, artifacts, or subsystems each task may change;
+- task breakdown;
+- reading list for each task or task group;
+- definition of done and verification commands for each task or phase;
+- review phase, scaled to the risk of the change.
+
+Tasks must be split by meaningful, verifiable delivery boundaries. A task should usually own a
+coherent behavior, interface, artifact, or risk area and include the files needed to complete and
+verify that boundary. Do not split tasks by individual file, tiny edit, or mechanical step when those
+pieces cannot be independently verified. Do not merge unrelated risk areas merely to reduce task
+count.
+
+Prefer fewer, well-bounded subagent tasks over many tiny tasks. A good task gives a subagent enough
+context to finish one meaningful unit without reading the whole plan or carrying state from previous
+tasks. Use task groups when several small edits share one verification boundary.
+
+Plans must make dependencies and sequencing explicit. Parallelize independent tasks only when they
+have separate file ownership or clear integration points. Shared files such as CMake registrations,
+schema definitions, fixture manifests, or plan indexes must be called out as coordination points.
+
+Review requirements scale with risk. Plans that touch CUDA kernels, numerical behavior, q5090
+formats, CLI/report schemas, benchmark evidence, GPU memory lifetime, or multi-step runtime flows
+should include independent review subagents or an equivalent strict review phase. Small
+documentation-only or single-surface plans may use a focused checklist instead.
+
+Verification must follow the repository testing policy. Do not add low-value tests to satisfy a plan
+template. Use builds, existing tests, allowed high-value tests, `compute-sanitizer`,
+benchmark/report checks, or manual artifact inspection as appropriate for the changed behavior.
+
 ## Testing Policy
 
 Tests are not added by default.
