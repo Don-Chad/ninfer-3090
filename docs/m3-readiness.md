@@ -10,6 +10,21 @@ template, fixed prompt ids, and stop tokens `[248046, 248044]`.
 Final readiness will be filled after the real q5090 runs produce valid local raw reports and committed
 chat-template output/prefill gate summaries under `docs/bench/baselines/`.
 
+## Latest Local Smoke Observation
+
+Commit `9e878885ee547e7b98ffe680e5f395a38f8e2b9b` replaced the fixture prompts with common user
+questions and added the decoded-text nonempty gate. A local `cn_short` smoke run on that clean commit
+still generated only whitespace tokens, so `tools/bench/make_baseline_summary.py --baseline-class smoke`
+correctly rejected the decoded manifest with:
+
+```text
+decoded manifest must contain nonempty clean output for cn_short
+```
+
+No new smoke summary is committed yet. The remaining blocker is therefore not only prompt wording; the
+current real-weight inference path must first produce nonempty assistant text for the short common
+questions.
+
 ## Pending Evidence
 
 - Local raw e2e reports under `profiles/e2e/` for `m3_output_gate` and `m3_prefill_gate`.
