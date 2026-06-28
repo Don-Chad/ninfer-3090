@@ -137,8 +137,8 @@ The card binds these as-is; **no in-card slicing** (the splits happen offline):
 |---|---|---|---|
 | `embed_tokens` | row-grouped | **Q6G64** | quantized table; gather dequantizes one row → `embed_` is a `Weight*` |
 | `lm_head` | tiled | **Q6G64** | quantized GEMV; precision lever via the `Weight` handle |
-| attn `q_proj` | `q_proj.q` rows 0:6144 | Q4 | gate is a **separate** tensor |
-| attn `gate_proj` | `q_proj.gate` rows 6144:12288 | Q5 | applied after attention as `⊙ σ(gate)` |
+| attn `q_proj` | `q_proj.q` per-head `view[24,512,5120][:, :256]` | Q4 | per-head interleaved `[q\|gate]`; gate is a **separate** tensor (NOT contiguous rows 0:6144) |
+| attn `gate_proj` | `q_proj.gate` per-head `view[24,512,5120][:, 256:]` | Q5 | applied after attention as `⊙ σ(gate)` |
 | attn `k_proj`/`v_proj`/`o_proj` | tiled | Q4 / Q5 / Q5 | |
 | GDN `in_q`/`in_k`/`in_v` | row-slices of `in_proj_qkv` (0:2048 / 2048:4096 / 4096:10240) | Q4 / Q4 / Q5 | |
 | GDN `in_z` / `out_proj` | tiled | Q5 / Q5 | |

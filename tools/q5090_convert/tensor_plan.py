@@ -16,6 +16,12 @@ from . import qtypes as qt
 
 
 TRANSFORM_GDN_CONV1D_RUNTIME_NATIVE = "gdn_conv1d_runtime_native"
+TRANSFORM_ATTN_QPROJ_QUERY = "attn_qproj_query"
+TRANSFORM_ATTN_QPROJ_GATE = "attn_qproj_gate"
+
+# Full-attention head geometry (q_proj packs query+gate interleaved per head).
+_ATTN_HEADS = 24
+_ATTN_HEAD_DIM = 256
 
 
 @dataclass
@@ -33,12 +39,32 @@ class TensorSpec:
 
 
 # GDN fused in_proj_qkv row splits: q=16*128, k=16*128, v=48*128 -> [10240, 5120]
+# These ARE contiguous in the reference (torch.split on [q_all, k_all, v_all]).
 _GDN_Q = (0, 2048)
 _GDN_K = (2048, 4096)
 _GDN_V = (4096, 10240)
-# Full-attn fused q_proj row splits: q=24*256, gate=24*256 -> [12288, 5120]
-_ATTN_Q = (0, 6144)
-_ATTN_GATE = (6144, 12288)
+
+
+def attn_qproj_split(t: "torch.Tensor", take_gate: bool):
+    """Extract query or gate from the fused attention q_proj weight.
+
+    The reference (modeling_qwen3_5.Qwen3_5Attention) computes
+        q_proj(x).view(-1, head_dim*2) -> chunk(2, dim=-1) -> (query, gate)
+    i.e. each head owns a contiguous [query(head_dim) | gate(head_dim)] block, so
+    query/gate are interleaved per head across the output rows. A naive
+    [0:n/2] / [n/2:] row split scrambles heads (cos ~0.04 vs the true query),
+    which corrupts every full-attention layer. Recover the correct per-head
+    halves here so `.q` holds the query of all heads and `.gate` the gate.
+    """
+    rows, hidden = t.shape
+    head = _ATTN_HEAD_DIM
+    if rows != _ATTN_HEADS * head * 2:
+        raise ValueError(
+            f"attn q_proj expected [{_ATTN_HEADS * head * 2}, H], got {tuple(t.shape)}"
+        )
+    t = t.reshape(_ATTN_HEADS, 2 * head, hidden)
+    part = t[:, head:, :] if take_gate else t[:, :head, :]
+    return part.reshape(_ATTN_HEADS * head, hidden).contiguous()
 
 
 def runtime_native_gdn_conv1d(t: "torch.Tensor"):
@@ -116,8 +142,12 @@ def build_text_specs(layer_types: List[str]) -> List[TensorSpec]:
         elif lt == "full_attention":
             qp = p + "self_attn.q_proj.weight"
             s += [
-                _tile(p + "self_attn.q_proj.q", qt.QT_Q4G64, qp, qt.SK_ATTN_Q, li, row_slice=_ATTN_Q),
-                _tile(p + "self_attn.q_proj.gate", qt.QT_Q5G64, qp, qt.SK_ATTN_GATE, li, row_slice=_ATTN_GATE),
+                TensorSpec(p + "self_attn.q_proj.q", qt.QT_Q4G64, qt.LAYOUT_TILE_N64_K64,
+                           qt.MODULE_TEXT, qp, qt.SK_ATTN_Q, li,
+                           transform=TRANSFORM_ATTN_QPROJ_QUERY),
+                TensorSpec(p + "self_attn.q_proj.gate", qt.QT_Q5G64, qt.LAYOUT_TILE_N64_K64,
+                           qt.MODULE_TEXT, qp, qt.SK_ATTN_GATE, li,
+                           transform=TRANSFORM_ATTN_QPROJ_GATE),
                 _tile(p + "self_attn.k_proj.weight", qt.QT_Q4G64, p + "self_attn.k_proj.weight", qt.SK_ATTN_K, li),
                 _tile(p + "self_attn.v_proj.weight", qt.QT_Q5G64, p + "self_attn.v_proj.weight", qt.SK_ATTN_V, li),
                 _bf16(p + "self_attn.q_norm.weight", p + "self_attn.q_norm.weight", qt.SK_ATTN_Q_NORM, li),

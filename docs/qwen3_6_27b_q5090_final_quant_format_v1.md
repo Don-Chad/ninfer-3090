@@ -327,8 +327,16 @@ model.language_model.layers.{L}.
 | Tensor / logical slice | 逻辑/存储 shape | qtype | layout | 说明 |
 |---|---:|---|---|---|
 | `input_layernorm.weight` | `[5120]` | `BF16_CTRL` | contiguous | RMSNorm；不量化 |
-| `self_attn.q_proj.weight::q` | rows `[0:6144]` of `[12288,5120]` | `Q4G64_F16S` | `TILE_N64_K64` | full attention query projection |
-| `self_attn.q_proj.weight::gate` | rows `[6144:12288]` | `Q5G64_F16S` | `TILE_N64_K64` | Qwen gated attention output gate，敏感 |
+| `self_attn.q_proj.weight::q` | per-head `[:, :256]` of `view[24,512,5120]` → `[6144,5120]` | `Q4G64_F16S` | `TILE_N64_K64` | full attention query projection |
+| `self_attn.q_proj.weight::gate` | per-head `[:, 256:]` of `view[24,512,5120]` → `[6144,5120]` | `Q5G64_F16S` | `TILE_N64_K64` | Qwen gated attention output gate，敏感 |
+
+> ⚠️ `q_proj` is packed **per-head interleaved** as `[head_i: query(256) | gate(256)] ×24`
+> (reference: `q_proj(h).view(-1, head_dim*2).chunk(2, dim=-1)`). The `::q` / `::gate`
+> split is therefore `view([24,512,5120])` then take the first / last 256 rows of **each**
+> head — **NOT** two contiguous `[0:6144]` / `[6144:12288]` blocks. The naive contiguous
+> split scrambles heads (cos ≈ 0.04 vs the true query) and yields whitespace-only output.
+> See `tools/q5090_convert/tensor_plan.py::attn_qproj_split` and
+> `docs/qwen3.6-27b-architecture.md` §4.3 / §6.4. (GDN `in_proj_qkv` below **is** contiguous.)
 | `self_attn.k_proj.weight` | `[1024,5120]` | `Q4G64_F16S` | `TILE_N64_K64` | K projection |
 | `self_attn.v_proj.weight` | `[1024,5120]` | `Q5G64_F16S` | `TILE_N64_K64` | V projection，敏感 |
 | `self_attn.q_norm.weight` | `[256]` | `BF16_CTRL` | contiguous | head norm；不量化 |
@@ -344,8 +352,8 @@ Full attention 单层大小明细：
 | tensor | qtype | estimated bytes |
 |---|---|---:|
 | `input_layernorm.weight` | `BF16_CTRL` | 0.009766 MiB |
-| `self_attn.q_proj.weight::q rows[0:6144]` | `Q4G64_F16S` | 15.937500 MiB |
-| `self_attn.q_proj.weight::gate rows[6144:12288]` | `Q5G64_F16S` | 19.687500 MiB |
+| `self_attn.q_proj.weight::q (per-head [:, :256])` | `Q4G64_F16S` | 15.937500 MiB |
+| `self_attn.q_proj.weight::gate (per-head [:, 256:])` | `Q5G64_F16S` | 19.687500 MiB |
 | `self_attn.k_proj.weight` | `Q4G64_F16S` | 2.656250 MiB |
 | `self_attn.v_proj.weight` | `Q5G64_F16S` | 3.281250 MiB |
 | `self_attn.q_norm.weight` | `BF16_CTRL` | 0.000488 MiB |
@@ -913,8 +921,8 @@ conv_state 约数 MiB 量级
 
 ```text
 [ ] read model.language_model.layers.{L}.input_layernorm.weight -> BF16_CTRL
-[ ] split model.language_model.layers.{L}.self_attn.q_proj.weight rows[0:6144] -> Q4G64_F16S .q
-[ ] split model.language_model.layers.{L}.self_attn.q_proj.weight rows[6144:12288] -> Q5G64_F16S .gate
+[ ] split model.language_model.layers.{L}.self_attn.q_proj.weight per-head view[24,512,5120][:, :256] -> Q4G64_F16S .q
+[ ] split model.language_model.layers.{L}.self_attn.q_proj.weight per-head view[24,512,5120][:, 256:] -> Q5G64_F16S .gate
 [ ] read model.language_model.layers.{L}.self_attn.k_proj.weight -> Q4G64_F16S
 [ ] read model.language_model.layers.{L}.self_attn.v_proj.weight -> Q5G64_F16S
 [ ] read model.language_model.layers.{L}.self_attn.q_norm.weight -> BF16_CTRL

@@ -36,7 +36,15 @@ def _to_bytes(t: torch.Tensor) -> bytes:
     return t.reshape(-1).contiguous().cpu().numpy().tobytes()
 
 
-def _from_bytes(payload: bytes, device, dtype=np.uint8) -> torch.Tensor:
+def _from_bytes(payload, device, dtype=np.uint8) -> torch.Tensor:
+    # Fast path: payload already a resident uint8 tensor on the target device
+    # (used by the parity oracle to avoid re-reading/re-uploading weights each
+    # forward). All low-bit decoders only ever request dtype=uint8 from here and
+    # reinterpret slices via torch .view(), so a pass-through is exact.
+    if isinstance(payload, torch.Tensor):
+        if dtype is not np.uint8:
+            raise ValueError("resident tensor payloads must be decoded as uint8")
+        return payload
     return torch.from_numpy(np.frombuffer(payload, dtype).copy()).to(device)
 
 

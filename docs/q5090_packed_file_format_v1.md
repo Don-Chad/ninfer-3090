@@ -286,8 +286,9 @@ model.language_model.layers.{L}.linear_attn.in_proj_qkv.weight  # [10240,5120]
   -> .in_proj_qkv.v   rows [4096:10240] Q5
 
 model.language_model.layers.{L}.self_attn.q_proj.weight         # [12288,5120]
-  -> .q_proj.q        rows [0:6144]     Q4
-  -> .q_proj.gate     rows [6144:12288] Q5
+  # per-head INTERLEAVED [query(256)|gate(256)] x24 (view[24,512,5120]); NOT contiguous halves
+  -> .q_proj.q        view[24,512,5120][:, :256]  -> [6144,5120]  Q4
+  -> .q_proj.gate     view[24,512,5120][:, 256:]  -> [6144,5120]  Q5
 
 model.visual.patch_embed.proj.weight  # Conv3d [1152,3,2,16,16]
   -> reshaped to [1152, 1536]          Q5  (out_channels, in*kt*kh*kw)

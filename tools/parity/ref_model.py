@@ -19,6 +19,7 @@ from typing import Dict, Iterable, List, Optional
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -131,9 +132,14 @@ def apply_rope(q: torch.Tensor, k: torch.Tensor, positions: torch.Tensor) -> tup
 
 
 def causal_conv1d(x: torch.Tensor, weight: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
-    # x [T,C], weight decoded as [C,1,4] or [C,4], state [C,3] oldest -> newest.
+    # x [T,C], state [C,3] oldest -> newest.
+    # The q5090 conv1d weight is stored in the engine's runtime-native layout:
+    # metadata shape [C,K,1] but the flat bytes are [K,C] (dim0-fastest). A naive
+    # `reshape(C,K)` would scramble taps across channels, so recover [C,K] as
+    # w[c,k] = flat[k*C + c].
     T, C = x.shape
-    w = weight.reshape(C, 4).float()
+    K = weight.numel() // C
+    w = weight.reshape(-1).reshape(K, C).transpose(0, 1).contiguous().float()
     old = state.clone()
     outs = []
     for t in range(T):
@@ -175,10 +181,18 @@ class Entry:
 
 
 class Q5090File:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, resident_device: torch.device | str | None = None):
         self.path = Path(path)
         self._fh = self.path.open("rb")
         self._mm = mmap.mmap(self._fh.fileno(), 0, access=mmap.ACCESS_READ)
+        # When set, each tensor payload is uploaded to this device once and
+        # decoded in place on every later forward. This turns the oracle from
+        # "re-read + re-upload 15 GiB per forward" into a one-time upload, which
+        # is the dominant cost of decode-step throughput.
+        self._resident_device = (
+            torch.device(resident_device) if resident_device is not None else None
+        )
+        self._gpu: Dict[str, torch.Tensor] = {}
         hdr = fmt.unpack_header(self._mm[: fmt.HEADER_SIZE])
         if hdr["magic"] != fmt.MAGIC:
             raise ValueError(f"bad q5090 magic in {self.path}")
@@ -201,9 +215,46 @@ class Q5090File:
                 payload_bytes=e["payload_bytes"],
             )
 
+    def _resident_payload(self, name: str) -> Optional[torch.Tensor]:
+        """Return the full payload of `name` as a resident uint8 tensor, or None.
+
+        Populated lazily on first use. If the upload runs the device out of
+        memory we transparently disable residency and stream from mmap instead,
+        so the oracle still completes (just slower) on memory-tight devices.
+        """
+        if self._resident_device is None:
+            return None
+        e = self.entries[name]
+        # Only the large low-bit quant tensors (tiled / row-grouped) are worth
+        # keeping resident and decode cleanly from a raw uint8 blob. The small
+        # CONTIGUOUS control tensors (norms, A_log, dt_bias) need uint16/f4
+        # reinterpretation, so they keep streaming from mmap (negligible cost).
+        if e.layout == qt.LAYOUT_CONTIGUOUS:
+            return None
+        cached = self._gpu.get(name)
+        if cached is not None:
+            return cached
+        host = np.frombuffer(
+            self._mm[e.payload_offset : e.payload_offset + e.payload_bytes], dtype=np.uint8
+        )
+        try:
+            tensor = torch.from_numpy(host.copy()).to(self._resident_device)
+        except torch.cuda.OutOfMemoryError:
+            self._resident_device = None
+            self._gpu.clear()
+            torch.cuda.empty_cache()
+            return None
+        self._gpu[name] = tensor
+        return tensor
+
     def tensor(self, name: str, device: torch.device | str) -> torch.Tensor:
         e = self.entries[name]
-        payload = self._mm[e.payload_offset : e.payload_offset + e.payload_bytes]
+        resident = self._resident_payload(name)
+        payload = (
+            resident
+            if resident is not None
+            else self._mm[e.payload_offset : e.payload_offset + e.payload_bytes]
+        )
         return decode_tensor(payload, e.qtype, e.layout, e.shape, e.padded_shape, device=device).float()
 
     def row_grouped_rows(self, name: str, rows: torch.Tensor, device: torch.device | str) -> torch.Tensor:
@@ -217,12 +268,16 @@ class Q5090File:
         _, kp = e.padded_shape
         kg = kp // spec.group_size
         roww = 2 + spec.bytes_per_group
+        resident = self._resident_payload(name)
         out = []
         for row in rows.detach().cpu().tolist():
             if row < 0 or row >= n:
                 raise IndexError(f"{name} row out of range: {row}")
-            offset = e.payload_offset + row * kg * roww
-            payload = self._mm[offset : offset + kg * roww]
+            rel = row * kg * roww
+            if resident is not None:
+                payload = resident[rel : rel + kg * roww]
+            else:
+                payload = self._mm[e.payload_offset + rel : e.payload_offset + rel + kg * roww]
             out.append(decode_tensor(payload, e.qtype, e.layout, [1, k], [1, kp], device=device))
         return torch.cat(out, dim=0).float()
 
@@ -242,13 +297,18 @@ class Q5090File:
         spec = qt.QUANT_SPECS[e.qtype]
         kg = kp // spec.group_size
         tilew = 64 * 2 + 64 * spec.bytes_per_group
+        resident = self._resident_payload(name)
         for row0 in range(0, n, rows_per_chunk):
             row1 = min(n, row0 + rows_per_chunk)
             tile0 = row0 // 64
             tile_rows = ((row1 - row0 + 63) // 64) * 64
             tiles = tile_rows // 64
-            offset = e.payload_offset + tile0 * kg * tilew
-            payload = self._mm[offset : offset + tiles * kg * tilew]
+            rel = tile0 * kg * tilew
+            nbytes = tiles * kg * tilew
+            if resident is not None:
+                payload = resident[rel : rel + nbytes]
+            else:
+                payload = self._mm[e.payload_offset + rel : e.payload_offset + rel + nbytes]
             chunk = decode_tensor(
                 payload,
                 e.qtype,
@@ -265,7 +325,13 @@ class Q5090File:
 
 
 class RefModel:
-    def __init__(self, weights: str | Path, device: str = "cuda", cache_globals: bool = False):
+    def __init__(
+        self,
+        weights: str | Path,
+        device: str = "cuda",
+        cache_globals: bool = False,
+        resident: str = "auto",
+    ):
         if device == "cuda" and not torch.cuda.is_available():
             raise RuntimeError(
                 "CUDA was requested, but this Python has CPU-only PyTorch. "
@@ -274,7 +340,16 @@ class RefModel:
                 "or pass --device cpu explicitly."
             )
         self.device = torch.device(device)
-        self.q5090 = Q5090File(weights)
+        # "auto": keep payloads resident on the compute device when it is CUDA
+        # (one-time upload instead of per-forward streaming). "gpu"/"stream"
+        # force the behaviour. CPU stays on the mmap-streaming path.
+        if resident not in {"auto", "gpu", "stream"}:
+            raise ValueError(f"resident must be auto/gpu/stream, got {resident!r}")
+        if resident == "gpu" or (resident == "auto" and self.device.type == "cuda"):
+            resident_device: torch.device | None = self.device
+        else:
+            resident_device = None
+        self.q5090 = Q5090File(weights, resident_device=resident_device)
         self.cache_globals = cache_globals
         self._globals: Dict[str, torch.Tensor] = {}
         self.reset_state()
@@ -461,9 +536,16 @@ class RefModel:
             return []
 
         x = self.embed(prompt_ids)
+        if dumps is not None:
+            dumps["embed"] = x.detach().float().cpu()
         pos = torch.arange(len(prompt_ids), device=self.device, dtype=torch.int32)
         x = self.run_layers(x, "prefill", pos, dumps)
-        token = int(torch.argmax(self.logits_last(x)).item())
+        lg = self.logits_last(x)
+        if dumps is not None:
+            xf = rmsnorm(x, self.weight("model.language_model.norm.weight"), unit_offset=True)
+            dumps["final_norm"] = xf.detach().float().cpu()
+            dumps["logits_last"] = lg.detach().float().cpu()
+        token = int(torch.argmax(lg).item())
         out = [token]
         self.pos = len(prompt_ids)
 
@@ -489,12 +571,19 @@ def main() -> None:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--no-cache-globals", action="store_true")
     ap.add_argument("--cache-globals", action="store_true")
+    ap.add_argument(
+        "--resident",
+        default="auto",
+        choices=["auto", "gpu", "stream"],
+        help="keep quantized payloads resident on device (auto/gpu) or stream from mmap",
+    )
     args = ap.parse_args()
 
     model = RefModel(
         args.weights,
         device=args.device,
         cache_globals=args.cache_globals and not args.no_cache_globals,
+        resident=args.resident,
     )
     with torch.inference_mode():
         tokens = model.forward(parse_prompt(args.prompt), args.decode)

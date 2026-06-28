@@ -142,6 +142,10 @@ def _prepare_source(reader: ShardReader, spec: tp.TensorSpec) -> torch.Tensor:
     if spec.transform is not None:
         if spec.transform == tp.TRANSFORM_GDN_CONV1D_RUNTIME_NATIVE:
             t = tp.runtime_native_gdn_conv1d(t)
+        elif spec.transform == tp.TRANSFORM_ATTN_QPROJ_QUERY:
+            t = tp.attn_qproj_split(t, take_gate=False)
+        elif spec.transform == tp.TRANSFORM_ATTN_QPROJ_GATE:
+            t = tp.attn_qproj_split(t, take_gate=True)
         else:
             raise ValueError(f"{spec.name}: unknown tensor transform {spec.transform!r}")
     if spec.layout != qt.LAYOUT_CONTIGUOUS and t.dim() != 2:
