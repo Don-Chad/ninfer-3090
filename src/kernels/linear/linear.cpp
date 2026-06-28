@@ -1,8 +1,8 @@
-// qus::kernels - linear wrapper: public api validation and qtype/T dispatch.
 #include "qus/kernels/linear.h"
 
-#include "kernels/launcher/linear.h" // detail::linear_dense_*_launch
-#include "qus/core/weight.h"
+#include "kernels/linear/plan/linear_plan.h"
+#include "kernels/linear/reference/linear_generic.h"
+#include "qus/core/weight.h"   // as_dense
 
 #include <cstdint>
 #include <limits>
@@ -191,13 +191,13 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) 
     if (x.dtype != DType::BF16 || out.dtype != DType::BF16) {
         throw std::invalid_argument("linear: x/out must be BF16");
     }
-
     (void)numel_allow_zero(x, "x");
     (void)numel_allow_zero(out, "out");
 
+    // --- validation (identical to the legacy wrapper) ---
     switch (w.qtype) {
     case QType::BF16_CTRL:
-    case QType::FP32_CTRL: {
+    case QType::FP32_CTRL:
         require_dense_metadata(w);
         require_matrix_shapes(x, w, out);
         require_tensor_strides(x, out);
@@ -207,13 +207,7 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) 
         if (is_empty_T(x, out)) { return; }
         require_tensor_data(x, out);
         require_dense_alignment(x, w, out);
-        const Tensor dense = as_dense(w);
-        if (x.ne[1] == 1) {
-            detail::linear_dense_gemv_launch(x, dense, out, stream);
-        } else {
-            detail::linear_dense_gemm_launch(x, dense, out, stream);
-        }
-    } break;
+        break;
     case QType::Q4G64_F16S:
         require_tile_lowbit_metadata(w, "Q4G64_F16S", 32u);
         require_matrix_shapes(x, w, out);
@@ -223,11 +217,6 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) 
         }
         if (is_empty_T(x, out)) { return; }
         require_tensor_data(x, out);
-        if (x.ne[1] == 1) {
-            detail::linear_q4_gemv_launch(x, w, out, stream);
-        } else {
-            detail::linear_q4_gemm_launch(x, w, out, stream);
-        }
         break;
     case QType::Q5G64_F16S:
         require_tile_lowbit_metadata(w, "Q5G64_F16S", 40u);
@@ -238,11 +227,6 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) 
         }
         if (is_empty_T(x, out)) { return; }
         require_tensor_data(x, out);
-        if (x.ne[1] == 1) {
-            detail::linear_q5_gemv_launch(x, w, out, stream);
-        } else {
-            detail::linear_q5_gemm_launch(x, w, out, stream);
-        }
         break;
     case QType::Q6G64_F16S:
         require_tile_lowbit_metadata(w, "Q6G64_F16S", 48u);
@@ -253,14 +237,34 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) 
         }
         if (is_empty_T(x, out)) { return; }
         require_tensor_data(x, out);
-        if (x.ne[1] == 1) {
-            detail::linear_q6_gemv_launch(x, w, out, stream);
-        } else {
-            detail::linear_q6_gemm_launch(x, w, out, stream);
-        }
         break;
     default:
         throw std::invalid_argument("linear: unsupported weight qtype");
+    }
+
+    // --- classify + dispatch (M3 framework) ---
+    const detail::LinearFormat fmt    = detail::classify_format(w);
+    const detail::ShapeFamily  shape  = detail::classify_shape(w.n, w.k);
+    const detail::LinearRegime regime = detail::classify_regime(fmt, shape, x.ne[1]);
+    const detail::LinearPlan   plan   = detail::resolve_plan(detail::LinearPlanKey{fmt, shape, regime});
+
+    switch (plan.policy) {
+    case detail::LinearPolicyId::GenericLowbitGemv:
+        detail::linear_generic_lowbit_gemv_launch(x, w, out, fmt, stream);
+        break;
+    case detail::LinearPolicyId::GenericLowbitGemm:
+        detail::linear_generic_lowbit_gemm_launch(x, w, out, fmt, stream);
+        break;
+    case detail::LinearPolicyId::GenericDenseGemv: {
+        const Tensor dense = as_dense(w);
+        detail::linear_generic_dense_gemv_launch(x, dense, out, stream);
+        break;
+    }
+    case detail::LinearPolicyId::GenericDenseGemm: {
+        const Tensor dense = as_dense(w);
+        detail::linear_generic_dense_gemm_launch(x, dense, out, stream);
+        break;
+    }
     }
 }
 
