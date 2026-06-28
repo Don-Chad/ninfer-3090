@@ -694,3 +694,98 @@ compute-sanitizer ./build/tests/qus_linear_test
 
 All passed. `ctest` reported 1/1 tests passed. `compute-sanitizer` reported `ERROR SUMMARY: 0
 errors`.
+
+## Q4 Round 4 - Q4 mlp.gate/up [17408,5120]
+
+Subagent model/effort: gpt-5.5, xhigh.
+
+Target: Q4 `mlp.gate/up [17408,5120]`, launch 0 of:
+
+```bash
+./build/bench/qus_linear_bench --decode --q4
+```
+
+NCU kernel filter:
+
+```bash
+--kernel-name regex:'linear_tuned_lowbit_gemv_kernel' --launch-skip 0 --launch-count 1
+```
+
+Artifacts:
+
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/baseline_basic.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/baseline_roofline.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/baseline_detailed.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/baseline_source.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/baseline_instr_sched.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/baseline_global_loads.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/baseline_stall_reasons.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/after_basic.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/after_roofline.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/after_detailed.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/after_source.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/after_instr_sched.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/after_global_loads.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q4-mlp-gate-up/after_stall_reasons.ncu.{rep,csv,txt}`
+
+### Diagnosis
+
+The round-4 baseline confirmed practical diminishing returns: the Q4 x4 cooperative-scale path was
+still dominated by L1TEX long-scoreboard latency, but not by spills, gross coalescing failure, or
+branch divergence. DRAM was 59.87%, Memory SOL was 59.87%, Compute SOL was 59.13%, achieved
+occupancy was 82.82%, registers were 36/thread, and local/shared spilling was zero. Scheduler
+metrics showed 1.71 eligible warps per scheduler and 0.60 issued warp per scheduler. The top stall
+was long scoreboard at 11.1 cycles, 65.7% of cycles between issued instructions. The source
+coalescing warning remained limited to 1,044,480 excessive sectors, 12% of 8,373,248 total sectors.
+
+Single change: specialize only the Q4 kernel schedule so each output row is split across two warps in
+the same CTA. Each paired warp owns alternating x4 K-group chunks, keeps the existing coalesced
+packed-byte loads and cooperative scale loads inside its chunks, then the two lane-0 partial sums are
+combined through a tiny shared-memory reduction. This targets long-scoreboard latency hiding and the
+partial-wave effect without changing Q5/Q6 paths, public APIs, q5090 ABI, tests, CMake, registry
+routing, or the externally workspace-free contract.
+
+### Metrics
+
+| metric | before | after |
+| --- | ---: | ---: |
+| NCU duration | 47.58 us | 46.27 us |
+| DRAM throughput | 59.87% | 60.61% |
+| Memory SOL | 59.87% | 62.40% |
+| Compute SOL | 59.13% | 62.40% |
+| L1/TEX throughput | 66.91% | 68.51% |
+| achieved occupancy | 82.82% | 76.34% |
+| registers/thread | 36 | 41 |
+| spills/local memory | 0 | 0 |
+| long scoreboard | 11.1 cycles, 65.7% | 9.1 cycles, 61.9% |
+| top normalized stall | long scoreboard, 66.25% | long scoreboard, 67.75% |
+| second normalized stall | not selected, 10.76% | not selected, 9.81% |
+| barrier stall | 0% | 3.23% |
+| eligible warps/scheduler | 1.71 | 1.49 |
+| issued warp/scheduler | 0.60 | 0.62 |
+| global-load instructions | 3,133,440 | 3,133,440 |
+| global-load L1TEX sectors | 8,355,840 | 8,355,840 |
+| global-load requested bytes | 267.39 MB | 267.39 MB |
+| global-load data bytes | 225.61 MB | 225.61 MB |
+| total SM instructions | 32,657,408 | 34,676,736 |
+| source coalescing warning | 1,044,480 excessive sectors | 1,044,480 excessive sectors |
+| source branch instructions | 452,608 | 957,440 |
+
+Accepted with concern: the diagnosed long-scoreboard limiter improved on the warp-state metric, NCU
+duration improved by 2.75%, DRAM throughput rose by 0.74 points, and correctness plus sanitizer
+verification stayed clean. This does not meet the Task 4 target (`>=70%` DRAM and near
+`C = 82.76%`). The concern is that the gain is small and comes with higher register pressure,
+lower achieved occupancy, more branch/control instructions, and new barrier stalls; the residual
+source coalescing warning is unchanged. This is likely a diminishing-returns area unless a later
+round finds a lower-overhead way to hide the same L1TEX latency or remove the scale-sector warning.
+
+### Verification
+
+```bash
+cmake --build build -j
+ctest --test-dir build -R qus_linear_test --output-on-failure
+compute-sanitizer ./build/tests/qus_linear_test
+```
+
+All passed. `ctest` reported 1/1 tests passed. `compute-sanitizer` reported `ERROR SUMMARY: 0
+errors`.

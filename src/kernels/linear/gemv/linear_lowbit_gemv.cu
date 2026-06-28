@@ -15,11 +15,21 @@ namespace {
 constexpr int kThreadsPerBlock = 128;
 constexpr int kWarpSize        = 32;
 constexpr int kWarpsPerBlock   = kThreadsPerBlock / kWarpSize;
+constexpr int kQ4WarpsPerRow   = 2;
 
 int grid_for_rows(std::int64_t rows) {
     const std::int64_t grid = (rows + kWarpsPerBlock - 1) / kWarpsPerBlock;
     if (grid > std::numeric_limits<int>::max()) {
         throw std::overflow_error("linear: tuned low-bit GEMV launch grid exceeds CUDA limit");
+    }
+    return static_cast<int>(std::max<std::int64_t>(1, grid));
+}
+
+int q4_grid_for_rows(std::int64_t rows) {
+    constexpr int kRowsPerBlock = kWarpsPerBlock / kQ4WarpsPerRow;
+    const std::int64_t grid     = (rows + kRowsPerBlock - 1) / kRowsPerBlock;
+    if (grid > std::numeric_limits<int>::max()) {
+        throw std::overflow_error("linear: tuned Q4 GEMV launch grid exceeds CUDA limit");
     }
     return static_cast<int>(std::max<std::int64_t>(1, grid));
 }
@@ -49,7 +59,10 @@ void linear_tuned_lowbit_gemv_launch(const Tensor& x, const Weight& w, Tensor& o
 
     switch (fmt) {
     case LinearFormat::Q4G64_N64K64:
-        launch_tuned_lowbit_gemv<Q4Codec>(x, payload, out, n, k, padded_k, stream);
+        linear_tuned_lowbit_gemv_kernel<Q4Codec><<<q4_grid_for_rows(n), kThreadsPerBlock, 0,
+                                                   stream>>>(
+            static_cast<const __nv_bfloat16*>(x.data), payload,
+            static_cast<__nv_bfloat16*>(out.data), n, k, padded_k);
         break;
     case LinearFormat::Q5G64_N64K64:
         launch_tuned_lowbit_gemv<Q5Codec>(x, payload, out, n, k, padded_k, stream);

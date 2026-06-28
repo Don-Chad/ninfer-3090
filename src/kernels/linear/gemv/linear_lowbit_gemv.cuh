@@ -268,25 +268,34 @@ __global__ void linear_tuned_lowbit_gemv_kernel<Q4Codec>(const __nv_bfloat16* x,
                                                          __nv_bfloat16* out, std::int32_t n,
                                                          std::int32_t k, std::int32_t padded_k) {
     constexpr int kWarpSize = 32;
+    constexpr int kWarpsPerRow = 2;
+    constexpr int kGroupsPerFastStep = 4;
     static_assert(Q4Codec::kGroupK == 64);
 
     const int lane            = threadIdx.x & (kWarpSize - 1);
     const int warp_in_block   = threadIdx.x / kWarpSize;
     const int warps_per_block = blockDim.x / kWarpSize;
-    const std::int32_t row =
-        static_cast<std::int32_t>(blockIdx.x * warps_per_block + warp_in_block);
+    const int row_warp        = warp_in_block % kWarpsPerRow;
+    const int row_in_block    = warp_in_block / kWarpsPerRow;
+    const int rows_per_block  = warps_per_block / kWarpsPerRow;
+    const std::int32_t row    =
+        static_cast<std::int32_t>(blockIdx.x * rows_per_block + row_in_block);
     const std::int32_t group_cnt = padded_k / Q4Codec::kGroupK;
+    const bool valid_row         = row < n;
+    const std::int32_t active_group_cnt = valid_row ? group_cnt : 0;
 
-    if (row >= n) { return; }
+    __shared__ float warp_partials[4];
 
     const std::int32_t tile = row / 64;
     const std::int32_t rit  = row - tile * 64;
     const int offset        = lane * 2;
     float acc               = 0.0f;
 
-    std::int32_t group = 0;
-    const std::int32_t full_group_cnt = k / Q4Codec::kGroupK;
-    for (; group + 3 < full_group_cnt; group += 4) {
+    std::int32_t chunk_base = 0;
+    const std::int32_t full_group_cnt = valid_row ? k / Q4Codec::kGroupK : 0;
+    for (; chunk_base + kWarpsPerRow * kGroupsPerFastStep - 1 < full_group_cnt;
+         chunk_base += kWarpsPerRow * kGroupsPerFastStep) {
+        const std::int32_t group = chunk_base + row_warp * kGroupsPerFastStep;
         const std::int32_t base_k0 = group * Q4Codec::kGroupK;
         const std::int32_t base_k1 = base_k0 + Q4Codec::kGroupK;
         const std::int32_t base_k2 = base_k1 + Q4Codec::kGroupK;
@@ -357,7 +366,8 @@ __global__ void linear_tuned_lowbit_gemv_kernel<Q4Codec>(const __nv_bfloat16* x,
         acc = fmaf(static_cast<float>(s31) * scale3, xv3.y, acc);
     }
 
-    for (; group < group_cnt; ++group) {
+    for (std::int32_t group = chunk_base + row_warp; group < active_group_cnt;
+         group += kWarpsPerRow) {
         const std::int32_t base_k = group * Q4Codec::kGroupK;
         if (base_k >= k) { continue; }
 
@@ -373,7 +383,13 @@ __global__ void linear_tuned_lowbit_gemv_kernel<Q4Codec>(const __nv_bfloat16* x,
         acc += __shfl_down_sync(0xffffffffu, acc, delta);
     }
 
-    if (lane == 0) { out[row] = __float2bfloat16(acc); }
+    if (lane == 0) { warp_partials[warp_in_block] = acc; }
+    __syncthreads();
+
+    if (valid_row && row_warp == 0 && lane == 0) {
+        out[row] = __float2bfloat16(warp_partials[warp_in_block] +
+                                    warp_partials[warp_in_block + 1]);
+    }
 }
 
 __device__ __forceinline__ std::uint32_t q5_load_lane_pair_bits(const std::uint32_t* words,
