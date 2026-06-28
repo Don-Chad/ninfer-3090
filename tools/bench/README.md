@@ -55,6 +55,10 @@ m3_output_gate
 m3_prefill_gate
 ```
 
+Raw `qus_e2e_bench` reports leave `weights.q5090_sha256` empty so benchmark startup does not rescan the
+large q5090 file. `make_baseline_summary.py` computes the q5090 SHA256 from `q5090_path` for committed
+summaries.
+
 E2E benchmark invocations for Qwen3.6 chat-template fixtures should pass both stop tokens:
 
 ```bash

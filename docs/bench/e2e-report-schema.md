@@ -106,7 +106,9 @@ Required fields:
 }
 ```
 
-Official M3 output-gate and prefill-gate baselines require `q5090_sha256`.
+Raw benchmark reports may leave `q5090_sha256` empty so `qus_e2e_bench` does not synchronously rescan
+large q5090 files before the first case runs. Committed baseline summaries still require q5090 SHA256;
+`tools/bench/make_baseline_summary.py` computes it from `q5090_path` when the raw report field is empty.
 
 ## Memory
 
@@ -346,7 +348,7 @@ Report comparison depends on stable identity fields:
 - `schema_version`;
 - `artifact_type`;
 - git commit and dirty/clean state;
-- q5090 path, file size, and SHA256 for official baselines;
+- q5090 path, file size, and SHA256 for committed official baseline summaries;
 - fixture set, manifest SHA256, case names, prompt format, messages path/SHA256, prompt ids path/SHA256,
   and prompt token count;
 - chat-template identity, including chat-template Jinja SHA256 and generation-config SHA256;

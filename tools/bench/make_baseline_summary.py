@@ -97,6 +97,21 @@ def _memory_summary(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _q5090_sha256(weights: dict[str, Any]) -> str:
+    raw = _require_key(weights, "q5090_sha256", "weights")
+    if not isinstance(raw, str):
+        raise RuntimeError("weights.q5090_sha256 must be a string")
+    if raw:
+        return raw
+    path = _require_key(weights, "q5090_path", "weights")
+    if not isinstance(path, str) or not path:
+        raise RuntimeError("weights.q5090_path must be a nonempty string")
+    q5090_path = Path(path)
+    if not q5090_path.exists():
+        return ""
+    return common.sha256_file(q5090_path)
+
+
 def _require_decoded_artifact(artifact: dict[str, Any], index: int) -> dict[str, Any]:
     label = f"decoded manifest artifacts[{index}]"
     case_name = _require_key(artifact, "case_name", label)
@@ -251,8 +266,6 @@ def _enforce_m3_output_gate(report: dict[str, Any]) -> None:
             raise RuntimeError(
                 f"{case_name} m3_output_gate run requires at least 3 measured repeat records"
             )
-    if not report["weights"].get("q5090_sha256"):
-        raise RuntimeError("m3_output_gate summary requires q5090_sha256")
 
 
 def _enforce_m3_prefill_gate(report: dict[str, Any]) -> None:
@@ -268,8 +281,6 @@ def _enforce_m3_prefill_gate(report: dict[str, Any]) -> None:
         raise RuntimeError("long_2k m3_prefill_gate run requires repeats>=1")
     if len(long_2k["repeats"]) < 1:
         raise RuntimeError("long_2k m3_prefill_gate run requires at least 1 measured repeat record")
-    if not report["weights"].get("q5090_sha256"):
-        raise RuntimeError("m3_prefill_gate summary requires q5090_sha256")
 
 
 def make_summary(
@@ -299,6 +310,9 @@ def make_summary(
     weights = common.require_mapping(report["weights"], "weights")
     memory = common.require_mapping(report["memory"], "memory")
     engine = common.require_mapping(report["engine"], "engine")
+    q5090_sha256 = _q5090_sha256(weights)
+    if baseline_class in ("m3_output_gate", "m3_prefill_gate") and not q5090_sha256:
+        raise RuntimeError(f"{baseline_class} summary requires q5090_sha256")
     return {
         "artifact_type": "qus_e2e_baseline_summary",
         "schema_version": 1,
@@ -311,7 +325,7 @@ def make_summary(
         "q5090": {
             "path": _require_key(weights, "q5090_path", "weights"),
             "file_size_bytes": _require_key(weights, "q5090_file_size_bytes", "weights"),
-            "sha256": _require_key(weights, "q5090_sha256", "weights"),
+            "sha256": q5090_sha256,
             "conv1d_layout": _require_key(weights, "q5090_conv1d_layout", "weights"),
             "load_strategy": _require_key(weights, "load_strategy", "weights"),
         },

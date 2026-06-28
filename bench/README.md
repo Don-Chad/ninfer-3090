@@ -175,6 +175,11 @@ docs/bench/baselines/
 Large raw reports and profiler artifacts stay out of git. The committed summary must include enough
 metadata to audit the readiness decision from git alone.
 
+`qus_e2e_bench` does not compute the q5090 file SHA256 in its raw report; it leaves
+`weights.q5090_sha256` empty to avoid a second full read of the large weight file before the first case
+runs. `tools/bench/make_baseline_summary.py` computes the q5090 SHA256 when creating a committed
+summary.
+
 ## Report Comparison
 
 Compare two local raw e2e reports with:
