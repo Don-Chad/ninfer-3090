@@ -450,6 +450,53 @@ int test_local_bpe_split_merge_cases() {
     return failures;
 }
 
+int test_stream_decoder_buffers_incomplete_utf8() {
+    TempDir dir;
+    write_tokenizer_json(
+        dir.path,
+        minimal_tokenizer_json(
+            R"({"ä":0,"½":1,"ł":2,"!":3})",
+            R"([{"id":4,"content":"<extra>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true}])"));
+    const qus::text::QwenTokenizer tokenizer(dir.path);
+
+    qus::text::TokenStreamDecoder stream(tokenizer, qus::text::DecodeOptions{false, {}});
+
+    int failures = 0;
+    failures += check(stream.append(0).empty(), "stream emitted partial first UTF-8 byte");
+    failures += check(stream.append(1).empty(), "stream emitted partial second UTF-8 byte");
+    failures += check(stream.append(2) == "你", "stream did not emit completed UTF-8 codepoint");
+    failures += check(stream.append(3) == "!", "stream did not emit ASCII token");
+    failures += check(stream.finish().empty(), "stream finish returned unexpected suffix");
+    return failures;
+}
+
+int test_stream_decoder_stop_and_special_modes() {
+    TempDir dir;
+    write_tokenizer_json(
+        dir.path,
+        minimal_tokenizer_json(
+            R"({"!":0})",
+            R"([{"id":1,"content":"<|im_start|>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true},{"id":2,"content":"<|im_end|>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true},{"id":3,"content":"<think>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":false}])"));
+    const qus::text::QwenTokenizer tokenizer(dir.path);
+
+    int failures = 0;
+    {
+        qus::text::TokenStreamDecoder clean(tokenizer, qus::text::DecodeOptions{true, {2}});
+        failures += check(clean.append(1).empty(), "clean stream emitted special start token");
+        failures += check(clean.append(3) == "<think>", "clean stream skipped non-special token");
+        failures += check(clean.append(2).empty(), "clean stream emitted terminal stop token");
+        failures += check(clean.stopped(), "clean stream did not mark stop token");
+        failures += check(clean.finish().empty(), "clean stream finish returned unexpected text");
+    }
+    {
+        qus::text::TokenStreamDecoder raw(tokenizer, qus::text::DecodeOptions{false, {}});
+        failures += check(raw.append(2) == "<|im_end|>", "raw stream skipped stop token content");
+        failures += check(!raw.stopped(), "raw stream marked stop without stop ids");
+        failures += check(raw.finish().empty(), "raw stream finish returned unexpected text");
+    }
+    return failures;
+}
+
 int test_added_token_same_position_first_loaded_wins() {
     int failures = 0;
     {
@@ -650,6 +697,8 @@ int main() {
         failures += test_decode_rejects_reconstructed_invalid_utf8();
         failures += test_rejects_nul_in_merges_txt_symbols();
         failures += test_local_bpe_split_merge_cases();
+        failures += test_stream_decoder_buffers_incomplete_utf8();
+        failures += test_stream_decoder_stop_and_special_modes();
         failures += test_added_token_same_position_first_loaded_wins();
         failures += test_encode_rejects_unsupported_added_token_flags();
         failures += test_decode_rejects_sparse_invalid_id();

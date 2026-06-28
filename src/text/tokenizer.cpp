@@ -443,6 +443,50 @@ bool is_stop_token_id(std::span<const int> stop_token_ids, int id) {
     return std::find(stop_token_ids.begin(), stop_token_ids.end(), id) != stop_token_ids.end();
 }
 
+std::size_t valid_utf8_prefix_size(std::string_view bytes) {
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const auto lead = static_cast<unsigned char>(bytes[offset]);
+        std::size_t length = 0;
+        std::uint32_t codepoint = 0;
+        std::uint32_t minimum = 0;
+        if (lead <= 0x7F) {
+            length = 1;
+            codepoint = lead;
+            minimum = 0;
+        } else if (lead >= 0xC2 && lead <= 0xDF) {
+            length = 2;
+            codepoint = lead & 0x1FU;
+            minimum = 0x80U;
+        } else if (lead >= 0xE0 && lead <= 0xEF) {
+            length = 3;
+            codepoint = lead & 0x0FU;
+            minimum = 0x800U;
+        } else if (lead >= 0xF0 && lead <= 0xF4) {
+            length = 4;
+            codepoint = lead & 0x07U;
+            minimum = 0x10000U;
+        } else {
+            throw std::invalid_argument("invalid UTF-8 leading byte in token stream");
+        }
+
+        if (offset + length > bytes.size()) { return offset; }
+        for (std::size_t i = 1; i < length; ++i) {
+            const auto byte = static_cast<unsigned char>(bytes[offset + i]);
+            if ((byte & 0xC0U) != 0x80U) {
+                throw std::invalid_argument("invalid UTF-8 continuation byte in token stream");
+            }
+            codepoint = (codepoint << 6U) | (byte & 0x3FU);
+        }
+        if (codepoint < minimum || (codepoint >= 0xD800U && codepoint <= 0xDFFFU) ||
+            codepoint > 0x10FFFFU) {
+            throw std::invalid_argument("invalid UTF-8 codepoint in token stream");
+        }
+        offset += length;
+    }
+    return offset;
+}
+
 void append_symbol_id(std::vector<int>& ids,
                       const std::unordered_map<std::string, int>& token_to_id,
                       std::string_view symbol) {
@@ -577,8 +621,6 @@ std::vector<int> QwenTokenizer::encode(std::string_view text, EncodeOptions opti
 }
 
 std::string QwenTokenizer::decode(std::span<const int> ids, DecodeOptions options) const {
-    static const std::unordered_map<std::uint32_t, char> byte_decoder = build_byte_level_decoder();
-
     std::string text;
     const std::size_t terminal_stop_index =
         (!ids.empty() && is_stop_token_id(options.stop_token_ids, ids.back())) ? ids.size() - 1
@@ -587,43 +629,74 @@ std::string QwenTokenizer::decode(std::span<const int> ids, DecodeOptions option
     for (std::size_t i = 0; i < ids.size(); ++i) {
         const int id = ids[i];
         if (i == terminal_stop_index) { continue; }
-        if (options.skip_special_tokens && is_special_token(id)) { continue; }
-        if (id < 0) {
-            throw std::invalid_argument("QwenTokenizer::decode received negative token id " +
-                                        std::to_string(id));
-        }
-        const auto index = static_cast<std::size_t>(id);
-        if (index >= id_to_token_.size() || index >= valid_token_ids_.size() ||
-            !valid_token_ids_.at(index)) {
-            throw std::out_of_range("QwenTokenizer::decode token id " + std::to_string(id) +
-                                    " is outside loaded vocabulary");
-        }
-
-        const std::string& token = id_to_token_.at(index);
-        if (is_added_token_id(added_tokens_, id)) {
-            text += token;
-            continue;
-        }
-
-        const std::vector<uni::CodepointSpan> codepoints =
-            uni::utf8_codepoints(token, "QwenTokenizer::decode token id " + std::to_string(id));
-        for (const uni::CodepointSpan& codepoint : codepoints) {
-            const auto byte = byte_decoder.find(static_cast<std::uint32_t>(codepoint.value));
-            if (byte == byte_decoder.end()) {
-                throw std::invalid_argument(
-                    "QwenTokenizer::decode token id " + std::to_string(id) +
-                    " contains a character outside the byte-level alphabet");
-            }
-            text.push_back(byte->second);
-        }
+        text += decode_token_bytes(id, options.skip_special_tokens);
     }
     (void)uni::utf8_codepoints(text, "QwenTokenizer::decode reconstructed output");
     return text;
 }
 
+std::string QwenTokenizer::decode_token_bytes(int id, bool skip_special_tokens) const {
+    static const std::unordered_map<std::uint32_t, char> byte_decoder = build_byte_level_decoder();
+
+    if (skip_special_tokens && is_special_token(id)) { return {}; }
+    if (id < 0) {
+        throw std::invalid_argument("QwenTokenizer::decode received negative token id " +
+                                    std::to_string(id));
+    }
+    const auto index = static_cast<std::size_t>(id);
+    if (index >= id_to_token_.size() || index >= valid_token_ids_.size() ||
+        !valid_token_ids_.at(index)) {
+        throw std::out_of_range("QwenTokenizer::decode token id " + std::to_string(id) +
+                                " is outside loaded vocabulary");
+    }
+
+    const std::string& token = id_to_token_.at(index);
+    if (is_added_token_id(added_tokens_, id)) { return token; }
+
+    std::string bytes;
+    const std::vector<uni::CodepointSpan> codepoints =
+        uni::utf8_codepoints(token, "QwenTokenizer::decode token id " + std::to_string(id));
+    for (const uni::CodepointSpan& codepoint : codepoints) {
+        const auto byte = byte_decoder.find(static_cast<std::uint32_t>(codepoint.value));
+        if (byte == byte_decoder.end()) {
+            throw std::invalid_argument("QwenTokenizer::decode token id " + std::to_string(id) +
+                                        " contains a character outside the byte-level alphabet");
+        }
+        bytes.push_back(byte->second);
+    }
+    return bytes;
+}
+
 bool QwenTokenizer::is_special_token(int id) const noexcept {
     return std::any_of(added_tokens_.begin(), added_tokens_.end(),
                        [id](const AddedToken& token) { return token.id == id && token.special; });
+}
+
+TokenStreamDecoder::TokenStreamDecoder(const QwenTokenizer& tokenizer, DecodeOptions options)
+    : tokenizer_(tokenizer), options_(std::move(options)) {}
+
+std::string TokenStreamDecoder::append(int token_id) {
+    if (stopped_) { return {}; }
+    if (is_stop_token_id(options_.stop_token_ids, token_id)) {
+        stopped_ = true;
+        return {};
+    }
+
+    pending_bytes_ += tokenizer_.decode_token_bytes(token_id, options_.skip_special_tokens);
+    const std::size_t prefix_size = valid_utf8_prefix_size(pending_bytes_);
+    if (prefix_size == 0) { return {}; }
+
+    std::string text = pending_bytes_.substr(0, prefix_size);
+    pending_bytes_.erase(0, prefix_size);
+    return text;
+}
+
+std::string TokenStreamDecoder::finish() {
+    if (pending_bytes_.empty()) { return {}; }
+    (void)uni::utf8_codepoints(pending_bytes_, "QwenTokenizer stream decoder pending bytes");
+    std::string text = std::move(pending_bytes_);
+    pending_bytes_.clear();
+    return text;
 }
 
 } // namespace qus::text

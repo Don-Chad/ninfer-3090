@@ -95,6 +95,31 @@ int test_decode_stop_trimming_modes() {
     return failures;
 }
 
+int test_stream_callback_api_can_capture_chunks() {
+    qus::text::TextGenerationOptions options;
+    std::vector<std::string> pieces;
+    std::vector<int> ids;
+    options.stream_callback = [&](const qus::text::TextStreamChunk& chunk) {
+        pieces.push_back(chunk.text);
+        ids.push_back(chunk.token_id);
+    };
+
+    options.stream_callback(qus::text::TextStreamChunk{.token_id = 7, .text = "hi"});
+
+    int failures = 0;
+    failures += check(pieces == std::vector<std::string>{"hi"},
+                      "stream callback did not capture text chunk");
+    failures += check(ids == std::vector<int>{7}, "stream callback did not capture token id");
+
+    qus::text::TextGenerationResult result;
+    result.timings.render_tokenize_seconds = 0.25;
+    result.timings.prefill_seconds         = 1.0;
+    result.timings.decode_seconds          = 2.0;
+    result.timings.total_seconds           = 3.25;
+    failures += check(result.timings.total_seconds == 3.25, "timing result API mismatch");
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -102,6 +127,7 @@ int main() {
         int failures = 0;
         failures += test_resolve_stop_token_ids();
         failures += test_decode_stop_trimming_modes();
+        failures += test_stream_callback_api_can_capture_chunks();
         return failures == 0 ? 0 : fail("qwen text runner test failed");
     } catch (const std::exception& ex) {
         std::cerr << "qwen text runner test failed: " << ex.what() << '\n';

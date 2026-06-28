@@ -34,6 +34,7 @@ public:
 
     std::vector<int> encode(std::string_view text, EncodeOptions options = {}) const;
     std::string decode(std::span<const int> ids, DecodeOptions options = {}) const;
+    std::string decode_token_bytes(int id, bool skip_special_tokens = false) const;
 
     [[nodiscard]] const std::vector<int>& default_stop_token_ids() const noexcept {
         return default_stop_token_ids_;
@@ -54,6 +55,22 @@ private:
     bool has_bpe_merges_ = false;
     std::vector<AddedToken> added_tokens_;
     std::vector<int> default_stop_token_ids_;
+};
+
+class TokenStreamDecoder {
+public:
+    explicit TokenStreamDecoder(const QwenTokenizer& tokenizer, DecodeOptions options = {});
+
+    std::string append(int token_id);
+    std::string finish();
+
+    [[nodiscard]] bool stopped() const noexcept { return stopped_; }
+
+private:
+    const QwenTokenizer& tokenizer_;
+    DecodeOptions options_;
+    std::string pending_bytes_;
+    bool stopped_ = false;
 };
 
 } // namespace qus::text

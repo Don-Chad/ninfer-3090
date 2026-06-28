@@ -71,6 +71,17 @@ int test_messages_mode_options() {
     return failures;
 }
 
+int test_usage_documents_streaming_output_boundary() {
+    const std::string usage = qus::text::usage_text("qus");
+
+    int failures = 0;
+    failures += check(usage.find("streams decoded text to stdout") != std::string::npos,
+                      "usage does not document streaming stdout");
+    failures += check(usage.find("progress and timings to stderr") != std::string::npos,
+                      "usage does not document stderr progress/timings");
+    return failures;
+}
+
 int expect_invalid(std::vector<const char*> args, const char* label) {
     try {
         (void)parse(std::move(args));
@@ -105,6 +116,7 @@ int main() {
     int failures = 0;
     failures += test_prompt_mode_defaults();
     failures += test_messages_mode_options();
+    failures += test_usage_documents_streaming_output_boundary();
     failures += test_rejections();
     return failures == 0 ? 0 : fail("qwen text cli test failed");
 }

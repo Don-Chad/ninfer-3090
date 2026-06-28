@@ -23,7 +23,8 @@ std::string usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <weights.qus> --tokenizer <dir> (--prompt <text>|--messages <messages.json>) "
            "[--max-context N] [--max-new N] [--device N] [--raw-output] "
-           "[--print-token-ids] [--stop-token-id N]...\n";
+           "[--print-token-ids] [--stop-token-id N]...\n"
+           "       streams decoded text to stdout; writes progress and timings to stderr\n";
 }
 
 CliOptions parse_cli(int argc, char** argv) {

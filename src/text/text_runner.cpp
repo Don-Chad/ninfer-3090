@@ -1,6 +1,7 @@
 #include "qus/text/text_runner.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <stdexcept>
 #include <utility>
@@ -12,10 +13,14 @@ TextGenerationRunner::TextGenerationRunner(QwenTokenizer& tokenizer, qus::Engine
 
 TextGenerationResult TextGenerationRunner::generate(const std::vector<ChatMessage>& messages,
                                                      const TextGenerationOptions& options) {
+    using Clock = std::chrono::steady_clock;
+
     if (options.max_new_tokens <= 0) {
         throw std::invalid_argument("max_new_tokens must be positive");
     }
 
+    const auto total_start = Clock::now();
+    const auto render_start = Clock::now();
     const std::vector<int> stop_token_ids =
         resolve_stop_token_ids(tokenizer_, options.stop_token_ids);
     const std::string prompt              = render_qwen_chat(messages);
@@ -25,19 +30,70 @@ TextGenerationResult TextGenerationRunner::generate(const std::vector<ChatMessag
     if (required_context > engine_.max_context()) {
         throw std::invalid_argument("prompt exceeds engine max_context");
     }
+    const auto render_end = Clock::now();
 
-    std::vector<int> generated_token_ids =
-        engine_.generate(prompt_token_ids, options.max_new_tokens);
+    std::vector<int> generated_token_ids;
+    generated_token_ids.reserve(static_cast<std::size_t>(options.max_new_tokens));
+
     const std::vector<int> decode_stop_token_ids = options.raw_output ? std::vector<int>{}
                                                                       : stop_token_ids;
+    TokenStreamDecoder stream_decoder(
+        tokenizer_, DecodeOptions{.skip_special_tokens = !options.raw_output,
+                                  .stop_token_ids = decode_stop_token_ids});
+
+    const auto emit_stream_text = [&](int token) {
+        if (!options.stream_callback) { return; }
+        const std::string text = stream_decoder.append(token);
+        if (!text.empty()) { options.stream_callback(TextStreamChunk{.token_id = token, .text = text}); }
+    };
+    const auto is_stop = [&](int token) {
+        return std::find(stop_token_ids.begin(), stop_token_ids.end(), token) !=
+               stop_token_ids.end();
+    };
+
+    const auto prefill_start = Clock::now();
+    int token = engine_.prefill(prompt_token_ids);
+    const auto prefill_end = Clock::now();
+    generated_token_ids.push_back(token);
+    emit_stream_text(token);
+
+    const auto decode_start = Clock::now();
+    if (!is_stop(token)) {
+        while (static_cast<int>(generated_token_ids.size()) < options.max_new_tokens) {
+            token = engine_.decode_step();
+            generated_token_ids.push_back(token);
+            emit_stream_text(token);
+            if (is_stop(token)) { break; }
+        }
+    }
+    const auto decode_end = Clock::now();
+
+    if (options.stream_callback) {
+        const std::string suffix = stream_decoder.finish();
+        if (!suffix.empty()) {
+            options.stream_callback(
+                TextStreamChunk{.token_id = generated_token_ids.empty() ? -1
+                                                                        : generated_token_ids.back(),
+                                .text = suffix});
+        }
+    }
+
     std::string text = tokenizer_.decode(
         generated_token_ids,
         DecodeOptions{.skip_special_tokens = !options.raw_output,
                       .stop_token_ids = decode_stop_token_ids});
+    const auto total_end = Clock::now();
+
+    TextGenerationTimings timings;
+    timings.render_tokenize_seconds = std::chrono::duration<double>(render_end - render_start).count();
+    timings.prefill_seconds         = std::chrono::duration<double>(prefill_end - prefill_start).count();
+    timings.decode_seconds          = std::chrono::duration<double>(decode_end - decode_start).count();
+    timings.total_seconds           = std::chrono::duration<double>(total_end - total_start).count();
 
     return TextGenerationResult{.prompt_token_ids = std::move(prompt_token_ids),
                                 .generated_token_ids = std::move(generated_token_ids),
-                                .text = std::move(text)};
+                                .text = std::move(text),
+                                .timings = timings};
 }
 
 std::vector<int> resolve_stop_token_ids(const QwenTokenizer& tokenizer,
