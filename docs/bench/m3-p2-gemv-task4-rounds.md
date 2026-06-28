@@ -222,3 +222,89 @@ compute-sanitizer ./build/tests/qus_linear_test
 
 All passed. `ctest` reported 1/1 tests passed. `compute-sanitizer` reported `ERROR SUMMARY: 0
 errors`.
+
+## Round 4 - Q5 mlp.down [5120,17408]
+
+Subagent model/effort: gpt-5.5, xhigh.
+
+Target: Q5 `mlp.down [5120,17408]`, launch 0 of:
+
+```bash
+./build/bench/qus_linear_bench --decode --q5
+```
+
+NCU kernel filter:
+
+```bash
+--kernel-name regex:'linear_tuned_lowbit_gemv_kernel' --launch-skip 0 --launch-count 1
+```
+
+Artifacts:
+
+- `profiles/m3-p2-gemv-task4/round4-q5-mlp-down/baseline_basic.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q5-mlp-down/baseline_roofline.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q5-mlp-down/baseline_source.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q5-mlp-down/baseline_stalls.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q5-mlp-down/baseline_instr.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q5-mlp-down/after_basic.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q5-mlp-down/after_roofline.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q5-mlp-down/after_source.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q5-mlp-down/after_stalls.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round4-q5-mlp-down/after_instr.ncu.{rep,csv,txt}`
+
+### Diagnosis
+
+The round-4 baseline confirmed the remaining limiter was latency hiding under L1TEX scoreboard
+pressure, not spills or raw occupancy. DRAM was 21.76%, Memory SOL was 29.01%, Compute SOL was
+29.93%, achieved occupancy was 64.52%, and there were zero local or shared memory spills. The
+scheduler issued only 0.31 warp per scheduler with 0.70 eligible warps per scheduler, and the top
+stalls were long scoreboard on L1TEX plus wait. The instruction counter pass still showed 6,963,200
+global-load instructions and 13,926,400 global-load L1TEX sectors.
+
+Single change: add a Q5-only two-K64-group full-group path in the row-group kernel. Each lane issues
+the independent scale, packed payload, and `x` loads for two adjacent full K64 groups before consuming
+them, while the existing tail-safe path handles odd or partial final groups. This keeps the round-2
+row-group schedule, one-warp-per-row ownership, public APIs, q5090 ABI, tests, CMake, registry
+routing, and the externally workspace-free contract unchanged.
+
+### Metrics
+
+| metric | before | after |
+| --- | ---: | ---: |
+| NCU duration | 169.57 us | 73.89 us |
+| DRAM throughput | 21.76% | 50.12% |
+| Memory SOL | 29.01% | 67.99% |
+| Compute SOL | 29.93% | 67.99% |
+| L1/TEX throughput | 30.22% | 77.77% |
+| achieved occupancy | 64.52% | 64.40% |
+| registers/thread | 30 | 38 |
+| spills/local memory | 0 | 0 |
+| long scoreboard | 18.6 cycles, 79.18% | 12.0 cycles, 73.95% |
+| second stall | wait, 9.81% | wait, 6.91% |
+| LG throttle | 0.05% | 5.70% |
+| eligible warps/scheduler | 0.70 | 0.74 |
+| issued warp/scheduler | 0.31 | 0.43 |
+| global-load instructions | 6,963,200 | 6,963,200 |
+| global-load L1TEX sectors | 13,926,400 | 13,926,400 |
+| global-load data bytes | 286.88 MB | 286.88 MB |
+| total SM instructions | 69,268,480 | 36,956,160 |
+| source branch instructions | 4,904,960 | 389,120 |
+
+Accepted: the diagnosed latency-hiding/issue limiter improved materially. Warp cycles per issued
+instruction dropped from 24.20 to 16.60, issued warp per scheduler rose from 0.31 to 0.43, NCU
+duration improved by 56.42%, and DRAM throughput rose by 28.36 points with no spills or correctness
+regression. This still does not meet the Task 4 target (`>=70%` DRAM and near `C = 82.76%`), and the
+kernel remains L1TEX-long-scoreboard limited with higher LG/MIO throttle after the two-group path.
+The next round should continue Q5 `mlp.down`, likely targeting the unchanged global-load traffic or
+the remaining L1TEX scoreboard pressure.
+
+### Verification
+
+```bash
+cmake --build build -j
+ctest --test-dir build -R qus_linear_test --output-on-failure
+compute-sanitizer ./build/tests/qus_linear_test
+```
+
+All passed. `ctest` reported 1/1 tests passed. `compute-sanitizer` reported `ERROR SUMMARY: 0
+errors`.
