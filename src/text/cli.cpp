@@ -1,0 +1,78 @@
+#include "qus/text/cli.h"
+
+#include <cstdlib>
+#include <limits>
+#include <stdexcept>
+
+namespace qus::text {
+namespace {
+
+int parse_nonnegative_int(const char* text, const char* label) {
+    char* end        = nullptr;
+    const long value = std::strtol(text, &end, 10);
+    if (end == text || *end != '\0' || value < 0 ||
+        value > static_cast<long>(std::numeric_limits<int>::max())) {
+        throw std::invalid_argument(std::string("invalid ") + label + ": " + text);
+    }
+    return static_cast<int>(value);
+}
+
+} // namespace
+
+std::string usage_text(const char* argv0) {
+    return std::string("usage: ") + argv0 +
+           " <weights.qus> --tokenizer <dir> (--prompt <text>|--messages <messages.json>) "
+           "[--max-context N] [--max-new N] [--device N] [--raw-output] "
+           "[--print-token-ids] [--stop-token-id N]...\n";
+}
+
+CliOptions parse_cli(int argc, char** argv) {
+    CliOptions options;
+    if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
+        options.help_requested = true;
+        return options;
+    }
+    if (argc < 2) { throw std::invalid_argument("weights path is required"); }
+    options.weights_path = argv[1];
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        const auto require_value = [&](const char* flag) -> const char* {
+            if (++i >= argc) { throw std::invalid_argument(std::string(flag) + " needs a value"); }
+            return argv[i];
+        };
+        if (arg == "--tokenizer") {
+            options.tokenizer_path = require_value("--tokenizer");
+        } else if (arg == "--prompt") {
+            options.prompt = require_value("--prompt");
+        } else if (arg == "--messages") {
+            options.messages_path = require_value("--messages");
+        } else if (arg == "--max-new") {
+            options.max_new = parse_nonnegative_int(require_value("--max-new"), "max-new");
+        } else if (arg == "--max-context") {
+            options.max_context = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--max-context"), "max-context"));
+        } else if (arg == "--device") {
+            options.device = parse_nonnegative_int(require_value("--device"), "device");
+        } else if (arg == "--raw-output") {
+            options.output_mode = OutputMode::Raw;
+        } else if (arg == "--print-token-ids") {
+            options.print_token_ids = true;
+        } else if (arg == "--stop-token-id") {
+            options.stop_token_ids.push_back(
+                parse_nonnegative_int(require_value("--stop-token-id"), "stop-token-id"));
+        } else {
+            throw std::invalid_argument("unknown argument: " + arg);
+        }
+    }
+    if (options.tokenizer_path.empty()) { throw std::invalid_argument("--tokenizer is required"); }
+    const bool has_prompt   = !options.prompt.empty();
+    const bool has_messages = !options.messages_path.empty();
+    if (has_prompt == has_messages) {
+        throw std::invalid_argument("pass exactly one of --prompt or --messages");
+    }
+    if (options.max_new <= 0) { throw std::invalid_argument("--max-new must be positive"); }
+    if (options.max_context == 0) { throw std::invalid_argument("--max-context must be positive"); }
+    return options;
+}
+
+} // namespace qus::text
