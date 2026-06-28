@@ -1,40 +1,28 @@
-# Quality Rules and Test Governance Design
+# Quality Rules and Test Governance Implementation Plan
 
-> Status: implemented. Date: 2026-06-28.
-> Scope: persistent repository rules for compatibility and testing, plus the phased strategy for
-> later test-suite cleanup. The first implementation step creates `AGENTS.md`; cleanup work follows
-> in a separate implementation plan.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
+> (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
 
-## 1. Problem
+**Goal:** Create the persistent root `AGENTS.md` rules approved in the quality-rules design spec.
 
-The repository has accumulated two harmful implementation habits:
+**Architecture:** This implementation creates only the durable repository rule file. Test cleanup,
+compatibility-code cleanup, subagent fan-out, and historical document archival remain separate work
+after the rule file exists.
 
-- compatibility paths that preserve old behavior even though this project has no external backward
-  compatibility requirement;
-- excessive or low-value tests, especially tests that lock source structure, implementation shape,
-  or compatibility behavior instead of exercising meaningful runtime risk.
+**Tech Stack:** Markdown documentation in the repository root and `docs/superpowers`.
 
-The project needs a durable rule source before the next phase begins. The durable rules must be
-separate from the temporary cleanup campaign. `AGENTS.md` is for persistent engineering rules only;
-test-audit staging, subagent assignment, and document-archive work belong in plans, not in
-`AGENTS.md`.
+---
 
-## 2. Design Decision
+### Task 1: Add Persistent Repository Rules
 
-Create a root `AGENTS.md` with long-lived rules:
+**Files:**
+- Create: `AGENTS.md`
+- Modify: `docs/superpowers/specs/2026-06-28-quality-rules-and-test-governance-design.md`
 
-- no backward compatibility for project-owned behavior;
-- direct implementation style, without legacy shims or speculative generic abstractions;
-- tests are not added by default;
-- TDD is restricted to explicit high-value categories;
-- source-structure and compatibility tests are forbidden;
-- bad existing tests must be removed or rewritten according to the real risk they protect;
-- verification should prove the changed behavior with the smallest meaningful command set.
+- [ ] **Step 1: Create `AGENTS.md`**
 
-The current cleanup campaign is intentionally not encoded in `AGENTS.md`. The cleanup campaign will
-be planned separately after this spec is reviewed and approved.
-
-## 3. Target `AGENTS.md`
+Create `AGENTS.md` at the repository root with exactly the persistent rules from the approved spec:
 
 ```markdown
 # AGENTS.md
@@ -165,36 +153,65 @@ behavior:
 Do not add low-value tests to compensate for weak verification.
 ```
 
-## 4. Cleanup Strategy Outside `AGENTS.md`
+- [ ] **Step 2: Mark the design spec implemented**
 
-The later implementation plan should keep cleanup staging separate from the persistent rules:
+In `docs/superpowers/specs/2026-06-28-quality-rules-and-test-governance-design.md`, change the
+status line to:
 
-1. Create `AGENTS.md` exactly from the approved persistent rule content.
-2. Audit the full test suite and classify each test file as `KEEP`, `REWRITE`, `MERGE`, or
-   `DELETE`.
-3. Split cleanup work across independent subagent domains such as L0/core, runtime/model, q5090
-   format, L1 kernels, and tools/bench.
-4. For `REWRITE`, add a valid replacement test before deleting the invalid test.
-5. For `DELETE`, remove the test without replacement unless a real uncovered risk is identified.
-6. Clean compatibility code paths after the rule file exists, with active code and tests as the
-   target. Historical document archival is a separate future task.
+```markdown
+> Status: implemented. Date: 2026-06-28.
+```
 
-Shared registration files such as `tests/CMakeLists.txt` must be coordinated so independent cleanup
-tasks do not conflict.
+- [ ] **Step 3: Verify the durable rule file exists**
 
-## 5. Non-Goals
+Run:
 
-- Do not edit existing tests in the same step that introduces `AGENTS.md`.
-- Do not archive or rewrite historical docs in this task.
-- Do not encode the temporary cleanup phase, subagent split, or historical document policy inside
-  `AGENTS.md`.
-- Do not add tests merely because cleanup deletes tests.
+```bash
+test -f AGENTS.md
+```
 
-## 6. Success Criteria
+Expected: exits 0.
 
-- `AGENTS.md` contains only durable repository rules.
-- Future work cannot justify compatibility code, compatibility tests, or low-value TDD from older
-  habits.
-- Test cleanup can proceed in parallel under a shared rule set.
-- Existing tests that protect real risk are preserved only if their method is valid, or rewritten
-  before removal if their method is invalid.
+- [ ] **Step 4: Verify no cleanup-stage language entered `AGENTS.md`**
+
+Run:
+
+```bash
+rg -n "subagent|archive|historical|docs/plans|cleanup campaign|test-audit|phase|temporary" AGENTS.md
+```
+
+Expected: no matches and exit code 1.
+
+- [ ] **Step 5: Verify the required rule anchors are present**
+
+Run:
+
+```bash
+rg -n "No Backward Compatibility|Restricted TDD|Hard Whitelist|Conditional Whitelist|Forbidden Tests|Rewriting Bad Tests|Verification" AGENTS.md
+```
+
+Expected: one match for each listed heading.
+
+- [ ] **Step 6: Review the diff**
+
+Run:
+
+```bash
+git diff -- AGENTS.md docs/superpowers/specs/2026-06-28-quality-rules-and-test-governance-design.md
+```
+
+Expected: `AGENTS.md` contains only persistent rules; the spec status changes from
+`pending user review` to `implemented`.
+
+- [ ] **Step 7: Commit**
+
+Run:
+
+```bash
+git add AGENTS.md \
+        docs/superpowers/specs/2026-06-28-quality-rules-and-test-governance-design.md \
+        docs/superpowers/plans/2026-06-28-quality-rules-and-test-governance.md
+git commit -m "docs: add repository quality rules"
+```
+
+Expected: commit succeeds.
