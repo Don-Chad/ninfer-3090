@@ -22,8 +22,9 @@ baseline without relying on chat history:
 - tokenizer provenance.
 
 Smoke runs do not satisfy the M3 gate. Official M3 readiness requires both `m3_output_gate` and
-`m3_prefill_gate` summaries, following `docs/m2.8-pre-m3-standard.md` and
-`docs/bench/e2e-report-schema.md`.
+`m3_prefill_gate` summaries following
+[`../e2e-report-schema.md`](../e2e-report-schema.md). The historical M2.8 gate standard is archived
+at [`../../archive/pre-optimization/m2.8-pre-m3-standard.md`](../../archive/pre-optimization/m2.8-pre-m3-standard.md).
 
 Committed summary files use:
 

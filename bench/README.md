@@ -1,7 +1,9 @@
 # Benchmarks
 
-This directory contains benchmark binaries. The authoritative pre-M3 benchmark, report, and readiness
-contract is `docs/m2.8-pre-m3-standard.md`.
+This directory contains benchmark binaries. Current optimization work uses the e2e report schema in
+`docs/bench/e2e-report-schema.md` and the completed gate evidence in `docs/m3-readiness.md`. The
+historical pre-M3 benchmark/readiness standard is archived at
+`docs/archive/pre-optimization/m2.8-pre-m3-standard.md`.
 
 ## Benchmark Types
 
@@ -9,10 +11,9 @@ Per-op benchmarks are the existing `qus_<op>_bench` binaries. They run one kerne
 shapes and are the entry point for ncu/nsys analysis. Their stdout numbers are convenience readouts;
 M3 optimization claims require profiler evidence plus before/after e2e JSON reports.
 
-`qus_e2e_bench` is the M2.8 real-weight benchmark target to add. It must drive `Engine::load()`,
-`Engine::prefill()`, and `Engine::decode_step()` directly, write one JSON report object per invocation,
-and use the schema in `docs/bench/e2e-report-schema.md`. It must not use `Engine::generate()` for
-primary timing.
+`qus_e2e_bench` is the real-weight benchmark target. It drives `Engine::load()`, `Engine::prefill()`,
+and `Engine::decode_step()` directly, writes one JSON report object per invocation, and uses the
+schema in `docs/bench/e2e-report-schema.md`. It must not use `Engine::generate()` for primary timing.
 
 ## Build
 

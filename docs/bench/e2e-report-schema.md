@@ -1,7 +1,8 @@
 # M2.8 E2E Report Schema v1
 
-`docs/m2.8-pre-m3-standard.md` is authoritative. This file is the focused schema reference for
-`qus_e2e_bench`, decoded sidecars, and committed baseline summaries.
+This is the current focused schema reference for `qus_e2e_bench`, decoded sidecars, and committed
+baseline summaries. The historical M2.8 standard that introduced this schema is archived at
+[`../archive/pre-optimization/m2.8-pre-m3-standard.md`](../archive/pre-optimization/m2.8-pre-m3-standard.md).
 
 ## Artifact Types
 

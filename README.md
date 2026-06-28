@@ -93,10 +93,6 @@ NVIDIA RTX 5090 (Blackwell, sm_120, 32 GB) · CUDA 13.1 · gcc 13.3 · CMake 3.2
 
 - [`docs/design.md`](docs/design.md) — master design & goal document (scope, boundaries,
   architecture, data flow, memory, numerics, roadmap).
-- [`docs/m2.8-pre-m3-standard.md`](docs/m2.8-pre-m3-standard.md) — authoritative M2.8
-  benchmark/I/O/memory/readiness standard used to produce the completed pre-M3 gate artifacts.
-- [`docs/m2.8-pre-m3-standard.zh.md`](docs/m2.8-pre-m3-standard.zh.md) — Chinese review aid for
-  the M2.8 standard; the English standard is authoritative.
 - [`docs/m3-readiness.md`](docs/m3-readiness.md) — completed M2.8 gate evidence and starting point
   for M3 planning.
 - [`docs/qwen3.6-27b-architecture.md`](docs/qwen3.6-27b-architecture.md) — exact model
@@ -104,4 +100,6 @@ NVIDIA RTX 5090 (Blackwell, sm_120, 32 GB) · CUDA 13.1 · gcc 13.3 · CMake 3.2
   operator inventory, and runtime tensor-transform ownership.
 - [`docs/q5090_packed_file_format_v1.md`](docs/q5090_packed_file_format_v1.md) — canonical
   packed-weight ABI consumed by the C++ runtime.
+- [`docs/archive/pre-optimization/`](docs/archive/pre-optimization/) — completed pre-optimization
+  plans, specs, and historical M2.8 standard material.
 - [`tools/q5090_convert`](tools/q5090_convert) — canonical safetensors-to-q5090 converter.

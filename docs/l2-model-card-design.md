@@ -5,7 +5,8 @@
 > The L2 model card (`config.h`/`model.h`/`qwen3_6_27b.cpp`) and the `Engine`
 > (`engine.h`/`engine.cpp`) now exist. This document remains the design/reference for that
 > implementation and for future graph/fusion work. See
-> [`docs/plans/l2-model-card-m2.md`](plans/l2-model-card-m2.md) for retained M2 history.
+> [`archive/pre-optimization/plans/l2-model-card-m2.md`](archive/pre-optimization/plans/l2-model-card-m2.md)
+> for retained M2 history.
 > Scope: the **L2 model card** — the hand-written static forward schedule for Qwen3.6-27B that
 > issues L1 kernel calls in order, plus the prefill/decode drivers and KV/state lifecycle. It
 > sits above L1 kernels and L0 infra. See [`design.md`](design.md) §5/§6/§7 (system architecture

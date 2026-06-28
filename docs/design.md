@@ -412,10 +412,9 @@ qwen3.6-ultraspeed/
 - **M2.5 — Hardening/documentation sync:** mostly landed / in progress; graph-readiness fixes, EOS
   handling, parity tap structure, and cleanup structural checks are present. Keep unknown or
   environment-heavy gates as verify-current items.
-- **M2.8 — Pre-M3 benchmark/I/O/memory observability gate:** active; implement the authoritative
-  standard in `docs/m2.8-pre-m3-standard.md`, including e2e timing/reporting, canonical prompt fixtures,
-  Engine/arena memory stats, hidden-allocation accounting, regression comparison, and an M3 readiness
-  note.
+- **M2.8 — Pre-M3 benchmark/I/O/memory observability gate:** complete; gate evidence lives in
+  [`m3-readiness.md`](m3-readiness.md), with the historical standard archived under
+  [`archive/pre-optimization/`](archive/pre-optimization/).
 - **M3 — Per-kernel optimization:** follows M2.8 readiness; each kernel to roofline (W4A16 GEMV, GQA,
   GDN, conv, RoPE, SwiGLU, argmax).
 - **M4 — Fusion:** fuse adjacent ops; reduce launches/round-trips.
