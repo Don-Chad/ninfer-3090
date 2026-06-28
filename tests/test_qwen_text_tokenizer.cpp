@@ -101,6 +101,19 @@ bool throws_generation_invalid_containing(const std::filesystem::path& dir,
     return false;
 }
 
+bool throws_invalid_with_file_containing(const std::filesystem::path& dir,
+                                         const std::filesystem::path& file,
+                                         std::string_view expected) {
+    try {
+        (void)qus::text::QwenTokenizer(dir);
+    } catch (const std::invalid_argument& ex) {
+        const std::string message = ex.what();
+        return message.find(expected) != std::string::npos &&
+               message.find(file.string()) != std::string::npos;
+    }
+    return false;
+}
+
 bool decode_throws_out_of_range_containing(const qus::text::QwenTokenizer& tokenizer,
                                            const std::vector<int>& ids, std::string_view expected) {
     try {
@@ -358,6 +371,84 @@ int test_byte_level_vocab_decode() {
     return failures;
 }
 
+int test_decode_rejects_reconstructed_invalid_utf8() {
+    TempDir dir;
+    write_tokenizer_json(
+        dir.path,
+        minimal_tokenizer_json(
+            R"({"Ã":0})",
+            R"([{"id":1,"content":"<extra>","single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true}])"));
+    const qus::text::QwenTokenizer tokenizer(dir.path);
+
+    return check(decode_throws_invalid_containing(tokenizer, {0}, "valid UTF-8"),
+                 "decode returned reconstructed invalid UTF-8");
+}
+
+int test_rejects_nul_in_merges_txt_symbols() {
+    TempDir dir;
+    write_tokenizer_json(dir.path, minimal_tokenizer_json(R"({"a":0,"b":1})", "[]"));
+    std::string merges = "#version: 0.2\n";
+    merges += std::string("a\0 b\n", 5);
+    write_file(dir.path / "merges.txt", merges);
+
+    return check(throws_invalid_with_file_containing(dir.path, dir.path / "merges.txt", "NUL"),
+                 "merges.txt symbol containing NUL accepted");
+}
+
+int test_local_bpe_split_merge_cases() {
+    TempDir dir;
+    write_tokenizer_json(
+        dir.path,
+        minimal_tokenizer_json(
+            R"({"c":0,"a":1,"n":2,"'":3,"t":4,"ca":5,"can":6,"'t":7,"Ġ":8,"Ċ":9,"ĠĠ":10,"ĊĊ":11,"ĠĠĊĊ":12,"ä":13,"½":14,"ł":15,"ä½":16,"ä½ł":17,"å":18,"¥":19,"å¥":20,"å¥½":21,"!":22,"ð":23,"Ł":24,"ĺ":25,"Ģ":26,"ðŁ":27,"ðŁĺ":28,"ðŁĺĢ":29,"ĠðŁĺĢ":30,"C":31,"f":32,"Ã":33,"©":34,"Ca":35,"Caf":36,"Ã©":37,"ĠCaf":38,"ĠCafÃ©":39})",
+            "[]"));
+    write_file(dir.path / "merges.txt", "#version: 0.2\n"
+                                        "c a\n"
+                                        "ca n\n"
+                                        "' t\n"
+                                        "Ġ Ġ\n"
+                                        "Ċ Ċ\n"
+                                        "ĠĠ ĊĊ\n"
+                                        "ä ½\n"
+                                        "ä½ ł\n"
+                                        "å ¥\n"
+                                        "å¥ ½\n"
+                                        "ð Ł\n"
+                                        "ðŁ ĺ\n"
+                                        "ðŁĺ Ģ\n"
+                                        "Ġ ðŁĺĢ\n"
+                                        "C a\n"
+                                        "Ca f\n"
+                                        "Ã ©\n"
+                                        "Ġ Caf\n"
+                                        "ĠCaf Ã©\n");
+
+    const qus::text::QwenTokenizer tokenizer(dir.path);
+
+    int failures = 0;
+    failures += check(tokenizer.encode("can't") == std::vector<int>{6, 7},
+                      "local contraction BPE ids mismatch");
+    failures += check(tokenizer.decode(std::vector<int>{6, 7}) == "can't",
+                      "local contraction BPE decode mismatch");
+    failures += check(tokenizer.encode("  \n\n") == std::vector<int>{12},
+                      "local whitespace/newline BPE ids mismatch");
+    failures += check(tokenizer.decode(std::vector<int>{12}) == "  \n\n",
+                      "local whitespace/newline BPE decode mismatch");
+    failures += check(tokenizer.encode("你好") == std::vector<int>{17, 21},
+                      "local non-Latin BPE ids mismatch");
+    failures += check(tokenizer.decode(std::vector<int>{17, 21}) == "你好",
+                      "local non-Latin BPE decode mismatch");
+    failures += check(tokenizer.encode("! 😀") == std::vector<int>{22, 30},
+                      "local punctuation/emoji BPE ids mismatch");
+    failures += check(tokenizer.decode(std::vector<int>{22, 30}) == "! 😀",
+                      "local punctuation/emoji BPE decode mismatch");
+    failures +=
+        check(tokenizer.encode(" Café") == std::vector<int>{39}, "local NFC mark BPE ids mismatch");
+    failures += check(tokenizer.decode(std::vector<int>{39}) == " Café",
+                      "local NFC mark BPE decode mismatch");
+    return failures;
+}
+
 int test_added_token_same_position_first_loaded_wins() {
     int failures = 0;
     {
@@ -520,6 +611,9 @@ int main() {
         failures += test_load_real_tokenizer_metadata();
         failures += test_minimal_added_token_encode_decode();
         failures += test_byte_level_vocab_decode();
+        failures += test_decode_rejects_reconstructed_invalid_utf8();
+        failures += test_rejects_nul_in_merges_txt_symbols();
+        failures += test_local_bpe_split_merge_cases();
         failures += test_added_token_same_position_first_loaded_wins();
         failures += test_encode_rejects_unsupported_added_token_flags();
         failures += test_decode_rejects_sparse_invalid_id();

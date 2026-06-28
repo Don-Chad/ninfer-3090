@@ -244,7 +244,11 @@ std::unordered_map<std::string, int> load_bpe_merge_ranks(const std::filesystem:
         }
         const std::string left  = line.substr(0, first_space);
         const std::string right = line.substr(first_space + 1);
-        const auto inserted     = ranks.emplace(merge_pair_key(left, right), rank);
+        if (left.find('\0') != std::string::npos || right.find('\0') != std::string::npos) {
+            throw std::invalid_argument("field merges.txt must not contain NUL in merge symbols: " +
+                                        path.string());
+        }
+        const auto inserted = ranks.emplace(merge_pair_key(left, right), rank);
         if (!inserted.second) {
             throw std::invalid_argument("duplicate merge pair in " + path.string() + ": " + line);
         }
@@ -613,6 +617,7 @@ std::string QwenTokenizer::decode(std::span<const int> ids, DecodeOptions option
             text.push_back(byte->second);
         }
     }
+    (void)uni::utf8_codepoints(text, "QwenTokenizer::decode reconstructed output");
     return text;
 }
 
