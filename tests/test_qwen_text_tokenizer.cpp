@@ -624,6 +624,8 @@ int test_hf_golden_message_cases() {
         const std::vector<int> expected = item.at("ids").get<std::vector<int>>();
         if (actual != expected) {
             std::cerr << "message ids mismatch for " << item.at("name").get<std::string>() << '\n';
+            print_ids("expected", expected);
+            print_ids("actual", actual);
             return 1;
         }
     }
