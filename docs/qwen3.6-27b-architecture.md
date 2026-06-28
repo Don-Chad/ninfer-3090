@@ -52,7 +52,7 @@ From `text_config` in `config.json`:
 | — | rms_norm_eps `ε` | **1e-6** |
 | `V` | vocab_size | **248320** |
 | — | tie_word_embeddings | **false** (separate `lm_head`) |
-| — | max_position_embeddings | **262144** (v1 targets 128K) |
+| — | max_position_embeddings | **262144** (model capacity; current M2.8 gate `max_ctx = 8192`, 128K/256K deferred) |
 | — | torch_dtype | bfloat16 |
 | — | full_attention_interval | 4 |
 | **Full attention** | | |

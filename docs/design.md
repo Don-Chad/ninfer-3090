@@ -76,7 +76,7 @@ only**. These dimensions are the "固化" truth everything specializes to.
 | norm | RMSNorm, eps 1e-6 |
 | vocab_size | **248320** |
 | tie_word_embeddings | **false** (separate `lm_head`) |
-| max_position_embeddings | 262144 (256K); **v1 targets 128K** |
+| max_position_embeddings | 262144 (256K model capacity); current M2.8 runtime gate `max_ctx = 8192`; 128K/256K deferred |
 | torch_dtype | bfloat16 |
 
 ### 3.2 Hybrid attention — 3:1 pattern (`full_attention_interval = 4`)
@@ -128,7 +128,7 @@ only**. These dimensions are the "固化" truth everything specializes to.
 - Core Engine, M2.8 benchmark, and parity tools: token ids in/out for stable performance and debug
   contracts.
 - **Greedy (argmax)** next-token selection.
-- **128K** context, **bf16 KV**.
+- Current M2.8 official runtime gate: `max_ctx = 8192`, **bf16 KV**.
 - **W4A16** linear layers (bf16 activations, 4-bit weights dequantized to bf16).
 - Python offline tooling (quantize + relayout/pack → one fixed weight file).
 - C++/CUDA runtime: load the fixed file + run inference.
@@ -148,7 +148,7 @@ only**. These dimensions are the "固化" truth everything specializes to.
 1. **MTP self-speculative decode** (planned; deferred so single-token throughput can be
    optimized without accept-rate confounding the measurements).
 2. fp8/fp4 **prefill** kernels.
-3. **256K** context / **fp8 KV**.
+3. **128K/256K** context / **fp8 KV**.
 4. Full sampler (temperature / top-k / top-p / RNG).
 5. Vision / multimodal path.
 6. Multi-GPU, tensor/pipeline parallelism, continuous batching, paged attention.
@@ -161,7 +161,7 @@ only**. These dimensions are the "固化" truth everything specializes to.
 | 3 | Multimodal | Text-only v1; don't preclude vision later |
 | 4 | MTP | Planned later; single-token first |
 | 5 | Compute precision | bf16 activations + W4A16 baseline; fp8/fp4 prefill later |
-| 6 | Context / KV | 128K, bf16 KV; pool runtime-sized |
+| 6 | Context / KV | current M2.8 gate `max_ctx = 8192`, bf16 KV; 128K/256K deferred; pool runtime-sized |
 | 7 | 固化/自由 | Model-card graph + generic kernel API + routed specialized impls |
 | 8 | Runtime I/O | primary `qus` text/messages in -> text out; Engine/bench/parity use token ids |
 | 9 | Weight pipeline | Python (quant+pack) → fixed file; C++ only loads |
@@ -282,15 +282,15 @@ into a megakernel.
 
 ---
 
-## 8. Memory management (@128K context, bf16 KV)
+## 8. Memory management (future 128K budget anchor, bf16 KV)
 
 | Region | Size | Notes |
 |---|---|---|
 | 4-bit weights (+ scales, + hi-precision sensitive tensors) | ~14–15 GB | loaded once |
-| Full-attn KV (16 layers) @128K | ~8 GB | 64 KB/token; runtime-sized pool |
+| Full-attn KV (16 layers) at future 128K | ~8 GB | 64 KB/token; budget anchor only; current M2.8 gate is `max_ctx = 8192` |
 | GDN recurrent + conv state | ~0.15–0.2 GB | fixed-size, context-independent |
 | Activations / workspace arena | ~1–2 GB | reused across layers |
-| **Total** | **~24–26 GB / 32 GB** | headroom for fp8-KV / 256K later |
+| **Total** | **~24–26 GB / 32 GB** | future 128K budget anchor; headroom planning for fp8-KV / 256K later |
 
 - Weights mmap'd from the one fixed file into device buffers (no runtime relayout).
 - KV/state pools sized at startup from `(max_context, dims)`.
