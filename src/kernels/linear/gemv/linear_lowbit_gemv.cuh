@@ -209,4 +209,86 @@ __global__ void linear_tuned_lowbit_gemv_kernel(const __nv_bfloat16* x, const st
     if (lane == 0) { out[row] = __float2bfloat16(acc); }
 }
 
+__device__ __forceinline__ std::uint32_t q5_load_row_word(const std::uint32_t* words, int word) {
+    return word < 10 ? words[word] : 0u;
+}
+
+template <>
+__global__ void linear_tuned_lowbit_gemv_kernel<Q5Codec>(const __nv_bfloat16* x,
+                                                         const std::uint8_t* payload,
+                                                         __nv_bfloat16* out, std::int32_t n,
+                                                         std::int32_t k, std::int32_t padded_k) {
+    constexpr int kWarpSize = 32;
+    static_assert(Q5Codec::kGroupK == 64);
+
+    const int lane            = threadIdx.x & (kWarpSize - 1);
+    const int warp_in_block   = threadIdx.x / kWarpSize;
+    const int warps_per_block = blockDim.x / kWarpSize;
+    const std::int32_t row =
+        static_cast<std::int32_t>(blockIdx.x * warps_per_block + warp_in_block);
+    const std::int32_t group_cnt = padded_k / Q5Codec::kGroupK;
+
+    if (row >= n) { return; }
+
+    const std::int32_t tile = row / 64;
+    const std::int32_t rit  = row - tile * 64;
+    float acc               = 0.0f;
+
+    for (std::int32_t group = 0; group < group_cnt; ++group) {
+        const std::int32_t base_k = group * Q5Codec::kGroupK;
+        if (base_k >= k) { continue; }
+
+        const std::int32_t remaining = k - base_k;
+        const std::int32_t limit =
+            remaining < Q5Codec::kGroupK ? remaining : Q5Codec::kGroupK;
+        const int offset = lane * 2;
+
+        const std::int64_t off =
+            (static_cast<std::int64_t>(tile) * group_cnt + group) * Q5Codec::kTileBytes;
+        std::uint32_t scale_bits = 0u;
+        if (lane == 0) {
+            scale_bits = static_cast<std::uint16_t>(payload[off + rit * 2]) |
+                         static_cast<std::uint32_t>(
+                             static_cast<std::uint16_t>(payload[off + rit * 2 + 1]) << 8);
+        }
+        scale_bits       = __shfl_sync(0xffffffffu, scale_bits, 0);
+        const float scale = __half2float(__ushort_as_half(static_cast<std::uint16_t>(scale_bits)));
+
+        const std::uint8_t* packed = payload + off + 64 * 2 +
+                                     static_cast<std::int64_t>(rit) *
+                                         Q5Codec::kBytesPerRowPerGroup;
+        const auto* words = reinterpret_cast<const std::uint32_t*>(packed);
+
+        const int bitpos0          = offset * Q5Codec::kBits;
+        const int wi0              = bitpos0 >> 5;
+        const int sh0              = bitpos0 & 31;
+        const std::uint32_t bits0 =
+            __funnelshift_r(q5_load_row_word(words, wi0), q5_load_row_word(words, wi0 + 1), sh0);
+        const int s0 = static_cast<int>(bits0 << 27) >> 27;
+
+        const int bitpos1          = bitpos0 + Q5Codec::kBits;
+        const int wi1              = bitpos1 >> 5;
+        const int sh1              = bitpos1 & 31;
+        const std::uint32_t bits1 =
+            __funnelshift_r(q5_load_row_word(words, wi1), q5_load_row_word(words, wi1 + 1), sh1);
+        const int s1 = static_cast<int>(bits1 << 27) >> 27;
+
+        if (offset + 1 < limit) {
+            const float2 xv =
+                __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(x + base_k + offset));
+            acc = fmaf(static_cast<float>(s0) * scale, xv.x, acc);
+            acc = fmaf(static_cast<float>(s1) * scale, xv.y, acc);
+        } else if (offset < limit) {
+            acc = fmaf(static_cast<float>(s0) * scale, __bfloat162float(x[base_k + offset]), acc);
+        }
+    }
+
+#pragma unroll
+    for (int delta = kWarpSize / 2; delta > 0; delta >>= 1) {
+        acc += __shfl_down_sync(0xffffffffu, acc, delta);
+    }
+
+    if (lane == 0) { out[row] = __float2bfloat16(acc); }
+}
+
 } // namespace qus::kernels::detail

@@ -67,3 +67,79 @@ compute-sanitizer ./build/tests/qus_linear_test
 
 All passed. `ctest` reported 1/1 tests passed. `compute-sanitizer` reported `ERROR SUMMARY: 0
 errors`.
+
+## Round 2 - Q5 mlp.down [5120,17408]
+
+Subagent model/effort: gpt-5.5, xhigh.
+
+Target: Q5 `mlp.down [5120,17408]`, launch 0 of:
+
+```bash
+./build/bench/qus_linear_bench --decode --q5
+```
+
+NCU kernel filter:
+
+```bash
+--kernel-name regex:'linear_tuned_lowbit_gemv_kernel' --launch-skip 0 --launch-count 1
+```
+
+Artifacts:
+
+- `profiles/m3-p2-gemv-task4/round2-q5-mlp-down/baseline_basic.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round2-q5-mlp-down/baseline_roofline.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round2-q5-mlp-down/baseline_detailed.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round2-q5-mlp-down/baseline_source.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round2-q5-mlp-down/baseline_stalls.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round2-q5-mlp-down/after_basic.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round2-q5-mlp-down/after_roofline.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round2-q5-mlp-down/after_source.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round2-q5-mlp-down/after_stalls.ncu.{rep,csv,txt}`
+
+### Diagnosis
+
+The round-2 baseline confirmed the remaining limiter was access shape, not spills or raw occupancy.
+DRAM was still only 21.88% while L1/TEX throughput was 97.93%, long scoreboard was 44.8 cycles, and
+Source Counters reported 46,909,440 excessive sectors (86% of 54,318,080 total sectors). This matched
+the layout issue expected from the warp-per-row schedule: lanes in one warp touched different K64
+groups for the same row, while `TILE_N64_K64` stores rows contiguously within a fixed K64 group.
+
+Single change: specialize only the tuned Q5 GEMV kernel so a warp walks K64 groups serially for one
+row while lanes split the 64 values inside each group. Each lane loads its needed Q5 words from the
+same 40-byte row group and accumulates two positions per group. This keeps the one-warp-per-row
+ownership, avoids CTA/shared-memory K partitioning, and leaves Q4/Q6, public APIs, q5090 ABI, tests,
+CMake, and registry routing unchanged.
+
+### Metrics
+
+| metric | before | after |
+| --- | ---: | ---: |
+| NCU duration | 174.34 us | 169.82 us |
+| DRAM throughput | 21.88% | 21.63% |
+| Memory SOL | 90.95% | 39.01% |
+| Compute SOL | 12.96% | 39.01% |
+| L1/TEX throughput | 97.93% | 40.03% |
+| achieved occupancy | 62.69% | 63.52% |
+| registers/thread | 35 | 34 |
+| spills/local memory | 0 | 0 |
+| long scoreboard | 44.8 cycles, 83.33% | 15.2 cycles, 76.40% |
+| second stall | LG throttle, 8.62% | wait, 9.77% |
+| LG throttle | 8.62% | 1.68% |
+| source coalescing warning | 46,909,440 excessive sectors | no uncoalesced-global-access warning |
+
+Accepted: the diagnosed coalescing/long-scoreboard limiter improved materially, no spills were
+introduced, and NCU duration improved by 2.59%. DRAM is effectively flat and still far below the
+Task 4 target; against the accepted round-1 DRAM number this moved from 21.58% to 21.63%, so this is
+not target success. The next limiter is still issue eligibility/L1TEX latency, with more instruction
+work in the row/group-coalesced schedule.
+
+### Verification
+
+```bash
+cmake --build build -j
+ctest --test-dir build -R qus_linear_test --output-on-failure
+compute-sanitizer ./build/tests/qus_linear_test
+```
+
+All passed. `ctest` reported 1/1 tests passed. `compute-sanitizer` reported `ERROR SUMMARY: 0
+errors`.
