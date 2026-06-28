@@ -401,3 +401,95 @@ compute-sanitizer ./build/tests/qus_linear_test
 
 All passed. `ctest` reported 1/1 tests passed. `compute-sanitizer` reported `ERROR SUMMARY: 0
 errors`.
+
+## Q4 Round 1 - Q4 mlp.gate/up [17408,5120]
+
+Subagent model/effort: gpt-5.5, xhigh.
+
+Target: Q4 `mlp.gate/up [17408,5120]`, launch 0 of:
+
+```bash
+./build/bench/qus_linear_bench --decode --q4
+```
+
+NCU kernel filter:
+
+```bash
+--kernel-name regex:'linear_tuned_lowbit_gemv_kernel' --launch-skip 0 --launch-count 1
+```
+
+Artifacts:
+
+- `profiles/m3-p2-gemv-task4/round1-q4-mlp-gate-up/baseline_basic.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round1-q4-mlp-gate-up/baseline_roofline.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round1-q4-mlp-gate-up/baseline_detailed.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round1-q4-mlp-gate-up/baseline_source.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round1-q4-mlp-gate-up/baseline_instr_sched.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round1-q4-mlp-gate-up/baseline_global_loads.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round1-q4-mlp-gate-up/after_basic.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round1-q4-mlp-gate-up/after_roofline.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round1-q4-mlp-gate-up/after_detailed.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round1-q4-mlp-gate-up/after_source.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round1-q4-mlp-gate-up/after_instr_sched.ncu.{rep,csv,txt}`
+- `profiles/m3-p2-gemv-task4/round1-q4-mlp-gate-up/after_global_loads.ncu.{rep,csv,txt}`
+
+### Diagnosis
+
+The Q4 baseline confirmed the dominant limiter was uncoalesced global access through L1TEX, not
+spills or missing occupancy. DRAM was only 15.85% while Memory SOL was 95.26%, L1/TEX throughput was
+98.23%, achieved occupancy was 90.20%, and the kernel had zero local/shared spilling. Scheduler
+metrics showed only 0.18 eligible warps per scheduler, with NCU's detailed rule reporting long
+scoreboard at 48.0 cycles, 59.85% of cycles between issued instructions. Program-counter sampling
+ranked long scoreboard first and LG throttle second. Source Counters reported 51,423,232 excessive
+sectors, 88% of 58,508,288 total sectors, matching the old warp-per-row schedule where lanes touched
+different K64 groups at a 2176-byte Q4 tile stride.
+
+Single change: specialize only Q4 so one warp walks K64 groups serially for one output row while
+lanes split the 64 values inside each group. Each lane loads one adjacent Q4 packed byte, decodes the
+two nibbles it owns, loads the corresponding adjacent `x` pair, and participates in the same
+warp-level reduction. This keeps Q5/Q6, public APIs, q5090 ABI, tests, CMake, registry routing, and
+the externally workspace-free contract unchanged.
+
+### Metrics
+
+| metric | before | after |
+| --- | ---: | ---: |
+| NCU duration | 179.84 us | 133.82 us |
+| DRAM throughput | 15.85% | 21.32% |
+| Memory SOL | 95.26% | 31.07% |
+| Compute SOL | 13.11% | 35.71% |
+| L1/TEX throughput | 98.23% | 42.04% |
+| achieved occupancy | 90.20% | 97.06% |
+| registers/thread | 35 | 28 |
+| spills/local memory | 0 | 0 |
+| long scoreboard | 48.0 cycles, 59.85% | 16.9 cycles, 71.4% |
+| top PC-sampled stall | long scoreboard, 76.54% | long scoreboard, 77.56% |
+| second PC-sampled stall | LG throttle, 14.61% | wait, 10.74% |
+| eligible warps/scheduler | 0.18 | 1.29 |
+| issued warp/scheduler | 0.14 | 0.48 |
+| global-load instructions | 2,193,408 | 5,570,560 |
+| global-load L1TEX sectors | 58,490,880 | 9,748,480 |
+| global-load requested bytes | 1.87 GB | 311.95 MB |
+| global-load data bytes | 225.61 MB | 225.61 MB |
+| total SM instructions | 32,204,800 | 65,140,736 |
+| source coalescing warning | 51,423,232 excessive sectors | no warning |
+| source branch instructions | 3,551,232 | 4,978,688 |
+
+Accepted with concern: the diagnosed access-pattern limiter improved materially. L1TEX sector traffic
+dropped by 83.33%, the uncoalesced global-access warning disappeared, long-scoreboard cycles dropped,
+eligible warps per scheduler rose from 0.18 to 1.29, NCU duration improved by 25.59%, and DRAM
+throughput rose by 5.47 points with no spills or correctness regression. This still does not meet the
+Task 4 target (`>=70%` DRAM and near `C = 82.76%`). The tradeoff is higher total instruction count and
+higher global-load instruction count; the next limiter is L1TEX long-scoreboard/wait latency in the
+row-group schedule rather than sector inflation.
+
+### Verification
+
+```bash
+cmake --build build -j
+ctest --test-dir build -R qus_linear_test --output-on-failure
+compute-sanitizer ./build/tests/qus_linear_test
+```
+
+All passed. `ctest` reported 1/1 tests passed. `compute-sanitizer` reported `ERROR SUMMARY: 0
+errors`.
