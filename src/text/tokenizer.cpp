@@ -3,16 +3,19 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <fstream>
-#include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace qus::text {
 namespace {
 
 using Json = nlohmann::json;
+
+constexpr std::int64_t kMaxTokenId = 1'000'000;
 
 Json read_json_file(const std::filesystem::path& path, const char* label) {
     std::ifstream in(path);
@@ -56,12 +59,30 @@ const Json& require_array_field(const Json& object, const char* field,
     return value;
 }
 
-int require_int_field(const Json& object, const char* field, const std::filesystem::path& path) {
-    if (!object.is_object() || !object.contains(field) || !object.at(field).is_number_integer()) {
+int parse_token_id(const Json& value, const char* field, const std::filesystem::path& path) {
+    if (!value.is_number_integer()) {
         throw std::invalid_argument("field " + std::string(field) + " must be integer in " +
                                     path.string());
     }
-    return object.at(field).get<int>();
+    if (value.is_number_unsigned()) {
+        const std::uint64_t id = value.get<std::uint64_t>();
+        if (id > static_cast<std::uint64_t>(kMaxTokenId)) {
+            throw std::invalid_argument("field " + std::string(field) + " id is out of range in " +
+                                        path.string());
+        }
+        return static_cast<int>(id);
+    }
+
+    const std::int64_t id = value.get<std::int64_t>();
+    if (id < 0) {
+        throw std::invalid_argument("field " + std::string(field) + " has negative id in " +
+                                    path.string());
+    }
+    if (id > kMaxTokenId) {
+        throw std::invalid_argument("field " + std::string(field) + " id is out of range in " +
+                                    path.string());
+    }
+    return static_cast<int>(id);
 }
 
 std::string require_string_field(const Json& object, const char* field,
@@ -81,39 +102,30 @@ bool require_bool_field(const Json& object, const char* field, const std::filesy
     return object.at(field).get<bool>();
 }
 
-void ensure_id_slot(std::vector<std::string>& id_to_token, int id,
-                    const std::filesystem::path& path, const char* field) {
-    if (id < 0) {
-        throw std::invalid_argument("field " + std::string(field) + " has negative id in " +
-                                    path.string());
-    }
-    const auto index = static_cast<std::size_t>(id);
-    if (index >= id_to_token.size()) { id_to_token.resize(index + 1); }
-}
-
 std::vector<std::string> load_vocab(const Json& model, const std::filesystem::path& path) {
     if (!model.contains("type") || !model.at("type").is_string() ||
         model.at("type").get<std::string>() != "BPE") {
         throw std::invalid_argument("field model.type must be BPE in " + path.string());
     }
     const Json& vocab = require_object_field(model, "vocab", path);
+    if (vocab.empty()) {
+        throw std::invalid_argument("field model.vocab must not be empty in " + path.string());
+    }
 
     int max_id = -1;
+    std::unordered_set<int> seen_ids;
     for (const auto& item : vocab.items()) {
-        if (!item.value().is_number_integer()) {
-            throw std::invalid_argument("field model.vocab value must be integer in " +
-                                        path.string());
-        }
-        const int id = item.value().get<int>();
-        if (id < 0) {
-            throw std::invalid_argument("field model.vocab has negative id in " + path.string());
+        const int id = parse_token_id(item.value(), "model.vocab", path);
+        if (!seen_ids.insert(id).second) {
+            throw std::invalid_argument("field model.vocab has duplicate id in " + path.string());
         }
         max_id = std::max(max_id, id);
     }
 
     std::vector<std::string> id_to_token(static_cast<std::size_t>(max_id + 1));
     for (const auto& item : vocab.items()) {
-        id_to_token.at(static_cast<std::size_t>(item.value().get<int>())) = item.key();
+        id_to_token.at(static_cast<std::size_t>(
+            parse_token_id(item.value(), "model.vocab", path))) = item.key();
     }
     return id_to_token;
 }
@@ -123,7 +135,10 @@ AddedToken parse_added_token(const Json& item, const std::filesystem::path& path
         throw std::invalid_argument("field added_tokens item must be object in " + path.string());
     }
     AddedToken token;
-    token.id          = require_int_field(item, "id", path);
+    if (!item.contains("id")) {
+        throw std::invalid_argument("missing field added_tokens.id in " + path.string());
+    }
+    token.id          = parse_token_id(item.at("id"), "added_tokens.id", path);
     token.content     = require_string_field(item, "content", path);
     token.single_word = require_bool_field(item, "single_word", path);
     token.lstrip      = require_bool_field(item, "lstrip", path);
@@ -138,9 +153,18 @@ std::vector<AddedToken> load_added_tokens(const Json& root, const std::filesyste
     const Json& added = require_array_field(root, "added_tokens", path);
     std::vector<AddedToken> tokens;
     tokens.reserve(added.size());
+    std::unordered_set<int> seen_added_ids;
     for (const Json& item : added) {
         AddedToken token = parse_added_token(item, path);
-        ensure_id_slot(id_to_token, token.id, path, "added_tokens");
+        const auto index = static_cast<std::size_t>(token.id);
+        if (index < id_to_token.size() && !id_to_token.at(index).empty()) {
+            throw std::invalid_argument("field added_tokens overlaps existing id in " +
+                                        path.string());
+        }
+        if (!seen_added_ids.insert(token.id).second) {
+            throw std::invalid_argument("field added_tokens has duplicate id in " + path.string());
+        }
+        if (index >= id_to_token.size()) { id_to_token.resize(index + 1); }
         id_to_token.at(static_cast<std::size_t>(token.id)) = token.content;
         tokens.push_back(std::move(token));
     }
@@ -156,17 +180,14 @@ std::vector<int> load_default_stop_token_ids(const std::filesystem::path& path) 
     }
 
     const Json& eos = root.at("eos_token_id");
-    if (eos.is_number_integer()) { return {eos.get<int>()}; }
+    if (eos.is_number_integer()) { return {parse_token_id(eos, "eos_token_id", path)}; }
     if (eos.is_array()) {
+        if (eos.empty()) {
+            throw std::invalid_argument("field eos_token_id must not be empty in " + path.string());
+        }
         std::vector<int> ids;
         ids.reserve(eos.size());
-        for (const Json& item : eos) {
-            if (!item.is_number_integer()) {
-                throw std::invalid_argument("field eos_token_id must contain integers in " +
-                                            path.string());
-            }
-            ids.push_back(item.get<int>());
-        }
+        for (const Json& item : eos) { ids.push_back(parse_token_id(item, "eos_token_id", path)); }
         return ids;
     }
     throw std::invalid_argument("field eos_token_id must be integer or array in " + path.string());
