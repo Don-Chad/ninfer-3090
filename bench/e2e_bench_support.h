@@ -61,6 +61,7 @@ struct RunOptions {
     std::uint32_t max_ctx = qus::EngineOptions{}.max_ctx;
     int device = 0;
     std::vector<int> stop_token_ids = {248046, 248044};
+    bool quiet = false;
 };
 
 struct RepeatReport {

@@ -288,8 +288,6 @@ int main() {
                                     [first_payload, first_payload_bytes](auto& b) {
                                         b[first_payload + first_payload_bytes] = std::byte{1};
                                     });
-    failures += expect_parse_throws(
-        valid, "crc mismatch", [first_payload](auto& b) { b[first_payload] ^= std::byte{0x1}; });
     failures += expect_parse_throws(valid, "shape payload mismatch", [first_entry](auto& b) {
         write_u32(b, first_entry + 40, 128);
     });

@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <exception>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -87,6 +88,51 @@ struct PreparedCase {
     qus::bench::e2e::FixtureMetadata fixture;
 };
 
+std::string format_seconds(double seconds) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(3) << seconds << "s";
+    return out.str();
+}
+
+std::string format_rate(double value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2) << value;
+    return out.str();
+}
+
+std::string format_gib(std::size_t bytes) {
+    constexpr double gib = 1024.0 * 1024.0 * 1024.0;
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2) << (static_cast<double>(bytes) / gib) << " GiB";
+    return out.str();
+}
+
+std::string format_arena(std::string_view name, const qus::ArenaMemoryStats& stats) {
+    std::ostringstream out;
+    out << name << '=';
+    if (!stats.present) {
+        out << "n/a";
+    } else {
+        out << "used " << format_gib(stats.used_bytes) << " peak "
+            << format_gib(stats.peak_used_bytes);
+    }
+    return out.str();
+}
+
+class ProgressLog {
+public:
+    explicit ProgressLog(bool quiet) : quiet_(quiet) {}
+
+    [[nodiscard]] bool enabled() const noexcept { return !quiet_; }
+
+    void line(std::string_view message) const {
+        if (!quiet_) { std::cerr << "[e2e] " << message << '\n'; }
+    }
+
+private:
+    bool quiet_ = false;
+};
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -103,6 +149,7 @@ int main(int argc, char** argv) {
         std::cout << qus::bench::e2e::usage_text(argc > 0 ? argv[0] : "qus_e2e_bench");
         return 0;
     }
+    const ProgressLog progress(options.quiet);
 
     qus::EngineOptions engine_options;
     engine_options.device = options.device;
@@ -110,6 +157,15 @@ int main(int argc, char** argv) {
 
     std::vector<PreparedCase> case_inputs;
     try {
+        {
+            std::ostringstream message;
+            message << "preflight: manifest=" << options.fixture_manifest_path
+                    << " cases=" << options.cases.size() << " device=" << options.device
+                    << " max_ctx=" << options.max_ctx
+                    << " warmup_repeats=" << options.warmup_repeats
+                    << " repeats=" << options.repeats;
+            progress.line(message.str());
+        }
         case_inputs.reserve(options.cases.size());
         for (const qus::bench::e2e::CaseSpec& spec : options.cases) {
             qus::bench::e2e::FixtureMetadata fixture =
@@ -129,6 +185,15 @@ int main(int argc, char** argv) {
             input.stop_token_ids = options.stop_token_ids;
             input.max_context = options.max_ctx;
             qus::bench::e2e::validate_case_context(input);
+            {
+                std::ostringstream message;
+                message << "preflight: prepared case=" << input.name
+                        << " prompt_tokens=" << input.prompt_ids.size()
+                        << " max_new_tokens=" << input.requested_max_new_tokens
+                        << " required_max_ctx=" << input.required_max_context()
+                        << " ids=" << input.prompt_ids_path;
+                progress.line(message.str());
+            }
             case_inputs.push_back(PreparedCase{std::move(input), std::move(fixture)});
         }
     } catch (const std::exception& e) {
@@ -140,11 +205,25 @@ int main(int argc, char** argv) {
     qus::Engine engine(engine_options);
     double load_time_s = 0.0;
     try {
+        {
+            std::ostringstream message;
+            message << "load: start weights=" << options.weights_path;
+            progress.line(message.str());
+        }
         const auto load_start = Clock::now();
         engine.load(options.weights_path);
         synchronize_cuda();
         const auto load_end = Clock::now();
         load_time_s = seconds_since(load_start, load_end);
+        const qus::EngineMemoryStats memory = engine.memory_stats();
+        {
+            std::ostringstream message;
+            message << "load: done elapsed=" << format_seconds(load_time_s) << ' '
+                    << format_arena("weights", memory.weights) << ' '
+                    << format_arena("cache", memory.cache) << ' '
+                    << format_arena("workspace", memory.workspace);
+            progress.line(message.str());
+        }
     } catch (const std::exception& e) {
         qus::bench::e2e::write_error_report(options.output_json_path, "load", e.what());
         std::cerr << "qus_e2e_bench: " << e.what() << '\n';
@@ -165,10 +244,17 @@ int main(int argc, char** argv) {
         report.workspace_lifetime_policy = qus::model::kWorkspaceLifetimePolicy;
         report.post_load_memory = engine.memory_stats();
 
-        for (const PreparedCase& prepared : case_inputs) {
+        for (std::size_t case_index = 0; case_index < case_inputs.size(); ++case_index) {
+            const PreparedCase& prepared = case_inputs[case_index];
             const qus::bench::e2e::CaseRunInput& input = prepared.input;
             const qus::bench::e2e::FixtureCaseMetadata& fixture_case =
                 prepared.fixture.case_metadata;
+            {
+                std::ostringstream message;
+                message << "case " << (case_index + 1) << '/' << case_inputs.size()
+                        << ": start name=" << input.name;
+                progress.line(message.str());
+            }
             qus::bench::e2e::CaseReport case_report;
             case_report.input = input;
             case_report.prompt_format = fixture_case.prompt_format;
@@ -187,6 +273,13 @@ int main(int argc, char** argv) {
             case_report.measured_repeats = options.repeats;
 
             auto run_one_repeat = [&](int repeat_index, bool measured) {
+                {
+                    std::ostringstream message;
+                    message << "case " << (case_index + 1) << '/' << case_inputs.size() << ' '
+                            << (measured ? "repeat" : "warmup") << ' ' << repeat_index
+                            << ": start";
+                    progress.line(message.str());
+                }
                 engine.reset_memory_peaks();
                 qus::bench::e2e::RepeatReport repeat;
                 repeat.repeat_index = repeat_index;
@@ -218,6 +311,24 @@ int main(int argc, char** argv) {
                     input.requested_max_new_tokens);
                 repeat.memory = engine.memory_stats();
 
+                {
+                    std::ostringstream message;
+                    message << "case " << (case_index + 1) << '/' << case_inputs.size() << ' '
+                            << (measured ? "repeat" : "warmup") << ' ' << repeat_index
+                            << ": done prefill=" << format_seconds(repeat.prefill_time_s)
+                            << " prefill_prompt_tok_s="
+                            << format_rate(repeat.prefill_prompt_tok_s())
+                            << " decode=" << format_seconds(repeat.decode_time_s)
+                            << " decode_eager_tok_s=";
+                    if (repeat.decode_eager_tok_s_valid()) {
+                        message << format_rate(repeat.decode_eager_tok_s());
+                    } else {
+                        message << "n/a";
+                    }
+                    message << " generated_tokens=" << repeat.generated_token_ids.size()
+                            << " stop_reason=" << repeat.stop_reason;
+                    progress.line(message.str());
+                }
                 if (measured) { case_report.repeats.push_back(std::move(repeat)); }
             };
 
@@ -233,10 +344,28 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            {
+                std::ostringstream message;
+                message << "case " << (case_index + 1) << '/' << case_inputs.size()
+                        << ": done name=" << input.name
+                        << " deterministic=" << (case_report.deterministic ? "true" : "false")
+                        << " measured_repeats=" << case_report.repeats.size();
+                progress.line(message.str());
+            }
             report.cases.push_back(std::move(case_report));
         }
 
+        {
+            std::ostringstream message;
+            message << "report: writing " << options.output_json_path;
+            progress.line(message.str());
+        }
         qus::bench::e2e::write_raw_report(options.output_json_path, report);
+        {
+            std::ostringstream message;
+            message << "report: wrote " << options.output_json_path;
+            progress.line(message.str());
+        }
         std::cout << "wrote " << options.output_json_path << '\n';
         return 0;
     } catch (const std::exception& e) {

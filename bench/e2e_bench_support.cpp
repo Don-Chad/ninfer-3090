@@ -419,6 +419,7 @@ std::string usage_text(std::string_view program) {
         << "  --stop-token-id <id>                           stop token id; repeat to append "
         << "(default: " << default_stop_tokens.str() << ")\n"
         << "  --eos-token-id <id>                            deprecated alias for one stop token\n"
+        << "  --quiet                                        suppress progress logging\n"
         << "  -h, --help                                     show this help\n";
     return out.str();
 }
@@ -459,6 +460,8 @@ RunOptions parse_args(int argc, char** argv) {
                 static_cast<std::uint32_t>(parse_positive_int(require_value("--max-ctx"), "max_ctx"));
         } else if (arg == "--device") {
             options.device = parse_nonnegative_int(require_value("--device"), "device");
+        } else if (arg == "--quiet") {
+            options.quiet = true;
         } else if (arg == "--stop-token-id") {
             if (saw_eos_token_alias) {
                 throw std::invalid_argument(

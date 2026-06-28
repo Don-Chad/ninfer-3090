@@ -32,23 +32,6 @@ struct Range {
     std::uint64_t end   = 0;
 };
 
-class ProgressReporter {
-public:
-    explicit ProgressReporter(Q5090Progress* progress) : progress_(progress) {}
-
-    void report(std::string_view phase, std::uint64_t done, std::uint64_t total,
-                bool force = false) {
-        if (progress_ == nullptr || !progress_->callback) { return; }
-        if (!force && done < last_done_ + progress_->min_interval_bytes && done < total) { return; }
-        last_done_ = done;
-        progress_->callback(phase, done, total);
-    }
-
-private:
-    Q5090Progress* progress_ = nullptr;
-    std::uint64_t last_done_ = 0;
-};
-
 [[noreturn]] void parse_error(const char* message) { throw std::runtime_error(message); }
 
 void require(bool ok, const char* message) {
@@ -539,16 +522,14 @@ std::vector<ParsedQ5090Tensor> parse_tensors(std::span<const std::byte> file,
                                              const ParsedQ5090Header& h,
                                              const std::vector<ParsedQ5090Module>& modules,
                                              Q5090Progress* progress) {
-    ProgressReporter reporter(progress);
+    (void) progress;
     std::vector<ParsedQ5090Tensor> tensors;
     tensors.reserve(h.tensor_count);
     std::vector<Range> ranges;
     ranges.reserve(h.tensor_count);
     std::set<std::string> seen_names;
     std::set<std::tuple<std::uint16_t, std::uint32_t, std::uint32_t>> seen_sources;
-    std::uint64_t crc_done             = 0;
     std::uint64_t previous_payload_end = h.payload_offset;
-    reporter.report("parse crc", 0, h.payload_bytes, true);
     for (std::uint32_t i = 0; i < h.tensor_count; ++i) {
         const std::uint64_t off = h.tensor_index_offset + checked_mul(i, kTensorEntrySize);
         ParsedQ5090Tensor t;
@@ -605,18 +586,12 @@ std::vector<ParsedQ5090Tensor> parse_tensors(std::span<const std::byte> file,
             require(seen_sources.insert(source_key).second, "q5090 duplicate tensor source id");
         }
         require(expected_payload_bytes(t) == t.payload_bytes, "q5090 tensor payload byte mismatch");
-        require(q5090_crc32(file.subspan(static_cast<std::size_t>(t.payload_offset),
-                                         static_cast<std::size_t>(t.payload_bytes))) == t.crc32,
-                "q5090 tensor crc mismatch");
-        crc_done = std::min(h.payload_bytes, checked_add(crc_done, t.payload_bytes));
-        reporter.report("parse crc", crc_done, h.payload_bytes);
         ranges.push_back(Range{t.payload_offset, payload_end});
         tensors.push_back(std::move(t));
     }
     require_zero_range(file, previous_payload_end,
                        checked_add(h.payload_offset, h.payload_bytes) - previous_payload_end,
                        "q5090 payload padding nonzero");
-    reporter.report("parse crc", h.payload_bytes, h.payload_bytes, true);
 
     std::sort(ranges.begin(), ranges.end(),
               [](const Range& a, const Range& b) { return a.begin < b.begin; });

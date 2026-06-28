@@ -87,9 +87,15 @@ qus_e2e_bench \
   [--repeats <n>] \
   [--max-ctx <tokens>] \
   [--device <cuda-device>] \
+  [--quiet] \
   --stop-token-id 248046 \
   --stop-token-id 248044
 ```
+
+By default, `qus_e2e_bench` writes human-readable progress lines to `stderr` with the `[e2e]`
+prefix for preflight, weight load, each warmup/measured repeat, case completion, and report writing.
+This progress output is not part of the JSON report and does not change the timing contract. Use
+`--quiet` to suppress progress lines while keeping normal errors and the final `stdout` write notice.
 
 Minimal local error-report smoke:
 
