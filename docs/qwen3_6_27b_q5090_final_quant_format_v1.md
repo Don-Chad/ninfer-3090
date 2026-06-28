@@ -371,9 +371,13 @@ Full attention 单层大小明细：
 
 ```text
 self_attn.q_proj.weight shape = [12288, 5120]
-rows 0..6143      -> query       -> Q4G64_F16S
-rows 6144..12287  -> output gate -> Q5G64_F16S
+view[24, 512, 5120][:, :256, :]   -> query       -> [6144,5120] Q4G64_F16S
+view[24, 512, 5120][:, 256:, :]   -> output gate -> [6144,5120] Q5G64_F16S
 ```
+
+这里的 `512` 是每个 full-attention head 的 fused `[query(256) | gate(256)]` 输出宽度。
+因此离线转换必须按 head 取前/后 256 行后再展平成 `[6144,5120]`；不能把
+`[12288,5120]` 直接切成连续的 `[0:6144]` 和 `[6144:12288]` 两半。
 
 converter 输出 logical tensor entries：
 
