@@ -263,10 +263,11 @@ __device__ __forceinline__ float q4_accumulate_lane_pair(
 }
 
 template <>
-__global__ void linear_tuned_lowbit_gemv_kernel<Q4Codec>(const __nv_bfloat16* x,
-                                                         const std::uint8_t* payload,
-                                                         __nv_bfloat16* out, std::int32_t n,
-                                                         std::int32_t k, std::int32_t padded_k) {
+__global__ void __launch_bounds__(128, 12)
+    linear_tuned_lowbit_gemv_kernel<Q4Codec>(const __nv_bfloat16* x,
+                                             const std::uint8_t* payload, __nv_bfloat16* out,
+                                             std::int32_t n, std::int32_t k,
+                                             std::int32_t padded_k) {
     constexpr int kWarpSize = 32;
     constexpr int kWarpsPerRow = 2;
     constexpr int kGroupsPerFastStep = 4;
