@@ -418,7 +418,6 @@ std::string usage_text(std::string_view program) {
         << defaults.device << ")\n"
         << "  --stop-token-id <id>                           stop token id; repeat to append "
         << "(default: " << default_stop_tokens.str() << ")\n"
-        << "  --eos-token-id <id>                            deprecated alias for one stop token\n"
         << "  --quiet                                        suppress progress logging\n"
         << "  -h, --help                                     show this help\n";
     return out.str();
@@ -429,8 +428,6 @@ RunOptions parse_args(int argc, char** argv) {
     bool saw_weights = false;
     bool saw_output = false;
     bool saw_explicit_stop_token = false;
-    bool saw_stop_token_flag = false;
-    bool saw_eos_token_alias = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg(argv[i]);
         auto require_value = [&](const char* flag) -> std::string {
@@ -463,27 +460,12 @@ RunOptions parse_args(int argc, char** argv) {
         } else if (arg == "--quiet") {
             options.quiet = true;
         } else if (arg == "--stop-token-id") {
-            if (saw_eos_token_alias) {
-                throw std::invalid_argument(
-                    "--eos-token-id cannot be combined with --stop-token-id");
-            }
-            saw_stop_token_flag = true;
             if (!saw_explicit_stop_token) {
                 options.stop_token_ids.clear();
                 saw_explicit_stop_token = true;
             }
             options.stop_token_ids.push_back(
                 parse_nonnegative_int(require_value("--stop-token-id"), "stop_token_id"));
-        } else if (arg == "--eos-token-id") {
-            if (saw_stop_token_flag) {
-                throw std::invalid_argument(
-                    "--eos-token-id cannot be combined with --stop-token-id");
-            }
-            saw_eos_token_alias = true;
-            options.stop_token_ids.clear();
-            options.stop_token_ids.push_back(
-                parse_nonnegative_int(require_value("--eos-token-id"), "eos_token_id"));
-            saw_explicit_stop_token = true;
         } else {
             throw std::invalid_argument("unknown argument: " + std::string(arg));
         }

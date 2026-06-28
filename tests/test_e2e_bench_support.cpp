@@ -186,26 +186,13 @@ int test_parse_args_stop_tokens() {
     failures += expect_int_vector(parsed_repeated.stop_token_ids, {7, 9},
                                   "explicit repeated stop token ids");
 
-    std::vector<std::string> eos_alias = base;
-    eos_alias.insert(eos_alias.end(), {"--eos-token-id", "123"});
-    const qus::bench::e2e::RunOptions parsed_alias = parse_args_for_test(eos_alias);
-    failures += expect_int_vector(parsed_alias.stop_token_ids, {123},
-                                  "deprecated eos alias stop token ids");
-
     failures += expect_throws<std::invalid_argument>(
         [&] {
-            std::vector<std::string> mixed = base;
-            mixed.insert(mixed.end(), {"--stop-token-id", "7", "--eos-token-id", "123"});
-            (void)parse_args_for_test(mixed);
+            std::vector<std::string> old_flag = base;
+            old_flag.insert(old_flag.end(), {"--eos-token-id", "123"});
+            (void)parse_args_for_test(old_flag);
         },
-        "stop token then eos alias mixed flags");
-    failures += expect_throws<std::invalid_argument>(
-        [&] {
-            std::vector<std::string> mixed = base;
-            mixed.insert(mixed.end(), {"--eos-token-id", "123", "--stop-token-id", "7"});
-            (void)parse_args_for_test(mixed);
-        },
-        "eos alias then stop token mixed flags");
+        "old eos flag is not accepted");
 
     failures += expect_throws<std::invalid_argument>(
         [&] {
@@ -257,8 +244,6 @@ int test_usage_text() {
     failures += expect_contains(usage, "--device", "usage device");
     failures += expect_contains(usage, "--stop-token-id", "usage stop token");
     failures += expect_contains(usage, "[248046, 248044]", "usage stop token default");
-    failures += expect_contains(usage, "--eos-token-id", "usage eos");
-    failures += expect_contains(usage, "deprecated", "usage eos deprecated");
     failures += expect_contains(usage, "default: " + std::to_string(qus::EngineOptions{}.max_ctx),
                                 "usage max_ctx default");
     failures += expect_contains(usage, "default: 1", "usage repeats default");

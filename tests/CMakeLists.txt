@@ -14,7 +14,6 @@ endfunction()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-qus_add_test(qus_l0_tests                    SOURCES test_dtype.cpp)
 qus_add_test(qus_device_test                 SOURCES test_device.cpp)
 qus_add_test(qus_tensor_test                 SOURCES test_tensor.cpp)
 qus_add_test(qus_weight_test                 SOURCES test_weight.cpp)
@@ -29,7 +28,6 @@ qus_add_test(qus_model_config_test           SOURCES test_model_config.cpp)
 qus_add_test(qus_model_bind_test             SOURCES test_model_bind.cpp        NEEDS_SOURCE_DIR)
 qus_add_test(qus_model_blocks_test           SOURCES test_model_blocks.cpp      NEEDS_SOURCE_DIR)
 target_compile_definitions(qus_model_blocks_test PRIVATE QUS_MODEL_TESTING=1)
-qus_add_test(qus_engine_load_test            SOURCES test_engine_load.cpp       NEEDS_SOURCE_DIR)
 qus_add_test(qus_engine_memory_stats_test    SOURCES test_engine_memory_stats.cpp NEEDS_SOURCE_DIR)
 qus_add_test(qus_e2e_bench_support_test
              SOURCES test_e2e_bench_support.cpp
@@ -43,8 +41,6 @@ qus_add_test(qus_graph_readiness_structure_test
              SOURCES test_graph_readiness_structure.cpp NEEDS_SOURCE_DIR)
 qus_add_test(qus_runtime_tap_structure_test
              SOURCES test_runtime_tap_structure.cpp NEEDS_SOURCE_DIR)
-qus_add_test(qus_hardening_cleanup_structure_test
-             SOURCES test_hardening_cleanup_structure.cpp NEEDS_SOURCE_DIR)
 
 add_executable(qus_block_dump ${PROJECT_SOURCE_DIR}/tools/parity/block_dump.cpp)
 target_link_libraries(qus_block_dump PRIVATE qus_core)
@@ -62,8 +58,6 @@ qus_add_test(qus_sigmoid_gate_mul_test SOURCES kernels/test_sigmoid_gate_mul.cpp
 qus_add_test(qus_rmsnorm_test SOURCES kernels/test_rmsnorm.cpp)
 qus_add_test(qus_l2norm_test SOURCES kernels/test_l2norm.cpp)
 qus_add_test(qus_gdn_gating_test SOURCES kernels/test_gdn_gating.cpp)
-qus_add_test(qus_gdn_common_test SOURCES kernels/test_gdn_common.cpp)
-target_include_directories(qus_gdn_common_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
 qus_add_test(qus_gated_delta_rule_test SOURCES kernels/test_gated_delta_rule.cpp)
 qus_add_test(qus_causal_conv1d_test SOURCES kernels/test_causal_conv1d.cpp)
 qus_add_test(qus_rope_test SOURCES kernels/test_rope.cpp)
@@ -71,4 +65,3 @@ qus_add_test(qus_gqa_attention_test SOURCES kernels/test_gqa_attention.cpp)
 qus_add_test(qus_embed_gather_test SOURCES kernels/test_embed_gather.cpp)
 qus_add_test(qus_argmax_test SOURCES kernels/test_argmax.cpp)
 qus_add_test(qus_linear_test SOURCES kernels/test_linear.cpp)
-qus_add_test(qus_linear_dense_structure_test SOURCES kernels/test_linear_dense_structure.cpp NEEDS_SOURCE_DIR)

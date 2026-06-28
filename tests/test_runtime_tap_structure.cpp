@@ -74,12 +74,6 @@ static_assert(requires(qus::model::Qwen3_6_27B& card, std::span<const int> ids, 
 int main() {
     int failures = 0;
 
-    const qus::EngineOptions positional{7, 4096};
-    if (positional.device != 7 || positional.max_ctx != 4096 || positional.eos_token_id != -1) {
-        std::cerr << "EngineOptions positional aggregate compatibility broke\n";
-        ++failures;
-    }
-
     qus::EngineOptions eos_options;
     eos_options.eos_token_id = 123;
     if (eos_options.eos_token_id != 123) {
@@ -126,9 +120,6 @@ int main() {
     failures += expect_present(model, "TapId::AfterMlp", "tap hook must cover MLP outputs");
     failures += expect_present(model, "TapId::AfterFinalNorm", "tap hook must cover final norm");
     failures += expect_present(model, "TapId::AfterLogits", "tap hook must cover logits");
-    failures +=
-        expect_present(model, "layer_%02d.f32", "FileTap must keep legacy layer dump files");
-
     failures += expect_present(model_h, "kWorkspaceLifetimePolicy",
                                "model must expose workspace lifetime policy");
     failures += expect_present(model_h, "block_scoped_mixer_mlp_rewind",

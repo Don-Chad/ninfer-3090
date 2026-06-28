@@ -224,11 +224,6 @@ void FileTap::operator()(TapId id, int layer, Phase phase, const Tensor& x, cuda
     (void)phase;
     const std::vector<float> values = tensor_to_f32(x, stream);
     write_f32_file(out_dir_ / tap_file_name(id, layer), values);
-    if (id == TapId::AfterMlp) {
-        char legacy[32];
-        std::snprintf(legacy, sizeof(legacy), "layer_%02d.f32", layer);
-        write_f32_file(out_dir_ / legacy, values);
-    }
 }
 
 Qwen3_6_27B::Qwen3_6_27B(DeviceContext& ctx, WeightStore& weights, WorkspaceArena& work,

@@ -69,7 +69,7 @@ def dump_first_divergent_layer(
         model.forward(prompt, mismatch_index + 1, dumps=dumps)
         first_bad = None
         for layer in range(64):
-            cpp = np.fromfile(out_dir / f"layer_{layer:02d}.f32", dtype="<f4")
+            cpp = np.fromfile(out_dir / f"layer_{layer:02d}_mlp.f32", dtype="<f4")
             if cpp.size % D != 0:
                 raise ValueError(f"bad dump shape for layer {layer}: {cpp.size} floats")
             cpp = cpp.reshape(cpp.size // D, D)
