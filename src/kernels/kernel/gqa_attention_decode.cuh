@@ -236,6 +236,7 @@ __launch_bounds__(256) __global__ void gqa_attention_decode_reduce_output_kernel
         __syncthreads();
     }
     const float head_m = reduce[0];
+    __syncthreads();
 
     if (head_m == -CUDART_INF_F) {
         const int d = d_start + tid;
