@@ -20,8 +20,8 @@ transforms: the converter may canonicalize documented TEXT_CORE shapes into q509
 | `packing.py` | LSB-first two's-complement bit packing (Q4/Q5/Q6) + W8 |
 | `layouts.py` | ROW_SPLIT and CONTIGUOUS encoders + decoders |
 | `tensor_plan.py` | declarative source->qtype/layout/slice tables for all three segments |
-| `convert.py` | CLI: stream shards, assemble the packed file + `manifest.json` |
-| `verify.py` | reparse + per-tensor round-trip dequant error metrics |
+| `convert.py` | CLI: stream shards, assemble the packed file + `manifest.v2.json` |
+| `verify.py` | L0 structure/plan checks, L1 bit-exact quantizer checks, and `conv_dump.v2.json` |
 | `tests/` | CPU round-trip tests for packing/quant/layouts/container |
 
 GDN `linear_attn.conv1d.weight` is transformed from HF raw `[10240,1,4]` into q5090 canonical
@@ -33,16 +33,20 @@ runtime model bind path does not allocate temporary conv1d storage.
 Run from the repo root with a CUDA-enabled env:
 
 ```bash
-conda run -n vllm-bench python -m tools.q5090_convert.convert \
-  --model /home/neroued/llama.cpp/models/Qwen3.6-27B
+/home/neroued/miniconda3/envs/py311/bin/python -m tools.q5090_convert.convert \
+  --model /home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16 \
+  --out out/qwen3_6_27b.q5090_w4g64_mixed_v2.qus
 
-conda run -n vllm-bench python -m tools.q5090_convert.verify \
-  --model /home/neroued/llama.cpp/models/Qwen3.6-27B \
-  --file  /home/neroued/llama.cpp/models/Qwen3.6-27B-q5090/qwen3_6_27b.q5090_w4g64_mixed_v2.qus
+/home/neroued/miniconda3/envs/py311/bin/python -m tools.q5090_convert.verify \
+  out/qwen3_6_27b.q5090_w4g64_mixed_v2.qus
 ```
 
-Useful flags: `--out FILE`, `--no-mtp`, `--no-vision`, `--device cpu`,
-`--limit-text-layers N` / `--vision-blocks M` (debug subsets), `--force` (config mismatch -> warn).
+The converter writes `out/manifest.v2.json` next to the packed file. The verifier writes
+`out/conv_dump.v2.json` unless `--dump FILE` is supplied. Useful flags: `--out FILE`, `--no-mtp`,
+`--no-vision`, `--device cpu`, `--force` (config mismatch -> warn). Converter-only subset flags
+`--limit-text-layers N` and `--vision-blocks M` are for local writer debugging; the full L0/L1 verifier
+expects the complete emitted plan. The verifier defaults to the local HF model path above; pass
+`--model DIR` to verify another source tree.
 
 Tests:
 
