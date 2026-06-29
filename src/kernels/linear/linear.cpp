@@ -1,6 +1,13 @@
 #include "qus/kernels/linear.h"
 
 #include "kernels/linear/plan/linear_plan.h"
+#include "kernels/linear/gemv/linear_rowsplit_gemv_attn_kv_1024.cuh"
+#include "kernels/linear/gemv/linear_rowsplit_gemv_gdn_qk_2048.cuh"
+#include "kernels/linear/gemv/linear_rowsplit_gemv_lm_head.cuh"
+#include "kernels/linear/gemv/linear_rowsplit_gemv_mlp_down.cuh"
+#include "kernels/linear/gemv/linear_rowsplit_gemv_mlp_gate_up.cuh"
+#include "kernels/linear/gemv/linear_rowsplit_gemv_out_6144.cuh"
+#include "kernels/linear/gemv/linear_rowsplit_gemv_proj_6144.cuh"
 #include "kernels/linear/reference/linear_generic.h"
 #include "qus/core/weight.h"   // as_dense
 
@@ -275,6 +282,33 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) 
         detail::linear_generic_dense_gemm_launch(x, dense, out, stream);
         break;
     }
+    case detail::LinearPolicyId::AttnKV1024Q4RowsplitGemv:
+        detail::linear_rowsplit_gemv_attn_kv_1024_q4_launch(x, w, out, stream);
+        break;
+    case detail::LinearPolicyId::AttnKV1024Q5RowsplitGemv:
+        detail::linear_rowsplit_gemv_attn_kv_1024_q5_launch(x, w, out, stream);
+        break;
+    case detail::LinearPolicyId::MlpGateUpQ4RowsplitGemv:
+        detail::linear_rowsplit_gemv_mlp_gate_up_q4_launch(x, w, out, stream);
+        break;
+    case detail::LinearPolicyId::MlpDownQ5RowsplitGemv:
+        detail::linear_rowsplit_gemv_mlp_down_q5_launch(x, w, out, stream);
+        break;
+    case detail::LinearPolicyId::LmHeadQ6RowsplitGemv:
+        detail::linear_rowsplit_gemv_lm_head_q6_launch(x, w, out, stream);
+        break;
+    case detail::LinearPolicyId::Proj6144Q4RowsplitGemv:
+        detail::linear_rowsplit_gemv_proj_6144_q4_launch(x, w, out, stream);
+        break;
+    case detail::LinearPolicyId::Proj6144Q5RowsplitGemv:
+        detail::linear_rowsplit_gemv_proj_6144_q5_launch(x, w, out, stream);
+        break;
+    case detail::LinearPolicyId::Out6144Q5RowsplitGemv:
+        detail::linear_rowsplit_gemv_out_6144_q5_launch(x, w, out, stream);
+        break;
+    case detail::LinearPolicyId::GdnQK2048Q4RowsplitGemv:
+        detail::linear_rowsplit_gemv_gdn_qk_2048_q4_launch(x, w, out, stream);
+        break;
     }
 }
 

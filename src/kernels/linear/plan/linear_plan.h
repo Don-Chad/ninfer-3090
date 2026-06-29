@@ -37,6 +37,15 @@ enum class LinearPolicyId {
     GenericLowbitGemm,
     GenericDenseGemv,
     GenericDenseGemm,
+    AttnKV1024Q4RowsplitGemv,
+    AttnKV1024Q5RowsplitGemv,
+    MlpGateUpQ4RowsplitGemv,
+    MlpDownQ5RowsplitGemv,
+    LmHeadQ6RowsplitGemv,
+    Proj6144Q4RowsplitGemv,
+    Proj6144Q5RowsplitGemv,
+    Out6144Q5RowsplitGemv,
+    GdnQK2048Q4RowsplitGemv,
 };
 
 struct LinearPlanKey {

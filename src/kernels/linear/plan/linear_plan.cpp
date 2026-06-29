@@ -44,6 +44,70 @@ LinearRegime classify_regime(LinearFormat /*fmt*/, ShapeFamily /*shape*/, std::i
 }
 
 LinearPlan resolve_plan(LinearPlanKey key) {
+    if (key.format == LinearFormat::Q4G64_RowSplit &&
+        key.shape == ShapeFamily::AttnKV1024x5120 &&
+        key.regime == LinearRegime::T1) {
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::AttnKV1024Q4RowsplitGemv,
+                          policy_name(LinearPolicyId::AttnKV1024Q4RowsplitGemv),
+                          /*uses_tensor_cores=*/false};
+    }
+    if (key.format == LinearFormat::Q5G64_RowSplit &&
+        key.shape == ShapeFamily::AttnKV1024x5120 &&
+        key.regime == LinearRegime::T1) {
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::AttnKV1024Q5RowsplitGemv,
+                          policy_name(LinearPolicyId::AttnKV1024Q5RowsplitGemv),
+                          /*uses_tensor_cores=*/false};
+    }
+    if (key.format == LinearFormat::Q4G64_RowSplit &&
+        key.shape == ShapeFamily::MlpGateUp17408x5120 &&
+        key.regime == LinearRegime::T1) {
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::MlpGateUpQ4RowsplitGemv,
+                          policy_name(LinearPolicyId::MlpGateUpQ4RowsplitGemv),
+                          /*uses_tensor_cores=*/false};
+    }
+    if (key.format == LinearFormat::Q5G64_RowSplit &&
+        key.shape == ShapeFamily::MlpDown5120x17408 &&
+        key.regime == LinearRegime::T1) {
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::MlpDownQ5RowsplitGemv,
+                          policy_name(LinearPolicyId::MlpDownQ5RowsplitGemv),
+                          /*uses_tensor_cores=*/false};
+    }
+    if (key.format == LinearFormat::Q6G64_RowSplit &&
+        key.shape == ShapeFamily::LmHead248320x5120 &&
+        key.regime == LinearRegime::T1) {
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::LmHeadQ6RowsplitGemv,
+                          policy_name(LinearPolicyId::LmHeadQ6RowsplitGemv),
+                          /*uses_tensor_cores=*/false};
+    }
+    if (key.format == LinearFormat::Q4G64_RowSplit &&
+        key.shape == ShapeFamily::Proj6144x5120 &&
+        key.regime == LinearRegime::T1) {
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::Proj6144Q4RowsplitGemv,
+                          policy_name(LinearPolicyId::Proj6144Q4RowsplitGemv),
+                          /*uses_tensor_cores=*/false};
+    }
+    if (key.format == LinearFormat::Q5G64_RowSplit &&
+        key.shape == ShapeFamily::Proj6144x5120 &&
+        key.regime == LinearRegime::T1) {
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::Proj6144Q5RowsplitGemv,
+                          policy_name(LinearPolicyId::Proj6144Q5RowsplitGemv),
+                          /*uses_tensor_cores=*/false};
+    }
+    if (key.format == LinearFormat::Q5G64_RowSplit &&
+        key.shape == ShapeFamily::Out5120x6144 &&
+        key.regime == LinearRegime::T1) {
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::Out6144Q5RowsplitGemv,
+                          policy_name(LinearPolicyId::Out6144Q5RowsplitGemv),
+                          /*uses_tensor_cores=*/false};
+    }
+    if (key.format == LinearFormat::Q4G64_RowSplit &&
+        key.shape == ShapeFamily::GdnQK2048x5120 &&
+        key.regime == LinearRegime::T1) {
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::GdnQK2048Q4RowsplitGemv,
+                          policy_name(LinearPolicyId::GdnQK2048Q4RowsplitGemv),
+                          /*uses_tensor_cores=*/false};
+    }
+
     const bool dense = (key.format == LinearFormat::DenseBF16 || key.format == LinearFormat::DenseFP32);
     const bool gemv  = (key.regime == LinearRegime::T1);
     const LinearPolicyId policy =
@@ -97,6 +161,24 @@ const char* policy_name(LinearPolicyId p) {
     case LinearPolicyId::GenericLowbitGemm: return "linear.ref.lowbit.gemm.generic.v1";
     case LinearPolicyId::GenericDenseGemv:  return "linear.ref.dense.gemv.generic.v1";
     case LinearPolicyId::GenericDenseGemm:  return "linear.ref.dense.gemm.generic.v1";
+    case LinearPolicyId::AttnKV1024Q4RowsplitGemv:
+        return "linear.rowsplit.gemv.attn_kv_1024.q4.warp4_row.v1";
+    case LinearPolicyId::AttnKV1024Q5RowsplitGemv:
+        return "linear.rowsplit.gemv.attn_kv_1024.q5.warp8_row.v1";
+    case LinearPolicyId::MlpGateUpQ4RowsplitGemv:
+        return "linear.rowsplit.gemv.mlp_gate_up.q4.warp_row.v1";
+    case LinearPolicyId::MlpDownQ5RowsplitGemv:
+        return "linear.rowsplit.gemv.mlp_down.q5.warp_row.v1";
+    case LinearPolicyId::LmHeadQ6RowsplitGemv:
+        return "linear.rowsplit.gemv.lm_head.q6.warp_row.v1";
+    case LinearPolicyId::Proj6144Q4RowsplitGemv:
+        return "linear.rowsplit.gemv.proj_6144.q4.warp_row.v1";
+    case LinearPolicyId::Proj6144Q5RowsplitGemv:
+        return "linear.rowsplit.gemv.proj_6144.q5.warp_row.v1";
+    case LinearPolicyId::Out6144Q5RowsplitGemv:
+        return "linear.rowsplit.gemv.out_6144.q5.warp_row.v1";
+    case LinearPolicyId::GdnQK2048Q4RowsplitGemv:
+        return "linear.rowsplit.gemv.gdn_qk_2048.q4.warp_row.v1";
     }
     return "linear.ref.unknown";
 }
