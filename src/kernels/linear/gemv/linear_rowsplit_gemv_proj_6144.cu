@@ -22,18 +22,6 @@ constexpr int kSplitK        = 4;
 constexpr int kQ5NibbleBytesPerGroup = 32;
 constexpr int kQ5HighBytesPerGroup = 8;
 
-struct ArenaScope {
-    WorkspaceArena& ws;
-    std::size_t mark;
-
-    explicit ArenaScope(WorkspaceArena& arena) : ws(arena), mark(arena.mark()) {}
-
-    ~ArenaScope() { ws.rewind(mark); }
-
-    ArenaScope(const ArenaScope&)            = delete;
-    ArenaScope& operator=(const ArenaScope&) = delete;
-};
-
 __device__ __forceinline__ int sign_extend_q5(int v) { return (v & 0x10) ? (v - 32) : v; }
 
 __device__ __forceinline__ std::uint16_t load_scale_bits(const std::uint8_t* scale_row, int group) {
@@ -73,12 +61,14 @@ __global__ void linear_rowsplit_gemv_proj_6144_q5_kernel(const __nv_bfloat16* __
                                                          const std::uint8_t* __restrict__ codes,
                                                          const std::uint8_t* __restrict__ high_bits,
                                                          const std::uint8_t* __restrict__ scales,
-                                                         float* __restrict__ partials) {
+                                                         __nv_bfloat16* __restrict__ out) {
+    __shared__ float split_sums[kSplitK];
+
     const int lane = static_cast<int>(threadIdx.x) & 31;
     const int warp = static_cast<int>(threadIdx.x) >> 5;
-    const int row  = static_cast<int>(blockIdx.x) * kWarpsPerBlock + warp;
+    const int row  = static_cast<int>(blockIdx.x);
     if (row >= kN) { return; }
-    const int split       = static_cast<int>(blockIdx.y);
+    const int split       = warp;
     const int group_begin = split * (kGroups / kSplitK);
     const int group_end   = group_begin + (kGroups / kSplitK);
 
@@ -127,20 +117,16 @@ __global__ void linear_rowsplit_gemv_proj_6144_q5_kernel(const __nv_bfloat16* __
     }
 
     acc = warp_reduce_sum(acc);
-    if (lane == 0) { partials[static_cast<std::int64_t>(split) * kN + row] = acc; }
-}
-
-__global__ void linear_rowsplit_gemv_proj_6144_q5_reduce_kernel(const float* __restrict__ partials,
-                                                                __nv_bfloat16* __restrict__ out) {
-    const int row = static_cast<int>(blockIdx.x) * blockDim.x + static_cast<int>(threadIdx.x);
-    if (row >= kN) { return; }
-
-    float acc = 0.0f;
+    if (lane == 0) { split_sums[split] = acc; }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float total = 0.0f;
 #pragma unroll
-    for (int split = 0; split < kSplitK; ++split) {
-        acc += partials[static_cast<std::int64_t>(split) * kN + row];
+        for (int i = 0; i < kSplitK; ++i) {
+            total += split_sums[i];
+        }
+        out[row] = __float2bfloat16(total);
     }
-    out[row] = __float2bfloat16(acc);
 }
 
 } // namespace
@@ -150,21 +136,12 @@ void linear_rowsplit_gemv_proj_6144_q5_launch(const Tensor& x, const Weight& w, 
     if (w.n != kN || w.k != kK || w.padded_shape[1] != kK) {
         throw std::invalid_argument("linear: Proj6144 Q5 tuned GEMV requires 6144x5120");
     }
-    ArenaScope arena_scope(ws);
-    Tensor partials_tensor = ws.alloc(DType::FP32, {kSplitK, kN});
-    auto* partials         = static_cast<float*>(partials_tensor.data);
+    (void)ws;
 
-    const int grid = (kN + kWarpsPerBlock - 1) / kWarpsPerBlock;
-    linear_rowsplit_gemv_proj_6144_q5_kernel<<<dim3(grid, kSplitK, 1), kBlockThreads, 0, stream>>>(
+    linear_rowsplit_gemv_proj_6144_q5_kernel<<<kN, kBlockThreads, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
         static_cast<const std::uint8_t*>(w.qhigh),
-        static_cast<const std::uint8_t*>(w.scales), partials);
-    CUDA_CHECK(cudaGetLastError());
-
-    constexpr int kReduceThreads = 256;
-    const int reduce_grid        = (kN + kReduceThreads - 1) / kReduceThreads;
-    linear_rowsplit_gemv_proj_6144_q5_reduce_kernel<<<reduce_grid, kReduceThreads, 0, stream>>>(
-        partials, static_cast<__nv_bfloat16*>(out.data));
+        static_cast<const std::uint8_t*>(w.scales), static_cast<__nv_bfloat16*>(out.data));
     CUDA_CHECK(cudaGetLastError());
 }
 
