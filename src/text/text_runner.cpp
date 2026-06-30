@@ -6,7 +6,22 @@
 #include <stdexcept>
 #include <utility>
 
+#include <nvtx3/nvToolsExt.h>
+
 namespace qus::text {
+
+namespace {
+
+class NvtxRange {
+public:
+    explicit NvtxRange(const char* name) { nvtxRangePushA(name); }
+    ~NvtxRange() { nvtxRangePop(); }
+
+    NvtxRange(const NvtxRange&)            = delete;
+    NvtxRange& operator=(const NvtxRange&) = delete;
+};
+
+} // namespace
 
 TextGenerationRunner::TextGenerationRunner(QwenTokenizer& tokenizer, qus::Engine& engine)
     : tokenizer_(tokenizer), engine_(engine) {}
@@ -52,18 +67,25 @@ TextGenerationResult TextGenerationRunner::generate(const std::vector<ChatMessag
     };
 
     const auto prefill_start = Clock::now();
-    int token = engine_.prefill(prompt_token_ids);
+    int token = 0;
+    {
+        const NvtxRange range("qus.prefill");
+        token = engine_.prefill(prompt_token_ids);
+    }
     const auto prefill_end = Clock::now();
     generated_token_ids.push_back(token);
     emit_stream_text(token);
 
     const auto decode_start = Clock::now();
-    if (!is_stop(token)) {
-        while (static_cast<int>(generated_token_ids.size()) < options.max_new_tokens) {
-            token = engine_.decode_step();
-            generated_token_ids.push_back(token);
-            emit_stream_text(token);
-            if (is_stop(token)) { break; }
+    {
+        const NvtxRange range("qus.decode");
+        if (!is_stop(token)) {
+            while (static_cast<int>(generated_token_ids.size()) < options.max_new_tokens) {
+                token = engine_.decode_step();
+                generated_token_ids.push_back(token);
+                emit_stream_text(token);
+                if (is_stop(token)) { break; }
+            }
         }
     }
     const auto decode_end = Clock::now();
