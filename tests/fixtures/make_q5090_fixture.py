@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit compact q5090 v2 fixtures through the real converter format helpers."""
+"""Emit compact q5090 v3 fixtures through the real converter format helpers."""
 
 from __future__ import annotations
 
@@ -109,15 +109,26 @@ def make_runtime_native_conv1d_values(seed: int) -> torch.Tensor:
     return runtime_native_gdn_conv1d(torch.from_numpy(values).to(torch.bfloat16))
 
 
-def row_split_sizes(n: int, k: int, qtype: int) -> tuple[int, int, int, int, int, int]:
+def row_split_sizes(n: int, k: int, qtype: int) -> tuple[int, int, int, int, int, int, int, int]:
     spec = qt.QUANT_SPECS[qtype]
-    padded_k = align_up(k, spec.group_size)
+    padded_k = align_up(k, 128)
     groups = padded_k // spec.group_size
-    code_plane_bytes = n * groups * spec.bytes_per_group
-    scale_plane_offset = align_up(code_plane_bytes, fmt.PAYLOAD_ALIGN)
+    nibble_plane_bytes = n * groups * spec.nibble_bytes_per_group
+    high_plane_offset = align_up(nibble_plane_bytes, fmt.PAYLOAD_ALIGN)
+    high_plane_bytes = n * groups * spec.high_bytes_per_group
+    scale_plane_offset = high_plane_offset + align_up(high_plane_bytes, fmt.PAYLOAD_ALIGN)
     scale_plane_bytes = n * groups * 2
     payload_bytes = scale_plane_offset + scale_plane_bytes
-    return padded_k, groups, code_plane_bytes, scale_plane_offset, scale_plane_bytes, payload_bytes
+    return (
+        padded_k,
+        groups,
+        nibble_plane_bytes,
+        high_plane_offset,
+        high_plane_bytes,
+        scale_plane_offset,
+        scale_plane_bytes,
+        payload_bytes,
+    )
 
 
 def encode_zero_tensor(shape: tuple[int, ...], qtype: int, layout: int):
@@ -133,14 +144,25 @@ def encode_zero_tensor(shape: tuple[int, ...], qtype: int, layout: int):
         for dim in shape:
             count *= dim
         raw = bytes(count * elem_size)
-        return raw, logical, logical, 0, qt.SCALE_NONE, len(raw), 0
+        return raw, logical, logical, 0, qt.SCALE_NONE, len(raw), 0, 0
 
     if layout != qt.LAYOUT_ROW_SPLIT:
         raise ValueError(f"unknown layout {layout}")
     n, k = shape
     spec = qt.QUANT_SPECS[qtype]
-    padded_k, _, code_bytes, _, scale_bytes, payload_bytes = row_split_sizes(n, k, qtype)
-    return bytes(payload_bytes), logical, [n, padded_k], spec.group_size, qt.SCALE_FP16, code_bytes, scale_bytes
+    padded_k, _, nibble_bytes, _, high_bytes, _, scale_bytes, payload_bytes = row_split_sizes(
+        n, k, qtype
+    )
+    return (
+        bytes(payload_bytes),
+        logical,
+        [n, padded_k],
+        spec.group_size,
+        qt.SCALE_FP16,
+        nibble_bytes,
+        high_bytes,
+        scale_bytes,
+    )
 
 
 def encode_random_tensor(shape: tuple[int, ...], qtype: int, layout: int, seed: int):
@@ -158,24 +180,44 @@ def encode_random_tensor(shape: tuple[int, ...], qtype: int, layout: int, seed: 
                 .astype("<i2")
                 .tobytes()
             )
-            return raw, logical, logical, 0, qt.SCALE_NONE, len(raw), 0
+            return raw, logical, logical, 0, qt.SCALE_NONE, len(raw), 0, 0
         if qtype == qt.QT_FP32:
             values = rng.uniform(-0.01, 0.01, size=shape).astype("<f4")
             raw = values.tobytes()
-            return raw, logical, logical, 0, qt.SCALE_NONE, len(raw), 0
+            return raw, logical, logical, 0, qt.SCALE_NONE, len(raw), 0, 0
         raise ValueError(f"random CONTIGUOUS qtype must be BF16/FP32, got {qtype}")
 
     if layout != qt.LAYOUT_ROW_SPLIT:
         raise ValueError(f"unknown layout {layout}")
     n, k = shape
     spec = qt.QUANT_SPECS[qtype]
-    padded_k, groups, code_bytes, scale_off, scale_bytes, payload_bytes = row_split_sizes(n, k, qtype)
-    code = rng.integers(0, 256, size=code_bytes, dtype=np.uint8).tobytes()
+    (
+        padded_k,
+        groups,
+        nibble_bytes,
+        high_off,
+        high_bytes,
+        scale_off,
+        scale_bytes,
+        payload_bytes,
+    ) = row_split_sizes(n, k, qtype)
+    nibble = rng.integers(0, 256, size=nibble_bytes, dtype=np.uint8).tobytes()
+    high = rng.integers(0, 256, size=high_bytes, dtype=np.uint8).tobytes()
     scales = rng.uniform(0.0002, 0.002, size=n * groups).astype(np.float16).tobytes()
     payload = bytearray(payload_bytes)
-    payload[:code_bytes] = code
+    payload[:nibble_bytes] = nibble
+    payload[high_off: high_off + high_bytes] = high
     payload[scale_off: scale_off + scale_bytes] = scales
-    return bytes(payload), logical, [n, padded_k], spec.group_size, qt.SCALE_FP16, code_bytes, scale_bytes
+    return (
+        bytes(payload),
+        logical,
+        [n, padded_k],
+        spec.group_size,
+        qt.SCALE_FP16,
+        nibble_bytes,
+        high_bytes,
+        scale_bytes,
+    )
 
 
 def encode_block(block: BlockSpec):
@@ -713,7 +755,8 @@ def build_file(out_path: Path, profile: str) -> None:
             padded,
             group,
             scale_dtype,
-            code_plane_bytes,
+            nibble_plane_bytes,
+            high_plane_bytes,
             scale_plane_bytes,
         ) = encode_block(spec)
         entry.shape = logical
@@ -723,7 +766,8 @@ def build_file(out_path: Path, profile: str) -> None:
         entry.payload_offset = pos
         entry.payload_bytes = len(payload)
         entry.crc32 = fmt.crc32(payload)
-        entry.code_plane_bytes = code_plane_bytes
+        entry.nibble_plane_bytes = nibble_plane_bytes
+        entry.high_plane_bytes = high_plane_bytes
         entry.scale_plane_bytes = scale_plane_bytes
         file_bytes.extend(payload)
         end = pos + len(payload)

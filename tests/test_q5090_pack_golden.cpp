@@ -96,14 +96,15 @@ qtypes = {
     "q6": qt.QT_Q6G64,
 }
 
-payload, logical, padded, group_size, scale_dtype, code_plane_bytes, scale_plane_bytes = encode_tensor(
+payload, logical, padded, group_size, scale_dtype, nibble_plane_bytes, high_plane_bytes, scale_plane_bytes = encode_tensor(
     known_matrix(), qtypes[qtype_name], qt.LAYOUT_ROW_SPLIT, torch.device("cpu")
 )
 
-if logical != [N, K] or padded != [70, 192] or group_size != 64 or scale_dtype != qt.SCALE_FP16:
+if logical != [N, K] or padded != [70, 256] or group_size != 64 or scale_dtype != qt.SCALE_FP16:
     raise SystemExit(
         f"unexpected encoder metadata: logical={logical} padded={padded} "
-        f"group={group_size} scale={scale_dtype} code={code_plane_bytes} scales={scale_plane_bytes}"
+        f"group={group_size} scale={scale_dtype} nibble={nibble_plane_bytes} "
+        f"high={high_plane_bytes} scales={scale_plane_bytes}"
     )
 
 out_path.write_bytes(payload)

@@ -23,7 +23,8 @@ constexpr std::int32_t kVocab = 16;
 constexpr std::int32_t kD     = 128;
 constexpr std::int32_t kQwenHiddenD = 5120;
 constexpr std::int32_t kGroup = 64;
-constexpr std::int32_t kBpr   = 48;
+constexpr std::int32_t kNibbleBpr = 32;
+constexpr std::int32_t kHighBpr   = 16;
 
 static std::int32_t groups_for_d(std::int32_t d) {
     if (d <= 0 || d % kGroup != 0) {
@@ -118,23 +119,28 @@ static std::vector<int> ids_for_T(std::int32_t T) {
     return ids;
 }
 
-static void pack_q6_group(const std::int8_t* codes, std::uint8_t* out) {
-    std::fill(out, out + kBpr, std::uint8_t{0});
+static void pack_q6_group(const std::int8_t* codes, std::uint8_t* nibble, std::uint8_t* high) {
+    std::fill(nibble, nibble + kNibbleBpr, std::uint8_t{0});
+    std::fill(high, high + kHighBpr, std::uint8_t{0});
     for (std::int32_t c = 0; c < kGroup; ++c) {
         const std::uint32_t u = static_cast<std::uint8_t>(codes[c]) & 0x3fu;
-        for (std::int32_t bit = 0; bit < 6; ++bit) {
-            const std::int32_t pos = c * 6 + bit;
-            out[pos / 8] |= static_cast<std::uint8_t>(((u >> bit) & 1u) << (pos % 8));
+        const std::uint32_t low = u & 0x0fu;
+        if ((c & 1) == 0) {
+            nibble[c >> 1] |= static_cast<std::uint8_t>(low);
+        } else {
+            nibble[c >> 1] |= static_cast<std::uint8_t>(low << 4);
         }
+        const std::int32_t high_pos = c * 2;
+        high[high_pos >> 3] |= static_cast<std::uint8_t>(((u >> 4) & 0x03u) << (high_pos & 7));
     }
 }
 
-static int unpack_q6_code(const std::uint8_t* packed, std::int32_t c) {
-    std::uint32_t u = 0;
-    for (std::int32_t bit = 0; bit < 6; ++bit) {
-        const std::int32_t pos = c * 6 + bit;
-        u |= static_cast<std::uint32_t>((packed[pos / 8] >> (pos % 8)) & 1u) << bit;
-    }
+static int unpack_q6_code(const std::uint8_t* nibble, const std::uint8_t* high, std::int32_t c) {
+    const std::uint8_t low_byte = nibble[c >> 1];
+    const std::uint32_t low = (c & 1) ? (low_byte >> 4) : (low_byte & 0x0fu);
+    const std::int32_t high_pos = c * 2;
+    const std::uint32_t hi = (high[high_pos >> 3] >> (high_pos & 7)) & 0x03u;
+    const std::uint32_t u = low | (hi << 4);
     return (u & 0x20u) ? static_cast<int>(u) - 64 : static_cast<int>(u);
 }
 
@@ -142,9 +148,13 @@ static std::vector<std::uint8_t> encode_q6_row_split(const std::vector<float>& s
                                                      std::int32_t d,
                                                      std::vector<float>& deq) {
     const std::int32_t kg = groups_for_d(d);
-    const std::size_t code_plane_bytes =
-        static_cast<std::size_t>(kVocab) * static_cast<std::size_t>(kg) * kBpr;
-    const std::size_t scale_plane_offset = align_up_size(code_plane_bytes, 256);
+    const std::size_t nibble_plane_bytes =
+        static_cast<std::size_t>(kVocab) * static_cast<std::size_t>(kg) * kNibbleBpr;
+    const std::size_t high_plane_offset = align_up_size(nibble_plane_bytes, 256);
+    const std::size_t high_plane_bytes =
+        static_cast<std::size_t>(kVocab) * static_cast<std::size_t>(kg) * kHighBpr;
+    const std::size_t scale_plane_offset =
+        high_plane_offset + align_up_size(high_plane_bytes, 256);
     const std::size_t scale_plane_bytes =
         static_cast<std::size_t>(kVocab) * static_cast<std::size_t>(kg) * 2u;
     std::vector<std::uint8_t> payload(scale_plane_offset + scale_plane_bytes);
@@ -173,9 +183,10 @@ static std::vector<std::uint8_t> encode_q6_row_split(const std::vector<float>& s
             }
 
             const std::size_t group_index = static_cast<std::size_t>(row) * kg + g;
-            const std::size_t code_off = group_index * kBpr;
+            const std::size_t nibble_off = group_index * kNibbleBpr;
+            const std::size_t high_off = high_plane_offset + group_index * kHighBpr;
             const std::size_t scale_off = scale_plane_offset + group_index * 2;
-            pack_q6_group(codes, payload.data() + code_off);
+            pack_q6_group(codes, payload.data() + nibble_off, payload.data() + high_off);
             payload[scale_off + 0] = static_cast<std::uint8_t>(scale_h & 0xffu);
             payload[scale_off + 1] = static_cast<std::uint8_t>(scale_h >> 8);
         }
@@ -219,10 +230,14 @@ static Weight dense_weight(void* data, std::int32_t d = kD) {
 
 static Weight q6_weight(void* payload, std::int32_t d = kD) {
     const std::int32_t kg = groups_for_d(d);
-    const std::uint64_t code_plane_bytes =
-        static_cast<std::uint64_t>(kVocab) * static_cast<std::uint64_t>(kg) * kBpr;
+    const std::uint64_t nibble_plane_bytes =
+        static_cast<std::uint64_t>(kVocab) * static_cast<std::uint64_t>(kg) * kNibbleBpr;
+    const std::uint64_t high_plane_offset =
+        ((nibble_plane_bytes + 255ULL) / 256ULL) * 256ULL;
+    const std::uint64_t high_plane_bytes =
+        static_cast<std::uint64_t>(kVocab) * static_cast<std::uint64_t>(kg) * kHighBpr;
     const std::uint64_t scale_plane_offset =
-        ((code_plane_bytes + 255ULL) / 256ULL) * 256ULL;
+        high_plane_offset + ((high_plane_bytes + 255ULL) / 256ULL) * 256ULL;
     const std::uint64_t scale_plane_bytes =
         static_cast<std::uint64_t>(kVocab) * static_cast<std::uint64_t>(kg) * 2ULL;
     Weight w{};
@@ -231,8 +246,10 @@ static Weight q6_weight(void* payload, std::int32_t d = kD) {
     w.q5090_scale_dtype = ScaleDType::FP16;
     w.payload         = payload;
     w.payload_bytes   = scale_plane_offset + scale_plane_bytes;
+    w.high_plane_bytes = high_plane_bytes;
     if (payload != nullptr) {
         w.qdata  = payload;
+        w.qhigh  = static_cast<std::uint8_t*>(payload) + high_plane_offset;
         w.scales = static_cast<std::uint8_t*>(payload) + scale_plane_offset;
     }
     w.group_size      = kGroup;

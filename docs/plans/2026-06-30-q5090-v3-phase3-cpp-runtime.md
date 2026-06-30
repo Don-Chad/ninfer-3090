@@ -63,17 +63,17 @@ model subagent doing the whole atomic task (un-split) plus a paired review; Stag
 | file | change |
 | --- | --- |
 | `include/qus/core/tensor.h` (`Weight` struct) | add a **high-plane pointer** `qhigh` (and `high_plane_bytes`) alongside `qdata`/`scales`; `qhigh == nullptr` for Q4/W8/dense. |
-| `include/qus/core/weight_store_parser.h` | parse the v3 `TensorEntry` plane fields (`nibble_plane_bytes`/`high_plane_bytes`/`scale_plane_bytes`); accept magic `Q5090MIXEDV3`/version 3; structural checks per spec §13 (3-plane sizes, ROW_SPLIT vs CONTIGUOUS `padded_shape`, `K_pad=align_up(K,128)`). |
+| `include/qus/core/weight_store_parser.h`, `src/core/weight_store_parser.cpp` | parse the v3 `TensorEntry` plane fields (`nibble_plane_bytes`/`high_plane_bytes`/`scale_plane_bytes`); accept magic `Q5090MIXEDV3`/version 3; structural checks per spec §13 (3-plane sizes, ROW_SPLIT vs CONTIGUOUS `padded_shape`, `K_pad=align_up(K,128)`). |
 | `src/core/weight_store.cpp` (`make_quant_descriptor`, ~193) | compute the three 256-aligned relative plane offsets (nibble/high/scale) per spec §9.2/§9.3; set `weight.qdata` (nibble), `weight.qhigh` (high), `weight.scales` (scale), each shifted by `segment.row_begin*G*{nib,hi,2}`; assert against the parsed plane-byte fields. |
-| `src/kernels/linear/codec/linear_codec.cuh` (`Q5Codec`, `Q6Codec`) | two-plane unpack: `low` from the nibble plane (reuse the Q4 nibble loader), `high` from the high plane, `q = sign_extend(low | high<<4)`. Drives the generic lowbit GEMV/GEMM (prefill + fallback). |
+| `src/kernels/linear/codec/linear_codec.cuh` (`Q5Codec`, `Q6Codec`), `src/kernels/linear/reference/linear_generic.h`, `src/kernels/linear/reference/linear_generic_lowbit*.{cu,cuh}` | two-plane unpack: `low` from the nibble plane (reuse the Q4 nibble loader), `high` from the high plane, `q = sign_extend(low | high<<4)`. Drives the generic lowbit GEMV/GEMM (prefill + fallback), whose launchers must pass `w.qhigh` for Q5/Q6. |
 | `src/kernels/linear/gemv/linear_rowsplit_gemv_mlp_down.{cu,cuh}` | unpack body → plane-split; keep split-K + reduce **structure** (Stage B revisits the split factor / whether the reduce is still needed). Plumb `qhigh`. |
 | `..._proj_6144.{cu,cuh}`, `..._out_6144.{cu,cuh}` | unpack body → plane-split; keep current occupancy/split-K structure; plumb `qhigh`. |
 | `..._attn_in_7168.{cu,cuh}` (Q5 kernel only) | Q5 unpack body → plane-split; the Q4 kernel in the same file is untouched. |
 | `..._lm_head.{cu,cuh}` | Q6 unpack body → plane-split (nibble + 2-bit high). |
-| `src/kernels/launcher/embed_gather.{cu,h}` + kernel | Q6 single-row dequant reads nibble + high planes. |
+| `src/kernels/wrapper/embed_gather.cpp`, `src/kernels/launcher/embed_gather.{cu,h}`, `src/kernels/kernel/embed_gather.cuh` | Q6 single-row dequant reads nibble + high planes. |
 | `src/kernels/linear/linear.cpp` + the rowsplit launcher signatures | thread `w.qhigh` to the Q5/Q6 launchers (Q4/W8 unaffected). |
-| `bench/linear_op_bench.cu` (`make_row_split_payload`/`make_weight`) | generate v3 three-plane payloads and set `qhigh` so the per-op bench measures the real v3 kernel. |
-| `tests/kernels/q5090_pack.h`, `tests/test_q5090_pack_golden.cpp`, `tests/test_q5090_parser.cpp`, `tests/test_weight_store*.cpp` | C++ packer/golden/parser updated to v3 three-plane; assert plane offsets + dequant. |
+| `bench/linear_op_bench.cu` (`make_row_split_payload`/`make_weight`), `bench/linear_bench.cu`, `bench/embed_gather_bench.cu` | generate v3 three-plane payloads and set `qhigh` so the active low-bit benches measure the real v3 kernels and do not preserve v2 payload assumptions. |
+| `tests/fixtures/make_q5090_fixture.py`, `tests/kernels/q5090_pack.h`, `tests/kernels/test_embed_gather.cpp`, `tests/test_q5090_pack_golden.cpp`, `tests/test_q5090_parser.cpp`, `tests/test_weight_store*.cpp`, `tests/test_model_bind.cpp`, `tests/test_engine_memory_stats.cpp`, `tests/test_model_blocks.cpp`, `tools/parity/q5090_structural_dump.h` | C++ packer/golden/parser, fixture-backed runtime tests, embed-gather oracle, and structural parity dump updated to v3 three-plane; assert plane offsets + dequant. |
 
 **Delete:** the v2 reader/parse path and any v2-only assumptions (magic/version/2-plane offset math).
 
@@ -84,8 +84,12 @@ model subagent doing the whole atomic task (un-split) plus a paired review; Stag
 - Spec §4 (TensorEntry plane fields), §9.1 (decode), §9.2 (3-plane sizes/offsets), §9.3 (plane
   addressing / `BlockView` contract), §13 (validation).
 - `src/core/weight_store.cpp` `make_quant_descriptor` (193–227) + the load loop (338–379);
-  `include/qus/core/weight_store_parser.h`; the Q5/Q6 kernels' current `accumulate_*_group`;
-  `linear_codec.cuh`; `bench/linear_op_bench.cu` `make_row_split_payload`/`make_weight`.
+  `include/qus/core/weight_store_parser.h`; `src/core/weight_store_parser.cpp`;
+  the Q5/Q6 kernels' current `accumulate_*_group`; `linear_codec.cuh`;
+  `src/kernels/linear/reference/linear_generic_lowbit*.{cu,cuh}`;
+  `src/kernels/wrapper/embed_gather.cpp`; `src/kernels/kernel/embed_gather.cuh`;
+  `bench/linear_op_bench.cu` `make_row_split_payload`/`make_weight`;
+  `bench/linear_bench.cu`; `bench/embed_gather_bench.cu`.
 
 ### Stage A definition of done (run once, all must pass)
 

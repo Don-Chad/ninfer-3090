@@ -175,18 +175,37 @@ std::uint64_t checked_mul_u64(std::uint64_t a, std::uint64_t b) {
     return a * b;
 }
 
-std::uint64_t bytes_per_group(QType qtype) {
+std::uint64_t checked_add(std::uint64_t a, std::uint64_t b) {
+    if (b > std::numeric_limits<std::uint64_t>::max() - a) {
+        throw std::overflow_error("q5090 row-split byte offset overflow");
+    }
+    return a + b;
+}
+
+std::uint64_t nibble_bytes_per_group(QType qtype) {
     switch (qtype) {
     case QType::Q4G64_F16S:
-        return 32;
     case QType::Q5G64_F16S:
-        return 40;
     case QType::Q6G64_F16S:
-        return 48;
+        return 32;
     case QType::W8G128_F16S:
         return 128;
     default:
-        throw std::runtime_error("q5090 row-split qtype has no packed bytes per group");
+        throw std::runtime_error("q5090 row-split qtype has no nibble bytes per group");
+    }
+}
+
+std::uint64_t high_bytes_per_group(QType qtype) {
+    switch (qtype) {
+    case QType::Q4G64_F16S:
+    case QType::W8G128_F16S:
+        return 0;
+    case QType::Q5G64_F16S:
+        return 8;
+    case QType::Q6G64_F16S:
+        return 16;
+    default:
+        throw std::runtime_error("q5090 row-split qtype has no high bytes per group");
     }
 }
 
@@ -203,6 +222,7 @@ Weight make_quant_descriptor(const ParsedQ5090Tensor& tensor, const ParsedQ5090S
     Weight weight{};
     weight.payload           = payload;
     weight.payload_bytes     = tensor.payload_bytes;
+    weight.high_plane_bytes  = tensor.high_plane_bytes;
     weight.qtype             = tensor.qtype;
     weight.layout            = tensor.layout;
     weight.module            = tensor.module_kind;
@@ -213,17 +233,37 @@ Weight make_quant_descriptor(const ParsedQ5090Tensor& tensor, const ParsedQ5090S
     weight.ndim              = 2;
 
     const std::uint64_t groups = tensor.padded_shape[1] / tensor.group_size;
-    const std::uint64_t code_row_bytes = checked_mul_u64(groups, bytes_per_group(tensor.qtype));
+    const std::uint64_t nibble_group_bytes = nibble_bytes_per_group(tensor.qtype);
+    const std::uint64_t high_group_bytes = high_bytes_per_group(tensor.qtype);
+    const std::uint64_t nibble_row_bytes = checked_mul_u64(groups, nibble_group_bytes);
+    const std::uint64_t high_row_bytes = checked_mul_u64(groups, high_group_bytes);
     const std::uint64_t scale_row_bytes = checked_mul_u64(groups, 2);
-    const std::uint64_t code_offset = checked_mul_u64(segment.row_begin, code_row_bytes);
+    const std::uint64_t expected_nibble =
+        checked_mul_u64(static_cast<std::uint64_t>(tensor.shape[0]), nibble_row_bytes);
+    const std::uint64_t expected_high =
+        checked_mul_u64(static_cast<std::uint64_t>(tensor.shape[0]), high_row_bytes);
+    const std::uint64_t expected_scale =
+        checked_mul_u64(static_cast<std::uint64_t>(tensor.shape[0]), scale_row_bytes);
+    if (tensor.nibble_plane_bytes != expected_nibble || tensor.high_plane_bytes != expected_high ||
+        tensor.scale_plane_bytes != expected_scale) {
+        throw std::runtime_error("q5090 row-split plane byte fields do not match descriptor math");
+    }
+
+    const std::uint64_t high_rel = align_up(tensor.nibble_plane_bytes, 256);
+    const std::uint64_t scale_rel = checked_add(high_rel, align_up(tensor.high_plane_bytes, 256));
+    const std::uint64_t nibble_offset = checked_mul_u64(segment.row_begin, nibble_row_bytes);
+    const std::uint64_t high_offset =
+        checked_add(high_rel, checked_mul_u64(segment.row_begin, high_row_bytes));
     const std::uint64_t scale_offset =
-        align_up(tensor.code_plane_bytes, 256) + checked_mul_u64(segment.row_begin, scale_row_bytes);
+        checked_add(scale_rel, checked_mul_u64(segment.row_begin, scale_row_bytes));
     if (payload != nullptr) {
         const auto* bytes = static_cast<const std::byte*>(payload);
-        weight.qdata      = bytes + code_offset;
+        weight.qdata      = bytes + nibble_offset;
+        weight.qhigh      = high_group_bytes == 0 ? nullptr : bytes + high_offset;
         weight.scales     = bytes + scale_offset;
     } else {
         weight.qdata  = nullptr;
+        weight.qhigh  = nullptr;
         weight.scales = nullptr;
     }
 

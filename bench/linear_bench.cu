@@ -147,11 +147,20 @@ void run_dense_stress(QType qtype) {
     run_dense_shape(kDenseStressN, kDenseStressK, kDenseStressT, qtype, "stress-prefill");
 }
 
-std::int32_t bytes_per_group(QType qtype) {
+std::int32_t nibble_bytes_per_group(QType qtype) {
     switch (qtype) {
     case QType::Q4G64_F16S: return 32;
-    case QType::Q5G64_F16S: return 40;
-    case QType::Q6G64_F16S: return 48;
+    case QType::Q5G64_F16S: return 32;
+    case QType::Q6G64_F16S: return 32;
+    default:                return 0;
+    }
+}
+
+std::int32_t high_bytes_per_group(QType qtype) {
+    switch (qtype) {
+    case QType::Q4G64_F16S: return 0;
+    case QType::Q5G64_F16S: return 8;
+    case QType::Q6G64_F16S: return 16;
     default:                return 0;
     }
 }
@@ -162,17 +171,26 @@ std::uint64_t align_up_u64(std::uint64_t value, std::uint64_t align) {
 
 DBuf make_row_split_payload(QType qtype, std::int32_t n, std::int32_t k) {
     constexpr std::uint16_t kScaleOne = 0x3c00u;
-    const std::int32_t kg = (k + 63) / 64;
-    const std::int32_t bpr = bytes_per_group(qtype);
-    const std::uint64_t code_bytes =
-        static_cast<std::uint64_t>(n) * static_cast<std::uint64_t>(kg) *
-        static_cast<std::uint64_t>(bpr);
-    const std::uint64_t scale_offset = align_up_u64(code_bytes, 256);
+    const std::int32_t k_pad = static_cast<std::int32_t>(align_up_u64(k, 128));
+    const std::int32_t kg    = k_pad / 64;
+    const std::uint64_t groups =
+        static_cast<std::uint64_t>(n) * static_cast<std::uint64_t>(kg);
+    const std::uint64_t nibble_bytes =
+        groups * static_cast<std::uint64_t>(nibble_bytes_per_group(qtype));
+    const std::uint64_t high_bytes =
+        groups * static_cast<std::uint64_t>(high_bytes_per_group(qtype));
+    const std::uint64_t high_offset  = align_up_u64(nibble_bytes, 256);
+    const std::uint64_t scale_offset = high_offset + align_up_u64(high_bytes, 256);
     const std::uint64_t scale_bytes =
         static_cast<std::uint64_t>(n) * static_cast<std::uint64_t>(kg) * 2ULL;
+
     std::vector<std::uint8_t> payload(static_cast<std::size_t>(scale_offset + scale_bytes));
-    for (std::uint64_t i = 0; i < code_bytes; ++i) {
+    for (std::uint64_t i = 0; i < nibble_bytes; ++i) {
         payload[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>((i * 17u + 31u) & 0xffu);
+    }
+    for (std::uint64_t i = 0; i < high_bytes; ++i) {
+        payload[static_cast<std::size_t>(high_offset + i)] =
+            static_cast<std::uint8_t>((i * 13u + 7u) & 0xffu);
     }
     for (std::int32_t row = 0; row < n; ++row) {
         for (std::int32_t g = 0; g < kg; ++g) {
@@ -190,16 +208,22 @@ DBuf make_row_split_payload(QType qtype, std::int32_t n, std::int32_t k) {
 }
 
 Weight lowbit_weight(void* payload, QType qtype, std::int32_t n, std::int32_t k) {
-    const std::int32_t kg = (k + 63) / 64;
-    const std::uint64_t code_bytes =
-        static_cast<std::uint64_t>(n) * static_cast<std::uint64_t>(kg) *
-        static_cast<std::uint64_t>(bytes_per_group(qtype));
-    const std::uint64_t scale_offset = align_up_u64(code_bytes, 256);
+    const std::int32_t k_pad = static_cast<std::int32_t>(align_up_u64(k, 128));
+    const std::int32_t kg    = k_pad / 64;
+    const std::uint64_t groups =
+        static_cast<std::uint64_t>(n) * static_cast<std::uint64_t>(kg);
+    const std::uint64_t nibble_bytes =
+        groups * static_cast<std::uint64_t>(nibble_bytes_per_group(qtype));
+    const std::uint64_t high_bytes =
+        groups * static_cast<std::uint64_t>(high_bytes_per_group(qtype));
+    const std::uint64_t high_offset  = align_up_u64(nibble_bytes, 256);
+    const std::uint64_t scale_offset = high_offset + align_up_u64(high_bytes, 256);
     const std::uint64_t scale_bytes =
         static_cast<std::uint64_t>(n) * static_cast<std::uint64_t>(kg) * 2ULL;
     Weight w{};
     w.payload           = payload;
     w.payload_bytes     = scale_offset + scale_bytes;
+    w.high_plane_bytes  = high_bytes;
     w.qtype             = qtype;
     w.layout            = QuantLayout::RowSplit;
     w.q5090_scale_dtype = ScaleDType::FP16;
@@ -207,9 +231,11 @@ Weight lowbit_weight(void* payload, QType qtype, std::int32_t n, std::int32_t k)
     w.shape[0]          = n;
     w.shape[1]          = k;
     w.padded_shape[0]   = n;
-    w.padded_shape[1]   = k;
+    w.padded_shape[1]   = k_pad;
     w.ndim              = 2;
     w.qdata             = payload;
+    w.qhigh             = high_bytes == 0 ? nullptr
+                                          : static_cast<std::uint8_t*>(payload) + high_offset;
     w.scales            = static_cast<std::uint8_t*>(payload) + scale_offset;
     w.n                 = n;
     w.k                 = k;

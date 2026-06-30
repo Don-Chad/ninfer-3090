@@ -76,6 +76,19 @@ int expect_weight(const qus::Weight* w, qus::SourceKind kind, std::uint32_t laye
     failures += w->qdata != nullptr ? 0 : fail(std::string(label) + " qdata");
     if (layout == qus::QuantLayout::RowSplit) {
         failures += w->scales != nullptr ? 0 : fail(std::string(label) + " scales");
+        if (qtype == qus::QType::Q5G64_F16S || qtype == qus::QType::Q6G64_F16S) {
+            failures += w->qhigh != nullptr ? 0 : fail(std::string(label) + " qhigh");
+            failures +=
+                w->high_plane_bytes > 0 ? 0 : fail(std::string(label) + " high_plane_bytes");
+        } else {
+            failures += w->qhigh == nullptr ? 0 : fail(std::string(label) + " qhigh null");
+            failures +=
+                w->high_plane_bytes == 0 ? 0 : fail(std::string(label) + " high_plane_bytes zero");
+        }
+    } else {
+        failures += w->qhigh == nullptr ? 0 : fail(std::string(label) + " dense qhigh null");
+        failures +=
+            w->high_plane_bytes == 0 ? 0 : fail(std::string(label) + " dense high_plane_bytes zero");
     }
     return failures;
 }

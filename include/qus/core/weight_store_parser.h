@@ -102,7 +102,8 @@ struct ParsedQ5090Tensor {
     std::uint32_t segment_begin               = 0;
     std::uint16_t fusion_group_id             = 0;
     std::uint16_t fusion_index                = 0;
-    std::uint64_t code_plane_bytes            = 0;
+    std::uint64_t nibble_plane_bytes          = 0;
+    std::uint64_t high_plane_bytes            = 0;
     std::uint64_t scale_plane_bytes           = 0;
 };
 

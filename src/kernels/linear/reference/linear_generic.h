@@ -7,7 +7,7 @@
 
 namespace qus::kernels::detail {
 
-// Low-bit (Q4/Q5/Q6): launcher selects the codec by fmt. w carries payload/qdata + padded_shape.
+// Low-bit (Q4/Q5/Q6): launcher selects the codec by fmt. w carries payload/qdata/qhigh + padded_shape.
 void linear_generic_lowbit_gemv_launch(const Tensor& x, const Weight& w, Tensor& out,
                                        LinearFormat fmt, cudaStream_t stream);
 void linear_generic_lowbit_gemm_launch(const Tensor& x, const Weight& w, Tensor& out,

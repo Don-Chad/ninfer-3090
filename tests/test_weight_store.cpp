@@ -77,6 +77,76 @@ const qus::ParsedQ5090Tensor& find_tensor(const qus::ParsedQ5090File& parsed,
     throw std::runtime_error("tensor not found");
 }
 
+const qus::ParsedQ5090Segment& find_segment(const qus::ParsedQ5090File& parsed,
+                                            std::string_view name) {
+    for (const qus::ParsedQ5090Segment& segment : parsed.segments) {
+        if (segment.name == name) { return segment; }
+    }
+    throw std::runtime_error("segment not found");
+}
+
+std::uint64_t align_up_u64(std::uint64_t value, std::uint64_t align) {
+    return ((value + align - 1) / align) * align;
+}
+
+std::uint64_t nibble_bytes_per_group(qus::QType qtype) {
+    switch (qtype) {
+    case qus::QType::Q4G64_F16S:
+    case qus::QType::Q5G64_F16S:
+    case qus::QType::Q6G64_F16S:
+        return 32;
+    case qus::QType::W8G128_F16S:
+        return 128;
+    default:
+        throw std::runtime_error("unexpected row-split qtype");
+    }
+}
+
+std::uint64_t high_bytes_per_group(qus::QType qtype) {
+    switch (qtype) {
+    case qus::QType::Q4G64_F16S:
+    case qus::QType::W8G128_F16S:
+        return 0;
+    case qus::QType::Q5G64_F16S:
+        return 8;
+    case qus::QType::Q6G64_F16S:
+        return 16;
+    default:
+        throw std::runtime_error("unexpected row-split qtype");
+    }
+}
+
+int expect_plane_offsets(const qus::Weight& weight, const qus::ParsedQ5090Tensor& tensor,
+                         const qus::ParsedQ5090Segment& segment, std::string_view label) {
+    if (weight.payload == nullptr) { return fail(std::string(label) + " payload null"); }
+    const std::uint64_t groups = tensor.padded_shape[1] / tensor.group_size;
+    const std::uint64_t nibble_row = groups * nibble_bytes_per_group(tensor.qtype);
+    const std::uint64_t high_row = groups * high_bytes_per_group(tensor.qtype);
+    const std::uint64_t scale_row = groups * 2ULL;
+    const std::uint64_t high_rel = align_up_u64(tensor.nibble_plane_bytes, 256);
+    const std::uint64_t scale_rel =
+        high_rel + align_up_u64(tensor.high_plane_bytes, 256);
+    const auto* base = static_cast<const std::byte*>(weight.payload);
+    int failures = 0;
+    failures += weight.high_plane_bytes == tensor.high_plane_bytes
+                    ? 0
+                    : fail(std::string(label) + " high_plane_bytes mismatch");
+    failures += weight.qdata == base + segment.row_begin * nibble_row
+                    ? 0
+                    : fail(std::string(label) + " qdata offset mismatch");
+    if (high_row == 0) {
+        failures += weight.qhigh == nullptr ? 0 : fail(std::string(label) + " qhigh non-null");
+    } else {
+        failures += weight.qhigh == base + high_rel + segment.row_begin * high_row
+                        ? 0
+                        : fail(std::string(label) + " qhigh offset mismatch");
+    }
+    failures += weight.scales == base + scale_rel + segment.row_begin * scale_row
+                    ? 0
+                    : fail(std::string(label) + " scales offset mismatch");
+    return failures;
+}
+
 std::vector<std::byte> payload_bytes(const std::vector<std::byte>& file,
                                      const qus::ParsedQ5090Tensor& tensor) {
     const auto begin = file.begin() + static_cast<std::ptrdiff_t>(tensor.payload_offset);
@@ -143,7 +213,11 @@ int expect_default_text_load(const qus::WeightStore& store, const qus::ParsedQ50
                         ? 0
                         : fail("text payload bytes mismatch");
         failures += text_weight->layout == qus::QuantLayout::RowSplit ? 0 : fail("text layout mismatch");
+        failures += text_weight->qhigh != nullptr ? 0 : fail("text qhigh null");
         failures += text_weight->scales != nullptr ? 0 : fail("text scales null");
+        failures += expect_plane_offsets(
+            *text_weight, text_q, find_segment(parsed, "layers.0.mlp.down_proj.weight"),
+            "text qweight");
         failures +=
             expect_device_bytes(text_weight->payload, payload_bytes(file, text_q), "text qweight");
     }
@@ -158,6 +232,14 @@ int expect_default_text_load(const qus::WeightStore& store, const qus::ParsedQ50
         failures += gate->payload == up->payload ? 0 : fail("fused segments should share payload");
         failures += gate->qdata != nullptr && gate->scales != nullptr ? 0 : fail("gate planes null");
         failures += up->qdata != nullptr && up->scales != nullptr ? 0 : fail("up planes null");
+        failures += gate->qhigh == nullptr ? 0 : fail("gate qhigh should be null");
+        failures += up->qhigh == nullptr ? 0 : fail("up qhigh should be null");
+        failures += expect_plane_offsets(
+            *gate, find_tensor(parsed, "layers.0.mlp.gateup"),
+            find_segment(parsed, "layers.0.mlp.gate_proj.weight"), "gate segment");
+        failures += expect_plane_offsets(
+            *up, find_tensor(parsed, "layers.0.mlp.gateup"),
+            find_segment(parsed, "layers.0.mlp.up_proj.weight"), "up segment");
     }
     const auto& gateup_tensor = find_tensor(parsed, "layers.0.mlp.gateup");
     const qus::Weight* gateup =

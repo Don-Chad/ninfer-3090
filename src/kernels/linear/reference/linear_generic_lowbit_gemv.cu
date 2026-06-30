@@ -30,22 +30,23 @@ void linear_generic_lowbit_gemv_launch(const Tensor& x, const Weight& w, Tensor&
     const std::int32_t k        = x.ne[0];
     const std::int32_t padded_k = w.padded_shape[1];
     const auto* codes           = static_cast<const std::uint8_t*>(w.qdata);
+    const auto* high            = static_cast<const std::uint8_t*>(w.qhigh);
     const auto* scales          = static_cast<const std::uint8_t*>(w.scales);
 
     switch (fmt) {
     case LinearFormat::Q4G64_RowSplit:
         linear_generic_lowbit_gemv_kernel<Q4Codec><<<grid_for(n), kBlock, 0, stream>>>(
-            static_cast<const __nv_bfloat16*>(x.data), codes, scales,
+            static_cast<const __nv_bfloat16*>(x.data), codes, nullptr, scales,
             static_cast<__nv_bfloat16*>(out.data), n, k, padded_k);
         break;
     case LinearFormat::Q5G64_RowSplit:
         linear_generic_lowbit_gemv_kernel<Q5Codec><<<grid_for(n), kBlock, 0, stream>>>(
-            static_cast<const __nv_bfloat16*>(x.data), codes, scales,
+            static_cast<const __nv_bfloat16*>(x.data), codes, high, scales,
             static_cast<__nv_bfloat16*>(out.data), n, k, padded_k);
         break;
     case LinearFormat::Q6G64_RowSplit:
         linear_generic_lowbit_gemv_kernel<Q6Codec><<<grid_for(n), kBlock, 0, stream>>>(
-            static_cast<const __nv_bfloat16*>(x.data), codes, scales,
+            static_cast<const __nv_bfloat16*>(x.data), codes, high, scales,
             static_cast<__nv_bfloat16*>(out.data), n, k, padded_k);
         break;
     default: break;

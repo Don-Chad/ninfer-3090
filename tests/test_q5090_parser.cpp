@@ -157,14 +157,15 @@ int check_valid_parse(const std::vector<std::byte>& bytes) {
     failures += embed.module_kind == qus::ModuleKind::TextCore ? 0 : fail("embed module mismatch");
     failures +=
         embed.shape == std::array<std::uint32_t, 4>{3, 5, 1, 1} ? 0 : fail("embed shape mismatch");
-    failures += embed.padded_shape == std::array<std::uint32_t, 4>{3, 64, 1, 1}
+    failures += embed.padded_shape == std::array<std::uint32_t, 4>{3, 128, 1, 1}
                     ? 0
                     : fail("embed padded mismatch");
     failures += embed.group_size == 64 ? 0 : fail("embed group mismatch");
     failures += embed.scale_dtype == qus::ScaleDType::FP16 ? 0 : fail("embed scale dtype mismatch");
-    failures += embed.payload_bytes == 262 ? 0 : fail("embed payload bytes mismatch");
-    failures += embed.code_plane_bytes == 144 ? 0 : fail("embed code bytes mismatch");
-    failures += embed.scale_plane_bytes == 6 ? 0 : fail("embed scale bytes mismatch");
+    failures += embed.payload_bytes == 524 ? 0 : fail("embed payload bytes mismatch");
+    failures += embed.nibble_plane_bytes == 192 ? 0 : fail("embed nibble bytes mismatch");
+    failures += embed.high_plane_bytes == 96 ? 0 : fail("embed high bytes mismatch");
+    failures += embed.scale_plane_bytes == 12 ? 0 : fail("embed scale bytes mismatch");
     failures += embed.segment_count == 1 ? 0 : fail("embed segment count mismatch");
     failures += embed.name_hash == qus::q5090_fnv1a64(embed.name) ? 0 : fail("embed hash mismatch");
     const auto& embed_segment = find_segment(parsed, "model.language_model.embed_tokens.weight");
@@ -332,8 +333,14 @@ int main() {
     failures += expect_parse_throws(valid, "shape payload mismatch", [first_entry](auto& b) {
         write_u32(b, first_entry + 40, 128);
     });
-    failures += expect_parse_throws(valid, "code plane mismatch", [first_entry](auto& b) {
+    failures += expect_parse_throws(valid, "nibble plane mismatch", [first_entry](auto& b) {
         write_u64(b, first_entry + 100, read_u64(b, first_entry + 100) + 1);
+    });
+    failures += expect_parse_throws(valid, "high plane mismatch", [first_entry](auto& b) {
+        write_u64(b, first_entry + 108, read_u64(b, first_entry + 108) + 1);
+    });
+    failures += expect_parse_throws(valid, "scale plane mismatch", [first_entry](auto& b) {
+        write_u64(b, first_entry + 116, read_u64(b, first_entry + 116) + 1);
     });
     failures += expect_parse_throws(valid, "segment partition mismatch", [up_segment](auto& b) {
         write_u32(b, up_segment + 8, 6);

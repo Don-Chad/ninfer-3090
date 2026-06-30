@@ -19,11 +19,18 @@ namespace {
 constexpr std::int32_t kVocab = 248320;
 constexpr std::int32_t kD     = 5120;
 constexpr std::int32_t kGroup = 64;
-constexpr std::int32_t kBpr   = 48;
-constexpr std::int32_t kKg    = kD / kGroup;
-constexpr std::uint64_t kCodePlaneBytes =
-    static_cast<std::uint64_t>(kVocab) * static_cast<std::uint64_t>(kKg) * kBpr;
-constexpr std::uint64_t kScalePlaneOffset = ((kCodePlaneBytes + 255ULL) / 256ULL) * 256ULL;
+constexpr std::int32_t kDPad  = ((kD + 127) / 128) * 128;
+constexpr std::int32_t kNibbleBpr = 32;
+constexpr std::int32_t kHighBpr   = 16;
+constexpr std::int32_t kScaleBpr  = 2;
+constexpr std::int32_t kKg    = kDPad / kGroup;
+constexpr std::uint64_t kNibblePlaneBytes =
+    static_cast<std::uint64_t>(kVocab) * static_cast<std::uint64_t>(kKg) * kNibbleBpr;
+constexpr std::uint64_t kHighPlaneOffset = ((kNibblePlaneBytes + 255ULL) / 256ULL) * 256ULL;
+constexpr std::uint64_t kHighPlaneBytes =
+    static_cast<std::uint64_t>(kVocab) * static_cast<std::uint64_t>(kKg) * kHighBpr;
+constexpr std::uint64_t kScalePlaneOffset =
+    kHighPlaneOffset + ((kHighPlaneBytes + 255ULL) / 256ULL) * 256ULL;
 constexpr std::uint64_t kScalePlaneBytes =
     static_cast<std::uint64_t>(kVocab) * static_cast<std::uint64_t>(kKg) * 2ULL;
 constexpr std::uint64_t kPayloadBytes = kScalePlaneOffset + kScalePlaneBytes;
@@ -42,6 +49,7 @@ Weight q6_weight(void* payload) {
     Weight w{};
     w.payload            = payload;
     w.payload_bytes      = kPayloadBytes;
+    w.high_plane_bytes   = kHighPlaneBytes;
     w.qtype              = QType::Q6G64_F16S;
     w.layout             = QuantLayout::RowSplit;
     w.q5090_scale_dtype  = ScaleDType::FP16;
@@ -49,9 +57,10 @@ Weight q6_weight(void* payload) {
     w.shape[0]           = kVocab;
     w.shape[1]           = kD;
     w.padded_shape[0]    = kVocab;
-    w.padded_shape[1]    = kD;
+    w.padded_shape[1]    = kDPad;
     w.ndim               = 2;
     w.qdata              = payload;
+    w.qhigh              = static_cast<std::uint8_t*>(payload) + kHighPlaneOffset;
     w.scales             = static_cast<std::uint8_t*>(payload) + kScalePlaneOffset;
     w.n                  = kVocab;
     w.k                  = kD;
@@ -77,7 +86,7 @@ void run(std::int32_t t, const char* tag) {
 
     // Task-defined traffic: Q6 row read plus BF16 output write.
     const double bytes = static_cast<double>(t) * static_cast<double>(kKg) *
-                             static_cast<double>(kBpr + 2) +
+                             static_cast<double>(kNibbleBpr + kHighBpr + kScaleBpr) +
                          static_cast<double>(t) * static_cast<double>(kD) * 2.0;
     const Result r = bench_loop(
         [&](cudaStream_t s) { kernels::embed_gather(tids, table, tout, s); }, bytes);

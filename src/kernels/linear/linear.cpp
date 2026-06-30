@@ -116,6 +116,9 @@ void require_dense_metadata(const Weight& w) {
     if (w.q5090_scale_dtype != ScaleDType::None) {
         throw std::invalid_argument("linear: dense weight scale dtype must be None");
     }
+    if (w.qhigh != nullptr || w.high_plane_bytes != 0) {
+        throw std::invalid_argument("linear: dense weight high plane must be null");
+    }
     for (int d = 0; d < 4; ++d) {
         if (w.padded_shape[d] != w.shape[d]) {
             throw std::invalid_argument("linear: dense weight padded shape must match shape");
@@ -131,7 +134,8 @@ void require_dense_metadata(const Weight& w) {
 }
 
 void require_row_split_lowbit_metadata(const Weight& w, const char* label,
-                                       std::uint64_t bytes_per_group) {
+                                       std::uint64_t nibble_bytes_per_group,
+                                       std::uint64_t high_bytes_per_group) {
     if (w.layout != QuantLayout::RowSplit) {
         throw std::invalid_argument(std::string("linear: ") + label + " weight must be RowSplit");
     }
@@ -144,15 +148,24 @@ void require_row_split_lowbit_metadata(const Weight& w, const char* label,
                                     " weight scale dtype must be FP16");
     }
     if (w.padded_shape[0] != w.shape[0] ||
-        w.padded_shape[1] != align_up_checked(w.shape[1], 64, label)) {
+        w.padded_shape[1] != align_up_checked(w.shape[1], 128, label)) {
         throw std::invalid_argument(std::string("linear: ") + label + " padded shape is invalid");
     }
     const std::uint64_t kg = static_cast<std::uint64_t>(w.padded_shape[1] / 64);
-    const std::uint64_t code_plane_bytes =
-        checked_mul_u64(checked_mul_u64(static_cast<std::uint64_t>(w.n), kg), bytes_per_group);
+    const std::uint64_t nibble_plane_bytes =
+        checked_mul_u64(checked_mul_u64(static_cast<std::uint64_t>(w.n), kg),
+                        nibble_bytes_per_group);
+    const std::uint64_t high_plane_bytes =
+        checked_mul_u64(checked_mul_u64(static_cast<std::uint64_t>(w.n), kg),
+                        high_bytes_per_group);
     const std::uint64_t scale_plane_bytes =
         checked_mul_u64(checked_mul_u64(static_cast<std::uint64_t>(w.n), kg), 2u);
-    const std::uint64_t scale_plane_off = align_up_u64(code_plane_bytes, 256);
+    const std::uint64_t high_plane_off = align_up_u64(nibble_plane_bytes, 256);
+    const std::uint64_t high_aligned = align_up_u64(high_plane_bytes, 256);
+    if (high_aligned > std::numeric_limits<std::uint64_t>::max() - high_plane_off) {
+        throw std::overflow_error("linear: row-split payload size overflows uint64");
+    }
+    const std::uint64_t scale_plane_off = high_plane_off + high_aligned;
     if (scale_plane_bytes > std::numeric_limits<std::uint64_t>::max() - scale_plane_off) {
         throw std::overflow_error("linear: row-split payload size overflows uint64");
     }
@@ -162,7 +175,16 @@ void require_row_split_lowbit_metadata(const Weight& w, const char* label,
     }
     if (w.qdata == nullptr || w.scales == nullptr) {
         throw std::invalid_argument(std::string("linear: ") + label +
-                                    " code and scale planes must be non-null");
+                                    " nibble and scale planes must be non-null");
+    }
+    if (high_bytes_per_group == 0) {
+        if (w.qhigh != nullptr || w.high_plane_bytes != 0) {
+            throw std::invalid_argument(std::string("linear: ") + label +
+                                        " high plane must be null");
+        }
+    } else if (w.qhigh == nullptr || w.high_plane_bytes < high_plane_bytes) {
+        throw std::invalid_argument(std::string("linear: ") + label +
+                                    " high plane must be non-null");
     }
 }
 
@@ -236,21 +258,21 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
         require_dense_alignment(x, w, out);
         break;
     case QType::Q4G64_F16S:
-        require_row_split_lowbit_metadata(w, "Q4G64_F16S", 32u);
+        require_row_split_lowbit_metadata(w, "Q4G64_F16S", 32u, 0u);
         require_matrix_shapes(x, w, out);
         require_tensor_strides(x, out);
         if (is_empty_T(x, out)) { return; }
         require_tensor_data(x, out);
         break;
     case QType::Q5G64_F16S:
-        require_row_split_lowbit_metadata(w, "Q5G64_F16S", 40u);
+        require_row_split_lowbit_metadata(w, "Q5G64_F16S", 32u, 8u);
         require_matrix_shapes(x, w, out);
         require_tensor_strides(x, out);
         if (is_empty_T(x, out)) { return; }
         require_tensor_data(x, out);
         break;
     case QType::Q6G64_F16S:
-        require_row_split_lowbit_metadata(w, "Q6G64_F16S", 48u);
+        require_row_split_lowbit_metadata(w, "Q6G64_F16S", 32u, 16u);
         require_matrix_shapes(x, w, out);
         require_tensor_strides(x, out);
         if (is_empty_T(x, out)) { return; }

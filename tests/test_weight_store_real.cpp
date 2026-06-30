@@ -199,51 +199,25 @@ int expect_empty_array_field(const Json& object, const char* key, const char* me
     return 0;
 }
 
-int expect_manifest_module(const Json& module, const char* kind, const char* policy,
-                           std::uint64_t block_count, std::uint64_t segment_count,
-                           std::uint64_t fusion_group_count, std::uint64_t payload_bytes,
-                           std::uint64_t load_policy) {
-    if (!module.is_object()) { return fail("manifest module must be object"); }
-    int failures = 0;
-    failures += expect_string_field(module, "kind", kind, "manifest module kind mismatch");
-    failures += expect_string_field(module, "policy", policy, "manifest module policy mismatch");
-    failures +=
-        expect_uint_field(module, "block_count", block_count, "manifest module block_count mismatch");
-    failures += expect_uint_field(module, "segment_count", segment_count,
-                                  "manifest module segment_count mismatch");
-    failures += expect_uint_field(module, "fusion_group_count", fusion_group_count,
-                                  "manifest module fusion_group_count mismatch");
-    failures += expect_uint_field(module, "payload_bytes", payload_bytes,
-                                  "manifest module payload_bytes mismatch");
-    failures +=
-        expect_uint_field(module, "load_policy", load_policy, "manifest module load_policy mismatch");
-    return failures;
-}
-
 int expect_manifest_fields(const Json& manifest, std::uint64_t file_size) {
     if (!manifest.is_object()) { return fail("manifest root must be object"); }
 
     int failures = 0;
-    failures += expect_string_field(manifest, "format", "q5090_w4g64_mixed_v2",
+    failures += expect_string_field(manifest, "format", "q5090_w4g64_mixed_v3",
                                     "manifest format mismatch");
-    failures += expect_uint_field(manifest, "format_version", 2, "manifest format_version mismatch");
-    failures +=
-        expect_string_field(manifest, "model", "Qwen/Qwen3.6-27B", "manifest model mismatch");
-    failures += expect_string_field(manifest, "binary_spec", "docs/q5090_packed_file_format_v2.md",
+    failures += expect_uint_field(manifest, "format_version", 3, "manifest format_version mismatch");
+    failures += expect_uint_field(manifest, "format_minor", 0, "manifest format_minor mismatch");
+    failures += expect_string_field(manifest, "binary_spec", "docs/q5090_packed_file_format_v3.md",
                                     "manifest binary_spec mismatch");
     failures += expect_string_field(manifest, "tensor_plan",
                                     "docs/qwen3_6_27b_q5090_v2_tensor_plan.md",
                                     "manifest tensor_plan mismatch");
+    failures += expect_string_field(manifest, "weights_file",
+                                    "qwen3_6_27b.q5090_w4g64_mixed_v3.qus",
+                                    "manifest weights_file mismatch");
     failures += expect_uint_field(manifest, "file_bytes", file_size, "manifest file_bytes mismatch");
-    failures += expect_uint_field(manifest, "hidden_size", 5120, "manifest hidden_size mismatch");
-    failures +=
-        expect_uint_field(manifest, "intermediate_size", 17408, "manifest intermediate_size mismatch");
-    failures += expect_uint_field(manifest, "vocab_size", 248320, "manifest vocab_size mismatch");
-    failures +=
-        expect_uint_field(manifest, "num_hidden_layers", 64, "manifest num_hidden_layers mismatch");
-    failures += expect_bool_field(manifest, "zero_point", false, "manifest zero_point mismatch");
-    failures +=
-        expect_empty_array_field(manifest, "disabled_modules", "manifest disabled_modules mismatch");
+    failures += expect_bool_field(manifest, "calibrated", false, "manifest calibrated mismatch");
+    failures += expect_empty_array_field(manifest, "absent_modules", "manifest absent_modules mismatch");
     failures += expect_string_array_field(
         manifest, "qtypes",
         std::array<const char*, 6>{"Q4G64_F16S", "Q5G64_F16S", "Q6G64_F16S", "W8G128_F16S",
@@ -252,7 +226,15 @@ int expect_manifest_fields(const Json& manifest, std::uint64_t file_size) {
     failures += expect_string_array_field(
         manifest, "layouts", std::array<const char*, 2>{"ROW_SPLIT", "CONTIGUOUS"},
         "manifest layouts mismatch");
-    failures += expect_uint_field(manifest, "block_count", 1167, "manifest block_count mismatch");
+    failures += expect_string_array_field(
+        manifest, "code_planes", std::array<const char*, 3>{"nibble", "high", "scale"},
+        "manifest code_planes mismatch");
+    failures += expect_string_array_field(
+        manifest, "modules",
+        std::array<const char*, 3>{"TEXT_CORE", "MTP_DRAFT", "VISION_ENCODER"},
+        "manifest modules mismatch");
+    failures += expect_uint_field(manifest, "module_count", 3, "manifest module_count mismatch");
+    failures += expect_uint_field(manifest, "tensor_count", 1167, "manifest tensor_count mismatch");
     failures += expect_uint_field(manifest, "segment_count", 1311, "manifest segment_count mismatch");
     failures += expect_uint_field(manifest, "fusion_group_count", 128,
                                   "manifest fusion_group_count mismatch");
@@ -261,25 +243,16 @@ int expect_manifest_fields(const Json& manifest, std::uint64_t file_size) {
     if (alignment_it == manifest.end() || !alignment_it->is_object()) {
         failures += fail("manifest alignment mismatch");
     } else {
-        failures += expect_uint_field(*alignment_it, "file_header", 4096,
-                                      "manifest alignment.file_header mismatch");
-        failures += expect_uint_field(*alignment_it, "tensor_payload", 256,
-                                      "manifest alignment.tensor_payload mismatch");
-        failures += expect_uint_field(*alignment_it, "payload_region", 4096,
-                                      "manifest alignment.payload_region mismatch");
-    }
-
-    const auto modules_it = manifest.find("modules");
-    if (modules_it == manifest.end() || !modules_it->is_array() || modules_it->size() != 3) {
-        failures += fail("manifest modules mismatch");
-    } else {
-        failures += expect_manifest_module((*modules_it)[0], "TEXT_CORE", "q5090_w4g64_mixed_v2",
-                                           819, 963, 128, 16378329088ULL, 0);
-        failures += expect_manifest_module((*modules_it)[1], "MTP_DRAFT", "mtp_w8g128_v2", 15,
-                                           15, 0, 431361024ULL, 0);
-        failures += expect_manifest_module((*modules_it)[2], "VISION_ENCODER",
-                                           "vision_q4mix_merger_w8g128_v2", 333, 333, 0,
-                                           293396992ULL, 1);
+        failures += expect_uint_field(*alignment_it, "header", 4096,
+                                      "manifest alignment.header mismatch");
+        failures += expect_uint_field(*alignment_it, "payload", 4096,
+                                      "manifest alignment.payload mismatch");
+        failures += expect_uint_field(*alignment_it, "block", 256,
+                                      "manifest alignment.block mismatch");
+        failures += expect_uint_field(*alignment_it, "k_pad", 128,
+                                      "manifest alignment.k_pad mismatch");
+        failures += expect_uint_field(*alignment_it, "group_size", 64,
+                                      "manifest alignment.group_size mismatch");
     }
     return failures;
 }
@@ -366,6 +339,20 @@ int expect_fused_weight(const qus::WeightStore& store, std::uint16_t group_id,
     failures += fused->scales == first->scales
                     ? 0
                     : fail(std::string(label) + " scales first-segment mismatch");
+    if (qtype == qus::QType::Q5G64_F16S || qtype == qus::QType::Q6G64_F16S) {
+        failures += fused->qhigh == first->qhigh
+                        ? 0
+                        : fail(std::string(label) + " qhigh first-segment mismatch");
+        failures += fused->qhigh != nullptr ? 0 : fail(std::string(label) + " qhigh null");
+        failures += fused->high_plane_bytes > 0
+                        ? 0
+                        : fail(std::string(label) + " high_plane_bytes zero");
+    } else {
+        failures += fused->qhigh == nullptr ? 0 : fail(std::string(label) + " qhigh non-null");
+        failures += fused->high_plane_bytes == 0
+                        ? 0
+                        : fail(std::string(label) + " high_plane_bytes nonzero");
+    }
     return failures;
 }
 
@@ -439,8 +426,10 @@ int run_mtp_load(const std::filesystem::path& file_path, std::uint64_t text_payl
 
 int main() {
     const std::filesystem::path root(QUS_SOURCE_DIR);
-    const std::filesystem::path file_path     = root / "out/qwen3_6_27b.q5090_w4g64_mixed_v2.qus";
-    const std::filesystem::path manifest_path = root / "out/manifest.v2.json";
+    const std::filesystem::path file_path =
+        root / "out/qwen3_6_27b.q5090_w4g64_mixed_v3.qus";
+    const std::filesystem::path manifest_path =
+        root / "out/qwen3_6_27b.q5090_w4g64_mixed_v3.qus.manifest.json";
     if (!std::filesystem::exists(file_path) || !std::filesystem::exists(manifest_path)) {
         std::cout << "SKIP: real q5090 file or manifest not present\n";
         return 0;

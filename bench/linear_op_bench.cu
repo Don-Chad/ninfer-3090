@@ -1,9 +1,9 @@
-// Cold-cache per-op GEMV measurement rig for q5090 v2 ROW_SPLIT low-bit
+// Cold-cache per-op GEMV measurement rig for q5090 v3 ROW_SPLIT low-bit
 // linears. This is measurement-only: it dispatches through qus::kernels::linear
 // so the current generic ROW_SPLIT plan remains the measured implementation.
 //
 // Examples:
-//   ./build/bench/qus_linear_op_bench --all-targets --csv-out profiles/ncu-linear-v2/baseline.csv
+//   ./build/bench/qus_linear_op_bench --all-targets --csv-out profiles/ncu-linear-v3/baseline.csv
 //   ./build/bench/qus_linear_op_bench --shape MlpGateUp34816x5120 --qtype Q4 --repeat 200
 
 #include "qus/kernels/linear.h"
@@ -114,7 +114,9 @@ struct TimingStats {
 
 struct RowSplitPayload {
     DeviceBuffer  data;
-    std::uint64_t code_bytes   = 0;
+    std::uint64_t nibble_bytes = 0;
+    std::uint64_t high_offset  = 0;
+    std::uint64_t high_bytes   = 0;
     std::uint64_t scale_offset = 0;
     std::uint64_t scale_bytes  = 0;
     std::uint64_t payload_bytes() const { return scale_offset + scale_bytes; }
@@ -194,11 +196,20 @@ const char* qtype_name(QType qtype) {
     }
 }
 
-std::int32_t bytes_per_group(QType qtype) {
+std::int32_t nibble_bytes_per_group(QType qtype) {
     switch (qtype) {
     case QType::Q4G64_F16S: return 32;
-    case QType::Q5G64_F16S: return 40;
-    case QType::Q6G64_F16S: return 48;
+    case QType::Q5G64_F16S: return 32;
+    case QType::Q6G64_F16S: return 32;
+    default:                throw std::invalid_argument("unsupported qtype for ROW_SPLIT bench");
+    }
+}
+
+std::int32_t high_bytes_per_group(QType qtype) {
+    switch (qtype) {
+    case QType::Q4G64_F16S: return 0;
+    case QType::Q5G64_F16S: return 8;
+    case QType::Q6G64_F16S: return 16;
     default:                throw std::invalid_argument("unsupported qtype for ROW_SPLIT bench");
     }
 }
@@ -411,20 +422,28 @@ DeviceBuffer make_bf16_device(std::uint64_t n) {
 
 RowSplitPayload make_row_split_payload(QType qtype, std::int32_t n, std::int32_t k,
                                        cudaStream_t stream) {
-    const std::int32_t padded_k = static_cast<std::int32_t>(align_up_u64(k, 64));
+    const std::int32_t padded_k = static_cast<std::int32_t>(align_up_u64(k, 128));
     const std::int32_t kg       = padded_k / 64;
     const std::uint64_t groups =
         static_cast<std::uint64_t>(n) * static_cast<std::uint64_t>(kg);
-    const std::uint64_t code_bytes =
-        groups * static_cast<std::uint64_t>(bytes_per_group(qtype));
-    const std::uint64_t scale_offset = align_up_u64(code_bytes, 256);
+    const std::uint64_t nibble_bytes =
+        groups * static_cast<std::uint64_t>(nibble_bytes_per_group(qtype));
+    const std::uint64_t high_bytes =
+        groups * static_cast<std::uint64_t>(high_bytes_per_group(qtype));
+    const std::uint64_t high_offset = align_up_u64(nibble_bytes, 256);
+    const std::uint64_t scale_offset = high_offset + align_up_u64(high_bytes, 256);
     const std::uint64_t scale_bytes  = groups * 2ULL;
 
-    RowSplitPayload payload{DeviceBuffer(scale_offset + scale_bytes), code_bytes, scale_offset,
-                            scale_bytes};
+    RowSplitPayload payload{DeviceBuffer(scale_offset + scale_bytes), nibble_bytes, high_offset,
+                            high_bytes, scale_offset, scale_bytes};
     constexpr int block = 256;
-    fill_codes_kernel<<<grid_for(code_bytes, block), block, 0, stream>>>(
-        static_cast<std::uint8_t*>(payload.data.p), code_bytes);
+    fill_codes_kernel<<<grid_for(nibble_bytes, block), block, 0, stream>>>(
+        static_cast<std::uint8_t*>(payload.data.p), nibble_bytes);
+    CUDA_CHECK(cudaGetLastError());
+    if (high_bytes != 0) {
+        fill_codes_kernel<<<grid_for(high_bytes, block), block, 0, stream>>>(
+            static_cast<std::uint8_t*>(payload.data.p) + high_offset, high_bytes);
+    }
     CUDA_CHECK(cudaGetLastError());
     fill_scales_kernel<<<grid_for(groups, block), block, 0, stream>>>(
         static_cast<std::uint8_t*>(payload.data.p) + scale_offset, groups);
@@ -434,10 +453,11 @@ RowSplitPayload make_row_split_payload(QType qtype, std::int32_t n, std::int32_t
 }
 
 Weight make_weight(const RowSplitPayload& payload, QType qtype, std::int32_t n, std::int32_t k) {
-    const std::int32_t padded_k = static_cast<std::int32_t>(align_up_u64(k, 64));
+    const std::int32_t padded_k = static_cast<std::int32_t>(align_up_u64(k, 128));
     Weight             w{};
     w.payload             = payload.data.p;
     w.payload_bytes       = payload.payload_bytes();
+    w.high_plane_bytes    = payload.high_bytes;
     w.qtype               = qtype;
     w.layout              = QuantLayout::RowSplit;
     w.q5090_scale_dtype   = ScaleDType::FP16;
@@ -448,6 +468,10 @@ Weight make_weight(const RowSplitPayload& payload, QType qtype, std::int32_t n, 
     w.padded_shape[1]     = padded_k;
     w.ndim                = 2;
     w.qdata               = payload.data.p;
+    w.qhigh               = payload.high_bytes == 0
+                                ? nullptr
+                                : static_cast<const std::uint8_t*>(payload.data.p) +
+                                      payload.high_offset;
     w.scales              = static_cast<const std::uint8_t*>(payload.data.p) + payload.scale_offset;
     w.n                   = n;
     w.k                   = k;

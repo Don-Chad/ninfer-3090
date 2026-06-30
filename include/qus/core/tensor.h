@@ -116,6 +116,7 @@ enum class SourceKind : std::uint32_t {
 struct Weight {
     const void* payload          = nullptr;
     std::uint64_t payload_bytes  = 0;
+    std::uint64_t high_plane_bytes = 0;
     QType qtype                  = QType::Q4G64_F16S;
     ModuleKind module            = ModuleKind::TextCore;
     ScaleDType q5090_scale_dtype = ScaleDType::FP16;
@@ -127,6 +128,7 @@ struct Weight {
     std::uint32_t ndim           = 0;
 
     const void* qdata        = nullptr;
+    const void* qhigh        = nullptr;
     const void* scales       = nullptr;
     std::int32_t n           = 0;
     std::int32_t k           = 0;

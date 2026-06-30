@@ -40,6 +40,15 @@ std::uint64_t checked_mul_u64(std::uint64_t a, std::uint64_t b) {
     return a * b;
 }
 
+std::int32_t align_up_i32(std::int32_t x, std::int32_t m) {
+    const std::int64_t y =
+        ((static_cast<std::int64_t>(x) + m - 1) / m) * static_cast<std::int64_t>(m);
+    if (y > std::numeric_limits<std::int32_t>::max()) {
+        throw std::overflow_error("embed_gather: padded shape overflows int32");
+    }
+    return static_cast<std::int32_t>(y);
+}
+
 void require_ids_shape(const Tensor& ids) {
     if (ids.ne[1] != 1 || ids.ne[2] != 1 || ids.ne[3] != 1) {
         throw std::invalid_argument("embed_gather: ids must have shape [T]");
@@ -72,6 +81,9 @@ void require_dense_metadata(const Weight& table, const Tensor& out) {
     if (table.shape[1] != out.ne[0]) {
         throw std::invalid_argument("embed_gather: dense table d must match out.ne[0]");
     }
+    if (table.qhigh != nullptr || table.high_plane_bytes != 0) {
+        throw std::invalid_argument("embed_gather: dense table high plane must be null");
+    }
     const std::uint64_t expected = checked_mul_u64(
         checked_mul_u64(static_cast<std::uint64_t>(table.shape[0]),
                         static_cast<std::uint64_t>(table.shape[1])),
@@ -92,25 +104,33 @@ void require_q6_metadata(const Weight& table, const Tensor& out) {
     if (table.q5090_scale_dtype != ScaleDType::FP16) {
         throw std::invalid_argument("embed_gather: Q6G64_F16S table scale dtype must be FP16");
     }
-    if (table.padded_shape[0] != table.shape[0] || table.padded_shape[1] < table.shape[1] ||
-        table.padded_shape[1] % 64 != 0) {
+    if (table.padded_shape[0] != table.shape[0] ||
+        table.padded_shape[1] != align_up_i32(table.shape[1], 128)) {
         throw std::invalid_argument("embed_gather: Q6G64_F16S padded shape is invalid");
     }
     if (table.shape[1] != out.ne[0]) {
         throw std::invalid_argument("embed_gather: Q6G64_F16S table d must match out.ne[0]");
     }
     const std::uint64_t kg = static_cast<std::uint64_t>(table.padded_shape[1] / 64);
-    const std::uint64_t code_plane_bytes =
-        checked_mul_u64(checked_mul_u64(static_cast<std::uint64_t>(table.shape[0]), kg), 48);
+    const std::uint64_t nibble_plane_bytes =
+        checked_mul_u64(checked_mul_u64(static_cast<std::uint64_t>(table.shape[0]), kg), 32);
+    const std::uint64_t high_plane_bytes =
+        checked_mul_u64(checked_mul_u64(static_cast<std::uint64_t>(table.shape[0]), kg), 16);
     const std::uint64_t scale_plane_bytes =
         checked_mul_u64(checked_mul_u64(static_cast<std::uint64_t>(table.shape[0]), kg), 2);
-    const std::uint64_t scale_plane_off = ((code_plane_bytes + 255u) / 256u) * 256u;
+    const std::uint64_t high_plane_off = ((nibble_plane_bytes + 255u) / 256u) * 256u;
+    const std::uint64_t scale_plane_off =
+        high_plane_off + ((high_plane_bytes + 255u) / 256u) * 256u;
     const std::uint64_t expected = scale_plane_off + scale_plane_bytes;
     if (table.payload_bytes != 0 && table.payload_bytes < expected) {
         throw std::invalid_argument("embed_gather: Q6G64_F16S payload is too small");
     }
-    if (table.qdata == nullptr || table.scales == nullptr) {
-        throw std::invalid_argument("embed_gather: Q6G64_F16S code and scale planes must be non-null");
+    if (table.qdata == nullptr || table.qhigh == nullptr || table.scales == nullptr) {
+        throw std::invalid_argument(
+            "embed_gather: Q6G64_F16S planes must be non-null");
+    }
+    if (table.high_plane_bytes < high_plane_bytes) {
+        throw std::invalid_argument("embed_gather: Q6G64_F16S high plane is too small");
     }
 }
 

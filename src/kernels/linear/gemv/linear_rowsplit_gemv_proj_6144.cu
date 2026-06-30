@@ -19,7 +19,8 @@ constexpr int kWarpsPerBlock = 4;
 constexpr int kBlockThreads  = kWarpsPerBlock * 32;
 constexpr int kSplitK        = 4;
 
-constexpr int kQ5BytesPerGroup = 40;
+constexpr int kQ5NibbleBytesPerGroup = 32;
+constexpr int kQ5HighBytesPerGroup = 8;
 
 struct ArenaScope {
     WorkspaceArena& ws;
@@ -42,21 +43,17 @@ __device__ __forceinline__ std::uint16_t load_scale_bits(const std::uint8_t* sca
 }
 
 __device__ __forceinline__ float accumulate_q5_group(const __nv_bfloat162* __restrict__ x2,
-                                                     const std::uint8_t* __restrict__ code_group,
+                                                     const std::uint8_t* __restrict__ nibble_group,
+                                                     const std::uint8_t* __restrict__ high_group,
                                                      std::uint16_t scale_bits, int lane, int group,
                                                      float acc) {
     const float scale = __half2float(__ushort_as_half(scale_bits));
 
-    const int bitpos      = lane * 10;
-    const int byte_offset = bitpos >> 3;
-    const int bit_shift   = bitpos & 7;
-    const std::uint16_t packed =
-        static_cast<std::uint16_t>(code_group[byte_offset]) |
-        static_cast<std::uint16_t>(static_cast<std::uint16_t>(code_group[byte_offset + 1]) << 8);
-    const std::uint32_t bits = static_cast<std::uint32_t>(packed >> bit_shift);
+    const std::uint8_t low  = nibble_group[lane];
+    const std::uint8_t high = high_group[lane >> 2] >> ((lane & 3) * 2);
 
-    const int q0    = sign_extend_q5(static_cast<int>(bits & 0x1fu));
-    const int q1    = sign_extend_q5(static_cast<int>((bits >> 5) & 0x1fu));
+    const int q0    = sign_extend_q5(static_cast<int>((low & 0x0fu) | ((high & 0x01u) << 4)));
+    const int q1    = sign_extend_q5(static_cast<int>((low >> 4) | ((high & 0x02u) << 3)));
     const int k0    = group * kGroupK + lane * 2;
     const float2 xv = __bfloat1622float2(x2[k0 >> 1]);
     acc             = fmaf(static_cast<float>(q0) * scale, xv.x, acc);
@@ -74,6 +71,7 @@ __device__ __forceinline__ float warp_reduce_sum(float acc) {
 
 __global__ void linear_rowsplit_gemv_proj_6144_q5_kernel(const __nv_bfloat16* __restrict__ x,
                                                          const std::uint8_t* __restrict__ codes,
+                                                         const std::uint8_t* __restrict__ high_bits,
                                                          const std::uint8_t* __restrict__ scales,
                                                          float* __restrict__ partials) {
     const int lane = static_cast<int>(threadIdx.x) & 31;
@@ -85,7 +83,9 @@ __global__ void linear_rowsplit_gemv_proj_6144_q5_kernel(const __nv_bfloat16* __
     const int group_end   = group_begin + (kGroups / kSplitK);
 
     const std::uint8_t* code_row =
-        codes + static_cast<std::int64_t>(row) * kGroups * kQ5BytesPerGroup;
+        codes + static_cast<std::int64_t>(row) * kGroups * kQ5NibbleBytesPerGroup;
+    const std::uint8_t* high_row =
+        high_bits + static_cast<std::int64_t>(row) * kGroups * kQ5HighBytesPerGroup;
     const std::uint8_t* scale_row = scales + static_cast<std::int64_t>(row) * kGroups * 2;
     const auto* x2                = reinterpret_cast<const __nv_bfloat162*>(x);
 
@@ -93,10 +93,14 @@ __global__ void linear_rowsplit_gemv_proj_6144_q5_kernel(const __nv_bfloat16* __
     int group = group_begin;
 #pragma unroll 1
     for (; group < group_end; group += 4) {
-        const std::uint8_t* code_group0 = code_row + group * kQ5BytesPerGroup;
-        const std::uint8_t* code_group1 = code_group0 + kQ5BytesPerGroup;
-        const std::uint8_t* code_group2 = code_group1 + kQ5BytesPerGroup;
-        const std::uint8_t* code_group3 = code_group2 + kQ5BytesPerGroup;
+        const std::uint8_t* code_group0 = code_row + group * kQ5NibbleBytesPerGroup;
+        const std::uint8_t* code_group1 = code_group0 + kQ5NibbleBytesPerGroup;
+        const std::uint8_t* code_group2 = code_group1 + kQ5NibbleBytesPerGroup;
+        const std::uint8_t* code_group3 = code_group2 + kQ5NibbleBytesPerGroup;
+        const std::uint8_t* high_group0 = high_row + group * kQ5HighBytesPerGroup;
+        const std::uint8_t* high_group1 = high_group0 + kQ5HighBytesPerGroup;
+        const std::uint8_t* high_group2 = high_group1 + kQ5HighBytesPerGroup;
+        const std::uint8_t* high_group3 = high_group2 + kQ5HighBytesPerGroup;
 
         std::uint16_t scale0_bits = 0;
         std::uint16_t scale1_bits = 0;
@@ -116,10 +120,10 @@ __global__ void linear_rowsplit_gemv_proj_6144_q5_kernel(const __nv_bfloat16* __
         scale2_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale2_bits, 2));
         scale3_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale3_bits, 3));
 
-        acc = accumulate_q5_group(x2, code_group0, scale0_bits, lane, group, acc);
-        acc = accumulate_q5_group(x2, code_group1, scale1_bits, lane, group + 1, acc);
-        acc = accumulate_q5_group(x2, code_group2, scale2_bits, lane, group + 2, acc);
-        acc = accumulate_q5_group(x2, code_group3, scale3_bits, lane, group + 3, acc);
+        acc = accumulate_q5_group(x2, code_group0, high_group0, scale0_bits, lane, group, acc);
+        acc = accumulate_q5_group(x2, code_group1, high_group1, scale1_bits, lane, group + 1, acc);
+        acc = accumulate_q5_group(x2, code_group2, high_group2, scale2_bits, lane, group + 2, acc);
+        acc = accumulate_q5_group(x2, code_group3, high_group3, scale3_bits, lane, group + 3, acc);
     }
 
     acc = warp_reduce_sum(acc);
@@ -153,6 +157,7 @@ void linear_rowsplit_gemv_proj_6144_q5_launch(const Tensor& x, const Weight& w, 
     const int grid = (kN + kWarpsPerBlock - 1) / kWarpsPerBlock;
     linear_rowsplit_gemv_proj_6144_q5_kernel<<<dim3(grid, kSplitK, 1), kBlockThreads, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
+        static_cast<const std::uint8_t*>(w.qhigh),
         static_cast<const std::uint8_t*>(w.scales), partials);
     CUDA_CHECK(cudaGetLastError());
 

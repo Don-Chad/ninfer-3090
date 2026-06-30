@@ -16,11 +16,11 @@ namespace {
 constexpr std::array<std::byte, 16> kMagic = {
     std::byte{0x51}, std::byte{0x35}, std::byte{0x30}, std::byte{0x39},
     std::byte{0x30}, std::byte{0x4D}, std::byte{0x49}, std::byte{0x58},
-    std::byte{0x45}, std::byte{0x44}, std::byte{0x56}, std::byte{0x32},
+    std::byte{0x45}, std::byte{0x44}, std::byte{0x56}, std::byte{0x33},
     std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
 };
 
-constexpr std::uint32_t kVersion               = 2;
+constexpr std::uint32_t kVersion               = 3;
 constexpr std::uint32_t kEndianTag             = 0x01020304U;
 constexpr std::uint32_t kHeaderSize            = 4096;
 constexpr std::uint32_t kModuleRecordSize      = 64;
@@ -221,6 +221,21 @@ bool valid_source_kind(std::uint32_t kind) {
     }
 }
 
+bool valid_source_kind(ModuleKind module, std::uint32_t kind) {
+    if (kind == static_cast<std::uint32_t>(SourceKind::Other)) { return true; }
+    switch (module) {
+    case ModuleKind::TextCore:
+        return (kind >= 1 && kind <= 5) || (kind >= 10 && kind <= 20) ||
+               (kind >= 30 && kind <= 36) || (kind >= 40 && kind <= 42);
+    case ModuleKind::MtpDraft:
+        return (kind >= 50 && kind <= 53) || kind == 4 || kind == 5 ||
+               (kind >= 30 && kind <= 36) || (kind >= 40 && kind <= 42);
+    case ModuleKind::VisionEncoder:
+        return kind >= 60 && kind <= 80;
+    }
+    return false;
+}
+
 bool valid_fusion_group_id(std::uint32_t group_id) {
     return group_id >= 1 && group_id <= 3;
 }
@@ -243,20 +258,31 @@ std::uint32_t quant_group_size(QType qtype) {
     }
 }
 
-std::uint32_t quant_bits(QType qtype) {
+std::uint64_t nibble_bytes_per_group(QType qtype) {
     switch (qtype) {
-    case QType::Q4G64_F16S: return 4;
-    case QType::Q5G64_F16S: return 5;
-    case QType::Q6G64_F16S: return 6;
-    case QType::W8G128_F16S: return 8;
-    default: parse_error("q5090 qtype has no quant bit width");
+    case QType::Q4G64_F16S:
+    case QType::Q5G64_F16S:
+    case QType::Q6G64_F16S:
+        return 32;
+    case QType::W8G128_F16S:
+        return 128;
+    default:
+        parse_error("q5090 qtype has no nibble plane bytes per group");
     }
 }
 
-std::uint64_t bytes_per_group(QType qtype) {
-    const std::uint64_t group = quant_group_size(qtype);
-    const std::uint64_t bits  = quant_bits(qtype);
-    return (group * bits + 7) / 8;
+std::uint64_t high_bytes_per_group(QType qtype) {
+    switch (qtype) {
+    case QType::Q4G64_F16S:
+    case QType::W8G128_F16S:
+        return 0;
+    case QType::Q5G64_F16S:
+        return 8;
+    case QType::Q6G64_F16S:
+        return 16;
+    default:
+        parse_error("q5090 qtype has no high plane bytes per group");
+    }
 }
 
 std::uint64_t element_size(QType qtype) {
@@ -297,14 +323,22 @@ std::uint64_t expected_payload_bytes(const ParsedQ5090Tensor& tensor) {
         require(tensor.scale_dtype == ScaleDType::FP16, "q5090 ROW_SPLIT scale mismatch");
         require(tensor.padded_shape[0] == tensor.shape[0],
                 "q5090 ROW_SPLIT padded N mismatch");
-        require(tensor.padded_shape[1] == align_up(tensor.shape[1], group),
+        require(tensor.shape[2] == 1 && tensor.shape[3] == 1,
+                "q5090 ROW_SPLIT trailing shape mismatch");
+        require(tensor.padded_shape[1] == align_up(tensor.shape[1], 128),
                 "q5090 ROW_SPLIT padded K mismatch");
         const std::uint64_t groups = tensor.padded_shape[1] / group;
-        const std::uint64_t code =
-            checked_mul(checked_mul(tensor.shape[0], groups), bytes_per_group(tensor.qtype));
+        const std::uint64_t nibble =
+            checked_mul(checked_mul(tensor.shape[0], groups), nibble_bytes_per_group(tensor.qtype));
+        const std::uint64_t high =
+            checked_mul(checked_mul(tensor.shape[0], groups), high_bytes_per_group(tensor.qtype));
         const std::uint64_t scale = checked_mul(checked_mul(tensor.shape[0], groups), 2);
-        const std::uint64_t payload = checked_add(align_up(code, kPayloadAlign), scale);
-        require(tensor.code_plane_bytes == code, "q5090 ROW_SPLIT code plane byte mismatch");
+        const std::uint64_t high_rel = align_up(nibble, kPayloadAlign);
+        const std::uint64_t scale_rel = checked_add(high_rel, align_up(high, kPayloadAlign));
+        const std::uint64_t payload = checked_add(scale_rel, scale);
+        require(tensor.nibble_plane_bytes == nibble,
+                "q5090 ROW_SPLIT nibble plane byte mismatch");
+        require(tensor.high_plane_bytes == high, "q5090 ROW_SPLIT high plane byte mismatch");
         require(tensor.scale_plane_bytes == scale, "q5090 ROW_SPLIT scale plane byte mismatch");
         return payload;
     }
@@ -316,7 +350,8 @@ std::uint64_t expected_payload_bytes(const ParsedQ5090Tensor& tensor) {
         require(tensor.padded_shape == tensor.shape, "q5090 CONTIGUOUS padded shape mismatch");
         const std::uint64_t raw = checked_mul(numel(tensor.shape, tensor.ndim),
                                               element_size(tensor.qtype));
-        require(tensor.code_plane_bytes == raw, "q5090 CONTIGUOUS code byte mismatch");
+        require(tensor.nibble_plane_bytes == raw, "q5090 CONTIGUOUS payload byte mismatch");
+        require(tensor.high_plane_bytes == 0, "q5090 CONTIGUOUS high byte mismatch");
         require(tensor.scale_plane_bytes == 0, "q5090 CONTIGUOUS scale byte mismatch");
         return raw;
     }
@@ -455,6 +490,7 @@ std::vector<ParsedQ5090Module> parse_modules(std::span<const std::byte> file,
         require(all_zero(file.subspan(static_cast<std::size_t>(off + 48), 16)),
                 "q5090 module reserved bytes nonzero");
         require(m.module_version == kVersion, "q5090 bad module version");
+        require(m.flags == 0, "q5090 module flags nonzero");
         require(m.tensor_index_count > 0, "q5090 empty module");
         require(m.tensor_index_begin == expected_begin,
                 "q5090 module tensor ranges are not contiguous");
@@ -545,9 +581,10 @@ std::vector<ParsedQ5090Tensor> parse_tensors(std::span<const std::byte> file,
         t.segment_begin     = read_u32(file, off + 92);
         t.fusion_group_id   = read_u16(file, off + 96);
         t.fusion_index      = read_u16(file, off + 98);
-        t.code_plane_bytes  = read_u64(file, off + 100);
-        t.scale_plane_bytes = read_u64(file, off + 108);
-        require(all_zero(file.subspan(static_cast<std::size_t>(off + 116), 12)),
+        t.nibble_plane_bytes = read_u64(file, off + 100);
+        t.high_plane_bytes   = read_u64(file, off + 108);
+        t.scale_plane_bytes  = read_u64(file, off + 116);
+        require(all_zero(file.subspan(static_cast<std::size_t>(off + 124), 4)),
                 "q5090 tensor reserved bytes nonzero");
 
         const ParsedQ5090Module& module = module_for_tensor_index(modules, i);
@@ -573,7 +610,7 @@ std::vector<ParsedQ5090Tensor> parse_tensors(std::span<const std::byte> file,
         previous_payload_end = payload_end;
         require(t.source_layer <= 63 || t.source_layer == kQ5090NoLayer,
                 "q5090 invalid source layer");
-        require(valid_source_kind(t.source_kind), "q5090 invalid source kind");
+        require(valid_source_kind(t.module_kind, t.source_kind), "q5090 invalid source kind");
         require(t.fusion_group_id == 0 || valid_fusion_group_id(t.fusion_group_id),
                 "q5090 invalid tensor fusion group id");
         if (t.fusion_group_id == 0) {
@@ -647,6 +684,8 @@ void validate_tensor_segments(const std::vector<ParsedQ5090Tensor>& tensors,
         std::uint32_t row = 0;
         for (std::uint32_t j = 0; j < t.segment_count; ++j) {
             const ParsedQ5090Segment& s = segments[static_cast<std::size_t>(t.segment_begin + j)];
+            require(valid_source_kind(t.module_kind, s.source_kind),
+                    "q5090 invalid segment source kind for module");
             if (t.layout == QuantLayout::RowSplit) {
                 require(s.row_begin == row, "q5090 ROW_SPLIT segments are not contiguous");
                 row = static_cast<std::uint32_t>(checked_add(row, s.row_count));
