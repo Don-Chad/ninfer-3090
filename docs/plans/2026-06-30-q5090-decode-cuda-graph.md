@@ -94,6 +94,21 @@ Review  independent strict review subagent (kernels + numerics + GPU memory + ru
   and bench all read the same value and cannot diverge. The decode kernel itself derives the split count
   from `gridDim.y` (like vLLM's `max_num_partitions = gridDim.z`), so the `.cuh` needs no constant and the
   `.cpp` wrapper never includes a kernel `.cuh`. Task 1 introduces it; Task 2 owns its value.
+- **Run to completion (no pausing).** Execute Tasks 1 → 2 → 3 → 4 in order **without** pausing for
+  confirmation; each task is gated on its own DoD plus the two-stage review. Stop **only** if a DoD gate
+  fails and one `systematic-debugging` pass cannot fix it, or a task would need to edit a file outside its
+  declared ownership — then report and ask. Otherwise drive straight through to the final Review.
+
+## Build & run environment (all tasks use these)
+
+- **Configure/build:** `cmake -S . -B build -G Ninja` if `build/` is missing, then `cmake --build build -j`.
+  `ctest --test-dir build [-R <name>]` runs tests; `compute-sanitizer --tool memcheck <bin>` for memory gates.
+- **Weights (v3 only — the runtime reads v3 on current `master`):** `out/qwen3_6_27b.q5090_w4g64_mixed_v3.qus`.
+- **Tokenizer:** `/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16`.
+- **GPU:** one RTX 5090 (sm_120). Tasks 2 (cold-cache bench + `ncu`) and 3 (parity + nsys) need the GPU and
+  the ~15 GB model loaded; profiling artifacts go under `profiles/{ncu,nsys}-decode-cuda-graph/`.
+- **Git:** linear history on `master`, one conforming commit per task with the messages in each task's
+  commit step (Conventional Commits, `q5090` scope). Never force-push; never amend pushed commits.
 
 ## Reference facts (verified in tree)
 
