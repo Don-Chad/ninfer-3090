@@ -1,4 +1,4 @@
-#include "kernels/linear/gemv/linear_rowsplit_gemv_gdn_qk_2048.cuh"
+#include "kernels/linear/gemv/linear_rowsplit_gemv_gdn_in_qk_4096.cuh"
 
 #include "qus/core/device.h" // CUDA_CHECK
 
@@ -11,7 +11,7 @@
 namespace qus::kernels::detail {
 namespace {
 
-constexpr int kN = 2048;
+constexpr int kN = 4096;
 constexpr int kK = 5120;
 constexpr int kGroupK = 64;
 constexpr int kGroups = kK / kGroupK;
@@ -39,7 +39,7 @@ __device__ __forceinline__ float warp_reduce_sum(float acc) {
     return acc;
 }
 
-__global__ void linear_rowsplit_gemv_gdn_qk_2048_q4_kernel(
+__global__ void linear_rowsplit_gemv_gdn_in_qk_4096_q4_kernel(
     const __nv_bfloat16* __restrict__ x, const std::uint8_t* __restrict__ codes,
     const std::uint8_t* __restrict__ scales, __nv_bfloat16* __restrict__ out) {
     const int lane = static_cast<int>(threadIdx.x) & 31;
@@ -87,13 +87,13 @@ __global__ void linear_rowsplit_gemv_gdn_qk_2048_q4_kernel(
 
 } // namespace
 
-void linear_rowsplit_gemv_gdn_qk_2048_q4_launch(const Tensor& x, const Weight& w, Tensor& out,
-                                                cudaStream_t stream) {
+void linear_rowsplit_gemv_gdn_in_qk_4096_q4_launch(const Tensor& x, const Weight& w, Tensor& out,
+                                                   WorkspaceArena& ws, cudaStream_t stream) {
+    (void)ws;
     if (w.n != kN || w.k != kK || w.padded_shape[1] != kK) {
-        throw std::invalid_argument("linear: GdnQK2048 Q4 tuned GEMV requires 2048x5120");
+        throw std::invalid_argument("linear: GDN in q/k Q4 fused GEMV requires 4096x5120");
     }
-    const int grid = kN;
-    linear_rowsplit_gemv_gdn_qk_2048_q4_kernel<<<grid, kBlockThreads, 0, stream>>>(
+    linear_rowsplit_gemv_gdn_in_qk_4096_q4_kernel<<<kN, kBlockThreads, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
         static_cast<const std::uint8_t*>(w.scales), static_cast<__nv_bfloat16*>(out.data));
     CUDA_CHECK(cudaGetLastError());

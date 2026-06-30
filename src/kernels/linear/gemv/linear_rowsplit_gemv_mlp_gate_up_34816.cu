@@ -1,4 +1,4 @@
-#include "kernels/linear/gemv/linear_rowsplit_gemv_mlp_gate_up.cuh"
+#include "kernels/linear/gemv/linear_rowsplit_gemv_mlp_gate_up_34816.cuh"
 
 #include "qus/core/device.h" // CUDA_CHECK
 
@@ -11,7 +11,7 @@
 namespace qus::kernels::detail {
 namespace {
 
-constexpr int kN = 17408;
+constexpr int kN = 34816;
 constexpr int kK = 5120;
 constexpr int kGroupK = 64;
 constexpr int kGroups = kK / kGroupK;
@@ -23,10 +23,9 @@ __device__ __forceinline__ int sign_extend_q4(int v) {
     return (v & 0x08) ? (v - 16) : v;
 }
 
-__global__ void linear_rowsplit_gemv_mlp_gate_up_q4_kernel(const __nv_bfloat16* __restrict__ x,
-                                                           const std::uint8_t* __restrict__ codes,
-                                                           const std::uint8_t* __restrict__ scales,
-                                                           __nv_bfloat16* __restrict__ out) {
+__global__ void linear_rowsplit_gemv_mlp_gate_up_34816_q4_kernel(
+    const __nv_bfloat16* __restrict__ x, const std::uint8_t* __restrict__ codes,
+    const std::uint8_t* __restrict__ scales, __nv_bfloat16* __restrict__ out) {
     const int lane = static_cast<int>(threadIdx.x) & 31;
     const int warp = static_cast<int>(threadIdx.x) >> 5;
     const int row = static_cast<int>(blockIdx.x) * kWarpsPerBlock + warp;
@@ -74,13 +73,15 @@ __global__ void linear_rowsplit_gemv_mlp_gate_up_q4_kernel(const __nv_bfloat16* 
 
 } // namespace
 
-void linear_rowsplit_gemv_mlp_gate_up_q4_launch(const Tensor& x, const Weight& w, Tensor& out,
-                                                cudaStream_t stream) {
+void linear_rowsplit_gemv_mlp_gate_up_34816_q4_launch(const Tensor& x, const Weight& w,
+                                                      Tensor& out, WorkspaceArena& ws,
+                                                      cudaStream_t stream) {
+    (void)ws;
     if (w.n != kN || w.k != kK || w.padded_shape[1] != kK) {
-        throw std::invalid_argument("linear: MLP gate/up Q4 tuned GEMV requires 17408x5120");
+        throw std::invalid_argument("linear: MLP gate/up Q4 fused GEMV requires 34816x5120");
     }
     const int grid = (kN + kWarpsPerBlock - 1) / kWarpsPerBlock;
-    linear_rowsplit_gemv_mlp_gate_up_q4_kernel<<<grid, kBlockThreads, 0, stream>>>(
+    linear_rowsplit_gemv_mlp_gate_up_34816_q4_kernel<<<grid, kBlockThreads, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
         static_cast<const std::uint8_t*>(w.scales), static_cast<__nv_bfloat16*>(out.data));
     CUDA_CHECK(cudaGetLastError());

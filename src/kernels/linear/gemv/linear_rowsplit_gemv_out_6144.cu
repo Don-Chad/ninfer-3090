@@ -117,7 +117,8 @@ __global__ void linear_rowsplit_gemv_out_6144_q5_kernel(const __nv_bfloat16* __r
 } // namespace
 
 void linear_rowsplit_gemv_out_6144_q5_launch(const Tensor& x, const Weight& w, Tensor& out,
-                                             cudaStream_t stream) {
+                                             WorkspaceArena& ws, cudaStream_t stream) {
+    (void)ws;
     if (w.n != kN || w.k != kK || w.padded_shape[1] != kK) {
         throw std::invalid_argument("linear: Out6144 Q5 tuned GEMV requires 5120x6144");
     }

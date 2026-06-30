@@ -18,11 +18,11 @@ enum class LinearFormat {
 
 enum class ShapeFamily {
     DenseCtrl48x5120,
-    AttnKV1024x5120,
-    GdnQK2048x5120,
+    AttnInQKV7168x5120,
+    GdnInQK4096x5120,
     Proj6144x5120,
     Out5120x6144,
-    MlpGateUp17408x5120,
+    MlpGateUp34816x5120,
     MlpDown5120x17408,
     LmHead248320x5120,
     Generic,
@@ -37,15 +37,14 @@ enum class LinearPolicyId {
     GenericLowbitGemm,
     GenericDenseGemv,
     GenericDenseGemm,
-    AttnKV1024Q4RowsplitGemv,
-    AttnKV1024Q5RowsplitGemv,
-    MlpGateUpQ4RowsplitGemv,
+    MlpGateUp34816Q4RowsplitGemv,
+    AttnInQKV7168Q4RowsplitGemv,
+    AttnInQKV7168Q5RowsplitGemv,
+    GdnInQK4096Q4RowsplitGemv,
     MlpDownQ5RowsplitGemv,
     LmHeadQ6RowsplitGemv,
-    Proj6144Q4RowsplitGemv,
     Proj6144Q5RowsplitGemv,
     Out6144Q5RowsplitGemv,
-    GdnQK2048Q4RowsplitGemv,
 };
 
 struct LinearPlanKey {

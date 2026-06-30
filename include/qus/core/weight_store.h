@@ -21,6 +21,14 @@ struct LoadOptions {
     std::vector<std::string> required_text_tensors;
 };
 
+struct FusedBlockRecord {
+    ModuleKind    module       = ModuleKind::TextCore;
+    std::uint16_t group_id     = 0;
+    std::uint16_t fusion_index = 0;
+    std::uint32_t source_layer = kQ5090NoLayer;
+    Weight        weight;
+};
+
 class WeightStore {
 public:
     explicit WeightStore(Q5090Expectations expected = {});
@@ -34,6 +42,9 @@ public:
                          std::uint32_t source_layer) const noexcept;
     const Weight* qweight(ModuleKind module, std::uint32_t source_kind,
                           std::uint32_t source_layer) const noexcept;
+    const Weight* qfused(ModuleKind module, std::uint16_t group_id,
+                         std::uint16_t fusion_index,
+                         std::uint32_t source_layer) const noexcept;
 
     std::size_t tensor_count() const noexcept;
     std::size_t quant_count() const noexcept;
@@ -70,6 +81,7 @@ private:
     Q5090Expectations expected_;
     std::vector<TensorRecord> tensors_;
     std::vector<QuantRecord> quant_;
+    std::vector<FusedBlockRecord> fused_;
     ModuleState modules_[3];
     std::size_t total_tensor_count_   = 0;
     std::size_t loaded_payload_bytes_ = 0;

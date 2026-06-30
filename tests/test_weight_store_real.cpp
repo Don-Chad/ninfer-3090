@@ -335,6 +335,59 @@ bool enough_free_memory(std::uint64_t bytes) {
     return true;
 }
 
+int expect_fused_weight(const qus::WeightStore& store, std::uint16_t group_id,
+                        std::uint16_t fusion_index, std::uint32_t source_layer,
+                        qus::QType qtype, std::int32_t n, qus::SourceKind first_segment,
+                        const char* label) {
+    const qus::Weight* fused =
+        store.qfused(qus::ModuleKind::TextCore, group_id, fusion_index, source_layer);
+    const qus::Weight* first = store.qweight(qus::ModuleKind::TextCore,
+                                             static_cast<std::uint32_t>(first_segment),
+                                             source_layer);
+    int failures = 0;
+    failures += fused != nullptr ? 0 : fail(std::string(label) + " fused missing");
+    failures += first != nullptr ? 0 : fail(std::string(label) + " first segment missing");
+    if (fused == nullptr || first == nullptr) { return failures; }
+    failures += fused->qtype == qtype ? 0 : fail(std::string(label) + " qtype mismatch");
+    failures += fused->layout == qus::QuantLayout::RowSplit
+                    ? 0
+                    : fail(std::string(label) + " layout mismatch");
+    failures += fused->n == n ? 0 : fail(std::string(label) + " n mismatch");
+    failures += fused->k == 5120 ? 0 : fail(std::string(label) + " k mismatch");
+    failures += fused->source_kind == static_cast<std::uint32_t>(qus::SourceKind::Other)
+                    ? 0
+                    : fail(std::string(label) + " source_kind mismatch");
+    failures += fused->source_layer == source_layer
+                    ? 0
+                    : fail(std::string(label) + " source_layer mismatch");
+    failures += fused->qdata == first->qdata
+                    ? 0
+                    : fail(std::string(label) + " qdata first-segment mismatch");
+    failures += fused->scales == first->scales
+                    ? 0
+                    : fail(std::string(label) + " scales first-segment mismatch");
+    return failures;
+}
+
+int expect_real_fused_contract(const qus::WeightStore& store) {
+    int failures = 0;
+    failures += expect_fused_weight(store, /*MLP_GATEUP*/ 3, 0, 0, qus::QType::Q4G64_F16S,
+                                    34816, qus::SourceKind::MlpGate, "mlp.gate_up");
+    failures += expect_fused_weight(store, /*ATTN_IN*/ 1, 0, 3, qus::QType::Q4G64_F16S,
+                                    7168, qus::SourceKind::AttnQ, "attn.qkv.q4");
+    failures += expect_fused_weight(store, /*ATTN_IN*/ 1, 1, 3, qus::QType::Q5G64_F16S,
+                                    7168, qus::SourceKind::AttnGate, "attn.gatev.q5");
+    failures += expect_fused_weight(store, /*GDN_IN*/ 2, 0, 0, qus::QType::Q4G64_F16S,
+                                    4096, qus::SourceKind::GdnInProjQ, "gdn.in_qk.q4");
+    failures += store.qfused(qus::ModuleKind::TextCore, 0, 0, 3) == nullptr
+                    ? 0
+                    : fail("standalone o_proj should not have fused record");
+    failures += store.qfused(qus::ModuleKind::TextCore, 0, 0, 0) == nullptr
+                    ? 0
+                    : fail("standalone mlp.down should not have fused record");
+    return failures;
+}
+
 int run_default_load(const std::filesystem::path& file_path, std::uint64_t text_payload_bytes,
                      qus::Q5090Progress* progress) {
     if (!enough_free_memory(text_payload_bytes + kGiB)) { return 0; }
@@ -354,6 +407,7 @@ int run_default_load(const std::filesystem::path& file_path, std::uint64_t text_
     failures += store.tensor_count() == 1167 ? 0 : fail("real store tensor_count mismatch");
     failures +=
         store.loaded_payload_bytes() == text_payload_bytes ? 0 : fail("real loaded bytes mismatch");
+    failures += expect_real_fused_contract(store);
     return failures;
 }
 

@@ -23,11 +23,11 @@ ShapeFamily classify_shape(std::int32_t n, std::int32_t k) {
     struct Entry { std::int32_t n, k; ShapeFamily fam; };
     static constexpr Entry kTable[] = {
         {    48,  5120, ShapeFamily::DenseCtrl48x5120     },
-        {  1024,  5120, ShapeFamily::AttnKV1024x5120      },
-        {  2048,  5120, ShapeFamily::GdnQK2048x5120       },
+        {  7168,  5120, ShapeFamily::AttnInQKV7168x5120   },
+        {  4096,  5120, ShapeFamily::GdnInQK4096x5120     },
         {  6144,  5120, ShapeFamily::Proj6144x5120        },
         {  5120,  6144, ShapeFamily::Out5120x6144         },
-        { 17408,  5120, ShapeFamily::MlpGateUp17408x5120  },
+        { 34816,  5120, ShapeFamily::MlpGateUp34816x5120  },
         {  5120, 17408, ShapeFamily::MlpDown5120x17408    },
         {248320,  5120, ShapeFamily::LmHead248320x5120    },
     };
@@ -45,24 +45,31 @@ LinearRegime classify_regime(LinearFormat /*fmt*/, ShapeFamily /*shape*/, std::i
 
 LinearPlan resolve_plan(LinearPlanKey key) {
     if (key.format == LinearFormat::Q4G64_RowSplit &&
-        key.shape == ShapeFamily::AttnKV1024x5120 &&
+        key.shape == ShapeFamily::MlpGateUp34816x5120 &&
         key.regime == LinearRegime::T1) {
-        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::AttnKV1024Q4RowsplitGemv,
-                          policy_name(LinearPolicyId::AttnKV1024Q4RowsplitGemv),
-                          /*uses_tensor_cores=*/false};
-    }
-    if (key.format == LinearFormat::Q5G64_RowSplit &&
-        key.shape == ShapeFamily::AttnKV1024x5120 &&
-        key.regime == LinearRegime::T1) {
-        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::AttnKV1024Q5RowsplitGemv,
-                          policy_name(LinearPolicyId::AttnKV1024Q5RowsplitGemv),
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::MlpGateUp34816Q4RowsplitGemv,
+                          policy_name(LinearPolicyId::MlpGateUp34816Q4RowsplitGemv),
                           /*uses_tensor_cores=*/false};
     }
     if (key.format == LinearFormat::Q4G64_RowSplit &&
-        key.shape == ShapeFamily::MlpGateUp17408x5120 &&
+        key.shape == ShapeFamily::AttnInQKV7168x5120 &&
         key.regime == LinearRegime::T1) {
-        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::MlpGateUpQ4RowsplitGemv,
-                          policy_name(LinearPolicyId::MlpGateUpQ4RowsplitGemv),
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::AttnInQKV7168Q4RowsplitGemv,
+                          policy_name(LinearPolicyId::AttnInQKV7168Q4RowsplitGemv),
+                          /*uses_tensor_cores=*/false};
+    }
+    if (key.format == LinearFormat::Q5G64_RowSplit &&
+        key.shape == ShapeFamily::AttnInQKV7168x5120 &&
+        key.regime == LinearRegime::T1) {
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::AttnInQKV7168Q5RowsplitGemv,
+                          policy_name(LinearPolicyId::AttnInQKV7168Q5RowsplitGemv),
+                          /*uses_tensor_cores=*/false};
+    }
+    if (key.format == LinearFormat::Q4G64_RowSplit &&
+        key.shape == ShapeFamily::GdnInQK4096x5120 &&
+        key.regime == LinearRegime::T1) {
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::GdnInQK4096Q4RowsplitGemv,
+                          policy_name(LinearPolicyId::GdnInQK4096Q4RowsplitGemv),
                           /*uses_tensor_cores=*/false};
     }
     if (key.format == LinearFormat::Q5G64_RowSplit &&
@@ -79,13 +86,6 @@ LinearPlan resolve_plan(LinearPlanKey key) {
                           policy_name(LinearPolicyId::LmHeadQ6RowsplitGemv),
                           /*uses_tensor_cores=*/false};
     }
-    if (key.format == LinearFormat::Q4G64_RowSplit &&
-        key.shape == ShapeFamily::Proj6144x5120 &&
-        key.regime == LinearRegime::T1) {
-        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::Proj6144Q4RowsplitGemv,
-                          policy_name(LinearPolicyId::Proj6144Q4RowsplitGemv),
-                          /*uses_tensor_cores=*/false};
-    }
     if (key.format == LinearFormat::Q5G64_RowSplit &&
         key.shape == ShapeFamily::Proj6144x5120 &&
         key.regime == LinearRegime::T1) {
@@ -100,14 +100,6 @@ LinearPlan resolve_plan(LinearPlanKey key) {
                           policy_name(LinearPolicyId::Out6144Q5RowsplitGemv),
                           /*uses_tensor_cores=*/false};
     }
-    if (key.format == LinearFormat::Q4G64_RowSplit &&
-        key.shape == ShapeFamily::GdnQK2048x5120 &&
-        key.regime == LinearRegime::T1) {
-        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::GdnQK2048Q4RowsplitGemv,
-                          policy_name(LinearPolicyId::GdnQK2048Q4RowsplitGemv),
-                          /*uses_tensor_cores=*/false};
-    }
-
     const bool dense = (key.format == LinearFormat::DenseBF16 || key.format == LinearFormat::DenseFP32);
     const bool gemv  = (key.regime == LinearRegime::T1);
     const LinearPolicyId policy =
@@ -134,11 +126,11 @@ const char* format_name(LinearFormat f) {
 const char* shape_name(ShapeFamily s) {
     switch (s) {
     case ShapeFamily::DenseCtrl48x5120:    return "dense_ctrl_48x5120";
-    case ShapeFamily::AttnKV1024x5120:     return "attn_kv_1024x5120";
-    case ShapeFamily::GdnQK2048x5120:      return "gdn_qk_2048x5120";
+    case ShapeFamily::AttnInQKV7168x5120:  return "attn_in_qkv_7168x5120";
+    case ShapeFamily::GdnInQK4096x5120:    return "gdn_in_qk_4096x5120";
     case ShapeFamily::Proj6144x5120:       return "proj_6144x5120";
     case ShapeFamily::Out5120x6144:        return "out_5120x6144";
-    case ShapeFamily::MlpGateUp17408x5120: return "mlp_gate_up_17408x5120";
+    case ShapeFamily::MlpGateUp34816x5120: return "mlp_gate_up_34816x5120";
     case ShapeFamily::MlpDown5120x17408:   return "mlp_down_5120x17408";
     case ShapeFamily::LmHead248320x5120:   return "lm_head_248320x5120";
     case ShapeFamily::Generic:             return "generic";
@@ -161,24 +153,22 @@ const char* policy_name(LinearPolicyId p) {
     case LinearPolicyId::GenericLowbitGemm: return "linear.ref.lowbit.gemm.generic.v1";
     case LinearPolicyId::GenericDenseGemv:  return "linear.ref.dense.gemv.generic.v1";
     case LinearPolicyId::GenericDenseGemm:  return "linear.ref.dense.gemm.generic.v1";
-    case LinearPolicyId::AttnKV1024Q4RowsplitGemv:
-        return "linear.rowsplit.gemv.attn_kv_1024.q4.warp4_row.v1";
-    case LinearPolicyId::AttnKV1024Q5RowsplitGemv:
-        return "linear.rowsplit.gemv.attn_kv_1024.q5.warp8_row.v1";
-    case LinearPolicyId::MlpGateUpQ4RowsplitGemv:
-        return "linear.rowsplit.gemv.mlp_gate_up.q4.warp_row.v1";
+    case LinearPolicyId::MlpGateUp34816Q4RowsplitGemv:
+        return "linear.rowsplit.gemv.mlp_gate_up_34816.q4.warp_row.v1";
+    case LinearPolicyId::AttnInQKV7168Q4RowsplitGemv:
+        return "linear.rowsplit.gemv.attn_in_7168.q4.warp_row.v1";
+    case LinearPolicyId::AttnInQKV7168Q5RowsplitGemv:
+        return "linear.rowsplit.gemv.attn_in_7168.q5.warp_row.v1";
+    case LinearPolicyId::GdnInQK4096Q4RowsplitGemv:
+        return "linear.rowsplit.gemv.gdn_in_qk_4096.q4.warp_row.v1";
     case LinearPolicyId::MlpDownQ5RowsplitGemv:
         return "linear.rowsplit.gemv.mlp_down.q5.warp_row.v1";
     case LinearPolicyId::LmHeadQ6RowsplitGemv:
         return "linear.rowsplit.gemv.lm_head.q6.warp_row.v1";
-    case LinearPolicyId::Proj6144Q4RowsplitGemv:
-        return "linear.rowsplit.gemv.proj_6144.q4.warp_row.v1";
     case LinearPolicyId::Proj6144Q5RowsplitGemv:
         return "linear.rowsplit.gemv.proj_6144.q5.warp_row.v1";
     case LinearPolicyId::Out6144Q5RowsplitGemv:
         return "linear.rowsplit.gemv.out_6144.q5.warp_row.v1";
-    case LinearPolicyId::GdnQK2048Q4RowsplitGemv:
-        return "linear.rowsplit.gemv.gdn_qk_2048.q4.warp_row.v1";
     }
     return "linear.ref.unknown";
 }

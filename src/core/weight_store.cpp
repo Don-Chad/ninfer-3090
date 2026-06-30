@@ -262,6 +262,31 @@ bool contains_text_name(const ParsedQ5090File& parsed, std::string_view name) {
     return false;
 }
 
+const ParsedQ5090FusionGroup& require_fusion_group_record(const ParsedQ5090File& parsed,
+                                                          const ParsedQ5090Tensor& tensor,
+                                                          std::size_t tensor_index) {
+    for (const ParsedQ5090FusionGroup& group : parsed.fusion_groups) {
+        if (group.group_id != tensor.fusion_group_id) { continue; }
+        const std::uint64_t first = group.first_block_tensor_index;
+        const std::uint64_t end   = first + group.block_count;
+        if (tensor_index < first || tensor_index >= end) { continue; }
+        if (tensor.fusion_index >= group.block_count) {
+            throw std::runtime_error("q5090 fused block fusion_index exceeds group block_count");
+        }
+        if (first + tensor.fusion_index != tensor_index) {
+            throw std::runtime_error("q5090 fused block index does not match fusion_index");
+        }
+        if (tensor.source_layer != group.source_layer) {
+            throw std::runtime_error("q5090 fused block source_layer does not match group");
+        }
+        if (tensor.shape[1] != group.shared_k) {
+            throw std::runtime_error("q5090 fused block K does not match group shared_k");
+        }
+        return group;
+    }
+    throw std::runtime_error("q5090 fused block references no FusionGroupRecord");
+}
+
 } // namespace
 
 WeightStore::WeightStore(Q5090Expectations expected) : expected_(std::move(expected)) {}
@@ -280,6 +305,7 @@ void WeightStore::load(const char* path, DeviceArena& weights, DeviceContext& ct
     const std::size_t mark = weights.mark();
     std::vector<TensorRecord> next_tensors;
     std::vector<QuantRecord> next_quant;
+    std::vector<FusedBlockRecord> next_fused;
     ModuleState next_modules[3]{};
     std::size_t next_loaded_payload_bytes = 0;
 
@@ -297,6 +323,7 @@ void WeightStore::load(const char* path, DeviceArena& weights, DeviceContext& ct
 
         next_tensors.reserve(parsed.tensors.size());
         next_quant.reserve(parsed.segments.size());
+        next_fused.reserve(parsed.tensors.size());
         std::uint64_t upload_total = 0;
         for (const ParsedQ5090Tensor& tensor : parsed.tensors) {
             if (should_load(tensor.module_kind, options)) { upload_total += tensor.payload_bytes; }
@@ -306,7 +333,8 @@ void WeightStore::load(const char* path, DeviceArena& weights, DeviceContext& ct
             options.progress != nullptr ? &upload_reporter : nullptr;
         std::uint64_t uploaded = 0;
         upload_reporter.report("upload payloads", 0, upload_total, true);
-        for (const ParsedQ5090Tensor& tensor : parsed.tensors) {
+        for (std::size_t tensor_index = 0; tensor_index < parsed.tensors.size(); ++tensor_index) {
+            const ParsedQ5090Tensor& tensor = parsed.tensors[tensor_index];
             const bool load_payload = should_load(tensor.module_kind, options);
             void* payload           = nullptr;
             if (load_payload) {
@@ -337,6 +365,19 @@ void WeightStore::load(const char* path, DeviceArena& weights, DeviceContext& ct
                                     segment.source_layer,
                                     make_quant_descriptor(tensor, segment, payload)});
                 }
+                if (tensor.fusion_group_id != 0) {
+                    const ParsedQ5090FusionGroup& group =
+                        require_fusion_group_record(parsed, tensor, tensor_index);
+                    ParsedQ5090Segment block_seg{};
+                    block_seg.source_kind  = static_cast<std::uint32_t>(SourceKind::Other);
+                    block_seg.source_layer = group.source_layer;
+                    block_seg.row_begin    = 0;
+                    block_seg.row_count    = tensor.shape[0];
+                    next_fused.push_back(FusedBlockRecord{
+                        tensor.module_kind, static_cast<std::uint16_t>(tensor.fusion_group_id),
+                        static_cast<std::uint16_t>(tensor.fusion_index), group.source_layer,
+                        make_quant_descriptor(tensor, block_seg, payload)});
+                }
             } else {
                 throw std::runtime_error("unsupported q5090 tensor layout");
             }
@@ -351,6 +392,7 @@ void WeightStore::load(const char* path, DeviceArena& weights, DeviceContext& ct
 
     tensors_              = std::move(next_tensors);
     quant_                = std::move(next_quant);
+    fused_                = std::move(next_fused);
     total_tensor_count_   = parsed.tensors.size();
     loaded_payload_bytes_ = next_loaded_payload_bytes;
     for (std::size_t i = 0; i < 3; ++i) { modules_[i] = next_modules[i]; }
@@ -392,6 +434,18 @@ const Weight* WeightStore::qweight(ModuleKind module, std::uint32_t source_kind,
     return nullptr;
 }
 
+const Weight* WeightStore::qfused(ModuleKind module, std::uint16_t group_id,
+                                  std::uint16_t fusion_index,
+                                  std::uint32_t source_layer) const noexcept {
+    for (const FusedBlockRecord& record : fused_) {
+        if (record.module == module && record.group_id == group_id &&
+            record.fusion_index == fusion_index && record.source_layer == source_layer) {
+            return &record.weight;
+        }
+    }
+    return nullptr;
+}
+
 std::size_t WeightStore::tensor_count() const noexcept { return total_tensor_count_; }
 
 std::size_t WeightStore::quant_count() const noexcept { return quant_.size(); }
@@ -410,6 +464,7 @@ bool WeightStore::module_loaded(ModuleKind module) const noexcept {
 void WeightStore::clear() noexcept {
     tensors_.clear();
     quant_.clear();
+    fused_.clear();
     for (ModuleState& module : modules_) { module = ModuleState{}; }
     total_tensor_count_   = 0;
     loaded_payload_bytes_ = 0;

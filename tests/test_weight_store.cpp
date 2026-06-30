@@ -100,6 +100,15 @@ int expect_device_bytes(const void* device, const std::vector<std::byte>& expect
     return 0;
 }
 
+std::uint32_t segment_row_sum(const qus::ParsedQ5090File& parsed,
+                              const qus::ParsedQ5090Tensor& tensor) {
+    std::uint32_t rows = 0;
+    for (std::uint32_t i = 0; i < tensor.segment_count; ++i) {
+        rows += parsed.segments[static_cast<std::size_t>(tensor.segment_begin + i)].row_count;
+    }
+    return rows;
+}
+
 int expect_counts(const qus::WeightStore& store, std::uint64_t loaded_bytes) {
     int failures = 0;
     failures += store.tensor_count() == 10 ? 0 : fail("tensor_count mismatch");
@@ -149,6 +158,24 @@ int expect_default_text_load(const qus::WeightStore& store, const qus::ParsedQ50
         failures += gate->payload == up->payload ? 0 : fail("fused segments should share payload");
         failures += gate->qdata != nullptr && gate->scales != nullptr ? 0 : fail("gate planes null");
         failures += up->qdata != nullptr && up->scales != nullptr ? 0 : fail("up planes null");
+    }
+    const auto& gateup_tensor = find_tensor(parsed, "layers.0.mlp.gateup");
+    const qus::Weight* gateup =
+        store.qfused(qus::ModuleKind::TextCore, /*MLP_GATEUP*/ 3, 0, 0);
+    failures += gateup != nullptr ? 0 : fail("missing fused gate/up block");
+    if (gateup != nullptr && gate != nullptr) {
+        failures += gateup->n == static_cast<std::int32_t>(segment_row_sum(parsed, gateup_tensor))
+                        ? 0
+                        : fail("fused gate/up row sum mismatch");
+        failures += gateup->k == 7 ? 0 : fail("fused gate/up K mismatch");
+        failures += gateup->qtype == qus::QType::Q4G64_F16S ? 0 : fail("fused gate/up qtype");
+        failures += gateup->source_kind == static_cast<std::uint32_t>(qus::SourceKind::Other)
+                        ? 0
+                        : fail("fused gate/up source_kind");
+        failures += gateup->qdata == gate->qdata ? 0 : fail("fused gate/up qdata should start at gate");
+        failures += gateup->scales == gate->scales
+                        ? 0
+                        : fail("fused gate/up scales should start at gate");
     }
 
     const auto& text_tensor_meta =
@@ -254,6 +281,9 @@ int main() {
     default_store.clear();
     failures += default_store.tensor_count() == 0 ? 0 : fail("clear tensor_count mismatch");
     failures += default_store.quant_count() == 0 ? 0 : fail("clear quant_count mismatch");
+    failures += default_store.qfused(qus::ModuleKind::TextCore, 3, 0, 0) == nullptr
+                    ? 0
+                    : fail("clear fused lookup mismatch");
     failures += default_store.loaded_payload_bytes() == 0 ? 0 : fail("clear loaded bytes mismatch");
     failures += !default_store.module_loaded(qus::ModuleKind::TextCore)
                     ? 0

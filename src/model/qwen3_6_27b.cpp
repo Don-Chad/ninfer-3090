@@ -33,6 +33,9 @@ namespace qus::model {
 namespace {
 
 constexpr ModuleKind kText = ModuleKind::TextCore;
+constexpr std::uint16_t kFusionAttnIn = 1;
+constexpr std::uint16_t kFusionGdnIn = 2;
+constexpr std::uint16_t kFusionMlpGateUp = 3;
 
 std::uint32_t sk(SourceKind kind) { return static_cast<std::uint32_t>(kind); }
 
@@ -41,11 +44,29 @@ std::string source_label(const char* field, SourceKind kind, std::uint32_t layer
            " layer=" + (layer == kQ5090NoLayer ? std::string("NO_LAYER") : std::to_string(layer));
 }
 
+std::string fused_label(const char* field, std::uint16_t group_id, std::uint16_t fusion_index,
+                        std::uint32_t layer) {
+    return std::string(field) + " fusion_group=" + std::to_string(group_id) +
+           " fusion_index=" + std::to_string(fusion_index) +
+           " layer=" + (layer == kQ5090NoLayer ? std::string("NO_LAYER") : std::to_string(layer));
+}
+
 const Weight* require_weight(const WeightStore& store, SourceKind kind, std::uint32_t layer,
                              const char* field) {
     const Weight* weight = store.qweight(kText, sk(kind), layer);
     if (weight == nullptr) {
         throw std::runtime_error("missing q5090 weight: " + source_label(field, kind, layer));
+    }
+    return weight;
+}
+
+const Weight* require_weight_fused(const WeightStore& store, std::uint16_t group_id,
+                                   std::uint16_t fusion_index, std::uint32_t layer,
+                                   const char* field) {
+    const Weight* weight = store.qfused(kText, group_id, fusion_index, layer);
+    if (weight == nullptr) {
+        throw std::runtime_error("missing q5090 fused weight: " +
+                                 fused_label(field, group_id, fusion_index, layer));
     }
     return weight;
 }
@@ -84,6 +105,7 @@ Tensor bind_conv1d_view(const WeightStore& store, SourceKind kind, std::uint32_t
 MlpW bind_mlp(const WeightStore& store, std::uint32_t layer) {
     return MlpW{require_weight(store, SourceKind::MlpGate, layer, "mlp.gate"),
                 require_weight(store, SourceKind::MlpUp, layer, "mlp.up"),
+                require_weight_fused(store, kFusionMlpGateUp, 0, layer, "mlp.gate_up"),
                 require_weight(store, SourceKind::MlpDown, layer, "mlp.down")};
 }
 
@@ -250,6 +272,10 @@ void Qwen3_6_27B::bind() {
                 require_weight(weights_, SourceKind::AttnGate, source_layer, "full.gate_proj");
             out.k_proj = require_weight(weights_, SourceKind::AttnK, source_layer, "full.k_proj");
             out.v_proj = require_weight(weights_, SourceKind::AttnV, source_layer, "full.v_proj");
+            out.qkv_q4 = require_weight_fused(weights_, kFusionAttnIn, 0, source_layer,
+                                               "attn.qkv.q4");
+            out.gatev_q5 = require_weight_fused(weights_, kFusionAttnIn, 1, source_layer,
+                                                 "attn.gatev.q5");
             out.o_proj = require_weight(weights_, SourceKind::AttnO, source_layer, "full.o_proj");
             out.q_norm =
                 require_tensor(weights_, SourceKind::AttnQNorm, source_layer, "full.q_norm");
@@ -265,6 +291,8 @@ void Qwen3_6_27B::bind() {
                                             "gdn.input_norm");
             out.in_q = require_weight(weights_, SourceKind::GdnInProjQ, source_layer, "gdn.in_q");
             out.in_k = require_weight(weights_, SourceKind::GdnInProjK, source_layer, "gdn.in_k");
+            out.in_qk_q4 =
+                require_weight_fused(weights_, kFusionGdnIn, 0, source_layer, "gdn.in_qk.q4");
             out.in_v = require_weight(weights_, SourceKind::GdnInProjV, source_layer, "gdn.in_v");
             out.in_z = require_weight(weights_, SourceKind::GdnInProjZ, source_layer, "gdn.in_z");
             gdn_in_a_[gidx] =
@@ -297,6 +325,36 @@ void Qwen3_6_27B::attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
     Tensor h = work_.alloc(DType::BF16, {kCfg.hidden, T});
     kernels::rmsnorm(x, *w.input_norm, kCfg.rms_eps, true, nullptr, h, s);
 
+    if (ph == Phase::Decode) {
+        Tensor qk    = work_.alloc(DType::BF16, {kCfg.q_size + kCfg.kv_size, 1});
+        Tensor gatev = work_.alloc(DType::BF16, {kCfg.q_size + kCfg.kv_size, 1});
+        kernels::linear(h, *w.qkv_q4, qk, work_, s);
+        kernels::linear(h, *w.gatev_q5, gatev, work_, s);
+
+        Tensor q = qk.slice(0, 0, kCfg.q_size).view({kCfg.head_dim, kCfg.n_q, 1});
+        Tensor k =
+            qk.slice(0, kCfg.q_size, kCfg.kv_size).view({kCfg.head_dim, kCfg.n_kv, 1});
+        Tensor gate = gatev.slice(0, 0, kCfg.q_size).view({kCfg.head_dim, kCfg.n_q, 1});
+        Tensor v =
+            gatev.slice(0, kCfg.q_size, kCfg.kv_size).view({kCfg.head_dim, kCfg.n_kv, 1});
+
+        Tensor qn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, 1});
+        Tensor kn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, 1});
+        kernels::rmsnorm(q, *w.q_norm, kCfg.rms_eps, true, nullptr, qn, s);
+        kernels::rmsnorm(k, *w.k_norm, kCfg.rms_eps, true, nullptr, kn, s);
+        const Tensor& positions = active_positions_ != nullptr ? *active_positions_ : io_.pos;
+        kernels::rope(positions, kCfg.rotary_dim, kCfg.rope_theta, qn, kn, s);
+
+        Tensor a = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, 1});
+        kernels::gqa_attention_decode(qn, kn, v, io_.pos, kAttnScale, kv_, fidx, work_, a, s);
+        kernels::sigmoid_gate_mul(gate, a, s);
+
+        Tensor o = work_.alloc(DType::BF16, {kCfg.hidden, 1});
+        kernels::linear(a.view({kCfg.q_size, 1}), *w.o_proj, o, work_, s);
+        kernels::residual_add(o, x, s);
+        return;
+    }
+
     Tensor q         = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
     Tensor gate      = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
     Tensor k         = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, T});
@@ -318,11 +376,7 @@ void Qwen3_6_27B::attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
     kernels::rope(positions, kCfg.rotary_dim, kCfg.rope_theta, qn, kn, s);
 
     Tensor a = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
-    if (ph == Phase::Prefill) {
-        kernels::gqa_attention_prefill(qn, kn, v, kAttnScale, kv_, fidx, a, s);
-    } else {
-        kernels::gqa_attention_decode(qn, kn, v, io_.pos, kAttnScale, kv_, fidx, work_, a, s);
-    }
+    kernels::gqa_attention_prefill(qn, kn, v, kAttnScale, kv_, fidx, a, s);
     kernels::sigmoid_gate_mul(gate, a, s);
 
     Tensor o = work_.alloc(DType::BF16, {kCfg.hidden, T});
@@ -336,6 +390,54 @@ void Qwen3_6_27B::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
 
     Tensor h = work_.alloc(DType::BF16, {kCfg.hidden, T});
     kernels::rmsnorm(x, *w.input_norm, kCfg.rms_eps, true, nullptr, h, s);
+
+    if (ph == Phase::Decode) {
+        Tensor qkv    = work_.alloc(DType::BF16, {kCfg.conv_dim, 1});
+        Tensor qk_out = qkv.slice(0, 0, 2 * kCfg.key_dim);
+        Tensor v_out  = qkv.slice(0, 2 * kCfg.key_dim, kCfg.value_dim);
+        kernels::linear(h, *w.in_qk_q4, qk_out, work_, s);
+        kernels::linear(h, *w.in_v, v_out, work_, s);
+
+        Tensor a = work_.alloc(DType::BF16, {kCfg.gdn_v_heads, 1});
+        Tensor b = work_.alloc(DType::BF16, {kCfg.gdn_v_heads, 1});
+        kernels::linear(h, *w.in_a, a, work_, s);
+        kernels::linear(h, *w.in_b, b, work_, s);
+
+        Tensor qkv_c       = work_.alloc(DType::BF16, {kCfg.conv_dim, 1});
+        Tensor& conv_state = state_.conv.at(static_cast<std::size_t>(gidx));
+        kernels::causal_conv1d_decode(qkv, *w.conv1d, conv_state, qkv_c, s);
+
+        Tensor g    = work_.alloc(DType::FP32, {kCfg.gdn_v_heads, 1});
+        Tensor beta = work_.alloc(DType::FP32, {kCfg.gdn_v_heads, 1});
+        kernels::gdn_gating(a, b, *w.a_log, *w.dt_bias, g, beta, s);
+
+        Tensor qc = qkv_c.slice(0, 0, kCfg.key_dim);
+        Tensor kc = qkv_c.slice(0, kCfg.key_dim, kCfg.key_dim);
+        Tensor vc = qkv_c.slice(0, 2 * kCfg.key_dim, kCfg.value_dim);
+
+        Tensor qn = work_.alloc(DType::BF16, {kCfg.gdn_k_dim, kCfg.gdn_k_heads, 1});
+        Tensor kn = work_.alloc(DType::BF16, {kCfg.gdn_k_dim, kCfg.gdn_k_heads, 1});
+        kernels::l2norm(qc.view({kCfg.gdn_k_dim, kCfg.gdn_k_heads, 1}), 1.0e-6f, qn, s);
+        kernels::l2norm(kc.view({kCfg.gdn_k_dim, kCfg.gdn_k_heads, 1}), 1.0e-6f, kn, s);
+
+        Tensor vv         = vc.view({kCfg.gdn_v_dim, kCfg.gdn_v_heads, 1});
+        Tensor o          = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, 1});
+        Tensor& ssm_state = state_.ssm.at(static_cast<std::size_t>(gidx));
+        kernels::gated_delta_rule_recurrent(qn, kn, vv, g, beta, kGdnScale, work_, ssm_state, o,
+                                            s);
+
+        Tensor z      = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, 1});
+        Tensor z_flat = z.view({kCfg.value_dim, 1});
+        kernels::linear(h, *w.in_z, z_flat, work_, s);
+
+        Tensor on = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, 1});
+        kernels::rmsnorm(o, *w.gdn_norm, kCfg.rms_eps, false, &z, on, s);
+
+        Tensor out = work_.alloc(DType::BF16, {kCfg.hidden, 1});
+        kernels::linear(on.view({kCfg.value_dim, 1}), *w.out_proj, out, work_, s);
+        kernels::residual_add(out, x, s);
+        return;
+    }
 
     Tensor q = work_.alloc(DType::BF16, {kCfg.key_dim, T});
     Tensor k = work_.alloc(DType::BF16, {kCfg.key_dim, T});
@@ -356,11 +458,7 @@ void Qwen3_6_27B::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
 
     Tensor qkv_c       = work_.alloc(DType::BF16, {kCfg.conv_dim, T});
     Tensor& conv_state = state_.conv.at(static_cast<std::size_t>(gidx));
-    if (ph == Phase::Prefill) {
-        kernels::causal_conv1d_prefill(qkv, *w.conv1d, conv_state, qkv_c, s);
-    } else {
-        kernels::causal_conv1d_decode(qkv, *w.conv1d, conv_state, qkv_c, s);
-    }
+    kernels::causal_conv1d_prefill(qkv, *w.conv1d, conv_state, qkv_c, s);
 
     Tensor g    = work_.alloc(DType::FP32, {kCfg.gdn_v_heads, T});
     Tensor beta = work_.alloc(DType::FP32, {kCfg.gdn_v_heads, T});
@@ -381,12 +479,7 @@ void Qwen3_6_27B::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
     Tensor vv         = vc.view({kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
     Tensor o          = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
     Tensor& ssm_state = state_.ssm.at(static_cast<std::size_t>(gidx));
-    if (ph == Phase::Prefill) {
-        kernels::gated_delta_rule_chunked(qn, kn, vv, g, beta, kGdnScale, 64, work_, ssm_state, o,
-                                          s);
-    } else {
-        kernels::gated_delta_rule_recurrent(qn, kn, vv, g, beta, kGdnScale, work_, ssm_state, o, s);
-    }
+    kernels::gated_delta_rule_chunked(qn, kn, vv, g, beta, kGdnScale, 64, work_, ssm_state, o, s);
 
     Tensor z      = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
     Tensor z_flat = z.view({kCfg.value_dim, T});
@@ -401,12 +494,25 @@ void Qwen3_6_27B::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
 }
 
 void Qwen3_6_27B::mlp_tail(const Tensor* post_norm, const MlpW& m, Tensor& x, Phase ph) {
-    (void)ph;
     cudaStream_t s = ctx_.stream;
     const int T    = x.ne[1];
 
     Tensor h = work_.alloc(DType::BF16, {kCfg.hidden, T});
     kernels::rmsnorm(x, *post_norm, kCfg.rms_eps, true, nullptr, h, s);
+
+    if (ph == Phase::Decode) {
+        Tensor gu = work_.alloc(DType::BF16, {2 * kCfg.intermediate, 1});
+        kernels::linear(h, *m.gate_up, gu, work_, s);
+        Tensor g = gu.slice(0, 0, kCfg.intermediate);
+        Tensor u = gu.slice(0, kCfg.intermediate, kCfg.intermediate);
+        Tensor a = work_.alloc(DType::BF16, {kCfg.intermediate, 1});
+        kernels::silu_and_mul(g, u, a, s);
+
+        Tensor d = work_.alloc(DType::BF16, {kCfg.hidden, 1});
+        kernels::linear(a, *m.down, d, work_, s);
+        kernels::residual_add(d, x, s);
+        return;
+    }
 
     Tensor g = work_.alloc(DType::BF16, {kCfg.intermediate, T});
     Tensor u = work_.alloc(DType::BF16, {kCfg.intermediate, T});

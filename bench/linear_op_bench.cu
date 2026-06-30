@@ -4,7 +4,7 @@
 //
 // Examples:
 //   ./build/bench/qus_linear_op_bench --all-targets --csv-out profiles/ncu-linear-v2/baseline.csv
-//   ./build/bench/qus_linear_op_bench --shape MlpGateUp17408x5120 --qtype Q4 --repeat 200
+//   ./build/bench/qus_linear_op_bench --shape MlpGateUp34816x5120 --qtype Q4 --repeat 200
 
 #include "qus/kernels/linear.h"
 #include "qus/core/device.h"
@@ -69,25 +69,24 @@ struct TargetSpec {
 };
 
 constexpr ShapeSpec kShapes[] = {
-    {"MlpGateUp17408x5120", 17408, 5120},
+    {"MlpGateUp34816x5120", 34816, 5120},
+    {"AttnInQKV7168x5120", 7168, 5120},
+    {"GdnInQK4096x5120", 4096, 5120},
     {"MlpDown5120x17408", 5120, 17408},
     {"LmHead248320x5120", 248320, 5120},
     {"Proj6144x5120", 6144, 5120},
     {"Out5120x6144", 5120, 6144},
-    {"GdnQK2048x5120", 2048, 5120},
-    {"AttnKV1024x5120", 1024, 5120},
 };
 
 constexpr TargetSpec kTask2Targets[] = {
-    {{"MlpGateUp17408x5120", 17408, 5120}, QType::Q4G64_F16S},
+    {{"MlpGateUp34816x5120", 34816, 5120}, QType::Q4G64_F16S},
+    {{"AttnInQKV7168x5120", 7168, 5120}, QType::Q4G64_F16S},
+    {{"AttnInQKV7168x5120", 7168, 5120}, QType::Q5G64_F16S},
+    {{"GdnInQK4096x5120", 4096, 5120}, QType::Q4G64_F16S},
     {{"MlpDown5120x17408", 5120, 17408}, QType::Q5G64_F16S},
     {{"LmHead248320x5120", 248320, 5120}, QType::Q6G64_F16S},
     {{"Proj6144x5120", 6144, 5120}, QType::Q5G64_F16S},
-    {{"Proj6144x5120", 6144, 5120}, QType::Q4G64_F16S},
     {{"Out5120x6144", 5120, 6144}, QType::Q5G64_F16S},
-    {{"GdnQK2048x5120", 2048, 5120}, QType::Q4G64_F16S},
-    {{"AttnKV1024x5120", 1024, 5120}, QType::Q5G64_F16S},
-    {{"AttnKV1024x5120", 1024, 5120}, QType::Q4G64_F16S},
 };
 
 struct Options {
@@ -257,7 +256,7 @@ void usage(const char* argv0) {
                  "  %s --shape ShapeFamily --qtype Q4|Q5|Q6 [--repeat N]\n\n"
                  "Options:\n"
                  "  --all-targets              Run the Task-2 target shape/qtype rows (default).\n"
-                 "  --shape NAME               One ShapeFamily string, e.g. MlpGateUp17408x5120.\n"
+                 "  --shape NAME               One ShapeFamily string, e.g. MlpGateUp34816x5120.\n"
                  "  --qtype Q4|Q5|Q6           Low-bit ROW_SPLIT qtype for --shape.\n"
                  "  --warmup N                 Cold-cache warmup GEMV launches (default %d).\n"
                  "  --repeat N                 Cold-cache measured GEMV launches (default %d).\n"

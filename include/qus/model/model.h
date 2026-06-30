@@ -19,9 +19,10 @@ namespace qus::model {
 inline constexpr const char* kWorkspaceLifetimePolicy = "block_scoped_mixer_mlp_rewind";
 
 struct MlpW {
-    const Weight* gate = nullptr;
-    const Weight* up   = nullptr;
-    const Weight* down = nullptr;
+    const Weight* gate    = nullptr;
+    const Weight* up      = nullptr;
+    const Weight* gate_up = nullptr;
+    const Weight* down    = nullptr;
 };
 
 struct FullLayerW {
@@ -30,6 +31,8 @@ struct FullLayerW {
     const Weight* gate_proj      = nullptr;
     const Weight* k_proj         = nullptr;
     const Weight* v_proj         = nullptr;
+    const Weight* qkv_q4         = nullptr;
+    const Weight* gatev_q5       = nullptr;
     const Weight* o_proj         = nullptr;
     const Tensor* q_norm         = nullptr;
     const Tensor* k_norm         = nullptr;
@@ -41,6 +44,7 @@ struct GdnLayerW {
     const Tensor* input_norm     = nullptr;
     const Weight* in_q           = nullptr;
     const Weight* in_k           = nullptr;
+    const Weight* in_qk_q4       = nullptr;
     const Weight* in_v           = nullptr;
     const Weight* in_z           = nullptr;
     const Weight* in_a           = nullptr;

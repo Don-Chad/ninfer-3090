@@ -104,7 +104,8 @@ __global__ void linear_rowsplit_gemv_lm_head_q6_kernel(const __nv_bfloat16* __re
 } // namespace
 
 void linear_rowsplit_gemv_lm_head_q6_launch(const Tensor& x, const Weight& w, Tensor& out,
-                                            cudaStream_t stream) {
+                                            WorkspaceArena& ws, cudaStream_t stream) {
+    (void)ws;
     if (w.n != kN || w.k != kK || w.padded_shape[1] != kK) {
         throw std::invalid_argument("linear: lm_head Q6 tuned GEMV requires 248320x5120");
     }
