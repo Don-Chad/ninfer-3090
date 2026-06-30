@@ -22,6 +22,7 @@ struct ArenaScope {
     std::size_t mark;
 
     explicit ArenaScope(WorkspaceArena& arena) : ws(arena), mark(arena.mark()) {}
+
     ~ArenaScope() { ws.rewind(mark); }
 
     ArenaScope(const ArenaScope&)            = delete;
@@ -33,15 +34,6 @@ std::int32_t checked_i32(std::uint32_t value, const char* op, const char* name) 
         throw std::overflow_error(std::string(op) + ": " + name + " exceeds int32");
     }
     return static_cast<std::int32_t>(value);
-}
-
-std::int32_t ceil_div_i32(std::int32_t value, std::int32_t divisor) {
-    return (value + divisor - 1) / divisor;
-}
-
-std::int32_t decode_tile_n(std::uint32_t host_pos) {
-    const std::uint32_t window = host_pos + 1U;
-    return (window <= 4096U) ? 16 : 64;
 }
 
 void require_shape(const Tensor& t, std::int32_t n0, std::int32_t n1, std::int32_t n2,
@@ -81,9 +73,9 @@ void validate_cache(KVCache& kv, int layer, const char* op) {
         throw std::invalid_argument(std::string(op) + ": KVCache tensors must be BF16");
     }
     const std::int32_t padded_context = checked_i32(kv.padded_context, op, "padded_context");
-    if (cache_k.ne[0] != kHeadDim || cache_k.ne[1] != padded_context ||
-        cache_k.ne[2] != kKVHeads || cache_k.ne[3] != 1 || cache_v.ne[0] != kHeadDim ||
-        cache_v.ne[1] != padded_context || cache_v.ne[2] != kKVHeads || cache_v.ne[3] != 1) {
+    if (cache_k.ne[0] != kHeadDim || cache_k.ne[1] != padded_context || cache_k.ne[2] != kKVHeads ||
+        cache_k.ne[3] != 1 || cache_v.ne[0] != kHeadDim || cache_v.ne[1] != padded_context ||
+        cache_v.ne[2] != kKVHeads || cache_v.ne[3] != 1) {
         throw std::invalid_argument(std::string(op) + ": invalid KVCache tensor shape");
     }
     require_contiguous_nonnull(cache_k, op, "cache k");
@@ -155,18 +147,13 @@ void gqa_attention_decode(const Tensor& q, const Tensor& k, const Tensor& v, con
     }
 
     ArenaScope arena_scope(ws);
-    const std::int32_t tile_n     = decode_tile_n(kv.pos);
-    const std::int32_t window     = checked_i32(kv.pos + 1U, op, "decode window");
-    const std::int32_t tile_count = ceil_div_i32(window, tile_n);
-    constexpr std::int32_t q_heads_per_cta = 6;
 
-    Tensor partial_acc = ws.alloc(DType::BF16, {kHeadDim, kQHeads, tile_count});
-    Tensor partial_m   = ws.alloc(DType::FP32, {kQHeads, tile_count});
-    Tensor partial_l   = ws.alloc(DType::FP32, {kQHeads, tile_count});
+    Tensor partial_acc = ws.alloc(DType::BF16, {kHeadDim, kQHeads, kGqaDecodeSplits});
+    Tensor partial_m   = ws.alloc(DType::FP32, {kQHeads, kGqaDecodeSplits});
+    Tensor partial_l   = ws.alloc(DType::FP32, {kQHeads, kGqaDecodeSplits});
 
-    detail::gqa_attention_decode_launch(q, k, v, pos, scale, kv, layer, tile_n, tile_count,
-                                        q_heads_per_cta, partial_acc, partial_m, partial_l, out,
-                                        stream);
+    detail::gqa_attention_decode_launch(q, k, v, pos, scale, kv, layer, partial_acc, partial_m,
+                                        partial_l, out, stream);
 }
 
 } // namespace qus::kernels

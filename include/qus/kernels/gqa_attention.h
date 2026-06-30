@@ -9,6 +9,8 @@
 
 namespace qus::kernels {
 
+inline constexpr int kGqaDecodeSplits = 128;
+
 void gqa_attention_prefill(const Tensor& q, const Tensor& k, const Tensor& v, float scale,
                            KVCache& kv, int layer, Tensor& out, cudaStream_t stream);
 
