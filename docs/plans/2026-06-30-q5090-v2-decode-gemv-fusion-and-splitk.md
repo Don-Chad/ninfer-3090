@@ -51,7 +51,7 @@ snapshot, integration only), `compute-sanitizer`, `ncu`/`nsys`, `git worktree`.
   - Linear kernel correctness is judged by the fp64/tolerance oracle in `qus_linear_test`. The old
     per-segment reduction order is not a compatibility contract.
   - Phase-2 tuning may reorder reductions when that improves the kernel. The numeric gate is the fp64
-    oracle; exact byte equality and greedy snapshot identity are not optimization correctness gates.
+    oracle; token identity is not an optimization correctness gate.
 - **No MTP/Vision, no attention-algorithm change, no KV/state-shape change.**
 
 ## Execution mode
