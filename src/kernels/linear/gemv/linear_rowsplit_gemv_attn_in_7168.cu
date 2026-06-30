@@ -44,6 +44,12 @@ __device__ __forceinline__ std::uint16_t load_scale_bits(const std::uint8_t* sca
            static_cast<std::uint16_t>(static_cast<std::uint16_t>(sp[1]) << 8);
 }
 
+__device__ __forceinline__ std::uint32_t load_scale_pair_bits(const std::uint8_t* scale_row,
+                                                              int group) {
+    return static_cast<std::uint32_t>(load_scale_bits(scale_row, group)) |
+           (static_cast<std::uint32_t>(load_scale_bits(scale_row, group + 1)) << 16);
+}
+
 __device__ __forceinline__ float accumulate_q5_group(const __nv_bfloat162* __restrict__ x2,
                                                      const std::uint8_t* __restrict__ nibble_group,
                                                      const std::uint8_t* __restrict__ high_group,
@@ -171,55 +177,37 @@ __global__ void linear_rowsplit_gemv_attn_in_7168_q5_kernel(
         const std::uint8_t* scale_row = scales + static_cast<std::int64_t>(row) * kGroups * 2;
 
         float acc = 0.0f;
-        int group = 0;
 #pragma unroll 1
-        for (; group + 2 < kGroups; group += 3) {
+        for (int group = 0; group < kGroups; group += 4) {
             const std::uint8_t* code_group0 = code_row + group * kQ5NibbleBytesPerGroup;
             const std::uint8_t* code_group1 = code_group0 + kQ5NibbleBytesPerGroup;
             const std::uint8_t* code_group2 = code_group1 + kQ5NibbleBytesPerGroup;
+            const std::uint8_t* code_group3 = code_group2 + kQ5NibbleBytesPerGroup;
             const std::uint8_t* high_group0 = high_row + group * kQ5HighBytesPerGroup;
             const std::uint8_t* high_group1 = high_group0 + kQ5HighBytesPerGroup;
             const std::uint8_t* high_group2 = high_group1 + kQ5HighBytesPerGroup;
+            const std::uint8_t* high_group3 = high_group2 + kQ5HighBytesPerGroup;
 
-            std::uint16_t scale0_bits = 0;
-            std::uint16_t scale1_bits = 0;
-            std::uint16_t scale2_bits = 0;
+            std::uint32_t scale01_bits = 0;
+            std::uint32_t scale23_bits = 0;
             if (lane == 0) {
-                scale0_bits = load_scale_bits(scale_row, group);
+                scale01_bits = load_scale_pair_bits(scale_row, group);
             } else if (lane == 1) {
-                scale1_bits = load_scale_bits(scale_row, group + 1);
-            } else if (lane == 2) {
-                scale2_bits = load_scale_bits(scale_row, group + 2);
+                scale23_bits = load_scale_pair_bits(scale_row, group + 2);
             }
-            scale0_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale0_bits, 0));
-            scale1_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale1_bits, 1));
-            scale2_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale2_bits, 2));
+            scale01_bits = static_cast<std::uint32_t>(__shfl_sync(0xffffffffu, scale01_bits, 0));
+            scale23_bits = static_cast<std::uint32_t>(__shfl_sync(0xffffffffu, scale23_bits, 1));
+            const auto scale0_bits = static_cast<std::uint16_t>(scale01_bits & 0xffffu);
+            const auto scale1_bits = static_cast<std::uint16_t>(scale01_bits >> 16);
+            const auto scale2_bits = static_cast<std::uint16_t>(scale23_bits & 0xffffu);
+            const auto scale3_bits = static_cast<std::uint16_t>(scale23_bits >> 16);
 
             acc = accumulate_q5_group(x2, code_group0, high_group0, scale0_bits, lane, group, acc);
             acc = accumulate_q5_group(x2, code_group1, high_group1, scale1_bits, lane, group + 1,
                                       acc);
             acc = accumulate_q5_group(x2, code_group2, high_group2, scale2_bits, lane, group + 2,
                                       acc);
-        }
-
-        if (group < kGroups) {
-            const std::uint8_t* code_group0 = code_row + group * kQ5NibbleBytesPerGroup;
-            const std::uint8_t* code_group1 = code_group0 + kQ5NibbleBytesPerGroup;
-            const std::uint8_t* high_group0 = high_row + group * kQ5HighBytesPerGroup;
-            const std::uint8_t* high_group1 = high_group0 + kQ5HighBytesPerGroup;
-
-            std::uint16_t scale0_bits = 0;
-            std::uint16_t scale1_bits = 0;
-            if (lane == 0) {
-                scale0_bits = load_scale_bits(scale_row, group);
-            } else if (lane == 1) {
-                scale1_bits = load_scale_bits(scale_row, group + 1);
-            }
-            scale0_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale0_bits, 0));
-            scale1_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale1_bits, 1));
-
-            acc = accumulate_q5_group(x2, code_group0, high_group0, scale0_bits, lane, group, acc);
-            acc = accumulate_q5_group(x2, code_group1, high_group1, scale1_bits, lane, group + 1,
+            acc = accumulate_q5_group(x2, code_group3, high_group3, scale3_bits, lane, group + 3,
                                       acc);
         }
 
@@ -251,19 +239,17 @@ __global__ void linear_rowsplit_gemv_attn_in_7168_q5_kernel(
         const std::uint8_t* high_group1 = high_group0 + kQ5HighBytesPerGroup;
         const std::uint8_t* high_group2 = high_group1 + kQ5HighBytesPerGroup;
 
-        std::uint16_t scale0_bits = 0;
-        std::uint16_t scale1_bits = 0;
+        std::uint32_t scale01_bits = 0;
         std::uint16_t scale2_bits = 0;
         if (lane == 0) {
-            scale0_bits = load_scale_bits(scale_row, group);
+            scale01_bits = load_scale_pair_bits(scale_row, group);
         } else if (lane == 1) {
-            scale1_bits = load_scale_bits(scale_row, group + 1);
-        } else if (lane == 2) {
             scale2_bits = load_scale_bits(scale_row, group + 2);
         }
-        scale0_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale0_bits, 0));
-        scale1_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale1_bits, 1));
-        scale2_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale2_bits, 2));
+        scale01_bits = static_cast<std::uint32_t>(__shfl_sync(0xffffffffu, scale01_bits, 0));
+        scale2_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale2_bits, 1));
+        const auto scale0_bits = static_cast<std::uint16_t>(scale01_bits & 0xffffu);
+        const auto scale1_bits = static_cast<std::uint16_t>(scale01_bits >> 16);
 
         acc = accumulate_q5_group(x2, code_group0, high_group0, scale0_bits, lane, group, acc);
         acc = accumulate_q5_group(x2, code_group1, high_group1, scale1_bits, lane, group + 1, acc);
@@ -276,15 +262,17 @@ __global__ void linear_rowsplit_gemv_attn_in_7168_q5_kernel(
         const std::uint8_t* high_group0 = high_row + group * kQ5HighBytesPerGroup;
         const std::uint8_t* high_group1 = high_group0 + kQ5HighBytesPerGroup;
 
-        std::uint16_t scale0_bits = 0;
-        std::uint16_t scale1_bits = 0;
+        std::uint32_t scale01_bits = 0;
         if (lane == 0) {
-            scale0_bits = load_scale_bits(scale_row, group);
-        } else if (lane == 1 && group + 1 < group_end) {
-            scale1_bits = load_scale_bits(scale_row, group + 1);
+            scale01_bits = static_cast<std::uint32_t>(load_scale_bits(scale_row, group));
+            if (group + 1 < group_end) {
+                scale01_bits |= static_cast<std::uint32_t>(load_scale_bits(scale_row, group + 1))
+                                << 16;
+            }
         }
-        scale0_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale0_bits, 0));
-        scale1_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale1_bits, 1));
+        scale01_bits = static_cast<std::uint32_t>(__shfl_sync(0xffffffffu, scale01_bits, 0));
+        const auto scale0_bits = static_cast<std::uint16_t>(scale01_bits & 0xffffu);
+        const auto scale1_bits = static_cast<std::uint16_t>(scale01_bits >> 16);
 
         acc = accumulate_q5_group(x2, code_group0, high_group0, scale0_bits, lane, group, acc);
         if (group + 1 < group_end) {
