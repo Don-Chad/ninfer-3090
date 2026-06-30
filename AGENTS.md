@@ -39,6 +39,15 @@ Use the project layering deliberately:
 Do not add abstractions for hypothetical future models, generic runtime flexibility, legacy
 surfaces, or speculative reuse.
 
+## Commit Messages
+
+Use Conventional Commit-style subjects for project commits:
+`type(scope): concise imperative summary`, or `type: concise imperative summary` when no useful
+scope exists.
+
+Use lowercase types consistent with project history, such as `docs`, `feat`, `fix`, `perf`,
+`bench`, `test`, `build`, `refactor`, or `chore`. Do not use free-form title-case subjects.
+
 ## Implementation Plan Writing
 
 These rules apply to formal implementation plans under `docs/plans/**` and
@@ -49,6 +58,9 @@ When writing a formal implementation plan, default to a subagent-driven executio
 user explicitly requests another mode. The plan should be executable by a coordinator that dispatches
 bounded work to fresh subagents, then integrates and verifies the results. If a plan should not use
 subagents, state the reason and the intended execution mode in the plan.
+
+Whenever using subagents, assign every subagent the current strongest available model. Do not choose
+weaker, cheaper, legacy, or compatibility-oriented models for subagent work.
 
 Every formal implementation plan should include at least:
 
