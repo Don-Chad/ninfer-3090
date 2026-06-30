@@ -51,7 +51,7 @@ snapshot, integration only), `compute-sanitizer`, `ncu`/`nsys`, `git worktree`.
   - Linear kernel correctness is judged by the fp64/tolerance oracle in `qus_linear_test`. The old
     per-segment reduction order is not a compatibility contract.
   - Phase-2 tuning may reorder reductions when that improves the kernel. The numeric gate is the fp64
-    oracle; byte-for-byte equality and greedy snapshot identity are not optimization correctness gates.
+    oracle; exact byte equality and greedy snapshot identity are not optimization correctness gates.
 - **No MTP/Vision, no attention-algorithm change, no KV/state-shape change.**
 
 ## Execution mode
@@ -374,7 +374,7 @@ cmake --build build --target qus_e2e_bench -j
   --case cn_short:bench/fixtures/prompts/cn_short.ids:96 \
   --warmup-repeats 1 --repeats 1 --max-ctx 8192 --device 0 \
   --stop-token-id 248046 --stop-token-id 248044
-# Inspect generated_token_ids if needed; bit-exact token identity is not a correctness gate.
+# Inspect generated_token_ids if needed; token identity is not a correctness gate.
 ```
 - [ ] `compute-sanitizer --tool memcheck` clean over a short decode (slice/view bounds, `qkv` direct
       write, `qkv_c` views).
