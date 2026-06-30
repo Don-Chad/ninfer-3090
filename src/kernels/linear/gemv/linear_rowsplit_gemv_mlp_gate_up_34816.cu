@@ -123,7 +123,7 @@ __device__ __forceinline__ void q4_issue_tile(
 __global__ void linear_rowsplit_gemv_mlp_gate_up_silu_17408_q4_kernel(
     const __nv_bfloat16* __restrict__ x, const std::uint8_t* __restrict__ codes,
     const std::uint8_t* __restrict__ scales, __nv_bfloat16* __restrict__ out) {
-    constexpr int kStages = 3;
+    constexpr int kStages = 4;
     constexpr int kPrefetch = kStages - 1;
     __shared__ __align__(16) __nv_bfloat16 x_sh[kK];
     __shared__ uint4 code_tile[kWarpsPerBlock][kStages][kVecsPerWarpTile];
