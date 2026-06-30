@@ -132,6 +132,7 @@ public:
     }
 
     void decode_step();
+    void decode_step_record();
 
     template <class Tap>
     void decode_step(Tap& tap) {

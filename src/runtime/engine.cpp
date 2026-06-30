@@ -125,6 +125,8 @@ std::size_t Engine::default_cache_bytes(std::uint32_t max_ctx) {
 }
 
 void Engine::load(const std::string& path) {
+    decode_graph_.reset();
+    decode_warmed_ = false;
     card_.reset();
     state_.reset();
     kv_.reset();
@@ -218,7 +220,16 @@ int Engine::decode_step() {
     if (kv_->pos >= kv_->max_context) {
         throw std::out_of_range("Engine::decode_step exceeds max_ctx");
     }
-    card_->decode_step();
+    if (options_.use_cuda_graph && decode_warmed_) {
+        if (!decode_graph_.ready()) {
+            decode_graph_.capture(ctx_->stream, [this] { card_->decode_step_record(); });
+        }
+        decode_graph_.launch(ctx_->stream);
+    } else {
+        card_->decode_step_record();
+        decode_warmed_ = true;
+    }
+    kv_->advance();
     return read_token();
 }
 

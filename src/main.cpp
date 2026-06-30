@@ -118,6 +118,7 @@ int main(int argc, char** argv) {
         engine_options.max_ctx        = cli.max_context;
         engine_options.stop_token_ids = stop_token_ids;
         engine_options.progress       = &progress;
+        engine_options.use_cuda_graph = cli.use_cuda_graph;
         qus::Engine engine(engine_options);
 
         const auto engine_load_start = Clock::now();

@@ -6,6 +6,7 @@
 #include "qus/core/state_store.h"
 #include "qus/core/weight_store.h"
 #include "qus/model/model.h"
+#include "qus/runtime/decode_graph.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -44,6 +45,7 @@ struct EngineOptions {
     std::size_t work_bytes   = 4ULL * 1024ULL * 1024ULL * 1024ULL;
     Q5090Progress* progress  = nullptr;
     std::vector<int> stop_token_ids;
+    bool use_cuda_graph = true;
 };
 
 class Engine {
@@ -84,6 +86,8 @@ private:
     std::optional<GdnState> state_;
     model::StepState io_{};
     std::optional<model::Qwen3_6_27B> card_;
+    DecodeGraph decode_graph_;
+    bool decode_warmed_ = false;
 };
 
 } // namespace qus

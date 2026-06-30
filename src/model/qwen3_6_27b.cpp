@@ -625,12 +625,17 @@ void Qwen3_6_27B::decode_step_impl(Tap& tap) {
     if constexpr (Tap::enabled) { tap(TapId::AfterLogits, -1, Phase::Decode, io_.logits, s); }
     kernels::argmax(io_.logits, io_.token, s);
 
-    kv_.advance();
     detail::advance_pos(io_.pos, s);
     work_.reset();
 }
 
 void Qwen3_6_27B::decode_step() {
+    NullTap tap;
+    decode_step_impl(tap);
+    kv_.advance();
+}
+
+void Qwen3_6_27B::decode_step_record() {
     NullTap tap;
     decode_step_impl(tap);
 }
@@ -639,6 +644,7 @@ void Qwen3_6_27B::decode_step_erased(void* tap, TapCallback callback) {
     if (callback == nullptr) { throw std::invalid_argument("Qwen3_6_27B::decode tap is null"); }
     ErasedTap erased{tap, callback};
     decode_step_impl(erased);
+    kv_.advance();
 }
 
 } // namespace qus::model

@@ -23,7 +23,7 @@ std::string usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <weights.qus> --tokenizer <dir> (--prompt <text>|--messages <messages.json>) "
            "[--max-context N] [--max-new N] [--device N] [--raw-output] "
-           "[--print-token-ids] [--stop-token-id N]...\n"
+           "[--print-token-ids] [--no-cuda-graph] [--stop-token-id N]...\n"
            "       streams decoded text to stdout; writes progress and timings to stderr\n";
 }
 
@@ -58,6 +58,8 @@ CliOptions parse_cli(int argc, char** argv) {
             options.output_mode = OutputMode::Raw;
         } else if (arg == "--print-token-ids") {
             options.print_token_ids = true;
+        } else if (arg == "--no-cuda-graph") {
+            options.use_cuda_graph = false;
         } else if (arg == "--stop-token-id") {
             options.stop_token_ids.push_back(
                 parse_nonnegative_int(require_value("--stop-token-id"), "stop-token-id"));
