@@ -21,6 +21,7 @@ constexpr int kGroupsPerWarpTile = 16;
 constexpr int kVecsPerWarpTile = kGroupsPerWarpTile * kBytesPerGroup / kVecBytes;
 constexpr int kWarpsPerBlock = 8;
 constexpr int kBlockThreads = kWarpsPerBlock * 32;
+constexpr int kXVecs = kK / 8; // x as uint4 (8 bf16 each)
 static_assert(kBytesPerGroup == 2 * kVecBytes);
 static_assert(kGroups % kGroupsPerWarpTile == 0);
 static_assert(kVecsPerWarpTile == 32);
@@ -32,7 +33,16 @@ __device__ __forceinline__ int sign_extend_q4(int v) {
 __global__ void linear_rowsplit_gemv_mlp_gate_up_34816_q4_kernel(
     const __nv_bfloat16* __restrict__ x, const std::uint8_t* __restrict__ codes,
     const std::uint8_t* __restrict__ scales, __nv_bfloat16* __restrict__ out) {
+    __shared__ __align__(16) __nv_bfloat16 x_sh[kK];
     __shared__ uint4 code_tile[kWarpsPerBlock][kVecsPerWarpTile];
+
+    auto*       x_sh_v = reinterpret_cast<uint4*>(x_sh);
+    const auto* x_g    = reinterpret_cast<const uint4*>(x);
+    for (int i = static_cast<int>(threadIdx.x); i < kXVecs;
+         i += static_cast<int>(blockDim.x)) {
+        x_sh_v[i] = x_g[i];
+    }
+    __syncthreads();
 
     const int lane = static_cast<int>(threadIdx.x) & 31;
     const int warp = static_cast<int>(threadIdx.x) >> 5;
@@ -42,7 +52,7 @@ __global__ void linear_rowsplit_gemv_mlp_gate_up_34816_q4_kernel(
     const std::uint8_t* code_row =
         codes + static_cast<std::int64_t>(row) * kGroups * kBytesPerGroup;
     const std::uint8_t* scale_row = scales + static_cast<std::int64_t>(row) * kGroups * 2;
-    const auto* x2 = reinterpret_cast<const __nv_bfloat162*>(x);
+    const auto* x2 = reinterpret_cast<const __nv_bfloat162*>(x_sh);
 
     float acc = 0.0f;
     for (int tile = 0; tile < kGroups; tile += kGroupsPerWarpTile) {
