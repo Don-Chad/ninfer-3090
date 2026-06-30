@@ -35,4 +35,20 @@ void linear_rowsplit_gemv_mlp_down_q5_launch(const Tensor& x, const Weight& w, T
     CUDA_CHECK(cudaGetLastError());
 }
 
+void linear_rowsplit_gemv_mlp_down_residual_q5_launch(const Tensor& x, const Weight& w,
+                                                      Tensor& residual_out, WorkspaceArena& ws,
+                                                      cudaStream_t stream) {
+    if (w.n != kN || w.k != kK || w.padded_shape[1] != kK) {
+        throw std::invalid_argument("linear_residual_add: MLP down Q5 requires 5120x17408");
+    }
+    (void)ws;
+
+    launch_q5_rowsplit_gemv_residual<kN, kK, kRowsPerBlock, kStages, /*kStageX=*/false>(
+        static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
+        static_cast<const std::uint8_t*>(w.qhigh), static_cast<const std::uint8_t*>(w.scales),
+        static_cast<const __nv_bfloat16*>(residual_out.data),
+        static_cast<__nv_bfloat16*>(residual_out.data), stream);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 } // namespace qus::kernels::detail

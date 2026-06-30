@@ -11,6 +11,7 @@
 #include "qus/kernels/gqa_attention.h"
 #include "qus/kernels/l2norm.h"
 #include "qus/kernels/linear.h"
+#include "qus/kernels/linear_residual.h"
 #include "qus/kernels/embed_gather.h"
 #include "qus/kernels/residual_add.h"
 #include "qus/kernels/rmsnorm.h"
@@ -350,9 +351,7 @@ void Qwen3_6_27B::attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
         kernels::gqa_attention_decode(qn, kn, v, io_.pos, kAttnScale, kv_, fidx, work_, a, s);
         kernels::sigmoid_gate_mul(gate, a, s);
 
-        Tensor o = work_.alloc(DType::BF16, {kCfg.hidden, 1});
-        kernels::linear(a.view({kCfg.q_size, 1}), *w.o_proj, o, work_, s);
-        kernels::residual_add(o, x, s);
+        kernels::linear_residual_add(a.view({kCfg.q_size, 1}), *w.o_proj, x, work_, s);
         return;
     }
 
@@ -432,9 +431,7 @@ void Qwen3_6_27B::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
         Tensor on = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, 1});
         kernels::rmsnorm(o, *w.gdn_norm, kCfg.rms_eps, false, &z, on, s);
 
-        Tensor out = work_.alloc(DType::BF16, {kCfg.hidden, 1});
-        kernels::linear(on.view({kCfg.value_dim, 1}), *w.out_proj, out, work_, s);
-        kernels::residual_add(out, x, s);
+        kernels::linear_residual_add(on.view({kCfg.value_dim, 1}), *w.out_proj, x, work_, s);
         return;
     }
 
@@ -507,9 +504,7 @@ void Qwen3_6_27B::mlp_tail(const Tensor* post_norm, const MlpW& m, Tensor& x, Ph
         Tensor a = work_.alloc(DType::BF16, {kCfg.intermediate, 1});
         kernels::silu_and_mul(g, u, a, s);
 
-        Tensor d = work_.alloc(DType::BF16, {kCfg.hidden, 1});
-        kernels::linear(a, *m.down, d, work_, s);
-        kernels::residual_add(d, x, s);
+        kernels::linear_residual_add(a, *m.down, x, work_, s);
         return;
     }
 
