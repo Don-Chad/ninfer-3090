@@ -85,37 +85,51 @@ Cleanup                               git worktree remove (all) + git worktree p
 
 1. **Task 0** (direct): build the bench, record the baseline, init the ledger; commit
    `bench(q5090): record roofline-pushdown baseline`.
-2. **Dispatch A1–A7 in parallel:** for each tag, create a detached worktree and dispatch one subagent
-   per the Subagent assignment below.
-3. **Integrate as loops return:** evidence-check, then apply+commit on `master` sequentially
-   (Coordinator accept-and-integrate). Update the ledger.
-4. **Integration gate** (once, after all integrated).
-5. **Cleanup** (remove + prune worktrees).
-6. **Review** subagent.
+2. **Open A1–A7 in parallel:** for each tag, create one detached worktree (kept for the kernel's whole
+   loop). Kernels run concurrently; within a kernel, rounds are sequential.
+3. **Drive each kernel's tuning loop** (see "Per-kernel tuning loop"): the coordinator dispatches a
+   **fresh strongest-model subagent per round** — round 1 = the A-task seed design, rounds 2+ = open
+   discovery — until the stop condition.
+4. **Integrate as kernels finish:** evidence-check, then squash the worktree's net change into one
+   `perf(q5090):` commit on `master` (Coordinator accept-and-integrate). Update the ledger.
+5. **Integration gate** (once, after all integrated).
+6. **Cleanup** (remove + prune worktrees).
+7. **Review** subagent.
 
-### Subagent assignment (exactly what each loop subagent is dispatched with — keep the prompt thin)
+### Subagent assignment (what each round subagent is dispatched with — keep the prompt thin)
 
-A loop subagent receives only a pointer, not re-explained detail: *"Read this plan. Execute task
-**A\<i\>** — your design section + the Per-loop protocol + the Per-loop DoD. Edit only your owned
-`.cu`/`.cuh`. Measure with `qus_linear_op_bench` + `ncu` + `ctest -R linear` only; never run the full
-model; never edit a shared file. Return your evidence bundle under
-`profiles/ncu-roofline-pushdown/<tag>/`."* Every specific (file, limiter, lever, target, commands,
-gate) lives in this plan — the dispatch prompt carries none of it.
+Every round subagent runs on the **strongest available model**, works in the kernel's detached
+worktree, edits only the owned `.cu`/`.cuh`, measures with `qus_linear_op_bench` + `ncu` +
+`ctest -R linear` only (never the full model, never a shared file), and returns one round's evidence
+under `profiles/ncu-roofline-pushdown/<tag>/`.
+
+- **Round 1 (seed):** *"Read this plan. Execute task **A\<i\>**, round 1: implement its **Design** as
+  the starting direction; fp64-verify; ncu-profile; commit the round on the worktree HEAD; append
+  `round1_*` + a `summary.md` line."*
+- **Rounds 2+ (discovery):** *"Read this plan + `profiles/ncu-roofline-pushdown/<tag>/` (round-0
+  baseline + all prior rounds). Task **A\<i\>**, round N: from the `ncu` evidence find the current
+  dominant limiter and the single best change to beat it — you are **not** bound to the seed design.
+  One limiter this round; fp64-verify; ncu; commit the round; append `roundN_*` + a `summary.md`
+  line."*
+
+Every specific (file, oracle, gate, commands) lives in this plan — the dispatch prompt carries none of
+it beyond the round's framing above.
 
 ### Git workflow (points the user fixed)
 
 - **No named feature branches.** A git worktree cannot share `master`'s checkout, so each parallel
   worktree is created **detached** at the base commit:
   `git worktree add --detach ../qus-tune-<tag> <base-commit>`.
-- **Develop on the mainline.** Subagents iterate inside their detached worktree (own build dir),
-  editing only their kernel `.cu`/`.cuh`. They do **not** create branches and need not commit there —
-  they leave the final, verified files in the worktree working tree.
-- **Linear history, no merges.** The coordinator integrates each *finished + verified* kernel
-  **sequentially in the main `master` checkout**: harvest the two-file diff
-  (`git -C ../qus-tune-<tag> diff -- <files> | git -C <main> apply`), then
-  `git add <files> && git commit`. Because the kernel files are disjoint, sequential applies never
-  conflict, so `master` advances as a straight line of one commit per kernel — **never** a merge
-  commit, never a feature-branch merge.
+- **Commit freely inside the worktree.** Subagents iterate in their detached worktree (own build dir)
+  and **may commit per round on the detached HEAD** — encouraged, so a round can checkpoint and roll
+  back (`git reset --hard <round-k>`). These intermediate commits stay no-branch and never reach
+  `master`.
+- **Squash to one linear commit on integrate.** The coordinator collapses the worktree's **net change
+  vs the base commit** into a single commit on `master`, so all per-round checkpoints become one
+  conforming `perf(q5090):` commit:
+  `git -C ../qus-tune-<tag> diff <base-commit> -- <files> | git -C <main> apply`, then
+  `git add <files> && git commit`. Disjoint files ⇒ sequential applies never conflict ⇒ `master` stays
+  a straight line — **one commit per kernel, no merge commits, no feature branch.**
 - **Commit messages follow the mainline convention** (Conventional Commits, as in
   `git log`: `perf(q5090): tune mlp gate-up decode gemv`). One commit per kernel, e.g.
   `perf(q5090): vectorize mlp gate-up decode gemv loads`,
@@ -125,10 +139,10 @@ gate) lives in this plan — the dispatch prompt carries none of it.
   (`git worktree remove ../qus-tune-<tag>`) and `git worktree prune`. Only the main `master` worktree
   remains; because the worktrees were detached, there are no leftover branch refs to delete.
 
-Each loop **follows its design scheme below AND runs a tuning loop**: implement the design, profile,
-iterate one limiter per round until the gate. If `ncu` disproves the design's core hypothesis, the
-subagent reports that back (it does not silently abandon the design). The coordinator maintains the
-ledger as the single source of truth across the parallel loops.
+Each kernel is a **hybrid two-phase loop** (see "Per-kernel tuning loop"): round 1 follows the A-task
+seed design; rounds 2+ are an open profile→optimize discovery loop that pursues whatever limiter `ncu`
+reveals, not just the seed. The coordinator maintains the ledger as the single source of truth across
+the parallel kernels.
 
 ### Coordinator ledger (Task 0 creates it; only the coordinator writes it)
 
@@ -141,6 +155,8 @@ ledger as the single source of truth across the parallel loops.
 ```
 
 - `status` ∈ `pending → baselined → in-progress → gate-met | non-bw-wall | blocked → integrated`.
+- `rounds`: count of dispatched round-subagents (round 1 = seed design; rounds 2+ = discovery). Each
+  round is a **fresh strongest-model subagent**; the coordinator drives the loop.
 - `final limiter (ncu)`: the dominant limiter the loop ended on (DRAM / L1-TEX-unpack / occupancy / …).
 - `layout-relevant?` (Q5/Q6 rows only): `yes` if the loop hit its occupancy ceiling and `ncu` **still**
   shows the 5-/6-bit unpack (L1/TEX + branch divergence) as the dominant limiter below the DRAM
@@ -149,23 +165,30 @@ ledger as the single source of truth across the parallel loops.
 - Before dispatching a loop, the coordinator confirms the row is `pending`/`baselined` and its worktree
   isn't already created; never two loops on the same kernel file.
 
-### Per-loop protocol (identical for every loop)
+### Per-kernel tuning loop (coordinator-driven; one fresh strongest-model subagent per round)
 
-0. **Round 0 baseline.** In the loop's detached worktree, cold-cache bench + `ncu` the target as-is;
-   save to `profiles/ncu-roofline-pushdown/<tag>/round0_baseline.*`. Must reproduce the coordinator's
-   canonical baseline for this shape.
-1. **Implement the design scheme** (this task's section).
-2. **Profile + verify.** `ncu` the changed kernel (save `round<N>_<limiter>.*`); run the shape's fp64
-   oracle; revert anything that fails the oracle.
-3. **Iterate**, one limiter per round, until the gate or a documented wall.
-4. **Report** a `round0 → best` table (cold_us, achieved_GB/s, DRAM%, % of `roof_us`) + a
-   one-line-per-round `{limiter → change → result}` log to `profiles/ncu-roofline-pushdown/<tag>/summary.md`.
+The coordinator owns the round loop for each kernel; each round is a **fresh subagent on the strongest
+available model**, working in the kernel's persistent detached worktree, doing exactly **one**
+profile→change→re-profile round and committing it on the worktree HEAD. This is the hybrid: a seed
+round in the plan's direction, then an open discovery loop.
 
-**Gate:** cold-cache `achieved_dram_pct` materially up and approaching `roof_us` for the shape, **or**
-`ncu` documents a non-bandwidth wall — in which case name that wall in `summary.md` (and, for Q5/Q6,
-set `layout-relevant? = yes`) and stop. Do not fight a format-shaped problem inside the kernel beyond
-its occupancy ceiling. The shape's fp64 oracle is green; `git diff --stat` in the worktree shows only
-the owned `.cu`/`.cuh`.
+- **Round 0 — baseline (coordinator, once):** cold-cache bench + `ncu` the kernel as-is →
+  `round0_baseline.*`. Reproduces the canonical baseline for this shape.
+- **Round 1 — seed:** the subagent implements the A-task **Design** (the coordinator's starting
+  direction), fp64-verifies, ncu-profiles, commits the round on the worktree HEAD, appends `round1_*`
+  + a `summary.md` line.
+- **Rounds 2..N — discovery (no prescribed direction):** the coordinator hands the next fresh subagent
+  **only** the accumulated evidence (round 0 + all prior rounds + the gate + the fp64 oracle) and asks
+  it to find, from `ncu`, the current dominant limiter and the single best change to beat it — **not**
+  bound to the seed. One limiter per round; fp64-verify; ncu; commit the round; append `roundN_*`.
+- **Stop (coordinator):** gate met, **or** `ncu` documents a non-bandwidth wall, **or** no material
+  improvement for 2 consecutive rounds (stall). Take the **best** round (roll the worktree back to it
+  if the last round regressed).
+
+**Gate:** cold-cache `achieved_dram_pct` materially up and approaching `roof_us`, **or** `ncu`
+documents a non-bandwidth wall — name it in `summary.md` (Q5/Q6: set `layout-relevant? = yes`) and
+stop; do not fight a format-shaped problem inside the kernel beyond its occupancy ceiling. Every round
+keeps the fp64 oracle green and touches only the owned `.cu`/`.cuh`.
 
 ## Reference facts (verified in tree)
 
@@ -226,8 +249,10 @@ worktrees are created at it). Commit the baseline + ledger on `master`:
 
 ## Group A — per-kernel design schemes + tuning loops (parallel detached worktrees)
 
-Each task: **one detached worktree, one kernel file pair, one subagent**, design below + tuning-loop
-protocol above, evidence-gated integration. Priority = integration order (biggest decode share first).
+Each task: **one detached worktree, one kernel file pair**, driven by the Per-kernel tuning loop above
+(fresh strongest-model subagent per round), evidence-gated integration. Priority = integration order
+(biggest decode share first). **Each A-task's "Design" is the round-1 seed direction only** — rounds 2+
+are an open discovery loop and may pursue any `ncu`-revealed limiter, not just the seed.
 
 ### A1 — `mlp_gate_up_34816` Q4  (22.4% of decode; the top kernel)
 
@@ -315,7 +340,7 @@ protocol above, evidence-gated integration. Priority = integration order (bigges
   share.
 - **Target:** ≈ 92% DRAM.
 
-### Per-loop DoD (the evidence bundle each subagent returns)
+### Per-kernel DoD (the evidence bundle the loop returns, across all its rounds)
 
 - `round0_baseline` + best-round `ncu`/op-bench artifacts + `summary.md` (before→after table +
   per-round limiter→change→result log) under `profiles/ncu-roofline-pushdown/<tag>/`.
@@ -332,16 +357,18 @@ improvement or a documented wall, (b) the limiter was `ncu`-discovered, (c) fp64
 worktree diff touches only the owned file. Then integrate **onto `master`, sequentially**:
 
 ```bash
-git -C ../qus-tune-<tag> diff -- <owned .cu> <owned .cuh> | git -C <main> apply
+# net change vs base = all the worktree's per-round commits squashed into the working tree:
+git -C ../qus-tune-<tag> diff <base-commit> -- <owned .cu> <owned .cuh> | git -C <main> apply
 cmake --build build -j && ctest --test-dir build -R linear     # re-verify on master
 git add <owned .cu> <owned .cuh>
 git commit -m "perf(q5090): <imperative summary of the kernel change>"
 ```
 
 Record `best *`, `Δ`, `final limiter`, `layout-relevant?`, `integrated=yes` in the ledger (commit the
-ledger update as `bench(q5090): …`). Disjoint files ⇒ the applies never conflict ⇒ `master` stays a
-straight line (no merge commits). A loop failing (a)–(d) is re-dispatched (resume the subagent with its
-prior evidence) or marked `blocked`.
+ledger update as `bench(q5090): …`). The worktree's per-round checkpoints collapse into this one
+commit; disjoint files ⇒ applies never conflict ⇒ `master` stays a straight line (one `perf(q5090):`
+commit per kernel, no merges). A kernel that can't pass (a)–(d) gets more discovery rounds or is marked
+`blocked`.
 
 ### Integration gate (coordinator, after integrating all loops — ONCE, sequential)
 
@@ -399,13 +426,17 @@ results separately and decide then.
 ## Self-review (against AGENTS.md + the user's task shape)
 
 - **Per-kernel design schemes** — A1–A7 each carry a concrete limiter hypothesis, technique, structure,
-  and target ✓. Each loop "follows the design AND runs a tuning loop" ✓.
-- **Subagent-driven, worktree-parallel** — loops own disjoint kernel files, edit no shared
+  and target ✓; each is the **round-1 seed** of a hybrid loop ✓.
+- **Hybrid tuning loop, fresh subagent per round, strongest model** — round 1 follows the seed design;
+  rounds 2+ are an open `ncu`-discovery loop not bound to the seed; the coordinator dispatches a fresh
+  strongest-model subagent per round and stops on gate / wall / 2-round stall ✓.
+- **Subagent-driven, worktree-parallel** — kernels own disjoint files, edit no shared
   registry/schedule/format file, and measure with the per-op bench (no model load) ⇒ parallel-safe, low
   GPU contention ✓.
-- **Linear mainline history (no branches, no merges)** — detached worktrees for parallel iteration;
-  the coordinator applies each finished kernel's two-file diff and commits it sequentially on `master`;
-  one `perf(q5090): …` commit per kernel; worktrees removed + pruned at the end ✓.
+- **Linear mainline history (no branches, no merges)** — detached worktrees may commit per round for
+  checkpoint/rollback; on integrate the coordinator squashes the worktree's **net-vs-base** two-file
+  diff into **one `perf(q5090): …` commit per kernel** on `master`; worktrees removed + pruned at the
+  end ✓.
 - **Layout change excluded** — no Task C; the on-disk layout is frozen; the relayout decision is a
   separate post-plan analysis fed by the ledger's `final limiter` / `layout-relevant?` evidence ✓.
 - **Coordinator ledger** — `tuning_status.md` tracks status/rounds/Δ/limiter/integrated per kernel ✓.
