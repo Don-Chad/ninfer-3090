@@ -17,16 +17,19 @@ constexpr int kGroupK        = 64;
 constexpr int kGroups        = kK / kGroupK;
 constexpr int kNibbleBytesPerGroup = 32;
 constexpr int kHighBytesPerGroup = 8;
-constexpr int kWarpsPerRow   = 8;
+constexpr int kWarpsPerRow   = 4;
 constexpr int kGroupsPerWarp = kGroups / kWarpsPerRow;
 constexpr int kBlockThreads  = kWarpsPerRow * 32;
 
 __device__ __forceinline__ int sign_extend_q5(int v) { return (v & 0x10) ? (v - 32) : v; }
 
-__device__ __forceinline__ std::uint16_t load_scale_bits(const std::uint8_t* scale_row, int group) {
+__device__ __forceinline__ std::uint32_t load_scale_pair_bits(const std::uint8_t* scale_row,
+                                                              int group) {
     const std::uint8_t* sp = scale_row + group * 2;
-    return static_cast<std::uint16_t>(sp[0]) |
-           static_cast<std::uint16_t>(static_cast<std::uint16_t>(sp[1]) << 8);
+    return static_cast<std::uint32_t>(sp[0]) |
+           (static_cast<std::uint32_t>(sp[1]) << 8) |
+           (static_cast<std::uint32_t>(sp[2]) << 16) |
+           (static_cast<std::uint32_t>(sp[3]) << 24);
 }
 
 __device__ __forceinline__ float accumulate_group(const __nv_bfloat162* __restrict__ x2,
@@ -77,29 +80,34 @@ __global__ void linear_rowsplit_gemv_out_6144_q5_kernel(const __nv_bfloat16* __r
 
     float acc = 0.0f;
 #pragma unroll 1
-    for (int group = group_begin; group < group_end; group += 3) {
+    for (int group = group_begin; group < group_end; group += 4) {
         const std::uint8_t* code_group0 = code_row + group * kNibbleBytesPerGroup;
         const std::uint8_t* code_group1 = code_group0 + kNibbleBytesPerGroup;
         const std::uint8_t* code_group2 = code_group1 + kNibbleBytesPerGroup;
+        const std::uint8_t* code_group3 = code_group2 + kNibbleBytesPerGroup;
         const std::uint8_t* high_group0 = high_row + group * kHighBytesPerGroup;
         const std::uint8_t* high_group1 = high_group0 + kHighBytesPerGroup;
         const std::uint8_t* high_group2 = high_group1 + kHighBytesPerGroup;
+        const std::uint8_t* high_group3 = high_group2 + kHighBytesPerGroup;
 
-        std::uint16_t scale0_bits = 0;
-        std::uint16_t scale1_bits = 0;
-        std::uint16_t scale2_bits = 0;
+        std::uint32_t scale01_bits = 0;
+        std::uint32_t scale23_bits = 0;
         if (lane == 0) {
-            scale0_bits = load_scale_bits(scale_row, group);
-            scale1_bits = load_scale_bits(scale_row, group + 1);
-            scale2_bits = load_scale_bits(scale_row, group + 2);
+            scale01_bits = load_scale_pair_bits(scale_row, group);
+        } else if (lane == 1) {
+            scale23_bits = load_scale_pair_bits(scale_row, group + 2);
         }
-        scale0_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale0_bits, 0));
-        scale1_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale1_bits, 0));
-        scale2_bits = static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, scale2_bits, 0));
+        scale01_bits = __shfl_sync(0xffffffffu, scale01_bits, 0);
+        scale23_bits = __shfl_sync(0xffffffffu, scale23_bits, 1);
+        const auto scale0_bits = static_cast<std::uint16_t>(scale01_bits & 0xffffu);
+        const auto scale1_bits = static_cast<std::uint16_t>(scale01_bits >> 16);
+        const auto scale2_bits = static_cast<std::uint16_t>(scale23_bits & 0xffffu);
+        const auto scale3_bits = static_cast<std::uint16_t>(scale23_bits >> 16);
 
         acc = accumulate_group(x2, code_group0, high_group0, scale0_bits, lane, group, acc);
         acc = accumulate_group(x2, code_group1, high_group1, scale1_bits, lane, group + 1, acc);
         acc = accumulate_group(x2, code_group2, high_group2, scale2_bits, lane, group + 2, acc);
+        acc = accumulate_group(x2, code_group3, high_group3, scale3_bits, lane, group + 3, acc);
     }
 
     acc = warp_reduce_sum(acc);
