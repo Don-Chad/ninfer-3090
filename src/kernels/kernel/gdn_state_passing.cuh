@@ -31,9 +31,6 @@ using qus::kernels::mma_m16n8k8_tf32_b32;
 using qus::kernels::ldmatrix_x4_b16;
 using qus::kernels::ldmatrix_x2_b16;
 using qus::kernels::smem_addr_b32;
-using qus::kernels::async_copy_commit;
-using qus::kernels::async_copy_wait;
-using qus::kernels::async_copy_wait_all;
 using qus::kernels::exp2_fast;
 using qus::kernels::RCP_LN2_F;
 
@@ -135,10 +132,10 @@ struct kernel_dims<16> {
 
 // Smem floats per block, derived purely from kernel_dims<S>.
 //
-// `_LOAD_` slot sizes are per cp.async stage (W_LOAD_FLT = bytes loaded per
-// W cp.async, K_LOAD_FLT = bytes loaded per k cp.async). With HALVES=1 a
-// single load brings the full slab; with HALVES=2 each load brings a half
-// and the kernel issues a second cp.async mid-Phase E.
+// `_LOAD_` slot sizes are per shared-memory load stage. W/U/k receive bf16
+// global data converted to float shared memory. With HALVES=1 a single load
+// brings the full slab; with HALVES=2 each load brings a half and Phase E
+// performs a second synchronous k load.
 template <int S>
 struct smem_layout {
     using D                             = kernel_dims<S>;
@@ -207,11 +204,13 @@ struct SnapView {
 // dropping min_blocks costs nothing.
 template <int S>
 __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
-    void state_passing_gdn_kernel(const float* __restrict__ W_in, const float* __restrict__ U_in,
-                                  const float* __restrict__ k_in,
+    void state_passing_gdn_kernel(const __nv_bfloat16* __restrict__ W_in,
+                                  const __nv_bfloat16* __restrict__ U_in,
+                                  const __nv_bfloat16* __restrict__ k_in,
                                   const float* __restrict__ g_cumsum, const float* state_in,
-                                  float* __restrict__ v_new, float* __restrict__ h_chunk,
-                                  float* state_out, int64_t T, int64_t H_v,
+                                  __nv_bfloat16* __restrict__ v_new,
+                                  __nv_bfloat16* __restrict__ h_chunk, float* state_out,
+                                  int64_t T, int64_t H_v,
                                   qus::kernels::head_map qk_map,
                                   // Token-axis stride for k (in floats).
                                   // Caller passes the materialised value
@@ -318,8 +317,9 @@ __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
         }
     }
 
-    // Cross-chunk cp.async prefetch. Chunk 0's W_half_0 + U + k_half_0 issued
-    // BEFORE the loop; subsequent chunks issue at end of B / E.
+    // Cross-chunk prefetch. Chunk 0's W_half_0 + U + k_half_0 are loaded
+    // before the loop; subsequent chunks load W at end of Phase B and U/k at
+    // end of Phase E.
     //
     // R7.1: All per-chunk gmem bases are precomputed as `*_block_base`
     // (chunk-0 value) + `*_chunk_stride` (delta), and advanced ADDITIVELY at
@@ -344,24 +344,18 @@ __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
     const int64_t g_block_base  = (int64_t)b * T * H_v + h_v;
     const int64_t g_thread_base = g_block_base + (int64_t)tid * H_v;
 
-    // Two cp.async commit groups per chunk-boundary issue:
-    //   Group A (early) = W (W_HALVES=1: full, W_HALVES=2: first half) + U
-    //                     -- consumed in Phase B / C
-    //   Group B (late)  = k (K_HALVES=1: full, K_HALVES=2: first half)
-    //                     -- consumed in Phase E
-    // Phase A drains group A only; group B is drained just before matmul2.
+    // W/U/k are bf16 in global workspace/boundary storage and are converted
+    // into float shared memory before the math phases consume them.
     {
         const int64_t ce0_64 = BT; // chunk_0 end = BT
         const int cl0        = (ce0_64 < T) ? (int)ce0_64 : (int)T;
-        qus::kernels::issue_async_load_vec4<BT, W_STRIDE, THREADS_K>(W_view, W_in + W_block_base,
-                                                                     W_stride, cl0, tid);
-        qus::kernels::issue_async_load_vec4<BT, N_STRIP_PER_BLOCK, THREADS_K>(
+        qus::kernels::issue_load_bf16_to_float_vec4<BT, W_STRIDE, THREADS_K>(
+            W_view, W_in + W_block_base, W_stride, cl0, tid);
+        qus::kernels::issue_load_bf16_to_float_vec4<BT, N_STRIP_PER_BLOCK, THREADS_K>(
             U_view, U_in + W_block_base + d_off, W_stride, cl0, tid);
-        async_copy_commit();
         const int cl_k0 = (cl0 < K_LOAD_ROWS) ? cl0 : K_LOAD_ROWS;
-        qus::kernels::issue_async_load_vec4<K_LOAD_ROWS, S, THREADS_K>(k_view, k_in + k_block_base,
-                                                                       k_stride, cl_k0, tid);
-        async_copy_commit();
+        qus::kernels::issue_load_bf16_to_float_vec4<K_LOAD_ROWS, S, THREADS_K>(
+            k_view, k_in + k_block_base, k_stride, cl_k0, tid);
     }
 
     // === Main chunk loop ===
@@ -381,9 +375,9 @@ __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
         const int64_t ce    = (ce_64 < T) ? ce_64 : T;
         const int cl        = (int)(ce - cs);
 
-        // Hoisted next-chunk metadata (used by Phase B + Phase E prefetches).
-        // Variables are unconditionally computed; the prefetch sites still
-        // gate the cp.async issue on `chunk + 1 < NT`.
+        // Hoisted next-chunk metadata (used by Phase B + Phase E loads).
+        // Variables are unconditionally computed; the load sites still gate
+        // global memory traffic on `chunk + 1 < NT`.
         const int64_t cs_next     = cs + BT;
         const int64_t ce_next_64  = cs_next + BT;
         const int64_t ce_next     = (ce_next_64 < T) ? ce_next_64 : T;
@@ -405,8 +399,6 @@ __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
             g_smem[tid] = val;
         }
 
-        async_copy_wait<1>(); // wait for W + U; k_half_0 keeps loading
-
         {
             SnapView<SNAP_K_ROWS> snap = snap_views[s_idx];
 #pragma unroll
@@ -422,7 +414,7 @@ __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
             }
         }
 
-        __syncthreads(); // gates W+U+g_smem cp.async/STS AND scatter visibility
+        __syncthreads(); // gates W+U+g_smem STS and scatter visibility
 
         // === Phase B: per-sit coop_write + matmul1 (no per-sit scatter sync) ===
         //
@@ -439,15 +431,8 @@ __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
         for (int half = 0; half < W_HALVES; ++half) {
             if (half >= 1) {
                 __syncthreads(); // gates prev half's mma reads of W_smem
-                qus::kernels::issue_async_load_vec4<BT, W_STRIDE, THREADS_K>(
+                qus::kernels::issue_load_bf16_to_float_vec4<BT, W_STRIDE, THREADS_K>(
                     W_view, W_in + W_base + (int64_t)(half * W_STRIDE), W_stride, cl, tid);
-                async_copy_commit();
-                async_copy_wait_all();
-                // cp.async wait_all is per-thread; need __syncthreads to
-                // make W_half_1 visible to other threads' mma reads. The
-                // per-sit scatter-SYNC used to do double duty in the
-                // baseline; with unified scatter we add an explicit
-                // visibility barrier instead.
                 __syncthreads();
             }
 
@@ -472,8 +457,12 @@ __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
                         const int k_off    = kvec * 4;
                         float4 val         = snap.vec4_at(d_local, k_off);
                         const int d_global = d_off + d_local;
-                        *reinterpret_cast<float4*>(
-                            &h_chunk[hc_base + (int64_t)d_global * S + k_row_off + k_off]) = val;
+                        __nv_bfloat16* out =
+                            &h_chunk[hc_base + (int64_t)d_global * S + k_row_off + k_off];
+                        reinterpret_cast<__nv_bfloat162*>(out)[0] =
+                            __floats2bfloat162_rn(val.x, val.y);
+                        reinterpret_cast<__nv_bfloat162*>(out)[1] =
+                            __floats2bfloat162_rn(val.z, val.w);
                     }
                 }
 
@@ -555,20 +544,19 @@ __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
             }
         }
 
-        // Cross-chunk W prefetch right after Phase B finishes consuming
-        // W_smem -- hides W's HBM read behind C+D+E. The __syncthreads gates the half=1
+        // Cross-chunk W load right after Phase B finishes consuming
+        // W_smem. The __syncthreads gates the half=1
         // sit's mma reads of W_smem (matmul1 inner LDS.32 in slow warps)
-        // BEFORE this thread's cp.async DMA starts overwriting W_smem with
-        // the next chunk's W_half_0. Without it, racecheck reports a
-        // cp.async-write vs f32_to_tf32-read race on W_smem at sm_120, which
+        // BEFORE this thread overwrites W_smem with the next chunk's
+        // W_half_0. Without it, racecheck reports a write vs
+        // f32_to_tf32-read race on W_smem at sm_120, which
         // surfaces as ~25% flaky v_new at S=128/L=256 (the chunk-end barrier
         // before next iter's Phase A only fences the *future* read of the
         // arriving W, not the *prior* read of the outgoing W).
         if (chunk + 1 < NT) {
             __syncthreads();
-            qus::kernels::issue_async_load_vec4<BT, W_STRIDE, THREADS_K>(W_view, W_in + W_base_next,
-                                                                         W_stride, cl_next, tid);
-            async_copy_commit();
+            qus::kernels::issue_load_bf16_to_float_vec4<BT, W_STRIDE, THREADS_K>(
+                W_view, W_in + W_base_next, W_stride, cl_next, tid);
         }
 
 // === Phase C: subtract U from U_smem (no global wait, U landed in A) ===
@@ -609,12 +597,14 @@ __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
             const float v3 = vnew_frag[m_mm1][3];
 
             if (top_in_chunk) {
-                *reinterpret_cast<float2*>(&v_new[vn_base + (int64_t)row_g0 * vn_stride + col_d0]) =
-                    make_float2(v0, v1);
+                const __nv_bfloat162 out = __floats2bfloat162_rn(v0, v1);
+                *reinterpret_cast<__nv_bfloat162*>(
+                    &v_new[vn_base + (int64_t)row_g0 * vn_stride + col_d0]) = out;
             }
             if (bot_in_chunk) {
-                *reinterpret_cast<float2*>(&v_new[vn_base + (int64_t)row_g1 * vn_stride + col_d0]) =
-                    make_float2(v2, v3);
+                const __nv_bfloat162 out = __floats2bfloat162_rn(v2, v3);
+                *reinterpret_cast<__nv_bfloat162*>(
+                    &v_new[vn_base + (int64_t)row_g1 * vn_stride + col_d0]) = out;
             }
 
             const int row_g0_loc = s_idx * BT_PER_WARP + m_mm1 * MMA_M + lane_g;
@@ -632,22 +622,20 @@ __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
             for (int e = 0; e < 4; ++e) { h_frag[m][e] *= gamma_C; }
         }
 
-        // Drain late group (k). Wait queue at this point is
-        // {k (older), W_next (newer)}; wait<1> drains k while leaving
-        // W_next in flight. The barrier below also gates matmul2's reads
-        // of vd_view (Phase D write -> Phase E read).
-        async_copy_wait<1>();
+        // k is loaded synchronously. The barrier below gates matmul2's
+        // reads of vd_view (Phase D write -> Phase E read) without draining
+        // a possible W_next async prefetch.
         __syncthreads();
 
         // === Phase E: matmul2 over BT rows of k ===
         //
         // K_HALVES=1 (S=128 mainloop-rewrite): full k already in smem from
         // the prologue / chunk-end prefetch -- one mma2 sweep over BT/MMA_K
-        // tiles, no mid-phase k cp.async, no extra sync.
+        // tiles, no mid-phase k reload, no extra sync.
         //
         // K_HALVES=2 (S=64/32/16): split the sweep at K_LOAD_ROWS, refill
         // k_smem with the second half mid-loop. Saves K_LOAD_FLT smem at
-        // the cost of one extra cp.async + wait_all + sync.
+        // the cost of one extra synchronous reload + sync.
         if constexpr (K_HALVES == 1) {
             constexpr int K_TILES_MM2 = BT / MMA_K;
 #pragma unroll
@@ -704,14 +692,12 @@ __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
                 }
             }
 
-            __syncthreads(); // before k_half_1 cp.async overwrites k_smem
+            __syncthreads(); // before k_half_1 overwrites k_smem
 
             const int64_t k_base_h1 = k_base + (int64_t)K_LOAD_ROWS * k_stride;
             const int cl_kh1        = (cl > K_LOAD_ROWS) ? (cl - K_LOAD_ROWS) : 0;
-            qus::kernels::issue_async_load_vec4<K_LOAD_ROWS, S, THREADS_K>(k_view, k_in + k_base_h1,
-                                                                           k_stride, cl_kh1, tid);
-            async_copy_commit();
-            async_copy_wait_all();
+            qus::kernels::issue_load_bf16_to_float_vec4<K_LOAD_ROWS, S, THREADS_K>(
+                k_view, k_in + k_base_h1, k_stride, cl_kh1, tid);
             __syncthreads();
 
 #pragma unroll
@@ -743,17 +729,15 @@ __launch_bounds__(kernel_dims<S>::THREADS, 1) __global__
             }
         }
 
-        __syncthreads(); // before chunk-end cp.async overwrites k/U smem
+        __syncthreads(); // before chunk-end loads overwrite k/U smem
 
-        // Cross-chunk prefetch: chunk t+1 U (small) + k (large) split
-        // into two commit groups so Phase A only waits for U.
+        // Cross-chunk load: chunk t+1 U/k are converted synchronously into
+        // shared memory.
         if (chunk + 1 < NT) {
-            qus::kernels::issue_async_load_vec4<BT, N_STRIP_PER_BLOCK, THREADS_K>(
+            qus::kernels::issue_load_bf16_to_float_vec4<BT, N_STRIP_PER_BLOCK, THREADS_K>(
                 U_view, U_in + W_base_next + d_off, W_stride, cl_next, tid);
-            async_copy_commit();
-            qus::kernels::issue_async_load_vec4<K_LOAD_ROWS, S, THREADS_K>(
+            qus::kernels::issue_load_bf16_to_float_vec4<K_LOAD_ROWS, S, THREADS_K>(
                 k_view, k_in + k_base_next, k_stride, cl_k_next, tid);
-            async_copy_commit();
         }
 
         // R7.1: advance loop-carried accumulators for next iter.

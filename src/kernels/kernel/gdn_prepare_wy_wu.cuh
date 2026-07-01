@@ -30,8 +30,6 @@ using gdn_chunked::bh_decode_t;
 using gdn_chunked::zero_frag;
 using qus::kernels::SmemTile;
 using qus::kernels::mma_m16n8k8_tf32;
-using qus::kernels::async_copy_commit;
-using qus::kernels::async_copy_wait_all;
 
 static_assert(gdn_chunked::kChunkSize == 64,
               "stage_prepare_wy_wu: kChunkSize must be 64 (kernel hard-codes "
@@ -209,11 +207,13 @@ __device__ __forceinline__ void store_frag_to_M(const float frag[8], int my_w, i
 // __launch_bounds__ NOT applied: nvcc's natural reg=203 is the sweet spot.
 // Capping at 256 (min_blocks=2) just spills the overflow.
 template <int S>
-__global__ void prepare_wy_wu_gdn_kernel(const float* __restrict__ k_in,
-                                         const float* __restrict__ v_in,
+__global__ void prepare_wy_wu_gdn_kernel(const __nv_bfloat16* __restrict__ k_in,
+                                         const __nv_bfloat16* __restrict__ v_in,
                                          const float* __restrict__ g_in,
-                                         const float* __restrict__ beta_in, float* __restrict__ W,
-                                         float* __restrict__ U, float* __restrict__ g_cumsum_out,
+                                         const float* __restrict__ beta_in,
+                                         __nv_bfloat16* __restrict__ W,
+                                         __nv_bfloat16* __restrict__ U,
+                                         float* __restrict__ g_cumsum_out,
                                          int64_t T, int64_t H_v, qus::kernels::head_map qk_map,
                                          // Token-axis strides (in floats) for k / v. Caller
                                          // passes materialised values (launch_typed handles
@@ -271,7 +271,7 @@ __global__ void prepare_wy_wu_gdn_kernel(const float* __restrict__ k_in,
     // (consumed by Phase WY-C / WU-A) AND HBM g_cumsum_out (consumed
     // by stages 3/4 unchanged). This folds the old standalone g_cumsum
     // kernel (~10 us, 1.3% of e2e) into here at zero added latency: the
-    // scan is hidden behind Phase WY-B's K cp.async + KKT mma.
+    // scan is hidden behind Phase WY-B's K load + KKT mma.
     //
     // No __syncthreads here -- per-chunk K loader below issues one before
     // any read of g_smem / beta_smem can race the scan stores.
@@ -365,8 +365,8 @@ __global__ void prepare_wy_wu_gdn_kernel(const float* __restrict__ k_in,
             const int col4 = v - row * VEC_PER_ROW_CHUNK;
             float4 val     = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
             if (row < cl) {
-                val = *reinterpret_cast<const float4*>(k_in + k_base + (int64_t)row * k_stride_t +
-                                                       chunk_col + col4 * 4);
+                val = qus::kernels::load_bf16_vec4_as_float4(
+                    k_in + k_base + (int64_t)row * k_stride_t + chunk_col + col4 * 4);
             }
             K_view.vec4_at(row, col4 * 4) = val;
         }
@@ -527,19 +527,17 @@ __global__ void prepare_wy_wu_gdn_kernel(const float* __restrict__ k_in,
     // === Phase WY-E: +I on diagonal of T_inv (no HBM write; sync fused into WU-A) ===
     if (tid < cl) { M_view.at(tid, tid) += 1.0f; }
 
-    // === Phase WU-A: cp.async V into VK_smem; pre-compute bg = beta * exp(g) ===
+    // === Phase WU-A: load V into VK_smem; pre-compute bg = beta * exp(g) ===
     {
         const int64_t row_base =
             (int64_t)b * T * v_stride_t + (int64_t)cs * v_stride_t + (int64_t)h_v * S;
         const int64_t row_stride = v_stride_t;
-        qus::kernels::issue_async_load_vec4<BT, S, THREADS>(VK_view, v_in + row_base, row_stride,
-                                                            cl, tid);
+        qus::kernels::issue_load_bf16_to_float_vec4<BT, S, THREADS>(
+            VK_view, v_in + row_base, row_stride, cl, tid);
     }
 
     if (tid < BT) { bg_smem[tid] = beta_smem[tid] * expf(g_smem[tid]); }
 
-    async_copy_commit();
-    async_copy_wait_all();
     __syncthreads(); // gates +I, bg writes, and V smem visibility
 
     // Per-thread fragment indexing for the recompute_wu matmuls.
@@ -554,7 +552,7 @@ __global__ void prepare_wy_wu_gdn_kernel(const float* __restrict__ k_in,
     // VK_view. N_CHUNK is compile-time so the column offset folds away and
     // each chunk's D[N_TILES_PER_CHUNK][4] = 16 fp32/lane stays in registers
     // for the chunk's lifetime only (vs lifting across all chunks).
-    auto matmul_chunk = [&]<int N_CHUNK>(float* __restrict__ out_gmem,
+    auto matmul_chunk = [&]<int N_CHUNK>(__nv_bfloat16* __restrict__ out_gmem,
                                          const float* __restrict__ scale_smem) {
         constexpr int n_chunk_off = N_CHUNK * (N_TILES_PER_CHUNK * MMA_N);
 
@@ -594,19 +592,19 @@ __global__ void prepare_wy_wu_gdn_kernel(const float* __restrict__ k_in,
         for (int t = 0; t < N_TILES_PER_CHUNK; ++t) {
             const int col = n_chunk_off + t * MMA_N + col_d0;
             if (t_row_g0 < cl) {
-                float2 v0 = make_float2(D[t][0], D[t][1]);
-                *reinterpret_cast<float2*>(&out_gmem[(int64_t)t_row_g0 * out_row_stride + col]) =
-                    v0;
+                const __nv_bfloat162 v0 = __floats2bfloat162_rn(D[t][0], D[t][1]);
+                *reinterpret_cast<__nv_bfloat162*>(
+                    &out_gmem[(int64_t)t_row_g0 * out_row_stride + col]) = v0;
             }
             if (t_row_g1 < cl) {
-                float2 v1 = make_float2(D[t][2], D[t][3]);
-                *reinterpret_cast<float2*>(&out_gmem[(int64_t)t_row_g1 * out_row_stride + col]) =
-                    v1;
+                const __nv_bfloat162 v1 = __floats2bfloat162_rn(D[t][2], D[t][3]);
+                *reinterpret_cast<__nv_bfloat162*>(
+                    &out_gmem[(int64_t)t_row_g1 * out_row_stride + col]) = v1;
             }
         }
     };
 
-    auto matmul_two_chunks = [&]<int C0, int C1>(float* __restrict__ out_gmem,
+    auto matmul_two_chunks = [&]<int C0, int C1>(__nv_bfloat16* __restrict__ out_gmem,
                                                  const float* __restrict__ scale_smem) {
         constexpr int c0_off = C0 * (N_TILES_PER_CHUNK * MMA_N);
         constexpr int c1_off = C1 * (N_TILES_PER_CHUNK * MMA_N);
@@ -656,14 +654,14 @@ __global__ void prepare_wy_wu_gdn_kernel(const float* __restrict__ k_in,
         for (int t = 0; t < N_TILES_PER_CHUNK; ++t) {
             const int col = c0_off + t * MMA_N + col_d0;
             if (t_row_g0 < cl) {
-                float2 v0 = make_float2(D0[t][0], D0[t][1]);
-                *reinterpret_cast<float2*>(&out_gmem[(int64_t)t_row_g0 * out_row_stride + col]) =
-                    v0;
+                const __nv_bfloat162 v0 = __floats2bfloat162_rn(D0[t][0], D0[t][1]);
+                *reinterpret_cast<__nv_bfloat162*>(
+                    &out_gmem[(int64_t)t_row_g0 * out_row_stride + col]) = v0;
             }
             if (t_row_g1 < cl) {
-                float2 v1 = make_float2(D0[t][2], D0[t][3]);
-                *reinterpret_cast<float2*>(&out_gmem[(int64_t)t_row_g1 * out_row_stride + col]) =
-                    v1;
+                const __nv_bfloat162 v1 = __floats2bfloat162_rn(D0[t][2], D0[t][3]);
+                *reinterpret_cast<__nv_bfloat162*>(
+                    &out_gmem[(int64_t)t_row_g1 * out_row_stride + col]) = v1;
             }
         }
 
@@ -671,21 +669,21 @@ __global__ void prepare_wy_wu_gdn_kernel(const float* __restrict__ k_in,
         for (int t = 0; t < N_TILES_PER_CHUNK; ++t) {
             const int col = c1_off + t * MMA_N + col_d0;
             if (t_row_g0 < cl) {
-                float2 v0 = make_float2(D1[t][0], D1[t][1]);
-                *reinterpret_cast<float2*>(&out_gmem[(int64_t)t_row_g0 * out_row_stride + col]) =
-                    v0;
+                const __nv_bfloat162 v0 = __floats2bfloat162_rn(D1[t][0], D1[t][1]);
+                *reinterpret_cast<__nv_bfloat162*>(
+                    &out_gmem[(int64_t)t_row_g0 * out_row_stride + col]) = v0;
             }
             if (t_row_g1 < cl) {
-                float2 v1 = make_float2(D1[t][2], D1[t][3]);
-                *reinterpret_cast<float2*>(&out_gmem[(int64_t)t_row_g1 * out_row_stride + col]) =
-                    v1;
+                const __nv_bfloat162 v1 = __floats2bfloat162_rn(D1[t][2], D1[t][3]);
+                *reinterpret_cast<__nv_bfloat162*>(
+                    &out_gmem[(int64_t)t_row_g1 * out_row_stride + col]) = v1;
             }
         }
     };
 
     // T_inv @ (scale * VK) -> out_gmem. C++20 fold-expression dispatch so
     // each n_chunk's D fragment is born and dies in its own scope.
-    auto matmul_and_store = [&](float* __restrict__ out_gmem,
+    auto matmul_and_store = [&](__nv_bfloat16* __restrict__ out_gmem,
                                 const float* __restrict__ scale_smem) {
         if constexpr (N_CHUNKS == 4) {
             matmul_two_chunks.template operator()<0, 1>(out_gmem, scale_smem);
@@ -700,16 +698,14 @@ __global__ void prepare_wy_wu_gdn_kernel(const float* __restrict__ k_in,
     // === Phase WU-B: U = T_inv @ (beta * V) ===
     matmul_and_store(U + out_base, beta_smem);
 
-    // === Phase WU-C: cp.async K -> VK_smem (overwrite V) ===
-    __syncthreads(); // V reads done before K cp.async overwrites
+    // === Phase WU-C: load K -> VK_smem (overwrite V) ===
+    __syncthreads(); // V reads done before K load overwrites
     {
         const int64_t row_base =
             ((int64_t)b * T + cs) * k_stride_t + (int64_t)qk_map.qk_head(h_v) * S;
-        qus::kernels::issue_async_load_vec4<BT, S, THREADS>(VK_view, k_in + row_base, k_stride_t,
-                                                            cl, tid);
+        qus::kernels::issue_load_bf16_to_float_vec4<BT, S, THREADS>(VK_view, k_in + row_base,
+                                                                    k_stride_t, cl, tid);
     }
-    async_copy_commit();
-    async_copy_wait_all();
     __syncthreads();
 
     // === Phase WU-D: W = T_inv @ (bg * K) ===

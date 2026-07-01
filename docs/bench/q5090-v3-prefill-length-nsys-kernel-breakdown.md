@@ -114,6 +114,33 @@ Small prompt lengths show more single-run variance under nsys. The `bench r3`
 columns are the steadier throughput reference; the nsys single-run columns are
 for profiler attribution.
 
+### Workspace Update: GDN Chunked BF16 Scratch
+
+After moving `gated_delta_rule_chunked` to native bf16 boundary I/O and bf16
+storage for the chunked scratch buffers that passed `gdn_state_fp32`, the
+workspace peak is:
+
+| pp | work peak MiB | KiB/token | work bytes | artifact |
+| ---: | ---: | ---: | ---: | --- |
+| 4096 | 723.0 | 180.8 | 4 GiB | `profiles/bench/gdn_task_check_final_4096.json` |
+| 16384 | 2892.1 | 180.8 | 4 GiB | `profiles/bench/gdn_task_check_final_16384_w4g.json` |
+
+Baseline `pp4096` was 1219.0 MiB, or 304.8 KiB/token. The final `pp4096`
+delta is -496.0 MiB, exactly -124.0 KiB/token. With a 4 GiB workspace arena,
+the resulting peak model implies about 23203 tokens, or 23168 tokens rounded
+down to the chunk multiple.
+
+Scratch storage decisions:
+
+| buffer | final storage | accumulator/math |
+| --- | --- | --- |
+| `q/k/v/out` boundary temporaries | removed; native bf16 I/O | convert to fp32 in registers/shared memory |
+| `g_cumsum` | FP32 | FP32 gating and `exp(g)` |
+| `W` | bf16 | T_inv and downstream MMA accumulate FP32 |
+| `U` | bf16 | T_inv and downstream subtraction/MMA accumulate FP32 |
+| `v_new` | bf16 | chunk output accumulates FP32 |
+| `h_chunk` snapshot | bf16 | running state accumulator and `state_out` stay FP32 |
+
 ## Category Breakdown
 
 | category | pp128 | pp256 | pp512 | pp1024 | pp2048 | pp4096 |
@@ -126,6 +153,9 @@ for profiler attribution.
 | `io_sampling_bookkeeping` | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
 
 ## Per-Kernel Share Matrix
+
+This table is from the original nsys profile above. The `gdn_cast_*` rows are
+historical and do not exist in the current native-bf16 chunked path.
 
 | kernel label | pp128 | pp256 | pp512 | pp1024 | pp2048 | pp4096 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -232,4 +262,3 @@ ncu --force-overwrite --target-processes all --replay-mode application \
     -p 1024 -r 1 --warmup 0 -o json \
     --output-file profiles/ncu-prefill-length-sweep/pp1024_rowsplit_gemm_mma_q4.json
 ```
-

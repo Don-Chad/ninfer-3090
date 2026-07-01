@@ -3,6 +3,7 @@
 #include "kernels/kernel/gdn_chunked_common.cuh"
 #include "qus/core/device.h"
 
+#include <cuda_bf16.h>
 #include <cstddef>
 #include <cstdint>
 #include <new>
@@ -34,10 +35,10 @@ void gated_delta_rule_chunked_launch(const Tensor& q, const Tensor& k, const Ten
 
     auto* base     = static_cast<unsigned char*>(workspace);
     auto* g_cumsum = reinterpret_cast<float*>(base + layout.g_cumsum_off);
-    auto* W        = reinterpret_cast<float*>(base + layout.W_off);
-    auto* U        = reinterpret_cast<float*>(base + layout.U_off);
-    auto* v_new    = reinterpret_cast<float*>(base + layout.v_new_off);
-    auto* h_chunk  = reinterpret_cast<float*>(base + layout.h_chunk_off);
+    auto* W        = reinterpret_cast<__nv_bfloat16*>(base + layout.W_off);
+    auto* U        = reinterpret_cast<__nv_bfloat16*>(base + layout.U_off);
+    auto* v_new    = reinterpret_cast<__nv_bfloat16*>(base + layout.v_new_off);
+    auto* h_chunk  = reinterpret_cast<__nv_bfloat16*>(base + layout.h_chunk_off);
 
     gdn_chunked::prepare_wy_wu_config prepare{};
     prepare.S            = q.ne[0];
@@ -45,8 +46,8 @@ void gated_delta_rule_chunked_launch(const Tensor& q, const Tensor& k, const Ten
     prepare.H_v          = v.ne[1];
     prepare.L            = q.ne[2];
     prepare.B            = kB;
-    prepare.k            = static_cast<const float*>(k.data);
-    prepare.v            = static_cast<const float*>(v.data);
+    prepare.k            = static_cast<const __nv_bfloat16*>(k.data);
+    prepare.v            = static_cast<const __nv_bfloat16*>(v.data);
     prepare.g_in         = static_cast<const float*>(g.data);
     prepare.beta         = static_cast<const float*>(beta.data);
     prepare.W            = W;
@@ -63,7 +64,7 @@ void gated_delta_rule_chunked_launch(const Tensor& q, const Tensor& k, const Ten
     state.B         = kB;
     state.W         = W;
     state.U         = U;
-    state.k         = static_cast<const float*>(k.data);
+    state.k         = static_cast<const __nv_bfloat16*>(k.data);
     state.g_cumsum  = g_cumsum;
     state.state_in  = static_cast<const float*>(ssm_state.data);
     state.v_new     = v_new;
@@ -78,12 +79,12 @@ void gated_delta_rule_chunked_launch(const Tensor& q, const Tensor& k, const Ten
     output.H_v      = v.ne[1];
     output.L        = q.ne[2];
     output.B        = kB;
-    output.q        = static_cast<const float*>(q.data);
-    output.k        = static_cast<const float*>(k.data);
+    output.q        = static_cast<const __nv_bfloat16*>(q.data);
+    output.k        = static_cast<const __nv_bfloat16*>(k.data);
     output.v_new    = v_new;
     output.g_cumsum = g_cumsum;
     output.h_chunk  = h_chunk;
-    output.attn_out = static_cast<float*>(out.data);
+    output.attn_out = static_cast<__nv_bfloat16*>(out.data);
     output.scale    = scale;
     output.stream   = stream;
     CUDA_CHECK(gdn_chunk_output::launch_chunk_output(output));

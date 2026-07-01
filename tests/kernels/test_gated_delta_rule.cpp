@@ -74,22 +74,17 @@ std::size_t chunked_workspace_bytes(int T_full) {
         off = align_up_size(off + bytes, 256);
     };
     reserve(T * H_v * sizeof(float));          // g_cumsum
-    reserve(T * H_v * S * sizeof(float));      // W
-    reserve(T * H_v * S * sizeof(float));      // U
-    reserve(T * H_v * S * sizeof(float));      // v_new
-    reserve(NT * H_v * S * S * sizeof(float)); // h_chunk
+    reserve(T * H_v * S * sizeof(std::uint16_t)); // W
+    reserve(T * H_v * S * sizeof(std::uint16_t)); // U
+    reserve(T * H_v * S * sizeof(std::uint16_t)); // v_new
+    reserve(NT * H_v * S * S * sizeof(std::uint16_t)); // h_chunk
     return off;
 }
 
 std::size_t chunked_arena_bytes(int T) {
-    const std::size_t t      = static_cast<std::size_t>(T);
-    const std::size_t q_f32  = t * H_qk * S * sizeof(float);
-    const std::size_t k_f32  = t * H_qk * S * sizeof(float);
-    const std::size_t v_f32  = t * H_v * S * sizeof(float);
-    const std::size_t out32  = t * H_v * S * sizeof(float);
     const int T_full         = (T / BT) * BT;
     const std::size_t stages = chunked_workspace_bytes(T_full);
-    return q_f32 + k_f32 + v_f32 + out32 + stages + 4 * 1024 * 1024;
+    return stages + 4 * 1024 * 1024;
 }
 
 struct GpuResult {
@@ -236,8 +231,9 @@ int recurrent_case(int T, std::uint32_t seed, bool stress_g, bool use_gdn_state 
     return failures;
 }
 
-int chunked_case(int T, std::uint32_t seed, bool compare_recurrent, bool compare_ar_golden) {
-    const auto in      = make_inputs(T, seed, false);
+int chunked_case(int T, std::uint32_t seed, bool compare_recurrent, bool compare_ar_golden,
+                 bool stress_g = false) {
+    const auto in      = make_inputs(T, seed, stress_g);
     const double scale = 1.0 / std::sqrt(static_cast<double>(S));
     std::vector<double> chunked_ref_out(static_cast<std::size_t>(B * T * H_v * S));
     std::vector<double> chunked_ref_state(static_cast<std::size_t>(B * H_v * S * S));
@@ -258,7 +254,8 @@ int chunked_case(int T, std::uint32_t seed, bool compare_recurrent, bool compare
     int failures = 0;
     try {
         const GpuResult got   = run_chunked_gpu(in);
-        const std::string tag = std::string("gdn chunked T=") + std::to_string(T);
+        const std::string tag = std::string("gdn chunked T=") + std::to_string(T) +
+                                (stress_g ? " slow-decay" : "");
         failures += verify((tag + " vs chunked-ref out").c_str(), got.out, chunked_ref_out,
                            Tolerance::gdn_output_bf16());
         failures += verify((tag + " vs chunked-ref state").c_str(), got.state, chunked_ref_state,
@@ -278,7 +275,8 @@ int chunked_case(int T, std::uint32_t seed, bool compare_recurrent, bool compare
                                Tolerance::gdn_state_fp32());
         }
     } catch (const std::exception& e) {
-        std::cerr << "gdn chunked T=" << T << ": unexpected exception: " << e.what() << '\n';
+        std::cerr << "gdn chunked T=" << T << (stress_g ? " slow-decay" : "")
+                  << ": unexpected exception: " << e.what() << '\n';
         return 1;
     }
 
@@ -393,6 +391,7 @@ int main() {
     failures += chunked_case(512, 8534u, true, false);
     failures += chunked_chain_equivalence_case(128, 6122u);
     failures += chunked_case(4096, 8122u, false, false);
+    failures += chunked_case(4096, 9122u, false, false, true);
     failures += chunked_validation_case();
 
     std::cout << (failures ? "FAIL" : "OK") << " gated_delta_rule correctness\n";

@@ -28,8 +28,6 @@ using gdn_chunked::bh_decode_t;
 using gdn_chunked::zero_frag;
 using qus::kernels::SmemTile;
 using qus::kernels::mma_m16n8k8_tf32;
-using qus::kernels::async_copy_commit;
-using qus::kernels::async_copy_wait_all;
 using qus::kernels::exp2_fast;
 using qus::kernels::RCP_LN2_F;
 
@@ -82,10 +80,12 @@ struct kernel_dims {
 
 template <int S>
 __launch_bounds__(THREADS, 3) __global__
-    void chunk_output_gdn_kernel(const float* __restrict__ q_in, const float* __restrict__ k_in,
-                                 const float* __restrict__ v_new_in,
+    void chunk_output_gdn_kernel(const __nv_bfloat16* __restrict__ q_in,
+                                 const __nv_bfloat16* __restrict__ k_in,
+                                 const __nv_bfloat16* __restrict__ v_new_in,
                                  const float* __restrict__ g_cumsum_in,
-                                 const float* __restrict__ h_chunk_in, float* __restrict__ attn_out,
+                                 const __nv_bfloat16* __restrict__ h_chunk_in,
+                                 __nv_bfloat16* __restrict__ attn_out,
                                  int64_t T, int64_t H_v, qus::kernels::head_map qk_map,
                                  // Token-axis strides (in floats) for
                                  // q / k. Caller passes materialised
@@ -140,11 +140,11 @@ __launch_bounds__(THREADS, 3) __global__
     const int64_t v_row_stride   = (int64_t)H_v * S;
     const int64_t out_row_stride = v_row_stride;
 
-    // === Phase A: cp.async q (full S) + k_pass[0]; sync-load g_cumsum ===
-    qus::kernels::issue_async_load_vec4<BT, S, THREADS>(q_view, q_in + q_base, q_stride_t, cl, tid);
-    qus::kernels::issue_async_load_vec4<BT, K_PER_PASS, THREADS>(k_pass_view, k_in + k_base,
-                                                                 k_stride_t, cl, tid);
-    async_copy_commit();
+    // === Phase A: bf16 q (full S) + k_pass[0] -> float smem; sync-load g_cumsum ===
+    qus::kernels::issue_load_bf16_to_float_vec4<BT, S, THREADS>(q_view, q_in + q_base, q_stride_t,
+                                                                cl, tid);
+    qus::kernels::issue_load_bf16_to_float_vec4<BT, K_PER_PASS, THREADS>(
+        k_pass_view, k_in + k_base, k_stride_t, cl, tid);
 
     if (tid < BT) {
         float val = 0.0f;
@@ -155,7 +155,6 @@ __launch_bounds__(THREADS, 3) __global__
         g_smem[tid] = val;
     }
 
-    async_copy_wait_all();
     __syncthreads();
 
     // === Phase B: MM2 = Q @ K^T, accumulate over K_TILE_PASSES passes ===
@@ -197,10 +196,8 @@ __launch_bounds__(THREADS, 3) __global__
         // Issue + wait next pass's k_pass into the same alias region.
         if (pass + 1 < K_TILE_PASSES) {
             __syncthreads();
-            qus::kernels::issue_async_load_vec4<BT, K_PER_PASS, THREADS>(
+            qus::kernels::issue_load_bf16_to_float_vec4<BT, K_PER_PASS, THREADS>(
                 k_pass_view, k_in + k_base + (int64_t)(pass + 1) * K_PER_PASS, k_stride_t, cl, tid);
-            async_copy_commit();
-            async_copy_wait_all();
             __syncthreads();
         }
     }
@@ -278,15 +275,12 @@ __launch_bounds__(THREADS, 3) __global__
     for (int c = 0; c < N_CHUNKS; ++c) {
         const int d_chunk_off = c * D_CHUNK;
 
-        // --- E.1: cp.async h_part[c] = h_chunk[..., d_off:+D_CHUNK, :] ---
+        // --- E.1: bf16 h_chunk[..., d_off:+D_CHUNK, :] -> float h_part[c] ---
         {
-            const float* h_part_gmem = h_chunk_in + hc_base + (int64_t)d_chunk_off * S;
-            qus::kernels::issue_async_load_vec4<D_CHUNK, S, THREADS>(h_part_view, h_part_gmem,
-                                                                     /*row_stride=*/(int64_t)S,
-                                                                     /*cl=*/D_CHUNK, tid);
+            const __nv_bfloat16* h_part_gmem = h_chunk_in + hc_base + (int64_t)d_chunk_off * S;
+            qus::kernels::issue_load_bf16_to_float_vec4<D_CHUNK, S, THREADS>(
+                h_part_view, h_part_gmem, /*row_stride=*/(int64_t)S, /*cl=*/D_CHUNK, tid);
         }
-        async_copy_commit();
-        async_copy_wait_all();
         __syncthreads();
 
         // --- E.2: MM1: D_frag = Q @ h^T (raw, gamma_r applied below) ---
@@ -326,14 +320,12 @@ __launch_bounds__(THREADS, 3) __global__
 
         __syncthreads(); // gates MM1 reads of h_part before v_part overwrite
 
-        // --- E.4: cp.async v_part[c] = v_new[..., d_off:+D_CHUNK] ---
+        // --- E.4: bf16 v_new[..., d_off:+D_CHUNK] -> float v_part[c] ---
         {
-            const float* v_part_gmem = v_new_in + vn_base + (int64_t)d_chunk_off;
-            qus::kernels::issue_async_load_vec4<BT, D_CHUNK, THREADS>(v_part_view, v_part_gmem,
-                                                                      v_row_stride, cl, tid);
+            const __nv_bfloat16* v_part_gmem = v_new_in + vn_base + (int64_t)d_chunk_off;
+            qus::kernels::issue_load_bf16_to_float_vec4<BT, D_CHUNK, THREADS>(
+                v_part_view, v_part_gmem, v_row_stride, cl, tid);
         }
-        async_copy_commit();
-        async_copy_wait_all();
         __syncthreads();
 
 // --- E.5: MM3: D_frag += A_a (regs) @ v_part ---
@@ -363,14 +355,16 @@ __launch_bounds__(THREADS, 3) __global__
         for (int nt = 0; nt < N_TILES_PER_CHUNK; ++nt) {
             const int n_off    = nt * MMA_N;
             const int d_global = d_chunk_off + n_off + 2 * lane_t;
-            float2 v0          = make_float2(scale * D_frag[nt][0], scale * D_frag[nt][1]);
-            float2 v1          = make_float2(scale * D_frag[nt][2], scale * D_frag[nt][3]);
+            const __nv_bfloat162 v0 =
+                __floats2bfloat162_rn(scale * D_frag[nt][0], scale * D_frag[nt][1]);
+            const __nv_bfloat162 v1 =
+                __floats2bfloat162_rn(scale * D_frag[nt][2], scale * D_frag[nt][3]);
             if (row_g0 < cl) {
-                *reinterpret_cast<float2*>(
+                *reinterpret_cast<__nv_bfloat162*>(
                     &attn_out[out_base + (int64_t)row_g0 * out_row_stride + d_global]) = v0;
             }
             if (row_g1 < cl) {
-                *reinterpret_cast<float2*>(
+                *reinterpret_cast<__nv_bfloat162*>(
                     &attn_out[out_base + (int64_t)row_g1 * out_row_stride + d_global]) = v1;
             }
         }

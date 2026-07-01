@@ -2,6 +2,7 @@
 
 #include "kernels/kernel/gdn_common.cuh"
 
+#include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>
@@ -49,7 +50,8 @@ inline std::int64_t reserve(std::int64_t& cursor, std::int64_t bytes) {
 inline workspace_layout compute_workspace_layout(std::int64_t S, std::int64_t H_qk,
                                                  std::int64_t H_v, std::int64_t L, std::int64_t B) {
     (void)H_qk;
-    constexpr std::int64_t f = static_cast<std::int64_t>(sizeof(float));
+    constexpr std::int64_t f    = static_cast<std::int64_t>(sizeof(float));
+    constexpr std::int64_t bf16 = static_cast<std::int64_t>(sizeof(__nv_bfloat16));
     const std::int64_t T     = L;
     const std::int64_t NT    = (T + kChunkSize - 1) / kChunkSize;
 
@@ -59,10 +61,10 @@ inline workspace_layout compute_workspace_layout(std::int64_t S, std::int64_t H_
 
     workspace_layout w{};
     w.g_cumsum_bytes = per_token_g * f;
-    w.W_bytes        = per_token_S * f;
-    w.U_bytes        = per_token_S * f;
-    w.v_new_bytes    = per_token_S * f;
-    w.h_chunk_bytes  = per_chunk_SxS * f;
+    w.W_bytes        = per_token_S * bf16;
+    w.U_bytes        = per_token_S * bf16;
+    w.v_new_bytes    = per_token_S * bf16;
+    w.h_chunk_bytes  = per_chunk_SxS * bf16;
 
     std::int64_t cur = 0;
     w.g_cumsum_off   = reserve(cur, w.g_cumsum_bytes);
@@ -86,13 +88,13 @@ struct prepare_wy_wu_config {
     std::int64_t L    = 0;
     std::int64_t B    = 0;
 
-    const float* k    = nullptr;
-    const float* v    = nullptr;
+    const __nv_bfloat16* k = nullptr;
+    const __nv_bfloat16* v = nullptr;
     const float* g_in = nullptr;
     const float* beta = nullptr;
 
-    float* W            = nullptr;
-    float* U            = nullptr;
+    __nv_bfloat16* W   = nullptr;
+    __nv_bfloat16* U   = nullptr;
     float* g_cumsum_out = nullptr;
 
     std::int64_t k_stride_t_floats = 0;
@@ -108,14 +110,14 @@ struct state_passing_config {
     std::int64_t L    = 0;
     std::int64_t B    = 0;
 
-    const float* W        = nullptr;
-    const float* U        = nullptr;
-    const float* k        = nullptr;
+    const __nv_bfloat16* W = nullptr;
+    const __nv_bfloat16* U = nullptr;
+    const __nv_bfloat16* k = nullptr;
     const float* g_cumsum = nullptr;
     const float* state_in = nullptr;
 
-    float* v_new     = nullptr;
-    float* h_chunk   = nullptr;
+    __nv_bfloat16* v_new = nullptr;
+    __nv_bfloat16* h_chunk = nullptr;
     float* state_out = nullptr;
 
     std::int64_t k_stride_t_floats = 0;
@@ -130,13 +132,13 @@ struct chunk_output_config {
     std::int64_t L    = 0;
     std::int64_t B    = 0;
 
-    const float* q        = nullptr;
-    const float* k        = nullptr;
-    const float* v_new    = nullptr;
+    const __nv_bfloat16* q = nullptr;
+    const __nv_bfloat16* k = nullptr;
+    const __nv_bfloat16* v_new = nullptr;
     const float* g_cumsum = nullptr;
-    const float* h_chunk  = nullptr;
+    const __nv_bfloat16* h_chunk = nullptr;
 
-    float* attn_out = nullptr;
+    __nv_bfloat16* attn_out = nullptr;
 
     std::int64_t q_stride_t_floats = 0;
     std::int64_t k_stride_t_floats = 0;

@@ -1,44 +1,11 @@
 #include "kernels/launcher/gated_delta_rule.h"
 
 #include "kernels/kernel/gated_delta_rule_recurrent.cuh"
-#include "kernels/kernel/gdn_cast.cuh"
 #include "qus/core/device.h"
 
-#include <algorithm>
 #include <cstdint>
 
 namespace qus::kernels::detail {
-namespace {
-
-constexpr int kBlock = 256;
-
-int linear_grid(std::int64_t n) {
-    return static_cast<int>(
-        std::max<std::int64_t>(1, (n + static_cast<std::int64_t>(kBlock) - 1) / kBlock));
-}
-
-} // namespace
-
-void gdn_cast_qkv_bf16_to_f32_launch(const Tensor& q, const Tensor& k, const Tensor& v,
-                                     Tensor& q_out, Tensor& k_out, Tensor& v_out,
-                                     cudaStream_t stream) {
-    const std::int64_t q_n   = q.numel();
-    const std::int64_t k_n   = k.numel();
-    const std::int64_t v_n   = v.numel();
-    const std::int64_t total = q_n + k_n + v_n;
-    gdn_cast_qkv_bf16_to_f32_kernel<<<linear_grid(total), kBlock, 0, stream>>>(
-        static_cast<const __nv_bfloat16*>(q.data), static_cast<const __nv_bfloat16*>(k.data),
-        static_cast<const __nv_bfloat16*>(v.data), static_cast<float*>(q_out.data),
-        static_cast<float*>(k_out.data), static_cast<float*>(v_out.data), q_n, k_n, v_n);
-    CUDA_CHECK(cudaGetLastError());
-}
-
-void gdn_cast_f32_to_bf16_launch(const Tensor& in, Tensor& out, cudaStream_t stream) {
-    const std::int64_t n = in.numel();
-    gdn_cast_f32_to_bf16_kernel<<<linear_grid(n), kBlock, 0, stream>>>(
-        static_cast<const float*>(in.data), static_cast<__nv_bfloat16*>(out.data), n);
-    CUDA_CHECK(cudaGetLastError());
-}
 
 void gated_delta_rule_recurrent_launch(const Tensor& q, const Tensor& k, const Tensor& v,
                                        const Tensor& g, const Tensor& beta, float scale,

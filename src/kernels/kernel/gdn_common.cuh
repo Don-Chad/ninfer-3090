@@ -12,6 +12,7 @@
 #include <cstdlib>
 
 #ifdef __CUDACC__
+#    include <cuda_bf16.h>
 #    define QUS_KERNELS_HOST_DEVICE __host__ __device__
 #else
 #    define QUS_KERNELS_HOST_DEVICE
@@ -273,6 +274,36 @@ issue_async_load_vec4(View view, const float* __restrict__ gmem_base_row0,
         } else {
             *reinterpret_cast<float4*>(smem_ptr) = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
         }
+    }
+}
+
+static __device__ __forceinline__ float4 load_bf16_vec4_as_float4(
+    const __nv_bfloat16* __restrict__ src) {
+    const auto* src2 = reinterpret_cast<const __nv_bfloat162*>(src);
+    const float2 lo  = __bfloat1622float2(src2[0]);
+    const float2 hi  = __bfloat1622float2(src2[1]);
+    return make_float4(lo.x, lo.y, hi.x, hi.y);
+}
+
+template <int ROWS, int STRIDE, int THREADS, class View>
+static __device__ __forceinline__ void
+issue_load_bf16_to_float_vec4(View view, const __nv_bfloat16* __restrict__ gmem_base_row0,
+                              std::int64_t gmem_row_stride_elems, int cl, int tid) {
+    static_assert(STRIDE % 4 == 0, "issue_load_bf16_to_float_vec4: STRIDE must be a multiple of 4");
+    constexpr int VEC_PER_ROW = STRIDE / 4;
+    constexpr int N_VEC       = ROWS * VEC_PER_ROW;
+#    pragma unroll
+    for (int v = tid; v < N_VEC; v += THREADS) {
+        const int row       = v / VEC_PER_ROW;
+        const int col4      = v - row * VEC_PER_ROW;
+        float4 val          = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        const bool in_range = row < cl;
+        if (in_range) {
+            const __nv_bfloat16* gmem_ptr =
+                gmem_base_row0 + static_cast<std::int64_t>(row) * gmem_row_stride_elems + col4 * 4;
+            val = load_bf16_vec4_as_float4(gmem_ptr);
+        }
+        view.vec4_at(row, col4 * 4) = val;
     }
 }
 

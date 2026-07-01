@@ -9,10 +9,9 @@
 //   ./qus_gated_delta_rule_bench --prefill --kernel-only
 //   ./qus_gated_delta_rule_bench --prefill --sweep --csv
 //
-// The public-wrapper chunked row includes bf16 q/k/v/out boundary casts and
-// WorkspaceArena scratch. The kernel-only-fp32 row times the detail chunked
-// launcher with fp32 q/k/v/out/state and preallocated workspace, matching
-// ~/chunked_gdn/bench_chunked's allocation policy.
+// The public-wrapper chunked row includes WorkspaceArena scratch. The
+// kernel-only row times the detail chunked launcher with preallocated
+// workspace, matching ~/chunked_gdn/bench_chunked's allocation policy.
 #include "qus/kernels/gated_delta_rule.h"
 #include "kernels/launcher/gated_delta_rule.h"
 #include "qus_bench_common.h"
@@ -63,9 +62,10 @@ struct Options {
 };
 
 struct BenchRow {
-    const char* mode = "";
-    const char* path = "";
-    int L            = 0;
+    const char* mode            = "";
+    const char* path            = "";
+    int L                       = 0;
+    std::size_t workspace_bytes = 0;
     Result result{};
 };
 
@@ -147,7 +147,7 @@ void print_help(const char* prog) {
         "  --decode           run recurrent decode at L=1 (default when no mode is given)\n"
         "  --prefill          run chunked prefill at L=4096 by default\n"
         "  --chunked          alias for --prefill\n"
-        "  --kernel-only      use the FP32 detail launcher path instead of the public wrapper\n"
+        "  --kernel-only      use the native-bf16 detail launcher path instead of the public wrapper\n"
         "  --sweep            with prefill, sweep L over {64,128,256,512,1024,4096}\n"
         "\n"
         "Shape:\n"
@@ -179,19 +179,10 @@ std::size_t checked_add(std::size_t a, std::size_t b) {
     return a + b;
 }
 
-std::size_t tensor_bytes(std::size_t n, std::size_t elem_size) { return n * elem_size; }
-
 std::size_t wrapper_workspace_bytes(int T) {
-    const std::size_t t      = static_cast<std::size_t>(T);
-    const std::size_t qk_n   = static_cast<std::size_t>(kS) * kHqk * t;
-    const std::size_t v_n    = static_cast<std::size_t>(kS) * kHv * t;
     const int T_full         = (T / kChunkSize) * kChunkSize;
     const std::size_t stages = kernels::detail::gdn_chunked_workspace_bytes(T_full);
     std::size_t bytes        = 0;
-    bytes                    = checked_add(bytes, align_up(tensor_bytes(qk_n, sizeof(float))));
-    bytes                    = checked_add(bytes, align_up(tensor_bytes(qk_n, sizeof(float))));
-    bytes                    = checked_add(bytes, align_up(tensor_bytes(v_n, sizeof(float))));
-    bytes                    = checked_add(bytes, align_up(tensor_bytes(v_n, sizeof(float))));
     bytes                    = checked_add(bytes, align_up(stages));
     return checked_add(bytes, 4u * 1024u * 1024u);
 }
@@ -275,7 +266,7 @@ BenchRow run_decode_public(const Options& opt) {
     Tensor tout(out.p, DType::BF16, {kS, kHv, T});
     WorkspaceArena ws(wrapper_workspace_bytes(T));
 
-    BenchRow row{"decode", "public-wrapper", T, {}};
+    BenchRow row{"decode", "public-wrapper", T, 0, {}};
     row.result = bench_loop(
         [&](cudaStream_t s) {
             kernels::gated_delta_rule_recurrent(tq, tk, tv, tg, tbeta, kScale, ws, tstate, tout, s);
@@ -306,7 +297,7 @@ BenchRow run_decode_kernel_only(const Options& opt) {
     Tensor tstate(state.p, DType::FP32, {kS, kS, kHv});
     Tensor tout(out.p, DType::FP32, {kS, kHv, T});
 
-    BenchRow row{"decode", "kernel-only-fp32", T, {}};
+    BenchRow row{"decode", "kernel-only-fp32", T, 0, {}};
     row.result = bench_loop(
         [&](cudaStream_t s) {
             kernels::detail::gated_delta_rule_recurrent_launch(tq, tk, tv, tg, tbeta, kScale,
@@ -330,7 +321,8 @@ BenchRow run_prefill_public(const Options& opt, int T) {
     DBuf beta  = make_f32(std::vector<float>(gb_n, 0.5f));
     DBuf state = make_zeros(state_n * sizeof(float));
     DBuf out   = make_zeros(v_n * sizeof(std::uint16_t));
-    WorkspaceArena ws(wrapper_workspace_bytes(T));
+    const std::size_t ws_bytes = wrapper_workspace_bytes(T);
+    WorkspaceArena ws(ws_bytes);
 
     Tensor tq(q.p, DType::BF16, {kS, kHqk, T});
     Tensor tk(k.p, DType::BF16, {kS, kHqk, T});
@@ -340,7 +332,7 @@ BenchRow run_prefill_public(const Options& opt, int T) {
     Tensor tstate(state.p, DType::FP32, {kS, kS, kHv});
     Tensor tout(out.p, DType::BF16, {kS, kHv, T});
 
-    BenchRow row{"prefill", "public-wrapper", T, {}};
+    BenchRow row{"prefill", "public-wrapper", T, ws_bytes, {}};
     row.result = bench_loop(
         [&](cudaStream_t s) {
             kernels::gated_delta_rule_chunked(tq, tk, tv, tg, tbeta, kScale, kChunkSize, ws, tstate,
@@ -359,48 +351,52 @@ BenchRow run_prefill_kernel_only(const Options& opt, int T) {
     const std::size_t state_n  = static_cast<std::size_t>(kS) * kS * kHv;
     const std::size_t ws_bytes = kernels::detail::gdn_chunked_workspace_bytes(T);
 
-    DBuf q         = make_f32(make_normalized_qk(static_cast<std::size_t>(kHqk) * T, 0x12345678u));
-    DBuf k         = make_f32(make_normalized_qk(static_cast<std::size_t>(kHqk) * T, 0x87654321u));
-    DBuf v         = make_f32(make_ramp(v_n, 0.5f));
+    DBuf q =
+        make_bf16_from_f32(make_normalized_qk(static_cast<std::size_t>(kHqk) * T, 0x12345678u));
+    DBuf k =
+        make_bf16_from_f32(make_normalized_qk(static_cast<std::size_t>(kHqk) * T, 0x87654321u));
+    DBuf v         = make_bf16_from_f32(make_ramp(v_n, 0.5f));
     DBuf g         = make_f32(std::vector<float>(gb_n, -1.0f));
     DBuf beta      = make_f32(std::vector<float>(gb_n, 0.5f));
     DBuf state     = make_zeros(state_n * sizeof(float));
-    DBuf out       = make_zeros(v_n * sizeof(float));
+    DBuf out       = make_zeros(v_n * sizeof(std::uint16_t));
     DBuf workspace = make_zeros(ws_bytes);
 
-    Tensor tq(q.p, DType::FP32, {kS, kHqk, T});
-    Tensor tk(k.p, DType::FP32, {kS, kHqk, T});
-    Tensor tv(v.p, DType::FP32, {kS, kHv, T});
+    Tensor tq(q.p, DType::BF16, {kS, kHqk, T});
+    Tensor tk(k.p, DType::BF16, {kS, kHqk, T});
+    Tensor tv(v.p, DType::BF16, {kS, kHv, T});
     Tensor tg(g.p, DType::FP32, {kHv, T});
     Tensor tbeta(beta.p, DType::FP32, {kHv, T});
     Tensor tstate(state.p, DType::FP32, {kS, kS, kHv});
-    Tensor tout(out.p, DType::FP32, {kS, kHv, T});
+    Tensor tout(out.p, DType::BF16, {kS, kHv, T});
 
-    BenchRow row{"prefill", "kernel-only-fp32", T, {}};
+    BenchRow row{"prefill", "kernel-only-bf16", T, ws_bytes, {}};
     row.result = bench_loop(
         [&](cudaStream_t s) {
             kernels::detail::gated_delta_rule_chunked_launch(tq, tk, tv, tg, tbeta, kScale, tstate,
                                                              tout, workspace.p, workspace.bytes, s);
         },
-        estimate_user_bytes(T, sizeof(float)), opt.warmup, opt.repeat, opt.min_time_ms);
+        estimate_user_bytes(T, sizeof(std::uint16_t)), opt.warmup, opt.repeat, opt.min_time_ms);
     return row;
 }
 
 void print_csv_header() {
-    std::printf("mode,path,S,H_qk,H_v,L,B,runs,inner,median_us,min_us,p95_us,mean_us,gbs\n");
+    std::printf(
+        "mode,path,S,H_qk,H_v,L,B,workspace_bytes,runs,inner,median_us,min_us,p95_us,mean_us,gbs\n");
 }
 
 void print_row(const BenchRow& row, bool csv) {
     if (csv) {
-        std::printf("%s,%s,%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f\n", row.mode, row.path, kS,
-                    kHqk, kHv, row.L, kB, row.result.n_runs, row.result.inner_iters,
-                    row.result.median_us, row.result.min_us, row.result.p95_us, row.result.mean_us,
-                    row.result.gbs);
+        std::printf("%s,%s,%d,%d,%d,%d,%d,%zu,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f\n", row.mode,
+                    row.path, kS, kHqk, kHv, row.L, kB, row.workspace_bytes, row.result.n_runs,
+                    row.result.inner_iters, row.result.median_us, row.result.min_us,
+                    row.result.p95_us, row.result.mean_us, row.result.gbs);
         return;
     }
 
     char tag[128];
-    std::snprintf(tag, sizeof(tag), "gdn %s %s [S128,Hqk16,Hv48,L%d]", row.mode, row.path, row.L);
+    std::snprintf(tag, sizeof(tag), "gdn %s %s [S128,Hqk16,Hv48,L%d,ws=%.1fMiB]", row.mode,
+                  row.path, row.L, static_cast<double>(row.workspace_bytes) / (1024.0 * 1024.0));
     print_result(tag, row.result);
 }
 

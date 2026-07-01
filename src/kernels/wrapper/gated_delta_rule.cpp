@@ -121,25 +121,18 @@ void gated_delta_rule_chunked(const Tensor& q, const Tensor& k, const Tensor& v,
     validate_chunked(q, k, v, g, beta, scale, chunk_size, ssm_state, out);
 
     ArenaScope arena_scope(ws);
-    Tensor q_f32   = ws.alloc(DType::FP32, {q.ne[0], q.ne[1], q.ne[2]});
-    Tensor k_f32   = ws.alloc(DType::FP32, {k.ne[0], k.ne[1], k.ne[2]});
-    Tensor v_f32   = ws.alloc(DType::FP32, {v.ne[0], v.ne[1], v.ne[2]});
-    Tensor out_f32 = ws.alloc(DType::FP32, {out.ne[0], out.ne[1], out.ne[2]});
-
-    detail::gdn_cast_qkv_bf16_to_f32_launch(q, k, v, q_f32, k_f32, v_f32, stream);
-
     const std::int32_t T      = q.ne[2];
     const std::int32_t T_full = (T / chunk_size) * chunk_size;
     if (T_full > 0) {
         const std::size_t stage_bytes = detail::gdn_chunked_workspace_bytes(T_full);
         Tensor stage_workspace        = ws.alloc(DType::FP32, {checked_arena_floats(stage_bytes)});
 
-        Tensor q_full    = q_f32.slice(2, 0, T_full);
-        Tensor k_full    = k_f32.slice(2, 0, T_full);
-        Tensor v_full    = v_f32.slice(2, 0, T_full);
+        Tensor q_full    = q.slice(2, 0, T_full);
+        Tensor k_full    = k.slice(2, 0, T_full);
+        Tensor v_full    = v.slice(2, 0, T_full);
         Tensor g_full    = g.slice(1, 0, T_full);
         Tensor beta_full = beta.slice(1, 0, T_full);
-        Tensor out_full  = out_f32.slice(2, 0, T_full);
+        Tensor out_full  = out.slice(2, 0, T_full);
         detail::gated_delta_rule_chunked_launch(q_full, k_full, v_full, g_full, beta_full, scale,
                                                 ssm_state, out_full, stage_workspace.data,
                                                 stage_workspace.bytes(), stream);
@@ -147,17 +140,15 @@ void gated_delta_rule_chunked(const Tensor& q, const Tensor& k, const Tensor& v,
 
     const std::int32_t tail = T - T_full;
     if (tail > 0) {
-        Tensor q_tail    = q_f32.slice(2, T_full, tail);
-        Tensor k_tail    = k_f32.slice(2, T_full, tail);
-        Tensor v_tail    = v_f32.slice(2, T_full, tail);
+        Tensor q_tail    = q.slice(2, T_full, tail);
+        Tensor k_tail    = k.slice(2, T_full, tail);
+        Tensor v_tail    = v.slice(2, T_full, tail);
         Tensor g_tail    = g.slice(1, T_full, tail);
         Tensor beta_tail = beta.slice(1, T_full, tail);
-        Tensor out_tail  = out_f32.slice(2, T_full, tail);
-        detail::gated_delta_rule_recurrent_launch(q_tail, k_tail, v_tail, g_tail, beta_tail, scale,
-                                                  ssm_state, out_tail, stream);
+        Tensor out_tail  = out.slice(2, T_full, tail);
+        detail::gated_delta_rule_recurrent_bf16_launch(q_tail, k_tail, v_tail, g_tail, beta_tail,
+                                                       scale, ssm_state, out_tail, stream);
     }
-
-    detail::gdn_cast_f32_to_bf16_launch(out_f32, out, stream);
 }
 
 } // namespace qus::kernels
