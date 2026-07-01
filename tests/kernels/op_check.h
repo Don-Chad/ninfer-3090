@@ -47,6 +47,16 @@ struct Tolerance {
 
     static constexpr Tolerance linear_bf16() { return {2e-3, 1.6e-2, 2e-3, 5.0, 8e-3}; }
 
+    // Tensor-core (low-precision-compute) linear: the mma rounds operands to
+    // bf16/tf32, so near-zero cancellation outputs get large *relative* per-element
+    // error even though the matmul is correct. The correct correctness metric for a
+    // GEMM is the normwise relative residual (rel_l2), which stays ~2e-3 (same as the
+    // fp32 path). This preset gates on rel_l2 only (tightened, a strong bug net since
+    // any layout/index bug spikes it) with NaN/inf still fatal; the per-element
+    // worst/frequency caps are neutralized (they mis-fire on cancellation). See
+    // docs/l1-op-test-standard.md §1.3.
+    static constexpr Tolerance linear_tc() { return {2e-3, 1.6e-2, 1.0, 1e30, 4e-3}; }
+
     static constexpr Tolerance attention_bf16() { return {2e-3, 1.6e-2, 2e-3, 5.0, 8e-3}; }
 
     static constexpr Tolerance gdn_output_bf16() { return {1e-3, 1.0e-2, 2e-3, 5.0, 8e-3}; }

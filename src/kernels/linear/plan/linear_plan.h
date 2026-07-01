@@ -35,6 +35,7 @@ enum class LinearBackendKind { Gemv, Gemm, Reference };
 enum class LinearPolicyId {
     GenericLowbitGemv,
     RowsplitLowbitGemmMultistep,
+    RowsplitLowbitGemmMma,
     GenericDenseGemv,
     GenericDenseGemm,
     MlpGateUp34816Q4RowsplitGemv,

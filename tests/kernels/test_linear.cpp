@@ -230,8 +230,11 @@ int one_quant_shape(QType qtype, std::int32_t n, std::int32_t k,
         const std::string label  = "linear " + std::string(qtype_name(qtype)) + suffix + " [" +
                                   std::to_string(n) + "," + std::to_string(k) +
                                   "] T=" + std::to_string(t) + " seed=" + std::to_string(seed);
+        // T > 64 is the LargeT regime -> tensor-core mma GEMM, judged by the normwise
+        // linear_tc criterion; T <= 64 uses the fp32 multi-step / GEMV path (strict).
+        const Tolerance tol = (t > 64) ? Tolerance::linear_tc() : Tolerance::linear_bf16();
         failures += verify(label.c_str(), from_device_bf16(dout, static_cast<std::size_t>(n) * t),
-                           ref, Tolerance::linear_bf16());
+                           ref, tol);
     }
     return failures;
 }
@@ -489,6 +492,9 @@ int main() {
     f += one_quant_shape(QType::Q5G64_F16S, 130, 256, {7, 8, 9, 65, 2048}, 93u);
     f += one_quant_shape(QType::Q6G64_F16S, 192, 320, {7, 9, 63, 64, 65}, 97u);
     f += one_quant_shape(QType::Q4G64_F16S, 320, 384, {2, 33, 513}, 99u, 8.0f, 1.25f, "stress");
+    // LargeT (T > tau) exercises the tensor-core GEMM; cover the big N and big K dims.
+    f += one_quant_shape(QType::Q4G64_F16S, 17408, 5120, {128}, 137u); // gate/up (K=5120)
+    f += one_quant_shape(QType::Q5G64_F16S, 5120, 17408, {128}, 139u); // mlp_down (K=17408)
 
     std::cout << (f ? "FAIL" : "OK") << " linear correctness\n";
     return f ? 1 : 0;

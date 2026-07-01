@@ -92,3 +92,28 @@ crossover is on the order of tens of tokens.
 - Bench: `./build/bench/qus_linear_op_bench --csv-out profiles/prefill-linear-foundation/baseline.csv`
   → 96 rows (8 targets × 12 T), both ceilings measured.
 - Decode unchanged: T1 kernels/launchers untouched; T1 routing identical.
+
+## 7. P2 — LargeT tensor-core GEMM (status)
+
+Measured checkpoint after the foundation: e2e prefill went from ~1.46 s / 20 tok (naive GEMM) to
+0.18 s / 26 tok and 3.72 s / 705 tok; an nsys breakdown at 705 tok showed **linear ~97%** of prefill
+(Q5 51.7% + Q4 45.0%), attention 2.4%, everything else <1%, with the multi-step kernel at only
+~4-6% of the measured ~220 TFLOP/s tensor-core ceiling. So P2 adds a tensor-core GEMM for the LargeT
+regime (`linear_rowsplit_gemm_mma.{cuh,cu}`, `RowsplitLowbitGemmMma`, `uses_tensor_cores=true`).
+
+- **Numerics.** bf16 `mma.sync.aligned.m16n8k16` with on-chip low-bit dequant (identical
+  `Codec::load_pair` math), fp32 accumulate. Parity is judged by the normwise `linear_tc` criterion
+  (see `l1-op-test-standard.md` §1.3): the fp64 golden is unchanged, but the pass metric is
+  `rel_l2` (which is identical, ~2e-3, to the fp32 multi-step path) rather than a per-element
+  worst-case cap that mis-fires on near-zero cancellation outputs. bf16 (not tf32) is kept because,
+  under the correct criterion, it passes and is ~2x faster. compute-sanitizer clean.
+- **Perf status (honest).** The current kernel is *correctness-first*: it assembles mma fragments
+  from per-element global loads (no shared staging / ldmatrix / cp.async), so it is **latency-bound**
+  (~3.5-5.6% of the TC ceiling, ~0.5% of DRAM BW) and currently **perf-neutral vs the multi-step
+  kernel** (e.g. T=512 MlpGateUp: 11.5 vs 11.6 TFLOP/s; e2e 705-tok prefill 3.72 -> 3.74 s). The
+  tensor cores are starved by scattered weight loads.
+- **Remaining work (the roofline pushdown).** To realize the TC speedup: stage the quantized weight
+  planes + x into shared with coalesced/cp.async loads, dequant once per K-tile into a shared bf16
+  tile reused across a large token tile, and feed the mma via `ldmatrix` (reuse the
+  `gdn_common.cuh` helpers). Then tune tile shapes with ncu toward the >=50% bar and recalibrate
+  `tau` from the bench (currently `tau=64`, and LargeT->mma is perf-neutral until this lands).

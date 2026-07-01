@@ -14,6 +14,9 @@ void linear_generic_lowbit_gemv_launch(const Tensor& x, const Weight& w, Tensor&
                                        LinearFormat fmt, cudaStream_t stream);
 void linear_rowsplit_gemm_multistep_launch(const Tensor& x, const Weight& w, Tensor& out,
                                            LinearFormat fmt, cudaStream_t stream);
+// LargeT (T > tau) tensor-core path: bf16 mma.sync with on-chip low-bit dequant.
+void linear_rowsplit_gemm_mma_launch(const Tensor& x, const Weight& w, Tensor& out,
+                                     LinearFormat fmt, cudaStream_t stream);
 
 // Dense (BF16/FP32): wrapper passes as_dense(w) as the weight Tensor.
 void linear_generic_dense_gemv_launch(const Tensor& x, const Tensor& weight, Tensor& out,

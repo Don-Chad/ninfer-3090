@@ -105,19 +105,30 @@ LinearPlan resolve_plan(LinearPlanKey key) {
                           policy_name(LinearPolicyId::Out6144Q5RowsplitGemv),
                           /*uses_tensor_cores=*/false};
     }
-    // T1 decode uses the generic GEMV; every T>1 (SmallT/LargeT) low-bit shape uses the
-    // multi-step GEMM (registered families that have no T1-only plan land here too). Dense
-    // keeps its reference GEMV/GEMM. uses_tensor_cores stays false until the P2 MMA GEMM.
-    const bool dense = (key.format == LinearFormat::DenseBF16 || key.format == LinearFormat::DenseFP32);
-    const bool gemv  = (key.regime == LinearRegime::T1);
-    const LinearPolicyId policy =
-        dense ? (gemv ? LinearPolicyId::GenericDenseGemv : LinearPolicyId::GenericDenseGemm)
-              : (gemv ? LinearPolicyId::GenericLowbitGemv
-                      : LinearPolicyId::RowsplitLowbitGemmMultistep);
-    const LinearBackendKind backend =
-        dense ? LinearBackendKind::Reference : (gemv ? LinearBackendKind::Gemv
-                                                     : LinearBackendKind::Gemm);
-    return LinearPlan{ backend, policy, policy_name(policy), /*uses_tensor_cores=*/false };
+    // Dense keeps its reference GEMV/GEMM. Low-bit routes by regime: T1 -> generic GEMV
+    // (decode); SmallT -> multi-step GEMV (memory-bound, CUDA cores); LargeT -> bf16
+    // tensor-core mma GEMM (compute-bound). Registered families with no T1-only plan land
+    // here too (their T>1 goes to multi-step / mma).
+    if (key.format == LinearFormat::DenseBF16 || key.format == LinearFormat::DenseFP32) {
+        const bool           gemv   = (key.regime == LinearRegime::T1);
+        const LinearPolicyId policy =
+            gemv ? LinearPolicyId::GenericDenseGemv : LinearPolicyId::GenericDenseGemm;
+        return LinearPlan{LinearBackendKind::Reference, policy, policy_name(policy),
+                          /*uses_tensor_cores=*/false};
+    }
+    if (key.regime == LinearRegime::T1) {
+        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::GenericLowbitGemv,
+                          policy_name(LinearPolicyId::GenericLowbitGemv),
+                          /*uses_tensor_cores=*/false};
+    }
+    if (key.regime == LinearRegime::SmallT) {
+        return LinearPlan{LinearBackendKind::Gemm, LinearPolicyId::RowsplitLowbitGemmMultistep,
+                          policy_name(LinearPolicyId::RowsplitLowbitGemmMultistep),
+                          /*uses_tensor_cores=*/false};
+    }
+    return LinearPlan{LinearBackendKind::Gemm, LinearPolicyId::RowsplitLowbitGemmMma,
+                      policy_name(LinearPolicyId::RowsplitLowbitGemmMma),
+                      /*uses_tensor_cores=*/true};
 }
 
 const char* format_name(LinearFormat f) {
@@ -161,6 +172,8 @@ const char* policy_name(LinearPolicyId p) {
     case LinearPolicyId::GenericLowbitGemv: return "linear.ref.lowbit.gemv.generic.v1";
     case LinearPolicyId::RowsplitLowbitGemmMultistep:
         return "linear.rowsplit.gemm.multistep.v1";
+    case LinearPolicyId::RowsplitLowbitGemmMma:
+        return "linear.rowsplit.gemm.mma.bf16.v1";
     case LinearPolicyId::GenericDenseGemv:  return "linear.ref.dense.gemv.generic.v1";
     case LinearPolicyId::GenericDenseGemm:  return "linear.ref.dense.gemm.generic.v1";
     case LinearPolicyId::MlpGateUp34816Q4RowsplitGemv:
