@@ -296,12 +296,14 @@ evidence: [`../profiles/ncu-gqa-prefill/pp4096_perwarp_2cta_delta.md`](../profil
 
 Useful tensor-core efficiency (% of the 209.5 TFLOP/s bf16/FP32-accumulate peak), `qus_gqa_attention_bench`:
 
-| T | 512 | 1024 | 2048 | 4096 | 8192 | 16384 |
-|---|---:|---:|---:|---:|---:|---:|
-| TC % | 20.0 | 39.9 | 55.1 | 70.7 | **80.9** | **84.1** |
+| T | 512 | 1024 | 2048 | 4096 | 8192 | 16384 | 32768 | 65536 | 131072 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| TC % | 20.0 | 39.9 | 55.1 | 70.7 | 81.7 | 82.8 | 86.4 | 87.7 | **88.1** |
 
-Efficiency rises with context to a **~84% asymptote** — the practical fp32-accumulate tensor-pipe
-ceiling on sm_120. The `pp4096` target lands at **70.7%** (up from the 36.5% cooperative baseline);
+Efficiency rises with context to a **~88% asymptote** at 128k — the practical fp32-accumulate
+tensor-pipe ceiling on sm_120 (the residual ~12% is the irreducible softmax + one barrier per key
+block + epilogue). Every length from 8k up clears the 80% goal. The `pp4096` target lands at
+**70.7%** (up from the 36.5% cooperative baseline);
 it sits below the asymptote purely from finite-size overhead (per-CTA pipeline ramp + partial waves),
 not a structural flaw, and the long contexts where attention actually dominates prefill already clear
 80%. The kernel is tensor-pipe bound (ncu: "Tensor is the highest-utilized pipeline", 64.2%),
