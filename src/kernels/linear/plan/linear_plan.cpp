@@ -37,10 +37,15 @@ ShapeFamily classify_shape(std::int32_t n, std::int32_t k) {
     return ShapeFamily::Generic;
 }
 
-LinearRegime classify_regime(LinearFormat /*fmt*/, ShapeFamily /*shape*/, std::int32_t t) {
-    // Phase 1: no SmallT band yet. Activated when the first SmallT-specific plan lands; the
-    // threshold then becomes a tunable per (format, shape) per the framework spec §8.3.
-    return t == 1 ? LinearRegime::T1 : LinearRegime::LargeT;
+// SmallT -> LargeT crossover per (format, shape). Placeholder until the LargeT
+// tensor-core GEMM (P2) lands: SmallT and LargeT currently run the same multi-step
+// GEMV, so the split is latent and the value does not change behavior. It is kept
+// as the calibration surface for P2 (measured from the T-swept bench).
+std::int32_t regime_threshold(LinearFormat /*fmt*/, ShapeFamily /*shape*/) { return 64; }
+
+LinearRegime classify_regime(LinearFormat fmt, ShapeFamily shape, std::int32_t t) {
+    if (t <= 1) { return LinearRegime::T1; }
+    return t <= regime_threshold(fmt, shape) ? LinearRegime::SmallT : LinearRegime::LargeT;
 }
 
 LinearPlan resolve_plan(LinearPlanKey key) {
@@ -100,11 +105,15 @@ LinearPlan resolve_plan(LinearPlanKey key) {
                           policy_name(LinearPolicyId::Out6144Q5RowsplitGemv),
                           /*uses_tensor_cores=*/false};
     }
+    // T1 decode uses the generic GEMV; every T>1 (SmallT/LargeT) low-bit shape uses the
+    // multi-step GEMM (registered families that have no T1-only plan land here too). Dense
+    // keeps its reference GEMV/GEMM. uses_tensor_cores stays false until the P2 MMA GEMM.
     const bool dense = (key.format == LinearFormat::DenseBF16 || key.format == LinearFormat::DenseFP32);
     const bool gemv  = (key.regime == LinearRegime::T1);
     const LinearPolicyId policy =
-        dense ? (gemv ? LinearPolicyId::GenericDenseGemv  : LinearPolicyId::GenericDenseGemm)
-              : (gemv ? LinearPolicyId::GenericLowbitGemv : LinearPolicyId::GenericLowbitGemm);
+        dense ? (gemv ? LinearPolicyId::GenericDenseGemv : LinearPolicyId::GenericDenseGemm)
+              : (gemv ? LinearPolicyId::GenericLowbitGemv
+                      : LinearPolicyId::RowsplitLowbitGemmMultistep);
     const LinearBackendKind backend =
         dense ? LinearBackendKind::Reference : (gemv ? LinearBackendKind::Gemv
                                                      : LinearBackendKind::Gemm);
@@ -150,7 +159,8 @@ const char* regime_name(LinearRegime r) {
 const char* policy_name(LinearPolicyId p) {
     switch (p) {
     case LinearPolicyId::GenericLowbitGemv: return "linear.ref.lowbit.gemv.generic.v1";
-    case LinearPolicyId::GenericLowbitGemm: return "linear.ref.lowbit.gemm.generic.v1";
+    case LinearPolicyId::RowsplitLowbitGemmMultistep:
+        return "linear.rowsplit.gemm.multistep.v1";
     case LinearPolicyId::GenericDenseGemv:  return "linear.ref.dense.gemv.generic.v1";
     case LinearPolicyId::GenericDenseGemm:  return "linear.ref.dense.gemm.generic.v1";
     case LinearPolicyId::MlpGateUp34816Q4RowsplitGemv:

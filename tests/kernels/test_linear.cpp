@@ -472,6 +472,24 @@ int main() {
     }
     f += one_quant_shape(QType::Q6G64_F16S, 4096, 5120, {1, 7}, 31u);
 
+    // --- prefill (T>1) coverage of the multi-step GEMM path ---------------------
+    // The fp64 CPU golden is O(N*K*T), so large families run at small/medium T and
+    // the long-T (512, 2048) + tile-boundary cases run on small shapes.
+    f += one_quant_shape(QType::Q4G64_F16S, 34816, 5120, {2, 8, 64}, 61u);
+    f += one_quant_shape(QType::Q5G64_F16S, 5120, 17408, {2, 8, 64}, 67u);
+    // Real prefill projection shapes (unregistered families -> multi-step path).
+    f += one_quant_shape(QType::Q4G64_F16S, 17408, 5120, {2, 8, 64}, 71u);   // gate/up
+    f += one_quant_shape(QType::Q4G64_F16S, 2048, 5120, {2, 8, 64, 512}, 73u); // gdn in_q/in_k
+    f += one_quant_shape(QType::Q4G64_F16S, 1024, 5120, {2, 9, 512}, 79u);   // k/v proj
+    f += one_quant_shape(QType::Q5G64_F16S, 6144, 5120, {2, 8, 64, 512}, 83u); // q/gate/in_v/in_z
+    f += one_quant_shape(QType::Q5G64_F16S, 5120, 6144, {2, 8, 64, 512}, 89u); // o/out proj
+    f += one_quant_shape(QType::Q6G64_F16S, 4096, 5120, {2, 8, 64}, 131u);
+    // Long T + column-tile boundary (kTt=8) + unaligned N/K on small shapes.
+    f += one_quant_shape(QType::Q4G64_F16S, 256, 256, {512, 2048}, 91u);
+    f += one_quant_shape(QType::Q5G64_F16S, 130, 256, {7, 8, 9, 65, 2048}, 93u);
+    f += one_quant_shape(QType::Q6G64_F16S, 192, 320, {7, 9, 63, 64, 65}, 97u);
+    f += one_quant_shape(QType::Q4G64_F16S, 320, 384, {2, 33, 513}, 99u, 8.0f, 1.25f, "stress");
+
     std::cout << (f ? "FAIL" : "OK") << " linear correctness\n";
     return f ? 1 : 0;
 }

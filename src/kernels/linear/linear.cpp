@@ -292,8 +292,8 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
     case detail::LinearPolicyId::GenericLowbitGemv:
         detail::linear_generic_lowbit_gemv_launch(x, w, out, fmt, stream);
         break;
-    case detail::LinearPolicyId::GenericLowbitGemm:
-        detail::linear_generic_lowbit_gemm_launch(x, w, out, fmt, stream);
+    case detail::LinearPolicyId::RowsplitLowbitGemmMultistep:
+        detail::linear_rowsplit_gemm_multistep_launch(x, w, out, fmt, stream);
         break;
     case detail::LinearPolicyId::GenericDenseGemv: {
         const Tensor dense = as_dense(w);

@@ -101,6 +101,7 @@ struct Options {
     std::uint64_t flush_bytes        = kDefaultFlushBytes;
     std::uint64_t copy_bytes         = kDefaultCopyBytes;
     double        stream_ceiling_gbs = 0.0;
+    std::vector<int> t_sweep;   // activation columns to sweep; empty => default set
     std::string   csv_out;
 };
 
@@ -127,6 +128,7 @@ struct RunResult {
     const char*   qtype_name          = "";
     std::int32_t  n                   = 0;
     std::int32_t  k                   = 0;
+    std::int32_t  t                   = 1;
     std::uint64_t weight_payload_bytes = 0;
     std::uint64_t x_bytes             = 0;
     std::uint64_t out_bytes           = 0;
@@ -134,8 +136,12 @@ struct RunResult {
     double        cold_median_us      = 0.0;
     double        cold_min_us         = 0.0;
     double        cold_p95_us         = 0.0;
+    double        warm_median_us      = 0.0;
     double        achieved_gbs        = 0.0;
     double        achieved_dram_pct   = 0.0;
+    double        achieved_tflops     = 0.0;
+    double        tc_ceiling_tflops   = 0.0;
+    double        tc_pct              = 0.0;
     double        stream_ceiling_gbs  = 0.0;
     double        roofline_us         = 0.0;
     int           repeat              = 0;
@@ -170,6 +176,38 @@ __global__ void stream_copy_kernel(const uint4* src, uint4* dst, std::uint64_t w
     for (std::uint64_t i = start; i < words; i += stride) {
         dst[i] = src[i];
     }
+}
+
+// Dense bf16 mma.sync (m16n8k16) throughput probe: pure tensor-core FLOPs, no
+// memory traffic. Used as the *measured* compute roofline for the T-sweep, the
+// TC analogue of the stream-copy bandwidth ceiling (we do not quote a datasheet
+// number). NACC independent accumulator chains supply the ILP to approach peak.
+template <int NACC>
+__global__ void tc_peak_kernel(float* sink, int iters) {
+    const unsigned a0 = 0x3f803f80u, a1 = 0x3f803f80u, a2 = 0x3f803f80u, a3 = 0x3f803f80u;
+    const unsigned b0 = 0x3f803f80u, b1 = 0x3f803f80u; // bf16 1.0 packed pairs
+    float          c[NACC][4];
+#pragma unroll
+    for (int n = 0; n < NACC; ++n) {
+        c[n][0] = 0.0f;
+        c[n][1] = 0.0f;
+        c[n][2] = 0.0f;
+        c[n][3] = 0.0f;
+    }
+    for (int i = 0; i < iters; ++i) {
+#pragma unroll
+        for (int n = 0; n < NACC; ++n) {
+            asm volatile(
+                "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                : "+f"(c[n][0]), "+f"(c[n][1]), "+f"(c[n][2]), "+f"(c[n][3])
+                : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
+        }
+    }
+    float s = 0.0f;
+#pragma unroll
+    for (int n = 0; n < NACC; ++n) { s += c[n][0] + c[n][1] + c[n][2] + c[n][3]; }
+    sink[blockIdx.x * blockDim.x + threadIdx.x] = s; // force the chain to be live
 }
 
 std::uint64_t align_up_u64(std::uint64_t value, std::uint64_t align) {
@@ -249,6 +287,26 @@ int parse_int(std::string_view raw, const char* label) {
     return static_cast<int>(value);
 }
 
+std::vector<int> parse_int_list(std::string_view raw) {
+    std::vector<int>  out;
+    const std::string s(raw);
+    std::size_t       pos = 0;
+    while (pos <= s.size()) {
+        const std::size_t comma = s.find(',', pos);
+        const std::string tok =
+            s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        if (!tok.empty()) {
+            const int v = parse_int(tok, "t-sweep");
+            if (v <= 0) { throw std::invalid_argument("--t-sweep values must be positive"); }
+            out.push_back(v);
+        }
+        if (comma == std::string::npos) { break; }
+        pos = comma + 1;
+    }
+    if (out.empty()) { throw std::invalid_argument("--t-sweep must list at least one value"); }
+    return out;
+}
+
 double parse_double(std::string_view raw, const char* label) {
     char*      end = nullptr;
     const auto str = std::string(raw);
@@ -275,6 +333,8 @@ void usage(const char* argv0) {
                  "  --flush-mib N              L2 flush buffer size in MiB (default 256).\n"
                  "  --copy-mib N               Copy-ceiling buffer size in MiB (default 512).\n"
                  "  --stream-ceiling-gbs X     Use a premeasured copy ceiling instead of measuring it.\n"
+                 "  --t-sweep L                Comma list of activation columns T, e.g. 1,8,64,512\n"
+                 "                             (default 1,2,4,8,16,32,64,128,256,512,1024,2048).\n"
                  "  --csv-out PATH             Write the result table as CSV.\n",
                  argv0, argv0, kDefaultWarmup, kDefaultRepeat, kDefaultCopyRepeat);
 }
@@ -309,6 +369,8 @@ Options parse_args(int argc, char** argv) {
             opt.copy_bytes = parse_u64(next("copy-mib"), "copy-mib") << 20;
         } else if (arg == "--stream-ceiling-gbs") {
             opt.stream_ceiling_gbs = parse_double(next("stream-ceiling-gbs"), "stream-ceiling-gbs");
+        } else if (arg == "--t-sweep") {
+            opt.t_sweep = parse_int_list(next("t-sweep"));
         } else if (arg == "--csv-out") {
             opt.csv_out = next("csv-out path");
         } else if (arg == "--help" || arg == "-h") {
@@ -328,6 +390,9 @@ Options parse_args(int argc, char** argv) {
     if (opt.flush_bytes == 0) { throw std::invalid_argument("--flush-mib must be positive"); }
     if (opt.copy_bytes == 0 || (opt.copy_bytes % sizeof(uint4)) != 0) {
         throw std::invalid_argument("--copy-mib must produce a positive uint4-aligned byte count");
+    }
+    if (opt.t_sweep.empty()) {
+        opt.t_sweep = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048};
     }
     return opt;
 }
@@ -383,6 +448,82 @@ TimingStats measure_cold(Launch&& launch, DeviceBuffer& flush, cudaStream_t stre
     stats.p95_us    = sorted[std::min(sorted.size() - 1, static_cast<std::size_t>(0.95 * sorted.size()))];
     stats.mean_us   = sum / static_cast<double>(samples.size());
     return stats;
+}
+
+// Warm (no L2 flush between samples): diagnostic for intra-call L2 reuse across
+// T-tiles. For weights larger than L2 this converges to the cold number.
+template <class Launch>
+TimingStats measure_warm(Launch&& launch, cudaStream_t stream, int warmup, int repeat) {
+    cudaEvent_t start = nullptr;
+    cudaEvent_t stop  = nullptr;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+
+    for (int i = 0; i < warmup; ++i) { launch(stream); }
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    std::vector<double> samples;
+    samples.reserve(static_cast<std::size_t>(repeat));
+    for (int i = 0; i < repeat; ++i) {
+        CUDA_CHECK(cudaEventRecord(start, stream));
+        launch(stream);
+        CUDA_CHECK(cudaEventRecord(stop, stream));
+        CUDA_CHECK(cudaEventSynchronize(stop));
+        float ms = 0.0f;
+        CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+        samples.push_back(static_cast<double>(ms) * 1000.0);
+    }
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
+
+    std::vector<double> sorted = samples;
+    std::sort(sorted.begin(), sorted.end());
+    double sum = 0.0;
+    for (double sample : samples) { sum += sample; }
+
+    TimingStats stats;
+    stats.samples   = static_cast<int>(samples.size());
+    stats.median_us = sorted[sorted.size() / 2];
+    stats.min_us    = sorted.front();
+    stats.p95_us    = sorted[std::min(sorted.size() - 1, static_cast<std::size_t>(0.95 * sorted.size()))];
+    stats.mean_us   = sum / static_cast<double>(samples.size());
+    return stats;
+}
+
+double measure_tc_ceiling_tflops(cudaStream_t stream) {
+    constexpr int kGrid  = 1024;
+    constexpr int kBlock = 256;
+    constexpr int kWarps = kBlock / 32;
+    constexpr int kNacc  = 8;
+    constexpr int kIters = 4096;
+    DeviceBuffer  sink(static_cast<std::uint64_t>(kGrid) * kBlock * sizeof(float));
+
+    tc_peak_kernel<kNacc><<<kGrid, kBlock, 0, stream>>>(static_cast<float*>(sink.p), kIters);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    cudaEvent_t start = nullptr;
+    cudaEvent_t stop  = nullptr;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    double best_ms = 1e30;
+    for (int rep = 0; rep < 5; ++rep) {
+        CUDA_CHECK(cudaEventRecord(start, stream));
+        tc_peak_kernel<kNacc><<<kGrid, kBlock, 0, stream>>>(static_cast<float*>(sink.p), kIters);
+        CUDA_CHECK(cudaEventRecord(stop, stream));
+        CUDA_CHECK(cudaEventSynchronize(stop));
+        float ms = 0.0f;
+        CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+        best_ms = std::min(best_ms, static_cast<double>(ms));
+    }
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
+
+    // 2*M*N*K flops per mma (m16n8k16), per warp per accumulator per iteration.
+    const double flops = static_cast<double>(kGrid) * kWarps * kNacc * kIters * 2.0 * 16.0 *
+                         8.0 * 16.0;
+    const double sec = best_ms * 1e-3;
+    return sec > 0.0 ? flops / sec / 1e12 : 0.0;
 }
 
 double measure_stream_copy_ceiling_gbs(std::uint64_t copy_bytes, int repeat, DeviceBuffer& flush,
@@ -480,69 +621,83 @@ Weight make_weight(const RowSplitPayload& payload, QType qtype, std::int32_t n, 
 }
 
 RunResult run_target(const TargetSpec& target, const Options& opt, double stream_ceiling_gbs,
-                     DeviceBuffer& flush, cudaStream_t stream) {
-    const ShapeSpec& shape = target.shape;
-    DeviceBuffer     x     = make_bf16_device(static_cast<std::uint64_t>(shape.k));
-    RowSplitPayload  wbuf  = make_row_split_payload(target.qtype, shape.n, shape.k, stream);
-    DeviceBuffer     out(static_cast<std::uint64_t>(shape.n) * 2ULL);
+                     double tc_ceiling_tflops, std::int32_t t, DeviceBuffer& flush,
+                     cudaStream_t stream) {
+    const ShapeSpec&   shape = target.shape;
+    const std::uint64_t tt   = static_cast<std::uint64_t>(t);
+    DeviceBuffer       x     = make_bf16_device(static_cast<std::uint64_t>(shape.k) * tt);
+    RowSplitPayload    wbuf  = make_row_split_payload(target.qtype, shape.n, shape.k, stream);
+    DeviceBuffer       out(static_cast<std::uint64_t>(shape.n) * tt * 2ULL);
     CUDA_CHECK(cudaMemsetAsync(out.p, 0, out.bytes, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
-    Tensor tx(x.p, DType::BF16, {shape.k, 1});
-    Tensor tout(out.p, DType::BF16, {shape.n, 1});
+    Tensor tx(x.p, DType::BF16, {shape.k, t});
+    Tensor tout(out.p, DType::BF16, {shape.n, t});
     Weight w = make_weight(wbuf, target.qtype, shape.n, shape.k);
     WorkspaceArena ws(64ULL << 20);
 
-    const TimingStats stats = measure_cold(
-        [&](cudaStream_t s) { kernels::linear(tx, w, tout, ws, s); }, flush, stream, opt.warmup,
-        opt.repeat);
+    const auto launch = [&](cudaStream_t s) { kernels::linear(tx, w, tout, ws, s); };
+    const TimingStats cold = measure_cold(launch, flush, stream, opt.warmup, opt.repeat);
+    const TimingStats warm = measure_warm(launch, stream, opt.warmup, opt.repeat);
 
-    const std::uint64_t x_bytes        = static_cast<std::uint64_t>(shape.k) * 2ULL;
-    const std::uint64_t out_bytes      = static_cast<std::uint64_t>(shape.n) * 2ULL;
+    const std::uint64_t x_bytes        = static_cast<std::uint64_t>(shape.k) * tt * 2ULL;
+    const std::uint64_t out_bytes      = static_cast<std::uint64_t>(shape.n) * tt * 2ULL;
     const std::uint64_t bytes_streamed = w.payload_bytes + x_bytes + out_bytes;
-    const double        sec            = stats.median_us * 1e-6;
+    const double        sec            = cold.median_us * 1e-6;
     const double        achieved_gbs =
         sec > 0.0 ? static_cast<double>(bytes_streamed) / sec / 1e9 : 0.0;
     const double achieved_dram_pct =
         stream_ceiling_gbs > 0.0 ? achieved_gbs / stream_ceiling_gbs * 100.0 : 0.0;
+    const double flops = 2.0 * static_cast<double>(shape.n) * static_cast<double>(shape.k) *
+                         static_cast<double>(t);
+    const double achieved_tflops = sec > 0.0 ? flops / sec / 1e12 : 0.0;
+    const double tc_pct = tc_ceiling_tflops > 0.0 ? achieved_tflops / tc_ceiling_tflops * 100.0 : 0.0;
     const double roofline_us =
         stream_ceiling_gbs > 0.0
             ? static_cast<double>(bytes_streamed) / (stream_ceiling_gbs * 1e9) * 1e6
             : 0.0;
 
-    return RunResult{shape.name,
-                     qtype_name(target.qtype),
-                     shape.n,
-                     shape.k,
-                     w.payload_bytes,
-                     x_bytes,
-                     out_bytes,
-                     bytes_streamed,
-                     stats.median_us,
-                     stats.min_us,
-                     stats.p95_us,
-                     achieved_gbs,
-                     achieved_dram_pct,
-                     stream_ceiling_gbs,
-                     roofline_us,
-                     opt.repeat,
-                     opt.warmup,
-                     opt.flush_bytes};
+    RunResult r;
+    r.shape_name           = shape.name;
+    r.qtype_name           = qtype_name(target.qtype);
+    r.n                    = shape.n;
+    r.k                    = shape.k;
+    r.t                    = t;
+    r.weight_payload_bytes = w.payload_bytes;
+    r.x_bytes              = x_bytes;
+    r.out_bytes            = out_bytes;
+    r.bytes_streamed       = bytes_streamed;
+    r.cold_median_us       = cold.median_us;
+    r.cold_min_us          = cold.min_us;
+    r.cold_p95_us          = cold.p95_us;
+    r.warm_median_us       = warm.median_us;
+    r.achieved_gbs         = achieved_gbs;
+    r.achieved_dram_pct    = achieved_dram_pct;
+    r.achieved_tflops      = achieved_tflops;
+    r.tc_ceiling_tflops    = tc_ceiling_tflops;
+    r.tc_pct               = tc_pct;
+    r.stream_ceiling_gbs   = stream_ceiling_gbs;
+    r.roofline_us          = roofline_us;
+    r.repeat               = opt.repeat;
+    r.warmup               = opt.warmup;
+    r.flush_bytes          = opt.flush_bytes;
+    return r;
 }
 
 void print_table(const std::vector<RunResult>& rows, double stream_ceiling_gbs,
-                 std::uint64_t copy_bytes) {
-    std::printf("# stream_ceiling_gbs=%.3f\n", stream_ceiling_gbs);
+                 double tc_ceiling_tflops, std::uint64_t copy_bytes) {
+    std::printf("# stream_ceiling_gbs=%.3f tc_ceiling_tflops=%.3f\n", stream_ceiling_gbs,
+                tc_ceiling_tflops);
     std::printf("# stream_ceiling_method=cold L2-flushed uint4 copy kernel, bytes_per_sample=%llu "
-                "(read+write counted as 2x copy bytes)\n",
+                "(read+write counted as 2x copy bytes); "
+                "tc_ceiling_method=dense bf16 mma.sync m16n8k16 probe\n",
                 static_cast<unsigned long long>(copy_bytes));
-    std::printf("%-24s %-3s %8s %8s %15s %12s %12s %9s %10s\n", "shape", "qt", "N", "K",
-                "bytes_streamed", "cold_us", "ach_GB/s", "DRAM_%", "roof_us");
+    std::printf("%-22s %-3s %8s %8s %6s %12s %11s %7s %11s %7s %12s\n", "shape", "qt", "N", "K",
+                "T", "cold_us", "ach_GB/s", "DRAM_%", "ach_TFLOP", "TC_%", "warm_us");
     for (const RunResult& r : rows) {
-        std::printf("%-24s %-3s %8d %8d %15llu %12.3f %12.3f %9.3f %10.3f\n",
-                    r.shape_name, r.qtype_name, r.n, r.k,
-                    static_cast<unsigned long long>(r.bytes_streamed), r.cold_median_us,
-                    r.achieved_gbs, r.achieved_dram_pct, r.roofline_us);
+        std::printf("%-22s %-3s %8d %8d %6d %12.3f %11.3f %7.2f %11.2f %7.2f %12.3f\n",
+                    r.shape_name, r.qtype_name, r.n, r.k, r.t, r.cold_median_us, r.achieved_gbs,
+                    r.achieved_dram_pct, r.achieved_tflops, r.tc_pct, r.warm_median_us);
     }
 }
 
@@ -550,16 +705,21 @@ void write_csv(const std::filesystem::path& path, const std::vector<RunResult>& 
     if (path.has_parent_path()) { std::filesystem::create_directories(path.parent_path()); }
     std::ofstream out(path);
     if (!out) { throw std::runtime_error("failed to open CSV output: " + path.string()); }
+    // Existing columns are kept in place; the T-sweep + compute-roofline columns are
+    // appended so downstream parsers that read by name (or the leading columns) are
+    // unaffected. Each row is now one (shape, qtype, T) point.
     out << "shape,qtype,N,K,weight_payload_bytes,x_bytes,out_bytes,bytes_streamed,"
            "cold_median_us,cold_min_us,cold_p95_us,achieved_gbs,achieved_dram_pct,"
-           "stream_ceiling_gbs,roofline_us,warmup,repeat,flush_bytes\n";
+           "stream_ceiling_gbs,roofline_us,warmup,repeat,flush_bytes,"
+           "T,achieved_tflops,tc_ceiling_tflops,tc_pct,warm_median_us\n";
     for (const RunResult& r : rows) {
         out << r.shape_name << ',' << r.qtype_name << ',' << r.n << ',' << r.k << ','
             << r.weight_payload_bytes << ',' << r.x_bytes << ',' << r.out_bytes << ','
             << r.bytes_streamed << ',' << r.cold_median_us << ',' << r.cold_min_us << ','
             << r.cold_p95_us << ',' << r.achieved_gbs << ',' << r.achieved_dram_pct << ','
             << r.stream_ceiling_gbs << ',' << r.roofline_us << ',' << r.warmup << ','
-            << r.repeat << ',' << r.flush_bytes << '\n';
+            << r.repeat << ',' << r.flush_bytes << ',' << r.t << ',' << r.achieved_tflops << ','
+            << r.tc_ceiling_tflops << ',' << r.tc_pct << ',' << r.warm_median_us << '\n';
     }
 }
 
@@ -584,6 +744,7 @@ int main(int argc, char** argv) {
             stream_ceiling_gbs =
                 measure_stream_copy_ceiling_gbs(opt.copy_bytes, opt.copy_repeat, flush, stream);
         }
+        const double tc_ceiling_tflops = measure_tc_ceiling_tflops(stream);
 
         std::vector<TargetSpec> targets;
         if (opt.all_targets) {
@@ -593,12 +754,15 @@ int main(int argc, char** argv) {
         }
 
         std::vector<RunResult> rows;
-        rows.reserve(targets.size());
+        rows.reserve(targets.size() * opt.t_sweep.size());
         for (const TargetSpec& target : targets) {
-            rows.push_back(run_target(target, opt, stream_ceiling_gbs, flush, stream));
+            for (int t : opt.t_sweep) {
+                rows.push_back(run_target(target, opt, stream_ceiling_gbs, tc_ceiling_tflops, t,
+                                          flush, stream));
+            }
         }
 
-        print_table(rows, stream_ceiling_gbs, opt.copy_bytes);
+        print_table(rows, stream_ceiling_gbs, tc_ceiling_tflops, opt.copy_bytes);
         if (!opt.csv_out.empty()) { write_csv(opt.csv_out, rows); }
 
         CUDA_CHECK(cudaStreamDestroy(stream));
