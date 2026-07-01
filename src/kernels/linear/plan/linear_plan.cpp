@@ -37,11 +37,13 @@ ShapeFamily classify_shape(std::int32_t n, std::int32_t k) {
     return ShapeFamily::Generic;
 }
 
-// SmallT -> LargeT crossover per (format, shape). Placeholder until the LargeT
-// tensor-core GEMM (P2) lands: SmallT and LargeT currently run the same multi-step
-// GEMV, so the split is latent and the value does not change behavior. It is kept
-// as the calibration surface for P2 (measured from the T-swept bench).
-std::int32_t regime_threshold(LinearFormat /*fmt*/, ShapeFamily /*shape*/) { return 64; }
+// SmallT -> LargeT crossover per (format, shape). Calibrated from the T-swept
+// bench (profiles/prefill-linear-foundation/baseline_p2.csv): the cp.async
+// tensor-core GEMM overtakes the multi-step GEMV around T~16 on every shape (at
+// T<=8 its BN-wide token tile is mostly empty, so the GEMV is faster; from T=32
+// it is ~3-6x faster and keeps climbing to ~65-74% of the bf16 mma ceiling). So
+// route T<=16 to the multi-step GEMV and T>16 to the mma GEMM.
+std::int32_t regime_threshold(LinearFormat /*fmt*/, ShapeFamily /*shape*/) { return 16; }
 
 LinearRegime classify_regime(LinearFormat fmt, ShapeFamily shape, std::int32_t t) {
     if (t <= 1) { return LinearRegime::T1; }

@@ -107,13 +107,19 @@ regime (`linear_rowsplit_gemm_mma.{cuh,cu}`, `RowsplitLowbitGemmMma`, `uses_tens
   `rel_l2` (which is identical, ~2e-3, to the fp32 multi-step path) rather than a per-element
   worst-case cap that mis-fires on near-zero cancellation outputs. bf16 (not tf32) is kept because,
   under the correct criterion, it passes and is ~2x faster. compute-sanitizer clean.
-- **Perf status (honest).** The current kernel is *correctness-first*: it assembles mma fragments
-  from per-element global loads (no shared staging / ldmatrix / cp.async), so it is **latency-bound**
-  (~3.5-5.6% of the TC ceiling, ~0.5% of DRAM BW) and currently **perf-neutral vs the multi-step
-  kernel** (e.g. T=512 MlpGateUp: 11.5 vs 11.6 TFLOP/s; e2e 705-tok prefill 3.72 -> 3.74 s). The
-  tensor cores are starved by scattered weight loads.
-- **Remaining work (the roofline pushdown).** To realize the TC speedup: stage the quantized weight
-  planes + x into shared with coalesced/cp.async loads, dequant once per K-tile into a shared bf16
-  tile reused across a large token tile, and feed the mma via `ldmatrix` (reuse the
-  `gdn_common.cuh` helpers). Then tune tile shapes with ncu toward the >=50% bar and recalibrate
-  `tau` from the bench (currently `tau=64`, and LargeT->mma is perf-neutral until this lands).
+- **Perf status (done, ncu-driven).** The correctness-first kernel was rebuilt into a tiled GEMM
+  behind a compile-time `GemmCfg<BM,BN,BK,WM,WN,STAGES,MIN_BLOCKS>` (default `64x128x64/32x32`,
+  `STAGES=2`). The pushdown, in the order ncu evidence dictated: (1) warp-per-row **coalesced**
+  dequant (fixed 87% excessive global sectors); (2) **`ldmatrix`** A/B fragments + an XOR **swizzle**
+  of the shared bf16 tiles (fixed 83% excessive shared wavefronts / bank conflicts); (3) occupancy
+  via `__launch_bounds__` min-blocks; (4) a **`cp.async` double-buffered** mainloop that prefetches
+  the next K-tile's raw quant + x while the current tile dequants + multiplies (this was the big one:
+  it removed the dominant global-load `long_scoreboard` stall). Result on the measured ~220 TFLOP/s
+  bf16 `mma.sync` ceiling: **T=512 -> Q4 gate/up 68.2%, Q5 mlp_down 65.9%, Q5 out 62.8%, Q6 lm_head
+  60.2%; T=2048 -> 65-74% on every dominant shape** (from ~10-14% for the correctness-first kernel).
+  The binding limiter is now the tensor/issue pipe (ncu SM SOL ~65%, DRAM ~8%, occupancy ~32% -- the
+  pipeline hides latency at low occupancy), i.e. compute-bound as intended.
+- **e2e + `tau`.** `tau` recalibrated 64 -> 16 (mma overtakes the multi-step GEMV at T~16). e2e
+  prefill on a 7932-token prompt (`long_2k`): **54.6 s -> 13.7 s (~4x), 145 -> 576 prompt tok/s**
+  (multi-step vs mma, same prompt; attention/GDN unchanged). `qus_linear_test` (`linear_tc`) green,
+  `compute-sanitizer memcheck` + `racecheck` clean. Details: [`plans/2026-07-01-prefill-tc-gemm.md`](plans/2026-07-01-prefill-tc-gemm.md).

@@ -1,6 +1,7 @@
 # Prefill Tensor-Core GEMM (P2) — implementation plan
 
-> Status: partially executed 2026-07-01. Design: [`../2026-07-01-prefill-linear-foundation-design.md`](../2026-07-01-prefill-linear-foundation-design.md) §7.
+> Status: executed 2026-07-01 (ncu-driven roofline pushdown complete). Design:
+> [`../2026-07-01-prefill-linear-foundation-design.md`](../2026-07-01-prefill-linear-foundation-design.md) §7.
 
 ## Goal
 
@@ -24,24 +25,32 @@ Single-agent, direct sequential; strict review for this high-risk CUDA/numerical
     `mma.sync.aligned.m16n8k16` GEMM with on-chip low-bit dequant (identical `Codec::load_pair`
     math), fp32 accumulate, N/T/K tails.
   - Seam: `RowsplitLowbitGemmMma` policy (`uses_tensor_cores=true`); `resolve_plan` routes low-bit
-    LargeT (`T>tau`, `tau=64`) to it; SmallT stays multi-step; decode/dense unchanged.
+    LargeT (`T>tau`, `tau=16`) to it; SmallT stays multi-step; decode/dense unchanged.
   - Numerics methodology: `Tolerance::linear_tc` normwise (`rel_l2<=4e-3`) parity preset for the TC
     path, documented in [`../l1-op-test-standard.md`](../l1-op-test-standard.md) §1.3. Full
-    `qus_linear_test` prefill matrix green; `compute-sanitizer memcheck` clean.
-- **Not yet met: the perf bar.** The current kernel is correctness-first (per-element global loads,
-  no shared staging / ldmatrix / cp.async), so it is latency-bound (~3.5-5.6% of the TC ceiling) and
-  perf-neutral vs the multi-step kernel; e2e 705-tok prefill 3.72 -> 3.74 s (no regression, no gain).
+    `qus_linear_test` prefill matrix green; `compute-sanitizer memcheck` + `racecheck` clean.
+- **Perf bar met (ncu-driven pushdown).** The correctness-first kernel was rebuilt into a tiled GEMM
+  behind a compile-time `GemmCfg<BM,BN,BK,WM,WN,STAGES,MIN_BLOCKS>` (default `64x128x64/32x32`,
+  `STAGES=2`): warp-per-row coalesced dequant into a swizzled shared bf16 tile, `ldmatrix` A/B
+  fragments, register-double-buffered mma, and a `cp.async` double-buffered mainloop that prefetches
+  the next K-tile's raw quant + x while the current tile computes. On the measured ~220 TFLOP/s bf16
+  `mma.sync` ceiling this reaches **68.2% (Q4 gate/up) and 65.9% (Q5 mlp_down) at T=512, and
+  65-74% across every dominant shape at T=2048** (from ~10-14% for the correctness-first kernel).
+  The binding limiter is now the tensor/issue pipe (ncu SM SOL ~65%, DRAM ~8%, achieved occupancy
+  ~32% -- the software pipeline hides latency at low occupancy), i.e. compute-bound as intended.
 
-## Remaining work (roofline pushdown)
+## Result (roofline pushdown, done)
 
-1. Stage quantized weight planes + x into shared with coalesced/cp.async loads; dequant once per
-   K-tile into a shared bf16 tile reused across a large token tile; feed mma via `ldmatrix`
-   (`gdn_common.cuh` helpers).
-2. ncu-tune tile shapes / pipeline depth / swizzle toward `>=50%` of the measured TC ceiling on the
-   dominant shapes (Q4 gate/up 17408x5120, Q5 proj/out/down); recalibrate `tau` from the T-swept
-   bench; refresh `profiles/prefill-linear-foundation/baseline_p2.csv`; re-measure e2e prefill.
-3. Strict review of fragment/ldmatrix correctness, dequant-into-shared, tails, shared/cp.async
-   lifetime.
+- Kernel: [`../../src/kernels/linear/gemm/linear_rowsplit_gemm_mma.cuh`](../../src/kernels/linear/gemm/linear_rowsplit_gemm_mma.cuh)
+  (cp.async pipeline + `ldmatrix` + XOR swizzle + coalesced dequant), launcher config table +
+  `QUS_GEMM_CFG` sweep override.
+- `tau` recalibrated 64 -> 16 from the T-swept bench: the mma GEMM overtakes the multi-step GEMV at
+  T~16 (T<=8 its BN-wide token tile is mostly empty; from T=32 it is ~3-6x faster). Baseline refreshed
+  at `profiles/prefill-linear-foundation/baseline_p2.csv` (`baseline_p2_pre.csv` = before).
+- e2e prefill (long_2k, 7932 prompt tokens): **54.6 s -> 13.7 s (~4x), 145 -> 576 prompt tok/s**
+  (multi-step vs mma on the same prompt; attention/GDN are unchanged and grow with T at 7932).
+- Correctness: `qus_linear_test` (LargeT judged by `linear_tc`) green; `compute-sanitizer memcheck`
+  and `racecheck` clean.
 
 ## Verification commands
 
@@ -49,5 +58,8 @@ Single-agent, direct sequential; strict review for this high-risk CUDA/numerical
 cmake --build build -j
 ./build/tests/qus_linear_test
 compute-sanitizer --tool memcheck ./build/tests/qus_linear_test
+compute-sanitizer --tool racecheck ./build/bench/qus_linear_op_bench --shape GdnInQK4096x5120 --qtype Q4 --t-sweep 128 --warmup 0 --repeat 1 --copy-repeat 1
 ./build/bench/qus_linear_op_bench --t-sweep 1,8,64,128,512,2048 --csv-out profiles/prefill-linear-foundation/baseline_p2.csv
+# e2e prefill (LargeT): mma vs the pre-P2 multi-step path on the same 7932-tok prompt
+./build/bench/qus_e2e_bench --weights out/qwen3_6_27b.q5090_w4g64_mixed_v3.qus --output-json profiles/prefill-linear-foundation/e2e_long_p2_after.json --case long_2k:bench/fixtures/prompts/long_2k.ids:1 --max-ctx 8192 --warmup-repeats 1 --repeats 3
 ```

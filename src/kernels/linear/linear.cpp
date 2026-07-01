@@ -283,10 +283,18 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
     }
 
     // --- classify + dispatch (M3 framework) ---
-    const detail::LinearFormat fmt    = detail::classify_format(w);
-    const detail::ShapeFamily  shape  = detail::classify_shape(w.n, w.k);
-    const detail::LinearRegime regime = detail::classify_regime(fmt, shape, x.ne[1]);
-    const detail::LinearPlan   plan   = detail::resolve_plan(detail::LinearPlanKey{fmt, shape, regime});
+    const detail::LinearFormat fmt   = detail::classify_format(w);
+    const detail::ShapeFamily  shape = detail::classify_shape(w.n, w.k);
+    detail::LinearRegime       regime = detail::classify_regime(fmt, shape, x.ne[1]);
+    // The LargeT bf16 tensor-core mma GEMM streams x with 16B cp.async (8 bf16 per
+    // token row), which requires k % 8 == 0 (else the per-token base k*col is not
+    // 16-byte aligned and the last k%8 elements would be dropped). Every Qwen3.6
+    // shape has k a multiple of 128; for any other k, fall back to the multi-step
+    // GEMV, which is correct for all k.
+    if (regime == detail::LinearRegime::LargeT && (w.k % 8) != 0) {
+        regime = detail::LinearRegime::SmallT;
+    }
+    const detail::LinearPlan plan = detail::resolve_plan(detail::LinearPlanKey{fmt, shape, regime});
 
     switch (plan.policy) {
     case detail::LinearPolicyId::GenericLowbitGemv:

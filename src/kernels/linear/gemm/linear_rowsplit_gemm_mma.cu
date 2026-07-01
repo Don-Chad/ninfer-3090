@@ -7,21 +7,58 @@
 #include "qus/core/device.h"                          // CUDA_CHECK
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
+#include <string_view>
 
 namespace qus::kernels::detail {
 namespace {
 
-constexpr int kWarpsPerBlock = 8;
-constexpr int kColTiles      = 8;               // tokens per block tile = 8 * kColTiles
-constexpr int kBlockThreads  = kWarpsPerBlock * 32;
-constexpr int kBM            = kWarpsPerBlock * 16; // output rows per block
-constexpr int kBT            = kColTiles * 8;        // output tokens per block
-
 int ceil_div(int a, int b) { return (a + b - 1) / b; }
+
+template <class Codec, class Cfg>
+void launch_cfg(const __nv_bfloat16* xp, const std::uint8_t* codes, const std::uint8_t* high,
+                const std::uint8_t* scales, __nv_bfloat16* outp, std::int32_t n, std::int32_t k,
+                std::int32_t t, std::int32_t padded_k, cudaStream_t stream) {
+    const dim3 grid(static_cast<unsigned>(ceil_div(n, Cfg::BM)),
+                    static_cast<unsigned>(ceil_div(t, Cfg::BN)), 1u);
+    linear_rowsplit_gemm_mma_kernel<Codec, Cfg>
+        <<<grid, Cfg::THREADS, 0, stream>>>(xp, codes, high, scales, outp, n, k, t, padded_k);
+}
+
+// QUS_GEMM_CFG selects a compiled tile config for ncu sweeps. Tag = "BMxBNxWMxWN"
+// (BK is fixed to 64). Unset / unknown -> the default. Add candidates here as the
+// tuning loop needs them.
+template <class Codec>
+void dispatch_codec(const __nv_bfloat16* xp, const std::uint8_t* codes, const std::uint8_t* high,
+                    const std::uint8_t* scales, __nv_bfloat16* outp, std::int32_t n, std::int32_t k,
+                    std::int32_t t, std::int32_t padded_k, cudaStream_t stream) {
+    const char*            env = std::getenv("QUS_GEMM_CFG");
+    const std::string_view tag = env ? std::string_view(env) : std::string_view();
+
+    // Tag = "BMxBNxWMxWN" (BK 64). All configs are cp.async double-buffered
+    // (STAGES=2); the trailing GemmCfg arg is __launch_bounds__ min blocks/SM.
+    if (tag == "64x64x32x32") {
+        launch_cfg<Codec, GemmCfg<64, 64, 64, 32, 32, 2, 3>>(xp, codes, high, scales, outp, n, k, t, padded_k, stream);
+    } else if (tag == "128x64x32x32") {
+        launch_cfg<Codec, GemmCfg<128, 64, 64, 32, 32, 2, 2>>(xp, codes, high, scales, outp, n, k, t, padded_k, stream);
+    } else if (tag == "64x128x32x32") {
+        launch_cfg<Codec, GemmCfg<64, 128, 64, 32, 32, 2, 2>>(xp, codes, high, scales, outp, n, k, t, padded_k, stream);
+    } else if (tag == "128x64x64x32") {
+        launch_cfg<Codec, GemmCfg<128, 64, 64, 64, 32, 2, 2>>(xp, codes, high, scales, outp, n, k, t, padded_k, stream);
+    } else if (tag == "64x64x64x32") {
+        launch_cfg<Codec, GemmCfg<64, 64, 64, 64, 32, 2, 3>>(xp, codes, high, scales, outp, n, k, t, padded_k, stream);
+    } else {
+        launch_cfg<Codec, GemmCfg<64, 128, 64, 32, 32, 2, 2>>(xp, codes, high, scales, outp, n, k, t, padded_k, stream);
+    }
+}
 
 } // namespace
 
+// Precondition (enforced by the regime seam in linear.cpp): k % 8 == 0, so each
+// token row of x is 16-byte aligned for the cp.async<16> staging. Non-multiple-of-8
+// k is routed to the multi-step GEMV instead.
 void linear_rowsplit_gemm_mma_launch(const Tensor& x, const Weight& w, Tensor& out,
                                      LinearFormat fmt, cudaStream_t stream) {
     const std::int32_t n        = out.ne[0];
@@ -34,21 +71,15 @@ void linear_rowsplit_gemm_mma_launch(const Tensor& x, const Weight& w, Tensor& o
     const auto*        xp       = static_cast<const __nv_bfloat16*>(x.data);
     auto*              outp     = static_cast<__nv_bfloat16*>(out.data);
 
-    const dim3 grid(static_cast<unsigned>(ceil_div(n, kBM)),
-                    static_cast<unsigned>(ceil_div(t, kBT)), 1u);
-
     switch (fmt) {
     case LinearFormat::Q4G64_RowSplit:
-        linear_rowsplit_gemm_mma_kernel<Q4Codec, kColTiles>
-            <<<grid, kBlockThreads, 0, stream>>>(xp, codes, high, scales, outp, n, k, t, padded_k);
+        dispatch_codec<Q4Codec>(xp, codes, high, scales, outp, n, k, t, padded_k, stream);
         break;
     case LinearFormat::Q5G64_RowSplit:
-        linear_rowsplit_gemm_mma_kernel<Q5Codec, kColTiles>
-            <<<grid, kBlockThreads, 0, stream>>>(xp, codes, high, scales, outp, n, k, t, padded_k);
+        dispatch_codec<Q5Codec>(xp, codes, high, scales, outp, n, k, t, padded_k, stream);
         break;
     case LinearFormat::Q6G64_RowSplit:
-        linear_rowsplit_gemm_mma_kernel<Q6Codec, kColTiles>
-            <<<grid, kBlockThreads, 0, stream>>>(xp, codes, high, scales, outp, n, k, t, padded_k);
+        dispatch_codec<Q6Codec>(xp, codes, high, scales, outp, n, k, t, padded_k, stream);
         break;
     default:
         throw std::invalid_argument("linear: mma GEMM requires a Q4/Q5/Q6 row-split format");
