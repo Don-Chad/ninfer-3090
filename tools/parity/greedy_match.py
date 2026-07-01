@@ -20,7 +20,7 @@ from tools.parity import hf_reference as hfref  # noqa: E402
 from tools.parity.ref_model import RefModel  # noqa: E402
 
 DEFAULT_SNAPSHOT = ROOT / "profiles/e2e/m3-output-gate.json"
-DEFAULT_FIXTURE = ROOT / "bench/fixtures/prompts/cn_short.ids"
+DEFAULT_FIXTURE = ROOT / "bench/fixtures/bench_corpus.ids"
 DEFAULT_STOP = {248046, 248044}
 
 

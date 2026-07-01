@@ -1,0 +1,12 @@
+{
+  "artifact_type": "qus_bench_corpus",
+  "schema_version": 1,
+  "tokenizer_source": "local_hf",
+  "tokenizer_model_id": "Qwen/Qwen3.6-27B",
+  "add_special_tokens": false,
+  "chat_template": false,
+  "min_tokens": 9216,
+  "token_count": 10241,
+  "ids_sha256": "a815f71e7d05ff12d46c0ebf241fbdd0abf4cc8d5741ddda5e30b74cbae43023",
+  "source": "curated mixed-domain prose (zh/en/code/math), repeated to reach min_tokens"
+}

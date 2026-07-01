@@ -83,7 +83,8 @@ cmake --build build -j
   --max-new 128
 ```
 
-`bench/qus_e2e_bench` still consumes `.ids` fixtures for stable benchmark contracts.
+`bench/qus_bench` is the real-weight throughput tool (llama-bench-style prefill/decode rates); see
+[`bench/README.md`](bench/README.md).
 
 ## Toolchain target
 

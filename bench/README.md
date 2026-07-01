@@ -1,170 +1,125 @@
 # Benchmarks
 
-This directory contains benchmark binaries. Current optimization work uses the e2e report schema in
-`docs/bench/e2e-report-schema.md` and the completed gate evidence in `docs/m3-readiness.md`. The
-historical pre-M3 benchmark/readiness standard is archived at
-`docs/archive/pre-optimization/m2.8-pre-m3-standard.md`.
+This directory contains benchmark binaries. `qus_bench` is the real-weight throughput tool; the
+`qus_<op>_bench` binaries are per-kernel microbenchmarks. Correctness and per-layer parity are NOT
+handled here; they live under [`tools/parity`](../tools/parity).
 
-## Benchmark Types
+## Benchmark types
 
-Per-op benchmarks are the existing `qus_<op>_bench` binaries. They run one kernel family at Qwen3.6-27B
-shapes and are the entry point for ncu/nsys analysis. Their stdout numbers are convenience readouts;
-M3 optimization claims require profiler evidence plus before/after e2e JSON reports.
+Per-op benchmarks are the `qus_<op>_bench` binaries. They run one kernel family at Qwen3.6-27B
+shapes and are the entry point for ncu/nsys analysis. Their stdout numbers are convenience
+readouts; optimization claims require profiler evidence plus before/after `qus_bench` reports.
 
-`qus_e2e_bench` is the real-weight benchmark target. It drives `Engine::load()`, `Engine::prefill()`,
-and `Engine::decode_step()` directly, writes one JSON report object per invocation, and uses the
-schema in `docs/bench/e2e-report-schema.md`. It must not use `Engine::generate()` for primary timing.
+`qus_bench` is the real-weight throughput benchmark, modeled on `llama-bench`. It drives
+`Engine::load()`, `Engine::prefill()`, and `Engine::decode_step()` directly and measures prefill
+(`pp`) and decode (`tg`) throughput separately.
 
 ## Build
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+cmake --build build -j --target qus_bench
 ```
 
-Build an individual benchmark target when iterating:
+## Meaningful token corpus
+
+`qus_bench` reads token ids only; it has no tokenizer dependency. Prefill of an exact length `P`
+is the first `P` ids of a committed, meaningful corpus:
+
+```text
+bench/fixtures/bench_corpus.ids
+bench/fixtures/bench_corpus.manifest.json
+```
+
+Bake or verify the corpus with [`tools/bench/make_bench_corpus.py`](../tools/bench/README.md). The
+corpus bounds the largest prefill length; re-bake with a larger `--min-tokens` to go higher.
+
+## Test model
+
+Three test kinds, each measured independently over `repetitions` timed runs (plus discarded
+`warmup` runs). A warmup run is required for honest decode numbers because the first `decode_step`
+captures the CUDA graph; measured runs then reflect steady graph replay.
+
+- `pp{P}` — prefill `P` meaningful tokens. `prefill t/s = P / prefill_time`.
+- `tg{G}` — prefill a 1-token seed (untimed), then time exactly `G` decode steps. `decode t/s = G / decode_time`. Decode ignores stop tokens, so the length is exact.
+- `pp{P}+tg{G}` — prefill `P`, then decode `G` in one sequence; reports both rates (decode runs at context offset `P`).
+
+Timing boundary is `host_visible_phase_end`: `prefill()` and each `decode_step()` synchronize and
+read back their token before the timer stops, so decode t/s includes per-step device-to-host
+readback. `max_ctx` is auto-sized to the largest test requirement (`pp`→P, `tg`→G+1, `pp+tg`→P+G)
+unless `--max-ctx` overrides it; a `--max-ctx` smaller than a test needs is rejected.
+
+## CLI
+
+```text
+qus_bench --weights <q5090-path>
+          [--corpus <ids-path>]              # default: bench/fixtures/bench_corpus.ids
+          [-p, --n-prompt <list>]            # pp tests, e.g. 512 or 128,512,2048
+          [-n, --n-gen <list>]               # tg tests, e.g. 128
+          [-pg, --prompt-gen <P,G;P,G...>]   # combined pp+tg tests
+          [-r, --repetitions <n>]            # default 5
+          [--warmup <n>]                     # default 1, discarded
+          [--max-ctx <tokens>]               # default: auto = max test requirement
+          [--device <id>] [--no-cuda-graph]
+          [-o, --output <table|json|csv>]    # default table
+          [--output-file <path>]             # default stdout
+```
+
+With no `-p/-n/-pg`, the default matrix is `pp512` and `tg128`. Progress lines are written to
+`stderr` with the `[qus_bench]` prefix and are not part of the output artifact.
+
+Example:
 
 ```bash
-cmake --build build -j --target qus_argmax_bench
+./build/bench/qus_bench \
+  --weights out/qwen3_6_27b.q5090_w4g64_mixed_v3.qus \
+  -p 512,2048 -n 128 -pg 2048,128 -r 5 --warmup 1
 ```
 
-`qus_e2e_bench` is registered as a benchmark target. It builds with `cmake --build build -j --target
-qus_e2e_bench` and remains outside default real-weight CTest execution.
+## Output
 
-## Prompt Fixtures
+Default `table` prints an identity/config header followed by one row per test with prefill and
+decode t/s (`mean ± stddev`; the stddev is omitted for a single repetition). `--output json` and
+`--output csv` write machine-readable results.
 
-Canonical e2e prompts live under:
+JSON shape (`schema_version: 1`, `artifact_type: "qus_bench_report"`):
 
-```text
-bench/fixtures/prompts/
+```json
+{
+  "schema_version": 1,
+  "artifact_type": "qus_bench_report",
+  "tool": "qus_bench",
+  "command": "",
+  "git_commit": "",
+  "worktree_dirty": false,
+  "environment": {"gpu_name": "", "cuda_runtime_version": "", "cuda_driver_version": "", "device_id": 0},
+  "weights": {"path": "", "file_size_bytes": 0},
+  "config": {"max_ctx": 0, "decode_path": "cuda_graph", "repetitions": 5, "warmup": 1,
+             "timing_boundary": "host_visible_phase_end", "corpus_path": "", "corpus_tokens": 0},
+  "tests": [
+    {
+      "label": "pp2048+tg128", "kind": "pp+tg", "n_prompt": 2048, "n_gen": 128,
+      "prefill_tok_s_mean": 0.0, "prefill_tok_s_stddev": 0.0,
+      "decode_tok_s_mean": 0.0, "decode_tok_s_stddev": 0.0,
+      "prefill_time_s_mean": 0.0, "decode_time_s_mean": 0.0,
+      "reps": [{"prefill_time_s": 0.0, "prefill_tok_s": 0.0, "decode_time_s": 0.0, "decode_tok_s": 0.0}]
+    }
+  ]
+}
 ```
 
-Each case uses a committed pair:
-
-```text
-<case>.messages.json
-<case>.ids
-```
-
-`.messages.json` is the chat-message source for review and regeneration. `.ids` is the canonical C++
-benchmark input: whitespace-separated decimal token ids, with no comments and no inline metadata.
-
-The fixture set manifest is required:
-
-```text
-bench/fixtures/prompts/m2.8-v1.manifest.json
-```
-
-The manifest records tokenizer provenance, case names, prompt token counts, and hashes for each
-`.messages.json`/`.ids` pair. `qus_e2e_bench` reads `.ids` only and has no tokenizer dependency.
-Python fixture generation renders ids with
-`tokenizer.apply_chat_template(..., add_generation_prompt=True, enable_thinking=False)` from a local
-Qwen3.6 tokenizer path; tokenizer-level special tokens are not added separately.
-
-Regenerate or check fixtures with:
-
-```bash
-python3 tools/bench/tokenize_prompts.py \
-  --tokenizer-path /path/to/local/Qwen3.6-27B/tokenizer \
-  --fixture-dir bench/fixtures/prompts
-
-python3 tools/bench/tokenize_prompts.py \
-  --tokenizer-path /path/to/local/Qwen3.6-27B/tokenizer \
-  --fixture-dir bench/fixtures/prompts \
-  --check
-```
-
-## E2E CLI Contract
-
-The required M2.8 CLI is:
-
-```text
-qus_e2e_bench \
-  --weights <q5090-path> \
-  --output-json <report-path> \
-  --case <name>:<prompt-ids-path>:<max-new-tokens> \
-  [--case <name>:<prompt-ids-path>:<max-new-tokens> ...] \
-  [--warmup-repeats <n>] \
-  [--repeats <n>] \
-  [--max-ctx <tokens>] \
-  [--device <cuda-device>] \
-  [--quiet] \
-  --stop-token-id 248046 \
-  --stop-token-id 248044
-```
-
-By default, `qus_e2e_bench` writes human-readable progress lines to `stderr` with the `[e2e]`
-prefix for preflight, weight load, each warmup/measured repeat, case completion, and report writing.
-This progress output is not part of the JSON report and does not change the timing contract. Use
-`--quiet` to suppress progress lines while keeping normal errors and the final `stdout` write notice.
-
-Minimal local error-report smoke:
-
-```bash
-printf '1 2 3\n' > /tmp/qus_e2e_smoke.ids
-./build/bench/qus_e2e_bench \
-  --weights /tmp/missing.qus \
-  --output-json profiles/e2e/error-smoke.json \
-  --case smoke:/tmp/qus_e2e_smoke.ids:1 \
-  --max-ctx 3 \
-  --stop-token-id 248046 \
-  --stop-token-id 248044
-```
-
-The command exits nonzero and writes a schema-v1 error report when the output path is writable.
-
-Smoke baseline minimum:
-
-```text
-cn_short, max_new_tokens >= 96, repeats >= 1, decoded clean output nonempty
-```
-
-M3 output gate baseline minimum:
-
-```text
-cn_short, en_short, code_short, math_short
-max_new_tokens >= 96 for each short case
-warmup_repeats >= 1, repeats >= 3
-decoded clean output nonempty for each short case
-```
-
-M3 prefill gate baseline minimum:
-
-```text
-long_2k, prompt_tokens >= 2048, max_new_tokens == 1, repeats >= 1
-```
+`kind` is `pp`, `tg`, or `pp+tg`. Phase fields that do not apply to a test kind are `null`
+(a `pp` test has null decode fields; a `tg` test has null prefill fields). CSV columns are
+`label,kind,n_prompt,n_gen,repetitions,prefill_tok_s_mean,prefill_tok_s_stddev,decode_tok_s_mean,decode_tok_s_stddev,prefill_time_s_mean,decode_time_s_mean`,
+with empty cells for inapplicable phases.
 
 ## Artifacts
 
-Raw e2e reports are local:
+Raw reports are local and stay out of git:
 
 ```text
-profiles/e2e/
+profiles/bench/
 ```
-
-Decoded text sidecars are written beside a report:
-
-```text
-profiles/e2e/<report-stem>.decoded/
-```
-
-Each decoded repeat writes raw and cleaned text:
-
-```text
-repeat_<n>.raw.txt
-repeat_<n>.clean.txt
-```
-
-Generate decoded sidecars with:
-
-```bash
-python3 tools/bench/decode_e2e_report.py \
-  --tokenizer-path /path/to/local/Qwen3.6-27B/tokenizer \
-  --report profiles/e2e/example.json
-```
-
-Decoded text is for human smoke review only, not an automated correctness gate.
-Smoke and M3 output-gate summaries require decoded sidecars and reject empty clean decoded output.
 
 Profiler outputs are local:
 
@@ -173,75 +128,8 @@ profiles/ncu/
 profiles/nsys/
 ```
 
-Committed official baseline summaries live under:
+## Performance claims
 
-```text
-docs/bench/baselines/
-```
-
-Large raw reports and profiler artifacts stay out of git. The committed summary must include enough
-metadata to audit the readiness decision from git alone.
-
-`qus_e2e_bench` does not compute the q5090 file SHA256 in its raw report; it leaves
-`weights.q5090_sha256` empty to avoid a second full read of the large weight file before the first case
-runs. `tools/bench/make_baseline_summary.py` computes the q5090 SHA256 when creating a committed
-summary.
-
-## Report Comparison
-
-Compare two local raw e2e reports with:
-
-```bash
-python3 tools/bench/compare_e2e_reports.py \
-  --baseline profiles/e2e/baseline.json \
-  --candidate profiles/e2e/candidate.json \
-  --output-json profiles/e2e/compare.json
-```
-
-Default hard failures include schema/artifact mismatches, missing required cases, changed case identity
-including fixture or generation config fields, non-ok status, changed q5090 identity when token comparison
-is enabled, and generated token id mismatch for fixed q5090 + fixed prompt + greedy config.
-
-Performance and memory regressions are warnings by default. Promote them with:
-
-```bash
-python3 tools/bench/compare_e2e_reports.py \
-  --baseline profiles/e2e/baseline.json \
-  --candidate profiles/e2e/candidate.json \
-  --fail-on-performance-regression \
-  --fail-on-memory-regression
-```
-
-Create a committed baseline summary from a local raw report with:
-
-Use a redacted decoded manifest for committed summaries. Current decode tooling writes `tokenizer_path` as
-an empty string by default, so the generated `manifest.json` can be passed directly. If you are working with
-older or hand-written decoded manifests, verify that `tokenizer.tokenizer_path` is empty before summary
-generation; the summary tool rejects unredacted manifests.
-
-```bash
-python3 tools/bench/make_baseline_summary.py \
-  --report profiles/e2e/m3-output-gate.json \
-  --output docs/bench/baselines/m3-output-gate-summary.json \
-  --baseline-class m3_output_gate \
-  --decoded-manifest profiles/e2e/m3-output-gate.decoded/manifest.json
-```
-
-For the long prefill gate:
-
-```bash
-python3 tools/bench/make_baseline_summary.py \
-  --report profiles/e2e/m3-prefill-gate.json \
-  --output docs/bench/baselines/m3-prefill-gate-summary.json \
-  --baseline-class m3_prefill_gate
-```
-
-## Performance Claims
-
-A valid M3 performance claim needs both:
-
-- local per-op/profiler evidence for the touched kernel family;
-- before/after `qus_e2e_bench` JSON reports for the relevant fixture cases.
-
-Any published number must state the command, artifact path, git commit, q5090 identity where relevant,
-and dirty/clean worktree state.
+A valid performance claim needs both local per-op/profiler evidence for the touched kernel family
+and before/after `qus_bench` reports for the relevant test matrix. Any published number must state
+the command, artifact path, git commit, q5090 identity, and dirty/clean worktree state.

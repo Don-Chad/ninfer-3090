@@ -1,6 +1,0 @@
-[
-  {
-    "role": "user",
-    "content": "下面这段 Python 代码有什么问题？请指出 bug 并给出修正建议：\n\n```python\ndef average(nums):\n    return sum(nums) / len(nums)\n\nprint(average([]))\n```"
-  }
-]

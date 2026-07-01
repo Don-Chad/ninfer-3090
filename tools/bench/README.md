@@ -1,66 +1,49 @@
-# Bench Tools
+# tools/bench
 
-These tools support the M2.8 pre-M3 benchmark standard.
+Offline helper for the `qus_bench` throughput tool. Correctness/parity tooling lives separately
+under [`tools/parity`](../parity).
 
-## Tokenizer Policy
+## Corpus baker
 
-Tokenizer-dependent commands use a local Hugging Face tokenizer directory. Resolution order:
+`qus_bench` benchmarks prefill at an exact length by slicing the first `P` token ids of a
+committed corpus, so the corpus must be real, in-distribution text (not random tokens) and long
+enough for the largest prefill you want to run. `make_bench_corpus.py` bakes that corpus offline
+with a local Hugging Face Qwen3.6 tokenizer.
 
-1. `--tokenizer-path`
-2. `QUS_TOKENIZER_PATH`
-3. fail
-
-The tools use `local_files_only=True` and must not download from the network.
-
-Prompt fixture generation uses Qwen3.6 chat-template sources: each case is a `.messages.json` chat
-message file paired with a canonical `.ids` file. Token ids are rendered with
-`tokenizer.apply_chat_template(..., add_generation_prompt=True, enable_thinking=False)` from the local
-tokenizer path; tokenizer-level special tokens are not added separately.
-
-## Regenerate Fixtures
-
-```bash
-python3 tools/bench/tokenize_prompts.py \
-  --tokenizer-path /path/to/local/Qwen3.6-27B/tokenizer \
-  --fixture-dir bench/fixtures/prompts
-```
-
-Check committed fixtures:
-
-```bash
-python3 tools/bench/tokenize_prompts.py \
-  --tokenizer-path /path/to/local/Qwen3.6-27B/tokenizer \
-  --fixture-dir bench/fixtures/prompts \
-  --check
-```
-
-## Decode E2E Reports
-
-```bash
-python3 tools/bench/decode_e2e_report.py \
-  --tokenizer-path /path/to/local/Qwen3.6-27B/tokenizer \
-  --report profiles/e2e/example.json
-```
-
-Decoded text is human-smoke-only. Each decoded repeat writes `repeat_<n>.raw.txt` and
-`repeat_<n>.clean.txt` sidecars, plus manifest metadata for clean text length, SHA256, and whether the
-clean text is nonempty after stripping whitespace. Correctness gates use token ids and report comparison;
-the nonempty check only prevents committing blank output smoke artifacts.
-
-Baseline summary classes are:
+Outputs (committed):
 
 ```text
-smoke
-m3_output_gate
-m3_prefill_gate
+bench/fixtures/bench_corpus.ids            whitespace-separated decimal token ids
+bench/fixtures/bench_corpus.manifest.json  tokenizer id, token count, ids sha256
 ```
 
-Raw `qus_e2e_bench` reports leave `weights.q5090_sha256` empty so benchmark startup does not rescan the
-large q5090 file. `make_baseline_summary.py` computes the q5090 SHA256 from `q5090_path` for committed
-summaries.
+The corpus is curated mixed-domain prose (Chinese / English / code / math) encoded WITHOUT the
+chat template and WITHOUT special tokens, then repeated to reach `--min-tokens`. Encoding is
+deterministic for a fixed text + tokenizer, so `--check` can verify the committed artifact.
 
-E2E benchmark invocations for Qwen3.6 chat-template fixtures should pass both stop tokens:
+## Requirements
+
+Install the tokenizer dependencies into the active Python environment:
 
 ```bash
---stop-token-id 248046 --stop-token-id 248044
+pip install -r tools/bench/requirements.txt
 ```
+
+The tokenizer is loaded locally only; the tool never downloads from the network. Pass
+`--tokenizer-path` or set `QUS_TOKENIZER_PATH`.
+
+## Regenerate / check
+
+```bash
+# Regenerate the committed corpus (default target ~9216 tokens, covers prefill up to max_ctx).
+python3 tools/bench/make_bench_corpus.py \
+  --tokenizer-path /path/to/local/Qwen3.6-27B/tokenizer \
+  --min-tokens 9216
+
+# Verify the committed .ids + manifest match a fresh bake (nonzero exit on mismatch).
+python3 tools/bench/make_bench_corpus.py \
+  --tokenizer-path /path/to/local/Qwen3.6-27B/tokenizer \
+  --min-tokens 9216 --check
+```
+
+To benchmark prefill lengths beyond the current corpus, re-bake with a larger `--min-tokens`.

@@ -2,6 +2,10 @@
 
 > Status: complete for the regenerated Qwen3.6 chat-template M2.8 baseline.
 > Scope: official M3 entry evidence package for qwen3.6-ultraspeed.
+> Note: the M2.8 e2e benchmark apparatus (`qus_e2e_bench`, its JSON report schema, and the
+> committed baseline summaries) has been retired. Throughput is now measured with the `qus_bench`
+> tool (see [`bench/README.md`](../bench/README.md)); the numbers below are the historical M2.8
+> evidence, and the report/summary artifacts they reference no longer live in the tree.
 
 The previous pre-chat-template and whitespace-output smoke observations are superseded. The current
 baseline was regenerated on real q5090 weights with `.messages.json` prompt fixtures rendered through
@@ -21,16 +25,13 @@ the Qwen3.6 chat template, fixed prompt ids, and stop tokens `[248046, 248044]`.
 
 ## Evidence Artifacts
 
-- Output gate raw report: `profiles/e2e/m3-output-gate.json`
-- Output gate decoded sidecars: `profiles/e2e/m3-output-gate.decoded/`
-- Output gate summary: `docs/bench/baselines/m3-output-gate-summary.json`
-- Prefill gate raw report: `profiles/e2e/m3-prefill-gate.json`
-- Prefill gate summary: `docs/bench/baselines/m3-prefill-gate-summary.json`
+- Output gate raw report (historical, local): `profiles/e2e/m3-output-gate.json`
+- Prefill gate raw report (historical, local): `profiles/e2e/m3-prefill-gate.json`
 - L1 microbench snapshot: `profiles/microbench/l1-microbench-20260628-235356.log`
 
-Raw reports, decoded sidecars, and microbench logs remain local under ignored `profiles/`. The
-committed summaries under `docs/bench/baselines/` contain the auditable report hashes, q5090 identity,
-tokenizer identity, case identity, timing summary, and memory summary.
+These M2.8 raw reports and microbench logs were local under ignored `profiles/`. The committed
+baseline summaries that used to live under `docs/bench/baselines/` were removed together with the
+e2e apparatus; the tables below preserve the audited numbers from that baseline.
 
 ## Output Gate
 

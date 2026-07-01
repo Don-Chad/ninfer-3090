@@ -1,1 +1,1 @@
-"""M2.8 benchmark fixture and report helper tools."""
+"""Offline helpers for the qus_bench throughput tool (corpus baking)."""
