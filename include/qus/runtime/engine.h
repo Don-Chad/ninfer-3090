@@ -8,7 +8,6 @@
 #include "qus/model/model.h"
 #include "qus/runtime/decode_graph.h"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -56,7 +55,6 @@ public:
     void load(const std::string& path);
     int prefill(std::span<const int> ids);
     int decode_step();
-    std::vector<int> decode_steps(int max_steps);
     std::vector<int> generate(std::span<const int> prompt, int max_new_tokens);
 
     [[nodiscard]] bool loaded() const noexcept { return card_.has_value(); }
@@ -76,12 +74,7 @@ private:
 
     void require_loaded() const;
     [[nodiscard]] int read_token();
-    [[nodiscard]] std::vector<int> read_decode_tokens(int count);
-    void record_decode_token(int slot);
-    void reset_decode_graphs() noexcept;
     [[nodiscard]] bool is_stop_token(int token) const noexcept;
-
-    static constexpr int kDecodeGraphChunk = 4;
 
     EngineOptions options_;
     std::optional<DeviceContext> ctx_;
@@ -93,8 +86,7 @@ private:
     std::optional<GdnState> state_;
     model::StepState io_{};
     std::optional<model::Qwen3_6_27B> card_;
-    std::array<DecodeGraph, kDecodeGraphChunk> decode_graphs_;
-    std::array<int, kDecodeGraphChunk> host_decode_tokens_{};
+    DecodeGraph decode_graph_;
     bool decode_warmed_ = false;
 };
 

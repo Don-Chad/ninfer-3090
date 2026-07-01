@@ -91,9 +91,6 @@ struct ProgressState {
 
 int main(int argc, char** argv) {
     try {
-        std::ios::sync_with_stdio(false);
-        std::cin.tie(nullptr);
-
         const qus::text::CliOptions cli = qus::text::parse_cli(argc, argv);
         if (cli.help_requested) {
             std::cout << qus::text::usage_text(argv[0]);
@@ -151,6 +148,7 @@ int main(int argc, char** argv) {
         generation_options.stop_token_ids = stop_token_ids;
         generation_options.stream_callback = [](const qus::text::TextStreamChunk& chunk) {
             std::cout << chunk.text;
+            std::cout.flush();
         };
 
         qus::text::TextGenerationRunner runner(tokenizer, engine);
