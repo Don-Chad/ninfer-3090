@@ -87,8 +87,9 @@ int expect_weight(const qus::Weight* w, qus::SourceKind kind, std::uint32_t laye
         }
     } else {
         failures += w->qhigh == nullptr ? 0 : fail(std::string(label) + " dense qhigh null");
-        failures +=
-            w->high_plane_bytes == 0 ? 0 : fail(std::string(label) + " dense high_plane_bytes zero");
+        failures += w->high_plane_bytes == 0
+                        ? 0
+                        : fail(std::string(label) + " dense high_plane_bytes zero");
     }
     return failures;
 }
@@ -148,11 +149,9 @@ int main() {
 
     qus::WeightStore store(expectations());
     store.load(fixture_path.c_str(), weights_arena, ctx);
-    const qus::Tensor* stored_conv1d =
-        store.tensor(qus::ModuleKind::TextCore,
-                     static_cast<std::uint32_t>(qus::SourceKind::GdnConv1d), 0);
-    failures +=
-        expect_tensor(stored_conv1d, qus::DType::BF16, {10240, 4, 1}, "store.gdn.conv1d");
+    const qus::Tensor* stored_conv1d = store.tensor(
+        qus::ModuleKind::TextCore, static_cast<std::uint32_t>(qus::SourceKind::GdnConv1d), 0);
+    failures += expect_tensor(stored_conv1d, qus::DType::BF16, {10240, 4, 1}, "store.gdn.conv1d");
     qus::KVCache kv(cache_arena, qus::model::kCfg.n_full(), 1, qus::model::kCfg.n_kv,
                     qus::model::kCfg.head_dim);
     qus::GdnState state(cache_arena, qus::model::kCfg.n_gdn(), qus::model::kCfg.conv_dim,
@@ -161,15 +160,13 @@ int main() {
     qus::model::StepState io{io_arena.alloc(qus::DType::I32, {1}),
                              io_arena.alloc(qus::DType::I32, {1}),
                              io_arena.alloc(qus::DType::BF16, {qus::model::kCfg.vocab})};
-    qus::model::Qwen3_6_27B card(ctx, store, workspace, kv, state, io);
+    qus::model::Qwen3_6_27B card(ctx, store, workspace, kv, state, io, 512);
 
-    failures +=
-        expect_weight(card.embed(), qus::SourceKind::Embed, qus::kQ5090NoLayer,
-                      qus::QType::Q6G64_F16S, qus::QuantLayout::RowSplit, 16, 8, "embed");
+    failures += expect_weight(card.embed(), qus::SourceKind::Embed, qus::kQ5090NoLayer,
+                              qus::QType::Q6G64_F16S, qus::QuantLayout::RowSplit, 16, 8, "embed");
     failures += expect_tensor(card.final_norm(), qus::DType::BF16, {5120}, "final_norm");
-    failures +=
-        expect_weight(card.lm_head(), qus::SourceKind::LmHead, qus::kQ5090NoLayer,
-                      qus::QType::Q6G64_F16S, qus::QuantLayout::RowSplit, 16, 8, "lm_head");
+    failures += expect_weight(card.lm_head(), qus::SourceKind::LmHead, qus::kQ5090NoLayer,
+                              qus::QType::Q6G64_F16S, qus::QuantLayout::RowSplit, 16, 8, "lm_head");
 
     const qus::model::FullLayerW& full = card.full_layer(0);
     failures += expect_tensor(full.input_norm, qus::DType::BF16, {5120}, "full.input_norm");
@@ -203,7 +200,8 @@ int main() {
     failures += expect_weight(gdn.in_b, qus::SourceKind::GdnInProjB, 0, qus::QType::BF16_CTRL,
                               qus::QuantLayout::Contiguous, 48, 8, "gdn.in_b");
     failures += expect_tensor(gdn.conv1d, qus::DType::BF16, {10240, 4}, "gdn.conv1d");
-    failures += gdn.conv1d->data == stored_conv1d->data ? 0 : fail("gdn.conv1d must alias WeightStore");
+    failures +=
+        gdn.conv1d->data == stored_conv1d->data ? 0 : fail("gdn.conv1d must alias WeightStore");
     failures += expect_tensor(gdn.a_log, qus::DType::FP32, {48}, "gdn.a_log");
     failures += expect_tensor(gdn.dt_bias, qus::DType::FP32, {48}, "gdn.dt_bias");
     failures += expect_tensor(gdn.gdn_norm, qus::DType::BF16, {128}, "gdn.gdn_norm");

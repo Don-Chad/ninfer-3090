@@ -238,7 +238,7 @@ int main() {
                              io_arena.alloc(qus::DType::I32, {1}),
                              io_arena.alloc(qus::DType::BF16, {qus::model::kCfg.vocab})};
 
-    qus::model::Qwen3_6_27B card(ctx, store, workspace, kv, state, io);
+    qus::model::Qwen3_6_27B card(ctx, store, workspace, kv, state, io, 512);
     const qus::model::FullLayerW& full = card.full_layer(0);
     const qus::model::GdnLayerW& gdn   = card.gdn_layer(0);
 

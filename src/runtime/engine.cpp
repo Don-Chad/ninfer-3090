@@ -39,9 +39,9 @@ std::size_t align_up(std::size_t value, std::size_t alignment, const char* label
 ArenaMemoryStats arena_stats(const std::optional<DeviceArena>& arena) noexcept {
     ArenaMemoryStats stats;
     if (!arena) { return stats; }
-    stats.present = true;
-    stats.capacity_bytes = arena->capacity();
-    stats.used_bytes = arena->used();
+    stats.present         = true;
+    stats.capacity_bytes  = arena->capacity();
+    stats.used_bytes      = arena->used();
     stats.peak_used_bytes = arena->peak_used();
     return stats;
 }
@@ -50,9 +50,7 @@ ArenaMemoryStats arena_stats(const std::optional<DeviceArena>& arena) noexcept {
 
 Engine::Engine(EngineOptions options) : options_(options) {
     for (const int id : options_.stop_token_ids) {
-        if (id < 0) {
-            throw std::invalid_argument("Engine stop_token_ids must be nonnegative");
-        }
+        if (id < 0) { throw std::invalid_argument("Engine stop_token_ids must be nonnegative"); }
     }
     std::sort(options_.stop_token_ids.begin(), options_.stop_token_ids.end());
     options_.stop_token_ids.erase(
@@ -61,6 +59,13 @@ Engine::Engine(EngineOptions options) : options_(options) {
     if (options_.max_ctx == 0) { throw std::invalid_argument("Engine max_ctx must be nonzero"); }
     if (options_.work_bytes == 0) {
         throw std::invalid_argument("Engine work_bytes must be nonzero");
+    }
+    if (options_.prefill_chunk == 0 || options_.prefill_chunk % 128 != 0) {
+        throw std::invalid_argument("Engine prefill_chunk must be a nonzero multiple of 128");
+    }
+    if (options_.prefill_chunk >
+        static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
+        throw std::invalid_argument("Engine prefill_chunk exceeds int32");
     }
 }
 
@@ -89,7 +94,8 @@ std::size_t Engine::default_weight_bytes(const std::string& path) {
 }
 
 std::size_t Engine::default_cache_bytes(std::uint32_t max_ctx) {
-    const auto padded_ctx_size = align_up(static_cast<std::size_t>(max_ctx), 128, "cache arena size");
+    const auto padded_ctx_size =
+        align_up(static_cast<std::size_t>(max_ctx), 128, "cache arena size");
     const std::size_t kv_elems = checked_mul(
         checked_mul(model::kCfg.n_full(), 2, "cache arena size"),
         checked_mul(checked_mul(model::kCfg.n_kv, model::kCfg.head_dim, "cache arena size"),
@@ -159,7 +165,7 @@ void Engine::load(const std::string& path) {
         cache_arena_->alloc(DType::I32, {1}),
         cache_arena_->alloc(DType::BF16, {model::kCfg.vocab, 1}),
     };
-    card_.emplace(*ctx_, *weights_, *work_, *kv_, *state_, io_);
+    card_.emplace(*ctx_, *weights_, *work_, *kv_, *state_, io_, options_.prefill_chunk);
 }
 
 void Engine::require_loaded() const {
@@ -170,17 +176,17 @@ std::uint32_t Engine::position() const noexcept { return kv_ ? kv_->pos : 0; }
 
 EngineMemoryStats Engine::memory_stats() const noexcept {
     EngineMemoryStats stats;
-    stats.loaded = loaded();
-    stats.device = options_.device;
+    stats.loaded      = loaded();
+    stats.device      = options_.device;
     stats.max_context = options_.max_ctx;
-    stats.position = position();
-    stats.weights = arena_stats(weight_arena_);
-    stats.cache = arena_stats(cache_arena_);
-    stats.workspace = arena_stats(work_);
+    stats.position    = position();
+    stats.weights     = arena_stats(weight_arena_);
+    stats.cache       = arena_stats(cache_arena_);
+    stats.workspace   = arena_stats(work_);
     if (weights_) {
         stats.q5090_loaded_payload_bytes = weights_->loaded_payload_bytes();
-        stats.q5090_tensor_count = weights_->tensor_count();
-        stats.q5090_quant_count = weights_->quant_count();
+        stats.q5090_tensor_count         = weights_->tensor_count();
+        stats.q5090_quant_count          = weights_->quant_count();
     }
     return stats;
 }

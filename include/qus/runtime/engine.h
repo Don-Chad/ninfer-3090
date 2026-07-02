@@ -18,32 +18,33 @@
 namespace qus {
 
 struct ArenaMemoryStats {
-    bool present = false;
-    std::size_t capacity_bytes = 0;
-    std::size_t used_bytes = 0;
+    bool present                = false;
+    std::size_t capacity_bytes  = 0;
+    std::size_t used_bytes      = 0;
     std::size_t peak_used_bytes = 0;
 };
 
 struct EngineMemoryStats {
-    bool loaded = false;
-    int device = 0;
+    bool loaded               = false;
+    int device                = 0;
     std::uint32_t max_context = 0;
-    std::uint32_t position = 0;
+    std::uint32_t position    = 0;
     ArenaMemoryStats weights;
     ArenaMemoryStats cache;
     ArenaMemoryStats workspace;
     std::size_t q5090_loaded_payload_bytes = 0;
-    std::size_t q5090_tensor_count = 0;
-    std::size_t q5090_quant_count = 0;
+    std::size_t q5090_tensor_count         = 0;
+    std::size_t q5090_quant_count          = 0;
 };
 
 struct EngineOptions {
-    int device               = 0;
-    std::uint32_t max_ctx    = 2048;
-    std::size_t weight_bytes = 0;
-    std::size_t cache_bytes  = 0;
-    std::size_t work_bytes   = 4ULL * 1024ULL * 1024ULL * 1024ULL;
-    Q5090Progress* progress  = nullptr;
+    int device                  = 0;
+    std::uint32_t max_ctx       = 2048;
+    std::size_t weight_bytes    = 0;
+    std::size_t cache_bytes     = 0;
+    std::size_t work_bytes      = 4ULL * 1024ULL * 1024ULL * 1024ULL;
+    std::uint32_t prefill_chunk = 512;
+    Q5090Progress* progress     = nullptr;
     std::vector<int> stop_token_ids;
     bool use_cuda_graph = true;
 };

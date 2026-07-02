@@ -98,7 +98,7 @@ using TapCallback = void (*)(void*, TapId, int, Phase, const Tensor&, cudaStream
 class Qwen3_6_27B {
 public:
     Qwen3_6_27B(DeviceContext& ctx, WeightStore& weights, WorkspaceArena& work, KVCache& kv,
-                GdnState& state, StepState& io);
+                GdnState& state, StepState& io, std::uint32_t prefill_chunk);
     ~Qwen3_6_27B();
 
     Qwen3_6_27B(const Qwen3_6_27B&)            = delete;
@@ -153,7 +153,7 @@ public:
     };
 
     void test_attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
-        attn_mix(w, x, fidx, ph);
+        attn_mix(w, x, fidx, ph, 0);
     }
 
     void test_gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
@@ -177,7 +177,7 @@ public:
 
 private:
     void bind();
-    void attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph);
+    void attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph, std::uint32_t cache_offset);
     void gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph);
     void mlp_tail(const Tensor* post_norm, const MlpW& m, Tensor& x, Phase ph);
     void prefill_erased(std::span<const int> ids, void* tap, TapCallback callback);
@@ -187,7 +187,7 @@ private:
     template <class Tap>
     void decode_step_impl(Tap& tap);
     template <class Tap>
-    void run_layers(Tensor& x, Phase ph, Tap& tap);
+    void run_layers(Tensor& x, Phase ph, Tap& tap, std::uint32_t cache_offset);
     void run_layers(Tensor& x, Phase ph);
 
     DeviceContext& ctx_;
@@ -196,6 +196,7 @@ private:
     KVCache& kv_;
     GdnState& state_;
     StepState& io_;
+    std::uint32_t prefill_chunk_    = 512;
     const Tensor* active_positions_ = nullptr;
 
     const Weight* embed_      = nullptr;

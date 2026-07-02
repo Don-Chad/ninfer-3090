@@ -17,12 +17,20 @@ int parse_nonnegative_int(const char* text, const char* label) {
     return static_cast<int>(value);
 }
 
+std::uint32_t parse_positive_u32(const char* text, const char* label) {
+    const int value = parse_nonnegative_int(text, label);
+    if (value <= 0) {
+        throw std::invalid_argument(std::string("--") + label + " must be positive");
+    }
+    return static_cast<std::uint32_t>(value);
+}
+
 } // namespace
 
 std::string usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <weights.qus> --tokenizer <dir> (--prompt <text>|--messages <messages.json>) "
-           "[--max-context N] [--max-new N] [--device N] [--raw-output] "
+           "[--max-context N] [--prefill-chunk N] [--max-new N] [--device N] [--raw-output] "
            "[--print-token-ids] [--no-cuda-graph] [--stop-token-id N]...\n"
            "       streams decoded text to stdout; writes progress and timings to stderr\n";
 }
@@ -36,7 +44,7 @@ CliOptions parse_cli(int argc, char** argv) {
     if (argc < 2) { throw std::invalid_argument("weights path is required"); }
     options.weights_path = argv[1];
     for (int i = 2; i < argc; ++i) {
-        const std::string arg = argv[i];
+        const std::string arg    = argv[i];
         const auto require_value = [&](const char* flag) -> const char* {
             if (++i >= argc) { throw std::invalid_argument(std::string(flag) + " needs a value"); }
             return argv[i];
@@ -52,6 +60,9 @@ CliOptions parse_cli(int argc, char** argv) {
         } else if (arg == "--max-context") {
             options.max_context = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--max-context"), "max-context"));
+        } else if (arg == "--prefill-chunk") {
+            options.prefill_chunk =
+                parse_positive_u32(require_value("--prefill-chunk"), "prefill-chunk");
         } else if (arg == "--device") {
             options.device = parse_nonnegative_int(require_value("--device"), "device");
         } else if (arg == "--raw-output") {
@@ -75,6 +86,9 @@ CliOptions parse_cli(int argc, char** argv) {
     }
     if (options.max_new <= 0) { throw std::invalid_argument("--max-new must be positive"); }
     if (options.max_context == 0) { throw std::invalid_argument("--max-context must be positive"); }
+    if (options.prefill_chunk % 128 != 0) {
+        throw std::invalid_argument("--prefill-chunk must be a multiple of 128");
+    }
     return options;
 }
 

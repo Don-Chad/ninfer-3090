@@ -3,6 +3,7 @@
 #include "qus/core/device.h"
 
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -35,9 +36,9 @@ void require_vector_shape(const Tensor& t, const char* name) {
     }
 }
 
-__global__ void fill_positions_kernel(std::int32_t* positions, std::int32_t n) {
+__global__ void fill_positions_kernel(std::int32_t* positions, std::int32_t n, std::int32_t start) {
     const std::int32_t i = static_cast<std::int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
-    if (i < n) { positions[i] = i; }
+    if (i < n) { positions[i] = start + i; }
 }
 
 __global__ void set_pos_kernel(std::int32_t* pos, std::int32_t value) { pos[0] = value; }
@@ -46,13 +47,17 @@ __global__ void advance_pos_kernel(std::int32_t* pos) { ++pos[0]; }
 
 } // namespace
 
-void fill_positions(Tensor& positions, cudaStream_t stream) {
+void fill_positions(Tensor& positions, int start, cudaStream_t stream) {
     require_i32_contiguous_nonnull(positions, "fill_positions");
     require_vector_shape(positions, "fill_positions");
-    const int n    = positions.ne[0];
+    if (start < 0) { throw std::invalid_argument("fill_positions: start must be nonnegative"); }
+    const int n = positions.ne[0];
+    if (start > std::numeric_limits<std::int32_t>::max() - n) {
+        throw std::overflow_error("fill_positions: range exceeds int32");
+    }
     const int grid = (n + kBlock - 1) / kBlock;
     fill_positions_kernel<<<grid, kBlock, 0, stream>>>(static_cast<std::int32_t*>(positions.data),
-                                                       n);
+                                                       n, start);
     CUDA_CHECK(cudaGetLastError());
 }
 

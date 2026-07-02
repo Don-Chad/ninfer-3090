@@ -23,6 +23,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -253,8 +254,13 @@ void FileTap::operator()(TapId id, int layer, Phase phase, const Tensor& x, cuda
 }
 
 Qwen3_6_27B::Qwen3_6_27B(DeviceContext& ctx, WeightStore& weights, WorkspaceArena& work,
-                         KVCache& kv, GdnState& state, StepState& io)
-    : ctx_(ctx), weights_(weights), work_(work), kv_(kv), state_(state), io_(io) {
+                         KVCache& kv, GdnState& state, StepState& io, std::uint32_t prefill_chunk)
+    : ctx_(ctx), weights_(weights), work_(work), kv_(kv), state_(state), io_(io),
+      prefill_chunk_(prefill_chunk) {
+    if (prefill_chunk_ == 0 || prefill_chunk_ % 128 != 0 ||
+        prefill_chunk_ > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
+        throw std::invalid_argument("Qwen3_6_27B prefill_chunk must be a nonzero multiple of 128");
+    }
     bind();
 }
 
@@ -322,7 +328,8 @@ void Qwen3_6_27B::bind() {
     }
 }
 
-void Qwen3_6_27B::attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
+void Qwen3_6_27B::attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph,
+                           std::uint32_t cache_offset) {
     cudaStream_t s = ctx_.stream;
     const int T    = x.ne[1];
 
@@ -376,7 +383,7 @@ void Qwen3_6_27B::attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
     kernels::rope(positions, kCfg.rotary_dim, kCfg.rope_theta, qn, kn, s);
 
     Tensor a = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
-    kernels::gqa_attention_prefill(qn, kn, v, kAttnScale, kv_, fidx, 0, a, s);
+    kernels::gqa_attention_prefill(qn, kn, v, kAttnScale, kv_, fidx, cache_offset, a, s);
     kernels::sigmoid_gate_mul(gate, a, s);
 
     Tensor o = work_.alloc(DType::BF16, {kCfg.hidden, T});
@@ -506,13 +513,13 @@ void Qwen3_6_27B::mlp_tail(const Tensor* post_norm, const MlpW& m, Tensor& x, Ph
 }
 
 template <class Tap>
-void Qwen3_6_27B::run_layers(Tensor& x, Phase ph, Tap& tap) {
+void Qwen3_6_27B::run_layers(Tensor& x, Phase ph, Tap& tap, std::uint32_t cache_offset) {
     for (int layer = 0; layer < kCfg.n_layers; ++layer) {
         if (ModelConfig::is_full(layer)) {
             const int fidx               = ModelConfig::full_idx(layer);
             const FullLayerW& full       = full_.at(static_cast<std::size_t>(fidx));
             const std::size_t mixer_mark = work_.mark();
-            attn_mix(full, x, fidx, ph);
+            attn_mix(full, x, fidx, ph, cache_offset);
             if constexpr (Tap::enabled) { tap(TapId::AfterMixer, layer, ph, x, ctx_.stream); }
             work_.rewind(mixer_mark);
             const std::size_t mlp_mark = work_.mark();
@@ -536,7 +543,7 @@ void Qwen3_6_27B::run_layers(Tensor& x, Phase ph, Tap& tap) {
 
 void Qwen3_6_27B::run_layers(Tensor& x, Phase ph) {
     NullTap tap;
-    run_layers(x, ph, tap);
+    run_layers(x, ph, tap, 0);
 }
 
 template <class Tap>
@@ -545,32 +552,46 @@ void Qwen3_6_27B::prefill_impl(std::span<const int> ids, Tap& tap) {
     if (ids.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
         throw std::overflow_error("Qwen3_6_27B::prefill token count exceeds int32");
     }
+    cudaStream_t s  = ctx_.stream;
+    const int T     = static_cast<int>(ids.size());
+    const int chunk = static_cast<int>(prefill_chunk_);
 
-    cudaStream_t s = ctx_.stream;
-    const int T    = static_cast<int>(ids.size());
-    work_.reset();
+    for (int t0 = 0; t0 < T; t0 += chunk) {
+        const int len      = std::min(chunk, T - t0);
+        const bool is_last = (t0 + len == T);
+        work_.reset();
 
-    Tensor ids_device = work_.alloc(DType::I32, {T});
-    copy_i32_to_device(ids.data(), ids_device);
+        {
+            Tensor ids_device = work_.alloc(DType::I32, {len});
+            copy_i32_to_device(ids.data() + t0, ids_device);
 
-    Tensor positions = work_.alloc(DType::I32, {T});
-    detail::fill_positions(positions, s);
-    ScopedPositions scoped_positions(active_positions_, positions);
+            Tensor positions = work_.alloc(DType::I32, {len});
+            detail::fill_positions(positions, t0, s);
+            ScopedPositions scoped_positions(active_positions_, positions);
 
-    Tensor x = work_.alloc(DType::BF16, {kCfg.hidden, T});
-    kernels::embed_gather(ids_device, *embed_, x, s);
-    if constexpr (Tap::enabled) { tap(TapId::AfterEmbed, -1, Phase::Prefill, x, s); }
-    run_layers(x, Phase::Prefill, tap);
+            Tensor x = work_.alloc(DType::BF16, {kCfg.hidden, len});
+            kernels::embed_gather(ids_device, *embed_, x, s);
+            if constexpr (Tap::enabled) { tap(TapId::AfterEmbed, -1, Phase::Prefill, x, s); }
+            run_layers(x, Phase::Prefill, tap, static_cast<std::uint32_t>(t0));
 
-    Tensor xf = work_.alloc(DType::BF16, {kCfg.hidden, T});
-    kernels::rmsnorm(x, *final_norm_, kCfg.rms_eps, true, nullptr, xf, s);
-    if constexpr (Tap::enabled) { tap(TapId::AfterFinalNorm, -1, Phase::Prefill, xf, s); }
-    Tensor last = xf.slice(1, T - 1, 1);
-    kernels::linear(last, *lm_head_, io_.logits, work_, s);
-    if constexpr (Tap::enabled) { tap(TapId::AfterLogits, -1, Phase::Prefill, io_.logits, s); }
-    kernels::argmax(io_.logits, io_.token, s);
+            if (is_last) {
+                Tensor xf = work_.alloc(DType::BF16, {kCfg.hidden, len});
+                kernels::rmsnorm(x, *final_norm_, kCfg.rms_eps, true, nullptr, xf, s);
+                if constexpr (Tap::enabled) {
+                    tap(TapId::AfterFinalNorm, -1, Phase::Prefill, xf, s);
+                }
+                Tensor last = xf.slice(1, len - 1, 1);
+                kernels::linear(last, *lm_head_, io_.logits, work_, s);
+                if constexpr (Tap::enabled) {
+                    tap(TapId::AfterLogits, -1, Phase::Prefill, io_.logits, s);
+                }
+                kernels::argmax(io_.logits, io_.token, s);
+            }
+        }
 
-    kv_.pos = static_cast<std::uint32_t>(T);
+        kv_.pos = static_cast<std::uint32_t>(t0 + len);
+    }
+
     detail::set_pos(io_.pos, T, s);
     work_.reset();
 }
@@ -594,7 +615,7 @@ void Qwen3_6_27B::decode_step_impl(Tap& tap) {
     Tensor x = work_.alloc(DType::BF16, {kCfg.hidden, 1});
     kernels::embed_gather(io_.token, *embed_, x, s);
     if constexpr (Tap::enabled) { tap(TapId::AfterEmbed, -1, Phase::Decode, x, s); }
-    run_layers(x, Phase::Decode, tap);
+    run_layers(x, Phase::Decode, tap, 0);
 
     Tensor xf = work_.alloc(DType::BF16, {kCfg.hidden, 1});
     kernels::rmsnorm(x, *final_norm_, kCfg.rms_eps, true, nullptr, xf, s);

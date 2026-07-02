@@ -17,12 +17,13 @@ struct CliOptions {
     std::string tokenizer_path;
     std::string prompt;
     std::string messages_path;
-    int max_new = 128;
-    std::uint32_t max_context = 2048;
-    int device = 0;
-    OutputMode output_mode = OutputMode::Clean;
-    bool print_token_ids = false;
-    bool use_cuda_graph = true;
+    int max_new                 = 128;
+    std::uint32_t max_context   = 2048;
+    std::uint32_t prefill_chunk = 512;
+    int device                  = 0;
+    OutputMode output_mode      = OutputMode::Clean;
+    bool print_token_ids        = false;
+    bool use_cuda_graph         = true;
     std::vector<int> stop_token_ids;
 };
 
