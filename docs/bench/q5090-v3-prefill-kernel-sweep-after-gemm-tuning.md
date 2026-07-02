@@ -23,6 +23,10 @@ the post-GQA historical report:
 - `pp4096` host prefill mean improved from `1538.345 ms` to `1366.292 ms` (`1.13x`).
 - `pp8192` improved from `3055.059 ms` to `2748.453 ms` (`1.11x`).
 - `pp16384` improved from `6216.728 ms` to `5640.026 ms` (`1.10x`).
+- The current nsys `pp4096` prefill kernel sum is `1356.965 ms`: Q4 rowsplit GEMM is `44.2%`,
+  Q5 rowsplit GEMM is `41.3%`, dense GEMM is `5.1%`, and GQA prefill is `1.7%`.
+- At `pp16384`, rowsplit GEMM is still the dominant work: Q4 is `43.1%`, Q5 is `38.5%`,
+  GQA prefill is `5.5%`, and dense GEMM is `4.6%`.
 - Q4 MLP gate+up-equivalent bench improved by `1.14x-1.22x` across 1k-8k.
 - Q5 MLP down bench improved by `1.15x-1.16x` across 1k-8k.
 - GQA prefill is unchanged within noise, which is expected because this rerun is measuring rowsplit
@@ -36,6 +40,10 @@ the post-GQA historical report:
 Directory:
 
 `profiles/ncu-prefill-kernel-sweep-2026-07-02-q6-scale-pair/`
+
+nsys directory:
+
+`profiles/nsys-prefill-length-sweep-2026-07-02-q6-scale-pair/`
 
 Important files:
 
@@ -51,6 +59,11 @@ Important files:
 | GQA ncu reports | `profiles/ncu-prefill-kernel-sweep-2026-07-02-q6-scale-pair/ncu_gqa_prefill_T*.ncu-rep` |
 | 128-4096 host timing | `profiles/ncu-prefill-kernel-sweep-2026-07-02-q6-scale-pair/qus_bench_prefill_sweep_r3_warmup1.json` |
 | 8192/16384 host timing | `profiles/ncu-prefill-kernel-sweep-2026-07-02-q6-scale-pair/qus_bench_prefill_sweep_8192_16384_r3_warmup1.json` |
+| Per-length nsys reports | `profiles/nsys-prefill-length-sweep-2026-07-02-q6-scale-pair/pp*_prefill_r1_warmup0.nsys-rep` |
+| Official nsys kernel stats | `profiles/nsys-prefill-length-sweep-2026-07-02-q6-scale-pair/pp*_prefill_r1_warmup0_cuda_gpu_kern_sum.csv` |
+| Derived nsys timing summary | `profiles/nsys-prefill-length-sweep-2026-07-02-q6-scale-pair/prefill_summary.csv` |
+| Derived nsys kernel breakdown | `profiles/nsys-prefill-length-sweep-2026-07-02-q6-scale-pair/prefill_kernel_breakdown.csv` |
+| Derived nsys category breakdown | `profiles/nsys-prefill-length-sweep-2026-07-02-q6-scale-pair/prefill_category_breakdown.csv` |
 
 ## Commands
 
@@ -113,6 +126,26 @@ ncu --force-overwrite \
 
 ncu replay duration is not used as the latency source. Use bench medians for kernel timing.
 
+nsys used one prompt length per trace, matching the historical length report:
+
+```bash
+nsys profile --force-overwrite=true --stats=false \
+  --trace=cuda,nvtx,osrt \
+  --sample=none --cpuctxsw=none \
+  -o profiles/nsys-prefill-length-sweep-2026-07-02-q6-scale-pair/pp<P>_prefill_r1_warmup0 \
+  ./build/bench/qus_bench \
+    --weights out/qwen3_6_27b.q5090_w4g64_mixed_v3.qus \
+    -p <P> -r 1 --warmup 0 \
+    -o json \
+    --output-file profiles/nsys-prefill-length-sweep-2026-07-02-q6-scale-pair/pp<P>_prefill_r1_warmup0.json
+
+nsys stats --force-export=true --force-overwrite=true \
+  --report nvtx_sum,cuda_api_sum,cuda_gpu_kern_sum,cuda_gpu_mem_time_sum \
+  --format csv \
+  --output profiles/nsys-prefill-length-sweep-2026-07-02-q6-scale-pair/pp<P>_prefill_r1_warmup0 \
+  profiles/nsys-prefill-length-sweep-2026-07-02-q6-scale-pair/pp<P>_prefill_r1_warmup0.nsys-rep
+```
+
 ## Host prefill timing
 
 | pp | old mean ms | new mean ms | speedup | old tok/s | new tok/s | work peak MiB |
@@ -128,6 +161,89 @@ ncu replay duration is not used as the latency source. Use bench medians for ker
 
 Readout: the gain is largest at short/mid lengths and stays visible through 16k. The long-context
 curve is now roughly `2.9k-3.0k tok/s` from 2k through 16k in this r3 host timing run.
+
+## Current nsys e2e kernel breakdown
+
+This is the missing whole-prefill view: kernel percentages below are percentages of summed GPU
+kernel duration in the current nsys trace. The nsys run uses `-r 1 --warmup 0`; the host timing table
+above uses the lower-noise r3 bench artifacts.
+
+| pp | nsys NVTX ms | kernel sum ms | kernel/NVTX | kernel launches |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 125.451 | 111.942 | 89.2% | 1398 |
+| 256 | 150.005 | 133.911 | 89.3% | 1398 |
+| 512 | 211.546 | 196.463 | 92.9% | 1398 |
+| 1024 | 371.519 | 354.239 | 95.3% | 1398 |
+| 2048 | 701.475 | 683.743 | 97.5% | 1398 |
+| 4096 | 1382.741 | 1356.965 | 98.1% | 1398 |
+| 8192 | 2746.225 | 2709.620 | 98.7% | 1398 |
+| 16384 | 5670.528 | 5612.826 | 99.0% | 1398 |
+
+Category share:
+
+| category | pp128 | pp256 | pp512 | pp1024 | pp2048 | pp4096 | pp8192 | pp16384 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `linear` | 95.3% | 94.2% | 92.4% | 92.8% | 91.8% | 90.7% | 88.7% | 86.2% |
+| `gqa_attention` | 0.3% | 0.4% | 0.6% | 0.7% | 1.1% | 1.7% | 3.0% | 5.5% |
+| `gdn` | 2.5% | 2.8% | 3.9% | 3.2% | 3.7% | 3.7% | 3.7% | 3.6% |
+| `normalization` | 1.0% | 1.3% | 1.4% | 1.5% | 1.5% | 1.7% | 2.1% | 2.1% |
+| `elementwise_conv_rope` | 0.9% | 1.3% | 1.6% | 1.8% | 1.9% | 2.1% | 2.5% | 2.5% |
+| `io_sampling_bookkeeping` | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
+
+Per-kernel share matrix:
+
+| kernel label | pp128 | pp256 | pp512 | pp1024 | pp2048 | pp4096 | pp8192 | pp16384 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `rowsplit_gemm_mma_q4` | 31.3% | 39.8% | 42.5% | 42.4% | 44.0% | 44.2% | 43.9% | 43.1% |
+| `rowsplit_gemm_mma_q5` | 48.2% | 42.0% | 41.3% | 42.6% | 41.6% | 41.3% | 39.9% | 38.5% |
+| `dense_gemm` | 15.1% | 11.9% | 8.3% | 7.7% | 6.1% | 5.1% | 5.0% | 4.6% |
+| `gqa_attention_prefill` | 0.3% | 0.4% | 0.6% | 0.7% | 1.1% | 1.7% | 3.0% | 5.5% |
+| `gdn_state_passing` | 0.7% | 1.0% | 1.6% | 1.4% | 1.9% | 1.8% | 1.9% | 1.9% |
+| `rmsnorm` | 0.6% | 0.8% | 1.1% | 1.2% | 1.3% | 1.4% | 1.5% | 1.5% |
+| `silu_and_mul` | 0.4% | 0.7% | 0.9% | 1.1% | 1.0% | 1.2% | 1.2% | 1.2% |
+| `gdn_chunk_output` | 0.6% | 0.7% | 1.0% | 0.7% | 0.9% | 0.9% | 0.8% | 0.8% |
+| `gdn_prepare_wy_wu` | 1.1% | 1.0% | 1.3% | 1.1% | 0.9% | 0.9% | 0.9% | 0.8% |
+| `causal_conv1d_pairs` | 0.2% | 0.3% | 0.3% | 0.3% | 0.4% | 0.5% | 0.4% | 0.4% |
+| `residual_add` | 0.2% | 0.3% | 0.3% | 0.3% | 0.4% | 0.4% | 0.6% | 0.7% |
+| `rmsnorm_d5120` | 0.4% | 0.3% | 0.3% | 0.2% | 0.2% | 0.2% | 0.5% | 0.5% |
+| `l2norm` | 0.1% | 0.1% | 0.1% | 0.1% | 0.1% | 0.1% | 0.1% | 0.1% |
+| `sigmoid_gate_mul` | 0.0% | 0.0% | 0.1% | 0.1% | 0.1% | 0.1% | 0.1% | 0.1% |
+| `lm_head_gemv_q6` | 0.5% | 0.5% | 0.3% | 0.2% | 0.1% | 0.0% | 0.0% | 0.0% |
+| `rope` | 0.1% | 0.1% | 0.0% | 0.0% | 0.0% | 0.0% | 0.1% | 0.1% |
+
+Current top kernels:
+
+| pp | rank | kernel | launches | total ms | % kernel | avg us |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 128 | 1 | `rowsplit_gemm_mma_q5` | 256 | 54.009 | 48.2% | 210.972 |
+| 128 | 2 | `rowsplit_gemm_mma_q4` | 192 | 35.047 | 31.3% | 182.537 |
+| 128 | 3 | `dense_gemm` | 96 | 16.952 | 15.1% | 176.585 |
+| 256 | 1 | `rowsplit_gemm_mma_q5` | 256 | 56.206 | 42.0% | 219.554 |
+| 256 | 2 | `rowsplit_gemm_mma_q4` | 192 | 53.347 | 39.8% | 277.848 |
+| 256 | 3 | `dense_gemm` | 96 | 15.967 | 11.9% | 166.323 |
+| 512 | 1 | `rowsplit_gemm_mma_q4` | 192 | 83.511 | 42.5% | 434.953 |
+| 512 | 2 | `rowsplit_gemm_mma_q5` | 256 | 81.184 | 41.3% | 317.123 |
+| 512 | 3 | `dense_gemm` | 96 | 16.222 | 8.3% | 168.978 |
+| 1024 | 1 | `rowsplit_gemm_mma_q5` | 256 | 150.801 | 42.6% | 589.068 |
+| 1024 | 2 | `rowsplit_gemm_mma_q4` | 192 | 150.276 | 42.4% | 782.690 |
+| 1024 | 3 | `dense_gemm` | 96 | 27.143 | 7.7% | 282.744 |
+| 2048 | 1 | `rowsplit_gemm_mma_q4` | 192 | 300.940 | 44.0% | 1567.397 |
+| 2048 | 2 | `rowsplit_gemm_mma_q5` | 256 | 284.521 | 41.6% | 1111.410 |
+| 2048 | 3 | `dense_gemm` | 96 | 41.785 | 6.1% | 435.262 |
+| 4096 | 1 | `rowsplit_gemm_mma_q4` | 192 | 599.967 | 44.2% | 3124.830 |
+| 4096 | 2 | `rowsplit_gemm_mma_q5` | 256 | 560.938 | 41.3% | 2191.164 |
+| 4096 | 3 | `dense_gemm` | 96 | 68.530 | 5.1% | 713.855 |
+| 8192 | 1 | `rowsplit_gemm_mma_q4` | 192 | 1188.690 | 43.9% | 6191.096 |
+| 8192 | 2 | `rowsplit_gemm_mma_q5` | 256 | 1080.306 | 39.9% | 4219.946 |
+| 8192 | 3 | `dense_gemm` | 96 | 134.950 | 5.0% | 1405.726 |
+| 16384 | 1 | `rowsplit_gemm_mma_q4` | 192 | 2416.967 | 43.1% | 12588.372 |
+| 16384 | 2 | `rowsplit_gemm_mma_q5` | 256 | 2161.370 | 38.5% | 8442.852 |
+| 16384 | 3 | `gqa_attention_prefill` | 16 | 309.152 | 5.5% | 19322.021 |
+
+Readout: the full-prefill bottleneck is still overwhelmingly rowsplit low-bit GEMM. Q4+Q5 rowsplit
+GEMM is `85.5%` at 4k, `83.8%` at 8k, and `81.6%` at 16k. GQA grows with length and reaches `5.5%`
+at 16k, but it is still far behind rowsplit GEMM. Dense GEMM remains a secondary `4.6-5.1%`
+long-context bucket.
 
 ## Kernel bench useful efficiency
 
