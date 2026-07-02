@@ -16,7 +16,6 @@ target_include_directories(qus_core PRIVATE
   ${PROJECT_SOURCE_DIR}/third_party/utf8proc)
 target_link_libraries(qus_core PUBLIC CUDA::cudart)
 target_compile_options(qus_core PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
-set_target_properties(qus_core PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 # --- Driver executable (text in -> text out) ---------------------------------
 add_executable(qus ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp)
