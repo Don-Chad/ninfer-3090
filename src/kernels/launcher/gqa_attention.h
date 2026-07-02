@@ -7,10 +7,13 @@
 
 #include <cuda_runtime.h>
 
+#include <cstdint>
+
 namespace qus::kernels::detail {
 
 void gqa_attention_prefill_launch(const Tensor& q, const Tensor& k, const Tensor& v, float scale,
-                                  KVCache& kv, int layer, Tensor& out, cudaStream_t stream);
+                                  KVCache& kv, int layer, std::uint32_t cache_offset, Tensor& out,
+                                  cudaStream_t stream);
 
 void gqa_attention_decode_launch(const Tensor& q, const Tensor& k, const Tensor& v,
                                  const Tensor& pos, float scale, KVCache& kv, int layer,

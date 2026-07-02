@@ -178,12 +178,12 @@ Result bench_cold_cache_loop(const launch_fn& launch, DBuf& cold_cache, double b
     for (double v : samples) { sum += v; }
 
     Result r;
-    r.n_runs      = static_cast<int>(samples.size());
-    r.inner_iters = 1;
-    r.median_us   = pct(0.50);
-    r.min_us      = sorted.front();
-    r.p95_us      = pct(0.95);
-    r.mean_us     = sum / static_cast<double>(samples.size());
+    r.n_runs         = static_cast<int>(samples.size());
+    r.inner_iters    = 1;
+    r.median_us      = pct(0.50);
+    r.min_us         = sorted.front();
+    r.p95_us         = pct(0.95);
+    r.mean_us        = sum / static_cast<double>(samples.size());
     const double sec = r.median_us * 1e-6;
     r.gbs            = (sec > 0.0) ? bytes_moved / sec / 1e9 : 0.0;
     return r;
@@ -203,8 +203,7 @@ void print_decode_result(const char* tag, const Result& r, const DecodeBytes& by
                 tag, r.median_us, r.min_us, r.p95_us, total_gbs, useful_kv_gbs,
                 static_cast<double>(bytes.useful_kv) / kMiB,
                 static_cast<double>(bytes.scratch) / kMiB, static_cast<double>(bytes.total) / kMiB,
-                kGqaDecodeSplits, decode_kps(pos_value), round_robin_layers,
-                suffix);
+                kGqaDecodeSplits, decode_kps(pos_value), round_robin_layers, suffix);
 }
 
 void run_decode(KVCache& kv, WorkspaceArena& ws, const Tensor& q, const Tensor& k, const Tensor& v,
@@ -271,13 +270,13 @@ double prefill_useful_flops(std::int32_t tokens) {
 }
 
 double prefill_model_floor_bytes(std::int32_t tokens) {
-    const double q_bytes =
-        static_cast<double>(tokens) * static_cast<double>(kQHeads) *
-        static_cast<double>(kHeadDim) * static_cast<double>(sizeof(std::uint16_t));
+    const double q_bytes = static_cast<double>(tokens) * static_cast<double>(kQHeads) *
+                           static_cast<double>(kHeadDim) *
+                           static_cast<double>(sizeof(std::uint16_t));
     const double out_bytes = q_bytes;
-    const double k_bytes =
-        static_cast<double>(tokens) * static_cast<double>(kKVHeads) *
-        static_cast<double>(kHeadDim) * static_cast<double>(sizeof(std::uint16_t));
+    const double k_bytes   = static_cast<double>(tokens) * static_cast<double>(kKVHeads) *
+                           static_cast<double>(kHeadDim) *
+                           static_cast<double>(sizeof(std::uint16_t));
     const double v_bytes = k_bytes;
     return q_bytes + out_bytes + k_bytes + v_bytes;
 }
@@ -289,22 +288,22 @@ struct PrefillTimingOptions {
 };
 
 struct PrefillMetrics {
-    std::int32_t tokens             = 0;
-    int runs                        = 0;
-    int inner_iters                 = 1;
-    double median_ms                = 0.0;
-    double min_ms                   = 0.0;
-    double p95_ms                   = 0.0;
-    double mean_ms                  = 0.0;
-    double useful_flops             = 0.0;
-    double model_floor_bytes        = 0.0;
-    double tflops                   = 0.0;
-    double tflops_pct               = 0.0;
-    double gbps_model               = 0.0;
-    double gbps_model_pct           = 0.0;
-    double roofline_tflops          = 0.0;
-    double roofline_eff_pct         = 0.0;
-    const char* bound               = "tc";
+    std::int32_t tokens      = 0;
+    int runs                 = 0;
+    int inner_iters          = 1;
+    double median_ms         = 0.0;
+    double min_ms            = 0.0;
+    double p95_ms            = 0.0;
+    double mean_ms           = 0.0;
+    double useful_flops      = 0.0;
+    double model_floor_bytes = 0.0;
+    double tflops            = 0.0;
+    double tflops_pct        = 0.0;
+    double gbps_model        = 0.0;
+    double gbps_model_pct    = 0.0;
+    double roofline_tflops   = 0.0;
+    double roofline_eff_pct  = 0.0;
+    const char* bound        = "tc";
 };
 
 PrefillMetrics prefill_metrics_from_result(std::int32_t tokens, const Result& r) {
@@ -324,15 +323,14 @@ PrefillMetrics prefill_metrics_from_result(std::int32_t tokens, const Result& r)
         m.tflops     = m.useful_flops / sec / 1.0e12;
         m.gbps_model = m.model_floor_bytes / sec / 1.0e9;
     }
-    m.tflops_pct = m.tflops / kDenseTcPeakTflops * 100.0;
+    m.tflops_pct     = m.tflops / kDenseTcPeakTflops * 100.0;
     m.gbps_model_pct = m.gbps_model / kDramPeakGBs * 100.0;
 
     const double intensity = m.model_floor_bytes > 0.0 ? m.useful_flops / m.model_floor_bytes : 0.0;
     const double dram_roof_tflops = kDramPeakGBs * intensity / 1000.0;
-    m.roofline_tflops            = std::min(kDenseTcPeakTflops, dram_roof_tflops);
-    m.bound                      = (kDenseTcPeakTflops <= dram_roof_tflops) ? "tc" : "dram";
-    m.roofline_eff_pct =
-        (m.roofline_tflops > 0.0) ? (m.tflops / m.roofline_tflops * 100.0) : 0.0;
+    m.roofline_tflops             = std::min(kDenseTcPeakTflops, dram_roof_tflops);
+    m.bound                       = (kDenseTcPeakTflops <= dram_roof_tflops) ? "tc" : "dram";
+    m.roofline_eff_pct = (m.roofline_tflops > 0.0) ? (m.tflops / m.roofline_tflops * 100.0) : 0.0;
     return m;
 }
 
@@ -345,8 +343,7 @@ void print_prefill_result(const PrefillMetrics& m) {
                 m.roofline_eff_pct, m.runs, m.inner_iters);
 }
 
-PrefillMetrics run_prefill(KVCache& kv, std::int32_t tokens,
-                           const PrefillTimingOptions& timing) {
+PrefillMetrics run_prefill(KVCache& kv, std::int32_t tokens, const PrefillTimingOptions& timing) {
     const std::size_t qn = static_cast<std::size_t>(kHeadDim) * static_cast<std::size_t>(kQHeads) *
                            static_cast<std::size_t>(tokens);
     const std::size_t kvn = static_cast<std::size_t>(kHeadDim) *
@@ -362,7 +359,9 @@ PrefillMetrics run_prefill(KVCache& kv, std::int32_t tokens,
     Tensor tout(out.p, DType::BF16, {kHeadDim, kQHeads, tokens});
 
     const Result r = bench_loop(
-        [&](cudaStream_t s) { kernels::gqa_attention_prefill(tq, tk, tv, kScale, kv, 0, tout, s); },
+        [&](cudaStream_t s) {
+            kernels::gqa_attention_prefill(tq, tk, tv, kScale, kv, 0, 0, tout, s);
+        },
         prefill_model_floor_bytes(tokens), timing.warmup, timing.repeat, timing.min_time_ms);
 
     PrefillMetrics metrics = prefill_metrics_from_result(tokens, r);
@@ -386,7 +385,7 @@ void run_prefill_profile_once(KVCache& kv, std::int32_t tokens) {
     Tensor tout(out.p, DType::BF16, {kHeadDim, kQHeads, tokens});
 
     cudaStream_t stream = nullptr;
-    kernels::gqa_attention_prefill(tq, tk, tv, kScale, kv, 0, tout, stream);
+    kernels::gqa_attention_prefill(tq, tk, tv, kScale, kv, 0, 0, tout, stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     std::printf("PROFILE_ONCE gqa_attention prefill T=%d useful_flops=%.0f "
@@ -441,10 +440,9 @@ std::string format_prefill_json(const std::vector<PrefillMetrics>& results,
             << ", \"tflops\": " << json_number(m.tflops)
             << ", \"tflops_pct\": " << json_number(m.tflops_pct)
             << ", \"gbps_model\": " << json_number(m.gbps_model)
-            << ", \"gbps_model_pct\": " << json_number(m.gbps_model_pct)
-            << ", \"gbps_dram\": null"
-            << ", \"gbps_dram_pct\": null"
-            << ", \"gbps_pct\": " << json_number(m.gbps_model_pct) << ", \"bound\": \"" << m.bound
+            << ", \"gbps_model_pct\": " << json_number(m.gbps_model_pct) << ", \"gbps_dram\": null"
+            << ", \"gbps_dram_pct\": null" << ", \"gbps_pct\": " << json_number(m.gbps_model_pct)
+            << ", \"bound\": \"" << m.bound
             << "\", \"roofline_tflops\": " << json_number(m.roofline_tflops)
             << ", \"roofline_eff_pct\": " << json_number(m.roofline_eff_pct)
             << ", \"model_floor_bytes\": " << json_number(m.model_floor_bytes)
@@ -515,8 +513,8 @@ std::int32_t parse_i32_arg(const char* text, const char* flag) {
 }
 
 double parse_double_arg(const char* text, const char* flag) {
-    errno             = 0;
-    char* end         = nullptr;
+    errno              = 0;
+    char* end          = nullptr;
     const double value = std::strtod(text, &end);
     if (errno != 0 || end == text || *end != '\0' || !std::isfinite(value)) {
         char msg[128];
@@ -550,8 +548,7 @@ Options parse_options(int argc, char** argv) {
             opt.decode = true;
         } else if (!std::strcmp(argv[i], "--prefill")) {
             opt.prefill = true;
-        } else if (!std::strcmp(argv[i], "--tokens") ||
-                   !std::strcmp(argv[i], "--prefill-tokens")) {
+        } else if (!std::strcmp(argv[i], "--tokens") || !std::strcmp(argv[i], "--prefill-tokens")) {
             if (++i >= argc) { fail_usage("--tokens requires a value"); }
             opt.prefill_tokens = parse_i32_list_arg(argv[i], "--tokens");
             opt.prefill        = true;

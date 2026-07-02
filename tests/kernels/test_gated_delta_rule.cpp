@@ -73,10 +73,10 @@ std::size_t chunked_workspace_bytes(int T_full) {
         if (bytes == 0) { return; }
         off = align_up_size(off + bytes, 256);
     };
-    reserve(T * H_v * sizeof(float));          // g_cumsum
-    reserve(T * H_v * S * sizeof(std::uint16_t)); // W
-    reserve(T * H_v * S * sizeof(std::uint16_t)); // U
-    reserve(T * H_v * S * sizeof(std::uint16_t)); // v_new
+    reserve(T * H_v * sizeof(float));                  // g_cumsum
+    reserve(T * H_v * S * sizeof(std::uint16_t));      // W
+    reserve(T * H_v * S * sizeof(std::uint16_t));      // U
+    reserve(T * H_v * S * sizeof(std::uint16_t));      // v_new
     reserve(NT * H_v * S * S * sizeof(std::uint16_t)); // h_chunk
     return off;
 }
@@ -172,6 +172,47 @@ GpuResult run_chunked_gpu(const gdn_ref::Inputs& in, int chunk_size = BT) {
     return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
 }
 
+GpuResult run_chunked_gpu_split(const gdn_ref::Inputs& in, int split, int chunk_size = BT) {
+    DBuf dq     = to_device_bf16(in.q);
+    DBuf dk     = to_device_bf16(in.k);
+    DBuf dv     = to_device_bf16(in.v);
+    DBuf dg     = to_device_f32(in.g);
+    DBuf dbeta  = to_device_f32(in.beta);
+    DBuf dstate = to_device_f32(in.state);
+    DBuf dout(in.v.size() * 2);
+    WorkspaceArena ws(chunked_arena_bytes(static_cast<int>(in.T)));
+
+    Tensor tq(dq.p, DType::BF16, {S, H_qk, static_cast<int>(in.T)});
+    Tensor tk(dk.p, DType::BF16, {S, H_qk, static_cast<int>(in.T)});
+    Tensor tv(dv.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
+    Tensor tg(dg.p, DType::FP32, {H_v, static_cast<int>(in.T)});
+    Tensor tbeta(dbeta.p, DType::FP32, {H_v, static_cast<int>(in.T)});
+    Tensor tstate(dstate.p, DType::FP32, {S, S, H_v});
+    Tensor tout(dout.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
+
+    Tensor q0    = tq.slice(2, 0, split);
+    Tensor k0    = tk.slice(2, 0, split);
+    Tensor v0    = tv.slice(2, 0, split);
+    Tensor g0    = tg.slice(1, 0, split);
+    Tensor beta0 = tbeta.slice(1, 0, split);
+    Tensor out0  = tout.slice(2, 0, split);
+    kernels::gated_delta_rule_chunked(q0, k0, v0, g0, beta0, 1.0f / std::sqrt(float(S)), chunk_size,
+                                      ws, tstate, out0, nullptr);
+
+    const int tail = static_cast<int>(in.T) - split;
+    Tensor q1      = tq.slice(2, split, tail);
+    Tensor k1      = tk.slice(2, split, tail);
+    Tensor v1      = tv.slice(2, split, tail);
+    Tensor g1      = tg.slice(1, split, tail);
+    Tensor beta1   = tbeta.slice(1, split, tail);
+    Tensor out1    = tout.slice(2, split, tail);
+    kernels::gated_delta_rule_chunked(q1, k1, v1, g1, beta1, 1.0f / std::sqrt(float(S)), chunk_size,
+                                      ws, tstate, out1, nullptr);
+
+    cudaDeviceSynchronize();
+    return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
+}
+
 int recurrent_case(int T, std::uint32_t seed, bool stress_g, bool use_gdn_state = false) {
     const auto in      = make_inputs(T, seed, stress_g);
     const double scale = 1.0 / std::sqrt(static_cast<double>(S));
@@ -253,9 +294,9 @@ int chunked_case(int T, std::uint32_t seed, bool compare_recurrent, bool compare
 
     int failures = 0;
     try {
-        const GpuResult got   = run_chunked_gpu(in);
-        const std::string tag = std::string("gdn chunked T=") + std::to_string(T) +
-                                (stress_g ? " slow-decay" : "");
+        const GpuResult got = run_chunked_gpu(in);
+        const std::string tag =
+            std::string("gdn chunked T=") + std::to_string(T) + (stress_g ? " slow-decay" : "");
         failures += verify((tag + " vs chunked-ref out").c_str(), got.out, chunked_ref_out,
                            Tolerance::gdn_output_bf16());
         failures += verify((tag + " vs chunked-ref state").c_str(), got.state, chunked_ref_state,
@@ -297,6 +338,28 @@ int chunked_chain_equivalence_case(int T, std::uint32_t seed) {
                            Tolerance::gdn_state_fp32());
     } catch (const std::exception& e) {
         std::cerr << "gdn chunked chain-equivalence T=" << T
+                  << ": unexpected exception: " << e.what() << '\n';
+        return 1;
+    }
+
+    return failures;
+}
+
+int chunked_state_carry_equivalence_case(int T, int split, std::uint32_t seed) {
+    const auto in = make_inputs(T, seed, false);
+
+    int failures = 0;
+    try {
+        const GpuResult whole     = run_chunked_gpu(in);
+        const GpuResult split_run = run_chunked_gpu_split(in, split);
+        const std::string tag     = std::string("gdn chunked state-carry T=") + std::to_string(T) +
+                                " split=" + std::to_string(split);
+        failures +=
+            verify((tag + " out").c_str(), split_run.out, whole.out, Tolerance::gdn_output_bf16());
+        failures += verify((tag + " state").c_str(), split_run.state, whole.state,
+                           Tolerance::gdn_state_fp32());
+    } catch (const std::exception& e) {
+        std::cerr << "gdn chunked state-carry T=" << T << " split=" << split
                   << ": unexpected exception: " << e.what() << '\n';
         return 1;
     }
@@ -392,6 +455,8 @@ int main() {
     failures += chunked_chain_equivalence_case(128, 6122u);
     failures += chunked_case(4096, 8122u, false, false);
     failures += chunked_case(4096, 9122u, false, false, true);
+    failures += chunked_state_carry_equivalence_case(200, 96, 9822u);
+    failures += chunked_state_carry_equivalence_case(512, 128, 9922u);
     failures += chunked_validation_case();
 
     std::cout << (failures ? "FAIL" : "OK") << " gated_delta_rule correctness\n";

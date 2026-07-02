@@ -36,9 +36,9 @@
 namespace qus::model {
 namespace {
 
-constexpr ModuleKind kText = ModuleKind::TextCore;
-constexpr std::uint16_t kFusionAttnIn = 1;
-constexpr std::uint16_t kFusionGdnIn = 2;
+constexpr ModuleKind kText               = ModuleKind::TextCore;
+constexpr std::uint16_t kFusionAttnIn    = 1;
+constexpr std::uint16_t kFusionGdnIn     = 2;
 constexpr std::uint16_t kFusionMlpGateUp = 3;
 
 std::uint32_t sk(SourceKind kind) { return static_cast<std::uint32_t>(kind); }
@@ -276,10 +276,10 @@ void Qwen3_6_27B::bind() {
                 require_weight(weights_, SourceKind::AttnGate, source_layer, "full.gate_proj");
             out.k_proj = require_weight(weights_, SourceKind::AttnK, source_layer, "full.k_proj");
             out.v_proj = require_weight(weights_, SourceKind::AttnV, source_layer, "full.v_proj");
-            out.qkv_q4 = require_weight_fused(weights_, kFusionAttnIn, 0, source_layer,
-                                               "attn.qkv.q4");
-            out.gatev_q5 = require_weight_fused(weights_, kFusionAttnIn, 1, source_layer,
-                                                 "attn.gatev.q5");
+            out.qkv_q4 =
+                require_weight_fused(weights_, kFusionAttnIn, 0, source_layer, "attn.qkv.q4");
+            out.gatev_q5 =
+                require_weight_fused(weights_, kFusionAttnIn, 1, source_layer, "attn.gatev.q5");
             out.o_proj = require_weight(weights_, SourceKind::AttnO, source_layer, "full.o_proj");
             out.q_norm =
                 require_tensor(weights_, SourceKind::AttnQNorm, source_layer, "full.q_norm");
@@ -335,12 +335,10 @@ void Qwen3_6_27B::attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
         kernels::linear(h, *w.qkv_q4, qk, work_, s);
         kernels::linear(h, *w.gatev_q5, gatev, work_, s);
 
-        Tensor q = qk.slice(0, 0, kCfg.q_size).view({kCfg.head_dim, kCfg.n_q, 1});
-        Tensor k =
-            qk.slice(0, kCfg.q_size, kCfg.kv_size).view({kCfg.head_dim, kCfg.n_kv, 1});
+        Tensor q    = qk.slice(0, 0, kCfg.q_size).view({kCfg.head_dim, kCfg.n_q, 1});
+        Tensor k    = qk.slice(0, kCfg.q_size, kCfg.kv_size).view({kCfg.head_dim, kCfg.n_kv, 1});
         Tensor gate = gatev.slice(0, 0, kCfg.q_size).view({kCfg.head_dim, kCfg.n_q, 1});
-        Tensor v =
-            gatev.slice(0, kCfg.q_size, kCfg.kv_size).view({kCfg.head_dim, kCfg.n_kv, 1});
+        Tensor v    = gatev.slice(0, kCfg.q_size, kCfg.kv_size).view({kCfg.head_dim, kCfg.n_kv, 1});
 
         Tensor qn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, 1});
         Tensor kn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, 1});
@@ -378,7 +376,7 @@ void Qwen3_6_27B::attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
     kernels::rope(positions, kCfg.rotary_dim, kCfg.rope_theta, qn, kn, s);
 
     Tensor a = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
-    kernels::gqa_attention_prefill(qn, kn, v, kAttnScale, kv_, fidx, a, s);
+    kernels::gqa_attention_prefill(qn, kn, v, kAttnScale, kv_, fidx, 0, a, s);
     kernels::sigmoid_gate_mul(gate, a, s);
 
     Tensor o = work_.alloc(DType::BF16, {kCfg.hidden, T});
@@ -422,8 +420,7 @@ void Qwen3_6_27B::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
         Tensor vv         = vc.view({kCfg.gdn_v_dim, kCfg.gdn_v_heads, 1});
         Tensor o          = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, 1});
         Tensor& ssm_state = state_.ssm.at(static_cast<std::size_t>(gidx));
-        kernels::gated_delta_rule_recurrent(qn, kn, vv, g, beta, kGdnScale, work_, ssm_state, o,
-                                            s);
+        kernels::gated_delta_rule_recurrent(qn, kn, vv, g, beta, kGdnScale, work_, ssm_state, o, s);
 
         Tensor on = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, 1});
         kernels::rmsnorm(o, *w.gdn_norm, kCfg.rms_eps, false, &z, on, s);
@@ -512,8 +509,8 @@ template <class Tap>
 void Qwen3_6_27B::run_layers(Tensor& x, Phase ph, Tap& tap) {
     for (int layer = 0; layer < kCfg.n_layers; ++layer) {
         if (ModelConfig::is_full(layer)) {
-            const int fidx         = ModelConfig::full_idx(layer);
-            const FullLayerW& full = full_.at(static_cast<std::size_t>(fidx));
+            const int fidx               = ModelConfig::full_idx(layer);
+            const FullLayerW& full       = full_.at(static_cast<std::size_t>(fidx));
             const std::size_t mixer_mark = work_.mark();
             attn_mix(full, x, fidx, ph);
             if constexpr (Tap::enabled) { tap(TapId::AfterMixer, layer, ph, x, ctx_.stream); }
@@ -523,8 +520,8 @@ void Qwen3_6_27B::run_layers(Tensor& x, Phase ph, Tap& tap) {
             if constexpr (Tap::enabled) { tap(TapId::AfterMlp, layer, ph, x, ctx_.stream); }
             work_.rewind(mlp_mark);
         } else {
-            const int gidx       = ModelConfig::gdn_idx(layer);
-            const GdnLayerW& gdn = gdn_.at(static_cast<std::size_t>(gidx));
+            const int gidx               = ModelConfig::gdn_idx(layer);
+            const GdnLayerW& gdn         = gdn_.at(static_cast<std::size_t>(gidx));
             const std::size_t mixer_mark = work_.mark();
             gdn_mix(gdn, x, gidx, ph);
             if constexpr (Tap::enabled) { tap(TapId::AfterMixer, layer, ph, x, ctx_.stream); }

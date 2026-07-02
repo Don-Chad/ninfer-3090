@@ -1,8 +1,8 @@
 #pragma once
 
-// qus::kernels - gqa_attention prefill kernels. The op writes the full prompt
-// k/v into KVCache positions [0..T-1], then computes causal GQA attention for
-// every prompt token with fp32 online softmax and fp32 AV accumulation.
+// qus::kernels - gqa_attention prefill kernels. The op writes the prompt chunk
+// k/v into absolute KVCache positions [cache_offset..cache_offset+T-1], then
+// computes causal GQA attention for every chunk token over all cached history.
 
 #include <cuda_bf16.h>
 #include <math_constants.h>
@@ -20,10 +20,9 @@ inline constexpr int kGqaPrefillGroupSize = 6;
 
 __device__ __forceinline__ std::int64_t gqa_prefill_cache_index(int kv_head, int d, int position,
                                                                 int padded_context) {
-    return static_cast<std::int64_t>(d) +
-           static_cast<std::int64_t>(kGqaPrefillHeadDim) *
-               (static_cast<std::int64_t>(position) +
-                static_cast<std::int64_t>(padded_context) * kv_head);
+    return static_cast<std::int64_t>(d) + static_cast<std::int64_t>(kGqaPrefillHeadDim) *
+                                              (static_cast<std::int64_t>(position) +
+                                               static_cast<std::int64_t>(padded_context) * kv_head);
 }
 
 __device__ __forceinline__ std::int64_t gqa_prefill_q_index(int q_head, int d, int token) {
@@ -52,11 +51,11 @@ __device__ __forceinline__ float gqa_prefill_warp_sum(float value) {
 
 __device__ __forceinline__ float gqa_prefill_warp_max(float value) {
     constexpr unsigned mask = 0xffffffffu;
-    value = fmaxf(value, __shfl_down_sync(mask, value, 16));
-    value = fmaxf(value, __shfl_down_sync(mask, value, 8));
-    value = fmaxf(value, __shfl_down_sync(mask, value, 4));
-    value = fmaxf(value, __shfl_down_sync(mask, value, 2));
-    value = fmaxf(value, __shfl_down_sync(mask, value, 1));
+    value                   = fmaxf(value, __shfl_down_sync(mask, value, 16));
+    value                   = fmaxf(value, __shfl_down_sync(mask, value, 8));
+    value                   = fmaxf(value, __shfl_down_sync(mask, value, 4));
+    value                   = fmaxf(value, __shfl_down_sync(mask, value, 2));
+    value                   = fmaxf(value, __shfl_down_sync(mask, value, 1));
     return value;
 }
 
@@ -97,8 +96,7 @@ __device__ __forceinline__ void gqa_prefill_ldmatrix_x4(unsigned& a0, unsigned& 
                  : "r"(addr));
 }
 
-__device__ __forceinline__ void gqa_prefill_ldmatrix_x2(unsigned& b0, unsigned& b1,
-                                                        unsigned addr) {
+__device__ __forceinline__ void gqa_prefill_ldmatrix_x2(unsigned& b0, unsigned& b1, unsigned addr) {
     asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];\n"
                  : "=r"(b0), "=r"(b1)
                  : "r"(addr));
@@ -111,9 +109,10 @@ __device__ __forceinline__ void gqa_prefill_ldmatrix_x2_trans(unsigned& b0, unsi
                  : "r"(addr));
 }
 
-__device__ __forceinline__ void gqa_prefill_mma_m16n8k16_bf16(
-    float& c0, float& c1, float& c2, float& c3, unsigned a0, unsigned a1, unsigned a2,
-    unsigned a3, unsigned b0, unsigned b1) {
+__device__ __forceinline__ void gqa_prefill_mma_m16n8k16_bf16(float& c0, float& c1, float& c2,
+                                                              float& c3, unsigned a0, unsigned a1,
+                                                              unsigned a2, unsigned a3, unsigned b0,
+                                                              unsigned b1) {
     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
                  "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
                  : "+f"(c0), "+f"(c1), "+f"(c2), "+f"(c3)
@@ -128,7 +127,7 @@ __device__ __forceinline__ float gqa_prefill_exp2_fast(float x) {
 
 __global__ void gqa_attention_prefill_fill_kernel(const __nv_bfloat16* k, const __nv_bfloat16* v,
                                                   __nv_bfloat16* cache_k, __nv_bfloat16* cache_v,
-                                                  std::int32_t tokens,
+                                                  std::int32_t tokens, std::int32_t cache_offset,
                                                   std::int32_t padded_context) {
     const std::int64_t idx = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const std::int64_t n =
@@ -140,16 +139,17 @@ __global__ void gqa_attention_prefill_fill_kernel(const __nv_bfloat16* k, const 
     const int kv_head = tmp % kGqaPrefillKVHeads;
     const int token   = tmp / kGqaPrefillKVHeads;
 
-    const std::int64_t cache_off = gqa_prefill_cache_index(kv_head, d, token, padded_context);
-    cache_k[cache_off]           = k[idx];
-    cache_v[cache_off]           = v[idx];
+    const std::int64_t cache_off =
+        gqa_prefill_cache_index(kv_head, d, cache_offset + token, padded_context);
+    cache_k[cache_off] = k[idx];
+    cache_v[cache_off] = v[idx];
 }
 
 __launch_bounds__(256) __global__
     void gqa_attention_prefill_slow_kernel(const __nv_bfloat16* q, const __nv_bfloat16* cache_k,
                                            const __nv_bfloat16* cache_v, float scale,
                                            __nv_bfloat16* out, std::int32_t tokens,
-                                           std::int32_t padded_context) {
+                                           std::int32_t cache_offset, std::int32_t padded_context) {
     const int block  = static_cast<int>(blockIdx.x);
     const int q_head = block % kGqaPrefillQHeads;
     const int token  = block / kGqaPrefillQHeads;
@@ -161,10 +161,11 @@ __launch_bounds__(256) __global__
     const int kv_head = q_head / kGqaPrefillGroupSize;
     const float q_d   = __bfloat162float(q[gqa_prefill_q_index(q_head, d, token)]);
 
-    float max_score = -3.4028234663852886e38f;
-    float denom     = 0.0f;
-    float acc       = 0.0f;
-    for (std::int32_t j = 0; j <= token; ++j) {
+    float max_score              = -3.4028234663852886e38f;
+    float denom                  = 0.0f;
+    float acc                    = 0.0f;
+    const std::int32_t query_abs = cache_offset + token;
+    for (std::int32_t j = 0; j <= query_abs; ++j) {
         const float k_d =
             __bfloat162float(cache_k[gqa_prefill_cache_index(kv_head, d, j, padded_context)]);
         const float dot_part = q_d * k_d;
@@ -174,9 +175,9 @@ __launch_bounds__(256) __global__
         const float new_w    = expf(score - next_max);
         const float v_d =
             __bfloat162float(cache_v[gqa_prefill_cache_index(kv_head, d, j, padded_context)]);
-        acc                  = acc * old_w + new_w * v_d;
-        denom                = denom * old_w + new_w;
-        max_score            = next_max;
+        acc       = acc * old_w + new_w * v_d;
+        denom     = denom * old_w + new_w;
+        max_score = next_max;
     }
 
     out[gqa_prefill_q_index(q_head, d, token)] = __float2bfloat16(acc / denom);
@@ -191,17 +192,18 @@ __launch_bounds__(256) __global__
 __launch_bounds__(128, 2) __global__
     void gqa_attention_prefill_kernel(const __nv_bfloat16* q, const __nv_bfloat16* cache_k,
                                       const __nv_bfloat16* cache_v, float scale, __nv_bfloat16* out,
-                                      std::int32_t tokens, std::int32_t padded_context) {
-    constexpr int Wc      = 4;
-    constexpr int Br      = Wc * 16;
-    constexpr int Bc      = 32;
-    constexpr int D       = kGqaPrefillHeadDim;
-    constexpr int Threads = Wc * 32;
-    constexpr int QKNt    = Bc / 8;  // QK score n-tiles
-    constexpr int QKKs    = D / 16;  // QK contraction steps over head_dim
-    constexpr int PVNt    = D / 8;   // PV output n-tiles
-    constexpr int PVKs    = Bc / 16; // PV contraction steps over keys
-    constexpr float Log2E = 1.4426950408889634074f;
+                                      std::int32_t tokens, std::int32_t cache_offset,
+                                      std::int32_t padded_context) {
+    constexpr int Wc            = 4;
+    constexpr int Br            = Wc * 16;
+    constexpr int Bc            = 32;
+    constexpr int D             = kGqaPrefillHeadDim;
+    constexpr int Threads       = Wc * 32;
+    constexpr int QKNt          = Bc / 8;  // QK score n-tiles
+    constexpr int QKKs          = D / 16;  // QK contraction steps over head_dim
+    constexpr int PVNt          = D / 8;   // PV output n-tiles
+    constexpr int PVKs          = Bc / 16; // PV contraction steps over keys
+    constexpr float Log2E       = 1.4426950408889634074f;
     constexpr unsigned FullMask = 0xffffffffu;
 
     static_assert(Threads == 128);
@@ -235,13 +237,13 @@ __launch_bounds__(128, 2) __global__
     const int b_rin    = lane & 7;
     const int b_koff   = ((lane >> 3) & 1) << 3;
 
-    const int warp_row0 = warp * 16;             // CTA-tile rows owned by this warp
-    __nv_bfloat16* p_sw = &p_s[warp * 16 * Bc];  // warp-local P scratch [16 x Bc]
+    const int warp_row0 = warp * 16;            // CTA-tile rows owned by this warp
+    __nv_bfloat16* p_sw = &p_s[warp * 16 * Bc]; // warp-local P scratch [16 x Bc]
 
     for (int idx = tid; idx < Br * D; idx += Threads) {
-        const int row  = idx / D;
-        const int d    = idx - row * D;
-        const int qrow = q0 + row;
+        const int row       = idx / D;
+        const int d         = idx - row * D;
+        const int qrow      = q0 + row;
         __nv_bfloat16 value = __float2bfloat16(0.0f);
         if (qrow < tokens) { value = q[gqa_prefill_q_index(q_head, d, qrow)]; }
         qkv_s[row * D + gqa_prefill_swz(row, d)] = value;
@@ -269,19 +271,20 @@ __launch_bounds__(128, 2) __global__
     }
     float m0 = -CUDART_INF_F, m1 = -CUDART_INF_F, l0 = 0.0f, l1 = 0.0f;
 
-    const int max_key    = min(tokens, q0 + Br);
+    const int cache_end  = cache_offset + tokens;
+    const int max_key    = min(cache_end, cache_offset + q0 + Br);
     const int key_blocks = (max_key + Bc - 1) / Bc;
 
     for (int kb = 0; kb < key_blocks; ++kb) {
         const int k0 = kb * Bc;
 #pragma unroll 1
         for (int chunk = tid; chunk < Bc * (D / 8); chunk += Threads) {
-            const int key_l = chunk / (D / 8);
-            const int d     = (chunk - key_l * (D / 8)) * 8;
-            const int key   = k0 + key_l;
+            const int key_l      = chunk / (D / 8);
+            const int d          = (chunk - key_l * (D / 8)) * 8;
+            const int key        = k0 + key_l;
             __nv_bfloat16* k_dst = &k_s[key_l * D + gqa_prefill_swz(key_l, d)];
             __nv_bfloat16* v_dst = &v_s[key_l * D + gqa_prefill_swz(key_l, d)];
-            if (key < tokens) {
+            if (key < cache_end) {
                 const std::int64_t off = gqa_prefill_cache_index(kv_head, d, key, padded_context);
                 qus::kernels::async_copy_global_to_shared<16>(k_dst, &cache_k[off]);
                 qus::kernels::async_copy_global_to_shared<16>(v_dst, &cache_v[off]);
@@ -317,6 +320,8 @@ __launch_bounds__(128, 2) __global__
         const int row1  = warp_row0 + gid + 8;
         const int qrow0 = q0 + row0;
         const int qrow1 = q0 + row1;
+        const int qabs0 = cache_offset + qrow0;
+        const int qabs1 = cache_offset + qrow1;
 
         float bm0 = -CUDART_INF_F, bm1 = -CUDART_INF_F;
 #pragma unroll
@@ -325,24 +330,28 @@ __launch_bounds__(128, 2) __global__
             const int col1 = col0 + 1;
             const int key0 = k0 + col0;
             const int key1 = k0 + col1;
-            score[nt][0] = (qrow0 < tokens && key0 < tokens && key0 <= qrow0)
-                               ? score[nt][0] * scale : -CUDART_INF_F;
-            score[nt][1] = (qrow0 < tokens && key1 < tokens && key1 <= qrow0)
-                               ? score[nt][1] * scale : -CUDART_INF_F;
-            score[nt][2] = (qrow1 < tokens && key0 < tokens && key0 <= qrow1)
-                               ? score[nt][2] * scale : -CUDART_INF_F;
-            score[nt][3] = (qrow1 < tokens && key1 < tokens && key1 <= qrow1)
-                               ? score[nt][3] * scale : -CUDART_INF_F;
-            bm0 = fmaxf(bm0, fmaxf(score[nt][0], score[nt][1]));
-            bm1 = fmaxf(bm1, fmaxf(score[nt][2], score[nt][3]));
+            score[nt][0]   = (qrow0 < tokens && key0 < cache_end && key0 <= qabs0)
+                                 ? score[nt][0] * scale
+                                 : -CUDART_INF_F;
+            score[nt][1]   = (qrow0 < tokens && key1 < cache_end && key1 <= qabs0)
+                                 ? score[nt][1] * scale
+                                 : -CUDART_INF_F;
+            score[nt][2]   = (qrow1 < tokens && key0 < cache_end && key0 <= qabs1)
+                                 ? score[nt][2] * scale
+                                 : -CUDART_INF_F;
+            score[nt][3]   = (qrow1 < tokens && key1 < cache_end && key1 <= qabs1)
+                                 ? score[nt][3] * scale
+                                 : -CUDART_INF_F;
+            bm0            = fmaxf(bm0, fmaxf(score[nt][0], score[nt][1]));
+            bm1            = fmaxf(bm1, fmaxf(score[nt][2], score[nt][3]));
         }
         bm0 = fmaxf(bm0, __shfl_xor_sync(FullMask, bm0, 1));
         bm0 = fmaxf(bm0, __shfl_xor_sync(FullMask, bm0, 2));
         bm1 = fmaxf(bm1, __shfl_xor_sync(FullMask, bm1, 1));
         bm1 = fmaxf(bm1, __shfl_xor_sync(FullMask, bm1, 2));
 
-        const float nm0    = fmaxf(m0, bm0);
-        const float nm1    = fmaxf(m1, bm1);
+        const float nm0 = fmaxf(m0, bm0);
+        const float nm1 = fmaxf(m1, bm1);
         const float alpha0 =
             (m0 == -CUDART_INF_F) ? 0.0f : gqa_prefill_exp2_fast((m0 - nm0) * Log2E);
         const float alpha1 =
@@ -351,16 +360,20 @@ __launch_bounds__(128, 2) __global__
         float bl0 = 0.0f, bl1 = 0.0f;
 #pragma unroll
         for (int nt = 0; nt < QKNt; ++nt) {
-            const int col0 = nt * 8 + 2 * lid;
-            const int col1 = col0 + 1;
+            const int col0  = nt * 8 + 2 * lid;
+            const int col1  = col0 + 1;
             const float p00 = (nm0 > -CUDART_INF_F && score[nt][0] > -CUDART_INF_F)
-                                  ? gqa_prefill_exp2_fast((score[nt][0] - nm0) * Log2E) : 0.0f;
+                                  ? gqa_prefill_exp2_fast((score[nt][0] - nm0) * Log2E)
+                                  : 0.0f;
             const float p01 = (nm0 > -CUDART_INF_F && score[nt][1] > -CUDART_INF_F)
-                                  ? gqa_prefill_exp2_fast((score[nt][1] - nm0) * Log2E) : 0.0f;
+                                  ? gqa_prefill_exp2_fast((score[nt][1] - nm0) * Log2E)
+                                  : 0.0f;
             const float p10 = (nm1 > -CUDART_INF_F && score[nt][2] > -CUDART_INF_F)
-                                  ? gqa_prefill_exp2_fast((score[nt][2] - nm1) * Log2E) : 0.0f;
+                                  ? gqa_prefill_exp2_fast((score[nt][2] - nm1) * Log2E)
+                                  : 0.0f;
             const float p11 = (nm1 > -CUDART_INF_F && score[nt][3] > -CUDART_INF_F)
-                                  ? gqa_prefill_exp2_fast((score[nt][3] - nm1) * Log2E) : 0.0f;
+                                  ? gqa_prefill_exp2_fast((score[nt][3] - nm1) * Log2E)
+                                  : 0.0f;
             bl0 += p00 + p01;
             bl1 += p10 + p11;
             p_sw[gid * Bc + gqa_prefill_swz32(gid, col0)]           = __float2bfloat16(p00);
@@ -395,7 +408,8 @@ __launch_bounds__(128, 2) __global__
                 const int pcol = k * 16 + a_coloff;
                 gqa_prefill_ldmatrix_x4(
                     pf[0], pf[1], pf[2], pf[3],
-                    gqa_prefill_smem_addr(&p_sw[a_rowoff * Bc + gqa_prefill_swz32(a_rowoff, pcol)]));
+                    gqa_prefill_smem_addr(
+                        &p_sw[a_rowoff * Bc + gqa_prefill_swz32(a_rowoff, pcol)]));
                 unsigned vf[2];
                 const int vrow = k * 16 + b_koff + b_rin;
                 const int vcol = n * 8;

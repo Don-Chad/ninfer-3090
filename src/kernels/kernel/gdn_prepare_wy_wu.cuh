@@ -172,6 +172,7 @@ compute_off_diag(float out[8], int warp, int lane, const float A_reg[N_SUB][8],
         __syncwarp();
         const float* A_buf = scr_smem + warp * BC * SCR_STRIDE;
         mma16_raw_x_swiz(sum, lane, A_buf, M_view, k * BC, MY_J * BC);
+        __syncwarp();
         if (k == MY_J) { // diagonal-block correction (folded after unroll)
 #pragma unroll
             for (int e = 0; e < 8; ++e) sum[e] += A_reg[k][e];
@@ -207,18 +208,16 @@ __device__ __forceinline__ void store_frag_to_M(const float frag[8], int my_w, i
 // __launch_bounds__ NOT applied: nvcc's natural reg=203 is the sweet spot.
 // Capping at 256 (min_blocks=2) just spills the overflow.
 template <int S>
-__global__ void prepare_wy_wu_gdn_kernel(const __nv_bfloat16* __restrict__ k_in,
-                                         const __nv_bfloat16* __restrict__ v_in,
-                                         const float* __restrict__ g_in,
-                                         const float* __restrict__ beta_in,
-                                         __nv_bfloat16* __restrict__ W,
-                                         __nv_bfloat16* __restrict__ U,
-                                         float* __restrict__ g_cumsum_out,
-                                         int64_t T, int64_t H_v, qus::kernels::head_map qk_map,
-                                         // Token-axis strides (in floats) for k / v. Caller
-                                         // passes materialised values (launch_typed handles
-                                         // 0 -> packed defaults H_qk*S / H_v*S).
-                                         int64_t k_stride_t, int64_t v_stride_t) {
+__global__ void
+prepare_wy_wu_gdn_kernel(const __nv_bfloat16* __restrict__ k_in,
+                         const __nv_bfloat16* __restrict__ v_in, const float* __restrict__ g_in,
+                         const float* __restrict__ beta_in, __nv_bfloat16* __restrict__ W,
+                         __nv_bfloat16* __restrict__ U, float* __restrict__ g_cumsum_out, int64_t T,
+                         int64_t H_v, qus::kernels::head_map qk_map,
+                         // Token-axis strides (in floats) for k / v. Caller
+                         // passes materialised values (launch_typed handles
+                         // 0 -> packed defaults H_qk*S / H_v*S).
+                         int64_t k_stride_t, int64_t v_stride_t) {
     using KD                        = kernel_dims<S>;
     constexpr int K_STRIDE          = KD::K_CHUNK;
     constexpr int K_CHUNK           = KD::K_CHUNK;
@@ -484,7 +483,7 @@ __global__ void prepare_wy_wu_gdn_kernel(const __nv_bfloat16* __restrict__ k_in,
                 if (j < i) { sum += M_view.at(row_i, diag_off + j) * M_view.at(diag_off + j, col); }
             }
             __syncwarp();
-            if (wcol < i) { M_view.at(row_i, col) += sum; }
+            if (lane < 16 && wcol < i) { M_view.at(row_i, col) += sum; }
             __syncwarp();
         }
     }
@@ -532,8 +531,8 @@ __global__ void prepare_wy_wu_gdn_kernel(const __nv_bfloat16* __restrict__ k_in,
         const int64_t row_base =
             (int64_t)b * T * v_stride_t + (int64_t)cs * v_stride_t + (int64_t)h_v * S;
         const int64_t row_stride = v_stride_t;
-        qus::kernels::issue_load_bf16_to_float_vec4<BT, S, THREADS>(
-            VK_view, v_in + row_base, row_stride, cl, tid);
+        qus::kernels::issue_load_bf16_to_float_vec4<BT, S, THREADS>(VK_view, v_in + row_base,
+                                                                    row_stride, cl, tid);
     }
 
     if (tid < BT) { bg_smem[tid] = beta_smem[tid] * expf(g_smem[tid]); }

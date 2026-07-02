@@ -85,7 +85,8 @@ void validate_cache(KVCache& kv, int layer, const char* op) {
 } // namespace
 
 void gqa_attention_prefill(const Tensor& q, const Tensor& k, const Tensor& v, float scale,
-                           KVCache& kv, int layer, Tensor& out, cudaStream_t stream) {
+                           KVCache& kv, int layer, std::uint32_t cache_offset, Tensor& out,
+                           cudaStream_t stream) {
     constexpr const char* op = "gqa_attention_prefill";
     if (q.dtype != DType::BF16 || k.dtype != DType::BF16 || v.dtype != DType::BF16 ||
         out.dtype != DType::BF16) {
@@ -107,11 +108,18 @@ void gqa_attention_prefill(const Tensor& q, const Tensor& k, const Tensor& v, fl
     require_contiguous_nonnull(v, op, "v");
     require_contiguous_nonnull(out, op, "out");
     validate_cache(kv, layer, op);
-    if (tokens > static_cast<std::int32_t>(kv.max_context)) {
-        throw std::invalid_argument("gqa_attention_prefill: T exceeds KVCache max_context");
+    const std::uint32_t token_count = static_cast<std::uint32_t>(tokens);
+    if (cache_offset > kv.max_context || token_count > kv.max_context - cache_offset) {
+        throw std::invalid_argument(
+            "gqa_attention_prefill: cache range exceeds KVCache max_context");
+    }
+    if (cache_offset > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) ||
+        token_count >
+            static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - cache_offset) {
+        throw std::overflow_error("gqa_attention_prefill: cache range exceeds int32");
     }
 
-    detail::gqa_attention_prefill_launch(q, k, v, scale, kv, layer, out, stream);
+    detail::gqa_attention_prefill_launch(q, k, v, scale, kv, layer, cache_offset, out, stream);
 }
 
 void gqa_attention_decode(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& pos,

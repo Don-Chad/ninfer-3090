@@ -23,10 +23,10 @@ using namespace qus::test;
 
 namespace {
 
-constexpr std::int32_t kHeadDim = 256;
-constexpr std::int32_t kQHeads  = 24;
-constexpr std::int32_t kKVHeads = 4;
-constexpr float kScale          = 0.0625f;
+constexpr std::int32_t kHeadDim             = 256;
+constexpr std::int32_t kQHeads              = 24;
+constexpr std::int32_t kKVHeads             = 4;
+constexpr float kScale                      = 0.0625f;
 constexpr std::size_t kDecodeWorkspaceBytes = 16ULL * 1024ULL * 1024ULL;
 
 enum class DecodeInputMode { Random, Stress };
@@ -53,9 +53,7 @@ std::size_t kv_tensor_index(std::int32_t kv_head, std::int32_t d, std::int32_t t
                                              static_cast<std::size_t>(token);
 }
 
-std::int32_t align_up_128(std::int32_t value) {
-    return ((value + 127) / 128) * 128;
-}
+std::int32_t align_up_128(std::int32_t value) { return ((value + 127) / 128) * 128; }
 
 std::size_t cache_index(std::int32_t kv_head, std::int32_t d, std::int32_t position,
                         std::int32_t padded_context) {
@@ -141,38 +139,42 @@ void cpu_gqa_decode(const std::vector<float>& q, const std::vector<float>& cache
 }
 
 void cpu_gqa_prefill(const std::vector<float>& q, const std::vector<float>& k,
-                     const std::vector<float>& v, std::int32_t tokens,
-                     std::int32_t padded_context,
+                     const std::vector<float>& v, const std::vector<float>& initial_cache_k,
+                     const std::vector<float>& initial_cache_v, std::int32_t tokens,
+                     std::int32_t cache_offset, std::int32_t padded_context,
                      std::vector<float>& expected_cache_k, std::vector<float>& expected_cache_v,
                      std::vector<double>& out) {
     out.assign(static_cast<std::size_t>(kHeadDim) * static_cast<std::size_t>(kQHeads) *
                    static_cast<std::size_t>(tokens),
                0.0);
-    expected_cache_k.assign(cache_elements(padded_context), 0.0f);
-    expected_cache_v.assign(expected_cache_k.size(), 0.0f);
+    expected_cache_k = initial_cache_k;
+    expected_cache_v = initial_cache_v;
 
     for (std::int32_t t = 0; t < tokens; ++t) {
         for (std::int32_t h = 0; h < kKVHeads; ++h) {
             for (std::int32_t d = 0; d < kHeadDim; ++d) {
-                expected_cache_k[cache_index(h, d, t, padded_context)] =
+                expected_cache_k[cache_index(h, d, cache_offset + t, padded_context)] =
                     k[kv_tensor_index(h, d, t)];
-                expected_cache_v[cache_index(h, d, t, padded_context)] =
+                expected_cache_v[cache_index(h, d, cache_offset + t, padded_context)] =
                     v[kv_tensor_index(h, d, t)];
             }
         }
     }
 
-    std::vector<double> scores(static_cast<std::size_t>(tokens));
-    std::vector<double> probs(static_cast<std::size_t>(tokens));
+    const std::int32_t cache_end = cache_offset + tokens;
+    std::vector<double> scores(static_cast<std::size_t>(cache_end));
+    std::vector<double> probs(static_cast<std::size_t>(cache_end));
     for (std::int32_t t = 0; t < tokens; ++t) {
+        const std::int32_t query_abs = cache_offset + t;
         for (std::int32_t qh = 0; qh < kQHeads; ++qh) {
             const std::int32_t kvh = qh / 6;
             double max_score       = -std::numeric_limits<double>::infinity();
-            for (std::int32_t j = 0; j <= t; ++j) {
+            for (std::int32_t j = 0; j <= query_abs; ++j) {
                 double dot = 0.0;
                 for (std::int32_t d = 0; d < kHeadDim; ++d) {
                     dot += static_cast<double>(q[q_index(qh, d, t)]) *
-                           static_cast<double>(k[kv_tensor_index(kvh, d, j)]);
+                           static_cast<double>(
+                               expected_cache_k[cache_index(kvh, d, j, padded_context)]);
                 }
                 const double score                  = dot * static_cast<double>(kScale);
                 scores[static_cast<std::size_t>(j)] = score;
@@ -180,18 +182,21 @@ void cpu_gqa_prefill(const std::vector<float>& q, const std::vector<float>& k,
             }
 
             double denom = 0.0;
-            for (std::int32_t j = 0; j <= t; ++j) {
+            for (std::int32_t j = 0; j <= query_abs; ++j) {
                 const double p = std::exp(scores[static_cast<std::size_t>(j)] - max_score);
                 probs[static_cast<std::size_t>(j)] = p;
                 denom += p;
             }
-            for (std::int32_t j = 0; j <= t; ++j) { probs[static_cast<std::size_t>(j)] /= denom; }
+            for (std::int32_t j = 0; j <= query_abs; ++j) {
+                probs[static_cast<std::size_t>(j)] /= denom;
+            }
 
             for (std::int32_t d = 0; d < kHeadDim; ++d) {
                 double acc = 0.0;
-                for (std::int32_t j = 0; j <= t; ++j) {
+                for (std::int32_t j = 0; j <= query_abs; ++j) {
                     acc += probs[static_cast<std::size_t>(j)] *
-                           static_cast<double>(v[kv_tensor_index(kvh, d, j)]);
+                           static_cast<double>(
+                               expected_cache_v[cache_index(kvh, d, j, padded_context)]);
                 }
                 out[q_index(qh, d, t)] = acc;
             }
@@ -201,8 +206,8 @@ void cpu_gqa_prefill(const std::vector<float>& q, const std::vector<float>& k,
 
 int one_decode_case(std::int32_t pos, std::uint32_t seed,
                     DecodeInputMode mode = DecodeInputMode::Random) {
-    const std::size_t qn      = static_cast<std::size_t>(kHeadDim) * kQHeads;
-    const std::size_t kvn     = static_cast<std::size_t>(kHeadDim) * kKVHeads;
+    const std::size_t qn              = static_cast<std::size_t>(kHeadDim) * kQHeads;
+    const std::size_t kvn             = static_cast<std::size_t>(kHeadDim) * kKVHeads;
     const std::int32_t padded_context = align_up_128(pos + 1);
     const std::size_t cache_n         = cache_elements(padded_context);
 
@@ -230,10 +235,8 @@ int one_decode_case(std::int32_t pos, std::uint32_t seed,
     std::vector<float> expected_cache_v = cache_v;
     for (std::int32_t h = 0; h < kKVHeads; ++h) {
         for (std::int32_t d = 0; d < kHeadDim; ++d) {
-            expected_cache_k[cache_index(h, d, pos, padded_context)] =
-                k_new[kv_tensor_index(h, d)];
-            expected_cache_v[cache_index(h, d, pos, padded_context)] =
-                v_new[kv_tensor_index(h, d)];
+            expected_cache_k[cache_index(h, d, pos, padded_context)] = k_new[kv_tensor_index(h, d)];
+            expected_cache_v[cache_index(h, d, pos, padded_context)] = v_new[kv_tensor_index(h, d)];
         }
     }
 
@@ -262,7 +265,7 @@ int one_decode_case(std::int32_t pos, std::uint32_t seed,
     Tensor tpos(dpos.p, DType::I32, {1});
     Tensor tout(dout.p, DType::BF16, {kHeadDim, kQHeads, 1});
 
-    kv.pos = static_cast<std::uint32_t>(pos);
+    kv.pos                             = static_cast<std::uint32_t>(pos);
     const std::uint32_t initial_kv_pos = kv.pos;
     kernels::gqa_attention_decode(tq, tk, tv, tpos, kScale, kv, 0, ws, tout, nullptr);
     cudaDeviceSynchronize();
@@ -285,11 +288,13 @@ int one_decode_case(std::int32_t pos, std::uint32_t seed,
     return f;
 }
 
-int one_prefill_case(std::int32_t tokens, std::uint32_t seed) {
+int one_prefill_case(std::int32_t tokens, std::uint32_t seed, std::int32_t cache_offset) {
     const std::size_t qn =
         static_cast<std::size_t>(kHeadDim) * kQHeads * static_cast<std::size_t>(tokens);
     const std::size_t kvn =
         static_cast<std::size_t>(kHeadDim) * kKVHeads * static_cast<std::size_t>(tokens);
+    const std::int32_t padded_context = align_up_128(cache_offset + tokens);
+    const std::size_t cache_n         = cache_elements(padded_context);
 
     std::vector<float> q(qn), k(kvn), v(kvn);
     fill_uniform(q, seed, -0.25f, 0.25f);
@@ -299,33 +304,43 @@ int one_prefill_case(std::int32_t tokens, std::uint32_t seed) {
     round_to_bf16(k);
     round_to_bf16(v);
 
+    std::vector<float> cache_k(cache_n), cache_v(cache_n);
+    fill_uniform(cache_k, seed + 3000u, -0.25f, 0.25f);
+    fill_uniform(cache_v, seed + 4000u, -1.0f, 1.0f);
+    round_to_bf16(cache_k);
+    round_to_bf16(cache_v);
+
     std::vector<float> expected_cache_k, expected_cache_v;
     std::vector<double> ref;
-    const std::int32_t padded_context = align_up_128(tokens);
-    cpu_gqa_prefill(q, k, v, tokens, padded_context, expected_cache_k, expected_cache_v, ref);
+    cpu_gqa_prefill(q, k, v, cache_k, cache_v, tokens, cache_offset, padded_context,
+                    expected_cache_k, expected_cache_v, ref);
 
     DBuf dq   = to_device_bf16(q);
     DBuf dk   = to_device_bf16(k);
     DBuf dv   = to_device_bf16(v);
     DBuf dout = DBuf(qn * sizeof(std::uint16_t));
 
-    const std::size_t cache_n     = cache_elements(padded_context);
     const std::size_t layer_bytes = cache_n * sizeof(std::uint16_t);
     DeviceArena cache_arena(2 * (layer_bytes + 256) + 4096);
-    KVCache kv(cache_arena, 1, static_cast<std::uint32_t>(tokens), kKVHeads, kHeadDim, DType::BF16);
-    cudaMemset(kv.k[0].data, 0, layer_bytes);
-    cudaMemset(kv.v[0].data, 0, layer_bytes);
+    KVCache kv(cache_arena, 1, static_cast<std::uint32_t>(cache_offset + tokens), kKVHeads,
+               kHeadDim, DType::BF16);
+    const std::vector<std::uint16_t> cache_k_bits = bf16_bits(cache_k);
+    const std::vector<std::uint16_t> cache_v_bits = bf16_bits(cache_v);
+    cudaMemcpy(kv.k[0].data, cache_k_bits.data(), layer_bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(kv.v[0].data, cache_v_bits.data(), layer_bytes, cudaMemcpyHostToDevice);
 
     Tensor tq(dq.p, DType::BF16, {kHeadDim, kQHeads, tokens});
     Tensor tk(dk.p, DType::BF16, {kHeadDim, kKVHeads, tokens});
     Tensor tv(dv.p, DType::BF16, {kHeadDim, kKVHeads, tokens});
     Tensor tout(dout.p, DType::BF16, {kHeadDim, kQHeads, tokens});
 
-    kernels::gqa_attention_prefill(tq, tk, tv, kScale, kv, 0, tout, nullptr);
+    kernels::gqa_attention_prefill(tq, tk, tv, kScale, kv, 0,
+                                   static_cast<std::uint32_t>(cache_offset), tout, nullptr);
     cudaDeviceSynchronize();
 
-    int f             = 0;
-    std::string label = "gqa prefill T=" + std::to_string(tokens);
+    int f = 0;
+    std::string label =
+        "gqa prefill offset=" + std::to_string(cache_offset) + " T=" + std::to_string(tokens);
     f += verify(label.c_str(), from_device_bf16(dout, qn), ref, Tolerance::attention_bf16());
     f += check_bits_equal((label + " k fill").c_str(), from_device_bf16_bits(kv.k[0].data, cache_n),
                           bf16_bits(expected_cache_k));
@@ -417,9 +432,9 @@ int one_prefill_decode_consistency_case(std::int32_t tokens, std::uint32_t seed)
     Tensor tpos(dpos.p, DType::I32, {1});
     Tensor tout_decode(dout_decode.p, DType::BF16, {kHeadDim, kQHeads, 1});
 
-    kernels::gqa_attention_prefill(tq_prefill, tk_prefill, tv_prefill, kScale, kv, 0, tout_prefill,
-                                   nullptr);
-    kv.pos = static_cast<std::uint32_t>(tokens);
+    kernels::gqa_attention_prefill(tq_prefill, tk_prefill, tv_prefill, kScale, kv, 0, 0,
+                                   tout_prefill, nullptr);
+    kv.pos                             = static_cast<std::uint32_t>(tokens);
     const std::uint32_t initial_kv_pos = kv.pos;
     kernels::gqa_attention_decode(tq_decode, tk_decode, tv_decode, tpos, kScale, kv, 0, ws,
                                   tout_decode, nullptr);
@@ -463,7 +478,7 @@ int validation_checks() {
     DBuf dout(qn * sizeof(std::uint16_t));
     WorkspaceArena ws(kDecodeWorkspaceBytes);
     const std::int32_t padded_context = align_up_128(pos + 1);
-    const std::size_t layer_bytes = cache_elements(padded_context) * sizeof(std::uint16_t);
+    const std::size_t layer_bytes     = cache_elements(padded_context) * sizeof(std::uint16_t);
     DeviceArena cache_arena(2 * (layer_bytes + 256) + 4096);
     KVCache kv(cache_arena, 1, pos + 1, kKVHeads, kHeadDim, DType::BF16);
     kv.pos = static_cast<std::uint32_t>(pos);
@@ -477,16 +492,19 @@ int validation_checks() {
     int f = 0;
     f += expect_invalid("gqa prefill q shape", [&] {
         Tensor bad(dq.p, DType::BF16, {kHeadDim, kQHeads, 2});
-        kernels::gqa_attention_prefill(bad, k, v, kScale, kv, 0, out, nullptr);
+        kernels::gqa_attention_prefill(bad, k, v, kScale, kv, 0, 0, out, nullptr);
     });
     f += expect_invalid("gqa prefill k shape", [&] {
         Tensor bad(dk.p, DType::BF16, {kHeadDim, kKVHeads, 2});
-        kernels::gqa_attention_prefill(q, bad, v, kScale, kv, 0, out, nullptr);
+        kernels::gqa_attention_prefill(q, bad, v, kScale, kv, 0, 0, out, nullptr);
     });
     f += expect_invalid("gqa prefill zero T", [&] {
         Tensor bad = q;
         bad.ne[2]  = 0;
-        kernels::gqa_attention_prefill(bad, k, v, kScale, kv, 0, out, nullptr);
+        kernels::gqa_attention_prefill(bad, k, v, kScale, kv, 0, 0, out, nullptr);
+    });
+    f += expect_invalid("gqa prefill cache offset range", [&] {
+        kernels::gqa_attention_prefill(q, k, v, kScale, kv, 0, kv.max_context, out, nullptr);
     });
     f += expect_invalid("gqa decode pos dtype", [&] {
         Tensor bad = scalar_pos;
@@ -528,19 +546,20 @@ int main(int argc, char** argv) {
     }
 
     int f = 0;
-    f += one_prefill_case(1, 101u);
-    f += one_prefill_case(7, 107u);
-    f += one_prefill_case(128, 113u);
-    f += one_prefill_case(512, 127u);
+    f += one_prefill_case(1, 101u, 0);
+    f += one_prefill_case(7, 107u, 0);
+    f += one_prefill_case(128, 113u, 0);
+    f += one_prefill_case(512, 127u, 0);
+    f += one_prefill_case(128, 137u, 128);
+    f += one_prefill_case(512, 139u, 128);
+    f += one_prefill_case(65, 149u, 384);
     f += one_prefill_decode_consistency_case(128, 131u);
     f += one_decode_case(1, 11u);
     f += one_decode_case(17, 17u);
     f += one_decode_case(2048, 23u);
     f += one_decode_case(2882, 29u);
     f += one_decode_case(8191, 37u);
-    if (long_decode) {
-        f += one_decode_case(32768, 41u);
-    }
+    if (long_decode) { f += one_decode_case(32768, 41u); }
     f += one_decode_case(17, 31u, DecodeInputMode::Stress);
     f += validation_checks();
 

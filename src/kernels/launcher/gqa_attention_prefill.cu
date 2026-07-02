@@ -1,5 +1,5 @@
-// qus::kernels - gqa_attention prefill launcher: fill prompt k/v then launch
-// causal full-prompt attention.
+// qus::kernels - gqa_attention prefill launcher: fill prompt chunk k/v then
+// launch causal attention over absolute cached history.
 #include "kernels/launcher/gqa_attention.h"
 
 #include "kernels/kernel/gqa_attention_prefill.cuh"
@@ -10,12 +10,14 @@
 namespace qus::kernels::detail {
 
 void gqa_attention_prefill_launch(const Tensor& q, const Tensor& k, const Tensor& v, float scale,
-                                  KVCache& kv, int layer, Tensor& out, cudaStream_t stream) {
+                                  KVCache& kv, int layer, std::uint32_t cache_offset, Tensor& out,
+                                  cudaStream_t stream) {
     Tensor& cache_k = kv.k[static_cast<std::uint32_t>(layer)];
     Tensor& cache_v = kv.v[static_cast<std::uint32_t>(layer)];
 
-    constexpr int kBlock = 256;
-    const auto tokens    = static_cast<std::int32_t>(q.ne[2]);
+    constexpr int kBlock      = 256;
+    const auto tokens         = static_cast<std::int32_t>(q.ne[2]);
+    const auto offset         = static_cast<std::int32_t>(cache_offset);
     const auto padded_context = static_cast<std::int32_t>(kv.padded_context);
 
     const std::int64_t kv_elements =
@@ -24,17 +26,17 @@ void gqa_attention_prefill_launch(const Tensor& q, const Tensor& k, const Tensor
     gqa_attention_prefill_fill_kernel<<<fill_grid, kBlock, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(k.data), static_cast<const __nv_bfloat16*>(v.data),
         static_cast<__nv_bfloat16*>(cache_k.data), static_cast<__nv_bfloat16*>(cache_v.data),
-        tokens, padded_context);
+        tokens, offset, padded_context);
     CUDA_CHECK(cudaGetLastError());
 
-    constexpr int kQBlock = 64;
+    constexpr int kQBlock         = 64;
     constexpr int kAttentionBlock = 128;
     const dim3 attention_grid(static_cast<unsigned>((tokens + kQBlock - 1) / kQBlock),
                               static_cast<unsigned>(kGqaPrefillQHeads), 1u);
     gqa_attention_prefill_kernel<<<attention_grid, kAttentionBlock, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(q.data), static_cast<const __nv_bfloat16*>(cache_k.data),
         static_cast<const __nv_bfloat16*>(cache_v.data), scale,
-        static_cast<__nv_bfloat16*>(out.data), tokens, padded_context);
+        static_cast<__nv_bfloat16*>(out.data), tokens, offset, padded_context);
     CUDA_CHECK(cudaGetLastError());
 }
 

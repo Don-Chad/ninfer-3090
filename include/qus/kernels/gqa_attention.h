@@ -7,12 +7,15 @@
 
 #include <cuda_runtime.h> // cudaStream_t
 
+#include <cstdint>
+
 namespace qus::kernels {
 
 inline constexpr int kGqaDecodeSplits = 192;
 
 void gqa_attention_prefill(const Tensor& q, const Tensor& k, const Tensor& v, float scale,
-                           KVCache& kv, int layer, Tensor& out, cudaStream_t stream);
+                           KVCache& kv, int layer, std::uint32_t cache_offset, Tensor& out,
+                           cudaStream_t stream);
 
 void gqa_attention_decode(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& pos,
                           float scale, KVCache& kv, int layer, WorkspaceArena& ws, Tensor& out,
