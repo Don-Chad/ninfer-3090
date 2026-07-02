@@ -18,9 +18,9 @@ namespace {
 
 int parse_int(std::string_view text, const char* label) {
     if (text.empty()) { throw std::invalid_argument(std::string(label) + " is empty"); }
-    int value = 0;
+    int value         = 0;
     const auto* first = text.data();
-    const auto* last = text.data() + text.size();
+    const auto* last  = text.data() + text.size();
     const auto result = std::from_chars(first, last, value);
     if (result.ec != std::errc{} || result.ptr != last) {
         throw std::invalid_argument(std::string("invalid ") + label + ": " + std::string(text));
@@ -43,9 +43,9 @@ int parse_positive(std::string_view text, const char* label) {
 std::size_t parse_positive_u64(std::string_view text, const char* label) {
     if (text.empty()) { throw std::invalid_argument(std::string(label) + " is empty"); }
     unsigned long long value = 0;
-    const auto* first = text.data();
-    const auto* last = text.data() + text.size();
-    const auto result = std::from_chars(first, last, value);
+    const auto* first        = text.data();
+    const auto* last         = text.data() + text.size();
+    const auto result        = std::from_chars(first, last, value);
     if (result.ec != std::errc{} || result.ptr != last || value == 0) {
         throw std::invalid_argument(std::string("invalid ") + label + ": " + std::string(text));
     }
@@ -56,10 +56,9 @@ std::vector<int> parse_int_list(std::string_view value, const char* label) {
     std::vector<int> out;
     std::size_t start = 0;
     while (true) {
-        const std::size_t comma = value.find(',', start);
-        const std::string_view piece =
-            value.substr(start, comma == std::string_view::npos ? std::string_view::npos
-                                                                : comma - start);
+        const std::size_t comma      = value.find(',', start);
+        const std::string_view piece = value.substr(
+            start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
         out.push_back(parse_positive(piece, label));
         if (comma == std::string_view::npos) { break; }
         start = comma + 1;
@@ -71,12 +70,12 @@ std::vector<std::pair<int, int>> parse_pair_list(std::string_view value, const c
     std::vector<std::pair<int, int>> out;
     std::size_t start = 0;
     while (true) {
-        const std::size_t semi = value.find(';', start);
-        const std::string_view piece =
-            value.substr(start, semi == std::string_view::npos ? std::string_view::npos
-                                                               : semi - start);
+        const std::size_t semi       = value.find(';', start);
+        const std::string_view piece = value.substr(
+            start, semi == std::string_view::npos ? std::string_view::npos : semi - start);
         const std::size_t comma = piece.find(',');
-        if (comma == std::string_view::npos || piece.find(',', comma + 1) != std::string_view::npos) {
+        if (comma == std::string_view::npos ||
+            piece.find(',', comma + 1) != std::string_view::npos) {
             throw std::invalid_argument(std::string(label) + " expects P,G pairs");
         }
         const int p = parse_positive(piece.substr(0, comma), "prompt-gen P");
@@ -127,9 +126,12 @@ std::string existing_read_path(const std::string& path) {
 
 const char* kind_string(TestKind kind) {
     switch (kind) {
-    case TestKind::Prefill: return "pp";
-    case TestKind::Decode: return "tg";
-    case TestKind::PrefillDecode: return "pp+tg";
+    case TestKind::Prefill:
+        return "pp";
+    case TestKind::Decode:
+        return "tg";
+    case TestKind::PrefillDecode:
+        return "pp+tg";
     }
     return "unknown";
 }
@@ -158,7 +160,9 @@ std::string rate_cell(const std::vector<double>& series) {
     const Stats stats = compute_stats(series);
     std::ostringstream out;
     out << std::fixed << std::setprecision(2) << stats.mean;
-    if (stats.count >= 2) { out << " \u00b1 " << std::fixed << std::setprecision(2) << stats.stddev; }
+    if (stats.count >= 2) {
+        out << " \u00b1 " << std::fixed << std::setprecision(2) << stats.stddev;
+    }
     return out.str();
 }
 
@@ -205,10 +209,12 @@ std::string usage_text(std::string_view program) {
         << "  -pg, --prompt-gen <P,G;..>  combined pp{P}+tg{G} tests\n"
         << "  -r, --repetitions <n>       measured repetitions (default: " << kDefaultRepetitions
         << ")\n"
-        << "  --warmup <n>                warmup repetitions, discarded (default: " << kDefaultWarmup
-        << ")\n"
+        << "  --warmup <n>                warmup repetitions, discarded (default: "
+        << kDefaultWarmup << ")\n"
         << "  --max-ctx <tokens>          override auto-sized max context\n"
-        << "  --work-bytes <bytes>        prefill workspace arena size; raise for long prefills\n"
+        << "  --prefill-chunk <tokens>    prefill ubatch size, multiple of 128 (default: "
+        << kDefaultPrefillChunk << ")\n"
+        << "  --work-bytes <bytes>        explicit workspace arena override\n"
         << "  --device <id>               CUDA device ordinal (default: 0)\n"
         << "  --no-cuda-graph             disable CUDA graph decode (decode_path=eager)\n"
         << "  -o, --output <table|json|csv>  output format (default: table)\n"
@@ -226,7 +232,9 @@ BenchOptions parse_args(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg(argv[i]);
         auto require_value = [&](const char* flag) -> std::string {
-            if (i + 1 >= argc) { throw std::invalid_argument(std::string(flag) + " requires value"); }
+            if (i + 1 >= argc) {
+                throw std::invalid_argument(std::string(flag) + " requires value");
+            }
             return argv[++i];
         };
         if (arg == "--help" || arg == "-h") {
@@ -234,7 +242,7 @@ BenchOptions parse_args(int argc, char** argv) {
             return options;
         } else if (arg == "--weights") {
             options.weights_path = require_value("--weights");
-            saw_weights = true;
+            saw_weights          = true;
         } else if (arg == "--corpus") {
             options.corpus_path = require_value("--corpus");
         } else if (arg == "-p" || arg == "--n-prompt") {
@@ -254,6 +262,9 @@ BenchOptions parse_args(int argc, char** argv) {
         } else if (arg == "--max-ctx") {
             options.max_ctx =
                 static_cast<std::uint32_t>(parse_positive(require_value("--max-ctx"), "max-ctx"));
+        } else if (arg == "--prefill-chunk") {
+            options.prefill_chunk = static_cast<std::uint32_t>(
+                parse_positive(require_value("--prefill-chunk"), "prefill-chunk"));
         } else if (arg == "--work-bytes") {
             options.work_bytes = parse_positive_u64(require_value("--work-bytes"), "work-bytes");
         } else if (arg == "--device") {
@@ -278,13 +289,16 @@ BenchOptions parse_args(int argc, char** argv) {
         }
     }
     if (!saw_weights) { throw std::invalid_argument("--weights is required"); }
+    if (options.prefill_chunk % 128 != 0) {
+        throw std::invalid_argument("--prefill-chunk must be a multiple of 128");
+    }
     return options;
 }
 
 std::vector<BenchTest> expand_tests(const BenchOptions& options) {
     std::vector<BenchTest> tests;
-    std::vector<int> prompts = options.n_prompt;
-    std::vector<int> gens = options.n_gen;
+    std::vector<int> prompts                  = options.n_prompt;
+    std::vector<int> gens                     = options.n_gen;
     std::vector<std::pair<int, int>> combined = options.prompt_gen;
     if (prompts.empty() && gens.empty() && combined.empty()) {
         prompts.push_back(kDefaultNPrompt);
@@ -308,13 +322,13 @@ std::vector<BenchTest> expand_tests(const BenchOptions& options) {
 
 std::uint32_t resolve_max_ctx(const std::vector<BenchTest>& tests,
                               std::optional<std::uint32_t> override_max_ctx) {
-    std::uint32_t required = 0;
+    std::uint32_t required  = 0;
     const BenchTest* driver = nullptr;
     for (const BenchTest& test : tests) {
         const std::uint32_t need = test.required_context();
         if (need > required) {
             required = need;
-            driver = &test;
+            driver   = &test;
         }
     }
     if (required == 0) { throw std::invalid_argument("no tests to size max_ctx for"); }
@@ -336,8 +350,8 @@ void validate_prompt_lengths(const std::vector<BenchTest>& tests, std::size_t co
     for (const BenchTest& test : tests) {
         if (test.has_prefill() && static_cast<std::size_t>(test.n_prompt) > corpus_tokens) {
             throw std::invalid_argument("test " + test.label + " prefill length " +
-                                        std::to_string(test.n_prompt) +
-                                        " exceeds corpus tokens " + std::to_string(corpus_tokens));
+                                        std::to_string(test.n_prompt) + " exceeds corpus tokens " +
+                                        std::to_string(corpus_tokens));
         }
     }
 }
@@ -430,11 +444,11 @@ std::string format_table(const BenchEnvironment& env, const std::vector<TestResu
     out << "  weights:    " << env.weights_path << " (" << env.weights_file_size_bytes
         << " bytes)\n";
     out << "  corpus:     " << env.corpus_path << " (" << env.corpus_tokens << " tokens)\n";
-    out << "  config:     max_ctx=" << env.max_ctx << " work_bytes=" << env.work_bytes
-        << " decode_path=" << env.decode_path << " repetitions=" << env.repetitions
-        << " warmup=" << env.warmup << "\n\n";
+    out << "  config:     max_ctx=" << env.max_ctx << " prefill_chunk=" << env.prefill_chunk
+        << " work_bytes=" << env.work_bytes << " decode_path=" << env.decode_path
+        << " repetitions=" << env.repetitions << " warmup=" << env.warmup << "\n\n";
 
-    constexpr std::size_t kCols = 6;
+    constexpr std::size_t kCols                  = 6;
     const std::array<std::string, kCols> headers = {"test",        "n_prompt",   "n_gen",
                                                     "prefill t/s", "decode t/s", "work peak"};
     std::vector<std::array<std::string, kCols>> rows;
@@ -449,7 +463,9 @@ std::string format_table(const BenchEnvironment& env, const std::vector<TestResu
     std::array<std::size_t, kCols> width{};
     for (std::size_t c = 0; c < headers.size(); ++c) { width[c] = headers[c].size(); }
     for (const auto& row : rows) {
-        for (std::size_t c = 0; c < row.size(); ++c) { width[c] = std::max(width[c], row[c].size()); }
+        for (std::size_t c = 0; c < row.size(); ++c) {
+            width[c] = std::max(width[c], row[c].size());
+        }
     }
 
     auto write_row = [&](const std::array<std::string, kCols>& row) {
@@ -491,6 +507,7 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << "  },\n"
         << "  \"config\": {\n"
         << "    \"max_ctx\": " << env.max_ctx << ",\n"
+        << "    \"prefill_chunk\": " << env.prefill_chunk << ",\n"
         << "    \"work_bytes\": " << env.work_bytes << ",\n"
         << "    \"decode_path\": \"" << json_escape(env.decode_path) << "\",\n"
         << "    \"repetitions\": " << env.repetitions << ",\n"
@@ -501,11 +518,11 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << "  },\n"
         << "  \"tests\": [\n";
     for (std::size_t i = 0; i < results.size(); ++i) {
-        const TestResult& result = results[i];
+        const TestResult& result                = results[i];
         const std::vector<double> prefill_rates = prefill_tok_s_series(result);
-        const std::vector<double> decode_rates = decode_tok_s_series(result);
+        const std::vector<double> decode_rates  = decode_tok_s_series(result);
         const std::vector<double> prefill_times = prefill_time_series(result);
-        const std::vector<double> decode_times = decode_time_series(result);
+        const std::vector<double> decode_times  = decode_time_series(result);
         out << "    {\n"
             << "      \"label\": \"" << json_escape(result.test.label) << "\",\n"
             << "      \"kind\": \"" << kind_string(result.test.kind) << "\",\n"
@@ -529,12 +546,12 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
                 << ", ";
             out << "\"prefill_tok_s\": "
                 << (result.test.has_prefill() && rep.prefill_time_s > 0.0
-                        ? json_number(static_cast<double>(result.test.n_prompt) / rep.prefill_time_s)
+                        ? json_number(static_cast<double>(result.test.n_prompt) /
+                                      rep.prefill_time_s)
                         : std::string("null"))
                 << ", ";
             out << "\"decode_time_s\": "
-                << (result.test.has_decode() ? json_number(rep.decode_time_s)
-                                             : std::string("null"))
+                << (result.test.has_decode() ? json_number(rep.decode_time_s) : std::string("null"))
                 << ", ";
             out << "\"decode_tok_s\": "
                 << (result.test.has_decode() && rep.decode_time_s > 0.0
@@ -550,9 +567,10 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
     return out.str();
 }
 
-std::string format_csv(const std::vector<TestResult>& results) {
+std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult>& results) {
     std::ostringstream out;
-    out << "label,kind,n_prompt,n_gen,repetitions,prefill_tok_s_mean,prefill_tok_s_stddev,"
+    out << "label,kind,n_prompt,n_gen,prefill_chunk,repetitions,prefill_tok_s_mean,prefill_tok_s_"
+           "stddev,"
            "decode_tok_s_mean,decode_tok_s_stddev,prefill_time_s_mean,decode_time_s_mean,"
            "workspace_peak_bytes\n";
     auto cell_mean = [](const std::vector<double>& series) -> std::string {
@@ -563,8 +581,8 @@ std::string format_csv(const std::vector<TestResult>& results) {
     };
     for (const TestResult& result : results) {
         out << result.test.label << "," << kind_string(result.test.kind) << ","
-            << result.test.n_prompt << "," << result.test.n_gen << "," << result.reps.size() << ","
-            << cell_mean(prefill_tok_s_series(result)) << ","
+            << result.test.n_prompt << "," << result.test.n_gen << "," << env.prefill_chunk << ","
+            << result.reps.size() << "," << cell_mean(prefill_tok_s_series(result)) << ","
             << cell_stddev(prefill_tok_s_series(result)) << ","
             << cell_mean(decode_tok_s_series(result)) << ","
             << cell_stddev(decode_tok_s_series(result)) << ","
@@ -578,11 +596,21 @@ std::string json_escape(std::string_view value) {
     std::string out;
     for (const char c : value) {
         switch (c) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
+        case '"':
+            out += "\\\"";
+            break;
+        case '\\':
+            out += "\\\\";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
         default: {
             const auto uc = static_cast<unsigned char>(c);
             if (uc < 0x20) {

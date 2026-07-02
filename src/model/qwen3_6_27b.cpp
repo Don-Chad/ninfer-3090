@@ -575,13 +575,13 @@ void Qwen3_6_27B::prefill_impl(std::span<const int> ids, Tap& tap) {
             run_layers(x, Phase::Prefill, tap, static_cast<std::uint32_t>(t0));
 
             if (is_last) {
-                Tensor xf = work_.alloc(DType::BF16, {kCfg.hidden, len});
-                kernels::rmsnorm(x, *final_norm_, kCfg.rms_eps, true, nullptr, xf, s);
+                Tensor last_x = x.slice(1, len - 1, 1);
+                Tensor xf     = work_.alloc(DType::BF16, {kCfg.hidden, 1});
+                kernels::rmsnorm(last_x, *final_norm_, kCfg.rms_eps, true, nullptr, xf, s);
                 if constexpr (Tap::enabled) {
                     tap(TapId::AfterFinalNorm, -1, Phase::Prefill, xf, s);
                 }
-                Tensor last = xf.slice(1, len - 1, 1);
-                kernels::linear(last, *lm_head_, io_.logits, work_, s);
+                kernels::linear(xf, *lm_head_, io_.logits, work_, s);
                 if constexpr (Tap::enabled) {
                     tap(TapId::AfterLogits, -1, Phase::Prefill, io_.logits, s);
                 }

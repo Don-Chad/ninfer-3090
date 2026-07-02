@@ -39,7 +39,7 @@ std::string cuda_version_string(int version) {
 }
 
 void fill_cuda_environment(qus::bench::BenchEnvironment& env, int device) {
-    env.device_id = device;
+    env.device_id       = device;
     int runtime_version = 0;
     if (cudaRuntimeGetVersion(&runtime_version) == cudaSuccess) {
         env.cuda_runtime_version = cuda_version_string(runtime_version);
@@ -62,14 +62,15 @@ qus::bench::RepTiming run_repetition(qus::Engine& engine, const qus::bench::Benc
     switch (test.kind) {
     case qus::bench::TestKind::Prefill: {
         const std::vector<int> slice = qus::bench::prompt_slice(corpus, test.n_prompt);
-        const auto start = Clock::now();
+        const auto start             = Clock::now();
         const qus::NvtxRange range("qus_bench.prefill." + test.label);
         engine.prefill(slice);
         timing.prefill_time_s = seconds_between(start, Clock::now());
         break;
     }
     case qus::bench::TestKind::Decode: {
-        const std::vector<int> seed = qus::bench::prompt_slice(corpus, qus::bench::kDecodeSeedTokens);
+        const std::vector<int> seed =
+            qus::bench::prompt_slice(corpus, qus::bench::kDecodeSeedTokens);
         engine.prefill(seed); // untimed setup
         const auto start = Clock::now();
         const qus::NvtxRange range("qus_bench.decode." + test.label);
@@ -79,7 +80,7 @@ qus::bench::RepTiming run_repetition(qus::Engine& engine, const qus::bench::Benc
     }
     case qus::bench::TestKind::PrefillDecode: {
         const std::vector<int> slice = qus::bench::prompt_slice(corpus, test.n_prompt);
-        const auto start = Clock::now();
+        const auto start             = Clock::now();
         {
             const qus::NvtxRange range("qus_bench.prefill." + test.label);
             engine.prefill(slice);
@@ -89,9 +90,9 @@ qus::bench::RepTiming run_repetition(qus::Engine& engine, const qus::bench::Benc
             const qus::NvtxRange range("qus_bench.decode." + test.label);
             for (int step = 0; step < test.n_gen; ++step) { engine.decode_step(); }
         }
-        const auto end = Clock::now();
+        const auto end        = Clock::now();
         timing.prefill_time_s = seconds_between(start, after_prefill);
-        timing.decode_time_s = seconds_between(after_prefill, end);
+        timing.decode_time_s  = seconds_between(after_prefill, end);
         break;
     }
     }
@@ -133,33 +134,35 @@ int main(int argc, char** argv) {
         const std::uint32_t max_ctx = qus::bench::resolve_max_ctx(tests, options.max_ctx);
 
         qus::EngineOptions engine_options;
-        engine_options.device = options.device;
-        engine_options.max_ctx = max_ctx;
+        engine_options.device         = options.device;
+        engine_options.max_ctx        = max_ctx;
+        engine_options.prefill_chunk  = options.prefill_chunk;
         engine_options.use_cuda_graph = options.use_cuda_graph;
         if (options.work_bytes.has_value()) { engine_options.work_bytes = *options.work_bytes; }
 
         qus::bench::BenchEnvironment env;
         fill_cuda_environment(env, options.device);
-        env.git_commit = qus::bench::current_git_commit_or_empty();
-        env.worktree_dirty = qus::bench::current_git_worktree_dirty();
-        env.weights_path = options.weights_path;
+        env.git_commit              = qus::bench::current_git_commit_or_empty();
+        env.worktree_dirty          = qus::bench::current_git_worktree_dirty();
+        env.weights_path            = options.weights_path;
         env.weights_file_size_bytes = qus::bench::file_size_or_zero(options.weights_path);
-        env.max_ctx = max_ctx;
-        env.work_bytes = engine_options.work_bytes;
-        env.decode_path = options.use_cuda_graph ? "cuda_graph" : "eager";
-        env.repetitions = options.repetitions;
-        env.warmup = options.warmup;
-        env.corpus_path = options.corpus_path;
-        env.corpus_tokens = corpus.size();
+        env.max_ctx                 = max_ctx;
+        env.prefill_chunk           = options.prefill_chunk;
+        env.decode_path             = options.use_cuda_graph ? "cuda_graph" : "eager";
+        env.repetitions             = options.repetitions;
+        env.warmup                  = options.warmup;
+        env.corpus_path             = options.corpus_path;
+        env.corpus_tokens           = corpus.size();
 
-        std::cerr << "[qus_bench] loading weights " << options.weights_path << " (max_ctx="
-                  << max_ctx << ")\n";
+        std::cerr << "[qus_bench] loading weights " << options.weights_path
+                  << " (max_ctx=" << max_ctx << ")\n";
         qus::Engine engine(engine_options);
         engine.load(options.weights_path);
         if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) {
             throw std::runtime_error(std::string("cuda sync after load: ") +
                                      cudaGetErrorString(status));
         }
+        env.work_bytes = engine.memory_stats().workspace.capacity_bytes;
 
         std::vector<qus::bench::TestResult> results;
         results.reserve(tests.size());
@@ -187,7 +190,7 @@ int main(int argc, char** argv) {
             text = qus::bench::format_json(env, command_line(argc, argv), results);
             break;
         case qus::bench::OutputFormat::Csv:
-            text = qus::bench::format_csv(results);
+            text = qus::bench::format_csv(env, results);
             break;
         }
         write_output(options, text);

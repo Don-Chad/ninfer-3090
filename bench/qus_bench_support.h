@@ -14,32 +14,35 @@
 
 namespace qus::bench {
 
-inline constexpr int kSchemaVersion = 1;
-inline constexpr std::string_view kArtifactType = "qus_bench_report";
+inline constexpr int kSchemaVersion                  = 2;
+inline constexpr std::string_view kArtifactType      = "qus_bench_report";
 inline constexpr std::string_view kDefaultCorpusPath = "bench/fixtures/bench_corpus.ids";
 // Seed tokens prefilled (untimed) before a pure decode (tg) test so the model has a valid
 // context to decode from. Kept tiny so tg measures near-peak decode throughput.
-inline constexpr int kDecodeSeedTokens = 1;
-inline constexpr int kDefaultNPrompt = 512;
-inline constexpr int kDefaultNGen = 128;
-inline constexpr int kDefaultRepetitions = 5;
-inline constexpr int kDefaultWarmup = 1;
+inline constexpr int kDecodeSeedTokens              = 1;
+inline constexpr int kDefaultNPrompt                = 512;
+inline constexpr int kDefaultNGen                   = 128;
+inline constexpr int kDefaultRepetitions            = 5;
+inline constexpr int kDefaultWarmup                 = 1;
+inline constexpr std::uint32_t kDefaultPrefillChunk = 512;
 
 enum class TestKind { Prefill, Decode, PrefillDecode };
 
 // One benchmark test: pp{P} (Prefill), tg{G} (Decode), or pp{P}+tg{G} (PrefillDecode).
 struct BenchTest {
     TestKind kind = TestKind::Prefill;
-    int n_prompt = 0; // P; prefill length (0 for pure decode)
-    int n_gen = 0;    // G; decode steps (0 for pure prefill)
+    int n_prompt  = 0; // P; prefill length (0 for pure decode)
+    int n_gen     = 0; // G; decode steps (0 for pure prefill)
     std::string label;
 
     [[nodiscard]] bool has_prefill() const noexcept {
         return kind == TestKind::Prefill || kind == TestKind::PrefillDecode;
     }
+
     [[nodiscard]] bool has_decode() const noexcept {
         return kind == TestKind::Decode || kind == TestKind::PrefillDecode;
     }
+
     // Minimum EngineOptions.max_ctx that lets this test run without tripping the engine
     // prefill/decode context guards. Derivation: prefill(P) leaves pos=P; each decode_step
     // requires pos < max_ctx then advances.
@@ -51,24 +54,25 @@ enum class OutputFormat { Table, Json, Csv };
 struct BenchOptions {
     std::string weights_path;
     std::string corpus_path{kDefaultCorpusPath};
-    std::vector<int> n_prompt;                     // -p
-    std::vector<int> n_gen;                        // -n
-    std::vector<std::pair<int, int>> prompt_gen;   // -pg
+    std::vector<int> n_prompt;                   // -p
+    std::vector<int> n_gen;                      // -n
+    std::vector<std::pair<int, int>> prompt_gen; // -pg
     int repetitions = kDefaultRepetitions;
-    int warmup = kDefaultWarmup;
-    std::optional<std::uint32_t> max_ctx;          // --max-ctx override
-    std::optional<std::size_t> work_bytes;         // --work-bytes override (prefill workspace)
-    int device = 0;
-    bool use_cuda_graph = true;
-    OutputFormat output = OutputFormat::Table;
-    std::string output_file;                       // empty => stdout
+    int warmup      = kDefaultWarmup;
+    std::optional<std::uint32_t> max_ctx;  // --max-ctx override
+    std::optional<std::size_t> work_bytes; // --work-bytes override (prefill workspace)
+    std::uint32_t prefill_chunk = kDefaultPrefillChunk;
+    int device                  = 0;
+    bool use_cuda_graph         = true;
+    OutputFormat output         = OutputFormat::Table;
+    std::string output_file; // empty => stdout
     bool help_requested = false;
 };
 
 // Timing for one measured repetition. Only the fields relevant to the test kind are set.
 struct RepTiming {
     double prefill_time_s = 0.0;
-    double decode_time_s = 0.0;
+    double decode_time_s  = 0.0;
 };
 
 struct TestResult {
@@ -78,9 +82,9 @@ struct TestResult {
 };
 
 struct Stats {
-    double mean = 0.0;
+    double mean   = 0.0;
     double stddev = 0.0; // sample stddev (n-1); 0 when fewer than 2 samples
-    int count = 0;
+    int count     = 0;
 };
 
 struct BenchEnvironment {
@@ -92,11 +96,12 @@ struct BenchEnvironment {
     int device_id = 0;
     std::string weights_path;
     std::uint64_t weights_file_size_bytes = 0;
-    std::uint32_t max_ctx = 0;
-    std::size_t work_bytes = 0;
-    std::string decode_path;   // "cuda_graph" or "eager"
+    std::uint32_t max_ctx                 = 0;
+    std::size_t work_bytes                = 0;
+    std::uint32_t prefill_chunk           = kDefaultPrefillChunk;
+    std::string decode_path; // "cuda_graph" or "eager"
     int repetitions = 0;
-    int warmup = 0;
+    int warmup      = 0;
     std::string corpus_path;
     std::size_t corpus_tokens = 0;
 };
@@ -130,7 +135,7 @@ std::vector<double> decode_time_series(const TestResult& result);
 std::string format_table(const BenchEnvironment& env, const std::vector<TestResult>& results);
 std::string format_json(const BenchEnvironment& env, const std::string& command,
                         const std::vector<TestResult>& results);
-std::string format_csv(const std::vector<TestResult>& results);
+std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult>& results);
 
 // Small shared helpers (also used by qus_bench.cpp for the report header).
 std::string json_escape(std::string_view value);

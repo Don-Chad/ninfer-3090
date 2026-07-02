@@ -6,13 +6,15 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <initializer_list>
 #include <limits>
 #include <stdexcept>
 
 namespace qus {
 namespace {
 
-constexpr std::size_t kMiB = 1024ULL * 1024ULL;
+constexpr std::size_t kMiB        = 1024ULL * 1024ULL;
+constexpr std::size_t kArenaAlign = 256ULL;
 
 std::size_t checked_mul(std::size_t a, std::size_t b, const char* label) {
     if (b != 0 && a > std::numeric_limits<std::size_t>::max() / b) {
@@ -36,6 +38,53 @@ std::size_t align_up(std::size_t value, std::size_t alignment, const char* label
     return (value + mask) & ~mask;
 }
 
+std::size_t arena_alloc_after(std::size_t cursor, std::size_t bytes, const char* label) {
+    const std::size_t aligned = align_up(cursor, kArenaAlign, label);
+    return checked_add(aligned, bytes, label);
+}
+
+std::size_t arena_sequence_bytes(std::size_t cursor, std::initializer_list<std::size_t> sizes,
+                                 const char* label) {
+    for (const std::size_t bytes : sizes) { cursor = arena_alloc_after(cursor, bytes, label); }
+    return cursor;
+}
+
+std::size_t tensor_bytes(std::size_t elems, DType dtype, const char* label) {
+    return checked_mul(elems, dtype_size(dtype), label);
+}
+
+std::size_t token_matrix_bytes(std::size_t rows, std::size_t tokens, DType dtype,
+                               const char* label) {
+    return tensor_bytes(checked_mul(rows, tokens, label), dtype, label);
+}
+
+std::size_t gdn_chunked_stage_bytes(std::size_t tokens) {
+    if (tokens == 0) { return 0; }
+    constexpr std::size_t kGdnKernelChunk = 64;
+    constexpr std::size_t kS              = 128;
+    constexpr std::size_t kHv             = 48;
+    const std::size_t nt                  = (tokens + kGdnKernelChunk - 1) / kGdnKernelChunk;
+
+    std::size_t cursor = 0;
+    cursor             = arena_sequence_bytes(
+        cursor,
+        {
+            token_matrix_bytes(kHv, tokens, DType::FP32, "work arena gdn stage"),
+            token_matrix_bytes(checked_mul(kHv, kS, "work arena gdn stage"), tokens, DType::BF16,
+                                           "work arena gdn stage"),
+            token_matrix_bytes(checked_mul(kHv, kS, "work arena gdn stage"), tokens, DType::BF16,
+                                           "work arena gdn stage"),
+            token_matrix_bytes(checked_mul(kHv, kS, "work arena gdn stage"), tokens, DType::BF16,
+                                           "work arena gdn stage"),
+            tensor_bytes(checked_mul(checked_mul(nt, kHv, "work arena gdn stage"),
+                                                 checked_mul(kS, kS, "work arena gdn stage"),
+                                                 "work arena gdn stage"),
+                                     DType::BF16, "work arena gdn stage"),
+        },
+        "work arena gdn stage");
+    return cursor;
+}
+
 ArenaMemoryStats arena_stats(const std::optional<DeviceArena>& arena) noexcept {
     ArenaMemoryStats stats;
     if (!arena) { return stats; }
@@ -57,9 +106,6 @@ Engine::Engine(EngineOptions options) : options_(options) {
         std::unique(options_.stop_token_ids.begin(), options_.stop_token_ids.end()),
         options_.stop_token_ids.end());
     if (options_.max_ctx == 0) { throw std::invalid_argument("Engine max_ctx must be nonzero"); }
-    if (options_.work_bytes == 0) {
-        throw std::invalid_argument("Engine work_bytes must be nonzero");
-    }
     if (options_.prefill_chunk == 0 || options_.prefill_chunk % 128 != 0) {
         throw std::invalid_argument("Engine prefill_chunk must be a nonzero multiple of 128");
     }
@@ -130,6 +176,92 @@ std::size_t Engine::default_cache_bytes(std::uint32_t max_ctx) {
     return checked_add(total, 64ULL * kMiB, "cache arena size");
 }
 
+std::size_t Engine::default_work_bytes(std::uint32_t prefill_chunk) {
+    if (prefill_chunk == 0 || prefill_chunk % 128 != 0) {
+        throw std::invalid_argument("Engine prefill_chunk must be a nonzero multiple of 128");
+    }
+    if (prefill_chunk > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
+        throw std::invalid_argument("Engine prefill_chunk exceeds int32");
+    }
+
+    const std::size_t tokens = prefill_chunk;
+    const auto bf16          = [&](std::size_t rows) {
+        return token_matrix_bytes(rows, tokens, DType::BF16, "work arena size");
+    };
+    const auto fp32 = [&](std::size_t rows) {
+        return token_matrix_bytes(rows, tokens, DType::FP32, "work arena size");
+    };
+
+    const std::size_t persistent =
+        arena_sequence_bytes(0,
+                             {
+                                 token_matrix_bytes(1, tokens, DType::I32, "work arena size"),
+                                 token_matrix_bytes(1, tokens, DType::I32, "work arena size"),
+                                 bf16(model::kCfg.hidden),
+                             },
+                             "work arena size");
+
+    const std::size_t attention = arena_sequence_bytes(persistent,
+                                                       {
+                                                           bf16(model::kCfg.hidden),
+                                                           bf16(model::kCfg.q_size),
+                                                           bf16(model::kCfg.q_size),
+                                                           bf16(model::kCfg.kv_size),
+                                                           bf16(model::kCfg.kv_size),
+                                                           bf16(model::kCfg.q_size),
+                                                           bf16(model::kCfg.kv_size),
+                                                           bf16(model::kCfg.q_size),
+                                                           bf16(model::kCfg.hidden),
+                                                       },
+                                                       "work arena size");
+
+    const std::size_t gdn_before_stage = arena_sequence_bytes(persistent,
+                                                              {
+                                                                  bf16(model::kCfg.hidden),
+                                                                  bf16(model::kCfg.key_dim),
+                                                                  bf16(model::kCfg.key_dim),
+                                                                  bf16(model::kCfg.value_dim),
+                                                                  bf16(model::kCfg.conv_dim),
+                                                                  bf16(model::kCfg.conv_dim),
+                                                                  fp32(model::kCfg.gdn_v_heads),
+                                                                  fp32(model::kCfg.gdn_v_heads),
+                                                                  bf16(model::kCfg.key_dim),
+                                                                  bf16(model::kCfg.key_dim),
+                                                                  bf16(model::kCfg.value_dim),
+                                                                  bf16(model::kCfg.key_dim),
+                                                                  bf16(model::kCfg.key_dim),
+                                                                  bf16(model::kCfg.value_dim),
+                                                              },
+                                                              "work arena size");
+    const std::size_t gdn_during_stage =
+        arena_alloc_after(gdn_before_stage, gdn_chunked_stage_bytes(tokens), "work arena size");
+    const std::size_t gdn_after_stage = arena_sequence_bytes(gdn_before_stage,
+                                                             {
+                                                                 bf16(model::kCfg.value_dim),
+                                                                 bf16(model::kCfg.value_dim),
+                                                                 bf16(model::kCfg.hidden),
+                                                             },
+                                                             "work arena size");
+    const std::size_t gdn             = std::max(gdn_during_stage, gdn_after_stage);
+
+    const std::size_t mlp = arena_sequence_bytes(persistent,
+                                                 {
+                                                     bf16(model::kCfg.hidden),
+                                                     bf16(2ULL * model::kCfg.intermediate),
+                                                     bf16(model::kCfg.intermediate),
+                                                     bf16(model::kCfg.hidden),
+                                                 },
+                                                 "work arena size");
+
+    const std::size_t final_head = arena_sequence_bytes(
+        persistent, {tensor_bytes(model::kCfg.hidden, DType::BF16, "work arena size")},
+        "work arena size");
+
+    const std::size_t formula_peak = std::max({attention, gdn, mlp, final_head});
+    const std::size_t with_margin  = checked_add(formula_peak, 64ULL * kMiB, "work arena size");
+    return align_up(with_margin, 16ULL * kMiB, "work arena size");
+}
+
 void Engine::load(const std::string& path) {
     decode_graph_.reset();
     decode_warmed_ = false;
@@ -146,7 +278,8 @@ void Engine::load(const std::string& path) {
     ctx_.emplace(options_.device);
     weight_arena_.emplace(options_.weight_bytes == 0 ? default_weight_bytes(path)
                                                      : options_.weight_bytes);
-    work_.emplace(options_.work_bytes);
+    work_.emplace(options_.work_bytes == 0 ? default_work_bytes(options_.prefill_chunk)
+                                           : options_.work_bytes);
     weights_.emplace(expectations());
 
     LoadOptions load_options;

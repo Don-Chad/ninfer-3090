@@ -42,7 +42,7 @@ struct EngineOptions {
     std::uint32_t max_ctx       = 2048;
     std::size_t weight_bytes    = 0;
     std::size_t cache_bytes     = 0;
-    std::size_t work_bytes      = 4ULL * 1024ULL * 1024ULL * 1024ULL;
+    std::size_t work_bytes      = 0;
     std::uint32_t prefill_chunk = 512;
     Q5090Progress* progress     = nullptr;
     std::vector<int> stop_token_ids;
@@ -67,6 +67,8 @@ public:
     [[nodiscard]] EngineMemoryStats memory_stats() const noexcept;
 
     void reset_memory_peaks() noexcept;
+
+    [[nodiscard]] static std::size_t default_work_bytes(std::uint32_t prefill_chunk);
 
 private:
     [[nodiscard]] static Q5090Expectations expectations();
