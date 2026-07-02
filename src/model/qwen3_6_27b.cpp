@@ -138,9 +138,9 @@ void extract_bf16_block(const Tensor& src, int src_channel, Tensor& dst, cudaStr
                                  stream));
 }
 
-void copy_i32_to_device(const int* src, Tensor& dst) {
-    CUDA_CHECK(cudaMemcpy(dst.data, src, static_cast<std::size_t>(dst.ne[0]) * sizeof(int),
-                          cudaMemcpyHostToDevice));
+void copy_i32_to_device(const int* src, Tensor& dst, cudaStream_t stream) {
+    CUDA_CHECK(cudaMemcpyAsync(dst.data, src, static_cast<std::size_t>(dst.ne[0]) * sizeof(int),
+                               cudaMemcpyHostToDevice, stream));
 }
 
 class ScopedPositions {
@@ -563,7 +563,7 @@ void Qwen3_6_27B::prefill_impl(std::span<const int> ids, Tap& tap) {
 
         {
             Tensor ids_device = work_.alloc(DType::I32, {len});
-            copy_i32_to_device(ids.data() + t0, ids_device);
+            copy_i32_to_device(ids.data() + t0, ids_device, s);
 
             Tensor positions = work_.alloc(DType::I32, {len});
             detail::fill_positions(positions, t0, s);
