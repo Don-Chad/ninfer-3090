@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <optional>
 #include <random>
@@ -24,6 +25,36 @@ constexpr int H_qk = 16;
 constexpr int H_v  = 48;
 constexpr int B    = 1;
 constexpr int BT   = 64;
+
+std::vector<std::uint16_t> from_device_u16(const void* ptr, std::size_t n) {
+    std::vector<std::uint16_t> out(n);
+    cudaMemcpy(out.data(), ptr, n * sizeof(std::uint16_t), cudaMemcpyDeviceToHost);
+    return out;
+}
+
+std::vector<std::uint32_t> from_device_u32(const void* ptr, std::size_t n) {
+    std::vector<std::uint32_t> out(n);
+    cudaMemcpy(out.data(), ptr, n * sizeof(std::uint32_t), cudaMemcpyDeviceToHost);
+    return out;
+}
+
+template <typename T>
+int verify_bits_equal(const char* label, const std::vector<T>& got, const std::vector<T>& ref) {
+    if (got.size() != ref.size()) {
+        std::cerr << label << ": size mismatch got=" << got.size() << " ref=" << ref.size()
+                  << '\n';
+        return 1;
+    }
+    for (std::size_t i = 0; i < got.size(); ++i) {
+        if (got[i] != ref[i]) {
+            std::cerr << label << ": bit mismatch at " << i << " got=0x" << std::hex
+                      << static_cast<std::uint64_t>(got[i]) << " ref=0x"
+                      << static_cast<std::uint64_t>(ref[i]) << std::dec << '\n';
+            return 1;
+        }
+    }
+    return 0;
+}
 
 void fill_uniform_shared(std::vector<float>& buf, std::mt19937& gen, float lo, float hi) {
     std::uniform_real_distribution<float> d(lo, hi);
@@ -146,6 +177,82 @@ GpuResult run_recurrent_gpu_stepped(const gdn_ref::Inputs& in) {
     }
     cudaDeviceSynchronize();
     return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
+}
+
+int snapshot_chain_equivalence_case(int T, std::uint32_t seed, bool stress_g) {
+    const auto in = make_inputs(T, seed, stress_g);
+
+    std::vector<float> snapshot_state(in.state.size() * static_cast<std::size_t>(T), 17.0f);
+    std::copy(in.state.begin(), in.state.end(), snapshot_state.begin());
+
+    DBuf dq_snapshot = to_device_bf16(in.q);
+    DBuf dk_snapshot = to_device_bf16(in.k);
+    DBuf dv_snapshot = to_device_bf16(in.v);
+    DBuf dg_snapshot = to_device_f32(in.g);
+    DBuf dbeta_snapshot = to_device_f32(in.beta);
+    DBuf dstate_snapshot = to_device_f32(snapshot_state);
+    DBuf dout_snapshot(in.v.size() * 2);
+    WorkspaceArena ws_snapshot(chunked_arena_bytes(T));
+
+    Tensor tq_snapshot(dq_snapshot.p, DType::BF16, {S, H_qk, T});
+    Tensor tk_snapshot(dk_snapshot.p, DType::BF16, {S, H_qk, T});
+    Tensor tv_snapshot(dv_snapshot.p, DType::BF16, {S, H_v, T});
+    Tensor tg_snapshot(dg_snapshot.p, DType::FP32, {H_v, T});
+    Tensor tbeta_snapshot(dbeta_snapshot.p, DType::FP32, {H_v, T});
+    Tensor tstate_snapshot(dstate_snapshot.p, DType::FP32, {S, S, H_v, T});
+    Tensor tout_snapshot(dout_snapshot.p, DType::BF16, {S, H_v, T});
+
+    kernels::gated_delta_rule_recurrent_snapshot(
+        tq_snapshot, tk_snapshot, tv_snapshot, tg_snapshot, tbeta_snapshot,
+        1.0f / std::sqrt(float(S)), ws_snapshot, tstate_snapshot, tout_snapshot, nullptr);
+    cudaDeviceSynchronize();
+
+    DBuf dq_step = to_device_bf16(in.q);
+    DBuf dk_step = to_device_bf16(in.k);
+    DBuf dv_step = to_device_bf16(in.v);
+    DBuf dg_step = to_device_f32(in.g);
+    DBuf dbeta_step = to_device_f32(in.beta);
+    DBuf dstate_step = to_device_f32(in.state);
+    DBuf dout_step(in.v.size() * 2);
+    WorkspaceArena ws_step(chunked_arena_bytes(T));
+
+    Tensor tq_step(dq_step.p, DType::BF16, {S, H_qk, T});
+    Tensor tk_step(dk_step.p, DType::BF16, {S, H_qk, T});
+    Tensor tv_step(dv_step.p, DType::BF16, {S, H_v, T});
+    Tensor tg_step(dg_step.p, DType::FP32, {H_v, T});
+    Tensor tbeta_step(dbeta_step.p, DType::FP32, {H_v, T});
+    Tensor tstate_step(dstate_step.p, DType::FP32, {S, S, H_v});
+    Tensor tout_step(dout_step.p, DType::BF16, {S, H_v, T});
+
+    std::vector<std::uint32_t> expected_slots(in.state.size() * static_cast<std::size_t>(T));
+    for (int t = 0; t < T; ++t) {
+        Tensor q_t    = tq_step.slice(2, t, 1);
+        Tensor k_t    = tk_step.slice(2, t, 1);
+        Tensor v_t    = tv_step.slice(2, t, 1);
+        Tensor g_t    = tg_step.slice(1, t, 1);
+        Tensor beta_t = tbeta_step.slice(1, t, 1);
+        Tensor out_t  = tout_step.slice(2, t, 1);
+        kernels::gated_delta_rule_recurrent(q_t, k_t, v_t, g_t, beta_t,
+                                            1.0f / std::sqrt(float(S)), ws_step, tstate_step,
+                                            out_t, nullptr);
+        cudaDeviceSynchronize();
+        const auto state_bits = from_device_u32(dstate_step.p, in.state.size());
+        std::memcpy(expected_slots.data() + static_cast<std::size_t>(t) * in.state.size(),
+                    state_bits.data(), in.state.size() * sizeof(std::uint32_t));
+    }
+    cudaDeviceSynchronize();
+
+    const std::string tag = "gdn recurrent snapshot T=" + std::to_string(T) +
+                            (stress_g ? " stress" : " default");
+    int failures = 0;
+    failures += verify_bits_equal((tag + " out bits").c_str(),
+                                  from_device_u16(dout_snapshot.p, in.v.size()),
+                                  from_device_u16(dout_step.p, in.v.size()));
+    failures += verify_bits_equal(
+        (tag + " state slot bits").c_str(),
+        from_device_u32(dstate_snapshot.p, in.state.size() * static_cast<std::size_t>(T)),
+        expected_slots);
+    return failures;
 }
 
 GpuResult run_chunked_gpu(const gdn_ref::Inputs& in, int chunk_size = BT) {
@@ -427,6 +534,20 @@ int chunked_validation_case() {
         ++failures;
     }
 
+    try {
+        Tensor too_few_slots(dstate.p, DType::FP32, {S, S, H_v, BT - 1});
+        kernels::gated_delta_rule_recurrent_snapshot(tq, tk, tv, tg, tbeta,
+                                                     1.0f / std::sqrt(float(S)), ws,
+                                                     too_few_slots, tout, nullptr);
+        std::cerr << "gdn snapshot T exceeds slots validation: expected invalid_argument\n";
+        ++failures;
+    } catch (const std::invalid_argument&) {
+    } catch (const std::exception& e) {
+        std::cerr << "gdn snapshot T exceeds slots validation: wrong exception: " << e.what()
+                  << '\n';
+        ++failures;
+    }
+
     return failures;
 }
 
@@ -445,6 +566,13 @@ int main() {
     failures += recurrent_case(1, 3027u, true);
     failures += recurrent_case(7, 3033u, true);
     failures += recurrent_case(2, 4028u, false, true);
+    for (std::uint32_t seed : {7028u, 8128u}) {
+        for (int T : {1, 2, 3, 4, 5, 6}) {
+            failures += snapshot_chain_equivalence_case(T, seed + static_cast<std::uint32_t>(T),
+                                                        false);
+        }
+    }
+    failures += snapshot_chain_equivalence_case(6, 9028u, true);
     failures += validation_case();
     failures += chunked_case(32, 4528u, true, true);
     failures += chunked_case(64, 4090u, true, true);

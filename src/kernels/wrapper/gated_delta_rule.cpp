@@ -74,6 +74,45 @@ void validate_recurrent(const Tensor& q, const Tensor& k, const Tensor& v, const
     }
 }
 
+void validate_recurrent_snapshot(const Tensor& q, const Tensor& k, const Tensor& v,
+                                 const Tensor& g, const Tensor& beta, float scale,
+                                 const Tensor& ssm_states, const Tensor& out) {
+    require_dtype(q, DType::BF16, "q must be BF16");
+    require_dtype(k, DType::BF16, "k must be BF16");
+    require_dtype(v, DType::BF16, "v must be BF16");
+    require_dtype(out, DType::BF16, "out must be BF16");
+    require_dtype(g, DType::FP32, "g must be FP32");
+    require_dtype(beta, DType::FP32, "beta must be FP32");
+    require_dtype(ssm_states, DType::FP32, "ssm_states must be FP32");
+
+    const std::int32_t T = q.ne[2];
+    if (T <= 0) { throw std::invalid_argument("gated_delta_rule: T must be positive"); }
+    require_shape(q, kS, kHqk, T, 1, "q");
+    require_shape(k, kS, kHqk, T, 1, "k");
+    require_shape(v, kS, kHv, T, 1, "v");
+    require_shape(out, kS, kHv, T, 1, "out");
+    require_shape(g, kHv, T, 1, 1, "g");
+    require_shape(beta, kHv, T, 1, 1, "beta");
+    if (ssm_states.ne[0] != kS || ssm_states.ne[1] != kS || ssm_states.ne[2] != kHv ||
+        ssm_states.ne[3] < T) {
+        throw std::invalid_argument(
+            "gated_delta_rule: invalid shape for ssm_states snapshot");
+    }
+
+    require_contiguous_nonnull(q, "q");
+    require_contiguous_nonnull(k, "k");
+    require_contiguous_nonnull(v, "v");
+    require_contiguous_nonnull(g, "g");
+    require_contiguous_nonnull(beta, "beta");
+    require_contiguous_nonnull(ssm_states, "ssm_states");
+    require_contiguous_nonnull(out, "out");
+
+    constexpr float expected_scale = 0.08838834764831845f;
+    if (!std::isfinite(scale) || scale <= 0.0f || std::abs(scale - expected_scale) > 1.0e-6f) {
+        throw std::invalid_argument("gated_delta_rule: scale must be 1/sqrt(128)");
+    }
+}
+
 void validate_chunked(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& g,
                       const Tensor& beta, float scale, int chunk_size, const Tensor& ssm_state,
                       const Tensor& out) {
@@ -113,6 +152,17 @@ void gated_delta_rule_recurrent(const Tensor& q, const Tensor& k, const Tensor& 
     (void)ws;
     detail::gated_delta_rule_recurrent_bf16_launch(q, k, v, g, beta, scale, ssm_state, out,
                                                    stream);
+}
+
+void gated_delta_rule_recurrent_snapshot(const Tensor& q, const Tensor& k, const Tensor& v,
+                                         const Tensor& g, const Tensor& beta, float scale,
+                                         WorkspaceArena& ws, Tensor& ssm_states, Tensor& out,
+                                         cudaStream_t stream) {
+    validate_recurrent_snapshot(q, k, v, g, beta, scale, ssm_states, out);
+
+    (void)ws;
+    detail::gated_delta_rule_recurrent_snapshot_bf16_launch(q, k, v, g, beta, scale, ssm_states,
+                                                            out, stream);
 }
 
 void gated_delta_rule_chunked(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& g,

@@ -13,6 +13,11 @@ void gated_delta_rule_recurrent(const Tensor& q, const Tensor& k, const Tensor& 
                                 const Tensor& beta, float scale, WorkspaceArena& ws,
                                 Tensor& ssm_state, Tensor& out, cudaStream_t stream);
 
+void gated_delta_rule_recurrent_snapshot(const Tensor& q, const Tensor& k, const Tensor& v,
+                                         const Tensor& g, const Tensor& beta, float scale,
+                                         WorkspaceArena& ws, Tensor& ssm_states, Tensor& out,
+                                         cudaStream_t stream);
+
 void gated_delta_rule_chunked(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& g,
                               const Tensor& beta, float scale, int chunk_size, WorkspaceArena& ws,
                               Tensor& ssm_state, Tensor& out, cudaStream_t stream);

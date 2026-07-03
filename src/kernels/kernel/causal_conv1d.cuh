@@ -141,4 +141,43 @@ __global__ void causal_conv1d_decode_kernel(const __nv_bfloat16* x, const __nv_b
     }
 }
 
+__global__ void causal_conv1d_sequence_snapshot_kernel(const __nv_bfloat16* x,
+                                                       const __nv_bfloat16* weight,
+                                                       __nv_bfloat16* conv_states,
+                                                       __nv_bfloat16* out, std::int32_t C,
+                                                       std::int32_t T) {
+    const std::int64_t start  = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x;
+    const std::int64_t stride = static_cast<std::int64_t>(gridDim.x) * blockDim.x;
+    const std::int64_t C64    = static_cast<std::int64_t>(C);
+    const std::int64_t slot_stride = C64 * 3;
+
+    for (std::int64_t c64 = start; c64 < C64; c64 += stride) {
+        const std::int32_t c = static_cast<std::int32_t>(c64);
+        __nv_bfloat16 s0     = conv_states[c64];
+        __nv_bfloat16 s1     = conv_states[C64 + c64];
+        __nv_bfloat16 s2     = conv_states[2 * C64 + c64];
+
+        for (std::int32_t t = 0; t < T; ++t) {
+            const std::int64_t out_idx = static_cast<std::int64_t>(t) * C64 + c64;
+            const __nv_bfloat16 x0     = x[out_idx];
+
+            float acc = 0.0f;
+            acc += __bfloat162float(weight[c]) * __bfloat162float(s0);
+            acc += __bfloat162float(weight[C64 + c]) * __bfloat162float(s1);
+            acc += __bfloat162float(weight[2 * C64 + c]) * __bfloat162float(s2);
+            acc += __bfloat162float(weight[3 * C64 + c]) * __bfloat162float(x0);
+
+            out[out_idx] = __float2bfloat16_rn(causal_conv1d_silu_f32(acc));
+            s0           = s1;
+            s1           = s2;
+            s2           = x0;
+
+            __nv_bfloat16* slot = conv_states + static_cast<std::int64_t>(t) * slot_stride;
+            slot[c64]           = s0;
+            slot[C64 + c64]     = s1;
+            slot[2 * C64 + c64] = s2;
+        }
+    }
+}
+
 } // namespace qus::kernels

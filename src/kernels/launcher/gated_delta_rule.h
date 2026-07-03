@@ -17,6 +17,12 @@ void gated_delta_rule_recurrent_bf16_launch(const Tensor& q, const Tensor& k, co
                                             const Tensor& g, const Tensor& beta, float scale,
                                             Tensor& ssm_state, Tensor& out, cudaStream_t stream);
 
+void gated_delta_rule_recurrent_snapshot_bf16_launch(const Tensor& q, const Tensor& k,
+                                                     const Tensor& v, const Tensor& g,
+                                                     const Tensor& beta, float scale,
+                                                     Tensor& ssm_states, Tensor& out,
+                                                     cudaStream_t stream);
+
 std::size_t gdn_chunked_workspace_bytes(std::int64_t T);
 
 void gated_delta_rule_chunked_launch(const Tensor& q, const Tensor& k, const Tensor& v,

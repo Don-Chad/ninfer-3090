@@ -4,8 +4,10 @@
 #include "qus/kernels/causal_conv1d.h"
 #include "kernels/op_tester.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -19,6 +21,29 @@ static double silu(double x) { return x / (1.0 + std::exp(-x)); }
 
 static std::size_t idx2(std::int32_t c, std::int32_t t, std::int32_t C) {
     return static_cast<std::size_t>(t) * static_cast<std::size_t>(C) + static_cast<std::size_t>(c);
+}
+
+static std::vector<std::uint16_t> from_device_u16(const void* ptr, std::size_t n) {
+    std::vector<std::uint16_t> out(n);
+    cudaMemcpy(out.data(), ptr, n * sizeof(std::uint16_t), cudaMemcpyDeviceToHost);
+    return out;
+}
+
+static int verify_u16_equal(const char* label, const std::vector<std::uint16_t>& got,
+                            const std::vector<std::uint16_t>& ref) {
+    if (got.size() != ref.size()) {
+        std::cerr << label << ": size mismatch got=" << got.size() << " ref=" << ref.size()
+                  << '\n';
+        return 1;
+    }
+    for (std::size_t i = 0; i < got.size(); ++i) {
+        if (got[i] != ref[i]) {
+            std::cerr << label << ": bit mismatch at " << i << " got=0x" << std::hex << got[i]
+                      << " ref=0x" << ref[i] << std::dec << '\n';
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static void cpu_prefill_ref(const std::vector<float>& x, const std::vector<float>& weight,
@@ -180,6 +205,65 @@ static int decode_chain_equivalence(std::uint32_t seed) {
     return f;
 }
 
+static int snapshot_chain_equivalence(std::uint32_t seed, std::int32_t T, float lo = -8.f,
+                                      float hi = 8.f) {
+    constexpr std::int32_t C   = 10240;
+    const std::size_t n        = static_cast<std::size_t>(C) * static_cast<std::size_t>(T);
+    const std::size_t state_n  = static_cast<std::size_t>(C) * 3u;
+    const std::size_t weight_n = static_cast<std::size_t>(C) * 4u;
+
+    std::vector<float> x(n), weight(weight_n), state(state_n);
+    fill_uniform(x, seed, lo, hi);
+    fill_uniform(weight, seed + 1000u, lo, hi);
+    fill_uniform(state, seed + 2000u, lo, hi);
+    round_to_bf16(x);
+    round_to_bf16(weight);
+    round_to_bf16(state);
+
+    std::vector<float> snapshot_state(state_n * static_cast<std::size_t>(T), 17.0f);
+    std::copy(state.begin(), state.end(), snapshot_state.begin());
+
+    DBuf dx_snapshot = to_device_bf16(x), dw_snapshot = to_device_bf16(weight),
+         dstates_snapshot = to_device_bf16(snapshot_state), dout_snapshot(n * 2);
+    Tensor tx_snapshot(dx_snapshot.p, DType::BF16, {C, T});
+    Tensor tw_snapshot(dw_snapshot.p, DType::BF16, {C, 4});
+    Tensor ts_snapshot(dstates_snapshot.p, DType::BF16, {C, 3, T});
+    Tensor tout_snapshot(dout_snapshot.p, DType::BF16, {C, T});
+    kernels::causal_conv1d_sequence_snapshot(tx_snapshot, tw_snapshot, ts_snapshot, tout_snapshot,
+                                             nullptr);
+    cudaDeviceSynchronize();
+
+    DBuf dx_decode = to_device_bf16(x), dw_decode = to_device_bf16(weight),
+         dstate_decode = to_device_bf16(state), dout_decode(n * 2);
+    Tensor tw_decode(dw_decode.p, DType::BF16, {C, 4});
+    Tensor ts_decode(dstate_decode.p, DType::BF16, {C, 3});
+
+    std::vector<std::uint16_t> expected_slots(state_n * static_cast<std::size_t>(T));
+    for (std::int32_t t = 0; t < T; ++t) {
+        auto* x_step = static_cast<unsigned char*>(dx_decode.p) +
+                       static_cast<std::size_t>(t) * static_cast<std::size_t>(C) * 2u;
+        Tensor tx_step(x_step, DType::BF16, {C, 1});
+        auto* out_step = static_cast<unsigned char*>(dout_decode.p) +
+                         static_cast<std::size_t>(t) * static_cast<std::size_t>(C) * 2u;
+        Tensor tout_step(out_step, DType::BF16, {C, 1});
+        kernels::causal_conv1d_decode(tx_step, tw_decode, ts_decode, tout_step, nullptr);
+        cudaDeviceSynchronize();
+        const auto state_bits = from_device_u16(dstate_decode.p, state_n);
+        std::memcpy(expected_slots.data() + static_cast<std::size_t>(t) * state_n,
+                    state_bits.data(), state_n * sizeof(std::uint16_t));
+    }
+    cudaDeviceSynchronize();
+
+    const std::string tag = "causal_conv1d snapshot T=" + std::to_string(T);
+    int f                 = 0;
+    f += verify_u16_equal((tag + " out bits").c_str(), from_device_u16(dout_snapshot.p, n),
+                          from_device_u16(dout_decode.p, n));
+    f += verify_u16_equal((tag + " state slot bits").c_str(),
+                          from_device_u16(dstates_snapshot.p, state_n * static_cast<std::size_t>(T)),
+                          expected_slots);
+    return f;
+}
+
 static int prefill_state_carry_equivalence(std::uint32_t seed, std::int32_t C, std::int32_t T,
                                            std::int32_t split) {
     const std::size_t n        = static_cast<std::size_t>(C) * T;
@@ -319,6 +403,10 @@ static int validation_checks() {
     });
     f += expect_invalid("causal_conv1d validation decode T",
                         [&] { kernels::causal_conv1d_decode(x, weight, state, out, nullptr); });
+    f += expect_invalid("causal_conv1d validation snapshot T exceeds slots", [&] {
+        Tensor bad_state(dstate.p, DType::BF16, {C, 3, T - 1});
+        kernels::causal_conv1d_sequence_snapshot(x, weight, bad_state, out, nullptr);
+    });
     f += expect_invalid("causal_conv1d validation contiguous", [&] {
         Tensor bad = out;
         bad.nb[0]  = 4;
@@ -392,6 +480,9 @@ int main() {
         f += one_decode_shape("causal_conv1d decode [10240,1]", 10240, seed + 3000u);
         f += one_prefill_shape("causal_conv1d prefill [10241,64]", 10241, 64, seed + 4000u);
         f += decode_chain_equivalence(seed + 5000u);
+        for (std::int32_t T : {1, 2, 3, 4, 5, 6}) {
+            f += snapshot_chain_equivalence(seed + 6000u + static_cast<std::uint32_t>(T), T);
+        }
     }
     f += prefill_state_carry_equivalence(6061u, 10240, 257, 129);
     f += prefill_state_carry_equivalence(6067u, 10241, 257, 2);
@@ -399,6 +490,7 @@ int main() {
                            -32.f, 32.f);
     f += one_decode_shape("causal_conv1d stress decode [10240,1] [-32,32]", 10240, 4343u, -32.f,
                           32.f);
+    f += snapshot_chain_equivalence(4444u, 6, -32.f, 32.f);
 
     std::cout << (f ? "FAIL" : "OK") << " causal_conv1d correctness\n";
     return f ? 1 : 0;

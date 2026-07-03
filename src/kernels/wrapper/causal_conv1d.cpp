@@ -52,6 +52,13 @@ void require_state_shape(const Tensor& conv_state, std::int32_t C) {
     }
 }
 
+void require_snapshot_state_shape(const Tensor& conv_states, std::int32_t C, std::int32_t T) {
+    if (conv_states.ne[0] != C || conv_states.ne[1] != 3 || conv_states.ne[2] < T ||
+        conv_states.ne[3] != 1) {
+        throw std::invalid_argument("causal_conv1d: conv_states must have shape [C,3,S] with S>=T");
+    }
+}
+
 void require_out_shape(const Tensor& x, const Tensor& out) {
     for (int d = 0; d < 4; ++d) {
         if (out.ne[d] != x.ne[d]) {
@@ -110,6 +117,29 @@ void causal_conv1d_decode(const Tensor& x, const Tensor& weight, Tensor& conv_st
 
     require_non_empty_accessible(x, weight, conv_state, out);
     detail::causal_conv1d_decode_launch(x, weight, conv_state, out, stream);
+}
+
+void causal_conv1d_sequence_snapshot(const Tensor& x, const Tensor& weight, Tensor& conv_states,
+                                     Tensor& out, cudaStream_t stream) {
+    if (x.dtype != DType::BF16 || weight.dtype != DType::BF16 ||
+        conv_states.dtype != DType::BF16 || out.dtype != DType::BF16) {
+        throw std::invalid_argument("causal_conv1d: x/weight/conv_states/out must be BF16");
+    }
+
+    const std::int64_t n = numel_allow_zero(x, "x");
+    (void) numel_allow_zero(weight, "weight");
+    (void) numel_allow_zero(conv_states, "conv_states");
+    (void) numel_allow_zero(out, "out");
+
+    require_x_shape(x);
+    if (x.ne[1] <= 0) { throw std::invalid_argument("causal_conv1d: snapshot T must be positive"); }
+    require_weight_shape(weight, x.ne[0]);
+    require_snapshot_state_shape(conv_states, x.ne[0], x.ne[1]);
+    require_out_shape(x, out);
+    if (n == 0) { return; }
+
+    require_non_empty_accessible(x, weight, conv_states, out);
+    detail::causal_conv1d_sequence_snapshot_launch(x, weight, conv_states, out, stream);
 }
 
 } // namespace qus::kernels

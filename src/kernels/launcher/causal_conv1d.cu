@@ -80,4 +80,19 @@ void causal_conv1d_decode_launch(const Tensor& x, const Tensor& weight, Tensor& 
     CUDA_CHECK(cudaGetLastError());
 }
 
+void causal_conv1d_sequence_snapshot_launch(const Tensor& x, const Tensor& weight,
+                                            Tensor& conv_states, Tensor& out,
+                                            cudaStream_t stream) {
+    constexpr int kBlock = 256;
+    const std::int32_t C = x.ne[0];
+    const std::int32_t T = x.ne[1];
+
+    causal_conv1d_sequence_snapshot_kernel<<<grid_for(C, kBlock, "sequence snapshot"), kBlock, 0,
+                                             stream>>>(
+        static_cast<const __nv_bfloat16*>(x.data), static_cast<const __nv_bfloat16*>(weight.data),
+        static_cast<__nv_bfloat16*>(conv_states.data), static_cast<__nv_bfloat16*>(out.data), C,
+        T);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 } // namespace qus::kernels::detail
