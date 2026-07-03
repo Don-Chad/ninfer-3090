@@ -2,9 +2,11 @@
 
 > Status: normative sequencing（里程碑顺序与边界的权威来源）。Date: 2026-07-03。
 > 这是 roadmap，不是实现计划：它规定做什么、按什么顺序、边界在哪、以什么判据算完成。
-> 每个里程碑启动时在 `docs/plans/` 下另立一个正式 plan（按 AGENTS.md 计划规范，
-> subagent-driven），任务锚定
+> 每个里程碑启动时在 `docs/plans/` 下另立一个正式 plan（按 AGENTS.md 计划规范），任务锚定
 > [implementation-requirements](2026-07-03-mtp-implementation-requirements.md) 的需求 ID。
+> 执行模式（各里程碑统一）：主 agent 先写计划、后直接实现，不采用 subagent-driven
+> 执行；仅在计划完成后与实现完成后各安排一次当前最强模型的独立 review，计划中需
+> 按 AGENTS.md 要求写明该模式及理由。
 > 算法与状态语义以[总领文档](2026-07-03-mtp-spec-decode-overview.md)及其细分文档为准。
 
 ## 端态（roadmap 完成时的状态）
