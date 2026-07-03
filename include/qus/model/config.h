@@ -33,6 +33,15 @@ struct ModelConfig {
     static constexpr int kv_size    = n_kv * head_dim;
     static constexpr int q_proj_out = 2 * q_size;
 
+    static constexpr int mtp_layers          = 1;
+    static constexpr int mtp_fc_in           = 2 * hidden;
+    static constexpr int mtp_attn_in         = 2 * q_size + 2 * kv_size;
+    static constexpr int mtp_attn_q_rows     = q_size;
+    static constexpr int mtp_attn_k_rows     = kv_size;
+    static constexpr int mtp_attn_gate_rows  = q_size;
+    static constexpr int mtp_attn_v_rows     = kv_size;
+    static constexpr int mtp_mlp_gateup_rows = 2 * intermediate;
+
     [[nodiscard]] static constexpr bool is_full(int layer) {
         return (layer + 1) % full_interval == 0;
     }

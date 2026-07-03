@@ -58,10 +58,11 @@ qus::Q5090Expectations expectations() {
 }
 
 int expect_weight(const qus::Weight* w, qus::SourceKind kind, std::uint32_t layer, qus::QType qtype,
-                  qus::QuantLayout layout, std::int32_t n, std::int32_t k, std::string_view label) {
+                  qus::QuantLayout layout, std::int32_t n, std::int32_t k, std::string_view label,
+                  qus::ModuleKind module = qus::ModuleKind::TextCore) {
     int failures = 0;
     if (w == nullptr) { return fail(std::string(label) + " is null"); }
-    failures += w->module == qus::ModuleKind::TextCore ? 0 : fail(std::string(label) + " module");
+    failures += w->module == module ? 0 : fail(std::string(label) + " module");
     failures += w->source_kind == static_cast<std::uint32_t>(kind)
                     ? 0
                     : fail(std::string(label) + " source_kind");
@@ -148,7 +149,9 @@ int main() {
     qus::DeviceArena io_arena(1024ULL * 1024ULL);
 
     qus::WeightStore store(expectations());
-    store.load(fixture_path.c_str(), weights_arena, ctx);
+    qus::LoadOptions load_options;
+    load_options.load_mtp = true;
+    store.load(fixture_path.c_str(), weights_arena, ctx, load_options);
     const qus::Tensor* stored_conv1d = store.tensor(
         qus::ModuleKind::TextCore, static_cast<std::uint32_t>(qus::SourceKind::GdnConv1d), 0);
     failures += expect_tensor(stored_conv1d, qus::DType::BF16, {10240, 4, 1}, "store.gdn.conv1d");
@@ -157,10 +160,12 @@ int main() {
     qus::GdnState state(cache_arena, qus::model::kCfg.n_gdn(), qus::model::kCfg.conv_dim,
                         qus::model::kCfg.gdn_conv_state_width, qus::model::kCfg.gdn_v_heads,
                         qus::model::kCfg.gdn_v_dim, qus::model::kCfg.gdn_k_dim);
+    qus::KVCache mtp_kv(cache_arena, qus::model::kCfg.mtp_layers, 1, qus::model::kCfg.n_kv,
+                        qus::model::kCfg.head_dim);
     qus::model::StepState io{io_arena.alloc(qus::DType::I32, {1}),
                              io_arena.alloc(qus::DType::I32, {1}),
                              io_arena.alloc(qus::DType::BF16, {qus::model::kCfg.vocab})};
-    qus::model::Qwen3_6_27B card(ctx, store, workspace, kv, state, io, 512);
+    qus::model::Qwen3_6_27B card(ctx, store, workspace, kv, state, io, 512, &mtp_kv);
 
     failures += expect_weight(card.embed(), qus::SourceKind::Embed, qus::kQ5090NoLayer,
                               qus::QType::Q6G64_F16S, qus::QuantLayout::RowSplit, 16, 8, "embed");
@@ -209,6 +214,33 @@ int main() {
                               qus::QuantLayout::RowSplit, 8, 8, "gdn.out_proj");
     failures += expect_tensor(gdn.post_attn_norm, qus::DType::BF16, {5120}, "gdn.post_attn_norm");
     failures += expect_mlp(gdn.mlp, 0, "gdn.mlp");
+
+    const qus::model::MtpW& mtp = card.mtp_weights();
+    failures += expect_weight(mtp.fc, qus::SourceKind::MtpFc, qus::kQ5090NoLayer,
+                              qus::QType::W8G32_F16S, qus::QuantLayout::RowSplit, 8, 16,
+                              "mtp.fc", qus::ModuleKind::MtpDraft);
+    failures += expect_tensor(mtp.pre_fc_norm_embedding, qus::DType::BF16, {8},
+                              "mtp.pre_fc_norm_embedding");
+    failures +=
+        expect_tensor(mtp.pre_fc_norm_hidden, qus::DType::BF16, {8}, "mtp.pre_fc_norm_hidden");
+    failures += expect_tensor(mtp.input_norm, qus::DType::BF16, {8}, "mtp.input_norm");
+    failures += expect_weight(mtp.attn_in, qus::SourceKind::Other, 0, qus::QType::W8G32_F16S,
+                              qus::QuantLayout::RowSplit, 24, 8, "mtp.attn_in",
+                              qus::ModuleKind::MtpDraft);
+    failures += expect_tensor(mtp.q_norm, qus::DType::BF16, {4}, "mtp.q_norm");
+    failures += expect_tensor(mtp.k_norm, qus::DType::BF16, {4}, "mtp.k_norm");
+    failures += expect_weight(mtp.o_proj, qus::SourceKind::AttnO, 0, qus::QType::W8G32_F16S,
+                              qus::QuantLayout::RowSplit, 8, 8, "mtp.o_proj",
+                              qus::ModuleKind::MtpDraft);
+    failures +=
+        expect_tensor(mtp.post_attn_norm, qus::DType::BF16, {8}, "mtp.post_attn_norm");
+    failures += expect_weight(mtp.gate_up, qus::SourceKind::Other, 0, qus::QType::W8G32_F16S,
+                              qus::QuantLayout::RowSplit, 20, 8, "mtp.gate_up",
+                              qus::ModuleKind::MtpDraft);
+    failures += expect_weight(mtp.down, qus::SourceKind::MlpDown, 0, qus::QType::W8G32_F16S,
+                              qus::QuantLayout::RowSplit, 8, 10, "mtp.down",
+                              qus::ModuleKind::MtpDraft);
+    failures += expect_tensor(mtp.norm, qus::DType::BF16, {8}, "mtp.norm");
 
     return failures == 0 ? 0 : 1;
 }

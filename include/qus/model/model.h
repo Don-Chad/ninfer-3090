@@ -58,6 +58,21 @@ struct GdnLayerW {
     MlpW mlp;
 };
 
+struct MtpW {
+    const Weight* fc                    = nullptr;
+    const Tensor* pre_fc_norm_embedding = nullptr;
+    const Tensor* pre_fc_norm_hidden    = nullptr;
+    const Tensor* input_norm            = nullptr;
+    const Weight* attn_in               = nullptr;
+    const Tensor* q_norm                = nullptr;
+    const Tensor* k_norm                = nullptr;
+    const Weight* o_proj                = nullptr;
+    const Tensor* post_attn_norm        = nullptr;
+    const Weight* gate_up               = nullptr;
+    const Weight* down                  = nullptr;
+    const Tensor* norm                  = nullptr;
+};
+
 struct StepState {
     Tensor token;
     Tensor pos;
@@ -98,7 +113,8 @@ using TapCallback = void (*)(void*, TapId, int, Phase, const Tensor&, cudaStream
 class Qwen3_6_27B {
 public:
     Qwen3_6_27B(DeviceContext& ctx, WeightStore& weights, WorkspaceArena& work, KVCache& kv,
-                GdnState& state, StepState& io, std::uint32_t prefill_chunk);
+                GdnState& state, StepState& io, std::uint32_t prefill_chunk,
+                KVCache* mtp_kv = nullptr);
     ~Qwen3_6_27B();
 
     Qwen3_6_27B(const Qwen3_6_27B&)            = delete;
@@ -115,6 +131,20 @@ public:
     [[nodiscard]] const FullLayerW& full_layer(std::size_t i) const { return full_.at(i); }
 
     [[nodiscard]] const GdnLayerW& gdn_layer(std::size_t i) const { return gdn_.at(i); }
+
+    [[nodiscard]] bool mtp_enabled() const noexcept { return mtp_kv_ != nullptr; }
+
+    [[nodiscard]] const MtpW& mtp_weights() const;
+
+    void mtp_set_cache_position(std::uint32_t position);
+
+    void mtp_forward_batch(const Tensor& ids, const Tensor& hidden, const Tensor& positions,
+                           std::uint32_t cache_offset, Tensor& mtp_hidden, int logits_column,
+                           Tensor* logits, Tensor* draft_token);
+
+    void mtp_forward_ar_step(const Tensor& token, const Tensor& previous_hidden,
+                             const Tensor& position, Tensor& mtp_hidden, Tensor& logits,
+                             Tensor& draft_token);
 
     void prefill(std::span<const int> ids);
 
@@ -180,6 +210,8 @@ private:
     void attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph, std::uint32_t cache_offset);
     void gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph);
     void mlp_tail(const Tensor* post_norm, const MlpW& m, Tensor& x, Phase ph);
+    void mtp_forward_core(const Tensor& ids, const Tensor& hidden, const Tensor& positions,
+                          Phase ph, std::uint32_t cache_offset, Tensor& mtp_hidden);
     void prefill_erased(std::span<const int> ids, void* tap, TapCallback callback);
     void decode_step_erased(void* tap, TapCallback callback);
     template <class Tap>
@@ -194,6 +226,7 @@ private:
     WeightStore& weights_;
     WorkspaceArena& work_;
     KVCache& kv_;
+    KVCache* mtp_kv_ = nullptr;
     GdnState& state_;
     StepState& io_;
     std::uint32_t prefill_chunk_    = kDefaultPrefillChunk;
@@ -202,6 +235,7 @@ private:
     const Weight* embed_      = nullptr;
     const Tensor* final_norm_ = nullptr;
     const Weight* lm_head_    = nullptr;
+    MtpW mtp_{};
     std::array<FullLayerW, ModelConfig::n_full()> full_{};
     std::array<GdnLayerW, ModelConfig::n_gdn()> gdn_{};
     std::array<Weight, ModelConfig::n_gdn()> gdn_in_a_{};
