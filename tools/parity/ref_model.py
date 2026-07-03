@@ -14,7 +14,7 @@ import json
 import mmap
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -218,14 +218,39 @@ class WeightView:
 
 @dataclass
 class SpeculativeStats:
+    draft_batches: int = 0
     draft_tokens: int = 0
     accepted_tokens: int = 0
+    draft_tokens_per_pos: List[int] = field(default_factory=list)
+    accepted_tokens_per_pos: List[int] = field(default_factory=list)
 
     @property
     def acceptance_rate(self) -> float:
         if self.draft_tokens == 0:
             return 0.0
         return self.accepted_tokens / self.draft_tokens
+
+    @property
+    def acceptance_length(self) -> float:
+        if self.draft_batches == 0:
+            return 0.0
+        return 1.0 + self.accepted_tokens / self.draft_batches
+
+    def observe_draft(self, draft_count: int, accepted_count: int) -> None:
+        if draft_count < 0:
+            raise ValueError("draft_count must be nonnegative")
+        if accepted_count < 0 or accepted_count > draft_count:
+            raise ValueError("accepted_count must be in [0,draft_count]")
+        self.draft_batches += 1
+        self.draft_tokens += draft_count
+        self.accepted_tokens += accepted_count
+        while len(self.draft_tokens_per_pos) < draft_count:
+            self.draft_tokens_per_pos.append(0)
+            self.accepted_tokens_per_pos.append(0)
+        for i in range(draft_count):
+            self.draft_tokens_per_pos[i] += 1
+        for i in range(accepted_count):
+            self.accepted_tokens_per_pos[i] += 1
 
 
 class Q5090File:
@@ -786,11 +811,15 @@ class RefModel:
                     torch.empty(0, H_KV, DH, device=self.device),
                 ),
             )
+            old_len = old_k.shape[0]
             self.kv[fidx] = (torch.cat([old_k, k], dim=0), torch.cat([old_v, v], dim=0))
             k_all, v_all = self.kv[fidx]
             k_rep = k_all.repeat_interleave(H_Q // H_KV, dim=1).float()
             v_rep = v_all.repeat_interleave(H_Q // H_KV, dim=1).float()
             scores = torch.einsum("thd,shd->ths", q.float(), k_rep) * ATTN_SCALE
+            t_idx = old_len + torch.arange(T, device=self.device)
+            s_idx = torch.arange(k_all.shape[0], device=self.device)
+            scores = scores.masked_fill(s_idx[None, None, :] > t_idx[:, None, None], -torch.inf)
             probs = torch.softmax(scores, dim=-1)
             return bf16(torch.einsum("ths,shd->thd", probs, v_rep))
 
@@ -823,11 +852,15 @@ class RefModel:
                 torch.empty(0, H_KV, DH, device=self.device),
             ),
         )
+        old_len = old_k.shape[0]
         self.mtp_kv[layer] = (torch.cat([old_k, k], dim=0), torch.cat([old_v, v], dim=0))
         k_all, v_all = self.mtp_kv[layer]
         k_rep = k_all.repeat_interleave(H_Q // H_KV, dim=1).float()
         v_rep = v_all.repeat_interleave(H_Q // H_KV, dim=1).float()
         scores = torch.einsum("thd,shd->ths", q.float(), k_rep) * ATTN_SCALE
+        t_idx = old_len + torch.arange(T, device=self.device)
+        s_idx = torch.arange(k_all.shape[0], device=self.device)
+        scores = scores.masked_fill(s_idx[None, None, :] > t_idx[:, None, None], -torch.inf)
         probs = torch.softmax(scores, dim=-1)
         return bf16(torch.einsum("ths,shd->thd", probs, v_rep))
 
@@ -942,6 +975,67 @@ class RefModel:
     def logits_last(self, x: torch.Tensor) -> torch.Tensor:
         return self.logits_from_hidden_last(self.final_norm_hidden(x))
 
+    def greedy_tokens_from_hidden(self, hidden: torch.Tensor) -> List[int]:
+        if hidden.ndim != 2 or hidden.shape[1] != D:
+            raise ValueError(f"hidden shape {tuple(hidden.shape)} must be [T,{D}]")
+        if hidden.shape[0] == 0:
+            return []
+        h = hidden.to(torch.bfloat16)
+        best_vals = torch.full((h.shape[0],), -torch.inf, device=self.device, dtype=torch.float32)
+        best_ids = torch.zeros((h.shape[0],), device=self.device, dtype=torch.long)
+        for row0, row1, weight in self.q5090.row_split_row_chunks(
+            "lm_head.weight",
+            self.device,
+            output_dtype=torch.bfloat16,
+        ):
+            logits = h @ weight.to(torch.bfloat16).t()
+            vals, idx = torch.max(logits.float(), dim=-1)
+            take = vals > best_vals
+            best_vals[take] = vals[take]
+            best_ids[take] = idx[take].to(torch.long) + row0
+            del weight, logits
+        return [int(x) for x in best_ids.tolist()]
+
+    def snapshot_target_state(
+        self,
+    ) -> tuple[
+        Dict[int, tuple[torch.Tensor, torch.Tensor]],
+        Dict[int, torch.Tensor],
+        Dict[int, torch.Tensor],
+        int,
+    ]:
+        return (
+            {i: (k.clone(), v.clone()) for i, (k, v) in self.kv.items()},
+            {i: state.clone() for i, state in self.conv.items()},
+            {i: state.clone() for i, state in self.ssm.items()},
+            self.pos,
+        )
+
+    def restore_target_state(
+        self,
+        state: tuple[
+            Dict[int, tuple[torch.Tensor, torch.Tensor]],
+            Dict[int, torch.Tensor],
+            Dict[int, torch.Tensor],
+            int,
+        ],
+    ) -> None:
+        self.kv, self.conv, self.ssm, self.pos = state
+
+    def target_decode_hidden(self, input_ids: Iterable[int], start_position: int) -> torch.Tensor:
+        ids = list(input_ids)
+        if not ids:
+            raise ValueError("target decode input_ids must not be empty")
+        x = self.embed(ids)
+        positions = torch.arange(
+            start_position,
+            start_position + len(ids),
+            device=self.device,
+            dtype=torch.int32,
+        )
+        x = self.run_layers(x, "decode", positions)
+        return self.final_norm_hidden(x)
+
     def mtp_forward(
         self,
         input_ids: Iterable[int],
@@ -993,11 +1087,8 @@ class RefModel:
         return mtp_hidden, logits, draft
 
     def _target_decode_one(self, token: int, position: int) -> tuple[int, torch.Tensor]:
-        x = self.embed([token])
-        pos = torch.tensor([position], device=self.device, dtype=torch.int32)
-        x = self.run_layers(x, "decode", pos)
-        hidden = self.final_norm_hidden(x)
-        next_token = int(torch.argmax(self.logits_from_hidden_last(hidden)).item())
+        hidden = self.target_decode_hidden([token], position)
+        next_token = self.greedy_tokens_from_hidden(hidden)[0]
         return next_token, hidden
 
     def _mtp_make_drafts(
@@ -1062,65 +1153,73 @@ class RefModel:
         last_mtp_logits = mtp_logits
         last_mtp_position = len(prompt_ids) - 1
         committed_mtp_len = self.mtp_kv_len()
-        drafts = self._mtp_make_drafts(
-            last_mtp_hidden,
-            last_mtp_logits,
-            last_mtp_position,
-            draft_count,
-            committed_mtp_len,
-        )
-        draft_index = 0
 
         while len(out) < n_decode:
-            if draft_index >= len(drafts):
-                drafts = self._mtp_make_drafts(
-                    last_mtp_hidden,
-                    last_mtp_logits,
-                    last_mtp_position,
-                    draft_count,
-                    committed_mtp_len,
-                )
-                draft_index = 0
-            candidate = drafts[draft_index]
+            remaining = n_decode - len(out)
+            if remaining <= 1:
+                target_token, _ = self._target_decode_one(token, self.pos)
+                self.pos += 1
+                token = target_token
+                out.append(token)
+                break
+            k = min(draft_count, remaining - 1)
+            drafts = self._mtp_make_drafts(
+                last_mtp_hidden,
+                last_mtp_logits,
+                last_mtp_position,
+                k,
+                committed_mtp_len,
+            )
 
             target_position = self.pos
-            target_token, target_hidden = self._target_decode_one(token, target_position)
-            self.pos += 1
-            stats.draft_tokens += 1
-            accepted = target_token == candidate
-            if accepted:
-                stats.accepted_tokens += 1
-                token = candidate
-                draft_index += 1
-            else:
-                token = target_token
-                drafts = []
-                draft_index = 0
+            target_inputs = [token] + drafts
+            target_state = self.snapshot_target_state()
+            target_hidden_window = self.target_decode_hidden(target_inputs, target_position)
+            target_tokens = self.greedy_tokens_from_hidden(target_hidden_window)
 
-            out.append(token)
-            if stop_token_ids and token in stop_token_ids:
+            accepted_count = 0
+            while accepted_count < k and target_tokens[accepted_count] == drafts[accepted_count]:
+                accepted_count += 1
+            stats.observe_draft(k, accepted_count)
+
+            if accepted_count == k:
+                valid_target_inputs = target_inputs
+                valid_target_hidden = target_hidden_window
+                committed_tokens = drafts + [target_tokens[k]]
+            else:
+                valid_target_inputs = [token] + drafts[:accepted_count]
+                self.restore_target_state(target_state)
+                valid_target_hidden = self.target_decode_hidden(valid_target_inputs, target_position)
+                committed_tokens = drafts[:accepted_count] + [target_tokens[accepted_count]]
+
+            self.pos = target_position + len(valid_target_inputs)
+            stop_hit = False
+            for committed_token in committed_tokens:
+                token = committed_token
+                out.append(token)
+                if stop_token_ids and token in stop_token_ids:
+                    stop_hit = True
+                    break
+            if stop_hit or len(out) >= n_decode:
                 break
 
             self.truncate_mtp_kv(committed_mtp_len)
+            mtp_ids = valid_target_inputs[1:] + [token]
+            mtp_positions = torch.arange(
+                target_position,
+                target_position + len(valid_target_inputs),
+                device=self.device,
+                dtype=torch.int32,
+            )
             last_mtp_hidden, last_mtp_logits, _ = self.mtp_forward(
-                [token],
-                target_hidden,
-                torch.tensor([target_position], device=self.device, dtype=torch.int32),
+                mtp_ids,
+                valid_target_hidden,
+                mtp_positions,
                 "decode",
             )
             last_mtp_hidden = last_mtp_hidden[-1:, :]
-            last_mtp_position = target_position
+            last_mtp_position = target_position + len(valid_target_inputs) - 1
             committed_mtp_len = self.mtp_kv_len()
-
-            if not accepted or draft_index >= len(drafts):
-                drafts = self._mtp_make_drafts(
-                    last_mtp_hidden,
-                    last_mtp_logits,
-                    last_mtp_position,
-                    draft_count,
-                    committed_mtp_len,
-                )
-                draft_index = 0
 
         return out, stats
 
@@ -1288,9 +1387,13 @@ def main() -> None:
         print(f"RENDERED_PROMPT: {rendered_prompt!r}")
     print(f"GENERATED_TOKEN_IDS: {tokens}")
     if spec_stats is not None:
+        print(f"MTP_DRAFT_BATCHES: {spec_stats.draft_batches}")
         print(f"MTP_DRAFT_TOKENS: {spec_stats.draft_tokens}")
         print(f"MTP_ACCEPTED_TOKENS: {spec_stats.accepted_tokens}")
         print(f"MTP_ACCEPTANCE_RATE: {spec_stats.acceptance_rate:.6f}")
+        print(f"MTP_ACCEPTANCE_LENGTH: {spec_stats.acceptance_length:.6f}")
+        print(f"MTP_DRAFT_TOKENS_PER_POS: {spec_stats.draft_tokens_per_pos}")
+        print(f"MTP_ACCEPTED_TOKENS_PER_POS: {spec_stats.accepted_tokens_per_pos}")
     if tokenizer is not None:
         text = tokenizer.decode(tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False)
         print(f"GENERATED_TEXT: {text!r}")
