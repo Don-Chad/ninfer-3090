@@ -996,32 +996,6 @@ class RefModel:
             del weight, logits
         return [int(x) for x in best_ids.tolist()]
 
-    def snapshot_target_state(
-        self,
-    ) -> tuple[
-        Dict[int, tuple[torch.Tensor, torch.Tensor]],
-        Dict[int, torch.Tensor],
-        Dict[int, torch.Tensor],
-        int,
-    ]:
-        return (
-            {i: (k.clone(), v.clone()) for i, (k, v) in self.kv.items()},
-            {i: state.clone() for i, state in self.conv.items()},
-            {i: state.clone() for i, state in self.ssm.items()},
-            self.pos,
-        )
-
-    def restore_target_state(
-        self,
-        state: tuple[
-            Dict[int, tuple[torch.Tensor, torch.Tensor]],
-            Dict[int, torch.Tensor],
-            Dict[int, torch.Tensor],
-            int,
-        ],
-    ) -> None:
-        self.kv, self.conv, self.ssm, self.pos = state
-
     def target_decode_hidden(self, input_ids: Iterable[int], start_position: int) -> torch.Tensor:
         ids = list(input_ids)
         if not ids:
@@ -1090,6 +1064,38 @@ class RefModel:
         hidden = self.target_decode_hidden([token], position)
         next_token = self.greedy_tokens_from_hidden(hidden)[0]
         return next_token, hidden
+
+    def _target_verify_drafts(
+        self,
+        token: int,
+        drafts: list[int],
+        target_position: int,
+    ) -> tuple[int, int, list[int], torch.Tensor]:
+        target_tokens: list[int] = []
+        valid_inputs: list[int] = []
+        valid_hidden: list[torch.Tensor] = []
+        accepted_count = 0
+
+        for i in range(len(drafts) + 1):
+            input_token = token if i == 0 else drafts[i - 1]
+            hidden = self.target_decode_hidden([input_token], target_position + i)
+            next_token = self.greedy_tokens_from_hidden(hidden)[0]
+            target_tokens.append(next_token)
+            valid_inputs.append(input_token)
+            valid_hidden.append(hidden)
+
+            if i == len(drafts):
+                break
+            if next_token != drafts[i]:
+                break
+            accepted_count += 1
+
+        return (
+            accepted_count,
+            target_tokens[accepted_count],
+            valid_inputs,
+            torch.cat(valid_hidden, dim=0),
+        )
 
     def _mtp_make_drafts(
         self,
@@ -1177,25 +1183,14 @@ class RefModel:
             )
 
             target_position = self.pos
-            target_inputs = [token] + drafts
-            target_state = self.snapshot_target_state()
-            target_hidden_window = self.target_decode_hidden(target_inputs, target_position)
-            target_tokens = self.greedy_tokens_from_hidden(target_hidden_window)
-
-            accepted_count = 0
-            while accepted_count < k and target_tokens[accepted_count] == drafts[accepted_count]:
-                accepted_count += 1
+            accepted_count, target_token, valid_target_inputs, valid_target_hidden = self._target_verify_drafts(
+                token,
+                drafts,
+                target_position,
+            )
             stats.observe_draft(k, accepted_count)
 
-            if accepted_count == k:
-                valid_target_inputs = target_inputs
-                valid_target_hidden = target_hidden_window
-                committed_tokens = drafts + [target_tokens[k]]
-            else:
-                valid_target_inputs = [token] + drafts[:accepted_count]
-                self.restore_target_state(target_state)
-                valid_target_hidden = self.target_decode_hidden(valid_target_inputs, target_position)
-                committed_tokens = drafts[:accepted_count] + [target_tokens[accepted_count]]
+            committed_tokens = drafts[:accepted_count] + [target_token]
 
             self.pos = target_position + len(valid_target_inputs)
             stop_hit = False
