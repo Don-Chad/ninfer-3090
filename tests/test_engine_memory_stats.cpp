@@ -131,9 +131,9 @@ int test_loaded_stats_with_cuda() {
 
     const std::filesystem::path fixture = make_fixture();
     qus::EngineOptions options;
-    options.device     = 0;
-    options.max_ctx    = 4;
-    options.work_bytes = 64ULL * kMiB;
+    options.device         = 0;
+    options.max_ctx        = 4;
+    options.prefill_chunk  = 128;
 
     qus::Engine engine(options);
     engine.load(fixture.string());
@@ -147,7 +147,8 @@ int test_loaded_stats_with_cuda() {
     failures += expect_present(stats.weights, "loaded weights", true);
     failures += expect_present(stats.cache, "loaded cache", true);
     failures += expect_present(stats.workspace, "loaded workspace", false);
-    failures += expect_size(stats.workspace.capacity_bytes, 64ULL * kMiB, "workspace capacity");
+    failures += expect_size(stats.workspace.capacity_bytes, qus::Engine::default_work_bytes(128),
+                            "workspace capacity");
     failures += stats.q5090_loaded_payload_bytes > 0 ? 0 : fail("loaded payload bytes zero");
     failures += stats.q5090_tensor_count > 0 ? 0 : fail("q5090 tensor count zero");
     failures += stats.q5090_quant_count > 0 ? 0 : fail("q5090 quant count zero");
@@ -167,7 +168,7 @@ int test_loaded_stats_with_cuda() {
     qus::EngineOptions mtp_options;
     mtp_options.device           = 0;
     mtp_options.max_ctx          = 4;
-    mtp_options.work_bytes       = 64ULL * kMiB;
+    mtp_options.prefill_chunk    = 128;
     mtp_options.mtp_draft_tokens = 1;
     qus::Engine mtp_engine(mtp_options);
     mtp_engine.load(fixture.string());
@@ -182,6 +183,12 @@ int test_loaded_stats_with_cuda() {
     failures += mtp_stats.q5090_quant_count == stats.q5090_quant_count
                     ? 0
                     : fail("MTP load changed quant count");
+    failures += mtp_stats.cache.capacity_bytes > stats.cache.capacity_bytes
+                    ? 0
+                    : fail("MTP load did not increase cache capacity");
+    failures += mtp_stats.workspace.capacity_bytes > stats.workspace.capacity_bytes
+                    ? 0
+                    : fail("MTP load did not increase workspace capacity");
     return failures;
 }
 

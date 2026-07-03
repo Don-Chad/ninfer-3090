@@ -87,6 +87,7 @@ private:
     std::optional<WorkspaceArena> work_;
     std::optional<WeightStore> weights_;
     std::optional<KVCache> kv_;
+    std::optional<KVCache> mtp_kv_;
     std::optional<GdnState> state_;
     model::StepState io_{};
     std::optional<model::Qwen3_6_27B> card_;
