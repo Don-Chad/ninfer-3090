@@ -7,6 +7,7 @@
 
 #include "qus/model/config.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -16,7 +17,7 @@
 
 namespace qus::bench {
 
-inline constexpr int kSchemaVersion                  = 2;
+inline constexpr int kSchemaVersion                  = 3;
 inline constexpr std::string_view kArtifactType      = "qus_bench_report";
 inline constexpr std::string_view kDefaultCorpusPath = "bench/fixtures/bench_corpus.ids";
 // Seed tokens prefilled (untimed) before a pure decode (tg) test so the model has a valid
@@ -63,6 +64,8 @@ struct BenchOptions {
     std::optional<std::uint32_t> max_ctx;  // --max-ctx override
     std::optional<std::size_t> work_bytes; // --work-bytes override (prefill workspace)
     std::uint32_t prefill_chunk = model::kDefaultPrefillChunk;
+    int mtp_draft_tokens        = 0;
+    bool mtp_strict_sequential  = false;
     int device                  = 0;
     bool use_cuda_graph         = true;
     OutputFormat output         = OutputFormat::Table;
@@ -74,7 +77,18 @@ struct BenchOptions {
 struct RepTiming {
     double prefill_time_s = 0.0;
     double decode_time_s  = 0.0;
+    struct BenchMtpStats {
+        bool enabled = false;
+        int k = 0;
+        std::int64_t draft_tokens = 0;
+        std::int64_t accepted_tokens = 0;
+        std::int64_t rounds = 0;
+        std::int64_t fallback_steps = 0;
+        std::array<std::int64_t, model::kMaxMtpDraftTokens> accepted_per_pos{};
+    } mtp;
 };
+
+using BenchMtpStats = RepTiming::BenchMtpStats;
 
 struct TestResult {
     BenchTest test;
@@ -100,7 +114,9 @@ struct BenchEnvironment {
     std::uint32_t max_ctx                 = 0;
     std::size_t work_bytes                = 0;
     std::uint32_t prefill_chunk           = model::kDefaultPrefillChunk;
-    std::string decode_path; // "cuda_graph" or "eager"
+    int mtp_draft_tokens                  = 0;
+    bool mtp_strict_sequential            = false;
+    std::string decode_path; // "cuda_graph", "eager", "mtp_eager", or "mtp_strict"
     int repetitions = 0;
     int warmup      = 0;
     std::string corpus_path;
@@ -123,6 +139,8 @@ void validate_prompt_lengths(const std::vector<BenchTest>& tests, std::size_t co
 // Corpus ------------------------------------------------------------------------------------
 std::vector<int> load_corpus_ids(const std::string& path);
 std::vector<int> prompt_slice(const std::vector<int>& corpus, int n_prompt);
+std::string decode_path_name(bool use_cuda_graph, int mtp_draft_tokens,
+                             bool mtp_strict_sequential);
 
 // Statistics --------------------------------------------------------------------------------
 Stats compute_stats(const std::vector<double>& values);

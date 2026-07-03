@@ -22,6 +22,20 @@ double seconds_between(Clock::time_point start, Clock::time_point end) {
     return std::chrono::duration<double>(end - start).count();
 }
 
+qus::bench::BenchMtpStats to_bench_mtp_stats(const qus::EngineMtpStats& stats) {
+    qus::bench::BenchMtpStats out;
+    out.enabled = stats.enabled;
+    out.k = stats.k;
+    out.draft_tokens = stats.draft_tokens;
+    out.accepted_tokens = stats.accepted_tokens;
+    out.rounds = stats.rounds;
+    out.fallback_steps = stats.fallback_steps;
+    for (std::size_t i = 0; i < out.accepted_per_pos.size(); ++i) {
+        out.accepted_per_pos[i] = stats.accepted_per_pos[i];
+    }
+    return out;
+}
+
 std::string command_line(int argc, char** argv) {
     std::ostringstream out;
     for (int i = 0; i < argc; ++i) {
@@ -62,24 +76,29 @@ qus::bench::RepTiming run_repetition(qus::Engine& engine, const qus::bench::Benc
     switch (test.kind) {
     case qus::bench::TestKind::Prefill: {
         const std::vector<int> slice = qus::bench::prompt_slice(corpus, test.n_prompt);
+        engine.reset_mtp_stats();
         const auto start             = Clock::now();
         const qus::NvtxRange range("qus_bench.prefill." + test.label);
         engine.prefill(slice);
         timing.prefill_time_s = seconds_between(start, Clock::now());
+        timing.mtp = to_bench_mtp_stats(engine.mtp_stats());
         break;
     }
     case qus::bench::TestKind::Decode: {
         const std::vector<int> seed =
             qus::bench::prompt_slice(corpus, qus::bench::kDecodeSeedTokens);
         engine.prefill(seed); // untimed setup
+        engine.reset_mtp_stats();
         const auto start = Clock::now();
         const qus::NvtxRange range("qus_bench.decode." + test.label);
         for (int step = 0; step < test.n_gen; ++step) { engine.decode_step(); }
         timing.decode_time_s = seconds_between(start, Clock::now());
+        timing.mtp = to_bench_mtp_stats(engine.mtp_stats());
         break;
     }
     case qus::bench::TestKind::PrefillDecode: {
         const std::vector<int> slice = qus::bench::prompt_slice(corpus, test.n_prompt);
+        engine.reset_mtp_stats();
         const auto start             = Clock::now();
         {
             const qus::NvtxRange range("qus_bench.prefill." + test.label);
@@ -93,6 +112,7 @@ qus::bench::RepTiming run_repetition(qus::Engine& engine, const qus::bench::Benc
         const auto end        = Clock::now();
         timing.prefill_time_s = seconds_between(start, after_prefill);
         timing.decode_time_s  = seconds_between(after_prefill, end);
+        timing.mtp = to_bench_mtp_stats(engine.mtp_stats());
         break;
     }
     }
@@ -137,6 +157,8 @@ int main(int argc, char** argv) {
         engine_options.device         = options.device;
         engine_options.max_ctx        = max_ctx;
         engine_options.prefill_chunk  = options.prefill_chunk;
+        engine_options.mtp_draft_tokens = options.mtp_draft_tokens;
+        engine_options.mtp_strict_sequential = options.mtp_strict_sequential;
         engine_options.use_cuda_graph = options.use_cuda_graph;
         if (options.work_bytes.has_value()) { engine_options.work_bytes = *options.work_bytes; }
 
@@ -148,7 +170,10 @@ int main(int argc, char** argv) {
         env.weights_file_size_bytes = qus::bench::file_size_or_zero(options.weights_path);
         env.max_ctx                 = max_ctx;
         env.prefill_chunk           = options.prefill_chunk;
-        env.decode_path             = options.use_cuda_graph ? "cuda_graph" : "eager";
+        env.mtp_draft_tokens        = options.mtp_draft_tokens;
+        env.mtp_strict_sequential   = options.mtp_strict_sequential;
+        env.decode_path             = qus::bench::decode_path_name(
+            options.use_cuda_graph, options.mtp_draft_tokens, options.mtp_strict_sequential);
         env.repetitions             = options.repetitions;
         env.warmup                  = options.warmup;
         env.corpus_path             = options.corpus_path;

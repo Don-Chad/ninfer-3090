@@ -52,6 +52,14 @@ std::size_t parse_positive_u64(std::string_view text, const char* label) {
     return static_cast<std::size_t>(value);
 }
 
+int parse_mtp_draft_tokens(std::string_view text) {
+    const int value = parse_nonnegative(text, "mtp-draft-tokens");
+    if (value > model::kMaxMtpDraftTokens) {
+        throw std::invalid_argument("--mtp-draft-tokens must be in [0,5]");
+    }
+    return value;
+}
+
 std::vector<int> parse_int_list(std::string_view value, const char* label) {
     std::vector<int> out;
     std::size_t start = 0;
@@ -216,7 +224,9 @@ std::string usage_text(std::string_view program) {
         << model::kDefaultPrefillChunk << ")\n"
         << "  --work-bytes <bytes>        explicit workspace arena override\n"
         << "  --device <id>               CUDA device ordinal (default: 0)\n"
-        << "  --no-cuda-graph             disable CUDA graph decode (decode_path=eager)\n"
+        << "  --no-cuda-graph             disable CUDA graph decode (non-MTP decode_path=eager)\n"
+        << "  --mtp-draft-tokens <0..5>   enable eager MTP draft rounds (default: 0)\n"
+        << "  --mtp-strict-sequential     run MTP strict-sequential debug mode\n"
         << "  -o, --output <table|json|csv>  output format (default: table)\n"
         << "  --output-file <path>        write output to a file instead of stdout\n"
         << "  -h, --help                  show this help\n"
@@ -269,6 +279,10 @@ BenchOptions parse_args(int argc, char** argv) {
             options.work_bytes = parse_positive_u64(require_value("--work-bytes"), "work-bytes");
         } else if (arg == "--device") {
             options.device = parse_nonnegative(require_value("--device"), "device");
+        } else if (arg == "--mtp-draft-tokens") {
+            options.mtp_draft_tokens = parse_mtp_draft_tokens(require_value("--mtp-draft-tokens"));
+        } else if (arg == "--mtp-strict-sequential") {
+            options.mtp_strict_sequential = true;
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "-o" || arg == "--output") {
@@ -383,6 +397,12 @@ std::vector<int> prompt_slice(const std::vector<int>& corpus, int n_prompt) {
     return std::vector<int>(corpus.begin(), corpus.begin() + n_prompt);
 }
 
+std::string decode_path_name(bool use_cuda_graph, int mtp_draft_tokens,
+                             bool mtp_strict_sequential) {
+    if (mtp_draft_tokens > 0) { return mtp_strict_sequential ? "mtp_strict" : "mtp_eager"; }
+    return use_cuda_graph ? "cuda_graph" : "eager";
+}
+
 Stats compute_stats(const std::vector<double>& values) {
     Stats stats;
     stats.count = static_cast<int>(values.size());
@@ -434,6 +454,8 @@ std::vector<double> decode_time_series(const TestResult& result) {
     return out;
 }
 
+BenchMtpStats aggregate_mtp(const BenchEnvironment& env, const TestResult& result);
+
 std::string format_table(const BenchEnvironment& env, const std::vector<TestResult>& results) {
     std::ostringstream out;
     out << "qus_bench throughput report\n";
@@ -445,18 +467,27 @@ std::string format_table(const BenchEnvironment& env, const std::vector<TestResu
         << " bytes)\n";
     out << "  corpus:     " << env.corpus_path << " (" << env.corpus_tokens << " tokens)\n";
     out << "  config:     max_ctx=" << env.max_ctx << " prefill_chunk=" << env.prefill_chunk
+        << " mtp_k=" << env.mtp_draft_tokens
+        << " mtp_strict=" << (env.mtp_strict_sequential ? "true" : "false")
         << " work_bytes=" << env.work_bytes << " decode_path=" << env.decode_path
         << " repetitions=" << env.repetitions << " warmup=" << env.warmup << "\n\n";
 
-    constexpr std::size_t kCols                  = 6;
+    constexpr std::size_t kCols                  = 7;
     const std::array<std::string, kCols> headers = {"test",        "n_prompt",   "n_gen",
-                                                    "prefill t/s", "decode t/s", "work peak"};
+                                                    "prefill t/s", "decode t/s", "mtp acc",
+                                                    "work peak"};
     std::vector<std::array<std::string, kCols>> rows;
     rows.reserve(results.size());
     for (const TestResult& result : results) {
+        const BenchMtpStats mtp = aggregate_mtp(env, result);
+        const std::string mtp_rate =
+            mtp.draft_tokens > 0
+                ? json_number(static_cast<double>(mtp.accepted_tokens) /
+                              static_cast<double>(mtp.draft_tokens))
+                : std::string("n/a");
         rows.push_back({result.test.label, std::to_string(result.test.n_prompt),
                         std::to_string(result.test.n_gen), rate_cell(prefill_tok_s_series(result)),
-                        rate_cell(decode_tok_s_series(result)),
+                        rate_cell(decode_tok_s_series(result)), mtp_rate,
                         format_bytes(result.workspace_peak_bytes)});
     }
 
@@ -485,6 +516,59 @@ std::string format_table(const BenchEnvironment& env, const std::vector<TestResu
     return out.str();
 }
 
+void append_mtp_json(std::ostringstream& out, const BenchEnvironment& env,
+                     const BenchMtpStats& mtp, const std::string& indent) {
+    out << indent << "\"mtp\": {\n";
+    out << indent << "  \"enabled\": " << (mtp.enabled ? "true" : "false") << ",\n";
+    out << indent << "  \"k\": " << mtp.k << ",\n";
+    out << indent << "  \"draft_tokens\": " << mtp.draft_tokens << ",\n";
+    out << indent << "  \"accepted_tokens\": " << mtp.accepted_tokens << ",\n";
+    out << indent << "  \"acceptance_rate\": ";
+    if (mtp.draft_tokens > 0) {
+        out << json_number(static_cast<double>(mtp.accepted_tokens) /
+                           static_cast<double>(mtp.draft_tokens));
+    } else {
+        out << "null";
+    }
+    out << ",\n";
+    out << indent << "  \"acceptance_length\": ";
+    if (mtp.rounds > 0) {
+        out << json_number(1.0 + static_cast<double>(mtp.accepted_tokens) /
+                                     static_cast<double>(mtp.rounds));
+    } else {
+        out << "null";
+    }
+    out << ",\n";
+    out << indent << "  \"rounds\": " << mtp.rounds << ",\n";
+    out << indent << "  \"fallback_steps\": " << mtp.fallback_steps << ",\n";
+    out << indent << "  \"accepted_per_pos\": [";
+    for (int i = 0; i < mtp.k; ++i) {
+        if (i != 0) { out << ", "; }
+        out << mtp.accepted_per_pos[static_cast<std::size_t>(i)];
+    }
+    out << "]\n";
+    out << indent << "}";
+}
+
+BenchMtpStats aggregate_mtp(const BenchEnvironment& env, const TestResult& result) {
+    BenchMtpStats out;
+    out.enabled = env.mtp_draft_tokens > 0;
+    out.k       = env.mtp_draft_tokens;
+    for (const RepTiming& rep : result.reps) {
+        out.enabled = out.enabled || rep.mtp.enabled;
+        out.k       = std::max(out.k, rep.mtp.k);
+        out.draft_tokens += rep.mtp.draft_tokens;
+        out.accepted_tokens += rep.mtp.accepted_tokens;
+        out.rounds += rep.mtp.rounds;
+        out.fallback_steps += rep.mtp.fallback_steps;
+        for (std::size_t i = 0; i < out.accepted_per_pos.size(); ++i) {
+            out.accepted_per_pos[i] += rep.mtp.accepted_per_pos[i];
+        }
+    }
+    if (out.k < 0 || out.k > model::kMaxMtpDraftTokens) { out.k = 0; }
+    return out;
+}
+
 std::string format_json(const BenchEnvironment& env, const std::string& command,
                         const std::vector<TestResult>& results) {
     std::ostringstream out;
@@ -508,6 +592,9 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << "  \"config\": {\n"
         << "    \"max_ctx\": " << env.max_ctx << ",\n"
         << "    \"prefill_chunk\": " << env.prefill_chunk << ",\n"
+        << "    \"mtp_draft_tokens\": " << env.mtp_draft_tokens << ",\n"
+        << "    \"mtp_strict_sequential\": "
+        << (env.mtp_strict_sequential ? "true" : "false") << ",\n"
         << "    \"work_bytes\": " << env.work_bytes << ",\n"
         << "    \"decode_path\": \"" << json_escape(env.decode_path) << "\",\n"
         << "    \"repetitions\": " << env.repetitions << ",\n"
@@ -535,7 +622,8 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         append_stat_fields(out, "prefill_time_s", prefill_times, "      ");
         out << ",\n";
         append_stat_fields(out, "decode_time_s", decode_times, "      ");
-        out << ",\n      \"workspace_peak_bytes\": " << result.workspace_peak_bytes;
+        out << ",\n      \"workspace_peak_bytes\": " << result.workspace_peak_bytes << ",\n";
+        append_mtp_json(out, env, aggregate_mtp(env, result), "      ");
         out << ",\n      \"reps\": [\n";
         for (std::size_t r = 0; r < result.reps.size(); ++r) {
             const RepTiming& rep = result.reps[r];
@@ -569,7 +657,8 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
 
 std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult>& results) {
     std::ostringstream out;
-    out << "label,kind,n_prompt,n_gen,prefill_chunk,repetitions,prefill_tok_s_mean,prefill_tok_s_"
+    out << "label,kind,n_prompt,n_gen,prefill_chunk,mtp_draft_tokens,mtp_acceptance_rate,"
+           "repetitions,prefill_tok_s_mean,prefill_tok_s_"
            "stddev,"
            "decode_tok_s_mean,decode_tok_s_stddev,prefill_time_s_mean,decode_time_s_mean,"
            "workspace_peak_bytes\n";
@@ -580,8 +669,15 @@ std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult
         return series.empty() ? std::string() : json_number(compute_stats(series).stddev);
     };
     for (const TestResult& result : results) {
+        const BenchMtpStats mtp = aggregate_mtp(env, result);
+        const std::string mtp_rate =
+            mtp.draft_tokens > 0
+                ? json_number(static_cast<double>(mtp.accepted_tokens) /
+                              static_cast<double>(mtp.draft_tokens))
+                : std::string();
         out << result.test.label << "," << kind_string(result.test.kind) << ","
             << result.test.n_prompt << "," << result.test.n_gen << "," << env.prefill_chunk << ","
+            << env.mtp_draft_tokens << "," << mtp_rate << ","
             << result.reps.size() << "," << cell_mean(prefill_tok_s_series(result)) << ","
             << cell_stddev(prefill_tok_s_series(result)) << ","
             << cell_mean(decode_tok_s_series(result)) << ","
