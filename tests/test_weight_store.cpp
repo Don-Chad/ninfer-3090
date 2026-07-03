@@ -25,6 +25,9 @@ bool cuda_unavailable(cudaError_t err) {
     return err == cudaErrorNoDevice || err == cudaErrorInsufficientDriver;
 }
 
+constexpr std::size_t kFixtureArenaBytes = 1ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t kSegmentRecordSize = 32;
+
 int fail(std::string_view message) {
     std::cerr << message << '\n';
     return 1;
@@ -48,6 +51,24 @@ std::vector<std::byte> read_file(const std::filesystem::path& path) {
     std::vector<std::byte> bytes(chars.size());
     std::memcpy(bytes.data(), chars.data(), chars.size());
     return bytes;
+}
+
+void write_file(const std::filesystem::path& path, const std::vector<std::byte>& bytes) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out) { throw std::runtime_error("failed to create fixture"); }
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    if (!out) { throw std::runtime_error("failed to write fixture"); }
+}
+
+std::uint64_t read_u64(const std::vector<std::byte>& bytes, std::uint64_t offset) {
+    std::uint64_t value = 0;
+    std::memcpy(&value, bytes.data() + offset, sizeof(value));
+    return value;
+}
+
+void write_u32(std::vector<std::byte>& bytes, std::uint64_t offset, std::uint32_t value) {
+    std::memcpy(bytes.data() + offset, &value, sizeof(value));
 }
 
 qus::Q5090Expectations expectations() {
@@ -85,6 +106,13 @@ const qus::ParsedQ5090Segment& find_segment(const qus::ParsedQ5090File& parsed,
     throw std::runtime_error("segment not found");
 }
 
+std::size_t find_segment_index(const qus::ParsedQ5090File& parsed, std::string_view name) {
+    for (std::size_t i = 0; i < parsed.segments.size(); ++i) {
+        if (parsed.segments[i].name == name) { return i; }
+    }
+    throw std::runtime_error("segment not found");
+}
+
 std::uint64_t align_up_u64(std::uint64_t value, std::uint64_t align) {
     return ((value + align - 1) / align) * align;
 }
@@ -94,6 +122,7 @@ std::uint64_t nibble_bytes_per_group(qus::QType qtype) {
     case qus::QType::Q4G64_F16S:
     case qus::QType::Q5G64_F16S:
     case qus::QType::Q6G64_F16S:
+    case qus::QType::W8G32_F16S:
         return 32;
     case qus::QType::W8G128_F16S:
         return 128;
@@ -106,6 +135,7 @@ std::uint64_t high_bytes_per_group(qus::QType qtype) {
     switch (qtype) {
     case qus::QType::Q4G64_F16S:
     case qus::QType::W8G128_F16S:
+    case qus::QType::W8G32_F16S:
         return 0;
     case qus::QType::Q5G64_F16S:
         return 8;
@@ -181,12 +211,12 @@ std::uint32_t segment_row_sum(const qus::ParsedQ5090File& parsed,
 
 int expect_counts(const qus::WeightStore& store, std::uint64_t loaded_bytes) {
     int failures = 0;
-    failures += store.tensor_count() == 10 ? 0 : fail("tensor_count mismatch");
-    failures += store.quant_count() == 7 ? 0 : fail("quant_count mismatch");
+    failures += store.tensor_count() == 20 ? 0 : fail("tensor_count mismatch");
+    failures += store.quant_count() == 15 ? 0 : fail("quant_count mismatch");
     failures +=
         store.module_tensor_count(qus::ModuleKind::TextCore) == 6 ? 0 : fail("TEXT count mismatch");
     failures +=
-        store.module_tensor_count(qus::ModuleKind::MtpDraft) == 2 ? 0 : fail("MTP count mismatch");
+        store.module_tensor_count(qus::ModuleKind::MtpDraft) == 12 ? 0 : fail("MTP count mismatch");
     failures += store.module_tensor_count(qus::ModuleKind::VisionEncoder) == 2
                     ? 0
                     : fail("VISION count mismatch");
@@ -278,6 +308,9 @@ int expect_default_text_load(const qus::WeightStore& store, const qus::ParsedQ50
     failures += mtp != nullptr ? 0 : fail("missing MTP metadata");
     if (mtp != nullptr) {
         failures += mtp->payload == nullptr ? 0 : fail("MTP payload loaded by default");
+        failures += mtp->qtype == qus::QType::W8G32_F16S ? 0 : fail("MTP qtype mismatch");
+        failures += mtp->group_size == 32 ? 0 : fail("MTP group_size mismatch");
+        failures += mtp->high_plane_bytes == 0 ? 0 : fail("MTP high plane mismatch");
     }
     const qus::Weight* vision = store.qweight("model.visual.patch_embed.proj.weight");
     failures += vision != nullptr ? 0 : fail("missing VISION metadata");
@@ -304,6 +337,37 @@ int expect_module_payload(const qus::WeightStore& store, const qus::ParsedQ5090F
         failures += expect_device_bytes(weight->payload, payload_bytes(file, meta), name);
     }
     return failures;
+}
+
+int expect_mtp_expectations_reject_swapped_attn_segments(
+    const std::vector<std::byte>& valid, const qus::ParsedQ5090File& parsed,
+    qus::DeviceContext& ctx) {
+    std::vector<std::byte> bad = valid;
+    const std::uint64_t segment_offset = read_u64(bad, 200);
+    const std::size_t k_index =
+        find_segment_index(parsed, "mtp.layers.0.self_attn.k_proj.weight");
+    const std::size_t gate_index =
+        find_segment_index(parsed, "mtp.layers.0.self_attn.q_proj.gate");
+    write_u32(bad, segment_offset + k_index * kSegmentRecordSize,
+              static_cast<std::uint32_t>(qus::SourceKind::AttnGate));
+    write_u32(bad, segment_offset + gate_index * kSegmentRecordSize,
+              static_cast<std::uint32_t>(qus::SourceKind::AttnK));
+
+    const auto path =
+        std::filesystem::temp_directory_path() / "qus_q5090_bad_mtp_attn_segments.qus";
+    write_file(path, bad);
+
+    qus::LoadOptions options;
+    options.load_mtp = true;
+    qus::DeviceArena arena(kFixtureArenaBytes);
+    qus::WeightStore store(expectations());
+    store.load(path.c_str(), arena, ctx, options);
+    try {
+        store.require_mtp_module_expectations();
+    } catch (const std::runtime_error&) {
+        return 0;
+    }
+    return fail("swapped MTP attn segment source kinds were accepted");
 }
 
 template <typename Exception, typename Fn>
@@ -346,7 +410,7 @@ int main() {
     const qus::ParsedQ5090File parsed        = qus::parse_q5090_file(file, expectations());
     qus::DeviceContext ctx(0);
 
-    qus::DeviceArena default_arena(65536);
+    qus::DeviceArena default_arena(kFixtureArenaBytes);
     qus::WeightStore default_store(expectations());
     default_store.load(fixture_path.c_str(), default_arena, ctx);
     failures += expect_default_text_load(default_store, parsed, file);
@@ -373,20 +437,29 @@ int main() {
 
     qus::LoadOptions mtp_options;
     mtp_options.load_mtp = true;
-    qus::DeviceArena mtp_arena(65536);
+    qus::DeviceArena mtp_arena(kFixtureArenaBytes);
     qus::WeightStore mtp_store(expectations());
     mtp_store.load(fixture_path.c_str(), mtp_arena, ctx, mtp_options);
+    mtp_store.require_mtp_module_expectations();
     failures += mtp_store.module_loaded(qus::ModuleKind::MtpDraft) ? 0 : fail("MTP not loaded");
     failures += !mtp_store.module_loaded(qus::ModuleKind::VisionEncoder)
                     ? 0
                     : fail("VISION loaded with MTP");
     failures += expect_module_payload(mtp_store, parsed, file, "mtp.fc.weight", true);
+    const qus::Weight* mtp_attn = mtp_store.qfused(qus::ModuleKind::MtpDraft, /*ATTN_IN*/ 1, 0, 0);
+    failures += mtp_attn != nullptr ? 0 : fail("missing MTP attn fused block");
+    if (mtp_attn != nullptr) {
+        failures += mtp_attn->qtype == qus::QType::W8G32_F16S ? 0 : fail("MTP attn qtype");
+        failures += mtp_attn->group_size == 32 ? 0 : fail("MTP attn group_size");
+        failures += mtp_attn->qhigh == nullptr ? 0 : fail("MTP attn qhigh");
+        failures += mtp_attn->high_plane_bytes == 0 ? 0 : fail("MTP attn high_plane_bytes");
+    }
     failures += expect_module_payload(mtp_store, parsed, file,
                                       "model.visual.patch_embed.proj.weight", false);
 
     qus::LoadOptions vision_options;
     vision_options.load_vision = true;
-    qus::DeviceArena vision_arena(65536);
+    qus::DeviceArena vision_arena(kFixtureArenaBytes);
     qus::WeightStore vision_store(expectations());
     vision_store.load(fixture_path.c_str(), vision_arena, ctx, vision_options);
     failures +=
@@ -400,9 +473,10 @@ int main() {
     qus::LoadOptions all_options;
     all_options.load_mtp    = true;
     all_options.load_vision = true;
-    qus::DeviceArena all_arena(65536);
+    qus::DeviceArena all_arena(kFixtureArenaBytes);
     qus::WeightStore all_store(expectations());
     all_store.load(fixture_path.c_str(), all_arena, ctx, all_options);
+    all_store.require_mtp_module_expectations();
     failures +=
         all_store.module_loaded(qus::ModuleKind::TextCore) ? 0 : fail("TEXT not loaded with all");
     failures +=
@@ -413,8 +487,9 @@ int main() {
     failures += expect_module_payload(all_store, parsed, file, "mtp.fc.weight", true);
     failures += expect_module_payload(all_store, parsed, file,
                                       "model.visual.patch_embed.proj.weight", true);
+    failures += expect_mtp_expectations_reject_swapped_attn_segments(file, parsed, ctx);
 
-    qus::DeviceArena required_arena(65536);
+    qus::DeviceArena required_arena(kFixtureArenaBytes);
     failures += expect_throws_without_arena_growth<std::runtime_error>(
         required_arena,
         [&] {

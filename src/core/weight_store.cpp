@@ -187,6 +187,7 @@ std::uint64_t nibble_bytes_per_group(QType qtype) {
     case QType::Q4G64_F16S:
     case QType::Q5G64_F16S:
     case QType::Q6G64_F16S:
+    case QType::W8G32_F16S:
         return 32;
     case QType::W8G128_F16S:
         return 128;
@@ -199,6 +200,7 @@ std::uint64_t high_bytes_per_group(QType qtype) {
     switch (qtype) {
     case QType::Q4G64_F16S:
     case QType::W8G128_F16S:
+    case QType::W8G32_F16S:
         return 0;
     case QType::Q5G64_F16S:
         return 8;
@@ -395,14 +397,15 @@ void WeightStore::load(const char* path, DeviceArena& weights, DeviceContext& ct
                                                tensor.shape, tensor.ndim);
                 next_tensors.push_back(TensorRecord{segment.name, tensor.module_kind,
                                                     segment.source_kind, segment.source_layer,
-                                                    tensor.payload_bytes, view});
+                                                    tensor.qtype, tensor.payload_bytes, view});
             } else if (is_quant_layout(tensor.layout)) {
                 for (std::uint32_t j = 0; j < tensor.segment_count; ++j) {
                     const ParsedQ5090Segment& segment =
                         parsed.segments[static_cast<std::size_t>(tensor.segment_begin + j)];
                     next_quant.push_back(
-                        QuantRecord{segment.name, tensor.module_kind, segment.source_kind,
-                                    segment.source_layer,
+                        QuantRecord{segment.name, tensor.name, tensor.module_kind,
+                                    segment.source_kind, segment.source_layer, segment.row_begin,
+                                    segment.row_count,
                                     make_quant_descriptor(tensor, segment, payload)});
                 }
                 if (tensor.fusion_group_id != 0) {
@@ -414,7 +417,8 @@ void WeightStore::load(const char* path, DeviceArena& weights, DeviceContext& ct
                     block_seg.row_begin    = 0;
                     block_seg.row_count    = tensor.shape[0];
                     next_fused.push_back(FusedBlockRecord{
-                        tensor.module_kind, static_cast<std::uint16_t>(tensor.fusion_group_id),
+                        tensor.name, tensor.module_kind,
+                        static_cast<std::uint16_t>(tensor.fusion_group_id),
                         static_cast<std::uint16_t>(tensor.fusion_index), group.source_layer,
                         make_quant_descriptor(tensor, block_seg, payload)});
                 }
@@ -499,6 +503,240 @@ std::size_t WeightStore::module_tensor_count(ModuleKind module) const noexcept {
 
 bool WeightStore::module_loaded(ModuleKind module) const noexcept {
     return modules_[module_index(module)].loaded;
+}
+
+void WeightStore::require_mtp_module_expectations() const {
+    const ModuleState& mtp = modules_[module_index(ModuleKind::MtpDraft)];
+    if (!mtp.present) { throw std::runtime_error("q5090 MTP_DRAFT module is missing"); }
+    if (!mtp.loaded) { throw std::runtime_error("q5090 MTP_DRAFT module is not loaded"); }
+    if (mtp.tensor_count != 12) {
+        throw std::runtime_error("q5090 MTP_DRAFT tensor count mismatch");
+    }
+
+    std::size_t mtp_quant_segments = 0;
+    for (const QuantRecord& record : quant_) {
+        if (record.module == ModuleKind::MtpDraft) { ++mtp_quant_segments; }
+    }
+    std::size_t mtp_dense_segments = 0;
+    for (const TensorRecord& record : tensors_) {
+        if (record.module == ModuleKind::MtpDraft) { ++mtp_dense_segments; }
+    }
+    std::size_t mtp_fused_blocks = 0;
+    for (const FusedBlockRecord& record : fused_) {
+        if (record.module == ModuleKind::MtpDraft) { ++mtp_fused_blocks; }
+    }
+
+    if (mtp_quant_segments + mtp_dense_segments != 16) {
+        throw std::runtime_error("q5090 MTP_DRAFT segment count mismatch");
+    }
+    if (mtp_dense_segments != 7) {
+        throw std::runtime_error("q5090 MTP_DRAFT BF16 control count mismatch");
+    }
+    if (mtp_fused_blocks != 2) {
+        throw std::runtime_error("q5090 MTP_DRAFT fusion group count mismatch");
+    }
+
+    auto require_w8_metadata = [](const Weight& weight, const char* label) {
+        const std::string prefix = std::string("q5090 invalid MTP W8G32 weight: ") + label;
+        if (weight.qtype != QType::W8G32_F16S || weight.layout != QuantLayout::RowSplit ||
+            weight.group_size != 32 || weight.group != 32 || weight.high_plane_bytes != 0 ||
+            weight.qhigh != nullptr || weight.q5090_scale_dtype != ScaleDType::FP16 ||
+            weight.ndim != 2 || weight.n <= 0 || weight.k <= 0 || weight.shape[0] != weight.n ||
+            weight.shape[1] != weight.k || weight.shape[2] != 1 || weight.shape[3] != 1 ||
+            weight.padded_shape[0] != weight.n || weight.padded_shape[1] < weight.k ||
+            weight.padded_shape[2] != 1 || weight.padded_shape[3] != 1) {
+            throw std::runtime_error(prefix);
+        }
+    };
+    auto require_equal_u32 = [](std::uint32_t got, std::uint32_t want, const char* label) {
+        if (got != want) {
+            throw std::runtime_error(std::string("q5090 invalid MTP layout: ") + label);
+        }
+    };
+    auto require_equal_i32 = [](std::int32_t got, std::uint32_t want, const char* label) {
+        if (got < 0 || static_cast<std::uint32_t>(got) != want) {
+            throw std::runtime_error(std::string("q5090 invalid MTP layout: ") + label);
+        }
+    };
+    auto checked_add_u32 = [](std::uint32_t a, std::uint32_t b, const char* label) {
+        if (b > std::numeric_limits<std::uint32_t>::max() - a) {
+            throw std::overflow_error(label);
+        }
+        return a + b;
+    };
+    auto checked_mul_u32 = [](std::uint32_t a, std::uint32_t b, const char* label) {
+        if (b != 0 && a > std::numeric_limits<std::uint32_t>::max() / b) {
+            throw std::overflow_error(label);
+        }
+        return a * b;
+    };
+    auto require_w8_segment = [&](const char* block_name, const char* segment_name,
+                                  SourceKind source_kind, std::uint32_t source_layer,
+                                  const char* label) -> const QuantRecord& {
+        for (const QuantRecord& record : quant_) {
+            if (record.module == ModuleKind::MtpDraft && record.block_name == block_name &&
+                record.name == segment_name &&
+                record.source_kind == static_cast<std::uint32_t>(source_kind) &&
+                record.source_layer == source_layer) {
+                require_w8_metadata(record.weight, label);
+                return record;
+            }
+        }
+        throw std::runtime_error(std::string("q5090 missing MTP W8G32 segment: ") + label);
+    };
+    auto require_segment_range = [&](const QuantRecord& record, std::uint32_t row_begin,
+                                     std::uint32_t row_count, const char* label) {
+        require_equal_u32(record.row_begin, row_begin, label);
+        require_equal_u32(record.row_count, row_count, label);
+        require_equal_i32(record.weight.n, row_count, label);
+    };
+    auto require_fused_w8 = [&](const char* block_name, std::uint16_t group_id,
+                                std::uint32_t total_n, std::uint32_t k,
+                                const char* label) {
+        for (const FusedBlockRecord& record : fused_) {
+            if (record.module == ModuleKind::MtpDraft && record.name == block_name &&
+                record.group_id == group_id && record.fusion_index == 0 &&
+                record.source_layer == 0) {
+                require_w8_metadata(record.weight, label);
+                if (record.weight.source_kind != static_cast<std::uint32_t>(SourceKind::Other)) {
+                    throw std::runtime_error(std::string("q5090 invalid MTP fused source: ") +
+                                             label);
+                }
+                require_equal_i32(record.weight.n, total_n, label);
+                require_equal_i32(record.weight.k, k, label);
+                return;
+            }
+        }
+        throw std::runtime_error(std::string("q5090 missing MTP W8G32 fused block: ") + label);
+    };
+    auto require_bf16 = [&](const char* name, SourceKind source_kind,
+                            std::uint32_t source_layer) -> const TensorRecord& {
+        for (const TensorRecord& record : tensors_) {
+            if (record.module == ModuleKind::MtpDraft && record.name == name &&
+                record.source_kind == static_cast<std::uint32_t>(source_kind) &&
+                record.source_layer == source_layer) {
+                if (record.qtype != QType::BF16_CTRL || record.tensor.dtype != DType::BF16) {
+                    throw std::runtime_error(std::string("q5090 invalid MTP BF16 control: ") +
+                                             name);
+                }
+                return record;
+            }
+        }
+        throw std::runtime_error(std::string("q5090 missing MTP BF16 control: ") + name);
+    };
+    auto require_bf16_1d = [&](const char* name, SourceKind source_kind,
+                               std::uint32_t source_layer, std::uint32_t size) {
+        const TensorRecord& record = require_bf16(name, source_kind, source_layer);
+        if (record.tensor.ne[0] < 0 || static_cast<std::uint32_t>(record.tensor.ne[0]) != size ||
+            record.tensor.ne[1] != 1 || record.tensor.ne[2] != 1 || record.tensor.ne[3] != 1) {
+            throw std::runtime_error(std::string("q5090 invalid MTP BF16 shape: ") + name);
+        }
+    };
+
+    const QuantRecord& fc = require_w8_segment(
+        "mtp.fc.weight", "mtp.fc.weight", SourceKind::MtpFc, kQ5090NoLayer, "mtp.fc.weight");
+    require_segment_range(fc, 0, fc.row_count, "mtp.fc.weight");
+    if (fc.row_count == 0) { throw std::runtime_error("q5090 invalid MTP hidden size"); }
+    const std::uint32_t hidden = fc.row_count;
+    require_equal_i32(fc.weight.k, checked_mul_u32(hidden, 2, "q5090 MTP fc K overflow"),
+                      "mtp.fc.weight K");
+
+    require_bf16_1d("mtp.pre_fc_norm_embedding.weight", SourceKind::MtpPreFcNormEmb,
+                    kQ5090NoLayer, hidden);
+    require_bf16_1d("mtp.pre_fc_norm_hidden.weight", SourceKind::MtpPreFcNormHid,
+                    kQ5090NoLayer, hidden);
+    require_bf16_1d("mtp.layers.0.input_layernorm.weight", SourceKind::InputLayernorm, 0,
+                    hidden);
+
+    const char* attn_block = "mtp.layers.0.attn_in.w8";
+    const QuantRecord& attn_q =
+        require_w8_segment(attn_block, "mtp.layers.0.self_attn.q_proj.q", SourceKind::AttnQ, 0,
+                           "mtp.layers.0.attn_in.w8 ATTN_Q");
+    const std::uint32_t q_rows = attn_q.row_count;
+    require_segment_range(attn_q, 0, q_rows, "mtp.layers.0.attn_in.w8 ATTN_Q");
+    require_equal_i32(attn_q.weight.k, hidden, "mtp.layers.0.attn_in.w8 K");
+
+    const QuantRecord& attn_k = require_w8_segment(attn_block,
+                                                   "mtp.layers.0.self_attn.k_proj.weight",
+                                                   SourceKind::AttnK, 0,
+                                                   "mtp.layers.0.attn_in.w8 ATTN_K");
+    const std::uint32_t k_rows = attn_k.row_count;
+    require_segment_range(attn_k, q_rows, k_rows, "mtp.layers.0.attn_in.w8 ATTN_K");
+    require_equal_i32(attn_k.weight.k, hidden, "mtp.layers.0.attn_in.w8 K");
+
+    const QuantRecord& attn_gate =
+        require_w8_segment(attn_block, "mtp.layers.0.self_attn.q_proj.gate",
+                           SourceKind::AttnGate, 0, "mtp.layers.0.attn_in.w8 ATTN_GATE");
+    const std::uint32_t gate_begin =
+        checked_add_u32(q_rows, k_rows, "q5090 MTP attn gate row overflow");
+    require_segment_range(attn_gate, gate_begin, q_rows, "mtp.layers.0.attn_in.w8 ATTN_GATE");
+    require_equal_i32(attn_gate.weight.k, hidden, "mtp.layers.0.attn_in.w8 K");
+
+    const QuantRecord& attn_v = require_w8_segment(attn_block,
+                                                   "mtp.layers.0.self_attn.v_proj.weight",
+                                                   SourceKind::AttnV, 0,
+                                                   "mtp.layers.0.attn_in.w8 ATTN_V");
+    const std::uint32_t v_begin =
+        checked_add_u32(gate_begin, q_rows, "q5090 MTP attn v row overflow");
+    require_segment_range(attn_v, v_begin, k_rows, "mtp.layers.0.attn_in.w8 ATTN_V");
+    require_equal_i32(attn_v.weight.k, hidden, "mtp.layers.0.attn_in.w8 K");
+    const std::uint32_t attn_total =
+        checked_add_u32(v_begin, k_rows, "q5090 MTP attn total row overflow");
+    require_fused_w8(attn_block, /*ATTN_IN*/ 1, attn_total, hidden,
+                     "mtp.layers.0.attn_in.w8");
+
+    const TensorRecord& q_norm =
+        require_bf16("mtp.layers.0.self_attn.q_norm.weight", SourceKind::AttnQNorm, 0);
+    const TensorRecord& k_norm =
+        require_bf16("mtp.layers.0.self_attn.k_norm.weight", SourceKind::AttnKNorm, 0);
+    if (q_norm.tensor.ne[0] <= 0 || k_norm.tensor.ne[0] != q_norm.tensor.ne[0] ||
+        q_norm.tensor.ne[1] != 1 || q_norm.tensor.ne[2] != 1 || q_norm.tensor.ne[3] != 1 ||
+        k_norm.tensor.ne[1] != 1 || k_norm.tensor.ne[2] != 1 || k_norm.tensor.ne[3] != 1 ||
+        (q_rows % static_cast<std::uint32_t>(q_norm.tensor.ne[0])) != 0 ||
+        (k_rows % static_cast<std::uint32_t>(q_norm.tensor.ne[0])) != 0) {
+        throw std::runtime_error("q5090 invalid MTP q/k norm shape");
+    }
+
+    const QuantRecord& o_proj = require_w8_segment(
+        "mtp.layers.0.self_attn.o_proj.weight", "mtp.layers.0.self_attn.o_proj.weight",
+        SourceKind::AttnO, 0, "mtp.layers.0.self_attn.o_proj.weight");
+    require_segment_range(o_proj, 0, hidden, "mtp.layers.0.self_attn.o_proj.weight");
+    require_equal_i32(o_proj.weight.k, q_rows, "mtp.layers.0.self_attn.o_proj.weight K");
+    require_bf16_1d("mtp.layers.0.post_attention_layernorm.weight",
+                    SourceKind::PostAttnLayernorm, 0, hidden);
+
+    const char* gateup_block = "mtp.layers.0.mlp.gateup.w8";
+    const QuantRecord& mlp_gate =
+        require_w8_segment(gateup_block, "mtp.layers.0.mlp.gate_proj.weight",
+                           SourceKind::MlpGate, 0, "mtp.layers.0.mlp.gateup.w8 MLP_GATE");
+    const std::uint32_t intermediate = mlp_gate.row_count;
+    require_segment_range(mlp_gate, 0, intermediate, "mtp.layers.0.mlp.gateup.w8 MLP_GATE");
+    require_equal_i32(mlp_gate.weight.k, hidden, "mtp.layers.0.mlp.gateup.w8 K");
+
+    const QuantRecord& mlp_up =
+        require_w8_segment(gateup_block, "mtp.layers.0.mlp.up_proj.weight", SourceKind::MlpUp, 0,
+                           "mtp.layers.0.mlp.gateup.w8 MLP_UP");
+    require_segment_range(mlp_up, intermediate, intermediate,
+                          "mtp.layers.0.mlp.gateup.w8 MLP_UP");
+    require_equal_i32(mlp_up.weight.k, hidden, "mtp.layers.0.mlp.gateup.w8 K");
+    require_fused_w8(gateup_block, /*MLP_GATEUP*/ 3,
+                     checked_mul_u32(intermediate, 2, "q5090 MTP gateup row overflow"), hidden,
+                     "mtp.layers.0.mlp.gateup.w8");
+
+    const QuantRecord& down = require_w8_segment(
+        "mtp.layers.0.mlp.down_proj.weight", "mtp.layers.0.mlp.down_proj.weight",
+        SourceKind::MlpDown, 0, "mtp.layers.0.mlp.down_proj.weight");
+    require_segment_range(down, 0, hidden, "mtp.layers.0.mlp.down_proj.weight");
+    require_equal_i32(down.weight.k, intermediate, "mtp.layers.0.mlp.down_proj.weight K");
+    require_bf16_1d("mtp.norm.weight", SourceKind::MtpNorm, kQ5090NoLayer, hidden);
+
+    if (mtp.payload_bytes == 451267584ULL) {
+        require_equal_u32(hidden, 5120, "real MTP hidden size");
+        require_equal_u32(q_rows, 6144, "real MTP q rows");
+        require_equal_u32(k_rows, 1024, "real MTP kv rows");
+        require_equal_u32(intermediate, 17408, "real MTP intermediate size");
+        require_equal_i32(q_norm.tensor.ne[0], 256, "real MTP q/k norm size");
+    }
 }
 
 void WeightStore::clear() noexcept {

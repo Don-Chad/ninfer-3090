@@ -24,6 +24,7 @@ qus_add_test(qus_weight_store_test           SOURCES test_weight_store.cpp      
 qus_add_test(qus_q5090_parser_test           SOURCES test_q5090_parser.cpp       NEEDS_SOURCE_DIR)
 qus_add_test(qus_q5090_pack_golden_test      SOURCES test_q5090_pack_golden.cpp  NEEDS_SOURCE_DIR)
 qus_add_test(qus_weight_store_real_file_test SOURCES test_weight_store_real.cpp  NEEDS_SOURCE_DIR)
+qus_add_test(qus_engine_real_file_test       SOURCES test_engine_real_file.cpp   NEEDS_SOURCE_DIR)
 qus_add_test(qus_model_config_test           SOURCES test_model_config.cpp)
 qus_add_test(qus_model_bind_test             SOURCES test_model_bind.cpp        NEEDS_SOURCE_DIR)
 qus_add_test(qus_model_blocks_test           SOURCES test_model_blocks.cpp      NEEDS_SOURCE_DIR)

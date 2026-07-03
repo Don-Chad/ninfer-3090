@@ -199,6 +199,30 @@ int expect_empty_array_field(const Json& object, const char* key, const char* me
     return 0;
 }
 
+template <std::size_t N>
+int expect_uint_array_field(const Json& object, const char* key,
+                            const std::array<std::uint64_t, N>& expected,
+                            const char* message) {
+    const auto it = object.find(key);
+    if (it == object.end() || !it->is_array() || it->size() != expected.size()) {
+        return fail(message);
+    }
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        const Json& value = (*it)[i];
+        if (value.is_number_unsigned()) {
+            if (value.get<std::uint64_t>() != expected[i]) { return fail(message); }
+        } else if (value.is_number_integer()) {
+            const std::int64_t signed_value = value.get<std::int64_t>();
+            if (signed_value < 0 || static_cast<std::uint64_t>(signed_value) != expected[i]) {
+                return fail(message);
+            }
+        } else {
+            return fail(message);
+        }
+    }
+    return 0;
+}
+
 int expect_manifest_fields(const Json& manifest, std::uint64_t file_size) {
     if (!manifest.is_object()) { return fail("manifest root must be object"); }
 
@@ -213,15 +237,15 @@ int expect_manifest_fields(const Json& manifest, std::uint64_t file_size) {
                                     "docs/q5090_packed_file_format_v3.md",
                                     "manifest tensor_plan mismatch");
     failures += expect_string_field(manifest, "weights_file",
-                                    "qwen3_6_27b.q5090_w4g64_mixed_v3.qus",
+                                    "qwen3_6_27b.q5090_w4g64_mixed_v3_mtp_w8g32.qus",
                                     "manifest weights_file mismatch");
     failures += expect_uint_field(manifest, "file_bytes", file_size, "manifest file_bytes mismatch");
     failures += expect_bool_field(manifest, "calibrated", false, "manifest calibrated mismatch");
     failures += expect_empty_array_field(manifest, "absent_modules", "manifest absent_modules mismatch");
     failures += expect_string_array_field(
         manifest, "qtypes",
-        std::array<const char*, 6>{"Q4G64_F16S", "Q5G64_F16S", "Q6G64_F16S", "W8G128_F16S",
-                                  "BF16_CTRL", "FP32_CTRL"},
+        std::array<const char*, 7>{"Q4G64_F16S", "Q5G64_F16S", "Q6G64_F16S", "W8G128_F16S",
+                                  "BF16_CTRL", "FP32_CTRL", "W8G32_F16S"},
         "manifest qtypes mismatch");
     failures += expect_string_array_field(
         manifest, "layouts", std::array<const char*, 2>{"ROW_SPLIT", "CONTIGUOUS"},
@@ -251,8 +275,9 @@ int expect_manifest_fields(const Json& manifest, std::uint64_t file_size) {
                                       "manifest alignment.block mismatch");
         failures += expect_uint_field(*alignment_it, "k_pad", 128,
                                       "manifest alignment.k_pad mismatch");
-        failures += expect_uint_field(*alignment_it, "group_size", 64,
-                                      "manifest alignment.group_size mismatch");
+        failures += expect_uint_array_field(*alignment_it, "group_sizes",
+                                            std::array<std::uint64_t, 3>{32, 64, 128},
+                                            "manifest alignment.group_sizes mismatch");
     }
     return failures;
 }
@@ -281,7 +306,7 @@ int expect_inventory(const qus::ParsedQ5090File& parsed, std::uint64_t file_size
                     : fail("real MTP module mismatch");
     failures += parsed.modules[1].tensor_index_count == 12 ? 0 : fail("real MTP count mismatch");
     failures +=
-        parsed.modules[1].payload_bytes == 431361024ULL ? 0 : fail("real MTP payload mismatch");
+        parsed.modules[1].payload_bytes == 451267584ULL ? 0 : fail("real MTP payload mismatch");
     failures += parsed.modules[2].module_kind == qus::ModuleKind::VisionEncoder
                     ? 0
                     : fail("real VISION module mismatch");
@@ -409,6 +434,7 @@ int run_mtp_load(const std::filesystem::path& file_path, std::uint64_t text_payl
     options.progress = progress;
     qus::WeightStore store(expectations());
     store.load(file_path.c_str(), arena, ctx, options);
+    store.require_mtp_module_expectations();
     int failures = 0;
     failures +=
         store.module_loaded(qus::ModuleKind::TextCore) ? 0 : fail("real TEXT not loaded with MTP");
@@ -427,9 +453,9 @@ int run_mtp_load(const std::filesystem::path& file_path, std::uint64_t text_payl
 int main() {
     const std::filesystem::path root(QUS_SOURCE_DIR);
     const std::filesystem::path file_path =
-        root / "out/qwen3_6_27b.q5090_w4g64_mixed_v3.qus";
+        root / "out/qwen3_6_27b.q5090_w4g64_mixed_v3_mtp_w8g32.qus";
     const std::filesystem::path manifest_path =
-        root / "out/qwen3_6_27b.q5090_w4g64_mixed_v3.qus.manifest.json";
+        root / "out/qwen3_6_27b.q5090_w4g64_mixed_v3_mtp_w8g32.qus.manifest.json";
     if (!std::filesystem::exists(file_path) || !std::filesystem::exists(manifest_path)) {
         std::cout << "SKIP: real q5090 file or manifest not present\n";
         return 0;

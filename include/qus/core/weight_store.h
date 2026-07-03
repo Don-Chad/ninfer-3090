@@ -22,6 +22,7 @@ struct LoadOptions {
 };
 
 struct FusedBlockRecord {
+    std::string   name;
     ModuleKind    module       = ModuleKind::TextCore;
     std::uint16_t group_id     = 0;
     std::uint16_t fusion_index = 0;
@@ -51,6 +52,7 @@ public:
     std::size_t loaded_payload_bytes() const noexcept;
     std::size_t module_tensor_count(ModuleKind module) const noexcept;
     bool module_loaded(ModuleKind module) const noexcept;
+    void require_mtp_module_expectations() const;
     void clear() noexcept;
 
 private:
@@ -59,15 +61,19 @@ private:
         ModuleKind module           = ModuleKind::TextCore;
         std::uint32_t source_kind   = 0;
         std::uint32_t source_layer  = kQ5090NoLayer;
+        QType qtype                 = QType::BF16_CTRL;
         std::uint64_t payload_bytes = 0;
         Tensor tensor;
     };
 
     struct QuantRecord {
         std::string name;
+        std::string block_name;
         ModuleKind module          = ModuleKind::TextCore;
         std::uint32_t source_kind  = 0;
         std::uint32_t source_layer = kQ5090NoLayer;
+        std::uint32_t row_begin    = 0;
+        std::uint32_t row_count    = 0;
         Weight weight;
     };
 

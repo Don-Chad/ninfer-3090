@@ -103,6 +103,13 @@ int test_unloaded_stats_do_not_need_cuda() {
     failures += expect_absent(after_reset.weights, "unloaded weights after reset");
     failures += expect_absent(after_reset.cache, "unloaded cache after reset");
     failures += expect_absent(after_reset.workspace, "unloaded workspace after reset");
+    try {
+        qus::EngineOptions bad_options;
+        bad_options.mtp_draft_tokens = -1;
+        qus::Engine bad_engine(bad_options);
+        (void)bad_engine;
+        failures += fail("negative mtp_draft_tokens did not throw");
+    } catch (const std::invalid_argument&) {}
     return failures;
 }
 
@@ -156,6 +163,25 @@ int test_loaded_stats_with_cuda() {
                             "tensor count stable after reset");
     failures += expect_size(after_reset.q5090_quant_count, stats.q5090_quant_count,
                             "quant count stable after reset");
+
+    qus::EngineOptions mtp_options;
+    mtp_options.device           = 0;
+    mtp_options.max_ctx          = 4;
+    mtp_options.work_bytes       = 64ULL * kMiB;
+    mtp_options.mtp_draft_tokens = 1;
+    qus::Engine mtp_engine(mtp_options);
+    mtp_engine.load(fixture.string());
+    const qus::EngineMemoryStats mtp_stats = mtp_engine.memory_stats();
+    failures += mtp_stats.loaded ? 0 : fail("MTP loaded stats did not report loaded");
+    failures += mtp_stats.q5090_loaded_payload_bytes > stats.q5090_loaded_payload_bytes
+                    ? 0
+                    : fail("MTP load did not increase loaded payload bytes");
+    failures += mtp_stats.q5090_tensor_count == stats.q5090_tensor_count
+                    ? 0
+                    : fail("MTP load changed tensor count");
+    failures += mtp_stats.q5090_quant_count == stats.q5090_quant_count
+                    ? 0
+                    : fail("MTP load changed quant count");
     return failures;
 }
 

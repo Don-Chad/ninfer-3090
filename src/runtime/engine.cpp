@@ -15,6 +15,7 @@ namespace {
 
 constexpr std::size_t kMiB        = 1024ULL * 1024ULL;
 constexpr std::size_t kArenaAlign = 256ULL;
+constexpr std::size_t kMtpPayloadBudgetBytes = 451267584ULL;
 
 std::size_t checked_mul(std::size_t a, std::size_t b, const char* label) {
     if (b != 0 && a > std::numeric_limits<std::size_t>::max() / b) {
@@ -106,6 +107,9 @@ Engine::Engine(EngineOptions options) : options_(options) {
         std::unique(options_.stop_token_ids.begin(), options_.stop_token_ids.end()),
         options_.stop_token_ids.end());
     if (options_.max_ctx == 0) { throw std::invalid_argument("Engine max_ctx must be nonzero"); }
+    if (options_.mtp_draft_tokens < 0) {
+        throw std::invalid_argument("Engine mtp_draft_tokens must be nonnegative");
+    }
     if (options_.prefill_chunk == 0 ||
         options_.prefill_chunk % model::kPrefillChunkAlignment != 0) {
         throw std::invalid_argument("Engine prefill_chunk must be a nonzero multiple of 128");
@@ -137,7 +141,9 @@ Q5090Expectations Engine::expectations() {
 
 std::size_t Engine::default_weight_bytes(const std::string& path) {
     const auto file_size = std::filesystem::file_size(path);
-    return checked_add(static_cast<std::size_t>(file_size), 256ULL * kMiB, "weight arena size");
+    std::size_t total = checked_add(static_cast<std::size_t>(file_size), 256ULL * kMiB,
+                                    "weight arena size");
+    return checked_add(total, kMtpPayloadBudgetBytes, "weight arena size");
 }
 
 std::size_t Engine::default_cache_bytes(std::uint32_t max_ctx) {
@@ -285,7 +291,9 @@ void Engine::load(const std::string& path) {
 
     LoadOptions load_options;
     load_options.progress = options_.progress;
+    load_options.load_mtp = options_.mtp_draft_tokens > 0;
     weights_->load(path.c_str(), *weight_arena_, *ctx_, load_options);
+    if (load_options.load_mtp) { weights_->require_mtp_module_expectations(); }
 
     cache_arena_.emplace(options_.cache_bytes == 0 ? default_cache_bytes(options_.max_ctx)
                                                    : options_.cache_bytes);
