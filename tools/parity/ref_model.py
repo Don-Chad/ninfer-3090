@@ -16,7 +16,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -1124,6 +1124,7 @@ class RefModel:
         *,
         draft_count: int,
         stop_token_ids: Optional[set[int]] = None,
+        progress: Optional[Callable[[str], None]] = None,
     ) -> tuple[List[int], SpeculativeStats]:
         if draft_count < 1 or draft_count > 5:
             raise ValueError("draft_count must be in [1,5]")
@@ -1144,6 +1145,8 @@ class RefModel:
         token = int(torch.argmax(self.logits_from_hidden_last(target_hidden)).item())
         out = [token]
         self.pos = len(prompt_ids)
+        if progress is not None:
+            progress(f"mtp out={len(out)}/{n_decode} prefill token={token}")
         if len(out) >= n_decode or (stop_token_ids and token in stop_token_ids):
             return out, stats
 
@@ -1161,6 +1164,8 @@ class RefModel:
                 self.pos += 1
                 token = target_token
                 out.append(token)
+                if progress is not None:
+                    progress(f"mtp out={len(out)}/{n_decode} final-target token={token}")
                 break
             k = min(draft_count, remaining - 1)
             drafts = self._mtp_make_drafts(
@@ -1200,6 +1205,13 @@ class RefModel:
                 if stop_token_ids and token in stop_token_ids:
                     stop_hit = True
                     break
+            if progress is not None:
+                stop_note = " stop" if stop_hit else ""
+                progress(
+                    f"mtp out={len(out)}/{n_decode} batch={stats.draft_batches} "
+                    f"accepted={accepted_count}/{k} drafted={stats.draft_tokens} "
+                    f"accepted_total={stats.accepted_tokens}{stop_note}"
+                )
             if stop_hit or len(out) >= n_decode:
                 break
 
@@ -1230,6 +1242,7 @@ class RefModel:
         *,
         dumps: Optional[Dict[str, torch.Tensor]] = None,
         stop_token_ids: Optional[set[int]] = None,
+        progress: Optional[Callable[[str], None]] = None,
     ) -> List[int]:
         prompt_ids = list(prompt)
         if not prompt_ids:
@@ -1253,6 +1266,8 @@ class RefModel:
         token = int(torch.argmax(lg).item())
         out = [token]
         self.pos = len(prompt_ids)
+        if progress is not None:
+            progress(f"greedy out={len(out)}/{n_decode} prefill token={token}")
         if stop_token_ids and token in stop_token_ids:
             return out
 
@@ -1263,6 +1278,9 @@ class RefModel:
             token = int(torch.argmax(self.logits_last(x)).item())
             out.append(token)
             self.pos += 1
+            if progress is not None:
+                stop_note = " stop" if stop_token_ids and token in stop_token_ids else ""
+                progress(f"greedy out={len(out)}/{n_decode} token={token}{stop_note}")
             if stop_token_ids and token in stop_token_ids:
                 break
         return out
@@ -1341,6 +1359,7 @@ def main() -> None:
     ap.add_argument("--mtp-draft-tokens", type=int, default=0, help="0 disables MTP; 1..5 enables verified greedy MTP")
     ap.add_argument("--stop-token-ids", default=DEFAULT_STOP_TOKEN_IDS)
     ap.add_argument("--show-rendered-prompt", action="store_true")
+    ap.add_argument("--progress", action="store_true", help="print decode progress to stderr")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--dump", default=None, help="write v3 structural dump JSON")
     ap.add_argument(
@@ -1371,6 +1390,9 @@ def main() -> None:
         ]
         prompt_ids, rendered_prompt = chat_prompt_ids(tokenizer, messages)
     stop_token_ids = parse_stop_token_ids(args.stop_token_ids)
+    progress = None
+    if args.progress:
+        progress = lambda msg: print(f"PROGRESS: {msg}", file=sys.stderr, flush=True)
     with torch.inference_mode():
         if args.mtp_draft_tokens:
             tokens, spec_stats = model.forward_mtp_verified(
@@ -1378,9 +1400,15 @@ def main() -> None:
                 args.decode,
                 draft_count=args.mtp_draft_tokens,
                 stop_token_ids=stop_token_ids,
+                progress=progress,
             )
         else:
-            tokens = model.forward(prompt_ids, args.decode, stop_token_ids=stop_token_ids)
+            tokens = model.forward(
+                prompt_ids,
+                args.decode,
+                stop_token_ids=stop_token_ids,
+                progress=progress,
+            )
             spec_stats = None
     print(f"PROMPT_TOKENS: {len(prompt_ids)}")
     if rendered_prompt is not None and args.show_rendered_prompt:
