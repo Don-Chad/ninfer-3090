@@ -32,6 +32,8 @@ const char* qtype_name(QType qtype) {
         return "q5";
     case QType::Q6G64_F16S:
         return "q6";
+    case QType::W8G32_F16S:
+        return "w8g32";
     default:
         return "unsupported";
     }
@@ -234,7 +236,9 @@ int one_quant_shape(QType qtype, std::int32_t n, std::int32_t k,
         // tensor-core mma GEMM, judged by the normwise linear_tc criterion; T <= tau
         // uses the fp32 multi-step / GEMV path (strict per-element). Keep this bound in
         // sync with detail::regime_threshold in linear_plan.cpp.
-        const Tolerance tol = (t > 16) ? Tolerance::linear_tc() : Tolerance::linear_bf16();
+        const Tolerance tol =
+            (qtype != QType::W8G32_F16S && t > 16) ? Tolerance::linear_tc()
+                                                   : Tolerance::linear_bf16();
         failures += verify(label.c_str(), from_device_bf16(dout, static_cast<std::size_t>(n) * t),
                            ref, tol);
     }
@@ -243,29 +247,6 @@ int one_quant_shape(QType qtype, std::int32_t n, std::int32_t k,
 
 int one_q4_shape(std::int32_t n, std::int32_t k, std::uint32_t seed) {
     return one_quant_shape(QType::Q4G64_F16S, n, k, {1, 2, 7, 64}, seed);
-}
-
-int unsupported_qtype_validation() {
-    int f = 0;
-    std::vector<float> x(4, 1.0f);
-    round_to_bf16(x);
-    DBuf dx = to_device_bf16(x);
-    DBuf dout(2 * 2u);
-    Tensor tx(dx.p, DType::BF16, {4, 1});
-    Tensor tout(dout.p, DType::BF16, {2, 1});
-    WorkspaceArena ws(64ULL << 20);
-
-    for (QType qtype : {QType::W8G128_F16S, QType::W8G32_F16S}) {
-        Weight w = dense_weight(dx.p, QType::BF16_CTRL, 2, 4);
-        w.qtype  = qtype;
-        try {
-            kernels::linear(tx, w, tout, ws, nullptr);
-            std::cerr << "linear unsupported W8 qtype: expected invalid_argument\n";
-            ++f;
-        } catch (const std::invalid_argument&) {}
-    }
-
-    return f;
 }
 
 int dense_metadata_validation() {
@@ -388,6 +369,7 @@ int lowbit_metadata_validation(QType qtype) {
     Tensor tx(dx.p, DType::BF16, {k, 1});
     Tensor tout(dout.p, DType::BF16, {n, 1});
     WorkspaceArena ws(64ULL << 20);
+    const std::uint32_t expected_group = qtype == QType::W8G32_F16S ? 32u : 64u;
 
     try {
         Weight bad        = packed.device_weight(dx.p);
@@ -396,6 +378,42 @@ int lowbit_metadata_validation(QType qtype) {
         std::cerr << "linear " << qtype_name(qtype) << " payload size: expected invalid_argument\n";
         ++f;
     } catch (const std::invalid_argument&) {}
+
+    try {
+        Weight bad    = packed.device_weight(dx.p);
+        bad.group     = expected_group == 32u ? 64 : 32;
+        bad.group_size = expected_group == 32u ? 64u : 32u;
+        kernels::linear(tx, bad, tout, ws, nullptr);
+        std::cerr << "linear " << qtype_name(qtype) << " group size: expected invalid_argument\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+
+    try {
+        Weight bad            = packed.device_weight(dx.p);
+        bad.q5090_scale_dtype = ScaleDType::None;
+        kernels::linear(tx, bad, tout, ws, nullptr);
+        std::cerr << "linear " << qtype_name(qtype) << " scale dtype: expected invalid_argument\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+
+    try {
+        Weight bad          = packed.device_weight(dx.p);
+        bad.padded_shape[1] = bad.padded_shape[1] + 128;
+        kernels::linear(tx, bad, tout, ws, nullptr);
+        std::cerr << "linear " << qtype_name(qtype) << " padded K: expected invalid_argument\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+
+    if (qtype == QType::W8G32_F16S) {
+        try {
+            Weight bad            = packed.device_weight(dx.p);
+            bad.qhigh             = dx.p;
+            bad.high_plane_bytes  = 1;
+            kernels::linear(tx, bad, tout, ws, nullptr);
+            std::cerr << "linear w8g32 high plane: expected invalid_argument\n";
+            ++f;
+        } catch (const std::invalid_argument&) {}
+    }
 
     try {
         Tensor empty_tx  = tx;
@@ -435,12 +453,12 @@ int main() {
     }
 
     int f = 0;
-    f += unsupported_qtype_validation();
     f += dense_metadata_validation();
     f += dense_alignment_validation();
     f += lowbit_metadata_validation(QType::Q4G64_F16S);
     f += lowbit_metadata_validation(QType::Q5G64_F16S);
     f += lowbit_metadata_validation(QType::Q6G64_F16S);
+    f += lowbit_metadata_validation(QType::W8G32_F16S);
 
     for (std::uint32_t seed : {1u, 7u, 99u}) {
         for (QType qtype : {QType::BF16_CTRL, QType::FP32_CTRL}) {
@@ -464,6 +482,19 @@ int main() {
     f += one_quant_shape(QType::Q4G64_F16S, 70, 130, {1, 9}, 103u, 8.0f, 1.25f, "stress");
     f += one_quant_shape(QType::Q5G64_F16S, 70, 130, {1, 9}, 107u, 8.0f, 1.25f, "stress");
     f += one_quant_shape(QType::Q6G64_F16S, 70, 130, {1, 9}, 109u, 8.0f, 1.25f, "stress");
+    for (std::uint32_t seed : {1u, 7u, 99u}) {
+        f += one_quant_shape(QType::W8G32_F16S, 70, 130, {1, 2, 5, 17}, seed);
+        f += one_quant_shape(QType::W8G32_F16S, 70, 131, {1, 2, 5, 17}, seed);
+        for (auto [n, k] : {std::pair<std::int32_t, std::int32_t>{5120, 10240},
+                            std::pair<std::int32_t, std::int32_t>{14336, 5120},
+                            std::pair<std::int32_t, std::int32_t>{5120, 6144},
+                            std::pair<std::int32_t, std::int32_t>{34816, 5120},
+                            std::pair<std::int32_t, std::int32_t>{5120, 17408}}) {
+            f += one_quant_shape(QType::W8G32_F16S, n, k, {1, 2, 5, 17}, seed);
+        }
+    }
+    f += one_quant_shape(QType::W8G32_F16S, 96, 130, {1, 2, 5, 17}, 113u, 8.0f, 1.25f,
+                         "stress");
     f += one_quant_shape(QType::Q4G64_F16S, 128, 128, {512}, 43u);
     f += one_quant_shape(QType::Q6G64_F16S, 128, 128, {512}, 47u);
     for (auto [n, k] : {std::pair<std::int32_t, std::int32_t>{34816, 5120},
