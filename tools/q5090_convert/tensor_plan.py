@@ -35,6 +35,7 @@ ATTN_KV_ROWS = 4 * _ATTN_HEAD_DIM
 ATTN_IN_BLOCK_ROWS = ATTN_Q_ROWS + ATTN_KV_ROWS
 MTP_ATTN_IN_ROWS = (2 * ATTN_Q_ROWS) + (2 * ATTN_KV_ROWS)
 MTP_MLP_GATEUP_ROWS = 2 * INTERMEDIATE_SIZE
+MTP_DENSE_QTYPE = qt.QT_W8G32
 
 GDN_KEY_ROWS = 16 * 128
 GDN_VALUE_ROWS = 48 * 128
@@ -821,7 +822,7 @@ def _mtp_source(
     source_kind: int,
     source_layer: int,
     *,
-    qtype: int = qt.QT_W8G128,
+    qtype: int = MTP_DENSE_QTYPE,
     layout: int = qt.LAYOUT_ROW_SPLIT,
     transform: Optional[str] = None,
 ) -> TensorSpec:
@@ -848,7 +849,7 @@ def build_mtp_manifest() -> ExpectedManifest:
         blocks,
         segments,
         "mtp.fc.weight",
-        qt.QT_W8G128,
+        MTP_DENSE_QTYPE,
         qt.LAYOUT_ROW_SPLIT,
         (HIDDEN_SIZE, 2 * HIDDEN_SIZE),
         "mtp.fc.weight",
@@ -895,7 +896,7 @@ def build_mtp_manifest() -> ExpectedManifest:
         blocks,
         segments,
         p + "attn_in.w8",
-        qt.QT_W8G128,
+        MTP_DENSE_QTYPE,
         qt.LAYOUT_ROW_SPLIT,
         (MTP_ATTN_IN_ROWS, HIDDEN_SIZE),
         0,
@@ -994,7 +995,7 @@ def build_mtp_manifest() -> ExpectedManifest:
         blocks,
         segments,
         p + "self_attn.o_proj.weight",
-        qt.QT_W8G128,
+        MTP_DENSE_QTYPE,
         qt.LAYOUT_ROW_SPLIT,
         (HIDDEN_SIZE, ATTN_Q_ROWS),
         p + "self_attn.o_proj.weight",
@@ -1020,7 +1021,7 @@ def build_mtp_manifest() -> ExpectedManifest:
         blocks,
         segments,
         p + "mlp.gateup.w8",
-        qt.QT_W8G128,
+        MTP_DENSE_QTYPE,
         qt.LAYOUT_ROW_SPLIT,
         (MTP_MLP_GATEUP_ROWS, HIDDEN_SIZE),
         0,
@@ -1068,7 +1069,7 @@ def build_mtp_manifest() -> ExpectedManifest:
         blocks,
         segments,
         p + "mlp.down_proj.weight",
-        qt.QT_W8G128,
+        MTP_DENSE_QTYPE,
         qt.LAYOUT_ROW_SPLIT,
         (HIDDEN_SIZE, INTERMEDIATE_SIZE),
         p + "mlp.down_proj.weight",

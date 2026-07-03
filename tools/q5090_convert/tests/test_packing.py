@@ -70,12 +70,13 @@ def test_torch_matches_numpy_plane_split_packing():
 
 def test_w8_roundtrip():
     rng = np.random.default_rng(2)
-    codes = rng.integers(-127, 128, size=(123, 128)).astype(np.int8)
-    back = unpack_w8_groups(pack_w8_groups(codes)).reshape(codes.shape)
-    assert np.array_equal(codes, back)
-    nibble, high = pack_plane_split_groups(codes, 8)
-    assert high.shape == (123, 0)
-    assert np.array_equal(unpack_plane_split_groups(nibble, high, 8, 128), codes)
+    for group_size in (32, 128):
+        codes = rng.integers(-127, 128, size=(123, group_size)).astype(np.int8)
+        back = unpack_w8_groups(pack_w8_groups(codes)).reshape(codes.shape)
+        assert np.array_equal(codes, back)
+        nibble, high = pack_plane_split_groups(codes, 8)
+        assert high.shape == (123, 0)
+        assert np.array_equal(unpack_plane_split_groups(nibble, high, 8, group_size), codes)
 
 
 def test_quant_range_and_dequant():
@@ -93,6 +94,7 @@ def test_row_split_encode_decode_quantized_bit_exact():
         (torch.randn(17, 128), qt.QT_Q4G64),
         (torch.randn(19, 256), qt.QT_Q5G64),
         (torch.randn(23, 384), qt.QT_Q6G64),
+        (torch.randn(11, 160), qt.QT_W8G32),
         (torch.randn(13, 256), qt.QT_W8G128),
     ]
 
@@ -148,6 +150,7 @@ def test_row_split_dequant_matches_policy_output():
         (torch.randn(9, 192), qt.QT_Q4G64),
         (torch.randn(11, 192), qt.QT_Q5G64),
         (torch.randn(13, 320), qt.QT_Q6G64),
+        (torch.randn(5, 160), qt.QT_W8G32),
         (torch.randn(7, 192), qt.QT_W8G128),
     ]
 

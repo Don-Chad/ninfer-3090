@@ -67,7 +67,7 @@ def encode_row_split(w: torch.Tensor, qtype: int, device) -> EncodeResult:
     del wf
 
     groups = kp // gs
-    if qtype == qt.QT_W8G128:
+    if bits == 8:
         nibble_plane = codes.contiguous().view(torch.uint8).reshape(n, groups, nib)
         high_plane = torch.empty((n, groups, 0), dtype=torch.uint8, device=device)
     else:
@@ -130,7 +130,7 @@ def decode_row_split_quantized(payload, padded, qtype, device="cpu"):
         arr, nibble_bytes, high_bytes, scale_bytes
     )
 
-    if qtype == qt.QT_W8G128:
+    if bits == 8:
         codes = nibble_plane.reshape(n, groups, gs).view(torch.int8)
     else:
         nibble_packed = nibble_plane.reshape(n * groups, nib)

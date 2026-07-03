@@ -241,7 +241,7 @@ def test_mtp_attn_and_mlp_fused_segments():
 
     attn = _block(manifest, "mtp.layers.0.attn_in.w8")
     assert attn.module_kind == qt.MODULE_MTP
-    assert attn.qtype == qt.QT_W8G128
+    assert attn.qtype == qt.QT_W8G32
     assert attn.layout == qt.LAYOUT_ROW_SPLIT
     assert attn.shape == (14336, 5120)
     assert attn.source_kind == qt.SK_OTHER
@@ -259,7 +259,7 @@ def test_mtp_attn_and_mlp_fused_segments():
 
     gateup = _block(manifest, "mtp.layers.0.mlp.gateup.w8")
     assert gateup.module_kind == qt.MODULE_MTP
-    assert gateup.qtype == qt.QT_W8G128
+    assert gateup.qtype == qt.QT_W8G32
     assert gateup.shape == (34816, 5120)
     assert gateup.source_kind == qt.SK_OTHER
     assert gateup.fusion_group_id == qt.FUSION_MLP_GATEUP
@@ -274,16 +274,16 @@ def test_mtp_standalone_blocks():
 
     fc = _block(manifest, "mtp.fc.weight")
     assert fc.module_kind == qt.MODULE_MTP
-    assert fc.qtype == qt.QT_W8G128
+    assert fc.qtype == qt.QT_W8G32
     assert fc.shape == (5120, 10240)
     assert fc.source_kind == qt.SK_MTP_FC
 
     o_proj = _block(manifest, "mtp.layers.0.self_attn.o_proj.weight")
-    assert o_proj.qtype == qt.QT_W8G128
+    assert o_proj.qtype == qt.QT_W8G32
     assert o_proj.shape == (5120, 6144)
 
     down = _block(manifest, "mtp.layers.0.mlp.down_proj.weight")
-    assert down.qtype == qt.QT_W8G128
+    assert down.qtype == qt.QT_W8G32
     assert down.shape == (5120, 17408)
 
     norm = _block(manifest, "mtp.norm.weight")

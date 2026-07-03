@@ -18,25 +18,30 @@ and grouping**; it never changes the dequantized values (§0 invariants).
 A conformant converter/loader implements this document **plus**:
 
 - **Quantization policy** —
-  [qwen3_6_27b_q5090_final_quant_format_v1.md](qwen3_6_27b_q5090_final_quant_format_v1.md): *which
-  `qtype` each tensor gets* and the quantizer algorithm whose output this format stores verbatim (§8).
+  [qwen3_6_27b_q5090_final_quant_format_v1.md](qwen3_6_27b_q5090_final_quant_format_v1.md): inherited
+  TEXT_CORE/VISION qtype assignment and the quantizer algorithm whose output this format stores
+  verbatim (§8). This v3 document overrides that companion only for MTP_DRAFT: MTP dense/fused linears
+  are `W8G32_F16S`, and MTP controls are `BF16_CTRL`.
 - **TEXT_CORE / VISION tensor plan** —
   [qwen3_6_27b_q5090_v2_tensor_plan.md](qwen3_6_27b_q5090_v2_tensor_plan.md): the TEXT_CORE and
   VISION_ENCODER per-model block/segment/fusion assignment, canonical emission order, control-tensor
   shapes, and source transforms. Its MTP_DRAFT standalone assignment is historical for v2 and is **not**
   normative for v3.
 - **MTP_DRAFT v3 assignment** — this document (§10.1, §14, §16) owns the v3 MTP_DRAFT fused
-  block/segment/fusion assignment directly: 12 blocks, 16 segments, and two fusion groups. This changes
-  only grouping/source transforms inside the existing `q5090_w4g64_mixed_v3` container; it does not
-  change `W8G128_F16S`, the file magic, or the version number. The v2 tensor-plan document and the
-  quantization-policy document are not edited by this assignment change.
+  block/segment/fusion assignment directly: 12 blocks, 16 segments, and two fusion groups. MTP_DRAFT
+  dense/fused linears use the v3-local precision qtype `W8G32_F16S`; MTP control tensors remain
+  `BF16_CTRL`. This changes only MTP_DRAFT assignment and qtype selection inside the existing
+  `q5090_w4g64_mixed_v3` container; it does not change `W8G128_F16S`, the file magic, or the version
+  number. The v2 tensor-plan document and the quantization-policy document are not edited by this
+  assignment change.
 
 ## Why this layout
 
 Single-stream decode (`T == 1`) is **weight-bandwidth bound**: every linear weight is streamed from
-HBM once per token, so decode throughput is `BW_eff / bytes_per_token`. The format does **not** reduce
-`bytes_per_token` (the codes and scales are unchanged); it maximizes the achievable `BW_eff` and
-removes launch/occupancy and unpack waste, by these structural choices:
+HBM once per token, so decode throughput is `BW_eff / bytes_per_token`. For inherited Q4/Q5/Q6 and
+W8G128 tensors, v3 does **not** reduce `bytes_per_token`; it maximizes achievable `BW_eff` and removes
+launch/occupancy and unpack waste. MTP_DRAFT is the exception: its dense/fused linears intentionally
+use W8G32, spending more scale bytes for finer W8 scale granularity and better draft fidelity.
 
 1. **Row-major split planes.** Each output row's codes are contiguous and all scales live in a separate
    contiguous plane. A GEMV thread/warp streams a row with fully coalesced, vector-width loads — no
@@ -209,7 +214,7 @@ plane, and a scale plane, each covering all `N` rows (§9.2).
 | 22 | 2 | u16 | `ndim` |
 | 24 | 16 | u32[4] | `shape` (logical `[N, K, 1, 1]`; `N` = total rows of the block) |
 | 40 | 16 | u32[4] | `padded_shape` (`[N, K_pad, 1, 1]`, `K_pad = align_up(K,128)`; §9.2) |
-| 56 | 4 | u32 | `group_size` (64 for Q4/Q5/Q6, 128 for W8, 0 for CONTIGUOUS) |
+| 56 | 4 | u32 | `group_size` (64 for Q4/Q5/Q6, 128 for W8G128, 32 for W8G32, 0 for CONTIGUOUS) |
 | 60 | 2 | u16 | `scale_dtype` (0=none, 1=FP16) |
 | 62 | 2 | u16 | `segment_count` (≥1) |
 | 64 | 8 | u64 | `payload_offset` (absolute, 256-aligned) |
@@ -220,8 +225,8 @@ plane, and a scale plane, each covering all `N` rows (§9.2).
 | 92 | 4 | u32 | `segment_begin` (index of this block's first `SegmentRecord`) |
 | 96 | 2 | u16 | `fusion_group_id` (0=NONE; §7) |
 | 98 | 2 | u16 | `fusion_index` (position of this block within its fusion group; 0 if NONE) |
-| 100 | 8 | u64 | `nibble_plane_bytes` (low-4-bit base plane; for W8 the full int8 plane; §9.2) |
-| 108 | 8 | u64 | `high_plane_bytes` (high-bit plane; 0 for Q4 / W8 / CONTIGUOUS) |
+| 100 | 8 | u64 | `nibble_plane_bytes` (low-4-bit base plane; for W8G128/W8G32 the full int8 plane; §9.2) |
+| 108 | 8 | u64 | `high_plane_bytes` (high-bit plane; 0 for Q4 / W8G128 / W8G32 / CONTIGUOUS) |
 | 116 | 8 | u64 | `scale_plane_bytes` (0 for CONTIGUOUS) |
 | 124 | 4 | u8 | reserved zero |
 
@@ -307,12 +312,13 @@ among its projections; a single-`qtype` group is one block.
 | 3 | `W8G128_F16S` | 8 | 128 | [-127, 127] |
 | 4 | `BF16_CTRL` | 16 | - | bfloat16 |
 | 5 | `FP32_CTRL` | 32 | - | float32 |
+| 6 | `W8G32_F16S` | 8 | 32 | [-127, 127] |
 
 `layout` (u16) — the complete set; there are no other layouts:
 
 | value | name | used by |
 |---:|---|---|
-| 0 | `ROW_SPLIT` | every quantized tensor (Q4/Q5/Q6 with `group_size=64`, W8 with `group_size=128`) |
+| 0 | `ROW_SPLIT` | every quantized tensor (Q4/Q5/Q6 with `group_size=64`, W8G128 with `group_size=128`, W8G32 with `group_size=32`) |
 | 1 | `CONTIGUOUS` | dense control tensors (BF16_CTRL / FP32_CTRL) |
 
 `module_kind` (u16): `0=TEXT_CORE`, `1=MTP_DRAFT`, `2=VISION_ENCODER`.
@@ -384,8 +390,9 @@ scale16 = fp16(scale)              # stored AND used to quantize
 q_i     = clamp(round_half_even(w_i / scale16), qmin, qmax)
 ```
 
-`qmin = -(qmax+1)` for Q4/Q5/Q6; `qmin = -127` for W8. All-zero group: `scale = 0`, codes `0`. A
-nonzero group whose scale underflows fp16 is bumped to the smallest positive fp16 subnormal.
+`qmin = -(qmax+1)` for Q4/Q5/Q6; `qmin = -127` for W8G128/W8G32. All-zero group: `scale = 0`,
+codes `0`. A nonzero group whose scale underflows fp16 is bumped to the smallest positive fp16
+subnormal.
 
 When the policy runs a **calibrated** pass, it MAY choose `scale16` per group by a different criterion
 (e.g. error-minimizing search) while keeping the same per-group, symmetric, fp16-scale, no-zero-point
@@ -402,7 +409,7 @@ A signed code `q_i` is stored as its `bits`-wide two's-complement pattern
 
 ```text
 low_i  = u_i & 0x0F                 # bits 0..3
-high_i = u_i >> 4                   # Q5: 1 bit (0..1); Q6: 2 bits (0..3); Q4: none; W8: see below
+high_i = u_i >> 4                   # Q5: 1 bit (0..1); Q6: 2 bits (0..3); Q4: none; W8G128/W8G32: see below
 ```
 
 Per group of `group_size` codes, the format emits:
@@ -415,8 +422,10 @@ Per group of `group_size` codes, the format emits:
   - **Q6**: 2 high bits per code → `group_size / 4` bytes (16 for `group_size=64`). Packed LSB-first,
     two consecutive bits per code: bits `2c` and `2c+1` of the run are `high_c & 1` and
     `(high_c >> 1) & 1` (i.e. bits 4 and 5 of `u_c`). Reconstruct `high_c = (run >> (2c)) & 0x3`.
-- **W8** has **no nibble split and no high run**: the base ("nibble") plane stores one signed `int8`
-  per code, `group_size` (= 128) bytes per group; `high_i` is unused.
+- **W8G128/W8G32** have **no nibble split and no high run**: the base ("nibble") plane stores one
+  signed `int8` per code, `group_size` bytes per group; `high_i` is unused. `W8G128_F16S` uses 128
+  codes per FP16 scale. `W8G32_F16S` uses 32 codes per FP16 scale and is the precision-first MTP_DRAFT
+  dense-linear qtype.
 
 Per-group byte counts:
 
@@ -425,7 +434,8 @@ Per-group byte counts:
 | Q4 | 4 | 32 | 0 | 32 |
 | Q5 | 5 | 32 | 8 | 40 |
 | Q6 | 6 | 32 | 16 | 48 |
-| W8 | 8 | 128 (one `int8` per code) | 0 | 128 |
+| W8G128 | 8 | 128 (one `int8` per code) | 0 | 128 |
+| W8G32 | 8 | 32 (one `int8` per code) | 0 | 32 |
 
 **Decode (reconstruction):**
 
@@ -433,7 +443,7 @@ Per-group byte counts:
 # Q4/Q5/Q6:
 u_c = low_c | (high_c << 4)         # Q5: 5-bit; Q6: 6-bit; Q4: u_c = low_c
 q_c = sign_extend(u_c, bits)        # Q4 from bit3, Q5 from bit4, Q6 from bit5
-# W8:
+# W8G128/W8G32:
 q_c = (int8) base_byte_c            # already signed; no merge, no sign-extend step
 # all qtypes:
 w_c = scale16(group) * q_c
@@ -445,17 +455,17 @@ Worked Q5 example: policy code `q = -5`. `u = -5 & 0x1F = 27 = 0b1_1011`. `low =
 
 ### 9.2 `ROW_SPLIT` (every quantized block)
 
-Logical `[N, K]`. `K` is padded to **`K_pad = align_up(K, 128)`** — a multiple of both `128` and
-`group_size`. This is the single mandatory K-alignment rule: it makes `G = K_pad / group_size` **even**
-for the group-64 qtypes (and integral for W8's group-128), which guarantees every plane's per-row run
-is 16-byte aligned (`nib·G`, Q5 high `8·G`, Q6 high `16·G`, W8 base `128·G` are all multiples of 16,
-since `G` even ⇒ `8·G` is a multiple of 16). `N` is **not** padded. Let `nib` = base bytes/group from
-§9.1 (`32` for Q4/Q5/Q6, `128` for W8) and `hi` = high bytes/group (`0` Q4/W8, `8` Q5, `16` Q6). The
-payload is **three row-major planes** over all `N` rows (Q4/W8: two — the high plane is empty), each
-starting 256-aligned:
+Logical `[N, K]`. `K` is padded to **`K_pad = align_up(K, 128)`**. This is the single mandatory
+K-alignment rule for every quantized qtype; it is independent of `group_size`. It makes
+`G = K_pad / group_size` integral for W8G128/W8G32 and **even** for the group-64 qtypes, which
+guarantees every plane's per-row run is 16-byte aligned (`nib*G`, Q5 high `8*G`, Q6 high `16*G`,
+W8G128 base `128*G`, W8G32 base `32*G` are all multiples of 16). `N` is **not** padded. Let `nib` =
+base bytes/group from §9.1 (`32` for Q4/Q5/Q6/W8G32, `128` for W8G128) and `hi` = high bytes/group
+(`0` Q4/W8G128/W8G32, `8` Q5, `16` Q6). The payload is **three row-major planes** over all `N` rows
+(Q4/W8G128/W8G32: two — the high plane is empty), each starting 256-aligned:
 
 ```text
-# nibble (base) plane: low-4-bit (or int8 for W8) codes, row-major
+# nibble (base) plane: low-4-bit (or int8 for W8G128/W8G32) codes, row-major
 for n in 0 .. N-1:
   for g in 0 .. G-1:
     u8 nibble[nib]          # (row n, group g) base run, per §9.1
@@ -479,7 +489,7 @@ Sizes and **relative** plane offsets (always equal to the `TensorEntry` fields):
 
 ```text
 nibble_plane_bytes = N * G * nib
-high_plane_bytes   = N * G * hi                          # 0 for Q4 / W8
+high_plane_bytes   = N * G * hi                          # 0 for Q4 / W8G128 / W8G32
 scale_plane_bytes  = N * G * 2
 
 # offsets RELATIVE to the block's payload_offset:
@@ -524,9 +534,12 @@ Representative blocks (`nibble` / `high` / `scale` plane bytes):
 | `GDN_IN` Q4 block | `[4096,5120]` | Q4 | 80 | 10,485,760 | 0 | 655,360 | `GDN_IN_PROJ_Q[0,2048)`, `GDN_IN_PROJ_K[2048,4096)` |
 | `GDN_IN` Q5 block | `[6144,5120]` | Q5 | 80 | 15,728,640 | 3,932,160 | 983,040 | `GDN_IN_PROJ_V[0,6144)` |
 | `MLP_GATEUP` block | `[34816,5120]` | Q4 | 80 | 89,128,960 | 0 | 5,570,560 | `MLP_GATE[0,17408)`, `MLP_UP[17408,34816)` |
+| `mtp.attn_in.w8` | `[14336,5120]` | W8G32 | 160 | 73,400,320 | 0 | 4,587,520 | `ATTN_Q[0,6144)`, `ATTN_K[6144,7168)`, `ATTN_GATE[7168,13312)`, `ATTN_V[13312,14336)` |
+| `mtp.mlp.gateup.w8` | `[34816,5120]` | W8G32 | 160 | 178,257,920 | 0 | 11,141,120 | `MLP_GATE[0,17408)`, `MLP_UP[17408,34816)` |
 
 Total code bytes per block (`nibble + high`) equal `N*G*(nib+hi)` — `40·N·G` Q5, `48·N·G` Q6,
-`32·N·G` Q4 — i.e. `bytes_per_token` is unchanged by the plane split.
+`32·N·G` Q4/W8G32, `128·N·G` W8G128 — i.e. `bytes_per_token` is unchanged by the plane split and W8
+scale granularity changes only the scale-plane size.
 
 ### 9.3 Plane addressing (runtime view contract)
 
@@ -554,9 +567,9 @@ high bits  : (u8*)high_ptr   + r*G*hi         # G*hi bytes  (only if hi != 0)
 scales     : (fp16*)scale_ptr + r*G           # G fp16
 ```
 
-`high_ptr == nullptr` signals a single-plane block (Q4/W8); a consumer of such a block uses only the
-base plane. These pointer/offset rules — not the kernel internals — are the ABI a conformant GEMV/GEMM
-relies on; they are fully determined by the `TensorEntry` plane-byte fields and §9.2.
+`high_ptr == nullptr` signals a single-plane block (Q4/W8G128/W8G32); a consumer of such a block uses
+only the base plane. These pointer/offset rules — not the kernel internals — are the ABI a conformant
+GEMV/GEMM relies on; they are fully determined by the `TensorEntry` plane-byte fields and §9.2.
 
 ### 9.4 `CONTIGUOUS` (BF16_CTRL / FP32_CTRL)
 
@@ -600,8 +613,8 @@ TEXT_CORE by `TensorEntry.module_kind = MTP_DRAFT`; no new fusion id is introduc
 
 | group | source_layer | member blocks (`qtype`, `[N,K]`) | segments (row-ranges) | `total_n` |
 |---|---:|---|---|---:|
-| `ATTN_IN` | 0 | W8 `[14336,5120]` named `mtp.layers.0.attn_in.w8` | `ATTN_Q[0,6144)`, `ATTN_K[6144,7168)`, `ATTN_GATE[7168,13312)`, `ATTN_V[13312,14336)` | 14336 |
-| `MLP_GATEUP` | 0 | W8 `[34816,5120]` named `mtp.layers.0.mlp.gateup.w8` | `MLP_GATE[0,17408)`, `MLP_UP[17408,34816)` | 34816 |
+| `ATTN_IN` | 0 | W8G32 `[14336,5120]` named `mtp.layers.0.attn_in.w8` | `ATTN_Q[0,6144)`, `ATTN_K[6144,7168)`, `ATTN_GATE[7168,13312)`, `ATTN_V[13312,14336)` | 14336 |
+| `MLP_GATEUP` | 0 | W8G32 `[34816,5120]` named `mtp.layers.0.mlp.gateup.w8` | `MLP_GATE[0,17408)`, `MLP_UP[17408,34816)` | 34816 |
 
 Both fused MTP blocks have block-level `source_kind = OTHER`; segment identity is authoritative. The
 MTP raw `self_attn.q_proj.weight [12288,5120]` is interleaved per head as
@@ -641,8 +654,8 @@ fallback.
   handling is a kernel concern, not a storage concern.
 - **Plane alignment.** Relative to the block `payload_offset`: nibble plane at `0`; high plane at
   `align_up(nibble_plane_bytes, 256)`; scale plane at `high_rel + align_up(high_plane_bytes, 256)`.
-  When `high_plane_bytes == 0` (Q4/W8) the scale plane immediately follows the aligned nibble plane.
-  All inter-plane pad bytes are zero (§0).
+  When `high_plane_bytes == 0` (Q4/W8G128/W8G32) the scale plane immediately follows the aligned
+  nibble plane. All inter-plane pad bytes are zero (§0).
 - **Block / member alignment.** Each block payload is 256-aligned. Fusion-group member blocks are
   emitted consecutively, each 256-aligned; `FusionGroupRecord.payload_bytes` covers the inter-member
   (zero) padding.
@@ -672,8 +685,8 @@ from this document alone.
    `[file payload_offset, file_size)`; blocks appear in **tensor-index order** with no overlap; block
    `payload_offset + payload_bytes ≤ next block payload_offset` (or `file_size` for the last); the
    header `payload_bytes` and `file_size` are consistent with the last block's end.
-5. **Per-block fields.** `group_size`/`scale_dtype` match `qtype` (Q4/Q5/Q6: 64/FP16; W8: 128/FP16;
-   CONTIGUOUS: 0/none). Then, **by layout**:
+5. **Per-block fields.** `group_size`/`scale_dtype` match `qtype` (Q4/Q5/Q6: 64/FP16;
+   W8G128: 128/FP16; W8G32: 32/FP16; CONTIGUOUS: 0/none). Then, **by layout**:
    - **ROW_SPLIT**: `padded_shape[0] == shape[0] == N`, `padded_shape[1] == align_up(shape[1],128)`,
      `shape[2]==shape[3]==1`; `nibble_plane_bytes`/`high_plane_bytes`/`scale_plane_bytes` equal the §9.2
      formulas; `payload_bytes == scale_rel + scale_plane_bytes`.
@@ -708,10 +721,10 @@ from this document alone.
 | `lm_head` | Q6 | `ROW_SPLIT` | standalone |
 | `embed_tokens` | Q6 | `ROW_SPLIT` | standalone (consumed by gather; see note) |
 | norms, `A_log`, `dt_bias`, conv1d | BF16/FP32 | `CONTIGUOUS` | standalone |
-| MTP `fc`, `o_proj`, `down_proj` | W8 | `ROW_SPLIT` (group 128) | standalone |
-| MTP `attn q/k/gate/v` | W8 | `ROW_SPLIT` (group 128) | `ATTN_IN` (one block, four segments) |
-| MTP MLP `gate`, `up` | W8 | `ROW_SPLIT` (group 128) | `MLP_GATEUP` (one block, two segments) |
-| vision quantized linears | Q4/Q5/W8 | `ROW_SPLIT` | standalone (vision biases/norms `CONTIGUOUS`) |
+| MTP `fc`, `o_proj`, `down_proj` | W8G32 | `ROW_SPLIT` (group 32) | standalone |
+| MTP `attn q/k/gate/v` | W8G32 | `ROW_SPLIT` (group 32) | `ATTN_IN` (one block, four segments) |
+| MTP MLP `gate`, `up` | W8G32 | `ROW_SPLIT` (group 32) | `MLP_GATEUP` (one block, two segments) |
+| vision quantized linears | Q4/Q5/W8G128 | `ROW_SPLIT` | standalone (vision biases/norms `CONTIGUOUS`) |
 
 Every quantized tensor in every module uses `ROW_SPLIT`; every dense control tensor uses `CONTIGUOUS`.
 There is no tiled layout anywhere. The class table above fixes layout/grouping. TEXT_CORE and
@@ -720,18 +733,18 @@ MTP_DRAFT exact v3 assignment is the following canonical block order:
 
 | block name | qtype/layout | shape | source kind / segments |
 |---|---|---:|---|
-| `mtp.fc.weight` | W8 row-split | `[5120,10240]` | `MTP_FC`, `NO_LAYER` |
-| `mtp.pre_fc_norm_embedding.weight` | BF16 contiguous | `[5120]` | `MTP_PRE_FC_NORM_EMB`, `NO_LAYER` |
-| `mtp.pre_fc_norm_hidden.weight` | BF16 contiguous | `[5120]` | `MTP_PRE_FC_NORM_HID`, `NO_LAYER` |
-| `mtp.layers.0.input_layernorm.weight` | BF16 contiguous | `[5120]` | `INPUT_LAYERNORM`, layer 0 |
-| `mtp.layers.0.attn_in.w8` | W8 row-split | `[14336,5120]` | block `OTHER`; segments `ATTN_Q/K/GATE/V`, layer 0 |
-| `mtp.layers.0.self_attn.q_norm.weight` | BF16 contiguous | `[256]` | `ATTN_Q_NORM`, layer 0 |
-| `mtp.layers.0.self_attn.k_norm.weight` | BF16 contiguous | `[256]` | `ATTN_K_NORM`, layer 0 |
-| `mtp.layers.0.self_attn.o_proj.weight` | W8 row-split | `[5120,6144]` | `ATTN_O`, layer 0 |
-| `mtp.layers.0.post_attention_layernorm.weight` | BF16 contiguous | `[5120]` | `POST_ATTN_LAYERNORM`, layer 0 |
-| `mtp.layers.0.mlp.gateup.w8` | W8 row-split | `[34816,5120]` | block `OTHER`; segments `MLP_GATE/MLP_UP`, layer 0 |
-| `mtp.layers.0.mlp.down_proj.weight` | W8 row-split | `[5120,17408]` | `MLP_DOWN`, layer 0 |
-| `mtp.norm.weight` | BF16 contiguous | `[5120]` | `MTP_NORM`, `NO_LAYER` |
+| `mtp.fc.weight` | W8G32 row-split | `[5120,10240]` | `MTP_FC`, `NO_LAYER` |
+| `mtp.pre_fc_norm_embedding.weight` | BF16_CTRL contiguous | `[5120]` | `MTP_PRE_FC_NORM_EMB`, `NO_LAYER` |
+| `mtp.pre_fc_norm_hidden.weight` | BF16_CTRL contiguous | `[5120]` | `MTP_PRE_FC_NORM_HID`, `NO_LAYER` |
+| `mtp.layers.0.input_layernorm.weight` | BF16_CTRL contiguous | `[5120]` | `INPUT_LAYERNORM`, layer 0 |
+| `mtp.layers.0.attn_in.w8` | W8G32 row-split | `[14336,5120]` | block `OTHER`; segments `ATTN_Q/K/GATE/V`, layer 0 |
+| `mtp.layers.0.self_attn.q_norm.weight` | BF16_CTRL contiguous | `[256]` | `ATTN_Q_NORM`, layer 0 |
+| `mtp.layers.0.self_attn.k_norm.weight` | BF16_CTRL contiguous | `[256]` | `ATTN_K_NORM`, layer 0 |
+| `mtp.layers.0.self_attn.o_proj.weight` | W8G32 row-split | `[5120,6144]` | `ATTN_O`, layer 0 |
+| `mtp.layers.0.post_attention_layernorm.weight` | BF16_CTRL contiguous | `[5120]` | `POST_ATTN_LAYERNORM`, layer 0 |
+| `mtp.layers.0.mlp.gateup.w8` | W8G32 row-split | `[34816,5120]` | block `OTHER`; segments `MLP_GATE/MLP_UP`, layer 0 |
+| `mtp.layers.0.mlp.down_proj.weight` | W8G32 row-split | `[5120,17408]` | `MLP_DOWN`, layer 0 |
+| `mtp.norm.weight` | BF16_CTRL contiguous | `[5120]` | `MTP_NORM`, `NO_LAYER` |
 
 A converter or verifier implements these assignments to produce/validate the concrete
 block/segment/fusion set. A full artifact contains 1164 blocks, 1312 segments, and 130 fusion groups:
@@ -783,18 +796,18 @@ mlp.gate_proj.weight -> MLP_GATE [17408,5120] Q4 (MLP_GATEUP block segment)
 mlp.up_proj.weight   -> MLP_UP   [17408,5120] Q4 (MLP_GATEUP block segment)
 
 mtp.layers.0.self_attn.q_proj.weight [12288,5120]   # interleaved [query(256)|gate(256)] x24
-  -> ATTN_Q   [6144,5120] W8 (MTP ATTN_IN block segment)
-  -> ATTN_GATE[6144,5120] W8 (MTP ATTN_IN block segment)
-mtp.layers.0.self_attn.k_proj.weight -> ATTN_K [1024,5120] W8 (MTP ATTN_IN block segment)
-mtp.layers.0.self_attn.v_proj.weight -> ATTN_V [1024,5120] W8 (MTP ATTN_IN block segment)
+  -> ATTN_Q   [6144,5120] W8G32 (MTP ATTN_IN block segment)
+  -> ATTN_GATE[6144,5120] W8G32 (MTP ATTN_IN block segment)
+mtp.layers.0.self_attn.k_proj.weight -> ATTN_K [1024,5120] W8G32 (MTP ATTN_IN block segment)
+mtp.layers.0.self_attn.v_proj.weight -> ATTN_V [1024,5120] W8G32 (MTP ATTN_IN block segment)
 
-mtp.layers.0.mlp.gate_proj.weight -> MLP_GATE [17408,5120] W8 (MTP MLP_GATEUP block segment)
-mtp.layers.0.mlp.up_proj.weight   -> MLP_UP   [17408,5120] W8 (MTP MLP_GATEUP block segment)
+mtp.layers.0.mlp.gate_proj.weight -> MLP_GATE [17408,5120] W8G32 (MTP MLP_GATEUP block segment)
+mtp.layers.0.mlp.up_proj.weight   -> MLP_UP   [17408,5120] W8G32 (MTP MLP_GATEUP block segment)
 ```
 
 Each block's `name`/`name_hash` is the converter-assigned canonical name (for a standalone block, the
-projection name; for a fused block, the group name, e.g. `layers.{L}.attn_in.q4`); per-projection names
-are recovered from segment `name_*`.
+projection name; for a fused block, the group name, e.g. `layers.{L}.attn_in.q4` for TEXT_CORE or
+`mtp.layers.0.attn_in.w8` for MTP_DRAFT); per-projection names are recovered from segment `name_*`.
 
 ## 17. Manifest
 
@@ -809,15 +822,15 @@ fields:
   "format_minor": 0,
   "binary_spec": "docs/q5090_packed_file_format_v3.md",
   "tensor_plan": "docs/q5090_packed_file_format_v3.md",
-  "value_source": "qwen3_6_27b_q5090_final_quant_format_v1 (policy)",
+  "value_source": "qwen3_6_27b_q5090_final_quant_format_v1 + v3_mtp_w8g32_override",
   "weights_file": "qwen3_6_27b.q5090_w4g64_mixed_v3.qus",
   "file_bytes": 0,
   "sha256_safetensors_index": "<64 hex chars>",
   "calibrated": false,
-  "alignment": { "header": 4096, "payload": 4096, "block": 256, "k_pad": 128, "group_size": 64 },
+  "alignment": { "header": 4096, "payload": 4096, "block": 256, "k_pad": 128, "group_sizes": [32, 64, 128] },
   "layouts": ["ROW_SPLIT", "CONTIGUOUS"],
   "code_planes": ["nibble", "high", "scale"],
-  "qtypes": ["Q4G64_F16S", "Q5G64_F16S", "Q6G64_F16S", "W8G128_F16S", "BF16_CTRL", "FP32_CTRL"],
+  "qtypes": ["Q4G64_F16S", "Q5G64_F16S", "Q6G64_F16S", "W8G128_F16S", "BF16_CTRL", "FP32_CTRL", "W8G32_F16S"],
   "modules": ["TEXT_CORE", "MTP_DRAFT", "VISION_ENCODER"],
   "absent_modules": [],
   "tensor_count": 1164,
@@ -843,12 +856,14 @@ it.
 
 ## 18. Non-goals and scope
 
-- **No bytes/token reduction.** The format stores the same codes/scales; the gain is achievable
-  `BW_eff` and reduced launch/occupancy/unpack waste, not less traffic.
-- **No requantization, no numeric-format change.** No FP4/FP6/MXFP/NVFP; values equal the policy.
+- **No general bytes/token reduction.** For inherited Q4/Q5/Q6/W8G128 tensors, the format stores the
+  same policy codes/scales; the gain is achievable `BW_eff` and reduced launch/occupancy/unpack waste,
+  not less traffic. MTP_DRAFT W8G32 intentionally increases scale-plane bytes versus W8G128.
+- **No low-bit numeric-format change.** No FP4/FP6/MXFP/NVFP; values equal the active policy for each
+  qtype. `W8G32_F16S` is still signed int8 with FP16 per-group scales, but uses a 32-element group.
 - **No second resident copy and no dequant-to-BF16/FP32** of any quantized weight.
-- **Per-group fp16 scales.** One fp16 scale per `(row, group)` of 64 (128 for W8). The format does not
-  use hierarchical/sub-block quantized scales.
+- **Per-group fp16 scales.** One fp16 scale per `(row, group)` of 64 (128 for W8G128, 32 for W8G32).
+  The format does not use hierarchical/sub-block quantized scales.
 - **Float-accumulation consumption assumed.** The byte layout targets a dequantize-to-float GEMV/GEMM;
   it neither requires nor encodes an integer-dot (quantized-activation) execution path.
 - **Decode-first prefill, explicitly.** The global byte order is GEMV-optimal; prefill GEMM consumes it
@@ -862,25 +877,27 @@ it.
 
 ## 19. Differences from `q5090_w4g64_mixed_v2`
 
-This format supersedes v2; there is no dual-format path. The **only** substantive on-disk change is the
-code packing; the validation/addressing/flags clarifications below tighten the contract without
-changing v2-shared bytes.
+This format supersedes v2; there is no dual-format path. For inherited TEXT_CORE/VISION tensors, the
+substantive on-disk change is the code packing; the validation/addressing/flags clarifications below
+tighten the contract without changing v2-shared bytes. MTP_DRAFT is specified directly in this v3
+document and uses the v3-local `W8G32_F16S` precision assignment.
 
 | aspect | v2 | v3 |
 |---|---|---|
 | magic / `version` / `format` | `Q5090MIXEDV2` / 2 / `..._v2` | `Q5090MIXEDV3` / 3 / `..._v3` |
 | Q5/Q6 code packing | one group bitstream, codes concatenated LSB-first; decode needs cross-byte funnel-shift | **bit-plane**: low-4-bit nibble plane + separate high-bit plane (Q5: 1 bit, Q6: 2 bits); decode `sign_extend(low\|high<<4)`, shift/mask only |
-| ROW_SPLIT planes | 2 (code + scale) | 3 (nibble + high [empty for Q4/W8] + scale), each 256-aligned |
+| ROW_SPLIT planes | 2 (code + scale) | 3 (nibble + high [empty for Q4/W8G128/W8G32] + scale), each 256-aligned |
 | `TensorEntry` plane fields | `code_plane_bytes` (100), `scale_plane_bytes` (108) | `nibble_plane_bytes` (100), `high_plane_bytes` (108), `scale_plane_bytes` (116) |
 | `payload_bytes` definition | (ambiguous) | block payload **size** = `scale_rel + scale_plane_bytes` (relative span) |
 | K padding | to `group_size` (with an odd-`G` Q5→128 caveat) | single rule `K_pad = align_up(K,128)`; no special case |
-| Q4 / W8 packing, scales, values, bytes/token | nibble / int8; per-group fp16; policy values | **unchanged** (bit-identical dequant; same total code bytes per block) |
+| Q4 / W8 packing, scales, values, bytes/token | nibble / int8; per-group fp16; policy values | Q4/Q5/Q6/W8G128 unchanged; v3 additionally assigns MTP_DRAFT dense linears to `W8G32_F16S` for finer W8 scale granularity |
 | `source_kind` MTP/VISION | spec listed placeholders `50..53 MTP_*`, `60..80 VIS_*` | full enum listed in §7; **values unchanged** (match v1 + `tensor.h`/`qtypes.py`) |
 | MTP_DRAFT assignment | standalone W8 linears in the v2 tensor-plan companion | v3-owned fused assignment: 12 blocks, 16 segments, `ATTN_IN` + `MLP_GATEUP` fusion groups; no version bump inside v3 |
 | module support | TEXT/MTP/VISION first-class | **unchanged** (the full converter artifact carries all three; runtime load policy may skip optional modules) |
 | plane addressing, structural validation, flags, manifest, FP endianness | implicit | **made normative** here (§9.3, §13, §2/§3, §17, §0) |
 
-Everything not listed is identical to v2 in structure and meaning. v3 is a pure relayout of the Q5/Q6
-code bits: same dequantized values (invariant 0.1), same `bytes_per_token`, designed so a warp-per-row
-GEMV reconstructs each value with register-only shift/mask and reuses the Q4 nibble loader for the
-dominant (low-bit) traffic.
+Everything not listed is identical to v2 in structure and meaning for inherited TEXT_CORE/VISION
+tensors. For those tensors, v3 is a pure relayout of Q5/Q6 code bits: same dequantized values
+(invariant 0.1), same `bytes_per_token`, designed so a warp-per-row GEMV reconstructs each value with
+register-only shift/mask and reuses the Q4 nibble loader for the dominant low-bit traffic. MTP_DRAFT is
+the v3-owned exception: it keeps the fused layout and uses W8G32 for precision-first draft quality.

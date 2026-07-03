@@ -16,6 +16,7 @@ QT_Q6G64 = 2
 QT_W8G128 = 3
 QT_BF16 = 4
 QT_FP32 = 5
+QT_W8G32 = 6
 
 QTYPE_NAME = {
     QT_Q4G64: "Q4G64_F16S",
@@ -24,6 +25,7 @@ QTYPE_NAME = {
     QT_W8G128: "W8G128_F16S",
     QT_BF16: "BF16_CTRL",
     QT_FP32: "FP32_CTRL",
+    QT_W8G32: "W8G32_F16S",
 }
 
 # --- layout ids (TensorEntry.layout) ---
@@ -48,7 +50,7 @@ MODULE_NAME = {
 
 MODULE_POLICY = {
     MODULE_TEXT: "q5090_w4g64_mixed_v3",
-    MODULE_MTP: "mtp_w8g128_v3",
+    MODULE_MTP: "mtp_w8g32_v3",
     MODULE_VISION: "vision_q4mix_merger_w8g128_v3",
 }
 
@@ -163,6 +165,7 @@ QUANT_SPECS = {
     QT_Q5G64: QuantSpec(bits=5, group_size=64, qmax=15, qmin=-16),
     QT_Q6G64: QuantSpec(bits=6, group_size=64, qmax=31, qmin=-32),
     QT_W8G128: QuantSpec(bits=8, group_size=128, qmax=127, qmin=-127),
+    QT_W8G32: QuantSpec(bits=8, group_size=32, qmax=127, qmin=-127),
 }
 
 

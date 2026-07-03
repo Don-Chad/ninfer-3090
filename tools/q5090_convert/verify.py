@@ -353,6 +353,43 @@ def _find_plan_block(plan, name: str):
     return None
 
 
+def _precision_scope_checks(entries) -> List[str]:
+    problems: List[str] = []
+    mtp_w8g32_names = {
+        "mtp.fc.weight",
+        "mtp.layers.0.attn_in.w8",
+        "mtp.layers.0.self_attn.o_proj.weight",
+        "mtp.layers.0.mlp.gateup.w8",
+        "mtp.layers.0.mlp.down_proj.weight",
+    }
+    vision_w8g128_names = {
+        "model.visual.merger.linear_fc1.weight",
+        "model.visual.merger.linear_fc2.weight",
+    }
+
+    for e in entries:
+        name = e["name"]
+        module = e["module_kind"]
+        qtype = e["qtype"]
+        if qtype == qt.QT_W8G32:
+            if module != qt.MODULE_MTP or name not in mtp_w8g32_names:
+                problems.append(f"{name}: W8G32 is only allowed for MTP_DRAFT dense/fused linears")
+        if module == qt.MODULE_MTP and name in mtp_w8g32_names and qtype != qt.QT_W8G32:
+            problems.append(f"{name}: MTP dense/fused linear qtype {qtype} != W8G32")
+        if module == qt.MODULE_TEXT and qtype in (qt.QT_W8G32, qt.QT_W8G128):
+            problems.append(f"{name}: TEXT_CORE must not use W8 qtypes")
+        if module == qt.MODULE_VISION:
+            if qtype == qt.QT_W8G32:
+                problems.append(f"{name}: VISION_ENCODER must not use W8G32")
+            if qtype == qt.QT_W8G128 and name not in vision_w8g128_names:
+                problems.append(f"{name}: VISION_ENCODER W8G128 is only allowed for merger FC tensors")
+
+    got_vision_w8g128 = {e["name"] for e in entries if e["module_kind"] == qt.MODULE_VISION and e["qtype"] == qt.QT_W8G128}
+    if got_vision_w8g128 != vision_w8g128_names:
+        problems.append(f"VISION W8G128 tensors {sorted(got_vision_w8g128)!r} != {sorted(vision_w8g128_names)!r}")
+    return problems
+
+
 def _mtp_layout_checks(modules, entries, segments, fusions, plan) -> List[str]:
     problems: List[str] = []
     mtp_begin, mtp_end = _module_tensor_range(modules, qt.MODULE_MTP)
@@ -367,19 +404,19 @@ def _mtp_layout_checks(modules, entries, segments, fusions, plan) -> List[str]:
 
     by_name = {e["name"]: e for e in mtp_entries}
 
-    def expect_w8(name: str, shape: List[int]) -> dict | None:
+    def expect_mtp_w8g32(name: str, shape: List[int]) -> dict | None:
         e = by_name.get(name)
         if e is None:
             problems.append(f"{name}: missing MTP block")
             return None
         if e["shape"] != shape:
             problems.append(f"{name}: shape {e['shape']} != {shape}")
-        if e["qtype"] != qt.QT_W8G128:
-            problems.append(f"{name}: qtype {e['qtype']} != W8G128")
+        if e["qtype"] != qt.QT_W8G32:
+            problems.append(f"{name}: qtype {e['qtype']} != W8G32")
         if e["layout"] != qt.LAYOUT_ROW_SPLIT:
             problems.append(f"{name}: layout {e['layout']} != ROW_SPLIT")
-        if e["group_size"] != 128:
-            problems.append(f"{name}: group_size {e['group_size']} != 128")
+        if e["group_size"] != 32:
+            problems.append(f"{name}: group_size {e['group_size']} != 32")
         if e["scale_dtype"] != qt.SCALE_FP16:
             problems.append(f"{name}: scale_dtype {e['scale_dtype']} != FP16")
         if e["high_plane_bytes"] != 0:
@@ -396,17 +433,17 @@ def _mtp_layout_checks(modules, entries, segments, fusions, plan) -> List[str]:
         if e["qtype"] != qt.QT_BF16 or e["layout"] != qt.LAYOUT_CONTIGUOUS:
             problems.append(f"{name}: expected BF16 CONTIGUOUS")
 
-    expect_w8("mtp.fc.weight", [5120, 10240])
+    expect_mtp_w8g32("mtp.fc.weight", [5120, 10240])
     expect_bf16("mtp.pre_fc_norm_embedding.weight", [5120])
     expect_bf16("mtp.pre_fc_norm_hidden.weight", [5120])
     expect_bf16("mtp.layers.0.input_layernorm.weight", [5120])
-    attn = expect_w8("mtp.layers.0.attn_in.w8", [14336, 5120])
+    attn = expect_mtp_w8g32("mtp.layers.0.attn_in.w8", [14336, 5120])
     expect_bf16("mtp.layers.0.self_attn.q_norm.weight", [256])
     expect_bf16("mtp.layers.0.self_attn.k_norm.weight", [256])
-    expect_w8("mtp.layers.0.self_attn.o_proj.weight", [5120, 6144])
+    expect_mtp_w8g32("mtp.layers.0.self_attn.o_proj.weight", [5120, 6144])
     expect_bf16("mtp.layers.0.post_attention_layernorm.weight", [5120])
-    gateup = expect_w8("mtp.layers.0.mlp.gateup.w8", [34816, 5120])
-    expect_w8("mtp.layers.0.mlp.down_proj.weight", [5120, 17408])
+    gateup = expect_mtp_w8g32("mtp.layers.0.mlp.gateup.w8", [34816, 5120])
+    expect_mtp_w8g32("mtp.layers.0.mlp.down_proj.weight", [5120, 17408])
     expect_bf16("mtp.norm.weight", [5120])
 
     if attn is not None:
@@ -796,6 +833,7 @@ def _l0_checks(path: str, hdr, modules, entries, segments, fusions, plan) -> Lis
             problems.append(f"fusion[{i}]: total_n {g['total_n']} != {total_n}")
         if g["shared_k"] != shared_k:
             problems.append(f"fusion[{i}]: shared_k {g['shared_k']} != {shared_k}")
+    problems += _precision_scope_checks(entries)
     problems += _mtp_layout_checks(modules, entries, segments, fusions, plan)
     return problems
 
@@ -853,7 +891,7 @@ def _manifest_checks(path: str, hdr, modules, entries, segments, fusions) -> Lis
         "payload": fmt.REGION_ALIGN,
         "block": fmt.PAYLOAD_ALIGN,
         "k_pad": 128,
-        "group_size": 64,
+        "group_sizes": [32, 64, 128],
     }
     if alignment != want_alignment:
         problems.append(f"manifest alignment {alignment!r} != {want_alignment!r}")
