@@ -260,6 +260,11 @@ speedup ≈ (E[a]+1) × C_t / (C_t×(1+ε) + k × C_mtp)
 保守预期（真实负载接受率更低、small-T 未调优）为 **2~3.5×**。`k` 的最终默认值
 由 benchmark 决定，初始建议 3 或 4。
 
+M3 checkpoint（见 `docs/bench/mtp-m3-target-verify-cost.md`）在 RTX 5090 上测得
+generic target verify 的 k=5/T=6 成本为 `66.4134 ms`，T=1 decode 为 `13.1765 ms`，
+即 ε≈4.04，远高于上面的乐观占位值。M5 必须优先处理 target small-T verify
+kernel/launch 开销，否则端到端加速模型会被 verify 成本主导。
+
 注意：acceptance 数据目前只有单 prompt 证据，正式结论以 bench 报告为准。
 
 ---
