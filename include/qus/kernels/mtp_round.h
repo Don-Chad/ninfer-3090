@@ -1,0 +1,29 @@
+#pragma once
+
+// qus::kernels - fixed-shape MTP round state helpers.
+
+#include "qus/core/tensor.h"
+
+#include <cuda_runtime.h>
+
+namespace qus::kernels {
+
+void mtp_prepare_verify_inputs(const Tensor& token, const Tensor& drafts, const Tensor& length,
+                               Tensor& window_base, Tensor& verify_ids, Tensor& positions,
+                               cudaStream_t stream);
+
+void mtp_accept_tokens(const Tensor& target_tokens, const Tensor& drafts, Tensor& length,
+                       Tensor& token, Tensor& sampled_out, Tensor& num_sampled, Tensor& accepted,
+                       Tensor& ar_pos, Tensor& stats, cudaStream_t stream);
+
+void mtp_prepare_shifted_ids(const Tensor& verify_ids, const Tensor& token,
+                             const Tensor& accepted, Tensor& shifted_ids, cudaStream_t stream);
+
+void mtp_gather_hidden_row(const Tensor& hidden, const Tensor& accepted, Tensor& out,
+                           cudaStream_t stream);
+
+void mtp_increment_i32(Tensor& scalar, cudaStream_t stream);
+
+void mtp_count_fallback_step(Tensor& stats, cudaStream_t stream);
+
+} // namespace qus::kernels
