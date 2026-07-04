@@ -56,11 +56,13 @@ void launch_codec(const __nv_bfloat16* xp, const std::uint8_t* codes, const std:
                   std::int32_t t, std::int32_t padded_k, std::int32_t full_slabs,
                   cudaStream_t stream) {
     if constexpr (std::is_same_v<SC, Q5Smallt>) {
-        if (t == 4 && full_slabs * 1024 == k && padded_k == k &&
-            ((n == 7168 && k == 5120) || (n == 6144 && k == 5120))) {
-            launch_q5_t4_chunk4(xp, codes, high, scales, outp, n, k, t, padded_k, full_slabs,
-                                 stream);
-            return;
+        if (t == 4 && full_slabs * 1024 == k && padded_k == k) {
+            if ((n == 7168 && k == 5120) || (n == 6144 && k == 5120) ||
+                (n == 5120 && k == 6144)) {
+                launch_q5_t4_chunk4(xp, codes, high, scales, outp, n, k, t, padded_k, full_slabs,
+                                     stream);
+                return;
+            }
         }
     }
     if (t <= 4) {
