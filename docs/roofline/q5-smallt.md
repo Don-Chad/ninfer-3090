@@ -99,6 +99,7 @@ amount of latency hiding available.
 | 42 | Apply the same x-preload pattern to the one-warp MlpDown direct body. | MlpDown: 62.69 us / 60.35% SOL, memory 53.07%, regs 54, static smem 0 B, waves/SM 0.94. | Rejected. The small SOL gain did not pay for itself in duration. |
 | 43 | Route MlpDown to the direct split4 body. | MlpDown: 74.62 us / 65.41% SOL, memory 65.41%, regs 44, static smem 64 B, waves/SM 3.01, achieved occupancy 75.62%. | Rejected. This raises the primary SOL metric but materially regresses duration, violating the representative-shape guardrail. |
 | 44 | Launch the one-warp MlpDown direct body with 4 rows/block instead of 8. | MlpDown: 62.88 us / 59.36% SOL, memory 52.86%, regs 54, waves/SM 0.84. | Rejected. Smaller blocks reduced wave count and regressed both duration and SOL. |
+| 45 | Group two rows per direct split4 block to recover some within-block x reuse while retaining four K-slice warps per row. | Attn: 27.71 us / 66.48% SOL, memory 49.45%, regs 44, static smem 128 B, waves/SM 4.22, achieved occupancy 74.58%. | Rejected. The larger 256-thread block did not improve L1TEX behavior enough to beat the one-row split4 body. |
 
 ## Final Candidate
 
