@@ -37,6 +37,26 @@ std::string format_tok_s(double tokens, double seconds) {
     return out.str();
 }
 
+std::string format_rate(std::int64_t numerator, std::int64_t denominator) {
+    if (denominator <= 0) { return "n/a"; }
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2)
+        << (100.0 * static_cast<double>(numerator) / static_cast<double>(denominator)) << '%';
+    return out.str();
+}
+
+std::string format_per_round(double value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2) << value << " tok/round";
+    return out.str();
+}
+
+std::string format_mtp_acceptance_length(const qus::EngineMtpStats& stats) {
+    if (stats.rounds <= 0) { return "n/a"; }
+    return format_per_round(1.0 + static_cast<double>(stats.accepted_tokens) /
+                                      static_cast<double>(stats.rounds));
+}
+
 std::string format_bytes(std::uint64_t bytes) {
     constexpr double kGiB = 1024.0 * 1024.0 * 1024.0;
     constexpr double kMiB = 1024.0 * 1024.0;
@@ -50,6 +70,18 @@ std::string format_bytes(std::uint64_t bytes) {
         out << bytes << " B";
     }
     return out.str();
+}
+
+std::string format_arena_used(const qus::ArenaMemoryStats& stats) {
+    if (!stats.present) { return "n/a"; }
+    return format_bytes(static_cast<std::uint64_t>(stats.used_bytes)) + " / " +
+           format_bytes(static_cast<std::uint64_t>(stats.capacity_bytes));
+}
+
+std::string format_arena_peak(const qus::ArenaMemoryStats& stats) {
+    if (!stats.present) { return "n/a"; }
+    return format_bytes(static_cast<std::uint64_t>(stats.peak_used_bytes)) + " / " +
+           format_bytes(static_cast<std::uint64_t>(stats.capacity_bytes));
 }
 
 std::string format_percent(std::uint64_t done, std::uint64_t total) {
@@ -191,6 +223,25 @@ int main(int argc, char** argv) {
                      format_tok_s(static_cast<double>(decode_tokens), decode_seconds));
         print_metric("throughput (overall)",
                      format_tok_s(static_cast<double>(generated_tokens), seconds));
+
+        const qus::EngineMemoryStats memory = engine.memory_stats();
+        const std::uint64_t reserved_bytes =
+            static_cast<std::uint64_t>(memory.weights.capacity_bytes) +
+            static_cast<std::uint64_t>(memory.cache.capacity_bytes) +
+            static_cast<std::uint64_t>(memory.workspace.capacity_bytes);
+        print_metric("gpu weights used", format_arena_used(memory.weights));
+        print_metric("gpu cache used", format_arena_used(memory.cache));
+        print_metric("gpu workspace peak", format_arena_peak(memory.workspace));
+        print_metric("gpu reserved total", format_bytes(reserved_bytes));
+
+        const qus::EngineMtpStats mtp = engine.mtp_stats();
+        if (mtp.enabled) {
+            print_metric("mtp draft window", std::to_string(mtp.k));
+            print_metric("mtp drafted tokens", std::to_string(mtp.draft_tokens));
+            print_metric("mtp accepted tokens", std::to_string(mtp.accepted_tokens));
+            print_metric("mtp acceptance rate", format_rate(mtp.accepted_tokens, mtp.draft_tokens));
+            print_metric("mtp acceptance length", format_mtp_acceptance_length(mtp));
+        }
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << '\n';
         std::cerr << qus::text::usage_text(argv[0]);
