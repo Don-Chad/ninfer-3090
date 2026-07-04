@@ -15,7 +15,6 @@ namespace qus::kernels::detail {
 namespace {
 
 constexpr int kRowsPerBlockDefault = 8;
-constexpr int kRowsPerBlockQ5Chunk = 1;
 constexpr int kStages              = 2;
 
 int ceil_div(int a, int b) { return (a + b - 1) / b; }
@@ -33,18 +32,6 @@ void launch_tt(const __nv_bfloat16* xp, const std::uint8_t* codes, const std::ui
                                              full_slabs);
 }
 
-void launch_q5_t4_chunk4(const __nv_bfloat16* xp, const std::uint8_t* codes,
-                         const std::uint8_t* high, const std::uint8_t* scales,
-                         __nv_bfloat16* outp, std::int32_t n, std::int32_t k, std::int32_t t,
-                         std::int32_t padded_k, std::int32_t full_slabs, cudaStream_t stream) {
-    constexpr int kWarpTilesPerBlock = 4;
-    constexpr int kBlockThreads      = kWarpTilesPerBlock * 32;
-    const dim3    grid(static_cast<unsigned>(ceil_div(n, kRowsPerBlockQ5Chunk)), 1u, 1u);
-    linear_rowsplit_gemm_smallt_kernel_chunk4<Q5Smallt, 4, kWarpTilesPerBlock, kStages>
-        <<<grid, kBlockThreads, 0, stream>>>(xp, codes, high, scales, outp, n, k, t, padded_k,
-                                             full_slabs);
-}
-
 void launch_q5_t4_direct(const __nv_bfloat16* xp, const std::uint8_t* codes,
                          const std::uint8_t* high, const std::uint8_t* scales,
                          __nv_bfloat16* outp, std::int32_t n, std::int32_t k, std::int32_t t,
@@ -52,6 +39,18 @@ void launch_q5_t4_direct(const __nv_bfloat16* xp, const std::uint8_t* codes,
     constexpr int kBlockThreads = kRowsPerBlockDefault * 32;
     const dim3    grid(static_cast<unsigned>(ceil_div(n, kRowsPerBlockDefault)), 1u, 1u);
     linear_rowsplit_gemm_smallt_kernel_direct_q5_t4<Q5Smallt, kRowsPerBlockDefault>
+        <<<grid, kBlockThreads, 0, stream>>>(xp, codes, high, scales, outp, n, k, t, padded_k,
+                                             full_slabs);
+}
+
+void launch_q5_t4_direct_split4(const __nv_bfloat16* xp, const std::uint8_t* codes,
+                                const std::uint8_t* high, const std::uint8_t* scales,
+                                __nv_bfloat16* outp, std::int32_t n, std::int32_t k,
+                                std::int32_t t, std::int32_t padded_k,
+                                std::int32_t full_slabs, cudaStream_t stream) {
+    constexpr int kBlockThreads = 4 * 32;
+    const dim3    grid(static_cast<unsigned>(n), 1u, 1u);
+    linear_rowsplit_gemm_smallt_kernel_direct_split4_q5_t4<Q5Smallt>
         <<<grid, kBlockThreads, 0, stream>>>(xp, codes, high, scales, outp, n, k, t, padded_k,
                                              full_slabs);
 }
@@ -70,8 +69,8 @@ void launch_codec(const __nv_bfloat16* xp, const std::uint8_t* codes, const std:
         if (t == 4 && full_slabs * 1024 == k && padded_k == k) {
             if ((n == 7168 && k == 5120) || (n == 6144 && k == 5120) ||
                 (n == 5120 && k == 6144)) {
-                launch_q5_t4_chunk4(xp, codes, high, scales, outp, n, k, t, padded_k, full_slabs,
-                                     stream);
+                launch_q5_t4_direct_split4(xp, codes, high, scales, outp, n, k, t, padded_k,
+                                           full_slabs, stream);
                 return;
             }
             if (n == 5120 && k == 17408) {
