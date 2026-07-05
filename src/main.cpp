@@ -175,6 +175,7 @@ int main(int argc, char** argv) {
         qus::text::TextGenerationOptions generation_options;
         generation_options.max_new_tokens  = cli.max_new;
         generation_options.raw_output      = cli.output_mode == qus::text::OutputMode::Raw;
+        generation_options.enable_thinking = cli.enable_thinking;
         generation_options.stop_token_ids  = stop_token_ids;
         generation_options.stream_callback = [](const qus::text::TextStreamChunk& chunk) {
             std::cout << chunk.text;

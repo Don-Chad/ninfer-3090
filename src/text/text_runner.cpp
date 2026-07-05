@@ -25,7 +25,8 @@ TextGenerationResult TextGenerationRunner::generate(const std::vector<ChatMessag
     const auto render_start = Clock::now();
     const std::vector<int> stop_token_ids =
         resolve_stop_token_ids(tokenizer_, options.stop_token_ids);
-    const std::string prompt              = render_qwen_chat(messages);
+    const std::string prompt              = render_qwen_chat(
+        messages, ChatRenderOptions{.enable_thinking = options.enable_thinking});
     std::vector<int> prompt_token_ids     = tokenizer_.encode(prompt);
     const std::size_t required_context =
         prompt_token_ids.size() + static_cast<std::size_t>(options.max_new_tokens - 1);

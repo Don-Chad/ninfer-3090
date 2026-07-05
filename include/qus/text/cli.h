@@ -27,6 +27,7 @@ struct CliOptions {
     OutputMode output_mode      = OutputMode::Clean;
     bool print_token_ids        = false;
     bool use_cuda_graph         = true;
+    bool enable_thinking        = false;
     std::vector<int> stop_token_ids;
 };
 

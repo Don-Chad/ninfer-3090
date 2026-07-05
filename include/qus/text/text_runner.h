@@ -27,6 +27,7 @@ struct TextGenerationTimings {
 struct TextGenerationOptions {
     int max_new_tokens = 128;
     bool raw_output = false;
+    bool enable_thinking = false;
     std::vector<int> stop_token_ids;
     TextStreamCallback stream_callback;
 };
