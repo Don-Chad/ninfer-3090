@@ -145,6 +145,25 @@ public:
 
     [[nodiscard]] const Weight* lm_head() const noexcept { return lm_head_; }
 
+    // Optional embedded Q4 draft head (v4 packed file). When set, the MTP draft
+    // argmax sites project with this smaller [n,5120] head and remap the shortlist
+    // index back to a real vocab id via `ids`. Verify and every non-draft site keep
+    // using the full `lm_head_`, so emitted tokens are unchanged; only per-round
+    // acceptance (speed) is affected. Pass a null weight to force the baseline head.
+    void set_lm_head_draft(const Weight* w, const std::int32_t* ids, int n) noexcept {
+        lm_head_draft_     = w;
+        lm_head_draft_ids_ = ids;
+        lm_head_draft_n_   = n;
+    }
+
+    [[nodiscard]] const Weight* lm_head_draft() const noexcept { return lm_head_draft_; }
+
+    [[nodiscard]] const std::int32_t* lm_head_draft_ids() const noexcept {
+        return lm_head_draft_ids_;
+    }
+
+    [[nodiscard]] int lm_head_draft_n() const noexcept { return lm_head_draft_n_; }
+
     [[nodiscard]] const FullLayerW& full_layer(std::size_t i) const { return full_.at(i); }
 
     [[nodiscard]] const GdnLayerW& gdn_layer(std::size_t i) const { return gdn_.at(i); }
@@ -232,6 +251,12 @@ private:
     void mlp_tail(const Tensor* post_norm, const MlpW& m, Tensor& x, Phase ph);
     void mtp_forward_core(const Tensor& ids, const Tensor& hidden, const Tensor& positions,
                           Tensor& mtp_hidden);
+    // Draft-proposal argmax at an MTP draft site. Uses the full `lm_head_` (writing
+    // into `logits`) unless a draft head is set, in which case it projects with the
+    // smaller `lm_head_draft_` into a work-scoped [n,1] buffer, argmaxes to a
+    // shortlist index, and remaps it to a real vocab id. `draft_token` receives the
+    // vocab id either way. Caller owns the surrounding work_ mark/rewind.
+    void mtp_draft_argmax(const Tensor& hidden_col, Tensor& logits, Tensor& draft_token);
     void prefill_erased(std::span<const int> ids, void* tap, TapCallback callback);
     void decode_step_erased(void* tap, TapCallback callback);
     template <class Tap>
@@ -255,6 +280,9 @@ private:
     const Weight* embed_      = nullptr;
     const Tensor* final_norm_ = nullptr;
     const Weight* lm_head_    = nullptr;
+    const Weight* lm_head_draft_            = nullptr;
+    const std::int32_t* lm_head_draft_ids_ = nullptr;
+    int lm_head_draft_n_                   = 0;
     MtpW mtp_{};
     std::array<FullLayerW, ModelConfig::n_full()> full_{};
     std::array<GdnLayerW, ModelConfig::n_gdn()> gdn_{};

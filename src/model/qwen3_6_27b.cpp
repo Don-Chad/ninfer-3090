@@ -388,6 +388,18 @@ void Qwen3_6_27B::bind() {
     embed_      = require_weight(weights_, SourceKind::Embed, kQ5090NoLayer, "embed");
     final_norm_ = require_tensor(weights_, SourceKind::FinalNorm, kQ5090NoLayer, "final_norm");
     lm_head_    = require_weight(weights_, SourceKind::LmHead, kQ5090NoLayer, "lm_head");
+
+    // Optional embedded draft head (v4 DRAFT_HEAD_PRESENT). Bind it whenever both
+    // the Q4 weight and its int32 id-map are present; the engine's two-mode toggle
+    // decides whether the MTP proposal sites actually use it (see Engine::load).
+    const Weight* draft_head = weights_.qweight(kText, sk(SourceKind::LmHeadDraft), kQ5090NoLayer);
+    const Tensor* draft_ids  = weights_.tensor(kText, sk(SourceKind::LmHeadDraftIdmap),
+                                               kQ5090NoLayer);
+    if (draft_head != nullptr && draft_ids != nullptr) {
+        set_lm_head_draft(draft_head, static_cast<const std::int32_t*>(draft_ids->data),
+                          draft_head->n);
+    }
+
     if (mtp_kv_ != nullptr) { mtp_ = bind_mtp(weights_); }
 
     for (int layer = 0; layer < kCfg.n_layers; ++layer) {
@@ -518,6 +530,19 @@ void Qwen3_6_27B::mtp_forward_core(const Tensor& ids, const Tensor& hidden, cons
     work_.rewind(mark);
 }
 
+void Qwen3_6_27B::mtp_draft_argmax(const Tensor& hidden_col, Tensor& logits, Tensor& draft_token) {
+    if (lm_head_draft_ != nullptr) {
+        Tensor draft_logits = work_.alloc(DType::BF16, {lm_head_draft_n_, 1});
+        kernels::linear(hidden_col, *lm_head_draft_, draft_logits, work_, ctx_.stream);
+        kernels::argmax(draft_logits, draft_token, ctx_.stream);
+        kernels::mtp_remap_draft_token(draft_token, lm_head_draft_ids_, lm_head_draft_n_,
+                                       ctx_.stream);
+    } else {
+        kernels::linear(hidden_col, *lm_head_, logits, work_, ctx_.stream);
+        kernels::argmax(logits, draft_token, ctx_.stream);
+    }
+}
+
 void Qwen3_6_27B::mtp_forward_batch(const Tensor& ids, const Tensor& hidden,
                                     const Tensor& positions, Tensor& mtp_hidden,
                                     int logits_column, Tensor* logits, Tensor* draft_token) {
@@ -544,8 +569,7 @@ void Qwen3_6_27B::mtp_forward_batch(const Tensor& ids, const Tensor& hidden,
     if (logits_column >= 0) {
         const std::size_t logits_mark = work_.mark();
         Tensor col                    = mtp_hidden.slice(1, logits_column, 1);
-        kernels::linear(col, *lm_head_, *logits, work_, ctx_.stream);
-        kernels::argmax(*logits, *draft_token, ctx_.stream);
+        mtp_draft_argmax(col, *logits, *draft_token);
         work_.rewind(logits_mark);
     }
 }
@@ -563,8 +587,7 @@ void Qwen3_6_27B::mtp_forward_ar_step(const Tensor& token, const Tensor& previou
 
     mtp_forward_core(token, previous_hidden, position, mtp_hidden);
     const std::size_t logits_mark = work_.mark();
-    kernels::linear(mtp_hidden, *lm_head_, logits, work_, ctx_.stream);
-    kernels::argmax(logits, draft_token, ctx_.stream);
+    mtp_draft_argmax(mtp_hidden, logits, draft_token);
     work_.rewind(logits_mark);
 }
 
@@ -584,8 +607,7 @@ void Qwen3_6_27B::mtp_sample_from_hidden_row(const Tensor& mtp_hidden, const Ten
 
     const std::size_t mark = work_.mark();
     kernels::mtp_gather_hidden_row(mtp_hidden, row, out_hidden, ctx_.stream);
-    kernels::linear(out_hidden, *lm_head_, logits, work_, ctx_.stream);
-    kernels::argmax(logits, draft_token, ctx_.stream);
+    mtp_draft_argmax(out_hidden, logits, draft_token);
     work_.rewind(mark);
 }
 

@@ -59,6 +59,11 @@ struct EngineOptions {
     Q5090Progress* progress     = nullptr;
     std::vector<int> stop_token_ids;
     bool use_cuda_graph = true;
+    // Two-mode draft toggle. When true, the MTP proposal sites use the embedded
+    // Q4 draft head (requires a v4 file with DRAFT_HEAD_PRESENT). When false, every
+    // site uses the full lm_head. Verify/prefill/k0 always use the full head, so
+    // emitted tokens are identical in either mode; only decode speed differs.
+    bool use_lm_head_draft = false;
 };
 
 class Engine {

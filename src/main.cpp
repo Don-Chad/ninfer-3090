@@ -161,6 +161,7 @@ int main(int argc, char** argv) {
         engine_options.stop_token_ids = stop_token_ids;
         engine_options.progress       = &progress;
         engine_options.use_cuda_graph = cli.use_cuda_graph;
+        engine_options.use_lm_head_draft = cli.use_lm_head_draft;
         qus::Engine engine(engine_options);
 
         const auto engine_load_start = Clock::now();

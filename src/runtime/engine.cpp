@@ -520,6 +520,18 @@ void Engine::load(const std::string& path) {
     CUDA_CHECK(cudaMemsetAsync(io_.stats.data, 0, io_.stats.bytes(), ctx_->stream));
     card_.emplace(*ctx_, *weights_, *work_, *kv_, *state_, io_, options_.prefill_chunk,
                   mtp_kv_ ? &*mtp_kv_ : nullptr);
+
+    // bind() auto-binds the embedded draft head when present. Enforce the two-mode
+    // toggle here: keep it only when explicitly enabled, and fail loudly if enabled
+    // for a file that has no draft head instead of silently running the full head.
+    if (options_.use_lm_head_draft) {
+        if (card_->lm_head_draft() == nullptr) {
+            throw std::runtime_error(
+                "engine: use_lm_head_draft is set but the weight file has no draft head");
+        }
+    } else {
+        card_->set_lm_head_draft(nullptr, nullptr, 0);
+    }
 }
 
 void Engine::require_loaded() const {

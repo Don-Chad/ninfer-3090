@@ -28,6 +28,7 @@ struct CliOptions {
     bool print_token_ids        = false;
     bool use_cuda_graph         = true;
     bool enable_thinking        = false;
+    bool use_lm_head_draft      = false;
     std::vector<int> stop_token_ids;
 };
 
