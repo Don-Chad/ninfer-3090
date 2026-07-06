@@ -13,6 +13,14 @@ void sample_column_launch(const Tensor& logits, Tensor& out, const SamplingConfi
     sample_column_kernel<<<static_cast<unsigned int>(cols), kSamplerBlock, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(logits.data), static_cast<std::int32_t*>(out.data),
         config, pos_base, purpose, vocab);
+    const std::int32_t partial_blocks =
+        (vocab + kSamplerPartialTileItems - 1) / kSamplerPartialTileItems;
+    const dim3 partial_grid(static_cast<unsigned int>(partial_blocks),
+                            static_cast<unsigned int>(cols));
+    sampling_partial_topk_kernel<<<partial_grid, kSamplerBlock, 0, stream>>>(
+        static_cast<const __nv_bfloat16*>(logits.data), config, vocab);
+    sampling_finalize_sample_kernel<<<static_cast<unsigned int>(cols), kSamplerBlock, 0, stream>>>(
+        static_cast<std::int32_t*>(out.data), config, pos_base, purpose, vocab, partial_blocks);
 }
 
 } // namespace qus::kernels::detail

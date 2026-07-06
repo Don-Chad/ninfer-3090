@@ -77,11 +77,18 @@ __launch_bounds__(kSamplerBlock) __global__ void mtp_accept_tokens_kernel(
     __shared__ float cand_val[kSamplerMaxCandidates];
     __shared__ int cand_idx[kSamplerMaxCandidates];
     __shared__ float prob[kSamplerMaxCandidates];
+    __shared__ float merge_val[kSamplerBlock * kSamplerFastCandidates];
+    __shared__ int merge_idx[kSamplerBlock * kSamplerFastCandidates];
     __shared__ int n_support;
     __shared__ int a_sh;
     __shared__ int done_sh;
     __shared__ int tstar_sh;
     __shared__ int L_sh;
+
+    const int partial_blocks = (vocab + kSamplerPartialTileItems - 1) / kSamplerPartialTileItems;
+    const bool scratch_capable =
+        ((k + 1) <= kSamplerScratchColumns) && (partial_blocks <= kSamplerScratchPartialBlocks);
+    if (vocab > kSamplerTileItems && scratch_capable) { return; }
 
     if (tid == 0) {
         a_sh    = 0;
@@ -92,8 +99,15 @@ __launch_bounds__(kSamplerBlock) __global__ void mtp_accept_tokens_kernel(
     __syncthreads();
 
     for (int i = 0; i <= k; ++i) {
-        sampling_build_truncated(logits, static_cast<std::int64_t>(i) * vocab, vocab, cfg, red_val,
-                                 red_idx, cand_val, cand_idx, prob, &n_support);
+        if (vocab <= kSamplerTileItems) {
+            sampling_build_truncated_small(logits, static_cast<std::int64_t>(i) * vocab, vocab,
+                                           cfg, red_val, red_idx, cand_val, cand_idx, prob,
+                                           &n_support);
+        } else {
+            sampling_build_truncated_block_fast(logits, static_cast<std::int64_t>(i) * vocab,
+                                                vocab, cfg, merge_val, merge_idx, cand_val,
+                                                cand_idx, prob, &n_support);
+        }
         if (tid == 0 && done_sh == 0) {
             const int L = L_sh;
             if (i < k) {
@@ -152,6 +166,144 @@ __launch_bounds__(kSamplerBlock) __global__ void mtp_accept_tokens_kernel(
         if (cfg.token_counts != nullptr) {
             for (int i = 0; i < produced; ++i) { atomicAdd(&cfg.token_counts[sampled_out[i]], 1); }
         }
+    }
+}
+
+__launch_bounds__(kSamplerBlock) __global__ void mtp_sampling_partial_topk_kernel(
+    const __nv_bfloat16* logits, const SamplingConfig* cfg_ptr, std::int32_t vocab) {
+    const int col            = static_cast<int>(blockIdx.y);
+    const int partial        = static_cast<int>(blockIdx.x);
+    const SamplingConfig cfg = *cfg_ptr;
+    const int partial_blocks = static_cast<int>(gridDim.x);
+    if (!(cfg.temperature > 0.0f) || vocab <= kSamplerTileItems ||
+        col >= kSamplerScratchColumns || partial_blocks > kSamplerScratchPartialBlocks) {
+        return;
+    }
+
+    __shared__ typename SamplingPartialBlockSort::TempStorage sort_storage;
+    unsigned long long keys[kSamplerItemsPerThread];
+    int items[kSamplerItemsPerThread];
+
+    const int cap = sampling_candidate_cap(cfg, vocab);
+    const std::int64_t base = static_cast<std::int64_t>(col) * vocab;
+    const int tile_start = partial * kSamplerPartialTileItems;
+#pragma unroll
+    for (int item = 0; item < kSamplerItemsPerThread; ++item) {
+        const int v = tile_start + item * blockDim.x + threadIdx.x;
+        if (v < vocab) {
+            const float x = sampling_adjusted_logit(__bfloat162float(logits[base + v]), v, cfg);
+            keys[item] = sampling_sort_key(x, v);
+            items[item] = v;
+        } else {
+            keys[item] = 0ull;
+            items[item] = INT_MAX;
+        }
+    }
+    SamplingPartialBlockSort(sort_storage).SortDescending(keys, items);
+
+#pragma unroll
+    for (int item = 0; item < kSamplerItemsPerThread; ++item) {
+        const int rank = threadIdx.x * kSamplerItemsPerThread + item;
+        if (rank < cap) {
+            const int off = sampling_partial_offset(col, partial, rank);
+            sampling_partial_val[off] = sampling_key_float(keys[item]);
+            sampling_partial_idx[off] = items[item];
+        }
+    }
+}
+
+__launch_bounds__(kSamplerBlock) __global__ void mtp_sampling_finalize_distribution_kernel(
+    const SamplingConfig* cfg_ptr, std::int32_t vocab, std::int32_t cols,
+    std::int32_t partial_blocks) {
+    const int col            = static_cast<int>(blockIdx.x);
+    const int tid            = threadIdx.x;
+    const SamplingConfig cfg = *cfg_ptr;
+    if (!(cfg.temperature > 0.0f) || vocab <= kSamplerTileItems ||
+        cols > kSamplerScratchColumns || partial_blocks > kSamplerScratchPartialBlocks) {
+        return;
+    }
+
+    __shared__ float merge_val[(kSamplerBlock / 32) * kSamplerFastCandidates];
+    __shared__ int merge_idx[(kSamplerBlock / 32) * kSamplerFastCandidates];
+    __shared__ typename SamplingFinalizeBlockSort::TempStorage sort_storage;
+    __shared__ float cand_val[kSamplerMaxCandidates];
+    __shared__ int cand_idx[kSamplerMaxCandidates];
+    __shared__ float prob[kSamplerMaxCandidates];
+    __shared__ int n_support;
+
+    sampling_merge_partials_to_support(col, partial_blocks, cfg, sort_storage, merge_val,
+                                       merge_idx, cand_val, cand_idx, prob, &n_support, vocab);
+
+    if (tid == 0) {
+        sampling_dist_support[col] = n_support;
+        for (int j = 0; j < n_support; ++j) {
+            const int off = sampling_dist_offset(col, j);
+            sampling_dist_idx[off] = cand_idx[j];
+            sampling_dist_prob[off] = prob[j];
+        }
+    }
+}
+
+__launch_bounds__(kSamplerBlock) __global__ void mtp_accept_tokens_sampling_kernel(
+    const std::int32_t* drafts, std::int32_t* length, std::int32_t* token,
+    std::int32_t* sampled_out, std::int32_t* num_sampled, std::int32_t* accepted,
+    std::int32_t* ar_pos, std::int64_t* stats, const SamplingConfig* cfg_ptr,
+    std::int32_t vocab, std::int32_t k, std::int32_t partial_blocks) {
+    const int tid            = threadIdx.x;
+    const SamplingConfig cfg = *cfg_ptr;
+    if (tid != 0 || !(cfg.temperature > 0.0f) || vocab <= kSamplerTileItems ||
+        (k + 1) > kSamplerScratchColumns || partial_blocks > kSamplerScratchPartialBlocks) {
+        return;
+    }
+
+    const int L = *length;
+    int a       = 0;
+    int tstar   = 0;
+    for (int i = 0; i <= k; ++i) {
+        const int n = sampling_dist_support[i];
+        const int* cand_idx = sampling_dist_idx + sampling_dist_offset(i, 0);
+        const float* prob = sampling_dist_prob + sampling_dist_offset(i, 0);
+        if (i < k) {
+            const int d = drafts[i];
+            float pd    = 0.0f;
+            for (int j = 0; j < n; ++j) {
+                if (cand_idx[j] == d) {
+                    pd = prob[j];
+                    break;
+                }
+            }
+            const float u = sampling_uniform(cfg.seed, L + i + 1, kSamplePurposeMtpAccept, 0u);
+            if (u < pd) {
+                a = i + 1;
+                continue;
+            }
+            const float ur = sampling_uniform(cfg.seed, L + i + 1, kSamplePurposeMtpResample, 0u);
+            tstar = sampling_pick_from_support(cand_idx, prob, n, d, ur);
+            break;
+        }
+        const float u = sampling_uniform(cfg.seed, L + k + 1, kSamplePurposeMtpBonus, 0u);
+        tstar = sampling_pick_from_support(cand_idx, prob, n, -1, u);
+    }
+
+    for (int i = 0; i <= k; ++i) { sampled_out[i] = 0; }
+    for (int i = 0; i < a; ++i) { sampled_out[i] = drafts[i]; }
+    sampled_out[a] = tstar;
+
+    const int produced = a + 1;
+    *num_sampled       = produced;
+    *accepted          = a;
+    *token             = tstar;
+    *length            = L + produced;
+    *ar_pos            = *length;
+
+    stats[0] += k;
+    stats[1] += a;
+    stats[2] += 1;
+    for (int i = 0; i < a && i < kMtpRoundAcceptedPerPosLimit; ++i) {
+        stats[kMtpRoundAcceptedPerPosOffset + i] += 1;
+    }
+    if (cfg.token_counts != nullptr) {
+        for (int i = 0; i < produced; ++i) { atomicAdd(&cfg.token_counts[sampled_out[i]], 1); }
     }
 }
 
