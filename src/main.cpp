@@ -178,9 +178,17 @@ int main(int argc, char** argv) {
         generation_options.raw_output      = cli.output_mode == qus::text::OutputMode::Raw;
         generation_options.enable_thinking = cli.enable_thinking;
         generation_options.stop_token_ids  = stop_token_ids;
+        // Answer content streams to stdout; the <think> reasoning streams to stderr
+        // so `qus ... > out.txt` captures only the answer, matching how the CLI
+        // already routes diagnostics.
         generation_options.stream_callback = [](const qus::text::TextStreamChunk& chunk) {
-            std::cout << chunk.text;
-            std::cout.flush();
+            if (chunk.channel == qus::text::TextChannel::Reasoning) {
+                std::cerr << chunk.text;
+                std::cerr.flush();
+            } else {
+                std::cout << chunk.text;
+                std::cout.flush();
+            }
         };
 
         qus::text::TextGenerationRunner runner(tokenizer, engine);

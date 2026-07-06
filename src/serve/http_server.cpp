@@ -215,6 +215,7 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
         const GenerationOutcome outcome = service_.run(prepared, nullptr);
         const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
         res.set_content(make_chat_completion_response(id, model, created, outcome.text,
+                                                      outcome.reasoning,
                                                       finish_reason_wire(outcome.finish_reason),
                                                       usage),
                         "application/json");
@@ -232,8 +233,11 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
         try {
             queue->push(make_chat_chunk_role(id, model, created, include_usage));
             StreamSink sink;
-            sink.on_delta = [&](const std::string& text) {
+            sink.on_content = [&](const std::string& text) {
                 queue->push(make_chat_chunk_content(id, model, created, text, include_usage));
+            };
+            sink.on_reasoning = [&](const std::string& text) {
+                queue->push(make_chat_chunk_reasoning(id, model, created, text, include_usage));
             };
             sink.is_cancelled = [&]() { return cancelled->load(); };
 

@@ -10,9 +10,17 @@
 
 namespace qus::text {
 
+// The channel a streamed delta belongs to. When thinking is enabled the model's
+// output opens inside a <think> block (the opening tag lives in the prompt); the
+// runner routes everything up to "</think>" to Reasoning and the rest to Content.
+enum class TextChannel {
+    Content,
+    Reasoning,
+};
+
 struct TextStreamChunk {
-    int token_id = 0;
     std::string text;
+    TextChannel channel = TextChannel::Content;
 };
 
 using TextStreamCallback = std::function<void(const TextStreamChunk&)>;
@@ -46,7 +54,8 @@ struct TextGenerationOptions {
 struct TextGenerationResult {
     std::vector<int> prompt_token_ids;
     std::vector<int> generated_token_ids;
-    std::string text;
+    std::string text;       // answer only; the <think> block is split into `reasoning`
+    std::string reasoning;  // <think> block content, empty unless thinking is active
     TextGenerationTimings timings;
     FinishReason finish_reason = FinishReason::Length;
 };

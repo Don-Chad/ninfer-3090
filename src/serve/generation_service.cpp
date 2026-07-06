@@ -12,6 +12,16 @@
 namespace qus::serve {
 namespace {
 
+// Back a byte offset up to the start of a UTF-8 code point so a held-back tail
+// never splits a multibyte character. `len` is clamped to [0, buffer.size()].
+std::size_t backup_to_utf8_boundary(const std::string& buffer, std::size_t len) {
+    if (len >= buffer.size()) { return buffer.size(); }
+    while (len > 0 && (static_cast<unsigned char>(buffer[len]) & 0xC0) == 0x80) {
+        --len;
+    }
+    return len;
+}
+
 // Detokenized stop-string matching. Emitted text never includes the stop string.
 // A tail of up to (max_len - 1) bytes is held back so a stop string spanning two
 // deltas is still caught before its prefix is emitted.
@@ -50,16 +60,10 @@ public:
             return result;
         }
         const std::size_t hold = std::min(buffer_.size(), max_len_ - 1);
-        std::size_t emit_len   = buffer_.size() - hold;
-        // Never cut in the middle of a multibyte UTF-8 sequence: back the emit
-        // boundary up to the start of a code point so nlohmann never has to
-        // serialize invalid UTF-8 into a delta. The held bytes complete on the
-        // next push (or in flush()).
-        while (emit_len > 0 && emit_len < buffer_.size() &&
-               (static_cast<unsigned char>(buffer_[emit_len]) & 0xC0) == 0x80) {
-            --emit_len;
-        }
-        result.emit = buffer_.substr(0, emit_len);
+        // Never cut in the middle of a multibyte UTF-8 sequence: the held bytes
+        // complete on the next push (or in flush()).
+        const std::size_t emit_len = backup_to_utf8_boundary(buffer_, buffer_.size() - hold);
+        result.emit                = buffer_.substr(0, emit_len);
         buffer_.erase(0, emit_len);
         return result;
     }
@@ -129,13 +133,20 @@ GenerationOutcome GenerationService::run(const PreparedRequest& prepared, const 
     qus::text::TextGenerationRunner runner(*tokenizer_, *engine_);
     qus::text::TextGenerationOptions opt = prepared.options;
 
+    // The runner already splits the <think> block from the answer and tags each
+    // delta with its channel; stop strings apply to the answer channel only.
     StopSequences matcher(prepared.stop_strings);
     bool stop_matched = false;
 
     if (sink != nullptr) {
         opt.stream_callback = [&](const qus::text::TextStreamChunk& chunk) {
+            if (chunk.channel == qus::text::TextChannel::Reasoning) {
+                if (sink->on_reasoning) { sink->on_reasoning(chunk.text); }
+                return;
+            }
+            if (stop_matched) { return; }
             const StopSequences::Result r = matcher.push(chunk.text);
-            if (!r.emit.empty() && sink->on_delta) { sink->on_delta(r.emit); }
+            if (!r.emit.empty() && sink->on_content) { sink->on_content(r.emit); }
             if (r.stopped) { stop_matched = true; }
         };
         opt.should_cancel = [&]() {
@@ -151,15 +162,16 @@ GenerationOutcome GenerationService::run(const PreparedRequest& prepared, const 
 
     if (sink != nullptr) {
         if (!stop_matched) {
-            const std::string tail = matcher.flush();
-            if (!tail.empty() && sink->on_delta) { sink->on_delta(tail); }
+            const std::string rest = matcher.flush();
+            if (!rest.empty() && sink->on_content) { sink->on_content(rest); }
         }
         outcome.finish_reason = stop_matched ? qus::text::FinishReason::Stop : result.finish_reason;
     } else {
+        outcome.reasoning             = result.reasoning;
         const StopSequences::Result r = matcher.push(result.text);
-        std::string text              = r.emit;
-        if (!r.stopped) { text += matcher.flush(); }
-        outcome.text          = std::move(text);
+        std::string answer            = r.emit;
+        if (!r.stopped) { answer += matcher.flush(); }
+        outcome.text          = std::move(answer);
         outcome.finish_reason = r.stopped ? qus::text::FinishReason::Stop : result.finish_reason;
     }
     return outcome;

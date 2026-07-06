@@ -251,8 +251,11 @@ GenerationRequest parse_chat_completion_request(const Json& body, const RequestL
 
 std::string make_chat_completion_response(const std::string& id, const std::string& model,
                                           std::int64_t created, const std::string& content,
+                                          const std::string& reasoning,
                                           const char* finish_reason,
                                           const CompletionUsage& usage) {
+    Json message = {{"role", "assistant"}, {"content", content}};
+    if (!reasoning.empty()) { message["reasoning_content"] = reasoning; }
     const Json payload = {
         {"id", id},
         {"object", "chat.completion"},
@@ -260,7 +263,7 @@ std::string make_chat_completion_response(const std::string& id, const std::stri
         {"model", model},
         {"choices",
          Json::array({Json{{"index", 0},
-                           {"message", Json{{"role", "assistant"}, {"content", content}}},
+                           {"message", std::move(message)},
                            {"finish_reason", finish_reason}}})},
         {"usage",
          Json{{"prompt_tokens", usage.prompt_tokens},
@@ -275,6 +278,17 @@ std::string make_chat_chunk_role(const std::string& id, const std::string& model
     payload["choices"]      = Json::array({Json{{"index", 0},
                                                 {"delta", Json{{"role", "assistant"}, {"content", ""}}},
                                                 {"finish_reason", nullptr}}});
+    if (include_usage) { payload["usage"] = nullptr; }
+    return sse_event(payload);
+}
+
+std::string make_chat_chunk_reasoning(const std::string& id, const std::string& model,
+                                      std::int64_t created, const std::string& delta_text,
+                                      bool include_usage) {
+    Json payload       = base_chunk(id, model, created);
+    payload["choices"] = Json::array({Json{{"index", 0},
+                                           {"delta", Json{{"reasoning_content", delta_text}}},
+                                           {"finish_reason", nullptr}}});
     if (include_usage) { payload["usage"] = nullptr; }
     return sse_event(payload);
 }

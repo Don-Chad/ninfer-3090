@@ -3,12 +3,100 @@
 #include "qus/core/nvtx_range.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace qus::text {
+namespace {
+
+constexpr const char* kThinkClose = "</think>";
+
+// Back a byte offset up to the start of a UTF-8 code point so a held-back tail
+// never splits a multibyte character.
+std::size_t backup_to_utf8_boundary(const std::string& buffer, std::size_t len) {
+    if (len >= buffer.size()) { return buffer.size(); }
+    while (len > 0 && (static_cast<unsigned char>(buffer[len]) & 0xC0) == 0x80) {
+        --len;
+    }
+    return len;
+}
+
+// Splits a decoded token stream into a reasoning channel (the <think> block) and
+// an answer channel. The opening <think> lives in the prompt, so generation
+// starts inside reasoning whenever thinking is active; the closing "</think>"
+// marks the switch to answer content, and leading whitespace after it (the
+// template's blank lines) is dropped. Works for both incremental streaming (many
+// push() calls) and one-shot splitting (single push() + flush()); both channels
+// emit only on UTF-8 code-point boundaries.
+class ThinkSplitter {
+public:
+    struct Result {
+        std::string reasoning;
+        std::string content;
+    };
+
+    explicit ThinkSplitter(bool starts_in_reasoning) : in_reasoning_(starts_in_reasoning) {}
+
+    Result push(const std::string& text) {
+        Result out;
+        if (!in_reasoning_) {
+            out.content = take_content(text);
+            return out;
+        }
+        buffer_ += text;
+        const std::size_t pos = buffer_.find(kThinkClose);
+        if (pos != std::string::npos) {
+            out.reasoning    = buffer_.substr(0, pos);
+            std::string rest = buffer_.substr(pos + std::char_traits<char>::length(kThinkClose));
+            buffer_.clear();
+            in_reasoning_  = false;
+            strip_leading_ = true;
+            out.content    = take_content(rest);
+            return out;
+        }
+        const std::size_t hold =
+            std::min(buffer_.size(), std::char_traits<char>::length(kThinkClose) - 1);
+        const std::size_t emit_len = backup_to_utf8_boundary(buffer_, buffer_.size() - hold);
+        out.reasoning              = buffer_.substr(0, emit_len);
+        buffer_.erase(0, emit_len);
+        return out;
+    }
+
+    Result flush() {
+        Result out;
+        if (in_reasoning_) {
+            out.reasoning = buffer_;
+        } else {
+            out.content = take_content(buffer_);
+        }
+        buffer_.clear();
+        return out;
+    }
+
+private:
+    std::string take_content(std::string piece) {
+        if (strip_leading_) {
+            std::size_t i = 0;
+            while (i < piece.size() &&
+                   std::isspace(static_cast<unsigned char>(piece[i])) != 0) {
+                ++i;
+            }
+            piece.erase(0, i);
+            if (!piece.empty()) { strip_leading_ = false; }
+        }
+        return piece;
+    }
+
+    bool in_reasoning_;
+    bool strip_leading_ = false;
+    std::string buffer_;
+};
+
+} // namespace
 
 TextGenerationRunner::TextGenerationRunner(QwenTokenizer& tokenizer, qus::Engine& engine)
     : tokenizer_(tokenizer), engine_(engine) {}
@@ -44,10 +132,27 @@ TextGenerationResult TextGenerationRunner::generate(const std::vector<ChatMessag
         tokenizer_, DecodeOptions{.skip_special_tokens = !options.raw_output,
                                   .stop_token_ids = decode_stop_token_ids});
 
+    // Thinking output opens inside a <think> block that the prompt injected; split
+    // the reasoning off the answer so callers see clean channels. Raw output is
+    // passed through verbatim (tags and all).
+    const bool split_thinking = options.enable_thinking && !options.raw_output;
+    ThinkSplitter stream_splitter(split_thinking);
+
+    const auto emit_split = [&](const ThinkSplitter::Result& split) {
+        if (!options.stream_callback) { return; }
+        if (!split.reasoning.empty()) {
+            options.stream_callback(
+                TextStreamChunk{.text = split.reasoning, .channel = TextChannel::Reasoning});
+        }
+        if (!split.content.empty()) {
+            options.stream_callback(
+                TextStreamChunk{.text = split.content, .channel = TextChannel::Content});
+        }
+    };
     const auto emit_stream_text = [&](int token) {
         if (!options.stream_callback) { return; }
         const std::string text = stream_decoder.append(token);
-        if (!text.empty()) { options.stream_callback(TextStreamChunk{.token_id = token, .text = text}); }
+        if (!text.empty()) { emit_split(stream_splitter.push(text)); }
     };
     const auto is_stop = [&](int token) {
         return std::find(stop_token_ids.begin(), stop_token_ids.end(), token) !=
@@ -97,19 +202,22 @@ TextGenerationResult TextGenerationRunner::generate(const std::vector<ChatMessag
 
     if (options.stream_callback) {
         const std::string suffix = stream_decoder.finish();
-        if (!suffix.empty()) {
-            options.stream_callback(
-                TextStreamChunk{.token_id = generated_token_ids.empty() ? -1
-                                                                        : generated_token_ids.back(),
-                                .text = suffix});
-        }
+        if (!suffix.empty()) { emit_split(stream_splitter.push(suffix)); }
+        emit_split(stream_splitter.flush());
     }
 
-    std::string text = tokenizer_.decode(
+    // Split the full decoded output once for the result fields (authoritative and
+    // independent of whether the caller streamed).
+    const std::string decoded = tokenizer_.decode(
         generated_token_ids,
         DecodeOptions{.skip_special_tokens = !options.raw_output,
                       .stop_token_ids = decode_stop_token_ids});
-    const auto total_end = Clock::now();
+    ThinkSplitter result_splitter(split_thinking);
+    ThinkSplitter::Result head = result_splitter.push(decoded);
+    ThinkSplitter::Result tail = result_splitter.flush();
+    std::string reasoning      = std::move(head.reasoning) + tail.reasoning;
+    std::string text           = std::move(head.content) + tail.content;
+    const auto total_end       = Clock::now();
 
     TextGenerationTimings timings;
     timings.render_tokenize_seconds = std::chrono::duration<double>(render_end - render_start).count();
@@ -120,6 +228,7 @@ TextGenerationResult TextGenerationRunner::generate(const std::vector<ChatMessag
     return TextGenerationResult{.prompt_token_ids = std::move(prompt_token_ids),
                                 .generated_token_ids = std::move(generated_token_ids),
                                 .text = std::move(text),
+                                .reasoning = std::move(reasoning),
                                 .timings = timings,
                                 .finish_reason = finish_reason};
 }

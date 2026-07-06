@@ -98,18 +98,24 @@ int test_decode_stop_trimming_modes() {
 int test_stream_callback_api_can_capture_chunks() {
     qus::text::TextGenerationOptions options;
     std::vector<std::string> pieces;
-    std::vector<int> ids;
+    std::vector<qus::text::TextChannel> channels;
     options.stream_callback = [&](const qus::text::TextStreamChunk& chunk) {
         pieces.push_back(chunk.text);
-        ids.push_back(chunk.token_id);
+        channels.push_back(chunk.channel);
     };
 
-    options.stream_callback(qus::text::TextStreamChunk{.token_id = 7, .text = "hi"});
+    options.stream_callback(
+        qus::text::TextStreamChunk{.text = "why", .channel = qus::text::TextChannel::Reasoning});
+    options.stream_callback(
+        qus::text::TextStreamChunk{.text = "hi", .channel = qus::text::TextChannel::Content});
 
     int failures = 0;
-    failures += check(pieces == std::vector<std::string>{"hi"},
-                      "stream callback did not capture text chunk");
-    failures += check(ids == std::vector<int>{7}, "stream callback did not capture token id");
+    failures += check(pieces == std::vector<std::string>{"why", "hi"},
+                      "stream callback did not capture text chunks");
+    failures += check(channels == std::vector<qus::text::TextChannel>{
+                                      qus::text::TextChannel::Reasoning,
+                                      qus::text::TextChannel::Content},
+                      "stream callback did not capture channels");
 
     qus::text::TextGenerationResult result;
     result.timings.render_tokenize_seconds = 0.25;

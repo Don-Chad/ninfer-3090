@@ -20,15 +20,19 @@
 namespace qus::serve {
 
 struct GenerationOutcome {
-    std::string text;  // full text for non-streaming; empty when streamed via a sink
+    std::string text;       // answer text (non-streaming); empty when streamed via a sink
+    std::string reasoning;  // thinking text split out of the <think> block (non-streaming)
     int prompt_tokens                     = 0;
     int completion_tokens                 = 0;
     qus::text::FinishReason finish_reason = qus::text::FinishReason::Length;
 };
 
-// Streaming hooks supplied by the transport layer.
+// Streaming hooks supplied by the transport layer. Reasoning (the <think> block)
+// and answer content are delivered on separate channels so the transport can map
+// them to reasoning_content vs content deltas.
 struct StreamSink {
-    std::function<void(const std::string& delta_text)> on_delta;
+    std::function<void(const std::string& delta_text)> on_content;
+    std::function<void(const std::string& delta_text)> on_reasoning;
     std::function<bool()> is_cancelled;
 };
 

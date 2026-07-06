@@ -195,16 +195,27 @@ int test_response_serialization() {
     int failures = 0;
     const CompletionUsage usage{10, 3};
     const Json j = Json::parse(
-        make_chat_completion_response("id-1", "m", 111, "hello world", "stop", usage));
+        make_chat_completion_response("id-1", "m", 111, "hello world", "", "stop", usage));
     failures += check(j.at("object") == "chat.completion", "response object");
     failures += check(j.at("id") == "id-1", "response id");
     failures += check(j.at("choices").at(0).at("message").at("role") == "assistant", "assistant role");
     failures += check(j.at("choices").at(0).at("message").at("content") == "hello world",
                       "response content");
+    // Empty reasoning must not emit the reasoning_content key at all.
+    failures += check(!j.at("choices").at(0).at("message").contains("reasoning_content"),
+                      "no reasoning_content when reasoning empty");
     failures += check(j.at("choices").at(0).at("finish_reason") == "stop", "response finish_reason");
     failures += check(j.at("usage").at("prompt_tokens") == 10, "usage prompt_tokens");
     failures += check(j.at("usage").at("completion_tokens") == 3, "usage completion_tokens");
     failures += check(j.at("usage").at("total_tokens") == 13, "usage total_tokens");
+
+    // Non-empty reasoning is attached as message.reasoning_content, content stays answer-only.
+    const Json jr = Json::parse(make_chat_completion_response("id-2", "m", 111, "the answer",
+                                                              "let me think", "stop", usage));
+    failures += check(jr.at("choices").at(0).at("message").at("content") == "the answer",
+                      "reasoning response content is answer only");
+    failures += check(jr.at("choices").at(0).at("message").at("reasoning_content") == "let me think",
+                      "reasoning_content carried");
     return failures;
 }
 
@@ -217,6 +228,14 @@ int test_chunk_serialization() {
 
     const Json content = parse_sse(make_chat_chunk_content("id", "m", 1, "tok", false));
     failures += check(content.at("choices").at(0).at("delta").at("content") == "tok", "content delta");
+
+    // Reasoning deltas carry reasoning_content (not content) so clients render them
+    // as a separate thinking channel.
+    const Json reasoning = parse_sse(make_chat_chunk_reasoning("id", "m", 1, "why", false));
+    failures += check(reasoning.at("choices").at(0).at("delta").at("reasoning_content") == "why",
+                      "reasoning delta");
+    failures += check(!reasoning.at("choices").at(0).at("delta").contains("content"),
+                      "reasoning delta has no content key");
 
     // When usage reporting is on, content-bearing chunks carry usage: null.
     const Json role_usage = parse_sse(make_chat_chunk_role("id", "m", 1, true));

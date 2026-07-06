@@ -50,19 +50,26 @@ struct CompletionUsage {
 GenerationRequest parse_chat_completion_request(const nlohmann::json& body,
                                                 const RequestLimits& limits);
 
-// Non-streaming chat completion response body (JSON string).
+// Non-streaming chat completion response body (JSON string). When `reasoning` is
+// non-empty it is attached as `message.reasoning_content` (the DeepSeek/vLLM-style
+// convention consumed by Chatbox, Open WebUI, etc.), leaving `content` = answer.
 std::string make_chat_completion_response(const std::string& id, const std::string& model,
                                           std::int64_t created, const std::string& content,
+                                          const std::string& reasoning,
                                           const char* finish_reason, const CompletionUsage& usage);
 
 // Streaming SSE event strings ("data: {...}\n\n"). The first chunk carries the
-// assistant role; content chunks carry text deltas; the final chunk carries the
+// assistant role; reasoning chunks carry `reasoning_content` deltas (the <think>
+// block), content chunks carry `content` deltas; the final chunk carries the
 // finish_reason with an empty delta. Per the OpenAI stream_options contract, when
 // usage reporting is enabled every content-bearing chunk carries `usage: null`
 // and a single dedicated usage chunk (empty choices) is emitted before [DONE];
 // pass include_usage accordingly.
 std::string make_chat_chunk_role(const std::string& id, const std::string& model,
                                  std::int64_t created, bool include_usage);
+std::string make_chat_chunk_reasoning(const std::string& id, const std::string& model,
+                                      std::int64_t created, const std::string& delta_text,
+                                      bool include_usage);
 std::string make_chat_chunk_content(const std::string& id, const std::string& model,
                                      std::int64_t created, const std::string& delta_text,
                                      bool include_usage);
