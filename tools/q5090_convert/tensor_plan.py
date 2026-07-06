@@ -57,6 +57,10 @@ class TensorSpec:
     row_slice: Optional[Tuple[int, int]] = None   # take src.weight[start:end] rows
     reshape: Optional[Tuple[int, ...]] = None      # reshape source before encoding
     transform: Optional[str] = None
+    # Marks a block whose rows are computed by the converter (not read verbatim
+    # from `src_name`): "draft_weights" (shortlist rows of lm_head, Q4-quantized)
+    # or "draft_idmap" (int32 shortlist-index -> vocab-id map). See draft_head.py.
+    synthetic: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -239,6 +243,7 @@ def _source(
     row_slice: Optional[Tuple[int, int]] = None,
     transform: Optional[str] = None,
     module_kind: int = qt.MODULE_TEXT,
+    synthetic: Optional[str] = None,
 ) -> TensorSpec:
     return TensorSpec(
         name,
@@ -250,6 +255,7 @@ def _source(
         source_layer,
         row_slice=row_slice,
         transform=transform,
+        synthetic=synthetic,
     )
 
 
@@ -322,6 +328,7 @@ def _append_standalone_block(
     row_slice: Optional[Tuple[int, int]] = None,
     transform: Optional[str] = None,
     module_kind: int = qt.MODULE_TEXT,
+    synthetic: Optional[str] = None,
 ) -> TensorBlockSpec:
     source = _source(
         name,
@@ -333,6 +340,7 @@ def _append_standalone_block(
         row_slice,
         transform,
         module_kind,
+        synthetic,
     )
     return _append_block(
         blocks,
@@ -378,7 +386,10 @@ def _append_fusion_group(
     )
 
 
-def build_text_manifest(layer_types: List[str]) -> ExpectedManifest:
+def build_text_manifest(
+    layer_types: List[str],
+    draft_head_n: Optional[int] = None,
+) -> ExpectedManifest:
     blocks: List[TensorBlockSpec] = []
     segments: List[TensorSegmentSpec] = []
     fusion_groups: List[TensorFusionGroupSpec] = []
@@ -808,6 +819,35 @@ def build_text_manifest(layer_types: List[str]) -> ExpectedManifest:
         "lm_head.weight",
         qt.SK_LM_HEAD,
     )
+
+    if draft_head_n is not None:
+        # Optional shortlisted draft lm_head (§14/§18): a Q4G64 [N,5120] block of
+        # the frequency-selected lm_head rows plus a paired int32 [N] id-map. Both
+        # are synthetic: their rows are computed by the converter from the ranking
+        # + original bf16 lm_head, not read verbatim from a safetensors key. The
+        # placeholder src_name keeps the (already-required) lm_head.weight present.
+        _append_standalone_block(
+            blocks,
+            segments,
+            "lm_head_draft",
+            qt.QT_Q4G64,
+            qt.LAYOUT_ROW_SPLIT,
+            (draft_head_n, HIDDEN_SIZE),
+            "lm_head.weight",
+            qt.SK_LM_HEAD_DRAFT,
+            synthetic="draft_weights",
+        )
+        _append_standalone_block(
+            blocks,
+            segments,
+            "lm_head_draft.idmap",
+            qt.QT_I32,
+            qt.LAYOUT_CONTIGUOUS,
+            (draft_head_n,),
+            "lm_head.weight",
+            qt.SK_LM_HEAD_DRAFT_IDMAP,
+            synthetic="draft_idmap",
+        )
 
     return ExpectedManifest(tuple(blocks), tuple(segments), tuple(fusion_groups))
 

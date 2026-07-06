@@ -204,6 +204,47 @@ def test_globals_are_standalone_text_blocks():
     assert lm_head.shape == (248320, 5120)
 
 
+def test_draft_head_blocks_appended_when_requested():
+    base = tp.build_text_manifest(_canonical_layer_types())
+    n = 131072
+    dm = tp.build_text_manifest(_canonical_layer_types(), draft_head_n=n)
+
+    assert len(dm.blocks) == len(base.blocks) + 2
+    assert len(dm.segments) == len(base.segments) + 2
+    assert len(dm.fusion_groups) == len(base.fusion_groups)
+    assert [b.name for b in dm.blocks[-3:]] == [
+        "lm_head.weight",
+        "lm_head_draft",
+        "lm_head_draft.idmap",
+    ]
+
+    weights = _block(dm, "lm_head_draft")
+    assert weights.qtype == qt.QT_Q4G64
+    assert weights.layout == qt.LAYOUT_ROW_SPLIT
+    assert weights.shape == (n, 5120)
+    assert weights.module_kind == qt.MODULE_TEXT
+    assert weights.source_kind == qt.SK_LM_HEAD_DRAFT
+    assert weights.source_layer == qt.NO_LAYER
+    assert weights.fusion_group_id == qt.FUSION_NONE
+    assert weights.segments[0].source.synthetic == "draft_weights"
+
+    idmap = _block(dm, "lm_head_draft.idmap")
+    assert idmap.qtype == qt.QT_I32
+    assert idmap.layout == qt.LAYOUT_CONTIGUOUS
+    assert idmap.shape == (n,)
+    assert idmap.module_kind == qt.MODULE_TEXT
+    assert idmap.source_kind == qt.SK_LM_HEAD_DRAFT_IDMAP
+    assert idmap.source_layer == qt.NO_LAYER
+    assert idmap.segments[0].source.synthetic == "draft_idmap"
+
+
+def test_draft_head_default_manifest_has_no_draft_blocks():
+    base = tp.build_text_manifest(_canonical_layer_types())
+    names = {b.name for b in base.blocks}
+    assert "lm_head_draft" not in names
+    assert "lm_head_draft.idmap" not in names
+
+
 def test_mtp_manifest_counts_order_and_fusions():
     manifest = tp.build_mtp_manifest()
 

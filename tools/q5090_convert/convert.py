@@ -1,11 +1,12 @@
-"""CLI: Qwen3.6-27B bf16 safetensors -> q5090_w4g64_mixed_v3 packed file.
+"""CLI: Qwen3.6-27B bf16 safetensors -> q5090_w4g64_mixed_v4 packed file.
 
 Usage:
   python -m tools.q5090_convert.convert --model /path/to/Qwen3.6-27B --out out/file.qus
 
 Default output includes all modules present in the HF source: TEXT_CORE plus MTP_DRAFT and
-VISION_ENCODER when their weights exist. Binary format:
-../../docs/q5090_packed_file_format_v3.md
+VISION_ENCODER when their weights exist, and (unless --no-draft-head) the optional shortlisted
+Q4 draft lm_head + int32 id-map embedded in TEXT_CORE. Binary format:
+../../docs/q5090_packed_file_format_v4.md
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from safetensors import safe_open
 from . import format as fmt
 from . import qtypes as qt
 from . import tensor_plan as tp
+from . import draft_head as dh
 from .layouts import encode_tensor
 from .quantize import pick_device
 
@@ -48,7 +50,7 @@ EXPECTED = dict(
     vision_intermediate=4304,
     vision_out_hidden=5120,
 )
-OUTPUT_FORMAT_MARKER = "mixed_v3"
+OUTPUT_FORMAT_MARKER = "mixed_v4"
 
 @dataclass(frozen=True)
 class SegmentPlan:
@@ -223,8 +225,11 @@ def _prepare_source(reader: ShardReader, spec: tp.TensorSpec) -> torch.Tensor:
     return t.contiguous()
 
 
-def _text_plan(layer_types: Sequence[str]) -> Tuple[List[BlockPlan], List[SegmentPlan], List[FusionPlan]]:
-    manifest = tp.build_text_manifest(list(layer_types))
+def _text_plan(
+    layer_types: Sequence[str],
+    draft_head_n: Optional[int] = None,
+) -> Tuple[List[BlockPlan], List[SegmentPlan], List[FusionPlan]]:
+    manifest = tp.build_text_manifest(list(layer_types), draft_head_n=draft_head_n)
     segments: List[SegmentPlan] = []
     blocks: List[BlockPlan] = []
     for b in manifest.blocks:
@@ -361,10 +366,11 @@ def _append_manifest(
 
 def build_conversion_plan(
     cfg: dict,
+    draft_head_n: Optional[int] = None,
 ) -> ConversionPlan:
     layer_types = _layer_types(cfg)
 
-    blocks, segments, fusion_groups = _text_plan(layer_types)
+    blocks, segments, fusion_groups = _text_plan(layer_types, draft_head_n=draft_head_n)
     modules: List[ModulePlan] = [
         ModulePlan(qt.MODULE_TEXT, 0, len(blocks), qt.LOAD_RESIDENT),
     ]
@@ -384,7 +390,39 @@ def plan_source_names(plan: ConversionPlan) -> List[str]:
     return sorted({s.source.src_name for s in plan.segments})
 
 
-def materialize_block(reader: ShardReader, block: BlockPlan) -> torch.Tensor:
+def _materialize_draft_block(
+    reader: ShardReader,
+    block: BlockPlan,
+    kind: str,
+    draft: Optional["dh.DraftHeadContext"],
+) -> torch.Tensor:
+    if draft is None:
+        raise ValueError(f"{block.name}: draft-head block requires a DraftHeadContext")
+    if int(block.shape[0]) != draft.n:
+        raise ValueError(f"{block.name}: block N {block.shape[0]} != shortlist N {draft.n}")
+    sel = torch.from_numpy(draft.selected)
+    if kind == "draft_idmap":
+        return sel.to(torch.int32).contiguous()
+    if kind == "draft_weights":
+        full = reader.get("lm_head.weight")
+        if int(full.shape[0]) <= int(sel.max().item()):
+            raise ValueError(f"{block.name}: shortlist id exceeds lm_head rows {full.shape[0]}")
+        return full.index_select(0, sel).contiguous()
+    raise ValueError(f"{block.name}: unknown synthetic kind {kind!r}")
+
+
+def materialize_block(
+    reader: ShardReader,
+    block: BlockPlan,
+    draft: Optional["dh.DraftHeadContext"] = None,
+) -> torch.Tensor:
+    syn = block.segments[0].source.synthetic
+    if syn is not None:
+        w = _materialize_draft_block(reader, block, syn, draft)
+        if block.shape is not None and tuple(int(x) for x in w.shape) != tuple(block.shape):
+            raise ValueError(f"{block.name}: materialized shape {tuple(w.shape)} != plan {block.shape}")
+        return w
+
     parts = []
     for seg in block.segments:
         part = _prepare_source(reader, seg.source)
@@ -429,11 +467,11 @@ def _prod(xs: Sequence[int]) -> int:
     return p
 
 
-def _require_v3_output_path(out_path: str) -> None:
+def _require_v4_output_path(out_path: str) -> None:
     basename = os.path.basename(os.path.normpath(out_path))
     if OUTPUT_FORMAT_MARKER not in basename or not basename.endswith(".qus"):
         raise SystemExit(
-            f"q5090 v3 converter output path must be a {OUTPUT_FORMAT_MARKER} .qus file: "
+            f"q5090 v4 converter output path must be a {OUTPUT_FORMAT_MARKER} .qus file: "
             f"{out_path}"
         )
 
@@ -521,17 +559,31 @@ def _write_manifest(
         if any(e.layout == layout for e in entries)
     ]
 
+    draft_w = next(
+        (e for e in entries if e.module_kind == qt.MODULE_TEXT and e.source_kind == qt.SK_LM_HEAD_DRAFT),
+        None,
+    )
+    draft_id = next(
+        (e for e in entries if e.module_kind == qt.MODULE_TEXT and e.source_kind == qt.SK_LM_HEAD_DRAFT_IDMAP),
+        None,
+    )
+    draft_present = draft_w is not None
+
     manifest = {
-        "format": "q5090_w4g64_mixed_v3",
-        "format_version": 3,
+        "format": "q5090_w4g64_mixed_v4",
+        "format_version": fmt.VERSION,
         "format_minor": fmt.FORMAT_MINOR,
-        "binary_spec": "docs/q5090_packed_file_format_v3.md",
-        "tensor_plan": "docs/q5090_packed_file_format_v3.md",
-        "value_source": "qwen3_6_27b_q5090_final_quant_format_v1 + v3_mtp_w8g32_override",
+        "binary_spec": "docs/q5090_packed_file_format_v4.md",
+        "tensor_plan": "docs/q5090_packed_file_format_v4.md",
+        "value_source": (
+            "per-group symmetric weight-only quant (§8); MTP dense/fused linears W8G32; "
+            "optional draft lm_head = Q4G64 of original bf16 lm_head shortlist rows"
+        ),
         "weights_file": os.path.basename(out_path),
         "file_bytes": int(file_size),
         "sha256_safetensors_index": source_index_sha256.hex(),
         "calibrated": False,
+        "draft_head_present": draft_present,
         "alignment": {
             "header": fmt.HEADER_SIZE,
             "payload": fmt.REGION_ALIGN,
@@ -551,6 +603,19 @@ def _write_manifest(
         "fusion_groups": group_summary,
         "effective_text_bpw": round(text_bytes * 8 / max(1, text_elems), 4),
     }
+    if draft_present:
+        manifest["draft_head"] = {
+            "present": True,
+            "n": int(draft_w.shape[0]),
+            "k": int(draft_w.shape[1]),
+            "weights_qtype": qt.QTYPE_NAME[draft_w.qtype],
+            "weights_source_kind": "LM_HEAD_DRAFT",
+            "weights_payload_bytes": int(draft_w.payload_bytes),
+            "idmap_qtype": qt.QTYPE_NAME[draft_id.qtype],
+            "idmap_source_kind": "LM_HEAD_DRAFT_IDMAP",
+            "idmap_payload_bytes": int(draft_id.payload_bytes),
+            "selection": "docs/2026-07-06-lm-head-draft-q4-decision.md",
+        }
     mpath = out_path + fmt.MANIFEST_SUFFIX
     with open(mpath, "w") as f:
         json.dump(manifest, f, indent=2)
@@ -559,18 +624,30 @@ def _write_manifest(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="q5090_w4g64_mixed_v3 quantizing converter")
+    ap = argparse.ArgumentParser(description="q5090_w4g64_mixed_v4 quantizing converter")
     ap.add_argument("--model", required=True, help="path to original Qwen3.6-27B safetensors dir")
     ap.add_argument("--out", default=None, help="output .qus file path")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--force", action="store_true", help="warn instead of abort on config mismatch")
+    ap.add_argument(
+        "--ranking",
+        default=dh.DEFAULT_RANKING,
+        help="frequency ranking (.counts.i64) driving the draft-head shortlist",
+    )
+    ap.add_argument("--draft-n", type=int, default=dh.DRAFT_HEAD_N, help="draft lm_head shortlist size N")
+    ap.add_argument(
+        "--tokenizer",
+        default=None,
+        help="HF dir with tokenizer_config.json for force-include special ids (default: --model)",
+    )
+    ap.add_argument("--no-draft-head", action="store_true", help="emit a v4 file without the draft head")
     args = ap.parse_args()
 
     model_dir = args.model.rstrip("/")
     out_path = args.out or os.path.join(
-        os.getcwd(), "out", "qwen3_6_27b.q5090_w4g64_mixed_v3.qus"
+        os.getcwd(), "out", "qwen3_6_27b.q5090_w4g64_mixed_v4.qus"
     )
-    _require_v3_output_path(out_path)
+    _require_v4_output_path(out_path)
     out_dir = os.path.dirname(out_path)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -588,7 +665,18 @@ def main() -> None:
     weight_map = json.loads(index_raw)["weight_map"]
     reader = ShardReader(model_dir, weight_map)
 
-    plan = build_conversion_plan(cfg)
+    draft: Optional[dh.DraftHeadContext] = None
+    draft_head_n: Optional[int] = None
+    if not args.no_draft_head:
+        tokenizer_dir = args.tokenizer or model_dir
+        draft = dh.compute_shortlist(args.ranking, tokenizer_dir, args.draft_n, tc["vocab_size"])
+        draft_head_n = draft.n
+        print(
+            f"draft head: N={draft.n} from {args.ranking}  "
+            f"force-include specials={len(draft.force_include)}"
+        )
+
+    plan = build_conversion_plan(cfg, draft_head_n=draft_head_n)
     missing = [name for name in plan_source_names(plan) if not reader.has(name)]
     if missing:
         raise SystemExit("missing source tensors:\n  " + "\n  ".join(missing))
@@ -659,7 +747,7 @@ def main() -> None:
                 f.write(b"\x00" * pad)
                 pos += pad
 
-            w = materialize_block(reader, block)
+            w = materialize_block(reader, block, draft)
             (
                 payload,
                 logical,
@@ -735,6 +823,8 @@ def main() -> None:
             )
 
         flags = fmt.FLAG_TEXT_PRESENT | fmt.FLAG_MTP_PRESENT | fmt.FLAG_VISION_PRESENT
+        if draft is not None:
+            flags |= fmt.FLAG_DRAFT_HEAD_PRESENT
         header = fmt.FileHeaderFields(
             tensor_count=tensor_count,
             module_count=module_count,

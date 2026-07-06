@@ -1,6 +1,6 @@
-"""Binary serialization for the q5090_w4g64_mixed_v3 packed file.
+"""Binary serialization for the q5090_w4g64_mixed_v4 packed file.
 
-Exact byte layout: ../../docs/q5090_packed_file_format_v3.md sections 2-9.
+Exact byte layout: ../../docs/q5090_packed_file_format_v4.md sections 2-9.
 """
 
 from __future__ import annotations
@@ -10,10 +10,10 @@ import zlib
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
-MAGIC = b"Q5090MIXEDV3\x00\x00\x00\x00"
+MAGIC = b"Q5090MIXEDV4\x00\x00\x00\x00"
 assert len(MAGIC) == 16
 
-VERSION = 3
+VERSION = 4
 FORMAT_MINOR = 0
 ENDIAN_TAG = 0x01020304
 HEADER_SIZE = 4096
@@ -27,8 +27,9 @@ FLAG_TEXT_PRESENT = 1 << 0
 FLAG_MTP_PRESENT = 1 << 1
 FLAG_VISION_PRESENT = 1 << 2
 FLAG_CALIBRATED = 1 << 3
+FLAG_DRAFT_HEAD_PRESENT = 1 << 4
 FLAG_MODULE_PRESENT_MASK = FLAG_TEXT_PRESENT | FLAG_MTP_PRESENT | FLAG_VISION_PRESENT
-FLAG_RESERVED_MASK = 0xFFFFFFF0
+FLAG_RESERVED_MASK = 0xFFFFFFE0
 
 PAYLOAD_ALIGN = 256
 REGION_ALIGN = 4096

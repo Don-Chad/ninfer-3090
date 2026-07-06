@@ -102,8 +102,10 @@ def encode_contiguous(w: torch.Tensor, qtype: int) -> EncodeResult:
         raw = w.to(torch.bfloat16).contiguous().view(torch.int16).cpu().numpy().astype("<i2").tobytes()
     elif qtype == qt.QT_FP32:
         raw = w.to(torch.float32).contiguous().cpu().numpy().astype("<f4").tobytes()
+    elif qtype == qt.QT_I32:
+        raw = w.to(torch.int32).contiguous().cpu().numpy().astype("<i4").tobytes()
     else:
-        raise ValueError(f"CONTIGUOUS qtype must be BF16/FP32, got {qtype}")
+        raise ValueError(f"CONTIGUOUS qtype must be BF16/FP32/I32, got {qtype}")
     return raw, shape, list(shape), 0, qt.SCALE_NONE, len(raw), 0, 0
 
 
@@ -173,8 +175,10 @@ def decode_contiguous(payload, shape, qtype, device) -> torch.Tensor:
         f32 = (u16.to(torch.int32) << 16).view(torch.float32)
     elif qtype == qt.QT_FP32:
         f32 = _from_bytes(payload, device, "<f4")
+    elif qtype == qt.QT_I32:
+        return _from_bytes(payload, device, "<i4").reshape(shape)
     else:
-        raise ValueError(f"CONTIGUOUS qtype must be BF16/FP32, got {qtype}")
+        raise ValueError(f"CONTIGUOUS qtype must be BF16/FP32/I32, got {qtype}")
     return f32.reshape(shape)
 
 

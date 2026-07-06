@@ -1,4 +1,4 @@
-"""Round-trip tests for q5090 v3 packing, layouts and binary records.
+"""Round-trip tests for q5090 v4 packing, layouts and binary records.
 
 Runs on CPU so it needs no GPU. Either:
   pytest tools/q5090_convert/tests/test_packing.py
@@ -191,7 +191,26 @@ def test_contiguous_exact_and_plane_metadata():
     assert scale_bytes == 0
 
 
-def test_v3_records_pack_unpack_and_string_table():
+def test_i32_ctrl_contiguous_roundtrip():
+    ids = torch.tensor([0, 1, 42, 248319, -1, 131071], dtype=torch.int32)
+    payload, logical, padded, group, sd, nibble_bytes, high_bytes, scale_bytes = layouts.encode_tensor(
+        ids, qt.QT_I32, qt.LAYOUT_CONTIGUOUS, DEV
+    )
+    assert logical == [6]
+    assert padded == [6]
+    assert group == 0
+    assert sd == qt.SCALE_NONE
+    assert len(payload) == 6 * 4
+    assert nibble_bytes == len(payload)
+    assert high_bytes == 0
+    assert scale_bytes == 0
+    assert payload == ids.cpu().numpy().astype("<i4").tobytes()
+    got = layouts.decode_tensor(payload, qt.QT_I32, qt.LAYOUT_CONTIGUOUS, logical, padded, DEV)
+    assert got.dtype == torch.int32
+    assert got.cpu().tolist() == ids.tolist()
+
+
+def test_v4_records_pack_unpack_and_string_table():
     entry = fmt.TensorEntry(
         name="block.q4",
         qtype=qt.QT_Q4G64,
@@ -267,11 +286,11 @@ def test_v3_records_pack_unpack_and_string_table():
     assert parsed_fusion["total_n"] == 384
     assert parsed_fusion["shared_k"] == 128
 
-    module = fmt.ModuleRecord(qt.MODULE_TEXT, 3, 0, 1, 8192, 9984, qt.LOAD_RESIDENT)
+    module = fmt.ModuleRecord(qt.MODULE_TEXT, fmt.VERSION, 0, 1, 8192, 9984, qt.LOAD_RESIDENT)
     packed_module = fmt.pack_module_record(module)
     assert len(packed_module) == fmt.MODULE_RECORD_SIZE
     parsed_module = fmt.unpack_module_record(packed_module)
-    assert parsed_module["module_version"] == 3
+    assert parsed_module["module_version"] == fmt.VERSION
     assert parsed_module["payload_bytes"] == 9984
 
     header = fmt.FileHeaderFields(
@@ -313,7 +332,7 @@ def test_v3_records_pack_unpack_and_string_table():
     assert packed_header[236:] == b"\x00" * (fmt.HEADER_SIZE - 236)
     parsed_header = fmt.unpack_header(packed_header)
     assert parsed_header["magic"] == fmt.MAGIC
-    assert parsed_header["version"] == 3
+    assert parsed_header["version"] == fmt.VERSION
     assert parsed_header["segment_count"] == 2
     assert parsed_header["fusion_group_count"] == 1
     assert parsed_header["segment_index_offset"] == 6144

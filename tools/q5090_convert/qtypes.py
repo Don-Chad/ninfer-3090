@@ -1,7 +1,7 @@
-"""Enums and per-qtype constants for the q5090_w4g64_mixed_v3 packed format.
+"""Enums and per-qtype constants for the q5090_w4g64_mixed_v4 packed format.
 
 Values here are the on-disk ABI; do not renumber. See
-../../docs/q5090_packed_file_format_v3.md sections 7-9.
+../../docs/q5090_packed_file_format_v4.md sections 7-9.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ QT_W8G128 = 3
 QT_BF16 = 4
 QT_FP32 = 5
 QT_W8G32 = 6
+QT_I32 = 7
 
 QTYPE_NAME = {
     QT_Q4G64: "Q4G64_F16S",
@@ -26,6 +27,7 @@ QTYPE_NAME = {
     QT_BF16: "BF16_CTRL",
     QT_FP32: "FP32_CTRL",
     QT_W8G32: "W8G32_F16S",
+    QT_I32: "I32_CTRL",
 }
 
 # --- layout ids (TensorEntry.layout) ---
@@ -49,7 +51,7 @@ MODULE_NAME = {
 }
 
 MODULE_POLICY = {
-    MODULE_TEXT: "q5090_w4g64_mixed_v3",
+    MODULE_TEXT: "q5090_w4g64_mixed_v4",
     MODULE_MTP: "mtp_w8g32_v3",
     MODULE_VISION: "vision_q4mix_merger_w8g128_v3",
 }
@@ -83,6 +85,8 @@ SK_LM_HEAD = 2
 SK_FINAL_NORM = 3
 SK_INPUT_LAYERNORM = 4
 SK_POST_ATTN_LAYERNORM = 5
+SK_LM_HEAD_DRAFT = 6
+SK_LM_HEAD_DRAFT_IDMAP = 7
 SK_GDN_A_LOG = 10
 SK_GDN_DT_BIAS = 11
 SK_GDN_CONV1D = 12
