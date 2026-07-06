@@ -21,7 +21,7 @@ namespace qus::kernels {
 inline constexpr int kSamplerBlock         = 256;
 inline constexpr int kSamplerMaxCandidates = 256;
 inline constexpr int kSamplerTileItems     = 256;
-inline constexpr int kSamplerItemsPerThread = 2;
+inline constexpr int kSamplerItemsPerThread = 3;
 inline constexpr int kSamplerPartialTileItems = kSamplerBlock * kSamplerItemsPerThread;
 inline constexpr int kSamplerFinalizeItemsPerThread = 10;
 inline constexpr int kSamplerFinalizeTileItems = kSamplerBlock * kSamplerFinalizeItemsPerThread;
