@@ -1,5 +1,7 @@
 #include "qus/serve/serve_options.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
@@ -20,17 +22,27 @@ int parse_nonnegative_int(const char* text, const char* label) {
 
 } // namespace
 
+int derive_default_max_tokens(std::uint32_t max_context) {
+    const std::uint32_t half = max_context / 2;
+    const std::uint32_t capped =
+        std::min(half, static_cast<std::uint32_t>(kDefaultMaxTokensCeiling));
+    return std::max<int>(1, static_cast<int>(capped));
+}
+
 std::string serve_usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <weights.qus> --tokenizer <dir> [--host H] [--port N] [--api-key KEY] "
            "[--model-id ID] [--max-context N] [--prefill-chunk N] [--device N] "
            "[--mtp-draft-tokens N] [--default-max-tokens N] [--no-cuda-graph] "
            "[--lm-head-draft] [--thinking] [--cors]\n"
-           "       serves an OpenAI-compatible Chat Completions endpoint\n";
+           "       serves an OpenAI-compatible Chat Completions endpoint\n"
+           "       --default-max-tokens defaults to min(max_context/2, "
+           + std::to_string(kDefaultMaxTokensCeiling) + ") when omitted\n";
 }
 
 ServeOptions parse_serve_options(int argc, char** argv) {
     ServeOptions options;
+    bool default_max_tokens_explicit = false;
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
         options.help_requested = true;
         return options;
@@ -67,6 +79,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--default-max-tokens") {
             options.default_max_tokens =
                 parse_nonnegative_int(require_value("--default-max-tokens"), "default-max-tokens");
+            default_max_tokens_explicit = true;
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "--lm-head-draft") {
@@ -88,8 +101,12 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         options.prefill_chunk % model::kPrefillChunkAlignment != 0) {
         throw std::invalid_argument("--prefill-chunk must be a positive multiple of 128");
     }
-    if (options.default_max_tokens <= 0) {
-        throw std::invalid_argument("--default-max-tokens must be positive");
+    if (default_max_tokens_explicit) {
+        if (options.default_max_tokens <= 0) {
+            throw std::invalid_argument("--default-max-tokens must be positive");
+        }
+    } else {
+        options.default_max_tokens = derive_default_max_tokens(options.max_context);
     }
     return options;
 }
