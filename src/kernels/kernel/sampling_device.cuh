@@ -43,6 +43,7 @@ static __device__ float sampling_dist_prob[kSamplerScratchColumns * kSamplerMaxC
 static __device__ int sampling_dist_support[kSamplerScratchColumns];
 static __device__ int sampling_mtp_finalize_init;
 static __device__ int sampling_mtp_finalize_count;
+static __device__ int sampling_partial_done[kSamplerScratchColumns];
 static __device__ int sampling_group_init[kSamplerScratchColumns];
 static __device__ int sampling_group_done[kSamplerScratchColumns];
 

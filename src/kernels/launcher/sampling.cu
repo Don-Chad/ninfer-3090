@@ -21,10 +21,16 @@ void sample_column_launch(const Tensor& logits, Tensor& out, const SamplingConfi
     }
     const dim3 partial_grid(static_cast<unsigned int>(partial_blocks),
                             static_cast<unsigned int>(cols));
-    sampling_partial_topk_kernel<<<partial_grid, kSamplerBlock, 0, stream>>>(
-        static_cast<const __nv_bfloat16*>(logits.data), config, vocab);
     const std::int32_t groups =
         (partial_blocks + kSamplerPartialsPerGroup - 1) / kSamplerPartialsPerGroup;
+    if (cols == 1) {
+        sampling_fused_sample_kernel<<<partial_grid, kSamplerBlock, 0, stream>>>(
+            static_cast<const __nv_bfloat16*>(logits.data), static_cast<std::int32_t*>(out.data),
+            config, pos_base, purpose, vocab, partial_blocks, groups);
+        return;
+    }
+    sampling_partial_topk_kernel<<<partial_grid, kSamplerBlock, 0, stream>>>(
+        static_cast<const __nv_bfloat16*>(logits.data), config, vocab);
     const dim3 group_grid(static_cast<unsigned int>(groups), static_cast<unsigned int>(cols));
     sampling_group_finalize_sample_kernel<<<group_grid, kSamplerBlock, 0, stream>>>(
         static_cast<std::int32_t*>(out.data), config, pos_base, purpose, vocab, partial_blocks,
