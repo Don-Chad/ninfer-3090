@@ -29,33 +29,36 @@ void mtp_accept_tokens_launch(const Tensor& target_tokens, const Tensor& logits,
                               Tensor& sampled_out, Tensor& num_sampled, Tensor& accepted,
                               Tensor& ar_pos, Tensor& stats, const SamplingConfig* config,
                               cudaStream_t stream) {
-    mtp_accept_tokens_kernel<<<1, kSamplerBlock, 0, stream>>>(
-        static_cast<const std::int32_t*>(target_tokens.data),
-        static_cast<const __nv_bfloat16*>(logits.data),
-        static_cast<const std::int32_t*>(drafts.data), static_cast<std::int32_t*>(length.data),
-        static_cast<std::int32_t*>(token.data), static_cast<std::int32_t*>(sampled_out.data),
-        static_cast<std::int32_t*>(num_sampled.data), static_cast<std::int32_t*>(accepted.data),
-        static_cast<std::int32_t*>(ar_pos.data), static_cast<std::int64_t*>(stats.data), config,
-        logits.ne[0], drafts.ne[0]);
-    CUDA_CHECK(cudaGetLastError());
     const std::int32_t vocab = logits.ne[0];
     const std::int32_t cols = drafts.ne[0] + 1;
     const std::int32_t partial_blocks =
         (vocab + kSamplerPartialTileItems - 1) / kSamplerPartialTileItems;
+    if (vocab <= kSamplerTileItems || cols > kSamplerScratchColumns ||
+        partial_blocks > kSamplerScratchPartialBlocks) {
+        mtp_accept_tokens_kernel<<<1, kSamplerBlock, 0, stream>>>(
+            static_cast<const std::int32_t*>(target_tokens.data),
+            static_cast<const __nv_bfloat16*>(logits.data),
+            static_cast<const std::int32_t*>(drafts.data), static_cast<std::int32_t*>(length.data),
+            static_cast<std::int32_t*>(token.data), static_cast<std::int32_t*>(sampled_out.data),
+            static_cast<std::int32_t*>(num_sampled.data), static_cast<std::int32_t*>(accepted.data),
+            static_cast<std::int32_t*>(ar_pos.data), static_cast<std::int64_t*>(stats.data),
+            config, vocab, drafts.ne[0]);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
     const dim3 partial_grid(static_cast<unsigned int>(partial_blocks),
                             static_cast<unsigned int>(cols));
     mtp_sampling_partial_topk_kernel<<<partial_grid, kSamplerBlock, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(logits.data), config, vocab);
     CUDA_CHECK(cudaGetLastError());
     mtp_sampling_finalize_distribution_kernel<<<static_cast<unsigned int>(cols), kSamplerBlock, 0,
-                                                stream>>>(config, vocab, cols, partial_blocks);
-    CUDA_CHECK(cudaGetLastError());
-    mtp_accept_tokens_sampling_kernel<<<1, kSamplerBlock, 0, stream>>>(
+                                                stream>>>(
+        static_cast<const std::int32_t*>(target_tokens.data),
         static_cast<const std::int32_t*>(drafts.data), static_cast<std::int32_t*>(length.data),
         static_cast<std::int32_t*>(token.data), static_cast<std::int32_t*>(sampled_out.data),
         static_cast<std::int32_t*>(num_sampled.data), static_cast<std::int32_t*>(accepted.data),
         static_cast<std::int32_t*>(ar_pos.data), static_cast<std::int64_t*>(stats.data), config,
-        vocab, drafts.ne[0], partial_blocks);
+        vocab, cols, partial_blocks);
     CUDA_CHECK(cudaGetLastError());
 }
 

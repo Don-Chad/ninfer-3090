@@ -213,14 +213,51 @@ __launch_bounds__(kSamplerBlock) __global__ void mtp_sampling_partial_topk_kerne
 }
 
 __launch_bounds__(kSamplerBlock) __global__ void mtp_sampling_finalize_distribution_kernel(
+    const std::int32_t* target_tokens, const std::int32_t* drafts, std::int32_t* length,
+    std::int32_t* token, std::int32_t* sampled_out, std::int32_t* num_sampled,
+    std::int32_t* accepted, std::int32_t* ar_pos, std::int64_t* stats,
     const SamplingConfig* cfg_ptr, std::int32_t vocab, std::int32_t cols,
     std::int32_t partial_blocks) {
     const int col            = static_cast<int>(blockIdx.x);
     const int tid            = threadIdx.x;
     const SamplingConfig cfg = *cfg_ptr;
-    if (!(cfg.temperature > 0.0f) || vocab <= kSamplerTileItems ||
-        cols > kSamplerScratchColumns || partial_blocks > kSamplerScratchPartialBlocks) {
+    if (vocab <= kSamplerTileItems || cols > kSamplerScratchColumns ||
+        partial_blocks > kSamplerScratchPartialBlocks) {
         return;
+    }
+
+    if (!(cfg.temperature > 0.0f)) {
+        if (tid == 0 && col == 0) {
+            const int k = cols - 1;
+            int a = 0;
+            while (a < k && target_tokens[a] == drafts[a]) { ++a; }
+            const int t_star = target_tokens[a];
+
+            for (int i = 0; i <= k; ++i) { sampled_out[i] = 0; }
+            for (int i = 0; i < a; ++i) { sampled_out[i] = drafts[i]; }
+            sampled_out[a] = t_star;
+
+            const int produced = a + 1;
+            *num_sampled       = produced;
+            *accepted          = a;
+            *token             = t_star;
+            *length += produced;
+            *ar_pos = *length;
+
+            stats[0] += k;
+            stats[1] += a;
+            stats[2] += 1;
+            for (int i = 0; i < a && i < kMtpRoundAcceptedPerPosLimit; ++i) {
+                stats[kMtpRoundAcceptedPerPosOffset + i] += 1;
+            }
+        }
+        return;
+    }
+
+    if (tid == 0 && atomicCAS(&sampling_mtp_finalize_init, 0, 2) == 0) {
+        sampling_mtp_finalize_count = 0;
+        __threadfence();
+        atomicExch(&sampling_mtp_finalize_init, 1);
     }
 
     __shared__ float merge_val[(kSamplerBlock / 32) * kSamplerFastCandidates];
@@ -231,79 +268,80 @@ __launch_bounds__(kSamplerBlock) __global__ void mtp_sampling_finalize_distribut
     __shared__ float prob[kSamplerMaxCandidates];
     __shared__ int n_support;
 
+    const int cap = sampling_candidate_cap(cfg, vocab);
     sampling_merge_partials_to_support(col, partial_blocks, cfg, sort_storage, merge_val,
-                                       merge_idx, cand_val, cand_idx, prob, &n_support, vocab);
+                                       merge_idx, cand_val, cand_idx, prob, &n_support, vocab,
+                                       cap, true);
 
     if (tid == 0) {
+        while (atomicAdd(&sampling_mtp_finalize_init, 0) != 1) {}
         sampling_dist_support[col] = n_support;
         for (int j = 0; j < n_support; ++j) {
             const int off = sampling_dist_offset(col, j);
             sampling_dist_idx[off] = cand_idx[j];
             sampling_dist_prob[off] = prob[j];
         }
-    }
-}
-
-__launch_bounds__(kSamplerBlock) __global__ void mtp_accept_tokens_sampling_kernel(
-    const std::int32_t* drafts, std::int32_t* length, std::int32_t* token,
-    std::int32_t* sampled_out, std::int32_t* num_sampled, std::int32_t* accepted,
-    std::int32_t* ar_pos, std::int64_t* stats, const SamplingConfig* cfg_ptr,
-    std::int32_t vocab, std::int32_t k, std::int32_t partial_blocks) {
-    const int tid            = threadIdx.x;
-    const SamplingConfig cfg = *cfg_ptr;
-    if (tid != 0 || !(cfg.temperature > 0.0f) || vocab <= kSamplerTileItems ||
-        (k + 1) > kSamplerScratchColumns || partial_blocks > kSamplerScratchPartialBlocks) {
-        return;
-    }
-
-    const int L = *length;
-    int a       = 0;
-    int tstar   = 0;
-    for (int i = 0; i <= k; ++i) {
-        const int n = sampling_dist_support[i];
-        const int* cand_idx = sampling_dist_idx + sampling_dist_offset(i, 0);
-        const float* prob = sampling_dist_prob + sampling_dist_offset(i, 0);
-        if (i < k) {
-            const int d = drafts[i];
-            float pd    = 0.0f;
-            for (int j = 0; j < n; ++j) {
-                if (cand_idx[j] == d) {
-                    pd = prob[j];
+        __threadfence();
+        const int done = atomicAdd(&sampling_mtp_finalize_count, 1) + 1;
+        if (done == cols) {
+            const int k = cols - 1;
+            const int L = *length;
+            int a       = 0;
+            int tstar   = 0;
+            for (int i = 0; i <= k; ++i) {
+                const int n = sampling_dist_support[i];
+                const int* dist_idx = sampling_dist_idx + sampling_dist_offset(i, 0);
+                const float* dist_prob = sampling_dist_prob + sampling_dist_offset(i, 0);
+                if (i < k) {
+                    const int d = drafts[i];
+                    float pd    = 0.0f;
+                    for (int j = 0; j < n; ++j) {
+                        if (dist_idx[j] == d) {
+                            pd = dist_prob[j];
+                            break;
+                        }
+                    }
+                    const float u =
+                        sampling_uniform(cfg.seed, L + i + 1, kSamplePurposeMtpAccept, 0u);
+                    if (u < pd) {
+                        a = i + 1;
+                        continue;
+                    }
+                    const float ur =
+                        sampling_uniform(cfg.seed, L + i + 1, kSamplePurposeMtpResample, 0u);
+                    tstar = sampling_pick_from_support(dist_idx, dist_prob, n, d, ur);
                     break;
                 }
+                const float u = sampling_uniform(cfg.seed, L + k + 1, kSamplePurposeMtpBonus, 0u);
+                tstar = sampling_pick_from_support(dist_idx, dist_prob, n, -1, u);
             }
-            const float u = sampling_uniform(cfg.seed, L + i + 1, kSamplePurposeMtpAccept, 0u);
-            if (u < pd) {
-                a = i + 1;
-                continue;
+
+            for (int i = 0; i <= k; ++i) { sampled_out[i] = 0; }
+            for (int i = 0; i < a; ++i) { sampled_out[i] = drafts[i]; }
+            sampled_out[a] = tstar;
+
+            const int produced = a + 1;
+            *num_sampled       = produced;
+            *accepted          = a;
+            *token             = tstar;
+            *length            = L + produced;
+            *ar_pos            = *length;
+
+            stats[0] += k;
+            stats[1] += a;
+            stats[2] += 1;
+            for (int i = 0; i < a && i < kMtpRoundAcceptedPerPosLimit; ++i) {
+                stats[kMtpRoundAcceptedPerPosOffset + i] += 1;
             }
-            const float ur = sampling_uniform(cfg.seed, L + i + 1, kSamplePurposeMtpResample, 0u);
-            tstar = sampling_pick_from_support(cand_idx, prob, n, d, ur);
-            break;
+            if (cfg.token_counts != nullptr) {
+                for (int i = 0; i < produced; ++i) {
+                    atomicAdd(&cfg.token_counts[sampled_out[i]], 1);
+                }
+            }
+            __threadfence();
+            sampling_mtp_finalize_count = 0;
+            atomicExch(&sampling_mtp_finalize_init, 0);
         }
-        const float u = sampling_uniform(cfg.seed, L + k + 1, kSamplePurposeMtpBonus, 0u);
-        tstar = sampling_pick_from_support(cand_idx, prob, n, -1, u);
-    }
-
-    for (int i = 0; i <= k; ++i) { sampled_out[i] = 0; }
-    for (int i = 0; i < a; ++i) { sampled_out[i] = drafts[i]; }
-    sampled_out[a] = tstar;
-
-    const int produced = a + 1;
-    *num_sampled       = produced;
-    *accepted          = a;
-    *token             = tstar;
-    *length            = L + produced;
-    *ar_pos            = *length;
-
-    stats[0] += k;
-    stats[1] += a;
-    stats[2] += 1;
-    for (int i = 0; i < a && i < kMtpRoundAcceptedPerPosLimit; ++i) {
-        stats[kMtpRoundAcceptedPerPosOffset + i] += 1;
-    }
-    if (cfg.token_counts != nullptr) {
-        for (int i = 0; i < produced; ++i) { atomicAdd(&cfg.token_counts[sampled_out[i]], 1); }
     }
 }
 

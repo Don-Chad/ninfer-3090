@@ -88,8 +88,7 @@ __launch_bounds__(kSamplerBlock) __global__ void sampling_partial_topk_kernel(
     const int partial        = static_cast<int>(blockIdx.x);
     const SamplingConfig cfg = *cfg_ptr;
     const int partial_blocks = static_cast<int>(gridDim.x);
-    if (!(cfg.temperature > 0.0f) || vocab <= kSamplerTileItems ||
-        col >= kSamplerScratchColumns || partial_blocks > kSamplerScratchPartialBlocks) {
+    if (col >= kSamplerScratchColumns || partial_blocks > kSamplerScratchPartialBlocks) {
         return;
     }
 
@@ -97,14 +96,16 @@ __launch_bounds__(kSamplerBlock) __global__ void sampling_partial_topk_kernel(
     unsigned long long keys[kSamplerItemsPerThread];
     int items[kSamplerItemsPerThread];
 
-    const int cap = sampling_candidate_cap(cfg, vocab);
+    const bool greedy = !(cfg.temperature > 0.0f);
+    const int cap = greedy ? 1 : sampling_candidate_cap(cfg, vocab);
     const std::int64_t base = static_cast<std::int64_t>(col) * vocab;
     const int tile_start = partial * kSamplerPartialTileItems;
 #pragma unroll
     for (int item = 0; item < kSamplerItemsPerThread; ++item) {
         const int v = tile_start + item * blockDim.x + threadIdx.x;
         if (v < vocab) {
-            const float x = sampling_adjusted_logit(__bfloat162float(logits[base + v]), v, cfg);
+            const float raw = __bfloat162float(logits[base + v]);
+            const float x = greedy ? raw : sampling_adjusted_logit(raw, v, cfg);
             keys[item] = sampling_sort_key(x, v);
             items[item] = v;
         } else {
@@ -131,8 +132,7 @@ __launch_bounds__(kSamplerBlock) __global__ void sampling_finalize_sample_kernel
     const int col            = static_cast<int>(blockIdx.x);
     const int tid            = threadIdx.x;
     const SamplingConfig cfg = *cfg_ptr;
-    if (!(cfg.temperature > 0.0f) || vocab <= kSamplerTileItems ||
-        gridDim.x > kSamplerScratchColumns || partial_blocks > kSamplerScratchPartialBlocks) {
+    if (gridDim.x > kSamplerScratchColumns || partial_blocks > kSamplerScratchPartialBlocks) {
         return;
     }
 
@@ -144,10 +144,17 @@ __launch_bounds__(kSamplerBlock) __global__ void sampling_finalize_sample_kernel
     __shared__ float prob[kSamplerMaxCandidates];
     __shared__ int n_support;
 
+    const bool greedy = !(cfg.temperature > 0.0f);
+    const int cap = greedy ? 1 : sampling_candidate_cap(cfg, vocab);
     sampling_merge_partials_to_support(col, partial_blocks, cfg, sort_storage, merge_val,
-                                       merge_idx, cand_val, cand_idx, prob, &n_support, vocab);
+                                       merge_idx, cand_val, cand_idx, prob, &n_support, vocab,
+                                       cap, !greedy);
 
     if (tid != 0) { return; }
+    if (greedy) {
+        out[col] = cand_idx[0];
+        return;
+    }
     const int support = n_support;
     const float u     = sampling_uniform(cfg.seed, *pos_base + col, purpose, 0u);
     float acc         = 0.0f;

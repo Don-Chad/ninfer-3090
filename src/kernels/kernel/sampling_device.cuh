@@ -37,6 +37,8 @@ static __device__ int sampling_partial_idx[kSamplerScratchColumns *
 static __device__ int sampling_dist_idx[kSamplerScratchColumns * kSamplerMaxCandidates];
 static __device__ float sampling_dist_prob[kSamplerScratchColumns * kSamplerMaxCandidates];
 static __device__ int sampling_dist_support[kSamplerScratchColumns];
+static __device__ int sampling_mtp_finalize_init;
+static __device__ int sampling_mtp_finalize_count;
 
 using SamplingPartialBlockSort =
     cub::BlockRadixSort<unsigned long long, kSamplerBlock, kSamplerItemsPerThread, int>;
@@ -191,6 +193,7 @@ __device__ inline void sampling_normalize_support(const SamplingConfig& cfg, flo
     __syncthreads();
 }
 
+
 // All threads of the block must call. Small-column exact truncated support
 // builder used by unit tests and any <=256-token column. It sorts one shared
 // tile and then applies the same top-p/min-p renormalization as the large path.
@@ -292,9 +295,8 @@ __device__ inline void sampling_merge_partials_to_support(
     int col, int partial_blocks, const SamplingConfig& cfg,
     typename SamplingFinalizeBlockSort::TempStorage& sort_storage, float* merge_val,
     int* merge_idx, float* cand_val, int* cand_idx, float* prob, int* n_support,
-    std::int32_t vocab) {
+    std::int32_t vocab, int cap, bool normalize) {
     const int tid = threadIdx.x;
-    const int cap = sampling_candidate_cap(cfg, vocab);
     const int n = partial_blocks * cap;
     if (n <= kSamplerFinalizeTileItems) {
         unsigned long long keys[kSamplerFinalizeItemsPerThread];
@@ -325,7 +327,12 @@ __device__ inline void sampling_merge_partials_to_support(
             }
         }
         __syncthreads();
-        sampling_normalize_support(cfg, cand_val, cand_idx, prob, n_support, cap);
+        if (normalize) {
+            sampling_normalize_support(cfg, cand_val, cand_idx, prob, n_support, cap);
+        } else {
+            if (tid == 0) { *n_support = cap; }
+            __syncthreads();
+        }
         return;
     }
 
@@ -385,7 +392,12 @@ __device__ inline void sampling_merge_partials_to_support(
             }
         }
         __syncthreads();
-        sampling_normalize_support(cfg, cand_val, cand_idx, prob, n_support, cap);
+        if (normalize) {
+            sampling_normalize_support(cfg, cand_val, cand_idx, prob, n_support, cap);
+        } else {
+            if (tid == 0) { *n_support = cap; }
+            __syncthreads();
+        }
         return;
     }
 
@@ -405,7 +417,12 @@ __device__ inline void sampling_merge_partials_to_support(
         }
     }
     __syncthreads();
-    sampling_normalize_support(cfg, cand_val, cand_idx, prob, n_support, cap);
+    if (normalize) {
+        sampling_normalize_support(cfg, cand_val, cand_idx, prob, n_support, cap);
+    } else {
+        if (tid == 0) { *n_support = cap; }
+        __syncthreads();
+    }
 }
 
 // thread-0 helper: inverse-CDF pick over a normalized `prob[0..n-1]` support,
