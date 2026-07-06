@@ -30,17 +30,14 @@ inline constexpr int kSamplerFinalizeItemsPerThread = 10;
 inline constexpr int kSamplerFinalizeTileItems = kSamplerBlock * kSamplerFinalizeItemsPerThread;
 inline constexpr int kSamplerGroupItemsPerThread = 2;
 inline constexpr int kSamplerGroupTileItems = kSamplerBlock * kSamplerGroupItemsPerThread;
-inline constexpr int kSamplerPartialsPerGroup = 21;
+inline constexpr int kSamplerPartialsPerGroup = 25;
 inline constexpr int kSamplerFastCandidates = 20;
 inline constexpr int kSamplerScratchColumns = 8;
 inline constexpr int kSamplerScratchPartialBlocks = 1024;
 
-static __device__ float sampling_partial_val[kSamplerScratchColumns *
-                                             kSamplerScratchPartialBlocks *
-                                             kSamplerMaxCandidates];
-static __device__ int sampling_partial_idx[kSamplerScratchColumns *
-                                           kSamplerScratchPartialBlocks *
-                                           kSamplerMaxCandidates];
+static __device__ unsigned long long sampling_partial_key[kSamplerScratchColumns *
+                                                          kSamplerScratchPartialBlocks *
+                                                          kSamplerMaxCandidates];
 static __device__ int sampling_dist_idx[kSamplerScratchColumns * kSamplerMaxCandidates];
 static __device__ float sampling_dist_prob[kSamplerScratchColumns * kSamplerMaxCandidates];
 static __device__ int sampling_dist_support[kSamplerScratchColumns];
@@ -53,7 +50,7 @@ static __device__ int sampling_group_done[kSamplerScratchColumns];
 using SamplingPartialBlockSort =
     cub::BlockRadixSort<unsigned long long, kSamplerBlock, kSamplerItemsPerThread, int>;
 using SamplingFinalizeBlockSort =
-    cub::BlockRadixSort<unsigned long long, kSamplerBlock, kSamplerFinalizeItemsPerThread, int>;
+    cub::BlockRadixSort<unsigned long long, kSamplerBlock, kSamplerFinalizeItemsPerThread>;
 using SamplingGroupBlockSort =
     cub::BlockRadixSort<unsigned long long, kSamplerBlock, kSamplerGroupItemsPerThread, int>;
 using SamplingPartialMergeSort =
@@ -157,9 +154,11 @@ __device__ __forceinline__ float sampling_adjusted_logit(float raw, int v,
     if (c.token_counts != nullptr) {
         const int cnt = c.token_counts[v];
         if (cnt > 0) { x -= c.presence_penalty; }
-        x -= c.frequency_penalty * static_cast<float>(cnt);
+        if (c.frequency_penalty != 0.0f) {
+            x -= c.frequency_penalty * static_cast<float>(cnt);
+        }
     }
-    return x / c.temperature;
+    return x;
 }
 
 __device__ __forceinline__ void sampling_insert_candidate(float* vals, int* idxs, int cap,
@@ -207,10 +206,11 @@ __device__ inline void sampling_normalize_support(const SamplingConfig& cfg, flo
                                                   int n) {
     const int tid = threadIdx.x;
     if (tid == 0) {
-        const float m = cand_val[0];
+        const float inv_temp = 1.0f / cfg.temperature;
+        const float m = cand_val[0] * inv_temp;
         float sum     = 0.0f;
         for (int j = 0; j < n; ++j) {
-            const float e = __expf(cand_val[j] - m);
+            const float e = __expf(cand_val[j] * inv_temp - m);
             prob[j]       = e;
             sum += e;
         }
@@ -343,7 +343,6 @@ __device__ inline void sampling_merge_partials_to_support(
     const int n = partial_blocks * cap;
     if (n <= kSamplerFinalizeTileItems) {
         unsigned long long keys[kSamplerFinalizeItemsPerThread];
-        int items[kSamplerFinalizeItemsPerThread];
 #pragma unroll
         for (int item = 0; item < kSamplerFinalizeItemsPerThread; ++item) {
             const int p = item * blockDim.x + tid;
@@ -351,22 +350,18 @@ __device__ inline void sampling_merge_partials_to_support(
                 const int partial = p / cap;
                 const int j = p - partial * cap;
                 const int off = sampling_partial_offset(col, partial, j);
-                const int idx = sampling_partial_idx[off];
-                const float v = sampling_partial_val[off];
-                keys[item] = sampling_sort_key(v, idx);
-                items[item] = idx;
+                keys[item] = sampling_partial_key[off];
             } else {
                 keys[item] = 0ull;
-                items[item] = INT_MAX;
             }
         }
-        SamplingFinalizeBlockSort(sort_storage).SortDescending(keys, items);
+        SamplingFinalizeBlockSort(sort_storage).SortDescending(keys);
 #pragma unroll
         for (int item = 0; item < kSamplerFinalizeItemsPerThread; ++item) {
             const int rank = tid * kSamplerFinalizeItemsPerThread + item;
             if (rank < cap) {
                 cand_val[rank] = sampling_key_float(keys[item]);
-                cand_idx[rank] = items[item];
+                cand_idx[rank] = sampling_key_index(keys[item]);
             }
         }
         __syncthreads();
@@ -393,8 +388,9 @@ __device__ inline void sampling_merge_partials_to_support(
                     const int partial = p / cap;
                     const int j = p - partial * cap;
                     const int off = sampling_partial_offset(col, partial, j);
-                    const int idx = sampling_partial_idx[off];
-                    const float v = sampling_partial_val[off];
+                    const unsigned long long key = sampling_partial_key[off];
+                    const int idx = sampling_key_index(key);
+                    const float v = sampling_key_float(key);
                     if (idx != INT_MAX &&
                         (rank == 0 || sampling_worse_than(v, idx, pivot_val, pivot_idx)) &&
                         sampling_better(v, idx, best_val, best_idx)) {
@@ -454,9 +450,10 @@ __device__ inline void sampling_merge_partials_to_support(
             const int partial = p / cap;
             const int j = p - partial * cap;
             const int off = sampling_partial_offset(col, partial, j);
-            const int idx = sampling_partial_idx[off];
+            const unsigned long long key = sampling_partial_key[off];
+            const int idx = sampling_key_index(key);
             if (idx == INT_MAX) { continue; }
-            sampling_insert_candidate(cand_val, cand_idx, cap, sampling_partial_val[off], idx);
+            sampling_insert_candidate(cand_val, cand_idx, cap, sampling_key_float(key), idx);
         }
     }
     __syncthreads();

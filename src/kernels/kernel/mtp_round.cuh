@@ -203,8 +203,7 @@ __launch_bounds__(kSamplerBlock) __global__ void mtp_sampling_partial_topk_kerne
         const int rank = threadIdx.x * kSamplerItemsPerThread + item;
         if (rank < cap) {
             const int off = sampling_partial_offset(col, partial, rank);
-            sampling_partial_val[off] = sampling_key_float(keys[item]);
-            sampling_partial_idx[off] = sampling_key_index(keys[item]);
+            sampling_partial_key[off] = keys[item];
         }
     }
 }
@@ -414,9 +413,7 @@ __launch_bounds__(kSamplerBlock) __global__ void mtp_sampling_group_finalize_ker
             const int partial = group_begin + p / cap;
             const int j = p - (p / cap) * cap;
             const int off = sampling_partial_offset(col, partial, j);
-            const int idx = sampling_partial_idx[off];
-            const float v = sampling_partial_val[off];
-            keys[item] = sampling_sort_key(v, idx);
+            keys[item] = sampling_partial_key[off];
         } else {
             keys[item] = 0ull;
         }
@@ -428,8 +425,7 @@ __launch_bounds__(kSamplerBlock) __global__ void mtp_sampling_group_finalize_ker
         const int rank = tid * kSamplerGroupItemsPerThread + item;
         if (rank < cap) {
             const int out_off = sampling_partial_offset(col, partial_blocks + group, rank);
-            sampling_partial_val[out_off] = sampling_key_float(keys[item]);
-            sampling_partial_idx[out_off] = sampling_key_index(keys[item]);
+            sampling_partial_key[out_off] = keys[item];
         }
     }
     __syncthreads();
@@ -450,9 +446,7 @@ __launch_bounds__(kSamplerBlock) __global__ void mtp_sampling_group_finalize_ker
             const int partial = partial_blocks + p / cap;
             const int j = p - (p / cap) * cap;
             const int off = sampling_partial_offset(col, partial, j);
-            const int idx = sampling_partial_idx[off];
-            const float v = sampling_partial_val[off];
-            keys[item] = sampling_sort_key(v, idx);
+            keys[item] = sampling_partial_key[off];
         } else {
             keys[item] = 0ull;
         }
