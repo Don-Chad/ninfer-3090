@@ -170,4 +170,133 @@ __launch_bounds__(kSamplerBlock) __global__ void sampling_finalize_sample_kernel
     if (cfg.token_counts != nullptr) { atomicAdd(&cfg.token_counts[picked], 1); }
 }
 
+__launch_bounds__(kSamplerBlock) __global__ void sampling_group_finalize_sample_kernel(
+    std::int32_t* out, const SamplingConfig* cfg_ptr, const std::int32_t* pos_base,
+    std::int32_t purpose, std::int32_t vocab, std::int32_t partial_blocks,
+    std::int32_t group_count) {
+    const int group          = static_cast<int>(blockIdx.x);
+    const int col            = static_cast<int>(blockIdx.y);
+    const int tid            = threadIdx.x;
+    const SamplingConfig cfg = *cfg_ptr;
+    if (col >= kSamplerScratchColumns || partial_blocks > kSamplerScratchPartialBlocks ||
+        partial_blocks + group_count > kSamplerScratchPartialBlocks) {
+        return;
+    }
+
+    __shared__ typename SamplingGroupBlockSort::TempStorage sort_storage;
+    __shared__ float cand_val[kSamplerMaxCandidates];
+    __shared__ int cand_idx[kSamplerMaxCandidates];
+    __shared__ float prob[kSamplerMaxCandidates];
+    __shared__ int n_support;
+    __shared__ int is_last;
+    unsigned long long keys[kSamplerGroupItemsPerThread];
+    int items[kSamplerGroupItemsPerThread];
+
+    const bool greedy = !(cfg.temperature > 0.0f);
+    const int cap = greedy ? 1 : sampling_candidate_cap(cfg, vocab);
+    if (tid == 0 && atomicCAS(&sampling_group_init[col], 0, 1) == 0) {
+        sampling_group_done[col] = 0;
+        __threadfence();
+    }
+
+    const int group_begin = group * kSamplerPartialsPerGroup;
+    int group_partials = partial_blocks - group_begin;
+    if (group_partials < 0) { group_partials = 0; }
+    if (group_partials > kSamplerPartialsPerGroup) { group_partials = kSamplerPartialsPerGroup; }
+    const int group_n = group_partials * cap;
+#pragma unroll
+    for (int item = 0; item < kSamplerGroupItemsPerThread; ++item) {
+        const int p = item * blockDim.x + tid;
+        if (p < group_n) {
+            const int partial = group_begin + p / cap;
+            const int j = p - (p / cap) * cap;
+            const int off = sampling_partial_offset(col, partial, j);
+            const int idx = sampling_partial_idx[off];
+            const float v = sampling_partial_val[off];
+            keys[item] = sampling_sort_key(v, idx);
+            items[item] = idx;
+        } else {
+            keys[item] = 0ull;
+            items[item] = INT_MAX;
+        }
+    }
+    SamplingGroupBlockSort(sort_storage).SortDescending(keys, items);
+
+#pragma unroll
+    for (int item = 0; item < kSamplerGroupItemsPerThread; ++item) {
+        const int rank = tid * kSamplerGroupItemsPerThread + item;
+        if (rank < cap) {
+            const int out_off = sampling_partial_offset(col, partial_blocks + group, rank);
+            sampling_partial_val[out_off] = sampling_key_float(keys[item]);
+            sampling_partial_idx[out_off] = items[item];
+        }
+    }
+    __syncthreads();
+
+    if (tid == 0) {
+        __threadfence();
+        const int done = atomicAdd(&sampling_group_done[col], 1) + 1;
+        is_last = (done == group_count) ? 1 : 0;
+    }
+    __syncthreads();
+    if (!is_last) { return; }
+
+    const int final_n = group_count * cap;
+#pragma unroll
+    for (int item = 0; item < kSamplerGroupItemsPerThread; ++item) {
+        const int p = item * blockDim.x + tid;
+        if (p < final_n) {
+            const int partial = partial_blocks + p / cap;
+            const int j = p - (p / cap) * cap;
+            const int off = sampling_partial_offset(col, partial, j);
+            const int idx = sampling_partial_idx[off];
+            const float v = sampling_partial_val[off];
+            keys[item] = sampling_sort_key(v, idx);
+            items[item] = idx;
+        } else {
+            keys[item] = 0ull;
+            items[item] = INT_MAX;
+        }
+    }
+    SamplingGroupBlockSort(sort_storage).SortDescending(keys, items);
+
+#pragma unroll
+    for (int item = 0; item < kSamplerGroupItemsPerThread; ++item) {
+        const int rank = tid * kSamplerGroupItemsPerThread + item;
+        if (rank < cap) {
+            cand_val[rank] = sampling_key_float(keys[item]);
+            cand_idx[rank] = items[item];
+        }
+    }
+    __syncthreads();
+
+    if (greedy) {
+        if (tid == 0) {
+            out[col] = cand_idx[0];
+            sampling_group_done[col] = 0;
+            atomicExch(&sampling_group_init[col], 0);
+        }
+        return;
+    }
+
+    sampling_normalize_support(cfg, cand_val, cand_idx, prob, &n_support, cap);
+    if (tid == 0) {
+        const int support = n_support;
+        const float u = sampling_uniform(cfg.seed, *pos_base + col, purpose, 0u);
+        float acc = 0.0f;
+        int picked = cand_idx[support - 1];
+        for (int j = 0; j < support; ++j) {
+            acc += prob[j];
+            if (u < acc) {
+                picked = cand_idx[j];
+                break;
+            }
+        }
+        out[col] = picked;
+        if (cfg.token_counts != nullptr) { atomicAdd(&cfg.token_counts[picked], 1); }
+        sampling_group_done[col] = 0;
+        atomicExch(&sampling_group_init[col], 0);
+    }
+}
+
 } // namespace qus::kernels

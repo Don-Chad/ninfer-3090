@@ -24,6 +24,9 @@ inline constexpr int kSamplerItemsPerThread = 8;
 inline constexpr int kSamplerPartialTileItems = kSamplerBlock * kSamplerItemsPerThread;
 inline constexpr int kSamplerFinalizeItemsPerThread = 10;
 inline constexpr int kSamplerFinalizeTileItems = kSamplerBlock * kSamplerFinalizeItemsPerThread;
+inline constexpr int kSamplerGroupItemsPerThread = 2;
+inline constexpr int kSamplerGroupTileItems = kSamplerBlock * kSamplerGroupItemsPerThread;
+inline constexpr int kSamplerPartialsPerGroup = 8;
 inline constexpr int kSamplerFastCandidates = 20;
 inline constexpr int kSamplerScratchColumns = 8;
 inline constexpr int kSamplerScratchPartialBlocks = 1024;
@@ -39,11 +42,15 @@ static __device__ float sampling_dist_prob[kSamplerScratchColumns * kSamplerMaxC
 static __device__ int sampling_dist_support[kSamplerScratchColumns];
 static __device__ int sampling_mtp_finalize_init;
 static __device__ int sampling_mtp_finalize_count;
+static __device__ int sampling_group_init[kSamplerScratchColumns];
+static __device__ int sampling_group_done[kSamplerScratchColumns];
 
 using SamplingPartialBlockSort =
     cub::BlockRadixSort<unsigned long long, kSamplerBlock, kSamplerItemsPerThread, int>;
 using SamplingFinalizeBlockSort =
     cub::BlockRadixSort<unsigned long long, kSamplerBlock, kSamplerFinalizeItemsPerThread, int>;
+using SamplingGroupBlockSort =
+    cub::BlockRadixSort<unsigned long long, kSamplerBlock, kSamplerGroupItemsPerThread, int>;
 
 __device__ __forceinline__ unsigned long long sampling_splitmix64(unsigned long long x) {
     x += 0x9E3779B97F4A7C15ull;
