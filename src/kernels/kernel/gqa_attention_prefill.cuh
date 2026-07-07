@@ -139,7 +139,7 @@ __global__ void gqa_attention_prefill_fill_kernel(const __nv_bfloat16* k, const 
     const int tmp      = static_cast<int>(idx / kGqaPrefillHeadDim);
     const int kv_head  = tmp % kGqaPrefillKVHeads;
     const int token    = tmp / kGqaPrefillKVHeads;
-    const int position = positions[token];
+    const int position = positions[0] + token;
 
     const std::int64_t cache_off = gqa_prefill_cache_index(kv_head, d, position, padded_context);
     cache_k[cache_off]           = k[idx];
@@ -226,6 +226,7 @@ __launch_bounds__(128, 2) __global__
     const int lane    = tid & 31;
     const int q0      = q_block * Br;
     const int kv_head = q_head / kGqaPrefillGroupSize;
+    const int base_pos = positions[0];
 
     if (q_head >= kGqaPrefillQHeads || q0 >= tokens) { return; }
 
@@ -275,7 +276,7 @@ __launch_bounds__(128, 2) __global__
 
     const int tile_rows     = min(Br, tokens - q0);
     const int last_qrow     = q0 + tile_rows - 1;
-    const int max_query_abs = (tile_rows > 0) ? positions[last_qrow] : -1;
+    const int max_query_abs = (tile_rows > 0) ? base_pos + last_qrow : -1;
     const int key_blocks    = (max_query_abs + Bc) / Bc;
 
     for (int kb = 0; kb < key_blocks; ++kb) {
@@ -305,17 +306,23 @@ __launch_bounds__(128, 2) __global__
 #pragma unroll
         for (int nt = 0; nt < QKNt; ++nt) {
             score[nt][0] = score[nt][1] = score[nt][2] = score[nt][3] = 0.0f;
+        }
 #pragma unroll
-            for (int k = 0; k < QKKs; ++k) {
-                unsigned bf[2];
+        for (int k = 0; k < QKKs; ++k) {
+            unsigned bf[QKNt][2];
+#pragma unroll
+            for (int nt = 0; nt < QKNt; ++nt) {
                 const int brow = nt * 8 + b_rin;
                 const int bcol = k * 16 + b_koff;
                 gqa_prefill_ldmatrix_x2(
-                    bf[0], bf[1],
+                    bf[nt][0], bf[nt][1],
                     gqa_prefill_smem_addr(&k_s[brow * D + gqa_prefill_swz(brow, bcol)]));
+            }
+#pragma unroll
+            for (int nt = 0; nt < QKNt; ++nt) {
                 gqa_prefill_mma_m16n8k16_bf16(score[nt][0], score[nt][1], score[nt][2],
                                               score[nt][3], af_q[k][0], af_q[k][1], af_q[k][2],
-                                              af_q[k][3], bf[0], bf[1]);
+                                              af_q[k][3], bf[nt][0], bf[nt][1]);
             }
         }
 
@@ -323,8 +330,8 @@ __launch_bounds__(128, 2) __global__
         const int row1  = warp_row0 + gid + 8;
         const int qrow0 = q0 + row0;
         const int qrow1 = q0 + row1;
-        const int qabs0 = (qrow0 < tokens) ? positions[qrow0] : -1;
-        const int qabs1 = (qrow1 < tokens) ? positions[qrow1] : -1;
+        const int qabs0 = (qrow0 < tokens) ? base_pos + qrow0 : -1;
+        const int qabs1 = (qrow1 < tokens) ? base_pos + qrow1 : -1;
 
         float bm0 = -CUDART_INF_F, bm1 = -CUDART_INF_F;
 #pragma unroll
@@ -404,15 +411,14 @@ __launch_bounds__(128, 2) __global__
 
         // PV: acc += P * V, contracting over the Bc keys.
 #pragma unroll
-        for (int n = 0; n < PVNt; ++n) {
+        for (int k = 0; k < PVKs; ++k) {
+            unsigned pf[4];
+            const int pcol = k * 16 + a_coloff;
+            gqa_prefill_ldmatrix_x4(
+                pf[0], pf[1], pf[2], pf[3],
+                gqa_prefill_smem_addr(&p_sw[a_rowoff * Bc + gqa_prefill_swz32(a_rowoff, pcol)]));
 #pragma unroll
-            for (int k = 0; k < PVKs; ++k) {
-                unsigned pf[4];
-                const int pcol = k * 16 + a_coloff;
-                gqa_prefill_ldmatrix_x4(
-                    pf[0], pf[1], pf[2], pf[3],
-                    gqa_prefill_smem_addr(
-                        &p_sw[a_rowoff * Bc + gqa_prefill_swz32(a_rowoff, pcol)]));
+            for (int n = 0; n < PVNt; ++n) {
                 unsigned vf[2];
                 const int vrow = k * 16 + b_koff + b_rin;
                 const int vcol = n * 8;
