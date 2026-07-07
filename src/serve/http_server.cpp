@@ -222,7 +222,7 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
     log_line(format_request_start(req_id, request.stream, request.messages.size(),
                                   prepared.options.max_new_tokens, request.max_tokens_set,
                                   request.tools.size(), request.tool_choice,
-                                  request.has_tool_history()));
+                                  request.has_tool_history(), prepared.options.sampling));
 
     if (!request.stream) {
         try {

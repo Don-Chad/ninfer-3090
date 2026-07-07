@@ -46,6 +46,19 @@ std::string seconds_str(double seconds) {
     return out.str();
 }
 
+// Compact resolved-sampler summary. temperature <= 0 is the exact-argmax path.
+std::string sampler_str(const qus::kernels::SamplingConfig& s) {
+    if (s.temperature <= 0.0f) { return "greedy"; }
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2) << "temp=" << s.temperature
+        << " top_p=" << s.top_p << " top_k=" << s.top_k;
+    if (s.min_p > 0.0f) { out << " min_p=" << s.min_p; }
+    if (s.presence_penalty != 0.0f) { out << " pres=" << s.presence_penalty; }
+    if (s.frequency_penalty != 0.0f) { out << " freq=" << s.frequency_penalty; }
+    out << " seed=" << s.seed;
+    return out.str();
+}
+
 std::string mtp_str(const GenerationMetrics& m) {
     if (!m.mtp_enabled) { return "off"; }
     std::ostringstream out;
@@ -69,7 +82,8 @@ std::string mtp_str(const GenerationMetrics& m) {
 
 std::string format_request_start(std::uint64_t id, bool stream, std::size_t n_messages,
                                  int max_tokens, bool client_set, std::size_t n_tools,
-                                 const ToolChoice& tool_choice, bool has_tool_history) {
+                                 const ToolChoice& tool_choice, bool has_tool_history,
+                                 const qus::kernels::SamplingConfig& sampling) {
     std::ostringstream out;
     out << "[req " << id << "] chat " << (stream ? "stream" : "non-stream")
         << " msgs=" << n_messages << " max_tokens=" << max_tokens << ' '
@@ -77,6 +91,7 @@ std::string format_request_start(std::uint64_t id, bool stream, std::size_t n_me
         << " tools=" << n_tools
         << " tool_choice=" << tool_choice_name(tool_choice)
         << " tool_history=" << (has_tool_history ? "yes" : "no")
+        << " sampler=[" << sampler_str(sampling) << ']'
         << " \xE2\x86\x92 running";
     return out.str();
 }
@@ -94,6 +109,7 @@ std::string format_request_done(std::uint64_t id, const GenerationOutcome& outco
         << (outcome.tool_calls.empty() ? finish_reason_name(outcome.finish_reason) : "tool_calls");
     if (!outcome.tool_calls.empty()) { out << " tool_calls=" << outcome.tool_calls.size(); }
     out << " prompt=" << outcome.prompt_tokens << " gen=" << outcome.completion_tokens
+        << " cache=" << m.prefix_cache_hit_tokens
         << " ttft=" << std::fixed << std::setprecision(0) << ttft_ms << "ms"
         << " prefill=" << rate(static_cast<double>(outcome.prompt_tokens), m.prefill_seconds)
         << " decode=" << rate(decode_tokens, m.decode_seconds)

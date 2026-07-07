@@ -181,6 +181,7 @@ GenerationOutcome GenerationService::run(const PreparedRequest& prepared, const 
     outcome.metrics.mtp_rounds              = mtp.rounds;
     outcome.metrics.mtp_draft_tokens        = mtp.draft_tokens;
     outcome.metrics.mtp_accepted_tokens     = mtp.accepted_tokens;
+    outcome.metrics.prefix_cache_hit_tokens = engine_->last_prefix_cache_hit();
 
     if (sink != nullptr) {
         if (!stop_matched) {

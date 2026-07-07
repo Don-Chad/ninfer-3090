@@ -666,6 +666,7 @@ int Engine::prefill(std::span<const int> ids) {
     kv_->reset();
     if (mtp_kv_) { mtp_kv_->reset(); }
     pending_sampled_.clear();
+    last_prefix_hit_tokens_ = 0;
     state_->reset(ctx_->stream);
     kernels::mtp_reset_gdn_initial_slot(io_.gdn_initial_slot, ctx_->stream);
     // Penalty counts are per-request: clear them before this prompt's first pick.
@@ -711,7 +712,11 @@ int Engine::prefill_cached(std::span<const int> ids) {
     if (resident > 0 && resident <= logical_tokens_.size() && ids.size() > resident) {
         std::size_t match = 0;
         while (match < resident && logical_tokens_[match] == ids[match]) { ++match; }
-        if (match == resident) { return prefill_append(ids.subspan(resident)); }
+        if (match == resident) {
+            const int tok = prefill_append(ids.subspan(resident));
+            last_prefix_hit_tokens_ = static_cast<std::uint32_t>(resident);
+            return tok;
+        }
     }
     return prefill(ids);
 }

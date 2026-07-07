@@ -95,6 +95,12 @@ public:
 
     [[nodiscard]] std::uint32_t max_context() const noexcept { return options_.max_ctx; }
 
+    // Number of resident prefix tokens reused by the most recent prefill_cached() call (0 when it
+    // fell back to a full reset prefill). Meaningful only right after a prefill/prefill_cached.
+    [[nodiscard]] std::uint32_t last_prefix_cache_hit() const noexcept {
+        return last_prefix_hit_tokens_;
+    }
+
     [[nodiscard]] EngineMemoryStats memory_stats() const noexcept;
     [[nodiscard]] EngineMtpStats mtp_stats() const;
 
@@ -146,6 +152,8 @@ private:
     bool decode_warmed_ = false;
     bool round_warmed_  = false;
     std::vector<int> pending_sampled_;
+    // Reused prefix length of the most recent prefill_cached() (0 on full reset prefill).
+    std::uint32_t last_prefix_hit_tokens_ = 0;
     // Host mirror of the resident logical token sequence: prompt tokens followed by every token
     // returned by prefill/decode. The reusable prefix is logical_tokens_[0 : kv_.pos]; the tail
     // beyond kv_.pos (if any) holds the last emitted-but-uncommitted bonus token.

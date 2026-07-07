@@ -31,6 +31,8 @@ struct GenerationMetrics {
     std::int64_t mtp_rounds          = 0;
     std::int64_t mtp_draft_tokens    = 0;
     std::int64_t mtp_accepted_tokens = 0;
+    // Resident prefix tokens reused by the engine prefix cache this request (0 = full prefill).
+    std::uint32_t prefix_cache_hit_tokens = 0;
 };
 
 struct GenerationOutcome {
