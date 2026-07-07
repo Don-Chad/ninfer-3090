@@ -100,8 +100,10 @@ std::size_t default_cache_bytes_for(std::uint32_t max_ctx, int draft_tokens,
                                     std::uint32_t prefill_chunk) {
     validate_mtp_draft_tokens(draft_tokens);
     const bool include_mtp_kv      = draft_tokens > 0;
-    const auto snapshot_slots      = static_cast<std::size_t>(draft_tokens) + 1ULL;
-    const std::size_t window_cols  = snapshot_slots;
+    const std::size_t window_cols  = static_cast<std::size_t>(draft_tokens) + 1ULL;
+    // One extra GDN snapshot slot beyond the MTP window holds the turn-boundary recurrent state
+    // used for partial prefix reuse across turns (decode/MTP only cycle slots 0..draft_tokens).
+    const std::size_t gdn_snapshot_slots = window_cols + 1ULL;
     const std::size_t draft_cols   = std::max<std::size_t>(1, static_cast<std::size_t>(draft_tokens));
     const auto padded_ctx_size =
         align_up(static_cast<std::size_t>(max_ctx), 128, "cache arena size");
@@ -118,7 +120,7 @@ std::size_t default_cache_bytes_for(std::uint32_t max_ctx, int draft_tokens,
 
     const std::size_t conv_elems =
         checked_mul(checked_mul(model::kCfg.n_gdn(), model::kCfg.conv_dim, "cache arena size"),
-                    checked_mul(model::kCfg.gdn_conv_state_width, snapshot_slots,
+                    checked_mul(model::kCfg.gdn_conv_state_width, gdn_snapshot_slots,
                                 "cache arena size"),
                     "cache arena size");
     const std::size_t conv_bytes =
@@ -129,7 +131,7 @@ std::size_t default_cache_bytes_for(std::uint32_t max_ctx, int draft_tokens,
                     checked_mul(
                         checked_mul(model::kCfg.gdn_v_dim, model::kCfg.gdn_v_heads,
                                     "cache arena size"),
-                        snapshot_slots, "cache arena size"),
+                        gdn_snapshot_slots, "cache arena size"),
                     "cache arena size");
     const std::size_t ssm_bytes =
         checked_mul(ssm_elems, dtype_size(DType::FP32), "cache arena size");
@@ -486,11 +488,14 @@ void Engine::load(const std::string& path) {
     }
     const auto window_cols =
         static_cast<std::int32_t>(options_.mtp_draft_tokens) + static_cast<std::int32_t>(1);
+    // One extra GDN snapshot slot (index window_cols) is the dedicated turn-boundary slot used for
+    // partial prefix reuse; decode/MTP only cycle slots 0..mtp_draft_tokens.
+    const auto gdn_snapshot_slots = window_cols + static_cast<std::int32_t>(1);
     const auto draft_cols =
         std::max<std::int32_t>(1, static_cast<std::int32_t>(options_.mtp_draft_tokens));
     state_.emplace(*cache_arena_, model::kCfg.n_gdn(), model::kCfg.conv_dim,
                    model::kCfg.gdn_conv_state_width, model::kCfg.gdn_v_heads,
-                   model::kCfg.gdn_v_dim, model::kCfg.gdn_k_dim, window_cols);
+                   model::kCfg.gdn_v_dim, model::kCfg.gdn_k_dim, gdn_snapshot_slots);
     io_ = model::StepState{
         cache_arena_->alloc(DType::I32, {1}),
         cache_arena_->alloc(DType::I32, {1}),
@@ -667,6 +672,9 @@ int Engine::prefill(std::span<const int> ids) {
     if (mtp_kv_) { mtp_kv_->reset(); }
     pending_sampled_.clear();
     last_prefix_hit_tokens_ = 0;
+    // A full reset invalidates any resident turn-boundary GDN snapshot (slot data is about to be
+    // overwritten). prefill_cached re-establishes it after this call if a snapshot is taken.
+    content_boundary_prev_ = kNoBoundary;
     state_->reset(ctx_->stream);
     kernels::mtp_reset_gdn_initial_slot(io_.gdn_initial_slot, ctx_->stream);
     // Penalty counts are per-request: clear them before this prompt's first pick.
@@ -702,23 +710,68 @@ int Engine::prefill_append(std::span<const int> ids) {
     return tok;
 }
 
-int Engine::prefill_cached(std::span<const int> ids) {
+int Engine::prefill_cached(std::span<const int> ids, std::uint32_t content_boundary) {
     require_loaded();
     if (ids.empty()) { throw std::invalid_argument("Engine::prefill_cached requires tokens"); }
-    const std::size_t resident = kv_->pos;
-    // Reuse only when the ENTIRE resident cache is an exact prefix of the new request and there is
-    // a non-empty suffix to append. The mirror must cover the resident prefix (a max-token cutoff
-    // can leave committed-but-unmirrored tokens, in which case we conservatively full-prefill).
-    if (resident > 0 && resident <= logical_tokens_.size() && ids.size() > resident) {
-        std::size_t match = 0;
-        while (match < resident && logical_tokens_[match] == ids[match]) { ++match; }
-        if (match == resident) {
-            const int tok = prefill_append(ids.subspan(resident));
-            last_prefix_hit_tokens_ = static_cast<std::uint32_t>(resident);
-            return tok;
-        }
+    if (ids.size() > options_.max_ctx) {
+        throw std::invalid_argument("Engine::prefill_cached exceeds max_ctx");
     }
-    return prefill(ids);
+
+    // Snapshot the GDN recurrent state at THIS turn's assistant-content boundary regardless of which
+    // reuse branch runs, so the next turn can continue from it. The card no-ops the snapshot when the
+    // boundary falls outside the prefilled range; commit_boundary() below mirrors that check so
+    // content_boundary_prev_ only advertises a boundary that was actually snapshotted.
+    card_->set_prefill_snapshot_boundary(static_cast<std::int64_t>(content_boundary));
+
+    const std::size_t E         = kv_->pos;               // committed resident end
+    const std::size_t mirror    = logical_tokens_.size(); // host token mirror
+    const std::size_t cmp_limit = std::min({E, mirror, ids.size()});
+    std::size_t lcp             = 0;
+    while (lcp < cmp_limit && logical_tokens_[lcp] == ids[lcp]) { ++lcp; }
+
+    // Advertise B_current as reusable next turn only when the card actually snapshots it: the
+    // boundary must be strictly inside (reuse_start, L]. reuse_start is the branch base (E, B_prev,
+    // or 0); L == ids.size() == base + T in every branch.
+    const auto commit_boundary = [&](std::size_t reuse_start) {
+        content_boundary_prev_ =
+            (static_cast<std::size_t>(content_boundary) > reuse_start &&
+             static_cast<std::size_t>(content_boundary) <= ids.size())
+                ? content_boundary
+                : kNoBoundary;
+    };
+
+    // Branch 1: the whole committed prefix E is a prefix of ids -> append the new suffix from E.
+    if (E > 0 && E <= mirror && lcp == E && ids.size() > E) {
+        const int tok           = prefill_append(ids.subspan(E));
+        last_prefix_hit_tokens_ = static_cast<std::uint32_t>(E);
+        commit_boundary(E);
+        return tok;
+    }
+
+    // Branch 2: reuse through the previous turn's assistant-content boundary B_prev. Valid iff the
+    // first B_prev tokens still match AND the GDN boundary snapshot was taken at exactly B_prev
+    // (guaranteed by content_boundary_prev_ being set only on a real snapshot). MTP KV is fully
+    // position-indexed (its pos is never advanced or read), so rewriting positions [B_prev, L) is
+    // consistent with no extra bookkeeping; the full-attention KV rewind sets kv_->pos.
+    const std::uint32_t B = content_boundary_prev_;
+    if (B != kNoBoundary && B > 0 && static_cast<std::size_t>(B) <= E &&
+        static_cast<std::size_t>(B) <= mirror && lcp >= static_cast<std::size_t>(B) &&
+        ids.size() > static_cast<std::size_t>(B)) {
+        kv_->rewind(B);
+        // Restore the turn-boundary GDN state into the running slot so the continuation prefill's
+        // first chunk reads it (non-MTP forces slot 0; MTP reads gdn_initial_slot, set to 0 here).
+        state_->copy_slot(static_cast<std::int32_t>(state_->snapshot_slots - 1), 0, ctx_->stream);
+        set_gdn_initial_slot(0);
+        const int tok           = prefill_append(ids.subspan(B));
+        last_prefix_hit_tokens_ = B;
+        commit_boundary(static_cast<std::size_t>(B));
+        return tok;
+    }
+
+    // Branch 3: nothing reusable -> full reset prefill.
+    const int tok = prefill(ids);
+    commit_boundary(0);
+    return tok;
 }
 
 void Engine::set_gdn_initial_slot(int slot) {

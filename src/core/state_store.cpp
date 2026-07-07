@@ -120,6 +120,20 @@ Tensor GdnState::ssm_slot(std::uint32_t layer, std::int32_t slot) const {
     return ssm.at(layer).slice(3, slot, 1).view({key_head_dim, value_head_dim, value_heads});
 }
 
+void GdnState::copy_slot(std::int32_t src, std::int32_t dst, cudaStream_t stream) {
+    if (src == dst) { return; }
+    for (std::uint32_t layer = 0; layer < layer_count(); ++layer) {
+        const Tensor s = conv_slot(layer, src);
+        const Tensor d = conv_slot(layer, dst);
+        CUDA_CHECK(cudaMemcpyAsync(d.data, s.data, s.bytes(), cudaMemcpyDeviceToDevice, stream));
+    }
+    for (std::uint32_t layer = 0; layer < layer_count(); ++layer) {
+        const Tensor s = ssm_slot(layer, src);
+        const Tensor d = ssm_slot(layer, dst);
+        CUDA_CHECK(cudaMemcpyAsync(d.data, s.data, s.bytes(), cudaMemcpyDeviceToDevice, stream));
+    }
+}
+
 void GdnState::reset(cudaStream_t stream) {
     for (std::uint32_t layer = 0; layer < layer_count(); ++layer) {
         const Tensor slot0 = conv_slot(layer, 0);

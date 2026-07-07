@@ -164,6 +164,14 @@ public:
     // buffer contents change between requests.
     void set_sampling(const kernels::SamplingConfig* config) noexcept { sampling_config_ = config; }
 
+    // Absolute token position at which the next prefill snapshots the running GDN conv/SSM state
+    // into the dedicated turn-boundary snapshot slot (the last GdnState slot). -1 disables it. The
+    // engine sets this per prefill so partial prefix reuse can continue the recurrence from the
+    // assistant-content boundary next turn. Consumed and reset by prefill.
+    void set_prefill_snapshot_boundary(std::int64_t abs_pos) noexcept {
+        prefill_snapshot_boundary_ = abs_pos;
+    }
+
     [[nodiscard]] const kernels::SamplingConfig* sampling_config() const noexcept {
         return sampling_config_;
     }
@@ -292,6 +300,9 @@ private:
     // Slot 0 for the reset path and for every chunk after the first; the committed snapshot slot
     // for chunk 0 of a prefix-append prefill (MTP). The running state is always written to slot 0.
     std::int32_t gdn_prefill_read_slot_ = 0;
+    // Absolute position at which the current prefill snapshots the running GDN state into the
+    // turn-boundary slot; -1 disables. Set via set_prefill_snapshot_boundary and reset by prefill.
+    std::int64_t prefill_snapshot_boundary_ = -1;
 
     const Weight* embed_      = nullptr;
     const Tensor* final_norm_ = nullptr;

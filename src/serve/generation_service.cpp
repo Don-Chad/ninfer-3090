@@ -118,6 +118,13 @@ PreparedRequest GenerationService::prepare(const GenerationRequest& req) const {
     prepared.render_tokenize_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - render_start).count();
     prepared.prompt_tokens = static_cast<int>(ids.size());
+    // Assistant-content boundary for cross-turn GDN prefix reuse: the position right after the final
+    // `<|im_start|>assistant\n` header (before the generation-prompt opener the template appended).
+    const std::uint32_t opener =
+        qus::text::generation_prompt_opener_tokens(*tokenizer_, render_options);
+    prepared.content_boundary = opener <= ids.size()
+                                    ? static_cast<std::uint32_t>(ids.size()) - opener
+                                    : static_cast<std::uint32_t>(ids.size());
 
     const std::size_t required =
         ids.size() + static_cast<std::size_t>(std::max(0, prepared.options.max_new_tokens - 1));
@@ -175,8 +182,8 @@ GenerationOutcome GenerationService::run(const PreparedRequest& prepared, const 
     engine_->reset_mtp_stats();
     // The prompt was already rendered + tokenized in prepare(); reuse those ids so
     // the chat template renders exactly once per request.
-    const qus::text::TextGenerationResult result =
-        runner.generate(std::span<const int>(prepared.prompt_token_ids), opt);
+    const qus::text::TextGenerationResult result = runner.generate(
+        std::span<const int>(prepared.prompt_token_ids), opt, prepared.content_boundary);
     const qus::EngineMtpStats mtp = engine_->mtp_stats();
 
     GenerationOutcome outcome;

@@ -921,8 +921,24 @@ void Qwen3_6_27B::prefill_impl(std::span<const int> ids, Tap& tap) {
         if (gdn_read_slot0 < 0 || gdn_read_slot0 >= state_.snapshot_slots) { gdn_read_slot0 = 0; }
     }
 
-    for (int t0 = 0; t0 < T; t0 += chunk) {
-        const int len      = std::min(chunk, T - t0);
+    // Turn-boundary GDN snapshot: when a boundary is requested, publish the running conv/SSM state
+    // into the dedicated last snapshot slot exactly at absolute position prefill_snapshot_boundary_.
+    // Chunks are capped so one ends precisely at the boundary, so slot 0 holds the state at that
+    // position when we copy it out; the next turn continues the recurrence from there for partial
+    // prefix reuse. The boundary must lie strictly inside (base, base+T].
+    const std::int64_t base64   = static_cast<std::int64_t>(base);
+    const std::int64_t snap_abs = prefill_snapshot_boundary_;
+    const bool has_snapshot =
+        snap_abs > base64 && snap_abs <= base64 + static_cast<std::int64_t>(T);
+    const int snap_rel               = has_snapshot ? static_cast<int>(snap_abs - base64) : -1;
+    const std::int32_t boundary_slot = state_.snapshot_slots - 1;
+
+    for (int t0 = 0; t0 < T;) {
+        int len = std::min(chunk, T - t0);
+        // Cap the chunk so it ends exactly at the snapshot boundary. Because a capped chunk is
+        // shorter than `chunk`, the loop must advance by the processed `len` (see the t0 += len at the
+        // end of the body), not by `chunk`, or it would skip [t0+len, t0+chunk) and drop the tail.
+        if (snap_rel > 0 && t0 < snap_rel && t0 + len > snap_rel) { len = snap_rel - t0; }
         const bool is_last = (t0 + len == T);
         work_.reset();
 
@@ -1024,7 +1040,16 @@ void Qwen3_6_27B::prefill_impl(std::span<const int> ids, Tap& tap) {
         }
 
         kv_.pos = base + static_cast<std::uint32_t>(t0 + len);
+
+        // Snapshot the running GDN state at the requested boundary into the dedicated slot. This
+        // chunk ended exactly at the boundary (see the len cap above), so slot 0 is the state there.
+        if (snap_rel > 0 && t0 + len == snap_rel) { state_.copy_slot(0, boundary_slot, s); }
+
+        t0 += len;
     }
+
+    // Consume the one-shot boundary request so a subsequent boundary-less prefill does not snapshot.
+    prefill_snapshot_boundary_ = -1;
 
     // Prefill wrote the running GDN state to slot 0; the first decode round must read slot 0.
     if (mtp_enabled()) { kernels::mtp_reset_gdn_initial_slot(io_.gdn_initial_slot, s); }

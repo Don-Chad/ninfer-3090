@@ -6,6 +6,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -110,20 +111,31 @@ TextGenerationResult TextGenerationRunner::generate(const std::vector<ChatMessag
     render_options.enable_thinking   = options.enable_thinking;
     const std::string prompt         = render_qwen_chat(messages, render_options);
     std::vector<int> prompt_token_ids = tokenizer_.encode(prompt);
+    // Assistant-content boundary for cross-turn prefix reuse: the position right after the final
+    // `<|im_start|>assistant\n` header, i.e. before the generation-prompt opener the template just
+    // appended. A later thinking-stripped re-render diverges exactly here.
+    const std::uint32_t opener = generation_prompt_opener_tokens(tokenizer_, render_options);
+    const std::uint32_t content_boundary =
+        opener <= prompt_token_ids.size()
+            ? static_cast<std::uint32_t>(prompt_token_ids.size()) - opener
+            : static_cast<std::uint32_t>(prompt_token_ids.size());
     const double render_tokenize_seconds =
         std::chrono::duration<double>(Clock::now() - render_start).count();
-    return run_tokens(std::move(prompt_token_ids), options, render_tokenize_seconds);
+    return run_tokens(std::move(prompt_token_ids), options, render_tokenize_seconds,
+                      content_boundary);
 }
 
 TextGenerationResult TextGenerationRunner::generate(std::span<const int> prompt_token_ids,
-                                                     const TextGenerationOptions& options) {
+                                                     const TextGenerationOptions& options,
+                                                     std::uint32_t content_boundary) {
     return run_tokens(std::vector<int>(prompt_token_ids.begin(), prompt_token_ids.end()), options,
-                      0.0);
+                      0.0, content_boundary);
 }
 
 TextGenerationResult TextGenerationRunner::run_tokens(std::vector<int> prompt_token_ids,
                                                        const TextGenerationOptions& options,
-                                                       double render_tokenize_seconds) {
+                                                       double render_tokenize_seconds,
+                                                       std::uint32_t content_boundary) {
     using Clock = std::chrono::steady_clock;
 
     if (options.max_new_tokens <= 0) {
@@ -192,9 +204,11 @@ TextGenerationResult TextGenerationRunner::run_tokens(std::vector<int> prompt_to
         engine_.set_sampling(options.sampling);
         const NvtxRange range("qus.prefill");
         // Engine-level prefix caching: reuse the resident KV + GDN state when this request extends
-        // the previous turn's token sequence, prefilling only the new suffix. Falls back to a full
-        // reset prefill on any divergence, so single-shot callers (empty resident) are unchanged.
-        token = engine_.prefill_cached(prompt_token_ids);
+        // the previous turn's token sequence, prefilling only the new suffix. content_boundary lets
+        // it also reuse across a thinking-stripped re-render by rewinding to the previous turn's
+        // assistant-content boundary. Falls back to a full reset prefill on any divergence, so
+        // single-shot callers (empty resident) are unchanged.
+        token = engine_.prefill_cached(prompt_token_ids, content_boundary);
     }
     const auto prefill_end = Clock::now();
 
@@ -257,6 +271,14 @@ TextGenerationResult TextGenerationRunner::run_tokens(std::vector<int> prompt_to
                                 .reasoning = std::move(reasoning),
                                 .timings = timings,
                                 .finish_reason = finish_reason};
+}
+
+std::uint32_t generation_prompt_opener_tokens(const QwenTokenizer& tokenizer,
+                                              const ChatRenderOptions& options) {
+    if (!options.add_generation_prompt) { return 0; }
+    const std::string opener =
+        options.enable_thinking ? "<think>\n" : "<think>\n\n</think>\n\n";
+    return static_cast<std::uint32_t>(tokenizer.encode(opener).size());
 }
 
 std::vector<int> resolve_stop_token_ids(const QwenTokenizer& tokenizer,

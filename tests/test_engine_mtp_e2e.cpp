@@ -162,7 +162,11 @@ std::vector<int> drive_turn(qus::Engine& engine, const std::vector<int>& prompt,
     const auto is_stop = [&](int token) {
         return std::find(stop_ids.begin(), stop_ids.end(), token) != stop_ids.end();
     };
-    int token = use_cache ? engine.prefill_cached(prompt) : engine.prefill(prompt);
+    // This scenario appends full (unstripped) generations, so it exercises the reuse-E append path;
+    // pass the boundary at the prompt end (snapshot taken, no chunk split, generation unchanged).
+    int token = use_cache
+                    ? engine.prefill_cached(prompt, static_cast<std::uint32_t>(prompt.size()))
+                    : engine.prefill(prompt);
     out.push_back(token);
     if (is_stop(token)) { return out; }
     while (static_cast<int>(out.size()) < max_new) {
@@ -226,6 +230,61 @@ int scenario_multiturn_prefix_cache(const std::filesystem::path& weights) {
     return failures;
 }
 
+// Regression for the reproduced garbage-output bug (plan whitelist 6). A content_boundary strictly
+// inside the prompt caps a prefill chunk to end exactly at the boundary; the chunk loop must advance
+// by the processed length, not the nominal chunk size, or it silently drops [t0+len, t0+chunk) and,
+// when the boundary is near the end, never computes logits. This scenario also exercises branch-2
+// partial reuse (turn 2 shares only p1[0:boundary] then diverges), so cache-ON must equal an
+// independent full (cache-OFF) prefill token-for-token, and turn 2 must actually reuse `boundary`
+// resident tokens.
+int scenario_partial_reuse_parity(const std::filesystem::path& weights) {
+    const std::vector<int> p1     = foundation_prompt_ids();
+    const std::uint32_t boundary  = static_cast<std::uint32_t>(p1.size() / 2);
+    std::vector<int> p2(p1.begin(), p1.begin() + static_cast<std::ptrdiff_t>(boundary));
+    for (int i = 0; i < 12; ++i) { p2.push_back(1000 + i); } // divergent suffix after the shared prefix
+    constexpr int kNew = 8;
+
+    const auto run_from = [&](qus::Engine& eng, const std::vector<int>& prompt, bool cache,
+                             std::uint32_t cb) {
+        std::vector<int> out;
+        int tok = cache ? eng.prefill_cached(prompt, cb) : eng.prefill(prompt);
+        out.push_back(tok);
+        while (static_cast<int>(out.size()) < kNew) { out.push_back(eng.decode_step()); }
+        return out;
+    };
+
+    int failures = 0;
+    for (int mtp : {0, 3}) {
+        const std::string tag = mtp > 0 ? "mtp-on" : "mtp-off";
+        qus::EngineOptions options;
+        options.max_ctx          = 256;
+        options.mtp_draft_tokens = mtp;
+        options.use_cuda_graph   = false;
+
+        // Cache OFF: independent full prefills (prefill() resets state between turns).
+        qus::Engine base(options);
+        base.load(weights.string());
+        const std::vector<int> g1_off = run_from(base, p1, false, 0);
+        const std::vector<int> g2_off = run_from(base, p2, false, 0);
+
+        // Cache ON: turn 1 caps a chunk at `boundary` and snapshots GDN there; turn 2 reuses that
+        // boundary via branch-2 rewind and re-prefills only the divergent suffix.
+        qus::Engine cached(options);
+        cached.load(weights.string());
+        const std::vector<int> g1_on = run_from(cached, p1, true, boundary);
+        const std::vector<int> g2_on =
+            run_from(cached, p2, true, static_cast<std::uint32_t>(p2.size()));
+        const std::uint32_t hit2 = cached.last_prefix_cache_hit();
+
+        failures += (g1_on == g1_off) ? 0 : fail("partial reuse turn 1 parity differs (" + tag + ")");
+        failures += (g2_on == g2_off) ? 0 : fail("partial reuse turn 2 parity differs (" + tag + ")");
+        failures += (hit2 == boundary)
+                        ? 0
+                        : fail("partial reuse turn 2 did not take the branch-2 boundary (" + tag + ")");
+    }
+    return failures;
+}
+
 int scenario_graph_parity(const std::filesystem::path& weights) {
     const std::vector<int> prompt = foundation_prompt_ids();
 
@@ -257,6 +316,7 @@ int run_scenario(std::string_view scenario, const std::filesystem::path& weights
     if (scenario == "multiturn_prefix_cache") {
         return scenario_multiturn_prefix_cache(weights);
     }
+    if (scenario == "partial_reuse_parity") { return scenario_partial_reuse_parity(weights); }
     if (scenario == "graph_parity") { return scenario_graph_parity(weights); }
     std::cerr << "unknown scenario: " << scenario << '\n';
     return 2;
@@ -268,7 +328,7 @@ int main(int argc, char** argv) {
     if (argc > 2) {
         std::cerr << "usage: qus_engine_mtp_e2e_test "
                      "<batched|capacity_fallback|fallback_after_accept|stop_truncation|"
-                     "multiturn_prefix_cache|graph_parity>\n";
+                     "multiturn_prefix_cache|partial_reuse_parity|graph_parity>\n";
         return 2;
     }
     const std::filesystem::path weights = real_weights_path();
@@ -302,7 +362,7 @@ int main(int argc, char** argv) {
     } else {
         for (std::string_view scenario :
              {"batched", "capacity_fallback", "fallback_after_accept", "stop_truncation",
-              "multiturn_prefix_cache", "graph_parity"}) {
+              "multiturn_prefix_cache", "partial_reuse_parity", "graph_parity"}) {
             const int scenario_failures = run_scenario(scenario, weights);
             if (scenario_failures != 0) { failures += scenario_failures; }
         }

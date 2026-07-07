@@ -270,6 +270,95 @@ int verify_gdn_snapshot_slots(qus::model::Qwen3_6_27B& card, const qus::model::G
     return failures;
 }
 
+// Task A/B numerical gate: splitting a GDN prefill at an arbitrary boundary, snapshotting the
+// running conv+SSM state into the dedicated boundary slot (GdnState::copy_slot), then restoring it
+// and continuing from there must reproduce a single contiguous prefill bit-for-bit. This is the
+// exact primitive behind the engine's partial prefix reuse (chunk-cap snapshot at the assistant-
+// content boundary + KV rewind + slot restore), exercised here on the real GDN layer without the
+// full model or engine.
+int gdn_boundary_snapshot_parity(qus::model::Qwen3_6_27B& card, const qus::model::GdnLayerW& gdn,
+                                 qus::WorkspaceArena& work, qus::DeviceArena& x_arena,
+                                 qus::GdnState& state) {
+    constexpr int L                  = 8;
+    constexpr int B                  = 3;  // deliberately not a multiple of the GDN kernel chunk
+    const int hidden                 = qus::model::kCfg.hidden;
+    const std::int32_t boundary_slot = state.snapshot_slots - 1;
+    if (boundary_slot < 1) {
+        return fail("gdn boundary parity needs at least two GDN snapshot slots");
+    }
+
+    // Shared input tokens, column-major [hidden, L]; column t is a contiguous hidden-length block.
+    std::vector<float> host(static_cast<std::size_t>(hidden) * L);
+    qus::test::fill_uniform(host, 4242u, -0.25f, 0.25f);
+    qus::test::round_to_bf16(host);
+    std::vector<std::uint16_t> in_bits(host.size());
+    for (std::size_t i = 0; i < host.size(); ++i) { in_bits[i] = qus::test::f32_to_bf16(host[i]); }
+
+    const auto upload = [&](qus::Tensor& x, int col0, int cols) {
+        CUDA_CHECK(cudaMemcpy(x.data,
+                              in_bits.data() + static_cast<std::size_t>(col0) * hidden,
+                              static_cast<std::size_t>(cols) * hidden * sizeof(std::uint16_t),
+                              cudaMemcpyHostToDevice));
+    };
+    const auto download = [&](const qus::Tensor& x, int cols) {
+        std::vector<std::uint16_t> out(static_cast<std::size_t>(cols) * hidden);
+        CUDA_CHECK(cudaMemcpy(out.data(), x.data, out.size() * sizeof(std::uint16_t),
+                              cudaMemcpyDeviceToHost));
+        return out;
+    };
+
+    // Reference: one contiguous GDN prefill over all L tokens (reads slot 0, writes slot 0).
+    work.reset();
+    x_arena.reset();
+    state.reset();
+    qus::Tensor x_ref = x_arena.alloc(qus::DType::BF16, {hidden, L});
+    upload(x_ref, 0, L);
+    try {
+        card.test_gdn_mix(gdn, x_ref, 0, qus::model::Phase::Prefill);
+        CUDA_CHECK(cudaDeviceSynchronize());
+    } catch (const std::exception& e) {
+        return fail(std::string("gdn boundary parity reference: unexpected exception: ") + e.what());
+    }
+    const std::vector<std::uint16_t> ref = download(x_ref, L);
+
+    // Split: prefill [0:B) -> snapshot slot 0 to the boundary slot -> clobber slot 0 (reset only
+    // touches slot 0, leaving the boundary intact) -> restore the boundary into slot 0 -> prefill
+    // [B:L). The tail output must match the reference tail bit-for-bit.
+    work.reset();
+    x_arena.reset();
+    state.reset();
+    qus::Tensor x_head = x_arena.alloc(qus::DType::BF16, {hidden, B});
+    qus::Tensor x_tail = x_arena.alloc(qus::DType::BF16, {hidden, L - B});
+    upload(x_head, 0, B);
+    upload(x_tail, B, L - B);
+    try {
+        card.test_gdn_mix(gdn, x_head, 0, qus::model::Phase::Prefill);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        state.copy_slot(0, boundary_slot);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        state.reset();
+        state.copy_slot(boundary_slot, 0);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        card.test_gdn_mix(gdn, x_tail, 0, qus::model::Phase::Prefill);
+        CUDA_CHECK(cudaDeviceSynchronize());
+    } catch (const std::exception& e) {
+        return fail(std::string("gdn boundary parity split: unexpected exception: ") + e.what());
+    }
+    const std::vector<std::uint16_t> tail = download(x_tail, L - B);
+
+    for (int t = 0; t < L - B; ++t) {
+        for (int c = 0; c < hidden; ++c) {
+            const std::size_t si = static_cast<std::size_t>(t) * hidden + c;
+            const std::size_t ri = static_cast<std::size_t>(t + B) * hidden + c;
+            if (tail[si] != ref[ri]) {
+                return fail("gdn boundary snapshot parity mismatch at tail col " +
+                            std::to_string(t) + " row " + std::to_string(c));
+            }
+        }
+    }
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -324,6 +413,7 @@ int main() {
     failures += run_case(card, full, gdn, workspace, x_arena, kv, state, io,
                          qus::model::Phase::Verify, 3, "verify T=3");
     failures += verify_gdn_snapshot_slots(card, gdn, workspace, x_arena, kv, state, io);
+    failures += gdn_boundary_snapshot_parity(card, gdn, workspace, x_arena, state);
     failures += fused_prefill_uses_gate_up(card, full, workspace, x_arena);
     return failures == 0 ? 0 : 1;
 }

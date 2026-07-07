@@ -78,16 +78,21 @@ public:
 
     // Prefills/decodes an already-tokenized prompt, skipping render+encode. The
     // serving layer renders once in GenerationService::prepare() and reuses the
-    // token ids here so a served request renders exactly once.
+    // token ids here so a served request renders exactly once. `content_boundary`
+    // is the absolute assistant-content boundary (prompt_tokens - opener length),
+    // threaded into the engine prefix cache for cross-turn GDN reuse.
     TextGenerationResult generate(std::span<const int> prompt_token_ids,
-                                  const TextGenerationOptions& options);
+                                  const TextGenerationOptions& options,
+                                  std::uint32_t content_boundary);
 
 private:
     // Shared prefill/decode body. render_tokenize_seconds is folded into the
     // total time so the metric stays meaningful regardless of the entry point.
+    // `content_boundary` is passed straight to Engine::prefill_cached.
     TextGenerationResult run_tokens(std::vector<int> prompt_token_ids,
                                     const TextGenerationOptions& options,
-                                    double render_tokenize_seconds);
+                                    double render_tokenize_seconds,
+                                    std::uint32_t content_boundary);
 
     QwenTokenizer& tokenizer_;
     qus::Engine& engine_;
@@ -95,5 +100,13 @@ private:
 
 std::vector<int> resolve_stop_token_ids(const QwenTokenizer& tokenizer,
                                         const std::vector<int>& overrides);
+
+// Token length of the trailing generation-prompt opener that render_qwen_chat appends after the
+// final `<|im_start|>assistant\n` header (`<think>\n` with thinking on, `<think>\n\n</think>\n\n`
+// off). `<think>`/`</think>` are atomic special tokens, so the opener tokenizes independently of
+// its left context and this length is a clean suffix split. Returns 0 when no generation prompt is
+// added. Used to derive the assistant-content boundary for cross-turn prefix reuse.
+std::uint32_t generation_prompt_opener_tokens(const QwenTokenizer& tokenizer,
+                                              const ChatRenderOptions& options);
 
 } // namespace qus::text

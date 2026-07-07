@@ -82,10 +82,18 @@ public:
     void set_sampling(const kernels::SamplingConfig& config);
 
     int prefill(std::span<const int> ids);
-    // Single-user multi-turn prefix caching. When the resident cache is an exact prefix of `ids`,
-    // prefill only the new suffix (reusing KV + GDN state); otherwise fall back to a full reset
-    // prefill. Correct under MTP speculative decode. Returns the first generated token.
-    int prefill_cached(std::span<const int> ids);
+    // Single-user multi-turn prefix caching with partial longest-common-prefix reuse.
+    //
+    // `content_boundary` is the absolute token position of THIS turn's assistant-content boundary
+    // (prompt_tokens - generation-prompt-opener length). The engine snapshots the GDN recurrent
+    // state there so a later turn can continue the recurrence from it even after the thinking-
+    // stripped re-render diverges right after the assistant header.
+    //
+    // Reuse decision (most to least reuse): (1) append when the whole committed prefix E is a prefix
+    // of `ids`; (2) rewind to the previous turn's boundary B_prev (KV rewind + GDN snapshot restore)
+    // when `ids` matches through B_prev; (3) otherwise a full reset prefill. Correct under MTP
+    // speculative decode. Returns the first generated token.
+    int prefill_cached(std::span<const int> ids, std::uint32_t content_boundary);
     int decode_step();
     std::vector<int> generate(std::span<const int> prompt, int max_new_tokens);
 
@@ -154,6 +162,12 @@ private:
     std::vector<int> pending_sampled_;
     // Reused prefix length of the most recent prefill_cached() (0 on full reset prefill).
     std::uint32_t last_prefix_hit_tokens_ = 0;
+    // Sentinel: no reusable turn-boundary GDN snapshot is available.
+    static constexpr std::uint32_t kNoBoundary = 0xFFFFFFFFu;
+    // Absolute position of the assistant-content boundary at which the resident GDN boundary slot was
+    // snapshotted (kNoBoundary when none). Reuse-B is valid only when the incoming request matches
+    // logical_tokens_ through this position AND the snapshot was actually taken here.
+    std::uint32_t content_boundary_prev_ = kNoBoundary;
     // Host mirror of the resident logical token sequence: prompt tokens followed by every token
     // returned by prefill/decode. The reusable prefix is logical_tokens_[0 : kv_.pos]; the tail
     // beyond kv_.pos (if any) holds the last emitted-but-uncommitted bonus token.

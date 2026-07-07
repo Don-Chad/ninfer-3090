@@ -64,6 +64,9 @@ struct PreparedRequest {
     std::vector<int> prompt_token_ids;
     double render_tokenize_seconds = 0.0;
     int prompt_tokens  = 0;
+    // Absolute assistant-content boundary (prompt_tokens - generation-prompt opener length) threaded
+    // into the engine prefix cache so a later thinking-stripped turn can reuse up to it.
+    std::uint32_t content_boundary = 0;
     bool include_usage = false;
     bool tool_capable  = false;
 };

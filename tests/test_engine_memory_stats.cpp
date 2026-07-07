@@ -73,6 +73,13 @@ std::size_t gdn_single_ssm_bytes() {
            static_cast<std::size_t>(qus::model::kCfg.gdn_v_heads) * sizeof(float);
 }
 
+std::size_t gdn_single_conv_bytes() {
+    return static_cast<std::size_t>(qus::model::kCfg.n_gdn()) *
+           static_cast<std::size_t>(qus::model::kCfg.conv_dim) *
+           static_cast<std::size_t>(qus::model::kCfg.gdn_conv_state_width) *
+           sizeof(std::uint16_t);
+}
+
 std::filesystem::path make_fixture() {
     const auto path = std::filesystem::temp_directory_path() / "qus_engine_memory_stats_fixture.qus";
     const std::filesystem::path script =
@@ -217,6 +224,9 @@ int test_loaded_stats_with_cuda() {
 
     const qus::EngineMemoryStats k0_8192 = load_stats(8192, 0);
     const qus::EngineMemoryStats k5_8192 = load_stats(8192, 5);
+    // Each engine now budgets draft_tokens + 2 GDN snapshot slots: the MTP window (draft_tokens + 1)
+    // plus one dedicated turn-boundary slot for partial prefix reuse. That constant +1 slot is
+    // present in both k=0 and k=5, so the k5-k0 delta is still exactly the 5 extra MTP-window slots.
     const std::size_t expected_snapshot_increment = 5ULL * gdn_single_ssm_bytes();
     failures += expected_snapshot_increment == 720ULL * kMiB
                     ? 0
@@ -225,9 +235,18 @@ int test_loaded_stats_with_cuda() {
         k5_8192.cache.capacity_bytes >= k0_8192.cache.capacity_bytes + expected_snapshot_increment
             ? 0
             : fail("k=5 cache budget does not include the 720 MiB SSM snapshot increment");
-    failures += k5_8192.cache.used_bytes > k0_8192.cache.used_bytes + expected_snapshot_increment
+    // The k5-k0 delta covers 5 conv slots as well as 5 SSM slots (plus MTP KV and wider IO windows).
+    const std::size_t expected_slot_increment =
+        5ULL * (gdn_single_ssm_bytes() + gdn_single_conv_bytes());
+    failures += k5_8192.cache.used_bytes > k0_8192.cache.used_bytes + expected_slot_increment
                     ? 0
-                    : fail("k=5 cache allocation did not materialize snapshot slots");
+                    : fail("k=5 cache allocation did not materialize conv+SSM snapshot slots");
+    // The non-MTP engine must still budget the dedicated turn-boundary slot on top of its single
+    // running slot: at least two conv + two SSM GDN slots even with no MTP window.
+    const std::size_t k0_min_gdn_state = 2ULL * (gdn_single_ssm_bytes() + gdn_single_conv_bytes());
+    failures += k0_8192.cache.used_bytes >= k0_min_gdn_state
+                    ? 0
+                    : fail("k=0 cache does not budget the turn-boundary GDN snapshot slot");
     failures += k5_8192.workspace.capacity_bytes >= k0_8192.workspace.capacity_bytes
                     ? 0
                     : fail("k=5 workspace capacity regressed below k=0");
