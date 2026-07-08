@@ -88,6 +88,12 @@ public:
     // Validate + tokenize (tokenizer only). Throws ApiException on bad/oversized input.
     [[nodiscard]] PreparedRequest prepare(const GenerationRequest& req) const;
 
+    // Render + tokenize only: the prompt token count for the Anthropic
+    // count_tokens endpoint. No context-length check and no engine lock (tokenizer
+    // only). Throws ApiException on bad input (unsupported role/modality) like
+    // prepare(), but never rejects an over-context prompt.
+    [[nodiscard]] int count_prompt_tokens(const GenerationRequest& req) const;
+
     // Execute under the engine lock. When sink != nullptr, deltas stream through
     // the sink and text is left empty; otherwise the full text is returned.
     GenerationOutcome run(const PreparedRequest& prepared, const StreamSink* sink);

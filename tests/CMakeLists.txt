@@ -58,6 +58,11 @@ add_executable(qus_tool_call_parser_test test_tool_call_parser.cpp)
 target_link_libraries(qus_tool_call_parser_test PRIVATE qus_serve)
 target_include_directories(qus_tool_call_parser_test PRIVATE ${PROJECT_SOURCE_DIR}/third_party)
 add_test(NAME qus_tool_call_parser_test COMMAND qus_tool_call_parser_test)
+# Serving-layer Anthropic Messages schema/translation contract (consumed by Claude Code).
+add_executable(qus_anthropic_schema_test test_anthropic_schema.cpp)
+target_link_libraries(qus_anthropic_schema_test PRIVATE qus_serve)
+target_include_directories(qus_anthropic_schema_test PRIVATE ${PROJECT_SOURCE_DIR}/third_party)
+add_test(NAME qus_anthropic_schema_test COMMAND qus_anthropic_schema_test)
 qus_add_test(qus_bench_support_test
              SOURCES test_qus_bench_support.cpp
                      ${PROJECT_SOURCE_DIR}/bench/qus_bench_support.cpp

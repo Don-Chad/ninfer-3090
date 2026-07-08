@@ -9,41 +9,13 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
-#include <stdexcept>
 #include <string>
 
 namespace qus::serve {
 
-// A structured API error mapped 1:1 onto an OpenAI error object + HTTP status.
-struct ApiError {
-    int status          = 400;
-    std::string type    = "invalid_request_error";
-    std::string message;
-    std::string param;  // optional
-    std::string code;   // optional
-};
-
-class ApiException : public std::runtime_error {
-public:
-    explicit ApiException(ApiError error)
-        : std::runtime_error(error.message), error_(std::move(error)) {}
-
-    [[nodiscard]] const ApiError& error() const noexcept { return error_; }
-
-private:
-    ApiError error_;
-};
-
-// Server-side context needed while parsing/validating a request.
-struct RequestLimits {
-    int default_max_tokens    = 512;
-    std::uint32_t max_context = 8192;
-};
-
-struct CompletionUsage {
-    int prompt_tokens     = 0;
-    int completion_tokens = 0;
-};
+// ApiError, ApiException, RequestLimits, and CompletionUsage are the wire-format
+// independent request/error types; they live in request.h and are shared by the
+// OpenAI and Anthropic schema layers.
 
 // Parse an already-decoded JSON body into a GenerationRequest. Throws ApiException
 // on malformed or unsupported requests (n>1, tools, non-text response_format, ...).

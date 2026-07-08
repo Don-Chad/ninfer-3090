@@ -1,6 +1,5 @@
 #include "qus/serve/generation_service.h"
 
-#include "qus/serve/openai_schema.h"
 #include "qus/serve/tool_call_parser.h"
 #include "qus/serve/translate.h"
 
@@ -141,6 +140,15 @@ PreparedRequest GenerationService::prepare(const GenerationRequest& req) const {
     }
     prepared.prompt_token_ids = std::move(ids);
     return prepared;
+}
+
+int GenerationService::count_prompt_tokens(const GenerationRequest& req) const {
+    const std::vector<qus::text::ChatMessage> messages = to_chat_messages(req);
+    qus::text::TextGenerationOptions options            = to_generation_options(req, options_);
+    qus::text::ChatRenderOptions render_options         = options.render_options;
+    render_options.enable_thinking                      = options.enable_thinking;
+    const std::string prompt = qus::text::render_qwen_chat(messages, render_options);
+    return static_cast<int>(tokenizer_->encode(prompt).size());
 }
 
 GenerationOutcome GenerationService::run(const PreparedRequest& prepared, const StreamSink* sink) {

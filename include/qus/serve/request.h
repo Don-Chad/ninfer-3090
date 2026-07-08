@@ -11,11 +11,44 @@
 
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace qus::serve {
+
+// A structured API error mapped onto an error object + HTTP status. Wire-format
+// independent: each protocol layer renders it into its own error body shape.
+struct ApiError {
+    int status          = 400;
+    std::string type    = "invalid_request_error";
+    std::string message;
+    std::string param;  // optional
+    std::string code;   // optional
+};
+
+class ApiException : public std::runtime_error {
+public:
+    explicit ApiException(ApiError error)
+        : std::runtime_error(error.message), error_(std::move(error)) {}
+
+    [[nodiscard]] const ApiError& error() const noexcept { return error_; }
+
+private:
+    ApiError error_;
+};
+
+// Server-side context needed while parsing/validating a request.
+struct RequestLimits {
+    int default_max_tokens    = 512;
+    std::uint32_t max_context = 8192;
+};
+
+struct CompletionUsage {
+    int prompt_tokens     = 0;
+    int completion_tokens = 0;
+};
 
 // A single piece of message content. Only Text is executable today; the other
 // kinds are modeled so the DTO layer can carry multimodal content and the
