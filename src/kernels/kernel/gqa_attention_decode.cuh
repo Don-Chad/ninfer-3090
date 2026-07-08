@@ -64,8 +64,7 @@ __device__ __forceinline__ bool gqa_valid_q_head(int kv_head, int q_head) {
            q_head < (kv_head + 1) * kGqaGroupSize && q_head < kGqaQHeads;
 }
 
-__device__ __forceinline__ int gqa_small_t_active_splits(int window, int max_splits, int tokens) {
-    if (tokens <= 1) { return max_splits; }
+__device__ __forceinline__ int gqa_small_t_active_splits(int window, int max_splits) {
     if (window <= 0) { return max_splits; }
     int target_keys_per_split = 480;
     if (window <= 4096) {
@@ -211,7 +210,7 @@ __launch_bounds__(128, 2) __global__
     }
 
     const int window             = last_pos + 1;
-    const int active_split_count = gqa_small_t_active_splits(window, split_count, tokens);
+    const int active_split_count = gqa_small_t_active_splits(window, split_count);
     if (split >= active_split_count) { return; }
 
     const int kps         = (window + active_split_count - 1) / active_split_count;
@@ -519,7 +518,7 @@ __launch_bounds__(256) __global__
     if (q_head >= kGqaQHeads || token >= tokens) { return; }
     const int last_pos           = positions[tokens - 1];
     const int window             = last_pos + 1;
-    const int active_split_count = gqa_small_t_active_splits(window, split_count, tokens);
+    const int active_split_count = gqa_small_t_active_splits(window, split_count);
 
     __shared__ float reduce[256];
 

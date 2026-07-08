@@ -15,16 +15,19 @@ std::int32_t ceil_div_i32(std::int32_t x, std::int32_t y) {
     return (x + y - 1) / y;
 }
 
-std::int32_t gqa_small_t_split_upper_bound(std::int32_t max_context, std::int32_t tokens) {
-    if (tokens <= 1) { return kGqaDecodeSplits; }
-    if (max_context <= 0) { return kGqaDecodeSplits; }
+// Split-KV grid sizing keyed on the actual attention window (kv.pos + tokens),
+// not the allocation ceiling. Over-splitting inflates the partial scratch that
+// the reduce kernel must stream back, so the count must track the live context.
+// Mirrors the device-side gqa_small_t_active_splits tiers so host launch and
+// in-kernel early-exit agree. Same schedule for every T, including decode T=1.
+std::int32_t gqa_small_t_split_upper_bound(std::int32_t window) {
+    if (window <= 0) { return kGqaDecodeSplits; }
 
     constexpr std::int32_t kMinSplits = 4;
     std::int32_t splits               = kMinSplits;
 
     const auto include_tier = [&](std::int32_t window_limit, std::int32_t target_keys_per_split) {
-        const std::int32_t tier_window =
-            (max_context < window_limit) ? max_context : window_limit;
+        const std::int32_t tier_window = (window < window_limit) ? window : window_limit;
         if (tier_window > 0) {
             const std::int32_t tier_splits = ceil_div_i32(tier_window, target_keys_per_split);
             splits                         = (splits > tier_splits) ? splits : tier_splits;
@@ -32,9 +35,9 @@ std::int32_t gqa_small_t_split_upper_bound(std::int32_t max_context, std::int32_
     };
 
     include_tier(4096, 64);
-    if (max_context > 4096) { include_tier(8198, 128); }
-    if (max_context > 8198) { include_tier(16390, 256); }
-    if (max_context > 16390) { include_tier(max_context, 480); }
+    if (window > 4096) { include_tier(8198, 128); }
+    if (window > 8198) { include_tier(16390, 256); }
+    if (window > 16390) { include_tier(window, 480); }
 
     return (splits < kGqaDecodeSplits) ? splits : kGqaDecodeSplits;
 }
@@ -42,11 +45,11 @@ std::int32_t gqa_small_t_split_upper_bound(std::int32_t max_context, std::int32_
 template <int TokenTile, int WarpsPerCta>
 void launch_tc_partial(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& pos,
                        float scale, Tensor& cache_k, Tensor& cache_v, std::int32_t padded_context,
-                       std::int32_t max_context, Tensor& partial_acc, Tensor& partial_m,
-                       Tensor& partial_l, cudaStream_t stream) {
+                       std::int32_t max_context, std::int32_t window, Tensor& partial_acc,
+                       Tensor& partial_m, Tensor& partial_l, cudaStream_t stream) {
     constexpr int kBlock = 32 * WarpsPerCta;
     const int tokens     = q.ne[2];
-    const int splits     = gqa_small_t_split_upper_bound(max_context, tokens);
+    const int splits     = gqa_small_t_split_upper_bound(window);
     const dim3 grid(kGqaKVHeads, splits, 1);
     gqa_attention_small_t_tc_partial_kernel<TokenTile, WarpsPerCta><<<grid, kBlock, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(q.data), static_cast<const __nv_bfloat16*>(k.data),
@@ -70,31 +73,36 @@ void gqa_attention_small_t_launch(const Tensor& q, const Tensor& k, const Tensor
 
     const auto padded_context = static_cast<std::int32_t>(kv.padded_context);
     const auto max_context    = static_cast<std::int32_t>(kv.max_context);
+    // Split count tracks the live attention window (kv.pos is the pre-round base
+    // position; positions run [base, base+T)), so decode/verify at a short context
+    // inside a large allocation is not over-split. The kernel still receives the
+    // real max_context for cache-bounds checks.
+    const auto window = static_cast<std::int32_t>(kv.pos) + q.ne[2];
 
     switch (q.ne[2]) {
     case 1:
         launch_tc_partial<1, 2>(q, k, v, pos, scale, cache_k, cache_v, padded_context, max_context,
-                                partial_acc, partial_m, partial_l, stream);
+                                window, partial_acc, partial_m, partial_l, stream);
         break;
     case 2:
         launch_tc_partial<2, 4>(q, k, v, pos, scale, cache_k, cache_v, padded_context, max_context,
-                                partial_acc, partial_m, partial_l, stream);
+                                window, partial_acc, partial_m, partial_l, stream);
         break;
     case 3:
         launch_tc_partial<3, 4>(q, k, v, pos, scale, cache_k, cache_v, padded_context, max_context,
-                                partial_acc, partial_m, partial_l, stream);
+                                window, partial_acc, partial_m, partial_l, stream);
         break;
     case 4:
         launch_tc_partial<4, 4>(q, k, v, pos, scale, cache_k, cache_v, padded_context, max_context,
-                                partial_acc, partial_m, partial_l, stream);
+                                window, partial_acc, partial_m, partial_l, stream);
         break;
     case 5:
         launch_tc_partial<5, 4>(q, k, v, pos, scale, cache_k, cache_v, padded_context, max_context,
-                                partial_acc, partial_m, partial_l, stream);
+                                window, partial_acc, partial_m, partial_l, stream);
         break;
     case 6:
         launch_tc_partial<6, 4>(q, k, v, pos, scale, cache_k, cache_v, padded_context, max_context,
-                                partial_acc, partial_m, partial_l, stream);
+                                window, partial_acc, partial_m, partial_l, stream);
         break;
     default:
         throw std::invalid_argument("gqa_attention_small_t_launch: unsupported T");
@@ -102,7 +110,7 @@ void gqa_attention_small_t_launch(const Tensor& q, const Tensor& k, const Tensor
 
     constexpr int kReduceBlock = 256;
     constexpr int kDChunk      = 64;
-    const int partial_splits   = gqa_small_t_split_upper_bound(max_context, q.ne[2]);
+    const int partial_splits   = gqa_small_t_split_upper_bound(window);
     const dim3 reduce_grid(kGqaQHeads, (kGqaHeadDim + kDChunk - 1) / kDChunk, q.ne[2]);
     gqa_attention_small_t_reduce_output_kernel<kDChunk><<<reduce_grid, kReduceBlock, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(partial_acc.data),

@@ -73,7 +73,6 @@ std::int32_t decode_kps(std::int32_t pos_value) {
 }
 
 std::int32_t small_t_active_splits(std::int32_t tokens, std::int32_t context) {
-    if (tokens <= 1) { return kGqaDecodeSplits; }
     const std::int32_t window          = context + tokens;
     std::int32_t target_keys_per_split = 480;
     if (window <= 4096) {
@@ -552,6 +551,7 @@ void run_append_small_t(KVCache& kv, std::int32_t tokens, std::int32_t context) 
     Tensor tpos(pos.p, DType::I32, {tokens});
     Tensor tout(out.p, DType::BF16, {kHeadDim, kQHeads, tokens});
 
+    kv.pos = static_cast<std::uint32_t>(context);
     const DecodeBytes bytes = append_small_t_bytes(tokens, context);
     const Result r          = bench_loop(
         [&](cudaStream_t s) {
@@ -583,6 +583,7 @@ void run_append_small_t_profile_once(KVCache& kv, std::int32_t tokens, std::int3
     Tensor tpos(pos.p, DType::I32, {tokens});
     Tensor tout(out.p, DType::BF16, {kHeadDim, kQHeads, tokens});
 
+    kv.pos = static_cast<std::uint32_t>(context);
     const DecodeBytes bytes = append_small_t_bytes(tokens, context);
     cudaStream_t stream     = nullptr;
     if (cold_cache != nullptr) {
