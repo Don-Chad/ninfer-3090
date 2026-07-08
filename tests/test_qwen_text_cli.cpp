@@ -37,6 +37,8 @@ int test_prompt_mode_defaults() {
     failures += check(options.prefill_chunk == qus::model::kDefaultPrefillChunk,
                       "prompt mode: prefill-chunk default mismatch");
     failures += check(options.device == 0, "prompt mode: device default mismatch");
+    failures +=
+        check(options.kv_dtype == qus::DType::BF16, "prompt mode: kv dtype default mismatch");
     failures += check(options.output_mode == qus::text::OutputMode::Clean,
                       "prompt mode: output mode default mismatch");
     failures += check(!options.print_token_ids, "prompt mode: print-token-ids default mismatch");
@@ -45,18 +47,18 @@ int test_prompt_mode_defaults() {
 }
 
 int test_messages_mode_options() {
-    const qus::text::CliOptions options = parse({"qwen-text",       "weights.qus",
-                                                 "--tokenizer",     "tokenizer",
-                                                 "--messages",      "messages.json",
-                                                 "--max-new",       "16",
-                                                 "--max-context",   "4096",
-                                                 "--prefill-chunk", "128",
-                                                 "--device",        "1",
-                                                 "--mtp-draft-tokens",
-                                                 "5",
-                                                 "--raw-output",    "--print-token-ids",
-                                                 "--stop-token-id", "248046",
-                                                 "--stop-token-id", "248044"});
+    const qus::text::CliOptions options = parse({"qwen-text",          "weights.qus",
+                                                 "--tokenizer",        "tokenizer",
+                                                 "--messages",         "messages.json",
+                                                 "--max-new",          "16",
+                                                 "--max-context",      "4096",
+                                                 "--prefill-chunk",    "128",
+                                                 "--device",           "1",
+                                                 "--kv-dtype",         "int8",
+                                                 "--mtp-draft-tokens", "5",
+                                                 "--raw-output",       "--print-token-ids",
+                                                 "--stop-token-id",    "248046",
+                                                 "--stop-token-id",    "248044"});
 
     int failures = 0;
     failures +=
@@ -69,6 +71,7 @@ int test_messages_mode_options() {
     failures += check(options.max_context == 4096, "messages mode: max-context mismatch");
     failures += check(options.prefill_chunk == 128, "messages mode: prefill-chunk mismatch");
     failures += check(options.device == 1, "messages mode: device mismatch");
+    failures += check(options.kv_dtype == qus::DType::I8, "messages mode: kv dtype mismatch");
     failures += check(options.mtp_draft_tokens == 5, "messages mode: mtp draft tokens mismatch");
     failures += check(options.output_mode == qus::text::OutputMode::Raw,
                       "messages mode: output mode mismatch");
@@ -96,6 +99,8 @@ int test_usage_documents_streaming_output_boundary() {
                       "usage does not document prefill chunk");
     failures += check(usage.find("--mtp-draft-tokens N") != std::string::npos,
                       "usage does not document mtp draft tokens");
+    failures += check(usage.find("--kv-dtype bf16|int8") != std::string::npos,
+                      "usage does not document kv dtype");
     return failures;
 }
 
@@ -128,6 +133,9 @@ int test_rejections() {
     failures += expect_invalid({"qwen-text", "weights.qus", "--tokenizer", "tokenizer", "--prompt",
                                 "hello", "--mtp-draft-tokens", "6"},
                                "too many mtp draft tokens");
+    failures += expect_invalid({"qwen-text", "weights.qus", "--tokenizer", "tokenizer", "--prompt",
+                                "hello", "--kv-dtype", "fp8"},
+                               "invalid kv dtype");
     return failures;
 }
 

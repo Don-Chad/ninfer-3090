@@ -45,8 +45,7 @@ int expect_absent(const qus::ArenaMemoryStats& stats, std::string_view label) {
     return failures;
 }
 
-int expect_present(const qus::ArenaMemoryStats& stats, std::string_view label,
-                   bool require_used) {
+int expect_present(const qus::ArenaMemoryStats& stats, std::string_view label, bool require_used) {
     int failures = 0;
     failures += stats.present ? 0 : fail(std::string(label) + " absent");
     failures += stats.capacity_bytes > 0 ? 0 : fail(std::string(label) + " zero capacity");
@@ -76,12 +75,27 @@ std::size_t gdn_single_ssm_bytes() {
 std::size_t gdn_single_conv_bytes() {
     return static_cast<std::size_t>(qus::model::kCfg.n_gdn()) *
            static_cast<std::size_t>(qus::model::kCfg.conv_dim) *
-           static_cast<std::size_t>(qus::model::kCfg.gdn_conv_state_width) *
-           sizeof(std::uint16_t);
+           static_cast<std::size_t>(qus::model::kCfg.gdn_conv_state_width) * sizeof(std::uint16_t);
+}
+
+std::size_t kv_payload_bytes(std::uint32_t max_context, int layers, qus::DType dtype) {
+    const std::uint32_t padded_context = ((max_context + 127U) / 128U) * 128U;
+    const std::size_t vectors = static_cast<std::size_t>(layers) * static_cast<std::size_t>(2) *
+                                static_cast<std::size_t>(qus::model::kCfg.n_kv) *
+                                static_cast<std::size_t>(padded_context);
+    std::size_t bytes =
+        vectors * static_cast<std::size_t>(qus::model::kCfg.head_dim) * qus::dtype_size(dtype);
+    if (dtype == qus::DType::I8) {
+        bytes += vectors *
+                 static_cast<std::size_t>(qus::model::kCfg.head_dim / qus::kKvQuantGroup) *
+                 qus::dtype_size(qus::DType::FP16);
+    }
+    return bytes;
 }
 
 std::filesystem::path make_fixture() {
-    const auto path = std::filesystem::temp_directory_path() / "qus_engine_memory_stats_fixture.qus";
+    const auto path =
+        std::filesystem::temp_directory_path() / "qus_engine_memory_stats_fixture.qus";
     const std::filesystem::path script =
         std::filesystem::path(QUS_SOURCE_DIR) / "tests/fixtures/make_q5090_fixture.py";
     const std::string command =
@@ -99,12 +113,15 @@ int test_unloaded_stats_do_not_need_cuda() {
     options.work_bytes   = 16ULL * kMiB;
 
     qus::Engine engine(options);
-    int failures = 0;
+    int failures                       = 0;
     const qus::EngineMemoryStats stats = engine.memory_stats();
     failures += !stats.loaded ? 0 : fail("unloaded stats reported loaded");
     failures += stats.device == 7 ? 0 : fail("unloaded stats device mismatch");
     failures += expect_u32(stats.max_context, 123, "unloaded stats max_context");
     failures += expect_u32(stats.position, 0, "unloaded stats position");
+    failures += stats.kv_dtype == qus::DType::BF16 ? 0 : fail("unloaded kv dtype mismatch");
+    failures += expect_size(stats.kv_quant_group, 0, "unloaded kv quant group");
+    failures += expect_size(stats.kv_cache_payload_bytes, 0, "unloaded kv payload");
     failures += expect_absent(stats.weights, "unloaded weights");
     failures += expect_absent(stats.cache, "unloaded cache");
     failures += expect_absent(stats.workspace, "unloaded workspace");
@@ -152,14 +169,14 @@ int test_loaded_stats_with_cuda() {
 
     const std::filesystem::path fixture = make_fixture();
     qus::EngineOptions options;
-    options.device         = 0;
-    options.max_ctx        = 4;
-    options.prefill_chunk  = 128;
+    options.device        = 0;
+    options.max_ctx       = 4;
+    options.prefill_chunk = 128;
 
     qus::Engine engine(options);
     engine.load(fixture.string());
 
-    int failures = 0;
+    int failures                       = 0;
     const qus::EngineMemoryStats stats = engine.memory_stats();
     failures += stats.loaded ? 0 : fail("loaded stats did not report loaded");
     failures += stats.device == 0 ? 0 : fail("loaded stats device mismatch");
@@ -168,6 +185,12 @@ int test_loaded_stats_with_cuda() {
     failures += expect_present(stats.weights, "loaded weights", true);
     failures += expect_present(stats.cache, "loaded cache", true);
     failures += expect_present(stats.workspace, "loaded workspace", false);
+    failures += stats.kv_dtype == qus::DType::BF16 ? 0 : fail("loaded kv dtype mismatch");
+    failures += expect_size(stats.kv_quant_group, 0, "loaded kv quant group");
+    failures +=
+        expect_size(stats.kv_cache_payload_bytes,
+                    kv_payload_bytes(options.max_ctx, qus::model::kCfg.n_full(), qus::DType::BF16),
+                    "loaded kv payload");
     failures += expect_size(stats.workspace.capacity_bytes, qus::Engine::default_work_bytes(128),
                             "workspace capacity");
     failures += stats.q5090_loaded_payload_bytes > 0 ? 0 : fail("loaded payload bytes zero");
@@ -179,8 +202,8 @@ int test_loaded_stats_with_cuda() {
     failures += expect_peak_reset(after_reset.weights, "weights after reset");
     failures += expect_peak_reset(after_reset.cache, "cache after reset");
     failures += expect_peak_reset(after_reset.workspace, "workspace after reset");
-    failures += expect_size(after_reset.q5090_loaded_payload_bytes, stats.q5090_loaded_payload_bytes,
-                            "loaded payload stable after reset");
+    failures += expect_size(after_reset.q5090_loaded_payload_bytes,
+                            stats.q5090_loaded_payload_bytes, "loaded payload stable after reset");
     failures += expect_size(after_reset.q5090_tensor_count, stats.q5090_tensor_count,
                             "tensor count stable after reset");
     failures += expect_size(after_reset.q5090_quant_count, stats.q5090_quant_count,
@@ -211,6 +234,24 @@ int test_loaded_stats_with_cuda() {
                     ? 0
                     : fail("MTP load did not increase workspace capacity");
 
+    qus::EngineOptions int8_options;
+    int8_options.device        = 0;
+    int8_options.max_ctx       = 4;
+    int8_options.prefill_chunk = 128;
+    int8_options.kv_dtype      = qus::DType::I8;
+    qus::Engine int8_engine(int8_options);
+    int8_engine.load(fixture.string());
+    const qus::EngineMemoryStats int8_stats = int8_engine.memory_stats();
+    failures += int8_stats.kv_dtype == qus::DType::I8 ? 0 : fail("int8 kv dtype mismatch");
+    failures += expect_size(int8_stats.kv_quant_group, qus::kKvQuantGroup, "int8 kv quant group");
+    failures += expect_size(
+        int8_stats.kv_cache_payload_bytes,
+        kv_payload_bytes(int8_options.max_ctx, qus::model::kCfg.n_full(), qus::DType::I8),
+        "int8 kv payload");
+    failures += int8_stats.kv_cache_payload_bytes < stats.kv_cache_payload_bytes
+                    ? 0
+                    : fail("int8 kv payload did not shrink below bf16");
+
     auto load_stats = [&](std::uint32_t max_ctx, int draft_tokens) {
         qus::EngineOptions opts;
         opts.device           = 0;
@@ -224,9 +265,10 @@ int test_loaded_stats_with_cuda() {
 
     const qus::EngineMemoryStats k0_8192 = load_stats(8192, 0);
     const qus::EngineMemoryStats k5_8192 = load_stats(8192, 5);
-    // Each engine now budgets draft_tokens + 2 GDN snapshot slots: the MTP window (draft_tokens + 1)
-    // plus one dedicated turn-boundary slot for partial prefix reuse. That constant +1 slot is
-    // present in both k=0 and k=5, so the k5-k0 delta is still exactly the 5 extra MTP-window slots.
+    // Each engine now budgets draft_tokens + 2 GDN snapshot slots: the MTP window (draft_tokens +
+    // 1) plus one dedicated turn-boundary slot for partial prefix reuse. That constant +1 slot is
+    // present in both k=0 and k=5, so the k5-k0 delta is still exactly the 5 extra MTP-window
+    // slots.
     const std::size_t expected_snapshot_increment = 5ULL * gdn_single_ssm_bytes();
     failures += expected_snapshot_increment == 720ULL * kMiB
                     ? 0
@@ -235,7 +277,8 @@ int test_loaded_stats_with_cuda() {
         k5_8192.cache.capacity_bytes >= k0_8192.cache.capacity_bytes + expected_snapshot_increment
             ? 0
             : fail("k=5 cache budget does not include the 720 MiB SSM snapshot increment");
-    // The k5-k0 delta covers 5 conv slots as well as 5 SSM slots (plus MTP KV and wider IO windows).
+    // The k5-k0 delta covers 5 conv slots as well as 5 SSM slots (plus MTP KV and wider IO
+    // windows).
     const std::size_t expected_slot_increment =
         5ULL * (gdn_single_ssm_bytes() + gdn_single_conv_bytes());
     failures += k5_8192.cache.used_bytes > k0_8192.cache.used_bytes + expected_slot_increment

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "qus/core/dtype.h"
 #include "qus/model/config.h"
 
 #include <cstdint>
@@ -25,6 +26,7 @@ struct ServeOptions {
     std::uint32_t prefill_chunk = model::kDefaultPrefillChunk;
     int device                = 0;
     int mtp_draft_tokens      = 0;
+    DType kv_dtype            = DType::BF16;
     bool use_cuda_graph       = true;
     bool use_lm_head_draft    = false;
     bool enable_thinking      = true;  // default thinking mode for the generation prompt (--no-thinking opts out)

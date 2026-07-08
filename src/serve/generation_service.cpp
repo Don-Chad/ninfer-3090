@@ -93,6 +93,7 @@ GenerationService::GenerationService(ServeOptions options) : options_(std::move(
     engine_options.max_ctx          = options_.max_context;
     engine_options.prefill_chunk    = options_.prefill_chunk;
     engine_options.mtp_draft_tokens = options_.mtp_draft_tokens;
+    engine_options.kv_dtype         = options_.kv_dtype;
     engine_options.use_cuda_graph   = options_.use_cuda_graph;
     engine_options.use_lm_head_draft = options_.use_lm_head_draft;
     engine_options.stop_token_ids   = tokenizer_->default_stop_token_ids();
@@ -100,6 +101,8 @@ GenerationService::GenerationService(ServeOptions options) : options_(std::move(
     engine_ = std::make_unique<qus::Engine>(engine_options);
     engine_->load(options_.weights_path);
 }
+
+qus::EngineMemoryStats GenerationService::memory_stats() const { return engine_->memory_stats(); }
 
 PreparedRequest GenerationService::prepare(const GenerationRequest& req) const {
     PreparedRequest prepared;

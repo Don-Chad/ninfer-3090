@@ -85,6 +85,17 @@ std::string format_arena_peak(const qus::ArenaMemoryStats& stats) {
            format_bytes(static_cast<std::uint64_t>(stats.capacity_bytes));
 }
 
+std::string format_kv_dtype(qus::DType dtype) {
+    switch (dtype) {
+    case qus::DType::BF16:
+        return "bf16";
+    case qus::DType::I8:
+        return "int8";
+    default:
+        return "unknown";
+    }
+}
+
 std::string format_percent(std::uint64_t done, std::uint64_t total) {
     std::ostringstream out;
     out << std::fixed << std::setprecision(1);
@@ -165,13 +176,14 @@ int main(int argc, char** argv) {
         };
 
         qus::EngineOptions engine_options;
-        engine_options.device         = cli.device;
-        engine_options.max_ctx        = cli.max_context;
-        engine_options.prefill_chunk  = cli.prefill_chunk;
-        engine_options.mtp_draft_tokens = cli.mtp_draft_tokens;
-        engine_options.stop_token_ids = stop_token_ids;
-        engine_options.progress       = &progress;
-        engine_options.use_cuda_graph = cli.use_cuda_graph;
+        engine_options.device            = cli.device;
+        engine_options.max_ctx           = cli.max_context;
+        engine_options.prefill_chunk     = cli.prefill_chunk;
+        engine_options.mtp_draft_tokens  = cli.mtp_draft_tokens;
+        engine_options.kv_dtype          = cli.kv_dtype;
+        engine_options.stop_token_ids    = stop_token_ids;
+        engine_options.progress          = &progress;
+        engine_options.use_cuda_graph    = cli.use_cuda_graph;
         engine_options.use_lm_head_draft = cli.use_lm_head_draft;
         qus::Engine engine(engine_options);
 
@@ -266,6 +278,9 @@ int main(int argc, char** argv) {
             static_cast<std::uint64_t>(memory.workspace.capacity_bytes);
         print_metric("gpu weights used", format_arena_used(memory.weights));
         print_metric("gpu cache used", format_arena_used(memory.cache));
+        print_metric("kv cache dtype", format_kv_dtype(memory.kv_dtype));
+        print_metric("kv cache payload",
+                     format_bytes(static_cast<std::uint64_t>(memory.kv_cache_payload_bytes)));
         print_metric("gpu workspace peak", format_arena_peak(memory.workspace));
         print_metric("gpu reserved total", format_bytes(reserved_bytes));
 

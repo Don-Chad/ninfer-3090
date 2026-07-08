@@ -21,7 +21,7 @@ int parse_nonnegative_int(const char* text, const char* label) {
 }
 
 float parse_float_in(const char* text, const char* label, float lo, float hi) {
-    char* end         = nullptr;
+    char* end          = nullptr;
     const double value = std::strtod(text, &end);
     if (end == text || *end != '\0' || !(value >= lo) || !(value <= hi)) {
         throw std::invalid_argument(std::string("invalid ") + label + ": " + text);
@@ -30,12 +30,19 @@ float parse_float_in(const char* text, const char* label, float lo, float hi) {
 }
 
 std::uint64_t parse_u64(const char* text, const char* label) {
-    char* end                     = nullptr;
+    char* end                      = nullptr;
     const unsigned long long value = std::strtoull(text, &end, 10);
     if (end == text || *end != '\0') {
         throw std::invalid_argument(std::string("invalid ") + label + ": " + text);
     }
     return static_cast<std::uint64_t>(value);
+}
+
+DType parse_kv_dtype(const char* text) {
+    const std::string value(text);
+    if (value == "bf16") { return DType::BF16; }
+    if (value == "int8") { return DType::I8; }
+    throw std::invalid_argument("invalid kv-dtype: " + value);
 }
 
 } // namespace
@@ -51,13 +58,14 @@ std::string serve_usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <weights.qus> --tokenizer <dir> [--host H] [--port N] [--api-key KEY] "
            "[--model-id ID] [--max-context N] [--prefill-chunk N] [--device N] "
-           "[--mtp-draft-tokens N] [--default-max-tokens N] [--no-cuda-graph] "
+           "[--kv-dtype bf16|int8] [--mtp-draft-tokens N] [--default-max-tokens N] "
+           "[--no-cuda-graph] "
            "[--lm-head-draft] [--no-thinking] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       serves an OpenAI-compatible Chat Completions endpoint\n"
-           "       --default-max-tokens defaults to min(max_context/2, "
-           + std::to_string(kDefaultMaxTokensCeiling) +
+           "       --default-max-tokens defaults to min(max_context/2, " +
+           std::to_string(kDefaultMaxTokensCeiling) +
            ") when omitted\n"
            "       sampler defaults to Qwen3 thinking (temperature 0.6, top-p 0.95, "
            "top-k 20, presence-penalty 1.0); a request may override any field.\n"
@@ -97,6 +105,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 parse_nonnegative_int(require_value("--prefill-chunk"), "prefill-chunk"));
         } else if (arg == "--device") {
             options.device = parse_nonnegative_int(require_value("--device"), "device");
+        } else if (arg == "--kv-dtype") {
+            options.kv_dtype = parse_kv_dtype(require_value("--kv-dtype"));
         } else if (arg == "--mtp-draft-tokens") {
             options.mtp_draft_tokens =
                 parse_nonnegative_int(require_value("--mtp-draft-tokens"), "mtp-draft-tokens");
@@ -120,8 +130,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--top-k") {
             options.sampling_top_k = parse_nonnegative_int(require_value("--top-k"), "top-k");
         } else if (arg == "--presence-penalty") {
-            options.sampling_presence_penalty =
-                parse_float_in(require_value("--presence-penalty"), "presence-penalty", -2.0f, 2.0f);
+            options.sampling_presence_penalty = parse_float_in(require_value("--presence-penalty"),
+                                                               "presence-penalty", -2.0f, 2.0f);
         } else if (arg == "--frequency-penalty") {
             options.sampling_frequency_penalty = parse_float_in(
                 require_value("--frequency-penalty"), "frequency-penalty", -2.0f, 2.0f);
@@ -138,8 +148,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         throw std::invalid_argument("--port must be in [1,65535]");
     }
     if (options.max_context == 0) { throw std::invalid_argument("--max-context must be positive"); }
-    if (options.prefill_chunk == 0 ||
-        options.prefill_chunk % model::kPrefillChunkAlignment != 0) {
+    if (options.prefill_chunk == 0 || options.prefill_chunk % model::kPrefillChunkAlignment != 0) {
         throw std::invalid_argument("--prefill-chunk must be a positive multiple of 128");
     }
     if (default_max_tokens_explicit) {

@@ -84,6 +84,7 @@ public:
 
     [[nodiscard]] const ServeOptions& options() const noexcept { return options_; }
     [[nodiscard]] const ServerCapabilities& capabilities() const noexcept { return caps_; }
+    [[nodiscard]] qus::EngineMemoryStats memory_stats() const;
 
     // Validate + tokenize (tokenizer only). Throws ApiException on bad/oversized input.
     [[nodiscard]] PreparedRequest prepare(const GenerationRequest& req) const;

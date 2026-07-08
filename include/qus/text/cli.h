@@ -1,5 +1,6 @@
 #pragma once
 
+#include "qus/core/dtype.h"
 #include "qus/model/config.h"
 
 #include <cstdint>
@@ -24,6 +25,7 @@ struct CliOptions {
     std::uint32_t prefill_chunk = model::kDefaultPrefillChunk;
     int device                  = 0;
     int mtp_draft_tokens        = 0;
+    DType kv_dtype              = DType::BF16;
     OutputMode output_mode      = OutputMode::Clean;
     bool print_token_ids        = false;
     bool use_cuda_graph         = true;

@@ -33,6 +33,13 @@ int parse_mtp_draft_tokens(const char* text) {
     return value;
 }
 
+DType parse_kv_dtype(const char* text) {
+    const std::string value(text);
+    if (value == "bf16") { return DType::BF16; }
+    if (value == "int8") { return DType::I8; }
+    throw std::invalid_argument("invalid kv-dtype: " + value);
+}
+
 float parse_float_in(const char* text, const char* label, float lo, float hi) {
     char* end          = nullptr;
     const double value = std::strtod(text, &end);
@@ -57,7 +64,8 @@ std::string usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <weights.qus> --tokenizer <dir> (--prompt <text>|--messages <messages.json>) "
            "[--max-context N] [--prefill-chunk N] [--max-new N] [--device N] [--raw-output] "
-           "[--print-token-ids] [--no-cuda-graph] [--lm-head-draft] [--no-thinking] "
+           "[--kv-dtype bf16|int8] [--print-token-ids] [--no-cuda-graph] "
+           "[--lm-head-draft] [--no-thinking] "
            "[--mtp-draft-tokens N] [--stop-token-id N]... "
            "[--temperature F] [--top-p F] [--top-k N] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -96,6 +104,8 @@ CliOptions parse_cli(int argc, char** argv) {
                 parse_positive_u32(require_value("--prefill-chunk"), "prefill-chunk");
         } else if (arg == "--device") {
             options.device = parse_nonnegative_int(require_value("--device"), "device");
+        } else if (arg == "--kv-dtype") {
+            options.kv_dtype = parse_kv_dtype(require_value("--kv-dtype"));
         } else if (arg == "--mtp-draft-tokens") {
             options.mtp_draft_tokens = parse_mtp_draft_tokens(require_value("--mtp-draft-tokens"));
         } else if (arg == "--raw-output") {
@@ -119,11 +129,11 @@ CliOptions parse_cli(int argc, char** argv) {
         } else if (arg == "--top-k") {
             options.top_k = parse_nonnegative_int(require_value("--top-k"), "top-k");
         } else if (arg == "--presence-penalty") {
-            options.presence_penalty =
-                parse_float_in(require_value("--presence-penalty"), "presence-penalty", -2.0f, 2.0f);
+            options.presence_penalty = parse_float_in(require_value("--presence-penalty"),
+                                                      "presence-penalty", -2.0f, 2.0f);
         } else if (arg == "--frequency-penalty") {
-            options.frequency_penalty = parse_float_in(
-                require_value("--frequency-penalty"), "frequency-penalty", -2.0f, 2.0f);
+            options.frequency_penalty = parse_float_in(require_value("--frequency-penalty"),
+                                                       "frequency-penalty", -2.0f, 2.0f);
         } else if (arg == "--seed") {
             options.seed = parse_u64(require_value("--seed"), "seed");
         } else if (arg == "--greedy") {
