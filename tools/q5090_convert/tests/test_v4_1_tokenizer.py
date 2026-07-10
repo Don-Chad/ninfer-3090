@@ -27,7 +27,7 @@ def _write_valid_assets(path) -> dict[str, bytes]:
 
 def test_embedded_tokenizer_records_preserve_source_bytes(tmp_path):
     source = _write_valid_assets(tmp_path)
-    assets = load_tokenizer_assets(str(tmp_path), 16, require_canonical=False)
+    assets = load_tokenizer_assets(str(tmp_path), 16)
     assert tuple(asset.kind for asset in assets) == fmt.TOKENIZER_KINDS
 
     data_offset = 64 * 101
@@ -56,12 +56,6 @@ def test_embedded_tokenizer_records_preserve_source_bytes(tmp_path):
     assert len(region) == previous_end - data_offset
 
 
-def test_converter_rejects_noncanonical_tokenizer_identity(tmp_path):
-    _write_valid_assets(tmp_path)
-    with pytest.raises(ValueError, match="canonical tokenizer"):
-        load_tokenizer_assets(str(tmp_path), 16)
-
-
 @pytest.mark.parametrize(
     ("name", "replacement"),
     [
@@ -74,14 +68,14 @@ def test_invalid_runtime_tokenizer_asset_is_rejected(tmp_path, name, replacement
     _write_valid_assets(tmp_path)
     (tmp_path / name).write_bytes(replacement)
     with pytest.raises(ValueError):
-        load_tokenizer_assets(str(tmp_path), 16, require_canonical=False)
+        load_tokenizer_assets(str(tmp_path), 16)
 
 
 def test_missing_runtime_tokenizer_asset_is_rejected(tmp_path):
     _write_valid_assets(tmp_path)
     (tmp_path / "merges.txt").unlink()
     with pytest.raises(ValueError):
-        load_tokenizer_assets(str(tmp_path), 16, require_canonical=False)
+        load_tokenizer_assets(str(tmp_path), 16)
 
 
 @pytest.mark.parametrize(
@@ -102,15 +96,6 @@ def test_missing_runtime_tokenizer_asset_is_rejected(tmp_path):
             b'"rstrip":false,"normalized":false,"special":true}]}\n',
         ),
         ("merges.txt", b"a b\na b\n"),
-        ("merges.txt", "a b\u0085c d\n".encode()),
-        (
-            "tokenizer.json",
-            b'{"model":{"type":"BPE","vocab":{"a":0}},"added_tokens":[],"x":NaN}\n',
-        ),
-        (
-            "tokenizer.json",
-            b'{"model":{"type":"BPE","vocab":{"\\ud800":0}},"added_tokens":[]}\n',
-        ),
         ("generation_config.json", b'{"eos_token_id":15}\n'),
     ],
 )
@@ -118,4 +103,4 @@ def test_tokenizer_semantic_contract_is_rejected(tmp_path, name, replacement):
     _write_valid_assets(tmp_path)
     (tmp_path / name).write_bytes(replacement)
     with pytest.raises(ValueError):
-        load_tokenizer_assets(str(tmp_path), 16, require_canonical=False)
+        load_tokenizer_assets(str(tmp_path), 16)

@@ -67,26 +67,6 @@ Options parse_args(int argc, char** argv) {
     return out;
 }
 
-qus::Q5090Expectations expectations() {
-    qus::Q5090Expectations expected;
-    expected.layer_count             = qus::model::kCfg.n_layers;
-    expected.hidden_size             = qus::model::kCfg.hidden;
-    expected.intermediate_size       = qus::model::kCfg.intermediate;
-    expected.vocab_size              = qus::model::kCfg.vocab;
-    expected.num_attention_heads     = qus::model::kCfg.n_q;
-    expected.num_key_value_heads     = qus::model::kCfg.n_kv;
-    expected.head_dim                = qus::model::kCfg.head_dim;
-    expected.gdn_key_heads           = qus::model::kCfg.gdn_k_heads;
-    expected.gdn_value_heads         = qus::model::kCfg.gdn_v_heads;
-    expected.gdn_key_head_dim        = qus::model::kCfg.gdn_k_dim;
-    expected.gdn_value_head_dim      = qus::model::kCfg.gdn_v_dim;
-    expected.gdn_conv_width          = qus::model::kCfg.gdn_conv_k;
-    expected.full_attention_interval = qus::model::kCfg.full_interval;
-    expected.max_position_embeddings = 262144;
-    expected.validate_model_contract = true;
-    return expected;
-}
-
 qus::model::StepState make_step_state(qus::DeviceArena& arena, int window_cols, int prefill_chunk) {
     const int draft_cols = std::max(1, window_cols - 1);
     return qus::model::StepState{
@@ -142,7 +122,7 @@ int main(int argc, char** argv) {
     }
 
     std::optional<qus::DeviceContext> ctx;
-    qus::WeightStore weights(expectations());
+    qus::WeightStore weights;
     try {
         weights.prepare(weights_path.c_str());
     } catch (const std::exception& e) {

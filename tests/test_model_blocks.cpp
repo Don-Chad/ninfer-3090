@@ -41,26 +41,6 @@ std::filesystem::path make_fixture() {
     return path;
 }
 
-qus::Q5090Expectations expectations() {
-    qus::Q5090Expectations expected;
-    expected.layer_count             = 64;
-    expected.hidden_size             = qus::model::kCfg.hidden;
-    expected.intermediate_size       = qus::model::kCfg.intermediate;
-    expected.vocab_size              = qus::model::kCfg.vocab;
-    expected.num_attention_heads     = qus::model::kCfg.n_q;
-    expected.num_key_value_heads     = qus::model::kCfg.n_kv;
-    expected.head_dim                = qus::model::kCfg.head_dim;
-    expected.gdn_key_heads           = qus::model::kCfg.gdn_k_heads;
-    expected.gdn_value_heads         = qus::model::kCfg.gdn_v_heads;
-    expected.gdn_key_head_dim        = qus::model::kCfg.gdn_k_dim;
-    expected.gdn_value_head_dim      = qus::model::kCfg.gdn_v_dim;
-    expected.gdn_conv_width          = qus::model::kCfg.gdn_conv_k;
-    expected.full_attention_interval = qus::model::kCfg.full_interval;
-    expected.max_position_embeddings = 262144;
-    expected.validate_model_contract = false;
-    return expected;
-}
-
 void fill_hidden(qus::Tensor& x, int T) {
     std::vector<float> host(static_cast<std::size_t>(qus::model::kCfg.hidden) * T);
     qus::test::fill_uniform(host, 1234u + static_cast<std::uint32_t>(T), -0.25f, 0.25f);
@@ -390,7 +370,7 @@ int main() {
     qus::DeviceArena x_arena(8ULL * 1024ULL * 1024ULL);
     qus::DeviceArena io_arena(16ULL * 1024ULL * 1024ULL);
 
-    qus::WeightStore store(expectations());
+    qus::WeightStore store;
     store.load(fixture_path.c_str(), ctx);
 
     qus::KVCache kv(cache_arena, qus::model::kCfg.n_full(), 4, qus::model::kCfg.n_kv,

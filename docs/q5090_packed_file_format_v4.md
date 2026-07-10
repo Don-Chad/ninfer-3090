@@ -220,37 +220,27 @@ at `tokenizer_data_offset`; each later asset starts at
 between the string table and tokenizer index, between tokenizer assets, and between the final asset
 and the 4096-aligned weight `payload_offset` MUST be zero.
 
-The three SHA-256 values are frozen as part of the v4.1 model ABI:
+The SHA-256 field records the digest of the bytes embedded in this artifact; it does not select one
+globally frozen tokenizer identity. The converter and offline verifier recompute CRC32 and SHA-256.
+The runtime recomputes CRC32, checks UTF-8 and tokenizer-region padding, then lets `QwenTokenizer`
+parse the embedded assets when a text frontend needs them. Missing `merges.txt` or
+`generation_config.json` is invalid in v4.1; there is no hard-coded stop-token fallback.
 
-| asset | canonical SHA-256 |
-|---|---|
-| `tokenizer.json` | `87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4` |
-| `merges.txt` | `3bd640ba6d8da8f5844f3548b7e2184fc664dd670e1447e425a48dbaaad1ef43` |
-| `generation_config.json` | `e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e` |
-
-The converter, offline verifier, and runtime MUST recompute both CRC32 and SHA-256 over the actual
-asset bytes and require the canonical SHA-256 values. The runtime also validates UTF-8, the
-asset-specific tokenizer syntax, and all tokenizer-region padding before constructing the tokenizer.
-Missing `merges.txt` or `generation_config.json` is invalid in v4.1;
-there is no hard-coded stop-token fallback.
-
-Tokenizer semantic validation is part of the artifact contract and occurs before any CUDA context or
-device allocation. `model.type` MUST be `BPE`; `model.vocab` MUST be non-empty and all vocab and
+The converter validates tokenizer semantics while building the artifact. `model.type` MUST be `BPE`;
+`model.vocab` MUST be non-empty and all vocab and
 `added_tokens` ids MUST be unique integers in `[0, FileHeader.vocab_size)`. Added-token ids MUST NOT
 overlap the base vocab; every required added-token field MUST have the canonical type, and
 `single_word`, `lstrip`, `rstrip`, and `normalized` MUST all be false. Every effective `merges.txt`
 line is exactly two non-empty symbols separated by one ASCII space and merge pairs MUST be unique.
 `eos_token_id` is a non-empty integer or integer array whose ids are present in the embedded
-vocab/added-token set. For this single-model format, occupied token ids MUST be exactly the contiguous
-domain `[0,248077)`; arbitrary tokenizer substitution or token/id permutation is invalid. The 243
-model-reserved `LM_HEAD` rows `[248077,248320)` MUST be masked to negative infinity before every
-full-head argmax or sampling operation and MUST NOT appear in `LM_HEAD_DRAFT_IDMAP`.
+vocab/added-token set.
 The TEXT_CORE `EMBED` and full `LM_HEAD` blocks MUST both have logical shape
 `[FileHeader.vocab_size, FileHeader.hidden_size]`; this coupling prevents tokenizer ids from addressing
 outside the resident embedding table.
 
-`tokenizer_config.json` from the same `--model` directory is a converter input for draft-shortlist special-token selection but is not a
-runtime asset because the current C++ tokenizer does not consume it. Adding another runtime tokenizer
+`tokenizer_config.json` from the selected converter tokenizer directory (`--tokenizer`, default
+`--model`) is an input for draft-shortlist special-token selection but is not a runtime asset because
+the current C++ tokenizer does not consume it. Adding another runtime tokenizer
 asset requires a new explicit format revision; reserved fields cannot be repurposed silently.
 
 ## 3. ModuleRecord (64 bytes)
@@ -804,15 +794,14 @@ CRC are always runtime-mandatory. All checks are computable from this document a
 3. **Tokenizer.** Records have the exact §2.1 order/kind/encoding, non-empty bounded ranges, correct
    64-byte placement, no overlap, and `tokenizer_data_bytes` ends at the final asset end.
    `payload_offset == align_up(tokenizer_data_offset + tokenizer_data_bytes,4096)`. The runtime checks
-   tokenizer CRC32, canonical SHA-256, UTF-8/content syntax, and every tokenizer-region padding byte.
+   tokenizer CRC32, UTF-8, and every tokenizer-region padding byte. The offline verifier also checks
+   SHA-256 and tokenizer semantics.
 4. **Modules.** `module_kind`s are distinct and follow the canonical
    TEXT->LM_HEAD_DRAFT->MTP->VISION order with absent optional modules omitted; their
    `[tensor_index_begin, +tensor_index_count)` ranges partition `[0, tensor_count)` contiguously. Each
    module's offset-40/44 u32 and remaining reserved bytes are zero, and its
    `payload_offset/payload_bytes` span covers exactly its blocks' payloads. TEXT_CORE contains no
-   draft source kinds. For Qwen3.6-27B, TEXT_CORE has exactly 819 blocks, 963 segments, and 128
-   fusion groups; the loader validates the complete 64-layer full-attention/GDN/MLP inventory,
-   canonical names, qtypes, shapes, segment rows, and fusion membership before any H2D transfer.
+   draft source kinds.
 5. **Payload region.** Each block `payload_offset` is 256-aligned and lies in
    `[file payload_offset, file_size)`; blocks appear in **tensor-index order** with no overlap; block
    `payload_offset + payload_bytes <= next block payload_offset` (or `file_size` for the last); the
@@ -849,7 +838,7 @@ CRC are always runtime-mandatory. All checks are computable from this document a
 `LM_HEAD_DRAFT` module exists and contains exactly two blocks in order: one Q4G64 `ROW_SPLIT`
 `LM_HEAD_DRAFT`, then one I32_CTRL `CONTIGUOUS` `LM_HEAD_DRAFT_IDMAP`. Both use
 `source_layer=0xFFFFFFFF`, each has one full-range segment, and their `N` values match. Every id-map
-entry is unique and `< 248077` (the canonical occupied tokenizer domain). If the flag is clear, the module and both source kinds are absent.
+entry is unique and `< FileHeader.vocab_size`. If the flag is clear, the module and both source kinds are absent.
 A loader MUST reject any other combination.
 
 ## 14. Layout assignment policy

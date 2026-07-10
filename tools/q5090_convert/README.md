@@ -45,6 +45,7 @@ Run from the repo root with a CUDA-enabled env:
 ```bash
 /home/neroued/miniconda3/envs/py311/bin/python -m tools.q5090_convert.convert \
   --model /home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16 \
+  --tokenizer /home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16 \
   --out out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus
 
 /home/neroued/miniconda3/envs/py311/bin/python -m tools.q5090_convert.verify \
@@ -53,10 +54,10 @@ Run from the repo root with a CUDA-enabled env:
 
 The converter writes `<weights>.manifest.json` next to the packed file. The verifier writes
 `out/conv_dump.v4_1.json` unless `--dump FILE` is supplied. Useful flags: `--out FILE`, `--device cpu`,
-`--force` (config mismatch -> warn), `--no-draft-head`, and `--ranking FILE`.
-The converter reads the canonical embedded runtime assets and `tokenizer_config.json`
-from `--model`; v4.1 intentionally has no independent tokenizer override. The verifier re-derives the shortlist for L1 (`--ranking`) and
-defaults to the local HF model path above; pass `--model DIR` to verify another source tree.
+`--force` (config mismatch -> warn), `--tokenizer DIR`, `--no-draft-head`, and `--ranking FILE`.
+The converter reads embedded runtime assets and `tokenizer_config.json` from `--tokenizer`, defaulting
+to `--model`. The verifier re-derives the shortlist for L1 (`--ranking`, `--tokenizer`) and defaults to
+the local HF model path above; pass `--model DIR` to verify another source tree.
 `--quick` performs self-contained L0/CRC verification from the artifact and sidecar manifest without
 opening the HF source model.
 

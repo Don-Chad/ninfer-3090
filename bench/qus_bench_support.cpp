@@ -427,9 +427,8 @@ std::vector<int> load_corpus_ids(const std::string& path) {
             }
         }
         const int id = parse_nonnegative(token, "corpus token id");
-        if (id >= model::kCfg.tokenizer_vocab) {
-            throw std::invalid_argument("corpus token id is outside canonical tokenizer domain: " +
-                                        token);
+        if (id >= model::kCfg.vocab) {
+            throw std::invalid_argument("corpus token id is outside model vocab: " + token);
         }
         ids.push_back(id);
     }

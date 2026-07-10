@@ -488,9 +488,7 @@ def _prod(xs: Sequence[int]) -> int:
     return p
 
 
-def load_tokenizer_assets(
-    tokenizer_dir: str, vocab_size: int, *, require_canonical: bool = True
-) -> Tuple[TokenizerAsset, ...]:
+def load_tokenizer_assets(tokenizer_dir: str, vocab_size: int) -> Tuple[TokenizerAsset, ...]:
     assets = []
     raw_assets = {}
     for kind in fmt.TOKENIZER_KINDS:
@@ -523,7 +521,7 @@ def load_tokenizer_assets(
                 sha256=hashlib.sha256(data).digest(),
             )
         )
-    validate_tokenizer_assets(raw_assets, vocab_size, require_canonical=require_canonical)
+    validate_tokenizer_assets(raw_assets, vocab_size)
     return tuple(assets)
 
 
@@ -740,6 +738,11 @@ def _write_manifest(
 def main() -> None:
     ap = argparse.ArgumentParser(description="q5090_w4g64_mixed_v4_1 artifact converter")
     ap.add_argument("--model", required=True, help="path to original Qwen3.6-27B safetensors dir")
+    ap.add_argument(
+        "--tokenizer",
+        default=None,
+        help="HF tokenizer directory (default: --model)",
+    )
     ap.add_argument("--out", default=None, help="output .qus file path")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--force", action="store_true", help="warn instead of abort on config mismatch")
@@ -777,7 +780,7 @@ def main() -> None:
     weight_map = json.loads(index_raw)["weight_map"]
     reader = ShardReader(model_dir, weight_map)
 
-    tokenizer_dir = model_dir
+    tokenizer_dir = (args.tokenizer or model_dir).rstrip("/")
     tokenizer_assets = load_tokenizer_assets(tokenizer_dir, tc["vocab_size"])
     print(
         "tokenizer assets: "

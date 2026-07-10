@@ -128,26 +128,6 @@ Json read_manifest_json(const std::filesystem::path& path) {
     return manifest;
 }
 
-qus::Q5090Expectations expectations() {
-    qus::Q5090Expectations expected;
-    expected.layer_count             = 64;
-    expected.hidden_size             = 5120;
-    expected.intermediate_size       = 17408;
-    expected.vocab_size              = 248320;
-    expected.num_attention_heads     = 24;
-    expected.num_key_value_heads     = 4;
-    expected.head_dim                = 256;
-    expected.gdn_key_heads           = 16;
-    expected.gdn_value_heads         = 48;
-    expected.gdn_key_head_dim        = 128;
-    expected.gdn_value_head_dim      = 128;
-    expected.gdn_conv_width          = 4;
-    expected.full_attention_interval = 4;
-    expected.max_position_embeddings = 262144;
-    expected.validate_model_contract = true;
-    return expected;
-}
-
 int expect_string_field(const Json& object, const char* key, const char* expected,
                         const char* message) {
     const auto it = object.find(key);
@@ -463,7 +443,7 @@ int run_default_load(const std::filesystem::path& file_path, std::uint64_t text_
                      qus::Q5090Progress* progress) {
     if (!enough_free_memory(text_payload_bytes + kGiB)) { return 0; }
     qus::DeviceContext ctx(0);
-    qus::WeightStore store(expectations());
+    qus::WeightStore store;
     qus::LoadOptions options;
     options.progress = progress;
     store.load(file_path.c_str(), ctx, options);
@@ -518,7 +498,7 @@ int run_draft_load(const std::filesystem::path& file_path, std::uint64_t text_pa
     options.load_mtp           = true;
     options.load_lm_head_draft = true;
     options.progress           = progress;
-    qus::WeightStore store(expectations());
+    qus::WeightStore store;
     store.load(file_path.c_str(), ctx, options);
     int failures = 0;
     failures += store.module_loaded(qus::ModuleKind::LmHeadDraft)
@@ -540,7 +520,7 @@ int run_mtp_load(const std::filesystem::path& file_path, std::uint64_t text_payl
     qus::LoadOptions options;
     options.load_mtp = true;
     options.progress = progress;
-    qus::WeightStore store(expectations());
+    qus::WeightStore store;
     store.load(file_path.c_str(), ctx, options);
     store.require_mtp_module_expectations();
     int failures = 0;
@@ -563,7 +543,7 @@ int run_vision_load(const std::filesystem::path& file_path, std::uint64_t text_p
     qus::LoadOptions options;
     options.load_vision = true;
     options.progress    = progress;
-    qus::WeightStore store(expectations());
+    qus::WeightStore store;
     store.load(file_path.c_str(), ctx, options);
     int failures = 0;
     failures +=
@@ -605,7 +585,7 @@ int main() {
 
     std::vector<std::byte> bytes      = read_binary(file_path, &progress);
     const std::uint64_t file_size     = bytes.size();
-    const qus::ParsedQ5090File parsed = qus::parse_q5090_file(bytes, expectations(), &progress);
+    const qus::ParsedQ5090File parsed = qus::parse_q5090_file(bytes, &progress);
     failures += expect_inventory(parsed, file_size);
     const std::uint64_t text_payload_bytes   = parsed.modules[0].payload_bytes;
     const std::uint64_t draft_payload_bytes  = parsed.modules[1].payload_bytes;

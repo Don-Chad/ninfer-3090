@@ -26,25 +26,6 @@ namespace detail {
 
 using Json = nlohmann::json;
 
-inline Q5090Expectations expectations() {
-    Q5090Expectations expected;
-    expected.layer_count             = model::kCfg.n_layers;
-    expected.hidden_size             = model::kCfg.hidden;
-    expected.intermediate_size       = model::kCfg.intermediate;
-    expected.vocab_size              = model::kCfg.vocab;
-    expected.num_attention_heads     = model::kCfg.n_q;
-    expected.num_key_value_heads     = model::kCfg.n_kv;
-    expected.head_dim                = model::kCfg.head_dim;
-    expected.gdn_key_heads           = model::kCfg.gdn_k_heads;
-    expected.gdn_value_heads         = model::kCfg.gdn_v_heads;
-    expected.gdn_key_head_dim        = model::kCfg.gdn_k_dim;
-    expected.gdn_value_head_dim      = model::kCfg.gdn_v_dim;
-    expected.gdn_conv_width          = model::kCfg.gdn_conv_k;
-    expected.full_attention_interval = model::kCfg.full_interval;
-    expected.max_position_embeddings = 262144;
-    return expected;
-}
-
 inline std::vector<std::byte> read_file(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) { throw std::runtime_error("failed to open q5090 file: " + path.string()); }
@@ -482,7 +463,7 @@ inline Json fusion_json(const ParsedQ5090File& parsed, const ParsedQ5090FusionGr
 
 inline Json structural_dump(const std::filesystem::path& path) {
     const std::vector<std::byte> file = read_file(path);
-    const ParsedQ5090File parsed      = parse_q5090_file(file, expectations());
+    const ParsedQ5090File parsed      = parse_q5090_file(file);
 
     Json modules = Json::array();
     for (const ParsedQ5090Module& module : parsed.modules) {

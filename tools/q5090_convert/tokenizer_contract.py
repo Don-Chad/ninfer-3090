@@ -1,29 +1,11 @@
-"""Authoritative v4.1 embedded-tokenizer semantic validation."""
+"""Converter/verifier validation for v4.1 embedded tokenizer assets."""
 
 from __future__ import annotations
 
 import json
-import hashlib
 from typing import Mapping
 
 from . import format as fmt
-
-
-def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"non-standard JSON constant {value}")
-
-
-def _reject_surrogates(value: object, label: str) -> None:
-    if isinstance(value, str):
-        if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
-            raise ValueError(f"{label} contains a lone surrogate")
-    elif isinstance(value, list):
-        for item in value:
-            _reject_surrogates(item, label)
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            _reject_surrogates(key, label)
-            _reject_surrogates(item, label)
 
 
 def _decode_json(data: bytes, label: str) -> dict:
@@ -32,12 +14,11 @@ def _decode_json(data: bytes, label: str) -> dict:
     except UnicodeDecodeError as exc:
         raise ValueError(f"{label} is not UTF-8: {exc}") from exc
     try:
-        root = json.loads(text, parse_constant=_reject_json_constant)
-    except (json.JSONDecodeError, ValueError) as exc:
+        root = json.loads(text)
+    except json.JSONDecodeError as exc:
         raise ValueError(f"malformed {label}: {exc}") from exc
     if not isinstance(root, dict):
         raise ValueError(f"{label} root must be an object")
-    _reject_surrogates(root, label)
     return root
 
 
@@ -49,9 +30,7 @@ def _token_id(value: object, vocab_size: int, label: str) -> int:
     return value
 
 
-def validate_tokenizer_assets(
-    assets: Mapping[int, bytes], vocab_size: int, *, require_canonical: bool = False
-) -> None:
+def validate_tokenizer_assets(assets: Mapping[int, bytes], vocab_size: int) -> None:
     """Reject any bundle that the C++ tokenizer cannot safely consume for this model."""
 
     if vocab_size <= 0:
@@ -108,21 +87,6 @@ def validate_tokenizer_assets(
         if token_id not in occupied:
             raise ValueError(f"eos_token_id {token_id} is absent from tokenizer vocab")
 
-    if require_canonical:
-        if vocab_size != 248320:
-            raise ValueError(f"canonical tokenizer requires vocab_size 248320, got {vocab_size}")
-        expected_ids = set(range(fmt.TOKENIZER_OCCUPIED_ID_COUNT))
-        if occupied != expected_ids:
-            raise ValueError(
-                "canonical tokenizer occupied ids must be exactly "
-                f"[0,{fmt.TOKENIZER_OCCUPIED_ID_COUNT})"
-            )
-        for kind, expected_digest in fmt.TOKENIZER_CANONICAL_SHA256.items():
-            if hashlib.sha256(assets[kind]).digest() != expected_digest:
-                raise ValueError(
-                    f"{fmt.TOKENIZER_SOURCE_NAME[kind]} does not match canonical Qwen3.6-27B identity"
-                )
-
     merges_data = assets[fmt.TOKENIZER_MERGES]
     try:
         merges = merges_data.decode("utf-8")
@@ -132,8 +96,7 @@ def validate_tokenizer_assets(
         raise ValueError("merges.txt contains NUL")
     pairs: set[tuple[str, str]] = set()
     saw_content = False
-    for raw_line in merges.split("\n"):
-        line = raw_line.removesuffix("\r")
+    for line in merges.splitlines():
         if not line:
             continue
         if not saw_content and line.startswith("#version"):

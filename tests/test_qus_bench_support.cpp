@@ -162,16 +162,6 @@ int test_corpus_load_and_slice() {
     const auto nondigit = temp_file("qus_bench_corpus_nondigit.ids", "1 a 3");
     failures += expect_throws<std::invalid_argument>(
         [&] { (void)qb::load_corpus_ids(nondigit.string()); }, "non-digit id throws");
-    const auto tokenizer_edge =
-        temp_file("qus_bench_corpus_tokenizer_edge.ids",
-                  std::to_string(qus::model::kCfg.tokenizer_vocab - 1) + "\n");
-    failures += expect_size(qb::load_corpus_ids(tokenizer_edge.string()).size(), 1,
-                            "last canonical tokenizer id accepted");
-    const auto reserved_id = temp_file("qus_bench_corpus_reserved.ids",
-                                       std::to_string(qus::model::kCfg.tokenizer_vocab) + "\n");
-    failures += expect_throws<std::invalid_argument>(
-        [&] { (void)qb::load_corpus_ids(reserved_id.string()); },
-        "reserved corpus token id throws");
     return failures;
 }
 

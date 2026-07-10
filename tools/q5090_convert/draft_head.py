@@ -20,7 +20,6 @@ from dataclasses import dataclass
 import numpy as np
 
 VOCAB_SIZE = 248320
-TOKENIZER_ID_COUNT = 248077
 DRAFT_HEAD_N = 131072
 DEFAULT_RANKING = "tools/freq_corpus/fixtures/ranking/ranking.train.counts.i64"
 DEFAULT_TOKENIZER = "/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16"
@@ -59,18 +58,12 @@ def select_shortlist(total: np.ndarray, n: int, force_include: list) -> np.ndarr
     force-include set, so any consumer reproduces the same id-map.
     """
     vocab = int(total.size)
-    candidate_count = min(vocab, TOKENIZER_ID_COUNT)
-    if n > candidate_count:
-        raise SystemExit(f"N={n} exceeds tokenizer candidate domain={candidate_count}")
-    invalid_forced = sorted(set(i for i in force_include if i < 0 or i >= candidate_count))
-    if invalid_forced:
-        raise SystemExit(
-            f"force-include ids outside tokenizer domain [0,{candidate_count}): {invalid_forced}"
-        )
-    order = np.argsort(
-        -total[:candidate_count].astype(np.int64), kind="stable"
-    )  # freq desc, id asc on ties
-    forced = np.array(sorted(set(force_include)), dtype=np.int64)
+    if n > vocab:
+        raise SystemExit(f"N={n} exceeds vocab={vocab}")
+    order = np.argsort(-total.astype(np.int64), kind="stable")
+    forced = np.array(
+        sorted(set(i for i in force_include if 0 <= i < vocab)), dtype=np.int64
+    )
     if forced.size >= n:
         forced_by_freq = forced[np.argsort(-total[forced].astype(np.int64), kind="stable")]
         return np.sort(forced_by_freq[:n])
@@ -86,8 +79,6 @@ def select_shortlist(total: np.ndarray, n: int, force_include: list) -> np.ndarr
     selected = selected[np.argsort(-total[selected].astype(np.int64), kind="stable")]
     if selected.size != n or np.unique(selected).size != n:
         raise SystemExit(f"shortlist build failed: size={selected.size} unique={np.unique(selected).size}")
-    if np.any(selected < 0) or np.any(selected >= candidate_count):
-        raise SystemExit("shortlist contains ids outside canonical tokenizer domain")
     return selected
 
 
@@ -112,8 +103,8 @@ def compute_shortlist(
     total = counts[0]
     force_include = read_special_ids(tokenizer_dir)
     selected = select_shortlist(total, n, force_include)
-    if selected.size != n or np.any(selected >= TOKENIZER_ID_COUNT):
-        raise SystemExit("computed shortlist violates canonical tokenizer domain")
+    if selected.size != n:
+        raise SystemExit("computed shortlist has the wrong size")
     return DraftHeadContext(
         n=int(n),
         selected=selected,

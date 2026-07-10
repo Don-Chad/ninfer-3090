@@ -24,33 +24,6 @@
 namespace qus {
 namespace {
 
-class WeightStoreMutationGuard {
-public:
-    WeightStoreMutationGuard(WeightStore& store, bool& active, bool& clear_requested)
-        : store_(store), active_(active), clear_requested_(clear_requested) {
-        if (active_) {
-            throw std::runtime_error("nested q5090 WeightStore mutation is not allowed");
-        }
-        active_ = true;
-    }
-
-    ~WeightStoreMutationGuard() noexcept {
-        active_ = false;
-        if (clear_requested_) {
-            clear_requested_ = false;
-            store_.clear();
-        }
-    }
-
-    WeightStoreMutationGuard(const WeightStoreMutationGuard&)            = delete;
-    WeightStoreMutationGuard& operator=(const WeightStoreMutationGuard&) = delete;
-
-private:
-    WeightStore& store_;
-    bool& active_;
-    bool& clear_requested_;
-};
-
 constexpr std::uint64_t kHeaderBytes   = 4096;
 constexpr std::size_t kPinnedSlotCount = 2;
 constexpr std::size_t kPinnedSlotBytes = 64ULL * 1024ULL * 1024ULL;
@@ -338,8 +311,7 @@ struct WeightStore::PreparedArtifact {
         if (fd >= 0) { ::close(fd); }
     }
 
-    void read_exact(std::uint64_t offset, std::span<std::byte> output,
-                    std::uint64_t* bytes_read = nullptr) const {
+    void read_exact(std::uint64_t offset, std::span<std::byte> output) const {
         std::size_t done = 0;
         while (done < output.size()) {
             const std::size_t request = std::min<std::size_t>(
@@ -358,9 +330,6 @@ struct WeightStore::PreparedArtifact {
             }
             if (got == 0) { throw std::runtime_error("q5090 unexpected EOF"); }
             done += static_cast<std::size_t>(got);
-            if (bytes_read != nullptr) {
-                *bytes_read = checked_add(*bytes_read, static_cast<std::uint64_t>(got));
-            }
         }
     }
 
@@ -425,7 +394,7 @@ private:
 };
 
 template <typename Artifact>
-void validate_selected_draft_idmap(const Artifact& artifact, std::uint64_t* bytes_read) {
+void validate_selected_draft_idmap(const Artifact& artifact) {
     const bool selected = artifact.options.load_lm_head_draft;
     if (!selected) { return; }
     const ParsedQ5090Tensor* idmap = nullptr;
@@ -438,13 +407,13 @@ void validate_selected_draft_idmap(const Artifact& artifact, std::uint64_t* byte
     }
     if (idmap == nullptr) { throw std::runtime_error("q5090 selected draft id-map is missing"); }
     std::vector<std::byte> bytes(static_cast<std::size_t>(idmap->payload_bytes));
-    artifact.read_exact(idmap->payload_offset, bytes, bytes_read);
+    artifact.read_exact(idmap->payload_offset, bytes);
     std::set<std::uint32_t> ids;
     for (std::uint32_t i = 0; i < idmap->shape[0]; ++i) {
         std::uint32_t id = 0;
         std::memcpy(&id, bytes.data() + 4ULL * i, sizeof(id));
-        if (id >= 248077U) {
-            throw std::runtime_error("q5090 draft-head id-map contains non-tokenizer vocab id");
+        if (id >= artifact.parsed.header.vocab_size) {
+            throw std::runtime_error("q5090 draft-head id-map contains out-of-range vocab id");
         }
         if (!ids.insert(id).second) {
             throw std::runtime_error("q5090 draft-head id-map contains duplicate id");
@@ -454,25 +423,15 @@ void validate_selected_draft_idmap(const Artifact& artifact, std::uint64_t* byte
 
 } // namespace
 
-WeightStore::WeightStore(Q5090Expectations expected) : expected_(std::move(expected)) {}
+WeightStore::WeightStore() = default;
 
 WeightStore::~WeightStore() = default;
 
 void WeightStore::prepare(const char* path, const LoadOptions& options) {
-    if (mutation_active_) {
-        throw std::runtime_error("nested q5090 WeightStore mutation is not allowed");
-    }
-    const bool resident = std::any_of(module_arenas_.begin(), module_arenas_.end(),
-                                      [](const auto& arena) { return arena.has_value(); });
-    if (resident || !tensors_.empty() || !quant_.empty() || !fused_.empty()) {
-        throw std::runtime_error(
-            "q5090 prepare requires clear() before replacing resident weights");
-    }
     if (options.load_lm_head_draft && !options.load_mtp) {
         throw std::invalid_argument("q5090 LM_HEAD_DRAFT residency requires MTP_DRAFT");
     }
     clear();
-    WeightStoreMutationGuard mutation_guard(*this, mutation_active_, clear_requested_);
     for (std::size_t i = 0; i < stats_.modules.size(); ++i) {
         stats_.modules[i].module = static_cast<ModuleKind>(i);
     }
@@ -503,8 +462,7 @@ void WeightStore::prepare(const char* path, const LoadOptions& options) {
     reporter.report("read header", 0, kHeaderBytes, true);
     artifact->read_exact(0, header_bytes);
     reporter.report("read header", kHeaderBytes, kHeaderBytes, true);
-    stats_.header_read_bytes       = kHeaderBytes;
-    const ParsedQ5090Header header = parse_q5090_header(header_bytes, file_size, expected_);
+    const ParsedQ5090Header header = parse_q5090_header(header_bytes, file_size);
     stats_.header_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - header_begin).count();
 
@@ -521,8 +479,6 @@ void WeightStore::prepare(const char* path, const LoadOptions& options) {
     artifact->read_exact(kHeaderBytes, std::span<std::byte>(metadata).subspan(
                                            static_cast<std::size_t>(kHeaderBytes),
                                            static_cast<std::size_t>(catalog_bytes)));
-    stats_.catalog_read_bytes    = catalog_bytes;
-    stats_.total_file_read_bytes = checked_add(stats_.header_read_bytes, catalog_bytes);
     reporter.report("read catalog", catalog_bytes, catalog_bytes, true);
     stats_.catalog_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - catalog_begin).count();
@@ -535,16 +491,15 @@ void WeightStore::prepare(const char* path, const LoadOptions& options) {
                          std::span<std::byte>(metadata).subspan(
                              static_cast<std::size_t>(header.tokenizer_index_offset),
                              static_cast<std::size_t>(tokenizer_bytes)));
-    stats_.tokenizer_read_bytes  = tokenizer_bytes;
-    stats_.total_file_read_bytes = checked_add(stats_.total_file_read_bytes, tokenizer_bytes);
     reporter.report("read tokenizer", tokenizer_bytes, tokenizer_bytes, true);
-    artifact->parsed = parse_q5090_catalog(metadata, file_size, expected_);
+    artifact->parsed = parse_q5090_catalog(metadata, file_size);
     stats_.tokenizer_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - tokenizer_begin).count();
     artifact->verify_identity();
-    if (stats_.total_file_read_bytes != header.payload_offset) {
-        throw std::runtime_error("q5090 metadata read accounting mismatch");
-    }
+    stats_.header_read_bytes     = kHeaderBytes;
+    stats_.catalog_read_bytes    = catalog_bytes;
+    stats_.tokenizer_read_bytes  = tokenizer_bytes;
+    stats_.total_file_read_bytes = header.payload_offset;
 
     for (const std::string& required : options.required_text_tensors) {
         if (!contains_text_name(artifact->parsed, required)) {
@@ -604,18 +559,10 @@ void WeightStore::prepare(const char* path, const LoadOptions& options) {
 }
 
 void WeightStore::upload(DeviceContext& ctx) {
-    WeightStoreMutationGuard mutation_guard(*this, mutation_active_, clear_requested_);
     if (!prepared_) { throw std::runtime_error("q5090 upload requires a prepared artifact"); }
-    PreparedArtifact& artifact   = *prepared_;
-    ParsedQ5090File& parsed      = artifact.parsed;
-    stats_.fail_stage            = "identity";
-    stats_.total_file_read_bytes = parsed.header.payload_offset;
-    stats_.h2d_bytes             = 0;
-    stats_.device_resident_bytes = 0;
-    for (auto& module : stats_.modules) {
-        module.h2d_bytes      = 0;
-        module.upload_seconds = 0.0;
-    }
+    PreparedArtifact& artifact = *prepared_;
+    ParsedQ5090File& parsed    = artifact.parsed;
+    stats_.fail_stage          = "identity";
     artifact.verify_identity();
 
     std::vector<TensorRecord> next_tensors;
@@ -623,10 +570,15 @@ void WeightStore::upload(DeviceContext& ctx) {
     std::vector<FusedBlockRecord> next_fused;
     ModuleState next_modules[4]{};
     std::array<std::optional<DeviceArena>, 4> next_arenas;
+    std::array<double, 4> upload_seconds{};
     std::size_t next_loaded_payload_bytes = 0;
+    std::uint64_t total_file_read_bytes   = parsed.header.payload_offset;
     std::vector<void*> payloads(parsed.tensors.size(), nullptr);
     stats_.fail_stage = "selected payload validation";
-    validate_selected_draft_idmap(artifact, &stats_.total_file_read_bytes);
+    validate_selected_draft_idmap(artifact);
+    if (artifact.options.load_lm_head_draft) {
+        total_file_read_bytes = plan_.file_read_bytes - plan_.h2d_bytes;
+    }
 
     for (const ParsedQ5090Module& module : parsed.modules) {
         ModuleState& state  = next_modules[module_index(module.module_kind)];
@@ -696,18 +648,15 @@ void WeightStore::upload(DeviceContext& ctx) {
                 std::min<std::uint64_t>(slot.buffer.size(), module.file_bytes - copied));
             artifact.read_exact(
                 module.file_offset + copied,
-                std::span<std::byte>(static_cast<std::byte*>(slot.buffer.data()), chunk),
-                &stats_.total_file_read_bytes);
-            auto* dst = static_cast<std::byte*>(arena.base()) + copied;
+                std::span<std::byte>(static_cast<std::byte*>(slot.buffer.data()), chunk));
+            total_file_read_bytes = checked_add(total_file_read_bytes, chunk);
+            auto* dst             = static_cast<std::byte*>(arena.base()) + copied;
             cuda_throw(cudaMemcpyAsync(dst, slot.buffer.data(), chunk, cudaMemcpyHostToDevice,
                                        ctx.load_stream),
                        "cudaMemcpyAsync(q5090 staged payload)");
             // The pinned slot and device arena are DMA dependencies immediately after enqueue.
             // Arm before accounting or any other potentially-throwing work.
             drain_guard.arm();
-            stats_.h2d_bytes                   = checked_add(stats_.h2d_bytes, chunk);
-            Q5090ModuleLoadStats& module_stats = stats_.modules[module_index(module.module)];
-            module_stats.h2d_bytes             = checked_add(module_stats.h2d_bytes, chunk);
             cuda_throw(cudaEventRecord(slot.done, ctx.load_stream),
                        "cudaEventRecord(q5090 upload slot)");
             slot.in_flight = true;
@@ -720,14 +669,18 @@ void WeightStore::upload(DeviceContext& ctx) {
                    "cudaStreamSynchronize(q5090 module upload)");
         drain_guard.disarm();
         for (auto& slot : slots) { slot->in_flight = false; }
-        stats_.modules[module_index(module.module)].upload_seconds =
+        upload_seconds[module_index(module.module)] =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - module_begin).count();
     }
     upload_reporter.report("upload selected payloads", plan_.h2d_bytes, plan_.h2d_bytes, true);
-    if (stats_.h2d_bytes != plan_.h2d_bytes) {
-        throw std::runtime_error("q5090 H2D byte accounting mismatch");
-    }
+    stats_.h2d_bytes             = plan_.h2d_bytes;
+    stats_.total_file_read_bytes = total_file_read_bytes;
     stats_.device_resident_bytes = plan_.device_bytes;
+    for (const PlannedQ5090Module& module : plan_.modules) {
+        Q5090ModuleLoadStats& module_stats = stats_.modules[module_index(module.module)];
+        module_stats.h2d_bytes             = module.file_bytes;
+        module_stats.upload_seconds        = upload_seconds[module_index(module.module)];
+    }
     artifact.verify_identity();
 
     stats_.fail_stage = "publish";
@@ -783,6 +736,7 @@ void WeightStore::upload(DeviceContext& ctx) {
     loaded_payload_bytes_ = next_loaded_payload_bytes;
     for (std::size_t i = 0; i < 4; ++i) { modules_[i] = next_modules[i]; }
     module_arenas_ = std::move(next_arenas);
+    tokenizer_     = std::move(parsed.tokenizer);
     prepared_.reset();
     stats_.fail_stage.clear();
 }
@@ -873,12 +827,10 @@ void WeightStore::reset_arena_peaks() noexcept {
     }
 }
 
-Q5090TokenizerBundle WeightStore::take_prepared_tokenizer_bundle() {
-    if (!prepared_ || prepared_->parsed.tokenizer.empty()) {
-        throw std::runtime_error("q5090 prepared tokenizer bundle is not available");
-    }
-    Q5090TokenizerBundle bundle = std::move(prepared_->parsed.tokenizer);
-    prepared_->parsed.tokenizer = {};
+Q5090TokenizerBundle WeightStore::take_tokenizer_bundle() {
+    if (tokenizer_.empty()) { throw std::runtime_error("q5090 tokenizer bundle is not available"); }
+    Q5090TokenizerBundle bundle = std::move(tokenizer_);
+    tokenizer_                  = {};
     return bundle;
 }
 
@@ -1109,18 +1061,14 @@ void WeightStore::require_mtp_module_expectations() const {
 }
 
 void WeightStore::clear() noexcept {
-    if (mutation_active_) {
-        clear_requested_ = true;
-        return;
-    }
-    clear_requested_ = false;
     prepared_.reset();
     tensors_.clear();
     quant_.clear();
     fused_.clear();
     for (auto& arena : module_arenas_) { arena.reset(); }
-    plan_  = {};
-    stats_ = {};
+    plan_      = {};
+    stats_     = {};
+    tokenizer_ = {};
     for (ModuleState& module : modules_) { module = ModuleState{}; }
     total_tensor_count_   = 0;
     loaded_payload_bytes_ = 0;

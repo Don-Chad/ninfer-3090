@@ -60,18 +60,6 @@ std::uint64_t read_u64(const std::vector<std::byte>& bytes, std::uint64_t offset
     return value;
 }
 
-std::uint32_t crc32(std::span<const std::byte> bytes) {
-    std::uint32_t crc = 0xFFFFFFFFU;
-    for (const std::byte raw : bytes) {
-        crc ^= std::to_integer<std::uint8_t>(raw);
-        for (int bit = 0; bit < 8; ++bit) {
-            const std::uint32_t mask = 0U - (crc & 1U);
-            crc                      = (crc >> 1U) ^ (0xEDB88320U & mask);
-        }
-    }
-    return ~crc;
-}
-
 void write_u16(std::vector<std::byte>& bytes, std::uint64_t offset, std::uint16_t value) {
     std::memcpy(bytes.data() + offset, &value, sizeof(value));
 }
@@ -96,26 +84,6 @@ std::filesystem::path make_fixture(std::string_view profile = "default") {
     return path;
 }
 
-qus::Q5090Expectations expectations() {
-    qus::Q5090Expectations expected;
-    expected.layer_count             = 64;
-    expected.hidden_size             = 5120;
-    expected.intermediate_size       = 17408;
-    expected.vocab_size              = 248320;
-    expected.num_attention_heads     = 24;
-    expected.num_key_value_heads     = 4;
-    expected.head_dim                = 256;
-    expected.gdn_key_heads           = 16;
-    expected.gdn_value_heads         = 48;
-    expected.gdn_key_head_dim        = 128;
-    expected.gdn_value_head_dim      = 128;
-    expected.gdn_conv_width          = 4;
-    expected.full_attention_interval = 4;
-    expected.max_position_embeddings = 262144;
-    expected.validate_model_contract = false;
-    return expected;
-}
-
 const qus::ParsedQ5090Tensor& find_tensor(const qus::ParsedQ5090File& parsed,
                                           std::string_view name) {
     for (const qus::ParsedQ5090Tensor& tensor : parsed.tensors) {
@@ -138,15 +106,14 @@ int expect_parse_throws(const std::vector<std::byte>& valid, std::string_view la
     std::vector<std::byte> bytes = valid;
     mutate(bytes);
     try {
-        (void)qus::parse_q5090_file(bytes, expectations());
+        (void)qus::parse_q5090_file(bytes);
     } catch (const std::exception&) { return 0; }
     std::cerr << label << " did not throw\n";
     return 1;
 }
 
 int check_valid_parse(const std::vector<std::byte>& bytes) {
-    qus::Q5090Expectations expected   = expectations();
-    const qus::ParsedQ5090File parsed = qus::parse_q5090_file(bytes, expected);
+    const qus::ParsedQ5090File parsed = qus::parse_q5090_file(bytes);
     int failures                      = 0;
     failures += parsed.header.tensor_count == 20 ? 0 : fail("tensor_count mismatch");
     failures += parsed.header.module_count == 3 ? 0 : fail("module_count mismatch");
@@ -293,7 +260,7 @@ int check_valid_parse(const std::vector<std::byte>& bytes) {
 int check_model_bind_conv1d_parse() {
     const std::filesystem::path fixture_path = make_fixture("model-bind");
     const std::vector<std::byte> bytes       = read_file(fixture_path);
-    const qus::ParsedQ5090File parsed        = qus::parse_q5090_file(bytes, expectations());
+    const qus::ParsedQ5090File parsed        = qus::parse_q5090_file(bytes);
     const auto& conv = find_tensor(parsed, "layers.0.linear_attn.conv1d.weight");
 
     int failures = 0;
@@ -321,7 +288,7 @@ int check_draft_head_parse() {
     // sets LM_HEAD_DRAFT_PRESENT, and both draft blocks report the expected schema.
     const std::filesystem::path good_path = make_fixture("draft-head");
     const std::vector<std::byte> good     = read_file(good_path);
-    const qus::ParsedQ5090File parsed     = qus::parse_q5090_file(good, expectations());
+    const qus::ParsedQ5090File parsed     = qus::parse_q5090_file(good);
 
     failures += (parsed.header.flags & (1U << 4)) != 0
                     ? 0
@@ -374,7 +341,7 @@ int check_draft_head_parse() {
 int check_header_first_prepare(const std::filesystem::path& valid_path,
                                const std::vector<std::byte>& valid) {
     int failures = 0;
-    qus::WeightStore prepared(expectations());
+    qus::WeightStore prepared;
     prepared.prepare(valid_path.c_str());
     const qus::Q5090LoadPlan& plan = prepared.load_plan();
     failures += plan.modules.size() == 1 ? 0 : fail("CPU-only plan selected wrong module count");
@@ -401,18 +368,11 @@ int check_header_first_prepare(const std::filesystem::path& valid_path,
     const auto bad_path =
         std::filesystem::temp_directory_path() / "qus_q5090_header_first_bad_version.qus";
     write_file(bad_path, bad);
-    qus::WeightStore rejected(expectations());
+    qus::WeightStore rejected;
     try {
         rejected.prepare(bad_path.c_str());
         failures += fail("header-first bad version did not throw");
     } catch (const std::runtime_error&) {
-        const qus::Q5090LoadStats& stats = rejected.load_stats();
-        failures += stats.header_read_bytes == kHeaderSize
-                        ? 0
-                        : fail("bad version did not stop after Header read");
-        failures += stats.catalog_read_bytes == 0 && stats.tokenizer_read_bytes == 0
-                        ? 0
-                        : fail("bad version read catalog/tokenizer bytes");
         failures += rejected.module_arena(qus::ModuleKind::TextCore) == nullptr
                         ? 0
                         : fail("bad version allocated a device arena");
@@ -448,7 +408,7 @@ int main() {
     const std::uint64_t second_module       = module_offset + kModuleRecordSize;
     const std::uint64_t gate_segment        = segment_offset + kSegmentRecordSize;
     const std::uint64_t up_segment          = segment_offset + 2 * kSegmentRecordSize;
-    const qus::ParsedQ5090File parsed_valid = qus::parse_q5090_file(valid, expectations());
+    const qus::ParsedQ5090File parsed_valid = qus::parse_q5090_file(valid);
     const auto& mtp_attn                    = find_tensor(parsed_valid, "mtp.layers.0.attn_in.w8");
     const std::uint32_t mtp_attn_n          = mtp_attn.shape[0];
     const std::uint64_t mtp_attn_segments =
@@ -483,44 +443,6 @@ int main() {
     });
     failures += expect_parse_throws(valid, "tokenizer crc mismatch", [tokenizer_data](auto& b) {
         b[tokenizer_data] ^= std::byte{1};
-    });
-    failures +=
-        expect_parse_throws(valid, "tokenizer vocab id outside model", [tokenizer_index](auto& b) {
-            const std::uint64_t record = tokenizer_index;
-            const std::uint64_t offset = read_u64(b, record + 8);
-            const std::uint64_t bytes  = read_u64(b, record + 16);
-            for (std::uint64_t i = 0; i + 5 < bytes; ++i) {
-                if (b[offset + i] != std::byte{'0'}) { continue; }
-                constexpr char replacement[] = "248320";
-                std::memcpy(b.data() + offset + i, replacement, 6);
-                break;
-            }
-            write_u32(b, record + 24,
-                      crc32(std::span<const std::byte>(b).subspan(
-                          static_cast<std::size_t>(offset), static_cast<std::size_t>(bytes))));
-        });
-    failures +=
-        expect_parse_throws(valid, "tokenizer duplicate merge pair", [tokenizer_index](auto& b) {
-            const std::uint64_t record             = tokenizer_index + 64;
-            const std::uint64_t offset             = read_u64(b, record + 8);
-            const std::uint64_t bytes              = read_u64(b, record + 16);
-            constexpr std::string_view replacement = "a b\na b\n      ";
-            if (bytes != replacement.size()) {
-                throw std::runtime_error("fixture merge size mismatch");
-            }
-            std::memcpy(b.data() + offset, replacement.data(), replacement.size());
-            write_u32(b, record + 24,
-                      crc32(std::span<const std::byte>(b).subspan(
-                          static_cast<std::size_t>(offset), static_cast<std::size_t>(bytes))));
-        });
-    failures += expect_parse_throws(valid, "tokenizer malformed JSON", [tokenizer_index](auto& b) {
-        const std::uint64_t record = tokenizer_index + 2 * 64;
-        const std::uint64_t offset = read_u64(b, record + 8);
-        const std::uint64_t bytes  = read_u64(b, record + 16);
-        b[offset]                  = std::byte{'['};
-        write_u32(b, record + 24,
-                  crc32(std::span<const std::byte>(b).subspan(static_cast<std::size_t>(offset),
-                                                              static_cast<std::size_t>(bytes))));
     });
     failures += expect_parse_throws(valid, "tensor index non-adjacent", [module_offset](auto& b) {
         write_u64(b, 64, module_offset + kModuleRecordSize);
@@ -617,13 +539,5 @@ int main() {
     failures += expect_parse_throws(valid, "fusion total_n mismatch", [fusion_offset](auto& b) {
         write_u32(b, fusion_offset + 40, read_u32(b, fusion_offset + 40) + 1);
     });
-    try {
-        qus::Q5090Expectations expected;
-        expected.hidden_size             = 1;
-        expected.validate_model_contract = false;
-        (void)qus::parse_q5090_file(valid, expected);
-        failures += fail("dims mismatch did not throw");
-    } catch (const std::exception&) {}
-
     return failures == 0 ? 0 : fail("q5090 parser test failed");
 }

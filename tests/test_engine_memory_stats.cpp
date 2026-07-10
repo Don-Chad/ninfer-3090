@@ -81,7 +81,7 @@ int test_unloaded_stats_do_not_need_cuda() {
     } catch (const std::invalid_argument&) {}
     try {
         qus::EngineOptions bad_options;
-        bad_options.stop_token_ids = {qus::model::kCfg.tokenizer_vocab};
+        bad_options.stop_token_ids = {qus::model::kCfg.vocab};
         qus::Engine bad_engine(bad_options);
         (void)bad_engine;
         failures += fail("reserved stop token id did not throw before load");

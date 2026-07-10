@@ -208,9 +208,9 @@ int main(int argc, char** argv) {
         print_stage("load", "engine total",
                     std::chrono::duration<double>(Clock::now() - engine_load_start).count());
 
-        std::unique_ptr<qus::text::QwenTokenizer> tokenizer = engine.take_tokenizer();
+        qus::text::QwenTokenizer tokenizer(engine.take_tokenizer_bundle());
         const std::vector<int> stop_token_ids =
-            qus::text::resolve_stop_token_ids(*tokenizer, cli.stop_token_ids);
+            qus::text::resolve_stop_token_ids(tokenizer, cli.stop_token_ids);
         engine.set_stop_token_ids(stop_token_ids);
 
         const std::vector<qus::text::ChatMessage> messages =
@@ -248,7 +248,7 @@ int main(int argc, char** argv) {
             }
         };
 
-        qus::text::TextGenerationRunner runner(*tokenizer, engine);
+        qus::text::TextGenerationRunner runner(tokenizer, engine);
 
         const qus::text::TextGenerationResult result =
             runner.generate(messages, generation_options);

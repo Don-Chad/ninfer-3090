@@ -158,7 +158,7 @@ Exposes typed `Tensor` / `QuantWeight` views by name or by q5090 module/source i
 ```cpp
 class WeightStore {
 public:
-  explicit WeightStore(Q5090Expectations expected = {});
+  WeightStore();
   void load(const char* path, DeviceArena& weights, DeviceContext& ctx,
             const LoadOptions& options = {});
 

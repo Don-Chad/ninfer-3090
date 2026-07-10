@@ -79,24 +79,6 @@ def test_load_counts_rejects_ragged(tmp_path):
         raise AssertionError("load_counts accepted a ragged histogram")
 
 
-def test_reserved_model_rows_are_never_selected():
-    total = np.zeros(dh.VOCAB_SIZE, dtype=np.int64)
-    total[-1] = np.iinfo(np.int64).max
-    selected = dh.select_shortlist(total, 8, force_include=[])
-    assert np.all(selected < dh.TOKENIZER_ID_COUNT)
-    assert dh.VOCAB_SIZE - 1 not in selected
-
-
-def test_reserved_force_include_is_rejected():
-    total = np.zeros(dh.VOCAB_SIZE, dtype=np.int64)
-    try:
-        dh.select_shortlist(total, 8, force_include=[dh.TOKENIZER_ID_COUNT])
-    except SystemExit as exc:
-        assert "outside tokenizer domain" in str(exc)
-    else:
-        raise AssertionError("reserved force-include id was accepted")
-
-
 def _run_all():
     import tempfile
     from pathlib import Path

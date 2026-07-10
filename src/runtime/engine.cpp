@@ -15,9 +15,9 @@ namespace {
 
 void validate_token_ids(std::span<const int> ids, std::string_view label) {
     for (const int id : ids) {
-        if (id < 0 || id >= static_cast<int>(model::kCfg.tokenizer_vocab)) {
+        if (id < 0 || id >= static_cast<int>(model::kCfg.vocab)) {
             throw std::invalid_argument(std::string(label) +
-                                        " contains token id outside canonical tokenizer domain");
+                                        " contains token id outside model vocab");
         }
     }
 }
@@ -287,26 +287,6 @@ Engine::Engine(EngineOptions options) : options_(options) {
     }
 }
 
-Q5090Expectations Engine::expectations() {
-    Q5090Expectations expected;
-    expected.layer_count             = model::kCfg.n_layers;
-    expected.hidden_size             = model::kCfg.hidden;
-    expected.intermediate_size       = model::kCfg.intermediate;
-    expected.vocab_size              = model::kCfg.vocab;
-    expected.num_attention_heads     = model::kCfg.n_q;
-    expected.num_key_value_heads     = model::kCfg.n_kv;
-    expected.head_dim                = model::kCfg.head_dim;
-    expected.gdn_key_heads           = model::kCfg.gdn_k_heads;
-    expected.gdn_value_heads         = model::kCfg.gdn_v_heads;
-    expected.gdn_key_head_dim        = model::kCfg.gdn_k_dim;
-    expected.gdn_value_head_dim      = model::kCfg.gdn_v_dim;
-    expected.gdn_conv_width          = model::kCfg.gdn_conv_k;
-    expected.full_attention_interval = model::kCfg.full_interval;
-    expected.max_position_embeddings = 262144;
-    expected.validate_model_contract = true;
-    return expected;
-}
-
 std::size_t Engine::default_cache_bytes(std::uint32_t max_ctx) {
     return default_cache_bytes_for(max_ctx, 0, model::kDefaultPrefillChunk, DType::BF16,
                                    kKvQuantGroup);
@@ -502,24 +482,19 @@ void Engine::load(const std::string& path) {
     kv_.reset();
     mtp_kv_.reset();
     weights_.reset();
-    tokenizer_.reset();
     work_.reset();
     cache_arena_.reset();
     ctx_.reset();
     io_ = {};
 
     const bool enable_mtp = options_.mtp_draft_tokens > 0;
-    weights_.emplace(expectations());
+    weights_.emplace();
 
     LoadOptions load_options;
     load_options.progress           = options_.progress;
     load_options.load_mtp           = options_.mtp_draft_tokens > 0;
     load_options.load_lm_head_draft = options_.use_lm_head_draft;
     weights_->prepare(path.c_str(), load_options);
-
-    // Construct the real tokenizer before the first CUDA runtime call or device allocation.  This
-    // is the single authoritative runtime-consumer check; callers receive this same instance.
-    tokenizer_ = std::make_unique<text::QwenTokenizer>(weights_->take_prepared_tokenizer_bundle());
 
     ctx_.emplace(options_.device);
     weights_->upload(*ctx_);
@@ -610,9 +585,9 @@ void Engine::load(const std::string& path) {
     }
 }
 
-std::unique_ptr<text::QwenTokenizer> Engine::take_tokenizer() {
-    if (!tokenizer_) { throw std::runtime_error("Engine tokenizer is not available"); }
-    return std::move(tokenizer_);
+Q5090TokenizerBundle Engine::take_tokenizer_bundle() {
+    if (!weights_) { throw std::runtime_error("Engine tokenizer is not available"); }
+    return weights_->take_tokenizer_bundle();
 }
 
 void Engine::set_stop_token_ids(std::vector<int> ids) {

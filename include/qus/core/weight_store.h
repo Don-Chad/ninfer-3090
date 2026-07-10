@@ -90,15 +90,14 @@ struct FusedBlockRecord {
 
 class WeightStore {
 public:
-    explicit WeightStore(Q5090Expectations expected = {});
+    WeightStore();
     ~WeightStore();
 
     WeightStore(const WeightStore&)            = delete;
     WeightStore& operator=(const WeightStore&) = delete;
 
     // CPU-only phase. Opens one stable fd, reads/validates Header first, then the bounded
-    // catalog/tokenizer region, and derives the exact residency plan. No CUDA call is made. A
-    // resident store is one-shot; call clear() explicitly before preparing a replacement.
+    // catalog/tokenizer region, and derives the exact residency plan. No CUDA call is made.
     void prepare(const char* path, const LoadOptions& options = {});
     // GPU phase. Allocates one exact arena per selected module and transactionally publishes
     // descriptors only after staged uploads and the final file-identity check succeed.
@@ -123,11 +122,8 @@ public:
     const Q5090LoadStats& load_stats() const noexcept;
     const DeviceArena* module_arena(ModuleKind module) const noexcept;
     void reset_arena_peaks() noexcept;
-    // Transfer the already parser-validated CPU bundle after prepare() and before upload().
-    Q5090TokenizerBundle take_prepared_tokenizer_bundle();
+    Q5090TokenizerBundle take_tokenizer_bundle();
     void require_mtp_module_expectations() const;
-    // A clear requested from a progress callback is deferred until the active prepare/upload
-    // transaction has unwound. Nested prepare/load/upload calls fail immediately.
     void clear() noexcept;
 
 private:
@@ -159,7 +155,6 @@ private:
         std::uint64_t payload_bytes = 0;
     };
 
-    Q5090Expectations expected_;
     struct PreparedArtifact;
     std::unique_ptr<PreparedArtifact> prepared_;
     std::vector<TensorRecord> tensors_;
@@ -169,10 +164,9 @@ private:
     std::array<std::optional<DeviceArena>, 4> module_arenas_;
     Q5090LoadPlan plan_;
     Q5090LoadStats stats_;
+    Q5090TokenizerBundle tokenizer_;
     std::size_t total_tensor_count_   = 0;
     std::size_t loaded_payload_bytes_ = 0;
-    bool mutation_active_             = false;
-    bool clear_requested_             = false;
 };
 
 } // namespace qus

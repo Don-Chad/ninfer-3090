@@ -6,7 +6,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -15,26 +14,6 @@
 namespace qus {
 
 inline constexpr std::uint32_t kQ5090NoLayer = 0xFFFFFFFFU;
-
-struct Q5090Expectations {
-    std::optional<std::uint32_t> layer_count;
-    std::optional<std::uint32_t> hidden_size;
-    std::optional<std::uint32_t> intermediate_size;
-    std::optional<std::uint32_t> vocab_size;
-    std::optional<std::uint32_t> num_attention_heads;
-    std::optional<std::uint32_t> num_key_value_heads;
-    std::optional<std::uint32_t> head_dim;
-    std::optional<std::uint32_t> gdn_key_heads;
-    std::optional<std::uint32_t> gdn_value_heads;
-    std::optional<std::uint32_t> gdn_key_head_dim;
-    std::optional<std::uint32_t> gdn_value_head_dim;
-    std::optional<std::uint32_t> gdn_conv_width;
-    std::optional<std::uint32_t> full_attention_interval;
-    std::optional<std::uint32_t> max_position_embeddings;
-    // Fixed Qwen3.6 inventory checks are on by default. Compact binary-contract fixtures may disable
-    // them while exercising the generic byte-layout parser without constructing 16+ GiB payloads.
-    bool validate_model_contract = true;
-};
 
 struct ParsedQ5090Header {
     std::uint32_t tensor_count              = 0;
@@ -179,12 +158,9 @@ struct Q5090Progress {
 };
 
 std::uint64_t q5090_fnv1a64(std::string_view name);
-ParsedQ5090Header parse_q5090_header(std::span<const std::byte> header, std::uint64_t file_size,
-                                     const Q5090Expectations& expected = {});
-ParsedQ5090File parse_q5090_catalog(std::span<const std::byte> metadata, std::uint64_t file_size,
-                                    const Q5090Expectations& expected = {});
+ParsedQ5090Header parse_q5090_header(std::span<const std::byte> header, std::uint64_t file_size);
+ParsedQ5090File parse_q5090_catalog(std::span<const std::byte> metadata, std::uint64_t file_size);
 ParsedQ5090File parse_q5090_file(std::span<const std::byte> file,
-                                 const Q5090Expectations& expected = {},
-                                 Q5090Progress* progress           = nullptr);
+                                 Q5090Progress* progress = nullptr);
 
 } // namespace qus

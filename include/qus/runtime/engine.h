@@ -8,13 +8,11 @@
 #include "qus/kernels/sampling.h"
 #include "qus/model/model.h"
 #include "qus/runtime/decode_graph.h"
-#include "qus/text/tokenizer.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -78,7 +76,7 @@ public:
     explicit Engine(EngineOptions options = {});
 
     void load(const std::string& path);
-    std::unique_ptr<text::QwenTokenizer> take_tokenizer();
+    Q5090TokenizerBundle take_tokenizer_bundle();
     void set_stop_token_ids(std::vector<int> ids);
 
     // Install decode/prefill sampling. temperature <= 0 in `config` is exact
@@ -127,7 +125,6 @@ public:
     [[nodiscard]] static std::size_t default_work_bytes(std::uint32_t prefill_chunk);
 
 private:
-    [[nodiscard]] static Q5090Expectations expectations();
     [[nodiscard]] static std::size_t default_cache_bytes(std::uint32_t max_ctx);
 
     void require_loaded() const;
@@ -151,7 +148,6 @@ private:
     std::optional<DeviceArena> cache_arena_;
     std::optional<WorkspaceArena> work_;
     std::optional<WeightStore> weights_;
-    std::unique_ptr<text::QwenTokenizer> tokenizer_;
     std::optional<KVCache> kv_;
     std::optional<KVCache> mtp_kv_;
     std::optional<GdnState> state_;

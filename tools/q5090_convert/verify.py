@@ -710,7 +710,6 @@ def _tokenizer_checks(records: Sequence[dict], vocab_size: int) -> List[str]:
             validate_tokenizer_assets(
                 {record["kind"]: record["data"] for record in records},
                 vocab_size,
-                require_canonical=True,
             )
         except ValueError as exc:
             problems.append(f"tokenizer semantic contract: {exc}")
@@ -1120,12 +1119,10 @@ def _l0_checks(
                     if len(set(ids)) != len(ids):
                         problems.append(f"{e['name']}: id-map contains duplicate vocab ids")
                     if any(
-                        token_id < 0 or token_id >= fmt.TOKENIZER_OCCUPIED_ID_COUNT
+                        token_id < 0 or token_id >= hdr["vocab_size"]
                         for token_id in ids
                     ):
-                        problems.append(
-                            f"{e['name']}: id-map contains non-tokenizer vocab ids"
-                        )
+                        problems.append(f"{e['name']}: id-map contains out-of-range vocab ids")
             if (
                 e["layout"] == qt.LAYOUT_ROW_SPLIT
                 and qt.is_quant(e["qtype"])
@@ -1460,6 +1457,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="verify q5090_w4g64_mixed_v4_1 artifact")
     ap.add_argument("file", help="v4.1 .qus file")
     ap.add_argument("--model", default=DEFAULT_MODEL, help="HF bf16 source model for L1")
+    ap.add_argument(
+        "--tokenizer",
+        default=None,
+        help="HF tokenizer directory for draft special ids (default: --model)",
+    )
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--quick", action="store_true", help="L0 + CRC only; skip L1")
     ap.add_argument(
@@ -1539,17 +1541,6 @@ def main() -> None:
         with open(os.path.join(args.model, "model.safetensors.index.json")) as f:
             weight_map = json.load(f)["weight_map"]
         reader = ShardReader(args.model, weight_map)
-        for record in tokenizer_records:
-            source_name = fmt.TOKENIZER_SOURCE_NAME[record["kind"]]
-            source_path = os.path.join(args.model, source_name)
-            try:
-                with open(source_path, "rb") as source_file:
-                    source_bytes = source_file.read()
-            except OSError as exc:
-                l1.append(f"failed to read source tokenizer asset {source_path}: {exc}")
-                continue
-            if source_bytes != record["data"]:
-                l1.append(f"embedded tokenizer asset differs from source model: {source_name}")
         missing = sorted({s.source.src_name for s in plan.segments if not reader.has(s.source.src_name)})
         if missing:
             l1.append("missing source tensors:\n  " + "\n  ".join(missing))
@@ -1557,7 +1548,10 @@ def main() -> None:
             draft_ctx = None
             if draft_present:
                 draft_ctx = dh.compute_shortlist(
-                    args.ranking, args.model, dh.DRAFT_HEAD_N, tc["vocab_size"]
+                    args.ranking,
+                    args.tokenizer or args.model,
+                    dh.DRAFT_HEAD_N,
+                    tc["vocab_size"],
                 )
             value_problems, agg = _l1_checks(
                 args.file, entries, plan, reader, device, dump, draft_ctx

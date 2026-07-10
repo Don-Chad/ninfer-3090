@@ -38,26 +38,6 @@ std::filesystem::path make_fixture() {
     return path;
 }
 
-qus::Q5090Expectations expectations() {
-    qus::Q5090Expectations expected;
-    expected.layer_count             = 64;
-    expected.hidden_size             = 5120;
-    expected.intermediate_size       = 17408;
-    expected.vocab_size              = 248320;
-    expected.num_attention_heads     = 24;
-    expected.num_key_value_heads     = 4;
-    expected.head_dim                = 256;
-    expected.gdn_key_heads           = 16;
-    expected.gdn_value_heads         = 48;
-    expected.gdn_key_head_dim        = 128;
-    expected.gdn_value_head_dim      = 128;
-    expected.gdn_conv_width          = 4;
-    expected.full_attention_interval = 4;
-    expected.max_position_embeddings = 262144;
-    expected.validate_model_contract = false;
-    return expected;
-}
-
 int expect_weight(const qus::Weight* w, qus::SourceKind kind, std::uint32_t layer, qus::QType qtype,
                   qus::QuantLayout layout, std::int32_t n, std::int32_t k, std::string_view label,
                   qus::ModuleKind module = qus::ModuleKind::TextCore) {
@@ -148,7 +128,7 @@ int main() {
     qus::WorkspaceArena workspace(8ULL * 1024ULL * 1024ULL);
     qus::DeviceArena io_arena(1024ULL * 1024ULL);
 
-    qus::WeightStore store(expectations());
+    qus::WeightStore store;
     qus::LoadOptions load_options;
     load_options.load_mtp = true;
     store.load(fixture_path.c_str(), ctx, load_options);

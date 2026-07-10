@@ -95,7 +95,7 @@ GenerationService::GenerationService(ServeOptions options) : options_(std::move(
     engine_options.use_lm_head_draft = options_.use_lm_head_draft;
     engine_                          = std::make_unique<qus::Engine>(engine_options);
     engine_->load(options_.weights_path);
-    tokenizer_ = engine_->take_tokenizer();
+    tokenizer_ = std::make_unique<qus::text::QwenTokenizer>(engine_->take_tokenizer_bundle());
     engine_->set_stop_token_ids(tokenizer_->default_stop_token_ids());
 }
 
