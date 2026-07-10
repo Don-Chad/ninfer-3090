@@ -1,8 +1,9 @@
-# QUS Packed Weight File Format `q5090_w4g64_mixed_v4` (binary spec)
+# QUS Packed Artifact Format `q5090_w4g64_mixed_v4_1` (binary spec)
 
 This document is the **decode-optimal canonical binary contract** for Qwen3.6-27B on one RTX 5090. It
-is the single weight-file ABI the C++ runtime consumes. There is no other in-tree weight path, no
-runtime repack, and **no backward compatibility**: the converter emits v4, the runtime reads v4, and
+is the single model-artifact ABI the C++ runtime consumes. It contains the packed weights and the
+CPU-only tokenizer assets required by the text frontend. There is no other in-tree weight path, no
+runtime repack, and **no backward compatibility**: the converter emits v4.1, the runtime reads v4.1, and
 every consumer (converter, weight store, GEMV and GEMM kernels) targets this format directly with no
 transitional or fallback layout.
 
@@ -10,15 +11,19 @@ This document is **self-contained**: it fully specifies the container format, th
 and the tensor-assignment policy (§7, §10, §14) needed to build a conformant converter and loader from
 this file alone. The exhaustive per-layer emission (which layer emits which block, in which order)
 follows mechanically from the assignment policy applied across the 64 decoder layers and is not
-re-listed tensor-by-tensor. The format changes only the **storage order and grouping**; it never
-changes the dequantized values (§0 invariants).
+re-listed tensor-by-tensor. For weights, the format changes only the **storage order and grouping**;
+it never changes the dequantized values (§0 invariants). Tokenizer assets are separate raw bytes.
 
-Relative to a plain text-decode artifact, v4 adds an **optional shortlisted draft `lm_head`** for MTP
+Relative to a plain text-decode artifact, v4.1 adds an **optional shortlisted draft `lm_head`** for MTP
 speculative drafting: a standalone Q4 weights block plus a small `int32` index -> vocab id map. It is
 optional and, when present, changes only *which* tokens are proposed during drafting; verification
 always uses the full `lm_head`, so emitted tokens are unaffected (§18). The selection method and the
 measured decision to ship it are recorded in
 [2026-07-06-lm-head-draft-q4-decision.md](2026-07-06-lm-head-draft-q4-decision.md).
+
+v4.1 makes two container-level changes relative to the retired v4.0 artifact: it embeds the three
+runtime tokenizer assets, and it moves the draft-head pair out of `TEXT_CORE` into its own
+`LM_HEAD_DRAFT` module. `format_minor = 0` is not accepted and no v4.0 compatibility parser exists.
 
 ## Why this layout
 
@@ -56,13 +61,14 @@ of every weight; no dequantized BF16/FP32 copy of a quantized weight ever exists
 - **Multi-byte scalar payloads are little-endian.** FP16 scales and `CONTIGUOUS` BF16/FP32/int32
   elements use IEEE-754 (or two's-complement, for int32) little-endian byte order (least-significant
   byte first). BF16 is the high 16 bits of IEEE-754 binary32, stored as a little-endian `u16`.
-- **Zero-fill.** Every reserved field and **all padding** — index/string-table padding, the gap before
+- **Zero-fill.** Every reserved field and **all padding** — index/string/tokenizer padding, the gap before
   the 4096-aligned payload region, and every inter-plane / inter-block 256-byte alignment pad — MUST be
   zero. Because `crc32` (§15) covers a block's plane padding, zero-fill is required for deterministic
-  CRC. A verifier MUST reject nonzero reserved/padding bytes; a loader SHOULD.
+  CRC. A verifier MUST reject all nonzero reserved/padding bytes. A loader MUST reject them in the
+  header/catalog/tokenizer region and MAY skip unselected weight-payload padding.
 - File starts with a 4096-byte header. Module, tensor, segment, and fusion-group index tables and the
-  string table follow. The payload region starts at a 4096-byte boundary; each tensor payload is
-  **256-byte aligned**.
+  string table follow, then the tokenizer index/data region. The weight payload region starts at a
+  4096-byte boundary; each tensor payload is **256-byte aligned**.
 - **No baked runtime math transforms**: `A_log`/`dt_bias` upcast to FP32 (bf16 on disk), RMSNorm
   weights stored raw (no `+1`), `A = -exp(A_log)` remains the runtime's job.
 - **Canonical TEXT_CORE conv1d layout** is `[10240,4,1]` (`[conv_dim,gdn_conv_k,1]`).
@@ -101,6 +107,10 @@ of every weight; no dequantized BF16/FP32 copy of a quantized weight ever exists
 | FusionGroupRecord[fusion_group_count] (64 B each)|
 +--------------------------------------------------+ string_table_offset
 | String table (NUL-terminated tensor/segment names)|
++--------------------------------------------------+ tokenizer_index_offset (64-aligned)
+| TokenizerRecord[3]                 (64 bytes each)|
++--------------------------------------------------+ tokenizer_data_offset (64-aligned)
+| tokenizer assets + inter-asset zero padding      |
 +--------------------------------------------------+ payload_offset (4096-aligned)
 | Block payloads (each 256-aligned, no overlap)    |
 +--------------------------------------------------+ file_size
@@ -111,11 +121,14 @@ Index regions are **adjacent in this exact order** with no gaps: `module_index_o
 `segment_index_offset == tensor_index_offset + tensor_count*128`;
 `fusion_group_index_offset == segment_index_offset + segment_count*32`;
 `string_table_offset == fusion_group_index_offset + fusion_group_count*64`;
-`payload_offset == align_up(string_table_offset + string_table_bytes, 4096)`. Modules are contiguous
-ranges of the tensor index in the order TEXT_CORE, then MTP_DRAFT, then VISION_ENCODER. The segment and
-fusion-group tables are global (indexed by blocks). All three module kinds are first-class; which appear
-in a given file is a conversion choice. The optional draft `lm_head` blocks live inside the TEXT_CORE
-range (§14). The per-module assignment is in §7, §10, and §14.
+`tokenizer_index_offset == align_up(string_table_offset + string_table_bytes, 64)`;
+`tokenizer_data_offset == align_up(tokenizer_index_offset + 3*64, 64)`; and
+`payload_offset == align_up(tokenizer_data_offset + tokenizer_data_bytes, 4096)`. Modules are
+contiguous ranges of the tensor index in the canonical order TEXT_CORE, optional LM_HEAD_DRAFT,
+optional MTP_DRAFT, optional VISION_ENCODER. This order is semantic and is not numeric enum order.
+The segment and fusion-group tables are global (indexed by blocks). All four module kinds are
+first-class; which optional modules appear is a conversion choice. The per-module assignment is in
+§7, §10, and §14.
 
 ## 2. FileHeader (4096 bytes)
 
@@ -126,7 +139,7 @@ range (§14). The per-module assignment is in §7, §10, and §14.
 | 20 | 4 | u32 | `endian` = `0x01020304` |
 | 24 | 4 | u32 | `header_size` = 4096 |
 | 28 | 4 | u32 | `tensor_count` (number of blocks) |
-| 32 | 4 | u32 | `module_count` (1..3) |
+| 32 | 4 | u32 | `module_count` (1..4) |
 | 36 | 4 | u32 | `layer_count` = 64 |
 | 40 | 4 | u32 | `flags` (see below) |
 | 44 | 4 | u32 | `segment_count` |
@@ -157,37 +170,84 @@ range (§14). The per-module assignment is in §7, §10, and §14.
 | 208 | 8 | u64 | `segment_index_bytes` |
 | 216 | 8 | u64 | `fusion_group_index_offset` |
 | 224 | 8 | u64 | `fusion_group_index_bytes` |
-| 232 | 4 | u32 | `format_minor` = 0 |
-| 236 | 3860 | u8 | reserved zero |
+| 232 | 4 | u32 | `format_minor` = 1 |
+| 236 | 4 | u32 | `tokenizer_record_count` = 3 |
+| 240 | 4 | u32 | `tokenizer_record_size` = 64 |
+| 244 | 4 | u32 | `tokenizer_flags` = 0 |
+| 248 | 8 | u64 | `tokenizer_index_offset` |
+| 256 | 8 | u64 | `tokenizer_index_bytes` = 192 |
+| 264 | 8 | u64 | `tokenizer_data_offset` |
+| 272 | 8 | u64 | `tokenizer_data_bytes` (includes inter-asset padding, excludes final 4096 pad) |
+| 280 | 3816 | u8 | reserved zero |
 
 **`flags` semantics.** bit0 `TEXT_PRESENT`, bit1 `MTP_PRESENT`, bit2 `VISION_PRESENT` — each set iff the
 corresponding `module_kind` appears in the module table; bit0 is always set, and the bits MUST agree
 with the module table. bit3 `CALIBRATED` — set iff any tensor's codes/scales came from a calibrated
-quantizer pass (§8). bit4 `DRAFT_HEAD_PRESENT` — set **iff** a TEXT_CORE block with
-`source_kind == LM_HEAD_DRAFT` is present (which requires its paired `LM_HEAD_DRAFT_IDMAP` block; §14).
-A full artifact with the optional draft head sets
-`TEXT_PRESENT | MTP_PRESENT | VISION_PRESENT | DRAFT_HEAD_PRESENT`. Bits 5..31 are reserved and MUST be
-zero. A loader MUST reject a file whose reserved flag bits are set, whose module-present bits disagree
-with the module table, or whose `DRAFT_HEAD_PRESENT` disagrees with the presence of a `LM_HEAD_DRAFT`
-block.
+quantizer pass (§8). bit4 `LM_HEAD_DRAFT_PRESENT` — set **iff** an `LM_HEAD_DRAFT` ModuleRecord is
+present (§14). A full artifact sets
+`TEXT_PRESENT | MTP_PRESENT | VISION_PRESENT | LM_HEAD_DRAFT_PRESENT`. Bits 5..31 are reserved and MUST
+be zero. A loader MUST reject a file whose reserved flag bits are set or whose presence bits disagree
+with the module table. `DRAFT_HEAD_PRESENT` is a retired v4.0 name and is not an alias.
+
+### 2.1 TokenizerRecord (64 bytes)
+
+The artifact contains exactly three CPU-only raw UTF-8 assets. They are not tensors and never enter a
+device arena or H2D transfer plan.
+
+| Offset | Size | Type | Field |
+|---:|---:|---|---|
+| 0 | 4 | u32 | `kind` |
+| 4 | 4 | u32 | `encoding` = 0 (`RAW_UTF8`) |
+| 8 | 8 | u64 | `data_offset` (absolute) |
+| 16 | 8 | u64 | `data_bytes` |
+| 24 | 4 | u32 | `crc32` over asset bytes only |
+| 28 | 4 | u32 | reserved zero |
+| 32 | 32 | u8 | `sha256` over asset bytes only |
+
+The records appear exactly once each and in this exact order:
+
+| record | kind | source asset | maximum size |
+|---:|---:|---|---:|
+| 0 | 1 | `tokenizer.json` (`TOKENIZER_JSON`) | 256 MiB |
+| 1 | 2 | `merges.txt` (`MERGES_TXT`) | 64 MiB |
+| 2 | 3 | `generation_config.json` (`GENERATION_CONFIG_JSON`) | 1 MiB |
+
+All three assets are non-empty valid UTF-8. The converter copies the source bytes verbatim: it does
+not normalize JSON, line endings, or terminal newlines and does not append NUL. The first asset starts
+at `tokenizer_data_offset`; each later asset starts at
+`align_up(previous.data_offset + previous.data_bytes, 64)`. `tokenizer_data_bytes` spans from
+`tokenizer_data_offset` through the final asset byte and includes inter-asset zero padding. All bytes
+between the string table and tokenizer index, between tokenizer assets, and between the final asset
+and the 4096-aligned weight `payload_offset` MUST be zero.
+
+The converter and offline verifier MUST validate both CRC32 and SHA-256. The runtime MUST validate
+CRC32, UTF-8, the asset-specific tokenizer syntax, and all tokenizer-region padding before constructing
+the tokenizer. Runtime SHA-256 validation is optional; the field remains mandatory and authoritative
+for offline artifact identity. Missing `merges.txt` or `generation_config.json` is invalid in v4.1;
+there is no hard-coded stop-token fallback.
+
+`tokenizer_config.json` is a converter input for draft-shortlist special-token selection but is not a
+runtime asset because the current C++ tokenizer does not consume it. Adding another runtime tokenizer
+asset requires a new explicit format revision; reserved fields cannot be repurposed silently.
 
 ## 3. ModuleRecord (64 bytes)
 
 | Offset | Size | Type | Field |
 |---:|---:|---|---|
-| 0 | 4 | u32 | `module_kind` (0=TEXT_CORE, 1=MTP_DRAFT, 2=VISION_ENCODER) |
+| 0 | 4 | u32 | `module_kind` (0=TEXT_CORE, 1=MTP_DRAFT, 2=VISION_ENCODER, 3=LM_HEAD_DRAFT) |
 | 4 | 4 | u32 | `module_version` = 4 |
 | 8 | 8 | u64 | `tensor_index_begin` (first block) |
 | 16 | 8 | u64 | `tensor_index_count` (block count) |
 | 24 | 8 | u64 | `payload_offset` |
 | 32 | 8 | u64 | `payload_bytes` |
-| 40 | 4 | u32 | `load_policy` (0=RESIDENT, 1=LAZY_GPU, 2=CPU_PINNED_THEN_GPU) |
-| 44 | 4 | u32 | `flags` (reserved; MUST be zero — no module-level flags are defined) |
+| 40 | 4 | u32 | reserved zero (v4.0 `load_policy` is removed) |
+| 44 | 4 | u32 | reserved zero |
 | 48 | 16 | u8 | reserved zero |
 
-Default `load_policy`: TEXT=RESIDENT, MTP=RESIDENT, VISION=LAZY_GPU. A loader MUST reject a nonzero
-module `flags`. The modules' `[tensor_index_begin, tensor_index_begin+tensor_index_count)` ranges
-partition `[0, tensor_count)` contiguously in TEXT->MTP->VISION order.
+Runtime residency comes only from explicit feature requests; it is never encoded in the artifact. A
+loader MUST reject either nonzero u32 at offsets 40/44. The modules'
+`[tensor_index_begin, tensor_index_begin+tensor_index_count)` ranges partition `[0, tensor_count)`
+contiguously in TEXT->LM_HEAD_DRAFT->MTP->VISION order with absent optional modules omitted.
 
 ## 4. TensorEntry (128 bytes) — one block
 
@@ -319,7 +379,8 @@ among its projections; a single-`qtype` group is one block.
 | 0 | `ROW_SPLIT` | every quantized tensor (Q4/Q5/Q6 with `group_size=64`, W8G128 with `group_size=128`, W8G32 with `group_size=32`) |
 | 1 | `CONTIGUOUS` | dense control tensors (BF16_CTRL / FP32_CTRL / I32_CTRL) |
 
-`module_kind` (u16): `0=TEXT_CORE`, `1=MTP_DRAFT`, `2=VISION_ENCODER`.
+`module_kind` (u16): `0=TEXT_CORE`, `1=MTP_DRAFT`, `2=VISION_ENCODER`,
+`3=LM_HEAD_DRAFT`.
 
 `scale_dtype` (u16): `0=none`, `1=FP16`.
 
@@ -336,22 +397,26 @@ Values `4..63` are reserved for future fusion groups (including MTP/VISION fusio
 
 `source_kind` (u32) — the complete enum across all modules. TEXT_CORE kinds:
 
-| value | name | value | name | value | name |
-|---:|---|---:|---|---:|---|
-| 0 | `OTHER` (fused-block placeholder) | 13 | `GDN_IN_PROJ_A` | 32 | `ATTN_K` |
-| 1 | `EMBED` | 14 | `GDN_IN_PROJ_B` | 33 | `ATTN_V` |
-| 2 | `LM_HEAD` | 15 | `GDN_IN_PROJ_Q` | 34 | `ATTN_Q_NORM` |
-| 3 | `FINAL_NORM` | 16 | `GDN_IN_PROJ_K` | 35 | `ATTN_K_NORM` |
-| 4 | `INPUT_LAYERNORM` | 17 | `GDN_IN_PROJ_V` | 36 | `ATTN_O` |
-| 5 | `POST_ATTN_LAYERNORM` | 18 | `GDN_IN_PROJ_Z` | 40 | `MLP_GATE` |
-| 6 | `LM_HEAD_DRAFT` | 19 | `GDN_NORM` | 41 | `MLP_UP` |
-| 7 | `LM_HEAD_DRAFT_IDMAP` | 20 | `GDN_OUT_PROJ` | 42 | `MLP_DOWN` |
-| 10 | `GDN_A_LOG` | 30 | `ATTN_Q` | 31 | `ATTN_GATE` |
-| 11 | `GDN_DT_BIAS` | 12 | `GDN_CONV1D` | | |
+| value | name | value | name |
+|---:|---|---:|---|
+| 0 | `OTHER` (fused-block placeholder) | 1 | `EMBED` |
+| 2 | `LM_HEAD` | 3 | `FINAL_NORM` |
+| 4 | `INPUT_LAYERNORM` | 5 | `POST_ATTN_LAYERNORM` |
+| 10 | `GDN_A_LOG` | 11 | `GDN_DT_BIAS` |
+| 12 | `GDN_CONV1D` | 13 | `GDN_IN_PROJ_A` |
+| 14 | `GDN_IN_PROJ_B` | 15 | `GDN_IN_PROJ_Q` |
+| 16 | `GDN_IN_PROJ_K` | 17 | `GDN_IN_PROJ_V` |
+| 18 | `GDN_IN_PROJ_Z` | 19 | `GDN_NORM` |
+| 20 | `GDN_OUT_PROJ` | 30 | `ATTN_Q` |
+| 31 | `ATTN_GATE` | 32 | `ATTN_K` |
+| 33 | `ATTN_V` | 34 | `ATTN_Q_NORM` |
+| 35 | `ATTN_K_NORM` | 36 | `ATTN_O` |
+| 40 | `MLP_GATE` | 41 | `MLP_UP` |
+| 42 | `MLP_DOWN` | | |
 
 `LM_HEAD_DRAFT` (6) is the optional shortlisted draft `lm_head` weights block; `LM_HEAD_DRAFT_IDMAP`
-(7) is its paired `int32` index -> vocab id map. Both are TEXT_CORE globals (`source_layer =
-0xFFFFFFFF`), kept adjacent to `LM_HEAD`/`EMBED` (§14).
+(7) is its paired `int32` index -> vocab id map. These two source kinds are valid only when
+`module_kind=LM_HEAD_DRAFT`; both use `source_layer = 0xFFFFFFFF` (§14). They are not TEXT_CORE kinds.
 
 `MTP_DRAFT` (`module_kind=1`) adds the kinds below; its attention / MLP / norm linears **reuse** the
 shared `ATTN_*` / `MLP_*` / `INPUT_LAYERNORM` / `POST_ATTN_LAYERNORM` kinds above, disambiguated by
@@ -376,8 +441,9 @@ shared `ATTN_*` / `MLP_*` / `INPUT_LAYERNORM` / `POST_ATTN_LAYERNORM` kinds abov
 
 Values `8..9`, `21..29`, `37..39`, `43..49`, `54..59`, and `81..95` are reserved (unused). A loader MUST
 reject a block whose `source_kind` is not a defined value for its `module_kind` (or `OTHER` for a fused
-block). The TEXT_CORE assignment (including the optional draft head) is in §10 and §14; the MTP_DRAFT
-assignment is in §10.1 / §14 / §16; the VISION_ENCODER assignment follows the §14 class policy.
+block). The TEXT_CORE assignment is in §10/§14; the independent LM_HEAD_DRAFT assignment is in §14;
+the MTP_DRAFT assignment is in §10.1/§14/§16; and the VISION_ENCODER assignment follows the §14 class
+policy.
 
 ## 8. Quantization values (weight-only, symmetric, no zero point)
 
@@ -627,8 +693,8 @@ Notes:
 - `GDN_IN_PROJ_A` / `GDN_IN_PROJ_B` (the `[48,5120]` dense-control gates) are **not** group members;
   they are standalone `CONTIGUOUS` blocks.
 - Standalone (no group, `fusion_group_id = NONE`): `ATTN_O`, `GDN_OUT_PROJ`, `GDN_IN_PROJ_Z`,
-  `MLP_DOWN`, `LM_HEAD`, `EMBED`, the optional `LM_HEAD_DRAFT` weights block and its
-  `LM_HEAD_DRAFT_IDMAP`, and all control tensors.
+  `MLP_DOWN`, `LM_HEAD`, `EMBED`, and all TEXT_CORE control tensors. The optional draft-head pair is
+  standalone in its own `LM_HEAD_DRAFT` module (§14), not part of TEXT_CORE.
 
 ### 10.1 Fused projection groups (MTP_DRAFT)
 
@@ -691,31 +757,41 @@ fallback.
 
 ## 13. Structural validation (loader / verifier conformance)
 
-A conformant loader MUST reject a file that fails any of the **structural** checks 1–7 (a failure there
-can mis-read weights). Checks marked *(verifier)* — 8 `name_hash`, 9 zero-fill, 10 crc/dequant — are
-**integrity** checks for the offline auditor; a loader SHOULD apply them but MAY skip them at load time.
-The reserved-**flag**-bit rejection in check 1 is structural (loader MUST). All checks are computable
-from this document alone.
+A conformant loader MUST reject a file that fails any of the **structural** checks 1–8 (a failure there
+can mis-read weights or change token identity). Checks marked *(verifier)* — 9 `name_hash`, 10 full
+weight zero-fill, 11 weight crc/dequant — are **integrity** checks for the offline auditor; a loader MAY
+limit them to selected payloads at load time. Header/catalog/tokenizer reserved bytes and tokenizer
+CRC are always runtime-mandatory. All checks are computable from this document alone.
 
 1. **Header.** `magic == "Q5090MIXEDV4\0\0\0\0"`; `version == 4`; `endian == 0x01020304`;
-   `header_size == 4096`; `format_minor` is a known value (`0`); `module_count in [1,3]`;
-   `layer_count == 64`. `flags` reserved bits (5..31) are zero; the present-bits agree with the module
-   table (§2); and `DRAFT_HEAD_PRESENT` (bit4) is set iff a `LM_HEAD_DRAFT` block exists.
-2. **Index adjacency / sizes.** The six index/string offsets satisfy the adjacency chain of §1, and
-   `module_index_bytes == module_count*64`, `tensor_index_bytes == tensor_count*128`,
-   `segment_index_bytes == segment_count*32`, `fusion_group_index_bytes == fusion_group_count*64`.
-   `payload_offset` is 4096-aligned and equals `align_up(string_table_offset + string_table_bytes,
-   4096)`.
-3. **Modules.** `module_kind`s are distinct and ordered TEXT->MTP->VISION; the
-   `[tensor_index_begin, +tensor_index_count)` ranges partition `[0, tensor_count)` contiguously; each
-   module's `flags == 0`; each module's `payload_offset/payload_bytes` span covers exactly its blocks'
-   payloads. The `LM_HEAD_DRAFT` / `LM_HEAD_DRAFT_IDMAP` blocks, when present, lie in the TEXT_CORE
-   range.
-4. **Payload region.** Each block `payload_offset` is 256-aligned and lies in
+   `header_size == 4096`; `format_minor == 1`; `module_count in [1,4]`; `layer_count == 64`;
+   `tokenizer_record_count == 3`; `tokenizer_record_size == 64`; `tokenizer_flags == 0`. Header
+   reserved bytes and flag bits 5..31 are zero. Presence bits agree with the module table (§2).
+   `format_minor == 0` and all unknown minors are rejected after the 4096-byte header read.
+2. **Index adjacency / sizes.** The module/tensor/segment/fusion/string offsets satisfy the adjacency
+   chain of §1, and `module_index_bytes == module_count*64`,
+   `tensor_index_bytes == tensor_count*128`, `segment_index_bytes == segment_count*32`,
+   `fusion_group_index_bytes == fusion_group_count*64`.
+   `tokenizer_index_offset == align_up(string_table_offset + string_table_bytes,64)`,
+   `tokenizer_index_bytes == 192`, and
+   `tokenizer_data_offset == align_up(tokenizer_index_offset + 192,64)`. Every offset/size calculation
+   uses checked u64 arithmetic and lies within `file_size`.
+3. **Tokenizer.** Records have the exact §2.1 order/kind/encoding, non-empty bounded ranges, correct
+   64-byte placement, no overlap, and `tokenizer_data_bytes` ends at the final asset end.
+   `payload_offset == align_up(tokenizer_data_offset + tokenizer_data_bytes,4096)`. The runtime checks
+   tokenizer CRC32, UTF-8/content syntax, and every tokenizer-region padding byte; the verifier also
+   checks SHA-256.
+4. **Modules.** `module_kind`s are distinct and follow the canonical
+   TEXT->LM_HEAD_DRAFT->MTP->VISION order with absent optional modules omitted; their
+   `[tensor_index_begin, +tensor_index_count)` ranges partition `[0, tensor_count)` contiguously. Each
+   module's offset-40/44 u32 and remaining reserved bytes are zero, and its
+   `payload_offset/payload_bytes` span covers exactly its blocks' payloads. TEXT_CORE contains no
+   draft source kinds.
+5. **Payload region.** Each block `payload_offset` is 256-aligned and lies in
    `[file payload_offset, file_size)`; blocks appear in **tensor-index order** with no overlap; block
    `payload_offset + payload_bytes <= next block payload_offset` (or `file_size` for the last); the
    header `payload_bytes` and `file_size` are consistent with the last block's end.
-5. **Per-block fields.** `group_size`/`scale_dtype` match `qtype` (Q4/Q5/Q6: 64/FP16;
+6. **Per-block fields.** `group_size`/`scale_dtype` match `qtype` (Q4/Q5/Q6: 64/FP16;
    W8G128: 128/FP16; W8G32: 32/FP16; BF16_CTRL/FP32_CTRL/I32_CTRL: 0/none). Then, **by layout**:
    - **ROW_SPLIT**: `padded_shape[0] == shape[0] == N`, `padded_shape[1] == align_up(shape[1],128)`,
      `shape[2]==shape[3]==1`; `nibble_plane_bytes`/`high_plane_bytes`/`scale_plane_bytes` equal the §9.2
@@ -723,26 +799,29 @@ from this document alone.
    - **CONTIGUOUS** (BF16_CTRL/FP32_CTRL/I32_CTRL): `padded_shape == shape` (all four dims, no
      K-padding); `high_plane_bytes == 0`, `scale_plane_bytes == 0`, `nibble_plane_bytes == payload_bytes
      == elem_bytes * product(shape)` (`elem_bytes` = 2/4/4 for BF16/FP32/I32).
-6. **Segments.** `[segment_begin, segment_begin+segment_count) subset [0, segment_count_total)`; a
+7. **Segments.** `[segment_begin, segment_begin+segment_count) subset [0, segment_count_total)`; a
    block's segments partition `[0, N)` exactly with strictly increasing `row_begin` and no gap/overlap;
    if `segment_count == 1`, block `source_kind/source_layer == segment[0]`'s; if `segment_count > 1`,
    block `source_kind == OTHER (0)`. Each `source_kind` is a defined value for its module (§7). The
    `LM_HEAD_DRAFT` block has one segment `LM_HEAD_DRAFT[0,N)`; the `LM_HEAD_DRAFT_IDMAP` block has one
    segment `LM_HEAD_DRAFT_IDMAP[0,N)`; both use `source_layer == 0xFFFFFFFF`.
-7. **Fusion groups.** Members are `block_count` consecutive blocks at `first_block_tensor_index`,
+8. **Fusion groups.** Members are `block_count` consecutive blocks at `first_block_tensor_index`,
    consecutive in payload; each member's `fusion_group_id == group_id`, equal `source_layer`, equal
    `K`, `fusion_index == position`; `total_n == sum member N`; `shared_k == K`.
-8. **String table.** Every `name_offset + name_len < string_table_bytes`, the byte at
+9. **String table.** Every `name_offset + name_len < string_table_bytes`, the byte at
    `name_offset + name_len` is `NUL`, and (*verifier*) `name_hash == FNV-1a-64(name)` (§15).
-9. **(verifier) Zero-fill.** All reserved struct fields and all index/string-table/inter-plane/
-   inter-block padding bytes are zero (§0). (Reserved *flag* bits are structural — see check 1.)
-10. **(verifier)** `crc32` matches the block payload (§15); dequantizing each block reproduces the
+10. **(verifier) Weight zero-fill.** All string-table/weight inter-plane/inter-block padding bytes are
+   zero (§0). Header/catalog/tokenizer reserved and padding bytes are structural and already covered
+   by checks 1–4.
+11. **(verifier)** `crc32` matches the block payload (§15); dequantizing each block reproduces the
     quantizer values bit-for-bit (invariant 0.1).
 
-**Draft-head coupling (structural).** If `DRAFT_HEAD_PRESENT` is set: exactly one TEXT_CORE
-`LM_HEAD_DRAFT` block and exactly one TEXT_CORE `LM_HEAD_DRAFT_IDMAP` block exist; the id-map block is
-`I32_CTRL` `CONTIGUOUS`; and the id-map block's `N` (`shape[0]`) equals the draft-head weights block's
-`N`. If `DRAFT_HEAD_PRESENT` is clear, neither block exists. A loader MUST reject any other combination.
+**Draft-head coupling (structural).** If `LM_HEAD_DRAFT_PRESENT` is set, exactly one
+`LM_HEAD_DRAFT` module exists and contains exactly two blocks in order: one Q4G64 `ROW_SPLIT`
+`LM_HEAD_DRAFT`, then one I32_CTRL `CONTIGUOUS` `LM_HEAD_DRAFT_IDMAP`. Both use
+`source_layer=0xFFFFFFFF`, each has one full-range segment, and their `N` values match. Every id-map
+entry is unique and `< vocab_size`. If the flag is clear, the module and both source kinds are absent.
+A loader MUST reject any other combination.
 
 ## 14. Layout assignment policy
 
@@ -758,8 +837,8 @@ from this document alone.
 | MLP `down` | Q5 | `ROW_SPLIT` | standalone |
 | `lm_head` | Q6 | `ROW_SPLIT` | standalone |
 | `embed_tokens` | Q6 | `ROW_SPLIT` | standalone (consumed by gather; see note) |
-| `lm_head_draft` (optional) | Q4 | `ROW_SPLIT` | standalone (MTP draft shortlist; §18) |
-| `lm_head_draft.idmap` (optional) | I32_CTRL | `CONTIGUOUS` | standalone (paired with `lm_head_draft`) |
+| `lm_head_draft` (optional module) | Q4 | `ROW_SPLIT` | standalone in `LM_HEAD_DRAFT` (§18) |
+| `lm_head_draft.idmap` (optional module) | I32_CTRL | `CONTIGUOUS` | standalone in `LM_HEAD_DRAFT` |
 | norms, `A_log`, `dt_bias`, conv1d | BF16/FP32 | `CONTIGUOUS` | standalone |
 | MTP `fc`, `o_proj`, `down_proj` | W8G32 | `ROW_SPLIT` (group 32) | standalone |
 | MTP `attn q/k/gate/v` | W8G32 | `ROW_SPLIT` (group 32) | `ATTN_IN` (one block, four segments) |
@@ -769,12 +848,11 @@ from this document alone.
 Every quantized tensor in every module uses `ROW_SPLIT`; every dense control tensor uses `CONTIGUOUS`.
 There is no tiled layout anywhere. The class table above fixes layout/grouping. The per-layer TEXT_CORE
 and VISION_ENCODER emission follows mechanically from this policy applied across the 64 decoder layers
-(and the vision blocks); the TEXT_CORE globals are `EMBED`, `LM_HEAD`, `FINAL_NORM`, and — when present
-— the optional draft-head pair below. The MTP_DRAFT assignment is the canonical block order that
-follows.
+(and the vision blocks); the TEXT_CORE globals are only `EMBED`, `LM_HEAD`, and `FINAL_NORM`. The
+LM_HEAD_DRAFT and MTP_DRAFT assignments are the canonical block orders that follow.
 
-**Optional draft-head blocks (TEXT_CORE globals).** When `DRAFT_HEAD_PRESENT` is set, TEXT_CORE emits
-these two standalone blocks, adjacent to `LM_HEAD`/`EMBED`, the id-map immediately after the weights:
+**Optional `LM_HEAD_DRAFT` module.** When `LM_HEAD_DRAFT_PRESENT` is set, the independent module emits
+exactly these two standalone blocks, the id-map immediately after the weights:
 
 | block name | qtype/layout | shape | source kind / segments |
 |---|---|---:|---|
@@ -804,11 +882,10 @@ justification are in [2026-07-06-lm-head-draft-q4-decision.md](2026-07-06-lm-hea
 | `mtp.norm.weight` | BF16_CTRL contiguous | `[5120]` | `MTP_NORM`, `NO_LAYER` |
 
 A converter or verifier implements these assignments to produce/validate the concrete
-block/segment/fusion set. A full artifact with all three modules **and the draft head present** contains
-1166 blocks, 1314 segments, and 130 fusion groups: TEXT_CORE contributes 821/965/128 (including the two
-optional draft-head blocks), MTP_DRAFT contributes 12/16/2, and VISION_ENCODER contributes 333/333/0.
-With the draft head **absent**, TEXT_CORE contributes 819/963/128 and the totals are 1164/1312/130
-(the draft-head blocks are standalone, so `fusion_group_count` is unchanged either way).
+block/segment/fusion set. A full artifact with all four modules contains 1166 blocks, 1314 segments,
+and 130 fusion groups: TEXT_CORE contributes 819/963/128, LM_HEAD_DRAFT contributes 2/2/0,
+MTP_DRAFT contributes 12/16/2, and VISION_ENCODER contributes 333/333/0. With LM_HEAD_DRAFT absent,
+the totals are 1164/1312/130; `fusion_group_count` is unchanged.
 
 `embed_tokens` is gather-driven (one row per token), not GEMV-streamed, so the row/plane split gives it
 no throughput benefit and costs a couple of extra small transactions per lookup (a row's nibble run,
@@ -883,27 +960,36 @@ fields:
 
 ```json
 {
-  "format": "q5090_w4g64_mixed_v4",
+  "format": "q5090_w4g64_mixed_v4_1",
   "format_version": 4,
-  "format_minor": 0,
+  "format_minor": 1,
   "binary_spec": "docs/q5090_packed_file_format_v4.md",
   "value_source": "per-group symmetric weight-only quant (§8); MTP dense/fused linears W8G32; optional draft lm_head = Q4G64 of original bf16 lm_head shortlist rows",
-  "weights_file": "qwen3_6_27b.q5090_w4g64_mixed_v4.qus",
+  "weights_file": "qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus",
   "file_bytes": 0,
   "sha256_safetensors_index": "<64 hex chars>",
   "calibrated": false,
-  "draft_head_present": true,
-  "alignment": { "header": 4096, "payload": 4096, "block": 256, "k_pad": 128, "group_sizes": [32, 64, 128] },
+  "lm_head_draft_present": true,
+  "alignment": { "header": 4096, "tokenizer": 64, "payload": 4096, "block": 256, "k_pad": 128, "group_sizes": [32, 64, 128] },
   "layouts": ["ROW_SPLIT", "CONTIGUOUS"],
   "code_planes": ["nibble", "high", "scale"],
   "qtypes": ["Q4G64_F16S", "Q5G64_F16S", "Q6G64_F16S", "W8G128_F16S", "BF16_CTRL", "FP32_CTRL", "W8G32_F16S", "I32_CTRL"],
-  "modules": ["TEXT_CORE", "MTP_DRAFT", "VISION_ENCODER"],
+  "modules": ["TEXT_CORE", "LM_HEAD_DRAFT", "MTP_DRAFT", "VISION_ENCODER"],
   "absent_modules": [],
   "tensor_count": 1166,
   "segment_count": 1314,
   "fusion_group_count": 130,
-  "draft_head": {
+  "tokenizer": {
+    "record_count": 3,
+    "assets": [
+      {"kind": "TOKENIZER_JSON", "bytes": 0, "crc32": "00000000", "sha256": "<64 hex chars>"},
+      {"kind": "MERGES_TXT", "bytes": 0, "crc32": "00000000", "sha256": "<64 hex chars>"},
+      {"kind": "GENERATION_CONFIG_JSON", "bytes": 0, "crc32": "00000000", "sha256": "<64 hex chars>"}
+    ]
+  },
+  "lm_head_draft": {
     "present": true,
+    "module": "LM_HEAD_DRAFT",
     "n": 131072,
     "k": 5120,
     "weights_qtype": "Q4G64_F16S",
@@ -928,11 +1014,11 @@ fields:
 `tensor_count`/`segment_count`/`fusion_group_count` and `file_bytes` are filled by the converter and
 MUST equal the header values (a block is one `TensorEntry`, so `tensor_count` is the block count);
 `modules` lists the modules present in this file and `absent_modules` the supported-but-omitted ones;
-`draft_head_present` MUST equal header `flags.DRAFT_HEAD_PRESENT`; when the draft head is absent, drop
-the `draft_head` object (or set `present: false`), set `draft_head_present: false`, and lower
-`tensor_count`/`segment_count` by 2 (`1164`/`1312`). `effective_text_bpw` is the quantizer value. The
-manifest is not consumed by the runtime loader (which reads only the binary header) but MUST be
-consistent with it.
+`lm_head_draft_present` MUST equal header `flags.LM_HEAD_DRAFT_PRESENT`; when the module is absent,
+drop the `lm_head_draft` object (or set `present: false`), list `LM_HEAD_DRAFT` in `absent_modules`, and
+lower `tensor_count`/`segment_count` by 2 (`1164`/`1312`). Tokenizer asset bytes/hashes MUST equal the
+three TokenizerRecords. `effective_text_bpw` is the quantizer value. The manifest is not consumed by
+the runtime loader but MUST be exactly consistent with the authoritative binary header/catalog.
 
 ## 18. Non-goals and scope
 
@@ -962,12 +1048,12 @@ consistent with it.
   via SMEM-staged per-row segment loads. Because prefill is compute-bound and lower priority, this is a
   deliberate choice, not a regression; the format does not store a GEMM-optimal duplicate.
 - **No legacy layout, no fallback, no migration path.** Only `ROW_SPLIT` + `CONTIGUOUS` exist.
-- **MTP_DRAFT / VISION_ENCODER / draft head are first-class but selectively present.** The format, the
-  `source_kind` enum (§7), and the converter support all three modules and the optional draft head.
-  Runtime load policy may keep MTP/VISION unloaded until requested; the draft head is loaded only when
-  present. VISION and MTP_DRAFT block metadata is still present when their modules appear.
+- **MTP_DRAFT / VISION_ENCODER / LM_HEAD_DRAFT are first-class but selectively present.** The format,
+  `module_kind`/`source_kind` enums (§7), and converter support all three optional modules. Runtime
+  feature requests decide residency; ModuleRecord contains no load policy. Module metadata remains
+  available even when its payload is not resident.
 
-## 19. v4 feature set
+## 19. v4.1 feature set
 
 The format's distinctive capabilities, stated as its own feature list:
 
@@ -982,17 +1068,19 @@ The format's distinctive capabilities, stated as its own feature list:
   relative-offset/`payload_bytes` definition are normative in every `TensorEntry` (§4, §9.2, §9.3).
 - **W8G32 MTP linears.** MTP_DRAFT dense/fused linears use `W8G32_F16S` for finer W8 scale granularity
   and better draft fidelity, in the fused MTP assignment (§10.1, §14).
+- **Embedded CPU-only tokenizer.** Three mandatory raw UTF-8 assets have fixed TokenizerRecords,
+  bounds, placement, CRC32, and SHA-256 and are consumed without an external runtime path (§2.1).
 - **Optional shortlisted draft `lm_head`.** A standalone `[131072,5120]` `Q4G64` `ROW_SPLIT` block
-  (`source_kind = LM_HEAD_DRAFT`), Q4-quantized from the original bf16 `lm_head` shortlist rows,
-  cutting per-draft-step bandwidth (§14, §18).
+  in the independent `LM_HEAD_DRAFT` module, Q4-quantized from the original bf16 `lm_head` shortlist
+  rows, cutting per-draft-step bandwidth (§14, §18).
 - **`int32` draft id-map.** A paired `[131072]` `I32_CTRL` `CONTIGUOUS` block
   (`source_kind = LM_HEAD_DRAFT_IDMAP`) remaps a draft argmax over shortlist rows to a real vocab id
   (§9.4).
-- **`DRAFT_HEAD_PRESENT` header flag** (bit4) with structural coupling: set iff both draft-head blocks
-  are present, and the id-map `N` must equal the weights `N` (§2, §13).
+- **`LM_HEAD_DRAFT_PRESENT` header flag** (bit4) with structural coupling: set iff the independent
+  two-block module is present, and the id-map `N` must equal the weights `N` (§2, §13).
 - **New enum members.** `qtype 7 = I32_CTRL`; `source_kind 6 = LM_HEAD_DRAFT`,
-  `7 = LM_HEAD_DRAFT_IDMAP` (TEXT_CORE) (§7).
+  `7 = LM_HEAD_DRAFT_IDMAP`; `module_kind 3 = LM_HEAD_DRAFT` (§7).
 - **Container identity.** `magic = "Q5090MIXEDV4\0\0\0\0"`, `version = 4`,
-  `format = q5090_w4g64_mixed_v4`, `format_minor = 0`, `module_version = 4` (§2, §3).
+  `format = q5090_w4g64_mixed_v4_1`, `format_minor = 1`, `module_version = 4` (§2, §3).
 - **Strict invariants.** Value preservation, single resident copy, on-chip dequant only, one layout
   family for decode+prefill, fully self-describing metadata — verifiable per §0 and §13.
