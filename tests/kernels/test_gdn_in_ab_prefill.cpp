@@ -46,13 +46,16 @@ double softplus(double x) {
 
 void cpu_gdn_in_ab_prefill(const std::vector<float>& x, const std::vector<float>& aw,
                            const std::vector<float>& bw, const std::vector<float>& A_log,
-                           const std::vector<float>& dt_bias, std::int32_t T,
+                           const std::vector<float>& dt_bias,
+                           const std::vector<std::int32_t>& tokens,
                            std::vector<double>& g, std::vector<double>& beta) {
-    const std::size_t out_elems = static_cast<std::size_t>(kHeads) * static_cast<std::size_t>(T);
+    const std::size_t out_elems =
+        static_cast<std::size_t>(kHeads) * static_cast<std::size_t>(tokens.size());
     g.assign(out_elems, 0.0);
     beta.assign(out_elems, 0.0);
 
-    for (std::int32_t t = 0; t < T; ++t) {
+    for (std::size_t sample = 0; sample < tokens.size(); ++sample) {
+        const std::int32_t t = tokens[sample];
         const float* x_col = x.data() + static_cast<std::size_t>(t) * kHidden;
         for (std::int32_t h = 0; h < kHeads; ++h) {
             const float* aw_row = aw.data() + static_cast<std::size_t>(h) * kHidden;
@@ -66,8 +69,7 @@ void cpu_gdn_in_ab_prefill(const std::vector<float>& x, const std::vector<float>
 
             const float a = bf16_to_f32(f32_to_bf16(acc_a));
             const float b = bf16_to_f32(f32_to_bf16(acc_b));
-            const std::size_t i =
-                static_cast<std::size_t>(t) * kHeads + static_cast<std::size_t>(h);
+            const std::size_t i = sample * kHeads + static_cast<std::size_t>(h);
             g[i] = -std::exp(static_cast<double>(A_log[h])) *
                    softplus(static_cast<double>(a) + static_cast<double>(dt_bias[h]));
             beta[i] = 1.0 / (1.0 + std::exp(-static_cast<double>(b)));
@@ -75,7 +77,12 @@ void cpu_gdn_in_ab_prefill(const std::vector<float>& x, const std::vector<float>
     }
 }
 
-int one_shape(std::int32_t T, std::uint32_t seed) {
+int one_shape(std::int32_t T, std::uint32_t seed,
+              std::vector<std::int32_t> sample_tokens = {}, bool use_graph = false) {
+    if (sample_tokens.empty()) {
+        sample_tokens.reserve(static_cast<std::size_t>(T));
+        for (std::int32_t t = 0; t < T; ++t) { sample_tokens.push_back(t); }
+    }
     std::vector<float> x(static_cast<std::size_t>(kHidden) * static_cast<std::size_t>(T));
     std::vector<float> aw(static_cast<std::size_t>(kHeads) * kHidden);
     std::vector<float> bw(static_cast<std::size_t>(kHeads) * kHidden);
@@ -90,7 +97,7 @@ int one_shape(std::int32_t T, std::uint32_t seed) {
     round_to_bf16(bw);
 
     std::vector<double> ref_g, ref_beta;
-    cpu_gdn_in_ab_prefill(x, aw, bw, A_log, dt_bias, T, ref_g, ref_beta);
+    cpu_gdn_in_ab_prefill(x, aw, bw, A_log, dt_bias, sample_tokens, ref_g, ref_beta);
 
     DBuf dx = to_device_bf16(x), daw = to_device_bf16(aw), dbw = to_device_bf16(bw);
     DBuf dA_log = to_device_f32(A_log), ddt_bias = to_device_f32(dt_bias);
@@ -106,16 +113,43 @@ int one_shape(std::int32_t T, std::uint32_t seed) {
     Weight wb = dense_bf16_weight(dbw.p);
     WorkspaceArena ws(64u * 1024u * 1024u);
 
-    kernels::gdn_in_ab_gated(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, nullptr);
-    cudaDeviceSynchronize();
+    if (use_graph) {
+        cudaStream_t stream = nullptr;
+        cudaGraph_t graph = nullptr;
+        cudaGraphExec_t exec = nullptr;
+        cudaStreamCreate(&stream);
+        cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
+        kernels::gdn_in_ab_gated(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, stream);
+        cudaStreamEndCapture(stream, &graph);
+        cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
+        cudaGraphLaunch(exec, stream);
+        cudaStreamSynchronize(stream);
+        cudaGraphExecDestroy(exec);
+        cudaGraphDestroy(graph);
+        cudaStreamDestroy(stream);
+    } else {
+        kernels::gdn_in_ab_gated(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, nullptr);
+        cudaDeviceSynchronize();
+    }
 
-    const std::size_t n = static_cast<std::size_t>(kHeads) * static_cast<std::size_t>(T);
+    const std::size_t full_n = static_cast<std::size_t>(kHeads) * static_cast<std::size_t>(T);
+    const std::size_t n = static_cast<std::size_t>(kHeads) * sample_tokens.size();
+    const std::vector<double> full_g = from_device_f32(dg, full_n);
+    const std::vector<double> full_beta = from_device_f32(dbeta, full_n);
+    std::vector<double> sampled_g(n), sampled_beta(n);
+    for (std::size_t sample = 0; sample < sample_tokens.size(); ++sample) {
+        const std::size_t source = static_cast<std::size_t>(sample_tokens[sample]) * kHeads;
+        for (std::int32_t h = 0; h < kHeads; ++h) {
+            sampled_g[sample * kHeads + static_cast<std::size_t>(h)] = full_g[source + h];
+            sampled_beta[sample * kHeads + static_cast<std::size_t>(h)] = full_beta[source + h];
+        }
+    }
     const std::string label =
-        "gdn_in_ab_prefill fused [48,5120] T=" + std::to_string(T);
+        "gdn_in_ab_prefill fused [48,5120] T=" + std::to_string(T) +
+        " samples=" + std::to_string(sample_tokens.size());
     int failures = 0;
-    failures +=
-        verify((label + " g").c_str(), from_device_f32(dg, n), ref_g, Tolerance::gdn_output_bf16());
-    failures += verify((label + " beta").c_str(), from_device_f32(dbeta, n), ref_beta,
+    failures += verify((label + " g").c_str(), sampled_g, ref_g, Tolerance::gdn_output_bf16());
+    failures += verify((label + " beta").c_str(), sampled_beta, ref_beta,
                        Tolerance::gdn_output_bf16());
     return failures;
 }
@@ -135,6 +169,11 @@ int main() {
     failures += one_shape(7, 0x202u);
     failures += one_shape(8, 0x252u);
     failures += one_shape(128, 0x303u);
+    failures += one_shape(512, 0x353u, {0, 257, 511});
+    failures += one_shape(1024, 0x404u, {0, 511, 1023}, true);
+    failures += one_shape(2048, 0x454u, {0, 1023, 2047});
+    failures += one_shape(4096, 0x505u, {0, 2047, 4095});
+    failures += one_shape(4097, 0x555u, {0, 2048, 4096});
 
     std::cout << (failures ? "FAIL" : "OK") << " gdn_in_ab_prefill correctness\n";
     return failures ? 1 : 0;

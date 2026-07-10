@@ -21,6 +21,16 @@ constexpr std::int32_t kHeads  = 48;
 constexpr std::int32_t kSmallTMax    = 8;
 constexpr std::int32_t kSmallTSplits = 10;
 
+int dense_prefill_split_k(std::int32_t tokens) {
+    if (tokens <= 128) { return 40; }
+    if (tokens <= 256) { return 20; }
+    if (tokens <= 512) { return 10; }
+    if (tokens <= 1024) { return 8; }
+    if (tokens <= 2048) { return 4; }
+    if (tokens <= 4096) { return 2; }
+    return 1;
+}
+
 DBuf make_f32(std::size_t n, std::uint32_t seed) {
     std::vector<float> h(n);
     std::uint32_t state = seed;
@@ -94,15 +104,18 @@ void run(std::int32_t T, int warmup, int repeat, int min_time_ms) {
     Weight wa = dense_bf16_weight(aw.p);
     Weight wb = dense_bf16_weight(bw.p);
 
+    const int split_k = (T >= 2 && T <= kSmallTMax) ? kSmallTSplits
+                                                     : dense_prefill_split_k(T);
     const char* route = (T == 1) ? "decode-row"
                        : (T <= kSmallTMax) ? "smallt-splitk"
-                                           : "wmma-prefill";
+                       : (split_k > 1) ? "mma-coop-splitk"
+                                       : "mma-prefill";
     const double weight_bytes = 2.0 * static_cast<double>(w_elems) * sizeof(std::uint16_t);
     const double x_bytes      = static_cast<double>(x_elems) * sizeof(std::uint16_t);
     const double out_bytes    = 2.0 * static_cast<double>(out_elems) * sizeof(float);
     const double scratch_bytes =
-        (T >= 2 && T <= kSmallTMax)
-            ? 2.0 * static_cast<double>(kSmallTSplits) * static_cast<double>(T) *
+        (T >= 2 && split_k > 1)
+            ? 2.0 * static_cast<double>(split_k) * static_cast<double>(T) *
                   static_cast<double>(2 * kHeads) * sizeof(float)
             : 0.0;
     const double useful_bytes = weight_bytes + x_bytes + out_bytes;

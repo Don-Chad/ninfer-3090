@@ -1,27 +1,24 @@
 #include "kernels/linear/gemv/linear_dense_gdn_in_ab_48.cuh"
 
+#include "kernels/linear/gemm/linear_dense_gdn_in_ab_gemm_mma.cuh"
+
 #include "qus/core/device.h" // CUDA_CHECK
 
 #include <cuda_bf16.h>
-#include <mma.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 namespace qus::kernels::detail {
 namespace {
-namespace wmma = nvcuda::wmma;
 
 constexpr int kN       = 48;
 constexpr int kK       = 5120;
 constexpr int kThreads = 256;
 constexpr int kLogicalRows = 2 * kN;
-constexpr int kMmaM    = 16;
-constexpr int kMmaN    = 16;
-constexpr int kMmaK    = 16;
-constexpr int kPrefillWarpsPerBlock = 4;
 constexpr int kSmallTMax            = 8;
 constexpr int kSmallTKSlice         = 512;
 constexpr int kSmallTSplits         = kK / kSmallTKSlice;
@@ -179,111 +176,6 @@ __global__ void linear_dense_gdn_in_ab_gated_smallt_reduce_48_kernel(
     beta[out_index] = gdn_ab_sigmoid_f32(b_rounded);
 }
 
-template <int NFrags>
-__global__ void linear_dense_gdn_in_ab_gated_wmma_48_kernel(
-    const __nv_bfloat16* x, const __nv_bfloat16* a_weight, const __nv_bfloat16* b_weight,
-    const float* A_log, const float* dt_bias, float* g, float* beta, std::int32_t t) {
-    constexpr int kWarpN = NFrags * kMmaN;
-    const int warp = static_cast<int>(threadIdx.x) >> 5;
-    const int lane = static_cast<int>(threadIdx.x) & 31;
-    const int tile_row0 = static_cast<int>(blockIdx.y) * kMmaM;
-    const int tile_col0 =
-        (static_cast<int>(blockIdx.x) * kPrefillWarpsPerBlock + warp) * kWarpN;
-    if (tile_col0 >= t) { return; }
-
-    __shared__ __align__(16) __nv_bfloat16 b_tail[kPrefillWarpsPerBlock][NFrags]
-                                                        [kMmaK * kMmaN];
-    __shared__ __align__(16) float c_tile[kPrefillWarpsPerBlock][NFrags][2]
-                                           [kMmaM * kMmaN];
-
-    wmma::fragment<wmma::matrix_a, kMmaM, kMmaN, kMmaK, __nv_bfloat16, wmma::row_major>
-        a_frag;
-    wmma::fragment<wmma::matrix_a, kMmaM, kMmaN, kMmaK, __nv_bfloat16, wmma::row_major>
-        b_weight_frag;
-    wmma::fragment<wmma::matrix_b, kMmaM, kMmaN, kMmaK, __nv_bfloat16, wmma::col_major>
-        x_frag[NFrags];
-    wmma::fragment<wmma::accumulator, kMmaM, kMmaN, kMmaK, float> a_acc[NFrags];
-    wmma::fragment<wmma::accumulator, kMmaM, kMmaN, kMmaK, float> b_acc[NFrags];
-#pragma unroll
-    for (int n = 0; n < NFrags; ++n) {
-        wmma::fill_fragment(a_acc[n], 0.0f);
-        wmma::fill_fragment(b_acc[n], 0.0f);
-    }
-
-    for (int k0 = 0; k0 < kK; k0 += kMmaK) {
-        const __nv_bfloat16* a_ptr =
-            a_weight + static_cast<std::int64_t>(tile_row0) * kK + k0;
-        const __nv_bfloat16* bw_ptr =
-            b_weight + static_cast<std::int64_t>(tile_row0) * kK + k0;
-        wmma::load_matrix_sync(a_frag, a_ptr, kK);
-        wmma::load_matrix_sync(b_weight_frag, bw_ptr, kK);
-
-#pragma unroll
-        for (int n = 0; n < NFrags; ++n) {
-            const int col0 = tile_col0 + n * kMmaN;
-            if (col0 + kMmaN <= t) {
-                const __nv_bfloat16* x_ptr = x + static_cast<std::int64_t>(col0) * kK + k0;
-                wmma::load_matrix_sync(x_frag[n], x_ptr, kK);
-            } else {
-                for (int i = lane; i < kMmaK * kMmaN; i += 32) {
-                    const int kk    = i & (kMmaK - 1);
-                    const int col   = i >> 4;
-                    const int token = col0 + col;
-                    b_tail[warp][n][i] =
-                        (token < t) ? x[static_cast<std::int64_t>(token) * kK + k0 + kk]
-                                    : __float2bfloat16(0.0f);
-                }
-                __syncwarp();
-                wmma::load_matrix_sync(x_frag[n], b_tail[warp][n], kMmaK);
-            }
-            wmma::mma_sync(a_acc[n], a_frag, x_frag[n], a_acc[n]);
-            wmma::mma_sync(b_acc[n], b_weight_frag, x_frag[n], b_acc[n]);
-        }
-    }
-
-#pragma unroll
-    for (int n = 0; n < NFrags; ++n) {
-        wmma::store_matrix_sync(c_tile[warp][n][0], a_acc[n], kMmaN, wmma::mem_row_major);
-        wmma::store_matrix_sync(c_tile[warp][n][1], b_acc[n], kMmaN, wmma::mem_row_major);
-    }
-    __syncwarp();
-
-#pragma unroll
-    for (int n = 0; n < NFrags; ++n) {
-        for (int i = lane; i < kMmaM * kMmaN; i += 32) {
-            const int row   = i >> 4;
-            const int col   = i & (kMmaN - 1);
-            const int token = tile_col0 + n * kMmaN + col;
-            if (token >= t) { continue; }
-
-            const int global_row = tile_row0 + row;
-            const float a_rounded = __bfloat162float(__float2bfloat16(c_tile[warp][n][0][i]));
-            const float b_rounded = __bfloat162float(__float2bfloat16(c_tile[warp][n][1][i]));
-            const std::int64_t out_index = static_cast<std::int64_t>(token) * kN + global_row;
-            const float sp = gdn_ab_softplus_f32(a_rounded + dt_bias[global_row]);
-            g[out_index] = -expf(A_log[global_row]) * sp;
-            beta[out_index] = gdn_ab_sigmoid_f32(b_rounded);
-        }
-    }
-}
-
-template <int NFrags>
-void launch_gdn_in_ab_wmma(const Tensor& x, const Weight& a_weight, const Weight& b_weight,
-                           const Tensor& A_log, const Tensor& dt_bias, Tensor& g, Tensor& beta,
-                           cudaStream_t stream) {
-    constexpr int kWarpN = NFrags * kMmaN;
-    const std::int32_t t = x.ne[1];
-    const int n_tiles = (t + kWarpN - 1) / kWarpN;
-    dim3 block(kPrefillWarpsPerBlock * 32);
-    dim3 grid((n_tiles + kPrefillWarpsPerBlock - 1) / kPrefillWarpsPerBlock, kN / kMmaM);
-    linear_dense_gdn_in_ab_gated_wmma_48_kernel<NFrags><<<grid, block, 0, stream>>>(
-        static_cast<const __nv_bfloat16*>(x.data),
-        static_cast<const __nv_bfloat16*>(a_weight.qdata),
-        static_cast<const __nv_bfloat16*>(b_weight.qdata), static_cast<const float*>(A_log.data),
-        static_cast<const float*>(dt_bias.data), static_cast<float*>(g.data),
-        static_cast<float*>(beta.data), t);
-}
-
 __global__ void linear_dense_gdn_in_ab_gated_48_kernel(
     const __nv_bfloat16* x, const __nv_bfloat16* a_weight, const __nv_bfloat16* b_weight,
     const float* A_log, const float* dt_bias, float* g, float* beta) {
@@ -324,12 +216,83 @@ void require_shape(const Weight& w, const char* name) {
     }
 }
 
+int dense_prefill_split_k(std::int32_t tokens) {
+    if (tokens <= 128) { return 40; }
+    if (tokens <= 256) { return 20; }
+    if (tokens <= 512) { return 10; }
+    if (tokens <= 1024) { return 8; }
+    if (tokens <= 2048) { return 4; }
+    if (tokens <= 4096) { return 2; }
+    return 1;
+}
+
+template <int SplitK, int Warps = kDenseGdnWarps>
+void launch_dense_prefill_mma(const Tensor& x, const Weight& a_weight, const Weight& b_weight,
+                              const Tensor& A_log, const Tensor& dt_bias, void* workspace,
+                              Tensor& g, Tensor& beta, cudaStream_t stream) {
+    const std::int32_t t = x.ne[1];
+    const dim3 block(Warps * 32);
+    const dim3 grid(static_cast<unsigned>((t + kDenseGdnBlockN - 1) / kDenseGdnBlockN),
+                    static_cast<unsigned>(kDenseGdnHeads / kDenseGdnBlockM),
+                    static_cast<unsigned>(SplitK));
+    auto launch = [&](auto full_tokens) {
+        constexpr bool FullTokens = decltype(full_tokens)::value;
+        static const cudaError_t attr = cudaFuncSetAttribute(
+            linear_dense_gdn_in_ab_gemm_mma_kernel<SplitK, FullTokens, Warps>,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, kDenseGdnSmemBytes);
+        CUDA_CHECK(attr);
+        if constexpr (SplitK > 1) {
+            cudaLaunchConfig_t config{};
+            config.gridDim          = grid;
+            config.blockDim         = block;
+            config.dynamicSmemBytes = kDenseGdnSmemBytes;
+            config.stream           = stream;
+            cudaLaunchAttribute cooperative{};
+            cooperative.id              = cudaLaunchAttributeCooperative;
+            cooperative.val.cooperative = 1;
+            config.attrs                 = &cooperative;
+            config.numAttrs              = 1;
+            CUDA_CHECK(cudaLaunchKernelEx(
+                &config, linear_dense_gdn_in_ab_gemm_mma_kernel<SplitK, FullTokens, Warps>,
+                static_cast<const __nv_bfloat16*>(x.data),
+                static_cast<const __nv_bfloat16*>(a_weight.qdata),
+                static_cast<const __nv_bfloat16*>(b_weight.qdata),
+                static_cast<const float*>(A_log.data), static_cast<const float*>(dt_bias.data),
+                static_cast<float*>(workspace), static_cast<float*>(g.data),
+                static_cast<float*>(beta.data), t));
+        } else {
+            linear_dense_gdn_in_ab_gemm_mma_kernel<SplitK, FullTokens, Warps>
+                <<<grid, block, kDenseGdnSmemBytes, stream>>>(
+                    static_cast<const __nv_bfloat16*>(x.data),
+                    static_cast<const __nv_bfloat16*>(a_weight.qdata),
+                    static_cast<const __nv_bfloat16*>(b_weight.qdata),
+                    static_cast<const float*>(A_log.data), static_cast<const float*>(dt_bias.data),
+                    static_cast<float*>(workspace), static_cast<float*>(g.data),
+                    static_cast<float*>(beta.data), t);
+        }
+    };
+    if ((t % kDenseGdnBlockN) == 0) {
+        launch(std::true_type{});
+    } else {
+        launch(std::false_type{});
+    }
+    CUDA_CHECK(cudaGetLastError());
+
+}
+
 } // namespace
 
 std::size_t linear_dense_gdn_in_ab_gated_48_workspace_bytes(std::int32_t tokens) {
     if (tokens >= 2 && tokens <= kSmallTMax) {
         return static_cast<std::size_t>(kSmallTSplits) * static_cast<std::size_t>(tokens) *
                static_cast<std::size_t>(kLogicalRows) * sizeof(float);
+    }
+    if (tokens > kSmallTMax) {
+        const int split_k = dense_prefill_split_k(tokens);
+        if (split_k > 1) {
+            return static_cast<std::size_t>(split_k) * static_cast<std::size_t>(tokens) *
+                   static_cast<std::size_t>(kLogicalRows) * sizeof(float);
+        }
     }
     return 0;
 }
@@ -382,12 +345,40 @@ void linear_dense_gdn_in_ab_gated_48_launch(const Tensor& x, const Weight& a_wei
         return;
     }
 
-    if (t >= 8192) {
-        launch_gdn_in_ab_wmma<2>(x, a_weight, b_weight, A_log, dt_bias, g, beta, stream);
-    } else {
-        launch_gdn_in_ab_wmma<1>(x, a_weight, b_weight, A_log, dt_bias, g, beta, stream);
+    const std::size_t required = linear_dense_gdn_in_ab_gated_48_workspace_bytes(t);
+    if (required > 0 && (workspace == nullptr || workspace_bytes < required)) {
+        throw std::invalid_argument("gdn_in_ab_gated: dense prefill workspace is too small");
     }
-    CUDA_CHECK(cudaGetLastError());
+    switch (dense_prefill_split_k(t)) {
+    case 40:
+        launch_dense_prefill_mma<40>(x, a_weight, b_weight, A_log, dt_bias, workspace, g, beta,
+                                     stream);
+        break;
+    case 20:
+        launch_dense_prefill_mma<20>(x, a_weight, b_weight, A_log, dt_bias, workspace, g, beta,
+                                     stream);
+        break;
+    case 10:
+        launch_dense_prefill_mma<10>(x, a_weight, b_weight, A_log, dt_bias, workspace, g, beta,
+                                     stream);
+        break;
+    case 8:
+        launch_dense_prefill_mma<8, 8>(x, a_weight, b_weight, A_log, dt_bias, workspace, g, beta,
+                                       stream);
+        break;
+    case 4:
+        launch_dense_prefill_mma<4>(x, a_weight, b_weight, A_log, dt_bias, workspace, g, beta,
+                                    stream);
+        break;
+    case 2:
+        launch_dense_prefill_mma<2>(x, a_weight, b_weight, A_log, dt_bias, workspace, g, beta,
+                                    stream);
+        break;
+    default:
+        launch_dense_prefill_mma<1, 8>(x, a_weight, b_weight, A_log, dt_bias, workspace, g, beta,
+                                       stream);
+        break;
+    }
 }
 
 } // namespace qus::kernels::detail
