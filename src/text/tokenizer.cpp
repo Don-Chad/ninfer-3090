@@ -8,8 +8,8 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -31,58 +31,50 @@ struct VocabMetadata {
     std::unordered_set<int> occupied_ids;
 };
 
-Json read_json_file(const std::filesystem::path& path, const char* label) {
-    std::ifstream in(path);
-    if (!in) {
-        throw std::invalid_argument(std::string("missing ") + label + ": " + path.string());
-    }
-
-    Json root;
+Json read_json_asset(std::string_view contents, std::string_view label) {
     try {
-        in >> root;
+        return Json::parse(contents);
     } catch (const nlohmann::json::exception& ex) {
-        throw std::invalid_argument(std::string("malformed ") + label + " at " + path.string() +
-                                    ": " + ex.what());
+        throw std::invalid_argument("malformed " + std::string(label) + ": " + ex.what());
     }
-    return root;
 }
 
-const Json& require_object_field(const Json& object, const char* field,
-                                 const std::filesystem::path& path) {
+const Json& require_object_field(const Json& object, const char* field, std::string_view label) {
     if (!object.is_object() || !object.contains(field)) {
-        throw std::invalid_argument("missing field " + std::string(field) + " in " + path.string());
+        throw std::invalid_argument("missing field " + std::string(field) + " in " +
+                                    std::string(label));
     }
     const Json& value = object.at(field);
     if (!value.is_object()) {
         throw std::invalid_argument("field " + std::string(field) + " must be object in " +
-                                    path.string());
+                                    std::string(label));
     }
     return value;
 }
 
-const Json& require_array_field(const Json& object, const char* field,
-                                const std::filesystem::path& path) {
+const Json& require_array_field(const Json& object, const char* field, std::string_view label) {
     if (!object.is_object() || !object.contains(field)) {
-        throw std::invalid_argument("missing field " + std::string(field) + " in " + path.string());
+        throw std::invalid_argument("missing field " + std::string(field) + " in " +
+                                    std::string(label));
     }
     const Json& value = object.at(field);
     if (!value.is_array()) {
         throw std::invalid_argument("field " + std::string(field) + " must be array in " +
-                                    path.string());
+                                    std::string(label));
     }
     return value;
 }
 
-int parse_token_id(const Json& value, const char* field, const std::filesystem::path& path) {
+int parse_token_id(const Json& value, const char* field, std::string_view label) {
     if (!value.is_number_integer()) {
         throw std::invalid_argument("field " + std::string(field) + " must be integer in " +
-                                    path.string());
+                                    std::string(label));
     }
     if (value.is_number_unsigned()) {
         const std::uint64_t id = value.get<std::uint64_t>();
         if (id > static_cast<std::uint64_t>(kMaxTokenId)) {
             throw std::invalid_argument("field " + std::string(field) + " id is out of range in " +
-                                        path.string());
+                                        std::string(label));
         }
         return static_cast<int>(id);
     }
@@ -90,95 +82,97 @@ int parse_token_id(const Json& value, const char* field, const std::filesystem::
     const std::int64_t id = value.get<std::int64_t>();
     if (id < 0) {
         throw std::invalid_argument("field " + std::string(field) + " has negative id in " +
-                                    path.string());
+                                    std::string(label));
     }
     if (id > kMaxTokenId) {
         throw std::invalid_argument("field " + std::string(field) + " id is out of range in " +
-                                    path.string());
+                                    std::string(label));
     }
     return static_cast<int>(id);
 }
 
-std::string require_string_field(const Json& object, const char* field,
-                                 const std::filesystem::path& path) {
+std::string require_string_field(const Json& object, const char* field, std::string_view label) {
     if (!object.is_object() || !object.contains(field) || !object.at(field).is_string()) {
         throw std::invalid_argument("field " + std::string(field) + " must be string in " +
-                                    path.string());
+                                    std::string(label));
     }
     return object.at(field).get<std::string>();
 }
 
-bool require_bool_field(const Json& object, const char* field, const std::filesystem::path& path) {
+bool require_bool_field(const Json& object, const char* field, std::string_view label) {
     if (!object.is_object() || !object.contains(field) || !object.at(field).is_boolean()) {
         throw std::invalid_argument("field " + std::string(field) + " must be boolean in " +
-                                    path.string());
+                                    std::string(label));
     }
     return object.at(field).get<bool>();
 }
 
-VocabMetadata load_vocab(const Json& model, const std::filesystem::path& path) {
+VocabMetadata load_vocab(const Json& model, std::string_view label) {
     if (!model.contains("type") || !model.at("type").is_string() ||
         model.at("type").get<std::string>() != "BPE") {
-        throw std::invalid_argument("field model.type must be BPE in " + path.string());
+        throw std::invalid_argument("field model.type must be BPE in " + std::string(label));
     }
-    const Json& vocab = require_object_field(model, "vocab", path);
+    const Json& vocab = require_object_field(model, "vocab", label);
     if (vocab.empty()) {
-        throw std::invalid_argument("field model.vocab must not be empty in " + path.string());
+        throw std::invalid_argument("field model.vocab must not be empty in " + std::string(label));
     }
 
     int max_id = -1;
     VocabMetadata metadata;
     for (const auto& item : vocab.items()) {
-        const int id = parse_token_id(item.value(), "model.vocab", path);
+        const int id = parse_token_id(item.value(), "model.vocab", label);
         if (!metadata.occupied_ids.insert(id).second) {
-            throw std::invalid_argument("field model.vocab has duplicate id in " + path.string());
+            throw std::invalid_argument("field model.vocab has duplicate id in " +
+                                        std::string(label));
         }
         max_id = std::max(max_id, id);
     }
 
     metadata.id_to_token.resize(static_cast<std::size_t>(max_id + 1));
     for (const auto& item : vocab.items()) {
-        const int id = parse_token_id(item.value(), "model.vocab", path);
+        const int id = parse_token_id(item.value(), "model.vocab", label);
         metadata.id_to_token.at(static_cast<std::size_t>(id)) = item.key();
         metadata.token_to_id.emplace(item.key(), id);
     }
     return metadata;
 }
 
-AddedToken parse_added_token(const Json& item, const std::filesystem::path& path) {
+AddedToken parse_added_token(const Json& item, std::string_view label) {
     if (!item.is_object()) {
-        throw std::invalid_argument("field added_tokens item must be object in " + path.string());
+        throw std::invalid_argument("field added_tokens item must be object in " +
+                                    std::string(label));
     }
     AddedToken token;
     if (!item.contains("id")) {
-        throw std::invalid_argument("missing field added_tokens.id in " + path.string());
+        throw std::invalid_argument("missing field added_tokens.id in " + std::string(label));
     }
-    token.id          = parse_token_id(item.at("id"), "added_tokens.id", path);
-    token.content     = require_string_field(item, "content", path);
-    token.single_word = require_bool_field(item, "single_word", path);
-    token.lstrip      = require_bool_field(item, "lstrip", path);
-    token.rstrip      = require_bool_field(item, "rstrip", path);
-    token.normalized  = require_bool_field(item, "normalized", path);
-    token.special     = require_bool_field(item, "special", path);
+    token.id          = parse_token_id(item.at("id"), "added_tokens.id", label);
+    token.content     = require_string_field(item, "content", label);
+    token.single_word = require_bool_field(item, "single_word", label);
+    token.lstrip      = require_bool_field(item, "lstrip", label);
+    token.rstrip      = require_bool_field(item, "rstrip", label);
+    token.normalized  = require_bool_field(item, "normalized", label);
+    token.special     = require_bool_field(item, "special", label);
     return token;
 }
 
-std::vector<AddedToken> load_added_tokens(const Json& root, const std::filesystem::path& path,
+std::vector<AddedToken> load_added_tokens(const Json& root, std::string_view label,
                                           std::vector<std::string>& id_to_token,
                                           const std::unordered_set<int>& occupied_vocab_ids) {
-    const Json& added = require_array_field(root, "added_tokens", path);
+    const Json& added = require_array_field(root, "added_tokens", label);
     std::vector<AddedToken> tokens;
     tokens.reserve(added.size());
     std::unordered_set<int> seen_added_ids;
     for (const Json& item : added) {
-        AddedToken token = parse_added_token(item, path);
+        AddedToken token = parse_added_token(item, label);
         const auto index = static_cast<std::size_t>(token.id);
         if (occupied_vocab_ids.contains(token.id)) {
             throw std::invalid_argument("field added_tokens overlaps existing id in " +
-                                        path.string());
+                                        std::string(label));
         }
         if (!seen_added_ids.insert(token.id).second) {
-            throw std::invalid_argument("field added_tokens has duplicate id in " + path.string());
+            throw std::invalid_argument("field added_tokens has duplicate id in " +
+                                        std::string(label));
         }
         if (index >= id_to_token.size()) { id_to_token.resize(index + 1); }
         id_to_token.at(static_cast<std::size_t>(token.id)) = token.content;
@@ -187,26 +181,27 @@ std::vector<AddedToken> load_added_tokens(const Json& root, const std::filesyste
     return tokens;
 }
 
-std::vector<int> load_default_stop_token_ids(const std::filesystem::path& path) {
-    if (!std::filesystem::exists(path)) { return {248046, 248044}; }
-
-    const Json root = read_json_file(path, "generation_config.json");
+std::vector<int> load_default_stop_token_ids(std::string_view contents) {
+    constexpr std::string_view label = "generation_config.json";
+    const Json root                  = read_json_asset(contents, label);
     if (!root.is_object() || !root.contains("eos_token_id")) {
-        throw std::invalid_argument("missing field eos_token_id in " + path.string());
+        throw std::invalid_argument("missing field eos_token_id in generation_config.json");
     }
 
     const Json& eos = root.at("eos_token_id");
-    if (eos.is_number_integer()) { return {parse_token_id(eos, "eos_token_id", path)}; }
+    if (eos.is_number_integer()) { return {parse_token_id(eos, "eos_token_id", label)}; }
     if (eos.is_array()) {
         if (eos.empty()) {
-            throw std::invalid_argument("field eos_token_id must not be empty in " + path.string());
+            throw std::invalid_argument(
+                "field eos_token_id must not be empty in generation_config.json");
         }
         std::vector<int> ids;
         ids.reserve(eos.size());
-        for (const Json& item : eos) { ids.push_back(parse_token_id(item, "eos_token_id", path)); }
+        for (const Json& item : eos) { ids.push_back(parse_token_id(item, "eos_token_id", label)); }
         return ids;
     }
-    throw std::invalid_argument("field eos_token_id must be integer or array in " + path.string());
+    throw std::invalid_argument(
+        "field eos_token_id must be integer or array in generation_config.json");
 }
 
 std::string merge_pair_key(std::string_view left, std::string_view right) {
@@ -218,9 +213,8 @@ std::string merge_pair_key(std::string_view left, std::string_view right) {
     return key;
 }
 
-std::unordered_map<std::string, int> load_bpe_merge_ranks(const std::filesystem::path& path) {
-    std::ifstream in(path);
-    if (!in) { throw std::invalid_argument("missing merges.txt: " + path.string()); }
+std::unordered_map<std::string, int> load_bpe_merge_ranks(std::string_view contents) {
+    std::istringstream in{std::string(contents)};
 
     std::unordered_map<std::string, int> ranks;
     std::string line;
@@ -239,18 +233,17 @@ std::unordered_map<std::string, int> load_bpe_merge_ranks(const std::filesystem:
         if (first_space == std::string::npos || first_space == 0 ||
             first_space + 1 >= line.size() ||
             line.find(' ', first_space + 1) != std::string::npos) {
-            throw std::invalid_argument("malformed merges.txt line in " + path.string() + ": " +
-                                        line);
+            throw std::invalid_argument("malformed merges.txt line: " + line);
         }
         const std::string left  = line.substr(0, first_space);
         const std::string right = line.substr(first_space + 1);
         if (left.find('\0') != std::string::npos || right.find('\0') != std::string::npos) {
             throw std::invalid_argument("field merges.txt must not contain NUL in merge symbols: " +
-                                        path.string());
+                                        line);
         }
         const auto inserted = ranks.emplace(merge_pair_key(left, right), rank);
         if (!inserted.second) {
-            throw std::invalid_argument("duplicate merge pair in " + path.string() + ": " + line);
+            throw std::invalid_argument("duplicate merge pair in merges.txt: " + line);
         }
         ++rank;
     }
@@ -446,26 +439,26 @@ bool is_stop_token_id(std::span<const int> stop_token_ids, int id) {
 std::size_t valid_utf8_prefix_size(std::string_view bytes) {
     std::size_t offset = 0;
     while (offset < bytes.size()) {
-        const auto lead = static_cast<unsigned char>(bytes[offset]);
-        std::size_t length = 0;
+        const auto lead         = static_cast<unsigned char>(bytes[offset]);
+        std::size_t length      = 0;
         std::uint32_t codepoint = 0;
-        std::uint32_t minimum = 0;
+        std::uint32_t minimum   = 0;
         if (lead <= 0x7F) {
-            length = 1;
+            length    = 1;
             codepoint = lead;
-            minimum = 0;
+            minimum   = 0;
         } else if (lead >= 0xC2 && lead <= 0xDF) {
-            length = 2;
+            length    = 2;
             codepoint = lead & 0x1FU;
-            minimum = 0x80U;
+            minimum   = 0x80U;
         } else if (lead >= 0xE0 && lead <= 0xEF) {
-            length = 3;
+            length    = 3;
             codepoint = lead & 0x0FU;
-            minimum = 0x800U;
+            minimum   = 0x800U;
         } else if (lead >= 0xF0 && lead <= 0xF4) {
-            length = 4;
+            length    = 4;
             codepoint = lead & 0x07U;
-            minimum = 0x10000U;
+            minimum   = 0x10000U;
         } else {
             throw std::invalid_argument("invalid UTF-8 leading byte in token stream");
         }
@@ -517,7 +510,7 @@ void append_bpe_ids(std::vector<int>& ids, std::string_view text, bool has_bpe_m
     if (text.empty()) { return; }
     if (!has_bpe_merges) {
         throw std::invalid_argument(
-            "QwenTokenizer::encode ordinary BPE text requires merges.txt in tokenizer directory");
+            "QwenTokenizer::encode ordinary BPE text requires embedded merges.txt");
     }
 
     const std::string normalized = uni::normalize_nfc(text);
@@ -543,13 +536,13 @@ void append_bpe_ids(std::vector<int>& ids, std::string_view text, bool has_bpe_m
 
 } // namespace
 
-QwenTokenizer::QwenTokenizer(const std::filesystem::path& tokenizer_dir)
-    : tokenizer_dir_(tokenizer_dir) {
-    const std::filesystem::path tokenizer_json = tokenizer_dir_ / "tokenizer.json";
-    const Json root                            = read_json_file(tokenizer_json, "tokenizer.json");
-    const Json& model = require_object_field(root, "model", tokenizer_json);
+QwenTokenizer::QwenTokenizer(Q5090TokenizerBundle bundle) {
+    if (bundle.empty()) { throw std::invalid_argument("embedded q5090 tokenizer bundle is empty"); }
+    constexpr std::string_view tokenizer_label = "tokenizer.json";
+    const Json root   = read_json_asset(bundle.tokenizer_json, tokenizer_label);
+    const Json& model = require_object_field(root, "model", tokenizer_label);
 
-    VocabMetadata vocab_metadata = load_vocab(model, tokenizer_json);
+    VocabMetadata vocab_metadata = load_vocab(model, tokenizer_label);
     id_to_token_                 = std::move(vocab_metadata.id_to_token);
     vocab_token_to_id_           = std::move(vocab_metadata.token_to_id);
     valid_token_ids_.resize(id_to_token_.size());
@@ -557,20 +550,16 @@ QwenTokenizer::QwenTokenizer(const std::filesystem::path& tokenizer_dir)
         valid_token_ids_.at(static_cast<std::size_t>(id)) = true;
     }
     added_tokens_ =
-        load_added_tokens(root, tokenizer_json, id_to_token_, vocab_metadata.occupied_ids);
+        load_added_tokens(root, tokenizer_label, id_to_token_, vocab_metadata.occupied_ids);
     if (valid_token_ids_.size() < id_to_token_.size()) {
         valid_token_ids_.resize(id_to_token_.size());
     }
     for (const AddedToken& token : added_tokens_) {
         valid_token_ids_.at(static_cast<std::size_t>(token.id)) = true;
     }
-    const std::filesystem::path merges_txt = tokenizer_dir_ / "merges.txt";
-    if (std::filesystem::exists(merges_txt)) {
-        bpe_merge_ranks_ = load_bpe_merge_ranks(merges_txt);
-        has_bpe_merges_  = true;
-    }
-    default_stop_token_ids_ =
-        load_default_stop_token_ids(tokenizer_dir_ / "generation_config.json");
+    bpe_merge_ranks_        = load_bpe_merge_ranks(bundle.merges_txt);
+    has_bpe_merges_         = true;
+    default_stop_token_ids_ = load_default_stop_token_ids(bundle.generation_config_json);
 }
 
 std::vector<int> QwenTokenizer::encode(std::string_view text, EncodeOptions options) const {

@@ -22,14 +22,11 @@ qus::text::CliOptions parse(std::vector<const char*> args) {
 }
 
 int test_prompt_mode_defaults() {
-    const qus::text::CliOptions options =
-        parse({"qwen-text", "weights.qus", "--tokenizer", "tokenizer", "--prompt", "hello"});
+    const qus::text::CliOptions options = parse({"qwen-text", "weights.qus", "--prompt", "hello"});
 
     int failures = 0;
     failures += check(!options.help_requested, "prompt mode: help requested");
     failures += check(options.weights_path == "weights.qus", "prompt mode: weights path mismatch");
-    failures +=
-        check(options.tokenizer_path == "tokenizer", "prompt mode: tokenizer path mismatch");
     failures += check(options.prompt == "hello", "prompt mode: prompt mismatch");
     failures += check(options.messages_path.empty(), "prompt mode: messages path not empty");
     failures += check(options.max_new == 128, "prompt mode: max-new default mismatch");
@@ -48,7 +45,6 @@ int test_prompt_mode_defaults() {
 
 int test_messages_mode_options() {
     const qus::text::CliOptions options = parse({"qwen-text",          "weights.qus",
-                                                 "--tokenizer",        "tokenizer",
                                                  "--messages",         "messages.json",
                                                  "--max-new",          "16",
                                                  "--max-context",      "4096",
@@ -63,8 +59,6 @@ int test_messages_mode_options() {
     int failures = 0;
     failures +=
         check(options.weights_path == "weights.qus", "messages mode: weights path mismatch");
-    failures +=
-        check(options.tokenizer_path == "tokenizer", "messages mode: tokenizer path mismatch");
     failures += check(options.prompt.empty(), "messages mode: prompt not empty");
     failures += check(options.messages_path == "messages.json", "messages mode: messages mismatch");
     failures += check(options.max_new == 16, "messages mode: max-new mismatch");
@@ -101,6 +95,8 @@ int test_usage_documents_streaming_output_boundary() {
                       "usage does not document mtp draft tokens");
     failures += check(usage.find("--kv-dtype bf16|int8") != std::string::npos,
                       "usage does not document kv dtype");
+    failures += check(usage.find("--tokenizer") == std::string::npos,
+                      "usage still documents removed tokenizer path");
     return failures;
 }
 
@@ -117,25 +113,23 @@ int expect_invalid(std::vector<const char*> args, const char* label) {
 
 int test_rejections() {
     int failures = 0;
-    failures +=
-        expect_invalid({"qwen-text", "weights.qus", "--tokenizer", "tokenizer"}, "missing input");
-    failures +=
-        expect_invalid({"qwen-text", "weights.qus", "--prompt", "hello"}, "missing tokenizer");
-    failures += expect_invalid({"qwen-text", "weights.qus", "--tokenizer", "tokenizer", "--prompt",
-                                "hello", "--messages", "messages.json"},
-                               "both prompt and messages");
-    failures += expect_invalid({"qwen-text", "weights.qus", "--tokenizer", "tokenizer", "--prompt",
-                                "hello", "--max-new", "0"},
+    failures += expect_invalid({"qwen-text", "weights.qus"}, "missing input");
+    failures += expect_invalid(
+        {"qwen-text", "weights.qus", "--tokenizer", "tokenizer", "--prompt", "hello"},
+        "removed tokenizer option");
+    failures += expect_invalid(
+        {"qwen-text", "weights.qus", "--prompt", "hello", "--messages", "messages.json"},
+        "both prompt and messages");
+    failures += expect_invalid({"qwen-text", "weights.qus", "--prompt", "hello", "--max-new", "0"},
                                "zero max-new");
-    failures += expect_invalid({"qwen-text", "weights.qus", "--tokenizer", "tokenizer", "--prompt",
-                                "hello", "--prefill-chunk", "127"},
-                               "unaligned prefill chunk");
-    failures += expect_invalid({"qwen-text", "weights.qus", "--tokenizer", "tokenizer", "--prompt",
-                                "hello", "--mtp-draft-tokens", "6"},
-                               "too many mtp draft tokens");
-    failures += expect_invalid({"qwen-text", "weights.qus", "--tokenizer", "tokenizer", "--prompt",
-                                "hello", "--kv-dtype", "fp8"},
-                               "invalid kv dtype");
+    failures +=
+        expect_invalid({"qwen-text", "weights.qus", "--prompt", "hello", "--prefill-chunk", "127"},
+                       "unaligned prefill chunk");
+    failures +=
+        expect_invalid({"qwen-text", "weights.qus", "--prompt", "hello", "--mtp-draft-tokens", "6"},
+                       "too many mtp draft tokens");
+    failures += expect_invalid(
+        {"qwen-text", "weights.qus", "--prompt", "hello", "--kv-dtype", "fp8"}, "invalid kv dtype");
     return failures;
 }
 

@@ -85,8 +85,7 @@ qus::Q5090Expectations expectations() {
     return expected;
 }
 
-qus::model::StepState make_step_state(qus::DeviceArena& arena, int window_cols,
-                                      int prefill_chunk) {
+qus::model::StepState make_step_state(qus::DeviceArena& arena, int window_cols, int prefill_chunk) {
     const int draft_cols = std::max(1, window_cols - 1);
     return qus::model::StepState{
         arena.alloc(qus::DType::I32, {1}),
@@ -140,7 +139,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    int count = 0;
+    int count                   = 0;
     const cudaError_t count_err = cudaGetDeviceCount(&count);
     if (count_err == cudaErrorNoDevice || count_err == cudaErrorInsufficientDriver || count == 0) {
         std::cout << "SKIP: no usable CUDA device\n";
@@ -153,21 +152,18 @@ int main(int argc, char** argv) {
 
     try {
         qus::DeviceContext ctx(options.device);
-        constexpr int kMaxVerifyT     = 6;
-        constexpr int kMaxContext     = 128;
-        constexpr int kPrefillChunk   = 128;
-        const std::size_t weight_bytes =
-            std::filesystem::file_size(weights_path) + 256ULL * kMiB + 451267584ULL;
-        qus::DeviceArena weight_arena(weight_bytes);
+        constexpr int kMaxVerifyT   = 6;
+        constexpr int kMaxContext   = 128;
+        constexpr int kPrefillChunk = 128;
         qus::DeviceArena cache_arena(3ULL * kGiB);
         qus::WorkspaceArena workspace(3ULL * kGiB);
         qus::WeightStore weights(expectations());
         qus::LoadOptions load_options;
         load_options.load_mtp = false;
-        weights.load(weights_path.c_str(), weight_arena, ctx, load_options);
+        weights.load(weights_path.c_str(), ctx, load_options);
 
-        qus::KVCache kv(cache_arena, qus::model::kCfg.n_full(), kMaxContext,
-                        qus::model::kCfg.n_kv, qus::model::kCfg.head_dim);
+        qus::KVCache kv(cache_arena, qus::model::kCfg.n_full(), kMaxContext, qus::model::kCfg.n_kv,
+                        qus::model::kCfg.head_dim);
         qus::GdnState state(cache_arena, qus::model::kCfg.n_gdn(), qus::model::kCfg.conv_dim,
                             qus::model::kCfg.gdn_conv_state_width, qus::model::kCfg.gdn_v_heads,
                             qus::model::kCfg.gdn_v_dim, qus::model::kCfg.gdn_k_dim, kMaxVerifyT);

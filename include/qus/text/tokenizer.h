@@ -1,6 +1,7 @@
 #pragma once
 
-#include <filesystem>
+#include "qus/core/weight_store_parser.h"
+
 #include <span>
 #include <string>
 #include <string_view>
@@ -30,7 +31,7 @@ struct AddedToken {
 
 class QwenTokenizer {
 public:
-    explicit QwenTokenizer(const std::filesystem::path& tokenizer_dir);
+    explicit QwenTokenizer(Q5090TokenizerBundle bundle);
 
     std::vector<int> encode(std::string_view text, EncodeOptions options = {}) const;
     std::string decode(std::span<const int> ids, DecodeOptions options = {}) const;
@@ -47,7 +48,6 @@ public:
     }
 
 private:
-    std::filesystem::path tokenizer_dir_;
     std::vector<std::string> id_to_token_;
     std::vector<bool> valid_token_ids_;
     std::unordered_map<std::string, int> vocab_token_to_id_;

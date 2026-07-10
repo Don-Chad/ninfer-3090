@@ -459,7 +459,7 @@ Confirms the op wins survive the full model and the memory budget holds. Add `--
 - **Prefill (pp) at length 1024** and **decode (tg) at context offsets** via the combined path,
   bf16 vs int8:
   ```
-  qus_bench --weights out/qwen3_6_27b.q5090_w4g64_mixed_v4.qus --kv-dtype int8 \
+  qus_bench --weights out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus --kv-dtype int8 \
       -pg 8192,64;32768,64;65536,64;131072,64;262144,64 -r 5
   ```
   `-pg P,G` prefills `P`, then times `G` decode steps at context offset `P` — this is how we get

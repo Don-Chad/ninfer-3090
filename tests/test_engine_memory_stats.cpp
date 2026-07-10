@@ -106,11 +106,10 @@ std::filesystem::path make_fixture() {
 
 int test_unloaded_stats_do_not_need_cuda() {
     qus::EngineOptions options;
-    options.device       = 7;
-    options.max_ctx      = 123;
-    options.weight_bytes = 4096;
-    options.cache_bytes  = 8192;
-    options.work_bytes   = 16ULL * kMiB;
+    options.device      = 7;
+    options.max_ctx     = 123;
+    options.cache_bytes = 8192;
+    options.work_bytes  = 16ULL * kMiB;
 
     qus::Engine engine(options);
     int failures                       = 0;
@@ -224,9 +223,9 @@ int test_loaded_stats_with_cuda() {
     failures += mtp_stats.q5090_tensor_count == stats.q5090_tensor_count
                     ? 0
                     : fail("MTP load changed tensor count");
-    failures += mtp_stats.q5090_quant_count == stats.q5090_quant_count
+    failures += mtp_stats.q5090_quant_count > stats.q5090_quant_count
                     ? 0
-                    : fail("MTP load changed quant count");
+                    : fail("MTP load did not increase published quant count");
     failures += mtp_stats.cache.capacity_bytes > stats.cache.capacity_bytes
                     ? 0
                     : fail("MTP load did not increase cache capacity");

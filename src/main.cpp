@@ -96,6 +96,31 @@ std::string format_kv_dtype(qus::DType dtype) {
     }
 }
 
+std::string format_selected_modules(const qus::Q5090LoadStats& stats) {
+    auto name = [](qus::ModuleKind module) -> std::string_view {
+        switch (module) {
+        case qus::ModuleKind::TextCore:
+            return "TEXT_CORE";
+        case qus::ModuleKind::MtpDraft:
+            return "MTP_DRAFT";
+        case qus::ModuleKind::VisionEncoder:
+            return "VISION_ENCODER";
+        case qus::ModuleKind::LmHeadDraft:
+            return "LM_HEAD_DRAFT";
+        }
+        return "UNKNOWN";
+    };
+    std::string out;
+    for (qus::ModuleKind kind : {qus::ModuleKind::TextCore, qus::ModuleKind::LmHeadDraft,
+                                 qus::ModuleKind::MtpDraft, qus::ModuleKind::VisionEncoder}) {
+        const qus::Q5090ModuleLoadStats& module = stats.modules[static_cast<std::size_t>(kind)];
+        if (!module.selected) { continue; }
+        if (!out.empty()) { out += ','; }
+        out += name(module.module);
+    }
+    return out;
+}
+
 std::string format_percent(std::uint64_t done, std::uint64_t total) {
     std::ostringstream out;
     out << std::fixed << std::setprecision(1);
@@ -128,9 +153,8 @@ std::string format_sampling(const qus::kernels::SamplingConfig& cfg) {
     if (cfg.temperature <= 0.0f) { return "greedy (temperature 0)"; }
     std::ostringstream out;
     out << std::fixed << std::setprecision(2) << "temp=" << cfg.temperature
-        << " top_p=" << cfg.top_p << " top_k=" << cfg.top_k
-        << " presence=" << cfg.presence_penalty << " freq=" << cfg.frequency_penalty
-        << " seed=" << cfg.seed;
+        << " top_p=" << cfg.top_p << " top_k=" << cfg.top_k << " presence=" << cfg.presence_penalty
+        << " freq=" << cfg.frequency_penalty << " seed=" << cfg.seed;
     return out.str();
 }
 
@@ -151,14 +175,6 @@ int main(int argc, char** argv) {
         }
 
         std::cerr << "phase     detail                    elapsed/progress\n";
-        const auto tokenizer_start = Clock::now();
-        qus::text::QwenTokenizer tokenizer(cli.tokenizer_path);
-        print_stage("load", "tokenizer",
-                    std::chrono::duration<double>(Clock::now() - tokenizer_start).count());
-
-        const std::vector<int> stop_token_ids =
-            qus::text::resolve_stop_token_ids(tokenizer, cli.stop_token_ids);
-
         std::map<std::string, ProgressState> progress_states;
         qus::Q5090Progress progress;
         progress.min_interval_bytes = 1024ULL * 1024ULL * 1024ULL;
@@ -181,7 +197,6 @@ int main(int argc, char** argv) {
         engine_options.prefill_chunk     = cli.prefill_chunk;
         engine_options.mtp_draft_tokens  = cli.mtp_draft_tokens;
         engine_options.kv_dtype          = cli.kv_dtype;
-        engine_options.stop_token_ids    = stop_token_ids;
         engine_options.progress          = &progress;
         engine_options.use_cuda_graph    = cli.use_cuda_graph;
         engine_options.use_lm_head_draft = cli.use_lm_head_draft;
@@ -191,6 +206,14 @@ int main(int argc, char** argv) {
         engine.load(cli.weights_path);
         print_stage("load", "engine total",
                     std::chrono::duration<double>(Clock::now() - engine_load_start).count());
+
+        const auto tokenizer_start = Clock::now();
+        qus::text::QwenTokenizer tokenizer(engine.take_tokenizer_bundle());
+        print_stage("load", "tokenizer",
+                    std::chrono::duration<double>(Clock::now() - tokenizer_start).count());
+        const std::vector<int> stop_token_ids =
+            qus::text::resolve_stop_token_ids(tokenizer, cli.stop_token_ids);
+        engine.set_stop_token_ids(stop_token_ids);
 
         const std::vector<qus::text::ChatMessage> messages =
             cli.messages_path.empty() ? qus::text::messages_from_prompt(cli.prompt)
@@ -204,7 +227,7 @@ int main(int argc, char** argv) {
         // Default to Qwen3 thinking sampling so the CLI matches real usage and
         // does not fall into greedy repetition; --greedy leaves the config at
         // temperature 0 (exact argmax) for deterministic parity runs.
-        qus::kernels::SamplingConfig sampling;  // default is greedy (temperature 0)
+        qus::kernels::SamplingConfig sampling; // default is greedy (temperature 0)
         if (!cli.greedy) {
             sampling.temperature       = cli.temperature;
             sampling.top_p             = cli.top_p;
@@ -283,6 +306,11 @@ int main(int argc, char** argv) {
                      format_bytes(static_cast<std::uint64_t>(memory.kv_cache_payload_bytes)));
         print_metric("gpu workspace peak", format_arena_peak(memory.workspace));
         print_metric("gpu reserved total", format_bytes(reserved_bytes));
+        const qus::Q5090LoadStats& load = engine.q5090_load_stats();
+        print_metric("weight modules", format_selected_modules(load));
+        print_metric("artifact file read", format_bytes(load.total_file_read_bytes));
+        print_metric("weight H2D", format_bytes(load.h2d_bytes));
+        print_metric("pinned staging peak", format_bytes(load.host_peak_staging_bytes));
 
         const qus::EngineMtpStats mtp = engine.mtp_stats();
         if (mtp.enabled) {

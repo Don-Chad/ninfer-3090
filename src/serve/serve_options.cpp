@@ -56,7 +56,7 @@ int derive_default_max_tokens(std::uint32_t max_context) {
 
 std::string serve_usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
-           " <weights.qus> --tokenizer <dir> [--host H] [--port N] [--api-key KEY] "
+           " <weights.qus> [--host H] [--port N] [--api-key KEY] "
            "[--model-id ID] [--max-context N] [--prefill-chunk N] [--device N] "
            "[--kv-dtype bf16|int8] [--mtp-draft-tokens N] [--default-max-tokens N] "
            "[--no-cuda-graph] "
@@ -87,9 +87,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             if (++i >= argc) { throw std::invalid_argument(std::string(flag) + " needs a value"); }
             return argv[i];
         };
-        if (arg == "--tokenizer") {
-            options.tokenizer_path = require_value("--tokenizer");
-        } else if (arg == "--host") {
+        if (arg == "--host") {
             options.host = require_value("--host");
         } else if (arg == "--port") {
             options.port = parse_nonnegative_int(require_value("--port"), "port");
@@ -143,7 +141,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             throw std::invalid_argument("unknown argument: " + arg);
         }
     }
-    if (options.tokenizer_path.empty()) { throw std::invalid_argument("--tokenizer is required"); }
     if (options.port <= 0 || options.port > 65535) {
         throw std::invalid_argument("--port must be in [1,65535]");
     }

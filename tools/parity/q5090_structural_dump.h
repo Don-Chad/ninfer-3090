@@ -58,9 +58,7 @@ inline std::vector<std::byte> read_file(const std::filesystem::path& path) {
 inline std::string hex_bytes(const std::uint8_t* data, std::size_t n) {
     std::ostringstream out;
     out << std::hex << std::setfill('0');
-    for (std::size_t i = 0; i < n; ++i) {
-        out << std::setw(2) << static_cast<unsigned>(data[i]);
-    }
+    for (std::size_t i = 0; i < n; ++i) { out << std::setw(2) << static_cast<unsigned>(data[i]); }
     return out.str();
 }
 
@@ -69,38 +67,55 @@ inline std::string sha_hex(const std::array<std::uint8_t, 32>& sha) {
 }
 
 inline std::uint32_t tag(ModuleKind v) { return static_cast<std::uint32_t>(v); }
-inline std::uint32_t tag(LoadPolicy v) { return static_cast<std::uint32_t>(v); }
+
 inline std::uint32_t tag(QType v) { return static_cast<std::uint32_t>(v); }
+
 inline std::uint32_t tag(QuantLayout v) { return static_cast<std::uint32_t>(v); }
+
 inline std::uint32_t tag(ScaleDType v) { return static_cast<std::uint32_t>(v); }
 
 inline const char* qtype_name(QType qtype) {
     switch (qtype) {
-    case QType::Q4G64_F16S: return "Q4G64_F16S";
-    case QType::Q5G64_F16S: return "Q5G64_F16S";
-    case QType::Q6G64_F16S: return "Q6G64_F16S";
-    case QType::W8G128_F16S: return "W8G128_F16S";
-    case QType::BF16_CTRL: return "BF16_CTRL";
-    case QType::FP32_CTRL: return "FP32_CTRL";
-    case QType::W8G32_F16S: return "W8G32_F16S";
+    case QType::Q4G64_F16S:
+        return "Q4G64_F16S";
+    case QType::Q5G64_F16S:
+        return "Q5G64_F16S";
+    case QType::Q6G64_F16S:
+        return "Q6G64_F16S";
+    case QType::W8G128_F16S:
+        return "W8G128_F16S";
+    case QType::BF16_CTRL:
+        return "BF16_CTRL";
+    case QType::FP32_CTRL:
+        return "FP32_CTRL";
+    case QType::W8G32_F16S:
+        return "W8G32_F16S";
+    case QType::I32_CTRL:
+        return "I32_CTRL";
     }
     return "unknown";
 }
 
 inline const char* layout_name(QuantLayout layout) {
     switch (layout) {
-    case QuantLayout::RowSplit: return "ROW_SPLIT";
-    case QuantLayout::Contiguous: return "CONTIGUOUS";
+    case QuantLayout::RowSplit:
+        return "ROW_SPLIT";
+    case QuantLayout::Contiguous:
+        return "CONTIGUOUS";
     }
     return "unknown";
 }
 
 inline const char* fusion_group_name(std::uint32_t group_id) {
     switch (group_id) {
-    case 1: return "ATTN_IN";
-    case 2: return "GDN_IN";
-    case 3: return "MLP_GATEUP";
-    default: return "NONE";
+    case 1:
+        return "ATTN_IN";
+    case 2:
+        return "GDN_IN";
+    case 3:
+        return "MLP_GATEUP";
+    default:
+        return "NONE";
     }
 }
 
@@ -165,23 +180,33 @@ inline float f16_to_f32(std::uint16_t h) {
 
 inline std::uint32_t group_size(QType qtype) {
     switch (qtype) {
-    case QType::W8G128_F16S: return 128;
-    case QType::W8G32_F16S: return 32;
+    case QType::W8G128_F16S:
+        return 128;
+    case QType::W8G32_F16S:
+        return 32;
     case QType::Q4G64_F16S:
     case QType::Q5G64_F16S:
-    case QType::Q6G64_F16S: return 64;
-    default: throw std::runtime_error("qtype is not ROW_SPLIT quantized");
+    case QType::Q6G64_F16S:
+        return 64;
+    default:
+        throw std::runtime_error("qtype is not ROW_SPLIT quantized");
     }
 }
 
 inline std::uint32_t bit_width(QType qtype) {
     switch (qtype) {
-    case QType::Q4G64_F16S: return 4;
-    case QType::Q5G64_F16S: return 5;
-    case QType::Q6G64_F16S: return 6;
-    case QType::W8G128_F16S: return 8;
-    case QType::W8G32_F16S: return 8;
-    default: throw std::runtime_error("qtype is not ROW_SPLIT quantized");
+    case QType::Q4G64_F16S:
+        return 4;
+    case QType::Q5G64_F16S:
+        return 5;
+    case QType::Q6G64_F16S:
+        return 6;
+    case QType::W8G128_F16S:
+        return 8;
+    case QType::W8G32_F16S:
+        return 8;
+    default:
+        throw std::runtime_error("qtype is not ROW_SPLIT quantized");
     }
 }
 
@@ -190,9 +215,12 @@ inline std::uint32_t nibble_bytes_per_group(QType qtype) {
     case QType::Q4G64_F16S:
     case QType::Q5G64_F16S:
     case QType::Q6G64_F16S:
-    case QType::W8G32_F16S: return 32;
-    case QType::W8G128_F16S: return 128;
-    default: throw std::runtime_error("qtype is not ROW_SPLIT quantized");
+    case QType::W8G32_F16S:
+        return 32;
+    case QType::W8G128_F16S:
+        return 128;
+    default:
+        throw std::runtime_error("qtype is not ROW_SPLIT quantized");
     }
 }
 
@@ -200,10 +228,14 @@ inline std::uint32_t high_bytes_per_group(QType qtype) {
     switch (qtype) {
     case QType::Q4G64_F16S:
     case QType::W8G128_F16S:
-    case QType::W8G32_F16S: return 0;
-    case QType::Q5G64_F16S: return 8;
-    case QType::Q6G64_F16S: return 16;
-    default: throw std::runtime_error("qtype is not ROW_SPLIT quantized");
+    case QType::W8G32_F16S:
+        return 0;
+    case QType::Q5G64_F16S:
+        return 8;
+    case QType::Q6G64_F16S:
+        return 16;
+    default:
+        throw std::runtime_error("qtype is not ROW_SPLIT quantized");
     }
 }
 
@@ -216,57 +248,59 @@ inline int unpack_code(const std::byte* nibble, const std::byte* high, QType qty
     }
 
     const std::uint8_t low_byte = std::to_integer<std::uint8_t>(nibble[lane >> 1]);
-    const std::uint32_t low = (lane & 1u) ? (low_byte >> 4) : (low_byte & 0x0fu);
-    std::uint32_t hi = 0;
+    const std::uint32_t low     = (lane & 1u) ? (low_byte >> 4) : (low_byte & 0x0fu);
+    std::uint32_t hi            = 0;
     if (bits == 5) {
         hi = (std::to_integer<std::uint8_t>(high[lane >> 3]) >> (lane & 7u)) & 0x01u;
     } else if (bits == 6) {
         const std::uint32_t bit_pos = lane * 2;
         hi = (std::to_integer<std::uint8_t>(high[bit_pos >> 3]) >> (bit_pos & 7u)) & 0x03u;
     }
-    const std::uint32_t u = low | (hi << 4);
+    const std::uint32_t u    = low | (hi << 4);
     const std::uint32_t sign = 1u << (bits - 1);
     const std::uint32_t span = 1u << bits;
     return (u & sign) ? static_cast<int>(u) - static_cast<int>(span) : static_cast<int>(u);
 }
 
 inline bool is_quantized(QType qtype) {
-    return qtype == QType::Q4G64_F16S || qtype == QType::Q5G64_F16S ||
-           qtype == QType::Q6G64_F16S || qtype == QType::W8G128_F16S ||
-           qtype == QType::W8G32_F16S;
+    return qtype == QType::Q4G64_F16S || qtype == QType::Q5G64_F16S || qtype == QType::Q6G64_F16S ||
+           qtype == QType::W8G128_F16S || qtype == QType::W8G32_F16S;
 }
 
 inline Json row_split_probes(const std::vector<std::byte>& file, const ParsedQ5090Tensor& tensor) {
-    const std::uint32_t n = tensor.shape[0];
-    const std::uint32_t k = tensor.shape[1];
-    const std::uint32_t group = group_size(tensor.qtype);
-    const std::uint32_t groups = tensor.padded_shape[1] / group;
-    const std::uint32_t nibble_bpr = nibble_bytes_per_group(tensor.qtype);
-    const std::uint32_t high_bpr = high_bytes_per_group(tensor.qtype);
+    const std::uint32_t n                 = tensor.shape[0];
+    const std::uint32_t k                 = tensor.shape[1];
+    const std::uint32_t group             = group_size(tensor.qtype);
+    const std::uint32_t groups            = tensor.padded_shape[1] / group;
+    const std::uint32_t nibble_bpr        = nibble_bytes_per_group(tensor.qtype);
+    const std::uint32_t high_bpr          = high_bytes_per_group(tensor.qtype);
     const std::uint64_t high_plane_offset = align_up(tensor.nibble_plane_bytes, 256);
     const std::uint64_t scale_plane_offset =
         high_plane_offset + align_up(tensor.high_plane_bytes, 256);
     const std::byte* payload = file.data() + tensor.payload_offset;
 
-    Json probes = Json::array();
+    Json probes                                              = Json::array();
     const std::array<std::array<std::uint32_t, 2>, 3> coords = {
         std::array<std::uint32_t, 2>{0, 0},
         std::array<std::uint32_t, 2>{n / 2, k / 2},
         std::array<std::uint32_t, 2>{n - 1, k - 1},
     };
     for (const auto& coord : coords) {
-        const std::uint32_t row = coord[0];
-        const std::uint32_t col = coord[1];
-        const std::uint32_t g = col / group;
-        const std::uint32_t lane = col % group;
+        const std::uint32_t row         = coord[0];
+        const std::uint32_t col         = coord[1];
+        const std::uint32_t g           = col / group;
+        const std::uint32_t lane        = col % group;
         const std::uint64_t group_index = static_cast<std::uint64_t>(row) * groups + g;
-        const std::byte* nibble = payload + group_index * nibble_bpr;
+        const std::byte* nibble         = payload + group_index * nibble_bpr;
         const std::byte* high =
             high_bpr == 0 ? nullptr : payload + high_plane_offset + group_index * high_bpr;
         const std::byte* scale_ptr = payload + scale_plane_offset + group_index * 2;
-        const int q = unpack_code(nibble, high, tensor.qtype, lane);
-        const float scale = f16_to_f32(read_u16_le(scale_ptr));
-        probes.push_back(Json{{"row", row}, {"col", col}, {"scale", scale}, {"q", q},
+        const int q                = unpack_code(nibble, high, tensor.qtype, lane);
+        const float scale          = f16_to_f32(read_u16_le(scale_ptr));
+        probes.push_back(Json{{"row", row},
+                              {"col", col},
+                              {"scale", scale},
+                              {"q", q},
                               {"value", scale * static_cast<float>(q)}});
     }
     return probes;
@@ -274,23 +308,23 @@ inline Json row_split_probes(const std::vector<std::byte>& file, const ParsedQ50
 
 inline Json contiguous_probes(const std::vector<std::byte>& file, const ParsedQ5090Tensor& tensor) {
     const std::vector<std::uint32_t> shape = active_shape(tensor.shape, tensor.ndim);
-    const std::uint64_t numel = prod(shape);
-    Json probes = Json::array();
+    const std::uint64_t numel              = prod(shape);
+    Json probes                            = Json::array();
     if (numel == 0) { return probes; }
 
-    const std::byte* payload = file.data() + tensor.payload_offset;
-    const std::uint32_t elem_bytes = tensor.qtype == QType::BF16_CTRL ? 2u : 4u;
+    const std::byte* payload                   = file.data() + tensor.payload_offset;
+    const std::uint32_t elem_bytes             = tensor.qtype == QType::BF16_CTRL ? 2u : 4u;
     const std::array<std::uint64_t, 3> indexes = {0, numel / 2, numel - 1};
     for (std::uint64_t index : indexes) {
         std::uint64_t row = index;
         std::uint64_t col = 0;
         if (shape.size() != 1) {
             const std::uint64_t cols = prod(shape, 1);
-            row = index / cols;
-            col = index % cols;
+            row                      = index / cols;
+            col                      = index % cols;
         }
         const std::byte* ptr = payload + index * elem_bytes;
-        float value = 0.0f;
+        float value          = 0.0f;
         if (tensor.qtype == QType::BF16_CTRL) {
             value = bf16_to_f32(read_u16_le(ptr));
         } else {
@@ -344,6 +378,13 @@ inline Json header_json(const ParsedQ5090Header& h) {
         {"fusion_group_index_offset", h.fusion_group_index_offset},
         {"fusion_group_index_bytes", h.fusion_group_index_bytes},
         {"format_minor", h.format_minor},
+        {"tokenizer_record_count", h.tokenizer_record_count},
+        {"tokenizer_record_size", h.tokenizer_record_size},
+        {"tokenizer_flags", h.tokenizer_flags},
+        {"tokenizer_index_offset", h.tokenizer_index_offset},
+        {"tokenizer_index_bytes", h.tokenizer_index_bytes},
+        {"tokenizer_data_offset", h.tokenizer_data_offset},
+        {"tokenizer_data_bytes", h.tokenizer_data_bytes},
     };
 }
 
@@ -353,9 +394,31 @@ inline Json module_json(const ParsedQ5090Module& module) {
                 {"tensor_index_begin", module.tensor_index_begin},
                 {"tensor_index_count", module.tensor_index_count},
                 {"payload_offset", module.payload_offset},
-                {"payload_bytes", module.payload_bytes},
-                {"load_policy", tag(module.load_policy)},
-                {"flags", module.flags}};
+                {"payload_bytes", module.payload_bytes}};
+}
+
+inline const char* tokenizer_kind_name(Q5090TokenizerKind kind) {
+    switch (kind) {
+    case Q5090TokenizerKind::TokenizerJson:
+        return "TOKENIZER_JSON";
+    case Q5090TokenizerKind::MergesTxt:
+        return "MERGES_TXT";
+    case Q5090TokenizerKind::GenerationConfig:
+        return "GENERATION_CONFIG_JSON";
+    }
+    return "unknown";
+}
+
+inline std::string hex_u32(std::uint32_t value) {
+    std::ostringstream out;
+    out << std::hex << std::setfill('0') << std::setw(8) << value;
+    return out.str();
+}
+
+inline Json tokenizer_json(const ParsedQ5090TokenizerRecord& record) {
+    return Json{{"kind", tokenizer_kind_name(record.kind)}, {"encoding", record.encoding},
+                {"data_offset", record.data_offset},        {"data_bytes", record.data_bytes},
+                {"crc32", hex_u32(record.crc32)},           {"sha256", sha_hex(record.sha256)}};
 }
 
 inline Json segment_json(const ParsedQ5090Segment& segment, std::uint64_t index) {
@@ -372,8 +435,8 @@ inline Json block_json(const std::vector<std::byte>& file, const ParsedQ5090File
     Json segments = Json::array();
     for (std::uint32_t j = 0; j < tensor.segment_count; ++j) {
         const std::uint64_t seg_index = tensor.segment_begin + j;
-        segments.push_back(segment_json(parsed.segments.at(static_cast<std::size_t>(seg_index)),
-                                        seg_index));
+        segments.push_back(
+            segment_json(parsed.segments.at(static_cast<std::size_t>(seg_index)), seg_index));
     }
 
     const Json probes = is_quantized(tensor.qtype) ? row_split_probes(file, tensor)
@@ -399,7 +462,7 @@ inline Json block_json(const std::vector<std::byte>& file, const ParsedQ5090File
 }
 
 inline Json fusion_json(const ParsedQ5090File& parsed, const ParsedQ5090FusionGroup& fusion) {
-    Json members = Json::array();
+    Json members            = Json::array();
     const std::uint64_t end = std::min<std::uint64_t>(
         parsed.tensors.size(), fusion.first_block_tensor_index + fusion.block_count);
     for (std::uint64_t i = fusion.first_block_tensor_index; i < end; ++i) {
@@ -419,10 +482,12 @@ inline Json fusion_json(const ParsedQ5090File& parsed, const ParsedQ5090FusionGr
 
 inline Json structural_dump(const std::filesystem::path& path) {
     const std::vector<std::byte> file = read_file(path);
-    const ParsedQ5090File parsed = parse_q5090_file(file, expectations());
+    const ParsedQ5090File parsed      = parse_q5090_file(file, expectations());
 
     Json modules = Json::array();
-    for (const ParsedQ5090Module& module : parsed.modules) { modules.push_back(module_json(module)); }
+    for (const ParsedQ5090Module& module : parsed.modules) {
+        modules.push_back(module_json(module));
+    }
 
     Json blocks = Json::array();
     for (std::size_t i = 0; i < parsed.tensors.size(); ++i) {
@@ -434,12 +499,18 @@ inline Json structural_dump(const std::filesystem::path& path) {
         fusions.push_back(fusion_json(parsed, fusion));
     }
 
-    return Json{{"format", "q5090_w4g64_mixed_v3"},
+    Json tokenizer = Json::array();
+    for (const ParsedQ5090TokenizerRecord& record : parsed.tokenizer_records) {
+        tokenizer.push_back(tokenizer_json(record));
+    }
+
+    return Json{{"format", "q5090_w4g64_mixed_v4_1"},
                 {"file", path.string()},
                 {"header", header_json(parsed.header)},
                 {"modules", modules},
                 {"blocks", blocks},
-                {"fusion_groups", fusions}};
+                {"fusion_groups", fusions},
+                {"tokenizer", tokenizer}};
 }
 
 inline void write_json(const std::filesystem::path& path, const Json& value) {

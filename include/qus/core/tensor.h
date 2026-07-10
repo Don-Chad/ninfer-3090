@@ -39,7 +39,7 @@ enum class QType : std::uint16_t {
 };
 
 enum class QuantLayout : std::uint16_t {
-    RowSplit  = 0,
+    RowSplit   = 0,
     Contiguous = 1,
 };
 
@@ -47,17 +47,12 @@ enum class ModuleKind : std::uint16_t {
     TextCore      = 0,
     MtpDraft      = 1,
     VisionEncoder = 2,
+    LmHeadDraft   = 3,
 };
 
 enum class ScaleDType : std::uint16_t {
     None = 0,
     FP16 = 1,
-};
-
-enum class LoadPolicy : std::uint32_t {
-    Resident         = 0,
-    LazyGpu          = 1,
-    CpuPinnedThenGpu = 2,
 };
 
 enum class SourceKind : std::uint32_t {
@@ -118,18 +113,18 @@ enum class SourceKind : std::uint32_t {
 };
 
 struct Weight {
-    const void* payload          = nullptr;
-    std::uint64_t payload_bytes  = 0;
+    const void* payload            = nullptr;
+    std::uint64_t payload_bytes    = 0;
     std::uint64_t high_plane_bytes = 0;
-    QType qtype                  = QType::Q4G64_F16S;
-    ModuleKind module            = ModuleKind::TextCore;
-    ScaleDType q5090_scale_dtype = ScaleDType::FP16;
-    std::uint32_t group_size     = 0;
-    std::uint32_t source_layer   = 0xFFFFFFFFU;
-    std::uint32_t source_kind    = 0;
-    std::int32_t shape[4]        = {1, 1, 1, 1};
-    std::int32_t padded_shape[4] = {1, 1, 1, 1};
-    std::uint32_t ndim           = 0;
+    QType qtype                    = QType::Q4G64_F16S;
+    ModuleKind module              = ModuleKind::TextCore;
+    ScaleDType q5090_scale_dtype   = ScaleDType::FP16;
+    std::uint32_t group_size       = 0;
+    std::uint32_t source_layer     = 0xFFFFFFFFU;
+    std::uint32_t source_kind      = 0;
+    std::int32_t shape[4]          = {1, 1, 1, 1};
+    std::int32_t padded_shape[4]   = {1, 1, 1, 1};
+    std::uint32_t ndim             = 0;
 
     const void* qdata        = nullptr;
     const void* qhigh        = nullptr;

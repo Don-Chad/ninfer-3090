@@ -18,9 +18,7 @@ namespace {
 // never splits a multibyte character. `len` is clamped to [0, buffer.size()].
 std::size_t backup_to_utf8_boundary(const std::string& buffer, std::size_t len) {
     if (len >= buffer.size()) { return buffer.size(); }
-    while (len > 0 && (static_cast<unsigned char>(buffer[len]) & 0xC0) == 0x80) {
-        --len;
-    }
+    while (len > 0 && (static_cast<unsigned char>(buffer[len]) & 0xC0) == 0x80) { --len; }
     return len;
 }
 
@@ -85,21 +83,20 @@ private:
 } // namespace
 
 GenerationService::GenerationService(ServeOptions options) : options_(std::move(options)) {
-    caps_.sampling = true;  // the engine now honors SamplingParams (temperature 0 == greedy)
-    tokenizer_ = std::make_unique<qus::text::QwenTokenizer>(options_.tokenizer_path);
+    caps_.sampling = true; // the engine now honors SamplingParams (temperature 0 == greedy)
 
     qus::EngineOptions engine_options;
-    engine_options.device           = options_.device;
-    engine_options.max_ctx          = options_.max_context;
-    engine_options.prefill_chunk    = options_.prefill_chunk;
-    engine_options.mtp_draft_tokens = options_.mtp_draft_tokens;
-    engine_options.kv_dtype         = options_.kv_dtype;
-    engine_options.use_cuda_graph   = options_.use_cuda_graph;
+    engine_options.device            = options_.device;
+    engine_options.max_ctx           = options_.max_context;
+    engine_options.prefill_chunk     = options_.prefill_chunk;
+    engine_options.mtp_draft_tokens  = options_.mtp_draft_tokens;
+    engine_options.kv_dtype          = options_.kv_dtype;
+    engine_options.use_cuda_graph    = options_.use_cuda_graph;
     engine_options.use_lm_head_draft = options_.use_lm_head_draft;
-    engine_options.stop_token_ids   = tokenizer_->default_stop_token_ids();
-
-    engine_ = std::make_unique<qus::Engine>(engine_options);
+    engine_                          = std::make_unique<qus::Engine>(engine_options);
     engine_->load(options_.weights_path);
+    tokenizer_ = std::make_unique<qus::text::QwenTokenizer>(engine_->take_tokenizer_bundle());
+    engine_->set_stop_token_ids(tokenizer_->default_stop_token_ids());
 }
 
 qus::EngineMemoryStats GenerationService::memory_stats() const { return engine_->memory_stats(); }
@@ -114,13 +111,14 @@ PreparedRequest GenerationService::prepare(const GenerationRequest& req) const {
 
     qus::text::ChatRenderOptions render_options = prepared.options.render_options;
     render_options.enable_thinking              = prepared.options.enable_thinking;
-    const auto render_start = std::chrono::steady_clock::now();
+    const auto render_start                     = std::chrono::steady_clock::now();
     const std::string prompt = qus::text::render_qwen_chat(prepared.messages, render_options);
-    std::vector<int> ids = tokenizer_->encode(prompt);
+    std::vector<int> ids     = tokenizer_->encode(prompt);
     prepared.render_tokenize_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - render_start).count();
     prepared.prompt_tokens = static_cast<int>(ids.size());
-    // Assistant-content boundary for cross-turn GDN prefix reuse: the position right after the final
+    // Assistant-content boundary for cross-turn GDN prefix reuse: the position right after the
+    // final
     // `<|im_start|>assistant\n` header (before the generation-prompt opener the template appended).
     const std::uint32_t opener =
         qus::text::generation_prompt_opener_tokens(*tokenizer_, render_options);
@@ -147,9 +145,9 @@ PreparedRequest GenerationService::prepare(const GenerationRequest& req) const {
 
 int GenerationService::count_prompt_tokens(const GenerationRequest& req) const {
     const std::vector<qus::text::ChatMessage> messages = to_chat_messages(req);
-    qus::text::TextGenerationOptions options            = to_generation_options(req, options_);
-    qus::text::ChatRenderOptions render_options         = options.render_options;
-    render_options.enable_thinking                      = options.enable_thinking;
+    qus::text::TextGenerationOptions options           = to_generation_options(req, options_);
+    qus::text::ChatRenderOptions render_options        = options.render_options;
+    render_options.enable_thinking                     = options.enable_thinking;
     const std::string prompt = qus::text::render_qwen_chat(messages, render_options);
     return static_cast<int>(tokenizer_->encode(prompt).size());
 }
@@ -198,8 +196,8 @@ GenerationOutcome GenerationService::run(const PreparedRequest& prepared, const 
     const qus::EngineMtpStats mtp = engine_->mtp_stats();
 
     GenerationOutcome outcome;
-    outcome.prompt_tokens     = static_cast<int>(result.prompt_token_ids.size());
-    outcome.completion_tokens = static_cast<int>(result.generated_token_ids.size());
+    outcome.prompt_tokens                   = static_cast<int>(result.prompt_token_ids.size());
+    outcome.completion_tokens               = static_cast<int>(result.generated_token_ids.size());
     outcome.metrics.render_tokenize_seconds = prepared.render_tokenize_seconds;
     outcome.metrics.prefill_seconds         = result.timings.prefill_seconds;
     outcome.metrics.decode_seconds          = result.timings.decode_seconds;
@@ -252,8 +250,8 @@ void GenerationService::warmup() {
         turn.role = "user";
         turn.content.push_back(ContentPart{ContentKind::Text, "hi", "text"});
         req.messages.push_back(std::move(turn));
-        req.max_tokens     = 4;
-        req.max_tokens_set = true;
+        req.max_tokens           = 4;
+        req.max_tokens_set       = true;
         PreparedRequest prepared = prepare(req);
         run(prepared, nullptr);
     } catch (const std::exception& e) {

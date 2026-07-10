@@ -1,8 +1,8 @@
 # q5090 v4.1 工件格式冻结与分阶段加载优化设计
 
-状态：**实施中；v4.1 格式合同已冻结**。本文件给出格式变更和实施顺序；
-`docs/q5090_packed_file_format_v4.md` 已直接更新为唯一的 v4.1 规范。converter/runtime 的切换按
-§8 闸门继续推进。
+状态：**已实施（2026-07-10）**。`docs/q5090_packed_file_format_v4.md` 已直接更新为唯一的 v4.1
+规范；converter/verifier、canonical 工件、C++ 单文件 tokenizer、独立 `LM_HEAD_DRAFT`、
+Header-first prepare、按需 module residency、精确 arena 和 pinned staged uploader 均已落地。
 
 本文面向 Qwen3.6-27B / RTX 5090 的唯一 q5090 路径，不设计通用模型容器，也不保留 v4.0
 兼容读取。
@@ -750,3 +750,25 @@ metadata + tokenizer + pinned ring；真实输出不变。
 
 本设计的首要交付物不是更快的 loader，而是一份无歧义、可独立生成和验证的 v4.1 工件。只有该工件
 成为新的唯一事实来源后，加载优化才有稳定边界。
+
+---
+
+## 15. 实施记录
+
+最终实现遵循 F1 → F2 → F3 → loader optimization 的顺序：
+
+- canonical 工件：`out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus`，17,503,667,712 bytes，
+  SHA-256 `58adff47274aff102298139fa604932a51f6d94ae3bac8bcae494cbab4db2162`；
+- Python verifier：L0/L1 全量通过，既有 block 数值 mismatch 为 0；格式单测 37 项通过；
+- C++ Header-first：错误 version/minor 在读取 4096-byte Header 后失败，CPU prepare 不创建 CUDA
+  context 或 device arena；合法工件只读取 bounded catalog/tokenizer prefix 后即可生成 load plan；
+- residency：TEXT 16,378,329,088 bytes，LM_HEAD_DRAFT 357,040,128 bytes，MTP 451,267,584
+  bytes，VISION 293,396,992 bytes；每个 selected module 的 arena capacity/used 均精确等于 plan；
+- uploader：两个最多 64 MiB 的 pinned slot，selected module 使用同一 fd 上的 buffered `pread` 与
+  `cudaMemcpyAsync` 轮转；callback 异常路径会 drain in-flight DMA，且不发布 descriptor/arena；
+- 实测单文件 CLI 的 maximum RSS 为 331,212 KiB，而非旧实现的 17+ GiB full-file host buffer；
+- 验证：39 项非 real-file CTest、real WeightStore 四种 residency、Engine default/MTP/draft parity、
+  单文件 CLI 均通过；`compute-sanitizer --tool memcheck` 对 staged upload/bind fixture 报告 0 error。
+
+Phase 7 的 `O_DIRECT`/GDS 仍保持非目标：当前 buffered `pread` 基线已满足正确性、RSS 和 selective
+I/O 边界，在没有独立硬件收益证据前不增加第二条 I/O 路径。

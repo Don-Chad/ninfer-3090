@@ -58,9 +58,9 @@ Freedom at the API surface; 固化 (frozen) in the implementations, fusion, and 
 ## How it fits together
 
 ```
-bf16 safetensors ──(Python, offline)──> quantize + relayout/pack ──> ONE fixed weight file
+bf16 safetensors + tokenizer ──(Python, offline)──> quantize + relayout/pack ──> ONE v4.1 file
                                                                           │
-                                                          (C++/CUDA runtime) mmap + load + run
+                                                (C++/CUDA runtime) selective staged load + run
                                                                           │
            text/messages -> C++ Qwen tokenizer/chat template -> token ids -> forward -> greedy -> ids -> text
 ```
@@ -77,11 +77,14 @@ cmake --build build -j
 ## Usage
 
 ```bash
-./build/src/qus /path/to/weights.qus \
-  --tokenizer /home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16 \
+./build/src/qus /path/to/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus \
   --prompt "用三句话解释 prefill 和 decode 的区别。" \
   --max-new 128
 ```
+
+The v4.1 artifact embeds `tokenizer.json`, `merges.txt`, and `generation_config.json`; runtime
+commands do not accept a tokenizer directory. The loader validates the 4 KiB header before CUDA
+initialization, reads only the bounded catalog/tokenizer prefix, and uploads only requested modules.
 
 `bench/qus_bench` is the real-weight throughput tool (llama-bench-style prefill/decode rates); see
 [`bench/README.md`](bench/README.md).

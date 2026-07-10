@@ -90,8 +90,7 @@ void set_positions(qus::model::StepState& io, qus::test::DBuf& pos, int T) {
     io.pos = qus::Tensor(pos.p, qus::DType::I32, {T});
 }
 
-qus::model::StepState make_step_state(qus::DeviceArena& arena, int window_cols,
-                                      int prefill_chunk) {
+qus::model::StepState make_step_state(qus::DeviceArena& arena, int window_cols, int prefill_chunk) {
     const int draft_cols = std::max(1, window_cols - 1);
     return qus::model::StepState{
         arena.alloc(qus::DType::I32, {1}),
@@ -174,8 +173,8 @@ int run_case(qus::model::Qwen3_6_27B& card, const qus::model::FullLayerW& full,
         x_arena.reset();
         kv.reset();
         state.reset();
-        CUDA_CHECK(cudaMemsetAsync(io.gdn_initial_slot.data, 0, io.gdn_initial_slot.bytes(),
-                                   nullptr));
+        CUDA_CHECK(
+            cudaMemsetAsync(io.gdn_initial_slot.data, 0, io.gdn_initial_slot.bytes(), nullptr));
         qus::Tensor x = x_arena.alloc(qus::DType::BF16, {qus::model::kCfg.hidden, T});
         fill_hidden(x, T);
         try {
@@ -230,8 +229,7 @@ bool all_bytes_equal(const qus::Tensor& t, std::uint8_t value) {
 
 int verify_gdn_snapshot_slots(qus::model::Qwen3_6_27B& card, const qus::model::GdnLayerW& gdn,
                               qus::WorkspaceArena& work, qus::DeviceArena& x_arena,
-                              qus::KVCache& kv, qus::GdnState& state,
-                              qus::model::StepState& io) {
+                              qus::KVCache& kv, qus::GdnState& state, qus::model::StepState& io) {
     constexpr int T = 3;
     int failures    = 0;
     qus::test::DBuf pos(4);
@@ -257,14 +255,14 @@ int verify_gdn_snapshot_slots(qus::model::Qwen3_6_27B& card, const qus::model::G
     for (int slot = 0; slot < T; ++slot) {
         const qus::Tensor conv_slot = state.conv_slot(0, slot);
         const qus::Tensor ssm_slot  = state.ssm_slot(0, slot);
-        failures += all_bytes_equal(conv_slot, 0xA5)
-                        ? fail("verify gdn snapshot conv slot " + std::to_string(slot) +
-                               " was not written")
-                        : 0;
-        failures += all_bytes_equal(ssm_slot, 0xA5)
-                        ? fail("verify gdn snapshot ssm slot " + std::to_string(slot) +
-                               " was not written")
-                        : 0;
+        failures +=
+            all_bytes_equal(conv_slot, 0xA5)
+                ? fail("verify gdn snapshot conv slot " + std::to_string(slot) + " was not written")
+                : 0;
+        failures +=
+            all_bytes_equal(ssm_slot, 0xA5)
+                ? fail("verify gdn snapshot ssm slot " + std::to_string(slot) + " was not written")
+                : 0;
     }
     failures += expect_finite_hidden(x, "verify gdn snapshot slots");
     return failures;
@@ -280,7 +278,7 @@ int gdn_boundary_snapshot_parity(qus::model::Qwen3_6_27B& card, const qus::model
                                  qus::WorkspaceArena& work, qus::DeviceArena& x_arena,
                                  qus::GdnState& state) {
     constexpr int L                  = 8;
-    constexpr int B                  = 3;  // deliberately not a multiple of the GDN kernel chunk
+    constexpr int B                  = 3; // deliberately not a multiple of the GDN kernel chunk
     const int hidden                 = qus::model::kCfg.hidden;
     const std::int32_t boundary_slot = state.snapshot_slots - 1;
     if (boundary_slot < 1) {
@@ -295,8 +293,7 @@ int gdn_boundary_snapshot_parity(qus::model::Qwen3_6_27B& card, const qus::model
     for (std::size_t i = 0; i < host.size(); ++i) { in_bits[i] = qus::test::f32_to_bf16(host[i]); }
 
     const auto upload = [&](qus::Tensor& x, int col0, int cols) {
-        CUDA_CHECK(cudaMemcpy(x.data,
-                              in_bits.data() + static_cast<std::size_t>(col0) * hidden,
+        CUDA_CHECK(cudaMemcpy(x.data, in_bits.data() + static_cast<std::size_t>(col0) * hidden,
                               static_cast<std::size_t>(cols) * hidden * sizeof(std::uint16_t),
                               cudaMemcpyHostToDevice));
     };
@@ -317,7 +314,8 @@ int gdn_boundary_snapshot_parity(qus::model::Qwen3_6_27B& card, const qus::model
         card.test_gdn_mix(gdn, x_ref, 0, qus::model::Phase::Prefill);
         CUDA_CHECK(cudaDeviceSynchronize());
     } catch (const std::exception& e) {
-        return fail(std::string("gdn boundary parity reference: unexpected exception: ") + e.what());
+        return fail(std::string("gdn boundary parity reference: unexpected exception: ") +
+                    e.what());
     }
     const std::vector<std::uint16_t> ref = download(x_ref, L);
 
@@ -386,14 +384,13 @@ int main() {
     int failures = schedule_mapping_smoke();
 
     const std::filesystem::path fixture_path = make_fixture();
-    qus::DeviceArena fixture_weight_arena(768ULL * 1024ULL * 1024ULL);
     qus::DeviceArena cache_arena(768ULL * 1024ULL * 1024ULL);
     qus::WorkspaceArena workspace(128ULL * 1024ULL * 1024ULL);
     qus::DeviceArena x_arena(8ULL * 1024ULL * 1024ULL);
     qus::DeviceArena io_arena(16ULL * 1024ULL * 1024ULL);
 
     qus::WeightStore store(expectations());
-    store.load(fixture_path.c_str(), fixture_weight_arena, ctx);
+    store.load(fixture_path.c_str(), ctx);
 
     qus::KVCache kv(cache_arena, qus::model::kCfg.n_full(), 4, qus::model::kCfg.n_kv,
                     qus::model::kCfg.head_dim);

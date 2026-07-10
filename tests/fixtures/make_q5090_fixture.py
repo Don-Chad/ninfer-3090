@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -442,7 +443,7 @@ def add_compact_mtp(blocks: list[BlockSpec], fusions: list[FusionSpec]) -> None:
 
 
 def add_draft_head(blocks: list[BlockSpec], weights_n: int = 6, idmap_n: int | None = None) -> None:
-    """Append the optional Q4 draft lm_head and its I32 id-map (TEXT module).
+    """Append the optional Q4 draft lm_head and its I32 id-map module.
 
     ``idmap_n`` defaults to ``weights_n``; passing a different value produces a
     structurally valid file whose draft weights/id-map row counts disagree, which
@@ -456,7 +457,7 @@ def add_draft_head(blocks: list[BlockSpec], weights_n: int = 6, idmap_n: int | N
         "lm_head_draft",
         qt.QT_Q4G64,
         qt.LAYOUT_ROW_SPLIT,
-        qt.MODULE_TEXT,
+        qt.MODULE_LM_HEAD_DRAFT,
         no_layer,
         [seg("lm_head_draft", qt.SK_LM_HEAD_DRAFT, no_layer, (weights_n, 8))],
     )
@@ -465,9 +466,17 @@ def add_draft_head(blocks: list[BlockSpec], weights_n: int = 6, idmap_n: int | N
         "lm_head_draft.idmap",
         qt.QT_I32,
         qt.LAYOUT_CONTIGUOUS,
-        qt.MODULE_TEXT,
+        qt.MODULE_LM_HEAD_DRAFT,
         no_layer,
-        [seg("lm_head_draft.idmap", qt.SK_LM_HEAD_DRAFT_IDMAP, no_layer, (idmap_n,))],
+        [
+            seg(
+                "lm_head_draft.idmap",
+                qt.SK_LM_HEAD_DRAFT_IDMAP,
+                no_layer,
+                (idmap_n,),
+                torch.arange(idmap_n, dtype=torch.int32),
+            )
+        ],
     )
 
 
@@ -822,16 +831,12 @@ def build_model_bind(real_sample_blocks: bool, random_sample_blocks: bool) -> tu
     return blocks, fusions
 
 
-def module_counts(blocks: Iterable[BlockSpec]) -> list[tuple[int, int, int]]:
-    result: list[tuple[int, int, int]] = []
-    for kind, policy in (
-        (qt.MODULE_TEXT, qt.LOAD_RESIDENT),
-        (qt.MODULE_MTP, qt.LOAD_RESIDENT),
-        (qt.MODULE_VISION, qt.LOAD_LAZY_GPU),
-    ):
+def module_counts(blocks: Iterable[BlockSpec]) -> list[tuple[int, int]]:
+    result: list[tuple[int, int]] = []
+    for kind in qt.MODULE_CANONICAL_ORDER:
         count = sum(1 for b in blocks if b.module_kind == kind)
         if count:
-            result.append((kind, count, policy))
+            result.append((kind, count))
     return result
 
 
@@ -899,7 +904,42 @@ def build_file(out_path: Path, profile: str) -> None:
     fusion_group_index_bytes = len(fusion_specs) * fmt.FUSION_GROUP_RECORD_SIZE
     string_table_offset = fusion_group_index_offset + fusion_group_index_bytes
     string_table_bytes = len(string_table)
-    payload_offset = fmt.align_up(string_table_offset + string_table_bytes, fmt.REGION_ALIGN)
+    tokenizer_assets = (
+        (fmt.TOKENIZER_JSON, b'{"model":{"type":"BPE","vocab":{"a":0}},"added_tokens":[]}\n'),
+        (fmt.TOKENIZER_MERGES, b"#version: 0.2\n"),
+        (fmt.TOKENIZER_GENERATION_CONFIG, b'{"eos_token_id":[0]}\n'),
+    )
+    tokenizer_index_offset = fmt.align_up(
+        string_table_offset + string_table_bytes, fmt.TOKENIZER_ALIGN
+    )
+    tokenizer_index_bytes = fmt.TOKENIZER_RECORD_COUNT * fmt.TOKENIZER_RECORD_SIZE
+    tokenizer_data_offset = fmt.align_up(
+        tokenizer_index_offset + tokenizer_index_bytes, fmt.TOKENIZER_ALIGN
+    )
+    tokenizer_records: list[fmt.TokenizerRecord] = []
+    tokenizer_data = bytearray()
+    for kind, data in tokenizer_assets:
+        absolute = fmt.align_up(
+            tokenizer_data_offset + len(tokenizer_data), fmt.TOKENIZER_ALIGN
+        )
+        tokenizer_data.extend(
+            b"\x00" * (absolute - (tokenizer_data_offset + len(tokenizer_data)))
+        )
+        tokenizer_records.append(
+            fmt.TokenizerRecord(
+                kind=kind,
+                encoding=fmt.TOKENIZER_RAW_UTF8,
+                data_offset=absolute,
+                data_bytes=len(data),
+                crc32=fmt.crc32(data),
+                sha256=hashlib.sha256(data).digest(),
+            )
+        )
+        tokenizer_data.extend(data)
+    tokenizer_data_bytes = len(tokenizer_data)
+    payload_offset = fmt.align_up(
+        tokenizer_data_offset + tokenizer_data_bytes, fmt.REGION_ALIGN
+    )
 
     file_bytes = bytearray(payload_offset)
     pos = payload_offset
@@ -938,7 +978,7 @@ def build_file(out_path: Path, profile: str) -> None:
 
     records = []
     begin = 0
-    for kind, count, policy in modules:
+    for kind, count in modules:
         span = module_span[kind]
         records.append(
             fmt.ModuleRecord(
@@ -948,7 +988,6 @@ def build_file(out_path: Path, profile: str) -> None:
                 tensor_index_count=count,
                 payload_offset=span[0],
                 payload_bytes=span[1] - span[0],
-                load_policy=policy,
             )
         )
         begin += count
@@ -972,10 +1011,14 @@ def build_file(out_path: Path, profile: str) -> None:
         )
 
     header_flags = 0
-    for kind, _, _ in modules:
-        header_flags |= 1 << kind
-    if any(b.source_kind == qt.SK_LM_HEAD_DRAFT for b in blocks):
-        header_flags |= fmt.FLAG_DRAFT_HEAD_PRESENT
+    module_flags = {
+        qt.MODULE_TEXT: fmt.FLAG_TEXT_PRESENT,
+        qt.MODULE_MTP: fmt.FLAG_MTP_PRESENT,
+        qt.MODULE_VISION: fmt.FLAG_VISION_PRESENT,
+        qt.MODULE_LM_HEAD_DRAFT: fmt.FLAG_LM_HEAD_DRAFT_PRESENT,
+    }
+    for kind, _ in modules:
+        header_flags |= module_flags[kind]
 
     header = fmt.FileHeaderFields(
         tensor_count=len(entries),
@@ -1009,6 +1052,10 @@ def build_file(out_path: Path, profile: str) -> None:
         full_attention_interval=FULL_INTERVAL,
         max_position_embeddings=262144,
         fusion_group_count=len(fusion_records),
+        tokenizer_index_offset=tokenizer_index_offset,
+        tokenizer_index_bytes=tokenizer_index_bytes,
+        tokenizer_data_offset=tokenizer_data_offset,
+        tokenizer_data_bytes=tokenizer_data_bytes,
     )
 
     meta = bytearray(fmt.pack_header(header))
@@ -1021,6 +1068,11 @@ def build_file(out_path: Path, profile: str) -> None:
     for fusion_record in fusion_records:
         meta.extend(fmt.pack_fusion_group_record(fusion_record))
     meta.extend(string_table)
+    meta.extend(b"\x00" * (tokenizer_index_offset - len(meta)))
+    for tokenizer_record in tokenizer_records:
+        meta.extend(fmt.pack_tokenizer_record(tokenizer_record))
+    meta.extend(b"\x00" * (tokenizer_data_offset - len(meta)))
+    meta.extend(tokenizer_data)
     if len(meta) > payload_offset:
         raise RuntimeError(f"metadata {len(meta)} exceeds payload offset {payload_offset}")
     meta.extend(b"\x00" * (payload_offset - len(meta)))

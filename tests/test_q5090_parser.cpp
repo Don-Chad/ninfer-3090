@@ -1,4 +1,5 @@
 #include "qus/core/weight_store_parser.h"
+#include "qus/core/weight_store.h"
 
 #include <array>
 #include <cstddef>
@@ -17,10 +18,10 @@
 
 namespace {
 
-constexpr std::uint64_t kModuleRecordSize = 64;
-constexpr std::uint64_t kTensorEntrySize  = 128;
+constexpr std::uint64_t kModuleRecordSize  = 64;
+constexpr std::uint64_t kTensorEntrySize   = 128;
 constexpr std::uint64_t kSegmentRecordSize = 32;
-constexpr std::uint64_t kHeaderSize       = 4096;
+constexpr std::uint64_t kHeaderSize        = 4096;
 
 int fail(std::string_view message) {
     std::cerr << message << '\n';
@@ -37,6 +38,14 @@ std::vector<std::byte> read_file(const std::filesystem::path& path) {
     return bytes;
 }
 
+void write_file(const std::filesystem::path& path, const std::vector<std::byte>& bytes) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out) { throw std::runtime_error("failed to create fixture"); }
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    if (!out) { throw std::runtime_error("failed to write fixture"); }
+}
+
 std::uint32_t read_u32(const std::vector<std::byte>& bytes, std::uint64_t offset) {
     std::uint32_t value = 0;
     std::memcpy(&value, bytes.data() + offset, sizeof(value));
@@ -47,6 +56,18 @@ std::uint64_t read_u64(const std::vector<std::byte>& bytes, std::uint64_t offset
     std::uint64_t value = 0;
     std::memcpy(&value, bytes.data() + offset, sizeof(value));
     return value;
+}
+
+std::uint32_t crc32(std::span<const std::byte> bytes) {
+    std::uint32_t crc = 0xFFFFFFFFU;
+    for (const std::byte raw : bytes) {
+        crc ^= std::to_integer<std::uint8_t>(raw);
+        for (int bit = 0; bit < 8; ++bit) {
+            const std::uint32_t mask = 0U - (crc & 1U);
+            crc                      = (crc >> 1U) ^ (0xEDB88320U & mask);
+        }
+    }
+    return ~crc;
 }
 
 void write_u16(std::vector<std::byte>& bytes, std::uint64_t offset, std::uint16_t value) {
@@ -121,7 +142,7 @@ int expect_parse_throws(const std::vector<std::byte>& valid, std::string_view la
 }
 
 int check_valid_parse(const std::vector<std::byte>& bytes) {
-    qus::Q5090Expectations expected = expectations();
+    qus::Q5090Expectations expected   = expectations();
     const qus::ParsedQ5090File parsed = qus::parse_q5090_file(bytes, expected);
     int failures                      = 0;
     failures += parsed.header.tensor_count == 20 ? 0 : fail("tensor_count mismatch");
@@ -133,6 +154,16 @@ int check_valid_parse(const std::vector<std::byte>& bytes) {
     failures += parsed.tensors.size() == 20 ? 0 : fail("parsed tensor size mismatch");
     failures += parsed.segments.size() == 25 ? 0 : fail("parsed segment size mismatch");
     failures += parsed.fusion_groups.size() == 3 ? 0 : fail("parsed fusion group size mismatch");
+    failures += parsed.header.format_minor == 1 ? 0 : fail("format minor mismatch");
+    failures += parsed.tokenizer_records.size() == 3 ? 0 : fail("tokenizer record size mismatch");
+    failures += parsed.tokenizer.tokenizer_json.find("\"model\"") != std::string::npos
+                    ? 0
+                    : fail("embedded tokenizer.json mismatch");
+    failures +=
+        parsed.tokenizer.merges_txt == "#version: 0.2\n" ? 0 : fail("embedded merges.txt mismatch");
+    failures += parsed.tokenizer.generation_config_json == "{\"eos_token_id\":[0]}\n"
+                    ? 0
+                    : fail("embedded generation_config.json mismatch");
 
     failures += parsed.modules[0].module_kind == qus::ModuleKind::TextCore
                     ? 0
@@ -148,9 +179,6 @@ int check_valid_parse(const std::vector<std::byte>& bytes) {
     failures += parsed.modules[2].module_kind == qus::ModuleKind::VisionEncoder
                     ? 0
                     : fail("VISION module mismatch");
-    failures += parsed.modules[2].load_policy == qus::LoadPolicy::LazyGpu
-                    ? 0
-                    : fail("VISION load policy mismatch");
 
     const auto& embed = find_tensor(parsed, "model.language_model.embed_tokens.weight");
     failures += embed.qtype == qus::QType::Q6G64_F16S ? 0 : fail("embed qtype mismatch");
@@ -211,9 +239,8 @@ int check_valid_parse(const std::vector<std::byte>& bytes) {
     failures += mtp.qtype == qus::QType::W8G32_F16S ? 0 : fail("mtp qtype mismatch");
     failures += mtp.layout == qus::QuantLayout::RowSplit ? 0 : fail("mtp layout mismatch");
     failures += mtp.module_kind == qus::ModuleKind::MtpDraft ? 0 : fail("mtp module mismatch");
-    failures += mtp.shape == std::array<std::uint32_t, 4>{8, 16, 1, 1}
-                    ? 0
-                    : fail("mtp shape mismatch");
+    failures +=
+        mtp.shape == std::array<std::uint32_t, 4>{8, 16, 1, 1} ? 0 : fail("mtp shape mismatch");
     failures += mtp.padded_shape == std::array<std::uint32_t, 4>{8, 128, 1, 1}
                     ? 0
                     : fail("mtp padded mismatch");
@@ -257,8 +284,7 @@ int check_model_bind_conv1d_parse() {
     const std::filesystem::path fixture_path = make_fixture("model-bind");
     const std::vector<std::byte> bytes       = read_file(fixture_path);
     const qus::ParsedQ5090File parsed        = qus::parse_q5090_file(bytes, expectations());
-    const auto& conv =
-        find_tensor(parsed, "layers.0.linear_attn.conv1d.weight");
+    const auto& conv = find_tensor(parsed, "layers.0.linear_attn.conv1d.weight");
 
     int failures = 0;
     failures += conv.qtype == qus::QType::BF16_CTRL ? 0 : fail("conv1d qtype mismatch");
@@ -273,30 +299,33 @@ int check_model_bind_conv1d_parse() {
     failures += conv.padded_shape == std::array<std::uint32_t, 4>{10240, 4, 1, 1}
                     ? 0
                     : fail("conv1d padded shape mismatch");
-    failures += conv.payload_bytes == 10240ULL * 4ULL * 2ULL
-                    ? 0
-                    : fail("conv1d payload bytes mismatch");
+    failures +=
+        conv.payload_bytes == 10240ULL * 4ULL * 2ULL ? 0 : fail("conv1d payload bytes mismatch");
     return failures;
 }
 
 int check_draft_head_parse() {
     int failures = 0;
 
-    // Positive: a v4 file carrying the optional Q4 draft head + I32 id-map parses,
-    // sets DRAFT_HEAD_PRESENT, and both draft blocks report the expected schema.
+    // Positive: a v4.1 file carrying the independent Q4 draft head + I32 id-map module parses,
+    // sets LM_HEAD_DRAFT_PRESENT, and both draft blocks report the expected schema.
     const std::filesystem::path good_path = make_fixture("draft-head");
     const std::vector<std::byte> good     = read_file(good_path);
     const qus::ParsedQ5090File parsed     = qus::parse_q5090_file(good, expectations());
 
     failures += (parsed.header.flags & (1U << 4)) != 0
                     ? 0
-                    : fail("draft-head DRAFT_HEAD_PRESENT flag not set");
+                    : fail("draft-head LM_HEAD_DRAFT_PRESENT flag not set");
+    failures += parsed.modules.size() == 4 ? 0 : fail("draft module count mismatch");
+    failures += parsed.modules[1].module_kind == qus::ModuleKind::LmHeadDraft
+                    ? 0
+                    : fail("draft ModuleRecord kind mismatch");
 
     const auto& weights = find_tensor(parsed, "lm_head_draft");
     failures += weights.qtype == qus::QType::Q4G64_F16S ? 0 : fail("draft weights qtype mismatch");
     failures +=
         weights.layout == qus::QuantLayout::RowSplit ? 0 : fail("draft weights layout mismatch");
-    failures += weights.module_kind == qus::ModuleKind::TextCore
+    failures += weights.module_kind == qus::ModuleKind::LmHeadDraft
                     ? 0
                     : fail("draft weights module mismatch");
     failures += weights.source_kind == static_cast<std::uint32_t>(qus::SourceKind::LmHeadDraft)
@@ -315,7 +344,7 @@ int check_draft_head_parse() {
     failures += idmap.shape[0] == 6 ? 0 : fail("draft idmap length mismatch");
     failures += idmap.payload_bytes == 6ULL * 4ULL ? 0 : fail("draft idmap payload bytes mismatch");
 
-    // Negative: clearing DRAFT_HEAD_PRESENT while the draft blocks remain must be
+    // Negative: clearing LM_HEAD_DRAFT_PRESENT while the draft module remains must be
     // rejected (flag/block coupling).
     failures += expect_parse_throws(good, "draft flag cleared", [](auto& b) {
         write_u32(b, 40, read_u32(b, 40) & ~(1U << 4));
@@ -329,6 +358,55 @@ int check_draft_head_parse() {
     return failures;
 }
 
+int check_header_first_prepare(const std::filesystem::path& valid_path,
+                               const std::vector<std::byte>& valid) {
+    int failures = 0;
+    qus::WeightStore prepared(expectations());
+    prepared.prepare(valid_path.c_str());
+    const qus::Q5090LoadPlan& plan = prepared.load_plan();
+    failures += plan.modules.size() == 1 ? 0 : fail("CPU-only plan selected wrong module count");
+    failures += plan.modules[0].module == qus::ModuleKind::TextCore
+                    ? 0
+                    : fail("CPU-only plan did not select TEXT_CORE");
+    failures += plan.tensors.size() == 6 ? 0 : fail("CPU-only plan tensor count mismatch");
+    failures += plan.file_read_bytes == read_u64(valid, 96) + plan.modules[0].file_bytes
+                    ? 0
+                    : fail("CPU-only plan file byte count mismatch");
+    failures += prepared.module_arena(qus::ModuleKind::TextCore) == nullptr
+                    ? 0
+                    : fail("CPU-only prepare allocated a device arena");
+    const qus::Q5090LoadStats& good_stats = prepared.load_stats();
+    failures += good_stats.header_read_bytes == kHeaderSize
+                    ? 0
+                    : fail("CPU-only prepare header byte count mismatch");
+    failures += good_stats.total_file_read_bytes == read_u64(valid, 96)
+                    ? 0
+                    : fail("CPU-only prepare read beyond metadata/tokenizer");
+
+    std::vector<std::byte> bad = valid;
+    write_u32(bad, 16, 99);
+    const auto bad_path =
+        std::filesystem::temp_directory_path() / "qus_q5090_header_first_bad_version.qus";
+    write_file(bad_path, bad);
+    qus::WeightStore rejected(expectations());
+    try {
+        rejected.prepare(bad_path.c_str());
+        failures += fail("header-first bad version did not throw");
+    } catch (const std::runtime_error&) {
+        const qus::Q5090LoadStats& stats = rejected.load_stats();
+        failures += stats.header_read_bytes == kHeaderSize
+                        ? 0
+                        : fail("bad version did not stop after Header read");
+        failures += stats.catalog_read_bytes == 0 && stats.tokenizer_read_bytes == 0
+                        ? 0
+                        : fail("bad version read catalog/tokenizer bytes");
+        failures += rejected.module_arena(qus::ModuleKind::TextCore) == nullptr
+                        ? 0
+                        : fail("bad version allocated a device arena");
+    }
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -336,6 +414,7 @@ int main() {
     const std::filesystem::path fixture_path = make_fixture();
     const std::vector<std::byte> valid       = read_file(fixture_path);
     failures += check_valid_parse(valid);
+    failures += check_header_first_prepare(fixture_path, valid);
     failures += check_model_bind_conv1d_parse();
     failures += check_draft_head_parse();
 
@@ -346,6 +425,8 @@ int main() {
     const std::uint64_t payload_base        = read_u64(valid, 96);
     const std::uint64_t segment_offset      = read_u64(valid, 200);
     const std::uint64_t fusion_offset       = read_u64(valid, 216);
+    const std::uint64_t tokenizer_index     = read_u64(valid, 248);
+    const std::uint64_t tokenizer_data      = read_u64(valid, 264);
     const std::uint64_t first_entry         = tensor_offset;
     const std::uint64_t second_entry        = tensor_offset + kTensorEntrySize;
     const std::uint64_t mtp_entry           = tensor_offset + 6 * kTensorEntrySize;
@@ -362,10 +443,36 @@ int main() {
     failures +=
         expect_parse_throws(valid, "bad header size", [](auto& b) { write_u32(b, 24, 2048); });
     failures +=
+        expect_parse_throws(valid, "v4.0 format minor", [](auto& b) { write_u32(b, 232, 0); });
+    failures +=
         expect_parse_throws(valid, "unknown header flags", [](auto& b) { write_u32(b, 40, 0x20); });
     failures +=
         expect_parse_throws(valid, "module flags mismatch", [](auto& b) { write_u32(b, 40, 0x1); });
-    failures += expect_parse_throws(valid, "header reserved", [](auto& b) { write_u32(b, 236, 1); });
+    failures +=
+        expect_parse_throws(valid, "header reserved", [](auto& b) { write_u32(b, 280, 1); });
+    failures +=
+        expect_parse_throws(valid, "tokenizer record count", [](auto& b) { write_u32(b, 236, 2); });
+    failures += expect_parse_throws(valid, "tokenizer reserved", [tokenizer_index](auto& b) {
+        write_u32(b, tokenizer_index + 28, 1);
+    });
+    failures += expect_parse_throws(valid, "tokenizer bad kind", [tokenizer_index](auto& b) {
+        write_u32(b, tokenizer_index, 2);
+    });
+    failures += expect_parse_throws(valid, "tokenizer bad encoding", [tokenizer_index](auto& b) {
+        write_u32(b, tokenizer_index + 4, 1);
+    });
+    failures += expect_parse_throws(valid, "tokenizer crc mismatch", [tokenizer_data](auto& b) {
+        b[tokenizer_data] ^= std::byte{1};
+    });
+    failures += expect_parse_throws(valid, "tokenizer malformed JSON", [tokenizer_index](auto& b) {
+        const std::uint64_t record = tokenizer_index + 2 * 64;
+        const std::uint64_t offset = read_u64(b, record + 8);
+        const std::uint64_t bytes  = read_u64(b, record + 16);
+        b[offset]                  = std::byte{'['};
+        write_u32(b, record + 24,
+                  crc32(std::span<const std::byte>(b).subspan(static_cast<std::size_t>(offset),
+                                                              static_cast<std::size_t>(bytes))));
+    });
     failures += expect_parse_throws(valid, "tensor index non-adjacent", [module_offset](auto& b) {
         write_u64(b, 64, module_offset + kModuleRecordSize);
     });
@@ -396,11 +503,10 @@ int main() {
         write_u32(b, second_entry + 4, read_u32(b, first_entry + 4));
         write_u64(b, second_entry + 8, read_u64(b, first_entry + 8));
     });
-    failures +=
-        expect_parse_throws(valid, "duplicate source", [gate_segment, up_segment](auto& b) {
-            write_u32(b, up_segment + 0, read_u32(b, gate_segment + 0));
-            write_u32(b, up_segment + 4, read_u32(b, gate_segment + 4));
-        });
+    failures += expect_parse_throws(valid, "duplicate source", [gate_segment, up_segment](auto& b) {
+        write_u32(b, up_segment + 0, read_u32(b, gate_segment + 0));
+        write_u32(b, up_segment + 4, read_u32(b, gate_segment + 4));
+    });
     failures +=
         expect_parse_throws(valid, "bad string terminator", [first_entry, string_offset](auto& b) {
             const std::uint32_t name_len = read_u32(b, first_entry + 4);
@@ -433,18 +539,15 @@ int main() {
     failures += expect_parse_throws(valid, "scale plane mismatch", [first_entry](auto& b) {
         write_u64(b, first_entry + 116, read_u64(b, first_entry + 116) + 1);
     });
-    failures += expect_parse_throws(valid, "W8G32 bad group", [mtp_entry](auto& b) {
-        write_u32(b, mtp_entry + 56, 64);
-    });
-    failures += expect_parse_throws(valid, "W8G32 nonzero high plane", [mtp_entry](auto& b) {
-        write_u64(b, mtp_entry + 108, 32);
-    });
+    failures += expect_parse_throws(valid, "W8G32 bad group",
+                                    [mtp_entry](auto& b) { write_u32(b, mtp_entry + 56, 64); });
+    failures += expect_parse_throws(valid, "W8G32 nonzero high plane",
+                                    [mtp_entry](auto& b) { write_u64(b, mtp_entry + 108, 32); });
     failures += expect_parse_throws(valid, "W8G32 bad scale plane", [mtp_entry](auto& b) {
         write_u64(b, mtp_entry + 116, read_u64(b, mtp_entry + 116) + 2);
     });
-    failures += expect_parse_throws(valid, "segment partition mismatch", [up_segment](auto& b) {
-        write_u32(b, up_segment + 8, 6);
-    });
+    failures += expect_parse_throws(valid, "segment partition mismatch",
+                                    [up_segment](auto& b) { write_u32(b, up_segment + 8, 6); });
     failures += expect_parse_throws(valid, "fusion total_n mismatch", [fusion_offset](auto& b) {
         write_u32(b, fusion_offset + 40, read_u32(b, fusion_offset + 40) + 1);
     });

@@ -17,23 +17,23 @@ inline constexpr int kDefaultMaxTokensCeiling = 8192;
 struct ServeOptions {
     bool help_requested = false;
     std::string weights_path;
-    std::string tokenizer_path;
-    std::string host          = "127.0.0.1";
-    int port                  = 8080;
-    std::string api_key;                       // empty => no auth
-    std::string model_id      = "qwen3.6-27b"; // reported by /v1/models
-    std::uint32_t max_context = 8192;
+    std::string host = "127.0.0.1";
+    int port         = 8080;
+    std::string api_key;                         // empty => no auth
+    std::string model_id        = "qwen3.6-27b"; // reported by /v1/models
+    std::uint32_t max_context   = 8192;
     std::uint32_t prefill_chunk = model::kDefaultPrefillChunk;
-    int device                = 0;
-    int mtp_draft_tokens      = 0;
-    DType kv_dtype            = DType::BF16;
-    bool use_cuda_graph       = true;
-    bool use_lm_head_draft    = false;
-    bool enable_thinking      = true;  // default thinking mode for the generation prompt (--no-thinking opts out)
+    int device                  = 0;
+    int mtp_draft_tokens        = 0;
+    DType kv_dtype              = DType::BF16;
+    bool use_cuda_graph         = true;
+    bool use_lm_head_draft      = false;
+    bool enable_thinking =
+        true; // default thinking mode for the generation prompt (--no-thinking opts out)
     // Used when a request omits max_tokens. 0 => derive from max_context in
     // parse_serve_options; --default-max-tokens overrides with an explicit value.
-    int default_max_tokens    = 0;
-    bool enable_cors          = false;  // send permissive CORS headers for browser UIs
+    int default_max_tokens = 0;
+    bool enable_cors       = false; // send permissive CORS headers for browser UIs
     // Default sampler applied when a request omits a field. Defaults match the
     // Qwen3 thinking recommendation so real chat clients get non-degenerate
     // decoding out of the box; a request may override any field, and --greedy
@@ -46,7 +46,7 @@ struct ServeOptions {
     // Fixes the seed used when a request omits `seed`; when unset each such
     // request draws a fresh random seed so regenerations differ.
     std::optional<std::uint64_t> sampling_seed;
-    bool greedy                      = false;  // --greedy: force temperature 0 (exact argmax)
+    bool greedy = false; // --greedy: force temperature 0 (exact argmax)
 };
 
 // The default output length derived from the context window when the operator

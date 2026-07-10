@@ -6,7 +6,6 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
-#include <filesystem>
 #include <initializer_list>
 #include <limits>
 #include <stdexcept>
@@ -14,9 +13,8 @@
 namespace qus {
 namespace {
 
-constexpr std::size_t kMiB                   = 1024ULL * 1024ULL;
-constexpr std::size_t kArenaAlign            = 256ULL;
-constexpr std::size_t kMtpPayloadBudgetBytes = 451267584ULL;
+constexpr std::size_t kMiB        = 1024ULL * 1024ULL;
+constexpr std::size_t kArenaAlign = 256ULL;
 
 std::size_t checked_mul(std::size_t a, std::size_t b, const char* label) {
     if (b != 0 && a > std::numeric_limits<std::size_t>::max() / b) {
@@ -241,6 +239,21 @@ ArenaMemoryStats arena_stats(const std::optional<DeviceArena>& arena) noexcept {
     return stats;
 }
 
+ArenaMemoryStats weight_arena_stats(const std::optional<WeightStore>& weights) noexcept {
+    ArenaMemoryStats stats;
+    if (!weights) { return stats; }
+    for (ModuleKind module : {ModuleKind::TextCore, ModuleKind::MtpDraft, ModuleKind::VisionEncoder,
+                              ModuleKind::LmHeadDraft}) {
+        const DeviceArena* arena = weights->module_arena(module);
+        if (arena == nullptr) { continue; }
+        stats.present = true;
+        stats.capacity_bytes += arena->capacity();
+        stats.used_bytes += arena->used();
+        stats.peak_used_bytes += arena->peak_used();
+    }
+    return stats;
+}
+
 } // namespace
 
 Engine::Engine(EngineOptions options) : options_(options) {
@@ -253,6 +266,9 @@ Engine::Engine(EngineOptions options) : options_(options) {
         options_.stop_token_ids.end());
     if (options_.max_ctx == 0) { throw std::invalid_argument("Engine max_ctx must be nonzero"); }
     validate_mtp_draft_tokens(options_.mtp_draft_tokens);
+    if (options_.use_lm_head_draft && options_.mtp_draft_tokens == 0) {
+        throw std::invalid_argument("Engine lm-head-draft requires mtp_draft_tokens > 0");
+    }
     (void)runtime_kv_quant_group(options_.kv_dtype, options_.kv_quant_group);
     if (options_.prefill_chunk == 0 ||
         options_.prefill_chunk % model::kPrefillChunkAlignment != 0) {
@@ -281,13 +297,6 @@ Q5090Expectations Engine::expectations() {
     expected.full_attention_interval = model::kCfg.full_interval;
     expected.max_position_embeddings = 262144;
     return expected;
-}
-
-std::size_t Engine::default_weight_bytes(const std::string& path) {
-    const auto file_size = std::filesystem::file_size(path);
-    std::size_t total =
-        checked_add(static_cast<std::size_t>(file_size), 256ULL * kMiB, "weight arena size");
-    return checked_add(total, kMtpPayloadBudgetBytes, "weight arena size");
 }
 
 std::size_t Engine::default_cache_bytes(std::uint32_t max_ctx) {
@@ -487,24 +496,25 @@ void Engine::load(const std::string& path) {
     weights_.reset();
     work_.reset();
     cache_arena_.reset();
-    weight_arena_.reset();
     ctx_.reset();
     io_ = {};
 
-    ctx_.emplace(options_.device);
     const bool enable_mtp = options_.mtp_draft_tokens > 0;
-    weight_arena_.emplace(options_.weight_bytes == 0 ? default_weight_bytes(path)
-                                                     : options_.weight_bytes);
-    work_.emplace(options_.work_bytes == 0
-                      ? default_work_bytes_for(options_.prefill_chunk, options_.mtp_draft_tokens)
-                      : options_.work_bytes);
     weights_.emplace(expectations());
 
     LoadOptions load_options;
-    load_options.progress = options_.progress;
-    load_options.load_mtp = options_.mtp_draft_tokens > 0;
-    weights_->load(path.c_str(), *weight_arena_, *ctx_, load_options);
+    load_options.progress           = options_.progress;
+    load_options.load_mtp           = options_.mtp_draft_tokens > 0;
+    load_options.load_lm_head_draft = options_.use_lm_head_draft;
+    weights_->prepare(path.c_str(), load_options);
+
+    ctx_.emplace(options_.device);
+    weights_->upload(*ctx_);
     if (load_options.load_mtp) { weights_->require_mtp_module_expectations(); }
+
+    work_.emplace(options_.work_bytes == 0
+                      ? default_work_bytes_for(options_.prefill_chunk, options_.mtp_draft_tokens)
+                      : options_.work_bytes);
 
     cache_arena_.emplace(options_.cache_bytes == 0
                              ? default_cache_bytes_for(options_.max_ctx, options_.mtp_draft_tokens,
@@ -587,6 +597,20 @@ void Engine::load(const std::string& path) {
     }
 }
 
+Q5090TokenizerBundle Engine::take_tokenizer_bundle() {
+    if (!weights_) { throw std::runtime_error("Engine weights are not loaded"); }
+    return weights_->take_tokenizer_bundle();
+}
+
+void Engine::set_stop_token_ids(std::vector<int> ids) {
+    for (const int id : ids) {
+        if (id < 0) { throw std::invalid_argument("Engine stop_token_ids must be nonnegative"); }
+    }
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    options_.stop_token_ids = std::move(ids);
+}
+
 void Engine::require_loaded() const {
     if (!loaded()) { throw std::runtime_error("Engine is not loaded"); }
 }
@@ -599,7 +623,7 @@ EngineMemoryStats Engine::memory_stats() const noexcept {
     stats.device         = options_.device;
     stats.max_context    = options_.max_ctx;
     stats.position       = position();
-    stats.weights        = arena_stats(weight_arena_);
+    stats.weights        = weight_arena_stats(weights_);
     stats.cache          = arena_stats(cache_arena_);
     stats.workspace      = arena_stats(work_);
     stats.kv_dtype       = options_.kv_dtype;
@@ -620,6 +644,11 @@ EngineMemoryStats Engine::memory_stats() const noexcept {
     return stats;
 }
 
+const Q5090LoadStats& Engine::q5090_load_stats() const {
+    if (!weights_) { throw std::runtime_error("Engine weights are not loaded"); }
+    return weights_->load_stats();
+}
+
 EngineMtpStats Engine::mtp_stats() const {
     EngineMtpStats out;
     out.enabled = options_.mtp_draft_tokens > 0;
@@ -638,7 +667,7 @@ EngineMtpStats Engine::mtp_stats() const {
 }
 
 void Engine::reset_memory_peaks() noexcept {
-    if (weight_arena_) { weight_arena_->reset_peak(); }
+    if (weights_) { weights_->reset_arena_peaks(); }
     if (cache_arena_) { cache_arena_->reset_peak(); }
     if (work_) { work_->reset_peak(); }
 }

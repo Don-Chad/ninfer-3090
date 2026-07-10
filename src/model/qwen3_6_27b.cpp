@@ -390,12 +390,12 @@ void Qwen3_6_27B::bind() {
     final_norm_ = require_tensor(weights_, SourceKind::FinalNorm, kQ5090NoLayer, "final_norm");
     lm_head_    = require_weight(weights_, SourceKind::LmHead, kQ5090NoLayer, "lm_head");
 
-    // Optional embedded draft head (v4 DRAFT_HEAD_PRESENT). Bind it whenever both
-    // the Q4 weight and its int32 id-map are present; the engine's two-mode toggle
-    // decides whether the MTP proposal sites actually use it (see Engine::load).
-    const Weight* draft_head = weights_.qweight(kText, sk(SourceKind::LmHeadDraft), kQ5090NoLayer);
-    const Tensor* draft_ids  = weights_.tensor(kText, sk(SourceKind::LmHeadDraftIdmap),
-                                               kQ5090NoLayer);
+    // Optional independent LM_HEAD_DRAFT module. Non-resident modules publish no descriptors.
+    const auto draft_module = ModuleKind::LmHeadDraft;
+    const Weight* draft_head =
+        weights_.qweight(draft_module, sk(SourceKind::LmHeadDraft), kQ5090NoLayer);
+    const Tensor* draft_ids =
+        weights_.tensor(draft_module, sk(SourceKind::LmHeadDraftIdmap), kQ5090NoLayer);
     if (draft_head != nullptr && draft_ids != nullptr) {
         set_lm_head_draft(draft_head, static_cast<const std::int32_t*>(draft_ids->data),
                           draft_head->n);
@@ -545,8 +545,8 @@ void Qwen3_6_27B::mtp_draft_argmax(const Tensor& hidden_col, Tensor& logits, Ten
 }
 
 void Qwen3_6_27B::mtp_forward_batch(const Tensor& ids, const Tensor& hidden,
-                                    const Tensor& positions, Tensor& mtp_hidden,
-                                    int logits_column, Tensor* logits, Tensor* draft_token) {
+                                    const Tensor& positions, Tensor& mtp_hidden, int logits_column,
+                                    Tensor* logits, Tensor* draft_token) {
     if (mtp_kv_ == nullptr) { throw std::runtime_error("MTP forward is not enabled"); }
     const int T = ids.ne[0];
     if (T <= 0 || static_cast<std::uint32_t>(T) > prefill_chunk_) {
@@ -782,7 +782,7 @@ void Qwen3_6_27B::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
     } else {
         // Prefill reads the committed conv window from gdn_prefill_read_slot_ and writes the
         // running window to slot 0 (in-place when the read slot is 0).
-        Tensor conv_in  = state_.conv_slot(static_cast<std::uint32_t>(gidx), gdn_prefill_read_slot_);
+        Tensor conv_in = state_.conv_slot(static_cast<std::uint32_t>(gidx), gdn_prefill_read_slot_);
         Tensor conv_out = state_.conv_slot(static_cast<std::uint32_t>(gidx), 0);
         kernels::causal_conv1d_prefill(qkv, *w.conv1d, conv_in, conv_out, qkv_c, s);
     }
@@ -814,8 +814,8 @@ void Qwen3_6_27B::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
         // running state to slot 0 (in-place when the read slot is 0).
         Tensor ssm_in  = state_.ssm_slot(static_cast<std::uint32_t>(gidx), gdn_prefill_read_slot_);
         Tensor ssm_out = state_.ssm_slot(static_cast<std::uint32_t>(gidx), 0);
-        kernels::gated_delta_rule_chunked(qn, kn, vv, g, beta, kGdnScale, 64, work_, ssm_in, ssm_out,
-                                          o, s);
+        kernels::gated_delta_rule_chunked(qn, kn, vv, g, beta, kGdnScale, 64, work_, ssm_in,
+                                          ssm_out, o, s);
     }
 
     Tensor z      = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
@@ -922,10 +922,11 @@ void Qwen3_6_27B::prefill_impl(std::span<const int> ids, Tap& tap) {
     }
 
     // Turn-boundary GDN snapshot: when a boundary is requested, publish the running conv/SSM state
-    // into the dedicated last snapshot slot exactly at absolute position prefill_snapshot_boundary_.
-    // Chunks are capped so one ends precisely at the boundary, so slot 0 holds the state at that
-    // position when we copy it out; the next turn continues the recurrence from there for partial
-    // prefix reuse. The boundary must lie strictly inside (base, base+T].
+    // into the dedicated last snapshot slot exactly at absolute position
+    // prefill_snapshot_boundary_. Chunks are capped so one ends precisely at the boundary, so slot
+    // 0 holds the state at that position when we copy it out; the next turn continues the
+    // recurrence from there for partial prefix reuse. The boundary must lie strictly inside (base,
+    // base+T].
     const std::int64_t base64   = static_cast<std::int64_t>(base);
     const std::int64_t snap_abs = prefill_snapshot_boundary_;
     const bool has_snapshot =
@@ -936,8 +937,9 @@ void Qwen3_6_27B::prefill_impl(std::span<const int> ids, Tap& tap) {
     for (int t0 = 0; t0 < T;) {
         int len = std::min(chunk, T - t0);
         // Cap the chunk so it ends exactly at the snapshot boundary. Because a capped chunk is
-        // shorter than `chunk`, the loop must advance by the processed `len` (see the t0 += len at the
-        // end of the body), not by `chunk`, or it would skip [t0+len, t0+chunk) and drop the tail.
+        // shorter than `chunk`, the loop must advance by the processed `len` (see the t0 += len at
+        // the end of the body), not by `chunk`, or it would skip [t0+len, t0+chunk) and drop the
+        // tail.
         if (snap_rel > 0 && t0 < snap_rel && t0 + len > snap_rel) { len = snap_rel - t0; }
         const bool is_last = (t0 + len == T);
         work_.reset();
@@ -1042,13 +1044,15 @@ void Qwen3_6_27B::prefill_impl(std::span<const int> ids, Tap& tap) {
         kv_.pos = base + static_cast<std::uint32_t>(t0 + len);
 
         // Snapshot the running GDN state at the requested boundary into the dedicated slot. This
-        // chunk ended exactly at the boundary (see the len cap above), so slot 0 is the state there.
+        // chunk ended exactly at the boundary (see the len cap above), so slot 0 is the state
+        // there.
         if (snap_rel > 0 && t0 + len == snap_rel) { state_.copy_slot(0, boundary_slot, s); }
 
         t0 += len;
     }
 
-    // Consume the one-shot boundary request so a subsequent boundary-less prefill does not snapshot.
+    // Consume the one-shot boundary request so a subsequent boundary-less prefill does not
+    // snapshot.
     prefill_snapshot_boundary_ = -1;
 
     // Prefill wrote the running GDN state to slot 0; the first decode round must read slot 0.

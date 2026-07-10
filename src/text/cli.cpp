@@ -62,7 +62,7 @@ std::uint64_t parse_u64(const char* text, const char* label) {
 
 std::string usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
-           " <weights.qus> --tokenizer <dir> (--prompt <text>|--messages <messages.json>) "
+           " <weights.qus> (--prompt <text>|--messages <messages.json>) "
            "[--max-context N] [--prefill-chunk N] [--max-new N] [--device N] [--raw-output] "
            "[--kv-dtype bf16|int8] [--print-token-ids] [--no-cuda-graph] "
            "[--lm-head-draft] [--no-thinking] "
@@ -88,9 +88,7 @@ CliOptions parse_cli(int argc, char** argv) {
             if (++i >= argc) { throw std::invalid_argument(std::string(flag) + " needs a value"); }
             return argv[i];
         };
-        if (arg == "--tokenizer") {
-            options.tokenizer_path = require_value("--tokenizer");
-        } else if (arg == "--prompt") {
+        if (arg == "--prompt") {
             options.prompt = require_value("--prompt");
         } else if (arg == "--messages") {
             options.messages_path = require_value("--messages");
@@ -142,7 +140,6 @@ CliOptions parse_cli(int argc, char** argv) {
             throw std::invalid_argument("unknown argument: " + arg);
         }
     }
-    if (options.tokenizer_path.empty()) { throw std::invalid_argument("--tokenizer is required"); }
     const bool has_prompt   = !options.prompt.empty();
     const bool has_messages = !options.messages_path.empty();
     if (has_prompt == has_messages) {

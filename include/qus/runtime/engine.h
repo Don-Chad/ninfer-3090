@@ -55,7 +55,6 @@ struct EngineMtpStats {
 struct EngineOptions {
     int device                  = 0;
     std::uint32_t max_ctx       = 2048;
-    std::size_t weight_bytes    = 0;
     std::size_t cache_bytes     = 0;
     std::size_t work_bytes      = 0;
     std::uint32_t prefill_chunk = model::kDefaultPrefillChunk;
@@ -66,7 +65,7 @@ struct EngineOptions {
     std::vector<int> stop_token_ids;
     bool use_cuda_graph = true;
     // Two-mode draft toggle. When true, the MTP proposal sites use the embedded
-    // Q4 draft head (requires a v4 file with DRAFT_HEAD_PRESENT). When false, every
+    // Q4 draft head (requires the v4.1 LM_HEAD_DRAFT module). When false, every
     // site uses the full lm_head. Verify/prefill/k0 always use the full head, so
     // emitted tokens are identical in either mode; only decode speed differs.
     bool use_lm_head_draft = false;
@@ -77,6 +76,8 @@ public:
     explicit Engine(EngineOptions options = {});
 
     void load(const std::string& path);
+    Q5090TokenizerBundle take_tokenizer_bundle();
+    void set_stop_token_ids(std::vector<int> ids);
 
     // Install decode/prefill sampling. temperature <= 0 in `config` is exact
     // greedy argmax (the default when this is never called), so parity runs stay
@@ -115,6 +116,7 @@ public:
     }
 
     [[nodiscard]] EngineMemoryStats memory_stats() const noexcept;
+    [[nodiscard]] const Q5090LoadStats& q5090_load_stats() const;
     [[nodiscard]] EngineMtpStats mtp_stats() const;
 
     void reset_memory_peaks() noexcept;
@@ -124,7 +126,6 @@ public:
 
 private:
     [[nodiscard]] static Q5090Expectations expectations();
-    [[nodiscard]] static std::size_t default_weight_bytes(const std::string& path);
     [[nodiscard]] static std::size_t default_cache_bytes(std::uint32_t max_ctx);
 
     void require_loaded() const;
@@ -145,7 +146,6 @@ private:
 
     EngineOptions options_;
     std::optional<DeviceContext> ctx_;
-    std::optional<DeviceArena> weight_arena_;
     std::optional<DeviceArena> cache_arena_;
     std::optional<WorkspaceArena> work_;
     std::optional<WeightStore> weights_;

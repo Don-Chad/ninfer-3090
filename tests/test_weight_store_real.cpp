@@ -201,8 +201,7 @@ int expect_empty_array_field(const Json& object, const char* key, const char* me
 
 template <std::size_t N>
 int expect_uint_array_field(const Json& object, const char* key,
-                            const std::array<std::uint64_t, N>& expected,
-                            const char* message) {
+                            const std::array<std::uint64_t, N>& expected, const char* message) {
     const auto it = object.find(key);
     if (it == object.end() || !it->is_array() || it->size() != expected.size()) {
         return fail(message);
@@ -227,71 +226,77 @@ int expect_manifest_fields(const Json& manifest, std::uint64_t file_size) {
     if (!manifest.is_object()) { return fail("manifest root must be object"); }
 
     int failures = 0;
-    failures += expect_string_field(manifest, "format", "q5090_w4g64_mixed_v4",
+    failures += expect_string_field(manifest, "format", "q5090_w4g64_mixed_v4_1",
                                     "manifest format mismatch");
-    failures += expect_uint_field(manifest, "format_version", 4, "manifest format_version mismatch");
-    failures += expect_uint_field(manifest, "format_minor", 0, "manifest format_minor mismatch");
+    failures +=
+        expect_uint_field(manifest, "format_version", 4, "manifest format_version mismatch");
+    failures += expect_uint_field(manifest, "format_minor", 1, "manifest format_minor mismatch");
     failures += expect_string_field(manifest, "binary_spec", "docs/q5090_packed_file_format_v4.md",
                                     "manifest binary_spec mismatch");
-    failures += expect_string_field(manifest, "tensor_plan",
-                                    "docs/q5090_packed_file_format_v4.md",
+    failures += expect_string_field(manifest, "tensor_plan", "docs/q5090_packed_file_format_v4.md",
                                     "manifest tensor_plan mismatch");
-    failures += expect_string_field(manifest, "weights_file",
-                                    "qwen3_6_27b.q5090_w4g64_mixed_v4.qus",
-                                    "manifest weights_file mismatch");
-    failures += expect_uint_field(manifest, "file_bytes", file_size, "manifest file_bytes mismatch");
+    failures +=
+        expect_string_field(manifest, "weights_file", "qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus",
+                            "manifest weights_file mismatch");
+    failures +=
+        expect_uint_field(manifest, "file_bytes", file_size, "manifest file_bytes mismatch");
     failures += expect_bool_field(manifest, "calibrated", false, "manifest calibrated mismatch");
-    failures += expect_bool_field(manifest, "draft_head_present", true,
-                                  "manifest draft_head_present mismatch");
-    failures += expect_empty_array_field(manifest, "absent_modules", "manifest absent_modules mismatch");
+    failures += expect_bool_field(manifest, "lm_head_draft_present", true,
+                                  "manifest lm_head_draft_present mismatch");
+    failures +=
+        expect_empty_array_field(manifest, "absent_modules", "manifest absent_modules mismatch");
     failures += expect_string_array_field(
         manifest, "qtypes",
         std::array<const char*, 8>{"Q4G64_F16S", "Q5G64_F16S", "Q6G64_F16S", "W8G128_F16S",
-                                  "BF16_CTRL", "FP32_CTRL", "W8G32_F16S", "I32_CTRL"},
+                                   "BF16_CTRL", "FP32_CTRL", "W8G32_F16S", "I32_CTRL"},
         "manifest qtypes mismatch");
-    failures += expect_string_array_field(
-        manifest, "layouts", std::array<const char*, 2>{"ROW_SPLIT", "CONTIGUOUS"},
-        "manifest layouts mismatch");
-    failures += expect_string_array_field(
-        manifest, "code_planes", std::array<const char*, 3>{"nibble", "high", "scale"},
-        "manifest code_planes mismatch");
+    failures += expect_string_array_field(manifest, "layouts",
+                                          std::array<const char*, 2>{"ROW_SPLIT", "CONTIGUOUS"},
+                                          "manifest layouts mismatch");
+    failures += expect_string_array_field(manifest, "code_planes",
+                                          std::array<const char*, 3>{"nibble", "high", "scale"},
+                                          "manifest code_planes mismatch");
     failures += expect_string_array_field(
         manifest, "modules",
-        std::array<const char*, 3>{"TEXT_CORE", "MTP_DRAFT", "VISION_ENCODER"},
+        std::array<const char*, 4>{"TEXT_CORE", "LM_HEAD_DRAFT", "MTP_DRAFT", "VISION_ENCODER"},
         "manifest modules mismatch");
-    failures += expect_uint_field(manifest, "module_count", 3, "manifest module_count mismatch");
+    failures += expect_uint_field(manifest, "module_count", 4, "manifest module_count mismatch");
     failures += expect_uint_field(manifest, "tensor_count", 1166, "manifest tensor_count mismatch");
-    failures += expect_uint_field(manifest, "segment_count", 1314, "manifest segment_count mismatch");
+    failures +=
+        expect_uint_field(manifest, "segment_count", 1314, "manifest segment_count mismatch");
     failures += expect_uint_field(manifest, "fusion_group_count", 130,
                                   "manifest fusion_group_count mismatch");
 
-    const auto draft_it = manifest.find("draft_head");
+    const auto draft_it = manifest.find("lm_head_draft");
     if (draft_it == manifest.end() || !draft_it->is_object()) {
-        failures += fail("manifest draft_head mismatch");
+        failures += fail("manifest lm_head_draft mismatch");
     } else {
-        failures += expect_bool_field(*draft_it, "present", true, "manifest draft_head.present mismatch");
-        failures += expect_uint_field(*draft_it, "n", 131072, "manifest draft_head.n mismatch");
-        failures += expect_uint_field(*draft_it, "k", 5120, "manifest draft_head.k mismatch");
+        failures += expect_bool_field(*draft_it, "present", true,
+                                      "manifest lm_head_draft.present mismatch");
+        failures += expect_uint_field(*draft_it, "n", 131072, "manifest lm_head_draft.n mismatch");
+        failures += expect_uint_field(*draft_it, "k", 5120, "manifest lm_head_draft.k mismatch");
         failures += expect_string_field(*draft_it, "weights_qtype", "Q4G64_F16S",
-                                        "manifest draft_head.weights_qtype mismatch");
+                                        "manifest lm_head_draft.weights_qtype mismatch");
         failures += expect_string_field(*draft_it, "idmap_qtype", "I32_CTRL",
-                                        "manifest draft_head.idmap_qtype mismatch");
+                                        "manifest lm_head_draft.idmap_qtype mismatch");
         failures += expect_uint_field(*draft_it, "idmap_payload_bytes", 131072ULL * 4ULL,
-                                      "manifest draft_head.idmap_payload_bytes mismatch");
+                                      "manifest lm_head_draft.idmap_payload_bytes mismatch");
     }
 
     const auto alignment_it = manifest.find("alignment");
     if (alignment_it == manifest.end() || !alignment_it->is_object()) {
         failures += fail("manifest alignment mismatch");
     } else {
-        failures += expect_uint_field(*alignment_it, "header", 4096,
-                                      "manifest alignment.header mismatch");
+        failures +=
+            expect_uint_field(*alignment_it, "header", 4096, "manifest alignment.header mismatch");
+        failures += expect_uint_field(*alignment_it, "tokenizer", 64,
+                                      "manifest alignment.tokenizer mismatch");
         failures += expect_uint_field(*alignment_it, "payload", 4096,
                                       "manifest alignment.payload mismatch");
-        failures += expect_uint_field(*alignment_it, "block", 256,
-                                      "manifest alignment.block mismatch");
-        failures += expect_uint_field(*alignment_it, "k_pad", 128,
-                                      "manifest alignment.k_pad mismatch");
+        failures +=
+            expect_uint_field(*alignment_it, "block", 256, "manifest alignment.block mismatch");
+        failures +=
+            expect_uint_field(*alignment_it, "k_pad", 128, "manifest alignment.k_pad mismatch");
         failures += expect_uint_array_field(*alignment_it, "group_sizes",
                                             std::array<std::uint64_t, 3>{32, 64, 128},
                                             "manifest alignment.group_sizes mismatch");
@@ -302,35 +307,45 @@ int expect_manifest_fields(const Json& manifest, std::uint64_t file_size) {
 int expect_inventory(const qus::ParsedQ5090File& parsed, std::uint64_t file_size) {
     int failures = 0;
     failures += parsed.header.tensor_count == 1166 ? 0 : fail("real tensor_count mismatch");
-    failures += parsed.header.module_count == 3 ? 0 : fail("real module_count mismatch");
+    failures += parsed.header.module_count == 4 ? 0 : fail("real module_count mismatch");
+    failures += parsed.header.format_minor == 1 ? 0 : fail("real format_minor mismatch");
+    failures += parsed.tokenizer_records.size() == 3 ? 0 : fail("real tokenizer count mismatch");
     failures += parsed.header.segment_count == 1314 ? 0 : fail("real segment_count mismatch");
     failures += parsed.header.fusion_group_count == 130 ? 0 : fail("real fusion count mismatch");
     failures += parsed.tensors.size() == 1166 ? 0 : fail("real parsed tensor size mismatch");
     failures += parsed.segments.size() == 1314 ? 0 : fail("real parsed segment size mismatch");
     failures += parsed.fusion_groups.size() == 130 ? 0 : fail("real parsed fusion size mismatch");
-    failures += parsed.modules.size() == 3 ? 0 : fail("real parsed module size mismatch");
+    failures += parsed.modules.size() == 4 ? 0 : fail("real parsed module size mismatch");
     failures += parsed.header.payload_offset + parsed.header.payload_bytes == file_size
                     ? 0
                     : fail("real file size mismatch");
     failures += parsed.modules[0].module_kind == qus::ModuleKind::TextCore
                     ? 0
                     : fail("real TEXT module mismatch");
-    failures += parsed.modules[0].tensor_index_count == 821 ? 0 : fail("real TEXT count mismatch");
+    failures += parsed.modules[0].tensor_index_count == 819 ? 0 : fail("real TEXT count mismatch");
     failures +=
-        parsed.modules[0].payload_bytes == 16735369216ULL ? 0 : fail("real TEXT payload mismatch");
-    failures += parsed.modules[1].module_kind == qus::ModuleKind::MtpDraft
+        parsed.modules[0].payload_bytes == 16378329088ULL ? 0 : fail("real TEXT payload mismatch");
+    failures += parsed.modules[1].module_kind == qus::ModuleKind::LmHeadDraft
+                    ? 0
+                    : fail("real LM_HEAD_DRAFT module mismatch");
+    failures +=
+        parsed.modules[1].tensor_index_count == 2 ? 0 : fail("real LM_HEAD_DRAFT count mismatch");
+    failures += parsed.modules[1].payload_bytes == 357040128ULL
+                    ? 0
+                    : fail("real LM_HEAD_DRAFT payload mismatch");
+    failures += parsed.modules[2].module_kind == qus::ModuleKind::MtpDraft
                     ? 0
                     : fail("real MTP module mismatch");
-    failures += parsed.modules[1].tensor_index_count == 12 ? 0 : fail("real MTP count mismatch");
+    failures += parsed.modules[2].tensor_index_count == 12 ? 0 : fail("real MTP count mismatch");
     failures +=
-        parsed.modules[1].payload_bytes == 451267584ULL ? 0 : fail("real MTP payload mismatch");
-    failures += parsed.modules[2].module_kind == qus::ModuleKind::VisionEncoder
+        parsed.modules[2].payload_bytes == 451267584ULL ? 0 : fail("real MTP payload mismatch");
+    failures += parsed.modules[3].module_kind == qus::ModuleKind::VisionEncoder
                     ? 0
                     : fail("real VISION module mismatch");
     failures +=
-        parsed.modules[2].tensor_index_count == 333 ? 0 : fail("real VISION count mismatch");
+        parsed.modules[3].tensor_index_count == 333 ? 0 : fail("real VISION count mismatch");
     failures +=
-        parsed.modules[2].payload_bytes == 293396992ULL ? 0 : fail("real VISION payload mismatch");
+        parsed.modules[3].payload_bytes == 293396992ULL ? 0 : fail("real VISION payload mismatch");
     return failures;
 }
 
@@ -351,14 +366,12 @@ bool enough_free_memory(std::uint64_t bytes) {
 }
 
 int expect_fused_weight(const qus::WeightStore& store, std::uint16_t group_id,
-                        std::uint16_t fusion_index, std::uint32_t source_layer,
-                        qus::QType qtype, std::int32_t n, qus::SourceKind first_segment,
-                        const char* label) {
+                        std::uint16_t fusion_index, std::uint32_t source_layer, qus::QType qtype,
+                        std::int32_t n, qus::SourceKind first_segment, const char* label) {
     const qus::Weight* fused =
         store.qfused(qus::ModuleKind::TextCore, group_id, fusion_index, source_layer);
-    const qus::Weight* first = store.qweight(qus::ModuleKind::TextCore,
-                                             static_cast<std::uint32_t>(first_segment),
-                                             source_layer);
+    const qus::Weight* first = store.qweight(
+        qus::ModuleKind::TextCore, static_cast<std::uint32_t>(first_segment), source_layer);
     int failures = 0;
     failures += fused != nullptr ? 0 : fail(std::string(label) + " fused missing");
     failures += first != nullptr ? 0 : fail(std::string(label) + " first segment missing");
@@ -386,9 +399,8 @@ int expect_fused_weight(const qus::WeightStore& store, std::uint16_t group_id,
                         ? 0
                         : fail(std::string(label) + " qhigh first-segment mismatch");
         failures += fused->qhigh != nullptr ? 0 : fail(std::string(label) + " qhigh null");
-        failures += fused->high_plane_bytes > 0
-                        ? 0
-                        : fail(std::string(label) + " high_plane_bytes zero");
+        failures +=
+            fused->high_plane_bytes > 0 ? 0 : fail(std::string(label) + " high_plane_bytes zero");
     } else {
         failures += fused->qhigh == nullptr ? 0 : fail(std::string(label) + " qhigh non-null");
         failures += fused->high_plane_bytes == 0
@@ -400,14 +412,14 @@ int expect_fused_weight(const qus::WeightStore& store, std::uint16_t group_id,
 
 int expect_real_fused_contract(const qus::WeightStore& store) {
     int failures = 0;
-    failures += expect_fused_weight(store, /*MLP_GATEUP*/ 3, 0, 0, qus::QType::Q4G64_F16S,
-                                    34816, qus::SourceKind::MlpGate, "mlp.gate_up");
-    failures += expect_fused_weight(store, /*ATTN_IN*/ 1, 0, 3, qus::QType::Q4G64_F16S,
-                                    7168, qus::SourceKind::AttnQ, "attn.qkv.q4");
-    failures += expect_fused_weight(store, /*ATTN_IN*/ 1, 1, 3, qus::QType::Q5G64_F16S,
-                                    7168, qus::SourceKind::AttnGate, "attn.gatev.q5");
-    failures += expect_fused_weight(store, /*GDN_IN*/ 2, 0, 0, qus::QType::Q4G64_F16S,
-                                    4096, qus::SourceKind::GdnInProjQ, "gdn.in_qk.q4");
+    failures += expect_fused_weight(store, /*MLP_GATEUP*/ 3, 0, 0, qus::QType::Q4G64_F16S, 34816,
+                                    qus::SourceKind::MlpGate, "mlp.gate_up");
+    failures += expect_fused_weight(store, /*ATTN_IN*/ 1, 0, 3, qus::QType::Q4G64_F16S, 7168,
+                                    qus::SourceKind::AttnQ, "attn.qkv.q4");
+    failures += expect_fused_weight(store, /*ATTN_IN*/ 1, 1, 3, qus::QType::Q5G64_F16S, 7168,
+                                    qus::SourceKind::AttnGate, "attn.gatev.q5");
+    failures += expect_fused_weight(store, /*GDN_IN*/ 2, 0, 0, qus::QType::Q4G64_F16S, 4096,
+                                    qus::SourceKind::GdnInProjQ, "gdn.in_qk.q4");
     failures += store.qfused(qus::ModuleKind::TextCore, 0, 0, 3) == nullptr
                     ? 0
                     : fail("standalone o_proj should not have fused record");
@@ -419,12 +431,13 @@ int expect_real_fused_contract(const qus::WeightStore& store) {
 
 int expect_real_draft_head(const qus::WeightStore& store) {
     int failures = 0;
-    const qus::Weight* draft = store.qweight(
-        qus::ModuleKind::TextCore, static_cast<std::uint32_t>(qus::SourceKind::LmHeadDraft),
-        qus::kQ5090NoLayer);
+    const qus::Weight* draft =
+        store.qweight(qus::ModuleKind::LmHeadDraft,
+                      static_cast<std::uint32_t>(qus::SourceKind::LmHeadDraft), qus::kQ5090NoLayer);
     failures += draft != nullptr ? 0 : fail("real draft head weight missing");
     if (draft != nullptr) {
-        failures += draft->qtype == qus::QType::Q4G64_F16S ? 0 : fail("real draft head qtype mismatch");
+        failures +=
+            draft->qtype == qus::QType::Q4G64_F16S ? 0 : fail("real draft head qtype mismatch");
         failures += draft->layout == qus::QuantLayout::RowSplit
                         ? 0
                         : fail("real draft head layout mismatch");
@@ -434,11 +447,12 @@ int expect_real_draft_head(const qus::WeightStore& store) {
         failures += draft->high_plane_bytes == 0 ? 0 : fail("real draft head high plane nonzero");
     }
     const qus::Tensor* idmap = store.tensor(
-        qus::ModuleKind::TextCore, static_cast<std::uint32_t>(qus::SourceKind::LmHeadDraftIdmap),
+        qus::ModuleKind::LmHeadDraft, static_cast<std::uint32_t>(qus::SourceKind::LmHeadDraftIdmap),
         qus::kQ5090NoLayer);
     failures += idmap != nullptr ? 0 : fail("real draft head idmap missing");
     if (idmap != nullptr) {
-        failures += idmap->dtype == qus::DType::I32 ? 0 : fail("real draft head idmap dtype mismatch");
+        failures +=
+            idmap->dtype == qus::DType::I32 ? 0 : fail("real draft head idmap dtype mismatch");
         failures += idmap->ne[0] == 131072 ? 0 : fail("real draft head idmap length mismatch");
     }
     return failures;
@@ -448,11 +462,10 @@ int run_default_load(const std::filesystem::path& file_path, std::uint64_t text_
                      qus::Q5090Progress* progress) {
     if (!enough_free_memory(text_payload_bytes + kGiB)) { return 0; }
     qus::DeviceContext ctx(0);
-    qus::DeviceArena arena(static_cast<std::size_t>(text_payload_bytes + kGiB));
     qus::WeightStore store(expectations());
     qus::LoadOptions options;
     options.progress = progress;
-    store.load(file_path.c_str(), arena, ctx, options);
+    store.load(file_path.c_str(), ctx, options);
     int failures = 0;
     failures += store.module_loaded(qus::ModuleKind::TextCore) ? 0 : fail("real TEXT not loaded");
     failures +=
@@ -463,7 +476,52 @@ int run_default_load(const std::filesystem::path& file_path, std::uint64_t text_
     failures += store.tensor_count() == 1166 ? 0 : fail("real store tensor_count mismatch");
     failures +=
         store.loaded_payload_bytes() == text_payload_bytes ? 0 : fail("real loaded bytes mismatch");
+    const qus::DeviceArena* text_arena = store.module_arena(qus::ModuleKind::TextCore);
+    failures += text_arena != nullptr && text_arena->capacity() == text_payload_bytes &&
+                        text_arena->used() == text_payload_bytes
+                    ? 0
+                    : fail("real TEXT exact arena mismatch");
+    failures += store.module_arena(qus::ModuleKind::MtpDraft) == nullptr &&
+                        store.module_arena(qus::ModuleKind::LmHeadDraft) == nullptr &&
+                        store.module_arena(qus::ModuleKind::VisionEncoder) == nullptr
+                    ? 0
+                    : fail("real default load allocated an unselected module arena");
+    const qus::Q5090LoadStats& load_stats = store.load_stats();
+    failures += load_stats.h2d_bytes == text_payload_bytes
+                    ? 0
+                    : fail("real default H2D byte count mismatch");
+    failures += load_stats.total_file_read_bytes < std::filesystem::file_size(file_path)
+                    ? 0
+                    : fail("real default load read the full artifact");
+    failures += load_stats.pinned_slot_count == 2 &&
+                        load_stats.host_peak_staging_bytes <= 128ULL * 1024ULL * 1024ULL
+                    ? 0
+                    : fail("real default pinned staging stats mismatch");
     failures += expect_real_fused_contract(store);
+    failures += store.qweight(qus::ModuleKind::LmHeadDraft,
+                              static_cast<std::uint32_t>(qus::SourceKind::LmHeadDraft),
+                              qus::kQ5090NoLayer) == nullptr
+                    ? 0
+                    : fail("real LM_HEAD_DRAFT loaded by default");
+    return failures;
+}
+
+int run_draft_load(const std::filesystem::path& file_path, std::uint64_t text_payload_bytes,
+                   std::uint64_t draft_payload_bytes, qus::Q5090Progress* progress) {
+    if (!enough_free_memory(text_payload_bytes + draft_payload_bytes + kGiB)) { return 0; }
+    qus::DeviceContext ctx(0);
+    qus::LoadOptions options;
+    options.load_lm_head_draft = true;
+    options.progress           = progress;
+    qus::WeightStore store(expectations());
+    store.load(file_path.c_str(), ctx, options);
+    int failures = 0;
+    failures += store.module_loaded(qus::ModuleKind::LmHeadDraft)
+                    ? 0
+                    : fail("real LM_HEAD_DRAFT not loaded");
+    failures += store.loaded_payload_bytes() == text_payload_bytes + draft_payload_bytes
+                    ? 0
+                    : fail("real LM_HEAD_DRAFT loaded bytes mismatch");
     failures += expect_real_draft_head(store);
     return failures;
 }
@@ -473,12 +531,11 @@ int run_mtp_load(const std::filesystem::path& file_path, std::uint64_t text_payl
     const std::uint64_t needed = text_payload_bytes + mtp_payload_bytes + kGiB;
     if (!enough_free_memory(needed)) { return 0; }
     qus::DeviceContext ctx(0);
-    qus::DeviceArena arena(static_cast<std::size_t>(needed));
     qus::LoadOptions options;
     options.load_mtp = true;
     options.progress = progress;
     qus::WeightStore store(expectations());
-    store.load(file_path.c_str(), arena, ctx, options);
+    store.load(file_path.c_str(), ctx, options);
     store.require_mtp_module_expectations();
     int failures = 0;
     failures +=
@@ -493,20 +550,44 @@ int run_mtp_load(const std::filesystem::path& file_path, std::uint64_t text_payl
     return failures;
 }
 
+int run_vision_load(const std::filesystem::path& file_path, std::uint64_t text_payload_bytes,
+                    std::uint64_t vision_payload_bytes, qus::Q5090Progress* progress) {
+    if (!enough_free_memory(text_payload_bytes + vision_payload_bytes + kGiB)) { return 0; }
+    qus::DeviceContext ctx(0);
+    qus::LoadOptions options;
+    options.load_vision = true;
+    options.progress    = progress;
+    qus::WeightStore store(expectations());
+    store.load(file_path.c_str(), ctx, options);
+    int failures = 0;
+    failures +=
+        store.module_loaded(qus::ModuleKind::VisionEncoder) ? 0 : fail("real VISION not loaded");
+    failures += store.module_arena(qus::ModuleKind::VisionEncoder) != nullptr
+                    ? 0
+                    : fail("real VISION arena missing");
+    failures += store.module_arena(qus::ModuleKind::MtpDraft) == nullptr &&
+                        store.module_arena(qus::ModuleKind::LmHeadDraft) == nullptr
+                    ? 0
+                    : fail("real VISION load allocated unselected optional arenas");
+    failures += store.loaded_payload_bytes() == text_payload_bytes + vision_payload_bytes
+                    ? 0
+                    : fail("real VISION loaded bytes mismatch");
+    return failures;
+}
+
 } // namespace
 
 int main() {
     const std::filesystem::path root(QUS_SOURCE_DIR);
-    const std::filesystem::path file_path =
-        root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4.qus";
+    const std::filesystem::path file_path = root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus";
     const std::filesystem::path manifest_path =
-        root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4.qus.manifest.json";
+        root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus.manifest.json";
     if (!std::filesystem::exists(file_path) || !std::filesystem::exists(manifest_path)) {
         std::cout << "SKIP: real q5090 file or manifest not present\n";
         return 0;
     }
 
-    int failures = 0;
+    int failures                           = 0;
     const std::uint64_t manifest_file_size = std::filesystem::file_size(file_path);
     failures += expect_manifest_fields(read_manifest_json(manifest_path), manifest_file_size);
 
@@ -520,8 +601,10 @@ int main() {
     const std::uint64_t file_size     = bytes.size();
     const qus::ParsedQ5090File parsed = qus::parse_q5090_file(bytes, expectations(), &progress);
     failures += expect_inventory(parsed, file_size);
-    const std::uint64_t text_payload_bytes = parsed.modules[0].payload_bytes;
-    const std::uint64_t mtp_payload_bytes  = parsed.modules[1].payload_bytes;
+    const std::uint64_t text_payload_bytes   = parsed.modules[0].payload_bytes;
+    const std::uint64_t draft_payload_bytes  = parsed.modules[1].payload_bytes;
+    const std::uint64_t mtp_payload_bytes    = parsed.modules[2].payload_bytes;
+    const std::uint64_t vision_payload_bytes = parsed.modules[3].payload_bytes;
     bytes.clear();
     bytes.shrink_to_fit();
 
@@ -538,6 +621,10 @@ int main() {
 
     failures += run_default_load(file_path, text_payload_bytes, &progress);
     cudaDeviceSynchronize();
+    failures += run_draft_load(file_path, text_payload_bytes, draft_payload_bytes, &progress);
+    cudaDeviceSynchronize();
     failures += run_mtp_load(file_path, text_payload_bytes, mtp_payload_bytes, &progress);
+    cudaDeviceSynchronize();
+    failures += run_vision_load(file_path, text_payload_bytes, vision_payload_bytes, &progress);
     return failures == 0 ? 0 : fail("real q5090 weight store test failed");
 }

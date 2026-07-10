@@ -25,7 +25,6 @@ bool cuda_unavailable(cudaError_t err) {
     return err == cudaErrorNoDevice || err == cudaErrorInsufficientDriver;
 }
 
-constexpr std::size_t kFixtureArenaBytes = 1ULL * 1024ULL * 1024ULL;
 constexpr std::uint64_t kSegmentRecordSize = 32;
 
 int fail(std::string_view message) {
@@ -149,15 +148,14 @@ std::uint64_t high_bytes_per_group(qus::QType qtype) {
 int expect_plane_offsets(const qus::Weight& weight, const qus::ParsedQ5090Tensor& tensor,
                          const qus::ParsedQ5090Segment& segment, std::string_view label) {
     if (weight.payload == nullptr) { return fail(std::string(label) + " payload null"); }
-    const std::uint64_t groups = tensor.padded_shape[1] / tensor.group_size;
+    const std::uint64_t groups     = tensor.padded_shape[1] / tensor.group_size;
     const std::uint64_t nibble_row = groups * nibble_bytes_per_group(tensor.qtype);
-    const std::uint64_t high_row = groups * high_bytes_per_group(tensor.qtype);
-    const std::uint64_t scale_row = groups * 2ULL;
-    const std::uint64_t high_rel = align_up_u64(tensor.nibble_plane_bytes, 256);
-    const std::uint64_t scale_rel =
-        high_rel + align_up_u64(tensor.high_plane_bytes, 256);
-    const auto* base = static_cast<const std::byte*>(weight.payload);
-    int failures = 0;
+    const std::uint64_t high_row   = groups * high_bytes_per_group(tensor.qtype);
+    const std::uint64_t scale_row  = groups * 2ULL;
+    const std::uint64_t high_rel   = align_up_u64(tensor.nibble_plane_bytes, 256);
+    const std::uint64_t scale_rel  = high_rel + align_up_u64(tensor.high_plane_bytes, 256);
+    const auto* base               = static_cast<const std::byte*>(weight.payload);
+    int failures                   = 0;
     failures += weight.high_plane_bytes == tensor.high_plane_bytes
                     ? 0
                     : fail(std::string(label) + " high_plane_bytes mismatch");
@@ -209,10 +207,11 @@ std::uint32_t segment_row_sum(const qus::ParsedQ5090File& parsed,
     return rows;
 }
 
-int expect_counts(const qus::WeightStore& store, std::uint64_t loaded_bytes) {
+int expect_counts(const qus::WeightStore& store, std::size_t quant_count,
+                  std::uint64_t loaded_bytes) {
     int failures = 0;
     failures += store.tensor_count() == 20 ? 0 : fail("tensor_count mismatch");
-    failures += store.quant_count() == 15 ? 0 : fail("quant_count mismatch");
+    failures += store.quant_count() == quant_count ? 0 : fail("quant_count mismatch");
     failures +=
         store.module_tensor_count(qus::ModuleKind::TextCore) == 6 ? 0 : fail("TEXT count mismatch");
     failures +=
@@ -228,13 +227,13 @@ int expect_counts(const qus::WeightStore& store, std::uint64_t loaded_bytes) {
 int expect_default_text_load(const qus::WeightStore& store, const qus::ParsedQ5090File& parsed,
                              const std::vector<std::byte>& file) {
     int failures = 0;
-    failures += expect_counts(store, parsed.modules[0].payload_bytes);
+    failures += expect_counts(store, 5, parsed.modules[0].payload_bytes);
     failures += store.module_loaded(qus::ModuleKind::TextCore) ? 0 : fail("TEXT not loaded");
     failures += !store.module_loaded(qus::ModuleKind::MtpDraft) ? 0 : fail("MTP loaded by default");
     failures +=
         !store.module_loaded(qus::ModuleKind::VisionEncoder) ? 0 : fail("VISION loaded by default");
 
-    const auto& text_q = find_tensor(parsed, "layers.0.mlp.down_proj.weight");
+    const auto& text_q             = find_tensor(parsed, "layers.0.mlp.down_proj.weight");
     const qus::Weight* text_weight = store.qweight("layers.0.mlp.down_proj.weight");
     failures += text_weight != nullptr ? 0 : fail("missing text quant weight");
     if (text_weight != nullptr) {
@@ -242,12 +241,13 @@ int expect_default_text_load(const qus::WeightStore& store, const qus::ParsedQ50
         failures += text_weight->payload_bytes == text_q.payload_bytes
                         ? 0
                         : fail("text payload bytes mismatch");
-        failures += text_weight->layout == qus::QuantLayout::RowSplit ? 0 : fail("text layout mismatch");
+        failures +=
+            text_weight->layout == qus::QuantLayout::RowSplit ? 0 : fail("text layout mismatch");
         failures += text_weight->qhigh != nullptr ? 0 : fail("text qhigh null");
         failures += text_weight->scales != nullptr ? 0 : fail("text scales null");
-        failures += expect_plane_offsets(
-            *text_weight, text_q, find_segment(parsed, "layers.0.mlp.down_proj.weight"),
-            "text qweight");
+        failures += expect_plane_offsets(*text_weight, text_q,
+                                         find_segment(parsed, "layers.0.mlp.down_proj.weight"),
+                                         "text qweight");
         failures +=
             expect_device_bytes(text_weight->payload, payload_bytes(file, text_q), "text qweight");
     }
@@ -260,20 +260,20 @@ int expect_default_text_load(const qus::WeightStore& store, const qus::ParsedQ50
         failures += gate->n == 5 && gate->k == 7 ? 0 : fail("gate segment shape mismatch");
         failures += up->n == 4 && up->k == 7 ? 0 : fail("up segment shape mismatch");
         failures += gate->payload == up->payload ? 0 : fail("fused segments should share payload");
-        failures += gate->qdata != nullptr && gate->scales != nullptr ? 0 : fail("gate planes null");
+        failures +=
+            gate->qdata != nullptr && gate->scales != nullptr ? 0 : fail("gate planes null");
         failures += up->qdata != nullptr && up->scales != nullptr ? 0 : fail("up planes null");
         failures += gate->qhigh == nullptr ? 0 : fail("gate qhigh should be null");
         failures += up->qhigh == nullptr ? 0 : fail("up qhigh should be null");
-        failures += expect_plane_offsets(
-            *gate, find_tensor(parsed, "layers.0.mlp.gateup"),
-            find_segment(parsed, "layers.0.mlp.gate_proj.weight"), "gate segment");
-        failures += expect_plane_offsets(
-            *up, find_tensor(parsed, "layers.0.mlp.gateup"),
-            find_segment(parsed, "layers.0.mlp.up_proj.weight"), "up segment");
+        failures += expect_plane_offsets(*gate, find_tensor(parsed, "layers.0.mlp.gateup"),
+                                         find_segment(parsed, "layers.0.mlp.gate_proj.weight"),
+                                         "gate segment");
+        failures +=
+            expect_plane_offsets(*up, find_tensor(parsed, "layers.0.mlp.gateup"),
+                                 find_segment(parsed, "layers.0.mlp.up_proj.weight"), "up segment");
     }
     const auto& gateup_tensor = find_tensor(parsed, "layers.0.mlp.gateup");
-    const qus::Weight* gateup =
-        store.qfused(qus::ModuleKind::TextCore, /*MLP_GATEUP*/ 3, 0, 0);
+    const qus::Weight* gateup = store.qfused(qus::ModuleKind::TextCore, /*MLP_GATEUP*/ 3, 0, 0);
     failures += gateup != nullptr ? 0 : fail("missing fused gate/up block");
     if (gateup != nullptr && gate != nullptr) {
         failures += gateup->n == static_cast<std::int32_t>(segment_row_sum(parsed, gateup_tensor))
@@ -284,14 +284,13 @@ int expect_default_text_load(const qus::WeightStore& store, const qus::ParsedQ50
         failures += gateup->source_kind == static_cast<std::uint32_t>(qus::SourceKind::Other)
                         ? 0
                         : fail("fused gate/up source_kind");
-        failures += gateup->qdata == gate->qdata ? 0 : fail("fused gate/up qdata should start at gate");
-        failures += gateup->scales == gate->scales
-                        ? 0
-                        : fail("fused gate/up scales should start at gate");
+        failures +=
+            gateup->qdata == gate->qdata ? 0 : fail("fused gate/up qdata should start at gate");
+        failures +=
+            gateup->scales == gate->scales ? 0 : fail("fused gate/up scales should start at gate");
     }
 
-    const auto& text_tensor_meta =
-        find_tensor(parsed, "layers.0.input_layernorm.weight");
+    const auto& text_tensor_meta   = find_tensor(parsed, "layers.0.input_layernorm.weight");
     const qus::Tensor* text_tensor = store.tensor("layers.0.input_layernorm.weight");
     failures += text_tensor != nullptr ? 0 : fail("missing text tensor");
     if (text_tensor != nullptr) {
@@ -304,19 +303,12 @@ int expect_default_text_load(const qus::WeightStore& store, const qus::ParsedQ50
         qus::ModuleKind::TextCore, static_cast<std::uint32_t>(qus::SourceKind::MlpDown), 0);
     failures += by_source == text_weight ? 0 : fail("source lookup mismatch");
 
-    const qus::Weight* mtp = store.qweight("mtp.fc.weight");
-    failures += mtp != nullptr ? 0 : fail("missing MTP metadata");
-    if (mtp != nullptr) {
-        failures += mtp->payload == nullptr ? 0 : fail("MTP payload loaded by default");
-        failures += mtp->qtype == qus::QType::W8G32_F16S ? 0 : fail("MTP qtype mismatch");
-        failures += mtp->group_size == 32 ? 0 : fail("MTP group_size mismatch");
-        failures += mtp->high_plane_bytes == 0 ? 0 : fail("MTP high plane mismatch");
-    }
-    const qus::Weight* vision = store.qweight("model.visual.patch_embed.proj.weight");
-    failures += vision != nullptr ? 0 : fail("missing VISION metadata");
-    if (vision != nullptr) {
-        failures += vision->payload == nullptr ? 0 : fail("VISION payload loaded by default");
-    }
+    failures += store.qweight("mtp.fc.weight") == nullptr
+                    ? 0
+                    : fail("unselected MTP descriptor was published");
+    failures += store.qweight("model.visual.patch_embed.proj.weight") == nullptr
+                    ? 0
+                    : fail("unselected VISION descriptor was published");
     return failures;
 }
 
@@ -325,10 +317,10 @@ int expect_module_payload(const qus::WeightStore& store, const qus::ParsedQ5090F
                           bool should_be_loaded) {
     const qus::ParsedQ5090Tensor& meta = find_tensor(parsed, name);
     const qus::Weight* weight          = store.qweight(name);
-    if (weight == nullptr) { return fail("missing quant weight metadata"); }
     if (!should_be_loaded) {
-        return weight->payload == nullptr ? 0 : fail("unexpected loaded payload");
+        return weight == nullptr ? 0 : fail("unselected quant descriptor was published");
     }
+    if (weight == nullptr) { return fail("missing loaded quant weight"); }
     int failures = 0;
     failures += weight->payload != nullptr ? 0 : fail("expected loaded payload");
     failures +=
@@ -339,15 +331,13 @@ int expect_module_payload(const qus::WeightStore& store, const qus::ParsedQ5090F
     return failures;
 }
 
-int expect_mtp_expectations_reject_swapped_attn_segments(
-    const std::vector<std::byte>& valid, const qus::ParsedQ5090File& parsed,
-    qus::DeviceContext& ctx) {
-    std::vector<std::byte> bad = valid;
+int expect_mtp_expectations_reject_swapped_attn_segments(const std::vector<std::byte>& valid,
+                                                         const qus::ParsedQ5090File& parsed,
+                                                         qus::DeviceContext& ctx) {
+    std::vector<std::byte> bad         = valid;
     const std::uint64_t segment_offset = read_u64(bad, 200);
-    const std::size_t k_index =
-        find_segment_index(parsed, "mtp.layers.0.self_attn.k_proj.weight");
-    const std::size_t gate_index =
-        find_segment_index(parsed, "mtp.layers.0.self_attn.q_proj.gate");
+    const std::size_t k_index = find_segment_index(parsed, "mtp.layers.0.self_attn.k_proj.weight");
+    const std::size_t gate_index = find_segment_index(parsed, "mtp.layers.0.self_attn.q_proj.gate");
     write_u32(bad, segment_offset + k_index * kSegmentRecordSize,
               static_cast<std::uint32_t>(qus::SourceKind::AttnGate));
     write_u32(bad, segment_offset + gate_index * kSegmentRecordSize,
@@ -359,29 +349,19 @@ int expect_mtp_expectations_reject_swapped_attn_segments(
 
     qus::LoadOptions options;
     options.load_mtp = true;
-    qus::DeviceArena arena(kFixtureArenaBytes);
     qus::WeightStore store(expectations());
-    store.load(path.c_str(), arena, ctx, options);
+    store.load(path.c_str(), ctx, options);
     try {
         store.require_mtp_module_expectations();
-    } catch (const std::runtime_error&) {
-        return 0;
-    }
+    } catch (const std::runtime_error&) { return 0; }
     return fail("swapped MTP attn segment source kinds were accepted");
 }
 
 template <typename Exception, typename Fn>
-int expect_throws_without_arena_growth(qus::DeviceArena& arena, Fn&& fn, std::string_view label) {
-    const std::size_t before_used = arena.used();
-    const std::size_t before_peak = arena.peak_used();
+int expect_throws(Fn&& fn, std::string_view label) {
     try {
         fn();
-    } catch (const Exception&) {
-        int failures = 0;
-        failures += arena.used() == before_used ? 0 : fail("arena used grew after failed load");
-        failures += arena.peak_used() == before_peak ? 0 : fail("arena peak grew after failed load");
-        return failures;
-    }
+    } catch (const Exception&) { return 0; }
     std::cerr << label << " did not throw\n";
     return 1;
 }
@@ -410,20 +390,23 @@ int main() {
     const qus::ParsedQ5090File parsed        = qus::parse_q5090_file(file, expectations());
     qus::DeviceContext ctx(0);
 
-    qus::DeviceArena default_arena(kFixtureArenaBytes);
     qus::WeightStore default_store(expectations());
-    default_store.load(fixture_path.c_str(), default_arena, ctx);
+    default_store.load(fixture_path.c_str(), ctx);
     failures += expect_default_text_load(default_store, parsed, file);
-    failures += default_arena.used() >= default_store.loaded_payload_bytes()
+    const qus::DeviceArena* default_arena = default_store.module_arena(qus::ModuleKind::TextCore);
+    failures += default_arena != nullptr ? 0 : fail("default TEXT arena missing");
+    failures +=
+        default_arena != nullptr && default_arena->used() == default_store.loaded_payload_bytes()
+            ? 0
+            : fail("default arena exact used bytes mismatch");
+    failures += default_arena != nullptr &&
+                        default_arena->capacity() == default_store.loaded_payload_bytes()
                     ? 0
-                    : fail("default arena used is smaller than loaded payload bytes");
-    failures += default_arena.peak_used() >= default_arena.used()
+                    : fail("default arena exact capacity mismatch");
+    failures += default_store.load_stats().total_file_read_bytes ==
+                        default_store.load_plan().file_read_bytes
                     ? 0
-                    : fail("default arena peak is smaller than used");
-    default_arena.reset_peak();
-    failures += default_arena.peak_used() == default_arena.used()
-                    ? 0
-                    : fail("default arena reset_peak did not reset to current used");
+                    : fail("default planned/actual file read bytes mismatch");
     default_store.clear();
     failures += default_store.tensor_count() == 0 ? 0 : fail("clear tensor_count mismatch");
     failures += default_store.quant_count() == 0 ? 0 : fail("clear quant_count mismatch");
@@ -437,9 +420,8 @@ int main() {
 
     qus::LoadOptions mtp_options;
     mtp_options.load_mtp = true;
-    qus::DeviceArena mtp_arena(kFixtureArenaBytes);
     qus::WeightStore mtp_store(expectations());
-    mtp_store.load(fixture_path.c_str(), mtp_arena, ctx, mtp_options);
+    mtp_store.load(fixture_path.c_str(), ctx, mtp_options);
     mtp_store.require_mtp_module_expectations();
     failures += mtp_store.module_loaded(qus::ModuleKind::MtpDraft) ? 0 : fail("MTP not loaded");
     failures += !mtp_store.module_loaded(qus::ModuleKind::VisionEncoder)
@@ -459,9 +441,8 @@ int main() {
 
     qus::LoadOptions vision_options;
     vision_options.load_vision = true;
-    qus::DeviceArena vision_arena(kFixtureArenaBytes);
     qus::WeightStore vision_store(expectations());
-    vision_store.load(fixture_path.c_str(), vision_arena, ctx, vision_options);
+    vision_store.load(fixture_path.c_str(), ctx, vision_options);
     failures +=
         vision_store.module_loaded(qus::ModuleKind::VisionEncoder) ? 0 : fail("VISION not loaded");
     failures +=
@@ -473,9 +454,8 @@ int main() {
     qus::LoadOptions all_options;
     all_options.load_mtp    = true;
     all_options.load_vision = true;
-    qus::DeviceArena all_arena(kFixtureArenaBytes);
     qus::WeightStore all_store(expectations());
-    all_store.load(fixture_path.c_str(), all_arena, ctx, all_options);
+    all_store.load(fixture_path.c_str(), ctx, all_options);
     all_store.require_mtp_module_expectations();
     failures +=
         all_store.module_loaded(qus::ModuleKind::TextCore) ? 0 : fail("TEXT not loaded with all");
@@ -489,25 +469,37 @@ int main() {
                                       "model.visual.patch_embed.proj.weight", true);
     failures += expect_mtp_expectations_reject_swapped_attn_segments(file, parsed, ctx);
 
-    qus::DeviceArena required_arena(kFixtureArenaBytes);
-    failures += expect_throws_without_arena_growth<std::runtime_error>(
-        required_arena,
+    qus::WeightStore callback_failure_store(expectations());
+    qus::Q5090Progress throwing_progress;
+    throwing_progress.min_interval_bytes = 1;
+    throwing_progress.callback = [](std::string_view phase, std::uint64_t done, std::uint64_t) {
+        if (phase == "upload selected payloads" && done > 0) {
+            throw std::runtime_error("injected upload progress failure");
+        }
+    };
+    failures += expect_throws<std::runtime_error>(
+        [&] {
+            qus::LoadOptions options;
+            options.progress = &throwing_progress;
+            callback_failure_store.load(fixture_path.c_str(), ctx, options);
+        },
+        "upload callback failure");
+    failures += callback_failure_store.module_arena(qus::ModuleKind::TextCore) == nullptr &&
+                        callback_failure_store.qweight("layers.0.mlp.down_proj.weight") == nullptr
+                    ? 0
+                    : fail("failed upload published resident state");
+    failures += callback_failure_store.load_stats().fail_stage == "upload"
+                    ? 0
+                    : fail("failed upload stage was not recorded");
+
+    failures += expect_throws<std::runtime_error>(
         [&] {
             qus::LoadOptions options;
             options.required_text_tensors.push_back("missing.text.tensor");
             qus::WeightStore store(expectations());
-            store.load(fixture_path.c_str(), required_arena, ctx, options);
+            store.prepare(fixture_path.c_str(), options);
         },
         "missing required text tensor");
-
-    qus::DeviceArena small_arena(1024);
-    failures += expect_throws_without_arena_growth<std::bad_alloc>(
-        small_arena,
-        [&] {
-            qus::WeightStore store(expectations());
-            store.load(fixture_path.c_str(), small_arena, ctx);
-        },
-        "small arena");
 
     return failures == 0 ? 0 : fail("weight store q5090 test failed");
 }

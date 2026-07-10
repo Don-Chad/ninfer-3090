@@ -13,10 +13,9 @@
 
 namespace {
 
-constexpr std::size_t kMiB = 1024ULL * 1024ULL;
-constexpr std::size_t kGiB = 1024ULL * 1024ULL * 1024ULL;
-constexpr std::size_t kMtpPayloadBytes = 451267584ULL;
-constexpr std::size_t kDefaultArenaSlackBytes = 256ULL * kMiB;
+constexpr std::size_t kGiB              = 1024ULL * 1024ULL * 1024ULL;
+constexpr std::size_t kMtpPayloadBytes  = 451267584ULL;
+constexpr std::size_t kTextPayloadBytes = 16378329088ULL;
 
 bool cuda_unavailable(cudaError_t err) {
     return err == cudaErrorNoDevice || err == cudaErrorInsufficientDriver;
@@ -28,16 +27,16 @@ int fail(std::string_view message) {
 }
 
 bool enough_free_memory(std::size_t bytes) {
-    std::size_t free_bytes = 0;
+    std::size_t free_bytes  = 0;
     std::size_t total_bytes = 0;
-    const cudaError_t err = cudaMemGetInfo(&free_bytes, &total_bytes);
+    const cudaError_t err   = cudaMemGetInfo(&free_bytes, &total_bytes);
     if (err != cudaSuccess) {
         std::cout << "SKIP: cudaMemGetInfo failed: " << cudaGetErrorString(err) << '\n';
         return false;
     }
     if (free_bytes < bytes) {
-        std::cout << "SKIP: not enough free GPU memory; need " << bytes << ", free "
-                  << free_bytes << '\n';
+        std::cout << "SKIP: not enough free GPU memory; need " << bytes << ", free " << free_bytes
+                  << '\n';
         return false;
     }
     return true;
@@ -45,21 +44,20 @@ bool enough_free_memory(std::size_t bytes) {
 
 std::filesystem::path real_weights_path() {
     const std::filesystem::path root(QUS_SOURCE_DIR);
-    return root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4.qus";
+    return root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus";
 }
 
 std::vector<int> foundation_prompt_ids() {
     return {
-        248045, 846,    198,    96220,  109841, 96125,  12654,  220,    103733,
-        1510,   18479,  87682,  1494,   40798,  44646,  3709,   96719,  4960,
-        198,    16,     13,     220,    99486,  95814,  1697,   50246,  18078,
-        4891,   3709,   99448,  110167, 99516,  96932,  95793,  98162,  97889,
-        113282, 24178,  198,    17,     13,     220,    109066, 96983,  119808,
-        96348,  114727, 95726,  110167, 24178,  198,    18,     13,     220,
-        99488,  96656,  109293, 96492,  96766,  110280, 95726,  110167, 101831,
-        24178,  198,    19,     13,     220,    110334, 117443, 98682,  3709,
-        96172,  111654, 97889,  1992,   220,    99449,  137029, 1710,   248046,
-        198,    248045, 74455,  198,    248068, 271,    248069, 271,
+        248045, 846,    198,    96220,  109841, 96125,  12654,  220,    103733, 1510,
+        18479,  87682,  1494,   40798,  44646,  3709,   96719,  4960,   198,    16,
+        13,     220,    99486,  95814,  1697,   50246,  18078,  4891,   3709,   99448,
+        110167, 99516,  96932,  95793,  98162,  97889,  113282, 24178,  198,    17,
+        13,     220,    109066, 96983,  119808, 96348,  114727, 95726,  110167, 24178,
+        198,    18,     13,     220,    99488,  96656,  109293, 96492,  96766,  110280,
+        95726,  110167, 101831, 24178,  198,    19,     13,     220,    110334, 117443,
+        98682,  3709,   96172,  111654, 97889,  1992,   220,    99449,  137029, 1710,
+        248046, 198,    248045, 74455,  198,    248068, 271,    248069, 271,
     };
 }
 
@@ -84,7 +82,7 @@ int scenario_batched(const std::filesystem::path& weights) {
     options.max_ctx          = 128;
     options.mtp_draft_tokens = 5;
     options.use_cuda_graph   = false;
-    const Run mtp = generate(weights, options, foundation_prompt_ids(), 8);
+    const Run mtp            = generate(weights, options, foundation_prompt_ids(), 8);
 
     int failures = 0;
     failures += mtp.tokens.size() == 8 ? 0 : fail("batched scenario token count mismatch");
@@ -100,7 +98,7 @@ int scenario_capacity_fallback(const std::filesystem::path& weights) {
     options.max_ctx          = 8;
     options.mtp_draft_tokens = 5;
     options.use_cuda_graph   = false;
-    const Run mtp = generate(weights, options, {1, 2, 3, 4, 5, 6, 7}, 2);
+    const Run mtp            = generate(weights, options, {1, 2, 3, 4, 5, 6, 7}, 2);
 
     int failures = 0;
     failures += mtp.tokens.size() == 2 ? 0 : fail("capacity fallback token count mismatch");
@@ -115,17 +113,17 @@ int scenario_fallback_after_accept(const std::filesystem::path& weights) {
     options.max_ctx          = static_cast<std::uint32_t>(prompt.size() + 10);
     options.mtp_draft_tokens = 5;
     options.use_cuda_graph   = false;
-    const Run mtp = generate(weights, options, prompt, 8);
+    const Run mtp            = generate(weights, options, prompt, 8);
 
     int failures = 0;
     failures += mtp.tokens.size() == 8 ? 0 : fail("fallback-after-accept token count mismatch");
-    failures += mtp.mtp.rounds == 1 ? 0 : fail("fallback-after-accept did not run exactly one MTP round");
+    failures +=
+        mtp.mtp.rounds == 1 ? 0 : fail("fallback-after-accept did not run exactly one MTP round");
     failures += mtp.mtp.accepted_tokens > 0
                     ? 0
                     : fail("fallback-after-accept first round accepted no draft tokens");
-    failures += mtp.mtp.fallback_steps > 0
-                    ? 0
-                    : fail("fallback-after-accept did not record fallback");
+    failures +=
+        mtp.mtp.fallback_steps > 0 ? 0 : fail("fallback-after-accept did not record fallback");
     return failures;
 }
 
@@ -134,7 +132,7 @@ int scenario_stop_truncation(const std::filesystem::path& weights) {
     probe_options.max_ctx          = 32;
     probe_options.mtp_draft_tokens = 5;
     probe_options.use_cuda_graph   = false;
-    const Run probe = generate(weights, probe_options, {1}, 3);
+    const Run probe                = generate(weights, probe_options, {1}, 3);
     if (probe.tokens.size() < 2) { return fail("stop probe token count mismatch"); }
 
     qus::EngineOptions options;
@@ -142,7 +140,7 @@ int scenario_stop_truncation(const std::filesystem::path& weights) {
     options.mtp_draft_tokens = 5;
     options.use_cuda_graph   = false;
     options.stop_token_ids   = {probe.tokens[1]};
-    const Run mtp = generate(weights, options, {1}, 3);
+    const Run mtp            = generate(weights, options, {1}, 3);
 
     int failures = 0;
     failures += mtp.tokens == std::vector<int>({probe.tokens[0], probe.tokens[1]})
@@ -164,9 +162,8 @@ std::vector<int> drive_turn(qus::Engine& engine, const std::vector<int>& prompt,
     };
     // This scenario appends full (unstripped) generations, so it exercises the reuse-E append path;
     // pass the boundary at the prompt end (snapshot taken, no chunk split, generation unchanged).
-    int token = use_cache
-                    ? engine.prefill_cached(prompt, static_cast<std::uint32_t>(prompt.size()))
-                    : engine.prefill(prompt);
+    int token = use_cache ? engine.prefill_cached(prompt, static_cast<std::uint32_t>(prompt.size()))
+                          : engine.prefill(prompt);
     out.push_back(token);
     if (is_stop(token)) { return out; }
     while (static_cast<int>(out.size()) < max_new) {
@@ -183,10 +180,10 @@ std::vector<int> drive_turn(qus::Engine& engine, const std::vector<int>& prompt,
 // (cache ON). Covers MTP-off and MTP-on. Turn 1 ends on a committed stop token (the reusable
 // case) so turn 2 actually takes the append path.
 int scenario_multiturn_prefix_cache(const std::filesystem::path& weights) {
-    const std::vector<int> p1 = foundation_prompt_ids();
+    const std::vector<int> p1          = foundation_prompt_ids();
     const std::vector<int> user_suffix = {198, 248045, 74455, 198, 248068, 271};
-    constexpr int kTurnNew = 8;
-    int failures = 0;
+    constexpr int kTurnNew             = 8;
+    int failures                       = 0;
     for (int mtp : {0, 3}) {
         const std::string tag = mtp > 0 ? "mtp-on" : "mtp-off";
 
@@ -196,7 +193,7 @@ int scenario_multiturn_prefix_cache(const std::filesystem::path& weights) {
         probe_opt.max_ctx          = 256;
         probe_opt.mtp_draft_tokens = mtp;
         probe_opt.use_cuda_graph   = false;
-        const Run probe = generate(weights, probe_opt, p1, kTurnNew);
+        const Run probe            = generate(weights, probe_opt, p1, kTurnNew);
         if (probe.tokens.size() < 4) {
             failures += fail("multiturn probe too short (" + tag + ")");
             continue;
@@ -209,7 +206,7 @@ int scenario_multiturn_prefix_cache(const std::filesystem::path& weights) {
         qus::Engine base(options);
         base.load(weights.string());
         const std::vector<int> g1 = drive_turn(base, p1, kTurnNew, options.stop_token_ids, false);
-        std::vector<int> p2 = p1;
+        std::vector<int> p2       = p1;
         p2.insert(p2.end(), g1.begin(), g1.end());
         p2.insert(p2.end(), user_suffix.begin(), user_suffix.end());
         const std::vector<int> g2 = drive_turn(base, p2, kTurnNew, options.stop_token_ids, false);
@@ -218,11 +215,10 @@ int scenario_multiturn_prefix_cache(const std::filesystem::path& weights) {
         qus::Engine cached(options);
         cached.load(weights.string());
         const std::vector<int> c1 = drive_turn(cached, p1, kTurnNew, options.stop_token_ids, true);
-        std::vector<int> p2c = p1;
+        std::vector<int> p2c      = p1;
         p2c.insert(p2c.end(), c1.begin(), c1.end());
         p2c.insert(p2c.end(), user_suffix.begin(), user_suffix.end());
-        const std::vector<int> c2 =
-            drive_turn(cached, p2c, kTurnNew, options.stop_token_ids, true);
+        const std::vector<int> c2 = drive_turn(cached, p2c, kTurnNew, options.stop_token_ids, true);
 
         failures += (c1 == g1) ? 0 : fail("multiturn prefix cache turn 1 differs (" + tag + ")");
         failures += (c2 == g2) ? 0 : fail("multiturn prefix cache turn 2 differs (" + tag + ")");
@@ -231,21 +227,23 @@ int scenario_multiturn_prefix_cache(const std::filesystem::path& weights) {
 }
 
 // Regression for the reproduced garbage-output bug (plan whitelist 6). A content_boundary strictly
-// inside the prompt caps a prefill chunk to end exactly at the boundary; the chunk loop must advance
-// by the processed length, not the nominal chunk size, or it silently drops [t0+len, t0+chunk) and,
-// when the boundary is near the end, never computes logits. This scenario also exercises branch-2
-// partial reuse (turn 2 shares only p1[0:boundary] then diverges), so cache-ON must equal an
-// independent full (cache-OFF) prefill token-for-token, and turn 2 must actually reuse `boundary`
-// resident tokens.
+// inside the prompt caps a prefill chunk to end exactly at the boundary; the chunk loop must
+// advance by the processed length, not the nominal chunk size, or it silently drops [t0+len,
+// t0+chunk) and, when the boundary is near the end, never computes logits. This scenario also
+// exercises branch-2 partial reuse (turn 2 shares only p1[0:boundary] then diverges), so cache-ON
+// must equal an independent full (cache-OFF) prefill token-for-token, and turn 2 must actually
+// reuse `boundary` resident tokens.
 int scenario_partial_reuse_parity(const std::filesystem::path& weights) {
-    const std::vector<int> p1     = foundation_prompt_ids();
-    const std::uint32_t boundary  = static_cast<std::uint32_t>(p1.size() / 2);
+    const std::vector<int> p1    = foundation_prompt_ids();
+    const std::uint32_t boundary = static_cast<std::uint32_t>(p1.size() / 2);
     std::vector<int> p2(p1.begin(), p1.begin() + static_cast<std::ptrdiff_t>(boundary));
-    for (int i = 0; i < 12; ++i) { p2.push_back(1000 + i); } // divergent suffix after the shared prefix
+    for (int i = 0; i < 12; ++i) {
+        p2.push_back(1000 + i);
+    } // divergent suffix after the shared prefix
     constexpr int kNew = 8;
 
     const auto run_from = [&](qus::Engine& eng, const std::vector<int>& prompt, bool cache,
-                             std::uint32_t cb) {
+                              std::uint32_t cb) {
         std::vector<int> out;
         int tok = cache ? eng.prefill_cached(prompt, cb) : eng.prefill(prompt);
         out.push_back(tok);
@@ -276,11 +274,14 @@ int scenario_partial_reuse_parity(const std::filesystem::path& weights) {
             run_from(cached, p2, true, static_cast<std::uint32_t>(p2.size()));
         const std::uint32_t hit2 = cached.last_prefix_cache_hit();
 
-        failures += (g1_on == g1_off) ? 0 : fail("partial reuse turn 1 parity differs (" + tag + ")");
-        failures += (g2_on == g2_off) ? 0 : fail("partial reuse turn 2 parity differs (" + tag + ")");
-        failures += (hit2 == boundary)
-                        ? 0
-                        : fail("partial reuse turn 2 did not take the branch-2 boundary (" + tag + ")");
+        failures +=
+            (g1_on == g1_off) ? 0 : fail("partial reuse turn 1 parity differs (" + tag + ")");
+        failures +=
+            (g2_on == g2_off) ? 0 : fail("partial reuse turn 2 parity differs (" + tag + ")");
+        failures +=
+            (hit2 == boundary)
+                ? 0
+                : fail("partial reuse turn 2 did not take the branch-2 boundary (" + tag + ")");
     }
     return failures;
 }
@@ -292,13 +293,13 @@ int scenario_graph_parity(const std::filesystem::path& weights) {
     eager.max_ctx          = 256;
     eager.mtp_draft_tokens = 5;
     eager.use_cuda_graph   = false;
-    const Run a = generate(weights, eager, prompt, 24);
+    const Run a            = generate(weights, eager, prompt, 24);
 
     qus::EngineOptions graph;
     graph.max_ctx          = 256;
     graph.mtp_draft_tokens = 5;
     graph.use_cuda_graph   = true;
-    const Run b = generate(weights, graph, prompt, 24);
+    const Run b            = generate(weights, graph, prompt, 24);
 
     int failures = 0;
     failures += a.tokens == b.tokens ? 0 : fail("graph/eager MTP token streams differ");
@@ -313,9 +314,7 @@ int run_scenario(std::string_view scenario, const std::filesystem::path& weights
     if (scenario == "capacity_fallback") { return scenario_capacity_fallback(weights); }
     if (scenario == "fallback_after_accept") { return scenario_fallback_after_accept(weights); }
     if (scenario == "stop_truncation") { return scenario_stop_truncation(weights); }
-    if (scenario == "multiturn_prefix_cache") {
-        return scenario_multiturn_prefix_cache(weights);
-    }
+    if (scenario == "multiturn_prefix_cache") { return scenario_multiturn_prefix_cache(weights); }
     if (scenario == "partial_reuse_parity") { return scenario_partial_reuse_parity(weights); }
     if (scenario == "graph_parity") { return scenario_graph_parity(weights); }
     std::cerr << "unknown scenario: " << scenario << '\n';
@@ -337,7 +336,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    int count = 0;
+    int count                   = 0;
     const cudaError_t count_err = cudaGetDeviceCount(&count);
     if (cuda_unavailable(count_err) || count == 0) {
         std::cout << "SKIP: no usable CUDA device for real Engine load\n";
@@ -348,10 +347,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const std::size_t file_size = std::filesystem::file_size(weights);
-    if (!enough_free_memory(file_size + kDefaultArenaSlackBytes + kMtpPayloadBytes + kGiB)) {
-        return 0;
-    }
+    if (!enough_free_memory(kTextPayloadBytes + kMtpPayloadBytes + kGiB)) { return 0; }
 
     int failures = 0;
     if (argc == 2) {

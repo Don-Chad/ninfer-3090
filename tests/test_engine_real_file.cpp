@@ -12,11 +12,11 @@
 
 namespace {
 
-constexpr std::size_t kMiB = 1024ULL * 1024ULL;
-constexpr std::size_t kGiB = 1024ULL * 1024ULL * 1024ULL;
-constexpr std::size_t kTextPayloadBytes = 16735369216ULL;
-constexpr std::size_t kMtpPayloadBytes = 451267584ULL;
-constexpr std::size_t kDefaultArenaSlackBytes = 256ULL * kMiB;
+constexpr std::size_t kMiB               = 1024ULL * 1024ULL;
+constexpr std::size_t kGiB               = 1024ULL * 1024ULL * 1024ULL;
+constexpr std::size_t kTextPayloadBytes  = 16378329088ULL;
+constexpr std::size_t kMtpPayloadBytes   = 451267584ULL;
+constexpr std::size_t kDraftPayloadBytes = 357040128ULL;
 
 bool cuda_unavailable(cudaError_t err) {
     return err == cudaErrorNoDevice || err == cudaErrorInsufficientDriver;
@@ -28,25 +28,25 @@ int fail(std::string_view message) {
 }
 
 bool enough_free_memory(std::size_t bytes) {
-    std::size_t free_bytes = 0;
+    std::size_t free_bytes  = 0;
     std::size_t total_bytes = 0;
-    const cudaError_t err = cudaMemGetInfo(&free_bytes, &total_bytes);
+    const cudaError_t err   = cudaMemGetInfo(&free_bytes, &total_bytes);
     if (err != cudaSuccess) {
         std::cout << "SKIP: cudaMemGetInfo failed: " << cudaGetErrorString(err) << '\n';
         return false;
     }
     if (free_bytes < bytes) {
-        std::cout << "SKIP: not enough free GPU memory; need " << bytes << ", free "
-                  << free_bytes << '\n';
+        std::cout << "SKIP: not enough free GPU memory; need " << bytes << ", free " << free_bytes
+                  << '\n';
         return false;
     }
     return true;
 }
 
 void print_stats(const char* label, const qus::EngineMemoryStats& stats) {
-    std::cout << "ENGINE_REAL " << label << " loaded_payload="
-              << stats.q5090_loaded_payload_bytes << " weight_capacity="
-              << stats.weights.capacity_bytes << " weight_used=" << stats.weights.used_bytes
+    std::cout << "ENGINE_REAL " << label << " loaded_payload=" << stats.q5090_loaded_payload_bytes
+              << " weight_capacity=" << stats.weights.capacity_bytes
+              << " weight_used=" << stats.weights.used_bytes
               << " tensor_count=" << stats.q5090_tensor_count
               << " quant_count=" << stats.q5090_quant_count << '\n';
 }
@@ -54,9 +54,9 @@ void print_stats(const char* label, const qus::EngineMemoryStats& stats) {
 qus::EngineMemoryStats load_real_engine(const std::filesystem::path& weights_path,
                                         int mtp_draft_tokens) {
     qus::EngineOptions options;
-    options.device = 0;
-    options.max_ctx = 128;
-    options.work_bytes = 64ULL * kMiB;
+    options.device           = 0;
+    options.max_ctx          = 128;
+    options.work_bytes       = 64ULL * kMiB;
     options.mtp_draft_tokens = mtp_draft_tokens;
 
     qus::Engine engine(options);
@@ -74,18 +74,17 @@ int expect_stats(const qus::EngineMemoryStats& stats, std::size_t expected_loade
     failures += stats.weights.capacity_bytes == expected_weight_capacity
                     ? 0
                     : fail(std::string(label) + " weight arena capacity mismatch");
-    failures += stats.weights.used_bytes >= expected_loaded_payload
+    failures += stats.weights.used_bytes == expected_loaded_payload
                     ? 0
-                    : fail(std::string(label) + " weight arena used below loaded payload");
+                    : fail(std::string(label) + " weight arena used mismatch");
     failures += stats.weights.used_bytes <= stats.weights.capacity_bytes
                     ? 0
                     : fail(std::string(label) + " weight arena used above capacity");
     failures += stats.q5090_loaded_payload_bytes == expected_loaded_payload
                     ? 0
                     : fail(std::string(label) + " loaded payload mismatch");
-    failures += stats.q5090_tensor_count == 1166
-                    ? 0
-                    : fail(std::string(label) + " tensor count mismatch");
+    failures +=
+        stats.q5090_tensor_count == 1166 ? 0 : fail(std::string(label) + " tensor count mismatch");
     failures += stats.q5090_quant_count > 0 ? 0 : fail(std::string(label) + " quant count zero");
     return failures;
 }
@@ -116,9 +115,8 @@ int expect_k5_8192_memory_budget(const std::filesystem::path& weights_path) {
     failures += stats.weights.present ? 0 : fail("k=5 max_ctx=8192 missing weight arena");
     failures += stats.cache.present ? 0 : fail("k=5 max_ctx=8192 missing cache arena");
     failures += stats.workspace.present ? 0 : fail("k=5 max_ctx=8192 missing workspace arena");
-    failures += total_capacity < 32ULL * kGiB
-                    ? 0
-                    : fail("k=5 max_ctx=8192 arena capacity exceeds 32 GiB");
+    failures +=
+        total_capacity < 32ULL * kGiB ? 0 : fail("k=5 max_ctx=8192 arena capacity exceeds 32 GiB");
     failures += stats.cache.used_bytes < stats.cache.capacity_bytes
                     ? 0
                     : fail("k=5 max_ctx=8192 cache used exhausted capacity");
@@ -136,13 +134,15 @@ struct GenerateRun {
 GenerateRun generate_real_run(const std::filesystem::path& weights_path, int mtp_draft_tokens,
                               int max_new_tokens, std::uint32_t max_ctx = 32,
                               std::vector<int> stop_token_ids = {},
-                              std::vector<int> prompt = std::vector<int>{1}) {
+                              std::vector<int> prompt         = std::vector<int>{1},
+                              bool use_lm_head_draft          = false) {
     qus::EngineOptions options;
-    options.device                = 0;
-    options.max_ctx               = max_ctx;
-    options.mtp_draft_tokens      = mtp_draft_tokens;
-    options.use_cuda_graph        = false;
-    options.stop_token_ids        = std::move(stop_token_ids);
+    options.device            = 0;
+    options.max_ctx           = max_ctx;
+    options.mtp_draft_tokens  = mtp_draft_tokens;
+    options.use_cuda_graph    = false;
+    options.stop_token_ids    = std::move(stop_token_ids);
+    options.use_lm_head_draft = use_lm_head_draft;
 
     qus::Engine engine(options);
     engine.load(weights_path.string());
@@ -152,23 +152,44 @@ GenerateRun generate_real_run(const std::filesystem::path& weights_path, int mtp
     return out;
 }
 
+int expect_lm_head_draft_parity(const std::filesystem::path& weights_path) {
+    const GenerateRun full  = generate_real_run(weights_path, 3, 4, 64, {}, {1}, false);
+    const GenerateRun draft = generate_real_run(weights_path, 3, 4, 64, {}, {1}, true);
+    int failures            = 0;
+    failures += draft.tokens == full.tokens ? 0 : fail("LM_HEAD_DRAFT changed verified output");
+    failures += draft.mtp.rounds > 0 ? 0 : fail("LM_HEAD_DRAFT parity did not run MTP rounds");
+
+    qus::EngineOptions options;
+    options.device            = 0;
+    options.max_ctx           = 32;
+    options.mtp_draft_tokens  = 3;
+    options.use_lm_head_draft = true;
+    qus::Engine engine(options);
+    engine.load(weights_path.string());
+    const qus::EngineMemoryStats stats = engine.memory_stats();
+    failures += stats.q5090_loaded_payload_bytes ==
+                        kTextPayloadBytes + kMtpPayloadBytes + kDraftPayloadBytes
+                    ? 0
+                    : fail("LM_HEAD_DRAFT exact resident bytes mismatch");
+    return failures;
+}
+
 std::vector<int> foundation_prompt_ids() {
     return {
-        248045, 846,    198,    96220,  109841, 96125,  12654,  220,    103733,
-        1510,   18479,  87682,  1494,   40798,  44646,  3709,   96719,  4960,
-        198,    16,     13,     220,    99486,  95814,  1697,   50246,  18078,
-        4891,   3709,   99448,  110167, 99516,  96932,  95793,  98162,  97889,
-        113282, 24178,  198,    17,     13,     220,    109066, 96983,  119808,
-        96348,  114727, 95726,  110167, 24178,  198,    18,     13,     220,
-        99488,  96656,  109293, 96492,  96766,  110280, 95726,  110167, 101831,
-        24178,  198,    19,     13,     220,    110334, 117443, 98682,  3709,
-        96172,  111654, 97889,  1992,   220,    99449,  137029, 1710,   248046,
-        198,    248045, 74455,  198,    248068, 271,    248069, 271,
+        248045, 846,    198,    96220,  109841, 96125,  12654,  220,    103733, 1510,
+        18479,  87682,  1494,   40798,  44646,  3709,   96719,  4960,   198,    16,
+        13,     220,    99486,  95814,  1697,   50246,  18078,  4891,   3709,   99448,
+        110167, 99516,  96932,  95793,  98162,  97889,  113282, 24178,  198,    17,
+        13,     220,    109066, 96983,  119808, 96348,  114727, 95726,  110167, 24178,
+        198,    18,     13,     220,    99488,  96656,  109293, 96492,  96766,  110280,
+        95726,  110167, 101831, 24178,  198,    19,     13,     220,    110334, 117443,
+        98682,  3709,   96172,  111654, 97889,  1992,   220,    99449,  137029, 1710,
+        248046, 198,    248045, 74455,  198,    248068, 271,    248069, 271,
     };
 }
 
 int expect_mtp_rounds_across_k(const std::filesystem::path& weights_path) {
-    int failures = 0;
+    int failures          = 0;
     constexpr int kMaxNew = 3;
 
     for (int k = 1; k <= qus::model::kMaxMtpDraftTokens; ++k) {
@@ -187,7 +208,7 @@ int expect_mtp_rounds_across_k(const std::filesystem::path& weights_path) {
 }
 
 int expect_stop_and_capacity_controls(const std::filesystem::path& weights_path) {
-    int failures = 0;
+    int failures          = 0;
     constexpr int kMaxNew = 3;
 
     const GenerateRun probe = generate_real_run(weights_path, 5, kMaxNew);
@@ -258,14 +279,13 @@ int expect_generate_discards_pending_overshoot(const std::filesystem::path& weig
 
 int main() {
     const std::filesystem::path root(QUS_SOURCE_DIR);
-    const std::filesystem::path weights_path =
-        root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4.qus";
+    const std::filesystem::path weights_path = root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus";
     if (!std::filesystem::exists(weights_path)) {
         std::cout << "SKIP: real q5090 file not present\n";
         return 0;
     }
 
-    int count = 0;
+    int count                   = 0;
     const cudaError_t count_err = cudaGetDeviceCount(&count);
     if (cuda_unavailable(count_err) || count == 0) {
         std::cout << "SKIP: no usable CUDA device for real Engine load\n";
@@ -276,27 +296,27 @@ int main() {
         return 1;
     }
 
-    const std::size_t file_size = std::filesystem::file_size(weights_path);
-    const std::size_t expected_weight_capacity =
-        file_size + kDefaultArenaSlackBytes + kMtpPayloadBytes;
-    if (!enough_free_memory(expected_weight_capacity + kGiB)) { return 0; }
+    const std::size_t max_weight_capacity =
+        kTextPayloadBytes + kMtpPayloadBytes + kDraftPayloadBytes;
+    if (!enough_free_memory(max_weight_capacity + kGiB)) { return 0; }
 
     int failures = 0;
     {
         const qus::EngineMemoryStats stats = load_real_engine(weights_path, 0);
         print_stats("mtp=0", stats);
-        failures += expect_stats(stats, kTextPayloadBytes, expected_weight_capacity, "mtp=0");
+        failures += expect_stats(stats, kTextPayloadBytes, kTextPayloadBytes, "mtp=0");
     }
     {
         const qus::EngineMemoryStats stats = load_real_engine(weights_path, 1);
         print_stats("mtp=1", stats);
         failures += expect_stats(stats, kTextPayloadBytes + kMtpPayloadBytes,
-                                 expected_weight_capacity, "mtp=1");
+                                 kTextPayloadBytes + kMtpPayloadBytes, "mtp=1");
     }
     failures += expect_k5_8192_memory_budget(weights_path);
     failures += expect_mtp_rounds_across_k(weights_path);
     failures += expect_stop_and_capacity_controls(weights_path);
     failures += expect_near_full_prefill_uses_decode_fallback(weights_path);
     failures += expect_generate_discards_pending_overshoot(weights_path);
+    failures += expect_lm_head_draft_parity(weights_path);
     return failures == 0 ? 0 : fail("real Engine load test failed");
 }
