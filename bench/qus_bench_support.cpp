@@ -251,6 +251,7 @@ std::string usage_text(std::string_view program) {
         << "  --no-cuda-graph             disable CUDA graph decode (decode_path=eager or "
            "mtp_eager)\n"
         << "  --mtp-draft-tokens <0..5>   enable MTP draft rounds (default: 0)\n"
+        << "  --lm-head-draft             use the fixed v4.1 shortlisted draft head\n"
         << "  -o, --output <table|json|csv>  output format (default: table)\n"
         << "  --output-file <path>        write output to a file instead of stdout\n"
         << "  -h, --help                  show this help\n"
@@ -307,6 +308,8 @@ BenchOptions parse_args(int argc, char** argv) {
             options.device = parse_nonnegative(require_value("--device"), "device");
         } else if (arg == "--mtp-draft-tokens") {
             options.mtp_draft_tokens = parse_mtp_draft_tokens(require_value("--mtp-draft-tokens"));
+        } else if (arg == "--lm-head-draft") {
+            options.use_lm_head_draft = true;
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "-o" || arg == "--output") {
@@ -329,6 +332,9 @@ BenchOptions parse_args(int argc, char** argv) {
     if (!saw_weights) { throw std::invalid_argument("--weights is required"); }
     if (options.prefill_chunk % model::kPrefillChunkAlignment != 0) {
         throw std::invalid_argument("--prefill-chunk must be a multiple of 128");
+    }
+    if (options.use_lm_head_draft && options.mtp_draft_tokens == 0) {
+        throw std::invalid_argument("--lm-head-draft requires --mtp-draft-tokens > 0");
     }
     return options;
 }
@@ -420,7 +426,12 @@ std::vector<int> load_corpus_ids(const std::string& path) {
                 throw std::invalid_argument("invalid token id in corpus: " + token);
             }
         }
-        ids.push_back(parse_nonnegative(token, "corpus token id"));
+        const int id = parse_nonnegative(token, "corpus token id");
+        if (id >= model::kCfg.tokenizer_vocab) {
+            throw std::invalid_argument("corpus token id is outside canonical tokenizer domain: " +
+                                        token);
+        }
+        ids.push_back(id);
     }
     if (ids.empty()) { throw std::invalid_argument("corpus ids file is empty: " + path); }
     return ids;
@@ -549,9 +560,12 @@ std::string format_table(const BenchEnvironment& env, const std::vector<TestResu
     out << "  config:     max_ctx=" << env.max_ctx << " prefill_chunk=" << env.prefill_chunk
         << " kv_dtype=" << env.kv_dtype << " kv_quant_group=" << env.kv_quant_group
         << " kv_payload=" << format_bytes(env.kv_cache_payload_bytes)
-        << " mtp_k=" << env.mtp_draft_tokens << " work_bytes=" << env.work_bytes
-        << " decode_path=" << env.decode_path << " repetitions=" << env.repetitions
-        << " warmup=" << env.warmup;
+        << " mtp_k=" << env.mtp_draft_tokens
+        << " lm_head_draft=" << (env.use_lm_head_draft ? "true" : "false")
+        << " weight_h2d=" << format_bytes(env.q5090_h2d_bytes)
+        << " weight_resident=" << format_bytes(env.q5090_resident_bytes)
+        << " work_bytes=" << env.work_bytes << " decode_path=" << env.decode_path
+        << " repetitions=" << env.repetitions << " warmup=" << env.warmup;
     if (env.decode_graph_requested) {
         out << " graph_prime="
             << (env.decode_graph_primed ? std::to_string(env.decode_graph_prime_steps)
@@ -679,7 +693,15 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << "  },\n"
         << "  \"weights\": {\n"
         << "    \"path\": \"" << json_escape(env.weights_path) << "\",\n"
-        << "    \"file_size_bytes\": " << env.weights_file_size_bytes << "\n"
+        << "    \"file_size_bytes\": " << env.weights_file_size_bytes << ",\n"
+        << "    \"h2d_bytes\": " << env.q5090_h2d_bytes << ",\n"
+        << "    \"device_resident_bytes\": " << env.q5090_resident_bytes << ",\n"
+        << "    \"resident_modules\": [";
+    for (std::size_t i = 0; i < env.q5090_resident_modules.size(); ++i) {
+        if (i != 0) { out << ", "; }
+        out << "\"" << json_escape(env.q5090_resident_modules[i]) << "\"";
+    }
+    out << "]\n"
         << "  },\n"
         << "  \"config\": {\n"
         << "    \"max_ctx\": " << env.max_ctx << ",\n"
@@ -688,6 +710,7 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << "    \"kv_quant_group\": " << env.kv_quant_group << ",\n"
         << "    \"kv_cache_payload_bytes\": " << env.kv_cache_payload_bytes << ",\n"
         << "    \"mtp_draft_tokens\": " << env.mtp_draft_tokens << ",\n"
+        << "    \"lm_head_draft\": " << (env.use_lm_head_draft ? "true" : "false") << ",\n"
         << "    \"work_bytes\": " << env.work_bytes << ",\n"
         << "    \"decode_path\": \"" << json_escape(env.decode_path) << "\",\n"
         << "    \"decode_graph_prime\": {\n"
@@ -775,7 +798,8 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
 
 std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult>& results) {
     std::ostringstream out;
-    out << "label,kind,n_prompt,n_gen,prefill_chunk,mtp_draft_tokens,decode_path,"
+    out << "label,kind,n_prompt,n_gen,prefill_chunk,mtp_draft_tokens,lm_head_draft,"
+           "q5090_h2d_bytes,q5090_resident_bytes,decode_path,"
            "kv_dtype,kv_quant_group,kv_cache_payload_bytes,decode_graph_primed,"
            "decode_graph_prime_steps,mtp_rounds,mtp_fallback_steps,"
            "mtp_acceptance_rate,repetitions,prefill_tok_s_mean,prefill_tok_s_stddev,"
@@ -796,11 +820,13 @@ std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult
                                          : std::string();
         out << result.test.label << "," << kind_string(result.test.kind) << ","
             << result.test.n_prompt << "," << result.test.n_gen << "," << env.prefill_chunk << ","
-            << env.mtp_draft_tokens << "," << env.decode_path << "," << env.kv_dtype << ","
-            << env.kv_quant_group << "," << env.kv_cache_payload_bytes << ","
-            << (env.decode_graph_primed ? "true" : "false") << "," << env.decode_graph_prime_steps
-            << "," << mtp.rounds << "," << mtp.fallback_steps << "," << mtp_rate << ","
-            << result.reps.size() << "," << cell_mean(prefill_tok_s_series(result)) << ","
+            << env.mtp_draft_tokens << "," << (env.use_lm_head_draft ? "true" : "false") << ","
+            << env.q5090_h2d_bytes << "," << env.q5090_resident_bytes << "," << env.decode_path
+            << "," << env.kv_dtype << "," << env.kv_quant_group << "," << env.kv_cache_payload_bytes
+            << "," << (env.decode_graph_primed ? "true" : "false") << ","
+            << env.decode_graph_prime_steps << "," << mtp.rounds << "," << mtp.fallback_steps << ","
+            << mtp_rate << "," << result.reps.size() << ","
+            << cell_mean(prefill_tok_s_series(result)) << ","
             << cell_stddev(prefill_tok_s_series(result)) << ","
             << cell_mean(decode_output_tok_s_series(result)) << ","
             << cell_stddev(decode_output_tok_s_series(result)) << ","

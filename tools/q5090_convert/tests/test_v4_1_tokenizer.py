@@ -12,9 +12,13 @@ from ..convert import layout_tokenizer_assets, load_tokenizer_assets
 
 def _write_valid_assets(path) -> dict[str, bytes]:
     data = {
-        "tokenizer.json": b'{"model":{"type":"BPE"},"added_tokens":[]}\n',
+        "tokenizer.json": (
+            b'{"model":{"type":"BPE","vocab":{"a":0,"b":1}},'
+            b'"added_tokens":[{"id":2,"content":"<eos>","single_word":false,'
+            b'"lstrip":false,"rstrip":false,"normalized":false,"special":true}]}\n'
+        ),
         "merges.txt": b"#version: 0.2\na b\n",
-        "generation_config.json": b'{"eos_token_id":[248046,248044]}\n',
+        "generation_config.json": b'{"eos_token_id":[2]}\n',
     }
     for name, raw in data.items():
         (path / name).write_bytes(raw)
@@ -23,7 +27,7 @@ def _write_valid_assets(path) -> dict[str, bytes]:
 
 def test_embedded_tokenizer_records_preserve_source_bytes(tmp_path):
     source = _write_valid_assets(tmp_path)
-    assets = load_tokenizer_assets(str(tmp_path))
+    assets = load_tokenizer_assets(str(tmp_path), 16, require_canonical=False)
     assert tuple(asset.kind for asset in assets) == fmt.TOKENIZER_KINDS
 
     data_offset = 64 * 101
@@ -52,6 +56,12 @@ def test_embedded_tokenizer_records_preserve_source_bytes(tmp_path):
     assert len(region) == previous_end - data_offset
 
 
+def test_converter_rejects_noncanonical_tokenizer_identity(tmp_path):
+    _write_valid_assets(tmp_path)
+    with pytest.raises(ValueError, match="canonical tokenizer"):
+        load_tokenizer_assets(str(tmp_path), 16)
+
+
 @pytest.mark.parametrize(
     ("name", "replacement"),
     [
@@ -64,11 +74,48 @@ def test_invalid_runtime_tokenizer_asset_is_rejected(tmp_path, name, replacement
     _write_valid_assets(tmp_path)
     (tmp_path / name).write_bytes(replacement)
     with pytest.raises(ValueError):
-        load_tokenizer_assets(str(tmp_path))
+        load_tokenizer_assets(str(tmp_path), 16, require_canonical=False)
 
 
 def test_missing_runtime_tokenizer_asset_is_rejected(tmp_path):
     _write_valid_assets(tmp_path)
     (tmp_path / "merges.txt").unlink()
     with pytest.raises(ValueError):
-        load_tokenizer_assets(str(tmp_path))
+        load_tokenizer_assets(str(tmp_path), 16, require_canonical=False)
+
+
+@pytest.mark.parametrize(
+    ("name", "replacement"),
+    [
+        (
+            "tokenizer.json",
+            b'{"model":{"type":"BPE","vocab":{"a":0,"b":0}},"added_tokens":[]}\n',
+        ),
+        (
+            "tokenizer.json",
+            b'{"model":{"type":"BPE","vocab":{"a":16}},"added_tokens":[]}\n',
+        ),
+        (
+            "tokenizer.json",
+            b'{"model":{"type":"BPE","vocab":{"a":0}},"added_tokens":'
+            b'[{"id":2,"content":"<x>","single_word":true,"lstrip":false,'
+            b'"rstrip":false,"normalized":false,"special":true}]}\n',
+        ),
+        ("merges.txt", b"a b\na b\n"),
+        ("merges.txt", "a b\u0085c d\n".encode()),
+        (
+            "tokenizer.json",
+            b'{"model":{"type":"BPE","vocab":{"a":0}},"added_tokens":[],"x":NaN}\n',
+        ),
+        (
+            "tokenizer.json",
+            b'{"model":{"type":"BPE","vocab":{"\\ud800":0}},"added_tokens":[]}\n',
+        ),
+        ("generation_config.json", b'{"eos_token_id":15}\n'),
+    ],
+)
+def test_tokenizer_semantic_contract_is_rejected(tmp_path, name, replacement):
+    _write_valid_assets(tmp_path)
+    (tmp_path / name).write_bytes(replacement)
+    with pytest.raises(ValueError):
+        load_tokenizer_assets(str(tmp_path), 16, require_canonical=False)

@@ -24,6 +24,7 @@ from safetensors import safe_open
 from . import format as fmt
 from . import qtypes as qt
 from . import tensor_plan as tp
+from .tokenizer_contract import validate_tokenizer_assets
 from . import draft_head as dh
 from .layouts import encode_tensor
 from .quantize import pick_device
@@ -372,7 +373,9 @@ def _append_manifest(
 
 def build_conversion_plan(
     cfg: dict,
-    draft_head_n: Optional[int] = None,
+    include_draft_head: bool = False,
+    include_mtp: bool = True,
+    include_vision: bool = True,
 ) -> ConversionPlan:
     layer_types = _layer_types(cfg)
 
@@ -381,23 +384,25 @@ def build_conversion_plan(
         ModulePlan(qt.MODULE_TEXT, 0, len(blocks)),
     ]
 
-    if draft_head_n is not None:
+    if include_draft_head:
         begin = len(blocks)
         _append_manifest(
             blocks,
             segments,
             fusion_groups,
-            tp.build_lm_head_draft_manifest(draft_head_n),
+            tp.build_lm_head_draft_manifest(),
         )
         modules.append(ModulePlan(qt.MODULE_LM_HEAD_DRAFT, begin, len(blocks) - begin))
 
-    begin = len(blocks)
-    _append_manifest(blocks, segments, fusion_groups, tp.build_mtp_manifest())
-    modules.append(ModulePlan(qt.MODULE_MTP, begin, len(blocks) - begin))
+    if include_mtp:
+        begin = len(blocks)
+        _append_manifest(blocks, segments, fusion_groups, tp.build_mtp_manifest())
+        modules.append(ModulePlan(qt.MODULE_MTP, begin, len(blocks) - begin))
 
-    begin = len(blocks)
-    _append_standalone_blocks(blocks, segments, tp.build_vision_specs(EXPECTED["vision_depth"]))
-    modules.append(ModulePlan(qt.MODULE_VISION, begin, len(blocks) - begin))
+    if include_vision:
+        begin = len(blocks)
+        _append_standalone_blocks(blocks, segments, tp.build_vision_specs(EXPECTED["vision_depth"]))
+        modules.append(ModulePlan(qt.MODULE_VISION, begin, len(blocks) - begin))
 
     return ConversionPlan(tuple(modules), tuple(blocks), tuple(segments), tuple(fusion_groups))
 
@@ -483,39 +488,32 @@ def _prod(xs: Sequence[int]) -> int:
     return p
 
 
-def load_tokenizer_assets(tokenizer_dir: str) -> Tuple[TokenizerAsset, ...]:
+def load_tokenizer_assets(
+    tokenizer_dir: str, vocab_size: int, *, require_canonical: bool = True
+) -> Tuple[TokenizerAsset, ...]:
     assets = []
+    raw_assets = {}
     for kind in fmt.TOKENIZER_KINDS:
         source_name = fmt.TOKENIZER_SOURCE_NAME[kind]
         path = os.path.join(tokenizer_dir, source_name)
         try:
-            with open(path, "rb") as f:
-                data = f.read()
+            size = os.path.getsize(path)
         except OSError as exc:
             raise ValueError(f"missing tokenizer asset {path}: {exc}") from exc
-        if not data:
+        if size <= 0:
             raise ValueError(f"tokenizer asset is empty: {path}")
-        if len(data) > fmt.TOKENIZER_MAX_BYTES[kind]:
+        if size > fmt.TOKENIZER_MAX_BYTES[kind]:
             raise ValueError(
-                f"tokenizer asset {path} is {len(data)} bytes, max {fmt.TOKENIZER_MAX_BYTES[kind]}"
+                f"tokenizer asset {path} is {size} bytes, max {fmt.TOKENIZER_MAX_BYTES[kind]}"
             )
         try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError(f"tokenizer asset is not UTF-8: {path}: {exc}") from exc
-        if kind in (fmt.TOKENIZER_JSON, fmt.TOKENIZER_GENERATION_CONFIG):
-            try:
-                root = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"malformed tokenizer JSON {path}: {exc}") from exc
-            if not isinstance(root, dict):
-                raise ValueError(f"tokenizer JSON root must be an object: {path}")
-            if kind == fmt.TOKENIZER_JSON and "model" not in root:
-                raise ValueError(f"tokenizer.json is missing model: {path}")
-            if kind == fmt.TOKENIZER_GENERATION_CONFIG and "eos_token_id" not in root:
-                raise ValueError(f"generation_config.json is missing eos_token_id: {path}")
-        elif "\x00" in text:
-            raise ValueError(f"merges.txt contains NUL: {path}")
+            with open(path, "rb") as f:
+                data = f.read(size + 1)
+        except OSError as exc:
+            raise ValueError(f"failed to read tokenizer asset {path}: {exc}") from exc
+        if len(data) != size:
+            raise ValueError(f"tokenizer asset changed while reading: {path}")
+        raw_assets[kind] = data
         assets.append(
             TokenizerAsset(
                 kind=kind,
@@ -525,6 +523,7 @@ def load_tokenizer_assets(tokenizer_dir: str) -> Tuple[TokenizerAsset, ...]:
                 sha256=hashlib.sha256(data).digest(),
             )
         )
+    validate_tokenizer_assets(raw_assets, vocab_size, require_canonical=require_canonical)
     return tuple(assets)
 
 
@@ -749,15 +748,6 @@ def main() -> None:
         default=dh.DEFAULT_RANKING,
         help="frequency ranking (.counts.i64) driving the draft-head shortlist",
     )
-    ap.add_argument("--draft-n", type=int, default=dh.DRAFT_HEAD_N, help="draft lm_head shortlist size N")
-    ap.add_argument(
-        "--tokenizer",
-        default=None,
-        help=(
-            "HF tokenizer dir containing tokenizer.json, merges.txt, generation_config.json, and "
-            "tokenizer_config.json for draft special ids (default: --model)"
-        ),
-    )
     ap.add_argument(
         "--no-draft-head",
         action="store_true",
@@ -787,24 +777,28 @@ def main() -> None:
     weight_map = json.loads(index_raw)["weight_map"]
     reader = ShardReader(model_dir, weight_map)
 
-    tokenizer_dir = (args.tokenizer or model_dir).rstrip("/")
-    tokenizer_assets = load_tokenizer_assets(tokenizer_dir)
+    tokenizer_dir = model_dir
+    tokenizer_assets = load_tokenizer_assets(tokenizer_dir, tc["vocab_size"])
     print(
         "tokenizer assets: "
         + ", ".join(f"{asset.source_name}={_fmt_bytes(len(asset.data))}" for asset in tokenizer_assets)
     )
 
     draft: Optional[dh.DraftHeadContext] = None
-    draft_head_n: Optional[int] = None
     if not args.no_draft_head:
-        draft = dh.compute_shortlist(args.ranking, tokenizer_dir, args.draft_n, tc["vocab_size"])
-        draft_head_n = draft.n
+        draft = dh.compute_shortlist(
+            args.ranking, tokenizer_dir, dh.DRAFT_HEAD_N, tc["vocab_size"]
+        )
+        if draft.n != dh.DRAFT_HEAD_N:
+            raise ValueError(
+                f"draft shortlist size {draft.n} != fixed v4.1 size {dh.DRAFT_HEAD_N}"
+            )
         print(
             f"draft head: N={draft.n} from {args.ranking}  "
             f"force-include specials={len(draft.force_include)}"
         )
 
-    plan = build_conversion_plan(cfg, draft_head_n=draft_head_n)
+    plan = build_conversion_plan(cfg, include_draft_head=draft is not None)
     missing = [name for name in plan_source_names(plan) if not reader.has(name)]
     if missing:
         raise SystemExit("missing source tensors:\n  " + "\n  ".join(missing))

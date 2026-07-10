@@ -5,6 +5,7 @@
 
 #include <cuda_runtime.h>
 
+#include <array>
 #include <chrono>
 #include <exception>
 #include <filesystem>
@@ -12,6 +13,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -175,16 +177,16 @@ int main(int argc, char** argv) {
             tests, options.max_ctx, options.mtp_draft_tokens, options.use_cuda_graph);
 
         qus::EngineOptions engine_options;
-        engine_options.device           = options.device;
-        engine_options.max_ctx          = max_ctx;
-        engine_options.prefill_chunk    = options.prefill_chunk;
-        engine_options.kv_dtype         = options.kv_dtype;
-        engine_options.mtp_draft_tokens = options.mtp_draft_tokens;
-        engine_options.use_cuda_graph   = options.use_cuda_graph;
+        engine_options.device            = options.device;
+        engine_options.max_ctx           = max_ctx;
+        engine_options.prefill_chunk     = options.prefill_chunk;
+        engine_options.kv_dtype          = options.kv_dtype;
+        engine_options.mtp_draft_tokens  = options.mtp_draft_tokens;
+        engine_options.use_cuda_graph    = options.use_cuda_graph;
+        engine_options.use_lm_head_draft = options.use_lm_head_draft;
         if (options.work_bytes.has_value()) { engine_options.work_bytes = *options.work_bytes; }
 
         qus::bench::BenchEnvironment env;
-        fill_cuda_environment(env, options.device);
         env.git_commit              = qus::bench::current_git_commit_or_empty();
         env.worktree_dirty          = qus::bench::current_git_worktree_dirty();
         env.weights_path            = options.weights_path;
@@ -194,6 +196,7 @@ int main(int argc, char** argv) {
         env.kv_dtype                = qus::bench::kv_dtype_name(options.kv_dtype);
         env.kv_quant_group          = options.kv_dtype == qus::DType::I8 ? qus::kKvQuantGroup : 0;
         env.mtp_draft_tokens        = options.mtp_draft_tokens;
+        env.use_lm_head_draft       = options.use_lm_head_draft;
         env.decode_path =
             qus::bench::decode_path_name(options.use_cuda_graph, options.mtp_draft_tokens);
         env.decode_graph_requested = options.use_cuda_graph && needs_decode;
@@ -207,15 +210,26 @@ int main(int argc, char** argv) {
                   << ", kv_dtype=" << qus::bench::kv_dtype_name(options.kv_dtype) << ")\n";
         qus::Engine engine(engine_options);
         engine.load(options.weights_path);
+        fill_cuda_environment(env, options.device);
         if (const cudaError_t status = cudaDeviceSynchronize(); status != cudaSuccess) {
             throw std::runtime_error(std::string("cuda sync after load: ") +
                                      cudaGetErrorString(status));
         }
-        const qus::EngineMemoryStats memory = engine.memory_stats();
-        env.work_bytes                      = memory.workspace.capacity_bytes;
-        env.kv_dtype                        = qus::bench::kv_dtype_name(memory.kv_dtype);
-        env.kv_quant_group                  = memory.kv_quant_group;
-        env.kv_cache_payload_bytes          = memory.kv_cache_payload_bytes;
+        const qus::EngineMemoryStats memory   = engine.memory_stats();
+        env.work_bytes                        = memory.workspace.capacity_bytes;
+        env.kv_dtype                          = qus::bench::kv_dtype_name(memory.kv_dtype);
+        env.kv_quant_group                    = memory.kv_quant_group;
+        env.kv_cache_payload_bytes            = memory.kv_cache_payload_bytes;
+        const qus::Q5090LoadStats& load_stats = engine.q5090_load_stats();
+        env.q5090_h2d_bytes                   = load_stats.h2d_bytes;
+        env.q5090_resident_bytes              = load_stats.device_resident_bytes;
+        constexpr std::array<std::string_view, 4> module_names = {
+            "TEXT_CORE", "MTP_DRAFT", "VISION_ENCODER", "LM_HEAD_DRAFT"};
+        for (std::size_t i = 0; i < load_stats.modules.size(); ++i) {
+            if (load_stats.modules[i].selected) {
+                env.q5090_resident_modules.emplace_back(module_names[i]);
+            }
+        }
         prime_decode_graphs(engine, env, corpus);
 
         std::vector<qus::bench::TestResult> results;

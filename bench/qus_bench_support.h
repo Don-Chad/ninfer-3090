@@ -18,7 +18,7 @@
 
 namespace qus::bench {
 
-inline constexpr int kSchemaVersion                  = 5;
+inline constexpr int kSchemaVersion                  = 6;
 inline constexpr std::string_view kArtifactType      = "qus_bench_report";
 inline constexpr std::string_view kDefaultCorpusPath = "bench/fixtures/bench_corpus.ids";
 // Seed tokens prefilled (untimed) before a pure decode (tg) test so the model has a valid
@@ -67,6 +67,7 @@ struct BenchOptions {
     std::uint32_t prefill_chunk = model::kDefaultPrefillChunk;
     DType kv_dtype              = DType::BF16;
     int mtp_draft_tokens        = 0;
+    bool use_lm_head_draft      = false;
     int device                  = 0;
     bool use_cuda_graph         = true;
     OutputFormat output         = OutputFormat::Table;
@@ -120,6 +121,10 @@ struct BenchEnvironment {
     std::size_t kv_cache_payload_bytes    = 0;
     std::uint32_t prefill_chunk           = model::kDefaultPrefillChunk;
     int mtp_draft_tokens                  = 0;
+    bool use_lm_head_draft                = false;
+    std::uint64_t q5090_h2d_bytes         = 0;
+    std::uint64_t q5090_resident_bytes    = 0;
+    std::vector<std::string> q5090_resident_modules;
     std::string decode_path; // "cuda_graph", "eager", "mtp_cuda_graph", or "mtp_eager"
     bool decode_graph_requested  = false;
     bool decode_graph_primed     = false;

@@ -54,6 +54,7 @@ qus::Q5090Expectations expectations() {
     expected.gdn_conv_width          = 4;
     expected.full_attention_interval = 4;
     expected.max_position_embeddings = 262144;
+    expected.validate_model_contract = false;
     return expected;
 }
 

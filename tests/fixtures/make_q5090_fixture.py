@@ -442,7 +442,9 @@ def add_compact_mtp(blocks: list[BlockSpec], fusions: list[FusionSpec]) -> None:
     )
 
 
-def add_draft_head(blocks: list[BlockSpec], weights_n: int = 6, idmap_n: int | None = None) -> None:
+def add_draft_head(
+    blocks: list[BlockSpec], weights_n: int = 131072, idmap_n: int | None = None
+) -> None:
     """Append the optional Q4 draft lm_head and its I32 id-map module.
 
     ``idmap_n`` defaults to ``weights_n``; passing a different value produces a
@@ -459,7 +461,7 @@ def add_draft_head(blocks: list[BlockSpec], weights_n: int = 6, idmap_n: int | N
         qt.LAYOUT_ROW_SPLIT,
         qt.MODULE_LM_HEAD_DRAFT,
         no_layer,
-        [seg("lm_head_draft", qt.SK_LM_HEAD_DRAFT, no_layer, (weights_n, 8))],
+        [seg("lm_head_draft", qt.SK_LM_HEAD_DRAFT, no_layer, (weights_n, 5120))],
     )
     block(
         blocks,
@@ -850,7 +852,7 @@ def build_file(out_path: Path, profile: str) -> None:
     elif profile == "draft-head":
         blocks, fusion_specs = build_default(with_draft=True)
     elif profile == "draft-head-bad-n":
-        blocks, fusion_specs = build_default(with_draft=True, draft_idmap_n=5)
+        blocks, fusion_specs = build_default(with_draft=True, draft_idmap_n=131071)
     else:
         blocks, fusion_specs = build_default()
 
@@ -905,7 +907,7 @@ def build_file(out_path: Path, profile: str) -> None:
     string_table_offset = fusion_group_index_offset + fusion_group_index_bytes
     string_table_bytes = len(string_table)
     tokenizer_assets = (
-        (fmt.TOKENIZER_JSON, b'{"model":{"type":"BPE","vocab":{"a":0}},"added_tokens":[]}\n'),
+        (fmt.TOKENIZER_JSON, b'{"model":{"type":"BPE","vocab":{"a":0     }},"added_tokens":[]}\n'),
         (fmt.TOKENIZER_MERGES, b"#version: 0.2\n"),
         (fmt.TOKENIZER_GENERATION_CONFIG, b'{"eos_token_id":[0]}\n'),
     )

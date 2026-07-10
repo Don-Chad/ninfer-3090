@@ -206,7 +206,7 @@ def test_globals_are_standalone_text_blocks():
 
 def test_draft_head_is_an_independent_module_manifest():
     n = 131072
-    dm = tp.build_lm_head_draft_manifest(n)
+    dm = tp.build_lm_head_draft_manifest()
 
     assert len(dm.blocks) == 2
     assert len(dm.segments) == 2
@@ -243,19 +243,9 @@ def test_draft_head_default_manifest_has_no_draft_blocks():
     assert "lm_head_draft.idmap" not in names
 
 
-def test_draft_head_manifest_rejects_invalid_size():
-    for n in (0, -1, tp.VOCAB_SIZE + 1):
-        try:
-            tp.build_lm_head_draft_manifest(n)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"accepted invalid draft-head N={n}")
-
-
 def test_conversion_plan_uses_v4_1_canonical_module_order():
     cfg = {"layer_types": _canonical_layer_types()}
-    plan = build_conversion_plan(cfg, draft_head_n=131072)
+    plan = build_conversion_plan(cfg, include_draft_head=True)
     assert [module.module_kind for module in plan.modules] == [
         qt.MODULE_TEXT,
         qt.MODULE_LM_HEAD_DRAFT,
@@ -271,6 +261,15 @@ def test_conversion_plan_uses_v4_1_canonical_module_order():
     assert len(plan.blocks) == 1166
     assert len(plan.segments) == 1314
     assert len(plan.fusion_groups) == 130
+
+
+def test_conversion_plan_can_verify_optional_module_absence():
+    cfg = {"layer_types": _canonical_layer_types()}
+    plan = build_conversion_plan(cfg, include_mtp=False, include_vision=False)
+    assert [module.module_kind for module in plan.modules] == [qt.MODULE_TEXT]
+    assert len(plan.blocks) == 819
+    assert len(plan.segments) == 963
+    assert len(plan.fusion_groups) == 128
 
 
 def test_mtp_manifest_counts_order_and_fusions():

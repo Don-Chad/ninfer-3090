@@ -64,6 +64,21 @@ TOKENIZER_MAX_BYTES = {
     TOKENIZER_GENERATION_CONFIG: 1 << 20,
 }
 
+# v4.1 is a single-model contract: tokenizer row identity is part of the weight ABI, not an
+# interchangeable runtime resource.  These digests are the canonical Qwen3.6-27B runtime assets.
+TOKENIZER_CANONICAL_SHA256 = {
+    TOKENIZER_JSON: bytes.fromhex(
+        "87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4"
+    ),
+    TOKENIZER_MERGES: bytes.fromhex(
+        "3bd640ba6d8da8f5844f3548b7e2184fc664dd670e1447e425a48dbaaad1ef43"
+    ),
+    TOKENIZER_GENERATION_CONFIG: bytes.fromhex(
+        "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e"
+    ),
+}
+TOKENIZER_OCCUPIED_ID_COUNT = 248077
+
 _HEADER_STRUCT = struct.Struct("<16s8I8Q14I32s4QI3I4Q")
 _MODULE_STRUCT = struct.Struct("<IIQQQQII")
 _TOKENIZER_STRUCT = struct.Struct("<IIQQII32s")

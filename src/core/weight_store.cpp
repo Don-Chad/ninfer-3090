@@ -11,6 +11,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <set>
@@ -22,6 +23,33 @@
 
 namespace qus {
 namespace {
+
+class WeightStoreMutationGuard {
+public:
+    WeightStoreMutationGuard(WeightStore& store, bool& active, bool& clear_requested)
+        : store_(store), active_(active), clear_requested_(clear_requested) {
+        if (active_) {
+            throw std::runtime_error("nested q5090 WeightStore mutation is not allowed");
+        }
+        active_ = true;
+    }
+
+    ~WeightStoreMutationGuard() noexcept {
+        active_ = false;
+        if (clear_requested_) {
+            clear_requested_ = false;
+            store_.clear();
+        }
+    }
+
+    WeightStoreMutationGuard(const WeightStoreMutationGuard&)            = delete;
+    WeightStoreMutationGuard& operator=(const WeightStoreMutationGuard&) = delete;
+
+private:
+    WeightStore& store_;
+    bool& active_;
+    bool& clear_requested_;
+};
 
 constexpr std::uint64_t kHeaderBytes   = 4096;
 constexpr std::size_t kPinnedSlotCount = 2;
@@ -60,7 +88,7 @@ void cuda_throw(cudaError_t err, const char* what) {
 bool should_load(ModuleKind module, const LoadOptions& options) {
     switch (module) {
     case ModuleKind::TextCore:
-        return options.load_text;
+        return true;
     case ModuleKind::MtpDraft:
         return options.load_mtp;
     case ModuleKind::VisionEncoder:
@@ -304,12 +332,14 @@ struct WeightStore::PreparedArtifact {
 
     ParsedQ5090File parsed;
     LoadOptions options;
+    std::optional<Q5090Progress> owned_progress;
 
     ~PreparedArtifact() {
         if (fd >= 0) { ::close(fd); }
     }
 
-    void read_exact(std::uint64_t offset, std::span<std::byte> output) const {
+    void read_exact(std::uint64_t offset, std::span<std::byte> output,
+                    std::uint64_t* bytes_read = nullptr) const {
         std::size_t done = 0;
         while (done < output.size()) {
             const std::size_t request = std::min<std::size_t>(
@@ -328,6 +358,9 @@ struct WeightStore::PreparedArtifact {
             }
             if (got == 0) { throw std::runtime_error("q5090 unexpected EOF"); }
             done += static_cast<std::size_t>(got);
+            if (bytes_read != nullptr) {
+                *bytes_read = checked_add(*bytes_read, static_cast<std::uint64_t>(got));
+            }
         }
     }
 
@@ -371,8 +404,28 @@ public:
     bool in_flight   = false;
 };
 
+class UploadDrainGuard {
+public:
+    explicit UploadDrainGuard(cudaStream_t stream) : stream_(stream) {}
+
+    ~UploadDrainGuard() noexcept {
+        if (!armed_) { return; }
+        // If the stream cannot be proven quiescent, freeing pinned/device storage is unsafe. Treat
+        // this as CUDA-fatal instead of returning a recoverable exception into a poisoned process.
+        if (cudaStreamSynchronize(stream_) != cudaSuccess) { std::terminate(); }
+    }
+
+    void arm() noexcept { armed_ = true; }
+
+    void disarm() noexcept { armed_ = false; }
+
+private:
+    cudaStream_t stream_ = nullptr;
+    bool armed_          = false;
+};
+
 template <typename Artifact>
-void validate_selected_draft_idmap(const Artifact& artifact) {
+void validate_selected_draft_idmap(const Artifact& artifact, std::uint64_t* bytes_read) {
     const bool selected = artifact.options.load_lm_head_draft;
     if (!selected) { return; }
     const ParsedQ5090Tensor* idmap = nullptr;
@@ -385,13 +438,13 @@ void validate_selected_draft_idmap(const Artifact& artifact) {
     }
     if (idmap == nullptr) { throw std::runtime_error("q5090 selected draft id-map is missing"); }
     std::vector<std::byte> bytes(static_cast<std::size_t>(idmap->payload_bytes));
-    artifact.read_exact(idmap->payload_offset, bytes);
+    artifact.read_exact(idmap->payload_offset, bytes, bytes_read);
     std::set<std::uint32_t> ids;
     for (std::uint32_t i = 0; i < idmap->shape[0]; ++i) {
         std::uint32_t id = 0;
         std::memcpy(&id, bytes.data() + 4ULL * i, sizeof(id));
-        if (id >= artifact.parsed.header.vocab_size) {
-            throw std::runtime_error("q5090 draft-head id-map contains out-of-range id");
+        if (id >= 248077U) {
+            throw std::runtime_error("q5090 draft-head id-map contains non-tokenizer vocab id");
         }
         if (!ids.insert(id).second) {
             throw std::runtime_error("q5090 draft-head id-map contains duplicate id");
@@ -406,13 +459,30 @@ WeightStore::WeightStore(Q5090Expectations expected) : expected_(std::move(expec
 WeightStore::~WeightStore() = default;
 
 void WeightStore::prepare(const char* path, const LoadOptions& options) {
+    if (mutation_active_) {
+        throw std::runtime_error("nested q5090 WeightStore mutation is not allowed");
+    }
+    const bool resident = std::any_of(module_arenas_.begin(), module_arenas_.end(),
+                                      [](const auto& arena) { return arena.has_value(); });
+    if (resident || !tensors_.empty() || !quant_.empty() || !fused_.empty()) {
+        throw std::runtime_error(
+            "q5090 prepare requires clear() before replacing resident weights");
+    }
+    if (options.load_lm_head_draft && !options.load_mtp) {
+        throw std::invalid_argument("q5090 LM_HEAD_DRAFT residency requires MTP_DRAFT");
+    }
     clear();
+    WeightStoreMutationGuard mutation_guard(*this, mutation_active_, clear_requested_);
     for (std::size_t i = 0; i < stats_.modules.size(); ++i) {
         stats_.modules[i].module = static_cast<ModuleKind>(i);
     }
 
     auto artifact     = std::make_unique<PreparedArtifact>();
     artifact->options = options;
+    if (options.progress != nullptr) {
+        artifact->owned_progress.emplace(*options.progress);
+        artifact->options.progress = &*artifact->owned_progress;
+    }
     stats_.fail_stage = "header";
     artifact->fd      = ::open(path, O_RDONLY | O_CLOEXEC);
     if (artifact->fd < 0) {
@@ -427,7 +497,7 @@ void WeightStore::prepare(const char* path, const LoadOptions& options) {
     }
     const std::uint64_t file_size = static_cast<std::uint64_t>(artifact->identity.st_size);
 
-    ProgressReporter reporter(options.progress);
+    ProgressReporter reporter(artifact->options.progress);
     std::array<std::byte, kHeaderBytes> header_bytes{};
     const auto header_begin = std::chrono::steady_clock::now();
     reporter.report("read header", 0, kHeaderBytes, true);
@@ -451,6 +521,8 @@ void WeightStore::prepare(const char* path, const LoadOptions& options) {
     artifact->read_exact(kHeaderBytes, std::span<std::byte>(metadata).subspan(
                                            static_cast<std::size_t>(kHeaderBytes),
                                            static_cast<std::size_t>(catalog_bytes)));
+    stats_.catalog_read_bytes    = catalog_bytes;
+    stats_.total_file_read_bytes = checked_add(stats_.header_read_bytes, catalog_bytes);
     reporter.report("read catalog", catalog_bytes, catalog_bytes, true);
     stats_.catalog_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - catalog_begin).count();
@@ -463,14 +535,16 @@ void WeightStore::prepare(const char* path, const LoadOptions& options) {
                          std::span<std::byte>(metadata).subspan(
                              static_cast<std::size_t>(header.tokenizer_index_offset),
                              static_cast<std::size_t>(tokenizer_bytes)));
+    stats_.tokenizer_read_bytes  = tokenizer_bytes;
+    stats_.total_file_read_bytes = checked_add(stats_.total_file_read_bytes, tokenizer_bytes);
     reporter.report("read tokenizer", tokenizer_bytes, tokenizer_bytes, true);
     artifact->parsed = parse_q5090_catalog(metadata, file_size, expected_);
     stats_.tokenizer_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - tokenizer_begin).count();
     artifact->verify_identity();
-    stats_.catalog_read_bytes    = catalog_bytes;
-    stats_.tokenizer_read_bytes  = tokenizer_bytes;
-    stats_.total_file_read_bytes = header.payload_offset;
+    if (stats_.total_file_read_bytes != header.payload_offset) {
+        throw std::runtime_error("q5090 metadata read accounting mismatch");
+    }
 
     for (const std::string& required : options.required_text_tensors) {
         if (!contains_text_name(artifact->parsed, required)) {
@@ -504,7 +578,7 @@ void WeightStore::prepare(const char* path, const LoadOptions& options) {
                 tensor_index, module.module_kind, tensor.payload_offset, tensor.payload_bytes,
                 tensor.payload_offset - module.payload_offset});
         }
-        module_stats.h2d_bytes            = module.payload_bytes;
+        module_stats.h2d_bytes            = 0;
         module_stats.arena_capacity_bytes = module.payload_bytes;
     }
     for (ModuleKind requested : {ModuleKind::TextCore, ModuleKind::MtpDraft,
@@ -530,9 +604,18 @@ void WeightStore::prepare(const char* path, const LoadOptions& options) {
 }
 
 void WeightStore::upload(DeviceContext& ctx) {
+    WeightStoreMutationGuard mutation_guard(*this, mutation_active_, clear_requested_);
     if (!prepared_) { throw std::runtime_error("q5090 upload requires a prepared artifact"); }
-    PreparedArtifact& artifact = *prepared_;
-    ParsedQ5090File& parsed    = artifact.parsed;
+    PreparedArtifact& artifact   = *prepared_;
+    ParsedQ5090File& parsed      = artifact.parsed;
+    stats_.fail_stage            = "identity";
+    stats_.total_file_read_bytes = parsed.header.payload_offset;
+    stats_.h2d_bytes             = 0;
+    stats_.device_resident_bytes = 0;
+    for (auto& module : stats_.modules) {
+        module.h2d_bytes      = 0;
+        module.upload_seconds = 0.0;
+    }
     artifact.verify_identity();
 
     std::vector<TensorRecord> next_tensors;
@@ -542,165 +625,155 @@ void WeightStore::upload(DeviceContext& ctx) {
     std::array<std::optional<DeviceArena>, 4> next_arenas;
     std::size_t next_loaded_payload_bytes = 0;
     std::vector<void*> payloads(parsed.tensors.size(), nullptr);
-    bool dma_enqueued = false;
+    stats_.fail_stage = "selected payload validation";
+    validate_selected_draft_idmap(artifact, &stats_.total_file_read_bytes);
 
-    try {
-        stats_.fail_stage = "selected payload validation";
-        validate_selected_draft_idmap(artifact);
-        if (artifact.options.load_lm_head_draft) {
-            for (const ParsedQ5090Tensor& tensor : parsed.tensors) {
-                if (tensor.module_kind == ModuleKind::LmHeadDraft &&
-                    tensor.source_kind ==
-                        static_cast<std::uint32_t>(SourceKind::LmHeadDraftIdmap)) {
-                    stats_.total_file_read_bytes =
-                        checked_add(stats_.total_file_read_bytes, tensor.payload_bytes);
-                    break;
-                }
-            }
+    for (const ParsedQ5090Module& module : parsed.modules) {
+        ModuleState& state  = next_modules[module_index(module.module_kind)];
+        state.present       = true;
+        state.loaded        = plan_.selected[module_index(module.module_kind)];
+        state.tensor_count  = module.tensor_index_count;
+        state.payload_bytes = module.payload_bytes;
+        if (state.loaded) {
+            next_loaded_payload_bytes += static_cast<std::size_t>(module.payload_bytes);
         }
+    }
 
-        for (const ParsedQ5090Module& module : parsed.modules) {
-            ModuleState& state  = next_modules[module_index(module.module_kind)];
-            state.present       = true;
-            state.loaded        = plan_.selected[module_index(module.module_kind)];
-            state.tensor_count  = module.tensor_index_count;
-            state.payload_bytes = module.payload_bytes;
-            if (state.loaded) {
-                next_loaded_payload_bytes += static_cast<std::size_t>(module.payload_bytes);
-            }
+    next_tensors.reserve(parsed.tensors.size());
+    next_quant.reserve(parsed.segments.size());
+    next_fused.reserve(parsed.tensors.size());
+
+    stats_.fail_stage            = "allocate";
+    std::uint64_t largest_module = 0;
+    for (const PlannedQ5090Module& module : plan_.modules) {
+        const std::size_t index = module_index(module.module);
+        next_arenas[index].emplace(static_cast<std::size_t>(module.arena_bytes));
+        DeviceArena& arena = *next_arenas[index];
+        if (reinterpret_cast<std::uintptr_t>(arena.base()) % 256 != 0) {
+            throw std::runtime_error("q5090 module arena base is not 256-byte aligned");
         }
-
-        next_tensors.reserve(parsed.tensors.size());
-        next_quant.reserve(parsed.segments.size());
-        next_fused.reserve(parsed.tensors.size());
-
-        stats_.fail_stage            = "allocate";
-        std::uint64_t largest_module = 0;
-        for (const PlannedQ5090Module& module : plan_.modules) {
-            const std::size_t index = module_index(module.module);
-            next_arenas[index].emplace(static_cast<std::size_t>(module.arena_bytes));
-            DeviceArena& arena = *next_arenas[index];
-            if (reinterpret_cast<std::uintptr_t>(arena.base()) % 256 != 0) {
-                throw std::runtime_error("q5090 module arena base is not 256-byte aligned");
+        for (const PlannedQ5090Tensor& planned : plan_.tensors) {
+            if (planned.module != module.module) { continue; }
+            Tensor raw     = alloc_payload(arena, planned.file_bytes);
+            auto* expected = static_cast<std::byte*>(arena.base()) + planned.device_offset;
+            if (raw.data != expected) {
+                throw std::runtime_error("q5090 planned device offset mismatch");
             }
-            for (const PlannedQ5090Tensor& planned : plan_.tensors) {
-                if (planned.module != module.module) { continue; }
-                Tensor raw     = alloc_payload(arena, planned.file_bytes);
-                auto* expected = static_cast<std::byte*>(arena.base()) + planned.device_offset;
-                if (raw.data != expected) {
-                    throw std::runtime_error("q5090 planned device offset mismatch");
-                }
-                payloads[static_cast<std::size_t>(planned.tensor_index)] = raw.data;
-            }
-            if (arena.used() != module.arena_bytes || arena.capacity() != module.arena_bytes) {
-                throw std::runtime_error("q5090 exact module arena accounting mismatch");
-            }
-            largest_module = std::max(largest_module, module.file_bytes);
+            payloads[static_cast<std::size_t>(planned.tensor_index)] = raw.data;
         }
-
-        stats_.fail_stage = "upload";
-        const std::size_t slot_bytes =
-            static_cast<std::size_t>(std::min<std::uint64_t>(kPinnedSlotBytes, largest_module));
-        if (slot_bytes == 0) { throw std::runtime_error("q5090 load plan selected no payload"); }
-        std::array<std::unique_ptr<UploadSlot>, kPinnedSlotCount> slots;
-        for (auto& slot : slots) { slot = std::make_unique<UploadSlot>(slot_bytes); }
-        stats_.pinned_slot_count       = kPinnedSlotCount;
-        stats_.pinned_slot_bytes       = slot_bytes;
-        stats_.host_peak_staging_bytes = kPinnedSlotCount * slot_bytes;
-        ProgressReporter upload_reporter(artifact.options.progress);
-        std::uint64_t uploaded_total = 0;
-        upload_reporter.report("upload selected payloads", 0, plan_.h2d_bytes, true);
-        std::size_t next_slot = 0;
-        for (const PlannedQ5090Module& module : plan_.modules) {
-            const auto module_begin = std::chrono::steady_clock::now();
-            DeviceArena& arena      = *next_arenas[module_index(module.module)];
-            std::uint64_t copied    = 0;
-            while (copied < module.file_bytes) {
-                UploadSlot& slot = *slots[next_slot];
-                if (slot.in_flight) {
-                    cuda_throw(cudaEventSynchronize(slot.done),
-                               "cudaEventSynchronize(q5090 upload slot)");
-                    slot.in_flight = false;
-                }
-                const std::size_t chunk = static_cast<std::size_t>(
-                    std::min<std::uint64_t>(slot.buffer.size(), module.file_bytes - copied));
-                artifact.read_exact(
-                    module.file_offset + copied,
-                    std::span<std::byte>(static_cast<std::byte*>(slot.buffer.data()), chunk));
-                stats_.total_file_read_bytes = checked_add(stats_.total_file_read_bytes, chunk);
-                auto* dst                    = static_cast<std::byte*>(arena.base()) + copied;
-                cuda_throw(cudaMemcpyAsync(dst, slot.buffer.data(), chunk, cudaMemcpyHostToDevice,
-                                           ctx.load_stream),
-                           "cudaMemcpyAsync(q5090 staged payload)");
-                dma_enqueued = true;
-                cuda_throw(cudaEventRecord(slot.done, ctx.load_stream),
-                           "cudaEventRecord(q5090 upload slot)");
-                slot.in_flight = true;
-                copied += chunk;
-                uploaded_total += chunk;
-                upload_reporter.report("upload selected payloads", uploaded_total, plan_.h2d_bytes);
-                next_slot = (next_slot + 1) % slots.size();
-            }
-            cuda_throw(cudaStreamSynchronize(ctx.load_stream),
-                       "cudaStreamSynchronize(q5090 module upload)");
-            for (auto& slot : slots) { slot->in_flight = false; }
-            stats_.modules[module_index(module.module)].upload_seconds =
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - module_begin)
-                    .count();
+        if (arena.used() != module.arena_bytes || arena.capacity() != module.arena_bytes) {
+            throw std::runtime_error("q5090 exact module arena accounting mismatch");
         }
-        upload_reporter.report("upload selected payloads", plan_.h2d_bytes, plan_.h2d_bytes, true);
-        stats_.h2d_bytes             = plan_.h2d_bytes;
-        stats_.device_resident_bytes = plan_.device_bytes;
-        artifact.verify_identity();
+        largest_module = std::max(largest_module, module.file_bytes);
+    }
 
-        stats_.fail_stage = "publish";
-        for (std::size_t tensor_index = 0; tensor_index < parsed.tensors.size(); ++tensor_index) {
-            const ParsedQ5090Tensor& tensor = parsed.tensors[tensor_index];
-            void* payload                   = payloads[tensor_index];
-            if (payload == nullptr) { continue; }
+    stats_.fail_stage = "upload";
+    const std::size_t slot_bytes =
+        static_cast<std::size_t>(std::min<std::uint64_t>(kPinnedSlotBytes, largest_module));
+    if (slot_bytes == 0) { throw std::runtime_error("q5090 load plan selected no payload"); }
+    std::array<std::unique_ptr<UploadSlot>, kPinnedSlotCount> slots;
+    for (auto& slot : slots) { slot = std::make_unique<UploadSlot>(slot_bytes); }
+    UploadDrainGuard drain_guard(ctx.load_stream);
+    stats_.pinned_slot_count       = kPinnedSlotCount;
+    stats_.pinned_slot_bytes       = slot_bytes;
+    stats_.host_peak_staging_bytes = kPinnedSlotCount * slot_bytes;
+    ProgressReporter upload_reporter(artifact.options.progress);
+    std::uint64_t uploaded_total = 0;
+    upload_reporter.report("upload selected payloads", 0, plan_.h2d_bytes, true);
+    std::size_t next_slot = 0;
+    for (const PlannedQ5090Module& module : plan_.modules) {
+        const auto module_begin = std::chrono::steady_clock::now();
+        DeviceArena& arena      = *next_arenas[module_index(module.module)];
+        std::uint64_t copied    = 0;
+        while (copied < module.file_bytes) {
+            UploadSlot& slot = *slots[next_slot];
+            if (slot.in_flight) {
+                cuda_throw(cudaEventSynchronize(slot.done),
+                           "cudaEventSynchronize(q5090 upload slot)");
+                slot.in_flight = false;
+            }
+            const std::size_t chunk = static_cast<std::size_t>(
+                std::min<std::uint64_t>(slot.buffer.size(), module.file_bytes - copied));
+            artifact.read_exact(
+                module.file_offset + copied,
+                std::span<std::byte>(static_cast<std::byte*>(slot.buffer.data()), chunk),
+                &stats_.total_file_read_bytes);
+            auto* dst = static_cast<std::byte*>(arena.base()) + copied;
+            cuda_throw(cudaMemcpyAsync(dst, slot.buffer.data(), chunk, cudaMemcpyHostToDevice,
+                                       ctx.load_stream),
+                       "cudaMemcpyAsync(q5090 staged payload)");
+            // The pinned slot and device arena are DMA dependencies immediately after enqueue.
+            // Arm before accounting or any other potentially-throwing work.
+            drain_guard.arm();
+            stats_.h2d_bytes                   = checked_add(stats_.h2d_bytes, chunk);
+            Q5090ModuleLoadStats& module_stats = stats_.modules[module_index(module.module)];
+            module_stats.h2d_bytes             = checked_add(module_stats.h2d_bytes, chunk);
+            cuda_throw(cudaEventRecord(slot.done, ctx.load_stream),
+                       "cudaEventRecord(q5090 upload slot)");
+            slot.in_flight = true;
+            copied += chunk;
+            uploaded_total += chunk;
+            upload_reporter.report("upload selected payloads", uploaded_total, plan_.h2d_bytes);
+            next_slot = (next_slot + 1) % slots.size();
+        }
+        cuda_throw(cudaStreamSynchronize(ctx.load_stream),
+                   "cudaStreamSynchronize(q5090 module upload)");
+        drain_guard.disarm();
+        for (auto& slot : slots) { slot->in_flight = false; }
+        stats_.modules[module_index(module.module)].upload_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - module_begin).count();
+    }
+    upload_reporter.report("upload selected payloads", plan_.h2d_bytes, plan_.h2d_bytes, true);
+    if (stats_.h2d_bytes != plan_.h2d_bytes) {
+        throw std::runtime_error("q5090 H2D byte accounting mismatch");
+    }
+    stats_.device_resident_bytes = plan_.device_bytes;
+    artifact.verify_identity();
 
-            if (tensor.layout == QuantLayout::Contiguous) {
-                if (tensor.segment_count != 1) {
-                    throw std::runtime_error("q5090 contiguous block must have one segment");
-                }
+    stats_.fail_stage = "publish";
+    for (std::size_t tensor_index = 0; tensor_index < parsed.tensors.size(); ++tensor_index) {
+        const ParsedQ5090Tensor& tensor = parsed.tensors[tensor_index];
+        void* payload                   = payloads[tensor_index];
+        if (payload == nullptr) { continue; }
+
+        if (tensor.layout == QuantLayout::Contiguous) {
+            if (tensor.segment_count != 1) {
+                throw std::runtime_error("q5090 contiguous block must have one segment");
+            }
+            const ParsedQ5090Segment& segment =
+                parsed.segments[static_cast<std::size_t>(tensor.segment_begin)];
+            check_int32_shape(tensor);
+            Tensor view = make_tensor_view(payload, dtype_for_contiguous(tensor.qtype),
+                                           tensor.shape, tensor.ndim);
+            next_tensors.push_back(TensorRecord{segment.name, tensor.module_kind,
+                                                segment.source_kind, segment.source_layer,
+                                                tensor.qtype, tensor.payload_bytes, view});
+        } else if (is_quant_layout(tensor.layout)) {
+            for (std::uint32_t j = 0; j < tensor.segment_count; ++j) {
                 const ParsedQ5090Segment& segment =
-                    parsed.segments[static_cast<std::size_t>(tensor.segment_begin)];
-                check_int32_shape(tensor);
-                Tensor view = make_tensor_view(payload, dtype_for_contiguous(tensor.qtype),
-                                               tensor.shape, tensor.ndim);
-                next_tensors.push_back(TensorRecord{segment.name, tensor.module_kind,
-                                                    segment.source_kind, segment.source_layer,
-                                                    tensor.qtype, tensor.payload_bytes, view});
-            } else if (is_quant_layout(tensor.layout)) {
-                for (std::uint32_t j = 0; j < tensor.segment_count; ++j) {
-                    const ParsedQ5090Segment& segment =
-                        parsed.segments[static_cast<std::size_t>(tensor.segment_begin + j)];
-                    next_quant.push_back(QuantRecord{
-                        segment.name, tensor.name, tensor.module_kind, segment.source_kind,
-                        segment.source_layer, segment.row_begin, segment.row_count,
-                        make_quant_descriptor(tensor, segment, payload)});
-                }
-                if (tensor.fusion_group_id != 0) {
-                    const ParsedQ5090FusionGroup& group =
-                        require_fusion_group_record(parsed, tensor, tensor_index);
-                    ParsedQ5090Segment block_seg{};
-                    block_seg.source_kind  = static_cast<std::uint32_t>(SourceKind::Other);
-                    block_seg.source_layer = group.source_layer;
-                    block_seg.row_begin    = 0;
-                    block_seg.row_count    = tensor.shape[0];
-                    next_fused.push_back(FusedBlockRecord{
-                        tensor.name, tensor.module_kind,
-                        static_cast<std::uint16_t>(tensor.fusion_group_id),
-                        static_cast<std::uint16_t>(tensor.fusion_index), group.source_layer,
-                        make_quant_descriptor(tensor, block_seg, payload)});
-                }
-            } else {
-                throw std::runtime_error("unsupported q5090 tensor layout");
+                    parsed.segments[static_cast<std::size_t>(tensor.segment_begin + j)];
+                next_quant.push_back(QuantRecord{segment.name, tensor.name, tensor.module_kind,
+                                                 segment.source_kind, segment.source_layer,
+                                                 segment.row_begin, segment.row_count,
+                                                 make_quant_descriptor(tensor, segment, payload)});
             }
+            if (tensor.fusion_group_id != 0) {
+                const ParsedQ5090FusionGroup& group =
+                    require_fusion_group_record(parsed, tensor, tensor_index);
+                ParsedQ5090Segment block_seg{};
+                block_seg.source_kind  = static_cast<std::uint32_t>(SourceKind::Other);
+                block_seg.source_layer = group.source_layer;
+                block_seg.row_begin    = 0;
+                block_seg.row_count    = tensor.shape[0];
+                next_fused.push_back(FusedBlockRecord{
+                    tensor.name, tensor.module_kind,
+                    static_cast<std::uint16_t>(tensor.fusion_group_id),
+                    static_cast<std::uint16_t>(tensor.fusion_index), group.source_layer,
+                    make_quant_descriptor(tensor, block_seg, payload)});
+            }
+        } else {
+            throw std::runtime_error("unsupported q5090 tensor layout");
         }
-    } catch (...) {
-        if (dma_enqueued) { (void)cudaStreamSynchronize(ctx.load_stream); }
-        throw;
     }
 
     tensors_              = std::move(next_tensors);
@@ -708,7 +781,6 @@ void WeightStore::upload(DeviceContext& ctx) {
     fused_                = std::move(next_fused);
     total_tensor_count_   = parsed.tensors.size();
     loaded_payload_bytes_ = next_loaded_payload_bytes;
-    tokenizer_            = std::move(parsed.tokenizer);
     for (std::size_t i = 0; i < 4; ++i) { modules_[i] = next_modules[i]; }
     module_arenas_ = std::move(next_arenas);
     prepared_.reset();
@@ -801,10 +873,12 @@ void WeightStore::reset_arena_peaks() noexcept {
     }
 }
 
-Q5090TokenizerBundle WeightStore::take_tokenizer_bundle() {
-    if (tokenizer_.empty()) { throw std::runtime_error("q5090 tokenizer bundle is not available"); }
-    Q5090TokenizerBundle bundle = std::move(tokenizer_);
-    tokenizer_                  = {};
+Q5090TokenizerBundle WeightStore::take_prepared_tokenizer_bundle() {
+    if (!prepared_ || prepared_->parsed.tokenizer.empty()) {
+        throw std::runtime_error("q5090 prepared tokenizer bundle is not available");
+    }
+    Q5090TokenizerBundle bundle = std::move(prepared_->parsed.tokenizer);
+    prepared_->parsed.tokenizer = {};
     return bundle;
 }
 
@@ -1035,14 +1109,18 @@ void WeightStore::require_mtp_module_expectations() const {
 }
 
 void WeightStore::clear() noexcept {
+    if (mutation_active_) {
+        clear_requested_ = true;
+        return;
+    }
+    clear_requested_ = false;
     prepared_.reset();
     tensors_.clear();
     quant_.clear();
     fused_.clear();
     for (auto& arena : module_arenas_) { arena.reset(); }
-    tokenizer_ = {};
-    plan_      = {};
-    stats_     = {};
+    plan_  = {};
+    stats_ = {};
     for (ModuleState& module : modules_) { module = ModuleState{}; }
     total_tensor_count_   = 0;
     loaded_payload_bytes_ = 0;

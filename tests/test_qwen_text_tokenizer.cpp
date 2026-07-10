@@ -153,16 +153,6 @@ bool decode_throws_invalid_containing(const qus::text::QwenTokenizer& tokenizer,
     return false;
 }
 
-bool encode_throws_logic_containing(const qus::text::QwenTokenizer& tokenizer,
-                                    std::string_view text, std::string_view expected) {
-    try {
-        (void)tokenizer.encode(text);
-    } catch (const std::logic_error& ex) {
-        return std::string_view(ex.what()).find(expected) != std::string_view::npos;
-    }
-    return false;
-}
-
 int test_valid_minimal_metadata() {
     TempDir dir;
     write_tokenizer_json(dir.path, minimal_tokenizer_json(R"({"a":0,"b":1})"));
@@ -555,9 +545,8 @@ int test_encode_rejects_unsupported_added_token_flags() {
             minimal_tokenizer_json(
                 R"({"!":0})",
                 R"([{"id":1,"content":"<x>","single_word":true,"lstrip":false,"rstrip":false,"normalized":false,"special":false}])"));
-        const qus::text::QwenTokenizer tokenizer(test_bundle_from_dir(dir.path));
-        failures += check(encode_throws_logic_containing(tokenizer, "<x>", "single_word=false"),
-                          "single_word=true added token encode accepted");
+        failures += check(throws_invalid_containing(dir.path, "single_word=false"),
+                          "single_word=true added token construction accepted");
     }
     {
         TempDir dir;
@@ -566,9 +555,8 @@ int test_encode_rejects_unsupported_added_token_flags() {
             minimal_tokenizer_json(
                 R"({"!":0})",
                 R"([{"id":1,"content":"<x>","single_word":false,"lstrip":true,"rstrip":false,"normalized":false,"special":false}])"));
-        const qus::text::QwenTokenizer tokenizer(test_bundle_from_dir(dir.path));
-        failures += check(encode_throws_logic_containing(tokenizer, "<x>", "lstrip=false"),
-                          "lstrip=true added token encode accepted");
+        failures += check(throws_invalid_containing(dir.path, "lstrip=false"),
+                          "lstrip=true added token construction accepted");
     }
     {
         TempDir dir;
@@ -577,9 +565,8 @@ int test_encode_rejects_unsupported_added_token_flags() {
             minimal_tokenizer_json(
                 R"({"!":0})",
                 R"([{"id":1,"content":"<x>","single_word":false,"lstrip":false,"rstrip":true,"normalized":false,"special":false}])"));
-        const qus::text::QwenTokenizer tokenizer(test_bundle_from_dir(dir.path));
-        failures += check(encode_throws_logic_containing(tokenizer, "<x>", "rstrip=false"),
-                          "rstrip=true added token encode accepted");
+        failures += check(throws_invalid_containing(dir.path, "rstrip=false"),
+                          "rstrip=true added token construction accepted");
     }
     {
         TempDir dir;
@@ -588,9 +575,8 @@ int test_encode_rejects_unsupported_added_token_flags() {
             minimal_tokenizer_json(
                 R"({"!":0})",
                 R"([{"id":1,"content":"<x>","single_word":false,"lstrip":false,"rstrip":false,"normalized":true,"special":false}])"));
-        const qus::text::QwenTokenizer tokenizer(test_bundle_from_dir(dir.path));
-        failures += check(encode_throws_logic_containing(tokenizer, "<x>", "normalized=false"),
-                          "normalized=true added token encode accepted");
+        failures += check(throws_invalid_containing(dir.path, "normalized=false"),
+                          "normalized=true added token construction accepted");
     }
     return failures;
 }

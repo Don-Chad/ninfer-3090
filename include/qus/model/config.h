@@ -9,6 +9,9 @@ struct ModelConfig {
     static constexpr int n_layers     = 64;
     static constexpr int intermediate = 17408;
     static constexpr int vocab        = 248320;
+    // Canonical tokenizer ids occupy the contiguous prefix [0,248077).  The remaining lm-head
+    // rows are model-reserved and must never be emitted.
+    static constexpr int tokenizer_vocab = 248077;
 
     static constexpr int gdn_conv_k           = 4;
     static constexpr int gdn_conv_state_width = gdn_conv_k - 1;

@@ -5,7 +5,10 @@
 
 #include <cuda_runtime.h>
 
+#include <dlfcn.h>
+
 #include <cstddef>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -18,6 +21,61 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace {
+std::atomic<bool> g_fail_next_event_record{false};
+std::atomic<int> g_stream_sync_failures_remaining{0};
+std::atomic<bool> g_track_upload_lifetime{false};
+std::atomic<unsigned long long> g_lifetime_sequence{0};
+std::atomic<unsigned long long> g_first_successful_sync{0};
+std::atomic<unsigned long long> g_first_upload_free{0};
+
+void record_first(std::atomic<unsigned long long>& target) {
+    const unsigned long long sequence = g_lifetime_sequence.fetch_add(1) + 1;
+    unsigned long long expected       = 0;
+    (void)target.compare_exchange_strong(expected, sequence);
+}
+
+bool consume_stream_sync_failure() {
+    int remaining = g_stream_sync_failures_remaining.load();
+    while (remaining > 0) {
+        if (g_stream_sync_failures_remaining.compare_exchange_weak(remaining, remaining - 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
+extern "C" cudaError_t CUDARTAPI cudaEventRecord(cudaEvent_t event, cudaStream_t stream) {
+    if (g_fail_next_event_record.exchange(false)) { return cudaErrorUnknown; }
+    using Fn               = cudaError_t(CUDARTAPI*)(cudaEvent_t, cudaStream_t);
+    static const auto real = reinterpret_cast<Fn>(dlsym(RTLD_NEXT, "cudaEventRecord"));
+    return real == nullptr ? cudaErrorUnknown : real(event, stream);
+}
+
+extern "C" cudaError_t CUDARTAPI cudaStreamSynchronize(cudaStream_t stream) {
+    if (consume_stream_sync_failure()) { return cudaErrorUnknown; }
+    using Fn                 = cudaError_t(CUDARTAPI*)(cudaStream_t);
+    static const auto real   = reinterpret_cast<Fn>(dlsym(RTLD_NEXT, "cudaStreamSynchronize"));
+    const cudaError_t result = real == nullptr ? cudaErrorUnknown : real(stream);
+    if (result == cudaSuccess && g_track_upload_lifetime) { record_first(g_first_successful_sync); }
+    return result;
+}
+
+extern "C" cudaError_t CUDARTAPI cudaFreeHost(void* pointer) {
+    if (g_track_upload_lifetime) { record_first(g_first_upload_free); }
+    using Fn               = cudaError_t(CUDARTAPI*)(void*);
+    static const auto real = reinterpret_cast<Fn>(dlsym(RTLD_NEXT, "cudaFreeHost"));
+    return real == nullptr ? cudaErrorUnknown : real(pointer);
+}
+
+extern "C" cudaError_t CUDARTAPI cudaFree(void* pointer) {
+    if (g_track_upload_lifetime) { record_first(g_first_upload_free); }
+    using Fn               = cudaError_t(CUDARTAPI*)(void*);
+    static const auto real = reinterpret_cast<Fn>(dlsym(RTLD_NEXT, "cudaFree"));
+    return real == nullptr ? cudaErrorUnknown : real(pointer);
+}
 
 namespace {
 
@@ -86,6 +144,7 @@ qus::Q5090Expectations expectations() {
     expected.gdn_conv_width          = 4;
     expected.full_attention_interval = 4;
     expected.max_position_embeddings = 262144;
+    expected.validate_model_contract = false;
     return expected;
 }
 
@@ -368,7 +427,7 @@ int expect_throws(Fn&& fn, std::string_view label) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     int count                   = 0;
     const cudaError_t count_err = cudaGetDeviceCount(&count);
     if (cuda_unavailable(count_err)) {
@@ -390,6 +449,20 @@ int main() {
     const qus::ParsedQ5090File parsed        = qus::parse_q5090_file(file, expectations());
     qus::DeviceContext ctx(0);
 
+    if (argc == 2 && std::string_view(argv[1]) == "--fatal-drain") {
+        qus::WeightStore store(expectations());
+        store.prepare(fixture_path.c_str());
+        g_stream_sync_failures_remaining = 2;
+        try {
+            store.upload(ctx);
+        } catch (...) {
+            // A recoverable exception means the guard returned despite failing to prove the stream
+            // quiescent. Only std::terminate inside the guard may make this subprocess nonzero.
+            return 0;
+        }
+        return 0;
+    }
+
     qus::WeightStore default_store(expectations());
     default_store.load(fixture_path.c_str(), ctx);
     failures += expect_default_text_load(default_store, parsed, file);
@@ -407,6 +480,12 @@ int main() {
                         default_store.load_plan().file_read_bytes
                     ? 0
                     : fail("default planned/actual file read bytes mismatch");
+    failures +=
+        expect_throws<std::runtime_error>([&] { default_store.prepare(fixture_path.c_str()); },
+                                          "prepare replacing resident weights without clear");
+    failures += default_store.module_arena(qus::ModuleKind::TextCore) == default_arena
+                    ? 0
+                    : fail("rejected prepare destroyed resident arena");
     default_store.clear();
     failures += default_store.tensor_count() == 0 ? 0 : fail("clear tensor_count mismatch");
     failures += default_store.quant_count() == 0 ? 0 : fail("clear quant_count mismatch");
@@ -492,6 +571,134 @@ int main() {
                     ? 0
                     : fail("failed upload stage was not recorded");
 
+    qus::WeightStore split_progress_store(expectations());
+    int upload_progress_calls = 0;
+    {
+        qus::Q5090Progress short_lived_progress;
+        short_lived_progress.min_interval_bytes = 1;
+        short_lived_progress.callback           = [&](std::string_view phase, std::uint64_t done,
+                                            std::uint64_t) {
+            if (phase == "upload selected payloads" && done > 0) { ++upload_progress_calls; }
+        };
+        qus::LoadOptions options;
+        options.progress = &short_lived_progress;
+        split_progress_store.prepare(fixture_path.c_str(), options);
+    }
+    split_progress_store.upload(ctx);
+    failures += upload_progress_calls > 0
+                    ? 0
+                    : fail("split prepare/upload did not retain progress callback safely");
+
+    qus::WeightStore reentrant_clear_store(expectations());
+    qus::Q5090Progress reentrant_clear_progress;
+    reentrant_clear_progress.min_interval_bytes = 1;
+    reentrant_clear_progress.callback           = [&](std::string_view phase, std::uint64_t done,
+                                            std::uint64_t) {
+        if (phase == "upload selected payloads" && done > 0) { reentrant_clear_store.clear(); }
+    };
+    {
+        qus::LoadOptions options;
+        options.progress = &reentrant_clear_progress;
+        reentrant_clear_store.load(fixture_path.c_str(), ctx, options);
+    }
+    failures += reentrant_clear_store.module_arena(qus::ModuleKind::TextCore) == nullptr &&
+                        reentrant_clear_store.tensor_count() == 0
+                    ? 0
+                    : fail("progress callback clear was not safely deferred");
+
+    qus::WeightStore event_failure_store(expectations());
+    event_failure_store.prepare(fixture_path.c_str());
+    g_lifetime_sequence      = 0;
+    g_first_successful_sync  = 0;
+    g_first_upload_free      = 0;
+    g_track_upload_lifetime  = true;
+    g_fail_next_event_record = true;
+    failures += expect_throws<std::runtime_error>([&] { event_failure_store.upload(ctx); },
+                                                  "injected cudaEventRecord failure");
+    g_track_upload_lifetime = false;
+    failures += event_failure_store.load_stats().h2d_bytes > 0 &&
+                        event_failure_store.module_arena(qus::ModuleKind::TextCore) == nullptr
+                    ? 0
+                    : fail("event failure did not drain and roll back staged upload");
+    failures += g_first_successful_sync > 0 && g_first_upload_free > g_first_successful_sync
+                    ? 0
+                    : fail("event failure freed upload storage before stream drain");
+    event_failure_store.upload(ctx);
+    failures += event_failure_store.module_loaded(qus::ModuleKind::TextCore)
+                    ? 0
+                    : fail("event failure retry did not publish TEXT");
+    failures += event_failure_store.load_stats().total_file_read_bytes ==
+                            event_failure_store.load_plan().file_read_bytes &&
+                        event_failure_store.load_stats().h2d_bytes ==
+                            event_failure_store.load_plan().h2d_bytes
+                    ? 0
+                    : fail("event failure retry retained prior-attempt byte counters");
+
+    qus::WeightStore stream_failure_store(expectations());
+    stream_failure_store.prepare(fixture_path.c_str());
+    g_lifetime_sequence              = 0;
+    g_first_successful_sync          = 0;
+    g_first_upload_free              = 0;
+    g_track_upload_lifetime          = true;
+    g_stream_sync_failures_remaining = 1;
+    failures += expect_throws<std::runtime_error>([&] { stream_failure_store.upload(ctx); },
+                                                  "injected cudaStreamSynchronize failure");
+    g_track_upload_lifetime = false;
+    failures += stream_failure_store.module_arena(qus::ModuleKind::TextCore) == nullptr
+                    ? 0
+                    : fail("stream wait failure published an arena");
+    failures += g_first_successful_sync > 0 && g_first_upload_free > g_first_successful_sync
+                    ? 0
+                    : fail("stream wait failure freed upload storage before guard drain retry");
+    stream_failure_store.upload(ctx);
+    failures += stream_failure_store.module_loaded(qus::ModuleKind::TextCore)
+                    ? 0
+                    : fail("stream wait failure retry did not publish TEXT");
+    failures += stream_failure_store.load_stats().total_file_read_bytes ==
+                            stream_failure_store.load_plan().file_read_bytes &&
+                        stream_failure_store.load_stats().h2d_bytes ==
+                            stream_failure_store.load_plan().h2d_bytes
+                    ? 0
+                    : fail("stream wait failure retry retained prior-attempt byte counters");
+
+    const auto short_read_path =
+        std::filesystem::temp_directory_path() / "qus_q5090_weight_store_short_read.qus";
+    std::filesystem::copy_file(fixture_path, short_read_path,
+                               std::filesystem::copy_options::overwrite_existing);
+    qus::WeightStore short_read_store(expectations());
+    bool truncated = false;
+    qus::Q5090Progress truncate_progress;
+    truncate_progress.min_interval_bytes = 1;
+    truncate_progress.callback = [&](std::string_view phase, std::uint64_t done, std::uint64_t) {
+        if (phase != "upload selected payloads" || done != 0 || truncated) { return; }
+        const auto& module = short_read_store.load_plan().modules.front();
+        std::filesystem::resize_file(short_read_path, module.file_offset + module.file_bytes / 2);
+        truncated = true;
+    };
+    {
+        qus::LoadOptions options;
+        options.progress = &truncate_progress;
+        short_read_store.prepare(short_read_path.c_str(), options);
+    }
+    failures += expect_throws<std::runtime_error>([&] { short_read_store.upload(ctx); },
+                                                  "injected partial payload read");
+    failures += truncated && short_read_store.load_stats().h2d_bytes == 0 &&
+                        short_read_store.load_stats().total_file_read_bytes >
+                            short_read_store.load_plan().modules.front().file_offset &&
+                        short_read_store.load_stats().total_file_read_bytes <
+                            short_read_store.load_plan().file_read_bytes
+                    ? 0
+                    : fail("partial pread bytes were not retained in failed-attempt stats");
+
+    failures += expect_throws<std::invalid_argument>(
+        [&] {
+            qus::LoadOptions options;
+            options.load_lm_head_draft = true;
+            qus::WeightStore store(expectations());
+            store.prepare(fixture_path.c_str(), options);
+        },
+        "draft residency without MTP");
+
     failures += expect_throws<std::runtime_error>(
         [&] {
             qus::LoadOptions options;
@@ -500,6 +707,13 @@ int main() {
             store.prepare(fixture_path.c_str(), options);
         },
         "missing required text tensor");
+
+    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe");
+    const std::string death_command =
+        "ulimit -c 0; \"" + self.string() + "\" --fatal-drain >/dev/null 2>&1";
+    failures += std::system(death_command.c_str()) != 0
+                    ? 0
+                    : fail("double stream-sync failure did not terminate the subprocess");
 
     return failures == 0 ? 0 : fail("weight store q5090 test failed");
 }

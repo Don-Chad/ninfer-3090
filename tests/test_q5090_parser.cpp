@@ -1,5 +1,6 @@
 #include "qus/core/weight_store_parser.h"
 #include "qus/core/weight_store.h"
+#include "qus/text/tokenizer.h"
 
 #include <array>
 #include <cstddef>
@@ -10,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -110,6 +112,7 @@ qus::Q5090Expectations expectations() {
     expected.gdn_conv_width          = 4;
     expected.full_attention_interval = 4;
     expected.max_position_embeddings = 262144;
+    expected.validate_model_contract = false;
     return expected;
 }
 
@@ -135,7 +138,7 @@ int expect_parse_throws(const std::vector<std::byte>& valid, std::string_view la
     std::vector<std::byte> bytes = valid;
     mutate(bytes);
     try {
-        (void)qus::parse_q5090_file(bytes, qus::Q5090Expectations{});
+        (void)qus::parse_q5090_file(bytes, expectations());
     } catch (const std::exception&) { return 0; }
     std::cerr << label << " did not throw\n";
     return 1;
@@ -164,6 +167,13 @@ int check_valid_parse(const std::vector<std::byte>& bytes) {
     failures += parsed.tokenizer.generation_config_json == "{\"eos_token_id\":[0]}\n"
                     ? 0
                     : fail("embedded generation_config.json mismatch");
+    const qus::text::QwenTokenizer tokenizer(parsed.tokenizer);
+    failures += tokenizer.encode("a") == std::vector<int>{0}
+                    ? 0
+                    : fail("embedded artifact tokenizer encode mismatch");
+    failures += tokenizer.default_stop_token_ids() == std::vector<int>{0}
+                    ? 0
+                    : fail("embedded artifact tokenizer stop ids mismatch");
 
     failures += parsed.modules[0].module_kind == qus::ModuleKind::TextCore
                     ? 0
@@ -331,7 +341,9 @@ int check_draft_head_parse() {
     failures += weights.source_kind == static_cast<std::uint32_t>(qus::SourceKind::LmHeadDraft)
                     ? 0
                     : fail("draft weights source kind mismatch");
-    failures += weights.shape[0] == 6 ? 0 : fail("draft weights row count mismatch");
+    failures += weights.shape == std::array<std::uint32_t, 4>{131072, 5120, 1, 1}
+                    ? 0
+                    : fail("draft weights fixed v4.1 shape mismatch");
 
     const auto& idmap = find_tensor(parsed, "lm_head_draft.idmap");
     failures += idmap.qtype == qus::QType::I32_CTRL ? 0 : fail("draft idmap qtype mismatch");
@@ -341,8 +353,9 @@ int check_draft_head_parse() {
     failures += idmap.source_kind == static_cast<std::uint32_t>(qus::SourceKind::LmHeadDraftIdmap)
                     ? 0
                     : fail("draft idmap source kind mismatch");
-    failures += idmap.shape[0] == 6 ? 0 : fail("draft idmap length mismatch");
-    failures += idmap.payload_bytes == 6ULL * 4ULL ? 0 : fail("draft idmap payload bytes mismatch");
+    failures += idmap.shape[0] == 131072 ? 0 : fail("draft idmap length mismatch");
+    failures +=
+        idmap.payload_bytes == 131072ULL * 4ULL ? 0 : fail("draft idmap payload bytes mismatch");
 
     // Negative: clearing LM_HEAD_DRAFT_PRESENT while the draft module remains must be
     // rejected (flag/block coupling).
@@ -435,6 +448,11 @@ int main() {
     const std::uint64_t second_module       = module_offset + kModuleRecordSize;
     const std::uint64_t gate_segment        = segment_offset + kSegmentRecordSize;
     const std::uint64_t up_segment          = segment_offset + 2 * kSegmentRecordSize;
+    const qus::ParsedQ5090File parsed_valid = qus::parse_q5090_file(valid, expectations());
+    const auto& mtp_attn                    = find_tensor(parsed_valid, "mtp.layers.0.attn_in.w8");
+    const std::uint32_t mtp_attn_n          = mtp_attn.shape[0];
+    const std::uint64_t mtp_attn_segments =
+        segment_offset + static_cast<std::uint64_t>(mtp_attn.segment_begin) * kSegmentRecordSize;
 
     failures += expect_parse_throws(valid, "bad magic", [](auto& b) { b[0] = std::byte{0x58}; });
     failures += expect_parse_throws(valid, "bad version", [](auto& b) { write_u32(b, 16, 1); });
@@ -446,6 +464,8 @@ int main() {
         expect_parse_throws(valid, "v4.0 format minor", [](auto& b) { write_u32(b, 232, 0); });
     failures +=
         expect_parse_throws(valid, "unknown header flags", [](auto& b) { write_u32(b, 40, 0x20); });
+    failures += expect_parse_throws(valid, "zero full-attention interval",
+                                    [](auto& b) { write_u32(b, 156, 0); });
     failures +=
         expect_parse_throws(valid, "module flags mismatch", [](auto& b) { write_u32(b, 40, 0x1); });
     failures +=
@@ -464,6 +484,35 @@ int main() {
     failures += expect_parse_throws(valid, "tokenizer crc mismatch", [tokenizer_data](auto& b) {
         b[tokenizer_data] ^= std::byte{1};
     });
+    failures +=
+        expect_parse_throws(valid, "tokenizer vocab id outside model", [tokenizer_index](auto& b) {
+            const std::uint64_t record = tokenizer_index;
+            const std::uint64_t offset = read_u64(b, record + 8);
+            const std::uint64_t bytes  = read_u64(b, record + 16);
+            for (std::uint64_t i = 0; i + 5 < bytes; ++i) {
+                if (b[offset + i] != std::byte{'0'}) { continue; }
+                constexpr char replacement[] = "248320";
+                std::memcpy(b.data() + offset + i, replacement, 6);
+                break;
+            }
+            write_u32(b, record + 24,
+                      crc32(std::span<const std::byte>(b).subspan(
+                          static_cast<std::size_t>(offset), static_cast<std::size_t>(bytes))));
+        });
+    failures +=
+        expect_parse_throws(valid, "tokenizer duplicate merge pair", [tokenizer_index](auto& b) {
+            const std::uint64_t record             = tokenizer_index + 64;
+            const std::uint64_t offset             = read_u64(b, record + 8);
+            const std::uint64_t bytes              = read_u64(b, record + 16);
+            constexpr std::string_view replacement = "a b\na b\n      ";
+            if (bytes != replacement.size()) {
+                throw std::runtime_error("fixture merge size mismatch");
+            }
+            std::memcpy(b.data() + offset, replacement.data(), replacement.size());
+            write_u32(b, record + 24,
+                      crc32(std::span<const std::byte>(b).subspan(
+                          static_cast<std::size_t>(offset), static_cast<std::size_t>(bytes))));
+        });
     failures += expect_parse_throws(valid, "tokenizer malformed JSON", [tokenizer_index](auto& b) {
         const std::uint64_t record = tokenizer_index + 2 * 64;
         const std::uint64_t offset = read_u64(b, record + 8);
@@ -498,6 +547,9 @@ int main() {
                                     [first_entry](auto& b) { write_u16(b, first_entry + 22, 5); });
     failures += expect_parse_throws(valid, "bad name hash",
                                     [first_entry](auto& b) { write_u64(b, first_entry + 8, 123); });
+    failures += expect_parse_throws(valid, "catalog name length cap", [first_entry](auto& b) {
+        write_u32(b, first_entry + 4, 4097);
+    });
     failures += expect_parse_throws(valid, "duplicate name", [first_entry, second_entry](auto& b) {
         write_u32(b, second_entry, read_u32(b, first_entry));
         write_u32(b, second_entry + 4, read_u32(b, first_entry + 4));
@@ -548,12 +600,27 @@ int main() {
     });
     failures += expect_parse_throws(valid, "segment partition mismatch",
                                     [up_segment](auto& b) { write_u32(b, up_segment + 8, 6); });
+    failures += expect_parse_throws(
+        valid, "segment partition uint32 wrap", [mtp_attn_segments, mtp_attn_n](auto& b) {
+            const auto set_range = [&](std::uint32_t index, std::uint32_t begin,
+                                       std::uint32_t count) {
+                const std::uint64_t record =
+                    mtp_attn_segments + static_cast<std::uint64_t>(index) * kSegmentRecordSize;
+                write_u32(b, record + 8, begin);
+                write_u32(b, record + 12, count);
+            };
+            set_range(0, 0, 1);
+            set_range(1, 1, std::numeric_limits<std::uint32_t>::max());
+            set_range(2, 0, 1);
+            set_range(3, 1, mtp_attn_n - 1);
+        });
     failures += expect_parse_throws(valid, "fusion total_n mismatch", [fusion_offset](auto& b) {
         write_u32(b, fusion_offset + 40, read_u32(b, fusion_offset + 40) + 1);
     });
     try {
         qus::Q5090Expectations expected;
-        expected.hidden_size = 1;
+        expected.hidden_size             = 1;
+        expected.validate_model_contract = false;
         (void)qus::parse_q5090_file(valid, expected);
         failures += fail("dims mismatch did not throw");
     } catch (const std::exception&) {}

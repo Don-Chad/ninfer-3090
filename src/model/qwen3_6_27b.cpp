@@ -13,6 +13,7 @@
 #include "qus/kernels/l2norm.h"
 #include "qus/kernels/linear.h"
 #include "qus/kernels/linear_residual.h"
+#include "qus/kernels/logits_mask.h"
 #include "qus/kernels/mlp_gate_up_silu.h"
 #include "qus/kernels/mtp_pack.h"
 #include "qus/kernels/mtp_round.h"
@@ -540,6 +541,7 @@ void Qwen3_6_27B::mtp_draft_argmax(const Tensor& hidden_col, Tensor& logits, Ten
                                        ctx_.stream);
     } else {
         kernels::linear(hidden_col, *lm_head_, logits, work_, ctx_.stream);
+        kernels::mask_invalid_token_logits(logits, kCfg.tokenizer_vocab, ctx_.stream);
         kernels::argmax(logits, draft_token, ctx_.stream);
     }
 }
@@ -636,6 +638,7 @@ void Qwen3_6_27B::target_verify(const Tensor& ids, const Tensor& positions) {
         Tensor target = vector_window(io_.target_tokens, T);
         kernels::rmsnorm(x, *final_norm_, kCfg.rms_eps, true, nullptr, hidden, s);
         kernels::linear(hidden, *lm_head_, logits, work_, s);
+        kernels::mask_invalid_token_logits(logits, kCfg.tokenizer_vocab, s);
         kernels::argmax(logits, target, s);
     }
 
@@ -972,6 +975,7 @@ void Qwen3_6_27B::prefill_impl(std::span<const int> ids, Tap& tap) {
                 if constexpr (Tap::enabled) {
                     tap(TapId::AfterLogits, -1, Phase::Prefill, logits, s);
                 }
+                kernels::mask_invalid_token_logits(logits, kCfg.tokenizer_vocab, s);
                 // Set io_.pos to the bonus token's absolute position (base + T) before picking so
                 // the sampler RNG is keyed by it (prefill purpose keeps it distinct from the first
                 // decode step, which reuses the same io_.pos).
@@ -1089,6 +1093,7 @@ void Qwen3_6_27B::decode_step_impl(Tap& tap) {
     Tensor logits = matrix_window(io_.logits, 1);
     kernels::linear(xf, *lm_head_, logits, work_, s);
     if constexpr (Tap::enabled) { tap(TapId::AfterLogits, -1, Phase::Decode, logits, s); }
+    kernels::mask_invalid_token_logits(logits, kCfg.tokenizer_vocab, s);
     // io_.pos holds the input token's absolute position here; the decode purpose
     // keeps this draw distinct from the prefill bonus token that shares io_.pos.
     if (sampling_config_ != nullptr) {

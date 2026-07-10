@@ -16,6 +16,7 @@ import json
 import os
 import struct
 import time
+import zlib
 from collections import defaultdict
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -29,15 +30,10 @@ from . import draft_head as dh
 from .layouts import decode_row_split_quantized, decode_tensor, encode_tensor
 from .packing import row_split_plane_sizes
 from .quantize import pick_device, quantize_core
+from .tokenizer_contract import validate_tokenizer_assets
 from .convert import ShardReader, assert_config, build_conversion_plan, load_config, materialize_block
 
 DEFAULT_MODEL = "/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16"
-# Base full-artifact counts (no draft head); the draft head adds 2 blocks / 2 segments.
-FULL_ARTIFACT_BLOCKS = 1164
-FULL_ARTIFACT_SEGMENTS = 1312
-FULL_ARTIFACT_FUSIONS = 130
-
-
 def _prod(xs: Sequence[int]) -> int:
     p = 1
     for x in xs:
@@ -45,16 +41,47 @@ def _prod(xs: Sequence[int]) -> int:
     return p
 
 
-def _all_zero(buf: bytes) -> bool:
-    return not buf or buf == b"\x00" * len(buf)
-
-
 def _check_zero_range(f, begin: int, end: int, label: str, problems: List[str]) -> None:
     if end <= begin:
         return
-    f.seek(begin)
-    if not _all_zero(f.read(end - begin)):
-        problems.append(f"{label}: nonzero reserved/padding bytes")
+    file_size = os.fstat(f.fileno()).st_size
+    if begin < 0 or end < 0 or begin > end or end > file_size:
+        problems.append(f"{label}: range [{begin},{end}) outside file")
+        return
+    try:
+        f.seek(begin)
+    except (OSError, OverflowError, ValueError) as exc:
+        problems.append(f"{label}: invalid file range: {exc}")
+        return
+    remaining = end - begin
+    while remaining:
+        chunk = f.read(min(remaining, 8 << 20))
+        if not chunk:
+            problems.append(f"{label}: short read while checking reserved/padding bytes")
+            return
+        if any(chunk):
+            problems.append(f"{label}: nonzero reserved/padding bytes")
+            return
+        remaining -= len(chunk)
+
+
+def _crc32_range(f, begin: int, size: int) -> Optional[int]:
+    file_size = os.fstat(f.fileno()).st_size
+    if begin < 0 or size < 0 or begin > file_size or size > file_size - begin:
+        return None
+    try:
+        f.seek(begin)
+    except (OSError, OverflowError, ValueError):
+        return None
+    remaining = size
+    crc = 0
+    while remaining:
+        chunk = f.read(min(remaining, 8 << 20))
+        if not chunk:
+            return None
+        crc = zlib.crc32(chunk, crc)
+        remaining -= len(chunk)
+    return crc & 0xFFFFFFFF
 
 
 _TEXT_SOURCE_KINDS = {
@@ -146,6 +173,9 @@ def _source_kind_defined(module_kind: int, source_kind: int) -> bool:
 
 
 def _read_name(table: bytes, offset: int, length: int, label: str, problems: List[str]) -> str:
+    if length <= 0 or length > 4096:
+        problems.append(f"{label}: string length {length} outside (0,4096]")
+        return f"<bad:{label}>"
     end = offset + length
     if offset < 0 or length < 0 or end > len(table):
         problems.append(f"{label}: string range [{offset},{end}) outside string table")
@@ -219,7 +249,7 @@ def _read_file(path: str):
         entries = read_records(
             f,
             hdr["tensor_index_offset"],
-            bounded_count(hdr["tensor_count"], 2000, "tensor_count"),
+            bounded_count(hdr["tensor_count"], 2048, "tensor_count"),
             fmt.TENSOR_ENTRY_SIZE,
             fmt.unpack_tensor_entry,
             "TensorEntry",
@@ -227,7 +257,7 @@ def _read_file(path: str):
         segments = read_records(
             f,
             hdr["segment_index_offset"],
-            bounded_count(hdr["segment_count"], 2500, "segment_count"),
+            bounded_count(hdr["segment_count"], 4096, "segment_count"),
             fmt.SEGMENT_RECORD_SIZE,
             fmt.unpack_segment_record,
             "SegmentRecord",
@@ -235,12 +265,12 @@ def _read_file(path: str):
         fusions = read_records(
             f,
             hdr["fusion_group_index_offset"],
-            bounded_count(hdr["fusion_group_count"], 256, "fusion_group_count"),
+            bounded_count(hdr["fusion_group_count"], 512, "fusion_group_count"),
             fmt.FUSION_GROUP_RECORD_SIZE,
             fmt.unpack_fusion_group_record,
             "FusionGroupRecord",
         )
-        string_bytes = bounded_count(hdr["string_table_bytes"], 32 << 20, "string_table_bytes")
+        string_bytes = bounded_count(hdr["string_table_bytes"], 64 << 20, "string_table_bytes")
         if hdr["string_table_offset"] > file_size:
             problems.append("string_table_offset outside file")
             table = b""
@@ -264,7 +294,13 @@ def _read_file(path: str):
             for i, record in enumerate(tokenizer_records):
                 begin = record["data_offset"]
                 end = begin + record["data_bytes"]
-                if begin > file_size or end > file_size or end < begin:
+                max_bytes = fmt.TOKENIZER_MAX_BYTES[fmt.TOKENIZER_KINDS[i]]
+                if record["data_bytes"] <= 0 or record["data_bytes"] > max_bytes:
+                    problems.append(
+                        f"tokenizer[{i}]: data_bytes {record['data_bytes']} outside (0,{max_bytes}]"
+                    )
+                    record["data"] = b""
+                elif begin > file_size or end > file_size or end < begin:
                     problems.append(f"tokenizer[{i}]: data range [{begin},{end}) outside file")
                     record["data"] = b""
                 else:
@@ -488,9 +524,19 @@ def _precision_scope_checks(entries) -> List[str]:
             if qtype == qt.QT_W8G128 and name not in vision_w8g128_names:
                 problems.append(f"{name}: VISION_ENCODER W8G128 is only allowed for merger FC tensors")
 
-    got_vision_w8g128 = {e["name"] for e in entries if e["module_kind"] == qt.MODULE_VISION and e["qtype"] == qt.QT_W8G128}
-    if got_vision_w8g128 != vision_w8g128_names:
-        problems.append(f"VISION W8G128 tensors {sorted(got_vision_w8g128)!r} != {sorted(vision_w8g128_names)!r}")
+    got_vision_w8g128 = {
+        e["name"]
+        for e in entries
+        if e["module_kind"] == qt.MODULE_VISION and e["qtype"] == qt.QT_W8G128
+    }
+    if (
+        any(e["module_kind"] == qt.MODULE_VISION for e in entries)
+        and got_vision_w8g128 != vision_w8g128_names
+    ):
+        problems.append(
+            f"VISION W8G128 tensors {sorted(got_vision_w8g128)!r} "
+            f"!= {sorted(vision_w8g128_names)!r}"
+        )
     return problems
 
 
@@ -498,7 +544,7 @@ def _mtp_layout_checks(modules, entries, segments, fusions, plan) -> List[str]:
     problems: List[str] = []
     mtp_begin, mtp_end = _module_tensor_range(modules, qt.MODULE_MTP)
     if mtp_begin == mtp_end:
-        return ["MTP_DRAFT module missing"]
+        return []
     mtp_entries = entries[mtp_begin:mtp_end]
     mtp_segment_count = sum(e["segment_count"] for e in mtp_entries)
     if len(mtp_entries) != 12:
@@ -615,7 +661,7 @@ def _mtp_layout_checks(modules, entries, segments, fusions, plan) -> List[str]:
     return problems
 
 
-def _tokenizer_checks(records: Sequence[dict]) -> List[str]:
+def _tokenizer_checks(records: Sequence[dict], vocab_size: int) -> List[str]:
     problems: List[str] = []
     if len(records) != fmt.TOKENIZER_RECORD_COUNT:
         return [
@@ -657,28 +703,17 @@ def _tokenizer_checks(records: Sequence[dict]) -> List[str]:
             problems.append(f"{label}: crc32 mismatch")
         if hashlib.sha256(data).digest() != record["sha256"]:
             problems.append(f"{label}: sha256 mismatch")
+    if len(records) == fmt.TOKENIZER_RECORD_COUNT and all(
+        len(record.get("data", b"")) == record["data_bytes"] for record in records
+    ):
         try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            problems.append(f"{label}: invalid UTF-8: {exc}")
-            continue
-        if expected_kind in (fmt.TOKENIZER_JSON, fmt.TOKENIZER_GENERATION_CONFIG):
-            try:
-                root = json.loads(text)
-            except json.JSONDecodeError as exc:
-                problems.append(f"{label}: malformed JSON: {exc}")
-                continue
-            if not isinstance(root, dict):
-                problems.append(f"{label}: JSON root is not an object")
-            elif expected_kind == fmt.TOKENIZER_JSON and "model" not in root:
-                problems.append(f"{label}: tokenizer.json missing model")
-            elif (
-                expected_kind == fmt.TOKENIZER_GENERATION_CONFIG
-                and "eos_token_id" not in root
-            ):
-                problems.append(f"{label}: generation_config.json missing eos_token_id")
-        elif "\x00" in text:
-            problems.append(f"{label}: merges.txt contains NUL")
+            validate_tokenizer_assets(
+                {record["kind"]: record["data"] for record in records},
+                vocab_size,
+                require_canonical=True,
+            )
+        except ValueError as exc:
+            problems.append(f"tokenizer semantic contract: {exc}")
     return problems
 
 
@@ -699,6 +734,24 @@ def _l0_checks(
         problems.append(f"module_count {hdr['module_count']} != {len(plan.modules)}")
     if hdr["layer_count"] != 64:
         problems.append(f"layer_count {hdr['layer_count']} != 64")
+    fixed_model_header = {
+        "hidden_size": 5120,
+        "intermediate_size": 17408,
+        "vocab_size": 248320,
+        "num_attention_heads": 24,
+        "num_key_value_heads": 4,
+        "head_dim": 256,
+        "gdn_key_heads": 16,
+        "gdn_value_heads": 48,
+        "gdn_key_head_dim": 128,
+        "gdn_value_head_dim": 128,
+        "gdn_conv_width": 4,
+        "full_attention_interval": 4,
+        "max_position_embeddings": 262144,
+    }
+    for field, expected_value in fixed_model_header.items():
+        if hdr[field] != expected_value:
+            problems.append(f"{field} {hdr[field]} != {expected_value}")
     if hdr["format_minor"] != fmt.FORMAT_MINOR:
         problems.append(f"format_minor {hdr['format_minor']} != {fmt.FORMAT_MINOR}")
     if hdr["tokenizer_record_count"] != fmt.TOKENIZER_RECORD_COUNT:
@@ -734,17 +787,22 @@ def _l0_checks(
     expected_flags = 0
     for expected_module in plan.modules:
         expected_flags |= module_flag[expected_module.module_kind]
-    if hdr["flags"] != expected_flags:
-        problems.append(f"flags {hdr['flags']:#x} != expected {expected_flags:#x}")
-    exp_blocks = FULL_ARTIFACT_BLOCKS + (2 if draft_present else 0)
-    exp_segments = FULL_ARTIFACT_SEGMENTS + (2 if draft_present else 0)
-    if hdr["tensor_count"] != exp_blocks:
-        problems.append(f"tensor_count {hdr['tensor_count']} != full artifact count {exp_blocks}")
-    if hdr["segment_count"] != exp_segments:
-        problems.append(f"segment_count {hdr['segment_count']} != full artifact count {exp_segments}")
-    if hdr["fusion_group_count"] != FULL_ARTIFACT_FUSIONS:
+    if hdr["flags"] & fmt.FLAG_RESERVED_MASK:
+        problems.append(f"flags contain reserved bits: {hdr['flags']:#x}")
+    if (hdr["flags"] & fmt.FLAG_MODULE_PRESENT_MASK) != expected_flags:
         problems.append(
-            f"fusion_group_count {hdr['fusion_group_count']} != full artifact count {FULL_ARTIFACT_FUSIONS}"
+            f"module-present flags {hdr['flags'] & fmt.FLAG_MODULE_PRESENT_MASK:#x} "
+            f"!= expected {expected_flags:#x}"
+        )
+    exp_blocks = len(plan.blocks)
+    exp_segments = len(plan.segments)
+    if hdr["tensor_count"] != exp_blocks:
+        problems.append(f"tensor_count {hdr['tensor_count']} != expected count {exp_blocks}")
+    if hdr["segment_count"] != exp_segments:
+        problems.append(f"segment_count {hdr['segment_count']} != expected count {exp_segments}")
+    if hdr["fusion_group_count"] != len(plan.fusion_groups):
+        problems.append(
+            f"fusion_group_count {hdr['fusion_group_count']} != expected count {len(plan.fusion_groups)}"
         )
     if hdr["tensor_count"] != len(entries):
         problems.append(f"tensor_count {hdr['tensor_count']} != table entries {len(entries)}")
@@ -852,7 +910,7 @@ def _l0_checks(
         problems.append(f"payload_bytes {hdr['payload_bytes']} != file payload {file_size - hdr['payload_offset']}")
     if hdr["payload_offset"] > file_size:
         problems.append(f"payload_offset {hdr['payload_offset']} > file size {file_size}")
-    problems += _tokenizer_checks(tokenizer_records)
+    problems += _tokenizer_checks(tokenizer_records, hdr["vocab_size"])
 
     module_kinds = [m["module_kind"] for m in modules]
     expected_module_kinds = [m.module_kind for m in plan.modules]
@@ -1038,9 +1096,11 @@ def _l0_checks(
                 if off != expected_off:
                     problems.append(f"{e['name']}: payload_offset {off} != next aligned offset {expected_off}")
                 _check_zero_range(f, prev_end, off, f"{e['name']}: inter-block padding", problems)
-            f.seek(off)
-            payload = f.read(nb)
-            if fmt.crc32(payload) != e["crc32"]:
+            payload_crc = _crc32_range(f, off, nb)
+            if payload_crc is None:
+                problems.append(f"{e['name']}: short payload read")
+                continue
+            if payload_crc != e["crc32"]:
                 problems.append(f"{e['name']}: crc32 mismatch")
             if (
                 e["module_kind"] == qt.MODULE_LM_HEAD_DRAFT
@@ -1048,11 +1108,24 @@ def _l0_checks(
                 and e["qtype"] == qt.QT_I32
                 and nb % 4 == 0
             ):
-                ids = struct.unpack(f"<{nb // 4}i", payload)
-                if len(set(ids)) != len(ids):
-                    problems.append(f"{e['name']}: id-map contains duplicate vocab ids")
-                if any(token_id < 0 or token_id >= hdr["vocab_size"] for token_id in ids):
-                    problems.append(f"{e['name']}: id-map contains out-of-range vocab ids")
+                expected_bytes = dh.DRAFT_HEAD_N * 4
+                if nb != expected_bytes:
+                    problems.append(
+                        f"{e['name']}: id-map bytes {nb} != fixed v4.1 bytes {expected_bytes}"
+                    )
+                else:
+                    f.seek(off)
+                    payload = f.read(nb)
+                    ids = struct.unpack(f"<{nb // 4}i", payload)
+                    if len(set(ids)) != len(ids):
+                        problems.append(f"{e['name']}: id-map contains duplicate vocab ids")
+                    if any(
+                        token_id < 0 or token_id >= fmt.TOKENIZER_OCCUPIED_ID_COUNT
+                        for token_id in ids
+                    ):
+                        problems.append(
+                            f"{e['name']}: id-map contains non-tokenizer vocab ids"
+                        )
             if (
                 e["layout"] == qt.LAYOUT_ROW_SPLIT
                 and qt.is_quant(e["qtype"])
@@ -1394,33 +1467,31 @@ def main() -> None:
         default=dh.DEFAULT_RANKING,
         help="frequency ranking (.counts.i64) to re-derive the draft-head shortlist for L1",
     )
-    ap.add_argument(
-        "--tokenizer",
-        default=None,
-        help="HF dir with tokenizer_config.json for force-include specials (default: --model)",
-    )
     ap.add_argument("--dump", default=os.path.join("out", "conv_dump.v4_1.json"))
     args = ap.parse_args()
 
     t0 = time.time()
-    cfg = load_config(args.model)
-    assert_config(cfg, force=False)
-    tc = cfg.get("text_config", cfg)
-
     hdr, modules, entries, segments, fusions, tokenizer_records, read_problems = _read_file(
         args.file
     )
-    draft_n = next(
-        (
-            int(e["shape"][0])
-            for e in entries
-            if e["module_kind"] == qt.MODULE_LM_HEAD_DRAFT
-            and e["source_kind"] == qt.SK_LM_HEAD_DRAFT
-            and e["shape"]
-        ),
-        None,
+    draft_present = any(
+        e["module_kind"] == qt.MODULE_LM_HEAD_DRAFT
+        and e["source_kind"] == qt.SK_LM_HEAD_DRAFT
+        for e in entries
     )
-    plan = build_conversion_plan(cfg, draft_head_n=draft_n)
+    module_kinds = {module["module_kind"] for module in modules}
+    l0_cfg = {
+        "text_config": {
+            "num_hidden_layers": 64,
+            "full_attention_interval": 4,
+        }
+    }
+    plan = build_conversion_plan(
+        l0_cfg,
+        include_draft_head=draft_present,
+        include_mtp=qt.MODULE_MTP in module_kinds,
+        include_vision=qt.MODULE_VISION in module_kinds,
+    )
     dump = _make_dump(
         args.file, hdr, modules, entries, segments, fusions, tokenizer_records
     )
@@ -1460,22 +1531,38 @@ def main() -> None:
     l1: List[str] = []
     agg: Dict[int, dict] = {}
     if not args.quick and not l0:
+        cfg = load_config(args.model)
+        assert_config(cfg, force=False)
+        tc = cfg.get("text_config", cfg)
         device = pick_device(args.device)
         print(f"device: {device}", flush=True)
         with open(os.path.join(args.model, "model.safetensors.index.json")) as f:
             weight_map = json.load(f)["weight_map"]
         reader = ShardReader(args.model, weight_map)
+        for record in tokenizer_records:
+            source_name = fmt.TOKENIZER_SOURCE_NAME[record["kind"]]
+            source_path = os.path.join(args.model, source_name)
+            try:
+                with open(source_path, "rb") as source_file:
+                    source_bytes = source_file.read()
+            except OSError as exc:
+                l1.append(f"failed to read source tokenizer asset {source_path}: {exc}")
+                continue
+            if source_bytes != record["data"]:
+                l1.append(f"embedded tokenizer asset differs from source model: {source_name}")
         missing = sorted({s.source.src_name for s in plan.segments if not reader.has(s.source.src_name)})
         if missing:
             l1.append("missing source tensors:\n  " + "\n  ".join(missing))
         else:
             draft_ctx = None
-            if draft_n is not None:
-                tokenizer_dir = args.tokenizer or args.model
+            if draft_present:
                 draft_ctx = dh.compute_shortlist(
-                    args.ranking, tokenizer_dir, draft_n, tc["vocab_size"]
+                    args.ranking, args.model, dh.DRAFT_HEAD_N, tc["vocab_size"]
                 )
-            l1, agg = _l1_checks(args.file, entries, plan, reader, device, dump, draft_ctx)
+            value_problems, agg = _l1_checks(
+                args.file, entries, plan, reader, device, dump, draft_ctx
+            )
+            l1.extend(value_problems)
             print("L1 value checks done; problems=" + str(len(l1)), flush=True)
     elif args.quick:
         print("L1 skipped (--quick)", flush=True)

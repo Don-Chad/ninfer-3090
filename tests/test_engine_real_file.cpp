@@ -171,6 +171,18 @@ int expect_lm_head_draft_parity(const std::filesystem::path& weights_path) {
                         kTextPayloadBytes + kMtpPayloadBytes + kDraftPayloadBytes
                     ? 0
                     : fail("LM_HEAD_DRAFT exact resident bytes mismatch");
+    try {
+        (void)engine.prefill(std::vector<int>{-1});
+        failures += fail("Engine accepted a negative prompt token id");
+    } catch (const std::invalid_argument&) {}
+    try {
+        (void)engine.prefill(std::vector<int>{qus::model::kCfg.vocab});
+        failures += fail("Engine accepted a prompt token id at vocab_size");
+    } catch (const std::invalid_argument&) {}
+    try {
+        engine.set_stop_token_ids({qus::model::kCfg.vocab});
+        failures += fail("Engine accepted a stop token id at vocab_size");
+    } catch (const std::invalid_argument&) {}
     return failures;
 }
 

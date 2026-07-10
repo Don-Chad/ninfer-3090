@@ -165,6 +165,12 @@ std::vector<AddedToken> load_added_tokens(const Json& root, std::string_view lab
     std::unordered_set<int> seen_added_ids;
     for (const Json& item : added) {
         AddedToken token = parse_added_token(item, label);
+        if (token.single_word || token.lstrip || token.rstrip || token.normalized) {
+            throw std::invalid_argument(
+                "QwenTokenizer only supports added tokens with single_word=false, "
+                "lstrip=false, rstrip=false, and normalized=false in " +
+                std::string(label));
+        }
         const auto index = static_cast<std::size_t>(token.id);
         if (occupied_vocab_ids.contains(token.id)) {
             throw std::invalid_argument("field added_tokens overlaps existing id in " +
@@ -563,14 +569,6 @@ QwenTokenizer::QwenTokenizer(Q5090TokenizerBundle bundle) {
 }
 
 std::vector<int> QwenTokenizer::encode(std::string_view text, EncodeOptions options) const {
-    for (const AddedToken& token : added_tokens_) {
-        if (token.single_word || token.lstrip || token.rstrip || token.normalized) {
-            throw std::logic_error(
-                "QwenTokenizer::encode only supports Qwen added tokens with single_word=false, "
-                "lstrip=false, rstrip=false, and normalized=false");
-        }
-    }
-
     if (text.empty()) { return {}; }
     if (!options.parse_added_tokens) {
         std::vector<int> ids;

@@ -144,6 +144,7 @@ qus::Q5090Expectations expectations() {
     expected.gdn_conv_width          = 4;
     expected.full_attention_interval = 4;
     expected.max_position_embeddings = 262144;
+    expected.validate_model_contract = true;
     return expected;
 }
 
@@ -507,10 +508,14 @@ int run_default_load(const std::filesystem::path& file_path, std::uint64_t text_
 }
 
 int run_draft_load(const std::filesystem::path& file_path, std::uint64_t text_payload_bytes,
-                   std::uint64_t draft_payload_bytes, qus::Q5090Progress* progress) {
-    if (!enough_free_memory(text_payload_bytes + draft_payload_bytes + kGiB)) { return 0; }
+                   std::uint64_t draft_payload_bytes, std::uint64_t mtp_payload_bytes,
+                   qus::Q5090Progress* progress) {
+    if (!enough_free_memory(text_payload_bytes + draft_payload_bytes + mtp_payload_bytes + kGiB)) {
+        return 0;
+    }
     qus::DeviceContext ctx(0);
     qus::LoadOptions options;
+    options.load_mtp           = true;
     options.load_lm_head_draft = true;
     options.progress           = progress;
     qus::WeightStore store(expectations());
@@ -519,9 +524,10 @@ int run_draft_load(const std::filesystem::path& file_path, std::uint64_t text_pa
     failures += store.module_loaded(qus::ModuleKind::LmHeadDraft)
                     ? 0
                     : fail("real LM_HEAD_DRAFT not loaded");
-    failures += store.loaded_payload_bytes() == text_payload_bytes + draft_payload_bytes
-                    ? 0
-                    : fail("real LM_HEAD_DRAFT loaded bytes mismatch");
+    failures +=
+        store.loaded_payload_bytes() == text_payload_bytes + draft_payload_bytes + mtp_payload_bytes
+            ? 0
+            : fail("real LM_HEAD_DRAFT loaded bytes mismatch");
     failures += expect_real_draft_head(store);
     return failures;
 }
@@ -621,7 +627,8 @@ int main() {
 
     failures += run_default_load(file_path, text_payload_bytes, &progress);
     cudaDeviceSynchronize();
-    failures += run_draft_load(file_path, text_payload_bytes, draft_payload_bytes, &progress);
+    failures += run_draft_load(file_path, text_payload_bytes, draft_payload_bytes,
+                               mtp_payload_bytes, &progress);
     cudaDeviceSynchronize();
     failures += run_mtp_load(file_path, text_payload_bytes, mtp_payload_bytes, &progress);
     cudaDeviceSynchronize();

@@ -17,7 +17,6 @@
 namespace qus {
 
 struct LoadOptions {
-    bool load_text          = true;
     bool load_mtp           = false;
     bool load_vision        = false;
     bool load_lm_head_draft = false;
@@ -62,6 +61,8 @@ struct Q5090ModuleLoadStats {
 };
 
 struct Q5090LoadStats {
+    // Byte counters describe the latest prepare/upload attempt. Payload reads and H2D enqueue
+    // operations are accounted incrementally, including work completed before an exception.
     std::uint64_t header_read_bytes       = 0;
     std::uint64_t catalog_read_bytes      = 0;
     std::uint64_t tokenizer_read_bytes    = 0;
@@ -96,7 +97,8 @@ public:
     WeightStore& operator=(const WeightStore&) = delete;
 
     // CPU-only phase. Opens one stable fd, reads/validates Header first, then the bounded
-    // catalog/tokenizer region, and derives the exact residency plan. No CUDA call is made.
+    // catalog/tokenizer region, and derives the exact residency plan. No CUDA call is made. A
+    // resident store is one-shot; call clear() explicitly before preparing a replacement.
     void prepare(const char* path, const LoadOptions& options = {});
     // GPU phase. Allocates one exact arena per selected module and transactionally publishes
     // descriptors only after staged uploads and the final file-identity check succeed.
@@ -121,8 +123,11 @@ public:
     const Q5090LoadStats& load_stats() const noexcept;
     const DeviceArena* module_arena(ModuleKind module) const noexcept;
     void reset_arena_peaks() noexcept;
-    Q5090TokenizerBundle take_tokenizer_bundle();
+    // Transfer the already parser-validated CPU bundle after prepare() and before upload().
+    Q5090TokenizerBundle take_prepared_tokenizer_bundle();
     void require_mtp_module_expectations() const;
+    // A clear requested from a progress callback is deferred until the active prepare/upload
+    // transaction has unwound. Nested prepare/load/upload calls fail immediately.
     void clear() noexcept;
 
 private:
@@ -162,11 +167,12 @@ private:
     std::vector<FusedBlockRecord> fused_;
     ModuleState modules_[4];
     std::array<std::optional<DeviceArena>, 4> module_arenas_;
-    Q5090TokenizerBundle tokenizer_;
     Q5090LoadPlan plan_;
     Q5090LoadStats stats_;
     std::size_t total_tensor_count_   = 0;
     std::size_t loaded_payload_bytes_ = 0;
+    bool mutation_active_             = false;
+    bool clear_requested_             = false;
 };
 
 } // namespace qus

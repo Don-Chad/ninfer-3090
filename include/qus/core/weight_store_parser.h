@@ -31,6 +31,9 @@ struct Q5090Expectations {
     std::optional<std::uint32_t> gdn_conv_width;
     std::optional<std::uint32_t> full_attention_interval;
     std::optional<std::uint32_t> max_position_embeddings;
+    // Fixed Qwen3.6 inventory checks are on by default. Compact binary-contract fixtures may disable
+    // them while exercising the generic byte-layout parser without constructing 16+ GiB payloads.
+    bool validate_model_contract = true;
 };
 
 struct ParsedQ5090Header {

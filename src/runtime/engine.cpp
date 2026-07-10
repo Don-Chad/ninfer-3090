@@ -13,6 +13,15 @@
 namespace qus {
 namespace {
 
+void validate_token_ids(std::span<const int> ids, std::string_view label) {
+    for (const int id : ids) {
+        if (id < 0 || id >= static_cast<int>(model::kCfg.tokenizer_vocab)) {
+            throw std::invalid_argument(std::string(label) +
+                                        " contains token id outside canonical tokenizer domain");
+        }
+    }
+}
+
 constexpr std::size_t kMiB        = 1024ULL * 1024ULL;
 constexpr std::size_t kArenaAlign = 256ULL;
 
@@ -257,9 +266,7 @@ ArenaMemoryStats weight_arena_stats(const std::optional<WeightStore>& weights) n
 } // namespace
 
 Engine::Engine(EngineOptions options) : options_(options) {
-    for (const int id : options_.stop_token_ids) {
-        if (id < 0) { throw std::invalid_argument("Engine stop_token_ids must be nonnegative"); }
-    }
+    validate_token_ids(options_.stop_token_ids, "Engine stop_token_ids");
     std::sort(options_.stop_token_ids.begin(), options_.stop_token_ids.end());
     options_.stop_token_ids.erase(
         std::unique(options_.stop_token_ids.begin(), options_.stop_token_ids.end()),
@@ -296,6 +303,7 @@ Q5090Expectations Engine::expectations() {
     expected.gdn_conv_width          = model::kCfg.gdn_conv_k;
     expected.full_attention_interval = model::kCfg.full_interval;
     expected.max_position_embeddings = 262144;
+    expected.validate_model_contract = true;
     return expected;
 }
 
@@ -494,6 +502,7 @@ void Engine::load(const std::string& path) {
     kv_.reset();
     mtp_kv_.reset();
     weights_.reset();
+    tokenizer_.reset();
     work_.reset();
     cache_arena_.reset();
     ctx_.reset();
@@ -507,6 +516,10 @@ void Engine::load(const std::string& path) {
     load_options.load_mtp           = options_.mtp_draft_tokens > 0;
     load_options.load_lm_head_draft = options_.use_lm_head_draft;
     weights_->prepare(path.c_str(), load_options);
+
+    // Construct the real tokenizer before the first CUDA runtime call or device allocation.  This
+    // is the single authoritative runtime-consumer check; callers receive this same instance.
+    tokenizer_ = std::make_unique<text::QwenTokenizer>(weights_->take_prepared_tokenizer_bundle());
 
     ctx_.emplace(options_.device);
     weights_->upload(*ctx_);
@@ -597,15 +610,13 @@ void Engine::load(const std::string& path) {
     }
 }
 
-Q5090TokenizerBundle Engine::take_tokenizer_bundle() {
-    if (!weights_) { throw std::runtime_error("Engine weights are not loaded"); }
-    return weights_->take_tokenizer_bundle();
+std::unique_ptr<text::QwenTokenizer> Engine::take_tokenizer() {
+    if (!tokenizer_) { throw std::runtime_error("Engine tokenizer is not available"); }
+    return std::move(tokenizer_);
 }
 
 void Engine::set_stop_token_ids(std::vector<int> ids) {
-    for (const int id : ids) {
-        if (id < 0) { throw std::invalid_argument("Engine stop_token_ids must be nonnegative"); }
-    }
+    validate_token_ids(ids, "Engine stop_token_ids");
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
     options_.stop_token_ids = std::move(ids);
@@ -736,6 +747,7 @@ bool Engine::is_stop_token(int token) const noexcept {
 int Engine::prefill(std::span<const int> ids) {
     require_loaded();
     if (ids.empty()) { throw std::invalid_argument("Engine::prefill requires tokens"); }
+    validate_token_ids(ids, "Engine::prefill");
     if (ids.size() > options_.max_ctx) {
         throw std::invalid_argument("Engine::prefill exceeds max_ctx");
     }
@@ -760,6 +772,7 @@ int Engine::prefill(std::span<const int> ids) {
 int Engine::prefill_append(std::span<const int> ids) {
     require_loaded();
     if (ids.empty()) { throw std::invalid_argument("Engine::prefill_append requires tokens"); }
+    validate_token_ids(ids, "Engine::prefill_append");
     if (kv_->pos == 0) {
         throw std::runtime_error("Engine::prefill_append has no resident cache to extend");
     }
@@ -784,6 +797,7 @@ int Engine::prefill_append(std::span<const int> ids) {
 int Engine::prefill_cached(std::span<const int> ids, std::uint32_t content_boundary) {
     require_loaded();
     if (ids.empty()) { throw std::invalid_argument("Engine::prefill_cached requires tokens"); }
+    validate_token_ids(ids, "Engine::prefill_cached");
     if (ids.size() > options_.max_ctx) {
         throw std::invalid_argument("Engine::prefill_cached exceeds max_ctx");
     }

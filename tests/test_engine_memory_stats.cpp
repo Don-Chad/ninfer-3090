@@ -1,11 +1,6 @@
-#include "qus/core/device.h"
 #include "qus/runtime/engine.h"
 
-#include <cuda_runtime.h>
-
 #include <cstddef>
-#include <cstdlib>
-#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -14,10 +9,6 @@
 namespace {
 
 constexpr std::size_t kMiB = 1024ULL * 1024ULL;
-
-bool cuda_unavailable(cudaError_t err) {
-    return err == cudaErrorNoDevice || err == cudaErrorInsufficientDriver;
-}
 
 int fail(std::string_view message) {
     std::cerr << message << '\n';
@@ -43,65 +34,6 @@ int expect_absent(const qus::ArenaMemoryStats& stats, std::string_view label) {
     failures += expect_size(stats.used_bytes, 0, std::string(label) + " used");
     failures += expect_size(stats.peak_used_bytes, 0, std::string(label) + " peak");
     return failures;
-}
-
-int expect_present(const qus::ArenaMemoryStats& stats, std::string_view label, bool require_used) {
-    int failures = 0;
-    failures += stats.present ? 0 : fail(std::string(label) + " absent");
-    failures += stats.capacity_bytes > 0 ? 0 : fail(std::string(label) + " zero capacity");
-    if (require_used) {
-        failures += stats.used_bytes > 0 ? 0 : fail(std::string(label) + " zero used");
-    }
-    failures += stats.peak_used_bytes >= stats.used_bytes
-                    ? 0
-                    : fail(std::string(label) + " peak smaller than used");
-    return failures;
-}
-
-int expect_peak_reset(const qus::ArenaMemoryStats& stats, std::string_view label) {
-    if (!stats.present) { return fail(std::string(label) + " absent after reset"); }
-    return stats.peak_used_bytes == stats.used_bytes
-               ? 0
-               : fail(std::string(label) + " peak was not reset to used");
-}
-
-std::size_t gdn_single_ssm_bytes() {
-    return static_cast<std::size_t>(qus::model::kCfg.n_gdn()) *
-           static_cast<std::size_t>(qus::model::kCfg.gdn_k_dim) *
-           static_cast<std::size_t>(qus::model::kCfg.gdn_v_dim) *
-           static_cast<std::size_t>(qus::model::kCfg.gdn_v_heads) * sizeof(float);
-}
-
-std::size_t gdn_single_conv_bytes() {
-    return static_cast<std::size_t>(qus::model::kCfg.n_gdn()) *
-           static_cast<std::size_t>(qus::model::kCfg.conv_dim) *
-           static_cast<std::size_t>(qus::model::kCfg.gdn_conv_state_width) * sizeof(std::uint16_t);
-}
-
-std::size_t kv_payload_bytes(std::uint32_t max_context, int layers, qus::DType dtype) {
-    const std::uint32_t padded_context = ((max_context + 127U) / 128U) * 128U;
-    const std::size_t vectors = static_cast<std::size_t>(layers) * static_cast<std::size_t>(2) *
-                                static_cast<std::size_t>(qus::model::kCfg.n_kv) *
-                                static_cast<std::size_t>(padded_context);
-    std::size_t bytes =
-        vectors * static_cast<std::size_t>(qus::model::kCfg.head_dim) * qus::dtype_size(dtype);
-    if (dtype == qus::DType::I8) {
-        bytes += vectors *
-                 static_cast<std::size_t>(qus::model::kCfg.head_dim / qus::kKvQuantGroup) *
-                 qus::dtype_size(qus::DType::FP16);
-    }
-    return bytes;
-}
-
-std::filesystem::path make_fixture() {
-    const auto path =
-        std::filesystem::temp_directory_path() / "qus_engine_memory_stats_fixture.qus";
-    const std::filesystem::path script =
-        std::filesystem::path(QUS_SOURCE_DIR) / "tests/fixtures/make_q5090_fixture.py";
-    const std::string command =
-        "python3 \"" + script.string() + "\" --profile model-bind --out \"" + path.string() + "\"";
-    if (std::system(command.c_str()) != 0) { throw std::runtime_error("fixture generator failed"); }
-    return path;
 }
 
 int test_unloaded_stats_do_not_need_cuda() {
@@ -147,159 +79,20 @@ int test_unloaded_stats_do_not_need_cuda() {
         (void)bad_engine;
         failures += fail("too large mtp_draft_tokens did not throw");
     } catch (const std::invalid_argument&) {}
-    return failures;
-}
-
-int test_loaded_stats_with_cuda() {
-    int count                   = 0;
-    const cudaError_t count_err = cudaGetDeviceCount(&count);
-    if (cuda_unavailable(count_err)) {
-        std::cout << "SKIP: no usable CUDA device\n";
-        return 0;
-    }
-    if (count_err != cudaSuccess) {
-        std::cerr << "cudaGetDeviceCount failed: " << cudaGetErrorString(count_err) << '\n';
-        return 1;
-    }
-    if (count == 0) {
-        std::cout << "SKIP: no CUDA devices\n";
-        return 0;
-    }
-
-    const std::filesystem::path fixture = make_fixture();
-    qus::EngineOptions options;
-    options.device        = 0;
-    options.max_ctx       = 4;
-    options.prefill_chunk = 128;
-
-    qus::Engine engine(options);
-    engine.load(fixture.string());
-
-    int failures                       = 0;
-    const qus::EngineMemoryStats stats = engine.memory_stats();
-    failures += stats.loaded ? 0 : fail("loaded stats did not report loaded");
-    failures += stats.device == 0 ? 0 : fail("loaded stats device mismatch");
-    failures += expect_u32(stats.max_context, 4, "loaded stats max_context");
-    failures += expect_u32(stats.position, 0, "loaded stats position");
-    failures += expect_present(stats.weights, "loaded weights", true);
-    failures += expect_present(stats.cache, "loaded cache", true);
-    failures += expect_present(stats.workspace, "loaded workspace", false);
-    failures += stats.kv_dtype == qus::DType::BF16 ? 0 : fail("loaded kv dtype mismatch");
-    failures += expect_size(stats.kv_quant_group, 0, "loaded kv quant group");
-    failures +=
-        expect_size(stats.kv_cache_payload_bytes,
-                    kv_payload_bytes(options.max_ctx, qus::model::kCfg.n_full(), qus::DType::BF16),
-                    "loaded kv payload");
-    failures += expect_size(stats.workspace.capacity_bytes, qus::Engine::default_work_bytes(128),
-                            "workspace capacity");
-    failures += stats.q5090_loaded_payload_bytes > 0 ? 0 : fail("loaded payload bytes zero");
-    failures += stats.q5090_tensor_count > 0 ? 0 : fail("q5090 tensor count zero");
-    failures += stats.q5090_quant_count > 0 ? 0 : fail("q5090 quant count zero");
-
-    engine.reset_memory_peaks();
-    const qus::EngineMemoryStats after_reset = engine.memory_stats();
-    failures += expect_peak_reset(after_reset.weights, "weights after reset");
-    failures += expect_peak_reset(after_reset.cache, "cache after reset");
-    failures += expect_peak_reset(after_reset.workspace, "workspace after reset");
-    failures += expect_size(after_reset.q5090_loaded_payload_bytes,
-                            stats.q5090_loaded_payload_bytes, "loaded payload stable after reset");
-    failures += expect_size(after_reset.q5090_tensor_count, stats.q5090_tensor_count,
-                            "tensor count stable after reset");
-    failures += expect_size(after_reset.q5090_quant_count, stats.q5090_quant_count,
-                            "quant count stable after reset");
-
-    qus::EngineOptions mtp_options;
-    mtp_options.device           = 0;
-    mtp_options.max_ctx          = 4;
-    mtp_options.prefill_chunk    = 128;
-    mtp_options.mtp_draft_tokens = 1;
-    qus::Engine mtp_engine(mtp_options);
-    mtp_engine.load(fixture.string());
-    const qus::EngineMemoryStats mtp_stats = mtp_engine.memory_stats();
-    failures += mtp_stats.loaded ? 0 : fail("MTP loaded stats did not report loaded");
-    failures += mtp_stats.q5090_loaded_payload_bytes > stats.q5090_loaded_payload_bytes
-                    ? 0
-                    : fail("MTP load did not increase loaded payload bytes");
-    failures += mtp_stats.q5090_tensor_count == stats.q5090_tensor_count
-                    ? 0
-                    : fail("MTP load changed tensor count");
-    failures += mtp_stats.q5090_quant_count > stats.q5090_quant_count
-                    ? 0
-                    : fail("MTP load did not increase published quant count");
-    failures += mtp_stats.cache.capacity_bytes > stats.cache.capacity_bytes
-                    ? 0
-                    : fail("MTP load did not increase cache capacity");
-    failures += mtp_stats.workspace.capacity_bytes > stats.workspace.capacity_bytes
-                    ? 0
-                    : fail("MTP load did not increase workspace capacity");
-
-    qus::EngineOptions int8_options;
-    int8_options.device        = 0;
-    int8_options.max_ctx       = 4;
-    int8_options.prefill_chunk = 128;
-    int8_options.kv_dtype      = qus::DType::I8;
-    qus::Engine int8_engine(int8_options);
-    int8_engine.load(fixture.string());
-    const qus::EngineMemoryStats int8_stats = int8_engine.memory_stats();
-    failures += int8_stats.kv_dtype == qus::DType::I8 ? 0 : fail("int8 kv dtype mismatch");
-    failures += expect_size(int8_stats.kv_quant_group, qus::kKvQuantGroup, "int8 kv quant group");
-    failures += expect_size(
-        int8_stats.kv_cache_payload_bytes,
-        kv_payload_bytes(int8_options.max_ctx, qus::model::kCfg.n_full(), qus::DType::I8),
-        "int8 kv payload");
-    failures += int8_stats.kv_cache_payload_bytes < stats.kv_cache_payload_bytes
-                    ? 0
-                    : fail("int8 kv payload did not shrink below bf16");
-
-    auto load_stats = [&](std::uint32_t max_ctx, int draft_tokens) {
-        qus::EngineOptions opts;
-        opts.device           = 0;
-        opts.max_ctx          = max_ctx;
-        opts.prefill_chunk    = 128;
-        opts.mtp_draft_tokens = draft_tokens;
-        qus::Engine scoped(opts);
-        scoped.load(fixture.string());
-        return scoped.memory_stats();
-    };
-
-    const qus::EngineMemoryStats k0_8192 = load_stats(8192, 0);
-    const qus::EngineMemoryStats k5_8192 = load_stats(8192, 5);
-    // Each engine now budgets draft_tokens + 2 GDN snapshot slots: the MTP window (draft_tokens +
-    // 1) plus one dedicated turn-boundary slot for partial prefix reuse. That constant +1 slot is
-    // present in both k=0 and k=5, so the k5-k0 delta is still exactly the 5 extra MTP-window
-    // slots.
-    const std::size_t expected_snapshot_increment = 5ULL * gdn_single_ssm_bytes();
-    failures += expected_snapshot_increment == 720ULL * kMiB
-                    ? 0
-                    : fail("k=5 snapshot increment constant is not 720 MiB");
-    failures +=
-        k5_8192.cache.capacity_bytes >= k0_8192.cache.capacity_bytes + expected_snapshot_increment
-            ? 0
-            : fail("k=5 cache budget does not include the 720 MiB SSM snapshot increment");
-    // The k5-k0 delta covers 5 conv slots as well as 5 SSM slots (plus MTP KV and wider IO
-    // windows).
-    const std::size_t expected_slot_increment =
-        5ULL * (gdn_single_ssm_bytes() + gdn_single_conv_bytes());
-    failures += k5_8192.cache.used_bytes > k0_8192.cache.used_bytes + expected_slot_increment
-                    ? 0
-                    : fail("k=5 cache allocation did not materialize conv+SSM snapshot slots");
-    // The non-MTP engine must still budget the dedicated turn-boundary slot on top of its single
-    // running slot: at least two conv + two SSM GDN slots even with no MTP window.
-    const std::size_t k0_min_gdn_state = 2ULL * (gdn_single_ssm_bytes() + gdn_single_conv_bytes());
-    failures += k0_8192.cache.used_bytes >= k0_min_gdn_state
-                    ? 0
-                    : fail("k=0 cache does not budget the turn-boundary GDN snapshot slot");
-    failures += k5_8192.workspace.capacity_bytes >= k0_8192.workspace.capacity_bytes
-                    ? 0
-                    : fail("k=5 workspace capacity regressed below k=0");
+    try {
+        qus::EngineOptions bad_options;
+        bad_options.stop_token_ids = {qus::model::kCfg.tokenizer_vocab};
+        qus::Engine bad_engine(bad_options);
+        (void)bad_engine;
+        failures += fail("reserved stop token id did not throw before load");
+    } catch (const std::invalid_argument&) {}
     return failures;
 }
 
 } // namespace
 
 int main() {
-    int failures = 0;
-    failures += test_unloaded_stats_do_not_need_cuda();
-    failures += test_loaded_stats_with_cuda();
+    const int failures = test_unloaded_stats_do_not_need_cuda();
+    // Loaded accounting is covered by qus_engine_real_file_test with the canonical artifact.
     return failures == 0 ? 0 : fail("engine memory stats test failed");
 }

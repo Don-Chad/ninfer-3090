@@ -53,10 +53,12 @@ Run from the repo root with a CUDA-enabled env:
 
 The converter writes `<weights>.manifest.json` next to the packed file. The verifier writes
 `out/conv_dump.v4_1.json` unless `--dump FILE` is supplied. Useful flags: `--out FILE`, `--device cpu`,
-`--force` (config mismatch -> warn), `--no-draft-head`, `--ranking FILE`, `--draft-n N`, and
-`--tokenizer DIR`. The converter reads the three embedded runtime assets and `tokenizer_config.json`
-from that build-time directory. The verifier re-derives the shortlist for L1 (`--ranking`/`--tokenizer`) and
+`--force` (config mismatch -> warn), `--no-draft-head`, and `--ranking FILE`.
+The converter reads the canonical embedded runtime assets and `tokenizer_config.json`
+from `--model`; v4.1 intentionally has no independent tokenizer override. The verifier re-derives the shortlist for L1 (`--ranking`) and
 defaults to the local HF model path above; pass `--model DIR` to verify another source tree.
+`--quick` performs self-contained L0/CRC verification from the artifact and sidecar manifest without
+opening the HF source model.
 
 Tests:
 

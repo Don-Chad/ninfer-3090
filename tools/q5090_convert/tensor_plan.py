@@ -1,4 +1,4 @@
-"""Declarative q5090 v3 tensor plan.
+"""Declarative q5090 v4.1 tensor plan.
 
 TEXT_CORE, MTP_DRAFT, and VISION_ENCODER are expressed as stored blocks,
 logical segments, and fusion groups. Each segment carries the source TensorSpec
@@ -14,6 +14,7 @@ from typing import List, Optional, Tuple
 import torch
 
 from . import qtypes as qt
+from .draft_head import DRAFT_HEAD_N
 
 
 TRANSFORM_GDN_CONV1D_RUNTIME_NATIVE = "gdn_conv1d_runtime_native"
@@ -820,10 +821,8 @@ def build_text_manifest(layer_types: List[str]) -> ExpectedManifest:
     return ExpectedManifest(tuple(blocks), tuple(segments), tuple(fusion_groups))
 
 
-def build_lm_head_draft_manifest(n: int) -> ExpectedManifest:
-    if n <= 0 or n > VOCAB_SIZE:
-        raise ValueError(f"draft-head N must be in [1,{VOCAB_SIZE}], got {n}")
-
+def build_lm_head_draft_manifest() -> ExpectedManifest:
+    n = DRAFT_HEAD_N
     blocks: List[TensorBlockSpec] = []
     segments: List[TensorSegmentSpec] = []
     _append_standalone_block(
