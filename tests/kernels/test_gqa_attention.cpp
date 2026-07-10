@@ -1182,6 +1182,11 @@ int main(int argc, char** argv) {
     f += one_int8_decode_case(100, 4, 909u);
     f += one_int8_decode_case(2048, 4, 910u);
     f += one_int8_decode_case(100, 5, 912u);
+    // Protect the short-context launch specializations: full-CTA T=5, the
+    // narrow T=6 boundary, and the dynamic-smem Bc=64 path with its split cap.
+    f += one_int8_decode_case(256, 5, 914u);
+    f += one_int8_decode_case(128, 6, 915u);
+    f += one_int8_decode_case(8192, 6, 916u);
     for (std::int32_t tokens = 1; tokens <= 6; ++tokens) {
         f += one_prefill_case(tokens, 100u + static_cast<std::uint32_t>(tokens), 0);
         f += one_prefill_case(tokens, 200u + static_cast<std::uint32_t>(tokens), 1);

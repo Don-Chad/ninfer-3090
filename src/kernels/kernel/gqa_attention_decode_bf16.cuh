@@ -89,7 +89,7 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
     }
 
     const int window             = last_pos + 1;
-    const int active_split_count = gqa_small_t_active_splits(window, split_count);
+    const int active_split_count = gqa_small_t_active_splits(window, split_count, TokenTile);
     if (split >= active_split_count) { return; }
 
     const int kps         = (window + active_split_count - 1) / active_split_count;

@@ -55,7 +55,7 @@ __device__ __forceinline__ void gqa_small_t_i8_store_swz(std::int8_t* tile, int 
 // at a time. K/V codes and scales are staged asynchronously; non-producer warps
 // dequantize V while producers execute QK. After both consume the code tile, the
 // next K/V tile is prefetched into the same arena while the current PV runs.
-template <int TokenTile, int WarpsPerCta, int MinBlocksPerSm>
+template <int TokenTile, int WarpsPerCta, int MinBlocksPerSm, int KeyBlock, bool DynamicArena>
 __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     void gqa_attention_decode_i8_tiled_kernel(const __nv_bfloat16* q, const __nv_bfloat16* k_new,
                                               const __nv_bfloat16* v_new, const std::int32_t* pos,
@@ -68,7 +68,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     constexpr int RowCount             = TokenTile * kGqaGroupSize;
     constexpr int RowTiles             = (RowCount + 15) / 16;
     constexpr int Br                   = RowTiles * 16;
-    constexpr int Bc                   = 32;
+    constexpr int Bc                   = KeyBlock;
     constexpr int D                    = kGqaHeadDim;
     constexpr int DB16                 = D / 2;
     constexpr int Threads              = Wc * 32;
@@ -85,9 +85,10 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     constexpr unsigned FullMask        = 0xffffffffu;
 
     static_assert(TokenTile >= 1 && TokenTile <= 6);
+    static_assert(Bc == 32 || Bc == 64);
     static_assert(RowTiles >= 1 && RowTiles <= 3);
     static_assert(Wc % RowTiles == 0);
-    static_assert(PVNtPerWarp == 4 || PVNtPerWarp == 8 || PVNtPerWarp == 16);
+    static_assert(PVNtPerWarp == 2 || PVNtPerWarp == 4 || PVNtPerWarp == 8 || PVNtPerWarp == 16);
     static_assert(QKKs == Groups * GroupKc);
 
     // Keep Q in a compact dedicated tile so the producer can reload one
@@ -95,7 +96,9 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     // registers across the whole kernel. The main arena holds K i8, V i8, and
     // V bf16 during the key loop.
     __shared__ __align__(16) std::int8_t q_s[Br * D];
-    __shared__ __align__(16) std::int8_t r_s[4 * Bc * D];
+    __shared__ __align__(16) std::int8_t static_r_s[DynamicArena ? 16 : 4 * Bc * D];
+    extern __shared__ __align__(16) std::int8_t dynamic_r_s[];
+    std::int8_t* r_s      = DynamicArena ? dynamic_r_s : static_r_s;
     std::int8_t* q_i8     = q_s;
     float* q_scale_tmp    = reinterpret_cast<float*>(r_s);
     std::int8_t* k_i8     = r_s;
@@ -148,7 +151,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     }
 
     const int window             = last_pos + 1;
-    const int active_split_count = gqa_small_t_active_splits(window, split_count);
+    const int active_split_count = gqa_small_t_active_splits(window, split_count, TokenTile);
     if (split >= active_split_count) { return; }
 
     const int kps         = (window + active_split_count - 1) / active_split_count;

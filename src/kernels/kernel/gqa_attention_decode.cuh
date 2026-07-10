@@ -64,8 +64,15 @@ __device__ __forceinline__ bool gqa_valid_q_head(int kv_head, int q_head) {
            q_head < (kv_head + 1) * kGqaGroupSize && q_head < kGqaQHeads;
 }
 
-__device__ __forceinline__ int gqa_small_t_active_splits(int window, int max_splits) {
+__device__ __forceinline__ int gqa_small_t_active_splits(int window, int max_splits, int tokens) {
     if (window <= 0) { return max_splits; }
+    // These int8 launch ranges deliberately use one 32-key tile per split.
+    // BF16 passes its ordinary split count here, so returning max_splits leaves
+    // the BF16 schedule unchanged while keeping the shared reducer in sync.
+    if ((tokens == 5 && window > 128 && window <= 512) ||
+        (tokens == 6 && window > 128 && window <= 160)) {
+        return max_splits;
+    }
     int target_keys_per_split = 480;
     if (window <= 4096) {
         target_keys_per_split = 64;
@@ -163,7 +170,7 @@ __launch_bounds__(256) __global__
     if (q_head >= kGqaQHeads || token >= tokens) { return; }
     const int last_pos           = positions[tokens - 1];
     const int window             = last_pos + 1;
-    const int active_split_count = gqa_small_t_active_splits(window, split_count);
+    const int active_split_count = gqa_small_t_active_splits(window, split_count, tokens);
 
     __shared__ float reduce[256];
 

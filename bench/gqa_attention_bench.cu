@@ -67,8 +67,19 @@ std::size_t ceil_div_size(std::size_t value, std::size_t divisor) {
 
 std::size_t align_overhead(std::size_t allocations) { return allocations * 255u; }
 
-std::int32_t small_t_active_splits(std::int32_t tokens, std::int32_t context) {
-    const std::int32_t window          = context + tokens;
+std::int32_t small_t_active_splits(std::int32_t tokens, std::int32_t context, DType kv_dtype) {
+    const std::int32_t window = context + tokens;
+    // Keep the byte/scratch model identical to the dtype-aware production
+    // schedule so reported bandwidth does not undercount specialized splits.
+    if (kv_dtype == DType::I8 && tokens == 5 && window > 128 && window <= 512) {
+        return ceil_div_i32(window, 32);
+    }
+    if (kv_dtype == DType::I8 && tokens == 6 && window > 128 && window <= 160) {
+        return ceil_div_i32(window, 24);
+    }
+    if (kv_dtype == DType::I8 && tokens == 6 && window > 5000 && window <= 8198) {
+        return std::min(42, std::max(4, ceil_div_i32(window, 192)));
+    }
     std::int32_t target_keys_per_split = 480;
     if (window <= 4096) {
         target_keys_per_split = 64;
@@ -83,13 +94,13 @@ std::int32_t small_t_active_splits(std::int32_t tokens, std::int32_t context) {
     return std::min(kGqaDecodeSplits, splits);
 }
 
-std::int32_t decode_active_splits(std::int32_t pos_value) {
-    return small_t_active_splits(1, pos_value);
+std::int32_t decode_active_splits(std::int32_t pos_value, DType kv_dtype) {
+    return small_t_active_splits(1, pos_value, kv_dtype);
 }
 
-std::int32_t decode_kps(std::int32_t pos_value) {
+std::int32_t decode_kps(std::int32_t pos_value, DType kv_dtype) {
     const std::int32_t window = pos_value + 1;
-    return ceil_div_i32(window, decode_active_splits(pos_value));
+    return ceil_div_i32(window, decode_active_splits(pos_value, kv_dtype));
 }
 
 const char* kv_dtype_name(DType dtype) {
@@ -131,7 +142,7 @@ struct DecodeBytes {
 
 DecodeBytes decode_bytes(std::int32_t pos_value, DType kv_dtype) {
     const auto window      = static_cast<std::size_t>(pos_value) + 1u;
-    const auto split_count = static_cast<std::size_t>(decode_active_splits(pos_value));
+    const auto split_count = static_cast<std::size_t>(decode_active_splits(pos_value, kv_dtype));
 
     const std::size_t k_cache_reads = static_cast<std::size_t>(
         static_cast<double>(window * kKVHeads) * kv_cache_vector_bytes(kv_dtype));
@@ -157,7 +168,8 @@ DecodeBytes decode_bytes(std::int32_t pos_value, DType kv_dtype) {
 DecodeBytes append_small_t_bytes(std::int32_t tokens, std::int32_t context, DType kv_dtype) {
     const auto window      = static_cast<std::size_t>(context + tokens);
     const auto token_count = static_cast<std::size_t>(tokens);
-    const auto split_count = static_cast<std::size_t>(small_t_active_splits(tokens, context));
+    const auto split_count =
+        static_cast<std::size_t>(small_t_active_splits(tokens, context, kv_dtype));
 
     const std::size_t k_cache_reads = static_cast<std::size_t>(
         static_cast<double>(window * kKVHeads) * kv_cache_vector_bytes(kv_dtype));
@@ -389,7 +401,7 @@ void print_copy_ceiling_result(const char* tag, const Result& r, std::size_t pay
 }
 
 void print_decode_result(const char* tag, const Result& r, const DecodeBytes& bytes,
-                         std::int32_t pos_value, std::uint32_t round_robin_layers,
+                         std::int32_t pos_value, DType kv_dtype, std::uint32_t round_robin_layers,
                          const char* suffix) {
     const double sec       = r.median_us * 1.0e-6;
     const double total_gbs = (sec > 0.0) ? static_cast<double>(bytes.total) / sec / 1.0e9 : 0.0;
@@ -402,11 +414,13 @@ void print_decode_result(const char* tag, const Result& r, const DecodeBytes& by
                 tag, r.median_us, r.min_us, r.p95_us, total_gbs, useful_kv_gbs,
                 static_cast<double>(bytes.useful_kv) / kMiB,
                 static_cast<double>(bytes.scratch) / kMiB, static_cast<double>(bytes.total) / kMiB,
-                decode_active_splits(pos_value), decode_kps(pos_value), round_robin_layers, suffix);
+                decode_active_splits(pos_value, kv_dtype), decode_kps(pos_value, kv_dtype),
+                round_robin_layers, suffix);
 }
 
 void print_append_small_t_result(const char* tag, const Result& r, const DecodeBytes& bytes,
-                                 std::int32_t tokens, std::int32_t context, const char* suffix) {
+                                 std::int32_t tokens, std::int32_t context, DType kv_dtype,
+                                 const char* suffix) {
     const double sec       = r.median_us * 1.0e-6;
     const double total_gbs = (sec > 0.0) ? static_cast<double>(bytes.total) / sec / 1.0e9 : 0.0;
     const double useful_kv_gbs =
@@ -421,7 +435,7 @@ void print_append_small_t_result(const char* tag, const Result& r, const DecodeB
                 tag, r.median_us, r.min_us, r.p95_us, total_gbs, useful_kv_gbs, redundancy,
                 static_cast<double>(bytes.useful_kv) / kMiB,
                 static_cast<double>(bytes.scratch) / kMiB, static_cast<double>(bytes.total) / kMiB,
-                tokens, context, small_t_active_splits(tokens, context), suffix);
+                tokens, context, small_t_active_splits(tokens, context, kv_dtype), suffix);
 }
 
 struct AppendPromptMetrics {
@@ -545,7 +559,7 @@ void run_decode(KVCache& kv, WorkspaceArena& ws, const Tensor& q, const Tensor& 
     char tag[96];
     std::snprintf(tag, sizeof(tag), "gqa_attention decode combined pos=%d kv=%s", pos_value,
                   kv_dtype_name(kv.dtype));
-    print_decode_result(tag, r, bytes, pos_value, round_robin_layers,
+    print_decode_result(tag, r, bytes, pos_value, kv.dtype, round_robin_layers,
                         (round_robin_layers == 1u) ? " hot_cache_info" : "");
 }
 
@@ -566,13 +580,13 @@ void run_profile_once(KVCache& kv, WorkspaceArena& ws, const Tensor& q, const Te
 
         char tag[96];
         std::snprintf(tag, sizeof(tag), "PROFILE_COLD gqa_attention decode pos=%d", pos_value);
-        print_decode_result(tag, r, bytes, pos_value, 1u, " cold_cache");
+        print_decode_result(tag, r, bytes, pos_value, kv.dtype, 1u, " cold_cache");
         std::printf("PROFILE_COLD_METADATA pos=%d kv_dtype=%s splits=%d kps=%d "
                     "cold_cache_bytes=%zu "
                     "useful_kv_bytes=%zu scratch_bytes=%zu total_modeled_bytes=%zu repeats=%d\n",
-                    pos_value, kv_dtype_name(kv.dtype), decode_active_splits(pos_value),
-                    decode_kps(pos_value), cold_cache->bytes, bytes.useful_kv, bytes.scratch,
-                    bytes.total, r.n_runs);
+                    pos_value, kv_dtype_name(kv.dtype), decode_active_splits(pos_value, kv.dtype),
+                    decode_kps(pos_value, kv.dtype), cold_cache->bytes, bytes.useful_kv,
+                    bytes.scratch, bytes.total, r.n_runs);
         return;
     }
 
@@ -582,8 +596,8 @@ void run_profile_once(KVCache& kv, WorkspaceArena& ws, const Tensor& q, const Te
 
     std::printf("PROFILE_ONCE gqa_attention decode combined pos=%d kv_dtype=%s splits=%d kps=%d "
                 "useful_kv_bytes=%zu scratch_bytes=%zu total_modeled_bytes=%zu\n",
-                pos_value, kv_dtype_name(kv.dtype), decode_active_splits(pos_value),
-                decode_kps(pos_value), bytes.useful_kv, bytes.scratch, bytes.total);
+                pos_value, kv_dtype_name(kv.dtype), decode_active_splits(pos_value, kv.dtype),
+                decode_kps(pos_value, kv.dtype), bytes.useful_kv, bytes.scratch, bytes.total);
 }
 
 void run_append_small_t(KVCache& kv, std::int32_t tokens, std::int32_t context) {
@@ -614,7 +628,7 @@ void run_append_small_t(KVCache& kv, std::int32_t tokens, std::int32_t context) 
 
     char tag[96];
     std::snprintf(tag, sizeof(tag), "gqa_attention append-small-T kv=%s", kv_dtype_name(kv.dtype));
-    print_append_small_t_result(tag, r, bytes, tokens, context, "");
+    print_append_small_t_result(tag, r, bytes, tokens, context, kv.dtype, "");
 }
 
 void run_append_small_t_profile_once(KVCache& kv, std::int32_t tokens, std::int32_t context,
@@ -648,15 +662,15 @@ void run_append_small_t_profile_once(KVCache& kv, std::int32_t tokens, std::int3
         char tag[96];
         std::snprintf(tag, sizeof(tag), "PROFILE_COLD gqa_attention append-small-T kv=%s",
                       kv_dtype_name(kv.dtype));
-        print_append_small_t_result(tag, r, bytes, tokens, context, " cold_cache");
+        print_append_small_t_result(tag, r, bytes, tokens, context, kv.dtype, " cold_cache");
         std::printf("PROFILE_COLD_METADATA mode=append-small-t T=%d context=%d kv_dtype=%s "
                     "splits=%d "
                     "cold_cache_bytes=%zu useful_kv_bytes=%zu scratch_bytes=%zu "
                     "total_modeled_bytes=%zu redundancy=%.6f repeats=%d "
                     "ncu_kernel_regex='%s'\n",
                     tokens, context, kv_dtype_name(kv.dtype),
-                    small_t_active_splits(tokens, context), cold_cache->bytes, bytes.useful_kv,
-                    bytes.scratch, bytes.total,
+                    small_t_active_splits(tokens, context, kv.dtype), cold_cache->bytes,
+                    bytes.useful_kv, bytes.scratch, bytes.total,
                     bytes.useful_kv > 0
                         ? static_cast<double>(bytes.total) / static_cast<double>(bytes.useful_kv)
                         : 0.0,
@@ -669,8 +683,9 @@ void run_append_small_t_profile_once(KVCache& kv, std::int32_t tokens, std::int3
     std::printf("PROFILE_ONCE gqa_attention append-small-T T=%d context=%d kv_dtype=%s splits=%d "
                 "useful_kv_bytes=%zu scratch_bytes=%zu total_model_bytes=%zu redundancy=%.6f "
                 "ncu_kernel_regex='%s'\n",
-                tokens, context, kv_dtype_name(kv.dtype), small_t_active_splits(tokens, context),
-                bytes.useful_kv, bytes.scratch, bytes.total,
+                tokens, context, kv_dtype_name(kv.dtype),
+                small_t_active_splits(tokens, context, kv.dtype), bytes.useful_kv, bytes.scratch,
+                bytes.total,
                 bytes.useful_kv > 0
                     ? static_cast<double>(bytes.total) / static_cast<double>(bytes.useful_kv)
                     : 0.0,
