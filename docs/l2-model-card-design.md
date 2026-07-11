@@ -183,7 +183,7 @@ One dispatch per layer; the MLP tail is shared. Shorthand: `s = ctx_.stream`; `s
 the **real L1 signatures** (`l1-operator-catalog.md` §3): out-param `(inputs…, out, stream)`; the
 phase-split ops pick the `_prefill` / `_decode`(`_recurrent`) entry by `ph`. `rmsnorm` / `l2norm` /
 `causal_conv1d` / `gated_delta_rule` write a **distinct** out (not in place); `rope` /
-`sigmoid_gate_mul` / `residual_add` are in place.
+`sigmoid_mul` / `residual_add` are in place.
 
 ```cpp
 void attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
@@ -199,7 +199,7 @@ void attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
   rope(io_.pos, kCfg.rotary_dim, kCfg.rope_theta, qn, kn, s);                   // partial NeoX, in place
   Tensor a = scratch({256,24,T});
   gqa_attention(qn, kn, v, io_.pos, kAttnScale, kv_, fidx, work_, a, s);
-  sigmoid_gate_mul(gate, a, s);                                                 // a *= σ(gate)
+  sigmoid_mul(gate, a, s);                                                      // a *= σ(gate)
   Tensor o = scratch({5120, T});
   linear(a, *w.o_proj, o, s);
   residual_add(o, x, s);                                                        // x += o
@@ -215,8 +215,7 @@ void gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
   Tensor a = scratch({48,T}), b = scratch({48,T});
   linear(h, *w.in_a, a, s);  linear(h, *w.in_b, b, s);                         // bf16 dense
   Tensor qkv_c = scratch({10240, T});
-  if (ph == Phase::Prefill) causal_conv1d_prefill(qkv, *w.conv1d, st_.conv[gidx], qkv_c, s);
-  else                      causal_conv1d_decode (qkv, *w.conv1d, st_.conv[gidx], qkv_c, s);
+  causal_conv1d_silu(qkv, *w.conv1d, st_.conv[gidx], qkv_c, s);                 // T dispatch inside
   Tensor g = scratch_f32({48,T}), beta = scratch_f32({48,T});
   gdn_gating(a, b, *w.a_log, *w.dt_bias, g, beta, s);                          // fp32 g/beta
   Tensor qn = scratch({128,16,T}), kn = scratch({128,16,T});
@@ -224,8 +223,7 @@ void gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
   l2norm(qkv_c.slice(0, 2048, 2048).view({128,16,T}), 1e-6f, kn, s);
   Tensor vv = qkv_c.slice(0, 4096, 6144).view({128,48,T});
   Tensor o = scratch({128,48,T});
-  if (ph == Phase::Prefill) gated_delta_rule_chunked  (qn,kn,vv, g,beta, kGdnScale, 64, work_, st_.ssm[gidx], o, s);
-  else                      gated_delta_rule_recurrent(qn,kn,vv, g,beta, kGdnScale,     work_, st_.ssm[gidx], o, s);
+  gated_delta_rule(qn,kn,vv, g,beta, kGdnScale, work_, st_.ssm[gidx], o, s);    // T dispatch inside
   Tensor z = scratch({128,48,T}); linear(h, *w.in_z, z.view({6144,T}), s);     // gate z
   Tensor on = scratch({128,48,T});
   rmsnorm(o, *w.gdn_norm, eps, /*unit_offset=*/false, &z, on, s);             // gated norm: plain w · SiLU(z)
@@ -239,7 +237,7 @@ void mlp_tail(const Tensor* post_norm, const MlpW& m, Tensor& x, Phase ph) {
   rmsnorm(x, *post_norm, eps, true, nullptr, h, s);
   Tensor g = scratch({17408, T}), u = scratch({17408, T});
   linear(h, *m.gate, g, s);  linear(h, *m.up, u, s);
-  Tensor a = scratch({17408, T}); silu_and_mul(g, u, a, s);                     // SwiGLU
+  Tensor a = scratch({17408, T}); silu_mul(g, u, a, s);                         // SwiGLU
   Tensor d = scratch({5120, T});  linear(a, *m.down, d, s);
   residual_add(d, x, s);
 }
@@ -253,7 +251,7 @@ void run_layers(Tensor& x, Phase ph) {
 }
 
 void prefill(span<const int> ids) {                       // T = ids.size()
-  Tensor x = scratch({5120, T}); embed_gather(upload(ids), *embed_, x, s);      // Q6 dequant gather
+  Tensor x = scratch({5120, T}); embedding(upload(ids), *embed_, x, s);         // Q6 dequant gather
   run_layers(x, Phase::Prefill);
   Tensor xf = scratch({5120, T}); rmsnorm(x, *final_norm_, eps, true, nullptr, xf, s);
   linear(xf.slice(1, T-1, 1), lm_head_, io_.logits, s);   // last position only -> [vocab,1]
@@ -262,7 +260,7 @@ void prefill(span<const int> ids) {                       // T = ids.size()
 }
 
 void decode_step() {                                       // identical kernel sequence every call
-  Tensor x = scratch({5120, 1}); embed_gather(io_.token, *embed_, x, s);        // reads device cursor
+  Tensor x = scratch({5120, 1}); embedding(io_.token, *embed_, x, s);           // reads device cursor
   run_layers(x, Phase::Decode);
   Tensor xf = scratch({5120, 1}); rmsnorm(x, *final_norm_, eps, true, nullptr, xf, s);
   linear(xf, lm_head_, io_.logits, s);

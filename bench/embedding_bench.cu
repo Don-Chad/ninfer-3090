@@ -1,8 +1,8 @@
-// Performance bench for embed_gather Q6 ROW_SPLIT at the real Qwen3.6
+// Performance bench for embedding Q6 ROW_SPLIT at the real Qwen3.6
 // embedding shape. The printed GB/s is informational only; the gate is ncu
 // sustained DRAM percent (see docs/l1-op-test-standard.md section 2).
 //   ./qus_embed_gather_bench [--decode] [--t64|--prefill]   (default: both)
-#include "qus/kernels/embed_gather.h"
+#include "qus/kernels/embedding.h"
 #include "qus/core/device.h"
 #include "qus_bench_common.h"
 
@@ -16,14 +16,14 @@ using namespace qus::bench;
 
 namespace {
 
-constexpr std::int32_t kVocab = 248320;
-constexpr std::int32_t kD     = 5120;
-constexpr std::int32_t kGroup = 64;
-constexpr std::int32_t kDPad  = ((kD + 127) / 128) * 128;
+constexpr std::int32_t kVocab     = 248320;
+constexpr std::int32_t kD         = 5120;
+constexpr std::int32_t kGroup     = 64;
+constexpr std::int32_t kDPad      = ((kD + 127) / 128) * 128;
 constexpr std::int32_t kNibbleBpr = 32;
 constexpr std::int32_t kHighBpr   = 16;
 constexpr std::int32_t kScaleBpr  = 2;
-constexpr std::int32_t kKg    = kDPad / kGroup;
+constexpr std::int32_t kKg        = kDPad / kGroup;
 constexpr std::uint64_t kNibblePlaneBytes =
     static_cast<std::uint64_t>(kVocab) * static_cast<std::uint64_t>(kKg) * kNibbleBpr;
 constexpr std::uint64_t kHighPlaneOffset = ((kNibblePlaneBytes + 255ULL) / 256ULL) * 256ULL;
@@ -47,30 +47,29 @@ DBuf make_ids(std::int32_t t) {
 
 Weight q6_weight(void* payload) {
     Weight w{};
-    w.payload            = payload;
-    w.payload_bytes      = kPayloadBytes;
-    w.high_plane_bytes   = kHighPlaneBytes;
-    w.qtype              = QType::Q6G64_F16S;
-    w.layout             = QuantLayout::RowSplit;
-    w.q5090_scale_dtype  = ScaleDType::FP16;
-    w.group_size         = kGroup;
-    w.shape[0]           = kVocab;
-    w.shape[1]           = kD;
-    w.padded_shape[0]    = kVocab;
-    w.padded_shape[1]    = kDPad;
-    w.ndim               = 2;
-    w.qdata              = payload;
-    w.qhigh              = static_cast<std::uint8_t*>(payload) + kHighPlaneOffset;
-    w.scales             = static_cast<std::uint8_t*>(payload) + kScalePlaneOffset;
-    w.n                  = kVocab;
-    w.k                  = kD;
-    w.group              = kGroup;
+    w.payload           = payload;
+    w.payload_bytes     = kPayloadBytes;
+    w.high_plane_bytes  = kHighPlaneBytes;
+    w.qtype             = QType::Q6G64_F16S;
+    w.layout            = QuantLayout::RowSplit;
+    w.q5090_scale_dtype = ScaleDType::FP16;
+    w.group_size        = kGroup;
+    w.shape[0]          = kVocab;
+    w.shape[1]          = kD;
+    w.padded_shape[0]   = kVocab;
+    w.padded_shape[1]   = kDPad;
+    w.ndim              = 2;
+    w.qdata             = payload;
+    w.qhigh             = static_cast<std::uint8_t*>(payload) + kHighPlaneOffset;
+    w.scales            = static_cast<std::uint8_t*>(payload) + kScalePlaneOffset;
+    w.n                 = kVocab;
+    w.k                 = kD;
+    w.group             = kGroup;
     return w;
 }
 
 void run(std::int32_t t, const char* tag) {
-    const std::size_t out_elems =
-        static_cast<std::size_t>(kD) * static_cast<std::size_t>(t);
+    const std::size_t out_elems = static_cast<std::size_t>(kD) * static_cast<std::size_t>(t);
 
     DBuf payload(kPayloadBytes);
     DBuf ids = make_ids(t);
@@ -88,8 +87,8 @@ void run(std::int32_t t, const char* tag) {
     const double bytes = static_cast<double>(t) * static_cast<double>(kKg) *
                              static_cast<double>(kNibbleBpr + kHighBpr + kScaleBpr) +
                          static_cast<double>(t) * static_cast<double>(kD) * 2.0;
-    const Result r = bench_loop(
-        [&](cudaStream_t s) { kernels::embed_gather(tids, table, tout, s); }, bytes);
+    const Result r =
+        bench_loop([&](cudaStream_t s) { kernels::embedding(tids, table, tout, s); }, bytes);
     print_result(tag, r);
 }
 
@@ -104,12 +103,14 @@ int main(int argc, char** argv) {
 
     bool decode = false, t64 = false;
     for (int i = 1; i < argc; ++i) {
-        if (!std::strcmp(argv[i], "--decode")) decode = true;
-        else if (!std::strcmp(argv[i], "--t64") || !std::strcmp(argv[i], "--prefill")) t64 = true;
+        if (!std::strcmp(argv[i], "--decode"))
+            decode = true;
+        else if (!std::strcmp(argv[i], "--t64") || !std::strcmp(argv[i], "--prefill"))
+            t64 = true;
     }
     if (!decode && !t64) { decode = t64 = true; }
 
-    if (decode) run(1, "embed_gather q6 decode [248320,5120] T=1");
-    if (t64) run(64, "embed_gather q6 t64    [248320,5120] T=64");
+    if (decode) run(1, "embedding q6 decode [248320,5120] T=1");
+    if (t64) run(64, "embedding q6 t64    [248320,5120] T=64");
     return 0;
 }

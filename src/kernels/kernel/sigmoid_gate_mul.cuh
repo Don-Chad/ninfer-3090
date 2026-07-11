@@ -1,6 +1,6 @@
 #pragma once
 
-// qus::kernels - sigmoid_gate_mul kernel: x *= sigmoid(gate), elementwise in place.
+// qus::kernels - sigmoid_mul kernel: x *= sigmoid(gate), elementwise in place.
 // sigmoid(x) = 1 / (1 + e^-x), computed in fp32 with expf (NOT a polynomial fit).
 // Vectorized over bf16 pairs; included only by its launcher. See
 // docs/l1-kernel-layering.md section 6 and docs/l1-op-test-standard.md section 0.

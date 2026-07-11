@@ -257,8 +257,8 @@ int split_api_parity_case(std::int32_t T, std::uint32_t seed) {
     Tensor tk_split(dk_split.p, DType::BF16, {kHeadDim, kKHeads, T});
 
     kernels::rope(tpos, kRotaryDim, kTheta, tq_fused, tk_fused, nullptr);
-    kernels::rope_q(tpos, kRotaryDim, kTheta, tq_split, nullptr);
-    kernels::rope_k(tpos, kRotaryDim, kTheta, tk_split, nullptr);
+    kernels::rope(tpos, kRotaryDim, kTheta, tq_split, nullptr);
+    kernels::rope(tpos, kRotaryDim, kTheta, tk_split, nullptr);
     cudaDeviceSynchronize();
 
     const std::string label = "rope split API T=" + std::to_string(T);

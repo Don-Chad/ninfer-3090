@@ -1,15 +1,17 @@
 #include "qus/kernels/linear.h"
+#include "qus/kernels/linear_pair.h"
 
 #include "kernels/linear/plan/linear_plan.h"
 #include "kernels/linear/gemv/linear_rowsplit_gemv_attn_in_7168.cuh"
 #include "kernels/linear/gemv/linear_rowsplit_gemv_gdn_in_qk_4096.cuh"
+#include "kernels/linear/gemv/linear_rowsplit_gemv_gdn_in_vz_6144.cuh"
 #include "kernels/linear/gemv/linear_rowsplit_gemv_lm_head.cuh"
 #include "kernels/linear/gemv/linear_rowsplit_gemv_mlp_down.cuh"
 #include "kernels/linear/gemv/linear_rowsplit_gemv_mlp_gate_up_34816.cuh"
 #include "kernels/linear/gemv/linear_rowsplit_gemv_out_6144.cuh"
 #include "kernels/linear/gemv/linear_rowsplit_gemv_proj_6144.cuh"
 #include "kernels/linear/reference/linear_generic.h"
-#include "qus/core/weight.h"   // as_dense
+#include "qus/core/weight.h" // as_dense
 
 #include <cstdint>
 #include <limits>
@@ -133,8 +135,7 @@ void require_dense_metadata(const Weight& w) {
     }
 }
 
-void require_row_split_lowbit_metadata(const Weight& w, const char* label,
-                                       std::int32_t group_size,
+void require_row_split_lowbit_metadata(const Weight& w, const char* label, std::int32_t group_size,
                                        std::uint64_t nibble_bytes_per_group,
                                        std::uint64_t high_bytes_per_group) {
     if (w.layout != QuantLayout::RowSplit) {
@@ -153,16 +154,14 @@ void require_row_split_lowbit_metadata(const Weight& w, const char* label,
         throw std::invalid_argument(std::string("linear: ") + label + " padded shape is invalid");
     }
     const std::uint64_t kg = static_cast<std::uint64_t>(w.padded_shape[1] / group_size);
-    const std::uint64_t nibble_plane_bytes =
-        checked_mul_u64(checked_mul_u64(static_cast<std::uint64_t>(w.n), kg),
-                        nibble_bytes_per_group);
+    const std::uint64_t nibble_plane_bytes = checked_mul_u64(
+        checked_mul_u64(static_cast<std::uint64_t>(w.n), kg), nibble_bytes_per_group);
     const std::uint64_t high_plane_bytes =
-        checked_mul_u64(checked_mul_u64(static_cast<std::uint64_t>(w.n), kg),
-                        high_bytes_per_group);
+        checked_mul_u64(checked_mul_u64(static_cast<std::uint64_t>(w.n), kg), high_bytes_per_group);
     const std::uint64_t scale_plane_bytes =
         checked_mul_u64(checked_mul_u64(static_cast<std::uint64_t>(w.n), kg), 2u);
     const std::uint64_t high_plane_off = align_up_u64(nibble_plane_bytes, 256);
-    const std::uint64_t high_aligned = align_up_u64(high_plane_bytes, 256);
+    const std::uint64_t high_aligned   = align_up_u64(high_plane_bytes, 256);
     if (high_aligned > std::numeric_limits<std::uint64_t>::max() - high_plane_off) {
         throw std::overflow_error("linear: row-split payload size overflows uint64");
     }
@@ -291,24 +290,22 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
     }
 
     // --- classify + dispatch (M3 framework) ---
-    const detail::LinearFormat fmt   = detail::classify_format(w);
-    const detail::ShapeFamily  shape = detail::classify_shape(w.n, w.k);
-    detail::LinearRegime       regime = detail::classify_regime(fmt, shape, x.ne[1]);
+    const detail::LinearFormat fmt  = detail::classify_format(w);
+    const detail::ShapeFamily shape = detail::classify_shape(w.n, w.k);
+    detail::LinearRegime regime     = detail::classify_regime(fmt, shape, x.ne[1]);
     // The LargeT bf16 tensor-core mma GEMM streams x with 16B cp.async (8 bf16 per
     // token row), which requires k % 8 == 0 (else the per-token base k*col is not
     // 16-byte aligned and the last k%8 elements would be dropped). Every Qwen3.6
     // shape has k a multiple of 128; for any other k, fall back to the small-T
     // GEMM, which is correct for all k.
-    const bool mma_routed_format =
-        fmt == detail::LinearFormat::Q4G64_RowSplit ||
-        fmt == detail::LinearFormat::Q5G64_RowSplit ||
-        fmt == detail::LinearFormat::Q6G64_RowSplit ||
-        fmt == detail::LinearFormat::W8G32_RowSplit;
+    const bool mma_routed_format = fmt == detail::LinearFormat::Q4G64_RowSplit ||
+                                   fmt == detail::LinearFormat::Q5G64_RowSplit ||
+                                   fmt == detail::LinearFormat::Q6G64_RowSplit ||
+                                   fmt == detail::LinearFormat::W8G32_RowSplit;
     if (mma_routed_format && regime == detail::LinearRegime::LargeT && (w.k % 8) != 0) {
         regime = detail::LinearRegime::SmallT;
     }
-    if (fmt == detail::LinearFormat::W8G32_RowSplit &&
-        (w.padded_shape[1] % 256) != 0) {
+    if (fmt == detail::LinearFormat::W8G32_RowSplit && (w.padded_shape[1] % 256) != 0) {
         regime = detail::LinearRegime::SmallT;
     }
     const detail::LinearPlan plan = detail::resolve_plan(detail::LinearPlanKey{fmt, shape, regime});
@@ -363,37 +360,53 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
     }
 }
 
-void linear_w8g32_kv_pair(const Tensor& x, const Weight& k_weight, const Weight& v_weight,
-                          Tensor& k_out, Tensor& v_out, WorkspaceArena& ws,
-                          cudaStream_t stream) {
-    if (x.dtype != DType::BF16 || k_out.dtype != DType::BF16 || v_out.dtype != DType::BF16) {
-        throw std::invalid_argument("linear_w8g32_kv_pair: x/out tensors must be BF16");
+void linear_pair(const Tensor& x, const Weight& first_weight, const Weight& second_weight,
+                 Tensor& first_out, Tensor& second_out, WorkspaceArena& ws, cudaStream_t stream) {
+    if (x.dtype != DType::BF16 || first_out.dtype != DType::BF16 ||
+        second_out.dtype != DType::BF16) {
+        throw std::invalid_argument("linear_pair: x/out tensors must be BF16");
     }
-    if (k_weight.qtype != QType::W8G32_F16S || v_weight.qtype != QType::W8G32_F16S) {
-        throw std::invalid_argument("linear_w8g32_kv_pair: weights must be W8G32");
+    if (first_weight.qtype != second_weight.qtype) {
+        throw std::invalid_argument("linear_pair: weight qtypes must match");
     }
-    require_row_split_lowbit_metadata(k_weight, "K W8G32_F16S", 32, 32u, 0u);
-    require_row_split_lowbit_metadata(v_weight, "V W8G32_F16S", 32, 32u, 0u);
-    require_matrix_shapes(x, k_weight, k_out);
-    require_matrix_shapes(x, v_weight, v_out);
-    require_tensor_strides(x, k_out);
-    require_tensor_strides(x, v_out);
-    if (k_weight.n != v_weight.n || k_weight.k != v_weight.k ||
-        k_weight.padded_shape[1] != v_weight.padded_shape[1]) {
-        throw std::invalid_argument("linear_w8g32_kv_pair: K/V weight shapes must match");
+    switch (first_weight.qtype) {
+    case QType::W8G32_F16S:
+        require_row_split_lowbit_metadata(first_weight, "first W8G32_F16S", 32, 32u, 0u);
+        require_row_split_lowbit_metadata(second_weight, "second W8G32_F16S", 32, 32u, 0u);
+        break;
+    case QType::Q5G64_F16S:
+        require_row_split_lowbit_metadata(first_weight, "first Q5G64_F16S", 64, 32u, 8u);
+        require_row_split_lowbit_metadata(second_weight, "second Q5G64_F16S", 64, 32u, 8u);
+        break;
+    default:
+        throw std::invalid_argument("linear_pair: unsupported weight qtype");
     }
-    if (is_empty_T(x, k_out)) { return; }
-    require_tensor_data(x, k_out);
-    require_tensor_data(x, v_out);
+    require_matrix_shapes(x, first_weight, first_out);
+    require_matrix_shapes(x, second_weight, second_out);
+    require_tensor_strides(x, first_out);
+    require_tensor_strides(x, second_out);
+    if (first_weight.n != second_weight.n || first_weight.k != second_weight.k ||
+        first_weight.padded_shape[1] != second_weight.padded_shape[1]) {
+        throw std::invalid_argument("linear_pair: weight shapes must match");
+    }
+    if (is_empty_T(x, first_out)) { return; }
+    require_tensor_data(x, first_out);
+    require_tensor_data(x, second_out);
 
-    if (x.ne[1] <= 16 || (k_weight.k % 8) != 0 ||
-        (k_weight.padded_shape[1] % 256) != 0) {
-        linear(x, k_weight, k_out, ws, stream);
-        linear(x, v_weight, v_out, ws, stream);
+    if (first_weight.qtype == QType::Q5G64_F16S && x.ne[1] == 1 && first_weight.n == 6144 &&
+        first_weight.k == 5120) {
+        detail::linear_rowsplit_gemv_gdn_in_vz_6144_q5_launch(x, first_weight, second_weight,
+                                                              first_out, second_out, stream);
         return;
     }
-    detail::linear_rowsplit_w8g32_kv_gemm_mma_launch(
-        x, k_weight, v_weight, k_out, v_out, stream);
+    if (first_weight.qtype == QType::W8G32_F16S && x.ne[1] > 16 && (first_weight.k % 8) == 0 &&
+        (first_weight.padded_shape[1] % 256) == 0) {
+        detail::linear_rowsplit_w8g32_kv_gemm_mma_launch(x, first_weight, second_weight, first_out,
+                                                         second_out, stream);
+        return;
+    }
+    linear(x, first_weight, first_out, ws, stream);
+    linear(x, second_weight, second_out, ws, stream);
 }
 
 } // namespace qus::kernels

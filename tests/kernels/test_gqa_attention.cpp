@@ -5,6 +5,7 @@
 #include "qus/core/arena.h"
 #include "qus/core/kv_cache.h"
 #include "qus/kernels/gqa_attention.h"
+#include "model/gqa_prompt_ops.h"
 #include "kernels/op_tester.h"
 
 #include <cuda_runtime.h>

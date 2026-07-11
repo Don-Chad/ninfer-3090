@@ -2,6 +2,7 @@
 // (docs/l1-op-test-standard.md): fp64 golden from bf16-rounded inputs, honest
 // input ranges, composite tolerance bf16_reduction.
 #include "qus/kernels/rmsnorm.h"
+#include "qus/kernels/gated_rmsnorm.h"
 #include "kernels/op_tester.h"
 
 #include <cmath>
@@ -13,20 +14,21 @@
 using namespace qus;
 using namespace qus::test;
 
-static void cpu_rmsnorm(const std::vector<float>& x, const std::vector<float>& weight,
-                        float eps, bool unit_offset, const std::vector<float>* z,
-                        std::int32_t d, std::int64_t rows, std::vector<double>& o) {
+static void cpu_rmsnorm(const std::vector<float>& x, const std::vector<float>& weight, float eps,
+                        bool unit_offset, const std::vector<float>* z, std::int32_t d,
+                        std::int64_t rows, std::vector<double>& o) {
     for (std::int64_t r = 0; r < rows; ++r) {
         const std::int64_t base = r * d;
-        double sumsq = 0.0;
+        double sumsq            = 0.0;
         for (std::int32_t i = 0; i < d; ++i) {
             const double xv = static_cast<double>(x[base + i]);
             sumsq += xv * xv;
         }
-        const double inv = 1.0 / std::sqrt(sumsq / static_cast<double>(d) + static_cast<double>(eps));
+        const double inv =
+            1.0 / std::sqrt(sumsq / static_cast<double>(d) + static_cast<double>(eps));
         for (std::int32_t i = 0; i < d; ++i) {
             const double w = static_cast<double>(weight[i]) + (unit_offset ? 1.0 : 0.0);
-            double v = static_cast<double>(x[base + i]) * inv * w;
+            double v       = static_cast<double>(x[base + i]) * inv * w;
             if (z != nullptr) {
                 const double zv = static_cast<double>((*z)[base + i]);
                 v *= zv / (1.0 + std::exp(-zv));
@@ -44,7 +46,7 @@ static Tensor tensor_for_shape(void* data, std::int32_t d0, std::int32_t d1, std
 static int one_shape(const char* tag, std::int32_t d0, std::int32_t d1, std::int32_t d2,
                      bool unit_offset, bool gated, std::uint32_t seed, float lo, float hi) {
     const auto rows = static_cast<std::int64_t>(d1) * static_cast<std::int64_t>(d2);
-    const auto n = static_cast<std::size_t>(d0) * static_cast<std::size_t>(rows);
+    const auto n    = static_cast<std::size_t>(d0) * static_cast<std::size_t>(rows);
     std::vector<float> x(n), weight(d0), z(n);
     fill_uniform(x, seed, lo, hi);
     fill_uniform(weight, seed + 1000u, lo, hi);
@@ -57,18 +59,18 @@ static int one_shape(const char* tag, std::int32_t d0, std::int32_t d1, std::int
     cpu_rmsnorm(x, weight, 1e-6f, unit_offset, gated ? &z : nullptr, d0, rows, ref);
 
     DBuf dx = to_device_bf16(x), dw = to_device_bf16(weight), dout(n * 2);
-    DBuf dz = gated ? to_device_bf16(z) : DBuf(0);
+    DBuf dz   = gated ? to_device_bf16(z) : DBuf(0);
     Tensor tx = tensor_for_shape(dx.p, d0, d1, d2);
     Tensor tw(dw.p, DType::BF16, {d0});
     Tensor tout = tensor_for_shape(dout.p, d0, d1, d2);
     Tensor tz;
-    const Tensor* tz_ptr = nullptr;
-    if (gated) {
-        tz = tensor_for_shape(dz.p, d0, d1, d2);
-        tz_ptr = &tz;
-    }
+    if (gated) { tz = tensor_for_shape(dz.p, d0, d1, d2); }
 
-    kernels::rmsnorm(tx, tw, 1e-6f, unit_offset, tz_ptr, tout, nullptr);
+    if (gated) {
+        kernels::gated_rmsnorm(tx, tw, tz, 1e-6f, tout, nullptr);
+    } else {
+        kernels::rmsnorm(tx, tw, 1e-6f, unit_offset, tout, nullptr);
+    }
     cudaDeviceSynchronize();
 
     return verify(tag, from_device_bf16(dout, n), ref, Tolerance::bf16_reduction());
@@ -84,10 +86,10 @@ static DBuf to_device_bf16_unaligned(const std::vector<float>& h) {
 }
 
 static int unaligned_data_case() {
-    constexpr std::int32_t d0 = 260;
-    constexpr std::int32_t d1 = 3;
+    constexpr std::int32_t d0   = 260;
+    constexpr std::int32_t d1   = 3;
     constexpr std::int64_t rows = d1;
-    constexpr std::size_t n = static_cast<std::size_t>(d0) * d1;
+    constexpr std::size_t n     = static_cast<std::size_t>(d0) * d1;
     std::vector<float> x(n), weight(d0);
     fill_uniform(x, 2026u, -8.f, 8.f);
     fill_uniform(weight, 3026u, -8.f, 8.f);
@@ -97,15 +99,14 @@ static int unaligned_data_case() {
     std::vector<double> ref(n);
     cpu_rmsnorm(x, weight, 1e-6f, true, nullptr, d0, rows, ref);
 
-    DBuf dx = to_device_bf16_unaligned(x), dw = to_device_bf16_unaligned(weight),
-         dout((n + 1) * 2);
+    DBuf dx = to_device_bf16_unaligned(x), dw = to_device_bf16_unaligned(weight), dout((n + 1) * 2);
     auto* xptr = static_cast<unsigned char*>(dx.p) + 2;
     auto* wptr = static_cast<unsigned char*>(dw.p) + 2;
     auto* optr = static_cast<unsigned char*>(dout.p) + 2;
     Tensor tx(xptr, DType::BF16, {d0, d1});
     Tensor tw(wptr, DType::BF16, {d0});
     Tensor tout(optr, DType::BF16, {d0, d1});
-    kernels::rmsnorm(tx, tw, 1e-6f, true, nullptr, tout, nullptr);
+    kernels::rmsnorm(tx, tw, 1e-6f, true, tout, nullptr);
     cudaDeviceSynchronize();
 
     DBuf packed(n * 2);
@@ -137,10 +138,10 @@ static int validation_checks() {
         Tensor empty_x(nullptr, DType::BF16, {1});
         Tensor empty_weight(nullptr, DType::BF16, {1});
         Tensor empty_out(nullptr, DType::BF16, {1});
-        empty_x.ne[0] = 0;
+        empty_x.ne[0]      = 0;
         empty_weight.ne[0] = 0;
-        empty_out.ne[0] = 0;
-        kernels::rmsnorm(empty_x, empty_weight, 1e-6f, true, nullptr, empty_out, nullptr);
+        empty_out.ne[0]    = 0;
+        kernels::rmsnorm(empty_x, empty_weight, 1e-6f, true, empty_out, nullptr);
     } catch (const std::exception& e) {
         std::cerr << "validation empty: expected no throw, got " << e.what() << '\n';
         ++f;
@@ -150,13 +151,12 @@ static int validation_checks() {
         Tensor bad_empty_x(nullptr, DType::BF16, {1});
         Tensor bad_empty_weight(nullptr, DType::BF16, {1});
         Tensor bad_empty_out(nullptr, DType::BF16, {1});
-        bad_empty_x.ne[0] = 0;
-        bad_empty_x.ne[1] = -1;
+        bad_empty_x.ne[0]      = 0;
+        bad_empty_x.ne[1]      = -1;
         bad_empty_weight.ne[0] = 0;
-        bad_empty_out.ne[0] = 0;
-        bad_empty_out.ne[1] = -1;
-        kernels::rmsnorm(bad_empty_x, bad_empty_weight, 1e-6f, true, nullptr, bad_empty_out,
-                         nullptr);
+        bad_empty_out.ne[0]    = 0;
+        bad_empty_out.ne[1]    = -1;
+        kernels::rmsnorm(bad_empty_x, bad_empty_weight, 1e-6f, true, bad_empty_out, nullptr);
         std::cerr << "validation empty negative dim: expected invalid_argument\n";
         ++f;
     } catch (const std::invalid_argument&) {}
@@ -165,7 +165,7 @@ static int validation_checks() {
         Tensor huge_x = make_huge_rows();
         Tensor huge_weight(nullptr, DType::BF16, {1});
         Tensor huge_out = make_huge_rows();
-        kernels::rmsnorm(huge_x, huge_weight, 1e-6f, true, nullptr, huge_out, nullptr);
+        kernels::rmsnorm(huge_x, huge_weight, 1e-6f, true, huge_out, nullptr);
         std::cerr << "validation huge rows: expected overflow_error\n";
         ++f;
     } catch (const std::overflow_error&) {
@@ -177,56 +177,56 @@ static int validation_checks() {
 
     try {
         Tensor bad_dtype(nullptr, DType::FP32, {4});
-        kernels::rmsnorm(bad_dtype, weight, 1e-6f, true, nullptr, out, nullptr);
+        kernels::rmsnorm(bad_dtype, weight, 1e-6f, true, out, nullptr);
         std::cerr << "validation dtype: expected invalid_argument\n";
         ++f;
     } catch (const std::invalid_argument&) {}
 
     try {
         Tensor bad_weight(nullptr, DType::BF16, {5});
-        kernels::rmsnorm(x, bad_weight, 1e-6f, true, nullptr, out, nullptr);
+        kernels::rmsnorm(x, bad_weight, 1e-6f, true, out, nullptr);
         std::cerr << "validation weight shape: expected invalid_argument\n";
         ++f;
     } catch (const std::invalid_argument&) {}
 
     try {
         Tensor bad_weight_rank = weight;
-        bad_weight_rank.ne[1] = 2;
-        kernels::rmsnorm(x, bad_weight_rank, 1e-6f, true, nullptr, out, nullptr);
+        bad_weight_rank.ne[1]  = 2;
+        kernels::rmsnorm(x, bad_weight_rank, 1e-6f, true, out, nullptr);
         std::cerr << "validation weight rank: expected invalid_argument\n";
         ++f;
     } catch (const std::invalid_argument&) {}
 
     try {
         Tensor bad_z(nullptr, DType::BF16, {4, 2});
-        kernels::rmsnorm(x, weight, 1e-6f, true, &bad_z, out, nullptr);
+        kernels::gated_rmsnorm(x, weight, bad_z, 1e-6f, out, nullptr);
         std::cerr << "validation z shape: expected invalid_argument\n";
         ++f;
     } catch (const std::invalid_argument&) {}
 
     try {
         Tensor bad_stride = out;
-        bad_stride.nb[0] = 4;
-        kernels::rmsnorm(x, weight, 1e-6f, true, nullptr, bad_stride, nullptr);
+        bad_stride.nb[0]  = 4;
+        kernels::rmsnorm(x, weight, 1e-6f, true, bad_stride, nullptr);
         std::cerr << "validation contiguous: expected invalid_argument\n";
         ++f;
     } catch (const std::invalid_argument&) {}
 
     try {
-        kernels::rmsnorm(x, weight, 0.0f, true, nullptr, out, nullptr);
+        kernels::rmsnorm(x, weight, 0.0f, true, out, nullptr);
         std::cerr << "validation eps: expected invalid_argument\n";
         ++f;
     } catch (const std::invalid_argument&) {}
 
     try {
-        kernels::rmsnorm(x, weight, 1e-6f, true, nullptr, out, nullptr);
+        kernels::rmsnorm(x, weight, 1e-6f, true, out, nullptr);
         std::cerr << "validation null data: expected invalid_argument\n";
         ++f;
     } catch (const std::invalid_argument&) {}
 
     try {
         Tensor z(nullptr, DType::BF16, {4});
-        kernels::rmsnorm(x, weight, 1e-6f, false, &z, out, nullptr);
+        kernels::gated_rmsnorm(x, weight, z, 1e-6f, out, nullptr);
         std::cerr << "validation z null data: expected invalid_argument\n";
         ++f;
     } catch (const std::invalid_argument&) {}

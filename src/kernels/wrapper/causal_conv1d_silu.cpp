@@ -1,5 +1,5 @@
 // qus::kernels - causal_conv1d wrapper: public api validation and launcher dispatch.
-#include "qus/kernels/causal_conv1d.h"
+#include "qus/kernels/causal_conv1d_silu.h"
 
 #include "kernels/launcher/causal_conv1d.h" // detail::causal_conv1d_*_launch
 
@@ -76,15 +76,15 @@ void require_initial_slot_shape(const Tensor& initial_slot) {
 
 std::int64_t validate_common(const Tensor& x, const Tensor& weight, const Tensor& conv_state,
                              const Tensor& out) {
-    if (x.dtype != DType::BF16 || weight.dtype != DType::BF16 ||
-        conv_state.dtype != DType::BF16 || out.dtype != DType::BF16) {
+    if (x.dtype != DType::BF16 || weight.dtype != DType::BF16 || conv_state.dtype != DType::BF16 ||
+        out.dtype != DType::BF16) {
         throw std::invalid_argument("causal_conv1d: x/weight/conv_state/out must be BF16");
     }
 
     const std::int64_t n = numel_allow_zero(x, "x");
-    (void) numel_allow_zero(weight, "weight");
-    (void) numel_allow_zero(conv_state, "conv_state");
-    (void) numel_allow_zero(out, "out");
+    (void)numel_allow_zero(weight, "weight");
+    (void)numel_allow_zero(conv_state, "conv_state");
+    (void)numel_allow_zero(out, "out");
 
     require_x_shape(x);
     require_weight_shape(weight, x.ne[0]);
@@ -116,8 +116,8 @@ void require_initial_slot_accessible(const Tensor& initial_slot) {
 
 } // namespace
 
-void causal_conv1d_prefill(const Tensor& x, const Tensor& weight, const Tensor& conv_state_in,
-                           Tensor& conv_state_out, Tensor& out, cudaStream_t stream) {
+void causal_conv1d_silu(const Tensor& x, const Tensor& weight, const Tensor& conv_state_in,
+                        Tensor& conv_state_out, Tensor& out, cudaStream_t stream) {
     if (x.dtype != DType::BF16 || weight.dtype != DType::BF16 ||
         conv_state_in.dtype != DType::BF16 || conv_state_out.dtype != DType::BF16 ||
         out.dtype != DType::BF16) {
@@ -125,10 +125,10 @@ void causal_conv1d_prefill(const Tensor& x, const Tensor& weight, const Tensor& 
     }
 
     const std::int64_t n = numel_allow_zero(x, "x");
-    (void) numel_allow_zero(weight, "weight");
-    (void) numel_allow_zero(conv_state_in, "conv_state_in");
-    (void) numel_allow_zero(conv_state_out, "conv_state_out");
-    (void) numel_allow_zero(out, "out");
+    (void)numel_allow_zero(weight, "weight");
+    (void)numel_allow_zero(conv_state_in, "conv_state_in");
+    (void)numel_allow_zero(conv_state_out, "conv_state_out");
+    (void)numel_allow_zero(out, "out");
 
     require_x_shape(x);
     require_weight_shape(weight, x.ne[0]);
@@ -139,31 +139,29 @@ void causal_conv1d_prefill(const Tensor& x, const Tensor& weight, const Tensor& 
 
     require_non_empty_accessible(x, weight, conv_state_in, out);
     if (!conv_state_out.is_contiguous() || conv_state_out.data == nullptr) {
-        throw std::invalid_argument("causal_conv1d: conv_state_out must be contiguous and non-null");
+        throw std::invalid_argument(
+            "causal_conv1d: conv_state_out must be contiguous and non-null");
     }
     detail::causal_conv1d_prefill_launch(x, weight, conv_state_in, conv_state_out, out, stream);
 }
 
-void causal_conv1d_prefill(const Tensor& x, const Tensor& weight, Tensor& conv_state, Tensor& out,
-                           cudaStream_t stream) {
-    causal_conv1d_prefill(x, weight, conv_state, conv_state, out, stream);
-}
-
-void causal_conv1d_decode(const Tensor& x, const Tensor& weight, Tensor& conv_state, Tensor& out,
-                          cudaStream_t stream) {
+void causal_conv1d_silu(const Tensor& x, const Tensor& weight, Tensor& conv_state, Tensor& out,
+                        cudaStream_t stream) {
     const std::int64_t n = validate_common(x, weight, conv_state, out);
-    if (x.ne[1] != 1) { throw std::invalid_argument("causal_conv1d: decode requires T == 1"); }
     if (n == 0) { return; }
 
     require_non_empty_accessible(x, weight, conv_state, out);
-    detail::causal_conv1d_decode_launch(x, weight, conv_state, out, stream);
+    if (x.ne[1] == 1) {
+        detail::causal_conv1d_decode_launch(x, weight, conv_state, out, stream);
+    } else {
+        detail::causal_conv1d_prefill_launch(x, weight, conv_state, conv_state, out, stream);
+    }
 }
 
-void causal_conv1d_sequence_snapshot(const Tensor& x, const Tensor& weight, Tensor& conv_states,
-                                     const Tensor& initial_slot, Tensor& out,
-                                     cudaStream_t stream) {
-    if (x.dtype != DType::BF16 || weight.dtype != DType::BF16 ||
-        conv_states.dtype != DType::BF16 || out.dtype != DType::BF16) {
+void causal_conv1d_silu_snapshot(const Tensor& x, const Tensor& weight, Tensor& conv_states,
+                                 const Tensor& initial_slot, Tensor& out, cudaStream_t stream) {
+    if (x.dtype != DType::BF16 || weight.dtype != DType::BF16 || conv_states.dtype != DType::BF16 ||
+        out.dtype != DType::BF16) {
         throw std::invalid_argument("causal_conv1d: x/weight/conv_states/out must be BF16");
     }
     if (initial_slot.dtype != DType::I32) {
@@ -171,10 +169,10 @@ void causal_conv1d_sequence_snapshot(const Tensor& x, const Tensor& weight, Tens
     }
 
     const std::int64_t n = numel_allow_zero(x, "x");
-    (void) numel_allow_zero(weight, "weight");
-    (void) numel_allow_zero(conv_states, "conv_states");
-    (void) numel_allow_zero(initial_slot, "initial_slot");
-    (void) numel_allow_zero(out, "out");
+    (void)numel_allow_zero(weight, "weight");
+    (void)numel_allow_zero(conv_states, "conv_states");
+    (void)numel_allow_zero(initial_slot, "initial_slot");
+    (void)numel_allow_zero(out, "out");
 
     require_x_shape(x);
     if (x.ne[1] <= 0) { throw std::invalid_argument("causal_conv1d: snapshot T must be positive"); }

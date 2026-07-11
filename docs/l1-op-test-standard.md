@@ -58,7 +58,7 @@ in a way per-element allclose is not.
 ### 1.3 Frozen presets (`static constexpr` in `op_check.h`; selected by op class)
 Order: `atol, rtol, tail_frac, worst_ratio_max, rel_l2_tol`.
 
-- `bf16_elementwise` — `residual_add`, `sigmoid_gate_mul`, `silu_and_mul`, `rope`, `embed_gather`:
+- `bf16_elementwise` — `residual_add`, `sigmoid_mul`, `silu_mul`, `rope`, `embedding`:
   `1e-3, 8e-3, 1e-3, 4.0, 4e-3`. (One bf16 output rounding ≈ `2^-8`; `rtol=2^-7` gives 2x headroom.)
 - `bf16_reduction` — `rmsnorm`, `l2norm`, `causal_conv1d`:
   `2e-3, 1.6e-2, 2e-3, 5.0, 8e-3`. (fp32 reduction + bf16 round; GPU vs CPU accumulation order differs.)

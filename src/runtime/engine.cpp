@@ -1,6 +1,7 @@
 #include "qus/runtime/engine.h"
 
-#include "qus/kernels/mtp_round.h"
+#include "model/mtp_ops.h"
+
 #include "qus/model/config.h"
 
 #include <cuda_runtime.h>

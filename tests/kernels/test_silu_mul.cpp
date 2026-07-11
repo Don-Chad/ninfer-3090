@@ -1,8 +1,8 @@
-// Correctness + coverage for silu_and_mul, against the frozen op-test standard
+// Correctness + coverage for silu_mul, against the frozen op-test standard
 // (docs/l1-op-test-standard.md): fp64 golden from bf16-rounded inputs, honest
 // input ranges (incl. a large-magnitude stress case that rejects any
 // polynomial/"fast" silu approximation), composite tolerance bf16_elementwise.
-#include "qus/kernels/silu_and_mul.h"
+#include "qus/kernels/silu_mul.h"
 #include "kernels/op_tester.h"
 
 #include <cmath>
@@ -36,7 +36,7 @@ static int one_shape(const char* tag, int n, std::uint32_t seed, float lo, float
 
     DBuf dg = to_device_bf16(g), du = to_device_bf16(u), dout(static_cast<std::size_t>(n) * 2);
     Tensor tg(dg.p, DType::BF16, {n}), tu(du.p, DType::BF16, {n}), tout(dout.p, DType::BF16, {n});
-    kernels::silu_and_mul(tg, tu, tout, nullptr);
+    kernels::silu_mul(tg, tu, tout, nullptr);
     cudaDeviceSynchronize();
 
     return verify(tag, from_device_bf16(dout, n), ref, Tolerance::bf16_elementwise());
@@ -68,7 +68,7 @@ static int unaligned_data_case() {
     auto* uptr = static_cast<unsigned char*>(du.p) + 2;
     auto* optr = static_cast<unsigned char*>(dout.p) + 2;
     Tensor tg(gptr, DType::BF16, {n}), tu(uptr, DType::BF16, {n}), tout(optr, DType::BF16, {n});
-    kernels::silu_and_mul(tg, tu, tout, nullptr);
+    kernels::silu_mul(tg, tu, tout, nullptr);
     cudaDeviceSynchronize();
 
     DBuf packed(static_cast<std::size_t>(n) * 2);
@@ -101,10 +101,10 @@ static int strided_gate_up_view_case() {
 
     DBuf dfused = to_device_bf16(fused), dout(static_cast<std::size_t>(n) * 2);
     Tensor tfused(dfused.p, DType::BF16, {2 * intermediate, T});
-    Tensor tg   = tfused.slice(0, 0, intermediate);
-    Tensor tu   = tfused.slice(0, intermediate, intermediate);
+    Tensor tg = tfused.slice(0, 0, intermediate);
+    Tensor tu = tfused.slice(0, intermediate, intermediate);
     Tensor tout(dout.p, DType::BF16, {intermediate, T});
-    kernels::silu_and_mul(tg, tu, tout, nullptr);
+    kernels::silu_mul(tg, tu, tout, nullptr);
     cudaDeviceSynchronize();
 
     return verify("silu strided fused gate_up view", from_device_bf16(dout, n), ref,
@@ -116,10 +116,8 @@ static int null_validation_case() {
         Tensor gate(nullptr, DType::BF16, {1});
         Tensor up(nullptr, DType::BF16, {1});
         Tensor out(nullptr, DType::BF16, {1});
-        kernels::silu_and_mul(gate, up, out, nullptr);
-    } catch (const std::invalid_argument&) {
-        return 0;
-    }
+        kernels::silu_mul(gate, up, out, nullptr);
+    } catch (const std::invalid_argument&) { return 0; }
     std::cerr << "silu null validation: expected invalid_argument\n";
     return 1;
 }
@@ -144,6 +142,6 @@ int main() {
     f += strided_gate_up_view_case();
     f += null_validation_case();
 
-    std::cout << (f ? "FAIL" : "OK") << " silu_and_mul correctness\n";
+    std::cout << (f ? "FAIL" : "OK") << " silu_mul correctness\n";
     return f ? 1 : 0;
 }

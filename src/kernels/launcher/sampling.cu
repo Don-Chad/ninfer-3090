@@ -1,4 +1,4 @@
-// qus::kernels::detail - sample_column launch. One block per logits column.
+// qus::kernels::detail - sample launch. One block per logits column.
 #include "kernels/launcher/sampling.h"
 
 #include "kernels/kernel/sampling.cuh"

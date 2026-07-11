@@ -1,7 +1,7 @@
 // Correctness + coverage for causal_conv1d, against the frozen op-test
 // standard (docs/l1-op-test-standard.md): fp64 golden from bf16-rounded
 // inputs, honest [-8,8] ranges, composite tolerance bf16_reduction.
-#include "qus/kernels/causal_conv1d.h"
+#include "qus/kernels/causal_conv1d_silu.h"
 #include "kernels/op_tester.h"
 
 #include <algorithm>
@@ -32,8 +32,7 @@ static std::vector<std::uint16_t> from_device_u16(const void* ptr, std::size_t n
 static int verify_u16_equal(const char* label, const std::vector<std::uint16_t>& got,
                             const std::vector<std::uint16_t>& ref) {
     if (got.size() != ref.size()) {
-        std::cerr << label << ": size mismatch got=" << got.size() << " ref=" << ref.size()
-                  << '\n';
+        std::cerr << label << ": size mismatch got=" << got.size() << " ref=" << ref.size() << '\n';
         return 1;
     }
     for (std::size_t i = 0; i < got.size(); ++i) {
@@ -114,7 +113,7 @@ static int one_prefill_shape(const char* tag, std::int32_t C, std::int32_t T, st
     Tensor tw(dw.p, DType::BF16, {C, 4});
     Tensor ts(dstate.p, DType::BF16, {C, 3});
     Tensor tout(dout.p, DType::BF16, {C, T});
-    kernels::causal_conv1d_prefill(tx, tw, ts, tout, nullptr);
+    kernels::causal_conv1d_silu(tx, tw, ts, tout, nullptr);
     cudaDeviceSynchronize();
 
     int f = 0;
@@ -147,7 +146,7 @@ static int one_decode_shape(const char* tag, std::int32_t C, std::uint32_t seed,
     Tensor tw(dw.p, DType::BF16, {C, 4});
     Tensor ts(dstate.p, DType::BF16, {C, 3});
     Tensor tout(dout.p, DType::BF16, {C, 1});
-    kernels::causal_conv1d_decode(tx, tw, ts, tout, nullptr);
+    kernels::causal_conv1d_silu(tx, tw, ts, tout, nullptr);
     cudaDeviceSynchronize();
 
     int f = 0;
@@ -179,7 +178,7 @@ static int decode_chain_equivalence(std::uint32_t seed) {
     Tensor tw_prefill(dw_prefill.p, DType::BF16, {C, 4});
     Tensor ts_prefill(dstate_prefill.p, DType::BF16, {C, 3});
     Tensor tout_prefill(dout_prefill.p, DType::BF16, {C, T});
-    kernels::causal_conv1d_prefill(tx_prefill, tw_prefill, ts_prefill, tout_prefill, nullptr);
+    kernels::causal_conv1d_silu(tx_prefill, tw_prefill, ts_prefill, tout_prefill, nullptr);
     cudaDeviceSynchronize();
 
     DBuf dx_decode = to_device_bf16(x), dw_decode = to_device_bf16(weight),
@@ -193,7 +192,7 @@ static int decode_chain_equivalence(std::uint32_t seed) {
         auto* out_step = static_cast<unsigned char*>(dout_decode.p) +
                          static_cast<std::size_t>(t) * static_cast<std::size_t>(C) * 2u;
         Tensor tout_step(out_step, DType::BF16, {C, 1});
-        kernels::causal_conv1d_decode(tx_step, tw_decode, ts_decode, tout_step, nullptr);
+        kernels::causal_conv1d_silu(tx_step, tw_decode, ts_decode, tout_step, nullptr);
     }
     cudaDeviceSynchronize();
 
@@ -225,14 +224,14 @@ static int snapshot_chain_equivalence(std::uint32_t seed, std::int32_t T, float 
 
     DBuf dx_snapshot = to_device_bf16(x), dw_snapshot = to_device_bf16(weight),
          dstates_snapshot = to_device_bf16(snapshot_state), dout_snapshot(n * 2),
-         dinitial_slot = to_device_i32({0});
+         dinitial_slot    = to_device_i32({0});
     Tensor tx_snapshot(dx_snapshot.p, DType::BF16, {C, T});
     Tensor tw_snapshot(dw_snapshot.p, DType::BF16, {C, 4});
     Tensor ts_snapshot(dstates_snapshot.p, DType::BF16, {C, 3, T});
     Tensor tinitial_slot(dinitial_slot.p, DType::I32, {1});
     Tensor tout_snapshot(dout_snapshot.p, DType::BF16, {C, T});
-    kernels::causal_conv1d_sequence_snapshot(tx_snapshot, tw_snapshot, ts_snapshot, tinitial_slot,
-                                             tout_snapshot, nullptr);
+    kernels::causal_conv1d_silu_snapshot(tx_snapshot, tw_snapshot, ts_snapshot, tinitial_slot,
+                                         tout_snapshot, nullptr);
     cudaDeviceSynchronize();
 
     DBuf dx_decode = to_device_bf16(x), dw_decode = to_device_bf16(weight),
@@ -248,7 +247,7 @@ static int snapshot_chain_equivalence(std::uint32_t seed, std::int32_t T, float 
         auto* out_step = static_cast<unsigned char*>(dout_decode.p) +
                          static_cast<std::size_t>(t) * static_cast<std::size_t>(C) * 2u;
         Tensor tout_step(out_step, DType::BF16, {C, 1});
-        kernels::causal_conv1d_decode(tx_step, tw_decode, ts_decode, tout_step, nullptr);
+        kernels::causal_conv1d_silu(tx_step, tw_decode, ts_decode, tout_step, nullptr);
         cudaDeviceSynchronize();
         const auto state_bits = from_device_u16(dstate_decode.p, state_n);
         std::memcpy(expected_slots.data() + static_cast<std::size_t>(t) * state_n,
@@ -260,9 +259,9 @@ static int snapshot_chain_equivalence(std::uint32_t seed, std::int32_t T, float 
     int f                 = 0;
     f += verify_u16_equal((tag + " out bits").c_str(), from_device_u16(dout_snapshot.p, n),
                           from_device_u16(dout_decode.p, n));
-    f += verify_u16_equal((tag + " state slot bits").c_str(),
-                          from_device_u16(dstates_snapshot.p, state_n * static_cast<std::size_t>(T)),
-                          expected_slots);
+    f += verify_u16_equal(
+        (tag + " state slot bits").c_str(),
+        from_device_u16(dstates_snapshot.p, state_n * static_cast<std::size_t>(T)), expected_slots);
     return f;
 }
 
@@ -291,14 +290,14 @@ static int selected_slot_snapshot_equivalence(std::uint32_t seed, std::int32_t T
 
     DBuf dx_snapshot = to_device_bf16(x), dw_snapshot = to_device_bf16(weight),
          dstates_snapshot = to_device_bf16(snapshot_state), dout_snapshot(n * 2),
-         dinitial_slot = to_device_i32({initial_slot});
+         dinitial_slot    = to_device_i32({initial_slot});
     Tensor tx_snapshot(dx_snapshot.p, DType::BF16, {C, T});
     Tensor tw_snapshot(dw_snapshot.p, DType::BF16, {C, 4});
     Tensor ts_snapshot(dstates_snapshot.p, DType::BF16, {C, 3, Slots});
     Tensor tinitial_slot(dinitial_slot.p, DType::I32, {1});
     Tensor tout_snapshot(dout_snapshot.p, DType::BF16, {C, T});
-    kernels::causal_conv1d_sequence_snapshot(tx_snapshot, tw_snapshot, ts_snapshot, tinitial_slot,
-                                             tout_snapshot, nullptr);
+    kernels::causal_conv1d_silu_snapshot(tx_snapshot, tw_snapshot, ts_snapshot, tinitial_slot,
+                                         tout_snapshot, nullptr);
     cudaDeviceSynchronize();
 
     DBuf dx_decode = to_device_bf16(x), dw_decode = to_device_bf16(weight),
@@ -317,7 +316,7 @@ static int selected_slot_snapshot_equivalence(std::uint32_t seed, std::int32_t T
         auto* out_step = static_cast<unsigned char*>(dout_decode.p) +
                          static_cast<std::size_t>(t) * static_cast<std::size_t>(C) * 2u;
         Tensor tout_step(out_step, DType::BF16, {C, 1});
-        kernels::causal_conv1d_decode(tx_step, tw_decode, ts_decode, tout_step, nullptr);
+        kernels::causal_conv1d_silu(tx_step, tw_decode, ts_decode, tout_step, nullptr);
         cudaDeviceSynchronize();
         const auto state_bits = from_device_u16(dstate_decode.p, state_n);
         std::memcpy(expected_slots.data() + static_cast<std::size_t>(t) * state_n,
@@ -325,8 +324,8 @@ static int selected_slot_snapshot_equivalence(std::uint32_t seed, std::int32_t T
     }
     cudaDeviceSynchronize();
 
-    const std::string tag = "causal_conv1d selected snapshot slot=" +
-                            std::to_string(initial_slot) + " T=" + std::to_string(T);
+    const std::string tag = "causal_conv1d selected snapshot slot=" + std::to_string(initial_slot) +
+                            " T=" + std::to_string(T);
     int f = 0;
     f += verify_u16_equal((tag + " out bits").c_str(), from_device_u16(dout_snapshot.p, n),
                           from_device_u16(dout_decode.p, n));
@@ -356,7 +355,7 @@ static int prefill_state_carry_equivalence(std::uint32_t seed, std::int32_t C, s
     Tensor tw_whole(dw_whole.p, DType::BF16, {C, 4});
     Tensor ts_whole(dstate_whole.p, DType::BF16, {C, 3});
     Tensor tout_whole(dout_whole.p, DType::BF16, {C, T});
-    kernels::causal_conv1d_prefill(tx_whole, tw_whole, ts_whole, tout_whole, nullptr);
+    kernels::causal_conv1d_silu(tx_whole, tw_whole, ts_whole, tout_whole, nullptr);
     cudaDeviceSynchronize();
 
     DBuf dx_split = to_device_bf16(x), dw_split = to_device_bf16(weight),
@@ -368,11 +367,11 @@ static int prefill_state_carry_equivalence(std::uint32_t seed, std::int32_t C, s
 
     Tensor x0   = tx_split.slice(1, 0, split);
     Tensor out0 = tout_split.slice(1, 0, split);
-    kernels::causal_conv1d_prefill(x0, tw_split, ts_split, out0, nullptr);
+    kernels::causal_conv1d_silu(x0, tw_split, ts_split, out0, nullptr);
     const std::int32_t tail = T - split;
     Tensor x1               = tx_split.slice(1, split, tail);
     Tensor out1             = tout_split.slice(1, split, tail);
-    kernels::causal_conv1d_prefill(x1, tw_split, ts_split, out1, nullptr);
+    kernels::causal_conv1d_silu(x1, tw_split, ts_split, out1, nullptr);
     cudaDeviceSynchronize();
 
     const std::string tag = "causal_conv1d state-carry C=" + std::to_string(C) +
@@ -391,8 +390,8 @@ static int prefill_state_carry_equivalence(std::uint32_t seed, std::int32_t C, s
 // equivalence; T < 3 exercises reading the initial window from the selected slot.
 static int prefill_from_slot_equivalence(std::uint32_t seed, std::int32_t C, std::int32_t T,
                                          std::int32_t slots, std::int32_t read_slot) {
-    const std::size_t n       = static_cast<std::size_t>(C) * T;
-    const std::size_t state_n = static_cast<std::size_t>(C) * 3u;
+    const std::size_t n        = static_cast<std::size_t>(C) * T;
+    const std::size_t state_n  = static_cast<std::size_t>(C) * 3u;
     const std::size_t weight_n = static_cast<std::size_t>(C) * 4u;
 
     std::vector<float> x(n), weight(weight_n), state(state_n);
@@ -409,7 +408,7 @@ static int prefill_from_slot_equivalence(std::uint32_t seed, std::int32_t C, std
     Tensor tw(rw.p, DType::BF16, {C, 4});
     Tensor ts(rstate.p, DType::BF16, {C, 3});
     Tensor tout(rout.p, DType::BF16, {C, T});
-    kernels::causal_conv1d_prefill(tx, tw, ts, tout, nullptr);
+    kernels::causal_conv1d_silu(tx, tw, ts, tout, nullptr);
     cudaDeviceSynchronize();
 
     DBuf fx = to_device_bf16(x), fw = to_device_bf16(weight), fout(n * 2);
@@ -428,7 +427,7 @@ static int prefill_from_slot_equivalence(std::uint32_t seed, std::int32_t C, std
                DType::BF16, {C, 3});
     Tensor fout_state(fstates.p, DType::BF16, {C, 3});
     Tensor fout_t(fout.p, DType::BF16, {C, T});
-    kernels::causal_conv1d_prefill(fx_t, fw_t, fin, fout_state, fout_t, nullptr);
+    kernels::causal_conv1d_silu(fx_t, fw_t, fin, fout_state, fout_t, nullptr);
     cudaDeviceSynchronize();
 
     const std::string tag = "causal_conv1d from-slot C=" + std::to_string(C) +
@@ -437,8 +436,7 @@ static int prefill_from_slot_equivalence(std::uint32_t seed, std::int32_t C, std
     int f = 0;
     f += verify_u16_equal((tag + " out bits").c_str(), from_device_u16(fout.p, n),
                           from_device_u16(rout.p, n));
-    f += verify_u16_equal((tag + " slot0 state bits").c_str(),
-                          from_device_u16(fstates.p, state_n),
+    f += verify_u16_equal((tag + " slot0 state bits").c_str(), from_device_u16(fstates.p, state_n),
                           from_device_u16(rstate.p, state_n));
     return f;
 }
@@ -489,76 +487,73 @@ static int validation_checks() {
     f += expect_invalid("causal_conv1d validation x dtype", [&] {
         Tensor bad = x;
         bad.dtype  = DType::FP32;
-        kernels::causal_conv1d_prefill(bad, weight, state, out, nullptr);
+        kernels::causal_conv1d_silu(bad, weight, state, out, nullptr);
     });
     f += expect_invalid("causal_conv1d validation weight dtype", [&] {
         Tensor bad = weight;
         bad.dtype  = DType::FP32;
-        kernels::causal_conv1d_prefill(x, bad, state, out, nullptr);
+        kernels::causal_conv1d_silu(x, bad, state, out, nullptr);
     });
     f += expect_invalid("causal_conv1d validation state dtype", [&] {
         Tensor bad = state;
         bad.dtype  = DType::FP32;
-        kernels::causal_conv1d_prefill(x, weight, bad, out, nullptr);
+        kernels::causal_conv1d_silu(x, weight, bad, out, nullptr);
     });
     f += expect_invalid("causal_conv1d validation out dtype", [&] {
         Tensor bad = out;
         bad.dtype  = DType::FP32;
-        kernels::causal_conv1d_prefill(x, weight, state, bad, nullptr);
+        kernels::causal_conv1d_silu(x, weight, state, bad, nullptr);
     });
     f += expect_invalid("causal_conv1d validation out shape", [&] {
         Tensor bad = out;
         bad.ne[1]  = T + 1;
-        kernels::causal_conv1d_prefill(x, weight, state, bad, nullptr);
+        kernels::causal_conv1d_silu(x, weight, state, bad, nullptr);
     });
     f += expect_invalid("causal_conv1d validation weight C", [&] {
         Tensor bad = weight;
         bad.ne[0]  = C + 1;
-        kernels::causal_conv1d_prefill(x, bad, state, out, nullptr);
+        kernels::causal_conv1d_silu(x, bad, state, out, nullptr);
     });
     f += expect_invalid("causal_conv1d validation weight taps", [&] {
         Tensor bad = weight;
         bad.ne[1]  = 5;
-        kernels::causal_conv1d_prefill(x, bad, state, out, nullptr);
+        kernels::causal_conv1d_silu(x, bad, state, out, nullptr);
     });
     f += expect_invalid("causal_conv1d validation state C", [&] {
         Tensor bad = state;
         bad.ne[0]  = C + 1;
-        kernels::causal_conv1d_prefill(x, weight, bad, out, nullptr);
+        kernels::causal_conv1d_silu(x, weight, bad, out, nullptr);
     });
     f += expect_invalid("causal_conv1d validation state width", [&] {
         Tensor bad = state;
         bad.ne[1]  = 2;
-        kernels::causal_conv1d_prefill(x, weight, bad, out, nullptr);
+        kernels::causal_conv1d_silu(x, weight, bad, out, nullptr);
     });
-    f += expect_invalid("causal_conv1d validation decode T",
-                        [&] { kernels::causal_conv1d_decode(x, weight, state, out, nullptr); });
     f += expect_invalid("causal_conv1d validation snapshot T exceeds slots", [&] {
         Tensor bad_state(dstate.p, DType::BF16, {C, 3, T - 1});
         DBuf d_initial_slot = to_device_i32({0});
         Tensor initial_slot(d_initial_slot.p, DType::I32, {1});
-        kernels::causal_conv1d_sequence_snapshot(x, weight, bad_state, initial_slot, out, nullptr);
+        kernels::causal_conv1d_silu_snapshot(x, weight, bad_state, initial_slot, out, nullptr);
     });
     f += expect_invalid("causal_conv1d validation snapshot initial_slot dtype", [&] {
         Tensor snapshot_state(dstate.p, DType::BF16, {C, 3, T});
         DBuf d_initial_slot(sizeof(std::int32_t));
         Tensor initial_slot(d_initial_slot.p, DType::FP32, {1});
-        kernels::causal_conv1d_sequence_snapshot(x, weight, snapshot_state, initial_slot, out,
-                                                 nullptr);
+        kernels::causal_conv1d_silu_snapshot(x, weight, snapshot_state, initial_slot, out, nullptr);
     });
     f += expect_invalid("causal_conv1d validation contiguous", [&] {
         Tensor bad = out;
         bad.nb[0]  = 4;
-        kernels::causal_conv1d_prefill(x, weight, state, bad, nullptr);
+        kernels::causal_conv1d_silu(x, weight, state, bad, nullptr);
     });
     f += expect_invalid("causal_conv1d validation null data", [&] {
         Tensor bad(nullptr, DType::BF16, {C, T});
-        kernels::causal_conv1d_prefill(bad, weight, state, out, nullptr);
+        kernels::causal_conv1d_silu(bad, weight, state, out, nullptr);
     });
     f += expect_invalid("causal_conv1d validation negative dim", [&] {
         Tensor bad = x;
         bad.ne[1]  = -1;
-        kernels::causal_conv1d_prefill(bad, weight, state, out, nullptr);
+        kernels::causal_conv1d_silu(bad, weight, state, out, nullptr);
     });
     f += expect_invalid("causal_conv1d validation zero C", [&] {
         Tensor zx = x;
@@ -566,7 +561,7 @@ static int validation_checks() {
         Tensor zs = state;
         Tensor zo = out;
         zx.ne[0] = zw.ne[0] = zs.ne[0] = zo.ne[0] = 0;
-        kernels::causal_conv1d_prefill(zx, zw, zs, zo, nullptr);
+        kernels::causal_conv1d_silu(zx, zw, zs, zo, nullptr);
     });
     f += expect_overflow("causal_conv1d validation overflow", [&] {
         Tensor hx(nullptr, DType::BF16, {1});
@@ -585,7 +580,7 @@ static int validation_checks() {
         hs.ne[1] = 3;
         hs.ne[2] = 1;
         hs.ne[3] = 1;
-        kernels::causal_conv1d_prefill(hx, hw, hs, ho, nullptr);
+        kernels::causal_conv1d_silu(hx, hw, hs, ho, nullptr);
     });
 
     try {
@@ -593,7 +588,7 @@ static int validation_checks() {
         Tensor zo = out;
         zx.ne[1]  = 0;
         zo.ne[1]  = 0;
-        kernels::causal_conv1d_prefill(zx, weight, state, zo, nullptr);
+        kernels::causal_conv1d_silu(zx, weight, state, zo, nullptr);
     } catch (const std::exception& e) {
         std::cerr << "causal_conv1d validation zero T: expected no throw, got " << e.what() << '\n';
         ++f;

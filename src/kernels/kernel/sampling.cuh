@@ -1,6 +1,6 @@
 #pragma once
 
-// qus::kernels - sample_column kernel. One CUDA block handles one logits column
+// qus::kernels - sample kernel. One CUDA block handles one logits column
 // and reduces over vocab. The greedy branch (temperature <= 0) is an exact
 // argmax with lowest-index tie-break; the sampling branch builds the truncated
 // target distribution and draws a token with a stateless counter-based RNG.

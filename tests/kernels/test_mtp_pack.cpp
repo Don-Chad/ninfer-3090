@@ -1,4 +1,4 @@
-#include "qus/kernels/mtp_pack.h"
+#include "model/mtp_ops.h"
 #include "kernels/op_tester.h"
 
 #include <cuda_runtime.h>
@@ -53,8 +53,8 @@ int expect_bits(const std::string& label, const std::vector<std::uint16_t>& got,
 }
 
 int one_pack_case(int T) {
-    constexpr int hidden = 5120;
-    constexpr int out_rows = 10240;
+    constexpr int hidden       = 5120;
+    constexpr int out_rows     = 10240;
     const std::size_t hidden_n = static_cast<std::size_t>(hidden) * T;
     const std::size_t out_n    = static_cast<std::size_t>(out_rows) * T;
     const auto emb             = pattern(hidden_n, 17u + static_cast<std::uint32_t>(T));
@@ -82,9 +82,9 @@ int one_pack_case(int T) {
 }
 
 int one_split_case(int T) {
-    constexpr int attn_rows = 14336;
-    constexpr int q_rows = 6144;
-    constexpr int kv_rows = 1024;
+    constexpr int attn_rows  = 14336;
+    constexpr int q_rows     = 6144;
+    constexpr int kv_rows    = 1024;
     const std::size_t attn_n = static_cast<std::size_t>(attn_rows) * T;
     const auto attn          = pattern(attn_n, 4242u + static_cast<std::uint32_t>(T));
     std::vector<std::uint16_t> expected_q(static_cast<std::size_t>(q_rows) * T);
@@ -99,8 +99,7 @@ int one_split_case(int T) {
                 attn[src_base + q_rows + kv_rows + row];
         }
         for (int row = 0; row < kv_rows; ++row) {
-            expected_k[static_cast<std::size_t>(t) * kv_rows + row] =
-                attn[src_base + q_rows + row];
+            expected_k[static_cast<std::size_t>(t) * kv_rows + row] = attn[src_base + q_rows + row];
             expected_v[static_cast<std::size_t>(t) * kv_rows + row] =
                 attn[src_base + q_rows + kv_rows + q_rows + row];
         }
@@ -136,9 +135,7 @@ int validation_case() {
         DBuf d(2);
         Tensor x(d.p, DType::BF16, {1});
         kernels::mtp_pack_fc_input(x, x, x, nullptr);
-    } catch (const std::invalid_argument&) {
-        return 0;
-    }
+    } catch (const std::invalid_argument&) { return 0; }
     std::cerr << "mtp_pack validation: expected invalid_argument\n";
     return 1;
 }
@@ -159,4 +156,3 @@ int main() {
     std::cout << (failures ? "FAIL" : "OK") << " mtp_pack correctness\n";
     return failures ? 1 : 0;
 }
-

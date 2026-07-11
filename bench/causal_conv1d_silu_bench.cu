@@ -2,8 +2,8 @@
 // shape ([C,T] = [10240,T], depthwise width 4). This binary is the ncu target;
 // the GB/s it prints is informational only -- the gate is ncu sustained DRAM %
 // (see docs/l1-op-test-standard.md section 2).
-//   ./qus_causal_conv1d_bench [--decode] [--prefill]   (default: both)
-#include "qus/kernels/causal_conv1d.h"
+//   ./qus_causal_conv1d_silu_bench [--decode] [--prefill]   (default: both)
+#include "qus/kernels/causal_conv1d_silu.h"
 #include "qus/core/device.h"
 #include "qus_bench_common.h"
 
@@ -73,7 +73,7 @@ void run_prefill() {
 
     const double bytes = 4.0 * static_cast<double>(n) * 2.0;
     const Result r     = bench_loop(
-        [&](cudaStream_t s) { kernels::causal_conv1d_prefill(tx, tw, ts, tout, s); }, bytes);
+        [&](cudaStream_t s) { kernels::causal_conv1d_silu(tx, tw, ts, tout, s); }, bytes);
     print_result("causal_conv1d prefill [10240,4096]", r);
     run_copy_baseline(bytes, "copy same-byte prefill baseline");
 }
@@ -93,7 +93,7 @@ void run_decode() {
 
     const double bytes = 12.0 * static_cast<double>(kChannels) * 2.0;
     const Result r     = bench_loop(
-        [&](cudaStream_t s) { kernels::causal_conv1d_decode(tx, tw, ts, tout, s); }, bytes);
+        [&](cudaStream_t s) { kernels::causal_conv1d_silu(tx, tw, ts, tout, s); }, bytes);
     print_result("causal_conv1d decode  [10240,1]", r);
     run_copy_baseline(bytes, "copy same-byte decode baseline");
 }

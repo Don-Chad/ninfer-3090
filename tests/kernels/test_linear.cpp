@@ -2,10 +2,13 @@
 // op-test standard (docs/l1-op-test-standard.md): fp64 golden W @ x from
 // bf16-rounded inputs and weights, composite tolerance linear_bf16.
 #include "qus/kernels/linear.h"
-#include "qus/kernels/linear_residual.h"
-#include "qus/kernels/mlp_gate_up_silu.h"
+#include "qus/kernels/attn_input_proj.h"
+#include "qus/kernels/gdn_input_proj.h"
+#include "qus/kernels/linear_add.h"
+#include "qus/kernels/linear_pair.h"
+#include "qus/kernels/linear_swiglu.h"
 #include "qus/kernels/residual_add.h"
-#include "qus/kernels/silu_and_mul.h"
+#include "qus/kernels/silu_mul.h"
 #include "kernels/op_tester.h"
 #include "kernels/q5090_pack.h"
 
@@ -286,8 +289,8 @@ int paired_w8g32_shape(std::int32_t n, std::int32_t k, const std::vector<std::in
         Tensor tx(dx.p, DType::BF16, {k, t});
         Tensor tk(dkout.p, DType::BF16, {n, t});
         Tensor tv(dvout.p, DType::BF16, {n, t});
-        kernels::linear_w8g32_kv_pair(tx, kpacked.device_weight(dkw.p),
-                                      vpacked.device_weight(dvw.p), tk, tv, ws, nullptr);
+        kernels::linear_pair(tx, kpacked.device_weight(dkw.p), vpacked.device_weight(dvw.p), tk, tv,
+                             ws, nullptr);
         cudaDeviceSynchronize();
         const std::size_t count = static_cast<std::size_t>(n) * t;
         const std::vector<double> kr(kref.begin(), kref.begin() + count);
@@ -392,8 +395,8 @@ int grouped_attention_correctness(std::int32_t t) {
     kernels::linear(tx, gweight, tg_ref, ws, nullptr);
     kernels::linear(tx, kweight, tk_ref, ws, nullptr);
     kernels::linear(tx, vweight, tv_ref, ws, nullptr);
-    kernels::linear_attn_input_grouped(tx, qweight, gweight, kweight, vweight, tq_got, tg_got,
-                                       tk_got, tv_got, ws, nullptr);
+    kernels::attn_input_proj(tx, qweight, gweight, kweight, vweight, tq_got, tg_got, tk_got, tv_got,
+                             ws, nullptr);
     cudaDeviceSynchronize();
 
     int f = 0;
@@ -434,7 +437,7 @@ int grouped_gdn_correctness(std::int32_t t) {
     const Weight vweight  = vw.device_weight(dvw.p);
     kernels::linear(tx, qkweight, tqk, ws, nullptr);
     kernels::linear(tx, vweight, tv, ws, nullptr);
-    kernels::linear_gdn_input_grouped(tx, qkweight, vweight, tqkv, ws, nullptr);
+    kernels::gdn_input_proj(tx, qkweight, vweight, tqkv, ws, nullptr);
     cudaDeviceSynchronize();
     std::vector<double> ref(static_cast<std::size_t>(kRows) * t);
     const auto qkh = from_device_bf16(qk_ref, qk_count);
@@ -470,9 +473,9 @@ int gate_up_silu_correctness(std::int32_t t) {
     WorkspaceArena ws(256ULL << 20);
     const Weight weight = packed.device_weight(dw.p);
     kernels::linear(tx, weight, tgate_up, ws, nullptr);
-    kernels::silu_and_mul(tgate_up.slice(0, 0, kInter), tgate_up.slice(0, kInter, kInter), tref,
-                          nullptr);
-    kernels::mlp_gate_up_silu(tx, weight, tgot, ws, nullptr);
+    kernels::silu_mul(tgate_up.slice(0, 0, kInter), tgate_up.slice(0, kInter, kInter), tref,
+                      nullptr);
+    kernels::linear_swiglu(tx, weight, tgot, ws, nullptr);
     cudaDeviceSynchronize();
     return verify("linear Q4 gate/up SiLU paired",
                   from_device_bf16(got, static_cast<std::size_t>(kInter) * t),
@@ -504,7 +507,7 @@ int residual_epilogue_correctness(std::int32_t t) {
     const Weight weight = packed.device_weight(dw.p);
     kernels::linear(tx, weight, ty, ws, nullptr);
     kernels::residual_add(ty, tref, nullptr);
-    kernels::linear_residual_add(tx, weight, tgot, ws, nullptr);
+    kernels::linear_add(tx, weight, tgot, ws, nullptr);
     cudaDeviceSynchronize();
     return verify("linear Q5 residual epilogue",
                   from_device_bf16(dgot, static_cast<std::size_t>(kN) * t),

@@ -7,6 +7,7 @@
 //   ./build/bench/qus_linear_op_bench --shape MlpGateUp34816x5120 --qtype Q4 --repeat 200
 
 #include "qus/kernels/linear.h"
+#include "qus/kernels/linear_pair.h"
 #include "qus/core/device.h"
 #include "qus_bench_common.h"
 
@@ -34,57 +35,53 @@ namespace {
 
 constexpr std::uint64_t kDefaultFlushBytes = 256ULL << 20; // 256 MiB > RTX 5090 L2.
 constexpr std::uint64_t kDefaultCopyBytes  = 512ULL << 20; // Counted as read + write bytes.
-constexpr int           kDefaultWarmup     = 3;
-constexpr int           kDefaultRepeat     = 20;
-constexpr int           kDefaultCopyRepeat = 8;
+constexpr int kDefaultWarmup               = 3;
+constexpr int kDefaultRepeat               = 20;
+constexpr int kDefaultCopyRepeat           = 8;
 
 struct DeviceBuffer {
-    void*         p     = nullptr;
+    void* p             = nullptr;
     std::uint64_t bytes = 0;
 
     DeviceBuffer() = default;
+
     explicit DeviceBuffer(std::uint64_t nbytes) : bytes(nbytes) {
         if (bytes > 0) { CUDA_CHECK(cudaMalloc(&p, bytes)); }
     }
+
     ~DeviceBuffer() {
         if (p) { cudaFree(p); }
     }
+
     DeviceBuffer(DeviceBuffer&& other) noexcept : p(other.p), bytes(other.bytes) {
         other.p     = nullptr;
         other.bytes = 0;
     }
+
     DeviceBuffer(const DeviceBuffer&)            = delete;
     DeviceBuffer& operator=(const DeviceBuffer&) = delete;
 };
 
 struct ShapeSpec {
-    const char*  name;
+    const char* name;
     std::int32_t n;
     std::int32_t k;
 };
 
 struct TargetSpec {
     ShapeSpec shape;
-    QType     qtype;
+    QType qtype;
 };
 
 constexpr ShapeSpec kShapes[] = {
-    {"MtpFc5120x10240", 5120, 10240},
-    {"MtpKV1024x5120", 1024, 5120},
-    {"MtpAttnIn14336x5120", 14336, 5120},
-    {"MtpOProj5120x6144", 5120, 6144},
-    {"MtpMlpGateUp34816x5120", 34816, 5120},
-    {"MtpMlpDown5120x17408", 5120, 17408},
-    {"MlpGateUp34816x5120", 34816, 5120},
-    {"AttnInQKV7168x5120", 7168, 5120},
-    {"GdnInQK4096x5120", 4096, 5120},
-    {"MlpDown5120x17408", 5120, 17408},
-    {"LmHead248320x5120", 248320, 5120},
-    {"LmHeadDraft65536x5120", 65536, 5120},
-    {"LmHeadDraft98304x5120", 98304, 5120},
-    {"LmHeadDraft131072x5120", 131072, 5120},
-    {"Proj6144x5120", 6144, 5120},
-    {"Out5120x6144", 5120, 6144},
+    {"MtpFc5120x10240", 5120, 10240},        {"MtpKV1024x5120", 1024, 5120},
+    {"MtpAttnIn14336x5120", 14336, 5120},    {"MtpOProj5120x6144", 5120, 6144},
+    {"MtpMlpGateUp34816x5120", 34816, 5120}, {"MtpMlpDown5120x17408", 5120, 17408},
+    {"MlpGateUp34816x5120", 34816, 5120},    {"AttnInQKV7168x5120", 7168, 5120},
+    {"GdnInQK4096x5120", 4096, 5120},        {"MlpDown5120x17408", 5120, 17408},
+    {"LmHead248320x5120", 248320, 5120},     {"LmHeadDraft65536x5120", 65536, 5120},
+    {"LmHeadDraft98304x5120", 98304, 5120},  {"LmHeadDraft131072x5120", 131072, 5120},
+    {"Proj6144x5120", 6144, 5120},           {"Out5120x6144", 5120, 6144},
 };
 
 constexpr TargetSpec kTask2Targets[] = {
@@ -108,24 +105,24 @@ constexpr TargetSpec kTask2Targets[] = {
 };
 
 struct Options {
-    bool          all_targets        = true;
-    bool          have_shape         = false;
-    bool          have_qtype         = false;
-    bool          paired_kv          = false;
-    ShapeSpec     shape              = kTask2Targets[0].shape;
-    QType         qtype              = kTask2Targets[0].qtype;
-    int           warmup             = kDefaultWarmup;
-    int           repeat             = kDefaultRepeat;
-    int           copy_repeat        = kDefaultCopyRepeat;
-    std::uint64_t flush_bytes        = kDefaultFlushBytes;
-    std::uint64_t copy_bytes         = kDefaultCopyBytes;
-    double        stream_ceiling_gbs = 0.0;
-    std::vector<int> t_sweep;   // activation columns to sweep; empty => default set
-    std::string   csv_out;
+    bool all_targets          = true;
+    bool have_shape           = false;
+    bool have_qtype           = false;
+    bool paired_kv            = false;
+    ShapeSpec shape           = kTask2Targets[0].shape;
+    QType qtype               = kTask2Targets[0].qtype;
+    int warmup                = kDefaultWarmup;
+    int repeat                = kDefaultRepeat;
+    int copy_repeat           = kDefaultCopyRepeat;
+    std::uint64_t flush_bytes = kDefaultFlushBytes;
+    std::uint64_t copy_bytes  = kDefaultCopyBytes;
+    double stream_ceiling_gbs = 0.0;
+    std::vector<int> t_sweep; // activation columns to sweep; empty => default set
+    std::string csv_out;
 };
 
 struct TimingStats {
-    int    samples   = 0;
+    int samples      = 0;
     double median_us = 0.0;
     double min_us    = 0.0;
     double p95_us    = 0.0;
@@ -133,44 +130,44 @@ struct TimingStats {
 };
 
 struct RowSplitPayload {
-    DeviceBuffer  data;
+    DeviceBuffer data;
     std::uint64_t nibble_bytes = 0;
     std::uint64_t high_offset  = 0;
     std::uint64_t high_bytes   = 0;
     std::uint64_t scale_offset = 0;
     std::uint64_t scale_bytes  = 0;
+
     std::uint64_t payload_bytes() const { return scale_offset + scale_bytes; }
 };
 
 struct RunResult {
-    const char*   shape_name          = "";
-    const char*   qtype_name          = "";
-    std::int32_t  n                   = 0;
-    std::int32_t  k                   = 0;
-    std::int32_t  t                   = 1;
+    const char* shape_name             = "";
+    const char* qtype_name             = "";
+    std::int32_t n                     = 0;
+    std::int32_t k                     = 0;
+    std::int32_t t                     = 1;
     std::uint64_t weight_payload_bytes = 0;
-    std::uint64_t x_bytes             = 0;
-    std::uint64_t out_bytes           = 0;
-    std::uint64_t bytes_streamed      = 0;
-    double        cold_median_us      = 0.0;
-    double        cold_min_us         = 0.0;
-    double        cold_p95_us         = 0.0;
-    double        warm_median_us      = 0.0;
-    double        achieved_gbs        = 0.0;
-    double        achieved_dram_pct   = 0.0;
-    double        achieved_tflops     = 0.0;
-    double        tc_ceiling_tflops   = 0.0;
-    double        tc_pct              = 0.0;
-    double        stream_ceiling_gbs  = 0.0;
-    double        roofline_us         = 0.0;
-    int           repeat              = 0;
-    int           warmup              = 0;
-    std::uint64_t flush_bytes         = 0;
+    std::uint64_t x_bytes              = 0;
+    std::uint64_t out_bytes            = 0;
+    std::uint64_t bytes_streamed       = 0;
+    double cold_median_us              = 0.0;
+    double cold_min_us                 = 0.0;
+    double cold_p95_us                 = 0.0;
+    double warm_median_us              = 0.0;
+    double achieved_gbs                = 0.0;
+    double achieved_dram_pct           = 0.0;
+    double achieved_tflops             = 0.0;
+    double tc_ceiling_tflops           = 0.0;
+    double tc_pct                      = 0.0;
+    double stream_ceiling_gbs          = 0.0;
+    double roofline_us                 = 0.0;
+    int repeat                         = 0;
+    int warmup                         = 0;
+    std::uint64_t flush_bytes          = 0;
 };
 
 __global__ void fill_codes_kernel(std::uint8_t* codes, std::uint64_t nbytes) {
-    const std::uint64_t start =
-        blockIdx.x * static_cast<std::uint64_t>(blockDim.x) + threadIdx.x;
+    const std::uint64_t start  = blockIdx.x * static_cast<std::uint64_t>(blockDim.x) + threadIdx.x;
     const std::uint64_t stride = gridDim.x * static_cast<std::uint64_t>(blockDim.x);
     for (std::uint64_t i = start; i < nbytes; i += stride) {
         codes[i] = static_cast<std::uint8_t>((i * 17ULL + 31ULL) & 0xffULL);
@@ -178,8 +175,7 @@ __global__ void fill_codes_kernel(std::uint8_t* codes, std::uint64_t nbytes) {
 }
 
 __global__ void fill_scales_kernel(std::uint8_t* scales, std::uint64_t groups) {
-    const std::uint64_t start =
-        blockIdx.x * static_cast<std::uint64_t>(blockDim.x) + threadIdx.x;
+    const std::uint64_t start  = blockIdx.x * static_cast<std::uint64_t>(blockDim.x) + threadIdx.x;
     const std::uint64_t stride = gridDim.x * static_cast<std::uint64_t>(blockDim.x);
     for (std::uint64_t i = start; i < groups; i += stride) {
         const std::uint64_t off = i * 2ULL;
@@ -189,12 +185,9 @@ __global__ void fill_scales_kernel(std::uint8_t* scales, std::uint64_t groups) {
 }
 
 __global__ void stream_copy_kernel(const uint4* src, uint4* dst, std::uint64_t words) {
-    const std::uint64_t start =
-        blockIdx.x * static_cast<std::uint64_t>(blockDim.x) + threadIdx.x;
+    const std::uint64_t start  = blockIdx.x * static_cast<std::uint64_t>(blockDim.x) + threadIdx.x;
     const std::uint64_t stride = gridDim.x * static_cast<std::uint64_t>(blockDim.x);
-    for (std::uint64_t i = start; i < words; i += stride) {
-        dst[i] = src[i];
-    }
+    for (std::uint64_t i = start; i < words; i += stride) { dst[i] = src[i]; }
 }
 
 // Dense bf16 mma.sync (m16n8k16) throughput probe: pure tensor-core FLOPs, no
@@ -205,7 +198,7 @@ template <int NACC>
 __global__ void tc_peak_kernel(float* sink, int iters) {
     const unsigned a0 = 0x3f803f80u, a1 = 0x3f803f80u, a2 = 0x3f803f80u, a3 = 0x3f803f80u;
     const unsigned b0 = 0x3f803f80u, b1 = 0x3f803f80u; // bf16 1.0 packed pairs
-    float          c[NACC][4];
+    float c[NACC][4];
 #pragma unroll
     for (int n = 0; n < NACC; ++n) {
         c[n][0] = 0.0f;
@@ -216,11 +209,10 @@ __global__ void tc_peak_kernel(float* sink, int iters) {
     for (int i = 0; i < iters; ++i) {
 #pragma unroll
         for (int n = 0; n < NACC; ++n) {
-            asm volatile(
-                "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
-                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
-                : "+f"(c[n][0]), "+f"(c[n][1]), "+f"(c[n][2]), "+f"(c[n][3])
-                : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
+            asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+                         "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                         : "+f"(c[n][0]), "+f"(c[n][1]), "+f"(c[n][2]), "+f"(c[n][3])
+                         : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
         }
     }
     float s = 0.0f;
@@ -246,11 +238,16 @@ std::string lower(std::string_view s) {
 
 const char* qtype_name(QType qtype) {
     switch (qtype) {
-    case QType::Q4G64_F16S: return "Q4";
-    case QType::Q5G64_F16S: return "Q5";
-    case QType::Q6G64_F16S: return "Q6";
-    case QType::W8G32_F16S: return "W8G32";
-    default:                return "unsupported";
+    case QType::Q4G64_F16S:
+        return "Q4";
+    case QType::Q5G64_F16S:
+        return "Q5";
+    case QType::Q6G64_F16S:
+        return "Q6";
+    case QType::W8G32_F16S:
+        return "W8G32";
+    default:
+        return "unsupported";
     }
 }
 
@@ -258,29 +255,42 @@ std::int32_t group_size(QType qtype) {
     switch (qtype) {
     case QType::Q4G64_F16S:
     case QType::Q5G64_F16S:
-    case QType::Q6G64_F16S: return 64;
-    case QType::W8G32_F16S: return 32;
-    default:                throw std::invalid_argument("unsupported qtype for ROW_SPLIT bench");
+    case QType::Q6G64_F16S:
+        return 64;
+    case QType::W8G32_F16S:
+        return 32;
+    default:
+        throw std::invalid_argument("unsupported qtype for ROW_SPLIT bench");
     }
 }
 
 std::int32_t nibble_bytes_per_group(QType qtype) {
     switch (qtype) {
-    case QType::Q4G64_F16S: return 32;
-    case QType::Q5G64_F16S: return 32;
-    case QType::Q6G64_F16S: return 32;
-    case QType::W8G32_F16S: return 32;
-    default:                throw std::invalid_argument("unsupported qtype for ROW_SPLIT bench");
+    case QType::Q4G64_F16S:
+        return 32;
+    case QType::Q5G64_F16S:
+        return 32;
+    case QType::Q6G64_F16S:
+        return 32;
+    case QType::W8G32_F16S:
+        return 32;
+    default:
+        throw std::invalid_argument("unsupported qtype for ROW_SPLIT bench");
     }
 }
 
 std::int32_t high_bytes_per_group(QType qtype) {
     switch (qtype) {
-    case QType::Q4G64_F16S: return 0;
-    case QType::W8G32_F16S: return 0;
-    case QType::Q5G64_F16S: return 8;
-    case QType::Q6G64_F16S: return 16;
-    default:                throw std::invalid_argument("unsupported qtype for ROW_SPLIT bench");
+    case QType::Q4G64_F16S:
+        return 0;
+    case QType::W8G32_F16S:
+        return 0;
+    case QType::Q5G64_F16S:
+        return 8;
+    case QType::Q6G64_F16S:
+        return 16;
+    default:
+        throw std::invalid_argument("unsupported qtype for ROW_SPLIT bench");
     }
 }
 
@@ -302,9 +312,9 @@ ShapeSpec parse_shape(std::string_view raw) {
 }
 
 std::uint64_t parse_u64(std::string_view raw, const char* label) {
-    char*      end = nullptr;
-    const auto str = std::string(raw);
-    errno          = 0;
+    char* end                      = nullptr;
+    const auto str                 = std::string(raw);
+    errno                          = 0;
     const unsigned long long value = std::strtoull(str.c_str(), &end, 10);
     if (errno != 0 || end == str.c_str() || *end != '\0') {
         throw std::invalid_argument(std::string("invalid ") + label + ": " + str);
@@ -321,9 +331,9 @@ int parse_int(std::string_view raw, const char* label) {
 }
 
 std::vector<int> parse_int_list(std::string_view raw) {
-    std::vector<int>  out;
+    std::vector<int> out;
     const std::string s(raw);
-    std::size_t       pos = 0;
+    std::size_t pos = 0;
     while (pos <= s.size()) {
         const std::size_t comma = s.find(',', pos);
         const std::string tok =
@@ -341,9 +351,9 @@ std::vector<int> parse_int_list(std::string_view raw) {
 }
 
 double parse_double(std::string_view raw, const char* label) {
-    char*      end = nullptr;
-    const auto str = std::string(raw);
-    errno          = 0;
+    char* end          = nullptr;
+    const auto str     = std::string(raw);
+    errno              = 0;
     const double value = std::strtod(str.c_str(), &end);
     if (errno != 0 || end == str.c_str() || *end != '\0' || value <= 0.0) {
         throw std::invalid_argument(std::string("invalid ") + label + ": " + str);
@@ -352,25 +362,26 @@ double parse_double(std::string_view raw, const char* label) {
 }
 
 void usage(const char* argv0) {
-    std::fprintf(stderr,
-                 "Usage:\n"
-                 "  %s --all-targets [--warmup N] [--repeat N] [--copy-repeat N]\n"
-                 "  %s --shape ShapeFamily --qtype Q4|Q5|Q6|W8G32 [--repeat N]\n\n"
-                 "Options:\n"
-                 "  --all-targets              Run the registered target shape/qtype rows (default).\n"
-                 "  --shape NAME               One ShapeFamily string, e.g. MlpGateUp34816x5120.\n"
-                 "  --qtype Q4|Q5|Q6|W8G32     Low-bit ROW_SPLIT qtype for --shape.\n"
-                 "  --paired-kv                Benchmark paired MTP K/V (requires MtpKV + W8G32).\n"
-                 "  --warmup N                 Cold-cache warmup GEMV launches (default %d).\n"
-                 "  --repeat N                 Cold-cache measured GEMV launches (default %d).\n"
-                 "  --copy-repeat N            Cold-cache copy-ceiling samples (default %d).\n"
-                 "  --flush-mib N              L2 flush buffer size in MiB (default 256).\n"
-                 "  --copy-mib N               Copy-ceiling buffer size in MiB (default 512).\n"
-                 "  --stream-ceiling-gbs X     Use a premeasured copy ceiling instead of measuring it.\n"
-                 "  --t-sweep L                Comma list of activation columns T, e.g. 1,8,64,512\n"
-                 "                             (default 1,2,4,8,16,32,64,128,256,512,1024,2048).\n"
-                 "  --csv-out PATH             Write the result table as CSV.\n",
-                 argv0, argv0, kDefaultWarmup, kDefaultRepeat, kDefaultCopyRepeat);
+    std::fprintf(
+        stderr,
+        "Usage:\n"
+        "  %s --all-targets [--warmup N] [--repeat N] [--copy-repeat N]\n"
+        "  %s --shape ShapeFamily --qtype Q4|Q5|Q6|W8G32 [--repeat N]\n\n"
+        "Options:\n"
+        "  --all-targets              Run the registered target shape/qtype rows (default).\n"
+        "  --shape NAME               One ShapeFamily string, e.g. MlpGateUp34816x5120.\n"
+        "  --qtype Q4|Q5|Q6|W8G32     Low-bit ROW_SPLIT qtype for --shape.\n"
+        "  --paired-kv                Benchmark paired MTP K/V (requires MtpKV + W8G32).\n"
+        "  --warmup N                 Cold-cache warmup GEMV launches (default %d).\n"
+        "  --repeat N                 Cold-cache measured GEMV launches (default %d).\n"
+        "  --copy-repeat N            Cold-cache copy-ceiling samples (default %d).\n"
+        "  --flush-mib N              L2 flush buffer size in MiB (default 256).\n"
+        "  --copy-mib N               Copy-ceiling buffer size in MiB (default 512).\n"
+        "  --stream-ceiling-gbs X     Use a premeasured copy ceiling instead of measuring it.\n"
+        "  --t-sweep L                Comma list of activation columns T, e.g. 1,8,64,512\n"
+        "                             (default 1,2,4,8,16,32,64,128,256,512,1024,2048).\n"
+        "  --csv-out PATH             Write the result table as CSV.\n",
+        argv0, argv0, kDefaultWarmup, kDefaultRepeat, kDefaultCopyRepeat);
 }
 
 Options parse_args(int argc, char** argv) {
@@ -422,8 +433,7 @@ Options parse_args(int argc, char** argv) {
         throw std::invalid_argument("--shape and --qtype must be provided together");
     }
     if (opt.paired_kv &&
-        (std::string_view(opt.shape.name) != "MtpKV1024x5120" ||
-         opt.qtype != QType::W8G32_F16S)) {
+        (std::string_view(opt.shape.name) != "MtpKV1024x5120" || opt.qtype != QType::W8G32_F16S)) {
         throw std::invalid_argument("--paired-kv requires --shape MtpKV1024x5120 --qtype W8G32");
     }
     if (opt.repeat <= 0) { throw std::invalid_argument("--repeat must be positive"); }
@@ -433,9 +443,7 @@ Options parse_args(int argc, char** argv) {
     if (opt.copy_bytes == 0 || (opt.copy_bytes % sizeof(uint4)) != 0) {
         throw std::invalid_argument("--copy-mib must produce a positive uint4-aligned byte count");
     }
-    if (opt.t_sweep.empty()) {
-        opt.t_sweep = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048};
-    }
+    if (opt.t_sweep.empty()) { opt.t_sweep = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048}; }
     return opt;
 }
 
@@ -487,8 +495,9 @@ TimingStats measure_cold(Launch&& launch, DeviceBuffer& flush, cudaStream_t stre
     stats.samples   = static_cast<int>(samples.size());
     stats.median_us = sorted[sorted.size() / 2];
     stats.min_us    = sorted.front();
-    stats.p95_us    = sorted[std::min(sorted.size() - 1, static_cast<std::size_t>(0.95 * sorted.size()))];
-    stats.mean_us   = sum / static_cast<double>(samples.size());
+    stats.p95_us =
+        sorted[std::min(sorted.size() - 1, static_cast<std::size_t>(0.95 * sorted.size()))];
+    stats.mean_us = sum / static_cast<double>(samples.size());
     return stats;
 }
 
@@ -527,8 +536,9 @@ TimingStats measure_warm(Launch&& launch, cudaStream_t stream, int warmup, int r
     stats.samples   = static_cast<int>(samples.size());
     stats.median_us = sorted[sorted.size() / 2];
     stats.min_us    = sorted.front();
-    stats.p95_us    = sorted[std::min(sorted.size() - 1, static_cast<std::size_t>(0.95 * sorted.size()))];
-    stats.mean_us   = sum / static_cast<double>(samples.size());
+    stats.p95_us =
+        sorted[std::min(sorted.size() - 1, static_cast<std::size_t>(0.95 * sorted.size()))];
+    stats.mean_us = sum / static_cast<double>(samples.size());
     return stats;
 }
 
@@ -538,7 +548,7 @@ double measure_tc_ceiling_tflops(cudaStream_t stream) {
     constexpr int kWarps = kBlock / 32;
     constexpr int kNacc  = 8;
     constexpr int kIters = 4096;
-    DeviceBuffer  sink(static_cast<std::uint64_t>(kGrid) * kBlock * sizeof(float));
+    DeviceBuffer sink(static_cast<std::uint64_t>(kGrid) * kBlock * sizeof(float));
 
     tc_peak_kernel<kNacc><<<kGrid, kBlock, 0, stream>>>(static_cast<float*>(sink.p), kIters);
     CUDA_CHECK(cudaGetLastError());
@@ -562,8 +572,8 @@ double measure_tc_ceiling_tflops(cudaStream_t stream) {
     CUDA_CHECK(cudaEventDestroy(stop));
 
     // 2*M*N*K flops per mma (m16n8k16), per warp per accumulator per iteration.
-    const double flops = static_cast<double>(kGrid) * kWarps * kNacc * kIters * 2.0 * 16.0 *
-                         8.0 * 16.0;
+    const double flops =
+        static_cast<double>(kGrid) * kWarps * kNacc * kIters * 2.0 * 16.0 * 8.0 * 16.0;
     const double sec = best_ms * 1e-3;
     return sec > 0.0 ? flops / sec / 1e12 : 0.0;
 }
@@ -577,12 +587,12 @@ double measure_stream_copy_ceiling_gbs(std::uint64_t copy_bytes, int repeat, Dev
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     const std::uint64_t words = copy_bytes / sizeof(uint4);
-    const int           block = 256;
-    const int           grid  = grid_for(words, block);
-    const TimingStats stats = measure_cold(
+    const int block           = 256;
+    const int grid            = grid_for(words, block);
+    const TimingStats stats   = measure_cold(
         [&](cudaStream_t s) {
             stream_copy_kernel<<<grid, block, 0, s>>>(static_cast<const uint4*>(src.p),
-                                                      static_cast<uint4*>(dst.p), words);
+                                                        static_cast<uint4*>(dst.p), words);
             CUDA_CHECK(cudaGetLastError());
         },
         flush, stream, 1, repeat);
@@ -608,18 +618,21 @@ RowSplitPayload make_row_split_payload(QType qtype, std::int32_t n, std::int32_t
     const std::int32_t padded_k = static_cast<std::int32_t>(align_up_u64(k, 128));
     const std::int32_t group    = group_size(qtype);
     const std::int32_t kg       = padded_k / group;
-    const std::uint64_t groups =
-        static_cast<std::uint64_t>(n) * static_cast<std::uint64_t>(kg);
+    const std::uint64_t groups  = static_cast<std::uint64_t>(n) * static_cast<std::uint64_t>(kg);
     const std::uint64_t nibble_bytes =
         groups * static_cast<std::uint64_t>(nibble_bytes_per_group(qtype));
     const std::uint64_t high_bytes =
         groups * static_cast<std::uint64_t>(high_bytes_per_group(qtype));
-    const std::uint64_t high_offset = align_up_u64(nibble_bytes, 256);
+    const std::uint64_t high_offset  = align_up_u64(nibble_bytes, 256);
     const std::uint64_t scale_offset = high_offset + align_up_u64(high_bytes, 256);
     const std::uint64_t scale_bytes  = groups * 2ULL;
 
-    RowSplitPayload payload{DeviceBuffer(scale_offset + scale_bytes), nibble_bytes, high_offset,
-                            high_bytes, scale_offset, scale_bytes};
+    RowSplitPayload payload{DeviceBuffer(scale_offset + scale_bytes),
+                            nibble_bytes,
+                            high_offset,
+                            high_bytes,
+                            scale_offset,
+                            scale_bytes};
     constexpr int block = 256;
     fill_codes_kernel<<<grid_for(nibble_bytes, block), block, 0, stream>>>(
         static_cast<std::uint8_t*>(payload.data.p), nibble_bytes);
@@ -639,39 +652,38 @@ RowSplitPayload make_row_split_payload(QType qtype, std::int32_t n, std::int32_t
 Weight make_weight(const RowSplitPayload& payload, QType qtype, std::int32_t n, std::int32_t k) {
     const std::int32_t padded_k = static_cast<std::int32_t>(align_up_u64(k, 128));
     const std::int32_t group    = group_size(qtype);
-    Weight             w{};
-    w.payload             = payload.data.p;
-    w.payload_bytes       = payload.payload_bytes();
-    w.high_plane_bytes    = payload.high_bytes;
-    w.qtype               = qtype;
-    w.layout              = QuantLayout::RowSplit;
-    w.q5090_scale_dtype   = ScaleDType::FP16;
-    w.group_size          = static_cast<std::uint32_t>(group);
-    w.shape[0]            = n;
-    w.shape[1]            = k;
-    w.padded_shape[0]     = n;
-    w.padded_shape[1]     = padded_k;
-    w.ndim                = 2;
-    w.qdata               = payload.data.p;
-    w.qhigh               = payload.high_bytes == 0
-                                ? nullptr
-                                : static_cast<const std::uint8_t*>(payload.data.p) +
-                                      payload.high_offset;
-    w.scales              = static_cast<const std::uint8_t*>(payload.data.p) + payload.scale_offset;
-    w.n                   = n;
-    w.k                   = k;
-    w.group               = group;
+    Weight w{};
+    w.payload           = payload.data.p;
+    w.payload_bytes     = payload.payload_bytes();
+    w.high_plane_bytes  = payload.high_bytes;
+    w.qtype             = qtype;
+    w.layout            = QuantLayout::RowSplit;
+    w.q5090_scale_dtype = ScaleDType::FP16;
+    w.group_size        = static_cast<std::uint32_t>(group);
+    w.shape[0]          = n;
+    w.shape[1]          = k;
+    w.padded_shape[0]   = n;
+    w.padded_shape[1]   = padded_k;
+    w.ndim              = 2;
+    w.qdata             = payload.data.p;
+    w.qhigh             = payload.high_bytes == 0
+                              ? nullptr
+                              : static_cast<const std::uint8_t*>(payload.data.p) + payload.high_offset;
+    w.scales            = static_cast<const std::uint8_t*>(payload.data.p) + payload.scale_offset;
+    w.n                 = n;
+    w.k                 = k;
+    w.group             = group;
     return w;
 }
 
 RunResult run_target(const TargetSpec& target, const Options& opt, double stream_ceiling_gbs,
                      double tc_ceiling_tflops, std::int32_t t, DeviceBuffer& flush,
                      cudaStream_t stream) {
-    const ShapeSpec&   shape = target.shape;
-    const std::uint64_t tt   = static_cast<std::uint64_t>(t);
-    DeviceBuffer       x     = make_bf16_device(static_cast<std::uint64_t>(shape.k) * tt);
-    RowSplitPayload    wbuf  = make_row_split_payload(target.qtype, shape.n, shape.k, stream);
-    DeviceBuffer       out(static_cast<std::uint64_t>(shape.n) * tt * 2ULL);
+    const ShapeSpec& shape = target.shape;
+    const std::uint64_t tt = static_cast<std::uint64_t>(t);
+    DeviceBuffer x         = make_bf16_device(static_cast<std::uint64_t>(shape.k) * tt);
+    RowSplitPayload wbuf   = make_row_split_payload(target.qtype, shape.n, shape.k, stream);
+    DeviceBuffer out(static_cast<std::uint64_t>(shape.n) * tt * 2ULL);
     CUDA_CHECK(cudaMemsetAsync(out.p, 0, out.bytes, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -680,26 +692,25 @@ RunResult run_target(const TargetSpec& target, const Options& opt, double stream
     Weight w = make_weight(wbuf, target.qtype, shape.n, shape.k);
     WorkspaceArena ws(64ULL << 20);
 
-    const auto launch = [&](cudaStream_t s) { kernels::linear(tx, w, tout, ws, s); };
+    const auto launch      = [&](cudaStream_t s) { kernels::linear(tx, w, tout, ws, s); };
     const TimingStats cold = measure_cold(launch, flush, stream, opt.warmup, opt.repeat);
     const TimingStats warm = measure_warm(launch, stream, opt.warmup, opt.repeat);
 
     const std::uint64_t x_bytes        = static_cast<std::uint64_t>(shape.k) * tt * 2ULL;
     const std::uint64_t out_bytes      = static_cast<std::uint64_t>(shape.n) * tt * 2ULL;
     const std::uint64_t bytes_streamed = w.payload_bytes + x_bytes + out_bytes;
-    const double        sec            = cold.median_us * 1e-6;
-    const double        achieved_gbs =
-        sec > 0.0 ? static_cast<double>(bytes_streamed) / sec / 1e9 : 0.0;
+    const double sec                   = cold.median_us * 1e-6;
+    const double achieved_gbs = sec > 0.0 ? static_cast<double>(bytes_streamed) / sec / 1e9 : 0.0;
     const double achieved_dram_pct =
         stream_ceiling_gbs > 0.0 ? achieved_gbs / stream_ceiling_gbs * 100.0 : 0.0;
-    const double flops = 2.0 * static_cast<double>(shape.n) * static_cast<double>(shape.k) *
-                         static_cast<double>(t);
+    const double flops =
+        2.0 * static_cast<double>(shape.n) * static_cast<double>(shape.k) * static_cast<double>(t);
     const double achieved_tflops = sec > 0.0 ? flops / sec / 1e12 : 0.0;
-    const double tc_pct = tc_ceiling_tflops > 0.0 ? achieved_tflops / tc_ceiling_tflops * 100.0 : 0.0;
-    const double roofline_us =
-        stream_ceiling_gbs > 0.0
-            ? static_cast<double>(bytes_streamed) / (stream_ceiling_gbs * 1e9) * 1e6
-            : 0.0;
+    const double tc_pct =
+        tc_ceiling_tflops > 0.0 ? achieved_tflops / tc_ceiling_tflops * 100.0 : 0.0;
+    const double roofline_us = stream_ceiling_gbs > 0.0 ? static_cast<double>(bytes_streamed) /
+                                                              (stream_ceiling_gbs * 1e9) * 1e6
+                                                        : 0.0;
 
     RunResult r;
     r.shape_name           = shape.name;
@@ -728,14 +739,13 @@ RunResult run_target(const TargetSpec& target, const Options& opt, double stream
     return r;
 }
 
-RunResult run_paired_kv(const Options& opt, double stream_ceiling_gbs,
-                        double tc_ceiling_tflops, std::int32_t t, DeviceBuffer& flush,
-                        cudaStream_t stream) {
+RunResult run_paired_kv(const Options& opt, double stream_ceiling_gbs, double tc_ceiling_tflops,
+                        std::int32_t t, DeviceBuffer& flush, cudaStream_t stream) {
     constexpr ShapeSpec shape{"MtpKVPair1024x5120", 1024, 5120};
     const std::uint64_t tt = static_cast<std::uint64_t>(t);
-    DeviceBuffer x = make_bf16_device(static_cast<std::uint64_t>(shape.k) * tt);
-    RowSplitPayload kbuf = make_row_split_payload(QType::W8G32_F16S, shape.n, shape.k, stream);
-    RowSplitPayload vbuf = make_row_split_payload(QType::W8G32_F16S, shape.n, shape.k, stream);
+    DeviceBuffer x         = make_bf16_device(static_cast<std::uint64_t>(shape.k) * tt);
+    RowSplitPayload kbuf   = make_row_split_payload(QType::W8G32_F16S, shape.n, shape.k, stream);
+    RowSplitPayload vbuf   = make_row_split_payload(QType::W8G32_F16S, shape.n, shape.k, stream);
     DeviceBuffer kout(static_cast<std::uint64_t>(shape.n) * tt * 2ULL);
     DeviceBuffer vout(static_cast<std::uint64_t>(shape.n) * tt * 2ULL);
     CUDA_CHECK(cudaMemsetAsync(kout.p, 0, kout.bytes, stream));
@@ -749,50 +759,45 @@ RunResult run_paired_kv(const Options& opt, double stream_ceiling_gbs,
     Weight wv = make_weight(vbuf, QType::W8G32_F16S, shape.n, shape.k);
     WorkspaceArena ws(64ULL << 20);
 
-    const auto launch = [&](cudaStream_t s) {
-        kernels::linear_w8g32_kv_pair(tx, wk, wv, tk, tv, ws, s);
-    };
+    const auto launch = [&](cudaStream_t s) { kernels::linear_pair(tx, wk, wv, tk, tv, ws, s); };
     const TimingStats cold = measure_cold(launch, flush, stream, opt.warmup, opt.repeat);
     const TimingStats warm = measure_warm(launch, stream, opt.warmup, opt.repeat);
 
-    const std::uint64_t weight_bytes = wk.payload_bytes + wv.payload_bytes;
-    const std::uint64_t x_bytes = static_cast<std::uint64_t>(shape.k) * tt * 2ULL;
-    const std::uint64_t out_bytes = 2ULL * static_cast<std::uint64_t>(shape.n) * tt * 2ULL;
+    const std::uint64_t weight_bytes   = wk.payload_bytes + wv.payload_bytes;
+    const std::uint64_t x_bytes        = static_cast<std::uint64_t>(shape.k) * tt * 2ULL;
+    const std::uint64_t out_bytes      = 2ULL * static_cast<std::uint64_t>(shape.n) * tt * 2ULL;
     const std::uint64_t bytes_streamed = weight_bytes + x_bytes + out_bytes;
-    const double sec = cold.median_us * 1e-6;
-    const double flops = 4.0 * static_cast<double>(shape.n) * static_cast<double>(shape.k) *
-                         static_cast<double>(t);
+    const double sec                   = cold.median_us * 1e-6;
+    const double flops =
+        4.0 * static_cast<double>(shape.n) * static_cast<double>(shape.k) * static_cast<double>(t);
 
     RunResult r;
-    r.shape_name = shape.name;
-    r.qtype_name = "W8G32x2";
-    r.n = shape.n * 2;
-    r.k = shape.k;
-    r.t = t;
+    r.shape_name           = shape.name;
+    r.qtype_name           = "W8G32x2";
+    r.n                    = shape.n * 2;
+    r.k                    = shape.k;
+    r.t                    = t;
     r.weight_payload_bytes = weight_bytes;
-    r.x_bytes = x_bytes;
-    r.out_bytes = out_bytes;
-    r.bytes_streamed = bytes_streamed;
-    r.cold_median_us = cold.median_us;
-    r.cold_min_us = cold.min_us;
-    r.cold_p95_us = cold.p95_us;
-    r.warm_median_us = warm.median_us;
-    r.achieved_gbs = sec > 0.0 ? static_cast<double>(bytes_streamed) / sec / 1e9 : 0.0;
-    r.achieved_dram_pct = stream_ceiling_gbs > 0.0
-                              ? r.achieved_gbs / stream_ceiling_gbs * 100.0
-                              : 0.0;
-    r.achieved_tflops = sec > 0.0 ? flops / sec / 1e12 : 0.0;
+    r.x_bytes              = x_bytes;
+    r.out_bytes            = out_bytes;
+    r.bytes_streamed       = bytes_streamed;
+    r.cold_median_us       = cold.median_us;
+    r.cold_min_us          = cold.min_us;
+    r.cold_p95_us          = cold.p95_us;
+    r.warm_median_us       = warm.median_us;
+    r.achieved_gbs         = sec > 0.0 ? static_cast<double>(bytes_streamed) / sec / 1e9 : 0.0;
+    r.achieved_dram_pct =
+        stream_ceiling_gbs > 0.0 ? r.achieved_gbs / stream_ceiling_gbs * 100.0 : 0.0;
+    r.achieved_tflops   = sec > 0.0 ? flops / sec / 1e12 : 0.0;
     r.tc_ceiling_tflops = tc_ceiling_tflops;
-    r.tc_pct = tc_ceiling_tflops > 0.0
-                   ? r.achieved_tflops / tc_ceiling_tflops * 100.0
-                   : 0.0;
+    r.tc_pct = tc_ceiling_tflops > 0.0 ? r.achieved_tflops / tc_ceiling_tflops * 100.0 : 0.0;
     r.stream_ceiling_gbs = stream_ceiling_gbs;
-    r.roofline_us = stream_ceiling_gbs > 0.0
-                        ? static_cast<double>(bytes_streamed) / (stream_ceiling_gbs * 1e9) * 1e6
-                        : 0.0;
-    r.repeat = opt.repeat;
-    r.warmup = opt.warmup;
-    r.flush_bytes = opt.flush_bytes;
+    r.roofline_us        = stream_ceiling_gbs > 0.0
+                               ? static_cast<double>(bytes_streamed) / (stream_ceiling_gbs * 1e9) * 1e6
+                               : 0.0;
+    r.repeat             = opt.repeat;
+    r.warmup             = opt.warmup;
+    r.flush_bytes        = opt.flush_bytes;
     return r;
 }
 
@@ -829,8 +834,8 @@ void write_csv(const std::filesystem::path& path, const std::vector<RunResult>& 
             << r.weight_payload_bytes << ',' << r.x_bytes << ',' << r.out_bytes << ','
             << r.bytes_streamed << ',' << r.cold_median_us << ',' << r.cold_min_us << ','
             << r.cold_p95_us << ',' << r.achieved_gbs << ',' << r.achieved_dram_pct << ','
-            << r.stream_ceiling_gbs << ',' << r.roofline_us << ',' << r.warmup << ','
-            << r.repeat << ',' << r.flush_bytes << ',' << r.t << ',' << r.achieved_tflops << ','
+            << r.stream_ceiling_gbs << ',' << r.roofline_us << ',' << r.warmup << ',' << r.repeat
+            << ',' << r.flush_bytes << ',' << r.t << ',' << r.achieved_tflops << ','
             << r.tc_ceiling_tflops << ',' << r.tc_pct << ',' << r.warm_median_us << '\n';
     }
 }
@@ -873,8 +878,8 @@ int main(int argc, char** argv) {
                     rows.push_back(run_paired_kv(opt, stream_ceiling_gbs, tc_ceiling_tflops, t,
                                                  flush, stream));
                 } else {
-                    rows.push_back(run_target(target, opt, stream_ceiling_gbs, tc_ceiling_tflops,
-                                              t, flush, stream));
+                    rows.push_back(run_target(target, opt, stream_ceiling_gbs, tc_ceiling_tflops, t,
+                                              flush, stream));
                 }
             }
         }

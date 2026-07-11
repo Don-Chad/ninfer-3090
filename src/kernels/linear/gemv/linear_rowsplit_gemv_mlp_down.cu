@@ -39,7 +39,7 @@ void linear_rowsplit_gemv_mlp_down_residual_q5_launch(const Tensor& x, const Wei
                                                       Tensor& residual_out, WorkspaceArena& ws,
                                                       cudaStream_t stream) {
     if (w.n != kN || w.k != kK || w.padded_shape[1] != kK) {
-        throw std::invalid_argument("linear_residual_add: MLP down Q5 requires 5120x17408");
+        throw std::invalid_argument("linear_add: MLP down Q5 requires 5120x17408");
     }
     (void)ws;
 

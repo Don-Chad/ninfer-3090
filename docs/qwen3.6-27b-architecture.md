@@ -402,33 +402,30 @@ Shapes use the symbols from §2 (decode T=1).
 | N2 | `gemma_rmsnorm` (+fused residual add) | [T,D](+res) → [T,D] | (1+w), fp32 var |
 | N3 | `gemma_rmsnorm_headwise` | [T,H,256] → same | q_norm/k_norm, (1+w) |
 | N4 | `gated_rmsnorm` | o[T,48,128],z[…] → [T,48,128] | plain w, ⊙SiLU(z) |
-| N5 | `silu_and_mul` (SwiGLU) | gate[T,I],up[T,I] → [T,I] | fuse with G(gate,up) |
-| N6 | `sigmoid_gate_mul` | attn[T,6144],gate[…] → [T,6144] | full-attn output gate |
+| N5 | `silu_mul` (SwiGLU) | gate[T,I],up[T,I] → [T,I] | fuse with G(gate,up) |
+| N6 | `sigmoid_mul` | attn[T,6144],gate[…] → [T,6144] | full-attn output gate |
 
 ### 10.3 Full attention
 | ID | Operator | In → Out | Phase | Notes |
 |---|---|---|---|---|
-| A1 | `rope_partial_mrope` | q[T,24,256],k[T,4,256] → rotated | P,D | rotate 64 dims, IMROPE |
-| A2 | `flash_attn_causal_gqa` | q,k,v → o[T,24,256] | P | causal, scale 1/16, write KV |
-| A3 | `attn_decode_gqa` | q[1,24,256], KV → o[1,24,256] | D | append kv, attend window |
+| A1 | `rope` | q[T,24,256],k[T,4,256] → rotated | P,D | rotate 64 dims, IMROPE |
+| A2 | `gqa_attention` | q,k,v,KV → o[T,24,256] | P,D | append KV; T/cache-dtype dispatch is internal |
 
 ### 10.4 GDN linear attention
 | ID | Operator | In → Out | Phase | Notes |
 |---|---|---|---|---|
-| L1 | `causal_conv1d_prefill` | qkv[T,10240] → +SiLU | P | depthwise k=4, write conv_state |
-| L2 | `causal_conv1d_decode` | qkv[1,10240], conv_state → +SiLU | D | rolling state width 3 |
-| L3 | `gdn_gating` | a,b[T,48],A_log,dt_bias → g,β[T,48] | P,D | fp32; `-exp·softplus`, `σ` |
-| L4 | `l2norm_headwise` | q,k[T,16,128] → normed | P,D | per head, ε=1e-6 |
-| L5 | `gated_delta_recurrent` | q,k,v,g,β,state → o[1,48,128] | D | §7.1; q-scale 1/√128 |
-| L6 | `gated_delta_chunked` | q,k,v,g,β,state → o[T,48,128] | P | §7.2; chunk 64, WY/UT |
+| L1 | `causal_conv1d_silu` | qkv[T,10240], conv_state → +SiLU | P,D | depthwise k=4; T dispatch is internal |
+| L2 | `gdn_gating` | a,b[T,48],A_log,dt_bias → g,β[T,48] | P,D | fp32; `-exp·softplus`, `σ` |
+| L3 | `l2norm` | q,k[T,16,128] → normed | P,D | per head, ε=1e-6 |
+| L4 | `gated_delta_rule` | q,k,v,g,β,state → o[T,48,128] | P,D | recurrent/chunk-64 dispatch is internal |
 
 ### 10.5 Output / sampling / state
 | ID | Operator | In → Out | Notes |
 |---|---|---|---|
-| O1 | `argmax_vocab` | logits[1,248320] → id | greedy (v1) |
-| O2 | `sampler` (later) | logits → id | temp/top-k/top-p |
-| S1 | `kv_cache_append` | k,v[4,256] @ pos | full-attn layers |
-| S2 | `gdn_state_rw` | in-place conv+ssm state | GDN layers |
+| O1 | `argmax` | logits[1,248320] → id | exact greedy |
+| O2 | `sample` | logits → id | temperature/top-k/top-p/min-p/penalties |
+| S1 | internal GQA cache update | k,v[4,256] @ pos | folded into `gqa_attention` |
+| S2 | internal GDN state update | in-place conv+ssm state | folded into stateful GDN ops |
 
 Sub-kernels for L6 (chunked GDN) if not writing one monolithic kernel: `cumsum` (log-decay),
 `tril_matmul` (K_β·Kᵀ⊙Γ), `tri_solve` (UT inverse), plus the inter-chunk matmuls.
@@ -460,7 +457,7 @@ Sub-kernels for L6 (chunked GDN) if not writing one monolithic kernel: `cumsum` 
 - **QK-norm + partial-RoPE + gate-split** in one kernel (vLLM does this:
   `fused_qk_rmsnorm_rope_gate`).
 - **conv + SiLU + split**, and **post-conv → l2norm + gating** (vLLM `fused_post_conv_prep`).
-- **gated_rmsnorm + out_proj**; **silu_and_mul** inside the MLP.
+- **gated_rmsnorm + out_proj**; **silu_mul** inside the MLP.
 - whole **decode step → CUDA Graph / megakernel**.
 
 ---

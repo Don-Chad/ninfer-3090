@@ -47,8 +47,7 @@ std::uint32_t f32_bits(float value) {
 template <typename T>
 int verify_bits_equal(const char* label, const std::vector<T>& got, const std::vector<T>& ref) {
     if (got.size() != ref.size()) {
-        std::cerr << label << ": size mismatch got=" << got.size() << " ref=" << ref.size()
-                  << '\n';
+        std::cerr << label << ": size mismatch got=" << got.size() << " ref=" << ref.size() << '\n';
         return 1;
     }
     for (std::size_t i = 0; i < got.size(); ++i) {
@@ -147,8 +146,8 @@ GpuResult run_recurrent_gpu(const gdn_ref::Inputs& in) {
     Tensor tout(dout.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
     WorkspaceArena ws(chunked_arena_bytes(static_cast<int>(in.T)));
 
-    kernels::gated_delta_rule_recurrent(tq, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), ws,
-                                        tstate, tout, nullptr);
+    kernels::gated_delta_rule(tq, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), ws, tstate, tout,
+                              nullptr);
     cudaDeviceSynchronize();
     return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
 }
@@ -178,8 +177,8 @@ GpuResult run_recurrent_gpu_stepped(const gdn_ref::Inputs& in) {
         Tensor g_t    = tg.slice(1, t, 1);
         Tensor beta_t = tbeta.slice(1, t, 1);
         Tensor out_t  = tout.slice(2, t, 1);
-        kernels::gated_delta_rule_recurrent(q_t, k_t, v_t, g_t, beta_t, 1.0f / std::sqrt(float(S)),
-                                            ws, tstate, out_t, nullptr);
+        kernels::gated_delta_rule(q_t, k_t, v_t, g_t, beta_t, 1.0f / std::sqrt(float(S)), ws,
+                                  tstate, out_t, nullptr);
     }
     cudaDeviceSynchronize();
     return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
@@ -191,11 +190,11 @@ int snapshot_chain_equivalence_case(int T, std::uint32_t seed, bool stress_g) {
     std::vector<float> snapshot_state(in.state.size() * static_cast<std::size_t>(T), 17.0f);
     std::copy(in.state.begin(), in.state.end(), snapshot_state.begin());
 
-    DBuf dq_snapshot = to_device_bf16(in.q);
-    DBuf dk_snapshot = to_device_bf16(in.k);
-    DBuf dv_snapshot = to_device_bf16(in.v);
-    DBuf dg_snapshot = to_device_f32(in.g);
-    DBuf dbeta_snapshot = to_device_f32(in.beta);
+    DBuf dq_snapshot     = to_device_bf16(in.q);
+    DBuf dk_snapshot     = to_device_bf16(in.k);
+    DBuf dv_snapshot     = to_device_bf16(in.v);
+    DBuf dg_snapshot     = to_device_f32(in.g);
+    DBuf dbeta_snapshot  = to_device_f32(in.beta);
     DBuf dstate_snapshot = to_device_f32(snapshot_state);
     DBuf dout_snapshot(in.v.size() * 2);
     DBuf dinitial_slot = to_device_i32({0});
@@ -210,17 +209,16 @@ int snapshot_chain_equivalence_case(int T, std::uint32_t seed, bool stress_g) {
     Tensor tinitial_slot(dinitial_slot.p, DType::I32, {1});
     Tensor tout_snapshot(dout_snapshot.p, DType::BF16, {S, H_v, T});
 
-    kernels::gated_delta_rule_recurrent_snapshot(
-        tq_snapshot, tk_snapshot, tv_snapshot, tg_snapshot, tbeta_snapshot,
-        1.0f / std::sqrt(float(S)), ws_snapshot, tstate_snapshot, tinitial_slot, tout_snapshot,
-        nullptr);
+    kernels::gated_delta_rule_snapshot(tq_snapshot, tk_snapshot, tv_snapshot, tg_snapshot,
+                                       tbeta_snapshot, 1.0f / std::sqrt(float(S)), ws_snapshot,
+                                       tstate_snapshot, tinitial_slot, tout_snapshot, nullptr);
     cudaDeviceSynchronize();
 
-    DBuf dq_step = to_device_bf16(in.q);
-    DBuf dk_step = to_device_bf16(in.k);
-    DBuf dv_step = to_device_bf16(in.v);
-    DBuf dg_step = to_device_f32(in.g);
-    DBuf dbeta_step = to_device_f32(in.beta);
+    DBuf dq_step     = to_device_bf16(in.q);
+    DBuf dk_step     = to_device_bf16(in.k);
+    DBuf dv_step     = to_device_bf16(in.v);
+    DBuf dg_step     = to_device_f32(in.g);
+    DBuf dbeta_step  = to_device_f32(in.beta);
     DBuf dstate_step = to_device_f32(in.state);
     DBuf dout_step(in.v.size() * 2);
     WorkspaceArena ws_step(chunked_arena_bytes(T));
@@ -241,9 +239,8 @@ int snapshot_chain_equivalence_case(int T, std::uint32_t seed, bool stress_g) {
         Tensor g_t    = tg_step.slice(1, t, 1);
         Tensor beta_t = tbeta_step.slice(1, t, 1);
         Tensor out_t  = tout_step.slice(2, t, 1);
-        kernels::gated_delta_rule_recurrent(q_t, k_t, v_t, g_t, beta_t,
-                                            1.0f / std::sqrt(float(S)), ws_step, tstate_step,
-                                            out_t, nullptr);
+        kernels::gated_delta_rule(q_t, k_t, v_t, g_t, beta_t, 1.0f / std::sqrt(float(S)), ws_step,
+                                  tstate_step, out_t, nullptr);
         cudaDeviceSynchronize();
         const auto state_bits = from_device_u32(dstate_step.p, in.state.size());
         std::memcpy(expected_slots.data() + static_cast<std::size_t>(t) * in.state.size(),
@@ -251,8 +248,8 @@ int snapshot_chain_equivalence_case(int T, std::uint32_t seed, bool stress_g) {
     }
     cudaDeviceSynchronize();
 
-    const std::string tag = "gdn recurrent snapshot T=" + std::to_string(T) +
-                            (stress_g ? " stress" : " default");
+    const std::string tag =
+        "gdn recurrent snapshot T=" + std::to_string(T) + (stress_g ? " stress" : " default");
     int failures = 0;
     failures += verify_bits_equal((tag + " out bits").c_str(),
                                   from_device_u16(dout_snapshot.p, in.v.size()),
@@ -265,19 +262,19 @@ int snapshot_chain_equivalence_case(int T, std::uint32_t seed, bool stress_g) {
 }
 
 int selected_slot_snapshot_equivalence_case(int T, int initial_slot, std::uint32_t seed) {
-    constexpr int Slots = 6;
-    const auto in = make_inputs(T, seed, false);
+    constexpr int Slots       = 6;
+    const auto in             = make_inputs(T, seed, false);
     const std::size_t state_n = in.state.size();
 
     std::vector<float> snapshot_state(state_n * Slots, 17.0f);
     std::copy(in.state.begin(), in.state.end(),
               snapshot_state.begin() + static_cast<std::size_t>(initial_slot) * state_n);
 
-    DBuf dq_snapshot = to_device_bf16(in.q);
-    DBuf dk_snapshot = to_device_bf16(in.k);
-    DBuf dv_snapshot = to_device_bf16(in.v);
-    DBuf dg_snapshot = to_device_f32(in.g);
-    DBuf dbeta_snapshot = to_device_f32(in.beta);
+    DBuf dq_snapshot     = to_device_bf16(in.q);
+    DBuf dk_snapshot     = to_device_bf16(in.k);
+    DBuf dv_snapshot     = to_device_bf16(in.v);
+    DBuf dg_snapshot     = to_device_f32(in.g);
+    DBuf dbeta_snapshot  = to_device_f32(in.beta);
     DBuf dstate_snapshot = to_device_f32(snapshot_state);
     DBuf dout_snapshot(in.v.size() * 2);
     DBuf dinitial_slot = to_device_i32({initial_slot});
@@ -292,17 +289,16 @@ int selected_slot_snapshot_equivalence_case(int T, int initial_slot, std::uint32
     Tensor tinitial_slot(dinitial_slot.p, DType::I32, {1});
     Tensor tout_snapshot(dout_snapshot.p, DType::BF16, {S, H_v, T});
 
-    kernels::gated_delta_rule_recurrent_snapshot(
-        tq_snapshot, tk_snapshot, tv_snapshot, tg_snapshot, tbeta_snapshot,
-        1.0f / std::sqrt(float(S)), ws_snapshot, tstate_snapshot, tinitial_slot, tout_snapshot,
-        nullptr);
+    kernels::gated_delta_rule_snapshot(tq_snapshot, tk_snapshot, tv_snapshot, tg_snapshot,
+                                       tbeta_snapshot, 1.0f / std::sqrt(float(S)), ws_snapshot,
+                                       tstate_snapshot, tinitial_slot, tout_snapshot, nullptr);
     cudaDeviceSynchronize();
 
-    DBuf dq_step = to_device_bf16(in.q);
-    DBuf dk_step = to_device_bf16(in.k);
-    DBuf dv_step = to_device_bf16(in.v);
-    DBuf dg_step = to_device_f32(in.g);
-    DBuf dbeta_step = to_device_f32(in.beta);
+    DBuf dq_step     = to_device_bf16(in.q);
+    DBuf dk_step     = to_device_bf16(in.k);
+    DBuf dv_step     = to_device_bf16(in.v);
+    DBuf dg_step     = to_device_f32(in.g);
+    DBuf dbeta_step  = to_device_f32(in.beta);
     DBuf dstate_step = to_device_f32(in.state);
     DBuf dout_step(in.v.size() * 2);
     WorkspaceArena ws_step(chunked_arena_bytes(T));
@@ -326,9 +322,8 @@ int selected_slot_snapshot_equivalence_case(int T, int initial_slot, std::uint32
         Tensor g_t    = tg_step.slice(1, t, 1);
         Tensor beta_t = tbeta_step.slice(1, t, 1);
         Tensor out_t  = tout_step.slice(2, t, 1);
-        kernels::gated_delta_rule_recurrent(q_t, k_t, v_t, g_t, beta_t,
-                                            1.0f / std::sqrt(float(S)), ws_step, tstate_step,
-                                            out_t, nullptr);
+        kernels::gated_delta_rule(q_t, k_t, v_t, g_t, beta_t, 1.0f / std::sqrt(float(S)), ws_step,
+                                  tstate_step, out_t, nullptr);
         cudaDeviceSynchronize();
         const auto state_bits = from_device_u32(dstate_step.p, state_n);
         std::memcpy(expected_slots.data() + static_cast<std::size_t>(t) * state_n,
@@ -336,8 +331,8 @@ int selected_slot_snapshot_equivalence_case(int T, int initial_slot, std::uint32
     }
     cudaDeviceSynchronize();
 
-    const std::string tag = "gdn selected snapshot slot=" + std::to_string(initial_slot) +
-                            " T=" + std::to_string(T);
+    const std::string tag =
+        "gdn selected snapshot slot=" + std::to_string(initial_slot) + " T=" + std::to_string(T);
     int failures = 0;
     failures += verify_bits_equal((tag + " out bits").c_str(),
                                   from_device_u16(dout_snapshot.p, in.v.size()),
@@ -348,7 +343,7 @@ int selected_slot_snapshot_equivalence_case(int T, int initial_slot, std::uint32
     return failures;
 }
 
-GpuResult run_chunked_gpu(const gdn_ref::Inputs& in, int chunk_size = BT) {
+GpuResult run_chunked_gpu(const gdn_ref::Inputs& in) {
     DBuf dq     = to_device_bf16(in.q);
     DBuf dk     = to_device_bf16(in.k);
     DBuf dv     = to_device_bf16(in.v);
@@ -366,13 +361,13 @@ GpuResult run_chunked_gpu(const gdn_ref::Inputs& in, int chunk_size = BT) {
     Tensor tstate(dstate.p, DType::FP32, {S, S, H_v});
     Tensor tout(dout.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
 
-    kernels::gated_delta_rule_chunked(tq, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), chunk_size,
-                                      ws, tstate, tout, nullptr);
+    kernels::gated_delta_rule(tq, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), ws, tstate, tout,
+                              nullptr);
     cudaDeviceSynchronize();
     return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
 }
 
-GpuResult run_chunked_gpu_split(const gdn_ref::Inputs& in, int split, int chunk_size = BT) {
+GpuResult run_chunked_gpu_split(const gdn_ref::Inputs& in, int split) {
     DBuf dq     = to_device_bf16(in.q);
     DBuf dk     = to_device_bf16(in.k);
     DBuf dv     = to_device_bf16(in.v);
@@ -396,8 +391,8 @@ GpuResult run_chunked_gpu_split(const gdn_ref::Inputs& in, int split, int chunk_
     Tensor g0    = tg.slice(1, 0, split);
     Tensor beta0 = tbeta.slice(1, 0, split);
     Tensor out0  = tout.slice(2, 0, split);
-    kernels::gated_delta_rule_chunked(q0, k0, v0, g0, beta0, 1.0f / std::sqrt(float(S)), chunk_size,
-                                      ws, tstate, out0, nullptr);
+    kernels::gated_delta_rule(q0, k0, v0, g0, beta0, 1.0f / std::sqrt(float(S)), ws, tstate, out0,
+                              nullptr);
 
     const int tail = static_cast<int>(in.T) - split;
     Tensor q1      = tq.slice(2, split, tail);
@@ -406,8 +401,8 @@ GpuResult run_chunked_gpu_split(const gdn_ref::Inputs& in, int split, int chunk_
     Tensor g1      = tg.slice(1, split, tail);
     Tensor beta1   = tbeta.slice(1, split, tail);
     Tensor out1    = tout.slice(2, split, tail);
-    kernels::gated_delta_rule_chunked(q1, k1, v1, g1, beta1, 1.0f / std::sqrt(float(S)), chunk_size,
-                                      ws, tstate, out1, nullptr);
+    kernels::gated_delta_rule(q1, k1, v1, g1, beta1, 1.0f / std::sqrt(float(S)), ws, tstate, out1,
+                              nullptr);
 
     cudaDeviceSynchronize();
     return {from_device_bf16(dout, in.v.size()), from_device_f32(dstate, in.state.size())};
@@ -449,8 +444,8 @@ int recurrent_case(int T, std::uint32_t seed, bool stress_g, bool use_gdn_state 
         tstate = gdn_state->ssm[0];
     }
 
-    kernels::gated_delta_rule_recurrent(tq, tk, tv, tg, tbeta, static_cast<float>(scale), ws,
-                                        tstate, tout, nullptr);
+    kernels::gated_delta_rule(tq, tk, tv, tg, tbeta, static_cast<float>(scale), ws, tstate, tout,
+                              nullptr);
     cudaDeviceSynchronize();
 
     const std::string tag =
@@ -592,8 +587,7 @@ int chunked_from_slot_equivalence_case(int T, int slots, int read_slot, std::uin
             Tensor tbeta(rbeta.p, DType::FP32, {H_v, static_cast<int>(in.T)});
             Tensor tstate(rstate.p, DType::FP32, {S, S, H_v});
             Tensor tout(rout.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
-            kernels::gated_delta_rule_chunked(tq, tk, tv, tg, tbeta, scale, BT, ws, tstate, tout,
-                                              nullptr);
+            kernels::gated_delta_rule(tq, tk, tv, tg, tbeta, scale, ws, tstate, tout, nullptr);
         }
         cudaDeviceSynchronize();
 
@@ -601,7 +595,8 @@ int chunked_from_slot_equivalence_case(int T, int slots, int read_slot, std::uin
         DBuf fg = to_device_f32(in.g), fbeta = to_device_f32(in.beta);
         DBuf fstates(slot_floats * static_cast<std::size_t>(slots) * 4);
         cudaMemset(fstates.p, 0, fstates.bytes);
-        cudaMemcpy(static_cast<float*>(fstates.p) + static_cast<std::size_t>(read_slot) * slot_floats,
+        cudaMemcpy(static_cast<float*>(fstates.p) +
+                       static_cast<std::size_t>(read_slot) * slot_floats,
                    in.state.data(), slot_floats * 4, cudaMemcpyHostToDevice);
         DBuf fout(in.v.size() * 2);
         {
@@ -615,17 +610,17 @@ int chunked_from_slot_equivalence_case(int T, int slots, int read_slot, std::uin
                        DType::FP32, {S, S, H_v});
             Tensor tout_state(fstates.p, DType::FP32, {S, S, H_v});
             Tensor tout(fout.p, DType::BF16, {S, H_v, static_cast<int>(in.T)});
-            kernels::gated_delta_rule_chunked(tq, tk, tv, tg, tbeta, scale, BT, ws, tin, tout_state,
-                                              tout, nullptr);
+            kernels::gated_delta_rule(tq, tk, tv, tg, tbeta, scale, ws, tin, tout_state, tout,
+                                      nullptr);
         }
         cudaDeviceSynchronize();
 
         const std::string tag = std::string("gdn chunked from-slot T=") + std::to_string(T) +
                                 " slots=" + std::to_string(slots) +
                                 " read_slot=" + std::to_string(read_slot);
-        failures += verify_bits_equal((tag + " out bits").c_str(),
-                                      from_device_u16(fout.p, in.v.size()),
-                                      from_device_u16(rout.p, in.v.size()));
+        failures +=
+            verify_bits_equal((tag + " out bits").c_str(), from_device_u16(fout.p, in.v.size()),
+                              from_device_u16(rout.p, in.v.size()));
         failures += verify_bits_equal((tag + " slot0 state bits").c_str(),
                                       from_device_u32(fstates.p, slot_floats),
                                       from_device_u32(rstate.p, slot_floats));
@@ -647,8 +642,8 @@ int validation_case() {
         Tensor state(nullptr, DType::FP32, {S, S, H_v});
         Tensor out(nullptr, DType::BF16, {S, H_v, 1});
         WorkspaceArena ws(1024 * 1024);
-        kernels::gated_delta_rule_recurrent(q, k, v, g, beta, 1.0f / std::sqrt(float(S)), ws, state,
-                                            out, nullptr);
+        kernels::gated_delta_rule(q, k, v, g, beta, 1.0f / std::sqrt(float(S)), ws, state, out,
+                                  nullptr);
     } catch (const std::invalid_argument&) { return 0; }
     std::cerr << "gdn recurrent null validation: expected invalid_argument\n";
     return 1;
@@ -675,20 +670,9 @@ int chunked_validation_case() {
 
     int failures = 0;
     try {
-        kernels::gated_delta_rule_chunked(tq, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), 32, ws,
-                                          tstate, tout, nullptr);
-        std::cerr << "gdn chunked bad chunk_size validation: expected invalid_argument\n";
-        ++failures;
-    } catch (const std::invalid_argument&) {
-    } catch (const std::exception& e) {
-        std::cerr << "gdn chunked bad chunk_size validation: wrong exception: " << e.what() << '\n';
-        ++failures;
-    }
-
-    try {
         Tensor tq_bad(dq.p, DType::BF16, {S - 1, H_qk, BT});
-        kernels::gated_delta_rule_chunked(tq_bad, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), BT,
-                                          ws, tstate, tout, nullptr);
+        kernels::gated_delta_rule(tq_bad, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), ws, tstate,
+                                  tout, nullptr);
         std::cerr << "gdn chunked bad shape validation: expected invalid_argument\n";
         ++failures;
     } catch (const std::invalid_argument&) {
@@ -701,9 +685,8 @@ int chunked_validation_case() {
         Tensor too_few_slots(dstate.p, DType::FP32, {S, S, H_v, BT - 1});
         DBuf d_initial_slot = to_device_i32({0});
         Tensor initial_slot(d_initial_slot.p, DType::I32, {1});
-        kernels::gated_delta_rule_recurrent_snapshot(tq, tk, tv, tg, tbeta,
-                                                     1.0f / std::sqrt(float(S)), ws,
-                                                     too_few_slots, initial_slot, tout, nullptr);
+        kernels::gated_delta_rule_snapshot(tq, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), ws,
+                                           too_few_slots, initial_slot, tout, nullptr);
         std::cerr << "gdn snapshot T exceeds slots validation: expected invalid_argument\n";
         ++failures;
     } catch (const std::invalid_argument&) {
@@ -717,9 +700,8 @@ int chunked_validation_case() {
         Tensor states(dstate.p, DType::FP32, {S, S, H_v, BT});
         DBuf d_initial_slot(sizeof(std::int32_t));
         Tensor initial_slot(d_initial_slot.p, DType::FP32, {1});
-        kernels::gated_delta_rule_recurrent_snapshot(tq, tk, tv, tg, tbeta,
-                                                     1.0f / std::sqrt(float(S)), ws, states,
-                                                     initial_slot, tout, nullptr);
+        kernels::gated_delta_rule_snapshot(tq, tk, tv, tg, tbeta, 1.0f / std::sqrt(float(S)), ws,
+                                           states, initial_slot, tout, nullptr);
         std::cerr << "gdn snapshot bad initial_slot validation: expected invalid_argument\n";
         ++failures;
     } catch (const std::invalid_argument&) {
@@ -749,8 +731,8 @@ int main() {
     failures += recurrent_case(2, 4028u, false, true);
     for (std::uint32_t seed : {7028u, 8128u}) {
         for (int T : {1, 2, 3, 4, 5, 6}) {
-            failures += snapshot_chain_equivalence_case(T, seed + static_cast<std::uint32_t>(T),
-                                                        false);
+            failures +=
+                snapshot_chain_equivalence_case(T, seed + static_cast<std::uint32_t>(T), false);
         }
     }
     failures += snapshot_chain_equivalence_case(6, 9028u, true);

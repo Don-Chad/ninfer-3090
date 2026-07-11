@@ -1,7 +1,7 @@
 // Performance bench for the Qwen3.6-27B fused GDN in_a/in_b prefill path:
 // two dense BF16 [48,5120] projections fused with gdn_gating.
 //   ./qus_gdn_in_ab_prefill_bench -p 128,256,512,1024,2048,4096,8192,16384
-#include "qus/kernels/gdn_in_ab.h"
+#include "qus/kernels/gdn_gating_proj.h"
 #include "qus_bench_common.h"
 
 #include <cstdint>
@@ -16,8 +16,8 @@ using namespace qus::bench;
 
 namespace {
 
-constexpr std::int32_t kHidden = 5120;
-constexpr std::int32_t kHeads  = 48;
+constexpr std::int32_t kHidden       = 5120;
+constexpr std::int32_t kHeads        = 48;
 constexpr std::int32_t kSmallTMax    = 8;
 constexpr std::int32_t kSmallTSplits = 10;
 
@@ -35,9 +35,9 @@ DBuf make_f32(std::size_t n, std::uint32_t seed) {
     std::vector<float> h(n);
     std::uint32_t state = seed;
     for (std::size_t i = 0; i < n; ++i) {
-        state = state * 1664525u + 1013904223u;
+        state         = state * 1664525u + 1013904223u;
         const float u = static_cast<float>((state >> 8) & 0x00ffffffu) * (1.0f / 16777216.0f);
-        h[i] = 2.0f * u - 1.0f;
+        h[i]          = 2.0f * u - 1.0f;
     }
     DBuf d(n * sizeof(float));
     cudaMemcpy(d.p, h.data(), d.bytes, cudaMemcpyHostToDevice);
@@ -50,8 +50,8 @@ Weight dense_bf16_weight(void* data) {
     w.layout            = QuantLayout::Contiguous;
     w.q5090_scale_dtype = ScaleDType::None;
     w.payload           = data;
-    w.payload_bytes     = static_cast<std::uint64_t>(kHeads) * static_cast<std::uint64_t>(kHidden) *
-                      2ULL;
+    w.payload_bytes =
+        static_cast<std::uint64_t>(kHeads) * static_cast<std::uint64_t>(kHidden) * 2ULL;
     w.qdata           = data;
     w.scales          = nullptr;
     w.group_size      = 0;
@@ -70,7 +70,7 @@ std::vector<std::int32_t> parse_tokens(const char* csv) {
     std::vector<std::int32_t> out;
     const char* p = csv;
     while (*p != '\0') {
-        char* end = nullptr;
+        char* end    = nullptr;
         const long v = std::strtol(p, &end, 10);
         if (end == p || v <= 0 || v > 1'000'000) {
             std::fprintf(stderr, "invalid token length list: %s\n", csv);
@@ -104,36 +104,34 @@ void run(std::int32_t T, int warmup, int repeat, int min_time_ms) {
     Weight wa = dense_bf16_weight(aw.p);
     Weight wb = dense_bf16_weight(bw.p);
 
-    const int split_k = (T >= 2 && T <= kSmallTMax) ? kSmallTSplits
-                                                     : dense_prefill_split_k(T);
-    const char* route = (T == 1) ? "decode-row"
-                       : (T <= kSmallTMax) ? "smallt-splitk"
-                       : (split_k > 1) ? "mma-coop-splitk"
-                                       : "mma-prefill";
-    const double weight_bytes = 2.0 * static_cast<double>(w_elems) * sizeof(std::uint16_t);
-    const double x_bytes      = static_cast<double>(x_elems) * sizeof(std::uint16_t);
-    const double out_bytes    = 2.0 * static_cast<double>(out_elems) * sizeof(float);
-    const double scratch_bytes =
-        (T >= 2 && split_k > 1)
-            ? 2.0 * static_cast<double>(split_k) * static_cast<double>(T) *
-                  static_cast<double>(2 * kHeads) * sizeof(float)
-            : 0.0;
-    const double useful_bytes = weight_bytes + x_bytes + out_bytes;
-    const double bench_bytes  = useful_bytes + scratch_bytes;
+    const int split_k = (T >= 2 && T <= kSmallTMax) ? kSmallTSplits : dense_prefill_split_k(T);
+    const char* route = (T == 1)            ? "decode-row"
+                        : (T <= kSmallTMax) ? "smallt-splitk"
+                        : (split_k > 1)     ? "mma-coop-splitk"
+                                            : "mma-prefill";
+    const double weight_bytes  = 2.0 * static_cast<double>(w_elems) * sizeof(std::uint16_t);
+    const double x_bytes       = static_cast<double>(x_elems) * sizeof(std::uint16_t);
+    const double out_bytes     = 2.0 * static_cast<double>(out_elems) * sizeof(float);
+    const double scratch_bytes = (T >= 2 && split_k > 1)
+                                     ? 2.0 * static_cast<double>(split_k) * static_cast<double>(T) *
+                                           static_cast<double>(2 * kHeads) * sizeof(float)
+                                     : 0.0;
+    const double useful_bytes  = weight_bytes + x_bytes + out_bytes;
+    const double bench_bytes   = useful_bytes + scratch_bytes;
 
     const Result r = bench_loop(
         [&](cudaStream_t s) {
-            kernels::gdn_in_ab_gated(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, s);
+            kernels::gdn_gating_proj(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, s);
         },
         bench_bytes, warmup, repeat, min_time_ms);
 
-    const double sec          = r.median_us * 1e-6;
-    const double useful_gbs   = (sec > 0.0) ? useful_bytes / sec / 1e9 : 0.0;
-    const double bench_gbs    = (sec > 0.0) ? bench_bytes / sec / 1e9 : 0.0;
-    const double roof_pct     = useful_gbs / kRooflineGBs * 100.0;
-    std::printf("fused,%d,%s,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.0f,%d,%d\n", T, route,
-                r.median_us, r.min_us, r.p95_us, useful_gbs, bench_gbs, roof_pct,
-                scratch_bytes, r.n_runs, r.inner_iters);
+    const double sec        = r.median_us * 1e-6;
+    const double useful_gbs = (sec > 0.0) ? useful_bytes / sec / 1e9 : 0.0;
+    const double bench_gbs  = (sec > 0.0) ? bench_bytes / sec / 1e9 : 0.0;
+    const double roof_pct   = useful_gbs / kRooflineGBs * 100.0;
+    std::printf("fused,%d,%s,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.0f,%d,%d\n", T, route, r.median_us,
+                r.min_us, r.p95_us, useful_gbs, bench_gbs, roof_pct, scratch_bytes, r.n_runs,
+                r.inner_iters);
 }
 
 } // namespace

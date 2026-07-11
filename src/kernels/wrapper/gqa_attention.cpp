@@ -2,6 +2,7 @@
 #include "qus/kernels/gqa_attention.h"
 
 #include "kernels/launcher/gqa_attention.h"
+#include "model/gqa_prompt_ops.h"
 
 #include <cmath>
 #include <cstdint>
@@ -161,9 +162,9 @@ void gqa_attention(const Tensor& q, const Tensor& k, const Tensor& v, const Tens
     Tensor* partial_m_ptr   = nullptr;
     Tensor* partial_l_ptr   = nullptr;
     if (detail::gqa_attention_uses_small_t(tokens)) {
-        partial_acc     = ws.alloc(DType::BF16, {kHeadDim, kQHeads, tokens, kGqaDecodeSplits});
-        partial_m       = ws.alloc(DType::FP32, {kQHeads, tokens, kGqaDecodeSplits});
-        partial_l       = ws.alloc(DType::FP32, {kQHeads, tokens, kGqaDecodeSplits});
+        partial_acc = ws.alloc(DType::BF16, {kHeadDim, kQHeads, tokens, detail::kGqaDecodeSplits});
+        partial_m   = ws.alloc(DType::FP32, {kQHeads, tokens, detail::kGqaDecodeSplits});
+        partial_l   = ws.alloc(DType::FP32, {kQHeads, tokens, detail::kGqaDecodeSplits});
         partial_acc_ptr = &partial_acc;
         partial_m_ptr   = &partial_m;
         partial_l_ptr   = &partial_l;

@@ -1,3 +1,6 @@
+#include "qus/kernels/attn_input_proj.h"
+#include "qus/kernels/gdn_input_proj.h"
+
 #include "qus/kernels/linear.h"
 
 #include "kernels/linear/reference/linear_generic.h"
@@ -32,10 +35,9 @@ void require_rowsplit(const Weight& weight, QType qtype, std::int32_t n, std::in
 
 } // namespace
 
-void linear_attn_input_grouped(const Tensor& x, const Weight& q_weight, const Weight& gate_weight,
-                               const Weight& k_weight, const Weight& v_weight, Tensor& q,
-                               Tensor& gate, Tensor& k, Tensor& v, WorkspaceArena& ws,
-                               cudaStream_t stream) {
+void attn_input_proj(const Tensor& x, const Weight& q_weight, const Weight& gate_weight,
+                     const Weight& k_weight, const Weight& v_weight, Tensor& q, Tensor& gate,
+                     Tensor& k, Tensor& v, WorkspaceArena& ws, cudaStream_t stream) {
     constexpr std::int32_t kHidden = 5120;
     constexpr std::int32_t kQRows  = 6144;
     constexpr std::int32_t kKvRows = 1024;
@@ -61,8 +63,8 @@ void linear_attn_input_grouped(const Tensor& x, const Weight& q_weight, const We
                                                           v_weight, q, gate, k, v, stream);
 }
 
-void linear_gdn_input_grouped(const Tensor& x, const Weight& qk_weight, const Weight& v_weight,
-                              Tensor& qkv, WorkspaceArena& ws, cudaStream_t stream) {
+void gdn_input_proj(const Tensor& x, const Weight& qk_weight, const Weight& v_weight, Tensor& qkv,
+                    WorkspaceArena& ws, cudaStream_t stream) {
     constexpr std::int32_t kHidden = 5120;
     constexpr std::int32_t kQkRows = 4096;
     constexpr std::int32_t kVRows  = 6144;

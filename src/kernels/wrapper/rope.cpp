@@ -132,12 +132,16 @@ void rope_single(const Tensor& positions, int rotary_dim, float theta, Tensor& x
 
 } // namespace
 
-void rope_q(const Tensor& positions, int rotary_dim, float theta, Tensor& q, cudaStream_t stream) {
-    rope_single(positions, rotary_dim, theta, q, kQHeads, "q", true, stream);
-}
-
-void rope_k(const Tensor& positions, int rotary_dim, float theta, Tensor& k, cudaStream_t stream) {
-    rope_single(positions, rotary_dim, theta, k, kKHeads, "k", false, stream);
+void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaStream_t stream) {
+    if (x.ne[1] == kQHeads) {
+        rope_single(positions, rotary_dim, theta, x, kQHeads, "q", true, stream);
+        return;
+    }
+    if (x.ne[1] == kKHeads) {
+        rope_single(positions, rotary_dim, theta, x, kKHeads, "k", false, stream);
+        return;
+    }
+    throw std::invalid_argument("rope: single tensor must have 24 Q heads or 4 K heads");
 }
 
 } // namespace qus::kernels

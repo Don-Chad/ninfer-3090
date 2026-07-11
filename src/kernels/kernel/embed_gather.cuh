@@ -1,6 +1,6 @@
 #pragma once
 
-// qus::kernels - embed_gather kernels. Dense copies BF16 rows; Q6 decodes
+// qus::kernels - embedding kernels. Dense copies BF16 rows; Q6 decodes
 // ROW_SPLIT nibble, high, and scale planes.
 
 #include <cuda_bf16.h>

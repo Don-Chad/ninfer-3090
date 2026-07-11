@@ -211,7 +211,7 @@ __global__ void linear_dense_gdn_in_ab_gated_48_kernel(
 
 void require_shape(const Weight& w, const char* name) {
     if (w.n != kN || w.k != kK || w.shape[0] != kN || w.shape[1] != kK) {
-        throw std::invalid_argument(std::string("gdn_in_ab_gated: ") + name +
+        throw std::invalid_argument(std::string("gdn_gating_proj: ") + name +
                                     " requires 48x5120 dense BF16");
     }
 }
@@ -319,7 +319,7 @@ void linear_dense_gdn_in_ab_gated_48_launch(const Tensor& x, const Weight& a_wei
     if (t <= kSmallTMax) {
         const std::size_t required = linear_dense_gdn_in_ab_gated_48_workspace_bytes(t);
         if (workspace == nullptr || workspace_bytes < required) {
-            throw std::invalid_argument("gdn_in_ab_gated: small-T workspace is too small");
+            throw std::invalid_argument("gdn_gating_proj: small-T workspace is too small");
         }
         dim3 partial_block(kSmallTThreads);
         dim3 partial_grid((kLogicalRows + kSmallTRowsPerBlock - 1) / kSmallTRowsPerBlock,
@@ -347,7 +347,7 @@ void linear_dense_gdn_in_ab_gated_48_launch(const Tensor& x, const Weight& a_wei
 
     const std::size_t required = linear_dense_gdn_in_ab_gated_48_workspace_bytes(t);
     if (required > 0 && (workspace == nullptr || workspace_bytes < required)) {
-        throw std::invalid_argument("gdn_in_ab_gated: dense prefill workspace is too small");
+        throw std::invalid_argument("gdn_gating_proj: dense prefill workspace is too small");
     }
     switch (dense_prefill_split_k(t)) {
     case 8:

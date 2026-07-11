@@ -1,6 +1,6 @@
 #pragma once
 
-// qus::kernels::detail - private launch prototypes for embed_gather variants.
+// qus::kernels::detail - private launch prototypes for embedding variants.
 
 #include "qus/core/tensor.h"
 

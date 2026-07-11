@@ -1,5 +1,6 @@
 // qus::kernels - rmsnorm wrapper: public api validation and launcher dispatch.
 #include "qus/kernels/rmsnorm.h"
+#include "qus/kernels/gated_rmsnorm.h"
 
 #include "kernels/launcher/rmsnorm.h" // detail::rmsnorm_launch
 
@@ -44,8 +45,10 @@ void require_same_shape(const Tensor& a, const Tensor& b, const char* b_label) {
 
 } // namespace
 
-void rmsnorm(const Tensor& x, const Tensor& weight, float eps, bool unit_offset, const Tensor* z,
-             Tensor& out, cudaStream_t stream) {
+namespace {
+
+void rmsnorm_impl(const Tensor& x, const Tensor& weight, float eps, bool unit_offset,
+                  const Tensor* z, Tensor& out, cudaStream_t stream) {
     if (x.dtype != DType::BF16 || weight.dtype != DType::BF16 || out.dtype != DType::BF16 ||
         (z != nullptr && z->dtype != DType::BF16)) {
         throw std::invalid_argument("rmsnorm: x/weight/z/out must be BF16");
@@ -55,11 +58,11 @@ void rmsnorm(const Tensor& x, const Tensor& weight, float eps, bool unit_offset,
     }
 
     const std::int64_t n = numel_allow_zero(x, "x");
-    (void) numel_allow_zero(out, "out");
-    (void) numel_allow_zero(weight, "weight");
+    (void)numel_allow_zero(out, "out");
+    (void)numel_allow_zero(weight, "weight");
     require_same_shape(x, out, "out");
     if (z != nullptr) {
-        (void) numel_allow_zero(*z, "z");
+        (void)numel_allow_zero(*z, "z");
         require_same_shape(x, *z, "z");
     }
     if (weight.ne[0] != x.ne[0] || weight.ne[1] != 1 || weight.ne[2] != 1 || weight.ne[3] != 1) {
@@ -81,6 +84,18 @@ void rmsnorm(const Tensor& x, const Tensor& weight, float eps, bool unit_offset,
     }
 
     detail::rmsnorm_launch(x, weight, eps, unit_offset, z, out, stream);
+}
+
+} // namespace
+
+void rmsnorm(const Tensor& x, const Tensor& weight, float eps, bool unit_offset, Tensor& out,
+             cudaStream_t stream) {
+    rmsnorm_impl(x, weight, eps, unit_offset, nullptr, out, stream);
+}
+
+void gated_rmsnorm(const Tensor& x, const Tensor& weight, const Tensor& z, float eps, Tensor& out,
+                   cudaStream_t stream) {
+    rmsnorm_impl(x, weight, eps, false, &z, out, stream);
 }
 
 } // namespace qus::kernels

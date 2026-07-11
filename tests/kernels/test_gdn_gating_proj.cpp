@@ -1,6 +1,6 @@
 // Correctness coverage for the fused GDN in_a/in_b prefill path at Qwen3.6-27B
 // shapes: two dense BF16 [48,5120] projections fused with gdn_gating.
-#include "qus/kernels/gdn_in_ab.h"
+#include "qus/kernels/gdn_gating_proj.h"
 #include "qus/core/arena.h"
 #include "kernels/op_tester.h"
 
@@ -24,8 +24,8 @@ Weight dense_bf16_weight(void* data) {
     w.layout            = QuantLayout::Contiguous;
     w.q5090_scale_dtype = ScaleDType::None;
     w.payload           = data;
-    w.payload_bytes     = static_cast<std::uint64_t>(kHeads) * static_cast<std::uint64_t>(kHidden) *
-                      2ULL;
+    w.payload_bytes =
+        static_cast<std::uint64_t>(kHeads) * static_cast<std::uint64_t>(kHidden) * 2ULL;
     w.qdata           = data;
     w.scales          = nullptr;
     w.group_size      = 0;
@@ -40,15 +40,13 @@ Weight dense_bf16_weight(void* data) {
     return w;
 }
 
-double softplus(double x) {
-    return (x > 20.0) ? x : std::log1p(std::exp(x));
-}
+double softplus(double x) { return (x > 20.0) ? x : std::log1p(std::exp(x)); }
 
 void cpu_gdn_in_ab_prefill(const std::vector<float>& x, const std::vector<float>& aw,
                            const std::vector<float>& bw, const std::vector<float>& A_log,
                            const std::vector<float>& dt_bias,
-                           const std::vector<std::int32_t>& tokens,
-                           std::vector<double>& g, std::vector<double>& beta) {
+                           const std::vector<std::int32_t>& tokens, std::vector<double>& g,
+                           std::vector<double>& beta) {
     const std::size_t out_elems =
         static_cast<std::size_t>(kHeads) * static_cast<std::size_t>(tokens.size());
     g.assign(out_elems, 0.0);
@@ -56,7 +54,7 @@ void cpu_gdn_in_ab_prefill(const std::vector<float>& x, const std::vector<float>
 
     for (std::size_t sample = 0; sample < tokens.size(); ++sample) {
         const std::int32_t t = tokens[sample];
-        const float* x_col = x.data() + static_cast<std::size_t>(t) * kHidden;
+        const float* x_col   = x.data() + static_cast<std::size_t>(t) * kHidden;
         for (std::int32_t h = 0; h < kHeads; ++h) {
             const float* aw_row = aw.data() + static_cast<std::size_t>(h) * kHidden;
             const float* bw_row = bw.data() + static_cast<std::size_t>(h) * kHidden;
@@ -67,18 +65,18 @@ void cpu_gdn_in_ab_prefill(const std::vector<float>& x, const std::vector<float>
                 acc_b = std::fma(bw_row[k], x_col[k], acc_b);
             }
 
-            const float a = bf16_to_f32(f32_to_bf16(acc_a));
-            const float b = bf16_to_f32(f32_to_bf16(acc_b));
+            const float a       = bf16_to_f32(f32_to_bf16(acc_a));
+            const float b       = bf16_to_f32(f32_to_bf16(acc_b));
             const std::size_t i = sample * kHeads + static_cast<std::size_t>(h);
-            g[i] = -std::exp(static_cast<double>(A_log[h])) *
+            g[i]                = -std::exp(static_cast<double>(A_log[h])) *
                    softplus(static_cast<double>(a) + static_cast<double>(dt_bias[h]));
             beta[i] = 1.0 / (1.0 + std::exp(-static_cast<double>(b)));
         }
     }
 }
 
-int one_shape(std::int32_t T, std::uint32_t seed,
-              std::vector<std::int32_t> sample_tokens = {}, bool use_graph = false) {
+int one_shape(std::int32_t T, std::uint32_t seed, std::vector<std::int32_t> sample_tokens = {},
+              bool use_graph = false) {
     if (sample_tokens.empty()) {
         sample_tokens.reserve(static_cast<std::size_t>(T));
         for (std::int32_t t = 0; t < T; ++t) { sample_tokens.push_back(t); }
@@ -114,12 +112,12 @@ int one_shape(std::int32_t T, std::uint32_t seed,
     WorkspaceArena ws(64u * 1024u * 1024u);
 
     if (use_graph) {
-        cudaStream_t stream = nullptr;
-        cudaGraph_t graph = nullptr;
+        cudaStream_t stream  = nullptr;
+        cudaGraph_t graph    = nullptr;
         cudaGraphExec_t exec = nullptr;
         cudaStreamCreate(&stream);
         cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
-        kernels::gdn_in_ab_gated(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, stream);
+        kernels::gdn_gating_proj(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, stream);
         cudaStreamEndCapture(stream, &graph);
         cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
         cudaGraphLaunch(exec, stream);
@@ -128,29 +126,28 @@ int one_shape(std::int32_t T, std::uint32_t seed,
         cudaGraphDestroy(graph);
         cudaStreamDestroy(stream);
     } else {
-        kernels::gdn_in_ab_gated(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, nullptr);
+        kernels::gdn_gating_proj(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, nullptr);
         cudaDeviceSynchronize();
     }
 
     const std::size_t full_n = static_cast<std::size_t>(kHeads) * static_cast<std::size_t>(T);
-    const std::size_t n = static_cast<std::size_t>(kHeads) * sample_tokens.size();
-    const std::vector<double> full_g = from_device_f32(dg, full_n);
+    const std::size_t n      = static_cast<std::size_t>(kHeads) * sample_tokens.size();
+    const std::vector<double> full_g    = from_device_f32(dg, full_n);
     const std::vector<double> full_beta = from_device_f32(dbeta, full_n);
     std::vector<double> sampled_g(n), sampled_beta(n);
     for (std::size_t sample = 0; sample < sample_tokens.size(); ++sample) {
         const std::size_t source = static_cast<std::size_t>(sample_tokens[sample]) * kHeads;
         for (std::int32_t h = 0; h < kHeads; ++h) {
-            sampled_g[sample * kHeads + static_cast<std::size_t>(h)] = full_g[source + h];
+            sampled_g[sample * kHeads + static_cast<std::size_t>(h)]    = full_g[source + h];
             sampled_beta[sample * kHeads + static_cast<std::size_t>(h)] = full_beta[source + h];
         }
     }
-    const std::string label =
-        "gdn_in_ab_prefill fused [48,5120] T=" + std::to_string(T) +
-        " samples=" + std::to_string(sample_tokens.size());
+    const std::string label = "gdn_in_ab_prefill fused [48,5120] T=" + std::to_string(T) +
+                              " samples=" + std::to_string(sample_tokens.size());
     int failures = 0;
     failures += verify((label + " g").c_str(), sampled_g, ref_g, Tolerance::gdn_output_bf16());
-    failures += verify((label + " beta").c_str(), sampled_beta, ref_beta,
-                       Tolerance::gdn_output_bf16());
+    failures +=
+        verify((label + " beta").c_str(), sampled_beta, ref_beta, Tolerance::gdn_output_bf16());
     return failures;
 }
 

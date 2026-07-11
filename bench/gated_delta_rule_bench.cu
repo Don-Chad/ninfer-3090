@@ -140,32 +140,32 @@ Options parse_options(int argc, char** argv) {
 }
 
 void print_help(const char* prog) {
-    std::printf(
-        "Usage: %s [options]\n"
-        "\n"
-        "Modes:\n"
-        "  --decode           run recurrent decode at L=1 (default when no mode is given)\n"
-        "  --prefill          run chunked prefill at L=4096 by default\n"
-        "  --chunked          alias for --prefill\n"
-        "  --kernel-only      use the native-bf16 detail launcher path instead of the public wrapper\n"
-        "  --sweep            with prefill, sweep L over {64,128,256,512,1024,4096}\n"
-        "\n"
-        "Shape:\n"
-        "  --S N              fixed to 128\n"
-        "  --H_qk N           fixed to 16\n"
-        "  --H_v N            fixed to 48\n"
-        "  --L N              prefill length (default: 4096)\n"
-        "  --B N              fixed to 1\n"
-        "\n"
-        "Bench loop:\n"
-        "  --warmup N         warmup launches (default: 20)\n"
-        "  --repeat N         minimum timed samples (default: 100)\n"
-        "  --min-time-ms N    minimum total timed batch duration (default: 1000)\n"
-        "\n"
-        "Output:\n"
-        "  --csv              emit CSV rows\n"
-        "  -h, --help         show this help\n",
-        prog);
+    std::printf("Usage: %s [options]\n"
+                "\n"
+                "Modes:\n"
+                "  --decode           run recurrent decode at L=1 (default when no mode is given)\n"
+                "  --prefill          run chunked prefill at L=4096 by default\n"
+                "  --chunked          alias for --prefill\n"
+                "  --kernel-only      use the native-bf16 detail launcher path instead of the "
+                "public wrapper\n"
+                "  --sweep            with prefill, sweep L over {64,128,256,512,1024,4096}\n"
+                "\n"
+                "Shape:\n"
+                "  --S N              fixed to 128\n"
+                "  --H_qk N           fixed to 16\n"
+                "  --H_v N            fixed to 48\n"
+                "  --L N              prefill length (default: 4096)\n"
+                "  --B N              fixed to 1\n"
+                "\n"
+                "Bench loop:\n"
+                "  --warmup N         warmup launches (default: 20)\n"
+                "  --repeat N         minimum timed samples (default: 100)\n"
+                "  --min-time-ms N    minimum total timed batch duration (default: 1000)\n"
+                "\n"
+                "Output:\n"
+                "  --csv              emit CSV rows\n"
+                "  -h, --help         show this help\n",
+                prog);
 }
 
 std::size_t align_up(std::size_t value, std::size_t align = kAlign) {
@@ -269,7 +269,7 @@ BenchRow run_decode_public(const Options& opt) {
     BenchRow row{"decode", "public-wrapper", T, 0, {}};
     row.result = bench_loop(
         [&](cudaStream_t s) {
-            kernels::gated_delta_rule_recurrent(tq, tk, tv, tg, tbeta, kScale, ws, tstate, tout, s);
+            kernels::gated_delta_rule(tq, tk, tv, tg, tbeta, kScale, ws, tstate, tout, s);
         },
         estimate_user_bytes(T, sizeof(std::uint16_t)), opt.warmup, opt.repeat, opt.min_time_ms);
     return row;
@@ -316,11 +316,11 @@ BenchRow run_prefill_public(const Options& opt, int T) {
         make_bf16_from_f32(make_normalized_qk(static_cast<std::size_t>(kHqk) * T, 0x12345678u));
     DBuf k =
         make_bf16_from_f32(make_normalized_qk(static_cast<std::size_t>(kHqk) * T, 0x87654321u));
-    DBuf v     = make_bf16_from_f32(make_ramp(v_n, 0.5f));
-    DBuf g     = make_f32(std::vector<float>(gb_n, -1.0f));
-    DBuf beta  = make_f32(std::vector<float>(gb_n, 0.5f));
-    DBuf state = make_zeros(state_n * sizeof(float));
-    DBuf out   = make_zeros(v_n * sizeof(std::uint16_t));
+    DBuf v                     = make_bf16_from_f32(make_ramp(v_n, 0.5f));
+    DBuf g                     = make_f32(std::vector<float>(gb_n, -1.0f));
+    DBuf beta                  = make_f32(std::vector<float>(gb_n, 0.5f));
+    DBuf state                 = make_zeros(state_n * sizeof(float));
+    DBuf out                   = make_zeros(v_n * sizeof(std::uint16_t));
     const std::size_t ws_bytes = wrapper_workspace_bytes(T);
     WorkspaceArena ws(ws_bytes);
 
@@ -335,8 +335,7 @@ BenchRow run_prefill_public(const Options& opt, int T) {
     BenchRow row{"prefill", "public-wrapper", T, ws_bytes, {}};
     row.result = bench_loop(
         [&](cudaStream_t s) {
-            kernels::gated_delta_rule_chunked(tq, tk, tv, tg, tbeta, kScale, kChunkSize, ws, tstate,
-                                              tout, s);
+            kernels::gated_delta_rule(tq, tk, tv, tg, tbeta, kScale, ws, tstate, tout, s);
         },
         estimate_user_bytes(T, sizeof(std::uint16_t)), opt.warmup, opt.repeat, opt.min_time_ms);
     return row;
@@ -382,14 +381,14 @@ BenchRow run_prefill_kernel_only(const Options& opt, int T) {
 }
 
 void print_csv_header() {
-    std::printf(
-        "mode,path,S,H_qk,H_v,L,B,workspace_bytes,runs,inner,median_us,min_us,p95_us,mean_us,gbs\n");
+    std::printf("mode,path,S,H_qk,H_v,L,B,workspace_bytes,runs,inner,median_us,min_us,p95_us,mean_"
+                "us,gbs\n");
 }
 
 void print_row(const BenchRow& row, bool csv) {
     if (csv) {
-        std::printf("%s,%s,%d,%d,%d,%d,%d,%zu,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f\n", row.mode,
-                    row.path, kS, kHqk, kHv, row.L, kB, row.workspace_bytes, row.result.n_runs,
+        std::printf("%s,%s,%d,%d,%d,%d,%d,%zu,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f\n", row.mode, row.path,
+                    kS, kHqk, kHv, row.L, kB, row.workspace_bytes, row.result.n_runs,
                     row.result.inner_iters, row.result.median_us, row.result.min_us,
                     row.result.p95_us, row.result.mean_us, row.result.gbs);
         return;

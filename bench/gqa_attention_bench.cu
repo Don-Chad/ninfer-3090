@@ -34,7 +34,7 @@
 
 using namespace qus;
 using namespace qus::bench;
-using qus::kernels::kGqaDecodeSplits;
+using qus::kernels::detail::kGqaDecodeSplits;
 
 namespace {
 
@@ -487,17 +487,17 @@ struct PrefillTimingOptions {
 AppendPromptMetrics append_prompt_metrics_from_result(std::int32_t tokens, std::int32_t context,
                                                       DType kv_dtype, const Result& r) {
     AppendPromptMetrics m;
-    m.tokens             = tokens;
-    m.context            = context;
-    m.end_context        = context + tokens;
-    m.kv_dtype           = kv_dtype;
-    m.q_blocks           = append_prompt_q_blocks(tokens);
-    m.attention_ctas     = static_cast<std::int64_t>(m.q_blocks) * kQHeads;
-    m.key_tiles          = append_prompt_key_tiles_per_head(tokens, context) * kQHeads;
-    m.qk_mma_count       = m.key_tiles * (kv_dtype == DType::I8 ? 256 : 512);
-    m.pv_mma_count       = m.key_tiles * 512;
-    m.runs               = r.n_runs;
-    m.inner_iters        = r.inner_iters;
+    m.tokens         = tokens;
+    m.context        = context;
+    m.end_context    = context + tokens;
+    m.kv_dtype       = kv_dtype;
+    m.q_blocks       = append_prompt_q_blocks(tokens);
+    m.attention_ctas = static_cast<std::int64_t>(m.q_blocks) * kQHeads;
+    m.key_tiles      = append_prompt_key_tiles_per_head(tokens, context) * kQHeads;
+    m.qk_mma_count   = m.key_tiles * (kv_dtype == DType::I8 ? 256 : 512);
+    m.pv_mma_count   = m.key_tiles * 512;
+    m.runs           = r.n_runs;
+    m.inner_iters    = r.inner_iters;
     if (kv_dtype == DType::I8) {
         m.math_mode    = "s8_qk_f16_pv";
         m.qk_mma_dtype = "s8";
@@ -1015,16 +1015,16 @@ std::string format_append_prompt_csv(const std::vector<AppendPromptMetrics>& res
         out << m.tokens << ',' << m.context << ',' << m.end_context << ','
             << kv_dtype_name(m.kv_dtype) << ',' << m.math_mode << ',' << m.qk_mma_dtype << ','
             << m.pv_mma_dtype << ',' << m.qk_mma_count << ',' << m.pv_mma_count << ','
-            << json_number(m.median_ms) << ','
-            << json_number(m.tflops) << ',' << json_number(m.tflops_pct) << ','
-            << json_number(m.global_floor_gbps) << ',' << json_number(m.global_floor_gbps_pct)
-            << ',' << json_number(m.tile_kv_read_gbps) << ',' << json_number(m.logical_kv_gbps)
-            << ',' << json_number(m.avg_keys_per_query) << ',' << json_number(m.ns_per_key_query)
-            << ',' << json_number(m.us_per_token) << ',' << m.q_blocks << ',' << m.attention_ctas
-            << ',' << m.key_tiles << ',' << json_number(m.tile_reuse_queries) << ',' << m.bound
-            << ',' << json_number(m.roofline_tflops) << ',' << json_number(m.roofline_eff_pct)
-            << ',' << json_number(m.global_floor_bytes) << ',' << json_number(m.tile_kv_read_bytes)
-            << ',' << json_number(m.logical_kv_bytes) << ',' << json_number(m.useful_flops) << ','
+            << json_number(m.median_ms) << ',' << json_number(m.tflops) << ','
+            << json_number(m.tflops_pct) << ',' << json_number(m.global_floor_gbps) << ','
+            << json_number(m.global_floor_gbps_pct) << ',' << json_number(m.tile_kv_read_gbps)
+            << ',' << json_number(m.logical_kv_gbps) << ',' << json_number(m.avg_keys_per_query)
+            << ',' << json_number(m.ns_per_key_query) << ',' << json_number(m.us_per_token) << ','
+            << m.q_blocks << ',' << m.attention_ctas << ',' << m.key_tiles << ','
+            << json_number(m.tile_reuse_queries) << ',' << m.bound << ','
+            << json_number(m.roofline_tflops) << ',' << json_number(m.roofline_eff_pct) << ','
+            << json_number(m.global_floor_bytes) << ',' << json_number(m.tile_kv_read_bytes) << ','
+            << json_number(m.logical_kv_bytes) << ',' << json_number(m.useful_flops) << ','
             << json_number(m.key_sum) << ',' << json_number(m.qblock_key_rows) << ','
             << json_number(m.median_ms) << ',' << json_number(m.min_ms) << ','
             << json_number(m.p95_ms) << ',' << json_number(m.mean_ms) << ',' << m.runs << ','
@@ -1059,12 +1059,10 @@ std::string format_append_prompt_json(const std::vector<AppendPromptMetrics>& re
         const AppendPromptMetrics& m = results[i];
         out << "    {\"T\": " << m.tokens << ", \"context\": " << m.context
             << ", \"end_context\": " << m.end_context << ", \"ms\": " << json_number(m.median_ms)
-            << ", \"kv_dtype\": \"" << kv_dtype_name(m.kv_dtype) << "\""
-            << ", \"math_mode\": \"" << m.math_mode << "\""
-            << ", \"qk_mma_dtype\": \"" << m.qk_mma_dtype << "\""
+            << ", \"kv_dtype\": \"" << kv_dtype_name(m.kv_dtype) << "\"" << ", \"math_mode\": \""
+            << m.math_mode << "\"" << ", \"qk_mma_dtype\": \"" << m.qk_mma_dtype << "\""
             << ", \"pv_mma_dtype\": \"" << m.pv_mma_dtype << "\""
-            << ", \"qk_mma_count\": " << m.qk_mma_count
-            << ", \"pv_mma_count\": " << m.pv_mma_count
+            << ", \"qk_mma_count\": " << m.qk_mma_count << ", \"pv_mma_count\": " << m.pv_mma_count
             << ", \"tflops\": " << json_number(m.tflops)
             << ", \"tflops_pct\": " << json_number(m.tflops_pct)
             << ", \"global_floor_gbps\": " << json_number(m.global_floor_gbps)

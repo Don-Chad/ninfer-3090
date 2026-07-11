@@ -1,4 +1,4 @@
-// qus::kernels - embed_gather launcher: variant grid/block/stream setup.
+// qus::kernels - embedding launcher: variant grid/block/stream setup.
 #include "kernels/launcher/embed_gather.h"
 
 #include "kernels/kernel/embed_gather.cuh"

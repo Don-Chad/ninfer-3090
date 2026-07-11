@@ -1,6 +1,6 @@
 #pragma once
 
-// qus::kernels::detail — private launch prototype for silu_and_mul. Included by the wrapper
+// qus::kernels::detail — private launch prototype for silu_mul. Included by the wrapper
 // (host) and defined by the launcher (.cu). Not part of the public api.
 // See docs/l1-kernel-layering.md §4.
 

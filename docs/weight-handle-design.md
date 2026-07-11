@@ -3,7 +3,7 @@
 > Status: design (approved in brainstorm). Date: 2026-06-26.
 > Scope: the **weight-handle contract** — one tagged `Weight` type that represents a loaded
 > parameter at *any* precision (Q4/Q5/Q6/W8 **or** dense bf16/fp32), and the operator-API rule that
-> lets one verb (`linear`, `embed_gather`, the `lm_head` GEMV) consume it without separate
+> lets one verb (`linear`, `embedding`, the `lm_head` GEMV) consume it without separate
 > dense-vs-quant signatures. This sits at the **L0↔L1↔L2 seam**: it refines the L0 weight types
 > (`include/qus/core/tensor.h`), fixes the L1 dispatch axis (see
 > [`l1-kernel-layering.md`](l1-kernel-layering.md) §3/§5), and **replaces the `LinearW` tagged union**
@@ -30,7 +30,7 @@ Every operator that can take *either* precision must then accept `LinearW`, and 
 1. **leaks a two-type dichotomy into operator signatures** — the very thing we want to keep out of
    the L1 API surface;
 2. **mis-names the handle** when the weight is not a linear, e.g.
-   `embed_gather(out, ids, const LinearW& table)` — an embedding table is not a "Linear";
+   `embedding(out, ids, const LinearW& table)` — an embedding table is not a "Linear";
 3. **re-introduces a split the type system was already designed to erase**: `QType` already reserves
    `BF16_CTRL`/`FP32_CTRL`, `QuantLayout::Contiguous` already exists, and `QuantWeight` already
    carries `shape`/strides/`payload`. The dense case was *meant* to be just another tag.
@@ -180,7 +180,7 @@ exactly, so the projection round-trips.
 ### 5.1 The polymorphic surface is tiny
 
 Only a handful of call sites are precision-polymorphic: **`linear`** (used for every projection
-*and* the `lm_head` GEMV) and **`embed_gather`**. Everything else (`rmsnorm`, `conv1d`, `gdn_gates`,
+*and* the `lm_head` GEMV) and **`embedding`**. Everything else (`rmsnorm`, `conv1d`, `gdn_gates`,
 attention, rope, residual, `argmax`, …) is dense-only and keeps `const Tensor&`. The "must consider
 both `Tensor` and `Weight`" worry applies to **two** op signatures, not to all of L1.
 
@@ -218,8 +218,8 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t s) {
 ```
 
 ```cpp
-// include/qus/kernels/embed_gather.h  (api) — table is a Weight; out/ids are Tensor
-void embed_gather(const Tensor& ids, const Weight& table, Tensor& out, cudaStream_t stream);
+// include/qus/kernels/embedding.h  (api) — table is a Weight; out/ids are Tensor
+void embedding(const Tensor& ids, const Weight& table, Tensor& out, cudaStream_t stream);
 // wrapper: Q6G64_F16S -> dequant-gather one row per id; BF16_CTRL -> plain row copy via as_dense(table)
 ```
 
@@ -298,7 +298,7 @@ runtime op-graph. This is exactly `l2-model-card-design.md` Decisions #3 (precis
 - `include/qus/core/weight.h` (new, small) — `as_dense` / `weight_from_dense` inline helpers.
 - `include/qus/core/weight_store.h` / `src/core/weight_store.cpp` — `qweight(...)` accessor returns
   `const Weight*` (mechanical rename; `QuantRecord`→holds `Weight`).
-- L1 — `linear` and `embed_gather` api over `const Weight&`; wrappers dispatch on `qtype`; per-qtype
+- L1 — `linear` and `embedding` api over `const Weight&`; wrappers dispatch on `qtype`; per-qtype
   launcher/kernel variants, with `linear_dense` wrapping `as_dense`.
 - L2 `model.h` / `qwen3_6_27b.cpp` — delete `LinearW`; seam fields → `const Weight*` (or `Weight`);
   `bind()` synthesizes `in_a`/`in_b` via `weight_from_dense`.

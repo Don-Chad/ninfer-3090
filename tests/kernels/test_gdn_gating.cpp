@@ -3,7 +3,7 @@
 // GDN gate ranges including the softplus guard, composite tolerance
 // fp32_transcendental.
 #include "qus/kernels/gdn_gating.h"
-#include "qus/kernels/gdn_in_ab.h"
+#include "qus/kernels/gdn_gating_proj.h"
 #include "qus/core/arena.h"
 #include "kernels/op_tester.h"
 
@@ -20,17 +20,16 @@ using namespace qus::test;
 
 static void cpu_gdn_gating(const std::vector<float>& a, const std::vector<float>& b,
                            const std::vector<float>& A_log, const std::vector<float>& dt_bias,
-                           std::int32_t T, std::vector<double>& g,
-                           std::vector<double>& beta) {
+                           std::int32_t T, std::vector<double>& g, std::vector<double>& beta) {
     for (std::int32_t t = 0; t < T; ++t) {
         for (std::int32_t h = 0; h < 48; ++h) {
             const std::size_t i = static_cast<std::size_t>(t) * 48u + static_cast<std::size_t>(h);
-            double sp = static_cast<double>(a[i]) + static_cast<double>(dt_bias[h]);
-            sp = (sp > 20.0) ? sp : std::log1p(std::exp(sp));
-            g[i] = -std::exp(static_cast<double>(A_log[h])) * sp;
+            double sp           = static_cast<double>(a[i]) + static_cast<double>(dt_bias[h]);
+            sp                  = (sp > 20.0) ? sp : std::log1p(std::exp(sp));
+            g[i]                = -std::exp(static_cast<double>(A_log[h])) * sp;
 
             const double bv = static_cast<double>(b[i]);
-            beta[i] = 1.0 / (1.0 + std::exp(-bv));
+            beta[i]         = 1.0 / (1.0 + std::exp(-bv));
         }
     }
 }
@@ -93,13 +92,13 @@ static int fused_decode_matches_two_step() {
     Weight wb = dense_bf16_weight(dbw.p);
     WorkspaceArena ws(4u * 1024u * 1024u);
 
-    kernels::gdn_in_ab_gated(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, nullptr);
+    kernels::gdn_gating_proj(tx, wa, wb, tA_log, tdt_bias, ws, tg, tbeta, nullptr);
     cudaDeviceSynchronize();
 
     int f = 0;
-    f += verify("gdn_in_ab_gated T=1 g", from_device_f32(dg, 48), ref_g,
+    f += verify("gdn_gating_proj T=1 g", from_device_f32(dg, 48), ref_g,
                 Tolerance::fp32_transcendental());
-    f += verify("gdn_in_ab_gated T=1 beta", from_device_f32(dbeta, 48), ref_beta,
+    f += verify("gdn_gating_proj T=1 beta", from_device_f32(dbeta, 48), ref_beta,
                 Tolerance::fp32_transcendental());
     return f;
 }
@@ -160,21 +159,21 @@ static int validation_checks() {
     }
 
     try {
-        Tensor bad_empty = a;
-        bad_empty.ne[1] = 0;
-        bad_empty.ne[2] = -1;
+        Tensor bad_empty     = a;
+        bad_empty.ne[1]      = 0;
+        bad_empty.ne[2]      = -1;
         Tensor bad_empty_out = g;
-        bad_empty_out.ne[1] = 0;
-        bad_empty_out.ne[2] = -1;
+        bad_empty_out.ne[1]  = 0;
+        bad_empty_out.ne[2]  = -1;
         kernels::gdn_gating(bad_empty, b, A_log, dt_bias, bad_empty_out, beta, nullptr);
         std::cerr << "validation negative dim: expected invalid_argument\n";
         ++f;
     } catch (const std::invalid_argument&) {}
 
     try {
-        Tensor huge_a = a;
-        Tensor huge_b = b;
-        Tensor huge_g = g;
+        Tensor huge_a    = a;
+        Tensor huge_b    = b;
+        Tensor huge_g    = g;
         Tensor huge_beta = beta;
         for (int d = 0; d < 4; ++d) {
             huge_a.ne[d] = huge_b.ne[d] = huge_g.ne[d] = huge_beta.ne[d] =
@@ -213,7 +212,7 @@ static int validation_checks() {
 
     try {
         Tensor bad_heads = a;
-        bad_heads.ne[0] = 47;
+        bad_heads.ne[0]  = 47;
         kernels::gdn_gating(bad_heads, b, A_log, dt_bias, g, beta, nullptr);
         std::cerr << "validation head dim: expected invalid_argument\n";
         ++f;
@@ -221,7 +220,7 @@ static int validation_checks() {
 
     try {
         Tensor bad_T = b;
-        bad_T.ne[1] = 8;
+        bad_T.ne[1]  = 8;
         kernels::gdn_gating(a, bad_T, A_log, dt_bias, g, beta, nullptr);
         std::cerr << "validation T dim: expected invalid_argument\n";
         ++f;
@@ -229,7 +228,7 @@ static int validation_checks() {
 
     try {
         Tensor bad_rank = A_log;
-        bad_rank.ne[1] = 2;
+        bad_rank.ne[1]  = 2;
         kernels::gdn_gating(a, b, bad_rank, dt_bias, g, beta, nullptr);
         std::cerr << "validation A_log shape: expected invalid_argument\n";
         ++f;
@@ -237,7 +236,7 @@ static int validation_checks() {
 
     try {
         Tensor bad_stride = g;
-        bad_stride.nb[0] = 8;
+        bad_stride.nb[0]  = 8;
         kernels::gdn_gating(a, b, A_log, dt_bias, bad_stride, beta, nullptr);
         std::cerr << "validation contiguous: expected invalid_argument\n";
         ++f;

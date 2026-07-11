@@ -162,7 +162,7 @@ public:
     }
 
     // Device-resident sampling config for the argmax/sample sites. When null the
-    // decode/prefill token pick stays exact greedy argmax; when set, sample_column
+    // decode/prefill token pick stays exact greedy argmax; when set, sample
     // reads it (temperature == 0 in the config is still exact greedy). The pointer
     // is stable across requests so a captured CUDA graph stays valid; only the
     // buffer contents change between requests.

@@ -4,8 +4,8 @@
 #include "qus/core/device.h"
 #include "qus/core/tensor.h"
 #include "qus/kernels/argmax.h"
-#include "qus/kernels/mtp_round.h"
 #include "qus/kernels/sampling.h"
+#include "model/mtp_ops.h"
 #include "qus_bench_common.h"
 
 #include <cuda_runtime.h>
@@ -28,7 +28,7 @@ constexpr std::int32_t kMtpK  = 3;
 constexpr std::int32_t kStats = 9;
 
 struct Options {
-    int cols = 1;
+    int cols    = 1;
     bool sample = false;
     bool mtp    = false;
     bool argmax = false;
@@ -145,15 +145,14 @@ void run_sample(DBuf& logits, DBuf& cfg, int cols) {
     CUDA_CHECK(cudaMemset(pos.p, 0, pos.bytes));
     Tensor tlogits(logits.p, DType::BF16, {kVocab, cols});
     Tensor tout(out.p, DType::I32, {cols});
-    auto* cfg_ptr = static_cast<const kernels::SamplingConfig*>(cfg.p);
-    auto* pos_ptr = static_cast<const std::int32_t*>(pos.p);
+    auto* cfg_ptr  = static_cast<const kernels::SamplingConfig*>(cfg.p);
+    auto* pos_ptr  = static_cast<const std::int32_t*>(pos.p);
     const Result r = bench_loop(
         [&](cudaStream_t s) {
-            kernels::sample_column(tlogits, tout, cfg_ptr, pos_ptr, kernels::kSamplePurposeDecode,
-                                   s);
+            kernels::sample(tlogits, tout, cfg_ptr, pos_ptr, kernels::kSamplePurposeDecode, s);
         },
         payload_bytes(cols, true));
-    print_result(cols == 1 ? "sample_column [vocab,1]" : "sample_column [vocab,4]", r);
+    print_result(cols == 1 ? "sample [vocab,1]" : "sample [vocab,4]", r);
 }
 
 void run_mtp(DBuf& logits, DBuf& cfg) {

@@ -1,4 +1,4 @@
-#include "qus/kernels/mtp_round.h"
+#include "model/mtp_ops.h"
 #include "qus/kernels/sampling.h"
 #include "qus/model/model.h"
 #include "kernels/op_tester.h"
@@ -59,8 +59,7 @@ std::vector<std::uint16_t> from_device_u16(const DBuf& d, std::size_t n) {
 }
 
 template <class T>
-int expect_eq(const std::string& label, const std::vector<T>& got,
-              const std::vector<T>& expected) {
+int expect_eq(const std::string& label, const std::vector<T>& got, const std::vector<T>& expected) {
     if (got.size() != expected.size()) {
         std::cerr << label << ": size mismatch got=" << got.size()
                   << " expected=" << expected.size() << '\n';
@@ -78,9 +77,9 @@ int expect_eq(const std::string& label, const std::vector<T>& got,
 
 int prepare_verify_case() {
     constexpr int k = 5;
-    auto d_token = to_device_i32({42});
-    auto d_drafts = to_device_i32({101, 102, 103, 104, 105});
-    auto d_length = to_device_i32({11});
+    auto d_token    = to_device_i32({42});
+    auto d_drafts   = to_device_i32({101, 102, 103, 104, 105});
+    auto d_length   = to_device_i32({11});
     DBuf d_window_base(sizeof(std::int32_t));
     DBuf d_verify((k + 1) * sizeof(std::int32_t));
     DBuf d_positions((k + 1) * sizeof(std::int32_t));
@@ -107,10 +106,10 @@ int prepare_verify_case() {
 
 int accept_partial_case() {
     constexpr int k = 5;
-    auto d_targets = to_device_i32({7, 8, 9, 10, 11, 12});
-    auto d_drafts = to_device_i32({7, 8, 99, 10, 11});
-    auto d_length = to_device_i32({20});
-    auto d_token = to_device_i32({-1});
+    auto d_targets  = to_device_i32({7, 8, 9, 10, 11, 12});
+    auto d_drafts   = to_device_i32({7, 8, 99, 10, 11});
+    auto d_length   = to_device_i32({20});
+    auto d_token    = to_device_i32({-1});
     DBuf d_sampled((k + 1) * sizeof(std::int32_t));
     DBuf d_num(sizeof(std::int32_t));
     DBuf d_accepted(sizeof(std::int32_t));
@@ -118,7 +117,7 @@ int accept_partial_case() {
     auto d_stats = to_device_i64({5, 7, 3, 4, 100, 200, 300, 400, 500});
 
     DBuf d_logits = zero_logits(16, k + 1);
-    DBuf d_cfg    = to_device_config(kernels::SamplingConfig{});  // greedy
+    DBuf d_cfg    = to_device_config(kernels::SamplingConfig{}); // greedy
     Tensor targets(d_targets.p, DType::I32, {k + 1});
     Tensor logits(d_logits.p, DType::BF16, {16, k + 1});
     Tensor drafts(d_drafts.p, DType::I32, {k});
@@ -134,24 +133,25 @@ int accept_partial_case() {
     cudaDeviceSynchronize();
 
     int failures = 0;
-    failures += expect_eq("accept partial sampled", from_device_i32(d_sampled, k + 1),
-                          {7, 8, 9, 0, 0, 0});
+    failures +=
+        expect_eq("accept partial sampled", from_device_i32(d_sampled, k + 1), {7, 8, 9, 0, 0, 0});
     failures += expect_eq("accept partial num", from_device_i32(d_num, 1), {3});
     failures += expect_eq("accept partial accepted", from_device_i32(d_accepted, 1), {2});
     failures += expect_eq("accept partial length", from_device_i32(d_length, 1), {23});
     failures += expect_eq("accept partial token", from_device_i32(d_token, 1), {9});
     failures += expect_eq("accept partial ar_pos", from_device_i32(d_ar_pos, 1), {23});
-    failures += expect_eq("accept partial stats", from_device_i64(d_stats, model::kStepStatsCounters),
-                          {10, 9, 4, 4, 101, 201, 300, 400, 500});
+    failures +=
+        expect_eq("accept partial stats", from_device_i64(d_stats, model::kStepStatsCounters),
+                  {10, 9, 4, 4, 101, 201, 300, 400, 500});
     return failures;
 }
 
 int accept_all_reject_case() {
     constexpr int k = 5;
-    auto d_targets = to_device_i32({7, 8, 9, 10, 11, 12});
-    auto d_drafts = to_device_i32({99, 8, 9, 10, 11});
-    auto d_length = to_device_i32({20});
-    auto d_token = to_device_i32({-1});
+    auto d_targets  = to_device_i32({7, 8, 9, 10, 11, 12});
+    auto d_drafts   = to_device_i32({99, 8, 9, 10, 11});
+    auto d_length   = to_device_i32({20});
+    auto d_token    = to_device_i32({-1});
     DBuf d_sampled((k + 1) * sizeof(std::int32_t));
     DBuf d_num(sizeof(std::int32_t));
     DBuf d_accepted(sizeof(std::int32_t));
@@ -159,7 +159,7 @@ int accept_all_reject_case() {
     auto d_stats = to_device_i64(std::vector<std::int64_t>(model::kStepStatsCounters, 0));
 
     DBuf d_logits = zero_logits(16, k + 1);
-    DBuf d_cfg    = to_device_config(kernels::SamplingConfig{});  // greedy
+    DBuf d_cfg    = to_device_config(kernels::SamplingConfig{}); // greedy
     Tensor targets(d_targets.p, DType::I32, {k + 1});
     Tensor logits(d_logits.p, DType::BF16, {16, k + 1});
     Tensor drafts(d_drafts.p, DType::I32, {k});
@@ -182,18 +182,18 @@ int accept_all_reject_case() {
     failures += expect_eq("accept all reject length", from_device_i32(d_length, 1), {21});
     failures += expect_eq("accept all reject token", from_device_i32(d_token, 1), {7});
     failures += expect_eq("accept all reject ar_pos", from_device_i32(d_ar_pos, 1), {21});
-    failures += expect_eq("accept all reject stats",
-                          from_device_i64(d_stats, model::kStepStatsCounters),
-                          {5, 0, 1, 0, 0, 0, 0, 0, 0});
+    failures +=
+        expect_eq("accept all reject stats", from_device_i64(d_stats, model::kStepStatsCounters),
+                  {5, 0, 1, 0, 0, 0, 0, 0, 0});
     return failures;
 }
 
 int accept_all_case() {
     constexpr int k = 3;
-    auto d_targets = to_device_i32({1, 2, 3, 77});
-    auto d_drafts = to_device_i32({1, 2, 3});
-    auto d_length = to_device_i32({4});
-    auto d_token = to_device_i32({-1});
+    auto d_targets  = to_device_i32({1, 2, 3, 77});
+    auto d_drafts   = to_device_i32({1, 2, 3});
+    auto d_length   = to_device_i32({4});
+    auto d_token    = to_device_i32({-1});
     DBuf d_sampled((k + 1) * sizeof(std::int32_t));
     DBuf d_num(sizeof(std::int32_t));
     DBuf d_accepted(sizeof(std::int32_t));
@@ -201,7 +201,7 @@ int accept_all_case() {
     auto d_stats = to_device_i64(std::vector<std::int64_t>(model::kStepStatsCounters, 0));
 
     DBuf d_logits = zero_logits(16, k + 1);
-    DBuf d_cfg    = to_device_config(kernels::SamplingConfig{});  // greedy
+    DBuf d_cfg    = to_device_config(kernels::SamplingConfig{}); // greedy
     Tensor targets(d_targets.p, DType::I32, {k + 1});
     Tensor logits(d_logits.p, DType::BF16, {16, k + 1});
     Tensor drafts(d_drafts.p, DType::I32, {k});
@@ -229,10 +229,10 @@ int accept_all_case() {
 
 int shifted_case() {
     constexpr int k = 5;
-    auto d_verify = to_device_i32({40, 41, 42, 43, 44, 45});
-    auto d_token = to_device_i32({99});
+    auto d_verify   = to_device_i32({40, 41, 42, 43, 44, 45});
+    auto d_token    = to_device_i32({99});
     auto d_accepted = to_device_i32({2});
-    auto d_shifted = to_device_i32({-1, -1, -1, -1, -1, -1});
+    auto d_shifted  = to_device_i32({-1, -1, -1, -1, -1, -1});
 
     Tensor verify(d_verify.p, DType::I32, {k + 1});
     Tensor token(d_token.p, DType::I32, {1});
@@ -247,10 +247,10 @@ int shifted_case() {
 
 int shifted_all_accept_case() {
     constexpr int k = 5;
-    auto d_verify = to_device_i32({40, 41, 42, 43, 44, 45});
-    auto d_token = to_device_i32({99});
+    auto d_verify   = to_device_i32({40, 41, 42, 43, 44, 45});
+    auto d_token    = to_device_i32({99});
     auto d_accepted = to_device_i32({5});
-    auto d_shifted = to_device_i32({-1, -1, -1, -1, -1, -1});
+    auto d_shifted  = to_device_i32({-1, -1, -1, -1, -1, -1});
 
     Tensor verify(d_verify.p, DType::I32, {k + 1});
     Tensor token(d_token.p, DType::I32, {1});
@@ -277,7 +277,7 @@ int gather_case() {
     for (int row = 0; row < rows; ++row) {
         expected[row] = hidden[static_cast<std::size_t>(3) * rows + row];
     }
-    auto d_hidden = to_device_u16(hidden);
+    auto d_hidden   = to_device_u16(hidden);
     auto d_accepted = to_device_i32({3});
     DBuf d_out(static_cast<std::size_t>(rows) * sizeof(std::uint16_t));
 
@@ -309,7 +309,7 @@ int fallback_count_case() {
 
 int gdn_initial_slot_case() {
     auto d_accepted = to_device_i32({0});
-    auto d_slot = to_device_i32({-1});
+    auto d_slot     = to_device_i32({-1});
     Tensor accepted(d_accepted.p, DType::I32, {1});
     Tensor slot(d_slot.p, DType::I32, {1});
 
@@ -341,8 +341,8 @@ int reject_sampling_distribution_case() {
 
     std::vector<float> logits_h(static_cast<std::size_t>(vocab) * (k + 1), 0.0f);
     for (int v = 0; v < vocab; ++v) {
-        logits_h[v]             = base[v];  // column 0 -> p0
-        logits_h[vocab + v]     = base[v];  // column 1 (bonus, not checked here)
+        logits_h[v]         = base[v]; // column 0 -> p0
+        logits_h[vocab + v] = base[v]; // column 1 (bonus, not checked here)
     }
     DBuf d_logits = to_device_bf16(logits_h);
 
@@ -356,7 +356,7 @@ int reject_sampling_distribution_case() {
     }
     for (double& x : p0) { x /= sum; }
 
-    const int d0 = 5;  // a mid-probability draft exercises accept and reject
+    const int d0 = 5; // a mid-probability draft exercises accept and reject
     kernels::SamplingConfig cfg;
     cfg.temperature = 1.0f;
     cfg.seed        = 99u;
@@ -478,20 +478,22 @@ int reject_sampling_reproducible_case() {
 }
 
 int reject_sampling_real_shape_distribution_case() {
-    constexpr int k = 1;
+    constexpr int k     = 1;
     constexpr int vocab = 248320;
-    const int ids[] = {17, 7919, 65537, 200003};
-    const float vals[] = {3.0f, 2.0f, 1.0f, 0.0f};
+    const int ids[]     = {17, 7919, 65537, 200003};
+    const float vals[]  = {3.0f, 2.0f, 1.0f, 0.0f};
     std::vector<float> logits_h(static_cast<std::size_t>(vocab) * (k + 1), -20.0f);
     for (int col = 0; col <= k; ++col) {
-        for (int i = 0; i < 4; ++i) { logits_h[static_cast<std::size_t>(col) * vocab + ids[i]] = vals[i]; }
+        for (int i = 0; i < 4; ++i) {
+            logits_h[static_cast<std::size_t>(col) * vocab + ids[i]] = vals[i];
+        }
     }
     round_to_bf16(logits_h);
     DBuf d_logits = to_device_bf16(logits_h);
 
     std::vector<double> p0(4);
     double mmax = vals[0];
-    double sum = 0.0;
+    double sum  = 0.0;
     for (int i = 0; i < 4; ++i) {
         p0[i] = std::exp(static_cast<double>(vals[i]) - mmax);
         sum += p0[i];
@@ -500,9 +502,9 @@ int reject_sampling_real_shape_distribution_case() {
 
     kernels::SamplingConfig cfg;
     cfg.temperature = 1.0f;
-    cfg.top_k = 4;
-    cfg.seed = 7001u;
-    DBuf d_cfg = to_device_config(cfg);
+    cfg.top_k       = 4;
+    cfg.seed        = 7001u;
+    DBuf d_cfg      = to_device_config(cfg);
 
     const int N = 2048;
     std::vector<int> lengths(static_cast<std::size_t>(N));
@@ -512,8 +514,8 @@ int reject_sampling_real_shape_distribution_case() {
     DBuf d_collect(static_cast<std::size_t>(N) * sizeof(std::int32_t));
 
     auto d_targets = to_device_i32({0, 0});
-    auto d_drafts = to_device_i32({ids[1]});
-    auto d_token = to_device_i32({-1});
+    auto d_drafts  = to_device_i32({ids[1]});
+    auto d_token   = to_device_i32({-1});
     DBuf d_sampled((k + 1) * sizeof(std::int32_t));
     DBuf d_num(sizeof(std::int32_t));
     DBuf d_accepted(sizeof(std::int32_t));
@@ -564,8 +566,7 @@ int reject_sampling_real_shape_distribution_case() {
         std::cerr << "real-shape reject distribution: committed/target gap " << max_abs
                   << " too large\n";
         for (int i = 0; i < 4; ++i) {
-            std::cerr << "    token=" << ids[i] << " freq=" << freq[i] << " p0=" << p0[i]
-                      << '\n';
+            std::cerr << "    token=" << ids[i] << " freq=" << freq[i] << " p0=" << p0[i] << '\n';
         }
         return 1;
     }
@@ -577,16 +578,16 @@ std::vector<int> run_real_shape_mtp_sequence(const std::vector<float>& logits_h,
                                              const std::vector<int>& drafts_h,
                                              kernels::SamplingConfig cfg, int rounds) {
     constexpr int vocab = 248320;
-    const int k = static_cast<int>(drafts_h.size());
-    DBuf d_logits = to_device_bf16(logits_h);
+    const int k         = static_cast<int>(drafts_h.size());
+    DBuf d_logits       = to_device_bf16(logits_h);
     DBuf d_counts(static_cast<std::size_t>(vocab) * sizeof(std::int32_t));
     cudaMemset(d_counts.p, 0, d_counts.bytes);
     cfg.token_counts = static_cast<std::int32_t*>(d_counts.p);
-    DBuf d_cfg = to_device_config(cfg);
+    DBuf d_cfg       = to_device_config(cfg);
 
     auto d_targets = to_device_i32(std::vector<int>(static_cast<std::size_t>(k + 1), 0));
-    auto d_drafts = to_device_i32(drafts_h);
-    auto d_token = to_device_i32({-1});
+    auto d_drafts  = to_device_i32(drafts_h);
+    auto d_token   = to_device_i32({-1});
     DBuf d_length(sizeof(std::int32_t));
     DBuf d_sampled(static_cast<std::size_t>(k + 1) * sizeof(std::int32_t));
     DBuf d_num(sizeof(std::int32_t));
@@ -622,7 +623,7 @@ std::vector<int> run_real_shape_mtp_sequence(const std::vector<float>& logits_h,
 }
 
 int reject_sampling_real_shape_reproducible_case() {
-    constexpr int k = 3;
+    constexpr int k     = 3;
     constexpr int vocab = 248320;
     std::vector<float> logits_h(static_cast<std::size_t>(vocab) * (k + 1), -18.0f);
     std::vector<int> drafts;
@@ -637,13 +638,13 @@ int reject_sampling_real_shape_reproducible_case() {
     round_to_bf16(logits_h);
 
     kernels::SamplingConfig cfg;
-    cfg.temperature = 0.6f;
-    cfg.top_k = 20;
-    cfg.top_p = 0.95f;
+    cfg.temperature      = 0.6f;
+    cfg.top_k            = 20;
+    cfg.top_p            = 0.95f;
     cfg.presence_penalty = 1.0f;
-    cfg.seed = 9001u;
+    cfg.seed             = 9001u;
 
-    const int rounds = 64;
+    const int rounds   = 64;
     std::vector<int> a = run_real_shape_mtp_sequence(logits_h, drafts, cfg, rounds);
     std::vector<int> b = run_real_shape_mtp_sequence(logits_h, drafts, cfg, rounds);
     if (a != b) {
@@ -651,8 +652,8 @@ int reject_sampling_real_shape_reproducible_case() {
         return 1;
     }
     kernels::SamplingConfig cfg2 = cfg;
-    cfg2.seed = 9002u;
-    std::vector<int> c = run_real_shape_mtp_sequence(logits_h, drafts, cfg2, rounds);
+    cfg2.seed                    = 9002u;
+    std::vector<int> c           = run_real_shape_mtp_sequence(logits_h, drafts, cfg2, rounds);
     if (a == c) {
         std::cerr << "real-shape reject reproducible: different seed produced identical stream\n";
         return 1;
@@ -666,9 +667,7 @@ int validation_case() {
         DBuf d(4);
         Tensor scalar(d.p, DType::BF16, {1});
         kernels::mtp_increment_i32(scalar, nullptr);
-    } catch (const std::invalid_argument&) {
-        return 0;
-    }
+    } catch (const std::invalid_argument&) { return 0; }
     std::cerr << "mtp_round validation: expected invalid_argument\n";
     return 1;
 }
@@ -684,12 +683,12 @@ std::vector<int> run_one_mtp_round(const std::vector<float>& logits_h, int vocab
     DBuf d_counts(static_cast<std::size_t>(vocab) * sizeof(std::int32_t));
     cudaMemset(d_counts.p, 0, d_counts.bytes);
     cfg.token_counts = static_cast<std::int32_t*>(d_counts.p);
-    DBuf d_cfg = to_device_config(cfg);
+    DBuf d_cfg       = to_device_config(cfg);
 
-    auto d_targets  = to_device_i32(std::vector<int>(static_cast<std::size_t>(k + 1), 0));
-    auto d_drafts   = to_device_i32(drafts_h);
-    auto d_token    = to_device_i32({-1});
-    auto d_length   = to_device_i32({length});
+    auto d_targets = to_device_i32(std::vector<int>(static_cast<std::size_t>(k + 1), 0));
+    auto d_drafts  = to_device_i32(drafts_h);
+    auto d_token   = to_device_i32({-1});
+    auto d_length  = to_device_i32({length});
     DBuf d_sampled(static_cast<std::size_t>(k + 1) * sizeof(std::int32_t));
     DBuf d_num(sizeof(std::int32_t));
     DBuf d_accepted(sizeof(std::int32_t));
@@ -730,7 +729,7 @@ std::vector<int> run_one_mtp_round(const std::vector<float>& logits_h, int vocab
 // and seed/position independent, so it is a hard oracle rather than a histogram.
 int overlay_frequency_repeat_case() {
     constexpr int vocab = 8;
-    constexpr int k     = 3;  // 4 verify columns
+    constexpr int k     = 3; // 4 verify columns
     constexpr int A     = 1;
     std::vector<float> logits(static_cast<std::size_t>(vocab) * (k + 1), -20.0f);
     auto set = [&](int col, int id, float v) {
@@ -738,18 +737,18 @@ int overlay_frequency_repeat_case() {
     };
     set(0, A, 100.0f);
     set(1, A, 100.0f);
-    set(2, A, 100.0f);   // A_raw=100; A_adj at count 2 == 100 - 2*30 == 40 < 42
-    set(2, 2, 60.0f);    // dominates the residual -> deterministic correction
+    set(2, A, 100.0f); // A_raw=100; A_adj at count 2 == 100 - 2*30 == 40 < 42
+    set(2, 2, 60.0f);  // dominates the residual -> deterministic correction
     set(2, 3, 42.0f);
     set(2, 4, 42.0f);
     set(2, 5, 42.0f);
-    set(3, 6, 100.0f);   // bonus marker: only the buggy all-accept path reaches it
+    set(3, 6, 100.0f); // bonus marker: only the buggy all-accept path reaches it
     round_to_bf16(logits);
 
     kernels::SamplingConfig cfg;
-    cfg.temperature       = 1.0f;
-    cfg.top_k             = 4;
-    cfg.frequency_penalty = 30.0f;
+    cfg.temperature               = 1.0f;
+    cfg.top_k                     = 4;
+    cfg.frequency_penalty         = 30.0f;
     const std::vector<int> drafts = {A, A, A};
     // sampled_out = [A, A, 2, 0], num = 3, accepted = 2.
     const std::vector<int> expected = {A, A, 2, 0, 3, 2};
@@ -757,7 +756,7 @@ int overlay_frequency_repeat_case() {
     int failures = 0;
     for (std::uint64_t seed : {1ull, 7ull, 4242ull, 99991ull}) {
         for (int L : {0, 5, 1000, 65536}) {
-            cfg.seed = seed;
+            cfg.seed             = seed;
             std::vector<int> got = run_one_mtp_round(logits, vocab, k, drafts, cfg, L);
             failures += expect_eq("overlay frequency repeat (seed=" + std::to_string(seed) +
                                       " L=" + std::to_string(L) + ")",
@@ -778,25 +777,25 @@ int overlay_frequency_repeat_case() {
 // accepted, and the round emits a col2 bonus instead.
 int overlay_presence_case() {
     constexpr int vocab = 8;
-    constexpr int k     = 2;  // 3 verify columns
+    constexpr int k     = 2; // 3 verify columns
     constexpr int A     = 1;
     std::vector<float> logits(static_cast<std::size_t>(vocab) * (k + 1), -20.0f);
     auto set = [&](int col, int id, float v) {
         logits[static_cast<std::size_t>(col) * vocab + id] = v;
     };
     set(0, A, 100.0f);
-    set(1, A, 100.0f);   // A_adj with presence == 100 - 70 == 30 < 42 -> excluded
+    set(1, A, 100.0f); // A_adj with presence == 100 - 70 == 30 < 42 -> excluded
     set(1, 2, 60.0f);
     set(1, 3, 42.0f);
     set(1, 4, 42.0f);
     set(1, 5, 42.0f);
-    set(2, 6, 100.0f);   // bonus marker for the buggy accept path
+    set(2, 6, 100.0f); // bonus marker for the buggy accept path
     round_to_bf16(logits);
 
     kernels::SamplingConfig cfg;
-    cfg.temperature      = 1.0f;
-    cfg.top_k            = 4;
-    cfg.presence_penalty = 70.0f;
+    cfg.temperature               = 1.0f;
+    cfg.top_k                     = 4;
+    cfg.presence_penalty          = 70.0f;
     const std::vector<int> drafts = {A, A};
     // sampled_out = [A, 2, 0], num = 2, accepted = 1.
     const std::vector<int> expected = {A, 2, 0, 2, 1};
@@ -804,7 +803,7 @@ int overlay_presence_case() {
     int failures = 0;
     for (std::uint64_t seed : {2ull, 13ull, 555ull, 271828ull}) {
         for (int L : {0, 9, 4096, 100000}) {
-            cfg.seed = seed;
+            cfg.seed             = seed;
             std::vector<int> got = run_one_mtp_round(logits, vocab, k, drafts, cfg, L);
             failures += expect_eq("overlay presence (seed=" + std::to_string(seed) +
                                       " L=" + std::to_string(L) + ")",
@@ -829,8 +828,8 @@ int overlay_frequency_repeat_real_shape_case() {
     };
     set(0, A, 100.0f);
     set(1, A, 100.0f);
-    set(2, A, 100.0f);   // A_adj at count 2 == 40 < 42 -> out of top-k
-    set(2, B, 60.0f);    // dominates the residual
+    set(2, A, 100.0f); // A_adj at count 2 == 40 < 42 -> out of top-k
+    set(2, B, 60.0f);  // dominates the residual
     set(2, 65537, 42.0f);
     set(2, 131072, 42.0f);
     set(2, 200003, 42.0f);
@@ -838,16 +837,16 @@ int overlay_frequency_repeat_real_shape_case() {
     round_to_bf16(logits);
 
     kernels::SamplingConfig cfg;
-    cfg.temperature       = 1.0f;
-    cfg.top_k             = 4;
-    cfg.frequency_penalty = 30.0f;
-    const std::vector<int> drafts = {A, A, A};
+    cfg.temperature                 = 1.0f;
+    cfg.top_k                       = 4;
+    cfg.frequency_penalty           = 30.0f;
+    const std::vector<int> drafts   = {A, A, A};
     const std::vector<int> expected = {A, A, B, 0, 3, 2};
 
     int failures = 0;
     for (std::uint64_t seed : {3ull, 88ull, 123457ull}) {
         for (int L : {0, 1000, 250000}) {
-            cfg.seed = seed;
+            cfg.seed             = seed;
             std::vector<int> got = run_one_mtp_round(logits, vocab, k, drafts, cfg, L);
             failures += expect_eq("overlay frequency real-shape (seed=" + std::to_string(seed) +
                                       " L=" + std::to_string(L) + ")",

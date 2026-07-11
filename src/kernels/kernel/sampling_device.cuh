@@ -3,7 +3,7 @@
 // qus::kernels - shared device-side sampling primitives (no __global__ symbols,
 // so this header can be included by multiple translation units). Holds the
 // counter-based RNG, the candidate ordering, and the block-collaborative
-// truncated-distribution builder used by both sample_column and the MTP
+// truncated-distribution builder used by both sample and the MTP
 // rejection-sampling accept kernel.
 
 #include "qus/kernels/sampling.h"

@@ -1,4 +1,4 @@
-// qus::kernels - sigmoid_gate_mul launcher: grid/block/stream configuration + kernel launch.
+// qus::kernels - sigmoid_mul launcher: grid/block/stream configuration + kernel launch.
 // The only translation unit that includes this op's kernel header.
 // See docs/l1-kernel-layering.md section 4.
 #include "kernels/launcher/sigmoid_gate_mul.h"

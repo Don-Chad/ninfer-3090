@@ -1,6 +1,6 @@
 #pragma once
 
-// qus::kernels::detail - private launch prototype for sample_column.
+// qus::kernels::detail - private launch prototype for sample.
 
 #include "qus/core/tensor.h"
 #include "qus/kernels/sampling.h"

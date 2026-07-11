@@ -1,4 +1,4 @@
-#include "qus/kernels/mtp_pack.h"
+#include "model/mtp_ops.h"
 
 #include "kernels/launcher/mtp_pack.h"
 
@@ -9,7 +9,9 @@ namespace qus::kernels {
 namespace {
 
 void require_bf16_contiguous_nonnull(const Tensor& t, const char* op, const char* name) {
-    if (t.dtype != DType::BF16) { throw std::invalid_argument(std::string(op) + ": " + name + " must be BF16"); }
+    if (t.dtype != DType::BF16) {
+        throw std::invalid_argument(std::string(op) + ": " + name + " must be BF16");
+    }
     if (!t.is_contiguous()) {
         throw std::invalid_argument(std::string(op) + ": " + name + " must be contiguous");
     }
@@ -70,4 +72,3 @@ void mtp_split_attn_in(const Tensor& attn_in, Tensor& q, Tensor& k, Tensor& gate
 }
 
 } // namespace qus::kernels
-

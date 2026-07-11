@@ -1,4 +1,4 @@
-// Correctness for sample_column: greedy (temperature<=0) must equal argmax
+// Correctness for sample: greedy (temperature<=0) must equal argmax
 // exactly (bf16-rounded logits, lowest-index tie-break), and the sampling path
 // must respect top-k/top-p/min-p truncation, be reproducible under a fixed
 // seed, and match the softmax distribution it claims to draw from.
@@ -19,10 +19,12 @@ namespace {
 
 struct DeviceConfig {
     DBuf buf;
+
     explicit DeviceConfig(const kernels::SamplingConfig& cfg)
         : buf(sizeof(kernels::SamplingConfig)) {
         cudaMemcpy(buf.p, &cfg, sizeof(cfg), cudaMemcpyHostToDevice);
     }
+
     const kernels::SamplingConfig* ptr() const {
         return static_cast<const kernels::SamplingConfig*>(buf.p);
     }
@@ -63,13 +65,13 @@ std::vector<int> sample_many(const std::vector<float>& base, int cols,
     const int vocab             = static_cast<int>(base.size());
     std::vector<float> logits_h = broadcast_columns(base, cols);
     DBuf dlogits                = to_device_bf16(logits_h);
-    DBuf dout    = to_device_i32(std::vector<int>(static_cast<std::size_t>(cols), -1));
-    DBuf dpos    = device_pos(pos_start);
+    DBuf dout = to_device_i32(std::vector<int>(static_cast<std::size_t>(cols), -1));
+    DBuf dpos = device_pos(pos_start);
     DeviceConfig dcfg(cfg);
     Tensor tlogits(dlogits.p, DType::BF16, {vocab, cols});
     Tensor tout(dout.p, DType::I32, {cols});
-    kernels::sample_column(tlogits, tout, dcfg.ptr(), static_cast<const std::int32_t*>(dpos.p),
-                           purpose, nullptr);
+    kernels::sample(tlogits, tout, dcfg.ptr(), static_cast<const std::int32_t*>(dpos.p), purpose,
+                    nullptr);
     cudaDeviceSynchronize();
     return from_device_i32(dout, static_cast<std::size_t>(cols));
 }
@@ -77,9 +79,9 @@ std::vector<int> sample_many(const std::vector<float>& base, int cols,
 std::vector<int> sample_many_batched(const std::vector<float>& base, int total, int cols,
                                      kernels::SamplingConfig cfg, std::int32_t purpose,
                                      int pos_start, bool counts_active) {
-    const int vocab = static_cast<int>(base.size());
+    const int vocab             = static_cast<int>(base.size());
     std::vector<float> logits_h = broadcast_columns(base, cols);
-    DBuf dlogits = to_device_bf16(logits_h);
+    DBuf dlogits                = to_device_bf16(logits_h);
     DBuf dout = to_device_i32(std::vector<int>(static_cast<std::size_t>(cols), -1));
     DBuf dpos = device_pos(pos_start);
     DBuf dcollect(static_cast<std::size_t>(total) * sizeof(std::int32_t));
@@ -93,10 +95,10 @@ std::vector<int> sample_many_batched(const std::vector<float>& base, int total, 
     int produced = 0;
     while (produced < total) {
         const int batch = std::min(cols, total - produced);
-        const int pos = pos_start + produced;
+        const int pos   = pos_start + produced;
         cudaMemcpy(dpos.p, &pos, sizeof(pos), cudaMemcpyHostToDevice);
-        kernels::sample_column(tlogits, tout, dcfg.ptr(), static_cast<const std::int32_t*>(dpos.p),
-                               purpose, nullptr);
+        kernels::sample(tlogits, tout, dcfg.ptr(), static_cast<const std::int32_t*>(dpos.p),
+                        purpose, nullptr);
         cudaMemcpyAsync(static_cast<std::int32_t*>(dcollect.p) + produced, dout.p,
                         static_cast<std::size_t>(batch) * sizeof(std::int32_t),
                         cudaMemcpyDeviceToDevice, nullptr);
@@ -113,9 +115,9 @@ int greedy_matches_argmax(const char* tag, int vocab, int cols, std::uint32_t se
     fill_uniform(logits, seed, -9.0f, 9.0f);
     // Force ties so the lowest-index tie-break is exercised.
     for (int t = 0; t < cols && vocab > 1; ++t) {
-        const int b   = t * vocab;
-        const int a   = (5 + t * 97) % vocab;
-        int bb        = vocab - 1 - ((11 + t * 131) % vocab);
+        const int b = t * vocab;
+        const int a = (5 + t * 97) % vocab;
+        int bb      = vocab - 1 - ((11 + t * 131) % vocab);
         if (bb == a) { bb = (a + 1) % vocab; }
         logits[b + a]  = 24.0f + static_cast<float>(t);
         logits[b + bb] = 24.0f + static_cast<float>(t);
@@ -124,9 +126,9 @@ int greedy_matches_argmax(const char* tag, int vocab, int cols, std::uint32_t se
 
     std::vector<int> ref(static_cast<std::size_t>(cols));
     for (int t = 0; t < cols; ++t) {
-        const int b     = t * vocab;
-        int best        = 0;
-        float best_val  = logits[b];
+        const int b    = t * vocab;
+        int best       = 0;
+        float best_val = logits[b];
         for (int v = 1; v < vocab; ++v) {
             if (logits[b + v] > best_val) {
                 best_val = logits[b + v];
@@ -139,12 +141,12 @@ int greedy_matches_argmax(const char* tag, int vocab, int cols, std::uint32_t se
     DBuf dlogits = to_device_bf16(logits);
     DBuf dout    = to_device_i32(std::vector<int>(static_cast<std::size_t>(cols), -1));
     DBuf dpos    = device_pos(0);
-    kernels::SamplingConfig cfg;  // temperature 0 => greedy
+    kernels::SamplingConfig cfg; // temperature 0 => greedy
     DeviceConfig dcfg(cfg);
     Tensor tlogits(dlogits.p, DType::BF16, {vocab, cols});
     Tensor tout(dout.p, DType::I32, {cols});
-    kernels::sample_column(tlogits, tout, dcfg.ptr(), static_cast<const std::int32_t*>(dpos.p),
-                           kernels::kSamplePurposeDecode, nullptr);
+    kernels::sample(tlogits, tout, dcfg.ptr(), static_cast<const std::int32_t*>(dpos.p),
+                    kernels::kSamplePurposeDecode, nullptr);
     cudaDeviceSynchronize();
     std::vector<int> got = from_device_i32(dout, static_cast<std::size_t>(cols));
 
@@ -170,15 +172,14 @@ int top_k_subset() {
 
     std::vector<int> order(vocab);
     std::iota(order.begin(), order.end(), 0);
-    std::stable_sort(order.begin(), order.end(),
-                     [&](int a, int b) { return base[a] > base[b]; });
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return base[a] > base[b]; });
     std::vector<char> allowed(vocab, 0);
     for (int i = 0; i < 4; ++i) { allowed[order[i]] = 1; }
 
     kernels::SamplingConfig cfg;
-    cfg.temperature = 1.0f;
-    cfg.top_k       = 4;
-    cfg.seed        = 7u;
+    cfg.temperature      = 1.0f;
+    cfg.top_k            = 4;
+    cfg.seed             = 7u;
     std::vector<int> got = sample_many(base, 4000, cfg, kernels::kSamplePurposeDecode, 0);
     for (int tok : got) {
         if (tok < 0 || tok >= vocab || !allowed[tok]) {
@@ -212,9 +213,9 @@ int top_p_subset() {
     }
 
     kernels::SamplingConfig cfg;
-    cfg.temperature = 1.0f;
-    cfg.top_p       = static_cast<float>(top_p);
-    cfg.seed        = 11u;
+    cfg.temperature      = 1.0f;
+    cfg.top_p            = static_cast<float>(top_p);
+    cfg.seed             = 11u;
     std::vector<int> got = sample_many(base, 4000, cfg, kernels::kSamplePurposeDecode, 0);
     for (int tok : got) {
         if (tok < 0 || tok >= vocab || !allowed[tok]) {
@@ -242,9 +243,9 @@ int min_p_subset() {
     }
 
     kernels::SamplingConfig cfg;
-    cfg.temperature = 1.0f;
-    cfg.min_p       = static_cast<float>(min_p);
-    cfg.seed        = 13u;
+    cfg.temperature      = 1.0f;
+    cfg.min_p            = static_cast<float>(min_p);
+    cfg.seed             = 13u;
     std::vector<int> got = sample_many(base, 4000, cfg, kernels::kSamplePurposeDecode, 0);
     for (int tok : got) {
         if (tok < 0 || tok >= vocab || !allowed[tok]) {
@@ -264,8 +265,8 @@ int reproducible() {
     round_to_bf16(base);
 
     kernels::SamplingConfig cfg;
-    cfg.temperature = 0.8f;
-    cfg.seed        = 42u;
+    cfg.temperature    = 0.8f;
+    cfg.seed           = 42u;
     std::vector<int> a = sample_many(base, 2000, cfg, kernels::kSamplePurposeDecode, 0);
     std::vector<int> b = sample_many(base, 2000, cfg, kernels::kSamplePurposeDecode, 0);
     if (a != b) {
@@ -275,7 +276,7 @@ int reproducible() {
 
     kernels::SamplingConfig cfg2 = cfg;
     cfg2.seed                    = 43u;
-    std::vector<int> c = sample_many(base, 2000, cfg2, kernels::kSamplePurposeDecode, 0);
+    std::vector<int> c           = sample_many(base, 2000, cfg2, kernels::kSamplePurposeDecode, 0);
     if (a == c) {
         std::cerr << "reproducible: different seed produced identical stream\n";
         return 1;
@@ -293,9 +294,9 @@ int distribution_match() {
     const std::vector<double> p = softmax(base);
 
     kernels::SamplingConfig cfg;
-    cfg.temperature = 1.0f;  // full distribution: no truncation
-    cfg.seed        = 2024u;
-    const int N        = 60000;
+    cfg.temperature      = 1.0f; // full distribution: no truncation
+    cfg.seed             = 2024u;
+    const int N          = 60000;
     std::vector<int> got = sample_many(base, N, cfg, kernels::kSamplePurposeDecode, 0);
 
     std::vector<double> freq(vocab, 0.0);
@@ -324,7 +325,7 @@ int distribution_match() {
 int real_shape_distribution_match() {
     const int vocab = 248320;
     std::vector<float> base(vocab, -20.0f);
-    const int ids[] = {17, 7919, 65537, 200003};
+    const int ids[]    = {17, 7919, 65537, 200003};
     const float vals[] = {3.0f, 2.0f, 1.0f, 0.0f};
     for (int i = 0; i < 4; ++i) { base[ids[i]] = vals[i]; }
     round_to_bf16(base);
@@ -334,9 +335,9 @@ int real_shape_distribution_match() {
 
     kernels::SamplingConfig cfg;
     cfg.temperature = 1.0f;
-    cfg.top_k = 4;
-    cfg.seed = 20260706u;
-    const int N = 4096;
+    cfg.top_k       = 4;
+    cfg.seed        = 20260706u;
+    const int N     = 4096;
     std::vector<int> got =
         sample_many_batched(base, N, 8, cfg, kernels::kSamplePurposeDecode, 1000, false);
 
@@ -360,11 +361,9 @@ int real_shape_distribution_match() {
     double max_abs = 0.0;
     for (int i = 0; i < 4; ++i) { max_abs = std::max(max_abs, std::abs(freq[i] - p[i])); }
     if (max_abs > 0.04) {
-        std::cerr << "real_shape_distribution: empirical/target gap " << max_abs
-                  << " too large\n";
+        std::cerr << "real_shape_distribution: empirical/target gap " << max_abs << " too large\n";
         for (int i = 0; i < 4; ++i) {
-            std::cerr << "      token=" << ids[i] << " freq=" << freq[i] << " p=" << p[i]
-                      << '\n';
+            std::cerr << "      token=" << ids[i] << " freq=" << freq[i] << " p=" << p[i] << '\n';
         }
         return 1;
     }
@@ -381,12 +380,12 @@ int real_shape_reproducible_counts_active() {
     round_to_bf16(base);
 
     kernels::SamplingConfig cfg;
-    cfg.temperature = 0.6f;
-    cfg.top_k = 20;
-    cfg.top_p = 0.95f;
+    cfg.temperature      = 0.6f;
+    cfg.top_k            = 20;
+    cfg.top_p            = 0.95f;
     cfg.presence_penalty = 1.0f;
-    cfg.seed = 123456u;
-    const int N = 1024;
+    cfg.seed             = 123456u;
+    const int N          = 1024;
     std::vector<int> a =
         sample_many_batched(base, N, 8, cfg, kernels::kSamplePurposeDecode, 2000, true);
     std::vector<int> b =
@@ -396,7 +395,7 @@ int real_shape_reproducible_counts_active() {
         return 1;
     }
     kernels::SamplingConfig cfg2 = cfg;
-    cfg2.seed = 123457u;
+    cfg2.seed                    = 123457u;
     std::vector<int> c =
         sample_many_batched(base, N, 8, cfg2, kernels::kSamplePurposeDecode, 2000, true);
     if (a == c) {
@@ -475,8 +474,8 @@ int topk_clamp_equivalence() {
     std::vector<float> support(vals, vals + 4);
     const std::vector<double> p = softmax(support);
 
-    const int N        = 4096;
-    const int topks[]  = {20, 64, 0};
+    const int N       = 4096;
+    const int topks[] = {20, 64, 0};
     std::vector<std::vector<int>> streams;
     for (int topk : topks) {
         kernels::SamplingConfig cfg;
@@ -551,6 +550,6 @@ int main() {
     f += topk_clamp_equivalence();
     f += real_shape_reproducible_counts_active();
 
-    std::cout << (f ? "FAIL" : "OK") << " sample_column correctness\n";
+    std::cout << (f ? "FAIL" : "OK") << " sample correctness\n";
     return f ? 1 : 0;
 }

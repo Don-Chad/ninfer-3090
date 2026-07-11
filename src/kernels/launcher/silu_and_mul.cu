@@ -1,4 +1,4 @@
-// qus::kernels — silu_and_mul launcher: grid/block/stream configuration + kernel launch.
+// qus::kernels — silu_mul launcher: grid/block/stream configuration + kernel launch.
 // The only translation unit that includes this op's kernel header.
 // See docs/l1-kernel-layering.md §4.
 #include "kernels/launcher/silu_and_mul.h"

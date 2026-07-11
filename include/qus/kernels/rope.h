@@ -12,10 +12,7 @@ namespace qus::kernels {
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
           cudaStream_t stream);
 
-// Single-tensor variants used when prompt KV preparation only materializes K, or when a final-row
-// attention tail only materializes Q. They use the same partial NeoX rotation and arithmetic as
-// rope(), without requiring an unused companion tensor.
-void rope_q(const Tensor& positions, int rotary_dim, float theta, Tensor& q, cudaStream_t stream);
-void rope_k(const Tensor& positions, int rotary_dim, float theta, Tensor& k, cudaStream_t stream);
+// Single-tensor form. Q/K role is inferred from the head-count shape.
+void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaStream_t stream);
 
 } // namespace qus::kernels

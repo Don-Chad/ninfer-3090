@@ -36,7 +36,7 @@ void linear_rowsplit_gemv_out_6144_residual_q5_launch(const Tensor& x, const Wei
                                                       Tensor& residual_out, WorkspaceArena& ws,
                                                       cudaStream_t stream) {
     if (w.n != kN || w.k != kK || w.padded_shape[1] != kK) {
-        throw std::invalid_argument("linear_residual_add: Out6144 Q5 requires 5120x6144");
+        throw std::invalid_argument("linear_add: Out6144 Q5 requires 5120x6144");
     }
     (void)ws;
 

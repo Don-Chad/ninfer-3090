@@ -1,4 +1,4 @@
-#include "qus/kernels/mtp_round.h"
+#include "model/mtp_ops.h"
 
 #include "kernels/launcher/mtp_round.h"
 #include "qus/model/model.h"
@@ -83,8 +83,8 @@ void mtp_accept_tokens(const Tensor& target_tokens, const Tensor& logits, const 
                                      num_sampled, accepted, ar_pos, stats, config, stream);
 }
 
-void mtp_prepare_shifted_ids(const Tensor& verify_ids, const Tensor& token,
-                             const Tensor& accepted, Tensor& shifted_ids, cudaStream_t stream) {
+void mtp_prepare_shifted_ids(const Tensor& verify_ids, const Tensor& token, const Tensor& accepted,
+                             Tensor& shifted_ids, cudaStream_t stream) {
     constexpr const char* op = "mtp_prepare_shifted_ids";
     const std::int32_t T     = verify_ids.ne[0];
     require_vector(verify_ids, DType::I32, T, op, "verify_ids");
