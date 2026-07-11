@@ -1,11 +1,11 @@
-"""Verify a q5090_w4g64_mixed_v4_1 artifact with L0 structure checks and L1 value checks.
+"""Verify a q5090_w4g64_mixed_v4_2 artifact with L0 structure checks and L1 value checks.
 
 Usage:
-  python -m tools.q5090_convert.verify out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus
+  python -m tools.q5090_convert.verify out/qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus
 
 L0 validates the binary ABI and plan conformance. L1 recovers ROW_SPLIT scales/codes from the
 file and compares them bit-identically to tools.q5090_convert.quantize over the same block rows.
-The verifier writes a deterministic structural dump to out/conv_dump.v4_1.json by default.
+The verifier writes a deterministic structural dump to out/conv_dump.v4_2.json by default.
 """
 
 from __future__ import annotations
@@ -393,7 +393,7 @@ def _make_dump(path: str, hdr, modules, entries, segments, fusions, tokenizer_re
         )
 
     return {
-        "format": "q5090_w4g64_mixed_v4_1",
+        "format": "q5090_w4g64_mixed_v4_2",
         "file": path,
         "header": _header_dump(hdr),
         "modules": modules,
@@ -502,7 +502,7 @@ def _precision_scope_checks(entries) -> List[str]:
         "mtp.layers.0.mlp.gateup.w8",
         "mtp.layers.0.mlp.down_proj.weight",
     }
-    vision_w8g128_names = {
+    vision_w8g32_names = {
         "model.visual.merger.linear_fc1.weight",
         "model.visual.merger.linear_fc2.weight",
     }
@@ -512,30 +512,30 @@ def _precision_scope_checks(entries) -> List[str]:
         module = e["module_kind"]
         qtype = e["qtype"]
         if qtype == qt.QT_W8G32:
-            if module != qt.MODULE_MTP or name not in mtp_w8g32_names:
-                problems.append(f"{name}: W8G32 is only allowed for MTP_DRAFT dense/fused linears")
+            allowed = (
+                module == qt.MODULE_MTP and name in mtp_w8g32_names
+            ) or (
+                module == qt.MODULE_VISION and name in vision_w8g32_names
+            )
+            if not allowed:
+                problems.append(f"{name}: W8G32 is outside the canonical MTP/vision assignments")
         if module == qt.MODULE_MTP and name in mtp_w8g32_names and qtype != qt.QT_W8G32:
             problems.append(f"{name}: MTP dense/fused linear qtype {qtype} != W8G32")
-        if module == qt.MODULE_TEXT and qtype in (qt.QT_W8G32, qt.QT_W8G128):
+        if module == qt.MODULE_TEXT and qtype == qt.QT_W8G32:
             problems.append(f"{name}: TEXT_CORE must not use W8 qtypes")
-        if module == qt.MODULE_VISION:
-            if qtype == qt.QT_W8G32:
-                problems.append(f"{name}: VISION_ENCODER must not use W8G32")
-            if qtype == qt.QT_W8G128 and name not in vision_w8g128_names:
-                problems.append(f"{name}: VISION_ENCODER W8G128 is only allowed for merger FC tensors")
 
-    got_vision_w8g128 = {
+    got_vision_w8g32 = {
         e["name"]
         for e in entries
-        if e["module_kind"] == qt.MODULE_VISION and e["qtype"] == qt.QT_W8G128
+        if e["module_kind"] == qt.MODULE_VISION and e["qtype"] == qt.QT_W8G32
     }
     if (
         any(e["module_kind"] == qt.MODULE_VISION for e in entries)
-        and got_vision_w8g128 != vision_w8g128_names
+        and got_vision_w8g32 != vision_w8g32_names
     ):
         problems.append(
-            f"VISION W8G128 tensors {sorted(got_vision_w8g128)!r} "
-            f"!= {sorted(vision_w8g128_names)!r}"
+            f"VISION W8G32 tensors {sorted(got_vision_w8g32)!r} "
+            f"!= {sorted(vision_w8g32_names)!r}"
         )
     return problems
 
@@ -1110,7 +1110,7 @@ def _l0_checks(
                 expected_bytes = dh.DRAFT_HEAD_N * 4
                 if nb != expected_bytes:
                     problems.append(
-                        f"{e['name']}: id-map bytes {nb} != fixed v4.1 bytes {expected_bytes}"
+                        f"{e['name']}: id-map bytes {nb} != fixed v4.2 bytes {expected_bytes}"
                     )
                 else:
                     f.seek(off)
@@ -1258,7 +1258,7 @@ def _manifest_checks(
         if any(e["layout"] == layout for e in entries)
     ]
 
-    expect("format", "q5090_w4g64_mixed_v4_1")
+    expect("format", "q5090_w4g64_mixed_v4_2")
     expect("format_version", fmt.VERSION)
     expect("format_minor", fmt.FORMAT_MINOR)
     expect("binary_spec", "docs/q5090_packed_file_format_v4.md")
@@ -1295,7 +1295,7 @@ def _manifest_checks(
         "payload": fmt.REGION_ALIGN,
         "block": fmt.PAYLOAD_ALIGN,
         "k_pad": 128,
-        "group_sizes": [32, 64, 128],
+        "group_sizes": [32, 64],
     }
     if alignment != want_alignment:
         problems.append(f"manifest alignment {alignment!r} != {want_alignment!r}")
@@ -1454,8 +1454,8 @@ def _write_dump(path: str, dump: dict) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="verify q5090_w4g64_mixed_v4_1 artifact")
-    ap.add_argument("file", help="v4.1 .qus file")
+    ap = argparse.ArgumentParser(description="verify q5090_w4g64_mixed_v4_2 artifact")
+    ap.add_argument("file", help="v4.2 .qus file")
     ap.add_argument("--model", default=DEFAULT_MODEL, help="HF bf16 source model for L1")
     ap.add_argument(
         "--tokenizer",
@@ -1469,7 +1469,7 @@ def main() -> None:
         default=dh.DEFAULT_RANKING,
         help="frequency ranking (.counts.i64) to re-derive the draft-head shortlist for L1",
     )
-    ap.add_argument("--dump", default=os.path.join("out", "conv_dump.v4_1.json"))
+    ap.add_argument("--dump", default=os.path.join("out", "conv_dump.v4_2.json"))
     args = ap.parse_args()
 
     t0 = time.time()
@@ -1534,7 +1534,7 @@ def main() -> None:
     agg: Dict[int, dict] = {}
     if not args.quick and not l0:
         cfg = load_config(args.model)
-        assert_config(cfg, force=False)
+        assert_config(cfg)
         tc = cfg.get("text_config", cfg)
         device = pick_device(args.device)
         print(f"device: {device}", flush=True)

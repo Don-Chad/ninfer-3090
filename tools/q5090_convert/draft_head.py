@@ -1,6 +1,6 @@
 """Frequency-shortlist selection for the optional v4 draft `lm_head`.
 
-The converter embeds the optional fixed-v4.1 `[131072, 5120]` Q4G64 draft head plus a paired
+The converter embeds the optional fixed-v4.2 `[131072, 5120]` Q4G64 draft head plus a paired
 `[131072]` int32 id-map (see ../../docs/q5090_packed_file_format_v4.md sections 8, 9.4,
 14, 18). This module owns the deterministic selection of the N shortlist tokens
 from a frequency ranking so that both the converter (`convert.py`) and the

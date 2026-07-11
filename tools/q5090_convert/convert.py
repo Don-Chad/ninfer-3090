@@ -1,4 +1,4 @@
-"""CLI: Qwen3.6-27B bf16 safetensors -> q5090_w4g64_mixed_v4_1 artifact.
+"""CLI: Qwen3.6-27B bf16 safetensors -> q5090_w4g64_mixed_v4_2 artifact.
 
 Usage:
   python -m tools.q5090_convert.convert --model /path/to/Qwen3.6-27B --out out/file.qus
@@ -49,8 +49,14 @@ EXPECTED = dict(
     vision_hidden=1152,
     vision_intermediate=4304,
     vision_out_hidden=5120,
+    vision_num_heads=16,
+    vision_in_channels=3,
+    vision_patch_size=16,
+    vision_temporal_patch_size=2,
+    vision_spatial_merge_size=2,
+    vision_num_position_embeddings=2304,
 )
-OUTPUT_FORMAT_MARKER = "mixed_v4_1"
+OUTPUT_FORMAT_MARKER = "mixed_v4_2"
 
 
 @dataclass(frozen=True)
@@ -162,7 +168,7 @@ def load_config(model_dir: str) -> dict:
         return json.load(f)
 
 
-def assert_config(cfg: dict, force: bool) -> None:
+def assert_config(cfg: dict) -> None:
     tc = cfg.get("text_config", cfg)
     vc = cfg.get("vision_config", {})
     got = dict(
@@ -184,15 +190,18 @@ def assert_config(cfg: dict, force: bool) -> None:
         vision_hidden=vc.get("hidden_size"),
         vision_intermediate=vc.get("intermediate_size"),
         vision_out_hidden=vc.get("out_hidden_size"),
+        vision_num_heads=vc.get("num_heads"),
+        vision_in_channels=vc.get("in_channels"),
+        vision_patch_size=vc.get("patch_size"),
+        vision_temporal_patch_size=vc.get("temporal_patch_size"),
+        vision_spatial_merge_size=vc.get("spatial_merge_size"),
+        vision_num_position_embeddings=vc.get("num_position_embeddings"),
     )
     mism = [(k, EXPECTED[k], got[k]) for k in EXPECTED if got[k] != EXPECTED[k]]
     if mism:
         lines = "\n".join(f"  {k}: expected {e}, got {g}" for k, e, g in mism)
         msg = f"config.json does not match policy lock:\n{lines}"
-        if force:
-            print("WARNING:", msg)
-        else:
-            raise SystemExit(msg + "\n(use --force to override)")
+        raise SystemExit(msg)
 
 
 def _layer_types(cfg: dict) -> List[str]:
@@ -230,6 +239,10 @@ def _prepare_source(reader: ShardReader, spec: tp.TensorSpec) -> torch.Tensor:
             raise ValueError(f"{spec.name}: unknown tensor transform {spec.transform!r}")
     if spec.layout != qt.LAYOUT_CONTIGUOUS and t.dim() != 2:
         raise ValueError(f"{spec.name}: quant layout needs 2D, got {tuple(t.shape)}")
+    if spec.expected_shape is not None and tuple(t.shape) != spec.expected_shape:
+        raise ValueError(
+            f"{spec.name}: source shape {tuple(t.shape)} != canonical {spec.expected_shape}"
+        )
     return t.contiguous()
 
 
@@ -309,7 +322,7 @@ def _append_standalone_blocks(
                 qtype=spec.qtype,
                 layout=spec.layout,
                 module_kind=spec.module_kind,
-                shape=None,
+                shape=spec.expected_shape,
                 source_layer=spec.source_layer,
                 source_kind=spec.source_kind,
                 segment_begin=segment_index,
@@ -549,11 +562,11 @@ def layout_tokenizer_assets(
     return records, bytes(data_region)
 
 
-def _require_v4_1_output_path(out_path: str) -> None:
+def _require_v4_2_output_path(out_path: str) -> None:
     basename = os.path.basename(os.path.normpath(out_path))
     if not basename.endswith(f"{OUTPUT_FORMAT_MARKER}.qus"):
         raise SystemExit(
-            f"q5090 v4.1 converter output path must be a {OUTPUT_FORMAT_MARKER} .qus file: "
+            f"q5090 v4.2 converter output path must be a {OUTPUT_FORMAT_MARKER} .qus file: "
             f"{out_path}"
         )
 
@@ -664,7 +677,7 @@ def _write_manifest(
     draft_present = draft_w is not None
 
     manifest = {
-        "format": "q5090_w4g64_mixed_v4_1",
+        "format": "q5090_w4g64_mixed_v4_2",
         "format_version": fmt.VERSION,
         "format_minor": fmt.FORMAT_MINOR,
         "binary_spec": "docs/q5090_packed_file_format_v4.md",
@@ -684,7 +697,7 @@ def _write_manifest(
             "payload": fmt.REGION_ALIGN,
             "block": fmt.PAYLOAD_ALIGN,
             "k_pad": 128,
-            "group_sizes": [32, 64, 128],
+            "group_sizes": [32, 64],
         },
         "layouts": present_layouts,
         "code_planes": ["nibble", "high", "scale"],
@@ -736,7 +749,7 @@ def _write_manifest(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="q5090_w4g64_mixed_v4_1 artifact converter")
+    ap = argparse.ArgumentParser(description="q5090_w4g64_mixed_v4_2 artifact converter")
     ap.add_argument("--model", required=True, help="path to original Qwen3.6-27B safetensors dir")
     ap.add_argument(
         "--tokenizer",
@@ -745,7 +758,6 @@ def main() -> None:
     )
     ap.add_argument("--out", default=None, help="output .qus file path")
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--force", action="store_true", help="warn instead of abort on config mismatch")
     ap.add_argument(
         "--ranking",
         default=dh.DEFAULT_RANKING,
@@ -754,21 +766,21 @@ def main() -> None:
     ap.add_argument(
         "--no-draft-head",
         action="store_true",
-        help="emit a v4.1 artifact without the LM_HEAD_DRAFT module",
+        help="emit a v4.2 artifact without the LM_HEAD_DRAFT module",
     )
     args = ap.parse_args()
 
     model_dir = args.model.rstrip("/")
     out_path = args.out or os.path.join(
-        os.getcwd(), "out", "qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus"
+        os.getcwd(), "out", "qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus"
     )
-    _require_v4_1_output_path(out_path)
+    _require_v4_2_output_path(out_path)
     out_dir = os.path.dirname(out_path)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
     cfg = load_config(model_dir)
-    assert_config(cfg, args.force)
+    assert_config(cfg)
     tc = cfg.get("text_config", cfg)
     device = pick_device(args.device)
     print(f"device: {device}")
@@ -794,7 +806,7 @@ def main() -> None:
         )
         if draft.n != dh.DRAFT_HEAD_N:
             raise ValueError(
-                f"draft shortlist size {draft.n} != fixed v4.1 size {dh.DRAFT_HEAD_N}"
+                f"draft shortlist size {draft.n} != fixed v4.2 size {dh.DRAFT_HEAD_N}"
             )
         print(
             f"draft head: N={draft.n} from {args.ranking}  "

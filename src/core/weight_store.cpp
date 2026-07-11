@@ -157,8 +157,6 @@ std::uint64_t nibble_bytes_per_group(QType qtype) {
     case QType::Q6G64_F16S:
     case QType::W8G32_F16S:
         return 32;
-    case QType::W8G128_F16S:
-        return 128;
     default:
         throw std::runtime_error("q5090 row-split qtype has no nibble bytes per group");
     }
@@ -167,7 +165,6 @@ std::uint64_t nibble_bytes_per_group(QType qtype) {
 std::uint64_t high_bytes_per_group(QType qtype) {
     switch (qtype) {
     case QType::Q4G64_F16S:
-    case QType::W8G128_F16S:
     case QType::W8G32_F16S:
         return 0;
     case QType::Q5G64_F16S:

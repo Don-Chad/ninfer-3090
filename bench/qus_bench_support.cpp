@@ -251,7 +251,7 @@ std::string usage_text(std::string_view program) {
         << "  --no-cuda-graph             disable CUDA graph decode (decode_path=eager or "
            "mtp_eager)\n"
         << "  --mtp-draft-tokens <0..5>   enable MTP draft rounds (default: 0)\n"
-        << "  --lm-head-draft             use the fixed v4.1 shortlisted draft head\n"
+        << "  --lm-head-draft             use the fixed v4.2 shortlisted draft head\n"
         << "  -o, --output <table|json|csv>  output format (default: table)\n"
         << "  --output-file <path>        write output to a file instead of stdout\n"
         << "  -h, --help                  show this help\n"

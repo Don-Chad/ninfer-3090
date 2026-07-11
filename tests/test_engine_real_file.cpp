@@ -291,7 +291,7 @@ int expect_generate_discards_pending_overshoot(const std::filesystem::path& weig
 
 int main() {
     const std::filesystem::path root(QUS_SOURCE_DIR);
-    const std::filesystem::path weights_path = root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus";
+    const std::filesystem::path weights_path = root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus";
     if (!std::filesystem::exists(weights_path)) {
         std::cout << "SKIP: real q5090 file not present\n";
         return 0;

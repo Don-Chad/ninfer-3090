@@ -1,9 +1,9 @@
-# QUS Packed Artifact Format `q5090_w4g64_mixed_v4_1` (binary spec)
+# QUS Packed Artifact Format `q5090_w4g64_mixed_v4_2` (binary spec)
 
 This document is the **decode-optimal canonical binary contract** for Qwen3.6-27B on one RTX 5090. It
 is the single model-artifact ABI the C++ runtime consumes. It contains the packed weights and the
 CPU-only tokenizer assets required by the text frontend. There is no other in-tree weight path, no
-runtime repack, and **no backward compatibility**: the converter emits v4.1, the runtime reads v4.1, and
+runtime repack, and **no backward compatibility**: the converter emits v4.2, the runtime reads v4.2, and
 every consumer (converter, weight store, GEMV and GEMM kernels) targets this format directly with no
 transitional or fallback layout.
 
@@ -14,24 +14,25 @@ follows mechanically from the assignment policy applied across the 64 decoder la
 re-listed tensor-by-tensor. For weights, the format changes only the **storage order and grouping**;
 it never changes the dequantized values (§0 invariants). Tokenizer assets are separate raw bytes.
 
-Relative to a plain text-decode artifact, v4.1 adds an **optional shortlisted draft `lm_head`** for MTP
+The format includes an **optional shortlisted draft `lm_head`** for MTP
 speculative drafting: a standalone Q4 weights block plus a small `int32` index -> vocab id map. It is
 optional and, when present, changes only *which* tokens are proposed during drafting; verification
 always uses the full `lm_head`, so emitted tokens are unaffected (§18). The selection method and the
 measured decision to ship it are recorded in
 [2026-07-06-lm-head-draft-q4-decision.md](2026-07-06-lm-head-draft-q4-decision.md).
 
-v4.1 makes two container-level changes relative to the retired v4.0 artifact: it embeds the three
-runtime tokenizer assets, and it moves the draft-head pair out of `TEXT_CORE` into its own
-`LM_HEAD_DRAFT` module. `format_minor = 0` is not accepted and no v4.0 compatibility parser exists.
+v4.2 removes `W8G128_F16S`, assigns tag 3 to the sole W8 format `W8G32_F16S`, moves `I32_CTRL` to tag
+6, changes both vision merger FC weights to W8G32, and changes the flattened vision patch embedding
+to Q6G64. It retains the self-contained tokenizer and independent `LM_HEAD_DRAFT` module introduced
+by the retired v4.1 artifact. No earlier minor is accepted and no compatibility parser exists.
 
 ## Why this layout
 
 Single-stream decode (`T == 1`) is **weight-bandwidth bound**: every linear weight is streamed from
-HBM once per token, so decode throughput is `BW_eff / bytes_per_token`. For the Q4/Q5/Q6 and W8G128
+HBM once per token, so decode throughput is `BW_eff / bytes_per_token`. For the Q4/Q5/Q6 and W8G32
 tensors, the format does **not** reduce `bytes_per_token`; it maximizes achievable `BW_eff` and removes
-launch/occupancy and unpack waste. MTP_DRAFT is one exception: its dense/fused linears intentionally
-use W8G32, spending more scale bytes for finer W8 scale granularity and better draft fidelity. The
+launch/occupancy and unpack waste. MTP_DRAFT and the vision merger use W8G32 for fine W8 scale
+granularity. The
 optional draft `lm_head` is the other: it stores a frequency-shortlisted subset of vocab rows at Q4,
 so drafting streams far fewer bytes per draft step (§14, §18).
 
@@ -170,7 +171,7 @@ first-class; which optional modules appear is a conversion choice. The per-modul
 | 208 | 8 | u64 | `segment_index_bytes` |
 | 216 | 8 | u64 | `fusion_group_index_offset` |
 | 224 | 8 | u64 | `fusion_group_index_bytes` |
-| 232 | 4 | u32 | `format_minor` = 1 |
+| 232 | 4 | u32 | `format_minor` = 2 |
 | 236 | 4 | u32 | `tokenizer_record_count` = 3 |
 | 240 | 4 | u32 | `tokenizer_record_size` = 64 |
 | 244 | 4 | u32 | `tokenizer_flags` = 0 |
@@ -224,7 +225,7 @@ The SHA-256 field records the digest of the bytes embedded in this artifact; it 
 globally frozen tokenizer identity. The converter and offline verifier recompute CRC32 and SHA-256.
 The runtime recomputes CRC32, checks UTF-8 and tokenizer-region padding, then lets `QwenTokenizer`
 parse the embedded assets when a text frontend needs them. Missing `merges.txt` or
-`generation_config.json` is invalid in v4.1; there is no hard-coded stop-token fallback.
+`generation_config.json` is invalid in v4.2; there is no hard-coded stop-token fallback.
 
 The converter validates tokenizer semantics while building the artifact. `model.type` MUST be `BPE`;
 `model.vocab` MUST be non-empty and all vocab and
@@ -280,7 +281,7 @@ plane, and a scale plane, each covering all `N` rows (§9.2).
 | 22 | 2 | u16 | `ndim` |
 | 24 | 16 | u32[4] | `shape` (logical `[N, K, 1, 1]`; `N` = total rows of the block) |
 | 40 | 16 | u32[4] | `padded_shape` (`[N, K_pad, 1, 1]`, `K_pad = align_up(K,128)`; §9.2) |
-| 56 | 4 | u32 | `group_size` (64 for Q4/Q5/Q6, 128 for W8G128, 32 for W8G32, 0 for CONTIGUOUS incl. I32_CTRL) |
+| 56 | 4 | u32 | `group_size` (64 for Q4/Q5/Q6, 32 for W8G32, 0 for CONTIGUOUS incl. I32_CTRL) |
 | 60 | 2 | u16 | `scale_dtype` (0=none, 1=FP16) |
 | 62 | 2 | u16 | `segment_count` (>=1) |
 | 64 | 8 | u64 | `payload_offset` (absolute, 256-aligned) |
@@ -291,8 +292,8 @@ plane, and a scale plane, each covering all `N` rows (§9.2).
 | 92 | 4 | u32 | `segment_begin` (index of this block's first `SegmentRecord`) |
 | 96 | 2 | u16 | `fusion_group_id` (0=NONE; §7) |
 | 98 | 2 | u16 | `fusion_index` (position of this block within its fusion group; 0 if NONE) |
-| 100 | 8 | u64 | `nibble_plane_bytes` (low-4-bit base plane; for W8G128/W8G32 the full int8 plane; for CONTIGUOUS the whole payload; §9.2/§9.4) |
-| 108 | 8 | u64 | `high_plane_bytes` (high-bit plane; 0 for Q4 / W8G128 / W8G32 / CONTIGUOUS) |
+| 100 | 8 | u64 | `nibble_plane_bytes` (low-4-bit base plane; for W8G32 the full int8 plane; for CONTIGUOUS the whole payload; §9.2/§9.4) |
+| 108 | 8 | u64 | `high_plane_bytes` (high-bit plane; 0 for Q4 / W8G32 / CONTIGUOUS) |
 | 116 | 8 | u64 | `scale_plane_bytes` (0 for CONTIGUOUS) |
 | 124 | 4 | u8 | reserved zero |
 
@@ -376,11 +377,10 @@ among its projections; a single-`qtype` group is one block.
 | 0 | `Q4G64_F16S` | 4 | 64 | [-8, 7] |
 | 1 | `Q5G64_F16S` | 5 | 64 | [-16, 15] |
 | 2 | `Q6G64_F16S` | 6 | 64 | [-32, 31] |
-| 3 | `W8G128_F16S` | 8 | 128 | [-127, 127] |
+| 3 | `W8G32_F16S` | 8 | 32 | [-127, 127] |
 | 4 | `BF16_CTRL` | 16 | - | bfloat16 |
 | 5 | `FP32_CTRL` | 32 | - | float32 |
-| 6 | `W8G32_F16S` | 8 | 32 | [-127, 127] |
-| 7 | `I32_CTRL` | 32 | - | signed int32 |
+| 6 | `I32_CTRL` | 32 | - | signed int32 |
 
 `I32_CTRL` is a dense control dtype (raw two's-complement `int32` elements, `CONTIGUOUS`,
 `group_size = 0`, `scale_dtype = none`). It carries the draft-head id-map (§9.4, §14).
@@ -389,7 +389,7 @@ among its projections; a single-`qtype` group is one block.
 
 | value | name | used by |
 |---:|---|---|
-| 0 | `ROW_SPLIT` | every quantized tensor (Q4/Q5/Q6 with `group_size=64`, W8G128 with `group_size=128`, W8G32 with `group_size=32`) |
+| 0 | `ROW_SPLIT` | every quantized tensor (Q4/Q5/Q6 with `group_size=64`, W8G32 with `group_size=32`) |
 | 1 | `CONTIGUOUS` | dense control tensors (BF16_CTRL / FP32_CTRL / I32_CTRL) |
 
 `module_kind` (u16): `0=TEXT_CORE`, `1=MTP_DRAFT`, `2=VISION_ENCODER`,
@@ -472,7 +472,7 @@ scale16 = fp16(scale)              # stored AND used to quantize
 q_i     = clamp(round_half_even(w_i / scale16), qmin, qmax)
 ```
 
-`qmin = -(qmax+1)` for Q4/Q5/Q6; `qmin = -127` for W8G128/W8G32. All-zero group: `scale = 0`,
+`qmin = -(qmax+1)` for Q4/Q5/Q6; `qmin = -127` for W8G32. All-zero group: `scale = 0`,
 codes `0`. A nonzero group whose scale underflows fp16 is bumped to the smallest positive fp16
 subnormal.
 
@@ -499,7 +499,7 @@ A signed code `q_i` is stored as its `bits`-wide two's-complement pattern
 
 ```text
 low_i  = u_i & 0x0F                 # bits 0..3
-high_i = u_i >> 4                   # Q5: 1 bit (0..1); Q6: 2 bits (0..3); Q4: none; W8G128/W8G32: see below
+high_i = u_i >> 4                   # Q5: 1 bit (0..1); Q6: 2 bits (0..3); Q4: none; W8G32: see below
 ```
 
 Per group of `group_size` codes, the format emits:
@@ -512,10 +512,9 @@ Per group of `group_size` codes, the format emits:
   - **Q6**: 2 high bits per code -> `group_size / 4` bytes (16 for `group_size=64`). Packed LSB-first,
     two consecutive bits per code: bits `2c` and `2c+1` of the run are `high_c & 1` and
     `(high_c >> 1) & 1` (i.e. bits 4 and 5 of `u_c`). Reconstruct `high_c = (run >> (2c)) & 0x3`.
-- **W8G128/W8G32** have **no nibble split and no high run**: the base ("nibble") plane stores one
-  signed `int8` per code, `group_size` bytes per group; `high_i` is unused. `W8G128_F16S` uses 128
-  codes per FP16 scale. `W8G32_F16S` uses 32 codes per FP16 scale and is the precision-first MTP_DRAFT
-  dense-linear qtype.
+- **W8G32** has **no nibble split and no high run**: the base ("nibble") plane stores one signed
+  `int8` per code, 32 bytes per group; `high_i` is unused. One FP16 scale covers each group of 32
+  codes.
 
 Per-group byte counts:
 
@@ -524,7 +523,6 @@ Per-group byte counts:
 | Q4 | 4 | 32 | 0 | 32 |
 | Q5 | 5 | 32 | 8 | 40 |
 | Q6 | 6 | 32 | 16 | 48 |
-| W8G128 | 8 | 128 (one `int8` per code) | 0 | 128 |
 | W8G32 | 8 | 32 (one `int8` per code) | 0 | 32 |
 
 **Decode (reconstruction):**
@@ -533,7 +531,7 @@ Per-group byte counts:
 # Q4/Q5/Q6:
 u_c = low_c | (high_c << 4)         # Q5: 5-bit; Q6: 6-bit; Q4: u_c = low_c
 q_c = sign_extend(u_c, bits)        # Q4 from bit3, Q5 from bit4, Q6 from bit5
-# W8G128/W8G32:
+# W8G32:
 q_c = (int8) base_byte_c            # already signed; no merge, no sign-extend step
 # all qtypes:
 w_c = scale16(group) * q_c
@@ -550,15 +548,15 @@ Stored: nibble `13`. Decode: `u = 13`; `sign_extend(13, 4) = 13 - 16 = -3`. Corr
 
 Logical `[N, K]`. `K` is padded to **`K_pad = align_up(K, 128)`**. This is the single mandatory
 K-alignment rule for every quantized qtype; it is independent of `group_size`. It makes
-`G = K_pad / group_size` integral for W8G128/W8G32 and **even** for the group-64 qtypes, which
-guarantees every plane's per-row run is 16-byte aligned (`nib*G`, Q5 high `8*G`, Q6 high `16*G`,
-W8G128 base `128*G`, W8G32 base `32*G` are all multiples of 16). `N` is **not** padded. Let `nib` =
-base bytes/group from §9.1 (`32` for Q4/Q5/Q6/W8G32, `128` for W8G128) and `hi` = high bytes/group
-(`0` Q4/W8G128/W8G32, `8` Q5, `16` Q6). The payload is **three row-major planes** over all `N` rows
-(Q4/W8G128/W8G32: two — the high plane is empty), each starting 256-aligned:
+`G = K_pad / group_size` is integral for every qtype and even for the group-64 qtypes. Code/high-plane
+row runs preserve the vector-addressing alignment required by the format; scale runs are dense FP16
+arrays and are not promised a 16-byte row stride. `N` is **not** padded. Let `nib` =
+32 bytes/group for every qtype and `hi` = high bytes/group
+(`0` Q4/W8G32, `8` Q5, `16` Q6). The payload is **three row-major planes** over all `N` rows
+(Q4/W8G32: two — the high plane is empty), each starting 256-aligned:
 
 ```text
-# nibble (base) plane: low-4-bit (or int8 for W8G128/W8G32) codes, row-major
+# nibble (base) plane: low-4-bit (or int8 for W8G32) codes, row-major
 for n in 0 .. N-1:
   for g in 0 .. G-1:
     u8 nibble[nib]          # (row n, group g) base run, per §9.1
@@ -582,7 +580,7 @@ Sizes and **relative** plane offsets (always equal to the `TensorEntry` fields):
 
 ```text
 nibble_plane_bytes = N * G * nib
-high_plane_bytes   = N * G * hi                          # 0 for Q4 / W8G128 / W8G32
+high_plane_bytes   = N * G * hi                          # 0 for Q4 / W8G32
 scale_plane_bytes  = N * G * 2
 
 # offsets RELATIVE to the block's payload_offset:
@@ -635,8 +633,8 @@ For `lm_head_draft`: `K_pad = align_up(5120,128) = 5120`, `G = 5120/64 = 80`, `n
 `nibble = 131072*80*32 = 335,544,320`, `high = 0`, `scale = 131072*80*2 = 20,971,520`,
 `payload_bytes = align_up(335,544,320,256) + 20,971,520 = 356,515,840` (the nibble plane is already a
 multiple of 256). Total code bytes per block (`nibble + high`) equal `N*G*(nib+hi)` — `40·N·G` Q5,
-`48·N·G` Q6, `32·N·G` Q4/W8G32, `128·N·G` W8G128 — i.e. `bytes_per_token` for a full stream is unchanged
-by the plane split, and W8 scale granularity changes only the scale-plane size.
+`48·N·G` Q6 and `32·N·G` Q4/W8G32 — i.e. `bytes_per_token` for a full stream is unchanged
+by the plane split.
 
 ### 9.3 Plane addressing (runtime view contract)
 
@@ -664,7 +662,7 @@ high bits  : (u8*)high_ptr   + r*G*hi         # G*hi bytes  (only if hi != 0)
 scales     : (fp16*)scale_ptr + r*G           # G fp16
 ```
 
-`high_ptr == nullptr` signals a single-plane block (Q4/W8G128/W8G32, including the draft head); a
+`high_ptr == nullptr` signals a single-plane block (Q4/W8G32, including the draft head); a
 consumer of such a block uses only the base plane. These pointer/offset rules — not the kernel
 internals — are the ABI a conformant GEMV/GEMM relies on; they are fully determined by the
 `TensorEntry` plane-byte fields and §9.2.
@@ -760,7 +758,7 @@ fallback.
   handling is a kernel concern, not a storage concern.
 - **Plane alignment.** Relative to the block `payload_offset`: nibble plane at `0`; high plane at
   `align_up(nibble_plane_bytes, 256)`; scale plane at `high_rel + align_up(high_plane_bytes, 256)`.
-  When `high_plane_bytes == 0` (Q4/W8G128/W8G32) the scale plane immediately follows the aligned
+  When `high_plane_bytes == 0` (Q4/W8G32) the scale plane immediately follows the aligned
   nibble plane. All inter-plane pad bytes are zero (§0).
 - **CONTIGUOUS.** A `CONTIGUOUS` block (BF16/FP32/I32) has a single payload run of `payload_bytes`; no
   K-padding, no inter-plane pad.
@@ -777,7 +775,7 @@ limit them to selected payloads at load time. Header/catalog/tokenizer reserved 
 CRC are always runtime-mandatory. All checks are computable from this document alone.
 
 1. **Header.** `magic == "Q5090MIXEDV4\0\0\0\0"`; `version == 4`; `endian == 0x01020304`;
-   `header_size == 4096`; `format_minor == 1`; `module_count in [1,4]`; `layer_count == 64`;
+   `header_size == 4096`; `format_minor == 2`; `module_count in [1,4]`; `layer_count == 64`;
    `tokenizer_record_count == 3`; `tokenizer_record_size == 64`; `tokenizer_flags == 0`. Header
    reserved bytes and flag bits 5..31 are zero. Presence bits agree with the module table (§2).
    `tensor_count <= 2048`, `segment_count <= 4096`, `fusion_group_count <= 512`, and
@@ -807,7 +805,7 @@ CRC are always runtime-mandatory. All checks are computable from this document a
    `payload_offset + payload_bytes <= next block payload_offset` (or `file_size` for the last); the
    header `payload_bytes` and `file_size` are consistent with the last block's end.
 6. **Per-block fields.** `group_size`/`scale_dtype` match `qtype` (Q4/Q5/Q6: 64/FP16;
-   W8G128: 128/FP16; W8G32: 32/FP16; BF16_CTRL/FP32_CTRL/I32_CTRL: 0/none). Then, **by layout**:
+   W8G32: 32/FP16; BF16_CTRL/FP32_CTRL/I32_CTRL: 0/none). Then, **by layout**:
    - **ROW_SPLIT**: `padded_shape[0] == shape[0] == N`, `padded_shape[1] == align_up(shape[1],128)`,
      `shape[2]==shape[3]==1`; `nibble_plane_bytes`/`high_plane_bytes`/`scale_plane_bytes` equal the §9.2
      formulas; `payload_bytes == scale_rel + scale_plane_bytes`.
@@ -861,13 +859,22 @@ A loader MUST reject any other combination.
 | MTP `fc`, `o_proj`, `down_proj` | W8G32 | `ROW_SPLIT` (group 32) | standalone |
 | MTP `attn q/k/gate/v` | W8G32 | `ROW_SPLIT` (group 32) | `ATTN_IN` (one block, four segments) |
 | MTP MLP `gate`, `up` | W8G32 | `ROW_SPLIT` (group 32) | `MLP_GATEUP` (one block, two segments) |
-| vision quantized linears | Q4/Q5/W8G128 | `ROW_SPLIT` | standalone (vision biases/norms `CONTIGUOUS`) |
+| vision patch embed | Q6 | `ROW_SPLIT` | standalone; canonical Conv3d flatten below |
+| vision block `qkv` / `fc1` | Q4 | `ROW_SPLIT` | standalone |
+| vision block `proj` / `fc2` | Q5 | `ROW_SPLIT` | standalone |
+| vision merger `fc1` / `fc2` | W8G32 | `ROW_SPLIT` (group 32) | standalone |
+| vision position table, biases, norms | BF16_CTRL | `CONTIGUOUS` | standalone |
 
 Every quantized tensor in every module uses `ROW_SPLIT`; every dense control tensor uses `CONTIGUOUS`.
 There is no tiled layout anywhere. The class table above fixes layout/grouping. The per-layer TEXT_CORE
 and VISION_ENCODER emission follows mechanically from this policy applied across the 64 decoder layers
 (and the vision blocks); the TEXT_CORE globals are only `EMBED`, `LM_HEAD`, and `FINAL_NORM`. The
 LM_HEAD_DRAFT and MTP_DRAFT assignments are the canonical block orders that follow.
+
+The patch source has shape `[1152,3,2,16,16]` in contiguous `[out,C,T,H,W]` order. The converter
+flattens it directly to `[1152,1536]`; therefore K order is `C,T,H,W` with W varying fastest. A
+consumer MUST construct each patch vector in that same order. The format defines no Conv3d-specific
+layout and stores no second copy.
 
 **Optional `LM_HEAD_DRAFT` module.** When `LM_HEAD_DRAFT_PRESENT` is set, the independent module emits
 exactly these two standalone blocks, the id-map immediately after the weights:
@@ -978,20 +985,20 @@ fields:
 
 ```json
 {
-  "format": "q5090_w4g64_mixed_v4_1",
+  "format": "q5090_w4g64_mixed_v4_2",
   "format_version": 4,
-  "format_minor": 1,
+  "format_minor": 2,
   "binary_spec": "docs/q5090_packed_file_format_v4.md",
   "value_source": "per-group symmetric weight-only quant (§8); MTP dense/fused linears W8G32; optional draft lm_head = Q4G64 of original bf16 lm_head shortlist rows",
-  "weights_file": "qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus",
+  "weights_file": "qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus",
   "file_bytes": 0,
   "sha256_safetensors_index": "<64 hex chars>",
   "calibrated": false,
   "lm_head_draft_present": true,
-  "alignment": { "header": 4096, "tokenizer": 64, "payload": 4096, "block": 256, "k_pad": 128, "group_sizes": [32, 64, 128] },
+  "alignment": { "header": 4096, "tokenizer": 64, "payload": 4096, "block": 256, "k_pad": 128, "group_sizes": [32, 64] },
   "layouts": ["ROW_SPLIT", "CONTIGUOUS"],
   "code_planes": ["nibble", "high", "scale"],
-  "qtypes": ["Q4G64_F16S", "Q5G64_F16S", "Q6G64_F16S", "W8G128_F16S", "BF16_CTRL", "FP32_CTRL", "W8G32_F16S", "I32_CTRL"],
+  "qtypes": ["Q4G64_F16S", "Q5G64_F16S", "Q6G64_F16S", "W8G32_F16S", "BF16_CTRL", "FP32_CTRL", "I32_CTRL"],
   "modules": ["TEXT_CORE", "LM_HEAD_DRAFT", "MTP_DRAFT", "VISION_ENCODER"],
   "absent_modules": [],
   "tensor_count": 1166,
@@ -1040,10 +1047,9 @@ the runtime loader but MUST be exactly consistent with the authoritative binary 
 
 ## 18. Non-goals and scope
 
-- **No general bytes/token reduction for the shared weights.** For the Q4/Q5/Q6/W8G128 tensors, the
+- **No general bytes/token reduction for the shared weights.** For the Q4/Q5/Q6/W8G32 tensors, the
   format stores the same quantizer codes/scales; the gain is achievable `BW_eff` and reduced
-  launch/occupancy/unpack waste, not less traffic. MTP_DRAFT W8G32 intentionally increases scale-plane
-  bytes versus W8G128.
+  launch/occupancy/unpack waste, not less traffic.
 - **The draft head is the one bandwidth-reducing tensor.** It is a *smaller, distinct* head (a
   frequency shortlist of vocab rows at Q4), not a relayout of the full head. It reduces draft-step
   traffic; it is optional and orthogonal to module presence.
@@ -1058,7 +1064,7 @@ the runtime loader but MUST be exactly consistent with the authoritative binary 
   each qtype. `W8G32_F16S` is still signed int8 with FP16 per-group scales, but uses a 32-element
   group. `I32_CTRL` is raw int32 control data, not a quantized numeric format.
 - **No second resident copy and no dequant-to-BF16/FP32** of any quantized weight.
-- **Per-group fp16 scales.** One fp16 scale per `(row, group)` of 64 (128 for W8G128, 32 for W8G32).
+- **Per-group fp16 scales.** One fp16 scale per `(row, group)` of 64 for Q4/Q5/Q6 or 32 for W8G32.
   The format does not use hierarchical/sub-block quantized scales.
 - **Float-accumulation consumption assumed.** The byte layout targets a dequantize-to-float GEMV/GEMM;
   it neither requires nor encodes an integer-dot (quantized-activation) execution path.
@@ -1071,7 +1077,7 @@ the runtime loader but MUST be exactly consistent with the authoritative binary 
   feature requests decide residency; ModuleRecord contains no load policy. Module metadata remains
   available even when its payload is not resident.
 
-## 19. v4.1 feature set
+## 19. v4.2 feature set
 
 The format's distinctive capabilities, stated as its own feature list:
 
@@ -1080,12 +1086,13 @@ The format's distinctive capabilities, stated as its own feature list:
   — register-only shift/mask, no cross-byte funnel shift, no cross-lane communication. One nibble
   loader serves Q4, Q5, Q6 (§9.1).
 - **Three-plane `ROW_SPLIT`.** Every quantized block stores nibble / high (empty for Q4/W8) / scale as
-  three row-major, 256-aligned planes; the single K-padding rule `K_pad = align_up(K,128)` guarantees
-  16-byte-aligned per-row runs (§9.2).
+  three row-major, 256-aligned planes; the single K-padding rule is `K_pad = align_up(K,128)` (§9.2).
 - **Self-describing plane sizes.** `nibble_plane_bytes`/`high_plane_bytes`/`scale_plane_bytes` and the
   relative-offset/`payload_bytes` definition are normative in every `TensorEntry` (§4, §9.2, §9.3).
-- **W8G32 MTP linears.** MTP_DRAFT dense/fused linears use `W8G32_F16S` for finer W8 scale granularity
-  and better draft fidelity, in the fused MTP assignment (§10.1, §14).
+- **One W8 format.** MTP_DRAFT dense/fused linears and both vision merger FC weights use
+  `W8G32_F16S`; no W8G128 qtype or loader branch exists (§10.1, §14).
+- **Vision precision policy.** The flattened patch embedding is Q6G64, block qkv/fc1 are Q4G64,
+  block proj/fc2 are Q5G64, and controls remain BF16 (§14).
 - **Embedded CPU-only tokenizer.** Three mandatory raw UTF-8 assets have fixed TokenizerRecords,
   bounds, placement, CRC32, and SHA-256 and are consumed without an external runtime path (§2.1).
 - **Optional shortlisted draft `lm_head`.** A standalone `[131072,5120]` `Q4G64` `ROW_SPLIT` block
@@ -1096,9 +1103,9 @@ The format's distinctive capabilities, stated as its own feature list:
   (§9.4).
 - **`LM_HEAD_DRAFT_PRESENT` header flag** (bit4) with structural coupling: set iff the independent
   two-block module is present, and the id-map `N` must equal the weights `N` (§2, §13).
-- **New enum members.** `qtype 7 = I32_CTRL`; `source_kind 6 = LM_HEAD_DRAFT`,
-  `7 = LM_HEAD_DRAFT_IDMAP`; `module_kind 3 = LM_HEAD_DRAFT` (§7).
+- **Compact qtype enum.** Tags 0..6 are Q4G64, Q5G64, Q6G64, W8G32, BF16, FP32, and I32; there are
+  no retired tag holes (§7).
 - **Container identity.** `magic = "Q5090MIXEDV4\0\0\0\0"`, `version = 4`,
-  `format = q5090_w4g64_mixed_v4_1`, `format_minor = 1`, `module_version = 4` (§2, §3).
+  `format = q5090_w4g64_mixed_v4_2`, `format_minor = 2`, `module_version = 4` (§2, §3).
 - **Strict invariants.** Value preservation, single resident copy, on-chip dequant only, one layout
   family for decode+prefill, fully self-describing metadata — verifiable per §0 and §13.

@@ -1,11 +1,11 @@
 # q5090 Python reference
 
-`tools.q5090` is the correctness and diagnostics side of the project-owned v4.1 artifact. It is not
+`tools.q5090` is the correctness and diagnostics side of the project-owned v4.2 artifact. It is not
 a general model runtime and does not try to reproduce the C++ kernel instruction path.
 
 ## Responsibilities
 
-- `reader.py`: the only mmap-backed Python v4.1 reader and canonical structural dump producer.
+- `reader.py`: the only mmap-backed Python v4.2 reader and canonical structural dump producer.
 - `codec.py`: bit-exact Q4/Q5/Q6/W8 decode; CUDA unpack is fused with `torch.compile`.
 - `ref/`: the Qwen3.6-27B text/MTP schedule, state, library-backed operators and CLI.
 - `diagnostics/`: exact structure comparison and report-only activation comparison.
@@ -19,7 +19,7 @@ Use the CUDA environment that contains PyTorch and `flash-linear-attention`:
 
 ```bash
 /home/neroued/miniconda3/envs/py311/bin/python -m tools.q5090.ref \
-  --weights out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus \
+  --weights out/qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus \
   --prompt "请简短介绍一下你自己。" --decode 512
 ```
 
@@ -56,12 +56,12 @@ compiled codec for higher steady-state throughput. Library callers can override 
 
 ## Correctness standard
 
-Hard exact contracts are the v4.1 catalog/tokenizer structure, low-bit codes/scales, decoded BF16
+Hard exact contracts are the v4.2 catalog/tokenizer structure, low-bit codes/scales, decoded BF16
 weights and INT8 KV codes/scales. Model operators are checked against mathematical oracles with
 documented tolerances. Python and C++ activation dumps are diagnostic: their GEMV/GEMM, fusion,
 attention and GDN accumulation paths differ, so final greedy token equality is not a completion gate.
 
 ```bash
-python -m tools.q5090.diagnostics.structure out/conv_dump.v4_1.json /tmp/ref_dump.v4_1.json
+python -m tools.q5090.diagnostics.structure out/conv_dump.v4_2.json /tmp/ref_dump.v4_2.json
 python -m tools.q5090.diagnostics.activations /tmp/cpp_dump /tmp/python_dump
 ```

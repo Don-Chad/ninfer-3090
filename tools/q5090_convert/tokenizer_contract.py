@@ -1,4 +1,4 @@
-"""Converter/verifier validation for v4.1 embedded tokenizer assets."""
+"""Converter/verifier validation for v4.2 embedded tokenizer assets."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def validate_tokenizer_assets(assets: Mapping[int, bytes], vocab_size: int) -> N
     if vocab_size <= 0:
         raise ValueError(f"vocab_size must be positive, got {vocab_size}")
     if set(assets) != set(fmt.TOKENIZER_KINDS):
-        raise ValueError("tokenizer bundle must contain exactly the three v4.1 asset kinds")
+        raise ValueError("tokenizer bundle must contain exactly the three v4.2 asset kinds")
 
     tokenizer = _decode_json(assets[fmt.TOKENIZER_JSON], "tokenizer.json")
     model = tokenizer.get("model")

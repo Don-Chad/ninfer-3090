@@ -1,9 +1,9 @@
 # q5090_convert
 
 Offline, GPU-accelerated quantizing converter: original **Qwen3.6-27B** bf16 safetensors
--> a single self-describing artifact in the `q5090_w4g64_mixed_v4_1` format.
+-> a single self-describing artifact in the `q5090_w4g64_mixed_v4_2` format.
 
-- Binary file contract (self-contained v4.1, including tokenizer and optional draft `lm_head`):
+- Binary file contract (self-contained v4.2, including tokenizer and optional draft `lm_head`):
   [`docs/q5090_packed_file_format_v4.md`](../../docs/q5090_packed_file_format_v4.md)
 - Draft-head decision (Q4 @ N=131072):
   [`docs/2026-07-06-lm-head-draft-q4-decision.md`](../../docs/2026-07-06-lm-head-draft-q4-decision.md)
@@ -31,7 +31,7 @@ unioned with the tokenizer's special ids; its rows are re-quantized from the ori
 | `tensor_plan.py` | declarative source->qtype/layout/slice tables for all four modules |
 | `draft_head.py` | deterministic frequency-shortlist selection for the optional draft `lm_head` |
 | `convert.py` | CLI: stream shards, assemble the packed file + `.manifest.json` |
-| `verify.py` | L0 structure/tokenizer/plan checks, L1 bit-exact checks, and `conv_dump.v4_1.json` |
+| `verify.py` | L0 structure/tokenizer/plan checks, L1 bit-exact checks, and structural dumps |
 | `tests/` | CPU round-trip tests for packing/quant/layouts/container/shortlist |
 
 The mmap reader, CUDA decode path and reference inference schedule live in
@@ -50,15 +50,16 @@ Run from the repo root with a CUDA-enabled env:
 /home/neroued/miniconda3/envs/py311/bin/python -m tools.q5090_convert.convert \
   --model /home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16 \
   --tokenizer /home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16 \
-  --out out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus
+  --out out/qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus
 
 /home/neroued/miniconda3/envs/py311/bin/python -m tools.q5090_convert.verify \
-  out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus
+  out/qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus
 ```
 
 The converter writes `<weights>.manifest.json` next to the packed file. The verifier writes
-`out/conv_dump.v4_1.json` unless `--dump FILE` is supplied. Useful flags: `--out FILE`, `--device cpu`,
-`--force` (config mismatch -> warn), `--tokenizer DIR`, `--no-draft-head`, and `--ranking FILE`.
+`out/conv_dump.v4_2.json` by default; `--dump FILE` selects another path. Optional flags include
+`--out FILE`, `--device cpu`,
+`--tokenizer DIR`, `--no-draft-head`, and `--ranking FILE`.
 The converter reads embedded runtime assets and `tokenizer_config.json` from `--tokenizer`, defaulting
 to `--model`. The verifier re-derives the shortlist for L1 (`--ranking`, `--tokenizer`) and defaults to
 the local HF model path above; pass `--model DIR` to verify another source tree.

@@ -206,7 +206,7 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t s) {
         case QType::Q4G64_F16S:  detail::linear_q4_launch(x, w, out, s); break;
         case QType::Q5G64_F16S:  detail::linear_q5_launch(x, w, out, s); break;
         case QType::Q6G64_F16S:  detail::linear_q6_launch(x, w, out, s); break;
-        case QType::W8G128_F16S: detail::linear_w8_launch(x, w, out, s); break;
+        case QType::W8G32_F16S: detail::linear_w8_launch(x, w, out, s); break;
         case QType::BF16_CTRL:
         case QType::FP32_CTRL: {
             const Tensor wd = as_dense(w);

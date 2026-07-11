@@ -82,7 +82,7 @@ This gives the M3 framework a deliberate complexity budget.
 | math mode | No in M3 | Distinct math/dequant/MMA modes require distinct policy IDs and benchmark identities, but not a user-visible runtime axis. |
 | workspace policy | No in M3 | M3 performance `linear()` plans should be externally workspace-free. |
 | derived layout | No in initial M3 | Requires explicit design revision and q5090 ABI/manifest update. |
-| W8G128 / MTP / vision | No in TEXT-core M3 | Reserved at the format seam, not a performance obligation. |
+| W8G32 / MTP / vision | No in TEXT-core M3 | Supported at the format seam, not a TEXT-core performance obligation. |
 
 The goal is not to model every future possibility. The goal is to define the smallest stable
 framework that can host the M3 performance work.
@@ -478,8 +478,8 @@ Initial format families:
 | `DenseBF16` | `BF16_CTRL` | `CONTIGUOUS` | Dense BF16 control weights. |
 | `DenseFP32` | `FP32_CTRL` | `CONTIGUOUS` | Dense FP32 control weights. |
 
-Future/reserved formats, such as `W8G128_F16S + TILE_N64_K128`, may be added when MTP or vision
-enters scope. They are not TEXT-core M3 performance obligations.
+W8G32 is the sole W8 format used by MTP and the vision merger; its row-split backend enters through
+the same format/shape dispatch seam. These are not TEXT-core M3 performance obligations.
 
 ### 10.1 Codec responsibilities
 
@@ -987,7 +987,7 @@ MTP and vision are out of v1 TEXT-core M3 scope.
 
 The framework should not block them:
 
-- the format seam can later add `W8G128_F16S + TILE_N64_K128`;
+- the format seam includes `W8G32_F16S + ROW_SPLIT`;
 - the registry can later add shape families for MTP or vision;
 - future modules may introduce new operators or derived layouts;
 - TEXT-core M3 benchmarks should not carry W8/MTP/vision performance obligations.
@@ -1019,7 +1019,7 @@ contract that declares workspace, not through the current `linear()` API.
 
 ### 21.4 Additional formats
 
-W8G128, MTP, vision, or future hardware-native formats can be added through new `LinearFormat` values
+MTP, vision, or future hardware-native formats can be added through explicit `LinearFormat` values
 and shape families when they enter scope.
 
 ### 21.5 Fused multi-projection GEMV

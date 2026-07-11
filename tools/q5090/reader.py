@@ -1,4 +1,4 @@
-"""Canonical mmap-backed q5090 v4.1 reader."""
+"""Canonical mmap-backed q5090 v4.2 reader."""
 
 from __future__ import annotations
 
@@ -503,7 +503,7 @@ class Reader:
             for record in self.tokenizers
         ]
         out = {
-            "format": "q5090_w4g64_mixed_v4_1",
+            "format": "q5090_w4g64_mixed_v4_2",
             "file": str(self.path),
             "header": {key: json_value(value) for key, value in self.header.items()},
             "modules": self.modules,

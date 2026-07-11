@@ -31,11 +31,10 @@ enum class QType : std::uint16_t {
     Q4G64_F16S  = 0,
     Q5G64_F16S  = 1,
     Q6G64_F16S  = 2,
-    W8G128_F16S = 3,
+    W8G32_F16S  = 3,
     BF16_CTRL   = 4,
     FP32_CTRL   = 5,
-    W8G32_F16S  = 6,
-    I32_CTRL    = 7,
+    I32_CTRL    = 6,
 };
 
 enum class QuantLayout : std::uint16_t {

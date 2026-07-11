@@ -63,8 +63,6 @@ inline const char* qtype_name(QType qtype) {
         return "Q5G64_F16S";
     case QType::Q6G64_F16S:
         return "Q6G64_F16S";
-    case QType::W8G128_F16S:
-        return "W8G128_F16S";
     case QType::BF16_CTRL:
         return "BF16_CTRL";
     case QType::FP32_CTRL:
@@ -161,8 +159,6 @@ inline float f16_to_f32(std::uint16_t h) {
 
 inline std::uint32_t group_size(QType qtype) {
     switch (qtype) {
-    case QType::W8G128_F16S:
-        return 128;
     case QType::W8G32_F16S:
         return 32;
     case QType::Q4G64_F16S:
@@ -182,8 +178,6 @@ inline std::uint32_t bit_width(QType qtype) {
         return 5;
     case QType::Q6G64_F16S:
         return 6;
-    case QType::W8G128_F16S:
-        return 8;
     case QType::W8G32_F16S:
         return 8;
     default:
@@ -198,8 +192,6 @@ inline std::uint32_t nibble_bytes_per_group(QType qtype) {
     case QType::Q6G64_F16S:
     case QType::W8G32_F16S:
         return 32;
-    case QType::W8G128_F16S:
-        return 128;
     default:
         throw std::runtime_error("qtype is not ROW_SPLIT quantized");
     }
@@ -208,7 +200,6 @@ inline std::uint32_t nibble_bytes_per_group(QType qtype) {
 inline std::uint32_t high_bytes_per_group(QType qtype) {
     switch (qtype) {
     case QType::Q4G64_F16S:
-    case QType::W8G128_F16S:
     case QType::W8G32_F16S:
         return 0;
     case QType::Q5G64_F16S:
@@ -245,7 +236,7 @@ inline int unpack_code(const std::byte* nibble, const std::byte* high, QType qty
 
 inline bool is_quantized(QType qtype) {
     return qtype == QType::Q4G64_F16S || qtype == QType::Q5G64_F16S || qtype == QType::Q6G64_F16S ||
-           qtype == QType::W8G128_F16S || qtype == QType::W8G32_F16S;
+           qtype == QType::W8G32_F16S;
 }
 
 inline Json row_split_probes(const std::vector<std::byte>& file, const ParsedQ5090Tensor& tensor) {
@@ -308,6 +299,11 @@ inline Json contiguous_probes(const std::vector<std::byte>& file, const ParsedQ5
         float value          = 0.0f;
         if (tensor.qtype == QType::BF16_CTRL) {
             value = bf16_to_f32(read_u16_le(ptr));
+        } else if (tensor.qtype == QType::I32_CTRL) {
+            const std::uint32_t raw = read_u32_le(ptr);
+            std::int32_t integer    = 0;
+            std::memcpy(&integer, &raw, sizeof(integer));
+            value = static_cast<float>(integer);
         } else {
             value = bits_float(read_u32_le(ptr));
         }
@@ -319,11 +315,11 @@ inline Json contiguous_probes(const std::vector<std::byte>& file, const ParsedQ5
 inline Json header_json(const ParsedQ5090Header& h) {
     static constexpr std::array<std::uint8_t, 16> kMagic = {
         0x51, 0x35, 0x30, 0x39, 0x30, 0x4d, 0x49, 0x58,
-        0x45, 0x44, 0x56, 0x33, 0x00, 0x00, 0x00, 0x00,
+        0x45, 0x44, 0x56, 0x34, 0x00, 0x00, 0x00, 0x00,
     };
     return Json{
         {"magic", hex_bytes(kMagic.data(), kMagic.size())},
-        {"version", 3},
+        {"version", 4},
         {"endian", 0x01020304},
         {"header_size", 4096},
         {"tensor_count", h.tensor_count},
@@ -375,7 +371,9 @@ inline Json module_json(const ParsedQ5090Module& module) {
                 {"tensor_index_begin", module.tensor_index_begin},
                 {"tensor_index_count", module.tensor_index_count},
                 {"payload_offset", module.payload_offset},
-                {"payload_bytes", module.payload_bytes}};
+                {"payload_bytes", module.payload_bytes},
+                {"reserved0", 0},
+                {"reserved1", 0}};
 }
 
 inline const char* tokenizer_kind_name(Q5090TokenizerKind kind) {
@@ -485,7 +483,7 @@ inline Json structural_dump(const std::filesystem::path& path) {
         tokenizer.push_back(tokenizer_json(record));
     }
 
-    return Json{{"format", "q5090_w4g64_mixed_v4_1"},
+    return Json{{"format", "q5090_w4g64_mixed_v4_2"},
                 {"file", path.string()},
                 {"header", header_json(parsed.header)},
                 {"modules", modules},

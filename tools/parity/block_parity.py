@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Weight-level sanity gate for q5090 v4.1 text weights."""
+"""Weight-level sanity gate for q5090 v4.2 text weights."""
 
 from __future__ import annotations
 

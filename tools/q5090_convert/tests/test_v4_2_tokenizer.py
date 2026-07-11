@@ -1,4 +1,4 @@
-"""Binary-contract tests for the embedded v4.1 tokenizer region."""
+"""Binary-contract tests for the embedded v4.2 tokenizer region."""
 
 from __future__ import annotations
 

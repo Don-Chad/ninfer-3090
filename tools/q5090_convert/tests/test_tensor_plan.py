@@ -243,7 +243,7 @@ def test_draft_head_default_manifest_has_no_draft_blocks():
     assert "lm_head_draft.idmap" not in names
 
 
-def test_conversion_plan_uses_v4_1_canonical_module_order():
+def test_conversion_plan_uses_v4_2_canonical_module_order():
     cfg = {"layer_types": _canonical_layer_types()}
     plan = build_conversion_plan(cfg, include_draft_head=True)
     assert [module.module_kind for module in plan.modules] == [
@@ -261,6 +261,26 @@ def test_conversion_plan_uses_v4_1_canonical_module_order():
     assert len(plan.blocks) == 1166
     assert len(plan.segments) == 1314
     assert len(plan.fusion_groups) == 130
+
+
+def test_vision_uses_canonical_v4_2_precision_policy():
+    specs = tp.build_vision_specs(27)
+    by_name = {spec.name: spec for spec in specs}
+
+    assert len(specs) == 333
+    patch = by_name["model.visual.patch_embed.proj.weight"]
+    assert patch.qtype == qt.QT_Q6G64
+    assert patch.reshape == (1152, 1536)
+
+    for layer in range(27):
+        prefix = f"model.visual.blocks.{layer}."
+        assert by_name[prefix + "attn.qkv.weight"].qtype == qt.QT_Q4G64
+        assert by_name[prefix + "attn.proj.weight"].qtype == qt.QT_Q5G64
+        assert by_name[prefix + "mlp.linear_fc1.weight"].qtype == qt.QT_Q4G64
+        assert by_name[prefix + "mlp.linear_fc2.weight"].qtype == qt.QT_Q5G64
+
+    assert by_name["model.visual.merger.linear_fc1.weight"].qtype == qt.QT_W8G32
+    assert by_name["model.visual.merger.linear_fc2.weight"].qtype == qt.QT_W8G32
 
 
 def test_conversion_plan_can_verify_optional_module_absence():

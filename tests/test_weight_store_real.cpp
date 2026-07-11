@@ -207,17 +207,17 @@ int expect_manifest_fields(const Json& manifest, std::uint64_t file_size) {
     if (!manifest.is_object()) { return fail("manifest root must be object"); }
 
     int failures = 0;
-    failures += expect_string_field(manifest, "format", "q5090_w4g64_mixed_v4_1",
+    failures += expect_string_field(manifest, "format", "q5090_w4g64_mixed_v4_2",
                                     "manifest format mismatch");
     failures +=
         expect_uint_field(manifest, "format_version", 4, "manifest format_version mismatch");
-    failures += expect_uint_field(manifest, "format_minor", 1, "manifest format_minor mismatch");
+    failures += expect_uint_field(manifest, "format_minor", 2, "manifest format_minor mismatch");
     failures += expect_string_field(manifest, "binary_spec", "docs/q5090_packed_file_format_v4.md",
                                     "manifest binary_spec mismatch");
     failures += expect_string_field(manifest, "tensor_plan", "docs/q5090_packed_file_format_v4.md",
                                     "manifest tensor_plan mismatch");
     failures +=
-        expect_string_field(manifest, "weights_file", "qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus",
+        expect_string_field(manifest, "weights_file", "qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus",
                             "manifest weights_file mismatch");
     failures +=
         expect_uint_field(manifest, "file_bytes", file_size, "manifest file_bytes mismatch");
@@ -228,8 +228,8 @@ int expect_manifest_fields(const Json& manifest, std::uint64_t file_size) {
         expect_empty_array_field(manifest, "absent_modules", "manifest absent_modules mismatch");
     failures += expect_string_array_field(
         manifest, "qtypes",
-        std::array<const char*, 8>{"Q4G64_F16S", "Q5G64_F16S", "Q6G64_F16S", "W8G128_F16S",
-                                   "BF16_CTRL", "FP32_CTRL", "W8G32_F16S", "I32_CTRL"},
+        std::array<const char*, 7>{"Q4G64_F16S", "Q5G64_F16S", "Q6G64_F16S",
+                                   "W8G32_F16S", "BF16_CTRL", "FP32_CTRL", "I32_CTRL"},
         "manifest qtypes mismatch");
     failures += expect_string_array_field(manifest, "layouts",
                                           std::array<const char*, 2>{"ROW_SPLIT", "CONTIGUOUS"},
@@ -279,7 +279,7 @@ int expect_manifest_fields(const Json& manifest, std::uint64_t file_size) {
         failures +=
             expect_uint_field(*alignment_it, "k_pad", 128, "manifest alignment.k_pad mismatch");
         failures += expect_uint_array_field(*alignment_it, "group_sizes",
-                                            std::array<std::uint64_t, 3>{32, 64, 128},
+                                            std::array<std::uint64_t, 2>{32, 64},
                                             "manifest alignment.group_sizes mismatch");
     }
     return failures;
@@ -289,7 +289,7 @@ int expect_inventory(const qus::ParsedQ5090File& parsed, std::uint64_t file_size
     int failures = 0;
     failures += parsed.header.tensor_count == 1166 ? 0 : fail("real tensor_count mismatch");
     failures += parsed.header.module_count == 4 ? 0 : fail("real module_count mismatch");
-    failures += parsed.header.format_minor == 1 ? 0 : fail("real format_minor mismatch");
+    failures += parsed.header.format_minor == 2 ? 0 : fail("real format_minor mismatch");
     failures += parsed.tokenizer_records.size() == 3 ? 0 : fail("real tokenizer count mismatch");
     failures += parsed.header.segment_count == 1314 ? 0 : fail("real segment_count mismatch");
     failures += parsed.header.fusion_group_count == 130 ? 0 : fail("real fusion count mismatch");
@@ -326,7 +326,7 @@ int expect_inventory(const qus::ParsedQ5090File& parsed, std::uint64_t file_size
     failures +=
         parsed.modules[3].tensor_index_count == 333 ? 0 : fail("real VISION count mismatch");
     failures +=
-        parsed.modules[3].payload_bytes == 293396992ULL ? 0 : fail("real VISION payload mismatch");
+        parsed.modules[3].payload_bytes == 295719424ULL ? 0 : fail("real VISION payload mismatch");
     return failures;
 }
 
@@ -565,9 +565,9 @@ int run_vision_load(const std::filesystem::path& file_path, std::uint64_t text_p
 
 int main() {
     const std::filesystem::path root(QUS_SOURCE_DIR);
-    const std::filesystem::path file_path = root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus";
+    const std::filesystem::path file_path = root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus";
     const std::filesystem::path manifest_path =
-        root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus.manifest.json";
+        root / "out/qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus.manifest.json";
     if (!std::filesystem::exists(file_path) || !std::filesystem::exists(manifest_path)) {
         std::cout << "SKIP: real q5090 file or manifest not present\n";
         return 0;

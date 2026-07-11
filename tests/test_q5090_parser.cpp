@@ -124,7 +124,7 @@ int check_valid_parse(const std::vector<std::byte>& bytes) {
     failures += parsed.tensors.size() == 20 ? 0 : fail("parsed tensor size mismatch");
     failures += parsed.segments.size() == 25 ? 0 : fail("parsed segment size mismatch");
     failures += parsed.fusion_groups.size() == 3 ? 0 : fail("parsed fusion group size mismatch");
-    failures += parsed.header.format_minor == 1 ? 0 : fail("format minor mismatch");
+    failures += parsed.header.format_minor == 2 ? 0 : fail("format minor mismatch");
     failures += parsed.tokenizer_records.size() == 3 ? 0 : fail("tokenizer record size mismatch");
     failures += parsed.tokenizer.tokenizer_json.find("\"model\"") != std::string::npos
                     ? 0
@@ -284,7 +284,7 @@ int check_model_bind_conv1d_parse() {
 int check_draft_head_parse() {
     int failures = 0;
 
-    // Positive: a v4.1 file carrying the independent Q4 draft head + I32 id-map module parses,
+    // Positive: a v4.2 file carrying the independent Q4 draft head + I32 id-map module parses,
     // sets LM_HEAD_DRAFT_PRESENT, and both draft blocks report the expected schema.
     const std::filesystem::path good_path = make_fixture("draft-head");
     const std::vector<std::byte> good     = read_file(good_path);
@@ -310,7 +310,7 @@ int check_draft_head_parse() {
                     : fail("draft weights source kind mismatch");
     failures += weights.shape == std::array<std::uint32_t, 4>{131072, 5120, 1, 1}
                     ? 0
-                    : fail("draft weights fixed v4.1 shape mismatch");
+                    : fail("draft weights fixed v4.2 shape mismatch");
 
     const auto& idmap = find_tensor(parsed, "lm_head_draft.idmap");
     failures += idmap.qtype == qus::QType::I32_CTRL ? 0 : fail("draft idmap qtype mismatch");
@@ -421,7 +421,7 @@ int main() {
     failures +=
         expect_parse_throws(valid, "bad header size", [](auto& b) { write_u32(b, 24, 2048); });
     failures +=
-        expect_parse_throws(valid, "v4.0 format minor", [](auto& b) { write_u32(b, 232, 0); });
+        expect_parse_throws(valid, "retired v4.1 format minor", [](auto& b) { write_u32(b, 232, 1); });
     failures +=
         expect_parse_throws(valid, "unknown header flags", [](auto& b) { write_u32(b, 40, 0x20); });
     failures += expect_parse_throws(valid, "zero full-attention interval",
@@ -463,6 +463,8 @@ int main() {
         });
     failures += expect_parse_throws(valid, "bad qtype",
                                     [first_entry](auto& b) { write_u16(b, first_entry + 16, 99); });
+    failures += expect_parse_throws(valid, "retired qtype tag",
+                                    [first_entry](auto& b) { write_u16(b, first_entry + 16, 7); });
     failures += expect_parse_throws(valid, "bad layout",
                                     [first_entry](auto& b) { write_u16(b, first_entry + 18, 99); });
     failures += expect_parse_throws(valid, "bad ndim",

@@ -1,4 +1,4 @@
-"""Enums and per-qtype constants for the q5090_w4g64_mixed_v4_1 artifact.
+"""Enums and per-qtype constants for the q5090_w4g64_mixed_v4_2 artifact.
 
 Values here are the on-disk ABI; do not renumber. See
 ../../docs/q5090_packed_file_format_v4.md sections 7-9.
@@ -13,20 +13,18 @@ from dataclasses import dataclass
 QT_Q4G64 = 0
 QT_Q5G64 = 1
 QT_Q6G64 = 2
-QT_W8G128 = 3
+QT_W8G32 = 3
 QT_BF16 = 4
 QT_FP32 = 5
-QT_W8G32 = 6
-QT_I32 = 7
+QT_I32 = 6
 
 QTYPE_NAME = {
     QT_Q4G64: "Q4G64_F16S",
     QT_Q5G64: "Q5G64_F16S",
     QT_Q6G64: "Q6G64_F16S",
-    QT_W8G128: "W8G128_F16S",
+    QT_W8G32: "W8G32_F16S",
     QT_BF16: "BF16_CTRL",
     QT_FP32: "FP32_CTRL",
-    QT_W8G32: "W8G32_F16S",
     QT_I32: "I32_CTRL",
 }
 
@@ -60,9 +58,9 @@ MODULE_CANONICAL_ORDER = (
 )
 
 MODULE_FORMAT = {
-    MODULE_TEXT: "q5090_w4g64_mixed_v4_1",
+    MODULE_TEXT: "q5090_w4g64_mixed_v4_2",
     MODULE_MTP: "mtp_w8g32_v3",
-    MODULE_VISION: "vision_q4mix_merger_w8g128_v3",
+    MODULE_VISION: "vision_mixed_w8g32_v1",
     MODULE_LM_HEAD_DRAFT: "lm_head_draft_q4g64_v1",
 }
 
@@ -173,7 +171,6 @@ QUANT_SPECS = {
     QT_Q4G64: QuantSpec(bits=4, group_size=64, qmax=7, qmin=-8),
     QT_Q5G64: QuantSpec(bits=5, group_size=64, qmax=15, qmin=-16),
     QT_Q6G64: QuantSpec(bits=6, group_size=64, qmax=31, qmin=-32),
-    QT_W8G128: QuantSpec(bits=8, group_size=128, qmax=127, qmin=-127),
     QT_W8G32: QuantSpec(bits=8, group_size=32, qmax=127, qmin=-127),
 }
 

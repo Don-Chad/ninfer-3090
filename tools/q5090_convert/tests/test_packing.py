@@ -70,13 +70,12 @@ def test_torch_matches_numpy_plane_split_packing():
 
 def test_w8_roundtrip():
     rng = np.random.default_rng(2)
-    for group_size in (32, 128):
-        codes = rng.integers(-127, 128, size=(123, group_size)).astype(np.int8)
-        back = unpack_w8_groups(pack_w8_groups(codes)).reshape(codes.shape)
-        assert np.array_equal(codes, back)
-        nibble, high = pack_plane_split_groups(codes, 8)
-        assert high.shape == (123, 0)
-        assert np.array_equal(unpack_plane_split_groups(nibble, high, 8, group_size), codes)
+    codes = rng.integers(-127, 128, size=(123, 32)).astype(np.int8)
+    back = unpack_w8_groups(pack_w8_groups(codes)).reshape(codes.shape)
+    assert np.array_equal(codes, back)
+    nibble, high = pack_plane_split_groups(codes, 8)
+    assert high.shape == (123, 0)
+    assert np.array_equal(unpack_plane_split_groups(nibble, high, 8, 32), codes)
 
 
 def test_quant_range_and_dequant():
@@ -95,7 +94,6 @@ def test_row_split_encode_decode_quantized_bit_exact():
         (torch.randn(19, 256), qt.QT_Q5G64),
         (torch.randn(23, 384), qt.QT_Q6G64),
         (torch.randn(11, 160), qt.QT_W8G32),
-        (torch.randn(13, 256), qt.QT_W8G128),
     ]
 
     for w, qtype in cases:
@@ -151,7 +149,6 @@ def test_row_split_dequant_matches_policy_output():
         (torch.randn(11, 192), qt.QT_Q5G64),
         (torch.randn(13, 320), qt.QT_Q6G64),
         (torch.randn(5, 160), qt.QT_W8G32),
-        (torch.randn(7, 192), qt.QT_W8G128),
     ]
 
     for w, qtype in cases:
@@ -210,7 +207,7 @@ def test_i32_ctrl_contiguous_roundtrip():
     assert got.cpu().tolist() == ids.tolist()
 
 
-def test_v4_1_records_pack_unpack_and_string_table():
+def test_v4_2_records_pack_unpack_and_string_table():
     entry = fmt.TensorEntry(
         name="block.q4",
         qtype=qt.QT_Q4G64,
@@ -362,7 +359,7 @@ def test_v4_1_records_pack_unpack_and_string_table():
     assert parsed_header["fusion_group_count"] == 1
     assert parsed_header["segment_index_offset"] == 6144
     assert parsed_header["fusion_group_index_bytes"] == fmt.FUSION_GROUP_RECORD_SIZE
-    assert parsed_header["format_minor"] == 1
+    assert parsed_header["format_minor"] == 2
     assert parsed_header["tokenizer_record_count"] == 3
     assert parsed_header["tokenizer_record_size"] == 64
     assert parsed_header["tokenizer_index_offset"] == 6272

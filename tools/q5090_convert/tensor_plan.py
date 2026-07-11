@@ -1,4 +1,4 @@
-"""Declarative q5090 v4.1 tensor plan.
+"""Declarative q5090 v4.2 tensor plan.
 
 TEXT_CORE, MTP_DRAFT, and VISION_ENCODER are expressed as stored blocks,
 logical segments, and fusion groups. Each segment carries the source TensorSpec
@@ -58,6 +58,7 @@ class TensorSpec:
     row_slice: Optional[Tuple[int, int]] = None   # take src.weight[start:end] rows
     reshape: Optional[Tuple[int, ...]] = None      # reshape source before encoding
     transform: Optional[str] = None
+    expected_shape: Optional[Tuple[int, ...]] = None
     # Marks a block whose rows are computed by the converter (not read verbatim
     # from `src_name`): "draft_weights" (shortlist rows of lm_head, Q4-quantized)
     # or "draft_idmap" (int32 shortlist-index -> vocab-id map). See draft_head.py.
@@ -218,12 +219,15 @@ def runtime_native_gdn_conv1d(t: "torch.Tensor"):
     return t[:, 0, :].transpose(0, 1).contiguous().reshape(c, k, 1)
 
 
-def _bf16(name, src, sk, layer=qt.NO_LAYER, module=qt.MODULE_TEXT) -> TensorSpec:
-    return TensorSpec(name, qt.QT_BF16, qt.LAYOUT_CONTIGUOUS, module, src, sk, layer)
+def _bf16(name, src, sk, layer=qt.NO_LAYER, module=qt.MODULE_TEXT,
+          expected_shape=None) -> TensorSpec:
+    return TensorSpec(name, qt.QT_BF16, qt.LAYOUT_CONTIGUOUS, module, src, sk, layer,
+                      expected_shape=expected_shape)
 
 
-def _w8(name, src, sk, layer, module) -> TensorSpec:
-    return TensorSpec(name, qt.QT_W8G128, qt.LAYOUT_ROW_SPLIT, module, src, sk, layer)
+def _w8(name, src, sk, layer, module, expected_shape) -> TensorSpec:
+    return TensorSpec(name, qt.QT_W8G32, qt.LAYOUT_ROW_SPLIT, module, src, sk, layer,
+                      expected_shape=expected_shape)
 
 
 def _text_src(layer: int, suffix: str) -> str:
@@ -1135,42 +1139,43 @@ def build_mtp_manifest() -> ExpectedManifest:
 def build_vision_specs(depth: int) -> List[TensorSpec]:
     m = qt.MODULE_VISION
 
-    def vrow_split(name, qtype, sk, layer):
+    def vrow_split(name, qtype, sk, layer, shape):
         return TensorSpec("model.visual." + name, qtype, qt.LAYOUT_ROW_SPLIT, m,
-                          "model.visual." + name, sk, layer)
+                          "model.visual." + name, sk, layer, expected_shape=shape)
 
-    def vbf16(name, sk, layer=qt.NO_LAYER):
-        return _bf16("model.visual." + name, "model.visual." + name, sk, layer, m)
+    def vbf16(name, sk, shape, layer=qt.NO_LAYER):
+        return _bf16("model.visual." + name, "model.visual." + name, sk, layer, m,
+                     expected_shape=shape)
 
     s: List[TensorSpec] = []
-    # patch embed: Conv3d [1152,3,2,16,16] -> [1152, 1536]
-    s.append(TensorSpec("model.visual.patch_embed.proj.weight", qt.QT_Q5G64, qt.LAYOUT_ROW_SPLIT, m,
+    # Canonical contiguous Conv3d flatten: [out,C,T,H,W] -> [out,C*T*H*W].
+    s.append(TensorSpec("model.visual.patch_embed.proj.weight", qt.QT_Q6G64, qt.LAYOUT_ROW_SPLIT, m,
                         "model.visual.patch_embed.proj.weight", qt.SK_VIS_PATCH_EMBED, qt.NO_LAYER,
-                        reshape=(1152, 1536)))
-    s.append(vbf16("patch_embed.proj.bias", qt.SK_VIS_PATCH_EMBED_BIAS))
-    s.append(vbf16("pos_embed.weight", qt.SK_VIS_POS_EMBED))
+                        reshape=(1152, 1536), expected_shape=(1152, 1536)))
+    s.append(vbf16("patch_embed.proj.bias", qt.SK_VIS_PATCH_EMBED_BIAS, (1152,)))
+    s.append(vbf16("pos_embed.weight", qt.SK_VIS_POS_EMBED, (2304, 1152)))
     for b in range(depth):
         p = f"blocks.{b}."
         s += [
-            vrow_split(p + "attn.qkv.weight", qt.QT_Q4G64, qt.SK_VIS_BLOCK_QKV, b),
-            vbf16(p + "attn.qkv.bias", qt.SK_VIS_BLOCK_QKV_BIAS, b),
-            vrow_split(p + "attn.proj.weight", qt.QT_Q5G64, qt.SK_VIS_BLOCK_PROJ, b),
-            vbf16(p + "attn.proj.bias", qt.SK_VIS_BLOCK_PROJ_BIAS, b),
-            vrow_split(p + "mlp.linear_fc1.weight", qt.QT_Q4G64, qt.SK_VIS_BLOCK_FC1, b),
-            vbf16(p + "mlp.linear_fc1.bias", qt.SK_VIS_BLOCK_FC1_BIAS, b),
-            vrow_split(p + "mlp.linear_fc2.weight", qt.QT_Q5G64, qt.SK_VIS_BLOCK_FC2, b),
-            vbf16(p + "mlp.linear_fc2.bias", qt.SK_VIS_BLOCK_FC2_BIAS, b),
-            vbf16(p + "norm1.weight", qt.SK_VIS_BLOCK_NORM1_W, b),
-            vbf16(p + "norm1.bias", qt.SK_VIS_BLOCK_NORM1_B, b),
-            vbf16(p + "norm2.weight", qt.SK_VIS_BLOCK_NORM2_W, b),
-            vbf16(p + "norm2.bias", qt.SK_VIS_BLOCK_NORM2_B, b),
+            vrow_split(p + "attn.qkv.weight", qt.QT_Q4G64, qt.SK_VIS_BLOCK_QKV, b, (3456, 1152)),
+            vbf16(p + "attn.qkv.bias", qt.SK_VIS_BLOCK_QKV_BIAS, (3456,), b),
+            vrow_split(p + "attn.proj.weight", qt.QT_Q5G64, qt.SK_VIS_BLOCK_PROJ, b, (1152, 1152)),
+            vbf16(p + "attn.proj.bias", qt.SK_VIS_BLOCK_PROJ_BIAS, (1152,), b),
+            vrow_split(p + "mlp.linear_fc1.weight", qt.QT_Q4G64, qt.SK_VIS_BLOCK_FC1, b, (4304, 1152)),
+            vbf16(p + "mlp.linear_fc1.bias", qt.SK_VIS_BLOCK_FC1_BIAS, (4304,), b),
+            vrow_split(p + "mlp.linear_fc2.weight", qt.QT_Q5G64, qt.SK_VIS_BLOCK_FC2, b, (1152, 4304)),
+            vbf16(p + "mlp.linear_fc2.bias", qt.SK_VIS_BLOCK_FC2_BIAS, (1152,), b),
+            vbf16(p + "norm1.weight", qt.SK_VIS_BLOCK_NORM1_W, (1152,), b),
+            vbf16(p + "norm1.bias", qt.SK_VIS_BLOCK_NORM1_B, (1152,), b),
+            vbf16(p + "norm2.weight", qt.SK_VIS_BLOCK_NORM2_W, (1152,), b),
+            vbf16(p + "norm2.bias", qt.SK_VIS_BLOCK_NORM2_B, (1152,), b),
         ]
     s += [
-        _w8("model.visual.merger.linear_fc1.weight", "model.visual.merger.linear_fc1.weight", qt.SK_VIS_MERGER_FC1, qt.NO_LAYER, m),
-        vbf16("merger.linear_fc1.bias", qt.SK_VIS_MERGER_FC1_BIAS),
-        _w8("model.visual.merger.linear_fc2.weight", "model.visual.merger.linear_fc2.weight", qt.SK_VIS_MERGER_FC2, qt.NO_LAYER, m),
-        vbf16("merger.linear_fc2.bias", qt.SK_VIS_MERGER_FC2_BIAS),
-        vbf16("merger.norm.weight", qt.SK_VIS_MERGER_NORM_W),
-        vbf16("merger.norm.bias", qt.SK_VIS_MERGER_NORM_B),
+        _w8("model.visual.merger.linear_fc1.weight", "model.visual.merger.linear_fc1.weight", qt.SK_VIS_MERGER_FC1, qt.NO_LAYER, m, (4608, 4608)),
+        vbf16("merger.linear_fc1.bias", qt.SK_VIS_MERGER_FC1_BIAS, (4608,)),
+        _w8("model.visual.merger.linear_fc2.weight", "model.visual.merger.linear_fc2.weight", qt.SK_VIS_MERGER_FC2, qt.NO_LAYER, m, (5120, 4608)),
+        vbf16("merger.linear_fc2.bias", qt.SK_VIS_MERGER_FC2_BIAS, (5120,)),
+        vbf16("merger.norm.weight", qt.SK_VIS_MERGER_NORM_W, (1152,)),
+        vbf16("merger.norm.bias", qt.SK_VIS_MERGER_NORM_B, (1152,)),
     ]
     return s

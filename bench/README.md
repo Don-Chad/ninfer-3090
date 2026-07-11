@@ -77,7 +77,7 @@ qus_bench --weights <q5090-path>
           [--work-bytes <bytes>]             # optional workspace override
           [--device <id>] [--no-cuda-graph]
           [--mtp-draft-tokens <0..5>]
-          [--lm-head-draft]                   # requires MTP; loads v4.1 LM_HEAD_DRAFT
+          [--lm-head-draft]                   # requires MTP; loads v4.2 LM_HEAD_DRAFT
           [-o, --output <table|json|csv>]    # default table
           [--output-file <path>]             # default stdout
 ```
@@ -89,7 +89,7 @@ Example:
 
 ```bash
 ./build/bench/qus_bench \
-  --weights out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus \
+  --weights out/qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus \
   -p 512,2048 -n 128 -pg 2048,128 -r 5 --warmup 1
 ```
 

@@ -1,4 +1,4 @@
-"""Binary serialization for the q5090_w4g64_mixed_v4_1 artifact.
+"""Binary serialization for the q5090_w4g64_mixed_v4_2 artifact.
 
 Exact byte layout: ../../docs/q5090_packed_file_format_v4.md sections 2-9.
 """
@@ -14,7 +14,7 @@ MAGIC = b"Q5090MIXEDV4\x00\x00\x00\x00"
 assert len(MAGIC) == 16
 
 VERSION = 4
-FORMAT_MINOR = 1
+FORMAT_MINOR = 2
 ENDIAN_TAG = 0x01020304
 HEADER_SIZE = 4096
 MANIFEST_SUFFIX = ".manifest.json"

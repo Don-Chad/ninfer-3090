@@ -58,7 +58,7 @@ Freedom at the API surface; 固化 (frozen) in the implementations, fusion, and 
 ## How it fits together
 
 ```
-bf16 safetensors + tokenizer ──(Python, offline)──> quantize + relayout/pack ──> ONE v4.1 file
+bf16 safetensors + tokenizer ──(Python, offline)──> quantize + relayout/pack ──> ONE v4.2 file
                                                                           │
                                                 (C++/CUDA runtime) selective staged load + run
                                                                           │
@@ -77,12 +77,12 @@ cmake --build build -j
 ## Usage
 
 ```bash
-./build/src/qus /path/to/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus \
+./build/src/qus /path/to/qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus \
   --prompt "用三句话解释 prefill 和 decode 的区别。" \
   --max-new 128
 ```
 
-The v4.1 artifact embeds `tokenizer.json`, `merges.txt`, and `generation_config.json`; runtime
+The v4.2 artifact embeds `tokenizer.json`, `merges.txt`, and `generation_config.json`; runtime
 commands do not accept a tokenizer directory. The loader validates the 4 KiB header before CUDA
 initialization, reads only the bounded catalog/tokenizer prefix, and uploads only requested modules.
 
@@ -105,7 +105,7 @@ NVIDIA RTX 5090 (Blackwell, sm_120, 32 GB) · CUDA 13.1 · gcc 13.3 · CMake 3.2
 - [`docs/qwen3.6-27b-architecture.md`](docs/qwen3.6-27b-architecture.md) — exact model
   architecture reference: per-layer parameters, computation flow, Gated-DeltaNet math,
   operator inventory, and runtime tensor-transform ownership.
-- [`docs/q5090_packed_file_format_v1.md`](docs/q5090_packed_file_format_v1.md) — canonical
+- [`docs/q5090_packed_file_format_v4.md`](docs/q5090_packed_file_format_v4.md) — canonical
   packed-weight ABI consumed by the C++ runtime.
 - [`docs/archive/pre-optimization/`](docs/archive/pre-optimization/) — completed pre-optimization
   plans, specs, and historical M2.8 standard material.

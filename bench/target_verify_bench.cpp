@@ -27,7 +27,7 @@ constexpr std::size_t kMiB = 1024ULL * 1024ULL;
 constexpr std::size_t kGiB = 1024ULL * 1024ULL * 1024ULL;
 
 struct Options {
-    std::string weights = "out/qwen3_6_27b.q5090_w4g64_mixed_v4_1.qus";
+    std::string weights = "out/qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus";
     int device          = 0;
     int warmup          = 1;
     int reps            = 3;

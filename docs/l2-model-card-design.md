@@ -287,7 +287,7 @@ Notes (aligned to the implemented L1 ops):
 ## 5. The precision/quant seam in action
 
 The card always calls one verb: `linear(out_or_ws, x, const Weight&)`. Dispatch is a single
-`switch (w.qtype)` in the L1 wrapper: `Q4G64`/`Q5G64`/`Q6G64`/`W8G128` → the matching monomorphized
+`switch (w.qtype)` in the L1 wrapper: `Q4G64`/`Q5G64`/`Q6G64`/`W8G32` → the matching monomorphized
 quant GEMV; `BF16_CTRL`/`FP32_CTRL` → the dense GEMV (the wrapper projects the handle via
 `as_dense(w)` and reuses the bf16/fp32 kernel — no new op). Precision is therefore **data**:
 repacking a tensor (e.g. `lm_head` Q6→bf16, or any projection's bit-width) only flips the bound
