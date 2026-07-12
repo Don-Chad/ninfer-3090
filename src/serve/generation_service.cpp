@@ -105,6 +105,29 @@ private:
 
 } // namespace
 
+ContextOutputBudget resolve_context_output_budget(std::size_t prompt_tokens,
+                                                  int requested_max_tokens,
+                                                  std::uint32_t max_context) {
+    if (requested_max_tokens <= 0) {
+        throw std::invalid_argument("requested_max_tokens must be positive");
+    }
+    if (prompt_tokens > max_context) {
+        ApiError error;
+        error.status  = 400;
+        error.type    = "invalid_request_error";
+        error.code    = "context_length_exceeded";
+        error.param   = "messages";
+        error.message = "prompt (" + std::to_string(prompt_tokens) +
+                        " tokens) exceeds max_context (" + std::to_string(max_context) + ")";
+        throw ApiException(std::move(error));
+    }
+
+    const std::uint64_t available = static_cast<std::uint64_t>(max_context) - prompt_tokens + 1;
+    const int effective           = static_cast<int>(
+        std::min<std::uint64_t>(static_cast<std::uint64_t>(requested_max_tokens), available));
+    return ContextOutputBudget{requested_max_tokens, effective};
+}
+
 GenerationService::GenerationService(ServeOptions options) : options_(std::move(options)) {
     caps_.sampling = true; // the engine now honors SamplingParams (temperature 0 == greedy)
 
@@ -172,20 +195,10 @@ PreparedRequest GenerationService::prepare(const GenerationRequest& req) const {
                                     ? static_cast<std::uint32_t>(ids.size()) - opener
                                     : static_cast<std::uint32_t>(ids.size());
 
-    const std::size_t required =
-        ids.size() + static_cast<std::size_t>(std::max(0, prepared.options.max_new_tokens - 1));
-    if (required > engine_->max_context()) {
-        ApiError error;
-        error.status  = 400;
-        error.type    = "invalid_request_error";
-        error.code    = "context_length_exceeded";
-        error.param   = "messages";
-        error.message = "prompt (" + std::to_string(ids.size()) +
-                        " tokens) plus max_tokens exceeds max_context (" +
-                        std::to_string(engine_->max_context()) + ")";
-        throw ApiException(std::move(error));
-    }
-    prepared.prompt_token_ids = std::move(ids);
+    const ContextOutputBudget budget = resolve_context_output_budget(
+        ids.size(), prepared.options.max_new_tokens, engine_->max_context());
+    prepared.options.max_new_tokens = budget.effective_max_tokens;
+    prepared.prompt_token_ids       = std::move(ids);
     return prepared;
 }
 

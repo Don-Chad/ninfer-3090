@@ -81,18 +81,20 @@ std::string mtp_str(const GenerationMetrics& m) {
 } // namespace
 
 std::string format_request_start(std::uint64_t id, bool stream, std::size_t n_messages,
-                                 int max_tokens, bool client_set, std::size_t n_tools,
+                                 int requested_max_tokens, int effective_max_tokens,
+                                 bool client_set, std::size_t n_tools,
                                  const ToolChoice& tool_choice, bool has_tool_history,
                                  const qus::kernels::SamplingConfig& sampling) {
     std::ostringstream out;
     out << "[req " << id << "] chat " << (stream ? "stream" : "non-stream")
-        << " msgs=" << n_messages << " max_tokens=" << max_tokens << ' '
-        << (client_set ? "(client)" : "(server default)")
-        << " tools=" << n_tools
+        << " msgs=" << n_messages << " max_tokens=" << requested_max_tokens;
+    if (effective_max_tokens != requested_max_tokens) {
+        out << " effective_max_tokens=" << effective_max_tokens << " (context clamp)";
+    }
+    out << ' ' << (client_set ? "(client)" : "(server default)") << " tools=" << n_tools
         << " tool_choice=" << tool_choice_name(tool_choice)
-        << " tool_history=" << (has_tool_history ? "yes" : "no")
-        << " sampler=[" << sampler_str(sampling) << ']'
-        << " \xE2\x86\x92 running";
+        << " tool_history=" << (has_tool_history ? "yes" : "no") << " sampler=["
+        << sampler_str(sampling) << ']' << " \xE2\x86\x92 running";
     return out.str();
 }
 

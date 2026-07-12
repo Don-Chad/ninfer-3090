@@ -68,6 +68,10 @@ add_executable(qus_anthropic_schema_test test_anthropic_schema.cpp)
 target_link_libraries(qus_anthropic_schema_test PRIVATE qus_serve)
 target_include_directories(qus_anthropic_schema_test PRIVATE ${PROJECT_SOURCE_DIR}/third_party)
 add_test(NAME qus_anthropic_schema_test COMMAND qus_anthropic_schema_test)
+add_executable(qus_generation_budget_test test_generation_budget.cpp)
+target_link_libraries(qus_generation_budget_test PRIVATE qus_serve)
+target_include_directories(qus_generation_budget_test PRIVATE ${PROJECT_SOURCE_DIR}/third_party)
+add_test(NAME qus_generation_budget_test COMMAND qus_generation_budget_test)
 qus_add_test(qus_bench_support_test
              SOURCES test_qus_bench_support.cpp
                      ${PROJECT_SOURCE_DIR}/bench/qus_bench_support.cpp

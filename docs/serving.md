@@ -67,6 +67,13 @@ The server defaults to `127.0.0.1:8080`, model id `qwen3.6-27b`, and an 8,192-to
 request omits its output limit, the default is `min(max_context / 2, 8192)`, floored at one token.
 `--default-max-tokens` overrides that derived value.
 
+An explicit or default output limit is an upper bound, not a reservation. After rendering and
+tokenizing the prompt, the server reduces the effective output limit to the remaining KV capacity
+when necessary. A prompt that itself exceeds `max_context` is rejected; an otherwise valid request
+continues with the reduced limit and reports a length stop if it exhausts that capacity
+(`finish_reason: "length"` for OpenAI and `stop_reason: "max_tokens"` for Anthropic). The request
+start log records both requested and effective limits when this context clamp occurs.
+
 An API key is optional. When configured, requests must authenticate with the supported bearer-key
 surface. Permissive browser CORS is opt-in. The request body limit defaults to 384 MiB and is checked
 before JSON parsing; `--max-request-mib` can lower it.

@@ -14,11 +14,13 @@
 
 namespace qus::serve {
 
-// Logged right after a request is validated: what it asked for. `client_set`
-// distinguishes a client-provided max_tokens from the server default. `sampling`
-// is the resolved per-request sampler config (temperature 0 == greedy).
+// Logged right after a request is validated. `requested_max_tokens` is the
+// client/default upper bound and `effective_max_tokens` is the context-fitted
+// value. `client_set` distinguishes a client-provided value from the server
+// default. `sampling` is the resolved per-request sampler config.
 std::string format_request_start(std::uint64_t id, bool stream, std::size_t n_messages,
-                                 int max_tokens, bool client_set, std::size_t n_tools,
+                                 int requested_max_tokens, int effective_max_tokens,
+                                 bool client_set, std::size_t n_tools,
                                  const ToolChoice& tool_choice, bool has_tool_history,
                                  const qus::kernels::SamplingConfig& sampling);
 

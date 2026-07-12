@@ -75,6 +75,25 @@ struct PreparedRequest {
     bool tool_capable              = false;
 };
 
+// Resolve the maximum output that can fit beside an already-tokenized prompt.
+// `requested_max_tokens` is an upper bound: it is reduced to the remaining KV
+// capacity rather than causing an otherwise valid prompt to be rejected. The
+// runner's prefill produces the first completion token without appending it to
+// KV, hence the +1 in the available-output calculation. A prompt that cannot
+// itself fit still raises context_length_exceeded.
+struct ContextOutputBudget {
+    int requested_max_tokens = 0;
+    int effective_max_tokens = 0;
+
+    [[nodiscard]] bool clamped() const noexcept {
+        return effective_max_tokens != requested_max_tokens;
+    }
+};
+
+[[nodiscard]] ContextOutputBudget resolve_context_output_budget(std::size_t prompt_tokens,
+                                                                int requested_max_tokens,
+                                                                std::uint32_t max_context);
+
 // Which optional generation features the engine currently honors. Sampling is
 // wired through translate.cpp -> TextGenerationOptions -> Engine::set_sampling;
 // temperature 0 (or --greedy) selects the exact-argmax path.
