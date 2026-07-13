@@ -65,13 +65,6 @@ NInfer format. A loader that happens not to inspect filename extensions still in
 under the current q5090 v4.2 contract; that behavior does not establish a `.ninfer` compatibility
 alias.
 
-Existing future-facing plans may still contain candidate names such as `QUS packed-container v5`,
-future `.qus` filenames, or QUS-derived wire strings. Those passages predate this decision and do
-not override `NInfer` or the `.ninfer` extension. They are deliberately not replaced mechanically:
-the accepted [`ninfer-container-format.md`](ninfer-container-format.md) owns the future container
-name, JSON identifier namespaces, and model/container boundary while treating this document as its
-naming input.
-
 ## Deferred decisions
 
 Container-format questions formerly deferred here are now governed by
