@@ -11,6 +11,7 @@ formats, dated design investigations, and benchmark evidence belong under [`arch
 | [`../README.md`](../README.md) | project capabilities, build, and quick-start commands |
 | [`design.md`](design.md) | system boundaries, component ownership, runtime flows, and supported scope |
 | [`qwen3.6-27b-architecture.md`](qwen3.6-27b-architecture.md) | fixed model dimensions, math, Text/MTP/Vision schedules, and state semantics |
+| [`qwen3.6-35b-a3b-architecture.md`](qwen3.6-35b-a3b-architecture.md) | exact 35B-A3B source-checkpoint dimensions, hybrid Text/MoE/MTP/Vision math, and state semantics; not runtime-support status |
 | [`q5090_packed_file_format_v4.md`](q5090_packed_file_format_v4.md) | normative q5090 v4.2 binary and tensor-assignment contract |
 | [`kernel-development.md`](kernel-development.md) | L1 layering, API ownership, correctness, benchmark, and profiler workflow |
 | [`serving.md`](serving.md) | CLI/server generation semantics, sampling, multimodal input, and tool calling |
@@ -18,7 +19,7 @@ formats, dated design investigations, and benchmark evidence belong under [`arch
 These documents have deliberately separate responsibilities:
 
 - system design does not duplicate model mathematics or binary layout tables;
-- the model reference does not prescribe repository history or kernel implementation details;
+- the model references do not prescribe repository history or kernel implementation details;
 - the q5090 specification is the only normative artifact-format document;
 - public C++ headers, not a hand-maintained catalog, enumerate the current operator API;
 - executable `--help` output is the option-level CLI contract.

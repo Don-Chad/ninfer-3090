@@ -177,6 +177,8 @@ Start at [`docs/README.md`](docs/README.md). The active project documents are:
 - [`docs/design.md`](docs/design.md) — current system design and ownership boundaries;
 - [`docs/qwen3.6-27b-architecture.md`](docs/qwen3.6-27b-architecture.md) — fixed model, MTP, and
   Vision computation reference;
+- [`docs/qwen3.6-35b-a3b-architecture.md`](docs/qwen3.6-35b-a3b-architecture.md) — exact 35B-A3B
+  source-checkpoint Text/MoE/MTP/Vision reference (not current runtime-support status);
 - [`docs/q5090_packed_file_format_v4.md`](docs/q5090_packed_file_format_v4.md) — canonical v4.2
   artifact ABI;
 - [`docs/kernel-development.md`](docs/kernel-development.md) — kernel layering and verification;

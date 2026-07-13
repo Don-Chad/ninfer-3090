@@ -52,7 +52,10 @@ Use the smallest relevant current source:
 - `README.md` — capabilities, build, and quick-start commands;
 - `docs/README.md` — active documentation map and authority boundaries;
 - `docs/design.md` — system ownership, runtime flows, and supported scope;
-- `docs/qwen3.6-27b-architecture.md` — Text/MTP/Vision mathematics and state semantics;
+- `docs/qwen3.6-27b-architecture.md` — implemented 27B Text/MTP/Vision mathematics and state
+  semantics;
+- `docs/qwen3.6-35b-a3b-architecture.md` — exact 35B-A3B source-checkpoint Text/MoE/MTP/Vision
+  mathematics and state semantics; runtime support is defined elsewhere;
 - `docs/q5090_packed_file_format_v4.md` — the only normative q5090 artifact contract;
 - `docs/kernel-development.md` — kernel layering and correctness/performance workflow;
 - `docs/serving.md` — CLI, sampling, multimodal, OpenAI, and Anthropic behavior;

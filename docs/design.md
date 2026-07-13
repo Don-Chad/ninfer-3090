@@ -2,9 +2,12 @@
 
 > Status: current system architecture.
 >
-> This document defines repository boundaries, ownership, runtime flows, and supported scope. Model
-> mathematics belong in [`qwen3.6-27b-architecture.md`](qwen3.6-27b-architecture.md); the packed
-> artifact contract belongs in
+> This document defines repository boundaries, ownership, runtime flows, and supported scope. The
+> implemented model mathematics belong in
+> [`qwen3.6-27b-architecture.md`](qwen3.6-27b-architecture.md); the exact 35B-A3B source profile is
+> described separately in
+> [`qwen3.6-35b-a3b-architecture.md`](qwen3.6-35b-a3b-architecture.md). The packed artifact contract
+> belongs in
 > [`q5090_packed_file_format_v4.md`](q5090_packed_file_format_v4.md).
 
 ## 1. Purpose
