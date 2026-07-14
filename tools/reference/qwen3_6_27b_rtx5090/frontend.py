@@ -11,9 +11,6 @@ from .bindings import ArtifactBinding, BoundResource
 from .multimodal import MultimodalBatch, batch_from_processor_output
 
 
-IMAGE_PIXELS = 1024 * 1024
-VIDEO_PIXELS = 4 * 1024 * 1024
-
 _SPECIAL_TOKEN_IDS = {
     "<|vision_start|>": 248053,
     "<|vision_end|>": 248054,
@@ -129,20 +126,6 @@ class Frontend:
             return_dict=True,
             return_tensors="pt",
             enable_thinking=thinking,
-            processor_kwargs={
-                "images_kwargs": {
-                    "size": {
-                        "shortest_edge": 32 * 32,
-                        "longest_edge": IMAGE_PIXELS,
-                    }
-                },
-                "videos_kwargs": {
-                    "size": {
-                        "shortest_edge": 128 * 32 * 32,
-                        "longest_edge": VIDEO_PIXELS,
-                    }
-                },
-            },
         )
         return batch_from_processor_output(output)
 
@@ -162,4 +145,4 @@ class Frontend:
         )
 
 
-__all__ = ["Frontend", "IMAGE_PIXELS", "VIDEO_PIXELS"]
+__all__ = ["Frontend"]

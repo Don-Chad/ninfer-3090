@@ -162,7 +162,9 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
     const auto common_root = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens) {
         matrix(layout, DType::I32, 1, tokens);
         matrix(layout, DType::I32, 1, tokens);
+        matrix(layout, DType::I32, 3, tokens);
         matrix(layout, DType::BF16, TextConfig::hidden, tokens);
+        matrix(layout, DType::I32, 1, tokens);
     };
     const auto attention_stage = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens) {
         auto scope = layout.scope();
@@ -185,7 +187,7 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
         {
             auto operator_scope = layout.scope();
             layout.alloc_bytes(ops::gdn_input_proj_workspace_bytes(
-                TextConfig::key_dim, TextConfig::value_dim, tokens));
+                2 * TextConfig::key_dim, TextConfig::value_dim, tokens));
         }
         matrix(layout, DType::BF16, TextConfig::convolution_dim, tokens);
         matrix(layout, DType::FP32, TextConfig::gdn_value_heads, tokens);
@@ -236,6 +238,7 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
     }
 
     WorkspaceLayoutBuilder verify;
+    matrix(verify, DType::I32, 1, verify_tokens);
     matrix(verify, DType::BF16, TextConfig::hidden, verify_tokens);
     attention_stage(verify, verify_tokens);
     gdn_stage(verify, verify_tokens);
@@ -248,15 +251,20 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
     WorkspaceLayoutBuilder mtp;
     if (plan.mtp_k != 0) {
         common_root(mtp, prefill_tokens);
+        matrix(mtp, DType::I32, 1, prefill_tokens);
+        matrix(mtp, DType::BF16, TextConfig::hidden, prefill_tokens);
+        matrix(mtp, DType::I32, 1, prefill_tokens);
         matrix(mtp, DType::BF16, TextConfig::hidden, 1);
         matrix(mtp, DType::BF16, TextConfig::hidden, 1);
+        for (std::uint32_t i = 1; i < plan.mtp_k; ++i) {
+            matrix(mtp, DType::BF16, TextConfig::hidden, 1);
+        }
         {
             auto bulk_scope = mtp.scope();
             matrix(mtp, DType::BF16, TextConfig::hidden, prefill_tokens);
             matrix(mtp, DType::BF16, TextConfig::hidden, prefill_tokens);
             matrix(mtp, DType::BF16, TextConfig::hidden, prefill_tokens);
             matrix(mtp, DType::BF16, TextConfig::mtp_input_rows, prefill_tokens);
-            matrix(mtp, DType::BF16, TextConfig::hidden, prefill_tokens);
             matrix(mtp, DType::BF16, TextConfig::hidden, prefill_tokens);
             matrix(mtp, DType::BF16, TextConfig::kv_size, prefill_tokens);
             matrix(mtp, DType::BF16, TextConfig::kv_size, prefill_tokens);
@@ -268,6 +276,7 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
             matrix(mtp, DType::BF16, TextConfig::query_size, 1);
             matrix(mtp, DType::BF16, TextConfig::query_size, 1);
             matrix(mtp, DType::BF16, TextConfig::query_size, 1);
+            mtp.alloc_bytes(ops::gqa_attention_workspace_bytes(1));
             matrix(mtp, DType::BF16, TextConfig::hidden, 1);
             matrix(mtp, DType::BF16, TextConfig::hidden, 1);
             matrix(mtp, DType::BF16, TextConfig::mtp_mlp_gate_up_rows, 1);
