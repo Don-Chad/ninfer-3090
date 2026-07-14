@@ -351,8 +351,9 @@ changes its fixed allocation.
 | immutable Text/MTP/Vision bindings | `src/targets/qwen3_6_27b_rtx5090/impl/load/` |
 | Text/MTP/Vision execution and state | `src/targets/qwen3_6_27b_rtx5090/impl/program/`, `impl/schedule/` |
 | tokenizer, template, multimodal processing, output decoder | `src/targets/qwen3_6_27b_rtx5090/impl/frontend/` |
-| shared mathematical operators | `src/kernels/` |
-| GQA cache and GDN state implementations | `src/targets/qwen3_6_27b_rtx5090/impl/state/` |
+| mathematical and explicit local-state Op contracts/implementations | `include/ninfer/ops/`, `src/ops/` |
+| GQA cache physical container and cursor mechanisms | `src/core/kv_cache.*` |
+| GDN state implementation and target-owned state policy | `src/targets/qwen3_6_27b_rtx5090/impl/state/`, `impl/program/` |
 | `.ninfer` tensor assignment and binding | [`qwen3.6-27b-ninfer-artifact.md`](qwen3.6-27b-ninfer-artifact.md), `tools/reference/qwen3_6_27b_rtx5090/bindings.py` |
 | native `.ninfer` converter and verifier | `tools/convert/qwen3_6_27b_rtx5090` |
 | complete Python Text/Vision/MTP reference | `tools/reference/qwen3_6_27b_rtx5090` |

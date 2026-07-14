@@ -13,7 +13,7 @@ implementations, dated investigations, and performance evidence belong under
 | [`design.md`](design.md) | implemented component ownership, load/request flows, lifetime boundaries, and build direction |
 | [`ninfer-engine-architecture.md`](ninfer-engine-architecture.md) | detailed target-package, Engine, Frontend, Program, generated-token transaction, and source-organization decisions |
 | [`serving.md`](serving.md) | CLI, server, sampling, multimodal input, streaming, usage, and tool-call behavior |
-| [`kernel-development.md`](kernel-development.md) | shared-operator ownership, target-private kernel boundary, numerical validation, benchmarking, and profiling |
+| [`op-development.md`](op-development.md) | Op definition and contracts, central implementation ownership, numerical validation, benchmarking, and profiling |
 | [`ninfer-naming.md`](ninfer-naming.md) | canonical NInfer project name and `.ninfer` artifact extension |
 
 The executable `--help` output is the exact command-option contract. The installed C++ API is
@@ -56,9 +56,11 @@ qwen3_6_27b_rtx5090.ninfer
   -> apps/ninfer, apps/ninfer-serve, and ninfer_bench
 ```
 
-The target package owns checkpoint/GPU semantics. Common runtime code owns target-independent
-mechanisms and generated-token policy. Serving code owns protocols and transport. The public API is
-opaque and contains no CUDA, artifact, tensor, kernel, or target-private types.
+The target package owns checkpoint/GPU binding, schedules, and state policy; its schedules compose
+repository-internal Op contracts whose implementations are centrally owned. Common runtime code
+owns target-independent mechanisms and generated-token policy. Serving code owns protocols and
+transport. The public API is opaque and contains no CUDA, artifact, tensor, Op, kernel, or
+target-private types.
 
 ## Component guides
 

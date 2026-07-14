@@ -3,7 +3,7 @@
 #include "core/layout.h"
 #include "core/dtype.h"
 #include "core/tensor.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/state/kv_cache.h"
+#include "core/kv_cache.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/state/state_store.h"
 #include <ninfer/targets/qwen3_6_27b_rtx5090/package.h>
 

@@ -20,7 +20,7 @@ The delivered target includes:
 - the one-layer MTP draft model, full and optimized proposal heads, and eager or CUDA Graph decode;
 - the 27-layer Vision tower, patch merger, image/video preprocessing, embedding injection, and
   three-axis MRoPE;
-- chunked prefill, single-token decode, and target-shaped CUDA kernels;
+- chunked prefill, single-token decode, and exact-shape CUDA kernels;
 - BF16 and INT8 group-64 KV-cache storage;
 - greedy decoding and configurable temperature/top-k/top-p/min-p/penalty sampling;
 - prefix reuse for compatible text requests;
@@ -184,6 +184,8 @@ BF16 checkpoint
   -> ArtifactReader / ArtifactBinder / Materializer
   -> closed qwen3_6_27b_rtx5090 target package
        immutable LoadedModel + Frontend + one mutable Program
+       fixed schedules compose repository-internal Ops
+         -> central Op implementations and specialized CUDA kernels
   -> common generated-token controller
   -> public Engine
        CLI / server / benchmark
@@ -191,12 +193,14 @@ BF16 checkpoint
 
 The source and build boundaries are explicit:
 
-- `src/core`, `src/artifact`, and `src/kernels` own reusable mechanisms;
+- `src/core` and `src/artifact` own L0 execution/storage and native artifact mechanisms;
+- `include/ninfer/ops` defines repository-internal mathematical and explicit local-state contracts;
+  `src/ops` owns all implementations, including exact-shape and device-specialized CUDA kernels;
 - `src/text` and `src/media/decode` own checkpoint-neutral Unicode and media decoding;
 - `src/product/media_acquire` owns path, URL, and data-URI acquisition for product entry points;
 - `src/product/prompt_input` owns the shared CLI/diagnostic message-input adapter;
-- `src/targets/qwen3_6_27b_rtx5090` owns exact checkpoint/GPU load, frontend, state, schedules, and
-  target-only kernels/graph policy;
+- `src/targets/qwen3_6_27b_rtx5090` owns exact checkpoint/GPU load, frontend, Program state,
+  schedules, and graph/lifecycle policy; its schedules invoke central Op contracts;
 - `src/runtime` owns common request contracts, generation policy, and the public
   Engine implementation;
 - `src/serve` owns HTTP schemas, translation, streaming, and transport;
@@ -218,8 +222,8 @@ Start at [`docs/README.md`](docs/README.md). Important active documents include:
 - [`docs/qwen3.6-27b-ninfer-artifact.md`](docs/qwen3.6-27b-ninfer-artifact.md) — registered object
   inventory, source transforms, and binding obligations;
 - [`docs/qwen3.6-27b-architecture.md`](docs/qwen3.6-27b-architecture.md) — Text/MTP/Vision model math;
-- [`docs/kernel-development.md`](docs/kernel-development.md) — operator ownership and performance
-  workflow;
+- [`docs/op-development.md`](docs/op-development.md) — Op contracts, implementation ownership, and
+  correctness/performance workflow;
 - [`docs/serving.md`](docs/serving.md) — CLI and HTTP behavior.
 
 Completed plans, retired implementations, and dated evidence belong under

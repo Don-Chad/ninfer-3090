@@ -1,8 +1,10 @@
 # Benchmarks
 
 `ninfer_bench` measures the complete public `ninfer::Engine` route against a `.ninfer` artifact.
-The other `ninfer_<op>_bench` executables are target-shaped kernel microbenchmarks for ncu/nsys
-work. Correctness and model parity live outside this directory.
+The `bench/ops/` `ninfer_<op>_bench` executables measure central Op contracts and their specialized
+CUDA implementations for ncu/nsys work. Target benchmarks measure Program/model composition.
+Correctness and model parity live outside this directory; development rules are in
+[`../docs/op-development.md`](../docs/op-development.md).
 
 ## Build
 

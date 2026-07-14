@@ -52,13 +52,13 @@ execution behavior.
 
 | Component | Source | Ownership |
 |---|---|---|
-| Base mechanisms | `src/core`, selected `src/runtime` primitives | device/stream, tensor views, checked layouts, arenas, graph wrapper, public host-type definitions, request memory |
+| Base mechanisms | `src/core`, selected `src/runtime` primitives | device/stream, tensor views, checked layouts, arenas, graph wrapper, physical KV containers, raw transfers, public host-type definitions, request memory |
 | Artifact | `src/artifact` | `.ninfer` framing and directory parsing, object matching, range/geometry checks, binding records, direct final materialization |
-| Shared kernels | `src/kernels` | checkpoint-independent mathematical operators, launch policy, and CUDA implementations that are genuinely reused |
+| Ops | `include/ninfer/ops`, `src/ops` | repository-internal semantic contracts and every wrapper/launcher/kernel implementation, including fused and exact-shape/device-specialized paths |
 | Neutral text/media decode | `src/text`, `src/media/decode` | Unicode primitives and image/video decoding over owning bytes |
 | Product media acquisition | `src/product/media_acquire` | local-path, HTTP(S), and data-URI acquisition into owning media values |
 | Product prompt input | `src/product/prompt_input` | shared JSON/message parsing into owning public prompt values for product tools |
-| Exact target | `src/targets/qwen3_6_27b_rtx5090` | storage profile, load bindings, frontend, sequence/request plans, Program state, fixed Text/Vision/MTP schedules, target-only kernels/graph policy, target diagnostics |
+| Exact target | `src/targets/qwen3_6_27b_rtx5090` | storage profile, load bindings, frontend, sequence/request plans, Program state, fixed Text/Vision/MTP schedules, graph/lifecycle policy, target diagnostics |
 | Registry | `src/targets/registry.*` | closed target selection and complete target construction |
 | Product runtime | `src/runtime` | generated-token budget, round resolution, cancellation, publication, public Engine PIMPL, target lifetime |
 | Serving | `src/serve` | OpenAI/Anthropic schemas, translation, streaming, usage, request logs, and HTTP transport |
@@ -67,14 +67,18 @@ execution behavior.
 
 The central placement rule is simple:
 
-- generic byte/device/lifetime mechanisms belong below targets;
-- a complete checkpoint-independent mathematical operator may belong in shared kernels;
-- anything whose invariant names the checkpoint, GPU, fixed schedule, Vision composition, MTP
-  alignment, prefix repair, or graph shape belongs to the exact target;
+- generic byte/device/lifetime mechanisms belong in core/artifact;
+- every host-callable, semantically closed tensor or explicit local-state transformation is an Op,
+  and its complete implementation belongs in the central Op layer even when only one target,
+  numerical shape, or GPU currently uses it;
+- exact checkpoint binding, fixed layer order, operand/view selection, Vision composition, MTP
+  orchestration, prefix repair, state lifetime, and graph policy belong to the exact target;
 - stop/output-budget/cancellation/publication policy belongs to common runtime;
 - schemas, URLs/files, protocol translation, and transport belong to product/serve code.
 
-Small duplication between exact targets is preferable to a false family abstraction.
+The complete Op boundary and implementation rules are defined by
+[`op-development.md`](op-development.md). Small duplication of schedule and state policy between
+exact targets is preferable to a false family abstraction.
 
 ## 4. Public C++ API
 
@@ -281,7 +285,7 @@ CMake uses explicit source lists and component targets:
 ninfer_core
 ninfer_artifact
   -> ninfer_core
-ninfer_kernels
+ninfer_ops
   -> ninfer_core
 ninfer_text
 ninfer_media_decode
@@ -289,7 +293,7 @@ ninfer_media_acquire
 ninfer_product_prompt_input
   -> ninfer_media_acquire
 ninfer_qwen3_6_27b_rtx5090
-  -> ninfer_artifact + ninfer_kernels + ninfer_text + ninfer_media_decode
+  -> ninfer_artifact + ninfer_ops + ninfer_text + ninfer_media_decode
 ninfer_engine
   -> target package + common runtime
 ninfer_serve
@@ -306,7 +310,7 @@ entry and explicit closed-registry entry.
 Permanent checks are organized by observable risk:
 
 - `.ninfer` framing, numeric formats, layouts, resources, binding, and real target inventory;
-- shared operator numerical behavior at real shapes;
+- Op numerical/state-transition behavior at real supported shapes;
 - target Frontend behavior, Program state/prefix transactions, Text/Vision/MTP parity, and a real
   artifact smoke path;
 - OpenAI/Anthropic schema and tool-call behavior;

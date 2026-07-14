@@ -1,7 +1,7 @@
 #include "targets/qwen3_6_27b_rtx5090/impl/schedule/schedule.h"
 
-#include "kernels/linear/linear.h"
-#include "kernels/sampling/sampling.h"
+#include "ninfer/ops/linear.h"
+#include "ninfer/ops/sampling.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/config.h"
 
 #include <cuda_runtime.h>
@@ -63,10 +63,10 @@ void sample_from_hidden(State& state, const Tensor& hidden, std::int32_t absolut
     }
     state.work.reset();
     Tensor logits = state.io.logits.slice(1, 0, 1);
-    kernels::linear(hidden, state.model.output_head, logits, state.work, state.device.stream);
+    ops::linear(hidden, state.model.output_head, logits, state.work, state.device.stream);
     CUDA_CHECK(cudaMemcpyAsync(state.io.pos.data, &absolute_position, sizeof(absolute_position),
                                cudaMemcpyHostToDevice, state.device.stream));
-    kernels::sample(logits, state.io.token, TextConfig::token_domain, state.sampling,
+    ops::sample(logits, state.io.token, TextConfig::token_domain, state.sampling,
                     static_cast<const std::int32_t*>(state.io.pos.data), purpose,
                     state.device.stream);
     state.work.reset();

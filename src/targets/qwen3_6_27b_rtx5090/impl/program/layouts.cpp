@@ -1,11 +1,14 @@
 #include "targets/qwen3_6_27b_rtx5090/impl/program/layouts.h"
 
 #include "core/device.h"
-#include "kernels/gated_delta_rule/gated_delta_rule.h"
-#include "kernels/gdn_gating/gdn_gating_proj.h"
-#include "kernels/sampling/sampling.h"
+#include "ninfer/ops/gated_delta_rule.h"
+#include "ninfer/ops/gdn_gating_proj.h"
+#include "ninfer/ops/gdn_input_proj.h"
+#include "ninfer/ops/linear_add.h"
+#include "ninfer/ops/linear_swiglu.h"
+#include "ninfer/ops/sampling.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/config.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/kernels/gqa_attention/gqa_attention.h"
+#include "ninfer/ops/gqa_attention.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
 
 #include <algorithm>
@@ -133,7 +136,7 @@ PersistentLayout persistent_layout(const SequencePlan::Impl& plan) {
     out.io.stats            = add_tensor(builder, DType::I64, {kStepStatsCounters}, "step stats");
     out.token_counts        = i32(TextConfig::token_domain, "sampling token counts");
     const auto config_words = static_cast<std::int32_t>(
-        (sizeof(kernels::SamplingConfig) + sizeof(std::int32_t) - 1) / sizeof(std::int32_t));
+        (sizeof(ops::SamplingConfig) + sizeof(std::int32_t) - 1) / sizeof(std::int32_t));
     out.sampling_config = add_tensor(builder, DType::I32, {config_words}, "sampling config");
     out.tail_hidden = add_tensor(builder, DType::BF16, {TextConfig::hidden, 1}, "tail hidden");
     out.boundary_hidden =
@@ -171,22 +174,25 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
         matrix(layout, DType::BF16, TextConfig::query_size, tokens);
         matrix(layout, DType::BF16, TextConfig::kv_size, tokens);
         matrix(layout, DType::BF16, TextConfig::query_size, tokens);
-        matrix(layout, DType::BF16, TextConfig::hidden, tokens);
-        layout.alloc_bytes(kernels::gqa_attention_workspace_bytes(tokens));
+        layout.alloc_bytes(ops::gqa_attention_workspace_bytes(tokens));
+        layout.alloc_bytes(ops::linear_add_workspace_bytes(
+            TextConfig::hidden, TextConfig::query_size, tokens));
     };
     const auto gdn_stage = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens) {
         auto scope = layout.scope();
         matrix(layout, DType::BF16, TextConfig::hidden, tokens);
-        matrix(layout, DType::BF16, TextConfig::key_dim, tokens);
-        matrix(layout, DType::BF16, TextConfig::key_dim, tokens);
-        matrix(layout, DType::BF16, TextConfig::value_dim, tokens);
         matrix(layout, DType::BF16, TextConfig::convolution_dim, tokens);
+        {
+            auto operator_scope = layout.scope();
+            layout.alloc_bytes(ops::gdn_input_proj_workspace_bytes(
+                TextConfig::key_dim, TextConfig::value_dim, tokens));
+        }
         matrix(layout, DType::BF16, TextConfig::convolution_dim, tokens);
         matrix(layout, DType::FP32, TextConfig::gdn_value_heads, tokens);
         matrix(layout, DType::FP32, TextConfig::gdn_value_heads, tokens);
         {
             auto operator_scope = layout.scope();
-            layout.alloc_bytes(kernels::gdn_gating_proj_workspace_bytes(tokens));
+            layout.alloc_bytes(ops::gdn_gating_proj_workspace_bytes(tokens));
         }
         matrix(layout, DType::BF16, TextConfig::key_dim, tokens);
         matrix(layout, DType::BF16, TextConfig::key_dim, tokens);
@@ -196,18 +202,27 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
         matrix(layout, DType::BF16, TextConfig::value_dim, tokens);
         {
             auto operator_scope = layout.scope();
-            layout.alloc_bytes(kernels::gated_delta_rule_workspace_bytes(tokens));
+            layout.alloc_bytes(ops::gated_delta_rule_workspace_bytes(tokens));
         }
         matrix(layout, DType::BF16, TextConfig::value_dim, tokens);
         matrix(layout, DType::BF16, TextConfig::value_dim, tokens);
-        matrix(layout, DType::BF16, TextConfig::hidden, tokens);
+        layout.alloc_bytes(ops::linear_add_workspace_bytes(
+            TextConfig::hidden, TextConfig::value_dim, tokens));
     };
     const auto mlp_stage = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens) {
         auto scope = layout.scope();
         matrix(layout, DType::BF16, TextConfig::hidden, tokens);
-        matrix(layout, DType::BF16, 2 * TextConfig::intermediate, tokens);
         matrix(layout, DType::BF16, TextConfig::intermediate, tokens);
-        matrix(layout, DType::BF16, TextConfig::hidden, tokens);
+        {
+            auto operator_scope = layout.scope();
+            layout.alloc_bytes(ops::linear_swiglu_workspace_bytes(
+                2 * TextConfig::intermediate, tokens));
+        }
+        {
+            auto operator_scope = layout.scope();
+            layout.alloc_bytes(ops::linear_add_workspace_bytes(
+                TextConfig::hidden, TextConfig::intermediate, tokens));
+        }
     };
 
     WorkspaceLayoutBuilder prefill;

@@ -1,6 +1,6 @@
 #include "targets/qwen3_6_27b_rtx5090/impl/program/program.h"
 
-#include "targets/qwen3_6_27b_rtx5090/impl/schedule/ops.h"
+#include "ninfer/ops/mtp_round.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/config.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/schedule/schedule.h"
@@ -188,7 +188,7 @@ void Program::Impl::prepare_graphs() {
                                *gdn,
                                io,
                                prefill_chunk,
-                               static_cast<const kernels::SamplingConfig*>(sampling_config.data),
+                               static_cast<const ops::SamplingConfig*>(sampling_config.data),
                                proposal_head,
                                &boundary_hidden,
                                nullptr,
@@ -229,7 +229,7 @@ void Program::Impl::prepare_graphs() {
     }
 }
 
-void Program::Impl::install_sampling(const kernels::SamplingConfig& config) {
+void Program::Impl::install_sampling(const ops::SamplingConfig& config) {
     CUDA_CHECK(cudaMemsetAsync(token_counts.data, 0, token_counts.bytes(), device.stream));
     CUDA_CHECK(cudaMemsetAsync(io.stats.data, 0, io.stats.bytes(), device.stream));
     sampling_host = config;
@@ -352,7 +352,7 @@ runtime::BeginResult Program::Impl::begin(PreparedPromptData&& prompt, RequestPl
             *gdn,
             io,
             prefill_chunk,
-            static_cast<const kernels::SamplingConfig*>(sampling_config.data),
+            static_cast<const ops::SamplingConfig*>(sampling_config.data),
             proposal_head,
             &boundary_hidden,
             diagnostic_context,
@@ -405,7 +405,7 @@ runtime::BeginResult Program::Impl::begin(PreparedPromptData&& prompt, RequestPl
                 }
                 schedule::sample_from_hidden(schedule_state, tail_hidden,
                                              checked_i32(prompt_tokens, "sample position"),
-                                             kernels::kSamplePurposePrefill);
+                                             ops::kSamplePurposePrefill);
                 set_device_i32(io.rope_pos,
                                checked_i32(prompt_tokens, "rope position") + rope_delta);
                 if (plan.prepare_mtp) {
@@ -495,7 +495,7 @@ runtime::GeneratedRound Program::Impl::decode_round(runtime::RoundBudget budget)
             *gdn,
             io,
             prefill_chunk,
-            static_cast<const kernels::SamplingConfig*>(sampling_config.data),
+            static_cast<const ops::SamplingConfig*>(sampling_config.data),
             proposal_head,
             &boundary_hidden,
             diagnostic_context,
@@ -509,7 +509,7 @@ runtime::GeneratedRound Program::Impl::decode_round(runtime::RoundBudget budget)
             DecodeGraph* graph = use_cuda_graph && diagnostic_text_tap == nullptr ? &mtp_graph
                                                                                   : nullptr;
             schedule::mtp_round(schedule_state, mtp_k, graph);
-            kernels::mtp_gather_hidden_row(io.verify_hidden, io.accepted, tail_hidden,
+            ops::mtp_gather_hidden_row(io.verify_hidden, io.accepted, tail_hidden,
                                            device.stream);
             CUDA_CHECK(cudaMemcpyAsync(host_count, io.num_sampled.data, sizeof(std::int32_t),
                                        cudaMemcpyDeviceToHost, device.stream));

@@ -40,7 +40,7 @@ ninfer_add_test(ninfer_tensor_test       SOURCES test_tensor.cpp)
 ninfer_add_test(ninfer_arena_test        SOURCES test_arena.cpp)
 ninfer_add_test(ninfer_kv_cache_test
   SOURCES test_kv_cache.cpp
-  LIBRARIES ninfer_qwen3_6_27b_rtx5090 ninfer_core)
+  LIBRARIES ninfer_core)
 ninfer_add_test(ninfer_state_store_test
   SOURCES test_state_store.cpp
   LIBRARIES ninfer_qwen3_6_27b_rtx5090 ninfer_core)
@@ -76,9 +76,8 @@ ninfer_add_test(ninfer_bench_support_test
   LIBRARIES ninfer_engine)
 target_include_directories(ninfer_bench_support_test PRIVATE ${PROJECT_SOURCE_DIR}/bench/targets/qwen3_6_27b_rtx5090)
 
-# Shared operator numerical tests. Target-composed schedule tests are registered
-# separately below so the generic operator library does not acquire model policy.
-set(ninfer_kernel_tests
+# Shared Op numerical tests. Target-composed schedule tests are registered separately below.
+set(ninfer_op_tests
   silu_mul
   residual_add
   sigmoid_mul
@@ -88,61 +87,47 @@ set(ninfer_kernel_tests
   causal_conv1d_silu
   layer_norm
   embedding
-  argmax)
-foreach(op IN LISTS ninfer_kernel_tests)
-  ninfer_add_test(ninfer_${op}_test
-    SOURCES kernels/test_${op}.cpp
-    LIBRARIES ninfer_kernels)
-endforeach()
-
-# Operators whose implemented contract or dispatch names this exact checkpoint/GPU.
-set(ninfer_qwen3_6_27b_operator_tests
+  argmax
   gdn_gating
   gdn_gating_proj
   rope
   vision_pos_embed
   vision_attention
-  sampling)
-foreach(op IN LISTS ninfer_qwen3_6_27b_operator_tests)
+  sampling
+  cast
+  position
+  vision_elementwise)
+foreach(op IN LISTS ninfer_op_tests)
   ninfer_add_test(ninfer_${op}_test
-    SOURCES kernels/test_${op}.cpp
-    LIBRARIES ninfer_qwen3_6_27b_rtx5090 ninfer_core)
+    SOURCES ops/test_${op}.cpp
+    LIBRARIES ninfer_ops)
 endforeach()
 
-# These exercise fixed target schedule geometry in addition to target-owned kernels.
+# Stateful, fused, and exact-shape Ops remain central even when the current implementation domain
+# is one checkpoint/device.
 ninfer_add_test(ninfer_gqa_attention_test
-  SOURCES targets/qwen3_6_27b/test_gqa_attention.cpp
-  LIBRARIES ninfer_qwen3_6_27b_rtx5090 ninfer_core)
+  SOURCES ops/test_gqa_attention.cpp
+  LIBRARIES ninfer_ops)
 ninfer_add_test(ninfer_mtp_pack_test
-  SOURCES targets/qwen3_6_27b/test_mtp_pack.cpp
-  LIBRARIES ninfer_qwen3_6_27b_rtx5090 ninfer_core)
+  SOURCES ops/test_mtp_pack.cpp
+  LIBRARIES ninfer_ops)
 ninfer_add_test(ninfer_mtp_round_test
-  SOURCES targets/qwen3_6_27b/test_mtp_round.cpp
-  LIBRARIES ninfer_qwen3_6_27b_rtx5090 ninfer_core)
+  SOURCES ops/test_mtp_round.cpp
+  LIBRARIES ninfer_ops)
 ninfer_add_test(ninfer_linear_test
-  SOURCES targets/qwen3_6_27b/test_linear_kernels.cpp
-  LIBRARIES ninfer_qwen3_6_27b_rtx5090 ninfer_core)
-ninfer_add_test(ninfer_vision_elementwise_test
-  SOURCES targets/qwen3_6_27b/test_vision_elementwise.cpp
+  SOURCES ops/test_linear.cpp
+  LIBRARIES ninfer_ops)
+
+ninfer_add_test(ninfer_qwen3_6_27b_visual_scatter_test
+  SOURCES targets/qwen3_6_27b/test_visual_scatter.cpp
   LIBRARIES ninfer_qwen3_6_27b_rtx5090 ninfer_core)
 
 # These tests deliberately compile against the exact target's internal contracts; the target does
 # not export impl/ to ordinary consumers.
 set(ninfer_qwen3_6_27b_internal_tests
-  ninfer_kv_cache_test
   ninfer_state_store_test
   ninfer_qwen3_6_27b_frontend_test
-  ninfer_gdn_gating_test
-  ninfer_gdn_gating_proj_test
-  ninfer_rope_test
-  ninfer_vision_pos_embed_test
-  ninfer_vision_attention_test
-  ninfer_sampling_test
-  ninfer_gqa_attention_test
-  ninfer_mtp_pack_test
-  ninfer_mtp_round_test
-  ninfer_linear_test
-  ninfer_vision_elementwise_test)
+  ninfer_qwen3_6_27b_visual_scatter_test)
 foreach(test_target IN LISTS ninfer_qwen3_6_27b_internal_tests)
   target_include_directories(${test_target} PRIVATE
     ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b_rtx5090/impl)

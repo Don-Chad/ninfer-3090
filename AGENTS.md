@@ -66,7 +66,8 @@ Read the smallest relevant current authority:
   `docs/ninfer-tensor-formats.md`: generic `.ninfer` contracts;
 - `docs/qwen3.6-27b-ninfer-artifact.md`: exact target inventory, conversion, and binding;
 - `docs/qwen3.6-27b-architecture.md`: Text/Vision/MTP mathematics and state semantics;
-- `docs/kernel-development.md`: kernel correctness and performance workflow;
+- `docs/op-development.md`: Op boundary, contracts, implementation ownership, correctness, and
+  performance workflow;
 - `docs/serving.md`: CLI, sampling, multimodal, OpenAI, and Anthropic behavior;
 - `include/ninfer/engine.h` and `include/ninfer/types.h`: installed C++ product API.
 
@@ -76,16 +77,20 @@ Read the smallest relevant current authority:
 
 - `.ninfer` is the only C++ product artifact. Do not add `.qus` fallback, extension detection,
   compatibility shims, or a second product lane.
-- `include/ninfer/` contains only the opaque Engine API and owning host values. CUDA, tensors,
-  artifact details, kernels, targets, and serving types stay under `src/`.
-- `src/core` owns device primitives, tensors/views, checked layouts, arenas, and graph RAII.
+- `include/ninfer/engine.h` and `include/ninfer/types.h` are the installed opaque Engine API and
+  owning host values. `include/ninfer/ops/` contains repository-internal semantic Op contracts; it
+  is not installed product ABI.
+- `src/core` owns device primitives, tensors/views, checked layouts, arenas, graph RAII, physical
+  KV-cache containers, and raw transfer mechanisms.
 - `src/artifact` owns generic `.ninfer` framing, descriptors, binding primitives, and
   materialization. It has no checkpoint execution semantics.
-- `src/kernels` owns proven shared mathematical operators. A target-only fixed-shape operation
-  stays in that target until real reuse proves a common contract.
+- `src/ops` owns every semantically closed Op implementation, including fused, fixed-shape, and
+  device-specialized paths. Op ownership follows the mathematical/state-transition contract, not
+  its first model caller or demonstrated cross-target reuse.
 - `src/targets/<target_key>` owns the exact checkpoint/GPU storage profile, LoadedModel, Frontend,
-  Program, KV/recurrent state, Text/Vision/MTP schedules, target graphs, and diagnostics. It is one
-  closed package, not a model family or generic graph.
+  Program, recurrent state, Text/Vision/MTP schedules, target graph/state policy, and diagnostics.
+  Target schedules compose repository-internal Ops but do not own mathematical CUDA
+  implementations. A target is one closed package, not a model family or generic graph.
 - `src/runtime` owns common contracts, generated-token transaction/publication policy, and the
   public Engine PIMPL. It does not own model mathematics or target state.
 - `src/media/decode` consumes already-owned bytes. URL/path/data acquisition belongs to

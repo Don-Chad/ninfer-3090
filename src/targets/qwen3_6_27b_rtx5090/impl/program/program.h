@@ -1,14 +1,14 @@
 #pragma once
 
 #include "core/arena.h"
-#include "kernels/sampling/sampling.h"
+#include "ninfer/ops/sampling.h"
 #include "core/decode_graph.h"
 #include <ninfer/targets/qwen3_6_27b_rtx5090/package.h>
 
 #include "targets/qwen3_6_27b_rtx5090/impl/frontend/frontend.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/program/layouts.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/state/kv_cache.h"
+#include "core/kv_cache.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/state/state_store.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/schedule/text_context.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/schedule/vision_context.h"
@@ -34,7 +34,7 @@ struct RequestPlan::Impl {
     bool prepare_mtp             = false;
     bool multimodal              = false;
     std::optional<std::uint32_t> snapshot_boundary;
-    kernels::SamplingConfig sampling;
+    ops::SamplingConfig sampling;
 };
 
 enum class PendingKind : std::uint8_t {
@@ -113,7 +113,7 @@ public:
     Tensor token_counts;
     Tensor tail_hidden;
     Tensor boundary_hidden;
-    kernels::SamplingConfig sampling_host;
+    ops::SamplingConfig sampling_host;
 
     DecodeGraph ordinary_graph;
     DecodeGraph ordinary_aligned_graph;
@@ -144,7 +144,7 @@ private:
     void make_invalid() noexcept;
     void ordered_reset();
     void prepare_graphs();
-    void install_sampling(const kernels::SamplingConfig& config);
+    void install_sampling(const ops::SamplingConfig& config);
     void set_device_i32(Tensor& tensor, std::int32_t value);
     void copy_tail(const Tensor& source);
     void copy_round_token();

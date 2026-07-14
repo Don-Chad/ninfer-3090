@@ -2,14 +2,14 @@
 
 The retained tests protect current `.ninfer`, numerical operator, target, runtime-transaction,
 benchmark-report, and external protocol behavior. Repository verification principles are defined in
-[`../AGENTS.md`](../AGENTS.md); CUDA guidance is in
-[`../docs/kernel-development.md`](../docs/kernel-development.md).
+[`../AGENTS.md`](../AGENTS.md); Op contract and CUDA implementation guidance is in
+[`../docs/op-development.md`](../docs/op-development.md).
 
 ## Organization
 
 - `artifact/` — Python container, registered layout, quantization, and resource behavior;
-- `kernels/` — independent numerical checks at real supported shapes, plus the shared row-split
-  packing helper;
+- `ops/` — independent numerical and state-transition checks at real supported shapes, plus the
+  shared row-split packing helper;
 - `targets/qwen3_6_27b/` — registered inventory, converter recipe, source verifier, artifact
   bindings, reference behavior, target Frontend, multimodal/MTP behavior, and the opt-in real-Engine
   prefix test;
@@ -21,8 +21,8 @@ benchmark-report, and external protocol behavior. Repository verification princi
   protocol translation and tool-call behavior;
 - `test_ninfer_bench_support.cpp` — product benchmark CLI, timing boundary, and schema-v8 reports;
 - `test_bench_matrix.py` — schema-v8 report consumption by the Python matrix summarizer;
-- device/tensor/arena tests — reusable lower-component behavior; KV/GDN tests exercise the exact
-  target-owned state implementations.
+- device/tensor/arena tests — reusable lower-component behavior; KV tests cover the core physical
+  container, while GDN tests cover target-owned state and Op behavior at their proper boundaries.
 
 Tests are grouped by observable risk, not by mirroring every source file or class.
 

@@ -18,6 +18,7 @@ add_library(ninfer_core STATIC
   core/arena.cu
   core/device.cu
   core/dtype.cpp
+  core/kv_cache.cpp
   core/layout.cpp
   core/tensor.cpp
   core/decode_graph.cpp
@@ -36,43 +37,87 @@ add_library(ninfer_artifact STATIC
 ninfer_internal_includes(ninfer_artifact)
 target_link_libraries(ninfer_artifact PUBLIC ninfer_core)
 
-# Shared mathematical operators. The list is intentionally explicit: adding a
+# Shared mathematical Ops. The list is intentionally explicit: adding a
 # source is a build-boundary decision, not an accidental recursive-glob side effect.
-add_library(ninfer_kernels STATIC
-  kernels/add_bias/add_bias.cpp
-  kernels/add_bias/launch.cu
-  kernels/argmax/argmax.cpp
-  kernels/argmax/launch.cu
-  kernels/causal_conv1d/causal_conv1d_silu.cpp
-  kernels/causal_conv1d/launch.cu
-  kernels/embedding/embedding.cpp
-  kernels/embedding/launch.cu
-  kernels/gated_delta_rule/gated_delta_rule.cpp
-  kernels/gated_delta_rule/chunk_output.cu
-  kernels/gated_delta_rule/chunked.cu
-  kernels/gated_delta_rule/prepare_wy_wu.cu
-  kernels/gated_delta_rule/recurrent.cu
-  kernels/gated_delta_rule/state_passing.cu
-  kernels/gelu/gelu.cpp
-  kernels/gelu/launch.cu
-  kernels/l2norm/l2norm.cpp
-  kernels/l2norm/launch.cu
-  kernels/layer_norm/layer_norm.cpp
-  kernels/layer_norm/launch.cu
-  kernels/residual_add/residual_add.cpp
-  kernels/residual_add/launch.cu
-  kernels/rmsnorm/rmsnorm.cpp
-  kernels/rmsnorm/launch.cu
-  kernels/scatter/scatter.cpp
-  kernels/scatter/launch.cu
-  kernels/sigmoid_mul/sigmoid_mul.cpp
-  kernels/sigmoid_mul/launch.cu
-  kernels/silu_mul/silu_mul.cpp
-  kernels/silu_mul/launch.cu
-  )
-ninfer_internal_includes(ninfer_kernels)
-ninfer_cuda_archive(ninfer_kernels)
-target_link_libraries(ninfer_kernels PUBLIC ninfer_core)
+add_library(ninfer_ops STATIC
+  ops/launcher/add_bias.cu
+  ops/launcher/argmax.cu
+  ops/launcher/cast.cu
+  ops/launcher/causal_conv1d.cu
+  ops/launcher/embed_gather.cu
+  ops/launcher/gated_delta_rule_chunked.cu
+  ops/launcher/gated_delta_rule_recurrent.cu
+  ops/launcher/gdn_chunk_output.cu
+  ops/launcher/gdn_gating.cu
+  ops/launcher/gdn_prepare_wy_wu.cu
+  ops/launcher/gdn_state_passing.cu
+  ops/launcher/gelu.cu
+  ops/launcher/gqa_attention_decode.cu
+  ops/launcher/gqa_attention_prefill.cu
+  ops/launcher/l2norm.cu
+  ops/launcher/layer_norm.cu
+  ops/launcher/mtp_pack.cu
+  ops/launcher/mtp_round.cu
+  ops/launcher/position.cu
+  ops/launcher/residual_add.cu
+  ops/launcher/rmsnorm.cu
+  ops/launcher/rope.cu
+  ops/launcher/sampling.cu
+  ops/launcher/scalar.cu
+  ops/launcher/scatter.cu
+  ops/launcher/sigmoid_gate_mul.cu
+  ops/launcher/silu_and_mul.cu
+  ops/launcher/vision_attention.cu
+  ops/launcher/vision_pos_embed.cu
+  ops/linear/gemm/linear_rowsplit_gemm_mma.cu
+  ops/linear/gemm/linear_rowsplit_grouped_input_gemm_mma.cu
+  ops/linear/gemm/linear_rowsplit_q4_gate_up_silu_gemm_mma.cu
+  ops/linear/gemm/linear_rowsplit_w8g32_gemm_mma.cu
+  ops/linear/gemm/linear_rowsplit_w8g32_kv_gemm_mma.cu
+  ops/linear/gemv/linear_dense_gdn_in_ab_48.cu
+  ops/linear/gemv/linear_rowsplit_gemm_smallt.cu
+  ops/linear/gemv/linear_rowsplit_gemv_attn_in_7168.cu
+  ops/linear/gemv/linear_rowsplit_gemv_gdn_in_qk_4096.cu
+  ops/linear/gemv/linear_rowsplit_gemv_gdn_in_vz_6144.cu
+  ops/linear/gemv/linear_rowsplit_gemv_lm_head.cu
+  ops/linear/gemv/linear_rowsplit_gemv_mlp_down.cu
+  ops/linear/gemv/linear_rowsplit_gemv_mlp_gate_up_34816.cu
+  ops/linear/gemv/linear_rowsplit_gemv_out_6144.cu
+  ops/linear/gemv/linear_rowsplit_gemv_proj_6144.cu
+  ops/linear/linear.cpp
+  ops/linear/plan/linear_plan.cpp
+  ops/linear/reference/linear_generic_dense.cu
+  ops/wrapper/add_bias.cpp
+  ops/wrapper/argmax.cpp
+  ops/wrapper/cast.cpp
+  ops/wrapper/causal_conv1d_silu.cpp
+  ops/wrapper/embedding.cpp
+  ops/wrapper/gated_delta_rule.cpp
+  ops/wrapper/gdn_gating.cpp
+  ops/wrapper/gdn_gating_proj.cpp
+  ops/wrapper/gelu.cpp
+  ops/wrapper/gqa_attention.cpp
+  ops/wrapper/input_proj.cpp
+  ops/wrapper/l2norm.cpp
+  ops/wrapper/layer_norm.cpp
+  ops/wrapper/linear_add.cpp
+  ops/wrapper/linear_swiglu.cpp
+  ops/wrapper/mtp_pack.cpp
+  ops/wrapper/mtp_round.cpp
+  ops/wrapper/position.cpp
+  ops/wrapper/residual_add.cpp
+  ops/wrapper/rmsnorm.cpp
+  ops/wrapper/rope.cpp
+  ops/wrapper/sampling.cpp
+  ops/wrapper/scalar.cpp
+  ops/wrapper/scatter.cpp
+  ops/wrapper/sigmoid_mul.cpp
+  ops/wrapper/silu_mul.cpp
+  ops/wrapper/vision_attention.cpp
+  ops/wrapper/vision_pos_embed.cpp)
+ninfer_internal_includes(ninfer_ops)
+ninfer_cuda_archive(ninfer_ops)
+target_link_libraries(ninfer_ops PUBLIC ninfer_core)
 
 # Product-independent text and media mechanisms.
 add_library(ninfer_text STATIC

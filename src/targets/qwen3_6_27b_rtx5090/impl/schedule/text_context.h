@@ -4,10 +4,10 @@
 #include "core/device.h"
 #include "core/tensor.h"
 #include "core/weight.h"
-#include "kernels/sampling/sampling.h"
+#include "ninfer/ops/sampling.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/config.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/state/kv_cache.h"
+#include "core/kv_cache.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/state/state_store.h"
 
 #include <array>
@@ -228,7 +228,7 @@ public:
         lm_head_draft_n_   = count;
     }
 
-    void set_sampling(const kernels::SamplingConfig* config) noexcept { sampling_config_ = config; }
+    void set_sampling(const ops::SamplingConfig* config) noexcept { sampling_config_ = config; }
 
     void set_prefill_snapshot_boundary(std::int64_t position) noexcept {
         prefill_snapshot_boundary_ = position;
@@ -321,7 +321,7 @@ private:
     const Weight* lm_head_draft_                    = nullptr;
     const std::int32_t* lm_head_draft_ids_          = nullptr;
     int lm_head_draft_n_                            = 0;
-    const kernels::SamplingConfig* sampling_config_ = nullptr;
+    const ops::SamplingConfig* sampling_config_ = nullptr;
     MtpW mtp_;
     std::array<FullLayerW, TextConfig::full_attention_layers()> full_{};
     std::array<GdnLayerW, TextConfig::gdn_layers()> gdn_{};
@@ -341,13 +341,6 @@ struct VisionControl {
 };
 
 VisionControl build_vision_control(const ProcessedInput& input);
-void copy_i32(const std::int32_t* source, Tensor& destination, cudaStream_t stream);
-void fill_positions(Tensor& positions, int start, cudaStream_t stream);
-void offset_positions(const Tensor& source, const Tensor& delta, Tensor& destination,
-                      cudaStream_t stream);
-void set_pos(Tensor& position, int value, cudaStream_t stream);
-void advance_pos(Tensor& position, cudaStream_t stream);
-void vision_f32_to_bf16(const Tensor& source, Tensor& destination, cudaStream_t stream);
 
 } // namespace detail
 

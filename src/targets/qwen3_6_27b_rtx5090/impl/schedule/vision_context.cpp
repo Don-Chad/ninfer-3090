@@ -3,14 +3,15 @@
 #include "core/device.h"
 #include "core/layout.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
-#include "kernels/add_bias/add_bias.h"
-#include "kernels/gelu/gelu.h"
-#include "kernels/layer_norm/layer_norm.h"
-#include "kernels/linear/linear.h"
-#include "kernels/residual_add/residual_add.h"
-#include "kernels/rope/rope.h"
-#include "kernels/vision_attention/vision_attention.h"
-#include "kernels/vision_pos_embed/vision_pos_embed.h"
+#include "ninfer/ops/add_bias.h"
+#include "ninfer/ops/cast.h"
+#include "ninfer/ops/gelu.h"
+#include "ninfer/ops/layer_norm.h"
+#include "ninfer/ops/linear.h"
+#include "ninfer/ops/residual_add.h"
+#include "ninfer/ops/rope.h"
+#include "ninfer/ops/vision_attention.h"
+#include "ninfer/ops/vision_pos_embed.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -105,7 +106,7 @@ VisionWorkspaceLayout build_workspace_layout(const ProcessedInput& input,
                 out.attention_norm = add(DType::BF16, {VisionScheduleConfig::hidden, patches},
                                          "vision attention norm");
             }
-            const std::int32_t tile_count = kernels::vision_attention_scratch_tiles(
+            const std::int32_t tile_count = ops::vision_attention_scratch_tiles(
                 patches, static_cast<std::int32_t>(control.cu_seqlens.size()) - 1);
             if (tile_count != 0) {
                 out.attention_tiles = add(DType::I32, {4, tile_count}, "vision attention tiles");
@@ -210,15 +211,15 @@ Tensor VisionContext::encode(const ProcessedInput& input, WorkspaceArena& worksp
     Tensor patch_bf16 = layout.patch_bf16.bind(backing);
     Tensor patch_f32  = layout.patch_f32.bind(backing);
     copy_host(input.patches.data(), patch_f32, stream);
-    detail::vision_f32_to_bf16(patch_f32, patch_bf16, stream);
-    kernels::linear(patch_bf16, *patch_embed_, x, workspace, stream);
-    kernels::add_bias(*patch_embed_bias_, x, stream);
+    ops::cast_fp32_to_bf16(patch_f32, patch_bf16, stream);
+    ops::linear(patch_bf16, *patch_embed_, x, workspace, stream);
+    ops::add_bias(*patch_embed_bias_, x, stream);
     // The artifact records the source table shape [rows,hidden], while Tensor's
     // contiguous matrix convention is [inner,columns]. The payload is already
     // row-major, so this is a zero-copy [hidden,rows] view, not a transpose.
     Tensor position_table = position_embed_->reshape(
         {VisionScheduleConfig::hidden, VisionScheduleConfig::position_embeddings});
-    kernels::vision_pos_embed_add(position_table, pos_indices, pos_weights, x, stream);
+    ops::vision_pos_embed_add(position_table, pos_indices, pos_weights, x, stream);
     if (callback != nullptr) { callback(tap, VisionTapId::PatchEmbed, -1, x, stream); }
 
     for (std::size_t layer = 0; layer < blocks_.size(); ++layer) {
@@ -229,11 +230,11 @@ Tensor VisionContext::encode(const ProcessedInput& input, WorkspaceArena& worksp
                 Tensor qkv = layout.qkv.bind(backing);
                 {
                     Tensor h = layout.attention_norm.bind(backing);
-                    kernels::layer_norm(x, *block.norm1_weight, *block.norm1_bias,
+                    ops::layer_norm(x, *block.norm1_weight, *block.norm1_bias,
                                         VisionScheduleConfig::norm_eps, h, stream);
-                    kernels::linear(h, *block.qkv, qkv, workspace, stream);
+                    ops::linear(h, *block.qkv, qkv, workspace, stream);
                 }
-                kernels::add_bias(*block.qkv_bias, qkv, stream);
+                ops::add_bias(*block.qkv_bias, qkv, stream);
                 const std::int32_t plane      = VisionScheduleConfig::hidden;
                 const std::size_t plane_bytes = static_cast<std::size_t>(plane) * 2;
                 Tensor q(qkv.data, DType::BF16,
@@ -245,7 +246,7 @@ Tensor VisionContext::encode(const ProcessedInput& input, WorkspaceArena& worksp
                 q.nb[2] = qkv.nb[1];
                 k.nb[2] = qkv.nb[1];
                 v.nb[2] = qkv.nb[1];
-                kernels::rope(position_ids, VisionScheduleConfig::rotary_dim,
+                ops::rope(position_ids, VisionScheduleConfig::rotary_dim,
                               VisionScheduleConfig::rope_theta, q, k, stream);
                 Tensor attended_heads = attended.view(
                     {VisionScheduleConfig::head_dim, VisionScheduleConfig::heads, patches});
@@ -255,28 +256,28 @@ Tensor VisionContext::encode(const ProcessedInput& input, WorkspaceArena& worksp
                     attention_tiles     = layout.attention_tiles->bind(backing);
                     attention_tiles_ptr = &attention_tiles;
                 }
-                kernels::vision_attention(q, k, v, cu_seqlens, attention_tiles_ptr,
+                ops::vision_attention(q, k, v, cu_seqlens, attention_tiles_ptr,
                                           attended_heads, stream);
             }
             Tensor projected = layout.projected.bind(backing);
-            kernels::linear(attended, *block.projection, projected, workspace, stream);
-            kernels::add_bias(*block.projection_bias, projected, stream);
-            kernels::residual_add(projected, x, stream);
+            ops::linear(attended, *block.projection, projected, workspace, stream);
+            ops::add_bias(*block.projection_bias, projected, stream);
+            ops::residual_add(projected, x, stream);
         }
         {
             Tensor down = layout.mlp_down.bind(backing);
             Tensor up   = layout.mlp_up.bind(backing);
             {
                 Tensor h = layout.mlp_norm.bind(backing);
-                kernels::layer_norm(x, *block.norm2_weight, *block.norm2_bias,
+                ops::layer_norm(x, *block.norm2_weight, *block.norm2_bias,
                                     VisionScheduleConfig::norm_eps, h, stream);
-                kernels::linear(h, *block.fc1, up, workspace, stream);
+                ops::linear(h, *block.fc1, up, workspace, stream);
             }
-            kernels::add_bias(*block.fc1_bias, up, stream);
-            kernels::gelu(up, kernels::GeluMode::Tanh, stream);
-            kernels::linear(up, *block.fc2, down, workspace, stream);
-            kernels::add_bias(*block.fc2_bias, down, stream);
-            kernels::residual_add(down, x, stream);
+            ops::add_bias(*block.fc1_bias, up, stream);
+            ops::gelu(up, ops::GeluMode::Tanh, stream);
+            ops::linear(up, *block.fc2, down, workspace, stream);
+            ops::add_bias(*block.fc2_bias, down, stream);
+            ops::residual_add(down, x, stream);
         }
         if (callback != nullptr) {
             callback(tap, VisionTapId::Block, static_cast<int>(layer), x, stream);
@@ -284,15 +285,15 @@ Tensor VisionContext::encode(const ProcessedInput& input, WorkspaceArena& worksp
     }
 
     Tensor normalized = layout.normalized.bind(backing);
-    kernels::layer_norm(x, *merger_.norm_weight, *merger_.norm_bias, VisionScheduleConfig::norm_eps,
+    ops::layer_norm(x, *merger_.norm_weight, *merger_.norm_bias, VisionScheduleConfig::norm_eps,
                         normalized, stream);
     Tensor merged = normalized.view({VisionScheduleConfig::merger_hidden, tokens});
     Tensor hidden = layout.merger_hidden.bind(backing);
-    kernels::linear(merged, *merger_.fc1, hidden, workspace, stream);
-    kernels::add_bias(*merger_.fc1_bias, hidden, stream);
-    kernels::gelu(hidden, kernels::GeluMode::Exact, stream);
-    kernels::linear(hidden, *merger_.fc2, output, workspace, stream);
-    kernels::add_bias(*merger_.fc2_bias, output, stream);
+    ops::linear(merged, *merger_.fc1, hidden, workspace, stream);
+    ops::add_bias(*merger_.fc1_bias, hidden, stream);
+    ops::gelu(hidden, ops::GeluMode::Exact, stream);
+    ops::linear(hidden, *merger_.fc2, output, workspace, stream);
+    ops::add_bias(*merger_.fc2_bias, output, stream);
     if (callback != nullptr) { callback(tap, VisionTapId::Merger, -1, output, stream); }
     return output;
 }

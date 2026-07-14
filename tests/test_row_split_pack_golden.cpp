@@ -1,4 +1,4 @@
-#include "kernels/row_split_pack.h"
+#include "ops/row_split_pack.h"
 
 #include <algorithm>
 #include <chrono>

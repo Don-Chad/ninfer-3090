@@ -25,8 +25,8 @@ void validate_sampling(const SamplingParameters& sampling) {
     }
 }
 
-kernels::SamplingConfig translate_sampling(const SamplingParameters& source) {
-    kernels::SamplingConfig out;
+ops::SamplingConfig translate_sampling(const SamplingParameters& source) {
+    ops::SamplingConfig out;
     out.temperature       = source.temperature;
     out.top_k             = source.top_k;
     out.top_p             = source.top_p;

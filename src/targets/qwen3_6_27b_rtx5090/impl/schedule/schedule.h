@@ -2,12 +2,12 @@
 
 #include "core/arena.h"
 #include "core/device.h"
-#include "kernels/sampling/sampling.h"
+#include "ninfer/ops/sampling.h"
 #include "core/decode_graph.h"
 #include "runtime/contract/transient_region.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/frontend/frontend.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/state/kv_cache.h"
+#include "core/kv_cache.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/state/state_store.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/schedule/text_context.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/schedule/vision_context.h"
@@ -28,7 +28,7 @@ struct State {
     GdnState& gdn;
     StepState& io;
     std::uint32_t prefill_chunk;
-    const kernels::SamplingConfig* sampling;
+    const ops::SamplingConfig* sampling;
     ProposalHead proposal_head;
     Tensor* boundary_hidden;
     void* diagnostic_context                = nullptr;

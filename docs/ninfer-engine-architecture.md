@@ -5,11 +5,11 @@
 > Authority: this document defines the NInfer core engine boundary, exact-target registration
 > and dispatch, load-time construction, memory ownership, checkpoint frontend boundary,
 > single-request program contract, decode-round transaction, sequence-state invariants, and the
-> division between common infrastructure and target-private implementation. It also defines the
-> repository/source ownership, internal header visibility, target-package layout, and build
-> dependency direction that enforce those boundaries. It does not define model mathematics,
-> persistent tensor numeric semantics, `.ninfer` binary
-> framing, model-specific object inventories or layouts, conversion recipes, serving protocols,
+> division among common infrastructure, central Ops, and target-private schedule/state policy. It
+> also defines the repository/source ownership, internal header visibility, target-package layout,
+> and build dependency direction that enforce those boundaries. It does not define model
+> mathematics, persistent tensor numeric semantics, `.ninfer` binary framing, model-specific object
+> inventories or layouts, conversion recipes, serving protocols,
 > or future concurrent scheduling.
 >
 > Project purpose comes from [`ninfer-project-positioning.md`](ninfer-project-positioning.md).
@@ -37,6 +37,10 @@ Every supported pair supplies one statically compiled target package. That packa
 weights, native input representation, persistent sequence state, memory formulas, Text/Vision/MTP
 schedule, CUDA Graphs, prefix-reuse policy, and decode-round implementation. Common engine code owns
 only the mechanisms and lifecycle that are genuinely identical across selected targets.
+
+The package schedule composes repository-internal Op contracts. Mathematical CUDA implementations,
+including exact-shape and selected-device specializations, remain centrally owned by the Op layer;
+their specialization does not create target-private operators.
 
 The stable boundary has three principal parts:
 
@@ -230,13 +234,16 @@ controller from modifying speculative caches.
 
 ### 4.4 Ownership rule
 
-An object belongs to the lowest layer that can state its complete invariant. If an invariant names
-Qwen positions, GDN slots, MoE experts, MTP drafts, Vision merger columns, vocabulary padding, or a
-specific graph capture, the object is target-private. If an invariant is only about bytes,
-alignment, one device, one active request, or committed output, it may be common.
+An owner belongs to the lowest layer that can state its complete invariant. Checkpoint topology,
+weight-role binding, operand/view selection, model positions, recurrent/MTP instance lifetime,
+Vision composition, prefix policy, and graph capture are target-private. Bytes, alignment,
+device/storage lifetime, and committed-output mechanisms belong to lower common layers.
 
-Reuse occurs only after two real targets demonstrate identical semantics. Similar spelling or
-similar tensor rank is insufficient.
+A host-callable tensor or explicit local-state transformation is classified separately by the Op
+rule: if its complete values and effects can be defined from explicit arguments without schedule
+context, its contract and every implementation are centrally owned. One caller, an exact model
+shape, or one selected GPU does not require a second-target reuse proof. Similar schedule or state
+objects still require matching real invariants before extracting a shared family abstraction.
 
 ## 5. Closed target registry and dispatch
 
@@ -307,8 +314,9 @@ The nested type names are abbreviated in this conceptual listing; they are not p
 physical `package.h` to contain only forward declarations. Every target type that composition code
 must create, store, destroy, or call while instantiating `LoadedProduct<T>` and the whole generation
 loop is a complete contract-facing facade in that header. Its method signatures and object lifetime
-are visible, while target-private weights, state, schedules, and kernel policy remain behind an
-opaque implementation owned by the target library. Section 19 defines the corresponding
+are visible, while target-private weights, state, schedules, and graph/lifecycle policy remain
+behind an opaque implementation owned by the target library. Central Op implementation selection
+remains behind the Op contracts. Section 19 defines the corresponding
 export/implementation split.
 
 `plan_load` consumes and validates the complete artifact directory. It does not receive feature or
@@ -793,8 +801,8 @@ struct GeneratedRound {
 ```
 
 Only `ExecutionOptions` reaches `Program::plan_request`. The target validates the supported sampling
-domain and translates those values into its own stable device controls. Kernel-facing sampling
-structures remain private to the target/operator layer. Stop strings, output channels, and caller
+domain and translates those values into its own stable device controls. Op-facing sampling
+structures remain internal to the target/Op boundary. Stop strings, output channels, and caller
 publication policy never enter the model program.
 
 `execution.requested_output_tokens == 0` performs no model execution. It is not represented by a
@@ -1395,8 +1403,9 @@ committed.
 
 The target minimizes synchronization but never exposes an unread or partially copied result. A
 round should normally copy its count and licensed tokens through stable memory with one completion
-boundary. Partial finalization may require a rare target-private scalar repair or synchronization;
-that cost is preferable to an incorrect reusable prefix.
+boundary. Partial finalization may require a rare schedule-selected scalar Op repair or
+synchronization. The target owns the affected view and call time; the scalar Op owns the explicit
+value transition. That cost is preferable to an incorrect reusable prefix.
 
 ### 15.4 Hot-path exclusions
 
@@ -1518,7 +1527,7 @@ Validation against 248320 matrix rows alone is not sufficient.
 
 The installed API exposes owning input/result values and the model-neutral operations
 `Engine::prepare`, `Engine::prepare_tokens`, `Engine::generate`, `Engine::count_tokens`, and summary
-queries. Target phase methods, checkpoint memory formulas, caches, and kernel-facing sampling state
+queries. Target phase methods, checkpoint memory formulas, caches, and Op-facing sampling state
 remain internal. CLI, server, and product benchmarks use this same public route.
 
 ## 17. Required fit: Qwen3.6-35B-A3B
@@ -1533,9 +1542,10 @@ The exact checkpoint has 40 Text layers: 30 GDN and 10 full-attention layers, wi
 every layer. Each routed-expert bank is rank three, routes among 256 experts, selects eight, and is
 combined with a gated shared expert. Its one-layer MTP block also contains full attention and MoE.
 
-Those weight roles, expert descriptors, router buffers, and stage-specific kernels are 35B target
-types. The common loader only materializes the validated regions in its load plan; it does not gain
-an `experts` field or a generic layer graph.
+Those weight roles, expert descriptors, and router buffers are 35B target types. Routed-expert
+mathematics must be expressed as central Ops; their exact shapes may have dedicated kernels beneath
+those contracts. The common loader only materializes the validated regions in its load plan; it
+does not gain an `experts` field or a generic layer graph.
 
 ### 17.2 Different state and workspace
 
@@ -1605,46 +1615,57 @@ Despite different internal layers, both targets can:
 That is the common interface the 35B implementation must demonstrate. No lower-level phase needs to
 be public.
 
-## 18. Reuse below the target package
+## 18. Execution layers below the target package
 
-Target-private scheduling does not mean duplicating every primitive. Reuse is allowed at boundaries
-with complete mathematical semantics.
+Target-private scheduling does not make mathematical computation target-owned. NInfer separates the
+target schedule, central Op contracts, and their CUDA implementations by responsibility rather than
+by reuse count.
 
-### 18.1 Common L0 candidates
+### 18.1 L0 mechanisms
 
-Common core mechanisms may include:
+Core and artifact mechanisms include:
 
 - checked arithmetic, tensors/views, device/stream/event ownership;
 - immutable and mutable arenas plus `LayoutBuilder`;
-- strict container parser, object binder, and materializer;
+- strict container parsing, object binding, and materialization;
 - generic direct/packed storage descriptors from registered formats/layouts;
 - CUDA Graph lifetime wrappers;
-- pinned stable host buffers;
+- raw host/device transfers and pinned stable host buffers;
+- target-neutral physical KV-cache containers and cursor mechanisms;
 - diagnostic counters and timing/NVTX mechanisms.
 
-Generic KV or recurrent storage belongs here only if its API fully represents the semantics shared
-by real targets. Otherwise the storage primitive can be reused while the cache/state object remains
-target-private.
+Program owns each cache/state instance and all advance, rewind, reset, prefix, commit, and rollback
+policy. An Op may consume a core container or explicit view without acquiring its lifetime. A
+materially different future state representation may use another core type or remain target-owned;
+this does not require a universal cache hierarchy.
 
-### 18.2 Common L1 candidates
+### 18.2 Central Op layer
 
-Kernel/operator APIs may be shared when they state complete mathematics independent of one model
-schedule—for example a registered packed GEMM, an exact RMSNorm variant, a full-attention operation,
-or a routed-expert primitive. Hardware/kernel dispatch remains private behind that mathematical API.
+An Op is a host-callable, semantically closed tensor or explicit local-state transformation. Given
+explicit inputs, weights, state, and semantic parameters, its full outputs and mutations are defined
+without model identity or schedule context. Every Op contract and every implementation of that
+contract belong to the central Op layer.
 
-An operator does not own model layer order, residual scheduling, MTP alignment, cache commit, or
-prefix checkpoints. Those remain in the target package even when every kernel it calls is shared.
+One caller, one exact shape, one registered format, one device, fusion, or mutable explicit state do
+not make an Op target-private. An exact-shape CUDA kernel is an implementation selected by the Op
+wrapper; another target may later use the same contract and implementation without moving code.
 
-### 18.3 Promotion rule
+An Op does not own model layer order, operand/view selection, prompt chunking, MTP round
+orchestration, cache cursor policy, prefix checkpoints, or graph lifetime. Those remain in the
+target Program and schedule. The complete definition, contract-comment format, source layering,
+and admission procedure are authoritative in [`op-development.md`](op-development.md).
 
-A second target using similar code is a reason to compare invariants, not automatically to extract a
-base class. Promote code only when:
+### 18.3 Boundary decision
 
-1. both targets require the same observable semantics;
-2. ownership and lifetime are identical;
-3. the common API does not expose either target's private phase structure;
-4. specialization and whole-program optimization remain possible;
-5. the extracted component can be verified independently at its real shapes.
+A target-callable device transformation is admitted as an Op when its complete value/state effect
+can be described and verified from explicit arguments. If it still requires a model phase, weight
+role, request frontier, commit decision, or instance-lifetime policy, it is schedule composition
+rather than an Op. If it is only a tile, partial reduction, codec, launcher, or device helper under a
+complete transformation, it remains private implementation material below that Op.
+
+There is no target-facing private Op category and no requirement to prove use by a second target.
+This central ownership does not introduce a family base class, model graph, dynamic Op registry, or
+plugin interface.
 
 ## 19. Repository, source, and build organization
 
@@ -1654,7 +1675,7 @@ separate source and link ownership domains.
 
 ### 19.1 Physical ownership decision
 
-NInfer has no top-level mutable runtime model layer. The physical implementation unit is one
+NInfer has no top-level mutable runtime model layer. The physical target composition unit is one
 complete target package:
 
 ```text
@@ -1667,8 +1688,9 @@ at runtime. The package still declares and validates the registered `.ninfer` `m
 device, and complete object signatures through compiled code.
 
 There is no family base directory, `qwen/common`, `BaseTarget`, or shared checkpoint implementation
-created in advance. A later target starts as another complete sibling. Code moves out only under the
-promotion rule in Section 18.3 after the real invariants agree.
+created in advance. A later target starts as another complete sibling for binding, frontend,
+Program, schedule, and state policy. Every device transformation it invokes is still classified by
+the Op boundary in Section 18; central Op ownership does not create a shared model schedule.
 
 ### 19.2 Canonical repository tree
 
@@ -1676,14 +1698,20 @@ The implemented source tree follows this ownership shape:
 
 ```text
 include/
-└── ninfer/                              installed product API only
-    ├── engine.h                         Engine PIMPL
-    └── types.h                          owning host values and opaque prepared prompt
+└── ninfer/
+    ├── engine.h                         installed Engine PIMPL API
+    ├── types.h                          installed owning host values/opaque prepared prompt
+    └── ops/                             repository-internal semantic Op contracts; not installed
 
 src/
-├── core/                                device/stream, tensor/view, layout, arena, graph RAII
+├── core/                                device/stream, tensor/view, layout, arena, graph/KV/transfer
 ├── artifact/                            .ninfer reader, binder, layouts, materializer
-├── kernels/                             shared mathematical operators and selected CUDA kernels
+├── ops/
+│   ├── wrapper/                         contract validation, workspace scope, finite dispatch
+│   ├── launcher/                        private CUDA launch policy
+│   ├── kernel/                          __global__/__device__ implementations
+│   ├── common/                          narrow CUDA implementation primitives
+│   └── linear/                          codec/plan/reference/GEMV/GEMM implementation family
 ├── text/                                checkpoint-neutral Unicode primitives
 ├── media/
 │   └── decode/                          neutral image/video decode over owning bytes
@@ -1706,9 +1734,8 @@ src/
 │           ├── load/                     typed immutable bindings
 │           ├── frontend/                 prompt/output, tokenizer, template, media preprocessing
 │           ├── program/                  plans, layouts, prefix/state, graphs, Program owner
-│           ├── state/                    target Text/MTP KV and GDN storage implementations
+│           ├── state/                    target-specific recurrent/state representations
 │           ├── schedule/                 private Text, Vision, and MTP execution
-│           ├── kernels/                  target-only fixed-shape CUDA/operator implementations
 │           └── diagnostic/               explicitly linked target diagnostics
 └── serve/                               protocol schemas, translation, streaming, transport
 
@@ -1747,24 +1774,25 @@ uses fewer translation units:
 | `impl/config.h` | exact compiled semantic facts needed by this package, including dimensions, topology, token domains, and native limits | artifact offsets, conversion provenance, request state, user policy |
 | `impl/load/` | `StorageProfile`, `LoadPlan`, `BindingPlan`, typed immutable weight/resource structures, and direct final-address `LoadedModel` construction | sequence state, generation policy, runtime lookup after publication |
 | `impl/frontend/` | owning `PreparedPrompt`, tokenizer/template, checkpoint media/position preparation, `OutputSession`, and decoder state | network/file acquisition, CUDA state, Program or graph ownership |
-| `impl/program/` | `SequencePlan`, `RequestPlan`, layouts, the sole mutable `Program`, KV/recurrent/MTP/sampler state, prefix ledger, graph ownership, and round resolution | user callbacks, protocol schemas, artifact name lookup |
-| `impl/state/` | physical target Text/MTP KV and GDN recurrent storage bound by Program layouts | common runtime policy, request publication, or a second state owner |
-| `impl/schedule/` | target-private definitions of Program's fixed Text/Vision/MTP/MoE execution methods | another long-lived execution owner or an API callable by product code |
-| `impl/kernels/` | fused/fixed-shape helpers whose full contract is true only for this checkpoint and GPU | allocation, graph ownership, logical cursor/commit policy, serving behavior |
+| `impl/program/` | `SequencePlan`, `RequestPlan`, layouts, the sole mutable `Program`, core KV instances, recurrent/MTP/sampler state, prefix ledger, graph ownership, and round resolution | user callbacks, protocol schemas, artifact name lookup |
+| `impl/state/` | target-specific recurrent/state representations bound by Program layouts | common runtime policy, mathematical Op implementations, request publication, or a second state owner |
+| `impl/schedule/` | target-private definitions of Program's fixed Text/Vision/MTP/MoE execution methods | mathematical Op implementations, another long-lived execution owner, or an API callable by product code |
 
 `export/package.h` is an internal build interface, not an installed product API. It is the registry
 and whole-loop controller's target composition point. Target implementation types remain beneath the
-target directory and are not reachable from `include/ninfer/`. Once a Program call enters `impl/`,
-its fixed layer schedule and kernels use direct target-private types and calls.
+target directory and are not reachable from installed product headers. Once a Program call enters
+`impl/`, its fixed layer schedule uses direct target-private state and calls repository-internal Op
+contracts with explicit execution views and semantic parameters.
 
 Files under `impl/schedule/` are physical splits of private Program behavior. They do not introduce
 another object that retains Program-owned state. A non-owning helper either remains a private Program
 method or takes an explicit short-lived context. The only long-lived mutable sequence owner is
 `Program`; the only long-lived immutable target owner is `LoadedProduct`/`LoadedModel`.
 
-Later target directories need not contain identical files. For example, 35B may require private MoE
-scheduling and routed-expert kernels that 27B does not. Empty symmetry and family-shaped base classes
-are not introduced in advance.
+Later target directories need not contain identical files. For example, another target may require
+private MoE scheduling and state that the current target does not. Its routed-expert computation is
+still a central Op; empty target symmetry and family-shaped base classes are not introduced in
+advance.
 
 ### 19.4 Dependency direction
 
@@ -1775,26 +1803,28 @@ serve / apps -> public include/ninfer API + media acquisition
 media acquisition -> public owning media values + platform/network facilities
 runtime engine -> target composition + runtime generation + core
 target registry -> generation controller + each target export/package.h
-target package -> runtime contract + artifact + kernels + core + neutral text/media-decode primitives
+target package -> runtime contract + artifact + ops + core + neutral text/media-decode primitives
 runtime generation -> runtime contract + public host values
 media decode -> host codec mechanisms
 artifact -> core
-kernels -> core
+ops -> core
 core -> standard library + selected platform/toolchain APIs
 ```
 
 The following restrictions make that graph enforceable:
 
-- public headers do not include CUDA, tensor, artifact, kernel, or target-private types;
-- `core`, `artifact`, `kernels`, neutral `text`, and `media/decode` never include a target header;
+- installed product headers do not include CUDA, tensor, artifact, Op, kernel, or target-private
+  types; repository-internal `include/ninfer/ops/` contracts may include required L0/CUDA host types;
+- `core`, `artifact`, `ops`, neutral `text`, and `media/decode` never include a target header;
 - a target never includes `Engine`, `GenerationController`, serving/transport code, or another
   target, and never links product media acquisition;
 - the explicit registry is the common runtime composition point for concrete target exports;
 - Program's facade and implementation may consume the target's owning `PreparedPrompt` value but
   have no dependency on `Frontend` or `OutputDecoder`; frontend implementation has no dependency on
   Program implementation;
-- a mathematical operator or launcher never imports a runner/Program merely to obtain dimensions or
-  state; dimensions needed by a target-only operation keep that operation in the target package;
+- an Op implementation or launcher never imports a target/Program merely to obtain dimensions or
+  state; the target passes explicit views and semantic parameters, while exact shape remains a valid
+  wrapper dispatch predicate;
 - Qwen tokenizer rules, chat templates, placeholder expansion, patch construction, MRoPE positions,
   and output channel markers remain in the target frontend. Only genuinely checkpoint-neutral
   Unicode and decode-over-owning-bytes mechanics live in `src/text` or `src/media/decode`;
@@ -1818,10 +1848,10 @@ snake-case identifier. It is a build identity, never a runtime-discovered path o
 
 ### 19.5 Public and internal header rules
 
-Only `include/ninfer/` is installed or exported as a public include directory. `Engine` uses PIMPL,
-so adding or replacing a target does not place a CUDA, target, or artifact header in the public
-dependency graph. Public types are owning host values, explicitly bounded host views, or opaque
-move-only handles. `PreparedPrompt`'s public envelope is opaque; concrete prepared values,
+Only `include/ninfer/engine.h` and `include/ninfer/types.h` are installed product headers. `Engine`
+uses PIMPL, so adding or replacing a target does not place a CUDA, target, artifact, or Op header in
+the public dependency graph. Public types are owning host values, explicitly bounded host views, or
+opaque move-only handles. `PreparedPrompt`'s public envelope is opaque; concrete prepared values,
 `LoadedModel`, `Program`, target checkpoint facts, tensors, and device sampling controls remain
 internal.
 
@@ -1834,41 +1864,44 @@ Each target's `export/` directory is a scoped internal composition interface and
 Its `impl/` directory remains private to that exact target; neither path is part of the user-facing
 C++ API.
 
-Internal mathematical operator headers also remain under `src/kernels/`; they are project
-development contracts, not product ABI. Benchmarks and numerical tests gain access by linking the
-specific internal CMake target and its scoped include directory.
+Repository-internal mathematical Op headers live under `include/ninfer/ops/`; they are development
+contracts, not product ABI or installed headers. Op benchmarks and numerical tests gain access by
+linking `ninfer_ops` and its internal include path.
 
 Production headers are not reshaped by testing macros. Diagnostics that require file output,
 reference taps, or instrumented schedules live in a separate tool/test target or use an explicit
 internal diagnostic seam. They do not add `#ifdef TESTING` members to a production target type.
 
-### 19.6 Kernel source organization
+### 19.6 Op source organization
 
-Shared kernels are grouped vertically by complete mathematical operator:
+The semantic contract and implementation layers are physically distinct:
 
 ```text
-src/kernels/
-├── <shared-operator>/        contract, host entry, launcher, and CUDA implementation
-├── linear/                   codec, plans, selected GEMM/GEMV, and fallbacks
-└── common/                   narrow reusable CUDA primitives
+include/ninfer/ops/<family>.h      mathematical/state-transition contract
+src/ops/wrapper/<family>.cpp      validation, workspace scope, finite dispatch
+src/ops/launcher/<family>.*       private CUDA launch policy
+src/ops/kernel/<family>*.cuh      __global__/__device__ implementation
+src/ops/common/                   narrow CUDA implementation primitives
+src/ops/linear/                   codec/plan/reference/GEMV/GEMM implementation family
 ```
 
-The exact file count may vary, but these language/ownership rules are fixed:
+The exact file count may vary, but these ownership rules are fixed:
 
-- `.h` contains host-visible declarations and does not expose block/warp/tiling policy;
-- `.cpp` owns host validation and dispatch and does not include device-only `.cuh` files;
-- `.cu` owns CUDA launches and `__global__` definitions;
-- `.cuh` is device-only implementation material included only from `.cu/.cuh`;
-- a kernel receives explicit storage/workspace/stream arguments and never owns allocation, CUDA
-  Graphs, sequence cursors, or commit state;
-- exact-shape MTP round helpers, checkpoint scheduling fusion, and GPU policy used by only one real
-  target stay in that target package;
-- an operator enters the shared kernel library only when its complete contract is reusable. A
-  similar function name or tensor rank is not enough.
+- every contract comment defines the complete formula/indexing, logical shapes, supported domain,
+  numerical behavior, effects/aliases, and workspace requirement;
+- wrappers validate semantic inputs and select a finite implementation from format, layout,
+  numerical shape, token regime, state dtype, and device facts;
+- launchers own grid/block/shared-memory policy and CUDA entry invocation;
+- kernels and common/linear helpers are private implementation material and are never included by a
+  target schedule;
+- every implementation receives explicit storage/state/workspace/stream arguments and never owns
+  allocation, CUDA Graphs, sequence cursors, or commit policy;
+- exact-shape, fused, or selected-device implementations stay in `src/ops`; only their dispatch
+  predicate is specialized.
 
-For 35B, a routed-expert mathematical primitive may become shared L1 after proof. The decision that
-every layer routes, how shared and routed experts combine with residuals, and how MTP invokes its MoE
-remains 35B target scheduling.
+The word kernel remains correct for CUDA implementation code and profiling. It does not name the
+host-callable semantic layer. [`op-development.md`](op-development.md) is authoritative for formula
+comments, admission, naming, layering, testing, and performance workflow.
 
 ### 19.7 Build graph and closed registration
 
@@ -1877,11 +1910,11 @@ Directories are backed by separate CMake targets and explicit source lists. The 
 ```text
 ninfer_core
 ninfer_artifact                    -> ninfer_core
-ninfer_kernels                     -> ninfer_core
+ninfer_ops                         -> ninfer_core
 ninfer_text                        -> host Unicode mechanism
 ninfer_media_decode                -> host codec mechanism
 ninfer_media_acquire               -> host network/filesystem mechanism
-ninfer_qwen3_6_27b_rtx5090         -> artifact + kernels + text + media_decode
+ninfer_qwen3_6_27b_rtx5090         -> artifact + ops + text + media_decode
 ninfer_engine                      -> explicit target + artifact + core
 ninfer_serve                       -> engine + media_acquire
 apps/ninfer                        -> engine + media_acquire
@@ -1912,21 +1945,21 @@ Place a new value or function by the complete invariant it must maintain:
 
 1. bytes, ranges, alignment, device/stream lifetime, or generic materialization belong to
    `core`/`artifact`;
-2. a complete mathematical operation independent of checkpoint schedule belongs to shared
-   `kernels` only after real cross-target proof;
-3. any invariant naming a checkpoint dimension, Vision composition, GDN/MoE state, MTP alignment,
-   prefix repair, exact graph, or selected-GPU policy belongs to the exact target package;
+2. a complete tensor or explicit local-state transformation independent of checkpoint schedule is
+   an Op and belongs to `include/ninfer/ops` plus `src/ops`; no cross-target-use proof is required;
+3. checkpoint dimensions/topology, operand/view selection, Vision composition, GDN/MoE state
+   lifetime, MTP orchestration, prefix repair, exact graph, and selected-device schedule policy
+   belong to the exact target package;
 4. stop/output-budget/cancellation policy, decoder preview/commit ordering, and publication belong to
    runtime generation; checkpoint token-to-text/channel preview and its mutable decoder state remain
    in the target frontend's `OutputSession`;
 5. schemas, network/filesystem acquisition, and transport behavior belong to
    serve/product code and are not target dependencies.
 
-Small duplication between 27B and 35B is preferred to a false base class. Extraction requires the
-same semantics, ownership, lifetime, failure behavior, performance freedom, and independent oracle.
-An extracted helper is named after that narrow invariant. Catch-all `common.h`, `utils.h`, `ops.h`,
-generic `model.h`, global `ModelConfig`, or phase-flag-driven family schedules are not acceptable
-destinations.
+Small duplication of schedules and state policy between targets is preferred to a false base class.
+This does not permit duplicate target-owned Op implementations. A narrow shared helper is named
+after its invariant; catch-all `common.h`, `utils.h`, generic `model.h`, global `ModelConfig`, or
+phase-flag-driven family schedules are not acceptable destinations.
 
 Files split because ownership, lifetime, dependency direction, compilation language, or independent
 verification changes—not merely because a line threshold was crossed. A helper used by one
@@ -1942,8 +1975,8 @@ translation unit remains in its anonymous namespace instead of creating another 
 | KV/GDN/MTP state, stable graph buffers, sampling state, prefix ledger, and request plans | target `Program` under `impl/program/` |
 | fixed Text, Vision, and MTP execution order | target-private `impl/schedule/` |
 | output budget, stopping, cancellation, exact-prefix publication ordering, and common summaries | runtime generation and public `Engine` implementation |
-| device/tensor/layout/arena/graph primitives | `ninfer_core` |
-| complete mathematical operators shared by the registered target | `ninfer_kernels` |
+| device/tensor/layout/arena/graph/KV/transfer primitives | `ninfer_core` |
+| semantic Op contracts and all mathematical/local-state implementations | `include/ninfer/ops`, `ninfer_ops` |
 | checkpoint-neutral Unicode and image/video decoding | `ninfer_text` and `ninfer_media_decode` |
 | product path/URL/data acquisition | `ninfer_media_acquire` |
 | HTTP schemas, request translation, streaming, and transport | `ninfer_serve` and `apps/serve` |
@@ -1983,7 +2016,7 @@ different workload.
 
 The generic loader sources under `vllm/model_executor/model_loader/` leave final weight assignment
 to the concrete model, while reusable layer APIs and CUDA code have their own trees. That supports
-NInfer's generic materializer versus target binder split and vertical shared-operator directories.
+NInfer's generic materializer versus target binder split and separate central Op implementation layer.
 NInfer does not adopt vLLM's model-class registry, hook/ABC surface, or generalized runner/model-state
 protocol; its exact package and build entry are static.
 
@@ -2028,8 +2061,8 @@ SGLang's `python/sglang/srt/models/qwen3_5.py`, generalized `model_runner.py`, a
 imports runner state demonstrate another organizational failure mode for NInfer: a concrete model
 file can absorb loading, forward modes, platform policy, graph state, and execution context while a
 nominal lower layer depends back on the runner. The exact NInfer package is allowed to be specialized,
-but immutable load, mutable Program, frontend, and kernel ownership remain distinct and the build DAG
-forbids that reverse dependency.
+but immutable load, mutable Program, frontend, and central Op implementation ownership remain
+distinct, and the build DAG forbids that reverse dependency.
 
 ### 20.4 Adopted and deliberately rejected lessons
 
@@ -2125,7 +2158,7 @@ schedule definitions are private Program implementation.
 
 ### 21.12 Monolithic glob-built runtime library
 
-A recursive source glob and one library containing core, artifact, kernels, targets, frontend, and
+A recursive source glob and one library containing core, artifact, Ops, targets, frontend, and
 runtime allow every layer to include every other layer. Directory names then communicate style but
 enforce no architecture; adding a file can also silently change the shipped target set. NInfer uses
 explicit component/target source lists and one explicit closed registry link.
@@ -2163,15 +2196,17 @@ An implementation conforming to this architecture satisfies all of the following
     lattice. This does not prohibit ordinary output string/vector growth.
 21. **No silent degradation:** unsupported layout, hardware, capacity, or native component fails
     instead of choosing an unregistered fallback.
-22. **Physical target ownership:** every checkpoint/GPU invariant lives in its exact target package;
-    no parallel mutable target owner borrows Program state.
+22. **Physical target ownership:** every checkpoint binding, topology, schedule, state-lifetime, and
+    graph-policy invariant lives in its exact target package; numerical shape/GPU specialization of
+    an Op remains centrally owned, and no parallel mutable target owner borrows Program state.
 23. **Acyclic dependencies:** lower mechanisms and ordinary runtime files cannot include concrete
     target internals; target packages cannot include Engine/controller/serve or one another.
 24. **One composition choke point:** concrete target types enter common construction/execution only
     through the explicit registry, `ActiveTarget`, and target `export/package.h` facade.
 25. **Explicit product build:** source lists and the registered target set are explicit; recursive
     globbing, auto-registration, plugin discovery, and family fallback cannot change the product.
-26. **Opaque public API:** installed headers expose no CUDA, tensor, artifact, kernel, or target type.
+26. **Opaque public API:** installed headers expose no CUDA, tensor, artifact, Op, kernel, or target
+    type.
 27. **Acquisition stays above target execution:** exact target execution consumes owning media and
     does not perform URL/filesystem acquisition.
 
@@ -2234,7 +2269,7 @@ registered target:
 ### 23.5 Source and build boundaries
 
 - public API consumers compile without `src/`, CUDA, or target include directories;
-- core, artifact, kernels, text, media decode, media acquisition, exact target, Engine, and serving
+- core, artifact, Ops, text, media decode, media acquisition, exact target, Engine, and serving
   are explicit CMake targets with declared source lists and link directions;
 - each exact target builds as one independently named static target and does not depend on Engine or
   serving;
@@ -2267,8 +2302,8 @@ It leaves these later decisions open:
   governed by the container, storage-layout, and model-artifact specifications;
 - conversion specifications and object inventories for additional models beyond the registered
   Qwen3.6-27B target;
-- target-private leaf-file splitting and additional kernel/graph/workspace optimizations within the
-  fixed ownership boundaries;
+- target-private schedule/state leaf-file splitting, central Op kernel optimizations, and target
+  graph/workspace optimizations within the fixed ownership boundaries;
 - the future continuous-batching scheduler and its memory policy.
 
 Those decisions may refine implementation beneath this seam. They must not reintroduce a generic
