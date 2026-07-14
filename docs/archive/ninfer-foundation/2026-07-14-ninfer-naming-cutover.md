@@ -1,6 +1,133 @@
 # NInfer Naming Cutover Implementation Plan
 
-Status: implementation in progress; Phases 0-3 complete
+Status: completed and archived on 2026-07-14
+
+Reviewed cutover SHA: `3a4f245cfe1edb33117930c3300ba9c39244a7db`
+
+## Completion record
+
+The reviewed SHA above is the final tracked identity cutover before this archival change. It is not
+the SHA of the archival commit containing this record.
+
+### Delivered boundaries
+
+| Boundary | Result |
+|---|---|
+| Baseline | Captured Git, GitHub, environment, artifact, test, and deterministic-output evidence before changing identity. |
+| Runtime identity | Replaced public includes, C++ namespace, CMake identities, binaries, tests, benchmarks, diagnostics, macros, and runtime-owned strings with NInfer names. |
+| Tooling identity | Replaced the evaluation package and project-owned report, corpus, activation, environment-variable, and schema discriminators without compatibility aliases. |
+| Documentation identity | Updated active documentation to describe NInfer while keeping the implemented Qwen3.6-27B/RTX 5090/q5090 `.qus` route distinct from the pending multi-target engine and `.ninfer` container. |
+| GitHub identity | Renamed the existing private repository in place from `Neroued/qwen3.6-ultraspeed` to `Neroued/ninfer`; no replacement repository was created. |
+| Local identity | Atomically moved the checkout to `/home/neroued/ninfer`, recreated path-sensitive build and Python state, and left no old-path symlink. |
+
+The tracked cutover was delivered in these commits:
+
+- `798e251` — `refactor(naming): switch runtime identity to ninfer`;
+- `25ed511` — `refactor(tooling): switch project tooling to ninfer`;
+- `3a4f245` — `docs(project): complete ninfer identity cutover`.
+
+### Verification evidence
+
+The clean build was configured from the final path with:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_ARCHITECTURES=120a
+cmake --build build -j
+```
+
+The final gate produced these results:
+
+- CMake recorded `CMAKE_HOME_DIRECTORY=/home/neroued/ninfer`, project `ninfer`, and CUDA
+  architecture `120a`;
+- CTest registered 54 entries; all 53 baseline-passing entries passed from the final path;
+- the only remaining failing entry was the pre-existing `ninfer_engine_mtp_e2e_test`, which
+  reproduced exactly the two baseline markers
+  `partial reuse turn 2 parity differs (mtp-off)` and
+  `partial reuse turn 2 parity differs (mtp-on)`;
+- `py_compile` passed for the complete `eval/ninfer_eval` package, and the evaluation suite passed
+  15 tests;
+- `python -m pytest -q tools/q5090/tests tools/q5090_convert/tests` passed 54 tests;
+- `python tools/bench/make_bench_corpus.py --check` passed;
+- the q5090 quick verifier reported 1,166 blocks, 1,314 segments, 130 fusion groups, four modules,
+  and zero problems;
+- `ninfer`, `ninfer-serve`, and `ninfer_bench` help completed successfully; the two diagnostic
+  programs returned status 2 with their required usage text when invoked without arguments;
+- the final build contains no old `qus`, `qus-serve`, `qus_bench`, `qus-preprocess`, or
+  `qus-vision-dump` executable;
+- the recreated evaluation environment exactly matched the captured 184-package freeze and passed
+  `pip check`;
+- active Markdown links, stale references, generated paths, CMake state, virtual-environment
+  entrypoints, caches, Git configuration, and `git diff --check` all passed their final audits.
+
+The unchanged q5090 v4.2 artifact retained this identity across the directory move:
+
+```text
+path:    out/qwen3_6_27b.q5090_w4g64_mixed_v4_2.qus
+stat:    2096:1373035:17505990144
+sha256:  a430cf7f3d7c6a64c7d32f04a7225854f8e63e84ca9973217c6549a3f2bd3997
+```
+
+The final-path deterministic greedy generation was byte-identical to the pre-cutover output. A
+real `pp128` benchmark report also identified itself as schema 7,
+`ninfer_bench_report`/`ninfer_bench`, recorded the reviewed commit and clean worktree, and contained
+the expected artifact and RTX 5090 metadata.
+
+Three independent Phase 8 reviews passed without findings:
+
+- the behavior review normalized the rename and found all 186 changed `src/` files, 57 public
+  headers, and three CMake files byte-identical apart from the approved identity contracts;
+- the format/contract review found q5090 enums, parser, loader, converter, tensor assignment, and
+  `.qus` bytes unchanged, with all renamed producers and consumers closed on their new schema;
+- the identity/operations review found no old namespace, include root, package, macro, environment
+  fallback, target, binary, absolute generated path, or compatibility alias, and no active document
+  claiming that `.ninfer`, multi-target execution, or the 35B runtime was already implemented.
+
+### Repository identity
+
+The in-place GitHub rename preserved:
+
+```text
+repository id:  1281510950
+node id:        R_kgDOTGJOJg
+visibility:     private
+default branch: master
+cutover HEAD:   3a4f245cfe1edb33117930c3300ba9c39244a7db
+```
+
+The new origin is `https://github.com/Neroued/ninfer.git`. Authenticated API access through the old
+slug resolves to the same repository object, and both old and new Git URLs resolved the same
+`master` SHA at the reviewed boundary. The old slug is reserved and must not be reused. Because the
+repository is private, anonymous web requests return 404 and cannot independently display the web
+redirect.
+
+The rename preflight found no repository packages, hooks, deploy keys, deployments, releases, tags,
+Pages site, environments, Actions secrets or variables, Dependabot secrets, or repository-owned
+Action/reusable workflow. OIDC used the default subject with no repository workflow consumer.
+
+### Deviations and limitations
+
+- An initial clean configuration exposed the existing CMake default-architecture ordering, which
+  cached architecture 75 instead of the canonical target. Every accepted baseline and final build
+  was therefore recreated with the explicit `-DCMAKE_CUDA_ARCHITECTURES=120a` argument. Changing
+  architecture policy was outside this identity-only cutover.
+- The available GitHub OAuth/API view could not enumerate every account-wide third-party Installed
+  App. Repository hooks, statuses, check runs, workflows, and other integration surfaces were empty,
+  and no actual slug-bound integration conflict was found.
+- Several idle Cursor language-server processes and user Claude/terminal sessions still referenced
+  the checkout inode when the same-filesystem rename occurred. They were not terminated to avoid
+  destroying unrelated user sessions. There were no active source writes, builds, tests, servers,
+  profilers, or GPU jobs; their working directories followed the renamed inode, and the old path was
+  absent after the move. Editors should be reopened explicitly at `/home/neroued/ninfer`.
+
+### Recovery-material disposition
+
+The four external temporary recovery directories for the old build trees and virtual environment
+were removed after all three independent final reviews passed. Fresh `build/` and `eval/.venv/`
+state remains under the final checkout. The pre-cutover Git bundle and the small baseline/final
+evidence files under `/home/neroued/backups/` were retained outside the repository through goal
+closure as recovery and audit evidence; they are not supported compatibility state. The old local
+checkout path does not exist.
 
 ## 1. Goal
 
@@ -163,21 +290,21 @@ These facts are a planning baseline, not permission to skip execution-day checks
 
 Read these sources before changing the corresponding surface:
 
-- [`../ninfer-naming.md`](../ninfer-naming.md) — accepted `NInfer` and `.ninfer` spelling and the
+- [`../../ninfer-naming.md`](../../ninfer-naming.md) — accepted `NInfer` and `.ninfer` spelling and the
   boundary between project naming and container bytes;
-- [`../ninfer-project-positioning.md`](../ninfer-project-positioning.md) — project purpose and the
+- [`../../ninfer-project-positioning.md`](../../ninfer-project-positioning.md) — project purpose and the
   wording that the new README must reflect;
-- [`../ninfer-engine-architecture.md`](../ninfer-engine-architecture.md) — accepted future
+- [`../../ninfer-engine-architecture.md`](../../ninfer-engine-architecture.md) — accepted future
   `include/ninfer/`, namespace, component stem, and source/build boundary;
-- [`../ninfer-container-format.md`](../ninfer-container-format.md) — why `.ninfer` cannot alias the
+- [`../../ninfer-container-format.md`](../../ninfer-container-format.md) — why `.ninfer` cannot alias the
   current q5090 format;
-- [`../q5090_packed_file_format_v4.md`](../q5090_packed_file_format_v4.md) — current `.qus` contract
+- [`../../q5090_packed_file_format_v4.md`](../../q5090_packed_file_format_v4.md) — current `.qus` contract
   that this change must preserve;
-- [`../README.md`](../README.md), [`../../README.md`](../../README.md), and
-  [`../../AGENTS.md`](../../AGENTS.md) — active navigation, current product claims, local paths, and
+- [`../../README.md`](../../README.md), [`../../../README.md`](../../../README.md), and
+  [`../../../AGENTS.md`](../../../AGENTS.md) — active navigation, current product claims, local paths, and
   repository rules;
-- [`../serving.md`](../serving.md), [`../../bench/README.md`](../../bench/README.md), and
-  [`../../eval/README.md`](../../eval/README.md) — user-visible command and schema surfaces;
+- [`../../serving.md`](../../serving.md), [`../../../bench/README.md`](../../../bench/README.md), and
+  [`../../../eval/README.md`](../../../eval/README.md) — user-visible command and schema surfaces;
 - [GitHub repository-renaming documentation](https://docs.github.com/en/repositories/creating-and-managing-repositories/renaming-a-repository)
   and [remote URL documentation](https://docs.github.com/en/get-started/git-basics/managing-remote-repositories)
   — external cutover behavior and limitations;

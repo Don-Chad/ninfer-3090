@@ -12,6 +12,8 @@ Use the active documentation index at [`../README.md`](../README.md) for current
   pre-optimization gate.
 - [`optimization-era/`](optimization-era/) — subsequent linear, attention, MTP, INT8 KV, q5090,
   serving, and Vision design/implementation work through the v4.2-native runtime.
+- [`ninfer-foundation/`](ninfer-foundation/) — the completed project-identity cutover from QUS to
+  NInfer, including its implementation plan and verification record.
 
 ## Archive rules
 
