@@ -6,11 +6,51 @@
 
 namespace ninfer::ops {
 
+__global__ void vision_pos_embed_add_d1152_warp_kernel(const __nv_bfloat162* table,
+                                                       const std::int32_t* indices,
+                                                       const float* weights, __nv_bfloat162* x,
+                                                       std::int32_t patches,
+                                                       std::int32_t tiles_per_patch) {
+    constexpr int pairs = 1152 / 2;
+    const int lane      = static_cast<int>(threadIdx.x);
+    const int patch     = static_cast<int>(blockIdx.x) / tiles_per_patch;
+    const int tile      = static_cast<int>(blockIdx.x) - patch * tiles_per_patch;
+    if (patch >= patches) { return; }
+
+    const std::int64_t control = static_cast<std::int64_t>(patch) * 4 + lane;
+    const int lane_index       = lane < 4 ? indices[control] : 0;
+    const float lane_weight    = lane < 4 ? weights[control] : 0.0f;
+    int corner_indices[4];
+    float corner_weights[4];
+#pragma unroll
+    for (int corner = 0; corner < 4; ++corner) {
+        corner_indices[corner] = __shfl_sync(0xffffffffu, lane_index, corner);
+        corner_weights[corner] = __shfl_sync(0xffffffffu, lane_weight, corner);
+    }
+
+    const std::int64_t x_base = static_cast<std::int64_t>(patch) * pairs;
+    for (int pair = tile * 32 + lane; pair < pairs; pair += tiles_per_patch * 32) {
+        float lo = 0.0f;
+        float hi = 0.0f;
+#pragma unroll
+        for (int corner = 0; corner < 4; ++corner) {
+            const float2 value = __bfloat1622float2(
+                table[static_cast<std::int64_t>(corner_indices[corner]) * pairs + pair]);
+            lo += value.x * corner_weights[corner];
+            hi += value.y * corner_weights[corner];
+        }
+        const __nv_bfloat162 rounded  = __floats2bfloat162_rn(lo, hi);
+        const __nv_bfloat162 residual = x[x_base + pair];
+        x[x_base + pair] = __floats2bfloat162_rn(__low2float(residual) + __low2float(rounded),
+                                                 __high2float(residual) + __high2float(rounded));
+    }
+}
+
 template <int Block>
 __launch_bounds__(Block) __global__
     void vision_pos_embed_add_d1152_kernel(const __nv_bfloat162* table, const std::int32_t* indices,
                                            const float* weights, __nv_bfloat162* x,
-                                           std::int32_t patches, std::int32_t table_rows) {
+                                           std::int32_t patches) {
     constexpr int d     = 1152;
     constexpr int pairs = d / 2;
     const int patch     = static_cast<int>(blockIdx.x);
@@ -30,13 +70,10 @@ __launch_bounds__(Block) __global__
         float hi = 0.0f;
 #pragma unroll
         for (int corner = 0; corner < 4; ++corner) {
-            const int index = corner_indices[corner];
-            if (index >= 0 && index < table_rows) {
-                const float2 value =
-                    __bfloat1622float2(table[static_cast<std::int64_t>(index) * pairs + pair]);
-                lo += value.x * corner_weights[corner];
-                hi += value.y * corner_weights[corner];
-            }
+            const float2 value = __bfloat1622float2(
+                table[static_cast<std::int64_t>(corner_indices[corner]) * pairs + pair]);
+            lo += value.x * corner_weights[corner];
+            hi += value.y * corner_weights[corner];
         }
         const __nv_bfloat162 rounded  = __floats2bfloat162_rn(lo, hi);
         const __nv_bfloat162 residual = x[x_base + pair];
