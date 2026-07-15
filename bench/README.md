@@ -100,6 +100,28 @@ individual routes are suitable for Nsight Compute capture:
 ./build/bench/ninfer_sampling_select_bench --mtp --mode stochastic --mtp-k 5 --top-k 20
 ```
 
+## Pointwise Op benchmarks
+
+The Section 5 benchmarks cover the complete Qwen3.6-35B pointwise matrix. Default invocation runs
+all registered small, established, maximum-video, and maximum-image shapes. `--control` preserves
+the selected kernel topology and payload while replacing the mathematical operation with minimal
+bitwise work:
+
+```bash
+cmake --build build -j --target \
+  ninfer_residual_add_bench ninfer_sigmoid_mul_bench \
+  ninfer_gelu_bench ninfer_add_bias_bench
+
+./build/bench/ninfer_residual_add_bench [--patches P] [--control]
+./build/bench/ninfer_sigmoid_mul_bench [--tokens T] [--control]
+./build/bench/ninfer_gelu_bench [--mode tanh|exact --columns C] [--control]
+./build/bench/ninfer_add_bias_bench [--d D --columns C] [--control]
+```
+
+Aligned registered shapes use 16-byte BF16 packs in the cache-sized regime. GELU and AddBias
+select their BF16x2 streaming routes for larger Vision items; odd or unaligned repository-internal
+test shapes exercise the scalar fallbacks.
+
 ## Reports
 
 Table, JSON, and CSV reports all identify the selected target, artifact, Engine configuration,

@@ -148,6 +148,9 @@ int main() {
 
     // Coverage: requested shapes; >=3 seeds; honest range.
     for (std::uint32_t seed : {1u, 7u, 99u}) {
+        f += one_shape("residual_add 35b vision [1152,1]", 1152, 1, seed, -8.f, 8.f);
+        f += one_shape("residual_add 35b vision [1152,6]", 1152, 6, seed, -8.f, 8.f);
+        f += one_shape("residual_add 35b vision [1152,4096]", 1152, 4096, seed, -8.f, 8.f);
         f += one_shape("residual_add [5120,1]", 5120, 1, seed, -8.f, 8.f);
         f += one_shape("residual_add [5120,4096]", 5120, 4096, seed, -8.f, 8.f);
         f += one_shape("residual_add [6144,1]", 6144, 1, seed, -8.f, 8.f);

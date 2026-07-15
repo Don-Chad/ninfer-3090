@@ -1,43 +1,93 @@
-// Performance bench for sigmoid_mul at the real Qwen3.6-27B gate shape
-// (hidden_size = 6144). This binary is the ncu/nsys target; the GB/s it prints
-// is informational only -- the gate is ncu sustained DRAM % (see
-// docs/op-development.md §8).
-//   ./ninfer_sigmoid_gate_mul_bench [--decode] [--prefill]   (default: both)
 #include "ninfer/ops/sigmoid_mul.h"
 #include "ninfer_bench_common.h"
 
+#include <cuda_runtime.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 using namespace ninfer;
 using namespace ninfer::bench;
 
-static void run(int n, const char* tag) {
-    DBuf gate = make_bf16(static_cast<std::size_t>(n));
-    DBuf x    = make_bf16(static_cast<std::size_t>(n));
-    Tensor tgate(gate.p, DType::BF16, {n}), tx(x.p, DType::BF16, {n});
+namespace {
 
-    const double bytes = 3.0 * static_cast<double>(n) * 2.0; // read gate + read x + write x
-    const Result r     = bench_loop([&](cudaStream_t s) { ops::sigmoid_mul(tgate, tx, s); }, bytes);
-    print_result(tag, r);
+__global__ void sigmoid_mul_payload_control(const uint4* gate, uint4* x, std::int64_t packs) {
+    const std::int64_t start  = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x;
+    const std::int64_t stride = static_cast<std::int64_t>(gridDim.x) * blockDim.x;
+    for (std::int64_t i = start; i < packs; i += stride) {
+        const uint4 a = gate[i];
+        uint4 b       = x[i];
+        b.x ^= a.x;
+        b.y ^= a.y;
+        b.z ^= a.z;
+        b.w ^= a.w;
+        x[i] = b;
+    }
 }
 
+void run(int tokens, bool control) {
+    constexpr int d     = 4096;
+    const std::size_t n = static_cast<std::size_t>(d) * static_cast<std::size_t>(tokens);
+    DBuf gate           = make_bf16(n);
+    DBuf x              = make_bf16(n);
+    Tensor tgate(gate.p, DType::BF16, {256, 16, tokens});
+    Tensor tx(x.p, DType::BF16, {256, 16, tokens});
+
+    const Result result = bench_loop(
+        [&](cudaStream_t stream) {
+            if (control) {
+                constexpr int block   = 256;
+                constexpr int maxGrid = 4096;
+                const auto packs      = static_cast<std::int64_t>(n / 8);
+                const int grid        = static_cast<int>(std::min<std::int64_t>(
+                    maxGrid, std::max<std::int64_t>(1, (packs + block - 1) / block)));
+                sigmoid_mul_payload_control<<<grid, block, 0, stream>>>(
+                    static_cast<const uint4*>(gate.p), static_cast<uint4*>(x.p), packs);
+            } else {
+                ops::sigmoid_mul(tgate, tx, stream);
+            }
+        },
+        static_cast<double>(n) * 6.0);
+
+    char tag[80];
+    std::snprintf(tag, sizeof(tag), "%s [256,16,%-4d]", control ? "control" : "sigmoid_mul",
+                  tokens);
+    print_result(tag, result);
+}
+
+} // namespace
+
 int main(int argc, char** argv) {
-    int count = 0;
-    if (cudaGetDeviceCount(&count) != cudaSuccess || count == 0) {
+    int devices = 0;
+    if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) {
         std::printf("SKIP: no usable CUDA device\n");
         return 0;
     }
-    bool prefill = false, decode = false;
-    for (int i = 1; i < argc; ++i) {
-        if (!std::strcmp(argv[i], "--prefill"))
-            prefill = true;
-        else if (!std::strcmp(argv[i], "--decode"))
-            decode = true;
-    }
-    if (!prefill && !decode) { prefill = decode = true; }
 
-    constexpr int kHidden = 6144; // Qwen3.6-27B sigmoid gate hidden size
-    if (decode) run(kHidden * 1, "sigmoid_mul decode  [6144,1]");
-    if (prefill) run(kHidden * 4096, "sigmoid_mul prefill [6144,4096]");
+    int selected_tokens = 0;
+    bool control        = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--tokens") && i + 1 < argc) {
+            selected_tokens = std::atoi(argv[++i]);
+        } else if (!std::strcmp(argv[i], "--control")) {
+            control = true;
+        } else {
+            std::fprintf(stderr, "usage: %s [--tokens T] [--control]\n", argv[0]);
+            return 2;
+        }
+    }
+    if (selected_tokens < 0) {
+        std::fprintf(stderr, "tokens must be positive\n");
+        return 2;
+    }
+
+    if (selected_tokens > 0) {
+        run(selected_tokens, control);
+        return 0;
+    }
+    for (const int tokens : {1, 2, 3, 4, 5, 6, 1024}) { run(tokens, control); }
     return 0;
 }

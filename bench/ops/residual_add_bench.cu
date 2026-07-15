@@ -1,43 +1,93 @@
-// Performance bench for residual_add at the real Qwen3.6-27B hidden shape
-// (hidden_size = 5120). This binary is the ncu/nsys target; the GB/s it prints
-// is informational only -- the gate is ncu sustained DRAM % (see
-// docs/op-development.md §8).
-//   ./ninfer_residual_add_bench [--decode] [--prefill]   (default: both)
 #include "ninfer/ops/residual_add.h"
 #include "ninfer_bench_common.h"
 
+#include <cuda_runtime.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 using namespace ninfer;
 using namespace ninfer::bench;
 
-static void run(int n, const char* tag) {
-    DBuf y = make_bf16(static_cast<std::size_t>(n));
-    DBuf x = make_bf16(static_cast<std::size_t>(n));
-    Tensor ty(y.p, DType::BF16, {n}), tx(x.p, DType::BF16, {n});
+namespace {
 
-    const double bytes = 3.0 * static_cast<double>(n) * 2.0; // read y + read x + write x
-    const Result r     = bench_loop([&](cudaStream_t s) { ops::residual_add(ty, tx, s); }, bytes);
-    print_result(tag, r);
+__global__ void residual_add_payload_control(const uint4* y, uint4* x, std::int64_t packs) {
+    const std::int64_t start  = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x;
+    const std::int64_t stride = static_cast<std::int64_t>(gridDim.x) * blockDim.x;
+    for (std::int64_t i = start; i < packs; i += stride) {
+        const uint4 a = y[i];
+        uint4 b       = x[i];
+        b.x ^= a.x;
+        b.y ^= a.y;
+        b.z ^= a.z;
+        b.w ^= a.w;
+        x[i] = b;
+    }
 }
 
+void run(int patches, bool control) {
+    constexpr int d     = 1152;
+    const std::size_t n = static_cast<std::size_t>(d) * static_cast<std::size_t>(patches);
+    DBuf y              = make_bf16(n);
+    DBuf x              = make_bf16(n);
+    Tensor ty(y.p, DType::BF16, {d, patches});
+    Tensor tx(x.p, DType::BF16, {d, patches});
+
+    const Result result = bench_loop(
+        [&](cudaStream_t stream) {
+            if (control) {
+                constexpr int block   = 256;
+                constexpr int maxGrid = 4096;
+                const auto packs      = static_cast<std::int64_t>(n / 8);
+                const int grid        = static_cast<int>(std::min<std::int64_t>(
+                    maxGrid, std::max<std::int64_t>(1, (packs + block - 1) / block)));
+                residual_add_payload_control<<<grid, block, 0, stream>>>(
+                    static_cast<const uint4*>(y.p), static_cast<uint4*>(x.p), packs);
+            } else {
+                ops::residual_add(ty, tx, stream);
+            }
+        },
+        static_cast<double>(n) * 6.0);
+
+    char tag[80];
+    std::snprintf(tag, sizeof(tag), "%s [1152,%-5d]", control ? "control" : "residual_add",
+                  patches);
+    print_result(tag, result);
+}
+
+} // namespace
+
 int main(int argc, char** argv) {
-    int count = 0;
-    if (cudaGetDeviceCount(&count) != cudaSuccess || count == 0) {
+    int devices = 0;
+    if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) {
         std::printf("SKIP: no usable CUDA device\n");
         return 0;
     }
-    bool prefill = false, decode = false;
-    for (int i = 1; i < argc; ++i) {
-        if (!std::strcmp(argv[i], "--prefill"))
-            prefill = true;
-        else if (!std::strcmp(argv[i], "--decode"))
-            decode = true;
-    }
-    if (!prefill && !decode) { prefill = decode = true; }
 
-    constexpr int kHidden = 5120; // Qwen3.6-27B hidden_size
-    if (decode) run(kHidden * 1, "residual_add decode  [5120,1]");
-    if (prefill) run(kHidden * 4096, "residual_add prefill [5120,4096]");
+    int selected_patches = 0;
+    bool control         = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--patches") && i + 1 < argc) {
+            selected_patches = std::atoi(argv[++i]);
+        } else if (!std::strcmp(argv[i], "--control")) {
+            control = true;
+        } else {
+            std::fprintf(stderr, "usage: %s [--patches P] [--control]\n", argv[0]);
+            return 2;
+        }
+    }
+    if (selected_patches < 0 || (selected_patches > 0 && selected_patches % 4 != 0)) {
+        std::fprintf(stderr, "patches must be a positive multiple of 4\n");
+        return 2;
+    }
+
+    if (selected_patches > 0) {
+        run(selected_patches, control);
+        return 0;
+    }
+    for (const int patches : {8, 256, 4096, 49152, 65536}) { run(patches, control); }
     return 0;
 }

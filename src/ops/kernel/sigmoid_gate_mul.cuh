@@ -1,11 +1,13 @@
 #pragma once
 
-// ninfer::ops - sigmoid_mul kernel: x *= sigmoid(gate), elementwise in place.
-// sigmoid(x) = 1 / (1 + e^-x), computed in fp32 with expf (NOT a polynomial fit).
-// Vectorized over bf16 pairs; included only by its launcher. See
-// docs/op-development.md §6.
+// Implements: include/ninfer/ops/sigmoid_mul.h
+// Match: contiguous BF16 inputs. Registered aligned/eight-element domains use
+// one 16-byte pack per thread; BF16x2 and scalar routes preserve correctness for
+// smaller alignments and odd tails. Sigmoid remains FP32 expf, not a fit.
 
+#include "ops/common/bf16_vector.cuh"
 #include "ops/common/math.cuh"
+#include "ops/common/memory.cuh"
 
 #include <cuda_bf16.h>
 
@@ -32,7 +34,23 @@ __global__ void sigmoid_gate_mul_scalar_kernel(const __nv_bfloat16* gate, __nv_b
 }
 
 __launch_bounds__(256) __global__
-    void sigmoid_gate_mul_kernel(const __nv_bfloat16* gate, __nv_bfloat16* x, std::int64_t n) {
+    void sigmoid_gate_mul_bf16x8_kernel(const Bf16x8Pack* gate, Bf16x8Pack* x, std::int64_t packs) {
+    const std::int64_t start  = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x;
+    const std::int64_t stride = static_cast<std::int64_t>(gridDim.x) * blockDim.x;
+    for (std::int64_t i = start; i < packs; i += stride) {
+        const Bf16x8Pack gv = load_vec<Bf16x8Pack>(gate + i);
+        Bf16x8Pack xv       = load_vec<Bf16x8Pack>(x + i);
+#pragma unroll
+        for (int pair = 0; pair < 4; ++pair) {
+            xv.pair[pair] = sigmoid_gate_mul_pair(gv.pair[pair], xv.pair[pair]);
+        }
+        store_vec(x + i, xv);
+    }
+}
+
+__launch_bounds__(256) __global__
+    void sigmoid_gate_mul_bf16x2_kernel(const __nv_bfloat16* gate, __nv_bfloat16* x,
+                                        std::int64_t n) {
     const std::int64_t tid = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x;
     const std::int64_t stride =
         static_cast<std::int64_t>(gridDim.x) * blockDim.x * kSigmoidGateMulPairsPerThread;

@@ -1,5 +1,12 @@
 #pragma once
 
+// Implements: include/ninfer/ops/gelu.h
+// Match: contiguous BF16 storage. Exact-erf and tanh formulas share aligned
+// BF16x8/BF16x2/scalar storage routes but remain separate compile-time math.
+
+#include "ops/common/bf16_vector.cuh"
+#include "ops/common/memory.cuh"
+
 #include <cuda_bf16.h>
 
 #include <cstdint>
@@ -23,6 +30,20 @@ template <bool TanhApprox>
 __device__ __forceinline__ __nv_bfloat162 gelu_pair(__nv_bfloat162 input) {
     return __floats2bfloat162_rn(gelu_one<TanhApprox>(__low2float(input)),
                                  gelu_one<TanhApprox>(__high2float(input)));
+}
+
+template <bool TanhApprox, int Block>
+__launch_bounds__(Block) __global__ void gelu_bf16x8_kernel(Bf16x8Pack* x, std::int64_t packs) {
+    const std::int64_t start  = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x;
+    const std::int64_t stride = static_cast<std::int64_t>(gridDim.x) * blockDim.x;
+    for (std::int64_t i = start; i < packs; i += stride) {
+        Bf16x8Pack value = load_vec<Bf16x8Pack>(x + i);
+#pragma unroll
+        for (int pair = 0; pair < 4; ++pair) {
+            value.pair[pair] = gelu_pair<TanhApprox>(value.pair[pair]);
+        }
+        store_vec(x + i, value);
+    }
 }
 
 template <bool TanhApprox, int Block>
