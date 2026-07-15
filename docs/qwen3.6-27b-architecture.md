@@ -135,8 +135,11 @@ x = x + o_projection(a)
 ```
 
 Prefill appends all K/V columns and evaluates causal attention for the chunk. Decode appends one
-column and attends over the resident prefix. KV storage may be BF16 or per-group INT8; quantization
-changes cache representation, not attention semantics.
+column and attends over the resident prefix. KV storage may be BF16 or INT8-G64. The exact runtime
+cache codec and the common ideal attention oracle are defined by the repository-internal
+[`gqa_attention.h`](../include/ninfer/ops/gqa_attention.h) contract. Both cache formats and their
+optimized compute profiles are judged by that one oracle construction rather than by
+implementation-mirroring references.
 
 Text-only positions use the same scalar position for temporal, height, and width MRoPE sections.
 Multimodal prefill supplies distinct three-axis positions. Only 64 of each 256-dimensional head are
@@ -322,12 +325,24 @@ remain consistent.
 - activations are BF16 at public model/operator boundaries;
 - ordinary and Q/K norms use FP32 accumulation and BF16 output;
 - GDN `g`, `beta`, and recurrent state are FP32;
-- attention softmax and reductions use the accumulation policy defined by their numerical tests;
+- the ideal GQA oracle evaluates dot products, stable softmax, and value reduction in FP64 from
+  BF16 Q and logical cache values; the BF16 Op output is promoted to FP64 for comparison;
 - low-bit weight storage changes representation, not the intended dequantized matrix;
-- INT8 KV stores per-group codes/scales but preserves the BF16 attention contract within documented
-  tolerance;
+- INT8-G64 KV stores FP16 scales and signed codes, and its ideal logical K/V values are their FP32
+  decode;
+- the target's INT8 attention path intentionally quantizes Q to Q8-G64 for production computation;
+  this native compute profile does not replace BF16 Q in the common ideal oracle, and its delta is
+  accepted through the separate named INT8 tolerance rather than the BF16 tolerance;
 - the full target `lm_head` is used for prefill, verification, and ordinary decode regardless of
   draft-head mode.
+
+GQA numerical qualification covers both registered geometries, supported prompt and small-T
+regimes, the maintained conformance matrix, and target-representative activation ranges. Its
+`Tolerance::attention_bf16()` and `Tolerance::attention_int8()` acceptance envelopes are explicit
+named standards in `tests/ops/op_check.h`; they are not claimed as pointwise bounds for every
+arbitrary or adversarial BF16 tensor. A1 append-and-attend and A3 cached-only attention must each
+match the common ideal oracle independently. Comparing A1 with A3 remains useful for implementation
+consistency, but cannot substitute for either oracle comparison.
 
 ## 13. State inventory
 

@@ -423,6 +423,21 @@ criteria for floating-point and stochastic work. A stochastic test validates the
 contract or controlled semantic inputs; it does not require sampled text to remain identical unless
 the contract promises that result.
 
+When several optimized implementations approximate one ideal operation, keep one independent
+higher-precision oracle and give each implementation profile an explicit named tolerance when its
+rounding or quantization error differs. Do not copy query quantization, staging casts, reduction
+trees, or another implementation's output into the reference merely to make parity pass. State the
+qualification domain honestly: a tolerance established for registered shapes, supported regimes,
+the conformance matrix, and target-representative activations is not a universal error theorem for
+arbitrary unbounded or adversarial tensors. Each semantically complete entry point is checked
+directly against the oracle; pairwise implementation parity is supplementary evidence.
+
+GQA applies this rule concretely. BF16 and INT8-G64 A1/A3 share an FP64 ideal attention oracle over
+BF16 Q and logical cache values (BF16 or FP32-decoded INT8-G64). The target's INT8 Q8-G64 compute
+profile remains an intentional optimized implementation and uses the named
+`Tolerance::attention_int8()` rather than `Tolerance::attention_bf16()`; it is not folded into a
+second reference. Exact INT8 cache code and scale validation remains a separate codec check.
+
 Keep schedule composition, state-lifetime, and end-to-end behavior in target/product integration
 tests. Do not add tests for private filenames, namespace strings, source paths, trivial wrappers,
 coverage, retired compatibility, or hypothetical behavior.

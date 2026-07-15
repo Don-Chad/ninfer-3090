@@ -16,6 +16,35 @@ struct GqaExecutionEnvelope {
 };
 
 /**
+ * Shared numerical contract for A1/A2/A3.
+ *
+ * Public q/k/v inputs and BF16 cache values are interpreted after their BF16 storage boundary.
+ * INT8-G64 cache rows use one FP16 scale for each contiguous 64-element group. For BF16 source
+ * values x, their exact observable encoding is:
+ *
+ *   a          = max_i abs(FP32(x[i]))
+ *   scale_bits = FP16_RNE(a / 127)
+ *   s          = FP32(scale_bits)
+ *   inv        = s == 0 ? 0 : FP32(1 / s)
+ *   code[i]    = s == 0 ? 0 : I8(clamp(RNE_even(FP32(x[i]) * inv), -127, 127))
+ *   decode[i]  = FP32(code[i]) * s
+ *
+ * A1 and A2 produce identical code and scale bits. The common ideal attention oracle uses BF16 Q
+ * and logical cache values (BF16 values for a BF16 cache, FP32 decode above for INT8-G64), then
+ * evaluates score dot products, stable softmax, and value reduction in FP64. The BF16 Op output is
+ * promoted to FP64 for comparison with that result.
+ *
+ * The registered INT8 implementation defines Q8-G64, paired with INT8-G64 K, as its native query
+ * compute profile. Its profile-defined query quantization and any narrower staging do not replace
+ * BF16 Q in the ideal oracle. BF16 and INT8 implementations therefore use the separate named
+ * `attention_bf16` and `attention_int8` numerical qualification tolerances. Those envelopes apply
+ * to the registered geometries, token regimes, conformance matrix, and target-representative
+ * activation range; they are not a universal error bound for arbitrary adversarial BF16 tensors.
+ * A1 and A3 are each qualified directly against the ideal oracle. A1-versus-A3 parity is only an
+ * additional consistency check.
+ */
+
+/**
  * Returns transient arena capacity for the fused attention routes. It is nonzero for the
  * registered small-T (T=1..6) split-KV paths and zero for prompt attention.
  */
@@ -31,9 +60,10 @@ struct GqaExecutionEnvelope {
  *
  * The registered geometries are `[256,24|4,T]` group 6 and `[256,16|2,T]` group 8. q/k/v/out
  * are contiguous BF16, positions is contiguous sequential I32 [T], and scale is 1/sqrt(256).
- * Cache storage is BF16 or INT8-G64. The caller guarantees that every row in the causal domain is
- * populated and that `positions[T-1]+1` lies in the declared execution envelope. The envelope is
- * a host launch-resource promise; it does not alter the causal mask.
+ * Cache storage is BF16 or INT8-G64 under the shared numerical contract above. The caller
+ * guarantees that every row in the causal domain is populated and that `positions[T-1]+1` lies in
+ * the declared execution envelope. The envelope is a host launch-resource promise; it does not
+ * alter the causal mask.
  *
  * q/k/v/positions/out, every cache plane, and live workspace suballocations are pairwise
  * non-overlapping. The Op overwrites every addressed cache row but owns no persistent frontier.

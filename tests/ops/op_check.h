@@ -59,6 +59,13 @@ struct Tolerance {
 
     static constexpr Tolerance attention_bf16() { return {2e-3, 1.6e-2, 2e-3, 5.0, 8e-3}; }
 
+    // INT8-G64 attention is measured against the same ideal fp64 attention
+    // oracle as the BF16 route. Its Q8-G64 query quantization is the native
+    // INT8 compute profile. The 4e-3 absolute floor is fixed by the group-tail/
+    // cancellation regression in test_gqa_attention; the relative, tail,
+    // worst-ratio, and rel-L2 gates remain the BF16 values.
+    static constexpr Tolerance attention_int8() { return {4e-3, 1.6e-2, 2e-3, 5.0, 8e-3}; }
+
     static constexpr Tolerance gdn_output_bf16() { return {1e-3, 1.0e-2, 2e-3, 5.0, 8e-3}; }
 
     static constexpr Tolerance gdn_state_fp32() { return {5e-4, 5.0e-3, 2e-2, 5.0, 5e-3}; }

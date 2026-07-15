@@ -10,9 +10,14 @@ the "current" cursor-based implementation record the pre-refactor state.
 The stable ownership, execution-envelope, cache-view, Program-frontier, and graph-tier decisions
 now live in [`op-development.md`](../../op-development.md),
 [`ninfer-engine-architecture.md`](../../ninfer-engine-architecture.md), and the repository-internal
-GQA contract. Retained qualification evidence is in the
+[`GQA contract`](../../../include/ninfer/ops/gqa_attention.h). Retained
+qualification evidence is in the
 [`35B A3 roofline report`](../optimization-era/bench/qwen3.6-35b-gqa-a3-roofline.md) and the
 [`27B graph-frontier report`](../optimization-era/bench/qwen3.6-27b-gqa-graph-frontier-qualification.md).
+The one-tolerance numerical acceptance text retained in Sections 4.1 and 12.1 is historical and
+superseded by that active GQA contract and
+[`qwen3.6-27b-architecture.md`](../../qwen3.6-27b-architecture.md): BF16 and INT8 implementations
+now share one ideal high-precision oracle but use separate named qualification tolerances.
 
 ## 1. Scope and outcome
 

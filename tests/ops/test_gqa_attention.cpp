@@ -1,7 +1,7 @@
 // Correctness + coverage for gqa_attention prefill/decode, against the frozen
-// op-test standard (docs/op-development.md): fp64 golden from
-// bf16-rounded q/k/v/cache inputs, device scalar pos for decode, composite
-// tolerance attention_bf16.
+// op-test standard (docs/op-development.md): one fp64 ideal-attention oracle
+// starts from BF16 Q and logical decoded K/V for both cache formats. BF16 and
+// native-Q8 INT8 implementations use distinct named acceptance tolerances.
 #include "core/arena.h"
 #include "ninfer/ops/gqa_attention.h"
 #include "core/kv_cache.h"
@@ -266,6 +266,21 @@ void cpu_gqa_decode(const std::vector<float>& q, const std::vector<float>& cache
     }
 }
 
+void cpu_gqa_cached(const std::vector<float>& q, const std::vector<float>& cache_k,
+                    const std::vector<float>& cache_v, const std::vector<int>& positions,
+                    std::int32_t padded_context, std::vector<double>& out) {
+    const std::size_t q_col_elems = static_cast<std::size_t>(kHeadDim) * kQHeads;
+    out.resize(q_col_elems * positions.size());
+    for (std::size_t t = 0; t < positions.size(); ++t) {
+        std::vector<float> q_token(q.begin() + static_cast<std::ptrdiff_t>(t * q_col_elems),
+                                   q.begin() + static_cast<std::ptrdiff_t>((t + 1) * q_col_elems));
+        std::vector<double> token_out;
+        cpu_gqa_decode(q_token, cache_k, cache_v, positions[t], padded_context, token_out);
+        std::copy(token_out.begin(), token_out.end(),
+                  out.begin() + static_cast<std::ptrdiff_t>(t * q_col_elems));
+    }
+}
+
 void cpu_gqa_prefill(const std::vector<float>& q, const std::vector<float>& k,
                      const std::vector<float>& v, const std::vector<float>& initial_cache_k,
                      const std::vector<float>& initial_cache_v, std::int32_t tokens,
@@ -379,46 +394,6 @@ void cpu_quantize_append(const std::vector<float>& k, const std::vector<float>& 
     }
 }
 
-std::vector<float> dequantize_cache_bf16(const std::vector<std::int8_t>& code,
-                                         const std::vector<std::uint16_t>& scale,
-                                         std::int32_t padded_context) {
-    std::vector<float> out(code.size(), 0.0f);
-    for (std::int32_t kv_head = 0; kv_head < kKVHeads; ++kv_head) {
-        for (std::int32_t position = 0; position < padded_context; ++position) {
-            for (std::int32_t group = 0; group < kKvQuantGroups; ++group) {
-                const float s =
-                    f16_bits_to_f32(scale[scale_index(kv_head, group, position, padded_context)]);
-                for (std::int32_t i = 0; i < kKvQuantGroup; ++i) {
-                    const std::int32_t d  = group * kKvQuantGroup + i;
-                    const std::size_t idx = cache_index(kv_head, d, position, padded_context);
-                    out[idx] = bf16_to_f32(f32_to_bf16(static_cast<float>(code[idx]) * s));
-                }
-            }
-        }
-    }
-    return out;
-}
-
-std::vector<float> dequantize_cache_f16(const std::vector<std::int8_t>& code,
-                                        const std::vector<std::uint16_t>& scale,
-                                        std::int32_t padded_context) {
-    std::vector<float> out(code.size(), 0.0f);
-    for (std::int32_t kv_head = 0; kv_head < kKVHeads; ++kv_head) {
-        for (std::int32_t position = 0; position < padded_context; ++position) {
-            for (std::int32_t group = 0; group < kKvQuantGroups; ++group) {
-                const float s =
-                    f16_bits_to_f32(scale[scale_index(kv_head, group, position, padded_context)]);
-                for (std::int32_t i = 0; i < kKvQuantGroup; ++i) {
-                    const std::int32_t d  = group * kKvQuantGroup + i;
-                    const std::size_t idx = cache_index(kv_head, d, position, padded_context);
-                    out[idx] = f16_bits_to_f32(f32_to_f16_bits(static_cast<float>(code[idx]) * s));
-                }
-            }
-        }
-    }
-    return out;
-}
-
 std::vector<float> dequantize_cache_f32(const std::vector<std::int8_t>& code,
                                         const std::vector<std::uint16_t>& scale,
                                         std::int32_t padded_context) {
@@ -432,30 +407,6 @@ std::vector<float> dequantize_cache_f32(const std::vector<std::int8_t>& code,
                     const std::int32_t d  = group * kKvQuantGroup + i;
                     const std::size_t idx = cache_index(kv_head, d, position, padded_context);
                     out[idx]              = static_cast<float>(code[idx]) * s;
-                }
-            }
-        }
-    }
-    return out;
-}
-
-std::vector<float> quantize_query_i8_roundtrip(const std::vector<float>& q, std::int32_t tokens) {
-    std::vector<float> out(q.size(), 0.0f);
-    for (std::int32_t token = 0; token < tokens; ++token) {
-        for (std::int32_t q_head = 0; q_head < kQHeads; ++q_head) {
-            for (std::int32_t group = 0; group < kKvQuantGroups; ++group) {
-                const std::int32_t d0 = group * kKvQuantGroup;
-                float absmax          = 0.0f;
-                for (std::int32_t i = 0; i < kKvQuantGroup; ++i) {
-                    absmax = std::max(absmax, std::abs(q[q_index(q_head, d0 + i, token)]));
-                }
-                const float scale = absmax > 0.0f ? absmax / 127.0f : 0.0f;
-                const float inv   = scale > 0.0f ? 1.0f / scale : 0.0f;
-                for (std::int32_t i = 0; i < kKvQuantGroup; ++i) {
-                    const std::size_t idx = q_index(q_head, d0 + i, token);
-                    int code = inv > 0.0f ? static_cast<int>(std::nearbyint(q[idx] * inv)) : 0;
-                    code     = std::max(-127, std::min(127, code));
-                    out[idx] = static_cast<float>(code) * scale;
                 }
             }
         }
@@ -505,12 +456,12 @@ int one_int8_prefill_case(std::int32_t tokens, std::uint32_t seed, std::int32_t 
     std::vector<std::uint16_t> expected_v_scale = initial_v_scale;
     cpu_quantize_append(k, v, positions, true, tokens, padded_context, expected_k, expected_v,
                         expected_k_scale, expected_v_scale);
-    // Native-S8 QK uses an FP32-scale Q round-trip and exact code*FP16-scale K.
-    // FP16 PV consumes code*FP16-scale V after the packed shared-memory FP16 rounding.
+    // The ideal oracle sees the BF16-boundary Q and logical FP32 code*scale K/V.
+    // Native Q8 query quantization and PV staging are measured by the INT8 profile tolerance.
     const std::vector<float> cache_k =
         dequantize_cache_f32(expected_k, expected_k_scale, padded_context);
     const std::vector<float> cache_v =
-        dequantize_cache_f16(expected_v, expected_v_scale, padded_context);
+        dequantize_cache_f32(expected_v, expected_v_scale, padded_context);
     std::vector<float> k_roundtrip(kvn), v_roundtrip(kvn);
     for (std::int32_t t = 0; t < tokens; ++t) {
         for (std::int32_t h = 0; h < kKVHeads; ++h) {
@@ -526,11 +477,10 @@ int one_int8_prefill_case(std::int32_t tokens, std::uint32_t seed, std::int32_t 
     const std::vector<float> ref_cache_k =
         dequantize_cache_f32(initial_k, initial_k_scale, padded_context);
     const std::vector<float> ref_cache_v =
-        dequantize_cache_f16(initial_v, initial_v_scale, padded_context);
-    const std::vector<float> q_roundtrip = quantize_query_i8_roundtrip(q, tokens);
+        dequantize_cache_f32(initial_v, initial_v_scale, padded_context);
     std::vector<float> ignored_k, ignored_v;
     std::vector<double> ref;
-    cpu_gqa_prefill(q_roundtrip, k_roundtrip, v_roundtrip, ref_cache_k, ref_cache_v, tokens, base,
+    cpu_gqa_prefill(q, k_roundtrip, v_roundtrip, ref_cache_k, ref_cache_v, tokens, base,
                     padded_context, ignored_k, ignored_v, ref);
 
     DBuf dq   = to_device_bf16(q);
@@ -567,7 +517,7 @@ int one_int8_prefill_case(std::int32_t tokens, std::uint32_t seed, std::int32_t 
     int f = 0;
     const std::string label =
         "gqa int8 prefill base=" + std::to_string(base) + " T=" + std::to_string(tokens);
-    f += verify(label.c_str(), from_device_bf16(dout, qn), ref, Tolerance::attention_bf16());
+    f += verify(label.c_str(), from_device_bf16(dout, qn), ref, Tolerance::attention_int8());
     f += check_i8_equal((label + " k code").c_str(), from_device_i8(kv.k[0].data, code_n),
                         expected_k);
     f += check_i8_equal((label + " v code").c_str(), from_device_i8(kv.v[0].data, code_n),
@@ -583,7 +533,7 @@ int one_int8_prefill_case(std::int32_t tokens, std::uint32_t seed, std::int32_t 
 // then `tokens` (1..6) new tokens at [base, base+tokens). The kernel quantizes the
 // new tokens into the cache (fused append, no separate kernel) AND reads every key
 // (history and diagonal) back from the quantized cache for the int8-native QK. The
-// reference therefore applies the int8 round-trip to the new tokens as well.
+// ideal reference decodes every cache row in FP32 and retains the BF16-boundary Q.
 int one_int8_decode_case(std::int32_t base, std::int32_t tokens, std::uint32_t seed) {
     const std::size_t qn =
         static_cast<std::size_t>(kHeadDim) * kQHeads * static_cast<std::size_t>(tokens);
@@ -632,13 +582,12 @@ int one_int8_decode_case(std::int32_t base, std::int32_t tokens, std::uint32_t s
     cpu_quantize_append(k_new, v_new, new_positions, false, tokens, padded_context, expected_k,
                         expected_v, expected_k_scale, expected_v_scale);
 
-    // Native s8 QK uses an fp32-scale int8 Q round-trip and exact int8*scale K
-    // values. PV consumes V after its int8*fp16-scale value is rounded to bf16.
-    // Every key, including the newly appended diagonal, comes back from the cache.
+    // Every key/value, including the newly appended diagonal, comes back from
+    // the cache and is decoded as FP32 code*FP16-scale for the ideal oracle.
     std::vector<float> full_cache_k =
         dequantize_cache_f32(expected_k, expected_k_scale, padded_context);
     std::vector<float> full_cache_v =
-        dequantize_cache_bf16(expected_v, expected_v_scale, padded_context);
+        dequantize_cache_f32(expected_v, expected_v_scale, padded_context);
     std::vector<float> k_deq_new(kvn), v_deq_new(kvn);
     for (std::int32_t t = 0; t < tokens; ++t) {
         for (std::int32_t h = 0; h < kKVHeads; ++h) {
@@ -653,12 +602,11 @@ int one_int8_decode_case(std::int32_t base, std::int32_t tokens, std::uint32_t s
     std::vector<float> ref_cache_k =
         dequantize_cache_f32(initial_k, initial_k_scale, padded_context);
     std::vector<float> ref_cache_v =
-        dequantize_cache_bf16(initial_v, initial_v_scale, padded_context);
-    const std::vector<float> q_roundtrip = quantize_query_i8_roundtrip(q, tokens);
+        dequantize_cache_f32(initial_v, initial_v_scale, padded_context);
     std::vector<float> ignored_k, ignored_v;
     std::vector<double> ref;
-    cpu_gqa_prefill(q_roundtrip, k_deq_new, v_deq_new, ref_cache_k, ref_cache_v, tokens, base,
-                    padded_context, ignored_k, ignored_v, ref);
+    cpu_gqa_prefill(q, k_deq_new, v_deq_new, ref_cache_k, ref_cache_v, tokens, base, padded_context,
+                    ignored_k, ignored_v, ref);
 
     DBuf dq   = to_device_bf16(q);
     DBuf dk   = to_device_bf16(k_new);
@@ -694,7 +642,7 @@ int one_int8_decode_case(std::int32_t base, std::int32_t tokens, std::uint32_t s
     int f = 0;
     const std::string label =
         "gqa int8 decode base=" + std::to_string(base) + " T=" + std::to_string(tokens);
-    f += verify(label.c_str(), from_device_bf16(dout, qn), ref, Tolerance::attention_bf16());
+    f += verify(label.c_str(), from_device_bf16(dout, qn), ref, Tolerance::attention_int8());
     f += check_i8_equal((label + " k code").c_str(), from_device_i8(kv.k[0].data, code_n),
                         expected_k);
     f += check_i8_equal((label + " v code").c_str(), from_device_i8(kv.v[0].data, code_n),
@@ -703,6 +651,117 @@ int one_int8_decode_case(std::int32_t base, std::int32_t tokens, std::uint32_t s
                           from_device_u16(kv.k_scale[0].data, scale_n), expected_k_scale);
     f += check_bits_equal((label + " v scale").c_str(),
                           from_device_u16(kv.v_scale[0].data, scale_n), expected_v_scale);
+    return f;
+}
+
+int one_int8_query_quantization_envelope_case() {
+    constexpr std::int32_t base           = 1;
+    constexpr std::int32_t tokens         = 1;
+    constexpr std::int32_t padded_context = 128;
+    const std::size_t qn                  = static_cast<std::size_t>(kHeadDim) * kQHeads;
+    const std::size_t kvn                 = static_cast<std::size_t>(kHeadDim) * kKVHeads;
+    const std::size_t code_n              = cache_elements(padded_context);
+    const std::size_t scale_n             = scale_elements(padded_context);
+
+    // Each query group contains one 0.25 outlier and 63 small values. Native
+    // Q8-G64 intentionally rounds the small values to zero, while the shared
+    // ideal oracle retains the BF16 values. Opposite K/V rows turn that known
+    // approximation into a small (~3.5e-3), nonzero ideal output.
+    std::vector<float> q(qn), history_k(kvn), history_v(kvn), k_new(kvn), v_new(kvn);
+    for (std::int32_t q_head = 0; q_head < kQHeads; ++q_head) {
+        for (std::int32_t d = 0; d < kHeadDim; ++d) {
+            q[q_index(q_head, d)] = d % kKvQuantGroup == 0 ? 0.25f : 0.0009f;
+        }
+    }
+    for (std::int32_t kv_head = 0; kv_head < kKVHeads; ++kv_head) {
+        for (std::int32_t d = 0; d < kHeadDim; ++d) {
+            const std::size_t idx = kv_tensor_index(kv_head, d);
+            history_k[idx]        = d % kKvQuantGroup == 0 ? 0.0f : 0.25f;
+            k_new[idx]            = d % kKvQuantGroup == 0 ? 0.0f : -0.25f;
+            history_v[idx]        = 1.0f;
+            v_new[idx]            = -1.0f;
+        }
+    }
+    round_to_bf16(q);
+    round_to_bf16(history_k);
+    round_to_bf16(history_v);
+    round_to_bf16(k_new);
+    round_to_bf16(v_new);
+
+    std::vector<std::int8_t> initial_k(code_n, 0), initial_v(code_n, 0);
+    std::vector<std::uint16_t> initial_k_scale(scale_n, 0), initial_v_scale(scale_n, 0);
+    cpu_quantize_append(history_k, history_v, std::vector<int>{0}, false, 1, padded_context,
+                        initial_k, initial_v, initial_k_scale, initial_v_scale);
+    std::vector<std::int8_t> expected_k = initial_k, expected_v = initial_v;
+    std::vector<std::uint16_t> expected_k_scale = initial_k_scale;
+    std::vector<std::uint16_t> expected_v_scale = initial_v_scale;
+    cpu_quantize_append(k_new, v_new, std::vector<int>{base}, false, tokens, padded_context,
+                        expected_k, expected_v, expected_k_scale, expected_v_scale);
+
+    const std::vector<float> logical_k =
+        dequantize_cache_f32(expected_k, expected_k_scale, padded_context);
+    const std::vector<float> logical_v =
+        dequantize_cache_f32(expected_v, expected_v_scale, padded_context);
+    std::vector<double> oracle;
+    cpu_gqa_decode(q, logical_k, logical_v, base, padded_context, oracle);
+    if (oracle.empty() || oracle.front() < 3e-3 || oracle.front() > 4e-3) {
+        std::cerr << "gqa int8 Q8 envelope: invalid ideal-oracle fixture output\n";
+        return 1;
+    }
+
+    DBuf dq         = to_device_bf16(q);
+    DBuf dk         = to_device_bf16(k_new);
+    DBuf dv         = to_device_bf16(v_new);
+    DBuf dpos       = to_device_i32(std::vector<int>{base});
+    DBuf dout_full  = DBuf(qn * sizeof(std::uint16_t));
+    DBuf dout_split = DBuf(qn * sizeof(std::uint16_t));
+    WorkspaceArena ws(kGqaWorkspaceBytes);
+
+    const std::size_t arena_bytes =
+        2 * (code_n + 256) + 2 * (scale_n * sizeof(std::uint16_t) + 256) + 4096;
+    DeviceArena full_arena(arena_bytes);
+    DeviceArena split_arena(arena_bytes);
+    KVCache full_cache(full_arena, 1, base + tokens, kKVHeads, kHeadDim, DType::I8);
+    KVCache split_cache(split_arena, 1, base + tokens, kKVHeads, kHeadDim, DType::I8);
+    for (KVCache* cache : {&full_cache, &split_cache}) {
+        cudaMemcpy(cache->k[0].data, initial_k.data(), code_n * sizeof(std::int8_t),
+                   cudaMemcpyHostToDevice);
+        cudaMemcpy(cache->v[0].data, initial_v.data(), code_n * sizeof(std::int8_t),
+                   cudaMemcpyHostToDevice);
+        cudaMemcpy(cache->k_scale[0].data, initial_k_scale.data(), scale_n * sizeof(std::uint16_t),
+                   cudaMemcpyHostToDevice);
+        cudaMemcpy(cache->v_scale[0].data, initial_v_scale.data(), scale_n * sizeof(std::uint16_t),
+                   cudaMemcpyHostToDevice);
+    }
+
+    Tensor tq(dq.p, DType::BF16, {kHeadDim, kQHeads, tokens});
+    Tensor tk(dk.p, DType::BF16, {kHeadDim, kKVHeads, tokens});
+    Tensor tv(dv.p, DType::BF16, {kHeadDim, kKVHeads, tokens});
+    Tensor tpos(dpos.p, DType::I32, {tokens});
+    Tensor tout_full(dout_full.p, DType::BF16, {kHeadDim, kQHeads, tokens});
+    Tensor tout_split(dout_split.p, DType::BF16, {kHeadDim, kQHeads, tokens});
+    const auto envelope = exact_envelope(base + tokens);
+    ops::gqa_attention(tq, tk, tv, tpos, kScale, full_cache.layer_view(0), envelope, ws, tout_full,
+                       nullptr);
+    ops::gqa_kv_append(tk, tv, tpos, split_cache.layer_view(0), nullptr);
+    ops::gqa_attention_cached(tq, tpos, kScale, split_cache.layer_view(0), envelope, ws, tout_split,
+                              nullptr);
+    cudaDeviceSynchronize();
+
+    const std::string label = "gqa int8 Q8 envelope";
+    int f                   = 0;
+    f += verify((label + " A1 oracle").c_str(), from_device_bf16(dout_full, qn), oracle,
+                Tolerance::attention_int8());
+    f += verify((label + " A3 oracle").c_str(), from_device_bf16(dout_split, qn), oracle,
+                Tolerance::attention_int8());
+    f += check_i8_equal((label + " A1 k code").c_str(),
+                        from_device_i8(full_cache.k[0].data, code_n), expected_k);
+    f += check_i8_equal((label + " A1 v code").c_str(),
+                        from_device_i8(full_cache.v[0].data, code_n), expected_v);
+    f += check_i8_equal((label + " A2 k code").c_str(),
+                        from_device_i8(split_cache.k[0].data, code_n), expected_k);
+    f += check_i8_equal((label + " A2 v code").c_str(),
+                        from_device_i8(split_cache.v[0].data, code_n), expected_v);
     return f;
 }
 
@@ -874,6 +933,45 @@ int split_api_parity_case(DType cache_dtype, std::int32_t tokens, std::int32_t b
     std::vector<int> positions(static_cast<std::size_t>(tokens));
     for (std::int32_t t = 0; t < tokens; ++t) { positions[static_cast<std::size_t>(t)] = base + t; }
 
+    // Construct the cache representation independently, decode it to its logical
+    // values, then run one FP64 attention oracle from the original BF16 Q. Both
+    // append-and-attend (A1) and cached attention (A3) are checked against it.
+    std::vector<float> logical_cache_k(code_n, 0.0f), logical_cache_v(code_n, 0.0f);
+    std::vector<std::int8_t> expected_i8_k, expected_i8_v;
+    std::vector<std::uint16_t> expected_i8_k_scale, expected_i8_v_scale;
+    if (cache_dtype == DType::I8) {
+        expected_i8_k.assign(code_n, 0);
+        expected_i8_v.assign(code_n, 0);
+        expected_i8_k_scale.assign(scale_n, 0);
+        expected_i8_v_scale.assign(scale_n, 0);
+        cpu_quantize_append(k, v, positions, true, tokens, padded_context, expected_i8_k,
+                            expected_i8_v, expected_i8_k_scale, expected_i8_v_scale);
+        logical_cache_k = dequantize_cache_f32(expected_i8_k, expected_i8_k_scale, padded_context);
+        logical_cache_v = dequantize_cache_f32(expected_i8_v, expected_i8_v_scale, padded_context);
+    } else {
+        for (std::int32_t t = 0; t < tokens; ++t) {
+            for (std::int32_t h = 0; h < kKVHeads; ++h) {
+                for (std::int32_t d = 0; d < kHeadDim; ++d) {
+                    logical_cache_k[cache_index(h, d, base + t, padded_context)] =
+                        k[kv_tensor_index(h, d, t)];
+                    logical_cache_v[cache_index(h, d, base + t, padded_context)] =
+                        v[kv_tensor_index(h, d, t)];
+                }
+            }
+        }
+    }
+
+    const std::size_t q_col_elems     = static_cast<std::size_t>(kHeadDim) * kQHeads;
+    std::vector<float> oracle_q       = q;
+    std::vector<int> oracle_positions = positions;
+    if (final_row_only) {
+        oracle_q.erase(oracle_q.begin(), oracle_q.end() - static_cast<std::ptrdiff_t>(q_col_elems));
+        oracle_positions.erase(oracle_positions.begin(), oracle_positions.end() - 1);
+    }
+    std::vector<double> oracle;
+    cpu_gqa_cached(oracle_q, logical_cache_k, logical_cache_v, oracle_positions, padded_context,
+                   oracle);
+
     DBuf dq         = to_device_bf16(q);
     DBuf dk         = to_device_bf16(k);
     DBuf dv         = to_device_bf16(v);
@@ -907,7 +1005,6 @@ int split_api_parity_case(DType cache_dtype, std::int32_t tokens, std::int32_t b
     Tensor tv(dv.p, DType::BF16, {kHeadDim, kKVHeads, tokens});
     Tensor tpos(dpos.p, DType::I32, {tokens});
     Tensor tout_full(dout_full.p, DType::BF16, {kHeadDim, kQHeads, tokens});
-    const std::size_t q_col_elems   = static_cast<std::size_t>(kHeadDim) * kQHeads;
     auto* q_split_ptr               = static_cast<std::uint16_t*>(dq.p);
     auto* pos_split_ptr             = static_cast<std::int32_t*>(dpos.p);
     const std::int32_t split_tokens = final_row_only ? 1 : tokens;
@@ -930,33 +1027,54 @@ int split_api_parity_case(DType cache_dtype, std::int32_t tokens, std::int32_t b
     const std::string dtype_label = cache_dtype == DType::BF16 ? "bf16" : "int8";
     const std::string label = "gqa split API " + dtype_label + " base=" + std::to_string(base) +
                               " T=" + std::to_string(tokens) + (final_row_only ? " final-row" : "");
-    std::vector<double> expected = from_device_bf16(dout_full, qn);
+    std::vector<double> full_output = from_device_bf16(dout_full, qn);
     if (final_row_only) {
-        expected.erase(expected.begin(), expected.end() - static_cast<std::ptrdiff_t>(q_col_elems));
+        full_output.erase(full_output.begin(),
+                          full_output.end() - static_cast<std::ptrdiff_t>(q_col_elems));
     }
+    const std::vector<double> cached_output =
+        from_device_bf16(dout_split, q_col_elems * split_tokens);
+    const Tolerance oracle_tolerance =
+        cache_dtype == DType::BF16 ? Tolerance::attention_bf16() : Tolerance::attention_int8();
     int f = 0;
-    f += verify(label.c_str(), from_device_bf16(dout_split, q_col_elems * split_tokens), expected,
+    f += verify((label + " A1 oracle").c_str(), full_output, oracle, oracle_tolerance);
+    f += verify((label + " A3 oracle").c_str(), cached_output, oracle, oracle_tolerance);
+    f += verify((label + " A1/A3 parity").c_str(), cached_output, full_output,
                 Tolerance::attention_bf16());
     if (cache_dtype == DType::BF16) {
-        f += check_bits_equal((label + " k cache").c_str(),
-                              from_device_bf16_bits(split_cache.k[0].data, code_n),
-                              from_device_bf16_bits(full_cache.k[0].data, code_n));
-        f += check_bits_equal((label + " v cache").c_str(),
-                              from_device_bf16_bits(split_cache.v[0].data, code_n),
-                              from_device_bf16_bits(full_cache.v[0].data, code_n));
+        const std::vector<std::uint16_t> expected_k_bits = bf16_bits(logical_cache_k);
+        const std::vector<std::uint16_t> expected_v_bits = bf16_bits(logical_cache_v);
+        f += check_bits_equal((label + " A1 k cache").c_str(),
+                              from_device_bf16_bits(full_cache.k[0].data, code_n), expected_k_bits);
+        f += check_bits_equal((label + " A1 v cache").c_str(),
+                              from_device_bf16_bits(full_cache.v[0].data, code_n), expected_v_bits);
+        f +=
+            check_bits_equal((label + " A2 k cache").c_str(),
+                             from_device_bf16_bits(split_cache.k[0].data, code_n), expected_k_bits);
+        f +=
+            check_bits_equal((label + " A2 v cache").c_str(),
+                             from_device_bf16_bits(split_cache.v[0].data, code_n), expected_v_bits);
     } else {
-        f += check_i8_equal((label + " k code").c_str(),
-                            from_device_i8(split_cache.k[0].data, code_n),
-                            from_device_i8(full_cache.k[0].data, code_n));
-        f += check_i8_equal((label + " v code").c_str(),
-                            from_device_i8(split_cache.v[0].data, code_n),
-                            from_device_i8(full_cache.v[0].data, code_n));
-        f += check_bits_equal((label + " k scale").c_str(),
+        f += check_i8_equal((label + " A1 k code").c_str(),
+                            from_device_i8(full_cache.k[0].data, code_n), expected_i8_k);
+        f += check_i8_equal((label + " A1 v code").c_str(),
+                            from_device_i8(full_cache.v[0].data, code_n), expected_i8_v);
+        f += check_bits_equal((label + " A1 k scale").c_str(),
+                              from_device_u16(full_cache.k_scale[0].data, scale_n),
+                              expected_i8_k_scale);
+        f += check_bits_equal((label + " A1 v scale").c_str(),
+                              from_device_u16(full_cache.v_scale[0].data, scale_n),
+                              expected_i8_v_scale);
+        f += check_i8_equal((label + " A2 k code").c_str(),
+                            from_device_i8(split_cache.k[0].data, code_n), expected_i8_k);
+        f += check_i8_equal((label + " A2 v code").c_str(),
+                            from_device_i8(split_cache.v[0].data, code_n), expected_i8_v);
+        f += check_bits_equal((label + " A2 k scale").c_str(),
                               from_device_u16(split_cache.k_scale[0].data, scale_n),
-                              from_device_u16(full_cache.k_scale[0].data, scale_n));
-        f += check_bits_equal((label + " v scale").c_str(),
+                              expected_i8_k_scale);
+        f += check_bits_equal((label + " A2 v scale").c_str(),
                               from_device_u16(split_cache.v_scale[0].data, scale_n),
-                              from_device_u16(full_cache.v_scale[0].data, scale_n));
+                              expected_i8_v_scale);
     }
     return f;
 }
@@ -1405,6 +1523,7 @@ int main(int argc, char** argv) {
         f += one_int8_decode_case(256, 5, 914u);
         f += one_int8_decode_case(128, 6, 915u);
         f += one_int8_decode_case(8192, 6, 916u);
+        f += one_int8_query_quantization_envelope_case();
         for (std::int32_t tokens = 1; tokens <= 6; ++tokens) {
             f += one_prefill_case(tokens, 100u + static_cast<std::uint32_t>(tokens), 0);
             f += one_prefill_case(tokens, 200u + static_cast<std::uint32_t>(tokens), 1);
