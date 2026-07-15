@@ -95,6 +95,7 @@ set(ninfer_op_tests
   vision_attention
   sampling
   cast
+  scatter
   position
   vision_elementwise)
 foreach(op IN LISTS ninfer_op_tests)

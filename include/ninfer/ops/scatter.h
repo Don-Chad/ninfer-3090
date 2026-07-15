@@ -25,6 +25,10 @@ namespace ninfer::ops {
  *
  * Workspace:
  *   None. The Op has no persistent state side effect beyond the selected destination writes.
+ *
+ * Supported routes:
+ *   D divisible by eight with 16-byte-aligned source/destination uses BF16x8 copies; other aligned
+ *   even D uses BF16x2; remaining contiguous dimensions use scalar copies.
  */
 void scatter(const Tensor& src, const Tensor& indices, Tensor& dst, cudaStream_t stream);
 
