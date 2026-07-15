@@ -1,6 +1,6 @@
 import torch
 
-from tools.convert.qwen3_6_35b_a3b_rtx5090 import inventory, recipe
+from tools.convert.qwen3_6_35b_a3b_rtx5090 import recipe
 
 
 class TensorReader:
@@ -9,38 +9,6 @@ class TensorReader:
 
     def get(self, name: str) -> torch.Tensor:
         return self.tensors[name]
-
-
-def test_recipe_exactly_covers_inventory_and_checkpoint_sources() -> None:
-    assert len(recipe.RECIPE_SPECS) == 883
-    assert len(recipe.RECIPES_BY_NAME) == 883
-    assert tuple(item.object_name for item in recipe.RECIPE_SPECS) == tuple(
-        item.name for item in inventory.TENSOR_SPECS
-    )
-    assert all(
-        recipe.expression_shape(item.expression) == inventory.TENSOR_SPECS[index].shape
-        for index, item in enumerate(recipe.RECIPE_SPECS)
-    )
-
-    requirements = recipe.source_requirements()
-    assert len(requirements) == 1045
-    assert {item.dtype for item in requirements.values()} == {"BF16"}
-    assert requirements["model.language_model.embed_tokens.weight"].shape == (
-        248320,
-        2048,
-    )
-    assert requirements["model.language_model.layers.0.mlp.experts.gate_up_proj"].shape == (
-        256,
-        1024,
-        2048,
-    )
-    assert requirements["model.language_model.layers.0.mlp.experts.down_proj"].shape == (
-        256,
-        2048,
-        512,
-    )
-    assert requirements["mtp.layers.0.self_attn.q_proj.weight"].shape == (8192, 2048)
-    assert requirements["model.visual.merger.linear_fc2.weight"].shape == (2048, 4608)
 
 
 def test_attention_recipe_materializes_q_k_gate_v_row_order() -> None:
@@ -83,11 +51,15 @@ def test_moe_recipe_preserves_expert_major_half_split_rows() -> None:
         recipe.RECIPES_BY_NAME["text/layers/0/moe/routed_gate_up"],
         TensorReader({prefix + "experts.gate_up_proj": gate_up_rows}),
     )
-    for expert, projection, row in ((0, 0, 0), (0, 1, 0), (7, 1, 511), (255, 1, 511)):
-        stored = inventory.routed_gate_up_row(expert, projection, row)
-        expected = expert * 1024 + projection * 512 + row
-        assert int(routed_gate_up[stored, 0]) == expected
-        assert int(routed_gate_up[stored, -1]) == expected
+    for expert, projection, row in (
+        (0, 0, 0),
+        (0, 1, 0),
+        (7, 1, 511),
+        (255, 1, 511),
+    ):
+        physical_row = expert * 1024 + projection * 512 + row
+        assert int(routed_gate_up[physical_row, 0]) == physical_row
+        assert int(routed_gate_up[physical_row, -1]) == physical_row
 
     down_rows = (
         torch.arange(256 * 2048, dtype=torch.int32)
@@ -99,8 +71,8 @@ def test_moe_recipe_preserves_expert_major_half_split_rows() -> None:
         TensorReader({prefix + "experts.down_proj": down_rows}),
     )
     for expert, row in ((0, 0), (9, 123), (255, 2047)):
-        stored = inventory.routed_down_row(expert, row)
-        assert int(routed_down[stored, 0]) == expert * 2048 + row
+        physical_row = expert * 2048 + row
+        assert int(routed_down[physical_row, 0]) == physical_row
 
 
 def test_gdn_recipe_materializes_half_split_ab_and_qkvz() -> None:

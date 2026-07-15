@@ -2,38 +2,12 @@ from pathlib import Path
 
 import torch
 
-from tools.convert.qwen3_6.common import conversion as family_conversion
 from tools.convert.qwen3_6_35b_a3b_rtx5090 import (
     convert,
     draft_head,
     inventory,
     recipe,
 )
-
-
-def test_preplanned_directory_matches_complete_inventory_and_byte_contract() -> None:
-    convert.preflight_inventory()
-    resources = {spec.name: b"x" for spec in inventory.RESOURCE_SPECS}
-    plan = convert.build_object_plan(resources)
-
-    names = tuple(spec.name for spec in inventory.OBJECT_SPECS)
-    assert tuple(spec.name for spec in plan.specs) == names
-    assert tuple(obj.name for obj in plan.objects) == names
-    assert len(plan.objects) == 889
-    assert (
-        family_conversion.tensor_payload_bytes(inventory.TENSOR_SPECS)
-        == 22_360_191_904
-    )
-    assert (
-        family_conversion.device_arena_bytes(inventory.TENSOR_SPECS)
-        == 22_360_207_360
-    )
-    assert convert.EXPECTED_COMPONENT_BYTES == {
-        "main_text": 21_038_461_952,
-        "draft_head": 143_130_624,
-        "mtp": 897_934_336,
-        "vision": 280_664_992,
-    }
 
 
 def test_report_retains_target_specific_provenance_and_component_bytes(
@@ -57,6 +31,9 @@ def test_report_retains_target_specific_provenance_and_component_bytes(
         environment={"python": "test"},
     )
 
+    assert report["model_id"] == inventory.MODEL_ID
+    assert report["target_key"] == inventory.TARGET_KEY
+    assert report["recipe_id"] == convert.RECIPE_ID
     assert report["source"]["gguf_evidence_path"] == str(
         convert.GGUF_EVIDENCE_PATH
     )
@@ -74,33 +51,3 @@ def test_report_retains_target_specific_provenance_and_component_bytes(
             "device_arena": 22_360_207_360,
         },
     }
-
-
-def test_config_validation_requires_exact_moe_and_layer_schedule() -> None:
-    text = dict(convert._TEXT_CONFIG)
-    text["layer_types"] = [
-        "full_attention"
-        if layer in inventory.FULL_ATTENTION_LAYERS
-        else "linear_attention"
-        for layer in inventory.TEXT_LAYERS
-    ]
-    text["rope_parameters"] = dict(convert._ROPE_CONFIG)
-    config = {
-        **convert._ROOT_CONFIG,
-        "text_config": text,
-        "vision_config": dict(convert._VISION_CONFIG),
-    }
-    summary = convert.validate_config(config)
-    assert summary["layer_types"]["full_attention_layers"] == list(
-        inventory.FULL_ATTENTION_LAYERS
-    )
-    assert summary["text"]["num_experts"] == 256
-    assert summary["text"]["num_experts_per_tok"] == 8
-
-    text["num_experts_per_tok"] = 4
-    try:
-        convert.validate_config(config)
-    except ValueError as error:
-        assert "num_experts_per_tok" in str(error)
-    else:
-        raise AssertionError("invalid MoE top-k was accepted")

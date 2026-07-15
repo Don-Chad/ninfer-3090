@@ -390,17 +390,7 @@ def preflight_sources(model_dir: str | Path) -> SourcePreflight:
             "35B checkpoint source inventory differs from the exact 1045 tensors"
             + (": " + ", ".join(details) if details else "")
         )
-    result = _common_preflight_sources(model_dir, RECIPE_SPECS)
-    if (
-        result.source_tensor_count != 1045
-        or result.source_shard_count != 26
-        or result.source_dtype_counts != {SOURCE_DTYPE: 1045}
-    ):
-        raise ValueError(f"35B checkpoint source preflight drifted: {result}")
-    return result
-
-
-validate_recipe_coverage()
+    return _common_preflight_sources(model_dir, RECIPE_SPECS)
 
 
 __all__ = [

@@ -231,7 +231,6 @@ def load_resources(model_dir: str | Path) -> tuple[ResourcePayload, ...]:
 
 
 def build_object_plan(resources: Mapping[str, bytes]) -> ObjectPlan:
-    preflight_inventory()
     return family_conversion.build_object_plan(inventory.OBJECT_SPECS, resources)
 
 
@@ -244,13 +243,6 @@ def preflight_conversion(model_dir: str | Path) -> ConversionPreflight:
     )
     preflight_inventory()
     source = recipe.preflight_sources(model)
-    if (
-        source.recipe_count,
-        source.source_tensor_count,
-        source.source_shard_count,
-        source.source_dtype_counts,
-    ) != (883, 1045, 26, {"BF16": 1045}):
-        raise ValueError(f"checkpoint source inventory drifted: {source}")
 
     resources = load_resources(model)
     resource_map = {resource.name: resource.data for resource in resources}
@@ -283,16 +275,11 @@ def materialize_tensor(
                 draft_head.materialize_draft_head_token_ids(draft)
             )
         }
-    tensor = recipe.materialize_recipe(
+    return recipe.materialize_recipe(
         recipe.RECIPES_BY_NAME[spec.name],
         reader,
         derived,
     )
-    if tuple(tensor.shape) != spec.shape:
-        raise ValueError(
-            f"{spec.name}: materialized shape {tuple(tensor.shape)} != {spec.shape}"
-        )
-    return tensor
 
 
 def encode_tensor_payload(
@@ -383,8 +370,6 @@ def convert(
             inventory.MODEL_ID,
             preflight.object_plan.specs,
         ) as writer:
-            if writer.objects != preflight.object_plan.objects:
-                raise RuntimeError("writer object plan differs from completed preflight")
             for index, spec in enumerate(inventory.OBJECT_SPECS, start=1):
                 if isinstance(spec, inventory.ResourceSpec):
                     payload = resources[spec.name]

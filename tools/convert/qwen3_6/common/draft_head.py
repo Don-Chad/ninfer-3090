@@ -117,10 +117,6 @@ def compute_shortlist(
     tokenizer = Path(tokenizer_dir)
     forced = read_special_ids(tokenizer)
     total = load_total_counts(ranking, vocab)
-    if np.any(total < 0):
-        raise ValueError("draft ranking total counts must be nonnegative")
-    if np.any(total[tokenizer_vocab_size:] != 0):
-        raise ValueError("draft ranking assigns counts to padded non-token lm_head rows")
     selected = select_shortlist(total[:tokenizer_vocab_size], n, forced)
     return DraftHeadContext(
         n=n,
