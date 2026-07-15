@@ -1,17 +1,21 @@
-// Performance bench for partial NeoX RoPE at the real Qwen3.6-27B attention
-// q/k shapes. The printed GB/s is informational only; the gate is ncu sustained
-// DRAM % (see docs/op-development.md §8).
-//   ./ninfer_rope_bench [--decode] [--prefill]   (default: both)
-#include "ninfer/ops/rope.h"
+// Exact-domain RoPE benchmark for Qwen3.6 Text and Vision geometries.
+// Examples:
+//   ./ninfer_rope_bench --text --geometry 35b --axes both --tokens 1,2,3,4,5,6,1024
+//   ./ninfer_rope_bench --text --geometry 35b --form all --tokens 1,2,3,4,5,6,1024
+//   ./ninfer_rope_bench --vision --patches 8,256,4096,49152,65536
+// Add --control for the same-grid, same-payload fixed-resource control.
 #include "core/device.h"
+#include "ninfer/ops/rope.h"
 #include "ninfer_bench_common.h"
+#include "ops/kernel/rope.cuh"
 
 #include <cuda_bf16.h>
 
-#include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
-#include <limits>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace ninfer;
@@ -19,130 +23,330 @@ using namespace ninfer::bench;
 
 namespace {
 
-constexpr int kHeadDim   = 256;
-constexpr int kQHeads    = 24;
-constexpr int kKHeads    = 4;
-constexpr int kRotaryDim = 64;
-constexpr float kTheta   = 1.0e7f;
+constexpr int kTextHeadDim            = 256;
+constexpr int kTextRotaryDim          = 64;
+constexpr int kTextChunkMaxTokens     = 1024;
+constexpr int kLargeBlockWaveCapacity = 1020;
+constexpr float kTextTheta            = 1.0e7F;
+constexpr int kVisionHeadDim          = 72;
+constexpr int kVisionHeads            = 16;
+constexpr float kVisionTheta          = 10'000.0F;
 
-DBuf make_positions(int t) {
-    std::vector<std::int32_t> h(static_cast<std::size_t>(t));
-    for (int i = 0; i < t; ++i) h[static_cast<std::size_t>(i)] = i;
-    DBuf d(h.size() * sizeof(std::int32_t));
-    cudaMemcpy(d.p, h.data(), d.bytes, cudaMemcpyHostToDevice);
-    return d;
-}
-
-DBuf make_positions(int t, int axes) {
-    std::vector<std::int32_t> h(static_cast<std::size_t>(t) * axes);
-    for (int axis = 0; axis < axes; ++axis) {
-        for (int i = 0; i < t; ++i) { h[static_cast<std::size_t>(axis) * t + i] = i + axis * 17; }
+std::vector<int> parse_csv(const char* value) {
+    std::vector<int> values;
+    const std::string text(value);
+    std::size_t begin = 0;
+    while (begin < text.size()) {
+        const std::size_t end  = text.find(',', begin);
+        const std::string part = text.substr(begin, end == std::string::npos ? end : end - begin);
+        const int parsed       = std::stoi(part);
+        if (parsed <= 0) { throw std::invalid_argument("benchmark dimensions must be positive"); }
+        values.push_back(parsed);
+        if (end == std::string::npos) { break; }
+        begin = end + 1;
     }
-    DBuf d(h.size() * sizeof(std::int32_t));
-    cudaMemcpy(d.p, h.data(), d.bytes, cudaMemcpyHostToDevice);
-    return d;
+    if (values.empty()) { throw std::invalid_argument("empty benchmark dimension list"); }
+    return values;
 }
 
-__device__ __forceinline__ void copy_vec8(__nv_bfloat16* data, std::int64_t idx) {
-    void* ptr = data + idx;
+DBuf copy_positions(const std::vector<std::int32_t>& host) {
+    DBuf device(host.size() * sizeof(std::int32_t));
+    cudaMemcpy(device.p, host.data(), device.bytes, cudaMemcpyHostToDevice);
+    return device;
+}
+
+DBuf make_text_positions(int tokens, int axes) {
+    std::vector<std::int32_t> host(static_cast<std::size_t>(tokens) * axes);
+    for (int axis = 0; axis < axes; ++axis) {
+        for (int token = 0; token < tokens; ++token) {
+            host[static_cast<std::size_t>(axis) * tokens + token] = axis * 97 + token;
+        }
+    }
+    return copy_positions(host);
+}
+
+struct VisionGrid {
+    int temporal;
+    int height;
+    int width;
+};
+
+VisionGrid canonical_vision_grid(int patches) {
+    switch (patches) {
+    case 8:
+        return {2, 2, 2};
+    case 256:
+        return {1, 16, 16};
+    case 4096:
+        return {1, 64, 64};
+    case 49152:
+        return {3, 128, 128};
+    case 65536:
+        return {1, 256, 256};
+    default:
+        throw std::invalid_argument("Vision benchmark supports P=8,256,4096,49152,65536");
+    }
+}
+
+DBuf make_vision_positions(int patches) {
+    const VisionGrid grid = canonical_vision_grid(patches);
+    std::vector<std::int32_t> host(static_cast<std::size_t>(patches) * 2);
+    int token = 0;
+    for (int temporal = 0; temporal < grid.temporal; ++temporal) {
+        (void)temporal;
+        for (int block_h = 0; block_h < grid.height / 2; ++block_h) {
+            for (int block_w = 0; block_w < grid.width / 2; ++block_w) {
+                for (int inner_h = 0; inner_h < 2; ++inner_h) {
+                    for (int inner_w = 0; inner_w < 2; ++inner_w) {
+                        host[token]                                     = block_h * 2 + inner_h;
+                        host[static_cast<std::size_t>(patches) + token] = block_w * 2 + inner_w;
+                        ++token;
+                    }
+                }
+            }
+        }
+    }
+    return copy_positions(host);
+}
+
+__device__ __forceinline__ void copy_bf16x8(__nv_bfloat16* data, std::int64_t index) {
+    void* address = data + index;
     unsigned int x, y, z, w;
     asm volatile("ld.global.v4.u32 {%0, %1, %2, %3}, [%4];"
                  : "=r"(x), "=r"(y), "=r"(z), "=r"(w)
-                 : "l"(ptr)
+                 : "l"(address)
                  : "memory");
     asm volatile("st.global.v4.u32 [%0], {%1, %2, %3, %4};"
                  :
-                 : "l"(ptr), "r"(x), "r"(y), "r"(z), "r"(w)
+                 : "l"(address), "r"(x), "r"(y), "r"(z), "r"(w)
                  : "memory");
 }
 
-__global__ void rope_copy_baseline_kernel(__nv_bfloat16* q, __nv_bfloat16* k, std::int64_t q_vecs,
-                                          std::int64_t total_vecs) {
-    constexpr int kVecsPerThread = 4;
-    const std::int64_t tid       = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x;
-    const std::int64_t stride = static_cast<std::int64_t>(gridDim.x) * blockDim.x * kVecsPerThread;
-    for (std::int64_t v = tid * kVecsPerThread; v < total_vecs; v += stride) {
-        for (int i = 0; i < kVecsPerThread; ++i) {
-            const std::int64_t idx = v + i;
-            if (idx >= total_vecs) { break; }
-            if (idx < q_vecs) {
-                copy_vec8(q, idx * 8);
-            } else {
-                copy_vec8(k, (idx - q_vecs) * 8);
-            }
+template <ops::RopeKernelMode Mode, int HeadDim, int RotaryDim, int QHeads, int KHeads>
+__global__ void
+rope_payload_control_kernel(const std::int32_t* positions, __nv_bfloat16* q, __nv_bfloat16* k,
+                            int tokens, std::int64_t q_token_stride, std::int64_t k_token_stride) {
+    const int token = static_cast<int>(blockIdx.x);
+    if (token >= tokens) { return; }
+    constexpr int half = RotaryDim / 2;
+    __shared__ volatile float cos_cache[half];
+    __shared__ volatile float sin_cache[half];
+    if (threadIdx.x < half) {
+        const int pair = static_cast<int>(threadIdx.x);
+        int axis       = 0;
+        float frequency;
+        ops::fixed_axis_frequency<Mode>(pair, &axis, &frequency);
+        const float angle =
+            static_cast<float>(positions[static_cast<std::int64_t>(axis) * tokens + token]) *
+            frequency;
+        float sine, cosine;
+        sincosf(angle, &sine, &cosine);
+        cos_cache[pair] = cosine;
+        sin_cache[pair] = sine;
+    }
+    __syncthreads();
+    if (threadIdx.x < half) {
+        const float cosine = cos_cache[threadIdx.x];
+        const float sine   = sin_cache[threadIdx.x];
+        asm volatile("" : : "f"(cosine), "f"(sine) : "memory");
+    }
+
+    const int lane        = static_cast<int>(threadIdx.x) & 31;
+    const int warp        = static_cast<int>(threadIdx.x) >> 5;
+    const int block_warps = static_cast<int>(blockDim.x) >> 5;
+    for (int combined_head = warp; combined_head < QHeads + KHeads; combined_head += block_warps) {
+        const bool is_q             = combined_head < QHeads;
+        const int head              = is_q ? combined_head : combined_head - QHeads;
+        __nv_bfloat16* data         = is_q ? q : k;
+        const std::int64_t stride_t = is_q ? q_token_stride : k_token_stride;
+        const std::int64_t base =
+            static_cast<std::int64_t>(token) * stride_t + static_cast<std::int64_t>(head) * HeadDim;
+        for (int vector = lane; vector < RotaryDim / 8; vector += 32) {
+            copy_bf16x8(data, base + vector * 8);
         }
     }
 }
 
-void launch_copy_baseline(DBuf& q, DBuf& k, std::size_t qn, std::size_t kn, cudaStream_t stream) {
-    constexpr int kBlock  = 256;
-    const auto q_vecs     = static_cast<std::int64_t>(qn / 8);
-    const auto total_vecs = static_cast<std::int64_t>((qn + kn) / 8);
-    const auto blocks     = (total_vecs + kBlock * 4 - 1) / (kBlock * 4);
-    const int grid        = static_cast<int>(
-        std::min<std::int64_t>(blocks, static_cast<std::int64_t>(std::numeric_limits<int>::max())));
-    rope_copy_baseline_kernel<<<grid, kBlock, 0, stream>>>(
-        static_cast<__nv_bfloat16*>(q.p), static_cast<__nv_bfloat16*>(k.p), q_vecs, total_vecs);
+template <int QHeads, int KHeads>
+void launch_text_control(const Tensor& positions, Tensor& q, Tensor& k, cudaStream_t stream) {
+    const int tokens = q.ne[2];
+    int block        = 128;
+    if (tokens <= 6) {
+        block = (QHeads + KHeads) * 32;
+    } else if (tokens <= kLargeBlockWaveCapacity) {
+        block = 256;
+    } else if (tokens <= kTextChunkMaxTokens) {
+        block = 192;
+    }
+    const int head_warps = (QHeads + KHeads) * 32;
+    if (block > head_warps) { block = head_warps; }
+    if (positions.ne[1] == 1) {
+        rope_payload_control_kernel<ops::RopeKernelMode::Text1D, kTextHeadDim, kTextRotaryDim,
+                                    QHeads, KHeads><<<tokens, block, 0, stream>>>(
+            static_cast<const std::int32_t*>(positions.data), static_cast<__nv_bfloat16*>(q.data),
+            static_cast<__nv_bfloat16*>(k.data), tokens,
+            q.nb[2] / static_cast<std::int64_t>(sizeof(__nv_bfloat16)),
+            k.nb[2] / static_cast<std::int64_t>(sizeof(__nv_bfloat16)));
+    } else {
+        rope_payload_control_kernel<ops::RopeKernelMode::TextMrope, kTextHeadDim, kTextRotaryDim,
+                                    QHeads, KHeads><<<tokens, block, 0, stream>>>(
+            static_cast<const std::int32_t*>(positions.data), static_cast<__nv_bfloat16*>(q.data),
+            static_cast<__nv_bfloat16*>(k.data), tokens,
+            q.nb[2] / static_cast<std::int64_t>(sizeof(__nv_bfloat16)),
+            k.nb[2] / static_cast<std::int64_t>(sizeof(__nv_bfloat16)));
+    }
     CUDA_CHECK(cudaGetLastError());
 }
 
-void run(int t, const char* tag, bool copy_baseline) {
-    const auto qn = static_cast<std::size_t>(kHeadDim) * static_cast<std::size_t>(kQHeads) *
-                    static_cast<std::size_t>(t);
-    const auto kn = static_cast<std::size_t>(kHeadDim) * static_cast<std::size_t>(kKHeads) *
-                    static_cast<std::size_t>(t);
-
-    DBuf positions = make_positions(t);
-    DBuf q         = make_bf16(qn);
-    DBuf k         = make_bf16(kn);
-
-    Tensor tpos(positions.p, DType::I32, {t});
-    Tensor tq(q.p, DType::BF16, {kHeadDim, kQHeads, t});
-    Tensor tk(k.p, DType::BF16, {kHeadDim, kKHeads, t});
-
-    // Task-defined HBM traffic: q/k read and written in place. Positions are
-    // tiny by comparison and intentionally excluded from this byte count.
-    const double bytes = 2.0 * static_cast<double>(qn + kn) * 2.0;
-    const Result r =
-        copy_baseline
-            ? bench_loop([&](cudaStream_t s) { launch_copy_baseline(q, k, qn, kn, s); }, bytes)
-            : bench_loop([&](cudaStream_t s) { ops::rope(tpos, kRotaryDim, kTheta, tq, tk, s); },
-                         bytes);
-    print_result(tag, r);
-}
-
-void run_mrope(int t) {
-    const auto qn  = static_cast<std::size_t>(kHeadDim) * kQHeads * t;
-    const auto kn  = static_cast<std::size_t>(kHeadDim) * kKHeads * t;
-    DBuf positions = make_positions(t, 3);
-    DBuf q         = make_bf16(qn);
-    DBuf k         = make_bf16(kn);
-    Tensor tpos(positions.p, DType::I32, {t, 3});
-    Tensor tq(q.p, DType::BF16, {kHeadDim, kQHeads, t});
-    Tensor tk(k.p, DType::BF16, {kHeadDim, kKHeads, t});
-    const double bytes  = 4.0 * static_cast<double>(qn + kn);
+template <int Heads>
+void run_text_single(int tokens, int axes, bool control, const char* geometry, const char* role) {
+    const std::size_t elements = static_cast<std::size_t>(kTextHeadDim) * Heads * tokens;
+    DBuf positions             = make_text_positions(tokens, axes);
+    DBuf x                     = make_bf16(elements);
+    Tensor tpos(positions.p, DType::I32, {tokens, axes});
+    Tensor tx(x.p, DType::BF16, {kTextHeadDim, Heads, tokens});
+    const double bytes =
+        2.0 * static_cast<double>(Heads * kTextRotaryDim) * tokens * sizeof(__nv_bfloat16);
     const Result result = bench_loop(
-        [&](cudaStream_t stream) { ops::rope(tpos, kRotaryDim, kTheta, tq, tk, stream); }, bytes);
-    print_result("rope MRoPE [3,4096]", result);
+        [&](cudaStream_t stream) {
+            if (control) {
+                launch_text_control<Heads, 0>(tpos, tx, tx, stream);
+            } else {
+                ops::rope(tpos, kTextRotaryDim, kTextTheta, tx, stream);
+            }
+        },
+        bytes);
+    const std::string label = std::string("rope ") + (control ? "control" : "text") + " " +
+                              geometry + " " + role + " axes=" + std::to_string(axes) +
+                              " T=" + std::to_string(tokens);
+    print_result(label.c_str(), result);
 }
 
-void run_vision(int patches) {
-    constexpr int head_dim     = 72;
-    constexpr int heads        = 16;
-    constexpr int hidden       = head_dim * heads;
-    constexpr int qkv          = hidden * 3;
-    const std::size_t elements = static_cast<std::size_t>(patches) * qkv;
-    DBuf positions             = make_positions(patches, 2);
-    DBuf packed                = make_bf16(elements);
-    Tensor tq(packed.p, DType::BF16, {head_dim, heads, patches});
+void launch_vision_control(const Tensor& positions, Tensor& q, Tensor& k, cudaStream_t stream) {
+    constexpr int block = 128;
+    rope_payload_control_kernel<ops::RopeKernelMode::Vision2D, kVisionHeadDim, kVisionHeadDim,
+                                kVisionHeads, kVisionHeads><<<q.ne[2], block, 0, stream>>>(
+        static_cast<const std::int32_t*>(positions.data), static_cast<__nv_bfloat16*>(q.data),
+        static_cast<__nv_bfloat16*>(k.data), q.ne[2],
+        q.nb[2] / static_cast<std::int64_t>(sizeof(__nv_bfloat16)),
+        k.nb[2] / static_cast<std::int64_t>(sizeof(__nv_bfloat16)));
+    CUDA_CHECK(cudaGetLastError());
+}
+
+template <int QHeads, int KHeads>
+void run_text(int tokens, int axes, bool control, const char* geometry) {
+    const std::size_t q_elements = static_cast<std::size_t>(kTextHeadDim) * QHeads * tokens;
+    const std::size_t k_elements = static_cast<std::size_t>(kTextHeadDim) * KHeads * tokens;
+    DBuf positions               = make_text_positions(tokens, axes);
+    DBuf q                       = make_bf16(q_elements);
+    DBuf k                       = make_bf16(k_elements);
+    Tensor tpos(positions.p, DType::I32, {tokens, axes});
+    Tensor tq(q.p, DType::BF16, {kTextHeadDim, QHeads, tokens});
+    Tensor tk(k.p, DType::BF16, {kTextHeadDim, KHeads, tokens});
+    const double bytes = 2.0 * static_cast<double>((QHeads + KHeads) * kTextRotaryDim) * tokens *
+                         sizeof(__nv_bfloat16);
+    const Result result = bench_loop(
+        [&](cudaStream_t stream) {
+            if (control) {
+                launch_text_control<QHeads, KHeads>(tpos, tq, tk, stream);
+            } else {
+                ops::rope(tpos, kTextRotaryDim, kTextTheta, tq, tk, stream);
+            }
+        },
+        bytes);
+    const std::string label = std::string("rope ") + (control ? "control" : "text") + " " +
+                              geometry + " axes=" + std::to_string(axes) +
+                              " T=" + std::to_string(tokens);
+    print_result(label.c_str(), result);
+}
+
+void run_vision(int patches, bool control) {
+    constexpr int hidden = kVisionHeadDim * kVisionHeads;
+    constexpr int qkv    = hidden * 3;
+    DBuf positions       = make_vision_positions(patches);
+    DBuf packed          = make_zeros(static_cast<std::size_t>(qkv) * patches * 2);
+    Tensor tq(packed.p, DType::BF16, {kVisionHeadDim, kVisionHeads, patches});
     tq.nb[2]  = qkv * 2;
     Tensor tk = tq;
     tk.data   = static_cast<unsigned char*>(packed.p) + hidden * 2;
     Tensor tpos(positions.p, DType::I32, {patches, 2});
-    const double bytes  = 8.0 * static_cast<double>(hidden) * patches;
+    const double bytes = 2.0 * static_cast<double>(2 * kVisionHeads * kVisionHeadDim) * patches *
+                         sizeof(__nv_bfloat16);
     const Result result = bench_loop(
-        [&](cudaStream_t stream) { ops::rope(tpos, head_dim, 10000.0f, tq, tk, stream); }, bytes);
-    print_result("rope Vision packed P=4096", result);
+        [&](cudaStream_t stream) {
+            if (control) {
+                launch_vision_control(tpos, tq, tk, stream);
+            } else {
+                ops::rope(tpos, kVisionHeadDim, kVisionTheta, tq, tk, stream);
+            }
+        },
+        bytes);
+    const std::string label =
+        std::string("rope ") + (control ? "control" : "vision") + " P=" + std::to_string(patches);
+    print_result(label.c_str(), result);
+}
+
+struct Options {
+    bool text       = false;
+    bool vision     = false;
+    bool control    = false;
+    bool geometry27 = false;
+    bool geometry35 = true;
+    bool axes1      = true;
+    bool axes3      = true;
+    bool pair       = true;
+    bool single_q   = false;
+    bool single_k   = false;
+    std::vector<int> tokens{1, 2, 3, 4, 5, 6, 1024};
+    std::vector<int> patches{8, 256, 4096, 49152, 65536};
+};
+
+Options parse_options(int argc, char** argv) {
+    Options options;
+    for (int index = 1; index < argc; ++index) {
+        const char* arg  = argv[index];
+        const auto value = [&]() -> const char* {
+            if (++index >= argc) { throw std::invalid_argument(std::string(arg) + " needs value"); }
+            return argv[index];
+        };
+        if (!std::strcmp(arg, "--text")) {
+            options.text = true;
+        } else if (!std::strcmp(arg, "--vision")) {
+            options.vision = true;
+        } else if (!std::strcmp(arg, "--control")) {
+            options.control = true;
+        } else if (!std::strcmp(arg, "--geometry")) {
+            const std::string selected(value());
+            options.geometry27 = selected == "27b" || selected == "both";
+            options.geometry35 = selected == "35b" || selected == "both";
+            if (!options.geometry27 && !options.geometry35) {
+                throw std::invalid_argument("--geometry must be 27b, 35b, or both");
+            }
+        } else if (!std::strcmp(arg, "--axes")) {
+            const std::string selected(value());
+            options.axes1 = selected == "1" || selected == "both";
+            options.axes3 = selected == "3" || selected == "both";
+            if (!options.axes1 && !options.axes3) {
+                throw std::invalid_argument("--axes must be 1, 3, or both");
+            }
+        } else if (!std::strcmp(arg, "--form")) {
+            const std::string selected(value());
+            options.pair     = selected == "pair" || selected == "all";
+            options.single_q = selected == "q" || selected == "all";
+            options.single_k = selected == "k" || selected == "all";
+            if (!options.pair && !options.single_q && !options.single_k) {
+                throw std::invalid_argument("--form must be pair, q, k, or all");
+            }
+        } else if (!std::strcmp(arg, "--tokens")) {
+            options.tokens = parse_csv(value());
+        } else if (!std::strcmp(arg, "--patches")) {
+            options.patches = parse_csv(value());
+        } else {
+            throw std::invalid_argument(std::string("unknown option: ") + arg);
+        }
+    }
+    if (!options.text && !options.vision) { options.text = options.vision = true; }
+    return options;
 }
 
 } // namespace
@@ -153,35 +357,39 @@ int main(int argc, char** argv) {
         std::printf("SKIP: no usable CUDA device\n");
         return 0;
     }
-
-    bool prefill = false, decode = false, copy_baseline = false, mrope = false, vision = false;
-    for (int i = 1; i < argc; ++i) {
-        if (!std::strcmp(argv[i], "--prefill"))
-            prefill = true;
-        else if (!std::strcmp(argv[i], "--decode"))
-            decode = true;
-        else if (!std::strcmp(argv[i], "--copy-baseline"))
-            copy_baseline = true;
-        else if (!std::strcmp(argv[i], "--mrope"))
-            mrope = true;
-        else if (!std::strcmp(argv[i], "--vision"))
-            vision = true;
+    try {
+        const Options options = parse_options(argc, argv);
+        if (options.text) {
+            for (int axes : {1, 3}) {
+                if ((axes == 1 && !options.axes1) || (axes == 3 && !options.axes3)) { continue; }
+                for (int tokens : options.tokens) {
+                    if (options.geometry27) {
+                        if (options.pair) { run_text<24, 4>(tokens, axes, options.control, "27b"); }
+                        if (options.single_q) {
+                            run_text_single<24>(tokens, axes, options.control, "27b", "q");
+                        }
+                        if (options.single_k) {
+                            run_text_single<4>(tokens, axes, options.control, "27b", "k");
+                        }
+                    }
+                    if (options.geometry35) {
+                        if (options.pair) { run_text<16, 2>(tokens, axes, options.control, "35b"); }
+                        if (options.single_q) {
+                            run_text_single<16>(tokens, axes, options.control, "35b", "q");
+                        }
+                        if (options.single_k) {
+                            run_text_single<2>(tokens, axes, options.control, "35b", "k");
+                        }
+                    }
+                }
+            }
+        }
+        if (options.vision) {
+            for (int patches : options.patches) run_vision(patches, options.control);
+        }
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "error: %s\n", error.what());
+        return 2;
     }
-    if (!prefill && !decode && !mrope && !vision) { prefill = decode = true; }
-
-    if (decode) {
-        run(1,
-            copy_baseline ? "rope copy baseline decode  q=[256,24,1] k=[256,4,1]"
-                          : "rope decode  q=[256,24,1] k=[256,4,1]",
-            copy_baseline);
-    }
-    if (prefill) {
-        run(4096,
-            copy_baseline ? "rope copy baseline prefill q=[256,24,4096] k=[256,4,4096]"
-                          : "rope prefill q=[256,24,4096] k=[256,4,4096]",
-            copy_baseline);
-    }
-    if (mrope) run_mrope(4096);
-    if (vision) run_vision(4096);
     return 0;
 }

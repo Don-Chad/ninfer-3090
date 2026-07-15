@@ -23,16 +23,17 @@ namespace ninfer::ops {
  *   18..35 use axis 1, each with local frequency theta^(-2*(i%18)/36).
  *
  * positions is contiguous and theta is positive and finite. Q/K tensors are BF16
- * [head_dim,heads,T] with contiguous head features and heads; token stride may be padded. Text Q
- * has 24 heads and Text K has 4, while both Vision tensors have 16. q and k must not overlap one
- * another or positions. The Op mutates only the supplied Q/K tensor storage and uses no workspace
+ * [head_dim,heads,T] with positive head counts, contiguous head features and heads, and an optional
+ * padded token stride. The registered optimized domains are Text Q/K head geometries 24/4 and
+ * 16/2, plus Vision geometry 16/16. q and k must not overlap one another or positions. The Op
+ * mutates only dimensions [0,rotary_dim) of the supplied Q/K tensor storage and uses no workspace
  * or persistent state.
  */
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
           cudaStream_t stream);
 
-// Single-tensor form with the same formula and storage contract. Text Q/K role is inferred from
-// 24 versus 4 heads; Vision uses 16 heads.
+// Single-tensor form with the same formula and storage contract. The head count comes directly
+// from x; Q versus K role does not change the transformation.
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaStream_t stream);
 
 } // namespace ninfer::ops

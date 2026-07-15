@@ -12,10 +12,7 @@ namespace ninfer::ops {
 namespace {
 
 constexpr std::int32_t kTextHeadDim = 256;
-constexpr std::int32_t kTextQHeads  = 24;
-constexpr std::int32_t kTextKHeads  = 4;
 constexpr std::int32_t kVisionDim   = 72;
-constexpr std::int32_t kVisionHeads = 16;
 
 std::int64_t numel_allow_zero(const Tensor& tensor, const char* label) {
     bool zero      = false;
@@ -47,6 +44,9 @@ int position_axes(const Tensor& positions, std::int32_t tokens) {
 
 void require_tensor_layout(const Tensor& tensor, const char* label, std::int32_t head_dim,
                            std::int32_t heads, std::int32_t tokens) {
+    if (heads <= 0) {
+        throw std::invalid_argument(std::string("rope: ") + label + " must have positive heads");
+    }
     if (tensor.ne[0] != head_dim || tensor.ne[1] != heads || tensor.ne[2] != tokens ||
         tensor.ne[3] != 1) {
         throw std::invalid_argument(std::string("rope: invalid ") + label + " shape");
@@ -109,8 +109,8 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tenso
     const std::int32_t tokens   = q.ne[2];
     const int axes              = position_axes(positions, tokens);
     const std::int32_t head_dim = axes == 2 ? kVisionDim : kTextHeadDim;
-    const std::int32_t q_heads  = axes == 2 ? kVisionHeads : kTextQHeads;
-    const std::int32_t k_heads  = axes == 2 ? kVisionHeads : kTextKHeads;
+    const std::int32_t q_heads  = q.ne[1];
+    const std::int32_t k_heads  = k.ne[1];
     require_model_mode(axes, rotary_dim, head_dim);
     require_tensor_layout(q, "q", head_dim, q_heads, tokens);
     require_tensor_layout(k, "k", head_dim, k_heads, tokens);
@@ -119,11 +119,7 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tenso
     if (q.data == nullptr || k.data == nullptr) {
         throw std::invalid_argument("rope: q/k data must be non-null");
     }
-    if (axes == 1 && q.is_contiguous() && k.is_contiguous()) {
-        detail::rope_launch(positions, rotary_dim, theta, q, k, stream);
-    } else {
-        detail::rope_nd_launch(positions, rotary_dim, theta, q, k, stream);
-    }
+    detail::rope_launch(positions, rotary_dim, theta, q, k, stream);
 }
 
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaStream_t stream) {
@@ -134,30 +130,13 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaS
     const std::int32_t tokens   = x.ne[2];
     const int axes              = position_axes(positions, tokens);
     const std::int32_t head_dim = axes == 2 ? kVisionDim : kTextHeadDim;
-    std::int32_t heads          = 0;
-    bool text_q                 = false;
-    if (axes == 2) {
-        heads = kVisionHeads;
-    } else if (x.ne[1] == kTextQHeads) {
-        heads  = kTextQHeads;
-        text_q = true;
-    } else if (x.ne[1] == kTextKHeads) {
-        heads = kTextKHeads;
-    } else {
-        throw std::invalid_argument("rope: Text tensor must have 24 Q heads or 4 K heads");
-    }
+    const std::int32_t heads    = x.ne[1];
     require_model_mode(axes, rotary_dim, head_dim);
     require_tensor_layout(x, "tensor", head_dim, heads, tokens);
     if (x_numel == 0) { return; }
     require_positions_storage(positions);
     if (x.data == nullptr) { throw std::invalid_argument("rope: tensor data must be non-null"); }
-    if (axes != 1 || !x.is_contiguous()) {
-        detail::rope_nd_single_launch(positions, rotary_dim, theta, x, stream);
-    } else if (text_q) {
-        detail::rope_q_launch(positions, rotary_dim, theta, x, stream);
-    } else {
-        detail::rope_k_launch(positions, rotary_dim, theta, x, stream);
-    }
+    detail::rope_single_launch(positions, rotary_dim, theta, x, stream);
 }
 
 } // namespace ninfer::ops

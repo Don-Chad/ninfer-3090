@@ -336,6 +336,62 @@ int text_mrope_case() {
     return failures;
 }
 
+int text_35b_case(int tokens, int axes) {
+    constexpr int q_heads = 16;
+    constexpr int k_heads = 2;
+    std::vector<float> q(tensor_size(q_heads, tokens));
+    std::vector<float> k(tensor_size(k_heads, tokens));
+    std::vector<int> positions(static_cast<std::size_t>(axes) * tokens);
+    fill_uniform(q, 3501u + static_cast<std::uint32_t>(tokens), -8.0F, 8.0F);
+    fill_uniform(k, 3502u + static_cast<std::uint32_t>(tokens), -8.0F, 8.0F);
+    round_to_bf16(q);
+    round_to_bf16(k);
+    for (int axis = 0; axis < axes; ++axis) {
+        for (int token = 0; token < tokens; ++token) {
+            positions[static_cast<std::size_t>(axis) * tokens + token] = 100 * axis + token;
+        }
+    }
+
+    std::vector<double> q_ref;
+    std::vector<double> k_ref;
+    cpu_rope_nd(q, positions, axes, kHeadDim, q_heads, tokens, kRotaryDim, kTheta, q_ref);
+    cpu_rope_nd(k, positions, axes, kHeadDim, k_heads, tokens, kRotaryDim, kTheta, k_ref);
+
+    DBuf dpos    = to_device_i32(positions);
+    DBuf dq_pair = to_device_bf16(q);
+    DBuf dk_pair = to_device_bf16(k);
+    DBuf dq_one  = to_device_bf16(q);
+    DBuf dk_one  = to_device_bf16(k);
+    Tensor tpos(dpos.p, DType::I32, {tokens, axes});
+    Tensor tq_pair(dq_pair.p, DType::BF16, {kHeadDim, q_heads, tokens});
+    Tensor tk_pair(dk_pair.p, DType::BF16, {kHeadDim, k_heads, tokens});
+    Tensor tq_one(dq_one.p, DType::BF16, {kHeadDim, q_heads, tokens});
+    Tensor tk_one(dk_one.p, DType::BF16, {kHeadDim, k_heads, tokens});
+    ops::rope(tpos, kRotaryDim, kTheta, tq_pair, tk_pair, nullptr);
+    ops::rope(tpos, kRotaryDim, kTheta, tq_one, nullptr);
+    ops::rope(tpos, kRotaryDim, kTheta, tk_one, nullptr);
+    cudaDeviceSynchronize();
+
+    const std::string label =
+        "text 35B axes=" + std::to_string(axes) + " T=" + std::to_string(tokens);
+    const auto q_pair_bits = from_device_bf16_bits(dq_pair, q.size());
+    const auto k_pair_bits = from_device_bf16_bits(dk_pair, k.size());
+    int failures           = 0;
+    failures += verify((label + " q").c_str(), from_device_bf16(dq_pair, q.size()), q_ref,
+                       Tolerance::bf16_elementwise());
+    failures += verify((label + " k").c_str(), from_device_bf16(dk_pair, k.size()), k_ref,
+                       Tolerance::bf16_elementwise());
+    failures += check_passthrough_bits((label + " q passthrough").c_str(), q_pair_bits,
+                                       bf16_bits(q), q_heads, tokens, kRotaryDim);
+    failures += check_passthrough_bits((label + " k passthrough").c_str(), k_pair_bits,
+                                       bf16_bits(k), k_heads, tokens, kRotaryDim);
+    failures += check_all_bits_same((label + " q single").c_str(),
+                                    from_device_bf16_bits(dq_one, q.size()), q_pair_bits);
+    failures += check_all_bits_same((label + " k single").c_str(),
+                                    from_device_bf16_bits(dk_one, k.size()), k_pair_bits);
+    return failures;
+}
+
 int vision_rope_packed_case() {
     constexpr int head_dim = 72;
     constexpr int heads    = 16;
@@ -540,6 +596,8 @@ int main() {
     f += split_api_parity_case(7, 2007u);
     f += split_api_parity_case(1024, 2024u);
     f += text_mrope_case();
+    f += text_35b_case(1, 1);
+    f += text_35b_case(1024, 3);
     f += vision_rope_packed_case();
 
     std::cout << (f ? "FAIL" : "OK") << " rope correctness\n";

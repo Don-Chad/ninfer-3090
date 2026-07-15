@@ -194,8 +194,8 @@ calls here.
 
 | ID | Operation and exact typed domain | Mathematical semantics | Current support |
 |---|---|---|---|
-| R1 | Partial interleaved Text MRoPE; BF16 Q `[256,16,T]`, K `[256,2,T]`, I32 positions `[T]` or NInfer Tensor `[T,3]`; rotary dim 64, theta `1e7` | For pair `j<32`, rotate dimensions `(j,j+32)` by `phi=position*theta^(-2j/64)`. The three-axis form is indexed mathematically as `position[axis,t]`, with pair j using axis `j mod 3` and temporal/height/width counts `[11,11,10]`; dimensions 64:256 are unchanged. Tensor `[T,3]` has `ne[0]=T` and represents the architecture's axis-major mathematical array `[3,T]`. | **Adapt existing.** The position contract already matches; current Text kernels are fixed to 24Q/4KV rather than 16Q/2KV. |
-| R2 | Vision 2-D RoPE; BF16 Q/K `[72,16,P]`, I32 positions `[P,2]`; theta `10000` | Pair `j<36` rotates `(j,j+36)`. Axis is height for `j<18` and width otherwise; local frequency is `theta^(-2*(j mod 18)/36)`. | **Adapt existing.** Exact optimized geometry exists, but its retained report does not establish a roofline. |
+| R1 | Partial interleaved Text MRoPE; BF16 Q `[256,16,T]`, K `[256,2,T]`, I32 positions `[T]` or NInfer Tensor `[T,3]`; rotary dim 64, theta `1e7` | For pair `j<32`, rotate dimensions `(j,j+32)` by `phi=position*theta^(-2j/64)`. The three-axis form is indexed mathematically as `position[axis,t]`, with pair j using axis `j mod 3` and temporal/height/width counts `[11,11,10]`; dimensions 64:256 are unchanged. Tensor `[T,3]` has `ne[0]=T` and represents the architecture's axis-major mathematical array `[3,T]`. | **Supported for exactly this domain.** Fixed 16Q/2KV paired and required single-Q/single-K routes cover one-axis and three-axis `T=1..6/1024` at their same-grid fixed-work ceilings. See the [retained RTX 5090 report](archive/optimization-era/bench/qwen3.6-35b-rope-roofline.md). |
+| R2 | Vision 2-D RoPE; BF16 Q/K `[72,16,P]`, I32 positions `[P,2]`; theta `10000` | Pair `j<36` rotates `(j,j+36)`. Axis is height for `j<18` and width otherwise; local frequency is `theta^(-2*(j mod 18)/36)`. | **Supported for the complete target domain.** The packed-stride BF16x2 route covers every accepted patch count through maximum video/image `P=49152/65536`; the measured matrix remains within 1.6% of its same-grid control. See the [retained report](archive/optimization-era/bench/qwen3.6-35b-rope-roofline.md). |
 
 For either row, the pair transform is
 `(a,b)'=(a*cos(phi)-b*sin(phi), b*cos(phi)+a*sin(phi))`.
@@ -326,8 +326,8 @@ Under the strict support definition, the complete result is:
 
 | Status | Exact result |
 |---|---|
-| **Supported** | N1-N4 complete Text/GDN/MTP normalization domains, N5/N6 complete Vision LayerNorm `[1152,P]` domain, E1 Vision QKV bias add `[3456,4096]`, E6 tanh GELU `[4304,4096]`, A1 append-and-attend GQA `[256,16|2,T]`, A2 standalone KV append `[256,2,T]`, A3 cached-only GQA `[256,16,T]`, A4 complete segmented Vision attention `[72,16,P]`, S1/S2 GDN causal convolution and snapshot state, and S3/S4 GDN recurrence and snapshot state transition `[128,16,32]`. |
-| **Adapt existing** | Every target-callable dense/quantized Linear domain plus private L15-L17; indexing transforms; pointwise domains other than E1/E6; Text and Vision RoPE; generation and MTP-control Ops. All remain unsupported. |
+| **Supported** | N1-N4 complete Text/GDN/MTP normalization domains, N5/N6 complete Vision LayerNorm `[1152,P]` domain, E1 Vision QKV bias add `[3456,4096]`, E6 tanh GELU `[4304,4096]`, R1 Text RoPE/MRoPE `[256,16|2,T]`, R2 complete packed Vision RoPE `[72,16,P]`, A1 append-and-attend GQA `[256,16|2,T]`, A2 standalone KV append `[256,2,T]`, A3 cached-only GQA `[256,16,T]`, A4 complete segmented Vision attention `[72,16,P]`, S1/S2 GDN causal convolution and snapshot state, and S3/S4 GDN recurrence and snapshot state transition `[128,16,32]`. |
+| **Adapt existing** | Every target-callable dense/quantized Linear domain plus private L15-L17; indexing transforms; pointwise domains other than E1/E6; generation and MTP-control Ops. All remain unsupported. |
 | **New implementation** | L18-L19 expert-grouped contractions and M1-M4 sparse routing/grouping/reduction/closed `SparseMoeAdd` execution. |
 
 No complete Text/GDN block, sparse-MoE execution, generation path, or MTP execution currently meets
