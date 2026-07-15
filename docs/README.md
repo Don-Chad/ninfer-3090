@@ -46,6 +46,16 @@ target's storage and model semantics; they do not register a current product tar
 Model computation documents do not define product support, artifact framing, source ownership, or
 serving behavior. Runtime support requires an explicit compiled exact-checkpoint/GPU target.
 
+## Active implementation plans
+
+| Document | Scope |
+|---|---|
+| [`plans/2026-07-16-linear-kernel-architecture-refactor.md`](plans/2026-07-16-linear-kernel-architecture-refactor.md) | accepted refactor of the pure Linear kernel family into format/layout, decode, mainloop, schedule, pipeline, epilogue, and finite-policy layers |
+
+Active plans guide implementation but do not replace the semantic and ownership authorities above.
+When a plan is complete or abandoned, move it under `archive/`, remove it from this table, and
+integrate any lasting boundary into the appropriate active authority.
+
 ## Implemented product boundary
 
 The only registered product target is `qwen3_6_27b_rtx5090`. Its artifact and request route are:
