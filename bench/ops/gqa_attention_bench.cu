@@ -1,12 +1,18 @@
-// Performance bench for gqa_attention at Qwen3.6-27B decode/prefill shapes.
+// Performance bench for gqa_attention at the registered Qwen3.6 27B/35B geometries.
 // Prefill reports useful causal attention FLOP/s against the RTX 5090
 // bf16/FP32-accumulate dense tensor-core roofline. Correctness is covered by
 // tests/ops/test_gqa_attention.cpp.
-//   ./ninfer_gqa_attention_bench --decode
-//   ./ninfer_gqa_attention_bench --decode --decode-pos 2882 --profile-once --cold-cache
-//   ./ninfer_gqa_attention_bench --append-small-t --tokens 6 --context 32768
+// Canonical 35B matrix: prefill uses a fixed 1024-token chunk; decode/verify
+// sweeps T=1..6. Both sweep the same live-context list.
+//   ./ninfer_gqa_attention_bench --append-prompt-baseline --geometry 35b --tokens 1024 \
+//       --context 0,128,512,2048,8192,32768,131072,261120
+//   ./ninfer_gqa_attention_bench --append-small-t --geometry 35b --tokens 1,2,3,4,5,6 \
+//       --context 0,128,512,2048,8192,32768,131072,261120
+// Add --kv-dtype int8 to measure the INT8-G64 KV route.
+//   ./ninfer_gqa_attention_bench --decode --geometry 35b
+//   ./ninfer_gqa_attention_bench --decode --geometry 35b --decode-pos 2882 --profile-once \
+//       --cold-cache
 //   ./ninfer_gqa_attention_bench --copy-ceiling --tokens 1 --context 32768
-//   ./ninfer_gqa_attention_bench --append-prompt-baseline --tokens 1024 --context 0,8192,32768
 //   ./ninfer_gqa_attention_bench --prefill --tokens 4096
 //   ./ninfer_gqa_attention_bench --prefill --tokens 4096 --expect-tflops-pct-min 80
 #include "core/device.h"
@@ -35,15 +41,16 @@
 
 using namespace ninfer;
 using namespace ninfer::bench;
-using ninfer::ops::detail::kGqaDecodeSplits;
 
 namespace {
 
 using KVCache = ninfer::KVCache;
 
 constexpr std::int32_t kHeadDim                  = 256;
-constexpr std::int32_t kQHeads                   = 24;
-constexpr std::int32_t kKVHeads                  = 4;
+std::int32_t kQHeads                             = 24;
+std::int32_t kKVHeads                            = 4;
+std::int32_t kGqaDecodeSplits                    = 85;
+const char* kGeometryName                        = "27b";
 constexpr float kScale                           = 0.0625f;
 constexpr std::int32_t kDChunk                   = 64;
 constexpr std::size_t kColdCacheBytes            = std::size_t(256) << 20;
@@ -72,29 +79,33 @@ std::size_t ceil_div_size(std::size_t value, std::size_t divisor) {
 std::size_t align_overhead(std::size_t allocations) { return allocations * 255u; }
 
 std::int32_t small_t_active_splits(std::int32_t tokens, std::int32_t context, DType kv_dtype) {
-    const std::int32_t window = context + tokens;
+    const std::int32_t window      = context + tokens;
+    const std::int32_t split_scale = 4 / kKVHeads;
     // Keep the byte/scratch model identical to the dtype-aware production
     // schedule so reported bandwidth does not undercount specialized splits.
     if (kv_dtype == DType::I8 && tokens == 5 && window > 128 && window <= 512) {
-        return ceil_div_i32(window, 32);
+        return ceil_div_i32(window, 32 / split_scale);
     }
     if (kv_dtype == DType::I8 && tokens == 6 && window > 128 && window <= 160) {
-        return ceil_div_i32(window, 24);
+        return ceil_div_i32(window, 24 / split_scale);
     }
     if (kv_dtype == DType::I8 && tokens == 6 && window > 5000 && window <= 8198) {
-        return std::min(42, std::max(4, ceil_div_i32(window, 192)));
+        return std::min(42 * split_scale,
+                        std::max(4 * split_scale, ceil_div_i32(window, 192 / split_scale)));
     }
     std::int32_t target_keys_per_split = 480;
     if (window <= 4096) {
-        target_keys_per_split = 64;
+        target_keys_per_split = 64 / split_scale;
     } else if (window <= 8198) {
-        target_keys_per_split = 128;
+        target_keys_per_split = 128 / split_scale;
     } else if (window <= 16390) {
-        target_keys_per_split = 256;
+        target_keys_per_split = 256 / split_scale;
+    } else {
+        target_keys_per_split = 480 / split_scale;
     }
-    constexpr std::int32_t kMinSplits = 4;
-    std::int32_t splits               = ceil_div_i32(window, target_keys_per_split);
-    splits                            = std::max(kMinSplits, splits);
+    const std::int32_t kMinSplits = 4 * split_scale;
+    std::int32_t splits           = ceil_div_i32(window, target_keys_per_split);
+    splits                        = std::max(kMinSplits, splits);
     return std::min(kGqaDecodeSplits, splits);
 }
 
@@ -121,6 +132,11 @@ const char* kv_dtype_name(DType dtype) {
 const char* small_t_ncu_kernel_regex(DType dtype) {
     return dtype == DType::I8 ? "gqa_attention_decode_i8_tiled_kernel"
                               : "gqa_attention_small_t_tc_partial_bf16_kernel";
+}
+
+const char* prefill_ncu_kernel_regex(DType dtype) {
+    return dtype == DType::I8 ? "gqa_attention_prefill_i8_kernel"
+                              : "gqa_attention_prefill_bf16_kernel";
 }
 
 double kv_cache_vector_bytes(DType dtype) {
@@ -256,7 +272,7 @@ double append_prompt_global_floor_bytes(std::int32_t tokens, std::int32_t contex
 }
 
 std::size_t decode_workspace_bytes_for_pos(std::int32_t) {
-    constexpr auto split_count = static_cast<std::size_t>(kGqaDecodeSplits);
+    const auto split_count = static_cast<std::size_t>(kGqaDecodeSplits);
     const std::size_t partial_acc_bytes =
         static_cast<std::size_t>(kHeadDim) * kQHeads * split_count * sizeof(std::uint16_t);
     const std::size_t partial_m_bytes =
@@ -267,7 +283,7 @@ std::size_t decode_workspace_bytes_for_pos(std::int32_t) {
 }
 
 std::size_t small_t_workspace_bytes(std::int32_t tokens) {
-    constexpr auto split_count          = static_cast<std::size_t>(kGqaDecodeSplits);
+    const auto split_count              = static_cast<std::size_t>(kGqaDecodeSplits);
     const auto token_count              = static_cast<std::size_t>(tokens);
     const std::size_t partial_acc_bytes = static_cast<std::size_t>(kHeadDim) * kQHeads *
                                           token_count * split_count * sizeof(std::uint16_t);
@@ -930,9 +946,10 @@ void run_prefill_profile_once(KVCache& kv, std::int32_t tokens) {
 
     std::printf("PROFILE_ONCE gqa_attention prefill T=%d kv_dtype=%s useful_flops=%.0f "
                 "model_floor_bytes=%.0f tc_peak_tflops=%.1f dram_peak_gbps=%.0f "
-                "ncu_kernel_regex='gqa_attention_prefill_kernel'\n",
+                "ncu_kernel_regex='%s'\n",
                 tokens, kv_dtype_name(kv.dtype), prefill_useful_flops(tokens),
-                prefill_model_floor_bytes(tokens, kv.dtype), kDenseTcPeakTflops, kDramPeakGBs);
+                prefill_model_floor_bytes(tokens, kv.dtype), kDenseTcPeakTflops, kDramPeakGBs,
+                prefill_ncu_kernel_regex(kv.dtype));
 }
 
 std::string json_number(double value) {
@@ -1123,6 +1140,7 @@ struct Options {
     std::int32_t context             = 0;
     std::uint32_t round_robin_layers = 1;
     DType kv_dtype                   = DType::BF16;
+    bool geometry_35b                = false;
     std::vector<std::int32_t> tokens;
     std::vector<std::int32_t> contexts;
     PrefillTimingOptions prefill_timing;
@@ -1136,19 +1154,22 @@ void fail_usage(const char* message) {
         stderr,
         "error: %s\n"
         "usage: ninfer_gqa_attention_bench [--prefill] [--tokens T[,T...]] "
-        "[--kv-dtype bf16|int8] "
+        "[--geometry 27b|35b] [--kv-dtype bf16|int8] "
         "[--expect-tflops-pct-min PCT] [--csv-out path] [--json-out path]\n"
         "       ninfer_gqa_attention_bench --prefill --tokens 4096 --profile-once\n"
-        "       ninfer_gqa_attention_bench --append-small-t --tokens T --context N "
-        "[--kv-dtype bf16|int8] [--profile-once] [--cold-cache]\n"
+        "       ninfer_gqa_attention_bench --append-small-t --tokens T[,T...] "
+        "--context N[,N...] [--geometry 27b|35b] [--kv-dtype bf16|int8] "
+        "[--profile-once] [--cold-cache]\n"
         "       ninfer_gqa_attention_bench --append-prompt-baseline --tokens T[,T...] "
-        "--context N[,N...] [--kv-dtype bf16|int8] [--csv-out path] [--json-out path]\n"
+        "--context N[,N...] [--geometry 27b|35b] [--kv-dtype bf16|int8] "
+        "[--csv-out path] [--json-out path]\n"
         "       ninfer_gqa_attention_bench --append-prompt-attention-only --tokens T[,T...] "
-        "--context N[,N...] [--kv-dtype bf16|int8]\n"
+        "--context N[,N...] [--geometry 27b|35b] [--kv-dtype bf16|int8]\n"
         "       ninfer_gqa_attention_bench --copy-ceiling --tokens T --context N "
-        "[--kv-dtype bf16|int8]\n"
+        "[--geometry 27b|35b] [--kv-dtype bf16|int8]\n"
         "       ninfer_gqa_attention_bench --decode [--decode-pos N] [--profile-once] "
-        "[--cold-cache] [--round-robin-layers 16] [--kv-dtype bf16|int8]\n",
+        "[--cold-cache] [--round-robin-layers 16] [--geometry 27b|35b] "
+        "[--kv-dtype bf16|int8]\n",
         message);
     std::exit(2);
 }
@@ -1254,6 +1275,15 @@ Options parse_options(int argc, char** argv) {
         } else if (!std::strcmp(argv[i], "--kv-dtype")) {
             if (++i >= argc) { fail_usage("--kv-dtype requires a value"); }
             opt.kv_dtype = parse_kv_dtype_arg(argv[i], "--kv-dtype");
+        } else if (!std::strcmp(argv[i], "--geometry")) {
+            if (++i >= argc) { fail_usage("--geometry requires a value"); }
+            if (!std::strcmp(argv[i], "27b")) {
+                opt.geometry_35b = false;
+            } else if (!std::strcmp(argv[i], "35b")) {
+                opt.geometry_35b = true;
+            } else {
+                fail_usage("--geometry expects 27b or 35b");
+            }
         } else if (!std::strcmp(argv[i], "--warmup")) {
             if (++i >= argc) { fail_usage("--warmup requires a value"); }
             opt.prefill_timing.warmup = parse_i32_arg(argv[i], "--warmup");
@@ -1294,14 +1324,15 @@ Options parse_options(int argc, char** argv) {
         opt.tokens = {1024};
     }
     if (opt.copy_ceiling && opt.tokens.empty()) { opt.tokens = {1}; }
-    if (opt.append_small_t && opt.tokens.size() != 1u) {
-        fail_usage("--append-small-t requires exactly one --tokens value");
-    }
     if (opt.copy_ceiling && opt.tokens.size() != 1u) {
         fail_usage("--copy-ceiling requires exactly one --tokens value");
     }
-    if (opt.append_small_t && (opt.tokens[0] <= 0 || opt.tokens[0] > 6)) {
-        fail_usage("--append-small-t currently supports T in [1,6]");
+    if (opt.append_small_t) {
+        for (const std::int32_t tokens : opt.tokens) {
+            if (tokens <= 0 || tokens > 6) {
+                fail_usage("--append-small-t supports T values in [1,6]");
+            }
+        }
     }
     if (opt.copy_ceiling && (opt.tokens[0] <= 0 || opt.tokens[0] > 6)) {
         fail_usage("--copy-ceiling currently supports T in [1,6]");
@@ -1311,8 +1342,8 @@ Options parse_options(int argc, char** argv) {
         !opt.context_set) {
         fail_usage("append/copy modes require --context");
     }
-    if ((opt.append_small_t || opt.copy_ceiling) && opt.contexts.size() != 1u) {
-        fail_usage("--append-small-t and --copy-ceiling require exactly one --context value");
+    if (opt.copy_ceiling && opt.contexts.size() != 1u) {
+        fail_usage("--copy-ceiling requires exactly one --context value");
     }
     if ((opt.append_prompt_baseline || opt.append_prompt_attention) && opt.contexts.empty()) {
         fail_usage("--append-prompt modes require --context");
@@ -1349,6 +1380,10 @@ Options parse_options(int argc, char** argv) {
     if (opt.profile_once && opt.prefill && opt.tokens.size() != 1u) {
         fail_usage("--prefill --profile-once requires exactly one --tokens length");
     }
+    if (opt.profile_once && opt.append_small_t &&
+        (opt.tokens.size() != 1u || opt.contexts.size() != 1u)) {
+        fail_usage("--append-small-t --profile-once requires one T and one context");
+    }
     if (opt.profile_once && opt.decode && opt.round_robin_layers != 1u) {
         fail_usage("--profile-once cannot be combined with --round-robin-layers");
     }
@@ -1380,6 +1415,19 @@ std::vector<std::int32_t> selected_decode_positions(const Options& opt) {
                                      std::end(kDefaultDecodePositions));
 }
 
+void select_geometry(bool geometry_35b) {
+    if (geometry_35b) {
+        kQHeads       = 16;
+        kKVHeads      = 2;
+        kGeometryName = "35b";
+    } else {
+        kQHeads       = 24;
+        kKVHeads      = 4;
+        kGeometryName = "27b";
+    }
+    kGqaDecodeSplits = ops::detail::gqa_attention_decode_splits(kQHeads, kKVHeads);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1389,7 +1437,10 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    const Options opt                                = parse_options(argc, argv);
+    const Options opt = parse_options(argc, argv);
+    select_geometry(opt.geometry_35b);
+    std::printf("gqa_attention geometry=%s q_heads=%d kv_heads=%d decode_splits=%d\n",
+                kGeometryName, kQHeads, kKVHeads, kGqaDecodeSplits);
     const std::vector<std::int32_t> decode_positions = selected_decode_positions(opt);
 
     std::int32_t max_context = 2048;
@@ -1426,12 +1477,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    constexpr std::size_t qn  = static_cast<std::size_t>(kHeadDim) * kQHeads;
-    constexpr std::size_t kvn = static_cast<std::size_t>(kHeadDim) * kKVHeads;
-    DBuf q                    = make_bf16(qn);
-    DBuf k                    = make_bf16(kvn);
-    DBuf v                    = make_bf16(kvn);
-    DBuf out                  = make_zeros(qn * sizeof(std::uint16_t));
+    const std::size_t qn  = static_cast<std::size_t>(kHeadDim) * kQHeads;
+    const std::size_t kvn = static_cast<std::size_t>(kHeadDim) * kKVHeads;
+    DBuf q                = make_bf16(qn);
+    DBuf k                = make_bf16(kvn);
+    DBuf v                = make_bf16(kvn);
+    DBuf out              = make_zeros(qn * sizeof(std::uint16_t));
 
     Tensor tq(q.p, DType::BF16, {kHeadDim, kQHeads, 1});
     Tensor tk(k.p, DType::BF16, {kHeadDim, kKVHeads, 1});
@@ -1450,13 +1501,16 @@ int main(int argc, char** argv) {
         }
     }
     if (opt.append_small_t) {
-        const std::int32_t tokens = opt.tokens[0];
         if (opt.profile_once) {
             DBuf cold_cache = make_zeros(opt.cold_cache ? kColdCacheBytes : 1u);
-            run_append_small_t_profile_once(kv, tokens, opt.context,
+            run_append_small_t_profile_once(kv, opt.tokens[0], opt.context,
                                             opt.cold_cache ? &cold_cache : nullptr);
         } else {
-            run_append_small_t(kv, tokens, opt.context);
+            for (const std::int32_t tokens : opt.tokens) {
+                for (const std::int32_t context : opt.contexts) {
+                    run_append_small_t(kv, tokens, context);
+                }
+            }
         }
     }
     if (opt.append_prompt_baseline) {

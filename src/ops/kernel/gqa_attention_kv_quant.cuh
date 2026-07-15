@@ -18,7 +18,6 @@
 namespace ninfer::ops {
 
 inline constexpr int kGqaKvQuantHeadDim = 256;
-inline constexpr int kGqaKvQuantKVHeads = 4;
 inline constexpr int kGqaKvQuantGroup   = 64;
 inline constexpr int kGqaKvQuantGroups  = kGqaKvQuantHeadDim / kGqaKvQuantGroup;
 
@@ -37,11 +36,12 @@ __device__ __forceinline__ std::int64_t gqa_kv_quant_scale_index(int kv_head, in
                 static_cast<std::int64_t>(padded_context) * kv_head);
 }
 
+template <typename Geometry>
 __device__ __forceinline__ std::int64_t gqa_kv_quant_src_index(int kv_head, int d, int token) {
     return static_cast<std::int64_t>(d) +
            static_cast<std::int64_t>(kGqaKvQuantHeadDim) *
                (static_cast<std::int64_t>(kv_head) +
-                static_cast<std::int64_t>(kGqaKvQuantKVHeads) * token);
+                static_cast<std::int64_t>(Geometry::KVHeads) * token);
 }
 
 // Quantize one bf16 value with a precomputed 1/scale (scale is the FP16-rounded

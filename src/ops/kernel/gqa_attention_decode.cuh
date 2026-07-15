@@ -9,6 +9,7 @@
 #include "ops/common/math.cuh"
 #include "ops/common/mma.cuh"
 #include "ops/common/warp.cuh"
+#include "ops/kernel/gqa_attention_geometry.cuh"
 
 #include <cuda_bf16.h>
 #include <math_constants.h>
@@ -17,10 +18,7 @@
 
 namespace ninfer::ops {
 
-inline constexpr int kGqaHeadDim   = 256;
-inline constexpr int kGqaQHeads    = 24;
-inline constexpr int kGqaKVHeads   = 4;
-inline constexpr int kGqaGroupSize = 6;
+inline constexpr int kGqaHeadDim = 256;
 
 __device__ __forceinline__ std::int64_t gqa_cache_index(int kv_head, int d, int position,
                                                         int padded_context) {
@@ -29,39 +27,46 @@ __device__ __forceinline__ std::int64_t gqa_cache_index(int kv_head, int d, int 
                                                static_cast<std::int64_t>(padded_context) * kv_head);
 }
 
+template <typename Geometry>
 __device__ __forceinline__ std::int64_t gqa_q_index(int q_head, int d, int token = 0) {
+    return static_cast<std::int64_t>(d) + static_cast<std::int64_t>(kGqaHeadDim) *
+                                              (static_cast<std::int64_t>(q_head) +
+                                               static_cast<std::int64_t>(Geometry::QHeads) * token);
+}
+
+template <typename Geometry>
+__device__ __forceinline__ std::int64_t gqa_kv_new_index(int kv_head, int d, int token = 0) {
     return static_cast<std::int64_t>(d) +
            static_cast<std::int64_t>(kGqaHeadDim) *
-               (static_cast<std::int64_t>(q_head) + static_cast<std::int64_t>(kGqaQHeads) * token);
+               (static_cast<std::int64_t>(kv_head) +
+                static_cast<std::int64_t>(Geometry::KVHeads) * token);
 }
 
-__device__ __forceinline__ std::int64_t gqa_kv_new_index(int kv_head, int d, int token = 0) {
-    return static_cast<std::int64_t>(d) + static_cast<std::int64_t>(kGqaHeadDim) *
-                                              (static_cast<std::int64_t>(kv_head) +
-                                               static_cast<std::int64_t>(kGqaKVHeads) * token);
-}
-
+template <typename Geometry>
 __device__ __forceinline__ std::int64_t gqa_partial_acc_index(int q_head, int d, int token,
                                                               int split, int tokens) {
     return static_cast<std::int64_t>(d) +
            static_cast<std::int64_t>(kGqaHeadDim) *
                (static_cast<std::int64_t>(q_head) +
-                static_cast<std::int64_t>(kGqaQHeads) *
+                static_cast<std::int64_t>(Geometry::QHeads) *
                     (static_cast<std::int64_t>(token) + static_cast<std::int64_t>(tokens) * split));
 }
 
+template <typename Geometry>
 __device__ __forceinline__ std::int64_t gqa_partial_stat_index(int q_head, int token, int split,
                                                                int tokens) {
     return static_cast<std::int64_t>(q_head) +
-           static_cast<std::int64_t>(kGqaQHeads) *
+           static_cast<std::int64_t>(Geometry::QHeads) *
                (static_cast<std::int64_t>(token) + static_cast<std::int64_t>(tokens) * split);
 }
 
+template <typename Geometry>
 __device__ __forceinline__ bool gqa_valid_q_head(int kv_head, int q_head) {
-    return kv_head >= 0 && kv_head < kGqaKVHeads && q_head >= kv_head * kGqaGroupSize &&
-           q_head < (kv_head + 1) * kGqaGroupSize && q_head < kGqaQHeads;
+    return kv_head >= 0 && kv_head < Geometry::KVHeads && q_head >= kv_head * Geometry::GroupSize &&
+           q_head < (kv_head + 1) * Geometry::GroupSize && q_head < Geometry::QHeads;
 }
 
+template <typename Geometry>
 __device__ __forceinline__ int gqa_small_t_active_splits(int window, int max_splits, int tokens) {
     if (window <= 0) { return max_splits; }
     // These int8 launch ranges deliberately use one 32-key tile per split.
@@ -71,15 +76,15 @@ __device__ __forceinline__ int gqa_small_t_active_splits(int window, int max_spl
         (tokens == 6 && window > 128 && window <= 160)) {
         return max_splits;
     }
-    int target_keys_per_split = 480;
+    int target_keys_per_split = 480 / Geometry::DecodeSplitScale;
     if (window <= 4096) {
-        target_keys_per_split = 64;
+        target_keys_per_split = 64 / Geometry::DecodeSplitScale;
     } else if (window <= 8198) {
-        target_keys_per_split = 128;
+        target_keys_per_split = 128 / Geometry::DecodeSplitScale;
     } else if (window <= 16390) {
-        target_keys_per_split = 256;
+        target_keys_per_split = 256 / Geometry::DecodeSplitScale;
     }
-    constexpr int kMinSplits = 4;
+    constexpr int kMinSplits = 4 * Geometry::DecodeSplitScale;
     int splits               = div_up(window, target_keys_per_split);
     splits                   = max(kMinSplits, splits);
     return min(max_splits, splits);
@@ -101,14 +106,15 @@ __device__ __forceinline__ int gqa_small_t_tc_swz32(int row, int col) {
 // swizzle feed this MMA. The s32 accumulator layout matches the bf16 f32
 // accumulator (c0/c1 -> row groupID, c2/c3 -> row groupID+8), so score
 // consumption is unchanged; only per-64-group scale rescale differs.
+template <typename Geometry>
 __device__ __forceinline__ void gqa_small_t_tc_row_to_qt(int row, int tokens, int kv_head,
                                                          int& q_head, int& token) {
-    token             = row / kGqaGroupSize;
-    const int local_q = row - token * kGqaGroupSize;
-    q_head            = kv_head * kGqaGroupSize + local_q;
+    token             = row / Geometry::GroupSize;
+    const int local_q = row - token * Geometry::GroupSize;
+    q_head            = kv_head * Geometry::GroupSize + local_q;
 }
 
-template <int DChunk>
+template <typename Geometry, int DChunk>
 __launch_bounds__(256) __global__
     void gqa_attention_small_t_reduce_output_kernel(const __nv_bfloat16* partial_acc,
                                                     const float* partial_m, const float* partial_l,
@@ -121,16 +127,17 @@ __launch_bounds__(256) __global__
     const int d_start = static_cast<int>(blockIdx.y) * DChunk;
     const int token   = static_cast<int>(blockIdx.z);
     const int tid     = threadIdx.x;
-    if (q_head >= kGqaQHeads || token >= tokens) { return; }
+    if (q_head >= Geometry::QHeads || token >= tokens) { return; }
     const int last_pos           = positions[tokens - 1];
     const int window             = last_pos + 1;
-    const int active_split_count = gqa_small_t_active_splits(window, split_count, tokens);
+    const int active_split_count = gqa_small_t_active_splits<Geometry>(window, split_count, tokens);
 
     __shared__ float reduce[256];
 
     float local_m = -CUDART_INF_F;
     for (int split = tid; split < active_split_count; split += blockDim.x) {
-        local_m = fmaxf(local_m, partial_m[gqa_partial_stat_index(q_head, token, split, tokens)]);
+        local_m = fmaxf(local_m,
+                        partial_m[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)]);
     }
     reduce[tid] = local_m;
     __syncthreads();
@@ -145,18 +152,20 @@ __launch_bounds__(256) __global__
     if (head_m == -CUDART_INF_F) {
         const int d = d_start + tid;
         if (tid < DChunk && d < kGqaHeadDim) {
-            out[gqa_q_index(q_head, d, token)] = __float2bfloat16(0.0f);
+            out[gqa_q_index<Geometry>(q_head, d, token)] = __float2bfloat16(0.0f);
         }
         return;
     }
 
     float local_l = 0.0f;
     for (int split = tid; split < active_split_count; split += blockDim.x) {
-        const float tile_l = partial_l[gqa_partial_stat_index(q_head, token, split, tokens)];
+        const float tile_l =
+            partial_l[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)];
         if (tile_l > 0.0f) {
             local_l +=
                 tile_l *
-                expf(partial_m[gqa_partial_stat_index(q_head, token, split, tokens)] - head_m);
+                expf(partial_m[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] -
+                     head_m);
         }
     }
     reduce[tid] = local_l;
@@ -174,17 +183,19 @@ __launch_bounds__(256) __global__
     float numerator = 0.0f;
     if (head_l > 0.0f) {
         for (int split = 0; split < active_split_count; ++split) {
-            const float tile_l = partial_l[gqa_partial_stat_index(q_head, token, split, tokens)];
+            const float tile_l =
+                partial_l[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)];
             if (tile_l <= 0.0f) { continue; }
-            const float weight =
-                expf(partial_m[gqa_partial_stat_index(q_head, token, split, tokens)] - head_m);
-            numerator += __bfloat162float(
-                             partial_acc[gqa_partial_acc_index(q_head, d, token, split, tokens)]) *
-                         weight;
+            const float weight = expf(
+                partial_m[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] - head_m);
+            numerator +=
+                __bfloat162float(
+                    partial_acc[gqa_partial_acc_index<Geometry>(q_head, d, token, split, tokens)]) *
+                weight;
         }
     }
-    const float value                  = (head_l > 0.0f) ? numerator / head_l : 0.0f;
-    out[gqa_q_index(q_head, d, token)] = __float2bfloat16(value);
+    const float value                            = (head_l > 0.0f) ? numerator / head_l : 0.0f;
+    out[gqa_q_index<Geometry>(q_head, d, token)] = __float2bfloat16(value);
 }
 
 } // namespace ninfer::ops

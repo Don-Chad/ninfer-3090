@@ -172,7 +172,7 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
         matrix(layout, DType::BF16, TextConfig::query_size, tokens);
         matrix(layout, DType::BF16, TextConfig::kv_size, tokens);
         matrix(layout, DType::BF16, TextConfig::query_size, tokens);
-        layout.alloc_bytes(ops::gqa_attention_workspace_bytes(tokens));
+        layout.alloc_bytes(ops::gqa_attention_workspace_bytes(TextConfig::query_heads, tokens));
         layout.alloc_bytes(
             ops::linear_add_workspace_bytes(TextConfig::hidden, TextConfig::query_size, tokens));
     };
@@ -274,7 +274,7 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
             matrix(mtp, DType::BF16, TextConfig::query_size, 1);
             matrix(mtp, DType::BF16, TextConfig::query_size, 1);
             matrix(mtp, DType::BF16, TextConfig::query_size, 1);
-            mtp.alloc_bytes(ops::gqa_attention_workspace_bytes(1));
+            mtp.alloc_bytes(ops::gqa_attention_workspace_bytes(TextConfig::query_heads, 1));
             matrix(mtp, DType::BF16, TextConfig::hidden, 1);
             matrix(mtp, DType::BF16, TextConfig::hidden, 1);
             matrix(mtp, DType::BF16, TextConfig::mtp_mlp_gate_up_rows, 1);

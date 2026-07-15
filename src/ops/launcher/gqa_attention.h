@@ -11,8 +11,7 @@
 
 namespace ninfer::ops::detail {
 
-// Four KV heads × 85 splits = 340 CTAs, matching two CTA slots per SM on RTX 5090.
-inline constexpr int kGqaDecodeSplits = 85;
+std::int32_t gqa_attention_decode_splits(std::int32_t q_heads, std::int32_t kv_heads);
 
 bool gqa_attention_uses_small_t(std::int32_t tokens);
 

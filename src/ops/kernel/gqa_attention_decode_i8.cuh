@@ -54,7 +54,8 @@ __device__ __forceinline__ void gqa_small_t_i8_store_swz(std::int8_t* tile, int 
 // at a time. K/V codes and scales are staged asynchronously; non-producer warps
 // dequantize V while producers execute QK. After both consume the code tile, the
 // next K/V tile is prefetched into the same arena while the current PV runs.
-template <int TokenTile, int WarpsPerCta, int MinBlocksPerSm, int KeyBlock, bool DynamicArena>
+template <typename Geometry, int TokenTile, int WarpsPerCta, int MinBlocksPerSm, int KeyBlock,
+          bool DynamicArena>
 __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     void gqa_attention_decode_i8_tiled_kernel(const __nv_bfloat16* q, const __nv_bfloat16* k_new,
                                               const __nv_bfloat16* v_new, const std::int32_t* pos,
@@ -64,7 +65,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                                               float scale, __nv_bfloat16* partial_acc,
                                               float* partial_m, float* partial_l) {
     constexpr int Wc                   = WarpsPerCta;
-    constexpr int RowCount             = TokenTile * kGqaGroupSize;
+    constexpr int RowCount             = TokenTile * Geometry::GroupSize;
     constexpr int RowTiles             = (RowCount + 15) / 16;
     constexpr int Br                   = RowTiles * 16;
     constexpr int Bc                   = KeyBlock;
@@ -121,10 +122,11 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         for (int row = tid; row < RowCount; row += Threads) {
             int q_head = 0;
             int token  = 0;
-            gqa_small_t_tc_row_to_qt(row, TokenTile, kv_head, q_head, token);
-            if (gqa_valid_q_head(kv_head, q_head)) {
-                partial_m[gqa_partial_stat_index(q_head, token, split, TokenTile)] = -CUDART_INF_F;
-                partial_l[gqa_partial_stat_index(q_head, token, split, TokenTile)] = 0.0f;
+            gqa_small_t_tc_row_to_qt<Geometry>(row, TokenTile, kv_head, q_head, token);
+            if (gqa_valid_q_head<Geometry>(kv_head, q_head)) {
+                partial_m[gqa_partial_stat_index<Geometry>(q_head, token, split, TokenTile)] =
+                    -CUDART_INF_F;
+                partial_l[gqa_partial_stat_index<Geometry>(q_head, token, split, TokenTile)] = 0.0f;
             }
         }
         for (int idx = tid; idx < RowCount * D; idx += Threads) {
@@ -132,15 +134,15 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
             const int d   = idx - row * D;
             int q_head    = 0;
             int token     = 0;
-            gqa_small_t_tc_row_to_qt(row, TokenTile, kv_head, q_head, token);
-            if (gqa_valid_q_head(kv_head, q_head)) {
-                partial_acc[gqa_partial_acc_index(q_head, d, token, split, TokenTile)] =
+            gqa_small_t_tc_row_to_qt<Geometry>(row, TokenTile, kv_head, q_head, token);
+            if (gqa_valid_q_head<Geometry>(kv_head, q_head)) {
+                partial_acc[gqa_partial_acc_index<Geometry>(q_head, d, token, split, TokenTile)] =
                     __float2bfloat16(0.0f);
             }
         }
     };
 
-    if (kv_head < 0 || kv_head >= kGqaKVHeads || split_count <= 0) { return; }
+    if (kv_head < 0 || kv_head >= Geometry::KVHeads || split_count <= 0) { return; }
 
     const std::int32_t first_pos = pos[0];
     const std::int32_t last_pos  = pos[TokenTile - 1];
@@ -149,8 +151,9 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         return;
     }
 
-    const int window             = last_pos + 1;
-    const int active_split_count = gqa_small_t_active_splits(window, split_count, TokenTile);
+    const int window = last_pos + 1;
+    const int active_split_count =
+        gqa_small_t_active_splits<Geometry>(window, split_count, TokenTile);
     if (split >= active_split_count) { return; }
 
     const int kps         = div_up(window, active_split_count);
@@ -171,8 +174,8 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         if (position < split_start || position >= split_end) { continue; }
         const int d0            = grp * kGqaKvQuantGroup + lane;
         const int d1            = d0 + 32;
-        const std::int64_t src0 = gqa_kv_new_index(kv_head, d0, token);
-        const std::int64_t src1 = gqa_kv_new_index(kv_head, d1, token);
+        const std::int64_t src0 = gqa_kv_new_index<Geometry>(kv_head, d0, token);
+        const std::int64_t src1 = gqa_kv_new_index<Geometry>(kv_head, d1, token);
         const float kv0         = __bfloat162float(k_new[src0]);
         const float kv1         = __bfloat162float(k_new[src1]);
         const float vv0         = __bfloat162float(v_new[src0]);
@@ -215,9 +218,9 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         const int d1  = d0 + 32;
         int q_head    = 0;
         int token     = 0;
-        gqa_small_t_tc_row_to_qt(row, TokenTile, kv_head, q_head, token);
-        const float x0  = __bfloat162float(q[gqa_q_index(q_head, d0, token)]);
-        const float x1  = __bfloat162float(q[gqa_q_index(q_head, d1, token)]);
+        gqa_small_t_tc_row_to_qt<Geometry>(row, TokenTile, kv_head, q_head, token);
+        const float x0  = __bfloat162float(q[gqa_q_index<Geometry>(q_head, d0, token)]);
+        const float x1  = __bfloat162float(q[gqa_q_index<Geometry>(q_head, d1, token)]);
         float amax      = fmaxf(fabsf(x0), fabsf(x1));
         amax            = warp_max(amax, FullMask);
         const float qs  = amax > 0.0f ? amax / 127.0f : 0.0f;
@@ -361,8 +364,8 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
             const int row0 = producer_row_base + gid;
             const int row1 = row0 + 8;
             int q_head0 = 0, token0 = 0, q_head1 = 0, token1 = 0;
-            gqa_small_t_tc_row_to_qt(row0, TokenTile, kv_head, q_head0, token0);
-            gqa_small_t_tc_row_to_qt(row1, TokenTile, kv_head, q_head1, token1);
+            gqa_small_t_tc_row_to_qt<Geometry>(row0, TokenTile, kv_head, q_head0, token0);
+            gqa_small_t_tc_row_to_qt<Geometry>(row1, TokenTile, kv_head, q_head1, token1);
             const int qabs0 = (row0 < RowCount) ? pos[token0] : -1;
             const int qabs1 = (row1 < RowCount) ? pos[token1] : -1;
             float bm0 = -CUDART_INF_F, bm1 = -CUDART_INF_F;
@@ -508,16 +511,16 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         if (row0 < RowCount) {
             int q_head = 0;
             int token  = 0;
-            gqa_small_t_tc_row_to_qt(row0, TokenTile, kv_head, q_head, token);
-            partial_m[gqa_partial_stat_index(q_head, token, split, TokenTile)] = m0;
-            partial_l[gqa_partial_stat_index(q_head, token, split, TokenTile)] = l0;
+            gqa_small_t_tc_row_to_qt<Geometry>(row0, TokenTile, kv_head, q_head, token);
+            partial_m[gqa_partial_stat_index<Geometry>(q_head, token, split, TokenTile)] = m0;
+            partial_l[gqa_partial_stat_index<Geometry>(q_head, token, split, TokenTile)] = l0;
         }
         if (row1 < RowCount) {
             int q_head = 0;
             int token  = 0;
-            gqa_small_t_tc_row_to_qt(row1, TokenTile, kv_head, q_head, token);
-            partial_m[gqa_partial_stat_index(q_head, token, split, TokenTile)] = m1;
-            partial_l[gqa_partial_stat_index(q_head, token, split, TokenTile)] = l1;
+            gqa_small_t_tc_row_to_qt<Geometry>(row1, TokenTile, kv_head, q_head, token);
+            partial_m[gqa_partial_stat_index<Geometry>(q_head, token, split, TokenTile)] = m1;
+            partial_l[gqa_partial_stat_index<Geometry>(q_head, token, split, TokenTile)] = l1;
         }
     }
 
@@ -532,15 +535,17 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         if (row0 < RowCount) {
             int q_head = 0;
             int token  = 0;
-            gqa_small_t_tc_row_to_qt(row0, TokenTile, kv_head, q_head, token);
-            const std::int64_t dst = gqa_partial_acc_index(q_head, d0, token, split, TokenTile);
+            gqa_small_t_tc_row_to_qt<Geometry>(row0, TokenTile, kv_head, q_head, token);
+            const std::int64_t dst =
+                gqa_partial_acc_index<Geometry>(q_head, d0, token, split, TokenTile);
             *reinterpret_cast<unsigned*>(&partial_acc[dst]) = pack_bf16x2(acc[n][0], acc[n][1]);
         }
         if (row1 < RowCount) {
             int q_head = 0;
             int token  = 0;
-            gqa_small_t_tc_row_to_qt(row1, TokenTile, kv_head, q_head, token);
-            const std::int64_t dst = gqa_partial_acc_index(q_head, d0, token, split, TokenTile);
+            gqa_small_t_tc_row_to_qt<Geometry>(row1, TokenTile, kv_head, q_head, token);
+            const std::int64_t dst =
+                gqa_partial_acc_index<Geometry>(q_head, d0, token, split, TokenTile);
             *reinterpret_cast<unsigned*>(&partial_acc[dst]) = pack_bf16x2(acc[n][2], acc[n][3]);
         }
     }

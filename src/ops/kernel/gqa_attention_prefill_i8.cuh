@@ -1,6 +1,6 @@
 #pragma once
 
-// INT8-native GQA prompt kernel for the fixed Qwen3.6-27B shape. QK stays INT8 through
+// INT8-native GQA prompt kernel for the registered Qwen3.6 head geometries. QK stays INT8 through
 // m16n8k32.s8 Tensor Cores; V alone is dequantized with packed FP16 arithmetic while
 // producer warps execute QK. Sixteen warps split each 16-row FP16 PV output across
 // four 64-dimension slices.
@@ -79,6 +79,7 @@ __device__ __forceinline__ int4 gqa_prefill_i8_dequant_f16x8(const std::int8_t* 
 
 // Eight independent quantization units per CTA; one warp owns one
 // (token, kv_head, 64-d group), with two dimensions per lane.
+template <typename Geometry>
 __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_i8_kernel(
     const __nv_bfloat16* __restrict__ k, const __nv_bfloat16* __restrict__ v,
     const std::int32_t* __restrict__ positions, std::int8_t* __restrict__ cache_k,
@@ -89,19 +90,19 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_i8_kernel(
     const int warp              = static_cast<int>(threadIdx.x) >> 5;
     const int lane              = static_cast<int>(threadIdx.x) & 31;
     const int unit              = static_cast<int>(blockIdx.x) * Warps + warp;
-    const int units             = tokens * kGqaPrefillKVHeads * kGqaPrefillI8Groups;
+    const int units             = tokens * Geometry::KVHeads * kGqaPrefillI8Groups;
     if (unit >= units) { return; }
 
     const int group    = unit % kGqaPrefillI8Groups;
     const int tmp      = unit / kGqaPrefillI8Groups;
-    const int kv_head  = tmp % kGqaPrefillKVHeads;
-    const int token    = tmp / kGqaPrefillKVHeads;
+    const int kv_head  = tmp % Geometry::KVHeads;
+    const int token    = tmp / Geometry::KVHeads;
     const int position = positions[0] + token;
     const int d0       = group * kGqaKvQuantGroup + lane;
     const int d1       = d0 + 32;
 
-    const std::int64_t src0 = gqa_kv_quant_src_index(kv_head, d0, token);
-    const std::int64_t src1 = gqa_kv_quant_src_index(kv_head, d1, token);
+    const std::int64_t src0 = gqa_kv_quant_src_index<Geometry>(kv_head, d0, token);
+    const std::int64_t src1 = gqa_kv_quant_src_index<Geometry>(kv_head, d1, token);
     const float k0          = __bfloat162float(k[src0]);
     const float k1          = __bfloat162float(k[src1]);
     const float v0          = __bfloat162float(v[src0]);
@@ -135,6 +136,7 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_i8_kernel(
     }
 }
 
+template <typename Geometry>
 __global__ __maxnreg__(120) void gqa_attention_prefill_i8_kernel(
     const __nv_bfloat16* __restrict__ q, const std::int8_t* __restrict__ cache_k,
     const std::int8_t* __restrict__ cache_v, const __half* __restrict__ cache_k_scale,
@@ -182,9 +184,9 @@ __global__ __maxnreg__(120) void gqa_attention_prefill_i8_kernel(
     const int warp     = tid >> 5;
     const int lane     = tid & 31;
     const int q0       = q_block * Br;
-    const int kv_head  = q_head / kGqaPrefillGroupSize;
+    const int kv_head  = q_head / Geometry::GroupSize;
     const int base_pos = positions[0];
-    if (q_head >= kGqaPrefillQHeads || q0 >= tokens) { return; }
+    if (q_head >= Geometry::QHeads || q0 >= tokens) { return; }
 
     const int tile_rows     = min(Br, tokens - q0);
     const int max_query_abs = base_pos + q0 + tile_rows - 1;
@@ -199,8 +201,8 @@ __global__ __maxnreg__(120) void gqa_attention_prefill_i8_kernel(
         float x0      = 0.0f;
         float x1      = 0.0f;
         if (row < tile_rows) {
-            x0 = __bfloat162float(q[gqa_prefill_q_index(q_head, d0, q0 + row)]);
-            x1 = __bfloat162float(q[gqa_prefill_q_index(q_head, d1, q0 + row)]);
+            x0 = __bfloat162float(q[gqa_prefill_q_index<Geometry>(q_head, d0, q0 + row)]);
+            x1 = __bfloat162float(q[gqa_prefill_q_index<Geometry>(q_head, d1, q0 + row)]);
         }
         float absmax    = fmaxf(fabsf(x0), fabsf(x1));
         absmax          = warp_max(absmax, FullMask);
@@ -501,11 +503,13 @@ __global__ __maxnreg__(120) void gqa_attention_prefill_i8_kernel(
     for (int n = 0; n < PVNtPerWarp; ++n) {
         const int d0 = (d_slice * PVNtPerWarp + n) * 8 + 2 * lid;
         if (row0 < tile_rows) {
-            *reinterpret_cast<unsigned*>(&out[gqa_prefill_q_index(q_head, d0, q0 + row0)]) =
+            *reinterpret_cast<unsigned*>(
+                &out[gqa_prefill_q_index<Geometry>(q_head, d0, q0 + row0)]) =
                 pack_bf16x2(acc[n][0] * inv_l0, acc[n][1] * inv_l0);
         }
         if (row1 < tile_rows) {
-            *reinterpret_cast<unsigned*>(&out[gqa_prefill_q_index(q_head, d0, q0 + row1)]) =
+            *reinterpret_cast<unsigned*>(
+                &out[gqa_prefill_q_index<Geometry>(q_head, d0, q0 + row1)]) =
                 pack_bf16x2(acc[n][2] * inv_l1, acc[n][3] * inv_l1);
         }
     }

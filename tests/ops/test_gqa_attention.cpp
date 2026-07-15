@@ -52,8 +52,9 @@ private:
 };
 
 constexpr std::int32_t kHeadDim          = 256;
-constexpr std::int32_t kQHeads           = 24;
-constexpr std::int32_t kKVHeads          = 4;
+std::int32_t kQHeads                     = 24;
+std::int32_t kKVHeads                    = 4;
+std::int32_t kGroupSize                  = 6;
 constexpr std::int32_t kKvQuantGroup     = 64;
 constexpr std::int32_t kKvQuantGroups    = kHeadDim / kKvQuantGroup;
 constexpr float kScale                   = 0.0625f;
@@ -229,7 +230,7 @@ void cpu_gqa_decode(const std::vector<float>& q, const std::vector<float>& cache
     std::vector<double> probs(window);
 
     for (std::int32_t qh = 0; qh < kQHeads; ++qh) {
-        const std::int32_t kvh = qh / 6;
+        const std::int32_t kvh = qh / kGroupSize;
         double max_score       = -std::numeric_limits<double>::infinity();
         for (std::int32_t j = 0; j <= pos; ++j) {
             double dot = 0.0;
@@ -290,7 +291,7 @@ void cpu_gqa_prefill(const std::vector<float>& q, const std::vector<float>& k,
     for (std::int32_t t = 0; t < tokens; ++t) {
         const std::int32_t query_abs = cache_offset + t;
         for (std::int32_t qh = 0; qh < kQHeads; ++qh) {
-            const std::int32_t kvh = qh / 6;
+            const std::int32_t kvh = qh / kGroupSize;
             double max_score       = -std::numeric_limits<double>::infinity();
             for (std::int32_t j = 0; j <= query_abs; ++j) {
                 double dot = 0.0;
@@ -974,9 +975,9 @@ int one_prefill_decode_consistency_case(std::int32_t tokens, std::uint32_t seed)
         static_cast<std::size_t>(kHeadDim) * kQHeads * static_cast<std::size_t>(tokens);
     const std::size_t kv_prefill_n =
         static_cast<std::size_t>(kHeadDim) * kKVHeads * static_cast<std::size_t>(tokens);
-    constexpr std::size_t q_decode_n =
+    const std::size_t q_decode_n =
         static_cast<std::size_t>(kHeadDim) * static_cast<std::size_t>(kQHeads);
-    constexpr std::size_t kv_decode_n =
+    const std::size_t kv_decode_n =
         static_cast<std::size_t>(kHeadDim) * static_cast<std::size_t>(kKVHeads);
     const std::int32_t padded_context = align_up_128(tokens + 1);
     const std::size_t cache_n         = cache_elements(padded_context);
@@ -1347,57 +1348,69 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    const auto run_geometry = [&](std::int32_t q_heads, std::int32_t kv_heads) {
+        kQHeads    = q_heads;
+        kKVHeads   = kv_heads;
+        kGroupSize = q_heads / kv_heads;
+        std::cout << "RUN gqa_attention q_heads=" << q_heads << " kv_heads=" << kv_heads << '\n';
+
+        int f = 0;
+        // T<=6 and T>6 use separate native-S8 QK kernels. Cover the prompt path at
+        // tile tails and with nonzero history spanning multiple key tiles.
+        f += one_int8_decode_case(0, 6, 903u);
+        f += one_int8_prefill_case(65, 904u);
+        f += one_int8_prefill_case(192, 911u);
+        f += one_int8_prefill_case(65, 917u, 384);
+        f += one_int8_decode_case(17, 1, 905u);
+        f += one_int8_decode_case(2882, 1, 906u);
+        f += one_int8_decode_case(100, 2, 907u);
+        f += one_int8_decode_case(100, 3, 908u);
+        f += one_int8_decode_case(100, 4, 909u);
+        f += one_int8_decode_case(2048, 4, 910u);
+        f += one_int8_decode_case(100, 5, 912u);
+        // Protect the short-context launch specializations: full-CTA T=5, the
+        // narrow T=6 boundary, and the dynamic-smem Bc=64 path with its split cap.
+        f += one_int8_decode_case(256, 5, 914u);
+        f += one_int8_decode_case(128, 6, 915u);
+        f += one_int8_decode_case(8192, 6, 916u);
+        for (std::int32_t tokens = 1; tokens <= 6; ++tokens) {
+            f += one_prefill_case(tokens, 100u + static_cast<std::uint32_t>(tokens), 0);
+            f += one_prefill_case(tokens, 200u + static_cast<std::uint32_t>(tokens), 1);
+            f += one_prefill_case(tokens, 300u + static_cast<std::uint32_t>(tokens), 17);
+            f += one_prefill_case(tokens, 400u + static_cast<std::uint32_t>(tokens), 128);
+        }
+        f += one_prefill_case(7, 107u, 0);
+        f += one_prefill_case(128, 113u, 0);
+        f += one_prefill_case(512, 127u, 0);
+        f += one_prefill_case(128, 137u, 128);
+        f += one_prefill_case(512, 139u, 128);
+        f += one_prefill_case(65, 149u, 384);
+        f += one_prefill_decode_consistency_case(128, 131u);
+        f += split_api_parity_case(DType::BF16, 1, 17, 1401u);
+        f += split_api_parity_case(DType::BF16, 128, 17, 1402u);
+        f += split_api_parity_case(DType::I8, 1, 17, 1403u);
+        f += split_api_parity_case(DType::I8, 128, 17, 1404u);
+        f += split_api_parity_case(DType::BF16, 1024, 17, 1405u, true);
+        f += split_api_parity_case(DType::I8, 1024, 17, 1406u, true);
+        f += one_decode_case(1, 11u);
+        f += one_decode_case(17, 17u);
+        f += one_decode_case(2048, 23u);
+        f += one_decode_case(2882, 29u);
+        f += one_decode_case(8191, 37u);
+        if (long_decode) {
+            f += one_decode_case(32768, 41u);
+            f += one_int8_decode_case(40800, 1, 913u);
+        }
+        f += one_decode_case(17, 31u, DecodeInputMode::Stress);
+        f += one_future_token_isolation_case();
+        f += one_graph_relaunch_positions_case();
+        f += validation_checks();
+        return f;
+    };
+
     int f = 0;
-    // T<=6 and T>6 use separate native-S8 QK kernels. Cover the prompt path at
-    // tile tails and with nonzero history spanning multiple key tiles.
-    f += one_int8_decode_case(0, 6, 903u);
-    f += one_int8_prefill_case(65, 904u);
-    f += one_int8_prefill_case(192, 911u);
-    f += one_int8_prefill_case(65, 917u, 384);
-    f += one_int8_decode_case(17, 1, 905u);
-    f += one_int8_decode_case(2882, 1, 906u);
-    f += one_int8_decode_case(100, 2, 907u);
-    f += one_int8_decode_case(100, 3, 908u);
-    f += one_int8_decode_case(100, 4, 909u);
-    f += one_int8_decode_case(2048, 4, 910u);
-    f += one_int8_decode_case(100, 5, 912u);
-    // Protect the short-context launch specializations: full-CTA T=5, the
-    // narrow T=6 boundary, and the dynamic-smem Bc=64 path with its split cap.
-    f += one_int8_decode_case(256, 5, 914u);
-    f += one_int8_decode_case(128, 6, 915u);
-    f += one_int8_decode_case(8192, 6, 916u);
-    for (std::int32_t tokens = 1; tokens <= 6; ++tokens) {
-        f += one_prefill_case(tokens, 100u + static_cast<std::uint32_t>(tokens), 0);
-        f += one_prefill_case(tokens, 200u + static_cast<std::uint32_t>(tokens), 1);
-        f += one_prefill_case(tokens, 300u + static_cast<std::uint32_t>(tokens), 17);
-        f += one_prefill_case(tokens, 400u + static_cast<std::uint32_t>(tokens), 128);
-    }
-    f += one_prefill_case(7, 107u, 0);
-    f += one_prefill_case(128, 113u, 0);
-    f += one_prefill_case(512, 127u, 0);
-    f += one_prefill_case(128, 137u, 128);
-    f += one_prefill_case(512, 139u, 128);
-    f += one_prefill_case(65, 149u, 384);
-    f += one_prefill_decode_consistency_case(128, 131u);
-    f += split_api_parity_case(DType::BF16, 1, 17, 1401u);
-    f += split_api_parity_case(DType::BF16, 128, 17, 1402u);
-    f += split_api_parity_case(DType::I8, 1, 17, 1403u);
-    f += split_api_parity_case(DType::I8, 128, 17, 1404u);
-    f += split_api_parity_case(DType::BF16, 1024, 17, 1405u, true);
-    f += split_api_parity_case(DType::I8, 1024, 17, 1406u, true);
-    f += one_decode_case(1, 11u);
-    f += one_decode_case(17, 17u);
-    f += one_decode_case(2048, 23u);
-    f += one_decode_case(2882, 29u);
-    f += one_decode_case(8191, 37u);
-    if (long_decode) {
-        f += one_decode_case(32768, 41u);
-        f += one_int8_decode_case(40800, 1, 913u);
-    }
-    f += one_decode_case(17, 31u, DecodeInputMode::Stress);
-    f += one_future_token_isolation_case();
-    f += one_graph_relaunch_positions_case();
-    f += validation_checks();
+    f += run_geometry(24, 4);
+    f += run_geometry(16, 2);
 
     std::cout << (f ? "FAIL" : "OK") << " gqa_attention correctness\n";
     return f ? 1 : 0;

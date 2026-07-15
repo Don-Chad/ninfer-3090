@@ -1,12 +1,13 @@
 #pragma once
 
-// Fixed Qwen3.6 GQA geometry and leaf PTX helpers shared by the independently tuned
+// Shared Qwen3.6 GQA dimensions and leaf PTX helpers used by the independently tuned
 // BF16 and INT8 prompt kernels. This file deliberately owns no staging policy,
 // shared-memory arena, warp schedule, or kernel body.
 
 #include "ops/common/math.cuh"
 #include "ops/common/mma.cuh"
 #include "ops/common/warp.cuh"
+#include "ops/kernel/gqa_attention_geometry.cuh"
 
 #include <cuda_bf16.h>
 
@@ -14,10 +15,7 @@
 
 namespace ninfer::ops {
 
-inline constexpr int kGqaPrefillHeadDim   = 256;
-inline constexpr int kGqaPrefillQHeads    = 24;
-inline constexpr int kGqaPrefillKVHeads   = 4;
-inline constexpr int kGqaPrefillGroupSize = 6;
+inline constexpr int kGqaPrefillHeadDim = 256;
 
 inline constexpr int kGqaPrefillBr        = 64;
 inline constexpr int kGqaPrefillBc        = 64;
@@ -33,11 +31,11 @@ __device__ __forceinline__ std::int64_t gqa_prefill_cache_index(int kv_head, int
                                                static_cast<std::int64_t>(padded_context) * kv_head);
 }
 
+template <typename Geometry>
 __device__ __forceinline__ std::int64_t gqa_prefill_q_index(int q_head, int d, int token) {
-    return static_cast<std::int64_t>(d) +
-           static_cast<std::int64_t>(kGqaPrefillHeadDim) *
-               (static_cast<std::int64_t>(q_head) +
-                static_cast<std::int64_t>(kGqaPrefillQHeads) * token);
+    return static_cast<std::int64_t>(d) + static_cast<std::int64_t>(kGqaPrefillHeadDim) *
+                                              (static_cast<std::int64_t>(q_head) +
+                                               static_cast<std::int64_t>(Geometry::QHeads) * token);
 }
 
 // XOR-swizzled b16 element address. INT8 operands use the same layout by packing

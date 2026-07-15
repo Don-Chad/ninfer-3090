@@ -21,6 +21,7 @@
 
 namespace ninfer::ops {
 
+template <typename Geometry>
 __global__ void gqa_attention_prefill_fill_bf16_kernel(
     const __nv_bfloat16* __restrict__ k, const __nv_bfloat16* __restrict__ v,
     const std::int32_t* __restrict__ positions, __nv_bfloat16* __restrict__ cache_k,
@@ -28,19 +29,19 @@ __global__ void gqa_attention_prefill_fill_bf16_kernel(
     constexpr int VecElems = 8; // 8 bf16 == 16 B, matching the cache row alignment.
     const std::int64_t idx = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const std::int64_t n =
-        static_cast<std::int64_t>(tokens) * kGqaPrefillKVHeads * (kGqaPrefillHeadDim / VecElems);
+        static_cast<std::int64_t>(tokens) * Geometry::KVHeads * (kGqaPrefillHeadDim / VecElems);
     if (idx >= n) { return; }
 
     const int vec      = static_cast<int>(idx % (kGqaPrefillHeadDim / VecElems));
     const int tmp      = static_cast<int>(idx / (kGqaPrefillHeadDim / VecElems));
-    const int kv_head  = tmp % kGqaPrefillKVHeads;
-    const int token    = tmp / kGqaPrefillKVHeads;
+    const int kv_head  = tmp % Geometry::KVHeads;
+    const int token    = tmp / Geometry::KVHeads;
     const int d        = vec * VecElems;
     const int position = positions[0] + token;
 
     const std::int64_t src_off =
         static_cast<std::int64_t>(d) +
-        static_cast<std::int64_t>(kGqaPrefillHeadDim) * (kv_head + kGqaPrefillKVHeads * token);
+        static_cast<std::int64_t>(kGqaPrefillHeadDim) * (kv_head + Geometry::KVHeads * token);
     const std::int64_t cache_off = gqa_prefill_cache_index(kv_head, d, position, padded_context);
     store_vec(&cache_k[cache_off], load_vec<int4>(&k[src_off]));
     store_vec(&cache_v[cache_off], load_vec<int4>(&v[src_off]));
@@ -87,6 +88,7 @@ __device__ __forceinline__ void gqa_prefill_stage_kv(__nv_bfloat16* dst, const _
 // FlashAttention-2 forward, one CTA per (query 64-row block, query head). Grid is
 // (ceil(tokens/64), q_heads). seqlen_q = tokens, seqlen_k = base_pos + tokens, with
 // bottom-right causal alignment (query row i sees keys [0, base_pos + i]).
+template <typename Geometry>
 __launch_bounds__(kGqaPrefillThreads, 1) __global__
     void gqa_attention_prefill_bf16_kernel(const __nv_bfloat16* __restrict__ q,
                                            const __nv_bfloat16* __restrict__ cache_k,
@@ -118,10 +120,10 @@ __launch_bounds__(kGqaPrefillThreads, 1) __global__
     const int warp     = tid >> 5;
     const int lane     = tid & 31;
     const int q0       = q_block * Br;
-    const int kv_head  = q_head / kGqaPrefillGroupSize;
+    const int kv_head  = q_head / Geometry::GroupSize;
     const int base_pos = positions[0];
 
-    if (q_head >= kGqaPrefillQHeads || q0 >= tokens) { return; }
+    if (q_head >= Geometry::QHeads || q0 >= tokens) { return; }
 
     const int gid = lane >> 2;
     const int lid = lane & 3;
@@ -159,8 +161,8 @@ __launch_bounds__(kGqaPrefillThreads, 1) __global__
     // contiguous, with a token stride of 256*QHeads.
     {
         constexpr int VecPerRow      = D / 8;
-        constexpr int QRowStride     = D * kGqaPrefillQHeads; // global stride between tokens
-        const __nv_bfloat16* q_block = q + gqa_prefill_q_index(q_head, 0, q0);
+        constexpr int QRowStride     = D * Geometry::QHeads; // global stride between tokens
+        const __nv_bfloat16* q_block = q + gqa_prefill_q_index<Geometry>(q_head, 0, q0);
         if (q0 + Br <= tokens) {
 #pragma unroll
             for (int chunk = tid; chunk < Br * VecPerRow; chunk += Threads) {
@@ -417,11 +419,11 @@ __launch_bounds__(kGqaPrefillThreads, 1) __global__
         const int qrow0 = q0 + warp_row0 + gid;
         const int qrow1 = q0 + warp_row0 + gid + 8;
         if (qrow0 < tokens) {
-            *reinterpret_cast<unsigned*>(&out[gqa_prefill_q_index(q_head, d0, qrow0)]) =
+            *reinterpret_cast<unsigned*>(&out[gqa_prefill_q_index<Geometry>(q_head, d0, qrow0)]) =
                 pack_bf16x2(acc[n][0] * inv_l0, acc[n][1] * inv_l0);
         }
         if (qrow1 < tokens) {
-            *reinterpret_cast<unsigned*>(&out[gqa_prefill_q_index(q_head, d0, qrow1)]) =
+            *reinterpret_cast<unsigned*>(&out[gqa_prefill_q_index<Geometry>(q_head, d0, qrow1)]) =
                 pack_bf16x2(acc[n][2] * inv_l1, acc[n][3] * inv_l1);
         }
     }

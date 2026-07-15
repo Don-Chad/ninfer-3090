@@ -15,7 +15,7 @@
 
 namespace ninfer::ops {
 
-template <int TokenTile, int WarpsPerCta>
+template <typename Geometry, int TokenTile, int WarpsPerCta>
 __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_kernel(
     const __nv_bfloat16* q, const __nv_bfloat16* k_new, const __nv_bfloat16* v_new,
     const std::int32_t* pos, __nv_bfloat16* cache_k, __nv_bfloat16* cache_v, std::int32_t tokens,
@@ -50,16 +50,17 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
     const int tid         = static_cast<int>(threadIdx.x);
     const int warp        = tid >> 5;
     const int lane        = tid & 31;
-    const int row_count   = tokens * kGqaGroupSize;
+    const int row_count   = tokens * Geometry::GroupSize;
 
     auto write_neutral = [&]() {
         for (int row = tid; row < row_count; row += Threads) {
             int q_head = 0;
             int token  = 0;
-            gqa_small_t_tc_row_to_qt(row, tokens, kv_head, q_head, token);
-            if (gqa_valid_q_head(kv_head, q_head)) {
-                partial_m[gqa_partial_stat_index(q_head, token, split, tokens)] = -CUDART_INF_F;
-                partial_l[gqa_partial_stat_index(q_head, token, split, tokens)] = 0.0f;
+            gqa_small_t_tc_row_to_qt<Geometry>(row, tokens, kv_head, q_head, token);
+            if (gqa_valid_q_head<Geometry>(kv_head, q_head)) {
+                partial_m[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] =
+                    -CUDART_INF_F;
+                partial_l[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] = 0.0f;
             }
         }
         for (int idx = tid; idx < row_count * D; idx += Threads) {
@@ -67,15 +68,15 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
             const int d   = idx - row * D;
             int q_head    = 0;
             int token     = 0;
-            gqa_small_t_tc_row_to_qt(row, tokens, kv_head, q_head, token);
-            if (gqa_valid_q_head(kv_head, q_head)) {
-                partial_acc[gqa_partial_acc_index(q_head, d, token, split, tokens)] =
+            gqa_small_t_tc_row_to_qt<Geometry>(row, tokens, kv_head, q_head, token);
+            if (gqa_valid_q_head<Geometry>(kv_head, q_head)) {
+                partial_acc[gqa_partial_acc_index<Geometry>(q_head, d, token, split, tokens)] =
                     __float2bfloat16(0.0f);
             }
         }
     };
 
-    if (kv_head < 0 || kv_head >= kGqaKVHeads || tokens < 1 || tokens > TokenTile ||
+    if (kv_head < 0 || kv_head >= Geometry::KVHeads || tokens < 1 || tokens > TokenTile ||
         row_count > Br || split_count <= 0) {
         return;
     }
@@ -87,8 +88,9 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         return;
     }
 
-    const int window             = last_pos + 1;
-    const int active_split_count = gqa_small_t_active_splits(window, split_count, TokenTile);
+    const int window = last_pos + 1;
+    const int active_split_count =
+        gqa_small_t_active_splits<Geometry>(window, split_count, TokenTile);
     if (split >= active_split_count) { return; }
 
     const int kps         = div_up(window, active_split_count);
@@ -109,7 +111,7 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         const int d     = (chunk - token * (D / 8)) * 8;
         const int p_tok = pos[token];
         if (p_tok >= split_start && p_tok < split_end && p_tok >= 0 && p_tok < max_context) {
-            const std::int64_t new_off   = gqa_kv_new_index(kv_head, d, token);
+            const std::int64_t new_off   = gqa_kv_new_index<Geometry>(kv_head, d, token);
             const std::int64_t cache_off = gqa_cache_index(kv_head, d, p_tok, padded_context);
             store_vec(&cache_k[cache_off], load_vec<int4>(&k_new[new_off]));
             store_vec(&cache_v[cache_off], load_vec<int4>(&v_new[new_off]));
@@ -122,10 +124,10 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         const int d   = idx - row * D;
         int q_head    = 0;
         int token     = 0;
-        gqa_small_t_tc_row_to_qt(row, tokens, kv_head, q_head, token);
+        gqa_small_t_tc_row_to_qt<Geometry>(row, tokens, kv_head, q_head, token);
         __nv_bfloat16 value = __float2bfloat16(0.0f);
-        if (row < row_count && gqa_valid_q_head(kv_head, q_head)) {
-            value = q[gqa_q_index(q_head, d, token)];
+        if (row < row_count && gqa_valid_q_head<Geometry>(kv_head, q_head)) {
+            value = q[gqa_q_index<Geometry>(q_head, d, token)];
         }
         qkv_s[row * D + gqa_small_t_tc_swz(row, d)] = value;
     }
@@ -178,7 +180,7 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
                 const int new_token = key - first_pos;
                 const bool from_new = new_token >= 0 && new_token < tokens && key >= first_pos;
                 if (from_new) {
-                    const std::int64_t off = gqa_kv_new_index(kv_head, d, new_token);
+                    const std::int64_t off = gqa_kv_new_index<Geometry>(kv_head, d, new_token);
                     ninfer::ops::cp_async<16>(k_dst, &k_new[off]);
                     ninfer::ops::cp_async<16>(v_dst, &v_new[off]);
                 } else {
@@ -214,8 +216,8 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         const int row0 = warp_row0 + gid;
         const int row1 = row0 + 8;
         int q_head0 = 0, token0 = 0, q_head1 = 0, token1 = 0;
-        gqa_small_t_tc_row_to_qt(row0, tokens, kv_head, q_head0, token0);
-        gqa_small_t_tc_row_to_qt(row1, tokens, kv_head, q_head1, token1);
+        gqa_small_t_tc_row_to_qt<Geometry>(row0, tokens, kv_head, q_head0, token0);
+        gqa_small_t_tc_row_to_qt<Geometry>(row1, tokens, kv_head, q_head1, token1);
         const int qabs0 = (row0 < row_count) ? pos[token0] : -1;
         const int qabs1 = (row1 < row_count) ? pos[token1] : -1;
 
@@ -323,16 +325,16 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         if (row0 < row_count) {
             int q_head = 0;
             int token  = 0;
-            gqa_small_t_tc_row_to_qt(row0, tokens, kv_head, q_head, token);
-            partial_m[gqa_partial_stat_index(q_head, token, split, tokens)] = m0;
-            partial_l[gqa_partial_stat_index(q_head, token, split, tokens)] = l0;
+            gqa_small_t_tc_row_to_qt<Geometry>(row0, tokens, kv_head, q_head, token);
+            partial_m[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] = m0;
+            partial_l[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] = l0;
         }
         if (row1 < row_count) {
             int q_head = 0;
             int token  = 0;
-            gqa_small_t_tc_row_to_qt(row1, tokens, kv_head, q_head, token);
-            partial_m[gqa_partial_stat_index(q_head, token, split, tokens)] = m1;
-            partial_l[gqa_partial_stat_index(q_head, token, split, tokens)] = l1;
+            gqa_small_t_tc_row_to_qt<Geometry>(row1, tokens, kv_head, q_head, token);
+            partial_m[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] = m1;
+            partial_l[gqa_partial_stat_index<Geometry>(q_head, token, split, tokens)] = l1;
         }
     }
 
@@ -360,9 +362,10 @@ __launch_bounds__(128, 2) __global__ void gqa_attention_small_t_tc_partial_bf16_
         const int d   = (chunk - row * (D / 8)) * 8;
         int q_head    = 0;
         int token     = 0;
-        gqa_small_t_tc_row_to_qt(row, tokens, kv_head, q_head, token);
-        if (gqa_valid_q_head(kv_head, q_head)) {
-            const std::int64_t dst = gqa_partial_acc_index(q_head, d, token, split, tokens);
+        gqa_small_t_tc_row_to_qt<Geometry>(row, tokens, kv_head, q_head, token);
+        if (gqa_valid_q_head<Geometry>(kv_head, q_head)) {
+            const std::int64_t dst =
+                gqa_partial_acc_index<Geometry>(q_head, d, token, split, tokens);
             store_vec(&partial_acc[dst], load_vec<int4>(&qkv_s[row * D + d]));
         }
     }
