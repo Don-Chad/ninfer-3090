@@ -1,0 +1,272 @@
+{
+  "artifact_type": "ninfer_cli_examples",
+  "schema_version": 1,
+  "working_directory": "repository root",
+  "messages_format": "product CLI --messages JSON",
+  "prompt_token_basis": "Actual qwen3_6_27b_rtx5090 Engine preparation, including expanded Vision tokens.",
+  "family_tokenizer_observation": "The local 27B and 35B tokenizer/chat-template resources produced identical prompt token sequences for every messages JSON before target media expansion.",
+  "media": [
+    {
+      "path": "media/visual_chart.png",
+      "kind": "image",
+      "dimensions": [768, 512],
+      "source": "project-authored deterministic drawing"
+    },
+    {
+      "path": "media/natural_scene.png",
+      "kind": "image",
+      "dimensions": [768, 512],
+      "source": "project-authored deterministic drawing"
+    },
+    {
+      "path": "media/compare_left.png",
+      "kind": "image",
+      "dimensions": [640, 384],
+      "source": "project-authored deterministic drawing"
+    },
+    {
+      "path": "media/compare_right.png",
+      "kind": "image",
+      "dimensions": [640, 384],
+      "source": "project-authored deterministic drawing"
+    },
+    {
+      "path": "media/temporal_events.mp4",
+      "kind": "video",
+      "codec": "h264",
+      "dimensions": [640, 360],
+      "fps": 8,
+      "frames": 40,
+      "duration_seconds": 5.0,
+      "source": "project-authored deterministic animation"
+    }
+  ],
+  "cases": [
+    {
+      "name": "text_smoke_zh",
+      "messages": "messages/text_smoke_zh.json",
+      "kind": "text_smoke",
+      "thinking": false,
+      "prompt_tokens": 30,
+      "max_context": 2048,
+      "max_new": 8,
+      "kv_dtype": "bf16",
+      "oracle": {"mode": "exact", "stdout": "42"}
+    },
+    {
+      "name": "text_chat_history",
+      "messages": "messages/text_chat_history.json",
+      "kind": "text_history",
+      "thinking": false,
+      "prompt_tokens": 104,
+      "max_context": 2048,
+      "max_new": 32,
+      "kv_dtype": "bf16",
+      "oracle": {"mode": "exact", "stdout": "Cedar|2041-09-17|37"}
+    },
+    {
+      "name": "text_code_review",
+      "messages": "messages/text_code_review.json",
+      "kind": "text_code",
+      "thinking": false,
+      "prompt_tokens": 80,
+      "max_context": 2048,
+      "max_new": 256,
+      "kv_dtype": "bf16",
+      "oracle": {
+        "mode": "facts",
+        "facts": ["empty input divides by zero", "explicit empty-input handling"]
+      }
+    },
+    {
+      "name": "image_chart",
+      "messages": "messages/image_chart.json",
+      "kind": "single_image",
+      "thinking": false,
+      "media": ["media/visual_chart.png"],
+      "prompt_tokens": 428,
+      "max_context": 8192,
+      "max_new": 64,
+      "kv_dtype": "bf16",
+      "oracle": {
+        "mode": "facts",
+        "facts": ["NIFER VISION 731", "three red circles", "blue square is left of green triangle"]
+      }
+    },
+    {
+      "name": "image_natural",
+      "messages": "messages/image_natural.json",
+      "kind": "single_image_scene",
+      "thinking": false,
+      "media": ["media/natural_scene.png"],
+      "prompt_tokens": 417,
+      "max_context": 8192,
+      "max_new": 96,
+      "kv_dtype": "bf16",
+      "oracle": {"mode": "facts", "facts": ["mailbox 24", "sun on right"]}
+    },
+    {
+      "name": "video_temporal",
+      "messages": "messages/video_temporal.json",
+      "kind": "video",
+      "thinking": false,
+      "media": ["media/temporal_events.mp4"],
+      "prompt_tokens": 1191,
+      "max_context": 8192,
+      "max_new": 64,
+      "kv_dtype": "bf16",
+      "oracle": {
+        "mode": "facts",
+        "facts": ["red circle moves", "green 3", "blue square remains visible when 3 first appears", "ending 9"]
+      }
+    },
+    {
+      "name": "multi_image_compare",
+      "messages": "messages/multi_image_compare.json",
+      "kind": "multiple_images",
+      "thinking": false,
+      "media": ["media/compare_left.png", "media/compare_right.png"],
+      "prompt_tokens": 531,
+      "max_context": 8192,
+      "max_new": 64,
+      "kv_dtype": "bf16",
+      "oracle": {"mode": "facts", "facts": ["left count 2", "right count 3", "new yellow star"]}
+    },
+    {
+      "name": "mixed_image_video",
+      "messages": "messages/mixed_image_video.json",
+      "kind": "interleaved_image_video",
+      "thinking": false,
+      "media": ["media/visual_chart.png", "media/temporal_events.mp4"],
+      "prompt_tokens": 1575,
+      "max_context": 8192,
+      "max_new": 32,
+      "kv_dtype": "bf16",
+      "oracle": {"mode": "exact", "stdout": "NIFER-9"}
+    },
+    {
+      "name": "mixed_multiturn",
+      "messages": "messages/mixed_multiturn.json",
+      "kind": "multiturn_image_video",
+      "thinking": false,
+      "media": ["media/natural_scene.png", "media/temporal_events.mp4"],
+      "prompt_tokens": 1608,
+      "max_context": 8192,
+      "max_new": 32,
+      "kv_dtype": "bf16",
+      "oracle": {"mode": "exact", "stdout": "24-9"}
+    },
+    {
+      "name": "thinking_logic_grid",
+      "messages": "messages/thinking_logic_grid.json",
+      "kind": "text_reasoning",
+      "thinking": true,
+      "prompt_tokens": 415,
+      "max_context": 16384,
+      "max_new": 8192,
+      "kv_dtype": "bf16",
+      "oracle": {
+        "mode": "facts",
+        "facts": [
+          "1 Cedar violet 4303",
+          "2 Atlas amber 4505",
+          "3 Ember green 4101",
+          "4 Beacon red 4404",
+          "5 Delta blue 4202",
+          "CHECK=4606"
+        ]
+      }
+    },
+    {
+      "name": "thinking_multimodal_checksum",
+      "messages": "messages/thinking_multimodal_checksum.json",
+      "kind": "multimodal_reasoning",
+      "thinking": true,
+      "media": ["media/visual_chart.png", "media/natural_scene.png", "media/temporal_events.mp4"],
+      "prompt_tokens": 2070,
+      "max_context": 8192,
+      "max_new": 4096,
+      "kv_dtype": "bf16",
+      "oracle": {
+        "mode": "facts",
+        "facts": ["V=731", "C=3", "M=24", "G=3", "E=9", "CHECKSUM=2238"]
+      }
+    },
+    {
+      "name": "long_decode_design_review",
+      "messages": "messages/long_decode_design_review.json",
+      "kind": "long_decode_reasoning",
+      "thinking": true,
+      "prompt_tokens": 764,
+      "max_context": 32768,
+      "max_new": 16384,
+      "kv_dtype": "bf16",
+      "oracle": {
+        "mode": "structure_and_facts",
+        "required_sections": [
+          "范围与非目标",
+          "组件与所有权表",
+          "三档上下文的逐步显存计算表",
+          "状态机与伪代码",
+          "kernel/Op 接口和 CUDA Graph tier key",
+          "fusion 与性能方案",
+          "正确性、数值和性能验证矩阵",
+          "分阶段落地、回滚点和完成判据",
+          "设计自检"
+        ],
+        "facts": [
+          "65536 payload 335544320 metadata 20971520 total memory 20.732 GiB",
+          "131072 payload 671088640 metadata 41943040 total memory 21.064 GiB",
+          "262144 payload 1342177280 metadata 83886080 total memory 21.728 GiB",
+          "only Program advances frontiers",
+          "failure transitions are atomic",
+          "performance claims name measurement methods"
+        ]
+      }
+    },
+    {
+      "name": "long_8k",
+      "messages": "messages/long_8k.json",
+      "kind": "long_context",
+      "thinking": false,
+      "prompt_tokens": 7680,
+      "max_context": 8192,
+      "max_new": 64,
+      "kv_dtype": "bf16",
+      "oracle": {"mode": "exact", "stdout": "ORCHID=37; COPPER=8142; HARBOR=KESTREL; COLOR=AMBER; SUM=8179"}
+    },
+    {
+      "name": "long_64k",
+      "messages": "messages/long_64k.json",
+      "kind": "long_context",
+      "thinking": false,
+      "prompt_tokens": 64512,
+      "max_context": 65536,
+      "max_new": 64,
+      "kv_dtype": "int8",
+      "oracle": {"mode": "exact", "stdout": "ORCHID=37; COPPER=8142; HARBOR=KESTREL; COLOR=AMBER; SUM=8179"}
+    },
+    {
+      "name": "long_128k",
+      "messages": "messages/long_128k.json",
+      "kind": "long_context",
+      "thinking": false,
+      "prompt_tokens": 130048,
+      "max_context": 131072,
+      "max_new": 64,
+      "kv_dtype": "int8",
+      "oracle": {"mode": "exact", "stdout": "ORCHID=37; COPPER=8142; HARBOR=KESTREL; COLOR=AMBER; SUM=8179"}
+    },
+    {
+      "name": "long_256k",
+      "messages": "messages/long_256k.json",
+      "kind": "long_context",
+      "thinking": false,
+      "prompt_tokens": 260096,
+      "max_context": 262144,
+      "max_new": 64,
+      "kv_dtype": "int8",
+      "oracle": {"mode": "exact", "stdout": "ORCHID=37; COPPER=8142; HARBOR=KESTREL; COLOR=AMBER; SUM=8179"}
+    }
+  ]
+}

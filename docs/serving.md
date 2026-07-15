@@ -68,6 +68,9 @@ Structured chat and multimodal input:
   --max-new 256
 ```
 
+The repository's [`examples/cli/`](../examples/cli/) set provides stable offline message and media
+inputs for text, multimodal, thinking, long-decode, and long-context CLI checks.
+
 Exactly one of `--prompt` and `--messages` is required. A messages file may be either a nonempty
 message array or an object containing `messages` and an optional `tools` array. Supported roles are
 `system`, `developer`, `user`, `assistant`, and `tool`. Ordered content parts may contain text,

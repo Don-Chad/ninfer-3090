@@ -122,6 +122,9 @@ Structured text/image/video messages:
   --messages messages.json --no-thinking --max-new 256
 ```
 
+[`examples/cli/`](examples/cli/) contains committed offline message files and media for text,
+image, video, mixed multimodal, thinking, long-decode, and 8K-to-256K long-context runs.
+
 CUDA Graph decode is enabled by default. Enable MTP with `--mtp-draft-tokens N`, where `N` is in
 `1..5`; add `--lm-head-draft` to select the optimized proposal head. Use `--kv-dtype int8` for INT8
 KV storage, `--greedy` for argmax decoding, and `--max-context` to choose the Engine capacity.
