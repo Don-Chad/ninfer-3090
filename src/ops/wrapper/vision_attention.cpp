@@ -83,4 +83,21 @@ void vision_attention(const Tensor& q, const Tensor& k, const Tensor& v, const T
     vision_attention(q, k, v, cu_seqlens, tiles_ptr, out, stream);
 }
 
+void vision_attention(const Tensor& q, const Tensor& k, const Tensor& v,
+                      std::int32_t segment_length, Tensor& out, cudaStream_t stream) {
+    const std::int32_t patches = q.ne[2];
+    if (patches <= 0) { throw std::invalid_argument("vision_attention: P must be positive"); }
+    require_qkv(q, patches, "q");
+    require_qkv(k, patches, "k");
+    require_qkv(v, patches, "v");
+    require_qkv(out, patches, "out");
+    if (!out.is_contiguous()) {
+        throw std::invalid_argument("vision_attention: out must be contiguous");
+    }
+    if (segment_length <= 0 || patches % segment_length != 0) {
+        throw std::invalid_argument("vision_attention: invalid uniform segment length");
+    }
+    detail::vision_attention_uniform_launch(q, k, v, segment_length, out, stream);
+}
+
 } // namespace ninfer::ops

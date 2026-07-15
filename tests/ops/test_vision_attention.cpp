@@ -1,4 +1,5 @@
 #include "ninfer/ops/vision_attention.h"
+#include "ops/launcher/vision_attention.h"
 #include "ops/op_tester.h"
 
 #include <algorithm>
@@ -58,7 +59,7 @@ void reference_attention(const std::vector<float>& q, const std::vector<float>& 
     }
 }
 
-int one_case(const std::vector<int>& cu, std::uint32_t seed, bool packed) {
+int one_case(const std::vector<int>& cu, std::uint32_t seed, bool packed, int uniform_tile = 0) {
     const int patches       = cu.back();
     const std::size_t plane = static_cast<std::size_t>(patches) * kHeads * kDim;
     std::vector<float> q(plane), k(plane), v(plane);
@@ -116,10 +117,22 @@ int one_case(const std::vector<int>& cu, std::uint32_t seed, bool packed) {
     Tensor tcu(dcu.p, DType::I32, {static_cast<int>(cu.size())});
     Tensor tout(dout.p, DType::BF16, {kDim, kHeads, patches});
     WorkspaceArena workspace(256);
-    ops::vision_attention(tq, tk, tv, tcu, workspace, tout, nullptr);
+    if (uniform_tile > 0) {
+        ops::detail::vision_attention_uniform_launch_with_tile(tq, tk, tv, cu[1] - cu[0],
+                                                               uniform_tile, tout, nullptr);
+    } else if (uniform_tile < 0) {
+        ops::vision_attention(tq, tk, tv, cu[1] - cu[0], tout, nullptr);
+    } else {
+        ops::vision_attention(tq, tk, tv, tcu, workspace, tout, nullptr);
+    }
     cudaDeviceSynchronize();
-    return verify(packed ? "vision attention packed qkv" : "vision attention contiguous",
-                  from_device_bf16(dout, plane), reference, Tolerance::attention_bf16());
+    const std::string label = uniform_tile > 0
+                                  ? "vision attention uniform tile " + std::to_string(uniform_tile)
+                              : uniform_tile < 0 ? "vision attention uniform auto"
+                              : packed           ? "vision attention packed qkv"
+                                                 : "vision attention contiguous";
+    return verify(label.c_str(), from_device_bf16(dout, plane), reference,
+                  Tolerance::attention_bf16());
 }
 
 } // namespace
@@ -135,6 +148,9 @@ int main() {
     failures += one_case({0, 65, 194}, 31u, true);
     failures += one_case({0, 16}, 99u, true);
     failures += one_case({0, 256}, 2026u, true);
+    failures += one_case({0, 4, 8, 12}, 3001u, true, 16);
+    failures += one_case({0, 20, 40, 60}, 3002u, true, -1);
+    failures += one_case({0, 68, 136}, 3003u, true, 64);
     std::cout << (failures ? "FAIL" : "OK") << " vision_attention correctness\n";
     return failures ? 1 : 0;
 }

@@ -237,12 +237,13 @@ score[i,j] = dot(Q[:,h,i], K[:,h,j]) / sqrt(72)
 O[:,h,i]  = sum_j softmax(score[i,:])[j] * V[:,h,j]
 ```
 
-No index attends across I32 `cu_seqlens[S+1]` segment boundaries.
+No index attends across segment boundaries. On the 35B item route, the boundaries are the `S`
+equal consecutive ranges of length `g_h*g_w`; they are derived directly from that length and do
+not require a descriptor tensor or setup launch.
 
 | ID | Exact typed domain | Current support |
 |---|---|---|
-| A4 | BF16 Q/K/V/O `[72,16,4096]`, one segment of length 4096 | **Supported for exactly this domain.** The fixed `16x72` Flash kernel approaches its fixed resource roofline in the [retained report](archive/optimization-era/bench/vision-attention-roofline.md). |
-| A5 | BF16 Q/K/V/O `[72,16,P]` for every other valid item domain: `S=g_t` equal segments of length `g_h*g_w`, with the image/video P bounds in Section 1 | **Adapt existing.** The fixed kernel exists, but retained evidence does not qualify these exact segment domains. |
+| A4 | BF16 Q/K/V/O `[72,16,P]`; `S=g_t` equal segments of length `g_h*g_w`, with the complete image/video P bounds in Section 1. The required Q/K/V route is a view of packed QKV `[3456,P]`; O is contiguous. | **Supported for the complete domain.** A direct no-descriptor route dispatches measured 16/32/64-row FlashAttention instances. Same-grid payload controls qualify short and tail-heavy segments, while maximum-size image/video cases sustain 176.9/176.7 issued-MMA TFLOP/s and the maximum-video NCU capture reaches 80.66% Compute SOL. See the [retained RTX 5090 report](archive/optimization-era/bench/vision-attention-roofline.md). |
 
 ## 8. Stateful convolution and recurrence
 
@@ -312,7 +313,7 @@ classification:
 | Full Attention, including MTP's layer | L1, N2, R1, A1-A3, E5, L4 |
 | Gated-DeltaNet | L2, L3, S1-S4, N3, N4, L4 |
 | Sparse expert layer, including MTP's layer | M4; private implementation domains L15-L19 and M1-M3 |
-| Vision stem and 27 blocks | I1, L8, E3, I6, N5/N6, L9, E1/E2, R2, A4/A5, L10-L12, E4, E6/E7 |
+| Vision stem and 27 blocks | I1, L8, E3, I6, N5/N6, L9, E1/E2, R2, A4, L10-L12, E4, E6/E7 |
 | Vision merger and Text insertion | N5/N6, L13/L14, E3, E8, I3 |
 | MTP stem/proposal/control | I2, N1, I7, L5, the Full Attention and Sparse expert rows above, L6/L7, I8-I12, G1-G3 |
 
@@ -325,7 +326,7 @@ Under the strict support definition, the complete result is:
 
 | Status | Exact result |
 |---|---|
-| **Supported** | N5 Vision LayerNorm `[1152,4096]`, E1 Vision QKV bias add `[3456,4096]`, E6 tanh GELU `[4304,4096]`, A1 append-and-attend GQA `[256,16|2,T]`, A2 standalone KV append `[256,2,T]`, A4 one-segment Vision attention `[72,16,4096]`, S1/S2 GDN causal convolution and snapshot state, and S3/S4 GDN recurrence and snapshot state transition `[128,16,32]`. |
+| **Supported** | N5 Vision LayerNorm `[1152,4096]`, E1 Vision QKV bias add `[3456,4096]`, E6 tanh GELU `[4304,4096]`, A1 append-and-attend GQA `[256,16|2,T]`, A2 standalone KV append `[256,2,T]`, A4 complete segmented Vision attention `[72,16,P]`, S1/S2 GDN causal convolution and snapshot state, and S3/S4 GDN recurrence and snapshot state transition `[128,16,32]`. |
 | **Adapt existing** | Every target-callable dense/quantized Linear domain plus private L15-L17; indexing transforms; all Text/GDN/MTP normalization; pointwise domains other than E1/E6; Text and Vision RoPE; cached-only GQA A3; generation and MTP-control Ops. All remain unsupported. |
 | **New implementation** | L18-L19 expert-grouped contractions and M1-M4 sparse routing/grouping/reduction/closed `SparseMoeAdd` execution. |
 

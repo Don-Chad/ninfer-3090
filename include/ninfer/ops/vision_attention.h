@@ -44,4 +44,14 @@ void vision_attention(const Tensor& q, const Tensor& k, const Tensor& v, const T
 void vision_attention(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& cu_seqlens,
                       WorkspaceArena& workspace, Tensor& out, cudaStream_t stream);
 
+/**
+ * Equal-segment overload of the same packed, non-causal attention operation. P must be divisible
+ * by `segment_length`; consecutive ranges `[s*segment_length,(s+1)*segment_length)` are the
+ * independent segments. The q/k/v/out shape, layout, dtype, alias, and numerical semantics are
+ * identical to the cu_seqlens overload. Segment tiles are derived directly and no workspace or
+ * descriptor-setup launch is used.
+ */
+void vision_attention(const Tensor& q, const Tensor& k, const Tensor& v,
+                      std::int32_t segment_length, Tensor& out, cudaStream_t stream);
+
 } // namespace ninfer::ops
