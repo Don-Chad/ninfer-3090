@@ -16,7 +16,8 @@ namespace ninfer::ops {
  *   Source and destination have identical shapes and contiguous element order.
  *
  * Supported domain:
- *   Source is FP32 and destination is BF16.
+ *   Source is FP32 and destination is BF16. Contiguous aligned element counts divisible by four
+ *   or two use vector routes; all other contiguous shapes use the scalar route.
  *
  * Numeric:
  *   Each FP32 value is converted independently with round-to-nearest-even.
