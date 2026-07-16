@@ -15,6 +15,7 @@
 #include "ops/linear/q5/q5_rowsplit_plan.h"
 #include "ops/linear/q6/q6_rowsplit_plan.h"
 #include "ops/linear/w8/w8_rowsplit_plan.h"
+#include "ops/linear_add/w8/w8_linear_add_plan.h"
 #include "ops/row_split_pack.h"
 
 #include <algorithm>
@@ -548,6 +549,94 @@ int residual_epilogue_correctness(std::int32_t t) {
                   from_device_bf16(dref, static_cast<std::size_t>(kN) * t), Tolerance::linear_tc());
 }
 
+int w8_residual_epilogue_correctness() {
+    constexpr std::int32_t kN    = 2048;
+    constexpr std::int32_t kK    = 4096;
+    constexpr std::int32_t kMaxT = 1024;
+
+    std::vector<float> source_weight(static_cast<std::size_t>(kN) * kK);
+    std::vector<float> x(static_cast<std::size_t>(kK) * kMaxT);
+    std::vector<float> residual(static_cast<std::size_t>(kN) * kMaxT);
+    fill_uniform(source_weight, 3501u, -0.125f, 0.125f);
+    fill_uniform(x, 3503u, -0.25f, 0.25f);
+    fill_uniform(residual, 3505u, -2.0f, 2.0f);
+    round_to_bf16(source_weight);
+    round_to_bf16(x);
+    round_to_bf16(residual);
+    row_split::PackedWeight packed =
+        row_split::pack_row_split_lowbit(source_weight, kN, kK, QType::W8G32_F16S);
+    std::vector<float>().swap(source_weight);
+
+    DBuf dx = to_device_bf16(x);
+    DBuf dweight(packed.payload.size());
+    cudaMemcpy(dweight.p, packed.payload.data(), packed.payload.size(), cudaMemcpyHostToDevice);
+    const Weight weight = packed.device_weight(dweight.p);
+    WorkspaceArena ws(1);
+
+    int failures = 0;
+    for (const std::int32_t t : {1, 52, 53, 640, 641, 1024}) {
+        std::vector<float> initial(residual.begin(),
+                                   residual.begin() + static_cast<std::size_t>(kN) * t);
+        DBuf dout = to_device_bf16(initial);
+        Tensor tx(dx.p, DType::BF16, {kK, t});
+        Tensor tout(dout.p, DType::BF16, {kN, t});
+
+        if (t == kMaxT) {
+            cudaStream_t stream  = nullptr;
+            cudaGraph_t graph    = nullptr;
+            cudaGraphExec_t exec = nullptr;
+            cudaStreamCreate(&stream);
+            cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
+            ops::linear_add(tx, weight, tout, ws, stream);
+            cudaStreamEndCapture(stream, &graph);
+            cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
+            cudaGraphLaunch(exec, stream);
+            cudaStreamSynchronize(stream);
+            cudaGraphExecDestroy(exec);
+            cudaGraphDestroy(graph);
+            cudaStreamDestroy(stream);
+        } else {
+            ops::linear_add(tx, weight, tout, ws, nullptr);
+            cudaDeviceSynchronize();
+        }
+
+        const std::vector<double> full = from_device_bf16(dout, static_cast<std::size_t>(kN) * t);
+        std::vector<std::int32_t> sample_rows{0, 1, kN / 3, kN / 2, kN - 2, kN - 1};
+        std::vector<std::int32_t> sample_cols{0, t / 3, t / 2, t - 1};
+        std::sort(sample_cols.begin(), sample_cols.end());
+        sample_cols.erase(std::unique(sample_cols.begin(), sample_cols.end()), sample_cols.end());
+
+        std::vector<double> actual;
+        std::vector<double> reference;
+        actual.reserve(sample_rows.size() * sample_cols.size());
+        reference.reserve(actual.capacity());
+        for (const std::int32_t col : sample_cols) {
+            const float* xcol = x.data() + static_cast<std::size_t>(col) * kK;
+            for (const std::int32_t row : sample_rows) {
+                const float* wrow = packed.dequant.data() + static_cast<std::size_t>(row) * kK;
+                double acc        = 0.0;
+                for (std::int32_t kk = 0; kk < kK; ++kk) {
+                    acc += static_cast<double>(wrow[kk]) * static_cast<double>(xcol[kk]);
+                }
+                const float projected   = bf16_to_f32(f32_to_bf16(static_cast<float>(acc)));
+                const std::size_t index = static_cast<std::size_t>(col) * kN + row;
+                const float expected    = bf16_to_f32(f32_to_bf16(residual[index] + projected));
+                actual.push_back(full[index]);
+                reference.push_back(expected);
+            }
+        }
+
+        const auto plan           = ops::detail::w8_linear_add_resolve_plan({kN, kK, kK, t});
+        const Tolerance tolerance = ops::detail::w8_schedule_uses_mma(plan.schedule)
+                                        ? Tolerance::linear_tc()
+                                        : Tolerance::linear_bf16();
+        const std::string label =
+            "linear_add W8 [2048,4096] T=" + std::to_string(t) + " sampled BF16 seam";
+        failures += verify(label.c_str(), actual, reference, tolerance);
+    }
+    return failures;
+}
+
 int prefill_fusion_correctness() {
     int f = 0;
     for (const std::int32_t t : {4, 17, 128, 129}) {
@@ -556,6 +645,7 @@ int prefill_fusion_correctness() {
         f += residual_epilogue_correctness(t);
     }
     f += gate_up_silu_route_correctness();
+    f += w8_residual_epilogue_correctness();
     return f;
 }
 

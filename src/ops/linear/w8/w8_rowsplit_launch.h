@@ -21,6 +21,11 @@ enum class W8KernelVariant {
     Predicated,
 };
 
+enum class W8Epilogue {
+    Store,
+    Residual,
+};
+
 struct W8Problem {
     std::int32_t rows;
     std::int32_t k;

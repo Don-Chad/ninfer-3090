@@ -7,6 +7,7 @@
 //   ./build/bench/ninfer_linear_op_bench --shape MlpGateUp34816x5120 --qtype Q4 --repeat 200
 
 #include "ninfer/ops/linear.h"
+#include "ninfer/ops/linear_add.h"
 #include "ninfer/ops/linear_pair.h"
 #include "core/device.h"
 #include "ninfer_bench_common.h"
@@ -18,6 +19,7 @@
 #include "ops/linear/q6/q6_rowsplit_plan.h"
 #include "ops/linear/w8/w8_rowsplit_launch.h"
 #include "ops/linear/w8/w8_rowsplit_plan.h"
+#include "ops/linear_add/w8/w8_linear_add_plan.h"
 #include "ops/linear_pair/w8/w8_pair_plan.h"
 
 #include <cuda_bf16.h>
@@ -150,6 +152,7 @@ struct Options {
     bool have_shape                         = false;
     bool have_qtype                         = false;
     bool paired_kv                          = false;
+    bool linear_add                         = false;
     bool have_rows                          = false;
     bool have_k                             = false;
     ShapeSpec shape                         = kTask2Targets[0].shape;
@@ -413,6 +416,12 @@ ops::detail::W8Plan resolve_auto_w8_plan(const ShapeSpec& shape, std::int32_t t)
     return ops::detail::w8_rowsplit_resolve_plan({shape.n, shape.k, padded_k, t});
 }
 
+ops::detail::W8LinearAddPlan resolve_auto_w8_linear_add_plan(const ShapeSpec& shape,
+                                                             std::int32_t t) {
+    const auto padded_k = static_cast<std::int32_t>(align_up_u64(shape.k, 128));
+    return ops::detail::w8_linear_add_resolve_plan({shape.n, shape.k, padded_k, t});
+}
+
 std::string candidate_name(const Options& opt, QType qtype, const ShapeSpec& shape,
                            std::int32_t t) {
     switch (opt.candidate) {
@@ -427,7 +436,11 @@ std::string candidate_name(const Options& opt, QType qtype, const ShapeSpec& sha
             return ops::detail::q6_schedule_name(resolve_auto_q6_plan(shape, t).schedule);
         }
         if (qtype == QType::W8G32_F16S) {
-            return ops::detail::w8_schedule_name(resolve_auto_w8_plan(shape, t).schedule);
+            const auto schedule = opt.linear_add
+                                      ? resolve_auto_w8_linear_add_plan(shape, t).schedule
+                                      : resolve_auto_w8_plan(shape, t).schedule;
+            return std::string(opt.linear_add ? "linear_add." : "") +
+                   ops::detail::w8_schedule_name(schedule);
         }
         return "unsupported";
     case CandidateKind::Q4Fixed:
@@ -437,7 +450,8 @@ std::string candidate_name(const Options& opt, QType qtype, const ShapeSpec& sha
     case CandidateKind::Q6Fixed:
         return ops::detail::q6_schedule_name(opt.q6_schedule);
     case CandidateKind::W8Fixed:
-        return ops::detail::w8_schedule_name(opt.w8_schedule);
+        return std::string(opt.linear_add ? "linear_add." : "") +
+               ops::detail::w8_schedule_name(opt.w8_schedule);
     }
     return "unknown";
 }
@@ -694,6 +708,7 @@ void usage(const char* argv0) {
         "                             w8-mma-r32c128, or w8-mma-r64c128.\n"
         "  --variant NAME             Fixed kernel variant; auto is the default.\n"
         "  --paired-kv                Benchmark paired MTP K/V (requires MtpKV + W8G32).\n"
+        "  --linear-add               Benchmark W8 [2048,4096] fused residual epilogues.\n"
         "  --warmup N                 Cold-cache warmup GEMV launches (default %d).\n"
         "  --repeat N                 Cold-cache measured GEMV launches (default %d).\n"
         "  --copy-repeat N            Cold-cache copy-ceiling samples (default %d).\n"
@@ -745,6 +760,9 @@ Options parse_args(int argc, char** argv) {
             opt.all_targets            = false;
         } else if (arg == "--paired-kv") {
             opt.paired_kv   = true;
+            opt.all_targets = false;
+        } else if (arg == "--linear-add") {
+            opt.linear_add  = true;
             opt.all_targets = false;
         } else if (arg == "--warmup") {
             opt.warmup = parse_int(next("warmup"), "warmup");
@@ -813,6 +831,14 @@ Options parse_args(int argc, char** argv) {
     if (opt.paired_kv &&
         (std::string_view(opt.shape.name) != "MtpKV1024x5120" || opt.qtype != QType::W8G32_F16S)) {
         throw std::invalid_argument("--paired-kv requires --shape MtpKV1024x5120 --qtype W8G32");
+    }
+    if (opt.linear_add) {
+        if (opt.paired_kv || opt.all_targets || !numeric_shape || opt.qtype != QType::W8G32_F16S ||
+            opt.rows != 2048 || opt.k != 4096 ||
+            (opt.candidate != CandidateKind::Auto && opt.candidate != CandidateKind::W8Fixed)) {
+            throw std::invalid_argument("--linear-add requires --rows 2048 --k 4096 --qtype W8G32 "
+                                        "and an auto/W8 candidate");
+        }
     }
     if (opt.repeat <= 0) { throw std::invalid_argument("--repeat must be positive"); }
     if (opt.warmup < 0) { throw std::invalid_argument("--warmup must be nonnegative"); }
@@ -1150,6 +1176,19 @@ ops::detail::W8KernelVariant selected_w8_variant(const Options& opt, const Shape
 
 void launch_candidate(const Options& opt, const ShapeSpec& shape, const Tensor& x, const Weight& w,
                       Tensor& out, WorkspaceArena& ws, cudaStream_t stream) {
+    if (opt.linear_add) {
+        if (opt.candidate == CandidateKind::Auto) {
+            ops::linear_add(x, w, out, ws, stream);
+            return;
+        }
+        if (opt.candidate == CandidateKind::W8Fixed) {
+            const auto variant = selected_w8_variant(opt, shape, x.ne[1]);
+            ops::detail::w8_linear_add_launch_candidate(opt.w8_schedule, variant, x, w, out,
+                                                        stream);
+            return;
+        }
+        throw std::invalid_argument("LinearAdd benchmark requires an auto or W8 candidate");
+    }
     switch (opt.candidate) {
     case CandidateKind::Auto:
         ops::linear(x, w, out, ws, stream);
@@ -1258,7 +1297,10 @@ int candidate_col_tile(const Options& opt, QType qtype, const ShapeSpec& shape, 
             return schedule_col_tile(resolve_auto_q6_plan(shape, t).schedule);
         }
         if (qtype == QType::W8G32_F16S) {
-            return schedule_col_tile(resolve_auto_w8_plan(shape, t).schedule);
+            const auto schedule = opt.linear_add
+                                      ? resolve_auto_w8_linear_add_plan(shape, t).schedule
+                                      : resolve_auto_w8_plan(shape, t).schedule;
+            return schedule_col_tile(schedule);
         }
         throw std::invalid_argument("unsupported qtype for auto candidate tile");
     case CandidateKind::Q4Fixed:
@@ -1296,8 +1338,10 @@ bool candidate_uses_mma(const Options& opt, QType qtype, const ShapeSpec& shape,
     if (qtype == QType::Q6G64_F16S) {
         return ops::detail::q6_schedule_uses_mma(resolve_auto_q6_plan(shape, t).schedule);
     }
-    return qtype == QType::W8G32_F16S &&
-           ops::detail::w8_schedule_uses_mma(resolve_auto_w8_plan(shape, t).schedule);
+    if (qtype != QType::W8G32_F16S) { return false; }
+    const auto schedule = opt.linear_add ? resolve_auto_w8_linear_add_plan(shape, t).schedule
+                                         : resolve_auto_w8_plan(shape, t).schedule;
+    return ops::detail::w8_schedule_uses_mma(schedule);
 }
 
 int candidate_mma_row_tile(const Options& opt, QType qtype, const ShapeSpec& shape,
@@ -1306,7 +1350,8 @@ int candidate_mma_row_tile(const Options& opt, QType qtype, const ShapeSpec& sha
     if (opt.candidate == CandidateKind::W8Fixed) {
         schedule = opt.w8_schedule;
     } else if (opt.candidate == CandidateKind::Auto && qtype == QType::W8G32_F16S) {
-        schedule = resolve_auto_w8_plan(shape, t).schedule;
+        schedule = opt.linear_add ? resolve_auto_w8_linear_add_plan(shape, t).schedule
+                                  : resolve_auto_w8_plan(shape, t).schedule;
     } else {
         return 64;
     }
@@ -1342,13 +1387,14 @@ RunResult run_target(const TargetSpec& target, const Options& opt, double stream
     const TimingStats cold = measure_cold(launch, flush, stream, opt.warmup, opt.repeat);
     const TimingStats warm = measure_warm(launch, stream, opt.warmup, opt.repeat);
 
-    const std::uint64_t x_bytes       = static_cast<std::uint64_t>(shape.k) * tt * 2ULL;
-    const std::uint64_t out_bytes     = static_cast<std::uint64_t>(shape.n) * tt * 2ULL;
-    const std::uint64_t useful_bytes  = w.payload_bytes + x_bytes + out_bytes;
+    const std::uint64_t x_bytes   = static_cast<std::uint64_t>(shape.k) * tt * 2ULL;
+    const std::uint64_t out_bytes = static_cast<std::uint64_t>(shape.n) * tt * 2ULL;
+    const std::uint64_t useful_bytes =
+        w.payload_bytes + x_bytes + out_bytes * (opt.linear_add ? 2ULL : 1ULL);
     const int col_tile                = candidate_col_tile(opt, target.qtype, shape, t);
     const std::uint64_t weight_passes = static_cast<std::uint64_t>((t + col_tile - 1) / col_tile);
     const std::uint64_t weight_replay_lower_bound_bytes =
-        w.payload_bytes * weight_passes + x_bytes + out_bytes;
+        w.payload_bytes * weight_passes + x_bytes + out_bytes * (opt.linear_add ? 2ULL : 1ULL);
     const double sec        = cold.median_us * 1e-6;
     const double useful_gbs = sec > 0.0 ? static_cast<double>(useful_bytes) / sec / 1e9 : 0.0;
     const double weight_replay_lower_bound_gbs =
@@ -1398,8 +1444,9 @@ RunResult run_target(const TargetSpec& target, const Options& opt, double stream
         r.kernel_variant =
             ops::detail::q6_kernel_variant_name(resolve_auto_q6_plan(shape, t).variant);
     } else if (opt.candidate == CandidateKind::Auto && target.qtype == QType::W8G32_F16S) {
-        r.kernel_variant =
-            ops::detail::w8_kernel_variant_name(resolve_auto_w8_plan(shape, t).variant);
+        const auto variant = opt.linear_add ? resolve_auto_w8_linear_add_plan(shape, t).variant
+                                            : resolve_auto_w8_plan(shape, t).variant;
+        r.kernel_variant   = ops::detail::w8_kernel_variant_name(variant);
     } else {
         r.kernel_variant = "n/a";
     }

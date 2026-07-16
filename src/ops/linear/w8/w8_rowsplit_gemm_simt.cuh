@@ -145,7 +145,7 @@ w8_simt_consume_slab(const __nv_bfloat16* __restrict__ x0, std::int64_t xslab, s
 // full_slabs is computed on the host: k/1024 when k % 8 == 0 and x is 16-byte
 // aligned, else 0 (everything runs through the scalar tail).
 template <class Schedule, int ColsPerTile, int RowsPerCta, int PipelineStages,
-          W8KernelVariant Variant>
+          W8KernelVariant Variant, W8Epilogue Epilogue = W8Epilogue::Store>
 __global__ void w8_rowsplit_gemm_simt_kernel(const __nv_bfloat16* __restrict__ x,
                                              const std::uint8_t* __restrict__ codes,
                                              const std::uint8_t* __restrict__ scales,
@@ -237,7 +237,13 @@ __global__ void w8_rowsplit_gemm_simt_kernel(const __nv_bfloat16* __restrict__ x
         float a = acc[tt];
         a       = warp_reduce_sum(a);
         if (lane == 0) {
-            out[static_cast<std::int64_t>(col0 + tt) * rows + row] = __float2bfloat16(a);
+            const std::int64_t index = static_cast<std::int64_t>(col0 + tt) * rows + row;
+            __nv_bfloat16 result     = __float2bfloat16_rn(a);
+            if constexpr (Epilogue == W8Epilogue::Residual) {
+                result =
+                    __float2bfloat16_rn(__bfloat162float(out[index]) + __bfloat162float(result));
+            }
+            out[index] = result;
         }
     }
 }

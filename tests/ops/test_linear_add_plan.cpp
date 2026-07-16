@@ -1,5 +1,6 @@
 #include "ninfer/ops/linear_add.h"
 #include "ops/linear_add/q5/q5_linear_add_plan.h"
+#include "ops/linear_add/w8/w8_linear_add_plan.h"
 
 #include <array>
 #include <cstddef>
@@ -114,13 +115,53 @@ void workspace_tests() {
                    [] { (void)ninfer::ops::linear_add_workspace_bytes(5120, 5120, 1); });
     expect_invalid("workspace C0",
                    [] { (void)ninfer::ops::linear_add_workspace_bytes(5120, 6144, 0); });
+
+    for (const std::int32_t cols : {1, 52, 53, 640, 641, 1024}) {
+        expect("W8 workspace", ninfer::ops::linear_add_workspace_bytes(2048, 4096, cols), 0);
+    }
+    expect_invalid("W8 workspace C0",
+                   [] { (void)ninfer::ops::linear_add_workspace_bytes(2048, 4096, 0); });
+    expect_invalid("W8 workspace C1025",
+                   [] { (void)ninfer::ops::linear_add_workspace_bytes(2048, 4096, 1025); });
+}
+
+void w8_route_tests() {
+    using ninfer::ops::detail::W8KernelVariant;
+    using ninfer::ops::detail::W8ScheduleId;
+    constexpr std::array<std::int32_t, 8> boundaries{1, 52, 53, 640, 641, 1024, 0, 1025};
+    for (const std::int32_t cols : boundaries) {
+        const ninfer::ops::detail::W8Problem problem{2048, 4096, 4096, cols};
+        const bool admitted = cols >= 1 && cols <= 1024;
+        if (ninfer::ops::detail::w8_linear_add_admits(problem) != admitted) {
+            std::cerr << "wrong W8 LinearAdd admission C=" << cols << '\n';
+            ++failures;
+            continue;
+        }
+        if (!admitted) { continue; }
+        const auto plan             = ninfer::ops::detail::w8_linear_add_resolve_plan(problem);
+        const W8ScheduleId expected = cols <= 52    ? W8ScheduleId::SimtR8C4
+                                      : cols <= 640 ? W8ScheduleId::MmaR32C128
+                                                    : W8ScheduleId::MmaR64C128;
+        if (plan.schedule != expected || plan.variant == W8KernelVariant::None ||
+            !plan.performance_qualified) {
+            std::cerr << "wrong W8 LinearAdd route C=" << cols << '\n';
+            ++failures;
+        }
+    }
+    expect_invalid("W8 unsupported rows", [] {
+        (void)ninfer::ops::detail::w8_linear_add_resolve_plan({2049, 4096, 4096, 1});
+    });
+    expect_invalid("W8 unsupported K", [] {
+        (void)ninfer::ops::detail::w8_linear_add_resolve_plan({2048, 4608, 4608, 1});
+    });
 }
 
 } // namespace
 
 int main() {
     route_tests();
+    w8_route_tests();
     workspace_tests();
-    std::cout << (failures == 0 ? "OK" : "FAIL") << " Q5 LinearAdd plan\n";
+    std::cout << (failures == 0 ? "OK" : "FAIL") << " LinearAdd plans\n";
     return failures == 0 ? 0 : 1;
 }

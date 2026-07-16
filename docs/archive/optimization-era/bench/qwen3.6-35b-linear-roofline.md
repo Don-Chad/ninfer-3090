@@ -6,7 +6,7 @@ Target: Qwen3.6-35B-A3B exact Linear domains on NVIDIA GeForce RTX 5090 (`sm_120
 CUDA 13.1, driver 591.86, NCU 2025.4.1).
 
 This is retained standalone Op evidence. It does not register the 35B Engine target. This revision
-establishes L1-L2 and L5-L14.
+establishes L1-L2 and L4-L14.
 
 ## L1: W8 attention input parent `[9216,2048]`
 
@@ -185,6 +185,136 @@ profiles/ncu/qwen3_6_35b_a3b/linear/l2/final/
 L2 is supported for its complete Qwen3.6-35B-A3B target domain. One plain parent Linear provides
 all four logical output views, its exact finite route selects the measured candidate winners, and
 the maximum reaches 85.36% of the measured BF16 MMA ceiling without spilling.
+
+## L4: W8 Text mixer LinearAdd `[2048,4096]`
+
+The exact operation is W8G32_F16S RowSplit `[2048,4096]` times BF16 `[4096,T]`, followed by an
+in-place residual update of BF16 `[2048,T]`, for every Text chunk size `1<=T<=1024`:
+
+```text
+projected = BF16(W X)
+residual' = BF16(FP32(residual) + FP32(projected))
+```
+
+The explicit BF16 projection round is part of the Op contract. The implementation adds a
+compile-time residual epilogue to the existing W8 SIMT and MMA kernels. The MMA epilogue first
+materializes the CTA's projection tile as BF16 in shared memory, then performs coalesced BF16x8
+residual reads/adds/stores; ordinary Linear instantiations retain their store-only epilogue.
+
+### Route qualification
+
+Matched Release sweeps screened SIMT R8C4/R8C8 and MMA R32C128/R64C128 over every
+`T=1..1024`. SIMT R8C8 never won. After the candidate sweep, three independent high-repeat
+processes rechecked both seams. `T=49` favored SIMT by 2.02 us; `T=50..52` were practical ties
+at the event-timer resolution; and `T=53` favored MMA32 by 3.97 us. At the large seam, `T=640`
+kept the one-wave MMA32 route, while `T=641` increased its grid from five to six column tiles:
+MMA32 measured 140.54 us versus 126.21 us for MMA64. The retained finite route is:
+
+```text
+T=1..52     SIMT R8C4
+T=53..640   MMA R32C128
+T=641..1024 MMA R64C128
+```
+
+Within the final interval, occasional complete-tile points make MMA32 and MMA64 practical ties.
+Keeping one MMA64 interval costs at most about 1.4% at the checked tie points and avoids
+noise-driven single-point route fragments; MMA64 wins by 14-18 us at the interval entrance and
+largest tail-wave points.
+
+### Correctness, dispatch, and graph capture
+
+```bash
+cmake --build build -j --target \
+  ninfer_linear_test ninfer_linear_add_plan_test \
+  ninfer_w8_linear_plan_test ninfer_w8_linear_dispatch_test
+ctest --test-dir build \
+  -R '^ninfer_(linear_test|linear_add_plan_test|w8_linear_plan_test|w8_linear_dispatch_test)$' \
+  --output-on-failure
+```
+
+The independent oracle dequantizes the exact W8 codes/scales, computes sampled dot products in
+FP64 from BF16-rounded activations, applies the explicit BF16 projection round, then applies the
+BF16 residual add seam. SIMT points `T=1/52` were exact. The measured relative L2 errors at
+`T=53/640/641/1024` were `3.125e-3`, `2.161e-3`, `2.432e-3`, and `3.365e-3`. The maximum case
+also executes through CUDA Graph capture. Plan tests close the exact admitted interval, both
+route seams, zero-workspace capacity, and unsupported-shape rejection. Existing Q5 LinearAdd and
+plain-W8 plan/dispatch checks remain part of the same regression set.
+
+### Release timing and launch-aware roofline
+
+Three alternating production/control processes each used eight warmups and forty L2-flushed
+samples. The median same-session cold-copy and BF16 MMA probes were 1525.76 GB/s and
+220.63 TFLOP/s. Production measurements were:
+
+| T | Route | Cold median | Executed TFLOP/s |
+|---:|---|---:|---:|
+| 1 | SIMT R8C4 | 17.408 us | fixed launch/ownership floor |
+| 52 | SIMT R8C4 | 62.752 us | 13.90 useful |
+| 53 | MMA R32C128 | 62.720 us | 34.24 |
+| 128 | MMA R32C128 | 62.720 us | 34.24 |
+| 512 | MMA R32C128 | 72.992 us | 117.68 |
+| 640 | MMA R32C128 | 77.120 us | 139.23 |
+| 641 | MMA R64C128 | 126.208 us | 102.09 |
+| 896 | MMA R64C128 | 124.160 us | 121.07 |
+| 1024 | MMA R64C128 | 125.920 us | 136.44 |
+
+The exact plain W8 `[2048,4096]` Linear is a matched launch-aware upper control: it has the same
+weight format, grid, schedules, and contraction work but omits the required residual read/add.
+At `T=1024`, the control measured 124.128 us versus 125.920 us for LinearAdd, only 1.44% apart.
+Across the checked MMA points the required epilogue stayed within 5.61% of that upper control.
+The Small-T region is governed by fixed launch/wave geometry; production selects the measured
+lowest-latency residual candidate rather than being judged against an unattainable full-device
+MMA percentage.
+
+### NCU attribution
+
+Basic-first captures used `--replay-mode kernel`, `--launch-skip 0`, and `--launch-count 1`.
+The exact kernel regexes were `w8_rowsplit_gemm_simt_kernel` for `T=52` and
+`w8_rowsplit_gemm_mma_kernel` for `T=512/1024`; all three basic reports profiled the intended
+single residual kernel. Detailed and stall follow-ups used:
+
+```bash
+ncu --force-overwrite -o <report>.ncu-rep --set detailed \
+  --replay-mode kernel --kernel-name regex:'<kernel-regex>' \
+  --launch-skip 0 --launch-count 1 \
+  ./build/bench/ninfer_linear_op_bench --linear-add \
+    --rows 2048 --k 4096 --qtype W8G32 --candidate auto \
+    --t-sweep <52|512|1024> --warmup 0 --repeat 1 \
+    --copy-repeat 1 --stream-ceiling-gbs 1508.742
+
+ncu --force-overwrite -o <report>-stalls.ncu-rep \
+  --section SchedulerStats --section WarpStateStats \
+  --replay-mode kernel --kernel-name regex:'<kernel-regex>' \
+  --launch-skip 0 --launch-count 1 <same benchmark command>
+```
+
+The reports show:
+
+| Topology | Representative | NCU duration | SM SOL | Memory SOL | Occupancy | Registers | Static shared | Waves/SM |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| SIMT R8C4 | T=52 | 72.67 us | 58.98% | 49.34% | 62.20% | 64 | 17.41 KiB | 4.89 |
+| MMA R32C128 | T=512 | 99.30 us | 51.89% | 56.94% | 24.92% | 87 | 39.42 KiB | 0.75 |
+| MMA R64C128 | T=1024 | 182.98 us | 55.32% | 34.68% | 25.53% | 121 | 46.08 KiB | 0.75 |
+
+SIMT is primarily exposed to L1TEX scoreboard latency (5.3 of 12.4 cycles between issued
+instructions). Both MMA captures are launch-limited 0.75-wave grids with the tensor pipeline as
+the most utilized compute pipeline; the maximum's leading sampled stall is math-pipe throttle
+(5.2 of 13.5 cycles). All three detailed captures report zero local-memory and shared-memory
+spilling requests. NCU durations are diagnostic replay measurements and are not substituted for
+the CUDA-event medians.
+
+Reports are retained locally under:
+
+```text
+profiles/bench/qwen3_6_35b_linear_qualification/l4/
+profiles/ncu/qwen3_6_35b_a3b/linear/l4/final/
+```
+
+## L4 retained result
+
+L4 is supported for its complete Qwen3.6-35B-A3B target domain. Its finite route covers every
+`T=1..1024`, preserves the explicit BF16 projection/residual seam, stays within 1.44% of the
+matched plain-W8 maximum control, and has no profiler-observed spilling.
 
 ## L5: W8 MTP stem `[2048,4096]`
 

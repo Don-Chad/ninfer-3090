@@ -18,6 +18,13 @@
 
 namespace ninfer::ops::detail {
 
+union alignas(16) W8Bf16x8Bits {
+    uint4 raw;
+    __nv_bfloat162 pair[4];
+};
+
+static_assert(sizeof(W8Bf16x8Bits) == 16);
+
 template <int BM_, int BN_, int WM_, int WN_, int MIN_BLOCKS_, int STAGES_ = 2>
 struct W8RowSplitMmaGemmSchedule {
     static constexpr int BM                = BM_;
@@ -49,7 +56,7 @@ __device__ __forceinline__ int w8g32_swz64(int row, int col) {
     return (((col >> 3) ^ (row & 7)) << 3) | (col & 7);
 }
 
-template <class Cfg, W8KernelVariant Variant>
+template <class Cfg, W8KernelVariant Variant, W8Epilogue Epilogue = W8Epilogue::Store>
 __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void w8_rowsplit_gemm_mma_kernel(
     const __nv_bfloat16* __restrict__ x, const std::uint8_t* __restrict__ codes,
     const std::uint8_t* __restrict__ scales, __nv_bfloat16* __restrict__ out, std::int32_t m,
@@ -252,32 +259,103 @@ __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void w8_rowsplit_gem
         }
     }
 
+    if constexpr (Epilogue == W8Epilogue::Residual) {
+        static_assert(BM <= BK && (BM % 8) == 0,
+                      "W8 residual epilogue reuses one x stage as a BF16 output tile");
+        __syncthreads();
+        __nv_bfloat16* projected_shared = Bs[0];
 #pragma unroll
-    for (int mi = 0; mi < MT; ++mi) {
-        const int r0 = m0 + wm * WM + mi * 16 + gid;
-        const int r1 = r0 + 8;
+        for (int mi = 0; mi < MT; ++mi) {
+            const int local_r0 = wm * WM + mi * 16 + gid;
+            const int local_r1 = local_r0 + 8;
 #pragma unroll
-        for (int ni = 0; ni < NT; ++ni) {
-            const int c0   = n0 + wn * WN + ni * 8 + 2 * lid;
-            const int c1   = c0 + 1;
-            const float* a = acc[mi][ni];
+            for (int ni = 0; ni < NT; ++ni) {
+                const int local_c0                         = wn * WN + ni * 8 + 2 * lid;
+                const int local_c1                         = local_c0 + 1;
+                const float* a                             = acc[mi][ni];
+                projected_shared[local_c0 * BM + local_r0] = __float2bfloat16_rn(a[0]);
+                projected_shared[local_c1 * BM + local_r0] = __float2bfloat16_rn(a[1]);
+                projected_shared[local_c0 * BM + local_r1] = __float2bfloat16_rn(a[2]);
+                projected_shared[local_c1 * BM + local_r1] = __float2bfloat16_rn(a[3]);
+            }
+        }
+        __syncthreads();
+
+        constexpr int kRowsPerPack = 8;
+        constexpr int kPacksPerCol = BM / kRowsPerPack;
+        constexpr int kPacks       = BN * kPacksPerCol;
+        for (int pack = tid; pack < kPacks; pack += Cfg::THREADS) {
+            const int local_col = pack / kPacksPerCol;
+            const int row_pack  = pack - local_col * kPacksPerCol;
+            const int local_row = row_pack * kRowsPerPack;
+            const int col       = n0 + local_col;
+            const int row       = m0 + local_row;
             if constexpr (FullTiles) {
-                out[static_cast<std::int64_t>(c0) * m + r0] = __float2bfloat16_rn(a[0]);
-                out[static_cast<std::int64_t>(c1) * m + r0] = __float2bfloat16_rn(a[1]);
-                out[static_cast<std::int64_t>(c0) * m + r1] = __float2bfloat16_rn(a[2]);
-                out[static_cast<std::int64_t>(c1) * m + r1] = __float2bfloat16_rn(a[3]);
-            } else {
-                if (r0 < m && c0 < n) {
+                W8Bf16x8Bits projected;
+                projected.raw = load_vec<uint4>(&projected_shared[local_col * BM + local_row]);
+                W8Bf16x8Bits residual;
+                residual.raw = load_vec<uint4>(&out[static_cast<std::int64_t>(col) * m + row]);
+#pragma unroll
+                for (int pair = 0; pair < 4; ++pair) {
+                    residual.pair[pair] = __floats2bfloat162_rn(
+                        __low2float(residual.pair[pair]) + __low2float(projected.pair[pair]),
+                        __high2float(residual.pair[pair]) + __high2float(projected.pair[pair]));
+                }
+                store_vec(&out[static_cast<std::int64_t>(col) * m + row], residual.raw);
+            } else if (col < n && row < m) {
+                if (row + kRowsPerPack <= m) {
+                    W8Bf16x8Bits projected;
+                    projected.raw = load_vec<uint4>(&projected_shared[local_col * BM + local_row]);
+                    W8Bf16x8Bits residual;
+                    residual.raw = load_vec<uint4>(&out[static_cast<std::int64_t>(col) * m + row]);
+#pragma unroll
+                    for (int pair = 0; pair < 4; ++pair) {
+                        residual.pair[pair] = __floats2bfloat162_rn(
+                            __low2float(residual.pair[pair]) + __low2float(projected.pair[pair]),
+                            __high2float(residual.pair[pair]) + __high2float(projected.pair[pair]));
+                    }
+                    store_vec(&out[static_cast<std::int64_t>(col) * m + row], residual.raw);
+                } else {
+#pragma unroll
+                    for (int i = 0; i < kRowsPerPack; ++i) {
+                        if (row + i < m) {
+                            const std::int64_t index = static_cast<std::int64_t>(col) * m + row + i;
+                            out[index]               = __float2bfloat16_rn(
+                                __bfloat162float(out[index]) +
+                                __bfloat162float(projected_shared[local_col * BM + local_row + i]));
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+#pragma unroll
+        for (int mi = 0; mi < MT; ++mi) {
+            const int r0 = m0 + wm * WM + mi * 16 + gid;
+            const int r1 = r0 + 8;
+#pragma unroll
+            for (int ni = 0; ni < NT; ++ni) {
+                const int c0   = n0 + wn * WN + ni * 8 + 2 * lid;
+                const int c1   = c0 + 1;
+                const float* a = acc[mi][ni];
+                if constexpr (FullTiles) {
                     out[static_cast<std::int64_t>(c0) * m + r0] = __float2bfloat16_rn(a[0]);
-                }
-                if (r0 < m && c1 < n) {
                     out[static_cast<std::int64_t>(c1) * m + r0] = __float2bfloat16_rn(a[1]);
-                }
-                if (r1 < m && c0 < n) {
                     out[static_cast<std::int64_t>(c0) * m + r1] = __float2bfloat16_rn(a[2]);
-                }
-                if (r1 < m && c1 < n) {
                     out[static_cast<std::int64_t>(c1) * m + r1] = __float2bfloat16_rn(a[3]);
+                } else {
+                    if (r0 < m && c0 < n) {
+                        out[static_cast<std::int64_t>(c0) * m + r0] = __float2bfloat16_rn(a[0]);
+                    }
+                    if (r0 < m && c1 < n) {
+                        out[static_cast<std::int64_t>(c1) * m + r0] = __float2bfloat16_rn(a[1]);
+                    }
+                    if (r1 < m && c0 < n) {
+                        out[static_cast<std::int64_t>(c0) * m + r1] = __float2bfloat16_rn(a[2]);
+                    }
+                    if (r1 < m && c1 < n) {
+                        out[static_cast<std::int64_t>(c1) * m + r1] = __float2bfloat16_rn(a[3]);
+                    }
                 }
             }
         }
