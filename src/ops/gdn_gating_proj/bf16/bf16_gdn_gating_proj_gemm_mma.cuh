@@ -12,7 +12,7 @@
 // kernel launch.
 
 #include "ops/common/math.cuh"
-#include "ops/linear/common/rowsplit_mma_common.cuh"
+#include "ops/common/rowsplit_mma.cuh"
 
 #include <cuda_bf16.h>
 #include <cooperative_groups.h>

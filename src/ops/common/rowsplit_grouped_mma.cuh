@@ -4,7 +4,7 @@
 // set, route plan, workspace, and fixed instantiations.
 
 #include "ops/common/math.h"
-#include "ops/linear/common/rowsplit_mma_common.cuh"
+#include "ops/common/rowsplit_mma.cuh"
 #include "ops/linear/q4/q4_rowsplit_storage.cuh"
 #include "ops/linear/q5/q5_rowsplit_storage.cuh"
 #include "core/tensor.h"

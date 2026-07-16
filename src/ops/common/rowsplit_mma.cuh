@@ -6,8 +6,9 @@
 
 namespace ninfer::ops::detail {
 
-// Stable CUDA mechanics shared by semantically separate fused kernels. Format
-// backends own their codecs, kernel bodies, schedules, and route selection.
+// Stable CUDA mechanics shared by semantically separate row-split and fused
+// kernels. Format and semantic-Op backends own their codecs, kernel bodies,
+// schedules, and route selection.
 template <int BM_, int BN_, int BK_, int WM_, int WN_, int STAGES_, int MIN_BLOCKS_ = 1,
           bool FRAG_DBUF_ = true, bool CG_LOAD_ = false, bool SCALE_PAIR_LOAD_ = false>
 struct GemmCfg {

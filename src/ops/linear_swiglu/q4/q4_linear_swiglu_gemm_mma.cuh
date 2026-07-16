@@ -6,7 +6,7 @@
 // the warp's first and second row halves pair directly in the SiLU epilogue.
 
 #include "ops/common/math.cuh"
-#include "ops/linear/common/rowsplit_mma_common.cuh"
+#include "ops/common/rowsplit_mma.cuh"
 #include "ops/linear/q4/q4_rowsplit_storage.cuh"
 
 #include <cuda_bf16.h>
