@@ -48,11 +48,11 @@ Q6Plan expected_plan(const Q6Problem& problem) {
         schedule = S::SimtR8C4;
     } else if (problem.rows == 1152 && problem.k == 1536) {
         const int cols = problem.cols;
-        if (cols <= 36) {
+        if (cols <= 96) {
             schedule = S::SimtR8C4;
         } else if (cols <= 704) {
             schedule = S::MmaR64C64;
-        } else if (cols <= 768) {
+        } else if (cols <= 828) {
             schedule = S::MmaR64C128;
         } else if (cols <= 832) {
             schedule = S::MmaR64C64;
@@ -122,12 +122,12 @@ void route_boundaries() {
         {{248320, 5120, 5120, 1}, {S::SimtR8C4, V::None}},
         {{248320, 5120, 5120, 6}, {S::SimtR8C4, V::None}},
         {{1152, 1536, 1536, 4}, {S::SimtR8C4, V::None}},
-        {{1152, 1536, 1536, 36}, {S::SimtR8C4, V::None}},
-        {{1152, 1536, 1536, 40}, {S::MmaR64C64, V::Predicated}},
+        {{1152, 1536, 1536, 96}, {S::SimtR8C4, V::None}},
+        {{1152, 1536, 1536, 100}, {S::MmaR64C64, V::Predicated}},
         {{1152, 1536, 1536, 704}, {S::MmaR64C64, V::Full}},
         {{1152, 1536, 1536, 708}, {S::MmaR64C128, V::Predicated}},
         {{1152, 1536, 1536, 768}, {S::MmaR64C128, V::Full}},
-        {{1152, 1536, 1536, 772}, {S::MmaR64C64, V::Predicated}},
+        {{1152, 1536, 1536, 828}, {S::MmaR64C128, V::Predicated}},
         {{1152, 1536, 1536, 832}, {S::MmaR64C64, V::Full}},
         {{1152, 1536, 1536, 836}, {S::MmaR64C128, V::Predicated}},
         {{1152, 1536, 1536, 896}, {S::MmaR64C128, V::Full}},

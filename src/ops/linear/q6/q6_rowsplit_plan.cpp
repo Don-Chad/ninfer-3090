@@ -42,10 +42,10 @@ constexpr std::array<Q6RouteSpec, 10> kRouteSpecs{{
     {{1, 6, 1}, Q6ScheduleId::SimtR8C4},
 
     // [1152, 1536]
-    {{4, 36, 4}, Q6ScheduleId::SimtR8C4},
-    {{40, 704, 4}, Q6ScheduleId::MmaR64C64},
-    {{708, 768, 4}, Q6ScheduleId::MmaR64C128},
-    {{772, 832, 4}, Q6ScheduleId::MmaR64C64},
+    {{4, 96, 4}, Q6ScheduleId::SimtR8C4},
+    {{100, 704, 4}, Q6ScheduleId::MmaR64C64},
+    {{708, 828, 4}, Q6ScheduleId::MmaR64C128},
+    {{832, 832, 4}, Q6ScheduleId::MmaR64C64},
     {{836, 896, 4}, Q6ScheduleId::MmaR64C128},
     {{900, 960, 4}, Q6ScheduleId::MmaR64C64},
     {{964, 1024, 4}, Q6ScheduleId::MmaR64C128},

@@ -167,12 +167,12 @@ constexpr std::array<RoutePoint, 2> kHeadRoutes{{
 
 constexpr std::array<RoutePoint, 18> kVisionRoutes{{
     {4, S::SimtR8C4, V::None},
-    {36, S::SimtR8C4, V::None},
-    {40, S::MmaR64C64, V::Predicated},
+    {96, S::SimtR8C4, V::None},
+    {100, S::MmaR64C64, V::Predicated},
     {704, S::MmaR64C64, V::Full},
     {708, S::MmaR64C128, V::Predicated},
     {768, S::MmaR64C128, V::Full},
-    {772, S::MmaR64C64, V::Predicated},
+    {828, S::MmaR64C128, V::Predicated},
     {832, S::MmaR64C64, V::Full},
     {836, S::MmaR64C128, V::Predicated},
     {896, S::MmaR64C128, V::Full},
