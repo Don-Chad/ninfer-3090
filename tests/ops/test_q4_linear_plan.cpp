@@ -72,7 +72,7 @@ Q4Plan expected_production_plan(const Q4Problem& problem) {
             problem.cols == 1 ? S::GemvR1W8Direct : (problem.cols <= 7 ? S::SimtR8C4 : S::SimtR8C8);
     } else if (problem.rows == 34816 && problem.k == 5120) {
         schedule = problem.cols <= 4 ? S::SimtR8C4 : S::SimtR8C8;
-    } else if (problem.rows == 131072 && problem.k == 5120) {
+    } else if (problem.rows == 131072 && (problem.k == 5120 || problem.k == 2048)) {
         schedule = S::GemvR4W1Direct;
     } else if (problem.rows == 3456 && problem.k == 1152) {
         schedule =
@@ -160,12 +160,13 @@ struct SupportCase {
 };
 
 void exact_admission_and_full_route_scan() {
-    constexpr std::array<SupportCase, 7> supports{{
+    constexpr std::array<SupportCase, 8> supports{{
         {"text_1024x5120", 1024, 5120, 1, 16, 1},
         {"text_4096x5120", 4096, 5120, 1, 16, 1},
         {"text_6144x5120", 6144, 5120, 1, 16, 1},
         {"text_34816x5120", 34816, 5120, 2, 16, 1},
         {"text_131072x5120", 131072, 5120, 1, 1, 1},
+        {"text_131072x2048", 131072, 2048, 1, 1, 1},
         {"vision_3456x1152", 3456, 1152, 4, 131072, 4},
         {"vision_4304x1152", 4304, 1152, 4, 131072, 4},
     }};
@@ -194,7 +195,7 @@ struct RouteBoundaryCase {
 };
 
 void route_boundaries_and_seams() {
-    constexpr std::array<RouteBoundaryCase, 34> cases{{
+    constexpr std::array<RouteBoundaryCase, 35> cases{{
         {"1024 gemv end", {1024, 5120, 5120, 1}, {S::GemvR1W8Direct, V::None}},
         {"1024 gemv/simt seam", {1024, 5120, 5120, 2}, {S::SimtR8C4, V::Predicated}},
         {"1024 c4 end", {1024, 5120, 5120, 15}, {S::SimtR8C4, V::Predicated}},
@@ -218,6 +219,7 @@ void route_boundaries_and_seams() {
         {"34816 c8 end", {34816, 5120, 5120, 16}, {S::SimtR8C8, V::Full}},
 
         {"131072 gemv singleton", {131072, 5120, 5120, 1}, {S::GemvR4W1Direct, V::None}},
+        {"131072 K2048 gemv singleton", {131072, 2048, 2048, 1}, {S::GemvR4W1Direct, V::None}},
 
         {"3456 c4 begin", {3456, 1152, 1152, 4}, {S::SimtR8C4, V::Predicated}},
         {"3456 c4 end", {3456, 1152, 1152, 36}, {S::SimtR8C4, V::Predicated}},
@@ -269,11 +271,10 @@ void rejection_contract() {
         expect_rejected("capability-invalid " + std::to_string(i), capability_invalid[i], false);
     }
 
-    constexpr std::array<Q4Problem, 4> future_k2048{{
+    constexpr std::array<Q4Problem, 3> future_k2048{{
         {1024, 2048, 2048, 1},
         {4096, 2048, 2048, 8},
         {34816, 2048, 2048, 16},
-        {131072, 2048, 2048, 64},
     }};
     for (std::size_t i = 0; i < future_k2048.size(); ++i) {
         expect_rejected("future K=2048 " + std::to_string(i), future_k2048[i], true);

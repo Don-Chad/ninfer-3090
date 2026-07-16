@@ -2,11 +2,80 @@
 
 Date: 2026-07-17
 
-Target: Qwen3.6-35B-A3B Linear rows L8-L13 on NVIDIA GeForce RTX 5090 (`sm_120a`,
+Target: Qwen3.6-35B-A3B exact Linear domains on NVIDIA GeForce RTX 5090 (`sm_120a`,
 CUDA 13.1, driver 591.86, NCU 2025.4.1).
 
-This is retained standalone Op evidence. It does not register the 35B Engine target. Qualification
-was completed in Vision execution order; this revision establishes L8-L13.
+This is retained standalone Op evidence. It does not register the 35B Engine target. This revision
+establishes L7-L13.
+
+## L7: Q4 draft head `[131072,2048]`
+
+The exact operation is Q4G64_F16S RowSplit `[131072,2048]` times BF16 `[2048,1]`, producing the
+single BF16 shortlist-logit column `[131072,1]`.
+
+### Route qualification
+
+Every physically legal existing topology was screened in a Release build. The runtime-K
+`GemvR4W1Direct` path was the clear winner; the static `GemvR1W8Direct` path is intentionally legal
+only at K=5120.
+
+| Candidate | Cold median |
+|---|---:|
+| GEMV R4W1 direct | 105.664 us |
+| SIMT R8C4 predicated | 109.856 us |
+| SIMT R8C8 predicated | 161.536 us |
+| MMA R64C64 predicated | 288.032 us |
+| MMA R64C128 predicated | 357.600 us |
+
+The production registry therefore admits only `C=1` and maps it directly to GEMV R4W1.
+
+### Correctness and dispatch
+
+```bash
+cmake --build build -j --target \
+  ninfer_linear_op_bench ninfer_linear_test \
+  ninfer_q4_linear_candidate_test ninfer_q4_linear_plan_test \
+  ninfer_q4_linear_dispatch_test
+ctest --test-dir build \
+  -R '^ninfer_(linear_test|q4_linear_candidate_test|q4_linear_plan_test|q4_linear_dispatch_test)$' \
+  --output-on-failure
+```
+
+All four tests passed. The main Linear suite includes an independent FP64 oracle for the exact
+`[131072,2048]` problem; the plan and dispatch suites verify singleton admission, the fixed kernel
+identity, and public-to-fixed BF16 equality.
+
+### Release timing and roofline
+
+Three independent production processes, each with eight warmups and forty L2-flushed samples,
+measured a 105.760 us median and 1350.91 GB/s useful payload bandwidth. The corresponding
+same-session cold-copy ceiling median was 1508.06 GB/s, so production reaches 89.58% of the
+measured traffic roofline.
+
+### NCU attribution
+
+The basic capture matched the intended `q4_rowsplit_gemv_kernel` specialization. A detailed
+follow-up reported:
+
+| NCU duration | SM SOL | DRAM SOL | Occupancy | Registers | Static shared | Waves/SM |
+|---:|---:|---:|---:|---:|---:|---:|
+| 114.43 us | 56.41% | 73.88% | 75.09% | 44 | 2.18 KiB | 19.28 |
+
+NCU classifies the kernel as memory-bound and reports 1.32 TB/s memory throughput, 5.19% L2 hit
+rate, and zero local-memory or shared-memory spilling requests.
+
+Reports are retained locally under:
+
+```text
+profiles/bench/qwen3_6_35b_linear_qualification/l7/
+profiles/ncu/qwen3_6_35b_a3b/linear/l7/final/
+```
+
+## L7 retained result
+
+L7 is supported for its complete Qwen3.6-35B-A3B target domain. The exact singleton route selects
+the measured candidate winner, reaches 89.58% of the cold-copy roofline, and is profiler-confirmed
+DRAM-bound without spilling.
 
 ## L8: Q6 Vision patch projection `[1152,1536]`
 

@@ -454,12 +454,13 @@ int main() {
         return 0;
     }
 
-    constexpr std::array<SupportCase, 7> supports{{
+    constexpr std::array<SupportCase, 8> supports{{
         {"Q4 [1024,5120]", 1024, 5120, k1024Routes.data(), k1024Routes.size(), 11u},
         {"Q4 [4096,5120]", 4096, 5120, k4096Routes.data(), k4096Routes.size(), 13u},
         {"Q4 [6144,5120]", 6144, 5120, k6144Routes.data(), k6144Routes.size(), 17u},
         {"Q4 [34816,5120]", 34816, 5120, k34816Routes.data(), k34816Routes.size(), 19u},
         {"Q4 [131072,5120]", 131072, 5120, k131072Routes.data(), k131072Routes.size(), 23u},
+        {"Q4 [131072,2048]", 131072, 2048, k131072Routes.data(), k131072Routes.size(), 27u},
         {"Q4 [3456,1152]", 3456, 1152, k3456Routes.data(), k3456Routes.size(), 29u},
         {"Q4 [4304,1152]", 4304, 1152, k4304Routes.data(), k4304Routes.size(), 31u},
     }};
@@ -467,7 +468,6 @@ int main() {
     try {
         for (const SupportCase& support : supports) { run_support(support); }
         standalone_public_rejection("Q4 rejected [7168,5120] C=1", 7168, 5120, 1, 37u);
-        standalone_public_rejection("Q4 rejected future [131072,2048] C=1", 131072, 2048, 1, 41u);
         verify_declared_coverage();
     } catch (const std::exception& error) {
         std::cerr << "FAIL Q4 dispatch test infrastructure: " << error.what() << '\n';

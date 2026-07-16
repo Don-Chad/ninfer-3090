@@ -664,9 +664,11 @@ int main() {
     f += paired_w8g32_shape(1024, 5120, {4, 5, 57}, 127u);
     // Q4 public correctness is exact-admission only. The dedicated Q4 plan/dispatch tests cover
     // every route seam and compare public auto against the fixed entry word-for-word; these
-    // oracle points cover the split-K/SIMT numerical boundary at real product geometries.
+    // oracle points cover both registered head K values and the split-K/SIMT numerical boundary
+    // at real product geometries.
     f += one_quant_shape(QType::Q4G64_F16S, 1024, 5120, {1, 2, 15, 16}, 23u);
     f += one_quant_shape(QType::Q4G64_F16S, 4096, 5120, {1}, 25u);
+    f += one_quant_shape(QType::Q4G64_F16S, 131072, 2048, {1}, 26u);
     f += one_quant_shape(QType::Q4G64_F16S, 3456, 1152, {4, 40}, 27u);
     // Q5 public correctness is exact-admission only. Fused input projections own their
     // large-column parent operations; linear_add owns T=1 and T>=25 residual epilogues.
