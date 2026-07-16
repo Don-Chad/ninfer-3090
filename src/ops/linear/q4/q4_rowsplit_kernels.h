@@ -7,8 +7,6 @@
 
 namespace ninfer::ops::detail {
 
-void q4_rowsplit_gemv_r4_w1_shared_launch(const Tensor& x, const Weight& w, Tensor& out,
-                                          cudaStream_t stream);
 void q4_rowsplit_gemv_r4_w1_direct_launch(const Tensor& x, const Weight& w, Tensor& out,
                                           cudaStream_t stream);
 void q4_rowsplit_gemv_r1_w8_direct_launch(const Tensor& x, const Weight& w, Tensor& out,

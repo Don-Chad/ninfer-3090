@@ -1,5 +1,7 @@
 #include "ops/linear/plan/linear_plan.h"
 
+#include <stdexcept>
+
 namespace ninfer::ops::detail {
 
 LinearFormat classify_format(const Weight& w) {
@@ -70,28 +72,13 @@ LinearRegime classify_regime(LinearFormat fmt, ShapeFamily shape, std::int32_t t
 }
 
 LinearPlan resolve_plan(LinearPlanKey key) {
-    if (key.format == LinearFormat::Q4G64_RowSplit &&
-        key.shape == ShapeFamily::MlpGateUp34816x5120 && key.regime == LinearRegime::T1) {
-        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::MlpGateUp34816Q4RowsplitGemv,
-                          policy_name(LinearPolicyId::MlpGateUp34816Q4RowsplitGemv),
-                          /*uses_tensor_cores=*/false};
-    }
-    if (key.format == LinearFormat::Q4G64_RowSplit &&
-        key.shape == ShapeFamily::AttnInQKV7168x5120 && key.regime == LinearRegime::T1) {
-        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::AttnInQKV7168Q4RowsplitGemv,
-                          policy_name(LinearPolicyId::AttnInQKV7168Q4RowsplitGemv),
-                          /*uses_tensor_cores=*/false};
+    if (key.format == LinearFormat::Q4G64_RowSplit) {
+        throw std::invalid_argument("legacy linear planner does not own Q4 pure Linear");
     }
     if (key.format == LinearFormat::Q5G64_RowSplit &&
         key.shape == ShapeFamily::AttnInQKV7168x5120 && key.regime == LinearRegime::T1) {
         return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::AttnInQKV7168Q5RowsplitGemv,
                           policy_name(LinearPolicyId::AttnInQKV7168Q5RowsplitGemv),
-                          /*uses_tensor_cores=*/false};
-    }
-    if (key.format == LinearFormat::Q4G64_RowSplit && key.shape == ShapeFamily::GdnInQK4096x5120 &&
-        key.regime == LinearRegime::T1) {
-        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::GdnInQK4096Q4RowsplitGemv,
-                          policy_name(LinearPolicyId::GdnInQK4096Q4RowsplitGemv),
                           /*uses_tensor_cores=*/false};
     }
     if (key.format == LinearFormat::Q5G64_RowSplit && key.shape == ShapeFamily::MlpDown5120x17408 &&
@@ -106,12 +93,6 @@ LinearPlan resolve_plan(LinearPlanKey key) {
                           policy_name(LinearPolicyId::LmHeadQ6RowsplitGemv),
                           /*uses_tensor_cores=*/false};
     }
-    if (key.format == LinearFormat::Q4G64_RowSplit && key.shape == ShapeFamily::LmHeadVocabx5120 &&
-        key.regime == LinearRegime::T1) {
-        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::LmHeadQ4RowsplitGemv,
-                          policy_name(LinearPolicyId::LmHeadQ4RowsplitGemv),
-                          /*uses_tensor_cores=*/false};
-    }
     if (key.format == LinearFormat::Q5G64_RowSplit && key.shape == ShapeFamily::Proj6144x5120 &&
         key.regime == LinearRegime::T1) {
         return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::Proj6144Q5RowsplitGemv,
@@ -124,7 +105,7 @@ LinearPlan resolve_plan(LinearPlanKey key) {
                           policy_name(LinearPolicyId::Out6144Q5RowsplitGemv),
                           /*uses_tensor_cores=*/false};
     }
-    // Dense keeps its reference GEMV/GEMM. Q4/Q5/Q6 low-bit routes by regime:
+    // Dense keeps its reference GEMV/GEMM. Q5/Q6 low-bit routes by regime:
     // registered-shape T1 -> tuned GEMV above; generic T1 and SmallT -> the
     // small-T streaming GEMM (memory-bound, CUDA cores, weights streamed once
     // per column tile); LargeT -> bf16 tensor-core mma GEMM (compute-bound).
@@ -226,20 +207,12 @@ const char* policy_name(LinearPolicyId p) {
         return "linear.ref.dense.gemv.generic.v1";
     case LinearPolicyId::GenericDenseGemm:
         return "linear.ref.dense.gemm.generic.v1";
-    case LinearPolicyId::MlpGateUp34816Q4RowsplitGemv:
-        return "linear.rowsplit.gemv.mlp_gate_up_34816.q4.warp_row.v1";
-    case LinearPolicyId::AttnInQKV7168Q4RowsplitGemv:
-        return "linear.rowsplit.gemv.attn_in_7168.q4.warp_row.v1";
     case LinearPolicyId::AttnInQKV7168Q5RowsplitGemv:
         return "linear.rowsplit.gemv.attn_in_7168.q5.warp_row.v1";
-    case LinearPolicyId::GdnInQK4096Q4RowsplitGemv:
-        return "linear.rowsplit.gemv.gdn_in_qk_4096.q4.warp_row.v1";
     case LinearPolicyId::MlpDownQ5RowsplitGemv:
         return "linear.rowsplit.gemv.mlp_down.q5.warp_row.v1";
     case LinearPolicyId::LmHeadQ6RowsplitGemv:
         return "linear.rowsplit.gemv.lm_head.q6.warp_row.v1";
-    case LinearPolicyId::LmHeadQ4RowsplitGemv:
-        return "linear.rowsplit.gemv.lm_head.q4.warp_row.v1";
     case LinearPolicyId::Proj6144Q5RowsplitGemv:
         return "linear.rowsplit.gemv.proj_6144.q5.warp_row.v1";
     case LinearPolicyId::Out6144Q5RowsplitGemv:

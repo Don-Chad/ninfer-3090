@@ -80,8 +80,6 @@ struct FullLayerW {
     const Weight* gate_proj      = nullptr;
     const Weight* k_proj         = nullptr;
     const Weight* v_proj         = nullptr;
-    const Weight* qkv_q4         = nullptr;
-    const Weight* gatev_q5       = nullptr;
     const Weight* o_proj         = nullptr;
     const Tensor* q_norm         = nullptr;
     const Tensor* k_norm         = nullptr;
@@ -195,7 +193,6 @@ struct ProcessedInput {
 
 enum class Phase {
     Prefill,
-    Decode,
     Verify,
 };
 

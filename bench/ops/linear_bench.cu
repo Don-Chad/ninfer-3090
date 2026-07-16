@@ -310,9 +310,10 @@ void run_lowbit_decode(const LowbitShape& shape, QType qtype) {
 
 void run_q4_decode() {
     constexpr LowbitShape shapes[] = {
-        {"mlp.gate/up", 17408, 5120},
-        {"gdn q/k", 2048, 5120},
+        {"attn k", 1024, 5120},
+        {"gdn q/k", 4096, 5120},
         {"attn q", 6144, 5120},
+        {"draft head", 131072, 5120},
     };
     for (const LowbitShape& shape : shapes) { run_lowbit_decode(shape, QType::Q4G64_F16S); }
 }

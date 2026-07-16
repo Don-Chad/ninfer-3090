@@ -42,13 +42,9 @@ enum class LinearPolicyId {
     RowsplitW8G32GemmMma,
     GenericDenseGemv,
     GenericDenseGemm,
-    MlpGateUp34816Q4RowsplitGemv,
-    AttnInQKV7168Q4RowsplitGemv,
     AttnInQKV7168Q5RowsplitGemv,
-    GdnInQK4096Q4RowsplitGemv,
     MlpDownQ5RowsplitGemv,
     LmHeadQ6RowsplitGemv,
-    LmHeadQ4RowsplitGemv,
     Proj6144Q5RowsplitGemv,
     Out6144Q5RowsplitGemv,
 };
@@ -72,7 +68,7 @@ LinearFormat classify_format(const Weight& w);
 ShapeFamily classify_shape(std::int32_t n, std::int32_t k);
 LinearRegime classify_regime(LinearFormat fmt, ShapeFamily shape, std::int32_t t);
 
-// Phase 1 registry: every key resolves to a Generic (reference) plan.
+// Legacy planner for Q5/Q6/W8/Dense. Q4 pure Linear is owned by q4_rowsplit_plan.
 LinearPlan resolve_plan(LinearPlanKey key);
 
 // Names / identity for logs and (future) benchmarks. No behavioral role.

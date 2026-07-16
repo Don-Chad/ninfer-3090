@@ -92,11 +92,6 @@ struct Q4RowSplitGemvSchedule {
                   "Q4 GEMV transfer and scale schedules must select an implemented path");
 };
 
-using Q4GemvR4W1SharedSchedule =
-    Q4RowSplitGemvSchedule<4, 1, 16, 1, Q4GemvActivationAccess::CtaSharedFullK,
-                           Q4GemvLaneMapping::PackedWord8, Q4GemvDecodeMode::Fp16Mantissa,
-                           Q4GemvCodeTransfer::AsyncVector16, Q4GemvScaleAccess::SharedPair32,
-                           Cache::ca, 0, 1>;
 using Q4GemvR4W1DirectSchedule =
     Q4RowSplitGemvSchedule<4, 1, 16, 1, Q4GemvActivationAccess::Direct,
                            Q4GemvLaneMapping::PackedWord8, Q4GemvDecodeMode::Fp16Mantissa,

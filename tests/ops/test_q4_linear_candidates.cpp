@@ -125,8 +125,8 @@ int main() {
     using V      = ops::detail::Q4KernelVariant;
     int failures = 0;
 
-    failures += one_candidate(S::GemvR4W1Shared, V::None, 128, 512, 1, 11u);
     failures += one_candidate(S::GemvR4W1Direct, V::None, 128, 512, 1, 13u);
+    failures += one_candidate(S::GemvR4W1Direct, V::None, 128, 5120, 1, 15u);
     failures += one_candidate(S::GemvR1W8Direct, V::None, 128, 5120, 1, 18u);
 
     failures += one_candidate(S::SimtR8C4, V::Full, 128, 1024, 4, 19u);

@@ -9,7 +9,6 @@
 namespace ninfer::ops::detail {
 
 enum class Q4ScheduleId {
-    GemvR4W1Shared,
     GemvR4W1Direct,
     GemvR1W8Direct,
     SimtR8C4,
@@ -43,6 +42,8 @@ bool q4_schedule_uses_mma(Q4ScheduleId schedule);
 bool q4_candidate_is_legal(Q4ScheduleId schedule, Q4KernelVariant variant,
                            const Q4Problem& problem);
 
+void q4_rowsplit_launch_fixed(Q4Plan plan, const Tensor& x, const Weight& w, Tensor& out,
+                              cudaStream_t stream);
 void q4_rowsplit_launch_candidate(Q4ScheduleId schedule, Q4KernelVariant variant, const Tensor& x,
                                   const Weight& w, Tensor& out, cudaStream_t stream);
 

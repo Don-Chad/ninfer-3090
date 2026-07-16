@@ -77,7 +77,6 @@ add_library(ninfer_ops STATIC
   ops/linear/gemv/linear_dense_gdn_in_ab_48.cu
   ops/linear/gemv/linear_rowsplit_gemm_smallt.cu
   ops/linear/gemv/linear_rowsplit_gemv_attn_in_7168.cu
-  ops/linear/gemv/linear_rowsplit_gemv_gdn_in_qk_4096.cu
   ops/linear/gemv/linear_rowsplit_gemv_gdn_in_vz_6144.cu
   ops/linear/gemv/linear_rowsplit_gemv_lm_head.cu
   ops/linear/gemv/linear_rowsplit_gemv_mlp_down.cu
@@ -88,6 +87,7 @@ add_library(ninfer_ops STATIC
   ops/linear/q4/q4_rowsplit_gemm_simt.cu
   ops/linear/q4/q4_rowsplit_gemv.cu
   ops/linear/q4/q4_rowsplit_launch.cpp
+  ops/linear/q4/q4_rowsplit_plan.cpp
   ops/linear/linear.cpp
   ops/linear/plan/linear_plan.cpp
   ops/linear/reference/linear_generic_dense.cu

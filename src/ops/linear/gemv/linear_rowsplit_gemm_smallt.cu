@@ -1,6 +1,6 @@
 // Launcher for the warp-per-row small-T row-split low-bit GEMM. This is the
 // universal low-bit path outside the tuned T==1 GEMVs and the LargeT tensor-core
-// GEMM: SmallT for Q4/Q5/Q6, every T for W8G32 (no W8 MMA path exists), generic
+// GEMM: SmallT for Q5/Q6, every T for W8G32 (no W8 MMA path exists), generic
 // T==1 shapes, and the k%8!=0 LargeT fallback. The codec is selected by fmt.
 #include "ops/linear/gemv/linear_rowsplit_gemm_smallt.cuh"
 
@@ -156,10 +156,6 @@ void linear_rowsplit_gemm_smallt_launch(const Tensor& x, const Weight& w, Tensor
     const std::int32_t full_slabs = aligned_x ? k / 1024 : 0;
 
     switch (fmt) {
-    case LinearFormat::Q4G64_RowSplit:
-        launch_codec<Q4Smallt>(xp, codes, high, scales, outp, n, k, t, padded_k, full_slabs,
-                               stream);
-        break;
     case LinearFormat::Q5G64_RowSplit:
         launch_codec<Q5Smallt>(xp, codes, high, scales, outp, n, k, t, padded_k, full_slabs,
                                stream);
@@ -173,8 +169,7 @@ void linear_rowsplit_gemm_smallt_launch(const Tensor& x, const Weight& w, Tensor
                                stream);
         break;
     default:
-        throw std::invalid_argument(
-            "linear: small-T GEMM requires a Q4/Q5/Q6/W8G32 row-split format");
+        throw std::invalid_argument("linear: small-T GEMM requires a Q5/Q6/W8G32 row-split format");
     }
     CUDA_CHECK(cudaGetLastError());
 }

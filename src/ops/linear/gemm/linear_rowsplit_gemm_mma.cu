@@ -1,4 +1,4 @@
-// Launcher for the LargeT bf16 tensor-core GEMM (Q4/Q5/Q6 row-split), selected by
+// Launcher for the LargeT bf16 tensor-core GEMM (Q5/Q6 row-split), selected by
 // fmt. Routed from the LargeT regime; the multi-step GEMV remains the SmallT path
 // and the universal fallback.
 #include "ops/linear/gemm/linear_rowsplit_gemm_mma.cuh"
@@ -43,9 +43,7 @@ void dispatch_codec(const __nv_bfloat16* xp, const std::uint8_t* codes, const st
     using ShortCfg = GemmCfg<64, 64, 64, 32, 32, 2, 3>;
 
     bool short_tile = false;
-    if constexpr (std::is_same_v<Codec, Q4Codec>) {
-        short_tile = t <= 128 && n == 4096 && k == 5120;
-    } else if constexpr (std::is_same_v<Codec, Q5Codec>) {
+    if constexpr (std::is_same_v<Codec, Q5Codec>) {
         const bool down_or_out = (n == 5120 && k == 17408) || (n == 5120 && k == 6144);
         const bool projection  = n == 6144 && k == 5120;
         short_tile             = (t <= 128 && down_or_out) || (t <= 64 && projection);
@@ -78,9 +76,6 @@ void linear_rowsplit_gemm_mma_launch(const Tensor& x, const Weight& w, Tensor& o
     auto* outp                  = static_cast<__nv_bfloat16*>(out.data);
 
     switch (fmt) {
-    case LinearFormat::Q4G64_RowSplit:
-        dispatch_codec<Q4Codec>(xp, codes, high, scales, nullptr, outp, n, k, t, padded_k, stream);
-        break;
     case LinearFormat::Q5G64_RowSplit:
         dispatch_codec<Q5Codec>(xp, codes, high, scales, nullptr, outp, n, k, t, padded_k, stream);
         break;
@@ -88,7 +83,7 @@ void linear_rowsplit_gemm_mma_launch(const Tensor& x, const Weight& w, Tensor& o
         dispatch_codec<Q6Codec>(xp, codes, high, scales, nullptr, outp, n, k, t, padded_k, stream);
         break;
     default:
-        throw std::invalid_argument("linear: mma GEMM requires a Q4/Q5/Q6 row-split format");
+        throw std::invalid_argument("linear: mma GEMM requires a Q5/Q6 row-split format");
     }
     CUDA_CHECK(cudaGetLastError());
 }

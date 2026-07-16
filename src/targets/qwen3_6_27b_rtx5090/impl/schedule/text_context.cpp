@@ -213,8 +213,6 @@ void TextContext::bind() {
             out.gate_proj      = &source.output_gate;
             out.k_proj         = &source.key;
             out.v_proj         = &source.value;
-            out.qkv_q4         = &source.query_key;
-            out.gatev_q5       = &source.gate_value;
             out.o_proj         = &source.output;
             out.q_norm         = &source.query_norm;
             out.k_norm         = &source.key_norm;
@@ -629,36 +627,6 @@ void TextContext::attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
     Tensor h = work_.alloc(DType::BF16, {kCfg.hidden, T});
     ops::rmsnorm(x, *w.input_norm, kCfg.rms_eps, true, h, s);
 
-    if (ph == Phase::Decode) {
-        Tensor qk    = work_.alloc(DType::BF16, {kCfg.q_size + kCfg.kv_size, 1});
-        Tensor gatev = work_.alloc(DType::BF16, {kCfg.q_size + kCfg.kv_size, 1});
-        ops::linear(h, *w.qkv_q4, qk, work_, s);
-        ops::linear(h, *w.gatev_q5, gatev, work_, s);
-
-        Tensor q    = qk.slice(0, 0, kCfg.q_size).view({kCfg.head_dim, kCfg.n_q, 1});
-        Tensor k    = qk.slice(0, kCfg.q_size, kCfg.kv_size).view({kCfg.head_dim, kCfg.n_kv, 1});
-        Tensor gate = gatev.slice(0, 0, kCfg.q_size).view({kCfg.head_dim, kCfg.n_q, 1});
-        Tensor v    = gatev.slice(0, kCfg.q_size, kCfg.kv_size).view({kCfg.head_dim, kCfg.n_kv, 1});
-
-        Tensor qn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, 1});
-        Tensor kn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, 1});
-        ops::rmsnorm(q, *w.q_norm, kCfg.rms_eps, true, qn, s);
-        ops::rmsnorm(k, *w.k_norm, kCfg.rms_eps, true, kn, s);
-        const Tensor& cache_positions =
-            active_cache_positions_ != nullptr ? *active_cache_positions_ : io_.pos;
-        const Tensor& rope_positions =
-            active_rope_positions_ != nullptr ? *active_rope_positions_ : io_.rope_pos;
-        ops::rope(rope_positions, kCfg.rotary_dim, kCfg.rope_theta, qn, kn, s);
-
-        Tensor a = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, 1});
-        ops::gqa_attention(qn, kn, v, cache_positions, kAttnScale, kv_.layer_view(fidx),
-                           *active_gqa_envelope_, work_, a, s);
-        ops::sigmoid_mul(gate, a, s);
-
-        ops::linear_add(a.view({kCfg.q_size, 1}), *w.o_proj, x, work_, s);
-        return;
-    }
-
     Tensor q         = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
     Tensor gate      = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
     Tensor k         = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, T});
@@ -694,56 +662,6 @@ void TextContext::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
 
     Tensor h = work_.alloc(DType::BF16, {kCfg.hidden, T});
     ops::rmsnorm(x, *w.input_norm, kCfg.rms_eps, true, h, s);
-
-    if (ph == Phase::Decode) {
-        Tensor qkv    = work_.alloc(DType::BF16, {kCfg.conv_dim, 1});
-        Tensor qk_out = qkv.slice(0, 0, 2 * kCfg.key_dim);
-        Tensor v_out  = qkv.slice(0, 2 * kCfg.key_dim, kCfg.value_dim);
-        Tensor z      = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, 1});
-        Tensor z_flat = z.view({kCfg.value_dim, 1});
-        ops::linear(h, *w.in_qk_q4, qk_out, work_, s);
-        ops::linear_pair(h, *w.in_v, *w.in_z, v_out, z_flat, work_, s);
-
-        Tensor qkv_c = work_.alloc(DType::BF16, {kCfg.conv_dim, 1});
-        if (mtp_enabled()) {
-            Tensor& conv_states = state_.conv.at(static_cast<std::size_t>(gidx));
-            ops::causal_conv1d_silu_snapshot(qkv, *w.conv1d, conv_states, io_.gdn_initial_slot,
-                                             qkv_c, s);
-        } else {
-            Tensor conv_state = state_.conv_slot(static_cast<std::uint32_t>(gidx), 0);
-            ops::causal_conv1d_silu(qkv, *w.conv1d, conv_state, qkv_c, s);
-        }
-
-        Tensor g    = work_.alloc(DType::FP32, {kCfg.gdn_v_heads, 1});
-        Tensor beta = work_.alloc(DType::FP32, {kCfg.gdn_v_heads, 1});
-        ops::gdn_gating_proj(h, *w.in_a, *w.in_b, *w.a_log, *w.dt_bias, work_, g, beta, s);
-
-        Tensor qc = qkv_c.slice(0, 0, kCfg.key_dim);
-        Tensor kc = qkv_c.slice(0, kCfg.key_dim, kCfg.key_dim);
-        Tensor vc = qkv_c.slice(0, 2 * kCfg.key_dim, kCfg.value_dim);
-
-        Tensor qn = work_.alloc(DType::BF16, {kCfg.gdn_k_dim, kCfg.gdn_k_heads, 1});
-        Tensor kn = work_.alloc(DType::BF16, {kCfg.gdn_k_dim, kCfg.gdn_k_heads, 1});
-        ops::l2norm(qc.view({kCfg.gdn_k_dim, kCfg.gdn_k_heads, 1}), 1.0e-6f, qn, s);
-        ops::l2norm(kc.view({kCfg.gdn_k_dim, kCfg.gdn_k_heads, 1}), 1.0e-6f, kn, s);
-
-        Tensor vv = vc.view({kCfg.gdn_v_dim, kCfg.gdn_v_heads, 1});
-        Tensor o  = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, 1});
-        if (mtp_enabled()) {
-            Tensor& ssm_states = state_.ssm.at(static_cast<std::size_t>(gidx));
-            ops::gated_delta_rule_snapshot(qn, kn, vv, g, beta, kGdnScale, work_, ssm_states,
-                                           io_.gdn_initial_slot, o, s);
-        } else {
-            Tensor ssm_state = state_.ssm_slot(static_cast<std::uint32_t>(gidx), 0);
-            ops::gated_delta_rule(qn, kn, vv, g, beta, kGdnScale, work_, ssm_state, o, s);
-        }
-
-        Tensor on = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, 1});
-        ops::gated_rmsnorm(o, *w.gdn_norm, z, kCfg.rms_eps, on, s);
-
-        ops::linear_add(on.view({kCfg.value_dim, 1}), *w.out_proj, x, work_, s);
-        return;
-    }
 
     Tensor qkv = work_.alloc(DType::BF16, {kCfg.conv_dim, T});
     ops::gdn_input_proj(h, *w.in_qk_q4, *w.in_v, qkv, work_, s);

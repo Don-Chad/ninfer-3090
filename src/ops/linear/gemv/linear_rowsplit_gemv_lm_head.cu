@@ -100,59 +100,6 @@ __global__ void linear_rowsplit_gemv_lm_head_q6_kernel(const __nv_bfloat16* __re
     if (lane == 0) { out[row] = __float2bfloat16(acc); }
 }
 
-// Q4 variant of the tuned warp-per-row lm_head GEMV. Identical geometry to the Q6
-// kernel minus the high-bit plane: each nibble byte holds two signed 4-bit codes,
-// so there is no high tile to stage and each code dequants by sign-extending its nibble.
-__global__ void linear_rowsplit_gemv_lm_head_q4_kernel(const __nv_bfloat16* __restrict__ x,
-                                                       const std::uint8_t* __restrict__ codes,
-                                                       const std::uint8_t* __restrict__ scales,
-                                                       int n, __nv_bfloat16* __restrict__ out) {
-    __shared__ uint4 nibble_tile[kWarpsPerBlock][kNibbleVecsPerWarpTile];
-
-    const int lane = static_cast<int>(threadIdx.x) & 31;
-    const int warp = static_cast<int>(threadIdx.x) >> 5;
-    const int row  = static_cast<int>(blockIdx.x) * kWarpsPerBlock + warp;
-    if (row >= n) { return; }
-
-    const std::uint8_t* code_row =
-        codes + static_cast<std::int64_t>(row) * kGroups * kNibbleBytesPerGroup;
-    const std::uint8_t* scale_row = scales + static_cast<std::int64_t>(row) * kGroups * 2;
-    const auto* x2                = reinterpret_cast<const __nv_bfloat162*>(x);
-
-    float acc = 0.0f;
-    for (int tile = 0; tile < kGroups; tile += kGroupsPerWarpTile) {
-        const auto* nibble_vecs =
-            reinterpret_cast<const uint4*>(code_row + tile * kNibbleBytesPerGroup);
-        nibble_tile[warp][lane] = nibble_vecs[lane];
-        __syncwarp();
-
-        std::uint16_t lane_scale_bits = 0;
-        if (lane < kGroupsPerWarpTile) {
-            lane_scale_bits = load_vec<std::uint16_t>(scale_row + (tile + lane) * 2);
-        }
-        const auto* tile_nibbles = reinterpret_cast<const std::uint8_t*>(nibble_tile[warp]);
-
-#pragma unroll
-        for (int tile_group = 0; tile_group < kGroupsPerWarpTile; ++tile_group) {
-            const auto scale_bits =
-                static_cast<std::uint16_t>(__shfl_sync(0xffffffffu, lane_scale_bits, tile_group));
-            const float scale = __half2float(__ushort_as_half(scale_bits));
-
-            const std::uint8_t low = tile_nibbles[tile_group * kNibbleBytesPerGroup + lane];
-            const int q0           = sign_extend<4>(static_cast<int>(low & 0x0fu));
-            const int q1           = sign_extend<4>(static_cast<int>(low >> 4));
-            const int k0           = (tile + tile_group) * kGroupK + lane * 2;
-            const float2 xv        = __bfloat1622float2(x2[k0 >> 1]);
-            acc                    = fmaf(static_cast<float>(q0) * scale, xv.x, acc);
-            acc                    = fmaf(static_cast<float>(q1) * scale, xv.y, acc);
-        }
-        __syncwarp();
-    }
-
-    acc = warp_reduce_sum(acc);
-    if (lane == 0) { out[row] = __float2bfloat16(acc); }
-}
-
 } // namespace
 
 void linear_rowsplit_gemv_lm_head_q6_launch(const Tensor& x, const Weight& w, Tensor& out,
@@ -171,23 +118,6 @@ void linear_rowsplit_gemv_lm_head_q6_launch(const Tensor& x, const Weight& w, Te
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
         static_cast<const std::uint8_t*>(w.qhigh), static_cast<const std::uint8_t*>(w.scales), n,
         static_cast<__nv_bfloat16*>(out.data));
-    CUDA_CHECK(cudaGetLastError());
-}
-
-void linear_rowsplit_gemv_lm_head_q4_launch(const Tensor& x, const Weight& w, Tensor& out,
-                                            WorkspaceArena& ws, cudaStream_t stream) {
-    (void)ws;
-    // Same contract as the Q6 launch: K fixed at 5120, N runtime so the one tuned
-    // kernel serves any Q4 draft head (65536/98304/131072). No high plane is read.
-    if (w.k != kK || w.padded_shape[1] != kK) {
-        throw std::invalid_argument("linear: lm_head Q4 tuned GEMV requires k=5120");
-    }
-    if (w.n <= 0) { throw std::invalid_argument("linear: lm_head Q4 tuned GEMV requires n>0"); }
-    const int n    = static_cast<int>(w.n);
-    const int grid = div_up(n, kWarpsPerBlock);
-    linear_rowsplit_gemv_lm_head_q4_kernel<<<grid, kBlockThreads, 0, stream>>>(
-        static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
-        static_cast<const std::uint8_t*>(w.scales), n, static_cast<__nv_bfloat16*>(out.data));
     CUDA_CHECK(cudaGetLastError());
 }
 

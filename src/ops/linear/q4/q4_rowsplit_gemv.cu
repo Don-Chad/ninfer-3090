@@ -75,11 +75,6 @@ void launch_gemv(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t str
 
 } // namespace
 
-void q4_rowsplit_gemv_r4_w1_shared_launch(const Tensor& x, const Weight& w, Tensor& out,
-                                          cudaStream_t stream) {
-    launch_gemv<Q4GemvR4W1SharedSchedule>(x, w, out, stream);
-}
-
 void q4_rowsplit_gemv_r4_w1_direct_launch(const Tensor& x, const Weight& w, Tensor& out,
                                           cudaStream_t stream) {
     launch_gemv<Q4GemvR4W1DirectSchedule>(x, w, out, stream);

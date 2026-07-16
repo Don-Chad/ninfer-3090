@@ -121,6 +121,12 @@ ninfer_add_test(ninfer_linear_test
 ninfer_add_test(ninfer_q4_linear_candidate_test
   SOURCES ops/test_q4_linear_candidates.cpp
   LIBRARIES ninfer_ops)
+ninfer_add_test(ninfer_q4_linear_plan_test
+  SOURCES ops/test_q4_linear_plan.cpp
+  LIBRARIES ninfer_ops)
+ninfer_add_test(ninfer_q4_linear_dispatch_test
+  SOURCES ops/test_q4_linear_dispatch.cpp
+  LIBRARIES ninfer_ops)
 
 ninfer_add_test(ninfer_qwen3_6_27b_visual_scatter_test
   SOURCES targets/qwen3_6_27b/test_visual_scatter.cpp

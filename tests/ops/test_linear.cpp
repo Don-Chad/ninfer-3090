@@ -10,6 +10,8 @@
 #include "ninfer/ops/residual_add.h"
 #include "ninfer/ops/silu_mul.h"
 #include "ops/op_tester.h"
+#include "ops/linear/q4/q4_rowsplit_launch.h"
+#include "ops/linear/q4/q4_rowsplit_plan.h"
 #include "ops/row_split_pack.h"
 
 #include <algorithm>
@@ -196,6 +198,32 @@ int fp32_ctrl_first_column_consistency(std::int32_t n, std::int32_t k, std::int3
     return 0;
 }
 
+void launch_q4_test_reference(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
+    using S = ops::detail::Q4ScheduleId;
+    using V = ops::detail::Q4KernelVariant;
+
+    const ops::detail::Q4Problem problem{out.ne[0], x.ne[0], w.padded_shape[1], x.ne[1]};
+    S schedule;
+    if (problem.cols == 1 && problem.k == 5120) {
+        schedule = S::GemvR1W8Direct;
+    } else if (problem.cols <= 4) {
+        schedule = S::SimtR8C4;
+    } else if (problem.cols <= 8) {
+        schedule = S::SimtR8C8;
+    } else if (problem.cols <= 64) {
+        schedule = S::MmaR64C64;
+    } else {
+        schedule = S::MmaR64C128;
+    }
+
+    V variant = V::None;
+    if (!ops::detail::q4_candidate_is_legal(schedule, variant, problem)) {
+        variant = ops::detail::q4_candidate_is_legal(schedule, V::Full, problem) ? V::Full
+                                                                                 : V::Predicated;
+    }
+    ops::detail::q4_rowsplit_launch_candidate(schedule, variant, x, w, out, stream);
+}
+
 int one_quant_shape(QType qtype, std::int32_t n, std::int32_t k,
                     const std::vector<std::int32_t>& ts, std::uint32_t seed, float x_abs = 8.0f,
                     float weight_abs = 0.125f, const char* case_name = nullptr) {
@@ -239,19 +267,17 @@ int one_quant_shape(QType qtype, std::int32_t n, std::int32_t k,
         const std::string label  = "linear " + std::string(qtype_name(qtype)) + suffix + " [" +
                                   std::to_string(n) + "," + std::to_string(k) +
                                   "] T=" + std::to_string(t) + " seed=" + std::to_string(seed);
-        // T > tau (regime_threshold, currently 16) is the LargeT regime -> bf16
-        // tensor-core mma GEMM, judged by the normwise linear_tc criterion; T <= tau
-        // uses the fp32 multi-step / GEMV path (strict per-element). Keep this bound in
-        // sync with detail::regime_threshold in linear_plan.cpp.
-        const Tolerance tol = t > 16 ? Tolerance::linear_tc() : Tolerance::linear_bf16();
+        Tolerance tol = t > 16 ? Tolerance::linear_tc() : Tolerance::linear_bf16();
+        if (qtype == QType::Q4G64_F16S) {
+            const ops::detail::Q4Plan plan =
+                ops::detail::q4_rowsplit_resolve_plan({n, k, packed.weight.padded_shape[1], t});
+            tol = ops::detail::q4_schedule_uses_mma(plan.schedule) ? Tolerance::linear_tc()
+                                                                   : Tolerance::linear_bf16();
+        }
         failures += verify(label.c_str(), from_device_bf16(dout, static_cast<std::size_t>(n) * t),
                            ref, tol);
     }
     return failures;
-}
-
-int one_q4_shape(std::int32_t n, std::int32_t k, std::uint32_t seed) {
-    return one_quant_shape(QType::Q4G64_F16S, n, k, {1, 2, 7, 64}, seed);
 }
 
 int paired_w8g32_shape(std::int32_t n, std::int32_t k, const std::vector<std::int32_t>& ts,
@@ -390,9 +416,9 @@ int grouped_attention_correctness(std::int32_t t) {
     const Weight gweight = gw.device_weight(dgw.p);
     const Weight kweight = kw.device_weight(dkw.p);
     const Weight vweight = vw.device_weight(dvw.p);
-    ops::linear(tx, qweight, tq_ref, ws, nullptr);
+    launch_q4_test_reference(tx, qweight, tq_ref, nullptr);
     ops::linear(tx, gweight, tg_ref, ws, nullptr);
-    ops::linear(tx, kweight, tk_ref, ws, nullptr);
+    launch_q4_test_reference(tx, kweight, tk_ref, nullptr);
     ops::linear(tx, vweight, tv_ref, ws, nullptr);
     ops::attn_input_proj(tx, qweight, gweight, kweight, vweight, tq_got, tg_got, tk_got, tv_got, ws,
                          nullptr);
@@ -434,7 +460,7 @@ int grouped_gdn_correctness(std::int32_t t) {
     WorkspaceArena ws(256ULL << 20);
     const Weight qkweight = qkw.device_weight(dqkw.p);
     const Weight vweight  = vw.device_weight(dvw.p);
-    ops::linear(tx, qkweight, tqk, ws, nullptr);
+    launch_q4_test_reference(tx, qkweight, tqk, nullptr);
     ops::linear(tx, vweight, tv, ws, nullptr);
     ops::gdn_input_proj(tx, qkweight, vweight, tqkv, ws, nullptr);
     cudaDeviceSynchronize();
@@ -471,7 +497,7 @@ int gate_up_silu_correctness(std::int32_t t) {
     Tensor tgot(got.p, DType::BF16, {kInter, t});
     WorkspaceArena ws(256ULL << 20);
     const Weight weight = packed.device_weight(dw.p);
-    ops::linear(tx, weight, tgate_up, ws, nullptr);
+    launch_q4_test_reference(tx, weight, tgate_up, nullptr);
     ops::silu_mul(tgate_up.slice(0, 0, kInter), tgate_up.slice(0, kInter, kInter), tref, nullptr);
     ops::linear_swiglu(tx, weight, tgot, ws, nullptr);
     cudaDeviceSynchronize();
@@ -514,7 +540,7 @@ int residual_epilogue_correctness(std::int32_t t) {
 
 int prefill_fusion_correctness() {
     int f = 0;
-    for (const std::int32_t t : {17, 128, 129}) {
+    for (const std::int32_t t : {4, 17, 128, 129}) {
         f += grouped_attention_correctness(t);
         f += grouped_gdn_correctness(t);
         f += gate_up_silu_correctness(t);
@@ -767,8 +793,6 @@ int main() {
     f += one_dense_shape(96, 128, 512, QType::BF16_CTRL, 53u);
     f += fp32_ctrl_first_column_consistency(48, 64, 7);
     f += fp32_ctrl_first_column_consistency(64, 64, 32);
-    f += one_quant_shape(QType::Q4G64_F16S, 70, 130, {1, 5}, 41u);
-    f += one_quant_shape(QType::Q4G64_F16S, 70, 130, {1, 9}, 103u, 8.0f, 1.25f, "stress");
     f += one_quant_shape(QType::Q5G64_F16S, 70, 130, {1, 9}, 107u, 8.0f, 1.25f, "stress");
     f += one_quant_shape(QType::Q6G64_F16S, 70, 130, {1, 9}, 109u, 8.0f, 1.25f, "stress");
     for (std::uint32_t seed : {1u, 7u, 99u}) {
@@ -784,13 +808,13 @@ int main() {
     }
     f += one_quant_shape(QType::W8G32_F16S, 96, 130, {1, 2, 5, 17}, 113u, 8.0f, 1.25f, "stress");
     f += paired_w8g32_shape(64, 256, {17, 128}, 127u);
-    f += one_quant_shape(QType::Q4G64_F16S, 128, 128, {512}, 43u);
     f += one_quant_shape(QType::Q6G64_F16S, 128, 128, {512}, 47u);
-    for (auto [n, k] : {std::pair<std::int32_t, std::int32_t>{34816, 5120},
-                        std::pair<std::int32_t, std::int32_t>{7168, 5120},
-                        std::pair<std::int32_t, std::int32_t>{4096, 5120}}) {
-        f += one_quant_shape(QType::Q4G64_F16S, n, k, {1}, 23u);
-    }
+    // Q4 public correctness is exact-admission only. The dedicated Q4 plan/dispatch tests cover
+    // every route seam and compare public auto against the fixed entry word-for-word; these
+    // oracle points cover the split-K/SIMT numerical boundary at real product geometries.
+    f += one_quant_shape(QType::Q4G64_F16S, 1024, 5120, {1, 2, 15, 16}, 23u);
+    f += one_quant_shape(QType::Q4G64_F16S, 4096, 5120, {1}, 25u);
+    f += one_quant_shape(QType::Q4G64_F16S, 3456, 1152, {4, 40}, 27u);
     for (auto [n, k] : {std::pair<std::int32_t, std::int32_t>{6144, 5120},
                         std::pair<std::int32_t, std::int32_t>{7168, 5120},
                         std::pair<std::int32_t, std::int32_t>{5120, 6144},
@@ -799,34 +823,21 @@ int main() {
     }
     f += one_quant_shape(QType::Q6G64_F16S, 4096, 5120, {1, 7}, 31u);
 
-    // --- lm_head vocab-projection family (T1 warp-per-row GEMV) ------------------
-    // n>=65536, k=5120 routes to LmHeadVocabx5120. The Q6 kernel takes N at runtime
-    // (full head 248320 and any draft N), and the Q4 kernel serves the embedded Q4
-    // draft head. Cover the exact production N plus a smaller N to guard the
-    // runtime-N grid parameterization.
+    // --- Q6 lm_head vocab-projection family (T1 warp-per-row GEMV) ---------------
     f += one_quant_shape(QType::Q6G64_F16S, 248320, 5120, {1}, 211u); // full lm_head
     f += one_quant_shape(QType::Q6G64_F16S, 65536, 5120, {1}, 227u);  // runtime-N Q6
-    f += one_quant_shape(QType::Q4G64_F16S, 131072, 5120, {1}, 223u); // Q4 draft head
 
     // --- prefill (T>1) coverage of the multi-step GEMM path ---------------------
     // The fp64 CPU golden is O(N*K*T), so large families run at small/medium T and
     // the long-T (512, 2048) + tile-boundary cases run on small shapes.
-    f += one_quant_shape(QType::Q4G64_F16S, 34816, 5120, {2, 8, 64}, 61u);
     f += one_quant_shape(QType::Q5G64_F16S, 5120, 17408, {2, 8, 64}, 67u);
-    // Real prefill projection shapes (unregistered families -> multi-step path).
-    f += one_quant_shape(QType::Q4G64_F16S, 17408, 5120, {2, 8, 64}, 71u);     // gate/up
-    f += one_quant_shape(QType::Q4G64_F16S, 2048, 5120, {2, 8, 64, 512}, 73u); // gdn in_q/in_k
-    f += one_quant_shape(QType::Q4G64_F16S, 1024, 5120, {2, 9, 512}, 79u);     // k/v proj
     f += one_quant_shape(QType::Q5G64_F16S, 6144, 5120, {2, 8, 64, 512}, 83u); // q/gate/in_v/in_z
     f += one_quant_shape(QType::Q5G64_F16S, 5120, 6144, {2, 8, 64, 512}, 89u); // o/out proj
     f += one_quant_shape(QType::Q6G64_F16S, 4096, 5120, {2, 8, 64}, 131u);
-    // Long T + column-tile boundary (kTt=8) + unaligned N/K on small shapes.
-    f += one_quant_shape(QType::Q4G64_F16S, 256, 256, {512, 2048}, 91u);
+    // Long T + column-tile boundary (kTt=8) + unaligned N/K on Q5/Q6 test shapes.
     f += one_quant_shape(QType::Q5G64_F16S, 130, 256, {7, 8, 9, 65, 2048}, 93u);
     f += one_quant_shape(QType::Q6G64_F16S, 192, 320, {7, 9, 63, 64, 65}, 97u);
-    f += one_quant_shape(QType::Q4G64_F16S, 320, 384, {2, 33, 513}, 99u, 8.0f, 1.25f, "stress");
     // LargeT (T > tau) exercises the tensor-core GEMM; cover the big N and big K dims.
-    f += one_quant_shape(QType::Q4G64_F16S, 17408, 5120, {128}, 137u); // gate/up (K=5120)
     f += one_quant_shape(QType::Q5G64_F16S, 5120, 17408, {128}, 139u); // mlp_down (K=17408)
     // Regression: k % 8 != 0 at LargeT must fall back to the multi-step GEMV (the mma
     // path streams x with 16B cp.async and needs 16B-aligned token rows; k=130 would

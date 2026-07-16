@@ -10,10 +10,8 @@
 #include "ninfer/ops/linear_pair.h"
 #include "core/device.h"
 #include "ninfer_bench_common.h"
-#include "ops/linear/gemv/linear_rowsplit_gemv_gdn_in_qk_4096.cuh"
-#include "ops/linear/gemv/linear_rowsplit_gemv_mlp_gate_up_34816.cuh"
 #include "ops/linear/q4/q4_rowsplit_launch.h"
-#include "ops/linear/reference/linear_generic.h"
+#include "ops/linear/q4/q4_rowsplit_plan.h"
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -79,10 +77,6 @@ struct TargetSpec {
 
 enum class CandidateKind {
     Auto,
-    LegacySimt,
-    LegacyMma,
-    LegacyGemvR4W1Shared,
-    LegacyGemvR1W8Direct,
     Q4Fixed,
 };
 
@@ -95,18 +89,20 @@ constexpr ShapeSpec kShapes[] = {
     {"LmHead248320x5120", 248320, 5120},     {"LmHeadDraft65536x5120", 65536, 5120},
     {"LmHeadDraft98304x5120", 98304, 5120},  {"LmHeadDraft131072x5120", 131072, 5120},
     {"Proj6144x5120", 6144, 5120},           {"Out5120x6144", 5120, 6144},
+    {"VisionQKV3456x1152", 3456, 1152},      {"VisionFC14304x1152", 4304, 1152},
 };
 
 constexpr TargetSpec kTask2Targets[] = {
-    {{"MlpGateUp34816x5120", 34816, 5120}, QType::Q4G64_F16S},
-    {{"AttnInQKV7168x5120", 7168, 5120}, QType::Q4G64_F16S},
-    {{"AttnInQKV7168x5120", 7168, 5120}, QType::Q5G64_F16S},
+    {{"AttnK1024x5120", 1024, 5120}, QType::Q4G64_F16S},
     {{"GdnInQK4096x5120", 4096, 5120}, QType::Q4G64_F16S},
+    {{"AttnQ6144x5120", 6144, 5120}, QType::Q4G64_F16S},
+    {{"MlpGateUp34816x5120", 34816, 5120}, QType::Q4G64_F16S},
+    {{"LmHeadDraft131072x5120", 131072, 5120}, QType::Q4G64_F16S},
+    {{"VisionQKV3456x1152", 3456, 1152}, QType::Q4G64_F16S},
+    {{"VisionFC14304x1152", 4304, 1152}, QType::Q4G64_F16S},
+    {{"AttnInQKV7168x5120", 7168, 5120}, QType::Q5G64_F16S},
     {{"MlpDown5120x17408", 5120, 17408}, QType::Q5G64_F16S},
     {{"LmHead248320x5120", 248320, 5120}, QType::Q6G64_F16S},
-    {{"LmHeadDraft65536x5120", 65536, 5120}, QType::Q4G64_F16S},
-    {{"LmHeadDraft98304x5120", 98304, 5120}, QType::Q4G64_F16S},
-    {{"LmHeadDraft131072x5120", 131072, 5120}, QType::Q4G64_F16S},
     {{"Proj6144x5120", 6144, 5120}, QType::Q5G64_F16S},
     {{"Out5120x6144", 5120, 6144}, QType::Q5G64_F16S},
     {{"MtpFc5120x10240", 5120, 10240}, QType::W8G32_F16S},
@@ -356,19 +352,19 @@ QType parse_qtype(std::string_view raw) {
     throw std::invalid_argument("unknown qtype: " + std::string(raw));
 }
 
-std::string candidate_name(const Options& opt, const ShapeSpec& shape, std::int32_t t) {
+ops::detail::Q4Plan resolve_auto_q4_plan(const ShapeSpec& shape, std::int32_t t) {
+    const auto padded_k = static_cast<std::int32_t>(align_up_u64(shape.k, 128));
+    return ops::detail::q4_rowsplit_resolve_plan({shape.n, shape.k, padded_k, t});
+}
+
+std::string candidate_name(const Options& opt, QType qtype, const ShapeSpec& shape,
+                           std::int32_t t) {
     switch (opt.candidate) {
     case CandidateKind::Auto:
+        if (qtype == QType::Q4G64_F16S) {
+            return ops::detail::q4_schedule_name(resolve_auto_q4_plan(shape, t).schedule);
+        }
         return "auto";
-    case CandidateKind::LegacySimt:
-        return t <= 4 ? "legacy.q4.simt.r8.c4.slab1024.s2" : "legacy.q4.simt.r8.c8.slab1024.s2";
-    case CandidateKind::LegacyMma:
-        return shape.n == 4096 && shape.k == 5120 && t <= 128 ? "legacy.q4.mma.r64.c64.k64"
-                                                              : "legacy.q4.mma.r64.c128.k64";
-    case CandidateKind::LegacyGemvR4W1Shared:
-        return "legacy.q4.gemv.r4.w1.x_shared.k5120";
-    case CandidateKind::LegacyGemvR1W8Direct:
-        return "legacy.q4.gemv.r1.w8.x_direct.k5120";
     case CandidateKind::Q4Fixed:
         return ops::detail::q4_schedule_name(opt.q4_schedule);
     }
@@ -381,27 +377,8 @@ void parse_candidate(Options& opt, std::string_view raw) {
         opt.candidate = CandidateKind::Auto;
         return;
     }
-    if (candidate == "legacy-simt") {
-        opt.candidate = CandidateKind::LegacySimt;
-        return;
-    }
-    if (candidate == "legacy-mma") {
-        opt.candidate = CandidateKind::LegacyMma;
-        return;
-    }
-    if (candidate == "legacy-gemv-r4w1-shared") {
-        opt.candidate = CandidateKind::LegacyGemvR4W1Shared;
-        return;
-    }
-    if (candidate == "legacy-gemv-r1w8-direct") {
-        opt.candidate = CandidateKind::LegacyGemvR1W8Direct;
-        return;
-    }
-
     opt.candidate = CandidateKind::Q4Fixed;
-    if (candidate == "q4-gemv-r4w1-shared") {
-        opt.q4_schedule = ops::detail::Q4ScheduleId::GemvR4W1Shared;
-    } else if (candidate == "q4-gemv-r4w1-direct") {
+    if (candidate == "q4-gemv-r4w1-direct") {
         opt.q4_schedule = ops::detail::Q4ScheduleId::GemvR4W1Direct;
     } else if (candidate == "q4-gemv-r1w8-direct") {
         opt.q4_schedule = ops::detail::Q4ScheduleId::GemvR1W8Direct;
@@ -513,9 +490,7 @@ void usage(const char* argv0) {
         "  --shape NAME               One ShapeFamily string, e.g. MlpGateUp34816x5120.\n"
         "  --rows N --k K             Numeric matrix geometry for Q4 candidate work.\n"
         "  --qtype Q4|Q5|Q6|W8G32     Low-bit ROW_SPLIT qtype for --shape.\n"
-        "  --candidate NAME           auto, legacy-simt, legacy-mma,\n"
-        "                             legacy-gemv-r4w1-shared, legacy-gemv-r1w8-direct,\n"
-        "                             q4-gemv-r4w1-shared, q4-gemv-r4w1-direct,\n"
+        "  --candidate NAME           auto, q4-gemv-r4w1-direct,\n"
         "                             q4-gemv-r1w8-direct, q4-simt-r8c4, q4-simt-r8c8,\n"
         "                             q4-mma-r64c64, or q4-mma-r64c128.\n"
         "  --variant NAME             Q4 fixed variant; auto is the default.\n"
@@ -626,19 +601,25 @@ Options parse_args(int argc, char** argv) {
     if (opt.copy_bytes == 0 || (opt.copy_bytes % sizeof(uint4)) != 0) {
         throw std::invalid_argument("--copy-mib must produce a positive uint4-aligned byte count");
     }
-    if (opt.t_sweep.empty()) {
-        const bool gemv_candidate =
-            opt.candidate == CandidateKind::LegacyGemvR4W1Shared ||
-            opt.candidate == CandidateKind::LegacyGemvR1W8Direct ||
-            (opt.candidate == CandidateKind::Q4Fixed &&
-             (opt.q4_schedule == ops::detail::Q4ScheduleId::GemvR4W1Shared ||
-              opt.q4_schedule == ops::detail::Q4ScheduleId::GemvR4W1Direct ||
-              opt.q4_schedule == ops::detail::Q4ScheduleId::GemvR1W8Direct));
-        opt.t_sweep = gemv_candidate
-                          ? std::vector<int>{1}
-                          : std::vector<int>{1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048};
-    }
     return opt;
+}
+
+std::vector<int> default_t_sweep(const TargetSpec& target, const Options& opt) {
+    if (opt.candidate == CandidateKind::Q4Fixed) {
+        const bool gemv = opt.q4_schedule == ops::detail::Q4ScheduleId::GemvR4W1Direct ||
+                          opt.q4_schedule == ops::detail::Q4ScheduleId::GemvR1W8Direct;
+        return gemv ? std::vector<int>{1}
+                    : std::vector<int>{1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048};
+    }
+    if (target.qtype == QType::Q4G64_F16S) {
+        if (target.shape.n == 131072 && target.shape.k == 5120) { return {1}; }
+        if (target.shape.n == 34816 && target.shape.k == 5120) { return {2, 4, 5, 8, 16}; }
+        if (target.shape.k == 5120) { return {1, 2, 4, 5, 8, 16}; }
+        if (target.shape.k == 1152) {
+            return {4, 8, 12, 16, 24, 28, 36, 40, 64, 128, 320, 324, 512, 2048};
+        }
+    }
+    return {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048};
 }
 
 int grid_for(std::uint64_t elements, int block = 256) {
@@ -884,28 +865,6 @@ void launch_candidate(const Options& opt, const ShapeSpec& shape, const Tensor& 
     case CandidateKind::Auto:
         ops::linear(x, w, out, ws, stream);
         return;
-    case CandidateKind::LegacySimt:
-        ops::detail::linear_rowsplit_gemm_smallt_launch(
-            x, w, out, ops::detail::LinearFormat::Q4G64_RowSplit, stream);
-        return;
-    case CandidateKind::LegacyMma:
-        ops::detail::linear_rowsplit_gemm_mma_launch(
-            x, w, out, ops::detail::LinearFormat::Q4G64_RowSplit, stream);
-        return;
-    case CandidateKind::LegacyGemvR4W1Shared:
-        if (shape.n != 34816 || shape.k != 5120 || x.ne[1] != 1) {
-            throw std::invalid_argument(
-                "legacy R4/W1 shared GEMV is only valid for [34816,5120] Cols=1");
-        }
-        ops::detail::linear_rowsplit_gemv_mlp_gate_up_34816_q4_launch(x, w, out, ws, stream);
-        return;
-    case CandidateKind::LegacyGemvR1W8Direct:
-        if (shape.n != 4096 || shape.k != 5120 || x.ne[1] != 1) {
-            throw std::invalid_argument(
-                "legacy R1/W8 direct GEMV is only valid for [4096,5120] Cols=1");
-        }
-        ops::detail::linear_rowsplit_gemv_gdn_in_qk_4096_q4_launch(x, w, out, ws, stream);
-        return;
     case CandidateKind::Q4Fixed: {
         const auto variant = selected_q4_variant(opt, shape, x.ne[1]);
         ops::detail::q4_rowsplit_launch_candidate(opt.q4_schedule, variant, x, w, out, stream);
@@ -915,41 +874,42 @@ void launch_candidate(const Options& opt, const ShapeSpec& shape, const Tensor& 
     throw std::invalid_argument("unknown Linear benchmark candidate");
 }
 
-int candidate_col_tile(const Options& opt, const ShapeSpec& shape, std::int32_t t) {
+int schedule_col_tile(ops::detail::Q4ScheduleId schedule) {
     using S = ops::detail::Q4ScheduleId;
+    switch (schedule) {
+    case S::GemvR4W1Direct:
+    case S::GemvR1W8Direct:
+        return 1;
+    case S::SimtR8C4:
+        return 4;
+    case S::SimtR8C8:
+        return 8;
+    case S::MmaR64C64:
+        return 64;
+    case S::MmaR64C128:
+        return 128;
+    }
+    throw std::invalid_argument("unknown Q4 schedule tile");
+}
+
+int candidate_col_tile(const Options& opt, QType qtype, const ShapeSpec& shape, std::int32_t t) {
     switch (opt.candidate) {
     case CandidateKind::Auto:
-        return t;
-    case CandidateKind::LegacySimt:
-        return t <= 4 ? 4 : 8;
-    case CandidateKind::LegacyMma:
-        return shape.n == 4096 && shape.k == 5120 && t <= 128 ? 64 : 128;
-    case CandidateKind::LegacyGemvR4W1Shared:
-    case CandidateKind::LegacyGemvR1W8Direct:
-        return 1;
+        return qtype == QType::Q4G64_F16S
+                   ? schedule_col_tile(resolve_auto_q4_plan(shape, t).schedule)
+                   : t;
     case CandidateKind::Q4Fixed:
-        switch (opt.q4_schedule) {
-        case S::GemvR4W1Shared:
-        case S::GemvR4W1Direct:
-        case S::GemvR1W8Direct:
-            return 1;
-        case S::SimtR8C4:
-            return 4;
-        case S::SimtR8C8:
-            return 8;
-        case S::MmaR64C64:
-            return 64;
-        case S::MmaR64C128:
-            return 128;
-        }
+        return schedule_col_tile(opt.q4_schedule);
     }
     throw std::invalid_argument("unknown Linear benchmark candidate tile");
 }
 
-bool candidate_uses_mma(const Options& opt) {
-    return opt.candidate == CandidateKind::LegacyMma ||
-           (opt.candidate == CandidateKind::Q4Fixed &&
-            ops::detail::q4_schedule_uses_mma(opt.q4_schedule));
+bool candidate_uses_mma(const Options& opt, QType qtype, const ShapeSpec& shape, std::int32_t t) {
+    if (opt.candidate == CandidateKind::Q4Fixed) {
+        return ops::detail::q4_schedule_uses_mma(opt.q4_schedule);
+    }
+    return opt.candidate == CandidateKind::Auto && qtype == QType::Q4G64_F16S &&
+           ops::detail::q4_schedule_uses_mma(resolve_auto_q4_plan(shape, t).schedule);
 }
 
 RunResult run_target(const TargetSpec& target, const Options& opt, double stream_ceiling_gbs,
@@ -975,7 +935,7 @@ RunResult run_target(const TargetSpec& target, const Options& opt, double stream
     const std::uint64_t x_bytes       = static_cast<std::uint64_t>(shape.k) * tt * 2ULL;
     const std::uint64_t out_bytes     = static_cast<std::uint64_t>(shape.n) * tt * 2ULL;
     const std::uint64_t useful_bytes  = w.payload_bytes + x_bytes + out_bytes;
-    const int col_tile                = candidate_col_tile(opt, shape, t);
+    const int col_tile                = candidate_col_tile(opt, target.qtype, shape, t);
     const std::uint64_t weight_passes = static_cast<std::uint64_t>((t + col_tile - 1) / col_tile);
     const std::uint64_t weight_replay_lower_bound_bytes =
         w.payload_bytes * weight_passes + x_bytes + out_bytes;
@@ -989,7 +949,7 @@ RunResult run_target(const TargetSpec& target, const Options& opt, double stream
         2.0 * static_cast<double>(shape.n) * static_cast<double>(shape.k) * static_cast<double>(t);
     double executed_tflops = std::numeric_limits<double>::quiet_NaN();
     double executed_tc_pct = std::numeric_limits<double>::quiet_NaN();
-    if (candidate_uses_mma(opt)) {
+    if (candidate_uses_mma(opt, target.qtype, shape, t)) {
         const std::int64_t executed_rows = align_up_u64(shape.n, 64);
         const std::int64_t executed_cols = align_up_u64(t, col_tile);
         const double executed_flops      = 2.0 * static_cast<double>(executed_rows) *
@@ -1008,13 +968,12 @@ RunResult run_target(const TargetSpec& target, const Options& opt, double stream
     RunResult r;
     r.shape_name     = shape.name;
     r.qtype_name     = qtype_name(target.qtype);
-    r.candidate_name = candidate_name(opt, shape, t);
+    r.candidate_name = candidate_name(opt, target.qtype, shape, t);
     if (opt.candidate == CandidateKind::Q4Fixed) {
         r.kernel_variant = ops::detail::q4_kernel_variant_name(selected_q4_variant(opt, shape, t));
-    } else if (opt.candidate == CandidateKind::LegacyMma) {
-        r.kernel_variant = (shape.n % 64) == 0 && (t % col_tile) == 0 && (shape.k % 64) == 0
-                               ? "full"
-                               : "predicated";
+    } else if (opt.candidate == CandidateKind::Auto && target.qtype == QType::Q4G64_F16S) {
+        r.kernel_variant =
+            ops::detail::q4_kernel_variant_name(resolve_auto_q4_plan(shape, t).variant);
     } else {
         r.kernel_variant = "n/a";
     }
@@ -1144,7 +1103,7 @@ void write_csv(const std::filesystem::path& path, const std::vector<RunResult>& 
     std::ofstream out(path);
     if (!out) { throw std::runtime_error("failed to open CSV output: " + path.string()); }
     // Each row is one (shape, qtype, T, physical candidate) point. Useful counters,
-    // column-tiled weight-replay lower bounds, and forced-MMA executed counters remain
+    // column-tiled weight-replay lower bounds, and MMA-resolved Q4 executed counters remain
     // distinct; physical traffic and SOL percentages come only from NCU.
     out << "shape,qtype,N,K,weight_payload_bytes,x_bytes,out_bytes,useful_bytes,"
            "weight_replay_lower_bound_bytes,cold_median_us,cold_min_us,cold_p95_us,useful_gbs,"
@@ -1200,9 +1159,10 @@ int main(int argc, char** argv) {
         }
 
         std::vector<RunResult> rows;
-        rows.reserve(targets.size() * opt.t_sweep.size());
         for (const TargetSpec& target : targets) {
-            for (int t : opt.t_sweep) {
+            const std::vector<int> sweep =
+                opt.t_sweep.empty() ? default_t_sweep(target, opt) : opt.t_sweep;
+            for (int t : sweep) {
                 if (opt.paired_kv) {
                     rows.push_back(run_paired_kv(opt, stream_ceiling_gbs, tc_ceiling_tflops, t,
                                                  flush, stream));

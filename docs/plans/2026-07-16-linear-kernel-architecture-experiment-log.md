@@ -123,6 +123,7 @@ limits. Useful traffic/FLOP accounting is kept separate from physical NCU traffi
 | E053 | 2026-07-16 | Integrate the first dormant Q4 templates and reject any abstraction-induced regression before route work. | Three GEMV schedules, SIMT C4/C8 Full+Predicated, MMA C64/C128 Full+Predicated; matched legacy points. | Fresh Release `sm_120a` build; independent BF16-boundary/Q4-dequant/FP64 oracle; `cuobjdump` resources; one-process 5-warmup/20-cold structural screen with canonical candidate CSV. | All 11 initial candidates passed; no local/stack spill. New versus legacy cold median: warp-row 68.896/70.880 us (-2.8%), split-K 15.616/11.552 us (+35.2%), SIMT C4 27.904/32.032 us (-12.9%), SIMT C8 134.112/204.064 us (-34.3%), MMA C64 105.728/105.760 us (tie), MMA C128 29.952/29.920 us (tie). The split-K candidate used 48 registers versus the old winner's 34 and changed the lane/decode/scale topology. | Keep the three-family architecture and the successful schedules, but reject the first R1/W8 schedule. Make GEMV lane/decode/transfer topology an explicit compile-time schedule axis and regenerate split-K as byte-per-lane, scalar-scale/shuffle, synchronous-vector code staging before any qualification or commit. |
 | E054 | 2026-07-16 | Recover the split-K winner without reintroducing an application- or exact-Rows kernel. | `q4_rowsplit_gemv_kernel` R1/W8 at K5120; runtime and static group-ownership variants. | Bounded sequence: runtime PackedWord8 15.616 us; runtime PackedByte2 pair-loop 19.488 us; active-groups-10 unrolled 17.408 us; then the same template with `StaticGroupsPerRow=80`. Each step used the same Release benchmark and independent numerical oracle; final resources came from linked `cuobjdump`. | The final static-group schedule is 11.520 us versus legacy 11.520 us; R4/W1 is 70.880 versus 70.912 us. R1/W8 uses 36 versus 34 registers, identical 5,152 B linked static shared, zero local/stack spill, and a matching hot mix of 20 FFMA, 10 X loads, 10 code shared loads, and 10 shuffles. The complete candidate suite, including K5120 numerical coverage and static-K rejection, passes. Runtime ownership prevented the compiler from recovering the legacy hot-loop ILP even after the lane/decode path matched; specializing group count, not Rows or role, restored it. | Accept `StaticGroupsPerRow` as an evidence-gated codegen axis with 0 meaning runtime. Bind R1/W8 to 80 groups/K5120 and reject other K; any K5120 Rows can reuse it. Do not instantiate further static K values unless a runtime schedule fails the same >1% gate. |
 | E055 | 2026-07-16 | Qualify the Q4 production route catalog and its physical limits before atomic cut-over. | Seven current pure-Linear supports, all reachable Text integers/Vision multiples of four, and measurement-only future `[131072,2048]`. | Frozen 1512.483 GB/s copy and 220.246 TFLOP/s BF16-MMA context; 5/20 screen; three independent 8/40 confirmations at matched anchors and every retained seam; NCU detailed, explicit traffic, and stall captures for six final topologies. | New/legacy medians are equal for both GEMVs and C128, C64 is 1.2% faster, C4/C8 are 12.9%/34.1% faster. Final current routes use R1/W8 for three K5120 T1 views, R4/W1 direct for the draft head, C4/C8 for Text and early Vision, C64 for Vision mid bands through C320, and C128 from C324. R4/W1 shared has no winner route. Saturated C128 reaches 90.66% SM SOL with 63.7M tensor instructions; R4 direct reaches 75.18% DRAM SOL with 356.55 MB DRAM reads matching the Q4 payload; no topology spills. Future K2048 needs no new kernel: R4 at C1, C8 at C8, C64 at C9--64, C128 at C65+. | Freeze the exact finite route table in the Q4 Op-owned planner; retain six production schedules and both Full/Predicated variants where measured, delete R4 shared and all legacy measurement selectors during cut-over, and do not admit future K2048 yet. |
+| E056 | 2026-07-16 | Atomically cut production Q4 pure Linear over to the qualified three-template architecture without changing caller semantics. | Seven exact supports, six schedules/ten binary entries, Q4 public dispatch, dead parent routes, Text/Vision/MTP real product paths. | Full Release build; fixed oracle; host plan closure; 34 public-auto/fixed BF16 word-exact route points; full Linear regression; real-artifact prefix Text/Vision/MTP test; detached `eb9257e` old/new `ninfer_bench` brackets. | All correctness and real-artifact gates pass. Stable Text bracket: new 1633.09/1635.07 versus old 1633.87 prefill tok/s; new 78.61/78.55 versus old 77.90 decode tok/s. Optimized-head MTP: new 120.77/120.82 versus old 108.33 output tok/s with identical 0.5 acceptance and 24 rounds/12 fallbacks. Initial 1583/1677 Text values were frequency/power drift and disappear in the immediate bracket. | Keep the cutover. Q4 now resolves entirely inside `linear()`, unknown problems fail closed, old Q4 GEMV/Small-T/MMA routes and legacy selectors are deleted, and future shape work adds admission/route data before considering a new schedule. |
 
 ## 5. Environment and baseline inventory
 
@@ -2020,7 +2021,8 @@ schedule identity、variant、build、GPU 和 CUDA。CSV 明确区分：
 
 - `useful_*`；
 - 只考虑 column tile 权重重放的 `weight_replay_lower_bound_*`；
-- 仅 forced MMA 有意义的 `executed_tflops/executed_tc_pct`；
+- Q4 `auto` 或 fixed candidate 解析到 MMA schedule 时才有意义的
+  `executed_tflops/executed_tc_pct`；
 - physical bytes、occupancy 和 SOL 留给 NCU。
 
 因此结构 screen 中传入的 `--stream-ceiling-gbs 1000` 只是固定输出上下文，不构成
@@ -2038,7 +2040,8 @@ FP64 CPU W @ X
 
 覆盖：
 
-- 三个 GEMV schedule，包括最终 R1/W8 K5120；
+- 资格阶段的三个 GEMV schedule；cutover 后保留的 R4/W1 与 R1/W8 均在 K5120
+  独立 oracle 下复验，其中 R4/W1 还保留 K512 partial-tile 覆盖；
 - SIMT C4/C8 的 Full、Predicated、K1152 partial stage；
 - SIMT K3072 的三 stage ring-buffer 复用；
 - MMA C64/C128 的 Full、Predicated；
@@ -2253,3 +2256,152 @@ NCU duration 只用于 profiler 内部诊断，route timing 仍采用无 profile
   百分比。
 - 饱和 MMA C128 达到 90.66% SM SOL，满足本文约 85--90% BF16 MMA roofline 目标。
 - 六个 topology 的 local/shared spill metric 都为 0。
+
+### 11.9 Production 原子切换与真实产品验收（E056）
+
+#### 11.9.1 实现变化
+
+原子 change set 同时完成：
+
+1. 新增 `q4_rowsplit_plan.{h,cpp}`：
+   - 7 个 exact support；
+   - 21 条 support-local route；
+   - 编译期证明 support 唯一、route span 连续、无空洞并完整覆盖 admission；
+   - GEMV 派生 `None`，tiled schedule 优先合法 `Full`，否则 `Predicated`。
+2. `linear()` 保持原始语义签名，在 Q4 metadata、contiguous 和对齐验证后直接进入
+   Q4 planner；caller 不传 target、profile、role、schedule 或 variant。
+3. production 使用独立 `q4_rowsplit_launch_fixed(Q4Plan, ...)`；benchmark/test 的
+   candidate 入口只包装同一个闭合 fixed launch，不成为第二个 route owner。
+4. 删除未获 route 的 R4/W1 shared 实例；最终为：
+
+   ```text
+   2 GEMV entries
+   2 SIMT schedules x Full/Predicated
+   2 MMA schedules x Full/Predicated
+   = 10 production CUDA entries
+   ```
+
+5. 删除旧 pure-Q4：
+   - application-named GateUp、Attention parent、GDN Q/K、LM-head plain GEMV；
+   - generic Small-T 中的 `Q4Smallt` 与 Q4 case；
+   - generic low-bit MMA 中的 Q4 case/short rule；
+   - 四个 legacy benchmark selector；
+   - 旧 Q4 policy ID 和 resolver 分支。
+6. 保留 Q5/Q6/W8、Q5 residual、grouped input、folded SwiGLU、`Q4Codec` 和共享 MMA
+   header 基座。
+7. source audit 证明 `Phase::Decode` 没有调用者后，删除两个死分支和枚举值；packed
+   Q4/Q5 parent 仍作为 artifact row-view storage 保留。
+
+#### 11.9.2 构建与数值/route 验收
+
+命令：
+
+```bash
+cmake --build build -j 12
+
+./build/tests/ninfer_q4_linear_plan_test
+./build/tests/ninfer_q4_linear_candidate_test
+./build/tests/ninfer_q4_linear_dispatch_test
+NINFER_LINEAR_TEST_PREFILL_FUSIONS_ONLY=1 \
+  ./build/tests/ninfer_linear_test
+./build/tests/ninfer_linear_test
+```
+
+结果：
+
+```text
+full build                              PASS
+Q4 production plan                     OK
+Q4 fixed candidates                    OK
+Q4 public dispatch                     OK
+prefill grouped/fused correctness      OK
+full Linear correctness                OK
+```
+
+最终 linked archive 的 `cuobjdump --dump-resource-usage` 只有 10 个唯一 Q4 pure-Linear
+kernel symbols；`nm -C` 和 source `rg` 均找不到被删除的 application-named Q4
+launcher、`Q4Smallt` 或 R4/W1 shared entry。10 个 entry 继续保持 E055 记录的 zero
+stack/local/spill 资源合同。
+
+`q4_linear_plan_test` 覆盖完整 Vision step=4 域以及所有 Text/Vision route seam 和
+rejection。`q4_linear_dispatch_test` 对 7 个 support 复用 deterministic packed weight，
+在 21 条 route 的首末点去重后运行 34 个 GPU case；每个 case 同时断言 plan identity，
+再比较 public `linear()` 与 expected fixed candidate 的全部 BF16 words。六个 schedule
+和 `None/Full/Predicated` 均被实际执行。Public rejection 包括：
+
+```text
+[7168,5120] C1
+[34816,5120] C1/C17
+[131072,2048] C1
+Vision C5
+```
+
+独立 fixed-candidate suite 还以 test-side Q4 dequant + FP64 `W @ X` 验证生产
+R4/W1 的 K5120 五个完整 group tile；因此 draft-head 路径的数学正确性不依赖
+public/fixed 同实现逐 word 对照。
+
+real artifact gate：
+
+```bash
+NINFER_QWEN3_6_27B_WEIGHTS=out/qwen3_6_27b_rtx5090.ninfer \
+  ./build/tests/ninfer_qwen3_6_27b_prefix_real_test
+```
+
+输出 `ok`。该测试通过一个真实 Engine 同时覆盖 Text、Vision、MTP、prefix/state 和
+当前 artifact binding。
+
+#### 11.9.3 Matched end-to-end old/new
+
+为了避免用不同时间的绝对吞吐判断回退，建立 detached old worktree：
+
+```bash
+git worktree add --detach /tmp/ninfer-q4-old-eb9257e eb9257e
+cmake -S /tmp/ninfer-q4-old-eb9257e \
+      -B /tmp/ninfer-q4-old-eb9257e/build \
+      -DCMAKE_BUILD_TYPE=Release
+cmake --build /tmp/ninfer-q4-old-eb9257e/build \
+      --target ninfer_bench -j "$(nproc)"
+```
+
+Text 命令：
+
+```bash
+./build/bench/ninfer_bench \
+  --weights out/qwen3_6_27b_rtx5090.ninfer \
+  -pg 128,32 -r 3 --warmup 1 \
+  --prefill-chunk 128 --output table
+```
+
+即时 new/old/new bracket：
+
+| build | prefill tok/s | decode output tok/s |
+|---|---:|---:|
+| new | 1633.09 ± 5.27 | 78.61 ± 0.06 |
+| old `eb9257e` | 1633.87 ± 5.63 | 77.90 ± 0.19 |
+| new | 1635.07 ± 3.88 | 78.55 ± 0.03 |
+
+因此稳定 bracket 中 Text prefill practical tie，decode 无回退。更早一次 new
+1583.46/76.22 和 old 1677.06/79.68 发生在 GPU 功耗/频率漂移段；随后的即时 bracket
+同时收敛，不能把那两个孤立绝对值归因给代码。
+
+optimized draft-head MTP 命令：
+
+```bash
+./build/bench/ninfer_bench \
+  --weights out/qwen3_6_27b_rtx5090.ninfer \
+  -pg 32,32 -r 3 --warmup 1 \
+  --prefill-chunk 128 \
+  --mtp-draft-tokens 5 --lm-head-draft \
+  --output table
+```
+
+| build | prefill tok/s | decode output tok/s | acceptance | rounds/fallbacks |
+|---|---:|---:|---:|---:|
+| new | 394.43 ± 1.06 | 120.77 ± 0.26 | 0.5 | 24/12 |
+| old `eb9257e` | 394.95 ± 1.94 | 108.33 ± 0.12 | 0.5 | 24/12 |
+| new | 396.13 ± 1.27 | 120.82 ± 0.38 | 0.5 | 24/12 |
+
+MTP 语义轨迹不变，新实现 decode output throughput 提高约 11.5%。本轮没有追加新的
+NSYS attribution，因此不把全部增益强行归因给单个 kernel；实际发生变化的 Q4 路径
+包括 MTP final Q projection 和 optimized draft head，它们现在都使用 exact qualified
+schedule。

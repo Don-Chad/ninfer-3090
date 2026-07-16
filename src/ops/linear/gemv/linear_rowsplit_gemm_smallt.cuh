@@ -3,7 +3,7 @@
 // Warp-per-row small-T row-split low-bit GEMM: out[N,T] = W[N,K] . x[K,T].
 //
 // This is the universal low-bit path for every T the tuned decode GEMVs and the
-// LargeT tensor-core GEMM do not own: SmallT (2..16) for Q4/Q5/Q6, all T for
+// LargeT tensor-core GEMM do not own: SmallT (2..16) for Q5/Q6, all T for
 // W8G32, generic-shape T==1, and the k%8!=0 LargeT fallback. The design target
 // is the DRAM roofline: stream the weight payload once per kTt-column tile at
 // copy-ceiling bandwidth, so the cost of T<=kTt is nearly flat versus T==1 (the
@@ -62,34 +62,6 @@ namespace ninfer::ops::detail {
 // dequant_chunk(s_nib, s_hi, s_sc, c, lane, w): dequantize the lane's 8 values
 // of phase c into w[0..7], scale applied. All shared reads are conflict-free or
 // broadcast under the phase-interleaved ownership.
-
-struct Q4Smallt {
-    using Codec                             = Q4Codec;
-    static constexpr int kNibU4             = 32;
-    static constexpr int kHighU4            = 0;
-    static constexpr int kScaleU32          = 8;
-    static constexpr int kHighBytesPerGroup = 0;
-
-    // Nibble j of the code word is value j; (v ^ 8) - 8 sign extension becomes
-    // xor 0x8 per nibble + subtract (1024 + 8) in the fp16 domain.
-    __device__ static __forceinline__ void dequant_chunk(const uint4* s_nib, const uint4* /*s_hi*/,
-                                                         const std::uint32_t* s_sc, int c, int lane,
-                                                         float (&w)[8]) {
-        const std::uint32_t word =
-            reinterpret_cast<const std::uint32_t*>(s_nib)[c * 32 + lane] ^ 0x88888888u;
-        const float scale = __half2float(
-            __ushort_as_half(reinterpret_cast<const std::uint16_t*>(s_sc)[c * 4 + (lane >> 3)]));
-        const __half2 bias = __half2half2(__ushort_as_half(0x6408)); // 1032.0
-#pragma unroll
-        for (int p = 0; p < 4; ++p) {
-            std::uint32_t bits = ((word >> (4 * p)) & 0x000f000fu) | 0x64006400u;
-            const __half2 h    = __hsub2(half2_from_bits(bits), bias);
-            const float2 f     = __half22float2(h);
-            w[p]               = f.x * scale;
-            w[p + 4]           = f.y * scale;
-        }
-    }
-};
 
 struct Q5Smallt {
     using Codec                             = Q5Codec;
