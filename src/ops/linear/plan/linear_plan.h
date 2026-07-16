@@ -28,7 +28,6 @@ enum class ShapeFamily {
     Out5120x6144,
     MlpGateUp34816x5120,
     MlpDown5120x17408,
-    LmHeadVocabx5120,
     Generic,
 };
 
@@ -44,7 +43,6 @@ enum class LinearPolicyId {
     GenericDenseGemm,
     AttnInQKV7168Q5RowsplitGemv,
     MlpDownQ5RowsplitGemv,
-    LmHeadQ6RowsplitGemv,
     Proj6144Q5RowsplitGemv,
     Out6144Q5RowsplitGemv,
 };
@@ -62,13 +60,12 @@ struct LinearPlan {
     bool uses_tensor_cores; // derived metadata, reports only
 };
 
-// Host classification. classify_format returns GenericUnsupported for any (qtype, layout) the
-// wrapper does not accept; the wrapper validation rejects those before dispatch.
+// Host classification. Format-local Q4/Q6 dispatch occurs before this legacy planner is used.
 LinearFormat classify_format(const Weight& w);
 ShapeFamily classify_shape(std::int32_t n, std::int32_t k);
 LinearRegime classify_regime(LinearFormat fmt, ShapeFamily shape, std::int32_t t);
 
-// Legacy planner for Q5/Q6/W8/Dense. Q4 pure Linear is owned by q4_rowsplit_plan.
+// Legacy planner for Q5/W8/Dense. Q4/Q6 pure Linear are owned by their format-local plans.
 LinearPlan resolve_plan(LinearPlanKey key);
 
 // Names / identity for logs and (future) benchmarks. No behavioral role.

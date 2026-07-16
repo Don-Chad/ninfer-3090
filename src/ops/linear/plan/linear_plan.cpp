@@ -51,10 +51,6 @@ ShapeFamily classify_shape(std::int32_t n, std::int32_t k) {
     for (const auto& e : kTable) {
         if (e.n == n && e.k == k) { return e.fam; }
     }
-    // Vocab-projection family: the full lm_head (n=248320) and any separately
-    // loaded draft head (n=65536/98304/131072) all share k=5120 and the tuned Q6
-    // warp-per-row GEMV. No other registered shape reaches n>=65536 at k=5120.
-    if (k == 5120 && n >= 65536) { return ShapeFamily::LmHeadVocabx5120; }
     return ShapeFamily::Generic;
 }
 
@@ -72,8 +68,8 @@ LinearRegime classify_regime(LinearFormat fmt, ShapeFamily shape, std::int32_t t
 }
 
 LinearPlan resolve_plan(LinearPlanKey key) {
-    if (key.format == LinearFormat::Q4G64_RowSplit) {
-        throw std::invalid_argument("legacy linear planner does not own Q4 pure Linear");
+    if (key.format == LinearFormat::Q4G64_RowSplit || key.format == LinearFormat::Q6G64_RowSplit) {
+        throw std::invalid_argument("legacy linear planner does not own Q4/Q6 pure Linear");
     }
     if (key.format == LinearFormat::Q5G64_RowSplit &&
         key.shape == ShapeFamily::AttnInQKV7168x5120 && key.regime == LinearRegime::T1) {
@@ -85,12 +81,6 @@ LinearPlan resolve_plan(LinearPlanKey key) {
         key.regime == LinearRegime::T1) {
         return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::MlpDownQ5RowsplitGemv,
                           policy_name(LinearPolicyId::MlpDownQ5RowsplitGemv),
-                          /*uses_tensor_cores=*/false};
-    }
-    if (key.format == LinearFormat::Q6G64_RowSplit && key.shape == ShapeFamily::LmHeadVocabx5120 &&
-        key.regime == LinearRegime::T1) {
-        return LinearPlan{LinearBackendKind::Gemv, LinearPolicyId::LmHeadQ6RowsplitGemv,
-                          policy_name(LinearPolicyId::LmHeadQ6RowsplitGemv),
                           /*uses_tensor_cores=*/false};
     }
     if (key.format == LinearFormat::Q5G64_RowSplit && key.shape == ShapeFamily::Proj6144x5120 &&
@@ -105,12 +95,12 @@ LinearPlan resolve_plan(LinearPlanKey key) {
                           policy_name(LinearPolicyId::Out6144Q5RowsplitGemv),
                           /*uses_tensor_cores=*/false};
     }
-    // Dense keeps its reference GEMV/GEMM. Q5/Q6 low-bit routes by regime:
+    // Dense keeps its reference GEMV/GEMM. Q5 low-bit routes by regime:
     // registered-shape T1 -> tuned GEMV above; generic T1 and SmallT -> the
     // small-T streaming GEMM (memory-bound, CUDA cores, weights streamed once
     // per column tile); LargeT -> bf16 tensor-core mma GEMM (compute-bound).
     // W8G32 owns a separate LargeT MMA backend so its group-32 dequantization and
-    // SM120 tile pipeline can be tuned without changing the Q4/Q5/Q6 kernel.
+    // SM120 tile pipeline can be tuned without changing the Q5 kernel.
     if (key.format == LinearFormat::DenseBF16 || key.format == LinearFormat::DenseFP32) {
         const bool gemv = (key.regime == LinearRegime::T1);
         const LinearPolicyId policy =
@@ -175,8 +165,6 @@ const char* shape_name(ShapeFamily s) {
         return "mlp_gate_up_34816x5120";
     case ShapeFamily::MlpDown5120x17408:
         return "mlp_down_5120x17408";
-    case ShapeFamily::LmHeadVocabx5120:
-        return "lm_head_vocab_x5120";
     case ShapeFamily::Generic:
         return "generic";
     }
@@ -211,8 +199,6 @@ const char* policy_name(LinearPolicyId p) {
         return "linear.rowsplit.gemv.attn_in_7168.q5.warp_row.v1";
     case LinearPolicyId::MlpDownQ5RowsplitGemv:
         return "linear.rowsplit.gemv.mlp_down.q5.warp_row.v1";
-    case LinearPolicyId::LmHeadQ6RowsplitGemv:
-        return "linear.rowsplit.gemv.lm_head.q6.warp_row.v1";
     case LinearPolicyId::Proj6144Q5RowsplitGemv:
         return "linear.rowsplit.gemv.proj_6144.q5.warp_row.v1";
     case LinearPolicyId::Out6144Q5RowsplitGemv:

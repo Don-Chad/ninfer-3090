@@ -1,6 +1,4 @@
-// Launcher for the LargeT bf16 tensor-core GEMM (Q5/Q6 row-split), selected by
-// fmt. Routed from the LargeT regime; the multi-step GEMV remains the SmallT path
-// and the universal fallback.
+// Launcher for the legacy LargeT bf16 tensor-core GEMM (Q5 row-split).
 #include "ops/linear/gemm/linear_rowsplit_gemm_mma.cuh"
 
 #include "ops/common/math.h"
@@ -13,6 +11,9 @@
 
 namespace ninfer::ops::detail {
 namespace {
+
+using MmaR64C128Cfg = GemmCfg<64, 128, 64, 64, 32, 2, 1, false, true, true>;
+using MmaR64C64Cfg  = GemmCfg<64, 64, 64, 32, 32, 2, 3>;
 
 template <class Codec, class Cfg, bool Residual = false>
 void launch_cfg(const __nv_bfloat16* xp, const std::uint8_t* codes, const std::uint8_t* high,
@@ -39,9 +40,6 @@ void dispatch_codec(const __nv_bfloat16* xp, const std::uint8_t* codes, const st
                     const std::uint8_t* scales, const __nv_bfloat16* residual, __nv_bfloat16* outp,
                     std::int32_t n, std::int32_t k, std::int32_t t, std::int32_t padded_k,
                     cudaStream_t stream) {
-    using CgspCfg  = GemmCfg<64, 128, 64, 64, 32, 2, 1, false, true, true>;
-    using ShortCfg = GemmCfg<64, 64, 64, 32, 32, 2, 3>;
-
     bool short_tile = false;
     if constexpr (std::is_same_v<Codec, Q5Codec>) {
         const bool down_or_out = (n == 5120 && k == 17408) || (n == 5120 && k == 6144);
@@ -50,11 +48,11 @@ void dispatch_codec(const __nv_bfloat16* xp, const std::uint8_t* codes, const st
     }
 
     if (short_tile) {
-        launch_cfg<Codec, ShortCfg, Residual>(xp, codes, high, scales, residual, outp, n, k, t,
-                                              padded_k, stream);
+        launch_cfg<Codec, MmaR64C64Cfg, Residual>(xp, codes, high, scales, residual, outp, n, k, t,
+                                                  padded_k, stream);
     } else {
-        launch_cfg<Codec, CgspCfg, Residual>(xp, codes, high, scales, residual, outp, n, k, t,
-                                             padded_k, stream);
+        launch_cfg<Codec, MmaR64C128Cfg, Residual>(xp, codes, high, scales, residual, outp, n, k, t,
+                                                   padded_k, stream);
     }
 }
 
@@ -79,11 +77,8 @@ void linear_rowsplit_gemm_mma_launch(const Tensor& x, const Weight& w, Tensor& o
     case LinearFormat::Q5G64_RowSplit:
         dispatch_codec<Q5Codec>(xp, codes, high, scales, nullptr, outp, n, k, t, padded_k, stream);
         break;
-    case LinearFormat::Q6G64_RowSplit:
-        dispatch_codec<Q6Codec>(xp, codes, high, scales, nullptr, outp, n, k, t, padded_k, stream);
-        break;
     default:
-        throw std::invalid_argument("linear: mma GEMM requires a Q5/Q6 row-split format");
+        throw std::invalid_argument("linear: mma GEMM requires a Q5 row-split format");
     }
     CUDA_CHECK(cudaGetLastError());
 }

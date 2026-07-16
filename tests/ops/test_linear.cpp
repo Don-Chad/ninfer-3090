@@ -12,6 +12,7 @@
 #include "ops/op_tester.h"
 #include "ops/linear/q4/q4_rowsplit_launch.h"
 #include "ops/linear/q4/q4_rowsplit_plan.h"
+#include "ops/linear/q6/q6_rowsplit_plan.h"
 #include "ops/row_split_pack.h"
 
 #include <algorithm>
@@ -272,6 +273,11 @@ int one_quant_shape(QType qtype, std::int32_t n, std::int32_t k,
             const ops::detail::Q4Plan plan =
                 ops::detail::q4_rowsplit_resolve_plan({n, k, packed.weight.padded_shape[1], t});
             tol = ops::detail::q4_schedule_uses_mma(plan.schedule) ? Tolerance::linear_tc()
+                                                                   : Tolerance::linear_bf16();
+        } else if (qtype == QType::Q6G64_F16S) {
+            const ops::detail::Q6Plan plan =
+                ops::detail::q6_rowsplit_resolve_plan({n, k, packed.weight.padded_shape[1], t});
+            tol = ops::detail::q6_schedule_uses_mma(plan.schedule) ? Tolerance::linear_tc()
                                                                    : Tolerance::linear_bf16();
         }
         failures += verify(label.c_str(), from_device_bf16(dout, static_cast<std::size_t>(n) * t),
@@ -794,7 +800,6 @@ int main() {
     f += fp32_ctrl_first_column_consistency(48, 64, 7);
     f += fp32_ctrl_first_column_consistency(64, 64, 32);
     f += one_quant_shape(QType::Q5G64_F16S, 70, 130, {1, 9}, 107u, 8.0f, 1.25f, "stress");
-    f += one_quant_shape(QType::Q6G64_F16S, 70, 130, {1, 9}, 109u, 8.0f, 1.25f, "stress");
     for (std::uint32_t seed : {1u, 7u, 99u}) {
         f += one_quant_shape(QType::W8G32_F16S, 70, 130, {1, 2, 5, 17}, seed);
         f += one_quant_shape(QType::W8G32_F16S, 70, 131, {1, 2, 5, 17}, seed);
@@ -808,7 +813,6 @@ int main() {
     }
     f += one_quant_shape(QType::W8G32_F16S, 96, 130, {1, 2, 5, 17}, 113u, 8.0f, 1.25f, "stress");
     f += paired_w8g32_shape(64, 256, {17, 128}, 127u);
-    f += one_quant_shape(QType::Q6G64_F16S, 128, 128, {512}, 47u);
     // Q4 public correctness is exact-admission only. The dedicated Q4 plan/dispatch tests cover
     // every route seam and compare public auto against the fixed entry word-for-word; these
     // oracle points cover the split-K/SIMT numerical boundary at real product geometries.
@@ -821,11 +825,11 @@ int main() {
                         std::pair<std::int32_t, std::int32_t>{5120, 17408}}) {
         f += one_quant_shape(QType::Q5G64_F16S, n, k, {1, 2, 3, 4, 5, 6, 7}, 29u);
     }
-    f += one_quant_shape(QType::Q6G64_F16S, 4096, 5120, {1, 7}, 31u);
-
-    // --- Q6 lm_head vocab-projection family (T1 warp-per-row GEMV) ---------------
-    f += one_quant_shape(QType::Q6G64_F16S, 248320, 5120, {1}, 211u); // full lm_head
-    f += one_quant_shape(QType::Q6G64_F16S, 65536, 5120, {1}, 227u);  // runtime-N Q6
+    // Q6 public correctness is exact-admission only. The dedicated Q6 plan/dispatch tests cover
+    // every route seam and compare public auto against the fixed entry word-for-word. These
+    // independent fp64-oracle points cover the real head and Vision geometries.
+    f += one_quant_shape(QType::Q6G64_F16S, 248320, 5120, {1}, 211u);
+    f += one_quant_shape(QType::Q6G64_F16S, 1152, 1536, {4, 40, 128}, 227u);
 
     // --- prefill (T>1) coverage of the multi-step GEMM path ---------------------
     // The fp64 CPU golden is O(N*K*T), so large families run at small/medium T and
@@ -833,10 +837,8 @@ int main() {
     f += one_quant_shape(QType::Q5G64_F16S, 5120, 17408, {2, 8, 64}, 67u);
     f += one_quant_shape(QType::Q5G64_F16S, 6144, 5120, {2, 8, 64, 512}, 83u); // q/gate/in_v/in_z
     f += one_quant_shape(QType::Q5G64_F16S, 5120, 6144, {2, 8, 64, 512}, 89u); // o/out proj
-    f += one_quant_shape(QType::Q6G64_F16S, 4096, 5120, {2, 8, 64}, 131u);
-    // Long T + column-tile boundary (kTt=8) + unaligned N/K on Q5/Q6 test shapes.
+    // Long T + column-tile boundary (kTt=8) + unaligned N/K on a Q5 test shape.
     f += one_quant_shape(QType::Q5G64_F16S, 130, 256, {7, 8, 9, 65, 2048}, 93u);
-    f += one_quant_shape(QType::Q6G64_F16S, 192, 320, {7, 9, 63, 64, 65}, 97u);
     // LargeT (T > tau) exercises the tensor-core GEMM; cover the big N and big K dims.
     f += one_quant_shape(QType::Q5G64_F16S, 5120, 17408, {128}, 139u); // mlp_down (K=17408)
     // Regression: k % 8 != 0 at LargeT must fall back to the multi-step GEMV (the mma

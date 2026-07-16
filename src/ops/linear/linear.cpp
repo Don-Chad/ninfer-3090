@@ -4,12 +4,12 @@
 #include "ops/common/math.h"
 #include "ops/linear/gemv/linear_rowsplit_gemv_attn_in_7168.cuh"
 #include "ops/linear/gemv/linear_rowsplit_gemv_gdn_in_vz_6144.cuh"
-#include "ops/linear/gemv/linear_rowsplit_gemv_lm_head.cuh"
 #include "ops/linear/gemv/linear_rowsplit_gemv_mlp_down.cuh"
 #include "ops/linear/gemv/linear_rowsplit_gemv_out_6144.cuh"
 #include "ops/linear/gemv/linear_rowsplit_gemv_proj_6144.cuh"
 #include "ops/linear/plan/linear_plan.h"
 #include "ops/linear/q4/q4_rowsplit_plan.h"
+#include "ops/linear/q6/q6_rowsplit_plan.h"
 #include "ops/linear/reference/linear_generic.h"
 #include "core/weight.h" // as_dense
 
@@ -244,6 +244,17 @@ void require_q4_alignment(const Tensor& x, const Weight& w, const Tensor& out) {
     }
 }
 
+void require_q6_alignment(const Tensor& x, const Weight& w, const Tensor& out) {
+    const auto aligned = [](const void* ptr, std::uintptr_t alignment) {
+        return (reinterpret_cast<std::uintptr_t>(ptr) & (alignment - 1)) == 0;
+    };
+    if (!aligned(x.data, 16) || !aligned(out.data, 16) || !aligned(w.qdata, 16) ||
+        !aligned(w.qhigh, 16) || !aligned(w.scales, 4)) {
+        throw std::invalid_argument(
+            "linear: Q6 RowSplit requires 16-byte x/out/code/high and 4-byte scale alignment");
+    }
+}
+
 } // namespace
 
 void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
@@ -289,6 +300,7 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
         require_tensor_strides(x, out);
         if (is_empty_T(x, out)) { return; }
         require_tensor_data(x, out);
+        require_q6_alignment(x, w, out);
         break;
     case QType::W8G32_F16S:
         require_row_split_lowbit_metadata(w, "W8G32_F16S", 32, 32u, 0u);
@@ -301,14 +313,19 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
         throw std::invalid_argument("linear: unsupported weight qtype");
     }
 
-    // Q4 pure Linear owns exact admission and route selection internally. Callers provide only
-    // semantic operands; target/profile/application-role policy never crosses this boundary.
+    // Migrated low-bit pure Linear formats own exact admission and route selection internally.
+    // Callers provide only semantic operands; target/profile/application-role policy never crosses
+    // this boundary.
     if (w.qtype == QType::Q4G64_F16S) {
         detail::q4_rowsplit_dispatch(x, w, out, stream);
         return;
     }
+    if (w.qtype == QType::Q6G64_F16S) {
+        detail::q6_rowsplit_dispatch(x, w, out, stream);
+        return;
+    }
 
-    // Q5/Q6/W8/Dense continue through the existing planner until separately migrated.
+    // Q5/W8/Dense continue through the existing planner until separately migrated.
     const detail::LinearFormat fmt  = detail::classify_format(w);
     const detail::ShapeFamily shape = detail::classify_shape(w.n, w.k);
     detail::LinearRegime regime     = detail::classify_regime(fmt, shape, x.ne[1]);
@@ -317,9 +334,8 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
     // 16-byte aligned and the last k%8 elements would be dropped). Every Qwen3.6
     // shape has k a multiple of 128; for any other k, fall back to the small-T
     // GEMM, which is correct for all k.
-    const bool mma_routed_format = fmt == detail::LinearFormat::Q5G64_RowSplit ||
-                                   fmt == detail::LinearFormat::Q6G64_RowSplit ||
-                                   fmt == detail::LinearFormat::W8G32_RowSplit;
+    const bool mma_routed_format =
+        fmt == detail::LinearFormat::Q5G64_RowSplit || fmt == detail::LinearFormat::W8G32_RowSplit;
     if (mma_routed_format && regime == detail::LinearRegime::LargeT && (w.k % 8) != 0) {
         regime = detail::LinearRegime::SmallT;
     }
@@ -353,9 +369,6 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
         break;
     case detail::LinearPolicyId::MlpDownQ5RowsplitGemv:
         detail::linear_rowsplit_gemv_mlp_down_q5_launch(x, w, out, ws, stream);
-        break;
-    case detail::LinearPolicyId::LmHeadQ6RowsplitGemv:
-        detail::linear_rowsplit_gemv_lm_head_q6_launch(x, w, out, ws, stream);
         break;
     case detail::LinearPolicyId::Proj6144Q5RowsplitGemv:
         detail::linear_rowsplit_gemv_proj_6144_q5_launch(x, w, out, ws, stream);
