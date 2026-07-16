@@ -1,35 +1,242 @@
 # AGENTS.md
 
-## Project scope
-
 These rules apply to the whole repository.
+
+## Governing objective
+
+Complete the user's explicit deliverable within the applicable product contract. Use the smallest
+coherent scope that fully satisfies the requested outcome, preserves supported behavior, and makes
+the result credible. “Smallest” means no missing necessary work and no unrelated work; it does not
+mean the fewest changed lines or a partial solution.
+
+Correctness, performance, tests, profiling, documentation, provenance, cleanup, and tooling are
+means to the requested outcome, not independent objectives. Do not let supporting work replace,
+delay, or materially enlarge the requested deliverable.
+
+When choosing between possible work, use this order:
+
+1. respect applicable product and external-contract constraints;
+2. satisfy the user's explicit deliverable and acceptance criteria;
+3. preserve functional and numerical correctness of supported behavior;
+4. satisfy properties explicitly required by the task, including performance where applicable;
+5. preserve clear ownership and low maintenance cost;
+6. gather only the evidence and provenance needed to support the result.
+
+The product and architecture described here are the current contract for ordinary work. A task may
+explicitly change that contract; when it does, update the affected implementation, tests, and active
+authorities consistently rather than treating the current description as an immutable prohibition.
+
+## Scope control
+
+Before substantial work, determine the requested output, the behavior or decision it must support,
+and the conditions under which it is complete. This is an execution discipline, not a requirement
+to create a separate planning artifact.
+
+Work is in scope only when it:
+
+- directly contributes to the requested deliverable;
+- is necessary to preserve an applicable product, semantic, or external contract;
+- resolves uncertainty that could materially change the result; or
+- checks a realistic regression introduced by the change.
+
+Do not expand a task into a broader redesign, audit, cleanup, hardening effort, compatibility
+project, benchmark campaign, or documentation project without explicit user direction. General
+engineering preferences, possible future scenarios, and concerns outside the declared product
+model do not create requirements by themselves. Discuss a newly discovered cross-cutting
+constraint before adding it.
+
+Handle incidental findings proportionally:
+
+- address them when they block the requested outcome or make it materially incorrect;
+- include them when they are inseparable from a coherent implementation;
+- otherwise leave them unchanged and mention them only when they are useful to the user.
+
+For analysis, review, or design work, the requested explanation or design artifact is the
+deliverable; experiments and code inspection serve only to resolve material questions. For
+implementation work, produce the smallest coherent implementation and validate its supported
+observable behavior. For diagnosis, establish the cause and supporting evidence without turning
+the task into an unrequested fix or redesign.
+
+## Evidence, provenance, and completion
+
+Select evidence from the claim or decision it supports. The availability of a tool, test suite,
+artifact, or profiler does not make its use necessary. Prefer representative evidence over
+exhaustive evidence, and do not repeat an experiment unless the previous result is invalid or
+inconclusive, or the new result could change a live decision.
+
+Verification must match the semantic contract: use exact comparison for exact formats and
+transformations, and numerical or behavioral criteria for floating-point and probabilistic work.
+Do not substitute final-output plausibility for verification of an operator or state transition.
+
+Record only the provenance needed to interpret a material result. By default, this is the relevant
+target, hardware/toolchain, workload or command, and summarized outcome. Fixed hashes, clean
+worktrees, full command transcripts, raw profiler inventories, byte-identical regeneration, and
+exact probabilistic outputs are not validity requirements unless a concrete contract or the user
+requires them.
+
+Stop when:
+
+- the requested deliverable exists;
+- applicable contracts are satisfied;
+- material claims have sufficient evidence;
+- relevant checks pass, or their limitations are stated clearly; and
+- no known in-scope issue prevents the result from being used.
+
+Do not continue merely to eliminate all uncertainty, collect more metrics, complete a process loop,
+improve descriptive provenance, investigate unrelated observations, or make working notes
+exhaustive. The final result should lead with the deliverable, key decisions, relevant verification,
+and material limitations. Raw logs, experiment diaries, exhaustive command histories, hashes, and
+intermediate artifacts are excluded unless requested or themselves the deliverable.
+
+## Current product contract
 
 NInfer is a from-scratch C++/CUDA inference engine for maximum single-GPU inference performance on
 a small set of explicitly registered checkpoint/GPU targets. The current product supports exactly
 `qwen3_6_27b_rtx5090`: Qwen3.6-27B on an NVIDIA GeForce RTX 5090, with Text, image/video Vision,
 MTP, prefix reuse, CLI, OpenAI/Anthropic serving, and measurement through one `.ninfer` Engine
-route. The current workload is one user, one active request, and one GPU. Continuous batching,
-additional targets, and additional hardware are future work, not current behavior.
+route.
 
-## Core engineering principles
+The current workload is one user, one active request, and one GPU. Continuous batching, additional
+targets, and additional hardware are future work, not current behavior. This is a local,
+single-owner project. Registered models, generated artifacts, and the local workflow are trusted.
+Requirements derived from a different workload, trust model, or deployment model are out of scope
+until that product contract is explicitly changed.
 
-- This is a local, single-owner project. Registered models, generated artifacts, and the local
-  workflow are trusted. Do not invent untrusted-artifact, injection, multi-tenant, or adversarial
-  requirements.
-- Follow the declared product scope. A possible future scenario or general engineering preference
-  is not a current requirement. Discuss new cross-cutting constraints before adding them.
-- Prioritize functional correctness, inference performance, clear ownership, and low maintenance
-  cost. Generality, defensive hardening, formal completeness, and test coverage are not goals by
-  themselves.
-- Preserve useful provenance about how an artifact or result was produced, but keep descriptive
-  provenance separate from validity requirements. Do not require fixed hashes, clean worktrees,
-  byte-identical regeneration, or exact probabilistic outputs unless a concrete contract requires
-  them.
-- Verification must match the semantic contract: exact comparison for exact formats and
-  transformations; numerical or behavioral criteria for floating-point and probabilistic work.
-  Keep only tests that protect supported functionality or a realistic regression.
+## Engineering priorities
+
+Prioritize functional correctness, requested inference performance, clear ownership, direct code,
+and low maintenance cost. Generality, defensive hardening, formal completeness, broad compatibility,
+and test coverage are not goals by themselves.
+
+Prefer explicit target-specific implementation over framework-like abstraction. Do not add generic
+model graphs, family base classes, plugin discovery, string-driven execution, hidden device
+allocation, runtime weight repacking, or placeholders for hypothetical models or hardware unless an
+explicitly changed product contract requires them.
+
+## Sources of truth
+
+Read only the smallest relevant current authority needed for the task. The following list is a
+routing map, not a mandatory reading list:
+
+- `README.md` and executable `--help`: delivered capabilities and exact commands;
+- `docs/README.md`: active-document map and authority boundaries;
+- `docs/ninfer-project-positioning.md`: mission, target policy, workload, and non-goals;
+- `docs/design.md` and `docs/ninfer-engine-architecture.md`: implemented ownership, runtime, and
+  source/build boundaries;
+- `docs/ninfer-container-format.md`, `docs/ninfer-storage-layouts.md`, and
+  `docs/ninfer-tensor-formats.md`: generic `.ninfer` contracts;
+- `docs/qwen3.6-27b-ninfer-artifact.md`: exact target inventory, conversion, and binding;
+- `docs/qwen3.6-27b-architecture.md`: Text/Vision/MTP mathematics and state semantics;
+- `docs/op-development.md`: Op boundary, contracts, implementation ownership, correctness, and
+  performance workflow;
+- `docs/serving.md`: CLI, sampling, multimodal, OpenAI, and Anthropic behavior;
+- `include/ninfer/engine.h` and `include/ninfer/types.h`: installed C++ product API.
+
+Do not survey unrelated authorities for completeness. Read additional documents only when they
+govern a live decision in the current task. `docs/archive/` is historical evidence, not current
+authority.
+
+## Product and ownership boundaries
+
+These boundaries govern ordinary implementation work. An explicit architecture task may revise
+them, but must update the corresponding active authorities and affected implementation together.
+
+- `.ninfer` is the only C++ product artifact. Do not add `.qus` fallback, extension detection,
+  compatibility shims, or a second product lane.
+- `include/ninfer/engine.h` and `include/ninfer/types.h` are the installed opaque Engine API and
+  owning host values. `include/ninfer/ops/` contains repository-internal semantic Op contracts; it
+  is not installed product ABI.
+- `src/core` owns device primitives, tensors/views, checked layouts, arenas, graph RAII, physical
+  KV-cache containers, and raw transfer mechanisms.
+- `src/artifact` owns generic `.ninfer` framing, descriptors, binding primitives, and
+  materialization. It has no checkpoint execution semantics.
+- `src/ops` owns every semantically closed Op implementation, including fused, fixed-shape, and
+  device-specialized paths. Op ownership follows the mathematical or state-transition contract,
+  not its first model caller or demonstrated cross-target reuse.
+- `src/targets/<target_key>` owns the exact checkpoint/GPU storage profile, LoadedModel, Frontend,
+  Program, recurrent state, Text/Vision/MTP schedules, target graph/state policy, and diagnostics.
+  Target schedules compose repository-internal Ops but do not own mathematical CUDA
+  implementations. A target is one closed package, not a model family or generic graph.
+- `src/runtime` owns common contracts, generated-token transaction/publication policy, and the
+  public Engine PIMPL. It does not own model mathematics or target state.
+- `src/media/decode` consumes already-owned bytes. URL/path/data acquisition belongs to
+  `src/product/media_acquire`, CLI, or serving and is not linked into a target.
+- `src/product/prompt_input` owns the shared product-side JSON/message-to-owning-input adapter.
+- `src/serve` owns protocol translation and transport. CLI, server, and benchmark call only the
+  public Engine for inference.
+- `tools/convert/<target>`, `tools/reference/<target>`, and `tools/parity/<target>` remain
+  target-private conversion, correctness, and diagnostic implementations.
+
+## Compatibility and document lifecycle
+
+Project-owned C++ APIs, CLIs, Python tools, fixtures, reports, formats, and active documentation do
+not preserve backward compatibility. When a task replaces project-owned behavior, remove the
+obsolete aliases, fallbacks, transition branches, and tests in the affected contract instead of
+maintaining two paths. Do not turn that rule into unrelated repository-wide cleanup.
+
+The advertised OpenAI and Anthropic protocol surfaces are real external contracts. A change to
+their behavior must update the affected schema tests and serving documentation together.
+
+Integrate stable requirements into the existing active authority. Use a dated file under
+`docs/plans/` only when active work genuinely needs a separate plan; a plan is not a substitute for
+the requested deliverable. Archive it when the work completes or is abandoned. Do not create
+parallel `final`, `v2`, or `new-design` authorities. Update active links and
+`docs/archive/README.md` when moving completed plans.
+
+## Numerical correctness
+
+When a task changes numerical behavior or makes a numerical claim, identify the mathematical
+oracle, input rounding boundary, accumulation precision, output criterion, and real model shapes
+relevant to that claim. Apply exact, tolerance-based, or behavioral comparison according to the
+actual semantic contract.
+
+Where relevant to the changed behavior, account for numeric-format decode, BF16 fusion order, FP32
+GDN state, BF16/INT8 KV, MTP accept/commit state, arena lifetime, and CUDA Graph address stability.
+This is a risk map, not a checklist for every numerical task.
+
+## Performance work
+
+Define a performance claim at the level where it matters: operator, schedule, request phase, or
+end-to-end inference. Measure that level directly when practical. An isolated microbenchmark can
+support an operator-level claim but does not establish an end-to-end improvement.
+
+Use whole-inference profiling when end-to-end attribution remains unresolved. Use kernel profiling
+only after a relevant kernel has been identified and a kernel-level answer could materially change
+the current design or implementation decision. Do not collect additional profiling data once the
+relevant alternatives can be distinguished and the requested claim has adequate support.
+
+Retain concise context sufficient to interpret a reported result: relevant hardware/toolchain,
+artifact identity at the descriptive level, workload or command, and summarized measurements. Raw
+reports and fixed repository or artifact hashes are not required by default.
+
+## Tests and verification
+
+Add or retain a test only when it protects supported observable behavior or a realistic regression:
+numerical kernel/model correctness, `.ninfer` framing/binding, external schema/report behavior, a
+small real integration route, GPU lifetime, or a reproduced bug. Do not add tests for coverage,
+private file/class shape, getters/constructors, deleted compatibility, source-string scans,
+hypothetical failures, or test ceremony.
+
+Run the smallest set of checks sufficient to support the changed behavior and its material claims.
+The following are typical choices, not a cumulative checklist:
+
+| Change | Relevant evidence |
+|---|---|
+| documentation | affected active-link/stale-reference review and `git diff --check` |
+| C++ runtime/API | affected explicit targets and meaningful tests |
+| Python tooling | `py_compile` and affected Python tests |
+| `.ninfer` reader/converter/binder | affected contract tests and a real artifact when semantics require it |
+| CUDA math | independent numerical oracle at relevant shapes |
+| memory/lifetime | the affected execution; sanitizer only for a concrete lifetime risk |
+| performance | measurement at the claimed scope; attribution tools only when needed |
+| serving | affected OpenAI/Anthropic schema tests and observable request/stream behavior |
+
+Do not replace weak verification with low-value tests. State clearly when a relevant check could not
+run and why.
 
 ## Local environment
+
+These are available project resources, not a checklist of resources every task must use:
 
 | Purpose | Path |
 |---|---|
@@ -53,110 +260,10 @@ MODEL=/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16
 NINFER_WEIGHTS=out/qwen3_6_27b_rtx5090.ninfer
 ```
 
-## Sources of truth
-
-Read the smallest relevant current authority:
-
-- `README.md` and executable `--help`: delivered capabilities and exact commands;
-- `docs/README.md`: active-document map and authority boundaries;
-- `docs/ninfer-project-positioning.md`: mission, target policy, workload, and non-goals;
-- `docs/design.md` and `docs/ninfer-engine-architecture.md`: implemented ownership, runtime, and
-  source/build boundaries;
-- `docs/ninfer-container-format.md`, `docs/ninfer-storage-layouts.md`, and
-  `docs/ninfer-tensor-formats.md`: generic `.ninfer` contracts;
-- `docs/qwen3.6-27b-ninfer-artifact.md`: exact target inventory, conversion, and binding;
-- `docs/qwen3.6-27b-architecture.md`: Text/Vision/MTP mathematics and state semantics;
-- `docs/op-development.md`: Op boundary, contracts, implementation ownership, correctness, and
-  performance workflow;
-- `docs/serving.md`: CLI, sampling, multimodal, OpenAI, and Anthropic behavior;
-- `include/ninfer/engine.h` and `include/ninfer/types.h`: installed C++ product API.
-
-`docs/archive/` is historical evidence, not current authority.
-
-## Product and ownership boundaries
-
-- `.ninfer` is the only C++ product artifact. Do not add `.qus` fallback, extension detection,
-  compatibility shims, or a second product lane.
-- `include/ninfer/engine.h` and `include/ninfer/types.h` are the installed opaque Engine API and
-  owning host values. `include/ninfer/ops/` contains repository-internal semantic Op contracts; it
-  is not installed product ABI.
-- `src/core` owns device primitives, tensors/views, checked layouts, arenas, graph RAII, physical
-  KV-cache containers, and raw transfer mechanisms.
-- `src/artifact` owns generic `.ninfer` framing, descriptors, binding primitives, and
-  materialization. It has no checkpoint execution semantics.
-- `src/ops` owns every semantically closed Op implementation, including fused, fixed-shape, and
-  device-specialized paths. Op ownership follows the mathematical/state-transition contract, not
-  its first model caller or demonstrated cross-target reuse.
-- `src/targets/<target_key>` owns the exact checkpoint/GPU storage profile, LoadedModel, Frontend,
-  Program, recurrent state, Text/Vision/MTP schedules, target graph/state policy, and diagnostics.
-  Target schedules compose repository-internal Ops but do not own mathematical CUDA
-  implementations. A target is one closed package, not a model family or generic graph.
-- `src/runtime` owns common contracts, generated-token transaction/publication policy, and the
-  public Engine PIMPL. It does not own model mathematics or target state.
-- `src/media/decode` consumes already-owned bytes. URL/path/data acquisition belongs to
-  `src/product/media_acquire`, CLI, or serving and is not linked into a target.
-- `src/product/prompt_input` owns the shared product-side JSON/message-to-owning-input adapter.
-- `src/serve` owns protocol translation and transport. CLI, server, and benchmark call only the
-  public Engine for inference.
-- `tools/convert/<target>`, `tools/reference/<target>`, and `tools/parity/<target>` remain
-  target-private conversion, correctness, and diagnostic implementations.
-
-Prefer direct explicit code over framework-like abstraction. Do not add generic model graphs,
-family base classes, plugin discovery, string-driven execution, hidden device allocation, runtime
-weight repacking, or placeholders for hypothetical models/hardware.
-
-## Compatibility and lifecycle
-
-Project-owned C++ APIs, CLIs, Python tools, fixtures, reports, formats, and active documentation do
-not preserve backward compatibility. Replace obsolete behavior directly and delete aliases,
-fallbacks, transition branches, and tests that only protect removed behavior. The advertised
-OpenAI and Anthropic protocol surfaces are real external contracts and must change together with
-their schema tests and serving documentation.
-
-Integrate stable requirements into the existing active authority. Complex active work may use a
-dated file under `docs/plans/`; archive it when the work completes or is abandoned. Do not create
-parallel `final`, `v2`, or `new-design` authorities. Update active links and `docs/archive/README.md`
-when moving completed plans.
-
-## CUDA, numerical, and performance work
-
-Numerical changes must identify the mathematical oracle, input rounding boundary, accumulation
-precision, output tolerance, and real model shapes. Final-token plausibility is not operator
-verification. Pay particular attention to numeric-format decode, BF16 fusion order, FP32 GDN state,
-BF16/INT8 KV, MTP accept/commit state, arena lifetime, and CUDA Graph address stability.
-
-Use NSYS for whole-inference attribution, then NCU for an identified kernel. An isolated
-microbenchmark does not prove end-to-end improvement. A performance claim should retain enough
-descriptive context to interpret it—hardware/toolchain, artifact identity, command/matrix, and
-reports—but no fixed repository or artifact hash is required by default.
-
-## Tests and verification
-
-Add or retain a test only when it protects a supported observable risk: numerical kernel/model
-correctness, `.ninfer` framing/binding, external schema/report behavior, a small real integration
-route, GPU lifetime, or a reproduced bug. Do not add tests for coverage, private file/class shape,
-getters/constructors, deleted compatibility, source-string scans, hypothetical failures, or test
-ceremony.
-
-Run the smallest set that proves the change. Typical evidence is:
-
-| Change | Evidence |
-|---|---|
-| documentation | active-link/stale-reference review and `git diff --check` |
-| C++ runtime/API | affected explicit targets and meaningful tests |
-| Python tooling | `py_compile` and affected Python tests |
-| `.ninfer` reader/converter/binder | affected contract tests and a real artifact when needed |
-| CUDA math | independent numerical oracle at relevant shapes |
-| memory/lifetime | the affected execution; sanitizer only when it addresses the actual risk |
-| performance | relevant microbenchmark plus end-to-end `ninfer_bench`; NSYS/NCU as warranted |
-| serving | OpenAI/Anthropic schema tests and observable request/stream behavior |
-
-Do not replace weak verification with low-value tests. State clearly when a relevant check could not
-run and why.
-
 ## Commits
 
-Use Conventional Commit-style subjects, for example:
+Create a commit only when the user requests one. Use Conventional Commit-style subjects, for
+example:
 
 ```text
 feat(engine): cut over the registered target to native artifacts
