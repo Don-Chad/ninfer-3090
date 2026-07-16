@@ -256,6 +256,15 @@ constexpr std::array<RoutePoint, 6> kText2048x4096Routes{{
     {1024, S::MmaR64C128, V::Full},
 }};
 
+constexpr std::array<RoutePoint, 6> kText12288x2048Routes{{
+    {1, S::SimtR8C4, V::Predicated},
+    {16, S::SimtR8C4, V::Full},
+    {17, S::MmaR64C128, V::Predicated},
+    {127, S::MmaR64C128, V::Predicated},
+    {128, S::MmaR64C128, V::Full},
+    {1024, S::MmaR64C128, V::Full},
+}};
+
 struct SupportCase {
     const char* label;
     std::int32_t rows;
@@ -415,7 +424,7 @@ int main() {
         return 0;
     }
 
-    constexpr std::array<SupportCase, 11> supports{{
+    constexpr std::array<SupportCase, 12> supports{{
         {"W8 [5120,10240]", 5120, 10240, kDefault17Routes.data(), kDefault17Routes.size(), 11u},
         {"W8 [14336,5120]", 14336, 5120, kEarly9Routes.data(), kEarly9Routes.size(), 13u},
         {"W8 [1024,5120]", 1024, 5120, kR32Routes.data(), kR32Routes.size(), 17u},
@@ -428,6 +437,8 @@ int main() {
         {"W8 [2048,4608]", 2048, 4608, kVision2048Routes.data(), kVision2048Routes.size(), 43u},
         {"W8 [2048,4096]", 2048, 4096, kText2048x4096Routes.data(), kText2048x4096Routes.size(),
          47u},
+        {"W8 [12288,2048]", 12288, 2048, kText12288x2048Routes.data(), kText12288x2048Routes.size(),
+         53u},
     }};
 
     try {

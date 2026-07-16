@@ -6,7 +6,93 @@ Target: Qwen3.6-35B-A3B exact Linear domains on NVIDIA GeForce RTX 5090 (`sm_120
 CUDA 13.1, driver 591.86, NCU 2025.4.1).
 
 This is retained standalone Op evidence. It does not register the 35B Engine target. This revision
-establishes L5-L14.
+establishes L2 and L5-L14.
+
+## L2: W8 GDN input parent `[12288,2048]`
+
+The exact operation is one W8G32_F16S RowSplit parent `[12288,2048]` times BF16 `[2048,T]`,
+producing contiguous BF16 `[12288,T]` for every Text chunk size `1<=T<=1024`. The Q/K/V/Z
+regions are zero-work row views of this parent and do not require a role-specific arithmetic
+kernel.
+
+### Route qualification
+
+Matched Release-build sweeps screened SIMT R8C4/R8C8 and MMA R32C128/R64C128. C8 and MMA32 never
+won. Three independent processes around the only crossover measured:
+
+| T | SIMT R8C4 | MMA R64C128 | Decision |
+|---:|---:|---:|---|
+| 16 | 60.064 us | 66.816 us | SIMT |
+| 17 | 66.848 us | 66.784 us | practical tie; enter the sustained MMA winner |
+
+The retained route is therefore:
+
+```text
+T=1..16     SIMT R8C4
+T=17..1024  MMA R64C128
+```
+
+### Correctness and dispatch
+
+```bash
+cmake --build build -j --target \
+  ninfer_linear_op_bench ninfer_linear_test \
+  ninfer_w8_linear_plan_test ninfer_w8_linear_dispatch_test
+ctest --test-dir build \
+  -R '^ninfer_(linear_test|w8_linear_plan_test|w8_linear_dispatch_test)$' \
+  --output-on-failure
+```
+
+All three tests passed. The independent FP64 oracle covers both sides of the route seam at
+`T=16/17`; a distributed row/column sample checks the complete `T=1024` parent. Their relative
+L2 errors were `1.660e-3`, `2.158e-3`, and `2.251e-3`. Plan and dispatch tests close the complete
+interval, verify predicated/full variants, and compare public execution word-for-word with the
+resolved fixed entry.
+
+### Release timing and roofline
+
+Three independent production processes each used eight warmups and forty L2-flushed samples:
+
+| T | Route | Cold median | Executed TFLOP/s |
+|---:|---|---:|---:|
+| 1 | SIMT R8C4 | 25.856 us | 1.95 useful |
+| 16 | SIMT R8C4 | 60.416 us | 13.33 useful |
+| 17 | MMA R64C128 | 66.816 us | 12.81 |
+| 128 | MMA R64C128 | 66.816 us | 96.42 |
+| 256 | MMA R64C128 | 104.160 us | 123.70 |
+| 512 | MMA R64C128 | 163.072 us | 158.03 |
+| 1024 | MMA R64C128 | 304.416 us | 169.31 |
+
+The maximum reaches 85.36% of the three-process median 198.341 TFLOP/s BF16 MMA probe. Smaller
+points are governed by fixed launch/wave geometry and retain the measured lowest-latency existing
+candidate rather than being judged against an unattainable full-device percentage.
+
+### NCU attribution
+
+Basic-first captures matched the intended SIMT and MMA kernel substrings. Detailed follow-ups
+reported:
+
+| Topology | Representative | NCU duration | SM SOL | Memory SOL | Occupancy | Registers | Static shared | Waves/SM |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| SIMT R8C4 | T=16 | 74.24 us | 57.40% | 39.35% | 63.49% | 64 | 17.41 KiB | 9.04 |
+| MMA R64C128 | T=1024 | 427.04 us | 71.59% | 45.78% | 31.66% | 119 | 46.08 KiB | 4.52 |
+
+The maximum is tensor-pipeline limited. Both detailed captures report zero local-memory and
+shared-memory spilling requests. NCU durations are diagnostic counter-replay measurements and are
+not substituted for the CUDA-event medians.
+
+Reports are retained locally under:
+
+```text
+profiles/bench/qwen3_6_35b_linear_qualification/l2/
+profiles/ncu/qwen3_6_35b_a3b/linear/l2/final/
+```
+
+## L2 retained result
+
+L2 is supported for its complete Qwen3.6-35B-A3B target domain. One plain parent Linear provides
+all four logical output views, its exact finite route selects the measured candidate winners, and
+the maximum reaches 85.36% of the measured BF16 MMA ceiling without spilling.
 
 ## L5: W8 MTP stem `[2048,4096]`
 

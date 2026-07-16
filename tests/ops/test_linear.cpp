@@ -726,6 +726,8 @@ int main() {
         f += paired_w8g32_shape(1024, 5120, {4, 5, 57}, 127u);
         f += one_quant_shape(QType::W8G32_F16S, 2048, 4096, {56, 57}, 129u);
         f += one_quant_shape_sampled(QType::W8G32_F16S, 2048, 4096, 1024, 131u);
+        f += one_quant_shape(QType::W8G32_F16S, 12288, 2048, {16, 17}, 133u);
+        f += one_quant_shape_sampled(QType::W8G32_F16S, 12288, 2048, 1024, 135u);
         std::cout << (f ? "FAIL" : "OK") << " linear W8G32 focused correctness\n";
         return f ? 1 : 0;
     }
@@ -755,6 +757,8 @@ int main() {
     f += paired_w8g32_shape(1024, 5120, {4, 5, 57}, 127u);
     f += one_quant_shape(QType::W8G32_F16S, 2048, 4096, {56, 57}, 129u);
     f += one_quant_shape_sampled(QType::W8G32_F16S, 2048, 4096, 1024, 131u);
+    f += one_quant_shape(QType::W8G32_F16S, 12288, 2048, {16, 17}, 133u);
+    f += one_quant_shape_sampled(QType::W8G32_F16S, 12288, 2048, 1024, 135u);
     // Q4 public correctness is exact-admission only. The dedicated Q4 plan/dispatch tests cover
     // every route seam and compare public auto against the fixed entry word-for-word; these
     // oracle points cover both registered head K values and the split-K/SIMT numerical boundary
