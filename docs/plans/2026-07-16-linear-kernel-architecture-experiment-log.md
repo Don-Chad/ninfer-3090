@@ -122,6 +122,7 @@ limits. Useful traffic/FLOP accounting is kept separate from physical NCU traffi
 | E052 | 2026-07-16 | Define the implementation boundary for Q4 pure Linear before writing kernels. | Q4G64 RowSplit only; current seven physical contractions plus future `[131072,2048]` pressure. | Current-source audit, retained E003/E008/E011/E014/E016/E044/E049 evidence, three independent design/implementation/verification reviews, and the accepted Q4 template design document. | The bounded architecture is three template lifecycles—GEMV, SIMT GEMM, and MMA GEMM—with runtime Rows/K/Cols, a finite `ScheduleId + KernelVariant` set, exact Op-owned admission, and no application-role naming. Split-K partitions aligned scale pairs; SIMT owns vectorized partial K stages; MMA fixes BK64. | Implement dormant fixed candidates first while production dispatch remains unchanged. Rebuild the measurement harness from current source before making any new performance claim, then qualify and cut over Q4 atomically. |
 | E053 | 2026-07-16 | Integrate the first dormant Q4 templates and reject any abstraction-induced regression before route work. | Three GEMV schedules, SIMT C4/C8 Full+Predicated, MMA C64/C128 Full+Predicated; matched legacy points. | Fresh Release `sm_120a` build; independent BF16-boundary/Q4-dequant/FP64 oracle; `cuobjdump` resources; one-process 5-warmup/20-cold structural screen with canonical candidate CSV. | All 11 initial candidates passed; no local/stack spill. New versus legacy cold median: warp-row 68.896/70.880 us (-2.8%), split-K 15.616/11.552 us (+35.2%), SIMT C4 27.904/32.032 us (-12.9%), SIMT C8 134.112/204.064 us (-34.3%), MMA C64 105.728/105.760 us (tie), MMA C128 29.952/29.920 us (tie). The split-K candidate used 48 registers versus the old winner's 34 and changed the lane/decode/scale topology. | Keep the three-family architecture and the successful schedules, but reject the first R1/W8 schedule. Make GEMV lane/decode/transfer topology an explicit compile-time schedule axis and regenerate split-K as byte-per-lane, scalar-scale/shuffle, synchronous-vector code staging before any qualification or commit. |
 | E054 | 2026-07-16 | Recover the split-K winner without reintroducing an application- or exact-Rows kernel. | `q4_rowsplit_gemv_kernel` R1/W8 at K5120; runtime and static group-ownership variants. | Bounded sequence: runtime PackedWord8 15.616 us; runtime PackedByte2 pair-loop 19.488 us; active-groups-10 unrolled 17.408 us; then the same template with `StaticGroupsPerRow=80`. Each step used the same Release benchmark and independent numerical oracle; final resources came from linked `cuobjdump`. | The final static-group schedule is 11.520 us versus legacy 11.520 us; R4/W1 is 70.880 versus 70.912 us. R1/W8 uses 36 versus 34 registers, identical 5,152 B linked static shared, zero local/stack spill, and a matching hot mix of 20 FFMA, 10 X loads, 10 code shared loads, and 10 shuffles. The complete candidate suite, including K5120 numerical coverage and static-K rejection, passes. Runtime ownership prevented the compiler from recovering the legacy hot-loop ILP even after the lane/decode path matched; specializing group count, not Rows or role, restored it. | Accept `StaticGroupsPerRow` as an evidence-gated codegen axis with 0 meaning runtime. Bind R1/W8 to 80 groups/K5120 and reject other K; any K5120 Rows can reuse it. Do not instantiate further static K values unless a runtime schedule fails the same >1% gate. |
+| E055 | 2026-07-16 | Qualify the Q4 production route catalog and its physical limits before atomic cut-over. | Seven current pure-Linear supports, all reachable Text integers/Vision multiples of four, and measurement-only future `[131072,2048]`. | Frozen 1512.483 GB/s copy and 220.246 TFLOP/s BF16-MMA context; 5/20 screen; three independent 8/40 confirmations at matched anchors and every retained seam; NCU detailed, explicit traffic, and stall captures for six final topologies. | New/legacy medians are equal for both GEMVs and C128, C64 is 1.2% faster, C4/C8 are 12.9%/34.1% faster. Final current routes use R1/W8 for three K5120 T1 views, R4/W1 direct for the draft head, C4/C8 for Text and early Vision, C64 for Vision mid bands through C320, and C128 from C324. R4/W1 shared has no winner route. Saturated C128 reaches 90.66% SM SOL with 63.7M tensor instructions; R4 direct reaches 75.18% DRAM SOL with 356.55 MB DRAM reads matching the Q4 payload; no topology spills. Future K2048 needs no new kernel: R4 at C1, C8 at C8, C64 at C9--64, C128 at C65+. | Freeze the exact finite route table in the Q4 Op-owned planner; retain six production schedules and both Full/Predicated variants where measured, delete R4 shared and all legacy measurement selectors during cut-over, and do not admit future K2048 yet. |
 
 ## 5. Environment and baseline inventory
 
@@ -1978,7 +1979,7 @@ Remaining work is:
 - admit future 35B physical problems only through exact numerical, winner, physical, and product
   gates.
 
-## 11. Q4 三模板族重启实验（E052--E054）
+## 11. Q4 三模板族重启、资格与 Roofline 实验（E052--E055）
 
 ### 11.1 实现边界与环境
 
@@ -2129,3 +2130,126 @@ shuffle。结论不是“所有 K 都应静态化”，而是：
 
 R1/W8 因此只接受 K5120；R4/W1、SIMT 和 MMA 继续使用 runtime K。这个修正保留三个
 kernel lifecycle，不增加应用场景 kernel，也不把 exact Rows 变成模板参数。
+
+### 11.6 三进程 route 资格结论
+
+同一 session 重新测得：
+
+```text
+copy ceiling = 1512.483 GB/s
+BF16 MMA probe = 220.246 TFLOP/s
+```
+
+每个确认点运行三个独立进程，每进程 8 warmup、40 cold samples；第二个进程反转候选
+顺序。matched median-of-process-medians：
+
+| point | legacy | new | 结论 |
+|---|---:|---:|---|
+| R4/W1 `[34816,5120] C1` | 70.944 us | 70.912 us | tie |
+| R1/W8 `[4096,5120] C1` | 11.520 us | 11.520 us | tie |
+| SIMT C4 `[6144,5120] C4` | 32.032 us | 27.904 us | new -12.9% |
+| SIMT C8 `[34816,5120] C8` | 204.064 us | 134.400 us | new -34.1% |
+| MMA C64 `[4096,5120] C64` | 107.008 us | 105.760 us | new -1.2% |
+| MMA C128 `[3456,1152] C128` | 29.952 us | 29.952 us | tie |
+
+最终 current-product route：
+
+| exact problem | admitted Cols | schedule |
+|---|---|---|
+| `[1024,5120,5120]` | 1 | R1/W8 static-groups80 |
+|  | 2--15 | SIMT C4 |
+|  | 16 | SIMT C8 |
+| `[4096,5120,5120]` | 1 | R1/W8 static-groups80 |
+|  | 2--4 | SIMT C4 |
+|  | 5--16 | SIMT C8 |
+| `[6144,5120,5120]` | 1 | R1/W8 static-groups80 |
+|  | 2--7 | SIMT C4 |
+|  | 8--16 | SIMT C8 |
+| `[34816,5120,5120]` | 2--4 | SIMT C4 |
+|  | 5--16 | SIMT C8 |
+| `[131072,5120,5120]` | 1 | R4/W1 direct runtime-groups |
+| `[3456,1152,1152]`, `C%4==0` | 4--36 | SIMT C4 |
+|  | 40--320 | MMA C64 |
+|  | 324--131072 | MMA C128 |
+| `[4304,1152,1152]`, `C%4==0` | 4 | SIMT C4 |
+|  | 8 | SIMT C8 |
+|  | 12 | SIMT C4 |
+|  | 16--24 | SIMT C8 |
+|  | 28--320 | MMA C64 |
+|  | 324--131072 | MMA C128 |
+
+Vision 表中的范围只包含 4 的倍数。`[4304,1152] C20` 的 C4/C8 三进程 median 是
+25.856/25.888 us，按 practical tie 选择 C8 以避免在 C16--24 中制造无收益的额外
+边界。`[3456,1152] C40` 的 C4/C64/C128 是 29.952/29.952/29.984 us，选择 C64 以连接
+后续明确的 C64 winner。两个 Vision shape 在 C320/324 共同切换：
+
+| point | C64 | C128 |
+|---|---:|---:|
+| `[3456,1152] C320` | 31.648 us | 34.048 us |
+| `[3456,1152] C324` | 34.048 us | 34.048 us |
+| `[4304,1152] C320` | 34.048 us | 35.936 us |
+| `[4304,1152] C324` | 36.096 us | 36.064 us |
+
+Full variant 不能删除。单进程 full/predicated 代表点：
+
+| schedule | Full | Predicated |
+|---|---:|---:|
+| SIMT C4 `[6144,5120] C4` | 约 27.4 us | 32.7 us |
+| SIMT C8 `[34816,5120] C8` | 约 134.3 us | 165.2 us |
+| MMA C64 `[3456,1152] C64` | 约 27.9 us | 31.8 us |
+| MMA C128 `[3456,1152] C128` | 约 29.9 us | 31.9 us |
+
+### 11.7 Future K2048 transfer screen
+
+`[131072,2048]` 仍为 measurement-only，不进入 admission。5/20 screen：
+
+| Cols | winner | cold median |
+|---:|---|---:|
+| 1 | R4/W1 shared/direct practical tie | 105.632 / 105.664 us |
+| 8 | SIMT C8 | 206.144 us |
+| 9 | MMA C64 | 294.176 us |
+| 64 | MMA C64 | 285.472 us |
+| 65 | MMA C128 | 377.856 us |
+
+因此新增该相似 shape 的成本是数值资格、route 数据和 admission，而不是第四个 kernel
+族。当前产品不需要该 shape，所以不增加 support row。
+
+### 11.8 NCU 物理证据
+
+技能 preflight 通过；NCU 版本 2025.4.1.0。每个报告使用精确 kernel regex、
+`--launch-skip 0 --launch-count 1`。先用 `--set basic` 证明匹配，再用：
+
+```text
+--set detailed
+explicit traffic metrics
+explicit warp-stall metrics
+```
+
+报告位于：
+
+```text
+profiles/ncu/q4-linear-template-20260716/
+```
+
+NCU duration 只用于 profiler 内部诊断，route timing 仍采用无 profiler 的 CUDA event
+结果。
+
+| topology / point | SM SOL | DRAM SOL | achieved occupancy | regs / source static shared | physical traffic 摘要 | 主要 stall |
+|---|---:|---:|---:|---|---|---|
+| R1/W8 `[4096,5120] C1` | 66.86% | 52.77% | 86.85% | 36 / 4.13 KiB | DRAM read 11.16 MB，匹配一次 Q4 payload | long scoreboard、not selected、MIO、barrier |
+| R4/W1 direct `[131072,5120] C1` | 52.40% | 75.18% | 75.85% | 44 / 2.18 KiB | DRAM read 356.55 MB，匹配 code+scale；19.28 waves | long scoreboard 明显占主导 |
+| SIMT C4 `[34816,5120] C4` | 67.63% | 50.92% | 31.60% | 102 / 8.70 KiB | DRAM read 94.76 MB，匹配一次 payload | not selected、long scoreboard、math throttle |
+| SIMT C8 `[34816,5120] C8` | 69.95% | 31.94% | 32.13% | 128 / 8.70 KiB | DRAM read 94.82 MB，匹配一次 payload | not selected、math throttle、long scoreboard |
+| MMA C64 `[3456,1152] C320` | 36.17% | 3.91% | 13.24% | 98 / 28.93 KiB | 0.53 waves；622,080 tensor instructions | wait、math throttle、long scoreboard、barrier |
+| MMA C128 `[3456,1152] C32768` | 90.66% | 9.12% | 16.59% | 150 / 45.57 KiB | 63,700,992 tensor instructions；DRAM read/write 77.63/189.54 MB | wait、math throttle、short scoreboard |
+
+解释：
+
+- R4 direct 是明确的 DRAM-side 饱和 kernel；实际 DRAM read 与 356.5 MB Q4 code+scale
+  payload 对齐，达到 75.18% DRAM SOL。
+- SIMT C4/C8 不是单一 copy-roof kernel；二者同时有约 68--70% SM SOL，C8 的 DRAM SOL
+  更低，说明寄存器/issue/compute 与 cache reuse 共同限制。
+- MMA C64 的低 SOL 来自 0.53 waves 的 partial-wave launch，按最低延迟判断，不要求峰值
+  百分比。
+- 饱和 MMA C128 达到 90.66% SM SOL，满足本文约 85--90% BF16 MMA roofline 目标。
+- 六个 topology 的 local/shared spill metric 都为 0。
