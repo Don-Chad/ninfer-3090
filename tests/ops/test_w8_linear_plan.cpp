@@ -67,6 +67,11 @@ S expected_schedule(const W8Problem& problem) {
     if (problem.rows == 12288 && problem.k == 2048) {
         return problem.cols <= 16 ? S::SimtR8C4 : S::MmaR64C128;
     }
+    if (problem.rows == 9216 && problem.k == 2048) {
+        if (problem.cols <= 13) { return S::SimtR8C4; }
+        if (problem.cols <= 128) { return S::MmaR32C128; }
+        return S::MmaR64C128;
+    }
     if (problem.rows == 1024) {
         if (problem.cols <= 4) { return S::SimtR8C4; }
         if (problem.cols <= 16) { return S::SimtR8C8; }
@@ -107,7 +112,7 @@ void expect_plan(const std::string& label, const W8Problem& problem) {
 }
 
 void route_boundaries() {
-    constexpr std::array<W8Problem, 70> cases{{
+    constexpr std::array<W8Problem, 76> cases{{
         {5120, 10240, 10240, 1},       {5120, 10240, 10240, 4},  {5120, 10240, 10240, 5},
         {5120, 10240, 10240, 16},      {5120, 10240, 10240, 17}, {5120, 10240, 10240, 128},
         {5120, 10240, 10240, 8388480}, {14336, 5120, 5120, 4},   {14336, 5120, 5120, 5},
@@ -131,13 +136,15 @@ void route_boundaries() {
         {2048, 4096, 4096, 1},         {2048, 4096, 4096, 56},   {2048, 4096, 4096, 57},
         {2048, 4096, 4096, 895},       {2048, 4096, 4096, 896},  {2048, 4096, 4096, 1024},
         {12288, 2048, 2048, 1},        {12288, 2048, 2048, 16},  {12288, 2048, 2048, 17},
-        {12288, 2048, 2048, 1024},
+        {12288, 2048, 2048, 1024},     {9216, 2048, 2048, 1},    {9216, 2048, 2048, 13},
+        {9216, 2048, 2048, 14},        {9216, 2048, 2048, 128},  {9216, 2048, 2048, 129},
+        {9216, 2048, 2048, 1024},
     }};
     for (const W8Problem& problem : cases) { expect_plan("route boundary", problem); }
 }
 
 void rejection_contract() {
-    constexpr std::array<W8Problem, 10> rejected{{
+    constexpr std::array<W8Problem, 11> rejected{{
         {5120, 10240, 10240, 0},
         {5120, 10240, 10240, 8388481},
         {4608, 4608, 4608, 32769},
@@ -146,6 +153,7 @@ void rejection_contract() {
         {7168, 5120, 5120, 1},
         {2048, 4096, 4096, 1025},
         {12288, 2048, 2048, 1025},
+        {9216, 2048, 2048, 1025},
         {5120, 10240, 10368, 17},
         {5120, 2048, 2048, 1},
     }};

@@ -6,7 +6,99 @@ Target: Qwen3.6-35B-A3B exact Linear domains on NVIDIA GeForce RTX 5090 (`sm_120
 CUDA 13.1, driver 591.86, NCU 2025.4.1).
 
 This is retained standalone Op evidence. It does not register the 35B Engine target. This revision
-establishes L2 and L5-L14.
+establishes L1-L2 and L5-L14.
+
+## L1: W8 attention input parent `[9216,2048]`
+
+The exact operation is one W8G32_F16S RowSplit parent `[9216,2048]` times BF16 `[2048,T]`,
+producing contiguous BF16 `[9216,T]` for every Text chunk size `1<=T<=1024`. Q, K, gate, and V
+are zero-work row views of this parent, so the exact output topology does not require the 27B
+role-specific projection wrapper.
+
+### Route qualification
+
+Matched Release-build sweeps screened SIMT R8C4/R8C8 and MMA R32C128/R64C128. C8 never won.
+The smaller row count makes MMA32 the fixed-resource winner for one 128-column tile, while MMA64
+wins once a second column tile is required. Three independent processes established both seams:
+
+| T | Candidate medians | Decision |
+|---:|---|---|
+| 13 | SIMT C4 45.856 us; MMA32 46.240 us | SIMT |
+| 14 | SIMT C4 46.304 us; MMA32 46.176 us | practical tie; enter MMA32 |
+| 128 | MMA32 48.064 us; MMA64 48.384 us | MMA32 |
+| 129 | MMA32 79.104 us; MMA64 66.816 us | MMA64 |
+
+The exact retained route is:
+
+```text
+T=1..13     SIMT R8C4
+T=14..128   MMA R32C128
+T=129..1024 MMA R64C128
+```
+
+### Correctness and dispatch
+
+```bash
+cmake --build build -j --target \
+  ninfer_linear_op_bench ninfer_linear_test \
+  ninfer_w8_linear_plan_test ninfer_w8_linear_dispatch_test
+ctest --test-dir build \
+  -R '^ninfer_(linear_test|w8_linear_plan_test|w8_linear_dispatch_test)$' \
+  --output-on-failure
+```
+
+All three tests passed. The independent FP64 oracle covers `T=13/14` and `T=128/129`, while a
+distributed row/column sample checks `T=1024`. Their relative L2 errors were `1.659e-3`,
+`2.150e-3`, `2.161e-3`, `2.161e-3`, and `1.830e-3`. Plan and dispatch tests close the complete
+domain, verify both topology seams and predicated/full variants, and compare public execution
+word-for-word with the resolved fixed entry.
+
+### Release timing and roofline
+
+Three independent production processes each used eight warmups and forty L2-flushed samples:
+
+| T | Route | Cold median | Executed TFLOP/s |
+|---:|---|---:|---:|
+| 1 | SIMT R8C4 | 21.760 us | 1.73 useful |
+| 13 | SIMT R8C4 | 45.984 us | 10.67 useful |
+| 14 | MMA R32C128 | 45.984 us | 11.49 |
+| 128 | MMA R32C128 | 48.128 us | 100.40 |
+| 129 | MMA R64C128 | 66.816 us | 72.88 |
+| 256 | MMA R64C128 | 66.528 us | 145.26 |
+| 512 | MMA R64C128 | 126.208 us | 153.14 |
+| 1024 | MMA R64C128 | 219.104 us | 176.42 |
+
+The maximum reaches 83.79% of the three-process median 210.558 TFLOP/s BF16 MMA probe. It also
+exceeds the already qualified same-K, same-format L2 MMA64 maximum by 4.2%, providing a direct
+quantized-kernel work-rate cross-check. Smaller points select the matched fixed-resource winner.
+
+### NCU attribution
+
+Basic-first captures matched all three intended production specializations. Detailed follow-ups
+reported:
+
+| Topology | Representative | NCU duration | SM SOL | Memory SOL | Occupancy | Registers | Static shared | Waves/SM |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| SIMT R8C4 | T=13 | 56.22 us | 57.48% | 35.02% | 63.14% | 60 | 17.41 KiB | 6.78 |
+| MMA R32C128 | T=128 | 53.12 us | 54.48% | 60.28% | 28.02% | 83 | 39.42 KiB | 0.85 |
+| MMA R64C128 | T=1024 | 308.80 us | 74.10% | 47.29% | 31.26% | 119 | 46.08 KiB | 3.39 |
+
+MMA32 is explicitly a sub-wave fixed-resource route at the 128-column seam. The maximum is
+tensor-pipeline limited. All three detailed captures report zero local-memory and shared-memory
+spilling requests.
+
+Reports are retained locally under:
+
+```text
+profiles/bench/qwen3_6_35b_linear_qualification/l1/
+profiles/ncu/qwen3_6_35b_a3b/linear/l1/final/
+```
+
+## L1 retained result
+
+L1 is supported for its complete Qwen3.6-35B-A3B target domain. One contiguous parent Linear
+provides all declared output views, its finite SIMT/MMA32/MMA64 route selects the measured
+fixed-resource winners, and the maximum reaches 83.79% of the BF16 MMA ceiling without spilling.
 
 ## L2: W8 GDN input parent `[12288,2048]`
 

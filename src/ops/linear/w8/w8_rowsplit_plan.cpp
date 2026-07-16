@@ -35,7 +35,7 @@ struct W8RouteSpec {
     W8ScheduleId schedule;
 };
 
-constexpr std::array<W8SupportSpec, 12> kSupportSpecs{{
+constexpr std::array<W8SupportSpec, 13> kSupportSpecs{{
     {5120, 10240, 10240, {1, kMaxTextCols, 1}, 0, 3},
     {14336, 5120, 5120, {1, kMaxTextCols, 1}, 3, 3},
     {1024, 5120, 5120, {1, kMaxTextCols, 1}, 6, 3},
@@ -48,9 +48,10 @@ constexpr std::array<W8SupportSpec, 12> kSupportSpecs{{
     {2048, 4608, 4608, {1, kMaxVisionCols, 1}, 29, 13},
     {2048, 4096, 4096, {1, 1024, 1}, 42, 3},
     {12288, 2048, 2048, {1, 1024, 1}, 45, 2},
+    {9216, 2048, 2048, {1, 1024, 1}, 47, 3},
 }};
 
-constexpr std::array<W8RouteSpec, 47> kRouteSpecs{{
+constexpr std::array<W8RouteSpec, 50> kRouteSpecs{{
     // [5120,10240]
     {{1, 4, 1}, W8ScheduleId::SimtR8C4},
     {{5, 16, 1}, W8ScheduleId::SimtR8C8},
@@ -121,6 +122,11 @@ constexpr std::array<W8RouteSpec, 47> kRouteSpecs{{
     // [12288,2048]
     {{1, 16, 1}, W8ScheduleId::SimtR8C4},
     {{17, 1024, 1}, W8ScheduleId::MmaR64C128},
+
+    // [9216,2048]
+    {{1, 13, 1}, W8ScheduleId::SimtR8C4},
+    {{14, 128, 1}, W8ScheduleId::MmaR32C128},
+    {{129, 1024, 1}, W8ScheduleId::MmaR64C128},
 }};
 
 constexpr bool known_schedule(W8ScheduleId schedule) noexcept {
