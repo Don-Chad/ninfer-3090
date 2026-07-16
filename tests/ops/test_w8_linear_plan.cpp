@@ -160,6 +160,11 @@ void pair_contract() {
         if (plan.variant != expected_variant(base_schedule, base)) {
             fail("pair variant", "unexpected variant at C=" + std::to_string(value));
         }
+        if (plan.workspace_bytes != 0 ||
+            plan.performance_qualified != (value <= ninfer::ops::detail::kW8PairQualifiedCols)) {
+            fail("pair metadata",
+                 "unexpected workspace/qualification at C=" + std::to_string(value));
+        }
     }
 
     for (const W8PairProblem problem :

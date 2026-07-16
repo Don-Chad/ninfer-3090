@@ -1,5 +1,4 @@
 #include "ninfer/ops/linear.h"
-#include "ninfer/ops/linear_pair.h"
 
 #include "ops/common/math.h"
 #include "ops/linear/bf16/bf16_contiguous_plan.h"
@@ -7,7 +6,6 @@
 #include "ops/linear/q5/q5_rowsplit_plan.h"
 #include "ops/linear/q6/q6_rowsplit_plan.h"
 #include "ops/linear/w8/w8_rowsplit_plan.h"
-#include "ops/linear_pair/w8/w8_pair_plan.h"
 
 #include <cstdint>
 #include <limits>
@@ -288,39 +286,6 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
         detail::w8_rowsplit_dispatch(x, w, out, stream);
         return;
     }
-}
-
-void linear_pair(const Tensor& x, const Weight& first_weight, const Weight& second_weight,
-                 Tensor& first_out, Tensor& second_out, WorkspaceArena& ws, cudaStream_t stream) {
-    if (x.dtype != DType::BF16 || first_out.dtype != DType::BF16 ||
-        second_out.dtype != DType::BF16) {
-        throw std::invalid_argument("linear_pair: x/out tensors must be BF16");
-    }
-    if (first_weight.qtype != second_weight.qtype) {
-        throw std::invalid_argument("linear_pair: weight qtypes must match");
-    }
-    switch (first_weight.qtype) {
-    case QType::W8G32_F16S:
-        require_row_split_lowbit_metadata(first_weight, "first W8G32_F16S", 32, 32u, 0u);
-        require_row_split_lowbit_metadata(second_weight, "second W8G32_F16S", 32, 32u, 0u);
-        break;
-    default:
-        throw std::invalid_argument("linear_pair: unsupported weight qtype");
-    }
-    require_matrix_shapes(x, first_weight, first_out);
-    require_matrix_shapes(x, second_weight, second_out);
-    require_tensor_strides(x, first_out);
-    require_tensor_strides(x, second_out);
-    if (first_weight.n != second_weight.n || first_weight.k != second_weight.k ||
-        first_weight.padded_shape[1] != second_weight.padded_shape[1]) {
-        throw std::invalid_argument("linear_pair: weight shapes must match");
-    }
-    if (is_empty_T(x, first_out)) { return; }
-    require_tensor_data(x, first_out);
-    require_tensor_data(x, second_out);
-
-    (void)ws;
-    detail::w8_pair_dispatch(x, first_weight, second_weight, first_out, second_out, stream);
 }
 
 } // namespace ninfer::ops

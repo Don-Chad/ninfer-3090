@@ -11,8 +11,6 @@
 namespace ninfer::ops::detail {
 namespace {
 
-constexpr std::int32_t kMaxPairCols = 128 * 65535;
-
 struct W8PairRouteSpec {
     std::int32_t first;
     std::int32_t last;
@@ -22,7 +20,7 @@ struct W8PairRouteSpec {
 constexpr std::array<W8PairRouteSpec, 3> kRoutes{{
     {1, 4, W8PairScheduleId::TwoSimtR8C4},
     {5, 56, W8PairScheduleId::TwoSimtR8C8},
-    {57, kMaxPairCols, W8PairScheduleId::DualMmaR32C128},
+    {57, kW8PairMaxCols, W8PairScheduleId::DualMmaR32C128},
 }};
 
 constexpr bool routes_are_closed() noexcept {
@@ -31,7 +29,7 @@ constexpr bool routes_are_closed() noexcept {
         if (route.first != expected || route.last < route.first) { return false; }
         expected = route.last + 1;
     }
-    return kRoutes.back().last == kMaxPairCols;
+    return kRoutes.back().last == kW8PairMaxCols;
 }
 
 static_assert(routes_are_closed(), "W8 pair routes must be exact, contiguous, and closed");
@@ -62,9 +60,13 @@ W8KernelVariant resolve_variant(W8PairScheduleId schedule, const W8PairProblem& 
 
 void require_pair_weights(const Weight& first_weight, const Weight& second_weight) {
     const auto valid = [](const Weight& w) {
+        constexpr std::uint64_t kPayloadBytes = 5'570'560;
         return w.qtype == QType::W8G32_F16S && w.layout == QuantLayout::RowSplit &&
-               w.scale_dtype == DType::FP16 && w.group == 32 && w.group_size == 32 &&
-               w.qdata != nullptr && w.qhigh == nullptr && w.scales != nullptr;
+               w.scale_dtype == DType::FP16 && w.group == 32 && w.group_size == 32 && w.ndim == 2 &&
+               w.n == 1024 && w.k == 5120 && w.shape[0] == 1024 && w.shape[1] == 5120 &&
+               w.padded_shape[0] == 1024 && w.padded_shape[1] == 5120 &&
+               w.payload_bytes >= kPayloadBytes && w.qdata != nullptr && w.qhigh == nullptr &&
+               w.high_plane_bytes == 0 && w.scales != nullptr;
     };
     if (!valid(first_weight) || !valid(second_weight) || first_weight.n != second_weight.n ||
         first_weight.k != second_weight.k ||
@@ -114,7 +116,7 @@ W8PairProblem w8_pair_problem(const Tensor& x, const Weight& first_weight,
 
 bool w8_pair_admits(const W8PairProblem& problem) noexcept {
     return problem.rows == 1024 && problem.k == 5120 && problem.padded_k == 5120 &&
-           problem.cols >= 1 && problem.cols <= kMaxPairCols;
+           problem.cols >= 1 && problem.cols <= kW8PairMaxCols;
 }
 
 W8PairPlan w8_pair_resolve_plan(const W8PairProblem& problem) {
@@ -123,7 +125,8 @@ W8PairPlan w8_pair_resolve_plan(const W8PairProblem& problem) {
     }
     for (const W8PairRouteSpec& route : kRoutes) {
         if (problem.cols >= route.first && problem.cols <= route.last) {
-            return {route.schedule, resolve_variant(route.schedule, problem)};
+            return {route.schedule, resolve_variant(route.schedule, problem), 0,
+                    problem.cols <= kW8PairQualifiedCols};
         }
     }
     throw std::logic_error("w8 pair: admitted problem has no covering route");
@@ -134,6 +137,11 @@ void w8_pair_execute_plan(W8PairPlan plan, const Tensor& x, const Weight& first_
                           cudaStream_t stream) {
     require_pair_weights(first_weight, second_weight);
     const W8PairProblem problem = w8_pair_problem(x, first_weight, first_out);
+    const W8PairPlan resolved   = w8_pair_resolve_plan(problem);
+    if (resolved.schedule != plan.schedule || resolved.variant != plan.variant ||
+        resolved.workspace_bytes != plan.workspace_bytes) {
+        throw std::invalid_argument("w8 pair: plan does not match the exact problem");
+    }
     const W8Plan base_plan{
         plan.schedule == W8PairScheduleId::TwoSimtR8C4   ? W8ScheduleId::SimtR8C4
         : plan.schedule == W8PairScheduleId::TwoSimtR8C8 ? W8ScheduleId::SimtR8C8
