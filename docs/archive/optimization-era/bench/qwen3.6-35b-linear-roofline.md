@@ -6,7 +6,7 @@ Target: Qwen3.6-35B-A3B Linear rows L8-L13 on NVIDIA GeForce RTX 5090 (`sm_120a`
 CUDA 13.1, driver 591.86, NCU 2025.4.1).
 
 This is retained standalone Op evidence. It does not register the 35B Engine target. Qualification
-is being completed in Vision execution order; this revision establishes L8 and L9.
+is being completed in Vision execution order; this revision establishes L8-L10.
 
 ## L8: Q6 Vision patch projection `[1152,1536]`
 
@@ -201,3 +201,111 @@ profiles/ncu/qwen3_6_35b_a3b/linear/l9/final/
 L9 is supported for its complete Qwen3.6-35B-A3B target domain. Its existing exact route is the
 matched candidate winner, both maximum item sizes are tensor-pipe roofline kernels, and no captured
 topology spills.
+
+## L10: Q5 Vision attention output `[1152,1152]`
+
+The exact operation is Q5G64_F16S RowSplit `[1152,1152]` times BF16 `[1152,P]`, producing BF16
+`[1152,P]`. The complete target domain is every admitted four-column patch count through maximum
+video/image `P=49152/65536`.
+
+### Route correction
+
+The retained exact route was correct but substantially slower than existing legal candidates:
+
+- `P=8`: production C8 measured 15.616 us versus 9.472 us for C4;
+- `P=56`: production C8 measured 28.672 us versus 21.760 us for C4;
+- `P=60`: production MMA128 measured 32.000 us versus 23.840 us for C4;
+- full 64/128-column waves through `P=1088` alternated between MMA64 and MMA128 winners.
+
+SIMT split2/split4 and the Q5 GEMV are not legal for this exact problem. Matched candidate screens
+and three-process confirmations produced the final closed route:
+
+```text
+P=4..76       SIMT R8C4
+P=80..636     MMA R64C64
+P=640..700    MMA R64C128
+P=704         MMA R64C64
+P=708..828    MMA R64C128
+P=832         MMA R64C64
+P=836..896    MMA R64C128
+P=900..960    MMA R64C64
+P=964..1024   MMA R64C128
+P=1028..1088  MMA R64C64
+P>=1092       MMA R64C128
+```
+
+Representative three-process, eight-warmup, forty-cold-sample confirmations were:
+
+| P | C4 | MMA64 | MMA128 | Decision |
+|---:|---:|---:|---:|---|
+| 76 | 27.904 us | 29.952 us | 32.000 us | C4 |
+| 80 | 30.752 us | 29.952 us | 32.000 us | MMA64 |
+| 640 | — | 31.968 us | 29.984 us | MMA128 |
+| 704 | — | 32.000 us | 33.920 us | MMA64 |
+| 768 | — | 32.000 us | 30.752 us | MMA128 |
+| 832 | — | 32.000 us | 34.016 us | MMA64 |
+| 896 | — | 33.568 us | 31.840 us | MMA128 |
+| 960 | — | 32.032 us | 33.952 us | MMA64 |
+| 1024 | — | 32.736 us | 32.000 us | MMA128 |
+| 1088 | — | 33.376 us | 34.048 us | MMA64 |
+| 1152 | — | 33.888 us | 32.000 us | MMA128 |
+
+### Correctness and dispatch
+
+```bash
+cmake --build build -j --target \
+  ninfer_linear_op_bench ninfer_linear_test \
+  ninfer_q5_linear_candidate_test ninfer_q5_linear_plan_test
+ctest --test-dir build \
+  -R '^ninfer_(linear_test|q5_linear_candidate_test|q5_linear_plan_test)$' \
+  --output-on-failure
+```
+
+All three tests passed. The Q5 plan test scans the complete admitted Vision column domain and now
+checks every revised route boundary. The numerical suites retain independent fixed-candidate
+oracles and public exact-shape coverage.
+
+### Release timing and roofline
+
+| P | Route | Cold median | Executed TFLOP/s | Interpretation |
+|---:|---|---:|---:|---|
+| 4 | SIMT R8C4 | 9.504 us | 1.12 useful | fixed launch/ownership floor |
+| 76 | SIMT R8C4 | 27.904 us | 7.23 useful | small-P winner |
+| 80 | MMA R64C64 predicated | 29.952 us | 11.34 | first MMA winner |
+| 640 | MMA R64C128 full | 30.464 us | 55.76 | full-wave winner |
+| 704 | MMA R64C64 full | 32.256 us | 57.93 | full-wave winner |
+| 1024 | MMA R64C128 full | 31.936 us | 85.10 | full-wave winner |
+| 1088 | MMA R64C64 full | 33.568 us | 86.03 | full-wave winner |
+| 1280 | MMA R64C128 full | 34.048 us | 99.78 | stable large-P route |
+| 4096 | MMA R64C128 full | 66.816 us | 162.71 | compute-bound |
+| 49152 | MMA R64C128 full | 671.008 us | 194.42 | maximum video |
+| 65536 | MMA R64C128 full | 892.928 us | 194.80 | maximum image |
+
+The maximum rows are isolated one-point, three-process medians. Their median ratios to the
+same-process BF16 MMA probe are 94.76% and 93.68%, respectively.
+
+### NCU attribution
+
+| Topology | Representative | NCU duration | SM SOL | Memory SOL | Occupancy | Registers | Static shared | Waves/SM |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| SIMT R8C4 | P=76 | 32.70 us | 49.74% | 34.69% | 63.55% | 58 | 10.75 KiB | 4.02 |
+| MMA R64C64 | P=960 | 42.75 us | 35.39% | 30.71% | 13.13% | 102 | 29.95 KiB | 0.53 |
+| MMA R64C128 | P=49152 | 925.18 us | 86.59% | 54.38% | 16.56% | 154 | 46.59 KiB | 20.33 |
+| MMA R64C128 | P=65536 | 1.23 ms | 87.00% | 52.21% | 16.58% | 154 | 46.59 KiB | 27.11 |
+
+MMA64 is explicitly partial-wave limited. Both maximum-item captures are tensor-pipe limited.
+Detailed captures for all three topologies report zero local-memory and shared-memory spilling
+requests.
+
+Reports are retained locally under:
+
+```text
+profiles/bench/qwen3_6_35b_linear_qualification/l10/
+profiles/ncu/qwen3_6_35b_a3b/linear/l10/final/
+```
+
+## L10 retained result
+
+L10 is supported for its complete Qwen3.6-35B-A3B target domain. The corrected exact route removes
+large small-P regressions, selects the measured 64/128-column wave winner, and reaches at least
+86.59% Compute SOL at both maximum item sizes without spilling.

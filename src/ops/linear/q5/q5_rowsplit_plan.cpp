@@ -39,11 +39,11 @@ constexpr std::array<Q5SupportSpec, 6> kSupportSpecs{{
     {6144, 5120, 5120, {1, kMaxTextCols, 1}, 2, 5},
     {5120, 6144, 6144, {2, 24, 1}, 7, 2},
     {5120, 17408, 17408, {2, 24, 1}, 9, 2},
-    {1152, 1152, 1152, {4, 131072, 4}, 11, 3},
-    {1152, 4304, 4352, {4, 131072, 4}, 14, 3},
+    {1152, 1152, 1152, {4, 131072, 4}, 11, 11},
+    {1152, 4304, 4352, {4, 131072, 4}, 22, 3},
 }};
 
-constexpr std::array<Q5RouteSpec, 17> kRouteSpecs{{
+constexpr std::array<Q5RouteSpec, 25> kRouteSpecs{{
     // [1024, 5120]
     {{1, 4, 1}, Q5ScheduleId::SimtR8C4},
     {{5, 16, 1}, Q5ScheduleId::SimtR8C8},
@@ -64,9 +64,17 @@ constexpr std::array<Q5RouteSpec, 17> kRouteSpecs{{
     {{7, 24, 1}, Q5ScheduleId::SimtR8C8},
 
     // Vision [1152, 1152]
-    {{4, 4, 4}, Q5ScheduleId::SimtR8C4},
-    {{8, 56, 4}, Q5ScheduleId::SimtR8C8},
-    {{60, 131072, 4}, Q5ScheduleId::MmaR64C128},
+    {{4, 76, 4}, Q5ScheduleId::SimtR8C4},
+    {{80, 636, 4}, Q5ScheduleId::MmaR64C64},
+    {{640, 700, 4}, Q5ScheduleId::MmaR64C128},
+    {{704, 704, 4}, Q5ScheduleId::MmaR64C64},
+    {{708, 828, 4}, Q5ScheduleId::MmaR64C128},
+    {{832, 832, 4}, Q5ScheduleId::MmaR64C64},
+    {{836, 896, 4}, Q5ScheduleId::MmaR64C128},
+    {{900, 960, 4}, Q5ScheduleId::MmaR64C64},
+    {{964, 1024, 4}, Q5ScheduleId::MmaR64C128},
+    {{1028, 1088, 4}, Q5ScheduleId::MmaR64C64},
+    {{1092, 131072, 4}, Q5ScheduleId::MmaR64C128},
 
     // Vision [1152, 4304], Kpad=4352
     {{4, 4, 4}, Q5ScheduleId::SimtR8C4},
