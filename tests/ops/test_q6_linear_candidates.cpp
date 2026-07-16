@@ -80,6 +80,7 @@ int legality_contract_rejections() {
     };
 
     reject("SIMT Full lifecycle mismatch", S::SimtR8C4, V::Full, {128, 1536, 1536, 4});
+    reject("SIMT C8 Full lifecycle mismatch", S::SimtR8C8, V::Full, {128, 2048, 2048, 6});
     reject("MMA None lifecycle mismatch", S::MmaR64C64, V::None, {128, 1536, 1536, 64});
     reject("MMA Full column mismatch", S::MmaR64C64, V::Full, {128, 1536, 1536, 32});
     reject("MMA Full Kpad mismatch", S::MmaR64C128, V::Full, {128, 1408, 1536, 128});
@@ -104,6 +105,7 @@ int main() {
     failures += one_candidate(S::SimtR8C4, V::None, 128, 1536, 4, 13u);
     failures += one_candidate(S::SimtR8C4, V::None, 128, 5120, 6, 17u);
     failures += one_candidate(S::SimtR8C4, V::None, 128, 1536, 36, 19u);
+    failures += one_candidate(S::SimtR8C8, V::None, 128, 2048, 6, 21u);
 
     failures += one_candidate(S::MmaR64C64, V::Full, 128, 1536, 64, 23u);
     failures += one_candidate(S::MmaR64C64, V::Predicated, 144, 1536, 65, 29u);

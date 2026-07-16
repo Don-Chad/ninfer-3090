@@ -10,6 +10,7 @@ namespace ninfer::ops::detail {
 
 enum class Q6ScheduleId {
     SimtR8C4,
+    SimtR8C8,
     MmaR64C64,
     MmaR64C128,
 };

@@ -16,6 +16,7 @@ bool aligned_to(const void* pointer, std::uintptr_t alignment) {
 bool is_known_schedule(Q6ScheduleId schedule) {
     switch (schedule) {
     case Q6ScheduleId::SimtR8C4:
+    case Q6ScheduleId::SimtR8C8:
     case Q6ScheduleId::MmaR64C64:
     case Q6ScheduleId::MmaR64C128:
         return true;
@@ -23,12 +24,16 @@ bool is_known_schedule(Q6ScheduleId schedule) {
     return false;
 }
 
-bool is_simt(Q6ScheduleId schedule) { return schedule == Q6ScheduleId::SimtR8C4; }
+bool is_simt(Q6ScheduleId schedule) {
+    return schedule == Q6ScheduleId::SimtR8C4 || schedule == Q6ScheduleId::SimtR8C8;
+}
 
 int schedule_cols(Q6ScheduleId schedule) {
     switch (schedule) {
     case Q6ScheduleId::SimtR8C4:
         return 4;
+    case Q6ScheduleId::SimtR8C8:
+        return 8;
     case Q6ScheduleId::MmaR64C64:
         return 64;
     case Q6ScheduleId::MmaR64C128:
@@ -63,6 +68,8 @@ const char* q6_schedule_name(Q6ScheduleId schedule) {
     switch (schedule) {
     case Q6ScheduleId::SimtR8C4:
         return "q6.simt.r8.c4.slab1024.s2.code_ca.high_ca.scale_pair32";
+    case Q6ScheduleId::SimtR8C8:
+        return "q6.simt.r8.c8.slab1024.s2.code_ca.high_ca.scale_pair32";
     case Q6ScheduleId::MmaR64C64:
         return "q6.mma.r64.c64.k64.wr32.wc32.s2.frag_pingpong.q_ca.x_ca.scale_scalar16.lb3";
     case Q6ScheduleId::MmaR64C128:
@@ -117,6 +124,9 @@ void q6_rowsplit_launch_fixed(Q6Plan plan, const Tensor& x, const Weight& w, Ten
     switch (plan.schedule) {
     case Q6ScheduleId::SimtR8C4:
         q6_rowsplit_simt_r8_c4_launch(x, w, out, stream);
+        return;
+    case Q6ScheduleId::SimtR8C8:
+        q6_rowsplit_simt_r8_c8_launch(x, w, out, stream);
         return;
     case Q6ScheduleId::MmaR64C64:
         q6_rowsplit_mma_r64_c64_launch(plan.variant, x, w, out, stream);

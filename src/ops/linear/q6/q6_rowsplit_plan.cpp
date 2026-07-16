@@ -32,14 +32,19 @@ struct Q6RouteSpec {
     Q6ScheduleId schedule;
 };
 
-constexpr std::array<Q6SupportSpec, 2> kSupportSpecs{{
+constexpr std::array<Q6SupportSpec, 3> kSupportSpecs{{
     {248320, 5120, 5120, {1, 6, 1}, 0, 1},
-    {1152, 1536, 1536, {4, 131072, 4}, 1, 9},
+    {248320, 2048, 2048, {1, 6, 1}, 1, 2},
+    {1152, 1536, 1536, {4, 131072, 4}, 3, 9},
 }};
 
-constexpr std::array<Q6RouteSpec, 10> kRouteSpecs{{
+constexpr std::array<Q6RouteSpec, 12> kRouteSpecs{{
     // [248320, 5120]
     {{1, 6, 1}, Q6ScheduleId::SimtR8C4},
+
+    // [248320, 2048]
+    {{1, 4, 1}, Q6ScheduleId::SimtR8C4},
+    {{5, 6, 1}, Q6ScheduleId::SimtR8C8},
 
     // [1152, 1536]
     {{4, 96, 4}, Q6ScheduleId::SimtR8C4},
@@ -56,6 +61,7 @@ constexpr std::array<Q6RouteSpec, 10> kRouteSpecs{{
 constexpr bool known_schedule(Q6ScheduleId schedule) noexcept {
     switch (schedule) {
     case Q6ScheduleId::SimtR8C4:
+    case Q6ScheduleId::SimtR8C8:
     case Q6ScheduleId::MmaR64C64:
     case Q6ScheduleId::MmaR64C128:
         return true;
@@ -121,6 +127,7 @@ const Q6SupportSpec* find_support(const Q6Problem& problem) noexcept {
 Q6KernelVariant resolve_variant(Q6ScheduleId schedule, const Q6Problem& problem) {
     switch (schedule) {
     case Q6ScheduleId::SimtR8C4:
+    case Q6ScheduleId::SimtR8C8:
         if (q6_candidate_is_legal(schedule, Q6KernelVariant::None, problem)) {
             return Q6KernelVariant::None;
         }

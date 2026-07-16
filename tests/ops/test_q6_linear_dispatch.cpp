@@ -165,6 +165,13 @@ constexpr std::array<RoutePoint, 2> kHeadRoutes{{
     {6, S::SimtR8C4, V::None},
 }};
 
+constexpr std::array<RoutePoint, 4> kHead2048Routes{{
+    {1, S::SimtR8C4, V::None},
+    {4, S::SimtR8C4, V::None},
+    {5, S::SimtR8C8, V::None},
+    {6, S::SimtR8C8, V::None},
+}};
+
 constexpr std::array<RoutePoint, 18> kVisionRoutes{{
     {4, S::SimtR8C4, V::None},
     {96, S::SimtR8C4, V::None},
@@ -186,7 +193,7 @@ constexpr std::array<RoutePoint, 18> kVisionRoutes{{
     {131072, S::MmaR64C128, V::Full},
 }};
 
-std::array<bool, 3> schedules_seen{};
+std::array<bool, 4> schedules_seen{};
 std::array<bool, 3> variants_seen{};
 
 void record_coverage(S schedule, V variant) {
@@ -194,11 +201,14 @@ void record_coverage(S schedule, V variant) {
     case S::SimtR8C4:
         schedules_seen[0] = true;
         break;
-    case S::MmaR64C64:
+    case S::SimtR8C8:
         schedules_seen[1] = true;
         break;
-    case S::MmaR64C128:
+    case S::MmaR64C64:
         schedules_seen[2] = true;
+        break;
+    case S::MmaR64C128:
+        schedules_seen[3] = true;
         break;
     }
     switch (variant) {
@@ -314,10 +324,10 @@ void rejection_checks() {
     expect_public_rejection("vision non-step C=5", vision_x, vision.get(), vision_out, workspace);
 
     DeviceQ6Weight future(248320, 2048, 0x37u);
-    DeviceBuffer future_input(2048u * sizeof(std::uint16_t));
-    Tensor future_x(future_input.data(), DType::BF16, {2048, 1});
-    Tensor future_out(head_output.data(), DType::BF16, {248320, 1});
-    expect_public_rejection("future K=2048", future_x, future.get(), future_out, workspace);
+    DeviceBuffer future_input(2048u * 7u * sizeof(std::uint16_t));
+    Tensor future_x(future_input.data(), DType::BF16, {2048, 7});
+    Tensor future_out(head_output.data(), DType::BF16, {248320, 7});
+    expect_public_rejection("K=2048 C=7", future_x, future.get(), future_out, workspace);
 }
 
 void verify_coverage() {
@@ -346,6 +356,7 @@ int main() {
 
     try {
         run_support("Q6 [248320,5120]", 248320, 5120, kHeadRoutes, 0x2bu);
+        run_support("Q6 [248320,2048]", 248320, 2048, kHead2048Routes, 0x2du);
         run_support("Q6 [1152,1536]", 1152, 1536, kVisionRoutes, 0x31u);
         rejection_checks();
         verify_coverage();

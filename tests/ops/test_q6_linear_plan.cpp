@@ -34,7 +34,7 @@ std::string plan_name(Q6Plan plan) {
 }
 
 Q6KernelVariant expected_variant(Q6ScheduleId schedule, const Q6Problem& problem) {
-    if (schedule == S::SimtR8C4) { return V::None; }
+    if (schedule == S::SimtR8C4 || schedule == S::SimtR8C8) { return V::None; }
     const int cols = schedule == S::MmaR64C64 ? 64 : 128;
     return problem.rows % 64 == 0 && problem.cols % cols == 0 && problem.k == problem.padded_k &&
                    problem.k % 64 == 0
@@ -46,6 +46,8 @@ Q6Plan expected_plan(const Q6Problem& problem) {
     S schedule;
     if (problem.rows == 248320 && problem.k == 5120) {
         schedule = S::SimtR8C4;
+    } else if (problem.rows == 248320 && problem.k == 2048) {
+        schedule = problem.cols <= 4 ? S::SimtR8C4 : S::SimtR8C8;
     } else if (problem.rows == 1152 && problem.k == 1536) {
         const int cols = problem.cols;
         if (cols <= 96) {
@@ -101,6 +103,16 @@ void full_support_scan() {
         if (admitted) { expect_plan("head route", problem, expected_plan(problem)); }
     }
 
+    for (std::int32_t cols = 0; cols <= 7; ++cols) {
+        const Q6Problem problem{248320, 2048, 2048, cols};
+        const bool admitted = cols >= 1 && cols <= 6;
+        if (ninfer::ops::detail::q6_rowsplit_admits(problem) != admitted) {
+            fail("K2048 head admission",
+                 admitted ? "rejected admitted cols" : "accepted rejected cols");
+        }
+        if (admitted) { expect_plan("K2048 head route", problem, expected_plan(problem)); }
+    }
+
     for (std::int32_t cols = 0; cols <= 131076; ++cols) {
         const Q6Problem problem{1152, 1536, 1536, cols};
         const bool admitted = cols >= 4 && cols <= 131072 && cols % 4 == 0;
@@ -118,9 +130,13 @@ struct BoundaryCase {
 };
 
 void route_boundaries() {
-    constexpr std::array<BoundaryCase, 20> cases{{
+    constexpr std::array<BoundaryCase, 24> cases{{
         {{248320, 5120, 5120, 1}, {S::SimtR8C4, V::None}},
         {{248320, 5120, 5120, 6}, {S::SimtR8C4, V::None}},
+        {{248320, 2048, 2048, 1}, {S::SimtR8C4, V::None}},
+        {{248320, 2048, 2048, 4}, {S::SimtR8C4, V::None}},
+        {{248320, 2048, 2048, 5}, {S::SimtR8C8, V::None}},
+        {{248320, 2048, 2048, 6}, {S::SimtR8C8, V::None}},
         {{1152, 1536, 1536, 4}, {S::SimtR8C4, V::None}},
         {{1152, 1536, 1536, 96}, {S::SimtR8C4, V::None}},
         {{1152, 1536, 1536, 100}, {S::MmaR64C64, V::Predicated}},
@@ -152,7 +168,7 @@ void rejection_contract() {
         {65536, 5120, 5120, 1},
         {4096, 5120, 5120, 4},
         {1152, 1536, 1536, 5},
-        {248320, 2048, 2048, 1},
+        {248320, 2048, 2048, 7},
     }};
 
     for (const Q6Problem& problem : rejected) {

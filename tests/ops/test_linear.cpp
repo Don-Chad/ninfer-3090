@@ -201,12 +201,12 @@ int one_quant_shape(QType qtype, std::int32_t n, std::int32_t k,
     return failures;
 }
 
-int one_w8_shape_sampled(std::int32_t n, std::int32_t k, std::int32_t t, std::uint32_t seed) {
+int one_quant_shape_sampled(QType qtype, std::int32_t n, std::int32_t k, std::int32_t t,
+                            std::uint32_t seed) {
     std::vector<float> source_weight(static_cast<std::size_t>(n) * k);
     fill_uniform(source_weight, seed + 2000u, -0.125f, 0.125f);
     round_to_bf16(source_weight);
-    row_split::PackedWeight packed =
-        row_split::pack_row_split_lowbit(source_weight, n, k, QType::W8G32_F16S);
+    row_split::PackedWeight packed = row_split::pack_row_split_lowbit(source_weight, n, k, qtype);
     std::vector<float>().swap(source_weight);
 
     std::vector<float> x(static_cast<std::size_t>(k) * t);
@@ -224,8 +224,8 @@ int one_w8_shape_sampled(std::int32_t n, std::int32_t k, std::int32_t t, std::ui
         ops::linear(tx, packed.device_weight(dweight.p), tout, ws, nullptr);
         cudaDeviceSynchronize();
     } catch (const std::exception& e) {
-        std::cerr << "linear w8g32 sampled [" << n << "," << k << "] T=" << t << " seed=" << seed
-                  << ": unexpected exception: " << e.what() << '\n';
+        std::cerr << "linear " << qtype_name(qtype) << " sampled [" << n << "," << k << "] T=" << t
+                  << " seed=" << seed << ": unexpected exception: " << e.what() << '\n';
         return 1;
     }
 
@@ -263,14 +263,23 @@ int one_w8_shape_sampled(std::int32_t n, std::int32_t k, std::int32_t t, std::ui
         }
     }
 
-    const ops::detail::W8Plan plan =
-        ops::detail::w8_rowsplit_resolve_plan({n, k, packed.weight.padded_shape[1], t});
-    const Tolerance tolerance = ops::detail::w8_schedule_uses_mma(plan.schedule)
-                                    ? Tolerance::linear_tc()
-                                    : Tolerance::linear_bf16();
-    const std::string label   = "linear w8g32 sampled [" + std::to_string(n) + "," +
-                              std::to_string(k) + "] T=" + std::to_string(t) +
-                              " seed=" + std::to_string(seed);
+    Tolerance tolerance = Tolerance::linear_bf16();
+    if (qtype == QType::Q6G64_F16S) {
+        const ops::detail::Q6Plan plan =
+            ops::detail::q6_rowsplit_resolve_plan({n, k, packed.weight.padded_shape[1], t});
+        tolerance = ops::detail::q6_schedule_uses_mma(plan.schedule) ? Tolerance::linear_tc()
+                                                                     : Tolerance::linear_bf16();
+    } else if (qtype == QType::W8G32_F16S) {
+        const ops::detail::W8Plan plan =
+            ops::detail::w8_rowsplit_resolve_plan({n, k, packed.weight.padded_shape[1], t});
+        tolerance = ops::detail::w8_schedule_uses_mma(plan.schedule) ? Tolerance::linear_tc()
+                                                                     : Tolerance::linear_bf16();
+    } else {
+        throw std::invalid_argument("sampled Linear oracle supports only Q6 and W8");
+    }
+    const std::string label = "linear " + std::string(qtype_name(qtype)) + " sampled [" +
+                              std::to_string(n) + "," + std::to_string(k) +
+                              "] T=" + std::to_string(t) + " seed=" + std::to_string(seed);
     return verify(label.c_str(), actual, reference, tolerance);
 }
 
@@ -713,10 +722,10 @@ int main() {
         f +=
             one_quant_shape(QType::W8G32_F16S, 2048, 4608,
                             {14, 15, 16, 17, 19, 20, 21, 23, 24, 25, 27, 28, 29, 31, 32, 33}, 123u);
-        f += one_w8_shape_sampled(2048, 4608, 16384, 125u);
+        f += one_quant_shape_sampled(QType::W8G32_F16S, 2048, 4608, 16384, 125u);
         f += paired_w8g32_shape(1024, 5120, {4, 5, 57}, 127u);
         f += one_quant_shape(QType::W8G32_F16S, 2048, 4096, {56, 57}, 129u);
-        f += one_w8_shape_sampled(2048, 4096, 1024, 131u);
+        f += one_quant_shape_sampled(QType::W8G32_F16S, 2048, 4096, 1024, 131u);
         std::cout << (f ? "FAIL" : "OK") << " linear W8G32 focused correctness\n";
         return f ? 1 : 0;
     }
@@ -742,10 +751,10 @@ int main() {
     f += one_quant_shape(QType::W8G32_F16S, 4608, 4608, {5, 6}, 121u);
     f += one_quant_shape(QType::W8G32_F16S, 2048, 4608,
                          {14, 15, 16, 17, 19, 20, 21, 23, 24, 25, 27, 28, 29, 31, 32, 33}, 123u);
-    f += one_w8_shape_sampled(2048, 4608, 16384, 125u);
+    f += one_quant_shape_sampled(QType::W8G32_F16S, 2048, 4608, 16384, 125u);
     f += paired_w8g32_shape(1024, 5120, {4, 5, 57}, 127u);
     f += one_quant_shape(QType::W8G32_F16S, 2048, 4096, {56, 57}, 129u);
-    f += one_w8_shape_sampled(2048, 4096, 1024, 131u);
+    f += one_quant_shape_sampled(QType::W8G32_F16S, 2048, 4096, 1024, 131u);
     // Q4 public correctness is exact-admission only. The dedicated Q4 plan/dispatch tests cover
     // every route seam and compare public auto against the fixed entry word-for-word; these
     // oracle points cover both registered head K values and the split-K/SIMT numerical boundary
@@ -766,6 +775,8 @@ int main() {
     // every route seam and compare public auto against the fixed entry word-for-word. These
     // independent fp64-oracle points cover the real head and Vision geometries.
     f += one_quant_shape(QType::Q6G64_F16S, 248320, 5120, {1}, 211u);
+    f += one_quant_shape(QType::Q6G64_F16S, 248320, 2048, {1}, 223u);
+    f += one_quant_shape_sampled(QType::Q6G64_F16S, 248320, 2048, 6, 225u);
     f += one_quant_shape(QType::Q6G64_F16S, 1152, 1536, {4, 40, 128}, 227u);
 
     std::cout << (f ? "FAIL" : "OK") << " linear correctness\n";

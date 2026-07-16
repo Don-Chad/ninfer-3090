@@ -485,6 +485,9 @@ void parse_candidate(Options& opt, std::string_view raw) {
     } else if (candidate == "q6-simt-r8c4") {
         opt.candidate   = CandidateKind::Q6Fixed;
         opt.q6_schedule = ops::detail::Q6ScheduleId::SimtR8C4;
+    } else if (candidate == "q6-simt-r8c8") {
+        opt.candidate   = CandidateKind::Q6Fixed;
+        opt.q6_schedule = ops::detail::Q6ScheduleId::SimtR8C8;
     } else if (candidate == "q6-mma-r64c64") {
         opt.candidate   = CandidateKind::Q6Fixed;
         opt.q6_schedule = ops::detail::Q6ScheduleId::MmaR64C64;
@@ -685,7 +688,7 @@ void usage(const char* argv0) {
         "                             q5-gemv-r16s2x, q5-simt-r8c4, q5-simt-r8c8,\n"
         "                             q5-simt-split2-exact, q5-simt-split4-exact,\n"
         "                             q5-mma-r64c64, q5-mma-r64c128,\n"
-        "                             q6-simt-r8c4,\n"
+        "                             q6-simt-r8c4, q6-simt-r8c8,\n"
         "                             q6-mma-r64c64, q6-mma-r64c128,\n"
         "                             w8-simt-r8c4, w8-simt-r8c8,\n"
         "                             w8-mma-r32c128, or w8-mma-r64c128.\n"
@@ -1198,6 +1201,8 @@ int schedule_col_tile(ops::detail::Q6ScheduleId schedule) {
     switch (schedule) {
     case S::SimtR8C4:
         return 4;
+    case S::SimtR8C8:
+        return 8;
     case S::MmaR64C64:
         return 64;
     case S::MmaR64C128:

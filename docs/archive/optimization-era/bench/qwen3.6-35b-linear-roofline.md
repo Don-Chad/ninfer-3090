@@ -6,7 +6,7 @@ Target: Qwen3.6-35B-A3B exact Linear domains on NVIDIA GeForce RTX 5090 (`sm_120
 CUDA 13.1, driver 591.86, NCU 2025.4.1).
 
 This is retained standalone Op evidence. It does not register the 35B Engine target. This revision
-establishes L5 and L7-L14.
+establishes L5-L14.
 
 ## L5: W8 MTP stem `[2048,4096]`
 
@@ -96,6 +96,103 @@ profiles/ncu/qwen3_6_35b_a3b/linear/l5/final/
 L5 is supported for its complete Qwen3.6-35B-A3B target domain. Its finite route selects the
 measured crossover winners, the maximum remains within 0.77% of a same-topology launch-aware
 ceiling, and all production topologies are profiler-confirmed without spilling.
+
+## L6: Q6 full head `[248320,2048]`
+
+The exact operation is Q6G64_F16S RowSplit `[248320,2048]` times BF16 `[2048,C]`, producing full
+BF16 logits `[248320,C]` for every decision/verification width `1<=C<=6`.
+
+### Route qualification and C8 specialization
+
+All physically legal existing Q6 candidates were screened across the complete column domain.
+SIMT R8C4 was the clear bandwidth winner at `C=1..4`, but its four-column tile replayed the
+roughly 397 MB weight payload twice at `C=5/6`. MMA64 avoided that replay but executed 64 columns;
+MMA128 was slower still.
+
+The existing Q6 SIMT template already supported up to eight accumulator columns, so qualification
+added one direct R8C8 instance rather than a separate algorithm. Three independent-process
+measurements around the affected points were:
+
+| C | SIMT C4 | MMA64 | New SIMT C8 |
+|---:|---:|---:|---:|
+| 5 | 552.224 us | 557.056 us | 406.816 us |
+| 6 | 568.352 us | 558.368 us | 431.392 us |
+
+The resulting exact route is:
+
+```text
+C=1..4  SIMT R8C4
+C=5..6  SIMT R8C8
+```
+
+At `C=5/6`, C8 removes the second weight traversal and improves the former production topology by
+about 26%/24%.
+
+### Correctness and dispatch
+
+```bash
+cmake --build build -j --target \
+  ninfer_linear_op_bench ninfer_linear_test \
+  ninfer_q6_linear_candidate_test ninfer_q6_linear_plan_test \
+  ninfer_q6_linear_dispatch_test
+ctest --test-dir build \
+  -R '^ninfer_(linear_test|q6_linear_candidate_test|q6_linear_plan_test|q6_linear_dispatch_test)$' \
+  --output-on-failure
+```
+
+All four tests passed. The fixed-candidate suite checks the new C8 instance against an independent
+FP64 oracle. The main Linear suite checks the exact `[248320,2048]` shape at `C=1` in full and
+uses distributed sampled rows/columns at `C=6`; their relative L2 errors were `1.660e-3` and
+`1.115e-3`. Plan and dispatch tests close `C=1..6`, verify the C4/C8 seam, and compare public
+execution word-for-word with the resolved fixed entry.
+
+### Release timing and roofline
+
+Three independent production processes each used eight warmups and forty L2-flushed samples. The
+median same-session cold-copy ceiling was 1508.607 GB/s.
+
+| C | Route | Cold median | Useful bandwidth | Roofline interpretation |
+|---:|---|---:|---:|---|
+| 1 | SIMT R8C4 | 271.616 us | 1464.61 GB/s | 97.08% of cold-copy ceiling |
+| 2 | SIMT R8C4 | 285.728 us | 1394.03 GB/s | 92.41% of cold-copy ceiling |
+| 3 | SIMT R8C4 | 296.224 us | 1346.33 GB/s | 89.24% of cold-copy ceiling |
+| 4 | SIMT R8C4 | 312.160 us | 1279.20 GB/s | 84.79% of cold-copy ceiling |
+| 5 | SIMT R8C8 | 409.600 us | 12.42 TFLOP/s | 94.95% of matched C8 work-rate ceiling |
+| 6 | SIMT R8C8 | 433.376 us | 14.08 TFLOP/s | 94.64% of matched C8 work-rate ceiling |
+
+For the higher-reuse C8 route, the qualified 27B Q6 head `[248320,5120]` is a direct
+same-format/same-rows control using the identical kernel, 31040-CTA grid, and resource envelope.
+At `C=5/6` it measured 13.08/14.88 TFLOP/s, establishing the launch- and decode-aware ceilings
+used above. Thus every L6 column count reaches either the traffic roofline or at least 94.6% of
+the matching C8 work-rate ceiling.
+
+### NCU attribution
+
+Basic-first captures matched the intended `q6_rowsplit_gemm_simt_kernel` specializations.
+Detailed captures reported:
+
+| Topology | Representative | NCU duration | SM SOL | DRAM SOL | Occupancy | Registers | Static shared | Waves/SM |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| SIMT R8C4 | C=1 | 334.21 us | 82.10% | 73.15% | 30.87% | 84 | 12.80 KiB | 91.29 |
+| SIMT R8C8 | C=6 | 588.86 us | 74.45% | 42.37% | 32.18% | 101 | 12.80 KiB | 91.29 |
+
+The C4 capture moved 1.31 TB/s under counter replay, while C8 shifted toward the FMA/decode issue
+ceiling as each decoded weight fed six outputs. The K=5120 C8 control retained the same grid,
+101 registers/thread, 12.80 KiB static shared memory, and about 74% Compute SOL. Both detailed
+captures report zero local-memory and shared-memory spilling requests.
+
+Reports are retained locally under:
+
+```text
+profiles/bench/qwen3_6_35b_linear_qualification/l6/
+profiles/ncu/qwen3_6_35b_a3b/linear/l6/final/
+```
+
+## L6 retained result
+
+L6 is supported for its complete Qwen3.6-35B-A3B target domain. Its C4/C8 route removes redundant
+weight replay, reaches 84.79%-97.08% of the cold-copy ceiling at `C=1..4`, and remains within
+5.36% of a same-kernel work-rate ceiling at `C=5/6`, with no profiler-visible spilling.
 
 ## L7: Q4 draft head `[131072,2048]`
 
