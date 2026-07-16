@@ -1,6 +1,4 @@
-// Correctness + coverage for linear dense BF16/FP32, against the frozen
-// op-test standard (docs/op-development.md): fp64 golden W @ x from
-// bf16-rounded inputs and weights, composite tolerance linear_bf16.
+// Correctness and exact-admission coverage for pure Linear format backends.
 #include "ninfer/ops/linear.h"
 #include "ninfer/ops/attn_input_proj.h"
 #include "ninfer/ops/gdn_input_proj.h"
@@ -10,6 +8,7 @@
 #include "ninfer/ops/residual_add.h"
 #include "ninfer/ops/silu_mul.h"
 #include "ops/op_tester.h"
+#include "ops/linear/bf16/bf16_contiguous_plan.h"
 #include "ops/linear/q4/q4_rowsplit_launch.h"
 #include "ops/linear/q4/q4_rowsplit_plan.h"
 #include "ops/linear/q5/q5_rowsplit_launch.h"
@@ -26,7 +25,6 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
-#include <utility>
 #include <vector>
 
 using namespace ninfer;
@@ -36,10 +34,6 @@ namespace {
 
 const char* qtype_name(QType qtype) {
     switch (qtype) {
-    case QType::BF16_CTRL:
-        return "bf16";
-    case QType::FP32_CTRL:
-        return "fp32";
     case QType::Q4G64_F16S:
         return "q4";
     case QType::Q5G64_F16S:
@@ -50,42 +44,6 @@ const char* qtype_name(QType qtype) {
         return "w8g32";
     default:
         return "unsupported";
-    }
-}
-
-Weight dense_weight(void* data, QType qtype, std::int32_t n, std::int32_t k) {
-    Weight w{};
-    w.qtype         = qtype;
-    w.layout        = QuantLayout::Contiguous;
-    w.payload       = data;
-    w.payload_bytes = static_cast<std::uint64_t>(n) * static_cast<std::uint64_t>(k) *
-                      ((qtype == QType::FP32_CTRL) ? 4u : 2u);
-    w.qdata           = data;
-    w.scales          = nullptr;
-    w.group_size      = 0;
-    w.group           = 0;
-    w.ndim            = 2;
-    w.shape[0]        = n;
-    w.shape[1]        = k;
-    w.padded_shape[0] = n;
-    w.padded_shape[1] = k;
-    w.n               = n;
-    w.k               = k;
-    return w;
-}
-
-void cpu_linear_dense(const std::vector<float>& x, const std::vector<float>& weight, std::int32_t n,
-                      std::int32_t k, std::int32_t t, std::vector<double>& out) {
-    out.assign(static_cast<std::size_t>(n) * t, 0.0);
-    for (std::int32_t col = 0; col < t; ++col) {
-        double* dst = out.data() + static_cast<std::size_t>(col) * n;
-        for (std::int32_t row = 0; row < n; ++row) {
-            const float* wrow = weight.data() + static_cast<std::size_t>(row) * k;
-            for (std::int32_t kk = 0; kk < k; ++kk) {
-                const double xv = static_cast<double>(x[static_cast<std::size_t>(col) * k + kk]);
-                dst[row] += static_cast<double>(wrow[kk]) * xv;
-            }
-        }
     }
 }
 
@@ -122,84 +80,6 @@ void cpu_linear_dequant(const std::vector<float>& x, const std::vector<float>& w
         });
     }
     for (auto& thread : threads) { thread.join(); }
-}
-
-int one_dense_shape(std::int32_t n, std::int32_t k, std::int32_t t, QType qtype, std::uint32_t seed,
-                    float x_abs = 8.0f, float weight_abs = 0.125f,
-                    const char* case_name = nullptr) {
-    std::vector<float> x(static_cast<std::size_t>(k) * t);
-    std::vector<float> weight(static_cast<std::size_t>(n) * k);
-    fill_uniform(x, seed, -x_abs, x_abs);
-    fill_uniform(weight, seed + 1000u, -weight_abs, weight_abs);
-    round_to_bf16(x);
-    round_to_bf16(weight);
-
-    std::vector<double> ref;
-    cpu_linear_dense(x, weight, n, k, t, ref);
-
-    DBuf dx = to_device_bf16(x);
-    DBuf dw = (qtype == QType::FP32_CTRL) ? to_device_f32(weight) : to_device_bf16(weight);
-    DBuf dout(static_cast<std::size_t>(n) * t * 2u);
-
-    Tensor tx(dx.p, DType::BF16, {k, t});
-    Tensor tout(dout.p, DType::BF16, {n, t});
-    WorkspaceArena ws(64ULL << 20);
-    ops::linear(tx, dense_weight(dw.p, qtype, n, k), tout, ws, nullptr);
-    cudaDeviceSynchronize();
-
-    const std::string suffix = case_name ? (" " + std::string(case_name)) : std::string();
-    const std::string label  = "linear " + std::string(qtype_name(qtype)) + suffix + " [" +
-                              std::to_string(n) + "," + std::to_string(k) +
-                              "] T=" + std::to_string(t) + " seed=" + std::to_string(seed);
-    return verify(label.c_str(), from_device_bf16(dout, static_cast<std::size_t>(n) * t), ref,
-                  Tolerance::linear_bf16());
-}
-
-int fp32_ctrl_first_column_consistency(std::int32_t n, std::int32_t k, std::int32_t t) {
-    std::vector<float> x_one(static_cast<std::size_t>(k), 0.0f);
-    std::vector<float> x_many(static_cast<std::size_t>(k) * t, 0.0f);
-    std::vector<float> weight(static_cast<std::size_t>(n) * k, 0.0f);
-    for (std::int32_t kk = 0; kk < std::min<std::int32_t>(k, 16); ++kk) {
-        x_one[kk] = 3.0f;
-        for (std::int32_t col = 0; col < t; ++col) {
-            x_many[static_cast<std::size_t>(col) * k + kk] = 3.0f;
-        }
-    }
-    for (std::int32_t row = 0; row < n; ++row) {
-        for (std::int32_t kk = 0; kk < std::min<std::int32_t>(k, 16); ++kk) {
-            weight[static_cast<std::size_t>(row) * k + kk] = 1.003f;
-        }
-    }
-
-    DBuf dx_one  = to_device_bf16(x_one);
-    DBuf dx_many = to_device_bf16(x_many);
-    DBuf dw      = to_device_f32(weight);
-    DBuf out_one(static_cast<std::size_t>(n) * 2u);
-    DBuf out_many(static_cast<std::size_t>(n) * t * 2u);
-
-    Tensor tx_one(dx_one.p, DType::BF16, {k, 1});
-    Tensor tx_many(dx_many.p, DType::BF16, {k, t});
-    Tensor tout_one(out_one.p, DType::BF16, {n, 1});
-    Tensor tout_many(out_many.p, DType::BF16, {n, t});
-    Weight w = dense_weight(dw.p, QType::FP32_CTRL, n, k);
-    WorkspaceArena ws(64ULL << 20);
-
-    ops::linear(tx_one, w, tout_one, ws, nullptr);
-    ops::linear(tx_many, w, tout_many, ws, nullptr);
-    cudaDeviceSynchronize();
-
-    const std::vector<double> got_one = from_device_bf16(out_one, n);
-    const std::vector<double> got_many =
-        from_device_bf16(out_many, static_cast<std::size_t>(n) * t);
-    for (std::int32_t row = 0; row < n; ++row) {
-        if (got_one[row] != got_many[row]) {
-            std::cerr << "linear fp32 first-column consistency [" << n << "," << k << "] T=" << t
-                      << ": row " << row << " T=1=" << got_one[row] << " T>1=" << got_many[row]
-                      << '\n';
-            return 1;
-        }
-    }
-    return 0;
 }
 
 void launch_q4_test_reference(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
@@ -590,104 +470,57 @@ int prefill_fusion_correctness() {
     return f;
 }
 
-int dense_metadata_validation() {
-    int f = 0;
-    std::vector<float> x(4, 1.0f);
-    round_to_bf16(x);
-    DBuf dx = to_device_bf16(x);
-    DBuf dout(2 * 2u);
-    Tensor tx(dx.p, DType::BF16, {4, 1});
-    Tensor tout(dout.p, DType::BF16, {2, 1});
-    WorkspaceArena ws(64ULL << 20);
-
-    Weight w = dense_weight(dx.p, QType::BF16_CTRL, 2, 4);
-
-    try {
-        Weight bad = w;
-        bad.scales = dx.p;
-        ops::linear(tx, bad, tout, ws, nullptr);
-        std::cerr << "linear dense scale plane: expected invalid_argument\n";
-        ++f;
-    } catch (const std::invalid_argument&) {}
-
-    try {
-        Weight bad          = w;
-        bad.padded_shape[0] = 64;
-        ops::linear(tx, bad, tout, ws, nullptr);
-        std::cerr << "linear dense padded N: expected invalid_argument\n";
-        ++f;
-    } catch (const std::invalid_argument&) {}
-
-    try {
-        Weight bad          = w;
-        bad.padded_shape[1] = 64;
-        ops::linear(tx, bad, tout, ws, nullptr);
-        std::cerr << "linear dense padded K: expected invalid_argument\n";
-        ++f;
-    } catch (const std::invalid_argument&) {}
-
-    try {
-        Weight bad          = w;
-        bad.padded_shape[2] = 2;
-        ops::linear(tx, bad, tout, ws, nullptr);
-        std::cerr << "linear dense padded trailing dim: expected invalid_argument\n";
-        ++f;
-    } catch (const std::invalid_argument&) {}
-
-    try {
-        Tensor empty_tx(nullptr, DType::BF16, {4, 1});
-        Tensor empty_out(nullptr, DType::BF16, {2, 1});
-        empty_tx.ne[1]  = 0;
-        empty_out.ne[1] = 0;
-        ops::linear(empty_tx, w, empty_out, ws, nullptr);
-    } catch (const std::exception& e) {
-        std::cerr << "linear dense empty T: expected no throw, got " << e.what() << '\n';
-        ++f;
-    }
-
-    return f;
-}
-
-int dense_alignment_validation() {
+int bf16_placeholder_contract() {
     int f                    = 0;
-    constexpr std::int32_t n = 2;
-    constexpr std::int32_t k = 5;
-    DBuf dx(static_cast<std::size_t>(k) * 2u + 16u);
-    DBuf dw(static_cast<std::size_t>(n) * k * 2u + 16u);
-    DBuf dout(static_cast<std::size_t>(n) * 2u + 16u);
-    cudaMemset(dx.p, 0, dx.bytes);
-    cudaMemset(dw.p, 0, dw.bytes);
-    cudaMemset(dout.p, 0, dout.bytes);
-
-    auto* x_bytes   = static_cast<unsigned char*>(dx.p);
-    auto* w_bytes   = static_cast<unsigned char*>(dw.p);
-    auto* out_bytes = static_cast<unsigned char*>(dout.p);
+    constexpr std::int32_t n = 48;
+    constexpr std::int32_t k = 5120;
+    DBuf dx(static_cast<std::size_t>(k) * 2u);
+    DBuf dw_bf16(static_cast<std::size_t>(n) * k * 2u);
+    DBuf dw_fp32(static_cast<std::size_t>(n) * k * 4u);
+    DBuf dout(static_cast<std::size_t>(n) * 2u);
     Tensor tx(dx.p, DType::BF16, {k, 1});
     Tensor tout(dout.p, DType::BF16, {n, 1});
-    Weight w = dense_weight(dw.p, QType::BF16_CTRL, n, k);
-    WorkspaceArena ws(64ULL << 20);
+    WorkspaceArena ws(256);
 
+    const auto weight = [&](void* data, QType qtype) {
+        Weight w{};
+        w.qtype         = qtype;
+        w.layout        = QuantLayout::Contiguous;
+        w.payload       = data;
+        w.payload_bytes = static_cast<std::uint64_t>(n) * k * (qtype == QType::FP32_CTRL ? 4u : 2u);
+        w.qdata         = data;
+        w.ndim          = 2;
+        w.shape[0]      = n;
+        w.shape[1]      = k;
+        w.padded_shape[0] = n;
+        w.padded_shape[1] = k;
+        w.n               = n;
+        w.k               = k;
+        return w;
+    };
+
+    if (ops::detail::bf16_contiguous_admits({n, k, 1})) {
+        std::cerr << "linear BF16 placeholder unexpectedly admits a problem\n";
+        ++f;
+    }
     try {
-        Tensor bad_x(x_bytes + 2, DType::BF16, {k, 1});
-        ops::linear(bad_x, w, tout, ws, nullptr);
-        cudaDeviceSynchronize();
-        std::cerr << "linear dense unaligned x: expected invalid_argument\n";
+        ops::linear(tx, weight(dw_bf16.p, QType::BF16_CTRL), tout, ws, nullptr);
+        std::cerr << "linear BF16 placeholder unexpectedly executed\n";
+        ++f;
+    } catch (const std::invalid_argument&) {}
+    try {
+        ops::linear(tx, weight(dw_fp32.p, QType::FP32_CTRL), tout, ws, nullptr);
+        std::cerr << "linear FP32 unexpectedly remains supported\n";
         ++f;
     } catch (const std::invalid_argument&) {}
 
+    Tensor empty_x   = tx;
+    Tensor empty_out = tout;
+    empty_x.ne[1]    = 0;
+    empty_out.ne[1]  = 0;
     try {
-        Weight bad_w = dense_weight(w_bytes + 2, QType::BF16_CTRL, n, k);
-        ops::linear(tx, bad_w, tout, ws, nullptr);
-        cudaDeviceSynchronize();
-        std::cerr << "linear dense unaligned weight: expected invalid_argument\n";
-        ++f;
-    } catch (const std::invalid_argument&) {}
-
-    try {
-        Tensor bad_out(out_bytes + 2, DType::BF16, {n, 1});
-        ops::linear(tx, w, bad_out, ws, nullptr);
-        cudaDeviceSynchronize();
-        std::cerr << "linear dense unaligned out: expected invalid_argument\n";
+        ops::linear(empty_x, weight(dw_bf16.p, QType::BF16_CTRL), empty_out, ws, nullptr);
+        std::cerr << "linear BF16 placeholder accepted an empty problem\n";
         ++f;
     } catch (const std::invalid_argument&) {}
 
@@ -809,31 +642,12 @@ int main() {
 
     int f = 0;
     f += prefill_fusion_correctness();
-    f += dense_metadata_validation();
-    f += dense_alignment_validation();
+    f += bf16_placeholder_contract();
     f += lowbit_metadata_validation(QType::Q4G64_F16S);
     f += lowbit_metadata_validation(QType::Q5G64_F16S);
     f += lowbit_metadata_validation(QType::Q6G64_F16S);
     f += lowbit_metadata_validation(QType::W8G32_F16S);
 
-    for (std::uint32_t seed : {1u, 7u, 99u}) {
-        for (QType qtype : {QType::BF16_CTRL, QType::FP32_CTRL}) {
-            f += one_dense_shape(48, 5120, 1, qtype, seed);
-            f += one_dense_shape(48, 5120, 7, qtype, seed);
-        }
-    }
-    for (QType qtype : {QType::BF16_CTRL, QType::FP32_CTRL}) {
-        if (qtype == QType::BF16_CTRL) { f += one_dense_shape(64, 64, 32, qtype, 11u); }
-        f += one_dense_shape(64, 96, 64, qtype, 13u);
-        f += one_dense_shape(96, 513, 33, qtype, 15u);
-        f += one_dense_shape(5120, 6144, 1, qtype, 17u);
-        f += one_dense_shape(5120, 6144, 7, qtype, 17u);
-        f += one_dense_shape(37, 513, 19, qtype, 19u);
-        f += one_dense_shape(80, 130, 17, qtype, 101u, 8.0f, 1.5f, "stress");
-    }
-    f += one_dense_shape(96, 128, 512, QType::BF16_CTRL, 53u);
-    f += fp32_ctrl_first_column_consistency(48, 64, 7);
-    f += fp32_ctrl_first_column_consistency(64, 64, 32);
     // W8 public correctness is exact-admission only. The dedicated W8 dispatch test covers every
     // registered view and route family word-for-word; these independent fp64-oracle points cover
     // both SIMT schedules, both MMA row tiles, the Vision crossover, and the pair topology seam.

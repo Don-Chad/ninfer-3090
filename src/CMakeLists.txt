@@ -73,6 +73,7 @@ add_library(ninfer_ops STATIC
   ops/linear/gemm/linear_rowsplit_q4_gate_up_silu_gemm_mma.cu
   ops/linear/gemv/linear_dense_gdn_in_ab_48.cu
   ops/linear/gemv/linear_rowsplit_gemv_mlp_gate_up_34816.cu
+  ops/linear/bf16/bf16_contiguous_plan.cpp
   ops/linear/q4/q4_rowsplit_gemm_mma.cu
   ops/linear/q4/q4_rowsplit_gemm_simt.cu
   ops/linear/q4/q4_rowsplit_gemv.cu
@@ -95,8 +96,6 @@ add_library(ninfer_ops STATIC
   ops/linear_pair/w8/w8_pair_gemm_mma.cu
   ops/linear_pair/w8/w8_pair_plan.cpp
   ops/linear/linear.cpp
-  ops/linear/plan/linear_plan.cpp
-  ops/linear/reference/linear_generic_dense.cu
   ops/wrapper/add_bias.cpp
   ops/wrapper/argmax.cpp
   ops/wrapper/cast.cpp

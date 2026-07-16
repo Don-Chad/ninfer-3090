@@ -2,14 +2,12 @@
 #include "ninfer/ops/linear_pair.h"
 
 #include "ops/common/math.h"
-#include "ops/linear/plan/linear_plan.h"
+#include "ops/linear/bf16/bf16_contiguous_plan.h"
 #include "ops/linear/q4/q4_rowsplit_plan.h"
 #include "ops/linear/q5/q5_rowsplit_plan.h"
 #include "ops/linear/q6/q6_rowsplit_plan.h"
 #include "ops/linear/w8/w8_rowsplit_plan.h"
 #include "ops/linear_pair/w8/w8_pair_plan.h"
-#include "ops/linear/reference/linear_generic.h"
-#include "core/weight.h" // as_dense
 
 #include <cstdint>
 #include <limits>
@@ -105,34 +103,6 @@ void require_weight_2d(const Weight& w, const char* label) {
     }
 }
 
-void require_dense_metadata(const Weight& w) {
-    if (w.layout != QuantLayout::Contiguous) {
-        throw std::invalid_argument("linear: dense weight must be Contiguous");
-    }
-    require_weight_2d(w, "dense");
-    if (w.group != 0 || w.group_size != 0) {
-        throw std::invalid_argument("linear: dense weight group must be zero");
-    }
-    if (w.scales != nullptr) {
-        throw std::invalid_argument("linear: dense weight scale plane must be null");
-    }
-    if (w.qhigh != nullptr || w.high_plane_bytes != 0) {
-        throw std::invalid_argument("linear: dense weight high plane must be null");
-    }
-    for (int d = 0; d < 4; ++d) {
-        if (w.padded_shape[d] != w.shape[d]) {
-            throw std::invalid_argument("linear: dense weight padded shape must match shape");
-        }
-    }
-    const std::uint64_t elem_size = (w.qtype == QType::FP32_CTRL) ? 4u : 2u;
-    const std::uint64_t expected  = checked_mul_u64(
-        checked_mul_u64(static_cast<std::uint64_t>(w.n), static_cast<std::uint64_t>(w.k)),
-        elem_size);
-    if (w.payload_bytes != 0 && w.payload_bytes < expected) {
-        throw std::invalid_argument("linear: dense payload is too small");
-    }
-}
-
 void require_row_split_lowbit_metadata(const Weight& w, const char* label, std::int32_t group_size,
                                        std::uint64_t nibble_bytes_per_group,
                                        std::uint64_t high_bytes_per_group) {
@@ -218,19 +188,6 @@ void require_tensor_data(const Tensor& x, const Tensor& out) {
     }
 }
 
-void require_aligned_16(const void* p, const char* label) {
-    if ((reinterpret_cast<std::uintptr_t>(p) & 0xfu) != 0) {
-        throw std::invalid_argument(std::string("linear: dense ") + label +
-                                    " data must be 16-byte aligned");
-    }
-}
-
-void require_dense_alignment(const Tensor& x, const Weight& w, const Tensor& out) {
-    require_aligned_16(x.data, "x");
-    require_aligned_16(w.qdata, "weight");
-    require_aligned_16(out.data, "out");
-}
-
 void require_q4_alignment(const Tensor& x, const Weight& w, const Tensor& out) {
     const auto aligned = [](const void* ptr, std::uintptr_t alignment) {
         return (reinterpret_cast<std::uintptr_t>(ptr) & (alignment - 1)) == 0;
@@ -274,19 +231,8 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
     (void)numel_allow_zero(x, "x");
     (void)numel_allow_zero(out, "out");
 
-    // --- validation (identical to the legacy wrapper) ---
     switch (w.qtype) {
     case QType::BF16_CTRL:
-    case QType::FP32_CTRL:
-        require_dense_metadata(w);
-        require_matrix_shapes(x, w, out);
-        require_tensor_strides(x, out);
-        if (w.qdata == nullptr) {
-            throw std::invalid_argument("linear: dense weight data must be non-null");
-        }
-        if (is_empty_T(x, out)) { return; }
-        require_tensor_data(x, out);
-        require_dense_alignment(x, w, out);
         break;
     case QType::Q4G64_F16S:
         require_row_split_lowbit_metadata(w, "Q4G64_F16S", 64, 32u, 0u);
@@ -319,13 +265,13 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
         if (is_empty_T(x, out)) { return; }
         require_tensor_data(x, out);
         break;
+    case QType::FP32_CTRL:
     default:
         throw std::invalid_argument("linear: unsupported weight qtype");
     }
 
-    // Migrated low-bit pure Linear formats own exact admission and route selection internally.
-    // Callers provide only semantic operands; target/profile/application-role policy never crosses
-    // this boundary.
+    (void)ws;
+    if (w.qtype == QType::BF16_CTRL) { detail::bf16_contiguous_dispatch(x, w, out, stream); }
     if (w.qtype == QType::Q4G64_F16S) {
         detail::q4_rowsplit_dispatch(x, w, out, stream);
         return;
@@ -341,27 +287,6 @@ void linear(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& ws,
     if (w.qtype == QType::W8G32_F16S) {
         detail::w8_rowsplit_dispatch(x, w, out, stream);
         return;
-    }
-
-    // BF16/FP32 contiguous weights remain on the compatibility planner until the BF16 format
-    // boundary is established.
-    (void)ws;
-    const detail::LinearFormat fmt  = detail::classify_format(w);
-    const detail::ShapeFamily shape = detail::classify_shape(w.n, w.k);
-    detail::LinearRegime regime     = detail::classify_regime(fmt, shape, x.ne[1]);
-    const detail::LinearPlan plan = detail::resolve_plan(detail::LinearPlanKey{fmt, shape, regime});
-
-    switch (plan.policy) {
-    case detail::LinearPolicyId::GenericDenseGemv: {
-        const Tensor dense = as_dense(w);
-        detail::linear_generic_dense_gemv_launch(x, dense, out, stream);
-        break;
-    }
-    case detail::LinearPolicyId::GenericDenseGemm: {
-        const Tensor dense = as_dense(w);
-        detail::linear_generic_dense_gemm_launch(x, dense, out, stream);
-        break;
-    }
     }
 }
 
