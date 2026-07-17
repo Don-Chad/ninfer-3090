@@ -1,0 +1,320 @@
+# SparseMoe Design Log
+
+> Status: active design discussion for the future `qwen3_6_35b_a3b_rtx5090` target.
+
+This file records decisions reached while designing the closed `SparseMoe` Op. Stable conclusions
+will be folded into the applicable active authorities when the design is complete.
+
+The accepted decode-only execution work is tracked in the
+[`SparseMoe Decode Implementation Plan`](2026-07-17-sparse-moe-decode-implementation.md).
+
+## 2026-07-17: top-level API
+
+Decision:
+
+- The Op identity and sole execution entry point are `SparseMoe` and `sparse_moe(...)`.
+- Router projection, top-k selection, assignment grouping, grouped expert contractions, inverse
+  scatter, and reduction remain implementation-private stages rather than target-callable Ops.
+- A companion `sparse_moe_workspace_bytes(...)` capacity query is expected; it is a resource helper,
+  not a second Op.
+- The five physical weight roles are passed as one repository-internal `SparseMoeWeights` aggregate:
+  `router_shared_gate`, `routed_gate_up`, `routed_down`, `shared_gate_up`, and `shared_down`.
+- Final writeback is an explicit semantic epilogue of `SparseMoe`. The registered 35B call requires
+  `AddResidual`, where the destination is read as the decoder residual and updated in place.
+- The wrapper maps the semantic epilogue to an implementation route; a kernel may implement the
+  final writeback through a template-selected epilogue. `AddResidual` does not become part of the
+  Op name.
+- Do not add or qualify a `Store` production mode until a supported caller actually requires it.
+- The API does not expose decode/prefill, `small_t`, model role, layer id, router logits, selected
+  ids, route weights, grouped jobs, or other private intermediates. Token count and registered
+  weight formats select the execution route.
+
+Current interface direction:
+
+```cpp
+void sparse_moe(const Tensor& x, const SparseMoeWeights& weights,
+                SparseMoeEpilogue epilogue, Tensor& destination,
+                WorkspaceArena& workspace, cudaStream_t stream);
+```
+
+The exact workspace query signature and the remaining prefill execution/dataflow design remain to
+be discussed.
+
+## 2026-07-17: source organization
+
+Decision:
+
+- Keep the semantic contract in `include/ninfer/ops/` and one thin validation/workspace/dispatch
+  wrapper in `src/ops/wrapper/`.
+- Keep the multi-stage implementation together in a dedicated `src/ops/sparse_moe/` subtree rather
+  than scattering its private launch policy, descriptors, and kernels across the global launcher
+  and kernel directories.
+- Organize substantial implementation work primarily by the registered execution regimes
+  (decode, Small-T, and prefill), because one complete route mixes router BF16, routed
+  Q4/Q5/Q6/W8, and shared W8 work. Do not split the Op primarily into format-owned directories.
+- Plan data, workspace views, assignments, inverse maps, expert jobs, and other intermediate types
+  remain private to the SparseMoe subtree. Move a narrow primitive to `src/ops/common/` only after
+  another Op actually shares it.
+- The target package owns only artifact binding, layer order, workspace lifetime, and the call to
+  `sparse_moe(...)`; it does not own MoE CUDA mathematics.
+- Keep SparseMoe in the existing `ninfer_ops` library with explicit build source registration; do
+  not create another library or runtime registry.
+- Correctness evidence is centered on the complete Op against one independent oracle. Private
+  stages do not receive separate mathematical contracts or stage goldens. Benchmarking covers the
+  real decode, Small-T, and prefill domains.
+
+The exact directory depth, source filenames, translation-unit boundaries, and compilation grouping
+are intentionally deferred until implementation makes those boundaries concrete.
+
+## 2026-07-17: decode and Small-T kernel semantics
+
+Decision:
+
+- Lock the private decode route for `T=1` and the private Small-T route for `2<=T<=6` before
+  choosing CUDA geometry, filenames, or translation-unit boundaries.
+- Both routes have four logical kernel responsibilities. The router projection and route-selection
+  responsibilities may later share one launch if that implementation qualifies; this does not
+  change either responsibility. Do not add a separate grouping or final-reduction launch to the
+  Small-T route.
+- Keep prefill routing, grouping, expert execution, and launch topology undecided. Nothing in the
+  decode or Small-T decisions below is a prefill contract.
+
+### Meaning of a private kernel semantic
+
+The definitions below assign mathematical work and data dependencies inside the closed
+`SparseMoe` Op. They do not create public sub-Ops or independently observable values. A named
+logical input or output does not by itself require a tensor materialization. When two baseline
+launches require a handoff, the handoff is Op-private and does not prescribe its dtype, layout,
+rounding point, or longer lifetime than its consumer requires.
+
+In particular, an implementation may keep a producer's natural result precision for its consumer,
+may apply a route or shared scale before or after a linear map when the transformation is
+mathematically equivalent, and may eliminate a private value through fusion. It must still produce
+the complete `SparseMoe` result from the represented public input and registered weights. The
+complete Op, not these private responsibilities, is checked against the independent naive
+FP32/FP64 oracle.
+
+The common represented domain is:
+
+```text
+X             BF16 [2048,T] normalized MoE input
+R             BF16 [2048,T] destination containing the decoder residual
+router_shared BF16 [257,2048], router rows 0..255 and independent shared-score row 256
+routed_gu     256 expert banks, logical [1024,2048] per expert, gate rows then up rows
+routed_down   256 expert banks, logical [2048,512] per expert
+shared_gu     logical [1024,2048], gate rows then up rows
+shared_down   logical [2048,512]
+```
+
+Main Text and MTP select different registered routed codecs, but execute the same formulas. Expert
+id is the router row id and addresses the stored expert bank directly; no kernel gathers selected
+weights into another weight buffer.
+
+### Decode route (`T=1`)
+
+The decode baseline is four graph-stable launches. `D1` and `D2` may become one qualified launch;
+`D3` and `D4` remain separate baseline launches because they decompose the work along different
+contraction axes.
+
+#### D1. Router and shared-score projection
+
+For input column `x=X[:,0]`, compute the 257 logical dot products
+
+```text
+router_logit[e] = dot(router_shared[e,:], x), e=0..255
+shared_score    = dot(router_shared[256,:], x)
+```
+
+There is no bias. D1 owns only this projection. Its logical result is one set of 256 router logits
+and one independent shared score; it need not be stored as a 257-element tensor. If D1 remains a
+separate launch, its private output representation is chosen together with D2 rather than exposed
+as an Op contract.
+
+#### D2. Route selection and shared scaling
+
+D2 consumes D1's logical scores and determines exactly eight routed assignments. At an exact
+selection-boundary tie, the lower expert id is selected. For the selected set `I`, it computes
+
+```text
+alpha[e]    = exp(router_logit[e]) / sum(j in I, exp(router_logit[j])), e in I
+shared_scale = sigmoid(shared_score)
+```
+
+This is the same mathematical result as softmax over all 256 logits followed by selected-value
+renormalization. D2 therefore does not have to materialize all 256 softmax probabilities. A
+numerically stable shifted exponential evaluation is an implementation choice, not a distinct
+semantic route.
+
+D2's logical routed result is eight associated `(expert_id, alpha)` pairs. Route-slot order is
+private: the implementation may retain score order or sort the pairs by expert id, but it must
+preserve the selected set and keep every weight attached to its expert. With one token, assignment
+grouping degenerates to this optional reordering and does not receive another kernel.
+
+#### D3. Selected routed and shared gate/up SwiGLU
+
+For every routed pair `r=0..7`, with `e=expert_id[r]`, and every intermediate coordinate
+`j=0..511`, D3 computes the logical activation
+
+```text
+gate[r,j] = dot(routed_gu[e][j,:],     x)
+up[r,j]   = dot(routed_gu[e][512+j,:], x)
+act[r,j]  = SiLU(gate[r,j]) * up[r,j]
+```
+
+It also computes the always-on shared activation
+
+```text
+shared_gate[j] = dot(shared_gu[j,:],     x)
+shared_up[j]   = dot(shared_gu[512+j,:], x)
+shared_act[j]  = SiLU(shared_gate[j]) * shared_up[j]
+```
+
+D3 is one selected-routed-plus-shared launch. It must not launch once per expert, scan all 256
+experts, materialize gate and up as separate public tensors, or copy selected expert weights. Its
+logical producer/consumer boundary is the nine 512-element SwiGLU activations. Their physical
+layout and representation are private. Applying `alpha` to a routed activation at this point is
+allowed because the following down map is linear; it does not change the logical formula or make
+the scaled activation observable.
+
+The previously proposed one-intermediate-coordinate CTA and nine-warp mapping remains a concrete
+implementation candidate, not part of D3's semantic definition.
+
+#### D4. Down projections, route/shared merge, and residual epilogue
+
+For each hidden coordinate `k=0..2047`, D4 completes
+
+```text
+routed[k] = sum(r=0..7,
+                alpha[r] * dot(routed_down[expert_id[r]][k,:], act[r,:]))
+shared[k] = shared_scale * dot(shared_down[k,:], shared_act[:])
+R[k,0]    = R[k,0] + routed[k] + shared[k]
+```
+
+D4 owns all routed down projections, the shared down projection, route weighting, the eight-route
+reduction, shared scaling, and the required `AddResidual` writeback. It produces one observable
+BF16 destination value per hidden coordinate. It does not expose or materialize eight
+2048-element expert outputs, a standalone shared output, the merged `Y`, or a separate
+residual-add result.
+
+The points at which `alpha` and `shared_scale` are multiplied, and the association and precision
+of the routed/shared/residual additions, remain implementation choices. The previously proposed
+one-hidden-coordinate CTA and nine-warp mapping is a candidate rather than part of D4's semantic
+definition.
+
+#### Decode fusion boundary
+
+The only planned fusion experiment is D1+D2. It may avoid the private score handoff and one launch,
+but must be qualified against the separate projection/selection baseline because concentrating all
+257 dot products into a selection-capable launch may reduce projection parallelism. D2+D3 would
+require a grid-wide handoff from one global selection to the selected-expert work, and D3+D4 would
+either retain a global activation handoff or recompute the 2048-wide gate/up contractions for the
+512-to-2048 down map. Neither is a planned baseline fusion. D4 is already the final natural fusion
+boundary.
+
+### Small-T route (`2<=T<=6`)
+
+Small-T covers target verification and MTP rebuild windows. It is one multi-column route, not `T`
+serial invocations of decode. It has four graph-stable launches, with selection and assignment
+grouping deliberately combined in `S2` and final reduction deliberately contained in `S4`.
+
+#### S1. Multi-column router and shared-score projection
+
+For every token column `t=0..T-1`, S1 computes
+
+```text
+router_logit[e,t] = dot(router_shared[e,:], X[:,t]), e=0..255
+shared_score[t]   = dot(router_shared[256,:], X[:,t])
+```
+
+S1 owns one `[257,T]` logical projection and must exploit the multi-column domain rather than
+serially launch a singleton projection for each token. As in decode, the logical scores have no
+public representation or prescribed private dtype/layout.
+
+#### S2. Per-token selection and complete Small-T grouping
+
+For every token independently, S2 applies the same top-8 set, tie, selected-weight normalization,
+and shared-sigmoid semantics as D2. It then forms all `A=8T` logical assignments
+
+```text
+(expert_id, token_id, route_slot, alpha)
+```
+
+and partitions them into at most 48 expert jobs. A job for expert `e` contains all and only its
+`M_e` selected token/route pairs, with
+
+```text
+0 <= M_e <= T
+sum(e=0..255, M_e) = 8T
+```
+
+No assignment is dropped, duplicated, or redirected. The mapping back to `(token_id, route_slot)`
+is retained with its route weight. Job order and assignment order inside a job are private; logical
+expert ids continue to address the persistent banks directly.
+
+Selection and grouping are one Small-T launch. With at most 48 assignments, do not add separate
+histogram, prefix-scan, assignment-scatter, host grouping, or one-launch-per-active-expert stages.
+S2 may use registers and shared memory while constructing the jobs; the assignments and descriptors
+needed by the separate S3/S4 launches are handed off through Op-private caller-provided workspace.
+Their concrete encoding and numeric representation remain implementation choices.
+
+#### S3. Multi-column grouped gate/up SwiGLU
+
+For every expert job `e` and each of its assignments referring to token `t`, S3 computes
+
+```text
+act[e,t,:] = SwiGLU(routed_gu[e] * X[:,t])    # logical [512]
+```
+
+and, for every token, it computes
+
+```text
+shared_act[t,:] = SwiGLU(shared_gu * X[:,t])  # logical [512]
+```
+
+S3 is one launch covering every active routed expert and the always-on shared expert. Within an
+expert job, one routed weight stream serves all `M_e` token columns; it must not fall back to one
+decode-style weight stream or launch per assignment. The kernel consumes X through the assignment
+token mapping and need not construct a duplicated grouped-X tensor. It reads registered routed and
+shared weights in place and does not gather them.
+
+Its logical output is one 512-element activation per routed assignment plus one per shared token.
+Assignment-major, expert-major, token-major, and tiled physical representations are all permitted,
+as are natural private precision and staging choices. As in D3, route scaling may be folded into
+these activations when useful.
+
+#### S4. Multi-column down projections and direct final merge
+
+S4 consumes the grouped assignments and logical activations and completes, for every token `t` and
+hidden coordinate `k`,
+
+```text
+routed[k,t] = sum(r selected for t,
+                  alpha[r,t] *
+                  dot(routed_down[expert_id[r,t]][k,:], act[r,t,:]))
+shared[k,t] = shared_scale[t] * dot(shared_down[k,:], shared_act[t,:])
+R[k,t]      = R[k,t] + routed[k,t] + shared[k,t]
+```
+
+S4 is one launch. Its work decomposition must allow a routed down row for expert `e` to serve all
+`M_e` token columns in that job before advancing the weight stream. It uses the retained token
+mapping to accumulate directly into the corresponding token result and finishes the shared merge
+and `AddResidual` epilogue. It does not create a separate inverse-scatter kernel, route-reduction
+kernel, shared-merge kernel, residual-add kernel, or persistent `[2048,8,T]` expert-output tensor.
+
+The logical accumulation may be implemented with per-token registers, shared-memory partials, or
+another natural private organization. Weighting may occur before or after a down dot product;
+reduction order, intermediate precision, and final conversion to the observable BF16 destination
+are not fixed by this responsibility.
+
+#### Small-T fusion boundary
+
+S1+S2 is the only planned launch-fusion experiment and must be compared with the separate
+multi-column projection baseline. S2 already contains the tiny-domain grouping work. S2+S3 has a
+global route/job dependency, while S3+S4 crosses the 2048-to-512 and 512-to-2048 contraction axes;
+neither is a planned baseline fusion. S4 already contains inverse mapping, routed reduction,
+shared merge, and residual writeback.
+
+The exact CTA tiling, warp allocation, job encoding, workspace offsets, materialized activation
+format, and D1+D2/S1+S2 fusion choice remain implementation decisions. They are to be selected by
+complete-Op correctness against the common oracle and by isolated plus end-to-end measurements for
+the registered decode and Small-T workloads.

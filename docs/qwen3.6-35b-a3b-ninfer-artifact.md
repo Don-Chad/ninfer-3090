@@ -395,7 +395,8 @@ The routed-down format is Q6 exactly for layers:
 34, 38, 39
 ```
 
-It is Q5 for the other 37 layers. This includes full-attention layer 39 and GDN layers 34 and 38.
+It is Q5 for the other 37 layers. The three Q6 objects are full-attention layer 39 and GDN layers
+34 and 38.
 
 ### 5.5 Optimized draft head
 
