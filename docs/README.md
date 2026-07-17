@@ -24,6 +24,13 @@ defined by `include/ninfer/engine.h` and `include/ninfer/types.h`.
 | Document | Active scope |
 |---|---|
 | [`plans/2026-07-17-sparse-moe-design-log.md`](plans/2026-07-17-sparse-moe-design-log.md) | decisions for the closed future-target `SparseMoe` Op |
+| [`plans/2026-07-18-qwen3.6-family-runtime-mechanism-migration.md`](plans/2026-07-18-qwen3.6-family-runtime-mechanism-migration.md) | migrate the registered 27B target onto identity-free Qwen3.6 state/control mechanisms before any 35B runtime work |
+
+## Queued implementation plans
+
+| Document | Prerequisite |
+|---|---|
+| [`plans/2026-07-18-qwen3.6-35b-a3b-runtime-target.md`](plans/2026-07-18-qwen3.6-35b-a3b-runtime-target.md) | revise against the landed family runtime mechanisms after the active 27B migration completes |
 
 Completed plans are indexed under [`archive/`](archive/README.md).
 
