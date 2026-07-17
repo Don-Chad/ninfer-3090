@@ -385,7 +385,7 @@ retained for later changes is:
 - exact representative direct-word and Q4/Q5/Q6/W8 code/scale layout round trips;
 - an independently constructed C++ version-1 fixture covering object identities, payload spans,
   encoded sizes, and alignment;
-- the Qwen3.6-27B binder's complete 1172-object inventory and logical views;
+- the Qwen3.6-27B binder's complete 1124-object inventory and logical views;
 - inspection, representative source probes, Python reference inference, and Engine loading on a real
   converter-generated artifact where those paths are exercised.
 

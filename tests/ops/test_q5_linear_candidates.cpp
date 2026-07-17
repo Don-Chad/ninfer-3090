@@ -69,6 +69,40 @@ int one_candidate(ops::detail::Q5ScheduleId schedule, ops::detail::Q5KernelVaria
                   tolerance);
 }
 
+int exact_parent_candidate_sampled(ops::detail::Q5ScheduleId schedule, std::int32_t t,
+                                   std::uint32_t seed) {
+    constexpr std::int32_t n = 7168;
+    constexpr std::int32_t k = 5120;
+    auto packed = row_split::make_patterned_weight(QType::Q5G64_F16S, n, k, seed + 1000u);
+    std::vector<float> x(static_cast<std::size_t>(k) * t);
+    fill_uniform(x, seed, -0.01f, 0.01f);
+    round_to_bf16(x);
+
+    DBuf dx = to_device_bf16(x);
+    DBuf dw(packed.payload.size());
+    DBuf dout(static_cast<std::size_t>(n) * t * 2u);
+    cudaMemcpy(dw.p, packed.payload.data(), packed.payload.size(), cudaMemcpyHostToDevice);
+    Tensor tx(dx.p, DType::BF16, {k, t});
+    Tensor ty(dout.p, DType::BF16, {n, t});
+    ops::detail::q5_rowsplit_launch_candidate(schedule, ops::detail::Q5KernelVariant::None, tx,
+                                              packed.device_weight(dw.p), ty, nullptr);
+    cudaDeviceSynchronize();
+
+    const std::vector<double> full = from_device_bf16(dout, static_cast<std::size_t>(n) * t);
+    std::vector<double> actual;
+    std::vector<double> reference;
+    for (const std::int32_t col : {0, t / 2, t - 1}) {
+        for (const std::int32_t row : {0, 1, 6143, 6144, n - 2, n - 1}) {
+            actual.push_back(full[static_cast<std::size_t>(col) * n + row]);
+            reference.push_back(row_split::dot_row_split_lowbit_fp64(
+                packed, row, x.data() + static_cast<std::size_t>(col) * k, k));
+        }
+    }
+    const std::string label = std::string(ops::detail::q5_schedule_name(schedule)) +
+                              " [7168,5120] sampled C=" + std::to_string(t);
+    return verify(label.c_str(), actual, reference, Tolerance::linear_bf16());
+}
+
 int legality_contract_rejections() {
     using S = ops::detail::Q5ScheduleId;
     using V = ops::detail::Q5KernelVariant;
@@ -160,6 +194,15 @@ int main() {
     failures += one_candidate(S::MmaR64C64, V::Predicated, 144, 4304, 65, 31u);
     failures += one_candidate(S::MmaR64C128, V::Full, 128, 1152, 128, 37u);
     failures += one_candidate(S::MmaR64C128, V::Predicated, 144, 4304, 129, 41u);
+
+    // Exact Attention parent geometry: qualify every candidate schedule used by the Small-T
+    // sweep against the independent payload decoder, including both sides of the row split.
+    failures += exact_parent_candidate_sampled(S::GemvR16S2X, 1, 53u);
+    failures += exact_parent_candidate_sampled(S::SimtSplit4Exact, 2, 55u);
+    failures += exact_parent_candidate_sampled(S::SimtSplit4Exact, 6, 57u);
+    failures += exact_parent_candidate_sampled(S::SimtR8C4, 4, 59u);
+    failures += exact_parent_candidate_sampled(S::SimtR8C8, 7, 61u);
+    failures += exact_parent_candidate_sampled(S::SimtR8C8, 8, 63u);
 
     failures += legality_contract_rejections();
     failures += public_routes_match_fixed(6144, 5120, {25, 64, 65, 128}, 43u);

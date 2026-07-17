@@ -32,18 +32,19 @@ struct Q4RouteSpec {
     Q4ScheduleId schedule;
 };
 
-constexpr std::array<Q4SupportSpec, 8> kSupportSpecs{{
+constexpr std::array<Q4SupportSpec, 9> kSupportSpecs{{
     {1024, 5120, 5120, {1, 16, 1}, 0, 3},
     {4096, 5120, 5120, {1, 16, 1}, 3, 3},
     {6144, 5120, 5120, {1, 16, 1}, 6, 3},
-    {34816, 5120, 5120, {2, 16, 1}, 9, 2},
-    {131072, 5120, 5120, {1, 1, 1}, 11, 1},
-    {131072, 2048, 2048, {1, 1, 1}, 12, 1},
-    {3456, 1152, 1152, {4, 131072, 4}, 13, 3},
-    {4304, 1152, 1152, {4, 131072, 4}, 16, 6},
+    {7168, 5120, 5120, {1, 16, 1}, 9, 5},
+    {34816, 5120, 5120, {2, 16, 1}, 14, 2},
+    {131072, 5120, 5120, {1, 1, 1}, 16, 1},
+    {131072, 2048, 2048, {1, 1, 1}, 17, 1},
+    {3456, 1152, 1152, {4, 131072, 4}, 18, 3},
+    {4304, 1152, 1152, {4, 131072, 4}, 21, 6},
 }};
 
-constexpr std::array<Q4RouteSpec, 22> kRouteSpecs{{
+constexpr std::array<Q4RouteSpec, 27> kRouteSpecs{{
     // [1024, 5120]
     {{1, 1, 1}, Q4ScheduleId::GemvR1W8Direct},
     {{2, 15, 1}, Q4ScheduleId::SimtR8C4},
@@ -58,6 +59,13 @@ constexpr std::array<Q4RouteSpec, 22> kRouteSpecs{{
     {{1, 1, 1}, Q4ScheduleId::GemvR1W8Direct},
     {{2, 7, 1}, Q4ScheduleId::SimtR8C4},
     {{8, 16, 1}, Q4ScheduleId::SimtR8C8},
+
+    // [7168, 5120]
+    {{1, 1, 1}, Q4ScheduleId::GemvR1W8Direct},
+    {{2, 7, 1}, Q4ScheduleId::SimtR8C4},
+    {{8, 8, 1}, Q4ScheduleId::SimtR8C8},
+    {{9, 15, 1}, Q4ScheduleId::SimtR8C4},
+    {{16, 16, 1}, Q4ScheduleId::SimtR8C8},
 
     // [34816, 5120]
     {{2, 4, 1}, Q4ScheduleId::SimtR8C4},

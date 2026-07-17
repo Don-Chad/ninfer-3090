@@ -67,6 +67,42 @@ int one_candidate(ops::detail::Q4ScheduleId schedule, ops::detail::Q4KernelVaria
                   tolerance);
 }
 
+int exact_parent_candidate_sampled(ops::detail::Q4ScheduleId schedule,
+                                   ops::detail::Q4KernelVariant variant, std::int32_t t,
+                                   std::uint32_t seed) {
+    constexpr std::int32_t n = 7168;
+    constexpr std::int32_t k = 5120;
+    auto packed = row_split::make_patterned_weight(QType::Q4G64_F16S, n, k, seed + 1000u);
+    std::vector<float> x(static_cast<std::size_t>(k) * t);
+    fill_uniform(x, seed, -0.01f, 0.01f);
+    round_to_bf16(x);
+
+    DBuf dx = to_device_bf16(x);
+    DBuf dw(packed.payload.size());
+    DBuf dout(static_cast<std::size_t>(n) * t * 2u);
+    cudaMemcpy(dw.p, packed.payload.data(), packed.payload.size(), cudaMemcpyHostToDevice);
+    Tensor tx(dx.p, DType::BF16, {k, t});
+    Tensor ty(dout.p, DType::BF16, {n, t});
+    ops::detail::q4_rowsplit_launch_candidate(schedule, variant, tx, packed.device_weight(dw.p), ty,
+                                              nullptr);
+    cudaDeviceSynchronize();
+
+    const std::vector<double> full = from_device_bf16(dout, static_cast<std::size_t>(n) * t);
+    std::vector<double> actual;
+    std::vector<double> reference;
+    for (const std::int32_t col : {0, t / 2, t - 1}) {
+        for (const std::int32_t row : {0, 1, 6143, 6144, n - 2, n - 1}) {
+            actual.push_back(full[static_cast<std::size_t>(col) * n + row]);
+            reference.push_back(row_split::dot_row_split_lowbit_fp64(
+                packed, row, x.data() + static_cast<std::size_t>(col) * k, k));
+        }
+    }
+    const std::string label = std::string(ops::detail::q4_schedule_name(schedule)) + "." +
+                              ops::detail::q4_kernel_variant_name(variant) +
+                              " [7168,5120] sampled C=" + std::to_string(t);
+    return verify(label.c_str(), actual, reference, Tolerance::linear_bf16());
+}
+
 int illegal_candidate_rejection() {
     constexpr std::int32_t n = 128;
     constexpr std::int32_t k = 128;
@@ -142,6 +178,15 @@ int main() {
     failures += one_candidate(S::MmaR64C128, V::Predicated, 144, 128, 129, 47u);
     failures += one_candidate(S::MmaR64C64, V::Full, 128, 384, 64, 49u);
     failures += one_candidate(S::MmaR64C128, V::Predicated, 144, 384, 129, 53u);
+
+    // Exact Attention parent geometry: qualify every Small-T mainloop candidate and both tiled
+    // lifecycle variants against the independent payload decoder, including the 6143/6144 seam.
+    failures += exact_parent_candidate_sampled(S::GemvR1W8Direct, V::None, 1, 61u);
+    failures += exact_parent_candidate_sampled(S::GemvR4W1Direct, V::None, 1, 63u);
+    failures += exact_parent_candidate_sampled(S::SimtR8C4, V::Predicated, 3, 65u);
+    failures += exact_parent_candidate_sampled(S::SimtR8C4, V::Full, 4, 67u);
+    failures += exact_parent_candidate_sampled(S::SimtR8C8, V::Predicated, 7, 69u);
+    failures += exact_parent_candidate_sampled(S::SimtR8C8, V::Full, 8, 71u);
 
     failures += illegal_candidate_rejection();
     failures += legality_contract_rejections();

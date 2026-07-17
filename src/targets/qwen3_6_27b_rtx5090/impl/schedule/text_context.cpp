@@ -209,10 +209,8 @@ void TextContext::bind() {
             const auto& source =
                 weights_.full_layers[static_cast<std::size_t>(ModelConfig::full_idx(layer))];
             out.input_norm     = &source.input_norm;
-            out.q_proj         = &source.query;
-            out.gate_proj      = &source.output_gate;
-            out.k_proj         = &source.key;
-            out.v_proj         = &source.value;
+            out.query_key      = &source.query_key;
+            out.gate_value     = &source.gate_value;
             out.o_proj         = &source.output;
             out.q_norm         = &source.query_norm;
             out.k_norm         = &source.key_norm;
@@ -635,8 +633,8 @@ void TextContext::attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
     Tensor gate_flat = gate.view({kCfg.q_size, T});
     Tensor k_flat    = k.view({kCfg.kv_size, T});
     Tensor v_flat    = v.view({kCfg.kv_size, T});
-    ops::attn_input_proj(h, *w.q_proj, *w.gate_proj, *w.k_proj, *w.v_proj, q_flat, gate_flat,
-                         k_flat, v_flat, work_, s);
+    ops::attn_input_proj(h, *w.query_key, *w.gate_value, q_flat, gate_flat, k_flat, v_flat, work_,
+                         s);
 
     Tensor qn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
     Tensor kn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, T});

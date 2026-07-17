@@ -23,7 +23,7 @@ struct RouteSpec {
 };
 
 constexpr std::array<RouteSpec, 2> kRoutes{{
-    {{1, 16}, Q4Q5AttnInputScheduleId::IndependentFixed},
+    {{1, 16}, Q4Q5AttnInputScheduleId::ParentSplitFixed},
     {{17, kQ4Q5AttnInputMaxCols}, Q4Q5AttnInputScheduleId::GroupedHomogeneousPairMmaR64C128},
 }};
 
@@ -51,16 +51,16 @@ bool same_subplans(const std::optional<Q4Q5AttnInputSubplans>& lhs,
                    const std::optional<Q4Q5AttnInputSubplans>& rhs) {
     if (lhs.has_value() != rhs.has_value()) { return false; }
     if (!lhs.has_value()) { return true; }
-    return same_q4_plan(lhs->query, rhs->query) && same_q5_plan(lhs->gate, rhs->gate) &&
-           same_q4_plan(lhs->key, rhs->key) && same_q5_plan(lhs->value, rhs->value);
+    return same_q4_plan(lhs->query_key, rhs->query_key) &&
+           same_q5_plan(lhs->gate_value, rhs->gate_value);
 }
 
 } // namespace
 
 const char* q4_q5_attn_input_schedule_name(Q4Q5AttnInputScheduleId schedule) noexcept {
     switch (schedule) {
-    case Q4Q5AttnInputScheduleId::IndependentFixed:
-        return "attn_input_proj.q4_q5.independent_fixed";
+    case Q4Q5AttnInputScheduleId::ParentSplitFixed:
+        return "attn_input_proj.q4_q5.parent_split_fixed";
     case Q4Q5AttnInputScheduleId::GroupedHomogeneousPairMmaR64C128:
         return "attn_input_proj.q4_q5.grouped_homogeneous_pair.mma.r64.c128";
     }
@@ -86,16 +86,13 @@ Q4Q5AttnInputPlan q4_q5_attn_input_resolve_plan(const Q4Q5AttnInputProblem& prob
             0,
             problem.cols <= kQ4Q5AttnInputQualifiedCols,
         };
-        if (route.schedule == Q4Q5AttnInputScheduleId::IndependentFixed) {
-            plan.independent = Q4Q5AttnInputSubplans{
+        if (route.schedule == Q4Q5AttnInputScheduleId::ParentSplitFixed) {
+            const std::int32_t parent_rows = problem.query_rows + problem.kv_rows;
+            plan.parent_split              = Q4Q5AttnInputSubplans{
                 q4_rowsplit_resolve_plan(
-                    {problem.query_rows, problem.input_rows, problem.padded_k, problem.cols}),
+                    {parent_rows, problem.input_rows, problem.padded_k, problem.cols}),
                 q5_rowsplit_resolve_plan(
-                    {problem.query_rows, problem.input_rows, problem.padded_k, problem.cols}),
-                q4_rowsplit_resolve_plan(
-                    {problem.kv_rows, problem.input_rows, problem.padded_k, problem.cols}),
-                q5_rowsplit_resolve_plan(
-                    {problem.kv_rows, problem.input_rows, problem.padded_k, problem.cols}),
+                    {parent_rows, problem.input_rows, problem.padded_k, problem.cols}),
             };
         } else {
             plan.grouped_variant =
@@ -107,40 +104,39 @@ Q4Q5AttnInputPlan q4_q5_attn_input_resolve_plan(const Q4Q5AttnInputProblem& prob
 }
 
 void q4_q5_attn_input_execute_plan(const Q4Q5AttnInputPlan& plan, const Tensor& x,
-                                   const Weight& q_weight, const Weight& gate_weight,
-                                   const Weight& k_weight, const Weight& v_weight, Tensor& q,
-                                   Tensor& gate, Tensor& k, Tensor& v, cudaStream_t stream) {
-    const Q4Q5AttnInputProblem problem{x.ne[0], q.ne[0], k.ne[0], q_weight.padded_shape[1],
+                                   const Weight& query_key_weight, const Weight& gate_value_weight,
+                                   Tensor& q, Tensor& gate, Tensor& k, Tensor& v,
+                                   cudaStream_t stream) {
+    const Q4Q5AttnInputProblem problem{x.ne[0], q.ne[0], k.ne[0], query_key_weight.padded_shape[1],
                                        x.ne[1]};
     const Q4Q5AttnInputPlan resolved = q4_q5_attn_input_resolve_plan(problem);
     if (resolved.schedule != plan.schedule || resolved.grouped_variant != plan.grouped_variant ||
-        !same_subplans(resolved.independent, plan.independent) ||
+        !same_subplans(resolved.parent_split, plan.parent_split) ||
         resolved.workspace_bytes != plan.workspace_bytes) {
         throw std::invalid_argument("Q4/Q5 attention input: plan does not match exact problem");
     }
 
     switch (plan.schedule) {
-    case Q4Q5AttnInputScheduleId::IndependentFixed:
-        q4_rowsplit_execute_plan(plan.independent->query, x, q_weight, q, stream);
-        q5_rowsplit_execute_plan(plan.independent->gate, x, gate_weight, gate, stream);
-        q4_rowsplit_execute_plan(plan.independent->key, x, k_weight, k, stream);
-        q5_rowsplit_execute_plan(plan.independent->value, x, v_weight, v, stream);
+    case Q4Q5AttnInputScheduleId::ParentSplitFixed:
+        q4_q5_attn_input_small_t_launch(plan.parent_split->query_key, plan.parent_split->gate_value,
+                                        x, query_key_weight, gate_value_weight, q, gate, k, v,
+                                        stream);
         return;
     case Q4Q5AttnInputScheduleId::GroupedHomogeneousPairMmaR64C128:
-        q4_q5_attn_input_grouped_mma_launch(plan.grouped_variant, x, q_weight, gate_weight,
-                                            k_weight, v_weight, q, gate, k, v, stream);
+        q4_q5_attn_input_grouped_mma_launch(plan.grouped_variant, x, query_key_weight,
+                                            gate_value_weight, q, gate, k, v, stream);
         return;
     }
     throw std::logic_error("Q4/Q5 attention input: unknown schedule");
 }
 
-void q4_q5_attn_input_dispatch(const Tensor& x, const Weight& q_weight, const Weight& gate_weight,
-                               const Weight& k_weight, const Weight& v_weight, Tensor& q,
-                               Tensor& gate, Tensor& k, Tensor& v, cudaStream_t stream) {
-    const Q4Q5AttnInputProblem problem{x.ne[0], q.ne[0], k.ne[0], q_weight.padded_shape[1],
+void q4_q5_attn_input_dispatch(const Tensor& x, const Weight& query_key_weight,
+                               const Weight& gate_value_weight, Tensor& q, Tensor& gate, Tensor& k,
+                               Tensor& v, cudaStream_t stream) {
+    const Q4Q5AttnInputProblem problem{x.ne[0], q.ne[0], k.ne[0], query_key_weight.padded_shape[1],
                                        x.ne[1]};
     const Q4Q5AttnInputPlan plan = q4_q5_attn_input_resolve_plan(problem);
-    q4_q5_attn_input_execute_plan(plan, x, q_weight, gate_weight, k_weight, v_weight, q, gate, k, v,
+    q4_q5_attn_input_execute_plan(plan, x, query_key_weight, gate_value_weight, q, gate, k, v,
                                   stream);
 }
 

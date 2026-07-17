@@ -70,6 +70,14 @@ Q4Plan expected_production_plan(const Q4Problem& problem) {
     } else if (problem.rows == 6144 && problem.k == 5120) {
         schedule =
             problem.cols == 1 ? S::GemvR1W8Direct : (problem.cols <= 7 ? S::SimtR8C4 : S::SimtR8C8);
+    } else if (problem.rows == 7168 && problem.k == 5120) {
+        if (problem.cols == 1) {
+            schedule = S::GemvR1W8Direct;
+        } else if (problem.cols <= 7 || (problem.cols >= 9 && problem.cols <= 15)) {
+            schedule = S::SimtR8C4;
+        } else {
+            schedule = S::SimtR8C8;
+        }
     } else if (problem.rows == 34816 && problem.k == 5120) {
         schedule = problem.cols <= 4 ? S::SimtR8C4 : S::SimtR8C8;
     } else if (problem.rows == 131072 && (problem.k == 5120 || problem.k == 2048)) {
@@ -160,10 +168,11 @@ struct SupportCase {
 };
 
 void exact_admission_and_full_route_scan() {
-    constexpr std::array<SupportCase, 8> supports{{
+    constexpr std::array<SupportCase, 9> supports{{
         {"text_1024x5120", 1024, 5120, 1, 16, 1},
         {"text_4096x5120", 4096, 5120, 1, 16, 1},
         {"text_6144x5120", 6144, 5120, 1, 16, 1},
+        {"text_7168x5120", 7168, 5120, 1, 16, 1},
         {"text_34816x5120", 34816, 5120, 2, 16, 1},
         {"text_131072x5120", 131072, 5120, 1, 1, 1},
         {"text_131072x2048", 131072, 2048, 1, 1, 1},
@@ -195,7 +204,7 @@ struct RouteBoundaryCase {
 };
 
 void route_boundaries_and_seams() {
-    constexpr std::array<RouteBoundaryCase, 35> cases{{
+    constexpr std::array<RouteBoundaryCase, 42> cases{{
         {"1024 gemv end", {1024, 5120, 5120, 1}, {S::GemvR1W8Direct, V::None}},
         {"1024 gemv/simt seam", {1024, 5120, 5120, 2}, {S::SimtR8C4, V::Predicated}},
         {"1024 c4 end", {1024, 5120, 5120, 15}, {S::SimtR8C4, V::Predicated}},
@@ -212,6 +221,14 @@ void route_boundaries_and_seams() {
         {"6144 c4 end", {6144, 5120, 5120, 7}, {S::SimtR8C4, V::Predicated}},
         {"6144 c4/c8 seam", {6144, 5120, 5120, 8}, {S::SimtR8C8, V::Full}},
         {"6144 c8 end", {6144, 5120, 5120, 16}, {S::SimtR8C8, V::Full}},
+
+        {"7168 gemv end", {7168, 5120, 5120, 1}, {S::GemvR1W8Direct, V::None}},
+        {"7168 gemv/c4 seam", {7168, 5120, 5120, 2}, {S::SimtR8C4, V::Predicated}},
+        {"7168 c4 end", {7168, 5120, 5120, 7}, {S::SimtR8C4, V::Predicated}},
+        {"7168 c8 singleton", {7168, 5120, 5120, 8}, {S::SimtR8C8, V::Full}},
+        {"7168 second c4 begin", {7168, 5120, 5120, 9}, {S::SimtR8C4, V::Predicated}},
+        {"7168 second c4 end", {7168, 5120, 5120, 15}, {S::SimtR8C4, V::Predicated}},
+        {"7168 c8 end", {7168, 5120, 5120, 16}, {S::SimtR8C8, V::Full}},
 
         {"34816 c4 begin", {34816, 5120, 5120, 2}, {S::SimtR8C4, V::Predicated}},
         {"34816 c4 end", {34816, 5120, 5120, 4}, {S::SimtR8C4, V::Full}},
@@ -245,9 +262,8 @@ void route_boundaries_and_seams() {
 }
 
 void rejection_contract() {
-    constexpr std::array<Q4Problem, 8> capability_valid_unadmitted{{
+    constexpr std::array<Q4Problem, 7> capability_valid_unadmitted{{
         {128, 128, 128, 4},
-        {7168, 5120, 5120, 1},
         {17408, 5120, 5120, 8},
         {34816, 5120, 5120, 1},
         {1024, 5120, 5120, 17},

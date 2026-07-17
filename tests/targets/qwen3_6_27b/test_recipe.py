@@ -12,8 +12,8 @@ class TensorReader:
 
 
 def test_recipe_exactly_covers_inventory() -> None:
-    assert len(recipe.RECIPE_SPECS) == 1166
-    assert len(recipe.RECIPES_BY_NAME) == 1166
+    assert len(recipe.RECIPE_SPECS) == 1118
+    assert len(recipe.RECIPES_BY_NAME) == 1118
     assert tuple(item.object_name for item in recipe.RECIPE_SPECS) == tuple(
         item.name for item in inventory.TENSOR_SPECS
     )
@@ -71,6 +71,36 @@ def test_fused_mtp_attention_recipe_materializes_runtime_row_order() -> None:
     assert torch.equal(fused[7168:13312, 0], gate_rows)
     assert torch.equal(fused[7168:13312, -1], gate_rows)
     assert torch.all(fused[13312:, 0] == 252)
+
+
+def test_fused_gdn_value_z_recipe_materializes_runtime_row_order() -> None:
+    qkv_name = "model.language_model.layers.0.linear_attn.in_proj_qkv.weight"
+    z_name = "model.language_model.layers.0.linear_attn.in_proj_z.weight"
+    qkv = (
+        torch.arange(10240, dtype=torch.int64)
+        .remainder(251)
+        .to(torch.uint8)
+        .view(-1, 1)
+        .expand(-1, 5120)
+    )
+    z = (
+        torch.arange(6144, dtype=torch.int64)
+        .add(37)
+        .remainder(251)
+        .to(torch.uint8)
+        .view(-1, 1)
+        .expand(-1, 5120)
+    )
+    fused = recipe.materialize_recipe(
+        recipe.RECIPES_BY_NAME["text/layers/0/gdn/value_z"],
+        TensorReader({qkv_name: qkv, z_name: z}),
+    )
+
+    assert fused.shape == (12288, 5120)
+    assert torch.equal(fused[:6144, 0], qkv[4096:, 0])
+    assert torch.equal(fused[:6144, -1], qkv[4096:, -1])
+    assert torch.equal(fused[6144:, 0], z[:, 0])
+    assert torch.equal(fused[6144:, -1], z[:, -1])
 
 
 def test_representative_transforms_materialize_without_full_weights() -> None:

@@ -70,6 +70,7 @@ add_library(ninfer_ops STATIC
   ops/launcher/vision_attention.cu
   ops/launcher/vision_pos_embed.cu
   ops/attn_input_proj/q4_q5/q4_q5_attn_input_gemm_mma.cu
+  ops/attn_input_proj/q4_q5/q4_q5_attn_input_small_t.cu
   ops/attn_input_proj/q4_q5/q4_q5_attn_input_plan.cpp
   ops/gdn_input_proj/q4_q5/q4_q5_gdn_input_gemm_mma.cu
   ops/gdn_input_proj/q4_q5/q4_q5_gdn_input_plan.cpp

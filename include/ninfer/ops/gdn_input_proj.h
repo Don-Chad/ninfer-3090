@@ -13,9 +13,8 @@
 namespace ninfer::ops {
 
 /**
- * Returns the maximum transient capacity required by any admitted GdnInputProj route in
- * [1,max_tokens]. The registered Q4+Q5 problem materializes two BF16 projections through T=16,
- * so the capacity saturates at (qk_rows+value_rows)*16 BF16 elements.
+ * Validates the registered problem and token capacity. Every admitted route writes directly to
+ * the final output, so the required transient capacity is zero.
  */
 [[nodiscard]] std::size_t gdn_input_proj_workspace_bytes(std::int32_t qk_rows,
                                                          std::int32_t value_rows,
@@ -34,15 +33,15 @@ namespace ninfer::ops {
  *
  * Numeric:
  *   The oracle exact-decodes both weights and evaluates both projections naively in FP64 before
- *   converting the observable concatenated output to BF16. Production routes may fuse or
- *   materialize the projections and choose their private precision independently.
+ *   converting the observable concatenated output to BF16. Production routes may choose their
+ *   private precision independently; every registered route writes the final qkv allocation
+ *   directly.
  *
  * Effects:
  *   Writes the full qkv output; inputs and output must not alias.
  *
  * Workspace:
- *   Caller-owned transient storage reported by gdn_input_proj_workspace_bytes(4096,6144,T),
- *   scoped to the call. There is no persistent state side effect.
+ *   No transient bytes are required. The retained arena boundary is caller-owned and is not used.
  */
 void gdn_input_proj(const Tensor& x, const Weight& qk_weight, const Weight& v_weight, Tensor& qkv,
                     WorkspaceArena& ws, cudaStream_t stream);

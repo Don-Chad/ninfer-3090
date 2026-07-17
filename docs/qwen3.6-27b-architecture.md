@@ -145,6 +145,13 @@ Text-only positions use the same scalar position for temporal, height, and width
 Multimodal prefill supplies distinct three-axis positions. Only 64 of each 256-dimensional head are
 rotated, divided across the model's interleaved MRoPE sections `[11,11,10]`.
 
+For the registered RTX 5090 implementation, `attn_input_proj` consumes the physical
+`query_key [7168,5120]` Q4 parent and `gate_value [7168,5120]` Q5 parent directly. At
+`T=1..16`, one Q4 projection writes Q/K through a split epilogue and one Q5 projection writes
+Gate/V through a split epilogue, so a full-attention layer issues exactly two input-projection
+kernels. The `T>=17` route likewise evaluates the two homogeneous parents with grouped MMA
+launches. This is an implementation profile; Q, Gate, K, and V remain the four logical Op outputs.
+
 ## 5. Gated-DeltaNet layer
 
 The normalized input produces Q, K, V, Z, and per-V-head A/B controls:
@@ -166,6 +173,12 @@ observable FP32 values with the logical formula:
 g    = -exp(A_log) * softplus(a + dt_bias)
 beta = sigmoid(b)
 ```
+
+For `T=1..16`, the registered `gdn_input_proj` implementation keeps QK and V as two independent
+projections but gives each launcher a row slice of the final `[10240,T]` tensor with leading
+dimension 10240. It therefore allocates no concat workspace and performs no input-projection D2D
+copy. The grouped `T>=17` route is unchanged. Public `linear` output remains contiguous-only; the
+pitched row slices are private to this Op implementation.
 
 For V head `j`, let `q` and `k` come from Q/K head `j // 3`. With recurrent state
 `S[128,128]`, one token performs:

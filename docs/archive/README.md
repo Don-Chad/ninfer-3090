@@ -12,6 +12,12 @@ Use the active documentation index at [`../README.md`](../README.md) for current
   — independent FP32/FP64 Op-oracle coverage, kernel numerical-path freedom, 27B/35B
   active-document corrections, and the docs-only logical contract for future 35B MoE work.
 
+## Completed cutovers
+
+- [`optimization-era/plans/2026-07-17-qwen3-6-27b-decode-projection-cutover.md`](optimization-era/plans/2026-07-17-qwen3-6-27b-decode-projection-cutover.md)
+  — atomic 27B `gdn/value_z` artifact migration, two-parent full-attention input projection, and
+  direct GDN final-buffer output without concat D2D copies.
+
 ## Eras
 
 - [`pre-optimization/`](pre-optimization/) — L0/L1/L2 foundation, M2 hardening, and the M2.8

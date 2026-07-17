@@ -15,7 +15,7 @@ inline constexpr std::int32_t kQ4Q5AttnInputMaxCols       = 128 * 65535;
 inline constexpr std::int32_t kQ4Q5AttnInputQualifiedCols = 1024;
 
 enum class Q4Q5AttnInputScheduleId {
-    IndependentFixed,
+    ParentSplitFixed,
     GroupedHomogeneousPairMmaR64C128,
 };
 
@@ -28,16 +28,14 @@ struct Q4Q5AttnInputProblem {
 };
 
 struct Q4Q5AttnInputSubplans {
-    Q4Plan query;
-    Q5Plan gate;
-    Q4Plan key;
-    Q5Plan value;
+    Q4Plan query_key;
+    Q5Plan gate_value;
 };
 
 struct Q4Q5AttnInputPlan {
     Q4Q5AttnInputScheduleId schedule;
     Q4KernelVariant grouped_variant;
-    std::optional<Q4Q5AttnInputSubplans> independent;
+    std::optional<Q4Q5AttnInputSubplans> parent_split;
     std::size_t workspace_bytes;
     bool performance_qualified;
 };
@@ -48,11 +46,11 @@ bool q4_q5_attn_input_admits(const Q4Q5AttnInputProblem& problem) noexcept;
 Q4Q5AttnInputPlan q4_q5_attn_input_resolve_plan(const Q4Q5AttnInputProblem& problem);
 
 void q4_q5_attn_input_execute_plan(const Q4Q5AttnInputPlan& plan, const Tensor& x,
-                                   const Weight& q_weight, const Weight& gate_weight,
-                                   const Weight& k_weight, const Weight& v_weight, Tensor& q,
-                                   Tensor& gate, Tensor& k, Tensor& v, cudaStream_t stream);
-void q4_q5_attn_input_dispatch(const Tensor& x, const Weight& q_weight, const Weight& gate_weight,
-                               const Weight& k_weight, const Weight& v_weight, Tensor& q,
-                               Tensor& gate, Tensor& k, Tensor& v, cudaStream_t stream);
+                                   const Weight& query_key_weight, const Weight& gate_value_weight,
+                                   Tensor& q, Tensor& gate, Tensor& k, Tensor& v,
+                                   cudaStream_t stream);
+void q4_q5_attn_input_dispatch(const Tensor& x, const Weight& query_key_weight,
+                               const Weight& gate_value_weight, Tensor& q, Tensor& gate, Tensor& k,
+                               Tensor& v, cudaStream_t stream);
 
 } // namespace ninfer::ops::detail

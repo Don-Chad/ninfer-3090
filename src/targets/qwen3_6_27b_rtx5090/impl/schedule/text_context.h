@@ -76,10 +76,8 @@ struct MlpW {
 
 struct FullLayerW {
     const Tensor* input_norm     = nullptr;
-    const Weight* q_proj         = nullptr;
-    const Weight* gate_proj      = nullptr;
-    const Weight* k_proj         = nullptr;
-    const Weight* v_proj         = nullptr;
+    const Weight* query_key      = nullptr;
+    const Weight* gate_value     = nullptr;
     const Weight* o_proj         = nullptr;
     const Tensor* q_norm         = nullptr;
     const Tensor* k_norm         = nullptr;

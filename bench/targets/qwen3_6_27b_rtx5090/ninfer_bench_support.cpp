@@ -275,6 +275,7 @@ std::string usage_text(std::string_view program) {
         << "  --lm-head-draft             use the optimized proposal head; requires MTP\n"
         << "  --device <id>               CUDA device ordinal (default: 0)\n"
         << "  --no-cuda-graph             use eager decode\n"
+        << "  --profile-measured          bracket one measured repetition with CUDA profiler API\n"
         << "  -o, --output <table|json|csv>  output format (default: table)\n"
         << "  --output-file <path>        write report to a file\n"
         << "  -h, --help                  show this help\n\n"
@@ -334,6 +335,8 @@ BenchOptions parse_args(int argc, char** argv) {
             options.device = parse_nonnegative(value("--device"), "device");
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
+        } else if (arg == "--profile-measured") {
+            options.profile_measured = true;
         } else if (arg == "-o" || arg == "--output") {
             const std::string selected = value("--output");
             if (selected == "table") {

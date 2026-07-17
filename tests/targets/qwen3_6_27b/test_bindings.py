@@ -29,8 +29,8 @@ def binding():
 
 def test_complete_typed_binding_and_vision_policy(binding: ArtifactBinding) -> None:
     assert binding.model_id == "qwen3.6-27b"
-    assert len(binding.tensors) == 1166
-    assert len(binding.row_views) == 294
+    assert len(binding.tensors) == 1118
+    assert len(binding.row_views) == 390
     assert len(binding.axis_views) == 48
     assert len(binding.text.layers) == 64
     assert len(binding.vision.layers) == 27
@@ -38,6 +38,12 @@ def test_complete_typed_binding_and_vision_policy(binding: ArtifactBinding) -> N
     assert binding.mtp.full_output_head is binding.text.output_head
     assert binding.mtp.optimized_proposal_head is binding.text.draft_head
     assert binding.text.layers[0].gdn.convolution.shape == (10240, 4)
+    first_gdn = binding.text.layers[0].gdn
+    assert first_gdn is not None
+    assert first_gdn.value.block is first_gdn.value_z
+    assert (first_gdn.value.row_begin, first_gdn.value.row_end) == (0, 6144)
+    assert first_gdn.z.block is first_gdn.value_z
+    assert (first_gdn.z.row_begin, first_gdn.z.row_end) == (6144, 12288)
 
     vision = WeightStore(
         binding,

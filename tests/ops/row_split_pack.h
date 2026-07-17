@@ -226,6 +226,88 @@ struct PackedWeight {
     }
 };
 
+// Builds a full-shape deterministic RowSplit payload without allocating a source or dequantized
+// matrix. This is useful for exact product-shape route tests that verify only sampled FP64 rows.
+inline PackedWeight make_patterned_weight(QType qtype, std::int32_t n, std::int32_t k,
+                                          std::uint32_t seed) {
+    if (n <= 0 || k <= 0) {
+        throw std::invalid_argument("row-split patterned weight: shape must be positive");
+    }
+    const detail::QuantSpec spec = detail::quant_spec(qtype);
+    const std::int32_t padded_k  = detail::align_up(k, 128);
+    const std::int32_t kg        = padded_k / spec.group_size;
+    const std::uint64_t groups   = static_cast<std::uint64_t>(n) * kg;
+
+    PackedWeight packed;
+    packed.nibble_plane_bytes =
+        groups * static_cast<std::uint64_t>(detail::nibble_bytes_per_group(spec));
+    packed.high_plane_offset =
+        detail::align_up_size(static_cast<std::size_t>(packed.nibble_plane_bytes), 256);
+    packed.high_plane_bytes =
+        groups * static_cast<std::uint64_t>(detail::high_bytes_per_group(spec));
+    packed.scale_plane_offset =
+        packed.high_plane_offset +
+        detail::align_up_size(static_cast<std::size_t>(packed.high_plane_bytes), 256);
+    packed.scale_plane_bytes = groups * 2;
+    packed.payload.assign(
+        static_cast<std::size_t>(packed.scale_plane_offset + packed.scale_plane_bytes), 0);
+
+    const std::uint64_t nibble_bytes_per_group = detail::nibble_bytes_per_group(spec);
+    const std::uint64_t high_bytes_per_group   = detail::high_bytes_per_group(spec);
+    for (std::uint64_t group_index = 0; group_index < groups; ++group_index) {
+        const std::uint64_t row     = group_index / static_cast<std::uint64_t>(kg);
+        const std::uint64_t group   = group_index % static_cast<std::uint64_t>(kg);
+        const std::uint32_t row_mix = static_cast<std::uint32_t>(row ^ (row >> 8) ^ (row >> 16));
+        for (std::uint64_t byte = 0; byte < nibble_bytes_per_group; ++byte) {
+            std::uint8_t code = static_cast<std::uint8_t>(
+                (row_mix * 37u + group * 29u + byte * 17u + seed) & 0xffu);
+            if (qtype == QType::W8G32_F16S && code == 0x80u) { code = 0x81u; }
+            packed.payload[static_cast<std::size_t>(group_index * nibble_bytes_per_group + byte)] =
+                code;
+        }
+        for (std::uint64_t byte = 0; byte < high_bytes_per_group; ++byte) {
+            packed.payload[static_cast<std::size_t>(packed.high_plane_offset +
+                                                    group_index * high_bytes_per_group + byte)] =
+                static_cast<std::uint8_t>((row_mix * 43u + group * 31u + byte * 13u + seed * 3u) &
+                                          0xffu);
+        }
+    }
+    constexpr std::uint16_t kScales[] = {0x3800u, 0x3a00u, 0x3c00u, 0x3d00u};
+    for (std::uint64_t i = 0; i < groups; ++i) {
+        const std::uint64_t row         = i / static_cast<std::uint64_t>(kg);
+        const std::uint64_t group       = i % static_cast<std::uint64_t>(kg);
+        const std::uint64_t scale_index = (row ^ (row >> 8) ^ group ^ seed) & 3u;
+        detail::store_u16_le(packed.payload,
+                             static_cast<std::size_t>(packed.scale_plane_offset + i * 2),
+                             kScales[scale_index]);
+    }
+
+    packed.weight.qtype            = qtype;
+    packed.weight.layout           = QuantLayout::RowSplit;
+    packed.weight.scale_dtype      = DType::FP16;
+    packed.weight.payload          = packed.payload.data();
+    packed.weight.payload_bytes    = packed.payload.size();
+    packed.weight.high_plane_bytes = packed.high_plane_bytes;
+    packed.weight.qdata            = packed.payload.data();
+    packed.weight.qhigh =
+        packed.high_plane_bytes == 0 ? nullptr : packed.payload.data() + packed.high_plane_offset;
+    packed.weight.scales          = packed.payload.data() + packed.scale_plane_offset;
+    packed.weight.group_size      = static_cast<std::uint32_t>(spec.group_size);
+    packed.weight.group           = spec.group_size;
+    packed.weight.ndim            = 2;
+    packed.weight.shape[0]        = n;
+    packed.weight.shape[1]        = k;
+    packed.weight.shape[2]        = 1;
+    packed.weight.shape[3]        = 1;
+    packed.weight.padded_shape[0] = n;
+    packed.weight.padded_shape[1] = padded_k;
+    packed.weight.padded_shape[2] = 1;
+    packed.weight.padded_shape[3] = 1;
+    packed.weight.n               = n;
+    packed.weight.k               = k;
+    return packed;
+}
+
 // Independent logical decode for numerical oracles. This reads the registered payload bytes
 // directly: the signed code is decoded from its low/high planes, the stored FP16 scale is
 // converted exactly to FP64, and only then are the two multiplied. In particular, this helper

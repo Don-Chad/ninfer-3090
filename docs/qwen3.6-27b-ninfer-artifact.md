@@ -188,7 +188,7 @@ order:
 
 ### 5.3 GDN Text layer
 
-For every other layer `l` in `0..63`, emit these fourteen objects in table order:
+For every other layer `l` in `0..63`, emit these thirteen objects in table order:
 
 | Order | Object-name pattern | Shape | Format | Layout |
 |---:|---|---|---|---|
@@ -199,13 +199,17 @@ For every other layer `l` in `0..63`, emit these fourteen objects in table order
 | 4 | `text/layers/{l}/gdn/a_projection` | `[48,5120]` | `BF16` | `contiguous-le-v1` |
 | 5 | `text/layers/{l}/gdn/b_projection` | `[48,5120]` | `BF16` | `contiguous-le-v1` |
 | 6 | `text/layers/{l}/gdn/query_key` | `[4096,5120]` | `Q4G64_F16S` | `row-split-k128-v1` |
-| 7 | `text/layers/{l}/gdn/value` | `[6144,5120]` | `Q5G64_F16S` | `row-split-k128-v1` |
+| 7 | `text/layers/{l}/gdn/value_z` | `[12288,5120]` | `Q5G64_F16S` | `row-split-k128-v1` |
 | 8 | `text/layers/{l}/gdn/norm` | `[128]` | `BF16` | `contiguous-le-v1` |
-| 9 | `text/layers/{l}/gdn/z` | `[6144,5120]` | `Q5G64_F16S` | `row-split-k128-v1` |
-| 10 | `text/layers/{l}/gdn/output` | `[5120,6144]` | `Q5G64_F16S` | `row-split-k128-v1` |
-| 11 | `text/layers/{l}/post_attention_norm` | `[5120]` | `BF16` | `contiguous-le-v1` |
-| 12 | `text/layers/{l}/mlp/gate_up` | `[34816,5120]` | `Q4G64_F16S` | `row-split-k128-v1` |
-| 13 | `text/layers/{l}/mlp/down` | `[5120,17408]` | `Q5G64_F16S` | `row-split-k128-v1` |
+| 9 | `text/layers/{l}/gdn/output` | `[5120,6144]` | `Q5G64_F16S` | `row-split-k128-v1` |
+| 10 | `text/layers/{l}/post_attention_norm` | `[5120]` | `BF16` | `contiguous-le-v1` |
+| 11 | `text/layers/{l}/mlp/gate_up` | `[34816,5120]` | `Q4G64_F16S` | `row-split-k128-v1` |
+| 12 | `text/layers/{l}/mlp/down` | `[5120,17408]` | `Q5G64_F16S` | `row-split-k128-v1` |
+
+`gdn/value_z` owns two logical matrices: value is rows `[0,6144)` and z is rows
+`[6144,12288)`. RowSplit planes cover the complete parent independently, so their physical order
+is `base(value), base(z), high(value), high(z), scale(value), scale(z)`; concatenating two complete
+encoded child payloads would be invalid.
 
 The convolution shape is intentionally `[tap,channel] = [4,10240]`. Its bytes are tap-major, so
 this is the stored shape. A channel-major `[10240,4]` consumer view is
@@ -314,6 +318,8 @@ row-split storage geometry.
 | same | value | `[6144,7168)` | `[1024,5120]` |
 | `text/layers/{l}/gdn/query_key` | GDN query | `[0,2048)` | `[2048,5120]` |
 | same | GDN key | `[2048,4096)` | `[2048,5120]` |
+| `text/layers/{l}/gdn/value_z` | GDN value | `[0,6144)` | `[6144,5120]` |
+| same | GDN z | `[6144,12288)` | `[6144,5120]` |
 | `text/layers/{l}/mlp/gate_up` | MLP gate | `[0,17408)` | `[17408,5120]` |
 | same | MLP up | `[17408,34816)` | `[17408,5120]` |
 | `mtp/layer/attention/query_key_gate_value` | query | `[0,6144)` | `[6144,5120]` |
@@ -323,8 +329,9 @@ row-split storage geometry.
 | `mtp/layer/mlp/gate_up` | MTP MLP gate | `[0,17408)` | `[17408,5120]` |
 | same | MTP MLP up | `[17408,34816)` | `[17408,5120]` |
 
-The full-attention views exist only for the 16 full-attention layer numbers. The GDN query/key views
-exist only for the other 48 layer numbers. All 64 Text layers have the MLP gate/up views.
+The full-attention views exist only for the 16 full-attention layer numbers. The GDN query/key and
+value/z views exist only for the other 48 layer numbers. All 64 Text layers have the MLP gate/up
+views. The table defines 16 row-view templates and produces 390 bound row views for this target.
 
 Additional fixed aliases are:
 
@@ -347,17 +354,17 @@ needs.
 |---|---:|---:|
 | Text globals | embedding + final norm + full head | 3 |
 | full-attention Text layers | `16 × 9` | 144 |
-| GDN Text layers | `48 × 14` | 672 |
-| Text total | `3 + 144 + 672` | 819 |
+| GDN Text layers | `48 × 13` | 624 |
+| Text total | `3 + 144 + 624` | 771 |
 | optimized draft head | weight + ID map | 2 |
 | MTP | fixed table | 12 |
 | Vision stem | fixed table | 3 |
 | Vision transformer blocks | `27 × 12` | 324 |
 | Vision merger | fixed table | 6 |
 | Vision total | `3 + 324 + 6` | 333 |
-| all tensors | `819 + 2 + 12 + 333` | 1166 |
+| all tensors | `771 + 2 + 12 + 333` | 1118 |
 | frontend resources | fixed table | 6 |
-| complete artifact | `1166 + 6` | 1172 |
+| complete artifact | `1118 + 6` | 1124 |
 
 ### 9.2 Numeric-format counts
 
@@ -367,13 +374,13 @@ needs.
 | `FP32` | 96 | 0 | 0 | 0 | 96 |
 | `I32` | 0 | 1 | 0 | 0 | 1 |
 | `Q4G64_F16S` | 128 | 1 | 0 | 54 | 183 |
-| `Q5G64_F16S` | 240 | 0 | 0 | 54 | 294 |
+| `Q5G64_F16S` | 192 | 0 | 0 | 54 | 246 |
 | `Q6G64_F16S` | 2 | 0 | 0 | 1 | 3 |
 | `W8G32_F16S` | 0 | 0 | 5 | 2 | 7 |
-| total | 819 | 2 | 12 | 333 | 1166 |
+| total | 771 | 2 | 12 | 333 | 1118 |
 
 The three direct formats account for 679 `contiguous-le-v1` tensors. The four quantized formats
-account for 487 `row-split-k128-v1` tensors.
+account for 439 `row-split-k128-v1` tensors.
 
 ## 10. Conversion recipe boundary
 
@@ -530,9 +537,8 @@ value = [4096,10240)
 | `gdn/a_projection` | `linear_attn.in_proj_a.weight` `[48,5120]` | preserve BF16 |
 | `gdn/b_projection` | `linear_attn.in_proj_b.weight` `[48,5120]` | preserve BF16 |
 | `gdn/query_key` | `linear_attn.in_proj_qkv.weight` | row-concatenate query then key, equivalently rows `[0,4096)`, quantize Q4 |
-| `gdn/value` | same source | rows `[4096,10240)`, quantize Q5 |
+| `gdn/value_z` | `linear_attn.in_proj_qkv.weight`, `linear_attn.in_proj_z.weight` `[6144,5120]` | concatenate QKV rows `[4096,10240)` then z as BF16 `[value,z]`, quantize the `[12288,5120]` parent once as Q5 |
 | `gdn/norm` | `linear_attn.norm.weight` `[128]` | preserve BF16 |
-| `gdn/z` | `linear_attn.in_proj_z.weight` `[6144,5120]` | quantize Q5 |
 | `gdn/output` | `linear_attn.out_proj.weight` `[5120,6144]` | quantize Q5 |
 | `post_attention_norm` | `post_attention_layernorm.weight` `[5120]` | preserve BF16 |
 | `mlp/gate_up` | `mlp.gate_proj.weight`, `mlp.up_proj.weight`, each `[17408,5120]` | row-concatenate `[gate,up]`, quantize Q4 |
@@ -633,7 +639,7 @@ Qwen3.6-27B binder must perform exactly the model-specific work below.
 
 1. Require `model_id == "qwen3.6-27b"`.
 2. Generate the complete name/signature inventory from Sections 4 through 7 and require exactly
-   those 1172 objects: no missing object, duplicate role, alternate signature, or extra profile
+   those 1124 objects: no missing object, duplicate role, alternate signature, or extra profile
    object.
 3. Require every tensor's exact shape, format, and layout and every resource's exact
    `raw-bytes-v1` encoding. Encoded byte sizes come from the registered layouts, not this binder.
@@ -666,15 +672,23 @@ The target converter in `tools/convert/qwen3_6_27b_rtx5090/` and the independent
 `tools/reference/qwen3_6_27b_rtx5090/` derive this inventory and agree through a real emitted
 artifact. The verifier and reference path have established:
 
-- 1166 tensor objects and six frontend resources;
-- component counts `819 + 2 + 12 + 333`;
-- numeric counts `582 BF16`, `96 FP32`, `1 I32`, `183 Q4`, `294 Q5`, `3 Q6`, and `7 W8`;
-- layout counts `679 contiguous-le-v1` and `487 row-split-k128-v1`;
+- 1118 tensor objects and six frontend resources;
+- component counts `771 + 2 + 12 + 333`;
+- numeric counts `582 BF16`, `96 FP32`, `1 I32`, `183 Q4`, `246 Q5`, `3 Q6`, and `7 W8`;
+- layout counts `679 contiguous-le-v1` and `439 row-split-k128-v1`;
+- 48 physical `gdn/value_z` parents and 96 logical value/z row views, with no physical
+  `gdn/value` or `gdn/z` object;
 - all 1199 referenced BF16 source tensors present with expected shapes;
 - the six resources consumable by both the native C++ Frontend and the selected Hugging Face
   library path used by the Python reference;
 - complete Text, image/video Vision, MTP, and combined multimodal reference execution from the
   resulting `.ninfer` artifact.
+
+The 2026-07-17 atomic cutover compared every unaffected descriptor and payload byte exactly and
+compared all retired value/z code, high-bit, and scale planes with their new parent row ranges
+before replacing the canonical artifact. The canonical artifact was then re-inspected, re-verified
+against the source checkpoint, and loaded through the public C++ Engine. The recipe ID and common
+container version did not change, and no compatibility binder or obsolete artifact was retained.
 
 These are structural, numerical, and behavioral checks of the selected route. They do not require
 a fixed file hash, byte-identical regeneration, or exact reproduction of a probabilistic token

@@ -243,11 +243,9 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder) {
                 tensor(binder, prefix + "gdn/b_projection", NumericFormat::BF16, {48, 5120});
             target.gdn.query_key =
                 tensor(binder, prefix + "gdn/query_key", NumericFormat::Q4G64_F16S, {4096, 5120});
-            target.gdn.value =
-                tensor(binder, prefix + "gdn/value", NumericFormat::Q5G64_F16S, {6144, 5120});
+            target.gdn.value_z =
+                tensor(binder, prefix + "gdn/value_z", NumericFormat::Q5G64_F16S, {12288, 5120});
             target.gdn.norm = tensor(binder, prefix + "gdn/norm", NumericFormat::BF16, {128});
-            target.gdn.z =
-                tensor(binder, prefix + "gdn/z", NumericFormat::Q5G64_F16S, {6144, 5120});
             target.gdn.output =
                 tensor(binder, prefix + "gdn/output", NumericFormat::Q5G64_F16S, {5120, 6144});
         }
@@ -383,10 +381,11 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
                 quant_weight(backing, source.gdn.query_key, NumericFormat::Q4G64_F16S, 4096, 5120);
             target.query = row_view(target.query_key, 0, 2048);
             target.key   = row_view(target.query_key, 2048, 2048);
-            target.value =
-                quant_weight(backing, source.gdn.value, NumericFormat::Q5G64_F16S, 6144, 5120);
-            target.norm = direct_tensor(backing, source.gdn.norm, NumericFormat::BF16, {128});
-            target.z = quant_weight(backing, source.gdn.z, NumericFormat::Q5G64_F16S, 6144, 5120);
+            target.value_z =
+                quant_weight(backing, source.gdn.value_z, NumericFormat::Q5G64_F16S, 12288, 5120);
+            target.value = row_view(target.value_z, 0, 6144);
+            target.norm  = direct_tensor(backing, source.gdn.norm, NumericFormat::BF16, {128});
+            target.z     = row_view(target.value_z, 6144, 6144);
             target.output =
                 quant_weight(backing, source.gdn.output, NumericFormat::Q5G64_F16S, 5120, 6144);
             target.post_attention_norm =

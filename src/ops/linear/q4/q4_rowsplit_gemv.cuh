@@ -378,19 +378,36 @@ __device__ __forceinline__ float q4_gemv_dot_byte_sync(Q4GemvTileStorage<Schedul
     return accumulator0 + accumulator1;
 }
 
+template <bool SplitOutput, int SplitRow>
+__device__ __forceinline__ void q4_gemv_store(__nv_bfloat16* out, __nv_bfloat16* out_tail,
+                                              int output_row, float value) {
+    if constexpr (SplitOutput) {
+        if (output_row < SplitRow) {
+            out[output_row] = __float2bfloat16(value);
+        } else {
+            out_tail[output_row - SplitRow] = __float2bfloat16(value);
+        }
+    } else {
+        out[output_row] = __float2bfloat16(value);
+    }
+}
+
 // clang-format off
-template <class Schedule>
+template <class Schedule, bool SplitOutput = false, int SplitRow = 0>
 __global__ __launch_bounds__(Schedule::kThreads, Schedule::kLaunchBoundsMinBlocks)
 void q4_rowsplit_gemv_kernel(
     const __nv_bfloat16* __restrict__ x,
     const std::uint8_t* __restrict__ codes,
     const std::uint8_t* __restrict__ scales,
     __nv_bfloat16* __restrict__ out,
+    __nv_bfloat16* __restrict__ out_tail,
     std::int32_t rows,
     std::int32_t k) {
     // clang-format on
     constexpr int kRowsPerCta  = Schedule::kRowsPerCta;
     constexpr int kWarpsPerRow = Schedule::kWarpsPerRow;
+    static_assert(!SplitOutput || SplitRow > 0,
+                  "split-output Q4 GEMV requires a positive compile-time seam");
 
     __shared__ Q4GemvTileStorage<Schedule> shared_tiles;
     __shared__ float row_partials[kRowsPerCta][kWarpsPerRow];
@@ -464,7 +481,7 @@ void q4_rowsplit_gemv_kernel(
 
     accumulator = warp_reduce_sum(accumulator);
     if constexpr (kWarpsPerRow == 1) {
-        if (lane == 0) { out[row] = __float2bfloat16(accumulator); }
+        if (lane == 0) { q4_gemv_store<SplitOutput, SplitRow>(out, out_tail, row, accumulator); }
     } else {
         if (lane == 0) { row_partials[row_in_cta][warp_in_row] = accumulator; }
         __syncthreads();
@@ -475,7 +492,7 @@ void q4_rowsplit_gemv_kernel(
             for (int warp = 0; warp < kWarpsPerRow; ++warp) {
                 row_accumulator += row_partials[row_in_cta][warp];
             }
-            out[row] = __float2bfloat16(row_accumulator);
+            q4_gemv_store<SplitOutput, SplitRow>(out, out_tail, row, row_accumulator);
         }
     }
 }

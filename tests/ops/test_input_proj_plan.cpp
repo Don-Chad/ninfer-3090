@@ -15,6 +15,8 @@ using ninfer::ops::detail::Q4Q5AttnInputProblem;
 using ninfer::ops::detail::Q4Q5AttnInputScheduleId;
 using ninfer::ops::detail::Q4Q5GdnInputProblem;
 using ninfer::ops::detail::Q4Q5GdnInputScheduleId;
+using ninfer::ops::detail::Q4ScheduleId;
+using ninfer::ops::detail::Q5ScheduleId;
 
 int failures = 0;
 
@@ -33,19 +35,20 @@ void attn_route_tests() {
     };
     for (const std::int32_t cols : boundaries) {
         const Q4Q5AttnInputProblem problem{5120, 6144, 1024, 5120, cols};
-        const auto plan        = ninfer::ops::detail::q4_q5_attn_input_resolve_plan(problem);
-        const bool independent = cols <= 16;
-        const auto expected    = independent
-                                     ? Q4Q5AttnInputScheduleId::IndependentFixed
-                                     : Q4Q5AttnInputScheduleId::GroupedHomogeneousPairMmaR64C128;
-        if (plan.schedule != expected || plan.independent.has_value() != independent ||
+        const auto plan         = ninfer::ops::detail::q4_q5_attn_input_resolve_plan(problem);
+        const bool parent_split = cols <= 16;
+        const auto expected     = parent_split
+                                      ? Q4Q5AttnInputScheduleId::ParentSplitFixed
+                                      : Q4Q5AttnInputScheduleId::GroupedHomogeneousPairMmaR64C128;
+        if (plan.schedule != expected || plan.parent_split.has_value() != parent_split ||
             plan.workspace_bytes != 0) {
             std::cerr << "wrong attention input route C=" << cols << '\n';
             ++failures;
         }
         const Q4KernelVariant expected_variant =
-            independent ? Q4KernelVariant::None
-                        : ((cols % 128) == 0 ? Q4KernelVariant::Full : Q4KernelVariant::Predicated);
+            parent_split
+                ? Q4KernelVariant::None
+                : ((cols % 128) == 0 ? Q4KernelVariant::Full : Q4KernelVariant::Predicated);
         if (plan.grouped_variant != expected_variant) {
             std::cerr << "wrong attention input variant C=" << cols << '\n';
             ++failures;
@@ -53,6 +56,23 @@ void attn_route_tests() {
         if (plan.performance_qualified !=
             (cols <= ninfer::ops::detail::kQ4Q5AttnInputQualifiedCols)) {
             std::cerr << "wrong attention input qualification C=" << cols << '\n';
+            ++failures;
+        }
+    }
+    for (std::int32_t cols = 1; cols <= 16; ++cols) {
+        const auto plan =
+            ninfer::ops::detail::q4_q5_attn_input_resolve_plan({5120, 6144, 1024, 5120, cols});
+        const Q4ScheduleId expected_q4 =
+            cols == 1 ? Q4ScheduleId::GemvR1W8Direct
+                      : ((cols <= 7 || (cols >= 9 && cols <= 15)) ? Q4ScheduleId::SimtR8C4
+                                                                  : Q4ScheduleId::SimtR8C8);
+        const Q5ScheduleId expected_q5 =
+            cols == 1 ? Q5ScheduleId::GemvR16S2X
+                      : (cols <= 6 ? Q5ScheduleId::SimtSplit4Exact : Q5ScheduleId::SimtR8C4);
+        if (!plan.parent_split.has_value() ||
+            plan.parent_split->query_key.schedule != expected_q4 ||
+            plan.parent_split->gate_value.schedule != expected_q5) {
+            std::cerr << "wrong Attention parent subplans C=" << cols << '\n';
             ++failures;
         }
     }
@@ -70,19 +90,18 @@ void gdn_route_tests() {
     };
     for (const std::int32_t cols : boundaries) {
         const Q4Q5GdnInputProblem problem{5120, 4096, 6144, 10240, 5120, cols};
-        const auto plan         = ninfer::ops::detail::q4_q5_gdn_input_resolve_plan(problem);
-        const bool materialized = cols <= 16;
-        const auto expected     = materialized ? Q4Q5GdnInputScheduleId::MaterializedFixed
-                                               : Q4Q5GdnInputScheduleId::GroupedMixedMmaR64C128;
-        if (plan.schedule != expected || plan.materialized.has_value() != materialized ||
-            (plan.workspace_bytes != 0) != materialized) {
+        const auto plan        = ninfer::ops::detail::q4_q5_gdn_input_resolve_plan(problem);
+        const bool independent = cols <= 16;
+        const auto expected    = independent ? Q4Q5GdnInputScheduleId::IndependentDirectFixed
+                                             : Q4Q5GdnInputScheduleId::GroupedMixedMmaR64C128;
+        if (plan.schedule != expected || plan.independent.has_value() != independent ||
+            plan.workspace_bytes != 0) {
             std::cerr << "wrong GDN input route C=" << cols << '\n';
             ++failures;
         }
         const Q4KernelVariant expected_variant =
-            materialized
-                ? Q4KernelVariant::None
-                : ((cols % 128) == 0 ? Q4KernelVariant::Full : Q4KernelVariant::Predicated);
+            independent ? Q4KernelVariant::None
+                        : ((cols % 128) == 0 ? Q4KernelVariant::Full : Q4KernelVariant::Predicated);
         if (plan.grouped_variant != expected_variant) {
             std::cerr << "wrong GDN input variant C=" << cols << '\n';
             ++failures;
@@ -108,14 +127,14 @@ void workspace_tests() {
     };
 
     constexpr std::array<Case, 8> cases{{
-        {1, 20'480},
-        {2, 40'960},
-        {16, 327'680},
-        {17, 327'680},
-        {128, 327'680},
-        {1024, 327'680},
-        {1025, 327'680},
-        {ninfer::ops::detail::kQ4Q5GdnInputMaxCols, 327'680},
+        {1, 0},
+        {2, 0},
+        {16, 0},
+        {17, 0},
+        {128, 0},
+        {1024, 0},
+        {1025, 0},
+        {ninfer::ops::detail::kQ4Q5GdnInputMaxCols, 0},
     }};
     for (const Case test : cases) {
         const std::size_t actual =

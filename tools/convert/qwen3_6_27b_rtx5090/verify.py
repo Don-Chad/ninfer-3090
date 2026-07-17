@@ -38,7 +38,7 @@ DIRECT_PROBE_OBJECTS = (
 )
 QUANT_PROBE_OBJECTS = (
     "text/layers/3/attention/query_key",
-    "text/layers/0/gdn/value",
+    "text/layers/0/gdn/value_z",
     "vision/patch_embedding",
     "mtp/layer/attention/query_key_gate_value",
     "text/draft_head",
@@ -568,7 +568,11 @@ def verify_payloads(
             obj = artifact.find(object_name)
             if not isinstance(obj, TensorObject) or len(obj.shape) != 2:
                 _contract_error(f"quantized probe is not a matrix: {object_name}")
-            rows = _three_indices(obj.shape[0])
+            rows = (
+                (0, 6143, 6144, 12287)
+                if object_name == "text/layers/0/gdn/value_z"
+                else _three_indices(obj.shape[0])
+            )
             source_rows = _materialize_rows(
                 recipe.RECIPES_BY_NAME[object_name].expression,
                 rows,

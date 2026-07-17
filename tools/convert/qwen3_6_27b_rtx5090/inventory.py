@@ -70,9 +70,8 @@ def _build_text_core_specs() -> tuple[TensorSpec, ...]:
                     _tensor(prefix + "gdn/a_projection", (48, 5120), BF16),
                     _tensor(prefix + "gdn/b_projection", (48, 5120), BF16),
                     _tensor(prefix + "gdn/query_key", (4096, 5120), Q4),
-                    _tensor(prefix + "gdn/value", (6144, 5120), Q5),
+                    _tensor(prefix + "gdn/value_z", (12288, 5120), Q5),
                     _tensor(prefix + "gdn/norm", (128,), BF16),
-                    _tensor(prefix + "gdn/z", (6144, 5120), Q5),
                     _tensor(prefix + "gdn/output", (5120, 6144), Q5),
                 )
             )
@@ -192,6 +191,22 @@ LOGICAL_ROW_VIEW_SPECS = (
         2048,
         4096,
         (2048, 5120),
+        GDN_LAYERS,
+    ),
+    LogicalRowViewSpec(
+        "text/layers/{l}/gdn/value",
+        "text/layers/{l}/gdn/value_z",
+        0,
+        6144,
+        (6144, 5120),
+        GDN_LAYERS,
+    ),
+    LogicalRowViewSpec(
+        "text/layers/{l}/gdn/z",
+        "text/layers/{l}/gdn/value_z",
+        6144,
+        12288,
+        (6144, 5120),
         GDN_LAYERS,
     ),
     LogicalRowViewSpec(

@@ -38,9 +38,8 @@ struct GdnPlan {
     artifact::ObjectHandle a_projection;
     artifact::ObjectHandle b_projection;
     artifact::ObjectHandle query_key;
-    artifact::ObjectHandle value;
+    artifact::ObjectHandle value_z;
     artifact::ObjectHandle norm;
-    artifact::ObjectHandle z;
     artifact::ObjectHandle output;
 };
 
@@ -150,6 +149,7 @@ struct GdnWeights {
     Weight query_key;
     Weight query;
     Weight key;
+    Weight value_z;
     Weight value;
     Tensor norm;
     Weight z;

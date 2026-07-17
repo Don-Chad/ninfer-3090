@@ -57,11 +57,75 @@ std::vector<std::int32_t> sampled_indices(std::int32_t limit) {
     return result;
 }
 
+constexpr std::size_t kOutputGuardBytes = 256;
+constexpr std::uint8_t kOutputGuardByte = 0xa5;
+
+struct GuardedBf16Output {
+    explicit GuardedBf16Output(std::size_t words)
+        : storage(words * sizeof(std::uint16_t) + 2 * kOutputGuardBytes), words(words) {
+        cudaMemset(storage.p, kOutputGuardByte, storage.bytes);
+    }
+
+    void* data() const { return static_cast<std::uint8_t*>(storage.p) + kOutputGuardBytes; }
+
+    int verify_guards(const std::string& label) const {
+        std::vector<std::uint8_t> prefix(kOutputGuardBytes);
+        std::vector<std::uint8_t> suffix(kOutputGuardBytes);
+        cudaMemcpy(prefix.data(), storage.p, prefix.size(), cudaMemcpyDeviceToHost);
+        cudaMemcpy(suffix.data(),
+                   static_cast<const std::uint8_t*>(data()) + words * sizeof(std::uint16_t),
+                   suffix.size(), cudaMemcpyDeviceToHost);
+        const auto intact = [](const std::vector<std::uint8_t>& bytes) {
+            return std::all_of(bytes.begin(), bytes.end(),
+                               [](std::uint8_t byte) { return byte == kOutputGuardByte; });
+        };
+        if (intact(prefix) && intact(suffix)) { return 0; }
+        std::cerr << label << ": output canary was overwritten\n";
+        return 1;
+    }
+
+    DBuf storage;
+    std::size_t words;
+};
+
+std::vector<double> from_device_bf16_ptr(const void* device, std::size_t count) {
+    std::vector<std::uint16_t> bits(count);
+    cudaMemcpy(bits.data(), device, count * sizeof(std::uint16_t), cudaMemcpyDeviceToHost);
+    std::vector<double> result(count);
+    for (std::size_t i = 0; i < count; ++i) { result[i] = bf16_to_f32(bits[i]); }
+    return result;
+}
+
+std::vector<std::uint16_t> from_device_bf16_bits(const void* device, std::size_t count) {
+    std::vector<std::uint16_t> bits(count);
+    cudaMemcpy(bits.data(), device, count * sizeof(std::uint16_t), cudaMemcpyDeviceToHost);
+    return bits;
+}
+
+template <class Launch>
+void capture_and_replay(Launch&& launch) {
+    cudaStream_t stream  = nullptr;
+    cudaGraph_t graph    = nullptr;
+    cudaGraphExec_t exec = nullptr;
+    cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
+    cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
+    launch(stream);
+    cudaStreamEndCapture(stream, &graph);
+    cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
+    cudaGraphLaunch(exec, stream);
+    cudaStreamSynchronize(stream);
+    cudaGraphExecDestroy(exec);
+    cudaGraphDestroy(graph);
+    cudaStreamDestroy(stream);
+}
+
 int verify_sampled_projection(const std::string& label, const std::vector<double>& full_output,
                               std::int32_t output_stride, std::int32_t output_row_offset,
                               const std::vector<float>& x, std::int32_t k, std::int32_t t,
-                              const row_split::PackedWeight& packed, const Tolerance& tolerance) {
-    const auto rows = sampled_indices(packed.weight.shape[0]);
+                              const row_split::PackedWeight& packed, const Tolerance& tolerance,
+                              std::int32_t weight_row_offset = 0, std::int32_t logical_rows = -1) {
+    if (logical_rows < 0) { logical_rows = packed.weight.shape[0] - weight_row_offset; }
+    const auto rows = sampled_indices(logical_rows);
     const auto cols = sampled_indices(t);
     std::vector<double> actual;
     std::vector<double> reference;
@@ -72,7 +136,8 @@ int verify_sampled_projection(const std::string& label, const std::vector<double
         for (const std::int32_t row : rows) {
             actual.push_back(full_output[static_cast<std::size_t>(col) * output_stride +
                                          output_row_offset + row]);
-            reference.push_back(row_split::dot_row_split_lowbit_fp64(packed, row, xcol, k));
+            reference.push_back(
+                row_split::dot_row_split_lowbit_fp64(packed, weight_row_offset + row, xcol, k));
         }
     }
     return verify(label.c_str(), actual, reference, tolerance);
@@ -316,65 +381,7 @@ int paired_w8g32_shape(std::int32_t n, std::int32_t k, const std::vector<std::in
     return failures;
 }
 
-row_split::PackedWeight allocate_packed_weight(QType qtype, std::int32_t n, std::int32_t k) {
-    const auto spec                  = row_split::detail::quant_spec(qtype);
-    const std::int32_t padded_k      = row_split::detail::align_up(k, 128);
-    const std::int32_t kg            = padded_k / spec.group_size;
-    const std::uint64_t groups       = static_cast<std::uint64_t>(n) * kg;
-    const std::uint64_t nibble_bytes = groups * row_split::detail::nibble_bytes_per_group(spec);
-    const std::uint64_t high_bytes   = groups * row_split::detail::high_bytes_per_group(spec);
-
-    row_split::PackedWeight packed;
-    packed.nibble_plane_bytes = nibble_bytes;
-    packed.high_plane_offset  = row_split::detail::align_up_size(nibble_bytes, 256);
-    packed.high_plane_bytes   = high_bytes;
-    packed.scale_plane_offset =
-        packed.high_plane_offset + row_split::detail::align_up_size(high_bytes, 256);
-    packed.scale_plane_bytes = groups * 2;
-    packed.payload.assign(
-        static_cast<std::size_t>(packed.scale_plane_offset + packed.scale_plane_bytes), 0);
-    packed.weight.qtype            = qtype;
-    packed.weight.layout           = QuantLayout::RowSplit;
-    packed.weight.scale_dtype      = DType::FP16;
-    packed.weight.payload_bytes    = packed.payload.size();
-    packed.weight.high_plane_bytes = high_bytes;
-    packed.weight.group_size       = spec.group_size;
-    packed.weight.group            = spec.group_size;
-    packed.weight.ndim             = 2;
-    packed.weight.shape[0]         = n;
-    packed.weight.shape[1]         = k;
-    packed.weight.padded_shape[0]  = n;
-    packed.weight.padded_shape[1]  = padded_k;
-    packed.weight.n                = n;
-    packed.weight.k                = k;
-    return packed;
-}
-
-row_split::PackedWeight patterned_weight(QType qtype, std::int32_t n, std::int32_t k,
-                                         std::uint32_t seed) {
-    row_split::PackedWeight packed = allocate_packed_weight(qtype, n, k);
-    const auto spec                = row_split::detail::quant_spec(qtype);
-    const std::int32_t kg          = packed.weight.padded_shape[1] / spec.group_size;
-    const std::uint64_t groups     = static_cast<std::uint64_t>(n) * kg;
-    for (std::uint64_t i = 0; i < packed.nibble_plane_bytes; ++i) {
-        std::uint8_t code = static_cast<std::uint8_t>((i * 17u + seed) & 0xffu);
-        // W8G32_F16S deliberately excludes the two's-complement -128 code.
-        if (qtype == QType::W8G32_F16S && code == 0x80u) { code = 0x81u; }
-        packed.payload[static_cast<std::size_t>(i)] = code;
-    }
-    for (std::uint64_t i = 0; i < packed.high_plane_bytes; ++i) {
-        packed.payload[static_cast<std::size_t>(packed.high_plane_offset + i)] =
-            static_cast<std::uint8_t>((i * 13u + seed * 3u) & 0xffu);
-    }
-    for (std::uint64_t i = 0; i < groups; ++i) {
-        row_split::detail::store_u16_le(packed.payload,
-                                        static_cast<std::size_t>(packed.scale_plane_offset + i * 2),
-                                        0x3c00u); // fp16 1.0
-    }
-    return packed;
-}
-
-int grouped_attention_correctness(std::int32_t t) {
+int grouped_attention_correctness(std::int32_t t, bool use_graph) {
     constexpr int kHidden = 5120;
     constexpr int kQRows  = 6144;
     constexpr int kKvRows = 1024;
@@ -383,51 +390,58 @@ int grouped_attention_correctness(std::int32_t t) {
     round_to_bf16(x);
     DBuf dx = to_device_bf16(x);
 
-    auto qw = patterned_weight(QType::Q4G64_F16S, kQRows, kHidden, 11u);
-    auto gw = patterned_weight(QType::Q5G64_F16S, kQRows, kHidden, 13u);
-    auto kw = patterned_weight(QType::Q4G64_F16S, kKvRows, kHidden, 17u);
-    auto vw = patterned_weight(QType::Q5G64_F16S, kKvRows, kHidden, 19u);
-    DBuf dqw(qw.payload.size()), dgw(gw.payload.size()), dkw(kw.payload.size()),
-        dvw(vw.payload.size());
-    cudaMemcpy(dqw.p, qw.payload.data(), qw.payload.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(dgw.p, gw.payload.data(), gw.payload.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(dkw.p, kw.payload.data(), kw.payload.size(), cudaMemcpyHostToDevice);
-    cudaMemcpy(dvw.p, vw.payload.data(), vw.payload.size(), cudaMemcpyHostToDevice);
+    auto qkw = row_split::make_patterned_weight(QType::Q4G64_F16S, kQRows + kKvRows, kHidden, 11u);
+    auto gvw = row_split::make_patterned_weight(QType::Q5G64_F16S, kQRows + kKvRows, kHidden, 13u);
+    DBuf dqkw(qkw.payload.size()), dgvw(gvw.payload.size());
+    cudaMemcpy(dqkw.p, qkw.payload.data(), qkw.payload.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(dgvw.p, gvw.payload.data(), gvw.payload.size(), cudaMemcpyHostToDevice);
 
     const std::size_t q_count  = static_cast<std::size_t>(kQRows) * t;
     const std::size_t kv_count = static_cast<std::size_t>(kKvRows) * t;
-    DBuf q_got(q_count * 2), g_got(q_count * 2), k_got(kv_count * 2), v_got(kv_count * 2);
+    GuardedBf16Output q_got(q_count), g_got(q_count), k_got(kv_count), v_got(kv_count);
     Tensor tx(dx.p, DType::BF16, {kHidden, t});
-    Tensor tq_got(q_got.p, DType::BF16, {kQRows, t});
-    Tensor tg_got(g_got.p, DType::BF16, {kQRows, t});
-    Tensor tk_got(k_got.p, DType::BF16, {kKvRows, t});
-    Tensor tv_got(v_got.p, DType::BF16, {kKvRows, t});
-    WorkspaceArena ws(256ULL << 20);
-    const Weight qweight = qw.device_weight(dqw.p);
-    const Weight gweight = gw.device_weight(dgw.p);
-    const Weight kweight = kw.device_weight(dkw.p);
-    const Weight vweight = vw.device_weight(dvw.p);
-    ops::attn_input_proj(tx, qweight, gweight, kweight, vweight, tq_got, tg_got, tk_got, tv_got, ws,
-                         nullptr);
-    cudaDeviceSynchronize();
+    Tensor tq_got(q_got.data(), DType::BF16, {kQRows, t});
+    Tensor tg_got(g_got.data(), DType::BF16, {kQRows, t});
+    Tensor tk_got(k_got.data(), DType::BF16, {kKvRows, t});
+    Tensor tv_got(v_got.data(), DType::BF16, {kKvRows, t});
+    WorkspaceArena ws(1);
+    const Weight qkweight = qkw.device_weight(dqkw.p);
+    const Weight gvweight = gvw.device_weight(dgvw.p);
+    const auto launch     = [&](cudaStream_t stream) {
+        ops::attn_input_proj(tx, qkweight, gvweight, tq_got, tg_got, tk_got, tv_got, ws, stream);
+    };
+    if (use_graph) {
+        capture_and_replay(launch);
+    } else {
+        launch(nullptr);
+        cudaDeviceSynchronize();
+    }
 
     int f = 0;
-    f += verify_sampled_projection("linear grouped attention q FP64 oracle",
-                                   from_device_bf16(q_got, q_count), kQRows, 0, x, kHidden, t, qw,
-                                   Tolerance::linear_tc());
-    f += verify_sampled_projection("linear grouped attention gate FP64 oracle",
-                                   from_device_bf16(g_got, q_count), kQRows, 0, x, kHidden, t, gw,
-                                   Tolerance::linear_tc());
-    f += verify_sampled_projection("linear grouped attention k FP64 oracle",
-                                   from_device_bf16(k_got, kv_count), kKvRows, 0, x, kHidden, t, kw,
-                                   Tolerance::linear_tc());
-    f += verify_sampled_projection("linear grouped attention v FP64 oracle",
-                                   from_device_bf16(v_got, kv_count), kKvRows, 0, x, kHidden, t, vw,
-                                   Tolerance::linear_tc());
+    f += verify_sampled_projection(
+        "linear grouped attention q FP64 oracle", from_device_bf16_ptr(q_got.data(), q_count),
+        kQRows, 0, x, kHidden, t, qkw, t <= 16 ? Tolerance::linear_bf16() : Tolerance::linear_tc(),
+        0, kQRows);
+    f += verify_sampled_projection(
+        "linear grouped attention gate FP64 oracle", from_device_bf16_ptr(g_got.data(), q_count),
+        kQRows, 0, x, kHidden, t, gvw, t <= 16 ? Tolerance::linear_bf16() : Tolerance::linear_tc(),
+        0, kQRows);
+    f += verify_sampled_projection(
+        "linear grouped attention k FP64 oracle", from_device_bf16_ptr(k_got.data(), kv_count),
+        kKvRows, 0, x, kHidden, t, qkw, t <= 16 ? Tolerance::linear_bf16() : Tolerance::linear_tc(),
+        kQRows, kKvRows);
+    f += verify_sampled_projection(
+        "linear grouped attention v FP64 oracle", from_device_bf16_ptr(v_got.data(), kv_count),
+        kKvRows, 0, x, kHidden, t, gvw, t <= 16 ? Tolerance::linear_bf16() : Tolerance::linear_tc(),
+        kQRows, kKvRows);
+    f += q_got.verify_guards("attention q T=" + std::to_string(t));
+    f += g_got.verify_guards("attention gate T=" + std::to_string(t));
+    f += k_got.verify_guards("attention k T=" + std::to_string(t));
+    f += v_got.verify_guards("attention v T=" + std::to_string(t));
     return f;
 }
 
-int grouped_gdn_correctness(std::int32_t t) {
+int grouped_gdn_correctness(std::int32_t t, bool use_graph) {
     constexpr int kHidden = 5120;
     constexpr int kQkRows = 4096;
     constexpr int kVRows  = 6144;
@@ -436,25 +450,71 @@ int grouped_gdn_correctness(std::int32_t t) {
     fill_uniform(x, 311u, -0.01f, 0.01f);
     round_to_bf16(x);
     DBuf dx  = to_device_bf16(x);
-    auto qkw = patterned_weight(QType::Q4G64_F16S, kQkRows, kHidden, 23u);
-    auto vw  = patterned_weight(QType::Q5G64_F16S, kVRows, kHidden, 29u);
+    auto qkw = row_split::make_patterned_weight(QType::Q4G64_F16S, kQkRows, kHidden, 23u);
+    auto vw  = row_split::make_patterned_weight(QType::Q5G64_F16S, kVRows, kHidden, 29u);
     DBuf dqkw(qkw.payload.size()), dvw(vw.payload.size());
     cudaMemcpy(dqkw.p, qkw.payload.data(), qkw.payload.size(), cudaMemcpyHostToDevice);
     cudaMemcpy(dvw.p, vw.payload.data(), vw.payload.size(), cudaMemcpyHostToDevice);
-    DBuf got(static_cast<std::size_t>(kRows) * t * 2);
+    const std::size_t output_count = static_cast<std::size_t>(kRows) * t;
+    GuardedBf16Output got(output_count);
     Tensor tx(dx.p, DType::BF16, {kHidden, t});
-    Tensor tqkv(got.p, DType::BF16, {kRows, t});
-    WorkspaceArena ws(256ULL << 20);
+    Tensor tqkv(got.data(), DType::BF16, {kRows, t});
+    WorkspaceArena ws(1);
     const Weight qkweight = qkw.device_weight(dqkw.p);
     const Weight vweight  = vw.device_weight(dvw.p);
-    ops::gdn_input_proj(tx, qkweight, vweight, tqkv, ws, nullptr);
-    cudaDeviceSynchronize();
-    const std::vector<double> full = from_device_bf16(got, static_cast<std::size_t>(kRows) * t);
-    int f                          = 0;
+    Tensor qk_view        = tqkv.slice(0, 0, kQkRows);
+    Tensor value_view     = tqkv.slice(0, kQkRows, kVRows);
+    int f                 = 0;
+    if (qk_view.nb[1] != tqkv.nb[1] || value_view.nb[1] != tqkv.nb[1] ||
+        qk_view.nb[1] != static_cast<std::size_t>(kRows) * sizeof(std::uint16_t) ||
+        value_view.data != static_cast<std::uint8_t*>(tqkv.data) +
+                               static_cast<std::size_t>(kQkRows) * sizeof(std::uint16_t)) {
+        std::cerr << "GDN output row views have the wrong shared pitch/offset T=" << t << '\n';
+        ++f;
+    }
+    const auto launch = [&](cudaStream_t stream) {
+        ops::gdn_input_proj(tx, qkweight, vweight, tqkv, ws, stream);
+    };
+    if (use_graph) {
+        capture_and_replay(launch);
+    } else {
+        launch(nullptr);
+        cudaDeviceSynchronize();
+    }
+    const std::vector<double> full = from_device_bf16_ptr(got.data(), output_count);
     f += verify_sampled_projection("linear grouped GDN qk FP64 oracle", full, kRows, 0, x, kHidden,
-                                   t, qkw, Tolerance::linear_tc());
+                                   t, qkw,
+                                   t <= 16 ? Tolerance::linear_bf16() : Tolerance::linear_tc());
     f += verify_sampled_projection("linear grouped GDN v FP64 oracle", full, kRows, kQkRows, x,
-                                   kHidden, t, vw, Tolerance::linear_tc());
+                                   kHidden, t, vw,
+                                   t <= 16 ? Tolerance::linear_bf16() : Tolerance::linear_tc());
+    if (t <= 16) {
+        DBuf qk_contiguous(static_cast<std::size_t>(kQkRows) * t * sizeof(std::uint16_t));
+        DBuf v_contiguous(static_cast<std::size_t>(kVRows) * t * sizeof(std::uint16_t));
+        DBuf materialized(output_count * sizeof(std::uint16_t));
+        Tensor tqk(qk_contiguous.p, DType::BF16, {kQkRows, t});
+        Tensor tv(v_contiguous.p, DType::BF16, {kVRows, t});
+        ops::linear(tx, qkweight, tqk, ws, nullptr);
+        ops::linear(tx, vweight, tv, ws, nullptr);
+        cudaMemcpy2DAsync(materialized.p, static_cast<std::size_t>(kRows) * sizeof(std::uint16_t),
+                          qk_contiguous.p,
+                          static_cast<std::size_t>(kQkRows) * sizeof(std::uint16_t),
+                          static_cast<std::size_t>(kQkRows) * sizeof(std::uint16_t), t,
+                          cudaMemcpyDeviceToDevice, nullptr);
+        cudaMemcpy2DAsync(static_cast<std::uint8_t*>(materialized.p) +
+                              static_cast<std::size_t>(kQkRows) * sizeof(std::uint16_t),
+                          static_cast<std::size_t>(kRows) * sizeof(std::uint16_t), v_contiguous.p,
+                          static_cast<std::size_t>(kVRows) * sizeof(std::uint16_t),
+                          static_cast<std::size_t>(kVRows) * sizeof(std::uint16_t), t,
+                          cudaMemcpyDeviceToDevice, nullptr);
+        cudaDeviceSynchronize();
+        if (from_device_bf16_bits(got.data(), output_count) !=
+            from_device_bf16_bits(materialized.p, output_count)) {
+            std::cerr << "GDN direct output differs from materialize/copy control T=" << t << '\n';
+            ++f;
+        }
+    }
+    f += got.verify_guards("GDN qkv T=" + std::to_string(t));
     return f;
 }
 
@@ -467,7 +527,7 @@ double silu_fp64(double value) {
 int gate_up_silu_route_correctness() {
     constexpr int kHidden = 5120;
     constexpr int kInter  = 17408;
-    auto packed           = patterned_weight(QType::Q4G64_F16S, 2 * kInter, kHidden, 31u);
+    auto packed = row_split::make_patterned_weight(QType::Q4G64_F16S, 2 * kInter, kHidden, 31u);
     DBuf dw(packed.payload.size());
     cudaMemcpy(dw.p, packed.payload.data(), packed.payload.size(), cudaMemcpyHostToDevice);
     WorkspaceArena ws(256ULL << 20);
@@ -513,7 +573,7 @@ int gate_up_silu_route_correctness() {
 int q5_residual_epilogue_correctness(std::int32_t k, std::uint32_t seed) {
     constexpr std::int32_t kN    = 5120;
     constexpr std::int32_t kMaxT = 129;
-    auto packed                  = patterned_weight(QType::Q5G64_F16S, kN, k, seed);
+    auto packed                  = row_split::make_patterned_weight(QType::Q5G64_F16S, kN, k, seed);
     DBuf dw(packed.payload.size());
     cudaMemcpy(dw.p, packed.payload.data(), packed.payload.size(), cudaMemcpyHostToDevice);
     std::vector<float> x(static_cast<std::size_t>(k) * kMaxT);
@@ -576,7 +636,8 @@ int w8_residual_epilogue_correctness() {
     fill_uniform(residual, 3505u, -2.0f, 2.0f);
     round_to_bf16(x);
     round_to_bf16(residual);
-    row_split::PackedWeight packed = patterned_weight(QType::W8G32_F16S, kN, kK, 3501u);
+    row_split::PackedWeight packed =
+        row_split::make_patterned_weight(QType::W8G32_F16S, kN, kK, 3501u);
 
     DBuf dx = to_device_bf16(x);
     DBuf dweight(packed.payload.size());
@@ -642,9 +703,14 @@ int w8_residual_epilogue_correctness() {
 
 int prefill_fusion_correctness() {
     int f = 0;
-    for (const std::int32_t t : {4, 17, 128, 129}) {
-        f += grouped_attention_correctness(t);
-        f += grouped_gdn_correctness(t);
+    for (std::int32_t t = 1; t <= 16; ++t) {
+        f += grouped_attention_correctness(t, t == 1 || t == 6);
+    }
+    for (const std::int32_t t : {17, 127, 128, 129}) {
+        f += grouped_attention_correctness(t, false);
+    }
+    for (const std::int32_t t : {1, 2, 4, 5, 6, 7, 16, 17, 128, 129}) {
+        f += grouped_gdn_correctness(t, t == 6);
     }
     f += gate_up_silu_route_correctness();
     f += q5_residual_epilogue_correctness(6144, 37u);

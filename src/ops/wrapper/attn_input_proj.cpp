@@ -39,9 +39,9 @@ void require_rowsplit(const Weight& weight, QType qtype, std::int32_t rows, cons
 
 } // namespace
 
-void attn_input_proj(const Tensor& x, const Weight& q_weight, const Weight& gate_weight,
-                     const Weight& k_weight, const Weight& v_weight, Tensor& q, Tensor& gate,
-                     Tensor& k, Tensor& v, WorkspaceArena& ws, cudaStream_t stream) {
+void attn_input_proj(const Tensor& x, const Weight& query_key_weight,
+                     const Weight& gate_value_weight, Tensor& q, Tensor& gate, Tensor& k, Tensor& v,
+                     WorkspaceArena& ws, cudaStream_t stream) {
     constexpr std::int32_t kHidden = 5120;
     constexpr std::int32_t kQRows  = 6144;
     constexpr std::int32_t kKvRows = 1024;
@@ -51,13 +51,11 @@ void attn_input_proj(const Tensor& x, const Weight& q_weight, const Weight& gate
     require_matrix(gate, kQRows, cols, "gate");
     require_matrix(k, kKvRows, cols, "k");
     require_matrix(v, kKvRows, cols, "v");
-    require_rowsplit(q_weight, QType::Q4G64_F16S, kQRows, "q weight");
-    require_rowsplit(gate_weight, QType::Q5G64_F16S, kQRows, "gate weight");
-    require_rowsplit(k_weight, QType::Q4G64_F16S, kKvRows, "k weight");
-    require_rowsplit(v_weight, QType::Q5G64_F16S, kKvRows, "v weight");
+    require_rowsplit(query_key_weight, QType::Q4G64_F16S, kQRows + kKvRows, "query/key weight");
+    require_rowsplit(gate_value_weight, QType::Q5G64_F16S, kQRows + kKvRows, "gate/value weight");
 
     (void)ws;
-    detail::q4_q5_attn_input_dispatch(x, q_weight, gate_weight, k_weight, v_weight, q, gate, k, v,
+    detail::q4_q5_attn_input_dispatch(x, query_key_weight, gate_value_weight, q, gate, k, v,
                                       stream);
 }
 

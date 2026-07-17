@@ -18,6 +18,7 @@ void launch_schedule(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t
     const std::int32_t rows     = out.ne[0];
     const std::int32_t k        = x.ne[0];
     const std::int32_t cols     = x.ne[1];
+    const std::int32_t out_ld   = static_cast<std::int32_t>(out.nb[1] / sizeof(__nv_bfloat16));
     const std::int32_t padded_k = w.padded_shape[1];
 
     const dim3 grid(static_cast<unsigned>(div_up(rows, Schedule::kRowsPerCta)),
@@ -25,8 +26,8 @@ void launch_schedule(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t
 
     q4_rowsplit_gemm_simt_kernel<Schedule, Variant><<<grid, Schedule::kThreads, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
-        static_cast<const std::uint8_t*>(w.scales), static_cast<__nv_bfloat16*>(out.data), rows, k,
-        cols, padded_k);
+        static_cast<const std::uint8_t*>(w.scales), static_cast<__nv_bfloat16*>(out.data), nullptr,
+        out_ld, 0, rows, k, cols, padded_k);
 }
 
 template <class Schedule>

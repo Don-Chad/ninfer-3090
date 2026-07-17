@@ -46,7 +46,7 @@ ninfer_bench --weights <artifact.ninfer>
           [--max-ctx <tokens>] [--prefill-chunk <tokens>]
           [--kv-dtype <bf16|int8>]
           [--mtp-draft-tokens <0..5>] [--lm-head-draft]
-          [--device <id>] [--no-cuda-graph]
+          [--device <id>] [--no-cuda-graph] [--profile-measured]
           [-o, --output <table|json|csv>] [--output-file <path>]
 ```
 
@@ -63,6 +63,29 @@ Example:
 `bf16` selects BF16 KV storage and `int8` selects INT8 group-64 KV storage. MTP is enabled with
 `--mtp-draft-tokens`; `--lm-head-draft` selects the optimized proposal head. CUDA Graph decode is
 enabled by default.
+
+`--profile-measured` is a benchmark-only profiler boundary. It requires exactly one selected test
+and `-r 1`, synchronizes after warmup, and brackets only the measured repetition with
+`cudaProfilerStart/Stop`. Use it with an Nsight Systems `cudaProfilerApi` capture range so artifact
+load, graph construction, and warmup do not enter topology counts.
+
+## Input-projection Op benchmark
+
+`ninfer_input_proj_bench` measures the exact Qwen3.6-27B Attention and GDN input-projection shapes.
+Attention production uses the two parent projections and its benchmark-only control uses the
+former four logical projections. GDN production writes directly into the pitched final output;
+its controls isolate projection time and the former materialize-plus-two-copy composition. All
+timed operands are allocated before measurement, and each sample is preceded by a 256 MiB L2 flush.
+
+```bash
+cmake --build build -j --target ninfer_input_proj_bench
+./build/bench/ninfer_input_proj_bench \
+  --op all --t-sweep 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,128,129 \
+  --warmup 5 --repeat 50 --csv-out profiles/bench/input_proj.csv
+```
+
+The four-projection and materialize/copy controls exist only in this benchmark and are not
+production-callable routes.
 
 ## Target MTP round benchmark
 

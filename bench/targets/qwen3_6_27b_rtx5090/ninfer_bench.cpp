@@ -2,6 +2,7 @@
 
 #include "ninfer/engine.h"
 
+#include <cuda_profiler_api.h>
 #include <cuda_runtime.h>
 
 #include <exception>
@@ -42,6 +43,12 @@ void fill_cuda_environment(ninfer::bench::BenchEnvironment& env, int device) {
     cudaDeviceProp properties{};
     if (cudaGetDeviceProperties(&properties, device) == cudaSuccess) {
         env.gpu_name = properties.name;
+    }
+}
+
+void require_cuda(cudaError_t status, const char* operation) {
+    if (status != cudaSuccess) {
+        throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorString(status));
     }
 }
 
@@ -131,6 +138,10 @@ int main(int argc, char** argv) {
         const std::vector<ninfer::TokenId> corpus =
             ninfer::bench::load_corpus_ids(options.corpus_path);
         const std::vector<ninfer::bench::BenchTest> tests = ninfer::bench::expand_tests(options);
+        if (options.profile_measured && (tests.size() != 1 || options.repetitions != 1)) {
+            throw std::invalid_argument(
+                "--profile-measured requires exactly one benchmark test and -r 1");
+        }
         ninfer::bench::validate_prompt_lengths(tests, corpus.size());
         const std::uint32_t max_context = ninfer::bench::resolve_max_context(
             tests, options.max_context, options.mtp_draft_tokens, options.use_cuda_graph);
@@ -188,8 +199,16 @@ int main(int argc, char** argv) {
                 (void)run_repetition(engine, test, corpus);
             }
             result.reps.reserve(static_cast<std::size_t>(options.repetitions));
+            if (options.profile_measured) {
+                require_cuda(cudaDeviceSynchronize(), "profile pre-boundary synchronize");
+                require_cuda(cudaProfilerStart(), "cudaProfilerStart");
+            }
             for (int repetition = 0; repetition < options.repetitions; ++repetition) {
                 result.reps.push_back(run_repetition(engine, test, corpus));
+            }
+            if (options.profile_measured) {
+                require_cuda(cudaDeviceSynchronize(), "profile post-boundary synchronize");
+                require_cuda(cudaProfilerStop(), "cudaProfilerStop");
             }
             result.workspace_peak_bytes = engine.memory_summary().workspace.peak_used_bytes;
             results.push_back(std::move(result));

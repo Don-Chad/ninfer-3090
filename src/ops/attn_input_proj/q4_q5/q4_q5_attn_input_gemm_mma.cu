@@ -10,16 +10,24 @@
 namespace ninfer::ops::detail {
 namespace {
 
-RowSplitGroupedMmaJob make_job(const Weight& weight, Tensor& out) {
+RowSplitGroupedMmaJob make_job(const Weight& weight, std::int32_t row_begin, std::int32_t row_count,
+                               Tensor& out) {
+    if (row_begin < 0 || row_count <= 0 || row_begin + row_count > weight.n ||
+        out.ne[0] != row_count) {
+        throw std::invalid_argument("Q4/Q5 attention input grouped MMA row view is invalid");
+    }
+    const std::int64_t groups = weight.padded_shape[1] / 64;
+    const auto* codes         = static_cast<const std::uint8_t*>(weight.qdata) +
+                        static_cast<std::int64_t>(row_begin) * groups * 32;
+    const auto* high   = weight.qtype == QType::Q5G64_F16S
+                             ? static_cast<const std::uint8_t*>(weight.qhigh) +
+                                 static_cast<std::int64_t>(row_begin) * groups * 8
+                             : nullptr;
+    const auto* scales = static_cast<const std::uint8_t*>(weight.scales) +
+                         static_cast<std::int64_t>(row_begin) * groups * 2;
     return RowSplitGroupedMmaJob{
-        static_cast<const std::uint8_t*>(weight.qdata),
-        static_cast<const std::uint8_t*>(weight.qhigh),
-        static_cast<const std::uint8_t*>(weight.scales),
-        static_cast<__nv_bfloat16*>(out.data),
-        weight.n,
-        out.ne[0],
-        0,
-        weight.qtype == QType::Q5G64_F16S,
+        codes,     high,      scales, static_cast<__nv_bfloat16*>(out.data),
+        row_count, out.ne[0], 0,      weight.qtype == QType::Q5G64_F16S,
     };
 }
 
@@ -49,14 +57,16 @@ void launch_pair(Q4KernelVariant variant, const Tensor& x, RowSplitGroupedMmaJob
 } // namespace
 
 void q4_q5_attn_input_grouped_mma_launch(Q4KernelVariant variant, const Tensor& x,
-                                         const Weight& q_weight, const Weight& gate_weight,
-                                         const Weight& k_weight, const Weight& v_weight, Tensor& q,
-                                         Tensor& gate, Tensor& k, Tensor& v, cudaStream_t stream) {
+                                         const Weight& query_key_weight,
+                                         const Weight& gate_value_weight, Tensor& q, Tensor& gate,
+                                         Tensor& k, Tensor& v, cudaStream_t stream) {
     using Schedule = GemmCfg<64, 128, 64, 64, 32, 2, 1, false, true, true>;
-    launch_pair<Schedule, RowSplitGroupedMmaCodec::Q4>(variant, x, make_job(q_weight, q),
-                                                       make_job(k_weight, k), stream);
-    launch_pair<Schedule, RowSplitGroupedMmaCodec::Q5>(variant, x, make_job(gate_weight, gate),
-                                                       make_job(v_weight, v), stream);
+    launch_pair<Schedule, RowSplitGroupedMmaCodec::Q4>(
+        variant, x, make_job(query_key_weight, 0, 6144, q),
+        make_job(query_key_weight, 6144, 1024, k), stream);
+    launch_pair<Schedule, RowSplitGroupedMmaCodec::Q5>(
+        variant, x, make_job(gate_value_weight, 0, 6144, gate),
+        make_job(gate_value_weight, 6144, 1024, v), stream);
 }
 
 } // namespace ninfer::ops::detail

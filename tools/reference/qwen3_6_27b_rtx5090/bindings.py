@@ -147,9 +147,10 @@ class GdnBinding:
     query_key: PhysicalBlock
     query: LogicalRowView
     key: LogicalRowView
-    value: PhysicalBlock
+    value_z: PhysicalBlock
+    value: LogicalRowView
     norm: PhysicalBlock
-    z: PhysicalBlock
+    z: LogicalRowView
     output: PhysicalBlock
 
 
@@ -293,9 +294,8 @@ def _text_contract() -> tuple[_ExpectedTensor, ...]:
                     _tensor(prefix + "gdn/a_projection", (48, 5120), BF16),
                     _tensor(prefix + "gdn/b_projection", (48, 5120), BF16),
                     _tensor(prefix + "gdn/query_key", (4096, 5120), Q4),
-                    _tensor(prefix + "gdn/value", (6144, 5120), Q5),
+                    _tensor(prefix + "gdn/value_z", (12288, 5120), Q5),
                     _tensor(prefix + "gdn/norm", (128,), BF16),
-                    _tensor(prefix + "gdn/z", (6144, 5120), Q5),
                     _tensor(prefix + "gdn/output", (5120, 6144), Q5),
                 )
             )
@@ -415,11 +415,11 @@ def _validate_inventory(artifact: Artifact) -> None:
         raise BindingError(
             f"artifact model_id is {artifact.model_id!r}; expected {MODEL_ID!r}"
         )
-    if len(_OBJECT_CONTRACT) != 1172:
-        raise RuntimeError("Qwen3.6-27B reference contract must contain 1172 objects")
+    if len(_OBJECT_CONTRACT) != 1124:
+        raise RuntimeError("Qwen3.6-27B reference contract must contain 1124 objects")
     if len(artifact.objects) != len(_OBJECT_CONTRACT):
         raise BindingError(
-            f"artifact has {len(artifact.objects)} objects; expected 1172"
+            f"artifact has {len(artifact.objects)} objects; expected 1124"
         )
     expected_by_name = {obj.name: obj for obj in _OBJECT_CONTRACT}
     actual_names = {obj.name for obj in artifact.objects}
@@ -536,6 +536,7 @@ class ArtifactBinding:
                 gdn = None
             else:
                 query_key = blocks[prefix + "gdn/query_key"]
+                value_z = blocks[prefix + "gdn/value_z"]
                 convolution_storage = blocks[prefix + "gdn/convolution"]
                 convolution = AxisView(
                     convolution_storage, (1, 0), (10240, 4)
@@ -553,9 +554,10 @@ class ArtifactBinding:
                     key=_row_view(
                         query_key, 2048, 4096, (2048, 5120), row_views
                     ),
-                    value=blocks[prefix + "gdn/value"],
+                    value_z=value_z,
+                    value=_row_view(value_z, 0, 6144, (6144, 5120), row_views),
                     norm=blocks[prefix + "gdn/norm"],
-                    z=blocks[prefix + "gdn/z"],
+                    z=_row_view(value_z, 6144, 12288, (6144, 5120), row_views),
                     output=blocks[prefix + "gdn/output"],
                 )
                 attention = None
@@ -674,7 +676,7 @@ class ArtifactBinding:
         )
         self.row_views = tuple(row_views)
         self.axis_views = tuple(axis_views)
-        if len(self.tensors) != 1166 or len(self.row_views) != 294:
+        if len(self.tensors) != 1118 or len(self.row_views) != 390:
             raise RuntimeError("incomplete Qwen3.6-27B typed binding")
         if len(self.axis_views) != 48:
             raise RuntimeError("incomplete Qwen3.6-27B GDN axis binding")

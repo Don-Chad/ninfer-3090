@@ -253,7 +253,7 @@ int exercise_vision(ninfer::Engine& engine) {
 
 int verify_loaded_product(const ninfer::Engine& engine) {
     const ninfer::LoadSummary load = engine.load_summary();
-    if (load.target != "qwen3_6_27b_rtx5090" || load.tensor_count != 1166 ||
+    if (load.target != "qwen3_6_27b_rtx5090" || load.tensor_count != 1118 ||
         load.resource_count != 6 || load.host_to_device_bytes == 0 ||
         load.artifact_bytes_read < load.host_to_device_bytes) {
         std::cerr << "Engine construction has an incomplete load summary\n";

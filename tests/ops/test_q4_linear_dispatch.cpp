@@ -224,6 +224,16 @@ constexpr std::array<RoutePoint, 5> k6144Routes{{
     {16, S::SimtR8C8, V::Full},
 }};
 
+constexpr std::array<RoutePoint, 7> k7168Routes{{
+    {1, S::GemvR1W8Direct, V::None},
+    {2, S::SimtR8C4, V::Predicated},
+    {7, S::SimtR8C4, V::Predicated},
+    {8, S::SimtR8C8, V::Full},
+    {9, S::SimtR8C4, V::Predicated},
+    {15, S::SimtR8C4, V::Predicated},
+    {16, S::SimtR8C8, V::Full},
+}};
+
 constexpr std::array<RoutePoint, 4> k34816Routes{{
     {2, S::SimtR8C4, V::Predicated},
     {4, S::SimtR8C4, V::Full},
@@ -454,10 +464,11 @@ int main() {
         return 0;
     }
 
-    constexpr std::array<SupportCase, 8> supports{{
+    constexpr std::array<SupportCase, 9> supports{{
         {"Q4 [1024,5120]", 1024, 5120, k1024Routes.data(), k1024Routes.size(), 11u},
         {"Q4 [4096,5120]", 4096, 5120, k4096Routes.data(), k4096Routes.size(), 13u},
         {"Q4 [6144,5120]", 6144, 5120, k6144Routes.data(), k6144Routes.size(), 17u},
+        {"Q4 [7168,5120]", 7168, 5120, k7168Routes.data(), k7168Routes.size(), 37u},
         {"Q4 [34816,5120]", 34816, 5120, k34816Routes.data(), k34816Routes.size(), 19u},
         {"Q4 [131072,5120]", 131072, 5120, k131072Routes.data(), k131072Routes.size(), 23u},
         {"Q4 [131072,2048]", 131072, 2048, k131072Routes.data(), k131072Routes.size(), 27u},
@@ -467,7 +478,6 @@ int main() {
 
     try {
         for (const SupportCase& support : supports) { run_support(support); }
-        standalone_public_rejection("Q4 rejected [7168,5120] C=1", 7168, 5120, 1, 37u);
         verify_declared_coverage();
     } catch (const std::exception& error) {
         std::cerr << "FAIL Q4 dispatch test infrastructure: " << error.what() << '\n';

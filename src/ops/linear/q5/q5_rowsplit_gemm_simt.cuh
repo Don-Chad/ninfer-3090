@@ -149,7 +149,8 @@ q5_simt_consume_slab(const __nv_bfloat16* __restrict__ x0, std::int64_t xslab, s
     }
 }
 
-template <class SC, int kTt, int kFullSlabs, int kStride>
+template <class SC, int kTt, int kFullSlabs, int kStride, bool SplitOutput = false,
+          int SplitRow = 0>
 __launch_bounds__(64, 16) __global__
     void q5_rowsplit_gemm_simt_split2_kernel(const __nv_bfloat16* __restrict__ x,
                                              const std::uint8_t* __restrict__ codes,
@@ -251,19 +252,23 @@ __launch_bounds__(64, 16) __global__
     }
 }
 
-template <class SC, int kTt, int kFullSlabs, int kStride>
+template <class SC, int kTt, int kFullSlabs, int kStride, bool SplitOutput = false,
+          int SplitRow = 0>
 __launch_bounds__(128, 10) __global__
     void q5_rowsplit_gemm_simt_split4_kernel(const __nv_bfloat16* __restrict__ x,
                                              const std::uint8_t* __restrict__ codes,
                                              const std::uint8_t* __restrict__ high,
                                              const std::uint8_t* __restrict__ scales,
-                                             __nv_bfloat16* __restrict__ out, std::int32_t n,
-                                             std::int32_t k, std::int32_t t, std::int32_t padded_k,
-                                             std::int32_t full_slabs) {
+                                             __nv_bfloat16* __restrict__ out,
+                                             __nv_bfloat16* __restrict__ out_tail, std::int32_t n,
+                                             std::int32_t out_ld, std::int32_t k, std::int32_t t,
+                                             std::int32_t padded_k, std::int32_t full_slabs) {
     static_assert(std::is_same_v<SC, Q5RowSplitSimtSchedule>,
                   "direct split4 small-T kernel is Q5-only");
     static_assert(kTt > 0, "direct split4 requires a positive column tile");
     static_assert(kFullSlabs > 0 && kStride > 0, "direct split4 requires exact positive shape");
+    static_assert(!SplitOutput || SplitRow > 0,
+                  "split-output Q5 split4 requires a positive compile-time seam");
     (void)full_slabs;
     (void)k;
     (void)t;
@@ -346,23 +351,36 @@ __launch_bounds__(128, 10) __global__
         float sum = 0.0f;
 #pragma unroll
         for (int p = 0; p < 4; ++p) { sum += s_part[p][lane]; }
-        out[static_cast<std::int64_t>(lane) * n + row] = __float2bfloat16(sum);
+        if constexpr (SplitOutput) {
+            if (row < SplitRow) {
+                out[static_cast<std::int64_t>(lane) * out_ld + row] = __float2bfloat16(sum);
+            } else {
+                out_tail[static_cast<std::int64_t>(lane) * (n - SplitRow) + row - SplitRow] =
+                    __float2bfloat16(sum);
+            }
+        } else {
+            out[static_cast<std::int64_t>(lane) * out_ld + row] = __float2bfloat16(sum);
+        }
     }
 }
 
 // full_slabs is computed on the host: k/1024 when k % 8 == 0 and x is 16-byte
 // aligned, else 0 (everything runs through the scalar tail).
-template <class SC, int kTt, int kRowsPerBlock, int kStages>
+template <class SC, int kTt, int kRowsPerBlock, int kStages, bool SplitOutput = false,
+          int SplitRow = 0>
 __global__ void q5_rowsplit_gemm_simt_kernel(const __nv_bfloat16* __restrict__ x,
                                              const std::uint8_t* __restrict__ codes,
                                              const std::uint8_t* __restrict__ high,
                                              const std::uint8_t* __restrict__ scales,
-                                             __nv_bfloat16* __restrict__ out, std::int32_t n,
-                                             std::int32_t k, std::int32_t t, std::int32_t padded_k,
-                                             std::int32_t full_slabs) {
+                                             __nv_bfloat16* __restrict__ out,
+                                             __nv_bfloat16* __restrict__ out_tail, std::int32_t n,
+                                             std::int32_t out_ld, std::int32_t k, std::int32_t t,
+                                             std::int32_t padded_k, std::int32_t full_slabs) {
     using Codec                = typename SC::Codec;
     constexpr int kPrefetch    = kStages - 1;
     constexpr int kHighU4Alloc = SC::kHighU4 > 0 ? SC::kHighU4 : 1;
+    static_assert(!SplitOutput || SplitRow > 0,
+                  "split-output Q5 SIMT requires a positive compile-time seam");
 
     __shared__ __align__(16) uint4 s_nib[kRowsPerBlock][kStages][SC::kNibU4];
     __shared__ __align__(16) uint4 s_hi[kRowsPerBlock][kStages][kHighU4Alloc];
@@ -444,7 +462,16 @@ __global__ void q5_rowsplit_gemm_simt_kernel(const __nv_bfloat16* __restrict__ x
         float a = acc[tt];
         a       = warp_reduce_sum(a);
         if (lane == 0) {
-            out[static_cast<std::int64_t>(col0 + tt) * n + row] = __float2bfloat16(a);
+            if constexpr (SplitOutput) {
+                if (row < SplitRow) {
+                    out[static_cast<std::int64_t>(col0 + tt) * out_ld + row] = __float2bfloat16(a);
+                } else {
+                    out_tail[static_cast<std::int64_t>(col0 + tt) * (n - SplitRow) + row -
+                             SplitRow] = __float2bfloat16(a);
+                }
+            } else {
+                out[static_cast<std::int64_t>(col0 + tt) * out_ld + row] = __float2bfloat16(a);
+            }
         }
     }
 }

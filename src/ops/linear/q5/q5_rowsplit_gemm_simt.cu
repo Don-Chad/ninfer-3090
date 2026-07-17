@@ -20,6 +20,7 @@ void launch_simt(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t str
     const std::int32_t rows     = out.ne[0];
     const std::int32_t k        = x.ne[0];
     const std::int32_t cols     = x.ne[1];
+    const std::int32_t out_ld   = static_cast<std::int32_t>(out.nb[1] / sizeof(__nv_bfloat16));
     const std::int32_t padded_k = w.padded_shape[1];
     const auto* xp              = static_cast<const __nv_bfloat16*>(x.data);
     const bool aligned_x = (k % 8) == 0 && (reinterpret_cast<std::uintptr_t>(xp) & 0xfu) == 0;
@@ -28,10 +29,11 @@ void launch_simt(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t str
     const dim3 grid(static_cast<unsigned>(div_up(rows, kRowsPerBlock)),
                     static_cast<unsigned>(div_up(cols, ColsPerTile)), 1u);
     q5_rowsplit_gemm_simt_kernel<Q5RowSplitSimtSchedule, ColsPerTile, kRowsPerBlock, kStages>
-        <<<grid, kThreads, 0, stream>>>(
-            xp, static_cast<const std::uint8_t*>(w.qdata),
-            static_cast<const std::uint8_t*>(w.qhigh), static_cast<const std::uint8_t*>(w.scales),
-            static_cast<__nv_bfloat16*>(out.data), rows, k, cols, padded_k, full_slabs);
+        <<<grid, kThreads, 0, stream>>>(xp, static_cast<const std::uint8_t*>(w.qdata),
+                                        static_cast<const std::uint8_t*>(w.qhigh),
+                                        static_cast<const std::uint8_t*>(w.scales),
+                                        static_cast<__nv_bfloat16*>(out.data), nullptr, rows,
+                                        out_ld, k, cols, padded_k, full_slabs);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -62,12 +64,13 @@ template <int Cols>
 void launch_split4(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
     constexpr int kThreads = 4 * 32;
     const dim3 grid(static_cast<unsigned>(out.ne[0]), 1u, 1u);
+    const std::int32_t out_ld = static_cast<std::int32_t>(out.nb[1] / sizeof(__nv_bfloat16));
     q5_rowsplit_gemm_simt_split4_kernel<Q5RowSplitSimtSchedule, Cols, 5, 5120>
         <<<grid, kThreads, 0, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
             static_cast<const std::uint8_t*>(w.qhigh), static_cast<const std::uint8_t*>(w.scales),
-            static_cast<__nv_bfloat16*>(out.data), out.ne[0], x.ne[0], x.ne[1], w.padded_shape[1],
-            5);
+            static_cast<__nv_bfloat16*>(out.data), nullptr, out.ne[0], out_ld, x.ne[0], x.ne[1],
+            w.padded_shape[1], 5);
 }
 
 template <class Launch>

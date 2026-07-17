@@ -69,7 +69,8 @@ void launch_gemv(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t str
 
     q4_rowsplit_gemv_kernel<Schedule><<<grid, block, dynamic_shared_bytes, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
-        static_cast<const std::uint8_t*>(w.scales), static_cast<__nv_bfloat16*>(out.data), rows, k);
+        static_cast<const std::uint8_t*>(w.scales), static_cast<__nv_bfloat16*>(out.data), nullptr,
+        rows, k);
     CUDA_CHECK(cudaGetLastError());
 }
 

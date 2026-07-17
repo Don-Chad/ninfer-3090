@@ -3,6 +3,7 @@
 #include "ops/linear/q5/q5_rowsplit_kernels.h"
 
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -56,13 +57,26 @@ bool split2_shape(const Q5Problem& problem) {
 }
 
 bool split4_shape(const Q5Problem& problem) {
-    return problem.rows == 6144 && problem.k == 5120 && problem.padded_k == 5120;
+    return (problem.rows == 6144 || problem.rows == 7168) && problem.k == 5120 &&
+           problem.padded_k == 5120;
 }
 
-void require_candidate_operands(const Tensor& x, const Weight& w, const Tensor& out) {
+void require_candidate_operands(const Tensor& x, const Weight& w, const Tensor& out,
+                                bool allow_pitched_output) {
     if (x.dtype != DType::BF16 || out.dtype != DType::BF16 || x.ne[2] != 1 || x.ne[3] != 1 ||
-        out.ne[2] != 1 || out.ne[3] != 1 || !x.is_contiguous() || !out.is_contiguous()) {
-        throw std::invalid_argument("q5 candidate: x/out must be contiguous BF16 matrices");
+        out.ne[2] != 1 || out.ne[3] != 1 || !x.is_contiguous()) {
+        throw std::invalid_argument("q5 candidate: x/out must be BF16 matrices");
+    }
+    if (allow_pitched_output) {
+        constexpr std::int64_t elem = sizeof(std::uint16_t);
+        if (out.nb[0] != elem || out.nb[1] < static_cast<std::int64_t>(out.ne[0]) * elem ||
+            (out.nb[1] % elem) != 0 ||
+            out.nb[1] / elem > std::numeric_limits<std::int32_t>::max()) {
+            throw std::invalid_argument(
+                "q5 fixed pitched launch: invalid output leading dimension");
+        }
+    } else if (!out.is_contiguous()) {
+        throw std::invalid_argument("q5 candidate: output must be contiguous");
     }
     if (w.qtype != QType::Q5G64_F16S || w.layout != QuantLayout::RowSplit ||
         w.scale_dtype != DType::FP16 || w.group != 64 || w.group_size != 64 || w.qdata == nullptr ||
@@ -77,6 +91,34 @@ void require_candidate_operands(const Tensor& x, const Weight& w, const Tensor& 
         !aligned_to(w.qhigh, 16) || !aligned_to(w.scales, 16)) {
         throw std::invalid_argument("q5 candidate: required 16-byte pointer alignment is missing");
     }
+}
+
+void launch_fixed_unchecked(Q5Plan plan, const Tensor& x, const Weight& w, Tensor& out,
+                            cudaStream_t stream) {
+    switch (plan.schedule) {
+    case Q5ScheduleId::GemvR16S2X:
+        q5_rowsplit_gemv_r16_s2_x_launch(x, w, out, stream);
+        return;
+    case Q5ScheduleId::SimtR8C4:
+        q5_rowsplit_simt_r8_c4_launch(x, w, out, stream);
+        return;
+    case Q5ScheduleId::SimtR8C8:
+        q5_rowsplit_simt_r8_c8_launch(x, w, out, stream);
+        return;
+    case Q5ScheduleId::SimtSplit2Exact:
+        q5_rowsplit_simt_split2_exact_launch(x, w, out, stream);
+        return;
+    case Q5ScheduleId::SimtSplit4Exact:
+        q5_rowsplit_simt_split4_exact_launch(x, w, out, stream);
+        return;
+    case Q5ScheduleId::MmaR64C64:
+        q5_rowsplit_mma_r64_c64_launch(plan.variant, x, w, out, stream);
+        return;
+    case Q5ScheduleId::MmaR64C128:
+        q5_rowsplit_mma_r64_c128_launch(plan.variant, x, w, out, stream);
+        return;
+    }
+    throw std::logic_error("q5 fixed launch: unknown schedule");
 }
 
 } // namespace
@@ -124,8 +166,9 @@ bool q5_candidate_is_legal(Q5ScheduleId schedule, Q5KernelVariant variant,
         return false;
     }
     if (schedule == Q5ScheduleId::GemvR16S2X) {
-        return variant == Q5KernelVariant::None && problem.cols == 1 && problem.rows == 6144 &&
-               problem.k == 5120 && problem.padded_k == 5120;
+        return variant == Q5KernelVariant::None && problem.cols == 1 &&
+               (problem.rows == 6144 || problem.rows == 7168) && problem.k == 5120 &&
+               problem.padded_k == 5120;
     }
     if (schedule == Q5ScheduleId::SimtSplit2Exact) {
         return variant == Q5KernelVariant::None && problem.cols >= 2 && problem.cols <= 6 &&
@@ -148,7 +191,7 @@ bool q5_candidate_is_legal(Q5ScheduleId schedule, Q5KernelVariant variant,
 
 void q5_rowsplit_launch_fixed(Q5Plan plan, const Tensor& x, const Weight& w, Tensor& out,
                               cudaStream_t stream) {
-    require_candidate_operands(x, w, out);
+    require_candidate_operands(x, w, out, false);
     const Q5Problem problem{out.ne[0], x.ne[0], w.padded_shape[1], x.ne[1]};
     if (!q5_candidate_is_legal(plan.schedule, plan.variant, problem)) {
         throw std::invalid_argument(std::string("q5 fixed launch: illegal ") +
@@ -156,30 +199,20 @@ void q5_rowsplit_launch_fixed(Q5Plan plan, const Tensor& x, const Weight& w, Ten
                                     q5_kernel_variant_name(plan.variant));
     }
 
-    switch (plan.schedule) {
-    case Q5ScheduleId::GemvR16S2X:
-        q5_rowsplit_gemv_r16_s2_x_launch(x, w, out, stream);
-        return;
-    case Q5ScheduleId::SimtR8C4:
-        q5_rowsplit_simt_r8_c4_launch(x, w, out, stream);
-        return;
-    case Q5ScheduleId::SimtR8C8:
-        q5_rowsplit_simt_r8_c8_launch(x, w, out, stream);
-        return;
-    case Q5ScheduleId::SimtSplit2Exact:
-        q5_rowsplit_simt_split2_exact_launch(x, w, out, stream);
-        return;
-    case Q5ScheduleId::SimtSplit4Exact:
-        q5_rowsplit_simt_split4_exact_launch(x, w, out, stream);
-        return;
-    case Q5ScheduleId::MmaR64C64:
-        q5_rowsplit_mma_r64_c64_launch(plan.variant, x, w, out, stream);
-        return;
-    case Q5ScheduleId::MmaR64C128:
-        q5_rowsplit_mma_r64_c128_launch(plan.variant, x, w, out, stream);
-        return;
+    launch_fixed_unchecked(plan, x, w, out, stream);
+}
+
+void q5_rowsplit_launch_fixed_pitched(Q5Plan plan, const Tensor& x, const Weight& w, Tensor& out,
+                                      cudaStream_t stream) {
+    require_candidate_operands(x, w, out, true);
+    const Q5Problem problem{out.ne[0], x.ne[0], w.padded_shape[1], x.ne[1]};
+    if (!q5_candidate_is_legal(plan.schedule, plan.variant, problem) ||
+        (plan.schedule != Q5ScheduleId::GemvR16S2X &&
+         plan.schedule != Q5ScheduleId::SimtSplit4Exact &&
+         plan.schedule != Q5ScheduleId::SimtR8C8)) {
+        throw std::invalid_argument("q5 fixed pitched launch: schedule is not admitted");
     }
-    throw std::logic_error("q5 fixed launch: unknown schedule");
+    launch_fixed_unchecked(plan, x, w, out, stream);
 }
 
 void q5_rowsplit_launch_candidate(Q5ScheduleId schedule, Q5KernelVariant variant, const Tensor& x,

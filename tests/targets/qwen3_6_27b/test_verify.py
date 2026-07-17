@@ -46,7 +46,7 @@ def test_complete_structure_and_logical_bindings_without_large_payload() -> None
         summary.row_view_bindings,
         summary.alias_templates,
         summary.alias_bindings,
-    ) == (1172, 1166, 6, 14, 294, 4, 51)
+    ) == (1124, 1118, 6, 16, 390, 4, 51)
     assert summary.payload_bytes == artifact.objects[-1].offset + artifact.objects[-1].bytes
 
 

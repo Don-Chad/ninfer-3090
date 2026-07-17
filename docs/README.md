@@ -19,6 +19,11 @@ implementations, dated investigations, and performance evidence belong under [`a
 The executable `--help` output is the exact command-option contract. The public C++ API is
 defined by `include/ninfer/engine.h` and `include/ninfer/types.h`.
 
+## Active implementation plans
+
+There are no active implementation plans. Completed plans are indexed under
+[`archive/`](archive/README.md).
+
 ## Native artifact contracts
 
 | Document | Authority |

@@ -45,6 +45,8 @@ bool q5_candidate_is_legal(Q5ScheduleId schedule, Q5KernelVariant variant,
 
 void q5_rowsplit_launch_fixed(Q5Plan plan, const Tensor& x, const Weight& w, Tensor& out,
                               cudaStream_t stream);
+void q5_rowsplit_launch_fixed_pitched(Q5Plan plan, const Tensor& x, const Weight& w, Tensor& out,
+                                      cudaStream_t stream);
 void q5_rowsplit_launch_candidate(Q5ScheduleId schedule, Q5KernelVariant variant, const Tensor& x,
                                   const Weight& w, Tensor& out, cudaStream_t stream);
 

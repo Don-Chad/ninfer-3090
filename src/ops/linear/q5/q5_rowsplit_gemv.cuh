@@ -84,11 +84,13 @@ __device__ __forceinline__ float q5_gemv_consume_tile(const __nv_bfloat162* __re
 // kRowsPerBlock : rows (= warps) per block.
 // kStages : cp.async pipeline depth (shared buffers; >=2 to overlap).
 // kStageX : stage the activation vector into shared (false when x is too large).
-template <int kN, int kK, int kRowsPerBlock, int kStages, bool kStageX, bool kResidual>
+template <int kN, int kK, int kRowsPerBlock, int kStages, bool kStageX, bool kResidual,
+          bool kSplitOutput = false, int kSplitRow = 0>
 __global__ void
 q5_rowsplit_gemv_kernel(const __nv_bfloat16* __restrict__ x, const std::uint8_t* __restrict__ codes,
                         const std::uint8_t* __restrict__ high_bits,
-                        const std::uint8_t* __restrict__ scales, __nv_bfloat16* __restrict__ out) {
+                        const std::uint8_t* __restrict__ scales, __nv_bfloat16* __restrict__ out,
+                        __nv_bfloat16* __restrict__ out_tail) {
     constexpr int kGroupK              = 64;
     constexpr int kGroups              = kK / kGroupK;
     constexpr int kGroupsPerTile       = 16;
@@ -100,6 +102,9 @@ q5_rowsplit_gemv_kernel(const __nv_bfloat16* __restrict__ x, const std::uint8_t*
     static_assert(kGroups % kGroupsPerTile == 0, "K must be a multiple of 16 groups (1024)");
     static_assert(kN % kRowsPerBlock == 0, "N must be a multiple of kRowsPerBlock");
     static_assert(kStages >= 2, "need at least double buffering");
+    static_assert(!kSplitOutput || (kSplitRow > 0 && kSplitRow < kN),
+                  "split-output Q5 GEMV requires an interior compile-time seam");
+    static_assert(!kResidual || !kSplitOutput, "the Q5 residual GEMV epilogue is contiguous-only");
 
     // __align__(16) so the uint4 staging below is well-defined by construction.
     __shared__ __align__(16) __nv_bfloat16 x_sh[kStageX ? kK : 1];
@@ -166,7 +171,17 @@ q5_rowsplit_gemv_kernel(const __nv_bfloat16* __restrict__ x, const std::uint8_t*
     if constexpr (kResidual) {
         if (lane == 0) { acc = __bfloat162float(out[row]) + acc; }
     }
-    if (lane == 0) { out[row] = __float2bfloat16_rn(acc); }
+    if (lane == 0) {
+        if constexpr (kSplitOutput) {
+            if (row < kSplitRow) {
+                out[row] = __float2bfloat16_rn(acc);
+            } else {
+                out_tail[row - kSplitRow] = __float2bfloat16_rn(acc);
+            }
+        } else {
+            out[row] = __float2bfloat16_rn(acc);
+        }
+    }
 }
 
 // One block per kRowsPerBlock rows; kRowsPerBlock warps per block.
@@ -178,7 +193,7 @@ inline void q5_rowsplit_gemv_launch_kernel(const __nv_bfloat16* x, const std::ui
     constexpr int kBlockThreads = kRowsPerBlock * 32;
     const int grid              = kN / kRowsPerBlock;
     q5_rowsplit_gemv_kernel<kN, kK, kRowsPerBlock, kStages, kStageX, false>
-        <<<grid, kBlockThreads, 0, stream>>>(x, codes, high_bits, scales, out);
+        <<<grid, kBlockThreads, 0, stream>>>(x, codes, high_bits, scales, out, nullptr);
 }
 
 template <int kN, int kK, int kRowsPerBlock, int kStages = 2, bool kStageX = true>
@@ -189,7 +204,7 @@ q5_rowsplit_gemv_residual_launch_kernel(const __nv_bfloat16* x, const std::uint8
     constexpr int kBlockThreads = kRowsPerBlock * 32;
     const int grid              = kN / kRowsPerBlock;
     q5_rowsplit_gemv_kernel<kN, kK, kRowsPerBlock, kStages, kStageX, true>
-        <<<grid, kBlockThreads, 0, stream>>>(x, codes, high_bits, scales, residual_out);
+        <<<grid, kBlockThreads, 0, stream>>>(x, codes, high_bits, scales, residual_out, nullptr);
 }
 
 

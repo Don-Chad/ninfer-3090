@@ -146,16 +146,21 @@ def _build_text_recipes() -> tuple[TensorRecipe, ...]:
                         Slice(qkv_source, 0, 0, 4096),
                     ),
                     TensorRecipe(
-                        object_prefix + "gdn/value",
-                        Slice(qkv_source, 0, 4096, 10240),
+                        object_prefix + "gdn/value_z",
+                        Concat(
+                            (
+                                Slice(qkv_source, 0, 4096, 10240),
+                                _source(
+                                    source_prefix + "linear_attn.in_proj_z.weight",
+                                    (6144, 5120),
+                                ),
+                            ),
+                            0,
+                        ),
                     ),
                     TensorRecipe(
                         object_prefix + "gdn/norm",
                         _source(source_prefix + "linear_attn.norm.weight", (128,)),
-                    ),
-                    TensorRecipe(
-                        object_prefix + "gdn/z",
-                        _source(source_prefix + "linear_attn.in_proj_z.weight", (6144, 5120)),
                     ),
                     TensorRecipe(
                         object_prefix + "gdn/output",

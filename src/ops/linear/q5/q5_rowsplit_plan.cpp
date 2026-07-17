@@ -34,16 +34,17 @@ struct Q5RouteSpec {
     Q5ScheduleId schedule;
 };
 
-constexpr std::array<Q5SupportSpec, 6> kSupportSpecs{{
+constexpr std::array<Q5SupportSpec, 7> kSupportSpecs{{
     {1024, 5120, 5120, {1, 16, 1}, 0, 2},
     {6144, 5120, 5120, {1, kMaxTextCols, 1}, 2, 5},
-    {5120, 6144, 6144, {2, 24, 1}, 7, 2},
-    {5120, 17408, 17408, {2, 24, 1}, 9, 2},
-    {1152, 1152, 1152, {4, 131072, 4}, 11, 11},
-    {1152, 4304, 4352, {4, 131072, 4}, 22, 3},
+    {7168, 5120, 5120, {1, 16, 1}, 7, 3},
+    {5120, 6144, 6144, {2, 24, 1}, 10, 2},
+    {5120, 17408, 17408, {2, 24, 1}, 12, 2},
+    {1152, 1152, 1152, {4, 131072, 4}, 14, 11},
+    {1152, 4304, 4352, {4, 131072, 4}, 25, 3},
 }};
 
-constexpr std::array<Q5RouteSpec, 25> kRouteSpecs{{
+constexpr std::array<Q5RouteSpec, 28> kRouteSpecs{{
     // [1024, 5120]
     {{1, 4, 1}, Q5ScheduleId::SimtR8C4},
     {{5, 16, 1}, Q5ScheduleId::SimtR8C8},
@@ -54,6 +55,11 @@ constexpr std::array<Q5RouteSpec, 25> kRouteSpecs{{
     {{7, 24, 1}, Q5ScheduleId::SimtR8C8},
     {{25, 64, 1}, Q5ScheduleId::MmaR64C64},
     {{65, kMaxTextCols, 1}, Q5ScheduleId::MmaR64C128},
+
+    // [7168, 5120]
+    {{1, 1, 1}, Q5ScheduleId::GemvR16S2X},
+    {{2, 6, 1}, Q5ScheduleId::SimtSplit4Exact},
+    {{7, 16, 1}, Q5ScheduleId::SimtR8C4},
 
     // [5120, 6144]
     {{2, 6, 1}, Q5ScheduleId::SimtSplit2Exact},

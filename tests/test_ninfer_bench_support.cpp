@@ -87,6 +87,7 @@ int test_cli_contract() {
         "--device",
         "1",
         "--no-cuda-graph",
+        "--profile-measured",
         "--output",
         "json",
         "--output-file",
@@ -106,6 +107,7 @@ int test_cli_contract() {
     failures +=
         expect(parsed.proposal_head == ninfer::ProposalHead::Optimized, "optimized proposal head");
     failures += expect(parsed.device == 1 && !parsed.use_cuda_graph, "device and graph settings");
+    failures += expect(parsed.profile_measured, "profile-measured flag");
     failures +=
         expect(parsed.output == qb::OutputFormat::Json && parsed.output_file == "report.json",
                "output settings");
@@ -226,7 +228,7 @@ qb::BenchEnvironment sample_environment() {
                                             .artifact_bytes_read  = 17500000000ULL,
                                             .host_to_device_bytes = 17400000000ULL,
                                             .peak_staging_bytes   = 134217728ULL,
-                                            .tensor_count         = 1166,
+                                            .tensor_count         = 1118,
                                             .resource_count       = 6};
     env.memory.device                    = 0;
     env.memory.max_context               = 4096;

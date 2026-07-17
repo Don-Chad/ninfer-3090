@@ -3,6 +3,7 @@
 #include "ops/linear/q4/q4_rowsplit_kernels.h"
 
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -61,10 +62,22 @@ int schedule_cols(Q4ScheduleId schedule) {
     return 0;
 }
 
-void require_candidate_operands(const Tensor& x, const Weight& w, const Tensor& out) {
+void require_candidate_operands(const Tensor& x, const Weight& w, const Tensor& out,
+                                bool allow_pitched_output) {
     if (x.dtype != DType::BF16 || out.dtype != DType::BF16 || x.ne[2] != 1 || x.ne[3] != 1 ||
-        out.ne[2] != 1 || out.ne[3] != 1 || !x.is_contiguous() || !out.is_contiguous()) {
-        throw std::invalid_argument("q4 candidate: x/out must be contiguous BF16 matrices");
+        out.ne[2] != 1 || out.ne[3] != 1 || !x.is_contiguous()) {
+        throw std::invalid_argument("q4 candidate: x/out must be BF16 matrices");
+    }
+    if (allow_pitched_output) {
+        constexpr std::int64_t elem = sizeof(std::uint16_t);
+        if (out.nb[0] != elem || out.nb[1] < static_cast<std::int64_t>(out.ne[0]) * elem ||
+            (out.nb[1] % elem) != 0 ||
+            out.nb[1] / elem > std::numeric_limits<std::int32_t>::max()) {
+            throw std::invalid_argument(
+                "q4 fixed pitched launch: invalid output leading dimension");
+        }
+    } else if (!out.is_contiguous()) {
+        throw std::invalid_argument("q4 candidate: output must be contiguous");
     }
     if (w.qtype != QType::Q4G64_F16S || w.layout != QuantLayout::RowSplit ||
         w.scale_dtype != DType::FP16 || w.group != 64 || w.group_size != 64 || w.qhigh != nullptr ||
@@ -79,6 +92,31 @@ void require_candidate_operands(const Tensor& x, const Weight& w, const Tensor& 
         !aligned_to(w.scales, 4)) {
         throw std::invalid_argument("q4 candidate: required pointer alignment is missing");
     }
+}
+
+void launch_fixed_unchecked(Q4Plan plan, const Tensor& x, const Weight& w, Tensor& out,
+                            cudaStream_t stream) {
+    switch (plan.schedule) {
+    case Q4ScheduleId::GemvR4W1Direct:
+        q4_rowsplit_gemv_r4_w1_direct_launch(x, w, out, stream);
+        return;
+    case Q4ScheduleId::GemvR1W8Direct:
+        q4_rowsplit_gemv_r1_w8_direct_launch(x, w, out, stream);
+        return;
+    case Q4ScheduleId::SimtR8C4:
+        q4_rowsplit_gemm_simt_r8_c4_launch(plan.variant, x, w, out, stream);
+        return;
+    case Q4ScheduleId::SimtR8C8:
+        q4_rowsplit_gemm_simt_r8_c8_launch(plan.variant, x, w, out, stream);
+        return;
+    case Q4ScheduleId::MmaR64C64:
+        q4_rowsplit_gemm_mma_r64_c64_launch(plan.variant, x, w, out, stream);
+        return;
+    case Q4ScheduleId::MmaR64C128:
+        q4_rowsplit_gemm_mma_r64_c128_launch(plan.variant, x, w, out, stream);
+        return;
+    }
+    throw std::logic_error("q4 fixed launch: unknown schedule");
 }
 
 } // namespace
@@ -144,7 +182,7 @@ bool q4_candidate_is_legal(Q4ScheduleId schedule, Q4KernelVariant variant,
 
 void q4_rowsplit_launch_fixed(Q4Plan plan, const Tensor& x, const Weight& w, Tensor& out,
                               cudaStream_t stream) {
-    require_candidate_operands(x, w, out);
+    require_candidate_operands(x, w, out, false);
     const Q4Problem problem{out.ne[0], x.ne[0], w.padded_shape[1], x.ne[1]};
     if (!q4_candidate_is_legal(plan.schedule, plan.variant, problem)) {
         throw std::invalid_argument(std::string("q4 fixed launch: illegal ") +
@@ -152,27 +190,19 @@ void q4_rowsplit_launch_fixed(Q4Plan plan, const Tensor& x, const Weight& w, Ten
                                     q4_kernel_variant_name(plan.variant));
     }
 
-    switch (plan.schedule) {
-    case Q4ScheduleId::GemvR4W1Direct:
-        q4_rowsplit_gemv_r4_w1_direct_launch(x, w, out, stream);
-        return;
-    case Q4ScheduleId::GemvR1W8Direct:
-        q4_rowsplit_gemv_r1_w8_direct_launch(x, w, out, stream);
-        return;
-    case Q4ScheduleId::SimtR8C4:
-        q4_rowsplit_gemm_simt_r8_c4_launch(plan.variant, x, w, out, stream);
-        return;
-    case Q4ScheduleId::SimtR8C8:
-        q4_rowsplit_gemm_simt_r8_c8_launch(plan.variant, x, w, out, stream);
-        return;
-    case Q4ScheduleId::MmaR64C64:
-        q4_rowsplit_gemm_mma_r64_c64_launch(plan.variant, x, w, out, stream);
-        return;
-    case Q4ScheduleId::MmaR64C128:
-        q4_rowsplit_gemm_mma_r64_c128_launch(plan.variant, x, w, out, stream);
-        return;
+    launch_fixed_unchecked(plan, x, w, out, stream);
+}
+
+void q4_rowsplit_launch_fixed_pitched(Q4Plan plan, const Tensor& x, const Weight& w, Tensor& out,
+                                      cudaStream_t stream) {
+    require_candidate_operands(x, w, out, true);
+    const Q4Problem problem{out.ne[0], x.ne[0], w.padded_shape[1], x.ne[1]};
+    if (!q4_candidate_is_legal(plan.schedule, plan.variant, problem) ||
+        (plan.schedule != Q4ScheduleId::GemvR1W8Direct && plan.schedule != Q4ScheduleId::SimtR8C4 &&
+         plan.schedule != Q4ScheduleId::SimtR8C8)) {
+        throw std::invalid_argument("q4 fixed pitched launch: schedule is not admitted");
     }
-    throw std::logic_error("q4 fixed launch: unknown schedule");
+    launch_fixed_unchecked(plan, x, w, out, stream);
 }
 
 void q4_rowsplit_launch_candidate(Q4ScheduleId schedule, Q4KernelVariant variant, const Tensor& x,
