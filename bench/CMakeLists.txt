@@ -53,6 +53,8 @@ add_executable(ninfer_qwen3_6_27b_mtp_round_bench
 target_include_directories(ninfer_qwen3_6_27b_mtp_round_bench PRIVATE
   ${PROJECT_SOURCE_DIR}/include
   ${PROJECT_SOURCE_DIR}/src
-  ${PROJECT_SOURCE_DIR}/third_party)
+  ${PROJECT_SOURCE_DIR}/third_party
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b_rtx5090/export
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export)
 target_link_libraries(ninfer_qwen3_6_27b_mtp_round_bench PRIVATE
-  ninfer_qwen3_6_27b_rtx5090 ninfer_core)
+  ninfer_engine ninfer_core)

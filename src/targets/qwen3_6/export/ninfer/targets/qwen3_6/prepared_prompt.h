@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ninfer/targets/qwen3_6_27b_rtx5090/package.h>
+#include <ninfer/targets/qwen3_6/frontend.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -8,9 +8,7 @@
 #include <span>
 #include <vector>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
-
-struct FrontendResources;
+namespace ninfer::targets::qwen3_6 {
 
 enum class PromptModality : std::uint8_t {
     Image = 1,
@@ -51,8 +49,6 @@ struct PrepareStats {
     std::size_t patch_bytes       = 0;
 };
 
-// The concrete prepared value is target-private. It is produced by Frontend and consumed directly
-// by Program; common composition sees only PreparedPrompt's owning facade.
 struct PreparedPromptData {
     std::vector<TokenId> token_ids;
     std::vector<std::uint8_t> token_types;
@@ -69,15 +65,10 @@ struct PreparedPromptData {
     [[nodiscard]] bool has_media() const noexcept { return !vision_items.empty(); }
 };
 
-// Construction from raw package resources is private to the target. The registered path validates
-// exact checkpoint resource semantics after LoadedModel reaches its final address. The component
-// path exists for focused frontend tests with a deliberately small tokenizer fixture.
-class FrontendFactory {
+class PreparedPromptAccess {
 public:
-    [[nodiscard]] static Frontend create_registered(const FrontendResources& resources);
-    [[nodiscard]] static Frontend create_component(const FrontendResources& resources);
-    [[nodiscard]] static const PreparedPromptData& inspect(const PreparedPrompt& prompt);
-    [[nodiscard]] static PreparedPromptData& inspect(PreparedPrompt& prompt);
+    [[nodiscard]] static const PreparedPromptData& view(const PreparedPrompt& prompt);
+    [[nodiscard]] static PreparedPromptData take(PreparedPrompt&& prompt);
 };
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail
+} // namespace ninfer::targets::qwen3_6

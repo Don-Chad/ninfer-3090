@@ -1,5 +1,8 @@
 #pragma once
 
+#include <ninfer/targets/qwen3_6/frontend.h>
+#include <ninfer/targets/qwen3_6/vision.h>
+
 #include <cstdint>
 
 namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
@@ -12,7 +15,7 @@ struct TextConfig {
     // The output matrix is padded for the selected kernels. Only token IDs in
     // [0, token_domain) are tokenizer-addressable and valid sampling results.
     static constexpr int output_rows  = 248320;
-    static constexpr int token_domain = 248077;
+    static constexpr int token_domain = static_cast<int>(qwen3_6::kTokenDomain);
 
     static constexpr int gdn_conv_kernel      = 4;
     static constexpr int gdn_conv_state_width = gdn_conv_kernel - 1;
@@ -61,21 +64,8 @@ struct TextConfig {
     }
 };
 
-struct VisionConfig {
-    static constexpr int layers              = 27;
-    static constexpr int hidden              = 1152;
-    static constexpr int intermediate        = 4304;
-    static constexpr int output_hidden       = TextConfig::hidden;
-    static constexpr int heads               = 16;
-    static constexpr int head_dim            = hidden / heads;
-    static constexpr int patch_dim           = 3 * 2 * 16 * 16;
-    static constexpr int merge               = 2;
-    static constexpr int merge_unit          = merge * merge;
-    static constexpr int merger_hidden       = hidden * merge_unit;
-    static constexpr int position_embeddings = 48 * 48;
-    static constexpr int rotary_dim          = head_dim;
-    static constexpr float rope_theta        = 10'000.0F;
-    static constexpr float norm_epsilon      = 1.0e-6F;
+struct VisionConfig : qwen3_6::VisionBackboneConfig {
+    static constexpr int output_hidden = TextConfig::hidden;
 };
 
 inline constexpr float kAttentionScale                = 0.0625F;

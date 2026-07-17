@@ -44,8 +44,7 @@ struct Qwen3_6_27BRtx5090Instance {
     Qwen3_6_27BRtx5090Instance& operator=(const Qwen3_6_27BRtx5090Instance&) = delete;
 };
 
-using ActiveTarget  = std::variant<std::unique_ptr<Qwen3_6_27BRtx5090Instance>>;
-using PreparedValue = std::variant<Qwen3_6_27BRtx5090::PreparedPrompt>;
+using ActiveTarget = std::variant<std::unique_ptr<Qwen3_6_27BRtx5090Instance>>;
 
 struct ConstructedTarget {
     ActiveTarget active;

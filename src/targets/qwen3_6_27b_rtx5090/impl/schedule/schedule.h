@@ -5,7 +5,7 @@
 #include "ninfer/ops/sampling.h"
 #include "core/decode_graph.h"
 #include "runtime/contract/transient_region.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/frontend.h"
+#include <ninfer/targets/qwen3_6/prepared_prompt.h>
 #include "targets/qwen3_6_27b_rtx5090/impl/config.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
 #include "core/kv_cache.h"
@@ -21,6 +21,9 @@
 #include <span>
 
 namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule {
+
+using qwen3_6::PreparedPromptData;
+using qwen3_6::PromptModality;
 
 struct State {
     DeviceContext& device;

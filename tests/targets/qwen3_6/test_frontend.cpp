@@ -1,8 +1,9 @@
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/frontend.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/chat_template.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/tokenizer.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/schedule/schedule.h"
+#include <ninfer/targets/qwen3_6/frontend.h>
+#include <ninfer/targets/qwen3_6/frontend_resources.h>
+
+#include "targets/qwen3_6/impl/frontend/chat_template.h"
+#include "targets/qwen3_6/impl/frontend/test_access.h"
+#include "targets/qwen3_6/impl/frontend/tokenizer.h"
 
 #include <nlohmann/json.hpp>
 
@@ -19,11 +20,11 @@
 
 namespace {
 
-using Frontend          = ninfer::targets::qwen3_6_27b_rtx5090::detail::Frontend;
-using FrontendFactory   = ninfer::targets::qwen3_6_27b_rtx5090::detail::FrontendFactory;
-using FrontendResources = ninfer::targets::qwen3_6_27b_rtx5090::detail::FrontendResources;
-using PublishedOutput   = ninfer::targets::qwen3_6_27b_rtx5090::detail::PublishedOutput;
-namespace fi            = ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal;
+using Frontend          = ninfer::targets::qwen3_6::Frontend;
+using FrontendFactory   = ninfer::targets::qwen3_6::FrontendTestAccess;
+using FrontendResources = ninfer::targets::qwen3_6::FrontendResources;
+using PublishedOutput   = ninfer::targets::qwen3_6::PublishedOutput;
+namespace fi            = ninfer::targets::qwen3_6::frontend_internal;
 
 int check(bool condition, const char* message) {
     if (condition) { return 0; }
@@ -363,10 +364,6 @@ int test_text_and_image_prepare(const Frontend& frontend) {
                               near(prepared_data.patches[1536], 16.0F / 127.5F - 1.0F),
                           "image frontend patch normalization/order is incorrect");
     }
-    failures +=
-        check(ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule::vision_workspace_bytes(
-                  prepared_data) > 0,
-              "image frontend metadata did not produce a Vision workspace plan");
     return failures;
 }
 
@@ -389,13 +386,12 @@ int test_video_prepare(const Frontend& frontend) {
                          "video frontend did not retain one Vision item");
     if (!prepared_data.vision_items.empty()) {
         const auto& item = prepared_data.vision_items.front();
-        failures += check(
-            item.modality == ninfer::targets::qwen3_6_27b_rtx5090::detail::PromptModality::Video &&
-                item.grid.temporal == 1 && item.grid.height == 4 && item.grid.width == 4 &&
-                item.patch_count == 16 && item.timestamps.size() == 1 &&
-                item.timestamps.front() == 0.0 && item.token_spans.size() == 1 &&
-                item.token_spans.front().count == 4,
-            "video frontend temporal/grid/placeholder metadata is incorrect");
+        failures += check(item.modality == ninfer::targets::qwen3_6::PromptModality::Video &&
+                              item.grid.temporal == 1 && item.grid.height == 4 &&
+                              item.grid.width == 4 && item.patch_count == 16 &&
+                              item.timestamps.size() == 1 && item.timestamps.front() == 0.0 &&
+                              item.token_spans.size() == 1 && item.token_spans.front().count == 4,
+                          "video frontend temporal/grid/placeholder metadata is incorrect");
     }
     failures +=
         check(prepared_data.patches.size() == 16 * 1536 &&

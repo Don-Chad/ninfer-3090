@@ -298,8 +298,8 @@ All product entry points use the public Engine:
 - `build/bench/ninfer_bench`, implemented under `bench/targets/qwen3_6_27b_rtx5090/`, uses
   `prepare_tokens` plus `generate` and reports public load, memory, timing, and speculative values.
 
-The target-private `ninfer-qwen3_6_27b-dump` diagnostic links the target package directly for
-bounded activation manifests. It is not a public Engine method.
+The target-private `ninfer-qwen3_6_27b-dump` diagnostic links `ninfer_engine` and reaches an explicit
+internal target seam for bounded activation manifests. It is not a public Engine method.
 
 ## 13. Build graph
 
@@ -316,23 +316,19 @@ ninfer_media_decode
 ninfer_media_acquire
 ninfer_product_prompt_input
   -> ninfer_media_acquire
-ninfer_qwen3_6_family
-  -> ninfer_artifact + ninfer_text + ninfer_media_decode
-ninfer_qwen3_6_27b_rtx5090
-  -> ninfer_qwen3_6_family + ninfer_artifact + ninfer_ops
-ninfer_qwen3_6_35b_a3b_rtx5090                  # when registered
-  -> ninfer_qwen3_6_family + ninfer_artifact + ninfer_ops
 ninfer_engine
-  -> explicit target packages + common runtime
+  sources: common runtime + Qwen3.6 family leaves + registered exact-target sources
+  links:   ninfer_artifact + ninfer_core + ninfer_ops + ninfer_text + ninfer_media_decode
 ninfer_serve
   -> ninfer_engine + ninfer_media_acquire + protocol/transport
 apps / benchmark / diagnostic
 ```
 
-The registry is the composition boundary that sees exact target packages. The family library is an
-ordinary inward dependency and cannot register or select a target. Lower components do not discover
-target directories or import target semantics. Adding a target requires an explicit CMake entry and
-explicit closed-registry entry.
+`ninfer_engine` is the sole compile owner for family and registered exact-target translation units.
+Their directories contribute explicit `target_sources` lists and do not create family or target
+libraries. The registry still sees only complete exact packages; family leaves cannot register or
+select a target. Lower components do not discover target directories or import target semantics.
+Adding a target requires an explicit CMake source contribution and explicit closed-registry entry.
 
 ## 14. Verification boundary
 

@@ -1,4 +1,4 @@
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/chat_template.h"
+#include "targets/qwen3_6/impl/frontend/chat_template.h"
 
 #include <nlohmann/json.hpp>
 
@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <string_view>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal {
+namespace ninfer::targets::qwen3_6::frontend_internal {
 namespace {
 
 using OrderedJson = nlohmann::ordered_json;
@@ -325,4 +325,4 @@ std::string render_chat(const std::vector<ChatMessage>& messages, ChatRenderOpti
     return rendered;
 }
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal
+} // namespace ninfer::targets::qwen3_6::frontend_internal

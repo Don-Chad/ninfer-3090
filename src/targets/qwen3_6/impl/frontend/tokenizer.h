@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal {
+namespace ninfer::targets::qwen3_6::frontend_internal {
 
 struct EncodeOptions {
     bool parse_added_tokens = true;
@@ -60,4 +60,4 @@ private:
     std::vector<int> default_stop_token_ids_;
 };
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal
+} // namespace ninfer::targets::qwen3_6::frontend_internal

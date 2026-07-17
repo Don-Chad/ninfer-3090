@@ -1,9 +1,12 @@
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/frontend.h"
+#include <ninfer/targets/qwen3_6/frontend.h>
 
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/chat_template.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/processor.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/tokenizer.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
+#include <ninfer/targets/qwen3_6/frontend_resources.h>
+#include <ninfer/targets/qwen3_6/prepared_prompt.h>
+
+#include "targets/qwen3_6/impl/frontend/chat_template.h"
+#include "targets/qwen3_6/impl/frontend/processor.h"
+#include "targets/qwen3_6/impl/frontend/test_access.h"
+#include "targets/qwen3_6/impl/frontend/tokenizer.h"
 #include "text/unicode.h"
 
 #include <nlohmann/json.hpp>
@@ -24,7 +27,7 @@
 #include <utility>
 #include <vector>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
+namespace ninfer::targets::qwen3_6 {
 namespace {
 
 using Json   = nlohmann::json;
@@ -33,7 +36,6 @@ namespace fi = frontend_internal;
 
 constexpr std::size_t kPatchFeatures   = 1536;
 constexpr std::string_view kThinkClose = "</think>";
-constexpr std::size_t kTokenizerDomain = 248077;
 constexpr double kRescaleFactor        = 1.0 / 255.0;
 constexpr double kVideoFps             = 2.0;
 constexpr int kVideoMinFrames          = 4;
@@ -206,7 +208,7 @@ void validate_auxiliary_resources(const FrontendResources& resources) {
 }
 
 void validate_registered_tokenizer(const fi::Tokenizer& tokenizer) {
-    if (!tokenizer.has_exact_token_domain(kTokenizerDomain)) {
+    if (!tokenizer.has_exact_token_domain(kTokenDomain)) {
         throw std::invalid_argument(
             "artifact tokenizer does not expose the registered 248077-token domain");
     }
@@ -774,20 +776,30 @@ Frontend::Frontend(Frontend&&) noexcept            = default;
 Frontend& Frontend::operator=(Frontend&&) noexcept = default;
 Frontend::~Frontend()                              = default;
 
-Frontend FrontendFactory::create_registered(const FrontendResources& resources) {
+Frontend make_frontend(const FrontendResources& resources) {
     return Frontend(std::make_shared<const Frontend::Impl>(resources, true));
 }
 
-Frontend FrontendFactory::create_component(const FrontendResources& resources) {
+Frontend FrontendTestAccess::create_component(const FrontendResources& resources) {
     return Frontend(std::make_shared<const Frontend::Impl>(resources, false));
 }
 
-const PreparedPromptData& FrontendFactory::inspect(const PreparedPrompt& prompt) {
+const PreparedPromptData& PreparedPromptAccess::view(const PreparedPrompt& prompt) {
     if (prompt.data_ == nullptr) { throw std::invalid_argument("prepared prompt is empty"); }
     return *prompt.data_;
 }
 
-PreparedPromptData& FrontendFactory::inspect(PreparedPrompt& prompt) {
+PreparedPromptData PreparedPromptAccess::take(PreparedPrompt&& prompt) {
+    if (prompt.data_ == nullptr) { throw std::invalid_argument("prepared prompt is empty"); }
+    auto data = std::move(prompt.data_);
+    return std::move(*data);
+}
+
+const PreparedPromptData& FrontendTestAccess::inspect(const PreparedPrompt& prompt) {
+    return PreparedPromptAccess::view(prompt);
+}
+
+PreparedPromptData& FrontendTestAccess::inspect(PreparedPrompt& prompt) {
     if (prompt.data_ == nullptr) { throw std::invalid_argument("prepared prompt is empty"); }
     return *prompt.data_;
 }
@@ -882,4 +894,4 @@ OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
 
 const StopPolicy& Frontend::default_stop_policy() const noexcept { return impl_->defaults; }
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail
+} // namespace ninfer::targets::qwen3_6

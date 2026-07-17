@@ -1,4 +1,4 @@
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/processor.h"
+#include "targets/qwen3_6/impl/frontend/processor.h"
 
 #include "media/decode/decode.h"
 
@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal {
+namespace ninfer::targets::qwen3_6::frontend_internal {
 namespace {
 
 constexpr int kPatch                    = 16;
@@ -591,4 +591,4 @@ ProcessedInput Processor::process(const std::vector<ChatMessage>& messages,
     return output;
 }
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal
+} // namespace ninfer::targets::qwen3_6::frontend_internal

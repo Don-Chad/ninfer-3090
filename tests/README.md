@@ -10,8 +10,10 @@ benchmark-report, and external protocol behavior. Repository verification princi
 - `artifact/` — Python container, registered layout, quantization, and resource behavior;
 - `ops/` — independent numerical and state-transition checks at real supported shapes, plus the
   shared row-split packing helper;
+- `targets/qwen3_6/` — shared tokenizer/template, multimodal preprocessing, MRoPE, prepared-prompt,
+  stop, and incremental output-decoding behavior;
 - `targets/qwen3_6_27b/` — registered inventory, converter recipe, source verifier, artifact
-  bindings, reference behavior, target Frontend, multimodal/MTP behavior, and the opt-in real-Engine
+  bindings, reference behavior, target Program/multimodal/MTP behavior, and the opt-in real-Engine
   prefix test;
 - `targets/qwen3_6_35b_a3b/` — future-target converter contracts plus the artifact-native MoE
   oracle, typed binding, selected-expert row access, and 256K INT8 reference-memory calculation;
@@ -97,7 +99,7 @@ A permanent test should protect one current risk, such as:
 
 - exact registered artifact bytes, geometry, object binding, or conversion transform;
 - a numerical operator contract with an independent oracle;
-- target Frontend, Program frontier, prefix, MTP, or multimodal behavior;
+- family Frontend or target Program frontier, prefix, MTP, or multimodal behavior;
 - generated-token commit/stop/cancel consistency;
 - public benchmark or OpenAI/Anthropic observable behavior;
 - a reproduced supported bug.

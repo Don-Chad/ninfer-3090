@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal {
+namespace ninfer::targets::qwen3_6::frontend_internal {
 
 struct ToolCall {
     std::string id;
@@ -74,4 +74,4 @@ struct ChatRenderOptions {
 
 std::string render_chat(const std::vector<ChatMessage>& messages, ChatRenderOptions options = {});
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal
+} // namespace ninfer::targets::qwen3_6::frontend_internal

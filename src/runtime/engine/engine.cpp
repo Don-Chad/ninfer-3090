@@ -6,7 +6,6 @@
 
 #include <mutex>
 #include <stdexcept>
-#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -14,14 +13,14 @@ namespace ninfer {
 
 class PreparedPrompt::Impl {
 public:
-    template <class Prepared>
-    Impl(PromptSummary prompt_summary, double frontend_seconds, Prepared prepared)
+    Impl(PromptSummary prompt_summary, double frontend_seconds,
+         targets::qwen3_6::PreparedPrompt prepared)
         : summary(std::move(prompt_summary)), prepare_seconds(frontend_seconds),
-          value(std::in_place_type<Prepared>, std::move(prepared)) {}
+          value(std::move(prepared)) {}
 
     PromptSummary summary;
     double prepare_seconds = 0.0;
-    targets::PreparedValue value;
+    targets::qwen3_6::PreparedPrompt value;
 };
 
 PreparedPrompt::PreparedPrompt() noexcept                            = default;
@@ -121,20 +120,13 @@ GenerationResult Engine::generate(PreparedPrompt prompt, RequestOptions options,
     return std::visit(
         [&](auto& target_ptr) -> GenerationResult {
             if (target_ptr == nullptr) { throw std::logic_error("Engine target is not active"); }
-            using Instance      = std::remove_reference_t<decltype(*target_ptr)>;
-            using Prepared      = typename Instance::Package::PreparedPrompt;
-            auto* target_prompt = std::get_if<Prepared>(&prompt.impl_->value);
-            if (target_prompt == nullptr) {
-                throw std::invalid_argument("PreparedPrompt target does not match Engine target");
-            }
-
             const PromptSummary prompt_summary = prompt.impl_->summary;
             const double prepare_seconds       = prompt.impl_->prepare_seconds;
             auto output                        = target_ptr->loaded->frontend.make_output_session(
-                *target_prompt, options.stop, options.output);
-            auto controller =
-                runtime::run_one(*target_ptr->program, std::move(*target_prompt), std::move(output),
-                                 target_ptr->request_memory, options, cancellation, sink);
+                prompt.impl_->value, options.stop, options.output);
+            auto controller = runtime::run_one(*target_ptr->program, std::move(prompt.impl_->value),
+                                               std::move(output), target_ptr->request_memory,
+                                               options, cancellation, sink);
 
             GenerationResult result;
             result.prompt              = prompt_summary;

@@ -1,6 +1,7 @@
 #include <ninfer/targets/qwen3_6_27b_rtx5090/package.h>
+#include <ninfer/targets/qwen3_6/frontend_resources.h>
+#include <ninfer/targets/qwen3_6/prepared_prompt.h>
 
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/frontend.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/program/layouts.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/program/program.h"
@@ -38,15 +39,13 @@ Program::~Program() noexcept = default;
 
 RequestPlan Program::plan_request(const PreparedPrompt& prompt,
                                   const ExecutionOptions& options) const {
-    if (prompt.data_ == nullptr) { throw std::invalid_argument("prepared prompt is empty"); }
-    return impl_->plan_request(*prompt.data_, options);
+    return impl_->plan_request(qwen3_6::PreparedPromptAccess::view(prompt), options);
 }
 
 runtime::BeginResult Program::begin(PreparedPrompt&& prompt, RequestPlan&& plan,
                                     runtime::TransientRegion transient) {
-    if (prompt.data_ == nullptr) { throw std::invalid_argument("prepared prompt is empty"); }
-    auto data = std::move(prompt.data_);
-    return impl_->begin(std::move(*data), std::move(plan), transient);
+    return impl_->begin(qwen3_6::PreparedPromptAccess::take(std::move(prompt)), std::move(plan),
+                        transient);
 }
 
 runtime::GeneratedRound Program::decode_round(runtime::RoundBudget budget) {
@@ -96,7 +95,7 @@ Package::construct_loaded_model(LoadPlan&& plan, artifact::MaterializedArtifact&
 
 Package::Frontend Package::make_frontend(const LoadedModel& model) {
     if (model.impl_ == nullptr) { throw std::invalid_argument("loaded model is empty"); }
-    return detail::FrontendFactory::create_registered(model.impl_->data.frontend);
+    return qwen3_6::make_frontend(model.impl_->data.frontend);
 }
 
 Package::SequencePlan Package::plan_sequence(const LoadedModel& model, DeviceContext& device,

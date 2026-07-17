@@ -1,4 +1,4 @@
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/tokenizer.h"
+#include "targets/qwen3_6/impl/frontend/tokenizer.h"
 
 #include "text/unicode.h"
 
@@ -18,7 +18,7 @@
 #include <unordered_set>
 #include <utility>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal {
+namespace ninfer::targets::qwen3_6::frontend_internal {
 namespace {
 
 using Json    = nlohmann::json;
@@ -735,4 +735,4 @@ bool Tokenizer::has_exact_token_domain(std::size_t size) const noexcept {
                valid_token_ids_.end();
 }
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal
+} // namespace ninfer::targets::qwen3_6::frontend_internal

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/chat_template.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/tokenizer.h"
+#include "targets/qwen3_6/impl/frontend/chat_template.h"
+#include "targets/qwen3_6/impl/frontend/tokenizer.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -11,7 +11,7 @@
 #include <utility>
 #include <vector>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal {
+namespace ninfer::targets::qwen3_6::frontend_internal {
 
 enum class ProcessorErrorKind {
     BudgetExceeded,
@@ -110,4 +110,4 @@ private:
     ProcessorOptions options_;
 };
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal
+} // namespace ninfer::targets::qwen3_6::frontend_internal

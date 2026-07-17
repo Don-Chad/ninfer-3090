@@ -33,7 +33,8 @@ add_library(ninfer_artifact STATIC
   artifact/reader.cpp
   artifact/storage_layouts.cpp
   artifact/binder.cpp
-  artifact/materializer.cpp)
+  artifact/materializer.cpp
+  artifact/typed_binding.cpp)
 ninfer_internal_includes(ninfer_artifact)
 target_link_libraries(ninfer_artifact PUBLIC ninfer_core)
 
@@ -175,17 +176,24 @@ add_library(ninfer_product_prompt_input STATIC
 ninfer_internal_includes(ninfer_product_prompt_input)
 target_link_libraries(ninfer_product_prompt_input PRIVATE ninfer_media_acquire)
 
-# The first closed exact-checkpoint / exact-GPU package owns its complete source and include graph.
-add_subdirectory(targets/qwen3_6_27b_rtx5090)
-
-# One cold closed registry plus the opaque public product Engine.
+# One cold closed registry plus the opaque public product Engine. Family and exact-target
+# directories contribute their sources directly to this single compile owner below.
 add_library(ninfer_engine STATIC
   targets/registry.cpp
   runtime/engine/engine.cpp)
 ninfer_internal_includes(ninfer_engine)
 target_include_directories(ninfer_engine PUBLIC ${PROJECT_SOURCE_DIR}/include)
+
+add_subdirectory(targets/qwen3_6)
+add_subdirectory(targets/qwen3_6_27b_rtx5090)
+
 target_link_libraries(ninfer_engine
-  PRIVATE ninfer_qwen3_6_27b_rtx5090 ninfer_artifact ninfer_core)
+  PRIVATE
+    ninfer_artifact
+    ninfer_core
+    ninfer_ops
+    ninfer_text
+    ninfer_media_decode)
 add_library(ninfer::engine ALIAS ninfer_engine)
 
 # HTTP protocol/product adapter. No serving header is part of the installed API.

@@ -43,17 +43,20 @@ ninfer_add_test(ninfer_kv_cache_test
   LIBRARIES ninfer_core)
 ninfer_add_test(ninfer_state_store_test
   SOURCES test_state_store.cpp
-  LIBRARIES ninfer_qwen3_6_27b_rtx5090 ninfer_core)
+  LIBRARIES ninfer_engine ninfer_core)
 ninfer_add_test(ninfer_generation_controller_test SOURCES test_generation_controller.cpp)
 ninfer_add_test(ninfer_row_split_pack_golden_test
   SOURCES test_row_split_pack_golden.cpp
   NEEDS_SOURCE_DIR
   LIBRARIES ninfer_core)
 
-# Exact-target frontend and one opt-in real-artifact prefix/MTP integration test.
-ninfer_add_test(ninfer_qwen3_6_27b_frontend_test
-  SOURCES targets/qwen3_6_27b/test_frontend.cpp
-  LIBRARIES ninfer_qwen3_6_27b_rtx5090 ninfer_core)
+# Family frontend and one opt-in real-artifact prefix/MTP integration test.
+ninfer_add_test(ninfer_qwen3_6_frontend_test
+  SOURCES targets/qwen3_6/test_frontend.cpp
+  LIBRARIES ninfer_engine ninfer_core)
+target_include_directories(ninfer_qwen3_6_frontend_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/impl)
 ninfer_add_test(ninfer_qwen3_6_27b_prefix_real_test
   SOURCES targets/qwen3_6_27b/test_engine_prefix_real.cpp
   LIBRARIES ninfer_engine)
@@ -166,15 +169,16 @@ ninfer_add_test(ninfer_w8_linear_dispatch_test
 
 ninfer_add_test(ninfer_qwen3_6_27b_visual_scatter_test
   SOURCES targets/qwen3_6_27b/test_visual_scatter.cpp
-  LIBRARIES ninfer_qwen3_6_27b_rtx5090 ninfer_core)
+  LIBRARIES ninfer_engine ninfer_core)
 
 # These tests deliberately compile against the exact target's internal contracts; the target does
 # not export impl/ to ordinary consumers.
 set(ninfer_qwen3_6_27b_internal_tests
   ninfer_state_store_test
-  ninfer_qwen3_6_27b_frontend_test
   ninfer_qwen3_6_27b_visual_scatter_test)
 foreach(test_target IN LISTS ninfer_qwen3_6_27b_internal_tests)
   target_include_directories(${test_target} PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b_rtx5090/impl)
+    ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b_rtx5090/impl
+    ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b_rtx5090/export
+    ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export)
 endforeach()

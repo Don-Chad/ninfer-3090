@@ -5,8 +5,8 @@
 #include "product/prompt_input/prompt_input.h"
 #include "runtime/engine/request_memory.h"
 #include <ninfer/targets/qwen3_6_27b_rtx5090/package.h>
+#include <ninfer/targets/qwen3_6/prepared_prompt.h>
 #include "targets/qwen3_6_27b_rtx5090/impl/diagnostic/activation_dump_access.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/frontend.h"
 
 #include <cuda_runtime.h>
 #include <nlohmann/json.hpp>
@@ -203,8 +203,9 @@ Options parse_options(int argc, char** argv) {
 }
 
 Json frontend_metadata(const detail::PreparedPrompt& prompt) {
-    const detail::PreparedPromptData& data = detail::FrontendFactory::inspect(prompt);
-    Json positions                         = Json::array();
+    const ninfer::targets::qwen3_6::PreparedPromptData& data =
+        ninfer::targets::qwen3_6::PreparedPromptAccess::view(prompt);
+    Json positions = Json::array();
     for (int axis = 0; axis < 3; ++axis) {
         const auto values = data.position_axis(axis);
         positions.push_back(std::vector<std::int32_t>(values.begin(), values.end()));

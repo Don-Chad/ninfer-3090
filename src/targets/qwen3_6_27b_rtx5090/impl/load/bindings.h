@@ -1,20 +1,21 @@
 #pragma once
 
 #include <ninfer/targets/qwen3_6_27b_rtx5090/package.h>
+#include <ninfer/targets/qwen3_6/frontend_resources.h>
+#include <ninfer/targets/qwen3_6/vision.h>
 
 #include "artifact/binder.h"
 #include "artifact/materializer.h"
 #include "core/tensor.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
-#include <string>
 #include <utility>
 
 namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
 
 inline constexpr std::size_t kTextLayers          = 64;
-inline constexpr std::size_t kVisionLayers        = 27;
 inline constexpr std::size_t kFullAttentionLayers = 16;
 inline constexpr std::size_t kGdnLayers           = 48;
 
@@ -66,28 +67,8 @@ struct MtpPlan {
     artifact::ObjectHandle final_norm;
 };
 
-struct VisionLayerPlan {
-    artifact::ObjectHandle qkv;
-    artifact::ObjectHandle qkv_bias;
-    artifact::ObjectHandle output;
-    artifact::ObjectHandle output_bias;
-    artifact::ObjectHandle fc1;
-    artifact::ObjectHandle fc1_bias;
-    artifact::ObjectHandle fc2;
-    artifact::ObjectHandle fc2_bias;
-    artifact::ObjectHandle norm1_weight;
-    artifact::ObjectHandle norm1_bias;
-    artifact::ObjectHandle norm2_weight;
-    artifact::ObjectHandle norm2_bias;
-};
-
 struct BindingPlan {
-    artifact::ObjectHandle tokenizer_json;
-    artifact::ObjectHandle tokenizer_config_json;
-    artifact::ObjectHandle chat_template_jinja;
-    artifact::ObjectHandle generation_config_json;
-    artifact::ObjectHandle preprocessor_config_json;
-    artifact::ObjectHandle video_preprocessor_config_json;
+    qwen3_6::FrontendResourcePlan frontend;
 
     artifact::ObjectHandle token_embedding;
     std::array<TextLayerPlan, kTextLayers> text_layers;
@@ -97,16 +78,11 @@ struct BindingPlan {
     artifact::ObjectHandle draft_head_token_ids;
     MtpPlan mtp;
 
-    artifact::ObjectHandle vision_patch_embedding;
-    artifact::ObjectHandle vision_patch_embedding_bias;
-    artifact::ObjectHandle vision_position_embedding;
-    std::array<VisionLayerPlan, kVisionLayers> vision_layers;
-    artifact::ObjectHandle vision_merger_fc1;
-    artifact::ObjectHandle vision_merger_fc1_bias;
+    qwen3_6::VisionBackbonePlan vision_backbone;
+    qwen3_6::VisionMergerInputPlan vision_merger_input;
     artifact::ObjectHandle vision_merger_fc2;
     artifact::ObjectHandle vision_merger_fc2_bias;
-    artifact::ObjectHandle vision_merger_norm_weight;
-    artifact::ObjectHandle vision_merger_norm_bias;
+    qwen3_6::VisionMergerNormPlan vision_merger_norm;
 };
 
 struct ArtifactLoadPlan {
@@ -176,41 +152,10 @@ struct MtpWeights {
     Tensor final_norm;
 };
 
-struct VisionLayerWeights {
-    Weight qkv;
-    Tensor qkv_bias;
-    Weight output;
-    Tensor output_bias;
-    Weight fc1;
-    Tensor fc1_bias;
-    Weight fc2;
-    Tensor fc2_bias;
-    Tensor norm1_weight;
-    Tensor norm1_bias;
-    Tensor norm2_weight;
-    Tensor norm2_bias;
-};
-
 struct VisionWeights {
-    Weight patch_embedding;
-    Tensor patch_embedding_bias;
-    Tensor position_embedding;
-    std::array<VisionLayerWeights, kVisionLayers> layers;
-    Weight merger_fc1;
-    Tensor merger_fc1_bias;
+    qwen3_6::VisionCommonWeights common;
     Weight merger_fc2;
     Tensor merger_fc2_bias;
-    Tensor merger_norm_weight;
-    Tensor merger_norm_bias;
-};
-
-struct FrontendResources {
-    std::string tokenizer_json;
-    std::string tokenizer_config_json;
-    std::string chat_template_jinja;
-    std::string generation_config_json;
-    std::string preprocessor_config_json;
-    std::string video_preprocessor_config_json;
 };
 
 class LoadedModelData {
@@ -223,7 +168,7 @@ public:
     LoadedModelData& operator=(LoadedModelData&&)      = delete;
 
     artifact::MaterializedArtifact backing;
-    FrontendResources frontend;
+    qwen3_6::FrontendResources frontend;
     Weight token_embedding;
     std::array<FullAttentionWeights, kFullAttentionLayers> full_layers;
     std::array<GdnWeights, kGdnLayers> gdn_layers;

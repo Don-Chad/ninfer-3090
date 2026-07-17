@@ -218,7 +218,7 @@ Each target package owns:
 - the complete expected persistent object and resource inventory;
 - accepted shape, format, layout, encoding, and actual-GPU combinations;
 - typed weight roles, fused views, tied bindings, and device descriptors;
-- checkpoint token domains and output-row validity;
+- physical output-row validity and enforcement of the applicable family token domain;
 - all persistent and transient memory formulas for that target;
 - Text, Vision, MoE, recurrent, MTP, sampling, and final-head schedule;
 - physical KV/recurrent state instances, published cache prefixes, snapshots, and commit rules;
@@ -1759,7 +1759,7 @@ include/
 
 src/
 ├── core/                                device/stream, tensor/view, layout, arena, graph/KV/transfer
-├── artifact/                            .ninfer reader, binder, layouts, materializer
+├── artifact/                            .ninfer reader, binder, layouts, materializer, typed views
 ├── ops/
 │   ├── wrapper/                         contract validation, workspace scope, finite dispatch
 │   ├── launcher/                        private CUDA launch policy
@@ -1779,20 +1779,22 @@ src/
 ├── targets/
 │   ├── registry.h / registry.cpp        one explicit cold target registry
 │   ├── qwen3_6/                         identity-free family leaves; not a target package
-│   │   ├── CMakeLists.txt               explicit family source list
+│   │   ├── CMakeLists.txt               explicit source contribution to ninfer_engine
 │   │   ├── export/ninfer/targets/qwen3_6/
 │   │   │   ├── frontend.h               Frontend, PreparedPrompt, OutputSession contracts
+│   │   │   ├── prepared_prompt.h         owning prompt data and exact-program access
+│   │   │   ├── frontend_resources.h      six-resource plan/value and binding entry
 │   │   │   └── vision.h                 passive common Vision geometry/binding contracts
 │   │   └── impl/
 │   │       ├── frontend/                 tokenizer/template/media/MRoPE/output implementation
 │   │       └── vision/                   common backbone binding definitions; no schedule
 │   ├── qwen3_6_27b_rtx5090/
-│   │   ├── CMakeLists.txt                explicit target-private source list and dependencies
+│   │   ├── CMakeLists.txt                explicit source contribution to ninfer_engine
 │   │   ├── export/ninfer/targets/qwen3_6_27b_rtx5090/
 │   │   │   └── package.h                 narrow composition facade
 │   │   └── impl/
 │   │       ├── package.cpp               facade definitions and private construction
-│   │       ├── config.h                  exact semantic constants and token domains
+│   │       ├── config.h                  exact dimensions, topology, and native limits
 │   │       ├── load/                     typed immutable bindings
 │   │       ├── program/                  plans, layouts, prefix/state, graphs, Program owner
 │   │       ├── state/                    target-specific recurrent/state representations
@@ -1848,7 +1850,7 @@ merger policy, workspace, graphs, or mutable sequence state.
 |---|---|---|
 | `export/.../package.h` | the package tag and narrow facade types used by the registry/controller | public product API, target implementation includes, protocol behavior, or a second execution owner |
 | `impl/package.cpp` | facade definitions and private construction bridge | a second public/composition surface |
-| `impl/config.h` | exact compiled semantic facts needed by this package, including dimensions, topology, token domains, and native limits | artifact offsets, conversion provenance, request state, user policy |
+| `impl/config.h` | exact compiled semantic facts needed by this package, including dimensions, topology, physical output rows, and native limits | artifact offsets, conversion provenance, request state, user policy |
 | `impl/load/` | target-private binding plan, typed immutable weight/resource structures, and direct final-address `LoadedModel` construction behind the facade `LoadPlan` | sequence state, generation policy, runtime lookup after publication |
 | `impl/program/` | `SequencePlan`, `RequestPlan`, layouts, the sole mutable `Program`, core KV instances, recurrent/MTP/sampler state, prefix ledger, graph ownership, and round resolution | user callbacks, protocol schemas, artifact name lookup |
 | `impl/state/` | target-specific recurrent/state representations bound by Program layouts | common runtime policy, mathematical Op implementations, request publication, or a second state owner |
@@ -1987,7 +1989,8 @@ comments, admission, naming, layering, testing, and performance workflow.
 
 ### 19.7 Build graph and closed registration
 
-Directories are backed by separate CMake targets and explicit source lists. The component split is:
+Mechanism directories retain separate CMake libraries. Family and exact-target directories instead
+contribute explicit source lists to the single `ninfer_engine` compile owner:
 
 ```text
 ninfer_core
@@ -1997,20 +2000,20 @@ ninfer_text                        -> host Unicode mechanism
 ninfer_media_decode                -> host codec mechanism
 ninfer_media_acquire               -> host network/filesystem mechanism
 ninfer_product_prompt_input        -> media_acquire
-ninfer_qwen3_6_family              -> artifact + core + text + media_decode
-ninfer_qwen3_6_27b_rtx5090         -> qwen3_6_family + artifact + ops
-ninfer_qwen3_6_35b_a3b_rtx5090     -> qwen3_6_family + artifact + ops  # when registered
-ninfer_engine                      -> explicit targets + artifact + core
+ninfer_engine
+  sources                          -> runtime + registry + qwen3_6 family + registered exact target
+  links                            -> artifact + core + ops + text + media_decode
 ninfer_serve                       -> engine + media_acquire
 apps/ninfer                        -> engine + product_prompt_input
 apps/ninfer-serve                  -> serve
 ```
 
-`ninfer_qwen3_6_family` is an ordinary inward static dependency and has no registry hook. Each exact
-target is an independently buildable static target with an explicit list of `.cpp/.cu` sources. The
-final engine statically links the selected closed set. A target addition or replacement changes both
-its explicit build entry and registry variant in the same coherent change. Until that registration
-work lands, the current 27B build remains the only implemented runtime route.
+There is no family or exact-target static/object/interface library. `src/targets/qwen3_6` and each
+registered exact target call `target_sources(ninfer_engine PRIVATE ...)`, so every family and target
+translation unit is compiled exactly once. The family contribution has no registry hook. A target
+addition or replacement changes both its explicit source contribution and registry variant in the
+same coherent change. Until that registration work lands, the current 27B build remains the only
+implemented runtime route.
 
 `GLOB`, `GLOB_RECURSE`, directory scanning, static-constructor registration, shared-library plugin
 discovery, and fallback-to-family registration are forbidden. They can silently change the product
@@ -2059,7 +2062,8 @@ translation unit remains in its anonymous namespace instead of creating another 
 
 | Responsibility | Owner |
 |---|---|
-| dimensions, layer topology, token domains, and native limits | exact target `impl/config.h` |
+| shared token domain and Vision-backbone geometry | Qwen3.6 family contracts |
+| exact dimensions, layer topology, output storage rows, and native limits | exact target `impl/config.h` |
 | artifact inventory matching and immutable typed weight/resource bindings | target `impl/load/` over generic `artifact` mechanisms |
 | tokenizer, template, media/MRoPE preprocessing, owning prepared prompt, and output decoding | Qwen3.6 family `impl/frontend/` |
 | common Vision-backbone geometry and passive immutable-binding definitions | Qwen3.6 family `impl/vision/` |

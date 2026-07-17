@@ -4,8 +4,8 @@
 #include "ninfer/ops/sampling.h"
 #include "core/decode_graph.h"
 #include <ninfer/targets/qwen3_6_27b_rtx5090/package.h>
+#include <ninfer/targets/qwen3_6/prepared_prompt.h>
 
-#include "targets/qwen3_6_27b_rtx5090/impl/frontend/frontend.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/program/layouts.h"
 #include "core/kv_cache.h"
@@ -19,6 +19,8 @@
 #include <vector>
 
 namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
+
+using PreparedPromptData = qwen3_6::PreparedPromptData;
 
 enum class ReusePath : std::uint8_t {
     FullReset,

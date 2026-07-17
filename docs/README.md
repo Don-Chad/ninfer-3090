@@ -23,7 +23,6 @@ defined by `include/ninfer/engine.h` and `include/ninfer/types.h`.
 
 | Document | Active scope |
 |---|---|
-| [`plans/2026-07-18-qwen3.6-family-source-composition.md`](plans/2026-07-18-qwen3.6-family-source-composition.md) | extract the Qwen3.6 family frontend and passive Vision leaves from 27B and compose family/exact sources directly into `ninfer_engine`, without adding the 35B runtime target |
 | [`plans/2026-07-17-sparse-moe-design-log.md`](plans/2026-07-17-sparse-moe-design-log.md) | decisions for the closed future-target `SparseMoe` Op |
 
 Completed plans are indexed under [`archive/`](archive/README.md).

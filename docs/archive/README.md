@@ -25,6 +25,9 @@ Use the active documentation index at [`../README.md`](../README.md) for current
 
 ## Completed cutovers
 
+- [`2026-07-18-qwen3.6-family-source-composition.md`](2026-07-18-qwen3.6-family-source-composition.md)
+  — moved the shared Qwen3.6 frontend, resources, prepared values, and passive Vision bindings into
+  family ownership while compiling family and exact-target sources once in `ninfer_engine`.
 - [`2026-07-18-qwen3.6-official-checkpoint-cutover.md`](2026-07-18-qwen3.6-official-checkpoint-cutover.md)
   — replaced the 27B Unsloth-derived small files and artifact resources with the pinned official
   Qwen set while preserving every BF16 shard, and added the shared 27B/35B resource preflight.
