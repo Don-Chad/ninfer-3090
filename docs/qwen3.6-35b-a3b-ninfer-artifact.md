@@ -996,6 +996,13 @@ D1+D2 draining fusion was rejected because caller-owned transient workspace has 
 counter state and W8+W8 had no complete-route gain. Per-expert launches, all-expert scans, and
 materialized `[8,gate/up,512]` or `[8,2048]` intermediates remain nonconforming.
 
+For functional completeness before grouped kernels land, the same closed Op accepts any positive
+T by slicing the contiguous input/destination and submitting this complete four-launch
+single-column route once per column on one stream. It reuses one column's workspace and does not
+introduce another weight layout, numerical path, or observable intermediate. The target's current
+prefill chunk size is a schedule choice rather than an Op limit. This column-serial route does not
+qualify multi-column performance or replace the grouped execution requirements below.
+
 The logical sparse-MoE formula is:
 
 ```text
@@ -1075,10 +1082,11 @@ folded-SwiGLU MMA mapping: each 64-row tile consumes 32 consecutive gate rows an
 consecutive up rows. The inverse scatter and route-weight reduction recover original token order
 and logical expert ids.
 
-MTP uses the same fused attention and sparse-MoE contracts with W8 routed weights. Verification for
-a five-token draft window has at most six input columns and must use a Small-T multi-column path so
-one routed-weight stream covers the verification window; serial single-column expert launches are
-not accepted. Prefill, ordinary decode, and MTP consume the same persistent weights directly.
+MTP, ordinary generation, and prefill call the same `SparseMoe` API. Their different schedule
+shapes do not select different Op semantics: the current implementation covers all of them by
+iterating columns. Target performance qualification still requires grouped multi-column kernels
+that reuse each routed-weight stream across assigned columns. Every route consumes the same
+persistent weights directly.
 
 ### 15.4 Vision workspace lifetime
 
@@ -1201,11 +1209,12 @@ down banks; all-Q5 is not excluded by capacity alone.
 This document is a design authority, not evidence that the target already works. The target may be
 marked implemented only after all of the following exist.
 
-The decode-only `SparseMoe` Op now has independent-oracle, CUDA Graph, candidate-envelope, payload,
-and NCU evidence in the
+`SparseMoe` now functionally accepts every positive T. Its single-column route has
+independent-oracle, CUDA Graph, candidate-envelope, payload, and NCU evidence in the
 [`retained qualification report`](archive/optimization-era/bench/qwen3.6-35b-sparse-moe-decode-roofline.md).
-That closes only the operator domain `T=1`; it does not satisfy Small-T, prefill, target binding,
-memory-admission, end-to-end execution, or serving evidence below.
+The column iterator is checked with distinct multi-column inputs and Graph replay against the same
+complete oracle. This establishes functionality, not grouped multi-column performance. Target
+binding, memory-admission, end-to-end execution, and serving evidence remain required below.
 
 ### 17.1 Artifact and conversion
 

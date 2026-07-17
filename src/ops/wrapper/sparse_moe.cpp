@@ -52,12 +52,13 @@ void require_disjoint(const std::vector<AddressRange>& ranges) {
     }
 }
 
-void require_tensor(const Tensor& tensor, const char* name) {
-    if (tensor.dtype != DType::BF16 || tensor.ne[0] != kHidden || tensor.ne[1] != 1 ||
+std::int32_t require_tensor(const Tensor& tensor, const char* name) {
+    if (tensor.dtype != DType::BF16 || tensor.ne[0] != kHidden || tensor.ne[1] < 1 ||
         tensor.ne[2] != 1 || tensor.ne[3] != 1 || !tensor.is_contiguous() ||
         tensor.data == nullptr || !aligned_to(tensor.data, 16)) {
         throw std::invalid_argument(std::string("sparse_moe: invalid ") + name);
     }
+    return tensor.ne[1];
 }
 
 void require_matrix_metadata(const Weight& weight, std::int32_t n, std::int32_t k,
@@ -155,10 +156,10 @@ void validate_weights(const SparseMoeWeights& weights, std::vector<AddressRange>
 } // namespace
 
 std::size_t sparse_moe_workspace_bytes(std::int32_t max_tokens) {
-    if (max_tokens != 1) {
-        throw std::invalid_argument("sparse_moe_workspace_bytes: decode admits max_tokens=1");
+    if (max_tokens < 1) {
+        throw std::invalid_argument("sparse_moe_workspace_bytes: max_tokens must be positive");
     }
-    // All admitted codec profiles use the same initial FP32 private handoff profile.
+    // The functionally complete route serially reuses one column's private FP32 handoff storage.
     return detail::sparse_moe_decode_workspace_bytes();
 }
 
@@ -167,8 +168,10 @@ void sparse_moe(const Tensor& x, const SparseMoeWeights& weights, SparseMoeEpilo
     if (epilogue != SparseMoeEpilogue::AddResidual) {
         throw std::invalid_argument("sparse_moe: unsupported epilogue");
     }
-    require_tensor(x, "x");
-    require_tensor(destination, "destination");
+    const std::int32_t tokens = require_tensor(x, "x");
+    if (require_tensor(destination, "destination") != tokens) {
+        throw std::invalid_argument("sparse_moe: x and destination token counts must match");
+    }
 
     std::vector<AddressRange> ranges;
     ranges.reserve(16);
@@ -188,7 +191,12 @@ void sparse_moe(const Tensor& x, const SparseMoeWeights& weights, SparseMoeEpilo
     auto scope = workspace.scope();
     const detail::SparseMoeDecodeWorkspace views =
         detail::allocate_sparse_moe_decode_workspace(workspace);
-    detail::sparse_moe_decode_launch(x, weights, destination, views, plan, stream);
+    for (std::int32_t token = 0; token < tokens; ++token) {
+        const Tensor x_column     = x.slice(1, token, 1);
+        Tensor destination_column = destination.slice(1, token, 1);
+        detail::sparse_moe_decode_launch(x_column, weights, destination_column, views, plan,
+                                         stream);
+    }
 }
 
 } // namespace ninfer::ops

@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -151,20 +152,20 @@ Weight dense_bf16_weight(void* data, std::int32_t rows, std::int32_t columns) {
     return out;
 }
 
-std::vector<float> make_input() {
+std::vector<float> make_input(int variant) {
     std::vector<float> input(kHidden);
     input[0] = 1.0f;
     for (int k = 1; k < kHidden; ++k) {
-        input[k] = 0.025f + static_cast<float>((k * 7) % 19) * 0.002f;
+        input[k] = 0.025f + static_cast<float>((k * 7 + variant * 11) % 19) * 0.002f;
     }
     round_to_bf16(input);
     return input;
 }
 
-std::vector<float> make_residual() {
+std::vector<float> make_residual(int variant) {
     std::vector<float> residual(kHidden);
     for (int row = 0; row < kHidden; ++row) {
-        residual[row] = 0.125f + static_cast<float>((row * 5) % 23) * 0.003f;
+        residual[row] = 0.125f + static_cast<float>((row * 5 + variant * 13) % 23) * 0.003f;
     }
     round_to_bf16(residual);
     return residual;
@@ -306,14 +307,16 @@ std::vector<double> sparse_moe_oracle(const std::vector<float>& input,
     return output;
 }
 
-struct Profile {
+struct CodecProfile {
     const char* name;
     QType routed_gate_up;
     QType routed_down;
+    Tolerance tolerance;
+};
+
+struct RouteCase {
     std::array<int, kTopK> selected;
     int tie_excluded;
-    Tolerance tolerance;
-    bool graph_replay;
 };
 
 int expect_invalid(const char* label, const auto& call) {
@@ -324,10 +327,26 @@ int expect_invalid(const char* label, const auto& call) {
     return 1;
 }
 
-int run_profile(const Profile& profile, bool validate_contract) {
-    const std::vector<float> input    = make_input();
-    const std::vector<float> residual = make_residual();
-    const std::vector<float> router   = make_router(profile.selected, profile.tie_excluded);
+int run_case(const CodecProfile& profile, const RouteCase& route, const char* case_name, int tokens,
+             int unique_columns, bool graph_replay, bool validate_contract) {
+    std::vector<std::vector<float>> input_columns;
+    std::vector<std::vector<float>> residual_columns;
+    input_columns.reserve(unique_columns);
+    residual_columns.reserve(unique_columns);
+    for (int column = 0; column < unique_columns; ++column) {
+        input_columns.push_back(make_input(column));
+        residual_columns.push_back(make_residual(column));
+    }
+    std::vector<float> input(static_cast<std::size_t>(kHidden) * tokens);
+    std::vector<float> residual(static_cast<std::size_t>(kHidden) * tokens);
+    for (int token = 0; token < tokens; ++token) {
+        const int pattern = token % unique_columns;
+        std::copy(input_columns[pattern].begin(), input_columns[pattern].end(),
+                  input.begin() + static_cast<std::size_t>(token) * kHidden);
+        std::copy(residual_columns[pattern].begin(), residual_columns[pattern].end(),
+                  residual.begin() + static_cast<std::size_t>(token) * kHidden);
+    }
+    const std::vector<float> router = make_router(route.selected, route.tie_excluded);
 
     DBuf device_input         = to_device_bf16(input);
     DBuf device_residual_seed = to_device_bf16(residual);
@@ -343,8 +362,8 @@ int run_profile(const Profile& profile, bool validate_contract) {
 
     std::vector<HostExpert> host_experts;
     host_experts.reserve(kTopK);
-    for (int route = 0; route < kTopK; ++route) {
-        const int expert   = profile.selected[route];
+    for (int slot = 0; slot < kTopK; ++slot) {
+        const int expert   = route.selected[slot];
         const float factor = 0.8f + static_cast<float>((expert * 3) % 11) * 0.045f;
         auto gate_up       = row_split::pack_row_split_lowbit(
             make_gate_up(kExpertGateRows, kHidden, 100u + static_cast<std::uint32_t>(expert),
@@ -372,16 +391,26 @@ int run_profile(const Profile& profile, bool validate_contract) {
         shared_gate.weight(),
         shared_down_device.weight(),
     };
-    Tensor x(device_input.p, DType::BF16, {kHidden, 1});
-    Tensor destination(device_destination.p, DType::BF16, {kHidden, 1});
-    const std::size_t workspace_bytes = ops::sparse_moe_workspace_bytes(1);
+    Tensor x(device_input.p, DType::BF16, {kHidden, tokens});
+    Tensor destination(device_destination.p, DType::BF16, {kHidden, tokens});
+    const std::size_t workspace_bytes = ops::sparse_moe_workspace_bytes(tokens);
     WorkspaceArena workspace(workspace_bytes);
 
-    const std::vector<double> reference =
-        sparse_moe_oracle(input, residual, router, host_experts, host_shared_gate, host_shared_down,
-                          profile.selected);
+    std::vector<std::vector<double>> reference_columns;
+    reference_columns.reserve(unique_columns);
+    for (int column = 0; column < unique_columns; ++column) {
+        reference_columns.push_back(
+            sparse_moe_oracle(input_columns[column], residual_columns[column], router, host_experts,
+                              host_shared_gate, host_shared_down, route.selected));
+    }
+    std::vector<double> reference(static_cast<std::size_t>(kHidden) * tokens);
+    for (int token = 0; token < tokens; ++token) {
+        const auto& column = reference_columns[token % unique_columns];
+        std::copy(column.begin(), column.end(),
+                  reference.begin() + static_cast<std::size_t>(token) * kHidden);
+    }
 
-    if (profile.graph_replay) {
+    if (graph_replay) {
         cudaStream_t stream  = nullptr;
         cudaGraph_t graph    = nullptr;
         cudaGraphExec_t exec = nullptr;
@@ -405,8 +434,8 @@ int run_profile(const Profile& profile, bool validate_contract) {
         cudaDeviceSynchronize();
     }
 
-    const std::vector<double> actual = from_device_bf16(device_destination, kHidden);
-    int failures                     = verify(profile.name, actual, reference, profile.tolerance);
+    const std::vector<double> actual = from_device_bf16(device_destination, input.size());
+    int failures                     = verify(case_name, actual, reference, profile.tolerance);
     bool changed_residual            = false;
     for (std::size_t index = 0; index < actual.size(); ++index) {
         if (actual[index] != static_cast<double>(residual[index])) {
@@ -415,21 +444,32 @@ int run_profile(const Profile& profile, bool validate_contract) {
         }
     }
     if (!changed_residual) {
-        std::cerr << profile.name << ": sparse-MoE term did not change the nonzero residual\n";
+        std::cerr << case_name << ": sparse-MoE term did not change the nonzero residual\n";
         ++failures;
     }
 
     if (validate_contract) {
-        failures += expect_invalid("sparse_moe max_tokens",
-                                   [] { (void)ops::sparse_moe_workspace_bytes(2); });
+        failures += expect_invalid("sparse_moe zero max_tokens",
+                                   [] { (void)ops::sparse_moe_workspace_bytes(0); });
+        if (ops::sparse_moe_workspace_bytes(1) !=
+            ops::sparse_moe_workspace_bytes(std::numeric_limits<std::int32_t>::max())) {
+            std::cerr << "sparse_moe: serial fallback should reuse one column workspace\n";
+            ++failures;
+        }
         WorkspaceArena too_small(workspace_bytes - 1);
         failures += expect_invalid("sparse_moe workspace capacity", [&] {
             ops::sparse_moe(x, weights, ops::SparseMoeEpilogue::AddResidual, destination, too_small,
                             nullptr);
         });
-        Tensor two_tokens(device_input.p, DType::BF16, {kHidden, 2});
-        failures += expect_invalid("sparse_moe decode T", [&] {
-            ops::sparse_moe(two_tokens, weights, ops::SparseMoeEpilogue::AddResidual, destination,
+        Tensor mismatched_destination(device_destination.p, DType::BF16, {kHidden, tokens + 1});
+        failures += expect_invalid("sparse_moe token mismatch", [&] {
+            ops::sparse_moe(x, weights, ops::SparseMoeEpilogue::AddResidual, mismatched_destination,
+                            workspace, nullptr);
+        });
+        Tensor no_tokens = x;
+        no_tokens.ne[1]  = 0;
+        failures += expect_invalid("sparse_moe positive T", [&] {
+            ops::sparse_moe(no_tokens, weights, ops::SparseMoeEpilogue::AddResidual, destination,
                             workspace, nullptr);
         });
         ops::SparseMoeWeights bad_shape = weights;
@@ -456,34 +496,22 @@ int main() {
         return 0;
     }
 
-    const std::array<Profile, 3> profiles = {{
-        {"sparse_moe q4+q5",
-         QType::Q4G64_F16S,
-         QType::Q5G64_F16S,
-         {255, 0, 17, 31, 63, 127, 191, 223},
-         -1,
-         Tolerance::sparse_moe_q4_q5(),
-         true},
-        {"sparse_moe q4+q6 exact tie",
-         QType::Q4G64_F16S,
-         QType::Q6G64_F16S,
-         {0, 17, 31, 63, 127, 191, 223, 254},
-         255,
-         Tolerance::sparse_moe_q4_q6(),
-         false},
-        {"sparse_moe w8+w8",
-         QType::W8G32_F16S,
-         QType::W8G32_F16S,
-         {0, 32, 64, 96, 128, 160, 224, 255},
-         -1,
-         Tolerance::sparse_moe_w8_w8(),
-         false},
+    const std::array<CodecProfile, 3> profiles = {{
+        {"sparse_moe q4+q5", QType::Q4G64_F16S, QType::Q5G64_F16S, Tolerance::sparse_moe_q4_q5()},
+        {"sparse_moe q4+q6", QType::Q4G64_F16S, QType::Q6G64_F16S, Tolerance::sparse_moe_q4_q6()},
+        {"sparse_moe w8+w8", QType::W8G32_F16S, QType::W8G32_F16S, Tolerance::sparse_moe_w8_w8()},
     }};
+    const RouteCase ordinary_route{{255, 0, 17, 31, 63, 127, 191, 223}, -1};
+    const RouteCase boundary_tie{{0, 17, 31, 63, 127, 191, 223, 254}, 255};
 
     int failures = 0;
     for (std::size_t index = 0; index < profiles.size(); ++index) {
-        failures += run_profile(profiles[index], index == 0);
+        failures += run_case(profiles[index], ordinary_route, profiles[index].name, 1, 1, false,
+                             index == 0);
     }
-    std::cout << (failures ? "FAIL" : "OK") << " sparse_moe decode correctness\n";
+    // Codec decoding, routing tie behavior, and column traversal are orthogonal test dimensions.
+    failures += run_case(profiles[0], boundary_tie, "sparse_moe boundary tie", 1, 1, false, false);
+    failures += run_case(profiles[0], ordinary_route, "sparse_moe multi-column", 3, 3, true, false);
+    std::cout << (failures ? "FAIL" : "OK") << " sparse_moe correctness\n";
     return failures ? 1 : 0;
 }

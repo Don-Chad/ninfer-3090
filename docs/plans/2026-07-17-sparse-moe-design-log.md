@@ -325,8 +325,9 @@ Decision:
 
 - The repository-internal interface is
   `sparse_moe(x, weights, SparseMoeEpilogue::AddResidual, destination, workspace, stream)`, with
-  one `sparse_moe_workspace_bytes(max_tokens)` capacity query. The implemented route admits exactly
-  `max_tokens=1`; Small-T and prefill remain rejected rather than falling back to repeated decode.
+  one `sparse_moe_workspace_bytes(max_tokens)` capacity query. At decode qualification, the route
+  admitted exactly `max_tokens=1`; Small-T and prefill were rejected rather than falling back to
+  repeated decode.
 - Decode uses four launches: an 8-warp row-CTA router projection, one-warp register top-8 and
   selected normalization, one nine-path-warp gate/up SwiGLU launch, and one nine-path-warp
   one-output-row down/merge/`AddResidual` launch.
@@ -349,6 +350,34 @@ Decision:
   attribution are retained in the
   [`SparseMoe decode qualification report`](../archive/optimization-era/bench/qwen3.6-35b-sparse-moe-decode-roofline.md).
 
-This closes ordinary decode implementation only. The previously agreed Small-T semantics remain
-design input for a later implementation phase, and prefill routing/grouping/topology remains
-undecided.
+This closed ordinary decode implementation only at that phase. The previously agreed Small-T
+semantics remained design input for a later implementation phase, and prefill
+routing/grouping/topology remained undecided.
+
+## 2026-07-17: functionally complete column-serial implementation
+
+Decision:
+
+- Before grouped kernels are optimized, `SparseMoe` accepts every positive T. The current
+  implementation slices contiguous `[2048,T]` input and destination tensors by column and submits
+  the same closed single-column D1-D4 route for every column on the caller's stream. There is no
+  T-specific dispatch or semantic distinction inside the Op.
+- Target schedule sizes such as the current prefill chunk are caller workload choices, not
+  `SparseMoe` limits. They must not appear in the Op's tensor validation or workspace contract.
+- Every column still evaluates the complete logical formula independently. The fallback does not
+  expose or add a sub-Op, gather selected weights, launch once per expert, change routing, or add a
+  numeric boundary. In particular, it preserves the decode route's natural FP32 private handoffs
+  and sole final BF16 destination write.
+- The calls are stream ordered and reuse one column's private workspace, so
+  `sparse_moe_workspace_bytes(max_tokens)` accepts every positive `max_tokens` and currently
+  returns the same capacity for all of them. The launch sequence is deterministic under CUDA Graph
+  capture for a fixed input shape.
+- This decision deliberately supersedes the earlier rejection of repeated decode as an interim
+  *functional* route. It does not qualify that topology for Small-T or prefill performance. The
+  S1-S4 grouped Small-T design and the still-undecided grouped prefill design remain the required
+  optimization work; replacing the fallback must not change the public Op or oracle.
+- Weight codec and token count are independent dimensions. Permanent complete-Op coverage keeps
+  the three admitted codec profiles separate from routing behavior, adds an independent lower-id
+  boundary-tie case, and adds one multi-column case with distinct columns and Graph replay. Every
+  result is checked against the same independent naive FP64 formula, never against another
+  production route.
