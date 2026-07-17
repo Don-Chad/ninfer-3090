@@ -20,9 +20,10 @@ void launch_tt(const __nv_bfloat16* xp, const std::uint8_t* codes, const std::ui
     constexpr int kBlockThreads = kRowsPerBlockDefault * 32;
     const dim3 grid(static_cast<unsigned>(div_up(n, kRowsPerBlockDefault)),
                     static_cast<unsigned>(div_up(t, ColsPerTile)), 1u);
+    const W8ContiguousOutput output{outp, n};
     w8_rowsplit_gemm_simt_kernel<W8RowSplitSimtSchedule, ColsPerTile, kRowsPerBlockDefault, kStages,
                                  Variant><<<grid, kBlockThreads, 0, stream>>>(
-        xp, codes, scales, outp, n, k, t, padded_k, full_slabs);
+        xp, codes, scales, output, n, k, t, padded_k, full_slabs);
 }
 
 template <int ColsPerTile>

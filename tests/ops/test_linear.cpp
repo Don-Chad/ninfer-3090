@@ -13,6 +13,8 @@
 #include "ops/linear/w8/w8_rowsplit_plan.h"
 #include "ops/linear_add/q5/q5_linear_add_plan.h"
 #include "ops/linear_add/w8/w8_linear_add_plan.h"
+#include "ops/attn_input_proj/w8/w8_attn_input_plan.h"
+#include "ops/gdn_input_proj/w8/w8_gdn_input_plan.h"
 #include "ops/row_split_pack.h"
 
 #include <algorithm>
@@ -574,6 +576,131 @@ int grouped_gdn_correctness(std::int32_t t, bool use_graph) {
     return f;
 }
 
+int w8_attention_input_correctness() {
+    constexpr int kHidden = 2048;
+    constexpr int kQRows  = 4096;
+    constexpr int kKvRows = 512;
+    constexpr int kRows   = 9216;
+    constexpr int kMaxT   = 1024;
+
+    std::vector<float> x(static_cast<std::size_t>(kHidden) * kMaxT);
+    fill_uniform(x, 1701u, -0.25f, 0.25f);
+    round_to_bf16(x);
+    auto packed = row_split::make_patterned_weight(QType::W8G32_F16S, kRows, kHidden, 1703u);
+    DBuf dx     = to_device_bf16(x);
+    DBuf dw(packed.payload.size());
+    cudaMemcpy(dw.p, packed.payload.data(), packed.payload.size(), cudaMemcpyHostToDevice);
+    const Weight weight = packed.device_weight(dw.p);
+    WorkspaceArena ws(1);
+
+    int failures = 0;
+    for (const std::int32_t t : {1, 2, 4, 12, 13, 14, 128, 129, 1024}) {
+        const std::size_t q_count  = static_cast<std::size_t>(kQRows) * t;
+        const std::size_t kv_count = static_cast<std::size_t>(kKvRows) * t;
+        GuardedBf16Output q_got(q_count), gate_got(q_count), k_got(kv_count), v_got(kv_count);
+        Tensor tx(dx.p, DType::BF16, {kHidden, t});
+        Tensor tq(q_got.data(), DType::BF16, {kQRows, t});
+        Tensor tgate(gate_got.data(), DType::BF16, {kQRows, t});
+        Tensor tk(k_got.data(), DType::BF16, {kKvRows, t});
+        Tensor tv(v_got.data(), DType::BF16, {kKvRows, t});
+        const auto launch = [&](cudaStream_t stream) {
+            ops::attn_input_proj(tx, weight, tq, tgate, tk, tv, ws, stream);
+        };
+        if (t == 1) {
+            capture_and_replay(launch);
+        } else {
+            launch(nullptr);
+            cudaDeviceSynchronize();
+        }
+
+        const auto plan =
+            ops::detail::w8_attn_input_resolve_plan({kHidden, kQRows, kKvRows, kRows, kHidden, t});
+        const bool mma = plan.schedule == ops::detail::W8AttnInputScheduleId::MmaR32C128 ||
+                         plan.schedule == ops::detail::W8AttnInputScheduleId::MmaR64C128;
+        const Tolerance tolerance = mma ? Tolerance::linear_tc() : Tolerance::linear_bf16();
+        const std::string suffix  = " T=" + std::to_string(t);
+        failures += verify_sampled_projection("W8 attention q FP64 oracle" + suffix,
+                                              from_device_bf16_ptr(q_got.data(), q_count), kQRows,
+                                              0, x, kHidden, t, packed, tolerance, 0, kQRows);
+        failures += verify_sampled_projection("W8 attention k FP64 oracle" + suffix,
+                                              from_device_bf16_ptr(k_got.data(), kv_count), kKvRows,
+                                              0, x, kHidden, t, packed, tolerance, kQRows, kKvRows);
+        failures +=
+            verify_sampled_projection("W8 attention gate FP64 oracle" + suffix,
+                                      from_device_bf16_ptr(gate_got.data(), q_count), kQRows, 0, x,
+                                      kHidden, t, packed, tolerance, kQRows + kKvRows, kQRows);
+        failures += verify_sampled_projection(
+            "W8 attention v FP64 oracle" + suffix, from_device_bf16_ptr(v_got.data(), kv_count),
+            kKvRows, 0, x, kHidden, t, packed, tolerance, 2 * kQRows + kKvRows, kKvRows);
+        failures += q_got.verify_guards("W8 attention q" + suffix);
+        failures += gate_got.verify_guards("W8 attention gate" + suffix);
+        failures += k_got.verify_guards("W8 attention k" + suffix);
+        failures += v_got.verify_guards("W8 attention v" + suffix);
+    }
+    return failures;
+}
+
+int w8_gdn_input_correctness() {
+    constexpr int kHidden  = 2048;
+    constexpr int kQRows   = 2048;
+    constexpr int kKRows   = 2048;
+    constexpr int kVRows   = 4096;
+    constexpr int kZRows   = 4096;
+    constexpr int kQkvRows = kQRows + kKRows + kVRows;
+    constexpr int kRows    = kQkvRows + kZRows;
+    constexpr int kMaxT    = 1024;
+
+    std::vector<float> x(static_cast<std::size_t>(kHidden) * kMaxT);
+    fill_uniform(x, 1801u, -0.25f, 0.25f);
+    round_to_bf16(x);
+    auto packed = row_split::make_patterned_weight(QType::W8G32_F16S, kRows, kHidden, 1803u);
+    DBuf dx     = to_device_bf16(x);
+    DBuf dw(packed.payload.size());
+    cudaMemcpy(dw.p, packed.payload.data(), packed.payload.size(), cudaMemcpyHostToDevice);
+    const Weight weight = packed.device_weight(dw.p);
+    WorkspaceArena ws(1);
+
+    int failures = 0;
+    for (const std::int32_t t : {1, 2, 4, 16, 17, 128, 129, 1024}) {
+        const std::size_t qkv_count = static_cast<std::size_t>(kQkvRows) * t;
+        const std::size_t z_count   = static_cast<std::size_t>(kZRows) * t;
+        GuardedBf16Output qkv_got(qkv_count), z_got(z_count);
+        Tensor tx(dx.p, DType::BF16, {kHidden, t});
+        Tensor tqkv(qkv_got.data(), DType::BF16, {kQkvRows, t});
+        Tensor tz(z_got.data(), DType::BF16, {kZRows, t});
+        const auto launch = [&](cudaStream_t stream) {
+            ops::gdn_input_proj(tx, weight, tqkv, tz, ws, stream);
+        };
+        if (t == 1) {
+            capture_and_replay(launch);
+        } else {
+            launch(nullptr);
+            cudaDeviceSynchronize();
+        }
+
+        const auto plan =
+            ops::detail::w8_gdn_input_resolve_plan({kHidden, kQkvRows, kZRows, kRows, kHidden, t});
+        const bool mma            = plan.schedule == ops::detail::W8GdnInputScheduleId::MmaR64C128;
+        const Tolerance tolerance = mma ? Tolerance::linear_tc() : Tolerance::linear_bf16();
+        const std::vector<double> qkv = from_device_bf16_ptr(qkv_got.data(), qkv_count);
+        const std::string suffix      = " T=" + std::to_string(t);
+        failures += verify_sampled_projection("W8 GDN q FP64 oracle" + suffix, qkv, kQkvRows, 0, x,
+                                              kHidden, t, packed, tolerance, 0, kQRows);
+        failures +=
+            verify_sampled_projection("W8 GDN k FP64 oracle" + suffix, qkv, kQkvRows, kQRows, x,
+                                      kHidden, t, packed, tolerance, kQRows, kKRows);
+        failures += verify_sampled_projection("W8 GDN v FP64 oracle" + suffix, qkv, kQkvRows,
+                                              kQRows + kKRows, x, kHidden, t, packed, tolerance,
+                                              kQRows + kKRows, kVRows);
+        failures += verify_sampled_projection(
+            "W8 GDN z FP64 oracle" + suffix, from_device_bf16_ptr(z_got.data(), z_count), kZRows, 0,
+            x, kHidden, t, packed, tolerance, kQkvRows, kZRows);
+        failures += qkv_got.verify_guards("W8 GDN qkv" + suffix);
+        failures += z_got.verify_guards("W8 GDN z" + suffix);
+    }
+    return failures;
+}
+
 double silu_fp64(double value) {
     if (value >= 0.0) { return value / (1.0 + std::exp(-value)); }
     const double exp_value = std::exp(value);
@@ -772,6 +899,8 @@ int prefill_fusion_correctness() {
     f += q5_residual_epilogue_correctness(6144, 37u);
     f += q5_residual_epilogue_correctness(17408, 41u);
     f += w8_residual_epilogue_correctness();
+    f += w8_attention_input_correctness();
+    f += w8_gdn_input_correctness();
     return f;
 }
 
@@ -946,6 +1075,8 @@ int main() {
         f += one_quant_shape_sampled(QType::W8G32_F16S, 12288, 2048, 1024, 135u);
         f += one_quant_shape(QType::W8G32_F16S, 9216, 2048, {13, 14, 128, 129}, 137u);
         f += one_quant_shape_sampled(QType::W8G32_F16S, 9216, 2048, 1024, 139u);
+        f += w8_attention_input_correctness();
+        f += w8_gdn_input_correctness();
         std::cout << (f ? "FAIL" : "OK") << " linear W8G32 focused correctness\n";
         return f ? 1 : 0;
     }

@@ -33,6 +33,7 @@
 #include "ops/common/memory.cuh"
 #include "ops/common/warp.cuh"
 #include "ops/linear/w8/w8_rowsplit_launch.h"
+#include "ops/linear/w8/w8_rowsplit_output.cuh"
 #include "ops/linear/w8/w8_rowsplit_storage.cuh"
 
 #include <cuda_bf16.h>
@@ -145,12 +146,12 @@ w8_simt_consume_slab(const __nv_bfloat16* __restrict__ x0, std::int64_t xslab, s
 // full_slabs is computed on the host: k/1024 when k % 8 == 0 and x is 16-byte
 // aligned, else 0 (everything runs through the scalar tail).
 template <class Schedule, int ColsPerTile, int RowsPerCta, int PipelineStages,
-          W8KernelVariant Variant, W8Epilogue Epilogue = W8Epilogue::Store>
+          W8KernelVariant Variant, W8Epilogue Epilogue = W8Epilogue::Store,
+          class Output = W8ContiguousOutput>
 __global__ void w8_rowsplit_gemm_simt_kernel(const __nv_bfloat16* __restrict__ x,
                                              const std::uint8_t* __restrict__ codes,
-                                             const std::uint8_t* __restrict__ scales,
-                                             __nv_bfloat16* __restrict__ out, std::int32_t rows,
-                                             std::int32_t k, std::int32_t cols,
+                                             const std::uint8_t* __restrict__ scales, Output output,
+                                             std::int32_t rows, std::int32_t k, std::int32_t cols,
                                              std::int32_t padded_k, std::int32_t full_slabs) {
     static_assert(Variant == W8KernelVariant::Full || Variant == W8KernelVariant::Predicated);
     using Codec                = typename Schedule::Codec;
@@ -162,14 +163,16 @@ __global__ void w8_rowsplit_gemm_simt_kernel(const __nv_bfloat16* __restrict__ x
     __shared__ __align__(16) uint4 s_hi[RowsPerCta][PipelineStages][kHighU4Alloc];
     __shared__ __align__(16) std::uint32_t s_sc[RowsPerCta][PipelineStages][Schedule::kScaleU32];
 
-    const int lane = static_cast<int>(threadIdx.x) & 31;
-    const int warp = static_cast<int>(threadIdx.x) >> 5;
-    const int row  = static_cast<int>(blockIdx.x) * RowsPerCta + warp;
+    const int lane     = static_cast<int>(threadIdx.x) & 31;
+    const int warp     = static_cast<int>(threadIdx.x) >> 5;
+    const int cta_row0 = static_cast<int>(blockIdx.x) * RowsPerCta;
+    const int row      = cta_row0 + warp;
     if constexpr (!kFull) {
         if (row >= rows) { return; }
     }
-    const int col0  = static_cast<int>(blockIdx.y) * ColsPerTile;
-    const int ncols = kFull ? ColsPerTile : min(ColsPerTile, cols - col0);
+    const W8OutputTile output_tile = output.tile(cta_row0);
+    const int col0                 = static_cast<int>(blockIdx.y) * ColsPerTile;
+    const int ncols                = kFull ? ColsPerTile : min(ColsPerTile, cols - col0);
 
     const int kg_padded           = padded_k / Codec::kGroupK;
     const std::uint8_t* code_row  = codes + static_cast<std::int64_t>(row) * kg_padded * 32;
@@ -237,11 +240,11 @@ __global__ void w8_rowsplit_gemm_simt_kernel(const __nv_bfloat16* __restrict__ x
         float a = acc[tt];
         a       = warp_reduce_sum(a);
         if (lane == 0) {
-            const std::int64_t index = static_cast<std::int64_t>(col0 + tt) * rows + row;
+            __nv_bfloat16* destination = output_tile.at(row, col0 + tt);
             if constexpr (Epilogue == W8Epilogue::Residual) {
-                a = __bfloat162float(out[index]) + a;
+                a = __bfloat162float(*destination) + a;
             }
-            out[index] = __float2bfloat16_rn(a);
+            *destination = __float2bfloat16_rn(a);
         }
     }
 }

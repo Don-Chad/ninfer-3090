@@ -87,6 +87,23 @@ cmake --build build -j --target ninfer_input_proj_bench
 The four-projection and materialize/copy controls exist only in this benchmark and are not
 production-callable routes.
 
+## 35B W8 input-projection Op benchmark
+
+`ninfer_w8_input_proj_bench` measures the exact future-target W8 Attention `[9216,2048]` and GDN
+`[12288,2048]` multi-output Ops. Production writes independent contiguous consumer allocations
+directly. The controls expose each compiled SIMT/MMA candidate plus the semantically equivalent
+parent Linear alone and parent Linear followed by four or two column extracts. Each timed sample is
+preceded by a 256 MiB L2 flush.
+
+```bash
+cmake --build build -j --target ninfer_w8_input_proj_bench
+./build/bench/ninfer_w8_input_proj_bench \
+  --op all --t-sweep 1,2,4,8,12,13,16,17,32,64,128,129,256,512,1024 \
+  --warmup 10 --repeat 50 --csv-out profiles/bench/w8_input_proj_final.csv
+```
+
+The executable is an Op benchmark only; it does not register a 35B Engine target.
+
 ## Target MTP round benchmark
 
 `ninfer_qwen3_6_27b_mtp_round_bench` measures the registered target's native proposal and

@@ -1,6 +1,8 @@
 #include "ninfer/ops/gdn_input_proj.h"
 #include "ops/attn_input_proj/q4_q5/q4_q5_attn_input_plan.h"
+#include "ops/attn_input_proj/w8/w8_attn_input_plan.h"
 #include "ops/gdn_input_proj/q4_q5/q4_q5_gdn_input_plan.h"
+#include "ops/gdn_input_proj/w8/w8_gdn_input_plan.h"
 
 #include <array>
 #include <cstddef>
@@ -17,6 +19,11 @@ using ninfer::ops::detail::Q4Q5GdnInputProblem;
 using ninfer::ops::detail::Q4Q5GdnInputScheduleId;
 using ninfer::ops::detail::Q4ScheduleId;
 using ninfer::ops::detail::Q5ScheduleId;
+using ninfer::ops::detail::W8AttnInputProblem;
+using ninfer::ops::detail::W8AttnInputScheduleId;
+using ninfer::ops::detail::W8GdnInputProblem;
+using ninfer::ops::detail::W8GdnInputScheduleId;
+using ninfer::ops::detail::W8KernelVariant;
 
 int failures = 0;
 
@@ -110,6 +117,79 @@ void gdn_route_tests() {
     });
 }
 
+void w8_attn_route_tests() {
+    struct Case {
+        std::int32_t cols;
+        W8AttnInputScheduleId schedule;
+        W8KernelVariant variant;
+    };
+
+    constexpr std::array<Case, 12> cases{{
+        {1, W8AttnInputScheduleId::DecodeR8Direct, W8KernelVariant::None},
+        {2, W8AttnInputScheduleId::SimtR8C4, W8KernelVariant::Predicated},
+        {4, W8AttnInputScheduleId::SimtR8C4, W8KernelVariant::Full},
+        {12, W8AttnInputScheduleId::SimtR8C4, W8KernelVariant::Full},
+        {13, W8AttnInputScheduleId::MmaR32C128, W8KernelVariant::Predicated},
+        {14, W8AttnInputScheduleId::MmaR32C128, W8KernelVariant::Predicated},
+        {127, W8AttnInputScheduleId::MmaR32C128, W8KernelVariant::Predicated},
+        {128, W8AttnInputScheduleId::MmaR32C128, W8KernelVariant::Full},
+        {129, W8AttnInputScheduleId::MmaR64C128, W8KernelVariant::Predicated},
+        {256, W8AttnInputScheduleId::MmaR64C128, W8KernelVariant::Full},
+        {1024, W8AttnInputScheduleId::MmaR64C128, W8KernelVariant::Full},
+        {2048, W8AttnInputScheduleId::MmaR64C128, W8KernelVariant::Full},
+    }};
+    for (const Case test : cases) {
+        const W8AttnInputProblem problem{2048, 4096, 512, 9216, 2048, test.cols};
+        const auto plan = ninfer::ops::detail::w8_attn_input_resolve_plan(problem);
+        if (plan.schedule != test.schedule || plan.variant != test.variant ||
+            plan.workspace_bytes != 0) {
+            std::cerr << "wrong W8 attention input route C=" << test.cols << '\n';
+            ++failures;
+        }
+    }
+    expect_invalid("W8 attention C0", [] {
+        (void)ninfer::ops::detail::w8_attn_input_resolve_plan({2048, 4096, 512, 9216, 2048, 0});
+    });
+    expect_invalid("W8 attention unsupported shape", [] {
+        (void)ninfer::ops::detail::w8_attn_input_resolve_plan({2048, 4096, 512, 9217, 2048, 1});
+    });
+}
+
+void w8_gdn_route_tests() {
+    struct Case {
+        std::int32_t cols;
+        W8GdnInputScheduleId schedule;
+        W8KernelVariant variant;
+    };
+
+    constexpr std::array<Case, 9> cases{{
+        {1, W8GdnInputScheduleId::DecodeR8Direct, W8KernelVariant::None},
+        {2, W8GdnInputScheduleId::SimtR8C4, W8KernelVariant::Predicated},
+        {4, W8GdnInputScheduleId::SimtR8C4, W8KernelVariant::Full},
+        {16, W8GdnInputScheduleId::SimtR8C4, W8KernelVariant::Full},
+        {17, W8GdnInputScheduleId::MmaR64C128, W8KernelVariant::Predicated},
+        {127, W8GdnInputScheduleId::MmaR64C128, W8KernelVariant::Predicated},
+        {128, W8GdnInputScheduleId::MmaR64C128, W8KernelVariant::Full},
+        {129, W8GdnInputScheduleId::MmaR64C128, W8KernelVariant::Predicated},
+        {1024, W8GdnInputScheduleId::MmaR64C128, W8KernelVariant::Full},
+    }};
+    for (const Case test : cases) {
+        const W8GdnInputProblem problem{2048, 8192, 4096, 12288, 2048, test.cols};
+        const auto plan = ninfer::ops::detail::w8_gdn_input_resolve_plan(problem);
+        if (plan.schedule != test.schedule || plan.variant != test.variant ||
+            plan.workspace_bytes != 0) {
+            std::cerr << "wrong W8 GDN input route C=" << test.cols << '\n';
+            ++failures;
+        }
+    }
+    expect_invalid("W8 GDN C0", [] {
+        (void)ninfer::ops::detail::w8_gdn_input_resolve_plan({2048, 8192, 4096, 12288, 2048, 0});
+    });
+    expect_invalid("W8 GDN unsupported shape", [] {
+        (void)ninfer::ops::detail::w8_gdn_input_resolve_plan({2048, 8192, 4095, 12288, 2048, 1});
+    });
+}
+
 void workspace_tests() {
     struct Case {
         std::int32_t capacity;
@@ -135,6 +215,15 @@ void workspace_tests() {
             ++failures;
         }
     }
+    for (const Case test : cases) {
+        const std::size_t actual =
+            ninfer::ops::gdn_input_proj_workspace_bytes(8192, 4096, test.capacity);
+        if (actual != test.bytes) {
+            std::cerr << "W8 GDN input workspace C=" << test.capacity << ": expected " << test.bytes
+                      << ", got " << actual << '\n';
+            ++failures;
+        }
+    }
     expect_invalid("workspace unsupported rows",
                    [] { (void)ninfer::ops::gdn_input_proj_workspace_bytes(4095, 6144, 1); });
     expect_invalid("workspace C0",
@@ -146,7 +235,9 @@ void workspace_tests() {
 int main() {
     attn_route_tests();
     gdn_route_tests();
+    w8_attn_route_tests();
+    w8_gdn_route_tests();
     workspace_tests();
-    std::cout << (failures == 0 ? "OK" : "FAIL") << " Q4/Q5 input projection plans\n";
+    std::cout << (failures == 0 ? "OK" : "FAIL") << " input projection plans\n";
     return failures == 0 ? 0 : 1;
 }

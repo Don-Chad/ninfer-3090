@@ -1036,6 +1036,13 @@ objects as unrelated generic linear calls:
 - the Q6 full head and Q4 draft head use K=2048 fixed warp-row specializations rather than a
   shape-generic fallback.
 
+The central Op layer implements the two W8 input-projection contracts for every positive target T:
+fixed K=2048 decode at `T=1`, closed SIMT/MMA routes for larger T, direct writes to the independent
+consumer allocations, and zero transient workspace. This closes the operator implementation gap;
+it does not by itself add the future 35B binder, schedule, or registered Engine target. Current
+route and qualification details are maintained in the
+[35B operator inventory](qwen3.6-35b-a3b-operator-inventory.md).
+
 For `T>1`, the logical Q/K/gate/V or Q/K/V/Z slices of a single `[N,T]` projection do not become
 independent contiguous tensors: their token stride remains the parent `N`. The fused input kernel
 must therefore accept separate output pointers or explicit output leading dimensions and row

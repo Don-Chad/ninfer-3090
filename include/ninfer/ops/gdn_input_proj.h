@@ -13,9 +13,10 @@
 namespace ninfer::ops {
 
 /**
- * Validates the registered problem and positive token capacity. Every admitted route writes
- * directly to the final output, so the required transient capacity is zero. `max_tokens` is a
- * capacity query, not an execution limit.
+ * Validates a registered problem and positive token capacity. The admitted row pairs are
+ * (4096,6144) for the 27B Q4/Q5 route and (8192,4096) for the 35B W8 QKV/Z route. Every route
+ * writes directly to final outputs, so the required transient capacity is zero. `max_tokens` is
+ * a capacity query, not an execution limit.
  */
 [[nodiscard]] std::size_t gdn_input_proj_workspace_bytes(std::int32_t qk_rows,
                                                          std::int32_t value_rows,
@@ -46,6 +47,16 @@ namespace ninfer::ops {
  *   No transient bytes are required. The retained arena boundary is caller-owned and is not used.
  */
 void gdn_input_proj(const Tensor& x, const Weight& qk_weight, const Weight& v_weight, Tensor& qkv,
+                    WorkspaceArena& ws, cudaStream_t stream);
+
+/**
+ * Qwen3.6-35B W8 specialization. The one W8G32_F16S RowSplit parent has shape [12288,2048]
+ * and stored row order [query 2048, key 2048, value 4096, z 4096]. `x` is contiguous BF16
+ * [2048,T], qkv is contiguous BF16 [8192,T] in the exact causal-convolution channel order, and z
+ * is an independent contiguous BF16 [4096,T] output. Every route writes both allocations directly
+ * and requires no transient workspace. T may be any positive value.
+ */
+void gdn_input_proj(const Tensor& x, const Weight& query_key_value_z_weight, Tensor& qkv, Tensor& z,
                     WorkspaceArena& ws, cudaStream_t stream);
 
 } // namespace ninfer::ops

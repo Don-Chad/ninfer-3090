@@ -29,4 +29,15 @@ void attn_input_proj(const Tensor& x, const Weight& query_key_weight,
                      const Weight& gate_value_weight, Tensor& q, Tensor& gate, Tensor& k, Tensor& v,
                      WorkspaceArena& ws, cudaStream_t stream);
 
+/**
+ * Qwen3.6-35B W8 specialization. The one W8G32_F16S RowSplit parent has shape [9216,2048]
+ * and stored row order [query 4096, key 512, gate 4096, value 512]. `x` is contiguous BF16
+ * [2048,T], q/gate are contiguous BF16 [4096,T], and k/v are contiguous BF16 [512,T]. Every
+ * route writes the four independent final allocations directly; no parent output or transient
+ * workspace is materialized. T may be any positive value. The observable outputs use the same
+ * independent exact-decode oracle and BF16 boundary described above.
+ */
+void attn_input_proj(const Tensor& x, const Weight& query_key_gate_value_weight, Tensor& q,
+                     Tensor& gate, Tensor& k, Tensor& v, WorkspaceArena& ws, cudaStream_t stream);
+
 } // namespace ninfer::ops

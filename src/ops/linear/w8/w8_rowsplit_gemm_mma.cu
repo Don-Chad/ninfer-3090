@@ -23,8 +23,9 @@ void launch_w8_cfg(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t s
     const auto* codes  = static_cast<const std::uint8_t*>(w.qdata);
     const auto* scales = static_cast<const std::uint8_t*>(w.scales);
     auto* outp         = static_cast<__nv_bfloat16*>(out.data);
+    const W8ContiguousOutput output{outp, m};
     w8_rowsplit_gemm_mma_kernel<Cfg, Variant>
-        <<<grid, Cfg::THREADS, 0, stream>>>(xp, codes, scales, outp, m, k, n, padded_k);
+        <<<grid, Cfg::THREADS, 0, stream>>>(xp, codes, scales, output, m, k, n, padded_k);
 }
 
 template <class Cfg>

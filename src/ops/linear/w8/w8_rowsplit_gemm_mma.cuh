@@ -10,6 +10,7 @@
 
 #include "ops/common/mma.cuh"
 #include "ops/linear/w8/w8_rowsplit_launch.h"
+#include "ops/linear/w8/w8_rowsplit_output.cuh"
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -56,11 +57,12 @@ __device__ __forceinline__ int w8g32_swz64(int row, int col) {
     return (((col >> 3) ^ (row & 7)) << 3) | (col & 7);
 }
 
-template <class Cfg, W8KernelVariant Variant, W8Epilogue Epilogue = W8Epilogue::Store>
+template <class Cfg, W8KernelVariant Variant, W8Epilogue Epilogue = W8Epilogue::Store,
+          class Output = W8ContiguousOutput>
 __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void w8_rowsplit_gemm_mma_kernel(
     const __nv_bfloat16* __restrict__ x, const std::uint8_t* __restrict__ codes,
-    const std::uint8_t* __restrict__ scales, __nv_bfloat16* __restrict__ out, std::int32_t m,
-    std::int32_t k, std::int32_t n, std::int32_t padded_k) {
+    const std::uint8_t* __restrict__ scales, Output output, std::int32_t m, std::int32_t k,
+    std::int32_t n, std::int32_t padded_k) {
     static_assert(Variant == W8KernelVariant::Full || Variant == W8KernelVariant::Predicated);
     constexpr bool FullTiles = Variant == W8KernelVariant::Full;
     constexpr int BM         = Cfg::BM;
@@ -85,9 +87,10 @@ __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void w8_rowsplit_gem
     const int gid  = lane >> 2;
     const int lid  = lane & 3;
 
-    const int m0 = static_cast<int>(blockIdx.x) * BM;
-    const int n0 = static_cast<int>(blockIdx.y) * BN;
-    const int kg = padded_k / 32;
+    const int m0                   = static_cast<int>(blockIdx.x) * BM;
+    const int n0                   = static_cast<int>(blockIdx.y) * BN;
+    const int kg                   = padded_k / 32;
+    const W8OutputTile output_tile = output.tile(m0);
 
     float acc[MT][NT][4];
 #pragma unroll
@@ -294,34 +297,34 @@ __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void w8_rowsplit_gem
                 W8Bf16x8Bits projected;
                 projected.raw = load_vec<uint4>(&projected_shared[local_col * BM + local_row]);
                 W8Bf16x8Bits residual;
-                residual.raw = load_vec<uint4>(&out[static_cast<std::int64_t>(col) * m + row]);
+                residual.raw = load_vec<uint4>(output_tile.at(row, col));
 #pragma unroll
                 for (int pair = 0; pair < 4; ++pair) {
                     residual.pair[pair] = __floats2bfloat162_rn(
                         __low2float(residual.pair[pair]) + __low2float(projected.pair[pair]),
                         __high2float(residual.pair[pair]) + __high2float(projected.pair[pair]));
                 }
-                store_vec(&out[static_cast<std::int64_t>(col) * m + row], residual.raw);
+                store_vec(output_tile.at(row, col), residual.raw);
             } else if (col < n && row < m) {
                 if (row + kRowsPerPack <= m) {
                     W8Bf16x8Bits projected;
                     projected.raw = load_vec<uint4>(&projected_shared[local_col * BM + local_row]);
                     W8Bf16x8Bits residual;
-                    residual.raw = load_vec<uint4>(&out[static_cast<std::int64_t>(col) * m + row]);
+                    residual.raw = load_vec<uint4>(output_tile.at(row, col));
 #pragma unroll
                     for (int pair = 0; pair < 4; ++pair) {
                         residual.pair[pair] = __floats2bfloat162_rn(
                             __low2float(residual.pair[pair]) + __low2float(projected.pair[pair]),
                             __high2float(residual.pair[pair]) + __high2float(projected.pair[pair]));
                     }
-                    store_vec(&out[static_cast<std::int64_t>(col) * m + row], residual.raw);
+                    store_vec(output_tile.at(row, col), residual.raw);
                 } else {
 #pragma unroll
                     for (int i = 0; i < kRowsPerPack; ++i) {
                         if (row + i < m) {
-                            const std::int64_t index = static_cast<std::int64_t>(col) * m + row + i;
-                            out[index]               = __float2bfloat16_rn(
-                                __bfloat162float(out[index]) +
+                            __nv_bfloat16* destination = output_tile.at(row + i, col);
+                            *destination               = __float2bfloat16_rn(
+                                __bfloat162float(*destination) +
                                 __bfloat162float(projected_shared[local_col * BM + local_row + i]));
                         }
                     }
@@ -339,23 +342,15 @@ __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void w8_rowsplit_gem
                 const int c1   = c0 + 1;
                 const float* a = acc[mi][ni];
                 if constexpr (FullTiles) {
-                    out[static_cast<std::int64_t>(c0) * m + r0] = __float2bfloat16_rn(a[0]);
-                    out[static_cast<std::int64_t>(c1) * m + r0] = __float2bfloat16_rn(a[1]);
-                    out[static_cast<std::int64_t>(c0) * m + r1] = __float2bfloat16_rn(a[2]);
-                    out[static_cast<std::int64_t>(c1) * m + r1] = __float2bfloat16_rn(a[3]);
+                    *output_tile.at(r0, c0) = __float2bfloat16_rn(a[0]);
+                    *output_tile.at(r0, c1) = __float2bfloat16_rn(a[1]);
+                    *output_tile.at(r1, c0) = __float2bfloat16_rn(a[2]);
+                    *output_tile.at(r1, c1) = __float2bfloat16_rn(a[3]);
                 } else {
-                    if (r0 < m && c0 < n) {
-                        out[static_cast<std::int64_t>(c0) * m + r0] = __float2bfloat16_rn(a[0]);
-                    }
-                    if (r0 < m && c1 < n) {
-                        out[static_cast<std::int64_t>(c1) * m + r0] = __float2bfloat16_rn(a[1]);
-                    }
-                    if (r1 < m && c0 < n) {
-                        out[static_cast<std::int64_t>(c0) * m + r1] = __float2bfloat16_rn(a[2]);
-                    }
-                    if (r1 < m && c1 < n) {
-                        out[static_cast<std::int64_t>(c1) * m + r1] = __float2bfloat16_rn(a[3]);
-                    }
+                    if (r0 < m && c0 < n) { *output_tile.at(r0, c0) = __float2bfloat16_rn(a[0]); }
+                    if (r0 < m && c1 < n) { *output_tile.at(r0, c1) = __float2bfloat16_rn(a[1]); }
+                    if (r1 < m && c0 < n) { *output_tile.at(r1, c0) = __float2bfloat16_rn(a[2]); }
+                    if (r1 < m && c1 < n) { *output_tile.at(r1, c1) = __float2bfloat16_rn(a[3]); }
                 }
             }
         }

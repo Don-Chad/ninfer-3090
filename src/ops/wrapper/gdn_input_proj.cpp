@@ -1,6 +1,7 @@
 #include "ninfer/ops/gdn_input_proj.h"
 
 #include "ops/gdn_input_proj/q4_q5/q4_q5_gdn_input_plan.h"
+#include "ops/gdn_input_proj/w8/w8_gdn_input_plan.h"
 
 #include <cstdint>
 #include <stdexcept>
@@ -37,11 +38,25 @@ void require_rowsplit(const Weight& weight, QType qtype, std::int32_t rows, cons
     }
 }
 
+void require_w8_rowsplit(const Weight& weight, std::int32_t rows, const char* label) {
+    if (weight.qtype != QType::W8G32_F16S || weight.layout != QuantLayout::RowSplit ||
+        weight.scale_dtype != DType::FP16 || weight.group_size != 32 || weight.group != 32 ||
+        weight.ndim != 2 || weight.n != rows || weight.k != 2048 || weight.shape[0] != rows ||
+        weight.shape[1] != 2048 || weight.padded_shape[0] != rows ||
+        weight.padded_shape[1] != 2048 || weight.qhigh != nullptr || weight.high_plane_bytes != 0 ||
+        !aligned_to(weight.qdata, 16) || !aligned_to(weight.scales, 16)) {
+        throw std::invalid_argument(std::string("gdn_input_proj: invalid ") + label);
+    }
+}
+
 } // namespace
 
 std::size_t gdn_input_proj_workspace_bytes(std::int32_t qk_rows, std::int32_t value_rows,
                                            std::int32_t max_tokens) {
-    return detail::q4_q5_gdn_input_capacity_workspace_bytes(qk_rows, value_rows, max_tokens);
+    if (qk_rows == 4096 && value_rows == 6144) {
+        return detail::q4_q5_gdn_input_capacity_workspace_bytes(qk_rows, value_rows, max_tokens);
+    }
+    return detail::w8_gdn_input_capacity_workspace_bytes(qk_rows, value_rows, max_tokens);
 }
 
 void gdn_input_proj(const Tensor& x, const Weight& qk_weight, const Weight& v_weight, Tensor& qkv,
@@ -57,6 +72,23 @@ void gdn_input_proj(const Tensor& x, const Weight& qk_weight, const Weight& v_we
     require_rowsplit(v_weight, QType::Q5G64_F16S, kVRows, "value weight");
 
     detail::q4_q5_gdn_input_dispatch(x, qk_weight, v_weight, qkv, ws, stream);
+}
+
+void gdn_input_proj(const Tensor& x, const Weight& query_key_value_z_weight, Tensor& qkv, Tensor& z,
+                    WorkspaceArena& ws, cudaStream_t stream) {
+    constexpr std::int32_t kHidden  = 2048;
+    constexpr std::int32_t kQkvRows = 8192;
+    constexpr std::int32_t kZRows   = 4096;
+    constexpr std::int32_t kRows    = kQkvRows + kZRows;
+    const std::int32_t cols         = x.ne[1];
+    if (cols <= 0) { throw std::invalid_argument("gdn_input_proj: T must be positive"); }
+    require_matrix(x, kHidden, cols, "x");
+    require_matrix(qkv, kQkvRows, cols, "qkv");
+    require_matrix(z, kZRows, cols, "z");
+    require_w8_rowsplit(query_key_value_z_weight, kRows, "query/key/value/z weight");
+
+    (void)ws;
+    detail::w8_gdn_input_dispatch(x, query_key_value_z_weight, qkv, z, stream);
 }
 
 } // namespace ninfer::ops
