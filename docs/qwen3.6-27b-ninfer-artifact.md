@@ -133,27 +133,46 @@ source file bytes without an internal archive or filename header.
 
 | Order | Object name | Encoding | Source filename | Runtime meaning |
 |---:|---|---|---|---|
-| 0 | `frontend/tokenizer.json` | `raw-bytes-v1` | `tokenizer.json` | BPE vocabulary, merges, added tokens, and token bytes |
-| 1 | `frontend/tokenizer_config.json` | `raw-bytes-v1` | `tokenizer_config.json` | tokenizer prefix and special-token configuration |
+| 0 | `frontend/tokenizer.json` | `raw-bytes-v1` | `tokenizer.json` | BPE vocabulary, merges, token bytes, and added-token ids through 248069 |
+| 1 | `frontend/tokenizer_config.json` | `raw-bytes-v1` | `tokenizer_config.json` | complete added-token decoder, prefix, and special-token policy |
 | 2 | `frontend/chat_template.jinja` | `raw-bytes-v1` | `chat_template.jinja` | registered Qwen template identity and semantics |
 | 3 | `frontend/generation_config.json` | `raw-bytes-v1` | `generation_config.json` | model-default stop token IDs |
 | 4 | `frontend/preprocessor_config.json` | `raw-bytes-v1` | `preprocessor_config.json` | image resize, normalization, and patch limits |
 | 5 | `frontend/video_preprocessor_config.json` | `raw-bytes-v1` | `video_preprocessor_config.json` | video sampling, resize, normalization, and frame limits |
 
 These six payloads are byte-identical to the corresponding 35B-A3B resources. Both artifacts
-therefore carry the same Qwen3.6 family resource set.
+therefore carry the same pinned official Qwen3.6 family resource set:
+
+| Object | SHA-256 |
+|---|---|
+| `frontend/tokenizer.json` | `5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42` |
+| `frontend/tokenizer_config.json` | `5186f0defcd7f232382c7f0aebcd2252d073bb921ab240e407b7ae8745d2b29b` |
+| `frontend/chat_template.jinja` | `e84f32a23fdda27689f868aa4a1a5621f41133e51a48d7f3efcbea2839574259` |
+| `frontend/generation_config.json` | `e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e` |
+| `frontend/preprocessor_config.json` | `27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516` |
+| `frontend/video_preprocessor_config.json` | `7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13` |
 
 `vocab.json`, `merges.txt`, `added_tokens.json`, and `special_tokens_map.json` are not objects in
-this route because `tokenizer.json` already contains the registered tokenizer data.
+this route. The official source does not use the latter two files. The native tokenizer reads the
+base vocabulary, merges, and added-token subset from `tokenizer.json`, merges the agreeing
+definitions from `tokenizer_config.json::added_tokens_decoder`, and appends its config-only ids
+`248070..248076`. Conflicting ids, contents, flags, duplicate mappings, or a hole in the registered
+`0..248076` domain are invalid.
+
+The official processor resources omit class defaults rather than serializing expanded values. The
+native processor resolves `rescale_factor=1/255`, video `fps=2`, `min_frames=4`, and
+`max_frames=768`; any explicitly present value must agree. The compiled renderer follows the
+official template: it accepts at most one leading `system` message, rejects direct `developer` and
+late `system` roles, requires a real user query, and serializes non-string tool arguments as JSON.
 
 The C++ binder retains these payloads as owned strings and constructs the shared Qwen3.6 native
 tokenizer, template renderer, and image/video processor directly from them; it does not create a
 temporary checkpoint directory. The independent Python reference may materialize the six source
 filenames in a temporary directory and consume them through Transformers. The native route validates
-the registered tokenizer domain, required Vision tokens, template identity, and processor
-configuration; the Python route validates the tokenizer domain, Vision tokens, and required library
-processor inputs. MRoPE positions and `rope_delta` are derived prepared-prompt values rather than
-resource contents.
+the official pad-token/template guards, registered tokenizer domain, required Vision tokens, and
+processor configuration; the Python route validates the tokenizer domain, Vision tokens, and
+required library processor inputs. MRoPE positions and `rope_delta` are derived prepared-prompt
+values rather than resource contents.
 
 ## 5. Text and draft-head tensor inventory
 
@@ -397,6 +416,12 @@ The selected local source checkpoint is currently:
 /home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16
 ```
 
+It is the official `Qwen/Qwen3.6-27B` resource/configuration set pinned at revision
+`6a9e13bd6fc8f0983b9b99948120bc37f49c13e9`. Its fifteen retained BF16 shards have the same LFS
+SHA-256 object ids as that revision. Conversion report recipe id
+`qwen3_6_27b_rtx5090-v2` denotes this official source-resource contract; tensor recipes, formats,
+layouts, counts, and byte totals are unchanged from v1.
+
 That path is descriptive local provenance, not part of `model_id` and not an artifact validity
 condition. The recipe identifies source tensors by the patterns below, and the converter resolves
 them through `model.safetensors.index.json` one object at a time.
@@ -436,7 +461,6 @@ current selected checkpoint has the following required facts:
 | `vision_config.spatial_merge_size` | 2 |
 | `vision_config.num_position_embeddings` | 2304 |
 | `vision_config.out_hidden_size` | 5120 |
-| root `mtp_num_hidden_layers` | 1 |
 | root `tie_word_embeddings` | `false` |
 | root Vision token IDs | start 248053, end 248054, image 248056, video 248057 |
 
@@ -444,6 +468,11 @@ current selected checkpoint has the following required facts:
 set in Section 2. Every source tensor used by Sections 12 through 14 must exist, have the stated
 shape, and use BF16 source words. The current recipe references 1199 distinct source tensors; all
 1199 exist in the selected checkpoint and are BF16.
+
+Before source tensors are opened for conversion, all six resource payloads must match the official
+SHA-256 profile in Section 4. MTP depth is read only from
+`text_config.mtp_num_hidden_layers`; a root-level alias is neither required nor accepted as source
+authority.
 
 ## 12. Common numeric conversion rules
 
@@ -692,6 +721,13 @@ compared all retired value/z code, high-bit, and scale planes with their new par
 before replacing the canonical artifact. The canonical artifact was then re-inspected, re-verified
 against the source checkpoint, and loaded through the public C++ Engine. The recipe ID and common
 container version did not change, and no compatibility binder or obsolete artifact was retained.
+
+The 2026-07-18 official-checkpoint cutover preserved every shard inode, size, mtime, and content id,
+then regenerated and atomically promoted the canonical artifact with recipe id
+`qwen3_6_27b_rtx5090-v2`. Its 1118-tensor descriptor signature and component byte totals are
+unchanged; its six resource payloads now match Section 4. The promoted bytes passed source
+verification, artifact-native Transformers frontend checks, and a registered C++ Engine greedy
+smoke. The existing 35B-A3B artifact already matched the same resource profile and was retained.
 
 These are structural, numerical, and behavioral checks of the selected route. They do not require
 a fixed file hash, byte-identical regeneration, or exact reproduction of a probabilistic token

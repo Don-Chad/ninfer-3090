@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -156,21 +157,63 @@ AddedToken parse_added_token(const Json& item, std::string_view label) {
     return token;
 }
 
-std::vector<AddedToken> load_added_tokens(const Json& root, std::string_view label,
-                                          std::vector<std::string>& id_to_token,
-                                          const std::unordered_set<int>& occupied_vocab_ids) {
+AddedToken parse_added_token_decoder_entry(int id, const Json& item, std::string_view label) {
+    if (!item.is_object()) {
+        throw std::invalid_argument("field added_tokens_decoder item must be object in " +
+                                    std::string(label));
+    }
+    AddedToken token;
+    token.id          = id;
+    token.content     = require_string_field(item, "content", label);
+    token.single_word = require_bool_field(item, "single_word", label);
+    token.lstrip      = require_bool_field(item, "lstrip", label);
+    token.rstrip      = require_bool_field(item, "rstrip", label);
+    token.normalized  = require_bool_field(item, "normalized", label);
+    token.special     = require_bool_field(item, "special", label);
+    return token;
+}
+
+void validate_supported_added_token(const AddedToken& token, std::string_view label) {
+    if (token.content.empty()) {
+        throw std::invalid_argument("added token content must not be empty in " +
+                                    std::string(label));
+    }
+    if (token.single_word || token.lstrip || token.rstrip || token.normalized) {
+        throw std::invalid_argument("Tokenizer only supports added tokens with single_word=false, "
+                                    "lstrip=false, rstrip=false, and normalized=false in " +
+                                    std::string(label));
+    }
+}
+
+bool same_added_token(const AddedToken& lhs, const AddedToken& rhs) noexcept {
+    return lhs.id == rhs.id && lhs.content == rhs.content && lhs.single_word == rhs.single_word &&
+           lhs.lstrip == rhs.lstrip && lhs.rstrip == rhs.rstrip &&
+           lhs.normalized == rhs.normalized && lhs.special == rhs.special;
+}
+
+int parse_added_token_decoder_id(std::string_view key, std::string_view label) {
+    std::int64_t parsed     = -1;
+    const auto [end, error] = std::from_chars(key.data(), key.data() + key.size(), parsed);
+    if (error != std::errc{} || end != key.data() + key.size() || parsed < 0 ||
+        parsed > kMaxTokenId || std::to_string(parsed) != key) {
+        throw std::invalid_argument("added_tokens_decoder key must be a nonnegative token id in " +
+                                    std::string(label));
+    }
+    return static_cast<int>(parsed);
+}
+
+std::vector<AddedToken>
+load_added_tokens(const Json& root, std::string_view label, std::vector<std::string>& id_to_token,
+                  const std::unordered_set<int>& occupied_vocab_ids,
+                  const std::unordered_map<std::string, int>& occupied_vocab_tokens) {
     const Json& added = require_array_field(root, "added_tokens", label);
     std::vector<AddedToken> tokens;
     tokens.reserve(added.size());
     std::unordered_set<int> seen_added_ids;
+    std::unordered_map<std::string, int> seen_added_contents;
     for (const Json& item : added) {
         AddedToken token = parse_added_token(item, label);
-        if (token.single_word || token.lstrip || token.rstrip || token.normalized) {
-            throw std::invalid_argument(
-                "Tokenizer only supports added tokens with single_word=false, "
-                "lstrip=false, rstrip=false, and normalized=false in " +
-                std::string(label));
-        }
+        validate_supported_added_token(token, label);
         const auto index = static_cast<std::size_t>(token.id);
         if (occupied_vocab_ids.contains(token.id)) {
             throw std::invalid_argument("field added_tokens overlaps existing id in " +
@@ -180,11 +223,74 @@ std::vector<AddedToken> load_added_tokens(const Json& root, std::string_view lab
             throw std::invalid_argument("field added_tokens has duplicate id in " +
                                         std::string(label));
         }
+        if (occupied_vocab_tokens.contains(token.content) ||
+            !seen_added_contents.emplace(token.content, token.id).second) {
+            throw std::invalid_argument("field added_tokens has duplicate content mapping in " +
+                                        std::string(label));
+        }
         if (index >= id_to_token.size()) { id_to_token.resize(index + 1); }
         id_to_token.at(static_cast<std::size_t>(token.id)) = token.content;
         tokens.push_back(std::move(token));
     }
     return tokens;
+}
+
+void merge_added_tokens_decoder(const Json& root, std::string_view label,
+                                std::vector<std::string>& id_to_token,
+                                const std::unordered_set<int>& occupied_vocab_ids,
+                                const std::unordered_map<std::string, int>& occupied_vocab_tokens,
+                                std::vector<AddedToken>& tokens) {
+    const Json& decoder = require_object_field(root, "added_tokens_decoder", label);
+    std::unordered_map<int, std::size_t> token_by_id;
+    std::unordered_map<std::string, int> token_by_content;
+    std::unordered_set<int> decoder_ids;
+    token_by_id.reserve(tokens.size() + decoder.size());
+    token_by_content.reserve(tokens.size() + decoder.size());
+    for (std::size_t index = 0; index < tokens.size(); ++index) {
+        token_by_id.emplace(tokens[index].id, index);
+        token_by_content.emplace(tokens[index].content, tokens[index].id);
+    }
+
+    for (const auto& item : decoder.items()) {
+        const int id = parse_added_token_decoder_id(item.key(), label);
+        if (!decoder_ids.insert(id).second) {
+            throw std::invalid_argument("added_tokens_decoder has duplicate id mapping in " +
+                                        std::string(label));
+        }
+        AddedToken token = parse_added_token_decoder_entry(id, item.value(), label);
+        validate_supported_added_token(token, label);
+
+        const auto existing_id = token_by_id.find(id);
+        if (existing_id != token_by_id.end()) {
+            if (!same_added_token(tokens.at(existing_id->second), token)) {
+                throw std::invalid_argument("conflicting added-token definition for id " +
+                                            std::to_string(id) +
+                                            " between tokenizer.json and tokenizer_config.json");
+            }
+            continue;
+        }
+        if (occupied_vocab_ids.contains(id)) {
+            throw std::invalid_argument("added_tokens_decoder overlaps vocabulary id " +
+                                        std::to_string(id));
+        }
+        if (token_by_content.contains(token.content) ||
+            occupied_vocab_tokens.contains(token.content)) {
+            throw std::invalid_argument("conflicting added-token content mapping for " +
+                                        token.content);
+        }
+
+        const auto index = static_cast<std::size_t>(id);
+        if (index >= id_to_token.size()) { id_to_token.resize(index + 1); }
+        if (!id_to_token[index].empty()) {
+            throw std::invalid_argument("duplicate tokenizer mapping for id " + std::to_string(id));
+        }
+        id_to_token[index] = token.content;
+        token_by_id.emplace(id, tokens.size());
+        token_by_content.emplace(token.content, id);
+        tokens.push_back(std::move(token));
+    }
+    std::sort(tokens.begin(), tokens.end(),
+              [](const AddedToken& lhs, const AddedToken& rhs) { return lhs.id < rhs.id; });
 }
 
 std::vector<int> load_default_stop_token_ids(std::string_view contents) {
@@ -494,11 +600,15 @@ void append_bpe_ids(std::vector<int>& ids, std::string_view text, bool has_bpe_m
 } // namespace
 
 Tokenizer::Tokenizer(TokenizerResources resources) {
-    if (resources.tokenizer_json.empty() || resources.generation_config_json.empty()) {
+    if (resources.tokenizer_json.empty() || resources.tokenizer_config_json.empty() ||
+        resources.generation_config_json.empty()) {
         throw std::invalid_argument("embedded tokenizer resources are empty");
     }
-    constexpr std::string_view tokenizer_label = "tokenizer.json";
-    const Json root   = read_json_asset(resources.tokenizer_json, tokenizer_label);
+    constexpr std::string_view tokenizer_label        = "tokenizer.json";
+    constexpr std::string_view tokenizer_config_label = "tokenizer_config.json";
+    const Json root = read_json_asset(resources.tokenizer_json, tokenizer_label);
+    const Json tokenizer_config =
+        read_json_asset(resources.tokenizer_config_json, tokenizer_config_label);
     const Json& model = require_object_field(root, "model", tokenizer_label);
 
     VocabMetadata vocab_metadata = load_vocab(model, tokenizer_label);
@@ -508,8 +618,10 @@ Tokenizer::Tokenizer(TokenizerResources resources) {
     for (const int id : vocab_metadata.occupied_ids) {
         valid_token_ids_.at(static_cast<std::size_t>(id)) = true;
     }
-    added_tokens_ =
-        load_added_tokens(root, tokenizer_label, id_to_token_, vocab_metadata.occupied_ids);
+    added_tokens_ = load_added_tokens(root, tokenizer_label, id_to_token_,
+                                      vocab_metadata.occupied_ids, vocab_token_to_id_);
+    merge_added_tokens_decoder(tokenizer_config, tokenizer_config_label, id_to_token_,
+                               vocab_metadata.occupied_ids, vocab_token_to_id_, added_tokens_);
     if (valid_token_ids_.size() < id_to_token_.size()) {
         valid_token_ids_.resize(id_to_token_.size());
     }

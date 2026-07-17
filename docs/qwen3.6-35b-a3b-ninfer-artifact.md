@@ -106,7 +106,9 @@ The semantic token-id vocabulary is exactly compatible with the current 27B chec
 comparison establishes the same 248044-entry base token-to-id map, the same 247587 BPE merges after
 normalizing their JSON representation, and the same 33 added-token definitions at ids
 `248044..248076`. Both native tokenizers therefore expose the same 248077-entry `id -> token`
-domain, and the same shortlist id map can be interpreted by either model.
+domain, and the same shortlist id map can be interpreted by either model. The selected local 27B
+tree now uses the pinned official Qwen resources rather than the former Unsloth-expanded
+serialization.
 
 The two checkpoints use byte-identical copies of all six frontend resources in Section 4.2. They
 therefore share one Qwen3.6 frontend contract. The base `tokenizer.json` carries added-token ids only
@@ -330,6 +332,9 @@ self-contained; this duplicate storage does not create a second renderer or proc
 implementation. The Python reference may materialize the retained bytes under their source
 filenames. MRoPE positions, patch data, visual embeddings, and `rope_delta` are request state rather
 than artifact objects.
+
+The 2026-07-18 official-checkpoint cutover rechecked all six hashes and the artifact-native
+Transformers frontend. The existing 35B artifact already conformed and was retained unchanged.
 
 ## 5. Text and optimized-draft inventory
 
@@ -634,6 +639,9 @@ The selected conversion source is:
 /home/neroued/models/llm/qwen/Qwen3.6-35B-A3B/base-hf-bf16
 ```
 
+It is pinned to official `Qwen/Qwen3.6-35B-A3B` revision
+`995ad96eacd98c81ed38be0c5b274b04031597b0`.
+
 The implementation is organized without sibling-target dependencies:
 
 ```text
@@ -712,9 +720,11 @@ Vision = 333
 total = 693 + 19 + 333 = 1045
 ```
 
-Frontend files must exist under their exact names and are retained byte-for-byte. The exact
-tokenizer and processor semantics in Sections 2 and 4 are accepted checkpoint facts; conversion
-does not add a second defensive parser for resources that the family frontend will consume.
+Frontend files must exist under their exact names and are retained byte-for-byte. Before an
+artifact writer is opened, the common Qwen3.6 resource preflight requires all six payload SHA-256
+values to equal the official family profile recorded in the 27B artifact contract. This guard is
+passive source validation only; tokenizer and processor semantics remain owned by the family
+frontend rather than duplicated in either target converter.
 
 ## 11. Common conversion rules
 

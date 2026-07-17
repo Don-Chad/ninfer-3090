@@ -1,4 +1,6 @@
 #include "targets/qwen3_6_27b_rtx5090/impl/frontend/frontend.h"
+#include "targets/qwen3_6_27b_rtx5090/impl/frontend/chat_template.h"
+#include "targets/qwen3_6_27b_rtx5090/impl/frontend/tokenizer.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/schedule/schedule.h"
 
@@ -8,7 +10,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -19,6 +23,7 @@ using Frontend          = ninfer::targets::qwen3_6_27b_rtx5090::detail::Frontend
 using FrontendFactory   = ninfer::targets::qwen3_6_27b_rtx5090::detail::FrontendFactory;
 using FrontendResources = ninfer::targets::qwen3_6_27b_rtx5090::detail::FrontendResources;
 using PublishedOutput   = ninfer::targets::qwen3_6_27b_rtx5090::detail::PublishedOutput;
+namespace fi            = ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal;
 
 int check(bool condition, const char* message) {
     if (condition) { return 0; }
@@ -36,31 +41,59 @@ nlohmann::json added(int id, std::string content, bool special = false) {
                           {"special", special}};
 }
 
+nlohmann::json decoder_added(std::string content, bool special = false) {
+    nlohmann::json value = added(0, std::move(content), special);
+    value.erase("id");
+    return value;
+}
+
 FrontendResources resources() {
     FrontendResources result;
-    result.tokenizer_json =
-        nlohmann::json{
-            {"model",
-             {{"type", "BPE"},
-              {"vocab", {{"x", 0}, {"ä", 10}, {"¸", 11}, {"Ń", 12}}},
-              {"merges", nlohmann::json::array()}}},
-            {"added_tokens",
-             nlohmann::json::array(
-                 {added(1, "helloST"), added(2, "OPtail"), added(3, "thought</thi"),
-                  added(4, "nk>\n\nanswer"), added(6, "<eos>", true), added(7, "<0.0 seconds>"),
-                  added(30, "user\n"), added(31, "assistant\n"), added(32, "\n"),
-                  added(248045, "<|im_start|>", true), added(248046, "<|im_end|>", true),
-                  added(248053, "<|vision_start|>", true), added(248054, "<|vision_end|>", true),
-                  added(248056, "<|image_pad|>", true), added(248057, "<|video_pad|>", true),
-                  added(248068, "<think>"), added(248069, "</think>")})}}
-            .dump();
-    result.tokenizer_config_json  = R"({"add_bos_token":false,"add_prefix_space":false})";
-    result.chat_template_jinja    = "enable_thinking <|im_start|> <|vision_start|> vision_start";
+    const nlohmann::json tokens = nlohmann::json::array(
+        {added(1, "helloST"), added(2, "OPtail"), added(3, "thought</thi"),
+         added(4, "nk>\n\nanswer"), added(6, "<eos>", true), added(7, "<0.0 seconds>"),
+         added(30, "user\n"), added(31, "assistant\n"), added(32, "\n"),
+         added(248045, "<|im_start|>", true), added(248046, "<|im_end|>", true),
+         added(248053, "<|vision_start|>", true), added(248054, "<|vision_end|>", true),
+         added(248056, "<|image_pad|>", true), added(248057, "<|video_pad|>", true),
+         added(248068, "<think>"), added(248069, "</think>")});
+    result.tokenizer_json = nlohmann::json{
+        {"model",
+         {{"type", "BPE"},
+          {"vocab", {{"x", 0}, {"ä", 10}, {"¸", 11}, {"Ń", 12}}},
+          {"merges", nlohmann::json::array()}}},
+        {"added_tokens",
+         tokens}}.dump();
+
+    nlohmann::json decoder = nlohmann::json::object();
+    for (const nlohmann::json& token : tokens) {
+        nlohmann::json value = token;
+        const std::string id = std::to_string(value.at("id").get<int>());
+        value.erase("id");
+        decoder[id] = std::move(value);
+    }
+    decoder["248070"]            = decoder_added("<|audio_start|>", true);
+    decoder["248071"]            = decoder_added("<|audio_end|>", true);
+    decoder["248072"]            = decoder_added("<tts_pad>", true);
+    decoder["248073"]            = decoder_added("<tts_text_bos>", true);
+    decoder["248074"]            = decoder_added("<tts_text_eod>", true);
+    decoder["248075"]            = decoder_added("<tts_text_bos_single>", true);
+    decoder["248076"]            = decoder_added("<|audio_pad|>", true);
+    result.tokenizer_config_json = nlohmann::json{
+        {"add_bos_token", false},
+        {"add_prefix_space", false},
+        {"pad_token", "<|endoftext|>"},
+        {"added_tokens_decoder",
+         std::move(decoder)}}.dump();
+    result.chat_template_jinja =
+        "enable_thinking <|im_start|> <|vision_start|> vision_start "
+        "No user query found in messages. System message must be at the beginning. "
+        "Unexpected message role. args_value | tojson | safe";
     result.generation_config_json = R"({"eos_token_id":[6]})";
     result.preprocessor_config_json =
-        R"({"patch_size":16,"temporal_patch_size":2,"merge_size":2,"image_mean":[0.5,0.5,0.5],"image_std":[0.5,0.5,0.5],"rescale_factor":0.00392156862745098,"size":{"shortest_edge":4096,"longest_edge":16777216}})";
+        R"({"patch_size":16,"temporal_patch_size":2,"merge_size":2,"image_mean":[0.5,0.5,0.5],"image_std":[0.5,0.5,0.5],"size":{"shortest_edge":4096,"longest_edge":16777216}})";
     result.video_preprocessor_config_json =
-        R"({"patch_size":16,"temporal_patch_size":2,"merge_size":2,"image_mean":[0.5,0.5,0.5],"image_std":[0.5,0.5,0.5],"rescale_factor":0.00392156862745098,"size":{"shortest_edge":4096,"longest_edge":25165824},"fps":2,"min_frames":4,"max_frames":768})";
+        R"({"patch_size":16,"temporal_patch_size":2,"merge_size":2,"image_mean":[0.5,0.5,0.5],"image_std":[0.5,0.5,0.5],"size":{"shortest_edge":4096,"longest_edge":25165824}})";
     return result;
 }
 
@@ -86,6 +119,184 @@ std::string channel_text(const PublishedOutput& output, ninfer::OutputChannel ch
         if (delta.channel == channel) { result += delta.text; }
     }
     return result;
+}
+
+std::string read_file(const char* path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) { throw std::runtime_error(std::string("failed to open test resource: ") + path); }
+    return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+}
+
+fi::ChatMessage chat_message(std::string role, std::string content) {
+    fi::ChatMessage message;
+    message.role = std::move(role);
+    message.parts.push_back(fi::ChatPart::text_part(std::move(content)));
+    return message;
+}
+
+template <class Callable>
+bool throws_invalid_argument(Callable&& callable) {
+    try {
+        callable();
+    } catch (const std::invalid_argument&) { return true; }
+    return false;
+}
+
+int test_official_tokenizer_merge() {
+    const std::string tokenizer_json =
+        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer.json");
+    const std::string tokenizer_config_json =
+        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer_config.json");
+    const std::string generation_config_json =
+        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/generation_config.json");
+    const fi::Tokenizer tokenizer({.tokenizer_json         = tokenizer_json,
+                                   .tokenizer_config_json  = tokenizer_config_json,
+                                   .generation_config_json = generation_config_json});
+
+    constexpr std::array<std::pair<const char*, int>, 7> appended = {{
+        {"<|audio_start|>", 248070},
+        {"<|audio_end|>", 248071},
+        {"<tts_pad>", 248072},
+        {"<tts_text_bos>", 248073},
+        {"<tts_text_eod>", 248074},
+        {"<tts_text_bos_single>", 248075},
+        {"<|audio_pad|>", 248076},
+    }};
+    int failures = check(tokenizer.has_exact_token_domain(248077),
+                         "official tokenizer merge left a hole in the token domain");
+    for (const auto& [text, id] : appended) {
+        const std::vector<int> encoded = tokenizer.encode(text);
+        failures += check(encoded == std::vector<int>{id} && tokenizer.is_special_token(id) &&
+                              tokenizer.decode_token_bytes(id) == text,
+                          "official tokenizer_config.json token did not merge exactly");
+    }
+
+    FrontendResources conflicting = resources();
+    nlohmann::json config         = nlohmann::json::parse(conflicting.tokenizer_config_json);
+    config["added_tokens_decoder"]["248045"]["special"] = false;
+    conflicting.tokenizer_config_json                   = config.dump();
+    failures += check(
+        throws_invalid_argument([&] {
+            fi::Tokenizer invalid({.tokenizer_json         = conflicting.tokenizer_json,
+                                   .tokenizer_config_json  = conflicting.tokenizer_config_json,
+                                   .generation_config_json = conflicting.generation_config_json});
+        }),
+        "conflicting tokenizer/tokenizer_config added-token definitions were accepted");
+    return failures;
+}
+
+int test_official_chat_template() {
+    int failures = 0;
+    failures += check(fi::render_chat({chat_message("user", "hello")}) ==
+                          "<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n",
+                      "ordinary user prompt differs from the official template");
+
+    fi::ChatRenderOptions no_generation;
+    no_generation.add_generation_prompt = false;
+    failures += check(
+        fi::render_chat({chat_message("system", "  be concise  "), chat_message("user", "hello")},
+                        no_generation) == "<|im_start|>system\nbe concise<|im_end|>\n"
+                                          "<|im_start|>user\nhello<|im_end|>\n",
+        "leading system prompt differs from the official template");
+    failures += check(fi::render_chat({chat_message("system", ""), chat_message("user", "hello")},
+                                      no_generation) ==
+                          "<|im_start|>system\n<|im_end|>\n<|im_start|>user\nhello<|im_end|>\n",
+                      "empty leading system prompt differs from the official template");
+
+    fi::ChatMessage tool_assistant = chat_message("assistant", "");
+    tool_assistant.tool_calls.push_back(
+        {.id = "", .name = "f", .arguments_json = R"({"flag":true,"nested":{"x":[1,2]}})"});
+    failures +=
+        check(fi::render_chat({chat_message("user", "hi"), tool_assistant}, no_generation) ==
+                  "<|im_start|>user\nhi<|im_end|>\n"
+                  "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+                  "<tool_call>\n<function=f>\n<parameter=flag>\ntrue\n</parameter>\n"
+                  "<parameter=nested>\n{\"x\": [1, 2]}\n</parameter>\n"
+                  "</function>\n</tool_call><|im_end|>\n",
+              "nested or boolean tool arguments differ from official JSON rendering");
+
+    fi::ChatRenderOptions no_thinking;
+    no_thinking.enable_thinking = false;
+    failures += check(
+        fi::render_chat({chat_message("user", "q1"),
+                         chat_message("assistant", "<think>\nold thought\n</think>\n\nold answer"),
+                         chat_message("user", "q2")},
+                        no_thinking) == "<|im_start|>user\nq1<|im_end|>\n"
+                                        "<|im_start|>assistant\nold answer<|im_end|>\n"
+                                        "<|im_start|>user\nq2<|im_end|>\n"
+                                        "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        "thinking history differs from the official template");
+
+    fi::ChatMessage lookup = chat_message("assistant", "");
+    lookup.tool_calls.push_back(
+        {.id = "", .name = "lookup", .arguments_json = R"({"city":"Paris"})"});
+    failures += check(
+        fi::render_chat({chat_message("user", "weather?"), lookup, chat_message("tool", "sunny"),
+                         chat_message("tool", "20C"), chat_message("user", "thanks")},
+                        no_generation) ==
+            "<|im_start|>user\nweather?<|im_end|>\n"
+            "<|im_start|>assistant\n<tool_call>\n<function=lookup>\n"
+            "<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n"
+            "<|im_start|>user\n<tool_response>\nsunny\n</tool_response>\n"
+            "<tool_response>\n20C\n</tool_response><|im_end|>\n"
+            "<|im_start|>user\nthanks<|im_end|>\n",
+        "tool-response grouping differs from the official template");
+
+    fi::ChatRenderOptions tools = no_generation;
+    tools.tool_jsons.push_back(
+        R"({"type":"function","function":{"name":"f","description":"d","parameters":{"type":"object","properties":{"flag":{"type":"boolean"}}}}})");
+    const std::string tools_rendered =
+        fi::render_chat({chat_message("system", "be exact"), chat_message("user", "hi")}, tools);
+    failures += check(
+        tools_rendered.find("\n{\"type\": \"function\", \"function\": {\"name\": \"f\", "
+                            "\"description\": \"d\", \"parameters\": {\"type\": \"object\", "
+                            "\"properties\": {\"flag\": {\"type\": \"boolean\"}}}}}\n</tools>") !=
+                std::string::npos &&
+            tools_rendered.ends_with(
+                "</IMPORTANT>\n\nbe exact<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n"),
+        "tools system block differs from official tojson rendering");
+
+    failures += check(throws_invalid_argument([&] {
+                          (void)fi::render_chat(
+                              {chat_message("developer", "policy"), chat_message("user", "hi")},
+                              no_generation);
+                      }),
+                      "direct developer role was accepted by the model frontend");
+    failures +=
+        check(throws_invalid_argument([&] {
+                  (void)fi::render_chat(
+                      {chat_message("user", "hi"), chat_message("system", "late")}, no_generation);
+              }),
+              "late system role was accepted by the model frontend");
+    failures += check(throws_invalid_argument([&] {
+                          (void)fi::render_chat({chat_message("system", "only")}, no_generation);
+                      }),
+                      "message history without a user query was accepted");
+    failures += check(throws_invalid_argument([&] {
+                          (void)fi::render_chat(
+                              {chat_message("user", "hi"), chat_message("unexpected", "bad")},
+                              no_generation);
+                      }),
+                      "unexpected chat role was accepted");
+    return failures;
+}
+
+int test_official_resource_guards() {
+    FrontendResources stale_pad     = resources();
+    nlohmann::json tokenizer_config = nlohmann::json::parse(stale_pad.tokenizer_config_json);
+    tokenizer_config["pad_token"]   = "<|vision_pad|>";
+    stale_pad.tokenizer_config_json = tokenizer_config.dump();
+    int failures =
+        check(throws_invalid_argument([&] { (void)FrontendFactory::create_component(stale_pad); }),
+              "stale Unsloth pad-token policy was accepted");
+
+    FrontendResources stale_template = resources();
+    stale_template.chat_template_jinja =
+        "enable_thinking <|im_start|> <|vision_start|> vision_start";
+    failures += check(
+        throws_invalid_argument([&] { (void)FrontendFactory::create_component(stale_template); }),
+        "stale Unsloth template guards were accepted");
+    return failures;
 }
 
 int test_text_and_image_prepare(const Frontend& frontend) {
@@ -332,6 +543,9 @@ int main() {
     const FrontendResources owned = resources();
     const Frontend frontend       = FrontendFactory::create_component(owned);
     int failures                  = 0;
+    failures += test_official_tokenizer_merge();
+    failures += test_official_chat_template();
+    failures += test_official_resource_guards();
     failures += test_text_and_image_prepare(frontend);
     failures += test_video_prepare(frontend);
     failures += test_cross_round_stop(frontend);

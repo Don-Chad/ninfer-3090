@@ -34,12 +34,26 @@ namespace fi = frontend_internal;
 constexpr std::size_t kPatchFeatures   = 1536;
 constexpr std::string_view kThinkClose = "</think>";
 constexpr std::size_t kTokenizerDomain = 248077;
+constexpr double kRescaleFactor        = 1.0 / 255.0;
+constexpr double kVideoFps             = 2.0;
+constexpr int kVideoMinFrames          = 4;
+constexpr int kVideoMaxFrames          = 768;
 
 constexpr std::array<std::pair<std::string_view, TokenId>, 4> kVisionSpecialTokens = {{
     {"<|vision_start|>", 248053},
     {"<|vision_end|>", 248054},
     {"<|image_pad|>", 248056},
     {"<|video_pad|>", 248057},
+}};
+
+constexpr std::array<std::pair<std::string_view, TokenId>, 7> kConfigOnlyTokens = {{
+    {"<|audio_start|>", 248070},
+    {"<|audio_end|>", 248071},
+    {"<tts_pad>", 248072},
+    {"<tts_text_bos>", 248073},
+    {"<tts_text_eod>", 248074},
+    {"<tts_text_bos_single>", 248075},
+    {"<|audio_pad|>", 248076},
 }};
 
 Json parse_resource_json(std::string_view bytes, std::string_view name) {
@@ -69,6 +83,18 @@ double require_number(const Json& object, std::string_view field, std::string_vi
         throw std::invalid_argument(std::string(resource) + "." + key + " must be a number");
     }
     return object.at(key).get<double>();
+}
+
+double number_or_default(const Json& object, std::string_view field, std::string_view resource,
+                         double default_value) {
+    const std::string key(field);
+    return object.contains(key) ? require_number(object, field, resource) : default_value;
+}
+
+std::int64_t integer_or_default(const Json& object, std::string_view field,
+                                std::string_view resource, std::int64_t default_value) {
+    const std::string key(field);
+    return object.contains(key) ? require_integer(object, field, resource) : default_value;
 }
 
 const Json& require_object(const Json& object, std::string_view field, std::string_view resource) {
@@ -106,7 +132,7 @@ void validate_pixel_pipeline(const Json& config, std::string_view resource) {
     };
     require_half_triplet("image_mean");
     require_half_triplet("image_std");
-    if (require_number(config, "rescale_factor", resource) != 1.0 / 255.0) {
+    if (number_or_default(config, "rescale_factor", resource, kRescaleFactor) != kRescaleFactor) {
         throw std::invalid_argument(std::string(resource) +
                                     ".rescale_factor does not match the compiled normalization");
     }
@@ -136,11 +162,17 @@ fi::ProcessorOptions processor_options(const FrontendResources& resources) {
     options.video_max_pixels = positive_u64(
         require_integer(video_size, "longest_edge", "video_preprocessor_config.json.size"),
         "video longest_edge");
-    options.video_fps = require_number(video, "fps", "video_preprocessor_config.json");
-    options.video_min_frames =
-        static_cast<int>(require_integer(video, "min_frames", "video_preprocessor_config.json"));
-    options.video_max_frames =
-        static_cast<int>(require_integer(video, "max_frames", "video_preprocessor_config.json"));
+    options.video_fps =
+        number_or_default(video, "fps", "video_preprocessor_config.json", kVideoFps);
+    options.video_min_frames = static_cast<int>(
+        integer_or_default(video, "min_frames", "video_preprocessor_config.json", kVideoMinFrames));
+    options.video_max_frames = static_cast<int>(
+        integer_or_default(video, "max_frames", "video_preprocessor_config.json", kVideoMaxFrames));
+    if (options.video_fps != kVideoFps || options.video_min_frames != kVideoMinFrames ||
+        options.video_max_frames != kVideoMaxFrames) {
+        throw std::invalid_argument(
+            "video_preprocessor_config.json does not match registered sampling defaults");
+    }
 
     return options;
 }
@@ -153,10 +185,21 @@ void validate_auxiliary_resources(const FrontendResources& resources) {
         throw std::invalid_argument(
             "tokenizer_config.json does not match Qwen3.6 tokenizer prefix semantics");
     }
+    if (!tokenizer_config.contains("pad_token") || !tokenizer_config.at("pad_token").is_string() ||
+        tokenizer_config.at("pad_token").get<std::string>() != "<|endoftext|>") {
+        throw std::invalid_argument(
+            "tokenizer_config.json does not use the official <|endoftext|> pad token");
+    }
     if (resources.chat_template_jinja.empty() ||
         resources.chat_template_jinja.find("<|im_start|>") == std::string::npos ||
         resources.chat_template_jinja.find("enable_thinking") == std::string::npos ||
-        resources.chat_template_jinja.find("vision_start") == std::string::npos) {
+        resources.chat_template_jinja.find("vision_start") == std::string::npos ||
+        resources.chat_template_jinja.find("No user query found in messages.") ==
+            std::string::npos ||
+        resources.chat_template_jinja.find("System message must be at the beginning.") ==
+            std::string::npos ||
+        resources.chat_template_jinja.find("Unexpected message role.") == std::string::npos ||
+        resources.chat_template_jinja.find("args_value | tojson | safe") == std::string::npos) {
         throw std::invalid_argument(
             "chat_template.jinja does not match the compiled Qwen3.6 frontend");
     }
@@ -172,6 +215,14 @@ void validate_registered_tokenizer(const fi::Tokenizer& tokenizer) {
         if (encoded.size() != 1 || encoded.front() != expected) {
             throw std::invalid_argument("artifact tokenizer does not match registered Vision token "
                                         "IDs");
+        }
+    }
+    for (const auto& [text, expected] : kConfigOnlyTokens) {
+        const std::vector<int> encoded = tokenizer.encode(text);
+        if (encoded.size() != 1 || encoded.front() != expected ||
+            !tokenizer.is_special_token(expected)) {
+            throw std::invalid_argument(
+                "artifact tokenizer does not merge official tokenizer_config.json tokens");
         }
     }
 }
@@ -544,6 +595,7 @@ public:
     Impl(const FrontendResources& resources, bool registered_checkpoint)
         : tokenizer(std::make_shared<const fi::Tokenizer>(
               fi::TokenizerResources{.tokenizer_json         = resources.tokenizer_json,
+                                     .tokenizer_config_json  = resources.tokenizer_config_json,
                                      .generation_config_json = resources.generation_config_json})),
           processor(processor_options(resources)) {
         validate_auxiliary_resources(resources);

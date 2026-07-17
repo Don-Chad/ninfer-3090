@@ -9,7 +9,7 @@
 namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::frontend_internal {
 namespace {
 
-using Json = nlohmann::json;
+using OrderedJson = nlohmann::ordered_json;
 
 bool is_allowed_role(const std::string& role) {
     return role == "system" || role == "user" || role == "assistant" || role == "tool";
@@ -102,13 +102,38 @@ constexpr std::string_view kToolInstructions =
     "knowledge and do not tell the user about function calls\n"
     "</IMPORTANT>";
 
-std::string parameter_text(const Json& value) {
-    if (value.is_string()) { return value.get<std::string>(); }
+std::string tojson_text(const OrderedJson& value) {
+    if (value.is_array()) {
+        std::string rendered = "[";
+        for (std::size_t index = 0; index < value.size(); ++index) {
+            if (index != 0) { rendered += ", "; }
+            rendered += tojson_text(value[index]);
+        }
+        rendered += "]";
+        return rendered;
+    }
+    if (value.is_object()) {
+        std::string rendered = "{";
+        std::size_t index    = 0;
+        for (auto it = value.begin(); it != value.end(); ++it, ++index) {
+            if (index != 0) { rendered += ", "; }
+            rendered += OrderedJson(it.key()).dump();
+            rendered += ": ";
+            rendered += tojson_text(it.value());
+        }
+        rendered += "}";
+        return rendered;
+    }
     return value.dump();
 }
 
+std::string parameter_text(const OrderedJson& value) {
+    if (value.is_string()) { return value.get<std::string>(); }
+    return tojson_text(value);
+}
+
 std::string render_tool_call(const ToolCall& call) {
-    Json args = Json::parse(call.arguments_json);
+    OrderedJson args = OrderedJson::parse(call.arguments_json);
     if (!args.is_object()) {
         throw std::invalid_argument("tool call arguments must be a JSON object");
     }
@@ -135,7 +160,7 @@ std::string render_tools_system_block(const std::vector<std::string>& tool_jsons
     rendered += "# Tools\n\nYou have access to the following functions:\n\n<tools>";
     for (const std::string& tool : tool_jsons) {
         rendered += "\n";
-        rendered += tool;
+        rendered += tojson_text(OrderedJson::parse(tool));
     }
     rendered += "\n</tools>";
     rendered += std::string(kToolInstructions);
@@ -186,37 +211,21 @@ std::string ChatMessage::rendered_content(bool add_vision_id, int* image_count,
 std::string render_chat(const std::vector<ChatMessage>& messages, ChatRenderOptions options) {
     if (messages.empty()) { throw std::invalid_argument("chat messages must not be empty"); }
 
-    const auto is_system_role = [](const std::string& role) {
-        return role == "system" || role == "developer";
-    };
-
-    // Merge up to the first two leading system/developer messages; any later ones
-    // are dropped. developer folds into system. (jinja lines 45-57)
     std::size_t num_sys = 0;
     std::string merged_system;
-    if (is_system_role(messages[0].role)) {
+    if (messages[0].role == "system") {
         if (messages[0].has_media()) {
             throw std::invalid_argument("system message cannot contain images or videos");
         }
-        const std::string first = trim_ascii_whitespace(messages[0].rendered_content());
-        if (messages.size() > 1 && is_system_role(messages[1].role)) {
-            if (messages[1].has_media()) {
-                throw std::invalid_argument("system message cannot contain images or videos");
-            }
-            const std::string second = trim_ascii_whitespace(messages[1].rendered_content());
-            merged_system            = first + "\n" + second;
-            num_sys                  = 2;
-        } else {
-            merged_system = first;
-            num_sys       = 1;
-        }
+        merged_system = trim_ascii_whitespace(messages[0].rendered_content());
+        num_sys       = 1;
     }
 
     std::string rendered;
     const bool has_tools = !options.tool_jsons.empty();
     if (has_tools) {
         rendered += render_tools_system_block(options.tool_jsons, merged_system);
-    } else if (!merged_system.empty()) {
+    } else if (num_sys == 1) {
         rendered += "<|im_start|>system\n";
         rendered += merged_system;
         rendered += "<|im_end|>\n";
@@ -238,13 +247,16 @@ std::string render_chat(const std::vector<ChatMessage>& messages, ChatRenderOpti
             }
         }
     }
+    if (multi_step_tool) { throw std::invalid_argument("no user query found in chat messages"); }
 
     int image_count = 0;
     int video_count = 0;
     for (std::size_t i = 0; i < messages.size(); ++i) {
         const ChatMessage& message = messages[i];
         if (i < num_sys) { continue; }
-        if (is_system_role(message.role)) { continue; }
+        if (message.role == "system") {
+            throw std::invalid_argument("system message must be at the beginning");
+        }
         if (!is_allowed_role(message.role)) {
             throw std::invalid_argument("unsupported chat role: " + message.role);
         }

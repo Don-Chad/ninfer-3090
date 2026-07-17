@@ -25,6 +25,9 @@ Use the active documentation index at [`../README.md`](../README.md) for current
 
 ## Completed cutovers
 
+- [`2026-07-18-qwen3.6-official-checkpoint-cutover.md`](2026-07-18-qwen3.6-official-checkpoint-cutover.md)
+  — replaced the 27B Unsloth-derived small files and artifact resources with the pinned official
+  Qwen set while preserving every BF16 shard, and added the shared 27B/35B resource preflight.
 - [`optimization-era/plans/2026-07-17-qwen3-6-27b-decode-projection-cutover.md`](optimization-era/plans/2026-07-17-qwen3-6-27b-decode-projection-cutover.md)
   — atomic 27B `gdn/value_z` artifact migration, two-parent full-attention input projection, and
   direct GDN final-buffer output without concat D2D copies.

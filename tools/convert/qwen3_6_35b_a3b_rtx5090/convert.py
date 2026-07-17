@@ -26,6 +26,7 @@ from tools.artifact.container import ArtifactObject, ArtifactWriter
 from tools.convert.common.quantize import pick_device
 from tools.convert.common.safetensors import ShardReader
 from tools.convert.qwen3_6.common import conversion as family_conversion
+from tools.convert.qwen3_6.common import official_resources
 
 from . import draft_head, inventory, recipe
 
@@ -227,7 +228,9 @@ def preflight_inventory() -> None:
 
 
 def load_resources(model_dir: str | Path) -> tuple[ResourcePayload, ...]:
-    return family_conversion.load_resources(model_dir, inventory.RESOURCE_SPECS)
+    return official_resources.load_official_resources(
+        model_dir, inventory.RESOURCE_SPECS
+    )
 
 
 def build_object_plan(resources: Mapping[str, bytes]) -> ObjectPlan:

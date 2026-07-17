@@ -30,6 +30,7 @@ struct AddedToken {
 
 struct TokenizerResources {
     std::string_view tokenizer_json;
+    std::string_view tokenizer_config_json;
     std::string_view generation_config_json;
 };
 

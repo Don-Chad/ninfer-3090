@@ -25,17 +25,17 @@ from tools.artifact.container import (
 from tools.convert.common.quantize import pick_device
 from tools.convert.common.safetensors import ShardReader
 from tools.convert.qwen3_6.common import conversion as family_conversion
+from tools.convert.qwen3_6.common import official_resources
 
 from . import draft_head, inventory, recipe
 
 
-RECIPE_ID = "qwen3_6_27b_rtx5090-v1"
+RECIPE_ID = "qwen3_6_27b_rtx5090-v2"
 
 _ROOT_CONFIG = {
     "architectures": ["Qwen3_5ForConditionalGeneration"],
     "model_type": "qwen3_5",
     "language_model_only": False,
-    "mtp_num_hidden_layers": 1,
     "tie_word_embeddings": False,
     "vision_start_token_id": 248053,
     "vision_end_token_id": 248054,
@@ -148,7 +148,7 @@ def validate_config(config: Mapping[str, object]) -> dict[str, object]:
         },
         "rope": {name: rope[name] for name in _ROPE_CONFIG},
         "vision": {name: vision[name] for name in _VISION_CONFIG},
-        "mtp_num_hidden_layers": config["mtp_num_hidden_layers"],
+        "mtp_num_hidden_layers": text["mtp_num_hidden_layers"],
         "vision_token_ids": {
             name: config[name]
             for name in (
@@ -178,7 +178,9 @@ def preflight_inventory() -> None:
 
 
 def load_resources(model_dir: str | Path) -> tuple[ResourcePayload, ...]:
-    return family_conversion.load_resources(model_dir, inventory.RESOURCE_SPECS)
+    return official_resources.load_official_resources(
+        model_dir, inventory.RESOURCE_SPECS
+    )
 
 
 def build_object_plan(resources: Mapping[str, bytes]) -> ObjectPlan:
