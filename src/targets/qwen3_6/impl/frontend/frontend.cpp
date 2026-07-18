@@ -179,7 +179,7 @@ fi::ProcessorOptions processor_options(const FrontendResources& resources) {
     return options;
 }
 
-void validate_auxiliary_resources(const FrontendResources& resources) {
+void validate_tokenizer_config(const FrontendResources& resources) {
     const Json tokenizer_config =
         parse_resource_json(resources.tokenizer_config_json, "tokenizer_config.json");
     if (tokenizer_config.value("add_bos_token", true) ||
@@ -192,19 +192,14 @@ void validate_auxiliary_resources(const FrontendResources& resources) {
         throw std::invalid_argument(
             "tokenizer_config.json does not use the official <|endoftext|> pad token");
     }
-    if (resources.chat_template_jinja.empty() ||
-        resources.chat_template_jinja.find("<|im_start|>") == std::string::npos ||
-        resources.chat_template_jinja.find("enable_thinking") == std::string::npos ||
-        resources.chat_template_jinja.find("vision_start") == std::string::npos ||
-        resources.chat_template_jinja.find("No user query found in messages.") ==
-            std::string::npos ||
-        resources.chat_template_jinja.find("System message must be at the beginning.") ==
-            std::string::npos ||
-        resources.chat_template_jinja.find("Unexpected message role.") == std::string::npos ||
-        resources.chat_template_jinja.find("args_value | tojson | safe") == std::string::npos) {
-        throw std::invalid_argument(
-            "chat_template.jinja does not match the compiled Qwen3.6 frontend");
+}
+
+[[noreturn]] void throw_processor_error(const fi::ProcessorError& error) {
+    switch (error.kind()) {
+    case fi::ProcessorErrorKind::BudgetExceeded:
+        throw RequestError(RequestErrorKind::MediaBudgetExceeded, error.what());
     }
+    throw std::logic_error("unknown Qwen3.6 processor error kind");
 }
 
 void validate_registered_tokenizer(const fi::Tokenizer& tokenizer) {
@@ -600,7 +595,7 @@ public:
                                      .tokenizer_config_json  = resources.tokenizer_config_json,
                                      .generation_config_json = resources.generation_config_json})),
           processor(processor_options(resources)) {
-        validate_auxiliary_resources(resources);
+        validate_tokenizer_config(resources);
         if (registered_checkpoint) { validate_registered_tokenizer(*tokenizer); }
         for (const int token : tokenizer->default_stop_token_ids()) {
             if (!tokenizer->is_valid_token(token)) {
@@ -816,7 +811,10 @@ PreparedPrompt Frontend::prepare(PromptInput input) const {
     PreparedPromptData& result = *prepared;
     if (has_media) {
         fi::Processor processor(*impl_->tokenizer, impl_->processor);
-        fi::ProcessedInput processed = processor.process(messages, render_options(options));
+        fi::ProcessedInput processed;
+        try {
+            processed = processor.process(messages, render_options(options));
+        } catch (const fi::ProcessorError& error) { throw_processor_error(error); }
         result.token_ids.assign(processed.input_ids.begin(), processed.input_ids.end());
         result.token_types = std::move(processed.token_types);
         result.positions   = std::move(processed.positions);
@@ -859,8 +857,10 @@ std::uint32_t Frontend::count_tokens(PromptInput input) const {
     fi::ProcessorOptions processor_options = impl_->processor;
     processor_options.max_prompt_tokens    = std::numeric_limits<std::size_t>::max();
     fi::Processor processor(*impl_->tokenizer, processor_options);
-    return checked_token_count(
-        processor.process(messages, render_options(options)).input_ids.size());
+    try {
+        return checked_token_count(
+            processor.process(messages, render_options(options)).input_ids.size());
+    } catch (const fi::ProcessorError& error) { throw_processor_error(error); }
 }
 
 PreparedPrompt Frontend::prepare_tokens(std::vector<TokenId> token_ids,

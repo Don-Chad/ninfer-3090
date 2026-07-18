@@ -5,8 +5,10 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace ninfer {
@@ -137,6 +139,22 @@ struct PromptOptions {
 struct PromptInput {
     std::vector<ChatMessage> messages;
     PromptOptions options;
+};
+
+enum class RequestErrorKind : std::uint8_t {
+    ContextLengthExceeded,
+    MediaBudgetExceeded,
+};
+
+class RequestError final : public std::invalid_argument {
+public:
+    RequestError(RequestErrorKind kind, std::string message)
+        : std::invalid_argument(std::move(message)), kind_(kind) {}
+
+    [[nodiscard]] RequestErrorKind kind() const noexcept { return kind_; }
+
+private:
+    RequestErrorKind kind_;
 };
 
 struct PromptSummary {

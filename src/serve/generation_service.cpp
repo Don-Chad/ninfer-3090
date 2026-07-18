@@ -10,7 +10,6 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 #include <utility>
 
 namespace ninfer::serve {
@@ -87,17 +86,20 @@ ninfer::OwnedMedia acquire_media(const ContentPart& part) {
     return media;
 }
 
-bool is_processor_budget_error(const std::runtime_error& exception) {
-    const std::string_view message(exception.what());
-    return message.find("exceeds processor budget") != std::string_view::npos;
-}
-
-[[noreturn]] void throw_context_error(const std::invalid_argument& exception) {
+[[noreturn]] void throw_request_error(const ninfer::RequestError& exception) {
     ApiError error;
-    error.status  = 400;
     error.param   = "messages";
-    error.code    = "context_length_exceeded";
     error.message = exception.what();
+    switch (exception.kind()) {
+    case ninfer::RequestErrorKind::ContextLengthExceeded:
+        error.status = 400;
+        error.code   = "context_length_exceeded";
+        break;
+    case ninfer::RequestErrorKind::MediaBudgetExceeded:
+        error.status = 413;
+        error.code   = "media_budget_exceeded";
+        break;
+    }
     throw ApiException(std::move(error));
 }
 
@@ -147,22 +149,9 @@ PreparedRequest GenerationService::prepare(const GenerationRequest& request) con
         ninfer::PromptInput input = to_prompt_input(
             request, options_, [](const ContentPart& part) { return acquire_media(part); });
         prepared.prompt = engine_->prepare(std::move(input));
-    } catch (const ApiException&) { throw; } catch (const std::invalid_argument& exception) {
-        if (std::string_view(exception.what()).find("context capacity") != std::string_view::npos) {
-            throw_context_error(exception);
-        }
-        throw_invalid_input(exception);
-    } catch (const std::runtime_error& exception) {
-        if (is_processor_budget_error(exception)) {
-            ApiError error;
-            error.status  = 413;
-            error.param   = "messages";
-            error.code    = "media_budget_exceeded";
-            error.message = exception.what();
-            throw ApiException(std::move(error));
-        }
-        throw;
-    }
+    } catch (const ApiException&) { throw; } catch (const ninfer::RequestError& exception) {
+        throw_request_error(exception);
+    } catch (const std::invalid_argument& exception) { throw_invalid_input(exception); }
     prepared.prepare_seconds = std::chrono::duration<double>(Clock::now() - start).count();
     prepared.prompt_tokens   = static_cast<int>(prepared.prompt.summary().prompt_tokens);
     return prepared;
@@ -175,19 +164,9 @@ int GenerationService::count_prompt_tokens(const GenerationRequest& request) con
         ninfer::PromptInput input = to_prompt_input(
             request, options_, [](const ContentPart& part) { return acquire_media(part); });
         return static_cast<int>(engine_->count_tokens(std::move(input)));
-    } catch (const ApiException&) { throw; } catch (const std::invalid_argument& exception) {
-        throw_invalid_input(exception);
-    } catch (const std::runtime_error& exception) {
-        if (is_processor_budget_error(exception)) {
-            ApiError error;
-            error.status  = 413;
-            error.param   = "messages";
-            error.code    = "media_budget_exceeded";
-            error.message = exception.what();
-            throw ApiException(std::move(error));
-        }
-        throw;
-    }
+    } catch (const ApiException&) { throw; } catch (const ninfer::RequestError& exception) {
+        throw_request_error(exception);
+    } catch (const std::invalid_argument& exception) { throw_invalid_input(exception); }
 }
 
 GenerationOutcome GenerationService::run(PreparedRequest& prepared, const StreamSink* sink) {
@@ -205,13 +184,7 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     try {
         result = engine_->generate(std::move(prepared.prompt), prepared.options, public_sink,
                                    cancellation);
-    } catch (const std::invalid_argument& exception) {
-        const std::string_view message(exception.what());
-        if (message.find("context capacity") != std::string_view::npos) {
-            throw_context_error(exception);
-        }
-        throw;
-    }
+    } catch (const ninfer::RequestError& exception) { throw_request_error(exception); }
     if (prepared.media_permit.owns_lock()) { prepared.media_permit.unlock(); }
 
     GenerationOutcome outcome;

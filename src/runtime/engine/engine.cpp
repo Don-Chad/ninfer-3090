@@ -73,7 +73,8 @@ PreparedPrompt Engine::prepare(PromptInput input) const {
             auto prepared      = target_ptr->loaded->frontend.prepare(std::move(input));
             PromptSummary info = prepared.summary();
             if (info.prompt_tokens > target_ptr->capacity) {
-                throw std::invalid_argument("prepared prompt exceeds Engine context capacity");
+                throw RequestError(RequestErrorKind::ContextLengthExceeded,
+                                   "prepared prompt exceeds Engine context capacity");
             }
             const double seconds = prepared.prepare_seconds();
             return PreparedPrompt(
@@ -92,7 +93,8 @@ PreparedPrompt Engine::prepare_tokens(std::vector<TokenId> token_ids,
                                                                              allow_prefix_identity);
             PromptSummary info = prepared.summary();
             if (info.prompt_tokens > target_ptr->capacity) {
-                throw std::invalid_argument("prepared prompt exceeds Engine context capacity");
+                throw RequestError(RequestErrorKind::ContextLengthExceeded,
+                                   "prepared prompt exceeds Engine context capacity");
             }
             const double seconds = prepared.prepare_seconds();
             return PreparedPrompt(
@@ -121,8 +123,12 @@ GenerationResult Engine::generate(PreparedPrompt prompt, RequestOptions options,
         [&](auto& target_ptr) -> GenerationResult {
             if (target_ptr == nullptr) { throw std::logic_error("Engine target is not active"); }
             const PromptSummary prompt_summary = prompt.impl_->summary;
-            const double prepare_seconds       = prompt.impl_->prepare_seconds;
-            auto output                        = target_ptr->loaded->frontend.make_output_session(
+            if (prompt_summary.prompt_tokens > target_ptr->capacity) {
+                throw RequestError(RequestErrorKind::ContextLengthExceeded,
+                                   "prepared prompt exceeds Engine context capacity");
+            }
+            const double prepare_seconds = prompt.impl_->prepare_seconds;
+            auto output                  = target_ptr->loaded->frontend.make_output_session(
                 prompt.impl_->value, options.stop, options.output);
             auto controller = runtime::run_one(*target_ptr->program, std::move(prompt.impl_->value),
                                                std::move(output), target_ptr->request_memory,
