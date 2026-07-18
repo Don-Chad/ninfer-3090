@@ -16,7 +16,7 @@ read from the artifact.
 Install the target dependencies from `requirements.txt`, then run:
 
 ```bash
-/home/neroued/miniconda3/envs/py311/bin/python \
+python3 \
   -m tools.reference.qwen3_6_35b_a3b \
   --weights out/qwen3_6_35b_a3b.ninfer \
   --prompt "请简短介绍一下你自己。" --decode 128

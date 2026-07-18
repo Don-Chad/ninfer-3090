@@ -2,243 +2,181 @@
 
 > Selected checkpoints. Maximum single-GPU inference performance.
 
-NInfer is a from-scratch C++/CUDA inference engine for users who want the highest practical local
-inference performance from one GPU. It supports a small, explicitly registered set of exact model
-checkpoint targets. Each checkpoint is implemented as a concrete compiled target; NInfer is not a
-generic model runtime, compatibility layer, or model zoo.
+NInfer is a from-scratch C++/CUDA inference engine for two exact Qwen3.6 checkpoints on a single
+NVIDIA GeForce RTX 5090. It runs text, image, and video prompts through a local CLI or
+OpenAI-/Anthropic-compatible HTTP APIs.
 
-The currently registered targets are **Qwen3.6-27B** and **Qwen3.6-35B-A3B**. The current
-implementation is compiled for `sm_120a` and tuned and measured on NVIDIA RTX 5090. The two targets
-are peer variants of one Qwen3.6 family runtime; neither is implemented as a delta from the other.
-Each Engine owns one resident sequence and executes one active request at a time. Decode efficiency
-is the primary goal, followed by prefill throughput and time to first token. Limited continuous
-batching is a future direction, not a current capability or a large-scale-serving goal.
+NInfer deliberately supports a closed set of model artifacts instead of acting as a general model
+runtime:
 
-## Capabilities
+| Model | NInfer artifact | Size | SHA-256 |
+|---|---|---:|---|
+| [Qwen3.6-27B](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) | `qwen3_6_27b.ninfer` | 17,495,365,888 bytes (16.29 GiB) | `74fac75f3a6b7ab7b52e08c36969c7a33a8ba23465910eccd72d195adb497127` |
+| [Qwen3.6-35B-A3B](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | `qwen3_6_35b_a3b.ninfer` | 22,373,184,256 bytes (20.84 GiB) | `9e8378398d2b789a77224b5110c7590adbbc6fd4accd139b918157b2b9da7163` |
 
-Both delivered targets include:
+## Performance
 
-- their complete hybrid Text decoder: 27B uses 48 Gated-DeltaNet plus 16 GQA layers; 35B-A3B uses
-  30 Gated-DeltaNet plus 10 GQA layers and sparse MoE after every mixer;
-- the one-layer MTP draft model, full and optimized proposal heads, and eager or CUDA Graph decode;
-- the 27-layer Vision tower, patch merger, image/video preprocessing, embedding injection, and
-  three-axis MRoPE;
-- chunked prefill, single-token decode, and exact-shape CUDA kernels;
-- BF16 and INT8 group-64 KV-cache storage;
-- greedy decoding and configurable temperature/top-k/top-p/min-p/penalty sampling;
-- prefix reuse for compatible text requests;
-- text and structured multimodal CLI input;
-- OpenAI Chat Completions and Anthropic Messages endpoints, including streaming, token counting,
-  usage reporting, reasoning/content channels, and prompt-and-parse tool calls;
-- a public opaque C++ `Engine` API used by the CLI, server, and real-weight benchmark;
-- the native `.ninfer` converter, inspector, verifier, Python Text/Vision/MTP diagnostic reference,
-  and target-private activation diagnostics.
+The primary MTP path was measured on an RTX 5090 using the same long-context prompt source (7,678
+tokens after NInfer prompt preparation), 512 generated tokens, BF16 KV cache, greedy decoding, and
+a draft window of three. Each value is the mean of five measured runs after one warm-up.
 
-NInfer does not currently support a checkpoint beyond these two, another GPU, concurrent request execution,
-multi-GPU execution, or distributed serving. Context capacity is selected when the Engine is
-constructed and is bounded by the configured KV format and available GPU memory.
+| Model | Engine | Prefill | Decode |
+|---|---|---:|---:|
+| Qwen3.6-27B | **NInfer** | **2,829.62 tok/s** | **167.22 tok/s** |
+| Qwen3.6-27B | llama.cpp | 2,646.64 tok/s | 140.38 tok/s |
+| Qwen3.6-35B-A3B | **NInfer** | **13,411.71 tok/s** | **436.32 tok/s** |
+| Qwen3.6-35B-A3B | llama.cpp | 5,476.82 tok/s | 285.88 tok/s |
 
-## Registered targets
+For these configurations, NInfer reaches 1.07x/1.19x the llama.cpp prefill/decode rates on 27B and
+2.45x/1.53x on 35B-A3B. Within NInfer, enabling the measured MTP path raises decode throughput by
+2.52x on 27B and 1.78x on 35B-A3B.
 
-| Model | Runtime target key | Artifact | Text profile |
-|---|---|---|---|
-| Qwen3.6-27B | `qwen3_6_27b` | `qwen3_6_27b.ninfer` | dense, hidden 5120, 64 layers |
-| Qwen3.6-35B-A3B | `qwen3_6_35b_a3b` | `qwen3_6_35b_a3b.ninfer` | sparse MoE, hidden 2048, 40 layers |
+These are complete-engine comparisons using each engine's corresponding quantized artifact, not
+kernel measurements or identical weight formats. See [Performance](docs/performance.md) for the
+full MTP-on/off results, variability, exact commands, and comparison boundaries.
 
-The current `sm_120a` implementation uses BF16 activations and BF16 or INT8 group-64 KV and targets
-single-stream decode with one resident sequence and one active request.
+## Requirements
+
+NInfer currently requires:
+
+- 64-bit Linux;
+- NVIDIA GeForce RTX 5090 (`sm_120a`);
+- NVIDIA driver support for CUDA 13.1 and the CUDA Toolkit 13.1 or newer;
+- CMake 3.28 or newer and a C++20-capable host compiler;
+- `pkg-config`;
+- FFmpeg development libraries: `libavformat >= 60`, `libavcodec >= 60`,
+  `libavutil >= 58`, and `libswscale >= 7`;
+- `libcurl >= 7.85`;
+- Ninja, when using the commands below.
+
+The build rejects CUDA architectures other than `120a`. There is no install target or packaged
+binary distribution; NInfer is run from its source build tree.
 
 ## Build
 
-The supported toolchain is CUDA 13.1, GCC 13, and CMake 3.28 or newer. The build also requires
-PkgConfig, FFmpeg 6 development libraries (`libavformat`, `libavcodec`, `libavutil`, `libswscale`),
-and libcurl 7.85 or newer.
-
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120a
-cmake --build build -j
+git clone https://github.com/Neroued/ninfer.git
+cd ninfer
+
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
 ```
 
-The main products are:
+The default configuration builds:
 
-| Product | Purpose |
-|---|---|
-| `build/apps/ninfer` | text and multimodal generation CLI |
-| `build/apps/ninfer-serve` | OpenAI/Anthropic-compatible HTTP server |
-| `build/bench/ninfer_bench` | public-Engine prefill/decode benchmark |
-| `build/bench/ninfer_*_bench` | CUDA operator microbenchmarks |
-| `build/tools/ninfer-qwen3_6_27b-dump` | target-private activation diagnostic |
-
-Executable `--help` output is the exact option reference.
-
-## Create the `.ninfer` artifact
-
-Conversion is offline and reads the original BF16 checkpoint directly:
-
-```bash
-python -m tools.convert.qwen3_6_27b.convert \
-  --model /path/to/Qwen3.6-27B/base-hf-bf16 \
-  --out out/qwen3_6_27b.ninfer
-
-python -m tools.artifact.inspect \
-  out/qwen3_6_27b.ninfer --objects
-
-python -m tools.convert.qwen3_6_27b.verify \
-  out/qwen3_6_27b.ninfer \
-  --model /path/to/Qwen3.6-27B/base-hf-bf16
-
-python -m tools.convert.qwen3_6_35b_a3b.convert \
-  --model /path/to/Qwen3.6-35B-A3B/base-hf-bf16 \
-  --out out/qwen3_6_35b_a3b.ninfer
+```text
+build/apps/ninfer
+build/apps/ninfer-serve
 ```
 
-Each artifact contains its complete registered Text, MTP, Vision, draft-head, tokenizer, template,
-and generation-resource inventory. The C++ Engine and Python reference consume the selected
-artifact; the source checkpoint is not accessed during inference.
+Tests, benchmarks, and maintainer tools are excluded from the default build.
 
-The independent artifact-native Python Text/Vision/MTP diagnostic reference is available
-separately; it is not an exact generated-token golden for the C++ runtime:
+## Download a model
+
+Use the Hugging Face CLI to download either registered artifact:
 
 ```bash
-python -m tools.reference.qwen3_6_27b \
-  --weights out/qwen3_6_27b.ninfer \
-  --prompt "用三句话解释 prefill 和 decode 的区别。" \
-  --decode 128 --mtp-draft-tokens 3
+hf download neroued/Qwen3.6-27B-NInfer \
+  qwen3_6_27b.ninfer \
+  --local-dir models
+
+# Or:
+hf download neroued/Qwen3.6-35B-A3B-NInfer \
+  qwen3_6_35b_a3b.ninfer \
+  --local-dir models
 ```
+
+The `.ninfer` file contains the weights and frontend resources needed by NInfer. It is not a
+Transformers checkpoint, Safetensors distribution, or GGUF file.
 
 ## Run the CLI
 
-Text prompt:
+```bash
+./build/apps/ninfer models/qwen3_6_27b.ninfer \
+  --prompt "Explain prefill and decode in three sentences." \
+  --max-context 16384 \
+  --max-new 256 \
+  --mtp-draft-tokens 3 \
+  --lm-head-draft
+```
+
+Use `--messages FILE` instead of `--prompt` for chat history, images, or videos:
 
 ```bash
-./build/apps/ninfer out/qwen3_6_27b.ninfer \
-  --prompt "用三句话解释 prefill 和 decode 的区别。" \
+./build/apps/ninfer models/qwen3_6_27b.ninfer \
+  --messages examples/cli/messages/image_chart.json \
+  --max-context 8192 \
   --max-new 128
 ```
 
-Use `out/qwen3_6_35b_a3b.ninfer` in the same command to select the registered 35B-A3B
-variant; CLI, serving, and benchmark code contain no model-specific branch.
+Answer content is written to stdout. Loading progress, reasoning, timing, throughput, memory, and
+MTP statistics are written to stderr. See the [CLI guide](docs/cli.md) and
+[committed examples](examples/cli/) for structured input and runtime options.
 
-Structured text/image/video messages:
-
-```bash
-./build/apps/ninfer out/qwen3_6_27b.ninfer \
-  --messages messages.json --no-thinking --max-new 256
-```
-
-[`examples/cli/`](examples/cli/) contains committed offline message files and media for text,
-image, video, mixed multimodal, thinking, long-decode, and 8K-to-256K long-context runs.
-
-CUDA Graph decode is enabled by default. Enable MTP with `--mtp-draft-tokens N`, where `N` is in
-`1..5`; add `--lm-head-draft` to select the optimized proposal head. Use `--kv-dtype int8` for INT8
-KV storage, `--greedy` for argmax decoding, and `--max-context` to choose the Engine capacity.
-
-Media message parts accept local paths, HTTP(S) URLs, and base64 data URIs. The CLI acquires the
-bytes before the target Frontend performs checkpoint-specific image/video preparation.
-
-## Run the server
+## Run the HTTP server
 
 ```bash
-./build/apps/ninfer-serve out/qwen3_6_27b.ninfer \
-  --host 127.0.0.1 --port 8080 --max-context 8192
+./build/apps/ninfer-serve models/qwen3_6_27b.ninfer \
+  --model-id qwen3.6-27b \
+  --max-context 16384 \
+  --mtp-draft-tokens 3 \
+  --lm-head-draft
 ```
 
-The server exposes:
-
-- `GET /health`;
-- `GET /v1/models` and `GET /v1/models/{id}`;
-- `POST /v1/chat/completions`;
-- `POST /v1/messages`;
-- `POST /v1/messages/count_tokens`.
-
-See [`docs/serving.md`](docs/serving.md) for protocol, streaming, sampling, multimodal, and tool-call
-behavior.
-
-## Benchmark
+Then send an OpenAI-style request:
 
 ```bash
-./build/bench/ninfer_bench \
-  --weights out/qwen3_6_27b.ninfer \
-  -p 512,2048 -n 128 -pg '2048,128' -r 5 --warmup 1
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen3.6-27b",
+    "messages": [{"role": "user", "content": "Reply with one short sentence."}],
+    "max_tokens": 64
+  }'
 ```
 
-`ninfer_bench` drives the same public Engine route as the CLI and server. It reports prefill and
-decode separately, supports BF16/INT8 KV and ordinary/MTP graph or eager modes, and emits table,
-JSON, or CSV. See [`bench/README.md`](bench/README.md).
+The server also implements Anthropic Messages, streaming, token counting, multimodal input, and
+function-tool request/response translation. See [HTTP serving](docs/serving.md).
 
-## Public Engine
+## Capabilities
 
-The public product surface is [`include/ninfer/engine.h`](include/ninfer/engine.h) plus owning
-host values in [`include/ninfer/types.h`](include/ninfer/types.h). `Engine` constructs one selected
-target from an `EngineOptions` value and `.ninfer` path. Requests follow one route:
+Both registered artifacts support:
 
-```text
-Engine::prepare(...) or prepare_tokens(...)
-  -> opaque PreparedPrompt
-  -> Engine::generate(...)
-  -> GenerationResult + optional OutputSink deltas
-```
+- text generation with thinking and non-thinking prompt modes;
+- image, multi-image, video, and mixed multimodal messages;
+- chunked prefill and CUDA Graph decode;
+- MTP speculative decoding with draft windows from one to five;
+- BF16 and INT8 group-64 KV cache;
+- greedy, temperature, top-k, top-p, min-p, and presence/frequency-penalty sampling;
+- compatible-prefix reuse;
+- OpenAI Chat Completions and Anthropic Messages, including streaming and usage accounting;
+- prompt-rendered function tools and parsed tool calls.
 
-Target selection, artifact binding, CUDA state, `LoadedModel`, `Frontend`, and `Program` remain
-internal. The public API exposes load, memory, timing, and speculative summaries, not target phase
-methods or mutable model state.
+## Current limits
 
-## Architecture
-
-```text
-BF16 checkpoint
-  -> target converter
-  -> qwen3_6_27b.ninfer or qwen3_6_35b_a3b.ninfer
-  -> artifact reader / binder / materializer
-  -> selected closed exact target package
-       immutable exact LoadedModel + private Variant
-       shared Frontend + one mutable qwen3_6::Program<Variant>
-       fixed family schedules compose repository-internal Ops and closed Variant leaves
-         -> central Op implementations and specialized CUDA kernels
-  -> common generated-token controller
-  -> public Engine
-       CLI / server / benchmark
-```
-
-The source and build boundaries are explicit:
-
-- `src/core` and `src/artifact` own L0 execution/storage and native artifact mechanisms;
-- `include/ninfer/ops` defines repository-internal mathematical and explicit local-state contracts;
-  `src/ops` owns all implementations, including exact-shape and device-specialized CUDA kernels;
-- `src/text` and `src/media/decode` own checkpoint-neutral Unicode and media decoding;
-- `src/product/media_acquire` owns path, URL, and data-URI acquisition for product entry points;
-- `src/product/prompt_input` owns the shared CLI/diagnostic message-input adapter;
-- `src/targets/qwen3_6` owns the shared Frontend, `SequencePlan<Variant>`,
-  `RequestPlan<Variant>`, `Program<Variant>`, fixed Text/Vision/MTP schedules, live state/frontier
-  policy, workspace composition, and graph mechanics;
-- `src/targets/qwen3_6_27b` and `src/targets/qwen3_6_35b_a3b` own peer exact
-  checkpoint identities, configurations, artifact bindings and leaf payloads; they populate the
-  family model-view schemas and own three closed execution leaves, leaf-local workspace, graph
-  frontier ranges, and target diagnostics;
-- `src/runtime` owns common request contracts, generation policy, and the public
-  Engine implementation;
-- `src/serve` owns HTTP schemas, translation, streaming, and transport;
-- `apps/cli` and `apps/serve` are thin product entry points;
-- `tools/convert`, `tools/reference`, and `tools/parity` are target-keyed offline tools.
+- Only the two artifacts listed above are accepted product targets.
+- Execution is specialized for one RTX 5090 and one CUDA device.
+- One Engine owns one resident sequence and runs one active request at a time.
+- Continuous batching, multi-GPU execution, CPU/GPU offload, and distributed serving are not
+  implemented.
+- Context capacity is configurable up to the registered models' native 262,144-token limit, subject
+  to GPU memory and KV-cache configuration.
+- Tool calls are parsed and returned to the client; NInfer does not execute tools.
+- The C++ headers are used by the in-tree applications and are not distributed as an installed SDK.
 
 ## Documentation
 
-Start at [`docs/README.md`](docs/README.md). Important active documents include:
+- [Documentation index](docs/README.md)
+- [CLI](docs/cli.md)
+- [HTTP serving](docs/serving.md)
+- [Performance](docs/performance.md)
+- [CLI examples](examples/cli/)
 
-- [`docs/ninfer-project-positioning.md`](docs/ninfer-project-positioning.md) — mission, target
-  selection, workload, priorities, and non-goals;
-- [`docs/design.md`](docs/design.md) — implemented ownership and runtime flow;
-- [`docs/ninfer-engine-architecture.md`](docs/ninfer-engine-architecture.md) — detailed Engine,
-  target-package, lifetime, and source-boundary decisions;
-- [`docs/ninfer-container-format.md`](docs/ninfer-container-format.md),
-  [`docs/ninfer-storage-layouts.md`](docs/ninfer-storage-layouts.md), and
-  [`docs/ninfer-tensor-formats.md`](docs/ninfer-tensor-formats.md) — native artifact contracts;
-- [`docs/qwen3.6-27b-ninfer-artifact.md`](docs/qwen3.6-27b-ninfer-artifact.md) — registered object
-  inventory, source transforms, and binding obligations;
-- [`docs/qwen3.6-27b-architecture.md`](docs/qwen3.6-27b-architecture.md) — Text/MTP/Vision model math;
-- [`docs/op-development.md`](docs/op-development.md) — Op contracts, implementation ownership, and
-  correctness/performance workflow;
-- [`docs/serving.md`](docs/serving.md) — CLI and HTTP behavior.
+## License
 
-Completed plans, retired implementations, and dated evidence belong under
-[`docs/archive/`](docs/archive/); they do not define the current product.
+NInfer is licensed under the [Apache License 2.0](LICENSE).
+
+The published artifacts are derived from
+[Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) and
+[Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B), which are also distributed
+under Apache-2.0. Vendored dependencies retain their own license files under `third_party/`.

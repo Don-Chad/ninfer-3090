@@ -77,6 +77,9 @@ The matrix treats MTP `k=3` with the optimized proposal head as the primary path
 cover CUDA Graph and eager execution; prefill-only cases vary prompt length and prefill chunk.
 
 ```bash
+# Configure the benchmark targets once; they are off in the default public build.
+cmake -S . -B build -DNINFER_BUILD_BENCHMARKS=ON
+
 # Inspect commands without running the model.
 python3 tools/bench/run_ninfer_bench_matrix.py --preset core --dry-run
 

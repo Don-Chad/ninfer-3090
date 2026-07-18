@@ -4,13 +4,13 @@
 The `bench/ops/` `ninfer_<op>_bench` executables measure central Op contracts and their specialized
 CUDA implementations for ncu/nsys work. Target benchmarks measure Program/model composition.
 Correctness and model parity live outside this directory; development rules are in
-[`../docs/op-development.md`](../docs/op-development.md).
+[`../docs/maintainer/op-development.md`](../docs/maintainer/op-development.md).
 
 ## Build
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120a
-cmake --build build -j --target ninfer_bench
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNINFER_BUILD_BENCHMARKS=ON
+cmake --build build --parallel --target ninfer_bench
 ```
 
 ## Product benchmark
@@ -78,7 +78,7 @@ its controls isolate projection time and the former materialize-plus-two-copy co
 timed operands are allocated before measurement, and each sample is preceded by a 256 MiB L2 flush.
 
 ```bash
-cmake --build build -j --target ninfer_input_proj_bench
+cmake --build build --parallel --target ninfer_input_proj_bench
 ./build/bench/ninfer_input_proj_bench \
   --op all --t-sweep 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,128,129 \
   --warmup 5 --repeat 50 --csv-out profiles/bench/input_proj.csv
@@ -89,20 +89,21 @@ production-callable routes.
 
 ## 35B W8 input-projection Op benchmark
 
-`ninfer_w8_input_proj_bench` measures the exact future-target W8 Attention `[9216,2048]` and GDN
+`ninfer_w8_input_proj_bench` measures the registered 35B-A3B target's W8 Attention
+`[9216,2048]` and GDN
 `[12288,2048]` multi-output Ops. Production writes independent contiguous consumer allocations
 directly. The controls expose each compiled SIMT/MMA candidate plus the semantically equivalent
 parent Linear alone and parent Linear followed by four or two column extracts. Each timed sample is
 preceded by a 256 MiB L2 flush.
 
 ```bash
-cmake --build build -j --target ninfer_w8_input_proj_bench
+cmake --build build --parallel --target ninfer_w8_input_proj_bench
 ./build/bench/ninfer_w8_input_proj_bench \
   --op all --t-sweep 1,2,4,8,12,13,16,17,32,64,128,129,256,512,1024 \
   --warmup 10 --repeat 50 --csv-out profiles/bench/w8_input_proj_final.csv
 ```
 
-The executable is an Op benchmark only; it does not register a 35B Engine target.
+The executable isolates these Op contracts; end-to-end 35B-A3B measurement uses `ninfer_bench`.
 
 ## Target MTP round benchmark
 
@@ -112,7 +113,7 @@ artifact through the target-private package facade, prepares a real prompt with 
 Frontend, and reports draft/accept statistics for the target-owned MTP schedule:
 
 ```bash
-cmake --build build -j --target ninfer_qwen3_6_27b_mtp_round_bench
+cmake --build build --parallel --target ninfer_qwen3_6_27b_mtp_round_bench
 ./build/bench/ninfer_qwen3_6_27b_mtp_round_bench \
   --artifact out/qwen3_6_27b.ninfer
 ```
@@ -122,10 +123,10 @@ cmake --build build -j --target ninfer_qwen3_6_27b_mtp_round_bench
 The G1 benchmark covers the Qwen3.6-35B full physical vocabulary with 248077 valid rows at
 `C=1..6`, plus the 131072-row shortlist. Its `--control` route reads the same rotating payload and
 uses the same launch grid without computing argmax, which provides the fixed-work comparison used
-by the retained qualification report:
+by the benchmark comparison:
 
 ```bash
-cmake --build build -j --target ninfer_argmax_bench ninfer_sampling_select_bench
+cmake --build build --parallel --target ninfer_argmax_bench ninfer_sampling_select_bench
 ./build/bench/ninfer_argmax_bench
 ./build/bench/ninfer_argmax_bench --control
 ```
@@ -148,7 +149,7 @@ the selected kernel topology and payload while replacing the mathematical operat
 bitwise work:
 
 ```bash
-cmake --build build -j --target \
+cmake --build build --parallel --target \
   ninfer_residual_add_bench ninfer_sigmoid_mul_bench \
   ninfer_gelu_bench ninfer_add_bias_bench
 

@@ -14,7 +14,7 @@ can exercise those contracts without a model service or network access.
 Create the isolated environment with the repository's canonical Python:
 
 ```bash
-/home/neroued/miniconda3/envs/py311/bin/python -m venv eval/.venv
+python3 -m venv eval/.venv
 eval/.venv/bin/python -m pip install -r eval/requirements.txt
 ```
 

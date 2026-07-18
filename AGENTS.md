@@ -148,24 +148,22 @@ Read only current authorities relevant to a live decision in the task. The follo
 routing map, not a mandatory reading list:
 
 - `README.md` and executable `--help`: delivered capabilities and exact commands;
-- `docs/README.md`: active-document map and authority boundaries;
-- `docs/ninfer-project-positioning.md`: mission, target policy, workload, and non-goals;
-- `docs/design.md` and `docs/ninfer-engine-architecture.md`: implemented ownership, runtime, and
-  source/build boundaries;
-- `docs/ninfer-container-format.md`, `docs/ninfer-storage-layouts.md`, and
-  `docs/ninfer-tensor-formats.md`: generic `.ninfer` contracts;
-- `docs/qwen3.6-27b-ninfer-artifact.md` and `docs/qwen3.6-35b-a3b-ninfer-artifact.md`: exact target
+- `docs/README.md`: public documentation map;
+- `docs/cli.md`: CLI input, output, sampling, MTP, and runtime options;
+- `docs/serving.md`: OpenAI/Anthropic HTTP behavior;
+- `docs/performance.md`: published performance methodology and results;
+- `docs/maintainer/artifact-container.md`, `storage-layouts.md`, and `tensor-formats.md`:
+  generic `.ninfer` contracts;
+- `docs/maintainer/qwen3.6-27b-artifact.md` and `qwen3.6-35b-a3b-artifact.md`: exact target
   inventories, conversion, and binding;
-- `docs/qwen3.6-27b-architecture.md` and `docs/qwen3.6-35b-a3b-architecture.md`: exact model
-  mathematics, dimensions, and state semantics;
-- `docs/op-development.md`: Op boundary, contracts, implementation ownership, correctness, and
+- `docs/maintainer/qwen3.6-27b-model.md` and `qwen3.6-35b-a3b-model.md`: exact model mathematics,
+  dimensions, and state semantics;
+- `docs/maintainer/op-development.md`: Op contracts, implementation ownership, correctness, and
   performance workflow;
-- `docs/serving.md`: CLI, sampling, multimodal, OpenAI, and Anthropic behavior;
-- `include/ninfer/engine.h` and `include/ninfer/types.h`: installed C++ product API.
+- `include/ninfer/engine.h` and `include/ninfer/types.h`: in-tree C++ product interface.
 
-Do not survey unrelated authorities for completeness. Read additional documents only when they
-govern a live decision in the current task. `docs/archive/` is historical evidence, not current
-authority.
+Do not survey unrelated references for completeness. Read additional documents only when they
+govern a live decision in the current task.
 
 ## Product and ownership boundaries
 
@@ -174,9 +172,9 @@ them, but must update the corresponding active authorities and affected implemen
 
 - `.ninfer` is the only C++ product artifact. Do not add `.qus` fallback, extension detection,
   compatibility shims, or a second product lane.
-- `include/ninfer/engine.h` and `include/ninfer/types.h` are the installed opaque Engine API and
-  owning host values. `include/ninfer/ops/` contains repository-internal semantic Op contracts; it
-  is not installed product ABI.
+- `include/ninfer/engine.h` and `include/ninfer/types.h` are the opaque Engine interface used by
+  in-tree applications and owning host values. NInfer does not currently install or export a C++
+  SDK. `include/ninfer/ops/` contains repository-internal semantic Op contracts.
 - `src/core` owns device primitives, tensors/views, checked layouts, arenas, graph RAII, physical
   KV-cache containers, and raw transfer mechanisms.
 - `src/artifact` owns generic `.ninfer` framing, descriptors, binding primitives, and
@@ -217,11 +215,10 @@ maintaining two paths. Do not turn that rule into unrelated repository-wide clea
 The advertised OpenAI and Anthropic protocol surfaces are real external contracts. A change to
 their behavior must update the affected schema tests and serving documentation together.
 
-Integrate stable requirements into the existing active authority. Use a dated file under
-`docs/plans/` only when active work genuinely needs a separate plan; a plan is not a substitute for
-the requested deliverable. Archive it when the work completes or is abandoned. Do not create
-parallel `final`, `v2`, or `new-design` authorities. Update active links and
-`docs/archive/README.md` when moving completed plans.
+Integrate stable requirements into the existing active reference. Use a temporary dated plan only
+when active work genuinely needs one; a plan is not a substitute for the requested deliverable.
+Remove completed or abandoned plans instead of retaining a historical documentation tree. Do not
+create parallel `final`, `v2`, or `new-design` references.
 
 ## Numerical correctness
 
@@ -293,27 +290,27 @@ run and why.
 
 ## Local environment
 
-These are available project resources, not a checklist of resources every task must use:
+These are conventional project resources, not a checklist of resources every task must use:
 
 | Purpose | Path |
 |---|---|
-| repository | `/home/neroued/ninfer` |
-| Python 3.11 | `/home/neroued/miniconda3/envs/py311/bin/python` |
-| BF16 source checkpoint | `/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16` |
+| repository | current checkout |
+| Python 3.11 | `python3` in the selected maintainer environment |
+| BF16 source checkpoint | explicit local checkpoint directory |
 | product artifact | `out/qwen3_6_27b.ninfer` |
 | conversion report | `out/qwen3_6_27b.ninfer.conversion.json` |
 | normal build | `build/` |
 | profiler output | `profiles/ncu/`, `profiles/nsys/`, `profiles/bench/` |
 | hardware/toolchain | RTX 5090, `sm_120a`, CUDA 13.1 |
 
-Use the canonical Python interpreter explicitly. Do not install or upgrade dependencies unless the
-task requires it. Never select an artifact by glob, modification time, or an unqualified “latest”
-name. Large artifacts, source checkpoints, and profiler outputs are local prerequisites; do not
-download or regenerate them unless that work is in scope.
+Use the selected Python 3.11 interpreter explicitly. Do not install or upgrade dependencies unless
+the task requires it. Never select an artifact by glob, modification time, or an unqualified
+“latest” name. Large artifacts, source checkpoints, and profiler outputs are local prerequisites;
+do not download or regenerate them unless that work is in scope.
 
 ```bash
-PYTHON=/home/neroued/miniconda3/envs/py311/bin/python
-MODEL=/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16
+PYTHON=python3
+MODEL=/path/to/Qwen3.6-27B
 NINFER_WEIGHTS=out/qwen3_6_27b.ninfer
 ```
 

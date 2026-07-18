@@ -6,7 +6,7 @@ hard thinking problems, long decode, and four long-context capacities. This is a
 example set, not a second correctness framework.
 
 [`manifest.json`](manifest.json) lists each case, its intended observation, recommended runtime
-budget, and the actual prepared-prompt token count observed through the registered 27B Engine.
+budget, and its prepared-prompt token count.
 
 ## Quick start
 
@@ -14,7 +14,7 @@ Run from the repository root because media paths in the JSON files are repositor
 
 ```bash
 CLI=./build/apps/ninfer
-MODEL=out/qwen3_6_27b.ninfer
+MODEL=models/qwen3_6_27b.ninfer
 
 $CLI "$MODEL" \
   --messages examples/cli/messages/text_smoke_zh.json \
@@ -121,9 +121,9 @@ All four must output:
 ORCHID=37; COPPER=8142; HARBOR=KESTREL; COLOR=AMBER; SUM=8179
 ```
 
-The local 27B and 35B tokenizer/chat-template resources produce identical prompt token sequences
-for every committed JSON file. The C++ Engine is currently registered only for 27B, so this is an
-input-compatibility observation rather than a 35B Engine result.
+The registered 27B and 35B-A3B tokenizer/chat-template resources produce identical prompt token
+sequences for every committed JSON file. Both artifacts run these inputs through the same CLI
+surface.
 
 ## Fixture construction
 
@@ -134,8 +134,8 @@ The committed generated files are the actual inputs. To intentionally rebuild me
 long-context JSON files from the current source tree:
 
 ```bash
-/home/neroued/miniconda3/envs/py311/bin/python examples/cli/make_fixtures.py \
-  --tokenizer /home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16
+python3 examples/cli/make_fixtures.py \
+  --tokenizer /path/to/Qwen3.6-27B
 ```
 
 Regeneration updates the frozen source snapshot when selected project files change, so generated

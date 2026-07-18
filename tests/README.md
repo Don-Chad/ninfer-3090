@@ -3,7 +3,7 @@
 The retained tests protect current `.ninfer`, numerical operator, target, runtime-transaction,
 benchmark-report, and external protocol behavior. Repository verification principles are defined in
 [`../AGENTS.md`](../AGENTS.md); Op contract and CUDA implementation guidance is in
-[`../docs/op-development.md`](../docs/op-development.md).
+[`../docs/maintainer/op-development.md`](../docs/maintainer/op-development.md).
 
 ## Organization
 
@@ -36,23 +36,22 @@ Tests are grouped by observable risk, not by mirroring every source file or clas
 ## Build and run
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120a \
-  -DPython3_EXECUTABLE=/home/neroued/miniconda3/envs/py311/bin/python
-cmake --build build -j
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
 Run a focused target for a localized change:
 
 ```bash
-cmake --build build -j --target ninfer_sampling_test
+cmake --build build --parallel --target ninfer_sampling_test
 ctest --test-dir build -R ninfer_sampling_test --output-on-failure
 ```
 
 Run the native Python suites with the project Python environment:
 
 ```bash
-/home/neroued/miniconda3/envs/py311/bin/python -m pytest \
+python3 -m pytest \
   tests/artifact tests/targets/qwen3_6_27b tests/targets/qwen3_6_35b_a3b \
   tests/test_bench_matrix.py
 ```
@@ -96,7 +95,7 @@ Run the serving contract manually after starting a resident server in another te
 ```
 
 ```bash
-/home/neroued/miniconda3/envs/py311/bin/python -m tools.smoke.serve_contract \
+python3 -m tools.smoke.serve_contract \
   --base-url http://127.0.0.1:18080 --model qwen3.6-27b
 ```
 

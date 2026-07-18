@@ -13,7 +13,7 @@ artifact, then delegates those functions to Transformers.
 Install the target dependencies from `requirements.txt`, then run:
 
 ```bash
-/home/neroued/miniconda3/envs/py311/bin/python \
+python3 \
   -m tools.reference.qwen3_6_27b \
   --weights out/qwen3_6_27b.ninfer \
   --prompt "请简短介绍一下你自己。" --decode 512
