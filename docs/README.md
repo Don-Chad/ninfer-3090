@@ -24,12 +24,7 @@ defined by `include/ninfer/engine.h` and `include/ninfer/types.h`.
 | Document | Active scope |
 |---|---|
 | [`plans/2026-07-17-sparse-moe-design-log.md`](plans/2026-07-17-sparse-moe-design-log.md) | decisions for the closed future-target `SparseMoe` Op |
-
-## Queued implementation plans
-
-| Document | Prerequisite |
-|---|---|
-| [`plans/2026-07-18-qwen3.6-35b-a3b-runtime-target.md`](plans/2026-07-18-qwen3.6-35b-a3b-runtime-target.md) | the family runtime prerequisite is complete; revise this queued plan against the landed contracts before 35B C++ implementation |
+| [`plans/2026-07-18-qwen3.6-35b-a3b-runtime-target.md`](plans/2026-07-18-qwen3.6-35b-a3b-runtime-target.md) | accepted 35B-A3B exact-target implementation plan against the landed Qwen3.6 family mechanisms; runtime implementation has not begun |
 
 Completed plans are indexed under [`archive/`](archive/README.md).
 
