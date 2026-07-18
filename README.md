@@ -1,17 +1,18 @@
 # NInfer
 
-> Selected checkpoints. Selected GPUs. Maximum single-GPU inference performance.
+> Selected checkpoints. Maximum single-GPU inference performance.
 
 NInfer is a from-scratch C++/CUDA inference engine for users who want the highest practical local
 inference performance from one GPU. It supports a small, explicitly registered set of exact model
-checkpoints and GPU targets. Each pair is implemented as a concrete compiled target; NInfer is not
-a generic model runtime, compatibility layer, or model zoo.
+checkpoint targets. Each checkpoint is implemented as a concrete compiled target; NInfer is not a
+generic model runtime, compatibility layer, or model zoo.
 
-The currently registered targets are **Qwen3.6-27B** and **Qwen3.6-35B-A3B**, both on NVIDIA RTX
-5090. They are peer variants of one Qwen3.6 family runtime; neither is implemented as a delta from
-the other. Each Engine owns one resident sequence and executes one active request at a time. Decode
-efficiency is the primary goal, followed by prefill throughput and time to first token. Limited
-continuous batching is a future direction, not a current capability or a large-scale-serving goal.
+The currently registered targets are **Qwen3.6-27B** and **Qwen3.6-35B-A3B**. The current
+implementation is compiled for `sm_120a` and tuned and measured on NVIDIA RTX 5090. The two targets
+are peer variants of one Qwen3.6 family runtime; neither is implemented as a delta from the other.
+Each Engine owns one resident sequence and executes one active request at a time. Decode efficiency
+is the primary goal, followed by prefill throughput and time to first token. Limited continuous
+batching is a future direction, not a current capability or a large-scale-serving goal.
 
 ## Capabilities
 
@@ -41,10 +42,10 @@ constructed and is bounded by the configured KV format and available GPU memory.
 
 | Model | Runtime target key | Artifact | Text profile |
 |---|---|---|---|
-| Qwen3.6-27B | `qwen3_6_27b_rtx5090` | `qwen3_6_27b_rtx5090.ninfer` | dense, hidden 5120, 64 layers |
-| Qwen3.6-35B-A3B | `qwen3_6_35b_a3b_rtx5090` | `qwen3_6_35b_a3b_rtx5090.ninfer` | sparse MoE, hidden 2048, 40 layers |
+| Qwen3.6-27B | `qwen3_6_27b` | `qwen3_6_27b.ninfer` | dense, hidden 5120, 64 layers |
+| Qwen3.6-35B-A3B | `qwen3_6_35b_a3b` | `qwen3_6_35b_a3b.ninfer` | sparse MoE, hidden 2048, 40 layers |
 
-Both require RTX 5090 (`sm_120a`), use BF16 activations and BF16 or INT8 group-64 KV, and target
+The current `sm_120a` implementation uses BF16 activations and BF16 or INT8 group-64 KV and targets
 single-stream decode with one resident sequence and one active request.
 
 ## Build
@@ -75,20 +76,20 @@ Executable `--help` output is the exact option reference.
 Conversion is offline and reads the original BF16 checkpoint directly:
 
 ```bash
-python -m tools.convert.qwen3_6_27b_rtx5090.convert \
+python -m tools.convert.qwen3_6_27b.convert \
   --model /path/to/Qwen3.6-27B/base-hf-bf16 \
-  --out out/qwen3_6_27b_rtx5090.ninfer
+  --out out/qwen3_6_27b.ninfer
 
 python -m tools.artifact.inspect \
-  out/qwen3_6_27b_rtx5090.ninfer --objects
+  out/qwen3_6_27b.ninfer --objects
 
-python -m tools.convert.qwen3_6_27b_rtx5090.verify \
-  out/qwen3_6_27b_rtx5090.ninfer \
+python -m tools.convert.qwen3_6_27b.verify \
+  out/qwen3_6_27b.ninfer \
   --model /path/to/Qwen3.6-27B/base-hf-bf16
 
-python -m tools.convert.qwen3_6_35b_a3b_rtx5090.convert \
+python -m tools.convert.qwen3_6_35b_a3b.convert \
   --model /path/to/Qwen3.6-35B-A3B/base-hf-bf16 \
-  --out out/qwen3_6_35b_a3b_rtx5090.ninfer
+  --out out/qwen3_6_35b_a3b.ninfer
 ```
 
 Each artifact contains its complete registered Text, MTP, Vision, draft-head, tokenizer, template,
@@ -99,8 +100,8 @@ The independent artifact-native Python Text/Vision/MTP diagnostic reference is a
 separately; it is not an exact generated-token golden for the C++ runtime:
 
 ```bash
-python -m tools.reference.qwen3_6_27b_rtx5090 \
-  --weights out/qwen3_6_27b_rtx5090.ninfer \
+python -m tools.reference.qwen3_6_27b \
+  --weights out/qwen3_6_27b.ninfer \
   --prompt "用三句话解释 prefill 和 decode 的区别。" \
   --decode 128 --mtp-draft-tokens 3
 ```
@@ -110,18 +111,18 @@ python -m tools.reference.qwen3_6_27b_rtx5090 \
 Text prompt:
 
 ```bash
-./build/apps/ninfer out/qwen3_6_27b_rtx5090.ninfer \
+./build/apps/ninfer out/qwen3_6_27b.ninfer \
   --prompt "用三句话解释 prefill 和 decode 的区别。" \
   --max-new 128
 ```
 
-Use `out/qwen3_6_35b_a3b_rtx5090.ninfer` in the same command to select the registered 35B-A3B
+Use `out/qwen3_6_35b_a3b.ninfer` in the same command to select the registered 35B-A3B
 variant; CLI, serving, and benchmark code contain no model-specific branch.
 
 Structured text/image/video messages:
 
 ```bash
-./build/apps/ninfer out/qwen3_6_27b_rtx5090.ninfer \
+./build/apps/ninfer out/qwen3_6_27b.ninfer \
   --messages messages.json --no-thinking --max-new 256
 ```
 
@@ -138,7 +139,7 @@ bytes before the target Frontend performs checkpoint-specific image/video prepar
 ## Run the server
 
 ```bash
-./build/apps/ninfer-serve out/qwen3_6_27b_rtx5090.ninfer \
+./build/apps/ninfer-serve out/qwen3_6_27b.ninfer \
   --host 127.0.0.1 --port 8080 --max-context 8192
 ```
 
@@ -157,7 +158,7 @@ behavior.
 
 ```bash
 ./build/bench/ninfer_bench \
-  --weights out/qwen3_6_27b_rtx5090.ninfer \
+  --weights out/qwen3_6_27b.ninfer \
   -p 512,2048 -n 128 -pg '2048,128' -r 5 --warmup 1
 ```
 
@@ -187,7 +188,7 @@ methods or mutable model state.
 ```text
 BF16 checkpoint
   -> target converter
-  -> qwen3_6_27b_rtx5090.ninfer or qwen3_6_35b_a3b_rtx5090.ninfer
+  -> qwen3_6_27b.ninfer or qwen3_6_35b_a3b.ninfer
   -> artifact reader / binder / materializer
   -> selected closed exact target package
        immutable exact LoadedModel + private Variant
@@ -210,8 +211,8 @@ The source and build boundaries are explicit:
 - `src/targets/qwen3_6` owns the shared Frontend, `SequencePlan<Variant>`,
   `RequestPlan<Variant>`, `Program<Variant>`, fixed Text/Vision/MTP schedules, live state/frontier
   policy, workspace composition, and graph mechanics;
-- `src/targets/qwen3_6_27b_rtx5090` and `src/targets/qwen3_6_35b_a3b_rtx5090` own peer exact
-  checkpoint/GPU identities, configurations, artifact bindings and leaf payloads; they populate the
+- `src/targets/qwen3_6_27b` and `src/targets/qwen3_6_35b_a3b` own peer exact
+  checkpoint identities, configurations, artifact bindings and leaf payloads; they populate the
   family model-view schemas and own three closed execution leaves, leaf-local workspace, graph
   frontier ranges, and target diagnostics;
 - `src/runtime` owns common request contracts, generation policy, and the public

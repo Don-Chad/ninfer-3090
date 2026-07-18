@@ -189,8 +189,8 @@ ninfer_internal_includes(ninfer_engine)
 target_include_directories(ninfer_engine PUBLIC ${PROJECT_SOURCE_DIR}/include)
 
 add_subdirectory(targets/qwen3_6)
-add_subdirectory(targets/qwen3_6_27b_rtx5090)
-add_subdirectory(targets/qwen3_6_35b_a3b_rtx5090)
+add_subdirectory(targets/qwen3_6_27b)
+add_subdirectory(targets/qwen3_6_35b_a3b)
 
 target_link_libraries(ninfer_engine
   PRIVATE

@@ -105,14 +105,16 @@ intermediate artifacts are excluded unless requested or themselves the deliverab
 ## Current product contract
 
 NInfer is a from-scratch C++/CUDA inference engine for maximum single-GPU inference performance on
-a small set of explicitly registered checkpoint/GPU targets. The current product supports exactly
-two peer targets on NVIDIA GeForce RTX 5090: `qwen3_6_27b_rtx5090` and
-`qwen3_6_35b_a3b_rtx5090`. Both execute Text, image/video Vision, MTP, prefix reuse, CLI,
-OpenAI/Anthropic serving, and measurement through the same public `.ninfer` Engine route.
+a small set of explicitly registered checkpoint targets. The current product supports exactly two
+peer targets: `qwen3_6_27b` and `qwen3_6_35b_a3b`. The current implementation is compiled for
+`sm_120a` and tuned and measured on NVIDIA GeForce RTX 5090. Both targets execute Text, image/video
+Vision, MTP, prefix reuse, CLI, OpenAI/Anthropic serving, and measurement through the same public
+`.ninfer` Engine route.
 
 The current workload is one user, one active request, and one GPU. Continuous batching, additional
-targets, and additional hardware are future work, not current behavior. This is a local,
-single-owner project. Registered models, generated artifacts, and the local workflow are trusted.
+checkpoint targets, and retargeting the implementation to another execution platform are outside
+the current product. This is a local, single-owner project. Registered models, generated artifacts,
+and the local workflow are trusted.
 Requirements derived from a different workload, trust model, or deployment model are out of scope
 until that product contract is explicitly changed.
 
@@ -188,7 +190,7 @@ them, but must update the corresponding active authorities and affected implemen
   Vision definitions, and the fixed planning/Program/Text/Vision/MTP/state/workspace/CUDA-Graph
   algorithms. It has no target identity, registry entry, artifact binder, target leaf
   implementation, or storage for a live Program instance.
-- `src/targets/<target_key>` owns the exact checkpoint/GPU package, storage profile, binder,
+- `src/targets/<target_key>` owns the exact checkpoint package, storage profile, binder,
   `LoadedModel`, configuration, populated family model-view values and private leaf payloads,
   diagnostics, graph frontier values, and exactly three execution-leaf families: attention
   projection, GDN projection/control, and post-mixer. It aliases
@@ -298,8 +300,8 @@ These are available project resources, not a checklist of resources every task m
 | repository | `/home/neroued/ninfer` |
 | Python 3.11 | `/home/neroued/miniconda3/envs/py311/bin/python` |
 | BF16 source checkpoint | `/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16` |
-| product artifact | `out/qwen3_6_27b_rtx5090.ninfer` |
-| conversion report | `out/qwen3_6_27b_rtx5090.ninfer.conversion.json` |
+| product artifact | `out/qwen3_6_27b.ninfer` |
+| conversion report | `out/qwen3_6_27b.ninfer.conversion.json` |
 | normal build | `build/` |
 | profiler output | `profiles/ncu/`, `profiles/nsys/`, `profiles/bench/` |
 | hardware/toolchain | RTX 5090, `sm_120a`, CUDA 13.1 |
@@ -312,7 +314,7 @@ download or regenerate them unless that work is in scope.
 ```bash
 PYTHON=/home/neroued/miniconda3/envs/py311/bin/python
 MODEL=/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16
-NINFER_WEIGHTS=out/qwen3_6_27b_rtx5090.ninfer
+NINFER_WEIGHTS=out/qwen3_6_27b.ninfer
 ```
 
 ## Commits

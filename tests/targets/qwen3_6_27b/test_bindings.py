@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from tools.reference.qwen3_6_27b_rtx5090.bindings import ArtifactBinding
-from tools.reference.qwen3_6_27b_rtx5090.weights import WeightStore
+from tools.reference.qwen3_6_27b.bindings import ArtifactBinding
+from tools.reference.qwen3_6_27b.weights import WeightStore
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -18,7 +18,7 @@ def binding():
     path = Path(
         os.environ.get(
             "NINFER_QWEN3_6_27B_ARTIFACT",
-            PROJECT_ROOT / "out/qwen3_6_27b_rtx5090.ninfer",
+            PROJECT_ROOT / "out/qwen3_6_27b.ninfer",
         )
     )
     if not path.is_file():

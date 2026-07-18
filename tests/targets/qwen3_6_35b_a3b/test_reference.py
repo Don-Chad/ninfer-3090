@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from tools.reference.qwen3_6_35b_a3b_rtx5090.bindings import ArtifactBinding
-from tools.reference.qwen3_6_35b_a3b_rtx5090.weights import (
+from tools.reference.qwen3_6_35b_a3b.bindings import ArtifactBinding
+from tools.reference.qwen3_6_35b_a3b.weights import (
     WeightStore,
     estimate_fixed_bytes,
 )
@@ -21,7 +21,7 @@ def binding():
     path = Path(
         os.environ.get(
             "NINFER_QWEN3_6_35B_A3B_ARTIFACT",
-            PROJECT_ROOT / "out/qwen3_6_35b_a3b_rtx5090.ninfer",
+            PROJECT_ROOT / "out/qwen3_6_35b_a3b.ninfer",
         )
     )
     if not path.is_file():

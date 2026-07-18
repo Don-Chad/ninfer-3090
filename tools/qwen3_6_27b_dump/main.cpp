@@ -4,9 +4,9 @@
 #include "core/device.h"
 #include "product/prompt_input/prompt_input.h"
 #include "runtime/engine/request_memory.h"
-#include <ninfer/targets/qwen3_6_27b_rtx5090/package.h>
+#include <ninfer/targets/qwen3_6_27b/package.h>
 #include <ninfer/targets/qwen3_6/prepared_prompt.h>
-#include "targets/qwen3_6_27b_rtx5090/impl/diagnostic/activation_dump_access.h"
+#include "targets/qwen3_6_27b/impl/diagnostic/activation_dump_access.h"
 
 #include <cuda_runtime.h>
 #include <nlohmann/json.hpp>
@@ -31,7 +31,7 @@
 namespace {
 
 using Json         = nlohmann::json;
-namespace target   = ninfer::targets::qwen3_6_27b_rtx5090;
+namespace target   = ninfer::targets::qwen3_6_27b;
 namespace detail   = target::detail;
 namespace schedule = detail::schedule;
 
@@ -534,7 +534,7 @@ int run(const Options& options) {
                   {"frequency_penalty", 0.0},
                   {"seed", 0}};
     writer.write_manifest(
-        Json{{"target", "qwen3_6_27b_rtx5090"},
+        Json{{"target", "qwen3_6_27b"},
              {"weights", std::filesystem::absolute(options.weights).string()},
              {"prompt_source", options.messages.empty() ? "ids" : "messages"},
              {"messages", options.messages.empty()

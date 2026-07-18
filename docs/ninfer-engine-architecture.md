@@ -1,7 +1,7 @@
 # NInfer Core Engine Architecture
 
-> Status: accepted and implemented for the registered peer targets `qwen3_6_27b_rtx5090` and
-> `qwen3_6_35b_a3b_rtx5090`.
+> Status: accepted and implemented for the registered peer targets `qwen3_6_27b` and
+> `qwen3_6_35b_a3b`.
 >
 > Authority: this document defines the NInfer core engine boundary, exact-target registration
 > and dispatch, load-time construction, memory ownership, Qwen3.6 family boundary,
@@ -33,10 +33,10 @@ model `forward()` API.
 The unit selected at load time is:
 
 ```text
-exact checkpoint semantics + selected GPU implementation
+exact checkpoint semantics
 ```
 
-Every supported pair supplies one statically compiled exact package. The package owns identity,
+Every supported checkpoint supplies one statically compiled exact package. The package owns identity,
 artifact binding, exact configuration and immutable typed weights, then aliases the Qwen3.6 family
 runtime with one private compile-time Variant. The family `SequencePlan<Variant>`,
 `RequestPlan<Variant>`, and `Program<Variant>` own the fixed Text/Vision/MTP schedule, state
@@ -99,12 +99,12 @@ generic runtime how to infer an execution graph from artifact metadata.
 This architecture covers:
 
 - one process-local loaded product;
-- one selected GPU;
+- one GPU;
 - one `Program` with at most one active request;
 - an optionally reusable resident sequence between successive local requests;
 - exact-checkpoint native Text, Vision, MTP, recurrent, and sampling behavior as applicable;
 - synchronous GPU ownership even when transport and preparation run on other CPU threads;
-- one current optimized path for each registered exact checkpoint and GPU pair.
+- one current optimized path for each registered exact checkpoint.
 
 The design implements both Qwen3.6-27B and Qwen3.6-35B-A3B without putting either checkpoint's
 dimensions or phase vocabulary into the common public/controller API.
@@ -141,18 +141,16 @@ are fixed checkpoint facts. Two family members with different dimensions are dif
 
 ### 3.2 Target package
 
-A **target package** is one compiled implementation of an exact checkpoint, selected GPU, and
-complete persistent storage-consumer profile. It is a C++ type satisfying the internal contract in
-this document. Its name/profile is a source-level identity derived from the artifact's existing
-object signatures, not a new artifact field and not a public ABI.
+A **target package** is one compiled implementation of an exact checkpoint and complete persistent
+storage-consumer profile. It is a C++ type satisfying the internal contract in this document. Its
+name/profile is a source-level identity derived from the artifact's existing object signatures, not
+a new artifact field and not a public ABI.
 
-One checkpoint may eventually have more than one target package only because different selected
-GPUs are different optimization targets. For one exact checkpoint and one selected GPU, exactly one
-current complete storage-consumer profile exists. Changing that profile replaces the old
-project-owned package and artifact route; it does not retain a compatibility or quality alternative.
-Each package accepts exactly one complete role-to-format/layout/encoding profile; file offsets/order
-may vary as the container permits. No Cartesian product of known models, formats, layouts, and GPUs
-is implied.
+For one exact checkpoint, exactly one current complete storage-consumer profile exists. Changing
+that profile replaces the old project-owned package and artifact route; it does not retain a
+compatibility or quality alternative. Each package accepts exactly one complete
+role-to-format/layout/encoding profile; file offsets/order may vary as the container permits. No
+Cartesian product of known models, formats, layouts, and hardware profiles is implied.
 
 ### 3.3 Loaded product
 
@@ -318,7 +316,7 @@ to the common generation controller.
 A host-callable tensor or explicit local-state transformation is classified separately by the Op
 rule: if its complete values and effects can be defined from explicit arguments without schedule
 context, its contract and every implementation are centrally owned. One caller, an exact model
-shape, or one selected GPU does not require a second-target reuse proof. Mathematical state
+shape, or one current execution platform does not require a second-target reuse proof. Mathematical state
 transitions remain Ops. The family runtime composes those Ops and owns one Program's live state; it
 does not own the mathematical kernel implementations or exact artifact bindings.
 
@@ -1783,13 +1781,13 @@ NInfer has no top-level mutable runtime model layer. The physical target composi
 complete target package:
 
 ```text
-exact checkpoint + selected GPU + one current storage-consumer profile
+exact checkpoint + one current storage-consumer profile
 ```
 
-Its source key uses `<checkpoint_key>_<device_key>`, for example
-`qwen3_6_27b_rtx5090`. The source key is not an artifact field and is never inferred from a directory
-at runtime. The package still declares and validates the registered `.ninfer` `model_id`, actual
-device, and complete object signatures through compiled code.
+Its source key uses `<checkpoint_key>`, for example `qwen3_6_27b`. The source key is not an
+artifact field and is never inferred from a directory at runtime. The package still declares and
+validates the registered `.ninfer` `model_id`, compatible execution device, and complete object
+signatures through compiled code.
 
 `src/targets/qwen3_6` is the one deliberate family-runtime directory. It owns the shared frontend,
 passive common Vision bindings, `SequencePlan<Variant>`, `RequestPlan<Variant>`,
@@ -1852,9 +1850,9 @@ src/
 │   │       ├── state/                    decoder/GDN and round layout/view implementation
 │   │       ├── vision/                   binding/control definitions
 │   │       └── runtime/                  fixed planning/Text/Vision/MTP/state/graph implementation
-│   ├── qwen3_6_27b_rtx5090/
+│   ├── qwen3_6_27b/
 │   │   ├── CMakeLists.txt                explicit source contribution to ninfer_engine
-│   │   ├── export/ninfer/targets/qwen3_6_27b_rtx5090/
+│   │   ├── export/ninfer/targets/qwen3_6_27b/
 │   │   │   └── package.h                 narrow composition facade
 │   │   └── impl/
 │   │       ├── package.cpp               facade definitions and private construction
@@ -1862,7 +1860,7 @@ src/
 │   │       ├── load/                     exact plans/payloads; populates family model views
 │   │       ├── variant.h / variant.cpp   closed leaves, leaf workspace, graph-range data
 │   │       └── diagnostic/               explicitly linked target diagnostics
-│   └── qwen3_6_35b_a3b_rtx5090/
+│   └── qwen3_6_35b_a3b/
 │       ├── CMakeLists.txt                 explicit source contribution to ninfer_engine
 │       ├── export/.../package.h           peer exact-package facade
 │       └── impl/                          config, load, package, fused/MoE Variant leaves
@@ -1876,11 +1874,11 @@ tools/
 ├── artifact/                            generic .ninfer read/write/layout/inspection machinery
 ├── convert/common/                      generic checkpoint-reading/quantization helpers
 ├── convert/qwen3_6/common/               narrow Qwen3.6-family conversion leaves
-├── convert/qwen3_6_27b_rtx5090/         source mapping and conversion recipe
-├── convert/qwen3_6_35b_a3b_rtx5090/     registered 35B conversion recipe
-├── reference/qwen3_6_27b_rtx5090/       artifact-native Text/Vision/MTP Python reference
-├── reference/qwen3_6_35b_a3b_rtx5090/   artifact-native 35B Text/Vision/MTP/MoE reference
-├── parity/qwen3_6_27b_rtx5090/          independent target/reference diagnostics
+├── convert/qwen3_6_27b/         source mapping and conversion recipe
+├── convert/qwen3_6_35b_a3b/     registered 35B conversion recipe
+├── reference/qwen3_6_27b/       artifact-native Text/Vision/MTP Python reference
+├── reference/qwen3_6_35b_a3b/   artifact-native 35B Text/Vision/MTP/MoE reference
+├── parity/qwen3_6_27b/          independent target/reference diagnostics
 ├── qwen3_6_27b_dump/                    C++ target activation dump
 ├── bench/                               corpus generation and performance orchestration
 ├── smoke/                               resident-server product smoke client
@@ -1984,9 +1982,9 @@ There is one deliberate composition edge: `registry.h` and `registry.cpp` assemb
 The include and namespace are derived only from the compiled source key, for example:
 
 ```cpp
-#include <ninfer/targets/qwen3_6_35b_a3b_rtx5090/package.h>
+#include <ninfer/targets/qwen3_6_35b_a3b/package.h>
 
-namespace ninfer::targets::qwen3_6_35b_a3b_rtx5090 { /* facade declarations */ }
+namespace ninfer::targets::qwen3_6_35b_a3b { /* facade declarations */ }
 ```
 
 The directory key, include path, namespace suffix, CMake target suffix, and registry tag use the same

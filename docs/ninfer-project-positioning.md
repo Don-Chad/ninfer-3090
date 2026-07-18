@@ -14,18 +14,18 @@
 ## 1. Purpose
 
 NInfer is an end-to-end local inference engine for a small set of deliberately selected model
-checkpoints and GPU targets. It pursues maximum practical inference performance on those exact
-targets instead of broad model coverage, automatic compatibility, or portability across arbitrary
+checkpoint targets. It pursues maximum practical inference performance on those exact checkpoints
+instead of broad model coverage, automatic compatibility, or portability across arbitrary
 hardware.
 
 NInfer exists for users who want the highest inference performance obtainable from a single local
-GPU. It deliberately trades breadth for depth: each chosen checkpoint and hardware combination is
-treated as a concrete target to be understood, implemented, measured, and optimized in depth rather
-than as one instance of a generic runtime.
+GPU. It deliberately trades breadth for depth: each chosen checkpoint is treated as a concrete
+target to be understood, implemented, measured, and optimized in depth rather than as one instance
+of a generic runtime.
 
 The concise project position is:
 
-> Selected checkpoints. Selected GPUs. Maximum single-GPU inference performance.
+> Selected checkpoints. Maximum single-GPU inference performance.
 
 The corresponding value judgment is:
 
@@ -37,7 +37,7 @@ The corresponding value judgment is:
 The unit of work in NInfer is an exact optimization target:
 
 ```text
-exact model checkpoint + selected GPU + defined local workload
+exact model checkpoint + defined local workload
 ```
 
 A model family is not an optimization target. Checkpoints from the same family may differ in
@@ -46,15 +46,17 @@ other facts that materially change inference. Selecting one checkpoint therefore
 that another checkpoint is compatible, even when their architecture labels or configurations look
 similar.
 
-Hardware is selected with the same precision. A target is evaluated on a concrete GPU product, not
-inferred from a vendor, generation, or instruction-set label. The NVIDIA RTX 5090 is currently the
-only hardware target. Other GPUs may be added later, but each addition is a deliberate project
-decision and a new optimization effort rather than an automatic expansion of compatibility.
+Hardware is not a target-identity or registry dimension. The current implementation is compiled
+for `sm_120a` and tuned and measured on NVIDIA RTX 5090; those are implementation and evidence
+facts, not another package-key layer. This does not imply portability or automatic compatibility
+with arbitrary hardware. Retargeting the implementation to a different execution platform would
+be a deliberate optimization effort, not a second hardware-qualified identity for the same
+checkpoint.
 
 Checkpoint selection is intentional and maintainer-directed. Relevant considerations include:
 
 - the checkpoint's practical value to local users;
-- whether it can run well on one selected GPU without relying on offload;
+- whether it can run well on the current single-GPU implementation without relying on offload;
 - whether its complete native inference capabilities can be delivered;
 - whether specialization offers a meaningful performance opportunity;
 - whether its quality, behavior, memory use, and performance can be evaluated credibly;
@@ -74,10 +76,10 @@ to the single-request path and must not redefine the project around aggregate mu
 throughput. Large-scale concurrency, multi-tenant serving, and data-center scheduling are not target
 workloads.
 
-The current deployment unit is one host with one selected GPU. Performance-critical model
+The current deployment unit is one host with one local GPU. Performance-critical model
 execution and model state must fit and run on that GPU. CPU assistance may exist around the
 inference path, but CPU weight offload, layer-by-layer transfer, and CPU inference fallback are
-outside this boundary. A checkpoint that depends on them is not viable for that GPU target.
+outside this boundary. A checkpoint that depends on them is not viable for the current product.
 
 Multi-GPU and distributed execution are not planned capabilities, and NInfer does not reserve
 complexity for them in advance. If real hardware availability and project goals change, multi-GPU
@@ -142,7 +144,7 @@ Two context limits must remain distinct:
 
 - the checkpoint's native context limit, established by the checkpoint's own semantics and
   published behavior;
-- NInfer's verified context limit for one exact checkpoint, GPU, and current optimized path.
+- NInfer's verified context limit for one exact checkpoint on the current implementation path.
 
 NInfer aims to make the second reach the first, but it reports only lengths that have actually been
 validated. An advertised or theoretical limit is not a delivered result. Long-context decode speed,
@@ -156,8 +158,8 @@ or local latency in order to maximize aggregate request throughput.
 
 ## 6. One current optimized route
 
-For each exact checkpoint and hardware target, NInfer maintains one current optimized product
-route. It does not offer parallel high-fidelity, balanced, or maximum-speed editions.
+For each exact checkpoint target, NInfer maintains one current optimized product route. It does not
+offer parallel high-fidelity, balanced, or maximum-speed editions.
 
 The objective is:
 
@@ -242,7 +244,7 @@ NInfer is not intended to be:
 - a model zoo whose success is measured by recognized architectures;
 - a compatibility layer that treats family membership or similar configuration as sufficient;
 - a portable backend for every GPU, accelerator, or CPU;
-- a CPU-offload system for checkpoints that do not fit the selected GPU;
+- a CPU-offload system for checkpoints that do not fit the current local GPU;
 - a tensor-parallel, pipeline-parallel, multi-GPU, or distributed inference system under the current
   project direction;
 - a large-scale batching, multi-tenant, or data-center serving framework;
@@ -258,10 +260,10 @@ project decision rather than gradual expansion by implication.
 
 ## 11. Success criteria
 
-NInfer succeeds when deep knowledge of a selected checkpoint and GPU produces local, single-GPU
-inference performance that a general-purpose engine cannot easily match, while retaining acceptable
-quality and the checkpoint's native capabilities, and while pushing the verified usable context as
-close as practical to the checkpoint's native limit.
+NInfer succeeds when deep knowledge of a selected checkpoint and the current execution platform
+produces local, single-GPU inference performance that a general-purpose engine cannot easily match,
+while retaining acceptable quality and the checkpoint's native capabilities, and while pushing the
+verified usable context as close as practical to the checkpoint's native limit.
 
 Success is not established by:
 
@@ -282,9 +284,10 @@ NInfer favors the actual target. General mechanisms are justified by demonstrate
 real selected targets, not by the possibility that an unspecified checkpoint, device, or workload
 may appear later.
 
-Any proposal that changes the checkpoint-by-checkpoint targeting model, selected-hardware policy, single-GPU
-deployment boundary, local low-concurrency workload, single optimized route, or end-to-end product
-scope must revise this positioning explicitly rather than expanding the project by implication.
+Any proposal that changes the checkpoint-by-checkpoint targeting model, single-GPU implementation
+or deployment boundary, local low-concurrency workload, single optimized route, or end-to-end
+product scope must revise this positioning explicitly rather than expanding the project by
+implication.
 
 ## 13. Deliberately separate decisions
 

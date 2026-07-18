@@ -1,6 +1,6 @@
 from collections import Counter
 
-from tools.convert.qwen3_6_27b_rtx5090 import inventory
+from tools.convert.qwen3_6_27b import inventory
 
 
 def _tensor_by_name() -> dict[str, inventory.TensorSpec]:
@@ -9,7 +9,7 @@ def _tensor_by_name() -> dict[str, inventory.TensorSpec]:
 
 def test_complete_full_only_inventory_and_canonical_order() -> None:
     assert inventory.MODEL_ID == "qwen3.6-27b"
-    assert inventory.TARGET_KEY == "qwen3_6_27b_rtx5090"
+    assert inventory.TARGET_KEY == "qwen3_6_27b"
 
     assert len(inventory.TEXT_CORE_TENSOR_SPECS) == 771
     assert len(inventory.DRAFT_HEAD_TENSOR_SPECS) == 2

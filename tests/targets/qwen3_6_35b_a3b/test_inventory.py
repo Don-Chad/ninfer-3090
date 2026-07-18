@@ -1,4 +1,4 @@
-from tools.convert.qwen3_6_35b_a3b_rtx5090 import inventory
+from tools.convert.qwen3_6_35b_a3b import inventory
 
 
 def _tensors() -> dict[str, inventory.TensorSpec]:

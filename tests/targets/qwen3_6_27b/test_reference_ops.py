@@ -6,15 +6,15 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from tools.reference.qwen3_6_27b_rtx5090.config import ATTN_SCALE, CFG, VISION_CFG
-from tools.reference.qwen3_6_27b_rtx5090.ops import (
+from tools.reference.qwen3_6_27b.config import ATTN_SCALE, CFG, VISION_CFG
+from tools.reference.qwen3_6_27b.ops import (
     _naive_gated_delta_rule,
     apply_rope,
     attention,
     causal_conv1d,
     gated_delta_rule,
 )
-from tools.reference.qwen3_6_27b_rtx5090.state import KVCache
+from tools.reference.qwen3_6_27b.state import KVCache
 from tools.reference.qwen3_6.common.vision_ops import vision_attention
 
 

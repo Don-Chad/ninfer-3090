@@ -14,7 +14,7 @@ Run from the repository root because media paths in the JSON files are repositor
 
 ```bash
 CLI=./build/apps/ninfer
-MODEL=out/qwen3_6_27b_rtx5090.ninfer
+MODEL=out/qwen3_6_27b.ninfer
 
 $CLI "$MODEL" \
   --messages examples/cli/messages/text_smoke_zh.json \

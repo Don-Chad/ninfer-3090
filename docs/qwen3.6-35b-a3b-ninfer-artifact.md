@@ -1,7 +1,7 @@
 # Qwen3.6-35B-A3B NInfer Artifact Contract and Conversion Recipe
 
 > Status: implemented artifact contract for the registered
-> `qwen3_6_35b_a3b_rtx5090` target. The target-private converter, inventory, source recipe, C++
+> `qwen3_6_35b_a3b` target. The target-private converter, inventory, source recipe, C++
 > binder/package, artifact-native Python diagnostic path, and public Engine route implement this
 > contract. The Python path is not a generated-token golden or per-Op mathematical oracle.
 >
@@ -32,10 +32,10 @@ qwen3.6-35b-a3b
 The source/tool/compiled target key is:
 
 ```text
-qwen3_6_35b_a3b_rtx5090
+qwen3_6_35b_a3b
 ```
 
-The target key selects one exact checkpoint/GPU package. It is not serialized as another
+The target key selects one exact checkpoint package. It is not serialized as another
 `model_id`. The closed registry maps this `model_id` to that package before loading.
 
 Every conforming artifact is one complete product image. It contains Text, the optimized draft
@@ -651,10 +651,10 @@ tools/convert/qwen3_6/common/
     Qwen3.6 recipe expressions, shortlist mechanics, shared Vision geometry/mapping,
     frontend resource names, and artifact-writing mechanics
 
-tools/convert/qwen3_6_27b_rtx5090/
+tools/convert/qwen3_6_27b/
     complete 27B target inventory, source mapping, config, ranking policy, and CLI
 
-tools/convert/qwen3_6_35b_a3b_rtx5090/
+tools/convert/qwen3_6_35b_a3b/
     complete 35B-A3B target inventory, MoE/dense source mapping, config,
     fixed ranking policy, and CLI
 ```
@@ -1230,7 +1230,7 @@ The registered artifact route is supported by focused evidence tied to this cont
   projections, sparse MoE, attention, GDN, MTP, and Vision Ops; each production numerical path is
   checked against its own oracle and is not required to reproduce another path's output;
 - the real public Engine route loads the named artifact as
-  `qwen3_6_35b_a3b_rtx5090` and exercises Text, MTP, prefix/state lifecycle, CUDA Graph execution,
+  `qwen3_6_35b_a3b` and exercises Text, MTP, prefix/state lifecycle, CUDA Graph execution,
   and inline Vision; and
 - construction at native `max_context=262144` with INT8-G64 KV and MTP window five verifies the
   admitted sequence/workspace layout and rejects an over-capacity request before Program mutation.

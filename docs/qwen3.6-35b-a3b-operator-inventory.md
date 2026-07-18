@@ -1,7 +1,7 @@
 # Qwen3.6-35B-A3B Operator Inventory
 
 > Status: authoritative operation inventory and implementation-support matrix for the registered
-> `qwen3_6_35b_a3b_rtx5090` target.
+> `qwen3_6_35b_a3b` target.
 
 This document is organized by the operation that an Op or kernel performs, not by the model block
 that happens to call it. An attention input projection, a GDN input projection, an MTP projection,

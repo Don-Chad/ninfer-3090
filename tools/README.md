@@ -5,7 +5,7 @@ diagnostics, benchmark helpers, and the serving smoke client. Run commands from 
 root. The normal C++ products live under `apps/` and `bench/`; most Python tools here are invoked
 manually with `python -m`.
 
-The registered targets are `qwen3_6_27b_rtx5090` and `qwen3_6_35b_a3b_rtx5090`. Target-specific
+The registered targets are `qwen3_6_27b` and `qwen3_6_35b_a3b`. Target-specific
 tools use those exact keys in their directory names. Shared artifact mechanisms and
 checkpoint-reading helpers stay outside a target directory.
 
@@ -13,12 +13,12 @@ checkpoint-reading helpers stay outside a target directory.
 
 | Task | Start here |
 |---|---|
-| Build the 27B `.ninfer` artifact | [`convert/qwen3_6_27b_rtx5090/`](convert/qwen3_6_27b_rtx5090/) |
-| Build the 35B-A3B `.ninfer` artifact | [`convert/qwen3_6_35b_a3b_rtx5090/`](convert/qwen3_6_35b_a3b_rtx5090/) |
+| Build the 27B `.ninfer` artifact | [`convert/qwen3_6_27b/`](convert/qwen3_6_27b/) |
+| Build the 35B-A3B `.ninfer` artifact | [`convert/qwen3_6_35b_a3b/`](convert/qwen3_6_35b_a3b/) |
 | Inspect an artifact directory | [`artifact/inspect.py`](artifact/inspect.py) |
-| Verify an artifact against the BF16 checkpoint | [`convert/qwen3_6_27b_rtx5090/verify.py`](convert/qwen3_6_27b_rtx5090/verify.py) |
-| Run independent Python inference | [`reference/qwen3_6_27b_rtx5090/README.md`](reference/qwen3_6_27b_rtx5090/README.md) or [`reference/qwen3_6_35b_a3b_rtx5090/README.md`](reference/qwen3_6_35b_a3b_rtx5090/README.md) |
-| Compare Python, C++, and source-model activations | [`parity/qwen3_6_27b_rtx5090/README.md`](parity/qwen3_6_27b_rtx5090/README.md) |
+| Verify an artifact against the BF16 checkpoint | [`convert/qwen3_6_27b/verify.py`](convert/qwen3_6_27b/verify.py) |
+| Run independent Python inference | [`reference/qwen3_6_27b/README.md`](reference/qwen3_6_27b/README.md) or [`reference/qwen3_6_35b_a3b/README.md`](reference/qwen3_6_35b_a3b/README.md) |
+| Compare Python, C++, and source-model activations | [`parity/qwen3_6_27b/README.md`](parity/qwen3_6_27b/README.md) |
 | Run the end-to-end performance matrix | [`bench/README.md`](bench/README.md) |
 | Exercise a resident OpenAI/Anthropic server | [`smoke/serve_contract.py`](smoke/serve_contract.py) |
 
@@ -28,16 +28,16 @@ Create, inspect, and verify the artifact:
 
 ```bash
 /home/neroued/miniconda3/envs/py311/bin/python \
-  -m tools.convert.qwen3_6_27b_rtx5090.convert \
+  -m tools.convert.qwen3_6_27b.convert \
   --model /path/to/Qwen3.6-27B/base-hf-bf16 \
-  --out out/qwen3_6_27b_rtx5090.ninfer
+  --out out/qwen3_6_27b.ninfer
 
 /home/neroued/miniconda3/envs/py311/bin/python \
-  -m tools.artifact.inspect out/qwen3_6_27b_rtx5090.ninfer --objects
+  -m tools.artifact.inspect out/qwen3_6_27b.ninfer --objects
 
 /home/neroued/miniconda3/envs/py311/bin/python \
-  -m tools.convert.qwen3_6_27b_rtx5090.verify \
-  out/qwen3_6_27b_rtx5090.ninfer \
+  -m tools.convert.qwen3_6_27b.verify \
+  out/qwen3_6_27b.ninfer \
   --model /path/to/Qwen3.6-27B/base-hf-bf16
 ```
 
@@ -52,13 +52,13 @@ the same semantic token-id vocabulary:
 
 ```bash
 /home/neroued/miniconda3/envs/py311/bin/python \
-  -m tools.convert.qwen3_6_35b_a3b_rtx5090.convert \
+  -m tools.convert.qwen3_6_35b_a3b.convert \
   --model /home/neroued/models/llm/qwen/Qwen3.6-35B-A3B/base-hf-bf16 \
-  --out out/qwen3_6_35b_a3b_rtx5090.ninfer
+  --out out/qwen3_6_35b_a3b.ninfer
 ```
 
 The ranking path is fixed by the exact target converter. The sidecar records that its source
-measurement target was `qwen3_6_27b_rtx5090`; the selected rows themselves are always gathered from
+measurement target was `qwen3_6_27b`; the selected rows themselves are always gathered from
 the 35B BF16 output head before Q4 quantization.
 
 ## Python reference and parity
@@ -67,8 +67,8 @@ Run artifact-native Text, Vision, and MTP inference:
 
 ```bash
 /home/neroued/miniconda3/envs/py311/bin/python \
-  -m tools.reference.qwen3_6_27b_rtx5090 \
-  --weights out/qwen3_6_27b_rtx5090.ninfer \
+  -m tools.reference.qwen3_6_27b \
+  --weights out/qwen3_6_27b.ninfer \
   --prompt "Explain prefill and decode briefly." \
   --decode 128 --mtp-draft-tokens 3
 ```
@@ -76,14 +76,14 @@ Run artifact-native Text, Vision, and MTP inference:
 The reference is an independent diagnostic implementation, not the C++ runtime wrapped in Python
 and not an exact generated-token golden for it.
 Install its dependencies from
-[`reference/qwen3_6_27b_rtx5090/requirements.txt`](reference/qwen3_6_27b_rtx5090/requirements.txt).
+[`reference/qwen3_6_27b/requirements.txt`](reference/qwen3_6_27b/requirements.txt).
 
 The registered 35B-A3B artifact has its own complete Text/MoE/Vision/MTP diagnostic reference:
 
 ```bash
 /home/neroued/miniconda3/envs/py311/bin/python \
-  -m tools.reference.qwen3_6_35b_a3b_rtx5090 \
-  --weights out/qwen3_6_35b_a3b_rtx5090.ninfer \
+  -m tools.reference.qwen3_6_35b_a3b \
+  --weights out/qwen3_6_35b_a3b.ninfer \
   --prompt "Explain sparse MoE routing briefly." \
   --decode 128 --mtp-draft-tokens 3
 ```
@@ -137,12 +137,12 @@ tools/
 ├── artifact/                         generic .ninfer codec, layouts, formats, and inspector
 ├── convert/common/                   shared checkpoint-reading and quantization helpers
 ├── convert/qwen3_6/common/            narrow Qwen3.6-family conversion leaves
-├── convert/qwen3_6_27b_rtx5090/      exact-target converter, inventory, recipe, and verifier
-├── convert/qwen3_6_35b_a3b_rtx5090/  registered-target converter, inventory, and source recipe
+├── convert/qwen3_6_27b/      exact-target converter, inventory, recipe, and verifier
+├── convert/qwen3_6_35b_a3b/  registered-target converter, inventory, and source recipe
 ├── reference/qwen3_6/common/          narrow family-invariant reference leaves
-├── reference/qwen3_6_27b_rtx5090/    registered-target artifact-native Python reference
-├── reference/qwen3_6_35b_a3b_rtx5090/ registered-target artifact-native Python reference
-├── parity/qwen3_6_27b_rtx5090/       target numerical comparison tools
+├── reference/qwen3_6_27b/    registered-target artifact-native Python reference
+├── reference/qwen3_6_35b_a3b/ registered-target artifact-native Python reference
+├── parity/qwen3_6_27b/       target numerical comparison tools
 ├── qwen3_6_27b_dump/                 C++ target activation diagnostic
 ├── bench/                            corpus generation and performance orchestration
 ├── smoke/                            resident-server product smoke client

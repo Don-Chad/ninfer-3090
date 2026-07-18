@@ -376,8 +376,8 @@ correctly without carrying it.
 
 ## 11. Required implementation evidence
 
-The native implementation in `tools/artifact/`, `tools/convert/qwen3_6_27b_rtx5090/`,
-`tools/reference/qwen3_6_27b_rtx5090/`, and `src/artifact/` satisfies this layer. The compact evidence
+The native implementation in `tools/artifact/`, `tools/convert/qwen3_6_27b/`,
+`tools/reference/qwen3_6_27b/`, and `src/artifact/` satisfies this layer. The compact evidence
 retained for later changes is:
 
 - Python version-1 round trips for all seven numeric formats and a raw resource;

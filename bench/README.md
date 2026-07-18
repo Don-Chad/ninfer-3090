@@ -56,7 +56,7 @@ Example:
 
 ```bash
 ./build/bench/ninfer_bench \
-  --weights out/qwen3_6_27b_rtx5090.ninfer \
+  --weights out/qwen3_6_27b.ninfer \
   -p 512,2048 -n 128 -pg '2048,128' -r 5 --warmup 1
 ```
 
@@ -114,7 +114,7 @@ Frontend, and reports draft/accept statistics for the target-owned MTP schedule:
 ```bash
 cmake --build build -j --target ninfer_qwen3_6_27b_mtp_round_bench
 ./build/bench/ninfer_qwen3_6_27b_mtp_round_bench \
-  --artifact out/qwen3_6_27b_rtx5090.ninfer
+  --artifact out/qwen3_6_27b.ninfer
 ```
 
 ## Token-decision Op benchmarks

@@ -47,15 +47,15 @@ two compiled target packages.
 | [`qwen3.6-35b-a3b-operator-inventory.md`](qwen3.6-35b-a3b-operator-inventory.md) | complete 35B-A3B device-operator shapes and mathematics, with separate current functional-admission and roofline-qualified performance status |
 
 Model computation documents do not define product support, artifact framing, source ownership, or
-serving behavior. Runtime support requires an explicit compiled exact-checkpoint/GPU target.
+serving behavior. Runtime support requires an explicit compiled exact-checkpoint target.
 
 ## Implemented product boundary
 
-The registered product targets are `qwen3_6_27b_rtx5090` and
-`qwen3_6_35b_a3b_rtx5090`. Their request route is:
+The registered product targets are `qwen3_6_27b` and
+`qwen3_6_35b_a3b`. Their request route is:
 
 ```text
-qwen3_6_27b_rtx5090.ninfer or qwen3_6_35b_a3b_rtx5090.ninfer
+qwen3_6_27b.ninfer or qwen3_6_35b_a3b.ninfer
   -> generic artifact reader / binder / materializer
   -> closed exact-target registry and package
   -> exact immutable LoadedModel + shared Qwen3.6 Frontend
@@ -66,7 +66,7 @@ qwen3_6_27b_rtx5090.ninfer or qwen3_6_35b_a3b_rtx5090.ninfer
 ```
 
 The Qwen3.6 family owns fixed planning, Program, Text, Vision, MTP, state-transaction, workspace,
-and graph mechanics. Each peer package owns its checkpoint/GPU identity, binder/model view,
+and graph mechanics. Each peer package owns its checkpoint identity, binder/model view,
 dimensions, graph ranges, and three closed execution leaves. The leaves compose centrally owned
 repository-internal Ops. Common runtime code owns generated-token policy; serving owns protocols
 and transport. The public API is opaque and contains no CUDA, artifact, tensor, Op, kernel, family,
@@ -80,19 +80,19 @@ or target-private types.
 - [`../tools/README.md`](../tools/README.md) — entry point for artifact, conversion, reference,
   parity, benchmark, and serving-smoke tools;
 - [`../tools/artifact/`](../tools/artifact/) — generic `.ninfer` read/write/layout/inspection code;
-- [`../tools/convert/qwen3_6_27b_rtx5090/`](../tools/convert/qwen3_6_27b_rtx5090/) — registered
+- [`../tools/convert/qwen3_6_27b/`](../tools/convert/qwen3_6_27b/) — registered
   converter, inventory, recipe, draft head, and source verifier;
 - [`../tools/convert/qwen3_6/common/`](../tools/convert/qwen3_6/common/) — narrow Qwen3.6-family
   conversion leaves shared without sibling-target imports;
-- [`../tools/convert/qwen3_6_35b_a3b_rtx5090/`](../tools/convert/qwen3_6_35b_a3b_rtx5090/) — registered
+- [`../tools/convert/qwen3_6_35b_a3b/`](../tools/convert/qwen3_6_35b_a3b/) — registered
   35B-A3B converter, inventory, recipe, and preflight;
 - [`../tools/reference/qwen3_6/common/`](../tools/reference/qwen3_6/common/) — narrow Qwen3.6-family
   frontend, multimodal, sampling, activation-tap, and Vision-operator leaves;
-- [`../tools/reference/qwen3_6_27b_rtx5090/`](../tools/reference/qwen3_6_27b_rtx5090/) — complete
+- [`../tools/reference/qwen3_6_27b/`](../tools/reference/qwen3_6_27b/) — complete
   artifact-native Python Text/Vision/MTP diagnostic reference for the registered target;
-- [`../tools/reference/qwen3_6_35b_a3b_rtx5090/`](../tools/reference/qwen3_6_35b_a3b_rtx5090/) —
+- [`../tools/reference/qwen3_6_35b_a3b/`](../tools/reference/qwen3_6_35b_a3b/) —
   complete artifact-native Python Text/MoE/Vision/MTP diagnostic reference for the registered target;
-- [`../tools/parity/qwen3_6_27b_rtx5090/`](../tools/parity/qwen3_6_27b_rtx5090/) — target-specific
+- [`../tools/parity/qwen3_6_27b/`](../tools/parity/qwen3_6_27b/) — target-specific
   Text activation, source-BF16 Vision, and combined frontend/Vision/MTP comparison tools;
 - [`../eval/README.md`](../eval/README.md) — optional local capability-evaluation coordinator.
 

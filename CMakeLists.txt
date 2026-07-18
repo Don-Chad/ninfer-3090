@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.28)
 
-# The currently registered product target is RTX 5090 only. Set the default
-# before CUDA compiler detection so CMake does not inject its host-toolchain
-# default architecture; callers may still override it explicitly.
+# The current implementation is compiled for sm_120a. Set the default before
+# CUDA compiler detection so CMake does not inject its host-toolchain default
+# architecture; callers may still override it explicitly.
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES 120a CACHE STRING "CUDA architectures to build")
 endif()

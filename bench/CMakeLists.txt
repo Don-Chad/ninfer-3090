@@ -37,7 +37,7 @@ ninfer_add_op_bench(ninfer_sampling_select_bench SOURCES ops/sampling_select_ben
 ninfer_add_op_bench(ninfer_sparse_moe_bench SOURCES ops/sparse_moe_bench.cu)
 
 # End-to-end product benchmark: public Engine API and native .ninfer artifacts only.
-add_executable(ninfer_bench targets/qwen3_6_27b_rtx5090/ninfer_bench.cpp targets/qwen3_6_27b_rtx5090/ninfer_bench_support.cpp)
+add_executable(ninfer_bench targets/qwen3_6_27b/ninfer_bench.cpp targets/qwen3_6_27b/ninfer_bench_support.cpp)
 target_include_directories(ninfer_bench PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${PROJECT_SOURCE_DIR}/include
@@ -49,12 +49,12 @@ target_link_libraries(ninfer_bench PRIVATE ninfer_engine CUDA::cudart)
 # Native target-private MTP proposal/verification microbenchmark. It enters through the target
 # Program facade and executes the production round schedule over a real .ninfer artifact.
 add_executable(ninfer_qwen3_6_27b_mtp_round_bench
-  targets/qwen3_6_27b_rtx5090/target_mtp_round_bench.cpp)
+  targets/qwen3_6_27b/target_mtp_round_bench.cpp)
 target_include_directories(ninfer_qwen3_6_27b_mtp_round_bench PRIVATE
   ${PROJECT_SOURCE_DIR}/include
   ${PROJECT_SOURCE_DIR}/src
   ${PROJECT_SOURCE_DIR}/third_party
-  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b_rtx5090/export
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b/export
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export)
 target_link_libraries(ninfer_qwen3_6_27b_mtp_round_bench PRIVATE
   ninfer_engine ninfer_core)

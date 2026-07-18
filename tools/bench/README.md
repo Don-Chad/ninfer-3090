@@ -67,7 +67,7 @@ optionally use `--source-text`) to benchmark longer prefills, memory permitting.
 `.ninfer` artifact and stores its local reports under `profiles/bench/`. Its defaults are:
 
 ```text
-artifact: out/qwen3_6_27b_rtx5090.ninfer
+artifact: out/qwen3_6_27b.ninfer
 binary:   build/bench/ninfer_bench
 corpus:   bench/fixtures/bench_corpus.ids
 ```

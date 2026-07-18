@@ -58,23 +58,23 @@ Run the native Python suites with the project Python environment:
 ```
 
 The Python binding tests use `NINFER_QWEN3_6_27B_ARTIFACT` when set, otherwise they look for
-`out/qwen3_6_27b_rtx5090.ninfer`. They report a pytest skip when neither path provides the real
+`out/qwen3_6_27b.ninfer`. They report a pytest skip when neither path provides the real
 artifact. The 35B-A3B reference binding test follows the same rule with
-`NINFER_QWEN3_6_35B_A3B_ARTIFACT` and `out/qwen3_6_35b_a3b_rtx5090.ninfer`. The remaining Python
+`NINFER_QWEN3_6_35B_A3B_ARTIFACT` and `out/qwen3_6_35b_a3b.ninfer`. The remaining Python
 target tests still run without either artifact.
 
 The C++ prefix/MTP integration test is separately opt-in because it loads the full artifact and
 runs the real engine:
 
 ```bash
-NINFER_QWEN3_6_27B_WEIGHTS=$PWD/out/qwen3_6_27b_rtx5090.ninfer \
+NINFER_QWEN3_6_27B_WEIGHTS=$PWD/out/qwen3_6_27b.ninfer \
   ctest --test-dir build -R ninfer_qwen3_6_27b_prefix_real_test --output-on-failure
 ```
 
 Run the peer 35B-A3B route independently:
 
 ```bash
-NINFER_QWEN3_6_35B_A3B_WEIGHTS=$PWD/out/qwen3_6_35b_a3b_rtx5090.ninfer \
+NINFER_QWEN3_6_35B_A3B_WEIGHTS=$PWD/out/qwen3_6_35b_a3b.ninfer \
   ctest --test-dir build -R ninfer_qwen3_6_35b_a3b_real_test --output-on-failure
 ```
 
@@ -91,7 +91,7 @@ PYTHONPATH=eval eval/.venv/bin/python -m unittest discover \
 Run the serving contract manually after starting a resident server in another terminal:
 
 ```bash
-./build/apps/ninfer-serve out/qwen3_6_27b_rtx5090.ninfer \
+./build/apps/ninfer-serve out/qwen3_6_27b.ninfer \
   --host 127.0.0.1 --port 18080 --model-id qwen3.6-27b
 ```
 

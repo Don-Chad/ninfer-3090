@@ -85,10 +85,10 @@ ninfer_add_test(ninfer_tool_call_parser_test
   LIBRARIES ninfer_serve)
 ninfer_add_test(ninfer_bench_support_test
   SOURCES test_ninfer_bench_support.cpp
-          ${PROJECT_SOURCE_DIR}/bench/targets/qwen3_6_27b_rtx5090/ninfer_bench_support.cpp
+          ${PROJECT_SOURCE_DIR}/bench/targets/qwen3_6_27b/ninfer_bench_support.cpp
   NEEDS_SOURCE_DIR
   LIBRARIES ninfer_engine)
-target_include_directories(ninfer_bench_support_test PRIVATE ${PROJECT_SOURCE_DIR}/bench/targets/qwen3_6_27b_rtx5090)
+target_include_directories(ninfer_bench_support_test PRIVATE ${PROJECT_SOURCE_DIR}/bench/targets/qwen3_6_27b)
 
 # Shared Op numerical tests. Target-composed schedule tests are registered separately below.
 set(ninfer_op_tests
@@ -188,7 +188,7 @@ set(ninfer_qwen3_6_27b_internal_tests
   ninfer_qwen3_6_27b_visual_scatter_test)
 foreach(test_target IN LISTS ninfer_qwen3_6_27b_internal_tests)
   target_include_directories(${test_target} PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b_rtx5090/impl
-    ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b_rtx5090/export
+    ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b/impl
+    ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b/export
     ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export)
 endforeach()

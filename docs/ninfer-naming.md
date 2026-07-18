@@ -33,10 +33,10 @@ The current repository consistently uses:
 - `include/ninfer/ops/` for repository-internal Op contracts, not public product API;
 - `ninfer-*` and `ninfer_*` for executable and internal CMake target names;
 - `NINFER_*` for product environment variables;
-- exact target keys such as `qwen3_6_27b_rtx5090` for compiled checkpoint/GPU packages and
+- exact target keys such as `qwen3_6_27b` for compiled checkpoint packages and
   target-keyed offline tools.
 
-The currently registered runtime consumes `qwen3_6_27b_rtx5090.ninfer`. Converter, reference,
+The currently registered runtime consumes `qwen3_6_27b.ninfer`. Converter, reference,
 parity, C++ Engine, CLI, server, benchmark, and diagnostic paths all use the NInfer identity.
 
 ## Extension boundary
@@ -51,7 +51,8 @@ The `.ninfer` suffix names the project artifact class; it does not itself encode
 
 Those meanings are defined by the container, numeric-format, storage-layout, exact-target artifact,
 and compiled registry contracts. In particular, runtime support follows the complete artifact
-metadata/object signature plus the actual GPU and registered target package, not the filename stem.
+metadata/object signature plus the compatible execution device and registered target package, not
+the filename stem.
 
 ## Related authority
 

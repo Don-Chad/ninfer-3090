@@ -1,6 +1,6 @@
 import torch
 
-from tools.convert.qwen3_6_27b_rtx5090 import inventory, recipe
+from tools.convert.qwen3_6_27b import inventory, recipe
 
 
 class TensorReader:

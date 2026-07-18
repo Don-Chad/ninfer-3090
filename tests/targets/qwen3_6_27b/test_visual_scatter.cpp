@@ -1,5 +1,5 @@
 #include "ops/op_tester.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/config.h"
+#include "targets/qwen3_6_27b/impl/config.h"
 #include "targets/qwen3_6/impl/runtime/visual_scatter.h"
 
 #include <algorithm>
@@ -16,7 +16,7 @@ int main() {
         return 0;
     }
 
-    constexpr std::int32_t d = targets::qwen3_6_27b_rtx5090::detail::TextConfig::hidden;
+    constexpr std::int32_t d = targets::qwen3_6_27b::detail::TextConfig::hidden;
     constexpr std::int32_t t = 4;
     constexpr std::int32_t v = 3;
     std::vector<float> token_embeddings(static_cast<std::size_t>(d) * t);

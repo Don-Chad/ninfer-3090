@@ -29,7 +29,7 @@ from typing import Any, Iterable, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BENCH = REPO_ROOT / "build/bench/ninfer_bench"
-DEFAULT_WEIGHTS = REPO_ROOT / "out/qwen3_6_27b_rtx5090.ninfer"
+DEFAULT_WEIGHTS = REPO_ROOT / "out/qwen3_6_27b.ninfer"
 DEFAULT_CORPUS = REPO_ROOT / "bench/fixtures/bench_corpus.ids"
 
 PREFILL_LENGTHS_CORE = (128, 256, 512, 1024, 2048, 4096, 8192, 16384)

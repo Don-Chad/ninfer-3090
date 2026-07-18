@@ -16,7 +16,6 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 
 namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 namespace {
@@ -296,9 +295,8 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
         options.speculative.proposal_head == ProposalHead::Optimized) {
         throw std::invalid_argument("optimized proposal head requires MTP");
     }
-    if (device.sm() != 120 || std::string_view(device.props.name) != "NVIDIA GeForce RTX 5090") {
-        throw std::invalid_argument(
-            "Qwen3.6 RTX 5090 family runtime requires NVIDIA GeForce RTX 5090");
+    if (device.sm() != 120) {
+        throw std::invalid_argument("Qwen3.6 family runtime requires compute capability 12.0");
     }
 }
 

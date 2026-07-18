@@ -8,20 +8,21 @@ artifact documents.
 ## 1. Product scope
 
 NInfer is a high-performance local inference engine for a small set of compiled exact
-checkpoint/GPU targets. The currently registered product is:
+checkpoint targets. The currently registered product is:
 
 ```text
 device:     NVIDIA RTX 5090 (sm_120a)
-variants:   Qwen3.6-27B       -> qwen3_6_27b_rtx5090
-            Qwen3.6-35B-A3B  -> qwen3_6_35b_a3b_rtx5090
-artifacts:  qwen3_6_27b_rtx5090.ninfer
-            qwen3_6_35b_a3b_rtx5090.ninfer
+variants:   Qwen3.6-27B       -> qwen3_6_27b
+            Qwen3.6-35B-A3B  -> qwen3_6_35b_a3b
+artifacts:  qwen3_6_27b.ninfer
+            qwen3_6_35b_a3b.ninfer
 execution:  one resident sequence, one active request per Engine
 ```
 
 Both targets implement Text, image/video Vision, MTP, BF16/INT8 KV, sampling, prefix reuse, eager
-decode, and CUDA Graph decode. Another checkpoint or GPU becomes supported only through another
-explicit target package and registry entry.
+decode, and CUDA Graph decode. Another checkpoint becomes supported only through another explicit
+target package and registry entry. Retargeting the implementation to another execution platform is
+a separate optimization effort, not another hardware-qualified package identity.
 
 Continuous batching, request preemption, multi-GPU execution, offload, and distributed serving are
 outside the current implementation.
@@ -60,7 +61,7 @@ execution behavior.
 | Product media acquisition | `src/product/media_acquire` | local-path, HTTP(S), and data-URI acquisition into owning media values |
 | Product prompt input | `src/product/prompt_input` | shared JSON/message parsing into owning public prompt values for product tools |
 | Qwen3.6 family runtime | `src/targets/qwen3_6` | frontend/output semantics, semantic weight-view schemas, `SequencePlan<Variant>`, `RequestPlan<Variant>`, `Program<Variant>`, fixed Text/Vision/MTP schedules, lifecycle/state transactions, workspace composition, and CUDA Graph mechanics; no target identity, binder, or live cross-Program state |
-| Exact targets | `src/targets/qwen3_6_27b_rtx5090`, `src/targets/qwen3_6_35b_a3b_rtx5090` | peer package identities, exact artifact bindings/leaf payloads/configuration, populated family model-view values, graph frontier data, three closed execution leaves, explicit family instantiation, and target diagnostics |
+| Exact targets | `src/targets/qwen3_6_27b`, `src/targets/qwen3_6_35b_a3b` | peer package identities, exact artifact bindings/leaf payloads/configuration, populated family model-view values, graph frontier data, three closed execution leaves, explicit family instantiation, and target diagnostics |
 | Registry | `src/targets/registry.*` | closed target selection and complete target construction |
 | Product runtime | `src/runtime` | generated-token budget, round resolution, cancellation, publication, public Engine PIMPL, target lifetime |
 | Serving | `src/serve` | OpenAI/Anthropic schemas, translation, streaming, usage, request logs, and HTTP transport |
@@ -155,8 +156,9 @@ Engine construction performs the complete load before publishing a usable object
 9. construct reusable request memory and the non-movable Program at stable addresses;
 10. finish target initialization and release reader directory/name/staging state.
 
-Each target requires its exact registered model inventory and RTX 5090. Selection is cold
-construction logic; the generation loop contains no model-name or layout-string dispatch.
+Each target requires its exact registered model inventory. Package preflight validates compute
+capability 12.0 before materialization. Selection is cold construction logic; the generation loop
+contains no model-name or layout-string dispatch.
 
 `LoadSummary` reports the selected target, load/upload time, file and H2D bytes, staging peak, and
 object counts.
@@ -302,7 +304,7 @@ All product entry points use the public Engine:
   and prints deltas/summaries;
 - `apps/serve` and `src/serve` translate OpenAI/Anthropic requests, prepare/count/generate, and map
   public summaries into protocol responses;
-- `build/bench/ninfer_bench`, implemented under `bench/targets/qwen3_6_27b_rtx5090/`, uses only the
+- `build/bench/ninfer_bench`, implemented under `bench/targets/qwen3_6_27b/`, uses only the
   public artifact-selected Engine route and reports load, memory, timing, and speculative values for
   either registered artifact.
 
@@ -355,7 +357,7 @@ tests do not define throughput requirements or duplicate the generation loop.
 
 ## 15. Current limits
 
-- two compiled checkpoint/GPU targets, both on RTX 5090;
+- two compiled checkpoint targets; the current `sm_120a` build is tuned and measured on RTX 5090;
 - one active request and no continuous batching;
 - one GPU;
 - no runtime model graph, dynamic target discovery, or plugin ABI;

@@ -1,6 +1,6 @@
 import torch
 
-from tools.convert.qwen3_6_35b_a3b_rtx5090 import recipe
+from tools.convert.qwen3_6_35b_a3b import recipe
 
 
 class TensorReader:

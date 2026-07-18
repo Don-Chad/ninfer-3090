@@ -222,7 +222,7 @@ qb::BenchEnvironment sample_environment() {
     env.device_id                        = 0;
     env.artifact_path                    = "model.ninfer";
     env.artifact_file_size_bytes         = 17500000000ULL;
-    env.load                             = {.target               = "qwen3_6_27b_rtx5090",
+    env.load                             = {.target               = "qwen3_6_27b",
                                             .load_seconds         = 2.5,
                                             .upload_seconds       = 2.0,
                                             .artifact_bytes_read  = 17500000000ULL,
@@ -267,7 +267,7 @@ int test_report_contract() {
     failures += expect(report.at("schema_version") == 8, "report schema v8");
     failures += expect(report.at("artifact_type") == "ninfer_bench_report", "report identity");
     failures += expect(report.at("artifact").at("path") == "model.ninfer", "artifact path");
-    failures += expect(report.at("load").at("target") == "qwen3_6_27b_rtx5090", "load target");
+    failures += expect(report.at("load").at("target") == "qwen3_6_27b", "load target");
     failures +=
         expect(report.at("load").at("host_to_device_bytes") == 17400000000ULL, "load H2D bytes");
     failures += expect(report.at("memory").at("kv_cache") == "int8-group64", "memory KV");
@@ -314,7 +314,7 @@ int test_human_and_csv_reports() {
     const qb::BenchEnvironment env = sample_environment();
     const auto results             = sample_results();
     const std::string table        = qb::format_table(env, results);
-    failures += expect(table.find("qwen3_6_27b_rtx5090") != std::string::npos, "table target");
+    failures += expect(table.find("qwen3_6_27b") != std::string::npos, "table target");
     failures += expect(table.find("model.ninfer") != std::string::npos, "table artifact");
     failures +=
         expect(table.find("proposal_head=optimized") != std::string::npos, "table proposal head");

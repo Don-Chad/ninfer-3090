@@ -41,8 +41,9 @@ sizes may be constructed. In particular, `FP16`, `I64`, `Q4G32_F16S`, `Q6G128_F1
 binary16 scale inside the four quantized formats does not register `FP16` as a direct tensor format.
 
 NInfer does not reserve entries for hypothetical formats. A future format is added only for a real
-selected checkpoint and GPU target, after its numerical contract, cited upstream quality evidence
-where quantization is involved, storage path, and useful kernels are known. Registry membership
+selected checkpoint target, after its numerical contract, cited upstream quality evidence where
+quantization is involved, storage path, and useful kernels on the current execution platform are
+known. Registry membership
 means that a logical representation is allowed; it does not imply that every tensor role, operator,
 layout, shape, checkpoint, or GPU can consume it.
 
@@ -150,9 +151,9 @@ that requirement does not turn a floating-point oracle into a prescribed interna
 
 Consequently, `W8G32_F16S` means neither W8A8 nor FP16 output, and `F16S` says nothing about the
 activation type. A kernel is usable only for an explicitly supported combination of numeric format,
-storage layout, operator semantics, shape regime, compute profile, and selected GPU. This support
-matrix is a closed whitelist, not the Cartesian product of separately known components. There is no
-generic fallback obligation for another combination.
+storage layout, operator semantics, shape regime, compute profile, and current execution platform.
+This support matrix is a closed whitelist, not the Cartesian product of separately known
+components. There is no generic fallback obligation for another combination.
 
 ### 2.8 Runtime-state codec
 
@@ -612,7 +613,7 @@ register its physical layout or define the reshape used by its compiled target.
 
 Similarly, a format's presence in a `.ninfer` artifact does not prove runtime support. The selected
 model implementation must bind that tensor to a supported model consumer or operator path on the
-exact GPU target.
+current execution platform.
 
 ## 10. Explicit exclusions from the first registry
 
@@ -646,9 +647,9 @@ registry identities.
 ### 11.1 Admission trigger
 
 A new numeric format is considered only when an accepted, measurable requirement of a real selected
-checkpoint and GPU target cannot be met by the current registry and the candidate has a concrete
-benefit. Cartesian completeness, upstream popularity, theoretical elegance, or a desire to reserve
-future IDs is insufficient.
+checkpoint target cannot be met by the current registry and the candidate has a concrete benefit.
+Cartesian completeness, upstream popularity, theoretical elegance, or a desire to reserve future
+IDs is insufficient.
 
 The proposal must provide:
 
@@ -658,7 +659,7 @@ The proposal must provide:
 - for a lossy format, cited credible upstream/public evidence or implementation precedent supporting
   acceptable quality for that checkpoint;
 - the intended persistent layout and validation strategy;
-- useful operator and kernel paths for the selected GPU;
+- useful operator and kernel paths for the current execution platform;
 - measured local value in model residency, verified context, decode, or prefill, together with the
   cited upstream basis for acceptable quality;
 - an explanation of why an existing format cannot provide that value and, if the proposal is

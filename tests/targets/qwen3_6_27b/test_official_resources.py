@@ -8,8 +8,8 @@ from tools.convert.qwen3_6.common.official_resources import (
     OFFICIAL_RESOURCE_SHA256,
     validate_official_resource_hashes,
 )
-from tools.convert.qwen3_6_27b_rtx5090 import convert as convert_27b
-from tools.convert.qwen3_6_35b_a3b_rtx5090 import convert as convert_35b
+from tools.convert.qwen3_6_27b import convert as convert_27b
+from tools.convert.qwen3_6_35b_a3b import convert as convert_35b
 
 
 MODEL_27B = Path(

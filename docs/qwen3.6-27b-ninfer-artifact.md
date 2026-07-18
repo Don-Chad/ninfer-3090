@@ -26,7 +26,7 @@ qwen3.6-27b
 ```
 
 The source/tool target key for this conversion implementation is
-`qwen3_6_27b_rtx5090`. It selects target-private converter and reference code; it is not a second
+`qwen3_6_27b`. It selects target-private converter and reference code; it is not a second
 `model_id` and is not serialized in the artifact JSON.
 
 Every artifact with this `model_id` is one complete product route. It contains all Text, optimized
@@ -419,7 +419,7 @@ The selected local source checkpoint is currently:
 It is the official `Qwen/Qwen3.6-27B` resource/configuration set pinned at revision
 `6a9e13bd6fc8f0983b9b99948120bc37f49c13e9`. Its fifteen retained BF16 shards have the same LFS
 SHA-256 object ids as that revision. Conversion report recipe id
-`qwen3_6_27b_rtx5090-v2` denotes this official source-resource contract; tensor recipes, formats,
+`qwen3_6_27b-v2` denotes this official source-resource contract; tensor recipes, formats,
 layouts, counts, and byte totals are unchanged from v1.
 
 That path is descriptive local provenance, not part of `model_id` and not an artifact validity
@@ -700,8 +700,8 @@ this document.
 
 ## 16. Implemented evidence for this contract
 
-The target converter in `tools/convert/qwen3_6_27b_rtx5090/` and the independent binder in
-`tools/reference/qwen3_6_27b_rtx5090/` derive this inventory and agree through a real emitted
+The target converter in `tools/convert/qwen3_6_27b/` and the independent binder in
+`tools/reference/qwen3_6_27b/` derive this inventory and agree through a real emitted
 artifact. The verifier and reference path have established:
 
 - 1118 tensor objects and six frontend resources;
@@ -724,7 +724,7 @@ container version did not change, and no compatibility binder or obsolete artifa
 
 The 2026-07-18 official-checkpoint cutover preserved every shard inode, size, mtime, and content id,
 then regenerated and atomically promoted the canonical artifact with recipe id
-`qwen3_6_27b_rtx5090-v2`. Its 1118-tensor descriptor signature and component byte totals are
+`qwen3_6_27b-v2`. Its 1118-tensor descriptor signature and component byte totals are
 unchanged; its six resource payloads now match Section 4. The promoted bytes passed source
 verification, artifact-native Transformers frontend checks, and a registered C++ Engine greedy
 smoke. The existing 35B-A3B artifact already matched the same resource profile and was retained.

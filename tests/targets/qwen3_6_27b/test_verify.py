@@ -7,7 +7,7 @@ import torch
 from tools.artifact.container import ResourceSpec, TensorSpec, plan_objects
 from tools.artifact.layouts import encode_row_split
 from tools.convert.common.quantize import quantize_matrix
-from tools.convert.qwen3_6_27b_rtx5090 import inventory, verify
+from tools.convert.qwen3_6_27b import inventory, verify
 
 
 def _structural_artifact():

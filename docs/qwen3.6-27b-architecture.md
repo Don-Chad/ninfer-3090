@@ -398,18 +398,18 @@ changes its fixed allocation.
 
 | Model concern | Source |
 |---|---|
-| exact dimensions/layer counts and family hybrid-layer mapping | `src/targets/qwen3_6_27b_rtx5090/impl/config.h`, `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/hybrid_topology.h` |
-| immutable Text/MTP/Vision bindings | `src/targets/qwen3_6_27b_rtx5090/impl/load/` |
-| split attention projection, staged GDN projection/control, dense post-mixer leaves, leaf workspace, and graph frontier ranges | `src/targets/qwen3_6_27b_rtx5090/impl/variant.h`, `impl/variant.cpp` |
+| exact dimensions/layer counts and family hybrid-layer mapping | `src/targets/qwen3_6_27b/impl/config.h`, `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/hybrid_topology.h` |
+| immutable Text/MTP/Vision bindings | `src/targets/qwen3_6_27b/impl/load/` |
+| split attention projection, staged GDN projection/control, dense post-mixer leaves, leaf workspace, and graph frontier ranges | `src/targets/qwen3_6_27b/impl/variant.h`, `impl/variant.cpp` |
 | Text/MTP/Vision execution, planning, Program lifecycle, workspace composition, prefix/state transactions, and graph mechanics | `src/targets/qwen3_6/impl/runtime/` |
 | tokenizer, template, multimodal processing, output decoder | `src/targets/qwen3_6/impl/frontend/` |
 | mathematical and explicit local-state Op contracts/implementations | `include/ninfer/ops/`, `src/ops/` |
 | GQA physical cache container and checked per-layer views | `src/core/kv_cache.*` |
 | GDN layout/views/reset/copy and Text/MTP/GDN composition | `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/decoder_state.h`, `src/targets/qwen3_6/impl/state/decoder_state.cpp` |
 | generated-round buffer schema, MTP alignment, and Vision control | `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/`, `src/targets/qwen3_6/impl/state/round_state.cpp`, `src/targets/qwen3_6/impl/vision/control.cpp` |
-| `.ninfer` tensor assignment and binding | [`qwen3.6-27b-ninfer-artifact.md`](qwen3.6-27b-ninfer-artifact.md), `tools/reference/qwen3_6_27b_rtx5090/bindings.py` |
-| native `.ninfer` converter and verifier | `tools/convert/qwen3_6_27b_rtx5090` |
-| artifact-native Python Text/Vision/MTP reference | `tools/reference/qwen3_6_27b_rtx5090` |
+| `.ninfer` tensor assignment and binding | [`qwen3.6-27b-ninfer-artifact.md`](qwen3.6-27b-ninfer-artifact.md), `tools/reference/qwen3_6_27b/bindings.py` |
+| native `.ninfer` converter and verifier | `tools/convert/qwen3_6_27b` |
+| artifact-native Python Text/Vision/MTP reference | `tools/reference/qwen3_6_27b` |
 
 The Python reference is an independent executable implementation for model/artifact inspection and
 diagnosis; it is not the per-Op mathematical oracle, does not prescribe private C++ kernel

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.convert.qwen3_6_35b_a3b_rtx5090 import draft_head
+from tools.convert.qwen3_6_35b_a3b import draft_head
 
 
 def test_35b_uses_the_measured_27b_ranking() -> None:
@@ -12,4 +12,4 @@ def test_35b_uses_the_measured_27b_ranking() -> None:
     assert draft_head.DEFAULT_RANKING == Path(
         "tools/freq_corpus/fixtures/ranking/ranking.train.counts.i64"
     )
-    assert draft_head.RANKING_SOURCE_TARGET == "qwen3_6_27b_rtx5090"
+    assert draft_head.RANKING_SOURCE_TARGET == "qwen3_6_27b"

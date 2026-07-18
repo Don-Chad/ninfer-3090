@@ -1,12 +1,12 @@
 import torch
 import torch.nn.functional as F
 
-from tools.reference.qwen3_6_35b_a3b_rtx5090.bindings import (
+from tools.reference.qwen3_6_35b_a3b.bindings import (
     ExpertBank,
     MoeBinding,
 )
-from tools.reference.qwen3_6_35b_a3b_rtx5090.config import CFG
-from tools.reference.qwen3_6_35b_a3b_rtx5090.moe import forward
+from tools.reference.qwen3_6_35b_a3b.config import CFG
+from tools.reference.qwen3_6_35b_a3b.moe import forward
 
 
 def test_selected_expert_rows_and_high_precision_moe_formula() -> None:

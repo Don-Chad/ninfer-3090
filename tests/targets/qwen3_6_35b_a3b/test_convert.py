@@ -2,7 +2,7 @@ from pathlib import Path
 
 import torch
 
-from tools.convert.qwen3_6_35b_a3b_rtx5090 import (
+from tools.convert.qwen3_6_35b_a3b import (
     convert,
     draft_head,
     inventory,
@@ -40,7 +40,7 @@ def test_report_retains_target_specific_provenance_and_component_bytes(
     assert report["draft_head"] == {
         "rows": 131072,
         "tokenizer_vocab_size": 248077,
-        "ranking_source_target": "qwen3_6_27b_rtx5090",
+        "ranking_source_target": "qwen3_6_27b",
         "shared_semantic_vocabulary": True,
     }
     assert report["quantization"] == {

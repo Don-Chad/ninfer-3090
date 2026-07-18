@@ -3,7 +3,7 @@
   "schema_version": 1,
   "working_directory": "repository root",
   "messages_format": "product CLI --messages JSON",
-  "prompt_token_basis": "Actual qwen3_6_27b_rtx5090 Engine preparation, including expanded Vision tokens.",
+  "prompt_token_basis": "Actual qwen3_6_27b Engine preparation, including expanded Vision tokens.",
   "family_tokenizer_observation": "The local 27B and 35B tokenizer/chat-template resources produced identical prompt token sequences for every messages JSON before target media expansion.",
   "media": [
     {
