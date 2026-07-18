@@ -628,12 +628,13 @@ Options parse_options(int argc, char** argv) {
             options.csv_out = next("--csv-out value");
         } else if (argument == "--help" || argument == "-h") {
             std::printf("Usage: %s [--matrix] [--scope full|d1|d2|d3|d4] "
-                        "[--candidate NAME] [--codec q4-q5|q4-q6|w8-w8] [--tokens 1..8] "
+                        "[--candidate NAME] [--codec q4-q5|q4-q6|w8-w8] [--tokens 1..32] "
                         "[--distribution trace-like|independent|same] [--seed N] [--warmup N] "
                         "[--repeat N] [--csv-out PATH]\n\n"
-                        "Candidates: production, small-t-token-loop, decode-loop, payload-control, "
-                        "row-cta-4w, row-cta-8w, serial-control, warp-register, nine-warp-control, "
-                        "balanced-eight-warp, nine-warp-r1, balanced-eight-warp-r4.\n",
+                        "Candidates: production, small-t-persistent, decode-loop, payload-control, "
+                        "row-cta-4w, row-cta-8w, serial-control, "
+                        "warp-register, nine-warp-control, balanced-eight-warp, nine-warp-r1, "
+                        "balanced-eight-warp-r4.\n",
                         argv[0]);
             std::exit(0);
         } else {
@@ -644,7 +645,7 @@ Options parse_options(int argc, char** argv) {
         throw std::invalid_argument("warmup must be nonnegative and repeat positive");
     }
     if (options.tokens < 1 || options.tokens > ops::detail::kSparseMoeSmallTMax) {
-        throw std::invalid_argument("--tokens must be in [1,8]");
+        throw std::invalid_argument("--tokens must be in [1,32]");
     }
     return options;
 }
@@ -667,6 +668,9 @@ public:
                                      : ops::detail::sparse_moe_small_t_workspace_bytes(tokens)),
           decode_arena_(ops::detail::sparse_moe_decode_workspace_bytes()),
           public_workspace_(ops::sparse_moe_workspace_bytes(tokens)) {
+        // Keep T<=8 byte-for-byte comparable with the retained benchmark and
+        // reserve one additional marker coordinate per extended-range token.
+        const int route_markers = tokens <= 8 ? 8 : tokens <= 16 ? 16 : 32;
         std::vector<std::uint16_t> input(static_cast<std::size_t>(tokens) * kHidden);
         std::vector<std::uint16_t> residual(static_cast<std::size_t>(tokens) * kHidden);
         for (int token = 0; token < tokens; ++token) {
@@ -676,13 +680,13 @@ public:
                 residual[static_cast<std::size_t>(token) * kHidden + index] = bench::f32_to_bf16(
                     0.125f + static_cast<float>((index + 11 * token) % 17) * 0.002f);
             }
-            for (int marker = 0; marker < ops::detail::kSparseMoeSmallTMax; ++marker) {
-                input[static_cast<std::size_t>(token) * kHidden + kHidden -
-                      ops::detail::kSparseMoeSmallTMax + marker] = bench::f32_to_bf16(0.0f);
+            for (int marker = 0; marker < route_markers; ++marker) {
+                input[static_cast<std::size_t>(token) * kHidden + kHidden - route_markers +
+                      marker] = bench::f32_to_bf16(0.0f);
             }
             input[static_cast<std::size_t>(token) * kHidden] = bench::f32_to_bf16(1.0f);
-            input[static_cast<std::size_t>(token) * kHidden + kHidden -
-                  ops::detail::kSparseMoeSmallTMax + token]  = bench::f32_to_bf16(1.0f);
+            input[static_cast<std::size_t>(token) * kHidden + kHidden - route_markers + token] =
+                bench::f32_to_bf16(1.0f);
         }
         CUDA_CHECK(cudaMemcpy(input_.data, input.data(), input_.bytes, cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(residual_seed_.data, residual.data(), residual_seed_.bytes,
@@ -696,7 +700,7 @@ public:
         for (int token = 0; token < tokens; ++token) {
             for (int rank = 0; rank < kTopK; ++rank) {
                 const int expert = route_pattern_.selected[token][rank];
-                const int marker = kHidden - ops::detail::kSparseMoeSmallTMax + token;
+                const int marker = kHidden - route_markers + token;
                 router_values[static_cast<std::size_t>(expert) * kHidden + marker] =
                     12.0f - 0.25f * rank;
             }
@@ -1001,13 +1005,13 @@ Candidate make_candidate(CodecProfile profile, Scope scope, std::string_view nam
             result.plan.workspace_bytes = ops::detail::sparse_moe_decode_workspace_bytes();
             return result;
         }
-        if (name != "production" && name != "small-t-token-loop") {
+        if (name != "production" && name != "small-t-persistent") {
             throw std::invalid_argument("unknown T > 1 candidate");
         }
         if (name == "production") {
             result.name = "production";
         } else {
-            result.name = "small-t-token-loop";
+            result.name = "small-t-persistent";
         }
         result.small_t      = true;
         result.small_t_plan = ops::detail::resolve_sparse_moe_small_t_plan(
@@ -1242,9 +1246,9 @@ Payload payload_for(CodecProfile profile, Scope scope, bool payload_control, int
 std::vector<std::pair<Scope, const char*>> matrix_candidates(CodecProfile profile, int tokens) {
     std::vector<std::pair<Scope, const char*>> result;
     if (tokens > 1) {
-        return {{Scope::D1, "small-t-token-loop"},   {Scope::D2, "small-t-token-loop"},
-                {Scope::D3, "small-t-token-loop"},   {Scope::D4, "small-t-token-loop"},
-                {Scope::Full, "small-t-token-loop"}, {Scope::Full, "decode-loop"},
+        return {{Scope::D1, "small-t-persistent"},   {Scope::D2, "small-t-persistent"},
+                {Scope::D3, "small-t-persistent"},   {Scope::D4, "small-t-persistent"},
+                {Scope::Full, "small-t-persistent"}, {Scope::Full, "decode-loop"},
                 {Scope::Full, "production"}};
     }
     if (profile == CodecProfile::Q4Q5) {

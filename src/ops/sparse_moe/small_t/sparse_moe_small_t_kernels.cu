@@ -18,8 +18,6 @@ namespace {
 constexpr int kHidden           = 2048;
 constexpr int kRouterRows       = 257;
 constexpr int kTopK             = 8;
-constexpr int kIntermediate     = 512;
-constexpr int kPaths            = kTopK + 1;
 constexpr int kRouterPartitions = 4;
 constexpr int kRouterWarps      = 4;
 
@@ -28,7 +26,7 @@ __global__ void sparse_moe_small_t_s1_kernel(const __nv_bfloat16* __restrict__ x
                                              const __nv_bfloat16* __restrict__ router,
                                              float* __restrict__ partial_scores) {
     static_assert(Tokens >= kSparseMoeSmallTMin && Tokens <= kSparseMoeSmallTMax);
-    __shared__ float partial[Tokens][kRouterWarps];
+    __shared__ float partial[kRouterWarps][Tokens];
     const int row       = static_cast<int>(blockIdx.x) / kRouterPartitions;
     const int partition = static_cast<int>(blockIdx.x) - row * kRouterPartitions;
     const int warp      = static_cast<int>(threadIdx.x) >> 5;
@@ -55,7 +53,7 @@ __global__ void sparse_moe_small_t_s1_kernel(const __nv_bfloat16* __restrict__ x
 #pragma unroll
     for (int token = 0; token < Tokens; ++token) {
         const float sum = warp_reduce_sum(accumulator[token]);
-        if (lane == 0) { partial[token][warp] = sum; }
+        if (lane == 0) { partial[warp][token] = sum; }
     }
     __syncthreads();
 
@@ -63,7 +61,7 @@ __global__ void sparse_moe_small_t_s1_kernel(const __nv_bfloat16* __restrict__ x
         float sum = 0.0f;
 #pragma unroll
         for (int source_warp = 0; source_warp < kRouterWarps; ++source_warp) {
-            sum += partial[lane][source_warp];
+            sum += partial[source_warp][lane];
         }
         partial_scores[(static_cast<std::int64_t>(lane) * kRouterRows + row) * kRouterPartitions +
                        partition] = sum;
@@ -117,42 +115,22 @@ void launch_s2(const SparseMoeSmallTWorkspace& workspace, cudaStream_t stream) {
     CUDA_CHECK(cudaGetLastError());
 }
 
-SparseMoeDecodeWorkspace token_workspace(const SparseMoeSmallTWorkspace& workspace, int token) {
-    SparseMoeDecodeWorkspace out;
-    out.ids =
-        Tensor(static_cast<int*>(workspace.token_ids.data) + token * kTopK, DType::I32, {kTopK});
-    out.alpha = Tensor(static_cast<float*>(workspace.token_alpha.data) + token * kTopK, DType::FP32,
-                       {kTopK});
-    out.shared_scale =
-        Tensor(static_cast<float*>(workspace.shared_scale.data) + token, DType::FP32, {1});
-    out.scratch = Tensor(static_cast<float*>(workspace.scratch.data) +
-                             static_cast<std::int64_t>(token) * kPaths * kIntermediate,
-                         DType::FP32, {kPaths, kIntermediate});
-    return out;
-}
-
-void launch_s3_token_loop(const Tensor& x, const SparseMoeWeights& weights,
+void launch_s3_persistent(const Tensor& x, const SparseMoeWeights& weights,
                           const SparseMoeSmallTPlan& plan,
                           const SparseMoeSmallTWorkspace& workspace, cudaStream_t stream) {
-    const SparseMoeDecodePlan decode_plan =
-        resolve_sparse_moe_decode_plan(weights.routed_gate_up.qtype, weights.routed_down.qtype);
-    for (int token = 0; token < plan.tokens; ++token) {
-        const Tensor x_column                = x.slice(1, token, 1);
-        const SparseMoeDecodeWorkspace views = token_workspace(workspace, token);
-        sparse_moe_decode_launch_d3(x_column, weights, views, decode_plan.d3, stream);
-    }
+    sparse_moe_decode_launch_d3_persistent(
+        x, weights, static_cast<const int*>(workspace.token_ids.data),
+        static_cast<float*>(workspace.scratch.data), plan.tokens, stream);
 }
 
-void launch_s4_token_loop(const SparseMoeWeights& weights, Tensor& destination,
+void launch_s4_persistent(const SparseMoeWeights& weights, Tensor& destination,
                           const SparseMoeSmallTPlan& plan,
                           const SparseMoeSmallTWorkspace& workspace, cudaStream_t stream) {
-    const SparseMoeDecodePlan decode_plan =
-        resolve_sparse_moe_decode_plan(weights.routed_gate_up.qtype, weights.routed_down.qtype);
-    for (int token = 0; token < plan.tokens; ++token) {
-        Tensor destination_column            = destination.slice(1, token, 1);
-        const SparseMoeDecodeWorkspace views = token_workspace(workspace, token);
-        sparse_moe_decode_launch_d4(weights, destination_column, views, decode_plan.d4, stream);
-    }
+    sparse_moe_decode_launch_d4_persistent(
+        weights, destination, static_cast<const int*>(workspace.token_ids.data),
+        static_cast<const float*>(workspace.token_alpha.data),
+        static_cast<const float*>(workspace.shared_scale.data),
+        static_cast<const float*>(workspace.scratch.data), plan.tokens, stream);
 }
 
 template <class Launch>
@@ -179,6 +157,78 @@ void dispatch_tokens(std::int32_t tokens, Launch&& launch) {
     case 8:
         launch.template operator()<8>();
         return;
+    case 9:
+        launch.template operator()<9>();
+        return;
+    case 10:
+        launch.template operator()<10>();
+        return;
+    case 11:
+        launch.template operator()<11>();
+        return;
+    case 12:
+        launch.template operator()<12>();
+        return;
+    case 13:
+        launch.template operator()<13>();
+        return;
+    case 14:
+        launch.template operator()<14>();
+        return;
+    case 15:
+        launch.template operator()<15>();
+        return;
+    case 16:
+        launch.template operator()<16>();
+        return;
+    case 17:
+        launch.template operator()<17>();
+        return;
+    case 18:
+        launch.template operator()<18>();
+        return;
+    case 19:
+        launch.template operator()<19>();
+        return;
+    case 20:
+        launch.template operator()<20>();
+        return;
+    case 21:
+        launch.template operator()<21>();
+        return;
+    case 22:
+        launch.template operator()<22>();
+        return;
+    case 23:
+        launch.template operator()<23>();
+        return;
+    case 24:
+        launch.template operator()<24>();
+        return;
+    case 25:
+        launch.template operator()<25>();
+        return;
+    case 26:
+        launch.template operator()<26>();
+        return;
+    case 27:
+        launch.template operator()<27>();
+        return;
+    case 28:
+        launch.template operator()<28>();
+        return;
+    case 29:
+        launch.template operator()<29>();
+        return;
+    case 30:
+        launch.template operator()<30>();
+        return;
+    case 31:
+        launch.template operator()<31>();
+        return;
+    case 32:
+        launch.template operator()<32>();
+        return;
     default:
         throw std::invalid_argument("sparse_moe small-T: unsupported token count");
     }
@@ -201,13 +251,13 @@ void sparse_moe_small_t_launch_s2(const SparseMoeSmallTPlan& plan,
 void sparse_moe_small_t_launch_s3(const Tensor& x, const SparseMoeWeights& weights,
                                   const SparseMoeSmallTPlan& plan,
                                   const SparseMoeSmallTWorkspace& workspace, cudaStream_t stream) {
-    launch_s3_token_loop(x, weights, plan, workspace, stream);
+    launch_s3_persistent(x, weights, plan, workspace, stream);
 }
 
 void sparse_moe_small_t_launch_s4(const SparseMoeWeights& weights, Tensor& destination,
                                   const SparseMoeSmallTPlan& plan,
                                   const SparseMoeSmallTWorkspace& workspace, cudaStream_t stream) {
-    launch_s4_token_loop(weights, destination, plan, workspace, stream);
+    launch_s4_persistent(weights, destination, plan, workspace, stream);
 }
 
 void sparse_moe_small_t_launch(const Tensor& x, const SparseMoeWeights& weights,

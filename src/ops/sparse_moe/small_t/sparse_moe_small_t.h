@@ -12,7 +12,7 @@
 namespace ninfer::ops::detail {
 
 inline constexpr std::int32_t kSparseMoeSmallTMin = 2;
-inline constexpr std::int32_t kSparseMoeSmallTMax = 8;
+inline constexpr std::int32_t kSparseMoeSmallTMax = 32;
 
 struct SparseMoeSmallTPlan {
     std::int32_t tokens         = 0;

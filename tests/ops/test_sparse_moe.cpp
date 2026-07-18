@@ -32,6 +32,7 @@ constexpr std::int32_t kExpertGateRows = 1024;
 constexpr std::int32_t kRoutedGateRows = kExperts * kExpertGateRows;
 constexpr std::int32_t kRoutedDownRows = kExperts * kHidden;
 constexpr std::int32_t kSharedGateRows = 2 * kIntermediate;
+constexpr std::int32_t kSmallTMax      = 32;
 
 struct QuantGeometry {
     int group;
@@ -152,16 +153,18 @@ Weight dense_bf16_weight(void* data, std::int32_t rows, std::int32_t columns) {
     return out;
 }
 
-std::vector<float> make_input(int variant) {
+std::vector<float> make_input(int variant, int route_markers) {
     std::vector<float> input(kHidden);
     input[0] = 1.0f;
     for (int k = 1; k < kHidden; ++k) {
         input[k] = 0.025f + static_cast<float>((k * 7 + variant * 11) % 19) * 0.002f;
     }
-    // Reserve eight one-hot marker coordinates so a shared router matrix can produce different
-    // selected experts for adjacent Small-T columns without changing the represented BF16 domain.
-    for (int marker = 0; marker < 8; ++marker) { input[kHidden - 8 + marker] = 0.0f; }
-    input[kHidden - 8 + variant] = 1.0f;
+    // Reserve one-hot marker coordinates so a shared router matrix can produce different selected
+    // experts for adjacent Small-T columns without changing the represented BF16 domain.
+    for (int marker = 0; marker < route_markers; ++marker) {
+        input[kHidden - route_markers + marker] = 0.0f;
+    }
+    input[kHidden - route_markers + variant] = 1.0f;
     round_to_bf16(input);
     return input;
 }
@@ -208,7 +211,7 @@ std::vector<float> make_down(std::int32_t rows, std::int32_t columns, std::uint3
 
 std::vector<float> make_router_pattern(const std::vector<std::array<int, kTopK>>& selected_columns,
                                        const std::vector<int>& tie_excluded_columns) {
-    if (selected_columns.empty() || selected_columns.size() > 8 ||
+    if (selected_columns.empty() || selected_columns.size() > kSmallTMax ||
         tie_excluded_columns.size() != selected_columns.size()) {
         throw std::invalid_argument("invalid router test pattern");
     }
@@ -226,9 +229,12 @@ std::vector<float> make_router_pattern(const std::vector<std::array<int, kTopK>>
         router[static_cast<std::size_t>(expert) * kHidden] -= 8.0f;
     }
     for (std::size_t column = 0; column < selected_columns.size(); ++column) {
-        const int marker       = kHidden - 8 + static_cast<int>(column);
-        const auto& selected   = selected_columns[column];
-        const int tie_excluded = tie_excluded_columns[column];
+        const int route_markers = selected_columns.size() <= 8    ? 8
+                                  : selected_columns.size() <= 16 ? 16
+                                                                  : kSmallTMax;
+        const int marker        = kHidden - route_markers + static_cast<int>(column);
+        const auto& selected    = selected_columns[column];
+        const int tie_excluded  = tie_excluded_columns[column];
         for (int rank = 0; rank < kTopK; ++rank) {
             const float score = rank == kTopK - 1 && tie_excluded >= 0 ? 2.0f : 4.0f - 0.25f * rank;
             router[static_cast<std::size_t>(selected[rank]) * kHidden + marker] += score + 8.0f;
@@ -366,8 +372,9 @@ int run_case(const CodecProfile& profile, const RouteCase& route, const char* ca
     std::vector<std::vector<float>> residual_columns;
     input_columns.reserve(unique_columns);
     residual_columns.reserve(unique_columns);
+    const int route_markers = unique_columns <= 8 ? 8 : unique_columns <= 16 ? 16 : kSmallTMax;
     for (int column = 0; column < unique_columns; ++column) {
-        input_columns.push_back(make_input(column));
+        input_columns.push_back(make_input(column, route_markers));
         residual_columns.push_back(make_residual(column));
     }
     std::vector<float> input(static_cast<std::size_t>(kHidden) * tokens);
@@ -503,7 +510,7 @@ int run_case(const CodecProfile& profile, const RouteCase& route, const char* ca
         failures += expect_invalid("sparse_moe zero max_tokens",
                                    [] { (void)ops::sparse_moe_workspace_bytes(0); });
         const std::size_t decode_bytes  = ops::sparse_moe_workspace_bytes(1);
-        const std::size_t small_t_bytes = ops::sparse_moe_workspace_bytes(8);
+        const std::size_t small_t_bytes = ops::sparse_moe_workspace_bytes(kSmallTMax);
         if (small_t_bytes <= decode_bytes ||
             ops::sparse_moe_workspace_bytes(std::numeric_limits<std::int32_t>::max()) !=
                 small_t_bytes) {
@@ -571,10 +578,10 @@ int main() {
     // Codec decoding, routing tie behavior, exact-T dispatch, and per-token routing are
     // orthogonal test dimensions.
     failures += run_case(profiles[0], boundary_tie, "sparse_moe boundary tie", 1, 1, false, false);
-    for (int tokens = 2; tokens <= 8; ++tokens) {
+    for (int tokens = 2; tokens <= kSmallTMax; ++tokens) {
         const std::string name = "sparse_moe small-T" + std::to_string(tokens);
-        failures +=
-            run_case(profiles[0], ordinary_route, name.c_str(), tokens, tokens, tokens == 8, false);
+        failures += run_case(profiles[0], ordinary_route, name.c_str(), tokens, tokens,
+                             tokens == kSmallTMax, false);
     }
     failures +=
         run_case(profiles[1], ordinary_route, "sparse_moe q4+q6 small-T", 6, 6, false, false);
@@ -582,7 +589,8 @@ int main() {
         run_case(profiles[2], ordinary_route, "sparse_moe w8+w8 small-T", 6, 6, false, false);
     failures += run_case(profiles[0], ordinary_route, "sparse_moe correlated routes", 6, 6, true,
                          false, correlated_routes);
-    failures += run_case(profiles[0], ordinary_route, "sparse_moe serial T9", 9, 8, false, false);
+    failures += run_case(profiles[0], ordinary_route, "sparse_moe serial T33", 33, kSmallTMax,
+                         false, false);
     std::cout << (failures ? "FAIL" : "OK") << " sparse_moe correctness\n";
     return failures ? 1 : 0;
 }
