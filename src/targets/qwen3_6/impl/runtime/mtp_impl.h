@@ -1,6 +1,6 @@
-#include "targets/qwen3_6_27b_rtx5090/impl/schedule/schedule.h"
+#include "targets/qwen3_6/impl/runtime/instance.h"
+#include "targets/qwen3_6/impl/runtime/schedule.h"
 
-#include "targets/qwen3_6_27b_rtx5090/impl/config.h"
 #include "ninfer/ops/mtp_round.h"
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/scalar.h"
@@ -9,7 +9,7 @@
 
 #include <stdexcept>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule {
+namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule {
 namespace {
 
 void target_verify(TextContext& card, State& state, const Tensor& ids, const Tensor& positions,
@@ -195,4 +195,4 @@ void mtp_round(State& state, std::uint32_t k, MtpGqaEnvelopes envelopes, DecodeG
     run_prepared(state, graph, body);
 }
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule
+} // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule

@@ -32,19 +32,11 @@ VisionControl build_vision_control(const PreparedPromptData& prompt) {
     if (prompt.token_ids.size() != prompt.token_types.size()) {
         throw std::invalid_argument("vision control token types must cover the prompt");
     }
-    const std::size_t patches = static_cast<std::size_t>(prompt.prepare.raw_patches);
-    const std::size_t tokens  = static_cast<std::size_t>(prompt.prepare.vision_tokens);
     VisionControl out;
-    out.position_ids.resize(patches * 2);
-    out.position_table_indices.reserve(patches * 4);
-    out.position_table_weights.reserve(patches * 4);
-    out.scatter_indices.reserve(tokens);
     out.items.reserve(prompt.vision_items.size());
-    out.cu_seqlens.push_back(0);
 
-    std::size_t patch_cursor    = 0;
-    std::size_t position_cursor = 0;
-    std::size_t token_cursor    = 0;
+    std::size_t patch_cursor = 0;
+    std::size_t token_cursor = 0;
     for (const VisionItem& item : prompt.vision_items) {
         const std::int32_t t = item.grid.temporal;
         const std::int32_t h = item.grid.height;
@@ -65,11 +57,23 @@ VisionControl build_vision_control(const PreparedPromptData& prompt) {
             throw std::invalid_argument("vision control token spans do not match modality grid");
         }
 
-        const std::size_t scatter_begin = out.scatter_indices.size();
-        std::size_t item_tokens         = 0;
+        VisionItemControl control;
+        control.modality       = item.modality;
+        control.grid           = item.grid;
+        control.patch_begin    = item.patch_begin;
+        control.patch_count    = item.patch_count;
+        control.segment_length = h * w;
+        control.segment_count  = t;
+        control.position_ids.resize(item_patches * 2);
+        control.position_table_indices.reserve(item_patches * 4);
+        control.position_table_weights.reserve(item_patches * 4);
+        control.cu_seqlens.push_back(0);
+
+        std::size_t item_tokens = 0;
         std::size_t next_span_begin =
-            out.scatter_indices.empty() ? 0
-                                        : static_cast<std::size_t>(out.scatter_indices.back()) + 1;
+            token_cursor == 0
+                ? 0
+                : static_cast<std::size_t>(out.items.back().scatter_indices.back()) + 1;
         for (const TokenSpan& span : item.token_spans) {
             if (span.count == 0 || span.begin > prompt.token_types.size() ||
                 span.count > prompt.token_types.size() - span.begin) {
@@ -85,6 +89,9 @@ VisionControl build_vision_control(const PreparedPromptData& prompt) {
                              [expected](std::uint8_t value) { return value == expected; })) {
                 throw std::invalid_argument("vision control token span modality mismatch");
             }
+            for (std::size_t i = 0; i < span.count; ++i) {
+                control.scatter_indices.push_back(checked_i32(span.begin + i, "scatter index"));
+            }
             item_tokens += span.count;
             next_span_begin = span.begin + span.count;
         }
@@ -92,21 +99,22 @@ VisionControl build_vision_control(const PreparedPromptData& prompt) {
             throw std::invalid_argument("vision control token spans do not cover merged patches");
         }
 
+        std::size_t position_cursor = 0;
         for (std::int32_t temporal = 0; temporal < t; ++temporal) {
-            const std::int64_t next =
-                static_cast<std::int64_t>(out.cu_seqlens.back()) + static_cast<std::int64_t>(h) * w;
+            const std::int64_t next = static_cast<std::int64_t>(control.cu_seqlens.back()) +
+                                      static_cast<std::int64_t>(h) * w;
             if (next > std::numeric_limits<std::int32_t>::max()) {
                 throw std::overflow_error("vision control cu_seqlens exceeds int32");
             }
-            out.cu_seqlens.push_back(static_cast<std::int32_t>(next));
+            control.cu_seqlens.push_back(static_cast<std::int32_t>(next));
             for (std::int32_t block_y = 0; block_y < h / kMerge; ++block_y) {
                 for (std::int32_t block_x = 0; block_x < w / kMerge; ++block_x) {
                     for (std::int32_t inner_y = 0; inner_y < kMerge; ++inner_y) {
                         for (std::int32_t inner_x = 0; inner_x < kMerge; ++inner_x) {
-                            const std::int32_t y              = block_y * kMerge + inner_y;
-                            const std::int32_t x              = block_x * kMerge + inner_x;
-                            out.position_ids[position_cursor] = y;
-                            out.position_ids[patches + position_cursor] = x;
+                            const std::int32_t y                  = block_y * kMerge + inner_y;
+                            const std::int32_t x                  = block_x * kMerge + inner_x;
+                            control.position_ids[position_cursor] = y;
+                            control.position_ids[item_patches + position_cursor] = x;
                             ++position_cursor;
 
                             const float yf        = coordinate(y, h);
@@ -117,45 +125,36 @@ VisionControl build_vision_control(const PreparedPromptData& prompt) {
                             const std::int32_t x1 = std::min(x0 + 1, kPositionSide - 1);
                             const float wy        = yf - static_cast<float>(y0);
                             const float wx        = xf - static_cast<float>(x0);
-                            out.position_table_indices.insert(
-                                out.position_table_indices.end(),
+                            control.position_table_indices.insert(
+                                control.position_table_indices.end(),
                                 {y0 * kPositionSide + x0, y0 * kPositionSide + x1,
                                  y1 * kPositionSide + x0, y1 * kPositionSide + x1});
-                            out.position_table_weights.insert(out.position_table_weights.end(),
-                                                              {(1.0F - wy) * (1.0F - wx),
-                                                               (1.0F - wy) * wx, wy * (1.0F - wx),
-                                                               wy * wx});
+                            control.position_table_weights.insert(
+                                control.position_table_weights.end(),
+                                {(1.0F - wy) * (1.0F - wx), (1.0F - wy) * wx, wy * (1.0F - wx),
+                                 wy * wx});
                         }
                     }
                 }
             }
         }
 
-        for (const TokenSpan& span : item.token_spans) {
-            for (std::size_t i = 0; i < span.count; ++i) {
-                out.scatter_indices.push_back(checked_i32(span.begin + i, "scatter index"));
-            }
-            token_cursor += span.count;
+        control.merged_count = item_tokens;
+        if (position_cursor != item_patches || control.position_ids.size() != item_patches * 2 ||
+            control.position_table_indices.size() != item_patches * 4 ||
+            control.position_table_weights.size() != item_patches * 4 ||
+            control.scatter_indices.size() != item_tokens ||
+            control.cu_seqlens.back() != checked_i32(item_patches, "item patch count")) {
+            throw std::invalid_argument("vision item control metadata is incomplete");
         }
-        out.items.push_back(VisionItemControl{
-            .patch_begin    = item.patch_begin,
-            .patch_count    = item.patch_count,
-            .merged_begin   = token_cursor - item_tokens,
-            .merged_count   = item_tokens,
-            .segment_length = h * w,
-            .segment_count  = t,
-            .scatter_begin  = scatter_begin,
-            .scatter_count  = item_tokens,
-        });
+        token_cursor += item_tokens;
+        out.items.push_back(std::move(control));
         patch_cursor += item_patches;
     }
 
-    if (patch_cursor != patches || position_cursor != patches || token_cursor != tokens ||
-        out.position_ids.size() != patches * 2 ||
-        out.position_table_indices.size() != patches * 4 ||
-        out.position_table_weights.size() != patches * 4 || out.scatter_indices.size() != tokens ||
-        out.items.size() != prompt.vision_items.size() ||
-        out.cu_seqlens.back() != checked_i32(patches, "patch count")) {
+    if (patch_cursor != static_cast<std::size_t>(prompt.prepare.raw_patches) ||
+        token_cursor != static_cast<std::size_t>(prompt.prepare.vision_tokens) ||
+        out.items.size() != prompt.vision_items.size()) {
         throw std::invalid_argument("vision control metadata does not cover prepared prompt");
     }
     return out;

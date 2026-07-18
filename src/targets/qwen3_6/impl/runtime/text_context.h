@@ -1,4 +1,6 @@
 #pragma once
+#include "targets/qwen3_6/impl/runtime/instance.h"
+// Qwen3.6 family runtime implementation; instantiated only by exact variants.
 
 #include "core/arena.h"
 #include "core/device.h"
@@ -6,10 +8,9 @@
 #include "core/weight.h"
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/gqa_attention.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/config.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
 #include "core/kv_cache.h"
 #include <ninfer/targets/qwen3_6/decoder_state.h>
+#include <ninfer/targets/qwen3_6/diagnostics.h>
 #include <ninfer/targets/qwen3_6/prepared_prompt.h>
 #include <ninfer/targets/qwen3_6/round_state.h>
 
@@ -19,7 +20,7 @@
 #include <span>
 #include <vector>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule {
+namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule {
 
 // Target-private compatibility vocabulary for the mechanically preserved fixed schedule. It is
 // data-only: TextContext is constructed on the stack for one schedule recording/execution and owns
@@ -70,78 +71,51 @@ inline constexpr float kAttnScale                     = kAttentionScale;
 inline constexpr std::uint32_t kPrefillChunkAlignment = 128;
 
 struct MlpW {
-    const Weight* gate    = nullptr;
-    const Weight* up      = nullptr;
-    const Weight* gate_up = nullptr;
-    const Weight* down    = nullptr;
+    const MlpWeights* payload = nullptr;
 };
 
 struct FullLayerW {
-    const Tensor* input_norm     = nullptr;
-    const Weight* query_key      = nullptr;
-    const Weight* gate_value     = nullptr;
-    const Weight* o_proj         = nullptr;
-    const Tensor* q_norm         = nullptr;
-    const Tensor* k_norm         = nullptr;
-    const Tensor* post_attn_norm = nullptr;
+    const Tensor* input_norm                         = nullptr;
+    const FullAttentionProjectionWeights* projection = nullptr;
+    const Weight* o_proj                             = nullptr;
+    const Tensor* q_norm                             = nullptr;
+    const Tensor* k_norm                             = nullptr;
+    const Tensor* post_attn_norm                     = nullptr;
     MlpW mlp;
 };
 
 struct GdnLayerW {
-    const Tensor* input_norm     = nullptr;
-    const Weight* in_q           = nullptr;
-    const Weight* in_k           = nullptr;
-    const Weight* in_qk_q4       = nullptr;
-    const Weight* in_v           = nullptr;
-    const Weight* in_z           = nullptr;
-    const Weight* in_a           = nullptr;
-    const Weight* in_b           = nullptr;
-    const Tensor* conv1d         = nullptr;
-    const Tensor* a_log          = nullptr;
-    const Tensor* dt_bias        = nullptr;
-    const Tensor* gdn_norm       = nullptr;
-    const Weight* out_proj       = nullptr;
-    const Tensor* post_attn_norm = nullptr;
+    const Tensor* input_norm               = nullptr;
+    const GdnProjectionWeights* projection = nullptr;
+    const Tensor* conv1d                   = nullptr;
+    const Tensor* gdn_norm                 = nullptr;
+    const Weight* out_proj                 = nullptr;
+    const Tensor* post_attn_norm           = nullptr;
     MlpW mlp;
 };
 
 struct MtpW {
+    const MtpWeights* payload           = nullptr;
     const Weight* fc                    = nullptr;
     const Tensor* pre_fc_norm_embedding = nullptr;
     const Tensor* pre_fc_norm_hidden    = nullptr;
     const Tensor* input_norm            = nullptr;
-    const Weight* attn_in               = nullptr;
-    const Weight* q_proj                = nullptr;
-    const Weight* gate_proj             = nullptr;
-    const Weight* k_proj                = nullptr;
-    const Weight* v_proj                = nullptr;
     const Tensor* q_norm                = nullptr;
     const Tensor* k_norm                = nullptr;
     const Weight* o_proj                = nullptr;
     const Tensor* post_attn_norm        = nullptr;
-    const Weight* gate_up               = nullptr;
-    const Weight* down                  = nullptr;
     const Tensor* norm                  = nullptr;
 };
 
-enum class Phase {
-    Prefill,
-    Verify,
-};
-
-enum class TapId {
-    AfterEmbed,
-    AfterMixer,
-    AfterMlp,
-    AfterFinalNorm,
-    AfterLogits,
-};
-
-using TextTapCallback = void (*)(void*, TapId, int, Phase, const Tensor&, cudaStream_t);
+using Phase           = qwen3_6::TextPhase;
+using TapId           = qwen3_6::TextTapId;
+using TextTapCallback = qwen3_6::TextTapCallback;
 
 struct NullTap {
     static constexpr bool enabled = false;
 };
+
+class VisionPrefillSession;
 
 class TextContext {
 public:
@@ -178,12 +152,15 @@ public:
 
     [[nodiscard]] bool mtp_prompt_prepared() const noexcept { return mtp_prompt_prepared_; }
 
+    [[nodiscard]] std::uint32_t last_prefill_chunk_length() const noexcept {
+        return last_prefill_chunk_length_;
+    }
+
     void prefill(std::span<const int> ids);
-    void prefill(const qwen3_6::PreparedPromptData& input, const Tensor& visual_embeddings);
+    void prefill(const qwen3_6::PreparedPromptData& input, VisionPrefillSession& vision);
     void diagnostic_prefill(std::span<const int> ids, void* context, TextTapCallback callback);
-    void diagnostic_prefill(const qwen3_6::PreparedPromptData& input,
-                            const Tensor& visual_embeddings, void* context,
-                            TextTapCallback callback);
+    void diagnostic_prefill(const qwen3_6::PreparedPromptData& input, VisionPrefillSession& vision,
+                            void* context, TextTapCallback callback);
     void target_verify(const Tensor& ids, const Tensor& positions,
                        ops::GqaExecutionEnvelope envelope);
     void diagnostic_target_verify(const Tensor& ids, const Tensor& positions,
@@ -227,9 +204,8 @@ private:
 
     struct MultimodalPrefill {
         std::span<const std::int32_t> positions;
-        std::span<const std::int32_t> scatter_indices;
-        const Tensor* embeddings = nullptr;
-        std::int32_t rope_delta  = 0;
+        VisionPrefillSession* vision = nullptr;
+        std::int32_t rope_delta      = 0;
     };
 
     template <class Tap>
@@ -256,6 +232,7 @@ private:
     std::int64_t prefill_snapshot_boundary_               = -1;
     Tensor* boundary_hidden_output_                       = nullptr;
     bool mtp_prompt_prepared_                             = false;
+    std::uint32_t last_prefill_chunk_length_              = 0;
 
     const Weight* embed_                        = nullptr;
     const Tensor* final_norm_                   = nullptr;
@@ -272,4 +249,4 @@ private:
     std::array<Tensor, TextConfig::gdn_layers()> gdn_conv1d_views_{};
 };
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule
+} // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule

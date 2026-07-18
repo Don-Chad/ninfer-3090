@@ -40,6 +40,8 @@ public:
     CudaEventTimer& operator=(CudaEventTimer&& other) noexcept;
 
     void start();
+    void record_stop();
+    [[nodiscard]] float elapsed_ms() const;
     float stop_ms();
 
 private:

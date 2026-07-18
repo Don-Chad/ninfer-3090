@@ -12,12 +12,13 @@ benchmark-report, and external protocol behavior. Repository verification princi
   shared row-split packing helper;
 - `targets/qwen3_6/` — shared tokenizer/template, multimodal preprocessing, MRoPE, prepared-prompt,
   stop/output decoding, hybrid topology, decoder/GDN and round-state layouts/views, shifted-MTP
-  alignment, and Vision-control behavior;
+  alignment, Vision control, and family runtime mechanisms;
 - `targets/qwen3_6_27b/` — registered inventory, converter recipe, source verifier, artifact
-  bindings, reference behavior, target Program/multimodal/MTP behavior, and the opt-in real-Engine
+  bindings, reference diagnostics, family Program/multimodal/MTP behavior, and the opt-in real-Engine
   prefix test;
-- `targets/qwen3_6_35b_a3b/` — future-target converter contracts plus the artifact-native MoE
-  oracle, typed binding, selected-expert row access, and 256K INT8 reference-memory calculation;
+- `targets/qwen3_6_35b_a3b/` — registered inventory/converter contracts, artifact-native diagnostic
+  reference, MoE oracle, typed binding, selected-expert row access, 256K INT8 memory calculation,
+  and the opt-in real public-Engine route;
 - `test_ninfer_artifact_reader.cpp` — C++ framing, directory, encoded-size, payload-span, and
   geometry behavior against a self-contained C++ fixture;
 - `test_generation_controller.cpp` — accepted-prefix, cancellation, publication ordering, and
@@ -70,7 +71,15 @@ NINFER_QWEN3_6_27B_WEIGHTS=$PWD/out/qwen3_6_27b_rtx5090.ninfer \
   ctest --test-dir build -R ninfer_qwen3_6_27b_prefix_real_test --output-on-failure
 ```
 
-Without that variable CTest marks the C++ integration test as skipped.
+Run the peer 35B-A3B route independently:
+
+```bash
+NINFER_QWEN3_6_35B_A3B_WEIGHTS=$PWD/out/qwen3_6_35b_a3b_rtx5090.ninfer \
+  ctest --test-dir build -R ninfer_qwen3_6_35b_a3b_real_test --output-on-failure
+```
+
+Without the corresponding variable CTest marks each C++ integration test as skipped. Neither test
+uses another numerical/execution path's generated tokens as a golden.
 
 The capability-evaluation coordinator has its own environment and unittest entry point:
 
@@ -101,7 +110,7 @@ A permanent test should protect one current risk, such as:
 
 - exact registered artifact bytes, geometry, object binding, or conversion transform;
 - a numerical operator contract with an independent oracle;
-- family Frontend or target Program frontier, prefix, MTP, or multimodal behavior;
+- family Frontend or Program frontier, prefix, MTP, or multimodal behavior;
 - generated-token commit/stop/cancel consistency;
 - public benchmark or OpenAI/Anthropic observable behavior;
 - a reproduced supported bug.

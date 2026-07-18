@@ -1,5 +1,7 @@
 #pragma once
 
+// Identity-free Qwen3.6 family runtime helper.
+
 #include "core/arena.h"
 #include "core/tensor.h"
 #include <ninfer/targets/qwen3_6/mtp_alignment.h>
@@ -9,7 +11,7 @@
 #include <cstdint>
 #include <span>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule::detail {
+namespace ninfer::targets::qwen3_6::detail {
 
 // Composes the generic scatter Op from the family-provided shifted-window interpretation.
 void scatter_shifted_visual_embeddings(Tensor& input_embeddings, const Tensor& visual_embeddings,
@@ -18,4 +20,4 @@ void scatter_shifted_visual_embeddings(Tensor& input_embeddings, const Tensor& v
                                        const qwen3_6::MtpAlignmentWindow& window,
                                        WorkspaceArena& work, cudaStream_t stream);
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule::detail
+} // namespace ninfer::targets::qwen3_6::detail

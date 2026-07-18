@@ -1,14 +1,14 @@
-#include <ninfer/targets/qwen3_6_27b_rtx5090/package.h>
+#include <ninfer/targets/qwen3_6_35b_a3b_rtx5090/package.h>
 #include <ninfer/targets/qwen3_6/frontend_resources.h>
 #include <ninfer/targets/qwen3_6/prepared_prompt.h>
 
-#include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/variant.h"
+#include "targets/qwen3_6_35b_a3b_rtx5090/impl/load/bindings.h"
+#include "targets/qwen3_6_35b_a3b_rtx5090/impl/variant.h"
 
 #include <stdexcept>
 #include <utility>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
+namespace ninfer::targets::qwen3_6_35b_a3b_rtx5090::detail {
 
 class LoadPlan::Impl {
 public:
@@ -32,9 +32,9 @@ LoadedModel::LoadedModel(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(
 
 LoadedModel::~LoadedModel() = default;
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail
+} // namespace ninfer::targets::qwen3_6_35b_a3b_rtx5090::detail
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090 {
+namespace ninfer::targets::qwen3_6_35b_a3b_rtx5090 {
 
 void Package::preflight(DeviceContext& device, const EngineOptions& options) {
     detail::Variant::preflight(device, options);
@@ -71,4 +71,4 @@ Package::create_program(const LoadedModel& model, SequencePlan&& plan, DeviceCon
                                                     device);
 }
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090
+} // namespace ninfer::targets::qwen3_6_35b_a3b_rtx5090

@@ -1,12 +1,13 @@
 # SparseMoe Design Log
 
-> Status: active design discussion for the future `qwen3_6_35b_a3b_rtx5090` target.
+> Status: completed design log retained for the `SparseMoe` Op used by the registered
+> `qwen3_6_35b_a3b_rtx5090` target.
 
 This file records decisions reached while designing the closed `SparseMoe` Op. Stable conclusions
-will be folded into the applicable active authorities when the design is complete.
+are reflected in the active Op and target authorities.
 
 The accepted decode-only execution work is tracked in the
-completed [`SparseMoe Decode Implementation Plan`](../archive/2026-07-17-sparse-moe-decode-implementation.md).
+completed [`SparseMoe Decode Implementation Plan`](2026-07-17-sparse-moe-decode-implementation.md).
 
 ## 2026-07-17: top-level API
 
@@ -56,8 +57,9 @@ Decision:
 - Plan data, workspace views, assignments, inverse maps, expert jobs, and other intermediate types
   remain private to the SparseMoe subtree. Move a narrow primitive to `src/ops/common/` only after
   another Op actually shares it.
-- The target package owns only artifact binding, layer order, workspace lifetime, and the call to
-  `sparse_moe(...)`; it does not own MoE CUDA mathematics.
+- The exact Variant owns the sparse-MoE post-mixer leaf and its leaf-local workspace contribution;
+  the family runtime owns layer order/workspace lifetime and calls `sparse_moe(...)`. Neither owns
+  MoE CUDA mathematics.
 - Keep SparseMoe in the existing `ninfer_ops` library with explicit build source registration; do
   not create another library or runtime registry.
 - Correctness evidence is centered on the complete Op against one independent oracle. Private

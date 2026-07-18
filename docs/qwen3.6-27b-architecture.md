@@ -375,9 +375,9 @@ GQA numerical qualification covers both registered geometries, supported prompt 
 regimes, the maintained conformance matrix, and target-representative activation ranges. Its
 `Tolerance::attention_bf16()` and `Tolerance::attention_int8()` acceptance envelopes are explicit
 named standards in `tests/ops/op_check.h`; they are not claimed as pointwise bounds for every
-arbitrary or adversarial BF16 tensor. A1 append-and-attend and A3 cached-only attention must each
-match the common ideal oracle independently. Comparing A1 with A3 remains useful for implementation
-consistency, but cannot substitute for either oracle comparison.
+arbitrary or adversarial BF16 tensor. A1 append-and-attend and A3 cached-only attention are each
+checked directly against the common ideal oracle. Equality between those different numerical paths
+is not a contract or acceptance test.
 
 ## 13. State inventory
 
@@ -400,20 +400,20 @@ changes its fixed allocation.
 |---|---|
 | exact dimensions/layer counts and family hybrid-layer mapping | `src/targets/qwen3_6_27b_rtx5090/impl/config.h`, `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/hybrid_topology.h` |
 | immutable Text/MTP/Vision bindings | `src/targets/qwen3_6_27b_rtx5090/impl/load/` |
-| Text/MTP/Vision execution and state | `src/targets/qwen3_6_27b_rtx5090/impl/program/`, `impl/schedule/` |
+| split attention projection, staged GDN projection/control, dense post-mixer leaves, leaf workspace, and graph frontier ranges | `src/targets/qwen3_6_27b_rtx5090/impl/variant.h`, `impl/variant.cpp` |
+| Text/MTP/Vision execution, planning, Program lifecycle, workspace composition, prefix/state transactions, and graph mechanics | `src/targets/qwen3_6/impl/runtime/` |
 | tokenizer, template, multimodal processing, output decoder | `src/targets/qwen3_6/impl/frontend/` |
 | mathematical and explicit local-state Op contracts/implementations | `include/ninfer/ops/`, `src/ops/` |
 | GQA physical cache container and checked per-layer views | `src/core/kv_cache.*` |
-| Text/MTP published cache prefixes and graph frontier variants | `src/targets/qwen3_6_27b_rtx5090/impl/program/` |
 | GDN layout/views/reset/copy and Text/MTP/GDN composition | `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/decoder_state.h`, `src/targets/qwen3_6/impl/state/decoder_state.cpp` |
-| live state backing, valid frontiers, slot meaning, prefix policy, and CUDA Graphs | `src/targets/qwen3_6_27b_rtx5090/impl/program/` |
 | generated-round buffer schema, MTP alignment, and Vision control | `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/`, `src/targets/qwen3_6/impl/state/round_state.cpp`, `src/targets/qwen3_6/impl/vision/control.cpp` |
 | `.ninfer` tensor assignment and binding | [`qwen3.6-27b-ninfer-artifact.md`](qwen3.6-27b-ninfer-artifact.md), `tools/reference/qwen3_6_27b_rtx5090/bindings.py` |
 | native `.ninfer` converter and verifier | `tools/convert/qwen3_6_27b_rtx5090` |
 | artifact-native Python Text/Vision/MTP reference | `tools/reference/qwen3_6_27b_rtx5090` |
 
-The Python reference is an independent executable implementation for model/artifact-path and state
-parity; it is not the per-Op mathematical oracle and does not prescribe private C++ kernel
-precision. Each Op is checked against its own naive FP32/FP64 or exact oracle. The C++ target
+The Python reference is an independent executable implementation for model/artifact inspection and
+diagnosis; it is not the per-Op mathematical oracle, does not prescribe private C++ kernel
+precision, and does not define cross-runtime generated-token equality. Each Op is checked against
+its own naive FP32/FP64 or exact oracle. The C++ target
 implements the complete Text/Vision/MTP product over `.ninfer` through the closed Engine
 architecture.

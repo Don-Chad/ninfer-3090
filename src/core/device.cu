@@ -173,12 +173,18 @@ CudaEventTimer& CudaEventTimer::operator=(CudaEventTimer&& other) noexcept {
 
 void CudaEventTimer::start() { CUDA_CHECK(cudaEventRecord(start_, stream_)); }
 
-float CudaEventTimer::stop_ms() {
-    CUDA_CHECK(cudaEventRecord(stop_, stream_));
-    CUDA_CHECK(cudaEventSynchronize(stop_));
+void CudaEventTimer::record_stop() { CUDA_CHECK(cudaEventRecord(stop_, stream_)); }
+
+float CudaEventTimer::elapsed_ms() const {
     float ms = 0.0f;
     CUDA_CHECK(cudaEventElapsedTime(&ms, start_, stop_));
     return ms;
+}
+
+float CudaEventTimer::stop_ms() {
+    record_stop();
+    CUDA_CHECK(cudaEventSynchronize(stop_));
+    return elapsed_ms();
 }
 
 } // namespace ninfer

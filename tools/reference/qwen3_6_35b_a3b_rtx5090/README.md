@@ -5,10 +5,11 @@ This is the complete target-private artifact-native Python reference for the acc
 gated shared experts, Vision tower and 2048-wide merger, one-layer sparse-MoE MTP model, sampling,
 and persistent KV/GDN state directly from the `.ninfer` object layouts.
 
-The reference is an implementation and correctness route for future target bring-up. It does not
-register a C++ Engine target or change the currently delivered product boundary. It does not need
-the original Hugging Face checkpoint at inference time: tokenizer, generation, template, image,
-and video resources are read from the artifact.
+The reference is an independent diagnostic implementation for the registered artifact. The C++
+Engine target is registered separately; this Python route is not its generated-token golden and
+does not define equality across different numerical paths. It does not need the original Hugging
+Face checkpoint at inference time: tokenizer, generation, template, image, and video resources are
+read from the artifact.
 
 ## Run
 

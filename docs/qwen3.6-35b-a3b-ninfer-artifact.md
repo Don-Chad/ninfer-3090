@@ -1,19 +1,17 @@
 # Qwen3.6-35B-A3B NInfer Artifact Contract and Conversion Recipe
 
-> Status: accepted implementation specification for the future
-> `qwen3_6_35b_a3b_rtx5090` target. The target-private converter, inventory, source recipe, and
-> conversion preflight implement this contract and have completed a real end-to-end conversion
-> with the fixed 27B-measured shortlist. The complete artifact-native Python Text/MoE/Vision/MTP
-> path implements typed binding and a bring-up execution/parity profile; it is not a per-Op
-> mathematical oracle. No C++ binder, runtime target package, source verifier, or Engine route
-> currently exists.
+> Status: implemented artifact contract for the registered
+> `qwen3_6_35b_a3b_rtx5090` target. The target-private converter, inventory, source recipe, C++
+> binder/package, artifact-native Python diagnostic path, and public Engine route implement this
+> contract. The Python path is not a generated-token golden or per-Op mathematical oracle.
 >
 > Authority: this document defines the complete `.ninfer` persistent-object contract for
 > the exact Qwen3.6-35B-A3B checkpoint and the recipe that converts the selected Hugging Face BF16
 > checkpoint into those objects. It is authoritative for object names, shapes, formats, layouts,
 > MoE expert ordering, fused row order, frontend resources, source transforms, memory envelope, and
 > artifact acceptance. It does not prescribe private kernel accumulator, staging, workspace, or
-> rounding choices and does not advertise current product support.
+> rounding choices; runtime ownership is defined by [`design.md`](design.md) and
+> [`ninfer-engine-architecture.md`](ninfer-engine-architecture.md).
 >
 > Common framing and JSON fields remain defined by
 > [`ninfer-container-format.md`](ninfer-container-format.md). Numeric meanings and the canonical
@@ -25,7 +23,7 @@
 
 ## 1. Decision and boundary
 
-The exact model identity to be registered is:
+The registered exact model identity is:
 
 ```text
 qwen3.6-35b-a3b
@@ -38,9 +36,7 @@ qwen3_6_35b_a3b_rtx5090
 ```
 
 The target key selects one exact checkpoint/GPU package. It is not serialized as another
-`model_id`. Registration of this model id and target happens only when the converter, verifier,
-binder, kernels, complete Text/Vision/MTP route, and acceptance evidence in Section 17 land
-together.
+`model_id`. The closed registry maps this `model_id` to that package before loading.
 
 Every conforming artifact is one complete product image. It contains Text, the optimized draft
 head, MTP, Vision, and the six frontend resources in this document. There are no Text-only,
@@ -62,9 +58,12 @@ common numeric/layout contracts
     code and scale semantics, encoder arithmetic, plane packing, padding,
     row addressing, alignment, and encoded-size calculation
 
-target implementation
-    immutable bindings, fixed layer schedule, state policy, CUDA Graphs,
-    workspaces, and the public Engine route
+exact target implementation
+    immutable bindings, exact configuration, closed Variant leaves and graph frontier ranges
+
+Qwen3.6 family runtime
+    fixed layer schedule, Program state policy, workspace composition, CUDA Graph mechanics,
+    and the public Engine-facing Program contract
 
 repository-internal Ops
     semantically closed mathematical/state-transition contracts and CUDA implementations
@@ -660,10 +659,10 @@ tools/convert/qwen3_6_35b_a3b_rtx5090/
     fixed ranking policy, and CLI
 ```
 
-Both exact targets depend inward on the family common leaves; neither target imports the other.
-Family common code has no target identity, complete inventory, layer schedule, MoE precision set,
-or ranking path. Future reference-model work follows the same dependency direction but does not
-introduce a family base model or shared target schedule.
+Both converter targets depend inward on converter-family common leaves; neither converter imports
+the other. Converter-family common code has no target identity, complete inventory, MoE precision
+set, or ranking path. Runtime sharing is separately governed by the family-runtime/Variant boundary
+in [`ninfer-engine-architecture.md`](ninfer-engine-architecture.md).
 
 That path is descriptive local provenance, not artifact metadata or a runtime validity condition.
 The converter resolves tensors through `model.safetensors.index.json` and requires these facts
@@ -916,8 +915,8 @@ For source prefix `model.visual.merger.`:
 
 ## 14. Binder and materialization obligations
 
-After the common reader has established version-1 framing and registered layout geometry, the
-future Qwen3.6-35B-A3B binder must:
+After the common reader establishes version-1 framing and registered layout geometry, the
+Qwen3.6-35B-A3B binder:
 
 1. require `model_id == "qwen3.6-35b-a3b"`;
 2. generate and consume exactly the 889 objects in Sections 4 through 7, rejecting missing, extra,
@@ -1048,9 +1047,9 @@ objects as unrelated generic linear calls:
 
 The central Op layer implements the two W8 input-projection contracts for every positive target T:
 fixed K=2048 decode at `T=1`, closed SIMT/MMA routes for larger T, direct writes to the independent
-consumer allocations, and zero transient workspace. This closes the operator implementation gap;
-it does not by itself add the future 35B binder, schedule, or registered Engine target. Current
-route and qualification details are maintained in the
+consumer allocations, and zero transient workspace. The registered Variant uses those Ops inside
+its closed projection leaves; the family runtime owns the surrounding schedule. Current route and
+qualification details are maintained in the
 [35B operator inventory](qwen3.6-35b-a3b-operator-inventory.md).
 
 For `T>1`, the logical Q/K/gate/V or Q/K/V/Z slices of a single `[N,T]` projection do not become
@@ -1087,8 +1086,10 @@ GDN still preserves convolution, L2 normalization, FP32 recurrent state, gated n
 Op/state boundaries. Vision retains the implemented 27B block and merger Op boundaries. None of
 these boundaries prescribes a private accumulator or intermediate rounding path.
 
-The target schedule composes repository-internal Ops. CUDA implementations remain under
-`src/ops`; the target package owns fixed layer order, views, state, graph, and workspace policy.
+The family schedule composes repository-internal Ops. CUDA implementations remain under
+`src/ops`; the 35B package supplies its immutable views, dimensions, graph frontiers, and three
+closed leaf families while the family runtime owns layer order, state, graph mechanics, and
+workspace composition.
 
 ### 15.3 Prefill and MTP
 
@@ -1107,18 +1108,16 @@ persistent weights directly.
 
 ### 15.4 Vision workspace lifetime
 
-Vision attention is segmented and different media items do not attend to one another. The target
-must therefore keep GPU Vision workspace item-bounded rather than allocate for every media item in
-the complete 256K prompt at once. It may encode items sequentially, retain merged embeddings on the
-host, and stream the required columns into target and shifted-MTP prefill. An implementation that
-instead aggregates items must calculate the actual request workspace before execution and remain
-inside the Section 16 envelope.
+Vision attention is segmented and different media items do not attend to one another. The family
+runtime therefore encodes media items sequentially with item-bounded GPU workspace instead of
+allocating Vision intermediates for every media item in the complete 256K prompt at once. The
+merged result is consumed in item order by Text and shifted-MTP prefill.
 
 This lifetime rule does not remove image/video support or change preprocessing. It prevents
 independent Vision segments from multiplying peak GPU memory solely because the Text context is
-large. It is a new 35B target lifecycle requirement, not the current 27B aggregate-item behavior;
-the chosen ownership and streaming schedule, including any device-to-host handoff, require the
-Section 17 evidence.
+large. The family runtime now applies the same item-bounded GPU lifetime to both Variants while
+preserving each item's owning host controls and merged output until its ordered Text/MTP consumers
+complete.
 
 ## 16. RTX 5090 residency proof
 
@@ -1161,12 +1160,11 @@ FP32 recurrent matrices  = 30 * 32 * 128 * 128 * 4 = 60.00000 MiB
 one slot                                               61.40625 MiB
 ```
 
-The state policy migrates the current `snapshot_slots = mtp_k + 2` rule. At `mtp_k=5`, seven slots
-consume 450,723,840 bytes = 429.84375 MiB. Applying the current private Program member set to 2048
-hidden width and a six-column verification window gives an 8,207,872-byte ceiling for fixed
-token/logit/hidden/ledger/sampling buffers. This ceiling is a target-private planning result, not a
-checkpoint property; implementation must rederive it and update this envelope if its private layout
-grows.
+The family state policy fixes `snapshot_slots = mtp_k + 2`. At `mtp_k=5`, seven slots consume
+450,723,840 bytes = 429.84375 MiB. Applying the family Program's fixed state layout to the 35B
+widths and a six-column verification window gives an 8,207,872-byte ceiling for fixed
+token/logit/hidden/ledger/sampling buffers. The algorithm is shared; the resulting byte count is a
+35B configuration result rather than a checkpoint payload property.
 
 ```text
 planned sequence-persistent reservation
@@ -1177,42 +1175,31 @@ planned sequence-persistent reservation
 
 ### 16.3 Workspace and final envelope
 
-For Text and MTP with prefill chunk 1024, the design assigns one 256-MiB stable Program-workspace
-ceiling covering full attention, GDN, sparse MoE, heads, and control work. With the 27B-style
-two-stage Q/K/V-then-Z activation lifetime, the 35B GDN component derives to 117,841,920
-bytes; projecting Q/K/V/Z activations in one pass and retaining Z across the recurrence derives to
-126,230,528 bytes. A top-8 MoE route/gather/gate-up/down/reduce schedule remains below 100 MiB when
-scopes are reused. These are planning bounds to be measured during implementation, and the ceiling
-also covers the small multimodal root/control regions. A full-bank dequantization or persistent
-expert gather would violate it.
-
-Applying the current 27B scoped-layout geometry to one 35B item gives 1,086,849,280 bytes =
-1.01220727 GiB for one maximum-size image (`P=65536` raw patches, `V=16384` merged tokens). The
-budget reserves 1.25 GiB and uses the new item-bounded lifetime in Section 15.4. A maximum configured
-video is smaller. Arbitrary aggregate Vision tokens are not free: without item streaming,
-`V=65536` would require about 4.05 GiB and `V=262144` about 16.20 GiB.
+The family planner dry-runs the same scoped allocations used by Text, MTP, and Vision and reserves
+their maximum, not their sum. For the 35B native configuration with prefill chunk 1024, the
+item-bounded Vision maximum (`P=131072`, `V=32768`, up to 384 segments) dominates and produces one
+2,039,482,112-byte stable workspace arena. Text/MTP and each Vision item reuse that arena; neither a
+full-bank dequantization nor aggregate intermediates for every media item are resident.
 
 | Resident or reserved item | Bytes | MiB |
 |---|---:|---:|
 | device weight arena | 22,360,207,360 | 21,324.355469 |
-| Text + MTP INT8 KV | 3,045,064,704 | 2,904.000000 |
-| seven GDN slots | 450,723,840 | 429.843750 |
-| fixed sequence-state ceiling | 8,207,872 | 7.827637 |
-| Text/MTP Program workspace ceiling | 268,435,456 | 256.000000 |
-| CUDA Graph allowance | 67,108,864 | 64.000000 |
-| item-bounded Vision envelope | 1,342,177,280 | 1,280.000000 |
+| complete sequence-persistent arena | 3,503,996,416 | 3,341.671387 |
+| shared Text/MTP/Vision workspace arena | 2,039,482,112 | 1,945.001709 |
+| CUDA Graph allowance | 595,591,168 | 568.000000 |
 | CUDA context/allocator guard | 1,073,741,824 | 1,024.000000 |
-| **planned total** | **28,615,667,200** | **27,290.026855** |
-| **remaining from 32607 MiB** | **5,575,250,432** | **5,316.973145** |
+| **planned total** | **29,573,018,880** | **28,203.028564** |
+| **remaining from 32607 MiB** | **4,617,898,752** | **4,403.971436** |
 
-The remaining 5.192356586 GiB is deliberate unassigned margin, not permission for another weight
-copy. With the derived 1,086,849,280-byte maximum-image workspace instead of the 1.25-GiB envelope,
-margin is 5.430149317 GiB.
+The remaining 4.300753355 GiB is deliberate unassigned margin, not permission for another weight
+copy.
 
-The 256-MiB Program row and 64-MiB CUDA Graph row are design ceilings rather than measurements from
-an existing 35B target. Runtime admission must include every row in the table, including the
-1.25-GiB Vision envelope and 1-GiB guard. It may substitute a smaller request-specific Vision value
-only after calculating that request before execution.
+The workspace and CUDA Graph rows are runtime planning values rather than persistent artifact
+bytes. The graph value follows the implemented family calculation for the 35B native configuration:
+sixteen ordinary/aligned executables at 12 MiB, four short-window MTP executables at 12 MiB, and four
+long-window MTP executables at 82 MiB. Runtime admission uses the exact sequence/workspace plans and
+the calculated graph allowance after loading weights; the final guard retains conservative room
+for the CUDA context and allocator.
 
 For context, making both gate/up and down banks of every main routed expert Q5 would raise the
 weight arena to about 23.230816 GiB and leave 2.786106586 GiB under the same complete envelope. Making
@@ -1221,81 +1208,21 @@ W8 would raise weights to 35.418316 GiB and fail before KV. The chosen mixed tie
 materially improve memory margin and selected-expert traffic while retaining extra precision in the
 down banks; all-Q5 is not excluded by capacity alone.
 
-## 17. Required implementation evidence
+## 17. Implemented registration evidence
 
-This document is a design authority, not evidence that the target already works. The target may be
-marked implemented only after all of the following exist.
+The registered artifact route is supported by focused evidence tied to this contract:
 
-`SparseMoe` now functionally accepts every positive T. Its single-column route has
-independent-oracle, CUDA Graph, candidate-envelope, payload, and NCU evidence in the
-[`retained qualification report`](archive/optimization-era/bench/qwen3.6-35b-sparse-moe-decode-roofline.md).
-The column iterator is checked with distinct multi-column inputs and Graph replay against the same
-complete oracle. This establishes functionality, not grouped multi-column performance. Target
-binding, memory-admission, end-to-end execution, and serving evidence remain required below.
+- conversion/inventory checks establish exactly 883 tensors, six frontend resources, the object
+  signatures in this document, and the direct materialized device arena of 22,360,207,360 bytes;
+- independent mathematical or exact oracles remain authoritative for numeric codecs, fused
+  projections, sparse MoE, attention, GDN, MTP, and Vision Ops; each production numerical path is
+  checked against its own oracle and is not required to reproduce another path's output;
+- the real public Engine route loads the named artifact as
+  `qwen3_6_35b_a3b_rtx5090` and exercises Text, MTP, prefix/state lifecycle, CUDA Graph execution,
+  and inline Vision; and
+- construction at native `max_context=262144` with INT8-G64 KV and MTP window five verifies the
+  admitted sequence/workspace layout and rejects an over-capacity request before Program mutation.
 
-### 17.1 Artifact and conversion
-
-- converter-generated exact inventory: 883 tensors, six resources, all counts and byte totals in
-  Section 9;
-- coverage of each of the 1045 unique source tensors with no unused source role; the only
-  documented derived reread is `lm_head.weight` for the optimized draft-head gather;
-- retention of the six family frontend resources and correct native handling of the complete
-  248077-id tokenizer domain, including ids `248070..248076`;
-- exact codec verification for every format and representative expert ids, including half-split
-  gate/up and A/B rows, first/last expert boundaries, Q5/Q6 layer assignment, and every plane
-  offset, row stride, and expert stride in Section 3.4;
-- representative source probes after every concatenate, transpose, half-split flatten, and
-  expert-major flatten;
-- the fixed Section 12.5 ranking and exact agreement between its selected ids and the stored I32
-  draft-head map;
-- an external conversion report recording checkpoint path, GGUF evidence path, format counts,
-  component bytes, and encoder profile without making those values runtime gates.
-
-### 17.2 Numerical and behavioral correctness
-
-- independent naive FP32/FP64 or exact oracles for fused full-attention input, GDN input,
-  routed/shared MoE, MTP, and Vision at real shapes, with exact logical weight decode;
-- expert tests that vary all eight selected ids, include experts 0 and 255, and compare fused
-  gate/up/down/reduction against the complete Section 15 oracle rather than private stage goldens;
-- source-BF16 versus artifact-implementation activation comparisons at every layer type as
-  supplementary parity evidence, with output tolerances and router top-8 agreement statistics;
-- 35B full-head target and MTP held-out traces reporting shortlist coverage, MTP accepted-token
-  replay, and Q4 draft-head top-1 drift; these are required even if the final ids equal the 27B map;
-- complete text prefill/decode, image, video, mixed-media, MTP prefill/proposal/verification, and
-  accepted/rejected state continuation through the artifact-native reference and C++ Engine;
-- behavioral comparison against the BF16 source implementation and the project-accepted local GGUF
-  precedent before accepting the different NInfer codecs and fused route in the product target;
-  neither implementation replaces a per-Op mathematical oracle.
-
-The GGUF comparison is a target-route regression check, not a new numeric-format admission or a
-byte-equivalence test. Exact probabilistic token streams and fixed artifact hashes are not required.
-
-### 17.3 Memory and performance
-
-- real device-arena measurement equal to 22,360,207,360 bytes with no post-load weight repack;
-- successful 262144-capacity allocation with INT8 KV, MTP window five, seven GDN slots, graphs, and
-  the declared workspaces on the RTX 5090, with measured Program and Graph use inside their ceilings;
-- an admission check that retains the 1-GiB guard and either reserves the 1.25-GiB item-bounded
-  Vision envelope or substitutes a precomputed request-specific value;
-- a real long-context execution that exercises KV append/read and GDN continuation, not just an
-  allocation test;
-- a maximum-size image and maximum-size video through the item-bounded Vision lifetime while the
-  256K sequence capacity remains allocated, measuring device peak at or below the reserved 1.25 GiB
-  or the precomputed request-specific value and verifying any host handoff/streaming lifetime;
-- MoE operator benchmarks for decode and representative prefill shapes, followed by end-to-end
-  `ninfer_bench` attribution;
-- fixed-shape benchmarks proving that the fused Q/K/gate/V, Q/K/V/Z, A/B gating, output-residual,
-  K=2048 head, K=512 routed-down, and MTP `T<=6` paths replace their generic or serial fallbacks;
-- an address/traffic check showing only eight routed expert spans are referenced, Q4 gate/up reads
-  8.5 MiB per main layer, and Q5/Q6 down reads 5.25/6.25 MiB before cache effects, with no
-  materialized gate/up or expert-down matrices;
-- NSYS proof that routing, expert launches, and gathers do not dominate or serialize avoidably,
-  then NCU only for kernels identified as hotspots;
-- NCU comparison of global-plane and expert-local layouts only if the accepted global-plane kernel
-  exhibits a TLB or long-scoreboard hotspot; no persistent layout change is justified by pointer
-  proximity alone; and
-- end-to-end decode evidence that the sparse-MoE Op uses the graph-stable closed four-launch
-  schedule and does not scan, launch, gather, or materialize the other 248 routed experts.
-
-Until this evidence and the complete target land, `qwen3_6_27b_rtx5090` remains the only registered
-NInfer product target.
+Artifact-native Python execution remains a diagnostic implementation. It does not define an exact
+generated-token golden for the C++ runtime, and comparisons between different quantization,
+schedule, eager/graph, or reference paths are not acceptance tests.

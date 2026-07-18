@@ -1,10 +1,8 @@
-#include "targets/qwen3_6_27b_rtx5090/impl/program/program.h"
+#include "targets/qwen3_6/impl/runtime/instance.h"
+#include "targets/qwen3_6/impl/runtime/program.h"
 
 #include "ninfer/ops/mtp_round.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/config.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/program/graph_policy.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/schedule/schedule.h"
+#include "targets/qwen3_6/impl/runtime/schedule.h"
 
 #include <cuda_runtime.h>
 
@@ -17,7 +15,7 @@
 #include <string>
 #include <utility>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
+namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -90,8 +88,8 @@ void validate_graph_ranges(const std::vector<GraphFrontierRange>& ranges,
 
 } // namespace
 
-Program::Impl::Impl(const LoadedModelData& model_in, const SequencePlan::Impl& plan,
-                    DeviceContext& device_in)
+ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const SequencePlanImpl& plan,
+                                 DeviceContext& device_in)
     : model(model_in), device(device_in), capacity(plan.capacity),
       prefill_chunk(plan.prefill_chunk), mtp_k(plan.mtp_k), kv_dtype(plan.kv_dtype),
       kv_quant_group(plan.kv_quant_group), proposal_head(plan.proposal_head),
@@ -99,6 +97,9 @@ Program::Impl::Impl(const LoadedModelData& model_in, const SequencePlan::Impl& p
       graph_allowance_bytes(plan.graph_allowance_bytes), persistent(plan.persistent.bytes),
       work(plan.workspace_bytes),
       round_host((static_cast<std::size_t>(mtp_k) + 2ULL) * sizeof(std::int32_t)) {
+    if (model.weights_arena == nullptr) {
+        throw std::invalid_argument("Qwen3.6 model view has no owning weight arena");
+    }
     const DeviceSpan backing = persistent.alloc_bytes(plan.persistent.bytes, 256);
     decoder = std::make_unique<qwen3_6::DecoderState>(backing, plan.persistent.decoder);
 
@@ -129,11 +130,11 @@ Program::Impl::Impl(const LoadedModelData& model_in, const SequencePlan::Impl& p
     prepare_graphs();
 }
 
-Program::Impl::~Impl() noexcept {
+ProgramImplCore::~ProgramImplCore() noexcept {
     if (device.stream != nullptr) { (void)cudaStreamSynchronize(device.stream); }
 }
 
-void Program::Impl::make_invalid() noexcept {
+void ProgramImplCore::make_invalid() noexcept {
     lifecycle = Lifecycle::Invalid;
     E         = 0;
     S         = 0;
@@ -148,12 +149,12 @@ void Program::Impl::make_invalid() noexcept {
     pending             = {};
 }
 
-void Program::Impl::set_device_i32(Tensor& tensor, std::int32_t value) {
+void ProgramImplCore::set_device_i32(Tensor& tensor, std::int32_t value) {
     CUDA_CHECK(
         cudaMemcpyAsync(tensor.data, &value, sizeof(value), cudaMemcpyHostToDevice, device.stream));
 }
 
-void Program::Impl::ordered_reset() {
+void ProgramImplCore::ordered_reset() {
     decoder->gdn.reset_running(device.stream);
     work.reset();
     set_device_i32(io.pos, 0);
@@ -169,7 +170,7 @@ void Program::Impl::ordered_reset() {
     proposal_ready   = false;
 }
 
-void Program::Impl::prepare_graphs() {
+void ProgramImplCore::prepare_graphs() {
     if (!use_cuda_graph) { return; }
 
     std::size_t free_before = 0;
@@ -293,7 +294,7 @@ void Program::Impl::prepare_graphs() {
     }
 }
 
-void Program::Impl::install_sampling(const ops::SamplingConfig& config) {
+void ProgramImplCore::install_sampling(const ops::SamplingConfig& config) {
     CUDA_CHECK(cudaMemsetAsync(token_counts.data, 0, token_counts.bytes(), device.stream));
     CUDA_CHECK(cudaMemsetAsync(io.stats.data, 0, io.stats.bytes(), device.stream));
     sampling_host = config;
@@ -305,7 +306,7 @@ void Program::Impl::install_sampling(const ops::SamplingConfig& config) {
                                cudaMemcpyHostToDevice, device.stream));
 }
 
-void Program::Impl::copy_tail(const Tensor& source) {
+void ProgramImplCore::copy_tail(const Tensor& source) {
     if (source.dtype != DType::BF16 || source.ne[0] != TextConfig::hidden || source.ne[1] != 1) {
         throw std::logic_error("target tail hidden has an invalid shape");
     }
@@ -314,12 +315,12 @@ void Program::Impl::copy_tail(const Tensor& source) {
     tail_hidden_valid = true;
 }
 
-void Program::Impl::copy_round_token() {
+void ProgramImplCore::copy_round_token() {
     CUDA_CHECK(cudaMemcpyAsync(host_tokens, io.token.data, sizeof(TokenId), cudaMemcpyDeviceToHost,
                                device.stream));
 }
 
-void Program::Impl::validate_licensed_tokens(std::span<const TokenId> tokens) const {
+void ProgramImplCore::validate_licensed_tokens(std::span<const TokenId> tokens) const {
     for (const TokenId token : tokens) {
         if (token < 0 || token >= TextConfig::token_domain) {
             throw std::runtime_error("target returned a token outside the 248077-token domain");
@@ -327,15 +328,16 @@ void Program::Impl::validate_licensed_tokens(std::span<const TokenId> tokens) co
     }
 }
 
-runtime::BeginResult Program::Impl::begin(PreparedPromptData&& prompt, RequestPlan&& request_plan,
-                                          runtime::TransientRegion transient) {
+runtime::BeginResult ProgramImplCore::begin(PreparedPromptData&& prompt, RequestPlan&& request_plan,
+                                            runtime::TransientRegion transient) {
     if (request_plan.impl_ == nullptr) { throw std::invalid_argument("request plan is empty"); }
-    const RequestPlan::Impl& plan = *request_plan.impl_;
+    const RequestPlanImpl& plan = *request_plan.impl_;
     if (lifecycle == Lifecycle::Active || lifecycle == Lifecycle::Pending) {
         throw std::logic_error("begin requires Empty, Resident, or Invalid Program state");
     }
     const std::uint32_t prompt_tokens = static_cast<std::uint32_t>(prompt.token_ids.size());
-    if (prompt_tokens != plan.summary.prompt_tokens || prompt.has_media() != plan.multimodal) {
+    if (prompt_tokens != plan.summary.prompt_tokens ||
+        prompt.has_media() != plan.vision.has_value()) {
         throw std::invalid_argument("request plan does not describe the prepared prompt");
     }
     if (plan.summary.transient_bytes != 0 &&
@@ -426,22 +428,17 @@ runtime::BeginResult Program::Impl::begin(PreparedPromptData&& prompt, RequestPl
         bool mtp_prepared = false;
 
         if (has_media) {
-            const auto vision_start = Clock::now();
-            Tensor visual           = schedule::encode_vision(schedule_state, prompt, transient);
-            device.synchronize();
-            timings.vision_seconds =
-                std::chrono::duration<double>(Clock::now() - vision_start).count();
-
-            const auto text_start = Clock::now();
-            mtp_prepared =
-                schedule::prefill_multimodal(schedule_state, prompt, visual, plan.prepare_mtp);
-            const std::uint32_t final_length =
-                final_prefill_chunk_length(0, prompt_tokens, prefill_chunk, std::nullopt);
-            copy_tail(prefill_hidden.slice(1, static_cast<int>(final_length) - 1, 1));
+            const auto multimodal_start                    = Clock::now();
+            const schedule::MultimodalPrefillResult result = schedule::prefill_multimodal(
+                schedule_state, prompt, *plan.vision, transient, plan.prepare_mtp);
+            mtp_prepared = result.mtp_prepared;
+            copy_tail(prefill_hidden.slice(1, static_cast<int>(result.final_chunk_tokens) - 1, 1));
             copy_round_token();
             device.synchronize();
-            timings.prefill_seconds =
-                std::chrono::duration<double>(Clock::now() - text_start).count();
+            const double combined_seconds =
+                std::chrono::duration<double>(Clock::now() - multimodal_start).count();
+            timings.vision_seconds  = result.vision_seconds;
+            timings.prefill_seconds = std::max(0.0, combined_seconds - result.vision_seconds);
         } else {
             const auto text_start = Clock::now();
             if (had_suffix) {
@@ -528,7 +525,7 @@ runtime::BeginResult Program::Impl::begin(PreparedPromptData&& prompt, RequestPl
     }
 }
 
-runtime::GeneratedRound Program::Impl::decode_round(runtime::RoundBudget budget) {
+runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budget) {
     if (lifecycle != Lifecycle::Active) {
         throw std::logic_error("decode_round requires Active Program state");
     }
@@ -642,7 +639,7 @@ runtime::GeneratedRound Program::Impl::decode_round(runtime::RoundBudget budget)
     }
 }
 
-void Program::Impl::resolve_pending(std::uint32_t accepted_tokens, bool terminal) {
+void ProgramImplCore::resolve_pending(std::uint32_t accepted_tokens, bool terminal) {
     if (lifecycle != Lifecycle::Pending) {
         throw std::logic_error("resolve_pending requires a pending generated round");
     }
@@ -680,28 +677,28 @@ void Program::Impl::resolve_pending(std::uint32_t accepted_tokens, bool terminal
     pending   = {};
 }
 
-void Program::Impl::finish_active() {
+void ProgramImplCore::finish_active() {
     if (lifecycle != Lifecycle::Active) {
         throw std::logic_error("finish_active requires Active Program state");
     }
     lifecycle = Lifecycle::Resident;
 }
 
-void Program::Impl::abort_request() noexcept {
+void ProgramImplCore::abort_request() noexcept {
     if (lifecycle == Lifecycle::Empty || lifecycle == Lifecycle::Invalid) { return; }
     make_invalid();
 }
 
-std::uint32_t Program::Impl::materialized_tokens() const noexcept {
+std::uint32_t ProgramImplCore::materialized_tokens() const noexcept {
     return lifecycle == Lifecycle::Active || lifecycle == Lifecycle::Resident ? E : 0;
 }
 
-MemorySummary Program::Impl::memory_summary() const noexcept {
+MemorySummary ProgramImplCore::memory_summary() const noexcept {
     MemorySummary out;
     out.device      = device.device;
     out.max_context = capacity;
     out.kv_cache = kv_dtype == DType::BF16 ? KvCacheStorage::BFloat16 : KvCacheStorage::Int8Group64;
-    DeviceArena& weights = const_cast<LoadedModelData&>(model).backing.device_arena();
+    DeviceArena& weights = *model.weights_arena;
     out.weights = ArenaMemorySummary{weights.capacity(), weights.used(), weights.peak_used()};
     out.sequence =
         ArenaMemorySummary{persistent.capacity(), persistent.used(), persistent.peak_used()};
@@ -710,7 +707,7 @@ MemorySummary Program::Impl::memory_summary() const noexcept {
     return out;
 }
 
-SpeculativeStats Program::Impl::speculative_stats() const {
+SpeculativeStats ProgramImplCore::speculative_stats() const {
     SpeculativeStats out;
     out.enabled      = mtp_k != 0;
     out.draft_window = mtp_k;
@@ -731,10 +728,10 @@ SpeculativeStats Program::Impl::speculative_stats() const {
     return out;
 }
 
-void Program::Impl::reset_memory_peaks() noexcept {
-    const_cast<LoadedModelData&>(model).backing.device_arena().reset_peak();
+void ProgramImplCore::reset_memory_peaks() noexcept {
+    model.weights_arena->reset_peak();
     persistent.reset_peak();
     work.reset_peak();
 }
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail
+} // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS

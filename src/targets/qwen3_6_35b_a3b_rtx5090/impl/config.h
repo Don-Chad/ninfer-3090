@@ -6,15 +6,13 @@
 
 #include <cstdint>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
+namespace ninfer::targets::qwen3_6_35b_a3b_rtx5090::detail {
 
 struct TextConfig {
-    static constexpr int hidden       = 5120;
-    static constexpr int layers       = 64;
-    static constexpr int intermediate = 17408;
+    static constexpr int hidden       = 2048;
+    static constexpr int layers       = 40;
+    static constexpr int intermediate = 512;
 
-    // The output matrix is padded for the selected kernels. Only token IDs in
-    // [0, token_domain) are tokenizer-addressable and valid sampling results.
     static constexpr int output_rows  = 248320;
     static constexpr int token_domain = static_cast<int>(qwen3_6::kTokenDomain);
 
@@ -22,17 +20,16 @@ struct TextConfig {
     static constexpr int gdn_conv_state_width = gdn_conv_kernel - 1;
     static constexpr int gdn_key_heads        = 16;
     static constexpr int gdn_key_head_dim     = 128;
-    static constexpr int gdn_value_heads      = 48;
+    static constexpr int gdn_value_heads      = 32;
     static constexpr int gdn_value_head_dim   = 128;
 
-    static constexpr int query_heads = 24;
-    static constexpr int kv_heads    = 4;
+    static constexpr int query_heads = 16;
+    static constexpr int kv_heads    = 2;
     static constexpr int head_dim    = 256;
     static constexpr int rotary_dim  = 64;
 
-    static constexpr int full_attention_interval = qwen3_6::kHybridAttentionInterval;
-    static constexpr float rms_epsilon           = 1.0e-6F;
-    static constexpr float rope_theta            = 1.0e7F;
+    static constexpr float rms_epsilon = 1.0e-6F;
+    static constexpr float rope_theta  = 1.0e7F;
 
     static constexpr int key_dim               = gdn_key_heads * gdn_key_head_dim;
     static constexpr int value_dim             = gdn_value_heads * gdn_value_head_dim;
@@ -63,8 +60,8 @@ struct TextConfig {
     [[nodiscard]] static constexpr int gdn_index(int layer) { return qwen3_6::gdn_index(layer); }
 };
 
-static_assert(TextConfig::full_attention_layers() == 16);
-static_assert(TextConfig::gdn_layers() == 48);
+static_assert(TextConfig::full_attention_layers() == 10);
+static_assert(TextConfig::gdn_layers() == 30);
 
 struct VisionConfig : qwen3_6::VisionBackboneConfig {
     static constexpr int output_hidden = TextConfig::hidden;
@@ -77,4 +74,4 @@ inline constexpr std::uint32_t kMaximumMtpDraftTokens = 5;
 inline constexpr std::uint32_t kNativeContext         = 262144;
 inline constexpr std::int32_t kStepStatsCounters      = 9;
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail
+} // namespace ninfer::targets::qwen3_6_35b_a3b_rtx5090::detail

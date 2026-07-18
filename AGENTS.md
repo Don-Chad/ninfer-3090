@@ -106,9 +106,9 @@ intermediate artifacts are excluded unless requested or themselves the deliverab
 
 NInfer is a from-scratch C++/CUDA inference engine for maximum single-GPU inference performance on
 a small set of explicitly registered checkpoint/GPU targets. The current product supports exactly
-`qwen3_6_27b_rtx5090`: Qwen3.6-27B on an NVIDIA GeForce RTX 5090, with Text, image/video Vision,
-MTP, prefix reuse, CLI, OpenAI/Anthropic serving, and measurement through one `.ninfer` Engine
-route.
+two peer targets on NVIDIA GeForce RTX 5090: `qwen3_6_27b_rtx5090` and
+`qwen3_6_35b_a3b_rtx5090`. Both execute Text, image/video Vision, MTP, prefix reuse, CLI,
+OpenAI/Anthropic serving, and measurement through the same public `.ninfer` Engine route.
 
 The current workload is one user, one active request, and one GPU. Continuous batching, additional
 targets, and additional hardware are future work, not current behavior. This is a local,
@@ -116,12 +116,15 @@ single-owner project. Registered models, generated artifacts, and the local work
 Requirements derived from a different workload, trust model, or deployment model are out of scope
 until that product contract is explicitly changed.
 
-The accepted boundary for adding `qwen3_6_35b_a3b_rtx5090` is deliberate family reuse without a
-family execution model. The 27B and 35B-A3B exact targets share one identity-free Qwen3.6 frontend,
-owning prepared-prompt/output-session types, and common passive Vision definitions. They do not
-share Program state, Text/Vision/MTP schedules, Op selection or fusion, workspace policy, or CUDA
-Graphs. Both artifacts embed the same six frontend resources. A Qwen3.6 prepared prompt carries no
-exact-target tag or cross-target mismatch machinery.
+The two targets are peer compile-time Variants of one identity-free Qwen3.6 family runtime. The
+family owns the shared `SequencePlan<Variant>`, `RequestPlan<Variant>`, and `Program<Variant>`
+algorithms; frontend and output semantics; Text/Vision/MTP schedules; state transactions; workspace
+composition; and CUDA Graph capture/replay mechanics. Each exact package separately owns its
+artifact identity and binding, immutable model view, dimensions/storage facts, three closed
+execution-leaf families, graph frontier data, and Program instance bytes. No mutable state or device
+allocation is shared between Programs, neither target is defined as a delta from the other, and
+there is no runtime family selection or target-dependent branch inside family scheduling. Both
+artifacts embed the same six frontend resources, and a prepared prompt carries no exact-target tag.
 
 ## Engineering priorities
 
@@ -149,8 +152,10 @@ routing map, not a mandatory reading list:
   source/build boundaries;
 - `docs/ninfer-container-format.md`, `docs/ninfer-storage-layouts.md`, and
   `docs/ninfer-tensor-formats.md`: generic `.ninfer` contracts;
-- `docs/qwen3.6-27b-ninfer-artifact.md`: exact target inventory, conversion, and binding;
-- `docs/qwen3.6-27b-architecture.md`: Text/Vision/MTP mathematics and state semantics;
+- `docs/qwen3.6-27b-ninfer-artifact.md` and `docs/qwen3.6-35b-a3b-ninfer-artifact.md`: exact target
+  inventories, conversion, and binding;
+- `docs/qwen3.6-27b-architecture.md` and `docs/qwen3.6-35b-a3b-architecture.md`: exact model
+  mathematics, dimensions, and state semantics;
 - `docs/op-development.md`: Op boundary, contracts, implementation ownership, correctness, and
   performance workflow;
 - `docs/serving.md`: CLI, sampling, multimodal, OpenAI, and Anthropic behavior;
@@ -179,14 +184,17 @@ them, but must update the corresponding active authorities and affected implemen
   not its first model caller or demonstrated cross-target reuse.
 - `src/targets/qwen3_6` owns only the Qwen3.6-family invariants shared by the 27B and 35B-A3B
   targets: tokenizer/template and output semantics, media preprocessing and MRoPE prompt
-  construction, the owning prepared-prompt/output-session types, and passive common Vision
-  geometry/binding definitions. It has no target identity, registry entry, Program, execution
-  schedule, Op call/fusion policy, workspace, CUDA Graph, or mutable model state.
-- `src/targets/<target_key>` owns the exact checkpoint/GPU storage profile, LoadedModel, Program,
-  recurrent state, target-width bindings, Text/Vision/MTP schedules, target graph/state policy, and
-  diagnostics. A Qwen3.6 target composes the family leaves above. Target schedules compose
-  repository-internal Ops but do not own mathematical CUDA implementations. Each exact target is
-  one closed execution package, not a family model or generic graph.
+  construction, owning prepared-prompt/output-session types, semantic weight-view schemas, passive
+  Vision definitions, and the fixed planning/Program/Text/Vision/MTP/state/workspace/CUDA-Graph
+  algorithms. It has no target identity, registry entry, artifact binder, target leaf
+  implementation, or storage for a live Program instance.
+- `src/targets/<target_key>` owns the exact checkpoint/GPU package, storage profile, binder,
+  `LoadedModel`, configuration, populated family model-view values and private leaf payloads,
+  diagnostics, graph frontier values, and exactly three execution-leaf families: attention
+  projection, GDN projection/control, and post-mixer. It aliases
+  and instantiates the family runtime types; it does not own a copied Program, Text/Vision/MTP
+  schedule, workspace composition, state transaction, or graph-capture algorithm. Leaf Ops remain
+  implemented under `src/ops`.
 - `src/runtime` owns common contracts, generated-token transaction/publication policy, and the
   public Engine PIMPL. It does not own model mathematics or target state.
 - `src/media/decode` consumes already-owned bytes. URL/path/data acquisition belongs to

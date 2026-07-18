@@ -2,11 +2,8 @@
 
 This document describes the implemented C++ product boundary and repository ownership. Model
 mathematics are defined by the model architecture documents. Persistent numeric formats, layouts,
-container framing, and the Qwen3.6-27B object inventory are defined by their dedicated artifact
-documents.
-
-The Qwen3.6 family boundary recorded here is the accepted organization for registering the planned
-35B-A3B target. It does not claim that the second C++ target has already landed.
+container framing, and both exact Qwen3.6 object inventories are defined by their dedicated
+artifact documents.
 
 ## 1. Product scope
 
@@ -14,14 +11,15 @@ NInfer is a high-performance local inference engine for a small set of compiled 
 checkpoint/GPU targets. The currently registered product is:
 
 ```text
-checkpoint: Qwen3.6-27B
 device:     NVIDIA RTX 5090 (sm_120a)
-target key: qwen3_6_27b_rtx5090
-artifact:   qwen3_6_27b_rtx5090.ninfer
-execution:  one resident sequence, one active request
+variants:   Qwen3.6-27B       -> qwen3_6_27b_rtx5090
+            Qwen3.6-35B-A3B  -> qwen3_6_35b_a3b_rtx5090
+artifacts:  qwen3_6_27b_rtx5090.ninfer
+            qwen3_6_35b_a3b_rtx5090.ninfer
+execution:  one resident sequence, one active request per Engine
 ```
 
-The target implements Text, image/video Vision, MTP, BF16/INT8 KV, sampling, prefix reuse, eager
+Both targets implement Text, image/video Vision, MTP, BF16/INT8 KV, sampling, prefix reuse, eager
 decode, and CUDA Graph decode. Another checkpoint or GPU becomes supported only through another
 explicit target package and registry entry.
 
@@ -41,7 +39,7 @@ source BF16 checkpoint
        immutable LoadedModel
        shared immutable Qwen3.6 Frontend
        reusable request memory
-       one mutable non-movable Program
+       one mutable non-movable qwen3_6::Program<Variant>
   -> common generated-token controller
   -> opaque public Engine
        CLI / server / benchmark
@@ -61,8 +59,8 @@ execution behavior.
 | Neutral text/media decode | `src/text`, `src/media/decode` | Unicode primitives and image/video decoding over owning bytes |
 | Product media acquisition | `src/product/media_acquire` | local-path, HTTP(S), and data-URI acquisition into owning media values |
 | Product prompt input | `src/product/prompt_input` | shared JSON/message parsing into owning public prompt values for product tools |
-| Qwen3.6 family leaves | `src/targets/qwen3_6` | one tokenizer/template/media/MRoPE frontend, owning prepared prompt and output session, passive Vision bindings, hybrid topology, dimension-driven decoder/GDN and round-state layouts/views, pure MTP alignment, and Vision control metadata; no executable model graph or target identity |
-| Exact target | `src/targets/qwen3_6_27b_rtx5090` and, when registered, `src/targets/qwen3_6_35b_a3b_rtx5090` | registered storage signature, exact load bindings, sequence/request plans, Program-owned backing and live state instances, fixed Text/Vision/MTP schedules, Op/fusion choices, graph/lifecycle policy, target diagnostics |
+| Qwen3.6 family runtime | `src/targets/qwen3_6` | frontend/output semantics, semantic weight-view schemas, `SequencePlan<Variant>`, `RequestPlan<Variant>`, `Program<Variant>`, fixed Text/Vision/MTP schedules, lifecycle/state transactions, workspace composition, and CUDA Graph mechanics; no target identity, binder, or live cross-Program state |
+| Exact targets | `src/targets/qwen3_6_27b_rtx5090`, `src/targets/qwen3_6_35b_a3b_rtx5090` | peer package identities, exact artifact bindings/leaf payloads/configuration, populated family model-view values, graph frontier data, three closed execution leaves, explicit family instantiation, and target diagnostics |
 | Registry | `src/targets/registry.*` | closed target selection and complete target construction |
 | Product runtime | `src/runtime` | generated-token budget, round resolution, cancellation, publication, public Engine PIMPL, target lifetime |
 | Serving | `src/serve` | OpenAI/Anthropic schemas, translation, streaming, usage, request logs, and HTTP transport |
@@ -76,41 +74,39 @@ The central placement rule is simple:
   and its complete implementation belongs in the central Op layer even when only one target,
   numerical shape, or GPU currently uses it;
 - tokenizer/template/output semantics, multimodal prompt construction, owning prepared values,
-  passive Vision definitions, and identity-free topology/state-layout/control mechanisms that are
-  identical for the two Qwen3.6 checkpoints belong in the Qwen3.6 family leaves;
-- exact checkpoint binding, fixed layer order, operand/view selection, Vision composition, MTP
-  orchestration, Op selection and fusion, Program backing and live instances, state commit/frontier
-  policy, prefix repair, workspace, and graph policy belong to the exact target;
+  semantic views, fixed layer order, Vision composition, MTP orchestration, Program lifecycle,
+  state commit/frontier policy, prefix reuse, workspace composition, and graph capture/replay that
+  are identical for both Qwen3.6 variants belong in the Qwen3.6 family runtime;
+- exact checkpoint binding, dimensions/storage facts, immutable weight view, graph range values,
+  diagnostics, and the attention-projection, GDN-projection/control, and post-mixer leaves belong to
+  the exact target;
 - stop/output-budget/cancellation/publication policy belongs to common runtime;
 - schemas, URLs/files, protocol translation, and transport belong to product/serve code.
 
 The complete Op boundary and implementation rules are defined by
-[`op-development.md`](op-development.md). The family layer shares stable semantics and
-dimension-driven mechanisms, but no schedule or state policy. Duplication of target computation
-graphs is intentional.
+[`op-development.md`](op-development.md). The family runtime owns one fixed computation/state
+schedule; each Program instantiation still owns independent target-sized bytes and graph objects.
 
 ### 3.1 Qwen3.6 family boundary
 
 The 27B and 35B-A3B packages use the same `qwen3_6::Frontend`, `PreparedPrompt`, and
-`OutputSession`. Both artifacts embed the same six frontend resources. The family frontend owns
-tokenizer/chat-template interpretation, image/video preprocessing, placeholder expansion, MRoPE
-construction, output decoding, and default-stop interpretation. The common Vision portion owns
-shared preprocessing, backbone geometry, immutable binding vocabulary, and prepared-item control
-metadata. The family also owns the four-layer hybrid topology, physical GDN layout/views, the
-composition of core Text/MTP KV with GDN state, graph-stable round-buffer schema, and pure shifted
-MTP alignment. Every differing dimension is explicit in the corresponding specification.
+`OutputSession`; both artifacts embed the same six frontend resources. The family also defines the
+three complete runtime types `SequencePlan<Variant>`, `RequestPlan<Variant>`, and
+`Program<Variant>`. Their algorithms own the hybrid layer traversal, Text root/tail, attention and
+GDN work after projection, post-mixer placement, item-bounded Vision, shifted MTP, request lifecycle,
+prefix/state transactions, workspace scopes, and graph capture/replay.
 
-These state objects are non-owning views into exact-Program memory. They can clear the running GDN
-slot or copy an explicitly named source slot to an explicitly named destination, but they do not
-assign committed/candidate meaning, publish a cache prefix, allocate backing memory, or select an
-execution phase. The exact target binds its target-width Vision merger and decides how all Text,
-Vision, and MTP work is scheduled and fused.
+The Variant boundary is closed. A Variant supplies dimensions/storage facts, immutable semantic
+weight views, graph frontier ranges, and exactly three leaf families: attention projection, GDN
+projection/control, and post-mixer. Main Text and MTP may use distinct payloads or entry points of
+those same leaves. A Variant receives no Program state, lifecycle, positions, KV frontier, Vision
+control, or graph object and cannot add a schedule phase.
 
-This is compile-time code reuse, not family-level target selection. `src/targets/qwen3_6` has no
-`Program`, live sequence owner, frontier/commit policy, layer loop, execution graph, CUDA Graph,
-target registry entry, or fallback path. Both exact packages call their own Text/Vision/MTP
-schedules and may call different Ops or differently fused Ops even where the high-level mathematics
-are related.
+This is compile-time family execution, not runtime family target selection. The registry chooses one
+complete exact package before loading; that package instantiates the family templates with its
+private Variant. Every Program has independent arenas, state, workspace, and CUDA Graph objects.
+There is no sibling-target dependency, per-layer target dispatch, family fallback, or exact-target
+tag in a prepared prompt.
 
 ## 4. Public C++ API
 
@@ -137,7 +133,7 @@ LoadSummary load_summary() const;
 MemorySummary memory_summary() const;
 ```
 
-`PreparedPrompt` is opaque and move-only. For the supported and planned Qwen3.6 routes it contains
+`PreparedPrompt` is opaque and move-only. For both supported Qwen3.6 routes it contains
 one owning `qwen3_6::PreparedPrompt`; it has no exact-target alternative, target tag, provenance
 field, or mismatch check. Preparation may run outside the GPU execution critical section.
 `generate` serializes access to the single Program.
@@ -159,7 +155,7 @@ Engine construction performs the complete load before publishing a usable object
 9. construct reusable request memory and the non-movable Program at stable addresses;
 10. finish target initialization and release reader directory/name/staging state.
 
-The current target requires the exact registered model inventory and RTX 5090. Selection is cold
+Each target requires its exact registered model inventory and RTX 5090. Selection is cold
 construction logic; the generation loop contains no model-name or layout-string dispatch.
 
 `LoadSummary` reports the selected target, load/upload time, file and H2D bytes, staging peak, and
@@ -187,7 +183,7 @@ Memory is divided by lifetime:
 | sequence persistent | `Program` | arena and family-bound Text/MTP KV/GDN views, token ledger, prefix checkpoint |
 | graph stable | `Program` | family-bound round buffers, exact prefill/sampling buffers, host mirrors |
 | request active | `Program` | sampling counters/RNG and active-request controls |
-| request transient | `RequestMemory` | Vision and other request-planned scratch |
+| request transient | `RequestMemory` | one active Vision item's merger output and other request-planned data |
 
 `MemorySummary` exposes weights, sequence, workspace, KV payload, configured capacity, and storage
 mode without exposing internal allocators.
@@ -213,7 +209,8 @@ preprocessing rules without executing the model.
 
 ## 8. Program
 
-The target `Program` is the sole mutable owner of sequence execution. It contains:
+The selected family `Program<Variant>` instance is the sole mutable owner of sequence execution. It
+contains:
 
 - one caller-owned persistent arena and family-bound Text/MTP KV and GDN state views;
 - family-bound graph-stable round buffers plus exact prefill/sampling buffers;
@@ -233,10 +230,10 @@ resolve_pending(accepted count, terminal)
 finish_active / abort_request
 ```
 
-The fixed Text, Vision, and MTP functions under `impl/schedule` are private pieces of Program
-execution. They do not introduce another long-lived sequence owner.
+The fixed Text, Vision, and MTP functions under the family `impl/runtime/` directory are private
+pieces of `Program<Variant>` execution. They do not introduce another long-lived sequence owner.
 
-The target-private Program lifecycle moves among Empty, Resident, Active, Pending, and Invalid. At
+The family Program lifecycle moves among Empty, Resident, Active, Pending, and Invalid. At
 most one generated round is unresolved. `GeneratedRound` is only a synchronous span over
 Program-owned stable token storage; the pending lifecycle remains in Program rather than in an
 owning RAII handle. Planning is read-only; allocation/growth happens before begin; model execution
@@ -248,7 +245,7 @@ The common controller owns the only product generation loop. The begin token and
 ordinary or MTP round use the same resolution sequence:
 
 1. Program returns a `GeneratedRound`, a synchronous view over target-licensed tokens while its
-   target-private state remains Pending;
+   Program-owned provisional state remains Pending;
 2. the target `OutputSession` previews decoding into reusable request-local scratch and returns one
    `OutputDecision` containing the exact accepted prefix and finish reason;
 3. Program resolves that same accepted count through `resolve_pending`;
@@ -274,14 +271,14 @@ frontier or a target checkpoint boundary when identity, tokens, state, and MTP p
 Multimodal prompts currently take the fresh route. Callers may disable reuse through
 `ExecutionOptions`.
 
-The target request plan determines effective output capacity from the prepared prompt and Program
+The family request plan determines effective output capacity from the prepared prompt and Program
 state. CLI/server code does not duplicate target context formulas. An Engine rejects a prepared
 prompt that already exceeds its configured capacity; an output request may finish with
 `ContextCapacity` when the target plan shortens it.
 
 ## 11. Text, Vision, and MTP execution
 
-The target schedules preserve the model architecture document:
+The fixed family schedules preserve the model architecture documents:
 
 - text prefill is chunked at the configured multiple-of-128 chunk size;
 - multimodal preparation runs Vision, merges visual tokens, injects embeddings, and then executes
@@ -290,11 +287,12 @@ The target schedules preserve the model architecture document:
 - MTP prepares a proposal at the active frontier, verifies up to the selected draft window, and
   commits only the controller-approved prefix;
 - the optimized proposal head is selected with `ProposalHead::Optimized` / `--lm-head-draft`;
-- BF16 and INT8 group-64 KV are target-planned storage choices;
-- CUDA Graph capture/replay is target-private and uses Program-lifetime stable addresses.
+- BF16 and INT8 group-64 KV are selected options admitted by each Variant's exact facts;
+- CUDA Graph capture/replay is family-owned, uses Program-lifetime stable addresses, and consumes
+  only each Variant's frontier-range data.
 
-Detailed layer equations and tensor dimensions remain in
-[`qwen3.6-27b-architecture.md`](qwen3.6-27b-architecture.md).
+Detailed layer equations and tensor dimensions remain in the 27B and 35B-A3B architecture
+documents.
 
 ## 12. Product entry points
 
@@ -304,8 +302,9 @@ All product entry points use the public Engine:
   and prints deltas/summaries;
 - `apps/serve` and `src/serve` translate OpenAI/Anthropic requests, prepare/count/generate, and map
   public summaries into protocol responses;
-- `build/bench/ninfer_bench`, implemented under `bench/targets/qwen3_6_27b_rtx5090/`, uses
-  `prepare_tokens` plus `generate` and reports public load, memory, timing, and speculative values.
+- `build/bench/ninfer_bench`, implemented under `bench/targets/qwen3_6_27b_rtx5090/`, uses only the
+  public artifact-selected Engine route and reports load, memory, timing, and speculative values for
+  either registered artifact.
 
 The target-private `ninfer-qwen3_6_27b-dump` diagnostic links `ninfer_engine` and reaches an explicit
 internal target seam for bounded activation manifests. It is not a public Engine method.
@@ -345,8 +344,9 @@ Permanent checks are organized by observable risk:
 
 - `.ninfer` framing, numeric formats, layouts, resources, binding, and real target inventory;
 - Op numerical/state-transition behavior at real supported shapes;
-- family Frontend and runtime-mechanism behavior, target Program state/prefix transactions,
-  Text/Vision/MTP parity, and a real artifact smoke path;
+- family Frontend and runtime-mechanism behavior, Program state/prefix transactions, and one real
+  public-Engine path per target; cross-execution-path generated-token identity is not a numerical
+  contract;
 - OpenAI/Anthropic schema and tool-call behavior;
 - benchmark CLI/report contracts and real performance evidence.
 
@@ -355,7 +355,7 @@ tests do not define throughput requirements or duplicate the generation loop.
 
 ## 15. Current limits
 
-- one compiled checkpoint/GPU target;
+- two compiled checkpoint/GPU targets, both on RTX 5090;
 - one active request and no continuous batching;
 - one GPU;
 - no runtime model graph, dynamic target discovery, or plugin ABI;

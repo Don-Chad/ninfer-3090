@@ -1,13 +1,13 @@
 # NInfer Core Engine Architecture
 
-> Status: accepted and implemented for the registered `qwen3_6_27b_rtx5090` target. The Qwen3.6
-> family-sharing boundary also defines the planned `qwen3_6_35b_a3b_rtx5090` registration; the
-> second C++ target is not yet implemented.
+> Status: accepted and implemented for the registered peer targets `qwen3_6_27b_rtx5090` and
+> `qwen3_6_35b_a3b_rtx5090`.
 >
 > Authority: this document defines the NInfer core engine boundary, exact-target registration
 > and dispatch, load-time construction, memory ownership, Qwen3.6 family boundary,
 > single-request program contract, decode-round transaction, sequence-state invariants, and the
-> division among common infrastructure, central Ops, and target-private schedule/state policy. It
+> division among common infrastructure, the Qwen3.6 family runtime, exact Variants, and central
+> Ops. It
 > also defines the repository/source ownership, internal header visibility, target-package layout,
 > and build dependency direction that enforce those boundaries. It does not define model
 > mathematics, persistent tensor numeric semantics, `.ninfer` binary framing, model-specific object
@@ -22,38 +22,41 @@
 > [`qwen3.6-35b-a3b-architecture.md`](qwen3.6-35b-a3b-architecture.md). The concise implemented-system
 > overview is [`design.md`](design.md); this document is the detailed engine contract.
 
-The native `.ninfer` converter, Python artifact and reference layers, narrow C++ reader, 27B
-binder, exact target package, `Program`, common generation controller, public `Engine`, CLI, server,
-and benchmark route implement this boundary for the registered 27B target.
+The native `.ninfer` converters, Python artifact/reference layers, narrow C++ reader, two exact
+binders/packages, shared `Program<Variant>`, common generation controller, public `Engine`, CLI,
+server, and benchmark route implement this boundary for both registered targets.
 
 ## 1. Decision
 
-NInfer is built around **compiled exact-target programs**, not a generic model `forward()` API.
+NInfer is built around **compiled exact packages and family Program instantiations**, not a generic
+model `forward()` API.
 The unit selected at load time is:
 
 ```text
 exact checkpoint semantics + selected GPU implementation
 ```
 
-Every supported pair supplies one statically compiled target package. That package owns its typed
-weights, persistent sequence state, memory formulas, Text/Vision/MTP schedule, CUDA Graphs,
-prefix-reuse policy, and decode-round implementation. Related exact targets may depend on
-identity-free family leaves for input/output semantics, passive bindings, topology, state
-layouts/views, and pure host control mappings when those invariants are demonstrably identical.
-Common engine code owns only target-independent mechanisms and lifecycle.
+Every supported pair supplies one statically compiled exact package. The package owns identity,
+artifact binding, exact configuration and immutable typed weights, then aliases the Qwen3.6 family
+runtime with one private compile-time Variant. The family `SequencePlan<Variant>`,
+`RequestPlan<Variant>`, and `Program<Variant>` own the fixed Text/Vision/MTP schedule, state
+transactions, workspace composition, prefix policy, and CUDA Graph mechanics. The selected package
+owns the resulting Program instance and all of its bytes. Common engine code owns only
+target-independent mechanisms and the generated-token lifecycle.
 
-The package schedule composes repository-internal Op contracts. Mathematical CUDA implementations,
+The family schedule and closed Variant leaves compose repository-internal Op contracts.
+Mathematical CUDA implementations,
 including exact-shape and selected-device specializations, remain centrally owned by the Op layer;
 their specialization does not create target-private operators.
 
 The stable boundary has three principal parts:
 
-1. a **target package** turns a validated `.ninfer` directory into one immutable, typed loaded
-   product for the actual GPU;
-2. a **family leaf** supplies the shared frontend/output semantics plus identity-free topology,
-   state-layout/view, round-buffer, MTP-alignment, and Vision-control mechanisms;
-3. a **single-request program** owns all mutable GPU and host state for one resident sequence and
-   exposes begin, transactional decode-round resolution, finish, and invalidation operations.
+1. an **exact target package** turns one validated `.ninfer` directory into an immutable typed
+   loaded product and supplies one closed Variant for the actual GPU;
+2. the **Qwen3.6 family runtime** supplies shared frontend/output semantics and the complete fixed
+   planning, Text, Vision, MTP, state, workspace, and graph algorithms;
+3. one **`Program<Variant>` instance** owns all mutable GPU and host state for one resident sequence
+   and exposes begin, transactional decode-round resolution, finish, and invalidation operations.
 
 The common generation controller is compiled around this contract. It owns output limits, stop
 conditions, cancellation, output preview/commit ordering, and publication. It does not own model caches, recurrent
@@ -70,13 +73,13 @@ Engine
 │   ├── typed persistent resources
 │   ├── typed device weights
 │   └── exact checkpoint × GPU implementation
-├── Program                               exactly one resident/active sequence
-│   ├── target Text/MTP caches
-│   ├── target recurrent state
+├── qwen3_6::Program<Variant>             exactly one resident/active sequence
+│   ├── Variant-sized Text/MTP caches
+│   ├── Variant-sized recurrent state
 │   ├── sampling state and stable outputs
 │   ├── graph-stable buffers and graphs
-│   ├── target workspaces
-│   └── target prefix ledger/checkpoints
+│   ├── family-composed workspaces
+│   └── family prefix ledger/checkpoints
 ├── RequestMemory                         grow/reset only before target execution
 └── GenerationController                  one active request
     ├── output budget and stop policy
@@ -103,8 +106,8 @@ This architecture covers:
 - synchronous GPU ownership even when transport and preparation run on other CPU threads;
 - one current optimized path for each registered exact checkpoint and GPU pair.
 
-The design must fit both the existing Qwen3.6-27B path and the planned Qwen3.6-35B-A3B path without
-putting either checkpoint's dimensions or phase vocabulary into the common API.
+The design implements both Qwen3.6-27B and Qwen3.6-35B-A3B without putting either checkpoint's
+dimensions or phase vocabulary into the common public/controller API.
 
 ### 2.2 Explicit non-goals
 
@@ -182,17 +185,24 @@ processed by the target model. Section 11 defines the exact relation.
 ### 3.7 Decode round
 
 A **decode round** is one target operation that returns one or more target-licensed next tokens. It
-may be an ordinary one-token step or a target-private speculative MTP operation. Its provisional
-device mutations are not reusable until the controller resolves the returned round.
+may be an ordinary one-token step or a family-Program-private speculative MTP operation. Its
+provisional device mutations are not reusable until the controller resolves the returned round.
 
-### 3.8 Family leaf
+### 3.8 Qwen3.6 family runtime and Variant
 
-A **family leaf** is a statically linked, identity-free implementation whose complete invariant is
-shared by explicitly registered exact targets. It may own host frontend semantics, owning prepared
-values, passive immutable binding definitions, dimension-driven state layouts/non-owning views, or
-pure control metadata. It cannot register or select a target, own a `Program`, backing allocation,
-live sequence, frontier/commit policy, layer schedule or execution graph, choose Op calls or fusion,
-or provide a family fallback.
+The **Qwen3.6 family runtime** is the statically linked, identity-free implementation shared by the
+two registered exact targets. It owns the family frontend plus the complete
+`SequencePlan<Variant>`, `RequestPlan<Variant>`, and `Program<Variant>` algorithms. It has no
+`model_id`, registry entry, binder, exact dimensions, exact leaf payload, or live state shared
+between Program instances.
+
+A **Variant** is one exact package's private compile-time data and closed execution-leaf contract.
+It supplies exact dimensions/storage facts, immutable semantic weight views, graph frontier ranges,
+and only attention projection, staged GDN projection/control, and post-mixer leaves with their
+workspace contributions. A Variant receives no Program, lifecycle, positions, KV/GDN frontier,
+Vision control, MTP transaction, workspace-composition policy, or CUDA Graph object. It cannot add a
+phase or change family call order. This is compile-time source reuse, not runtime family selection or
+a fallback route.
 
 ## 4. Stable boundaries and ownership
 
@@ -212,7 +222,7 @@ Common engine code owns:
 - output-budget, stop, cancellation, decoding, and publication control;
 - common diagnostics and measurement plumbing whose semantics do not expose target internals.
 
-### 4.2 Target package owns semantics and policy
+### 4.2 Exact target package owns identity, binding, and the closed Variant
 
 Each target package owns:
 
@@ -220,16 +230,18 @@ Each target package owns:
 - accepted shape, format, layout, encoding, and actual-GPU combinations;
 - typed weight roles, fused views, tied bindings, and device descriptors;
 - physical output-row validity and enforcement of the applicable family token domain;
-- final persistent/transient memory composition and admission for that target;
-- Text, Vision, MoE, recurrent, MTP, sampling, and final-head schedule;
-- Program-owned backing and bound KV/recurrent state instances, published cache prefixes,
-  snapshot meanings, and commit rules;
-- prefix-reuse matching, checkpoints, restoration, and invalidation;
-- CUDA Graph choice, graph-stable bindings, warmup, and recapture policy;
-- decode-round maximum yield and context-tail fallback;
-- target-specific counters and detailed diagnostics.
+- exact dimensions, counts, limits, scales, codec/layout facts and option admission constants;
+- immutable family semantic weight views plus private payloads for the three closed leaf families;
+- attention-projection, staged GDN-projection/control, and post-mixer leaf implementations and
+  their matching workspace-byte contributions;
+- ordinary/MTP graph frontier-range data; and
+- exact target labels and diagnostics adapters.
 
-### 4.3 Qwen3.6 family leaves own shared semantics
+The package owns the selected `Program<Variant>` object and therefore its bytes, but it does not
+reimplement the Program type, lifecycle, schedule, state policy, workspace composition, or graph
+capture.
+
+### 4.3 Qwen3.6 family runtime owns the fixed algorithms
 
 The Qwen3.6 family layer owns exactly the invariants shared by 27B and 35B-A3B:
 
@@ -239,19 +251,39 @@ The Qwen3.6 family layer owns exactly the invariants shared by 27B and 35B-A3B:
   `OutputSession` state;
 - image/video validation and preprocessing, placeholder expansion, token types, MRoPE positions,
   `rope_delta`, and the owning `PreparedPrompt` representation;
-- the shared Vision-backbone geometry, passive immutable-binding vocabulary, and prepared-item
-  position/interpolation/scatter control metadata;
-- the four-layer `[GDN,GDN,GDN,full attention]` topology mapping;
-- dimension-driven GDN layout/views and the composition of core Text KV, optional MTP KV, and GDN
-  storage;
-- the graph-stable generated-round buffer schema and pure shifted-MTP/visual-overlap mapping.
+- the shared Vision-backbone geometry, passive immutable-binding vocabulary, prepared-item
+  position/interpolation/scatter control, and item-bounded Vision execution;
+- the four-layer `[GDN,GDN,GDN,full attention]` topology mapping, layer traversal, offset pre-norm,
+  residual ordering, fixed post-mixer placement, and Text root/tail;
+- full attention after projection: Q/K offset RMSNorm, RoPE, GQA append/attention, sigmoid gate,
+  output projection, and residual update;
+- GDN after projection: causal convolution, Q/K/V extraction, normalization, gated-delta recurrence,
+  gated RMSNorm, output projection, and residual update;
+- prompt prefill, ordinary decode, target verification, shifted MTP prefill/proposal/accept/rebuild,
+  context-tail fallback, and returned-round assembly;
+- persistent/request/workspace layouts, graph-stable buffers, and Variant-sized KV/GDN/MTP state;
+- `Empty`, `Active`, `Pending`, `Resident`, and `Invalid` lifecycle, frontier/slot transactions,
+  prefix matching/restoration, reset/abort, and diagnostics/timing aggregation; and
+- CUDA Graph stable controls, warmup, capture, replay, range selection, and coverage validation.
 
-The 2048- versus 5120-wide Vision merger binding remains an exact-target fact. More generally, a
-family leaf may describe values, layouts, views, explicit storage copies/resets, and host control
-metadata but never decides when or how model work executes. Text, Vision, and MTP call order,
-selected Ops, fusion boundaries, workspace reuse, live recurrent/MoE state and its semantic
-frontiers, and CUDA Graph policy remain separately implemented in each exact target even when
-high-level architecture is related. Family state/control sources do not depend on the Op layer.
+The 2048- versus 5120-wide Vision merger binding remains an exact-target fact. The Variant supplies
+the associated immutable view; the family owns when and how Vision is executed and consumed. The
+family also owns all allocations around a leaf, all surrounding Op calls, and the maximum-of-scoped
+workspace composition. The Variant may reserve only its leaf-local workspace and may choose Op
+implementations only inside a closed leaf.
+
+The closed leaf entry points are fixed:
+
+| Leaf family | Family-fixed entry points | Variant-owned difference |
+|---|---|---|
+| attention projection | main full projection; MTP full projection; MTP KV-only aligned prefill; MTP final-column Q/gate-only projection | split versus fused physical parents and exact packed bindings |
+| staged GDN projection/control | pre-convolution QKV plus optional output gate; post-convolution FP32 `g/beta`; post-recurrence output gate or no-op | 27B split QKV/control/Z calls versus 35B fused QKV/Z and fused A/B calls |
+| post mixer | one main-layer call and one complete-MTP-layer call, each updating the residual | 27B dense SwiGLU versus 35B routed/shared sparse MoE |
+
+The family always allocates the GDN output-gate tensor before the first stage and calls all three
+GDN entry points in that order. A fused Variant fills it in the first stage and makes the third a
+no-op; a split Variant fills it in the third stage. This preserves one shared convolution/control/
+recurrence schedule without imposing one physical projection layout.
 
 Both Qwen3.6 packages alias the same `Frontend`, `PreparedPrompt`, and `OutputSession` types. The
 prepared value has no target alternative, target tag, load-instance provenance, or cross-target
@@ -276,20 +308,19 @@ controller from modifying speculative caches.
 ### 4.5 Ownership rule
 
 An owner belongs to the lowest layer that can state its complete invariant. Shared Qwen3.6
-frontend/position semantics, hybrid topology, dimension-driven state layouts/views, round schema,
-alignment, and passive Vision definitions/control belong to the family leaf. Exact dimensions,
-target-width weight-role binding, operand/view selection, Program backing, recurrent/MTP instance
-lifetime and semantic frontiers, Vision execution composition, prefix policy, and graph capture are
-exact-target-private. Bytes, alignment, device/storage lifetime, and committed-output mechanisms
-belong to lower common layers.
+frontend/position semantics, hybrid schedule, dimension-driven layouts/views, Program state,
+Text/Vision/MTP execution, workspace composition, and graph mechanics belong to the family runtime.
+Exact dimensions, target-width weight-role binding, leaf operand/payload selection, leaf-local
+fusion/workspace, and graph frontier-range values belong to the exact Variant. Generic bytes,
+alignment and device/storage lifetime belong to lower common layers; committed-output policy belongs
+to the common generation controller.
 
 A host-callable tensor or explicit local-state transformation is classified separately by the Op
 rule: if its complete values and effects can be defined from explicit arguments without schedule
 context, its contract and every implementation are centrally owned. One caller, an exact model
 shape, or one selected GPU does not require a second-target reuse proof. Mathematical state
-transitions remain Ops; family storage views only bind/copy/clear explicitly identified bytes.
-Schedules, live sequence ownership, and state policy are deliberately excluded from the Qwen3.6
-family layer even when some source structure resembles another family target.
+transitions remain Ops. The family runtime composes those Ops and owns one Program's live state; it
+does not own the mathematical kernel implementations or exact artifact bindings.
 
 ## 5. Closed target registry and dispatch
 
@@ -307,10 +338,10 @@ complete directory and validates every canonical name, kind, shape, format/layou
 encoding before payload-sized allocation. Offsets and object-array order are not package keys beyond
 the generic container geometry rules.
 
-The current registry has one alternative. Adding another target extends the same explicit selection
-sequence; it does not introduce a separate runtime profile object or a profile field in JSON. An
-unknown model, wrong GPU, unavailable device capability, or unsupported storage signature is a load
-error before payload-sized allocation.
+The current registry has two alternatives, one for each registered Qwen3.6 peer Variant. Adding
+another target extends the same explicit selection sequence; it does not introduce a separate
+runtime profile object or a profile field in JSON. An unknown model, wrong GPU, unavailable device
+capability, or unsupported storage signature is a load error before payload-sized allocation.
 
 ### 5.2 Internal static package contract
 
@@ -326,9 +357,10 @@ struct SomeQwen3_6CheckpointRtx5090 {
     using Frontend = qwen3_6::Frontend;
     using PreparedPrompt = qwen3_6::PreparedPrompt;
     using OutputSession = qwen3_6::OutputSession;
-    struct SequencePlan;
-    struct RequestPlan;
-    class Program;
+    struct Variant;
+    using SequencePlan = qwen3_6::SequencePlan<Variant>;
+    using RequestPlan = qwen3_6::RequestPlan<Variant>;
+    using Program = qwen3_6::Program<Variant>;
 
     static void preflight(DeviceContext&, const EngineOptions&);
     static LoadPlan plan_load(artifact::Binder&);
@@ -355,13 +387,14 @@ The type names are abbreviated in this conceptual listing; they are not permissi
 physical `package.h` to contain only forward declarations. Every target type that composition code
 must create, store, destroy, or call while instantiating `LoadedProduct<T>` and the whole generation
 loop is a complete contract-facing facade in that header. Its method signatures and object lifetime
-are visible, while target-private weights, state, schedules, and graph/lifecycle policy remain
-behind an opaque implementation owned by the target library. Central Op implementation selection
-remains behind the Op contracts. Section 19 defines the corresponding
+are visible, while exact immutable weights and Variant leaf payloads remain behind the exact
+implementation and the family Program implementation remains behind its opaque template facade.
+Central Op implementation selection remains behind the Op contracts. Section 19 defines the corresponding
 export/implementation split.
 
-The three Qwen3.6 aliases above are the intentional family seam. They do not imply a package base
-class: `LoadPlan`, `LoadedModel`, sequence/request plans, and `Program` remain exact-target types.
+The three Qwen3.6 aliases above are the intentional family-runtime seam. They do not imply a package
+base class: `LoadPlan` and `LoadedModel` remain exact-target types, while sequence/request plans and
+Program are exact compile-time instantiations of the one family implementation.
 
 `preflight` performs cheap target-owned device and option checks. `plan_load` consumes and validates
 the complete artifact directory. It does not receive feature or quality toggles: one package
@@ -555,8 +588,8 @@ both total bytes and offsets. A target must not maintain one approximate `defaul
 and a separate allocation order that can drift.
 
 All element counts, products, roundups, and sums are checked before allocation. Common code supplies
-the arithmetic and arena mechanism; the target supplies every model-dependent dimension and
-lifetime decision.
+the arithmetic and arena mechanism; a Qwen3.6 Variant supplies model dimensions and closed-leaf
+workspace contributions while the family runtime fixes their lifetimes and composition.
 
 CUDA-driver graph-executable allocations are not fake entries in this layout because NInfer does
 not control their offsets. `SequencePlan` reserves an explicit target/toolchain allowance, then
@@ -574,7 +607,7 @@ NInfer distinguishes five lifetimes:
 | sequence persistent | `Program` | KV, GDN/recurrent state, logical ledger, prefix checkpoints |
 | graph stable | `Program` | graph inputs/outputs, scalar controls, host mirrors, captured workspaces |
 | request-active values | `Program` storage | sampling RNG/counters and active-request controls, reset at begin |
-| request transient | `RequestMemory` region | media staging and uncaptured prefill scratch |
+| request transient | `RequestMemory` region | one active Vision item's merged output |
 
 Memory may be physically coalesced only when lifetime, alignment, destruction, and address-stability
 requirements remain correct. The owner does not change merely because two regions share an arena.
@@ -582,19 +615,20 @@ requirements remain correct. The owner does not change merely because two region
 ### 7.3 Sequence planning
 
 `plan_sequence` validates a requested context against exact target limits and actual remaining device
-memory, then returns the one complete plan used by `create_program`. Common code must not calculate
-KV bytes, GDN slots, MTP snapshots, MoE workspace, Vision workspace, or head buffers.
+memory, then returns the one complete plan used by `create_program`. The Qwen3.6 family planner
+calculates KV/GDN/round layouts and the maximum of its Text, MTP, leaf-contributed, sampling, and
+item-bounded Vision workspace regimes from Variant dimensions.
 
 The plan identifies:
 
 - effective materialized execution capacity `C_exec` and target-native limits;
 - persistent and graph-stable layouts;
 - uncaptured scratch requirements and allowed growth policy;
-- feature dependencies required by the one current target route;
+- feature dependencies required by the selected registered target route;
 - graph shapes and stable addresses that must exist before capture;
-- target-private prefix-checkpoint capacity.
+- Program-private prefix-checkpoint capacity.
 
-If the one supported target route does not fit, construction fails. It does not silently disable a
+If the selected registered target route does not fit, construction fails. It does not silently disable a
 native component, reduce quality, offload, or choose a generic fallback.
 
 `SequencePlan` exposes `C_exec` as a bounded common diagnostic while retaining every model-specific
@@ -614,14 +648,14 @@ auto first = program.begin(
     std::move(prompt), std::move(plan), request_memory.region());
 ```
 
-`RequestPlan` is target-private, move-only, and self-contained. It may record an intended
-prefix-reuse path, required media workspace, effective output capacity, or other precomputed
-decisions as owning values and checked indices. It may not borrow from `PreparedPrompt`,
+`RequestPlan<Variant>` is family-runtime-private, move-only, and self-contained. It may record an
+intended prefix-reuse path, required one-item merger-output bytes, effective output capacity, or
+other precomputed decisions as owning values and checked indices. It may not borrow from `PreparedPrompt`,
 `RequestMemory`, a temporary descriptor, or mutable Program storage; `begin` receives the real
 owners directly. In the current serialized one-request route, planning and `begin` run under the
 same Engine generation lock, so no common plan-version protocol is required.
 
-Every target-private plan provides a const `summary()` returning the common
+Every family request plan provides a const `summary()` returning the common
 `RequestPlanSummary`. The controller copies that bounded value before moving the plan into `begin`;
 it never recomputes or substitutes the requested output limit afterward.
 
@@ -647,7 +681,7 @@ allocation.
 
 ### 8.1 Frontend boundary
 
-The frontend implementation belongs to the Qwen3.6 family leaf and is constructed from the
+The frontend implementation belongs to the Qwen3.6 family runtime and is constructed from the
 resources retained by the loaded exact checkpoint. It owns:
 
 - tokenizer and detokenizer behavior;
@@ -701,7 +735,7 @@ Common code sees a move-only opaque envelope conceptually carrying:
 - one opaque owning `qwen3_6::PreparedPrompt`.
 
 There is no prepared-value variant, exact-target tag, load-instance identity, or target-mismatch
-branch. The active Engine's exact-target Program consumes the family value and applies only its
+branch. The active Engine's `Program<Variant>` consumes the family value and applies only its
 ordinary request/capacity planning.
 
 ### 8.3 Ownership and concurrency of preparation
@@ -859,7 +893,7 @@ the policy itself is not passed to the Program.
 
 ### 9.2 Plans and observable summaries
 
-The detailed `RequestPlan` remains target-private. Common code receives a bounded summary:
+The detailed `RequestPlan<Variant>` remains family-runtime-private. Common code receives a bounded summary:
 
 ```cpp
 struct RequestPlanSummary {
@@ -925,8 +959,8 @@ domain are distinct checkpoint facts. A common `vocab_size` field must not colla
 
 ### 10.1 Required coarse operations
 
-For a package `T`, its program provides the following exact-target operations to the templated
-controller:
+For a package `T`, its `qwen3_6::Program<T::Variant>` alias provides the following operations to the
+templated controller:
 
 ```cpp
 class T::Program {
@@ -956,17 +990,17 @@ public:
 };
 ```
 
-The lifecycle state and `E`/`S` counters are target-private. Common code receives only the token
-view and calls the coarse resolution operations; it does not inspect or mutate target state. The
-narrow `materialized_tokens()` query exists for target diagnostics rather than controller policy.
+The lifecycle state and `E`/`S` counters are family-Program-private. Common code receives only the
+token view and calls the coarse resolution operations; it does not inspect or mutate Program state.
+The narrow `materialized_tokens()` query exists for diagnostics rather than controller policy.
 Section 11 defines the required Active and Resident relationships.
 
 `T::RequestPlan` is required to expose `const RequestPlanSummary& summary() const noexcept`. No
 other part of its representation is common.
 
-The exact target may have any number of private methods. The common controller cannot call them.
+The family Program may have any number of private methods. The common controller cannot call them.
 In particular, `target_verify`, `mtp_propose`, `run_vision`, cache rewind, recurrent-slot selection,
-and graph launch are not common operations.
+and graph launch are not controller operations and are not Variant callbacks.
 
 ### 10.2 `begin`
 
@@ -975,7 +1009,7 @@ it may:
 
 - fully reset sequence state;
 - append to an exact reusable prefix;
-- restore a target-private prefix checkpoint and continue;
+- restore a Program-private prefix checkpoint and continue;
 - run native Vision and merger work;
 - scatter composed embeddings and checkpoint-native positions;
 - prefill Text state in chunks and retain every target hidden column required by MTP;
@@ -1008,7 +1042,7 @@ struct RoundBudget {
 ```
 
 The target must not return more tokens than the budget. If its speculative graph can yield a wider
-batch than the remaining output budget or safe context tail, it uses a target-private narrower path,
+batch than the remaining output budget or safe context tail, it uses a family-owned narrower path,
 normally ordinary decode. A program never relies on the controller silently dropping a suffix.
 
 ### 10.4 Stable token return storage
@@ -1030,7 +1064,7 @@ The common controller relies on these exact failure guarantees:
 - `begin` follows Section 10.2, never exposes a partial new identity, and before propagating any
   recoverable exception it quiesces or safely cancels all asynchronous access to its moved
   `PreparedPrompt` and `TransientRegion` inputs;
-- `decode_round` enters target-private Pending only when all licensed output is ready; any recoverable
+- `decode_round` enters Program-private Pending only when all licensed output is ready; any recoverable
   exception after mutation but before returning a round leaves Program `Invalid` and leaves no
   untracked asynchronous access;
 - `resolve_pending` accepts `1 <= accepted_tokens <= produced`; Continue additionally requires the
@@ -1119,7 +1153,7 @@ E <= S <= E + 1
 ```
 
 `S == E + 1` means the final accepted logical token remains unprocessed but is part of the exact
-sequence. `S == E` means target-private finalization processed/canonicalized through the last
+sequence. `S == E` means Program-private finalization processed/canonicalized through the last
 accepted logical token. Both are legal; prefix reuse must know which form it holds.
 
 For a decode round starting from Active `(E, S = E + 1)` and terminally accepting exactly `m`
@@ -1152,14 +1186,14 @@ lifetime rules rather than preserving an unused single-request generation counte
 
 ### 11.4 Prefix reuse
 
-Prefix reuse is a target-private optimization over exact prepared-prompt identity. Token IDs alone
+Prefix reuse is a family Program optimization over exact prepared-prompt identity. Token IDs alone
 are insufficient when media content, position construction, templates, or other composed embeddings
 can differ.
 
 A target may reuse only:
 
 - an execution frontier it knows how to continue exactly; or
-- an explicit target-owned checkpoint whose full KV/recurrent/MTP/position state is consistent.
+- an explicit Program-owned checkpoint whose full KV/recurrent/MTP/position state is consistent.
 
 The target must atomically derive any requested boundary from the incoming prepared prompt and the
 resident ledger. Common code does not call a separate mutable `set_boundary()` before prefill.
@@ -1171,7 +1205,7 @@ reuse attempt cannot fall through with partially rewound state.
 
 ### 12.1 States
 
-The required target-private lifecycle is:
+The required family Program lifecycle is:
 
 ```text
 Empty ─────────────── begin success ──────────────> Pending
@@ -1186,7 +1220,7 @@ Active ────────────── finish_active ─────�
 Active/Pending/Resident ── abort_request ─────────> Invalid
 ```
 
-Only one pending round may exist. Pending is a target-private lifecycle state, not a common handle.
+Only one pending round may exist. Pending is a Program-private lifecycle state, not a common handle.
 `decode_round` is illegal outside `Active`; `begin` is illegal while active or pending;
 `finish_active` is illegal while a round is pending.
 
@@ -1258,7 +1292,7 @@ licensed output prefix for this result but makes the sequence non-reusable.
 
 ### 13.3 Provisional state
 
-While Program is Pending, target-private state may include:
+While Program is Pending, Program-private state may include:
 
 - verification KV entries and recurrent snapshots;
 - accepted-count and target-token buffers;
@@ -1434,8 +1468,9 @@ versus MTP, or exact checkpoint identity. Those branches occur within the select
 address referenced by a CUDA Graph remains stable for the program lifetime. Updating request values
 means copying into stable control buffers, not replacing pointers captured by a graph.
 
-Graph ownership, warmup, capture eligibility, recapture, and tail fallback are target-private.
-Common code only invokes `begin` and `decode_round`.
+Graph ownership, warmup, capture eligibility, replay selection, and tail fallback are family-owned.
+Only the ordered frontier-range data is Variant-owned. Common code invokes only `begin` and
+`decode_round`.
 
 ### 15.2 Graph completeness and execution intervals
 
@@ -1483,8 +1518,9 @@ host-allocation guarantee.
 
 ## 16. Concrete fit: Qwen3.6-27B
 
-This section records how the registered 27B package realizes the contract. Its concrete types remain
-target-private and do not become common engine API.
+This section records how the registered 27B package instantiates the family contract. Its exact
+configuration, bindings, leaf payloads, and diagnostics remain target-private and do not become
+common engine API.
 
 ### 16.1 Loaded product
 
@@ -1500,7 +1536,7 @@ the same lifetime as the bound artifact.
 
 ### 16.2 Program state
 
-The 27B `Program` owns:
+The selected 27B `Program<Variant27B>` instance owns:
 
 - one persistent arena and a family `DecoderState` bound into it: 16 full-attention Text KV caches,
   the optional MTP KV cache, and 48 GDN convolution histories/FP32 recurrent matrices with the
@@ -1511,12 +1547,12 @@ The 27B `Program` owns:
 - position/rope controls and multimodal continuation state;
 - sampling controls, occurrence counters, licensed output buffer, and MTP counters;
 - explicit Text/MTP valid-prefix lengths and MTP proposal readiness;
-- target-private ordinary/aligned and MTP frontier-tier graphs plus every graph-stable tensor;
+- family-owned ordinary/aligned and MTP frontier-tier graphs plus every graph-stable tensor;
 - prefill, verification, proposal, head, and Vision workspaces with their lifetimes separated.
 
-The family values are non-owning physical views. They are part of this one Program ownership unit
-because only the 27B target assigns valid lengths, running/committed slot meaning, prefix identity,
-proposal readiness, and round commit semantics.
+The family values are non-owning physical views bound into this one Program's arenas. The shared
+family algorithm assigns valid lengths, running/committed slot meaning, prefix identity, proposal
+readiness, and round commit semantics using the 27B dimensions supplied by `Variant27B`.
 
 ### 16.3 Fresh and reused begin
 
@@ -1542,8 +1578,9 @@ alone never authorizes multimodal reuse.
 
 The implemented path carries Vision-merger composed columns into shifted MTP inputs instead of
 reconstructing image/video placeholder columns through raw token embedding lookup. The native Python
-reference implements the same composed-embedding lookahead and provides supplementary behavioral
-parity. It does not replace the independent mathematical oracle of any participating Op.
+reference documents the same composed-embedding lookahead, but generated-token identity between
+different numerical/execution paths is not an acceptance contract. Independent mathematical Op
+oracles remain the numerical authority.
 
 ### 16.4 Decode round
 
@@ -1556,15 +1593,16 @@ A batch is returned as one `GeneratedRound` and resolved once through `resolve_p
 prevents the controller from exposing one token at a time while silently retaining an unresolved
 speculative suffix.
 
-The current 27B target deliberately makes a terminal strict prefix of an MTP batch non-reusable. It
-accepts that logical output prefix for the user-visible result, but calls the target-private invalid
-path instead of implementing KV/GDN/MTP repair for an uncommon terminal event. It never promises
-that generation can continue from an arbitrary intermediate MTP proposal state.
+The family Program deliberately makes a terminal strict prefix of an MTP batch non-reusable for
+both Variants. It accepts that logical output prefix for the user-visible result, but takes the
+Program invalid path instead of implementing KV/GDN/MTP repair for an uncommon terminal event. It
+never promises that generation can continue from an arbitrary intermediate MTP proposal state.
 
-For the 27B MTP result `[accepted drafts..., correction/bonus]`, let `n = accepted_drafts + 1`.
+For a Qwen3.6 MTP result `[accepted drafts..., correction/bonus]`, let
+`n = accepted_drafts + 1`.
 The required resolved states are:
 
-| Resolution | Materialized `E_f` | Logical `S_f` | 27B state consequence |
+| Resolution | Materialized `E_f` | Logical `S_f` | family Program consequence |
 |---|---:|---:|---|
 | full Continue of `n` | `E + n` | `E + n + 1` | final correction/bonus is the new frontier |
 | terminal `m < n` | not exposed | not exposed | `Invalid`; exact output prefix is returned but no sequence identity is reusable |
@@ -1572,7 +1610,7 @@ The required resolved states are:
 
 Advertising the Resident form requires agreement among the Program's `text_kv_valid` and
 `mtp_kv_valid` prefixes, device Text position, decode RoPE position
-(`rope_pos = text_pos + rope_delta` for this target), GDN initial slot, logical token mirror, MTP
+(`rope_pos = text_pos + rope_delta`), GDN initial slot, logical token mirror, MTP
 carry/proposal reachability, graph control scalars, and any still-active sampler state. Repairing
 only one prefix counter and the GDN slot is insufficient.
 
@@ -1582,9 +1620,10 @@ them continuable, because partial Continue is forbidden and the next request rei
 must not expose their suffix-contaminated values as active state. A full Continue must account for
 exactly all `n` accepted logical outputs.
 
-The 27B target has the same split token domain as 35B: 248320 output rows but only 248077
-tokenizer-addressable IDs. The implementation applies the valid-sample/decode domain to the first target
-sample, ordinary decode, every MTP target correction/bonus, and any optimized draft-head remap.
+Both Variants have the same split token domain: 248320 output rows but only 248077
+tokenizer-addressable IDs. The family implementation applies the valid-sample/decode domain to the
+first target sample, ordinary decode, every MTP target correction/bonus, and any optimized
+draft-head remap.
 Validation against 248320 matrix rows alone is not sufficient.
 
 ### 16.5 Public product fit
@@ -1594,11 +1633,11 @@ The public API exposes owning input/result values and the model-neutral operatio
 queries. Target phase methods, checkpoint memory formulas, caches, and Op-facing sampling state
 remain internal. CLI, server, and product benchmarks use this same public route.
 
-## 17. Required fit: Qwen3.6-35B-A3B
+## 17. Concrete fit: Qwen3.6-35B-A3B
 
-The planned 35B-A3B checkpoint is the second concrete design constraint that prevents the common
-contract from becoming renamed 27B bookkeeping. This section is a required fit analysis, not a
-claim that the target is implemented.
+The registered 35B-A3B peer Variant is the second concrete implementation of the family runtime. It
+prevents the family contract from becoming renamed 27B bookkeeping while avoiding a second copy of
+the shared schedule.
 
 ### 17.1 Different loaded structure
 
@@ -1613,16 +1652,16 @@ does not gain an `experts` field or a generic layer graph.
 
 ### 17.2 Different state and workspace
 
-The 35B program owns ten Text KV caches, thirty GDN state sets, one MTP KV cache, MoE routing and
-grouping workspaces, and its own graph-stable controls. Workspace peaks and reuse opportunities differ
-from dense 27B and are calculated by the 35B package, not a common formula parameterized by layer
-counts.
+The 35B `Program<Variant35BA3B>` instance owns ten Text KV caches, thirty GDN state sets, one MTP KV
+cache, MoE routing/grouping workspace, and graph-stable controls. The family composes their lifetimes
+from exact dimensions and the Variant's sparse-MoE leaf workspace contribution; it does not use a
+runtime model/config branch or a 27B-derived byte delta.
 
 ### 17.3 Composed MTP input
 
 The checkpoint reuses the target embedding for MTP, but a multimodal placeholder's shifted MTP
 input must use the same composed embedding column produced by Vision merger replacement—not a fresh
-raw token-table lookup. The 35B target therefore carries a private alignment value conceptually like:
+raw token-table lookup. The family runtime carries an internal alignment value conceptually like:
 
 ```cpp
 struct MtpAlignedBatch {
@@ -1632,8 +1671,8 @@ struct MtpAlignedBatch {
 };
 ```
 
-This is internal schedule data. Putting token IDs alone into a common MTP API would be incorrect for
-the multimodal checkpoint.
+This is family-runtime-private schedule data. Putting token IDs alone into a controller or Variant
+MTP API would be incorrect for the multimodal checkpoint.
 
 For prompt states `h_0..h_n` and positions `p_0..p_n`, Text first samples `x_(n+1)`. MTP then
 causally prefills the complete alignment:
@@ -1651,13 +1690,13 @@ columns or stream an exactly aligned MTP prefix with the one-column carry; runni
 last prompt column is invalid. When any shifted source column is an image/video placeholder, its
 composed merger embedding—not the raw placeholder row—is used.
 
-The shared Qwen3.6 prepared-prompt contract and the target-private begin contract cover the native
+The shared Qwen3.6 prepared-prompt contract and family `begin` implementation cover the native
 image and video paths:
 multiple media items, temporal video slices/timestamps, placeholder expansion, three-axis positions,
-token types, `rope_delta`, and isolation/alignment across media and text. These remain 35B-private
-execution concerns, while their owning host representation is shared with 27B. Image, video,
-multi-item, and cross-chunk cases are required parity gates rather than one generic “Vision works”
-check.
+token types, `rope_delta`, and isolation/alignment across media and text. Their exact merger width
+comes from `Variant35BA3B`; item ordering, lifetime, scatter, and shifted-MTP consumption remain one
+family execution algorithm. Numerical validation uses the participating Ops' independent oracles,
+not exact generated-token equality with another runtime path.
 
 ### 17.4 Token domains
 
@@ -1668,7 +1707,7 @@ treats all head rows as decodable tokens.
 
 ### 17.5 Same stable controller contract
 
-Despite different internal layers, both targets can:
+Despite different dimensions and leaf implementations, both registered targets:
 
 - consume the shared Qwen3.6 prepared prompt;
 - plan memory and effective output capacity before mutation;
@@ -1678,14 +1717,13 @@ Despite different internal layers, both targets can:
 - maintain the same `E`/`S` frontier invariant;
 - expose target-independent generation summaries.
 
-That is the common interface the 35B implementation must demonstrate. No lower-level phase needs to
-be public.
+That is the implemented common interface. No lower-level phase is public or Variant-extensible.
 
 ## 18. Execution layers below the target package
 
-Target-private scheduling does not make mathematical computation target-owned. NInfer separates the
-target schedule, central Op contracts, and their CUDA implementations by responsibility rather than
-by reuse count.
+Family scheduling does not make mathematical computation family-owned. NInfer separates the fixed
+Qwen3.6 schedule, closed Variant leaves, central Op contracts, and CUDA implementations by complete
+semantic responsibility rather than by reuse count.
 
 ### 18.1 L0 mechanisms
 
@@ -1718,12 +1756,12 @@ wrapper; another target may later use the same contract and implementation witho
 
 An Op does not own model layer order, operand/view selection, prompt chunking, MTP round
 orchestration, cache-frontier policy, prefix checkpoints, or graph lifetime. Those remain in the
-target Program and schedule. The complete definition, contract-comment format, source layering,
+family Program and schedule. The complete definition, contract-comment format, source layering,
 and admission procedure are authoritative in [`op-development.md`](op-development.md).
 
 ### 18.3 Boundary decision
 
-A target-callable device transformation is admitted as an Op when its complete value/state effect
+A family/Variant-callable device transformation is admitted as an Op when its complete value/state effect
 can be described and verified from explicit arguments. If it still requires a model phase, weight
 role, request frontier, commit decision, or instance-lifetime policy, it is schedule composition
 rather than an Op. If it is only a tile, partial reduction, codec, launcher, or device helper under a
@@ -1753,20 +1791,18 @@ Its source key uses `<checkpoint_key>_<device_key>`, for example
 at runtime. The package still declares and validates the registered `.ninfer` `model_id`, actual
 device, and complete object signatures through compiled code.
 
-`src/targets/qwen3_6` is the one deliberate family-leaf directory. It owns the shared frontend,
-passive common Vision definitions/bindings, hybrid topology, dimension-driven decoder/GDN and round
-layouts/views, pure MTP alignment, and Vision control from Section 4.3. It is not a target package:
-it has no `package.h`, target key, registry entry, `BaseTarget`, `Program`, schedule, graph, live
-sequence owner, or state/frontier policy. The 27B and 35B-A3B targets remain complete sibling
-execution packages and depend inward on those leaves; neither imports the other. Every device
-transformation remains classified by the Op boundary in Section 18, and every
-composition/order/fusion decision remains in an exact target.
+`src/targets/qwen3_6` is the one deliberate family-runtime directory. It owns the shared frontend,
+passive common Vision bindings, `SequencePlan<Variant>`, `RequestPlan<Variant>`,
+`Program<Variant>`, and the fixed planning/Text/Vision/MTP/state/workspace/graph implementation from
+Section 4.3. It is not an exact target package: it has no `model_id`, binder, registry entry,
+exact configuration, target label, or cross-Program state. The 27B and 35B-A3B exact packages are
+peer Variants that depend inward on this runtime; neither imports the other. Every device
+transformation remains classified by the Op boundary in Section 18, and only projection/control/
+post-mixer leaf fusion and operand binding differ by Variant.
 
 ### 19.2 Canonical repository tree
 
-The current implementation plus the accepted second-target organization follows this ownership
-shape. The 35B-A3B directory is created only when its complete runtime target lands; it is shown to
-fix the eventual ownership boundary, not to require an empty placeholder:
+The implemented two-target organization follows this ownership shape:
 
 ```text
 include/
@@ -1796,22 +1832,26 @@ src/
 │   └── engine/                          public PIMPL implementation and request memory
 ├── targets/
 │   ├── registry.h / registry.cpp        one explicit cold target registry
-│   ├── qwen3_6/                         identity-free family leaves; not a target package
+│   ├── qwen3_6/                         identity-free family runtime; not an exact package
 │   │   ├── CMakeLists.txt               explicit source contribution to ninfer_engine
 │   │   ├── export/ninfer/targets/qwen3_6/
 │   │   │   ├── frontend.h               Frontend, PreparedPrompt, OutputSession contracts
 │   │   │   ├── prepared_prompt.h         owning prompt data and exact-program access
 │   │   │   ├── frontend_resources.h      six-resource plan/value and binding entry
-│   │   │   ├── vision.h                 passive common Vision geometry/binding contracts
+│   │   │   ├── vision.h                 common Vision geometry/binding contracts
+│   │   │   ├── model_view.h              family Text/MTP/Vision views plus leaf payload slots
+│   │   │   ├── diagnostics.h             family semantic Text/Vision tap vocabulary
 │   │   │   ├── hybrid_topology.h        four-layer GDN/full-attention mapping
 │   │   │   ├── decoder_state.h          dimension-driven KV/GDN layouts and bound views
 │   │   │   ├── round_state.h            graph-stable generated-round buffer schema
 │   │   │   ├── mtp_alignment.h          pure shifted-window/visual-overlap mapping
-│   │   │   └── vision_control.h          prepared-item position/scatter control
+│   │   │   ├── vision_control.h          item-owned position/scatter control
+│   │   │   └── runtime.h                family SequencePlan/RequestPlan/Program facade
 │   │   └── impl/
 │   │       ├── frontend/                 tokenizer/template/media/MRoPE/output implementation
 │   │       ├── state/                    decoder/GDN and round layout/view implementation
-│   │       └── vision/                   binding/control definitions; no execution schedule
+│   │       ├── vision/                   binding/control definitions
+│   │       └── runtime/                  fixed planning/Text/Vision/MTP/state/graph implementation
 │   ├── qwen3_6_27b_rtx5090/
 │   │   ├── CMakeLists.txt                explicit source contribution to ninfer_engine
 │   │   ├── export/ninfer/targets/qwen3_6_27b_rtx5090/
@@ -1819,11 +1859,13 @@ src/
 │   │   └── impl/
 │   │       ├── package.cpp               facade definitions and private construction
 │   │       ├── config.h                  exact dimensions/counts, storage facts, native limits
-│   │       ├── load/                     typed immutable bindings
-│   │       ├── program/                  plans, backing/live state, prefix, graphs, Program owner
-│   │       ├── schedule/                 private Text, Vision, and MTP execution
+│   │       ├── load/                     exact plans/payloads; populates family model views
+│   │       ├── variant.h / variant.cpp   closed leaves, leaf workspace, graph-range data
 │   │       └── diagnostic/               explicitly linked target diagnostics
-│   └── qwen3_6_35b_a3b_rtx5090/         same package boundary when registered; MoE-private graph
+│   └── qwen3_6_35b_a3b_rtx5090/
+│       ├── CMakeLists.txt                 explicit source contribution to ninfer_engine
+│       ├── export/.../package.h           peer exact-package facade
+│       └── impl/                          config, load, package, fused/MoE Variant leaves
 └── serve/                               protocol schemas, translation, streaming, transport
 
 apps/
@@ -1835,8 +1877,9 @@ tools/
 ├── convert/common/                      generic checkpoint-reading/quantization helpers
 ├── convert/qwen3_6/common/               narrow Qwen3.6-family conversion leaves
 ├── convert/qwen3_6_27b_rtx5090/         source mapping and conversion recipe
-├── convert/qwen3_6_35b_a3b_rtx5090/     accepted future-target conversion recipe
+├── convert/qwen3_6_35b_a3b_rtx5090/     registered 35B conversion recipe
 ├── reference/qwen3_6_27b_rtx5090/       artifact-native Text/Vision/MTP Python reference
+├── reference/qwen3_6_35b_a3b_rtx5090/   artifact-native 35B Text/Vision/MTP/MoE reference
 ├── parity/qwen3_6_27b_rtx5090/          independent target/reference diagnostics
 ├── qwen3_6_27b_dump/                    C++ target activation dump
 ├── bench/                               corpus generation and performance orchestration
@@ -1848,14 +1891,10 @@ bench/                                   public Engine benchmark plus operator m
 tests/                                   component, operator, frontend, target, and product tests
 ```
 
-The runtime target is currently implemented only for 27B. Conversion tooling may precede a runtime
-registration when it implements an accepted complete artifact contract, as the 35B-A3B converter
-does; this does not create an Engine target or product route. A later runtime target is added as a
-complete sibling and an explicit registry/build entry, never as an empty placeholder.
 The top-level roots, one-directory-per-exact-target rule, physical `export/` versus `impl/` split,
 target responsibility partitions, package facade choke point, and dependency directions are
-normative. Family code contains only the identity-free leaves listed above: exact targets may depend
-on it, but may not import sibling targets. Files may split or merge inside one owner when their
+normative. Family code contains only identity-free shared runtime logic; exact targets may depend on
+it, but may not import sibling targets. Files may split or merge inside one owner when their
 invariant and dependencies remain the same.
 
 ### 19.3 Inside one target package
@@ -1863,12 +1902,13 @@ invariant and dependencies remain the same.
 Every target package keeps these responsibilities distinguishable even if a small implementation
 uses fewer translation units:
 
-The family component has three implementation areas. `impl/frontend/` owns the common `Frontend`,
+The family component has four implementation areas. `impl/frontend/` owns the common `Frontend`,
 `PreparedPrompt`, tokenizer/template/media/MRoPE preparation, and `OutputSession`; `impl/state/`
-owns dimension-driven layout planning, non-owning bound views, and explicit GDN slot reset/copy;
-`impl/vision/` owns shared backbone bindings and pure prepared-item control derivation. None may own
-execution order, mathematical CUDA implementation, target-width merger policy, Program backing,
-semantic state frontiers, workspace, or graphs.
+owns dimension-driven layout/view primitives and explicit GDN slot reset/copy; `impl/vision/` owns
+shared backbone bindings and prepared-item control derivation; `impl/runtime/` owns the complete
+fixed planning, Program lifecycle, Text/Vision/MTP execution, semantic frontiers, workspace
+composition, and graph mechanics. None owns exact target identity/binding, Variant dimensions or
+leaf payloads, or mathematical CUDA implementations.
 
 | Area | Owns | Must not own |
 |---|---|---|
@@ -1876,24 +1916,19 @@ semantic state frontiers, workspace, or graphs.
 | `impl/package.cpp` | facade definitions and private construction bridge | a second public/composition surface |
 | `impl/config.h` | exact compiled semantic facts needed by this package, including dimensions/layer counts, physical output rows, storage facts, and native limits; it instantiates family topology formulas | artifact offsets, conversion provenance, request state, user policy |
 | `impl/load/` | target-private binding plan, typed immutable weight/resource structures, and direct final-address `LoadedModel` construction behind the facade `LoadPlan` | sequence state, generation policy, runtime lookup after publication |
-| `impl/program/` | `SequencePlan`, `RequestPlan`, exact layout composition, backing allocation, the sole mutable `Program`, family-bound KV/GDN/round views, sampler state, semantic frontiers, prefix ledger, graph ownership, and round resolution | user callbacks, protocol schemas, artifact name lookup, or family execution policy |
-| `impl/schedule/` | target-private definitions of Program's fixed Text/Vision/MTP/MoE execution methods | mathematical Op implementations, another long-lived execution owner, or an API callable by product code |
+| `impl/variant.h` / `impl/variant.cpp` | exact compile-time facts, semantic weight-view aliases, three closed leaf families, leaf-local workspace contributions, graph frontier ranges, and explicit family instantiation | Program state, Text/Vision/MTP schedule, workspace composition, graph capture, new phases, or sibling-target calls |
+| `impl/diagnostic/` | exact labels and bounded adapters into family semantic tap points | a second execution path or target-private schedule |
 
 `export/package.h` is an internal build interface, not a public product API. It is the registry
 and whole-loop controller's target composition point. Target implementation types remain beneath the
-target directory and are not reachable from public product headers. Once a Program call enters
-`impl/`, its fixed layer schedule uses direct target-private state and calls repository-internal Op
-contracts with explicit execution views and semantic parameters.
+target directory and are not reachable from public product headers. Once a Program call enters the
+family runtime, its fixed layer schedule uses direct Program state, calls repository-internal Ops,
+and invokes only the matching closed Variant leaf at the projection/control/post-mixer seams.
 
-Files under `impl/schedule/` are physical splits of private Program behavior. They do not introduce
-another object that retains Program-owned state. A non-owning helper either remains a private Program
-method or takes an explicit short-lived context. The only long-lived mutable sequence owner is
-`Program`; the only long-lived immutable target owner is `LoadedProduct`/`LoadedModel`.
-
-Later target directories need not contain identical files. For example, another target may require
-private MoE scheduling and state that the current target does not. Its routed-expert computation is
-still a central Op; empty target symmetry and family-shaped base classes are not introduced in
-advance.
+Template definitions remain in family-private normal headers and are explicitly instantiated once
+by each exact target. No `.inl` convention, wrapper Program class, copied schedule, or target phase
+callback exists. The only long-lived mutable sequence owner is `Program<Variant>`; the only
+long-lived immutable exact owner is `LoadedProduct`/`LoadedModel`.
 
 ### 19.4 Dependency direction
 
@@ -1906,8 +1941,8 @@ product prompt input -> media acquisition
 media acquisition -> public owning media values + platform/network facilities
 runtime engine -> target composition + runtime generation + core
 target registry -> generation controller + each target export/package.h
-target package -> qwen3_6 family leaves + runtime contract + artifact + ops + core
-qwen3_6 family leaves -> runtime contract + artifact + core + neutral text/media-decode primitives
+target package -> qwen3_6 family runtime + runtime contract + artifact + ops + core
+qwen3_6 family runtime -> runtime contract + artifact + ops + core + neutral text/media-decode primitives
 runtime generation -> runtime contract + public host values
 media decode -> host codec mechanisms
 artifact -> core
@@ -1923,11 +1958,15 @@ The following restrictions make that graph enforceable:
 - a target never includes `Engine`, `GenerationController`, serving/transport code, or another
   target, and never links product media acquisition;
 - the explicit registry is the common runtime composition point for concrete target exports;
-- Program may consume the family-private prepared-prompt data contract, but it does not call
+- family Program may consume the family-private prepared-prompt data contract, but it does not call
   `Frontend` or `OutputSession` services; frontend implementation has no dependency on Program
   implementation;
-- family state/control mechanisms depend only on lower storage/layout contracts and family prepared
-  values; they do not include Op contracts, retain Program backing, or select an execution phase;
+- family runtime code may include public repository-internal Op contracts and owns its Program
+  backing/state/schedule; it never includes a target implementation header, artifact object name,
+  target identity, or private Op launcher/kernel;
+- Variant leaves receive only explicit semantic tensors, their exact weight payload, leaf-local
+  workspace and stream; they do not receive Program state, lifecycle, positions, frontier, Vision
+  control, MTP transaction, or graphs;
 - an Op implementation or launcher never imports a target/Program merely to obtain dimensions or
   state; the target passes explicit views and semantic parameters, while exact shape remains a valid
   wrapper dispatch predicate;
@@ -2002,7 +2041,7 @@ The exact file count may vary, but these ownership rules are fixed:
   admission limit;
 - launchers own grid/block/shared-memory policy and CUDA entry invocation;
 - kernels and common/linear helpers are private implementation material and are never included by a
-  target schedule;
+  family schedule or Variant leaf;
 - every implementation receives explicit storage/state/workspace/stream arguments and never owns
   allocation, CUDA Graphs, sequence cursors, or commit policy;
 - exact-shape, fused, or selected-device implementations stay in `src/ops`; only their dispatch
@@ -2026,7 +2065,7 @@ ninfer_media_decode                -> host codec mechanism
 ninfer_media_acquire               -> host network/filesystem mechanism
 ninfer_product_prompt_input        -> media_acquire
 ninfer_engine
-  sources                          -> runtime + registry + qwen3_6 family + registered exact target
+  sources                          -> runtime + registry + qwen3_6 family + both registered exact targets
   links                            -> artifact + core + ops + text + media_decode
 ninfer_serve                       -> engine + media_acquire
 apps/ninfer                        -> engine + product_prompt_input
@@ -2037,8 +2076,7 @@ There is no family or exact-target static/object/interface library. `src/targets
 registered exact target call `target_sources(ninfer_engine PRIVATE ...)`, so every family and target
 translation unit is compiled exactly once. The family contribution has no registry hook. A target
 addition or replacement changes both its explicit source contribution and registry variant in the
-same coherent change. Until that registration work lands, the current 27B build remains the only
-implemented runtime route.
+same coherent change. The current closed registry contains the complete 27B and 35B-A3B packages.
 
 `GLOB`, `GLOB_RECURSE`, directory scanning, static-constructor registration, shared-library plugin
 discovery, and fallback-to-family registration are forbidden. They can silently change the product
@@ -2048,8 +2086,8 @@ point that names the complete target set.
 Converter/reference tooling is not linked into runtime target libraries. A converter's source
 mapping, quantization/layout recipe, and reference configuration live under its own target-keyed
 tool directory. Agreement is demonstrated by emitted artifacts, the independently compiled binder,
-and parity evidence—not by importing one universal target configuration into both converter and
-runtime.
+and contract-specific checks—not by importing one universal target configuration into both
+converter and runtime.
 
 These boundaries are verified through component compilation/linking and real behavior checks. They
 must not be enforced by unit tests that scan source text for forbidden include names.
@@ -2063,23 +2101,23 @@ Place a new value or function by the complete invariant it must maintain:
 2. a complete tensor or explicit local-state transformation independent of checkpoint schedule is
    an Op and belongs to `include/ninfer/ops` plus `src/ops`; no cross-target-use proof is required;
 3. the shared Qwen3.6 tokenizer/template/output semantics, multimodal prompt/MRoPE construction,
-   owning prepared values, passive Vision-backbone definitions/bindings, four-layer hybrid topology,
-   dimension-driven decoder/GDN and generated-round layouts/views, pure MTP alignment, and Vision
-   control derivation belong to `src/targets/qwen3_6`;
-4. checkpoint dimensions/layer counts, target-width binding, exact layout composition and backing,
-   live state/frontier policy, operand/view selection, Vision execution composition, MoE state,
-   MTP orchestration, prefix repair, exact graph, and selected-device schedule policy belong to the
-   exact target package;
+   owning prepared values, Vision definitions/control/execution, hybrid traversal, layouts/views,
+   Program lifecycle, Text/MTP schedules, live frontiers, workspace composition, prefix policy and
+   graph mechanics belong to `src/targets/qwen3_6`;
+4. checkpoint dimensions/layer counts, target-width binding, immutable semantic weight views,
+   attention projection, staged GDN projection/control, post-mixer leaves, leaf-local workspace,
+   graph frontier-range data, and target diagnostics belong to the exact target package;
 5. stop/output-budget/cancellation policy, decoder preview/commit ordering, and publication belong to
    runtime generation; Qwen3.6 token-to-text/channel preview and its mutable decoder state remain in
    the family frontend's `OutputSession`;
 6. schemas, network/filesystem acquisition, and transport behavior belong to
    serve/product code and are not target dependencies.
 
-Small duplication of schedules and state policy between targets is preferred to a false base class.
-This does not permit duplicate target-owned Op implementations. A narrow shared helper is named
-after its invariant; catch-all `common.h`, `utils.h`, generic `model.h`, global `ModelConfig`, or
-phase-flag-driven family schedules are not acceptable destinations.
+The two admitted Qwen3.6 targets do not duplicate schedules or state policy. Reuse is one explicit
+family template with a closed Variant interface, not a base class, phase-flag graph, or runtime
+config interpreter. This does not permit duplicate target-owned Op implementations. Catch-all
+`common.h`, `utils.h`, generic `model.h`, global `ModelConfig`, or new phase callbacks are not
+acceptable destinations.
 
 Files split because ownership, lifetime, dependency direction, compilation language, or independent
 verification changes—not merely because a line threshold was crossed. A helper used by one
@@ -2093,10 +2131,10 @@ translation unit remains in its anonymous namespace instead of creating another 
 | exact dimensions/layer counts, output storage rows, storage facts, and native limits | exact target `impl/config.h` |
 | artifact inventory matching and immutable typed weight/resource bindings | target `impl/load/` over generic `artifact` mechanisms |
 | tokenizer, template, media/MRoPE preprocessing, owning prepared prompt, and output decoding | Qwen3.6 family `impl/frontend/` |
-| common Vision-backbone geometry, passive immutable bindings, and prepared-item control | Qwen3.6 family `impl/vision/` |
-| dimension-driven KV/GDN composition, GDN views/reset/copy, generated-round buffers, and pure MTP alignment | Qwen3.6 family `impl/state/` and contracts |
-| backing allocation, live KV/GDN/MTP and round instances, semantic frontiers, sampling state, prefix ledger, request plans, and graphs | target `Program` under `impl/program/` |
-| target-width bindings and fixed Text, Vision, and MTP execution order/Op fusion | target-private `impl/load/` and `impl/schedule/` |
+| common Vision geometry/bindings, prepared-item control, item execution and consumption | Qwen3.6 family `impl/vision/` and `impl/runtime/` |
+| dimension-driven KV/GDN composition, GDN views/reset/copy, generated-round buffers, and shifted MTP alignment | Qwen3.6 family `impl/state/` and `impl/runtime/` |
+| backing allocation, live KV/GDN/MTP and round instances, semantic frontiers, sampling state, prefix ledger, request plans, workspaces, and graphs | family `Program<Variant>` under `impl/runtime/`; bytes owned by the selected exact package instance |
+| target-width bindings, exact config, attention/GDN/post-mixer leaves, leaf fusion/workspace, and graph ranges | exact `impl/load/` plus `impl/variant.*` |
 | output budget, stopping, cancellation, exact-prefix publication ordering, and common summaries | runtime generation and public `Engine` implementation |
 | device/tensor/layout/arena/graph/KV/transfer primitives | `ninfer_core` |
 | semantic Op contracts and all mathematical/local-state implementations | `include/ninfer/ops`, `ninfer_ops` |
@@ -2107,13 +2145,14 @@ translation unit remains in its anonymous namespace instead of creating another 
 | conversion, Python reference, parity, and activation diagnostics | target-keyed `tools/` components |
 
 Common `Engine` contains no Qwen dimension, GDN/MTP/MoE/Vision field, target cache formula, or
-target-private setter protocol. Immutable binding is `LoadedModel`, mutable execution is `Program`,
-input/output semantics are `Frontend`, and fixed computations are Program-private schedules.
+target-private setter protocol. Immutable binding is exact `LoadedModel`, mutable execution is
+family `Program<Variant>`, input/output semantics are `Frontend`, and fixed computations are
+family-runtime-private schedules plus the three closed Variant leaves.
 
 ## 20. Design provenance from reference engines
 
 The boundary was informed by local vLLM, llama.cpp, and SGLang source study. That research provided
-useful evidence for processed-frontier tracking, stable graph inputs, target-owned composite state,
+useful evidence for processed-frontier tracking, stable graph inputs, Program-owned composite state,
 explicit model implementations, accepted-length-aware stop handling, and separating generic loading
 mechanisms from model-specific binding. External file paths and commit snapshots are intentionally
 not part of this active contract: the sections above and the current NInfer source tree are the
@@ -2126,12 +2165,12 @@ The resulting decisions are:
 | stable CUDA Graph inputs | adopt program-lifetime stable device and host buffers |
 | processed versus logical progress | adopt explicit frontier invariants |
 | speculative rejection | require target normalization before reuse/publication |
-| recurrent plus KV commit | keep one target-owned transaction |
+| recurrent plus KV commit | keep one family Program-owned transaction |
 | accepted-batch stop matching | stage text and resolve the exact accepted token prefix |
 | explicit model implementations | adopt a closed compiled target registry |
 | generic materialize, target-specific bind | adopt separate artifact and target-load components |
 | source/build discovery | require explicit package source lists and registry composition |
-| same-family frontend, topology, storage-view, MTP-alignment, and passive Vision invariants | share one identity-free Qwen3.6 family leaf |
+| same-family frontend, planning, Text/Vision/MTP/state/workspace/graph invariants | share one identity-free Qwen3.6 family runtime with closed compile-time Variants |
 | continuous batching scheduler | defer; outside current one-request scope |
 | paged multi-request cache | defer; no current owner or invariant requires it |
 | generic model graph/forward mode | reject from the common contract |
@@ -2165,7 +2204,7 @@ parsing; they are not artifact metadata.
 ### 21.4 Common model-state structs
 
 A public struct containing KV, GDN state, positions, MTP slots, MoE routes, or Vision data would be a
-Qwen-specific union disguised as reuse. `Program` owns a target-private state aggregate and exposes
+Qwen-specific union disguised as reuse. `Program<Variant>` owns a family-private state aggregate and exposes
 only lifecycle operations and summaries.
 
 ### 21.5 Model-specific prefill overloads
@@ -2236,7 +2275,8 @@ An implementation conforming to this architecture satisfies all of the following
 8. **Plan before mutation:** request capacity and transient memory are established before `begin`.
 9. **Stable graph addresses:** graph-referenced host/device storage does not move during program life.
 10. **Owning prompt:** asynchronous execution never reads caller-owned request or media memory.
-11. **Target-private phases:** common code cannot invoke model subphases or manipulate caches/state.
+11. **Family-private phases:** common controller code and Variants cannot invoke or replace model
+    subphases or manipulate Program caches/state.
 12. **Frontier correctness:** every resolved Active state satisfies `S = E + 1`; Resident satisfies
     `E <= S <= E + 1`, and all states obey the planned `C_exec` bounds.
 13. **Licensed output:** every returned token is valid target output, never an unverified proposal.
@@ -2252,14 +2292,14 @@ An implementation conforming to this architecture satisfies all of the following
     lattice. This does not prohibit ordinary output string/vector growth.
 21. **No silent degradation:** unsupported layout, hardware, capacity, or native component fails
     instead of choosing an unregistered fallback.
-22. **Physical target ownership:** every target-width binding, exact layout/backing composition,
-    live state/frontier policy, schedule, Op-call/fusion decision, and graph-policy invariant lives
-    in its exact target package. The identity-free Qwen3.6 frontend/prepared values, four-layer
-    topology, dimension-driven state/round layouts and views, pure MTP alignment, and passive Vision
-    definitions/control live in the family leaf; numerical shape/GPU specialization of an Op remains
-    centrally owned, and no parallel mutable target owner borrows Program state.
+22. **Family/Variant ownership:** target-width binding, exact dimensions/storage facts, the three
+    closed execution leaves, leaf-local workspace, and graph frontier ranges live in the exact
+    package. Frontend/prepared values plus planning, Text/Vision/MTP execution, state/frontier policy,
+    workspace composition, and graph mechanics live in the identity-free family runtime. Numerical
+    shape/GPU specialization of an Op remains centrally owned, and no parallel mutable owner borrows
+    Program state.
 23. **Acyclic dependencies:** lower mechanisms and ordinary runtime files cannot include concrete
-    target internals; target packages may include their identity-free family leaves but cannot
+    target internals; target packages may include their identity-free family runtime but cannot
     include Engine/controller/serve or one another.
 24. **One composition choke point:** concrete target types enter common construction/execution only
     through the explicit registry, `ActiveTarget`, and target `export/package.h` facade.
@@ -2267,7 +2307,7 @@ An implementation conforming to this architecture satisfies all of the following
     globbing, auto-registration, plugin discovery, and family fallback cannot change the product.
 26. **Opaque public API:** public headers expose no CUDA, tensor, artifact, Op, kernel, or target
     type.
-27. **Acquisition stays above target execution:** exact target execution consumes owning media and
+27. **Acquisition stays above target execution:** family execution consumes owning media and
     does not perform URL/filesystem acquisition.
 
 ## 23. Architectural verification obligations
@@ -2315,29 +2355,26 @@ registered target:
 
 ### 23.4 End-to-end target fit
 
-- the registered 27B target executes Text, image/video multimodal input, composed MTP inputs,
-  sampling, and prefix reuse through only the coarse controller contract;
+- both registered targets execute Text, native multimodal input, composed MTP inputs, sampling, and
+  prefix reuse through only the coarse controller contract and the same family runtime;
 - output row padding and tokenizer-addressable ID boundaries cannot emit undecodable IDs;
 - greedy and non-greedy MTP verification are checked against their mathematical oracle, including
   proposal/target `q/p` acceptance and correction required to preserve the target distribution;
+- exact generated-token equality between different numerical or execution paths is not an
+  acceptance contract; each path is checked against its own semantic/state obligations and
+  participating Ops against independent mathematical oracles;
 - useful decode/prefill/context results are measured through the complete product path.
-
-A future 35B-A3B target must, before registration, demonstrate that its GDN/full-attention/MoE,
-image/video and multiple-media `rope_delta`, Vision/MTP alignment, and prefix state fit this boundary
-without adding phase or expert fields to common APIs. This is an admission requirement and design-fit
-claim, not evidence that a 35B runtime target is already implemented.
 
 ### 23.5 Source and build boundaries
 
 - public API consumers compile without `src/`, CUDA, or target include directories;
-- core, artifact, Ops, text, media decode, media acquisition, the Qwen3.6 family leaves, each exact
-  target, Engine, and serving are explicit CMake targets with declared source lists and link
-  directions;
-- each exact target builds as one independently named static target and does not depend on Engine or
-  serving; the family component is an inward dependency and has no registry entry;
+- core, artifact, Ops, text, media decode, media acquisition, Engine, and serving are explicit CMake
+  components with declared source lists and link directions;
+- the family and each exact target contribute explicit sources to `ninfer_engine`; they are not
+  independently linked libraries, and the family has no registry entry;
 - the explicit registry names and constructs the complete registered target set;
-- the registered 27B target executes through the public Engine without exposing checkpoint branches
-  to CLI, serving, or benchmark code;
+- both registered targets execute through the public Engine without exposing checkpoint branches to
+  CLI, serving, or benchmark code;
 - converter/reference tools remain absent from runtime link dependencies;
 - adding an unlisted source file or target directory cannot change the built product until the
   explicit CMake source list and registry are deliberately updated.
@@ -2353,8 +2390,8 @@ This document fixes the implemented engine seam:
 container object directory
   -> compiled exact-target binder/load plan
   -> immutable loaded product
-  -> one non-movable target program
-  -> target-licensed `GeneratedRound` views and exact-prefix resolution
+  -> one non-movable qwen3_6::Program<Variant>
+  -> family-licensed `GeneratedRound` views and exact-prefix resolution
   -> common output controller
 ```
 
@@ -2362,10 +2399,10 @@ It leaves these later decisions open:
 
 - additional model, layout, and resource-encoding registrations beyond the initial identities
   governed by the container, storage-layout, and model-artifact specifications;
-- conversion specifications and object inventories for additional models beyond the registered
-  Qwen3.6-27B target;
-- target-private schedule/state leaf-file splitting, central Op kernel optimizations, and target
-  graph/workspace optimizations within the fixed ownership boundaries;
+- conversion specifications and object inventories for additional models beyond the two registered
+  Qwen3.6 targets;
+- family-runtime source splitting, closed Variant leaf optimization, central Op kernel
+  optimizations, and graph/workspace optimizations within the fixed ownership boundaries;
 - the future continuous-batching scheduler and its memory policy.
 
 Those decisions may refine implementation beneath this seam. They must not reintroduce a generic

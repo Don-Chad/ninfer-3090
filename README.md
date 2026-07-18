@@ -7,16 +7,18 @@ inference performance from one GPU. It supports a small, explicitly registered s
 checkpoints and GPU targets. Each pair is implemented as a concrete compiled target; NInfer is not
 a generic model runtime, compatibility layer, or model zoo.
 
-The currently registered target is exactly **Qwen3.6-27B on NVIDIA RTX 5090**. The current runtime
-owns one resident sequence and executes one active request at a time. Decode efficiency is the
-primary goal, followed by prefill throughput and time to first token. Limited continuous batching
-is a future direction, not a current capability or a large-scale-serving goal.
+The currently registered targets are **Qwen3.6-27B** and **Qwen3.6-35B-A3B**, both on NVIDIA RTX
+5090. They are peer variants of one Qwen3.6 family runtime; neither is implemented as a delta from
+the other. Each Engine owns one resident sequence and executes one active request at a time. Decode
+efficiency is the primary goal, followed by prefill throughput and time to first token. Limited
+continuous batching is a future direction, not a current capability or a large-scale-serving goal.
 
 ## Capabilities
 
-The delivered target includes:
+Both delivered targets include:
 
-- the complete 64-layer hybrid Text decoder: 48 Gated-DeltaNet layers and 16 GQA layers;
+- their complete hybrid Text decoder: 27B uses 48 Gated-DeltaNet plus 16 GQA layers; 35B-A3B uses
+  30 Gated-DeltaNet plus 10 GQA layers and sparse MoE after every mixer;
 - the one-layer MTP draft model, full and optimized proposal heads, and eager or CUDA Graph decode;
 - the 27-layer Vision tower, patch merger, image/video preprocessing, embedding injection, and
   three-axis MRoPE;
@@ -28,28 +30,22 @@ The delivered target includes:
 - OpenAI Chat Completions and Anthropic Messages endpoints, including streaming, token counting,
   usage reporting, reasoning/content channels, and prompt-and-parse tool calls;
 - a public opaque C++ `Engine` API used by the CLI, server, and real-weight benchmark;
-- the native `.ninfer` converter, inspector, verifier, Python Text/Vision/MTP reference, and
-  target-private parity diagnostics.
+- the native `.ninfer` converter, inspector, verifier, Python Text/Vision/MTP diagnostic reference,
+  and target-private activation diagnostics.
 
-NInfer does not currently support another checkpoint, another GPU, concurrent request execution,
+NInfer does not currently support a checkpoint beyond these two, another GPU, concurrent request execution,
 multi-GPU execution, or distributed serving. Context capacity is selected when the Engine is
 constructed and is bounded by the configured KV format and available GPU memory.
 
-## Registered target
+## Registered targets
 
-| Item | Current value |
-|---|---|
-| Model | Qwen3.6-27B (`qwen3_5` checkpoint architecture) |
-| GPU | RTX 5090, Blackwell, `sm_120a`, 32 GB |
-| Runtime target key | `qwen3_6_27b_rtx5090` |
-| Artifact | `qwen3_6_27b_rtx5090.ninfer` |
-| Workload | one resident sequence, one active request |
-| Activations | BF16 |
-| KV cache | BF16 or INT8 group-64 |
-| Primary metric | single-stream decode tokens/second |
+| Model | Runtime target key | Artifact | Text profile |
+|---|---|---|---|
+| Qwen3.6-27B | `qwen3_6_27b_rtx5090` | `qwen3_6_27b_rtx5090.ninfer` | dense, hidden 5120, 64 layers |
+| Qwen3.6-35B-A3B | `qwen3_6_35b_a3b_rtx5090` | `qwen3_6_35b_a3b_rtx5090.ninfer` | sparse MoE, hidden 2048, 40 layers |
 
-The Qwen3.6-35B-A3B architecture document is a model reference. It is not a registered runtime
-target.
+Both require RTX 5090 (`sm_120a`), use BF16 activations and BF16 or INT8 group-64 KV, and target
+single-stream decode with one resident sequence and one active request.
 
 ## Build
 
@@ -89,14 +85,18 @@ python -m tools.artifact.inspect \
 python -m tools.convert.qwen3_6_27b_rtx5090.verify \
   out/qwen3_6_27b_rtx5090.ninfer \
   --model /path/to/Qwen3.6-27B/base-hf-bf16
+
+python -m tools.convert.qwen3_6_35b_a3b_rtx5090.convert \
+  --model /path/to/Qwen3.6-35B-A3B/base-hf-bf16 \
+  --out out/qwen3_6_35b_a3b_rtx5090.ninfer
 ```
 
-The artifact contains the complete registered Text, MTP, Vision, draft-head, tokenizer, template,
-and generation-resource inventory. The C++ Engine and Python reference both consume this artifact;
-the source checkpoint is not accessed during inference.
+Each artifact contains its complete registered Text, MTP, Vision, draft-head, tokenizer, template,
+and generation-resource inventory. The C++ Engine and Python reference consume the selected
+artifact; the source checkpoint is not accessed during inference.
 
-The independent artifact-native Python Text/Vision/MTP correctness reference is available
-separately:
+The independent artifact-native Python Text/Vision/MTP diagnostic reference is available
+separately; it is not an exact generated-token golden for the C++ runtime:
 
 ```bash
 python -m tools.reference.qwen3_6_27b_rtx5090 \
@@ -114,6 +114,9 @@ Text prompt:
   --prompt "用三句话解释 prefill 和 decode 的区别。" \
   --max-new 128
 ```
+
+Use `out/qwen3_6_35b_a3b_rtx5090.ninfer` in the same command to select the registered 35B-A3B
+variant; CLI, serving, and benchmark code contain no model-specific branch.
 
 Structured text/image/video messages:
 
@@ -184,11 +187,12 @@ methods or mutable model state.
 ```text
 BF16 checkpoint
   -> target converter
-  -> qwen3_6_27b_rtx5090.ninfer
+  -> qwen3_6_27b_rtx5090.ninfer or qwen3_6_35b_a3b_rtx5090.ninfer
   -> artifact reader / binder / materializer
-  -> closed qwen3_6_27b_rtx5090 target package
-       immutable LoadedModel + Frontend + one mutable Program
-       fixed schedules compose repository-internal Ops
+  -> selected closed exact target package
+       immutable exact LoadedModel + private Variant
+       shared Frontend + one mutable qwen3_6::Program<Variant>
+       fixed family schedules compose repository-internal Ops and closed Variant leaves
          -> central Op implementations and specialized CUDA kernels
   -> common generated-token controller
   -> public Engine
@@ -203,11 +207,13 @@ The source and build boundaries are explicit:
 - `src/text` and `src/media/decode` own checkpoint-neutral Unicode and media decoding;
 - `src/product/media_acquire` owns path, URL, and data-URI acquisition for product entry points;
 - `src/product/prompt_input` owns the shared CLI/diagnostic message-input adapter;
-- `src/targets/qwen3_6` owns the shared Frontend plus identity-free hybrid topology,
-  state-layout/view, round-buffer, MTP-alignment, and Vision-control mechanisms;
-- `src/targets/qwen3_6_27b_rtx5090` owns exact checkpoint/GPU load, Program backing and live state,
-  schedules, frontiers/commit policy, and graph/lifecycle policy; its schedules invoke central Op
-  contracts;
+- `src/targets/qwen3_6` owns the shared Frontend, `SequencePlan<Variant>`,
+  `RequestPlan<Variant>`, `Program<Variant>`, fixed Text/Vision/MTP schedules, live state/frontier
+  policy, workspace composition, and graph mechanics;
+- `src/targets/qwen3_6_27b_rtx5090` and `src/targets/qwen3_6_35b_a3b_rtx5090` own peer exact
+  checkpoint/GPU identities, configurations, artifact bindings and leaf payloads; they populate the
+  family model-view schemas and own three closed execution leaves, leaf-local workspace, graph
+  frontier ranges, and target diagnostics;
 - `src/runtime` owns common request contracts, generation policy, and the public
   Engine implementation;
 - `src/serve` owns HTTP schemas, translation, streaming, and transport;

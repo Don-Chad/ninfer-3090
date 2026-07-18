@@ -1,25 +1,32 @@
 #pragma once
+#include "targets/qwen3_6/impl/runtime/instance.h"
+// Qwen3.6 family runtime implementation; instantiated only by exact variants.
 
 #include "core/arena.h"
 #include "core/device.h"
 #include "core/tensor.h"
 #include "core/weight.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/config.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/schedule/text_context.h"
+#include <ninfer/targets/qwen3_6/diagnostics.h>
+#include <ninfer/targets/qwen3_6/vision_control.h>
+#include "runtime/contract/transient_region.h"
+#include "targets/qwen3_6/impl/runtime/vision_prefill.h"
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <vector>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule {
+namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule {
 
-enum class VisionTapId {
-    PatchEmbed,
-    Block,
-    Merger,
+using VisionTapId       = qwen3_6::VisionTapId;
+using VisionTapCallback = qwen3_6::VisionTapCallback;
+
+struct VisionItemView {
+    std::span<const float> patches;
+    const qwen3_6::VisionItemControl* control = nullptr;
 };
-
-using VisionTapCallback = void (*)(void*, VisionTapId, int, const Tensor&, cudaStream_t);
 
 struct VisionScheduleConfig {
     static constexpr int layers              = VisionConfig::layers;
@@ -41,9 +48,11 @@ class VisionContext {
 public:
     VisionContext(DeviceContext& device, const LoadedModelData& model);
 
-    [[nodiscard]] static std::size_t workspace_bytes(const qwen3_6::PreparedPromptData& input);
-    [[nodiscard]] Tensor encode(const qwen3_6::PreparedPromptData& input, WorkspaceArena& workspace,
-                                void* tap = nullptr, VisionTapCallback callback = nullptr) const;
+    [[nodiscard]] static std::size_t workspace_bytes(const qwen3_6::VisionItemControl& item);
+    [[nodiscard]] static std::size_t maximum_workspace_bytes();
+    void encode(std::uint32_t item_index, const VisionItemView& item, Tensor& output,
+                WorkspaceArena& workspace, void* tap = nullptr,
+                VisionTapCallback callback = nullptr) const;
 
 private:
     struct BlockW {
@@ -78,4 +87,33 @@ private:
     MergerW merger_{};
 };
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule
+struct VisionChunk {
+    std::int32_t length                       = 0;
+    const qwen3_6::VisionItemControl* control = nullptr;
+    Tensor embeddings;
+};
+
+class VisionPrefillSession {
+public:
+    VisionPrefillSession(DeviceContext& device, const LoadedModelData& model,
+                         WorkspaceArena& workspace, const qwen3_6::PreparedPromptData& prompt,
+                         const VisionPrefillPlan& plan, runtime::TransientRegion transient,
+                         void* tap = nullptr, VisionTapCallback callback = nullptr);
+
+    [[nodiscard]] VisionChunk prepare_chunk(std::uint32_t begin, std::uint32_t nominal_length);
+    [[nodiscard]] double elapsed_seconds() const;
+
+private:
+    DeviceContext& device_;
+    WorkspaceArena& workspace_;
+    const qwen3_6::PreparedPromptData& prompt_;
+    const VisionPrefillPlan& plan_;
+    runtime::TransientRegion transient_;
+    VisionContext context_;
+    void* tap_                  = nullptr;
+    VisionTapCallback callback_ = nullptr;
+    std::optional<std::uint32_t> active_item_;
+    std::vector<CudaEventTimer> timers_;
+};
+
+} // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule

@@ -1,7 +1,7 @@
 # Qwen3.6-35B-A3B Operator Inventory
 
-> Status: authoritative operation inventory and current implementation-support matrix for the
-> future `qwen3_6_35b_a3b_rtx5090` target.
+> Status: authoritative operation inventory and implementation-support matrix for the registered
+> `qwen3_6_35b_a3b_rtx5090` target.
 
 This document is organized by the operation that an Op or kernel performs, not by the model block
 that happens to call it. An attention input projection, a GDN input projection, an MTP projection,
@@ -353,7 +353,7 @@ classification:
 | MTP stem/proposal/control | I2, N1, I7, L5, the Full Attention and Sparse expert rows above, L6/L7, I8-I12, G1-G3 |
 
 This is a device-operation cross-check, not a second graph authority. MTP shifted-token/hidden
-alignment and accepted-prefix state selection remain target schedule semantics in the architecture
+alignment and accepted-prefix state selection remain family schedule semantics in the architecture
 document. Vision position/interpolation metadata and segment bounds remain frontend inputs; their
 construction is not an additional device Op.
 

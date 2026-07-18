@@ -20,7 +20,7 @@ class MaterializedArtifact;
 struct MaterializationPlan;
 } // namespace artifact
 
-namespace targets::qwen3_6_27b_rtx5090 {
+namespace targets::qwen3_6_35b_a3b_rtx5090 {
 
 struct Package;
 
@@ -48,7 +48,7 @@ private:
     explicit LoadPlan(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
 
-    friend struct qwen3_6_27b_rtx5090::Package;
+    friend struct qwen3_6_35b_a3b_rtx5090::Package;
 };
 
 class LoadedModel {
@@ -65,14 +65,14 @@ private:
     explicit LoadedModel(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
 
-    friend struct qwen3_6_27b_rtx5090::Package;
+    friend struct qwen3_6_35b_a3b_rtx5090::Package;
 };
 
 } // namespace detail
 
 struct Package {
-    static constexpr std::string_view model_id   = "qwen3.6-27b";
-    static constexpr std::string_view target_key = "qwen3_6_27b_rtx5090";
+    static constexpr std::string_view model_id   = "qwen3.6-35b-a3b";
+    static constexpr std::string_view target_key = "qwen3_6_35b_a3b_rtx5090";
 
     using LoadPlan       = detail::LoadPlan;
     using LoadedModel    = detail::LoadedModel;
@@ -96,5 +96,5 @@ struct Package {
     create_program(const LoadedModel& model, SequencePlan&& plan, DeviceContext& device);
 };
 
-} // namespace targets::qwen3_6_27b_rtx5090
+} // namespace targets::qwen3_6_35b_a3b_rtx5090
 } // namespace ninfer

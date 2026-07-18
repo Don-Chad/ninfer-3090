@@ -1,6 +1,8 @@
-#include "targets/qwen3_6_27b_rtx5090/impl/schedule/text_context.h"
+#include "targets/qwen3_6/impl/runtime/instance.h"
+#include "targets/qwen3_6/impl/runtime/text_context.h"
 
-#include "targets/qwen3_6_27b_rtx5090/impl/schedule/visual_scatter.h"
+#include "targets/qwen3_6/impl/runtime/visual_scatter.h"
+#include "targets/qwen3_6/impl/runtime/vision_context.h"
 #include <ninfer/targets/qwen3_6/vision_control.h>
 #include "ninfer/ops/argmax.h"
 #include "ninfer/ops/attn_input_proj.h"
@@ -39,7 +41,7 @@
 #include <utility>
 #include <vector>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule {
+namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule {
 namespace {
 
 void copy_i32(const std::int32_t* source, Tensor& destination, cudaStream_t stream) {
@@ -155,11 +157,10 @@ struct CallbackTap {
 
 } // namespace
 
-TextContext::TextContext(DeviceContext& ctx,
-                         const targets::qwen3_6_27b_rtx5090::detail::LoadedModelData& weights,
-                         WorkspaceArena& work, KVCache& kv, qwen3_6::GdnStateStore& state,
-                         qwen3_6::RoundState& io, Tensor& prefill_hidden,
-                         std::uint32_t prefill_chunk, std::uint32_t text_kv_base, KVCache* mtp_kv)
+TextContext::TextContext(DeviceContext& ctx, const LoadedModelData& weights, WorkspaceArena& work,
+                         KVCache& kv, qwen3_6::GdnStateStore& state, qwen3_6::RoundState& io,
+                         Tensor& prefill_hidden, std::uint32_t prefill_chunk,
+                         std::uint32_t text_kv_base, KVCache* mtp_kv)
     : ctx_(ctx), weights_(weights), work_(work), kv_(kv), mtp_kv_(mtp_kv), state_(state), io_(io),
       prefill_hidden_(prefill_hidden), prefill_chunk_(prefill_chunk), text_kv_base_(text_kv_base) {
     if (prefill_chunk_ == 0 || prefill_chunk_ % kPrefillChunkAlignment != 0 ||
@@ -172,11 +173,9 @@ TextContext::TextContext(DeviceContext& ctx,
 TextContext::~TextContext() = default;
 
 void TextContext::bind() {
-    using TargetBindings = targets::qwen3_6_27b_rtx5090::detail::LoadedModelData;
-    using TargetMlp      = targets::qwen3_6_27b_rtx5090::detail::MlpWeights;
-    const auto bind_mlp  = [](const TargetMlp& source) {
-        return MlpW{&source.gate, &source.up, &source.gate_up, &source.down};
-    };
+    using TargetBindings = LoadedModelData;
+    using TargetMlp      = MlpWeights;
+    const auto bind_mlp  = [](const TargetMlp& source) { return MlpW{&source}; };
 
     embed_      = &weights_.token_embedding;
     final_norm_ = &weights_.final_norm;
@@ -187,21 +186,15 @@ void TextContext::bind() {
 
     if (mtp_kv_ != nullptr) {
         const auto& source = weights_.mtp;
-        mtp_               = MtpW{&source.input_projection,
+        mtp_               = MtpW{&source,
+                    &source.input_projection,
                     &source.embedding_norm,
                     &source.hidden_norm,
                     &source.input_norm,
-                    &source.query_key_gate_value,
-                    &source.query,
-                    &source.output_gate,
-                    &source.key,
-                    &source.value,
                     &source.query_norm,
                     &source.key_norm,
                     &source.output,
                     &source.post_attention_norm,
-                    &source.mlp.gate_up,
-                    &source.mlp.down,
                     &source.final_norm};
     }
 
@@ -211,32 +204,23 @@ void TextContext::bind() {
             const auto& source =
                 weights_.full_layers[static_cast<std::size_t>(ModelConfig::full_idx(layer))];
             out.input_norm     = &source.input_norm;
-            out.query_key      = &source.query_key;
-            out.gate_value     = &source.gate_value;
+            out.projection     = &source.projection;
             out.o_proj         = &source.output;
             out.q_norm         = &source.query_norm;
             out.k_norm         = &source.key_norm;
             out.post_attn_norm = &source.post_attention_norm;
-            out.mlp            = bind_mlp(source.mlp);
+            out.mlp            = bind_mlp(source.post_mixer);
         } else {
             const std::size_t gidx = static_cast<std::size_t>(ModelConfig::gdn_idx(layer));
             GdnLayerW& out         = gdn_[gidx];
             const auto& source     = weights_.gdn_layers[gidx];
             out.input_norm         = &source.input_norm;
-            out.in_q               = &source.query;
-            out.in_k               = &source.key;
-            out.in_qk_q4           = &source.query_key;
-            out.in_v               = &source.value;
-            out.in_z               = &source.z;
-            out.in_a               = &source.a_projection;
-            out.in_b               = &source.b_projection;
+            out.projection         = &source.projection;
             out.conv1d             = &source.convolution;
-            out.a_log              = &source.a_log;
-            out.dt_bias            = &source.dt_bias;
             out.gdn_norm           = &source.norm;
             out.out_proj           = &source.output;
             out.post_attn_norm     = &source.post_attention_norm;
-            out.mlp                = bind_mlp(source.mlp);
+            out.mlp                = bind_mlp(source.post_mixer);
         }
     }
 }
@@ -244,23 +228,6 @@ void TextContext::bind() {
 const MtpW& TextContext::mtp_weights() const {
     if (mtp_kv_ == nullptr) { throw std::runtime_error("MTP draft weights are not enabled"); }
     return mtp_;
-}
-
-void detail::scatter_shifted_visual_embeddings(Tensor& input_embeddings,
-                                               const Tensor& visual_embeddings,
-                                               std::span<const std::int32_t> scatter_indices,
-                                               std::uint32_t prompt_tokens,
-                                               const qwen3_6::MtpAlignmentWindow& window,
-                                               WorkspaceArena& work, cudaStream_t stream) {
-    const qwen3_6::MtpVisualOverlap overlap =
-        qwen3_6::shifted_visual_overlap(scatter_indices, prompt_tokens, window);
-    if (overlap.empty()) { return; }
-    const auto count      = static_cast<std::int32_t>(overlap.size());
-    Tensor indices_device = work.alloc(DType::I32, {count});
-    copy_i32(overlap.destination_columns.data(), indices_device, stream);
-    Tensor embeddings =
-        visual_embeddings.slice(1, static_cast<std::int32_t>(overlap.source_begin), count);
-    ops::scatter(embeddings, indices_device, input_embeddings, stream);
 }
 
 void TextContext::mtp_forward_stem(const Tensor& ids, const Tensor& hidden,
@@ -299,14 +266,16 @@ void TextContext::mtp_forward_tail(Tensor& x, const Tensor& ah, const Tensor& po
     cudaStream_t s = ctx_.stream;
     const int T    = x.ne[1];
 
-    Tensor attn_in = work_.alloc(DType::BF16, {kCfg.mtp_attn_in, T});
-    ops::linear(ah, *mtp_.attn_in, attn_in, work_, s);
-
-    Tensor q    = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
-    Tensor k    = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, T});
-    Tensor gate = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
-    Tensor v    = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, T});
-    ops::mtp_split_attn_in(attn_in, q, k, gate, v, s);
+    Tensor q         = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
+    Tensor k         = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, T});
+    Tensor gate      = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
+    Tensor v         = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, T});
+    Tensor q_flat    = q.view({kCfg.q_size, T});
+    Tensor gate_flat = gate.view({kCfg.q_size, T});
+    Tensor k_flat    = k.view({kCfg.kv_size, T});
+    Tensor v_flat    = v.view({kCfg.kv_size, T});
+    Variant::mtp_attention_projection(ah, mtp_.payload->attention, q_flat, gate_flat, k_flat,
+                                      v_flat, work_, s);
 
     Tensor qn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
     Tensor kn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, T});
@@ -326,16 +295,10 @@ void TextContext::mtp_forward_tail(Tensor& x, const Tensor& ah, const Tensor& po
     Tensor mh = work_.alloc(DType::BF16, {kCfg.hidden, T});
     ops::rmsnorm(x, *mtp_.post_attn_norm, kCfg.rms_eps, true, mh, s);
 
-    Tensor gate_up = work_.alloc(DType::BF16, {kCfg.mtp_mlp_gateup_rows, T});
-    ops::linear(mh, *mtp_.gate_up, gate_up, work_, s);
-
-    Tensor act = work_.alloc(DType::BF16, {kCfg.intermediate, T});
-    ops::silu_mul(gate_up.slice(0, 0, kCfg.intermediate),
-                  gate_up.slice(0, kCfg.intermediate, kCfg.intermediate), act, s);
-
-    Tensor d = work_.alloc(DType::BF16, {kCfg.hidden, T});
-    ops::linear(act, *mtp_.down, d, work_, s);
-    ops::residual_add(d, x, s);
+    {
+        auto post_mixer_scope = work_.scope();
+        Variant::mtp_post_mixer(mh, mtp_.payload->post_mixer, x, work_, s);
+    }
 
     ops::rmsnorm(x, *mtp_.norm, kCfg.rms_eps, true, mtp_hidden, s);
 }
@@ -397,7 +360,7 @@ void TextContext::mtp_prefill_chunk(const Tensor& ids, const Tensor& hidden,
 
         Tensor k_flat = work_.alloc(DType::BF16, {kCfg.kv_size, T});
         Tensor v_flat = work_.alloc(DType::BF16, {kCfg.kv_size, T});
-        ops::linear_pair(ah, *mtp_.k_proj, *mtp_.v_proj, k_flat, v_flat, work_, s);
+        Variant::mtp_kv_projection(ah, mtp_.payload->attention, k_flat, v_flat, work_, s);
         Tensor k  = k_flat.view({kCfg.head_dim, kCfg.n_kv, T});
         Tensor v  = v_flat.view({kCfg.head_dim, kCfg.n_kv, T});
         Tensor kn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, T});
@@ -422,8 +385,8 @@ void TextContext::mtp_prefill_chunk(const Tensor& ids, const Tensor& hidden,
     if (final_chunk) {
         Tensor q_flat    = work_.alloc(DType::BF16, {kCfg.q_size, 1});
         Tensor gate_flat = work_.alloc(DType::BF16, {kCfg.q_size, 1});
-        ops::linear(ah_last, *mtp_.q_proj, q_flat, work_, s);
-        ops::linear(ah_last, *mtp_.gate_proj, gate_flat, work_, s);
+        Variant::mtp_q_gate_projection(ah_last, mtp_.payload->attention, q_flat, gate_flat, work_,
+                                       s);
         Tensor q    = q_flat.view({kCfg.head_dim, kCfg.n_q, 1});
         Tensor gate = gate_flat.view({kCfg.head_dim, kCfg.n_q, 1});
         Tensor qn   = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, 1});
@@ -455,14 +418,10 @@ void TextContext::mtp_prefill_chunk(const Tensor& ids, const Tensor& hidden,
 
         Tensor mh = work_.alloc(DType::BF16, {kCfg.hidden, 1});
         ops::rmsnorm(x_last, *mtp_.post_attn_norm, kCfg.rms_eps, true, mh, s);
-        Tensor gate_up = work_.alloc(DType::BF16, {kCfg.mtp_mlp_gateup_rows, 1});
-        ops::linear(mh, *mtp_.gate_up, gate_up, work_, s);
-        Tensor act = work_.alloc(DType::BF16, {kCfg.intermediate, 1});
-        ops::silu_mul(gate_up.slice(0, 0, kCfg.intermediate),
-                      gate_up.slice(0, kCfg.intermediate, kCfg.intermediate), act, s);
-        Tensor d = work_.alloc(DType::BF16, {kCfg.hidden, 1});
-        ops::linear(act, *mtp_.down, d, work_, s);
-        ops::residual_add(d, x_last, s);
+        {
+            auto post_mixer_scope = work_.scope();
+            Variant::mtp_post_mixer(mh, mtp_.payload->post_mixer, x_last, work_, s);
+        }
         ops::rmsnorm(x_last, *mtp_.norm, kCfg.rms_eps, true, *final_hidden, s);
         mtp_draft_argmax(*final_hidden, *logits, *draft_token);
     }
@@ -624,8 +583,7 @@ void TextContext::attn_mix(const FullLayerW& w, Tensor& x, int fidx, Phase ph) {
     Tensor gate_flat = gate.view({kCfg.q_size, T});
     Tensor k_flat    = k.view({kCfg.kv_size, T});
     Tensor v_flat    = v.view({kCfg.kv_size, T});
-    ops::attn_input_proj(h, *w.query_key, *w.gate_value, q_flat, gate_flat, k_flat, v_flat, work_,
-                         s);
+    Variant::attention_projection(h, *w.projection, q_flat, gate_flat, k_flat, v_flat, work_, s);
 
     Tensor qn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_q, T});
     Tensor kn = work_.alloc(DType::BF16, {kCfg.head_dim, kCfg.n_kv, T});
@@ -653,7 +611,8 @@ void TextContext::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
     ops::rmsnorm(x, *w.input_norm, kCfg.rms_eps, true, h, s);
 
     Tensor qkv = work_.alloc(DType::BF16, {kCfg.conv_dim, T});
-    ops::gdn_input_proj(h, *w.in_qk_q4, *w.in_v, qkv, work_, s);
+    Tensor z   = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
+    Variant::gdn_input_projection(h, *w.projection, qkv, z, work_, s);
 
     Tensor qkv_c = work_.alloc(DType::BF16, {kCfg.conv_dim, T});
     if (ph == Phase::Verify) {
@@ -670,7 +629,7 @@ void TextContext::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
 
     Tensor g    = work_.alloc(DType::FP32, {kCfg.gdn_v_heads, T});
     Tensor beta = work_.alloc(DType::FP32, {kCfg.gdn_v_heads, T});
-    ops::gdn_gating_proj(h, *w.in_a, *w.in_b, *w.a_log, *w.dt_bias, work_, g, beta, s);
+    Variant::gdn_control_projection(h, *w.projection, g, beta, work_, s);
 
     Tensor qc = work_.alloc(DType::BF16, {kCfg.key_dim, T});
     Tensor kc = work_.alloc(DType::BF16, {kCfg.key_dim, T});
@@ -698,9 +657,7 @@ void TextContext::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
         ops::gated_delta_rule(qn, kn, vv, g, beta, kGdnScale, work_, ssm_in, ssm_out, o, s);
     }
 
-    Tensor z      = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
-    Tensor z_flat = z.view({kCfg.value_dim, T});
-    ops::linear(h, *w.in_z, z_flat, work_, s);
+    Variant::gdn_output_gate_projection(h, *w.projection, z, work_, s);
 
     Tensor on = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
     ops::gated_rmsnorm(o, *w.gdn_norm, z, kCfg.rms_eps, on, s);
@@ -716,9 +673,7 @@ void TextContext::mlp_tail(const Tensor* post_norm, const MlpW& m, Tensor& x, Ph
     Tensor h = work_.alloc(DType::BF16, {kCfg.hidden, T});
     ops::rmsnorm(x, *post_norm, kCfg.rms_eps, true, h, s);
 
-    Tensor a = work_.alloc(DType::BF16, {kCfg.intermediate, T});
-    ops::linear_swiglu(h, *m.gate_up, a, work_, s);
-    ops::linear_add(a, *m.down, x, work_, s);
+    Variant::post_mixer(h, *m.payload, x, work_, s);
 }
 
 template <class Tap>
@@ -778,23 +733,8 @@ void TextContext::prefill_impl(std::span<const int> ids, const MultimodalPrefill
         if (multimodal->positions.size() != static_cast<std::size_t>(3) * ids.size()) {
             throw std::invalid_argument("multimodal positions must have shape [3,T]");
         }
-        if (multimodal->embeddings == nullptr || multimodal->embeddings->dtype != DType::BF16 ||
-            multimodal->embeddings->ne[0] != kCfg.hidden ||
-            multimodal->embeddings->ne[1] !=
-                static_cast<std::int32_t>(multimodal->scatter_indices.size()) ||
-            multimodal->embeddings->ne[2] != 1 || multimodal->embeddings->ne[3] != 1 ||
-            !multimodal->embeddings->is_contiguous() || multimodal->embeddings->data == nullptr) {
-            throw std::invalid_argument("multimodal embeddings must be contiguous BF16 [5120,V]");
-        }
-        if (!std::is_sorted(multimodal->scatter_indices.begin(),
-                            multimodal->scatter_indices.end()) ||
-            std::adjacent_find(multimodal->scatter_indices.begin(),
-                               multimodal->scatter_indices.end()) !=
-                multimodal->scatter_indices.end() ||
-            (!multimodal->scatter_indices.empty() && (multimodal->scatter_indices.front() < 0 ||
-                                                      multimodal->scatter_indices.back() >= T))) {
-            throw std::invalid_argument(
-                "multimodal scatter indices must be unique, sorted, and inside prompt");
+        if (multimodal->vision == nullptr) {
+            throw std::invalid_argument("multimodal prefill requires a Vision session");
         }
         rope_delta_ = multimodal->rope_delta;
     } else if (text_kv_base_ == 0) {
@@ -848,7 +788,8 @@ void TextContext::prefill_impl(std::span<const int> ids, const MultimodalPrefill
             mtp_required_end <= static_cast<std::uint64_t>(mtp_kv_->max_context) &&
             target_round_required_end <= static_cast<std::uint64_t>(kv_.max_context);
     }
-    mtp_prompt_prepared_ = prepare_mtp_prompt;
+    mtp_prompt_prepared_       = prepare_mtp_prompt;
+    last_prefill_chunk_length_ = 0;
 
     for (int t0 = 0; t0 < T;) {
         int len = std::min(chunk, T - t0);
@@ -857,8 +798,19 @@ void TextContext::prefill_impl(std::span<const int> ids, const MultimodalPrefill
         // the end of the body), not by `chunk`, or it would skip [t0+len, t0+chunk) and drop the
         // tail.
         if (snap_rel > 0 && t0 < snap_rel && t0 + len > snap_rel) { len = snap_rel - t0; }
-        const bool is_last = (t0 + len == T);
         work_.reset();
+
+        VisionChunk vision_chunk;
+        if (multimodal != nullptr) {
+            if (multimodal->vision == nullptr) {
+                throw std::logic_error("multimodal prefill has no Vision session");
+            }
+            vision_chunk = multimodal->vision->prepare_chunk(static_cast<std::uint32_t>(t0),
+                                                             static_cast<std::uint32_t>(len));
+            len          = vision_chunk.length;
+        }
+        const bool is_last = (t0 + len == T);
+        if (is_last) { last_prefill_chunk_length_ = static_cast<std::uint32_t>(len); }
 
         gdn_prefill_read_slot_ = (t0 == 0) ? gdn_read_slot0 : 0;
 
@@ -893,22 +845,21 @@ void TextContext::prefill_impl(std::span<const int> ids, const MultimodalPrefill
 
             Tensor x = work_.alloc(DType::BF16, {kCfg.hidden, len});
             ops::embedding(ids_device, *embed_, x, s);
-            if (multimodal != nullptr && !multimodal->scatter_indices.empty()) {
-                const auto begin = std::lower_bound(multimodal->scatter_indices.begin(),
-                                                    multimodal->scatter_indices.end(), t0);
-                const auto end =
-                    std::lower_bound(begin, multimodal->scatter_indices.end(), t0 + len);
+            if (vision_chunk.control != nullptr) {
+                const auto scatter =
+                    std::span<const std::int32_t>(vision_chunk.control->scatter_indices);
+                const auto begin = std::lower_bound(scatter.begin(), scatter.end(), t0);
+                const auto end   = std::lower_bound(begin, scatter.end(), t0 + len);
                 const auto count = static_cast<std::int32_t>(end - begin);
                 if (count > 0) {
-                    const auto visual_begin =
-                        static_cast<std::int32_t>(begin - multimodal->scatter_indices.begin());
+                    const auto visual_begin = static_cast<std::int32_t>(begin - scatter.begin());
                     std::vector<std::int32_t> local_indices(static_cast<std::size_t>(count));
                     for (std::int32_t i = 0; i < count; ++i) {
                         local_indices[static_cast<std::size_t>(i)] = begin[i] - t0;
                     }
                     Tensor indices_device = work_.alloc(DType::I32, {count});
                     copy_i32(local_indices.data(), indices_device, s);
-                    Tensor embeddings = multimodal->embeddings->slice(1, visual_begin, count);
+                    Tensor embeddings = vision_chunk.embeddings.slice(1, visual_begin, count);
                     ops::scatter(embeddings, indices_device, x, s);
                 }
             }
@@ -969,9 +920,12 @@ void TextContext::prefill_impl(std::span<const int> ids, const MultimodalPrefill
                 if (multimodal != nullptr) {
                     mtp_input_embeddings = work_.alloc(DType::BF16, {kCfg.hidden, len});
                     ops::embedding(mtp_ids, *embed_, mtp_input_embeddings, s);
-                    detail::scatter_shifted_visual_embeddings(
-                        mtp_input_embeddings, *multimodal->embeddings, multimodal->scatter_indices,
-                        static_cast<std::uint32_t>(T), mtp_window, work_, s);
+                    if (vision_chunk.control != nullptr) {
+                        qwen3_6::detail::scatter_shifted_visual_embeddings(
+                            mtp_input_embeddings, vision_chunk.embeddings,
+                            vision_chunk.control->scatter_indices, static_cast<std::uint32_t>(T),
+                            mtp_window, work_, s);
+                    }
                     mtp_input_embeddings_ptr = &mtp_input_embeddings;
                 }
                 if (is_last) {
@@ -1042,25 +996,20 @@ void TextContext::diagnostic_prefill(std::span<const int> ids, void* context,
     prefill_impl(ids, nullptr, tap);
 }
 
-void TextContext::prefill(const qwen3_6::PreparedPromptData& input,
-                          const Tensor& visual_embeddings) {
-    const qwen3_6::VisionControl control = qwen3_6::build_vision_control(input);
-    const MultimodalPrefill multimodal{input.positions, control.scatter_indices, &visual_embeddings,
-                                       input.rope_delta};
+void TextContext::prefill(const qwen3_6::PreparedPromptData& input, VisionPrefillSession& vision) {
+    const MultimodalPrefill multimodal{input.positions, &vision, input.rope_delta};
     NullTap tap;
     prefill_impl(input.token_ids, &multimodal, tap);
 }
 
 void TextContext::diagnostic_prefill(const qwen3_6::PreparedPromptData& input,
-                                     const Tensor& visual_embeddings, void* context,
+                                     VisionPrefillSession& vision, void* context,
                                      TextTapCallback callback) {
     if (callback == nullptr) { throw std::invalid_argument("diagnostic prefill callback is null"); }
-    const qwen3_6::VisionControl control = qwen3_6::build_vision_control(input);
-    const MultimodalPrefill multimodal{input.positions, control.scatter_indices, &visual_embeddings,
-                                       input.rope_delta};
+    const MultimodalPrefill multimodal{input.positions, &vision, input.rope_delta};
     CallbackTap tap{context, callback};
     prefill_impl(input.token_ids, &multimodal, tap);
 }
 
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule
+} // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule

@@ -14,6 +14,8 @@ Use the active documentation index at [`../README.md`](../README.md) for current
 
 ## Completed operator plans
 
+- [`2026-07-17-sparse-moe-design-log.md`](2026-07-17-sparse-moe-design-log.md)
+  — retained closed-Op decisions for the `SparseMoe` leaf used by the registered 35B-A3B Variant.
 - [`2026-07-17-sparse-moe-decode-implementation.md`](2026-07-17-sparse-moe-decode-implementation.md)
   — the closed `SparseMoe` decode `T=1` API/workspace, four-stage implementation, independent
   oracle, CUDA Graph test, and RTX 5090 stage qualification.
@@ -25,6 +27,9 @@ Use the active documentation index at [`../README.md`](../README.md) for current
 
 ## Completed cutovers
 
+- [`2026-07-18-qwen3.6-family-runtime-variants.md`](2026-07-18-qwen3.6-family-runtime-variants.md)
+  — moved Program/planning/Text/Vision/MTP/state/workspace/graph algorithms into one Qwen3.6
+  family runtime, migrated 27B, and registered 35B-A3B as its peer Variant.
 - [`2026-07-18-qwen3.6-family-runtime-mechanism-migration.md`](2026-07-18-qwen3.6-family-runtime-mechanism-migration.md)
   — moved hybrid topology, decoder/GDN and round-state layouts/views, MTP alignment, and Vision
   control into the identity-free family leaf while retaining 27B Program/schedule/graph ownership.
@@ -37,6 +42,11 @@ Use the active documentation index at [`../README.md`](../README.md) for current
 - [`optimization-era/plans/2026-07-17-qwen3-6-27b-decode-projection-cutover.md`](optimization-era/plans/2026-07-17-qwen3-6-27b-decode-projection-cutover.md)
   — atomic 27B `gdn/value_z` artifact migration, two-parent full-attention input projection, and
   direct GDN final-buffer output without concat D2D copies.
+
+## Superseded plans
+
+- [`2026-07-18-qwen3.6-35b-a3b-runtime-target.md`](2026-07-18-qwen3.6-35b-a3b-runtime-target.md)
+  — the unexecuted independent-Program design replaced by the peer-Variant family-runtime plan.
 
 ## Eras
 

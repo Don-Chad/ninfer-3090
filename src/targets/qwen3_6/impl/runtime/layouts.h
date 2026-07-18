@@ -1,17 +1,18 @@
 #pragma once
+#include "targets/qwen3_6/impl/runtime/instance.h"
+// Qwen3.6 family runtime implementation; instantiated only by exact variants.
 
 #include "core/dtype.h"
 #include "core/layout.h"
 #include "core/tensor.h"
 #include <ninfer/targets/qwen3_6/decoder_state.h>
 #include <ninfer/targets/qwen3_6/round_state.h>
-#include <ninfer/targets/qwen3_6_27b_rtx5090/package.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
+namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 
 using TensorLayout = TensorRegion;
 
@@ -27,7 +28,12 @@ struct PersistentLayout {
     std::size_t kv_payload_bytes = 0;
 };
 
-struct SequencePlan::Impl {
+} // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS
+
+namespace ninfer::targets::qwen3_6::detail {
+
+template <>
+struct SequencePlanImpl<NINFER_QWEN36_VARIANT> {
     std::uint32_t capacity      = 0;
     std::uint32_t prefill_chunk = 0;
     std::uint32_t mtp_k         = 0;
@@ -36,13 +42,19 @@ struct SequencePlan::Impl {
     ProposalHead proposal_head  = ProposalHead::Full;
     bool use_cuda_graph         = true;
     int device                  = 0;
-    PersistentLayout persistent;
+    NINFER_QWEN36_RUNTIME_NS::PersistentLayout persistent;
     std::size_t workspace_bytes       = 0;
     std::size_t graph_allowance_bytes = 0;
 };
 
-void validate_target_options(DeviceContext& device, const EngineOptions& options);
-[[nodiscard]] std::unique_ptr<SequencePlan::Impl> plan_sequence_impl(DeviceContext& device,
-                                                                     const EngineOptions& options);
+} // namespace ninfer::targets::qwen3_6::detail
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail
+namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
+
+using SequencePlanImpl = qwen3_6::detail::SequencePlanImpl<Variant>;
+
+void validate_target_options(DeviceContext& device, const EngineOptions& options);
+[[nodiscard]] std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
+                                                                   const EngineOptions& options);
+
+} // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS

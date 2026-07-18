@@ -1,9 +1,9 @@
-#include "targets/qwen3_6_27b_rtx5090/impl/schedule/vision_context.h"
+#include "targets/qwen3_6/impl/runtime/instance.h"
+#include "targets/qwen3_6/impl/runtime/vision_context.h"
 
 #include "core/device.h"
 #include "core/layout.h"
 #include <ninfer/targets/qwen3_6/vision_control.h>
-#include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
 #include "ninfer/ops/add_bias.h"
 #include "ninfer/ops/cast.h"
 #include "ninfer/ops/gelu.h"
@@ -22,7 +22,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule {
+namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule {
 namespace {
 
 std::size_t checked_mul(std::size_t a, std::size_t b, const char* label) {
@@ -35,7 +35,6 @@ std::size_t checked_mul(std::size_t a, std::size_t b, const char* label) {
 constexpr std::size_t kWorkspaceAlignment = 256;
 
 struct VisionWorkspaceLayout {
-    TensorRegion output;
     TensorRegion position_ids;
     TensorRegion cu_seqlens;
     TensorRegion pos_indices;
@@ -56,10 +55,8 @@ struct VisionWorkspaceLayout {
     std::size_t bytes = 0;
 };
 
-VisionWorkspaceLayout build_workspace_layout(const qwen3_6::PreparedPromptData& input,
-                                             const qwen3_6::VisionControl& control) {
-    const auto patches64 = static_cast<std::size_t>(input.prepare.raw_patches);
-    const auto tokens64  = static_cast<std::size_t>(input.prepare.vision_tokens);
+VisionWorkspaceLayout build_workspace_layout(std::size_t patches64, std::size_t tokens64,
+                                             std::size_t segment_count) {
     if (patches64 == 0 || tokens64 == 0 ||
         patches64 !=
             checked_mul(tokens64, VisionScheduleConfig::merge_unit, "patch/token relation")) {
@@ -67,8 +64,8 @@ VisionWorkspaceLayout build_workspace_layout(const qwen3_6::PreparedPromptData& 
     }
     if (patches64 > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()) ||
         tokens64 > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()) ||
-        control.cu_seqlens.size() >
-            static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+        segment_count == 0 ||
+        segment_count >= static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
         throw std::overflow_error("Vision request dimensions exceed int32");
     }
     const auto patches = static_cast<std::int32_t>(patches64);
@@ -80,13 +77,12 @@ VisionWorkspaceLayout build_workspace_layout(const qwen3_6::PreparedPromptData& 
                          const char* label) {
         return builder.add_tensor(dtype, shape, kWorkspaceAlignment, label);
     };
-    out.output = add(DType::BF16, {VisionScheduleConfig::out_hidden, tokens}, "vision output");
     out.position_ids = add(DType::I32, {patches, 2}, "vision position ids");
-    out.cu_seqlens   = add(DType::I32, {static_cast<std::int32_t>(control.cu_seqlens.size())},
-                           "vision segment bounds");
-    out.pos_indices  = add(DType::I32, {4, patches}, "vision position indices");
-    out.pos_weights  = add(DType::FP32, {4, patches}, "vision position weights");
-    out.x            = add(DType::BF16, {VisionScheduleConfig::hidden, patches}, "vision residual");
+    out.cu_seqlens =
+        add(DType::I32, {static_cast<std::int32_t>(segment_count + 1)}, "vision segment bounds");
+    out.pos_indices = add(DType::I32, {4, patches}, "vision position indices");
+    out.pos_weights = add(DType::FP32, {4, patches}, "vision position weights");
+    out.x           = add(DType::BF16, {VisionScheduleConfig::hidden, patches}, "vision residual");
     {
         auto scope = builder.scope();
         out.patch_bf16 =
@@ -106,7 +102,7 @@ VisionWorkspaceLayout build_workspace_layout(const qwen3_6::PreparedPromptData& 
                                          "vision attention norm");
             }
             const std::int32_t tile_count = ops::vision_attention_scratch_tiles(
-                patches, static_cast<std::int32_t>(control.cu_seqlens.size()) - 1);
+                patches, static_cast<std::int32_t>(segment_count));
             if (tile_count != 0) {
                 out.attention_tiles = add(DType::I32, {4, tile_count}, "vision attention tiles");
             }
@@ -140,9 +136,7 @@ void copy_host(const void* src, Tensor& dst, cudaStream_t stream) {
 
 } // namespace
 
-VisionContext::VisionContext(DeviceContext& ctx,
-                             const targets::qwen3_6_27b_rtx5090::detail::LoadedModelData& weights)
-    : ctx_(ctx) {
+VisionContext::VisionContext(DeviceContext& ctx, const LoadedModelData& weights) : ctx_(ctx) {
     patch_embed_      = &weights.vision.common.patch_embedding;
     patch_embed_bias_ = &weights.vision.common.patch_embedding_bias;
     position_embed_   = &weights.vision.common.position_embedding;
@@ -170,24 +164,36 @@ VisionContext::VisionContext(DeviceContext& ctx,
     merger_.fc2_bias    = &weights.vision.merger_fc2_bias;
 }
 
-std::size_t VisionContext::workspace_bytes(const qwen3_6::PreparedPromptData& input) {
-    const qwen3_6::VisionControl control = qwen3_6::build_vision_control(input);
-    return build_workspace_layout(input, control).bytes;
+std::size_t VisionContext::workspace_bytes(const qwen3_6::VisionItemControl& item) {
+    return build_workspace_layout(item.patch_count, item.merged_count,
+                                  static_cast<std::size_t>(item.segment_count))
+        .bytes;
 }
 
-Tensor VisionContext::encode(const qwen3_6::PreparedPromptData& input, WorkspaceArena& workspace,
-                             void* tap, VisionTapCallback callback) const {
+std::size_t VisionContext::maximum_workspace_bytes() {
+    return build_workspace_layout(131072, 32768, 384).bytes;
+}
+
+void VisionContext::encode(std::uint32_t item_index, const VisionItemView& item, Tensor& output,
+                           WorkspaceArena& workspace, void* tap, VisionTapCallback callback) const {
     if ((tap == nullptr) != (callback == nullptr)) {
         throw std::invalid_argument("Vision tap context and callback must be provided together");
     }
-    const qwen3_6::VisionControl control = qwen3_6::build_vision_control(input);
-    const auto patches64                 = static_cast<std::size_t>(input.prepare.raw_patches);
-    const auto tokens64                  = static_cast<std::size_t>(input.prepare.vision_tokens);
-    if (input.patches.size() !=
+    if (item.control == nullptr) { throw std::invalid_argument("Vision item control is null"); }
+    const qwen3_6::VisionItemControl& control = *item.control;
+    const auto patches64                      = control.patch_count;
+    const auto tokens64                       = control.merged_count;
+    if (item.patches.size() !=
         checked_mul(patches64, VisionScheduleConfig::patch_dim, "patch elements")) {
         throw std::invalid_argument("Vision processor patch buffer has invalid shape");
     }
-    const VisionWorkspaceLayout layout = build_workspace_layout(input, control);
+    if (output.dtype != DType::BF16 || output.ne[0] != VisionScheduleConfig::out_hidden ||
+        output.ne[1] != static_cast<std::int32_t>(tokens64) || output.ne[2] != 1 ||
+        output.ne[3] != 1 || !output.is_contiguous() || output.data == nullptr) {
+        throw std::invalid_argument("Vision output must be contiguous BF16 [H,V]");
+    }
+    const VisionWorkspaceLayout layout = build_workspace_layout(
+        patches64, tokens64, static_cast<std::size_t>(control.segment_count));
     if (workspace.capacity() < layout.bytes) {
         throw std::invalid_argument("Vision workspace capacity is too small for request");
     }
@@ -197,7 +203,6 @@ Tensor VisionContext::encode(const qwen3_6::PreparedPromptData& input, Workspace
     workspace.reset();
     const DeviceSpan backing = workspace.alloc_bytes(layout.bytes, kWorkspaceAlignment);
 
-    Tensor output       = layout.output.bind(backing);
     Tensor position_ids = layout.position_ids.bind(backing);
     Tensor cu_seqlens   = layout.cu_seqlens.bind(backing);
     Tensor pos_indices  = layout.pos_indices.bind(backing);
@@ -210,7 +215,7 @@ Tensor VisionContext::encode(const qwen3_6::PreparedPromptData& input, Workspace
     Tensor x          = layout.x.bind(backing);
     Tensor patch_bf16 = layout.patch_bf16.bind(backing);
     Tensor patch_f32  = layout.patch_f32.bind(backing);
-    copy_host(input.patches.data(), patch_f32, stream);
+    copy_host(item.patches.data(), patch_f32, stream);
     ops::cast_fp32_to_bf16(patch_f32, patch_bf16, stream);
     ops::linear(patch_bf16, *patch_embed_, x, workspace, stream);
     ops::add_bias(*patch_embed_bias_, x, stream);
@@ -220,7 +225,7 @@ Tensor VisionContext::encode(const qwen3_6::PreparedPromptData& input, Workspace
     Tensor position_table = position_embed_->reshape(
         {VisionScheduleConfig::hidden, VisionScheduleConfig::position_embeddings});
     ops::vision_pos_embed_add(position_table, pos_indices, pos_weights, x, stream);
-    if (callback != nullptr) { callback(tap, VisionTapId::PatchEmbed, -1, x, stream); }
+    if (callback != nullptr) { callback(tap, item_index, VisionTapId::PatchEmbed, -1, x, stream); }
 
     for (std::size_t layer = 0; layer < blocks_.size(); ++layer) {
         const BlockW& block = blocks_[layer];
@@ -280,7 +285,7 @@ Tensor VisionContext::encode(const qwen3_6::PreparedPromptData& input, Workspace
             ops::residual_add(down, x, stream);
         }
         if (callback != nullptr) {
-            callback(tap, VisionTapId::Block, static_cast<int>(layer), x, stream);
+            callback(tap, item_index, VisionTapId::Block, static_cast<int>(layer), x, stream);
         }
     }
 
@@ -294,8 +299,111 @@ Tensor VisionContext::encode(const qwen3_6::PreparedPromptData& input, Workspace
     ops::gelu(hidden, ops::GeluMode::Exact, stream);
     ops::linear(hidden, *merger_.fc2, output, workspace, stream);
     ops::add_bias(*merger_.fc2_bias, output, stream);
-    if (callback != nullptr) { callback(tap, VisionTapId::Merger, -1, output, stream); }
-    return output;
+    if (callback != nullptr) { callback(tap, item_index, VisionTapId::Merger, -1, output, stream); }
 }
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail::schedule
+VisionPrefillSession::VisionPrefillSession(DeviceContext& device, const LoadedModelData& model,
+                                           WorkspaceArena& workspace,
+                                           const qwen3_6::PreparedPromptData& prompt,
+                                           const VisionPrefillPlan& plan,
+                                           runtime::TransientRegion transient, void* tap,
+                                           VisionTapCallback callback)
+    : device_(device), workspace_(workspace), prompt_(prompt), plan_(plan), transient_(transient),
+      context_(device, model), tap_(tap), callback_(callback) {
+    if ((tap_ == nullptr) != (callback_ == nullptr)) {
+        throw std::invalid_argument("Vision tap context and callback must be provided together");
+    }
+    if (plan_.control.items.empty() || plan_.uses.size() != plan_.control.items.size()) {
+        throw std::invalid_argument("Vision prefill plan has incomplete item spans");
+    }
+    if (transient_.data == nullptr || transient_.alignment < kWorkspaceAlignment) {
+        throw std::invalid_argument("Vision item output transient is missing or misaligned");
+    }
+    timers_.reserve(plan_.control.items.size());
+}
+
+VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32_t nominal_length) {
+    if (nominal_length == 0 || begin >= prompt_.token_ids.size()) {
+        throw std::invalid_argument("Vision chunk range is empty or outside the prompt");
+    }
+    const std::uint64_t nominal_end64 =
+        static_cast<std::uint64_t>(begin) + static_cast<std::uint64_t>(nominal_length);
+    std::uint32_t end = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(nominal_end64, prompt_.token_ids.size()));
+
+    const VisionUseSpan* active = nullptr;
+    for (const VisionUseSpan& use : plan_.uses) {
+        if (use.end <= begin) { continue; }
+        if (use.begin >= end) { break; }
+        if (active == nullptr) {
+            active = &use;
+        } else {
+            end = std::min(end, use.begin);
+            break;
+        }
+    }
+    if (end <= begin) { throw std::logic_error("Vision chunk cap made no forward progress"); }
+    if (active == nullptr) {
+        return VisionChunk{static_cast<std::int32_t>(end - begin), nullptr, {}};
+    }
+    if (active->item_index >= plan_.control.items.size() ||
+        active->item_index >= prompt_.vision_items.size()) {
+        throw std::logic_error("Vision prefill item index is out of range");
+    }
+    const qwen3_6::VisionItemControl& control = plan_.control.items[active->item_index];
+    const qwen3_6::VisionItem& source         = prompt_.vision_items[active->item_index];
+    if (source.modality != control.modality || source.grid.temporal != control.grid.temporal ||
+        source.grid.height != control.grid.height || source.grid.width != control.grid.width ||
+        source.patch_begin != control.patch_begin || source.patch_count != control.patch_count) {
+        throw std::invalid_argument("Vision prefill plan does not describe the prepared item");
+    }
+    if (control.merged_count > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+        throw std::overflow_error("Vision item output columns exceed int32");
+    }
+    const std::size_t output_bytes =
+        checked_mul(checked_mul(static_cast<std::size_t>(VisionScheduleConfig::out_hidden),
+                                control.merged_count, "item output elements"),
+                    dtype_size(DType::BF16), "item output bytes");
+    if (output_bytes > transient_.size) {
+        throw std::invalid_argument("Vision item output transient is too small");
+    }
+    Tensor output(
+        transient_.data, DType::BF16,
+        {VisionScheduleConfig::out_hidden, static_cast<std::int32_t>(control.merged_count)});
+
+    if (!active_item_ || *active_item_ != active->item_index) {
+        if (active_item_ && active->item_index <= *active_item_) {
+            throw std::logic_error("Vision items are not consumed in strictly increasing order");
+        }
+        const std::size_t patch_offset = checked_mul(
+            control.patch_begin, static_cast<std::size_t>(VisionScheduleConfig::patch_dim),
+            "item patch offset");
+        const std::size_t patch_elements = checked_mul(
+            control.patch_count, static_cast<std::size_t>(VisionScheduleConfig::patch_dim),
+            "item patch elements");
+        if (patch_offset > prompt_.patches.size() ||
+            patch_elements > prompt_.patches.size() - patch_offset) {
+            throw std::invalid_argument("Vision item patch range exceeds prepared payload");
+        }
+        timers_.emplace_back(device_);
+        timers_.back().start();
+        context_.encode(
+            active->item_index,
+            VisionItemView{
+                std::span<const float>(prompt_.patches).subspan(patch_offset, patch_elements),
+                &control},
+            output, workspace_, tap_, callback_);
+        timers_.back().record_stop();
+        workspace_.reset();
+        active_item_ = active->item_index;
+    }
+    return VisionChunk{static_cast<std::int32_t>(end - begin), &control, output};
+}
+
+double VisionPrefillSession::elapsed_seconds() const {
+    double milliseconds = 0.0;
+    for (const CudaEventTimer& timer : timers_) { milliseconds += timer.elapsed_ms(); }
+    return milliseconds / 1000.0;
+}
+
+} // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule

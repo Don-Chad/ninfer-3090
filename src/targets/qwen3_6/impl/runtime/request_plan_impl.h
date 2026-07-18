@@ -1,14 +1,14 @@
-#include "targets/qwen3_6_27b_rtx5090/impl/program/program.h"
+#include "targets/qwen3_6/impl/runtime/instance.h"
+#include "targets/qwen3_6/impl/runtime/program.h"
 
-#include "targets/qwen3_6_27b_rtx5090/impl/config.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/schedule/schedule.h"
+#include "targets/qwen3_6/impl/runtime/schedule.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
+namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 namespace {
 
 void validate_sampling(const SamplingParameters& sampling) {
@@ -45,21 +45,25 @@ bool matches_prefix(std::span<const TokenId> incoming, const std::vector<TokenId
                       resident.begin());
 }
 
-} // namespace
-
-RequestPlan::RequestPlan(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
-
-RequestPlan::RequestPlan(RequestPlan&&) noexcept            = default;
-RequestPlan& RequestPlan::operator=(RequestPlan&&) noexcept = default;
-RequestPlan::~RequestPlan()                                 = default;
-
-const runtime::RequestPlanSummary& RequestPlan::summary() const noexcept {
-    static const runtime::RequestPlanSummary empty;
-    return impl_ != nullptr ? impl_->summary : empty;
+std::size_t checked_size_mul(std::size_t a, std::size_t b, const char* label) {
+    if (b != 0 && a > std::numeric_limits<std::size_t>::max() / b) {
+        throw std::overflow_error(label);
+    }
+    return a * b;
 }
 
-RequestPlan Program::Impl::plan_request(const PreparedPromptData& prompt,
-                                        const ExecutionOptions& options) const {
+std::size_t align_up_256(std::size_t value, const char* label) {
+    constexpr std::size_t mask = 255;
+    if (value > std::numeric_limits<std::size_t>::max() - mask) {
+        throw std::overflow_error(label);
+    }
+    return (value + mask) & ~mask;
+}
+
+} // namespace
+
+RequestPlan ProgramImplCore::plan_request(const PreparedPromptData& prompt,
+                                          const ExecutionOptions& options) const {
     if (lifecycle == Lifecycle::Active || lifecycle == Lifecycle::Pending) {
         throw std::logic_error("cannot plan a request while Program is active or pending");
     }
@@ -84,8 +88,7 @@ RequestPlan Program::Impl::plan_request(const PreparedPromptData& prompt,
     }
     validate_sampling(options.sampling);
 
-    auto plan                             = std::make_unique<RequestPlan::Impl>();
-    plan->multimodal                      = prompt.has_media();
+    auto plan                             = std::make_unique<RequestPlanImpl>();
     plan->summary.prompt_tokens           = static_cast<std::uint32_t>(prompt.token_ids.size());
     plan->summary.requested_output_tokens = options.requested_output_tokens;
     const std::uint32_t capacity_output =
@@ -95,10 +98,9 @@ RequestPlan Program::Impl::plan_request(const PreparedPromptData& prompt,
     plan->summary.effective_limit_reason = options.requested_output_tokens <= capacity_output
                                                ? FinishReason::OutputLimit
                                                : FinishReason::ContextCapacity;
-    plan->summary.transient_alignment    = prompt.has_media() ? 256 : 1;
-    plan->summary.transient_bytes =
-        prompt.has_media() ? schedule::vision_workspace_bytes(prompt) : 0;
-    plan->sampling = translate_sampling(options.sampling);
+    plan->summary.transient_alignment    = 1;
+    plan->summary.transient_bytes        = 0;
+    plan->sampling                       = translate_sampling(options.sampling);
 
     const std::span<const TokenId> incoming(prompt.token_ids);
     if (options.allow_prefix_reuse && prompt.identity.reusable && !prompt.has_media() &&
@@ -134,6 +136,45 @@ RequestPlan Program::Impl::plan_request(const PreparedPromptData& prompt,
         }
     }
 
+    if (prompt.has_media()) {
+        VisionPrefillPlan vision;
+        vision.control = qwen3_6::build_vision_control(prompt);
+        vision.uses.reserve(vision.control.items.size());
+        std::size_t max_merged     = 0;
+        std::uint32_t previous_end = 0;
+        for (std::size_t index = 0; index < vision.control.items.size(); ++index) {
+            const qwen3_6::VisionItemControl& item = vision.control.items[index];
+            if (item.scatter_indices.empty()) {
+                throw std::invalid_argument("vision item has no Text consumer columns");
+            }
+            const auto first          = static_cast<std::uint32_t>(item.scatter_indices.front());
+            const auto last           = static_cast<std::uint32_t>(item.scatter_indices.back());
+            const std::uint32_t begin = plan->prepare_mtp && first != 0 ? first - 1 : first;
+            const std::uint32_t end   = last + 1;
+            if (!vision.uses.empty() && begin < previous_end) {
+                throw std::invalid_argument("vision item consumer spans overlap");
+            }
+            if (end > plan->summary.prompt_tokens) {
+                throw std::invalid_argument("vision item consumer span exceeds prompt");
+            }
+            if (schedule::VisionContext::workspace_bytes(item) > work.capacity()) {
+                throw std::invalid_argument("vision item exceeds the Program workspace envelope");
+            }
+            vision.uses.push_back(VisionUseSpan{begin, end, static_cast<std::uint32_t>(index)});
+            previous_end = end;
+            max_merged   = std::max(max_merged, item.merged_count);
+        }
+        const std::size_t output_elements =
+            checked_size_mul(static_cast<std::size_t>(VisionConfig::output_hidden), max_merged,
+                             "vision item output elements overflow size_t");
+        plan->summary.transient_alignment = 256;
+        plan->summary.transient_bytes =
+            align_up_256(checked_size_mul(output_elements, dtype_size(DType::BF16),
+                                          "vision item output bytes overflow size_t"),
+                         "vision item output alignment overflows size_t");
+        plan->vision = std::move(vision);
+    }
+
     if (!prompt.has_media() && prompt.identity.assistant_content_boundary) {
         const std::uint32_t candidate = *prompt.identity.assistant_content_boundary;
         if (candidate > plan->reuse_base && candidate <= plan->summary.prompt_tokens) {
@@ -143,4 +184,4 @@ RequestPlan Program::Impl::plan_request(const PreparedPromptData& prompt,
     return RequestPlan(std::move(plan));
 }
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail
+} // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS

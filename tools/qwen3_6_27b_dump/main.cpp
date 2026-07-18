@@ -240,15 +240,16 @@ std::string text_name(schedule::TapId id, int layer) {
     throw std::logic_error("unknown Text activation tap");
 }
 
-std::string vision_name(schedule::VisionTapId id, int layer) {
+std::string vision_name(std::uint32_t item_index, schedule::VisionTapId id, int layer) {
+    const std::string item = "vision/item_" + std::to_string(item_index) + "/";
     switch (id) {
     case schedule::VisionTapId::PatchEmbed:
-        return "vision/patch_embed";
+        return item + "patch_embed";
     case schedule::VisionTapId::Block:
-        return "vision/block_" + (layer < 10 ? std::string("0") : std::string()) +
+        return item + "block_" + (layer < 10 ? std::string("0") : std::string()) +
                std::to_string(layer);
     case schedule::VisionTapId::Merger:
-        return "vision/merger";
+        return item + "merger";
     }
     throw std::logic_error("unknown Vision activation tap");
 }
@@ -305,9 +306,9 @@ public:
         static_cast<ActivationWriter*>(opaque)->write_text(id, layer, phase, tensor, stream);
     }
 
-    static void vision_callback(void* opaque, schedule::VisionTapId id, int layer,
-                                const ninfer::Tensor& tensor, cudaStream_t stream) {
-        static_cast<ActivationWriter*>(opaque)->write_vision(id, layer, tensor, stream);
+    static void vision_callback(void* opaque, std::uint32_t item_index, schedule::VisionTapId id,
+                                int layer, const ninfer::Tensor& tensor, cudaStream_t stream) {
+        static_cast<ActivationWriter*>(opaque)->write_vision(item_index, id, layer, tensor, stream);
     }
 
     void write_manifest(Json metadata) const {
@@ -354,12 +355,12 @@ private:
         write(text_name(id, layer), phase_name, step, chunk, position, tensor, stream);
     }
 
-    void write_vision(schedule::VisionTapId id, int layer, const ninfer::Tensor& tensor,
-                      cudaStream_t stream) {
+    void write_vision(std::uint32_t item_index, schedule::VisionTapId id, int layer,
+                      const ninfer::Tensor& tensor, cudaStream_t stream) {
         if (id == schedule::VisionTapId::Block && layer != 0 && layer != 13 && layer != 26) {
             return;
         }
-        write(vision_name(id, layer), "prefill", 0, 0, 0, tensor, stream);
+        write(vision_name(item_index, id, layer), "prefill", 0, item_index, 0, tensor, stream);
     }
 
     void write(const std::string& name, const std::string& phase, std::uint32_t step,

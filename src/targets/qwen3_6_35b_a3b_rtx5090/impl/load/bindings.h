@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ninfer/targets/qwen3_6_27b_rtx5090/package.h>
+#include <ninfer/targets/qwen3_6_35b_a3b_rtx5090/package.h>
 #include <ninfer/targets/qwen3_6/frontend_resources.h>
 #include <ninfer/targets/qwen3_6/model_view.h>
 #include <ninfer/targets/qwen3_6/vision.h>
@@ -8,26 +8,28 @@
 #include "artifact/binder.h"
 #include "artifact/materializer.h"
 #include "core/tensor.h"
+#include "ninfer/ops/sparse_moe.h"
 
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <utility>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
+namespace ninfer::targets::qwen3_6_35b_a3b_rtx5090::detail {
 
-inline constexpr std::size_t kTextLayers          = 64;
-inline constexpr std::size_t kFullAttentionLayers = 16;
-inline constexpr std::size_t kGdnLayers           = 48;
+inline constexpr std::size_t kTextLayers          = 40;
+inline constexpr std::size_t kFullAttentionLayers = 10;
+inline constexpr std::size_t kGdnLayers           = 30;
 
-struct MlpPlan {
-    artifact::ObjectHandle gate_up;
-    artifact::ObjectHandle down;
+struct MoePlan {
+    artifact::ObjectHandle router_shared_gate;
+    artifact::ObjectHandle routed_gate_up;
+    artifact::ObjectHandle routed_down;
+    artifact::ObjectHandle shared_gate_up;
+    artifact::ObjectHandle shared_down;
 };
 
 struct FullAttentionPlan {
-    artifact::ObjectHandle query_key;
-    artifact::ObjectHandle gate_value;
+    artifact::ObjectHandle query_key_gate_value;
     artifact::ObjectHandle query_norm;
     artifact::ObjectHandle key_norm;
     artifact::ObjectHandle output;
@@ -37,10 +39,8 @@ struct GdnPlan {
     artifact::ObjectHandle a_log;
     artifact::ObjectHandle dt_bias;
     artifact::ObjectHandle convolution;
-    artifact::ObjectHandle a_projection;
-    artifact::ObjectHandle b_projection;
-    artifact::ObjectHandle query_key;
-    artifact::ObjectHandle value_z;
+    artifact::ObjectHandle a_b_projection;
+    artifact::ObjectHandle query_key_value_z;
     artifact::ObjectHandle norm;
     artifact::ObjectHandle output;
 };
@@ -51,7 +51,7 @@ struct TextLayerPlan {
     GdnPlan gdn{};
     bool is_full_attention = false;
     artifact::ObjectHandle post_attention_norm;
-    MlpPlan mlp;
+    MoePlan moe;
 };
 
 struct MtpPlan {
@@ -59,18 +59,14 @@ struct MtpPlan {
     artifact::ObjectHandle embedding_norm;
     artifact::ObjectHandle hidden_norm;
     artifact::ObjectHandle input_norm;
-    artifact::ObjectHandle query_key_gate_value;
-    artifact::ObjectHandle query_norm;
-    artifact::ObjectHandle key_norm;
-    artifact::ObjectHandle output;
+    FullAttentionPlan attention;
     artifact::ObjectHandle post_attention_norm;
-    MlpPlan mlp;
+    MoePlan moe;
     artifact::ObjectHandle final_norm;
 };
 
 struct BindingPlan {
     qwen3_6::FrontendResourcePlan frontend;
-
     artifact::ObjectHandle token_embedding;
     std::array<TextLayerPlan, kTextLayers> text_layers;
     artifact::ObjectHandle final_norm;
@@ -78,7 +74,6 @@ struct BindingPlan {
     artifact::ObjectHandle draft_head;
     artifact::ObjectHandle draft_head_token_ids;
     MtpPlan mtp;
-
     qwen3_6::VisionBackbonePlan vision_backbone;
     qwen3_6::VisionMergerInputPlan vision_merger_input;
     artifact::ObjectHandle vision_merger_fc2;
@@ -93,38 +88,24 @@ struct ArtifactLoadPlan {
 
 ArtifactLoadPlan bind_artifact(artifact::Binder& binder);
 
-struct DensePostMixerPayload {
-    Weight gate_up;
-    Weight down;
+struct SparseMoePayload {
+    ops::SparseMoeWeights op;
 };
 
-struct FullAttentionProjectionPayload {
-    Weight query_key;
-    Weight gate_value;
+struct AttentionProjectionPayload {
+    Weight query_key_gate_value;
 };
 
 struct GdnProjectionPayload {
     Tensor a_log;
     Tensor dt_bias;
-    Weight a_projection;
-    Weight b_projection;
-    Weight query_key;
-    Weight value;
-    Weight z;
+    Weight a_b_projection;
+    Weight query_key_value_z;
 };
 
-struct MtpAttentionPayload {
-    Weight packed;
-    Weight query;
-    Weight key;
-    Weight output_gate;
-    Weight value;
-};
-
-using RuntimeModelView =
-    qwen3_6::ModelView<FullAttentionProjectionPayload, GdnProjectionPayload, DensePostMixerPayload,
-                       MtpAttentionPayload, DensePostMixerPayload, kFullAttentionLayers,
-                       kGdnLayers>;
+using RuntimeModelView     = qwen3_6::ModelView<AttentionProjectionPayload, GdnProjectionPayload,
+                                                SparseMoePayload, AttentionProjectionPayload,
+                                                SparseMoePayload, kFullAttentionLayers, kGdnLayers>;
 using FullAttentionWeights = RuntimeModelView::FullLayer;
 using GdnWeights           = RuntimeModelView::GdnLayer;
 using MtpWeights           = RuntimeModelView::MtpLayer;
@@ -151,4 +132,4 @@ public:
     LoadedModelData data;
 };
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail
+} // namespace ninfer::targets::qwen3_6_35b_a3b_rtx5090::detail

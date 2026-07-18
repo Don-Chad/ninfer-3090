@@ -43,12 +43,11 @@ Weight row_view(const Weight& block, std::int32_t row_begin, std::int32_t row_co
     return out;
 }
 
-MlpWeights load_mlp(const MlpPlan& plan, const artifact::MaterializedArtifact& materialized,
-                    NumericFormat format) {
-    MlpWeights out;
+DensePostMixerPayload load_mlp(const MlpPlan& plan,
+                               const artifact::MaterializedArtifact& materialized,
+                               NumericFormat format) {
+    DensePostMixerPayload out;
     out.gate_up = artifact::materialized_weight(materialized, plan.gate_up, format, 34816, 5120);
-    out.gate    = row_view(out.gate_up, 0, 17408);
-    out.up      = row_view(out.gate_up, 17408, 17408);
     out.down    = artifact::materialized_weight(
         materialized, plan.down,
         format == NumericFormat::W8G32_F16S ? NumericFormat::W8G32_F16S : NumericFormat::Q5G64_F16S,
@@ -180,6 +179,17 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
     : backing(std::move(materialized)) {
     frontend = qwen3_6::take_frontend_resources(backing, plan.frontend);
 
+    runtime.weights_arena      = &backing.device_arena();
+    auto& token_embedding      = runtime.token_embedding;
+    auto& full_layers          = runtime.full_layers;
+    auto& gdn_layers           = runtime.gdn_layers;
+    auto& final_norm           = runtime.final_norm;
+    auto& output_head          = runtime.output_head;
+    auto& draft_head           = runtime.draft_head;
+    auto& draft_head_token_ids = runtime.draft_head_token_ids;
+    auto& mtp                  = runtime.mtp;
+    auto& vision               = runtime.vision;
+
     token_embedding        = artifact::materialized_weight(backing, plan.token_embedding,
                                                            NumericFormat::Q6G64_F16S, 248320, 5120);
     std::size_t full_index = 0;
@@ -190,53 +200,46 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
             FullAttentionWeights& target = full_layers.at(full_index++);
             target.input_norm            = artifact::materialized_tensor(backing, source.input_norm,
                                                                          NumericFormat::BF16, {5120});
-            target.query_key  = artifact::materialized_weight(backing, source.attention.query_key,
-                                                              NumericFormat::Q4G64_F16S, 7168, 5120);
-            target.query      = row_view(target.query_key, 0, 6144);
-            target.key        = row_view(target.query_key, 6144, 1024);
-            target.gate_value = artifact::materialized_weight(
+            target.projection.query_key  = artifact::materialized_weight(
+                backing, source.attention.query_key, NumericFormat::Q4G64_F16S, 7168, 5120);
+            target.projection.gate_value = artifact::materialized_weight(
                 backing, source.attention.gate_value, NumericFormat::Q5G64_F16S, 7168, 5120);
-            target.output_gate = row_view(target.gate_value, 0, 6144);
-            target.value       = row_view(target.gate_value, 6144, 1024);
-            target.query_norm  = artifact::materialized_tensor(backing, source.attention.query_norm,
-                                                               NumericFormat::BF16, {256});
-            target.key_norm    = artifact::materialized_tensor(backing, source.attention.key_norm,
-                                                               NumericFormat::BF16, {256});
-            target.output      = artifact::materialized_weight(backing, source.attention.output,
-                                                               NumericFormat::Q5G64_F16S, 5120, 6144);
+            target.query_norm = artifact::materialized_tensor(backing, source.attention.query_norm,
+                                                              NumericFormat::BF16, {256});
+            target.key_norm   = artifact::materialized_tensor(backing, source.attention.key_norm,
+                                                              NumericFormat::BF16, {256});
+            target.output     = artifact::materialized_weight(backing, source.attention.output,
+                                                              NumericFormat::Q5G64_F16S, 5120, 6144);
             target.post_attention_norm = artifact::materialized_tensor(
                 backing, source.post_attention_norm, NumericFormat::BF16, {5120});
-            target.mlp = load_mlp(source.mlp, backing, NumericFormat::Q4G64_F16S);
+            target.post_mixer = load_mlp(source.mlp, backing, NumericFormat::Q4G64_F16S);
         } else {
             GdnWeights& target = gdn_layers.at(gdn_index++);
             target.input_norm  = artifact::materialized_tensor(backing, source.input_norm,
                                                                NumericFormat::BF16, {5120});
-            target.a_log =
+            target.projection.a_log =
                 artifact::materialized_tensor(backing, source.gdn.a_log, NumericFormat::FP32, {48});
-            target.dt_bias             = artifact::materialized_tensor(backing, source.gdn.dt_bias,
-                                                                       NumericFormat::FP32, {48});
-            target.convolution_storage = artifact::materialized_tensor(
-                backing, source.gdn.convolution, NumericFormat::BF16, {10240, 4});
-            target.convolution  = target.convolution_storage;
-            target.a_projection = artifact::materialized_weight(backing, source.gdn.a_projection,
-                                                                NumericFormat::BF16, 48, 5120);
-            target.b_projection = artifact::materialized_weight(backing, source.gdn.b_projection,
-                                                                NumericFormat::BF16, 48, 5120);
-            target.query_key    = artifact::materialized_weight(backing, source.gdn.query_key,
-                                                                NumericFormat::Q4G64_F16S, 4096, 5120);
-            target.query        = row_view(target.query_key, 0, 2048);
-            target.key          = row_view(target.query_key, 2048, 2048);
-            target.value_z      = artifact::materialized_weight(backing, source.gdn.value_z,
-                                                                NumericFormat::Q5G64_F16S, 12288, 5120);
-            target.value        = row_view(target.value_z, 0, 6144);
+            target.projection.dt_bias = artifact::materialized_tensor(backing, source.gdn.dt_bias,
+                                                                      NumericFormat::FP32, {48});
+            target.convolution = artifact::materialized_tensor(backing, source.gdn.convolution,
+                                                               NumericFormat::BF16, {10240, 4});
+            target.projection.a_projection = artifact::materialized_weight(
+                backing, source.gdn.a_projection, NumericFormat::BF16, 48, 5120);
+            target.projection.b_projection = artifact::materialized_weight(
+                backing, source.gdn.b_projection, NumericFormat::BF16, 48, 5120);
+            target.projection.query_key = artifact::materialized_weight(
+                backing, source.gdn.query_key, NumericFormat::Q4G64_F16S, 4096, 5120);
+            const Weight value_z = artifact::materialized_weight(
+                backing, source.gdn.value_z, NumericFormat::Q5G64_F16S, 12288, 5120);
+            target.projection.value = row_view(value_z, 0, 6144);
             target.norm =
                 artifact::materialized_tensor(backing, source.gdn.norm, NumericFormat::BF16, {128});
-            target.z                   = row_view(target.value_z, 6144, 6144);
+            target.projection.z        = row_view(value_z, 6144, 6144);
             target.output              = artifact::materialized_weight(backing, source.gdn.output,
                                                                        NumericFormat::Q5G64_F16S, 5120, 6144);
             target.post_attention_norm = artifact::materialized_tensor(
                 backing, source.post_attention_norm, NumericFormat::BF16, {5120});
-            target.mlp = load_mlp(source.mlp, backing, NumericFormat::Q4G64_F16S);
+            target.post_mixer = load_mlp(source.mlp, backing, NumericFormat::Q4G64_F16S);
         }
     }
     if (full_index != full_layers.size() || gdn_index != gdn_layers.size()) {
@@ -259,12 +262,12 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
         artifact::materialized_tensor(backing, plan.mtp.hidden_norm, NumericFormat::BF16, {5120});
     mtp.input_norm =
         artifact::materialized_tensor(backing, plan.mtp.input_norm, NumericFormat::BF16, {5120});
-    mtp.query_key_gate_value = artifact::materialized_weight(
-        backing, plan.mtp.query_key_gate_value, NumericFormat::W8G32_F16S, 14336, 5120);
-    mtp.query       = row_view(mtp.query_key_gate_value, 0, 6144);
-    mtp.key         = row_view(mtp.query_key_gate_value, 6144, 1024);
-    mtp.output_gate = row_view(mtp.query_key_gate_value, 7168, 6144);
-    mtp.value       = row_view(mtp.query_key_gate_value, 13312, 1024);
+    mtp.attention.packed = artifact::materialized_weight(backing, plan.mtp.query_key_gate_value,
+                                                         NumericFormat::W8G32_F16S, 14336, 5120);
+    mtp.attention.query  = row_view(mtp.attention.packed, 0, 6144);
+    mtp.attention.key    = row_view(mtp.attention.packed, 6144, 1024);
+    mtp.attention.output_gate = row_view(mtp.attention.packed, 7168, 6144);
+    mtp.attention.value       = row_view(mtp.attention.packed, 13312, 1024);
     mtp.query_norm =
         artifact::materialized_tensor(backing, plan.mtp.query_norm, NumericFormat::BF16, {256});
     mtp.key_norm =
@@ -273,7 +276,7 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
                                                5120, 6144);
     mtp.post_attention_norm = artifact::materialized_tensor(backing, plan.mtp.post_attention_norm,
                                                             NumericFormat::BF16, {5120});
-    mtp.mlp                 = load_mlp(plan.mtp.mlp, backing, NumericFormat::W8G32_F16S);
+    mtp.post_mixer          = load_mlp(plan.mtp.mlp, backing, NumericFormat::W8G32_F16S);
     mtp.final_norm =
         artifact::materialized_tensor(backing, plan.mtp.final_norm, NumericFormat::BF16, {5120});
 

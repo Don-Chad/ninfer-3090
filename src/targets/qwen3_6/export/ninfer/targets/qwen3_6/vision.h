@@ -86,6 +86,12 @@ struct VisionCommonWeights {
     Tensor merger_norm_bias;
 };
 
+struct VisionWeights {
+    VisionCommonWeights common;
+    Weight merger_fc2;
+    Tensor merger_fc2_bias;
+};
+
 [[nodiscard]] VisionBackbonePlan bind_vision_backbone(artifact::Binder& binder);
 [[nodiscard]] VisionMergerInputPlan bind_vision_merger_input(artifact::Binder& binder);
 [[nodiscard]] VisionMergerNormPlan bind_vision_merger_norm(artifact::Binder& binder);

@@ -5,17 +5,16 @@ diagnostics, benchmark helpers, and the serving smoke client. Run commands from 
 root. The normal C++ products live under `apps/` and `bench/`; most Python tools here are invoked
 manually with `python -m`.
 
-The currently registered target is `qwen3_6_27b_rtx5090`. Target-specific tools use that exact key
-in their directory name. Shared artifact mechanisms and checkpoint-reading helpers stay outside a
-target directory. The accepted future `qwen3_6_35b_a3b_rtx5090` converter is available for artifact
-bring-up, but it does not register a runtime target or advertise 35B product support.
+The registered targets are `qwen3_6_27b_rtx5090` and `qwen3_6_35b_a3b_rtx5090`. Target-specific
+tools use those exact keys in their directory names. Shared artifact mechanisms and
+checkpoint-reading helpers stay outside a target directory.
 
 ## Start by task
 
 | Task | Start here |
 |---|---|
-| Build a `.ninfer` artifact | [`convert/qwen3_6_27b_rtx5090/`](convert/qwen3_6_27b_rtx5090/) |
-| Bring up the future 35B-A3B artifact | [`convert/qwen3_6_35b_a3b_rtx5090/`](convert/qwen3_6_35b_a3b_rtx5090/) |
+| Build the 27B `.ninfer` artifact | [`convert/qwen3_6_27b_rtx5090/`](convert/qwen3_6_27b_rtx5090/) |
+| Build the 35B-A3B `.ninfer` artifact | [`convert/qwen3_6_35b_a3b_rtx5090/`](convert/qwen3_6_35b_a3b_rtx5090/) |
 | Inspect an artifact directory | [`artifact/inspect.py`](artifact/inspect.py) |
 | Verify an artifact against the BF16 checkpoint | [`convert/qwen3_6_27b_rtx5090/verify.py`](convert/qwen3_6_27b_rtx5090/verify.py) |
 | Run independent Python inference | [`reference/qwen3_6_27b_rtx5090/README.md`](reference/qwen3_6_27b_rtx5090/README.md) or [`reference/qwen3_6_35b_a3b_rtx5090/README.md`](reference/qwen3_6_35b_a3b_rtx5090/README.md) |
@@ -74,12 +73,12 @@ Run artifact-native Text, Vision, and MTP inference:
   --decode 128 --mtp-draft-tokens 3
 ```
 
-The reference is an independent correctness implementation, not the C++ runtime wrapped in Python.
+The reference is an independent diagnostic implementation, not the C++ runtime wrapped in Python
+and not an exact generated-token golden for it.
 Install its dependencies from
 [`reference/qwen3_6_27b_rtx5090/requirements.txt`](reference/qwen3_6_27b_rtx5090/requirements.txt).
 
-The accepted 35B-A3B artifact has its own complete Text/MoE/Vision/MTP reference without
-registering a second Engine target:
+The registered 35B-A3B artifact has its own complete Text/MoE/Vision/MTP diagnostic reference:
 
 ```bash
 /home/neroued/miniconda3/envs/py311/bin/python \
@@ -139,10 +138,10 @@ tools/
 ├── convert/common/                   shared checkpoint-reading and quantization helpers
 ├── convert/qwen3_6/common/            narrow Qwen3.6-family conversion leaves
 ├── convert/qwen3_6_27b_rtx5090/      exact-target converter, inventory, recipe, and verifier
-├── convert/qwen3_6_35b_a3b_rtx5090/  future-target converter, inventory, and source recipe
+├── convert/qwen3_6_35b_a3b_rtx5090/  registered-target converter, inventory, and source recipe
 ├── reference/qwen3_6/common/          narrow family-invariant reference leaves
 ├── reference/qwen3_6_27b_rtx5090/    registered-target artifact-native Python reference
-├── reference/qwen3_6_35b_a3b_rtx5090/ future-target artifact-native Python reference
+├── reference/qwen3_6_35b_a3b_rtx5090/ registered-target artifact-native Python reference
 ├── parity/qwen3_6_27b_rtx5090/       target numerical comparison tools
 ├── qwen3_6_27b_dump/                 C++ target activation diagnostic
 ├── bench/                            corpus generation and performance orchestration
@@ -152,4 +151,4 @@ tools/
 
 Generated artifacts, profile reports, Python bytecode caches, and model weights are local outputs
 and are ignored by Git. The tracked training-frequency file under `freq_corpus/` is different: it
-is a registered input to the current target's draft-head conversion recipe.
+is a registered input to the 27B target's draft-head conversion recipe.

@@ -1,22 +1,23 @@
 #pragma once
+#include "targets/qwen3_6/impl/runtime/instance.h"
+// Qwen3.6 family runtime implementation; instantiated only by exact variants.
 
 #include "core/arena.h"
 #include "ninfer/ops/sampling.h"
 #include "core/decode_graph.h"
-#include <ninfer/targets/qwen3_6_27b_rtx5090/package.h>
 #include <ninfer/targets/qwen3_6/prepared_prompt.h>
 
-#include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/program/layouts.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/schedule/text_context.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/schedule/vision_context.h"
+#include "targets/qwen3_6/impl/runtime/layouts.h"
+#include "targets/qwen3_6/impl/runtime/text_context.h"
+#include "targets/qwen3_6/impl/runtime/vision_context.h"
+#include "targets/qwen3_6/impl/runtime/vision_prefill.h"
 
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <vector>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
+namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 
 using PreparedPromptData = qwen3_6::PreparedPromptData;
 
@@ -26,16 +27,27 @@ enum class ReusePath : std::uint8_t {
     RestoreBoundary,
 };
 
-struct RequestPlan::Impl {
+} // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS
+
+namespace ninfer::targets::qwen3_6::detail {
+
+template <>
+struct RequestPlanImpl<NINFER_QWEN36_VARIANT> {
     runtime::RequestPlanSummary summary;
-    ReusePath reuse          = ReusePath::FullReset;
-    std::uint32_t reuse_base = 0;
-    bool needs_mtp_bridge    = false;
-    bool prepare_mtp         = false;
-    bool multimodal          = false;
+    NINFER_QWEN36_RUNTIME_NS::ReusePath reuse = NINFER_QWEN36_RUNTIME_NS::ReusePath::FullReset;
+    std::uint32_t reuse_base                  = 0;
+    bool needs_mtp_bridge                     = false;
+    bool prepare_mtp                          = false;
+    std::optional<NINFER_QWEN36_RUNTIME_NS::VisionPrefillPlan> vision;
     std::optional<std::uint32_t> snapshot_boundary;
     ops::SamplingConfig sampling;
 };
+
+} // namespace ninfer::targets::qwen3_6::detail
+
+namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
+
+using RequestPlanImpl = qwen3_6::detail::RequestPlanImpl<Variant>;
 
 enum class PendingKind : std::uint8_t {
     None,
@@ -80,10 +92,11 @@ struct MtpGraphVariant {
     DecodeGraph mtp;
 };
 
-class Program::Impl {
+class ProgramImplCore {
 public:
-    Impl(const LoadedModelData& model, const SequencePlan::Impl& plan, DeviceContext& device);
-    ~Impl() noexcept;
+    ProgramImplCore(const LoadedModelData& model, const SequencePlanImpl& plan,
+                    DeviceContext& device);
+    ~ProgramImplCore() noexcept;
 
     [[nodiscard]] RequestPlan plan_request(const PreparedPromptData& prompt,
                                            const ExecutionOptions& options) const;
@@ -163,4 +176,14 @@ private:
     void validate_licensed_tokens(std::span<const TokenId> tokens) const;
 };
 
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail
+} // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS
+
+namespace ninfer::targets::qwen3_6::detail {
+
+template <>
+class ProgramImpl<NINFER_QWEN36_VARIANT> final : public NINFER_QWEN36_RUNTIME_NS::ProgramImplCore {
+public:
+    using NINFER_QWEN36_RUNTIME_NS::ProgramImplCore::ProgramImplCore;
+};
+
+} // namespace ninfer::targets::qwen3_6::detail

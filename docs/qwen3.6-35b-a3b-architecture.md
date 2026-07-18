@@ -6,9 +6,9 @@
 > `/home/neroued/models/llm/qwen/Qwen3.6-35B-A3B/base-hf-bf16`: Text, sparse
 > MoE, MTP, Vision, multimodal positions, numerics, and persistent state. Runtime support remains
 > defined by [`design.md`](design.md) and the project README. This document does not define a
-> `.ninfer` artifact contract, claim that the current runtime can load this checkpoint, or qualify
-> the advertised extended million-token mode. The accepted future-target artifact and quantization
-> specification is [`qwen3.6-35b-a3b-ninfer-artifact.md`](qwen3.6-35b-a3b-ninfer-artifact.md), and
+> `.ninfer` artifact contract or qualify the advertised extended million-token mode. The registered
+> runtime artifact and quantization specification is
+> [`qwen3.6-35b-a3b-ninfer-artifact.md`](qwen3.6-35b-a3b-ninfer-artifact.md), and
 > the strict current operator-support matrix is
 > [`qwen3.6-35b-a3b-operator-inventory.md`](qwen3.6-35b-a3b-operator-inventory.md).
 
@@ -313,8 +313,8 @@ sparse_moe(h) = y_routed + shared_scale * shared
 Softmax is taken over all 256 router logits before top-k, and the selected values are then
 renormalized to sum to one. This is algebraically equivalent to a softmax over only the selected
 logits. Hugging Face casts selected weights to activation dtype, while vLLM keeps them FP32 through
-its fused expert path. Those are execution profiles, not alternative mathematical oracles, and are
-useful only as supplementary parity evidence. Router auxiliary loss coefficient `0.001` and
+its fused expert path. Those are execution profiles, not alternative mathematical oracles, and do
+not define a cross-path equality requirement. Router auxiliary loss coefficient `0.001` and
 `output_router_logits=false` are training/output configuration; neither adds an inference term.
 
 Expert grouping, token permutation, physical expert reordering, shared-expert fusion, and separate
@@ -654,6 +654,23 @@ This reference was cross-checked on 2026-07-13 against the following independent
 | Text, GDN, MoE, MTP execution | `~/vllm` commit `92221485aaaa4088491db3f182dd65a390fc9ac5`, especially `qwen3_5.py`, `qwen3_5_mtp.py`, `qwen3_next.py`, and `qwen_gdn_linear_attn.py` |
 | independent Text/MTP recurrence graph | `~/llama.cpp-mainline` commit `07d937828636e305bc0cfe738b288f9ab05ff748`, especially `src/models/qwen35moe.cpp` and `src/models/delta-net-base.cpp` |
 | Vision and processor semantics | vLLM `qwen3_vl.py` / `qwen2_5_vl.py`, llama.cpp `tools/mtmd/models/qwen3vl.cpp`, and local processor configs |
+
+The registered implementation maps these concerns as follows:
+
+| Model concern | Source |
+|---|---|
+| exact 2048-wide dimensions, 40-layer topology, limits, scales, and option facts | `src/targets/qwen3_6_35b_a3b_rtx5090/impl/config.h` |
+| exact 883-tensor/six-resource binding and immutable Text/MTP/Vision/MoE views | `src/targets/qwen3_6_35b_a3b_rtx5090/impl/load/` |
+| fused attention projection, fused staged GDN projection/control, sparse-MoE post-mixer leaves, leaf workspace, and graph frontier ranges | `src/targets/qwen3_6_35b_a3b_rtx5090/impl/variant.h`, `impl/variant.cpp` |
+| fixed Text/MTP/Vision execution, planning, Program lifecycle, workspace composition, prefix/state transactions, and graph mechanics | `src/targets/qwen3_6/impl/runtime/` |
+| tokenizer, template, multimodal processing, and output decoding | `src/targets/qwen3_6/impl/frontend/` |
+| mathematical and explicit local-state Op contracts/implementations | `include/ninfer/ops/`, `src/ops/` |
+| exact artifact and converter | [`qwen3.6-35b-a3b-ninfer-artifact.md`](qwen3.6-35b-a3b-ninfer-artifact.md), `tools/convert/qwen3_6_35b_a3b_rtx5090/` |
+| artifact-native diagnostic reference | `tools/reference/qwen3_6_35b_a3b_rtx5090/` |
+
+The Python reference is diagnostic evidence, not a generated-token golden. Each production Op path
+is checked against its independent mathematical oracle; equality between different numerical or
+execution paths is not a runtime acceptance contract.
 
 As descriptive provenance for the checkpoint inspected by this reference, the local `config.json`
 SHA-256 is

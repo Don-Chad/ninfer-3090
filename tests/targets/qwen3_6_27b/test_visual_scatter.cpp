@@ -1,6 +1,6 @@
 #include "ops/op_tester.h"
 #include "targets/qwen3_6_27b_rtx5090/impl/config.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/schedule/visual_scatter.h"
+#include "targets/qwen3_6/impl/runtime/visual_scatter.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -42,7 +42,7 @@ int main() {
         work.reset();
         const auto window = targets::qwen3_6::plan_mtp_alignment_window(
             static_cast<std::uint32_t>(prompt_tokens), 0, t);
-        targets::qwen3_6_27b_rtx5090::detail::schedule::detail::scatter_shifted_visual_embeddings(
+        targets::qwen3_6::detail::scatter_shifted_visual_embeddings(
             input, visual, scatter_indices, static_cast<std::uint32_t>(prompt_tokens), window, work,
             nullptr);
         cudaDeviceSynchronize();

@@ -1,4 +1,6 @@
-#include "targets/qwen3_6_27b_rtx5090/impl/program/layouts.h"
+#include "targets/qwen3_6/impl/runtime/instance.h"
+#include "targets/qwen3_6/impl/runtime/layouts.h"
+#include "targets/qwen3_6/impl/runtime/vision_context.h"
 
 #include "core/device.h"
 #include "ninfer/ops/gated_delta_rule.h"
@@ -7,10 +9,7 @@
 #include "ninfer/ops/linear_add.h"
 #include "ninfer/ops/linear_swiglu.h"
 #include "ninfer/ops/sampling.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/config.h"
 #include "ninfer/ops/gqa_attention.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/load/bindings.h"
-#include "targets/qwen3_6_27b_rtx5090/impl/program/graph_policy.h"
 
 #include <algorithm>
 #include <initializer_list>
@@ -19,65 +18,15 @@
 #include <string>
 #include <string_view>
 
-namespace ninfer::targets::qwen3_6_27b_rtx5090::detail {
+namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 namespace {
 
 constexpr std::size_t kMiB        = 1024ULL * 1024ULL;
 constexpr std::size_t kArenaAlign = 256ULL;
 
-std::size_t checked_mul(std::size_t a, std::size_t b, const char* label) {
-    if (b != 0 && a > std::numeric_limits<std::size_t>::max() / b) {
-        throw std::overflow_error(label);
-    }
-    return a * b;
-}
-
 std::size_t checked_add(std::size_t a, std::size_t b, const char* label) {
     if (b > std::numeric_limits<std::size_t>::max() - a) { throw std::overflow_error(label); }
     return a + b;
-}
-
-std::size_t align_up(std::size_t value, std::size_t alignment, const char* label) {
-    const std::size_t mask = alignment - 1;
-    if (value > std::numeric_limits<std::size_t>::max() - mask) {
-        throw std::overflow_error(label);
-    }
-    return (value + mask) & ~mask;
-}
-
-std::size_t alloc_after(std::size_t cursor, std::size_t bytes, const char* label) {
-    return checked_add(align_up(cursor, kArenaAlign, label), bytes, label);
-}
-
-std::size_t sequence_bytes(std::size_t cursor, std::initializer_list<std::size_t> sizes,
-                           const char* label) {
-    for (const std::size_t bytes : sizes) { cursor = alloc_after(cursor, bytes, label); }
-    return cursor;
-}
-
-std::size_t tensor_bytes(std::size_t elements, DType dtype, const char* label) {
-    return checked_mul(elements, dtype_size(dtype), label);
-}
-
-std::size_t matrix_bytes(std::size_t rows, std::size_t tokens, DType dtype, const char* label) {
-    return tensor_bytes(checked_mul(rows, tokens, label), dtype, label);
-}
-
-std::size_t gdn_stage_bytes(std::size_t tokens) {
-    if (tokens == 0) { return 0; }
-    constexpr std::size_t kChunk = 64;
-    constexpr std::size_t kS     = 128;
-    constexpr std::size_t kHv    = 48;
-    const std::size_t chunks     = (tokens + kChunk - 1) / kChunk;
-    return sequence_bytes(0,
-                          {
-                              matrix_bytes(kHv, tokens, DType::FP32, "GDN workspace"),
-                              matrix_bytes(kHv * kS, tokens, DType::BF16, "GDN workspace"),
-                              matrix_bytes(kHv * kS, tokens, DType::BF16, "GDN workspace"),
-                              matrix_bytes(kHv * kS, tokens, DType::BF16, "GDN workspace"),
-                              tensor_bytes(chunks * kHv * kS * kS, DType::BF16, "GDN workspace"),
-                          },
-                          "GDN workspace");
 }
 
 TensorLayout add_tensor(LayoutBuilder& builder, DType dtype,
@@ -85,7 +34,7 @@ TensorLayout add_tensor(LayoutBuilder& builder, DType dtype,
     return builder.add_tensor(dtype, shape, kArenaAlign, label);
 }
 
-PersistentLayout persistent_layout(const SequencePlan::Impl& plan) {
+PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     const std::size_t columns = plan.mtp_k + 1ULL;
     const std::size_t slots   = columns + 1ULL;
     LayoutBuilder builder;
@@ -137,7 +86,7 @@ PersistentLayout persistent_layout(const SequencePlan::Impl& plan) {
     return out;
 }
 
-std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
+std::size_t workspace_bytes(const SequencePlanImpl& plan) {
     if (plan.prefill_chunk > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
         throw std::invalid_argument("prefill_chunk exceeds int32 workspace dimensions");
     }
@@ -171,17 +120,17 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
         auto scope = layout.scope();
         matrix(layout, DType::BF16, TextConfig::hidden, tokens);
         matrix(layout, DType::BF16, TextConfig::convolution_dim, tokens);
+        matrix(layout, DType::BF16, TextConfig::value_dim, tokens);
         {
             auto operator_scope = layout.scope();
-            layout.alloc_bytes(ops::gdn_input_proj_workspace_bytes(2 * TextConfig::key_dim,
-                                                                   TextConfig::value_dim, tokens));
+            layout.alloc_bytes(Variant::gdn_input_projection_workspace_bytes(tokens));
         }
         matrix(layout, DType::BF16, TextConfig::convolution_dim, tokens);
         matrix(layout, DType::FP32, TextConfig::gdn_value_heads, tokens);
         matrix(layout, DType::FP32, TextConfig::gdn_value_heads, tokens);
         {
             auto operator_scope = layout.scope();
-            layout.alloc_bytes(ops::gdn_gating_proj_workspace_bytes(tokens));
+            layout.alloc_bytes(Variant::gdn_control_projection_workspace_bytes(tokens));
         }
         matrix(layout, DType::BF16, TextConfig::key_dim, tokens);
         matrix(layout, DType::BF16, TextConfig::key_dim, tokens);
@@ -195,7 +144,10 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
                 TextConfig::gdn_value_head_dim, TextConfig::gdn_key_heads,
                 TextConfig::gdn_value_heads, tokens));
         }
-        matrix(layout, DType::BF16, TextConfig::value_dim, tokens);
+        {
+            auto operator_scope = layout.scope();
+            layout.alloc_bytes(Variant::gdn_output_gate_projection_workspace_bytes(tokens));
+        }
         matrix(layout, DType::BF16, TextConfig::value_dim, tokens);
         layout.alloc_bytes(
             ops::linear_add_workspace_bytes(TextConfig::hidden, TextConfig::value_dim, tokens));
@@ -203,17 +155,7 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
     const auto mlp_stage = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens) {
         auto scope = layout.scope();
         matrix(layout, DType::BF16, TextConfig::hidden, tokens);
-        matrix(layout, DType::BF16, TextConfig::intermediate, tokens);
-        {
-            auto operator_scope = layout.scope();
-            layout.alloc_bytes(
-                ops::linear_swiglu_workspace_bytes(2 * TextConfig::intermediate, tokens));
-        }
-        {
-            auto operator_scope = layout.scope();
-            layout.alloc_bytes(ops::linear_add_workspace_bytes(TextConfig::hidden,
-                                                               TextConfig::intermediate, tokens));
-        }
+        layout.alloc_bytes(Variant::post_mixer_workspace_bytes(tokens));
     };
 
     WorkspaceLayoutBuilder prefill;
@@ -238,41 +180,94 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
         matrix(verify, DType::BF16, TextConfig::hidden, verify_tokens);
     }
 
-    WorkspaceLayoutBuilder mtp;
+    const auto variant_scratch = [](WorkspaceLayoutBuilder& layout, std::size_t bytes) {
+        auto scope = layout.scope();
+        layout.alloc_bytes(bytes);
+    };
+    const auto proposal_scratch = [&](WorkspaceLayoutBuilder& layout) {
+        if (plan.proposal_head == ProposalHead::Optimized) {
+            matrix(layout, DType::BF16, Variant::draft_head_rows, 1);
+        }
+    };
+    const auto mtp_stem = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens,
+                              bool preembedded) {
+        if (!preembedded) { matrix(layout, DType::BF16, TextConfig::hidden, tokens); }
+        matrix(layout, DType::BF16, TextConfig::hidden, tokens);
+        matrix(layout, DType::BF16, TextConfig::hidden, tokens);
+        matrix(layout, DType::BF16, TextConfig::mtp_input_rows, tokens);
+        matrix(layout, DType::BF16, TextConfig::hidden, tokens);
+        matrix(layout, DType::BF16, TextConfig::hidden, tokens);
+    };
+    const auto mtp_full_core = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens) {
+        auto core_scope = layout.scope();
+        mtp_stem(layout, tokens, false);
+        matrix(layout, DType::BF16, TextConfig::query_size, tokens);
+        matrix(layout, DType::BF16, TextConfig::kv_size, tokens);
+        matrix(layout, DType::BF16, TextConfig::query_size, tokens);
+        matrix(layout, DType::BF16, TextConfig::kv_size, tokens);
+        variant_scratch(layout, Variant::mtp_attention_workspace_bytes(tokens));
+        matrix(layout, DType::BF16, TextConfig::query_size, tokens);
+        matrix(layout, DType::BF16, TextConfig::kv_size, tokens);
+        matrix(layout, DType::BF16, TextConfig::query_size, tokens);
+        variant_scratch(layout,
+                        ops::gqa_attention_workspace_bytes(TextConfig::query_heads, tokens));
+        matrix(layout, DType::BF16, TextConfig::hidden, tokens);
+        matrix(layout, DType::BF16, TextConfig::hidden, tokens);
+        variant_scratch(layout, Variant::mtp_post_mixer_workspace_bytes(tokens));
+    };
+    const auto mtp_full_call = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens,
+                                   bool build_proposal) {
+        auto position_scope = layout.scope();
+        matrix(layout, DType::I32, 1, tokens);
+        mtp_full_core(layout, tokens);
+        if (build_proposal) {
+            auto proposal_scope = layout.scope();
+            proposal_scratch(layout);
+        }
+    };
+    const auto mtp_prefill_chunk = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens) {
+        auto scratch_scope = layout.scope();
+        matrix(layout, DType::BF16, TextConfig::hidden, 1);
+        matrix(layout, DType::BF16, TextConfig::hidden, 1);
+        {
+            auto bulk_scope = layout.scope();
+            mtp_stem(layout, tokens, true);
+            matrix(layout, DType::BF16, TextConfig::kv_size, tokens);
+            matrix(layout, DType::BF16, TextConfig::kv_size, tokens);
+            variant_scratch(layout, Variant::mtp_kv_workspace_bytes(tokens));
+            matrix(layout, DType::BF16, TextConfig::kv_size, tokens);
+        }
+        matrix(layout, DType::BF16, TextConfig::query_size, 1);
+        matrix(layout, DType::BF16, TextConfig::query_size, 1);
+        variant_scratch(layout, Variant::mtp_q_gate_workspace_bytes(1));
+        matrix(layout, DType::BF16, TextConfig::query_size, 1);
+        matrix(layout, DType::I32, 3, 1);
+        matrix(layout, DType::BF16, TextConfig::query_size, 1);
+        variant_scratch(layout, ops::gqa_attention_workspace_bytes(TextConfig::query_heads, 1));
+        matrix(layout, DType::BF16, TextConfig::hidden, 1);
+        matrix(layout, DType::BF16, TextConfig::hidden, 1);
+        variant_scratch(layout, Variant::mtp_post_mixer_workspace_bytes(1));
+        proposal_scratch(layout);
+    };
+
+    WorkspaceLayoutBuilder mtp_prefill;
+    WorkspaceLayoutBuilder mtp_full;
     if (plan.mtp_k != 0) {
-        common_root(mtp, prefill_tokens);
-        matrix(mtp, DType::I32, 1, prefill_tokens);
-        matrix(mtp, DType::BF16, TextConfig::hidden, prefill_tokens);
-        matrix(mtp, DType::I32, 1, prefill_tokens);
-        matrix(mtp, DType::BF16, TextConfig::hidden, 1);
-        matrix(mtp, DType::BF16, TextConfig::hidden, 1);
+        common_root(mtp_prefill, prefill_tokens);
+        matrix(mtp_prefill, DType::I32, 1, prefill_tokens);
+        matrix(mtp_prefill, DType::BF16, TextConfig::hidden, prefill_tokens);
+        matrix(mtp_prefill, DType::I32, 1, prefill_tokens);
+        mtp_prefill_chunk(mtp_prefill, prefill_tokens);
         for (std::uint32_t i = 1; i < plan.mtp_k; ++i) {
-            matrix(mtp, DType::BF16, TextConfig::hidden, 1);
+            matrix(mtp_prefill, DType::BF16, TextConfig::hidden, 1);
+            mtp_full_call(mtp_prefill, 1, true);
         }
+
+        mtp_full_call(mtp_full, verify_tokens, false);
+        mtp_full_call(mtp_full, 1, true);
         {
-            auto bulk_scope = mtp.scope();
-            matrix(mtp, DType::BF16, TextConfig::hidden, prefill_tokens);
-            matrix(mtp, DType::BF16, TextConfig::hidden, prefill_tokens);
-            matrix(mtp, DType::BF16, TextConfig::hidden, prefill_tokens);
-            matrix(mtp, DType::BF16, TextConfig::mtp_input_rows, prefill_tokens);
-            matrix(mtp, DType::BF16, TextConfig::hidden, prefill_tokens);
-            matrix(mtp, DType::BF16, TextConfig::kv_size, prefill_tokens);
-            matrix(mtp, DType::BF16, TextConfig::kv_size, prefill_tokens);
-            matrix(mtp, DType::BF16, TextConfig::kv_size, prefill_tokens);
-        }
-        {
-            auto tail_scope = mtp.scope();
-            matrix(mtp, DType::BF16, TextConfig::query_size, 1);
-            matrix(mtp, DType::BF16, TextConfig::query_size, 1);
-            matrix(mtp, DType::BF16, TextConfig::query_size, 1);
-            matrix(mtp, DType::BF16, TextConfig::query_size, 1);
-            mtp.alloc_bytes(ops::gqa_attention_workspace_bytes(TextConfig::query_heads, 1));
-            matrix(mtp, DType::BF16, TextConfig::hidden, 1);
-            matrix(mtp, DType::BF16, TextConfig::hidden, 1);
-            matrix(mtp, DType::BF16, TextConfig::mtp_mlp_gate_up_rows, 1);
-            matrix(mtp, DType::BF16, TextConfig::intermediate, 1);
-            matrix(mtp, DType::BF16, TextConfig::hidden, 1);
-            matrix(mtp, DType::BF16, TextConfig::output_rows, 1);
+            auto proposal_scope = mtp_full.scope();
+            proposal_scratch(mtp_full);
         }
     }
 
@@ -280,17 +275,16 @@ std::size_t workspace_bytes(const SequencePlan::Impl& plan) {
     decision.alloc_bytes(
         ops::sampling_workspace_bytes(TextConfig::token_domain, std::max(1, verify_tokens)));
 
-    return std::max(
-        {prefill.peak_bytes(), verify.peak_bytes(), mtp.peak_bytes(), decision.peak_bytes()});
+    return std::max({prefill.peak_bytes(), verify.peak_bytes(), mtp_prefill.peak_bytes(),
+                     mtp_full.peak_bytes(), decision.peak_bytes(),
+                     schedule::VisionContext::maximum_workspace_bytes()});
 }
 
 } // namespace
 
 void validate_target_options(DeviceContext& device, const EngineOptions& options) {
-    if (options.max_context == 0 ||
-        options.max_context >
-            static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
-        throw std::invalid_argument("max_context must be in [1, INT32_MAX]");
+    if (options.max_context == 0 || options.max_context > Variant::maximum_context) {
+        throw std::invalid_argument("max_context exceeds the variant native context capacity");
     }
     if (options.prefill_chunk == 0 || options.prefill_chunk % kPrefillChunkAlignment != 0) {
         throw std::invalid_argument("prefill_chunk must be a nonzero multiple of 128");
@@ -303,15 +297,16 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
         throw std::invalid_argument("optimized proposal head requires MTP");
     }
     if (device.sm() != 120 || std::string_view(device.props.name) != "NVIDIA GeForce RTX 5090") {
-        throw std::invalid_argument("qwen3_6_27b_rtx5090 requires NVIDIA GeForce RTX 5090");
+        throw std::invalid_argument(
+            "Qwen3.6 RTX 5090 family runtime requires NVIDIA GeForce RTX 5090");
     }
 }
 
-std::unique_ptr<SequencePlan::Impl> plan_sequence_impl(DeviceContext& device,
-                                                       const EngineOptions& options) {
+std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
+                                                     const EngineOptions& options) {
     validate_target_options(device, options);
 
-    auto impl             = std::make_unique<SequencePlan::Impl>();
+    auto impl             = std::make_unique<SequencePlanImpl>();
     impl->capacity        = options.max_context;
     impl->prefill_chunk   = options.prefill_chunk;
     impl->mtp_k           = options.speculative.draft_tokens;
@@ -325,14 +320,15 @@ std::unique_ptr<SequencePlan::Impl> plan_sequence_impl(DeviceContext& device,
     if (impl->use_cuda_graph) {
         const std::size_t ordinary_variants = ordinary_graph_ranges(impl->capacity).size();
         const std::size_t ordinary_graphs   = ordinary_variants * (impl->mtp_k == 0 ? 1ULL : 2ULL);
-        // Full-model capture measures 5-5.5 MiB per ordinary or short-window executable. Long MTP
-        // executables also trigger substantially larger driver allocations: repeated cold 256K
-        // K=5 construction peaks at 512.32 MiB against this 548 MiB target-private allowance.
-        impl->graph_allowance_bytes = ordinary_graphs * 6ULL * kMiB;
+        // Cold full-model capture also materializes lazy CUDA module state. The 35B
+        // K=3/C=4096 public benchmark measured 123,277,312 bytes across its 12 ordinary/aligned
+        // and short-window executables. Keep one conservative family allowance of 12 MiB per
+        // executable. Long MTP executables also trigger substantially larger driver allocations.
+        impl->graph_allowance_bytes = ordinary_graphs * 12ULL * kMiB;
         for (const GraphFrontierRange range : mtp_graph_ranges(impl->capacity, impl->mtp_k)) {
             const std::uint64_t final_visible =
                 static_cast<std::uint64_t>(range.max) + 2ULL * impl->mtp_k;
-            impl->graph_allowance_bytes += (final_visible <= 4096 ? 6ULL : 82ULL) * kMiB;
+            impl->graph_allowance_bytes += (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
         }
     }
 
@@ -351,14 +347,4 @@ std::unique_ptr<SequencePlan::Impl> plan_sequence_impl(DeviceContext& device,
     return impl;
 }
 
-SequencePlan::SequencePlan(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
-
-SequencePlan::SequencePlan(SequencePlan&&) noexcept            = default;
-SequencePlan& SequencePlan::operator=(SequencePlan&&) noexcept = default;
-SequencePlan::~SequencePlan()                                  = default;
-
-std::uint32_t SequencePlan::capacity() const noexcept {
-    return impl_ != nullptr ? impl_->capacity : 0;
-}
-
-} // namespace ninfer::targets::qwen3_6_27b_rtx5090::detail
+} // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS
