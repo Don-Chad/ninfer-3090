@@ -1,5 +1,6 @@
 #include "ninfer/ops/sparse_moe.h"
 
+#include "core/nvtx.h"
 #include "ops/sparse_moe/decode/sparse_moe_decode.h"
 #include "ops/sparse_moe/prefill/sparse_moe_prefill.h"
 #include "ops/sparse_moe/small_t/sparse_moe_small_t.h"
@@ -192,7 +193,11 @@ void sparse_moe(const Tensor& x, const SparseMoeWeights& weights, SparseMoeEpilo
     const bool use_small_t = detail::sparse_moe_uses_small_t(tokens);
     const bool use_prefill = detail::sparse_moe_uses_prefill(tokens, weights.routed_gate_up.qtype,
                                                              weights.routed_down.qtype);
-    std::size_t required   = 0;
+    nvtx::ScopedRange moe_range(use_prefill   ? nvtx::Name::SparseMoePrefill
+                                : use_small_t ? nvtx::Name::SparseMoeSmallT
+                                              : nvtx::Name::SparseMoeDecode,
+                                nvtx::Category::Moe, static_cast<std::uint64_t>(tokens));
+    std::size_t required = 0;
     if (use_prefill) {
         required = detail::resolve_sparse_moe_prefill_plan(tokens, weights.routed_gate_up.qtype,
                                                            weights.routed_down.qtype)

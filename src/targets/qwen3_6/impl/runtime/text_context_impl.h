@@ -1,6 +1,7 @@
 #include "targets/qwen3_6/impl/runtime/instance.h"
 #include "targets/qwen3_6/impl/runtime/text_context.h"
 
+#include "core/nvtx.h"
 #include "targets/qwen3_6/impl/runtime/visual_scatter.h"
 #include "targets/qwen3_6/impl/runtime/vision_context.h"
 #include <ninfer/targets/qwen3_6/vision_control.h>
@@ -324,6 +325,8 @@ void TextContext::mtp_prefill_chunk(const Tensor& ids, const Tensor& hidden,
     if (T <= 0 || static_cast<std::uint32_t>(T) > prefill_chunk_) {
         throw std::invalid_argument("MTP prefill chunk T must be in [1,prefill_chunk]");
     }
+    nvtx::ScopedRange mtp_prefill_range(nvtx::Name::PrefillMtpChunk, nvtx::Category::Mtp,
+                                        static_cast<std::uint64_t>(T));
     require_tensor_shape(ids, DType::I32, {T}, "MTP prefill ids");
     require_tensor_shape(hidden, DType::BF16, {kCfg.hidden, T}, "MTP prefill hidden");
     require_tensor_shape(positions, DType::I32, {T}, "MTP prefill positions");
@@ -678,16 +681,26 @@ void TextContext::mlp_tail(const Tensor* post_norm, const MlpW& m, Tensor& x, Ph
 
 template <class Tap>
 void TextContext::run_layers(Tensor& x, Phase ph, Tap& tap) {
+    const bool prefill = ph == Phase::Prefill;
     for (int layer = 0; layer < kCfg.n_layers; ++layer) {
         if (ModelConfig::is_full(layer)) {
             const int fidx         = ModelConfig::full_idx(layer);
             const FullLayerW& full = full_.at(static_cast<std::size_t>(fidx));
+            nvtx::ScopedRange layer_range(
+                prefill ? nvtx::Name::PrefillLayerFull : nvtx::Name::VerifyLayerFull,
+                nvtx::Category::Attention, static_cast<std::uint64_t>(layer));
             {
+                nvtx::ScopedRange mixer_range(
+                    prefill ? nvtx::Name::PrefillAttention : nvtx::Name::VerifyAttention,
+                    nvtx::Category::Attention, static_cast<std::uint64_t>(layer));
                 auto mixer_scope = work_.scope();
                 attn_mix(full, x, fidx, ph);
                 if constexpr (Tap::enabled) { tap(TapId::AfterMixer, layer, ph, x, ctx_.stream); }
             }
             {
+                nvtx::ScopedRange post_mixer_range(
+                    prefill ? nvtx::Name::PrefillPostMixer : nvtx::Name::VerifyPostMixer,
+                    nvtx::Category::PostMixer, static_cast<std::uint64_t>(layer));
                 auto mlp_scope = work_.scope();
                 mlp_tail(full.post_attn_norm, full.mlp, x, ph);
                 if constexpr (Tap::enabled) { tap(TapId::AfterMlp, layer, ph, x, ctx_.stream); }
@@ -695,12 +708,21 @@ void TextContext::run_layers(Tensor& x, Phase ph, Tap& tap) {
         } else {
             const int gidx       = ModelConfig::gdn_idx(layer);
             const GdnLayerW& gdn = gdn_.at(static_cast<std::size_t>(gidx));
+            nvtx::ScopedRange layer_range(prefill ? nvtx::Name::PrefillLayerGdn
+                                                  : nvtx::Name::VerifyLayerGdn,
+                                          nvtx::Category::Gdn, static_cast<std::uint64_t>(layer));
             {
+                nvtx::ScopedRange mixer_range(
+                    prefill ? nvtx::Name::PrefillGdn : nvtx::Name::VerifyGdn, nvtx::Category::Gdn,
+                    static_cast<std::uint64_t>(layer));
                 auto mixer_scope = work_.scope();
                 gdn_mix(gdn, x, gidx, ph);
                 if constexpr (Tap::enabled) { tap(TapId::AfterMixer, layer, ph, x, ctx_.stream); }
             }
             {
+                nvtx::ScopedRange post_mixer_range(
+                    prefill ? nvtx::Name::PrefillPostMixer : nvtx::Name::VerifyPostMixer,
+                    nvtx::Category::PostMixer, static_cast<std::uint64_t>(layer));
                 auto mlp_scope = work_.scope();
                 mlp_tail(gdn.post_attn_norm, gdn.mlp, x, ph);
                 if constexpr (Tap::enabled) { tap(TapId::AfterMlp, layer, ph, x, ctx_.stream); }
@@ -811,6 +833,8 @@ void TextContext::prefill_impl(std::span<const int> ids, const MultimodalPrefill
         }
         const bool is_last = (t0 + len == T);
         if (is_last) { last_prefill_chunk_length_ = static_cast<std::uint32_t>(len); }
+        nvtx::ScopedRange chunk_range(nvtx::Name::PrefillChunk, nvtx::Category::Prefill,
+                                      static_cast<std::uint64_t>(len));
 
         gdn_prefill_read_slot_ = (t0 == 0) ? gdn_read_slot0 : 0;
 

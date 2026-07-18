@@ -503,6 +503,27 @@ Collect only the profiler evidence needed to answer the concrete question. Prese
 to interpret a result; fixed repository or artifact hashes are not required unless a separate
 contract calls for them.
 
+Full inference exposes persistent registered NVTX ranges in the `ninfer` domain. The outer
+`generate` range is the stable capture trigger; its direct children are `prefill` and `decode`.
+Prefill further identifies chunks, full-attention/GDN layers and mixers, while decode identifies
+ordinary or MTP rounds and their submit/wait portions. Sparse MoE calls use
+`sparse_moe.prefill`, `sparse_moe.small_t`, or `sparse_moe.decode`. Numeric payloads carry the
+token extent for chunk/MoE ranges, the layer index for layer/mixer ranges, and the execution
+frontier for decode-round ranges.
+
+Use graph granularity for representative end-to-end timing:
+
+```bash
+nsys profile --trace=cuda,nvtx --sample=none --cpuctxsw=none \
+  --cuda-graph-trace=graph --capture-range=nvtx \
+  --nvtx-capture='generate@ninfer' --capture-range-end=stop \
+  --output profiles/nsys/<name> <application> <arguments...>
+```
+
+Use a separate `--cuda-graph-trace=node` capture when individual graph-node kernel ranking is
+needed. Node tracing can perturb graph launch and request timing, so do not use that run for the
+end-to-end latency claim.
+
 ## 10. Adding or changing an Op
 
 Use this sequence for a proposed device transformation:

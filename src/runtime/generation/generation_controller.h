@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/nvtx.h"
 #include "ninfer/types.h"
 #include "runtime/contract/types.h"
 #include "runtime/generation/generation_budget.h"
@@ -30,7 +31,8 @@ template <class Program, class PreparedPrompt, class OutputSession, class Reques
 ControllerResult run_one(Program& program, PreparedPrompt prompt, OutputSession output,
                          RequestMemory& request_memory, const RequestOptions& options,
                          const CancellationView& cancellation, OutputSink* sink) {
-    using Clock            = std::chrono::steady_clock;
+    using Clock = std::chrono::steady_clock;
+    nvtx::ScopedRange generate_range(nvtx::Name::Generate, nvtx::Category::Runtime);
     const auto total_start = Clock::now();
 
     ControllerResult result;
@@ -104,7 +106,10 @@ ControllerResult run_one(Program& program, PreparedPrompt prompt, OutputSession 
     if (cancellation.requested()) { return finish_without_execution(FinishReason::Cancelled); }
 
     const auto prefill_start = Clock::now();
-    auto first = program.begin(std::move(prompt), std::move(plan), request_memory.region());
+    auto first               = [&] {
+        nvtx::ScopedRange prefill_range(nvtx::Name::Prefill, nvtx::Category::Prefill);
+        return program.begin(std::move(prompt), std::move(plan), request_memory.region());
+    }();
     result.prefill_seconds = std::chrono::duration<double>(Clock::now() - prefill_start).count();
     result.summary.begin   = first.summary;
     guard.arm();
@@ -113,6 +118,7 @@ ControllerResult run_one(Program& program, PreparedPrompt prompt, OutputSession 
         return std::move(*done);
     }
 
+    nvtx::ScopedRange decode_range(nvtx::Name::Decode, nvtx::Category::Decode);
     while (budget.remaining() != 0) {
         if (cancellation.requested()) {
             (void)output.preview_terminal(FinishReason::Cancelled);

@@ -1,6 +1,7 @@
 #include "targets/qwen3_6/impl/runtime/instance.h"
 #include "targets/qwen3_6/impl/runtime/program.h"
 
+#include "core/nvtx.h"
 #include "ninfer/ops/mtp_round.h"
 #include "targets/qwen3_6/impl/runtime/schedule.h"
 
@@ -545,6 +546,9 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
                          static_cast<std::uint64_t>(E) + 2ULL * mtp_k <= capacity;
     const std::uint32_t base_E = E;
     const std::uint32_t base_S = S;
+    nvtx::ScopedRange round_range(use_mtp ? nvtx::Name::DecodeMtpRound
+                                          : nvtx::Name::DecodeOrdinaryRound,
+                                  use_mtp ? nvtx::Category::Mtp : nvtx::Category::Decode, base_E);
     try {
         set_device_i32(io.gdn_initial_slot, current_gdn_slot);
         schedule::State schedule_state{
@@ -577,14 +581,23 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
                 envelopes                = mtp_gqa_envelopes(variant.min_execution_frontier,
                                                              variant.max_execution_frontier, mtp_k);
             }
-            schedule::mtp_round(schedule_state, mtp_k, envelopes, graph);
-            ops::mtp_gather_hidden_row(io.verify_hidden, io.accepted, tail_hidden, device.stream);
-            CUDA_CHECK(cudaMemcpyAsync(host_count, io.num_sampled.data, sizeof(std::int32_t),
-                                       cudaMemcpyDeviceToHost, device.stream));
-            CUDA_CHECK(cudaMemcpyAsync(host_tokens, io.sampled_out.data,
-                                       (mtp_k + 1ULL) * sizeof(TokenId), cudaMemcpyDeviceToHost,
-                                       device.stream));
-            device.synchronize();
+            {
+                nvtx::ScopedRange submit_range(nvtx::Name::DecodeMtpSubmit, nvtx::Category::Mtp,
+                                               base_E);
+                schedule::mtp_round(schedule_state, mtp_k, envelopes, graph);
+                ops::mtp_gather_hidden_row(io.verify_hidden, io.accepted, tail_hidden,
+                                           device.stream);
+                CUDA_CHECK(cudaMemcpyAsync(host_count, io.num_sampled.data, sizeof(std::int32_t),
+                                           cudaMemcpyDeviceToHost, device.stream));
+                CUDA_CHECK(cudaMemcpyAsync(host_tokens, io.sampled_out.data,
+                                           (mtp_k + 1ULL) * sizeof(TokenId), cudaMemcpyDeviceToHost,
+                                           device.stream));
+            }
+            {
+                nvtx::ScopedRange wait_range(nvtx::Name::DecodeMtpWait, nvtx::Category::Control,
+                                             base_E);
+                device.synchronize();
+            }
             if (*host_count <= 0 || *host_count > static_cast<std::int32_t>(mtp_k + 1)) {
                 throw std::runtime_error("MTP returned an invalid licensed-token count");
             }
@@ -610,10 +623,18 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
                 graph    = align_mtp ? &variant.ordinary_aligned : &variant.ordinary;
                 envelope = {variant.min_execution_frontier + 1, variant.max_execution_frontier + 1};
             }
-            schedule::ordinary_round(schedule_state, align_mtp, envelope, graph);
-            copy_tail(io.verify_hidden.slice(1, 0, 1));
-            copy_round_token();
-            device.synchronize();
+            {
+                nvtx::ScopedRange submit_range(nvtx::Name::DecodeOrdinarySubmit,
+                                               nvtx::Category::Decode, base_E);
+                schedule::ordinary_round(schedule_state, align_mtp, envelope, graph);
+                copy_tail(io.verify_hidden.slice(1, 0, 1));
+                copy_round_token();
+            }
+            {
+                nvtx::ScopedRange wait_range(nvtx::Name::DecodeOrdinaryWait,
+                                             nvtx::Category::Control, base_E);
+                device.synchronize();
+            }
             text_kv_valid    = base_E + 1;
             current_gdn_slot = 0;
             if (align_mtp) { mtp_kv_valid = base_E + 1; }
