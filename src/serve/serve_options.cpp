@@ -58,7 +58,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--model-id ID] [--max-context N] [--prefill-chunk N] [--device N] "
            "[--max-request-mib N] "
            "[--kv-dtype bf16|int8] [--mtp-draft-tokens N] [--default-max-tokens N] "
-           "[--no-cuda-graph] "
+           "[--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -67,6 +67,7 @@ std::string serve_usage_text(const char* argv0) {
            std::to_string(kDefaultMaxTokens) +
            " when omitted\n"
            "       --max-request-mib defaults to 384 and is enforced before JSON parsing\n"
+           "       --no-prefix-reuse disables compatible-prefix caching (enabled by default)\n"
            "       sampler defaults to Qwen3 thinking (temperature 0.6, top-p 0.95, "
            "top-k 20, presence-penalty 1.0); a request may override any field.\n"
            "       --greedy forces temperature 0 (exact argmax).\n";
@@ -121,6 +122,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             default_max_tokens_explicit = true;
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
+        } else if (arg == "--no-prefix-reuse") {
+            options.allow_prefix_reuse = false;
         } else if (arg == "--lm-head-draft") {
             options.proposal_head = ProposalHead::Optimized;
         } else if (arg == "--no-thinking") {

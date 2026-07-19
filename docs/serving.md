@@ -153,6 +153,7 @@ curl http://127.0.0.1:8080/v1/models \
 | `--lm-head-draft` | optimized MTP proposal head | off |
 | `--default-max-tokens N` | output limit when omitted by a request | `8192` |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
+| `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--cors` | permissive browser CORS headers | off |
 | `--greedy` | force exact argmax for all requests | off |
@@ -168,11 +169,12 @@ Run `./build/apps/ninfer-serve --help` for the exact option contract.
 The server accepts concurrent HTTP connections, but model execution is serialized because one
 Engine owns one resident sequence. It does not perform continuous batching.
 
-Compatible resident prefixes are reused for both text and multimodal histories. A multimodal hit
-requires matching token types, three-axis MRoPE positions, encoded-media digest, grid, and consumer
-spans; changing an earlier image or video therefore resets the prefix instead of reusing
-placeholder-token KV. Media wholly inside a matched prefix skips Vision execution, while new suffix
-media is encoded normally. The completion log reports the reused token count as `cache=`.
+Compatible resident prefixes are reused for both text and multimodal histories unless the server is
+started with `--no-prefix-reuse`. A multimodal hit requires matching token types, three-axis MRoPE
+positions, encoded-media digest, grid, and consumer spans; changing an earlier image or video
+therefore resets the prefix instead of reusing placeholder-token KV. Media wholly inside a matched
+prefix skips Vision execution, while new suffix media is encoded normally. The completion log
+reports the reused token count as `cache=`.
 
 MTP is an engine option and does not change protocol output shapes, stop behavior, or usage
 accounting. If a stop truncates a multi-token MTP round, the Engine commits the exact accepted target

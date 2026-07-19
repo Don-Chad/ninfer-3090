@@ -148,7 +148,7 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
                                           const ServeOptions& server) {
     ninfer::RequestOptions options;
     options.execution.requested_output_tokens = static_cast<std::uint32_t>(request.max_tokens);
-    options.execution.allow_prefix_reuse      = true;
+    options.execution.allow_prefix_reuse      = server.allow_prefix_reuse;
     options.execution.sampling                = resolve_sampling(request.sampling, server);
     options.output.raw                        = false;
     options.output.preserve_special_tokens    = request.uses_tools() || request.has_tool_history();
