@@ -158,6 +158,13 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.prefill_chunk == 0 || options.prefill_chunk % 128 != 0) {
         throw std::invalid_argument("--prefill-chunk must be a positive multiple of 128");
     }
+    if (options.mtp_draft_tokens > 5) {
+        throw std::invalid_argument("--mtp-draft-tokens must be in [0,5]");
+    }
+    if (options.proposal_head == ProposalHead::Optimized && options.mtp_draft_tokens == 0) {
+        throw std::invalid_argument(
+            "--lm-head-draft requires --mtp-draft-tokens greater than zero");
+    }
     if (default_max_tokens_explicit) {
         if (options.default_max_tokens <= 0) {
             throw std::invalid_argument("--default-max-tokens must be positive");

@@ -459,7 +459,7 @@ int run(const Options& options) {
         throw std::invalid_argument("--max-context is too small for the diagnostic schedule");
     }
 
-    auto sequence_plan = target::Package::plan_sequence(*model, device, engine);
+    auto sequence_plan = target::Package::plan_sequence(device, engine);
     auto program       = target::Package::create_program(*model, std::move(sequence_plan), device);
     ninfer::runtime::RequestMemory transient(device);
     ninfer::ExecutionOptions execution;

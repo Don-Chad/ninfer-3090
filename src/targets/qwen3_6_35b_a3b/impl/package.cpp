@@ -36,10 +36,6 @@ LoadedModel::~LoadedModel() = default;
 
 namespace ninfer::targets::qwen3_6_35b_a3b {
 
-void Package::preflight(DeviceContext& device, const EngineOptions& options) {
-    detail::Variant::preflight(device, options);
-}
-
 Package::LoadPlan Package::plan_load(artifact::Binder& binder) {
     return LoadPlan(std::make_unique<LoadPlan::Impl>(detail::bind_artifact(binder)));
 }
@@ -58,10 +54,8 @@ Package::Frontend Package::make_frontend(const LoadedModel& model) {
     return qwen3_6::make_frontend(model.impl_->data.frontend);
 }
 
-Package::SequencePlan Package::plan_sequence(const LoadedModel& model, DeviceContext& device,
-                                             const EngineOptions& options) {
-    if (model.impl_ == nullptr) { throw std::invalid_argument("loaded model is empty"); }
-    return qwen3_6::plan_sequence<detail::Variant>(model.impl_->data.runtime, device, options);
+Package::SequencePlan Package::plan_sequence(DeviceContext& device, const EngineOptions& options) {
+    return qwen3_6::plan_sequence<detail::Variant>(device, options);
 }
 
 std::unique_ptr<Package::Program>

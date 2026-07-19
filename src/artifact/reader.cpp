@@ -8,6 +8,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <span>
 #include <string_view>
 #include <system_error>
 #include <type_traits>
@@ -172,7 +173,7 @@ struct TransparentStringHash {
 class MappedFile {
 public:
     explicit MappedFile(const std::filesystem::path& path) {
-        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECT);
         if (fd < 0) {
             throw std::system_error(errno, std::generic_category(), "open " + path.string());
         }
@@ -216,6 +217,28 @@ public:
     const std::byte* data() const noexcept { return data_; }
 
     std::size_t size() const noexcept { return size_; }
+
+    std::size_t read_direct(std::uint64_t absolute_offset, std::span<std::byte> destination) const {
+        constexpr std::size_t alignment = Reader::direct_io_alignment;
+        if (absolute_offset % alignment != 0 || destination.size() % alignment != 0 ||
+            reinterpret_cast<std::uintptr_t>(destination.data()) % alignment != 0) {
+            throw ArtifactError("direct artifact read is not 4096-byte aligned");
+        }
+        if (absolute_offset > static_cast<std::uint64_t>(std::numeric_limits<off_t>::max()) ||
+            destination.size() > static_cast<std::size_t>(std::numeric_limits<ssize_t>::max())) {
+            throw ArtifactError("direct artifact read exceeds platform I/O limits");
+        }
+
+        ssize_t bytes = -1;
+        do {
+            bytes = ::pread(fd_, destination.data(), destination.size(),
+                            static_cast<off_t>(absolute_offset));
+        } while (bytes < 0 && errno == EINTR);
+        if (bytes < 0) {
+            throw std::system_error(errno, std::generic_category(), "direct artifact read");
+        }
+        return static_cast<std::size_t>(bytes);
+    }
 
 private:
     int fd_                = -1;
@@ -353,6 +376,11 @@ PayloadSpan Reader::payload(std::string_view name) const {
     const auto* object = find(name);
     if (object == nullptr) { throw ArtifactError("unknown artifact object: " + std::string(name)); }
     return payload(*object);
+}
+
+std::size_t Reader::read_direct(std::uint64_t absolute_offset,
+                                std::span<std::byte> destination) const {
+    return impl_->file.read_direct(absolute_offset, destination);
 }
 
 } // namespace ninfer::artifact

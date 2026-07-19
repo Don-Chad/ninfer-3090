@@ -35,7 +35,6 @@ struct Variant {
     static constexpr std::int32_t step_stats_counters       = kStepStatsCounters;
     static constexpr std::int32_t draft_head_rows           = 131072;
 
-    static void preflight(DeviceContext& device, const EngineOptions& options);
     static void attach_diagnostics(qwen3_6::Program<Variant>& program, void* context,
                                    qwen3_6::TextTapCallback text,
                                    qwen3_6::VisionTapCallback vision);

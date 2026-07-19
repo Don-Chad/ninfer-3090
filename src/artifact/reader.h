@@ -93,6 +93,8 @@ struct PayloadSpan {
 
 class Reader {
 public:
+    static constexpr std::size_t direct_io_alignment = 4096;
+
     explicit Reader(const std::filesystem::path& path);
     ~Reader();
 
@@ -109,6 +111,7 @@ public:
     std::uint64_t payload_offset() const noexcept;
     PayloadSpan payload(const ObjectDescriptor& object) const;
     PayloadSpan payload(std::string_view name) const;
+    std::size_t read_direct(std::uint64_t absolute_offset, std::span<std::byte> destination) const;
 
 private:
     struct Impl;

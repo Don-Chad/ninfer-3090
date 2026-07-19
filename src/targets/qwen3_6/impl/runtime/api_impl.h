@@ -30,6 +30,11 @@ std::uint32_t SequencePlan<Variant>::capacity() const noexcept {
 }
 
 template <>
+std::size_t SequencePlan<Variant>::device_reservation_bytes() const noexcept {
+    return impl_ != nullptr ? impl_->device_reservation_bytes : 0;
+}
+
+template <>
 RequestPlan<Variant>::RequestPlan(std::unique_ptr<detail::RequestPlanImpl<Variant>> impl) noexcept
     : impl_(std::move(impl)) {}
 
@@ -111,8 +116,7 @@ void Program<Variant>::reset_memory_peaks() noexcept {
 }
 
 template <>
-SequencePlan<Variant> plan_sequence<Variant>(const Variant::ModelView&, DeviceContext& device,
-                                             const EngineOptions& options) {
+SequencePlan<Variant> plan_sequence<Variant>(DeviceContext& device, const EngineOptions& options) {
     return SequencePlan<Variant>(
         detail::NINFER_QWEN36_RUNTIME_NS::plan_sequence_impl(device, options));
 }

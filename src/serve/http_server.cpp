@@ -15,6 +15,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -104,8 +105,7 @@ std::string sse_error_event(const ApiError& error) {
 
 } // namespace
 
-HttpServer::HttpServer(GenerationService& service, ServeOptions options)
-    : service_(service), options_(std::move(options)) {
+HttpServer::HttpServer(ServeOptions options) : options_(std::move(options)) {
     server_.set_payload_max_length(options_.max_request_bytes);
     register_routes();
 }
@@ -248,7 +248,7 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
             error.message = "model '" + request.model + "' not found";
             throw ApiException(std::move(error));
         }
-        prepared = service_.prepare(request);
+        prepared = service_->prepare(request);
     } catch (const ApiException& e) {
         write_error(res, e.error());
         return;
@@ -266,7 +266,7 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
 
     if (!request.stream) {
         try {
-            const GenerationOutcome outcome = service_.run(prepared, nullptr);
+            const GenerationOutcome outcome = service_->run(prepared, nullptr);
             log_line(format_request_done(req_id, outcome));
             const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
             if (!outcome.tool_calls.empty()) {
@@ -307,7 +307,7 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
             };
             sink.is_cancelled = [&]() { return cancelled->load(); };
 
-            const GenerationOutcome outcome = service_.run(*prepared_ptr, &sink);
+            const GenerationOutcome outcome = service_->run(*prepared_ptr, &sink);
             log_line(format_request_done(req_id, outcome));
             if (!outcome.tool_calls.empty()) {
                 if (!outcome.text.empty()) {
@@ -399,7 +399,7 @@ void HttpServer::handle_count_tokens(const httplib::Request& req, httplib::Respo
         RequestLimits limits;
         limits.default_max_tokens       = options_.default_max_tokens;
         const GenerationRequest request = parse_messages_request(body, limits);
-        const int input_tokens          = service_.count_prompt_tokens(request);
+        const int input_tokens          = service_->count_prompt_tokens(request);
         res.set_content(make_count_tokens_response(input_tokens), "application/json");
     } catch (const ApiException& e) {
         write_messages_error(res, e.error());
@@ -432,7 +432,7 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
         // The Anthropic endpoint accepts any `model` string (Claude Code sends real
         // Claude model names) and echoes it back; it never 404s on model id.
         request  = parse_messages_request(body, limits);
-        prepared = service_.prepare(request);
+        prepared = service_->prepare(request);
     } catch (const ApiException& e) {
         write_messages_error(res, e.error());
         return;
@@ -457,7 +457,7 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
 
     if (!request.stream) {
         try {
-            const GenerationOutcome outcome = service_.run(prepared, nullptr);
+            const GenerationOutcome outcome = service_->run(prepared, nullptr);
             log_line(format_request_done(req_id, outcome));
             const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
             const char* stop_reason =
@@ -523,7 +523,7 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
                 };
                 sink.is_cancelled = [&]() { return cancelled->load(); };
 
-                const GenerationOutcome outcome = service_.run(*prepared_ptr, &sink);
+                const GenerationOutcome outcome = service_->run(*prepared_ptr, &sink);
                 log_line(format_request_done(req_id, outcome));
 
                 // Close any block still open from live streaming.
@@ -609,7 +609,19 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
         [worker, cancelled](bool) { cancelled->store(true); });
 }
 
-bool HttpServer::listen() { return server_.listen(options_.host, options_.port); }
+bool HttpServer::bind() { return server_.bind_to_port(options_.host, options_.port); }
+
+void HttpServer::attach(GenerationService& service) {
+    if (service_ != nullptr) {
+        throw std::logic_error("HTTP generation service is already attached");
+    }
+    service_ = &service;
+}
+
+bool HttpServer::listen() {
+    if (service_ == nullptr) { throw std::logic_error("HTTP generation service is not attached"); }
+    return server_.listen_after_bind();
+}
 
 void HttpServer::stop() { server_.stop(); }
 

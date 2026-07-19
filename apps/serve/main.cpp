@@ -28,16 +28,22 @@ int main(int argc, char** argv) {
         }
 
         using Clock = std::chrono::steady_clock;
+        ninfer::serve::HttpServer server(options);
+        if (!server.bind()) {
+            std::cerr << "error: failed to bind " << options.host << ':' << options.port << '\n';
+            return 1;
+        }
+
         std::cerr << "ninfer-serve: loading model...\n";
         const auto load_start = Clock::now();
         ninfer::serve::GenerationService service(options);
+        server.attach(service);
         std::cerr << "ninfer-serve: model loaded in "
                   << std::chrono::duration<double>(Clock::now() - load_start).count() << " s\n";
 
         std::cerr << "ninfer-serve: warming up...\n";
         service.warmup();
 
-        ninfer::serve::HttpServer server(service, options);
         g_server.store(&server);
         std::signal(SIGINT, handle_signal);
         std::signal(SIGTERM, handle_signal);

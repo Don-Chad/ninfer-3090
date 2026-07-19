@@ -330,18 +330,9 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
         }
     }
 
-    std::size_t free_bytes  = 0;
-    std::size_t total_bytes = 0;
-    CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
-    const std::size_t required = checked_add(
+    impl->device_reservation_bytes = checked_add(
         checked_add(impl->persistent.bytes, impl->workspace_bytes, "sequence memory plan"),
         impl->graph_allowance_bytes, "sequence graph allowance");
-    if (required > free_bytes) {
-        throw std::invalid_argument("requested context requires " + std::to_string(required) +
-                                    " bytes of sequence/workspace memory, but only " +
-                                    std::to_string(free_bytes) +
-                                    " bytes are free after loading weights");
-    }
     return impl;
 }
 

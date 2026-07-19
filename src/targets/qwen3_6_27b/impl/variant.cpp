@@ -38,10 +38,6 @@ graph_ranges_through(std::uint32_t max_frontier, const std::vector<std::uint32_t
 
 } // namespace
 
-void Variant::preflight(DeviceContext& device, const EngineOptions& options) {
-    qwen3_6::detail::qwen3_6_27b_runtime::validate_target_options(device, options);
-}
-
 std::vector<GraphFrontierRange> Variant::ordinary_graph_ranges(std::uint32_t capacity) {
     // E+1 is the one-token visible window. Early ranges limit empty producer CTAs; later ranges
     // follow measured split-policy transitions until the producer grid reaches its fixed cap.

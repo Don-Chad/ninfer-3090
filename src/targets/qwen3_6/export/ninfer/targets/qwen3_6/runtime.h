@@ -5,6 +5,7 @@
 #include "runtime/contract/types.h"
 #include <ninfer/targets/qwen3_6/prepared_prompt.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -41,6 +42,7 @@ public:
     SequencePlan& operator=(const SequencePlan&) = delete;
 
     [[nodiscard]] std::uint32_t capacity() const noexcept;
+    [[nodiscard]] std::size_t device_reservation_bytes() const noexcept;
 
 public:
     // Family-private construction/storage seam; exact packages expose only the completed alias.
@@ -48,8 +50,7 @@ public:
     std::unique_ptr<detail::SequencePlanImpl<Variant>> impl_;
 
     template <class V>
-    friend SequencePlan<V> plan_sequence(const typename V::ModelView&, DeviceContext&,
-                                         const EngineOptions&);
+    friend SequencePlan<V> plan_sequence(DeviceContext&, const EngineOptions&);
     template <class V>
     friend class detail::ProgramImpl;
 };
@@ -110,8 +111,7 @@ private:
 };
 
 template <class Variant>
-[[nodiscard]] SequencePlan<Variant> plan_sequence(const typename Variant::ModelView& model,
-                                                  DeviceContext& device,
+[[nodiscard]] SequencePlan<Variant> plan_sequence(DeviceContext& device,
                                                   const EngineOptions& options);
 
 template <class Variant>

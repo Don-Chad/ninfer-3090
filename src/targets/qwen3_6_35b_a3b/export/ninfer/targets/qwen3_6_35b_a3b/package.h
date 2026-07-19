@@ -83,14 +83,11 @@ struct Package {
     using RequestPlan    = qwen3_6::RequestPlan<detail::Variant>;
     using Program        = qwen3_6::Program<detail::Variant>;
 
-    // Cheap target-owned option/device validation. The registry calls this after matching
-    // model_id and before any weight materialization.
-    static void preflight(DeviceContext& device, const EngineOptions& options);
     [[nodiscard]] static LoadPlan plan_load(artifact::Binder& binder);
     [[nodiscard]] static std::unique_ptr<LoadedModel>
     construct_loaded_model(LoadPlan&& plan, artifact::MaterializedArtifact&& materialized);
     [[nodiscard]] static Frontend make_frontend(const LoadedModel& model);
-    [[nodiscard]] static SequencePlan plan_sequence(const LoadedModel& model, DeviceContext& device,
+    [[nodiscard]] static SequencePlan plan_sequence(DeviceContext& device,
                                                     const EngineOptions& options);
     [[nodiscard]] static std::unique_ptr<Program>
     create_program(const LoadedModel& model, SequencePlan&& plan, DeviceContext& device);

@@ -43,8 +43,9 @@ struct SequencePlanImpl<NINFER_QWEN36_VARIANT> {
     bool use_cuda_graph         = true;
     int device                  = 0;
     NINFER_QWEN36_RUNTIME_NS::PersistentLayout persistent;
-    std::size_t workspace_bytes       = 0;
-    std::size_t graph_allowance_bytes = 0;
+    std::size_t workspace_bytes          = 0;
+    std::size_t graph_allowance_bytes    = 0;
+    std::size_t device_reservation_bytes = 0;
 };
 
 } // namespace ninfer::targets::qwen3_6::detail

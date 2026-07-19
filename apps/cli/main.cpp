@@ -229,6 +229,18 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        ninfer::PromptInput input =
+            cli.messages_path.empty()
+                ? ninfer::product::prompt_from_text(cli.prompt, cli.enable_thinking)
+                : ninfer::product::prompt_from_messages(cli.messages_path, cli.enable_thinking);
+
+        ninfer::RequestOptions request;
+        request.execution.sampling                = cli.sampling;
+        request.execution.requested_output_tokens = cli.max_new;
+        request.stop.token_ids                    = cli.stop_token_ids;
+        request.stop.strings                      = cli.stop_strings;
+        request.output.raw                        = cli.raw_output;
+
         std::cerr << "phase       detail                      elapsed/progress\n";
         std::map<std::string, ProgressState> progress;
         ninfer::EngineOptions engine_options;
@@ -262,18 +274,7 @@ int main(int argc, char** argv) {
         print_load_summary(engine.load_summary(), load_wall);
         engine.reset_memory_peaks();
 
-        ninfer::PromptInput input =
-            cli.messages_path.empty()
-                ? ninfer::product::prompt_from_text(cli.prompt, cli.enable_thinking)
-                : ninfer::product::prompt_from_messages(cli.messages_path, cli.enable_thinking);
         ninfer::PreparedPrompt prompt = engine.prepare(std::move(input));
-
-        ninfer::RequestOptions request;
-        request.execution.sampling                = cli.sampling;
-        request.execution.requested_output_tokens = cli.max_new;
-        request.stop.token_ids                    = cli.stop_token_ids;
-        request.stop.strings                      = cli.stop_strings;
-        request.output.raw                        = cli.raw_output;
 
         StreamingSink sink;
         const ninfer::GenerationResult result = engine.generate(std::move(prompt), request, &sink);

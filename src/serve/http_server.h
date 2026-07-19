@@ -14,9 +14,12 @@ namespace ninfer::serve {
 
 class HttpServer {
 public:
-    HttpServer(GenerationService& service, ServeOptions options);
+    explicit HttpServer(ServeOptions options);
 
-    // Blocking listen loop. Returns false if the socket could not be bound.
+    // Reserves the configured address before model loading. The service is attached only after its
+    // Engine is ready, then listen() enters the blocking accept loop on the already-bound socket.
+    bool bind();
+    void attach(GenerationService& service);
     bool listen();
     void stop();
 
@@ -32,7 +35,7 @@ private:
     // the httplib thread pool and streaming worker threads never interleave.
     void log_line(const std::string& line);
 
-    GenerationService& service_;
+    GenerationService* service_ = nullptr;
     ServeOptions options_;
     httplib::Server server_;
     std::atomic<std::uint64_t> request_seq_{0};

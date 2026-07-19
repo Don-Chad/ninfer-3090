@@ -32,8 +32,6 @@ struct Variant {
     static constexpr std::int32_t step_stats_counters       = kStepStatsCounters;
     static constexpr std::int32_t draft_head_rows           = 131072;
 
-    static void preflight(DeviceContext& device, const EngineOptions& options);
-
     [[nodiscard]] static std::vector<GraphFrontierRange>
     ordinary_graph_ranges(std::uint32_t capacity);
     [[nodiscard]] static std::vector<GraphFrontierRange>

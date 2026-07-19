@@ -40,10 +40,6 @@ void run_sparse_moe(const Tensor& hidden, const ops::SparseMoeWeights& weights, 
 
 } // namespace
 
-void Variant::preflight(DeviceContext& device, const EngineOptions& options) {
-    qwen3_6::detail::qwen3_6_35b_a3b_runtime::validate_target_options(device, options);
-}
-
 std::vector<GraphFrontierRange> Variant::ordinary_graph_ranges(std::uint32_t capacity) {
     return graph_ranges_through(capacity - 1, {127, 511, 2047, 4095, 8197, 16389, 32767});
 }

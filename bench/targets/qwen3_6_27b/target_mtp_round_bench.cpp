@@ -142,7 +142,7 @@ int run(const Options& options) {
     engine.speculative.proposal_head = options.proposal;
     engine.use_cuda_graph            = options.use_cuda_graph;
 
-    auto sequence = target::Package::plan_sequence(*model, device, engine);
+    auto sequence = target::Package::plan_sequence(device, engine);
     auto program  = target::Package::create_program(*model, std::move(sequence), device);
     ninfer::runtime::RequestMemory request_memory(device);
     ninfer::ExecutionOptions execution;
