@@ -685,7 +685,26 @@ void ProgramImplCore::resolve_pending(std::uint32_t accepted_tokens, bool termin
         throw std::logic_error("a continuing round must accept every licensed token");
     }
     if (terminal && pending.kind == PendingKind::Mtp && accepted_tokens < pending.produced) {
-        make_invalid();
+        // The output policy may stop inside a target-licensed MTP batch. Target verification has
+        // already materialized KV, hidden, and one GDN snapshot for every returned prefix, so
+        // commit the exact externally accepted frontier instead of discarding the resident
+        // sequence. The next request rebuilds MTP proposals from this target state.
+        const std::uint32_t committed_E = pending.base_E + accepted_tokens;
+        const std::uint32_t committed_S = pending.base_S + accepted_tokens;
+        if (committed_S > ledger.size() || committed_S > prefix_identity.size()) {
+            throw std::logic_error("partial MTP terminal exceeds the provisional ledger");
+        }
+        copy_tail(io.verify_hidden.slice(1, static_cast<int>(accepted_tokens) - 1, 1));
+        ledger.resize(committed_S);
+        prefix_identity.truncate(committed_S);
+        E                = committed_E;
+        S                = committed_S;
+        current_gdn_slot = static_cast<std::int32_t>(accepted_tokens - 1);
+        text_kv_valid    = committed_E;
+        mtp_kv_valid     = committed_E;
+        proposal_ready   = false;
+        lifecycle        = Lifecycle::Resident;
+        pending          = {};
         return;
     }
     if (accepted_tokens != pending.produced) {

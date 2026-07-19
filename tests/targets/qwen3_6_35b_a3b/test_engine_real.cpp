@@ -53,8 +53,8 @@ std::vector<std::uint8_t> gradient_ppm() {
 
 int verify_loaded_product(const ninfer::Engine& engine) {
     const ninfer::LoadSummary load = engine.load_summary();
-    if (load.target != "qwen3_6_35b_a3b" || load.tensor_count != 883 ||
-        load.resource_count != 6 || load.host_to_device_bytes != 22'360'191'904ULL ||
+    if (load.target != "qwen3_6_35b_a3b" || load.tensor_count != 883 || load.resource_count != 6 ||
+        load.host_to_device_bytes != 22'360'191'904ULL ||
         load.artifact_bytes_read < load.host_to_device_bytes) {
         std::cerr << "35B Engine construction has an incomplete load summary: target="
                   << load.target << " tensors=" << load.tensor_count
@@ -100,6 +100,34 @@ int exercise_text_mtp_and_prefix(ninfer::Engine& engine) {
                   << reused.reused_prompt_tokens << " expected=" << expected_reuse
                   << " outputs=" << reused.generated_token_ids.size()
                   << " fallbacks=" << reused.speculative.fallback_steps << '\n';
+        return 1;
+    }
+
+    if (first.generated_token_ids[0] == first.generated_token_ids[1]) {
+        std::cerr << "35B partial-terminal fixture repeats its first token\n";
+        return 1;
+    }
+    ninfer::RequestOptions stop_options = greedy_options(5, false);
+    stop_options.stop.token_ids.push_back(first.generated_token_ids[1]);
+    const ninfer::GenerationResult stopped =
+        engine.generate(engine.prepare_tokens(prompt), stop_options);
+    if (stopped.finish_reason != ninfer::FinishReason::StopToken ||
+        stopped.generated_token_ids.size() != 2) {
+        std::cerr << "35B custom stop did not terminate inside an MTP round\n";
+        return 1;
+    }
+
+    std::vector<ninfer::TokenId> stopped_continuation = prompt;
+    stopped_continuation.insert(stopped_continuation.end(), stopped.generated_token_ids.begin(),
+                                stopped.generated_token_ids.end());
+    stopped_continuation.push_back(198);
+    const ninfer::GenerationResult stopped_reuse = engine.generate(
+        engine.prepare_tokens(std::move(stopped_continuation)), greedy_options(1, true));
+    const std::uint32_t expected_stopped_reuse =
+        static_cast<std::uint32_t>(prompt.size() + stopped.generated_token_ids.size() - 1);
+    if (stopped_reuse.reused_prompt_tokens != expected_stopped_reuse) {
+        std::cerr << "35B partial MTP terminal reused " << stopped_reuse.reused_prompt_tokens
+                  << ", expected " << expected_stopped_reuse << '\n';
         return 1;
     }
 

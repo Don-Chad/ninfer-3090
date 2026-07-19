@@ -240,6 +240,12 @@ void test_prefix_identity() {
     append_text_token(original, 12, 3);
     expect(q36::detail::prefix_matches(original, ledger, resident, ledger.size()),
            "generated multimodal continuation identity");
+
+    const q36::PreparedPromptData prompt_only = identity_prompt();
+    resident.truncate(prompt_only.token_ids.size());
+    ledger.resize(prompt_only.token_ids.size());
+    expect(q36::detail::prefix_matches(prompt_only, ledger, resident, ledger.size()),
+           "truncated multimodal continuation identity");
 }
 
 } // namespace

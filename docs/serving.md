@@ -175,8 +175,9 @@ placeholder-token KV. Media wholly inside a matched prefix skips Vision executio
 media is encoded normally. The completion log reports the reused token count as `cache=`.
 
 MTP is an engine option and does not change protocol output shapes, stop behavior, or usage
-accounting. Output-limit and context-capacity finishes map to `length`/ `max_tokens`; ordinary
-model or string stops map to `stop`/ `end_turn`.
+accounting. If a stop truncates a multi-token MTP round, the Engine commits the exact accepted target
+prefix so a following compatible turn can still reuse it. Output-limit and context-capacity finishes
+map to `length`/ `max_tokens`; ordinary model or string stops map to `stop`/ `end_turn`.
 
 Function tools are rendered into the model prompt and generated calls are parsed into protocol
 responses. NInfer does not execute tools and does not enforce client JSON Schema through constrained

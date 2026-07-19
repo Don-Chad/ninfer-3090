@@ -17,6 +17,7 @@ public:
     void clear() noexcept;
     void assign(const PreparedPromptData& prompt);
     void append_generated(std::size_t count, std::int32_t rope_delta);
+    void truncate(std::size_t tokens);
 
     [[nodiscard]] std::size_t size() const noexcept { return token_types_.size(); }
 

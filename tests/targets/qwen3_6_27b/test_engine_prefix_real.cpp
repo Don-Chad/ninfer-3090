@@ -93,8 +93,11 @@ int exercise_partial_mtp_terminal(ninfer::Engine& engine,
     probe.stop.include_model_defaults       = false;
     const ninfer::GenerationResult after =
         engine.generate(engine.prepare_tokens(std::move(continuation)), probe);
-    if (after.reused_prompt_tokens != 0) {
-        std::cerr << "strict-prefix MTP terminal left provisional Program state reusable\n";
+    const std::uint32_t expected_reuse =
+        static_cast<std::uint32_t>(prompt.size() + stopped.generated_token_ids.size() - 1);
+    if (after.reused_prompt_tokens != expected_reuse) {
+        std::cerr << "partial MTP terminal reused " << after.reused_prompt_tokens << ", expected "
+                  << expected_reuse << '\n';
         return 1;
     }
     return 0;
@@ -302,6 +305,33 @@ int exercise_vision(ninfer::Engine& engine) {
         options(true));
     if (miss.reused_prompt_tokens != 0) {
         std::cerr << "changed media content incorrectly reused placeholder-token KV\n";
+        return 1;
+    }
+
+    ninfer::RequestOptions mtp_options            = options(false);
+    mtp_options.execution.requested_output_tokens = 5;
+    const ninfer::GenerationResult mtp_baseline =
+        engine.generate(engine.prepare(first_input(image_bytes)), mtp_options);
+    if (mtp_baseline.generated_token_ids.size() != 5 || mtp_baseline.speculative.rounds == 0 ||
+        mtp_baseline.generated_token_ids[0] == mtp_baseline.generated_token_ids[1]) {
+        std::cerr << "multimodal partial-terminal fixture did not enter an MTP round\n";
+        return 1;
+    }
+    ninfer::RequestOptions stop_options = mtp_options;
+    stop_options.stop.token_ids.push_back(mtp_baseline.generated_token_ids[1]);
+    const ninfer::GenerationResult stopped =
+        engine.generate(engine.prepare(first_input(image_bytes)), stop_options);
+    if (stopped.finish_reason != ninfer::FinishReason::StopToken ||
+        stopped.generated_token_ids.size() != 2) {
+        std::cerr << "multimodal custom stop did not terminate inside an MTP round\n";
+        return 1;
+    }
+    const ninfer::GenerationResult stopped_reuse =
+        engine.generate(engine.prepare(followup_input(image_bytes, stopped)), options(true));
+    if (stopped_reuse.reused_prompt_tokens == 0 || stopped_reuse.timings.vision_seconds != 0.0) {
+        std::cerr << "partial MTP terminal discarded its multimodal boundary: reused="
+                  << stopped_reuse.reused_prompt_tokens
+                  << " vision=" << stopped_reuse.timings.vision_seconds << '\n';
         return 1;
     }
     return 0;

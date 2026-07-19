@@ -99,6 +99,19 @@ void ResidentPrefixIdentity::append_generated(std::size_t count, std::int32_t ro
     }
 }
 
+void ResidentPrefixIdentity::truncate(std::size_t tokens) {
+    if (tokens > size()) {
+        throw std::out_of_range("cannot extend resident prefix identity by truncation");
+    }
+    std::size_t retained_items = 0;
+    if (!prefix_item_count(vision_items_, tokens, &retained_items)) {
+        throw std::logic_error("resident prefix truncation divides a Vision item");
+    }
+    token_types_.resize(tokens);
+    for (auto& axis : positions_) { axis.resize(tokens); }
+    vision_items_.resize(retained_items);
+}
+
 bool ResidentPrefixIdentity::matches(const PreparedPromptData& prompt, std::size_t count) const {
     const std::size_t prompt_tokens = prompt.token_ids.size();
     if (count > prompt_tokens || count > size() || prompt.token_types.size() != prompt_tokens ||
