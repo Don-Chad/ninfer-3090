@@ -296,12 +296,6 @@ int test_official_resource_guards() {
         check(throws_invalid_argument([&] { (void)FrontendFactory::create_component(stale_pad); }),
               "stale Unsloth pad-token policy was accepted");
 
-    FrontendResources stale_template = resources();
-    stale_template.chat_template_jinja =
-        "enable_thinking <|im_start|> <|vision_start|> vision_start";
-    failures += check(
-        throws_invalid_argument([&] { (void)FrontendFactory::create_component(stale_template); }),
-        "stale Unsloth template guards were accepted");
     return failures;
 }
 

@@ -159,11 +159,11 @@ late `system` roles, requires a real user query, and serializes non-string tool 
 The C++ binder retains these payloads as owned strings and constructs the shared Qwen3.6 native
 tokenizer, template renderer, and image/video processor directly from them; it does not create a
 temporary checkpoint directory. The independent Python reference may materialize the six source
-filenames in a temporary directory and consume them through Transformers. The native route validates
-the official pad-token/template guards, registered tokenizer domain, required Vision tokens, and
-processor configuration; the Python route validates the tokenizer domain, Vision tokens, and
-required library processor inputs. MRoPE positions and `rope_delta` are derived prepared-prompt
-values rather than resource contents.
+filenames in a temporary directory and consume them through Transformers. Conversion validates the
+exact official six-resource hash profile. The native route validates the official pad-token policy,
+registered tokenizer domain, required Vision tokens, and processor configuration; the Python route
+validates the tokenizer domain, Vision tokens, and required library processor inputs. MRoPE
+positions and `rope_delta` are derived prepared-prompt values rather than resource contents.
 
 ## 5. Text and draft-head tensor inventory
 
