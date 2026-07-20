@@ -12,6 +12,48 @@ tags:
   - conversational
   - cuda
   - rtx-5090
+model-index:
+  - name: Qwen3.6-35B-A3B-NInfer
+    results:
+      - task:
+          type: text-generation
+          name: Text Generation
+        dataset:
+          name: AIME 2025
+          type: aime25
+        metrics:
+          - type: accuracy
+            value: 90.0
+            name: Accuracy (0-shot, rule)
+        source:
+          url: https://github.com/Neroued/ninfer/tree/master/eval
+          name: NInfer EvalScope 1.9.0
+      - task:
+          type: text-generation
+          name: Text Generation
+        dataset:
+          name: AIME 2026
+          type: aime26
+        metrics:
+          - type: accuracy
+            value: 90.0
+            name: Accuracy (0-shot, rule)
+        source:
+          url: https://github.com/Neroued/ninfer/tree/master/eval
+          name: NInfer EvalScope 1.9.0
+      - task:
+          type: text-generation
+          name: Text Generation
+        dataset:
+          name: GPQA-Diamond
+          type: gpqa_diamond
+        metrics:
+          - type: accuracy
+            value: 85.35
+            name: Accuracy (0-shot, rule)
+        source:
+          url: https://github.com/Neroued/ninfer/tree/master/eval
+          name: NInfer EvalScope 1.9.0
 ---
 
 # Qwen3.6-35B-A3B for NInfer
@@ -88,10 +130,61 @@ The artifact supports:
 
 ## Performance
 
-On an RTX 5090, the published NInfer MTP=3 measurement for a 7,678-token prompt and 512 generated
-tokens reports 13,411.71 prefill tok/s and 436.32 decode tok/s, averaged over five measured runs
-after one warm-up. See the
-[full methodology and comparison](https://github.com/Neroued/ninfer/blob/master/docs/performance.md).
+The following single-GPU serving measurements were collected on an NVIDIA GeForce RTX 5090 with
+CUDA 13.1. Requests were submitted serially to a persistent `ninfer-serve` process with CUDA Graph
+enabled, a 1,024-token prefill chunk, INT8 group-64 KV cache, and prefix reuse disabled. Each value
+is the arithmetic mean ± sample standard deviation over five fixed seeds; warm-up requests are
+excluded.
+
+### Long-context baseline (MTP disabled)
+
+| Prompt tokens | Prefill tok/s | Server TTFT (ms) | Decode tok/s |
+|---:|---:|---:|---:|
+| 7,680 | 15,544.3 ± 242.4 | 500.2 ± 7.8 | 271.1 ± 3.6 |
+| 64,512 | 10,809.0 ± 95.3 | 6,009.9 ± 52.6 | 242.9 ± 1.3 |
+| 130,048 | 7,828.4 ± 34.1 | 16,693.3 ± 71.2 | 219.4 ± 1.6 |
+| 260,096 | 5,157.1 ± 52.4 | 50,598.8 ± 519.7 | 188.2 ± 2.1 |
+
+### MTP=3 long-reasoning decode
+
+Thinking was enabled and the output limit was 65,536 tokens.
+
+| AIME 2026 fixture | Completion tokens | Decode tok/s | MTP acceptance | MTP tokens/round |
+|---|---:|---:|---:|---:|
+| Problem 1 | 8,675.4 ± 1,565.6 | 634.3 ± 14.2 | 82.7% ± 2.6% | 3.48 ± 0.08 |
+| Problem 15 | 65,536.0 ± 0.0 | 542.8 ± 12.5 | 73.0% ± 2.5% | 3.19 ± 0.07 |
+| Problem 30 | 55,171.0 ± 5,407.1 | 572.9 ± 9.1 | 77.7% ± 1.4% | 3.33 ± 0.04 |
+
+### MTP=3 cross-scenario decode
+
+Each category contains three fixtures and five seeds per fixture (15 samples). Thinking was
+disabled and the output limit was 4,096 tokens.
+
+| Category | Decode tok/s | MTP acceptance | MTP tokens/round |
+|---|---:|---:|---:|
+| Code | 576.5 ± 21.7 | 71.0% ± 4.0% | 3.13 ± 0.12 |
+| Story | 395.9 ± 30.9 | 37.7% ± 5.8% | 2.13 ± 0.17 |
+| Translation | 559.3 ± 28.1 | 66.6% ± 5.1% | 3.00 ± 0.15 |
+| Structured output | 661.2 ± 29.5 | 87.2% ± 6.0% | 3.62 ± 0.18 |
+
+See the
+[full methodology and results](https://github.com/Neroued/ninfer/blob/master/docs/performance.md),
+including metric definitions and the exact reproduction command.
+
+## Evaluation
+
+The artifact was evaluated through NInfer's OpenAI-compatible serving route with thinking enabled,
+MTP=3, and a 262,144-token context limit. EvalScope 1.9.0 used 0-shot prompts, rule-based scoring,
+and one sample per problem with temperature 0.6, top-p 0.95, top-k 20, presence penalty 1.0, and
+seed 42. All configured samples completed and were scored.
+
+| Benchmark | Accuracy | Correct / total |
+|---|---:|---:|
+| AIME 2025 | 90.00% | 27 / 30 |
+| AIME 2026 | 90.00% | 27 / 30 |
+| GPQA-Diamond | 85.35% | 169 / 198 |
+
+These are single-sample results under the stated NInfer evaluation profile, not pass@k scores.
 
 ## Limits
 
