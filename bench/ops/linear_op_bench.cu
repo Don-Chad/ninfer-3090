@@ -1,14 +1,18 @@
-// Cold-cache per-op GEMV measurement rig for native row-split low-bit
-// linears. This is measurement-only: it dispatches through ninfer::ops::linear
-// so the current registered ROW_SPLIT plan remains the measured implementation.
+// Cold-cache per-Op measurement rig for native row-split low-bit Linear,
+// LinearAdd, LinearPair, and LinearSwiGLU contracts. Production modes dispatch
+// through their semantic ninfer::ops entry points; fixed-candidate modes remain
+// implementation diagnostics for the base Linear/W8 LinearAdd routes.
 //
 // Examples:
 //   ./build/bench/ninfer_linear_op_bench --all-targets --csv-out profiles/ncu/linear-baseline.csv
 //   ./build/bench/ninfer_linear_op_bench --shape MlpGateUp34816x5120 --qtype Q4 --repeat 200
+//   ./build/bench/ninfer_linear_op_bench --shape MlpGateUp34816x5120 --qtype Q4 \
+//       --linear-swiglu --t-sweep 1024
 
 #include "ninfer/ops/linear.h"
 #include "ninfer/ops/linear_add.h"
 #include "ninfer/ops/linear_pair.h"
+#include "ninfer/ops/linear_swiglu.h"
 #include "core/device.h"
 #include "ninfer_bench_common.h"
 #include "ops/linear/q4/q4_rowsplit_launch.h"
@@ -19,8 +23,10 @@
 #include "ops/linear/q6/q6_rowsplit_plan.h"
 #include "ops/linear/w8/w8_rowsplit_launch.h"
 #include "ops/linear/w8/w8_rowsplit_plan.h"
+#include "ops/linear_add/q5/q5_linear_add_plan.h"
 #include "ops/linear_add/w8/w8_linear_add_plan.h"
 #include "ops/linear_pair/w8/w8_pair_plan.h"
+#include "ops/linear_swiglu/q4/q4_linear_swiglu_plan.h"
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -37,7 +43,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 using namespace ninfer;
@@ -153,6 +158,7 @@ struct Options {
     bool have_qtype                         = false;
     bool paired_kv                          = false;
     bool linear_add                         = false;
+    bool linear_swiglu                      = false;
     bool have_rows                          = false;
     bool have_k                             = false;
     ShapeSpec shape                         = kTask2Targets[0].shape;
@@ -422,14 +428,35 @@ ops::detail::W8LinearAddPlan resolve_auto_w8_linear_add_plan(const ShapeSpec& sh
     return ops::detail::w8_linear_add_resolve_plan({shape.n, shape.k, padded_k, t});
 }
 
+ops::detail::Q5LinearAddPlan resolve_auto_q5_linear_add_plan(const ShapeSpec& shape,
+                                                             std::int32_t t) {
+    const auto padded_k = static_cast<std::int32_t>(align_up_u64(shape.k, 128));
+    return ops::detail::q5_linear_add_resolve_plan({shape.n, shape.k, padded_k, t});
+}
+
+ops::detail::Q4LinearSwiGluPlan resolve_auto_q4_linear_swiglu_plan(const ShapeSpec& shape,
+                                                                  std::int32_t t) {
+    const auto padded_k = static_cast<std::int32_t>(align_up_u64(shape.k, 128));
+    return ops::detail::q4_linear_swiglu_resolve_plan(
+        {shape.n, shape.n / 2, shape.k, padded_k, t});
+}
+
 std::string candidate_name(const Options& opt, QType qtype, const ShapeSpec& shape,
                            std::int32_t t) {
     switch (opt.candidate) {
     case CandidateKind::Auto:
         if (qtype == QType::Q4G64_F16S) {
+            if (opt.linear_swiglu) {
+                return ops::detail::q4_linear_swiglu_schedule_name(
+                    resolve_auto_q4_linear_swiglu_plan(shape, t).schedule);
+            }
             return ops::detail::q4_schedule_name(resolve_auto_q4_plan(shape, t).schedule);
         }
         if (qtype == QType::Q5G64_F16S) {
+            if (opt.linear_add) {
+                return ops::detail::q5_linear_add_schedule_name(
+                    resolve_auto_q5_linear_add_plan(shape, t).schedule);
+            }
             return ops::detail::q5_schedule_name(resolve_auto_q5_plan(shape, t).schedule);
         }
         if (qtype == QType::Q6G64_F16S) {
@@ -708,7 +735,9 @@ void usage(const char* argv0) {
         "                             w8-mma-r32c128, or w8-mma-r64c128.\n"
         "  --variant NAME             Fixed kernel variant; auto is the default.\n"
         "  --paired-kv                Benchmark paired MTP K/V (requires MtpKV + W8G32).\n"
-        "  --linear-add               Benchmark W8 [2048,4096] fused residual epilogues.\n"
+        "  --linear-add               Benchmark Q5 [5120,17408]/[5120,6144] or W8 "
+        "[2048,4096] LinearAdd.\n"
+        "  --linear-swiglu            Benchmark Q4 [34816,5120] LinearSwiGLU.\n"
         "  --warmup N                 Cold-cache warmup GEMV launches (default %d).\n"
         "  --repeat N                 Cold-cache measured GEMV launches (default %d).\n"
         "  --copy-repeat N            Cold-cache copy-ceiling samples (default %d).\n"
@@ -764,6 +793,9 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--linear-add") {
             opt.linear_add  = true;
             opt.all_targets = false;
+        } else if (arg == "--linear-swiglu") {
+            opt.linear_swiglu = true;
+            opt.all_targets   = false;
         } else if (arg == "--warmup") {
             opt.warmup = parse_int(next("warmup"), "warmup");
         } else if (arg == "--repeat") {
@@ -832,12 +864,29 @@ Options parse_args(int argc, char** argv) {
         (std::string_view(opt.shape.name) != "MtpKV1024x5120" || opt.qtype != QType::W8G32_F16S)) {
         throw std::invalid_argument("--paired-kv requires --shape MtpKV1024x5120 --qtype W8G32");
     }
+    if (opt.linear_add && opt.linear_swiglu) {
+        throw std::invalid_argument("--linear-add and --linear-swiglu are mutually exclusive");
+    }
     if (opt.linear_add) {
-        if (opt.paired_kv || opt.all_targets || !numeric_shape || opt.qtype != QType::W8G32_F16S ||
-            opt.rows != 2048 || opt.k != 4096 ||
-            (opt.candidate != CandidateKind::Auto && opt.candidate != CandidateKind::W8Fixed)) {
-            throw std::invalid_argument("--linear-add requires --rows 2048 --k 4096 --qtype W8G32 "
-                                        "and an auto/W8 candidate");
+        const ShapeSpec shape = numeric_shape ? ShapeSpec{"Numeric", opt.rows, opt.k} : opt.shape;
+        const bool q5 = opt.qtype == QType::Q5G64_F16S && shape.n == 5120 &&
+                        (shape.k == 6144 || shape.k == 17408) &&
+                        opt.candidate == CandidateKind::Auto;
+        const bool w8 = opt.qtype == QType::W8G32_F16S && shape.n == 2048 && shape.k == 4096 &&
+                        (opt.candidate == CandidateKind::Auto ||
+                         opt.candidate == CandidateKind::W8Fixed);
+        if (opt.paired_kv || opt.all_targets || (!q5 && !w8)) {
+            throw std::invalid_argument(
+                "--linear-add requires Q5 [5120,6144]/[5120,17408] with auto selection, "
+                "or W8G32 [2048,4096] with an auto/W8 candidate");
+        }
+    }
+    if (opt.linear_swiglu) {
+        const ShapeSpec shape = numeric_shape ? ShapeSpec{"Numeric", opt.rows, opt.k} : opt.shape;
+        if (opt.paired_kv || opt.all_targets || opt.qtype != QType::Q4G64_F16S ||
+            shape.n != 34816 || shape.k != 5120 || opt.candidate != CandidateKind::Auto) {
+            throw std::invalid_argument(
+                "--linear-swiglu requires Q4 [34816,5120] with auto selection");
         }
     }
     if (opt.repeat <= 0) { throw std::invalid_argument("--repeat must be positive"); }
@@ -855,6 +904,10 @@ Options parse_args(int argc, char** argv) {
 
 std::vector<int> default_t_sweep(const TargetSpec& target, const Options& opt) {
     if (opt.paired_kv) { return {1, 4, 5, 16, 17, 56, 57, 128}; }
+    if (opt.linear_swiglu) { return {1, 16, 128, 129, 256, 384, 512, 640, 1024}; }
+    if (opt.linear_add && target.qtype == QType::Q5G64_F16S) {
+        return {1, 24, 25, 64, 128, 129, 512, 1024};
+    }
     if (opt.candidate == CandidateKind::Q4Fixed) {
         const bool gemv = opt.q4_schedule == ops::detail::Q4ScheduleId::GemvR4W1Direct ||
                           opt.q4_schedule == ops::detail::Q4ScheduleId::GemvR1W8Direct;
@@ -1176,6 +1229,10 @@ ops::detail::W8KernelVariant selected_w8_variant(const Options& opt, const Shape
 
 void launch_candidate(const Options& opt, const ShapeSpec& shape, const Tensor& x, const Weight& w,
                       Tensor& out, WorkspaceArena& ws, cudaStream_t stream) {
+    if (opt.linear_swiglu) {
+        ops::linear_swiglu(x, w, out, ws, stream);
+        return;
+    }
     if (opt.linear_add) {
         if (opt.candidate == CandidateKind::Auto) {
             ops::linear_add(x, w, out, ws, stream);
@@ -1284,13 +1341,47 @@ int schedule_col_tile(ops::detail::W8ScheduleId schedule) {
     throw std::invalid_argument("unknown W8 schedule tile");
 }
 
+int linear_swiglu_col_tile(const ops::detail::Q4LinearSwiGluPlan& plan) {
+    using S = ops::detail::Q4LinearSwiGluScheduleId;
+    switch (plan.schedule) {
+    case S::GemvPair:
+        return 1;
+    case S::Materialized:
+        return schedule_col_tile(plan.materialized_projection->schedule);
+    case S::MmaSplitHalfPairR32C128:
+        return 128;
+    }
+    throw std::invalid_argument("unknown LinearSwiGLU schedule tile");
+}
+
+int linear_add_col_tile(const ops::detail::Q5LinearAddPlan& plan, std::int32_t t) {
+    using S = ops::detail::Q5LinearAddScheduleId;
+    switch (plan.schedule) {
+    case S::GemvResidual:
+        return 1;
+    case S::Materialized:
+        return schedule_col_tile(plan.materialized_projection->schedule, t);
+    case S::MmaResidualR64C64:
+        return 64;
+    case S::MmaResidualR64C128:
+        return 128;
+    }
+    throw std::invalid_argument("unknown Q5 LinearAdd schedule tile");
+}
+
 int candidate_col_tile(const Options& opt, QType qtype, const ShapeSpec& shape, std::int32_t t) {
     switch (opt.candidate) {
     case CandidateKind::Auto:
         if (qtype == QType::Q4G64_F16S) {
+            if (opt.linear_swiglu) {
+                return linear_swiglu_col_tile(resolve_auto_q4_linear_swiglu_plan(shape, t));
+            }
             return schedule_col_tile(resolve_auto_q4_plan(shape, t).schedule);
         }
         if (qtype == QType::Q5G64_F16S) {
+            if (opt.linear_add) {
+                return linear_add_col_tile(resolve_auto_q5_linear_add_plan(shape, t), t);
+            }
             return schedule_col_tile(resolve_auto_q5_plan(shape, t).schedule, t);
         }
         if (qtype == QType::Q6G64_F16S) {
@@ -1330,9 +1421,24 @@ bool candidate_uses_mma(const Options& opt, QType qtype, const ShapeSpec& shape,
     }
     if (opt.candidate != CandidateKind::Auto) { return false; }
     if (qtype == QType::Q4G64_F16S) {
+        if (opt.linear_swiglu) {
+            const auto plan = resolve_auto_q4_linear_swiglu_plan(shape, t);
+            using S         = ops::detail::Q4LinearSwiGluScheduleId;
+            return plan.schedule == S::MmaSplitHalfPairR32C128 ||
+                   (plan.schedule == S::Materialized &&
+                    ops::detail::q4_schedule_uses_mma(plan.materialized_projection->schedule));
+        }
         return ops::detail::q4_schedule_uses_mma(resolve_auto_q4_plan(shape, t).schedule);
     }
     if (qtype == QType::Q5G64_F16S) {
+        if (opt.linear_add) {
+            const auto plan = resolve_auto_q5_linear_add_plan(shape, t);
+            using S         = ops::detail::Q5LinearAddScheduleId;
+            return plan.schedule == S::MmaResidualR64C64 ||
+                   plan.schedule == S::MmaResidualR64C128 ||
+                   (plan.schedule == S::Materialized &&
+                    ops::detail::q5_schedule_uses_mma(plan.materialized_projection->schedule));
+        }
         return ops::detail::q5_schedule_uses_mma(resolve_auto_q5_plan(shape, t).schedule);
     }
     if (qtype == QType::Q6G64_F16S) {
@@ -1372,14 +1478,18 @@ RunResult run_target(const TargetSpec& target, const Options& opt, double stream
                      cudaStream_t stream) {
     const ShapeSpec& shape = target.shape;
     const std::uint64_t tt = static_cast<std::uint64_t>(t);
-    DeviceBuffer x         = make_bf16_device(static_cast<std::uint64_t>(shape.k) * tt);
-    RowSplitPayload wbuf   = make_row_split_payload(target.qtype, shape.n, shape.k, stream);
-    DeviceBuffer out(static_cast<std::uint64_t>(shape.n) * tt * 2ULL);
-    CUDA_CHECK(cudaMemsetAsync(out.p, 0, out.bytes, stream));
+    const std::int32_t output_rows = opt.linear_swiglu ? shape.n / 2 : shape.n;
+    DeviceBuffer x = make_bf16_device(static_cast<std::uint64_t>(shape.k) * tt);
+    RowSplitPayload wbuf = make_row_split_payload(target.qtype, shape.n, shape.k, stream);
+    DeviceBuffer out =
+        opt.linear_add
+            ? make_bf16_device(static_cast<std::uint64_t>(output_rows) * tt)
+            : DeviceBuffer(static_cast<std::uint64_t>(output_rows) * tt * 2ULL);
+    if (!opt.linear_add) { CUDA_CHECK(cudaMemsetAsync(out.p, 0, out.bytes, stream)); }
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     Tensor tx(x.p, DType::BF16, {shape.k, t});
-    Tensor tout(out.p, DType::BF16, {shape.n, t});
+    Tensor tout(out.p, DType::BF16, {output_rows, t});
     Weight w = make_weight(wbuf, target.qtype, shape.n, shape.k);
     WorkspaceArena ws(64ULL << 20);
 
@@ -1388,7 +1498,7 @@ RunResult run_target(const TargetSpec& target, const Options& opt, double stream
     const TimingStats warm = measure_warm(launch, stream, opt.warmup, opt.repeat);
 
     const std::uint64_t x_bytes   = static_cast<std::uint64_t>(shape.k) * tt * 2ULL;
-    const std::uint64_t out_bytes = static_cast<std::uint64_t>(shape.n) * tt * 2ULL;
+    const std::uint64_t out_bytes = static_cast<std::uint64_t>(output_rows) * tt * 2ULL;
     const std::uint64_t useful_bytes =
         w.payload_bytes + x_bytes + out_bytes * (opt.linear_add ? 2ULL : 1ULL);
     const int col_tile                = candidate_col_tile(opt, target.qtype, shape, t);
@@ -1435,11 +1545,14 @@ RunResult run_target(const TargetSpec& target, const Options& opt, double stream
     } else if (opt.candidate == CandidateKind::W8Fixed) {
         r.kernel_variant = ops::detail::w8_kernel_variant_name(selected_w8_variant(opt, shape, t));
     } else if (opt.candidate == CandidateKind::Auto && target.qtype == QType::Q4G64_F16S) {
-        r.kernel_variant =
-            ops::detail::q4_kernel_variant_name(resolve_auto_q4_plan(shape, t).variant);
+        const auto variant = opt.linear_swiglu
+                                 ? resolve_auto_q4_linear_swiglu_plan(shape, t).variant
+                                 : resolve_auto_q4_plan(shape, t).variant;
+        r.kernel_variant = ops::detail::q4_kernel_variant_name(variant);
     } else if (opt.candidate == CandidateKind::Auto && target.qtype == QType::Q5G64_F16S) {
-        r.kernel_variant =
-            ops::detail::q5_kernel_variant_name(resolve_auto_q5_plan(shape, t).variant);
+        const auto variant = opt.linear_add ? resolve_auto_q5_linear_add_plan(shape, t).variant
+                                            : resolve_auto_q5_plan(shape, t).variant;
+        r.kernel_variant = ops::detail::q5_kernel_variant_name(variant);
     } else if (opt.candidate == CandidateKind::Auto && target.qtype == QType::Q6G64_F16S) {
         r.kernel_variant =
             ops::detail::q6_kernel_variant_name(resolve_auto_q6_plan(shape, t).variant);

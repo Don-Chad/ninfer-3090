@@ -35,6 +35,7 @@ constexpr std::int32_t kParentRows   = kQueryRows + kKvRows;
 constexpr std::int32_t kGdnQkRows    = 4096;
 constexpr std::int32_t kGdnValueRows = 6144;
 constexpr std::int32_t kGdnRows      = kGdnQkRows + kGdnValueRows;
+constexpr std::int32_t kMaxBenchTokens = 16384;
 constexpr std::size_t kFlushBytes    = 256ULL << 20;
 
 enum class OpSelection { All, Attention, Gdn };
@@ -42,7 +43,7 @@ enum class OpSelection { All, Attention, Gdn };
 struct Options {
     OpSelection op = OpSelection::All;
     std::vector<std::int32_t> t_sweep{1,  2,  3,  4,  5,  6,  7,  8,   9,  10,
-                                      11, 12, 13, 14, 15, 16, 17, 128, 129};
+                                      11, 12, 13, 14, 15, 16, 17, 128, 129, 1024};
     int warmup = 5;
     int repeat = 50;
     std::string csv_out;
@@ -283,8 +284,8 @@ int main(int argc, char** argv) {
         const Options options = parse_options(argc, argv);
         const std::int32_t max_t =
             *std::max_element(options.t_sweep.begin(), options.t_sweep.end());
-        if (max_t > 129) {
-            throw std::invalid_argument("this fixed-shape benchmark admits T<=129");
+        if (max_t > kMaxBenchTokens) {
+            throw std::invalid_argument("input-projection benchmark allocation limit is T<=16384");
         }
 
         cudaStream_t stream = nullptr;

@@ -69,6 +69,23 @@ and `-r 1`, synchronizes after warmup, and brackets only the measured repetition
 `cudaProfilerStart/Stop`. Use it with an Nsight Systems `cudaProfilerApi` capture range so artifact
 load, graph construction, and warmup do not enter topology counts.
 
+## Text linear Op benchmarks
+
+`ninfer_linear_op_bench` exposes the registered 27B fused LinearSwiGLU and Q5 LinearAdd contracts
+through their production dispatch at the default `T=1024` prefill extent:
+
+```bash
+./build/bench/ninfer_linear_op_bench \
+  --shape MlpGateUp34816x5120 --qtype Q4 --linear-swiglu --t-sweep 1024
+./build/bench/ninfer_linear_op_bench \
+  --shape MlpDown5120x17408 --qtype Q5 --linear-add --t-sweep 1024
+./build/bench/ninfer_linear_op_bench \
+  --shape Out5120x6144 --qtype Q5 --linear-add --t-sweep 1024
+```
+
+The benchmark records the selected physical route, kernel variant, cold-cache timing, measured
+tensor-core ceiling, and useful/executed throughput.
+
 ## Input-projection Op benchmark
 
 `ninfer_input_proj_bench` measures the exact Qwen3.6-27B Attention and GDN input-projection shapes.
@@ -76,11 +93,13 @@ Attention production uses the two parent projections and its benchmark-only cont
 former four logical projections. GDN production writes directly into the pitched final output;
 its controls isolate projection time and the former materialize-plus-two-copy composition. All
 timed operands are allocated before measurement, and each sample is preceded by a 256 MiB L2 flush.
+Production accepts the Text token extent through the benchmark allocation limit; controls remain
+limited to their Small-T domain.
 
 ```bash
 cmake --build build --parallel --target ninfer_input_proj_bench
 ./build/bench/ninfer_input_proj_bench \
-  --op all --t-sweep 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,128,129 \
+  --op all --t-sweep 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,128,129,1024 \
   --warmup 5 --repeat 50 --csv-out profiles/bench/input_proj.csv
 ```
 
