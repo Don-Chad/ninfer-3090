@@ -5,8 +5,8 @@ This is the verified native Windows build of the Qwen3.6-27B and text-only Qwen3
 directly; WSL is not involved at runtime. The Linux/WSL build remains documented separately in
 [rtx-3090-wsl.md](rtx-3090-wsl.md).
 
-For the fastest verified 35B-A3B configuration, use INT8 KV, MTP K=1, the optimized head, and
-`--text-only`. The controlled tg128 result is 252.83 +/- 0.49 tok/s; see
+For the fastest verified 35B-A3B configuration, use INT8 KV, MTP K=2, the optimized head, and
+`--text-only`. The current controlled tg128 result is 265.59 +/- 0.71 tok/s; see
 [the full 35B-A3B report](rtx-3090-35b-a3b.md). Text-only mode rejects media and is required for
 the full artifact to fit in 24 GiB.
 

@@ -7,7 +7,7 @@ names, packaged `VERSION` files, and runtime startup diagnostics carry this revi
 
 NInfer runs the supported Qwen3.6 models locally through a command-line application or an
 OpenAI-/Anthropic-compatible HTTP server. Runtime v2 reaches **284.75 tok/s** in a real streamed
-Qwen3.6-35B-A3B MTP-3 generation; the repeated controlled MTP-1 result is **252.83 +/- 0.49
+Qwen3.6-35B-A3B MTP-3 generation; the latest repeated controlled MTP-2 result is **265.59 +/- 0.71
 tok/s** on one RTX 3090.
 
 Start with [GitHub Releases](https://github.com/Don-Chad/ninfer-3090/releases). If a matching
@@ -64,7 +64,7 @@ The RTX 3090 results are listed first. They show how much of the original RTX 50
 | Model and decode mode | RTX 3090 port | Original RTX 5090 | RTX 3090 share |
 |---|---:|---:|---:|
 | Qwen3.6-35B-A3B, no MTP | **188.61 +/- 0.30 tok/s** | **271.1 tok/s** | **69.6%** |
-| Qwen3.6-35B-A3B, fastest measured speculative path | **252.83 +/- 0.49 tok/s** (MTP-1) | **542.8-661.2 tok/s** (MTP-3) | **38.2-46.6%** |
+| Qwen3.6-35B-A3B, fastest measured speculative path | **265.59 +/- 0.71 tok/s** (MTP-2) | **542.8-661.2 tok/s** (MTP-3) | **40.2-49.0%** |
 | Qwen3.6-27B, no MTP | **38.04 tok/s** | **77.6 tok/s** | **49.0%** |
 | Qwen3.6-27B, fastest controlled MTP-3 result | **66.70 tok/s** | **158.7-189.1 tok/s** | **35.3-42.0%** |
 
@@ -74,11 +74,11 @@ long-prompt serving fixtures whose acceptance rate and workload vary. The exact 
 raw reports are linked below.
 
 On native Windows, Qwen3.6-35B-A3B in explicit `--text-only` mode measured **188.61 +/- 0.30
-tok/s** without MTP in the v2 4K-capacity run and **252.83 +/- 0.49 tok/s** with MTP-1 in the
-earlier 256-capacity controlled run. The normal result is a ten-run tg128 mean (188.59 tok/s
-median) after five warm-ups; the MTP result is a five-run mean after two warm-ups. Both use CUDA
-Graphs, INT8 KV, and the unmodified 20.84 GiB mixed Q4/Q5/Q6/W8 artifact. MTP-1 acceptance was
-84.06%.
+tok/s** without MTP in the v2 4K-capacity run and **265.59 +/- 0.71 tok/s** with MTP-2 in the
+256-capacity controlled run. The normal result is a ten-run tg128 mean (188.59 tok/s median)
+after five warm-ups; the MTP result is a five-run mean after two warm-ups. Both use CUDA Graphs,
+INT8 KV, and the unmodified 20.84 GiB mixed Q4/Q5/Q6/W8 artifact. MTP-2 acceptance was 70.75%,
+with 2.415 mean output tokens per speculative round.
 Text-only mode reduces stable workspace capacity from about 1.90 GiB to 15.05 MiB and rejects
 image/video requests; it does not alter or requantize model weights. See the
 [full reproduction report](docs/rtx-3090-35b-a3b.md).
@@ -211,7 +211,7 @@ source, replace `./ninfer.exe` below with `build-windows\apps\Release\ninfer.exe
 .\ninfer.exe models\qwen3_6_35b_a3b.ninfer `
   --prompt "Explain speculative decoding in three sentences." `
   --max-context 256 --prefill-chunk 128 --max-new 128 --kv-dtype int8 `
-  --mtp-draft-tokens 1 --lm-head-draft --text-only
+  --mtp-draft-tokens 2 --lm-head-draft --text-only
 ```
 
 `--text-only` is required for the 35B-A3B artifact on a 24 GiB RTX 3090. It rejects image/video

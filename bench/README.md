@@ -189,13 +189,13 @@ test shapes exercise the scalar fallbacks.
 
 Table, JSON, and CSV reports all identify the selected target, artifact, Engine configuration,
 load summary, memory capacity, KV payload, workspace peak, phase throughput, and speculative
-statistics. JSON schema version 8 records the public value objects directly:
+statistics. JSON schema version 9 records the public value objects directly:
 
 - `load`: target, load/upload time, file/H2D/staging bytes, tensor count, and resource count;
 - `memory`: weights/sequence/workspace arenas, planned context, KV storage, and KV payload;
 - each repetition's `timings`: prepare, Vision, prefill, decode, and total seconds;
-- each repetition's `speculative`: window, rounds, drafted/accepted tokens, fallbacks, and per-position
-acceptance.
+- each repetition's `speculative`: window, rounds, drafted/accepted tokens, fallbacks, effective
+  round latency, and per-position acceptance.
 
 `decode_output_tok_s` counts the requested `G` decode outputs. `decode_engine_tok_s` uses the
 Program's speculative round statistics, so it also describes work performed by a final partially

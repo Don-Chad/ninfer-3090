@@ -1,0 +1,164 @@
+{
+  "schema_version": 8,
+  "artifact_type": "ninfer_bench_report",
+  "tool": "ninfer_bench",
+  "command": "G:\\python\\custom-kernel-3090\\ninfer\\build-windows\\bench\\Release\\ninfer_bench.exe --weights .\\models\\qwen3_6_35b_a3b.ninfer --corpus .\\bench\\fixtures\\bench_corpus.ids -n 128 -r 5 --warmup 2 --max-ctx 256 --prefill-chunk 128 --kv-dtype int8 --mtp-draft-tokens 4 --lm-head-draft --text-only --output json --output-file .\\benchmark-results\\investigate-mtp-k4-rebuilt.json",
+  "environment": {"gpu_name": "NVIDIA GeForce RTX 3090", "cuda_runtime_version": "13.2", "cuda_driver_version": "13.2", "device_id": 0},
+  "artifact": {"path": ".\\models\\qwen3_6_35b_a3b.ninfer", "file_size_bytes": 22373184256},
+  "load": {
+    "target": "qwen3_6_35b_a3b",
+    "load_seconds": 4.7115208,
+    "upload_seconds": 4.0656297,
+    "artifact_bytes_read": 22373184256,
+    "host_to_device_bytes": 22360191904,
+    "peak_staging_bytes": 268435456,
+    "tensor_count": 883,
+    "resource_count": 6
+  },
+  "memory": {
+    "device": 0,
+    "max_context": 256,
+    "kv_cache": "int8-group64",
+    "weights": {"capacity_bytes": 22360207360, "used_bytes": 22360207360, "peak_used_bytes": 22360207360},
+    "sequence": {"capacity_bytes": 393345536, "used_bytes": 393345536, "peak_used_bytes": 393345536},
+    "workspace": {"capacity_bytes": 15780864, "used_bytes": 0, "peak_used_bytes": 7394944},
+    "kv_payload_bytes": 2973696
+  },
+  "config": {
+    "max_context": 256,
+    "prefill_chunk": 128,
+    "kv_cache": "int8-group64",
+    "mtp_draft_tokens": 4,
+    "proposal_head": "optimized",
+    "use_cuda_graph": true,
+    "text_only": true,
+    "decode_path": "mtp_cuda_graph",
+    "decode_graph_prime": {"primed": true, "output_tokens": 11},
+    "repetitions": 5,
+    "warmup": 2,
+    "corpus_path": ".\\bench\\fixtures\\bench_corpus.ids",
+    "corpus_tokens": 65536
+  },
+  "tests": [
+    {
+      "label": "tg128",
+      "kind": "tg",
+      "n_prompt": 0,
+      "n_gen": 128,
+      "requested_output_tokens": 129,
+      "prefill_tok_s_mean": null,
+      "prefill_tok_s_stddev": null,
+      "decode_output_tok_s_mean": 213.4844748,
+      "decode_output_tok_s_stddev": 0.3057397487,
+      "decode_engine_tok_s_mean": 213.4844748,
+      "decode_engine_tok_s_stddev": 0.3057397487,
+      "prepare_seconds_mean": 1.1e-06,
+      "prepare_seconds_stddev": 1.224744871e-07,
+      "prefill_seconds_mean": null,
+      "prefill_seconds_stddev": null,
+      "decode_seconds_mean": 0.5995762,
+      "decode_seconds_stddev": 0.000859268465,
+      "total_seconds_mean": 0.60929664,
+      "total_seconds_stddev": 0.0008978271649,
+      "workspace_peak_bytes": 1496448,
+      "speculative": {
+        "enabled": true,
+        "draft_window": 4,
+        "rounds": 215,
+        "drafted_tokens": 860,
+        "accepted_tokens": 410,
+        "fallback_steps": 15,
+        "acceptance_rate": 0.476744186,
+        "acceptance_length": 2.906976744,
+        "accepted_per_position": [165, 115, 80, 50]
+      },
+      "reps": [
+        {
+          "generated_output_tokens": 129,
+          "decode_output_tokens": 128,
+          "decode_engine_tokens": 128,
+          "timings": {"prepare_seconds": 1.1e-06, "vision_seconds": 0, "prefill_seconds": 0.0095145, "decode_seconds": 0.5987864, "total_seconds": 0.6085219},
+          "speculative": {
+            "enabled": true,
+            "draft_window": 4,
+            "rounds": 43,
+            "drafted_tokens": 172,
+            "accepted_tokens": 82,
+            "fallback_steps": 3,
+            "acceptance_rate": 0.476744186,
+            "acceptance_length": 2.906976744,
+            "accepted_per_position": [33, 23, 16, 10]
+          }
+        },
+        {
+          "generated_output_tokens": 129,
+          "decode_output_tokens": 128,
+          "decode_engine_tokens": 128,
+          "timings": {"prepare_seconds": 1.1e-06, "vision_seconds": 0, "prefill_seconds": 0.0097518, "decode_seconds": 0.6000879, "total_seconds": 0.6100419},
+          "speculative": {
+            "enabled": true,
+            "draft_window": 4,
+            "rounds": 43,
+            "drafted_tokens": 172,
+            "accepted_tokens": 82,
+            "fallback_steps": 3,
+            "acceptance_rate": 0.476744186,
+            "acceptance_length": 2.906976744,
+            "accepted_per_position": [33, 23, 16, 10]
+          }
+        },
+        {
+          "generated_output_tokens": 129,
+          "decode_output_tokens": 128,
+          "decode_engine_tokens": 128,
+          "timings": {"prepare_seconds": 1e-06, "vision_seconds": 0, "prefill_seconds": 0.0093204, "decode_seconds": 0.5989082, "total_seconds": 0.6084321},
+          "speculative": {
+            "enabled": true,
+            "draft_window": 4,
+            "rounds": 43,
+            "drafted_tokens": 172,
+            "accepted_tokens": 82,
+            "fallback_steps": 3,
+            "acceptance_rate": 0.476744186,
+            "acceptance_length": 2.906976744,
+            "accepted_per_position": [33, 23, 16, 10]
+          }
+        },
+        {
+          "generated_output_tokens": 129,
+          "decode_output_tokens": 128,
+          "decode_engine_tokens": 128,
+          "timings": {"prepare_seconds": 1.3e-06, "vision_seconds": 0, "prefill_seconds": 0.0093634, "decode_seconds": 0.6008154, "total_seconds": 0.6104225},
+          "speculative": {
+            "enabled": true,
+            "draft_window": 4,
+            "rounds": 43,
+            "drafted_tokens": 172,
+            "accepted_tokens": 82,
+            "fallback_steps": 3,
+            "acceptance_rate": 0.476744186,
+            "acceptance_length": 2.906976744,
+            "accepted_per_position": [33, 23, 16, 10]
+          }
+        },
+        {
+          "generated_output_tokens": 129,
+          "decode_output_tokens": 128,
+          "decode_engine_tokens": 128,
+          "timings": {"prepare_seconds": 1e-06, "vision_seconds": 0, "prefill_seconds": 0.0095571, "decode_seconds": 0.5992831, "total_seconds": 0.6090648},
+          "speculative": {
+            "enabled": true,
+            "draft_window": 4,
+            "rounds": 43,
+            "drafted_tokens": 172,
+            "accepted_tokens": 82,
+            "fallback_steps": 3,
+            "acceptance_rate": 0.476744186,
+            "acceptance_length": 2.906976744,
+            "accepted_per_position": [33, 23, 16, 10]
+          }
+        }
+      ]
+    }
+  ]
+}

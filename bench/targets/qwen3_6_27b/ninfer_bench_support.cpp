@@ -197,7 +197,7 @@ void append_arena_json(std::ostringstream& out, std::string_view name,
 }
 
 void append_speculative_json(std::ostringstream& out, const SpeculativeStats& stats,
-                             std::string_view indent) {
+                             double decode_seconds, std::string_view indent) {
     out << indent << "\"speculative\": {\n"
         << indent << "  \"enabled\": " << (stats.enabled ? "true" : "false") << ",\n"
         << indent << "  \"draft_window\": " << stats.draft_window << ",\n"
@@ -219,6 +219,12 @@ void append_speculative_json(std::ostringstream& out, const SpeculativeStats& st
         out << number(1.0 + static_cast<double>(stats.accepted_tokens) /
                                 static_cast<double>(stats.rounds));
     }
+    out << ",\n" << indent << "  \"round_latency_ms\": ";
+    if (stats.rounds == 0) {
+        out << "null";
+    } else {
+        out << number(1000.0 * decode_seconds / static_cast<double>(stats.rounds));
+    }
     out << ",\n" << indent << "  \"accepted_per_position\": [";
     for (std::size_t i = 0; i < stats.accepted_per_position.size(); ++i) {
         if (i != 0) { out << ", "; }
@@ -229,8 +235,9 @@ void append_speculative_json(std::ostringstream& out, const SpeculativeStats& st
 
 void append_timings_json(std::ostringstream& out, const GenerationTimings& timings,
                          std::string_view indent) {
-    out << indent << "\"timings\": {" << "\"prepare_seconds\": " << number(timings.prepare_seconds)
-        << ", " << "\"vision_seconds\": " << number(timings.vision_seconds) << ", "
+    out << indent << "\"timings\": {"
+        << "\"prepare_seconds\": " << number(timings.prepare_seconds) << ", "
+        << "\"vision_seconds\": " << number(timings.vision_seconds) << ", "
         << "\"prefill_seconds\": " << number(timings.prefill_seconds) << ", "
         << "\"decode_seconds\": " << number(timings.decode_seconds) << ", "
         << "\"total_seconds\": " << number(timings.total_seconds) << '}';
@@ -690,7 +697,12 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         out << ",\n";
         append_stat(out, "total_seconds", total_time_series(result), "      ");
         out << ",\n      \"workspace_peak_bytes\": " << result.workspace_peak_bytes << ",\n";
-        append_speculative_json(out, aggregate_speculative(result), "      ");
+        double aggregate_decode_seconds = 0.0;
+        for (const RepTiming& rep : result.reps) {
+            aggregate_decode_seconds += rep.timings.decode_seconds;
+        }
+        append_speculative_json(out, aggregate_speculative(result), aggregate_decode_seconds,
+                                "      ");
         out << ",\n      \"reps\": [\n";
         for (std::size_t r = 0; r < result.reps.size(); ++r) {
             const RepTiming& rep = result.reps[r];
@@ -704,7 +716,7 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
                 << ",\n";
             append_timings_json(out, rep.timings, "          ");
             out << ",\n";
-            append_speculative_json(out, rep.speculative, "          ");
+            append_speculative_json(out, rep.speculative, rep.timings.decode_seconds, "          ");
             out << "\n        }" << (r + 1 == result.reps.size() ? "" : ",") << '\n';
         }
         out << "      ]\n    }" << (i + 1 == results.size() ? "" : ",") << '\n';
@@ -719,6 +731,7 @@ std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult
            "proposal_head,decode_path,kv_cache,kv_payload_bytes,load_host_to_device_bytes,"
            "weights_capacity_bytes,sequence_capacity_bytes,workspace_capacity_bytes,"
            "workspace_peak_bytes,spec_rounds,spec_fallback_steps,spec_acceptance_rate,"
+           "spec_round_latency_ms,"
            "repetitions,prefill_tok_s_mean,prefill_tok_s_stddev,decode_output_tok_s_mean,"
            "decode_output_tok_s_stddev,decode_engine_tok_s_mean,decode_engine_tok_s_stddev,"
            "prepare_seconds_mean,prefill_seconds_mean,decode_seconds_mean,total_seconds_mean\n";
@@ -729,11 +742,19 @@ std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult
         return values.empty() ? std::string() : number(compute_stats(values).stddev);
     };
     for (const TestResult& result : results) {
-        const SpeculativeStats spec  = aggregate_speculative(result);
-        const std::string acceptance = spec.drafted_tokens == 0
-                                           ? std::string()
-                                           : number(static_cast<double>(spec.accepted_tokens) /
-                                                    static_cast<double>(spec.drafted_tokens));
+        const SpeculativeStats spec     = aggregate_speculative(result);
+        const std::string acceptance    = spec.drafted_tokens == 0
+                                              ? std::string()
+                                              : number(static_cast<double>(spec.accepted_tokens) /
+                                                       static_cast<double>(spec.drafted_tokens));
+        double aggregate_decode_seconds = 0.0;
+        for (const RepTiming& rep : result.reps) {
+            aggregate_decode_seconds += rep.timings.decode_seconds;
+        }
+        const std::string round_latency_ms =
+            spec.rounds == 0
+                ? std::string()
+                : number(1000.0 * aggregate_decode_seconds / static_cast<double>(spec.rounds));
         out << result.test.label << ',' << kind_string(result.test.kind) << ','
             << result.test.n_prompt << ',' << result.test.n_gen << ',' << env.load.target << ','
             << env.max_context << ',' << env.prefill_chunk << ',' << env.mtp_draft_tokens << ','
@@ -743,9 +764,10 @@ std::string format_csv(const BenchEnvironment& env, const std::vector<TestResult
             << env.load.host_to_device_bytes << ',' << env.memory.weights.capacity_bytes << ','
             << env.memory.sequence.capacity_bytes << ',' << env.memory.workspace.capacity_bytes
             << ',' << result.workspace_peak_bytes << ',' << spec.rounds << ','
-            << spec.fallback_steps << ',' << acceptance << ',' << result.reps.size() << ','
-            << mean(prefill_tok_s_series(result)) << ',' << stddev(prefill_tok_s_series(result))
-            << ',' << mean(decode_output_tok_s_series(result)) << ','
+            << spec.fallback_steps << ',' << acceptance << ',' << round_latency_ms << ','
+            << result.reps.size() << ',' << mean(prefill_tok_s_series(result)) << ','
+            << stddev(prefill_tok_s_series(result)) << ','
+            << mean(decode_output_tok_s_series(result)) << ','
             << stddev(decode_output_tok_s_series(result)) << ','
             << mean(decode_engine_tok_s_series(result)) << ','
             << stddev(decode_engine_tok_s_series(result)) << ','

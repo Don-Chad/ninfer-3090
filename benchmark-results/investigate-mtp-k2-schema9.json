@@ -1,0 +1,170 @@
+{
+  "schema_version": 9,
+  "artifact_type": "ninfer_bench_report",
+  "tool": "ninfer_bench",
+  "command": "G:\\python\\custom-kernel-3090\\ninfer\\build-windows\\bench\\Release\\ninfer_bench.exe --weights .\\models\\qwen3_6_35b_a3b.ninfer --corpus .\\bench\\fixtures\\bench_corpus.ids -n 128 -r 5 --warmup 2 --max-ctx 256 --prefill-chunk 128 --kv-dtype int8 --mtp-draft-tokens 2 --lm-head-draft --text-only --output json --output-file .\\benchmark-results\\investigate-mtp-k2-schema9.json",
+  "environment": {"gpu_name": "NVIDIA GeForce RTX 3090", "cuda_runtime_version": "13.2", "cuda_driver_version": "13.2", "device_id": 0},
+  "artifact": {"path": ".\\models\\qwen3_6_35b_a3b.ninfer", "file_size_bytes": 22373184256},
+  "load": {
+    "target": "qwen3_6_35b_a3b",
+    "load_seconds": 5.1093029,
+    "upload_seconds": 4.4949767,
+    "artifact_bytes_read": 22373184256,
+    "host_to_device_bytes": 22360191904,
+    "peak_staging_bytes": 268435456,
+    "tensor_count": 883,
+    "resource_count": 6
+  },
+  "memory": {
+    "device": 0,
+    "max_context": 256,
+    "kv_cache": "int8-group64",
+    "weights": {"capacity_bytes": 22360207360, "used_bytes": 22360207360, "peak_used_bytes": 22360207360},
+    "sequence": {"capacity_bytes": 263565824, "used_bytes": 263565824, "peak_used_bytes": 263565824},
+    "workspace": {"capacity_bytes": 15780864, "used_bytes": 0, "peak_used_bytes": 4437120},
+    "kv_payload_bytes": 2973696
+  },
+  "config": {
+    "max_context": 256,
+    "prefill_chunk": 128,
+    "kv_cache": "int8-group64",
+    "mtp_draft_tokens": 2,
+    "proposal_head": "optimized",
+    "use_cuda_graph": true,
+    "text_only": true,
+    "decode_path": "mtp_cuda_graph",
+    "decode_graph_prime": {"primed": true, "output_tokens": 7},
+    "repetitions": 5,
+    "warmup": 2,
+    "corpus_path": ".\\bench\\fixtures\\bench_corpus.ids",
+    "corpus_tokens": 65536
+  },
+  "tests": [
+    {
+      "label": "tg128",
+      "kind": "tg",
+      "n_prompt": 0,
+      "n_gen": 128,
+      "requested_output_tokens": 129,
+      "prefill_tok_s_mean": null,
+      "prefill_tok_s_stddev": null,
+      "decode_output_tok_s_mean": 265.8353942,
+      "decode_output_tok_s_stddev": 0.2811554394,
+      "decode_engine_tok_s_mean": 265.8353942,
+      "decode_engine_tok_s_stddev": 0.2811554394,
+      "prepare_seconds_mean": 1e-06,
+      "prepare_seconds_stddev": 2e-07,
+      "prefill_seconds_mean": null,
+      "prefill_seconds_stddev": null,
+      "decode_seconds_mean": 0.4815014,
+      "decode_seconds_stddev": 0.0005090313497,
+      "total_seconds_mean": 0.49041402,
+      "total_seconds_stddev": 0.0005304811231,
+      "workspace_peak_bytes": 1488256,
+      "speculative": {
+        "enabled": true,
+        "draft_window": 2,
+        "rounds": 265,
+        "drafted_tokens": 530,
+        "accepted_tokens": 375,
+        "fallback_steps": 0,
+        "acceptance_rate": 0.7075471698,
+        "acceptance_length": 2.41509434,
+        "round_latency_ms": 9.084932075,
+        "accepted_per_position": [215, 160]
+      },
+      "reps": [
+        {
+          "generated_output_tokens": 129,
+          "decode_output_tokens": 128,
+          "decode_engine_tokens": 128,
+          "timings": {"prepare_seconds": 1.2e-06, "vision_seconds": 0, "prefill_seconds": 0.0087199, "decode_seconds": 0.4818108, "total_seconds": 0.4908058},
+          "speculative": {
+            "enabled": true,
+            "draft_window": 2,
+            "rounds": 53,
+            "drafted_tokens": 106,
+            "accepted_tokens": 75,
+            "fallback_steps": 0,
+            "acceptance_rate": 0.7075471698,
+            "acceptance_length": 2.41509434,
+            "round_latency_ms": 9.090769811,
+            "accepted_per_position": [43, 32]
+          }
+        },
+        {
+          "generated_output_tokens": 129,
+          "decode_output_tokens": 128,
+          "decode_engine_tokens": 128,
+          "timings": {"prepare_seconds": 1.1e-06, "vision_seconds": 0, "prefill_seconds": 0.008798, "decode_seconds": 0.4807684, "total_seconds": 0.4897808},
+          "speculative": {
+            "enabled": true,
+            "draft_window": 2,
+            "rounds": 53,
+            "drafted_tokens": 106,
+            "accepted_tokens": 75,
+            "fallback_steps": 0,
+            "acceptance_rate": 0.7075471698,
+            "acceptance_length": 2.41509434,
+            "round_latency_ms": 9.071101887,
+            "accepted_per_position": [43, 32]
+          }
+        },
+        {
+          "generated_output_tokens": 129,
+          "decode_output_tokens": 128,
+          "decode_engine_tokens": 128,
+          "timings": {"prepare_seconds": 9e-07, "vision_seconds": 0, "prefill_seconds": 0.0089501, "decode_seconds": 0.4816501, "total_seconds": 0.4908109},
+          "speculative": {
+            "enabled": true,
+            "draft_window": 2,
+            "rounds": 53,
+            "drafted_tokens": 106,
+            "accepted_tokens": 75,
+            "fallback_steps": 0,
+            "acceptance_rate": 0.7075471698,
+            "acceptance_length": 2.41509434,
+            "round_latency_ms": 9.087737736,
+            "accepted_per_position": [43, 32]
+          }
+        },
+        {
+          "generated_output_tokens": 129,
+          "decode_output_tokens": 128,
+          "decode_engine_tokens": 128,
+          "timings": {"prepare_seconds": 1.1e-06, "vision_seconds": 0, "prefill_seconds": 0.00846, "decode_seconds": 0.4812244, "total_seconds": 0.4898882},
+          "speculative": {
+            "enabled": true,
+            "draft_window": 2,
+            "rounds": 53,
+            "drafted_tokens": 106,
+            "accepted_tokens": 75,
+            "fallback_steps": 0,
+            "acceptance_rate": 0.7075471698,
+            "acceptance_length": 2.41509434,
+            "round_latency_ms": 9.07970566,
+            "accepted_per_position": [43, 32]
+          }
+        },
+        {
+          "generated_output_tokens": 129,
+          "decode_output_tokens": 128,
+          "decode_engine_tokens": 128,
+          "timings": {"prepare_seconds": 7e-07, "vision_seconds": 0, "prefill_seconds": 0.0085098, "decode_seconds": 0.4820533, "total_seconds": 0.4907844},
+          "speculative": {
+            "enabled": true,
+            "draft_window": 2,
+            "rounds": 53,
+            "drafted_tokens": 106,
+            "accepted_tokens": 75,
+            "fallback_steps": 0,
+            "acceptance_rate": 0.7075471698,
+            "acceptance_length": 2.41509434,
+            "round_latency_ms": 9.095345283,
+            "accepted_per_position": [43, 32]
+          }
+        }
+      ]
+    }
+  ]
+}

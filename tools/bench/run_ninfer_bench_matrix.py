@@ -40,7 +40,7 @@ CONTEXT_CORE = ((512, 512), (2048, 512), (8192, 512))
 CONTEXT_FULL_EXTRA = ((32768, 256), (65536, 128))
 PRIMARY_KS = (0, 3, 5)
 SWEEP_KS = (0, 1, 2, 3, 4, 5)
-REPORT_SCHEMA_VERSION = 8
+REPORT_SCHEMA_VERSION = 9
 REPORT_ARTIFACT_TYPE = "ninfer_bench_report"
 REPORT_TOOL = "ninfer_bench"
 
@@ -321,6 +321,7 @@ def report_rows(report_path: Path, case: BenchCase) -> list[dict[str, Any]]:
             "spec_drafted_tokens": speculative.get("drafted_tokens"),
             "spec_accepted_tokens": speculative.get("accepted_tokens"),
             "spec_fallback_steps": speculative.get("fallback_steps"),
+            "spec_round_latency_ms": speculative.get("round_latency_ms"),
             "spec_accepted_per_position": json.dumps(
                 speculative.get("accepted_per_position", []), separators=(",", ":")
             ),

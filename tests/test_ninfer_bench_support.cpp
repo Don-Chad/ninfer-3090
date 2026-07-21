@@ -266,7 +266,7 @@ int test_report_contract() {
         return fail(std::string("invalid benchmark JSON: ") + error.what());
     }
 
-    failures += expect(report.at("schema_version") == 8, "report schema v8");
+    failures += expect(report.at("schema_version") == 9, "report schema v9");
     failures += expect(report.at("artifact_type") == "ninfer_bench_report", "report identity");
     failures += expect(report.at("artifact").at("path") == "model.ninfer", "artifact path");
     failures += expect(report.at("load").at("target") == "qwen3_6_27b", "load target");
@@ -299,6 +299,8 @@ int test_report_contract() {
     failures += expect(tg.at("speculative").at("fallback_steps") == 3, "speculative fallbacks");
     failures += expect_near(tg.at("speculative").at("acceptance_rate").get<double>(), 1.0,
                             "speculative acceptance");
+    failures += expect_near(tg.at("speculative").at("round_latency_ms").get<double>(), 1500.0,
+                            "aggregate speculative round latency");
     failures += expect(tg.at("speculative").at("accepted_per_position").size() == 5,
                        "per-position acceptance");
     failures +=
@@ -308,6 +310,9 @@ int test_report_contract() {
                             0.5, "rep GenerationTimings");
     failures += expect(tg.at("reps").at(0).at("speculative").at("drafted_tokens") == 5,
                        "rep SpeculativeStats");
+    failures +=
+        expect_near(tg.at("reps").at(0).at("speculative").at("round_latency_ms").get<double>(),
+                    500.0, "rep speculative round latency");
     return failures;
 }
 
@@ -328,8 +333,8 @@ int test_human_and_csv_reports() {
     failures += expect(csv.starts_with("label,kind,n_prompt,n_gen,target"), "CSV identity columns");
     for (const std::string_view field :
          {"proposal_head", "kv_payload_bytes", "load_host_to_device_bytes", "workspace_peak_bytes",
-          "spec_acceptance_rate", "decode_output_tok_s_mean", "decode_engine_tok_s_mean",
-          "total_seconds_mean"}) {
+          "spec_acceptance_rate", "spec_round_latency_ms", "decode_output_tok_s_mean",
+          "decode_engine_tok_s_mean", "total_seconds_mean"}) {
         failures += expect(csv.find(field) != std::string::npos,
                            std::string("CSV field ") + std::string(field));
     }

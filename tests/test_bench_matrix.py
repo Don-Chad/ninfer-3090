@@ -5,12 +5,12 @@ import json
 from tools.bench.run_ninfer_bench_matrix import BenchCase, report_rows
 
 
-def test_schema_v8_report_is_flattened_for_matrix_summary(tmp_path) -> None:
+def test_schema_v9_report_is_flattened_for_matrix_summary(tmp_path) -> None:
     report_path = tmp_path / "report.json"
     report_path.write_text(
         json.dumps(
             {
-                "schema_version": 8,
+                "schema_version": 9,
                 "artifact_type": "ninfer_bench_report",
                 "tool": "ninfer_bench",
                 "artifact": {"path": "model.ninfer"},
@@ -58,6 +58,7 @@ def test_schema_v8_report_is_flattened_for_matrix_summary(tmp_path) -> None:
                             "drafted_tokens": 5,
                             "accepted_tokens": 5,
                             "fallback_steps": 3,
+                            "round_latency_ms": 1500.0,
                             "accepted_per_position": [1, 1, 1, 1, 1],
                         },
                     }
@@ -96,4 +97,5 @@ def test_schema_v8_report_is_flattened_for_matrix_summary(tmp_path) -> None:
     assert row["decode_output_tok_s_mean"] == 4.5
     assert row["decode_engine_tok_s_mean"] == 7.5
     assert row["spec_fallback_steps"] == 3
+    assert row["spec_round_latency_ms"] == 1500.0
     assert row["spec_accepted_per_position"] == "[1,1,1,1,1]"
