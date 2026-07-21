@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <string>
 #include <vector>
 
 using namespace ninfer;
@@ -24,7 +25,7 @@ std::size_t index_of(int token, int head, int d) {
 void reference_attention(const std::vector<float>& q, const std::vector<float>& k,
                          const std::vector<float>& v, const std::vector<int>& cu,
                          std::vector<double>& out) {
-    constexpr double scale = 1.0 / std::sqrt(72.0);
+    const double scale = 1.0 / std::sqrt(72.0);
     for (std::size_t segment = 0; segment + 1 < cu.size(); ++segment) {
         const int begin = cu[segment];
         const int end   = cu[segment + 1];
