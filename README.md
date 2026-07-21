@@ -6,11 +6,11 @@ NInfer runs the supported Qwen3.6 models locally through a command-line applicat
 OpenAI-/Anthropic-compatible HTTP server. The fastest verified result so far is **252.83 +/- 0.49
 tok/s** for Qwen3.6-35B-A3B using text-only mode and MTP-1 on one RTX 3090.
 
-You do not have to compile the project yourself when a matching prebuilt package is available.
-Download a Windows or Linux archive from [GitHub Releases](https://github.com/Don-Chad/ninfer-3090/releases),
-download the model artifact separately, and run the included CLI or server. Release archives are
-published separately from Git source; if the Releases page does not yet contain a package, use the
-[source-build instructions](#build-from-source) below.
+Start with [GitHub Releases](https://github.com/Don-Chad/ninfer-3090/releases). If a matching
+Windows or Linux package is available, extract it and use the included CLI or server; compilation
+is not required. Model weights are downloaded separately. Release archives are not stored in the
+Git source tree, so if the Releases page is empty, use the [source-build instructions](#build-from-source)
+below.
 
 The phrase "from-scratch C++/CUDA inference engine" describes how NInfer itself is implemented; it
 does not mean every user must build it from source.
@@ -150,6 +150,10 @@ commands.
 
 ## Build from source
 
+This builds this RTX 3090 port, not the original RTX 5090 repository. The command below is the
+Linux/WSL2 route; native Windows users should follow the
+[Windows build guide](docs/rtx-3090-windows.md).
+
 ```bash
 git clone https://github.com/Don-Chad/ninfer-3090.git
 cd ninfer-3090
@@ -187,10 +191,13 @@ Transformers checkpoint, Safetensors distribution, or GGUF file.
 
 ## Run the CLI
 
-For the fastest verified RTX 3090 configuration:
+### Native Windows
+
+After extracting a Windows Release archive, run `ninfer.exe` from that directory. If you built from
+source, replace `./ninfer.exe` below with `build-windows\apps\Release\ninfer.exe`.
 
 ```powershell
-build-windows\apps\Release\ninfer.exe models\qwen3_6_35b_a3b.ninfer `
+.\ninfer.exe models\qwen3_6_35b_a3b.ninfer `
   --prompt "Explain speculative decoding in three sentences." `
   --max-context 256 --prefill-chunk 128 --max-new 128 --kv-dtype int8 `
   --mtp-draft-tokens 1 --lm-head-draft --text-only
@@ -199,8 +206,13 @@ build-windows\apps\Release\ninfer.exe models\qwen3_6_35b_a3b.ninfer `
 `--text-only` is required for the 35B-A3B artifact on a 24 GiB RTX 3090. It rejects image/video
 input and avoids reserving vision scratch memory; normal text model behavior is unchanged.
 
+### Linux/WSL2
+
+After extracting a Linux Release archive, run `./ninfer` from that directory. If you built from
+source, replace `./ninfer` below with `./build/apps/ninfer`.
+
 ```bash
-./build/apps/ninfer models/qwen3_6_27b.ninfer \
+./ninfer models/qwen3_6_27b.ninfer \
   --prompt "Explain prefill and decode in three sentences." \
   --max-context 16384 \
   --max-new 256 \
@@ -211,7 +223,7 @@ input and avoids reserving vision scratch memory; normal text model behavior is 
 Use `--messages FILE` instead of `--prompt` for chat history, images, or videos:
 
 ```bash
-./build/apps/ninfer models/qwen3_6_27b.ninfer \
+./ninfer models/qwen3_6_27b.ninfer \
   --messages examples/cli/messages/image_chart.json \
   --max-context 8192 \
   --max-new 128
@@ -223,8 +235,12 @@ MTP statistics are written to stderr. See the [CLI guide](docs/cli.md) and
 
 ## Run the HTTP server
 
+The example below uses an extracted Linux/WSL2 Release archive. Source builds use
+`./build/apps/ninfer-serve`; on Windows use `.\ninfer-serve.exe` from an extracted archive or
+`build-windows\apps\Release\ninfer-serve.exe` from a source build.
+
 ```bash
-./build/apps/ninfer-serve models/qwen3_6_27b.ninfer \
+./ninfer-serve models/qwen3_6_27b.ninfer \
   --model-id qwen3.6-27b \
   --max-context 16384 \
   --mtp-draft-tokens 3 \
@@ -248,10 +264,11 @@ function-tool request/response translation. See [HTTP serving](docs/serving.md).
 
 ## Capabilities
 
-Both registered artifacts support:
+The engine implements the following capabilities. Qwen3.6-27B can use the full list on the RTX
+3090; Qwen3.6-35B-A3B must run in text-only mode on a 24 GiB RTX 3090:
 
 - text generation with thinking and non-thinking prompt modes;
-- image, multi-image, video, and mixed multimodal messages;
+- image, multi-image, video, and mixed multimodal messages with Qwen3.6-27B;
 - chunked prefill and CUDA Graph decode;
 - MTP speculative decoding with draft windows from one to five;
 - BF16 and INT8 group-64 KV cache;

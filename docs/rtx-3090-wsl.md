@@ -1,6 +1,8 @@
 # RTX 3090 / WSL2 port
 
-This branch is a CUDA 12.8, `sm_86` port of NInfer for one GeForce RTX 3090. The verified product
+This report records the original CUDA 12.8 measurements for the `sm_86` port on one GeForce RTX
+3090. The current source requires CUDA 13.0 or newer; CUDA 12.8 references below describe the
+measured toolchain and are not current build requirements. The verified product
 targets are Qwen3.6-27B and text-only Qwen3.6-35B-A3B. The 35B artifact requires `--text-only` to
 omit vision workspace on a 24 GiB card. A quick WSL tg32 MTP-1 check measured 248.09 +/- 2.32
 tok/s; native Windows remains the primary controlled result. See
