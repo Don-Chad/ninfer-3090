@@ -11,6 +11,7 @@ namespace ninfer::ops::detail {
 enum class Q4ScheduleId {
     GemvR4W1Direct,
     GemvR1W8Direct,
+    SimtR4C4,
     SimtR8C4,
     SimtR8C8,
     MmaR64C64,

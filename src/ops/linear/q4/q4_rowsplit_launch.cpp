@@ -19,6 +19,7 @@ bool is_known_schedule(Q4ScheduleId schedule) {
     switch (schedule) {
     case Q4ScheduleId::GemvR4W1Direct:
     case Q4ScheduleId::GemvR1W8Direct:
+    case Q4ScheduleId::SimtR4C4:
     case Q4ScheduleId::SimtR8C4:
     case Q4ScheduleId::SimtR8C8:
     case Q4ScheduleId::MmaR64C64:
@@ -33,6 +34,7 @@ bool is_gemv(Q4ScheduleId schedule) {
     case Q4ScheduleId::GemvR4W1Direct:
     case Q4ScheduleId::GemvR1W8Direct:
         return true;
+    case Q4ScheduleId::SimtR4C4:
     case Q4ScheduleId::SimtR8C4:
     case Q4ScheduleId::SimtR8C8:
     case Q4ScheduleId::MmaR64C64:
@@ -43,11 +45,13 @@ bool is_gemv(Q4ScheduleId schedule) {
 }
 
 bool is_simt(Q4ScheduleId schedule) {
-    return schedule == Q4ScheduleId::SimtR8C4 || schedule == Q4ScheduleId::SimtR8C8;
+    return schedule == Q4ScheduleId::SimtR4C4 || schedule == Q4ScheduleId::SimtR8C4 ||
+           schedule == Q4ScheduleId::SimtR8C8;
 }
 
 int schedule_cols(Q4ScheduleId schedule) {
     switch (schedule) {
+    case Q4ScheduleId::SimtR4C4:
     case Q4ScheduleId::SimtR8C4:
         return 4;
     case Q4ScheduleId::SimtR8C8:
@@ -104,6 +108,9 @@ void launch_fixed_unchecked(Q4Plan plan, const Tensor& x, const Weight& w, Tenso
     case Q4ScheduleId::GemvR1W8Direct:
         q4_rowsplit_gemv_r1_w8_direct_launch(x, w, out, stream);
         return;
+    case Q4ScheduleId::SimtR4C4:
+        q4_rowsplit_gemm_simt_r4_c4_launch(plan.variant, x, w, out, stream);
+        return;
     case Q4ScheduleId::SimtR8C4:
         q4_rowsplit_gemm_simt_r8_c4_launch(plan.variant, x, w, out, stream);
         return;
@@ -132,6 +139,8 @@ const char* q4_schedule_name(Q4ScheduleId schedule) {
         return "q4.gemv.r1.w8.g16.s1.groups_static80.x_direct."
                "lane_q4x2.decode_scalar_integer."
                "code_sync_vec16_ca.scale_scalar16_shuffle.lb1";
+    case Q4ScheduleId::SimtR4C4:
+        return "q4.simt.r4.c4.g16.s2.code_ca.lb1.sm86";
     case Q4ScheduleId::SimtR8C4:
         return "q4.simt.r8.c4.g16.s2.code_ca.lb1";
     case Q4ScheduleId::SimtR8C8:
@@ -175,6 +184,9 @@ bool q4_candidate_is_legal(Q4ScheduleId schedule, Q4KernelVariant variant,
     const int tile_cols = schedule_cols(schedule);
     if (variant == Q4KernelVariant::Full) {
         if ((problem.cols % tile_cols) != 0) { return false; }
+        if (schedule == Q4ScheduleId::SimtR4C4) {
+            return (problem.rows % 4) == 0 && ((problem.k / 64) % 16) == 0;
+        }
         if (is_simt(schedule)) { return (problem.rows % 8) == 0 && ((problem.k / 64) % 16) == 0; }
         return (problem.rows % 64) == 0;
     }
@@ -204,7 +216,8 @@ void q4_rowsplit_launch_fixed_pitched(Q4Plan plan, const Tensor& x, const Weight
     require_candidate_operands(x, w, out, true);
     const Q4Problem problem{out.ne[0], x.ne[0], w.padded_shape[1], x.ne[1]};
     if (!q4_candidate_is_legal(plan.schedule, plan.variant, problem) ||
-        (plan.schedule != Q4ScheduleId::GemvR1W8Direct && plan.schedule != Q4ScheduleId::SimtR8C4 &&
+        (plan.schedule != Q4ScheduleId::GemvR1W8Direct && plan.schedule != Q4ScheduleId::SimtR4C4 &&
+         plan.schedule != Q4ScheduleId::SimtR8C4 &&
          plan.schedule != Q4ScheduleId::SimtR8C8)) {
         throw std::invalid_argument("q4 fixed pitched launch: schedule is not admitted");
     }

@@ -236,8 +236,12 @@ constexpr std::array<RoutePoint, 7> k7168Routes{{
 
 constexpr std::array<RoutePoint, 6> k34816Routes{{
     {1, S::GemvR1W8Direct, V::None},
+#ifdef _WIN32
     {2, S::SimtR8C4, V::Predicated},
-    {4, S::SimtR8C4, V::Full},
+#else
+    {2, S::SimtR4C4, V::Predicated},
+#endif
+    {4, S::SimtR4C4, V::Full},
     {5, S::SimtR8C8, V::Predicated},
     {16, S::SimtR8C8, V::Full},
     {17, S::MmaR64C128, V::Predicated},
@@ -277,7 +281,7 @@ struct SupportCase {
     std::uint32_t seed;
 };
 
-std::array<bool, 6> schedules_seen{};
+std::array<bool, 7> schedules_seen{};
 std::array<bool, 3> variants_seen{};
 
 void record_coverage(S schedule, V variant) {
@@ -288,17 +292,20 @@ void record_coverage(S schedule, V variant) {
     case S::GemvR1W8Direct:
         schedules_seen[1] = true;
         break;
-    case S::SimtR8C4:
+    case S::SimtR4C4:
         schedules_seen[2] = true;
         break;
-    case S::SimtR8C8:
+    case S::SimtR8C4:
         schedules_seen[3] = true;
         break;
-    case S::MmaR64C64:
+    case S::SimtR8C8:
         schedules_seen[4] = true;
         break;
-    case S::MmaR64C128:
+    case S::MmaR64C64:
         schedules_seen[5] = true;
+        break;
+    case S::MmaR64C128:
+        schedules_seen[6] = true;
         break;
     }
     switch (variant) {

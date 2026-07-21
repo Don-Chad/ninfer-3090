@@ -26,24 +26,22 @@ void expect_invalid(const char* label, Fn&& fn) {
 Bf16GdnGatingScheduleId expected_schedule(std::int32_t cols) {
     if (cols == 1) { return Bf16GdnGatingScheduleId::GemvPairedRows; }
     if (cols <= 8) { return Bf16GdnGatingScheduleId::SmallTSplit10; }
-    if (cols <= 1024) { return Bf16GdnGatingScheduleId::MmaCooperativeSplit8; }
-    if (cols <= 2048) { return Bf16GdnGatingScheduleId::MmaCooperativeSplit4; }
-    if (cols <= 4096) { return Bf16GdnGatingScheduleId::MmaCooperativeSplit2; }
+    if (cols <= 768) { return Bf16GdnGatingScheduleId::MmaCooperativeSplit8; }
+    if (cols <= 1664) { return Bf16GdnGatingScheduleId::MmaCooperativeSplit2; }
     return Bf16GdnGatingScheduleId::MmaUnsplit;
 }
 
 std::int32_t expected_split(std::int32_t cols) {
-    if (cols == 1 || cols > 4096) { return 1; }
+    if (cols == 1 || cols > 1664) { return 1; }
     if (cols <= 8) { return 10; }
-    if (cols <= 1024) { return 8; }
-    if (cols <= 2048) { return 4; }
+    if (cols <= 768) { return 8; }
     return 2;
 }
 
 void route_tests() {
     using S = Bf16GdnGatingScheduleId;
     constexpr std::array<std::int32_t, 14> boundaries{
-        1, 2, 8, 9, 127, 128, 1024, 1025, 2048, 2049, 4095, 4096, 4097, 8192,
+        1, 2, 8, 9, 127, 128, 768, 769, 1663, 1664, 1665, 2048, 4096, 8192,
     };
     for (const std::int32_t cols : boundaries) {
         const auto plan = ninfer::ops::detail::bf16_gdn_gating_resolve_plan({48, 5120, cols});
@@ -81,9 +79,9 @@ void route_tests() {
     };
 
     constexpr std::array<CooperativeBoundary, 3> cooperative_boundaries{{
-        {S::MmaCooperativeSplit8, 1792, "27B split8"},
-        {S::MmaCooperativeSplit4, 3584, "27B split4"},
-        {S::MmaCooperativeSplit2, 7168, "27B split2"},
+        {S::MmaCooperativeSplit8, 768, "27B split8"},
+        {S::MmaCooperativeSplit4, 768, "27B split4"},
+        {S::MmaCooperativeSplit2, 1664, "27B split2"},
     }};
     for (const CooperativeBoundary& boundary : cooperative_boundaries) {
         (void)ninfer::ops::detail::bf16_gdn_gating_resolve_candidate(
@@ -109,15 +107,15 @@ void route35_tests() {
         }
         if (!admitted) { continue; }
         const auto plan          = ninfer::ops::detail::bf16_gdn_gating_resolve_plan(problem);
-        const S expected         = cols <= 127    ? S::MmaCooperativeSplit16
-                                   : cols <= 1024 ? S::MmaCooperativeSplit8
-                                   : cols <= 2048 ? S::MmaCooperativeSplit4
-                                   : cols <= 4096 ? S::MmaCooperativeSplit2
+        const S expected         = cols <= 127   ? S::MmaCooperativeSplit16
+                                   : cols <= 960 ? S::MmaCooperativeSplit8
+                                   : cols <= 1920 ? S::MmaCooperativeSplit4
+                                   : cols <= 3904 ? S::MmaCooperativeSplit2
                                                   : S::MmaUnsplit;
-        const std::int32_t split = cols <= 127    ? 16
-                                   : cols <= 1024 ? 8
-                                   : cols <= 2048 ? 4
-                                   : cols <= 4096 ? 2
+        const std::int32_t split = cols <= 127   ? 16
+                                   : cols <= 960 ? 8
+                                   : cols <= 1920 ? 4
+                                   : cols <= 3904 ? 2
                                                   : 1;
         const std::size_t workspace =
             split > 1 ? static_cast<std::size_t>(split) * cols * 64u * sizeof(float) : 0;
@@ -138,11 +136,11 @@ void route35_tests() {
     };
 
     constexpr std::array<CooperativeBoundary, 5> cooperative_boundaries{{
-        {S::MmaCooperativeSplit32, 32, 320, "split32"},
-        {S::MmaCooperativeSplit16, 16, 1344, "split16"},
-        {S::MmaCooperativeSplit8, 8, 2688, "split8"},
-        {S::MmaCooperativeSplit4, 4, 5440, "split4"},
-        {S::MmaCooperativeSplit2, 2, 10880, "split2"},
+        {S::MmaCooperativeSplit32, 32, 128, "split32"},
+        {S::MmaCooperativeSplit16, 16, 640, "split16"},
+        {S::MmaCooperativeSplit8, 8, 960, "split8"},
+        {S::MmaCooperativeSplit4, 4, 1920, "split4"},
+        {S::MmaCooperativeSplit2, 2, 3904, "split2"},
     }};
     for (const CooperativeBoundary& boundary : cooperative_boundaries) {
         const auto plan = ninfer::ops::detail::bf16_gdn_gating_resolve_candidate(
@@ -189,12 +187,12 @@ void workspace_tests() {
         {9, 36'864},
         {10, 40'960},
         {128, 520'192},
-        {1024, 3'145'728},
-        {1025, 3'145'728},
-        {2048, 3'145'728},
-        {4096, 3'145'728},
-        {4097, 3'145'728},
-        {8192, 3'145'728},
+        {1024, 2'359'296},
+        {1025, 2'359'296},
+        {2048, 2'359'296},
+        {4096, 2'359'296},
+        {4097, 2'359'296},
+        {8192, 2'359'296},
     }};
     for (const Case test : cases) {
         const std::size_t actual = ninfer::ops::gdn_gating_proj_workspace_bytes(test.capacity);

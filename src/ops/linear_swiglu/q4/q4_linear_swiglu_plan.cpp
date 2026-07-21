@@ -84,7 +84,7 @@ Q4KernelVariant tiled_variant(Q4ScheduleId schedule, const Q4Problem& problem) {
 Q4Plan materialized_plan(const Q4LinearSwiGluProblem& problem) {
     Q4ScheduleId schedule = Q4ScheduleId::MmaR64C128;
     if (problem.cols <= 4) {
-        schedule = Q4ScheduleId::SimtR8C4;
+        schedule = Q4ScheduleId::SimtR4C4;
     } else if (problem.cols <= 16) {
         schedule = Q4ScheduleId::SimtR8C8;
     }

@@ -40,6 +40,10 @@ std::string plan_name(Q4Plan plan) {
 
 Q4KernelVariant expected_tiled_variant(Q4ScheduleId schedule, const Q4Problem& problem) {
     switch (schedule) {
+    case S::SimtR4C4:
+        return (problem.cols % 4) == 0 && (problem.rows % 4) == 0 && ((problem.k / 64) % 16) == 0
+                   ? V::Full
+                   : V::Predicated;
     case S::SimtR8C4:
         return (problem.cols % 4) == 0 && (problem.rows % 8) == 0 && ((problem.k / 64) % 16) == 0
                    ? V::Full
@@ -87,9 +91,14 @@ Q4Plan expected_production_plan(const Q4Problem& problem) {
             schedule = S::MmaR64C128;
         }
     } else if (problem.rows == 34816 && problem.k == 5120) {
+#ifdef _WIN32
+        if (problem.cols == 2) {
+            schedule = S::SimtR8C4;
+        } else
+#endif
         schedule = problem.cols == 1
                        ? S::GemvR1W8Direct
-                       : (problem.cols <= 4 ? S::SimtR8C4
+                       : (problem.cols <= 4 ? S::SimtR4C4
                                             : (problem.cols <= 16 ? S::SimtR8C8 : S::MmaR64C128));
     } else if (problem.rows == 131072 && (problem.k == 5120 || problem.k == 2048)) {
         schedule = problem.cols == 1 ? S::GemvR4W1Direct : S::MmaR64C128;
@@ -129,9 +138,10 @@ void expect_plan(const std::string& label, const Q4Problem& problem, Q4Plan expe
     }
 }
 
-constexpr std::array<S, 6> kSchedules{{
+constexpr std::array<S, 7> kSchedules{{
     S::GemvR4W1Direct,
     S::GemvR1W8Direct,
+    S::SimtR4C4,
     S::SimtR8C4,
     S::SimtR8C8,
     S::MmaR64C64,
@@ -242,8 +252,12 @@ void route_boundaries_and_seams() {
         {"7168 second c4 end", {7168, 5120, 5120, 15}, {S::SimtR8C4, V::Predicated}},
         {"7168 c8 end", {7168, 5120, 5120, 16}, {S::SimtR8C8, V::Full}},
 
+#ifdef _WIN32
         {"34816 c4 begin", {34816, 5120, 5120, 2}, {S::SimtR8C4, V::Predicated}},
-        {"34816 c4 end", {34816, 5120, 5120, 4}, {S::SimtR8C4, V::Full}},
+#else
+        {"34816 c4 begin", {34816, 5120, 5120, 2}, {S::SimtR4C4, V::Predicated}},
+#endif
+        {"34816 c4 end", {34816, 5120, 5120, 4}, {S::SimtR4C4, V::Full}},
         {"34816 c4/c8 seam", {34816, 5120, 5120, 5}, {S::SimtR8C8, V::Predicated}},
         {"34816 c8 end", {34816, 5120, 5120, 16}, {S::SimtR8C8, V::Full}},
         {"34816 T1", {34816, 5120, 5120, 1}, {S::GemvR1W8Direct, V::None}},

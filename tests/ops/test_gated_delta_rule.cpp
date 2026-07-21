@@ -11,6 +11,7 @@
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace ninfer;

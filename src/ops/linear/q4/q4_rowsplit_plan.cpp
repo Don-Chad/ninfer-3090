@@ -76,7 +76,7 @@ constexpr std::array<Q4RouteSpec, 35> kRouteSpecs{{
 
     // [34816, 5120]
     {{1, 1, 1}, Q4ScheduleId::GemvR1W8Direct},
-    {{2, 4, 1}, Q4ScheduleId::SimtR8C4},
+    {{2, 4, 1}, Q4ScheduleId::SimtR4C4},
     {{5, 16, 1}, Q4ScheduleId::SimtR8C8},
     {{17, kAnyCols, 1}, Q4ScheduleId::MmaR64C128},
 
@@ -106,6 +106,7 @@ constexpr bool known_schedule(Q4ScheduleId schedule) noexcept {
     switch (schedule) {
     case Q4ScheduleId::GemvR4W1Direct:
     case Q4ScheduleId::GemvR1W8Direct:
+    case Q4ScheduleId::SimtR4C4:
     case Q4ScheduleId::SimtR8C4:
     case Q4ScheduleId::SimtR8C8:
     case Q4ScheduleId::MmaR64C64:
@@ -180,6 +181,7 @@ Q4KernelVariant resolve_variant(Q4ScheduleId schedule, const Q4Problem& problem)
             return Q4KernelVariant::None;
         }
         break;
+    case Q4ScheduleId::SimtR4C4:
     case Q4ScheduleId::SimtR8C4:
     case Q4ScheduleId::SimtR8C8:
     case Q4ScheduleId::MmaR64C64:
@@ -211,6 +213,16 @@ Q4Plan q4_rowsplit_resolve_plan(const Q4Problem& problem) {
     if (support == nullptr || !support->admitted_cols.contains(problem.cols)) {
         throw std::invalid_argument("q4 linear: exact problem or column count is not admitted");
     }
+
+#ifdef _WIN32
+    // CUDA 13.2/MSVC on sm_86 measures R8C4 about 3% faster than R4C4 for this single
+    // predicated T=2 shape. Keep the CUDA 12.8/Linux route unchanged, where R4C4 wins.
+    if (problem.rows == 34816 && problem.k == 5120 && problem.padded_k == 5120 &&
+        problem.cols == 2) {
+        constexpr auto schedule = Q4ScheduleId::SimtR8C4;
+        return {schedule, resolve_variant(schedule, problem)};
+    }
+#endif
 
     for (std::size_t local = 0; local < support->route_count; ++local) {
         const Q4RouteSpec& route = kRouteSpecs[support->route_begin + local];

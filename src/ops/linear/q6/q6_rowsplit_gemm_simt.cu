@@ -10,6 +10,10 @@ namespace ninfer::ops::detail {
 namespace {
 
 using SimtR8C4Schedule = Q6RowSplitSimtGemmSchedule<8, 4, 16, 2, Cache::ca, 1>;
+// The 35B-A3B head has K=2048 and benefits from an extra cp.async stage, L2-only
+// code loads, and an explicit two-block launch bound on GA102. Keep the K=5120
+// dense-model schedule separate: the same settings regress its multi-column path.
+using SimtR8C4K2048Sm86Schedule = Q6RowSplitSimtGemmSchedule<8, 4, 16, 3, Cache::cg, 2>;
 using SimtR8C8Schedule = Q6RowSplitSimtGemmSchedule<8, 8, 16, 2, Cache::ca, 1>;
 
 template <class Schedule>
@@ -32,6 +36,10 @@ void launch_schedule(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t
 
 void q6_rowsplit_simt_r8_c4_launch(const Tensor& x, const Weight& w, Tensor& out,
                                    cudaStream_t stream) {
+    if (x.ne[0] == 2048) {
+        launch_schedule<SimtR8C4K2048Sm86Schedule>(x, w, out, stream);
+        return;
+    }
     launch_schedule<SimtR8C4Schedule>(x, w, out, stream);
 }
 

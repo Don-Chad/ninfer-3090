@@ -10,6 +10,7 @@
 namespace ninfer::ops::detail {
 namespace {
 
+using Q4SimtR4C4Schedule = Q4RowSplitSimtGemmSchedule<4, 4, 16, 2, Cache::ca, 1>;
 using Q4SimtR8C4Schedule = Q4RowSplitSimtGemmSchedule<8, 4, 16, 2, Cache::ca, 1>;
 using Q4SimtR8C8Schedule = Q4RowSplitSimtGemmSchedule<8, 8, 16, 2, Cache::ca, 1>;
 
@@ -47,6 +48,11 @@ void launch_variant(Q4KernelVariant variant, const Tensor& x, const Weight& w, T
 }
 
 } // namespace
+
+void q4_rowsplit_gemm_simt_r4_c4_launch(Q4KernelVariant variant, const Tensor& x, const Weight& w,
+                                        Tensor& out, cudaStream_t stream) {
+    launch_variant<Q4SimtR4C4Schedule>(variant, x, w, out, stream);
+}
 
 void q4_rowsplit_gemm_simt_r8_c4_launch(Q4KernelVariant variant, const Tensor& x, const Weight& w,
                                         Tensor& out, cudaStream_t stream) {

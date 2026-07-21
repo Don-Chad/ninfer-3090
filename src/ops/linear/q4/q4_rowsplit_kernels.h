@@ -12,6 +12,8 @@ void q4_rowsplit_gemv_r4_w1_direct_launch(const Tensor& x, const Weight& w, Tens
 void q4_rowsplit_gemv_r1_w8_direct_launch(const Tensor& x, const Weight& w, Tensor& out,
                                           cudaStream_t stream);
 
+void q4_rowsplit_gemm_simt_r4_c4_launch(Q4KernelVariant variant, const Tensor& x, const Weight& w,
+                                        Tensor& out, cudaStream_t stream);
 void q4_rowsplit_gemm_simt_r8_c4_launch(Q4KernelVariant variant, const Tensor& x, const Weight& w,
                                         Tensor& out, cudaStream_t stream);
 void q4_rowsplit_gemm_simt_r8_c8_launch(Q4KernelVariant variant, const Tensor& x, const Weight& w,

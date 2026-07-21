@@ -494,6 +494,8 @@ void parse_candidate(Options& opt, std::string_view raw) {
         opt.q4_schedule = ops::detail::Q4ScheduleId::GemvR4W1Direct;
     } else if (candidate == "q4-gemv-r1w8-direct") {
         opt.q4_schedule = ops::detail::Q4ScheduleId::GemvR1W8Direct;
+    } else if (candidate == "q4-simt-r4c4") {
+        opt.q4_schedule = ops::detail::Q4ScheduleId::SimtR4C4;
     } else if (candidate == "q4-simt-r8c4") {
         opt.q4_schedule = ops::detail::Q4ScheduleId::SimtR8C4;
     } else if (candidate == "q4-simt-r8c8") {
@@ -724,7 +726,8 @@ void usage(const char* argv0) {
         "  --rows N --k K             Numeric matrix geometry for fixed-candidate work.\n"
         "  --qtype Q4|Q5|Q6|W8G32     Low-bit ROW_SPLIT qtype for --shape.\n"
         "  --candidate NAME           auto, q4-gemv-r4w1-direct,\n"
-        "                             q4-gemv-r1w8-direct, q4-simt-r8c4, q4-simt-r8c8,\n"
+        "                             q4-gemv-r1w8-direct, q4-simt-r4c4, q4-simt-r8c4,\n"
+        "                             q4-simt-r8c8,\n"
         "                             q4-mma-r64c64, q4-mma-r64c128,\n"
         "                             q5-gemv-r16s2x, q5-simt-r8c4, q5-simt-r8c8,\n"
         "                             q5-simt-split2-exact, q5-simt-split4-exact,\n"
@@ -1280,6 +1283,7 @@ int schedule_col_tile(ops::detail::Q4ScheduleId schedule) {
     case S::GemvR4W1Direct:
     case S::GemvR1W8Direct:
         return 1;
+    case S::SimtR4C4:
     case S::SimtR8C4:
         return 4;
     case S::SimtR8C8:

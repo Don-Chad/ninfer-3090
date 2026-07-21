@@ -24,25 +24,24 @@ struct RouteSpec {
     Bf16GdnGatingScheduleId schedule;
 };
 
-constexpr std::array<RouteSpec, 6> k27Routes{{
+constexpr std::array<RouteSpec, 5> k27Routes{{
     {{1, 1}, Bf16GdnGatingScheduleId::GemvPairedRows},
     {{2, 8}, Bf16GdnGatingScheduleId::SmallTSplit10},
-    // As token tiles double, halve SplitK. This keeps the cooperative grid near 192 CTAs instead
-    // of making T a launch limit. Once the unsplit grid has enough independent work, it also
-    // removes the cooperative-residency constraint.
-    {{9, 1024}, Bf16GdnGatingScheduleId::MmaCooperativeSplit8},
-    {{1025, 2048}, Bf16GdnGatingScheduleId::MmaCooperativeSplit4},
-    {{2049, 4096}, Bf16GdnGatingScheduleId::MmaCooperativeSplit2},
-    {{4097, kAnyCols}, Bf16GdnGatingScheduleId::MmaUnsplit},
+    // The GA102 build admits two split8 CTAs per SM, but only one of the 512-thread split4/2
+    // specializations because their sm_86 register footprint is 74 registers per thread.
+    // Keep every cooperative grid resident across the RTX 3090's 82 SMs.
+    {{9, 768}, Bf16GdnGatingScheduleId::MmaCooperativeSplit8},
+    {{769, 1664}, Bf16GdnGatingScheduleId::MmaCooperativeSplit2},
+    {{1665, kAnyCols}, Bf16GdnGatingScheduleId::MmaUnsplit},
 }};
 
 constexpr std::array<RouteSpec, 5> k35Routes{{
-    // The same progression keeps the long-range cooperative routes near 256 CTAs.
+    // CUDA 12.8/sm_86 resource limits cap split8/4/2 at three CTAs per GA102 SM.
     {{1, 127}, Bf16GdnGatingScheduleId::MmaCooperativeSplit16},
-    {{128, 1024}, Bf16GdnGatingScheduleId::MmaCooperativeSplit8},
-    {{1025, 2048}, Bf16GdnGatingScheduleId::MmaCooperativeSplit4},
-    {{2049, 4096}, Bf16GdnGatingScheduleId::MmaCooperativeSplit2},
-    {{4097, kAnyCols}, Bf16GdnGatingScheduleId::MmaUnsplit},
+    {{128, 960}, Bf16GdnGatingScheduleId::MmaCooperativeSplit8},
+    {{961, 1920}, Bf16GdnGatingScheduleId::MmaCooperativeSplit4},
+    {{1921, 3904}, Bf16GdnGatingScheduleId::MmaCooperativeSplit2},
+    {{3905, kAnyCols}, Bf16GdnGatingScheduleId::MmaUnsplit},
 }};
 
 template <std::size_t N>
@@ -122,19 +121,22 @@ bool cooperative_grid_is_resident(Bf16GdnGatingScheduleId schedule, std::int32_t
 }
 
 bool cooperative_27_grid_is_resident(Bf16GdnGatingScheduleId schedule, std::int32_t cols) noexcept {
-    // BN128 uses 40 KiB of dynamic shared memory. Split8 uses 71 registers with 256 threads;
-    // split4/2 use 62 registers with 512 threads. Each specialization admits two CTAs/SM, hence
-    // 340 resident CTAs device-wide. There are three 16-row tiles per token tile.
-    return cooperative_grid_is_resident(schedule, cols, 128, 3, 340);
+    // CUDA 12.8/sm_86 emits 70 registers for the 256-thread split8 specialization and 74 for the
+    // 512-thread split4/2 specializations. Together with 40 KiB dynamic shared memory, that admits
+    // two split8 CTAs or one split4/2 CTA per GA102 SM. There are three 16-row tiles per token tile.
+    const std::int32_t resident_ctas =
+        schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit8 ? 164 : 82;
+    return cooperative_grid_is_resident(schedule, cols, 128, 3, resident_ctas);
 }
 
 bool cooperative_35_grid_is_resident(Bf16GdnGatingScheduleId schedule, std::int32_t cols) noexcept {
-    // BN64 uses 24 KiB of dynamic shared memory and two 16-row tiles. With the registered CUDA
-    // 13.1/sm_120a build, split32 uses 91/93 registers per thread and admits two CTAs/SM;
-    // split16/8/4/2 use at most 62 registers and admit four CTAs/SM. Across 170 SMs the
-    // device-wide limits are 340 and 680 CTAs respectively.
+    // BN64 uses 24 KiB of dynamic shared memory and 256 threads. CUDA 12.8/sm_86 emits 88-90
+    // registers for split32, 56 for split16, and 74 for split8/4/2. The resulting GA102 limits
+    // are respectively two, four, and three CTAs per SM across the RTX 3090's 82 SMs.
     const std::int32_t resident_ctas =
-        schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit32 ? 340 : 680;
+        schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit32 ? 164
+        : schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit16 ? 328
+                                                                     : 246;
     return cooperative_grid_is_resident(schedule, cols, 64, 2, resident_ctas);
 }
 

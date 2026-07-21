@@ -36,7 +36,7 @@ S expected_schedule(std::int32_t cols) {
 }
 
 Q4ScheduleId expected_materialized_schedule(std::int32_t cols) {
-    if (cols <= 4) { return Q4ScheduleId::SimtR8C4; }
+    if (cols <= 4) { return Q4ScheduleId::SimtR4C4; }
     if (cols <= 16) { return Q4ScheduleId::SimtR8C8; }
     return Q4ScheduleId::MmaR64C128;
 }

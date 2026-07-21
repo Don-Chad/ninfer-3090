@@ -105,6 +105,8 @@ std::vector<std::int32_t> parse_tokens(const char* csv) {
 
 ops::detail::Bf16GdnGatingScheduleId parse_candidate(std::string_view raw) {
     using S = ops::detail::Bf16GdnGatingScheduleId;
+    if (raw == "gemv-paired") { return S::GemvPairedRows; }
+    if (raw == "small-split10") { return S::SmallTSplit10; }
     if (raw == "simt-c4") { return S::SimtWarpRowC4; }
     if (raw == "simt-c8") { return S::SimtWarpRowC8; }
     if (raw == "mma-split32") { return S::MmaCooperativeSplit32; }
@@ -141,16 +143,14 @@ Options parse_args(int argc, char** argv) {
             opt.flush_bytes = static_cast<std::size_t>(mib) << 20;
         } else if (!std::strcmp(argv[i], "--help") || !std::strcmp(argv[i], "-h")) {
             std::printf("usage: %s [--35b] [--candidate auto|simt-c4|simt-c8|mma-split32|"
-                        "mma-split16|mma-split8|mma-split4|mma-split2|mma-unsplit] "
+                        "gemv-paired|small-split10|mma-split16|mma-split8|mma-split4|"
+                        "mma-split2|mma-unsplit] "
                         "[-p 1,2,...] [--warmup N] [--repeat N] [--flush-mib N]\n",
                         argv[0]);
             std::exit(0);
         } else {
             throw std::invalid_argument("unknown argument: " + std::string(argv[i]));
         }
-    }
-    if (!opt.geometry35 && !opt.auto_route) {
-        throw std::invalid_argument("fixed candidate screening is supported only for --35b");
     }
     if (opt.warmup < 0 || opt.repeat <= 0) {
         throw std::invalid_argument("warmup must be nonnegative and repeat positive");
