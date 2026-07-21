@@ -67,6 +67,7 @@ struct BenchOptions {
     ProposalHead proposal_head     = ProposalHead::Full;
     int device                     = 0;
     bool use_cuda_graph            = true;
+    bool text_only                 = false;
     bool profile_measured          = false;
     OutputFormat output            = OutputFormat::Table;
     std::string output_file;
@@ -108,6 +109,7 @@ struct BenchEnvironment {
     std::uint32_t mtp_draft_tokens                 = 0;
     ProposalHead proposal_head                     = ProposalHead::Full;
     bool use_cuda_graph                            = true;
+    bool text_only                                 = false;
     bool decode_graph_primed                       = false;
     std::uint32_t decode_graph_prime_output_tokens = 0;
     int repetitions                                = 0;

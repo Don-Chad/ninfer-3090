@@ -304,6 +304,7 @@ std::string format_server_start_json(const std::string& server_instance_id, std:
                                        {"prefill_chunk", options.prefill_chunk},
                                        {"kv_cache", kv_cache_name(options.kv_cache)},
                                        {"cuda_graph", options.use_cuda_graph},
+                                       {"text_only", options.text_only},
                                        {"prefix_reuse", options.allow_prefix_reuse},
                                        {"mtp_draft_window", options.mtp_draft_tokens},
                                        {"mtp_proposal_head", proposal_head_name(options.proposal_head)}};

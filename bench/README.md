@@ -46,7 +46,7 @@ ninfer_bench --weights <artifact.ninfer>
           [--max-ctx <tokens>] [--prefill-chunk <tokens>]
           [--kv-dtype <bf16|int8>]
           [--mtp-draft-tokens <0..5>] [--lm-head-draft]
-          [--device <id>] [--no-cuda-graph] [--profile-measured]
+          [--device <id>] [--no-cuda-graph] [--text-only] [--profile-measured]
           [-o, --output <table|json|csv>] [--output-file <path>]
 ```
 
@@ -63,6 +63,9 @@ Example:
 `bf16` selects BF16 KV storage and `int8` selects INT8 group-64 KV storage. MTP is enabled with
 `--mtp-draft-tokens`; `--lm-head-draft` selects the optimized proposal head. CUDA Graph decode is
 enabled by default.
+
+Use `--text-only` to reject media and omit the vision workspace reservation. This is required to
+fit the full 35B-A3B artifact on a 24 GiB RTX 3090.
 
 `--profile-measured` is a benchmark-only profiler boundary. It requires exactly one selected test
 and `-r 1`, synchronizes after warmup, and brackets only the measured repetition with

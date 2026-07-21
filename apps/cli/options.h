@@ -25,6 +25,7 @@ struct Options {
     std::uint32_t mtp_draft_tokens = 0;
     ProposalHead proposal_head     = ProposalHead::Full;
     bool use_cuda_graph            = true;
+    bool text_only                 = false;
 
     bool raw_output      = false;
     bool print_token_ids = false;

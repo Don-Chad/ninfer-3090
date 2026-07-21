@@ -1,5 +1,11 @@
 # NInfer documentation
 
+- [RTX 3090 / WSL2 port and measured configuration](rtx-3090-wsl.md)
+- [RTX 3090 / native Windows build and benchmarks](rtx-3090-windows.md)
+- [RTX 3090 ordinary MTP-disabled inference analysis](rtx-3090-normal-inference.md)
+- [RTX 3090 Qwen3.6-35B-A3B text-only tuning and benchmarks](rtx-3090-35b-a3b.md)
+- [Windows and Linux release bundles](../dist/README.md)
+
 Start with the [project README](../README.md) to build NInfer, download one of the two registered
 artifacts, and run the CLI or HTTP server.
 

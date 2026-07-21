@@ -154,6 +154,7 @@ curl http://127.0.0.1:8080/v1/models \
 | `--lm-head-draft` | optimized MTP proposal head | off |
 | `--default-max-tokens N` | output limit when omitted by a request | `8192` |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
+| `--text-only` | reject image/video and omit vision workspace reservation | off |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--cors` | permissive browser CORS headers | off |

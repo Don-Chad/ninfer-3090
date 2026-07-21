@@ -87,6 +87,7 @@ int test_cli_contract() {
         "--device",
         "1",
         "--no-cuda-graph",
+        "--text-only",
         "--profile-measured",
         "--output",
         "json",
@@ -106,7 +107,8 @@ int test_cli_contract() {
     failures += expect(parsed.mtp_draft_tokens == 5, "MTP window");
     failures +=
         expect(parsed.proposal_head == ninfer::ProposalHead::Optimized, "optimized proposal head");
-    failures += expect(parsed.device == 1 && !parsed.use_cuda_graph, "device and graph settings");
+    failures += expect(parsed.device == 1 && !parsed.use_cuda_graph && parsed.text_only,
+                       "device, graph, and text-only settings");
     failures += expect(parsed.profile_measured, "profile-measured flag");
     failures +=
         expect(parsed.output == qb::OutputFormat::Json && parsed.output_file == "report.json",

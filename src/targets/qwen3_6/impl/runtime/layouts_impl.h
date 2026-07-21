@@ -274,9 +274,13 @@ std::size_t workspace_bytes(const SequencePlanImpl& plan) {
     decision.alloc_bytes(
         ops::sampling_workspace_bytes(TextConfig::token_domain, std::max(1, verify_tokens)));
 
-    return std::max({prefill.peak_bytes(), verify.peak_bytes(), mtp_prefill.peak_bytes(),
-                     mtp_full.peak_bytes(), decision.peak_bytes(),
-                     schedule::VisionContext::maximum_workspace_bytes()});
+    std::size_t peak = std::max({prefill.peak_bytes(), verify.peak_bytes(),
+                                 mtp_prefill.peak_bytes(), mtp_full.peak_bytes(),
+                                 decision.peak_bytes()});
+    if (!plan.text_only) {
+        peak = std::max(peak, schedule::VisionContext::maximum_workspace_bytes());
+    }
+    return peak;
 }
 
 } // namespace
@@ -310,6 +314,7 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
     impl->mtp_k           = options.speculative.draft_tokens;
     impl->proposal_head   = options.speculative.proposal_head;
     impl->use_cuda_graph  = options.use_cuda_graph;
+    impl->text_only       = options.text_only;
     impl->device          = options.device;
     impl->kv_dtype        = options.kv_cache == KvCacheStorage::BFloat16 ? DType::BF16 : DType::I8;
     impl->kv_quant_group  = impl->kv_dtype == DType::I8 ? kKvQuantGroup : 0;

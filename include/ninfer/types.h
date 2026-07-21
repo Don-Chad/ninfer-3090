@@ -43,6 +43,8 @@ struct EngineOptions {
     KvCacheStorage kv_cache     = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
     bool use_cuda_graph = true;
+    // Reject multimodal prompts and omit the large vision scratch reservation.
+    bool text_only = false;
     LoadProgress load_progress;
 };
 

@@ -57,6 +57,13 @@ bool has_media(const GenerationRequest& request) {
     return false;
 }
 
+void enforce_text_only(const ServeOptions& options, const GenerationRequest& request) {
+    if (options.text_only && has_media(request)) {
+        throw_invalid_input(std::invalid_argument("text-only server rejects image and video input"),
+                            "media_disabled");
+    }
+}
+
 ninfer::OwnedMedia acquire_media(const ContentPart& part) {
     ninfer::product::media_acquire::Policy policy;
     std::vector<std::uint8_t> source_bytes;
@@ -132,12 +139,14 @@ GenerationService::GenerationService(ServeOptions options) : options_(std::move(
     engine_options.prefill_chunk            = options_.prefill_chunk;
     engine_options.kv_cache                 = options_.kv_cache;
     engine_options.use_cuda_graph           = options_.use_cuda_graph;
+    engine_options.text_only                = options_.text_only;
     engine_options.speculative.draft_tokens = static_cast<std::uint32_t>(options_.mtp_draft_tokens);
     engine_options.speculative.proposal_head = options_.proposal_head;
     engine_ = std::make_unique<ninfer::Engine>(std::move(engine_options));
 }
 
 PreparedRequest GenerationService::prepare(const GenerationRequest& request) const {
+    enforce_text_only(options_, request);
     PreparedRequest prepared;
     prepared.options         = to_request_options(request, options_);
     prepared.include_usage   = request.include_usage;
@@ -159,6 +168,7 @@ PreparedRequest GenerationService::prepare(const GenerationRequest& request) con
 }
 
 int GenerationService::count_prompt_tokens(const GenerationRequest& request) const {
+    enforce_text_only(options_, request);
     std::unique_lock<std::mutex> media_permit;
     if (has_media(request)) { media_permit = std::unique_lock<std::mutex>(media_mutex_); }
     try {

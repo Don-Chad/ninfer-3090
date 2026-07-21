@@ -107,6 +107,7 @@ proposal head.
 | `--mtp-draft-tokens 0..5` | MTP draft window | `0` |
 | `--lm-head-draft` | optimized MTP proposal head | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
+| `--text-only` | reject image/video and omit vision workspace reservation | off |
 | `--no-thinking` | disable thinking in prompt rendering | thinking on |
 | `--greedy` | exact argmax decoding | off |
 | `--temperature F` | sampling temperature | `0.6` |

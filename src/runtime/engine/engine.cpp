@@ -11,6 +11,25 @@
 
 namespace ninfer {
 
+namespace {
+
+bool has_media(const PromptInput& input) {
+    for (const ChatMessage& message : input.messages) {
+        for (const MessagePart& part : message.parts) {
+            if (part.kind == MessagePartKind::Media) { return true; }
+        }
+    }
+    return false;
+}
+
+void enforce_text_only(const EngineOptions& options, const PromptInput& input) {
+    if (options.text_only && has_media(input)) {
+        throw std::invalid_argument("text-only Engine rejects image and video input");
+    }
+}
+
+} // namespace
+
 class PreparedPrompt::Impl {
 public:
     Impl(PromptSummary prompt_summary, double frontend_seconds,
@@ -67,6 +86,7 @@ Engine& Engine::operator=(Engine&&) noexcept = default;
 
 PreparedPrompt Engine::prepare(PromptInput input) const {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
+    enforce_text_only(impl_->options, input);
     return std::visit(
         [&](const auto& target_ptr) -> PreparedPrompt {
             if (target_ptr == nullptr) { throw std::logic_error("Engine target is not active"); }
@@ -105,6 +125,7 @@ PreparedPrompt Engine::prepare_tokens(std::vector<TokenId> token_ids,
 
 std::uint32_t Engine::count_tokens(PromptInput input) const {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
+    enforce_text_only(impl_->options, input);
     return std::visit(
         [&](const auto& target_ptr) {
             if (target_ptr == nullptr) { throw std::logic_error("Engine target is not active"); }

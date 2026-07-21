@@ -37,6 +37,11 @@ int main() {
     failures += check(!disabled.allow_prefix_reuse,
                       "--no-prefix-reuse did not disable server prefix reuse");
 
+    const ServeOptions text_only = parse({"ninfer-serve", "model.ninfer", "--text-only"});
+    failures += check(text_only.text_only, "--text-only did not enable text-only engine mode");
+    failures += check(serve_usage_text("ninfer-serve").find("--text-only") != std::string::npos,
+                      "serve help omits --text-only");
+
     GenerationRequest request;
     request.max_tokens = 1;
     failures += check(to_request_options(request, defaults).execution.allow_prefix_reuse,

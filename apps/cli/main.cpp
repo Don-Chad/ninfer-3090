@@ -252,6 +252,7 @@ int main(int argc, char** argv) {
         engine_options.speculative.draft_tokens         = cli.mtp_draft_tokens;
         engine_options.speculative.proposal_head        = cli.proposal_head;
         engine_options.use_cuda_graph                   = cli.use_cuda_graph;
+        engine_options.text_only                        = cli.text_only;
         engine_options.load_progress.min_interval_bytes = 1ULL << 30;
         engine_options.load_progress.callback = [&](std::string_view phase, std::uint64_t done,
                                                     std::uint64_t total) {

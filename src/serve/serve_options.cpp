@@ -58,7 +58,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--model-id ID] [--max-context N] [--prefill-chunk N] [--device N] "
            "[--max-request-mib N] [--request-log-jsonl FILE] "
            "[--kv-dtype bf16|int8] [--mtp-draft-tokens N] [--default-max-tokens N] "
-           "[--no-cuda-graph] [--no-prefix-reuse] "
+           "[--no-cuda-graph] [--no-prefix-reuse] [--text-only] "
            "[--lm-head-draft] [--no-thinking] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -139,6 +139,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             default_max_tokens_explicit = true;
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
+        } else if (arg == "--text-only") {
+            options.text_only = true;
         } else if (arg == "--no-prefix-reuse") {
             options.allow_prefix_reuse = false;
         } else if (arg == "--lm-head-draft") {
