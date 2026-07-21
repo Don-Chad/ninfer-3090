@@ -6,10 +6,13 @@ Run the packaging script from the repository root after both verified builds exi
 powershell -ExecutionPolicy Bypass -File scripts\package-release.ps1
 ```
 
-It creates two versioned directories and archives under `dist/`:
+Runtime revision `0.2.0-rtx3090-v2` creates two explicitly versioned directories and archives
+under `dist/`:
 
-- `ninfer-rtx3090-windows-x64-*`: native Windows CLI, server, benchmark, and vcpkg DLLs;
-- `ninfer-rtx3090-linux-x64-*`: Ubuntu 24.04 / WSL2 CLI, server, and benchmark;
+- `ninfer-rtx3090-windows-x64-0.2.0-rtx3090-v2`: native Windows CLI, server, benchmark, vcpkg
+  DLLs, and `VERSION` marker;
+- `ninfer-rtx3090-linux-x64-0.2.0-rtx3090-v2`: Ubuntu 24.04 / WSL2 CLI, server, benchmark, and
+  `VERSION` marker;
 - `SHA256SUMS.txt`: archive hashes for release verification.
 
 Generated binaries and archives are ignored by Git because GitHub source repositories should not

@@ -1,10 +1,14 @@
 # NInfer for RTX 3090
 
+Current publishable runtime revision: **`0.2.0-rtx3090-v2`**. Windows and Linux release archive
+names, packaged `VERSION` files, and runtime startup diagnostics carry this revision explicitly.
+
 > Fast, single-GPU Qwen3.6 inference on a 24 GiB RTX 3090, for native Windows and Linux/WSL2.
 
 NInfer runs the supported Qwen3.6 models locally through a command-line application or an
-OpenAI-/Anthropic-compatible HTTP server. The fastest verified result so far is **252.83 +/- 0.49
-tok/s** for Qwen3.6-35B-A3B using text-only mode and MTP-1 on one RTX 3090.
+OpenAI-/Anthropic-compatible HTTP server. Runtime v2 reaches **284.75 tok/s** in a real streamed
+Qwen3.6-35B-A3B MTP-3 generation; the repeated controlled MTP-1 result is **252.83 +/- 0.49
+tok/s** on one RTX 3090.
 
 Start with [GitHub Releases](https://github.com/Don-Chad/ninfer-3090/releases). If a matching
 Windows or Linux package is available, extract it and use the included CLI or server; compilation
@@ -59,7 +63,7 @@ The RTX 3090 results are listed first. They show how much of the original RTX 50
 
 | Model and decode mode | RTX 3090 port | Original RTX 5090 | RTX 3090 share |
 |---|---:|---:|---:|
-| Qwen3.6-35B-A3B, no MTP | **179.09 +/- 0.30 tok/s** | **271.1 tok/s** | **66.1%** |
+| Qwen3.6-35B-A3B, no MTP | **188.61 +/- 0.30 tok/s** | **271.1 tok/s** | **69.6%** |
 | Qwen3.6-35B-A3B, fastest measured speculative path | **252.83 +/- 0.49 tok/s** (MTP-1) | **542.8-661.2 tok/s** (MTP-3) | **38.2-46.6%** |
 | Qwen3.6-27B, no MTP | **38.04 tok/s** | **77.6 tok/s** | **49.0%** |
 | Qwen3.6-27B, fastest controlled MTP-3 result | **66.70 tok/s** | **158.7-189.1 tok/s** | **35.3-42.0%** |
@@ -69,13 +73,20 @@ controlled port runs use short fixed contexts, while the original 5090 figures b
 long-prompt serving fixtures whose acceptance rate and workload vary. The exact configurations and
 raw reports are linked below.
 
-On native Windows, Qwen3.6-35B-A3B in explicit `--text-only` mode measured **179.09 +/- 0.30
-tok/s** without MTP and **252.83 +/- 0.49 tok/s** with MTP-1 and the optimized proposal head.
-These are five-run tg128 means after two warm-ups, using CUDA Graphs, INT8 KV, a 256-token engine
-capacity, and the unmodified 20.84 GiB mixed Q4/Q5/Q6/W8 artifact. MTP-1 acceptance was 84.06%.
+On native Windows, Qwen3.6-35B-A3B in explicit `--text-only` mode measured **188.61 +/- 0.30
+tok/s** without MTP in the v2 4K-capacity run and **252.83 +/- 0.49 tok/s** with MTP-1 in the
+earlier 256-capacity controlled run. The normal result is a ten-run tg128 mean (188.59 tok/s
+median) after five warm-ups; the MTP result is a five-run mean after two warm-ups. Both use CUDA
+Graphs, INT8 KV, and the unmodified 20.84 GiB mixed Q4/Q5/Q6/W8 artifact. MTP-1 acceptance was
+84.06%.
 Text-only mode reduces stable workspace capacity from about 1.90 GiB to 15.05 MiB and rejects
 image/video requests; it does not alter or requantize model weights. See the
 [full reproduction report](docs/rtx-3090-35b-a3b.md).
+
+A matched native-Windows CLI run at 4,096-token capacity measured **41 ms** normal and **40 ms**
+MTP-3 time to first token. Runtime v2 measured **186.81 decode tok/s** in its sampled normal
+generation and **284.75 decode tok/s** with MTP-3 at 70.57% draft acceptance; model loading is
+excluded from TTFT and reported separately by the CLI.
 
 On native Windows, the complete Qwen3.6-27B configuration—CUDA Graphs, BF16 KV, MTP-3, and the
 optimized proposal head—measures approximately **60–64 decode tok/s** on the RTX 3090. The latest
@@ -130,8 +141,8 @@ card for correct/total counts and the full evaluation notes.
 
 This port currently requires either:
 
-- 64-bit Linux/WSL2 with GCC 13 and CUDA 13.0 or newer; or
-- 64-bit Windows with Visual Studio 2022, CUDA 13.0 or newer, CMake 3.28 or newer, and vcpkg;
+- 64-bit Linux/WSL2 with GCC 13 and CUDA 12.8 or newer; or
+- 64-bit Windows with Visual Studio 2022, CUDA 12.8 or newer, CMake 3.28 or newer, and vcpkg;
 - NVIDIA GeForce RTX 3090 (`sm_86`);
 - CMake 3.28 or newer and a C++20-capable host compiler;
 - `pkg-config` on Linux;

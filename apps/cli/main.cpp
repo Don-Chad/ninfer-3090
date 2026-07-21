@@ -10,6 +10,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -114,7 +115,10 @@ struct ProgressState {
 
 class StreamingSink final : public ninfer::OutputSink {
 public:
+    explicit StreamingSink(Clock::time_point request_started) : request_started_(request_started) {}
+
     void publish(ninfer::OutputDelta delta) override {
+        if (!delta.text.empty() && !first_token_) { first_token_ = Clock::now(); }
         std::ostream& output =
             delta.channel == ninfer::OutputChannel::Reasoning ? std::cerr : std::cout;
         output << delta.text;
@@ -134,7 +138,14 @@ public:
         if (reasoning_seen_ && !reasoning_ends_in_newline_) { std::cerr << '\n'; }
     }
 
+    double time_to_first_token_seconds() const {
+        if (!first_token_) { return 0.0; }
+        return std::chrono::duration<double>(*first_token_ - request_started_).count();
+    }
+
 private:
+    Clock::time_point request_started_;
+    std::optional<Clock::time_point> first_token_;
     bool content_seen_              = false;
     bool content_ends_in_newline_   = false;
     bool reasoning_seen_            = false;
@@ -142,6 +153,7 @@ private:
 };
 
 void print_load_summary(const ninfer::LoadSummary& load, double wall_seconds) {
+    print_metric("runtime version", NINFER_RUNTIME_VERSION);
     print_stage("load", "engine construction", wall_seconds);
     print_stage("load", "artifact/materialize", load.load_seconds);
     print_stage("load", "host to device", load.upload_seconds);
@@ -155,7 +167,7 @@ void print_load_summary(const ninfer::LoadSummary& load, double wall_seconds) {
 
 void print_generation_summary(const ninfer::GenerationResult& result,
                               const ninfer::RequestOptions& request,
-                              const ninfer::MemorySummary& memory) {
+                              const ninfer::MemorySummary& memory, double time_to_first_token) {
     print_stage("prepare", "render/preprocess", result.timings.prepare_seconds);
     print_stage("generate", "vision", result.timings.vision_seconds);
     print_stage("generate", "text prefill", result.timings.prefill_seconds);
@@ -171,6 +183,7 @@ void print_generation_summary(const ninfer::GenerationResult& result,
     print_metric("prompt tokens", std::to_string(result.prompt.prompt_tokens));
     print_metric("reused prompt tokens", std::to_string(result.reused_prompt_tokens));
     print_metric("generated tokens", std::to_string(generated));
+    print_metric("time to first token", format_seconds(time_to_first_token));
     print_metric("model elapsed", format_seconds(model_seconds));
     print_metric("prefill speed", format_rate(static_cast<double>(result.prompt.prompt_tokens),
                                               result.timings.prefill_seconds));
@@ -275,9 +288,10 @@ int main(int argc, char** argv) {
         print_load_summary(engine.load_summary(), load_wall);
         engine.reset_memory_peaks();
 
+        const auto request_started = Clock::now();
         ninfer::PreparedPrompt prompt = engine.prepare(std::move(input));
 
-        StreamingSink sink;
+        StreamingSink sink(request_started);
         const ninfer::GenerationResult result = engine.generate(std::move(prompt), request, &sink);
         sink.finish_streams();
 
@@ -289,7 +303,8 @@ int main(int argc, char** argv) {
             }
             std::cerr << '\n';
         }
-        print_generation_summary(result, request, engine.memory_summary());
+        print_generation_summary(result, request, engine.memory_summary(),
+                                 sink.time_to_first_token_seconds());
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';

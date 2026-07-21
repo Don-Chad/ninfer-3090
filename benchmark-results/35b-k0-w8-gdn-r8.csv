@@ -1,0 +1,6 @@
+op,path,T,median_us,min_us,p95_us,warmup,repeat
+gdn,production,1,40.96,39.936,41.984,30,150
+gdn,decode_direct,1,40.96,39.936,41.984,30,150
+gdn,mma_r64_c128,1,185.344,165.888,186.368,30,150
+gdn,parent_linear,1,46.08,45.056,47.104,30,150
+gdn,parent_plus_extract,1,51.2,50.176,51.2,30,150

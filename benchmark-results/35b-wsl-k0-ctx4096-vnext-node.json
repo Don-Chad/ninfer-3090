@@ -1,0 +1,96 @@
+{
+  "schema_version": 8,
+  "artifact_type": "ninfer_bench_report",
+  "tool": "ninfer_bench",
+  "command": "/mnt/g/python/custom-kernel-3090/ninfer/./build-sm86/bench/ninfer_bench --weights ./models/qwen3_6_35b_a3b.ninfer --corpus ./bench/fixtures/bench_corpus.ids -n 32 -r 1 --warmup 2 --max-ctx 4096 --prefill-chunk 128 --kv-dtype int8 --mtp-draft-tokens 0 --text-only --profile-measured --output json --output-file ./benchmark-results/35b-wsl-k0-ctx4096-vnext-node.json",
+  "environment": {"gpu_name": "NVIDIA GeForce RTX 3090", "cuda_runtime_version": "12.8", "cuda_driver_version": "13.2", "device_id": 0},
+  "artifact": {"path": "./models/qwen3_6_35b_a3b.ninfer", "file_size_bytes": 22373184256},
+  "load": {
+    "target": "qwen3_6_35b_a3b",
+    "load_seconds": 89.02893945,
+    "upload_seconds": 87.60968664,
+    "artifact_bytes_read": 22373184256,
+    "host_to_device_bytes": 22360191904,
+    "peak_staging_bytes": 268435456,
+    "tensor_count": 883,
+    "resource_count": 6
+  },
+  "memory": {
+    "device": 0,
+    "max_context": 4096,
+    "kv_cache": "int8-group64",
+    "weights": {"capacity_bytes": 22360207360, "used_bytes": 22360207360, "peak_used_bytes": 22360207360},
+    "sequence": {"capacity_bytes": 174066176, "used_bytes": 174066176, "peak_used_bytes": 174066176},
+    "workspace": {"capacity_bytes": 15780864, "used_bytes": 0, "peak_used_bytes": 1458816},
+    "kv_payload_bytes": 43253760
+  },
+  "config": {
+    "max_context": 4096,
+    "prefill_chunk": 128,
+    "kv_cache": "int8-group64",
+    "mtp_draft_tokens": 0,
+    "proposal_head": "full",
+    "use_cuda_graph": true,
+    "text_only": true,
+    "decode_path": "cuda_graph",
+    "decode_graph_prime": {"primed": true, "output_tokens": 3},
+    "repetitions": 1,
+    "warmup": 2,
+    "corpus_path": "./bench/fixtures/bench_corpus.ids",
+    "corpus_tokens": 65536
+  },
+  "tests": [
+    {
+      "label": "tg32",
+      "kind": "tg",
+      "n_prompt": 0,
+      "n_gen": 32,
+      "requested_output_tokens": 33,
+      "prefill_tok_s_mean": null,
+      "prefill_tok_s_stddev": null,
+      "decode_output_tok_s_mean": 176.8944054,
+      "decode_output_tok_s_stddev": 0,
+      "decode_engine_tok_s_mean": 176.8944054,
+      "decode_engine_tok_s_stddev": 0,
+      "prepare_seconds_mean": 1.082e-06,
+      "prepare_seconds_stddev": 0,
+      "prefill_seconds_mean": null,
+      "prefill_seconds_stddev": null,
+      "decode_seconds_mean": 0.180898881,
+      "decode_seconds_stddev": 0,
+      "total_seconds_mean": 0.188997889,
+      "total_seconds_stddev": 0,
+      "workspace_peak_bytes": 1459072,
+      "speculative": {
+        "enabled": false,
+        "draft_window": 0,
+        "rounds": 0,
+        "drafted_tokens": 0,
+        "accepted_tokens": 0,
+        "fallback_steps": 0,
+        "acceptance_rate": null,
+        "acceptance_length": null,
+        "accepted_per_position": []
+      },
+      "reps": [
+        {
+          "generated_output_tokens": 33,
+          "decode_output_tokens": 32,
+          "decode_engine_tokens": 32,
+          "timings": {"prepare_seconds": 1.082e-06, "vision_seconds": 0, "prefill_seconds": 0.007913288, "decode_seconds": 0.180898881, "total_seconds": 0.188997889},
+          "speculative": {
+            "enabled": false,
+            "draft_window": 0,
+            "rounds": 0,
+            "drafted_tokens": 0,
+            "accepted_tokens": 0,
+            "fallback_steps": 0,
+            "acceptance_rate": null,
+            "acceptance_length": null,
+            "accepted_per_position": []
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+op,path,T,median_us,min_us,p95_us,warmup,repeat
+attention,production,1,32.768,31.744,32.768,30,150
+attention,decode_direct,1,32.768,31.744,32.768,30,150
+attention,simt_r8_c4,1,37.888,36.864,38.912,30,150
+attention,mma_r32_c128,1,116.736,112.64,117.76,30,150
+attention,mma_r64_c128,1,102.4,100.352,104.448,30,150
+attention,parent_linear,1,37.888,36.864,38.912,30,150
+attention,parent_plus_extract,1,48.128,46.08,49.152,30,150

@@ -1,0 +1,13 @@
+op,path,T,median_us,min_us,p95_us,warmup,repeat
+attention,production,1,34.816,33.792,34.816,30,150
+attention,decode_direct,1,34.816,33.792,34.816,30,150
+attention,simt_r8_c4,1,37.888,36.864,38.912,30,150
+attention,mma_r32_c128,1,115.712,109.6,117.76,30,150
+attention,mma_r64_c128,1,102.4,98.304,105.472,30,150
+attention,parent_linear,1,37.888,36.864,38.912,30,150
+attention,parent_plus_extract,1,48.128,47.104,49.152,30,150
+gdn,production,1,40.96,39.936,41.984,30,150
+gdn,decode_direct,1,40.96,39.936,41.984,30,150
+gdn,mma_r64_c128,1,159.744,158.72,160.768,30,150
+gdn,parent_linear,1,46.08,45.056,46.08,30,150
+gdn,parent_plus_extract,1,51.2,50.176,51.2,30,150

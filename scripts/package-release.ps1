@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 # Editable release configuration.
-$ReleaseTag = '2026-07-21'
+$ReleaseTag = '0.2.0-rtx3090-v2'
 $WslDistro = 'Ubuntu-24.04'
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -77,6 +77,7 @@ Copy-Item -LiteralPath $windowsBench -Destination $WindowsDir
 Get-ChildItem -LiteralPath $windowsBuild -Filter '*.dll' -File |
     Copy-Item -Destination $WindowsDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'LICENSE') -Destination $WindowsDir
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'VERSION') -Destination $WindowsDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'docs\rtx-3090-windows.md') `
     -Destination (Join-Path $WindowsDir 'README.md')
 Write-PackageHashes $WindowsDir
@@ -85,6 +86,7 @@ Copy-Item -LiteralPath (Join-Path $linuxBuild 'apps\ninfer') -Destination $Linux
 Copy-Item -LiteralPath (Join-Path $linuxBuild 'apps\ninfer-serve') -Destination $LinuxDir
 Copy-Item -LiteralPath (Join-Path $linuxBuild 'bench\ninfer_bench') -Destination $LinuxDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'LICENSE') -Destination $LinuxDir
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'VERSION') -Destination $LinuxDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'docs\rtx-3090-wsl.md') `
     -Destination (Join-Path $LinuxDir 'README.md')
 Write-PackageHashes $LinuxDir

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>NInfer 3090 Chat</title>
+  <style>
+    :root { color-scheme: dark; font: 15px/1.5 system-ui, sans-serif; background:#0b0d10; color:#e8eaed; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; }
+    main { width:min(860px,100%); height:100vh; display:grid; grid-template-rows:auto 1fr auto; padding:18px; gap:14px; }
+    header,.stats,.composer { display:flex; align-items:center; gap:12px; }
+    header { justify-content:space-between; }
+    h1 { font-size:16px; margin:0; font-weight:650; }
+    .status { color:#8b949e; font-size:13px; }
+    .status.ok::before { content:""; display:inline-block; width:7px; height:7px; margin-right:7px; border-radius:50%; background:#3fb950; }
+    .stats { flex-wrap:wrap; font-variant-numeric:tabular-nums; color:#9da7b3; font-size:13px; }
+    .stats b { color:#f0f3f6; font-size:16px; margin-right:3px; }
+    #chat { overflow:auto; display:flex; flex-direction:column; gap:12px; padding:6px 2px; }
+    .message { max-width:88%; padding:11px 13px; border-radius:14px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .user { align-self:flex-end; background:#1f6feb; }
+    .assistant { align-self:flex-start; background:#171b21; border:1px solid #2b313a; }
+    .reasoning { color:#8b949e; font-size:13px; border-bottom:1px solid #2b313a; margin-bottom:9px; padding-bottom:9px; }
+    .reasoning:empty { display:none; }
+    .composer { align-items:flex-end; }
+    textarea { flex:1; min-height:48px; max-height:180px; resize:vertical; border:1px solid #30363d; border-radius:12px; background:#11151a; color:inherit; padding:12px; font:inherit; outline:none; }
+    textarea:focus { border-color:#388bfd; }
+    button { border:0; border-radius:10px; padding:11px 16px; color:white; background:#238636; font-weight:650; cursor:pointer; }
+    button.secondary { background:#252b33; color:#c9d1d9; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    label { color:#8b949e; font-size:13px; white-space:nowrap; }
+    @media (max-width:600px) { main{padding:12px}.message{max-width:96%}.stats{gap:8px}.composer{flex-wrap:wrap}textarea{flex-basis:100%} }
+  </style>
+</head>
+<body>
+<main>
+  <div>
+    <header>
+      <h1>NInfer · Qwen3.6-35B-A3B · RTX 3090</h1>
+      <span id="status" class="status">connecting…</span>
+    </header>
+    <div class="stats" aria-live="polite">
+      <span title="Estimated while streaming; exact when usage arrives"><b id="speed">—</b> <span id="speed-unit">tok/s</span></span>
+      <span><b id="ttft">—</b> TTFT</span>
+      <span><b id="tokens">0</b> tokens</span>
+      <span><b id="elapsed">—</b> elapsed</span>
+    </div>
+  </div>
+  <section id="chat" aria-label="Conversation"></section>
+  <form id="form" class="composer">
+    <textarea id="prompt" aria-label="Message" placeholder="Message the model…" required autofocus></textarea>
+    <label><input id="thinking" type="checkbox" checked> thinking</label>
+    <button id="clear" class="secondary" type="button">Clear</button>
+    <button id="send" type="submit">Send</button>
+  </form>
+</main>
+<script>
+  const API = 'http://127.0.0.1:8080/v1';
+  const MODEL = 'qwen3.6-35b-a3b';
+  const $ = id => document.getElementById(id);
+  const messages = [];
+  let controller = null;
+
+  function metric(id, value) { $(id).textContent = value; }
+  function bubble(role, text = '') {
+    const box = document.createElement('div');
+    box.className = `message ${role}`;
+    if (role === 'assistant') {
+      const reasoning = document.createElement('div');
+      reasoning.className = 'reasoning';
+      const content = document.createElement('div');
+      box.append(reasoning, content);
+      $('chat').append(box);
+      return { box, reasoning, content };
+    }
+    box.textContent = text;
+    $('chat').append(box);
+    return { box };
+  }
+  function scrollDown() { $('chat').scrollTop = $('chat').scrollHeight; }
+
+  async function health() {
+    try {
+      const response = await fetch('http://127.0.0.1:8080/health');
+      if (!response.ok) throw new Error();
+      $('status').textContent = 'connected · MTP-3';
+      $('status').className = 'status ok';
+    } catch {
+      $('status').textContent = 'API unavailable';
+      $('status').className = 'status';
+    }
+  }
+
+  async function streamChat() {
+    const text = $('prompt').value.trim();
+    if (!text || controller) return;
+    messages.push({ role: 'user', content: text });
+    bubble('user', text);
+    $('prompt').value = '';
+    const view = bubble('assistant');
+    scrollDown();
+
+    controller = new AbortController();
+    $('send').textContent = 'Stop';
+    metric('speed', '—'); metric('speed-unit', 'tok/s'); metric('ttft', '—'); metric('tokens', '0'); metric('elapsed', '—');
+    const started = performance.now();
+    let first = 0, chunks = 0, exactTokens = 0, answer = '', reasoningText = '';
+    let timer = setInterval(() => {
+      const now = performance.now();
+      if (first) {
+        metric('speed', (chunks / Math.max((now - first) / 1000, 0.001)).toFixed(1));
+        metric('speed-unit', '~ tok/s');
+      }
+      metric('elapsed', `${((now - started) / 1000).toFixed(1)}s`);
+    }, 150);
+
+    try {
+      const response = await fetch(`${API}/chat/completions`, {
+        method: 'POST', signal: controller.signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: MODEL, messages, stream: true,
+          stream_options: { include_usage: true }, max_tokens: 1024,
+          enable_thinking: $('thinking').checked
+        })
+      });
+      if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        pending += decoder.decode(value, { stream: true });
+        const events = pending.split('\n\n');
+        pending = events.pop();
+        for (const event of events) {
+          const line = event.split('\n').find(row => row.startsWith('data:'));
+          if (!line) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') continue;
+          const packet = JSON.parse(data);
+          if (packet.usage?.completion_tokens != null) exactTokens = packet.usage.completion_tokens;
+          const delta = packet.choices?.[0]?.delta || {};
+          const piece = delta.reasoning_content || delta.content || '';
+          if (!piece) continue;
+          const now = performance.now();
+          if (!first) { first = now; metric('ttft', `${Math.round(now - started)}ms`); }
+          chunks++;
+          if (delta.reasoning_content) reasoningText += piece; else answer += piece;
+          view.reasoning.textContent = reasoningText;
+          view.content.textContent = answer;
+          metric('tokens', String(exactTokens || chunks));
+          scrollDown();
+        }
+      }
+      const ended = performance.now();
+      const count = exactTokens || chunks;
+      metric('tokens', String(count));
+      if (first) metric('speed', (count / Math.max((ended - first) / 1000, 0.001)).toFixed(1));
+      metric('speed-unit', exactTokens ? 'tok/s' : '~ tok/s');
+      metric('elapsed', `${((ended - started) / 1000).toFixed(1)}s`);
+      messages.push({ role: 'assistant', content: answer, reasoning_content: reasoningText });
+    } catch (error) {
+      if (error.name !== 'AbortError') view.content.textContent += `\n[${error.message}]`;
+    } finally {
+      clearInterval(timer);
+      controller = null;
+      $('send').textContent = 'Send';
+      $('prompt').focus();
+    }
+  }
+
+  $('form').addEventListener('submit', event => { event.preventDefault(); controller ? controller.abort() : streamChat(); });
+  $('prompt').addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); $('form').requestSubmit(); }
+  });
+  $('clear').addEventListener('click', () => { messages.length = 0; $('chat').replaceChildren(); });
+  health();
+</script>
+</body>
+</html>

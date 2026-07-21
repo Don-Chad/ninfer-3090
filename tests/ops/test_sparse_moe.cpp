@@ -2,6 +2,7 @@
 
 #include "ops/op_tester.h"
 #include "ops/row_split_pack.h"
+#include "ops/sparse_moe/decode/sparse_moe_decode.h"
 
 #include <cuda_runtime.h>
 
@@ -624,6 +625,24 @@ int main() {
     };
 
     int failures = 0;
+    {
+        using namespace ninfer::ops::detail;
+        const SparseMoeDecodePlan q4_q5 =
+            resolve_sparse_moe_decode_plan(QType::Q4G64_F16S, QType::Q5G64_F16S);
+        const SparseMoeDecodePlan q4_q6 =
+            resolve_sparse_moe_decode_plan(QType::Q4G64_F16S, QType::Q6G64_F16S);
+        const SparseMoeDecodePlan w8_w8 =
+            resolve_sparse_moe_decode_plan(QType::W8G32_F16S, QType::W8G32_F16S);
+        if (q4_q5.d3 != SparseMoeD3Schedule::BalancedEightWarp ||
+            q4_q5.d4 != SparseMoeD4Schedule::BalancedEightWarpRows4 ||
+            q4_q6.d3 != SparseMoeD3Schedule::BalancedEightWarp ||
+            q4_q6.d4 != SparseMoeD4Schedule::NineWarpRows1 ||
+            w8_w8.d3 != SparseMoeD3Schedule::NineWarp ||
+            w8_w8.d4 != SparseMoeD4Schedule::NineWarpRows1) {
+            std::cerr << "sparse_moe decode schedule selection mismatch\n";
+            ++failures;
+        }
+    }
     for (std::size_t index = 0; index < profiles.size(); ++index) {
         failures += run_case(profiles[index], ordinary_route, profiles[index].name, 1, 1, false,
                              index == 0);

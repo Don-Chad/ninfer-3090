@@ -27,6 +27,7 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        std::cerr << "ninfer-serve: runtime " << NINFER_RUNTIME_VERSION << '\n';
         using Clock = std::chrono::steady_clock;
         ninfer::serve::HttpServer server(options);
         if (!server.bind()) {

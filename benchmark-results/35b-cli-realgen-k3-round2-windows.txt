@@ -1,0 +1,14 @@
+phase       detail                      elapsed/progress
+error: model weights and requested context require 24933729792 bytes of device memory (weights 22360207360, sequence/workspace/graphs 2573522432), but only 24469569536 bytes are free before loading weights
+usage: G:\python\custom-kernel-3090\ninfer\build-windows\apps\Release\ninfer.exe <model.ninfer> (--prompt <text>|--messages <messages.json>)
+       [--max-context N] [--prefill-chunk N] [--max-new N] [--device N]
+       [--kv-dtype bf16|int8] [--mtp-draft-tokens 0..5] [--lm-head-draft]
+       [--temperature F] [--top-p F] [--top-k N] [--min-p F]
+       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]
+       [--stop-token-id N]... [--stop <text>]... [--reasoning-stop <text>]...
+       [--raw-output] [--print-token-ids] [--no-thinking] [--no-cuda-graph] [--text-only]
+
+Streams answer content to stdout and reasoning plus diagnostics to stderr.
+Structured message content accepts text, image/image_url, and video/video_url parts;
+media sources may be local paths, HTTP(S) URLs, or base64 data URIs.
+Sampling defaults: temperature 0.6, top-p 0.95, top-k 20, presence penalty 1.0.

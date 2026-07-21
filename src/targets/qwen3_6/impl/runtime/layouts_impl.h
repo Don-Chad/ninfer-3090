@@ -323,11 +323,14 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
     if (impl->use_cuda_graph) {
         const std::size_t ordinary_variants = ordinary_graph_ranges(impl->capacity).size();
         const std::size_t ordinary_graphs   = ordinary_variants * (impl->mtp_k == 0 ? 1ULL : 2ULL);
-        // Cold full-model capture also materializes lazy CUDA module state. The 35B
-        // K=3/C=4096 public benchmark measured 123,277,312 bytes across its 12 ordinary/aligned
-        // and short-window executables. Keep one conservative family allowance of 12 MiB per
-        // executable. Long MTP executables also trigger substantially larger driver allocations.
-        impl->graph_allowance_bytes = ordinary_graphs * 12ULL * kMiB;
+        // Cold full-model capture also materializes lazy CUDA module state. The 35B K=0/C=4096
+        // path consumed 101,707,776 bytes across four ordinary executables, so reserve 28 MiB
+        // apiece for ordinary-only capture. The 35B K=3/C=4096 public benchmark measured
+        // 123,277,312 bytes across its 12 ordinary/aligned and short-window executables; retain
+        // its tighter 12 MiB per-executable budget. Long MTP executables also trigger
+        // substantially larger driver allocations.
+        const std::size_t ordinary_graph_mib = impl->mtp_k == 0 ? 28ULL : 12ULL;
+        impl->graph_allowance_bytes = ordinary_graphs * ordinary_graph_mib * kMiB;
         for (const GraphFrontierRange range : mtp_graph_ranges(impl->capacity, impl->mtp_k)) {
             const std::uint64_t final_visible =
                 static_cast<std::uint64_t>(range.max) + 2ULL * impl->mtp_k;

@@ -1,0 +1,2 @@
+codec,tokens,distribution,seed,unique_experts,adjacent_overlap,scope,candidate,matched_control,matched_cold_us,matched_warm_us,grid,block,cold_median_us,cold_min_us,cold_p95_us,warm_median_us,warm_min_us,warm_p95_us,code_bytes,high_bytes,scale_bytes,useful_fma,executed_fma,workspace_bytes,warmup,repeat,build_type,gpu,cuda_runtime
+q4-q5,1,trace-like,20260718,8,8,d2,warp-register,serial-control,nan,nan,1,32,10.24,9.216,10.24,17.408,9.216,44.032,1028,0,0,0,0,18688,10,100,Release,NVIDIA GeForce RTX 3090,13020

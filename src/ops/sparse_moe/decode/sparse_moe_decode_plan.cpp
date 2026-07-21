@@ -23,6 +23,15 @@ SparseMoeDecodePlan resolve_sparse_moe_decode_plan(QType routed_gate_up, QType r
     }
 
     SparseMoeDecodePlan plan;
+    if (main_profile) {
+        // GA102 one-token decode: the balanced schedules reduce idle lanes and launch count for
+        // the Q4 routed gate/up and Q5/Q6 routed down stages. Keep the independent W8 MTP profile
+        // on its established nine-warp schedules.
+        plan.d3 = SparseMoeD3Schedule::BalancedEightWarp;
+        if (routed_down == QType::Q5G64_F16S) {
+            plan.d4 = SparseMoeD4Schedule::BalancedEightWarpRows4;
+        }
+    }
     plan.workspace_bytes = sparse_moe_decode_workspace_bytes();
     return plan;
 }

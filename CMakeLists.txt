@@ -12,7 +12,10 @@ if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "86")
     "'${CMAKE_CUDA_ARCHITECTURES}'")
 endif()
 
-project(ninfer LANGUAGES C CXX CUDA)
+project(ninfer VERSION 0.2.0 LANGUAGES C CXX CUDA)
+
+set(NINFER_RUNTIME_VERSION "0.2.0-rtx3090-v2" CACHE STRING "Published NInfer runtime revision")
+add_compile_definitions(NINFER_RUNTIME_VERSION="${NINFER_RUNTIME_VERSION}")
 
 # --- Global settings ---------------------------------------------------------
 option(NINFER_BUILD_APPS "Build the NInfer CLI and server" ON)
@@ -43,9 +46,9 @@ if(CMAKE_GENERATOR MATCHES "Ninja")
   set(CMAKE_JOB_POOL_LINK cuda_link)
 endif()
 
-if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.0)
+if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.8)
   message(FATAL_ERROR
-    "NInfer requires CUDA 13.0 or newer; found CUDA compiler "
+    "NInfer requires CUDA 12.8 or newer; found CUDA compiler "
     "${CMAKE_CUDA_COMPILER_VERSION}")
 endif()
 
