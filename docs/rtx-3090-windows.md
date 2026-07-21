@@ -20,7 +20,7 @@ the full artifact to fit in 24 GiB.
 - Visual Studio's bundled vcpkg
 - vcpkg FFmpeg 8.1.2 with the `zlib` feature and curl 8.21
 
-The source accepts CUDA 12.8 or newer but deliberately rejects GPU architectures other than
+The source accepts CUDA 13.0 or newer but deliberately rejects GPU architectures other than
 `sm_86`. CUDA 13 requires MSVC's conforming preprocessor; the build sets it automatically.
 
 ## Configure and build

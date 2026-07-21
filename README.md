@@ -1,11 +1,26 @@
-# NInfer
+# NInfer for RTX 3090
 
-> One repository for maximum single-GPU Qwen3.6 inference on the RTX 3090, with native Windows and
-> Linux/WSL2 builds from the same CUDA `sm_86` source.
+> Fast, single-GPU Qwen3.6 inference on a 24 GiB RTX 3090, for native Windows and Linux/WSL2.
 
-This repository is an RTX 3090 (`sm_86`) Linux/WSL2 and native Windows port. Both platforms use
-the same implementation and are maintained together here. Qwen3.6-27B and the text-only
-Qwen3.6-35B-A3B configuration are verified product targets; see the
+NInfer runs the supported Qwen3.6 models locally through a command-line application or an
+OpenAI-/Anthropic-compatible HTTP server. The fastest verified result so far is **252.83 +/- 0.49
+tok/s** for Qwen3.6-35B-A3B using text-only mode and MTP-1 on one RTX 3090.
+
+You do not have to compile the project yourself when a matching prebuilt package is available.
+Download a Windows or Linux archive from [GitHub Releases](https://github.com/Don-Chad/ninfer-3090/releases),
+download the model artifact separately, and run the included CLI or server. Release archives are
+published separately from Git source; if the Releases page does not yet contain a package, use the
+[source-build instructions](#build) below.
+
+The phrase "from-scratch C++/CUDA inference engine" describes how NInfer itself is implemented; it
+does not mean every user must build it from source.
+
+## About this port
+
+This repository ports the original [Neroued/ninfer](https://github.com/Neroued/ninfer) RTX 5090
+implementation to the RTX 3090 (`sm_86`). It adds native Windows support while retaining a shared
+Linux/WSL2 codebase, and tunes the inference kernels for GA102. Qwen3.6-27B and the text-only
+Qwen3.6-35B-A3B configuration are verified targets; see the
 [35B-A3B RTX 3090 report](docs/rtx-3090-35b-a3b.md), [WSL2 tuning report](docs/rtx-3090-wsl.md), and
 [native Windows guide](docs/rtx-3090-windows.md). A separate
 [ordinary-inference analysis](docs/rtx-3090-normal-inference.md) covers MTP-disabled decode, and
@@ -25,8 +40,7 @@ This port adds and verifies:
   `Qwen3.6-27B` generation from the 16.29 GiB NInfer artifact.
 
 NInfer is a from-scratch C++/CUDA inference engine for exact Qwen3.6 checkpoints on a single
-NVIDIA GPU. It runs text, image, and video prompts through a local CLI or
-OpenAI-/Anthropic-compatible HTTP APIs.
+NVIDIA GPU. The implementation is deliberately specialized rather than a general model runtime.
 
 NInfer deliberately supports a closed set of model artifacts instead of acting as a general model
 runtime:
@@ -116,8 +130,8 @@ card for correct/total counts and the full evaluation notes.
 
 This port currently requires either:
 
-- 64-bit Linux/WSL2 with GCC 13 and CUDA 12.8 or newer; or
-- 64-bit Windows with Visual Studio 2022, CUDA 12.8 or newer, CMake 3.28 or newer, and vcpkg;
+- 64-bit Linux/WSL2 with GCC 13 and CUDA 13.0 or newer; or
+- 64-bit Windows with Visual Studio 2022, CUDA 13.0 or newer, CMake 3.28 or newer, and vcpkg;
 - NVIDIA GeForce RTX 3090 (`sm_86`);
 - CMake 3.28 or newer and a C++20-capable host compiler;
 - `pkg-config` on Linux;
@@ -134,11 +148,11 @@ The checked-in `vcpkg.json` installs the Windows FFmpeg, zlib, curl, and pkgconf
 the [native Windows guide](docs/rtx-3090-windows.md) for the exact configure, test, and benchmark
 commands.
 
-## Build
+## Build from source
 
 ```bash
-git clone https://github.com/Neroued/ninfer.git
-cd ninfer
+git clone https://github.com/Don-Chad/ninfer-3090.git
+cd ninfer-3090
 
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
@@ -269,6 +283,14 @@ Both registered artifacts support:
 - [RTX 3090 ordinary inference](docs/rtx-3090-normal-inference.md)
 - [Windows and Linux release bundles](dist/README.md)
 - [CLI examples](examples/cli/)
+
+## Contributing
+
+Pull requests are welcome. This is a public repository and its
+[Pull requests page](https://github.com/Don-Chad/ninfer-3090/pulls) is open to contributions.
+Please describe the target platform, CUDA version, validation performed, and any measured
+performance impact. Keep RTX 3090 kernel changes backed by numerical tests and reproducible
+benchmarks.
 
 ## License
 
