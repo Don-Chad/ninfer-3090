@@ -38,6 +38,23 @@ runtime:
 
 ## Performance
 
+### RTX 3090 port compared with the original RTX 5090 results
+
+The RTX 3090 results are listed first. They show how much of the original RTX 5090 throughput this
+24 GiB GA102 port currently retains:
+
+| Model and decode mode | RTX 3090 port | Original RTX 5090 | RTX 3090 share |
+|---|---:|---:|---:|
+| Qwen3.6-35B-A3B, no MTP | **179.09 +/- 0.30 tok/s** | **271.1 tok/s** | **66.1%** |
+| Qwen3.6-35B-A3B, fastest measured speculative path | **252.83 +/- 0.49 tok/s** (MTP-1) | **542.8-661.2 tok/s** (MTP-3) | **38.2-46.6%** |
+| Qwen3.6-27B, no MTP | **38.04 tok/s** | **77.6 tok/s** | **49.0%** |
+| Qwen3.6-27B, fastest controlled MTP-3 result | **66.70 tok/s** | **158.7-189.1 tok/s** | **35.3-42.0%** |
+
+These percentages are orientation, not an apples-to-apples GPU benchmark. The 3090 tg128 and
+controlled port runs use short fixed contexts, while the original 5090 figures below come from
+long-prompt serving fixtures whose acceptance rate and workload vary. The exact configurations and
+raw reports are linked below.
+
 On native Windows, Qwen3.6-35B-A3B in explicit `--text-only` mode measured **179.09 +/- 0.30
 tok/s** without MTP and **252.83 +/- 0.49 tok/s** with MTP-1 and the optimized proposal head.
 These are five-run tg128 means after two warm-ups, using CUDA Graphs, INT8 KV, a 256-token engine
