@@ -10,7 +10,7 @@ You do not have to compile the project yourself when a matching prebuilt package
 Download a Windows or Linux archive from [GitHub Releases](https://github.com/Don-Chad/ninfer-3090/releases),
 download the model artifact separately, and run the included CLI or server. Release archives are
 published separately from Git source; if the Releases page does not yet contain a package, use the
-[source-build instructions](#build) below.
+[source-build instructions](#build-from-source) below.
 
 The phrase "from-scratch C++/CUDA inference engine" describes how NInfer itself is implemented; it
 does not mean every user must build it from source.
