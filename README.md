@@ -141,8 +141,9 @@ card for correct/total counts and the full evaluation notes.
 
 This port currently requires either:
 
-- 64-bit Linux/WSL2 with GCC 13 and CUDA 12.8 or newer; or
-- 64-bit Windows with Visual Studio 2022, CUDA 12.8 or newer, CMake 3.28 or newer, and vcpkg;
+- 64-bit Linux/WSL2 with GCC 13 and CUDA Toolkit 13.0 or newer; or
+- 64-bit Windows with Visual Studio 2022, CUDA Toolkit 13.0 or newer, CMake 3.28 or newer, and
+  vcpkg;
 - NVIDIA GeForce RTX 3090 (`sm_86`);
 - CMake 3.28 or newer and a C++20-capable host compiler;
 - `pkg-config` on Linux;
@@ -154,6 +155,10 @@ This port currently requires either:
 The build rejects CUDA architectures other than `86`. Verified binary bundles can be produced from
 the native Windows and WSL build trees with `scripts/package-release.ps1`; see
 [`dist/README.md`](dist/README.md). The model artifact is intentionally distributed separately.
+
+The CUDA Toolkit requirement applies when compiling from source. The prebuilt Windows archive
+statically includes the CUDA runtime, so users only need a current NVIDIA driver compatible with
+CUDA 13.x; they do not need to install the full CUDA Toolkit.
 
 The checked-in `vcpkg.json` installs the Windows FFmpeg, zlib, curl, and pkgconf dependencies. See
 the [native Windows guide](docs/rtx-3090-windows.md) for the exact configure, test, and benchmark

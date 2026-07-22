@@ -46,9 +46,9 @@ if(CMAKE_GENERATOR MATCHES "Ninja")
   set(CMAKE_JOB_POOL_LINK cuda_link)
 endif()
 
-if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.8)
+if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.0)
   message(FATAL_ERROR
-    "NInfer requires CUDA 12.8 or newer; found CUDA compiler "
+    "NInfer requires CUDA 13.0 or newer; found CUDA compiler "
     "${CMAKE_CUDA_COMPILER_VERSION}")
 endif()
 

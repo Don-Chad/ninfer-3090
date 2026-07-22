@@ -23,6 +23,8 @@ Model artifacts are not included. Download either the 16.29 GiB `qwen3_6_27b.nin
 `qwen3_6_35b_a3b.ninfer` artifact from the repositories linked in the project README and verify its
 published SHA-256 separately. The 35B-A3B artifact requires `--text-only` on an RTX 3090.
 
-The Linux bundle targets Ubuntu 24.04 and dynamically uses CUDA 12, FFmpeg 6, curl, and the standard
-C++ runtime. The Windows bundle includes its FFmpeg/curl/zlib DLLs and requires the NVIDIA driver
-and Microsoft Visual C++ 2022 runtime.
+The Linux bundle targets Ubuntu 24.04 and dynamically uses the CUDA 12 runtime, FFmpeg 6, curl, and
+the standard C++ runtime from the target system. The Windows bundle statically includes its CUDA
+runtime and packages its FFmpeg/curl/zlib DLLs; users need a current NVIDIA driver compatible with
+CUDA 13.x and the Microsoft Visual C++ 2022 runtime, but not the full CUDA Toolkit. Building either
+platform from current source requires CUDA Toolkit 13.0 or newer.
