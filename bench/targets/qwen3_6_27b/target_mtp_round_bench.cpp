@@ -1,4 +1,8 @@
+#if defined(NINFER_BENCH_QWEN3_6_35B_A3B)
+#include <ninfer/targets/qwen3_6_35b_a3b/package.h>
+#else
 #include <ninfer/targets/qwen3_6_27b/package.h>
+#endif
 
 #include "artifact/binder.h"
 #include "artifact/materializer.h"
@@ -23,10 +27,22 @@
 
 namespace {
 
-namespace target = ninfer::targets::qwen3_6_27b;
+#if defined(NINFER_BENCH_QWEN3_6_35B_A3B)
+namespace target                    = ninfer::targets::qwen3_6_35b_a3b;
+constexpr const char* kModelName    = "qwen3.6-35b-a3b";
+constexpr const char* kDefaultModel = "out/qwen3_6_35b_a3b.ninfer";
+constexpr const char* kFormat       = "ninfer_qwen3_6_35b_a3b_mtp_round_bench_v1";
+constexpr const char* kExecutable   = "ninfer_qwen3_6_35b_a3b_mtp_round_bench";
+#else
+namespace target                    = ninfer::targets::qwen3_6_27b;
+constexpr const char* kModelName    = "qwen3.6-27b";
+constexpr const char* kDefaultModel = "out/qwen3_6_27b.ninfer";
+constexpr const char* kFormat       = "ninfer_qwen3_6_27b_mtp_round_bench_v1";
+constexpr const char* kExecutable   = "ninfer_qwen3_6_27b_mtp_round_bench";
+#endif
 
 struct Options {
-    std::filesystem::path artifact = "out/qwen3_6_27b.ninfer";
+    std::filesystem::path artifact = kDefaultModel;
     int device                     = 0;
     int warmup                     = 2;
     int repetitions                = 10;
@@ -74,7 +90,7 @@ Options parse_options(int argc, char** argv) {
         } else if (argument == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (argument == "-h" || argument == "--help") {
-            print_usage(argc > 0 ? argv[0] : "ninfer_qwen3_6_27b_mtp_round_bench");
+            print_usage(argc > 0 ? argv[0] : kExecutable);
             std::exit(0);
         } else {
             throw std::invalid_argument("unknown argument: " + std::string(argument));
@@ -115,7 +131,7 @@ int run(const Options& options) {
     ninfer::DeviceContext device(options.device);
     ninfer::artifact::Reader reader(options.artifact);
     if (reader.model_id() != target::Package::model_id) {
-        throw std::invalid_argument("artifact model_id does not match qwen3.6-27b");
+        throw std::invalid_argument(std::string("artifact model_id does not match ") + kModelName);
     }
     ninfer::artifact::Binder binder(reader);
     auto load_plan = target::Package::plan_load(binder);
@@ -183,7 +199,7 @@ int run(const Options& options) {
     const double mean_licensed =
         static_cast<double>(licensed_tokens) / static_cast<double>(measurements.size());
 
-    std::cout << "format,ninfer_qwen3_6_27b_mtp_round_bench_v1\n";
+    std::cout << "format," << kFormat << '\n';
     std::cout << "artifact," << options.artifact.string() << '\n';
     std::cout << "device," << device.props.name << '\n';
     std::cout << "draft_tokens," << options.draft_tokens << '\n';
@@ -207,7 +223,7 @@ int main(int argc, char** argv) {
     try {
         return run(parse_options(argc, argv));
     } catch (const std::exception& error) {
-        std::cerr << "ninfer_qwen3_6_27b_mtp_round_bench: " << error.what() << '\n';
+        std::cerr << kExecutable << ": " << error.what() << '\n';
         return 1;
     }
 }

@@ -58,3 +58,16 @@ target_include_directories(ninfer_qwen3_6_27b_mtp_round_bench PRIVATE
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export)
 target_link_libraries(ninfer_qwen3_6_27b_mtp_round_bench PRIVATE
   ninfer_engine ninfer_core)
+
+add_executable(ninfer_qwen3_6_35b_a3b_mtp_round_bench
+  targets/qwen3_6_27b/target_mtp_round_bench.cpp)
+target_compile_definitions(ninfer_qwen3_6_35b_a3b_mtp_round_bench PRIVATE
+  NINFER_BENCH_QWEN3_6_35B_A3B=1)
+target_include_directories(ninfer_qwen3_6_35b_a3b_mtp_round_bench PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/third_party
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_35b_a3b/export
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export)
+target_link_libraries(ninfer_qwen3_6_35b_a3b_mtp_round_bench PRIVATE
+  ninfer_engine ninfer_core)
