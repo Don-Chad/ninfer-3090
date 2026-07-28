@@ -47,6 +47,9 @@ ninfer_add_test(ninfer_state_store_test
 target_include_directories(ninfer_state_store_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export)
 ninfer_add_test(ninfer_generation_controller_test SOURCES test_generation_controller.cpp)
+ninfer_add_test(ninfer_prompt_lookup_test
+  SOURCES test_prompt_lookup.cpp
+  LIBRARIES ninfer_core)
 ninfer_add_test(ninfer_row_split_pack_golden_test
   SOURCES test_row_split_pack_golden.cpp
   NEEDS_SOURCE_DIR

@@ -26,7 +26,8 @@ add_library(ninfer_core STATIC
   core/tensor.cpp
   core/decode_graph.cpp
   runtime/engine/public_types.cpp
-  runtime/engine/request_memory.cpp)
+  runtime/engine/request_memory.cpp
+  runtime/speculative/prompt_lookup.cpp)
 ninfer_internal_includes(ninfer_core)
 ninfer_cuda_archive(ninfer_core)
 target_link_libraries(ninfer_core PUBLIC ${NINFER_CUDART_TARGET} CUDA::nvtx3)
