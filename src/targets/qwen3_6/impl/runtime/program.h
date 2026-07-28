@@ -91,6 +91,7 @@ struct MtpGraphVariant {
     std::uint32_t min_execution_frontier = 0;
     std::uint32_t max_execution_frontier = 0;
     DecodeGraph mtp;
+    DecodeGraph prompt_lookup;
 };
 
 class ProgramImplCore {
@@ -127,6 +128,7 @@ public:
     const std::int32_t kv_quant_group;
     const ProposalHead proposal_head;
     const bool use_cuda_graph;
+    const std::uint32_t prompt_lookup_min_match;
     const std::size_t kv_payload_bytes;
     const std::size_t graph_allowance_bytes;
 

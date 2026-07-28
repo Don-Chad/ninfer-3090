@@ -3,6 +3,7 @@
 
 #include "core/nvtx.h"
 #include "ninfer/ops/mtp_round.h"
+#include "runtime/speculative/prompt_lookup.h"
 #include "targets/qwen3_6/impl/runtime/schedule.h"
 
 #include <cuda_runtime.h>
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -20,6 +22,16 @@ namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+std::uint32_t prompt_lookup_min_match_from_environment() {
+    const char* raw = std::getenv("NINFER_PROMPT_LOOKUP_MIN_MATCH");
+    if (raw == nullptr || *raw == '\0') { return 0; }
+    const unsigned long value = std::stoul(raw);
+    if (value == 0 || value > 64) {
+        throw std::invalid_argument("NINFER_PROMPT_LOOKUP_MIN_MATCH must be in [1,64]");
+    }
+    return static_cast<std::uint32_t>(value);
+}
 
 std::int32_t checked_i32(std::uint32_t value, const char* label) {
     if (value > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
@@ -96,7 +108,9 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
     : model(model_in), device(device_in), capacity(plan.capacity),
       prefill_chunk(plan.prefill_chunk), mtp_k(plan.mtp_k), kv_dtype(plan.kv_dtype),
       kv_quant_group(plan.kv_quant_group), proposal_head(plan.proposal_head),
-      use_cuda_graph(plan.use_cuda_graph), kv_payload_bytes(plan.persistent.kv_payload_bytes),
+      use_cuda_graph(plan.use_cuda_graph),
+      prompt_lookup_min_match(prompt_lookup_min_match_from_environment()),
+      kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), persistent(plan.persistent.bytes),
       work(plan.workspace_bytes),
       round_host((static_cast<std::size_t>(mtp_k) + 2ULL) * sizeof(std::int32_t)) {
@@ -274,6 +288,10 @@ void ProgramImplCore::prepare_graphs() {
             schedule::warm_capture_mtp_round(mtp_state, mtp_k,
                                              mtp_gqa_envelopes(range.min, range.max, mtp_k),
                                              prepare, variant.mtp);
+            auto lookup_state = state(representative);
+            schedule::warm_capture_prompt_lookup_round(
+                lookup_state, mtp_k, {range.min + mtp_k + 1, range.max + mtp_k + 1}, prepare,
+                variant.prompt_lookup);
         }
     }
 
@@ -554,14 +572,23 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
     if (proposal_ready && (decoder->mtp_cache() == nullptr || mtp_kv_valid != E)) {
         throw std::logic_error("MTP proposal does not match the Active execution frontier");
     }
-    const bool use_mtp = mtp_k != 0 && proposal_ready && mtp_kv_valid == E &&
+    const auto lookup =
+        prompt_lookup_min_match == 0
+            ? runtime::PromptLookupMatch{}
+            : runtime::find_prompt_lookup(ledger, mtp_k, prompt_lookup_min_match);
+    const bool use_lookup = mtp_k != 0 && lookup.draft.size() == mtp_k &&
+                            budget.generated_tokens_remaining >= mtp_k + 1 &&
+                            static_cast<std::uint64_t>(E) + mtp_k + 1ULL <= capacity;
+    const bool use_mtp = !use_lookup && mtp_k != 0 && proposal_ready && mtp_kv_valid == E &&
                          budget.generated_tokens_remaining >= mtp_k + 1 &&
                          static_cast<std::uint64_t>(E) + 2ULL * mtp_k <= capacity;
     const std::uint32_t base_E = E;
     const std::uint32_t base_S = S;
-    nvtx::ScopedRange round_range(use_mtp ? nvtx::Name::DecodeMtpRound
+    nvtx::ScopedRange round_range((use_mtp || use_lookup) ? nvtx::Name::DecodeMtpRound
                                           : nvtx::Name::DecodeOrdinaryRound,
-                                  use_mtp ? nvtx::Category::Mtp : nvtx::Category::Decode, base_E);
+                                  (use_mtp || use_lookup) ? nvtx::Category::Mtp
+                                                          : nvtx::Category::Decode,
+                                  base_E);
     try {
         set_device_i32(io.gdn_initial_slot, current_gdn_slot);
         schedule::State schedule_state{
@@ -585,7 +612,39 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
         std::uint32_t produced = 1;
         std::uint32_t accepted = 0;
         PendingKind kind       = PendingKind::Ordinary;
-        if (use_mtp) {
+        if (use_lookup) {
+            CUDA_CHECK(cudaMemcpyAsync(io.drafts.data, lookup.draft.data(),
+                                       lookup.draft.size() * sizeof(TokenId),
+                                       cudaMemcpyHostToDevice, device.stream));
+            DecodeGraph* graph = nullptr;
+            ops::GqaExecutionEnvelope envelope{base_E + mtp_k + 1, base_E + mtp_k + 1};
+            if (use_cuda_graph && diagnostic_text_tap == nullptr) {
+                MtpGraphVariant& variant =
+                    select_graph_variant(mtp_graphs, base_E, "prompt lookup");
+                graph = &variant.prompt_lookup;
+                envelope = {variant.min_execution_frontier + mtp_k + 1,
+                            variant.max_execution_frontier + mtp_k + 1};
+            }
+            schedule::prompt_lookup_round(schedule_state, mtp_k, envelope, graph);
+            ops::mtp_gather_hidden_row(io.verify_hidden, io.accepted, tail_hidden, device.stream);
+            CUDA_CHECK(cudaMemcpyAsync(host_count, io.num_sampled.data, sizeof(std::int32_t),
+                                       cudaMemcpyDeviceToHost, device.stream));
+            CUDA_CHECK(cudaMemcpyAsync(host_tokens, io.sampled_out.data,
+                                       (mtp_k + 1ULL) * sizeof(TokenId), cudaMemcpyDeviceToHost,
+                                       device.stream));
+            device.synchronize();
+            if (*host_count <= 0 || *host_count > static_cast<std::int32_t>(mtp_k + 1)) {
+                throw std::runtime_error("prompt lookup returned an invalid token count");
+            }
+            produced = static_cast<std::uint32_t>(*host_count);
+            accepted = produced - 1;
+            kind = PendingKind::Mtp;
+            text_kv_valid = base_E + produced;
+            current_gdn_slot = static_cast<std::int32_t>(accepted);
+            mtp_kv_valid = 0;
+            proposal_ready = false;
+            tail_hidden_valid = true;
+        } else if (use_mtp) {
             DecodeGraph* graph = nullptr;
             auto envelopes     = mtp_gqa_envelopes(base_E, base_E, mtp_k);
             if (use_cuda_graph && diagnostic_text_tap == nullptr) {

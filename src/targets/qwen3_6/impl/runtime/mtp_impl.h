@@ -181,6 +181,27 @@ auto mtp_body(State& state, std::uint32_t k, MtpGqaEnvelopes envelopes) {
     return record;
 }
 
+auto prompt_lookup_body(State& state, std::uint32_t k, ops::GqaExecutionEnvelope envelope) {
+    if (k == 0 || k != static_cast<std::uint32_t>(state.io.drafts.ne[0])) {
+        throw std::logic_error("prompt lookup storage does not match its configured window");
+    }
+    return [&state, envelope] {
+        TextContext card(state.device, state.model, state.work, state.text_kv, state.gdn, state.io,
+                         state.prefill_hidden, state.prefill_chunk, state.text_kv_base, nullptr);
+        configure_text_card(card, state);
+        ops::mtp_prepare_verify_inputs(state.io.token, state.io.drafts, state.io.pos,
+                                       state.io.window_base, state.io.verify_ids,
+                                       state.io.positions, state.device.stream);
+        target_verify(card, state, state.io.verify_ids, state.io.positions, envelope);
+        ops::mtp_accept_tokens(state.io.target_tokens, state.io.logits, state.io.drafts,
+                               state.io.pos, state.io.token, state.io.sampled_out,
+                               state.io.num_sampled, state.io.accepted, state.io.ar_pos,
+                               state.io.stats, TextConfig::token_domain, state.sampling, state.work,
+                               state.device.stream);
+        ops::assign_i32_scalar(state.io.accepted, state.io.gdn_initial_slot, state.device.stream);
+    };
+}
+
 void warm_capture_ordinary_round(State& state, bool align_mtp, ops::GqaExecutionEnvelope envelope,
                                  const GraphPrepare& prepare, DecodeGraph& graph) {
     auto body = ordinary_body(state, align_mtp, envelope);
@@ -201,6 +222,19 @@ void warm_capture_mtp_round(State& state, std::uint32_t k, MtpGqaEnvelopes envel
 
 void mtp_round(State& state, std::uint32_t k, MtpGqaEnvelopes envelopes, DecodeGraph* graph) {
     auto body = mtp_body(state, k, envelopes);
+    run_prepared(state, graph, body);
+}
+
+void warm_capture_prompt_lookup_round(State& state, std::uint32_t k,
+                                      ops::GqaExecutionEnvelope envelope,
+                                      const GraphPrepare& prepare, DecodeGraph& graph) {
+    auto body = prompt_lookup_body(state, k, envelope);
+    warm_capture(state, graph, prepare, body);
+}
+
+void prompt_lookup_round(State& state, std::uint32_t k, ops::GqaExecutionEnvelope envelope,
+                         DecodeGraph* graph) {
+    auto body = prompt_lookup_body(state, k, envelope);
     run_prepared(state, graph, body);
 }
 

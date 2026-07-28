@@ -89,4 +89,11 @@ void warm_capture_mtp_round(State& state, std::uint32_t k, MtpGqaEnvelopes envel
                             const GraphPrepare& prepare, DecodeGraph& graph);
 void mtp_round(State& state, std::uint32_t k, MtpGqaEnvelopes envelopes, DecodeGraph* graph);
 
+// Verify externally supplied drafts without running the MTP layer afterward.
+void warm_capture_prompt_lookup_round(State& state, std::uint32_t k,
+                                      ops::GqaExecutionEnvelope envelope,
+                                      const GraphPrepare& prepare, DecodeGraph& graph);
+void prompt_lookup_round(State& state, std::uint32_t k, ops::GqaExecutionEnvelope envelope,
+                         DecodeGraph* graph);
+
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule
