@@ -3,6 +3,7 @@
 #include "ops/op_tester.h"
 #include "ops/row_split_pack.h"
 #include "ops/sparse_moe/decode/sparse_moe_decode.h"
+#include "ops/sparse_moe/small_t/sparse_moe_small_t.h"
 
 #include <cuda_runtime.h>
 
@@ -407,6 +408,42 @@ int expect_invalid(const char* label, const auto& call) {
     return 1;
 }
 
+int verify_small_t_plans() {
+    int failures = 0;
+    for (int tokens = 2; tokens <= 16; ++tokens) {
+        const auto q5 = ops::detail::resolve_sparse_moe_small_t_plan(
+            tokens, QType::Q4G64_F16S, QType::Q5G64_F16S);
+        const auto q6 = ops::detail::resolve_sparse_moe_small_t_plan(
+            tokens, QType::Q4G64_F16S, QType::Q6G64_F16S);
+        const auto w8 = ops::detail::resolve_sparse_moe_small_t_plan(
+            tokens, QType::W8G32_F16S, QType::W8G32_F16S);
+
+        const auto expected_q5_d4 =
+            tokens <= 2   ? ops::detail::SparseMoeSmallTD4Schedule::Rows1
+            : tokens <= 5 ? ops::detail::SparseMoeSmallTD4Schedule::Rows2
+                          : ops::detail::SparseMoeSmallTD4Schedule::Rows4;
+        const auto expected_q6_d4 =
+            tokens <= 2    ? ops::detail::SparseMoeSmallTD4Schedule::Rows1
+            : tokens <= 11 ? ops::detail::SparseMoeSmallTD4Schedule::Rows2
+                           : ops::detail::SparseMoeSmallTD4Schedule::Rows4;
+        const auto expected_w8_d3 =
+            tokens <= 5 ? ops::detail::SparseMoeSmallTD3Schedule::Paths1
+                        : ops::detail::SparseMoeSmallTD3Schedule::Paths9;
+        const auto expected_w8_d4 =
+            tokens <= 8 ? ops::detail::SparseMoeSmallTD4Schedule::Rows1
+                        : ops::detail::SparseMoeSmallTD4Schedule::Rows4;
+        if (q5.d3_schedule != ops::detail::SparseMoeSmallTD3Schedule::Paths3 ||
+            q5.d4_schedule != expected_q5_d4 ||
+            q6.d3_schedule != ops::detail::SparseMoeSmallTD3Schedule::Paths3 ||
+            q6.d4_schedule != expected_q6_d4 || w8.d3_schedule != expected_w8_d3 ||
+            w8.d4_schedule != expected_w8_d4) {
+            std::cerr << "sparse_moe small-T plan mismatch at T=" << tokens << '\n';
+            ++failures;
+        }
+    }
+    return failures;
+}
+
 int run_case(const CodecProfile& profile, const RouteCase& route, const char* case_name, int tokens,
              int unique_columns, bool graph_replay, bool validate_contract,
              const std::vector<RouteCase>& route_columns = {}) {
@@ -624,7 +661,7 @@ int main() {
         {{{192, 193, 194, 195, 196, 197, 198, 199}}, -1},
     };
 
-    int failures = 0;
+    int failures = verify_small_t_plans();
     {
         using namespace ninfer::ops::detail;
         const SparseMoeDecodePlan q4_q5 =
@@ -657,17 +694,17 @@ int main() {
             std::string(tokens < kQ4Q5PrefillMin ? "sparse_moe small-T" : "sparse_moe prefill T") +
             std::to_string(tokens);
         failures += run_case(profiles[0], ordinary_route, name.c_str(), tokens, tokens,
-                             tokens == kSmallTMax, false);
+                             tokens == 16 || tokens == kSmallTMax, false);
     }
     for (int tokens = 2; tokens < kQ4Q6PrefillMin; ++tokens) {
         const std::string name = "sparse_moe q4+q6 small-T" + std::to_string(tokens);
         failures += run_case(profiles[1], ordinary_route, name.c_str(), tokens, tokens,
-                             tokens == kQ4Q6PrefillMin - 1, false);
+                             tokens == 16 || tokens == kQ4Q6PrefillMin - 1, false);
     }
     for (int tokens = 2; tokens < kW8W8PrefillMin; ++tokens) {
         const std::string name = "sparse_moe w8+w8 small-T" + std::to_string(tokens);
         failures += run_case(profiles[2], ordinary_route, name.c_str(), tokens, tokens,
-                             tokens == kW8W8PrefillMin - 1, false);
+                             tokens == 16 || tokens == kW8W8PrefillMin - 1, false);
     }
     failures += run_case(profiles[0], ordinary_route, "sparse_moe q4+q5 transition T45", 45,
                          kSmallTMax, false, false);
