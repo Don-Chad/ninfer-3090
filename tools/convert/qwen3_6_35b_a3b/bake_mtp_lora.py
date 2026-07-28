@@ -1,8 +1,8 @@
 """Bake the trained MTP LoRA into the native W8 input projection.
 
 This intentionally has no command-line parser. Edit the constants below or set
-NINFER_MTP_LORA_ACTION to ``apply``, ``verify``, or ``restore``. The original
-encoded tensor payload is backed up before the artifact is changed.
+NINFER_MTP_LORA_ACTION to ``create`` or ``verify``. The immutable base artifact
+is copied to a separately named specialization and is never modified.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 
 import torch
 from safetensors import safe_open
@@ -20,14 +21,14 @@ from tools.convert.common.quantize import quantize_and_encode
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-ARTIFACT_PATH = REPO_ROOT / "models/qwen3_6_35b_a3b.ninfer"
+BASE_ARTIFACT_PATH = REPO_ROOT / "models/qwen3_6_35b_a3b.ninfer"
+ARTIFACT_PATH = REPO_ROOT / "models/qwen3_6_35b_a3b-python-mtp-k3-w8.ninfer"
 SOURCE_MODEL_DIR = Path(r"D:\mtp-k3-training\source")
 ADAPTER_PATH = Path(
     r"D:\mtp-k3-training\checkpoints\python_mtp\best_python_mtp_k3.pt"
 )
-BACKUP_PATH = ARTIFACT_PATH.with_suffix(".mtp_input_projection.original.bin")
 REPORT_PATH = ARTIFACT_PATH.with_suffix(".mtp_lora_bake.json")
-ACTION = os.environ.get("NINFER_MTP_LORA_ACTION", "apply").strip().lower()
+ACTION = os.environ.get("NINFER_MTP_LORA_ACTION", "create").strip().lower()
 DEVICE = "cuda"
 
 OBJECT_NAME = "mtp/input_projection"
@@ -42,8 +43,8 @@ def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _artifact_payload() -> tuple[int, bytes]:
-    with Artifact.open(ARTIFACT_PATH) as artifact:
+def _artifact_payload(path: Path) -> tuple[int, bytes]:
+    with Artifact.open(path) as artifact:
         obj = artifact.find(OBJECT_NAME)
         if obj.kind != "tensor":
             raise ValueError(f"{OBJECT_NAME} is not a tensor")
@@ -109,16 +110,16 @@ def _encode(weight: torch.Tensor) -> bytes:
     return quantize_and_encode(weight, EXPECTED_FORMAT, device=DEVICE)
 
 
-def _replace_payload(absolute_offset: int, payload: bytes) -> None:
-    with ARTIFACT_PATH.open("r+b", buffering=0) as handle:
+def _replace_payload(path: Path, absolute_offset: int, payload: bytes) -> None:
+    with path.open("r+b", buffering=0) as handle:
         handle.seek(absolute_offset)
         handle.write(payload)
         handle.flush()
         os.fsync(handle.fileno())
 
 
-def apply() -> None:
-    absolute_offset, stored_original = _artifact_payload()
+def create() -> None:
+    _, stored_original = _artifact_payload(BASE_ARTIFACT_PATH)
     source = _load_source_weight()
     encoded_original = _encode(source)
     if encoded_original != stored_original:
@@ -127,33 +128,40 @@ def apply() -> None:
             "BF16 source; refusing to patch"
         )
 
-    if BACKUP_PATH.exists():
-        existing_backup = BACKUP_PATH.read_bytes()
-        if existing_backup != stored_original:
-            raise ValueError("existing backup does not match the artifact payload")
-    else:
-        BACKUP_PATH.write_bytes(stored_original)
-
     delta, metadata = _load_delta()
     merged = source.float().add_(delta)
     encoded_merged = _encode(merged)
     if len(encoded_merged) != len(stored_original):
         raise ValueError("encoded payload size changed")
 
+    if ARTIFACT_PATH.exists():
+        _, existing = _artifact_payload(ARTIFACT_PATH)
+        if existing == encoded_merged:
+            print(f"specialized artifact already exists: {ARTIFACT_PATH}")
+            return
+        raise FileExistsError(
+            f"refusing to overwrite existing specialized artifact: {ARTIFACT_PATH}"
+        )
+
+    shutil.copyfile(BASE_ARTIFACT_PATH, ARTIFACT_PATH)
+    absolute_offset, copied_original = _artifact_payload(ARTIFACT_PATH)
+    if copied_original != stored_original:
+        raise OSError("copied artifact projection differs from immutable base")
+
     changed_bytes = sum(a != b for a, b in zip(stored_original, encoded_merged))
-    _replace_payload(absolute_offset, encoded_merged)
-    _, written = _artifact_payload()
+    _replace_payload(ARTIFACT_PATH, absolute_offset, encoded_merged)
+    _, written = _artifact_payload(ARTIFACT_PATH)
     if written != encoded_merged:
         raise OSError("artifact payload verification failed after write")
 
     report = {
-        "action": "apply",
+        "action": "create",
+        "base_artifact": str(BASE_ARTIFACT_PATH),
         "artifact": str(ARTIFACT_PATH),
         "object": OBJECT_NAME,
         "format": EXPECTED_FORMAT,
         "shape": list(EXPECTED_SHAPE),
         "source_shard": str(_source_shard()),
-        "backup": str(BACKUP_PATH),
         "original_payload_sha256": _sha256(stored_original),
         "merged_payload_sha256": _sha256(encoded_merged),
         "payload_bytes": len(encoded_merged),
@@ -166,48 +174,25 @@ def apply() -> None:
     print(json.dumps(report, indent=2))
 
 
-def restore() -> None:
-    if not BACKUP_PATH.exists():
-        raise FileNotFoundError(f"missing backup: {BACKUP_PATH}")
-    absolute_offset, current = _artifact_payload()
-    original = BACKUP_PATH.read_bytes()
-    if len(original) != len(current):
-        raise ValueError("backup payload size does not match artifact")
-    _replace_payload(absolute_offset, original)
-    _, restored = _artifact_payload()
-    if restored != original:
-        raise OSError("artifact payload verification failed after restore")
-    print(
-        json.dumps(
-            {
-                "action": "restore",
-                "artifact": str(ARTIFACT_PATH),
-                "object": OBJECT_NAME,
-                "restored_payload_sha256": _sha256(restored),
-            },
-            indent=2,
-        )
-    )
-
-
 def verify() -> None:
-    _, current = _artifact_payload()
+    _, original = _artifact_payload(BASE_ARTIFACT_PATH)
     result = {
         "action": "verify",
+        "base_artifact": str(BASE_ARTIFACT_PATH),
         "artifact": str(ARTIFACT_PATH),
         "object": OBJECT_NAME,
-        "current_payload_sha256": _sha256(current),
-        "backup_exists": BACKUP_PATH.exists(),
+        "original_payload_sha256": _sha256(original),
+        "specialized_artifact_exists": ARTIFACT_PATH.exists(),
     }
-    if BACKUP_PATH.exists():
-        original = BACKUP_PATH.read_bytes()
-        result["original_payload_sha256"] = _sha256(original)
-        result["is_original"] = current == original
+    if ARTIFACT_PATH.exists():
+        _, specialized = _artifact_payload(ARTIFACT_PATH)
+        result["specialized_payload_sha256"] = _sha256(specialized)
+        result["differs_from_original"] = specialized != original
     print(json.dumps(result, indent=2))
 
 
 def main() -> None:
-    actions = {"apply": apply, "restore": restore, "verify": verify}
+    actions = {"create": create, "verify": verify}
     try:
         action = actions[ACTION]
     except KeyError:
