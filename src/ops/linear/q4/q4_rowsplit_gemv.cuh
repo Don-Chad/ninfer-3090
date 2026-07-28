@@ -393,16 +393,7 @@ __device__ __forceinline__ void q4_gemv_store(__nv_bfloat16* out, __nv_bfloat16*
 }
 
 // clang-format off
-struct Q4GemvStoreEpilogue {
-    template <bool SplitOutput, int SplitRow>
-    __device__ __forceinline__ void operator()(__nv_bfloat16* out, __nv_bfloat16* out_tail,
-                                               int row, float value) const {
-        q4_gemv_store<SplitOutput, SplitRow>(out, out_tail, row, value);
-    }
-};
-
-template <class Schedule, bool SplitOutput = false, int SplitRow = 0,
-          class Epilogue = Q4GemvStoreEpilogue>
+template <class Schedule, bool SplitOutput = false, int SplitRow = 0>
 __global__ __launch_bounds__(Schedule::kThreads, Schedule::kLaunchBoundsMinBlocks)
 void q4_rowsplit_gemv_kernel(
     const __nv_bfloat16* __restrict__ x,
@@ -411,8 +402,7 @@ void q4_rowsplit_gemv_kernel(
     __nv_bfloat16* __restrict__ out,
     __nv_bfloat16* __restrict__ out_tail,
     std::int32_t rows,
-    std::int32_t k,
-    Epilogue epilogue = {}) {
+    std::int32_t k) {
     // clang-format on
     constexpr int kRowsPerCta  = Schedule::kRowsPerCta;
     constexpr int kWarpsPerRow = Schedule::kWarpsPerRow;
@@ -491,9 +481,7 @@ void q4_rowsplit_gemv_kernel(
 
     accumulator = warp_reduce_sum(accumulator);
     if constexpr (kWarpsPerRow == 1) {
-        if (lane == 0) {
-            epilogue.template operator()<SplitOutput, SplitRow>(out, out_tail, row, accumulator);
-        }
+        if (lane == 0) { q4_gemv_store<SplitOutput, SplitRow>(out, out_tail, row, accumulator); }
     } else {
         if (lane == 0) { row_partials[row_in_cta][warp_in_row] = accumulator; }
         __syncthreads();
@@ -504,8 +492,7 @@ void q4_rowsplit_gemv_kernel(
             for (int warp = 0; warp < kWarpsPerRow; ++warp) {
                 row_accumulator += row_partials[row_in_cta][warp];
             }
-            epilogue.template operator()<SplitOutput, SplitRow>(out, out_tail, row,
-                                                                row_accumulator);
+            q4_gemv_store<SplitOutput, SplitRow>(out, out_tail, row, row_accumulator);
         }
     }
 }

@@ -115,36 +115,33 @@ std::size_t workspace_bytes(const SequencePlanImpl& plan) {
         layout.alloc_bytes(
             ops::linear_add_workspace_bytes(TextConfig::hidden, TextConfig::query_size, tokens));
     };
-    const auto gdn_stage = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens, bool verify) {
+    const auto gdn_stage = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens) {
         auto scope = layout.scope();
         matrix(layout, DType::BF16, TextConfig::hidden, tokens);
+        matrix(layout, DType::BF16, TextConfig::convolution_dim, tokens);
+        matrix(layout, DType::BF16, TextConfig::value_dim, tokens);
+        {
+            auto operator_scope = layout.scope();
+            layout.alloc_bytes(Variant::gdn_input_projection_workspace_bytes(tokens));
+        }
+        matrix(layout, DType::BF16, TextConfig::convolution_dim, tokens);
         matrix(layout, DType::FP32, TextConfig::gdn_value_heads, tokens);
         matrix(layout, DType::FP32, TextConfig::gdn_value_heads, tokens);
         {
             auto operator_scope = layout.scope();
-            layout.alloc_bytes(Variant::gdn_norm_control_projection_workspace_bytes(tokens));
+            layout.alloc_bytes(Variant::gdn_control_projection_workspace_bytes(tokens));
         }
-        matrix(layout, DType::BF16, TextConfig::value_dim, tokens);
         matrix(layout, DType::BF16, TextConfig::key_dim, tokens);
         matrix(layout, DType::BF16, TextConfig::key_dim, tokens);
         matrix(layout, DType::BF16, TextConfig::value_dim, tokens);
-        if (verify) {
-            auto operator_scope = layout.scope();
-            layout.alloc_bytes(Variant::gdn_input_projection_snapshot_workspace_bytes(tokens));
-        } else {
-            matrix(layout, DType::BF16, TextConfig::convolution_dim, tokens);
-            {
-                auto operator_scope = layout.scope();
-                layout.alloc_bytes(Variant::gdn_input_projection_workspace_bytes(tokens));
-            }
-            matrix(layout, DType::BF16, TextConfig::convolution_dim, tokens);
-        }
+        matrix(layout, DType::BF16, TextConfig::key_dim, tokens);
+        matrix(layout, DType::BF16, TextConfig::key_dim, tokens);
         matrix(layout, DType::BF16, TextConfig::value_dim, tokens);
         {
             auto operator_scope = layout.scope();
             layout.alloc_bytes(ops::gated_delta_rule_workspace_bytes(
                 TextConfig::gdn_value_head_dim, TextConfig::gdn_key_heads,
-                TextConfig::gdn_value_heads, tokens, /*normalize_qk=*/true));
+                TextConfig::gdn_value_heads, tokens));
         }
         {
             auto operator_scope = layout.scope();
@@ -163,7 +160,7 @@ std::size_t workspace_bytes(const SequencePlanImpl& plan) {
     WorkspaceLayoutBuilder prefill;
     common_root(prefill, prefill_tokens);
     attention_stage(prefill, prefill_tokens);
-    gdn_stage(prefill, prefill_tokens, false);
+    gdn_stage(prefill, prefill_tokens);
     mlp_stage(prefill, prefill_tokens);
     {
         auto final_scope = prefill.scope();
@@ -175,7 +172,7 @@ std::size_t workspace_bytes(const SequencePlanImpl& plan) {
     matrix(verify, DType::I32, 1, verify_tokens);
     matrix(verify, DType::BF16, TextConfig::hidden, verify_tokens);
     attention_stage(verify, verify_tokens);
-    gdn_stage(verify, verify_tokens, true);
+    gdn_stage(verify, verify_tokens);
     mlp_stage(verify, verify_tokens);
     {
         auto final_scope = verify.scope();

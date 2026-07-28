@@ -15,6 +15,7 @@
 #include "ninfer/ops/gdn_gating_proj.h"
 #include "ninfer/ops/gdn_input_proj.h"
 #include "ninfer/ops/gqa_attention.h"
+#include "ninfer/ops/l2norm.h"
 #include "ninfer/ops/linear.h"
 #include "ninfer/ops/linear_add.h"
 #include "ninfer/ops/linear_pair.h"
@@ -619,51 +620,54 @@ void TextContext::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
     cudaStream_t s = ctx_.stream;
     const int T    = x.ne[1];
 
-    Tensor h    = work_.alloc(DType::BF16, {kCfg.hidden, T});
-    Tensor g    = work_.alloc(DType::FP32, {kCfg.gdn_v_heads, T});
-    Tensor beta = work_.alloc(DType::FP32, {kCfg.gdn_v_heads, T});
-    Variant::gdn_norm_control_projection(x, *w.input_norm, kCfg.rms_eps, *w.projection, h, g, beta,
-                                         work_, s);
+    Tensor h = work_.alloc(DType::BF16, {kCfg.hidden, T});
+    ops::rmsnorm(x, *w.input_norm, kCfg.rms_eps, true, h, s);
 
-    Tensor z  = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
-    Tensor qc = work_.alloc(DType::BF16, {kCfg.key_dim, T});
-    Tensor kc = work_.alloc(DType::BF16, {kCfg.key_dim, T});
-    Tensor vc = work_.alloc(DType::BF16, {kCfg.value_dim, T});
+    Tensor qkv = work_.alloc(DType::BF16, {kCfg.conv_dim, T});
+    Tensor z   = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
+    Variant::gdn_input_projection(h, *w.projection, qkv, z, work_, s);
+
+    Tensor qkv_c = work_.alloc(DType::BF16, {kCfg.conv_dim, T});
     if (ph == Phase::Verify) {
         Tensor& conv_states = state_.conv.at(static_cast<std::size_t>(gidx));
-        Variant::gdn_input_projection_snapshot(h, *w.projection, *w.conv1d, conv_states,
-                                               io_.gdn_initial_slot, qc, kc, vc, z, work_, s);
+        ops::causal_conv1d_silu_snapshot(qkv, *w.conv1d, conv_states, io_.gdn_initial_slot, qkv_c,
+                                         s);
     } else {
-        Tensor qkv = work_.alloc(DType::BF16, {kCfg.conv_dim, T});
-        Variant::gdn_input_projection(h, *w.projection, qkv, z, work_, s);
-        Tensor qkv_c = work_.alloc(DType::BF16, {kCfg.conv_dim, T});
         // Prefill reads the committed conv window from gdn_prefill_read_slot_ and writes the
         // running window to slot 0 (in-place when the read slot is 0).
         Tensor conv_in = state_.conv_slot(static_cast<std::uint32_t>(gidx), gdn_prefill_read_slot_);
         Tensor conv_out = state_.conv_slot(static_cast<std::uint32_t>(gidx), 0);
         ops::causal_conv1d_silu(qkv, *w.conv1d, conv_in, conv_out, qkv_c, s);
-        ops::extract_bf16_columns(qkv_c, 0, qc, s);
-        ops::extract_bf16_columns(qkv_c, kCfg.key_dim, kc, s);
-        ops::extract_bf16_columns(qkv_c, 2 * kCfg.key_dim, vc, s);
     }
 
-    Tensor q_recurrent = qc.view({kCfg.gdn_k_dim, kCfg.gdn_k_heads, T});
-    Tensor k_recurrent = kc.view({kCfg.gdn_k_dim, kCfg.gdn_k_heads, T});
+    Tensor g    = work_.alloc(DType::FP32, {kCfg.gdn_v_heads, T});
+    Tensor beta = work_.alloc(DType::FP32, {kCfg.gdn_v_heads, T});
+    Variant::gdn_control_projection(h, *w.projection, g, beta, work_, s);
+
+    Tensor qc = work_.alloc(DType::BF16, {kCfg.key_dim, T});
+    Tensor kc = work_.alloc(DType::BF16, {kCfg.key_dim, T});
+    Tensor vc = work_.alloc(DType::BF16, {kCfg.value_dim, T});
+    ops::extract_bf16_columns(qkv_c, 0, qc, s);
+    ops::extract_bf16_columns(qkv_c, kCfg.key_dim, kc, s);
+    ops::extract_bf16_columns(qkv_c, 2 * kCfg.key_dim, vc, s);
+
+    Tensor qn = work_.alloc(DType::BF16, {kCfg.gdn_k_dim, kCfg.gdn_k_heads, T});
+    Tensor kn = work_.alloc(DType::BF16, {kCfg.gdn_k_dim, kCfg.gdn_k_heads, T});
+    ops::l2norm(qc.view({kCfg.gdn_k_dim, kCfg.gdn_k_heads, T}), 1.0e-6f, qn, s);
+    ops::l2norm(kc.view({kCfg.gdn_k_dim, kCfg.gdn_k_heads, T}), 1.0e-6f, kn, s);
 
     Tensor vv = vc.view({kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
     Tensor o  = work_.alloc(DType::BF16, {kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
     if (ph == Phase::Verify) {
         Tensor& ssm_states = state_.ssm.at(static_cast<std::size_t>(gidx));
-        ops::gated_delta_rule_snapshot(q_recurrent, k_recurrent, vv, g, beta, kGdnScale,
-                                       /*normalize_qk=*/true, work_, ssm_states,
+        ops::gated_delta_rule_snapshot(qn, kn, vv, g, beta, kGdnScale, work_, ssm_states,
                                        io_.gdn_initial_slot, o, s);
     } else {
         // Prefill reads the committed recurrent state from gdn_prefill_read_slot_ and writes the
         // running state to slot 0 (in-place when the read slot is 0).
         Tensor ssm_in  = state_.ssm_slot(static_cast<std::uint32_t>(gidx), gdn_prefill_read_slot_);
         Tensor ssm_out = state_.ssm_slot(static_cast<std::uint32_t>(gidx), 0);
-        ops::gated_delta_rule(q_recurrent, k_recurrent, vv, g, beta, kGdnScale,
-                              /*normalize_qk=*/true, work_, ssm_in, ssm_out, o, s);
+        ops::gated_delta_rule(qn, kn, vv, g, beta, kGdnScale, work_, ssm_in, ssm_out, o, s);
     }
 
     Variant::gdn_output_gate_projection(h, *w.projection, z, work_, s);

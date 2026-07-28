@@ -22,7 +22,6 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
-#include <type_traits>
 
 namespace ninfer::ops::detail {
 
@@ -158,33 +157,7 @@ q4_simt_consume_stage(const __nv_bfloat16* __restrict__ x, std::int32_t k, int c
     }
 }
 
-struct Q4SimtStoreEpilogue {
-    template <bool SplitOutput, int SplitRow, int Cols>
-    __device__ __forceinline__ void
-    operator()(__nv_bfloat16* out, __nv_bfloat16* out_tail, std::int32_t out_ld,
-               std::int32_t out_tail_ld, std::int32_t row, std::int32_t col0,
-               std::int32_t active_cols, const float (&values)[Cols]) const {
-#pragma unroll
-        for (int col = 0; col < Cols; ++col) {
-            if (col >= active_cols) { continue; }
-            if constexpr (SplitOutput) {
-                if (row < SplitRow) {
-                    out[static_cast<std::int64_t>(col0 + col) * out_ld + row] =
-                        __float2bfloat16(values[col]);
-                } else {
-                    out_tail[static_cast<std::int64_t>(col0 + col) * out_tail_ld + row - SplitRow] =
-                        __float2bfloat16(values[col]);
-                }
-            } else {
-                out[static_cast<std::int64_t>(col0 + col) * out_ld + row] =
-                    __float2bfloat16(values[col]);
-            }
-        }
-    }
-};
-
-template <class Schedule, Q4KernelVariant Variant, bool SplitOutput = false, int SplitRow = 0,
-          class Epilogue = Q4SimtStoreEpilogue>
+template <class Schedule, Q4KernelVariant Variant, bool SplitOutput = false, int SplitRow = 0>
 __global__ __launch_bounds__(
     Schedule::kThreads,
     Schedule::
@@ -199,8 +172,7 @@ __global__ __launch_bounds__(
                                                                   std::int32_t out_tail_ld,
                                                                   std::int32_t rows, std::int32_t k,
                                                                   std::int32_t cols,
-                                                                  std::int32_t padded_k,
-                                                                  Epilogue epilogue = {}) {
+                                                                  std::int32_t padded_k) {
     static_assert(Variant == Q4KernelVariant::Full || Variant == Q4KernelVariant::Predicated,
                   "Q4 SIMT GEMM requires a tiled kernel variant");
     static_assert(!SplitOutput || SplitRow > 0,
@@ -282,36 +254,24 @@ __global__ __launch_bounds__(
         __syncwarp();
     }
 
-    if constexpr (std::is_same_v<Epilogue, Q4SimtStoreEpilogue>) {
 #pragma unroll
-        for (int col = 0; col < kColsPerTile; ++col) {
-            if (kFull || col < active_cols) {
-                const float sum = warp_reduce_sum(acc[col]);
-                if (lane == 0) {
-                    if constexpr (SplitOutput) {
-                        if (row < SplitRow) {
-                            out[static_cast<std::int64_t>(col0 + col) * out_ld + row] =
-                                __float2bfloat16(sum);
-                        } else {
-                            out_tail[static_cast<std::int64_t>(col0 + col) * out_tail_ld + row -
-                                     SplitRow] = __float2bfloat16(sum);
-                        }
-                    } else {
+    for (int col = 0; col < kColsPerTile; ++col) {
+        if (kFull || col < active_cols) {
+            const float sum = warp_reduce_sum(acc[col]);
+            if (lane == 0) {
+                if constexpr (SplitOutput) {
+                    if (row < SplitRow) {
                         out[static_cast<std::int64_t>(col0 + col) * out_ld + row] =
                             __float2bfloat16(sum);
+                    } else {
+                        out_tail[static_cast<std::int64_t>(col0 + col) * out_tail_ld + row -
+                                 SplitRow] = __float2bfloat16(sum);
                     }
+                } else {
+                    out[static_cast<std::int64_t>(col0 + col) * out_ld + row] =
+                        __float2bfloat16(sum);
                 }
             }
-        }
-    } else {
-        float sums[kColsPerTile];
-#pragma unroll
-        for (int col = 0; col < kColsPerTile; ++col) {
-            sums[col] = (kFull || col < active_cols) ? warp_reduce_sum(acc[col]) : 0.0F;
-        }
-        if (lane == 0) {
-            epilogue.template operator()<SplitOutput, SplitRow>(out, out_tail, out_ld, out_tail_ld,
-                                                                row, col0, active_cols, sums);
         }
     }
 }
