@@ -48,6 +48,7 @@ struct SequencePlanImpl<NINFER_QWEN36_VARIANT> {
     std::int32_t kv_quant_group      = 0;
     bool kv_packed_k                 = false;
     bool kv_packed_v                 = false;
+    bool kv_rotate_v                 = false;
     ProposalHead proposal_head       = ProposalHead::Full;
     bool use_cuda_graph              = true;
     bool text_only                   = false;

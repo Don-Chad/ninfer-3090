@@ -192,6 +192,30 @@ The 128K allocation uses 1.102 GiB for the full sequence arena and 20.825 GiB fo
 so it fits a 24 GiB RTX 3090 but should run without another CUDA workload. Use 120K or less when a
 hard 22 GiB operational ceiling is required.
 
+For maximum fidelity, `--kv-dtype rk8v4` additionally applies a normalized H64 transform to values
+before INT4 quantization and the inverse transform after attention. The transform is orthogonal, so
+the attention result is unchanged before quantization; only the four-bit rounding remains lossy.
+This follows the value-rotation and inverse-output pattern used by rotation-based KV quantizers.
+
+```powershell
+.\ninfer.exe models\qwen3_6_35b_a3b.ninfer `
+  --prompt "Write a robust C++ parser..." `
+  --max-context 4096 --max-new 512 `
+  --kv-dtype rk8v4 --mtp-draft-tokens 2 --lm-head-draft `
+  --text-only
+```
+
+On canonical `tg128`, full rotation improved K8/V4 acceptance from 60.53% to 75.49% and throughput
+from 240.35 to 274.50 tok/s. The corresponding INT8 result was 70.75% acceptance and 262.05 tok/s.
+Two of three deterministic 96-token quality prompts matched INT8 byte-for-byte; the third remained
+factually correct but diverged in wording. This is a substantial quality improvement, not a claim
+of bit-exact or universally lossless four-bit inference.
+
+Full value rotation is expensive during very large prefills. At 65,536 input tokens it measured
+1,103.66 tok/s versus 3,117.28 tok/s for regular `k8v4`; long-context decode measured 114.76 tok/s.
+Use `rk8v4` for quality-first short and moderate contexts, and regular `k8v4` for maximum long-prompt
+prefill speed.
+
 `--kv-dtype int4` stores two signed 4-bit K/V codes per byte with FP16 group-64 scales. Keys and
 queries receive the same normalized 64-wide Walsh-Hadamard rotation before quantization, so their
 unquantized dot product is preserved while isolated key outliers are spread across the group.

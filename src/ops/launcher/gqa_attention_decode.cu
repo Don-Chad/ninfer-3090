@@ -103,7 +103,7 @@ void launch_tc_partial_bf16(const Tensor& q, CacheInput input, const Tensor& pos
     CUDA_CHECK(cudaGetLastError());
 }
 
-template <typename Geometry, int TokenTile, bool PackedK, bool PackedV, bool RotateK,
+template <typename Geometry, int TokenTile, bool PackedK, bool PackedV, bool RotateK, bool RotateV,
           typename CacheInput>
 void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, float scale,
                           KVCacheLayerView cache, std::int32_t padded_context,
@@ -122,13 +122,13 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
             static const cudaError_t attr = cudaFuncSetAttribute(
                 gqa_attention_decode_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta,
                                                      MinBlocksPerSm, KeyBlock, DynamicArena, PackedK,
-                                                     PackedV, RotateK, CacheInput>,
+                                                     PackedV, RotateK, RotateV, CacheInput>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kDynamicBytes));
             CUDA_CHECK(attr);
         }
         gqa_attention_decode_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta, MinBlocksPerSm,
                                              KeyBlock, DynamicArena, PackedK, PackedV, RotateK,
-                                             CacheInput>
+                                             RotateV, CacheInput>
             <<<grid, WarpsPerCta * 32, kDynamicBytes, stream>>>(
                 static_cast<const __nv_bfloat16*>(q.data), input,
                 static_cast<const std::int32_t*>(pos.data), static_cast<std::uint8_t*>(cache_k.data),
@@ -215,17 +215,23 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
 #define NINFER_GQA_SMALL_T_DISPATCH(TOKENS, WARPS)                                                 \
     do {                                                                                           \
         if (cache.dtype == DType::I8 && !cache.packed_v) {                                         \
-            launch_tc_partial_i8<Geometry, (TOKENS), false, false, false>(                         \
+            launch_tc_partial_i8<Geometry, (TOKENS), false, false, false, false>(                  \
                 q, input, pos, scale, cache, padded_context, max_context, implementation_window,   \
                 splits, partial_acc, partial_m, partial_l, stream);                                \
         } else if (cache.dtype == DType::U8) {                                                     \
-            launch_tc_partial_i8<Geometry, (TOKENS), true, true, true>(                            \
+            launch_tc_partial_i8<Geometry, (TOKENS), true, true, true, false>(                     \
                 q, input, pos, scale, cache, padded_context, max_context, implementation_window,   \
                 splits, partial_acc, partial_m, partial_l, stream);                                \
         } else if (cache.packed_v) {                                                               \
-            launch_tc_partial_i8<Geometry, (TOKENS), false, true, true>(                           \
-                q, input, pos, scale, cache, padded_context, max_context, implementation_window,   \
-                splits, partial_acc, partial_m, partial_l, stream);                                \
+            if (cache.rotate_v) {                                                                  \
+                launch_tc_partial_i8<Geometry, (TOKENS), false, true, true, true>(                 \
+                    q, input, pos, scale, cache, padded_context, max_context,                       \
+                    implementation_window, splits, partial_acc, partial_m, partial_l, stream);     \
+            } else {                                                                               \
+                launch_tc_partial_i8<Geometry, (TOKENS), false, true, true, false>(                \
+                    q, input, pos, scale, cache, padded_context, max_context,                       \
+                    implementation_window, splits, partial_acc, partial_m, partial_l, stream);     \
+            }                                                                                      \
         } else {                                                                                   \
             launch_tc_partial_bf16<Geometry, (TOKENS), (WARPS)>(                                   \
                 q, input, pos, scale, cache, padded_context, max_context, splits, partial_acc,     \
@@ -278,6 +284,13 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
                 static_cast<__nv_bfloat16*>(out.data));
     }
     CUDA_CHECK(cudaGetLastError());
+    if (cache.rotate_v) {
+        constexpr int kGroups = kGqaHeadDim / kGqaKvQuantGroup;
+        const int units       = q.ne[2] * Geometry::QHeads * kGroups;
+        gqa_kv_inverse_rotate_output_kernel<Geometry::QHeads>
+            <<<units, 32, 0, stream>>>(static_cast<__nv_bfloat16*>(out.data), q.ne[2]);
+        CUDA_CHECK(cudaGetLastError());
+    }
 }
 
 void gqa_attention_small_t_launch(const Tensor& q, const Tensor& k, const Tensor& v,

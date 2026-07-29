@@ -118,6 +118,11 @@ int test_cli_contract() {
         {"ninfer_bench", "--weights", "model.ninfer", "--kv-dtype", "k8v4"});
     failures += expect(k8v4.kv_cache == ninfer::KvCacheStorage::Int8KeyInt4ValueGroup64,
                        "K8/V4 KV");
+    const auto rk8v4 = parse_for_test(
+        {"ninfer_bench", "--weights", "model.ninfer", "--kv-dtype", "rk8v4"});
+    failures += expect(
+        rk8v4.kv_cache == ninfer::KvCacheStorage::RotatedInt8KeyInt4ValueGroup64,
+        "rotated K8/V4 KV");
     failures += expect(parsed.mtp_draft_tokens == 5, "MTP window");
     failures += expect(parsed.prompt_lookup_tokens == 15, "prompt lookup window");
     failures += expect(parsed.prompt_lookup_min_match == 4, "prompt lookup minimum match");

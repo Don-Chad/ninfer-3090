@@ -59,6 +59,7 @@ struct DecoderStateSpec {
     std::int32_t kv_quant_group         = 0;
     bool kv_packed_k                    = false;
     bool kv_packed_v                    = false;
+    bool kv_rotate_v                    = false;
     bool enable_mtp                     = false;
     GdnStateSpec gdn;
 };

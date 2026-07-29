@@ -101,6 +101,29 @@ __device__ __forceinline__ void gqa_kv_hadamard64(float& x0, float& x1,
     x1            = (a - b) * 0.125f;
 }
 
+template <int QHeads>
+__global__ void gqa_kv_inverse_rotate_output_kernel(__nv_bfloat16* output, int tokens) {
+    constexpr int Groups = kGqaKvQuantGroups;
+    const int unit       = static_cast<int>(blockIdx.x);
+    const int lane       = static_cast<int>(threadIdx.x);
+    if (lane >= 32) { return; }
+    const int group  = unit % Groups;
+    const int tmp    = unit / Groups;
+    const int q_head = tmp % QHeads;
+    const int token  = tmp / QHeads;
+    if (token >= tokens) { return; }
+    const int d0 = group * kGqaKvQuantGroup + lane;
+    const int d1 = d0 + 32;
+    const std::int64_t base =
+        static_cast<std::int64_t>(kGqaKvQuantHeadDim) *
+        (static_cast<std::int64_t>(q_head) + static_cast<std::int64_t>(QHeads) * token);
+    float x0 = __bfloat162float(output[base + d0]);
+    float x1 = __bfloat162float(output[base + d1]);
+    gqa_kv_hadamard64(x0, x1);
+    output[base + d0] = __float2bfloat16(x0);
+    output[base + d1] = __float2bfloat16(x1);
+}
+
 // Expand 16 consecutive packed INT4 values into the existing INT8 shared-memory
 // staging format. Keeping the staged representation identical lets the mature
 // SM86 s8 tensor-core QK path serve both cache formats.

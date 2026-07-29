@@ -17,11 +17,11 @@ struct PlannedCache {
 PlannedCache plan_cache(std::uint32_t layers, std::uint32_t max_context, std::int32_t heads,
                         std::int32_t head_dim, ninfer::DType dtype = ninfer::DType::BF16,
                         std::int32_t quant_group = 0, bool packed_k = false,
-                        bool packed_v = false) {
+                        bool packed_v = false, bool rotate_v = false) {
     ninfer::LayoutBuilder builder;
     auto layout =
         ninfer::plan_kv_cache(builder, layers, max_context, heads, head_dim, dtype, quant_group,
-                              packed_k, packed_v);
+                              packed_k, packed_v, rotate_v);
     return PlannedCache{std::move(layout), builder.finish(256)};
 }
 
@@ -151,6 +151,17 @@ int main() {
         k8v4_plan.layout.payload_bytes() >= int8_payload) {
         ++failures;
         std::cerr << "K8/V4 payload is not between INT4 and INT8\n";
+    }
+
+    auto rk8v4_plan = plan_cache(1, 8, 2, 64, ninfer::DType::I8, ninfer::kKvQuantGroup, false,
+                                 true, true);
+    ninfer::DeviceArena rk8v4_arena(rk8v4_plan.bytes);
+    ninfer::KVCache rk8v4_cache({rk8v4_arena.base(), rk8v4_arena.capacity()},
+                                rk8v4_plan.layout);
+    const auto rk8v4 = rk8v4_cache.layer_view(0);
+    if (rk8v4.packed_k || !rk8v4.packed_v || !rk8v4.rotate_v) {
+        ++failures;
+        std::cerr << "rotated K8/V4 layer view flags mismatch\n";
     }
 
     return failures == 0 ? 0 : fail("kv cache test failed");

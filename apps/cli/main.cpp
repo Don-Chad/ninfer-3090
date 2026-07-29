@@ -98,7 +98,10 @@ std::string format_kv_cache(ninfer::KvCacheStorage storage) {
     if (storage == ninfer::KvCacheStorage::BFloat16) { return "bf16"; }
     if (storage == ninfer::KvCacheStorage::Int8Group64) { return "int8-group64"; }
     if (storage == ninfer::KvCacheStorage::Int4Group64) { return "int4-group64"; }
-    return "k8-v4-group64";
+    if (storage == ninfer::KvCacheStorage::Int8KeyInt4ValueGroup64) {
+        return "k8-v4-group64";
+    }
+    return "rotated-k8-v4-group64";
 }
 
 void print_stage(std::string_view group, std::string_view detail, double seconds) {

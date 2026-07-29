@@ -74,6 +74,10 @@ void validate_cache(const KVCacheLayerView& cache, std::int32_t kv_heads, const 
     if (cache.k.dtype != k_dtype || cache.v.dtype != v_dtype) {
         throw std::invalid_argument(std::string(op) + ": invalid KV cache code dtype");
     }
+    if (cache.rotate_v && !cache.packed_v) {
+        throw std::invalid_argument(std::string(op) +
+                                    ": rotated V requires a packed value cache");
+    }
     require_shape(cache.k, cache.packed_k ? kHeadDim / 2 : kHeadDim, padded, kv_heads, 1, op,
                   "cache k");
     require_shape(cache.v, cache.packed_v ? kHeadDim / 2 : kHeadDim, padded, kv_heads, 1, op,

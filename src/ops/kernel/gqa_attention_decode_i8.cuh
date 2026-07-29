@@ -55,7 +55,8 @@ __device__ __forceinline__ void gqa_small_t_i8_store_swz(std::int8_t* tile, int 
 // dequantize V while producers execute QK. After both consume the code tile, the
 // next K/V tile is prefetched into the same arena while the current PV runs.
 template <typename Geometry, int TokenTile, int WarpsPerCta, int MinBlocksPerSm, int KeyBlock,
-          bool DynamicArena, bool PackedK, bool PackedV, bool RotateK, typename CacheInput>
+          bool DynamicArena, bool PackedK, bool PackedV, bool RotateK, bool RotateV,
+          typename CacheInput>
 __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     void gqa_attention_decode_i8_tiled_kernel(const __nv_bfloat16* q, CacheInput input,
                                               const std::int32_t* pos, std::uint8_t* cache_k_codes,
@@ -178,9 +179,10 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
             const std::int64_t src1 = gqa_kv_new_index<Geometry>(kv_head, d1, token);
             float kv0               = __bfloat162float(input.k[src0]);
             float kv1               = __bfloat162float(input.k[src1]);
-            const float vv0         = __bfloat162float(input.v[src0]);
-            const float vv1         = __bfloat162float(input.v[src1]);
+            float vv0               = __bfloat162float(input.v[src0]);
+            float vv1               = __bfloat162float(input.v[src1]);
             if constexpr (RotateK) { gqa_kv_hadamard64(kv0, kv1, FullMask); }
+            if constexpr (RotateV) { gqa_kv_hadamard64(vv0, vv1, FullMask); }
             float kamax             = fmaxf(fabsf(kv0), fabsf(kv1));
             float vamax             = fmaxf(fabsf(vv0), fabsf(vv1));
             kamax                   = warp_max(kamax, FullMask);

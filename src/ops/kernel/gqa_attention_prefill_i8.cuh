@@ -79,7 +79,7 @@ __device__ __forceinline__ int4 gqa_prefill_i8_dequant_f16x8(const std::int8_t* 
 
 // Eight independent quantization units per CTA; one warp owns one
 // (token, kv_head, 64-d group), with two dimensions per lane.
-template <typename Geometry, bool PackedK, bool PackedV, bool RotateK>
+template <typename Geometry, bool PackedK, bool PackedV, bool RotateK, bool RotateV>
 __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_i8_kernel(
     const __nv_bfloat16* __restrict__ k, const __nv_bfloat16* __restrict__ v,
     const std::int32_t* __restrict__ positions, std::uint8_t* __restrict__ cache_k,
@@ -105,9 +105,10 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_i8_kernel(
     const std::int64_t src1 = gqa_kv_quant_src_index<Geometry>(kv_head, d1, token);
     float k0                = __bfloat162float(k[src0]);
     float k1                = __bfloat162float(k[src1]);
-    const float v0          = __bfloat162float(v[src0]);
-    const float v1          = __bfloat162float(v[src1]);
+    float v0                = __bfloat162float(v[src0]);
+    float v1                = __bfloat162float(v[src1]);
     if constexpr (RotateK) { gqa_kv_hadamard64(k0, k1, FullMask); }
+    if constexpr (RotateV) { gqa_kv_hadamard64(v0, v1, FullMask); }
 
     float k_abs = fmaxf(fabsf(k0), fabsf(k1));
     float v_abs = fmaxf(fabsf(v0), fabsf(v1));
@@ -169,7 +170,7 @@ __launch_bounds__(256) __global__ void gqa_attention_prefill_fill_i8_kernel(
     }
 }
 
-template <typename Geometry, bool PackedK, bool PackedV, bool RotateK>
+template <typename Geometry, bool PackedK, bool PackedV, bool RotateK, bool RotateV>
 __global__ __maxnreg__(120) void gqa_attention_prefill_i8_kernel(
     const __nv_bfloat16* __restrict__ q, const std::uint8_t* __restrict__ cache_k,
     const std::uint8_t* __restrict__ cache_v, const __half* __restrict__ cache_k_scale,

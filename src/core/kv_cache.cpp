@@ -57,7 +57,7 @@ Tensor bind_tensor(DeviceSpan backing, const LayoutRegion& region, DType dtype,
 KVCacheLayout plan_kv_cache(LayoutBuilder& builder, std::uint32_t full_layers,
                             std::uint32_t max_context_in, std::int32_t num_kv_heads_in,
                             std::int32_t head_dim_in, DType dtype_in, std::int32_t quant_group_in,
-                            bool packed_k_in, bool packed_v_in) {
+                            bool packed_k_in, bool packed_v_in, bool rotate_v_in) {
     if (full_layers == 0) { throw std::invalid_argument("KVCache layers must be nonzero"); }
     if (max_context_in == 0 ||
         max_context_in > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
@@ -80,11 +80,15 @@ KVCacheLayout plan_kv_cache(LayoutBuilder& builder, std::uint32_t full_layers,
     layout.quant_group    = normalize_quant_group(dtype_in, quant_group_in, head_dim_in);
     layout.packed_k       = packed_k_in;
     layout.packed_v       = packed_v_in;
+    layout.rotate_v       = rotate_v_in;
     if (dtype_in == DType::BF16 && (packed_k_in || packed_v_in)) {
         throw std::invalid_argument("KVCache BF16 mode cannot use packed planes");
     }
     if (dtype_in == DType::U8 && (!packed_k_in || !packed_v_in)) {
         throw std::invalid_argument("KVCache packed U8 mode requires packed K and V");
+    }
+    if (rotate_v_in && !packed_v_in) {
+        throw std::invalid_argument("KVCache V rotation requires a packed value plane");
     }
 
     const auto padded_context_i32 = static_cast<std::int32_t>(layout.padded_context);
@@ -135,7 +139,8 @@ std::size_t KVCacheLayout::payload_bytes() const noexcept {
 KVCache::KVCache(DeviceSpan backing, const KVCacheLayout& layout)
     : max_context(layout.max_context), padded_context(layout.padded_context),
       num_kv_heads(layout.num_kv_heads), head_dim(layout.head_dim), dtype(layout.dtype),
-      quant_group(layout.quant_group), packed_k(layout.packed_k), packed_v(layout.packed_v) {
+      quant_group(layout.quant_group), packed_k(layout.packed_k), packed_v(layout.packed_v),
+      rotate_v(layout.rotate_v) {
     const auto layers = layout.k.size();
     if (layers == 0 || layout.v.size() != layers ||
         ((dtype == DType::I8 || dtype == DType::U8) &&
@@ -183,6 +188,7 @@ KVCacheLayerView KVCache::layer_view(std::uint32_t layer) const {
         .quant_group    = quant_group,
         .packed_k       = packed_k,
         .packed_v       = packed_v,
+        .rotate_v       = rotate_v,
     };
     if (dtype == DType::I8 || dtype == DType::U8) {
         view.k_scale = k_scale[layer];
