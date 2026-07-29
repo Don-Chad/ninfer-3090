@@ -14,7 +14,8 @@
 
 namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 
-using TensorLayout = TensorRegion;
+using TensorLayout                                                = TensorRegion;
+inline constexpr std::uint32_t kMaximumProfitableMtpRealignTokens = 8;
 
 struct PersistentLayout {
     qwen3_6::DecoderStateLayout decoder;
@@ -24,6 +25,7 @@ struct PersistentLayout {
     TensorLayout sampling_config;
     TensorLayout tail_hidden;
     TensorLayout boundary_hidden;
+    TensorLayout lookup_realign_hidden;
     std::size_t bytes            = 0;
     std::size_t kv_payload_bytes = 0;
 };

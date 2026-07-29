@@ -96,4 +96,7 @@ void warm_capture_prompt_lookup_round(State& state, std::uint32_t k,
 void prompt_lookup_round(State& state, std::uint32_t k, ops::GqaExecutionEnvelope envelope,
                          DecodeGraph* graph);
 
+void mtp_realign_and_propose(State& state, const Tensor& hidden, std::span<const TokenId> tokens,
+                             std::uint32_t first_position, std::uint32_t proposal_k);
+
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule

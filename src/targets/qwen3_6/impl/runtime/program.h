@@ -54,6 +54,7 @@ enum class PendingKind : std::uint8_t {
     None,
     Begin,
     Ordinary,
+    Lookup,
     Mtp,
 };
 
@@ -130,6 +131,7 @@ public:
     const std::uint32_t prefill_chunk;
     const std::uint32_t mtp_k;
     const std::uint32_t lookup_k;
+    const std::uint32_t lookup_mid_k;
     const std::uint32_t lookup_fallback_k;
     const std::uint32_t round_k;
     const DType kv_dtype;
@@ -149,11 +151,13 @@ public:
     Tensor token_counts;
     Tensor tail_hidden;
     Tensor boundary_hidden;
+    Tensor lookup_realign_hidden;
     ops::SamplingConfig sampling_host;
 
     std::vector<OrdinaryGraphVariant> ordinary_graphs;
     std::vector<MtpGraphVariant> mtp_graphs;
     std::vector<LookupGraphVariant> lookup_graphs;
+    std::vector<LookupGraphVariant> lookup_mid_graphs;
     std::vector<LookupGraphVariant> lookup_fallback_graphs;
 
     PinnedHostBuffer round_host;
@@ -165,12 +169,14 @@ public:
     std::uint32_t S     = 0;
     std::vector<TokenId> ledger;
     qwen3_6::detail::ResidentPrefixIdentity prefix_identity;
-    std::int32_t rope_delta       = 0;
-    std::int32_t current_gdn_slot = 0;
-    std::uint32_t text_kv_valid   = 0;
-    std::uint32_t mtp_kv_valid    = 0;
-    bool proposal_ready           = false;
-    bool tail_hidden_valid        = false;
+    std::int32_t rope_delta          = 0;
+    std::int32_t current_gdn_slot    = 0;
+    std::uint32_t text_kv_valid      = 0;
+    std::uint32_t mtp_kv_valid       = 0;
+    std::uint32_t lookup_realign_end = 0;
+    bool proposal_ready              = false;
+    bool lookup_realign_pending      = false;
+    bool tail_hidden_valid           = false;
     PrefixCheckpoint boundary;
     PendingCandidate pending;
     GenerationTimings timings;

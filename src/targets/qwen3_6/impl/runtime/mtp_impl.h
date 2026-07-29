@@ -7,7 +7,10 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
+#include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule {
 namespace {
@@ -61,6 +64,73 @@ void mtp_bridge_and_propose(State& state, const Tensor& next_token, const Tensor
         const ops::GqaExecutionEnvelope envelope{visible, visible};
         card.mtp_forward_ar_step(previous_token, state.io.mtp_ar_hidden, state.io.ar_pos, envelope,
                                  next_hidden, logits, next_draft);
+        CUDA_CHECK(cudaMemcpyAsync(state.io.mtp_ar_hidden.data, next_hidden.data,
+                                   state.io.mtp_ar_hidden.bytes(), cudaMemcpyDeviceToDevice,
+                                   state.device.stream));
+        ops::increment_i32_scalar(state.io.ar_pos, state.device.stream);
+    }
+}
+
+void mtp_realign_and_propose(State& state, const Tensor& hidden, std::span<const TokenId> tokens,
+                             std::uint32_t first_position, std::uint32_t proposal_k) {
+    if (state.mtp_kv == nullptr) { throw std::logic_error("MTP realignment requires MTP storage"); }
+    if (tokens.empty() || proposal_k == 0 ||
+        proposal_k > static_cast<std::uint32_t>(state.io.drafts.ne[0])) {
+        throw std::invalid_argument("MTP realignment has an invalid token or proposal window");
+    }
+    if (hidden.dtype != DType::BF16 || hidden.ne[0] != TextConfig::hidden ||
+        hidden.ne[1] != static_cast<std::int32_t>(tokens.size()) || hidden.ne[2] != 1 ||
+        hidden.ne[3] != 1 || hidden.data == nullptr) {
+        throw std::invalid_argument("MTP realignment hidden history has an invalid shape");
+    }
+    if (tokens.size() >
+        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max() - first_position)) {
+        throw std::overflow_error("MTP realignment position overflows uint32");
+    }
+
+    state.work.reset();
+    TextContext card(state.device, state.model, state.work, state.text_kv, state.gdn, state.io,
+                     state.prefill_hidden, state.prefill_chunk, state.text_kv_base, state.mtp_kv);
+    configure_text_card(card, state);
+
+    const std::size_t chunk_capacity =
+        std::min<std::size_t>(state.io.verify_ids.ne[0], state.prefill_chunk);
+    std::vector<std::int32_t> positions(chunk_capacity);
+    std::size_t offset = 0;
+    while (offset < tokens.size()) {
+        const std::size_t count = std::min(chunk_capacity, tokens.size() - offset);
+        auto ids                = state.io.verify_ids.slice(0, 0, static_cast<int>(count));
+        auto pos                = state.io.positions.slice(0, 0, static_cast<int>(count));
+        CUDA_CHECK(cudaMemcpyAsync(ids.data, tokens.data() + offset, count * sizeof(TokenId),
+                                   cudaMemcpyHostToDevice, state.device.stream));
+        for (std::size_t i = 0; i < count; ++i) {
+            positions[i] = static_cast<std::int32_t>(first_position + offset + i);
+        }
+        CUDA_CHECK(cudaMemcpyAsync(pos.data, positions.data(), count * sizeof(std::int32_t),
+                                   cudaMemcpyHostToDevice, state.device.stream));
+
+        auto source_hidden     = hidden.slice(1, static_cast<int>(offset), static_cast<int>(count));
+        auto mtp_hidden        = state.prefill_hidden.slice(1, 0, static_cast<int>(count));
+        const bool final_chunk = offset + count == tokens.size();
+        auto logits            = state.io.logits.slice(1, 0, 1);
+        auto draft0            = state.io.drafts.slice(0, 0, 1);
+        const std::uint32_t visible = first_position + static_cast<std::uint32_t>(offset + count);
+        card.mtp_forward_batch(ids, source_hidden, pos, {visible, visible}, mtp_hidden,
+                               final_chunk ? static_cast<int>(count) - 1 : -1,
+                               final_chunk ? &logits : nullptr, final_chunk ? &draft0 : nullptr);
+        offset += count;
+    }
+
+    const std::uint32_t frontier = first_position + static_cast<std::uint32_t>(tokens.size());
+    ops::set_i32_scalar(state.io.ar_pos, static_cast<std::int32_t>(frontier), state.device.stream);
+    auto logits = state.io.logits.slice(1, 0, 1);
+    for (std::uint32_t i = 1; i < proposal_k; ++i) {
+        auto previous_token         = state.io.drafts.slice(0, static_cast<int>(i) - 1, 1);
+        auto next_draft             = state.io.drafts.slice(0, static_cast<int>(i), 1);
+        auto next_hidden            = state.prefill_hidden.slice(1, static_cast<int>(i), 1);
+        const std::uint32_t visible = frontier + i;
+        card.mtp_forward_ar_step(previous_token, state.io.mtp_ar_hidden, state.io.ar_pos,
+                                 {visible, visible}, next_hidden, logits, next_draft);
         CUDA_CHECK(cudaMemcpyAsync(state.io.mtp_ar_hidden.data, next_hidden.data,
                                    state.io.mtp_ar_hidden.bytes(), cudaMemcpyDeviceToDevice,
                                    state.device.stream));

@@ -82,6 +82,12 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     out.tail_hidden     = add_tensor(builder, DType::BF16, {TextConfig::hidden, 1}, "tail hidden");
     out.boundary_hidden =
         add_tensor(builder, DType::BF16, {TextConfig::hidden, 1}, "boundary hidden");
+    if (plan.mtp_k != 0 && plan.lookup_k != 0) {
+        out.lookup_realign_hidden = add_tensor(
+            builder, DType::BF16,
+            {TextConfig::hidden, static_cast<std::int32_t>(kMaximumProfitableMtpRealignTokens)},
+            "prompt lookup MTP realignment hidden");
+    }
     out.bytes            = builder.finish(kArenaAlign, "persistent layout");
     out.kv_payload_bytes = out.decoder.kv_payload_bytes();
     return out;
@@ -267,7 +273,9 @@ std::size_t workspace_bytes(const SequencePlanImpl& plan) {
             mtp_full_call(mtp_prefill, 1, true);
         }
 
-        mtp_full_call(mtp_full, mtp_verify_tokens, false);
+        const std::int32_t mtp_realign_tokens =
+            plan.lookup_k == 0 ? mtp_verify_tokens : verify_tokens;
+        mtp_full_call(mtp_full, mtp_realign_tokens, false);
         mtp_full_call(mtp_full, 1, true);
         {
             auto proposal_scope = mtp_full.scope();
@@ -358,6 +366,12 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
             const std::uint64_t final_visible =
                 static_cast<std::uint64_t>(range.max) + 2ULL * impl->lookup_k;
             impl->graph_allowance_bytes += (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
+        }
+        if (impl->lookup_k > 8) {
+            for (const GraphFrontierRange range : mtp_graph_ranges(impl->capacity, 8)) {
+                const std::uint64_t final_visible = static_cast<std::uint64_t>(range.max) + 16ULL;
+                impl->graph_allowance_bytes += (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
+            }
         }
         if (impl->lookup_k > kMaximumMtpDraftTokens) {
             for (const GraphFrontierRange range :

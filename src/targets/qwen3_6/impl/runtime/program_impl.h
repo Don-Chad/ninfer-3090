@@ -139,6 +139,7 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
                                  DeviceContext& device_in)
     : model(model_in), device(device_in), capacity(plan.capacity),
       prefill_chunk(plan.prefill_chunk), mtp_k(plan.mtp_k), lookup_k(plan.lookup_k),
+      lookup_mid_k(lookup_k > 8 ? 8 : 0),
       lookup_fallback_k(lookup_k > kMaximumMtpDraftTokens ? kMaximumMtpDraftTokens : 0),
       round_k(plan.round_k), kv_dtype(plan.kv_dtype), kv_quant_group(plan.kv_quant_group),
       proposal_head(plan.proposal_head), use_cuda_graph(plan.use_cuda_graph),
@@ -161,6 +162,9 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
     sampling_config = plan.persistent.sampling_config.bind(backing);
     tail_hidden     = plan.persistent.tail_hidden.bind(backing);
     boundary_hidden = plan.persistent.boundary_hidden.bind(backing);
+    if (mtp_k != 0 && lookup_k != 0) {
+        lookup_realign_hidden = plan.persistent.lookup_realign_hidden.bind(backing);
+    }
 
     host_count  = static_cast<std::int32_t*>(round_host.data());
     host_tokens = reinterpret_cast<TokenId*>(host_count + 1);
@@ -193,13 +197,15 @@ void ProgramImplCore::make_invalid() noexcept {
     S         = 0;
     ledger.clear();
     prefix_identity.clear();
-    current_gdn_slot  = 0;
-    text_kv_valid     = 0;
-    mtp_kv_valid      = 0;
-    proposal_ready    = false;
-    tail_hidden_valid = false;
-    boundary          = {};
-    pending           = {};
+    current_gdn_slot       = 0;
+    text_kv_valid          = 0;
+    mtp_kv_valid           = 0;
+    lookup_realign_end     = 0;
+    proposal_ready         = false;
+    lookup_realign_pending = false;
+    tail_hidden_valid      = false;
+    boundary               = {};
+    pending                = {};
 }
 
 void ProgramImplCore::set_device_i32(Tensor& tensor, std::int32_t value) {
@@ -217,10 +223,12 @@ void ProgramImplCore::ordered_reset() {
     set_device_i32(io.accepted, 0);
     set_device_i32(io.gdn_initial_slot, 0);
     set_device_i32(io.ar_pos, 0);
-    current_gdn_slot = 0;
-    text_kv_valid    = 0;
-    mtp_kv_valid     = 0;
-    proposal_ready   = false;
+    current_gdn_slot       = 0;
+    text_kv_valid          = 0;
+    mtp_kv_valid           = 0;
+    lookup_realign_end     = 0;
+    proposal_ready         = false;
+    lookup_realign_pending = false;
 }
 
 void ProgramImplCore::prepare_graphs() {
@@ -343,6 +351,25 @@ void ProgramImplCore::prepare_graphs() {
             schedule::warm_capture_prompt_lookup_round(
                 lookup_state, lookup_k, {range.min + lookup_k + 1, range.max + lookup_k + 1},
                 prepare, variant.prompt_lookup);
+        }
+    }
+    const auto lookup_mid_ranges = mtp_graph_ranges(capacity, lookup_mid_k);
+    if (lookup_mid_k != 0) {
+        validate_graph_ranges(lookup_mid_ranges, capacity - 2 * lookup_mid_k, "prompt lookup mid");
+        lookup_mid_graphs.reserve(lookup_mid_ranges.size());
+        for (const GraphFrontierRange range : lookup_mid_ranges) {
+            lookup_mid_graphs.emplace_back();
+            LookupGraphVariant& variant        = lookup_mid_graphs.back();
+            variant.min_execution_frontier     = range.min;
+            variant.max_execution_frontier     = range.max;
+            const std::uint32_t representative = range.min;
+            const auto prepare = [&, representative] { prepare_representative(representative); };
+            auto lookup_io     = round_state_view(io, lookup_mid_k);
+            auto lookup_state  = state(representative, lookup_io);
+            schedule::warm_capture_prompt_lookup_round(
+                lookup_state, lookup_mid_k,
+                {range.min + lookup_mid_k + 1, range.max + lookup_mid_k + 1}, prepare,
+                variant.prompt_lookup);
         }
     }
     const auto lookup_fallback_ranges = mtp_graph_ranges(capacity, lookup_fallback_k);
@@ -594,9 +621,11 @@ runtime::BeginResult ProgramImplCore::begin(PreparedPromptData&& prompt, Request
         // Target prefill leaves its recurrent state in slot 0. Exact-frontier reuse performs no
         // target work, so it must retain the MTP snapshot that was committed at the old frontier.
         if (had_suffix) { current_gdn_slot = 0; }
-        mtp_kv_valid      = mtp_prepared ? prompt_tokens : 0;
-        proposal_ready    = mtp_prepared;
-        tail_hidden_valid = true;
+        mtp_kv_valid           = mtp_prepared ? prompt_tokens : 0;
+        proposal_ready         = mtp_prepared;
+        lookup_realign_end     = mtp_kv_valid;
+        lookup_realign_pending = false;
+        tail_hidden_valid      = true;
         if (snapshot_boundary) {
             boundary.valid            = true;
             boundary.boundary         = *snapshot_boundary;
@@ -656,8 +685,14 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
         return true;
     };
     const bool use_lookup =
-        prompt_lookup_min_match != 0 && (try_lookup(lookup_k) || try_lookup(lookup_fallback_k));
-    const bool use_mtp = !use_lookup && mtp_k != 0 && proposal_ready && mtp_kv_valid == E &&
+        prompt_lookup_min_match != 0 &&
+        (try_lookup(lookup_k) || try_lookup(lookup_mid_k) || try_lookup(lookup_fallback_k));
+    const bool needs_mtp_realign = !use_lookup && mtp_k != 0 && !proposal_ready &&
+                                   lookup_realign_pending && lookup_realign_end == E &&
+                                   mtp_kv_valid < E &&
+                                   E - mtp_kv_valid <= kMaximumProfitableMtpRealignTokens;
+    const bool use_mtp = !use_lookup && mtp_k != 0 &&
+                         ((proposal_ready && mtp_kv_valid == E) || needs_mtp_realign) &&
                          budget.generated_tokens_remaining >= mtp_k + 1 &&
                          static_cast<std::uint64_t>(E) + 2ULL * mtp_k <= capacity;
     const std::uint32_t base_E = E;
@@ -700,7 +735,10 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
                                                base_E + active_lookup_k + 1};
             if (use_cuda_graph && diagnostic_text_tap == nullptr) {
                 auto& graph_variants =
-                    active_lookup_k == lookup_k ? lookup_graphs : lookup_fallback_graphs;
+                    active_lookup_k == lookup_k
+                        ? lookup_graphs
+                        : (active_lookup_k == lookup_mid_k ? lookup_mid_graphs
+                                                           : lookup_fallback_graphs);
                 LookupGraphVariant& variant =
                     select_graph_variant(graph_variants, base_E, "prompt lookup");
                 graph    = &variant.prompt_lookup;
@@ -719,19 +757,48 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
             if (*host_count <= 0 || *host_count > static_cast<std::int32_t>(active_lookup_k + 1)) {
                 throw std::runtime_error("prompt lookup returned an invalid token count");
             }
-            produced          = static_cast<std::uint32_t>(*host_count);
-            accepted          = produced - 1;
-            kind              = PendingKind::Mtp;
-            text_kv_valid     = base_E + produced;
-            current_gdn_slot  = static_cast<std::int32_t>(accepted);
-            mtp_kv_valid      = 0;
-            proposal_ready    = false;
+            produced         = static_cast<std::uint32_t>(*host_count);
+            accepted         = produced - 1;
+            kind             = PendingKind::Lookup;
+            text_kv_valid    = base_E + produced;
+            current_gdn_slot = static_cast<std::int32_t>(accepted);
+            proposal_ready   = false;
+            const std::uint32_t deferred_before =
+                lookup_realign_pending ? base_E - mtp_kv_valid : 0;
+            if (decoder->mtp_cache() != nullptr &&
+                deferred_before + produced <= kMaximumProfitableMtpRealignTokens &&
+                ((!lookup_realign_pending && mtp_kv_valid == base_E) ||
+                 (lookup_realign_pending && lookup_realign_end == base_E))) {
+                auto destination = lookup_realign_hidden.slice(1, static_cast<int>(deferred_before),
+                                                               static_cast<int>(produced));
+                auto source      = lookup_io.verify_hidden.slice(1, 0, static_cast<int>(produced));
+                CUDA_CHECK(cudaMemcpyAsync(destination.data, source.data, source.bytes(),
+                                           cudaMemcpyDeviceToDevice, device.stream));
+                lookup_realign_end     = base_E + produced;
+                lookup_realign_pending = true;
+            } else {
+                lookup_realign_end     = 0;
+                lookup_realign_pending = false;
+            }
             tail_hidden_valid = true;
         } else if (use_mtp) {
             auto mtp_io         = round_state_view(io, mtp_k);
             auto schedule_state = make_schedule_state(mtp_io);
-            DecodeGraph* graph  = nullptr;
-            auto envelopes      = mtp_gqa_envelopes(base_E, base_E, mtp_k);
+            if (needs_mtp_realign) {
+                const std::uint32_t realign_tokens = base_E - mtp_kv_valid;
+                auto hidden = lookup_realign_hidden.slice(1, 0, static_cast<int>(realign_tokens));
+                schedule::mtp_realign_and_propose(
+                    schedule_state, hidden,
+                    std::span<const TokenId>(ledger).subspan(
+                        static_cast<std::size_t>(mtp_kv_valid) + 1, realign_tokens),
+                    mtp_kv_valid, mtp_k);
+                mtp_kv_valid           = base_E;
+                proposal_ready         = true;
+                lookup_realign_end     = 0;
+                lookup_realign_pending = false;
+            }
+            DecodeGraph* graph = nullptr;
+            auto envelopes     = mtp_gqa_envelopes(base_E, base_E, mtp_k);
             if (use_cuda_graph && diagnostic_text_tap == nullptr) {
                 MtpGraphVariant& variant = select_graph_variant(mtp_graphs, base_E, "MTP");
                 graph                    = &variant.mtp;
@@ -764,13 +831,15 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
                 static_cast<std::uint64_t>(base_E) + produced > capacity) {
                 throw std::runtime_error("MTP round exceeded its budget or context capacity");
             }
-            accepted          = produced - 1;
-            kind              = PendingKind::Mtp;
-            text_kv_valid     = base_E + produced;
-            current_gdn_slot  = static_cast<std::int32_t>(accepted);
-            mtp_kv_valid      = base_E + produced;
-            proposal_ready    = true;
-            tail_hidden_valid = true;
+            accepted               = produced - 1;
+            kind                   = PendingKind::Mtp;
+            text_kv_valid          = base_E + produced;
+            current_gdn_slot       = static_cast<std::int32_t>(accepted);
+            mtp_kv_valid           = base_E + produced;
+            proposal_ready         = true;
+            lookup_realign_end     = 0;
+            lookup_realign_pending = false;
+            tail_hidden_valid      = true;
         } else {
             auto schedule_state  = make_schedule_state(io);
             const bool align_mtp = decoder->mtp_cache() != nullptr && mtp_kv_valid == base_E;
@@ -797,8 +866,10 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
             text_kv_valid    = base_E + 1;
             current_gdn_slot = 0;
             if (align_mtp) { mtp_kv_valid = base_E + 1; }
-            proposal_ready    = false;
-            tail_hidden_valid = true;
+            proposal_ready         = false;
+            lookup_realign_end     = 0;
+            lookup_realign_pending = false;
+            tail_hidden_valid      = true;
         }
 
         validate_licensed_tokens(std::span<const TokenId>(host_tokens, produced));
@@ -830,7 +901,8 @@ void ProgramImplCore::resolve_pending(std::uint32_t accepted_tokens, bool termin
     if (!terminal && accepted_tokens != pending.produced) {
         throw std::logic_error("a continuing round must accept every licensed token");
     }
-    if (terminal && pending.kind == PendingKind::Mtp && accepted_tokens < pending.produced) {
+    if (terminal && (pending.kind == PendingKind::Lookup || pending.kind == PendingKind::Mtp) &&
+        accepted_tokens < pending.produced) {
         // The output policy may stop inside a target-licensed MTP batch. Target verification has
         // already materialized KV, hidden, and one GDN snapshot for every returned prefix, so
         // commit the exact externally accepted frontier instead of discarding the resident
@@ -847,10 +919,16 @@ void ProgramImplCore::resolve_pending(std::uint32_t accepted_tokens, bool termin
         S                = committed_S;
         current_gdn_slot = static_cast<std::int32_t>(accepted_tokens - 1);
         text_kv_valid    = committed_E;
-        mtp_kv_valid     = committed_E;
-        proposal_ready   = false;
-        lifecycle        = Lifecycle::Resident;
-        pending          = {};
+        if (pending.kind == PendingKind::Mtp) {
+            mtp_kv_valid           = committed_E;
+            lookup_realign_end     = 0;
+            lookup_realign_pending = false;
+        } else if (lookup_realign_pending) {
+            lookup_realign_end = committed_E;
+        }
+        proposal_ready = false;
+        lifecycle      = Lifecycle::Resident;
+        pending        = {};
         return;
     }
     if (accepted_tokens != pending.produced) {
@@ -863,6 +941,7 @@ void ProgramImplCore::resolve_pending(std::uint32_t accepted_tokens, bool termin
         S = pending.prompt_tokens + 1;
         break;
     case PendingKind::Ordinary:
+    case PendingKind::Lookup:
     case PendingKind::Mtp:
         E = pending.base_E + pending.produced;
         S = pending.base_S + pending.produced;
