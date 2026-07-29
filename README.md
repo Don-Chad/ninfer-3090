@@ -1,16 +1,23 @@
 # NInfer RTX 3090
 
-High-throughput, single-GPU inference for **Qwen3.6-35B-A3B** and **Qwen3.6-27B** on the
-24 GB NVIDIA RTX 3090. NInfer is a specialized C++20/CUDA engine with native Windows and
-Ubuntu/WSL2 binaries, CUDA Graph decode, low-bit model weights, INT8 KV cache, MTP speculative
-decoding, and adaptive prompt lookup for repetitive code and editing workloads.
+Run a genuinely capable **35B-class MoE model at 300–400+ output tok/s on a single RTX 3090** when
+the workload gives speculative decoding useful structure. NInfer turns the still-formidable
+24 GB GA102 card into a specialized local inference appliance for **Qwen3.6-35B-A3B**, with native
+Windows and Ubuntu/WSL2 binaries, CUDA Graph decode, low-bit weights, INT8 KV cache, MTP
+speculation, and adaptive prompt lookup.
+
+This is not a generic model runner with a few GPU flags. It is a C++20/CUDA engine shaped around
+this model and this GPU: quantized 35B-A3B weights fit beside a 4K-capable runtime, the MoE and
+Gated DeltaNet paths use GA102 schedules, and speculative execution changes strategy automatically
+between ordinary prompts and repetition-rich code.
 
 ## Headline RTX 3090 performance
 
 | Qwen3.6-35B-A3B mode | Workload | Result |
 |---|---|---:|
 | **Adaptive hybrid K15/K8/K5 + MTP-3, best clean run** | 1,500-token repeated-code prompt + 1,500 generated tokens | **406.44 ± 0.79 tok/s** |
-| **Adaptive hybrid, v0.3.0 release rerun** | same fixed fixture and settings | **399.16 ± 2.33 tok/s** |
+| **Adaptive hybrid, v0.3.0 release rerun** | same repetition-rich fixture and settings | **399.16 ± 2.33 tok/s** |
+| **MTP-3, realistic two-copy code refactor** | 1,500-token code prompt + 1,500 generated tokens | **310.04 ± 0.95 tok/s** |
 | **MTP-2** | canonical `tg128` fixture | **262.05 ± 1.62 tok/s** |
 | **MTP-3** | canonical `tg128` fixture | **260.55 ± 0.92 tok/s** |
 | **Ordinary decode** | canonical `tg128` fixture | **187.24 ± 0.27 tok/s** |
@@ -19,12 +26,28 @@ decoding, and adaptive prompt lookup for repetitive code and editing workloads.
 The 406.44 tok/s best and 399.16 tok/s release rerun are real end-to-end decode measurements, but
 they are intentionally labeled:
 the input contains repeated Python code and gives prompt lookup useful continuations. It is not
-presented as universal model throughput. On ordinary non-repetitive text, use the canonical MTP
-numbers as the better expectation.
+presented as universal model throughput. The much less repetitive two-copy code fixture still
+clears **310 tok/s** over a long 1,500-token generation. On ordinary non-repetitive text, use the
+canonical MTP numbers as the conservative controlled reference.
 
 The long hybrid benchmark also averages **752 ms from request start through prompt processing and
 the first generated token** at 1,500 input tokens. Short-prompt TTFT measurements are listed in
 [How performance is measured](#how-performance-is-measured).
+
+## Why this release is special
+
+- **A capable 35B-A3B model on one consumer GPU.** The 20.84 GiB mixed low-bit artifact and
+  text-only memory plan leave enough room for a 4K INT8 KV cache and captured decode graphs.
+- **The runtime chooses the speculative strategy.** MTP handles ordinary requests; a sub-0.1 ms
+  input scan enables K15/K8/K5 target-only lookup only when the prompt contains enough reusable
+  structure.
+- **Fast long-form code, not only a 128-token microbenchmark.** The realistic two-copy code
+  refactor reaches 310.04 tok/s across 1,500 generated tokens; the repetition-rich repository-edit
+  fixture reaches 399–406 tok/s.
+- **RTX 3090-native kernels.** GA102 schedules cover MoE decode, Gated DeltaNet projection and
+  recurrent state, output/argmax work, and CUDA Graph families for ordinary, MTP, and lookup paths.
+- **A complete local serving stack.** Native CLI, benchmark runner, and OpenAI-/Anthropic-compatible
+  server are shipped for Windows and Ubuntu/WSL2.
 
 ## Download
 
