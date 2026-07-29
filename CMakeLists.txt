@@ -14,7 +14,7 @@ endif()
 
 project(ninfer VERSION 0.2.0 LANGUAGES C CXX CUDA)
 
-set(NINFER_RUNTIME_VERSION "0.2.0-rtx3090-v2" CACHE STRING "Published NInfer runtime revision")
+set(NINFER_RUNTIME_VERSION "0.3.0-rtx3090" CACHE STRING "Published NInfer runtime revision")
 add_compile_definitions(NINFER_RUNTIME_VERSION="${NINFER_RUNTIME_VERSION}")
 
 # --- Global settings ---------------------------------------------------------

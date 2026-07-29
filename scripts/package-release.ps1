@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 # Editable release configuration.
-$ReleaseTag = '0.2.0-rtx3090-v2'
+$ReleaseTag = '0.3.0-rtx3090'
 $WslDistro = 'Ubuntu-24.04'
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path

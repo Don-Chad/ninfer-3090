@@ -1,335 +1,286 @@
-# NInfer for RTX 3090
+# NInfer RTX 3090
 
-Current publishable runtime revision: **`0.2.0-rtx3090-v2`**. Windows and Linux release archive
-names, packaged `VERSION` files, and runtime startup diagnostics carry this revision explicitly.
+High-throughput, single-GPU inference for **Qwen3.6-35B-A3B** and **Qwen3.6-27B** on the
+24 GB NVIDIA RTX 3090. NInfer is a specialized C++20/CUDA engine with native Windows and
+Ubuntu/WSL2 binaries, CUDA Graph decode, low-bit model weights, INT8 KV cache, MTP speculative
+decoding, and adaptive prompt lookup for repetitive code and editing workloads.
 
-> Fast, single-GPU Qwen3.6 inference on a 24 GiB RTX 3090, for native Windows and Linux/WSL2.
+## Headline RTX 3090 performance
 
-NInfer runs the supported Qwen3.6 models locally through a command-line application or an
-OpenAI-/Anthropic-compatible HTTP server. Runtime v2 reaches **284.75 tok/s** in a real streamed
-Qwen3.6-35B-A3B MTP-3 generation; the latest repeated controlled MTP-2 result is **265.59 +/- 0.71
-tok/s** on one RTX 3090.
+| Qwen3.6-35B-A3B mode | Workload | Result |
+|---|---|---:|
+| **Adaptive hybrid K15/K8/K5 + MTP-3** | 1,500-token repeated-code prompt + 1,500 generated tokens | **399.16 ± 2.33 tok/s** |
+| **MTP-2** | canonical `tg128` fixture | **262.05 ± 1.62 tok/s** |
+| **MTP-3** | canonical `tg128` fixture | **260.55 ± 0.92 tok/s** |
+| **Ordinary decode** | canonical `tg128` fixture | **187.24 ± 0.27 tok/s** |
+| **Prefill** | 1,500-token prompt through first token | **2,034.17 tok/s / 737.41 ms** |
 
-Start with [GitHub Releases](https://github.com/Don-Chad/ninfer-3090/releases). If a matching
-Windows or Linux package is available, extract it and use the included CLI or server; compilation
-is not required. Model weights are downloaded separately. Release archives are not stored in the
-Git source tree, so if the Releases page is empty, use the [source-build instructions](#build-from-source)
-below.
+The 399.16 tok/s result is a real end-to-end decode measurement, but it is intentionally labeled:
+the input contains repeated Python code and gives prompt lookup useful continuations. It is not
+presented as universal model throughput. On ordinary non-repetitive text, use the canonical MTP
+numbers as the better expectation.
 
-The phrase "from-scratch C++/CUDA inference engine" describes how NInfer itself is implemented; it
-does not mean every user must build it from source.
+The long hybrid benchmark also averages **752 ms from request start through prompt processing and
+the first generated token** at 1,500 input tokens. Short-prompt TTFT measurements are listed in
+[How performance is measured](#how-performance-is-measured).
 
-## About this port
+## Download
 
-This repository ports the original [Neroued/ninfer](https://github.com/Neroued/ninfer) RTX 5090
-implementation to the RTX 3090 (`sm_86`). It adds native Windows support while retaining a shared
-Linux/WSL2 codebase, and tunes the inference kernels for GA102. Qwen3.6-27B and the text-only
-Qwen3.6-35B-A3B configuration are verified targets; see the
-[35B-A3B RTX 3090 report](docs/rtx-3090-35b-a3b.md), [WSL2 tuning report](docs/rtx-3090-wsl.md), and
-[native Windows guide](docs/rtx-3090-windows.md). A separate
-[ordinary-inference analysis](docs/rtx-3090-normal-inference.md) covers MTP-disabled decode, and
-[`dist/`](dist/README.md) explains the verified Windows and Linux release bundles.
+Prebuilt packages are published on [GitHub Releases](https://github.com/Don-Chad/ninfer-3090/releases):
 
-This port adds and verifies:
+- Windows 11 x64: `ninfer`, `ninfer-serve`, benchmark tool, and required runtime DLLs.
+- Ubuntu 24.04 / WSL2 x64: `ninfer`, `ninfer-serve`, and benchmark tool.
 
-- native Windows 11 support using MSVC, CUDA, and vcpkg, alongside the Linux/WSL2 build;
-- Windows memory-mapped and asynchronous direct artifact loading, Winsock support, and correct
-  FFmpeg/curl/zlib runtime packaging;
-- RTX 3090-specific Q4 and Gated DeltaNet kernel dispatch selected with CUDA-event operator
-  harnesses;
-- a 35B-A3B text-only engine mode that omits the otherwise prohibitive vision workspace, plus a
-  GA102-tuned Q6 K=2048 verification-head schedule;
-- CUDA Graph ordinary decode and an RTX 3090-tuned MTP-3 speculative path;
-- reproducible benchmarks, full cross-platform tests, release packaging, and real
-  `Qwen3.6-27B` generation from the 16.29 GiB NInfer artifact.
+The model is distributed separately because the 35B-A3B artifact is approximately **20.84 GB**:
 
-NInfer is a from-scratch C++/CUDA inference engine for exact Qwen3.6 checkpoints on a single
-NVIDIA GPU. The implementation is deliberately specialized rather than a general model runtime.
-
-NInfer deliberately supports a closed set of model artifacts instead of acting as a general model
-runtime:
-
-| Model | NInfer artifact | Size | SHA-256 |
+| Model | Download | Artifact size | SHA-256 |
 |---|---|---:|---|
-| [Qwen3.6-27B](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) | `qwen3_6_27b.ninfer` | 17,495,365,888 bytes (16.29 GiB) | `74fac75f3a6b7ab7b52e08c36969c7a33a8ba23465910eccd72d195adb497127` |
-| [Qwen3.6-35B-A3B](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | `qwen3_6_35b_a3b.ninfer` | 22,373,184,256 bytes (20.84 GiB) | `9e8378398d2b789a77224b5110c7590adbbc6fd4accd139b918157b2b9da7163` |
+| Qwen3.6-35B-A3B | [Hugging Face](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | 20.84 GB | `9e8378398d2b789a77224b5110c7590adbbc6fd4accd139b918157b2b9da7163` |
+| Qwen3.6-27B | [Hugging Face](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) | 16.29 GB | `74fac75f3a6b7ab7b52e08c36969c7a33a8ba23465910eccd72d195adb497127` |
 
-## Performance
+```powershell
+hf download neroued/Qwen3.6-35B-A3B-NInfer `
+  qwen3_6_35b_a3b.ninfer `
+  --local-dir models
+```
 
-### RTX 3090 port compared with the original RTX 5090 results
+The `.ninfer` artifact already contains the quantized weights and frontend resources. It is not a
+GGUF or Transformers checkpoint and does not require conversion after download.
 
-The RTX 3090 results are listed first. They show how much of the original RTX 5090 throughput this
-24 GiB GA102 port currently retains:
+## Recommended 35B-A3B command
 
-| Model and decode mode | RTX 3090 port | Original RTX 5090 | RTX 3090 share |
-|---|---:|---:|---:|
-| Qwen3.6-35B-A3B, no MTP | **188.61 +/- 0.30 tok/s** | **271.1 tok/s** | **69.6%** |
-| Qwen3.6-35B-A3B, fastest measured speculative path | **265.59 +/- 0.71 tok/s** (MTP-2) | **542.8-661.2 tok/s** (MTP-3) | **40.2-49.0%** |
-| Qwen3.6-27B, no MTP | **38.04 tok/s** | **77.6 tok/s** | **49.0%** |
-| Qwen3.6-27B, fastest controlled MTP-3 result | **66.70 tok/s** | **158.7-189.1 tok/s** | **35.3-42.0%** |
+### Windows
 
-These percentages are orientation, not an apples-to-apples GPU benchmark. The 3090 tg128 and
-controlled port runs use short fixed contexts, while the original 5090 figures below come from
-long-prompt serving fixtures whose acceptance rate and workload vary. The exact configurations and
-raw reports are linked below.
+```powershell
+.\ninfer.exe models\qwen3_6_35b_a3b.ninfer `
+  --prompt "Write a Python function that merges overlapping intervals." `
+  --max-context 4096 --prefill-chunk 128 --max-new 512 `
+  --kv-dtype int8 --mtp-draft-tokens 3 --lm-head-draft `
+  --prompt-lookup-tokens 15 --prompt-lookup-min-match 4 `
+  --prompt-lookup-auto --prompt-lookup-min-context 1000 `
+  --text-only
+```
 
-On native Windows, Qwen3.6-35B-A3B in explicit `--text-only` mode measured **188.61 +/- 0.30
-tok/s** without MTP in the v2 4K-capacity run and **265.59 +/- 0.71 tok/s** with MTP-2 in the
-256-capacity controlled run. The normal result is a ten-run tg128 mean (188.59 tok/s median)
-after five warm-ups; the MTP result is a five-run mean after two warm-ups. Both use CUDA Graphs,
-INT8 KV, and the unmodified 20.84 GiB mixed Q4/Q5/Q6/W8 artifact. MTP-2 acceptance was 70.75%,
-with 2.415 mean output tokens per speculative round.
-Text-only mode reduces stable workspace capacity from about 1.90 GiB to 15.05 MiB and rejects
-image/video requests; it does not alter or requantize model weights. See the
-[full reproduction report](docs/rtx-3090-35b-a3b.md).
+### Ubuntu / WSL2
 
-A matched native-Windows CLI run at 4,096-token capacity measured **41 ms** normal and **40 ms**
-MTP-3 time to first token. Runtime v2 measured **186.81 decode tok/s** in its sampled normal
-generation and **284.75 decode tok/s** with MTP-3 at 70.57% draft acceptance; model loading is
-excluded from TTFT and reported separately by the CLI.
+```bash
+./ninfer models/qwen3_6_35b_a3b.ninfer \
+  --prompt "Write a Python function that merges overlapping intervals." \
+  --max-context 4096 --prefill-chunk 128 --max-new 512 \
+  --kv-dtype int8 --mtp-draft-tokens 3 --lm-head-draft \
+  --prompt-lookup-tokens 15 --prompt-lookup-min-match 4 \
+  --prompt-lookup-auto --prompt-lookup-min-context 1000 \
+  --text-only
+```
 
-On native Windows, the complete Qwen3.6-27B configuration—CUDA Graphs, BF16 KV, MTP-3, and the
-optimized proposal head—measures approximately **60–64 decode tok/s** on the RTX 3090. The latest
-quick run measured **59.96 ± 1.29 tok/s**, 60.74% draft acceptance, and 2.822 mean tokens per
-speculative round; the longer controlled run measured **64.23 tok/s**. Ordinary MTP-disabled
-decode measured **38.04 tok/s** in the controlled Windows run.
+`--text-only` is required for the 35B-A3B model on a 24 GB RTX 3090. It leaves the model intact but
+does not reserve the large vision workspace. Image and video requests are rejected in this mode.
 
-On the verified RTX 3090 / WSL2 system, Qwen3.6-27B with INT8 KV and MTP-3 measured **1,029.56
-prefill tok/s** at 512 input tokens and **66.70 decode tok/s** over 128 output tokens. MTP-disabled
-decode measured **35.28 tok/s**. The full draft-window sweep, kernel measurements, and memory
-figures are in the [3090 report](docs/rtx-3090-wsl.md).
+## Inference modes
 
-The figures below are upstream RTX 5090 reference results and are not measurements from this port.
+### Adaptive hybrid — recommended general mode
 
-Serving performance was measured on an RTX 5090 with INT8 group-64 KV cache, CUDA Graphs, a 1,024-
-token prefill chunk, and a maximum context of 262,144 tokens. Each reported fixture uses five fixed
-seeds after one warm-up. The two registered targets are reported independently and are not
-cross-target comparisons.
+Adaptive hybrid combines MTP-3 with target-only prompt lookup:
 
-**Qwen3.6-35B-A3B**
+```text
+--mtp-draft-tokens 3 --lm-head-draft
+--prompt-lookup-tokens 15 --prompt-lookup-min-match 4
+--prompt-lookup-auto --prompt-lookup-min-context 1000
+```
 
-- MTP0 at a 7,680-token prompt: **15,544.3 prefill tok/s** and **271.1 decode tok/s**.
-- MTP0 at a 260,096-token prompt: **5,157.1 prefill tok/s** and **188.2 decode tok/s**.
-- MTP3 long reasoning: **542.8–634.3 decode tok/s** with **73.0–82.7% acceptance**.
-- MTP3 structured output: **661.2 decode tok/s**, **87.2% acceptance**, and **3.62 tokens/round**.
+At the configured minimum context, the runtime classifies the request input using 15-token repeated
+n-gram coverage. Prompt lookup activates at 25% coverage; generated boilerplate cannot switch an
+ordinary request into lookup halfway through its answer. When active, lookup tries K=15, K=8, and
+K=5 captured CUDA Graphs. A guarded lazy realignment path restores MTP after lookup stops.
 
-**Qwen3.6-27B**
+This is the mode that reaches **399.16 tok/s** on the long repeated-code fixture while retaining
+MTP as the normal path for non-repetitive contexts.
 
-- MTP0 at a 7,680-token prompt: **3,218.1 prefill tok/s** and **77.6 decode tok/s**.
-- MTP0 at a 260,096-token prompt: **1,614.8 prefill tok/s** and **54.8 decode tok/s**.
-- MTP3 long reasoning: **158.7–174.2 decode tok/s** with **73.3–79.9% acceptance**.
-- MTP3 structured output: **189.1 decode tok/s**, **88.9% acceptance**, and **3.67 tokens/round**.
+### MTP speculative decoding — recommended for ordinary text
 
-See [Performance](docs/performance.md) for the full methodology, variability, reproduction command,
-and per-fixture results.
+MTP uses the model's trained proposal layer and verifies several draft tokens with the target model.
 
-## Evaluation
+```text
+--mtp-draft-tokens 2 --lm-head-draft
+```
 
-Capability scores from the published model cards, measured through NInfer's OpenAI-compatible
-serving route with thinking enabled, MTP=3, and EvalScope 1.9.0 (0-shot, rule scoring, one sample
-per problem):
+K=2 is the fastest controlled `tg128` setting at **262.05 tok/s**. K=3 reaches similar throughput
+and is the hybrid default because it provides better fallback behavior when lookup is enabled.
+Acceptance and round latency both matter: a larger K is not automatically faster.
 
-| Model | AIME 2025 | AIME 2026 | GPQA-Diamond |
-|---|---:|---:|---:|
-| [Qwen3.6-27B](model-cards/Qwen3.6-27B-NInfer/README.md) | 86.67% | 93.33% | 86.87% |
-| [Qwen3.6-35B-A3B](model-cards/Qwen3.6-35B-A3B-NInfer/README.md) | 90.00% | 90.00% | 85.35% |
+### Forced prompt lookup — specialized mode
 
-These are single-sample results under that NInfer evaluation profile, not pass@k. See each model
-card for correct/total counts and the full evaluation notes.
+Omit `--prompt-lookup-auto` to force lookup attempts:
 
-## Requirements
+```text
+--mtp-draft-tokens 3 --lm-head-draft
+--prompt-lookup-tokens 15 --prompt-lookup-min-match 4
+```
 
-This port currently requires either:
+Use this only when the workload is known to contain substantial repetition, such as repository
+edits, code transformations, templated output, or regenerating a document with local changes.
+Forced K=15 can regress ordinary prose because the target still pays to verify 16 positions.
 
-- 64-bit Linux/WSL2 with GCC 13 and CUDA Toolkit 13.0 or newer; or
-- 64-bit Windows with Visual Studio 2022, CUDA Toolkit 13.0 or newer, CMake 3.28 or newer, and
-  vcpkg;
-- NVIDIA GeForce RTX 3090 (`sm_86`);
-- CMake 3.28 or newer and a C++20-capable host compiler;
-- `pkg-config` on Linux;
-- FFmpeg development libraries: `libavformat >= 60`, `libavcodec >= 60`,
-  `libavutil >= 58`, and `libswscale >= 7`;
-- `libcurl >= 7.85`;
-- Ninja for the Linux commands below, or the Visual Studio 2022 generator on Windows.
+### Ordinary decode — reference and compatibility mode
 
-The build rejects CUDA architectures other than `86`. Verified binary bundles can be produced from
-the native Windows and WSL build trees with `scripts/package-release.ps1`; see
-[`dist/README.md`](dist/README.md). The model artifact is intentionally distributed separately.
+```text
+--mtp-draft-tokens 0
+```
 
-The CUDA Toolkit requirement applies when compiling from source. The prebuilt Windows archive
-statically includes the CUDA runtime, so users only need a current NVIDIA driver compatible with
-CUDA 13.x; they do not need to install the full CUDA Toolkit.
+This disables MTP and prompt lookup. It is useful as a stable baseline, for acceptance debugging,
+and for workloads where speculative execution is undesirable.
 
-The checked-in `vcpkg.json` installs the Windows FFmpeg, zlib, curl, and pkgconf dependencies. See
-the [native Windows guide](docs/rtx-3090-windows.md) for the exact configure, test, and benchmark
-commands.
+### CUDA Graphs and KV cache
+
+CUDA Graphs are enabled by default and should remain enabled for production throughput.
+`--no-cuda-graph` exists for diagnostics. For 35B-A3B on a 24 GB card, use `--kv-dtype int8`;
+BF16 KV substantially reduces available context.
+
+## How performance is measured
+
+All release-candidate headline measurements were produced locally on one NVIDIA GeForce RTX 3090
+with the same 20.84 GB Qwen3.6-35B-A3B artifact, CUDA 13.2 runtime/driver, INT8 group-64 KV,
+CUDA Graphs, text-only mode, and no simultaneous GPU workload.
+
+### Canonical decode
+
+The canonical comparison generates 128 timed tokens from the committed token fixture. It uses five
+measured repetitions after five discarded warm-ups:
+
+```powershell
+.\ninfer_bench.exe `
+  --weights models\qwen3_6_35b_a3b.ninfer `
+  --corpus bench\fixtures\bench_corpus.ids `
+  -n 128 -r 5 --warmup 5 --max-ctx 256 --prefill-chunk 128 `
+  --kv-dtype int8 --mtp-draft-tokens 2 --lm-head-draft --text-only
+```
+
+`tg128` is deliberately short and controlled. It is useful for kernel and scheduling comparisons,
+not a claim about every prompt.
+
+### Long repeated-code hybrid
+
+The hybrid result uses a fixed 1,500-token Python repository-edit prompt and generates exactly
+1,500 timed output tokens. Five repetitions follow two warm-ups:
+
+```powershell
+.\ninfer_bench.exe `
+  --weights models\qwen3_6_35b_a3b.ninfer `
+  --corpus benchmark-results\prompt-lookup-code-long\python_repository_edit_1500.ids `
+  -pg 1500,1500 -r 5 --warmup 2 --max-ctx 3072 --prefill-chunk 128 `
+  --kv-dtype int8 --mtp-draft-tokens 3 --lm-head-draft `
+  --prompt-lookup-tokens 15 --prompt-lookup-min-match 4 `
+  --prompt-lookup-auto --prompt-lookup-min-context 1000 --text-only
+```
+
+This run measured:
+
+- **399.16 ± 2.33 output tok/s**
+- **1,995.52 prefill tok/s**
+- 85.19% aggregate lookup acceptance
+- 13.44 mean output tokens per speculative round
+- 36.13 ms mean speculative-round latency
+
+The benchmark excludes model loading and CUDA Graph construction. Prefill time includes prompt
+execution through the first generated token; decode throughput covers the following fixed number
+of generated tokens. Reports include every repetition, acceptance counts, memory usage, hardware,
+runtime version, and the exact command.
+
+### Time to first token
+
+| Input length | Mean TTFT | Meaning |
+|---:|---:|---|
+| 128 tokens | **62.16 ms** | five-run release benchmark |
+| 512 tokens | **242.25 ms** | five-run release benchmark |
+| 1,500 tokens | **737.41 ms** | prefill-only release benchmark |
+| 1,500 tokens + hybrid decode | **751.75 ms** | long combined benchmark |
+
+Model loading is separate. On the 35B-A3B artifact, previously measured cold engine construction
+was approximately 4.7–4.9 seconds; subsequent requests use the resident model and captured graphs.
+
+## OpenAI- and Anthropic-compatible server
+
+```powershell
+.\ninfer-serve.exe models\qwen3_6_35b_a3b.ninfer `
+  --model-id qwen3.6-35b-a3b `
+  --host 127.0.0.1 --port 8080 `
+  --max-context 4096 --prefill-chunk 128 --kv-dtype int8 `
+  --mtp-draft-tokens 3 --lm-head-draft `
+  --prompt-lookup-tokens 15 --prompt-lookup-min-match 4 `
+  --prompt-lookup-auto --prompt-lookup-min-context 1000 `
+  --text-only
+```
+
+The server exposes OpenAI chat/completions and Anthropic messages routes. See
+[Serving](docs/serving.md) for request schemas, streaming, tool calls, and runtime logging.
 
 ## Build from source
 
-This builds this RTX 3090 port, not the original RTX 5090 repository. The command below is the
-Linux/WSL2 route; native Windows users should follow the
-[Windows build guide](docs/rtx-3090-windows.md).
+Source builds require CMake 3.28+, a C++20 compiler, and CUDA Toolkit 13.0+.
+
+### Ubuntu 24.04 / WSL2
+
+Install FFmpeg 6 development libraries, curl, pkg-config, GCC 13, Ninja, and CUDA, then:
 
 ```bash
 git clone https://github.com/Don-Chad/ninfer-3090.git
 cd ninfer-3090
-
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 ```
 
-The default configuration builds:
+### Windows 11
 
-```text
-build/apps/ninfer
-build/apps/ninfer-serve
-```
-
-Tests, benchmarks, and maintainer tools are excluded from the default build.
-
-## Download a model
-
-Use the Hugging Face CLI to download either registered artifact:
-
-```bash
-hf download neroued/Qwen3.6-27B-NInfer \
-  qwen3_6_27b.ninfer \
-  --local-dir models
-
-# Or:
-hf download neroued/Qwen3.6-35B-A3B-NInfer \
-  qwen3_6_35b_a3b.ninfer \
-  --local-dir models
-```
-
-The `.ninfer` file contains the weights and frontend resources needed by NInfer. It is not a
-Transformers checkpoint, Safetensors distribution, or GGUF file.
-
-## Run the CLI
-
-### Native Windows
-
-After extracting a Windows Release archive, run `ninfer.exe` from that directory. If you built from
-source, replace `./ninfer.exe` below with `build-windows\apps\Release\ninfer.exe`.
+Use Visual Studio 2022, CMake, CUDA Toolkit 13.0+, and vcpkg:
 
 ```powershell
-.\ninfer.exe models\qwen3_6_35b_a3b.ninfer `
-  --prompt "Explain speculative decoding in three sentences." `
-  --max-context 256 --prefill-chunk 128 --max-new 128 --kv-dtype int8 `
-  --mtp-draft-tokens 2 --lm-head-draft --text-only
+cmake -S . -B build-windows -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_TOOLCHAIN_FILE=C:\path\to\vcpkg\scripts\buildsystems\vcpkg.cmake
+cmake --build build-windows --config Release --parallel
+ctest --test-dir build-windows -C Release --output-on-failure
 ```
 
-`--text-only` is required for the 35B-A3B artifact on a 24 GiB RTX 3090. It rejects image/video
-input and avoids reserving vision scratch memory; normal text model behavior is unchanged.
+The Windows prebuilt package includes the CUDA runtime and dependency DLLs. Users of the prebuilt
+package need a current compatible NVIDIA driver and the Microsoft Visual C++ 2022 runtime, not the
+full CUDA Toolkit. The Ubuntu package dynamically uses the system CUDA runtime, FFmpeg, curl, and
+standard C++ libraries.
 
-### Linux/WSL2
+## Scope and design
 
-After extracting a Linux Release archive, run `./ninfer` from that directory. If you built from
-source, replace `./ninfer` below with `./build/apps/ninfer`.
+NInfer deliberately specializes for exact supported checkpoints instead of implementing a generic
+model graph. The RTX 3090 route includes GA102-specific Q4/Q5/Q6/W8 schedules, small-T MoE kernels,
+Gated DeltaNet projection and recurrent-state kernels, fused output work, CUDA Graph families, MTP,
+prefix reuse, and adaptive prompt lookup.
 
-```bash
-./ninfer models/qwen3_6_27b.ninfer \
-  --prompt "Explain prefill and decode in three sentences." \
-  --max-context 16384 \
-  --max-new 256 \
-  --mtp-draft-tokens 3 \
-  --lm-head-draft
-```
+The project supports one active request on one GPU. It is not a continuous-batching server and does
+not load arbitrary GGUF or Safetensors models.
 
-Use `--messages FILE` instead of `--prompt` for chat history, images, or videos:
+## Model quality
 
-```bash
-./ninfer models/qwen3_6_27b.ninfer \
-  --messages examples/cli/messages/image_chart.json \
-  --max-context 8192 \
-  --max-new 128
-```
+Speculative decoding does not replace target-model verification: returned tokens are licensed by
+the target model under the selected sampling configuration. Prompt lookup drafts are likewise
+verified before publication. Acceptance rate measures speed opportunity, not model capability.
 
-Answer content is written to stdout. Loading progress, reasoning, timing, throughput, memory, and
-MTP statistics are written to stderr. See the [CLI guide](docs/cli.md) and
-[committed examples](examples/cli/) for structured input and runtime options.
+Published model-card evaluations:
 
-## Run the HTTP server
+| Model | AIME 2025 | AIME 2026 | GPQA-Diamond |
+|---|---:|---:|---:|
+| Qwen3.6-35B-A3B | 90.00% | 90.00% | 85.35% |
+| Qwen3.6-27B | 86.67% | 93.33% | 86.87% |
 
-The example below uses an extracted Linux/WSL2 Release archive. Source builds use
-`./build/apps/ninfer-serve`; on Windows use `.\ninfer-serve.exe` from an extracted archive or
-`build-windows\apps\Release\ninfer-serve.exe` from a source build.
-
-```bash
-./ninfer-serve models/qwen3_6_27b.ninfer \
-  --model-id qwen3.6-27b \
-  --max-context 16384 \
-  --mtp-draft-tokens 3 \
-  --lm-head-draft
-```
-
-Then send an OpenAI-style request:
-
-```bash
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen3.6-27b",
-    "messages": [{"role": "user", "content": "Reply with one short sentence."}],
-    "max_tokens": 64
-  }'
-```
-
-The server also implements Anthropic Messages, streaming, token counting, multimodal input, and
-function-tool request/response translation. See [HTTP serving](docs/serving.md).
-
-## Capabilities
-
-The engine implements the following capabilities. Qwen3.6-27B can use the full list on the RTX
-3090; Qwen3.6-35B-A3B must run in text-only mode on a 24 GiB RTX 3090:
-
-- text generation with thinking and non-thinking prompt modes;
-- image, multi-image, video, and mixed multimodal messages with Qwen3.6-27B;
-- chunked prefill and CUDA Graph decode;
-- MTP speculative decoding with draft windows from one to five;
-- BF16 and INT8 group-64 KV cache;
-- greedy, temperature, top-k, top-p, min-p, and presence/frequency-penalty sampling;
-- compatible-prefix reuse;
-- OpenAI Chat Completions and Anthropic Messages, including streaming and usage accounting;
-- prompt-rendered function tools and parsed tool calls.
-
-## Current limits
-
-- Qwen3.6-35B-A3B requires `--text-only` on a 24 GiB RTX 3090; multimodal mode does not fit with
-  the full artifact resident.
-- Execution is specialized for one RTX 3090 and one CUDA device.
-- One Engine owns one resident sequence and runs one active request at a time.
-- Continuous batching, multi-GPU execution, CPU/GPU offload, and distributed serving are not
-  implemented.
-- Context capacity is configurable up to the registered models' native 262,144-token limit, subject
-  to GPU memory and KV-cache configuration.
-- Tool calls are parsed and returned to the client; NInfer does not execute tools.
-- The C++ headers are used by the in-tree applications and are not distributed as an installed SDK.
-
-## Documentation
-
-- [Documentation index](docs/README.md)
-- [CLI](docs/cli.md)
-- [HTTP serving](docs/serving.md)
-- [Performance](docs/performance.md)
-- [RTX 3090 / WSL2 port](docs/rtx-3090-wsl.md)
-- [RTX 3090 ordinary inference](docs/rtx-3090-normal-inference.md)
-- [Windows and Linux release bundles](dist/README.md)
-- [CLI examples](examples/cli/)
+See the model cards for evaluation configuration and limitations.
 
 ## Contributing
 
-Pull requests are welcome. This is a public repository and its
-[Pull requests page](https://github.com/Don-Chad/ninfer-3090/pulls) is open to contributions.
-Please describe the target platform, CUDA version, validation performed, and any measured
-performance impact. Keep RTX 3090 kernel changes backed by numerical tests and reproducible
-benchmarks.
+Issues and pull requests are welcome, especially for reproducible RTX 3090 kernel measurements,
+additional real-world prompt-lookup fixtures, Windows/Ubuntu packaging fixes, and correctness
+tests. Include the exact command, GPU state, artifact, and raw benchmark report with performance
+claims.
 
-## License
+## Project history
 
-NInfer is licensed under the [Apache License 2.0](LICENSE).
-
-The published artifacts are derived from
-[Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) and
-[Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B), which are also distributed
-under Apache-2.0. Vendored dependencies retain their own license files under `third_party/`.
+This RTX 3090 edition began as a port of
+[Neroued/ninfer](https://github.com/Neroued/ninfer), whose original implementation targets the
+RTX 5090. It now has its own native Windows/Ubuntu release workflow, GA102 kernel schedules,
+35B-A3B memory profile, benchmark suite, MTP tuning, and adaptive hybrid decoding path.
