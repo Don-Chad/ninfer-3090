@@ -21,11 +21,13 @@ struct Options {
     std::uint32_t prefill_chunk = 1024;
     int device                  = 0;
 
-    KvCacheStorage kv_cache        = KvCacheStorage::BFloat16;
-    std::uint32_t mtp_draft_tokens = 0;
-    ProposalHead proposal_head     = ProposalHead::Full;
-    bool use_cuda_graph            = true;
-    bool text_only                 = false;
+    KvCacheStorage kv_cache               = KvCacheStorage::BFloat16;
+    std::uint32_t mtp_draft_tokens        = 0;
+    std::uint32_t prompt_lookup_tokens    = 0;
+    std::uint32_t prompt_lookup_min_match = 0;
+    ProposalHead proposal_head            = ProposalHead::Full;
+    bool use_cuda_graph                   = true;
+    bool text_only                        = false;
 
     bool raw_output      = false;
     bool print_token_ids = false;

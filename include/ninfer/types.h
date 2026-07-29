@@ -26,8 +26,10 @@ enum class ProposalHead : std::uint8_t {
 };
 
 struct SpeculativeOptions {
-    std::uint32_t draft_tokens = 0;
-    ProposalHead proposal_head = ProposalHead::Full;
+    std::uint32_t draft_tokens            = 0;
+    std::uint32_t prompt_lookup_tokens    = 0;
+    std::uint32_t prompt_lookup_min_match = 0;
+    ProposalHead proposal_head            = ProposalHead::Full;
 };
 
 struct LoadProgress {

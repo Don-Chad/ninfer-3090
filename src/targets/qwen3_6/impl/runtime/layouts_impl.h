@@ -34,7 +34,7 @@ TensorLayout add_tensor(LayoutBuilder& builder, DType dtype,
 }
 
 PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
-    const std::size_t columns = plan.mtp_k + 1ULL;
+    const std::size_t columns = plan.round_k + 1ULL;
     const std::size_t slots   = columns + 1ULL;
     LayoutBuilder builder;
     PersistentLayout out;
@@ -62,10 +62,12 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
                  });
 
     out.round = qwen3_6::begin_round_state_layout(
-        builder, qwen3_6::RoundStateSpec{.hidden         = TextConfig::hidden,
-                                         .output_rows    = TextConfig::output_rows,
-                                         .draft_window   = plan.mtp_k,
-                                         .stats_counters = kStepStatsCounters});
+        builder, qwen3_6::RoundStateSpec{
+                     .hidden         = TextConfig::hidden,
+                     .output_rows    = TextConfig::output_rows,
+                     .draft_window   = plan.round_k,
+                     .stats_counters = std::max(kStepStatsCounters,
+                                                static_cast<std::int32_t>(4 + plan.round_k))});
     out.prefill_hidden = add_tensor(
         builder, DType::BF16, {TextConfig::hidden, static_cast<std::int32_t>(plan.prefill_chunk)},
         "step prefill hidden");
@@ -89,11 +91,14 @@ std::size_t workspace_bytes(const SequencePlanImpl& plan) {
     if (plan.prefill_chunk > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
         throw std::invalid_argument("prefill_chunk exceeds int32 workspace dimensions");
     }
-    const auto prefill_tokens = static_cast<std::int32_t>(plan.prefill_chunk);
-    const auto verify_tokens  = static_cast<std::int32_t>(plan.mtp_k + 1);
+    const auto prefill_tokens    = static_cast<std::int32_t>(plan.prefill_chunk);
+    const auto verify_tokens     = static_cast<std::int32_t>(plan.round_k + 1);
+    const auto mtp_verify_tokens = static_cast<std::int32_t>(plan.mtp_k + 1);
 
-    const auto matrix      = [](WorkspaceLayoutBuilder& layout, DType dtype, std::int32_t rows,
-                           std::int32_t tokens) { (void)layout.alloc(dtype, {rows, tokens}); };
+    const auto matrix = [](WorkspaceLayoutBuilder& layout, DType dtype, std::int32_t rows,
+                           std::int32_t tokens) {
+        (void)layout.alloc(dtype, {rows, tokens});
+    };
     const auto common_root = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens) {
         matrix(layout, DType::I32, 1, tokens);
         matrix(layout, DType::I32, 1, tokens);
@@ -262,7 +267,7 @@ std::size_t workspace_bytes(const SequencePlanImpl& plan) {
             mtp_full_call(mtp_prefill, 1, true);
         }
 
-        mtp_full_call(mtp_full, verify_tokens, false);
+        mtp_full_call(mtp_full, mtp_verify_tokens, false);
         mtp_full_call(mtp_full, 1, true);
         {
             auto proposal_scope = mtp_full.scope();
@@ -274,9 +279,9 @@ std::size_t workspace_bytes(const SequencePlanImpl& plan) {
     decision.alloc_bytes(
         ops::sampling_workspace_bytes(TextConfig::token_domain, std::max(1, verify_tokens)));
 
-    std::size_t peak = std::max({prefill.peak_bytes(), verify.peak_bytes(),
-                                 mtp_prefill.peak_bytes(), mtp_full.peak_bytes(),
-                                 decision.peak_bytes()});
+    std::size_t peak =
+        std::max({prefill.peak_bytes(), verify.peak_bytes(), mtp_prefill.peak_bytes(),
+                  mtp_full.peak_bytes(), decision.peak_bytes()});
     if (!plan.text_only) {
         peak = std::max(peak, schedule::VisionContext::maximum_workspace_bytes());
     }
@@ -295,6 +300,16 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
     if (options.speculative.draft_tokens > kMaximumMtpDraftTokens) {
         throw std::invalid_argument("MTP draft window must be in [0,5]");
     }
+    if (options.speculative.prompt_lookup_tokens > 15) {
+        throw std::invalid_argument("prompt lookup draft window must be in [0,15]");
+    }
+    if (options.speculative.prompt_lookup_tokens != 0 &&
+        options.speculative.prompt_lookup_min_match == 0) {
+        throw std::invalid_argument("prompt lookup requires a nonzero minimum match");
+    }
+    if (options.speculative.prompt_lookup_min_match > 64) {
+        throw std::invalid_argument("prompt lookup minimum match must be in [0,64]");
+    }
     if (options.speculative.draft_tokens == 0 &&
         options.speculative.proposal_head == ProposalHead::Optimized) {
         throw std::invalid_argument("optimized proposal head requires MTP");
@@ -308,18 +323,21 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
                                                      const EngineOptions& options) {
     validate_target_options(device, options);
 
-    auto impl             = std::make_unique<SequencePlanImpl>();
-    impl->capacity        = options.max_context;
-    impl->prefill_chunk   = options.prefill_chunk;
-    impl->mtp_k           = options.speculative.draft_tokens;
-    impl->proposal_head   = options.speculative.proposal_head;
-    impl->use_cuda_graph  = options.use_cuda_graph;
-    impl->text_only       = options.text_only;
-    impl->device          = options.device;
-    impl->kv_dtype        = options.kv_cache == KvCacheStorage::BFloat16 ? DType::BF16 : DType::I8;
-    impl->kv_quant_group  = impl->kv_dtype == DType::I8 ? kKvQuantGroup : 0;
-    impl->persistent      = persistent_layout(*impl);
-    impl->workspace_bytes = workspace_bytes(*impl);
+    auto impl              = std::make_unique<SequencePlanImpl>();
+    impl->capacity         = options.max_context;
+    impl->prefill_chunk    = options.prefill_chunk;
+    impl->mtp_k            = options.speculative.draft_tokens;
+    impl->lookup_k         = options.speculative.prompt_lookup_tokens;
+    impl->round_k          = std::max(impl->mtp_k, impl->lookup_k);
+    impl->lookup_min_match = options.speculative.prompt_lookup_min_match;
+    impl->proposal_head    = options.speculative.proposal_head;
+    impl->use_cuda_graph   = options.use_cuda_graph;
+    impl->text_only        = options.text_only;
+    impl->device           = options.device;
+    impl->kv_dtype         = options.kv_cache == KvCacheStorage::BFloat16 ? DType::BF16 : DType::I8;
+    impl->kv_quant_group   = impl->kv_dtype == DType::I8 ? kKvQuantGroup : 0;
+    impl->persistent       = persistent_layout(*impl);
+    impl->workspace_bytes  = workspace_bytes(*impl);
     if (impl->use_cuda_graph) {
         const std::size_t ordinary_variants = ordinary_graph_ranges(impl->capacity).size();
         const std::size_t ordinary_graphs   = ordinary_variants * (impl->mtp_k == 0 ? 1ULL : 2ULL);
@@ -330,10 +348,15 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
         // its tighter 12 MiB per-executable budget. Long MTP executables also trigger
         // substantially larger driver allocations.
         const std::size_t ordinary_graph_mib = impl->mtp_k == 0 ? 28ULL : 12ULL;
-        impl->graph_allowance_bytes = ordinary_graphs * ordinary_graph_mib * kMiB;
+        impl->graph_allowance_bytes          = ordinary_graphs * ordinary_graph_mib * kMiB;
         for (const GraphFrontierRange range : mtp_graph_ranges(impl->capacity, impl->mtp_k)) {
             const std::uint64_t final_visible =
                 static_cast<std::uint64_t>(range.max) + 2ULL * impl->mtp_k;
+            impl->graph_allowance_bytes += (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
+        }
+        for (const GraphFrontierRange range : mtp_graph_ranges(impl->capacity, impl->lookup_k)) {
+            const std::uint64_t final_visible =
+                static_cast<std::uint64_t>(range.max) + 2ULL * impl->lookup_k;
             impl->graph_allowance_bytes += (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
         }
     }

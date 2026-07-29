@@ -161,7 +161,8 @@ int accept_all_reject_case() {
     DBuf d_num(sizeof(std::int32_t));
     DBuf d_accepted(sizeof(std::int32_t));
     DBuf d_ar_pos(sizeof(std::int32_t));
-    auto d_stats = to_device_i64(std::vector<std::int64_t>(kStepStatsCounters, 0));
+    const int stats_count = std::max(kStepStatsCounters, 4 + k);
+    auto d_stats          = to_device_i64(std::vector<std::int64_t>(stats_count, 0));
 
     DBuf d_logits = zero_logits(16, k + 1);
     DBuf d_cfg    = to_device_config(ops::SamplingConfig{}); // greedy
@@ -174,7 +175,7 @@ int accept_all_reject_case() {
     Tensor num(d_num.p, DType::I32, {1});
     Tensor accepted(d_accepted.p, DType::I32, {1});
     Tensor ar_pos(d_ar_pos.p, DType::I32, {1});
-    Tensor stats(d_stats.p, DType::I64, {kStepStatsCounters});
+    Tensor stats(d_stats.p, DType::I64, {stats_count});
     ops::mtp_accept_tokens(targets, logits, drafts, length, token, sampled, num, accepted, ar_pos,
                            stats, 16, config_ptr(d_cfg), test_sampling_workspace(), nullptr);
     cudaDeviceSynchronize();
@@ -202,7 +203,8 @@ int accept_all_case() {
     DBuf d_num(sizeof(std::int32_t));
     DBuf d_accepted(sizeof(std::int32_t));
     DBuf d_ar_pos(sizeof(std::int32_t));
-    auto d_stats = to_device_i64(std::vector<std::int64_t>(kStepStatsCounters, 0));
+    const int stats_count = std::max(kStepStatsCounters, 4 + k);
+    auto d_stats          = to_device_i64(std::vector<std::int64_t>(stats_count, 0));
 
     DBuf d_logits = zero_logits(16, k + 1);
     DBuf d_cfg    = to_device_config(ops::SamplingConfig{}); // greedy
@@ -215,7 +217,7 @@ int accept_all_case() {
     Tensor num(d_num.p, DType::I32, {1});
     Tensor accepted(d_accepted.p, DType::I32, {1});
     Tensor ar_pos(d_ar_pos.p, DType::I32, {1});
-    Tensor stats(d_stats.p, DType::I64, {kStepStatsCounters});
+    Tensor stats(d_stats.p, DType::I64, {stats_count});
     ops::mtp_accept_tokens(targets, logits, drafts, length, token, sampled, num, accepted, ar_pos,
                            stats, 16, config_ptr(d_cfg), test_sampling_workspace(), nullptr);
     cudaDeviceSynchronize();
@@ -616,7 +618,8 @@ std::vector<int> run_real_shape_mtp_sequence(const std::vector<float>& logits_h,
     DBuf d_num(sizeof(std::int32_t));
     DBuf d_accepted(sizeof(std::int32_t));
     DBuf d_ar_pos(sizeof(std::int32_t));
-    auto d_stats = to_device_i64(std::vector<std::int64_t>(kStepStatsCounters, 0));
+    const int stats_count = std::max(kStepStatsCounters, 4 + k);
+    auto d_stats          = to_device_i64(std::vector<std::int64_t>(stats_count, 0));
     DBuf d_collect(static_cast<std::size_t>(rounds) * (k + 2) * sizeof(std::int32_t));
 
     Tensor targets(d_targets.p, DType::I32, {k + 1});
@@ -628,7 +631,7 @@ std::vector<int> run_real_shape_mtp_sequence(const std::vector<float>& logits_h,
     Tensor num(d_num.p, DType::I32, {1});
     Tensor accepted(d_accepted.p, DType::I32, {1});
     Tensor ar_pos(d_ar_pos.p, DType::I32, {1});
-    Tensor stats(d_stats.p, DType::I64, {kStepStatsCounters});
+    Tensor stats(d_stats.p, DType::I64, {stats_count});
 
     for (int r = 0; r < rounds; ++r) {
         const int len = 1000 + r;
@@ -723,7 +726,8 @@ std::vector<int> run_one_mtp_round(const std::vector<float>& logits_h, int vocab
     DBuf d_num(sizeof(std::int32_t));
     DBuf d_accepted(sizeof(std::int32_t));
     DBuf d_ar_pos(sizeof(std::int32_t));
-    auto d_stats = to_device_i64(std::vector<std::int64_t>(kStepStatsCounters, 0));
+    const int stats_count = std::max(kStepStatsCounters, 4 + k);
+    auto d_stats          = to_device_i64(std::vector<std::int64_t>(stats_count, 0));
 
     Tensor targets(d_targets.p, DType::I32, {k + 1});
     Tensor logits(d_logits.p, DType::BF16, {vocab, k + 1});
@@ -734,7 +738,7 @@ std::vector<int> run_one_mtp_round(const std::vector<float>& logits_h, int vocab
     Tensor num(d_num.p, DType::I32, {1});
     Tensor accepted(d_accepted.p, DType::I32, {1});
     Tensor ar_pos(d_ar_pos.p, DType::I32, {1});
-    Tensor stats(d_stats.p, DType::I64, {kStepStatsCounters});
+    Tensor stats(d_stats.p, DType::I64, {stats_count});
 
     ops::mtp_accept_tokens(targets, logits, drafts, length_t, token, sampled, num, accepted, ar_pos,
                            stats, token_domain, config_ptr(d_cfg), test_sampling_workspace(),
@@ -752,7 +756,7 @@ int exact_k_matrix_case() {
     constexpr int token_domain  = 248077;
     int failures                = 0;
 
-    for (int k = 1; k <= 5; ++k) {
+    for (const int k : {1, 2, 3, 4, 5, 8, 12, 15}) {
         std::vector<float> logits(static_cast<std::size_t>(physical_rows) * (k + 1), -20.0f);
         std::vector<int> targets(static_cast<std::size_t>(k + 1));
         std::vector<int> drafts(static_cast<std::size_t>(k));
@@ -798,7 +802,9 @@ int exact_k_matrix_case() {
                                                 100, token_domain, targets, false),
                               greedy_expected);
     }
-    if (failures == 0) { std::cout << "    exact MTP K=1..5 greedy/stochastic matrix ok\n"; }
+    if (failures == 0) {
+        std::cout << "    exact MTP K=1..5,8,12,15 greedy/stochastic matrix ok\n";
+    }
     return failures;
 }
 

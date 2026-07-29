@@ -141,6 +141,10 @@ GenerationService::GenerationService(ServeOptions options) : options_(std::move(
     engine_options.use_cuda_graph           = options_.use_cuda_graph;
     engine_options.text_only                = options_.text_only;
     engine_options.speculative.draft_tokens = static_cast<std::uint32_t>(options_.mtp_draft_tokens);
+    engine_options.speculative.prompt_lookup_tokens =
+        static_cast<std::uint32_t>(options_.prompt_lookup_tokens);
+    engine_options.speculative.prompt_lookup_min_match =
+        static_cast<std::uint32_t>(options_.prompt_lookup_min_match);
     engine_options.speculative.proposal_head = options_.proposal_head;
     engine_ = std::make_unique<ninfer::Engine>(std::move(engine_options));
 }

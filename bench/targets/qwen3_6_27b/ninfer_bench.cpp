@@ -5,6 +5,7 @@
 #include <cuda_profiler_api.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -143,19 +144,23 @@ int main(int argc, char** argv) {
                 "--profile-measured requires exactly one benchmark test and -r 1");
         }
         ninfer::bench::validate_prompt_lengths(tests, corpus.size());
+        const std::uint32_t largest_draft_window =
+            std::max(options.mtp_draft_tokens, options.prompt_lookup_tokens);
         const std::uint32_t max_context = ninfer::bench::resolve_max_context(
-            tests, options.max_context, options.mtp_draft_tokens, options.use_cuda_graph);
+            tests, options.max_context, largest_draft_window, options.use_cuda_graph);
 
         ninfer::EngineOptions engine_options;
-        engine_options.artifact_path             = options.artifact_path;
-        engine_options.device                    = options.device;
-        engine_options.max_context               = max_context;
-        engine_options.prefill_chunk             = options.prefill_chunk;
-        engine_options.kv_cache                  = options.kv_cache;
-        engine_options.speculative.draft_tokens  = options.mtp_draft_tokens;
-        engine_options.speculative.proposal_head = options.proposal_head;
-        engine_options.use_cuda_graph            = options.use_cuda_graph;
-        engine_options.text_only                 = options.text_only;
+        engine_options.artifact_path                       = options.artifact_path;
+        engine_options.device                              = options.device;
+        engine_options.max_context                         = max_context;
+        engine_options.prefill_chunk                       = options.prefill_chunk;
+        engine_options.kv_cache                            = options.kv_cache;
+        engine_options.speculative.draft_tokens            = options.mtp_draft_tokens;
+        engine_options.speculative.prompt_lookup_tokens    = options.prompt_lookup_tokens;
+        engine_options.speculative.prompt_lookup_min_match = options.prompt_lookup_min_match;
+        engine_options.speculative.proposal_head           = options.proposal_head;
+        engine_options.use_cuda_graph                      = options.use_cuda_graph;
+        engine_options.text_only                           = options.text_only;
 
         ninfer::bench::BenchEnvironment env;
         env.artifact_path            = options.artifact_path;
@@ -164,6 +169,8 @@ int main(int argc, char** argv) {
         env.prefill_chunk            = options.prefill_chunk;
         env.kv_cache                 = options.kv_cache;
         env.mtp_draft_tokens         = options.mtp_draft_tokens;
+        env.prompt_lookup_tokens     = options.prompt_lookup_tokens;
+        env.prompt_lookup_min_match  = options.prompt_lookup_min_match;
         env.proposal_head            = options.proposal_head;
         env.use_cuda_graph           = options.use_cuda_graph;
         env.text_only                = options.text_only;
@@ -173,7 +180,7 @@ int main(int argc, char** argv) {
         env.corpus_tokens            = corpus.size();
         if (options.use_cuda_graph && has_decode_tests(tests)) {
             env.decode_graph_prime_output_tokens =
-                ninfer::bench::decode_graph_prime_output_tokens(options.mtp_draft_tokens);
+                ninfer::bench::decode_graph_prime_output_tokens(largest_draft_window);
         }
 
         std::cerr << "[ninfer_bench] loading " << options.artifact_path

@@ -58,6 +58,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--model-id ID] [--max-context N] [--prefill-chunk N] [--device N] "
            "[--max-request-mib N] [--request-log-jsonl FILE] "
            "[--kv-dtype bf16|int8] [--mtp-draft-tokens N] [--default-max-tokens N] "
+           "[--prompt-lookup-tokens N --prompt-lookup-min-match N] "
            "[--no-cuda-graph] [--no-prefix-reuse] [--text-only] "
            "[--lm-head-draft] [--no-thinking] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--presence-penalty F] "
@@ -133,6 +134,12 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--mtp-draft-tokens") {
             options.mtp_draft_tokens =
                 parse_nonnegative_int(require_value("--mtp-draft-tokens"), "mtp-draft-tokens");
+        } else if (arg == "--prompt-lookup-tokens") {
+            options.prompt_lookup_tokens = parse_nonnegative_int(
+                require_value("--prompt-lookup-tokens"), "prompt-lookup-tokens");
+        } else if (arg == "--prompt-lookup-min-match") {
+            options.prompt_lookup_min_match = parse_nonnegative_int(
+                require_value("--prompt-lookup-min-match"), "prompt-lookup-min-match");
         } else if (arg == "--default-max-tokens") {
             options.default_max_tokens =
                 parse_nonnegative_int(require_value("--default-max-tokens"), "default-max-tokens");
@@ -182,6 +189,14 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (options.mtp_draft_tokens > 5) {
         throw std::invalid_argument("--mtp-draft-tokens must be in [0,5]");
+    }
+    if (options.prompt_lookup_tokens > 15) {
+        throw std::invalid_argument("--prompt-lookup-tokens must be in [0,15]");
+    }
+    if (options.prompt_lookup_min_match > 64 ||
+        ((options.prompt_lookup_tokens == 0) != (options.prompt_lookup_min_match == 0))) {
+        throw std::invalid_argument(
+            "--prompt-lookup-tokens and --prompt-lookup-min-match must be used together");
     }
     if (options.proposal_head == ProposalHead::Optimized && options.mtp_draft_tokens == 0) {
         throw std::invalid_argument(

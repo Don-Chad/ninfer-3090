@@ -91,6 +91,11 @@ struct MtpGraphVariant {
     std::uint32_t min_execution_frontier = 0;
     std::uint32_t max_execution_frontier = 0;
     DecodeGraph mtp;
+};
+
+struct LookupGraphVariant {
+    std::uint32_t min_execution_frontier = 0;
+    std::uint32_t max_execution_frontier = 0;
     DecodeGraph prompt_lookup;
 };
 
@@ -124,6 +129,8 @@ public:
     const std::uint32_t capacity;
     const std::uint32_t prefill_chunk;
     const std::uint32_t mtp_k;
+    const std::uint32_t lookup_k;
+    const std::uint32_t round_k;
     const DType kv_dtype;
     const std::int32_t kv_quant_group;
     const ProposalHead proposal_head;
@@ -145,6 +152,7 @@ public:
 
     std::vector<OrdinaryGraphVariant> ordinary_graphs;
     std::vector<MtpGraphVariant> mtp_graphs;
+    std::vector<LookupGraphVariant> lookup_graphs;
 
     PinnedHostBuffer round_host;
     std::int32_t* host_count = nullptr;

@@ -83,6 +83,10 @@ int test_cli_contract() {
         "int8",
         "--mtp-draft-tokens",
         "5",
+        "--prompt-lookup-tokens",
+        "15",
+        "--prompt-lookup-min-match",
+        "4",
         "--lm-head-draft",
         "--device",
         "1",
@@ -105,6 +109,8 @@ int test_cli_contract() {
     failures += expect(parsed.prefill_chunk == 128, "prefill chunk");
     failures += expect(parsed.kv_cache == ninfer::KvCacheStorage::Int8Group64, "INT8 KV");
     failures += expect(parsed.mtp_draft_tokens == 5, "MTP window");
+    failures += expect(parsed.prompt_lookup_tokens == 15, "prompt lookup window");
+    failures += expect(parsed.prompt_lookup_min_match == 4, "prompt lookup minimum match");
     failures +=
         expect(parsed.proposal_head == ninfer::ProposalHead::Optimized, "optimized proposal head");
     failures += expect(parsed.device == 1 && !parsed.use_cuda_graph && parsed.text_only,
@@ -137,6 +143,19 @@ int test_cli_contract() {
         "unsupported MTP window");
     failures += expect_throws<std::invalid_argument>(
         [] {
+            (void)parse_for_test({"ninfer_bench", "--weights", "model.ninfer",
+                                  "--prompt-lookup-tokens", "16", "--prompt-lookup-min-match",
+                                  "4"});
+        },
+        "unsupported prompt lookup window");
+    failures += expect_throws<std::invalid_argument>(
+        [] {
+            (void)parse_for_test(
+                {"ninfer_bench", "--weights", "model.ninfer", "--prompt-lookup-tokens", "15"});
+        },
+        "prompt lookup missing minimum match");
+    failures += expect_throws<std::invalid_argument>(
+        [] {
             (void)parse_for_test(
                 {"ninfer_bench", "--weights", "model.ninfer", "--prefill-chunk", "129"});
         },
@@ -165,13 +184,20 @@ int test_measurement_contract() {
     failures += expect_u32(tg.required_context(0), 129, "tg context");
     failures += expect_u32(tg.required_context(5), 139, "MTP tg context");
     failures += expect_u32(combined.required_context(5), 2186, "MTP combined context");
+    failures += expect_u32(combined.required_context(15), 2206, "lookup K15 combined context");
     failures += expect_u32(qb::decode_graph_prime_output_tokens(5), 13, "MTP graph-prime outputs");
     failures +=
         expect_u32(qb::decode_graph_prime_required_context(5), 23, "MTP graph-prime context");
+    failures +=
+        expect_u32(qb::decode_graph_prime_output_tokens(15), 33, "lookup graph-prime outputs");
+    failures +=
+        expect_u32(qb::decode_graph_prime_required_context(15), 63, "lookup graph-prime context");
 
     const std::vector<qb::BenchTest> matrix = {pp, tg, combined};
     failures +=
         expect_u32(qb::resolve_max_context(matrix, std::nullopt, 5, true), 2186, "auto context");
+    failures += expect_u32(qb::resolve_max_context(matrix, std::nullopt, 15, true), 2206,
+                           "lookup K15 auto context");
     failures +=
         expect_u32(qb::resolve_max_context(matrix, std::optional<std::uint32_t>(4096), 5, true),
                    4096, "explicit context");

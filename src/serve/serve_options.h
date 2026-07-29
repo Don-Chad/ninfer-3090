@@ -28,6 +28,8 @@ struct ServeOptions {
     std::size_t max_request_bytes = kDefaultMaxRequestBytes;
     int device                    = 0;
     int mtp_draft_tokens          = 0;
+    int prompt_lookup_tokens      = 0;
+    int prompt_lookup_min_match   = 0;
     KvCacheStorage kv_cache       = KvCacheStorage::BFloat16;
     bool use_cuda_graph           = true;
     bool text_only                = false;

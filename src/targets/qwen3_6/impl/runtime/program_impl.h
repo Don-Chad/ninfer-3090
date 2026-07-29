@@ -33,6 +33,38 @@ std::uint32_t prompt_lookup_min_match_from_environment() {
     return static_cast<std::uint32_t>(value);
 }
 
+std::int32_t checked_i32(std::uint32_t value, const char* label);
+
+qwen3_6::RoundState round_state_view(qwen3_6::RoundState& full, std::uint32_t draft_window) {
+    const int columns = checked_i32(draft_window + 1, "round state view columns");
+    const int drafts =
+        checked_i32(std::max<std::uint32_t>(1, draft_window), "round state view drafts");
+    if (columns > full.logits.ne[1] || drafts > full.drafts.ne[0]) {
+        throw std::logic_error("round state view exceeds persistent storage");
+    }
+    qwen3_6::RoundState view;
+    view.token            = full.token;
+    view.pos              = full.pos;
+    view.rope_pos         = full.rope_pos;
+    view.rope_delta       = full.rope_delta;
+    view.logits           = full.logits.slice(1, 0, columns);
+    view.verify_hidden    = full.verify_hidden.slice(1, 0, columns);
+    view.target_tokens    = full.target_tokens.slice(0, 0, columns);
+    view.drafts           = full.drafts.slice(0, 0, drafts);
+    view.sampled_out      = full.sampled_out.slice(0, 0, columns);
+    view.num_sampled      = full.num_sampled;
+    view.verify_ids       = full.verify_ids.slice(0, 0, columns);
+    view.shifted_ids      = full.shifted_ids.slice(0, 0, columns);
+    view.positions        = full.positions.slice(0, 0, columns);
+    view.window_base      = full.window_base;
+    view.accepted         = full.accepted;
+    view.gdn_initial_slot = full.gdn_initial_slot;
+    view.ar_pos           = full.ar_pos;
+    view.mtp_ar_hidden    = full.mtp_ar_hidden;
+    view.stats            = full.stats;
+    return view;
+}
+
 std::int32_t checked_i32(std::uint32_t value, const char* label) {
     if (value > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
         throw std::overflow_error(label);
@@ -106,14 +138,16 @@ void validate_graph_ranges(const std::vector<GraphFrontierRange>& ranges,
 ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const SequencePlanImpl& plan,
                                  DeviceContext& device_in)
     : model(model_in), device(device_in), capacity(plan.capacity),
-      prefill_chunk(plan.prefill_chunk), mtp_k(plan.mtp_k), kv_dtype(plan.kv_dtype),
-      kv_quant_group(plan.kv_quant_group), proposal_head(plan.proposal_head),
-      use_cuda_graph(plan.use_cuda_graph),
-      prompt_lookup_min_match(prompt_lookup_min_match_from_environment()),
+      prefill_chunk(plan.prefill_chunk), mtp_k(plan.mtp_k), lookup_k(plan.lookup_k),
+      round_k(plan.round_k), kv_dtype(plan.kv_dtype), kv_quant_group(plan.kv_quant_group),
+      proposal_head(plan.proposal_head), use_cuda_graph(plan.use_cuda_graph),
+      prompt_lookup_min_match(plan.lookup_min_match != 0
+                                  ? plan.lookup_min_match
+                                  : prompt_lookup_min_match_from_environment()),
       kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), persistent(plan.persistent.bytes),
       work(plan.workspace_bytes),
-      round_host((static_cast<std::size_t>(mtp_k) + 2ULL) * sizeof(std::int32_t)) {
+      round_host((static_cast<std::size_t>(round_k) + 2ULL) * sizeof(std::int32_t)) {
     if (model.weights_arena == nullptr) {
         throw std::invalid_argument("Qwen3.6 model view has no owning weight arena");
     }
@@ -231,14 +265,14 @@ void ProgramImplCore::prepare_graphs() {
         set_device_i32(io.rope_pos, checked_i32(frontier, "graph representative rope position"));
         set_device_i32(io.ar_pos, checked_i32(frontier, "graph representative MTP position"));
     };
-    const auto state = [&](std::uint32_t frontier) {
+    const auto state = [&](std::uint32_t frontier, qwen3_6::RoundState& round) {
         return schedule::State{device,
                                model,
                                work,
                                decoder->text_kv,
                                decoder->mtp_cache(),
                                decoder->gdn,
-                               io,
+                               round,
                                prefill_hidden,
                                prefill_chunk,
                                frontier,
@@ -262,11 +296,11 @@ void ProgramImplCore::prepare_graphs() {
         const ops::GqaExecutionEnvelope envelope{range.min + 1, range.max + 1};
         const auto prepare = [&, representative] { prepare_representative(representative); };
 
-        auto ordinary_state = state(representative);
+        auto ordinary_state = state(representative, io);
         schedule::warm_capture_ordinary_round(ordinary_state, false, envelope, prepare,
                                               variant.ordinary);
         if (decoder->mtp_cache() != nullptr) {
-            auto aligned_state = state(representative);
+            auto aligned_state = state(representative, io);
             schedule::warm_capture_ordinary_round(aligned_state, true, envelope, prepare,
                                                   variant.ordinary_aligned);
         }
@@ -284,14 +318,30 @@ void ProgramImplCore::prepare_graphs() {
             const std::uint32_t representative = range.min;
             const auto prepare = [&, representative] { prepare_representative(representative); };
 
-            auto mtp_state = state(representative);
+            auto mtp_io    = round_state_view(io, mtp_k);
+            auto mtp_state = state(representative, mtp_io);
             schedule::warm_capture_mtp_round(mtp_state, mtp_k,
                                              mtp_gqa_envelopes(range.min, range.max, mtp_k),
                                              prepare, variant.mtp);
-            auto lookup_state = state(representative);
+        }
+    }
+
+    const auto lookup_ranges = mtp_graph_ranges(capacity, lookup_k);
+    if (lookup_k != 0) {
+        validate_graph_ranges(lookup_ranges, capacity - 2 * lookup_k, "prompt lookup");
+        lookup_graphs.reserve(lookup_ranges.size());
+        for (const GraphFrontierRange range : lookup_ranges) {
+            lookup_graphs.emplace_back();
+            LookupGraphVariant& variant        = lookup_graphs.back();
+            variant.min_execution_frontier     = range.min;
+            variant.max_execution_frontier     = range.max;
+            const std::uint32_t representative = range.min;
+            const auto prepare = [&, representative] { prepare_representative(representative); };
+            auto lookup_io     = round_state_view(io, lookup_k);
+            auto lookup_state  = state(representative, lookup_io);
             schedule::warm_capture_prompt_lookup_round(
-                lookup_state, mtp_k, {range.min + mtp_k + 1, range.max + mtp_k + 1}, prepare,
-                variant.prompt_lookup);
+                lookup_state, lookup_k, {range.min + lookup_k + 1, range.max + lookup_k + 1},
+                prepare, variant.prompt_lookup);
         }
     }
 
@@ -575,78 +625,82 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
     const auto lookup =
         prompt_lookup_min_match == 0
             ? runtime::PromptLookupMatch{}
-            : runtime::find_prompt_lookup(ledger, mtp_k, prompt_lookup_min_match);
-    const bool use_lookup = mtp_k != 0 && lookup.draft.size() == mtp_k &&
-                            budget.generated_tokens_remaining >= mtp_k + 1 &&
-                            static_cast<std::uint64_t>(E) + mtp_k + 1ULL <= capacity;
+            : runtime::find_prompt_lookup(ledger, lookup_k, prompt_lookup_min_match);
+    const bool use_lookup = lookup_k != 0 && lookup.draft.size() == lookup_k &&
+                            budget.generated_tokens_remaining >= lookup_k + 1 &&
+                            static_cast<std::uint64_t>(E) + 2ULL * lookup_k <= capacity;
     const bool use_mtp = !use_lookup && mtp_k != 0 && proposal_ready && mtp_kv_valid == E &&
                          budget.generated_tokens_remaining >= mtp_k + 1 &&
                          static_cast<std::uint64_t>(E) + 2ULL * mtp_k <= capacity;
     const std::uint32_t base_E = E;
     const std::uint32_t base_S = S;
-    nvtx::ScopedRange round_range((use_mtp || use_lookup) ? nvtx::Name::DecodeMtpRound
-                                          : nvtx::Name::DecodeOrdinaryRound,
-                                  (use_mtp || use_lookup) ? nvtx::Category::Mtp
-                                                          : nvtx::Category::Decode,
-                                  base_E);
+    nvtx::ScopedRange round_range(
+        (use_mtp || use_lookup) ? nvtx::Name::DecodeMtpRound : nvtx::Name::DecodeOrdinaryRound,
+        (use_mtp || use_lookup) ? nvtx::Category::Mtp : nvtx::Category::Decode, base_E);
     try {
         set_device_i32(io.gdn_initial_slot, current_gdn_slot);
-        schedule::State schedule_state{
-            device,
-            model,
-            work,
-            decoder->text_kv,
-            decoder->mtp_cache(),
-            decoder->gdn,
-            io,
-            prefill_hidden,
-            prefill_chunk,
-            base_E,
-            static_cast<const ops::SamplingConfig*>(sampling_config.data),
-            proposal_head,
-            &boundary_hidden,
-            diagnostic_context,
-            diagnostic_text_tap,
-            diagnostic_vision_tap};
+        const auto make_schedule_state = [&](qwen3_6::RoundState& round) {
+            return schedule::State{device,
+                                   model,
+                                   work,
+                                   decoder->text_kv,
+                                   decoder->mtp_cache(),
+                                   decoder->gdn,
+                                   round,
+                                   prefill_hidden,
+                                   prefill_chunk,
+                                   base_E,
+                                   static_cast<const ops::SamplingConfig*>(sampling_config.data),
+                                   proposal_head,
+                                   &boundary_hidden,
+                                   diagnostic_context,
+                                   diagnostic_text_tap,
+                                   diagnostic_vision_tap};
+        };
 
         std::uint32_t produced = 1;
         std::uint32_t accepted = 0;
         PendingKind kind       = PendingKind::Ordinary;
         if (use_lookup) {
-            CUDA_CHECK(cudaMemcpyAsync(io.drafts.data, lookup.draft.data(),
+            auto lookup_io      = round_state_view(io, lookup_k);
+            auto schedule_state = make_schedule_state(lookup_io);
+            CUDA_CHECK(cudaMemcpyAsync(lookup_io.drafts.data, lookup.draft.data(),
                                        lookup.draft.size() * sizeof(TokenId),
                                        cudaMemcpyHostToDevice, device.stream));
             DecodeGraph* graph = nullptr;
-            ops::GqaExecutionEnvelope envelope{base_E + mtp_k + 1, base_E + mtp_k + 1};
+            ops::GqaExecutionEnvelope envelope{base_E + lookup_k + 1, base_E + lookup_k + 1};
             if (use_cuda_graph && diagnostic_text_tap == nullptr) {
-                MtpGraphVariant& variant =
-                    select_graph_variant(mtp_graphs, base_E, "prompt lookup");
-                graph = &variant.prompt_lookup;
-                envelope = {variant.min_execution_frontier + mtp_k + 1,
-                            variant.max_execution_frontier + mtp_k + 1};
+                LookupGraphVariant& variant =
+                    select_graph_variant(lookup_graphs, base_E, "prompt lookup");
+                graph    = &variant.prompt_lookup;
+                envelope = {variant.min_execution_frontier + lookup_k + 1,
+                            variant.max_execution_frontier + lookup_k + 1};
             }
-            schedule::prompt_lookup_round(schedule_state, mtp_k, envelope, graph);
-            ops::mtp_gather_hidden_row(io.verify_hidden, io.accepted, tail_hidden, device.stream);
-            CUDA_CHECK(cudaMemcpyAsync(host_count, io.num_sampled.data, sizeof(std::int32_t),
+            schedule::prompt_lookup_round(schedule_state, lookup_k, envelope, graph);
+            ops::mtp_gather_hidden_row(lookup_io.verify_hidden, lookup_io.accepted, tail_hidden,
+                                       device.stream);
+            CUDA_CHECK(cudaMemcpyAsync(host_count, lookup_io.num_sampled.data, sizeof(std::int32_t),
                                        cudaMemcpyDeviceToHost, device.stream));
-            CUDA_CHECK(cudaMemcpyAsync(host_tokens, io.sampled_out.data,
-                                       (mtp_k + 1ULL) * sizeof(TokenId), cudaMemcpyDeviceToHost,
+            CUDA_CHECK(cudaMemcpyAsync(host_tokens, lookup_io.sampled_out.data,
+                                       (lookup_k + 1ULL) * sizeof(TokenId), cudaMemcpyDeviceToHost,
                                        device.stream));
             device.synchronize();
-            if (*host_count <= 0 || *host_count > static_cast<std::int32_t>(mtp_k + 1)) {
+            if (*host_count <= 0 || *host_count > static_cast<std::int32_t>(lookup_k + 1)) {
                 throw std::runtime_error("prompt lookup returned an invalid token count");
             }
-            produced = static_cast<std::uint32_t>(*host_count);
-            accepted = produced - 1;
-            kind = PendingKind::Mtp;
-            text_kv_valid = base_E + produced;
-            current_gdn_slot = static_cast<std::int32_t>(accepted);
-            mtp_kv_valid = 0;
-            proposal_ready = false;
+            produced          = static_cast<std::uint32_t>(*host_count);
+            accepted          = produced - 1;
+            kind              = PendingKind::Mtp;
+            text_kv_valid     = base_E + produced;
+            current_gdn_slot  = static_cast<std::int32_t>(accepted);
+            mtp_kv_valid      = 0;
+            proposal_ready    = false;
             tail_hidden_valid = true;
         } else if (use_mtp) {
-            DecodeGraph* graph = nullptr;
-            auto envelopes     = mtp_gqa_envelopes(base_E, base_E, mtp_k);
+            auto mtp_io         = round_state_view(io, mtp_k);
+            auto schedule_state = make_schedule_state(mtp_io);
+            DecodeGraph* graph  = nullptr;
+            auto envelopes      = mtp_gqa_envelopes(base_E, base_E, mtp_k);
             if (use_cuda_graph && diagnostic_text_tap == nullptr) {
                 MtpGraphVariant& variant = select_graph_variant(mtp_graphs, base_E, "MTP");
                 graph                    = &variant.mtp;
@@ -657,11 +711,12 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
                 nvtx::ScopedRange submit_range(nvtx::Name::DecodeMtpSubmit, nvtx::Category::Mtp,
                                                base_E);
                 schedule::mtp_round(schedule_state, mtp_k, envelopes, graph);
-                ops::mtp_gather_hidden_row(io.verify_hidden, io.accepted, tail_hidden,
+                ops::mtp_gather_hidden_row(mtp_io.verify_hidden, mtp_io.accepted, tail_hidden,
                                            device.stream);
-                CUDA_CHECK(cudaMemcpyAsync(host_count, io.num_sampled.data, sizeof(std::int32_t),
-                                           cudaMemcpyDeviceToHost, device.stream));
-                CUDA_CHECK(cudaMemcpyAsync(host_tokens, io.sampled_out.data,
+                CUDA_CHECK(cudaMemcpyAsync(host_count, mtp_io.num_sampled.data,
+                                           sizeof(std::int32_t), cudaMemcpyDeviceToHost,
+                                           device.stream));
+                CUDA_CHECK(cudaMemcpyAsync(host_tokens, mtp_io.sampled_out.data,
                                            (mtp_k + 1ULL) * sizeof(TokenId), cudaMemcpyDeviceToHost,
                                            device.stream));
             }
@@ -686,6 +741,7 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
             proposal_ready    = true;
             tail_hidden_valid = true;
         } else {
+            auto schedule_state  = make_schedule_state(io);
             const bool align_mtp = decoder->mtp_cache() != nullptr && mtp_kv_valid == base_E;
             DecodeGraph* graph   = nullptr;
             ops::GqaExecutionEnvelope envelope{base_E + 1, base_E + 1};
@@ -822,10 +878,10 @@ MemorySummary ProgramImplCore::memory_summary() const noexcept {
 
 SpeculativeStats ProgramImplCore::speculative_stats() const {
     SpeculativeStats out;
-    out.enabled      = mtp_k != 0;
-    out.draft_window = mtp_k;
-    if (mtp_k == 0) { return out; }
-    std::array<std::int64_t, kStepStatsCounters> values{};
+    out.enabled      = round_k != 0;
+    out.draft_window = round_k;
+    if (round_k == 0) { return out; }
+    std::vector<std::int64_t> values(static_cast<std::size_t>(io.stats.ne[0]));
     CUDA_CHECK(cudaMemcpyAsync(values.data(), io.stats.data, io.stats.bytes(),
                                cudaMemcpyDeviceToHost, device.stream));
     device.synchronize();
@@ -833,8 +889,8 @@ SpeculativeStats ProgramImplCore::speculative_stats() const {
     out.accepted_tokens = static_cast<std::uint64_t>(std::max<std::int64_t>(0, values[1]));
     out.rounds          = static_cast<std::uint64_t>(std::max<std::int64_t>(0, values[2]));
     out.fallback_steps  = static_cast<std::uint64_t>(std::max<std::int64_t>(0, values[3]));
-    out.accepted_per_position.resize(mtp_k);
-    for (std::uint32_t i = 0; i < mtp_k; ++i) {
+    out.accepted_per_position.resize(round_k);
+    for (std::uint32_t i = 0; i < round_k; ++i) {
         out.accepted_per_position[i] =
             static_cast<std::uint64_t>(std::max<std::int64_t>(0, values[4 + i]));
     }

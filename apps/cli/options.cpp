@@ -64,10 +64,12 @@ std::string usage_text(const char* argv0) {
            " <model.ninfer> (--prompt <text>|--messages <messages.json>)\n"
            "       [--max-context N] [--prefill-chunk N] [--max-new N] [--device N]\n"
            "       [--kv-dtype bf16|int8] [--mtp-draft-tokens 0..5] [--lm-head-draft]\n"
+           "       [--prompt-lookup-tokens 0..15 --prompt-lookup-min-match 1..64]\n"
            "       [--temperature F] [--top-p F] [--top-k N] [--min-p F]\n"
            "       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--stop-token-id N]... [--stop <text>]... [--reasoning-stop <text>]...\n"
-           "       [--raw-output] [--print-token-ids] [--no-thinking] [--no-cuda-graph] [--text-only]\n"
+           "       [--raw-output] [--print-token-ids] [--no-thinking] [--no-cuda-graph] "
+           "[--text-only]\n"
            "\n"
            "Streams answer content to stdout and reasoning plus diagnostics to stderr.\n"
            "Structured message content accepts text, image/image_url, and video/video_url parts;\n"
@@ -109,6 +111,16 @@ Options parse_options(int argc, char** argv) {
             options.mtp_draft_tokens = parse_u32(value(arg), "mtp-draft-tokens", true);
             if (options.mtp_draft_tokens > 5) {
                 throw std::invalid_argument("--mtp-draft-tokens must be in [0,5]");
+            }
+        } else if (arg == "--prompt-lookup-tokens") {
+            options.prompt_lookup_tokens = parse_u32(value(arg), "prompt-lookup-tokens", true);
+            if (options.prompt_lookup_tokens > 15) {
+                throw std::invalid_argument("--prompt-lookup-tokens must be in [0,15]");
+            }
+        } else if (arg == "--prompt-lookup-min-match") {
+            options.prompt_lookup_min_match = parse_u32(value(arg), "prompt-lookup-min-match");
+            if (options.prompt_lookup_min_match > 64) {
+                throw std::invalid_argument("--prompt-lookup-min-match must be in [1,64]");
             }
         } else if (arg == "--lm-head-draft") {
             options.proposal_head = ProposalHead::Optimized;
@@ -175,6 +187,10 @@ Options parse_options(int argc, char** argv) {
     if (options.proposal_head == ProposalHead::Optimized && options.mtp_draft_tokens == 0) {
         throw std::invalid_argument(
             "--lm-head-draft requires --mtp-draft-tokens greater than zero");
+    }
+    if ((options.prompt_lookup_tokens == 0) != (options.prompt_lookup_min_match == 0)) {
+        throw std::invalid_argument(
+            "--prompt-lookup-tokens and --prompt-lookup-min-match must be used together");
     }
     if (options.greedy) { options.sampling = SamplingParameters{}; }
     return options;

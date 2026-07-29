@@ -54,8 +54,8 @@ void mtp_prepare_verify_inputs(const Tensor& token, const Tensor& drafts, const 
                                cudaStream_t stream) {
     constexpr const char* op = "mtp_prepare_verify_inputs";
     const std::int32_t k     = drafts.ne[0];
-    if (k < 1 || k > 5) {
-        throw std::invalid_argument("mtp_prepare_verify_inputs: K must be in [1,5]");
+    if (k < 1 || k > 15) {
+        throw std::invalid_argument("mtp_prepare_verify_inputs: K must be in [1,15]");
     }
     require_scalar(token, DType::I32, op, "token");
     require_vector(drafts, DType::I32, k, op, "drafts");
@@ -74,7 +74,7 @@ void mtp_accept_tokens(const Tensor& target_tokens, const Tensor& logits, const 
                        cudaStream_t stream) {
     constexpr const char* op = "mtp_accept_tokens";
     const std::int32_t k     = drafts.ne[0];
-    if (k < 1 || k > 5) { throw std::invalid_argument("mtp_accept_tokens: K must be in [1,5]"); }
+    if (k < 1 || k > 15) { throw std::invalid_argument("mtp_accept_tokens: K must be in [1,15]"); }
     require_vector(target_tokens, DType::I32, k + 1, op, "target_tokens");
     require_dtype(logits, DType::BF16, op, "logits");
     if (logits.ne[0] <= 0 || logits.ne[1] < k + 1 || logits.ne[2] != 1 || logits.ne[3] != 1) {
@@ -90,7 +90,7 @@ void mtp_accept_tokens(const Tensor& target_tokens, const Tensor& logits, const 
     require_scalar(num_sampled, DType::I32, op, "num_sampled");
     require_scalar(accepted, DType::I32, op, "accepted");
     require_scalar(ar_pos, DType::I32, op, "ar_pos");
-    require_vector_at_least(stats, DType::I64, 4 + std::min(k, 5), op, "stats");
+    require_vector_at_least(stats, DType::I64, 4 + k, op, "stats");
     if (config == nullptr) {
         throw std::invalid_argument("mtp_accept_tokens: config must be non-null");
     }

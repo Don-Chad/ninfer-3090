@@ -99,8 +99,10 @@ Invoke-Limited -Executable $Bench -Arguments (
     $common + @(
         "--mtp-draft-tokens", "3",
         "--lm-head-draft",
+        "--prompt-lookup-tokens", "3",
+        "--prompt-lookup-min-match", "4",
         "--output-file", (Join-Path $Output "lookup-k3-min4.json")
     )
-) -Environment @{"NINFER_PROMPT_LOOKUP_MIN_MATCH" = "4"}
+)
 
 Write-RunLog "scheduled prompt-lookup run completed"

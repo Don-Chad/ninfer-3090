@@ -34,15 +34,18 @@ namespace ninfer::targets::qwen3_6::detail {
 
 template <>
 struct SequencePlanImpl<NINFER_QWEN36_VARIANT> {
-    std::uint32_t capacity      = 0;
-    std::uint32_t prefill_chunk = 0;
-    std::uint32_t mtp_k         = 0;
-    DType kv_dtype              = DType::BF16;
-    std::int32_t kv_quant_group = 0;
-    ProposalHead proposal_head  = ProposalHead::Full;
-    bool use_cuda_graph         = true;
-    bool text_only              = false;
-    int device                  = 0;
+    std::uint32_t capacity         = 0;
+    std::uint32_t prefill_chunk    = 0;
+    std::uint32_t mtp_k            = 0;
+    std::uint32_t lookup_k         = 0;
+    std::uint32_t round_k          = 0;
+    std::uint32_t lookup_min_match = 0;
+    DType kv_dtype                 = DType::BF16;
+    std::int32_t kv_quant_group    = 0;
+    ProposalHead proposal_head     = ProposalHead::Full;
+    bool use_cuda_graph            = true;
+    bool text_only                 = false;
+    int device                     = 0;
     NINFER_QWEN36_RUNTIME_NS::PersistentLayout persistent;
     std::size_t workspace_bytes          = 0;
     std::size_t graph_allowance_bytes    = 0;

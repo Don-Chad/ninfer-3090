@@ -15,7 +15,7 @@
 namespace ninfer::ops {
 
 inline constexpr int kMtpRoundAcceptedPerPosOffset = 4;
-inline constexpr int kMtpRoundAcceptedPerPosLimit  = 5;
+inline constexpr int kMtpRoundAcceptedPerPosLimit  = 15;
 
 __global__ void mtp_prepare_verify_inputs_kernel(
     const std::int32_t* token, const std::int32_t* drafts, const std::int32_t* length,
