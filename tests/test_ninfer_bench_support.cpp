@@ -111,6 +111,9 @@ int test_cli_contract() {
     failures += expect(parsed.max_context == std::optional<std::uint32_t>(4096), "max context");
     failures += expect(parsed.prefill_chunk == 128, "prefill chunk");
     failures += expect(parsed.kv_cache == ninfer::KvCacheStorage::Int8Group64, "INT8 KV");
+    const auto int4 = parse_for_test(
+        {"ninfer_bench", "--weights", "model.ninfer", "--kv-dtype", "int4"});
+    failures += expect(int4.kv_cache == ninfer::KvCacheStorage::Int4Group64, "INT4 KV");
     failures += expect(parsed.mtp_draft_tokens == 5, "MTP window");
     failures += expect(parsed.prompt_lookup_tokens == 15, "prompt lookup window");
     failures += expect(parsed.prompt_lookup_min_match == 4, "prompt lookup minimum match");

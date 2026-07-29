@@ -103,7 +103,7 @@ void launch_tc_partial_bf16(const Tensor& q, CacheInput input, const Tensor& pos
     CUDA_CHECK(cudaGetLastError());
 }
 
-template <typename Geometry, int TokenTile, typename CacheInput>
+template <typename Geometry, int TokenTile, bool PackedI4, typename CacheInput>
 void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, float scale,
                           KVCacheLayerView cache, std::int32_t padded_context,
                           std::int32_t max_context, std::int32_t implementation_window,
@@ -120,17 +120,17 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
         if constexpr (DynamicArena) {
             static const cudaError_t attr = cudaFuncSetAttribute(
                 gqa_attention_decode_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta,
-                                                     MinBlocksPerSm, KeyBlock, DynamicArena,
+                                                     MinBlocksPerSm, KeyBlock, DynamicArena, PackedI4,
                                                      CacheInput>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kDynamicBytes));
             CUDA_CHECK(attr);
         }
         gqa_attention_decode_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta, MinBlocksPerSm,
-                                             KeyBlock, DynamicArena, CacheInput>
+                                             KeyBlock, DynamicArena, PackedI4, CacheInput>
             <<<grid, WarpsPerCta * 32, kDynamicBytes, stream>>>(
                 static_cast<const __nv_bfloat16*>(q.data), input,
-                static_cast<const std::int32_t*>(pos.data), static_cast<std::int8_t*>(cache_k.data),
-                static_cast<std::int8_t*>(cache_v.data), static_cast<__half*>(cache_k_scale.data),
+                static_cast<const std::int32_t*>(pos.data), static_cast<std::uint8_t*>(cache_k.data),
+                static_cast<std::uint8_t*>(cache_v.data), static_cast<__half*>(cache_k_scale.data),
                 static_cast<__half*>(cache_v_scale.data), padded_context, max_context, scale,
                 static_cast<__nv_bfloat16*>(partial_acc.data), static_cast<float*>(partial_m.data),
                 static_cast<float*>(partial_l.data));
@@ -213,9 +213,13 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
 #define NINFER_GQA_SMALL_T_DISPATCH(TOKENS, WARPS)                                                 \
     do {                                                                                           \
         if (cache.dtype == DType::I8) {                                                            \
-            launch_tc_partial_i8<Geometry, (TOKENS)>(q, input, pos, scale, cache, padded_context,  \
-                                                     max_context, implementation_window, splits,   \
-                                                     partial_acc, partial_m, partial_l, stream);   \
+            launch_tc_partial_i8<Geometry, (TOKENS), false>(                                       \
+                q, input, pos, scale, cache, padded_context, max_context, implementation_window,   \
+                splits, partial_acc, partial_m, partial_l, stream);                                \
+        } else if (cache.dtype == DType::U8) {                                                     \
+            launch_tc_partial_i8<Geometry, (TOKENS), true>(                                        \
+                q, input, pos, scale, cache, padded_context, max_context, implementation_window,   \
+                splits, partial_acc, partial_m, partial_l, stream);                                \
         } else {                                                                                   \
             launch_tc_partial_bf16<Geometry, (TOKENS), (WARPS)>(                                   \
                 q, input, pos, scale, cache, padded_context, max_context, splits, partial_acc,     \
@@ -250,7 +254,7 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
     constexpr int kReduceBlock = 256;
     constexpr int kDChunk      = 64;
     const dim3 reduce_grid(Geometry::QHeads, div_up(kGqaHeadDim, kDChunk), q.ne[2]);
-    if (cache.dtype == DType::I8) {
+    if (cache.dtype == DType::I8 || cache.dtype == DType::U8) {
         gqa_attention_small_t_reduce_output_kernel<Geometry, kDChunk, true>
             <<<reduce_grid, kReduceBlock, 0, stream>>>(
                 static_cast<const __nv_bfloat16*>(partial_acc.data),

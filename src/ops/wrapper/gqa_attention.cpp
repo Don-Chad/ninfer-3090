@@ -52,7 +52,7 @@ void require_contiguous_nonnull(const Tensor& tensor, const char* op, const char
 }
 
 void validate_cache(const KVCacheLayerView& cache, std::int32_t kv_heads, const char* op) {
-    if ((cache.dtype != DType::BF16 && cache.dtype != DType::I8) ||
+    if ((cache.dtype != DType::BF16 && cache.dtype != DType::I8 && cache.dtype != DType::U8) ||
         cache.num_kv_heads != kv_heads || cache.head_dim != kHeadDim) {
         throw std::invalid_argument(std::string(op) + ": invalid KV cache geometry or dtype");
     }
@@ -62,17 +62,20 @@ void validate_cache(const KVCacheLayerView& cache, std::int32_t kv_heads, const 
     if (cache.dtype == DType::BF16 && cache.quant_group != 0) {
         throw std::invalid_argument(std::string(op) + ": BF16 KV cache must not have quant_group");
     }
-    if (cache.dtype == DType::I8 && cache.quant_group != kKvQuantGroup) {
-        throw std::invalid_argument(std::string(op) + ": I8 KV cache must use quant_group 64");
+    if ((cache.dtype == DType::I8 || cache.dtype == DType::U8) &&
+        cache.quant_group != kKvQuantGroup) {
+        throw std::invalid_argument(std::string(op) +
+                                    ": quantized KV cache must use quant_group 64");
     }
 
     const std::int32_t padded = checked_i32(cache.padded_context, op, "padded_context");
-    const DType code_dtype    = cache.dtype == DType::I8 ? DType::I8 : DType::BF16;
+    const DType code_dtype = cache.dtype;
     if (cache.k.dtype != code_dtype || cache.v.dtype != code_dtype) {
         throw std::invalid_argument(std::string(op) + ": invalid KV cache code dtype");
     }
-    require_shape(cache.k, kHeadDim, padded, kv_heads, 1, op, "cache k");
-    require_shape(cache.v, kHeadDim, padded, kv_heads, 1, op, "cache v");
+    const std::int32_t code_dim = cache.dtype == DType::U8 ? kHeadDim / 2 : kHeadDim;
+    require_shape(cache.k, code_dim, padded, kv_heads, 1, op, "cache k");
+    require_shape(cache.v, code_dim, padded, kv_heads, 1, op, "cache v");
     require_contiguous_nonnull(cache.k, op, "cache k");
     require_contiguous_nonnull(cache.v, op, "cache v");
 

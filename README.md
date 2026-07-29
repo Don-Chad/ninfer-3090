@@ -162,6 +162,32 @@ CUDA Graphs are enabled by default and should remain enabled for production thro
 `--no-cuda-graph` exists for diagnostics. For 35B-A3B on a 24 GB card, use `--kv-dtype int8`;
 BF16 KV substantially reduces available context.
 
+### Experimental rotated INT4 KV for long context
+
+`--kv-dtype int4` stores two signed 4-bit K/V codes per byte with FP16 group-64 scales. Keys and
+queries receive the same normalized 64-wide Walsh-Hadamard rotation before quantization, so their
+unquantized dot product is preserved while isolated key outliers are spread across the group.
+Values remain unrotated and are dequantized inside the fused attention kernel.
+
+Use this mode when context capacity matters more than short-context speculative throughput:
+
+```powershell
+.\ninfer.exe models\qwen3_6_35b_a3b.ninfer `
+  --prompt "Summarize the following repository..." `
+  --max-context 131072 --prefill-chunk 1024 --max-new 512 `
+  --kv-dtype int4 --mtp-draft-tokens 2 --lm-head-draft `
+  --no-cuda-graph --text-only
+```
+
+On the development RTX 3090, a 131,072-token allocation reserves 21.73 GiB and a 65,536-token
+prefill completed at 3,061.91 tok/s. A 180,224-token eager allocation also loaded and executed at
+21.98 GiB reserved, but 131,072 is the safer practical ceiling when about 22 GiB is available.
+Long-context CUDA Graphs require additional memory, so start with `--no-cuda-graph`.
+
+INT4 is not the default speed route. On the controlled 4K `tg128` MTP benchmark, rotated INT4
+reached 238.25 tok/s versus 261.10 tok/s for INT8 because its lower precision reduced proposal
+acceptance. Keep `--kv-dtype int8` for the established short-context throughput result.
+
 ## How performance is measured
 
 All release-candidate headline measurements were produced locally on one NVIDIA GeForce RTX 3090

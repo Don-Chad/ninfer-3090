@@ -1079,6 +1079,63 @@ int split_api_parity_case(DType cache_dtype, std::int32_t tokens, std::int32_t b
     return f;
 }
 
+int int4_split_api_smoke_case(std::int32_t tokens, std::int32_t base, std::uint32_t seed) {
+    const std::size_t qn =
+        static_cast<std::size_t>(kHeadDim) * kQHeads * static_cast<std::size_t>(tokens);
+    const std::size_t kvn =
+        static_cast<std::size_t>(kHeadDim) * kKVHeads * static_cast<std::size_t>(tokens);
+    const std::int32_t total          = base + tokens;
+    const std::int32_t padded_context = align_up_128(total);
+    std::vector<float> q(qn), k(kvn), v(kvn);
+    fill_uniform(q, seed, -0.25f, 0.25f);
+    fill_uniform(k, seed + 1u, -0.25f, 0.25f);
+    fill_uniform(v, seed + 2u, -1.0f, 1.0f);
+    round_to_bf16(q);
+    round_to_bf16(k);
+    round_to_bf16(v);
+    std::vector<int> positions(static_cast<std::size_t>(tokens));
+    for (std::int32_t t = 0; t < tokens; ++t) { positions[static_cast<std::size_t>(t)] = base + t; }
+
+    DBuf dq = to_device_bf16(q);
+    DBuf dk = to_device_bf16(k);
+    DBuf dv = to_device_bf16(v);
+    DBuf dp = to_device_i32(positions);
+    DBuf da(qn * sizeof(std::uint16_t));
+    DBuf db(qn * sizeof(std::uint16_t));
+    WorkspaceArena ws(kGqaWorkspaceBytes);
+
+    const std::size_t packed_n =
+        static_cast<std::size_t>(kHeadDim / 2) * padded_context * kKVHeads;
+    const std::size_t scale_n = scale_elements(padded_context);
+    const std::size_t arena_bytes =
+        2 * (packed_n + 256) + 2 * (scale_n * sizeof(std::uint16_t) + 256) + 4096;
+    DeviceArena a_arena(arena_bytes);
+    DeviceArena b_arena(arena_bytes);
+    KVCache a_cache(a_arena, 1, static_cast<std::uint32_t>(total), kKVHeads, kHeadDim, DType::U8);
+    KVCache b_cache(b_arena, 1, static_cast<std::uint32_t>(total), kKVHeads, kHeadDim, DType::U8);
+    cudaMemset(a_cache.k[0].data, 0, packed_n);
+    cudaMemset(a_cache.v[0].data, 0, packed_n);
+    cudaMemset(b_cache.k[0].data, 0, packed_n);
+    cudaMemset(b_cache.v[0].data, 0, packed_n);
+
+    Tensor tq(dq.p, DType::BF16, {kHeadDim, kQHeads, tokens});
+    Tensor tk(dk.p, DType::BF16, {kHeadDim, kKVHeads, tokens});
+    Tensor tv(dv.p, DType::BF16, {kHeadDim, kKVHeads, tokens});
+    Tensor tp(dp.p, DType::I32, {tokens});
+    Tensor ta(da.p, DType::BF16, {kHeadDim, kQHeads, tokens});
+    Tensor tb(db.p, DType::BF16, {kHeadDim, kQHeads, tokens});
+    const auto envelope = exact_envelope(static_cast<std::uint32_t>(total));
+    ops::gqa_attention(tq, tk, tv, tp, kScale, a_cache.layer_view(0), envelope, ws, ta, nullptr);
+    ops::gqa_kv_append(tk, tv, tp, b_cache.layer_view(0), nullptr);
+    ops::gqa_attention_cached(tq, tp, kScale, b_cache.layer_view(0), envelope, ws, tb, nullptr);
+    cudaDeviceSynchronize();
+
+    const std::string label =
+        "gqa int4 split API base=" + std::to_string(base) + " T=" + std::to_string(tokens);
+    return verify(label.c_str(), from_device_bf16(db, qn), from_device_bf16(da, qn),
+                  Tolerance::attention_bf16());
+}
+
 int one_prefill_decode_consistency_case(std::int32_t tokens, std::uint32_t seed) {
     const std::size_t q_prefill_n =
         static_cast<std::size_t>(kHeadDim) * kQHeads * static_cast<std::size_t>(tokens);
@@ -1543,6 +1600,8 @@ int main(int argc, char** argv) {
         f += split_api_parity_case(DType::I8, 128, 17, 1404u);
         f += split_api_parity_case(DType::BF16, 1024, 17, 1405u, true);
         f += split_api_parity_case(DType::I8, 1024, 17, 1406u, true);
+        f += int4_split_api_smoke_case(1, 17, 1501u);
+        f += int4_split_api_smoke_case(128, 17, 1502u);
         f += one_decode_case(1, 11u);
         f += one_decode_case(17, 17u);
         f += one_decode_case(2048, 23u);

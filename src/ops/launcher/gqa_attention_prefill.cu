@@ -24,26 +24,37 @@ void gqa_attention_prompt_attention_launch_for(const Tensor& q, const Tensor& po
                              cudaFuncAttributeMaxDynamicSharedMemorySize, kGqaPrefillSmemBytes);
     CUDA_CHECK(attr_bf16);
     static const cudaError_t attr_i8 =
-        cudaFuncSetAttribute(gqa_attention_prefill_i8_kernel<Geometry>,
+        cudaFuncSetAttribute(gqa_attention_prefill_i8_kernel<Geometry, false>,
                              cudaFuncAttributeMaxDynamicSharedMemorySize, kGqaPrefillI8SmemBytes);
     CUDA_CHECK(attr_i8);
+    static const cudaError_t attr_i4 =
+        cudaFuncSetAttribute(gqa_attention_prefill_i8_kernel<Geometry, true>,
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, kGqaPrefillI8SmemBytes);
+    CUDA_CHECK(attr_i4);
 
     const auto tokens         = static_cast<std::int32_t>(q.ne[2]);
     const auto padded_context = static_cast<std::int32_t>(cache.padded_context);
-    if (cache.dtype == DType::I8) {
+    if (cache.dtype == DType::I8 || cache.dtype == DType::U8) {
         const dim3 attention_grid(static_cast<unsigned>(div_up(tokens, kGqaPrefillI8Br)),
                                   static_cast<unsigned>(Geometry::QHeads), 1u);
         const Tensor& cache_k_scale = cache.k_scale;
         const Tensor& cache_v_scale = cache.v_scale;
-        gqa_attention_prefill_i8_kernel<Geometry>
-            <<<attention_grid, kGqaPrefillI8Threads, kGqaPrefillI8SmemBytes, stream>>>(
-                static_cast<const __nv_bfloat16*>(q.data),
-                static_cast<const std::int8_t*>(cache_k.data),
-                static_cast<const std::int8_t*>(cache_v.data),
-                static_cast<const __half*>(cache_k_scale.data),
-                static_cast<const __half*>(cache_v_scale.data),
-                static_cast<const std::int32_t*>(positions.data), scale,
-                static_cast<__nv_bfloat16*>(out.data), tokens, padded_context);
+        auto launch = [&]<bool PackedI4>() {
+            gqa_attention_prefill_i8_kernel<Geometry, PackedI4>
+                <<<attention_grid, kGqaPrefillI8Threads, kGqaPrefillI8SmemBytes, stream>>>(
+                    static_cast<const __nv_bfloat16*>(q.data),
+                    static_cast<const std::uint8_t*>(cache_k.data),
+                    static_cast<const std::uint8_t*>(cache_v.data),
+                    static_cast<const __half*>(cache_k_scale.data),
+                    static_cast<const __half*>(cache_v_scale.data),
+                    static_cast<const std::int32_t*>(positions.data), scale,
+                    static_cast<__nv_bfloat16*>(out.data), tokens, padded_context);
+        };
+        if (cache.dtype == DType::U8) {
+            launch.template operator()<true>();
+        } else {
+            launch.template operator()<false>();
+        }
     } else {
         const dim3 attention_grid(static_cast<unsigned>(div_up(tokens, kGqaPrefillBr)),
                                   static_cast<unsigned>(Geometry::QHeads), 1u);
@@ -65,7 +76,7 @@ void gqa_kv_append_launch_for(const Tensor& k, const Tensor& v, const Tensor& po
     const auto padded_context = static_cast<std::int32_t>(cache.padded_context);
     Tensor& cache_k           = cache.k;
     Tensor& cache_v           = cache.v;
-    if (cache.dtype == DType::I8) {
+    if (cache.dtype == DType::I8 || cache.dtype == DType::U8) {
         Tensor& cache_k_scale    = cache.k_scale;
         Tensor& cache_v_scale    = cache.v_scale;
         constexpr int kFillBlock = 256;
@@ -74,12 +85,22 @@ void gqa_kv_append_launch_for(const Tensor& k, const Tensor& v, const Tensor& po
             static_cast<std::int64_t>(tokens) * Geometry::KVHeads * kGqaKvQuantGroups;
         const int fill_grid =
             static_cast<int>(div_up(fill_units, static_cast<std::int64_t>(kFillWarps)));
-        gqa_attention_prefill_fill_i8_kernel<Geometry><<<fill_grid, kFillBlock, 0, stream>>>(
-            static_cast<const __nv_bfloat16*>(k.data), static_cast<const __nv_bfloat16*>(v.data),
-            static_cast<const std::int32_t*>(positions.data),
-            static_cast<std::int8_t*>(cache_k.data), static_cast<std::int8_t*>(cache_v.data),
-            static_cast<__half*>(cache_k_scale.data), static_cast<__half*>(cache_v_scale.data),
-            tokens, padded_context);
+        auto launch = [&]<bool PackedI4>() {
+            gqa_attention_prefill_fill_i8_kernel<Geometry, PackedI4>
+                <<<fill_grid, kFillBlock, 0, stream>>>(
+                    static_cast<const __nv_bfloat16*>(k.data),
+                    static_cast<const __nv_bfloat16*>(v.data),
+                    static_cast<const std::int32_t*>(positions.data),
+                    static_cast<std::uint8_t*>(cache_k.data),
+                    static_cast<std::uint8_t*>(cache_v.data),
+                    static_cast<__half*>(cache_k_scale.data),
+                    static_cast<__half*>(cache_v_scale.data), tokens, padded_context);
+        };
+        if (cache.dtype == DType::U8) {
+            launch.template operator()<true>();
+        } else {
+            launch.template operator()<false>();
+        }
         CUDA_CHECK(cudaGetLastError());
     } else {
         constexpr int kBlock           = 256;

@@ -112,5 +112,27 @@ int main() {
         std::cerr << "INT8 physical planes alias\n";
     }
 
+    auto int4_plan = plan_cache(1, 8, 2, 64, ninfer::DType::U8);
+    ninfer::DeviceArena int4_arena(int4_plan.bytes);
+    ninfer::KVCache int4_cache({int4_arena.base(), int4_arena.capacity()}, int4_plan.layout);
+    const ninfer::KVCacheLayerView int4 = int4_cache.layer_view(0);
+    failures += check_shape(int4.k, {32, 128, 2, 1}, "int4 K");
+    failures += check_shape(int4.v, {32, 128, 2, 1}, "int4 V");
+    failures += check_shape(int4.k_scale, {1, 128, 2, 1}, "int4 K scale");
+    failures += check_shape(int4.v_scale, {1, 128, 2, 1}, "int4 V scale");
+    failures += expect_size(int4.quant_group, ninfer::kKvQuantGroup, "int4 quant group");
+    if (int4.dtype != ninfer::DType::U8 || int4.k.dtype != ninfer::DType::U8 ||
+        int4.v.dtype != ninfer::DType::U8 || int4.k_scale.dtype != ninfer::DType::FP16 ||
+        int4.v_scale.dtype != ninfer::DType::FP16) {
+        ++failures;
+        std::cerr << "INT4 layer view plane dtype mismatch\n";
+    }
+    const std::size_t int8_payload = int8_plan.layout.payload_bytes();
+    const std::size_t int4_payload = int4_plan.layout.payload_bytes();
+    if (int4_payload >= int8_payload) {
+        ++failures;
+        std::cerr << "INT4 payload did not shrink versus INT8\n";
+    }
+
     return failures == 0 ? 0 : fail("kv cache test failed");
 }

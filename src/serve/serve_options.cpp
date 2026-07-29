@@ -47,6 +47,7 @@ KvCacheStorage parse_kv_dtype(const char* text) {
     const std::string value(text);
     if (value == "bf16") { return KvCacheStorage::BFloat16; }
     if (value == "int8") { return KvCacheStorage::Int8Group64; }
+    if (value == "int4") { return KvCacheStorage::Int4Group64; }
     throw std::invalid_argument("invalid kv-dtype: " + value);
 }
 
@@ -57,7 +58,7 @@ std::string serve_usage_text(const char* argv0) {
            " <model.ninfer> [--host H] [--port N] [--api-key KEY] "
            "[--model-id ID] [--max-context N] [--prefill-chunk N] [--device N] "
            "[--max-request-mib N] [--request-log-jsonl FILE] "
-           "[--kv-dtype bf16|int8] [--mtp-draft-tokens N] [--default-max-tokens N] "
+           "[--kv-dtype bf16|int8|int4] [--mtp-draft-tokens N] [--default-max-tokens N] "
            "[--prompt-lookup-tokens N --prompt-lookup-min-match N] "
            "[--prompt-lookup-auto --prompt-lookup-min-context N] "
            "[--no-cuda-graph] [--no-prefix-reuse] [--text-only] "

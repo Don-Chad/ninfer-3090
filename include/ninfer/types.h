@@ -18,6 +18,7 @@ using TokenId = std::int32_t;
 enum class KvCacheStorage : std::uint8_t {
     BFloat16,
     Int8Group64,
+    Int4Group64,
 };
 
 enum class ProposalHead : std::uint8_t {

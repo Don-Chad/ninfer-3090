@@ -29,11 +29,13 @@ std::int32_t normalize_quant_group(DType dtype, std::int32_t quant_group, std::i
         }
         return 0;
     }
-    if (dtype != DType::I8) { throw std::invalid_argument("KVCache dtype must be BF16 or I8"); }
+    if (dtype != DType::I8 && dtype != DType::U8) {
+        throw std::invalid_argument("KVCache dtype must be BF16, I8, or packed U8");
+    }
 
     const std::int32_t group = quant_group == 0 ? kKvQuantGroup : quant_group;
     if (group != kKvQuantGroup) {
-        throw std::invalid_argument("KVCache I8 mode requires quant_group 64");
+        throw std::invalid_argument("KVCache quantized mode requires quant_group 64");
     }
     if (head_dim % group != 0) {
         throw std::invalid_argument("KVCache head_dim must be divisible by quant_group");
@@ -73,8 +75,10 @@ KVCacheLayout plan_kv_cache(LayoutBuilder& builder, std::uint32_t full_layers,
     layout.quant_group    = normalize_quant_group(dtype_in, quant_group_in, head_dim_in);
 
     const auto padded_context_i32 = static_cast<std::int32_t>(layout.padded_context);
-    const Tensor code_shape(nullptr, dtype_in, {head_dim_in, padded_context_i32, num_kv_heads_in});
-    const bool quantized      = dtype_in == DType::I8;
+    const bool packed_i4      = dtype_in == DType::U8;
+    const std::int32_t code_dim = packed_i4 ? head_dim_in / 2 : head_dim_in;
+    const Tensor code_shape(nullptr, dtype_in, {code_dim, padded_context_i32, num_kv_heads_in});
+    const bool quantized      = dtype_in == DType::I8 || packed_i4;
     const std::int32_t groups = quantized ? head_dim_in / layout.quant_group : 0;
     const std::size_t scale_bytes =
         quantized
@@ -116,21 +120,23 @@ KVCache::KVCache(DeviceSpan backing, const KVCacheLayout& layout)
       quant_group(layout.quant_group) {
     const auto layers = layout.k.size();
     if (layers == 0 || layout.v.size() != layers ||
-        (dtype == DType::I8 &&
+        ((dtype == DType::I8 || dtype == DType::U8) &&
          (layout.k_scale.size() != layers || layout.v_scale.size() != layers)) ||
-        (dtype != DType::I8 && (!layout.k_scale.empty() || !layout.v_scale.empty()))) {
+        (dtype == DType::BF16 && (!layout.k_scale.empty() || !layout.v_scale.empty()))) {
         throw std::invalid_argument("KVCache layout plane counts are inconsistent");
     }
     const auto padded = static_cast<std::int32_t>(padded_context);
-    const auto groups = dtype == DType::I8 ? head_dim / quant_group : 0;
+    const bool quantized = dtype == DType::I8 || dtype == DType::U8;
+    const auto groups = quantized ? head_dim / quant_group : 0;
+    const auto code_dim = dtype == DType::U8 ? head_dim / 2 : head_dim;
     k.reserve(layers);
     v.reserve(layers);
     k_scale.reserve(layout.k_scale.size());
     v_scale.reserve(layout.v_scale.size());
     for (std::size_t layer = 0; layer < layers; ++layer) {
-        k.push_back(bind_tensor(backing, layout.k[layer], dtype, {head_dim, padded, num_kv_heads}));
-        v.push_back(bind_tensor(backing, layout.v[layer], dtype, {head_dim, padded, num_kv_heads}));
-        if (dtype == DType::I8) {
+        k.push_back(bind_tensor(backing, layout.k[layer], dtype, {code_dim, padded, num_kv_heads}));
+        v.push_back(bind_tensor(backing, layout.v[layer], dtype, {code_dim, padded, num_kv_heads}));
+        if (quantized) {
             k_scale.push_back(bind_tensor(backing, layout.k_scale[layer], DType::FP16,
                                           {groups, padded, num_kv_heads}));
             v_scale.push_back(bind_tensor(backing, layout.v_scale[layer], DType::FP16,
@@ -153,7 +159,7 @@ KVCacheLayerView KVCache::layer_view(std::uint32_t layer) const {
         .dtype          = dtype,
         .quant_group    = quant_group,
     };
-    if (dtype == DType::I8) {
+    if (dtype == DType::I8 || dtype == DType::U8) {
         view.k_scale = k_scale[layer];
         view.v_scale = v_scale[layer];
     }

@@ -20,12 +20,22 @@ namespace ninfer::ops {
 inline constexpr int kGqaKvQuantHeadDim = 256;
 inline constexpr int kGqaKvQuantGroup   = 64;
 inline constexpr int kGqaKvQuantGroups  = kGqaKvQuantHeadDim / kGqaKvQuantGroup;
+inline constexpr int kGqaKvPackedHeadDim = kGqaKvQuantHeadDim / 2;
 
 __device__ __forceinline__ std::int64_t gqa_kv_quant_code_index(int kv_head, int d, int position,
                                                                 int padded_context) {
     return static_cast<std::int64_t>(d) + static_cast<std::int64_t>(kGqaKvQuantHeadDim) *
                                               (static_cast<std::int64_t>(position) +
                                                static_cast<std::int64_t>(padded_context) * kv_head);
+}
+
+__device__ __forceinline__ std::int64_t gqa_kv_i4_code_index(int kv_head, int d_pair,
+                                                              int position,
+                                                              int padded_context) {
+    return static_cast<std::int64_t>(d_pair) +
+           static_cast<std::int64_t>(kGqaKvPackedHeadDim) *
+               (static_cast<std::int64_t>(position) +
+                static_cast<std::int64_t>(padded_context) * kv_head);
 }
 
 __device__ __forceinline__ std::int64_t gqa_kv_quant_scale_index(int kv_head, int group,
@@ -52,6 +62,57 @@ __device__ __forceinline__ std::int8_t gqa_kv_quant_code(float x, float inv_scal
     int q = __float2int_rn(x * inv_scale);
     q     = max(-127, min(127, q));
     return static_cast<std::int8_t>(q);
+}
+
+__device__ __forceinline__ std::int8_t gqa_kv_quant_i4_code(float x, float inv_scale) {
+    if (inv_scale == 0.0f) { return static_cast<std::int8_t>(0); }
+    int q = __float2int_rn(x * inv_scale);
+    q     = max(-7, min(7, q));
+    return static_cast<std::int8_t>(q);
+}
+
+__device__ __forceinline__ std::uint8_t gqa_kv_pack_i4(std::int8_t lo, std::int8_t hi) {
+    return static_cast<std::uint8_t>((static_cast<unsigned>(lo) & 0x0fu) |
+                                     ((static_cast<unsigned>(hi) & 0x0fu) << 4));
+}
+
+__device__ __forceinline__ std::int8_t gqa_kv_unpack_i4(std::uint8_t packed, int high) {
+    const unsigned nibble = high ? (packed >> 4) : (packed & 0x0fu);
+    return static_cast<std::int8_t>(static_cast<int>(nibble ^ 8u) - 8);
+}
+
+// Normalized Walsh-Hadamard transform over one 64-value quantization group.
+// Each warp lane owns dimensions lane and lane+32. Applying the same orthogonal
+// transform to Q and K preserves their dot product while spreading isolated
+// outliers before low-bit quantization.
+__device__ __forceinline__ void gqa_kv_hadamard64(float& x0, float& x1,
+                                                  unsigned mask = 0xffffffffu) {
+#pragma unroll
+    for (int offset = 1; offset < 32; offset <<= 1) {
+        const float y0 = __shfl_xor_sync(mask, x0, offset);
+        const float y1 = __shfl_xor_sync(mask, x1, offset);
+        const bool hi  = (static_cast<int>(threadIdx.x) & offset) != 0;
+        x0             = hi ? y0 - x0 : x0 + y0;
+        x1             = hi ? y1 - x1 : x1 + y1;
+    }
+    const float a = x0;
+    const float b = x1;
+    x0            = (a + b) * 0.125f;
+    x1            = (a - b) * 0.125f;
+}
+
+// Expand 16 consecutive packed INT4 values into the existing INT8 shared-memory
+// staging format. Keeping the staged representation identical lets the mature
+// SM86 s8 tensor-core QK path serve both cache formats.
+__device__ __forceinline__ void gqa_kv_unpack_i4x16(const std::uint8_t* src8,
+                                                    std::int8_t* dst16) {
+    const std::uint64_t raw = load_vec<std::uint64_t>(src8);
+    const auto* bytes       = reinterpret_cast<const std::uint8_t*>(&raw);
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        dst16[2 * i]     = gqa_kv_unpack_i4(bytes[i], 0);
+        dst16[2 * i + 1] = gqa_kv_unpack_i4(bytes[i], 1);
+    }
 }
 
 // Dequantize 8 consecutive int8 codes (dims [d, d+8), aligned to a multiple of 8
