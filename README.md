@@ -9,13 +9,15 @@ decoding, and adaptive prompt lookup for repetitive code and editing workloads.
 
 | Qwen3.6-35B-A3B mode | Workload | Result |
 |---|---|---:|
-| **Adaptive hybrid K15/K8/K5 + MTP-3** | 1,500-token repeated-code prompt + 1,500 generated tokens | **399.16 ± 2.33 tok/s** |
+| **Adaptive hybrid K15/K8/K5 + MTP-3, best clean run** | 1,500-token repeated-code prompt + 1,500 generated tokens | **406.44 ± 0.79 tok/s** |
+| **Adaptive hybrid, v0.3.0 release rerun** | same fixed fixture and settings | **399.16 ± 2.33 tok/s** |
 | **MTP-2** | canonical `tg128` fixture | **262.05 ± 1.62 tok/s** |
 | **MTP-3** | canonical `tg128` fixture | **260.55 ± 0.92 tok/s** |
 | **Ordinary decode** | canonical `tg128` fixture | **187.24 ± 0.27 tok/s** |
 | **Prefill** | 1,500-token prompt through first token | **2,034.17 tok/s / 737.41 ms** |
 
-The 399.16 tok/s result is a real end-to-end decode measurement, but it is intentionally labeled:
+The 406.44 tok/s best and 399.16 tok/s release rerun are real end-to-end decode measurements, but
+they are intentionally labeled:
 the input contains repeated Python code and gives prompt lookup useful continuations. It is not
 presented as universal model throughput. On ordinary non-repetitive text, use the canonical MTP
 numbers as the better expectation.
@@ -93,8 +95,9 @@ n-gram coverage. Prompt lookup activates at 25% coverage; generated boilerplate 
 ordinary request into lookup halfway through its answer. When active, lookup tries K=15, K=8, and
 K=5 captured CUDA Graphs. A guarded lazy realignment path restores MTP after lookup stops.
 
-This is the mode that reaches **399.16 tok/s** on the long repeated-code fixture while retaining
-MTP as the normal path for non-repetitive contexts.
+This mode reached **406.44 ± 0.79 tok/s** in its best clean five-run measurement and
+**399.16 ± 2.33 tok/s** in the final release rerun, while retaining MTP as the normal path for
+non-repetitive contexts.
 
 ### MTP speculative decoding — recommended for ordinary text
 
@@ -181,6 +184,10 @@ This run measured:
 - 13.44 mean output tokens per speculative round
 - 36.13 ms mean speculative-round latency
 
+The best clean run of the same fixed fixture and command measured **406.44 ± 0.79 output tok/s**.
+The release headline shows both values so the peak is visible without disguising run-to-run
+variation.
+
 The benchmark excludes model loading and CUDA Graph construction. Prefill time includes prompt
 execution through the first generated token; decode throughput covers the following fixed number
 of generated tokens. Reports include every repetition, acceptance counts, memory usage, hardware,
@@ -195,8 +202,9 @@ runtime version, and the exact command.
 | 1,500 tokens | **737.41 ms** | prefill-only release benchmark |
 | 1,500 tokens + hybrid decode | **751.75 ms** | long combined benchmark |
 
-Model loading is separate. On the 35B-A3B artifact, previously measured cold engine construction
-was approximately 4.7–4.9 seconds; subsequent requests use the resident model and captured graphs.
+Model loading is separate. The release TTFT run measured 5.42 seconds for cold engine construction,
+including 4.28 seconds of host-to-device upload; subsequent requests use the resident model and
+captured graphs.
 
 ## OpenAI- and Anthropic-compatible server
 

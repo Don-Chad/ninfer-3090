@@ -360,10 +360,11 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
         // apiece for ordinary-only capture. The 35B K=3/C=4096 public benchmark measured
         // 123,277,312 bytes across its 12 ordinary/aligned and short-window executables. Current
         // Windows drivers can consume about 104 MiB for the six K=2 executables, so an MTP-only
-        // program reserves 20 MiB per executable. Hybrid lookup captures have a larger graph set
-        // but retain the measured 12 MiB average. Long executables can require substantially more.
+        // program reserves 20 MiB per executable. Hybrid lookup captures have a larger graph set;
+        // CUDA 13.0 on Linux measured just over the former 12 MiB average, so reserve 13 MiB per
+        // short executable. Long executables can require substantially more.
         const std::size_t short_graph_mib =
-            impl->mtp_k == 0 ? 28ULL : impl->lookup_k == 0 ? 20ULL : 12ULL;
+            impl->mtp_k == 0 ? 28ULL : impl->lookup_k == 0 ? 20ULL : 13ULL;
         const std::size_t ordinary_graph_mib = short_graph_mib;
         impl->graph_allowance_bytes          = ordinary_graphs * ordinary_graph_mib * kMiB;
         for (const GraphFrontierRange range : mtp_graph_ranges(impl->capacity, impl->mtp_k)) {
@@ -375,12 +376,12 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
         for (const GraphFrontierRange range : mtp_graph_ranges(impl->capacity, impl->lookup_k)) {
             const std::uint64_t final_visible =
                 static_cast<std::uint64_t>(range.max) + 2ULL * impl->lookup_k;
-            impl->graph_allowance_bytes += (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
+            impl->graph_allowance_bytes += (final_visible <= 4096 ? 13ULL : 82ULL) * kMiB;
         }
         if (impl->lookup_k > 8) {
             for (const GraphFrontierRange range : mtp_graph_ranges(impl->capacity, 8)) {
                 const std::uint64_t final_visible = static_cast<std::uint64_t>(range.max) + 16ULL;
-                impl->graph_allowance_bytes += (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
+                impl->graph_allowance_bytes += (final_visible <= 4096 ? 13ULL : 82ULL) * kMiB;
             }
         }
         if (impl->lookup_k > kMaximumMtpDraftTokens) {
@@ -388,7 +389,7 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
                  mtp_graph_ranges(impl->capacity, kMaximumMtpDraftTokens)) {
                 const std::uint64_t final_visible =
                     static_cast<std::uint64_t>(range.max) + 2ULL * kMaximumMtpDraftTokens;
-                impl->graph_allowance_bytes += (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
+                impl->graph_allowance_bytes += (final_visible <= 4096 ? 13ULL : 82ULL) * kMiB;
             }
         }
     }
