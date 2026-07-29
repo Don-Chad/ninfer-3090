@@ -358,15 +358,19 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
         // Cold full-model capture also materializes lazy CUDA module state. The 35B K=0/C=4096
         // path consumed 101,707,776 bytes across four ordinary executables, so reserve 28 MiB
         // apiece for ordinary-only capture. The 35B K=3/C=4096 public benchmark measured
-        // 123,277,312 bytes across its 12 ordinary/aligned and short-window executables; retain
-        // its tighter 12 MiB per-executable budget. Long MTP executables also trigger
-        // substantially larger driver allocations.
-        const std::size_t ordinary_graph_mib = impl->mtp_k == 0 ? 28ULL : 12ULL;
+        // 123,277,312 bytes across its 12 ordinary/aligned and short-window executables. Current
+        // Windows drivers can consume about 104 MiB for the six K=2 executables, so an MTP-only
+        // program reserves 20 MiB per executable. Hybrid lookup captures have a larger graph set
+        // but retain the measured 12 MiB average. Long executables can require substantially more.
+        const std::size_t short_graph_mib =
+            impl->mtp_k == 0 ? 28ULL : impl->lookup_k == 0 ? 20ULL : 12ULL;
+        const std::size_t ordinary_graph_mib = short_graph_mib;
         impl->graph_allowance_bytes          = ordinary_graphs * ordinary_graph_mib * kMiB;
         for (const GraphFrontierRange range : mtp_graph_ranges(impl->capacity, impl->mtp_k)) {
             const std::uint64_t final_visible =
                 static_cast<std::uint64_t>(range.max) + 2ULL * impl->mtp_k;
-            impl->graph_allowance_bytes += (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
+            impl->graph_allowance_bytes +=
+                (final_visible <= 4096 ? short_graph_mib : 82ULL) * kMiB;
         }
         for (const GraphFrontierRange range : mtp_graph_ranges(impl->capacity, impl->lookup_k)) {
             const std::uint64_t final_visible =
