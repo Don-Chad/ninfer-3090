@@ -29,8 +29,16 @@ function Invoke-Limited {
         [Environment]::SetEnvironmentVariable($key, $Environment[$key], "Process")
     }
     try {
-        $process = Start-Process -FilePath $Executable -ArgumentList $Arguments `
-            -WorkingDirectory $Repo -WindowStyle Hidden -PassThru
+        $startParameters = @{
+            FilePath = $Executable
+            WorkingDirectory = $Repo
+            WindowStyle = "Hidden"
+            PassThru = $true
+        }
+        if ($Arguments.Count -gt 0) {
+            $startParameters.ArgumentList = $Arguments
+        }
+        $process = Start-Process @startParameters
         if (-not $process.WaitForExit($ProcessTimeoutSeconds * 1000)) {
             Stop-Process -Id $process.Id -Force
             throw "process timed out after $ProcessTimeoutSeconds seconds: $Executable"
