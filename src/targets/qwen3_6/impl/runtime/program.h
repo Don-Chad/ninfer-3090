@@ -139,6 +139,8 @@ public:
     const ProposalHead proposal_head;
     const bool use_cuda_graph;
     const std::uint32_t prompt_lookup_min_match;
+    const std::uint32_t prompt_lookup_min_context;
+    const bool prompt_lookup_auto;
     const std::size_t kv_payload_bytes;
     const std::size_t graph_allowance_bytes;
 
@@ -169,14 +171,17 @@ public:
     std::uint32_t S     = 0;
     std::vector<TokenId> ledger;
     qwen3_6::detail::ResidentPrefixIdentity prefix_identity;
-    std::int32_t rope_delta          = 0;
-    std::int32_t current_gdn_slot    = 0;
-    std::uint32_t text_kv_valid      = 0;
-    std::uint32_t mtp_kv_valid       = 0;
-    std::uint32_t lookup_realign_end = 0;
-    bool proposal_ready              = false;
-    bool lookup_realign_pending      = false;
-    bool tail_hidden_valid           = false;
+    std::int32_t rope_delta               = 0;
+    std::int32_t current_gdn_slot         = 0;
+    std::uint32_t text_kv_valid           = 0;
+    std::uint32_t mtp_kv_valid            = 0;
+    std::uint32_t lookup_realign_end      = 0;
+    bool proposal_ready                   = false;
+    bool lookup_realign_pending           = false;
+    bool prompt_lookup_auto_active        = false;
+    std::uint32_t next_prompt_lookup_scan = 0;
+    double prompt_lookup_repetition       = 0.0;
+    bool tail_hidden_valid                = false;
     PrefixCheckpoint boundary;
     PendingCandidate pending;
     GenerationTimings timings;

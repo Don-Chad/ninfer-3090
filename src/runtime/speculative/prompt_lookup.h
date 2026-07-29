@@ -25,4 +25,8 @@ struct PromptLookupMatch {
                                                    std::uint32_t min_match_tokens,
                                                    std::uint32_t max_match_tokens = 64);
 
+// Fraction of n-gram starts whose rolling hash has appeared earlier in history.
+[[nodiscard]] double prompt_repetition_coverage(std::span<const TokenId> history,
+                                                std::uint32_t ngram_tokens = 15);
+
 } // namespace ninfer::runtime

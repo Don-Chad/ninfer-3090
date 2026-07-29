@@ -30,6 +30,8 @@ struct ServeOptions {
     int mtp_draft_tokens          = 0;
     int prompt_lookup_tokens      = 0;
     int prompt_lookup_min_match   = 0;
+    int prompt_lookup_min_context = 1000;
+    bool prompt_lookup_auto       = false;
     KvCacheStorage kv_cache       = KvCacheStorage::BFloat16;
     bool use_cuda_graph           = true;
     bool text_only                = false;

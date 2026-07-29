@@ -87,6 +87,9 @@ int test_cli_contract() {
         "15",
         "--prompt-lookup-min-match",
         "4",
+        "--prompt-lookup-auto",
+        "--prompt-lookup-min-context",
+        "1000",
         "--lm-head-draft",
         "--device",
         "1",
@@ -111,6 +114,8 @@ int test_cli_contract() {
     failures += expect(parsed.mtp_draft_tokens == 5, "MTP window");
     failures += expect(parsed.prompt_lookup_tokens == 15, "prompt lookup window");
     failures += expect(parsed.prompt_lookup_min_match == 4, "prompt lookup minimum match");
+    failures += expect(parsed.prompt_lookup_auto && parsed.prompt_lookup_min_context == 1000,
+                       "automatic prompt lookup settings");
     failures +=
         expect(parsed.proposal_head == ninfer::ProposalHead::Optimized, "optimized proposal head");
     failures += expect(parsed.device == 1 && !parsed.use_cuda_graph && parsed.text_only,

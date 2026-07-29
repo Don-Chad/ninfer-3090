@@ -59,6 +59,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-request-mib N] [--request-log-jsonl FILE] "
            "[--kv-dtype bf16|int8] [--mtp-draft-tokens N] [--default-max-tokens N] "
            "[--prompt-lookup-tokens N --prompt-lookup-min-match N] "
+           "[--prompt-lookup-auto --prompt-lookup-min-context N] "
            "[--no-cuda-graph] [--no-prefix-reuse] [--text-only] "
            "[--lm-head-draft] [--no-thinking] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--presence-penalty F] "
@@ -140,6 +141,11 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--prompt-lookup-min-match") {
             options.prompt_lookup_min_match = parse_nonnegative_int(
                 require_value("--prompt-lookup-min-match"), "prompt-lookup-min-match");
+        } else if (arg == "--prompt-lookup-auto") {
+            options.prompt_lookup_auto = true;
+        } else if (arg == "--prompt-lookup-min-context") {
+            options.prompt_lookup_min_context = parse_nonnegative_int(
+                require_value("--prompt-lookup-min-context"), "prompt-lookup-min-context");
         } else if (arg == "--default-max-tokens") {
             options.default_max_tokens =
                 parse_nonnegative_int(require_value("--default-max-tokens"), "default-max-tokens");
@@ -201,6 +207,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.proposal_head == ProposalHead::Optimized && options.mtp_draft_tokens == 0) {
         throw std::invalid_argument(
             "--lm-head-draft requires --mtp-draft-tokens greater than zero");
+    }
+    if (options.prompt_lookup_auto &&
+        (options.prompt_lookup_tokens == 0 || options.mtp_draft_tokens == 0)) {
+        throw std::invalid_argument("--prompt-lookup-auto requires prompt lookup and MTP");
     }
     if (default_max_tokens_explicit) {
         if (options.default_max_tokens <= 0) {

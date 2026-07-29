@@ -281,6 +281,8 @@ std::string usage_text(std::string_view program) {
         << "  --mtp-draft-tokens <0..5>   speculative draft window (default: 0)\n"
         << "  --prompt-lookup-tokens <0..15> independent prompt-lookup window (default: 0)\n"
         << "  --prompt-lookup-min-match <1..64> required suffix match length\n"
+        << "  --prompt-lookup-auto         gate lookup with a fast repetition scan\n"
+        << "  --prompt-lookup-min-context <N> first auto scan context (default: 1000)\n"
         << "  --lm-head-draft             use the optimized proposal head; requires MTP\n"
         << "  --device <id>               CUDA device ordinal (default: 0)\n"
         << "  --no-cuda-graph             use eager decode\n"
@@ -351,6 +353,11 @@ BenchOptions parse_args(int argc, char** argv) {
             if (options.prompt_lookup_min_match > 64) {
                 throw std::invalid_argument("--prompt-lookup-min-match must be in [1,64]");
             }
+        } else if (arg == "--prompt-lookup-auto") {
+            options.prompt_lookup_auto = true;
+        } else if (arg == "--prompt-lookup-min-context") {
+            options.prompt_lookup_min_context =
+                parse_u32(value("--prompt-lookup-min-context"), "prompt-lookup-min-context", true);
         } else if (arg == "--lm-head-draft") {
             options.proposal_head = ProposalHead::Optimized;
         } else if (arg == "--device") {
@@ -389,6 +396,10 @@ BenchOptions parse_args(int argc, char** argv) {
     if ((options.prompt_lookup_tokens == 0) != (options.prompt_lookup_min_match == 0)) {
         throw std::invalid_argument(
             "--prompt-lookup-tokens and --prompt-lookup-min-match must be used together");
+    }
+    if (options.prompt_lookup_auto &&
+        (options.prompt_lookup_tokens == 0 || options.mtp_draft_tokens == 0)) {
+        throw std::invalid_argument("--prompt-lookup-auto requires prompt lookup and MTP");
     }
     return options;
 }
@@ -591,6 +602,7 @@ std::string format_table(const BenchEnvironment& env, const std::vector<TestResu
         << "  corpus:     " << env.corpus_path << " (" << env.corpus_tokens << " tokens)\n"
         << "  config:     max_context=" << env.max_context << " prefill_chunk=" << env.prefill_chunk
         << " kv_cache=" << kv_cache_name(env.kv_cache) << " mtp_k=" << env.mtp_draft_tokens
+        << " lookup_auto=" << (env.prompt_lookup_auto ? "true" : "false")
         << " proposal_head=" << proposal_head_name(env.proposal_head)
         << " text_only=" << (env.text_only ? "true" : "false")
         << " decode_path=" << decode_path_name(env.use_cuda_graph, env.mtp_draft_tokens)
@@ -679,6 +691,8 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << "    \"mtp_draft_tokens\": " << env.mtp_draft_tokens << ",\n"
         << "    \"prompt_lookup_tokens\": " << env.prompt_lookup_tokens << ",\n"
         << "    \"prompt_lookup_min_match\": " << env.prompt_lookup_min_match << ",\n"
+        << "    \"prompt_lookup_auto\": " << (env.prompt_lookup_auto ? "true" : "false") << ",\n"
+        << "    \"prompt_lookup_min_context\": " << env.prompt_lookup_min_context << ",\n"
         << "    \"proposal_head\": \"" << proposal_head_name(env.proposal_head) << "\",\n"
         << "    \"use_cuda_graph\": " << (env.use_cuda_graph ? "true" : "false") << ",\n"
         << "    \"text_only\": " << (env.text_only ? "true" : "false") << ",\n"

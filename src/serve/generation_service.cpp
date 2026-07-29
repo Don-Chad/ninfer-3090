@@ -145,7 +145,10 @@ GenerationService::GenerationService(ServeOptions options) : options_(std::move(
         static_cast<std::uint32_t>(options_.prompt_lookup_tokens);
     engine_options.speculative.prompt_lookup_min_match =
         static_cast<std::uint32_t>(options_.prompt_lookup_min_match);
-    engine_options.speculative.proposal_head = options_.proposal_head;
+    engine_options.speculative.prompt_lookup_min_context =
+        static_cast<std::uint32_t>(options_.prompt_lookup_min_context);
+    engine_options.speculative.prompt_lookup_auto = options_.prompt_lookup_auto;
+    engine_options.speculative.proposal_head      = options_.proposal_head;
     engine_ = std::make_unique<ninfer::Engine>(std::move(engine_options));
 }
 

@@ -257,18 +257,20 @@ int main(int argc, char** argv) {
         std::cerr << "phase       detail                      elapsed/progress\n";
         std::map<std::string, ProgressState> progress;
         ninfer::EngineOptions engine_options;
-        engine_options.artifact_path                       = cli.artifact_path;
-        engine_options.device                              = cli.device;
-        engine_options.max_context                         = cli.max_context;
-        engine_options.prefill_chunk                       = cli.prefill_chunk;
-        engine_options.kv_cache                            = cli.kv_cache;
-        engine_options.speculative.draft_tokens            = cli.mtp_draft_tokens;
-        engine_options.speculative.prompt_lookup_tokens    = cli.prompt_lookup_tokens;
-        engine_options.speculative.prompt_lookup_min_match = cli.prompt_lookup_min_match;
-        engine_options.speculative.proposal_head           = cli.proposal_head;
-        engine_options.use_cuda_graph                      = cli.use_cuda_graph;
-        engine_options.text_only                           = cli.text_only;
-        engine_options.load_progress.min_interval_bytes    = 1ULL << 30;
+        engine_options.artifact_path                         = cli.artifact_path;
+        engine_options.device                                = cli.device;
+        engine_options.max_context                           = cli.max_context;
+        engine_options.prefill_chunk                         = cli.prefill_chunk;
+        engine_options.kv_cache                              = cli.kv_cache;
+        engine_options.speculative.draft_tokens              = cli.mtp_draft_tokens;
+        engine_options.speculative.prompt_lookup_tokens      = cli.prompt_lookup_tokens;
+        engine_options.speculative.prompt_lookup_min_match   = cli.prompt_lookup_min_match;
+        engine_options.speculative.prompt_lookup_min_context = cli.prompt_lookup_min_context;
+        engine_options.speculative.prompt_lookup_auto        = cli.prompt_lookup_auto;
+        engine_options.speculative.proposal_head             = cli.proposal_head;
+        engine_options.use_cuda_graph                        = cli.use_cuda_graph;
+        engine_options.text_only                             = cli.text_only;
+        engine_options.load_progress.min_interval_bytes      = 1ULL << 30;
         engine_options.load_progress.callback = [&](std::string_view phase, std::uint64_t done,
                                                     std::uint64_t total) {
             const auto now = Clock::now();

@@ -318,6 +318,10 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
     if (options.speculative.prompt_lookup_min_match > 64) {
         throw std::invalid_argument("prompt lookup minimum match must be in [0,64]");
     }
+    if (options.speculative.prompt_lookup_auto &&
+        (options.speculative.prompt_lookup_tokens == 0 || options.speculative.draft_tokens == 0)) {
+        throw std::invalid_argument("automatic prompt lookup requires prompt lookup and MTP");
+    }
     if (options.speculative.draft_tokens == 0 &&
         options.speculative.proposal_head == ProposalHead::Optimized) {
         throw std::invalid_argument("optimized proposal head requires MTP");
@@ -331,21 +335,23 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
                                                      const EngineOptions& options) {
     validate_target_options(device, options);
 
-    auto impl              = std::make_unique<SequencePlanImpl>();
-    impl->capacity         = options.max_context;
-    impl->prefill_chunk    = options.prefill_chunk;
-    impl->mtp_k            = options.speculative.draft_tokens;
-    impl->lookup_k         = options.speculative.prompt_lookup_tokens;
-    impl->round_k          = std::max(impl->mtp_k, impl->lookup_k);
-    impl->lookup_min_match = options.speculative.prompt_lookup_min_match;
-    impl->proposal_head    = options.speculative.proposal_head;
-    impl->use_cuda_graph   = options.use_cuda_graph;
-    impl->text_only        = options.text_only;
-    impl->device           = options.device;
-    impl->kv_dtype         = options.kv_cache == KvCacheStorage::BFloat16 ? DType::BF16 : DType::I8;
-    impl->kv_quant_group   = impl->kv_dtype == DType::I8 ? kKvQuantGroup : 0;
-    impl->persistent       = persistent_layout(*impl);
-    impl->workspace_bytes  = workspace_bytes(*impl);
+    auto impl                = std::make_unique<SequencePlanImpl>();
+    impl->capacity           = options.max_context;
+    impl->prefill_chunk      = options.prefill_chunk;
+    impl->mtp_k              = options.speculative.draft_tokens;
+    impl->lookup_k           = options.speculative.prompt_lookup_tokens;
+    impl->round_k            = std::max(impl->mtp_k, impl->lookup_k);
+    impl->lookup_min_match   = options.speculative.prompt_lookup_min_match;
+    impl->lookup_min_context = options.speculative.prompt_lookup_min_context;
+    impl->lookup_auto        = options.speculative.prompt_lookup_auto;
+    impl->proposal_head      = options.speculative.proposal_head;
+    impl->use_cuda_graph     = options.use_cuda_graph;
+    impl->text_only          = options.text_only;
+    impl->device             = options.device;
+    impl->kv_dtype        = options.kv_cache == KvCacheStorage::BFloat16 ? DType::BF16 : DType::I8;
+    impl->kv_quant_group  = impl->kv_dtype == DType::I8 ? kKvQuantGroup : 0;
+    impl->persistent      = persistent_layout(*impl);
+    impl->workspace_bytes = workspace_bytes(*impl);
     if (impl->use_cuda_graph) {
         const std::size_t ordinary_variants = ordinary_graph_ranges(impl->capacity).size();
         const std::size_t ordinary_graphs   = ordinary_variants * (impl->mtp_k == 0 ? 1ULL : 2ULL);

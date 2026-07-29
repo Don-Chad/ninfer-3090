@@ -65,6 +65,7 @@ std::string usage_text(const char* argv0) {
            "       [--max-context N] [--prefill-chunk N] [--max-new N] [--device N]\n"
            "       [--kv-dtype bf16|int8] [--mtp-draft-tokens 0..5] [--lm-head-draft]\n"
            "       [--prompt-lookup-tokens 0..15 --prompt-lookup-min-match 1..64]\n"
+           "       [--prompt-lookup-auto --prompt-lookup-min-context N]\n"
            "       [--temperature F] [--top-p F] [--top-k N] [--min-p F]\n"
            "       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--stop-token-id N]... [--stop <text>]... [--reasoning-stop <text>]...\n"
@@ -122,6 +123,11 @@ Options parse_options(int argc, char** argv) {
             if (options.prompt_lookup_min_match > 64) {
                 throw std::invalid_argument("--prompt-lookup-min-match must be in [1,64]");
             }
+        } else if (arg == "--prompt-lookup-auto") {
+            options.prompt_lookup_auto = true;
+        } else if (arg == "--prompt-lookup-min-context") {
+            options.prompt_lookup_min_context =
+                parse_u32(value(arg), "prompt-lookup-min-context", true);
         } else if (arg == "--lm-head-draft") {
             options.proposal_head = ProposalHead::Optimized;
         } else if (arg == "--raw-output") {
@@ -191,6 +197,10 @@ Options parse_options(int argc, char** argv) {
     if ((options.prompt_lookup_tokens == 0) != (options.prompt_lookup_min_match == 0)) {
         throw std::invalid_argument(
             "--prompt-lookup-tokens and --prompt-lookup-min-match must be used together");
+    }
+    if (options.prompt_lookup_auto &&
+        (options.prompt_lookup_tokens == 0 || options.mtp_draft_tokens == 0)) {
+        throw std::invalid_argument("--prompt-lookup-auto requires prompt lookup and MTP");
     }
     if (options.greedy) { options.sampling = SamplingParameters{}; }
     return options;

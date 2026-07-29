@@ -21,7 +21,9 @@
 namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 namespace {
 
-using Clock = std::chrono::steady_clock;
+using Clock                                    = std::chrono::steady_clock;
+constexpr std::uint32_t kPromptLookupScanNgram = 15;
+constexpr double kPromptLookupEnableCoverage   = 0.25;
 
 std::uint32_t prompt_lookup_min_match_from_environment() {
     const char* raw = std::getenv("NINFER_PROMPT_LOOKUP_MIN_MATCH");
@@ -146,6 +148,7 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
       prompt_lookup_min_match(plan.lookup_min_match != 0
                                   ? plan.lookup_min_match
                                   : prompt_lookup_min_match_from_environment()),
+      prompt_lookup_min_context(plan.lookup_min_context), prompt_lookup_auto(plan.lookup_auto),
       kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), persistent(plan.persistent.bytes),
       work(plan.workspace_bytes),
@@ -197,15 +200,18 @@ void ProgramImplCore::make_invalid() noexcept {
     S         = 0;
     ledger.clear();
     prefix_identity.clear();
-    current_gdn_slot       = 0;
-    text_kv_valid          = 0;
-    mtp_kv_valid           = 0;
-    lookup_realign_end     = 0;
-    proposal_ready         = false;
-    lookup_realign_pending = false;
-    tail_hidden_valid      = false;
-    boundary               = {};
-    pending                = {};
+    current_gdn_slot          = 0;
+    text_kv_valid             = 0;
+    mtp_kv_valid              = 0;
+    lookup_realign_end        = 0;
+    proposal_ready            = false;
+    lookup_realign_pending    = false;
+    prompt_lookup_auto_active = false;
+    next_prompt_lookup_scan   = prompt_lookup_min_context;
+    prompt_lookup_repetition  = 0.0;
+    tail_hidden_valid         = false;
+    boundary                  = {};
+    pending                   = {};
 }
 
 void ProgramImplCore::set_device_i32(Tensor& tensor, std::int32_t value) {
@@ -223,12 +229,15 @@ void ProgramImplCore::ordered_reset() {
     set_device_i32(io.accepted, 0);
     set_device_i32(io.gdn_initial_slot, 0);
     set_device_i32(io.ar_pos, 0);
-    current_gdn_slot       = 0;
-    text_kv_valid          = 0;
-    mtp_kv_valid           = 0;
-    lookup_realign_end     = 0;
-    proposal_ready         = false;
-    lookup_realign_pending = false;
+    current_gdn_slot          = 0;
+    text_kv_valid             = 0;
+    mtp_kv_valid              = 0;
+    lookup_realign_end        = 0;
+    proposal_ready            = false;
+    lookup_realign_pending    = false;
+    prompt_lookup_auto_active = false;
+    next_prompt_lookup_scan   = prompt_lookup_min_context;
+    prompt_lookup_repetition  = 0.0;
 }
 
 void ProgramImplCore::prepare_graphs() {
@@ -621,11 +630,14 @@ runtime::BeginResult ProgramImplCore::begin(PreparedPromptData&& prompt, Request
         // Target prefill leaves its recurrent state in slot 0. Exact-frontier reuse performs no
         // target work, so it must retain the MTP snapshot that was committed at the old frontier.
         if (had_suffix) { current_gdn_slot = 0; }
-        mtp_kv_valid           = mtp_prepared ? prompt_tokens : 0;
-        proposal_ready         = mtp_prepared;
-        lookup_realign_end     = mtp_kv_valid;
-        lookup_realign_pending = false;
-        tail_hidden_valid      = true;
+        mtp_kv_valid              = mtp_prepared ? prompt_tokens : 0;
+        proposal_ready            = mtp_prepared;
+        lookup_realign_end        = mtp_kv_valid;
+        lookup_realign_pending    = false;
+        prompt_lookup_auto_active = false;
+        next_prompt_lookup_scan   = prompt_lookup_min_context;
+        prompt_lookup_repetition  = 0.0;
+        tail_hidden_valid         = true;
         if (snapshot_boundary) {
             boundary.valid            = true;
             boundary.boundary         = *snapshot_boundary;
@@ -672,6 +684,14 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
     if (proposal_ready && (decoder->mtp_cache() == nullptr || mtp_kv_valid != E)) {
         throw std::logic_error("MTP proposal does not match the Active execution frontier");
     }
+    if (prompt_lookup_auto && S >= next_prompt_lookup_scan) {
+        prompt_lookup_repetition =
+            runtime::prompt_repetition_coverage(ledger, kPromptLookupScanNgram);
+        prompt_lookup_auto_active = prompt_lookup_repetition >= kPromptLookupEnableCoverage;
+        // Classify only the request input. Generated boilerplate must not flip a request from MTP
+        // into prompt lookup halfway through an answer.
+        next_prompt_lookup_scan = std::numeric_limits<std::uint32_t>::max();
+    }
     runtime::PromptLookupMatch lookup;
     std::uint32_t active_lookup_k = 0;
     const auto try_lookup         = [&](std::uint32_t k) {
@@ -685,7 +705,7 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
         return true;
     };
     const bool use_lookup =
-        prompt_lookup_min_match != 0 &&
+        prompt_lookup_min_match != 0 && (!prompt_lookup_auto || prompt_lookup_auto_active) &&
         (try_lookup(lookup_k) || try_lookup(lookup_mid_k) || try_lookup(lookup_fallback_k));
     const bool needs_mtp_realign = !use_lookup && mtp_k != 0 && !proposal_ready &&
                                    lookup_realign_pending && lookup_realign_end == E &&
