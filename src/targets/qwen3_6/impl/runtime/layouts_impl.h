@@ -359,6 +359,14 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
                 static_cast<std::uint64_t>(range.max) + 2ULL * impl->lookup_k;
             impl->graph_allowance_bytes += (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
         }
+        if (impl->lookup_k > kMaximumMtpDraftTokens) {
+            for (const GraphFrontierRange range :
+                 mtp_graph_ranges(impl->capacity, kMaximumMtpDraftTokens)) {
+                const std::uint64_t final_visible =
+                    static_cast<std::uint64_t>(range.max) + 2ULL * kMaximumMtpDraftTokens;
+                impl->graph_allowance_bytes += (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
+            }
+        }
     }
 
     impl->device_reservation_bytes = checked_add(

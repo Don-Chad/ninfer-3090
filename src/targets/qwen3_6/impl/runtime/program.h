@@ -130,6 +130,7 @@ public:
     const std::uint32_t prefill_chunk;
     const std::uint32_t mtp_k;
     const std::uint32_t lookup_k;
+    const std::uint32_t lookup_fallback_k;
     const std::uint32_t round_k;
     const DType kv_dtype;
     const std::int32_t kv_quant_group;
@@ -153,6 +154,7 @@ public:
     std::vector<OrdinaryGraphVariant> ordinary_graphs;
     std::vector<MtpGraphVariant> mtp_graphs;
     std::vector<LookupGraphVariant> lookup_graphs;
+    std::vector<LookupGraphVariant> lookup_fallback_graphs;
 
     PinnedHostBuffer round_host;
     std::int32_t* host_count = nullptr;

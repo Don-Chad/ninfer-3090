@@ -27,21 +27,28 @@ int main() {
         const std::vector<ninfer::TokenId> history{1, 2, 7, 1, 2, 8, 1, 2};
         const auto match = ninfer::runtime::find_prompt_lookup(history, 2, 2);
         failures += expect(match.source_offset == 3, "ties prefer recent occurrence");
-        failures += expect(match.draft == std::vector<ninfer::TokenId>({8, 1}),
-                           "recent continuation");
+        failures +=
+            expect(match.draft == std::vector<ninfer::TokenId>({8, 1}), "recent continuation");
     }
     {
         const std::vector<ninfer::TokenId> history{1, 2, 3, 4, 5};
-        failures += expect(!ninfer::runtime::find_prompt_lookup(history, 4, 2),
-                           "no repeated suffix");
+        failures +=
+            expect(!ninfer::runtime::find_prompt_lookup(history, 4, 2), "no repeated suffix");
         failures += expect(!ninfer::runtime::find_prompt_lookup(history, 0, 2),
                            "zero draft window disables lookup");
     }
     {
         const std::vector<ninfer::TokenId> history{4, 5, 4, 5};
         const auto match = ninfer::runtime::find_prompt_lookup(history, 8, 2);
-        failures += expect(match.draft == std::vector<ninfer::TokenId>({4, 5}),
-                           "draft is bounded by available history");
+        failures += expect(!match, "incomplete continuation does not license a lookup round");
+    }
+    {
+        const std::vector<ninfer::TokenId> history{9, 1, 2, 3, 7, 8, 1, 2, 3};
+        const auto match = ninfer::runtime::find_prompt_lookup(history, 2, 2);
+        failures += expect(match.matched_tokens == 3, "single scan extends the suffix backward");
+        failures += expect(match.source_offset == 1, "extended suffix source offset");
+        failures += expect(match.draft == std::vector<ninfer::TokenId>({7, 8}),
+                           "extended suffix continuation");
     }
     return failures == 0 ? 0 : 1;
 }

@@ -139,6 +139,7 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
                                  DeviceContext& device_in)
     : model(model_in), device(device_in), capacity(plan.capacity),
       prefill_chunk(plan.prefill_chunk), mtp_k(plan.mtp_k), lookup_k(plan.lookup_k),
+      lookup_fallback_k(lookup_k > kMaximumMtpDraftTokens ? kMaximumMtpDraftTokens : 0),
       round_k(plan.round_k), kv_dtype(plan.kv_dtype), kv_quant_group(plan.kv_quant_group),
       proposal_head(plan.proposal_head), use_cuda_graph(plan.use_cuda_graph),
       prompt_lookup_min_match(plan.lookup_min_match != 0
@@ -342,6 +343,26 @@ void ProgramImplCore::prepare_graphs() {
             schedule::warm_capture_prompt_lookup_round(
                 lookup_state, lookup_k, {range.min + lookup_k + 1, range.max + lookup_k + 1},
                 prepare, variant.prompt_lookup);
+        }
+    }
+    const auto lookup_fallback_ranges = mtp_graph_ranges(capacity, lookup_fallback_k);
+    if (lookup_fallback_k != 0) {
+        validate_graph_ranges(lookup_fallback_ranges, capacity - 2 * lookup_fallback_k,
+                              "prompt lookup fallback");
+        lookup_fallback_graphs.reserve(lookup_fallback_ranges.size());
+        for (const GraphFrontierRange range : lookup_fallback_ranges) {
+            lookup_fallback_graphs.emplace_back();
+            LookupGraphVariant& variant        = lookup_fallback_graphs.back();
+            variant.min_execution_frontier     = range.min;
+            variant.max_execution_frontier     = range.max;
+            const std::uint32_t representative = range.min;
+            const auto prepare = [&, representative] { prepare_representative(representative); };
+            auto lookup_io     = round_state_view(io, lookup_fallback_k);
+            auto lookup_state  = state(representative, lookup_io);
+            schedule::warm_capture_prompt_lookup_round(
+                lookup_state, lookup_fallback_k,
+                {range.min + lookup_fallback_k + 1, range.max + lookup_fallback_k + 1}, prepare,
+                variant.prompt_lookup);
         }
     }
 
@@ -622,13 +643,20 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
     if (proposal_ready && (decoder->mtp_cache() == nullptr || mtp_kv_valid != E)) {
         throw std::logic_error("MTP proposal does not match the Active execution frontier");
     }
-    const auto lookup =
-        prompt_lookup_min_match == 0
-            ? runtime::PromptLookupMatch{}
-            : runtime::find_prompt_lookup(ledger, lookup_k, prompt_lookup_min_match);
-    const bool use_lookup = lookup_k != 0 && lookup.draft.size() == lookup_k &&
-                            budget.generated_tokens_remaining >= lookup_k + 1 &&
-                            static_cast<std::uint64_t>(E) + 2ULL * lookup_k <= capacity;
+    runtime::PromptLookupMatch lookup;
+    std::uint32_t active_lookup_k = 0;
+    const auto try_lookup         = [&](std::uint32_t k) {
+        if (k == 0 || budget.generated_tokens_remaining < k + 1 ||
+            static_cast<std::uint64_t>(E) + 2ULL * k > capacity) {
+            return false;
+        }
+        lookup = runtime::find_prompt_lookup(ledger, k, prompt_lookup_min_match);
+        if (lookup.draft.size() != k) { return false; }
+        active_lookup_k = k;
+        return true;
+    };
+    const bool use_lookup =
+        prompt_lookup_min_match != 0 && (try_lookup(lookup_k) || try_lookup(lookup_fallback_k));
     const bool use_mtp = !use_lookup && mtp_k != 0 && proposal_ready && mtp_kv_valid == E &&
                          budget.generated_tokens_remaining >= mtp_k + 1 &&
                          static_cast<std::uint64_t>(E) + 2ULL * mtp_k <= capacity;
@@ -662,30 +690,33 @@ runtime::GeneratedRound ProgramImplCore::decode_round(runtime::RoundBudget budge
         std::uint32_t accepted = 0;
         PendingKind kind       = PendingKind::Ordinary;
         if (use_lookup) {
-            auto lookup_io      = round_state_view(io, lookup_k);
+            auto lookup_io      = round_state_view(io, active_lookup_k);
             auto schedule_state = make_schedule_state(lookup_io);
             CUDA_CHECK(cudaMemcpyAsync(lookup_io.drafts.data, lookup.draft.data(),
                                        lookup.draft.size() * sizeof(TokenId),
                                        cudaMemcpyHostToDevice, device.stream));
             DecodeGraph* graph = nullptr;
-            ops::GqaExecutionEnvelope envelope{base_E + lookup_k + 1, base_E + lookup_k + 1};
+            ops::GqaExecutionEnvelope envelope{base_E + active_lookup_k + 1,
+                                               base_E + active_lookup_k + 1};
             if (use_cuda_graph && diagnostic_text_tap == nullptr) {
+                auto& graph_variants =
+                    active_lookup_k == lookup_k ? lookup_graphs : lookup_fallback_graphs;
                 LookupGraphVariant& variant =
-                    select_graph_variant(lookup_graphs, base_E, "prompt lookup");
+                    select_graph_variant(graph_variants, base_E, "prompt lookup");
                 graph    = &variant.prompt_lookup;
-                envelope = {variant.min_execution_frontier + lookup_k + 1,
-                            variant.max_execution_frontier + lookup_k + 1};
+                envelope = {variant.min_execution_frontier + active_lookup_k + 1,
+                            variant.max_execution_frontier + active_lookup_k + 1};
             }
-            schedule::prompt_lookup_round(schedule_state, lookup_k, envelope, graph);
+            schedule::prompt_lookup_round(schedule_state, active_lookup_k, envelope, graph);
             ops::mtp_gather_hidden_row(lookup_io.verify_hidden, lookup_io.accepted, tail_hidden,
                                        device.stream);
             CUDA_CHECK(cudaMemcpyAsync(host_count, lookup_io.num_sampled.data, sizeof(std::int32_t),
                                        cudaMemcpyDeviceToHost, device.stream));
             CUDA_CHECK(cudaMemcpyAsync(host_tokens, lookup_io.sampled_out.data,
-                                       (lookup_k + 1ULL) * sizeof(TokenId), cudaMemcpyDeviceToHost,
-                                       device.stream));
+                                       (active_lookup_k + 1ULL) * sizeof(TokenId),
+                                       cudaMemcpyDeviceToHost, device.stream));
             device.synchronize();
-            if (*host_count <= 0 || *host_count > static_cast<std::int32_t>(lookup_k + 1)) {
+            if (*host_count <= 0 || *host_count > static_cast<std::int32_t>(active_lookup_k + 1)) {
                 throw std::runtime_error("prompt lookup returned an invalid token count");
             }
             produced          = static_cast<std::uint32_t>(*host_count);
