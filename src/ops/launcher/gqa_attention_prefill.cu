@@ -24,13 +24,17 @@ void gqa_attention_prompt_attention_launch_for(const Tensor& q, const Tensor& po
                              cudaFuncAttributeMaxDynamicSharedMemorySize, kGqaPrefillSmemBytes);
     CUDA_CHECK(attr_bf16);
     static const cudaError_t attr_i8 =
-        cudaFuncSetAttribute(gqa_attention_prefill_i8_kernel<Geometry, false>,
+        cudaFuncSetAttribute(gqa_attention_prefill_i8_kernel<Geometry, false, false, false>,
                              cudaFuncAttributeMaxDynamicSharedMemorySize, kGqaPrefillI8SmemBytes);
     CUDA_CHECK(attr_i8);
     static const cudaError_t attr_i4 =
-        cudaFuncSetAttribute(gqa_attention_prefill_i8_kernel<Geometry, true>,
+        cudaFuncSetAttribute(gqa_attention_prefill_i8_kernel<Geometry, true, true, true>,
                              cudaFuncAttributeMaxDynamicSharedMemorySize, kGqaPrefillI8SmemBytes);
     CUDA_CHECK(attr_i4);
+    static const cudaError_t attr_k8v4 =
+        cudaFuncSetAttribute(gqa_attention_prefill_i8_kernel<Geometry, false, true, true>,
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, kGqaPrefillI8SmemBytes);
+    CUDA_CHECK(attr_k8v4);
 
     const auto tokens         = static_cast<std::int32_t>(q.ne[2]);
     const auto padded_context = static_cast<std::int32_t>(cache.padded_context);
@@ -39,8 +43,8 @@ void gqa_attention_prompt_attention_launch_for(const Tensor& q, const Tensor& po
                                   static_cast<unsigned>(Geometry::QHeads), 1u);
         const Tensor& cache_k_scale = cache.k_scale;
         const Tensor& cache_v_scale = cache.v_scale;
-        auto launch = [&]<bool PackedI4>() {
-            gqa_attention_prefill_i8_kernel<Geometry, PackedI4>
+        auto launch = [&]<bool PackedK, bool PackedV, bool RotateK>() {
+            gqa_attention_prefill_i8_kernel<Geometry, PackedK, PackedV, RotateK>
                 <<<attention_grid, kGqaPrefillI8Threads, kGqaPrefillI8SmemBytes, stream>>>(
                     static_cast<const __nv_bfloat16*>(q.data),
                     static_cast<const std::uint8_t*>(cache_k.data),
@@ -51,9 +55,11 @@ void gqa_attention_prompt_attention_launch_for(const Tensor& q, const Tensor& po
                     static_cast<__nv_bfloat16*>(out.data), tokens, padded_context);
         };
         if (cache.dtype == DType::U8) {
-            launch.template operator()<true>();
+            launch.template operator()<true, true, true>();
+        } else if (cache.packed_v) {
+            launch.template operator()<false, true, true>();
         } else {
-            launch.template operator()<false>();
+            launch.template operator()<false, false, false>();
         }
     } else {
         const dim3 attention_grid(static_cast<unsigned>(div_up(tokens, kGqaPrefillBr)),
@@ -85,8 +91,8 @@ void gqa_kv_append_launch_for(const Tensor& k, const Tensor& v, const Tensor& po
             static_cast<std::int64_t>(tokens) * Geometry::KVHeads * kGqaKvQuantGroups;
         const int fill_grid =
             static_cast<int>(div_up(fill_units, static_cast<std::int64_t>(kFillWarps)));
-        auto launch = [&]<bool PackedI4>() {
-            gqa_attention_prefill_fill_i8_kernel<Geometry, PackedI4>
+        auto launch = [&]<bool PackedK, bool PackedV, bool RotateK>() {
+            gqa_attention_prefill_fill_i8_kernel<Geometry, PackedK, PackedV, RotateK>
                 <<<fill_grid, kFillBlock, 0, stream>>>(
                     static_cast<const __nv_bfloat16*>(k.data),
                     static_cast<const __nv_bfloat16*>(v.data),
@@ -97,9 +103,11 @@ void gqa_kv_append_launch_for(const Tensor& k, const Tensor& v, const Tensor& po
                     static_cast<__half*>(cache_v_scale.data), tokens, padded_context);
         };
         if (cache.dtype == DType::U8) {
-            launch.template operator()<true>();
+            launch.template operator()<true, true, true>();
+        } else if (cache.packed_v) {
+            launch.template operator()<false, true, true>();
         } else {
-            launch.template operator()<false>();
+            launch.template operator()<false, false, false>();
         }
         CUDA_CHECK(cudaGetLastError());
     } else {

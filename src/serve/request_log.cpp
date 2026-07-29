@@ -100,7 +100,9 @@ std::string tool_choice_name(const ToolChoice& choice) {
 
 const char* kv_cache_name(ninfer::KvCacheStorage storage) {
     if (storage == ninfer::KvCacheStorage::BFloat16) { return "bf16"; }
-    return storage == ninfer::KvCacheStorage::Int8Group64 ? "int8-group64" : "int4-group64";
+    if (storage == ninfer::KvCacheStorage::Int8Group64) { return "int8-group64"; }
+    if (storage == ninfer::KvCacheStorage::Int4Group64) { return "int4-group64"; }
+    return "k8-v4-group64";
 }
 
 const char* proposal_head_name(ninfer::ProposalHead proposal) {

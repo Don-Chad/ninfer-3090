@@ -146,10 +146,12 @@ DecoderStateLayout plan_decoder_state(LayoutBuilder& builder, const DecoderState
     DecoderStateLayout layout;
     layout.text_kv =
         plan_kv_cache(builder, spec.full_attention_layers, spec.capacity, spec.kv_heads,
-                      spec.attention_head_dim, spec.kv_dtype, spec.kv_quant_group);
+                      spec.attention_head_dim, spec.kv_dtype, spec.kv_quant_group,
+                      spec.kv_packed_k, spec.kv_packed_v);
     if (spec.enable_mtp) {
         layout.mtp_kv = plan_kv_cache(builder, spec.mtp_layers, spec.capacity, spec.kv_heads,
-                                      spec.attention_head_dim, spec.kv_dtype, spec.kv_quant_group);
+                                      spec.attention_head_dim, spec.kv_dtype, spec.kv_quant_group,
+                                      spec.kv_packed_k, spec.kv_packed_v);
     }
     layout.gdn = plan_gdn_state(builder, spec.gdn);
     return layout;

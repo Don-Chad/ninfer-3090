@@ -52,6 +52,7 @@ KvCacheStorage parse_kv_cache(std::string_view text) {
     if (text == "bf16") { return KvCacheStorage::BFloat16; }
     if (text == "int8") { return KvCacheStorage::Int8Group64; }
     if (text == "int4") { return KvCacheStorage::Int4Group64; }
+    if (text == "k8v4") { return KvCacheStorage::Int8KeyInt4ValueGroup64; }
     throw std::invalid_argument("--kv-dtype must be bf16, int8, or int4");
 }
 
@@ -278,7 +279,7 @@ std::string usage_text(std::string_view program) {
         << "  --max-ctx <tokens>          override auto-sized context capacity\n"
         << "  --prefill-chunk <tokens>    multiple of " << kPrefillChunkAlignment
         << " (default: " << kDefaultPrefillChunk << ")\n"
-        << "  --kv-dtype <bf16|int8|int4> KV cache storage (default: bf16)\n"
+        << "  --kv-dtype <bf16|int8|int4|k8v4> KV cache storage (default: bf16)\n"
         << "  --mtp-draft-tokens <0..5>   speculative draft window (default: 0)\n"
         << "  --prompt-lookup-tokens <0..15> independent prompt-lookup window (default: 0)\n"
         << "  --prompt-lookup-min-match <1..64> required suffix match length\n"
@@ -853,6 +854,8 @@ std::string kv_cache_name(KvCacheStorage storage) {
         return "int8-group64";
     case KvCacheStorage::Int4Group64:
         return "int4-group64";
+    case KvCacheStorage::Int8KeyInt4ValueGroup64:
+        return "k8-v4-group64";
     }
     return "unknown";
 }

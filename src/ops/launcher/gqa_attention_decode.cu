@@ -103,7 +103,8 @@ void launch_tc_partial_bf16(const Tensor& q, CacheInput input, const Tensor& pos
     CUDA_CHECK(cudaGetLastError());
 }
 
-template <typename Geometry, int TokenTile, bool PackedI4, typename CacheInput>
+template <typename Geometry, int TokenTile, bool PackedK, bool PackedV, bool RotateK,
+          typename CacheInput>
 void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, float scale,
                           KVCacheLayerView cache, std::int32_t padded_context,
                           std::int32_t max_context, std::int32_t implementation_window,
@@ -120,13 +121,14 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
         if constexpr (DynamicArena) {
             static const cudaError_t attr = cudaFuncSetAttribute(
                 gqa_attention_decode_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta,
-                                                     MinBlocksPerSm, KeyBlock, DynamicArena, PackedI4,
-                                                     CacheInput>,
+                                                     MinBlocksPerSm, KeyBlock, DynamicArena, PackedK,
+                                                     PackedV, RotateK, CacheInput>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kDynamicBytes));
             CUDA_CHECK(attr);
         }
         gqa_attention_decode_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta, MinBlocksPerSm,
-                                             KeyBlock, DynamicArena, PackedI4, CacheInput>
+                                             KeyBlock, DynamicArena, PackedK, PackedV, RotateK,
+                                             CacheInput>
             <<<grid, WarpsPerCta * 32, kDynamicBytes, stream>>>(
                 static_cast<const __nv_bfloat16*>(q.data), input,
                 static_cast<const std::int32_t*>(pos.data), static_cast<std::uint8_t*>(cache_k.data),
@@ -212,12 +214,16 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
     // geometry inside launch_tc_partial_i8.
 #define NINFER_GQA_SMALL_T_DISPATCH(TOKENS, WARPS)                                                 \
     do {                                                                                           \
-        if (cache.dtype == DType::I8) {                                                            \
-            launch_tc_partial_i8<Geometry, (TOKENS), false>(                                       \
+        if (cache.dtype == DType::I8 && !cache.packed_v) {                                         \
+            launch_tc_partial_i8<Geometry, (TOKENS), false, false, false>(                         \
                 q, input, pos, scale, cache, padded_context, max_context, implementation_window,   \
                 splits, partial_acc, partial_m, partial_l, stream);                                \
         } else if (cache.dtype == DType::U8) {                                                     \
-            launch_tc_partial_i8<Geometry, (TOKENS), true>(                                        \
+            launch_tc_partial_i8<Geometry, (TOKENS), true, true, true>(                            \
+                q, input, pos, scale, cache, padded_context, max_context, implementation_window,   \
+                splits, partial_acc, partial_m, partial_l, stream);                                \
+        } else if (cache.packed_v) {                                                               \
+            launch_tc_partial_i8<Geometry, (TOKENS), false, true, true>(                           \
                 q, input, pos, scale, cache, padded_context, max_context, implementation_window,   \
                 splits, partial_acc, partial_m, partial_l, stream);                                \
         } else {                                                                                   \

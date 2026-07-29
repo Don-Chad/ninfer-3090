@@ -47,6 +47,8 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
                      .attention_head_dim    = TextConfig::head_dim,
                      .kv_dtype              = plan.kv_dtype,
                      .kv_quant_group        = plan.kv_quant_group,
+                     .kv_packed_k           = plan.kv_packed_k,
+                     .kv_packed_v           = plan.kv_packed_v,
                      .enable_mtp            = plan.mtp_k != 0,
                      .gdn =
                          {
@@ -350,8 +352,11 @@ std::unique_ptr<SequencePlanImpl> plan_sequence_impl(DeviceContext& device,
     impl->device             = options.device;
     impl->kv_dtype = options.kv_cache == KvCacheStorage::BFloat16
                          ? DType::BF16
-                         : (options.kv_cache == KvCacheStorage::Int8Group64 ? DType::I8
-                                                                            : DType::U8);
+                         : (options.kv_cache == KvCacheStorage::Int4Group64 ? DType::U8
+                                                                            : DType::I8);
+    impl->kv_packed_k = options.kv_cache == KvCacheStorage::Int4Group64;
+    impl->kv_packed_v = options.kv_cache == KvCacheStorage::Int4Group64 ||
+                        options.kv_cache == KvCacheStorage::Int8KeyInt4ValueGroup64;
     impl->kv_quant_group = impl->kv_dtype == DType::BF16 ? 0 : kKvQuantGroup;
     impl->persistent      = persistent_layout(*impl);
     impl->workspace_bytes = workspace_bytes(*impl);

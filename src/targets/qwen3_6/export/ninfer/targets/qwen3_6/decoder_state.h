@@ -57,6 +57,8 @@ struct DecoderStateSpec {
     std::int32_t attention_head_dim     = 0;
     DType kv_dtype                      = DType::BF16;
     std::int32_t kv_quant_group         = 0;
+    bool kv_packed_k                    = false;
+    bool kv_packed_v                    = false;
     bool enable_mtp                     = false;
     GdnStateSpec gdn;
 };

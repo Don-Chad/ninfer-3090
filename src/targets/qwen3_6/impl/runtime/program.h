@@ -136,6 +136,8 @@ public:
     const std::uint32_t round_k;
     const DType kv_dtype;
     const std::int32_t kv_quant_group;
+    const bool kv_packed_k;
+    const bool kv_packed_v;
     const ProposalHead proposal_head;
     const bool use_cuda_graph;
     const std::uint32_t prompt_lookup_min_match;

@@ -34,10 +34,12 @@ struct CacheBinding {
 
 CacheBinding bind_cache(DeviceArena& arena, std::uint32_t layers, std::uint32_t max_context,
                         std::int32_t heads, std::int32_t head_dim, DType dtype,
-                        std::int32_t quant_group) {
+                        std::int32_t quant_group, bool packed_k = false,
+                        bool packed_v = false) {
     LayoutBuilder builder;
     auto layout =
-        l0::plan_kv_cache(builder, layers, max_context, heads, head_dim, dtype, quant_group);
+        l0::plan_kv_cache(builder, layers, max_context, heads, head_dim, dtype, quant_group,
+                          packed_k, packed_v);
     auto backing = arena.alloc_bytes(builder.finish(256));
     return CacheBinding{backing, std::move(layout)};
 }
@@ -46,6 +48,11 @@ struct KVCache : l0::KVCache {
     KVCache(DeviceArena& arena, std::uint32_t layers, std::uint32_t max_context, std::int32_t heads,
             std::int32_t head_dim, DType dtype = DType::BF16, std::int32_t quant_group = 0)
         : KVCache(bind_cache(arena, layers, max_context, heads, head_dim, dtype, quant_group)) {}
+    KVCache(DeviceArena& arena, std::uint32_t layers, std::uint32_t max_context, std::int32_t heads,
+            std::int32_t head_dim, DType dtype, std::int32_t quant_group, bool packed_k,
+            bool packed_v)
+        : KVCache(bind_cache(arena, layers, max_context, heads, head_dim, dtype, quant_group,
+                             packed_k, packed_v)) {}
 
 private:
     explicit KVCache(CacheBinding binding) : l0::KVCache(binding.backing, binding.layout) {}
@@ -1079,7 +1086,8 @@ int split_api_parity_case(DType cache_dtype, std::int32_t tokens, std::int32_t b
     return f;
 }
 
-int int4_split_api_smoke_case(std::int32_t tokens, std::int32_t base, std::uint32_t seed) {
+int packed_split_api_smoke_case(std::int32_t tokens, std::int32_t base, std::uint32_t seed,
+                                bool k8v4) {
     const std::size_t qn =
         static_cast<std::size_t>(kHeadDim) * kQHeads * static_cast<std::size_t>(tokens);
     const std::size_t kvn =
@@ -1106,16 +1114,20 @@ int int4_split_api_smoke_case(std::int32_t tokens, std::int32_t base, std::uint3
 
     const std::size_t packed_n =
         static_cast<std::size_t>(kHeadDim / 2) * padded_context * kKVHeads;
+    const std::size_t key_n = k8v4 ? packed_n * 2 : packed_n;
     const std::size_t scale_n = scale_elements(padded_context);
     const std::size_t arena_bytes =
-        2 * (packed_n + 256) + 2 * (scale_n * sizeof(std::uint16_t) + 256) + 4096;
+        2 * (key_n + packed_n + 512) + 2 * (scale_n * sizeof(std::uint16_t) + 256) + 4096;
     DeviceArena a_arena(arena_bytes);
     DeviceArena b_arena(arena_bytes);
-    KVCache a_cache(a_arena, 1, static_cast<std::uint32_t>(total), kKVHeads, kHeadDim, DType::U8);
-    KVCache b_cache(b_arena, 1, static_cast<std::uint32_t>(total), kKVHeads, kHeadDim, DType::U8);
-    cudaMemset(a_cache.k[0].data, 0, packed_n);
+    const DType cache_dtype = k8v4 ? DType::I8 : DType::U8;
+    KVCache a_cache(a_arena, 1, static_cast<std::uint32_t>(total), kKVHeads, kHeadDim,
+                    cache_dtype, kKvQuantGroup, !k8v4, true);
+    KVCache b_cache(b_arena, 1, static_cast<std::uint32_t>(total), kKVHeads, kHeadDim,
+                    cache_dtype, kKvQuantGroup, !k8v4, true);
+    cudaMemset(a_cache.k[0].data, 0, key_n);
     cudaMemset(a_cache.v[0].data, 0, packed_n);
-    cudaMemset(b_cache.k[0].data, 0, packed_n);
+    cudaMemset(b_cache.k[0].data, 0, key_n);
     cudaMemset(b_cache.v[0].data, 0, packed_n);
 
     Tensor tq(dq.p, DType::BF16, {kHeadDim, kQHeads, tokens});
@@ -1131,7 +1143,8 @@ int int4_split_api_smoke_case(std::int32_t tokens, std::int32_t base, std::uint3
     cudaDeviceSynchronize();
 
     const std::string label =
-        "gqa int4 split API base=" + std::to_string(base) + " T=" + std::to_string(tokens);
+        std::string("gqa ") + (k8v4 ? "k8v4" : "int4") +
+        " split API base=" + std::to_string(base) + " T=" + std::to_string(tokens);
     return verify(label.c_str(), from_device_bf16(db, qn), from_device_bf16(da, qn),
                   Tolerance::attention_bf16());
 }
@@ -1600,8 +1613,10 @@ int main(int argc, char** argv) {
         f += split_api_parity_case(DType::I8, 128, 17, 1404u);
         f += split_api_parity_case(DType::BF16, 1024, 17, 1405u, true);
         f += split_api_parity_case(DType::I8, 1024, 17, 1406u, true);
-        f += int4_split_api_smoke_case(1, 17, 1501u);
-        f += int4_split_api_smoke_case(128, 17, 1502u);
+        f += packed_split_api_smoke_case(1, 17, 1501u, false);
+        f += packed_split_api_smoke_case(128, 17, 1502u, false);
+        f += packed_split_api_smoke_case(1, 17, 1503u, true);
+        f += packed_split_api_smoke_case(128, 17, 1504u, true);
         f += one_decode_case(1, 11u);
         f += one_decode_case(17, 17u);
         f += one_decode_case(2048, 23u);

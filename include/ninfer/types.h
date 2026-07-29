@@ -19,6 +19,7 @@ enum class KvCacheStorage : std::uint8_t {
     BFloat16,
     Int8Group64,
     Int4Group64,
+    Int8KeyInt4ValueGroup64,
 };
 
 enum class ProposalHead : std::uint8_t {

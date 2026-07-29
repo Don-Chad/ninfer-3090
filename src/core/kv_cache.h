@@ -21,6 +21,8 @@ struct KVCacheLayerView {
     std::int32_t head_dim        = 0;
     DType dtype                  = DType::BF16;
     std::int32_t quant_group     = 0;
+    bool packed_k                = false;
+    bool packed_v                = false;
 };
 
 struct KVCacheLayout {
@@ -30,6 +32,8 @@ struct KVCacheLayout {
     std::int32_t head_dim        = 0;
     DType dtype                  = DType::BF16;
     std::int32_t quant_group     = 0;
+    bool packed_k                = false;
+    bool packed_v                = false;
     std::vector<LayoutRegion> k;
     std::vector<LayoutRegion> v;
     std::vector<LayoutRegion> k_scale;
@@ -41,7 +45,8 @@ struct KVCacheLayout {
 [[nodiscard]] KVCacheLayout plan_kv_cache(LayoutBuilder& builder, std::uint32_t full_layers,
                                           std::uint32_t max_context, std::int32_t num_kv_heads,
                                           std::int32_t head_dim, DType dtype = DType::BF16,
-                                          std::int32_t quant_group = 0);
+                                          std::int32_t quant_group = 0,
+                                          bool packed_k = false, bool packed_v = false);
 
 struct KVCache {
     std::vector<Tensor> k;
@@ -54,6 +59,8 @@ struct KVCache {
     std::int32_t head_dim        = 0;
     DType dtype                  = DType::BF16;
     std::int32_t quant_group     = 0;
+    bool packed_k                = false;
+    bool packed_v                = false;
 
     KVCache() = default;
     KVCache(DeviceSpan backing, const KVCacheLayout& layout);

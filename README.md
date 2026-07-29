@@ -164,12 +164,40 @@ BF16 KV substantially reduces available context.
 
 ### Experimental rotated INT4 KV for long context
 
+The recommended RotorQuant-style capacity mode is `--kv-dtype k8v4`: keys remain group-64 INT8,
+values use packed group-64 INT4, and Q/K receive the same normalized Walsh-Hadamard rotation. This
+keeps the attention-score path at eight bits while reducing the value-cache traffic and storage by
+half. Rotation and quantization are fused into the existing prompt-fill and decode cache-write
+kernels; there is no standalone rotation launch or intermediate rotated tensor.
+
+```powershell
+.\ninfer.exe models\qwen3_6_35b_a3b.ninfer `
+  --prompt "Summarize the following repository..." `
+  --max-context 131072 --prefill-chunk 1024 --max-new 512 `
+  --kv-dtype k8v4 --mtp-draft-tokens 2 --lm-head-draft `
+  --no-cuda-graph --text-only
+```
+
+Measured on the development RTX 3090:
+
+| Workload | INT8 K/V | Rotated K8/V4 |
+|---|---:|---:|
+| repeated-code `pp1500+tg1500` | 399.16 ± 2.33 tok/s | 395.08 ± 0.78 tok/s |
+| lookup acceptance | 85.19% | 83.26% |
+| KV payload at context 3,072 | 34.03 MiB | 25.78 MiB |
+| 65,536-token prefill | — | 3,117.28 tok/s |
+| KV payload at 131,072 capacity | — | 0.977 GiB |
+
+The 128K allocation uses 1.102 GiB for the full sequence arena and 20.825 GiB for model weights,
+so it fits a 24 GiB RTX 3090 but should run without another CUDA workload. Use 120K or less when a
+hard 22 GiB operational ceiling is required.
+
 `--kv-dtype int4` stores two signed 4-bit K/V codes per byte with FP16 group-64 scales. Keys and
 queries receive the same normalized 64-wide Walsh-Hadamard rotation before quantization, so their
 unquantized dot product is preserved while isolated key outliers are spread across the group.
 Values remain unrotated and are dequantized inside the fused attention kernel.
 
-Use this mode when context capacity matters more than short-context speculative throughput:
+Use full K4/V4 only when maximum context capacity matters more than model fidelity:
 
 ```powershell
 .\ninfer.exe models\qwen3_6_35b_a3b.ninfer `
@@ -187,6 +215,12 @@ Long-context CUDA Graphs require additional memory, so start with `--no-cuda-gra
 INT4 is not the default speed route. On the controlled 4K `tg128` MTP benchmark, rotated INT4
 reached 238.25 tok/s versus 261.10 tok/s for INT8 because its lower precision reduced proposal
 acceptance. Keep `--kv-dtype int8` for the established short-context throughput result.
+
+Direct packed-INT4 QK MMA was deliberately not selected for K8/V4: it accelerates the K4 key path,
+whereas the measured quality/acceptance frontier selected eight-bit keys. Likewise, selective
+high-precision sink heads were not enabled without a stable teacher-forced calibration signal;
+free-running acceptance changes the generated sequence and is not a safe per-head calibration
+objective.
 
 ## How performance is measured
 

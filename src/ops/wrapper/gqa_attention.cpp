@@ -69,13 +69,15 @@ void validate_cache(const KVCacheLayerView& cache, std::int32_t kv_heads, const 
     }
 
     const std::int32_t padded = checked_i32(cache.padded_context, op, "padded_context");
-    const DType code_dtype = cache.dtype;
-    if (cache.k.dtype != code_dtype || cache.v.dtype != code_dtype) {
+    const DType k_dtype = cache.packed_k ? DType::U8 : cache.dtype;
+    const DType v_dtype = cache.packed_v ? DType::U8 : cache.dtype;
+    if (cache.k.dtype != k_dtype || cache.v.dtype != v_dtype) {
         throw std::invalid_argument(std::string(op) + ": invalid KV cache code dtype");
     }
-    const std::int32_t code_dim = cache.dtype == DType::U8 ? kHeadDim / 2 : kHeadDim;
-    require_shape(cache.k, code_dim, padded, kv_heads, 1, op, "cache k");
-    require_shape(cache.v, code_dim, padded, kv_heads, 1, op, "cache v");
+    require_shape(cache.k, cache.packed_k ? kHeadDim / 2 : kHeadDim, padded, kv_heads, 1, op,
+                  "cache k");
+    require_shape(cache.v, cache.packed_v ? kHeadDim / 2 : kHeadDim, padded, kv_heads, 1, op,
+                  "cache v");
     require_contiguous_nonnull(cache.k, op, "cache k");
     require_contiguous_nonnull(cache.v, op, "cache v");
 

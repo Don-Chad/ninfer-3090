@@ -144,6 +144,7 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
       lookup_mid_k(lookup_k > 8 ? 8 : 0),
       lookup_fallback_k(lookup_k > kMaximumMtpDraftTokens ? kMaximumMtpDraftTokens : 0),
       round_k(plan.round_k), kv_dtype(plan.kv_dtype), kv_quant_group(plan.kv_quant_group),
+      kv_packed_k(plan.kv_packed_k), kv_packed_v(plan.kv_packed_v),
       proposal_head(plan.proposal_head), use_cuda_graph(plan.use_cuda_graph),
       prompt_lookup_min_match(plan.lookup_min_match != 0
                                   ? plan.lookup_min_match
@@ -996,10 +997,13 @@ MemorySummary ProgramImplCore::memory_summary() const noexcept {
     MemorySummary out;
     out.device      = device.device;
     out.max_context = capacity;
-    out.kv_cache = kv_dtype == DType::BF16
-                       ? KvCacheStorage::BFloat16
-                       : (kv_dtype == DType::I8 ? KvCacheStorage::Int8Group64
-                                                : KvCacheStorage::Int4Group64);
+    out.kv_cache =
+        kv_dtype == DType::BF16
+            ? KvCacheStorage::BFloat16
+            : (kv_packed_k
+                   ? KvCacheStorage::Int4Group64
+                   : (kv_packed_v ? KvCacheStorage::Int8KeyInt4ValueGroup64
+                                  : KvCacheStorage::Int8Group64));
     DeviceArena& weights = *model.weights_arena;
     out.weights = ArenaMemorySummary{weights.capacity(), weights.used(), weights.peak_used()};
     out.sequence =
