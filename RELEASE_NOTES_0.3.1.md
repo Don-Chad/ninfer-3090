@@ -32,6 +32,10 @@ templated code, regeneration, and other workloads with reusable local continuati
   recurrent-state work, output/argmax operations, and graph overhead.
 - **Cross-platform graph memory planning.** Windows and CUDA 13.0 Linux graph-capture footprints
   are both validated within the 24 GB card.
+- **Rotated compressed KV caches.** New `int4`, `k8v4`, and quality-first `rk8v4` modes extend
+  practical context capacity on a 24 GB RTX 3090. The asymmetric K8/V4 route preserves keys at
+  higher precision; `rk8v4` additionally rotates values before quantization and reverses the
+  transform after attention.
 - **Native release packages.** Windows 11 and Ubuntu 24.04/WSL2 builds include the CLI,
   OpenAI-/Anthropic-compatible server, benchmark runner, runtime dependencies, and checksums.
 
@@ -86,6 +90,23 @@ For ordinary prose or short prompts, MTP-2 is the conservative controlled-perfor
 Omitting `--prompt-lookup-auto` forces lookup attempts and should be reserved for workloads known
 to contain substantial repetition. K15 is not free: the target model verifies 16 positions, so
 forced lookup can be slower on non-repetitive text.
+
+## Long-context KV modes
+
+The default `--kv-dtype int8` remains the conservative quality and performance choice. When a
+larger context allocation is required:
+
+- `--kv-dtype k8v4` uses rotated INT8 keys and packed INT4 values. It is the recommended
+  long-context capacity mode because it keeps the fast value path.
+- `--kv-dtype rk8v4` adds a full value rotation and inverse attention-output rotation. It is the
+  quality-first K8/V4 mode, but its extra work makes very large prefills slower.
+- `--kv-dtype int4` packs both keys and values and provides the largest cache capacity, with the
+  greatest quantization trade-off.
+
+Maximum context is a memory allocation limit, not the attention length paid by every token. A
+54K maximum remains fast while only about 4K tokens are populated. Decode slows as the active KV
+cache grows because dense attention reads the populated history; on the 65,536-token fixture,
+K8/V4 decode measured about 112 tok/s on one RTX 3090.
 
 ## Model scope
 
