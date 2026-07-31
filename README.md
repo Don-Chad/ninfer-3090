@@ -1,15 +1,16 @@
-# NInfer RTX 3090
+# NInfer-3090 for the NVIDIA GeForce RTX 3090
 
-Run a genuinely capable **35B-class MoE model at 300–400+ output tok/s on a single RTX 3090** when
-the workload gives speculative decoding useful structure. NInfer turns the still-formidable
-24 GB GA102 card into a specialized local inference appliance for **Qwen3.6-35B-A3B**, with native
-Windows and Ubuntu/WSL2 binaries, CUDA Graph decode, low-bit weights, INT8 KV cache, MTP
-speculation, and adaptive prompt lookup.
+NInfer-3090 is a specialized C++20/CUDA inference engine for running Qwen3.6-35B-A3B on a single
+24 GB NVIDIA GeForce RTX 3090.
 
-This is not a generic model runner with a few GPU flags. It is a C++20/CUDA engine shaped around
-this model and this GPU: quantized 35B-A3B weights fit beside a 4K-capable runtime, the MoE and
-Gated DeltaNet paths use GA102 schedules, and speculative execution changes strategy automatically
-between ordinary prompts and repetition-rich code.
+Measured decode throughput ranges from approximately 260 tok/s on the controlled MTP benchmark to
+399–406 tok/s on a repetition-rich code workload where adaptive prompt lookup can reuse long
+continuations. A less repetitive 1,500-token code-refactoring workload reaches 310 tok/s.
+
+The runtime includes native Windows and Ubuntu/WSL2 binaries, CUDA Graph decode, mixed low-bit
+weights, INT8 and experimental INT4 KV-cache modes, MTP speculative decoding, and adaptive prompt
+lookup. It is optimized around the supported checkpoints and the RTX 3090 rather than implemented
+as a general-purpose model runner.
 
 ## Headline RTX 3090 performance
 
