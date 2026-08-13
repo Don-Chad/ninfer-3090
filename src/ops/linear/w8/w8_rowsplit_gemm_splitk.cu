@@ -30,8 +30,13 @@ void launch_active_cols(const Tensor& x, const Weight& weight, Tensor& out, cuda
                               : ActiveCols <= 32 ? 32
                               : ActiveCols <= 40 ? 40
                                                  : 48;
+#if defined(NINFER_SM86)
+    constexpr int KWarps    = 4;
+    constexpr int MinBlocks = 2;
+#else
     constexpr int KWarps    = ActiveCols <= 36 ? 16 : 8;
     constexpr int MinBlocks = KWarps == 16 ? 1 : 2;
+#endif
     constexpr auto ScaleAccess =
         ActiveCols > 4 ? W8SmallTMmaScaleAccess::Shared : W8SmallTMmaScaleAccess::Direct;
     constexpr auto ActivationCache = ActiveCols <= 36 || ActiveCols == 48 ? Cache::cg : Cache::ca;
@@ -85,8 +90,8 @@ void launch_w8_exact_t_splitk(const Tensor& x, const Weight& w, Tensor& out, cud
 void launch_w8_exact_t_composite(const Tensor& x, const Weight& w, Tensor& out,
                                  cudaStream_t stream) {
     require_problem(x, w, out);
-    if (x.ne[1] < 33 || x.ne[1] > 127) {
-        throw std::invalid_argument("W8 exact-T composite requires T=33..127");
+    if (x.ne[1] < 33) {
+        throw std::invalid_argument("W8 exact-T composite requires T>=33");
     }
 
     std::int32_t offset = 0;
@@ -125,6 +130,9 @@ void launch_w8_dflash_medium(const Tensor& x, const Weight& w, Tensor& out, cuda
         throw std::invalid_argument("W8 DFlash medium route requires T=49..128");
     }
 
+#if defined(NINFER_SM86)
+    launch_w8_exact_t_composite(x, w, out, stream);
+#else
     if (t <= 64) {
         launch_medium<64, 8, 4, 1>(x, w, out, stream);
     } else if (t == 65) {
@@ -146,12 +154,17 @@ void launch_w8_dflash_medium(const Tensor& x, const Weight& w, Tensor& out, cuda
     } else {
         launch_medium<128, 4, 8, 1>(x, w, out, stream);
     }
+#endif
     CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_w8_medium_splitk_c144(const Tensor& x, const Weight& w, Tensor& out,
                                   cudaStream_t stream) {
+#if defined(NINFER_SM86)
+    launch_w8_exact_t_composite(x, w, out, stream);
+#else
     launch_medium_route<144, 2, 9, 2>(x, w, out, stream);
+#endif
 }
 
 } // namespace ninfer::ops::detail

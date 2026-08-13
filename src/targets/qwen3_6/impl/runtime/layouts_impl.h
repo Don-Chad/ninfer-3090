@@ -577,8 +577,8 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
         }
         break;
     }
-    if (device.sm() != 120) {
-        throw std::invalid_argument("Qwen3.6 family runtime requires compute capability 12.0");
+    if (device.sm() != 86) {
+        throw std::invalid_argument("Qwen3.6 family runtime requires compute capability 8.6");
     }
 }
 
@@ -627,7 +627,11 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                     const std::uint64_t final_visible = std::min<std::uint64_t>(
                         impl->capacity,
                         static_cast<std::uint64_t>(profile.max) + 2ULL * impl->draft_window);
+#ifdef NINFER_SM86
+                    return (final_visible <= 4096 ? 16ULL : 86ULL) * kMiB;
+#else
                     return (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
+#endif
                 },
                 "MTP graph allowance");
             impl->graph_allowance_bytes = checked_mul(per_batch_allowance, impl->max_concurrency,

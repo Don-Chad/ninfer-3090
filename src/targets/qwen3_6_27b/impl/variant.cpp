@@ -43,7 +43,11 @@ void validate_token_interval(std::int32_t first, std::int32_t last) {
     }
 }
 
+#if defined(NINFER_SM86)
+constexpr ops::LinearPolicy kNvfp4TextPolicy = ops::LinearPolicy::A16Only;
+#else
 constexpr ops::LinearPolicy kNvfp4TextPolicy = ops::LinearPolicy::AllowA4;
+#endif
 
 ops::LinearPolicy text_policy(const Weight& weight) {
     return weight.qtype == QType::NVFP4 ? kNvfp4TextPolicy : ops::LinearPolicy::A16Only;

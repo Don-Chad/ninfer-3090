@@ -190,34 +190,39 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, qwen3_6::StartupFeature
         binder, "vision/merger/fc2_bias", NumericFormat::BF16, {2048}, vision_placement);
     out.vision_merger_norm = qwen3_6::bind_vision_merger_norm(binder, vision_placement);
 
-    const artifact::TensorPlacement dflash_placement =
-        features.dflash() ? artifact::TensorPlacement::Device
-                          : artifact::TensorPlacement::ValidateOnly;
-    const auto bind_dflash = [&](std::string_view name, NumericFormat format,
-                                 std::initializer_list<std::uint64_t> shape) {
-        return artifact::bind_tensor(binder, name, format, shape, dflash_placement);
-    };
-    out.dflash.feature_projection =
-        bind_dflash("dflash/feature_projection", NumericFormat::W8G32_F16S, {2048, 16384});
-    out.dflash.context_norm = bind_dflash("dflash/context_norm", NumericFormat::BF16, {2048});
-    for (std::size_t layer = 0; layer < kDFlashLayers; ++layer) {
-        DFlashLayerPlan& target  = out.dflash.layers[layer];
-        const std::string prefix = "dflash/layers/" + std::to_string(layer) + "/";
-        target.input_norm        = bind_dflash(prefix + "input_norm", NumericFormat::BF16, {2048});
-        target.query_key_value   = bind_dflash(prefix + "attention/query_key_value",
-                                               NumericFormat::W8G32_F16S, {6144, 2048});
-        target.query_norm =
-            bind_dflash(prefix + "attention/query_norm", NumericFormat::BF16, {128});
-        target.key_norm = bind_dflash(prefix + "attention/key_norm", NumericFormat::BF16, {128});
-        target.attention_output =
-            bind_dflash(prefix + "attention/output", NumericFormat::W8G32_F16S, {2048, 4096});
-        target.post_attention_norm =
-            bind_dflash(prefix + "post_attention_norm", NumericFormat::BF16, {2048});
-        target.gate_up =
-            bind_dflash(prefix + "mlp/gate_up", NumericFormat::W8G32_F16S, {12288, 2048});
-        target.down = bind_dflash(prefix + "mlp/down", NumericFormat::W8G32_F16S, {2048, 6144});
+    const bool artifact_has_dflash = binder.has_object("dflash/feature_projection");
+    if (features.dflash() && !artifact_has_dflash) {
+        throw artifact::ArtifactError("DFlash was requested but this compact artifact has no DFlash weights");
     }
-    out.dflash.final_norm = bind_dflash("dflash/final_norm", NumericFormat::BF16, {2048});
+    if (artifact_has_dflash) {
+        const artifact::TensorPlacement dflash_placement =
+            features.dflash() ? artifact::TensorPlacement::Device
+                              : artifact::TensorPlacement::ValidateOnly;
+        const auto bind_dflash = [&](std::string_view name, NumericFormat format,
+                                     std::initializer_list<std::uint64_t> shape) {
+            return artifact::bind_tensor(binder, name, format, shape, dflash_placement);
+        };
+        out.dflash.feature_projection =
+            bind_dflash("dflash/feature_projection", NumericFormat::W8G32_F16S, {2048, 16384});
+        out.dflash.context_norm = bind_dflash("dflash/context_norm", NumericFormat::BF16, {2048});
+        for (std::size_t layer = 0; layer < kDFlashLayers; ++layer) {
+            DFlashLayerPlan& target  = out.dflash.layers[layer];
+            const std::string prefix = "dflash/layers/" + std::to_string(layer) + "/";
+            target.input_norm = bind_dflash(prefix + "input_norm", NumericFormat::BF16, {2048});
+            target.query_key_value = bind_dflash(prefix + "attention/query_key_value",
+                                                  NumericFormat::W8G32_F16S, {6144, 2048});
+            target.query_norm = bind_dflash(prefix + "attention/query_norm", NumericFormat::BF16, {128});
+            target.key_norm = bind_dflash(prefix + "attention/key_norm", NumericFormat::BF16, {128});
+            target.attention_output = bind_dflash(prefix + "attention/output",
+                                                   NumericFormat::W8G32_F16S, {2048, 4096});
+            target.post_attention_norm = bind_dflash(prefix + "post_attention_norm",
+                                                      NumericFormat::BF16, {2048});
+            target.gate_up = bind_dflash(prefix + "mlp/gate_up", NumericFormat::W8G32_F16S,
+                                         {12288, 2048});
+            target.down = bind_dflash(prefix + "mlp/down", NumericFormat::W8G32_F16S, {2048, 6144});
+        }
+        out.dflash.final_norm = bind_dflash("dflash/final_norm", NumericFormat::BF16, {2048});
+    }
 
     load_plan.materialization = binder.finish();
     return load_plan;
