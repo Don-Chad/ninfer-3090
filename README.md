@@ -9,59 +9,36 @@ reasoning-effort control, ReplaySSM state transactions, and concurrent cohorts t
 This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. DFlash is not part
 of the recommended RTX 3090 path; use MTP speculative decoding.
 
-## Cohort batching, in plain language
+## Start Qwen3.8 in three steps
 
-Choose a cohort size at startup with `--max-concurrency`: C1 runs one request at a time, while C8
-can keep up to eight requests active. NInfer combines every active, decode-ready request into one
-compact GPU batch each generation round. Finished or temporarily non-ready requests are omitted,
-so a C8 server can execute batch sizes from one through eight without wasting rows on empty slots.
+1. Download and unzip the latest [Windows release](https://github.com/Don-Chad/ninfer-3090/releases/latest).
+2. Double-click `download-qwen38.bat` to download the model. Interrupted downloads resume.
+3. Double-click one launcher:
 
-New requests may arrive at any time. If a cohort lane and enough paged-KV/state capacity are free,
-the scheduler admits the next prepared request at a safe round boundary; otherwise it waits in the
-bounded pending queue configured by `--max-pending-requests`. A follow-up request is therefore able
-to join the running server, but it does not interrupt or rebuild a GPU operation already in flight.
+| Launcher | Best for |
+|---|---|
+| `run-qwen38-c1.bat` | One interactive user, lowest latency, up to 64K context |
+| `run-qwen38-c8.bat` | Multiple users or agents, highest aggregate throughput, 8K context |
 
-This differs from unrestricted dynamic or continuous batching: the active population can change,
-but the maximum cohort, memory pools, workspace, and CUDA Graph batch shapes are fixed at startup.
-That bounded design is less flexible than a large datacenter scheduler, but it gives predictable
-VRAM use and lets an RTX 3090 reuse optimized CUDA Graphs for each reachable batch size.
+The OpenAI-compatible API is then available at `http://127.0.0.1:8080/v1`. No Python environment,
+CMake, or PowerShell commands are required for the release build.
 
 ## Qwen3.8-27B support and RTX 3090 results
 
-Qwen3.8-27B is validated for the C1, C2, C4, and C8 cohorts. ReplaySSM records provisional GDN
-updates and folds only accepted speculative tokens into persistent recurrent state. This replaces
-the old per-depth state snapshots, saves several GiB at high concurrency, and makes C8/MTP3 fit on
-the RTX 3090. Every row below completed real text generation over simultaneous 128-token requests
-with CUDA Graphs and no competing GPU workload.
+Qwen3.8-27B is validated from one through eight simultaneous users. ReplaySSM cuts the memory cost
+of speculative decoding, allowing the faster MTP3 mode to remain enabled at C8. The table below is
+the new sustained test: every request generated 1,024 tokens with CUDA Graphs enabled.
 
-| Cohort | Validated profile | Whole-wave aggregate throughput | Mean TTFT | VRAM result |
-|---:|---|---:|---:|---:|
-| C1 | 4K, MTP3 | **61.82 tok/s** | **142 ms** | 19,500 MiB peak |
-| C2 | 4K, MTP3 | **77.11 tok/s** | **262 ms** | 20,278 MiB peak |
-| C4 | 4K, MTP3 | **80.20 tok/s** | **543 ms** | 21,811 MiB peak |
-| C8, ReplaySSM | 8K, MTP3, 65,536-token shared KV | **114.88 tok/s** | **1,432 ms** | 23,745 MiB peak |
+| Cohort | Total output | End-to-end throughput | Decode throughput | MTP acceptance | Mean TTFT | Peak VRAM |
+|---:|---:|---:|---:|---:|---:|---:|
+| C1 | 1,024 tokens | **70.19 tok/s** | **71.00 tok/s** | 61.13% | 149 ms | 19,641 MiB |
+| C2 | 2,048 tokens | **89.43 tok/s** | **90.66 tok/s** | 59.66% | 262 ms | 20,022 MiB |
+| C4 | 4,096 tokens | **97.89 tok/s** | **100.28 tok/s** | 59.63% | 538 ms | 20,641 MiB |
+| C8 | 8,192 tokens | **161.28 tok/s** | **165.33 tok/s** | 56.84% | 1,215 ms | 22,138 MiB |
 
-**Whole-wave aggregate throughput** is total completion tokens divided by elapsed time from the
-simultaneous request launch until the last request completes. It includes prefill/TTFT, decode
-ramp-up, and the tail where fewer requests remain active. This is the comparable headline number:
-**61.82 tok/s at C1 versus 114.88 tok/s at C8**, an 86% aggregate throughput increase.
-
-The original C8/MTP2 campaign sustained **179-211 aggregate tok/s during fully-active decode
-intervals**. That telemetry excludes prefill, ramp-up, and drain time, so it must not be compared
-directly with whole-wave throughput or interpreted as per-request speed. The ReplaySSM C8/MTP3
-run measured 153.77 aggregate decode tok/s across the complete decode span.
-
-A matched four-prompt C1 sweep measured ordinary decoding at 36.86 tok/s, MTP2 at 65.72 tok/s,
-and MTP3 at 71.56 tok/s. MTP2 accepted 78.4% of drafted tokens; MTP3 accepted 67.7% but committed
-3.04 tokens per round and remained 8.9% faster than MTP2. Greedy reasoning/output text was not
-byte-identical across every execution route, so these throughput results do not establish exact
-quality parity.
-
-The headline ReplaySSM run reserved 65,536 paged-KV tokens: enough capacity for eight independent
-8K sequences. A matched run with the established 8,192-token shared pool measured 114.73 tok/s and
-21,818 MiB peak VRAM. The 0.13% throughput difference is noise; use the 8K shared pool for almost
-2 GiB more headroom, or 65,536 when all eight requests must be able to grow to 8K simultaneously.
-Use C1 when single-request latency matters and C2/C4 for a latency-throughput balance.
+C1 is the responsive choice for a single user. C8 delivers **2.3x the total throughput** when
+several requests are active. The C8 long-output test uses a 16K shared KV pool so all eight
+1,024-token responses can be admitted together.
 
 ## Qwen3.6-35B-A3B RTX 3090 results
 
@@ -83,24 +60,14 @@ to v0.3.1's 1,500-token adaptive prompt-lookup benchmark.
 Compatible-prefix reuse was validated end to end: a repeated 26-token prompt reused 24 tokens,
 reducing measured prefill from 371 ms to 10 ms.
 
-## Changes since v0.3.1
+## What the release gives you
 
-- shared paged BF16/INT8 KV storage;
-- startup-bounded concurrent execution with decode-ready request compaction;
-- batched ordinary and MTP decode, with C1-C6 validated for compact 35B at 4K;
-- compatible-prefix KV reuse across requests;
-- explicit shared `--kv-capacity` sizing and admission control;
-- OpenAI Responses Core, Chat Completions, Anthropic Messages, streaming, function-call rendering,
-  request logging, and throughput telemetry;
-- direct compatibility with legacy compact v1 groupwise artifacts and current v2 artifacts;
-- registered Qwen3.8-27B groupwise artifact support using W8 embedding/output endpoints;
-- ReplaySSM speculative GDN state transactions, reducing recurrent-state memory at concurrency;
-- Qwen3.8 reasoning-effort selection (`low`, `medium`, and `xhigh`);
-- native Windows CUDA 13.x / MSVC support.
-
-The legacy reader assigns only the two registered groupwise identities. A compact 35B artifact
-without DFlash weights is accepted when DFlash is disabled and rejected explicitly if DFlash is
-requested.
+- A native Windows server that runs Qwen3.8-27B on one RTX 3090.
+- OpenAI Chat Completions, Responses, and Anthropic-compatible APIs.
+- ReplaySSM and MTP3 for higher throughput without exceeding 24 GB VRAM.
+- `low`, `medium`, and `xhigh` reasoning modes.
+- Prefix reuse for faster repeated or shared prompts.
+- One-user and eight-user launchers with safe tested defaults.
 
 ## Supported artifacts
 
@@ -116,99 +83,24 @@ artifact contains additional DFlash weights and is not the artifact used for the
 3090 concurrency results. The pinned compact v1 artifact keeps the measured model payload and
 omits DFlash, providing the known 24 GB memory profile.
 
-## Requirements
+## Downloads and compatibility
 
-- NVIDIA GeForce RTX 3090 (`sm_86`);
-- Windows 11 x64 (the release binary is native Windows);
-- an NVIDIA driver compatible with CUDA 13.x;
-- CMake 3.28 or newer and a C++20 compiler;
-- CUDA Toolkit 12.8 or newer when building from source;
-- FFmpeg and libcurl development/runtime dependencies.
+The release requires Windows 11, an RTX 3090, and a recent NVIDIA driver. The archive already
+contains the native applications and required DLLs.
 
-## Build on Windows
+For Qwen3.8, use `download-qwen38.bat` or download the
+[official artifact](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) manually and save it as
+`models\qwen3_8_27b.ninfer` beside the launchers.
 
-Use Visual Studio 2022 and vcpkg:
+For Qwen3.6-35B-A3B, the smaller
+[pinned container-v1 artifact](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer/tree/c8b8c1c0df4c74df3c190c6aa3a7f24dc614721c)
+is recommended on a 24 GB card. Releases v0.5 and newer also read the larger container-v2 file.
+An `artifact magic is not NInfer version 1` message means the executable is outdated, not that the
+current model download is necessarily corrupt.
 
-```powershell
-cmake -S . -B build-windows -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_TOOLCHAIN_FILE=C:/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake `
-  -DVCPKG_TARGET_TRIPLET=x64-windows `
-  -DCMAKE_CUDA_ARCHITECTURES=86
-cmake --build build-windows --config Release --parallel
-```
-
-See [the Windows guide](docs/rtx-3090-windows.md) for complete setup instructions.
-
-## Download the correct 35B artifact
-
-For the validated RTX 3090 profiles, pin the compact **container-v1** revision. Do not omit
-`--revision`: Hugging Face `main` now points to the larger container-v2/DFlash artifact.
-
-```powershell
-hf download neroued/Qwen3.6-35B-A3B-NInfer `
-  qwen3_6_35b_a3b.ninfer `
-  --revision c8b8c1c0df4c74df3c190c6aa3a7f24dc614721c `
-  --local-dir models
-
-Get-FileHash .\models\qwen3_6_35b_a3b.ninfer -Algorithm SHA256
-```
-
-The expected v1 size is **20.84 GiB** and its SHA-256 is
-`9e8378398d2b789a77224b5110c7590adbbc6fd4accd139b918157b2b9da7163`.
-
-### What if I already downloaded container v2?
-
-The current unpinned download is container v2, 21.22 GiB, SHA-256
-`1fb9ea0b5b8561e49d9604115ec89e5d9f2b6f6434e32c37c57fffd480a325d2`. NInfer-3090
-**v0.5.0 or newer supports v2 parsing and binding**, but this larger DFlash-bearing artifact was
-not used for the published 3090 memory/concurrency results. Prefer pinned v1 on a 24 GB card.
-
-If the program reports `artifact magic is not NInfer version 1`, the executable is older than
-the v1/v2 reader. Install the
-[v0.5.0 Windows release](https://github.com/Don-Chad/ninfer-3090/releases/tag/v0.5.0-rtx3090)
-or rebuild this branch. A v0.5 binary reports `artifact magic is not NInfer v1 or v2` for a truly
-invalid file. Also check that a failed/interrupted download did not leave a small pointer or
-partial file in place.
-
-`.ninfer` artifacts contain quantized weights and frontend resources. They are not GGUF or
-Transformers checkpoints.
-
-For Qwen3.8-27B:
-
-```powershell
-hf download neroued/Qwen3.8-27B-NInfer `
-  qwen3_8_27b.ninfer `
-  --local-dir models
-```
-
-## Run the server
-
-The explicit 4K KV capacity avoids reserving the extra 1 GiB safety margin used by `auto` and is
-the validated compact-35B configuration:
-
-```powershell
-.\build-windows\apps\Release\ninfer-serve.exe models\qwen3_6_35b_a3b.ninfer `
-  --host 127.0.0.1 --port 8080 `
-  --max-context 4096 --kv-capacity 4096 --max-concurrency 4 `
-  --kv-dtype int8 --spec mtp --draft-tokens 3 --lm-head-draft
-```
-
-Use `--max-concurrency 2` when individual request latency matters more than aggregate throughput.
-C6 provides the highest measured short-run aggregate throughput but leaves little VRAM headroom.
-
-The recommended Qwen3.8 C8/8K shared-pool profile uses ReplaySSM with MTP3:
-
-```powershell
-.\build-windows\apps\Release\ninfer-serve.exe models\qwen3_8_27b.ninfer `
-  --host 127.0.0.1 --port 8080 `
-  --max-context 8192 --kv-capacity 8192 --max-concurrency 8 `
-  --prefill-chunk 1024 --kv-dtype int8 `
-  --spec mtp --draft-tokens 3 --lm-head-draft
-```
-
-Set `--kv-capacity 65536` instead when every one of the eight requests must be able to occupy its
-full 8K context simultaneously. That profile measured 114.88 aggregate tok/s and 23,745 MiB peak
-VRAM; the 8K shared-pool profile measured 114.73 tok/s and 21,818 MiB.
+Developers building from source can use Visual Studio 2022, CUDA 12.8 or newer, CMake, and vcpkg.
+See the [Windows build guide](docs/rtx-3090-windows.md); ordinary release users do not need these
+tools.
 
 ## Qwen3.8 reasoning effort
 
@@ -251,6 +143,19 @@ The server supports:
 - bounded pending-request admission and JSONL request logs.
 
 See [HTTP serving](docs/serving.md) and [CLI usage](docs/cli.md).
+
+## How cohort batching works
+
+The C number is the maximum number of requests NInfer can run together. C1 favors one interactive
+user; C8 can combine up to eight active requests into each GPU step for much higher total output.
+
+Follow-up requests do not need to arrive at the same instant. When a running request finishes, the
+next waiting request can join at a safe generation boundary. Empty or finished lanes are skipped,
+so a C8 server also works normally with only one, two, or four active users.
+
+This is deliberately more bounded than datacenter-style dynamic batching. The maximum number of
+users and GPU memory are chosen when the server starts. In return, memory use stays predictable on
+a 24 GB card and the server can reuse fast CUDA Graphs instead of rebuilding work continuously.
 
 ## Current limits
 
