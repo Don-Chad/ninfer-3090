@@ -14,6 +14,30 @@ compatible-prefix reuse, bounded admission, and OpenAI/Anthropic serving APIs.
 The bundled applications and dependency DLLs are native Windows executables. Model artifacts are
 not included in the release archive.
 
+## Download the compatible Qwen3.6-35B artifact
+
+The published RTX 3090 measurements use the compact 20.84 GiB container-v1 artifact. Pin its
+revision because the Hugging Face repository's unpinned `main` file is now the larger 21.22 GiB
+container-v2 artifact with DFlash weights:
+
+```powershell
+hf download neroued/Qwen3.6-35B-A3B-NInfer `
+  qwen3_6_35b_a3b.ninfer `
+  --revision c8b8c1c0df4c74df3c190c6aa3a7f24dc614721c `
+  --local-dir models
+
+Get-FileHash .\models\qwen3_6_35b_a3b.ninfer -Algorithm SHA256
+```
+
+Expected SHA-256:
+`9e8378398d2b789a77224b5110c7590adbbc6fd4accd139b918157b2b9da7163`.
+
+The v0.5 runtime reader accepts both v1 and v2 containers. An error that says only
+`artifact magic is not NInfer version 1` comes from an older executable; replace it with the
+[v0.5.0 Windows release](https://github.com/Don-Chad/ninfer-3090/releases/tag/v0.5.0-rtx3090).
+Although v2 is readable, its DFlash-bearing payload is not the artifact used to qualify the 24 GB
+3090 cohort profiles, so pinned v1 remains the recommended download.
+
 ## Run the concurrent server
 
 Keep KV capacity explicit on a 24 GB card. Automatic sizing reserves an additional 1 GiB of

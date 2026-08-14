@@ -85,13 +85,15 @@ requested.
 
 | Model | Artifact | Size | Notes |
 |---|---|---:|---|
-| Qwen3.6-35B-A3B | [compact groupwise artifact](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | 20.84 GiB | Recommended; C1-C6 validated at 4K |
+| Qwen3.6-35B-A3B v1 | [pinned compact artifact](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer/tree/c8b8c1c0df4c74df3c190c6aa3a7f24dc614721c) | 20.84 GiB | **Recommended for RTX 3090; C1-C6 validated at 4K** |
+| Qwen3.6-35B-A3B v2 | [current upstream artifact](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | 21.22 GiB | Reader supported by v0.5+; includes DFlash payload and is not the measured 3090 artifact |
 | Qwen3.6-27B | [groupwise artifact](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) | 16.29 GiB | Supported with more runtime headroom |
 | **Qwen3.8-27B** | [official NInfer groupwise artifact](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) | 16.96 GiB | **Validated at C1, C2, C4 (4K/MTP3) and C8 (8K/MTP2)** |
 
-The current upstream 21.22 GiB 35B v2 artifact contains additional DFlash weights and does not fit
-the tested RTX 3090 concurrent configuration. The compact artifact keeps the proven model weights
-and omits that unused payload.
+NInfer-3090 v0.5 and newer recognize both v1 and v2 container magic. The current 21.22 GiB v2
+artifact contains additional DFlash weights and is not the artifact used for the published RTX
+3090 concurrency results. The pinned compact v1 artifact keeps the measured model payload and
+omits DFlash, providing the known 24 GB memory profile.
 
 ## Requirements
 
@@ -116,16 +118,39 @@ cmake --build build-windows --config Release --parallel
 
 See [the Windows guide](docs/rtx-3090-windows.md) for complete setup instructions.
 
-## Download the compact 35B model
+## Download the correct 35B artifact
+
+For the validated RTX 3090 profiles, pin the compact **container-v1** revision. Do not omit
+`--revision`: Hugging Face `main` now points to the larger container-v2/DFlash artifact.
 
 ```powershell
 hf download neroued/Qwen3.6-35B-A3B-NInfer `
   qwen3_6_35b_a3b.ninfer `
+  --revision c8b8c1c0df4c74df3c190c6aa3a7f24dc614721c `
   --local-dir models
+
+Get-FileHash .\models\qwen3_6_35b_a3b.ninfer -Algorithm SHA256
 ```
 
-The `.ninfer` artifact contains quantized weights and frontend resources. It is not a GGUF or
-Transformers checkpoint.
+The expected v1 size is **20.84 GiB** and its SHA-256 is
+`9e8378398d2b789a77224b5110c7590adbbc6fd4accd139b918157b2b9da7163`.
+
+### What if I already downloaded container v2?
+
+The current unpinned download is container v2, 21.22 GiB, SHA-256
+`1fb9ea0b5b8561e49d9604115ec89e5d9f2b6f6434e32c37c57fffd480a325d2`. NInfer-3090
+**v0.5.0 or newer supports v2 parsing and binding**, but this larger DFlash-bearing artifact was
+not used for the published 3090 memory/concurrency results. Prefer pinned v1 on a 24 GB card.
+
+If the program reports `artifact magic is not NInfer version 1`, the executable is older than
+the v1/v2 reader. Install the
+[v0.5.0 Windows release](https://github.com/Don-Chad/ninfer-3090/releases/tag/v0.5.0-rtx3090)
+or rebuild this branch. A v0.5 binary reports `artifact magic is not NInfer v1 or v2` for a truly
+invalid file. Also check that a failed/interrupted download did not leave a small pointer or
+partial file in place.
+
+`.ninfer` artifacts contain quantized weights and frontend resources. They are not GGUF or
+Transformers checkpoints.
 
 For Qwen3.8-27B:
 
