@@ -213,19 +213,21 @@ std::string render_chat(const std::vector<ChatMessage>& messages, ChatRenderOpti
 
     std::size_t num_sys = 0;
     std::string merged_system;
-    if (messages[0].role == "system") {
-        if (messages[0].has_media()) {
+    while (num_sys < messages.size() && messages[num_sys].role == "system") {
+        if (messages[num_sys].has_media()) {
             throw std::invalid_argument("system message cannot contain images or videos");
         }
-        merged_system = trim_ascii_whitespace(messages[0].rendered_content());
-        num_sys       = 1;
+        const std::string block = trim_ascii_whitespace(messages[num_sys].rendered_content());
+        if (!merged_system.empty() && !block.empty()) { merged_system += "\n\n"; }
+        merged_system += block;
+        ++num_sys;
     }
 
     std::string rendered;
     const bool has_tools = !options.tool_jsons.empty();
     if (has_tools) {
         rendered += render_tools_system_block(options.tool_jsons, merged_system);
-    } else if (num_sys == 1) {
+    } else if (num_sys != 0) {
         rendered += "<|im_start|>system\n";
         rendered += merged_system;
         rendered += "<|im_end|>\n";

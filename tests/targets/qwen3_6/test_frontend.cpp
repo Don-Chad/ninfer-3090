@@ -227,6 +227,12 @@ int test_official_chat_template() {
                         no_generation) == "<|im_start|>system\nbe concise<|im_end|>\n"
                                           "<|im_start|>user\nhello<|im_end|>\n",
         "leading system prompt differs from the official template");
+    failures += check(
+        fi::render_chat({chat_message("system", "first"), chat_message("system", "second"),
+                         chat_message("user", "hello")},
+                        no_generation) == "<|im_start|>system\nfirst\n\nsecond<|im_end|>\n"
+                                          "<|im_start|>user\nhello<|im_end|>\n",
+        "contiguous leading system prompts were not merged in order");
     failures += check(fi::render_chat({chat_message("system", ""), chat_message("user", "hello")},
                                       no_generation) ==
                           "<|im_start|>system\n<|im_end|>\n<|im_start|>user\nhello<|im_end|>\n",
