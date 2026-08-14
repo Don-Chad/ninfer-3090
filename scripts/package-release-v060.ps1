@@ -44,6 +44,8 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot 'RELEASE_NOTES_0.6.0.md') -Destinati
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\download-qwen38.bat') -Destination $ProductRoot
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\run-qwen38-c1.bat') -Destination $ProductRoot
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\run-qwen38-c8.bat') -Destination $ProductRoot
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\download-qwen36-35b-vision.bat') -Destination $ProductRoot
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\run-qwen36-35b-vision.bat') -Destination $ProductRoot
 
 $innerHashes = Get-ChildItem -LiteralPath $ProductRoot -File | Sort-Object Name | ForEach-Object {
     $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256

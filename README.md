@@ -19,6 +19,7 @@ of the recommended RTX 3090 path; use MTP speculative decoding.
 |---|---|
 | `run-qwen38-c1.bat` | One interactive user, lowest latency, up to 64K context |
 | `run-qwen38-c8.bat` | Multiple users or agents, highest aggregate throughput, 8K context |
+| `run-qwen36-35b-vision.bat` | Image understanding with Qwen3.6-35B-A3B, one user, 32K context |
 
 The OpenAI-compatible API is then available at `http://127.0.0.1:8080/v1`. No Python environment,
 CMake, or PowerShell commands are required for the release build.
@@ -66,6 +67,21 @@ to v0.3.1's 1,500-token adaptive prompt-lookup benchmark.
 Compatible-prefix reuse was validated end to end: a repeated 26-token prompt reused 24 tokens,
 reducing measured prefill from 371 ms to 10 ms.
 
+### Qwen3.6-35B vision
+
+The compact 35B artifact includes its vision encoder and accepts images through the same OpenAI-
+compatible API. Run `download-qwen36-35b-vision.bat` once, then double-click
+`run-qwen36-35b-vision.bat`.
+
+The safe RTX 3090 profile is **one request, 32K maximum context, INT8 KV, vision enabled, and MTP
+disabled**. A current v0.6 test processed three 1,920×1,080 images correctly. Each image expanded
+to a 2,081-token prompt; engine TTFT was 3.76–4.07 seconds, decode was about 159 tok/s, and peak
+VRAM was 23,944 MiB. This leaves little room for another GPU workload.
+
+MTP is intentionally off for this profile. At 32K, speculative recurrent state would exceed the
+3090 memory budget; KV compression alone does not recover enough memory. Text-only 35B profiles can
+still use MTP3 as documented above.
+
 ## What the release gives you
 
 - A native Windows server that runs Qwen3.8-27B on one RTX 3090.
@@ -73,13 +89,14 @@ reducing measured prefill from 371 ms to 10 ms.
 - ReplaySSM and MTP3 for higher throughput without exceeding 24 GB VRAM.
 - `low`, `medium`, and `xhigh` reasoning modes.
 - Prefix reuse for faster repeated or shared prompts.
+- Qwen3.6-35B image understanding with a guarded 32K profile.
 - One-user and eight-user launchers with safe tested defaults.
 
 ## Supported artifacts
 
 | Model | Artifact | Size | Notes |
 |---|---|---:|---|
-| Qwen3.6-35B-A3B v1 | [pinned compact artifact](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer/tree/c8b8c1c0df4c74df3c190c6aa3a7f24dc614721c) | 20.84 GiB | **Recommended for RTX 3090; C1-C6 validated at 4K** |
+| Qwen3.6-35B-A3B v1 | [pinned compact artifact](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer/tree/c8b8c1c0df4c74df3c190c6aa3a7f24dc614721c) | 20.84 GiB | **Recommended for RTX 3090; text C1-C6 at 4K and vision C1 at 32K** |
 | Qwen3.6-35B-A3B v2 | [current upstream artifact](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | 21.22 GiB | Reader supported by v0.5+; includes DFlash payload and is not the measured 3090 artifact |
 | Qwen3.6-27B | [groupwise artifact](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) | 16.29 GiB | Supported with more runtime headroom |
 | **Qwen3.8-27B** | [official NInfer groupwise artifact](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) | 16.96 GiB | **Validated at C1, C2, C4 and C8/MTP3 with ReplaySSM** |
