@@ -1,14 +1,50 @@
 # NInfer-3090
 
-NInfer-3090 is a specialized C++20/CUDA inference engine for Qwen3.6 and Qwen3.8 on one 24 GB
-NVIDIA GeForce RTX 3090. Version 0.5 adds native Qwen3.8-27B groupwise-artifact binding to the
-SM86 runtime while retaining paged KV, concurrent MTP execution, compatible-prefix reuse,
-request admission, and OpenAI/Anthropic serving.
+NInfer-3090 is a specialized C++20/CUDA inference engine for **Qwen3.8-27B** and Qwen3.6 on one
+24 GB NVIDIA GeForce RTX 3090. Qwen3.8-27B is a first-class, tested target: the native SM86
+runtime loads its official groupwise `.ninfer` artifact, serves OpenAI- and Anthropic-compatible
+APIs, and supports paged KV, compatible-prefix reuse, CUDA Graphs, MTP speculative decoding, and
+concurrent cohorts through **C8**.
 
 This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. DFlash is not part
 of the recommended RTX 3090 path; use MTP speculative decoding.
 
-## RTX 3090 results
+## Qwen3.8-27B support and RTX 3090 results
+
+Qwen3.8-27B is validated for the C1, C2, C4, and C8 cohorts. C1, C2, and C4 use the matched 4K/MTP3
+benchmark; the maximum-throughput C8 profile uses 8K/MTP2 because MTP3 does not fit safely at
+C8/8K. Every row below completed real text generation on one RTX 3090 with CUDA Graphs and no
+competing GPU workload.
+
+| Cohort | Validated profile | Whole-wave aggregate throughput | Mean TTFT | VRAM result |
+|---:|---|---:|---:|---:|
+| C1 | 4K, MTP3 | **61.82 tok/s** | **142 ms** | 19,500 MiB peak |
+| C2 | 4K, MTP3 | **77.11 tok/s** | **262 ms** | 20,278 MiB peak |
+| C4 | 4K, MTP3 | **80.20 tok/s** | **543 ms** | 21,811 MiB peak |
+| C8 | 8K, MTP2 | **105.30 tok/s** | not recorded | 774 MiB physically free |
+
+**Whole-wave aggregate throughput** is total completion tokens divided by elapsed time from the
+simultaneous request launch until the last request completes. It includes prefill/TTFT, decode
+ramp-up, and the tail where fewer requests remain active. This is the comparable headline number:
+**61.82 tok/s at C1 versus 105.30 tok/s at C8**, a 70% aggregate throughput increase.
+
+The C8 run also sustained **179-211 aggregate tok/s during fully-active decode intervals**. This
+is still aggregate across all eight requests, but it measures only telemetry intervals in which
+all eight lanes are decoding. It excludes prefill, ramp-up, and drain time, so it must not be
+compared directly with the 105.30 tok/s whole-wave result or interpreted as per-request speed.
+
+A matched four-prompt C1 sweep measured ordinary decoding at 36.86 tok/s, MTP2 at 65.72 tok/s,
+and MTP3 at 71.56 tok/s. MTP2 accepted 78.4% of drafted tokens; MTP3 accepted 67.7% but committed
+3.04 tokens per round and remained 8.9% faster than MTP2. Greedy reasoning/output text was not
+byte-identical across every execution route, so these throughput results do not establish exact
+quality parity.
+
+At C8/8K, MTP2 reached 90.8% MTP acceptance and left 388 MiB of planned slack. MTP3 is rejected
+safely: it misses the reservation by 789 MiB with graphs and 101 MiB without graphs. Use C1 when
+single-request latency matters, C2/C4 for a latency-throughput balance, and C8/MTP2 for maximum
+aggregate throughput.
+
+## Qwen3.6-35B-A3B RTX 3090 results
 
 Measured with the compact 20.84 GiB 35B-A3B artifact, a 4K shared INT8 group-64 paged KV pool,
 CUDA Graphs, MTP3, greedy decoding, and no competing GPU workload:
@@ -27,29 +63,6 @@ to v0.3.1's 1,500-token adaptive prompt-lookup benchmark.
 
 Compatible-prefix reuse was validated end to end: a repeated 26-token prompt reused 24 tokens,
 reducing measured prefill from 371 ms to 10 ms.
-
-### Qwen3.8-27B
-
-Qwen3.8-27B was measured with its official 16.96 GiB artifact, explicit 4K shared INT8 paged KV,
-MTP3, greedy decoding, 128 output tokens per request, and no competing GPU workload:
-
-| Concurrent requests | Aggregate end-to-end | Mean TTFT | Peak VRAM |
-|---:|---:|---:|---:|
-| 1 | 61.82 tok/s | 142 ms | 19,500 MiB |
-| 2 | 77.11 tok/s | 262 ms | 20,278 MiB |
-| 4 | 80.20 tok/s | 543 ms | 21,811 MiB |
-
-A matched four-prompt C1 sweep measured ordinary decoding at 36.86 tok/s, MTP2 at 65.72 tok/s,
-and MTP3 at 71.56 tok/s. MTP2 accepted 78.4% of drafted tokens; MTP3 accepted 67.7% but committed
-3.04 tokens per round and remained 8.9% faster than MTP2. Greedy reasoning/output text was not
-byte-identical across every execution route, so these throughput results do not establish exact
-quality parity.
-
-At 8K context, C8 starts and completes with MTP2, CUDA Graphs, and the optimized proposal head.
-The measured 128-token wave reached 105.30 aggregate end-to-end tok/s, 90.8% MTP acceptance, and
-179-211 tok/s during fully batched decode intervals. It leaves 774 MiB physically free and only
-388 MiB planned slack. MTP3 is rejected safely: it misses the reservation by 789 MiB with graphs
-and 101 MiB without graphs. Use MTP2 for C8/8K; use C2 or C4 when latency matters.
 
 ## Changes since v0.3.1
 
@@ -74,7 +87,7 @@ requested.
 |---|---|---:|---|
 | Qwen3.6-35B-A3B | [compact groupwise artifact](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | 20.84 GiB | Recommended; C1-C6 validated at 4K |
 | Qwen3.6-27B | [groupwise artifact](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) | 16.29 GiB | Supported with more runtime headroom |
-| Qwen3.8-27B | [groupwise artifact](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) | 16.96 GiB | Text validated at C1-C4/4K and C8/8K |
+| **Qwen3.8-27B** | [official NInfer groupwise artifact](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) | 16.96 GiB | **Validated at C1, C2, C4 (4K/MTP3) and C8 (8K/MTP2)** |
 
 The current upstream 21.22 GiB 35B v2 artifact contains additional DFlash weights and does not fit
 the tested RTX 3090 concurrent configuration. The compact artifact keeps the proven model weights
