@@ -1,7 +1,6 @@
 # NInfer-3090
 
-Run **Qwen3.8-27B** locally on one RTX 3090: native Windows, a familiar OpenAI-compatible API,
-64K context for interactive use, and no Python inference stack.
+Run **Qwen3.8-27B**  and Qwen 3.6 35B A3B locally on one RTX 3090 with fully fused kernels, build from the ground up for the fastest inference especially for these models. Native Windows and Linux, OpenAI-compatible API, large context. 80 tokens per second and 265 tokens per second respectively.
 
 NInfer-3090 is a small C++20/CUDA server tuned specifically for the 3090's 24 GB memory budget
 and `sm_86` GPU. It supports streaming, MTP speculative decoding, CUDA Graphs, paged KV and prefix
