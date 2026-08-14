@@ -14,6 +14,33 @@ compatible-prefix reuse, bounded admission, and OpenAI/Anthropic serving APIs.
 The bundled applications and dependency DLLs are native Windows executables. Model artifacts are
 not included in the release archive.
 
+## Quick start: Qwen3.8-27B at C1/64K
+
+Open PowerShell in the extracted release folder and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run-qwen38-c1.ps1
+```
+
+The launcher downloads the pinned 16.96 GiB Qwen3.8 artifact into `models\`, resumes interrupted
+downloads, verifies SHA-256
+`eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e`, and starts the
+OpenAI-compatible API at `http://127.0.0.1:8080/v1`. Its default profile is C1, 64K context,
+INT8 KV and MTP3. This profile completed real startup and generation on the RTX 3090 with about
+3.0 GiB of planned memory slack at startup.
+
+Use another PowerShell window to send a request:
+
+```powershell
+$body = @{
+  model = 'qwen3.8-27b'
+  messages = @(@{ role = 'user'; content = 'Say hello in three languages.' })
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod http://127.0.0.1:8080/v1/chat/completions `
+  -Method Post -ContentType 'application/json' -Body $body
+```
+
 ## Download the compatible Qwen3.6-35B artifact
 
 The published RTX 3090 measurements use the compact 20.84 GiB container-v1 artifact. Pin its

@@ -44,6 +44,7 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot 'VERSION') -Destination $ProductRoot
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'LICENSE') -Destination $ProductRoot
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'docs\rtx-3090-windows.md') -Destination (Join-Path $ProductRoot 'README.md')
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'RELEASE_NOTES_0.5.0.md') -Destination $ProductRoot
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\run-qwen38-c1.ps1') -Destination $ProductRoot
 
 $innerHashes = Get-ChildItem -LiteralPath $ProductRoot -File | Sort-Object Name | ForEach-Object {
     $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256

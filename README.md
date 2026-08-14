@@ -1,13 +1,55 @@
 # NInfer-3090
 
-NInfer-3090 is a specialized C++20/CUDA inference engine for **Qwen3.8-27B** and Qwen3.6 on one
-24 GB NVIDIA GeForce RTX 3090. Qwen3.8-27B is a first-class, tested target: the native SM86
-runtime loads its official groupwise `.ninfer` artifact, serves OpenAI- and Anthropic-compatible
-APIs, and supports paged KV, compatible-prefix reuse, CUDA Graphs, MTP speculative decoding, and
-concurrent cohorts through **C8**.
+Run **Qwen3.8-27B** locally on one RTX 3090: native Windows, a familiar OpenAI-compatible API,
+64K context for interactive use, and no Python inference stack.
 
-This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. DFlash is not part
-of the recommended RTX 3090 path; use MTP speculative decoding.
+NInfer-3090 is a small C++20/CUDA server tuned specifically for the 3090's 24 GB memory budget
+and `sm_86` GPU. It supports streaming, MTP speculative decoding, CUDA Graphs, paged KV and prefix
+caching. When several requests arrive together, it can also batch up to eight active generations.
+
+## Quick start: Qwen3.8-27B API at C1/64K
+
+Download and extract the
+[v0.5.0 Windows release](https://github.com/Don-Chad/ninfer-3090/releases/tag/v0.5.0-rtx3090),
+open PowerShell in that folder, and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run-qwen38-c1.ps1
+```
+
+That one command downloads the **pinned, correct** `qwen3_8_27b.ninfer` artifact, resumes an
+interrupted download, verifies its SHA-256, and starts the server at `http://127.0.0.1:8080/v1`.
+The model download is 16.96 GiB and is stored in `models\` beside the server.
+
+Building from source? Use the same launcher from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-qwen38-c1.ps1
+```
+
+Test it from another PowerShell window:
+
+```powershell
+$body = @{
+  model = 'qwen3.8-27b'
+  messages = @(@{ role = 'user'; content = 'Write a haiku about local AI.' })
+  stream = $false
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod http://127.0.0.1:8080/v1/chat/completions `
+  -Method Post -ContentType 'application/json' -Body $body
+```
+
+The default is **C1 + 64K INT8 KV + MTP3**: the responsive profile for a single user, coding
+agent, or desktop app. It has completed real 64K-capacity startup and generation on a 24 GB RTX
+3090, including a 10K-token tool prompt and an 8K-token output. Avoid other heavy GPU workloads
+while the server is running.
+
+> Need throughput instead? The tested C8/8K profile is documented below. C8 uses MTP2 because
+> MTP3 does not fit safely at that concurrency.
+
+This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable, and DFlash is not
+the recommended Qwen3.8 path on this GPU. Use MTP speculative decoding.
 
 ## Qwen3.8-27B support and RTX 3090 results
 
@@ -118,7 +160,7 @@ cmake --build build-windows --config Release --parallel
 
 See [the Windows guide](docs/rtx-3090-windows.md) for complete setup instructions.
 
-## Download the correct 35B artifact
+## Download model artifacts manually
 
 For the validated RTX 3090 profiles, pin the compact **container-v1** revision. Do not omit
 `--revision`: Hugging Face `main` now points to the larger container-v2/DFlash artifact.
@@ -152,15 +194,34 @@ partial file in place.
 `.ninfer` artifacts contain quantized weights and frontend resources. They are not GGUF or
 Transformers checkpoints.
 
-For Qwen3.8-27B:
+For Qwen3.8-27B, pin the exact artifact revision used by the quick launcher:
 
 ```powershell
 hf download neroued/Qwen3.8-27B-NInfer `
   qwen3_8_27b.ninfer `
+  --revision 3526913004b1cf552cb57b88d6a5c6f5e4a89a70 `
   --local-dir models
+
+Get-FileHash .\models\qwen3_8_27b.ninfer -Algorithm SHA256
 ```
 
+Expected SHA-256:
+`eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e`.
+
 ## Run the server
+
+For the recommended interactive Qwen3.8 C1/64K API, use `scripts\run-qwen38-c1.ps1` as shown in
+Quick start. The explicit command it runs is:
+
+```powershell
+.\build-windows\apps\Release\ninfer-serve.exe models\qwen3_8_27b.ninfer `
+  --host 127.0.0.1 --port 8080 `
+  --max-context 65536 --kv-capacity 65536 --max-concurrency 1 `
+  --prefill-chunk 512 --kv-dtype int8 `
+  --spec mtp --draft-tokens 3 --lm-head-draft
+```
+
+### Compact Qwen3.6-35B server
 
 The explicit 4K KV capacity avoids reserving the extra 1 GiB safety margin used by `auto` and is
 the validated compact-35B configuration:
