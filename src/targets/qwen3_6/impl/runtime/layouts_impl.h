@@ -628,7 +628,13 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                         impl->capacity,
                         static_cast<std::uint64_t>(profile.max) + 2ULL * impl->draft_window);
 #ifdef NINFER_SM86
-                    return (final_visible <= 4096 ? 16ULL : 86ULL) * kMiB;
+                    if (final_visible <= 4096) {
+                        // K4/K5 introduce additional captured launch topologies on SM86. A real
+                        // C1/K4 capture consumed 43.1 MiB; keep the qualified K2/K3 allowance
+                        // unchanged so tight high-concurrency profiles do not lose headroom.
+                        return (impl->draft_window >= 4 ? 64ULL : 16ULL) * kMiB;
+                    }
+                    return 86ULL * kMiB;
 #else
                     return (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
 #endif

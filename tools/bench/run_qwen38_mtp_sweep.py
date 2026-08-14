@@ -24,6 +24,7 @@ PROMPTS = (
     "Explain why batching can improve GPU inference throughput and when it hurts latency.",
     "A shop discounts an 80 euro item by 15 percent, then adds 21 percent VAT. Calculate the final price step by step.",
 )
+EXTRA_SERVER_ARGS: tuple[str, ...] = ()
 
 
 def wait_ready(process: subprocess.Popen[bytes]) -> None:
@@ -70,6 +71,7 @@ def run_mode(name: str, draft_tokens: int) -> dict:
     ]
     if draft_tokens:
         command.extend(["--spec", "mtp", "--draft-tokens", str(draft_tokens), "--lm-head-draft"])
+    command.extend(EXTRA_SERVER_ARGS)
     with (out / "stdout.log").open("w") as stdout, (out / "stderr.log").open("w") as stderr:
         process = subprocess.Popen(
             command, stdout=stdout, stderr=stderr,
