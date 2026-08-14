@@ -19,6 +19,7 @@ of the recommended RTX 3090 path; use MTP speculative decoding.
 |---|---|
 | `run-qwen38-c1.bat` | One interactive user, lowest latency, up to 64K context |
 | `run-qwen38-c8.bat` | Multiple users or agents, highest aggregate throughput, 8K context |
+| `run-qwen38-vision.bat` | Qwen3.8 image understanding, one user, 32K context, MTP3 |
 | `run-qwen36-35b-vision.bat` | Image understanding with Qwen3.6-35B-A3B, one user, 32K context |
 
 The OpenAI-compatible API is then available at `http://127.0.0.1:8080/v1`. No Python environment,
@@ -46,6 +47,17 @@ could be admitted simultaneously.
 C1 is the responsive choice for a single user. C8 delivers **2.3x the total throughput** when
 several requests are active. The C8 long-output test uses a 16K shared KV pool so all eight
 1,024-token responses can be admitted together.
+
+### Qwen3.8 vision
+
+The same Qwen3.8 artifact supports images. Run `download-qwen38.bat` once, then double-click
+`run-qwen38-vision.bat`. The tested RTX 3090 profile uses **one request, 32K maximum context,
+INT8 KV, ReplaySSM, and MTP3**.
+
+A 1,920×1,080 image expanded to 2,074 prompt tokens and was read correctly. Measured TTFT was
+3.29 seconds, decode reached 98.1 tok/s, MTP acceptance was 96.7%, and startup retained 2.16 GiB
+free VRAM. The artifact also declares multi-image and video support; this release test directly
+validated a single image.
 
 ## Qwen3.6-35B-A3B RTX 3090 results
 
@@ -88,6 +100,7 @@ still use MTP3 as documented above.
 - OpenAI Chat Completions, Responses, and Anthropic-compatible APIs.
 - ReplaySSM and MTP3 for higher throughput without exceeding 24 GB VRAM.
 - `low`, `medium`, and `xhigh` reasoning modes.
+- Qwen3.8 image understanding with ReplaySSM and MTP3.
 - Prefix reuse for faster repeated or shared prompts.
 - Qwen3.6-35B image understanding with a guarded 32K profile.
 - One-user and eight-user launchers with safe tested defaults.
