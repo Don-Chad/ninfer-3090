@@ -2,7 +2,8 @@
 
 This native Windows release supports Qwen3.8-27B, Qwen3.6-27B, and the compact, text-only
 Qwen3.6-35B-A3B v0.3.1 artifact. The runtime provides paged KV, concurrent request execution,
-compatible-prefix reuse, bounded admission, and OpenAI/Anthropic serving APIs.
+compatible-prefix reuse, bounded admission, ReplaySSM, reasoning-effort control, and
+OpenAI/Anthropic serving APIs.
 
 ## Requirements
 
@@ -61,7 +62,8 @@ runtime reports the missing optional weights explicitly.
 
 ## Qwen3.8-27B C8/8K profile
 
-The validated maximum-concurrency Qwen3.8 profile uses MTP2, not MTP3:
+ReplaySSM reduces speculative GDN state memory enough for the maximum-concurrency Qwen3.8 profile
+to use MTP3:
 
 ```powershell
 .\ninfer-serve.exe models\qwen3_8_27b.ninfer `
@@ -69,13 +71,24 @@ The validated maximum-concurrency Qwen3.8 profile uses MTP2, not MTP3:
   --max-context 8192 --kv-capacity 8192 `
   --max-concurrency 8 --max-pending-requests 32 `
   --prefill-chunk 1024 --kv-dtype int8 `
-  --spec mtp --draft-tokens 2 --lm-head-draft
+  --spec mtp --draft-tokens 3 --lm-head-draft
 ```
 
-This configuration measured 105.30 aggregate end-to-end tok/s for eight simultaneous 128-token
-generations, 90.8% MTP acceptance, and 179-211 tok/s in fully batched decode intervals. Startup
-left 774 MiB physically free and 388 MiB planned slack. Avoid competing GPU processes. MTP3 at
-C8/8K is rejected by the memory planner; use C4/MTP3 when more safety margin or lower TTFT matters.
+This 8,192-token shared-pool configuration measured 114.73 aggregate end-to-end tok/s for eight
+simultaneous 128-token generations and peaked at 21,818 MiB. Set `--kv-capacity 65536` when all
+eight requests need independent 8K capacity; that stronger reservation measured 114.88 tok/s and
+23,745 MiB peak. Avoid competing GPU processes.
+
+The cohort size is fixed at startup, but its active membership is not: every decode round compacts
+all ready requests into one batch, while completed slots disappear. Follow-up requests wait in the
+bounded pending queue and join at a safe round boundary when a lane and memory are available. This
+is more predictable than unrestricted dynamic batching because maximum VRAM, workspace, and CUDA
+Graph shapes are reserved in advance.
+
+Qwen3.8 supports `low`, `medium`, and `xhigh` reasoning effort. For Chat Completions add the
+top-level field `"reasoning_effort": "xhigh"`; Responses uses
+`"reasoning": {"effort": "xhigh"}`. The CLI accepts
+`--reasoning-effort low|medium|xhigh`.
 
 The paged cache supports BF16 and INT8 storage. RotorQuant/KV4 from older contiguous-cache work is
 not a supported v0.5 paged-cache mode.

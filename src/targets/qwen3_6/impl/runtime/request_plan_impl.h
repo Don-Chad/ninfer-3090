@@ -11,7 +11,7 @@
 namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 namespace {
 
-void validate_sampling(const SamplingParameters& sampling) {
+void validate_sampling(const ResolvedSamplingParameters& sampling) {
     if (!std::isfinite(sampling.temperature) || !std::isfinite(sampling.top_p) ||
         !std::isfinite(sampling.min_p) || !std::isfinite(sampling.presence_penalty) ||
         !std::isfinite(sampling.frequency_penalty)) {
@@ -25,7 +25,7 @@ void validate_sampling(const SamplingParameters& sampling) {
     }
 }
 
-ops::SamplingConfig translate_sampling(const SamplingParameters& source) {
+ops::SamplingConfig translate_sampling(const ResolvedSamplingParameters& source) {
     ops::SamplingConfig out;
     out.temperature       = source.temperature;
     out.top_k             = source.top_k;
@@ -57,8 +57,9 @@ std::uint64_t projected_service_work(const runtime::RequestPlanSummary& summary,
 
 } // namespace
 
-RequestBasePlan ProgramImplCore::plan_request_base(const PreparedPromptData& prompt,
-                                                   const ExecutionOptions& options) {
+RequestBasePlan
+ProgramImplCore::plan_request_base(const PreparedPromptData& prompt,
+                                   const runtime::ResolvedExecutionOptions& options) {
     if (prompt.token_ids.empty()) { throw std::invalid_argument("prompt must contain tokens"); }
     if (prompt.token_ids.size() > capacity) {
         throw std::invalid_argument("prompt exceeds configured context capacity");
@@ -144,16 +145,16 @@ RequestBasePlan ProgramImplCore::plan_request_base(const PreparedPromptData& pro
         base->vision_control         = std::move(control);
     }
 
-    if (prompt.identity.assistant_content_boundary) {
-        const std::uint32_t candidate = *prompt.identity.assistant_content_boundary;
-        if (candidate <= base->summary.prompt_tokens) { base->snapshot_boundary = candidate; }
+    if (prompt.identity.turn_rewrite_boundary) {
+        const std::uint32_t candidate = *prompt.identity.turn_rewrite_boundary;
+        if (candidate == 0 || candidate >= base->summary.prompt_tokens) {
+            throw std::invalid_argument("turn rewrite boundary must lie inside the prompt");
+        }
+        base->turn_rewrite_boundary = candidate;
     }
     const std::size_t cold_prefill_splits =
         (base->vision_control != nullptr ? base->vision_control->items.size() : 0ULL) +
-        (base->snapshot_boundary && *base->snapshot_boundary != 0 &&
-                 *base->snapshot_boundary < base->summary.prompt_tokens
-             ? 1ULL
-             : 0ULL);
+        (base->turn_rewrite_boundary ? 1ULL : 0ULL);
     base->summary.service_work_quanta =
         projected_service_work(base->summary, 0, prefill_chunk, cold_prefill_splits);
     return RequestBasePlan(std::move(base));
@@ -187,16 +188,13 @@ RequestPlan ProgramImplCore::plan_request_for_lane(std::uint32_t lane,
                                             sequence.execution_frontier)) {
             plan->reuse      = ReusePath::AppendAtFrontier;
             plan->reuse_base = sequence.execution_frontier;
-        } else if (sequence.boundary.valid && sequence.boundary.boundary != 0 &&
-                   (speculative_backend != SpeculativeBackend::DFlash ||
-                    (sequence.dflash_boundary_valid &&
-                     sequence.dflash_boundary_frontier == sequence.boundary.boundary)) &&
-                   sequence.boundary.boundary < prompt.token_ids.size() &&
+        } else if (sequence.turn_checkpoint.valid && sequence.turn_checkpoint.frontier != 0 &&
+                   sequence.turn_checkpoint.frontier < prompt.token_ids.size() &&
                    qwen3_6::detail::prefix_matches(prompt, sequence.ledger,
                                                    sequence.prefix_identity,
-                                                   sequence.boundary.boundary)) {
-            plan->reuse      = ReusePath::RestoreBoundary;
-            plan->reuse_base = sequence.boundary.boundary;
+                                                   sequence.turn_checkpoint.frontier)) {
+            plan->reuse      = ReusePath::RestoreTurnCheckpoint;
+            plan->reuse_base = sequence.turn_checkpoint.frontier;
         }
     }
 
@@ -205,14 +203,40 @@ RequestPlan ProgramImplCore::plan_request_for_lane(std::uint32_t lane,
             plan->reuse == ReusePath::AppendAtFrontier && sequence.tail_hidden_valid &&
             decoder->mtp_cache() != nullptr &&
             (plan->reuse_base == 0 || sequence.mtp_kv_valid >= plan->reuse_base - 1);
-        const bool boundary_ready =
-            plan->reuse == ReusePath::RestoreBoundary && decoder->mtp_cache() != nullptr &&
-            sequence.boundary.hidden_valid && sequence.boundary.mtp_prefix_valid &&
-            sequence.mtp_kv_valid >= plan->reuse_base - 1;
-        if (plan->reuse != ReusePath::FullReset && !append_ready && !boundary_ready) {
+        const bool checkpoint_ready = plan->reuse == ReusePath::RestoreTurnCheckpoint &&
+                                      decoder->mtp_cache() != nullptr &&
+                                      sequence.mtp_kv_valid >= plan->reuse_base - 1;
+        if (plan->reuse != ReusePath::FullReset && !append_ready && !checkpoint_ready) {
             plan->reuse      = ReusePath::FullReset;
             plan->reuse_base = 0;
         }
+    }
+
+    if (plan->reuse == ReusePath::RestoreTurnCheckpoint &&
+        speculative_backend == SpeculativeBackend::DFlash &&
+        (!dflash || !sequence.kv || !sequence.kv->backend ||
+         sequence.dflash_context_frontier < plan->reuse_base)) {
+        plan->reuse      = ReusePath::FullReset;
+        plan->reuse_base = 0;
+    }
+
+    const std::optional<std::uint32_t> desired = base.turn_rewrite_boundary;
+    const bool can_keep                        = desired && plan->reuse != ReusePath::FullReset &&
+                          sequence.turn_checkpoint.valid &&
+                          sequence.turn_checkpoint.frontier == *desired &&
+                          qwen3_6::detail::prefix_matches(prompt, sequence.ledger,
+                                                          sequence.prefix_identity, *desired);
+    if (!desired) {
+        plan->turn_checkpoint_action = TurnCheckpointAction::Drop;
+    } else if (can_keep) {
+        plan->turn_checkpoint_action = TurnCheckpointAction::KeepExisting;
+    } else {
+        if (*desired <= plan->reuse_base) {
+            plan->reuse      = ReusePath::FullReset;
+            plan->reuse_base = 0;
+        }
+        plan->turn_checkpoint_action           = TurnCheckpointAction::CaptureNew;
+        plan->turn_checkpoint_capture_frontier = desired;
     }
 
     plan->summary.reusable_prompt_tokens = plan->reuse_base;
@@ -224,7 +248,7 @@ RequestPlan ProgramImplCore::plan_request_for_lane(std::uint32_t lane,
             plan->mtp_bridge  = plan->reuse_base < plan->summary.prompt_tokens
                                     ? MtpBridgeMode::BeforeSuffix
                                     : MtpBridgeMode::AfterExactHit;
-        } else if (plan->reuse == ReusePath::RestoreBoundary) {
+        } else if (plan->reuse == ReusePath::RestoreTurnCheckpoint) {
             plan->prepare_mtp = true;
             plan->mtp_bridge  = MtpBridgeMode::BeforeSuffix;
         }
@@ -250,13 +274,8 @@ RequestPlan ProgramImplCore::plan_request_for_lane(std::uint32_t lane,
         }
     }
 
-    if (base.snapshot_boundary && *base.snapshot_boundary > plan->reuse_base) {
-        plan->snapshot_boundary = base.snapshot_boundary;
-    }
-    const std::size_t prefill_splits =
-        (plan->vision ? plan->vision->uses.size() : 0ULL) +
-        (plan->snapshot_boundary && *plan->snapshot_boundary < plan->summary.prompt_tokens ? 1ULL
-                                                                                           : 0ULL);
+    const std::size_t prefill_splits = (plan->vision ? plan->vision->uses.size() : 0ULL) +
+                                       (plan->turn_checkpoint_capture_frontier ? 1ULL : 0ULL);
     plan->summary.service_work_quanta =
         projected_service_work(plan->summary, plan->reuse_base, prefill_chunk, prefill_splits);
     return RequestPlan(std::move(plan));

@@ -4,6 +4,7 @@
 
 #include "core/cyclic_kv_cache.h"
 #include "core/dtype.h"
+#include "core/gdn_replay_records.h"
 #include "core/layout.h"
 #include "core/tensor.h"
 #include <ninfer/targets/qwen3_6/decoder_state.h>
@@ -21,26 +22,27 @@ using TensorLayout = TensorRegion;
 
 struct DFlashPersistentLayout {
     CyclicKVCacheLayout local;
-    CyclicKVCacheLayout boundary_local;
+    CyclicKVCacheLayout turn_checkpoint_local;
     qwen3_6::PagedKVCacheLayout full;
     TensorLayout prefill_features;
     TensorLayout prefill_positions;
     TensorLayout pending_features;
 
     [[nodiscard]] std::size_t kv_payload_bytes() const noexcept {
-        return local.payload_bytes() + boundary_local.payload_bytes() + full.payload_bytes();
+        return local.payload_bytes() + turn_checkpoint_local.payload_bytes() + full.payload_bytes();
     }
 };
 
 struct PersistentLayout {
     qwen3_6::DecoderStateLayout decoder;
+    std::optional<GdnReplayRecordLayout> replay_records;
     std::optional<DFlashPersistentLayout> dflash;
     qwen3_6::RoundStateLayout round;
     TensorLayout prefill_hidden;
     TensorLayout token_counts;
     TensorLayout sampling_config;
     TensorLayout tail_hidden;
-    TensorLayout boundary_hidden;
+    TensorLayout turn_checkpoint_hidden;
     std::size_t bytes            = 0;
     std::size_t kv_payload_bytes = 0;
 };

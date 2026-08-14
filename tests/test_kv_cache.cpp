@@ -81,6 +81,48 @@ int expect_device_page_ids(const ninfer::Tensor& row, std::initializer_list<std:
     return expect_page_ids(actual, expected, label);
 }
 
+int expect_zeroed_pages(ninfer::PagedKVPool& pool, ninfer::PagedKVPlaneOrder order,
+                        std::span<const std::int32_t> pages, cudaStream_t stream,
+                        const char* label) {
+    const ninfer::Tensor& plane = pool.plane(0);
+    cudaError_t err             = cudaMemsetAsync(plane.data, 0x5a, plane.bytes(), stream);
+    if (err != cudaSuccess) {
+        std::cerr << label << " setup failed: " << cudaGetErrorString(err) << '\n';
+        return 1;
+    }
+    pool.zero_pages(pages, stream);
+    err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+        std::cerr << label << " synchronization failed: " << cudaGetErrorString(err) << '\n';
+        return 1;
+    }
+
+    std::vector<unsigned char> actual(plane.bytes());
+    err = cudaMemcpy(actual.data(), plane.data, actual.size(), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        std::cerr << label << " copy failed: " << cudaGetErrorString(err) << '\n';
+        return 1;
+    }
+    std::vector<unsigned char> expected(actual.size(), 0x5a);
+    for (const std::int32_t page : pages) {
+        if (order == ninfer::PagedKVPlaneOrder::PageMajor) {
+            const std::size_t begin = static_cast<std::size_t>(page * plane.nb[3]);
+            std::fill(expected.begin() + static_cast<std::ptrdiff_t>(begin),
+                      expected.begin() + static_cast<std::ptrdiff_t>(begin + plane.nb[3]), 0);
+        } else {
+            for (std::int32_t head = 0; head < plane.ne[3]; ++head) {
+                const std::size_t begin =
+                    static_cast<std::size_t>(head * plane.nb[3] + page * plane.nb[2]);
+                std::fill(expected.begin() + static_cast<std::ptrdiff_t>(begin),
+                          expected.begin() + static_cast<std::ptrdiff_t>(begin + plane.nb[2]), 0);
+            }
+        }
+    }
+    if (actual == expected) { return 0; }
+    std::cerr << label << " cleared bytes outside the selected physical pages\n";
+    return 1;
+}
+
 } // namespace
 
 int main() {
@@ -121,6 +163,9 @@ int main() {
         expect_size(paged_plan.layout.payload_bytes(), expected_payload, "paged payload bytes");
     failures += expect_size(paged_plan.layout.metadata_bytes(), 10 * 2 * sizeof(std::int32_t),
                             "paged metadata bytes");
+    const std::int32_t selected_pages[] = {1, 2, 6};
+    failures += expect_zeroed_pages(paged_pool, ninfer::PagedKVPlaneOrder::PageMajor,
+                                    selected_pages, ctx.stream, "page-major selective zero");
 
     auto head_major_plan = plan_paged_cache(10, 10, 1, {{ninfer::DType::BF16, 128, 8}},
                                             ninfer::PagedKVPlaneOrder::HeadMajor);
@@ -128,6 +173,8 @@ int main() {
     ninfer::PagedKVPool head_major_pool({head_major_arena.base(), head_major_arena.capacity()},
                                         head_major_plan.layout);
     failures += check_shape(head_major_pool.plane(0), {128, 64, 10, 8}, "head-major paged plane");
+    failures += expect_zeroed_pages(head_major_pool, ninfer::PagedKVPlaneOrder::HeadMajor,
+                                    selected_pages, ctx.stream, "head-major selective zero");
 
     auto allocation_a = paged_pool.reserve(3);
     auto allocation_b = paged_pool.reserve(3);

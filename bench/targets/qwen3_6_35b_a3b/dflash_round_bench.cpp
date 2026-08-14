@@ -146,10 +146,7 @@ RoundMeasurement measure_round(target::Package::Program& program, ninfer::Device
     ninfer::CudaEventTimer timer(device);
     const auto wall_start = Clock::now();
     timer.start();
-    const auto round   = program.decode_batch(lane_span, budget_span);
-    const float gpu_ms = timer.stop_ms();
-    const double wall_ms =
-        std::chrono::duration<double, std::milli>(Clock::now() - wall_start).count();
+    const auto round = program.decode_batch(lane_span, budget_span);
     if (round.row_counts.size() != batch_size) {
         throw std::runtime_error("DFlash benchmark round returned invalid row counts");
     }
@@ -169,6 +166,9 @@ RoundMeasurement measure_round(target::Package::Program& program, ninfer::Device
                                   std::span<const std::uint32_t>(accepted.data(), batch_size),
                                   std::span<const std::uint8_t>(terminal.data(), batch_size),
                                   std::span<const std::uint8_t>(cancelled.data(), batch_size));
+    const float gpu_ms = timer.stop_ms();
+    const double wall_ms =
+        std::chrono::duration<double, std::milli>(Clock::now() - wall_start).count();
     return {.gpu_ms = gpu_ms, .wall_ms = wall_ms, .licensed_tokens = licensed};
 }
 
@@ -241,7 +241,7 @@ int run(const Options& options) {
     const std::size_t request_capacity = sequence.request_transient_capacity_bytes();
     auto program = target::Package::create_program(*model, std::move(sequence), device);
     ninfer::runtime::RequestMemory request_memory(device, request_capacity);
-    ninfer::ExecutionOptions execution;
+    ninfer::runtime::ResolvedExecutionOptions execution;
     execution.requested_output_tokens = 1 + measured_rounds * (options.draft_tokens + 1);
     execution.allow_prefix_reuse      = false;
     for (std::uint32_t lane = 0; lane < options.batch_size; ++lane) {
@@ -257,7 +257,7 @@ int run(const Options& options) {
         if (prefill.round.tokens.size() != 1) {
             throw std::runtime_error("benchmark seed prefill did not license exactly one token");
         }
-        program->resolve_pending_lane(lane, 1, false);
+        program->resolve_prefill_lane(lane, false);
     }
 
     for (int iteration = 0; iteration < options.warmup; ++iteration) {

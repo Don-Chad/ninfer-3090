@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace ninfer::serve {
@@ -21,6 +22,8 @@ namespace ninfer::serve {
 // on malformed or unsupported requests (n>1, tools, non-text response_format, ...).
 GenerationRequest parse_chat_completion_request(const nlohmann::json& body,
                                                 const RequestLimits& limits);
+
+std::optional<bool> parse_openai_preserve_thinking(const nlohmann::json& body);
 
 // Non-streaming chat completion response body (JSON string). When `reasoning` is
 // non-empty it is attached as `message.reasoning_content` (the DeepSeek/vLLM-style

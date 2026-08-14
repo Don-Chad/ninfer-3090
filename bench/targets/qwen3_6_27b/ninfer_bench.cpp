@@ -63,6 +63,7 @@ ninfer::RequestOptions benchmark_request(const ninfer::bench::BenchTest& test) {
     ninfer::RequestOptions options;
     options.execution.requested_output_tokens = test.requested_output_tokens();
     options.execution.allow_prefix_reuse      = false;
+    options.execution.sampling.temperature    = 0.0F;
     options.stop.include_model_defaults       = false;
     options.output.raw                        = true;
     options.output.preserve_special_tokens    = true;

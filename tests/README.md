@@ -147,6 +147,21 @@ This smoke check is intentionally not a CTest: it needs the real artifact, a sup
 server process that remains alive while the client exercises OpenAI Responses/Chat, Anthropic,
 state, streaming, and multimodal requests.
 
+The thinking-preservation fixture starts and stops its own server, submits a fixed two-step tool
+history, compares restored and cold greedy output, compares stripped and preserved closed-turn
+prompt lengths, and verifies request-log reuse paths and Responses inheritance:
+
+```bash
+python3 tools/smoke/serve_thinking_preservation.py \
+  --artifact out/qwen3_6_27b.ninfer --backend mtp
+
+python3 tools/smoke/serve_thinking_preservation.py \
+  --artifact out/qwen3_6_35b_a3b.ninfer --backend dflash
+```
+
+The shared messages are in
+[`fixtures/serve/qwen3_6_thinking_preservation.json`](fixtures/serve/qwen3_6_thinking_preservation.json).
+
 ## What belongs here
 
 A permanent test should protect one current risk, such as:

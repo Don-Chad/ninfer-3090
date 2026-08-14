@@ -81,4 +81,26 @@ void gated_delta_net_snapshot(const Tensor& q, const Tensor& k, const Tensor& v,
                               const Tensor& initial_state_slots, const Tensor& snapshot_base_slots,
                               Tensor& out, cudaStream_t stream);
 
+/**
+ * Op: gated_delta_net_replay_record
+ *
+ * Evaluates B independent normalized Gated DeltaNet recurrences from absolute state-pool slots
+ * without modifying any state. q/k are BF16 [128,Hq,T,B], v/out are BF16 [128,Hv,T,B], g/beta
+ * are FP32 [Hv,T,B], and ssm_states is FP32 [128,128,Hv,S]. The ReplaySSM execution domain is
+ * B=1..8 and T=2..16, with Hq=16 and Hv in {32,48}. scale is 1/sqrt(128).
+ *
+ * valid_columns is empty for dense rows or device I32 [B], with every caller-supplied extent in
+ * [1,T]. initial_state_slots is device I32 [B] containing absolute slots in [0,S). For each valid
+ * transition, key_record BF16 [128,Hq,T,B], value_record BF16 [128,Hv,T,B], and gate_record FP32
+ * [2,Hv,T,B] receive bit-preserving copies of raw k, v, and {g,beta}. The invalid record suffix is
+ * unchanged, while the invalid out suffix is exact BF16 zero. Inputs, state, records, and out are
+ * pairwise non-overlapping.
+ */
+void gated_delta_net_replay_record(const Tensor& q, const Tensor& k, const Tensor& v,
+                                   const Tensor& g, const Tensor& beta, float scale,
+                                   const Tensor& ssm_states, const Tensor& valid_columns,
+                                   const Tensor& initial_state_slots, Tensor& key_record,
+                                   Tensor& value_record, Tensor& gate_record, Tensor& out,
+                                   cudaStream_t stream);
+
 } // namespace ninfer::ops

@@ -81,6 +81,7 @@ using ActiveTarget =
 struct ConstructedTarget {
     ActiveTarget active;
     LoadSummary load;
+    ModelSamplingDefaults sampling_defaults;
 };
 
 [[nodiscard]] ConstructedTarget construct_target(const EngineOptions& options,

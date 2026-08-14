@@ -91,6 +91,7 @@ struct Package {
     using RequestPlan     = qwen3_6::RequestPlan<detail::Variant>;
     using Program         = qwen3_6::Program<detail::Variant>;
 
+    [[nodiscard]] static ModelSamplingDefaults sampling_defaults(std::string_view model);
     [[nodiscard]] static WeightsProfile resolve_weights(const artifact::ArtifactIdentity& identity);
     [[nodiscard]] static LoadPlan plan_load(artifact::Binder& binder, const EngineOptions& options,
                                             WeightsProfile weights_profile);

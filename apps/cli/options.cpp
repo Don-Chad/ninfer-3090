@@ -63,6 +63,13 @@ KvCapacityPolicy parse_kv_capacity(const char* text) {
     return KvCapacityPolicy::explicit_capacity(parse_u32(text, "kv-capacity"));
 }
 
+ReasoningEffort parse_reasoning_effort(std::string_view text) {
+    if (text == "low") { return ReasoningEffort::Low; }
+    if (text == "medium") { return ReasoningEffort::Medium; }
+    if (text == "xhigh") { return ReasoningEffort::XHigh; }
+    throw std::invalid_argument("invalid reasoning-effort: " + std::string(text));
+}
+
 } // namespace
 
 std::string usage_text(const char* argv0) {
@@ -75,7 +82,8 @@ std::string usage_text(const char* argv0) {
            "       [--temperature F] [--top-p F] [--top-k N] [--min-p F]\n"
            "       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--stop-token-id N]... [--stop <text>]... [--reasoning-stop <text>]...\n"
-           "       [--raw-output] [--print-token-ids] [--no-thinking] [--vision]\n"
+           "       [--raw-output] [--print-token-ids] [--no-thinking]\n"
+           "       [--reasoning-effort low|medium|xhigh] [--vision]\n"
            "       [--no-cuda-graph]\n"
            "\n"
            "Streams answer content to stdout and reasoning plus diagnostics to stderr.\n"
@@ -85,7 +93,8 @@ std::string usage_text(const char* argv0) {
            "--kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom.\n"
-           "Sampling defaults: temperature 0.6, top-p 0.95, top-k 20, presence penalty 1.0.\n";
+           "Sampling defaults come from the loaded model and thinking mode; flags override "
+           "individual fields.\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -134,6 +143,8 @@ Options parse_options(int argc, char** argv) {
             options.print_token_ids = true;
         } else if (arg == "--no-thinking") {
             options.enable_thinking = false;
+        } else if (arg == "--reasoning-effort") {
+            options.reasoning_effort = parse_reasoning_effort(value(arg));
         } else if (arg == "--vision") {
             options.enable_vision = true;
         } else if (arg == "--no-cuda-graph") {
@@ -200,7 +211,10 @@ Options parse_options(int argc, char** argv) {
     if (options.speculative.backend == SpeculativeBackend::DFlash && options.enable_vision) {
         throw std::invalid_argument("--spec dflash cannot be combined with --vision");
     }
-    if (options.greedy) { options.sampling = SamplingParameters{}; }
+    if (!options.enable_thinking && options.reasoning_effort) {
+        throw std::invalid_argument("--reasoning-effort cannot be combined with --no-thinking");
+    }
+    if (options.greedy) { options.sampling.temperature = 0.0F; }
     return options;
 }
 

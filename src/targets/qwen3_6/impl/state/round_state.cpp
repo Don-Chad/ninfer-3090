@@ -98,12 +98,7 @@ OrdinaryDecodeState::OrdinaryDecodeState(DeviceSpan backing,
     rope_positions  = ingress_tensor(offsetof(OrdinaryDecodeIngress, rope_positions), DType::I32);
     text_kv_table_rows =
         ingress_tensor(offsetof(OrdinaryDecodeIngress, text_kv_table_rows), DType::I32);
-    linear_state_read_slots =
-        ingress_tensor(offsetof(OrdinaryDecodeIngress, linear_state_read_slots), DType::I32);
-    linear_state_snapshot_base_slots = ingress_tensor(
-        offsetof(OrdinaryDecodeIngress, linear_state_snapshot_base_slots), DType::I32);
-    continuation_slots =
-        ingress_tensor(offsetof(OrdinaryDecodeIngress, continuation_slots), DType::I32);
+    lanes    = ingress_tensor(offsetof(OrdinaryDecodeIngress, lanes), DType::I32);
     sampling = reinterpret_cast<const ops::SamplingConfig*>(
         static_cast<const unsigned char*>(ingress.data) +
         offsetof(OrdinaryDecodeIngress, sampling));
@@ -125,8 +120,6 @@ void complete_round_state_layout(LayoutBuilder& builder, RoundStateLayout& layou
     const auto i32            = [&](std::int32_t count, const char* label) {
         return add_tensor(builder, DType::I32, {count}, label);
     };
-    layout.linear_state_read_slot          = i32(1, "step Linear Attention read slot");
-    layout.linear_state_snapshot_base_slot = i32(1, "step Linear Attention snapshot base slot");
     if (layout.spec.enable_mtp) {
         layout.mtp.emplace();
         const auto ar_steps =
@@ -258,12 +251,7 @@ MtpDecodeState::MtpDecodeState(DeviceSpan backing, const MtpDecodeStateLayout& l
         ingress_tensor(offsetof(MtpDecodeIngress, text_kv_table_rows), DType::I32, {batch});
     mtp_kv_table_rows =
         ingress_tensor(offsetof(MtpDecodeIngress, mtp_kv_table_rows), DType::I32, {batch});
-    linear_state_read_slots =
-        ingress_tensor(offsetof(MtpDecodeIngress, linear_state_read_slots), DType::I32, {batch});
-    linear_state_snapshot_base_slots = ingress_tensor(
-        offsetof(MtpDecodeIngress, linear_state_snapshot_base_slots), DType::I32, {batch});
-    continuation_slots =
-        ingress_tensor(offsetof(MtpDecodeIngress, continuation_slots), DType::I32, {batch});
+    lanes       = ingress_tensor(offsetof(MtpDecodeIngress, lanes), DType::I32, {batch});
     rope_deltas = ingress_tensor(offsetof(MtpDecodeIngress, rope_deltas), DType::I32, {batch});
     sampling    = reinterpret_cast<const ops::SamplingConfig*>(
         static_cast<const unsigned char*>(ingress.data) + offsetof(MtpDecodeIngress, sampling));
@@ -331,11 +319,7 @@ DFlashDecodeState::DFlashDecodeState(DeviceSpan backing, const DFlashDecodeState
         ingress_tensor(offsetof(DFlashDecodeIngress, text_kv_table_rows), DType::I32, {batch});
     dflash_kv_table_rows =
         ingress_tensor(offsetof(DFlashDecodeIngress, dflash_kv_table_rows), DType::I32, {batch});
-    lanes = ingress_tensor(offsetof(DFlashDecodeIngress, lanes), DType::I32, {batch});
-    linear_state_read_slots =
-        ingress_tensor(offsetof(DFlashDecodeIngress, linear_state_read_slots), DType::I32, {batch});
-    linear_state_snapshot_base_slots = ingress_tensor(
-        offsetof(DFlashDecodeIngress, linear_state_snapshot_base_slots), DType::I32, {batch});
+    lanes    = ingress_tensor(offsetof(DFlashDecodeIngress, lanes), DType::I32, {batch});
     sampling = reinterpret_cast<const ops::SamplingConfig*>(
         static_cast<const unsigned char*>(ingress.data) + offsetof(DFlashDecodeIngress, sampling));
     licensed_tokens =
@@ -361,15 +345,13 @@ RoundState::RoundState(DeviceSpan backing, const RoundStateLayout& layout) {
     if (layout.ordinary) {
         ordinary.emplace(backing, *layout.ordinary, layout.spec.batch_capacity);
     }
-    token                           = layout.token.bind(backing);
-    pos                             = layout.pos.bind(backing);
-    rope_pos                        = layout.rope_pos.bind(backing);
-    rope_delta                      = layout.rope_delta.bind(backing);
-    logits                          = layout.logits.bind(backing);
-    text_kv_table_row               = layout.text_kv_table_row.bind(backing);
-    backend_kv_table_row            = layout.backend_kv_table_row.bind(backing);
-    linear_state_read_slot          = layout.linear_state_read_slot.bind(backing);
-    linear_state_snapshot_base_slot = layout.linear_state_snapshot_base_slot.bind(backing);
+    token                = layout.token.bind(backing);
+    pos                  = layout.pos.bind(backing);
+    rope_pos             = layout.rope_pos.bind(backing);
+    rope_delta           = layout.rope_delta.bind(backing);
+    logits               = layout.logits.bind(backing);
+    text_kv_table_row    = layout.text_kv_table_row.bind(backing);
+    backend_kv_table_row = layout.backend_kv_table_row.bind(backing);
     if (layout.mtp) { mtp.emplace(backing, *layout.mtp); }
     if (layout.dflash_prefill) { dflash_prefill.emplace(backing, *layout.dflash_prefill); }
     if (layout.mtp_decode) {

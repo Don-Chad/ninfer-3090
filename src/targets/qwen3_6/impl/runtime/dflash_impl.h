@@ -330,8 +330,6 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
         Tensor text_rows        = frame.text_kv_table_rows.slice(0, 0, batch_size);
         Tensor dflash_rows      = frame.dflash_kv_table_rows.slice(0, 0, batch_size);
         Tensor lanes            = frame.lanes.slice(0, 0, batch_size);
-        Tensor read_slots       = frame.linear_state_read_slots.slice(0, 0, batch_size);
-        Tensor snapshot_slots   = frame.linear_state_snapshot_base_slots.slice(0, 0, batch_size);
         Tensor append_positions = frame.append_positions.slice(1, 0, batch_size);
         Tensor append_counts    = frame.append_counts.slice(0, 0, batch_size);
         Tensor drafts           = frame.draft_tokens.slice(1, 0, batch_size);
@@ -362,33 +360,30 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
                          state.execution.linear_attention, state.execution.io,
                          state.execution.prefill_hidden, state.execution.prefill_chunk, 0, {},
                          &state.text_cache);
-        configure_text_card(card, state.execution, nullptr, 0,
-                            state.execution.linear_attention.slot_count(), 0);
         DFlashFeatureSink sink =
             batch_feature_sink_impl<Variant>(state, lanes, valid_columns, width, batch_size);
         target_verify_accept(state.execution, state.continuation_hidden_store, card,
                              TargetVerifyFrameView{
-                                 .ids                              = verify_ids,
-                                 .cache_positions                  = target_positions,
-                                 .rope_positions                   = target_positions,
-                                 .valid_columns                    = valid_columns,
-                                 .kv_table_rows                    = text_rows,
-                                 .linear_state_read_slots          = read_slots,
-                                 .linear_state_snapshot_base_slots = snapshot_slots,
-                                 .target_hidden                    = target_hidden,
-                                 .target_logits                    = target_logits,
-                                 .target_tokens                    = target_tokens,
-                                 .drafts                           = drafts,
-                                 .current_extents                  = extents,
-                                 .frontiers                        = frontiers,
-                                 .anchors                          = anchors,
-                                 .licensed_tokens                  = licensed_tokens,
-                                 .licensed_counts                  = licensed_counts,
-                                 .accepted_drafts                  = accepted,
-                                 .selected_hidden                  = selected_hidden,
-                                 .continuation_lanes               = lanes,
-                                 .sampling                         = frame.sampling,
-                                 .feature_sink                     = &sink,
+                                 .ids             = verify_ids,
+                                 .cache_positions = target_positions,
+                                 .rope_positions  = target_positions,
+                                 .valid_columns   = valid_columns,
+                                 .kv_table_rows   = text_rows,
+                                 .lanes           = lanes,
+                                 .target_hidden   = target_hidden,
+                                 .target_logits   = target_logits,
+                                 .target_tokens   = target_tokens,
+                                 .drafts          = drafts,
+                                 .current_extents = extents,
+                                 .frontiers       = frontiers,
+                                 .anchors         = anchors,
+                                 .licensed_tokens = licensed_tokens,
+                                 .licensed_counts = licensed_counts,
+                                 .accepted_drafts = accepted,
+                                 .selected_hidden = selected_hidden,
+                                 .replay_records  = state.execution.replay_records,
+                                 .sampling        = frame.sampling,
+                                 .feature_sink    = &sink,
                              },
                              target_envelope);
         CUDA_CHECK(cudaMemcpyAsync(&state.host_egress, frame.egress.data,
@@ -420,13 +415,12 @@ void dflash_append_context(PrefillContext& state, const Tensor& features, const 
                                  envelope);
 }
 
-void warm_capture_dflash_decode_batch(DFlashBatchContext& state, std::int32_t batch_size,
-                                      std::uint32_t k, DFlashEnvelopes envelopes,
-                                      ops::GqaExecutionEnvelope target_envelope,
-                                      const GraphPrepare& prepare,
-                                      DecodeGraphDefinition& definition) {
+void capture_dflash_decode_batch(DFlashBatchContext& state, std::int32_t batch_size,
+                                 std::uint32_t k, DFlashEnvelopes envelopes,
+                                 ops::GqaExecutionEnvelope target_envelope,
+                                 DecodeGraphDefinition& definition) {
     auto body = dflash_decode_batch_body(state, batch_size, k, envelopes, target_envelope);
-    warm_capture(state, definition, prepare, body);
+    capture_graph(state, definition, body);
 }
 
 void dflash_decode_batch(DFlashBatchContext& state, std::int32_t batch_size, std::uint32_t k,

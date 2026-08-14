@@ -15,10 +15,10 @@ enum class W8GdnInputScheduleId {
     MmaR64C128,
 };
 
-enum class W8GdnInputSnapshotScheduleId {
+enum class W8GdnInputConvScheduleId {
     DecodeFused,
     SplitKMmaFused,
-    Composed,
+    Materialized,
 };
 
 struct W8GdnInputProblem {
@@ -34,15 +34,16 @@ struct W8GdnInputPlan {
     W8GdnInputScheduleId schedule;
 };
 
-struct W8GdnInputSnapshotPlan {
-    W8GdnInputSnapshotScheduleId schedule;
+struct W8GdnInputConvPlan {
+    W8GdnInputConvScheduleId schedule;
 };
 
 const char* w8_gdn_input_schedule_name(W8GdnInputScheduleId schedule) noexcept;
-const char* w8_gdn_input_snapshot_schedule_name(W8GdnInputSnapshotScheduleId schedule) noexcept;
+const char* w8_gdn_input_conv_schedule_name(W8GdnInputConvScheduleId schedule) noexcept;
 bool w8_gdn_input_admits(const W8GdnInputProblem& problem) noexcept;
 W8GdnInputPlan w8_gdn_input_resolve_plan(const W8GdnInputProblem& problem);
-W8GdnInputSnapshotPlan w8_gdn_input_snapshot_resolve_plan(const W8GdnInputProblem& problem);
+W8GdnInputConvPlan w8_gdn_input_conv_resolve_plan(const W8GdnInputProblem& problem,
+                                                  std::int32_t batch_size);
 
 void w8_gdn_input_dispatch(const Tensor& x, const Weight& weight, Tensor& qkv, Tensor& z,
                            cudaStream_t stream);

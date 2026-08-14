@@ -71,6 +71,11 @@ struct Variant {
                                   const Tensor& snapshot_base_slot, Tensor& query, Tensor& key,
                                   Tensor& value, Tensor& output_gate, qwen3_6::TextPhase phase,
                                   WorkspaceArena& workspace, cudaStream_t stream);
+    static void gdn_input_projection_record(
+        const Tensor& hidden, const GdnProjectionWeights& weights, const Tensor& conv_weight,
+        const Tensor& conv_states, const Tensor& valid_columns, const Tensor& initial_slots,
+        Tensor& conv_record, Tensor& query, Tensor& key, Tensor& value, Tensor& output_gate,
+        qwen3_6::TextPhase phase, WorkspaceArena& workspace, cudaStream_t stream);
     static void gdn_output_projection(const Tensor& hidden, const Weight& weight, Tensor& residual,
                                       qwen3_6::TextPhase phase, WorkspaceArena& workspace,
                                       cudaStream_t stream);
@@ -103,6 +108,9 @@ struct Variant {
                                                   qwen3_6::TextPhase phase, std::int32_t first,
                                                   std::int32_t last);
     [[nodiscard]] static std::size_t gdn_input_projection_snapshot_workspace_capacity_bytes(
+        WeightsProfile weights_profile, qwen3_6::TextPhase phase, std::int32_t batch_size,
+        std::int32_t first, std::int32_t last);
+    [[nodiscard]] static std::size_t gdn_input_projection_record_workspace_capacity_bytes(
         WeightsProfile weights_profile, qwen3_6::TextPhase phase, std::int32_t batch_size,
         std::int32_t first, std::int32_t last);
     [[nodiscard]] static std::size_t

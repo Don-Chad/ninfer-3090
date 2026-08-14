@@ -54,6 +54,16 @@ const char* q4_q5_gdn_input_schedule_name(Q4Q5GdnInputScheduleId schedule) noexc
     return "gdn_input_proj.q4_q5.unknown";
 }
 
+const char* q4_q5_gdn_input_conv_schedule_name(Q4Q5GdnInputConvScheduleId schedule) noexcept {
+    switch (schedule) {
+    case Q4Q5GdnInputConvScheduleId::ProjectionEpilogueFused:
+        return "gdn_input_proj_conv.q4_q5.projection_epilogue_fused";
+    case Q4Q5GdnInputConvScheduleId::Materialized:
+        return "gdn_input_proj_conv.q4_q5.materialized";
+    }
+    return "gdn_input_proj_conv.q4_q5.unknown";
+}
+
 bool q4_q5_gdn_input_admits(const Q4Q5GdnInputProblem& problem) noexcept {
     return supported_shape(problem) && problem.cols >= 1;
 }
@@ -69,6 +79,25 @@ Q4Q5GdnInputPlan q4_q5_gdn_input_resolve_plan(const Q4Q5GdnInputProblem& problem
         return {route.schedule};
     }
     throw std::logic_error("Q4/Q5 GDN input: admitted problem has no covering route");
+}
+
+Q4Q5GdnInputConvPlan q4_q5_gdn_input_conv_resolve_plan(const Q4Q5GdnInputProblem& problem,
+                                                       std::int32_t batch_size) {
+    if (!q4_q5_gdn_input_admits(problem) || batch_size <= 0 || batch_size > 8) {
+        throw std::invalid_argument(
+            "Q4/Q5 GDN input conv: exact problem or column count is not admitted");
+    }
+    if (batch_size > 1) { return {Q4Q5GdnInputConvScheduleId::Materialized}; }
+    switch (problem.cols) {
+    case 1:
+    case 2:
+    case 3:
+    case 5:
+    case 6:
+        return {Q4Q5GdnInputConvScheduleId::ProjectionEpilogueFused};
+    default:
+        return {Q4Q5GdnInputConvScheduleId::Materialized};
+    }
 }
 
 void q4_q5_gdn_input_execute_plan(const Q4Q5GdnInputPlan& plan, const Tensor& x,

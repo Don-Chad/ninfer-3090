@@ -59,20 +59,32 @@ ninfer_add_test(ninfer_artifact_materialization_test
   SOURCES test_artifact_materialization.cpp
   LIBRARIES ninfer_artifact)
 ninfer_add_test(ninfer_device_test       SOURCES test_device.cpp)
+ninfer_add_test(ninfer_decode_graph_test SOURCES test_decode_graph.cpp)
 ninfer_add_test(ninfer_tensor_test       SOURCES test_tensor.cpp)
 ninfer_add_test(ninfer_arena_test        SOURCES test_arena.cpp)
 ninfer_add_test(ninfer_request_memory_test SOURCES test_request_memory.cpp)
 ninfer_add_test(ninfer_admission_policy_test SOURCES test_admission_policy.cpp)
 ninfer_add_test(ninfer_kv_capacity_test SOURCES test_kv_capacity.cpp)
+ninfer_add_test(ninfer_sampling_defaults_test
+  SOURCES test_sampling_defaults.cpp
+  LIBRARIES ninfer_engine)
+target_include_directories(ninfer_sampling_defaults_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_27b/export
+  ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6_35b_a3b/export)
 ninfer_add_test(ninfer_kv_cache_test
   SOURCES test_kv_cache.cpp
   LIBRARIES ninfer_core)
 ninfer_add_test(ninfer_state_store_test
   SOURCES test_state_store.cpp
   LIBRARIES ninfer_core)
+ninfer_add_test(ninfer_gdn_replay_records_test
+  SOURCES test_gdn_replay_records.cpp
+  LIBRARIES ninfer_core)
 set_tests_properties(
   ninfer_artifact_materialization_test
   ninfer_device_test
+  ninfer_decode_graph_test
   ninfer_arena_test
   ninfer_request_memory_test
   ninfer_kv_cache_test
@@ -81,6 +93,7 @@ set_tests_properties(
 # Family frontend and one opt-in real-artifact prefix/MTP integration test.
 ninfer_add_test(ninfer_qwen3_6_frontend_test
   SOURCES targets/qwen3_6/test_frontend.cpp
+  NEEDS_SOURCE_DIR
   LIBRARIES ninfer_engine ninfer_core)
 target_include_directories(ninfer_qwen3_6_frontend_test PRIVATE
   ${PROJECT_SOURCE_DIR}/src/targets/qwen3_6/export
@@ -228,6 +241,15 @@ ninfer_add_op_test(ninfer_gdn_input_proj_test
   LIBRARIES ninfer_ops)
 ninfer_add_op_test(ninfer_gdn_input_proj_conv_snapshot_test
   SOURCES ops/test_gdn_input_proj_conv_snapshot.cpp
+  LIBRARIES ninfer_ops)
+ninfer_add_op_test(ninfer_gdn_input_proj_conv_record_test
+  SOURCES ops/test_gdn_input_proj_conv_record.cpp
+  LIBRARIES ninfer_ops)
+ninfer_add_op_test(ninfer_gated_delta_net_replay_record_test
+  SOURCES ops/test_gated_delta_net_replay_record.cpp
+  LIBRARIES ninfer_ops)
+ninfer_add_op_test(ninfer_gdn_replay_fold_test
+  SOURCES ops/test_gdn_replay_fold.cpp
   LIBRARIES ninfer_ops)
 ninfer_add_fused_linear_test(
   ninfer_linear_add_q5_a16_test

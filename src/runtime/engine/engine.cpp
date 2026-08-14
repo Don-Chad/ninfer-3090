@@ -1,6 +1,8 @@
 #include "ninfer/engine.h"
 
 #include "core/device.h"
+#include "runtime/contract/sampling.h"
+#include "runtime/contract/types.h"
 #include "runtime/engine/concurrent_executor.h"
 #include "targets/registry.h"
 
@@ -10,16 +12,32 @@
 #include <variant>
 
 namespace ninfer {
+namespace {
+
+runtime::ResolvedRequestOptions resolve_request_options(const ModelSamplingDefaults& defaults,
+                                                        SamplingMode mode, RequestOptions options) {
+    runtime::ResolvedRequestOptions resolved;
+    resolved.execution.sampling =
+        runtime::resolve_sampling(defaults, mode, options.execution.sampling);
+    resolved.execution.requested_output_tokens = options.execution.requested_output_tokens;
+    resolved.execution.allow_prefix_reuse      = options.execution.allow_prefix_reuse;
+    resolved.stop                              = std::move(options.stop);
+    resolved.output                            = options.output;
+    return resolved;
+}
+
+} // namespace
 
 class PreparedPrompt::Impl {
 public:
-    Impl(PromptSummary prompt_summary, double frontend_seconds,
+    Impl(PromptSummary prompt_summary, double frontend_seconds, SamplingMode mode,
          targets::qwen3_6::PreparedPrompt prepared)
         : summary(std::move(prompt_summary)), prepare_seconds(frontend_seconds),
-          value(std::move(prepared)) {}
+          sampling_mode(mode), value(std::move(prepared)) {}
 
     PromptSummary summary;
-    double prepare_seconds = 0.0;
+    double prepare_seconds     = 0.0;
+    SamplingMode sampling_mode = SamplingMode::Thinking;
     targets::qwen3_6::PreparedPrompt value;
 };
 
@@ -61,16 +79,22 @@ public:
     };
 
     template <class Submission>
-    Impl(std::shared_ptr<void> keep_alive, Submission submission)
-        : state_(
-              std::make_unique<Model<Submission>>(std::move(keep_alive), std::move(submission))) {}
+    Impl(std::shared_ptr<void> keep_alive, Submission submission,
+         ResolvedSamplingParameters sampling)
+        : state_(std::make_unique<Model<Submission>>(std::move(keep_alive), std::move(submission))),
+          sampling_(sampling) {}
 
     GenerationResult wait(OutputSink* sink, const CancellationView& cancellation) {
         return state_->wait(sink, cancellation);
     }
 
+    [[nodiscard]] const ResolvedSamplingParameters& resolved_sampling() const noexcept {
+        return sampling_;
+    }
+
 private:
     std::unique_ptr<Concept> state_;
+    ResolvedSamplingParameters sampling_;
 };
 
 GenerationHandle::GenerationHandle() noexcept                              = default;
@@ -81,6 +105,11 @@ GenerationHandle& GenerationHandle::operator=(GenerationHandle&&) noexcept = def
 GenerationHandle::GenerationHandle(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
 
 GenerationHandle::operator bool() const noexcept { return impl_ != nullptr; }
+
+const ResolvedSamplingParameters& GenerationHandle::resolved_sampling() const noexcept {
+    static const ResolvedSamplingParameters empty;
+    return impl_ != nullptr ? impl_->resolved_sampling() : empty;
+}
 
 GenerationResult GenerationHandle::wait(OutputSink* sink, const CancellationView& cancellation) {
     if (impl_ == nullptr) { throw std::logic_error("GenerationHandle is empty"); }
@@ -97,10 +126,11 @@ public:
 
     explicit Impl(EngineOptions engine_options)
         : options(std::move(engine_options)), device(options.device) {
-        auto constructed = targets::construct_target(options, device);
-        active           = std::move(constructed.active);
-        load             = std::move(constructed.load);
-        executor         = std::visit(
+        auto constructed  = targets::construct_target(options, device);
+        active            = std::move(constructed.active);
+        load              = std::move(constructed.load);
+        sampling_defaults = constructed.sampling_defaults;
+        executor          = std::visit(
             [&](auto& target_ptr) -> Executor {
                 using Instance =
                     typename std::remove_reference_t<decltype(target_ptr)>::element_type;
@@ -124,6 +154,7 @@ public:
     DeviceContext device;
     targets::ActiveTarget active;
     LoadSummary load;
+    ModelSamplingDefaults sampling_defaults;
     Executor executor;
 };
 
@@ -135,6 +166,8 @@ Engine& Engine::operator=(Engine&&) noexcept = default;
 
 PreparedPrompt Engine::prepare(PromptInput input) const {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
+    const SamplingMode sampling_mode =
+        input.options.enable_thinking ? SamplingMode::Thinking : SamplingMode::NonThinking;
     return std::visit(
         [&](const auto& target_ptr) -> PreparedPrompt {
             if (target_ptr == nullptr) { throw std::logic_error("Engine target is not active"); }
@@ -145,8 +178,8 @@ PreparedPrompt Engine::prepare(PromptInput input) const {
                                    "prepared prompt exceeds Engine context capacity");
             }
             const double seconds = prepared.prepare_seconds();
-            return PreparedPrompt(
-                std::make_unique<PreparedPrompt::Impl>(info, seconds, std::move(prepared)));
+            return PreparedPrompt(std::make_unique<PreparedPrompt::Impl>(
+                info, seconds, sampling_mode, std::move(prepared)));
         },
         impl_->active);
 }
@@ -165,8 +198,8 @@ PreparedPrompt Engine::prepare_tokens(std::vector<TokenId> token_ids,
                                    "prepared prompt exceeds Engine context capacity");
             }
             const double seconds = prepared.prepare_seconds();
-            return PreparedPrompt(
-                std::make_unique<PreparedPrompt::Impl>(info, seconds, std::move(prepared)));
+            return PreparedPrompt(std::make_unique<PreparedPrompt::Impl>(
+                info, seconds, SamplingMode::Thinking, std::move(prepared)));
         },
         impl_->active);
 }
@@ -179,6 +212,21 @@ std::uint32_t Engine::count_tokens(PromptInput input) const {
             return target_ptr->loaded->frontend.count_tokens(std::move(input));
         },
         impl_->active);
+}
+
+PromptCapabilities Engine::prompt_capabilities() const {
+    if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
+    return std::visit(
+        [](const auto& target_ptr) {
+            if (target_ptr == nullptr) { throw std::logic_error("Engine target is not active"); }
+            return target_ptr->loaded->frontend.prompt_capabilities();
+        },
+        impl_->active);
+}
+
+ModelSamplingDefaults Engine::sampling_defaults() const {
+    if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
+    return impl_->sampling_defaults;
 }
 
 GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
@@ -199,13 +247,17 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
         }
     } host_input_guard{&prompt, &host_input};
 
+    runtime::ResolvedRequestOptions resolved_options = resolve_request_options(
+        impl_->sampling_defaults, prompt.impl_->sampling_mode, std::move(options));
+    const ResolvedSamplingParameters resolved_sampling = resolved_options.execution.sampling;
+
     const PromptSummary prompt_summary = prompt.impl_->summary;
     if (prompt_summary.prompt_tokens > impl_->options.max_context) {
         throw RequestError(RequestErrorKind::ContextLengthExceeded,
                            "prepared prompt exceeds Engine context capacity");
     }
     const double prepare_seconds = prompt.impl_->prepare_seconds;
-    if (options.execution.requested_output_tokens == 0) {
+    if (resolved_options.execution.requested_output_tokens == 0) {
         struct ImmediateSubmission {
             GenerationResult result;
 
@@ -221,8 +273,8 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
         immediate.result.timings.total_seconds   = prepare_seconds;
         prompt.impl_.reset();
         host_input.reset();
-        return GenerationHandle(
-            std::make_unique<GenerationHandle::Impl>(impl_, std::move(immediate)));
+        return GenerationHandle(std::make_unique<GenerationHandle::Impl>(
+            impl_, std::move(immediate), resolved_sampling));
     }
 
     return std::visit(
@@ -232,10 +284,10 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
                 throw std::logic_error("concurrent Engine executor is unavailable");
             } else {
                 auto submission = executor->submit(std::move(prompt.impl_->value), prompt_summary,
-                                                   prepare_seconds, std::move(options),
+                                                   prepare_seconds, std::move(resolved_options),
                                                    pending_deadline, std::move(host_input));
-                return GenerationHandle(
-                    std::make_unique<GenerationHandle::Impl>(impl_, std::move(submission)));
+                return GenerationHandle(std::make_unique<GenerationHandle::Impl>(
+                    impl_, std::move(submission), resolved_sampling));
             }
         },
         impl_->executor);

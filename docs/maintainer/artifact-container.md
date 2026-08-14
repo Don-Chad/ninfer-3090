@@ -198,8 +198,8 @@ The version-2 registry contains:
 | Namespace | Registered identities | Authority |
 |---|---|---|
 | tensor numeric format | `BF16`, `FP32`, `I32`, `Q4G64_F16S`, `Q5G64_F16S`, `Q6G64_F16S`, `W8G32_F16S`, `NVFP4` | [`tensor-formats.md`](tensor-formats.md) |
-| `model_id` | `qwen3.6-27b`, `qwen3.6-35b-a3b` | respective target artifact reference |
-| `(model_id, weights_id)` | `qwen3.6-27b/groupwise-int`, `qwen3.6-27b/nvfp4`, `qwen3.6-35b-a3b/groupwise-int` | respective target artifact reference |
+| `model_id` | `qwen3.6-27b`, `qwen3.6-35b-a3b`, `qwen3.8-27b` | respective [Qwen3.6-27B](qwen3.6-27b-artifact.md), [Qwen3.6-35B-A3B](qwen3.6-35b-a3b-artifact.md), or [Qwen3.8-27B](qwen3.8-27b-artifact.md) artifact reference |
+| `(model_id, weights_id)` | `qwen3.6-27b/groupwise-int`, `qwen3.6-27b/nvfp4`, `qwen3.6-35b-a3b/groupwise-int`, `qwen3.8-27b/groupwise-int` | respective [Qwen3.6-27B](qwen3.6-27b-artifact.md), [Qwen3.6-35B-A3B](qwen3.6-35b-a3b-artifact.md), or [Qwen3.8-27B](qwen3.8-27b-artifact.md) artifact reference |
 | tensor layout | `contiguous-le-v1`, `row-split-k128-v1`, `blockscale-k16-m128x4-v1` | [`storage-layouts.md`](storage-layouts.md) |
 | resource encoding | `raw-bytes-v1` | [`storage-layouts.md`](storage-layouts.md) |
 
@@ -409,8 +409,8 @@ correctly without carrying it.
 ## 11. Required implementation evidence
 
 The native implementation in `tools/artifact/`, `tools/convert/qwen3_6_27b/`,
-`tools/reference/qwen3_6_27b/`, and `src/artifact/` satisfies this layer. The compact evidence
-retained for later changes is:
+`tools/convert/qwen3_8_27b/`, `tools/reference/qwen3_6_27b/`, and `src/artifact/` satisfies this
+layer. The compact evidence retained for later changes is:
 
 - Python version-2 round trips for all eight numeric formats and a raw resource;
 - representative framing, schema, offset/alignment, overlap, bounds, and encoded-size failures;
@@ -418,10 +418,10 @@ retained for later changes is:
   trips;
 - an independently constructed C++ version-2 fixture covering hierarchical identity, payload spans,
   encoded sizes, and alignment;
-- the Qwen3.6-27B binder's complete 1124-object groupwise inventory and 1307-object NVFP4
-  inventory, including the latter's 247 validation-only input divisors;
+- the complete registered target inventories, including the 1124-object 27B groupwise contracts
+  and the 1307-object 27B NVFP4 contract with 247 validation-only input divisors;
 - inspection, representative source probes, Python reference inference, and public Engine loading
-  of both real converter-generated 27B artifacts and the real 35B-A3B artifact.
+  of both real converter-generated Qwen3.6-27B artifacts and the real 35B-A3B artifact.
 
 This contract does not require canonical-JSON spelling tests, arbitrary malformed-input matrices,
 fuzz/resource-exhaustion campaigns, failure injection, interrupted-publication tests, full-file

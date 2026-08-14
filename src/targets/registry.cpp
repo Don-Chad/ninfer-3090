@@ -83,8 +83,9 @@ template <class Target, class Loaded, class Instance>
 ConstructedTarget construct_registered(const EngineOptions& options, DeviceContext& device,
                                        artifact::Reader& reader, Clock::time_point load_start,
                                        std::string_view target_key) {
-    const auto& identity       = reader.identity();
-    const auto weights_profile = Target::resolve_weights(identity);
+    const auto& identity                          = reader.identity();
+    const auto weights_profile                    = Target::resolve_weights(identity);
+    const ModelSamplingDefaults sampling_defaults = Target::sampling_defaults(identity.model_id);
 
     artifact::Binder binder(reader);
     auto load_plan        = Target::plan_load(binder, options, weights_profile);
@@ -125,8 +126,9 @@ ConstructedTarget construct_registered(const EngineOptions& options, DeviceConte
     summary.peak_staging_bytes   = stats.peak_staging_bytes;
     summary.tensor_count         = stats.tensor_count;
     summary.resource_count       = stats.resource_count;
-    return ConstructedTarget{.active = ActiveTarget(std::move(instance)),
-                             .load   = std::move(summary)};
+    return ConstructedTarget{.active            = ActiveTarget(std::move(instance)),
+                             .load              = std::move(summary),
+                             .sampling_defaults = sampling_defaults};
 }
 
 } // namespace

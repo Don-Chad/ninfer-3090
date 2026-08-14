@@ -121,9 +121,10 @@ All four must output:
 ORCHID=37; COPPER=8142; HARBOR=KESTREL; COLOR=AMBER; SUM=8179
 ```
 
-The registered 27B and 35B-A3B tokenizer/chat-template resources produce identical prompt token
-sequences for every committed JSON file. Both artifacts run these inputs through the same CLI
-surface.
+The committed prompt token counts were validated against the Qwen3.6-27B and Qwen3.6-35B-A3B
+frontend profiles, which produce identical sequences for these files. Qwen3.8-27B uses the same CLI
+surface but carries its own tokenizer and chat-template resources; inspect its prepared token count
+when using these fixtures.
 
 ## Fixture construction
 

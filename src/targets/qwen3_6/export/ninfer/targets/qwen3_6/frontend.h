@@ -115,6 +115,7 @@ public:
     [[nodiscard]] std::uint32_t count_tokens(PromptInput input) const;
     [[nodiscard]] PreparedPrompt prepare_tokens(std::vector<TokenId> token_ids,
                                                 bool allow_prefix_identity = true) const;
+    [[nodiscard]] PromptCapabilities prompt_capabilities() const noexcept;
     [[nodiscard]] OutputSession make_output_session(const PreparedPrompt& prompt,
                                                     const StopPolicy& caller_stop,
                                                     const OutputOptions& output = {}) const;

@@ -33,9 +33,7 @@ struct OrdinaryDecodeIngress {
     std::array<std::int32_t, kMaximumConcurrency> cache_positions{};
     std::array<std::int32_t, kMaximumConcurrency> rope_positions{};
     std::array<std::int32_t, kMaximumConcurrency> text_kv_table_rows{};
-    std::array<std::int32_t, kMaximumConcurrency> linear_state_read_slots{};
-    std::array<std::int32_t, kMaximumConcurrency> linear_state_snapshot_base_slots{};
-    std::array<std::int32_t, kMaximumConcurrency> continuation_slots{};
+    std::array<std::int32_t, kMaximumConcurrency> lanes{};
     std::array<ops::SamplingConfig, kMaximumConcurrency> sampling{};
 };
 
@@ -55,9 +53,7 @@ struct MtpDecodeIngress {
     std::array<std::int32_t, kMaximumConcurrency * kMtpDecodeMaximumWidth> target_rope_positions{};
     std::array<std::int32_t, kMaximumConcurrency> text_kv_table_rows{};
     std::array<std::int32_t, kMaximumConcurrency> mtp_kv_table_rows{};
-    std::array<std::int32_t, kMaximumConcurrency> linear_state_read_slots{};
-    std::array<std::int32_t, kMaximumConcurrency> linear_state_snapshot_base_slots{};
-    std::array<std::int32_t, kMaximumConcurrency> continuation_slots{};
+    std::array<std::int32_t, kMaximumConcurrency> lanes{};
     std::array<std::int32_t, kMaximumConcurrency> rope_deltas{};
     std::array<ops::SamplingConfig, kMaximumConcurrency> sampling{};
 };
@@ -82,8 +78,6 @@ struct DFlashDecodeIngress {
     std::array<std::int32_t, kMaximumConcurrency> text_kv_table_rows{};
     std::array<std::int32_t, kMaximumConcurrency> dflash_kv_table_rows{};
     std::array<std::int32_t, kMaximumConcurrency> lanes{};
-    std::array<std::int32_t, kMaximumConcurrency> linear_state_read_slots{};
-    std::array<std::int32_t, kMaximumConcurrency> linear_state_snapshot_base_slots{};
     std::array<ops::SamplingConfig, kMaximumConcurrency> sampling{};
 };
 
@@ -156,8 +150,6 @@ struct RoundStateLayout {
     TensorRegion logits;
     TensorRegion text_kv_table_row;
     TensorRegion backend_kv_table_row;
-    TensorRegion linear_state_read_slot;
-    TensorRegion linear_state_snapshot_base_slot;
     std::optional<MtpPrefillStateLayout> mtp;
     std::optional<DFlashPrefillStateLayout> dflash_prefill;
     std::optional<MtpDecodeStateLayout> mtp_decode;
@@ -172,9 +164,7 @@ struct OrdinaryDecodeState {
     Tensor cache_positions;
     Tensor rope_positions;
     Tensor text_kv_table_rows;
-    Tensor linear_state_read_slots;
-    Tensor linear_state_snapshot_base_slots;
-    Tensor continuation_slots;
+    Tensor lanes;
     const ops::SamplingConfig* sampling = nullptr;
     Tensor sampled_tokens;
     Tensor logits;
@@ -222,9 +212,7 @@ struct MtpDecodeState {
     Tensor target_rope_positions;
     Tensor text_kv_table_rows;
     Tensor mtp_kv_table_rows;
-    Tensor linear_state_read_slots;
-    Tensor linear_state_snapshot_base_slots;
-    Tensor continuation_slots;
+    Tensor lanes;
     Tensor rope_deltas;
     const ops::SamplingConfig* sampling = nullptr;
     Tensor licensed_tokens;
@@ -263,8 +251,6 @@ struct DFlashDecodeState {
     Tensor text_kv_table_rows;
     Tensor dflash_kv_table_rows;
     Tensor lanes;
-    Tensor linear_state_read_slots;
-    Tensor linear_state_snapshot_base_slots;
     const ops::SamplingConfig* sampling = nullptr;
     Tensor licensed_tokens;
     Tensor licensed_counts;
@@ -294,8 +280,6 @@ struct RoundState {
     Tensor logits;
     Tensor text_kv_table_row;
     Tensor backend_kv_table_row;
-    Tensor linear_state_read_slot;
-    Tensor linear_state_snapshot_base_slot;
     std::optional<MtpPrefillState> mtp;
     std::optional<DFlashPrefillState> dflash_prefill;
     std::optional<MtpDecodeState> mtp_decode;

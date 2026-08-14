@@ -84,7 +84,7 @@ WARMUP_FIXTURE = "text_smoke_zh"
 RUN_ARTIFACT_TYPE = "ninfer_serve_corpus_result"
 RUN_SCHEMA_VERSION = 5
 SERVER_LOG_ARTIFACT_TYPE = "ninfer_serve_request_log"
-SERVER_LOG_SCHEMA_VERSION = 6
+SERVER_LOG_SCHEMA_VERSION = 8
 STARTUP_TIMEOUT_SECONDS = 1800.0
 REQUEST_TIMEOUT_SECONDS = 24.0 * 60.0 * 60.0
 LOG_EVENT_TIMEOUT_SECONDS = 10.0
@@ -720,6 +720,25 @@ def server_command(
         )
     if spec.sampling_mode == "greedy":
         command.append("--greedy")
+    else:
+        # Published stochastic measurements use this explicit profile; they must not drift when
+        # product defaults follow a newly registered model recommendation.
+        command.extend(
+            [
+                "--temperature",
+                "0.6",
+                "--top-p",
+                "0.95",
+                "--top-k",
+                "20",
+                "--min-p",
+                "0",
+                "--presence-penalty",
+                "1.0",
+                "--frequency-penalty",
+                "0",
+            ]
+        )
     return command
 
 

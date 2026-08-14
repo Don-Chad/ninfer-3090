@@ -423,6 +423,31 @@ void parse_thinking(const Json& body, GenerationRequest& out) {
     out.enable_thinking    = (type != "disabled");
 }
 
+void parse_output_config(const Json& body, GenerationRequest& out) {
+    if (!body.contains("output_config") || body.at("output_config").is_null()) { return; }
+    const Json& config = body.at("output_config");
+    if (!config.is_object()) { bad_request("output_config must be an object", "output_config"); }
+    for (auto it = config.begin(); it != config.end(); ++it) {
+        if (it.key() != "effort" && !it.value().is_null()) {
+            bad_request("output_config." + it.key() + " is not supported", "output_config",
+                        "output_config_option_not_supported");
+        }
+    }
+    if (!config.contains("effort") || config.at("effort").is_null()) { return; }
+    if (!config.at("effort").is_string()) {
+        bad_request("output_config.effort must be a string", "output_config.effort");
+    }
+    const std::string value                              = config.at("effort").get<std::string>();
+    const std::optional<RequestedReasoningEffort> effort = parse_requested_reasoning_effort(value);
+    if (!effort || *effort == RequestedReasoningEffort::None ||
+        *effort == RequestedReasoningEffort::Minimal) {
+        bad_request("output_config.effort must be one of low, medium, high, xhigh, or max",
+                    "output_config.effort");
+    }
+    out.reasoning_effort       = *effort;
+    out.reasoning_effort_param = "output_config.effort";
+}
+
 const char* anthropic_error_type(int status) {
     switch (status) {
     case 400:
@@ -473,6 +498,13 @@ GenerationRequest parse_messages_request(const Json& body, const RequestLimits& 
     parse_stop_sequences(body, out);
     parse_sampling(body, out);
     parse_thinking(body, out);
+    parse_output_config(body, out);
+    if (body.contains("preserve_thinking") && !body.at("preserve_thinking").is_null()) {
+        if (!body.at("preserve_thinking").is_boolean()) {
+            bad_request("preserve_thinking must be a boolean or null", "preserve_thinking");
+        }
+        out.preserve_thinking = body.at("preserve_thinking").get<bool>();
+    }
 
     out.stream = get_bool(body, "stream", false);
 

@@ -18,7 +18,7 @@ DFlashFeatureSink make_dflash_prefill_sink(PrefillContext& state) {
         throw std::logic_error("DFlash prefill controls are unavailable");
     }
     return dflash_feature_sink(
-        state, [&state](const Tensor& features, const Tensor& positions, bool boundary) {
+        state, [&state](const Tensor& features, const Tensor& positions, bool turn_checkpoint) {
             auto& frame  = *state.execution.io.dflash_decode;
             Tensor count = frame.append_counts.slice(0, 0, 1);
             Tensor lane  = frame.lanes.slice(0, 0, 1);
@@ -26,9 +26,9 @@ DFlashFeatureSink make_dflash_prefill_sink(PrefillContext& state) {
             ops::set_i32_scalar(count, features.ne[1], state.execution.device.stream);
             const auto exact = static_cast<std::uint32_t>(features.ne[1]);
             dflash_append_context(state, features, positions, count, lane, row, {exact, exact});
-            if (boundary) {
-                state.dflash->save_boundary(state.dflash_host_ingress->lanes[0],
-                                            state.execution.device.stream);
+            if (turn_checkpoint) {
+                state.dflash->save_turn_checkpoint(state.dflash_host_ingress->lanes[0],
+                                                   state.execution.device.stream);
             }
         });
 }
@@ -36,10 +36,12 @@ DFlashFeatureSink make_dflash_prefill_sink(PrefillContext& state) {
 } // namespace
 
 void configure_text_card(TextContext& card, const ExecutionCore& execution,
-                         const ops::SamplingConfig* sampling, std::int32_t linear_state_base,
-                         std::int32_t linear_state_capacity, std::uint32_t mtp_proposal_extent) {
+                         const ops::SamplingConfig* sampling, std::int32_t current_state_slot,
+                         std::int32_t turn_checkpoint_state_slot,
+                         std::uint32_t mtp_proposal_extent) {
     card.set_sampling(sampling);
-    card.set_linear_state_group(linear_state_base, linear_state_capacity);
+    card.set_linear_state_slots(current_state_slot, turn_checkpoint_state_slot);
+    card.set_gdn_state_action(GdnStateAction::UpdateInPlace, nullptr);
     card.set_mtp_proposal_extent(mtp_proposal_extent);
     if (execution.proposal_head == ProposalHead::Full) {
         card.set_proposal_head(nullptr, nullptr, 0);
@@ -53,17 +55,19 @@ void configure_text_card(TextContext& card, const ExecutionCore& execution,
 
 PrefillChunkResult prefill_text_chunk(PrefillContext& state, std::span<const TokenId> ids,
                                       std::uint32_t nominal_length,
-                                      std::optional<std::uint32_t> snapshot_boundary,
+                                      std::optional<std::uint32_t> turn_checkpoint_capture_frontier,
                                       bool finalize_at_end) {
     TextContext card(state.execution.device, state.execution.model, state.execution.work,
                      state.text_kv, state.execution.linear_attention, state.execution.io,
                      state.execution.prefill_hidden, state.execution.prefill_chunk,
                      state.text_kv_base, state.mtp_kv, &state.text_cache, state.mtp_cache);
-    configure_text_card(card, state.execution, state.sampling, state.linear_state_base,
-                        state.linear_state_capacity, state.mtp_proposal_extent);
-    card.set_boundary_hidden_output(state.boundary_hidden);
-    card.set_prefill_snapshot_boundary(
-        snapshot_boundary ? static_cast<std::int64_t>(*snapshot_boundary) : -1);
+    configure_text_card(card, state.execution, state.sampling, state.current_state_slot,
+                        state.turn_checkpoint_state_slot, state.mtp_proposal_extent);
+    card.set_turn_checkpoint_hidden_output(state.turn_checkpoint_hidden);
+    card.set_prefill_turn_checkpoint_frontier(
+        turn_checkpoint_capture_frontier
+            ? static_cast<std::int64_t>(*turn_checkpoint_capture_frontier)
+            : -1);
     const std::span<const int> prompt(ids.data(), ids.size());
     if (state.dflash != nullptr) {
         DFlashFeatureSink sink = make_dflash_prefill_sink(state);
@@ -73,11 +77,11 @@ PrefillChunkResult prefill_text_chunk(PrefillContext& state, std::span<const Tok
     return card.prefill_chunk(prompt, state.text_kv_base, nominal_length, finalize_at_end);
 }
 
-PrefillChunkResult prefill_multimodal_chunk(PrefillContext& state, const PreparedPromptData& prompt,
-                                            VisionPrefillSession& vision,
-                                            std::uint32_t nominal_length,
-                                            std::optional<std::uint32_t> snapshot_boundary,
-                                            bool finalize_at_end) {
+PrefillChunkResult
+prefill_multimodal_chunk(PrefillContext& state, const PreparedPromptData& prompt,
+                         VisionPrefillSession& vision, std::uint32_t nominal_length,
+                         std::optional<std::uint32_t> turn_checkpoint_capture_frontier,
+                         bool finalize_at_end) {
     if (state.dflash != nullptr) {
         throw std::logic_error("DFlash staged multimodal prefill is unavailable");
     }
@@ -85,11 +89,13 @@ PrefillChunkResult prefill_multimodal_chunk(PrefillContext& state, const Prepare
                      state.text_kv, state.execution.linear_attention, state.execution.io,
                      state.execution.prefill_hidden, state.execution.prefill_chunk,
                      state.text_kv_base, state.mtp_kv, &state.text_cache, state.mtp_cache);
-    configure_text_card(card, state.execution, state.sampling, state.linear_state_base,
-                        state.linear_state_capacity, state.mtp_proposal_extent);
-    card.set_boundary_hidden_output(state.boundary_hidden);
-    card.set_prefill_snapshot_boundary(
-        snapshot_boundary ? static_cast<std::int64_t>(*snapshot_boundary) : -1);
+    configure_text_card(card, state.execution, state.sampling, state.current_state_slot,
+                        state.turn_checkpoint_state_slot, state.mtp_proposal_extent);
+    card.set_turn_checkpoint_hidden_output(state.turn_checkpoint_hidden);
+    card.set_prefill_turn_checkpoint_frontier(
+        turn_checkpoint_capture_frontier
+            ? static_cast<std::int64_t>(*turn_checkpoint_capture_frontier)
+            : -1);
     return card.prefill_chunk(prompt, state.text_kv_base, nominal_length, vision, finalize_at_end);
 }
 

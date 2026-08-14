@@ -41,6 +41,7 @@ public:
     GenerationHandle& operator=(const GenerationHandle&) = delete;
 
     [[nodiscard]] explicit operator bool() const noexcept;
+    [[nodiscard]] const ResolvedSamplingParameters& resolved_sampling() const noexcept;
 
     GenerationResult wait(OutputSink* sink = nullptr, const CancellationView& cancellation = {});
 
@@ -70,6 +71,8 @@ public:
                                                 bool allow_prefix_identity = true) const;
 
     [[nodiscard]] std::uint32_t count_tokens(PromptInput input) const;
+    [[nodiscard]] PromptCapabilities prompt_capabilities() const;
+    [[nodiscard]] ModelSamplingDefaults sampling_defaults() const;
 
     // Establishes queue membership synchronously. Destroying an unconsumed handle cancels its
     // request; wait() owns result consumption and may run independently from GPU execution.

@@ -53,6 +53,24 @@ ops::LinearPolicy text_policy(const Weight& weight) {
     return weight.qtype == QType::NVFP4 ? kNvfp4TextPolicy : ops::LinearPolicy::A16Only;
 }
 
+constexpr std::size_t kMinimumLeafWorkspaceBytes = 1;
+
+std::size_t gdn_record_workspace_bytes(const Tensor& hidden,
+                                       const Variant::GdnProjectionWeights& weights) {
+    const std::int32_t batch = hidden.ne[2];
+    const std::int32_t width = hidden.ne[1];
+    if (std::holds_alternative<SplitGdnInputProjectionPayload>(weights.input_projection)) {
+        return std::max(kMinimumLeafWorkspaceBytes,
+                        ops::gdn_input_proj_conv_record_workspace_capacity_bytes(
+                            TextConfig::key_dim, TextConfig::key_dim, TextConfig::value_dim, batch,
+                            width, width));
+    }
+    return std::max(
+        kMinimumLeafWorkspaceBytes,
+        ops::gdn_input_proj_conv_record_workspace_capacity_bytes(
+            QType::NVFP4, 16384, TextConfig::hidden, kNvfp4TextPolicy, batch, width, width));
+}
+
 } // namespace
 
 std::vector<GraphExecutionProfile> Variant::ordinary_graph_profiles(std::uint32_t capacity) {
@@ -180,6 +198,31 @@ void Variant::gdn_input_projection_snapshot(
                                       output_gate_view, text_policy(fused), workspace, stream);
 }
 
+void Variant::gdn_input_projection_record(const Tensor& hidden, const GdnProjectionWeights& weights,
+                                          const Tensor& conv_weight, const Tensor& conv_states,
+                                          const Tensor& valid_columns, const Tensor& initial_slots,
+                                          Tensor& conv_record, Tensor& query, Tensor& key,
+                                          Tensor& value, Tensor& output_gate, qwen3_6::TextPhase,
+                                          WorkspaceArena& workspace, cudaStream_t stream) {
+    auto workspace_scope     = workspace.scope();
+    const DeviceSpan storage = workspace.alloc_bytes(gdn_record_workspace_bytes(hidden, weights));
+    WorkspaceArena leaf_workspace(storage);
+    Tensor output_gate_view = output_gate.view({TextConfig::value_dim, hidden.ne[1], hidden.ne[2]});
+    if (const auto* split =
+            std::get_if<SplitGdnInputProjectionPayload>(&weights.input_projection)) {
+        ops::gdn_input_proj_conv_record(hidden, split->query_key, split->value_z, conv_weight,
+                                        conv_states, valid_columns, initial_slots, conv_record,
+                                        query, key, value, output_gate_view, leaf_workspace,
+                                        stream);
+        return;
+    }
+    const Weight& fused =
+        std::get<FusedGdnInputProjectionPayload>(weights.input_projection).query_key_value_z;
+    ops::gdn_input_proj_conv_record(hidden, fused, conv_weight, conv_states, valid_columns,
+                                    initial_slots, conv_record, query, key, value, output_gate_view,
+                                    text_policy(fused), leaf_workspace, stream);
+}
+
 void Variant::gdn_output_projection(const Tensor& hidden, const Weight& weight, Tensor& residual,
                                     qwen3_6::TextPhase, WorkspaceArena& workspace,
                                     cudaStream_t stream) {
@@ -302,6 +345,26 @@ std::size_t Variant::gdn_input_projection_snapshot_workspace_capacity_bytes(
     case WeightsProfile::Nvfp4:
         return ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
             QType::NVFP4, 16384, TextConfig::hidden, kNvfp4TextPolicy, batch_size, first, last);
+    }
+    throw std::logic_error("invalid 27B weights profile");
+}
+
+std::size_t Variant::gdn_input_projection_record_workspace_capacity_bytes(
+    WeightsProfile weights_profile, qwen3_6::TextPhase, std::int32_t batch_size, std::int32_t first,
+    std::int32_t last) {
+    validate_token_interval(first, last);
+    switch (weights_profile) {
+    case WeightsProfile::GroupwiseInt:
+    case WeightsProfile::GroupwiseIntW8Endpoints:
+        return std::max(kMinimumLeafWorkspaceBytes,
+                        ops::gdn_input_proj_conv_record_workspace_capacity_bytes(
+                            TextConfig::key_dim, TextConfig::key_dim, TextConfig::value_dim,
+                            batch_size, first, last));
+    case WeightsProfile::Nvfp4:
+        return std::max(kMinimumLeafWorkspaceBytes,
+                        ops::gdn_input_proj_conv_record_workspace_capacity_bytes(
+                            QType::NVFP4, 16384, TextConfig::hidden, kNvfp4TextPolicy, batch_size,
+                            first, last));
     }
     throw std::logic_error("invalid 27B weights profile");
 }

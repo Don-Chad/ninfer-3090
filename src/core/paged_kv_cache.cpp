@@ -164,6 +164,42 @@ PagedKVAllocation PagedKVPool::reserve(std::uint32_t page_entitlement) {
     return allocation;
 }
 
+void PagedKVPool::zero_pages(std::span<const std::int32_t> page_ids, cudaStream_t stream) {
+    if (page_ids.empty()) { return; }
+
+    std::vector<std::int32_t> sorted(page_ids.begin(), page_ids.end());
+    std::sort(sorted.begin(), sorted.end());
+    if (sorted.front() < 0 || sorted.back() >= static_cast<std::int32_t>(page_group_count())) {
+        throw std::out_of_range("Paged KV physical page is out of range");
+    }
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) {
+        throw std::invalid_argument("Paged KV physical pages must be distinct");
+    }
+
+    const auto zero_run = [&](std::int32_t first, std::int32_t count) {
+        for (const Tensor& plane : planes_) {
+            auto* base = static_cast<unsigned char*>(plane.data);
+            if (spec_.plane_order == PagedKVPlaneOrder::PageMajor) {
+                CUDA_CHECK(cudaMemsetAsync(base + static_cast<std::int64_t>(first) * plane.nb[3], 0,
+                                           static_cast<std::size_t>(count) * plane.nb[3], stream));
+            } else {
+                CUDA_CHECK(cudaMemset2DAsync(base + static_cast<std::int64_t>(first) * plane.nb[2],
+                                             plane.nb[3], 0,
+                                             static_cast<std::size_t>(count) * plane.nb[2],
+                                             static_cast<std::size_t>(plane.ne[3]), stream));
+            }
+        }
+    };
+
+    std::size_t begin = 0;
+    while (begin < sorted.size()) {
+        std::size_t end = begin + 1;
+        while (end < sorted.size() && sorted[end] == sorted[end - 1] + 1) { ++end; }
+        zero_run(sorted[begin], static_cast<std::int32_t>(end - begin));
+        begin = end;
+    }
+}
+
 std::vector<std::int32_t> PagedKVPool::take_pages(std::uint32_t count,
                                                   std::int32_t preferred_first) {
     if (count == 0) { return {}; }

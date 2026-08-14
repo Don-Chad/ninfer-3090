@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -95,20 +96,30 @@ struct ProcessedInput {
     // Row-major [sum(raw_patches), 1536], in the exact merger-friendly order.
     std::vector<float> patches;
     std::vector<VisionItem> vision_items;
+    std::optional<std::uint32_t> turn_rewrite_boundary;
     PreprocessStats stats;
 
     [[nodiscard]] std::span<const std::int32_t> position_axis(int axis) const;
 };
 
+struct EncodedChat {
+    std::vector<int> input_ids;
+    std::optional<std::uint32_t> turn_rewrite_boundary;
+};
+
+EncodedChat encode_rendered_chat(const Tokenizer& tokenizer, const RenderedChat& rendered);
+
 class Processor {
 public:
-    explicit Processor(const Tokenizer& tokenizer, ProcessorOptions options = {});
+    Processor(const Tokenizer& tokenizer, const CompiledChatTemplate& chat_template,
+              ProcessorOptions options = {});
 
     ProcessedInput process(const std::vector<ChatMessage>& messages,
                            ChatRenderOptions render_options = {}) const;
 
 private:
     const Tokenizer& tokenizer_;
+    const CompiledChatTemplate& chat_template_;
     ProcessorOptions options_;
 };
 

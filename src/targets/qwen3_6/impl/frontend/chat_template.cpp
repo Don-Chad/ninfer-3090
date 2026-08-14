@@ -1,15 +1,38 @@
 #include "targets/qwen3_6/impl/frontend/chat_template.h"
 
+#include "targets/qwen3_6/impl/frontend/digest.h"
+
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <cctype>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace ninfer::targets::qwen3_6::frontend_internal {
 namespace {
 
 using OrderedJson = nlohmann::ordered_json;
+
+constexpr Sha256Digest kThinkingToggleTemplateDigest{
+    0xe8, 0x4f, 0x32, 0xa2, 0x3f, 0xdd, 0xa2, 0x76, 0x89, 0xf8, 0x68, 0xaa, 0x4a, 0x1a, 0x56, 0x21,
+    0xf4, 0x11, 0x33, 0xe5, 0x1a, 0x48, 0xd7, 0xf3, 0xef, 0xcb, 0xea, 0x28, 0x39, 0x57, 0x42, 0x59,
+};
+
+constexpr Sha256Digest kReasoningEffortTemplateDigest{
+    0xc3, 0xcf, 0x9e, 0x34, 0xab, 0xf4, 0xf9, 0xe3, 0x6c, 0x2d, 0x72, 0x16, 0x5a, 0xa9, 0xc1, 0x32,
+    0xd3, 0xe2, 0xa7, 0x25, 0xb6, 0xc2, 0x58, 0x6a, 0xaa, 0x3a, 0x8a, 0xf9, 0xd7, 0xa8, 0x10, 0x41,
+};
+
+constexpr std::string_view kLowReasoningInstructions =
+    "Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to "
+    "the conclusion without unnecessary elaboration.";
+
+constexpr std::string_view kXHighReasoningInstructions =
+    "Reasoning effort is set to xhigh. Please think carefully through the task, validate key "
+    "assumptions, consider plausible alternatives, and prioritize correctness, consistency, and "
+    "clarity in the final answer.";
 
 bool is_allowed_role(const std::string& role) {
     return role == "system" || role == "user" || role == "assistant" || role == "tool";
@@ -33,6 +56,18 @@ bool starts_with(const std::string& text, std::string_view prefix) {
 bool ends_with(const std::string& text, std::string_view suffix) {
     return text.size() >= suffix.size() &&
            text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+long last_real_user_query(const std::vector<ChatMessage>& messages) {
+    for (long i = static_cast<long>(messages.size()) - 1; i >= 0; --i) {
+        const ChatMessage& message = messages[static_cast<std::size_t>(i)];
+        if (message.role != "user") { continue; }
+        const std::string content = trim_ascii_whitespace(message.rendered_content());
+        if (!(starts_with(content, "<tool_response>") && ends_with(content, "</tool_response>"))) {
+            return i;
+        }
+    }
+    throw std::invalid_argument("no user query found in chat messages");
 }
 
 std::string lstrip_newlines(std::string text) {
@@ -132,7 +167,10 @@ std::string parameter_text(const OrderedJson& value) {
     return tojson_text(value);
 }
 
-std::string render_tool_call(const ToolCall& call) {
+std::string render_tool_call(const ToolCall& call, bool allow_empty_arguments) {
+    if (allow_empty_arguments && call.arguments_json.empty()) {
+        return "<tool_call>\n<function=" + call.name + ">\n</function>\n</tool_call>";
+    }
     OrderedJson args = OrderedJson::parse(call.arguments_json);
     if (!args.is_object()) {
         throw std::invalid_argument("tool call arguments must be a JSON object");
@@ -154,9 +192,14 @@ std::string render_tool_call(const ToolCall& call) {
 }
 
 std::string render_tools_system_block(const std::vector<std::string>& tool_jsons,
-                                      const std::string& merged_system) {
+                                      const std::string& merged_system,
+                                      std::string_view reasoning_instructions) {
     std::string rendered;
     rendered += "<|im_start|>system\n";
+    if (!reasoning_instructions.empty()) {
+        rendered += reasoning_instructions;
+        rendered += "\n\n";
+    }
     rendered += "# Tools\n\nYou have access to the following functions:\n\n<tools>";
     for (const std::string& tool : tool_jsons) {
         rendered += "\n";
@@ -170,6 +213,33 @@ std::string render_tools_system_block(const std::vector<std::string>& tool_jsons
     }
     rendered += "<|im_end|>\n";
     return rendered;
+}
+
+std::string_view resolve_reasoning_instructions(ChatTemplateSemantics semantics,
+                                                const ChatRenderOptions& options) {
+    if (semantics == ChatTemplateSemantics::ThinkingToggle) {
+        if (options.reasoning_effort) {
+            throw std::invalid_argument("loaded chat template does not support reasoning effort");
+        }
+        return {};
+    }
+    if (!options.enable_thinking) {
+        if (options.reasoning_effort) {
+            throw std::invalid_argument(
+                "reasoning effort cannot be combined with disabled thinking");
+        }
+        return {};
+    }
+
+    switch (options.reasoning_effort.value_or(ReasoningEffort::XHigh)) {
+    case ReasoningEffort::Low:
+        return kLowReasoningInstructions;
+    case ReasoningEffort::Medium:
+        return {};
+    case ReasoningEffort::XHigh:
+        return kXHighReasoningInstructions;
+    }
+    throw std::invalid_argument("invalid reasoning effort");
 }
 
 } // namespace
@@ -208,8 +278,37 @@ std::string ChatMessage::rendered_content(bool add_vision_id, int* image_count,
     return out;
 }
 
-std::string render_chat(const std::vector<ChatMessage>& messages, ChatRenderOptions options) {
+CompiledChatTemplate CompiledChatTemplate::resolve(std::string_view source) {
+    const Sha256Digest digest = sha256(source);
+    if (digest == kThinkingToggleTemplateDigest) {
+        return CompiledChatTemplate(ChatTemplateSemantics::ThinkingToggle);
+    }
+    if (digest == kReasoningEffortTemplateDigest) {
+        return CompiledChatTemplate(ChatTemplateSemantics::ReasoningEffort);
+    }
+    throw std::invalid_argument("unsupported frontend/chat_template.jinja (sha256 " +
+                                sha256_hex(digest) + ")");
+}
+
+PromptCapabilities CompiledChatTemplate::capabilities() const noexcept {
+    PromptCapabilities result;
+    result.enable_thinking = true;
+    if (semantics_ == ChatTemplateSemantics::ReasoningEffort) {
+        result.reasoning_effort.low            = true;
+        result.reasoning_effort.medium         = true;
+        result.reasoning_effort.xhigh          = true;
+        result.reasoning_effort.default_effort = ReasoningEffort::XHigh;
+    }
+    return result;
+}
+
+RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messages,
+                                          ChatRenderOptions options) const {
     if (messages.empty()) { throw std::invalid_argument("chat messages must not be empty"); }
+
+    const bool effort_template = semantics_ == ChatTemplateSemantics::ReasoningEffort;
+    const std::string_view reasoning_instructions =
+        resolve_reasoning_instructions(semantics_, options);
 
     std::size_t num_sys = 0;
     std::string merged_system;
@@ -226,30 +325,26 @@ std::string render_chat(const std::vector<ChatMessage>& messages, ChatRenderOpti
     std::string rendered;
     const bool has_tools = !options.tool_jsons.empty();
     if (has_tools) {
-        rendered += render_tools_system_block(options.tool_jsons, merged_system);
+        rendered +=
+            render_tools_system_block(options.tool_jsons, merged_system, reasoning_instructions);
     } else if (num_sys != 0) {
+        if (!effort_template || !merged_system.empty() || !reasoning_instructions.empty()) {
+            rendered += "<|im_start|>system\n";
+            if (!reasoning_instructions.empty()) {
+                rendered += reasoning_instructions;
+                if (!merged_system.empty()) { rendered += "\n\n"; }
+            }
+            rendered += merged_system;
+            rendered += "<|im_end|>\n";
+        }
+    } else if (!reasoning_instructions.empty()) {
         rendered += "<|im_start|>system\n";
-        rendered += merged_system;
+        rendered += reasoning_instructions;
         rendered += "<|im_end|>\n";
     }
 
-    // last_query_index = index of the last user message whose (trimmed) content is
-    // not a bare <tool_response>...</tool_response> wrapper. (jinja lines 76-86)
-    long last_query_index = static_cast<long>(messages.size()) - 1;
-    bool multi_step_tool  = true;
-    for (long i = static_cast<long>(messages.size()) - 1; i >= 0; --i) {
-        if (!multi_step_tool) { break; }
-        const ChatMessage& message = messages[static_cast<std::size_t>(i)];
-        if (message.role == "user") {
-            const std::string content = trim_ascii_whitespace(message.rendered_content());
-            if (!(starts_with(content, "<tool_response>") &&
-                  ends_with(content, "</tool_response>"))) {
-                multi_step_tool  = false;
-                last_query_index = i;
-            }
-        }
-    }
-    if (multi_step_tool) { throw std::invalid_argument("no user query found in chat messages"); }
+    const long last_query_index = last_real_user_query(messages);
+    std::optional<std::size_t> turn_rewrite_byte_offset;
 
     int image_count = 0;
     int video_count = 0;
@@ -286,16 +381,19 @@ std::string render_chat(const std::vector<ChatMessage>& messages, ChatRenderOpti
         std::string body = content;
         if (!message.reasoning_content.empty()) {
             reasoning = message.reasoning_content;
-        } else {
+        } else if (!effort_template) {
             ThinkParts parts = derive_think_parts(content);
             reasoning        = std::move(parts.reasoning);
             body             = std::move(parts.content);
         }
         reasoning = trim_ascii_whitespace(reasoning);
 
-        const bool keep_thinking =
-            options.preserve_thinking || (static_cast<long>(i) > last_query_index);
+        const bool preserve_thinking = options.preserve_thinking.value_or(effort_template);
+        const bool keep_thinking = preserve_thinking || (static_cast<long>(i) > last_query_index);
         rendered += "<|im_start|>assistant\n";
+        if (!turn_rewrite_byte_offset && static_cast<long>(i) > last_query_index) {
+            turn_rewrite_byte_offset = rendered.size();
+        }
         if (keep_thinking) {
             rendered += "<think>\n";
             rendered += reasoning;
@@ -310,7 +408,7 @@ std::string render_chat(const std::vector<ChatMessage>& messages, ChatRenderOpti
                 } else {
                     rendered += "\n";
                 }
-                rendered += render_tool_call(message.tool_calls[call_index]);
+                rendered += render_tool_call(message.tool_calls[call_index], effort_template);
             }
         }
         rendered += "<|im_end|>\n";
@@ -318,13 +416,15 @@ std::string render_chat(const std::vector<ChatMessage>& messages, ChatRenderOpti
 
     if (options.add_generation_prompt) {
         rendered += "<|im_start|>assistant\n";
+        if (!turn_rewrite_byte_offset) { turn_rewrite_byte_offset = rendered.size(); }
         if (options.enable_thinking) {
             rendered += "<think>\n";
         } else {
             rendered += "<think>\n\n</think>\n\n";
         }
     }
-    return rendered;
+    return RenderedChat{.text                     = std::move(rendered),
+                        .turn_rewrite_byte_offset = turn_rewrite_byte_offset};
 }
 
 } // namespace ninfer::targets::qwen3_6::frontend_internal

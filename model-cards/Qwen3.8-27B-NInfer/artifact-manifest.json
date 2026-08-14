@@ -1,0 +1,63 @@
+{
+  "schema": "ninfer.artifact-manifest",
+  "schema_version": 1,
+  "artifact": {
+    "filename": "qwen3_8_27b.ninfer",
+    "bytes": 18210531328,
+    "sha256": "eec39564993d6e9c7d5e383382a760f093465c9d163ec9a1bd6b80199514bf3e",
+    "container_version": 2,
+    "model_id": "qwen3.8-27b",
+    "weights_id": "groupwise-int",
+    "target_key": "qwen3_8_27b"
+  },
+  "source": {
+    "base": {
+      "repo_id": "Qwen/Qwen3.8-27B",
+      "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "download_source": "https://modelscope.cn/models/Qwen/Qwen3.8-27B",
+      "license": "Apache-2.0"
+    }
+  },
+  "conversion": {
+    "recipe_id": "qwen3_8_27b-v1",
+    "converter_repository": "https://github.com/Neroued/ninfer",
+    "converter_revision": "52320554b5e71a9da96bff809ddf67ac5773ed63",
+    "ranking_input": {
+      "path": "tools/freq_corpus/fixtures/ranking/ranking.train.counts.i64",
+      "sha256": "c692dc76388132c910547589b4fb4a0503fbd6ad50aaac6a509bbcb192a8afa5"
+    }
+  },
+  "runtime": {
+    "repository": "https://github.com/Neroued/ninfer",
+    "minimum_revision": "52320554b5e71a9da96bff809ddf67ac5773ed63",
+    "cuda_architecture": "sm_120a"
+  },
+  "inventory": {
+    "objects": 1124,
+    "tensors": 1118,
+    "resources": 6,
+    "formats": {
+      "BF16": 582,
+      "FP32": 96,
+      "I32": 1,
+      "Q4G64_F16S": 183,
+      "Q5G64_F16S": 246,
+      "Q6G64_F16S": 1,
+      "W8G32_F16S": 9
+    },
+    "layouts": {
+      "contiguous-le-v1": 679,
+      "row-split-k128-v1": 439
+    },
+    "encodings": {
+      "raw-bytes-v1": 6
+    },
+    "bytes": {
+      "tensor": 18197503904,
+      "resource": 12837177,
+      "object": 18210341081,
+      "payload_span": 18210355200,
+      "alignment": 14119
+    }
+  }
+}

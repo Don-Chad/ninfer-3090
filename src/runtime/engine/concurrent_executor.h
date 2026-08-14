@@ -3,6 +3,7 @@
 // Small fixed-capacity request scheduling and batched decode execution for every backend.
 
 #include "ninfer/types.h"
+#include "runtime/contract/types.h"
 #include "runtime/engine/admission_policy.h"
 #include "runtime/engine/request_memory.h"
 #include "runtime/generation/generation_budget.h"
@@ -116,7 +117,7 @@ public:
     };
 
     Submission submit(targets::qwen3_6::PreparedPrompt prompt, PromptSummary prompt_summary,
-                      double prepare_seconds, RequestOptions options,
+                      double prepare_seconds, ResolvedRequestOptions options,
                       Clock::time_point pending_deadline = {}, HostInputLease host_input = {}) {
         const Clock::time_point submitted = Clock::now();
         if (pending_deadline == Clock::time_point{}) {
@@ -270,8 +271,8 @@ private:
     struct Request {
         Request(std::uint64_t request_identity, targets::qwen3_6::PreparedPrompt input,
                 targets::qwen3_6::OutputSession output_session, PromptSummary summary,
-                double frontend_seconds, RequestOptions request_options, Clock::time_point limit,
-                Clock::time_point submit_time, HostInputLease input_lease)
+                double frontend_seconds, ResolvedRequestOptions request_options,
+                Clock::time_point limit, Clock::time_point submit_time, HostInputLease input_lease)
             : id(request_identity), host_input(std::move(input_lease)), prompt(std::move(input)),
               output(std::move(output_session)), prompt_summary(summary),
               prepare_seconds(frontend_seconds), options(std::move(request_options)),
@@ -283,7 +284,7 @@ private:
         targets::qwen3_6::OutputSession output;
         PromptSummary prompt_summary;
         double prepare_seconds = 0.0;
-        RequestOptions options;
+        ResolvedRequestOptions options;
         Clock::time_point deadline;
         Clock::time_point submitted;
         std::optional<Clock::time_point> first_token;
@@ -432,7 +433,10 @@ private:
         result.reasoning_tokens        = request->output.reasoning_tokens();
         result.finish_reason           = reason;
         result.timings.prepare_seconds = request->prepare_seconds;
-        if (request->begin) { result.reused_prompt_tokens = request->begin->reused_prompt_tokens; }
+        if (request->begin) {
+            result.reused_prompt_tokens = request->begin->reused_prompt_tokens;
+            result.prefix_reuse_path    = request->begin->prefix_reuse_path;
+        }
         if (request->lane) {
             result.timings = instance_.program->generation_timings_lane(*request->lane);
             result.timings.prepare_seconds = request->prepare_seconds;
@@ -480,7 +484,7 @@ private:
             throw std::logic_error("prefill output policy did not accept its licensed token");
         }
         request->generated.push_back(token);
-        instance_.program->resolve_pending_lane(lane, 1, decision.finished());
+        instance_.program->resolve_prefill_lane(lane, decision.finished());
         request->budget->commit(1);
         auto published = request->output.commit_preview();
         if (!request->first_token) { request->first_token = Clock::now(); }

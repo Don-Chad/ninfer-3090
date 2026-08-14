@@ -716,7 +716,8 @@ void HttpServer::attach(GenerationService& service) {
     const ninfer::LoadSummary load = service.load_summary();
     public_model_id_               = resolve_public_model_id(options_, load.model_id);
     service_                       = &service;
-    request_jsonl_.write_server_start(options_, public_model_id_, load, service.memory_summary());
+    request_jsonl_.write_server_start(options_, service.sampling_defaults(), public_model_id_, load,
+                                      service.memory_summary());
 }
 
 bool HttpServer::listen() {

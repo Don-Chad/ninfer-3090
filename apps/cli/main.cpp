@@ -64,7 +64,7 @@ std::string format_arena_peak(const ninfer::ArenaMemorySummary& arena) {
     return format_bytes(arena.peak_used_bytes) + " / " + format_bytes(arena.capacity_bytes);
 }
 
-std::string format_sampling(const ninfer::SamplingParameters& sampling) {
+std::string format_sampling(const ninfer::ResolvedSamplingParameters& sampling) {
     if (sampling.temperature <= 0.0F) { return "greedy (temperature 0)"; }
     std::ostringstream output;
     output << std::fixed << std::setprecision(2) << "temp=" << sampling.temperature
@@ -152,7 +152,7 @@ void print_load_summary(const ninfer::LoadSummary& load, double wall_seconds) {
 }
 
 void print_generation_summary(const ninfer::GenerationResult& result,
-                              const ninfer::RequestOptions& request,
+                              const ninfer::ResolvedSamplingParameters& sampling,
                               const ninfer::MemorySummary& memory) {
     print_stage("prepare", "render/preprocess", result.timings.prepare_seconds);
     print_stage("generate", "vision", result.timings.vision_seconds);
@@ -164,7 +164,7 @@ void print_generation_summary(const ninfer::GenerationResult& result,
     const std::size_t decoded   = generated == 0 ? 0 : generated - 1;
     const double model_seconds  = result.timings.vision_seconds + result.timings.prefill_seconds +
                                  result.timings.decode_seconds;
-    print_metric("sampling", format_sampling(request.execution.sampling));
+    print_metric("sampling", format_sampling(sampling));
     print_metric("finish reason", format_finish(result.finish_reason));
     print_metric("prompt tokens", std::to_string(result.prompt.prompt_tokens));
     print_metric("reused prompt tokens", std::to_string(result.reused_prompt_tokens));
@@ -244,6 +244,7 @@ int main(int argc, char** argv) {
                 ? ninfer::product::prompt_from_text(cli.prompt, cli.enable_thinking)
                 : ninfer::product::prompt_from_messages(cli.messages_path, cli.enable_thinking,
                                                         cli.enable_vision);
+        input.options.reasoning_effort = cli.reasoning_effort;
 
         ninfer::RequestOptions request;
         request.execution.sampling                = cli.sampling;
@@ -276,7 +277,9 @@ int main(int argc, char** argv) {
         ninfer::PreparedPrompt prompt = engine.prepare(std::move(input));
 
         StreamingSink sink;
-        const ninfer::GenerationResult result = engine.generate(std::move(prompt), request, &sink);
+        ninfer::GenerationHandle generation = engine.submit(std::move(prompt), std::move(request));
+        const ninfer::ResolvedSamplingParameters sampling = generation.resolved_sampling();
+        const ninfer::GenerationResult result             = generation.wait(&sink);
         sink.finish_streams();
 
         if (cli.print_token_ids) {
@@ -287,7 +290,7 @@ int main(int argc, char** argv) {
             }
             std::cerr << '\n';
         }
-        print_generation_summary(result, request, engine.memory_summary());
+        print_generation_summary(result, sampling, engine.memory_summary());
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << '\n';

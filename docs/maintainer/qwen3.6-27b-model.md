@@ -194,11 +194,18 @@ dimension 10240. It therefore allocates no concat workspace and performs no inpu
 copy. The grouped `T>=17` route is unchanged. Public `linear` output remains contiguous-only; the
 pitched row slices are private to this Op implementation.
 
-Verify `T=1..6` invokes the shared `gdn_input_proj_conv_snapshot` contract: the target leaf combines
-the Q4/Q5 projections with causal convolution, SiLU, direct q/k/v placement, and publication of
-BF16 convolution snapshots to slots `0..T-1`. The eliminated qkv intermediate is not a semantic
-cast boundary; each exact route uses its directly oracle-qualified private precision and staging.
-The separate Z projection remains in the target output-gate leaf.
+Ordinary width-one decode invokes the shared `gdn_input_proj_conv_snapshot` contract with the
+initial and destination selectors both set to the lane's current slot. This is an in-place state
+update and does not retain a speculative trajectory. MTP target verification instead invokes
+`gdn_input_proj_conv_record`: the Q4/Q5 leaf combines projection, causal convolution, SiLU, direct
+q/k/v placement, and publication of the represented convolution column to the Program-owned
+ReplaySSM record row while leaving persistent state unchanged. The recurrent stage likewise emits
+raw key/value/gate records; after output resolution, one all-layer Fold applies only the committed
+record prefix to the lane's current state.
+
+The eliminated qkv intermediate is not a semantic cast boundary; each exact route uses its
+directly oracle-qualified private precision and staging. The separate Z projection remains in the
+target output-gate leaf.
 
 For V head `j`, let `q` and `k` come from Q/K head `j // 3`. With recurrent state
 `S[128,128]`, one token performs:
@@ -215,7 +222,8 @@ o  = (S @ q) * (1/sqrt(128))
 
 The CUDA recurrence uses an algebraically equivalent ordering appropriate to the kernel. Prefill
 uses chunked parallel state passing for large T and recurrent/small-T paths where appropriate;
-decode and MTP verification use recurrent/snapshot-capable paths.
+ordinary decode uses the width-one in-place path, while MTP verification and Fold share the same
+finite-precision recurrent transition through their Record and Fold modes.
 
 The per-head output is normalized and gated before projection:
 
@@ -224,11 +232,14 @@ on = gated_rmsnorm(o, gdn_norm, z)    # RMSNorm(o) * SiLU(z)
 x  = x + out_projection(on)
 ```
 
-Each GDN layer owns:
+For `C=max_concurrency`, the Program reserves exactly `2C` complete all-layer GDN state slots:
 
-- three previous convolution columns for normal continuation;
-- an FP32 recurrent matrix for every V head;
-- additional snapshot slots when MTP or reusable turn-boundary state requires them.
+- `[0,C)` is the current committed convolution history and FP32 recurrent state for each lane;
+- `[C,2C)` is the corresponding turn checkpoint used by thinking-aware prefix reuse.
+
+When MTP is enabled, a separate Program-owned ReplaySSM arena holds `C` physical record rows of
+width `draft_window+1` for every GDN layer. Records are pending-round scratch, not sequence state or
+additional checkpoint slots.
 
 ## 6. Text prefill and decode
 
@@ -288,10 +299,13 @@ sampling mode, proposal and target probabilities use the same processed distribu
 accept/reject correction preserves the target distribution. A bad draft therefore reduces
 acceptance and throughput; it must not change the distribution of emitted target tokens.
 
-Target verification advances speculative KV/GDN state into multiple slots. After the accepted
-length is known, the runtime commits the matching slot, rewinds logical positions for rejected
-candidates, and continues from the accepted target token. Near context capacity, the Engine falls
-back to the one-token target path when a complete safe round does not fit.
+Target verification writes candidate KV into provisioned but unpublished extents, reads each
+lane's current GDN checkpoint, and produces Program-owned ReplaySSM records without modifying any
+persistent GDN state. After the final per-row output prefix is known, one all-layer Fold replays
+exactly that prefix into the lane's current state. The same transaction trims rejected KV,
+commits continuation hidden/MTP state, and only then advances the authoritative frontier and
+publishes output. Near context capacity, the Engine falls back to the one-token target path when a
+complete safe round does not fit.
 
 ## 9. Vision preprocessing
 
@@ -386,18 +400,23 @@ oracle. Equality between those different numerical paths is not a contract or ac
 
 ## 13. State inventory
 
+Let `C=max_concurrency`.
+
 | State | Shape basis | Lifetime |
 |---|---|---|
 | Text GQA KV | 16 layers × context × 4 heads × 256 | active sequence |
 | MTP KV | 1 layer × context × 4 heads × 256 | active sequence when MTP enabled |
-| GDN conv | 48 layers × 10240 × 3, plus slots | active sequence |
-| GDN recurrent | 48 layers × 48 heads × 128 × 128 FP32, plus slots | active sequence |
+| GDN convolution history | 48 layers × 10240 × 3 × `2C` BF16 | Program lifetime; current and turn-checkpoint slots |
+| GDN recurrent matrices | 48 layers × 48 heads × 128 × 128 × `2C` FP32 | Program lifetime; current and turn-checkpoint slots |
+| ReplaySSM records | 48 layers × `C` rows × `draft_window+1` convolution/key/value/gate columns | Program lifetime when MTP enabled; one pending round |
+| Continuation hidden | current and turn-checkpoint `[5120,C]` BF16 stores | Program lifetime |
 | Text step buffers | token, positions, logits, verify/draft/sampling tensors | Program lifetime |
 | Program scratch | Text/MTP/Vision phase temporaries | one phase in the shared workspace arena |
 | Vision request transient | encoded Vision output `[8192,V]` | active prefix during request begin |
 
-KV memory grows with configured context. GDN recurrent state does not, although MTP snapshot count
-changes its fixed allocation.
+KV memory grows with configured context. The fixed GDN state pool depends only on `C` and always has
+the two current/turn-checkpoint planes; it is independent of the speculative window. Enabling MTP
+adds the separate ReplaySSM arena, whose capacity is `C*(draft_window+1)` record columns per layer.
 
 The Program freezes its feature set and memory plan at startup. The Qwen3.6 family builds named
 Text-prefill, ordinary-round, MTP-prefill, MTP-round, and Vision phase capacities from the
@@ -425,6 +444,7 @@ complete artifact inventory is still validated before these resident views are p
 | mathematical and explicit local-state Op contracts/implementations | `include/ninfer/ops/`, `src/ops/` |
 | growing GQA paged cache pools, allocations, and per-layer views | `src/core/paged_kv_cache.*` |
 | GDN layout/views/reset/copy and Text/MTP/GDN composition | `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/decoder_state.h`, `src/targets/qwen3_6/impl/state/decoder_state.cpp` |
+| fixed all-layer GDN state pool, ReplaySSM record arena, and Fold contract | `src/core/linear_attention_state.*`, `src/core/gdn_replay_records.*`, `include/ninfer/ops/gdn_replay.h`, `src/ops/linear_attention/gated_delta_net/replay.cpp` |
 | generated-round buffer schema, MTP alignment, and Vision control | `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/`, `src/targets/qwen3_6/impl/state/round_state.cpp`, `src/targets/qwen3_6/impl/vision/control.cpp` |
 | `.ninfer` tensor assignment and binding | [`qwen3.6-27b-artifact.md`](qwen3.6-27b-artifact.md), `tools/reference/qwen3_6_27b/bindings.py` |
 | native `.ninfer` converter and verifier | `tools/convert/qwen3_6_27b` |

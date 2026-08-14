@@ -712,12 +712,12 @@ descriptor, discriminate by object count, try one binder and catch failure, add 
 carry an artifact string branch into request execution.
 
 The `attn_input_proj`, `linear`, `linear_add`, and `linear_swiglu` signatures consume their
-registered immutable weights. The 27B groupwise `gdn_input_proj` and
-`gdn_input_proj_conv_snapshot` signatures accept the complete `[12288,5120]` Q5 `value_z` parent
-and write Z as an explicit BF16 output. Each NVFP4 leaf reads `d_x` and `d_w` from its complete
-parent `Weight`; the Op wrapper derives that weight's `1 / (d_x * d_w)` as a leaf-private kernel
-argument. That coefficient is not another artifact object, another `Weight` field, or a new Op
-parameter.
+registered immutable weights. The 27B groupwise `gdn_input_proj`,
+`gdn_input_proj_conv_snapshot`, and `gdn_input_proj_conv_record` signatures accept the complete
+`[12288,5120]` Q5 `value_z` parent and write Z as an explicit BF16 output. Each NVFP4 leaf reads
+`d_x` and `d_w` from its complete parent `Weight`; the Op wrapper derives that weight's
+`1 / (d_x * d_w)` as a leaf-private kernel argument. That coefficient is not another artifact
+object, another `Weight` field, or a new Op parameter.
 
 The nine BF16 Text exceptions use the fused semantic Op boundaries. The Op layer admits
 their single-parent BF16 weights through `attn_input_proj` for the six early

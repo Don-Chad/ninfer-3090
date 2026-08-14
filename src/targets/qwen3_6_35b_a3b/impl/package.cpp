@@ -38,6 +38,31 @@ LoadedModel::~LoadedModel() = default;
 } // namespace ninfer::targets::qwen3_6_35b_a3b::detail
 
 namespace ninfer::targets::qwen3_6_35b_a3b {
+namespace {
+
+constexpr ModelSamplingDefaults kQwen3_6_35BA3BDefaults{
+    .thinking     = {.temperature       = 1.0F,
+                     .top_k             = 20,
+                     .top_p             = 0.95F,
+                     .min_p             = 0.0F,
+                     .presence_penalty  = 1.5F,
+                     .frequency_penalty = 0.0F},
+    .non_thinking = {.temperature       = 0.7F,
+                     .top_k             = 20,
+                     .top_p             = 0.80F,
+                     .min_p             = 0.0F,
+                     .presence_penalty  = 1.5F,
+                     .frequency_penalty = 0.0F},
+};
+
+} // namespace
+
+ModelSamplingDefaults Package::sampling_defaults(std::string_view model) {
+    if (model == model_id) { return kQwen3_6_35BA3BDefaults; }
+    throw std::runtime_error("model '" + std::string(model) +
+                             "' has no sampling defaults in target package '" +
+                             std::string(target_key) + "'");
+}
 
 Package::WeightsProfile Package::resolve_weights(const artifact::ArtifactIdentity& identity) {
     if (identity.model_id == model_id && identity.weights_id == "groupwise-int") {

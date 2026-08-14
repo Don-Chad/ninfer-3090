@@ -34,6 +34,7 @@ struct StoredResponse {
     nlohmann::json response;
     std::vector<nlohmann::json> input_items;
     ResponseContext context;
+    bool preserve_thinking = false;
 };
 
 class ResponseStore {

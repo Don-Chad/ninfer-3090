@@ -104,14 +104,14 @@ RoundMeasurement measure_round(target::Package::Program& program, ninfer::Device
         ninfer::runtime::RoundBudget{.generated_tokens_remaining = draft_tokens + 1}};
     ninfer::CudaEventTimer timer(device);
     timer.start();
-    const auto round         = program.decode_batch(lanes, budgets);
-    const float milliseconds = timer.stop_ms();
+    const auto round = program.decode_batch(lanes, budgets);
     const std::uint32_t licensed =
         round.row_counts.empty() ? 1U : static_cast<std::uint32_t>(round.row_counts.front());
     const std::array<std::uint32_t, 1> accepted{licensed};
     constexpr std::array<std::uint8_t, 1> terminal{0};
     constexpr std::array<std::uint8_t, 1> cancelled{0};
     program.resolve_pending_batch(lanes, accepted, terminal, cancelled);
+    const float milliseconds = timer.stop_ms();
     return RoundMeasurement{.milliseconds = milliseconds, .licensed_tokens = licensed};
 }
 
@@ -158,7 +158,7 @@ int run(const Options& options) {
     const std::size_t request_capacity = sequence.request_transient_capacity_bytes();
     auto program = target::Package::create_program(*model, std::move(sequence), device);
     ninfer::runtime::RequestMemory request_memory(device, request_capacity);
-    ninfer::ExecutionOptions execution;
+    ninfer::runtime::ResolvedExecutionOptions execution;
     execution.requested_output_tokens = 1 + measured_rounds * (options.draft_tokens + 1);
     execution.allow_prefix_reuse      = false;
     auto request_base                 = program->plan_request_base(prompt, execution);
@@ -171,7 +171,7 @@ int run(const Options& options) {
     if (!first.complete || first.round.tokens.size() != 1) {
         throw std::runtime_error("benchmark seed prefill did not complete in one scheduling unit");
     }
-    program->resolve_pending_lane(0, 1, false);
+    program->resolve_prefill_lane(0, false);
 
     const std::uint64_t rounds_before = program->speculative_stats_lane(0).rounds;
     for (int iteration = 0; iteration < options.warmup; ++iteration) {

@@ -72,8 +72,8 @@ std::string serve_usage_text(const char* argv0) {
            "[--kv-dtype bf16|int8] [--spec mtp|dflash --draft-tokens N] "
            "[--default-max-tokens N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
-           "[--lm-head-draft] [--no-thinking] [--cors] "
-           "[--temperature F] [--top-p F] [--top-k N] [--presence-penalty F] "
+           "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
+           "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       serves OpenAI Responses/Chat Completions and Anthropic Messages endpoints\n"
            "       --default-max-tokens defaults to " +
@@ -90,8 +90,9 @@ std::string serve_usage_text(const char* argv0) {
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom\n"
            "       --no-prefix-reuse disables compatible-prefix caching (enabled by default)\n"
-           "       sampler defaults to Qwen3 thinking (temperature 0.6, top-p 0.95, "
-           "top-k 20, presence-penalty 1.0); a request may override any field.\n"
+           "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
+           "       sampler defaults come from the loaded model and resolved thinking mode; "
+           "server flags and request fields override individual values.\n"
            "       --greedy forces temperature 0 (exact argmax).\n";
 }
 
@@ -204,23 +205,30 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.speculative.proposal_head = ProposalHead::Optimized;
         } else if (arg == "--no-thinking") {
             options.enable_thinking = false;
+        } else if (arg == "--preserve-thinking") {
+            options.preserve_thinking = true;
         } else if (arg == "--cors") {
             options.enable_cors = true;
         } else if (arg == "--temperature") {
-            options.sampling_temperature =
+            options.sampling_overrides.temperature =
                 parse_float_in(require_value("--temperature"), "temperature", 0.0f, 2.0f);
         } else if (arg == "--top-p") {
-            options.sampling_top_p = parse_float_in(require_value("--top-p"), "top-p", 0.0f, 1.0f);
+            options.sampling_overrides.top_p =
+                parse_float_in(require_value("--top-p"), "top-p", 0.0f, 1.0f);
         } else if (arg == "--top-k") {
-            options.sampling_top_k = parse_nonnegative_int(require_value("--top-k"), "top-k");
+            options.sampling_overrides.top_k =
+                parse_nonnegative_int(require_value("--top-k"), "top-k");
+        } else if (arg == "--min-p") {
+            options.sampling_overrides.min_p =
+                parse_float_in(require_value("--min-p"), "min-p", 0.0f, 1.0f);
         } else if (arg == "--presence-penalty") {
-            options.sampling_presence_penalty = parse_float_in(require_value("--presence-penalty"),
-                                                               "presence-penalty", -2.0f, 2.0f);
+            options.sampling_overrides.presence_penalty = parse_float_in(
+                require_value("--presence-penalty"), "presence-penalty", -2.0f, 2.0f);
         } else if (arg == "--frequency-penalty") {
-            options.sampling_frequency_penalty = parse_float_in(
+            options.sampling_overrides.frequency_penalty = parse_float_in(
                 require_value("--frequency-penalty"), "frequency-penalty", -2.0f, 2.0f);
         } else if (arg == "--seed") {
-            options.sampling_seed = parse_u64(require_value("--seed"), "seed");
+            options.sampling_overrides.seed = parse_u64(require_value("--seed"), "seed");
         } else if (arg == "--greedy") {
             options.greedy = true;
         } else {

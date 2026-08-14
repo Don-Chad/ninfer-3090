@@ -32,9 +32,8 @@ struct ResponsesRequest {
     nlohmann::json metadata    = nlohmann::json::object();
     nlohmann::json tools       = nlohmann::json::array();
     nlohmann::json tool_choice = "auto";
-    std::optional<std::string> reasoning_effort;
-    bool store  = true;
-    bool stream = false;
+    bool store                 = true;
+    bool stream                = false;
 };
 
 struct ResponsesRuntimeValues {
@@ -63,6 +62,8 @@ ResponsesRequest parse_response_input_tokens_request(const nlohmann::json& body,
 // input; previous instructions are intentionally absent from stored context.
 void compose_responses_generation_messages(ResponsesRequest& request,
                                            const std::vector<ChatTurn>& previous_context);
+
+void inherit_responses_preserve_thinking(ResponsesRequest& request, bool parent_value);
 
 BuiltResponse make_response_object(const std::string& id, std::int64_t created_at,
                                    const ResponsesRequest& request,

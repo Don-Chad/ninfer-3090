@@ -115,6 +115,9 @@ public:
     [[nodiscard]] bool can_reserve(std::uint32_t page_entitlement) const noexcept;
     [[nodiscard]] PagedKVAllocation reserve(std::uint32_t page_entitlement);
 
+    // Zeros only the named physical page groups across every storage plane.
+    void zero_pages(std::span<const std::int32_t> page_ids, cudaStream_t stream = nullptr);
+
 private:
     friend class PagedKVAllocation;
     friend void resize_paged_kv_bundle(std::span<const PagedKVResize> changes);

@@ -3,7 +3,7 @@
 #include "core/device.h"
 #include "ops/common/mma.cuh"
 #include "ops/common/memory.cuh"
-#include "ops/gdn_input_proj/gdn_conv_snapshot.cuh"
+#include "ops/gdn_input_proj/gdn_conv.cuh"
 #include "ops/linear/w8/w8_small_t_mma.cuh"
 #include "ops/linear/w8/w8_rowsplit_output.cuh"
 
@@ -28,8 +28,9 @@ constexpr int kLastProjectionExactCols = 32;
 constexpr int kLastSnapshotExactCols   = 16;
 using Output                           = W8SplitOutput2<8192, 4096>;
 
+template <class Publish>
 struct W8GdnSplitKConvEpilogue {
-    GdnConvSnapshotEpilogue conv;
+    GdnConvEpilogue<Publish> conv;
     __nv_bfloat16* z;
 
     template <int ActiveCols>
@@ -287,24 +288,22 @@ void launch_active_cols(const Tensor& x, const Weight& weight, Tensor& qkv, Tens
             static_cast<const std::uint8_t*>(weight.scales), output);
 }
 
-template <int ActiveCols>
-void launch_active_cols_conv_snapshot(const Tensor& x, const Weight& weight,
-                                      const Tensor& conv_weight, Tensor& conv_states,
-                                      const Tensor& valid_columns, const Tensor& initial_slot,
-                                      const Tensor& snapshot_base_slot, Tensor& query, Tensor& key,
-                                      Tensor& value, Tensor& z, cudaStream_t stream) {
+template <int ActiveCols, class Publish>
+void launch_active_cols_conv(const Tensor& x, const Weight& weight, const Tensor& conv_weight,
+                             const Tensor& conv_states, const Tensor& valid_columns,
+                             const Tensor& initial_slot, Tensor& query, Tensor& key, Tensor& value,
+                             Tensor& z, Publish publish, cudaStream_t stream) {
     static_assert(ActiveCols >= 2 && ActiveCols <= 16);
     constexpr int TileCols = ActiveCols <= 8 ? 8 : 16;
     using Geometry         = W8LinearGeometry<kRows, kHidden>;
     using Schedule         = W8SmallTMmaDefaultSchedule<TileCols, ActiveCols>;
     const Output ignored_output{static_cast<__nv_bfloat16*>(query.data),
                                 static_cast<__nv_bfloat16*>(z.data)};
-    const W8GdnSplitKConvEpilogue epilogue{
+    const W8GdnSplitKConvEpilogue<Publish> epilogue{
         {
             static_cast<const __nv_bfloat16*>(conv_weight.data),
-            static_cast<__nv_bfloat16*>(conv_states.data),
+            static_cast<const __nv_bfloat16*>(conv_states.data),
             static_cast<const std::int32_t*>(initial_slot.data),
-            static_cast<const std::int32_t*>(snapshot_base_slot.data),
             valid_columns.data == nullptr ? nullptr
                                           : static_cast<const std::int32_t*>(valid_columns.data),
             static_cast<__nv_bfloat16*>(query.data),
@@ -315,14 +314,42 @@ void launch_active_cols_conv_snapshot(const Tensor& x, const Weight& weight,
             2048,
             4096,
             0,
+            ActiveCols,
+            0,
+            publish,
         },
         static_cast<__nv_bfloat16*>(z.data),
     };
-    w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, Output, W8GdnSplitKConvEpilogue>
+    w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, Output, W8GdnSplitKConvEpilogue<Publish>>
         <<<kRows / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), ignored_output, epilogue);
+}
+
+template <int ActiveCols>
+void launch_active_cols_conv_snapshot(const Tensor& x, const Weight& weight,
+                                      const Tensor& conv_weight, Tensor& conv_states,
+                                      const Tensor& valid_columns, const Tensor& initial_slot,
+                                      const Tensor& snapshot_base_slot, Tensor& query, Tensor& key,
+                                      Tensor& value, Tensor& z, cudaStream_t stream) {
+    launch_active_cols_conv<ActiveCols>(
+        x, weight, conv_weight, conv_states, valid_columns, initial_slot, query, key, value, z,
+        SnapshotHistoryPublish{static_cast<__nv_bfloat16*>(conv_states.data),
+                               static_cast<const std::int32_t*>(snapshot_base_slot.data), 8192},
+        stream);
+}
+
+template <int ActiveCols>
+void launch_active_cols_conv_record(const Tensor& x, const Weight& weight,
+                                    const Tensor& conv_weight, const Tensor& conv_states,
+                                    const Tensor& valid_columns, const Tensor& initial_slot,
+                                    Tensor& conv_record, Tensor& query, Tensor& key, Tensor& value,
+                                    Tensor& z, cudaStream_t stream) {
+    launch_active_cols_conv<ActiveCols>(
+        x, weight, conv_weight, conv_states, valid_columns, initial_slot, query, key, value, z,
+        RecordColumnPublish{static_cast<__nv_bfloat16*>(conv_record.data), 8192, ActiveCols},
+        stream);
 }
 
 template <int TileCols, int KSplits, int NGroups, int MinBlocks>
@@ -341,6 +368,9 @@ using ProjectionLauncher = void (*)(const Tensor&, const Weight&, Tensor&, Tenso
 using SnapshotLauncher   = void (*)(const Tensor&, const Weight&, const Tensor&, Tensor&,
                                   const Tensor&, const Tensor&, const Tensor&, Tensor&, Tensor&,
                                   Tensor&, Tensor&, cudaStream_t);
+using RecordLauncher     = void (*)(const Tensor&, const Weight&, const Tensor&, const Tensor&,
+                                const Tensor&, const Tensor&, Tensor&, Tensor&, Tensor&, Tensor&,
+                                Tensor&, cudaStream_t);
 
 template <std::size_t... Offsets>
 constexpr auto make_projection_launchers(std::index_sequence<Offsets...>) {
@@ -354,10 +384,18 @@ constexpr auto make_snapshot_launchers(std::index_sequence<Offsets...>) {
         &launch_active_cols_conv_snapshot<kFirstExactCols + static_cast<int>(Offsets)>...};
 }
 
+template <std::size_t... Offsets>
+constexpr auto make_record_launchers(std::index_sequence<Offsets...>) {
+    return std::array<RecordLauncher, sizeof...(Offsets)>{
+        &launch_active_cols_conv_record<kFirstExactCols + static_cast<int>(Offsets)>...};
+}
+
 constexpr auto kProjectionLaunchers = make_projection_launchers(
     std::make_index_sequence<kLastProjectionExactCols - kFirstExactCols + 1>{});
 constexpr auto kSnapshotLaunchers = make_snapshot_launchers(
     std::make_index_sequence<kLastSnapshotExactCols - kFirstExactCols + 1>{});
+constexpr auto kRecordLaunchers =
+    make_record_launchers(std::make_index_sequence<kLastSnapshotExactCols - kFirstExactCols + 1>{});
 
 } // namespace
 
@@ -390,6 +428,21 @@ void w8_gdn_input_splitk_conv_snapshot_launch(
     kSnapshotLaunchers[cols - kFirstExactCols](x, weight, conv_weight, conv_states, valid_columns,
                                                initial_slot, snapshot_base_slot, query, key, value,
                                                z, stream);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void w8_gdn_input_splitk_conv_record_launch(const Tensor& x, const Weight& weight,
+                                            const Tensor& conv_weight, const Tensor& conv_states,
+                                            const Tensor& valid_columns, const Tensor& initial_slot,
+                                            Tensor& conv_record, Tensor& query, Tensor& key,
+                                            Tensor& value, Tensor& z, cudaStream_t stream) {
+    const std::int32_t cols = x.ne[1];
+    if (cols < kFirstExactCols || cols > kLastSnapshotExactCols) {
+        throw std::invalid_argument("W8 fused GDN input record requires T=2..16");
+    }
+    kRecordLaunchers[cols - kFirstExactCols](x, weight, conv_weight, conv_states, valid_columns,
+                                             initial_slot, conv_record, query, key, value, z,
+                                             stream);
     CUDA_CHECK(cudaGetLastError());
 }
 

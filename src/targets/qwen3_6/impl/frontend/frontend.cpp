@@ -192,6 +192,21 @@ void validate_tokenizer_config(const FrontendResources& resources) {
         throw std::invalid_argument(
             "tokenizer_config.json does not use the official <|endoftext|> pad token");
     }
+    if (!tokenizer_config.contains("chat_template") ||
+        !tokenizer_config.at("chat_template").is_string()) {
+        throw std::invalid_argument(
+            "tokenizer_config.json.chat_template must contain the loaded chat template");
+    }
+    if (tokenizer_config.at("chat_template").get_ref<const std::string&>() !=
+        resources.chat_template_jinja) {
+        throw std::invalid_argument(
+            "tokenizer_config.json.chat_template does not match frontend/chat_template.jinja");
+    }
+}
+
+fi::CompiledChatTemplate compile_chat_template(const FrontendResources& resources) {
+    validate_tokenizer_config(resources);
+    return fi::CompiledChatTemplate::resolve(resources.chat_template_jinja);
 }
 
 [[noreturn]] void throw_processor_error(const fi::ProcessorError& error) {
@@ -264,6 +279,7 @@ std::vector<fi::ChatMessage> convert_messages(std::vector<ChatMessage> messages)
 fi::ChatRenderOptions render_options(const PromptOptions& options) {
     return fi::ChatRenderOptions{.add_generation_prompt = options.add_generation_prompt,
                                  .enable_thinking       = options.enable_thinking,
+                                 .reasoning_effort      = options.reasoning_effort,
                                  .preserve_thinking     = options.preserve_thinking,
                                  .add_vision_id         = options.add_vision_id,
                                  .tool_jsons            = options.tool_jsons};
@@ -292,20 +308,6 @@ void assign_text_positions(PreparedPromptData& prompt) {
         }
     }
     prompt.rope_delta = 0;
-}
-
-std::optional<std::uint32_t> assistant_boundary(const fi::Tokenizer& tokenizer,
-                                                const PromptOptions& options,
-                                                std::size_t prompt_tokens) {
-    if (!options.add_generation_prompt) { return std::nullopt; }
-    const std::string_view opener   = options.enable_thinking
-                                          ? std::string_view("<think>\n")
-                                          : std::string_view("<think>\n\n</think>\n\n");
-    const std::size_t opener_tokens = tokenizer.encode(opener).size();
-    if (opener_tokens > prompt_tokens) {
-        throw std::logic_error("generation-prompt opener exceeds rendered prompt");
-    }
-    return static_cast<std::uint32_t>(prompt_tokens - opener_tokens);
 }
 
 VisionItem convert_vision_item(fi::VisionItem item) {
@@ -592,12 +594,12 @@ DecoderState terminal_state(DecoderState state) {
 class Frontend::Impl {
 public:
     Impl(const FrontendResources& resources, bool registered_checkpoint, bool vision_enabled_)
-        : tokenizer(std::make_shared<const fi::Tokenizer>(
+        : chat_template(compile_chat_template(resources)),
+          tokenizer(std::make_shared<const fi::Tokenizer>(
               fi::TokenizerResources{.tokenizer_json         = resources.tokenizer_json,
                                      .tokenizer_config_json  = resources.tokenizer_config_json,
                                      .generation_config_json = resources.generation_config_json})),
           processor(processor_options(resources)), vision_enabled(vision_enabled_) {
-        validate_tokenizer_config(resources);
         if (registered_checkpoint) { validate_registered_tokenizer(*tokenizer); }
         for (const int token : tokenizer->default_stop_token_ids()) {
             if (!tokenizer->is_valid_token(token)) {
@@ -608,6 +610,7 @@ public:
         }
     }
 
+    fi::CompiledChatTemplate chat_template;
     std::shared_ptr<const fi::Tokenizer> tokenizer;
     fi::ProcessorOptions processor;
     StopPolicy defaults;
@@ -841,7 +844,7 @@ PreparedPrompt Frontend::prepare(PromptInput input) const {
     auto prepared              = std::make_unique<PreparedPromptData>();
     PreparedPromptData& result = *prepared;
     if (has_media) {
-        fi::Processor processor(*impl_->tokenizer, impl_->processor);
+        fi::Processor processor(*impl_->tokenizer, impl_->chat_template, impl_->processor);
         fi::ProcessedInput processed;
         try {
             processed = processor.process(messages, render_options(options));
@@ -855,20 +858,22 @@ PreparedPrompt Frontend::prepare(PromptInput input) const {
         for (fi::VisionItem& item : processed.vision_items) {
             result.vision_items.push_back(convert_vision_item(std::move(item)));
         }
-        result.prepare.media_items     = processed.stats.media_items;
-        result.prepare.raw_patches     = processed.stats.raw_patches;
-        result.prepare.vision_tokens   = processed.stats.vision_tokens;
-        result.prepare.attention_pairs = processed.stats.attention_pairs;
-        result.prepare.patch_bytes     = processed.stats.patch_bytes;
+        result.prepare.media_items            = processed.stats.media_items;
+        result.prepare.raw_patches            = processed.stats.raw_patches;
+        result.prepare.vision_tokens          = processed.stats.vision_tokens;
+        result.prepare.attention_pairs        = processed.stats.attention_pairs;
+        result.prepare.patch_bytes            = processed.stats.patch_bytes;
+        result.identity.turn_rewrite_boundary = processed.turn_rewrite_boundary;
     } else {
-        const std::string rendered = fi::render_chat(messages, render_options(options));
-        result.token_ids           = impl_->tokenizer->encode(rendered);
+        const fi::RenderedChat rendered =
+            impl_->chat_template.render(messages, render_options(options));
+        fi::EncodedChat encoded = fi::encode_rendered_chat(*impl_->tokenizer, rendered);
+        result.token_ids        = std::move(encoded.input_ids);
+        result.identity.turn_rewrite_boundary = encoded.turn_rewrite_boundary;
         assign_text_positions(result);
     }
     (void)checked_token_count(result.token_ids.size());
-    result.identity.reusable = true;
-    result.identity.assistant_content_boundary =
-        assistant_boundary(*impl_->tokenizer, options, result.token_ids.size());
+    result.identity.reusable   = true;
     result.starts_in_reasoning = options.add_generation_prompt && options.enable_thinking;
     result.prepare.seconds     = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
@@ -884,17 +889,22 @@ std::uint32_t Frontend::count_tokens(PromptInput input) const {
         throw std::invalid_argument("Vision is disabled for this Engine");
     }
     if (!has_media) {
-        return checked_token_count(
-            impl_->tokenizer->encode(fi::render_chat(messages, render_options(options))).size());
+        const fi::RenderedChat rendered =
+            impl_->chat_template.render(messages, render_options(options));
+        return checked_token_count(impl_->tokenizer->encode(rendered.text).size());
     }
 
     fi::ProcessorOptions processor_options = impl_->processor;
     processor_options.max_prompt_tokens    = std::numeric_limits<std::size_t>::max();
-    fi::Processor processor(*impl_->tokenizer, processor_options);
+    fi::Processor processor(*impl_->tokenizer, impl_->chat_template, processor_options);
     try {
         return checked_token_count(
             processor.process(messages, render_options(options)).input_ids.size());
     } catch (const fi::ProcessorError& error) { throw_processor_error(error); }
+}
+
+PromptCapabilities Frontend::prompt_capabilities() const noexcept {
+    return impl_ != nullptr ? impl_->chat_template.capabilities() : PromptCapabilities{};
 }
 
 PreparedPrompt Frontend::prepare_tokens(std::vector<TokenId> token_ids,

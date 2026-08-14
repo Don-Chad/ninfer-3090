@@ -8,16 +8,28 @@
 
 namespace ninfer::runtime {
 
-using ::ninfer::ExecutionOptions;
 using ::ninfer::FinishReason;
 using ::ninfer::KvCapacityMode;
 using ::ninfer::KvCapacityPolicy;
 using ::ninfer::OutputChannel;
-using ::ninfer::RequestOptions;
-using ::ninfer::SamplingParameters;
+using ::ninfer::ResolvedSamplingParameters;
 using ::ninfer::StopPolicy;
 using ::ninfer::StopString;
 using ::ninfer::TokenId;
+
+// Engine has already selected the registered model/mode preset, applied every explicit override,
+// and validated these values before constructing the runtime request.
+struct ResolvedExecutionOptions {
+    ResolvedSamplingParameters sampling;
+    std::uint32_t requested_output_tokens = 0;
+    bool allow_prefix_reuse               = true;
+};
+
+struct ResolvedRequestOptions {
+    ResolvedExecutionOptions execution;
+    StopPolicy stop;
+    OutputOptions output;
+};
 
 struct OutputDecision {
     std::uint32_t accepted_tokens = 0;
@@ -49,6 +61,7 @@ struct RequestPlanSummary {
 struct BeginSummary {
     std::uint32_t prompt_tokens        = 0;
     std::uint32_t reused_prompt_tokens = 0;
+    PrefixReusePath prefix_reuse_path  = PrefixReusePath::FullReset;
 };
 
 struct GeneratedRound {

@@ -27,6 +27,14 @@ struct LinearAttentionStatePoolLayout {
     std::vector<LayoutRegion> recurrent;
 };
 
+struct LinearAttentionStateAllLayersView {
+    Tensor conv_layer0;
+    Tensor recurrent_layer0;
+    std::int64_t conv_layer_stride_bytes      = 0;
+    std::int64_t recurrent_layer_stride_bytes = 0;
+    LinearAttentionStatePoolSpec spec;
+};
+
 [[nodiscard]] LinearAttentionStatePoolLayout
 plan_linear_attention_state_pool(LayoutBuilder& builder, const LinearAttentionStatePoolSpec& spec);
 
@@ -49,6 +57,7 @@ struct LinearAttentionStatePool {
     [[nodiscard]] std::int32_t slot_count() const noexcept;
     [[nodiscard]] std::int64_t conv_slot_stride_elements() const noexcept;
     [[nodiscard]] std::int64_t recurrent_slot_stride_elements() const noexcept;
+    [[nodiscard]] LinearAttentionStateAllLayersView all_layers_view() const;
     [[nodiscard]] Tensor conv_slot(std::uint32_t layer, std::int32_t slot) const;
     [[nodiscard]] Tensor recurrent_slot(std::uint32_t layer, std::int32_t slot) const;
 

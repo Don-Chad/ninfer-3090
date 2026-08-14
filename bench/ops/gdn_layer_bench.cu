@@ -373,8 +373,8 @@ Result run_case(Resources& resources, ninfer::DeviceBuffer& flush, cudaStream_t 
 
     const auto input_plan = ops::detail::w8_gdn_input_resolve_plan(
         {kHidden, kConvRows, kValueRows, kInputRows, kHidden, tokens});
-    const auto snapshot_plan = ops::detail::w8_gdn_input_snapshot_resolve_plan(
-        {kHidden, kConvRows, kValueRows, kInputRows, kHidden, tokens});
+    const auto snapshot_plan = ops::detail::w8_gdn_input_conv_resolve_plan(
+        {kHidden, kConvRows, kValueRows, kInputRows, kHidden, tokens}, 1);
     const auto control_plan =
         ops::detail::bf16_gdn_gating_resolve_plan({kValueHeads, kHidden, tokens});
     const auto norm_control_plan =
@@ -382,24 +382,24 @@ Result run_case(Resources& resources, ninfer::DeviceBuffer& flush, cudaStream_t 
     const auto output_plan =
         ops::detail::w8_linear_add_resolve_plan({kHidden, kValueRows, kValueRows, tokens});
 
-    return {tokens,
-            graph.nodes(),
-            options.route == "fused"
-                ? std::string(
-                      ops::detail::w8_gdn_input_snapshot_schedule_name(snapshot_plan.schedule)) +
-                      "+gated_delta_net_snapshot.bf16.recurrent." +
-                      (options.qk_norm == "fused" ? "qk_fused.w4" : "qk_pre_normalized.w4")
-                : std::string("gdn_input_proj_conv_snapshot.w8.composed_control+") +
-                      ops::detail::w8_gdn_input_schedule_name(input_plan.schedule) +
-                      "+gated_delta_net_snapshot.bf16.recurrent." +
-                      (options.qk_norm == "fused" ? "qk_fused.w4" : "qk_pre_normalized.w4"),
-            options.norm_control == "fused"
-                ? ops::detail::bf16_gdn_norm_gating_schedule_name(norm_control_plan.schedule)
-                : ops::detail::bf16_gdn_gating_schedule_name(control_plan.schedule),
-            options.gated_rms == "dv10-b1024" ? "gated_rms.candidate.warp_bf16x2_b1024"
-                                              : "gated_rms.production",
-            ops::detail::w8_linear_add_schedule_name(output_plan.schedule),
-            timing};
+    return {
+        tokens,
+        graph.nodes(),
+        options.route == "fused"
+            ? std::string(ops::detail::w8_gdn_input_conv_schedule_name(snapshot_plan.schedule)) +
+                  "+gated_delta_net_snapshot.bf16.recurrent." +
+                  (options.qk_norm == "fused" ? "qk_fused.w4" : "qk_pre_normalized.w4")
+            : std::string("gdn_input_proj_conv_snapshot.w8.composed_control+") +
+                  ops::detail::w8_gdn_input_schedule_name(input_plan.schedule) +
+                  "+gated_delta_net_snapshot.bf16.recurrent." +
+                  (options.qk_norm == "fused" ? "qk_fused.w4" : "qk_pre_normalized.w4"),
+        options.norm_control == "fused"
+            ? ops::detail::bf16_gdn_norm_gating_schedule_name(norm_control_plan.schedule)
+            : ops::detail::bf16_gdn_gating_schedule_name(control_plan.schedule),
+        options.gated_rms == "dv10-b1024" ? "gated_rms.candidate.warp_bf16x2_b1024"
+                                          : "gated_rms.production",
+        ops::detail::w8_linear_add_schedule_name(output_plan.schedule),
+        timing};
 }
 
 void write_csv(const Options& options, const std::vector<Result>& results) {

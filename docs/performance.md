@@ -2,7 +2,7 @@
 
 Tested Git revisions:
 
-- Concurrent MTP3 decode saturation for all three artifact profiles:
+- Concurrent MTP3 decode saturation for the three measured Qwen3.6 artifact profiles:
   `26da9df7c1b3d3c04ea7bbd730271aa01d00742a`;
 - Refreshed Qwen3.6-35B-A3B and Qwen3.6-27B NVFP4 MTP3:
   `f4f21cc36bd1a83cbc046f668719d591dc9c1e2e`;
@@ -16,11 +16,12 @@ Tested Git revisions:
 - Qwen3.6-35B-A3B MTP0 and Qwen3.6-27B groupwise-int MTP0:
   `0795169393cab0f2c16246d4bac20dee735dc2a4`.
 
-The serving measurements characterize the two registered NInfer targets independently on one
+The serving measurements characterize the two measured Qwen3.6 model IDs independently on one
 NVIDIA GeForce RTX 5090. They cover long-context prefill and baseline decode with speculative
 decoding disabled, plus long-reasoning and cross-scenario decode with MTP and DFlash. The 27B
 results report its `groupwise-int` and `nvfp4` weight profiles separately. The concurrent
-decode-saturation campaign measures the same three artifact profiles at C=1, 2, 4, and 8.
+decode-saturation campaign measures the same three Qwen3.6 artifact profiles at C=1, 2, 4, and 8.
+Qwen3.8-27B is supported by current NInfer builds but is not included in this published campaign.
 
 The single-request corpus requests were submitted serially to a persistent `ninfer-serve` process
 over the loopback OpenAI-compatible HTTP endpoint. Each reported corpus fixture used five fixed
@@ -187,8 +188,8 @@ python3 tools/bench/run_serve_concurrency.py \
 Use `--mode dflash7` for the corresponding DFlash block=8 campaign; add `--sampling greedy` for
 the exact-argmax profile.
 
-Omit `--mode` and supply the two groupwise-int target artifacts to run the complete two-target
-MTP0/MTP3 campaign:
+Omit `--mode` and supply the two measured Qwen3.6 groupwise-int artifacts to run the complete
+published Qwen3.6 MTP0/MTP3 campaign:
 
 ```bash
 python3 tools/bench/run_serve_corpus.py \

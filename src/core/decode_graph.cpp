@@ -127,6 +127,11 @@ void DecodeGraphExecutable::update(const DecodeGraphDefinition& definition) {
     }
 }
 
+void DecodeGraphExecutable::upload(cudaStream_t stream) {
+    if (!ready()) { throw std::logic_error("cannot upload an empty CUDA Graph executable"); }
+    CUDA_CHECK(cudaGraphUpload(exec_, stream));
+}
+
 void DecodeGraphExecutable::launch(cudaStream_t stream) {
     if (!ready()) { throw std::logic_error("cannot launch an empty CUDA Graph executable"); }
     CUDA_CHECK(cudaGraphLaunch(exec_, stream));

@@ -321,6 +321,24 @@ def server_command(
         )
     if point.sampling_mode == "greedy":
         command.append("--greedy")
+    else:
+        # Preserve the sampling profile attached to the published benchmark methodology.
+        command.extend(
+            [
+                "--temperature",
+                "0.6",
+                "--top-p",
+                "0.95",
+                "--top-k",
+                "20",
+                "--min-p",
+                "0",
+                "--presence-penalty",
+                "1.0",
+                "--frequency-penalty",
+                "0",
+            ]
+        )
     return command
 
 

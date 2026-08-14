@@ -25,6 +25,51 @@ void validate_layer_slot(const LinearAttentionStatePool& pool, std::uint32_t lay
     }
 }
 
+void validate_state_tensor(const Tensor& tensor, DType dtype,
+                           std::initializer_list<std::int32_t> shape, const char* label) {
+    const Tensor expected(nullptr, dtype, shape);
+    if (tensor.data == nullptr || tensor.dtype != dtype || !tensor.is_contiguous() ||
+        tensor.bytes() != expected.bytes()) {
+        throw std::logic_error(std::string("LinearAttentionStatePool ") + label +
+                               " tensor is inconsistent");
+    }
+    for (int dim = 0; dim < 4; ++dim) {
+        if (tensor.ne[dim] != expected.ne[dim]) {
+            throw std::logic_error(std::string("LinearAttentionStatePool ") + label +
+                                   " shape is inconsistent");
+        }
+    }
+}
+
+std::int64_t layer_stride_bytes(const std::vector<Tensor>& tensors, const char* label) {
+    if (tensors.empty()) {
+        throw std::logic_error(std::string("LinearAttentionStatePool has no ") + label + " layers");
+    }
+    if (tensors.size() == 1) { return 0; }
+
+    const auto first  = reinterpret_cast<std::uintptr_t>(tensors[0].data);
+    const auto second = reinterpret_cast<std::uintptr_t>(tensors[1].data);
+    if (second <= first ||
+        second - first > static_cast<std::uintptr_t>(std::numeric_limits<std::int64_t>::max())) {
+        throw std::logic_error(std::string("LinearAttentionStatePool ") + label +
+                               " layer stride is invalid");
+    }
+    const auto stride = static_cast<std::int64_t>(second - first);
+    if (static_cast<std::uint64_t>(stride) < tensors.front().bytes()) {
+        throw std::logic_error(std::string("LinearAttentionStatePool ") + label +
+                               " layers overlap");
+    }
+    for (std::size_t layer = 2; layer < tensors.size(); ++layer) {
+        const auto previous = reinterpret_cast<std::uintptr_t>(tensors[layer - 1].data);
+        const auto current  = reinterpret_cast<std::uintptr_t>(tensors[layer].data);
+        if (current <= previous || current - previous != static_cast<std::uintptr_t>(stride)) {
+            throw std::logic_error(std::string("LinearAttentionStatePool ") + label +
+                                   " layer stride is not constant");
+        }
+    }
+    return stride;
+}
+
 } // namespace
 
 LinearAttentionStatePoolLayout
@@ -113,6 +158,27 @@ std::int64_t LinearAttentionStatePool::recurrent_slot_stride_elements() const no
     return static_cast<std::int64_t>(spec.key_head_dim) *
            static_cast<std::int64_t>(spec.value_head_dim) *
            static_cast<std::int64_t>(spec.value_heads);
+}
+
+LinearAttentionStateAllLayersView LinearAttentionStatePool::all_layers_view() const {
+    if (conv.size() != spec.layers || recurrent.size() != spec.layers || conv.empty()) {
+        throw std::logic_error("LinearAttentionStatePool layer inventory is inconsistent");
+    }
+    for (std::size_t layer = 0; layer < conv.size(); ++layer) {
+        validate_state_tensor(conv[layer], spec.conv_dtype,
+                              {spec.conv_channels, spec.conv_width, spec.slot_count}, "conv");
+        validate_state_tensor(
+            recurrent[layer], DType::FP32,
+            {spec.key_head_dim, spec.value_head_dim, spec.value_heads, spec.slot_count},
+            "recurrent");
+    }
+    return LinearAttentionStateAllLayersView{
+        .conv_layer0                  = conv.front(),
+        .recurrent_layer0             = recurrent.front(),
+        .conv_layer_stride_bytes      = layer_stride_bytes(conv, "conv"),
+        .recurrent_layer_stride_bytes = layer_stride_bytes(recurrent, "recurrent"),
+        .spec                         = spec,
+    };
 }
 
 Tensor LinearAttentionStatePool::conv_slot(std::uint32_t layer, std::int32_t slot) const {

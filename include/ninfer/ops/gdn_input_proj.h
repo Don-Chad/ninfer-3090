@@ -78,8 +78,8 @@ void gdn_input_proj(const Tensor& x, const Weight& query_key_value_z_weight, Ten
  * Returns the transient capacity required by the registered two-parent Q4/Q5 or single-parent W8
  * snapshot profile. `batch_size` is exact and the query covers every W in the inclusive width
  * interval. B=1 preserves the format-specific fused/composed resolver. B=2..8 uses aggregate
- * projection plus two BF16 [C,B*W] intermediates. The query throws for an unregistered row profile
- * or unsupported B/W domain.
+ * projection plus one BF16 [C,B*W] projected plane. The query throws for an unregistered row
+ * profile or unsupported B/W domain.
  */
 [[nodiscard]] std::size_t gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
     std::int32_t query_rows, std::int32_t key_rows, std::int32_t value_rows,
@@ -88,8 +88,8 @@ void gdn_input_proj(const Tensor& x, const Weight& query_key_value_z_weight, Ten
 /**
  * Returns the transient capacity for the [16384,5120] NVFP4 snapshot profile. `batch_size` is exact
  * and the query covers every W in the inclusive width interval. B=1 preserves the existing fused
- * snapshot resolver. B=2..8 covers aggregate gdn_input_proj workspace plus projected/convolved
- * BF16 staging.
+ * snapshot resolver. B=2..8 covers aggregate gdn_input_proj workspace plus one projected BF16
+ * plane.
  */
 [[nodiscard]] std::size_t gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
     QType parent_qtype, std::int32_t parent_rows, std::int32_t input_rows, LinearPolicy policy,
@@ -160,5 +160,65 @@ void gdn_input_proj_conv_snapshot(const Tensor& x, const Weight& query_key_value
                                   const Tensor& snapshot_base_slots, Tensor& query, Tensor& key,
                                   Tensor& value, Tensor& z, WorkspaceArena& ws,
                                   cudaStream_t stream);
+
+/**
+ * Returns the transient capacity for the registered Q4/Q5 or W8 record-producing profile.
+ * `batch_size` is exact, and the inclusive T interval must lie within ReplaySSM's B=1..8,
+ * T=2..16 execution domain. These profiles require no transient storage because materialized
+ * projection writes directly to caller-owned conv_record.
+ */
+[[nodiscard]] std::size_t gdn_input_proj_conv_record_workspace_capacity_bytes(
+    std::int32_t query_rows, std::int32_t key_rows, std::int32_t value_rows,
+    std::int32_t batch_size, std::int32_t min_width, std::int32_t max_width);
+
+/**
+ * Returns the transient capacity for the [16384,5120] NVFP4 record-producing profile. A16 and
+ * fused small-T routes require no storage. AllowA4 returns only the activation-quantization
+ * workspace selected by the corresponding projection route; conv_record is caller-owned.
+ */
+[[nodiscard]] std::size_t gdn_input_proj_conv_record_workspace_capacity_bytes(
+    QType parent_qtype, std::int32_t parent_rows, std::int32_t input_rows, LinearPolicy policy,
+    std::int32_t batch_size, std::int32_t min_width, std::int32_t max_width);
+
+/**
+ * Op: gdn_input_proj_conv_record
+ *
+ * For each batch row, evaluates the registered projection, width-four causal convolution, SiLU,
+ * and q/k/value/z split from the BF16 history selected by initial_state_slots. It writes the BF16
+ * represented projection column consumed by the convolution to conv_record [C,T,B]. Query, key,
+ * and value are zero in each row's invalid tail; z is projected for every physical column.
+ *
+ * The execution domain is B=1..8 and T=2..16. valid_columns is empty for dense input or device
+ * I32 [B], with each caller-supplied extent in [1,T]. conv_states is a read-only BF16 [C,3,S]
+ * state-pool view, and initial_state_slots contains absolute slots in [0,S). Source state is not
+ * modified. Only the valid prefix of conv_record is semantically defined.
+ *
+ * The two-parent form registers Q4 q/k [4096,5120] and the Q5 value/z parent [12288,5120]. All
+ * tensor operands, outputs, conv_record, source state, and live workspace must be disjoint.
+ */
+void gdn_input_proj_conv_record(const Tensor& x, const Weight& qk_weight,
+                                const Weight& value_z_weight, const Tensor& conv_weight,
+                                const Tensor& conv_states, const Tensor& valid_columns,
+                                const Tensor& initial_state_slots, Tensor& conv_record,
+                                Tensor& query, Tensor& key, Tensor& value, Tensor& z,
+                                WorkspaceArena& workspace, cudaStream_t stream);
+
+/**
+ * Single-parent record-producing form. Registered parents are W8G32_F16S [12288,2048] and NVFP4
+ * [16384,5120]. W8 admits A16Only. NVFP4 admits A16Only and AllowA4.
+ */
+void gdn_input_proj_conv_record(const Tensor& x, const Weight& query_key_value_z_weight,
+                                const Tensor& conv_weight, const Tensor& conv_states,
+                                const Tensor& valid_columns, const Tensor& initial_state_slots,
+                                Tensor& conv_record, Tensor& query, Tensor& key, Tensor& value,
+                                Tensor& z, LinearPolicy policy, WorkspaceArena& workspace,
+                                cudaStream_t stream);
+
+/** Applies the A16-only single-parent record-producing form. */
+void gdn_input_proj_conv_record(const Tensor& x, const Weight& query_key_value_z_weight,
+                                const Tensor& conv_weight, const Tensor& conv_states,
+                                const Tensor& valid_columns, const Tensor& initial_state_slots,
+                                Tensor& conv_record, Tensor& query, Tensor& key, Tensor& value,
+                                Tensor& z, WorkspaceArena& workspace, cudaStream_t stream);
 
 } // namespace ninfer::ops

@@ -37,6 +37,7 @@ public:
 
     void instantiate(const DecodeGraphDefinition& definition);
     void update(const DecodeGraphDefinition& definition);
+    void upload(cudaStream_t stream);
     void launch(cudaStream_t stream);
     [[nodiscard]] bool ready() const noexcept;
     void reset() noexcept;

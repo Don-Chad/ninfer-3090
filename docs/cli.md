@@ -24,8 +24,11 @@ written to stderr, so stdout can be redirected independently:
   > answer.txt 2> run.log
 ```
 
-Thinking is enabled by default. Add `--no-thinking` for direct-response prompt rendering or
-`--greedy` for exact argmax decoding.
+Thinking is enabled by default. If the chat template embedded in the loaded artifact exposes
+reasoning effort, `--reasoning-effort low|medium|xhigh` selects it; omitting the option uses the
+template's default. An artifact whose template does not expose effort rejects the option. Add
+`--no-thinking` for direct-response prompt rendering; it cannot be combined with
+`--reasoning-effort`. `--greedy` selects exact argmax decoding independently.
 
 ## Startup memory profile
 
@@ -141,14 +144,30 @@ measured recommendation rather than a semantic limit.
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-thinking` | disable thinking in prompt rendering | thinking on |
+| `--reasoning-effort low\|medium\|xhigh` | select an effort exposed by the loaded chat template | template default |
 | `--greedy` | exact argmax decoding | off |
-| `--temperature F` | sampling temperature | `0.6` |
-| `--top-p F` | nucleus threshold | `0.95` |
-| `--top-k N` | top-k threshold | `20` |
-| `--min-p F` | min-p threshold | `0` |
-| `--presence-penalty F` | presence penalty | `1.0` |
-| `--frequency-penalty F` | frequency penalty | `0` |
+| `--temperature F` | sampling temperature override | registered model/mode default |
+| `--top-p F` | nucleus-threshold override | registered model/mode default |
+| `--top-k N` | top-k-threshold override | registered model/mode default |
+| `--min-p F` | min-p-threshold override | registered model/mode default |
+| `--presence-penalty F` | presence-penalty override | registered model/mode default |
+| `--frequency-penalty F` | frequency-penalty override | registered model/mode default (`0`) |
 | `--seed N` | sampling seed | `0` |
+
+When a sampling flag is omitted, Engine selects the official general-task preset registered for
+the loaded model and the rendered prompt mode. The current presets are:
+
+| Model | Prompt mode | Temperature | Top-p | Top-k | Min-p | Presence penalty |
+|---|---|---:|---:|---:|---:|---:|
+| Qwen3.6-27B | thinking | `1.0` | `0.95` | `20` | `0` | `0` |
+| Qwen3.6-27B | non-thinking | `0.7` | `0.80` | `20` | `0` | `1.5` |
+| Qwen3.8-27B | thinking | `1.0` | `0.95` | `20` | `0` | `0` |
+| Qwen3.8-27B | non-thinking | `0.7` | `0.80` | `20` | `0` | `1.5` |
+| Qwen3.6-35B-A3B | thinking | `1.0` | `0.95` | `20` | `0` | `1.5` |
+| Qwen3.6-35B-A3B | non-thinking | `0.7` | `0.80` | `20` | `0` | `1.5` |
+
+Frequency penalty is `0` in every registered preset. Qwen's separate precise-coding recommendation
+is task-specific and is therefore an explicit override rather than an inferred Engine default.
 
 Repeat `--stop-token-id`, `--stop`, or `--reasoning-stop` to add stop conditions. Use
 `--raw-output` to expose the frontend's raw output stream and `--print-token-ids` to include
@@ -158,8 +177,9 @@ Run `./build/apps/ninfer --help` for the exact option contract.
 
 ## Context and memory
 
-Both registered models have a native context limit of 262,144 tokens. The practical allocation on
-one RTX 5090 depends on the selected artifact, media workload, output budget, and KV-cache type.
+The registered model IDs have a native context limit of 262,144 tokens. The practical
+allocation on one RTX 5090 depends on the selected artifact, media workload, output budget, and
+KV-cache type.
 Use `--kv-dtype int8` for large context allocations. The prepared prompt must fit
 `--max-context`; generation stops at the remaining context capacity when necessary.
 `--kv-capacity N` controls the shared physical Main Text KV pool independently and is rounded up to

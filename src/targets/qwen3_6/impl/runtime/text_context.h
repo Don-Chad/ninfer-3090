@@ -6,6 +6,7 @@
 
 #include "core/arena.h"
 #include "core/device.h"
+#include "core/gdn_replay_records.h"
 #include "core/tensor.h"
 #include "core/weight.h"
 #include "ninfer/ops/sampling.h"
@@ -110,6 +111,11 @@ struct MtpW {
 
 using Phase = qwen3_6::TextPhase;
 
+enum class GdnStateAction : std::uint8_t {
+    UpdateInPlace,
+    RecordForReplay,
+};
+
 struct NullTap {
     static constexpr bool enabled = false;
 };
@@ -138,7 +144,7 @@ struct DFlashFeatureSink {
     void begin(const Tensor& value);
     void capture_layer(int layer, const Tensor& value, cudaStream_t stream);
     void capture_positions(const Tensor& source, cudaStream_t stream);
-    void consume_prefill_chunk(std::int32_t tokens, bool boundary);
+    void consume_prefill_chunk(std::int32_t tokens, bool turn_checkpoint);
 };
 
 class VisionPrefillSession;
@@ -165,15 +171,18 @@ public:
 
     void set_sampling(const ops::SamplingConfig* config) noexcept { sampling_config_ = config; }
 
-    void set_prefill_snapshot_boundary(std::int64_t position) noexcept {
-        prefill_snapshot_boundary_ = position;
+    void set_prefill_turn_checkpoint_frontier(std::int64_t position) noexcept {
+        prefill_turn_checkpoint_frontier_ = position;
     }
 
-    void set_boundary_hidden_output(Tensor* output) noexcept { boundary_hidden_output_ = output; }
+    void set_turn_checkpoint_hidden_output(Tensor* output) noexcept {
+        turn_checkpoint_hidden_output_ = output;
+    }
 
     void set_mtp_proposal_extent(std::uint32_t extent) noexcept { mtp_proposal_extent_ = extent; }
 
-    void set_linear_state_group(std::int32_t base, std::int32_t capacity);
+    void set_linear_state_slots(std::int32_t current_slot, std::int32_t turn_checkpoint_slot);
+    void set_gdn_state_action(GdnStateAction action, const GdnReplayRecords* replay_records);
 
     [[nodiscard]] const Weight* proposal_head() const noexcept { return proposal_head_; }
 
@@ -196,19 +205,16 @@ public:
                   std::uint32_t nominal_length, VisionPrefillSession& vision, bool finalize_at_end);
     void ordinary_decode_batch(const Tensor& ids, const Tensor& cache_positions,
                                const Tensor& rope_positions, const Tensor& kv_table_rows,
-                               const Tensor& linear_state_read_slots,
-                               const Tensor& linear_state_snapshot_base_slots,
-                               ops::GqaExecutionEnvelope envelope, Tensor& hidden, Tensor& logits);
+                               const Tensor& linear_state_slots, ops::GqaExecutionEnvelope envelope,
+                               Tensor& hidden, Tensor& logits);
     void target_verify_batch(const Tensor& ids, const Tensor& cache_positions,
                              const Tensor& rope_positions, const Tensor& valid_columns,
-                             const Tensor& kv_table_rows, const Tensor& linear_state_read_slots,
-                             const Tensor& linear_state_snapshot_base_slots,
+                             const Tensor& kv_table_rows, const Tensor& linear_state_slots,
                              ops::GqaExecutionEnvelope envelope, Tensor& hidden, Tensor& logits,
                              Tensor& target_tokens);
     void target_verify_batch(const Tensor& ids, const Tensor& cache_positions,
                              const Tensor& rope_positions, const Tensor& valid_columns,
-                             const Tensor& kv_table_rows, const Tensor& linear_state_read_slots,
-                             const Tensor& linear_state_snapshot_base_slots,
+                             const Tensor& kv_table_rows, const Tensor& linear_state_slots,
                              ops::GqaExecutionEnvelope envelope, Tensor& hidden, Tensor& logits,
                              Tensor& target_tokens, DFlashFeatureSink& sink);
     void mtp_forward_decode_batch(const Tensor& ids, const Tensor& hidden,
@@ -241,9 +247,7 @@ private:
     template <class Tap>
     void target_verify_batch_impl(const Tensor& ids, const Tensor& cache_positions,
                                   const Tensor& rope_positions, const Tensor& valid_columns,
-                                  const Tensor& kv_table_rows,
-                                  const Tensor& linear_state_read_slots,
-                                  const Tensor& linear_state_snapshot_base_slots,
+                                  const Tensor& kv_table_rows, const Tensor& linear_state_slots,
                                   ops::GqaExecutionEnvelope envelope, Tensor& hidden,
                                   Tensor& logits, Tensor& target_tokens, Tap& tap);
 
@@ -290,23 +294,23 @@ private:
     Tensor& prefill_hidden_;
     std::uint32_t prefill_chunk_;
     std::uint32_t text_kv_base_;
-    const Tensor* active_cache_positions_                  = nullptr;
-    const Tensor* active_rope_positions_                   = nullptr;
-    const Tensor* active_kv_table_rows_                    = nullptr;
-    const Tensor* active_linear_state_read_slots_          = nullptr;
-    const Tensor* active_linear_state_snapshot_base_slots_ = nullptr;
-    const Tensor* active_valid_columns_                    = nullptr;
-    const Tensor* active_backend_kv_table_rows_            = nullptr;
-    const ops::GqaExecutionEnvelope* active_gqa_envelope_  = nullptr;
-    std::int32_t active_sequence_batch_                    = 0;
-    std::int32_t active_sequence_width_                    = 0;
-    std::int32_t rope_delta_                               = 0;
-    std::int32_t linear_state_prefill_read_slot_           = 0;
-    std::int32_t linear_state_prefill_working_slot_        = 0;
-    std::int32_t linear_state_boundary_slot_               = 0;
-    std::int64_t prefill_snapshot_boundary_                = -1;
-    Tensor* boundary_hidden_output_                        = nullptr;
-    std::uint32_t mtp_proposal_extent_                     = 0;
+    const Tensor* active_cache_positions_                 = nullptr;
+    const Tensor* active_rope_positions_                  = nullptr;
+    const Tensor* active_kv_table_rows_                   = nullptr;
+    const Tensor* active_linear_state_slots_              = nullptr;
+    const Tensor* active_valid_columns_                   = nullptr;
+    const Tensor* active_backend_kv_table_rows_           = nullptr;
+    const ops::GqaExecutionEnvelope* active_gqa_envelope_ = nullptr;
+    std::int32_t active_sequence_batch_                   = 0;
+    std::int32_t active_sequence_width_                   = 0;
+    std::int32_t rope_delta_                              = 0;
+    std::int32_t linear_state_current_slot_               = 0;
+    std::int32_t linear_state_turn_checkpoint_slot_       = 0;
+    GdnStateAction gdn_state_action_                      = GdnStateAction::UpdateInPlace;
+    const GdnReplayRecords* replay_records_               = nullptr;
+    std::int64_t prefill_turn_checkpoint_frontier_        = -1;
+    Tensor* turn_checkpoint_hidden_output_                = nullptr;
+    std::uint32_t mtp_proposal_extent_                    = 0;
 
     const Weight* embed_                        = nullptr;
     const Tensor* final_norm_                   = nullptr;

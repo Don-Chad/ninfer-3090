@@ -53,7 +53,7 @@ page 内部任意 token offset。
 
 当前 Qwen3.6 target 的 Linear Attention state 不能从 KV prefix 单独重建。Prefix lookup 只能使用保留了
 完整 continuation state 的 target-declared checkpoint。当前可复用位置是 current resume frontier 和一份
-有效时的 assistant-content boundary checkpoint，具体 claim/restore 语义见 §10。落在这两个 checkpoint
+有效时的 turn checkpoint，具体 claim/restore 语义见 §10。落在这两个 checkpoint
 之外的更短 token prefix 是 arbitrary partial hit，本设计不支持。
 
 Paged KV Store 本身可以按任意 logical frontier truncate；这不表示上层拥有在任意位置恢复整个模型的
@@ -746,7 +746,7 @@ Cancellation 在第一个观察到它的 GPU boundary release bundle；不修改
 Qwen3.6 retained sequence 包含：
 
 - current resume frontier；
-- 一份有效时的 assistant-content boundary checkpoint。
+- 一份有效时的 turn checkpoint。
 
 每个 checkpoint 都必须同时描述：
 
@@ -756,13 +756,13 @@ Qwen3.6 retained sequence 包含：
 - position/model-continuation metadata；
 - 与上述状态一致的 prefix identity。
 
-Current resume frontier 和 boundary checkpoint 引用同一个 exclusively owned KV bundle；boundary 不是第二份
+Current resume frontier 和 turn checkpoint 引用同一个 exclusively owned KV bundle；checkpoint 不是第二份
 KV allocation。Incoming prompt 的复用路径为：
 
 - prompt 正好结束在 current resume frontier，且 decode anchor 完整时，直接成为 decode-ready；
 - prompt 完整包含 current resume frontier 并有 suffix 时，从该 frontier prefill suffix；
-- prompt 匹配已保存 assistant-content boundary 并在其后有新 suffix 时，claim bundle、truncate 到 boundary、
-  恢复 checkpoint，再 prefill suffix；
+- prompt 匹配已保存 turn checkpoint 并在其后有新 suffix 时，claim bundle、truncate 到 checkpoint
+  frontier、恢复 checkpoint，再 prefill suffix；
 - common prefix 结束在没有完整 checkpoint 的任意其他位置时，cache miss。
 
 最后一种情况不是 page-size limitation。缺少的是对应 Linear Attention/backend continuation state，而不是
@@ -785,7 +785,7 @@ Ownership transfer 后可以从 logical position 1000 继续。无需把 frontie
 一个 retained bundle 同时只能被一个 active request claim。所谓 pin 是 retained entry 持有各 pool
 allocations，使相应 IDs 不属于各自 free sets；不需要 page refcount 或特殊 allocator role。
 
-选择 boundary checkpoint 时，claim transaction 保留包含 boundary 的最后一个部分 page，并把其后的完整
+选择 turn checkpoint 时，claim transaction 保留包含 checkpoint frontier 的最后一个部分 page，并把其后的完整
 pages 返回各自 pool；随后各 pool 的 exact frontier 和 fixed continuation state 一起切换到该 checkpoint。
 该过程不复制 retained KV payload。
 
@@ -909,7 +909,7 @@ fixed unit；new admission 可以 claim 或先驱逐 retained entry，不能降�
 | speculative tails 不同 | Main、MTP 或 DFlash 按各自 frontier 独立 trim |
 | accepted length 为零 | target 决定各 pool progress；KV Store 不产生特殊状态 |
 | retained frontier 非 page-aligned | 原 offset 精确复用，不向 page boundary 取整 |
-| 命中已保存 assistant-content boundary | exclusive claim 后 truncate pages、恢复完整 checkpoint，再 prefill suffix |
+| 命中已保存 turn checkpoint | exclusive claim 后 truncate pages、恢复完整 checkpoint，再 prefill suffix |
 | 只有更短 token prefix match，但该位置没有 checkpoint | cache miss |
 | retained occupancy 阻塞 admission | Prefix Cache eviction 完整 entry 后重试 atomic admission |
 | retained eviction 后，request set 满足 main contract 但 backend reservation 失败 | startup sizing 或 accounting invariant violation；不是正常等待条件 |
@@ -1237,6 +1237,11 @@ reserve entitlement already exists
 Graph capture不以page IDs、physical contiguity或retained owner为key。Mapping update必须先于consumer，
 in-flight期间禁止改写同一row；Op和kernel内部不调用allocator，也不等待host page fault。
 
+Startup graph construction为每个temporary row保留一个private page，并可将同一page ID重复写入该row的
+全部logical entries，以覆盖任意reachable context envelope。只有eager code warm和每个executable的一次
+smoke会真实访问这些pages；准备时只清零当前exact `B`对应的private pages。Definition capture和
+update/upload validation不执行consumer，不能因此扫描或清零整个physical pool。
+
 ### 17.8 Prohibited implementations
 
 以下实现即使功能正确也不接受：
@@ -1274,7 +1279,7 @@ positions和represented cache values计算结果，不复制production page trav
 - positions/context覆盖 `0, 1, 31, 32, 63, 64, 65, 127, 128` 等tile/page边界；
 - prefill从page中间开始，跨一个和多个pages；
 - current retained frontier 位于 page 中间并在同一 tail page 继续 append；
-- assistant-content boundary restore 截断 fragmented mapping、释放 trailing pages 并从 exact checkpoint
+- turn-checkpoint restore 截断 fragmented mapping、释放 trailing pages 并从 exact checkpoint
   继续；
 - BF16 append bit-exact；
 - INT8-G64 code和FP16 scale bits与独立codec oracle一致；

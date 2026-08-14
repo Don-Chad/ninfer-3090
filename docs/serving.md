@@ -79,11 +79,31 @@ The endpoint supports:
 - non-streaming responses and server-sent event streams;
 - `stream_options.include_usage`;
 - function tools, tool choices, assistant tool-call history, and tool-result messages;
-- the `enable_thinking` extension.
+- the top-level `reasoning_effort` field;
+- the `enable_thinking` extension;
+- `chat_template_kwargs.preserve_thinking` and the top-level `preserve_thinking` alias.
 
 The request `model` must equal the public model ID: the artifact `identity.model_id` by default, or
 the explicit `--model-id` override. Reasoning is returned separately as `reasoning_content`; answer
 text remains in `content`.
+
+At startup, NInfer resolves prompt capabilities from the exact `frontend/chat_template.jinja`
+resource embedded in the loaded artifact. It does not infer them from the request's `model` field,
+the artifact identity, or a target profile. A recognized effort-capable template exposes `low`,
+`medium`, and `xhigh`; omitting effort uses that template's declared default. An explicit effort
+not exposed by the loaded template returns HTTP 400 with code
+`reasoning_effort_not_supported` before prompt preparation.
+
+For Chat Completions, `reasoning_effort: "none"` disables thinking. `low`, `medium`, and `xhigh`
+select the corresponding template effort when available. The other OpenAI protocol values
+`minimal`, `high`, and `max` are parsed but rejected when the loaded template does not expose them.
+`enable_thinking` controls the same new-turn thinking switch; a contradictory combination with
+`reasoning_effort` returns `conflicting_template_option`.
+
+`preserve_thinking` controls whether reasoning from closed assistant turns remains in later
+prompts. It defaults to the server setting, which is off unless `--preserve-thinking` is used. If
+both OpenAI spellings are present they must carry the same boolean value. Unknown non-null
+`chat_template_kwargs` are rejected.
 
 Streaming begins with an assistant-role chunk, sends separate reasoning and content deltas, then a
 finish-reason chunk and `[DONE]`. When `stream_options.include_usage` is true, a final empty
@@ -114,10 +134,10 @@ OpenAI image and video sources may be HTTP(S) URLs or base64 data URLs.
 ## OpenAI Responses Core
 
 NInfer implements the typed-Item and semantic-event core of the OpenAI
-[Responses API](https://developers.openai.com/api/reference/resources/responses/overview). Both
-registered targets use this same adapter and Engine route. It is intentionally not advertised as
-full parity with OpenAI-hosted tools, durable cloud storage, background jobs, Conversations, or
-compaction.
+[Responses API](https://developers.openai.com/api/reference/resources/responses/overview). All
+registered artifact identities use this same adapter and Engine route. It is intentionally not
+advertised as full parity with OpenAI-hosted tools, durable cloud storage, background jobs,
+Conversations, or compaction.
 
 ### Create a Response
 
@@ -165,7 +185,9 @@ wire response contains typed `output` Items.
 | `temperature` | finite number in `[0,2]` |
 | `top_p` | finite number in `[0,1]` |
 | `metadata` | at most 16 string pairs; keys at most 64 characters and values at most 512 |
-| `reasoning.effort` | `none` disables Qwen thinking; `medium` enables it; other effort levels are rejected because this checkpoint exposes a binary thinking mode |
+| `reasoning.effort` | `none` disables thinking; `low`, `medium`, or `xhigh` selects an effort exposed by the loaded chat template; `minimal`, `high`, and `max` return `reasoning_effort_not_supported` for the registered templates |
+| `chat_template_kwargs.preserve_thinking` | optional boolean controlling whether closed-turn reasoning remains in reconstructed prompts |
+| `preserve_thinking` | top-level alias for the same option; conflicting values are rejected |
 | `text.format` | omitted or `{"type":"text"}` only |
 | `tools` | flat Responses function definitions; see below |
 | `tool_choice` | `auto` or `none` |
@@ -298,6 +320,10 @@ Function definitions are request configuration rather than conversation Items an
 again on tool-result turns. The reconstructed prompt follows the ordinary Engine path, so resident
 prefix reuse applies naturally.
 
+A stored Response also retains its resolved `preserve_thinking` value. A child which omits the
+field inherits the parent value. An explicit different value creates a new semantic branch; prompt
+identity then determines whether the Engine restores a turn checkpoint or performs a full reset.
+
 Resource behavior:
 
 | Endpoint | Contract |
@@ -350,6 +376,13 @@ curl http://127.0.0.1:8080/v1/messages \
 The endpoint supports system text, user/assistant history, text and image blocks, thinking blocks,
 tool-use history, tool results, client-defined tools, non-streaming responses, and Anthropic SSE
 events. `thinking.type: "disabled"` disables thinking; other supported values enable it.
+The independent top-level `preserve_thinking` boolean controls closed-turn history and otherwise
+uses the server default.
+
+Anthropic `output_config.effort` accepts the protocol values `low`, `medium`, `high`, `xhigh`, and
+`max`. The value is then checked against the loaded chat template in the same way as the OpenAI
+endpoints; the registered effort-capable template exposes `low`, `medium`, and `xhigh`. Combining
+an effort with `thinking.type: "disabled"` is rejected as contradictory.
 
 Anthropic's `model` field is treated as a response label and does not select the loaded artifact.
 
@@ -406,12 +439,23 @@ curl http://127.0.0.1:8080/v1/models \
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
 | `--no-thinking` | disable thinking by default | thinking on |
+| `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
 | `--cors` | permissive browser CORS headers | off |
+| `--temperature F` | process-level temperature override | unset |
+| `--top-p F` | process-level top-p override | unset |
+| `--top-k N` | process-level top-k override | unset |
+| `--min-p F` | process-level min-p override | unset |
+| `--presence-penalty F` | process-level presence-penalty override | unset |
+| `--frequency-penalty F` | process-level frequency-penalty override | unset |
+| `--seed N` | fixed seed when a request omits one | fresh random seed per request |
 | `--greedy` | force exact argmax for all requests | off |
 
-Server sampling defaults are temperature `0.6`, top-p `0.95`, top-k `20`, presence penalty
-`1.0`, and frequency penalty `0`. Supported request fields override those defaults unless the
-server was started with `--greedy`.
+Engine selects sampling defaults from the loaded model and the request's resolved thinking mode.
+Qwen3.6-27B and Qwen3.8-27B use `1.0/0.95/20/0/0` for
+temperature/top-p/top-k/min-p/presence penalty in thinking mode and `0.7/0.80/20/0/1.5` in
+non-thinking mode. Qwen3.6-35B-A3B differs only in its thinking presence penalty, which is `1.5`.
+Frequency penalty is `0` for all registered presets. Process flags override registered values,
+request fields override process flags, and `--greedy` finally forces temperature `0`.
 
 Run `./build/apps/ninfer-serve --help` for the exact option contract.
 
@@ -427,15 +471,15 @@ is also rejected if it resolves to the model artifact.
   --request-log-jsonl profiles/bench/run/server.requests.jsonl
 ```
 
-Every line is one `ninfer_serve_request_log` schema-v6 JSON object. All events carry
+Every line is one `ninfer_serve_request_log` schema-v8 JSON object. All events carry
 `timestamp_unix_ms` and a process-unique `server_instance_id`; request IDs are monotonic only within
 that server instance.
 
 | Event | Contents |
 |---|---|
-| `server_start` | target/weights identity and artifact, resolved Engine and sampler configuration, weights/sequence/workspace/request-transient arenas, KV sizing ledger, CUDA Graph observed/allowance bytes, CUDA/GPU environment, and redacted argv |
-| `request_start` | protocol, resolved sampler and seed, thinking mode, output budget, stream/message/tool shape |
-| `request_done` | finish reason, prompt/completion/cache/computed-prefill tokens, unrounded phase seconds, and complete speculative-decoding counters |
+| `server_start` | target/weights identity and artifact, resolved Engine, registered thinking/non-thinking sampler defaults plus process overrides, thinking-history defaults, weights/sequence/workspace/request-transient arenas, KV sizing ledger, CUDA Graph observed/allowance bytes, CUDA/GPU environment, and redacted argv |
+| `request_start` | protocol, resolved sampler and seed, thinking modes, Responses semantic-change flag, output budget, stream/message/tool shape |
+| `request_done` | finish reason, prompt/completion/cache/computed-prefill tokens, prefix reuse path, unrounded phase seconds, and complete speculative-decoding counters |
 | `request_error` | the resolved request configuration and generation error message |
 | `throughput` | interval token deltas and rates, scheduler occupancy, and decode-round batch statistics |
 
@@ -512,6 +556,15 @@ positions, encoded-media digest, grid, and consumer spans; changing an earlier i
 therefore resets the prefix instead of reusing placeholder-token KV. Media wholly inside a matched
 prefix skips Vision execution, while new suffix media is encoded normally. The completion log
 reports the reused token count as `cache=`.
+
+The shared family runtime distinguishes `full_reset`, `append_frontier`, and
+`restore_turn_checkpoint`. A turn checkpoint includes the recurrent and selected
+speculative-backend continuation state required to recompute a rewritten suffix; matching KV
+tokens alone never authorize a partial hit. Stable `preserve_thinking=true` histories normally
+append, while stable `false` histories restore the previous open-turn checkpoint when a new user
+closes that turn. The JSONL completion record exposes the selected path as `prefix_reuse_path`.
+Changing reasoning effort changes the rendered prompt and therefore does not reuse a prefix whose
+effort instruction differs.
 
 Speculative decoding is an engine option and does not change protocol output shapes, stop behavior,
 or usage accounting. If a stop truncates a multi-token MTP or DFlash round, the Engine commits the

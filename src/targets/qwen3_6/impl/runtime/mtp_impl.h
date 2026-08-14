@@ -25,8 +25,8 @@ void mtp_bridge_and_propose(PrefillContext& state, const Tensor& next_token,
                      state.text_kv, state.execution.linear_attention, state.execution.io,
                      state.execution.prefill_hidden, state.execution.prefill_chunk,
                      state.text_kv_base, state.mtp_kv, &state.text_cache, state.mtp_cache);
-    configure_text_card(card, state.execution, state.sampling, state.linear_state_base,
-                        state.linear_state_capacity, state.mtp_proposal_extent);
+    configure_text_card(card, state.execution, state.sampling, state.current_state_slot,
+                        state.turn_checkpoint_state_slot, state.mtp_proposal_extent);
 
     Tensor position_view = state.execution.io.mtp->target_positions.slice(0, 0, 1);
     ops::set_i32_scalar(position_view, position, state.execution.device.stream);
@@ -85,9 +85,6 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                          state.execution.linear_attention, state.execution.io,
                          state.execution.prefill_hidden, state.execution.prefill_chunk, 0, {},
                          &state.text_cache, &state.mtp_cache);
-        configure_text_card(card, state.execution, nullptr, 0,
-                            state.execution.linear_attention.slot_count(), 0);
-
         Tensor anchors           = frame.anchors.slice(0, 0, batch_size);
         Tensor frontiers         = frame.base_frontiers.slice(0, 0, batch_size);
         Tensor budgets           = frame.remaining_budgets.slice(0, 0, batch_size);
@@ -97,9 +94,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
         Tensor target_rope       = frame.target_rope_positions.slice(1, 0, batch_size);
         Tensor text_rows         = frame.text_kv_table_rows.slice(0, 0, batch_size);
         Tensor mtp_rows          = frame.mtp_kv_table_rows.slice(0, 0, batch_size);
-        Tensor read_slots        = frame.linear_state_read_slots.slice(0, 0, batch_size);
-        Tensor snapshot_slots    = frame.linear_state_snapshot_base_slots.slice(0, 0, batch_size);
-        Tensor continuation      = frame.continuation_slots.slice(0, 0, batch_size);
+        Tensor lanes             = frame.lanes.slice(0, 0, batch_size);
         Tensor rope_deltas       = frame.rope_deltas.slice(0, 0, batch_size);
         Tensor verify_ids        = frame.verify_ids.slice(1, 0, batch_size);
         Tensor target_positions  = frame.target_positions.slice(1, 0, batch_size);
@@ -125,26 +120,25 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                                                state.execution.device.stream);
         target_verify_accept(state.execution, state.continuation_hidden_store, card,
                              TargetVerifyFrameView{
-                                 .ids                              = verify_ids,
-                                 .cache_positions                  = target_positions,
-                                 .rope_positions                   = target_rope,
-                                 .valid_columns                    = target_valid,
-                                 .kv_table_rows                    = text_rows,
-                                 .linear_state_read_slots          = read_slots,
-                                 .linear_state_snapshot_base_slots = snapshot_slots,
-                                 .target_hidden                    = target_hidden,
-                                 .target_logits                    = target_logits,
-                                 .target_tokens                    = target_tokens,
-                                 .drafts                           = current_drafts,
-                                 .current_extents                  = current_extents,
-                                 .frontiers                        = frontiers,
-                                 .anchors                          = anchors,
-                                 .licensed_tokens                  = licensed_tokens,
-                                 .licensed_counts                  = licensed_counts,
-                                 .accepted_drafts                  = accepted,
-                                 .selected_hidden                  = selected_hidden,
-                                 .continuation_lanes               = continuation,
-                                 .sampling                         = frame.sampling,
+                                 .ids             = verify_ids,
+                                 .cache_positions = target_positions,
+                                 .rope_positions  = target_rope,
+                                 .valid_columns   = target_valid,
+                                 .kv_table_rows   = text_rows,
+                                 .lanes           = lanes,
+                                 .target_hidden   = target_hidden,
+                                 .target_logits   = target_logits,
+                                 .target_tokens   = target_tokens,
+                                 .drafts          = current_drafts,
+                                 .current_extents = current_extents,
+                                 .frontiers       = frontiers,
+                                 .anchors         = anchors,
+                                 .licensed_tokens = licensed_tokens,
+                                 .licensed_counts = licensed_counts,
+                                 .accepted_drafts = accepted,
+                                 .selected_hidden = selected_hidden,
+                                 .replay_records  = state.execution.replay_records,
+                                 .sampling        = frame.sampling,
                              },
                              envelopes.target_verify);
 
@@ -188,11 +182,10 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
     };
 }
 
-void warm_capture_mtp_decode_batch(MtpBatchContext& state, std::int32_t batch_size, std::uint32_t k,
-                                   MtpGqaEnvelopes envelopes, const GraphPrepare& prepare,
-                                   DecodeGraphDefinition& definition) {
+void capture_mtp_decode_batch(MtpBatchContext& state, std::int32_t batch_size, std::uint32_t k,
+                              MtpGqaEnvelopes envelopes, DecodeGraphDefinition& definition) {
     auto body = mtp_decode_batch_body(state, batch_size, k, envelopes);
-    warm_capture(state, definition, prepare, body);
+    capture_graph(state, definition, body);
 }
 
 void mtp_decode_batch(MtpBatchContext& state, std::int32_t batch_size, std::uint32_t k,

@@ -208,13 +208,13 @@ void DFlashFeatureSink::capture_positions(const Tensor& source, cudaStream_t str
                                cudaMemcpyDeviceToDevice, stream));
 }
 
-void DFlashFeatureSink::consume_prefill_chunk(std::int32_t tokens, bool boundary) {
+void DFlashFeatureSink::consume_prefill_chunk(std::int32_t tokens, bool turn_checkpoint) {
     if (!consume_prefill || tokens != active_tokens) {
         throw std::logic_error("DFlash prefill feature consumer is unavailable");
     }
     Tensor feature_window  = features->slice(1, 0, tokens);
     Tensor position_window = positions->slice(0, 0, tokens);
-    consume_prefill(feature_window, position_window, boundary);
+    consume_prefill(feature_window, position_window, turn_checkpoint);
 }
 
 TextContext::TextContext(DeviceContext& ctx, const LoadedModelData& weights, WorkspaceArena& work,
@@ -234,18 +234,29 @@ TextContext::TextContext(DeviceContext& ctx, const LoadedModelData& weights, Wor
     if (mtp_enabled() && !io_.mtp_decode && !io_.mtp) {
         throw std::invalid_argument("MTP TextContext requires MTP round state");
     }
-    set_linear_state_group(0, state_.slot_count());
+    set_linear_state_slots(0, state_.slot_count() > 1 ? 1 : 0);
     bind();
 }
 
 TextContext::~TextContext() = default;
 
-void TextContext::set_linear_state_group(std::int32_t base, std::int32_t capacity) {
-    if (base < 0 || capacity < 2 || base > state_.slot_count() - capacity) {
-        throw std::invalid_argument("TextContext Linear Attention state group is invalid");
+void TextContext::set_linear_state_slots(std::int32_t current_slot,
+                                         std::int32_t turn_checkpoint_slot) {
+    if (current_slot < 0 || current_slot >= state_.slot_count() || turn_checkpoint_slot < 0 ||
+        turn_checkpoint_slot >= state_.slot_count() || current_slot == turn_checkpoint_slot) {
+        throw std::invalid_argument("TextContext Linear Attention slots are invalid");
     }
-    linear_state_prefill_working_slot_ = LinearStateSlots::prefill_working_slot(base);
-    linear_state_boundary_slot_        = LinearStateSlots::prefix_boundary_slot(base, capacity);
+    linear_state_current_slot_         = current_slot;
+    linear_state_turn_checkpoint_slot_ = turn_checkpoint_slot;
+}
+
+void TextContext::set_gdn_state_action(GdnStateAction action,
+                                       const GdnReplayRecords* replay_records) {
+    if ((action == GdnStateAction::RecordForReplay) != (replay_records != nullptr)) {
+        throw std::invalid_argument("TextContext GDN state action has inconsistent records");
+    }
+    gdn_state_action_ = action;
+    replay_records_   = replay_records;
 }
 
 void TextContext::bind() {
@@ -623,8 +634,7 @@ void TextContext::mtp_forward_ar_step(const Tensor& token, const Tensor& previou
 
 void TextContext::ordinary_decode_batch(const Tensor& ids, const Tensor& cache_positions,
                                         const Tensor& rope_positions, const Tensor& kv_table_rows,
-                                        const Tensor& linear_state_read_slots,
-                                        const Tensor& linear_state_snapshot_base_slots,
+                                        const Tensor& linear_state_slots,
                                         ops::GqaExecutionEnvelope envelope, Tensor& hidden,
                                         Tensor& logits) {
     const std::int32_t batch = ids.ne[0];
@@ -635,10 +645,8 @@ void TextContext::ordinary_decode_batch(const Tensor& ids, const Tensor& cache_p
     require_tensor_shape(cache_positions, DType::I32, {batch}, "ordinary decode cache positions");
     require_tensor_shape(rope_positions, DType::I32, {batch}, "ordinary decode RoPE positions");
     require_tensor_shape(kv_table_rows, DType::I32, {batch}, "ordinary decode KV rows");
-    require_tensor_shape(linear_state_read_slots, DType::I32, {batch},
-                         "ordinary decode Linear Attention read slots");
-    require_tensor_shape(linear_state_snapshot_base_slots, DType::I32, {batch},
-                         "ordinary decode Linear Attention snapshot slots");
+    require_tensor_shape(linear_state_slots, DType::I32, {batch},
+                         "ordinary decode Linear Attention slots");
     require_tensor_shape(hidden, DType::BF16, {kCfg.hidden, batch}, "ordinary decode hidden");
     require_tensor_shape(logits, DType::BF16, {kCfg.vocab, batch}, "ordinary decode logits");
 
@@ -649,10 +657,7 @@ void TextContext::ordinary_decode_batch(const Tensor& ids, const Tensor& cache_p
         ScopedPositions rope_binding(active_rope_positions_, rope_positions);
         ScopedEnvelope envelope_binding(active_gqa_envelope_, envelope);
         ScopedValue<const Tensor*> kv_binding(active_kv_table_rows_, &kv_table_rows);
-        ScopedValue<const Tensor*> read_binding(active_linear_state_read_slots_,
-                                                &linear_state_read_slots);
-        ScopedValue<const Tensor*> snapshot_binding(active_linear_state_snapshot_base_slots_,
-                                                    &linear_state_snapshot_base_slots);
+        ScopedValue<const Tensor*> state_binding(active_linear_state_slots_, &linear_state_slots);
         ScopedValue<std::int32_t> batch_binding(active_sequence_batch_, batch);
         ScopedValue<std::int32_t> width_binding(active_sequence_width_, 1);
 
@@ -670,8 +675,7 @@ template <class Tap>
 void TextContext::target_verify_batch_impl(const Tensor& ids, const Tensor& cache_positions,
                                            const Tensor& rope_positions,
                                            const Tensor& valid_columns, const Tensor& kv_table_rows,
-                                           const Tensor& linear_state_read_slots,
-                                           const Tensor& linear_state_snapshot_base_slots,
+                                           const Tensor& linear_state_slots,
                                            ops::GqaExecutionEnvelope envelope, Tensor& hidden,
                                            Tensor& logits, Tensor& target_tokens, Tap& tap) {
     const std::int32_t width = ids.ne[0];
@@ -688,10 +692,8 @@ void TextContext::target_verify_batch_impl(const Tensor& ids, const Tensor& cach
                          "target verify batch RoPE positions");
     require_tensor_shape(valid_columns, DType::I32, {batch}, "target verify batch valid columns");
     require_tensor_shape(kv_table_rows, DType::I32, {batch}, "target verify batch KV rows");
-    require_tensor_shape(linear_state_read_slots, DType::I32, {batch},
-                         "target verify batch Linear Attention read slots");
-    require_tensor_shape(linear_state_snapshot_base_slots, DType::I32, {batch},
-                         "target verify batch Linear Attention snapshot slots");
+    require_tensor_shape(linear_state_slots, DType::I32, {batch},
+                         "target verify batch Linear Attention slots");
     require_tensor_shape(hidden, DType::BF16, {kCfg.hidden, width, batch},
                          "target verify batch hidden");
     require_tensor_shape(logits, DType::BF16, {kCfg.vocab, width, batch},
@@ -705,10 +707,7 @@ void TextContext::target_verify_batch_impl(const Tensor& ids, const Tensor& cach
         ScopedPositions rope_binding(active_rope_positions_, rope_positions);
         ScopedEnvelope envelope_binding(active_gqa_envelope_, envelope);
         ScopedValue<const Tensor*> kv_binding(active_kv_table_rows_, &kv_table_rows);
-        ScopedValue<const Tensor*> read_binding(active_linear_state_read_slots_,
-                                                &linear_state_read_slots);
-        ScopedValue<const Tensor*> snapshot_binding(active_linear_state_snapshot_base_slots_,
-                                                    &linear_state_snapshot_base_slots);
+        ScopedValue<const Tensor*> state_binding(active_linear_state_slots_, &linear_state_slots);
         ScopedValue<const Tensor*> valid_binding(active_valid_columns_, &valid_columns);
         ScopedValue<std::int32_t> batch_binding(active_sequence_batch_, batch);
         ScopedValue<std::int32_t> width_binding(active_sequence_width_, width);
@@ -733,25 +732,22 @@ void TextContext::target_verify_batch_impl(const Tensor& ids, const Tensor& cach
 
 void TextContext::target_verify_batch(const Tensor& ids, const Tensor& cache_positions,
                                       const Tensor& rope_positions, const Tensor& valid_columns,
-                                      const Tensor& kv_table_rows,
-                                      const Tensor& linear_state_read_slots,
-                                      const Tensor& linear_state_snapshot_base_slots,
+                                      const Tensor& kv_table_rows, const Tensor& linear_state_slots,
                                       ops::GqaExecutionEnvelope envelope, Tensor& hidden,
                                       Tensor& logits, Tensor& target_tokens) {
     NullTap tap;
     target_verify_batch_impl(ids, cache_positions, rope_positions, valid_columns, kv_table_rows,
-                             linear_state_read_slots, linear_state_snapshot_base_slots, envelope,
-                             hidden, logits, target_tokens, tap);
+                             linear_state_slots, envelope, hidden, logits, target_tokens, tap);
 }
 
-void TextContext::target_verify_batch(
-    const Tensor& ids, const Tensor& cache_positions, const Tensor& rope_positions,
-    const Tensor& valid_columns, const Tensor& kv_table_rows, const Tensor& linear_state_read_slots,
-    const Tensor& linear_state_snapshot_base_slots, ops::GqaExecutionEnvelope envelope,
-    Tensor& hidden, Tensor& logits, Tensor& target_tokens, DFlashFeatureSink& sink) {
+void TextContext::target_verify_batch(const Tensor& ids, const Tensor& cache_positions,
+                                      const Tensor& rope_positions, const Tensor& valid_columns,
+                                      const Tensor& kv_table_rows, const Tensor& linear_state_slots,
+                                      ops::GqaExecutionEnvelope envelope, Tensor& hidden,
+                                      Tensor& logits, Tensor& target_tokens,
+                                      DFlashFeatureSink& sink) {
     target_verify_batch_impl(ids, cache_positions, rope_positions, valid_columns, kv_table_rows,
-                             linear_state_read_slots, linear_state_snapshot_base_slots, envelope,
-                             hidden, logits, target_tokens, sink);
+                             linear_state_slots, envelope, hidden, logits, target_tokens, sink);
 }
 
 void TextContext::mtp_forward_decode_batch(const Tensor& ids, const Tensor& hidden,
@@ -871,46 +867,44 @@ void TextContext::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
     Tensor kc             = projection.key;
     Tensor vc             = projection.value;
     if (ph == Phase::Verify) {
-        Tensor& conv_states          = state_.conv.at(static_cast<std::size_t>(gidx));
-        const Tensor& read_slots     = active_linear_state_read_slots_ != nullptr
-                                           ? *active_linear_state_read_slots_
-                                           : io_.linear_state_read_slot;
-        const Tensor& snapshot_slots = active_linear_state_snapshot_base_slots_ != nullptr
-                                           ? *active_linear_state_snapshot_base_slots_
-                                           : io_.linear_state_snapshot_base_slot;
-        Tensor projection_input      = h;
-        Tensor query_output          = qc;
-        Tensor key_output            = kc;
-        Tensor value_output          = vc;
-        Tensor gate_output           = z;
-        if (active_sequence_batch_ != 0) {
-            const std::int32_t width = active_sequence_width_;
-            if (width <= 0 || width * active_sequence_batch_ != T) {
-                throw std::logic_error(
-                    "GDN sequence batch binding does not match aggregate columns");
-            }
-            projection_input = h.view({kCfg.hidden, width, active_sequence_batch_});
-            query_output     = qc.view({kCfg.key_dim, width, active_sequence_batch_});
-            key_output       = kc.view({kCfg.key_dim, width, active_sequence_batch_});
-            value_output     = vc.view({kCfg.value_dim, width, active_sequence_batch_});
-            gate_output      = z.view({kCfg.value_dim, width, active_sequence_batch_});
+        if (active_sequence_batch_ == 0 || active_linear_state_slots_ == nullptr) {
+            throw std::logic_error(
+                "Verify GDN requires an explicit sequence batch and state slots");
         }
+        const std::int32_t width = active_sequence_width_;
+        if (width <= 0 || width * active_sequence_batch_ != T) {
+            throw std::logic_error("GDN sequence batch binding does not match aggregate columns");
+        }
+        Tensor projection_input = h.view({kCfg.hidden, width, active_sequence_batch_});
+        Tensor query_output     = qc.view({kCfg.key_dim, width, active_sequence_batch_});
+        Tensor key_output       = kc.view({kCfg.key_dim, width, active_sequence_batch_});
+        Tensor value_output     = vc.view({kCfg.value_dim, width, active_sequence_batch_});
+        Tensor gate_output      = z.view({kCfg.value_dim, width, active_sequence_batch_});
+        Tensor& conv_states     = state_.conv.at(static_cast<std::size_t>(gidx));
         const Tensor valid = active_valid_columns_ != nullptr ? *active_valid_columns_ : Tensor{};
-        Variant::gdn_input_projection_snapshot(
-            projection_input, *w.projection, *w.conv1d, conv_states, valid, read_slots,
-            snapshot_slots, query_output, key_output, value_output, gate_output, ph, work_, s);
+        if (gdn_state_action_ == GdnStateAction::RecordForReplay) {
+            if (replay_records_ == nullptr) {
+                throw std::logic_error("Replay-record GDN has no record storage");
+            }
+            GdnReplayRecordLayer records = replay_records_->layer(gidx, active_sequence_batch_);
+            Variant::gdn_input_projection_record(projection_input, *w.projection, *w.conv1d,
+                                                 conv_states, valid, *active_linear_state_slots_,
+                                                 records.conv, query_output, key_output,
+                                                 value_output, gate_output, ph, work_, s);
+        } else {
+            Variant::gdn_input_projection_snapshot(
+                projection_input, *w.projection, *w.conv1d, conv_states, valid,
+                *active_linear_state_slots_, *active_linear_state_slots_, query_output, key_output,
+                value_output, gate_output, ph, work_, s);
+        }
     } else {
         const auto conv = workspace_recipe::gdn_prefill_conv<TextConfig>(work_, T);
         Tensor qkv      = conv.projected;
         Variant::gdn_input_projection(h, *w.projection, qkv, z, ph, work_, s);
         Tensor qkv_c = conv.convolved;
-        // Prefill reads the committed conv window from linear_state_prefill_read_slot_ and writes
-        // the running window to the target working slot (in-place when both roles select it).
-        Tensor conv_in =
-            state_.conv_slot(static_cast<std::uint32_t>(gidx), linear_state_prefill_read_slot_);
-        Tensor conv_out =
-            state_.conv_slot(static_cast<std::uint32_t>(gidx), linear_state_prefill_working_slot_);
-        ops::causal_conv1d_silu(qkv, *w.conv1d, conv_in, conv_out, qkv_c, s);
+        Tensor conv_state =
+            state_.conv_slot(static_cast<std::uint32_t>(gidx), linear_state_current_slot_);
+        ops::causal_conv1d_silu(qkv, *w.conv1d, conv_state, conv_state, qkv_c, s);
         ops::extract_bf16_columns(qkv_c, 0, qc, s);
         ops::extract_bf16_columns(qkv_c, kCfg.key_dim, kc, s);
         ops::extract_bf16_columns(qkv_c, 2 * kCfg.key_dim, vc, s);
@@ -923,44 +917,35 @@ void TextContext::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
     Tensor o  = workspace_recipe::gdn_recurrent_output<TextConfig>(work_, T).view(
         {kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});
     if (ph == Phase::Verify) {
-        Tensor& recurrent_states     = state_.recurrent.at(static_cast<std::size_t>(gidx));
-        const Tensor& read_slots     = active_linear_state_read_slots_ != nullptr
-                                           ? *active_linear_state_read_slots_
-                                           : io_.linear_state_read_slot;
-        const Tensor& snapshot_slots = active_linear_state_snapshot_base_slots_ != nullptr
-                                           ? *active_linear_state_snapshot_base_slots_
-                                           : io_.linear_state_snapshot_base_slot;
-        if (active_sequence_batch_ != 0) {
-            const std::int32_t width = active_sequence_width_;
-            Tensor q_batch =
-                q_recurrent.view({kCfg.gdn_k_dim, kCfg.gdn_k_heads, width, active_sequence_batch_});
-            Tensor k_batch =
-                k_recurrent.view({kCfg.gdn_k_dim, kCfg.gdn_k_heads, width, active_sequence_batch_});
-            Tensor v_batch =
-                vv.view({kCfg.gdn_v_dim, kCfg.gdn_v_heads, width, active_sequence_batch_});
-            Tensor g_batch    = g.view({kCfg.gdn_v_heads, width, active_sequence_batch_});
-            Tensor beta_batch = beta.view({kCfg.gdn_v_heads, width, active_sequence_batch_});
-            Tensor out_batch =
-                o.view({kCfg.gdn_v_dim, kCfg.gdn_v_heads, width, active_sequence_batch_});
-            const Tensor valid =
-                active_valid_columns_ != nullptr ? *active_valid_columns_ : Tensor{};
+        Tensor& recurrent_states = state_.recurrent.at(static_cast<std::size_t>(gidx));
+        const std::int32_t width = active_sequence_width_;
+        Tensor q_batch =
+            q_recurrent.view({kCfg.gdn_k_dim, kCfg.gdn_k_heads, width, active_sequence_batch_});
+        Tensor k_batch =
+            k_recurrent.view({kCfg.gdn_k_dim, kCfg.gdn_k_heads, width, active_sequence_batch_});
+        Tensor v_batch = vv.view({kCfg.gdn_v_dim, kCfg.gdn_v_heads, width, active_sequence_batch_});
+        Tensor g_batch = g.view({kCfg.gdn_v_heads, width, active_sequence_batch_});
+        Tensor beta_batch = beta.view({kCfg.gdn_v_heads, width, active_sequence_batch_});
+        Tensor out_batch =
+            o.view({kCfg.gdn_v_dim, kCfg.gdn_v_heads, width, active_sequence_batch_});
+        const Tensor valid = active_valid_columns_ != nullptr ? *active_valid_columns_ : Tensor{};
+        if (gdn_state_action_ == GdnStateAction::RecordForReplay) {
+            GdnReplayRecordLayer records = replay_records_->layer(gidx, active_sequence_batch_);
+            ops::gated_delta_net_replay_record(q_batch, k_batch, v_batch, g_batch, beta_batch,
+                                               kGdnScale, recurrent_states, valid,
+                                               *active_linear_state_slots_, records.key,
+                                               records.value, records.gate, out_batch, s);
+        } else {
             ops::gated_delta_net_snapshot(q_batch, k_batch, v_batch, g_batch, beta_batch, kGdnScale,
                                           /*normalize_qk=*/true, recurrent_states, valid,
-                                          read_slots, snapshot_slots, out_batch, s);
-        } else {
-            ops::gated_delta_net_snapshot(q_recurrent, k_recurrent, vv, g, beta, kGdnScale,
-                                          /*normalize_qk=*/true, recurrent_states, Tensor{},
-                                          read_slots, snapshot_slots, o, s);
+                                          *active_linear_state_slots_, *active_linear_state_slots_,
+                                          out_batch, s);
         }
     } else {
-        // Prefill reads the committed recurrent state from linear_state_prefill_read_slot_ and
-        // writes the running state to the target working slot (in-place when both roles select it).
-        Tensor recurrent_in  = state_.recurrent_slot(static_cast<std::uint32_t>(gidx),
-                                                     linear_state_prefill_read_slot_);
-        Tensor recurrent_out = state_.recurrent_slot(static_cast<std::uint32_t>(gidx),
-                                                     linear_state_prefill_working_slot_);
+        Tensor recurrent_state =
+            state_.recurrent_slot(static_cast<std::uint32_t>(gidx), linear_state_current_slot_);
         ops::gated_delta_net(q_recurrent, k_recurrent, vv, g, beta, kGdnScale,
-                             /*normalize_qk=*/true, work_, recurrent_in, recurrent_out, o, s);
+                             /*normalize_qk=*/true, work_, recurrent_state, o, s);
     }
 
     Tensor on = workspace_recipe::gdn_normalized_output<TextConfig>(work_, T).view(
@@ -1078,29 +1063,12 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
     }
     const int base_i = static_cast<int>(base);
 
-    // The committed Linear Attention state for the resident prefix lives in the read slot.
-    // Chunk 0 reads it; every later chunk reads the target's prefill working slot. Resolved on the
-    // host because prefill is eager.
-    std::int32_t initial_linear_state_slot = linear_state_prefill_working_slot_;
-    CUDA_CHECK(cudaStreamSynchronize(s));
-    CUDA_CHECK(cudaMemcpy(&initial_linear_state_slot, io_.linear_state_read_slot.data,
-                          sizeof(initial_linear_state_slot), cudaMemcpyDeviceToHost));
-    if (initial_linear_state_slot < 0 || initial_linear_state_slot >= state_.slot_count()) {
-        throw std::logic_error("prefill Linear Attention read slot is out of range");
-    }
-
-    // Turn-boundary GDN snapshot: when a boundary is requested, publish the running conv/SSM state
-    // into the dedicated last snapshot slot exactly at absolute position
-    // prefill_snapshot_boundary_. Chunks are capped so one ends precisely at the boundary, so slot
-    // 0 holds the state at that position when we copy it out; the next turn continues the
-    // recurrence from there for partial prefix reuse. The boundary must lie strictly inside (base,
-    // base+T].
-    const std::int64_t base64   = static_cast<std::int64_t>(base);
-    const std::int64_t snap_abs = prefill_snapshot_boundary_;
-    const bool has_snapshot =
-        snap_abs > base64 && snap_abs <= base64 + static_cast<std::int64_t>(T);
-    const int snap_rel               = has_snapshot ? static_cast<int>(snap_abs - base64) : -1;
-    const std::int32_t boundary_slot = linear_state_boundary_slot_;
+    const std::int64_t base64         = static_cast<std::int64_t>(base);
+    const std::int64_t checkpoint_abs = prefill_turn_checkpoint_frontier_;
+    const bool has_turn_checkpoint =
+        checkpoint_abs > base64 && checkpoint_abs <= base64 + static_cast<std::int64_t>(T);
+    const int checkpoint_rel = has_turn_checkpoint ? static_cast<int>(checkpoint_abs - base64) : -1;
+    const std::int32_t turn_checkpoint_slot = linear_state_turn_checkpoint_slot_;
 
     const bool prepare_mtp_prompt = mtp_enabled() && io_.mtp.has_value();
     if (prepare_mtp_prompt &&
@@ -1110,11 +1078,9 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
     int t0 = 0;
     for (; t0 < T;) {
         int len = std::min(chunk, T - t0);
-        // Cap the chunk so it ends exactly at the snapshot boundary. Because a capped chunk is
-        // shorter than `chunk`, the loop must advance by the processed `len` (see the t0 += len at
-        // the end of the body), not by `chunk`, or it would skip [t0+len, t0+chunk) and drop the
-        // tail.
-        if (snap_rel > 0 && t0 < snap_rel && t0 + len > snap_rel) { len = snap_rel - t0; }
+        if (checkpoint_rel > 0 && t0 < checkpoint_rel && t0 + len > checkpoint_rel) {
+            len = checkpoint_rel - t0;
+        }
         work_.reset();
 
         VisionChunk vision_chunk;
@@ -1130,9 +1096,6 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
         const bool is_last = finalize_at_end && (t0 + len == T);
         nvtx::ScopedRange chunk_range(nvtx::Name::PrefillChunk, nvtx::Category::Prefill,
                                       static_cast<std::uint64_t>(len));
-
-        linear_state_prefill_read_slot_ =
-            (t0 == 0) ? initial_linear_state_slot : linear_state_prefill_working_slot_;
 
         {
             std::vector<std::int32_t> local_scatter_indices;
@@ -1301,37 +1264,30 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
                 }
             }
 
-            if (snap_rel > 0 && t0 + len == snap_rel && boundary_hidden_output_ != nullptr) {
-                require_tensor_shape(*boundary_hidden_output_, DType::BF16, {kCfg.hidden, 1},
-                                     "boundary hidden output");
-                const Tensor boundary_hidden = xf.slice(1, len - 1, 1);
-                CUDA_CHECK(cudaMemcpyAsync(boundary_hidden_output_->data, boundary_hidden.data,
-                                           boundary_hidden.bytes(), cudaMemcpyDeviceToDevice, s));
+            if (checkpoint_rel > 0 && t0 + len == checkpoint_rel &&
+                turn_checkpoint_hidden_output_ != nullptr) {
+                require_tensor_shape(*turn_checkpoint_hidden_output_, DType::BF16, {kCfg.hidden, 1},
+                                     "turn checkpoint hidden output");
+                const Tensor turn_hidden = xf.slice(1, len - 1, 1);
+                CUDA_CHECK(cudaMemcpyAsync(turn_checkpoint_hidden_output_->data, turn_hidden.data,
+                                           turn_hidden.bytes(), cudaMemcpyDeviceToDevice, s));
             }
         }
 
         if constexpr (requires { tap.consume_prefill_chunk(len, false); }) {
             work_.reset();
-            tap.consume_prefill_chunk(len, snap_rel > 0 && t0 + len == snap_rel);
+            tap.consume_prefill_chunk(len, checkpoint_rel > 0 && t0 + len == checkpoint_rel);
         }
 
-        // Snapshot the running GDN state at the requested boundary into the dedicated slot. This
-        // chunk ended exactly at the boundary (see the len cap above), so slot 0 is the state
-        // there.
-        if (snap_rel > 0 && t0 + len == snap_rel) {
-            state_.copy_slot(linear_state_prefill_working_slot_, boundary_slot, s);
+        if (checkpoint_rel > 0 && t0 + len == checkpoint_rel) {
+            state_.copy_slot(linear_state_current_slot_, turn_checkpoint_slot, s);
         }
 
         t0 += len;
         break;
     }
 
-    // Consume the one-shot boundary request so a subsequent boundary-less prefill does not
-    // snapshot.
-    prefill_snapshot_boundary_ = -1;
-
-    // Prefill wrote the target working state; the first decode round reads that slot.
-    ops::set_i32_scalar(io_.linear_state_read_slot, linear_state_prefill_working_slot_, s);
+    prefill_turn_checkpoint_frontier_ = -1;
 
     ctx_.synchronize();
     work_.reset();

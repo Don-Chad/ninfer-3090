@@ -4,13 +4,16 @@
 
 #include "serve/generation_service.h"
 #include "serve/responses_schema.h"
+#include "serve/translate.h"
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -28,6 +31,25 @@ RequestLimits limits() {
     RequestLimits value;
     value.default_max_tokens = 256;
     return value;
+}
+
+ninfer::PromptCapabilities effort_capabilities() {
+    ninfer::PromptCapabilities capabilities;
+    capabilities.enable_thinking                 = true;
+    capabilities.reasoning_effort.low            = true;
+    capabilities.reasoning_effort.medium         = true;
+    capabilities.reasoning_effort.xhigh          = true;
+    capabilities.reasoning_effort.default_effort = ninfer::ReasoningEffort::XHigh;
+    return capabilities;
+}
+
+bool throws_api(const std::function<void()>& fn) {
+    try {
+        fn();
+    } catch (const ApiException&) { return true; } catch (...) {
+        return false;
+    }
+    return false;
 }
 
 std::string api_code(const std::function<void()>& fn) {
@@ -82,8 +104,8 @@ int test_basic_request() {
               "previous response id parsed");
     failures += check(request.generation.max_tokens == 64 && request.generation.max_tokens_set,
                       "max_output_tokens reaches generation request");
-    failures += check(request.generation.enable_thinking.value_or(false),
-                      "medium reasoning enables thinking");
+    failures += check(request.generation.reasoning_effort == RequestedReasoningEffort::Medium,
+                      "medium reasoning effort was not parsed");
     failures += check(request.store && !request.stream, "Responses defaults applied");
     ResponsesRequest composed = request;
     ChatTurn previous;
@@ -98,6 +120,104 @@ int test_basic_request() {
                           composed.generation.messages[1].content[0].text == "old answer" &&
                           composed.generation.messages[2].content[0].text == "hello",
                       "instructions, previous context, and current input composed in order");
+    return failures;
+}
+
+int test_reasoning_effort() {
+    const Json base = {{"model", "m"}, {"input", "hello"}, {"max_output_tokens", 32}};
+    int failures    = 0;
+
+    for (const auto& [wire, expected] :
+         std::array<std::pair<const char*, RequestedReasoningEffort>, 7>{
+             {{"none", RequestedReasoningEffort::None},
+              {"minimal", RequestedReasoningEffort::Minimal},
+              {"low", RequestedReasoningEffort::Low},
+              {"medium", RequestedReasoningEffort::Medium},
+              {"high", RequestedReasoningEffort::High},
+              {"xhigh", RequestedReasoningEffort::XHigh},
+              {"max", RequestedReasoningEffort::Max}}}) {
+        Json body         = base;
+        body["reasoning"] = Json{{"effort", wire}};
+        failures +=
+            check(parse_responses_request(body, limits()).generation.reasoning_effort == expected,
+                  std::string("Responses did not accept protocol effort ") + wire);
+    }
+
+    Json low                            = base;
+    low["reasoning"]                    = Json{{"effort", "low"}};
+    const GenerationRequest low_request = parse_responses_request(low, limits()).generation;
+    const ResolvedPromptSemantics low_semantics =
+        resolve_prompt_semantics(low_request, ServeOptions{}, effort_capabilities());
+    failures += check(low_semantics.enable_thinking &&
+                          low_semantics.reasoning_effort == ninfer::ReasoningEffort::Low,
+                      "Responses low effort did not resolve through template capabilities");
+
+    Json none                                    = base;
+    none["reasoning"]                            = Json{{"effort", "none"}};
+    const ResolvedPromptSemantics none_semantics = resolve_prompt_semantics(
+        parse_responses_request(none, limits()).generation, ServeOptions{}, effort_capabilities());
+    failures += check(!none_semantics.enable_thinking && !none_semantics.reasoning_effort,
+                      "Responses none effort did not disable thinking");
+
+    Json high                            = base;
+    high["reasoning"]                    = Json{{"effort", "high"}};
+    const GenerationRequest high_request = parse_responses_request(high, limits()).generation;
+    failures += check(api_code([&] {
+                          (void)resolve_prompt_semantics(high_request, ServeOptions{},
+                                                         effort_capabilities());
+                      }) == "reasoning_effort_not_supported",
+                      "Responses high effort bypassed template capability validation");
+
+    Json invalid         = base;
+    invalid["reasoning"] = Json{{"effort", "ultra"}};
+    failures += check(throws_api([&] { (void)parse_responses_request(invalid, limits()); }),
+                      "unknown Responses reasoning effort was accepted");
+    invalid["reasoning"] = Json{{"effort", 1}};
+    failures += check(throws_api([&] { (void)parse_responses_request(invalid, limits()); }),
+                      "non-string Responses reasoning effort was accepted");
+    return failures;
+}
+
+int test_preserve_thinking_options_and_inheritance() {
+    const Json base = {{"model", "m"}, {"input", "hello"}};
+    int failures    = 0;
+
+    Json kwargs                    = base;
+    kwargs["chat_template_kwargs"] = Json{{"preserve_thinking", true}};
+    ResponsesRequest request       = parse_responses_request(kwargs, limits());
+    failures += check(request.generation.preserve_thinking == true,
+                      "Responses chat_template_kwargs preserve_thinking parsed");
+
+    ResponsesRequest inherited = parse_responses_request(base, limits());
+    inherit_responses_preserve_thinking(inherited, true);
+    failures += check(inherited.generation.preserve_thinking == true &&
+                          !inherited.generation.preserve_thinking_semantic_change,
+                      "Responses child did not inherit parent preserve_thinking");
+
+    ResponsesRequest unchanged = request;
+    inherit_responses_preserve_thinking(unchanged, true);
+    failures += check(!unchanged.generation.preserve_thinking_semantic_change,
+                      "equal explicit preserve value marked a semantic change");
+
+    Json explicit_false                 = base;
+    explicit_false["preserve_thinking"] = false;
+    ResponsesRequest changed            = parse_responses_request(explicit_false, limits());
+    inherit_responses_preserve_thinking(changed, true);
+    failures += check(changed.generation.preserve_thinking == false &&
+                          changed.generation.preserve_thinking_semantic_change,
+                      "explicit Responses preserve branch was not marked");
+
+    Json conflict                 = kwargs;
+    conflict["preserve_thinking"] = false;
+    failures += check(api_code([&] { (void)parse_responses_request(conflict, limits()); }) ==
+                          "conflicting_template_option",
+                      "Responses conflicting preserve values were accepted");
+
+    Json unknown                    = base;
+    unknown["chat_template_kwargs"] = Json{{"unknown", 1}};
+    failures += check(api_code([&] { (void)parse_responses_request(unknown, limits()); }) ==
+                          "chat_template_option_not_supported",
+                      "Responses unknown chat template option was accepted");
     return failures;
 }
 
@@ -181,12 +301,6 @@ int test_explicit_rejections() {
                           "tool_choice_not_supported",
                       "required tool choice rejected explicitly");
 
-    Json effort         = base;
-    effort["reasoning"] = Json{{"effort", "high"}};
-    failures += check(api_code([&] { (void)parse_responses_request(effort, limits()); }) ==
-                          "reasoning_effort_not_supported",
-                      "unsupported reasoning effort rejected");
-
     Json structured    = base;
     structured["text"] = Json{{"format", Json{{"type", "json_schema"}}}};
     failures += check(api_code([&] { (void)parse_responses_request(structured, limits()); }) ==
@@ -229,6 +343,7 @@ int test_response_object() {
     ResponsesRequest request = parse_responses_request(Json{{"model", "qwen3.6-27b"},
                                                             {"input", "hello"},
                                                             {"max_output_tokens", 32},
+                                                            {"reasoning", Json{{"effort", "low"}}},
                                                             {"store", false}},
                                                        limits());
     ResponsesRuntimeValues runtime;
@@ -246,6 +361,8 @@ int test_response_object() {
                       "typed reasoning and message output Items");
     failures += check(!response.contains("output_text"),
                       "SDK-only output_text helper absent from wire body");
+    failures += check(response.at("reasoning").at("effort") == "low",
+                      "Responses object did not echo reasoning effort");
     failures +=
         check(response.at("usage").at("input_tokens_details").at("cached_tokens") == 4 &&
                   response.at("usage").at("output_tokens_details").at("reasoning_tokens") == 3 &&
@@ -376,6 +493,8 @@ int test_input_tokens_schema() {
 int main() {
     int failures = 0;
     failures += test_basic_request();
+    failures += test_preserve_thinking_options_and_inheritance();
+    failures += test_reasoning_effort();
     failures += test_typed_items_and_tools();
     failures += test_explicit_rejections();
     failures += test_response_object();

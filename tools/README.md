@@ -13,6 +13,7 @@ for the selected tool.
 | Task | Location |
 |---|---|
 | Build the 27B artifact | [`convert/qwen3_6_27b/`](convert/qwen3_6_27b/) |
+| Build the Qwen3.8-27B artifact | [`convert/qwen3_8_27b/`](convert/qwen3_8_27b/) |
 | Build the 35B-A3B artifact | [`convert/qwen3_6_35b_a3b/`](convert/qwen3_6_35b_a3b/) |
 | Inspect artifact metadata and objects | [`artifact/inspect.py`](artifact/inspect.py) |
 | Run the 27B Python reference | [`reference/qwen3_6_27b/`](reference/qwen3_6_27b/README.md) |
@@ -20,6 +21,7 @@ for the selected tool.
 | Compare 27B artifact/source Vision activations | [`parity/qwen3_6_27b/`](parity/qwen3_6_27b/README.md) |
 | Run benchmark matrices | [`bench/`](bench/README.md) |
 | Exercise a resident HTTP server | [`smoke/serve_contract.py`](smoke/serve_contract.py) |
+| Exercise thinking preservation through a managed server | [`smoke/serve_thinking_preservation.py`](smoke/serve_thinking_preservation.py) |
 
 ## Artifact workflow
 
@@ -30,6 +32,10 @@ artifact. The paths below are placeholders for the maintainer's local checkpoint
 python3 -m tools.convert.qwen3_6_27b.convert \
   --model /path/to/Qwen3.6-27B \
   --out out/qwen3_6_27b.ninfer
+
+python3 -m tools.convert.qwen3_8_27b.convert \
+  --model /path/to/Qwen3.8-27B \
+  --out out/qwen3_8_27b.ninfer
 
 python3 -m tools.convert.qwen3_6_35b_a3b.convert \
   --model /path/to/Qwen3.6-35B-A3B-base \
@@ -88,3 +94,11 @@ python3 -m tools.smoke.serve_contract \
 
 The client exercises OpenAI, Anthropic, streaming, usage, multimodal, and tool-call response
 surfaces against the resident process.
+
+For turn-checkpoint and thinking-history behavior, the managed smoke script launches a real server
+and consumes the repository fixture:
+
+```bash
+python3 tools/smoke/serve_thinking_preservation.py \
+  --artifact out/qwen3_6_27b.ninfer --backend mtp
+```

@@ -228,7 +228,7 @@ admission；二者是 server-side phases，不需要扩展成更多 model-execut
 Intermediate prefill chunks 只推进 prompt state。Finalization unit 执行 target output selection并建立 decode
 anchor；如果立即命中 terminal condition，请求不进入 decode batch。Retained current frontier 正好覆盖完整
 prompt 时可以跳过 suffix prefill，但仍通过同一 finalization unit 从 retained tail state 产生下一 anchor，并在
-MTP 下完成 exact-hit bridge/proposal。命中已保存 boundary checkpoint 时则从该 checkpoint prefill 新 suffix。
+MTP 下完成 exact-hit bridge/proposal。命中已保存 turn checkpoint 时则从该 checkpoint prefill 新 suffix。
 单独的 KV match 不足以进入 `DECODE_READY`。
 
 ### 4.2 Slot
@@ -266,7 +266,7 @@ lane 的 backing 中，但不再存在 active request control，也不计入 act
 
 - Main/backend KV allocations 及 committed frontiers；
 - Linear Attention 和其他 fixed model-state allocation；
-- target decode cursor，包括 current anchor、position/RoPE progress 和 committed state selectors；
+- target decode cursor，包括 current anchor 和 position/RoPE progress；
 - continuation 所需的 hidden/checkpoint state；
 - prefix identity 和 target-defined reusable checkpoints。
 
@@ -275,6 +275,11 @@ workspace 或 graph。当前 fixed-state backing 是 lane-affine 的：retained 
 所有 free lanes 中寻找可复用 continuation，选中后在同一 lane 建立新的 request control；需要 active
 capacity 时可以先驱逐其他 free lanes 上的 retained state。新 request 的 sampling、RNG、stop 和 output
 state 始终重新创建。
+
+Qwen3.6 的 lane 是 Linear Attention state 的唯一 locator。`C=max_concurrency` 时，shared pool 固定使用
+`[0,C)` 作为各 lane 的 current committed state，使用 `[C,2C)` 作为各 lane 的 turn-checkpoint
+checkpoint；一份 slot 同时选择全部 GDN layers 的 convolution history 和 recurrent state。Decode round
+不在 `SequenceState` 中维护随 speculative position 变化的 state selector。
 
 ### 4.4 Batch row
 
@@ -685,8 +690,8 @@ block-table 和 allocator 的 contract 属于 Paged KV Context Store，不在本
 Retained prefix 是从已结束 request 中分离出来的、单一 owner 的 SequenceState。它留在原 physical lane，
 但该 lane 的 control slot 对 scheduler 是 free。Retained state 只发布 target 已保存完整 continuation state
 的 checkpoints。当前 Qwen3.6 retained state 可以发布 current
-resume frontier，以及一份有效时的 assistant-content boundary checkpoint。两者引用同一份 KV
-allocation；boundary checkpoint 额外保存对应的 recurrent、hidden、speculative-backend 和 position state，
+resume frontier，以及一份有效时的 turn checkpoint。两者引用同一份 KV allocation；turn checkpoint
+额外保存对应的 recurrent、hidden、speculative-backend 和 position state，
 不复制 KV payload。
 
 Admission 在同一 lane 成功时消费 retained entry，并把 SequenceState ownership 转移给新 request：
@@ -694,11 +699,11 @@ Admission 在同一 lane 成功时消费 retained entry，并把 SequenceState o
 - incoming prompt 在 current resume frontier 结束时，跳过 suffix token processing，经 finalization unit
   产生下一 anchor 后进入 `DECODE_READY`；
 - incoming prompt 完整包含 current resume frontier 并有后续 suffix 时，从该 frontier prefill suffix；
-- incoming prompt 匹配已保存 assistant-content boundary 并在其后有新 suffix 时，在 atomic admission
-  transaction 提交后把 growing allocations truncate 到 boundary、恢复完整 checkpoint，再 prefill suffix；
+- incoming prompt 匹配已保存 turn checkpoint 并在其后有新 suffix 时，在 atomic admission transaction
+  提交后把 growing allocations truncate 到 checkpoint frontier、恢复完整 checkpoint，再 prefill suffix；
 - common prefix 结束在没有 checkpoint 的任意其他位置时视为 cache miss。
 
-Boundary restore 保留包含 checkpoint 的部分尾页，释放其后的完整 pages。KV page 或 token prefix match
+Turn-checkpoint restore 保留包含 checkpoint 的部分尾页，释放其后的完整 pages。KV page 或 token prefix match
 本身不是 checkpoint；当前架构不支持 arbitrary longest-common-prefix reuse。
 
 一个 retained entry 同时只能被一个 active request 消费。多个 active requests 不共享同一份可写
@@ -825,6 +830,7 @@ Resident Model Runtime 是 model-instance object，不是 request object。它�
 - shared Sequence-State Store；
 - 一份 shared execution workspace；
 - 一份最大容量为 `C` 的 `DecodeBatchFrame`；
+- speculative backend 启用时，一份容量为 `C`、宽度为 `draft_window+1` 的 all-layer ReplaySSM record arena；
 - startup-captured graph definitions 和 topology executables。
 
 每个 request 的持久状态只存在于 slot control 和该 slot 当前拥有的 `SequenceState`。Model Runtime 不保存
@@ -854,11 +860,14 @@ current_tokens[B]
 cache_positions[1,B]
 RoPE positions/deltas[per target contract, B]
 Main KV table rows[B] + optional backend KV table rows[B]
-Linear Attention read/snapshot selectors[B]
-continuation-state destination selectors[B]
+lanes[B]
 SamplingConfig[B] + logical sampling positions[B]
 sampled_tokens[B]
 ```
+
+`lanes[b]` 是 row `b` 的 stable execution lane。Qwen3.6 用它同时选择 Linear Attention current state 和
+continuation-hidden destination；speculative Fold 也从 frozen membership 取得同一个 lane。KV table row
+保持独立，因为它描述 paged allocation binding，不是 fixed-state ownership。
 
 Hidden activations、mixer intermediates 和 logits 使用同一 shared frame/workspace 中的 exact-`B` views。
 `DecodeBatchFrame` 是 runtime 对这些 typed regions 的逻辑集合，不是传给所有 Ops 的通用 descriptor ABI；
@@ -871,7 +880,7 @@ Batch assembly 对不同数据采用不同处理：
 |---|---|
 | token、position、sampling config 等小型 controls | 按 compact row 写入连续 batch ingress |
 | KV payload 和 block tables | 保留在 shared paged pool，只写 per-row table-row selector |
-| Linear Attention / backend fixed state | 保留在 shared state pool，只写 target-defined slot/unit selector |
+| Linear Attention / backend fixed state | 保留在 shared state pool，以 stable lane 或 backend-defined row 定位 |
 | request stop、output 和 external identity | 只保留在 host slot，不进入 model graph |
 | activations、hidden、logits | 由一次 whole-batch schedule 在 shared execution memory 中产生 |
 
@@ -938,6 +947,10 @@ Ordinary round 对每个未取消 row 恰好 license 一个 token。EOS、stop �
 成为 terminal token，但不把同一 row 的 model state 与 output 截在不同 frontier。Cancellation 是唯一可以
 丢弃整行 provisional result 的 ordinary boundary outcome；该 `SequenceState` 随即释放。
 
+Qwen3.6 ordinary GDN 以 `initial_state_slots=lanes`、`snapshot_base_slots=lanes` 调用已有 width-1 Snapshot
+leaf。该 leaf 在完整读取 row 的 initial checkpoint 后原地覆盖同一 current slot，因此不产生 speculative
+trajectory，也不需要额外 state slot。
+
 ### 8.5 Whole-model execution
 
 logical batch size 为 `B` 时，一次 replay 的 model schedule 为：
@@ -994,6 +1007,12 @@ row result
 一次逻辑 transaction。Output event 只有在这些 state 全部 commit 后才能对 response path 可见。一行结束、
 取消或在 speculative mode 中接受较短 prefix，不改变其他行的 commit result。
 
+Speculative backend 的 target GDN 使用 ReplaySSM 时，GPU graph 只读 lane 的 current state 并写
+Program-owned raw records，不推进 committed GDN state。CPU output preview 得到每行最终提交长度后，
+`resolve_pending_batch` 先用原始 `B` 行执行一次 all-layer Fold，再完成必要的 hidden/backend correction，
+同步成功后才推进 host frontiers。取消行以 `commit_columns=0` 参与原始 row mapping，Fold 对该行严格
+no-op。Executor 只能在这个 commit tail 成功后提交 output preview 和发布 output event。
+
 全部 rows resolve 后，`RoundMembership` 销毁，frame 可以被下一 unit 覆盖。继续运行的 slots 在下一
 boundary 重新 compact；没有任何 row identity 从当前 frame 继承到下一 frame。
 
@@ -1047,6 +1066,22 @@ kernel 参数和 launch shape 触发 `cudaGraphExecUpdate` 不兼容。资源数
 Profile 在 capture 前按 configured context ceiling 截断，只有实际 reachable 的 topology classes 才实例化
 executable。Backend-specific proposal shape 只有在真实改变 CUDA node topology 时才形成每个 exact `B`
 下的 topology class，不生成 ordinary-tail 或额外 `B=1` compatibility graph。
+
+Startup 对 graph family 的准备顺序固定为：
+
+1. 对启用的 semantic family，以 `B=1` 的首个 reachable profile 执行一次 eager round，使 CUDA code 和
+   library runtime 在 stream capture 前完成 lazy materialization；
+2. 捕获全部 exact-`B`/profile definitions。Capture 只记录 CUDA work，不执行 model round，也不承担
+   production 数值 qualification；
+3. 每个 topology executable 由其首个 definition 实例化。该 topology 的其余 definitions 逐个通过
+   `cudaGraphExecUpdate` 验证兼容性，并通过 `cudaGraphUpload` 完成 executable resource materialization；
+4. 每个 executable 只 replay 一次首个 definition 作为 startup smoke。遍历其余 profiles 后，以
+   update/upload 恢复首个 installed definition，不额外 replay。
+
+因此 startup 不为每个 definition 执行 eager warm，也不把每个 profile 的 update 当成 real-model replay
+qualification。完整算子与 route correctness 由独立测试和 real-artifact integration route 负责；production
+startup 只验证 graph inventory、update compatibility、resource materialization 和每个 executable 的一次
+可执行性。
 
 ### 9.2 Dynamic active set
 
@@ -1116,6 +1151,12 @@ publication 属于 state substrate materialization。Serving 期间不 capture�
 Startup graph allowance 必须计入全部 reachable exact-`B` definitions，以及每个 exact `B`、每个实际
 topology class 的一份 executable，不能沿用只覆盖 `B=1` definitions 的 reservation。
 
+Capture/smoke 使用的 temporary Paged-KV allocation 每个有效 row 只 materialize 一个 private physical
+page，并把该 page 重复发布到 temporary block-table row。准备一次 eager/smoke 时只清零 `[0,B)` 对应的
+temporary pages、fixed-state lanes 和 typed controls；definition capture 本身只 reset shared workspace 的
+host allocator。不得按 configured KV capacity 清零整个 physical pool，也不得为每个 definition 清零全部
+`C` 行 state。
+
 ---
 
 ## 10. Speculative decoding
@@ -1155,6 +1196,18 @@ Engine capability 在 startup 时固定。MTP Engine 可以同时启用 Vision�
 不同 request 可以接受不同数量的 proposals。Acceptance length 是 result metadata，不能据此拆分
 verification、重放 model 或形成 acceptance cohort。Target model 始终是 output authority，只有 accepted
 target/backend state 可以 commit。
+
+Qwen3.6 的 MTP 与 DFlash 共用同一 target ReplaySSM transaction：target verify 按 compact row 把每层
+convolution/key/value/gate records 写入固定 arena，physical record row 恒等于本轮 batch row；CPU 得到
+最终 output prefix 后，一次 Fold 用 frozen `lanes[b]` 把 row `b` 提交到该 lane 的 current state。Rows
+不得因取消或不同 acceptance length 被压缩、重排。Record 位于 CUDA Graph 内，Fold 位于 CPU 决策后的
+eager commit tail；下一 GPU unit 必须等当前 records 被 Fold 消费后才能覆盖 arena。
+
+Target execution 完成到 Fold 结束期间，请求处于 Pending：authoritative execution/ledger frontiers、ledger
+内容和 prefix identity 仍停在 round base；licensed tokens 和 backend staging 只作为未发布候选存在。Fold、
+Text/backend KV trim、continuation hidden、proposal continuation 和 host frontier 必须提交同一个最终前缀。
+Continuing row 提交全部 licensed outputs；terminal row 可因 stop/EOS/output limit 提交严格前缀；取消行
+提交零列并释放 sequence。
 
 每行的 valid proposal extent 受 remaining output/context capacity 限制。Fixed proposal window 中未使用
 的位置被 mask，不能更新 request state 或 output。
@@ -1228,7 +1281,7 @@ B 不执行单独的 decode forward，而是在 final prefill 后加入 A 的下
 current token               101              202
 cache position               41              900
 Text KV table row             5                1
-Linear state unit            12               28
+stable lane                   0                2
 sampling state lane           0                2
 ```
 
@@ -1241,7 +1294,7 @@ sampled_tokens = [303, 404]
 
 Boundary 用 frozen mapping 把 303 交给 A、404 交给 B。若 A 继续而 B 的 404 是 terminal token，则两行都
 先提交各自正确的 model/output frontier，随后 B 的 slot/state 被释放或 retained。下一轮重新组批为 A 的
-`B=1` frame；A 的 KV row 和 Linear state unit 不因从 row 0/1 移动而改变。
+`B=1` frame；A 的 KV row 和 stable lane 不因 compact batch row 变化而改变。
 
 ### 12.3 Active batch grows and shrinks
 
@@ -1338,6 +1391,7 @@ admission。Later arrivals 从未成为 H 的 donor，也不能恢复已消费�
 ## Related documents
 
 - [Paged KV context storage](paged-kv-cache.md)
+- [ReplaySSM GDN technical reference](replayssm-gdn.md)
 - [Serving behavior](../serving.md)
 - [Qwen3.6-27B model semantics](qwen3.6-27b-model.md)
 - [Qwen3.6-35B-A3B model semantics](qwen3.6-35b-a3b-model.md)

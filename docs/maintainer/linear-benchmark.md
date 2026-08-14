@@ -408,35 +408,9 @@ repeat 和环境版本，但不恢复以下字段：
 benchmark 不需要声称选中了哪个 kernel。单点 NCU 可以看到真实 kernel 实例，production
 selector 源码是 host launcher route 的唯一 executable authority。
 
-## 8. 已完成的实现收口
+## 8. 注册规则
 
-旧 `linear_op_bench.cu` 已删除，并移除：
-
-- `--all-targets` 隐式默认行为；
-- LinearAdd、LinearSwiGLU、LinearPair 和 composed control；
-- private fused plan headers；
-- Q4/Q5/Q6/W8 launcher-name、tile、tail 和 MMA row-tile 镜像；
-- stream-copy kernel、copy buffers、`--copy-repeat` 和 `--stream-ceiling-gbs`；
-- Tensor Core peak probe；
-- warm-cache second pass；
-- per-shape default route-boundary T tables；
-- BF16 `--bf16-route`、candidate 合法域镜像和对私有 launcher 的直接调用；
-- `candidate_name` 和 `kernel_variant` 输出。
-
-当前 `linear_bench.cu` 保留：
-
-- deterministic packed Q4/Q5/Q6/W8/NVFP4 和 direct BF16 weight generation；
-- BF16 activation/output allocation；
-- public Linear invocation；
-- cold-cache CUDA-event timing；
-- single/sweep/suite/profile mode；
-- compact console/CSV output。
-
-构建 target 是 `ninfer_linear_bench`。旧 `ninfer_linear_op_bench` 不保留兼容别名。
-
-## 9. 注册规则
-
-### 9.1 新 production shape
+### 8.1 新 production shape
 
 新增 production Linear shape 不要求修改 benchmark：
 
@@ -453,7 +427,7 @@ label, qtype, policy, N, K, T class
 不得携带 launcher、schedule、kernel、tile、Full/Predicated、workspace 或 route-boundary
 metadata。
 
-### 9.2 新 route
+### 8.2 新 route
 
 新增或替换 host launcher 不修改 benchmark。single、sweep 和 suite 始终调用 public
 Linear，因此自然测量 selector 当前返回的 production route。
@@ -472,7 +446,7 @@ Linear，因此自然测量 selector 当前返回的 production route。
 plan 层重新引入长期 pure Linear benchmark。public `--sweep` 只观察最终 selector 的
 整体表现，不承担候选选择。
 
-### 9.3 新 weight/activation compute type
+### 8.3 新 weight/activation compute type
 
 只有同时完成以下事项才增加新的 benchmark type：
 
@@ -484,7 +458,7 @@ plan 层重新引入长期 pure Linear benchmark。public `--sweep` 只观察最
 policy 只是许可，长期 benchmark 不把许可本身冒充为低精度执行。当前所有预置 suite
 显式使用 `A16Only`；NVFP4 AllowA4 保留为数字 geometry 的显式 point。
 
-## 10. 当前验证
+## 9. 当前验证
 
 当前实现已验证：
 

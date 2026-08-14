@@ -218,6 +218,7 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
             if (!previous) {
                 throw ApiException(response_not_found(*request.previous_response_id));
             }
+            inherit_responses_preserve_thinking(request, previous->preserve_thinking);
             previous_context = previous->context;
         }
         compose_responses_generation_messages(request, flatten_response_context(previous_context));
@@ -245,10 +246,11 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
             BuiltResponse response = make_response_object(id, created, request, runtime, outcome);
             if (request.store) {
                 StoredResponse stored;
-                stored.id          = id;
-                stored.response    = response.body;
-                stored.input_items = request.input_items;
-                stored.context     = terminal_context(previous_context, request, response);
+                stored.id                = id;
+                stored.response          = response.body;
+                stored.input_items       = request.input_items;
+                stored.context           = terminal_context(previous_context, request, response);
+                stored.preserve_thinking = prepared.preserve_thinking;
                 response_store_.put(std::move(stored));
             }
             log_request_done(log_context, outcome);
@@ -305,6 +307,7 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
                     stored.input_items = stream->request.input_items;
                     stored.context     = terminal_context(stream->previous_context, stream->request,
                                                           finished.response);
+                    stored.preserve_thinking = stream->prepared.preserve_thinking;
                     response_store_.put(std::move(stored));
                 }
                 write_stream_items(sink, *stream, std::move(finished.events_before_terminal));

@@ -37,7 +37,8 @@ struct GenerationMetrics {
     std::uint64_t speculative_accepted_tokens = 0;
     std::uint64_t speculative_fallback_steps  = 0;
     std::vector<std::uint64_t> speculative_accepted_per_position;
-    std::uint32_t prefix_cache_hit_tokens = 0;
+    std::uint32_t prefix_cache_hit_tokens     = 0;
+    ninfer::PrefixReusePath prefix_reuse_path = ninfer::PrefixReusePath::FullReset;
 };
 
 struct GenerationOutcome {
@@ -63,13 +64,15 @@ struct StreamSink {
 // is consumed exactly once by run().
 struct PreparedRequest {
     ninfer::GenerationHandle generation;
-    ninfer::SamplingParameters sampling;
-    double prepare_seconds           = 0.0;
-    int prompt_tokens                = 0;
-    bool include_usage               = false;
-    bool tool_capable                = false;
-    std::size_t tool_name_max_length = 64;
-    bool enable_thinking             = true;
+    ninfer::ResolvedSamplingParameters sampling;
+    double prepare_seconds                 = 0.0;
+    int prompt_tokens                      = 0;
+    bool include_usage                     = false;
+    bool tool_capable                      = false;
+    std::size_t tool_name_max_length       = 64;
+    bool enable_thinking                   = true;
+    bool preserve_thinking                 = false;
+    bool preserve_thinking_semantic_change = false;
     std::shared_ptr<RequestLifetime> lifetime;
 };
 
@@ -84,6 +87,10 @@ public:
     [[nodiscard]] ninfer::MemorySummary memory_summary() const { return engine_->memory_summary(); }
 
     [[nodiscard]] ninfer::RuntimeStats runtime_stats() const { return engine_->runtime_stats(); }
+
+    [[nodiscard]] ninfer::ModelSamplingDefaults sampling_defaults() const {
+        return engine_->sampling_defaults();
+    }
 
     [[nodiscard]] PreparedRequest prepare(const GenerationRequest& req,
                                           std::function<bool()> is_cancelled = {}) const;
@@ -104,6 +111,7 @@ private:
 
     ServeOptions options_;
     std::unique_ptr<ninfer::Engine> engine_;
+    ninfer::PromptCapabilities prompt_capabilities_;
     std::shared_ptr<RequestCapacity> request_capacity_;
     std::shared_ptr<MediaInputCapacity> media_input_capacity_;
 };

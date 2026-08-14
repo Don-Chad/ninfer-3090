@@ -108,10 +108,13 @@ Every two adjacent V heads share one Q/K head. Each GDN layer retains three prec
 projection columns and 32 recurrent matrices of shape `[128,128]`; its persistent state is bounded
 with respect to context length.
 
-Verify `T=1..6` invokes the shared `gdn_input_proj_conv_snapshot` contract. The exact W8 leaf feeds
-the projection accumulators for the first 8192 rows directly into causal convolution and SiLU,
-writes q/k/v and BF16 snapshots to slots `0..T-1`, and writes the final 4096 Z rows directly. The
-former materialized qkv tensor is not a semantic cast boundary.
+Ordinary width-one decode invokes the shared `gdn_input_proj_conv_snapshot` contract with the
+initial and destination selectors both set to the lane's current slot; it is an in-place state
+update and retains no speculative trajectory. MTP and DFlash target verification instead invoke
+`gdn_input_proj_conv_record`. The exact W8 leaf feeds the projection accumulators for the first
+8192 rows directly into causal convolution and SiLU, writes q/k/v plus the represented convolution
+column to the Program-owned ReplaySSM row, and writes the final 4096 Z rows directly without
+modifying persistent state. The former materialized qkv tensor is not a semantic cast boundary.
 
 ### 2.4 Sparse MoE
 
@@ -326,10 +329,13 @@ on = plain_rmsnorm(o, gdn_norm) * SiLU(z)  # [32,128,T]
 y  = out_projection(on)                    # [2048,T]
 ```
 
-Each GDN layer owns three previous convolution columns and one FP32 `[32,128,128]` recurrent-state
-set for ordinary continuation. Prefill may use a parallel chunked delta-rule algorithm and decode a
-recurrent algorithm. Speculative decoding or prefix reuse requires extra state slots, but cannot
-change the recurrence licensed by a committed prefix.
+For `C=max_concurrency`, the Program reserves exactly `2C` complete all-layer GDN state slots:
+`[0,C)` holds each lane's current convolution/recurrent state and `[C,2C)` holds its turn
+checkpoint. Prefill may use a parallel chunked delta-rule algorithm and decode a recurrent
+algorithm. MTP/DFlash verification leaves these slots unchanged and writes a separate
+Program-owned ReplaySSM arena; one all-layer Fold later applies the committed record prefix to the
+current slot. Prefix reuse copies or restores the dedicated turn checkpoint and never creates a
+speculative-position state trajectory.
 
 ## 6. Sparse-MoE layer
 
@@ -622,8 +628,11 @@ distribution.
 
 Only the target state through the anchor and accepted candidate prefix becomes committed. The
 correction or bonus is the next still-unprocessed anchor. Rejected target state and draft-query K/V
-must not remain logically reachable. Continuation is defined by the accepted-prefix snapshots of
-all ten target KV caches, thirty GDN convolution windows, and thirty recurrent-state sets.
+must not remain logically reachable. Target verification writes raw per-layer ReplaySSM records
+while reading the lane's current GDN state. Once the final output prefix is known, one all-layer
+Fold replays exactly that prefix into the current convolution windows and recurrent matrices; the
+same transaction aligns all ten target KV caches and backend continuation state before publishing
+the new frontier.
 
 For DFlash specifically, temporary K/V produced from anchor/mask query hidden states is speculative
 branch state, not durable context. After verification, target residual outputs for the newly
@@ -755,17 +764,22 @@ encoder or audio projection tower. Token presence is not evidence of an audio in
 
 ## 16. Program memory inventory
 
+Let `C=max_concurrency` and `P=min(prefill_chunk,max_context)`.
+
 The Program-owned memory classes are:
 
 | State | Shape basis | BF16/FP32 payload at 262144 context | Lifetime |
 |---|---|---:|---|
 | Text GQA K and V | 10 layers × context × 2 heads × 256 × 2 planes | 5.0 GiB BF16 | active sequence |
 | MTP K and V | 1 layer × context × 2 heads × 256 × 2 planes | 0.5 GiB BF16 | active sequence when MTP enabled |
-| DFlash sliding context K and V | 5 layers × non-causal local context × 8 heads × 128 × 2 planes | about 80 MiB BF16 | active sequence when DFlash enabled |
+| DFlash current and turn-checkpoint local K/V | 2 copies × 5 layers × 4096 positions × 8 heads × 128 × 2 planes × `C` lanes | about 160 MiB × `C` BF16 | Program lifetime when DFlash enabled |
 | DFlash full context K and V | 1 layer × context × 8 heads × 128 × 2 planes | 1.0 GiB BF16 | active sequence when DFlash enabled |
-| GDN convolution history | 30 layers × 8192 channels × 3 columns | 1.406 MiB BF16 or 2.813 MiB FP32 | active sequence |
-| GDN recurrent matrices | 30 layers × 32 heads × 128 × 128 | 60 MiB FP32 | active sequence |
-| DFlash retained target features/positions | `[16384,C]` BF16 plus `[C]` I32 | `C=min(prefill_chunk,max_context)` | active sequence when DFlash enabled |
+| GDN convolution history | 30 layers × 8192 channels × 3 columns × `2C` | 1.406 MiB × `2C` BF16 | Program lifetime; current and turn-checkpoint slots |
+| GDN recurrent matrices | 30 layers × 32 heads × 128 × 128 × `2C` | 60 MiB × `2C` FP32 | Program lifetime; current and turn-checkpoint slots |
+| ReplaySSM records | 30 layers × `C` rows × `draft_window+1` convolution/key/value/gate columns | backend/window dependent | Program lifetime with MTP or DFlash; one pending round |
+| Continuation hidden | current and turn-checkpoint `[2048,C]` BF16 stores | 8 KiB × `C` BF16 | Program lifetime |
+| DFlash prefill target features/positions | `[16384,P]` BF16 plus `[P]` I32 | about 32 KiB × `P` | Program lifetime; one prefill unit |
+| DFlash pending target features | `[16384,draft_window+1,C]` BF16 | window dependent | Program lifetime; one pending round |
 | multimodal continuation | `rope_delta` and logical positions | negligible | active sequence |
 | MoE route data | token × 8 ids and weights plus grouping/reduction workspace | implementation-dependent | operator scope |
 | Program scratch | Text/MTP/DFlash/Vision phase temporaries | implementation-dependent | one phase in the shared workspace arena |
@@ -773,10 +787,11 @@ The Program-owned memory classes are:
 
 Payload estimates exclude allocator alignment and paging metadata; the table separately identifies
 Program scratch and request transient because they are independently frozen allocations.
-Speculative verification, prefix reuse, or transactional rollback multiplies the bounded GDN state
-by the required snapshot slots. Target full-attention KV, MTP KV, and the final DFlash layer's
-context KV grow with configured context; GDN state and the first five DFlash context windows are
-bounded.
+The GDN pool always contains exactly the `2C` current/turn-checkpoint slots and is independent of
+the speculative window. Enabling MTP or DFlash adds the separate ReplaySSM arena, which scales with
+`C*(draft_window+1)` rather than full state images. Target full-attention KV, MTP KV, and the final
+DFlash layer's context KV grow with configured context; GDN state and the first five DFlash context
+windows are bounded.
 The first five layers may use 4096-slot cyclic K/V storage, but a proposal query admits at most the
 last 4095 committed context positions according to its absolute position; a retained row at
 distance 4096 is outside the mask. These caches do not grow with total context.
@@ -785,8 +800,10 @@ The Program freezes its feature set and memory plan at startup. The Qwen3.6 fami
 Text, MTP, DFlash, and Vision phase capacities from the configured finite execution domains and
 reserves their maximum as one pure scratch arena; sequential phases and scoped child Ops reuse the
 same addresses. DFlash target features and positions survive between target verification and
-proposal/context publication, so they are persistent sequence state rather than a workspace
-prefix. Prefill and retained-feature columns use `min(prefill_chunk,max_context)`.
+proposal/context publication, so their prefill and pending-round buffers live in the Program
+persistent arena rather than shared phase scratch. Pending features do not become committed
+sequence state before the resolve transaction succeeds. Prefill columns use
+`min(prefill_chunk,max_context)`.
 
 Vision encoded output uses a separate startup-frozen request-transient allocation and is not
 dynamically grown by a request. A disabled speculative backend has no proposal model state or
@@ -916,6 +933,7 @@ The registered implementation maps these concerns as follows:
 | fixed Text/MTP/Vision/DFlash execution, planning, Program lifecycle, workspace composition, prefix/state transactions, speculative verification/acceptance, and graph mechanics | `src/targets/qwen3_6/impl/runtime/` |
 | tokenizer, template, multimodal processing, and output decoding | `src/targets/qwen3_6/impl/frontend/` |
 | mathematical and explicit local-state Op contracts/implementations | `include/ninfer/ops/`, `src/ops/` |
+| fixed all-layer GDN state pool, ReplaySSM record arena, and Fold contract | `src/core/linear_attention_state.*`, `src/core/gdn_replay_records.*`, `include/ninfer/ops/gdn_replay.h`, `src/ops/linear_attention/gated_delta_net/replay.cpp` |
 | exact artifact and converter | [`qwen3.6-35b-a3b-artifact.md`](qwen3.6-35b-a3b-artifact.md), `tools/convert/qwen3_6_35b_a3b/` |
 | artifact-native diagnostic reference | `tools/reference/qwen3_6_35b_a3b/` |
 

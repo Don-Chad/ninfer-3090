@@ -14,6 +14,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -115,6 +116,52 @@ struct SamplingParams {
     int n = 1;
 };
 
+// Protocol-level effort vocabulary. Each wire adapter accepts the values from
+// its external contract; translation then resolves them against the capabilities
+// advertised by the chat template embedded in the loaded artifact.
+enum class RequestedReasoningEffort : std::uint8_t {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+};
+
+[[nodiscard]] constexpr std::optional<RequestedReasoningEffort>
+parse_requested_reasoning_effort(std::string_view value) noexcept {
+    if (value == "none") { return RequestedReasoningEffort::None; }
+    if (value == "minimal") { return RequestedReasoningEffort::Minimal; }
+    if (value == "low") { return RequestedReasoningEffort::Low; }
+    if (value == "medium") { return RequestedReasoningEffort::Medium; }
+    if (value == "high") { return RequestedReasoningEffort::High; }
+    if (value == "xhigh") { return RequestedReasoningEffort::XHigh; }
+    if (value == "max") { return RequestedReasoningEffort::Max; }
+    return std::nullopt;
+}
+
+[[nodiscard]] constexpr std::string_view
+requested_reasoning_effort_name(RequestedReasoningEffort effort) noexcept {
+    switch (effort) {
+    case RequestedReasoningEffort::None:
+        return "none";
+    case RequestedReasoningEffort::Minimal:
+        return "minimal";
+    case RequestedReasoningEffort::Low:
+        return "low";
+    case RequestedReasoningEffort::Medium:
+        return "medium";
+    case RequestedReasoningEffort::High:
+        return "high";
+    case RequestedReasoningEffort::XHigh:
+        return "xhigh";
+    case RequestedReasoningEffort::Max:
+        return "max";
+    }
+    return {};
+}
+
 struct GenerationRequest {
     std::string model;
     std::vector<ChatTurn> messages;
@@ -127,6 +174,10 @@ struct GenerationRequest {
     bool stream         = false;
     bool include_usage  = false;
     std::optional<bool> enable_thinking; // non-standard extension; falls back to server default
+    std::optional<RequestedReasoningEffort> reasoning_effort;
+    std::string reasoning_effort_param = "reasoning_effort";
+    std::optional<bool> preserve_thinking;
+    bool preserve_thinking_semantic_change = false;
     SamplingParams sampling;
 
     [[nodiscard]] bool uses_tools() const noexcept {

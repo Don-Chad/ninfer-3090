@@ -112,6 +112,18 @@ const char* proposal_head_name(ninfer::ProposalHead proposal) {
     return proposal == ninfer::ProposalHead::Optimized ? "optimized" : "full";
 }
 
+const char* prefix_reuse_path_name(ninfer::PrefixReusePath path) {
+    switch (path) {
+    case ninfer::PrefixReusePath::FullReset:
+        return "full_reset";
+    case ninfer::PrefixReusePath::AppendAtFrontier:
+        return "append_frontier";
+    case ninfer::PrefixReusePath::RestoreTurnCheckpoint:
+        return "restore_turn_checkpoint";
+    }
+    return "unknown";
+}
+
 Json event_base(const std::string& server_instance_id, std::uint64_t timestamp, const char* event) {
     return Json{{"artifact_type", kRequestLogArtifactType},
                 {"schema_version", kRequestLogSchemaVersion},
@@ -120,7 +132,7 @@ Json event_base(const std::string& server_instance_id, std::uint64_t timestamp, 
                 {"server_instance_id", server_instance_id}};
 }
 
-Json sampler_json(const ninfer::SamplingParameters& sampling) {
+Json sampler_json(const ninfer::ResolvedSamplingParameters& sampling) {
     return Json{{"temperature", sampling.temperature},
                 {"top_p", sampling.top_p},
                 {"top_k", sampling.top_k},
@@ -128,6 +140,33 @@ Json sampler_json(const ninfer::SamplingParameters& sampling) {
                 {"presence_penalty", sampling.presence_penalty},
                 {"frequency_penalty", sampling.frequency_penalty},
                 {"seed", sampling.seed}};
+}
+
+Json preset_json(const ninfer::SamplingPreset& preset) {
+    return Json{{"temperature", preset.temperature},
+                {"top_p", preset.top_p},
+                {"top_k", preset.top_k},
+                {"min_p", preset.min_p},
+                {"presence_penalty", preset.presence_penalty},
+                {"frequency_penalty", preset.frequency_penalty}};
+}
+
+Json overrides_json(const ninfer::SamplingOverrides& overrides) {
+    Json result{{"temperature", nullptr},
+                {"top_p", nullptr},
+                {"top_k", nullptr},
+                {"min_p", nullptr},
+                {"presence_penalty", nullptr},
+                {"frequency_penalty", nullptr},
+                {"seed", nullptr}};
+    if (overrides.temperature) { result["temperature"] = *overrides.temperature; }
+    if (overrides.top_p) { result["top_p"] = *overrides.top_p; }
+    if (overrides.top_k) { result["top_k"] = *overrides.top_k; }
+    if (overrides.min_p) { result["min_p"] = *overrides.min_p; }
+    if (overrides.presence_penalty) { result["presence_penalty"] = *overrides.presence_penalty; }
+    if (overrides.frequency_penalty) { result["frequency_penalty"] = *overrides.frequency_penalty; }
+    if (overrides.seed) { result["seed"] = *overrides.seed; }
+    return result;
 }
 
 Json request_json(const RequestLogContext& context) {
@@ -143,6 +182,8 @@ Json request_json(const RequestLogContext& context) {
                 {"tool_choice", tool_choice_name(context.tool_choice)},
                 {"has_tool_history", context.has_tool_history},
                 {"enable_thinking", context.enable_thinking},
+                {"preserve_thinking", context.preserve_thinking},
+                {"preserve_thinking_semantic_change", context.preserve_thinking_semantic_change},
                 {"sampling", sampler_json(context.sampling)}};
 }
 
@@ -180,7 +221,7 @@ std::string seconds_str(double seconds) {
 }
 
 // Compact resolved-sampler summary. temperature <= 0 is the exact-argmax path.
-std::string sampler_str(const ninfer::SamplingParameters& sampling) {
+std::string sampler_str(const ninfer::ResolvedSamplingParameters& sampling) {
     if (sampling.temperature <= 0.0f) { return "greedy"; }
     std::ostringstream out;
     out << std::fixed << std::setprecision(2) << "temp=" << sampling.temperature
@@ -229,6 +270,8 @@ RequestLogContext make_request_log_context(std::uint64_t id, std::string protoco
     context.tool_choice                        = request.tool_choice;
     context.has_tool_history                   = request.has_tool_history();
     context.enable_thinking                    = prepared.enable_thinking;
+    context.preserve_thinking                  = prepared.preserve_thinking;
+    context.preserve_thinking_semantic_change  = prepared.preserve_thinking_semantic_change;
     context.sampling                           = prepared.sampling;
     return context;
 }
@@ -242,8 +285,10 @@ std::string format_request_start(const RequestLogContext& context) {
         << " tools=" << context.tool_count
         << " tool_choice=" << tool_choice_name(context.tool_choice)
         << " tool_history=" << (context.has_tool_history ? "yes" : "no")
-        << " thinking=" << (context.enable_thinking ? "on" : "off") << " sampler=["
-        << sampler_str(context.sampling) << "] \xE2\x86\x92 submitted";
+        << " thinking=" << (context.enable_thinking ? "on" : "off")
+        << " preserve_thinking=" << (context.preserve_thinking ? "on" : "off")
+        << " preserve_change=" << (context.preserve_thinking_semantic_change ? "yes" : "no")
+        << " sampler=[" << sampler_str(context.sampling) << "] \xE2\x86\x92 submitted";
     return out.str();
 }
 
@@ -262,7 +307,8 @@ std::string format_request_done(const RequestLogContext& context,
         << (outcome.tool_calls.empty() ? finish_reason_name(outcome.finish_reason) : "tool_calls");
     if (!outcome.tool_calls.empty()) { out << " tool_calls=" << outcome.tool_calls.size(); }
     out << " prompt=" << outcome.prompt_tokens << " gen=" << outcome.completion_tokens
-        << " cache=" << metrics.prefix_cache_hit_tokens << " ttft=" << std::fixed
+        << " cache=" << metrics.prefix_cache_hit_tokens
+        << " reuse=" << prefix_reuse_path_name(metrics.prefix_reuse_path) << " ttft=" << std::fixed
         << std::setprecision(0) << ttft_ms << "ms"
         << " prefill=" << rate(computed_prefill_tokens, metrics.prefill_seconds)
         << " decode=" << rate(decode_tokens, metrics.decode_seconds)
@@ -303,17 +349,13 @@ std::string format_throughput(const ThroughputReport& report) {
     return out.str();
 }
 
-std::string format_server_start_json(const std::string& server_instance_id, std::uint64_t timestamp,
-                                     const ServeOptions& options,
-                                     const std::string& public_model_id,
-                                     const ninfer::LoadSummary& load,
-                                     const ninfer::MemorySummary& memory,
-                                     const ServerLogEnvironment& environment,
-                                     std::optional<std::uint64_t> artifact_size_bytes) {
+std::string format_server_start_json(
+    const std::string& server_instance_id, std::uint64_t timestamp, const ServeOptions& options,
+    const ninfer::ModelSamplingDefaults& sampling_defaults, const std::string& public_model_id,
+    const ninfer::LoadSummary& load, const ninfer::MemorySummary& memory,
+    const ServerLogEnvironment& environment, std::optional<std::uint64_t> artifact_size_bytes) {
     Json record = event_base(server_instance_id, timestamp, "server_start");
 
-    Json default_seed = nullptr;
-    if (options.sampling_seed.has_value()) { default_seed = *options.sampling_seed; }
     Json artifact_size = nullptr;
     if (artifact_size_bytes.has_value()) { artifact_size = *artifact_size_bytes; }
 
@@ -325,7 +367,8 @@ std::string format_server_start_json(const std::string& server_instance_id, std:
                               {"max_request_bytes", options.max_request_bytes},
                               {"request_log_jsonl", options.request_log_jsonl},
                               {"default_output_tokens", options.default_max_tokens},
-                              {"default_thinking", options.enable_thinking}};
+                              {"default_thinking", options.enable_thinking},
+                              {"default_preserve_thinking", options.preserve_thinking}};
     record["artifact"] = Json{{"path", options.artifact_path},
                               {"size_bytes", std::move(artifact_size)},
                               {"target", load.target},
@@ -356,14 +399,12 @@ std::string format_server_start_json(const std::string& server_instance_id, std:
           {"speculative_backend", product::speculative_backend_name(options.speculative.backend)},
           {"speculative_draft_window", options.speculative.draft_tokens},
           {"proposal_head", proposal_head_name(options.speculative.proposal_head)}};
-    record["sampling_defaults"] = Json{{"temperature", options.sampling_temperature},
-                                       {"top_p", options.sampling_top_p},
-                                       {"top_k", options.sampling_top_k},
-                                       {"min_p", 0.0},
-                                       {"presence_penalty", options.sampling_presence_penalty},
-                                       {"frequency_penalty", options.sampling_frequency_penalty},
-                                       {"seed", std::move(default_seed)},
-                                       {"greedy", options.greedy}};
+    record["sampling_defaults"] =
+        Json{{"thinking", preset_json(sampling_defaults.thinking)},
+             {"non_thinking", preset_json(sampling_defaults.non_thinking)},
+             {"server_overrides", overrides_json(options.sampling_overrides)},
+             {"omitted_seed", "random"},
+             {"greedy", options.greedy}};
     record["memory"] =
         Json{{"weights", arena_json(memory.weights)},
              {"sequence", arena_json(memory.sequence)},
@@ -413,6 +454,7 @@ std::string format_request_done_json(const std::string& server_instance_id, std:
               std::max(0, outcome.prompt_tokens -
                               static_cast<int>(outcome.metrics.prefix_cache_hit_tokens))},
              {"prefix_cache_hit_tokens", outcome.metrics.prefix_cache_hit_tokens},
+             {"prefix_reuse_path", prefix_reuse_path_name(outcome.metrics.prefix_reuse_path)},
              {"tool_call_count", outcome.tool_calls.size()}};
     record["timings_seconds"] = Json{
         {"prepare", outcome.metrics.prepare_seconds}, {"ttft", outcome.metrics.ttft_seconds},
@@ -502,6 +544,7 @@ JsonlRequestLog::JsonlRequestLog(const std::string& path,
 }
 
 void JsonlRequestLog::write_server_start(const ServeOptions& options,
+                                         const ninfer::ModelSamplingDefaults& sampling_defaults,
                                          const std::string& public_model_id,
                                          const ninfer::LoadSummary& load,
                                          const ninfer::MemorySummary& memory) {
@@ -510,9 +553,9 @@ void JsonlRequestLog::write_server_start(const ServeOptions& options,
     const std::uintmax_t size = std::filesystem::file_size(options.artifact_path, error);
     const std::optional<std::uint64_t> artifact_size =
         error ? std::nullopt : std::optional<std::uint64_t>(size);
-    append(format_server_start_json(server_instance_id_, unix_time_ms(), options, public_model_id,
-                                    load, memory, query_server_log_environment(options.device),
-                                    artifact_size));
+    append(format_server_start_json(server_instance_id_, unix_time_ms(), options, sampling_defaults,
+                                    public_model_id, load, memory,
+                                    query_server_log_environment(options.device), artifact_size));
 }
 
 void JsonlRequestLog::write_request_start(const RequestLogContext& context) {

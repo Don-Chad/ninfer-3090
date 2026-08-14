@@ -42,23 +42,30 @@ int main() {
                       "request log accepted the model artifact as its output path");
 
     ServeOptions options;
-    options.artifact_path             = "/models/qwen3_6_27b.ninfer";
-    options.host                      = "127.0.0.1";
-    options.port                      = 8123;
-    options.api_key                   = "must-not-appear";
-    options.model_id_override         = "deployment-alias";
-    options.request_log_jsonl         = "requests.jsonl";
-    options.max_context               = 262144;
-    options.kv_capacity               = ninfer::KvCapacityPolicy::explicit_capacity(524288);
-    options.prefill_chunk             = 1024;
-    options.log_stats_interval_ms     = 2500;
-    options.kv_cache                  = ninfer::KvCacheStorage::Int8Group64;
-    options.speculative.backend       = ninfer::SpeculativeBackend::Mtp;
-    options.speculative.draft_tokens  = 3;
-    options.speculative.proposal_head = ninfer::ProposalHead::Optimized;
-    options.enable_vision             = false;
-    options.allow_prefix_reuse        = false;
+    options.artifact_path                  = "/models/qwen3_6_27b.ninfer";
+    options.host                           = "127.0.0.1";
+    options.port                           = 8123;
+    options.api_key                        = "must-not-appear";
+    options.model_id_override              = "deployment-alias";
+    options.request_log_jsonl              = "requests.jsonl";
+    options.max_context                    = 262144;
+    options.kv_capacity                    = ninfer::KvCapacityPolicy::explicit_capacity(524288);
+    options.prefill_chunk                  = 1024;
+    options.log_stats_interval_ms          = 2500;
+    options.kv_cache                       = ninfer::KvCacheStorage::Int8Group64;
+    options.speculative.backend            = ninfer::SpeculativeBackend::Mtp;
+    options.speculative.draft_tokens       = 3;
+    options.speculative.proposal_head      = ninfer::ProposalHead::Optimized;
+    options.enable_vision                  = false;
+    options.allow_prefix_reuse             = false;
+    options.preserve_thinking              = true;
+    options.sampling_overrides.temperature = 0.6F;
     options.startup_argv = {"ninfer-serve", options.artifact_path, "--api-key", "<redacted>"};
+
+    const ninfer::ModelSamplingDefaults sampling_defaults{
+        .thinking     = {.temperature = 1.0F, .top_k = 20, .top_p = 0.95F},
+        .non_thinking = {.temperature = 0.7F, .top_k = 20, .top_p = 0.8F, .presence_penalty = 1.5F},
+    };
 
     ninfer::LoadSummary load;
     load.target               = "qwen3_6_27b";
@@ -104,12 +111,13 @@ int main() {
     environment.cuda_runtime_version      = "13.1";
     environment.cuda_driver_version       = "13.1";
 
-    const Json server =
-        Json::parse(format_server_start_json("serve-test", 1000, options, "deployment-alias", load,
-                                             memory, environment, std::uint64_t{123456}));
+    const Json server = Json::parse(
+        format_server_start_json("serve-test", 1000, options, sampling_defaults, "deployment-alias",
+                                 load, memory, environment, std::uint64_t{123456}));
     failures += check(server.at("artifact_type") == kRequestLogArtifactType,
                       "server record artifact type mismatch");
-    failures += check(server.at("schema_version") == 6, "server record schema mismatch");
+    failures += check(server.at("schema_version") == kRequestLogSchemaVersion,
+                      "server record schema mismatch");
     failures += check(server.at("event") == "server_start", "server event mismatch");
     failures += check(server.at("server").at("public_model_id") == "deployment-alias",
                       "resolved public model id missing");
@@ -135,6 +143,17 @@ int main() {
         check(server.at("engine").at("proposal_head") == "optimized", "proposal head missing");
     failures +=
         check(server.at("engine").at("prefix_reuse") == false, "prefix-reuse state missing");
+    failures += check(server.at("server").at("default_preserve_thinking") == true,
+                      "server preserve-thinking default missing");
+    failures +=
+        check(server.at("sampling_defaults").at("thinking").at("temperature") == 1.0 &&
+                  server.at("sampling_defaults").at("non_thinking").at("presence_penalty") == 1.5,
+              "registered mode-specific sampling defaults missing");
+    failures += check(
+        server.at("sampling_defaults").at("server_overrides").at("temperature").get<float>() ==
+                0.6F &&
+            server.at("sampling_defaults").at("server_overrides").at("top_p").is_null(),
+        "server sampling overrides lost omission state");
     failures += check(server.at("environment").at("gpu_name") == "NVIDIA GeForce RTX 5090",
                       "GPU name missing");
     failures += check(server.at("memory").at("request_transient").at("capacity_bytes") == 500 &&
@@ -162,14 +181,16 @@ int main() {
     request.messages.resize(2);
 
     PreparedRequest prepared;
-    prepared.enable_thinking            = false;
-    prepared.sampling.temperature       = 0.6F;
-    prepared.sampling.top_p             = 0.95F;
-    prepared.sampling.top_k             = 20;
-    prepared.sampling.min_p             = 0.0F;
-    prepared.sampling.presence_penalty  = 1.0F;
-    prepared.sampling.frequency_penalty = 0.0F;
-    prepared.sampling.seed              = 7632647173703958409ULL;
+    prepared.enable_thinking                   = false;
+    prepared.preserve_thinking                 = true;
+    prepared.preserve_thinking_semantic_change = true;
+    prepared.sampling.temperature              = 0.6F;
+    prepared.sampling.top_p                    = 0.95F;
+    prepared.sampling.top_k                    = 20;
+    prepared.sampling.min_p                    = 0.0F;
+    prepared.sampling.presence_penalty         = 1.0F;
+    prepared.sampling.frequency_penalty        = 0.0F;
+    prepared.sampling.seed                     = 7632647173703958409ULL;
 
     const RequestLogContext context =
         make_request_log_context(7, "openai_chat_completions", request, prepared);
@@ -180,26 +201,30 @@ int main() {
                       "request output budget missing");
     failures += check(started.at("request").at("enable_thinking") == false,
                       "resolved thinking mode missing");
+    failures += check(started.at("request").at("preserve_thinking") == true &&
+                          started.at("request").at("preserve_thinking_semantic_change") == true,
+                      "resolved preserve-thinking metadata missing");
     failures += check(started.at("request").at("sampling").at("seed") == 7632647173703958409ULL,
                       "resolved seed missing");
 
     GenerationOutcome outcome;
-    outcome.prompt_tokens                             = 401;
-    outcome.completion_tokens                         = 1024;
-    outcome.finish_reason                             = ninfer::FinishReason::OutputLimit;
-    outcome.metrics.prepare_seconds                   = 0.1234567890123;
-    outcome.metrics.ttft_seconds                      = 0.3580246791357;
-    outcome.metrics.vision_seconds                    = 0.0;
-    outcome.metrics.prefill_seconds                   = 0.2345678901234;
-    outcome.metrics.decode_seconds                    = 5.3456789012345;
-    outcome.metrics.total_seconds                     = 5.7037035803702;
-    outcome.metrics.prefix_cache_hit_tokens           = 101;
-    outcome.metrics.speculative_backend               = ninfer::SpeculativeBackend::Mtp;
-    outcome.metrics.speculative_draft_window          = 3;
-    outcome.metrics.speculative_rounds                = 300;
-    outcome.metrics.speculative_draft_tokens          = 900;
-    outcome.metrics.speculative_accepted_tokens       = 720;
-    outcome.metrics.speculative_fallback_steps        = 2;
+    outcome.prompt_tokens                       = 401;
+    outcome.completion_tokens                   = 1024;
+    outcome.finish_reason                       = ninfer::FinishReason::OutputLimit;
+    outcome.metrics.prepare_seconds             = 0.1234567890123;
+    outcome.metrics.ttft_seconds                = 0.3580246791357;
+    outcome.metrics.vision_seconds              = 0.0;
+    outcome.metrics.prefill_seconds             = 0.2345678901234;
+    outcome.metrics.decode_seconds              = 5.3456789012345;
+    outcome.metrics.total_seconds               = 5.7037035803702;
+    outcome.metrics.prefix_cache_hit_tokens     = 101;
+    outcome.metrics.prefix_reuse_path           = ninfer::PrefixReusePath::RestoreTurnCheckpoint;
+    outcome.metrics.speculative_backend         = ninfer::SpeculativeBackend::Mtp;
+    outcome.metrics.speculative_draft_window    = 3;
+    outcome.metrics.speculative_rounds          = 300;
+    outcome.metrics.speculative_draft_tokens    = 900;
+    outcome.metrics.speculative_accepted_tokens = 720;
+    outcome.metrics.speculative_fallback_steps  = 2;
     outcome.metrics.speculative_accepted_per_position = {290, 240, 190};
 
     const Json done = Json::parse(format_request_done_json("serve-test", 3000, context, outcome));
@@ -208,6 +233,8 @@ int main() {
     failures += check(done.at("result").at("prompt_tokens") == 401, "prompt tokens missing");
     failures += check(done.at("result").at("computed_prefill_tokens") == 300,
                       "computed prefill tokens missing");
+    failures += check(done.at("result").at("prefix_reuse_path") == "restore_turn_checkpoint",
+                      "prefix reuse path missing");
     failures += check(done.at("timings_seconds").at("decode").get<double>() ==
                           outcome.metrics.decode_seconds,
                       "decode time lost precision");
@@ -231,6 +258,12 @@ int main() {
 
     failures += check(format_request_start(context).find("thinking=off") != std::string::npos,
                       "human request log omits resolved thinking mode");
+    failures +=
+        check(format_request_start(context).find("preserve_thinking=on") != std::string::npos,
+              "human request log omits preserve-thinking mode");
+    failures += check(format_request_done(context, outcome).find("reuse=restore_turn_checkpoint") !=
+                          std::string::npos,
+                      "human request log omits prefix reuse path");
     failures += check(format_request_start(context).find("submitted") != std::string::npos,
                       "human request log mislabels a submitted request");
 

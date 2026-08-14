@@ -23,35 +23,59 @@ std::uint64_t random_seed() {
     throw ApiException(std::move(error));
 }
 
-ninfer::SamplingParameters resolve_sampling(const SamplingParams& request,
-                                            const ServeOptions& server) {
-    ninfer::SamplingParameters sampling;
-    sampling.temperature =
-        static_cast<float>(request.temperature.value_or(server.sampling_temperature));
-    sampling.top_p = static_cast<float>(request.top_p.value_or(server.sampling_top_p));
-    sampling.top_k = request.top_k.value_or(server.sampling_top_k);
-    sampling.presence_penalty =
-        static_cast<float>(request.presence_penalty.value_or(server.sampling_presence_penalty));
-    sampling.frequency_penalty =
-        static_cast<float>(request.frequency_penalty.value_or(server.sampling_frequency_penalty));
-    sampling.seed = request.seed.value_or(server.sampling_seed.value_or(random_seed()));
+[[noreturn]] void invalid_prompt_option(std::string message, std::string param, std::string code) {
+    ApiError error;
+    error.message = std::move(message);
+    error.param   = std::move(param);
+    error.code    = std::move(code);
+    throw ApiException(std::move(error));
+}
 
-    if (!std::isfinite(sampling.temperature) || !std::isfinite(sampling.top_p) ||
-        !std::isfinite(sampling.min_p) || !std::isfinite(sampling.presence_penalty) ||
-        !std::isfinite(sampling.frequency_penalty)) {
+ninfer::SamplingOverrides resolve_sampling_overrides(const SamplingParams& request,
+                                                     const ServeOptions& server) {
+    ninfer::SamplingOverrides sampling = server.sampling_overrides;
+    if (request.temperature) { sampling.temperature = static_cast<float>(*request.temperature); }
+    if (request.top_p) { sampling.top_p = static_cast<float>(*request.top_p); }
+    if (request.top_k) { sampling.top_k = static_cast<std::int32_t>(*request.top_k); }
+    if (request.presence_penalty) {
+        sampling.presence_penalty = static_cast<float>(*request.presence_penalty);
+    }
+    if (request.frequency_penalty) {
+        sampling.frequency_penalty = static_cast<float>(*request.frequency_penalty);
+    }
+    if (request.seed) {
+        sampling.seed = *request.seed;
+    } else if (server.sampling_overrides.seed) {
+        sampling.seed = *server.sampling_overrides.seed;
+    } else {
+        sampling.seed = random_seed();
+    }
+
+    const auto finite = [](const std::optional<float>& value) {
+        return !value || std::isfinite(*value);
+    };
+    if (!finite(sampling.temperature) || !finite(sampling.top_p) || !finite(sampling.min_p) ||
+        !finite(sampling.presence_penalty) || !finite(sampling.frequency_penalty)) {
         invalid_sampling("sampling parameters must be finite", "sampling");
     }
-    if (sampling.temperature < 0.0F || sampling.temperature > 2.0F) {
+    if (sampling.temperature && (*sampling.temperature < 0.0F || *sampling.temperature > 2.0F)) {
         invalid_sampling("temperature must be in [0,2]", "temperature");
     }
-    if (sampling.top_p < 0.0F || sampling.top_p > 1.0F) {
+    if (sampling.top_p && (*sampling.top_p < 0.0F || *sampling.top_p > 1.0F)) {
         invalid_sampling("top_p must be in [0,1]", "top_p");
     }
-    if (sampling.top_k < 0) { invalid_sampling("top_k must be nonnegative", "top_k"); }
-    if (sampling.presence_penalty < -2.0F || sampling.presence_penalty > 2.0F) {
+    if (sampling.top_k && *sampling.top_k < 0) {
+        invalid_sampling("top_k must be nonnegative", "top_k");
+    }
+    if (sampling.min_p && (*sampling.min_p < 0.0F || *sampling.min_p > 1.0F)) {
+        invalid_sampling("min_p must be in [0,1]", "min_p");
+    }
+    if (sampling.presence_penalty &&
+        (*sampling.presence_penalty < -2.0F || *sampling.presence_penalty > 2.0F)) {
         invalid_sampling("presence_penalty must be in [-2,2]", "presence_penalty");
     }
-    if (sampling.frequency_penalty < -2.0F || sampling.frequency_penalty > 2.0F) {
+    if (sampling.frequency_penalty &&
+        (*sampling.frequency_penalty < -2.0F || *sampling.frequency_penalty > 2.0F)) {
         invalid_sampling("frequency_penalty must be in [-2,2]", "frequency_penalty");
     }
     if (server.greedy) { sampling.temperature = 0.0F; }
@@ -89,7 +113,64 @@ std::string normalized_role(const std::string& role) {
 
 } // namespace
 
-ninfer::PromptInput to_prompt_input(const GenerationRequest& request, const ServeOptions& server,
+ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& request,
+                                                 const ServeOptions& server,
+                                                 const ninfer::PromptCapabilities& capabilities) {
+    ResolvedPromptSemantics result{
+        .enable_thinking   = request.enable_thinking.value_or(server.enable_thinking),
+        .reasoning_effort  = std::nullopt,
+        .preserve_thinking = request.preserve_thinking.value_or(server.preserve_thinking),
+    };
+    if (!request.reasoning_effort) { return result; }
+
+    const RequestedReasoningEffort requested = *request.reasoning_effort;
+    const bool enables_thinking              = requested != RequestedReasoningEffort::None;
+    if (request.enable_thinking && *request.enable_thinking != enables_thinking) {
+        invalid_prompt_option("reasoning effort conflicts with enable_thinking",
+                              request.reasoning_effort_param, "conflicting_template_option");
+    }
+    result.enable_thinking = enables_thinking;
+
+    if (requested == RequestedReasoningEffort::None) {
+        if (!capabilities.enable_thinking) {
+            invalid_prompt_option("the loaded chat template cannot disable thinking",
+                                  request.reasoning_effort_param, "reasoning_effort_not_supported");
+        }
+        return result;
+    }
+
+    switch (requested) {
+    case RequestedReasoningEffort::Low:
+        result.reasoning_effort = ninfer::ReasoningEffort::Low;
+        break;
+    case RequestedReasoningEffort::Medium:
+        result.reasoning_effort = ninfer::ReasoningEffort::Medium;
+        break;
+    case RequestedReasoningEffort::XHigh:
+        result.reasoning_effort = ninfer::ReasoningEffort::XHigh;
+        break;
+    case RequestedReasoningEffort::Minimal:
+    case RequestedReasoningEffort::High:
+    case RequestedReasoningEffort::Max:
+        invalid_prompt_option("reasoning effort '" +
+                                  std::string(requested_reasoning_effort_name(requested)) +
+                                  "' is not supported by the loaded chat template",
+                              request.reasoning_effort_param, "reasoning_effort_not_supported");
+    case RequestedReasoningEffort::None:
+        break;
+    }
+
+    if (!capabilities.reasoning_effort.supports(*result.reasoning_effort)) {
+        invalid_prompt_option("reasoning effort '" +
+                                  std::string(requested_reasoning_effort_name(requested)) +
+                                  "' is not supported by the loaded chat template",
+                              request.reasoning_effort_param, "reasoning_effort_not_supported");
+    }
+    return result;
+}
+
+ninfer::PromptInput to_prompt_input(const GenerationRequest& request,
+                                    const ResolvedPromptSemantics& semantics,
                                     const MediaAcquirer& acquire_media) {
     ninfer::PromptInput input;
     input.messages.reserve(request.messages.size());
@@ -137,8 +218,9 @@ ninfer::PromptInput to_prompt_input(const GenerationRequest& request, const Serv
     }
 
     input.options.add_generation_prompt = true;
-    input.options.enable_thinking       = request.enable_thinking.value_or(server.enable_thinking);
-    input.options.preserve_thinking     = false;
+    input.options.enable_thinking       = semantics.enable_thinking;
+    input.options.reasoning_effort      = semantics.reasoning_effort;
+    input.options.preserve_thinking     = semantics.preserve_thinking;
     input.options.add_vision_id         = false;
     input.options.tool_jsons            = effective_tool_jsons(request);
     return input;
@@ -149,9 +231,9 @@ ninfer::RequestOptions to_request_options(const GenerationRequest& request,
     ninfer::RequestOptions options;
     options.execution.requested_output_tokens = static_cast<std::uint32_t>(request.max_tokens);
     options.execution.allow_prefix_reuse      = server.allow_prefix_reuse;
-    options.execution.sampling                = resolve_sampling(request.sampling, server);
-    options.output.raw                        = false;
-    options.output.preserve_special_tokens    = request.uses_tools() || request.has_tool_history();
+    options.execution.sampling             = resolve_sampling_overrides(request.sampling, server);
+    options.output.raw                     = false;
+    options.output.preserve_special_tokens = request.uses_tools() || request.has_tool_history();
     options.stop.strings.reserve(request.stop_strings.size());
     for (const std::string& stop : request.stop_strings) {
         if (!stop.empty()) {

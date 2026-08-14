@@ -18,14 +18,8 @@ void run_prepared(Context& state, DecodeGraphExecutable* executable, Body&& body
 }
 
 template <class Context, class Body>
-void warm_capture(Context& state, DecodeGraphDefinition& definition, const GraphPrepare& prepare,
-                  Body&& body) {
-    prepare();
-    state.execution.device.synchronize();
-    body();
-    state.execution.device.synchronize();
-    prepare();
-    state.execution.device.synchronize();
+void capture_graph(Context& state, DecodeGraphDefinition& definition, Body&& body) {
+    state.execution.work.reset();
     definition.capture(state.execution.device.stream, body);
 }
 

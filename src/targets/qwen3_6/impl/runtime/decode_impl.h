@@ -30,17 +30,14 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
         Tensor cache_positions = ordinary.cache_positions.slice(0, 0, batch_size);
         Tensor rope_positions  = ordinary.rope_positions.slice(0, 0, batch_size);
         Tensor kv_rows         = ordinary.text_kv_table_rows.slice(0, 0, batch_size);
-        Tensor read_slots      = ordinary.linear_state_read_slots.slice(0, 0, batch_size);
-        Tensor snapshot_slots  = ordinary.linear_state_snapshot_base_slots.slice(0, 0, batch_size);
-        Tensor continuation_slots = ordinary.continuation_slots.slice(0, 0, batch_size);
-        Tensor hidden             = ordinary.hidden.slice(1, 0, batch_size);
-        Tensor logits             = ordinary.logits.slice(1, 0, batch_size);
-        Tensor sampled            = ordinary.sampled_tokens.slice(0, 0, batch_size);
+        Tensor lanes           = ordinary.lanes.slice(0, 0, batch_size);
+        Tensor hidden          = ordinary.hidden.slice(1, 0, batch_size);
+        Tensor logits          = ordinary.logits.slice(1, 0, batch_size);
+        Tensor sampled         = ordinary.sampled_tokens.slice(0, 0, batch_size);
 
-        card.ordinary_decode_batch(tokens, cache_positions, rope_positions, kv_rows, read_slots,
-                                   snapshot_slots, envelope, hidden, logits);
-        ops::scatter(hidden, continuation_slots, state.continuation_hidden_store,
-                     state.execution.device.stream);
+        card.ordinary_decode_batch(tokens, cache_positions, rope_positions, kv_rows, lanes,
+                                   envelope, hidden, logits);
+        ops::scatter(hidden, lanes, state.continuation_hidden_store, state.execution.device.stream);
         ops::sample(logits, sampled, TextConfig::token_domain, ordinary.sampling, cache_positions,
                     ops::kSamplePurposeDecode, state.execution.work, state.execution.device.stream);
         CUDA_CHECK(cudaMemcpyAsync(&state.host_egress, ordinary.egress.data,
@@ -51,12 +48,11 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
 
 } // namespace
 
-void warm_capture_ordinary_decode_batch(OrdinaryBatchContext& state, std::int32_t batch_size,
-                                        ops::GqaExecutionEnvelope envelope,
-                                        const GraphPrepare& prepare,
-                                        DecodeGraphDefinition& definition) {
+void capture_ordinary_decode_batch(OrdinaryBatchContext& state, std::int32_t batch_size,
+                                   ops::GqaExecutionEnvelope envelope,
+                                   DecodeGraphDefinition& definition) {
     auto body = ordinary_batch_body(state, batch_size, envelope);
-    warm_capture(state, definition, prepare, body);
+    capture_graph(state, definition, body);
 }
 
 void ordinary_decode_batch(OrdinaryBatchContext& state, std::int32_t batch_size,

@@ -79,6 +79,15 @@ void validate_token_interval(std::int32_t first, std::int32_t last) {
     }
 }
 
+constexpr std::size_t kMinimumLeafWorkspaceBytes = 1;
+
+std::size_t gdn_record_workspace_bytes(const Tensor& hidden) {
+    return std::max(kMinimumLeafWorkspaceBytes,
+                    ops::gdn_input_proj_conv_record_workspace_capacity_bytes(
+                        TextConfig::key_dim, TextConfig::key_dim, TextConfig::value_dim,
+                        hidden.ne[2], hidden.ne[1], hidden.ne[1]));
+}
+
 } // namespace
 
 std::vector<GraphExecutionProfile> Variant::ordinary_graph_profiles(std::uint32_t capacity) {
@@ -174,6 +183,21 @@ void Variant::gdn_input_projection_snapshot(
                                       value, output_gate_view, workspace, stream);
 }
 
+void Variant::gdn_input_projection_record(const Tensor& hidden, const GdnProjectionWeights& weights,
+                                          const Tensor& conv_weight, const Tensor& conv_states,
+                                          const Tensor& valid_columns, const Tensor& initial_slots,
+                                          Tensor& conv_record, Tensor& query, Tensor& key,
+                                          Tensor& value, Tensor& output_gate, qwen3_6::TextPhase,
+                                          WorkspaceArena& workspace, cudaStream_t stream) {
+    auto workspace_scope     = workspace.scope();
+    const DeviceSpan storage = workspace.alloc_bytes(gdn_record_workspace_bytes(hidden));
+    WorkspaceArena leaf_workspace(storage);
+    Tensor output_gate_view = output_gate.view({TextConfig::value_dim, hidden.ne[1], hidden.ne[2]});
+    ops::gdn_input_proj_conv_record(hidden, weights.query_key_value_z, conv_weight, conv_states,
+                                    valid_columns, initial_slots, conv_record, query, key, value,
+                                    output_gate_view, leaf_workspace, stream);
+}
+
 void Variant::gdn_output_projection(const Tensor& hidden, const Weight& weight, Tensor& residual,
                                     qwen3_6::TextPhase, WorkspaceArena& workspace,
                                     cudaStream_t stream) {
@@ -254,6 +278,17 @@ std::size_t Variant::gdn_input_projection_snapshot_workspace_capacity_bytes(Weig
                                                                             std::int32_t last) {
     return ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
         TextConfig::key_dim, TextConfig::key_dim, TextConfig::value_dim, batch_size, first, last);
+}
+
+std::size_t Variant::gdn_input_projection_record_workspace_capacity_bytes(WeightsProfile,
+                                                                          qwen3_6::TextPhase,
+                                                                          std::int32_t batch_size,
+                                                                          std::int32_t first,
+                                                                          std::int32_t last) {
+    return std::max(kMinimumLeafWorkspaceBytes,
+                    ops::gdn_input_proj_conv_record_workspace_capacity_bytes(
+                        TextConfig::key_dim, TextConfig::key_dim, TextConfig::value_dim, batch_size,
+                        first, last));
 }
 
 std::size_t Variant::gdn_output_projection_workspace_capacity_bytes(WeightsProfile,

@@ -1,6 +1,7 @@
 #include "serve/responses_schema.h"
 
 #include "serve/generation_service.h"
+#include "serve/openai_schema.h"
 
 #include <algorithm>
 #include <array>
@@ -531,16 +532,15 @@ void parse_reasoning(const Json& body, ResponsesRequest& out) {
     if (!reasoning.at("effort").is_string()) {
         bad_request("reasoning.effort must be a string", "reasoning");
     }
-    const std::string effort = reasoning.at("effort").get<std::string>();
-    if (effort == "none") {
-        out.generation.enable_thinking = false;
-    } else if (effort == "medium") {
-        out.generation.enable_thinking = true;
-    } else {
-        bad_request("NInfer supports reasoning.effort 'none' or 'medium'", "reasoning",
-                    "reasoning_effort_not_supported");
+    const std::string value = reasoning.at("effort").get<std::string>();
+    const std::optional<RequestedReasoningEffort> effort = parse_requested_reasoning_effort(value);
+    if (!effort) {
+        bad_request("reasoning.effort must be one of none, minimal, low, medium, high, xhigh, or "
+                    "max",
+                    "reasoning");
     }
-    out.reasoning_effort = effort;
+    out.generation.reasoning_effort       = *effort;
+    out.generation.reasoning_effort_param = "reasoning.effort";
 }
 
 void validate_metadata(const Json& body, ResponsesRequest& out) {
@@ -563,6 +563,7 @@ void validate_metadata(const Json& body, ResponsesRequest& out) {
 void reject_unknown_top_level(const Json& body) {
     static const std::unordered_set<std::string> allowed = {
         "background",
+        "chat_template_kwargs",
         "context_management",
         "conversation",
         "include",
@@ -575,6 +576,7 @@ void reject_unknown_top_level(const Json& body) {
         "moderation",
         "parallel_tool_calls",
         "previous_response_id",
+        "preserve_thinking",
         "prompt",
         "prompt_cache_key",
         "prompt_cache_options",
@@ -730,6 +732,7 @@ ResponsesRequest parse_request_impl(const Json& body, const RequestLimits& limit
     parse_tools(body, out);
     parse_tool_choice(body, out);
     parse_reasoning(body, out);
+    out.generation.preserve_thinking = parse_openai_preserve_thinking(body);
 
     if (const std::optional<double> temperature = optional_number(body, "temperature")) {
         if (*temperature < 0.0 || *temperature > 2.0) {
@@ -797,7 +800,9 @@ struct ItemIds {
 Json response_common(const std::string& id, std::int64_t created_at,
                      const ResponsesRequest& request, const ResponsesRuntimeValues& runtime) {
     const Json reasoning = {
-        {"effort", request.reasoning_effort ? Json(*request.reasoning_effort) : Json(nullptr)},
+        {"effort", request.generation.reasoning_effort
+                       ? Json(requested_reasoning_effort_name(*request.generation.reasoning_effort))
+                       : Json(nullptr)},
         {"summary", nullptr}};
     return Json{
         {"id", id},
@@ -931,7 +936,8 @@ ResponsesRequest parse_response_input_tokens_request(const Json& body,
                                                      const RequestLimits& limits) {
     require_object(body);
     for (auto it = body.begin(); it != body.end(); ++it) {
-        if (it.key() != "model" && it.key() != "input") {
+        if (it.key() != "model" && it.key() != "input" && it.key() != "chat_template_kwargs" &&
+            it.key() != "preserve_thinking") {
             bad_request("unknown parameter: " + it.key(), it.key(), "unknown_parameter");
         }
     }
@@ -940,6 +946,15 @@ ResponsesRequest parse_response_input_tokens_request(const Json& body,
     parsed.stream            = false;
     parsed.generation.stream = false;
     return parsed;
+}
+
+void inherit_responses_preserve_thinking(ResponsesRequest& request, bool parent_value) {
+    if (request.generation.preserve_thinking) {
+        request.generation.preserve_thinking_semantic_change =
+            *request.generation.preserve_thinking != parent_value;
+        return;
+    }
+    request.generation.preserve_thinking = parent_value;
 }
 
 void compose_responses_generation_messages(ResponsesRequest& request,

@@ -9,10 +9,12 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <cstddef>
 #include <functional>
 #include <iostream>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -35,6 +37,15 @@ bool throws_api(const std::function<void()>& f) {
     return false;
 }
 
+std::string api_code(const std::function<void()>& f) {
+    try {
+        f();
+    } catch (const ApiException& error) { return error.error().code; } catch (...) {
+        return "wrong_exception";
+    }
+    return {};
+}
+
 RequestLimits default_limits() {
     RequestLimits limits;
     limits.default_max_tokens = 512;
@@ -42,6 +53,16 @@ RequestLimits default_limits() {
 }
 
 ServeOptions default_server() { return ServeOptions{}; }
+
+ninfer::PromptCapabilities effort_capabilities() {
+    ninfer::PromptCapabilities capabilities;
+    capabilities.enable_thinking                 = true;
+    capabilities.reasoning_effort.low            = true;
+    capabilities.reasoning_effort.medium         = true;
+    capabilities.reasoning_effort.xhigh          = true;
+    capabilities.reasoning_effort.default_effort = ninfer::ReasoningEffort::XHigh;
+    return capabilities;
+}
 
 ninfer::OwnedMedia fake_media(const ContentPart& part) {
     ninfer::OwnedMedia media;
@@ -53,7 +74,9 @@ ninfer::OwnedMedia fake_media(const ContentPart& part) {
 }
 
 ninfer::PromptInput translate(const GenerationRequest& req) {
-    return to_prompt_input(req, default_server(), fake_media);
+    const ServeOptions server = default_server();
+    return to_prompt_input(req, resolve_prompt_semantics(req, server, effort_capabilities()),
+                           fake_media);
 }
 
 std::string joined_text(const ninfer::ChatMessage& message) {
@@ -91,6 +114,143 @@ int test_parse_string_content() {
     failures += check(!req.stream, "stream defaults false");
     failures += check(req.max_tokens == 512, "max_tokens default applied");
     failures += check(!req.max_tokens_set, "max_tokens_set false when defaulted");
+    return failures;
+}
+
+int test_preserve_thinking_options() {
+    const Json base = {
+        {"model", "m"},
+        {"messages", Json::array({Json{{"role", "user"}, {"content", "hello"}}})},
+    };
+    int failures = 0;
+
+    Json kwargs                    = base;
+    kwargs["chat_template_kwargs"] = Json{{"preserve_thinking", true}};
+    const GenerationRequest kwargs_request =
+        parse_chat_completion_request(kwargs, default_limits());
+    failures += check(kwargs_request.preserve_thinking == true,
+                      "chat_template_kwargs preserve_thinking parsed");
+    failures += check(translate(kwargs_request).options.preserve_thinking,
+                      "resolved preserve_thinking reached PromptInput");
+
+    Json alias                 = base;
+    alias["preserve_thinking"] = false;
+    failures +=
+        check(parse_chat_completion_request(alias, default_limits()).preserve_thinking == false,
+              "top-level preserve_thinking alias parsed");
+
+    Json same                 = kwargs;
+    same["preserve_thinking"] = true;
+    failures +=
+        check(parse_chat_completion_request(same, default_limits()).preserve_thinking == true,
+              "matching preserve_thinking values rejected");
+
+    Json nulls                    = base;
+    nulls["preserve_thinking"]    = nullptr;
+    nulls["chat_template_kwargs"] = Json{{"preserve_thinking", nullptr}, {"future", nullptr}};
+    failures +=
+        check(!parse_chat_completion_request(nulls, default_limits()).preserve_thinking.has_value(),
+              "null preserve_thinking did not remain omitted");
+
+    Json conflict                 = kwargs;
+    conflict["preserve_thinking"] = false;
+    failures +=
+        check(throws_api([&] { (void)parse_chat_completion_request(conflict, default_limits()); }),
+              "conflicting preserve_thinking values accepted");
+
+    Json bad_kwargs                    = base;
+    bad_kwargs["chat_template_kwargs"] = true;
+    failures += check(
+        throws_api([&] { (void)parse_chat_completion_request(bad_kwargs, default_limits()); }),
+        "non-object chat_template_kwargs accepted");
+    Json bad_value                    = base;
+    bad_value["chat_template_kwargs"] = Json{{"preserve_thinking", "yes"}};
+    failures +=
+        check(throws_api([&] { (void)parse_chat_completion_request(bad_value, default_limits()); }),
+              "non-boolean preserve_thinking accepted");
+    Json unknown                    = base;
+    unknown["chat_template_kwargs"] = Json{{"preserve_thinking", true}, {"foo", 1}};
+    failures +=
+        check(throws_api([&] { (void)parse_chat_completion_request(unknown, default_limits()); }),
+              "unknown non-null chat template option accepted");
+    return failures;
+}
+
+int test_reasoning_effort() {
+    const Json base = {
+        {"model", "m"},
+        {"messages", Json::array({Json{{"role", "user"}, {"content", "hello"}}})},
+    };
+    int failures = 0;
+
+    Json low                            = base;
+    low["reasoning_effort"]             = "low";
+    const GenerationRequest low_request = parse_chat_completion_request(low, default_limits());
+    failures += check(low_request.reasoning_effort == RequestedReasoningEffort::Low,
+                      "Chat Completions reasoning_effort was not parsed");
+    const ninfer::PromptInput low_prompt = translate(low_request);
+    failures += check(low_prompt.options.enable_thinking &&
+                          low_prompt.options.reasoning_effort == ninfer::ReasoningEffort::Low,
+                      "Chat Completions low effort did not reach PromptInput");
+
+    Json none                = base;
+    none["reasoning_effort"] = "none";
+    const ninfer::PromptInput none_prompt =
+        translate(parse_chat_completion_request(none, default_limits()));
+    failures += check(!none_prompt.options.enable_thinking && !none_prompt.options.reasoning_effort,
+                      "Chat Completions none effort did not disable thinking");
+
+    for (const auto& [wire, expected] :
+         std::array<std::pair<const char*, RequestedReasoningEffort>, 6>{
+             {{"minimal", RequestedReasoningEffort::Minimal},
+              {"medium", RequestedReasoningEffort::Medium},
+              {"high", RequestedReasoningEffort::High},
+              {"xhigh", RequestedReasoningEffort::XHigh},
+              {"max", RequestedReasoningEffort::Max},
+              {"none", RequestedReasoningEffort::None}}}) {
+        Json body                = base;
+        body["reasoning_effort"] = wire;
+        failures += check(parse_chat_completion_request(body, default_limits()).reasoning_effort ==
+                              expected,
+                          std::string("Chat Completions did not accept protocol effort ") + wire);
+    }
+
+    Json high                            = base;
+    high["reasoning_effort"]             = "high";
+    const GenerationRequest high_request = parse_chat_completion_request(high, default_limits());
+    failures += check(api_code([&] {
+                          (void)resolve_prompt_semantics(high_request, default_server(),
+                                                         effort_capabilities());
+                      }) == "reasoning_effort_not_supported",
+                      "protocol-valid high effort was not rejected by template capability");
+
+    ninfer::PromptCapabilities toggle_capabilities;
+    toggle_capabilities.enable_thinking = true;
+    failures += check(api_code([&] {
+                          (void)resolve_prompt_semantics(low_request, default_server(),
+                                                         toggle_capabilities);
+                      }) == "reasoning_effort_not_supported",
+                      "reasoning effort was accepted without template support");
+
+    Json conflict               = low;
+    conflict["enable_thinking"] = false;
+    const GenerationRequest conflicting_request =
+        parse_chat_completion_request(conflict, default_limits());
+    failures += check(api_code([&] {
+                          (void)resolve_prompt_semantics(conflicting_request, default_server(),
+                                                         effort_capabilities());
+                      }) == "conflicting_template_option",
+                      "conflicting enable_thinking and reasoning_effort were accepted");
+
+    Json invalid                = base;
+    invalid["reasoning_effort"] = "ultra";
+    failures +=
+        check(throws_api([&] { (void)parse_chat_completion_request(invalid, default_limits()); }),
+              "unknown Chat Completions reasoning effort was accepted");
+    invalid["reasoning_effort"] = 1;
+    failures +=
+        check(throws_api([&] { (void)parse_chat_completion_request(invalid, default_limits()); }),
+              "non-string Chat Completions reasoning effort was accepted");
     return failures;
 }
 
@@ -352,10 +512,13 @@ int test_parse_sampling_carried() {
         check(req.sampling.logit_bias.count(5) == 1 && req.sampling.logit_bias.at(5) == -1.5,
               "logit_bias carried");
     const ninfer::RequestOptions options = to_request_options(req, default_server());
+    failures += check(options.execution.sampling.temperature == 0.7F,
+                      "temperature reaches Engine overrides");
+    failures += check(options.execution.sampling.top_p == 0.9F, "top_p reaches Engine overrides");
+    failures += check(options.execution.sampling.seed == 123u, "seed reaches Engine overrides");
     failures +=
-        check(options.execution.sampling.temperature == 0.7F, "temperature reaches Engine options");
-    failures += check(options.execution.sampling.top_p == 0.9F, "top_p reaches Engine options");
-    failures += check(options.execution.sampling.seed == 123u, "seed reaches Engine options");
+        check(!options.execution.sampling.top_k && !options.execution.sampling.presence_penalty,
+              "omitted request fields unexpectedly replaced model defaults");
     return failures;
 }
 
@@ -537,6 +700,8 @@ int test_finish_reason_wire() {
 int main() {
     int failures = 0;
     failures += test_parse_string_content();
+    failures += test_preserve_thinking_options();
+    failures += test_reasoning_effort();
     failures += test_parse_parts_and_flatten();
     failures += test_developer_role_mapped();
     failures += test_parse_media_in_translate();

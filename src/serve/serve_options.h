@@ -44,20 +44,12 @@ struct ServeOptions {
     bool allow_prefix_reuse = true;
     bool enable_thinking =
         true; // default thinking mode for the generation prompt (--no-thinking opts out)
+    bool preserve_thinking = false;
     int default_max_tokens = kDefaultMaxTokens;
     bool enable_cors       = false; // send permissive CORS headers for browser UIs
-    // Default sampler applied when a request omits a field. Defaults match the
-    // Qwen3 thinking recommendation so real chat clients get non-degenerate
-    // decoding out of the box; a request may override any field, and --greedy
-    // forces the exact-argmax path (temperature 0).
-    float sampling_temperature       = 0.6f;
-    float sampling_top_p             = 0.95f;
-    int sampling_top_k               = 20;
-    float sampling_presence_penalty  = 1.0f;
-    float sampling_frequency_penalty = 0.0f;
-    // Fixes the seed used when a request omits `seed`; when unset each such
-    // request draws a fresh random seed so regenerations differ.
-    std::optional<std::uint64_t> sampling_seed;
+    // Process-level explicit overrides layered between registered model/mode defaults and request
+    // fields. An omitted seed is replaced per request with a fresh random seed.
+    SamplingOverrides sampling_overrides;
     bool greedy = false; // --greedy: force temperature 0 (exact argmax)
 
     // Exact process argv for the server-start record. Secret-bearing option values are redacted

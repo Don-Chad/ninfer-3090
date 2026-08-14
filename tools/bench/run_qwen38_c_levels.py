@@ -12,13 +12,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SERVER = ROOT / "build-sm86-qwen38/apps/Release/ninfer-serve.exe"
+SERVER = ROOT / "build-sm86-replayssm/apps/Release/ninfer-serve.exe"
 MODEL = ROOT.parent / "qwen3_8_27b.ninfer"
-OUTPUT_ROOT = ROOT / "benchmark_results/qwen3_8_round_03_c_levels"
-CONCURRENCY_LEVELS = (1, 2, 4)
+OUTPUT_ROOT = ROOT / "benchmark_results/qwen3_8_round_12_replayssm_c8_k3_8k_shared"
+CONCURRENCY_LEVELS = (8,)
 PORT = 8093
-MAX_CONTEXT = 4096
-KV_CAPACITY = 4096
+MAX_CONTEXT = 8192
+KV_CAPACITY = 8192
 OUTPUT_TOKENS = 128
 PROMPT = "Explain three practical ways to make a CUDA inference server faster, with technical detail."
 STARTUP_TIMEOUT_SECONDS = 45
