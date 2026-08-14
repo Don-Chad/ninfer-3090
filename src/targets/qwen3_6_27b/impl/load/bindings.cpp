@@ -36,6 +36,7 @@ NumericFormat endpoint_format(WeightsProfile weights_profile) {
     switch (weights_profile) {
     case WeightsProfile::GroupwiseInt:
         return NumericFormat::Q6G64_F16S;
+    case WeightsProfile::GroupwiseIntW8Endpoints:
     case WeightsProfile::Nvfp4:
         return NumericFormat::W8G32_F16S;
     }
@@ -347,6 +348,7 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_
         bind_weight(binder, "text/token_embedding", vocabulary_format, {248320, 5120});
     switch (weights_profile) {
     case WeightsProfile::GroupwiseInt:
+    case WeightsProfile::GroupwiseIntW8Endpoints:
         bind_groupwise_text_layers(binder, out);
         break;
     case WeightsProfile::Nvfp4:

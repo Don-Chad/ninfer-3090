@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace ninfer::targets {
@@ -80,7 +81,8 @@ std::size_t current_free_device_bytes() {
 
 template <class Target, class Loaded, class Instance>
 ConstructedTarget construct_registered(const EngineOptions& options, DeviceContext& device,
-                                       artifact::Reader& reader, Clock::time_point load_start) {
+                                       artifact::Reader& reader, Clock::time_point load_start,
+                                       std::string_view target_key) {
     const auto& identity       = reader.identity();
     const auto weights_profile = Target::resolve_weights(identity);
 
@@ -113,7 +115,7 @@ ConstructedTarget construct_registered(const EngineOptions& options, DeviceConte
     instance->kv_capacity_resolution.available_after_startup_bytes = current_free_device_bytes();
 
     LoadSummary summary;
-    summary.target               = std::string(Target::target_key);
+    summary.target               = std::string(target_key);
     summary.model_id             = identity.model_id;
     summary.weights_id           = identity.weights_id;
     summary.load_seconds         = std::chrono::duration<double>(Clock::now() - load_start).count();
@@ -170,11 +172,15 @@ ConstructedTarget construct_target(const EngineOptions& options, DeviceContext& 
     const auto& identity = reader.identity();
     if (identity.model_id == Qwen3_6_27B::model_id) {
         return construct_registered<Qwen3_6_27B, LoadedQwen3_6_27B, Qwen3_6_27BInstance>(
-            options, device, reader, load_start);
+            options, device, reader, load_start, Qwen3_6_27B::target_key);
+    }
+    if (identity.model_id == Qwen3_6_27B::qwen3_8_model_id) {
+        return construct_registered<Qwen3_6_27B, LoadedQwen3_6_27B, Qwen3_6_27BInstance>(
+            options, device, reader, load_start, Qwen3_6_27B::qwen3_8_target_key);
     }
     if (identity.model_id == Qwen3_6_35BA3B::model_id) {
         return construct_registered<Qwen3_6_35BA3B, LoadedQwen3_6_35BA3B, Qwen3_6_35BA3BInstance>(
-            options, device, reader, load_start);
+            options, device, reader, load_start, Qwen3_6_35BA3B::target_key);
     }
     throw std::runtime_error("artifact identity '" + identity.model_id + "/" + identity.weights_id +
                              "' has no registered target for this device");
