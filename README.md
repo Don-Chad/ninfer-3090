@@ -29,6 +29,12 @@ Qwen3.8-27B is validated from one through eight simultaneous users. ReplaySSM cu
 of speculative decoding, allowing the faster MTP3 mode to remain enabled at C8. The table below is
 the new sustained test: every request generated 1,024 tokens with CUDA Graphs enabled.
 
+The prompts were **29-34 input tokens** and the server's maximum context window was **8,192 tokens
+per request**. Each measured sequence therefore reached roughly 1,053-1,058 tokens including its
+generated output. This is a long-output/decode benchmark, not an 8K-prompt or long-prefill test.
+C1-C4 used an 8,192-token shared KV pool; C8 used 16,384 tokens so all eight requested outputs
+could be admitted simultaneously.
+
 | Cohort | Total output | End-to-end throughput | Decode throughput | MTP acceptance | Mean TTFT | Peak VRAM |
 |---:|---:|---:|---:|---:|---:|---:|
 | C1 | 1,024 tokens | **70.19 tok/s** | **71.00 tok/s** | 61.13% | 149 ms | 19,641 MiB |
