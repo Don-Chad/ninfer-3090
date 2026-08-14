@@ -1,8 +1,8 @@
-# NInfer-3090 v0.4.0 for Windows
+# NInfer-3090 v0.5.0 for Windows
 
-This native Windows release supports the Qwen3.6-27B artifact and the compact, text-only
-Qwen3.6-35B-A3B v0.3.1 artifact. The runtime adds paged KV, concurrent request execution,
-compatible-prefix reuse, bounded admission, and improved serving APIs.
+This native Windows release supports Qwen3.8-27B, Qwen3.6-27B, and the compact, text-only
+Qwen3.6-35B-A3B v0.3.1 artifact. The runtime provides paged KV, concurrent request execution,
+compatible-prefix reuse, bounded admission, and OpenAI/Anthropic serving APIs.
 
 ## Requirements
 
@@ -34,6 +34,27 @@ Responses, OpenAI Chat Completions, and Anthropic Messages-compatible endpoints.
 
 The compact 35B artifact does not contain DFlash weights. Do not select `--spec dflash`; the
 runtime reports the missing optional weights explicitly.
+
+## Qwen3.8-27B C8/8K profile
+
+The validated maximum-concurrency Qwen3.8 profile uses MTP2, not MTP3:
+
+```powershell
+.\ninfer-serve.exe models\qwen3_8_27b.ninfer `
+  --host 127.0.0.1 --port 8080 `
+  --max-context 8192 --kv-capacity 8192 `
+  --max-concurrency 8 --max-pending-requests 32 `
+  --prefill-chunk 1024 --kv-dtype int8 `
+  --spec mtp --draft-tokens 2 --lm-head-draft
+```
+
+This configuration measured 105.30 aggregate end-to-end tok/s for eight simultaneous 128-token
+generations, 90.8% MTP acceptance, and 179-211 tok/s in fully batched decode intervals. Startup
+left 774 MiB physically free and 388 MiB planned slack. Avoid competing GPU processes. MTP3 at
+C8/8K is rejected by the memory planner; use C4/MTP3 when more safety margin or lower TTFT matters.
+
+The paged cache supports BF16 and INT8 storage. RotorQuant/KV4 from older contiguous-cache work is
+not a supported v0.5 paged-cache mode.
 
 ## Measured 35B capacity
 
@@ -69,6 +90,7 @@ preprocessor automatically.
 
 ## Release validation
 
-The v0.4 Windows release gate rebuilt `ninfer.exe`, `ninfer-serve.exe`, and `ninfer_bench.exe` and
-passed 11 focused tests covering artifact reading/materialization, request memory, admission,
-paged KV, prefix append, speculative rounds, and the three relevant SM86 W8 linear paths.
+The v0.5 Windows release gate rebuilt `ninfer.exe`, `ninfer-serve.exe`, and `ninfer_bench.exe`,
+loaded the official Qwen3.8 artifact, generated coherent output, and completed C1-C4 plus C8/8K
+serving checks. Focused tests cover artifact reading/materialization, request memory, admission,
+paged KV, prefix append, speculative rounds, and the relevant SM86 W8 linear paths.

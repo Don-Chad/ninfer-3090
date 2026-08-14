@@ -1,9 +1,9 @@
 # NInfer-3090
 
-NInfer-3090 is a specialized C++20/CUDA inference engine for Qwen3.6 on one 24 GB NVIDIA GeForce
-RTX 3090. Version 0.4 adds upstream's paged KV cache, true concurrent MTP execution, compatible
-prefix reuse, request admission, and expanded OpenAI/Anthropic serving while preserving support
-for the compact v0.3.1 Qwen3.6-35B-A3B artifact.
+NInfer-3090 is a specialized C++20/CUDA inference engine for Qwen3.6 and Qwen3.8 on one 24 GB
+NVIDIA GeForce RTX 3090. Version 0.5 adds native Qwen3.8-27B groupwise-artifact binding to the
+SM86 runtime while retaining paged KV, concurrent MTP execution, compatible-prefix reuse,
+request admission, and OpenAI/Anthropic serving.
 
 This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. DFlash is not part
 of the recommended RTX 3090 path; use MTP speculative decoding.
@@ -28,6 +28,29 @@ to v0.3.1's 1,500-token adaptive prompt-lookup benchmark.
 Compatible-prefix reuse was validated end to end: a repeated 26-token prompt reused 24 tokens,
 reducing measured prefill from 371 ms to 10 ms.
 
+### Qwen3.8-27B
+
+Qwen3.8-27B was measured with its official 16.96 GiB artifact, explicit 4K shared INT8 paged KV,
+MTP3, greedy decoding, 128 output tokens per request, and no competing GPU workload:
+
+| Concurrent requests | Aggregate end-to-end | Mean TTFT | Peak VRAM |
+|---:|---:|---:|---:|
+| 1 | 61.82 tok/s | 142 ms | 19,500 MiB |
+| 2 | 77.11 tok/s | 262 ms | 20,278 MiB |
+| 4 | 80.20 tok/s | 543 ms | 21,811 MiB |
+
+A matched four-prompt C1 sweep measured ordinary decoding at 36.86 tok/s, MTP2 at 65.72 tok/s,
+and MTP3 at 71.56 tok/s. MTP2 accepted 78.4% of drafted tokens; MTP3 accepted 67.7% but committed
+3.04 tokens per round and remained 8.9% faster than MTP2. Greedy reasoning/output text was not
+byte-identical across every execution route, so these throughput results do not establish exact
+quality parity.
+
+At 8K context, C8 starts and completes with MTP2, CUDA Graphs, and the optimized proposal head.
+The measured 128-token wave reached 105.30 aggregate end-to-end tok/s, 90.8% MTP acceptance, and
+179-211 tok/s during fully batched decode intervals. It leaves 774 MiB physically free and only
+388 MiB planned slack. MTP3 is rejected safely: it misses the reservation by 789 MiB with graphs
+and 101 MiB without graphs. Use MTP2 for C8/8K; use C2 or C4 when latency matters.
+
 ## Changes since v0.3.1
 
 - shared paged BF16/INT8 KV storage;
@@ -38,6 +61,7 @@ reducing measured prefill from 371 ms to 10 ms.
 - OpenAI Responses Core, Chat Completions, Anthropic Messages, streaming, function-call rendering,
   request logging, and throughput telemetry;
 - direct compatibility with legacy compact v1 groupwise artifacts and current v2 artifacts;
+- registered Qwen3.8-27B groupwise artifact support using W8 embedding/output endpoints;
 - native Windows CUDA 13.x / MSVC support.
 
 The legacy reader assigns only the two registered groupwise identities. A compact 35B artifact
@@ -50,6 +74,7 @@ requested.
 |---|---|---:|---|
 | Qwen3.6-35B-A3B | [compact groupwise artifact](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) | 20.84 GiB | Recommended; C1-C6 validated at 4K |
 | Qwen3.6-27B | [groupwise artifact](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) | 16.29 GiB | Supported with more runtime headroom |
+| Qwen3.8-27B | [groupwise artifact](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) | 16.96 GiB | Text validated at C1-C4/4K and C8/8K |
 
 The current upstream 21.22 GiB 35B v2 artifact contains additional DFlash weights and does not fit
 the tested RTX 3090 concurrent configuration. The compact artifact keeps the proven model weights
@@ -89,6 +114,14 @@ hf download neroued/Qwen3.6-35B-A3B-NInfer `
 The `.ninfer` artifact contains quantized weights and frontend resources. It is not a GGUF or
 Transformers checkpoint.
 
+For Qwen3.8-27B:
+
+```powershell
+hf download neroued/Qwen3.8-27B-NInfer `
+  qwen3_8_27b.ninfer `
+  --local-dir models
+```
+
 ## Run the server
 
 The explicit 4K KV capacity avoids reserving the extra 1 GiB safety margin used by `auto` and is
@@ -103,6 +136,16 @@ the validated compact-35B configuration:
 
 Use `--max-concurrency 2` when individual request latency matters more than aggregate throughput.
 C6 provides the highest measured short-run aggregate throughput but leaves little VRAM headroom.
+
+The validated Qwen3.8 C8/8K profile uses MTP2:
+
+```powershell
+.\build-windows\apps\Release\ninfer-serve.exe models\qwen3_8_27b.ninfer `
+  --host 127.0.0.1 --port 8080 `
+  --max-context 8192 --kv-capacity 8192 --max-concurrency 8 `
+  --prefill-chunk 1024 --kv-dtype int8 `
+  --spec mtp --draft-tokens 2 --lm-head-draft
+```
 
 ## Serving APIs
 
@@ -120,16 +163,19 @@ See [HTTP serving](docs/serving.md) and [CLI usage](docs/cli.md).
 ## Current limits
 
 - One process owns one model on one RTX 3090.
-- Concurrency is fixed at startup and limited to 1-8 by the API; compact 35B currently fits C1-C6.
+- Concurrency is fixed at startup and limited to 1-8 by the API; compact 35B fits C1-C6 and
+  Qwen3.8-27B fits C8/8K with MTP2.
 - The shared KV pool is fixed at startup and is not divided statically among request lanes.
 - This is bounded small-scale batching, not preemptive large-scale continuous batching.
 - No multi-GPU execution or CPU/GPU weight offload.
 - Tool calls are returned to the client but are not executed by NInfer.
 - NVFP4 A4 and TMA kernels require Blackwell and are unavailable on SM86.
+- The paged runtime exposes BF16 and INT8 KV. Legacy RotorQuant/KV4 paths are not ported to paged
+  append, prefix reuse, batched decode, and provisional MTP state.
 
 ## Validation
 
-The v0.4 release gate includes artifact loading, materialization, request memory, admission policy,
+The v0.5 release gate includes Qwen3.8 artifact loading/generation, materialization, request memory, admission policy,
 paged KV, prefix append, speculative rounds, and SM86 W8 linear paths. The focused Windows gate
 passed 11/11 tests. Benchmark logs remain local under `benchmark_results/` and are not included in
 source releases.
