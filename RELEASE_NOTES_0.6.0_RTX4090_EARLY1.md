@@ -12,7 +12,10 @@ Qwen3.8-27B ReplaySSM/MTP release path without claiming Ada-specific optimizatio
 
 ## Qualification boundary
 
-Compilation, linking, native cubin inspection, and CLI startup passed. On-device RTX 4090 inference
-and benchmark qualification are pending because the available RunPod API key returned HTTP 401.
-Treat this archive as a test candidate until the recorded cohort sweep passes.
+Compilation, linking, native cubin inspection, and on-device RTX 4090 inference passed. The recorded
+1,024-token cohort sweep completed C1/C2/C4/C8 at 102.13, 162.46, 193.49, and 299.82 aggregate
+tok/s respectively, with peak VRAM from 18,250 MiB to 20,708 MiB. See `README.md` in the archive
+for the full table and reproduction command.
 
+This remains an early compatibility release. It uses the proven pre-Hopper schedules and has not
+yet received RTX 4090-specific performance tuning.

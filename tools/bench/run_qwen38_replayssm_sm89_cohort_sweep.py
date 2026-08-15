@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import math
 import subprocess
 import threading
 import time
@@ -152,6 +153,25 @@ def run_cohort(cohort: int) -> dict:
         "peak_gpu_memory_mib": peak_mib,
     }
     (out / "summary.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    expected_tokens = cohort * OUTPUT_TOKENS
+    if result["requests"] != cohort:
+        raise RuntimeError(f"C{cohort} completed {result['requests']} of {cohort} requests")
+    if result["generated_tokens"] != expected_tokens:
+        raise RuntimeError(
+            f"C{cohort} generated {result['generated_tokens']} of {expected_tokens} required tokens"
+        )
+    for metric in (
+        "wave_seconds",
+        "end_to_end_tokens_per_second",
+        "decode_tokens_per_second",
+        "mean_ttft_ms",
+    ):
+        if not math.isfinite(result[metric]) or result[metric] <= 0:
+            raise RuntimeError(f"C{cohort} has invalid {metric}: {result[metric]}")
+    if not 0 <= result["acceptance_percent"] <= 100:
+        raise RuntimeError(f"C{cohort} has invalid MTP acceptance: {result['acceptance_percent']}")
+    if result["peak_gpu_memory_mib"] <= 0:
+        raise RuntimeError(f"C{cohort} has invalid peak VRAM: {result['peak_gpu_memory_mib']}")
     print(json.dumps(result))
     return result
 
