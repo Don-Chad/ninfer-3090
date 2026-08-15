@@ -110,6 +110,8 @@ def run_round(name: str, prompt: str, max_tokens: int, cohort: int) -> dict:
 
         try:
             wait_ready(process)
+            warmup_barrier = threading.Barrier(1)
+            request("Warm up the inference path with a short response.", 32, -1, warmup_barrier)
             peak_mib = gpu_used_mib()
             poller = threading.Thread(target=poll_gpu, daemon=True)
             poller.start()
@@ -134,8 +136,11 @@ def run_round(name: str, prompt: str, max_tokens: int, cohort: int) -> dict:
     (out / "responses.json").write_text(json.dumps([client[0] for client in clients], indent=2), encoding="utf-8")
     records = [json.loads(line) for line in request_log.read_text(encoding="utf-8").splitlines()]
     done = [record for record in records if record.get("event") == "request_done"]
-    if len(done) != cohort:
-        raise RuntimeError(f"{name} C{cohort}: expected {cohort} completed requests, found {len(done)}")
+    if len(done) != cohort + 1:
+        raise RuntimeError(
+            f"{name} C{cohort}: expected one warmup plus {cohort} measured requests, found {len(done)}"
+        )
+    done = done[-cohort:]
     generated = sum(record["result"]["completion_tokens"] for record in done)
     prompt_tokens = sum(record["result"]["prompt_tokens"] for record in done)
     computed_prefill = sum(record["result"]["computed_prefill_tokens"] for record in done)
@@ -187,29 +192,34 @@ def main() -> None:
         results.append(run_round("generation_1k", generation_prompt, OUTPUT_TOKENS, cohort))
     for cohort in COHORTS:
         results.append(run_round("prefill", prefill_prompt, 16, cohort))
+    generation_by_cohort = {
+        result["cohort"]: result for result in results if result["round"] == "generation_1k"
+    }
+    prefill_by_cohort = {
+        result["cohort"]: result for result in results if result["round"] == "prefill"
+    }
     headline_results = [
         {
-            "round": result["round"],
-            "cohort": result["cohort"],
-            "prompt_tokens_per_second": result["prefill_tokens_per_second"],
-            "decode_tokens_per_second": result["decode_tokens_per_second"],
+            "cohort": cohort,
+            "prompt_tokens_per_second": prefill_by_cohort[cohort]["prefill_tokens_per_second"],
+            "decode_tokens_per_second": generation_by_cohort[cohort]["decode_tokens_per_second"],
         }
-        for result in results
+        for cohort in COHORTS
     ]
     (OUTPUT_ROOT / "scores.json").write_text(json.dumps(headline_results, indent=2), encoding="utf-8")
-    score_lines = ["round,cohort,prompt_tokens,completion_tokens,prompt_tok_s,decode_tok_s"]
-    for result in results:
+    score_lines = ["cohort,prompt_tok_s,decode_tok_s"]
+    for result in headline_results:
         score_lines.append(
-            f"{result['round']},C{result['cohort']},{result['prompt_tokens']},{result['completion_tokens']},"
-            f"{result['prefill_tokens_per_second']:.2f},{result['decode_tokens_per_second']:.2f}"
+            f"C{result['cohort']},{result['prompt_tokens_per_second']:.2f},"
+            f"{result['decode_tokens_per_second']:.2f}"
         )
     (OUTPUT_ROOT / "scores.csv").write_text("\n".join(score_lines) + "\n", encoding="utf-8")
     print("\nHeadline scores (server compute time):")
-    print("Round           Cohort   Prompt tok/s   Decode tok/s")
-    for result in results:
+    print("Cohort   Prompt tok/s   Decode tok/s")
+    for result in headline_results:
         print(
-            f"{result['round']:<15} C{result['cohort']:<7} "
-            f"{result['prefill_tokens_per_second']:>12.2f} "
+            f"C{result['cohort']:<7} "
+            f"{result['prompt_tokens_per_second']:>12.2f} "
             f"{result['decode_tokens_per_second']:>14.2f}"
         )
     print(f"Scores saved to: {OUTPUT_ROOT}")
