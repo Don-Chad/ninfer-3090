@@ -81,7 +81,7 @@ def run_round(name: str, prompt: str, max_tokens: int) -> dict:
         str(SERVER), str(MODEL), "--host", "127.0.0.1", "--port", str(PORT),
         "--max-context", str(MAX_CONTEXT), "--kv-capacity", str(MAX_CONTEXT),
         "--max-concurrency", "1", "--max-pending-requests", "4",
-        "--pending-timeout-ms", "900000", "--prefill-chunk", "1024",
+        "--pending-timeout-ms", "900000", "--prefill-chunk", "512",
         "--kv-dtype", "int8", "--spec", "mtp", "--draft-tokens", "3",
         "--lm-head-draft", "--greedy", "--no-prefix-reuse",
         "--request-log-jsonl", str(request_log),
