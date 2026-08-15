@@ -9,6 +9,15 @@ reasoning-effort control, ReplaySSM state transactions, and concurrent cohorts t
 This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. DFlash is not part
 of the recommended RTX 3090 path; use MTP speculative decoding.
 
+## Build for Linux
+
+The source builds native Linux applications for the RTX 3090 and RTX 3090 Ti. The repository
+Dockerfile gives the shortest path on Bazzite and other Linux distributions. A native Ubuntu 24.04
+build can use system packages or the pinned vcpkg manifest.
+
+See the [RTX 3090 Linux build guide](docs/rtx-3090-linux.md) for the exact container and native
+commands. The project does not publish a qualified Linux binary release yet.
+
 ## Start Qwen3.8 in three steps
 
 1. Download and unzip the latest [Windows release](https://github.com/Don-Chad/ninfer-3090/releases/latest).
@@ -134,9 +143,12 @@ is recommended on a 24 GB card. Releases v0.5 and newer also read the larger con
 An `artifact magic is not NInfer version 1` message means the executable is outdated, not that the
 current model download is necessarily corrupt.
 
-Developers building from source can use Visual Studio 2022, CUDA 12.8 or newer, CMake, and vcpkg.
-See the [Windows build guide](docs/rtx-3090-windows.md); ordinary release users do not need these
-tools.
+Developers can build from source on Windows or Linux. Windows uses Visual Studio 2022 and vcpkg.
+Linux uses GCC 13 with system packages or the pinned vcpkg manifest. Both builds require CUDA 12.8
+or newer and CMake 3.28 or newer.
+
+See the [Windows build guide](docs/rtx-3090-windows.md) or the
+[Linux build guide](docs/rtx-3090-linux.md). Ordinary Windows release users do not need these tools.
 
 ## Qwen3.8 reasoning effort
 
@@ -216,8 +228,8 @@ source releases.
 ## Upstream
 
 NInfer-3090 is derived from [Neroued/ninfer](https://github.com/Neroued/ninfer). The upstream project
-targets RTX 5090/`sm_120a`; this fork carries the Windows and SM86 compatibility layer, compact 35B
-artifact support, and RTX 3090-specific schedules and memory planning.
+targets RTX 5090/`sm_120a`; this fork carries the Windows and Linux SM86 compatibility layer,
+compact 35B artifact support, and RTX 3090-specific schedules and memory planning.
 
 ## License
 
