@@ -6,8 +6,7 @@ runtime loads its official groupwise `.ninfer` artifact, serves OpenAI- and Anth
 APIs, and supports paged KV, compatible-prefix reuse, CUDA Graphs, MTP speculative decoding,
 reasoning-effort control, ReplaySSM state transactions, and concurrent cohorts through **C8**.
 
-This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. DFlash is not part
-of the recommended RTX 3090 path; use MTP speculative decoding.
+This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. The goal is the make the utmost rippin Qwen inference stack for the 3000 series. Gladly taking PR's, all help much appreciated. 
 
 Release notes for this branch: [v0.6.1](RELEASE_NOTES_0.6.1.md).
 
