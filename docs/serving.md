@@ -87,6 +87,11 @@ The request `model` must equal the public model ID: the artifact `identity.model
 the explicit `--model-id` override. Reasoning is returned separately as `reasoning_content`; answer
 text remains in `content`.
 
+Message roles retain their input order through schema translation. The Qwen family frontend maps
+both `system` and `developer` to system-class ChatML blocks at their original positions; it does not
+move later instructions to the beginning of the conversation. A leading instruction keeps the
+artifact template's existing tool/reasoning-instruction composition.
+
 At startup, NInfer resolves prompt capabilities from the exact `frontend/chat_template.jinja`
 resource embedded in the loaded artifact. It does not infer them from the request's `model` field,
 the artifact identity, or a target profile. A recognized effort-capable template exposes `low`,
@@ -220,6 +225,10 @@ String `input` is normalized to one user `message` with an `input_text` part. Ar
 Adjacent function-call Items are grouped into one assistant history turn. A reasoning Item attaches
 to the following assistant message or function call. Input Item IDs are preserved when supplied and
 generated otherwise; duplicate IDs fail.
+
+System and developer message Items retain their positions in the input array. Top-level
+`instructions` is represented as a leading developer turn for the current request; target-specific
+role lowering occurs only in the Qwen family frontend.
 
 `input_file`, `input_audio`, image `file_id`, non-`auto` image detail, reasoning summaries or
 encrypted reasoning, message `phase`, and other Item/content types are not supported. HTTP media
@@ -373,9 +382,15 @@ curl http://127.0.0.1:8080/v1/messages \
   }'
 ```
 
-The endpoint supports system text, user/assistant history, text and image blocks, thinking blocks,
-tool-use history, tool results, client-defined tools, non-streaming responses, and Anthropic SSE
-events. `thinking.type: "disabled"` disables thinking; other supported values enable it.
+The endpoint supports top-level system text, ordered mid-conversation system messages,
+user/assistant history, text and image blocks, thinking blocks, tool-use history, tool results,
+client-defined tools, non-streaming responses, and Anthropic SSE events.
+Mid-conversation system messages remain at their `messages` array position and are not merged into
+the top-level system instruction. A system section must follow a user/tool-result message and be
+final or immediately precede an assistant message; it cannot interrupt a tool-use/tool-result pair.
+Consecutive system messages remain separate ordered turns.
+
+`thinking.type: "disabled"` disables thinking; other supported values enable it.
 The independent top-level `preserve_thinking` boolean controls closed-turn history and otherwise
 uses the server default.
 
@@ -565,6 +580,10 @@ append, while stable `false` histories restore the previous open-turn checkpoint
 closes that turn. The JSONL completion record exposes the selected path as `prefix_reuse_path`.
 Changing reasoning effort changes the rendered prompt and therefore does not reuse a prefix whose
 effort instruction differs.
+
+An appended mid-conversation system message is an ordinary prompt suffix, so an unchanged prior
+history remains eligible for `append_frontier`. If the client modifies, removes, or moves a
+historical system message, the token prefix genuinely differs and a miss/reset is correct.
 
 Speculative decoding is an engine option and does not change protocol output shapes, stop behavior,
 or usage accounting. If a stop truncates a multi-token MTP or DFlash round, the Engine commits the

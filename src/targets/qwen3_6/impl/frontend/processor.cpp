@@ -302,14 +302,16 @@ Prepared prepare_video(const ChatPart& part, const ProcessorOptions& options,
 std::vector<const ChatPart*> media_parts(const std::vector<ChatMessage>& messages) {
     std::vector<const ChatPart*> out;
     for (const ChatMessage& message : messages) {
-        if (message.role == "system" || message.role == "developer") {
+        if (message.role == ChatRole::System || message.role == ChatRole::Developer) {
             if (message.has_media()) {
-                throw std::invalid_argument("system message cannot contain images or videos");
+                throw std::invalid_argument(
+                    "system and developer messages cannot contain images or videos");
             }
             continue;
         }
-        if (message.role != "user" && message.role != "assistant" && message.role != "tool") {
-            throw std::invalid_argument("unsupported chat role: " + message.role);
+        if (message.role != ChatRole::User && message.role != ChatRole::Assistant &&
+            message.role != ChatRole::Tool) {
+            throw std::invalid_argument("unsupported chat role value");
         }
         for (const ChatPart& part : message.parts) {
             if (part.kind != ChatPartKind::Text) { out.push_back(&part); }

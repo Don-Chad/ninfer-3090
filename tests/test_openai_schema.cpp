@@ -107,7 +107,7 @@ int test_parse_string_content() {
     const GenerationRequest req = parse_chat_completion_request(body, default_limits());
     failures += check(req.model == "qwen3.6-27b", "model parsed");
     failures += check(req.messages.size() == 1, "one message parsed");
-    failures += check(req.messages[0].role == "user", "role parsed");
+    failures += check(req.messages[0].role == ninfer::ChatRole::User, "role parsed");
     failures += check(req.messages[0].content.size() == 1, "one content part");
     failures += check(req.messages[0].content[0].kind == ContentKind::Text, "text part kind");
     failures += check(req.messages[0].content[0].text == "hello", "text part content");
@@ -304,16 +304,25 @@ int test_parse_media_in_translate() {
     return failures;
 }
 
-int test_developer_role_mapped() {
+int test_instruction_roles_preserved() {
     const Json body = {
         {"model", "m"},
         {"messages", Json::array({Json{{"role", "developer"}, {"content", "be terse"}},
-                                  Json{{"role", "user"}, {"content", "hi"}}})}};
+                                  Json{{"role", "user"}, {"content", "hi"}},
+                                  Json{{"role", "system"}, {"content", "new context"}}})}};
     const GenerationRequest req      = parse_chat_completion_request(body, default_limits());
     const ninfer::PromptInput prompt = translate(req);
     int failures                     = 0;
-    failures += check(prompt.messages.size() == 2, "developer + user parsed");
-    failures += check(prompt.messages[0].role == "system", "developer role mapped to system");
+    failures +=
+        check(req.messages.size() == 3 && req.messages[0].role == ninfer::ChatRole::Developer &&
+                  req.messages[1].role == ninfer::ChatRole::User &&
+                  req.messages[2].role == ninfer::ChatRole::System,
+              "schema did not preserve ordered developer/system roles");
+    failures += check(prompt.messages.size() == 3 &&
+                          prompt.messages[0].role == ninfer::ChatRole::Developer &&
+                          prompt.messages[1].role == ninfer::ChatRole::User &&
+                          prompt.messages[2].role == ninfer::ChatRole::System,
+                      "translation changed roles before target-specific lowering");
     return failures;
 }
 
@@ -453,7 +462,7 @@ int test_parse_tool_history_messages() {
     failures += check(req.messages[1].tool_calls[0].name == "get_weather", "tool call name parsed");
     failures += check(req.messages[1].tool_calls[0].arguments_json == R"({"city":"Paris"})",
                       "tool call arguments parsed");
-    failures += check(req.messages[2].role == "tool", "tool role parsed");
+    failures += check(req.messages[2].role == ninfer::ChatRole::Tool, "tool role parsed");
     failures += check(req.messages[2].tool_call_id == "call_1", "tool_call_id parsed");
     failures +=
         check(req.messages[2].content.at(0).text == R"({"temp":20})", "tool content parsed");
@@ -703,7 +712,7 @@ int main() {
     failures += test_preserve_thinking_options();
     failures += test_reasoning_effort();
     failures += test_parse_parts_and_flatten();
-    failures += test_developer_role_mapped();
+    failures += test_instruction_roles_preserved();
     failures += test_parse_media_in_translate();
     failures += test_reject_unsupported();
     failures += test_parse_function_tools_and_choices();

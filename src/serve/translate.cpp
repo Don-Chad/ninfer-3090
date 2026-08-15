@@ -99,18 +99,6 @@ std::vector<std::string> effective_tool_jsons(const GenerationRequest& request) 
     return tools;
 }
 
-std::string normalized_role(const std::string& role) {
-    if (role == "developer") { return "system"; }
-    if (role == "system" || role == "user" || role == "assistant" || role == "tool") {
-        return role;
-    }
-    ApiError error;
-    error.message = "unsupported role: " + role;
-    error.param   = "messages";
-    error.code    = "unsupported_role";
-    throw ApiException(std::move(error));
-}
-
 } // namespace
 
 ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& request,
@@ -176,7 +164,7 @@ ninfer::PromptInput to_prompt_input(const GenerationRequest& request,
     input.messages.reserve(request.messages.size());
     for (const ChatTurn& turn : request.messages) {
         ninfer::ChatMessage message;
-        message.role              = normalized_role(turn.role);
+        message.role              = turn.role;
         message.reasoning_content = turn.reasoning_content;
         message.tool_call_id      = turn.tool_call_id;
         message.tool_calls.reserve(turn.tool_calls.size());

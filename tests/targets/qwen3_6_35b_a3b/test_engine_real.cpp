@@ -155,7 +155,7 @@ int exercise_vision(ninfer::Engine& engine) {
     image.media.source_name = "inline.ppm";
 
     ninfer::ChatMessage message;
-    message.role = "user";
+    message.role = ninfer::ChatRole::User;
     message.parts.push_back(std::move(image));
     message.parts.push_back(ninfer::MessagePart{
         .kind = ninfer::MessagePartKind::Text, .text = "What is visible?", .media = {}});

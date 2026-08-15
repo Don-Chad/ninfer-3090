@@ -477,7 +477,7 @@ void GenerationService::warmup() {
     try {
         GenerationRequest request;
         ChatTurn turn;
-        turn.role = "user";
+        turn.role = ChatRole::User;
         ContentPart content;
         content.kind     = ContentKind::Text;
         content.text     = "hi";

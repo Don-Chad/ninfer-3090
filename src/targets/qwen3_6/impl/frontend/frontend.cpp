@@ -244,7 +244,7 @@ std::vector<fi::ChatMessage> convert_messages(std::vector<ChatMessage> messages)
     result.reserve(messages.size());
     for (ChatMessage& source : messages) {
         fi::ChatMessage target;
-        target.role              = std::move(source.role);
+        target.role              = source.role;
         target.reasoning_content = std::move(source.reasoning_content);
         target.tool_call_id      = std::move(source.tool_call_id);
         target.tool_calls.reserve(source.tool_calls.size());

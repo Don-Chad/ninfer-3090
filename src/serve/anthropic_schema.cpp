@@ -202,9 +202,8 @@ void parse_tool_choice(const Json& body, GenerationRequest& out) {
     }
 }
 
-// Flatten a system value (string or array of text blocks) into plain text. Used
-// for both the top-level `system` field and any system-role turn Claude Code
-// injects into the messages array.
+// Flatten only the content blocks within one system value. Callers preserve the
+// containing turn and its position in the conversation.
 std::string flatten_system_value(const Json& value, const char* param) {
     std::string text;
     if (value.is_string()) {
@@ -222,9 +221,13 @@ std::string flatten_system_value(const Json& value, const char* param) {
     return text;
 }
 
-void parse_system(const Json& body, std::string& system_text) {
+void parse_system(const Json& body, GenerationRequest& out) {
     if (!body.contains("system") || body.at("system").is_null()) { return; }
-    append_text(system_text, flatten_system_value(body.at("system"), "system"));
+    ChatTurn turn;
+    turn.role = ChatRole::System;
+    turn.content.push_back(
+        ContentPart{ContentKind::Text, flatten_system_value(body.at("system"), "system"), "text"});
+    out.messages.push_back(std::move(turn));
 }
 
 ToolCall parse_tool_use(const Json& block) {
@@ -275,7 +278,7 @@ std::vector<ContentPart> parse_tool_result_content(const Json& block) {
 
 void parse_assistant_content(const Json& content, GenerationRequest& out) {
     ChatTurn turn;
-    turn.role = "assistant";
+    turn.role = ChatRole::Assistant;
     std::string text;
     for (const Json& block : content) {
         const std::string type = require_block_type(block, "messages");
@@ -303,11 +306,17 @@ void parse_assistant_content(const Json& content, GenerationRequest& out) {
 }
 
 void parse_user_content(const Json& content, GenerationRequest& out) {
-    // A user turn may carry tool_result blocks (each -> its own tool turn) and/or
-    // text blocks (folded into one user turn emitted after the tool turns, matching
-    // the Qwen template's assistant-tool_calls -> tool-responses -> user order).
+    // Anthropic represents tool results as blocks within a user message. Expand
+    // them into protocol-neutral Tool turns without moving text/media blocks
+    // across the position at which each tool result appeared.
     ChatTurn user_turn;
-    user_turn.role = "user";
+    user_turn.role             = ChatRole::User;
+    const auto flush_user_turn = [&] {
+        if (user_turn.content.empty()) { return; }
+        out.messages.push_back(std::move(user_turn));
+        user_turn      = ChatTurn{};
+        user_turn.role = ChatRole::User;
+    };
     for (const Json& block : content) {
         const std::string type = require_block_type(block, "messages");
         if (type == "text") {
@@ -318,8 +327,9 @@ void parse_user_content(const Json& content, GenerationRequest& out) {
                 block.at("tool_use_id").get<std::string>().empty()) {
                 bad_request("tool_result blocks must contain a string tool_use_id", "messages");
             }
+            flush_user_turn();
             ChatTurn tool_turn;
-            tool_turn.role         = "tool";
+            tool_turn.role         = ChatRole::Tool;
             tool_turn.tool_call_id = block.at("tool_use_id").get<std::string>();
             tool_turn.content      = parse_tool_result_content(block);
             out.messages.push_back(std::move(tool_turn));
@@ -333,15 +343,18 @@ void parse_user_content(const Json& content, GenerationRequest& out) {
             bad_request("unsupported user content block: " + type, "messages");
         }
     }
-    if (!user_turn.content.empty()) { out.messages.push_back(std::move(user_turn)); }
+    flush_user_turn();
 }
 
-void parse_messages(const Json& body, GenerationRequest& out, std::string& system_text) {
+void parse_messages(const Json& body, GenerationRequest& out) {
     if (!body.contains("messages")) { bad_request("missing required field: messages", "messages"); }
     const Json& messages = body.at("messages");
     if (!messages.is_array() || messages.empty()) {
         bad_request("messages must be a non-empty array", "messages");
     }
+
+    std::vector<ChatRole> roles;
+    roles.reserve(messages.size());
     for (std::size_t i = 0; i < messages.size(); ++i) {
         const Json& item = messages.at(i);
         if (!item.is_object()) {
@@ -351,19 +364,47 @@ void parse_messages(const Json& body, GenerationRequest& out, std::string& syste
             bad_request("message " + std::to_string(i) + " must have a string role", "messages");
         }
         const std::string role = item.at("role").get<std::string>();
-        if (role != "user" && role != "assistant" && role != "system") {
+        if (role == "user") {
+            roles.push_back(ChatRole::User);
+        } else if (role == "assistant") {
+            roles.push_back(ChatRole::Assistant);
+        } else if (role == "system") {
+            roles.push_back(ChatRole::System);
+        } else {
             bad_request("message role must be 'user', 'assistant', or 'system'", "messages",
                         "unsupported_role");
         }
         if (!item.contains("content") || item.at("content").is_null()) {
             bad_request("message " + std::to_string(i) + " must have content", "messages");
         }
+    }
+
+    for (std::size_t i = 0; i < roles.size();) {
+        if (roles[i] != ChatRole::System) {
+            ++i;
+            continue;
+        }
+        const std::size_t section_begin = i;
+        while (i < roles.size() && roles[i] == ChatRole::System) { ++i; }
+        if (section_begin == 0 || roles[section_begin - 1] != ChatRole::User ||
+            (i < roles.size() && roles[i] != ChatRole::Assistant)) {
+            bad_request(
+                "system messages must follow a user/tool_result message and be final or precede "
+                "an assistant message",
+                "messages", "invalid_message_order");
+        }
+    }
+
+    for (std::size_t i = 0; i < messages.size(); ++i) {
+        const Json& item    = messages.at(i);
+        const ChatRole role = roles[i];
         const Json& content = item.at("content");
-        if (role == "system") {
-            // Claude Code injects system reminders as system-role messages inside
-            // the messages array. Fold them into the leading system block: the Qwen
-            // chat template only honors leading system turns and drops the rest.
-            append_text(system_text, flatten_system_value(content, "messages"));
+        if (role == ChatRole::System) {
+            ChatTurn turn;
+            turn.role = ChatRole::System;
+            turn.content.push_back(
+                ContentPart{ContentKind::Text, flatten_system_value(content, "messages"), "text"});
+            out.messages.push_back(std::move(turn));
             continue;
         }
         if (content.is_string()) {
@@ -373,7 +414,7 @@ void parse_messages(const Json& body, GenerationRequest& out, std::string& syste
                 ContentPart{ContentKind::Text, content.get<std::string>(), "text"});
             out.messages.push_back(std::move(turn));
         } else if (content.is_array()) {
-            if (role == "assistant") {
+            if (role == ChatRole::Assistant) {
                 parse_assistant_content(content, out);
             } else {
                 parse_user_content(content, out);
@@ -484,17 +525,8 @@ GenerationRequest parse_messages_request(const Json& body, const RequestLimits& 
 
     parse_tools(body, out);
     parse_tool_choice(body, out);
-    std::string system_text;
-    parse_system(body, system_text);
-    parse_messages(body, out, system_text);
-    // The leading system turn combines the top-level `system` field with any
-    // system-role reminders folded out of the messages array.
-    if (!system_text.empty()) {
-        ChatTurn turn;
-        turn.role = "system";
-        turn.content.push_back(ContentPart{ContentKind::Text, std::move(system_text), "text"});
-        out.messages.insert(out.messages.begin(), std::move(turn));
-    }
+    parse_system(body, out);
+    parse_messages(body, out);
     parse_stop_sequences(body, out);
     parse_sampling(body, out);
     parse_thinking(body, out);

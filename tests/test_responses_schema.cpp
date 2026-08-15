@@ -90,7 +90,8 @@ int test_basic_request() {
     const ResponsesRequest request = parse_responses_request(body, limits());
     int failures                   = 0;
     failures += check(request.generation.model == "qwen3.6-27b", "model parsed");
-    failures += check(request.input_turns.size() == 1 && request.input_turns[0].role == "user" &&
+    failures += check(request.input_turns.size() == 1 &&
+                          request.input_turns[0].role == ninfer::ChatRole::User &&
                           request.input_turns[0].content[0].text == "hello",
                       "string input normalized to a user turn");
     failures += check(request.input_items[0].at("type") == "message" &&
@@ -109,17 +110,41 @@ int test_basic_request() {
     failures += check(request.store && !request.stream, "Responses defaults applied");
     ResponsesRequest composed = request;
     ChatTurn previous;
-    previous.role = "assistant";
+    previous.role = ninfer::ChatRole::Assistant;
     ContentPart previous_text;
     previous_text.kind = ContentKind::Text;
     previous_text.text = "old answer";
     previous.content.push_back(std::move(previous_text));
     compose_responses_generation_messages(composed, {previous});
     failures += check(composed.generation.messages.size() == 3 &&
-                          composed.generation.messages[0].role == "developer" &&
+                          composed.generation.messages[0].role == ninfer::ChatRole::Developer &&
                           composed.generation.messages[1].content[0].text == "old answer" &&
                           composed.generation.messages[2].content[0].text == "hello",
                       "instructions, previous context, and current input composed in order");
+    return failures;
+}
+
+int test_instruction_message_order() {
+    ResponsesRequest request = parse_responses_request(
+        Json{{"model", "m"},
+             {"input",
+              Json::array(
+                  {Json{{"type", "message"}, {"role", "system"}, {"content", "initial"}},
+                   Json{{"type", "message"}, {"role", "user"}, {"content", "work"}},
+                   Json{{"type", "message"}, {"role", "developer"}, {"content", "current"}}})},
+             {"max_output_tokens", 32}},
+        limits());
+    int failures = check(request.input_turns.size() == 3 &&
+                             request.input_turns[0].role == ninfer::ChatRole::System &&
+                             request.input_turns[1].role == ninfer::ChatRole::User &&
+                             request.input_turns[2].role == ninfer::ChatRole::Developer,
+                         "Responses input instruction roles were lowered or reordered");
+    compose_responses_generation_messages(request, {});
+    failures += check(request.generation.messages.size() == 3 &&
+                          request.generation.messages[0].role == ninfer::ChatRole::System &&
+                          request.generation.messages[1].role == ninfer::ChatRole::User &&
+                          request.generation.messages[2].role == ninfer::ChatRole::Developer,
+                      "Responses composition changed input instruction order");
     return failures;
 }
 
@@ -264,11 +289,11 @@ int test_typed_items_and_tools() {
     const ResponsesRequest request = parse_responses_request(body, limits());
     int failures                   = 0;
     failures += check(request.input_turns.size() == 3, "typed Items grouped into three turns");
-    failures += check(request.input_turns[0].role == "assistant" &&
+    failures += check(request.input_turns[0].role == ninfer::ChatRole::Assistant &&
                           request.input_turns[0].reasoning_content == "need tools" &&
                           request.input_turns[0].tool_calls.size() == 2,
                       "reasoning and adjacent function calls grouped into one assistant turn");
-    failures += check(request.input_turns[1].role == "tool" &&
+    failures += check(request.input_turns[1].role == ninfer::ChatRole::Tool &&
                           request.input_turns[1].tool_call_id == "call_1",
                       "function output translated to tool turn");
     failures += check(request.input_turns[2].content[0].kind == ContentKind::Image,
@@ -493,6 +518,7 @@ int test_input_tokens_schema() {
 int main() {
     int failures = 0;
     failures += test_basic_request();
+    failures += test_instruction_message_order();
     failures += test_preserve_thinking_options_and_inheritance();
     failures += test_reasoning_effort();
     failures += test_typed_items_and_tools();

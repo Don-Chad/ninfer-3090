@@ -36,7 +36,7 @@ std::vector<std::uint8_t> gradient_ppm() {
 
 ninfer::PromptInput chinese_chat(bool enable_thinking) {
     ninfer::ChatMessage message;
-    message.role = "user";
+    message.role = ninfer::ChatRole::User;
     message.parts.push_back(ninfer::MessagePart{
         .kind = ninfer::MessagePartKind::Text, .text = "你好，简单介绍一下你自己。", .media = {}});
     ninfer::PromptInput input;
@@ -168,7 +168,7 @@ int exercise_vision(ninfer::Engine& engine) {
     };
     auto assistant_message = [](const ninfer::GenerationResult& result) {
         ninfer::ChatMessage message;
-        message.role              = "assistant";
+        message.role              = ninfer::ChatRole::Assistant;
         message.reasoning_content = result.reasoning;
         message.parts.push_back(ninfer::MessagePart{
             .kind = ninfer::MessagePartKind::Text, .text = result.content, .media = {}});
@@ -176,7 +176,7 @@ int exercise_vision(ninfer::Engine& engine) {
     };
     auto first_input = [&](const std::vector<std::uint8_t>& bytes) {
         ninfer::ChatMessage message;
-        message.role = "user";
+        message.role = ninfer::ChatRole::User;
         message.parts.push_back(image_part(bytes, "inline.ppm"));
         message.parts.push_back(ninfer::MessagePart{
             .kind = ninfer::MessagePartKind::Text, .text = "What is visible?", .media = {}});
@@ -190,7 +190,7 @@ int exercise_vision(ninfer::Engine& engine) {
         ninfer::PromptInput input = first_input(bytes);
         input.messages.push_back(assistant_message(first));
         ninfer::ChatMessage followup;
-        followup.role = "user";
+        followup.role = ninfer::ChatRole::User;
         followup.parts.push_back(ninfer::MessagePart{
             .kind = ninfer::MessagePartKind::Text, .text = "Give one more detail.", .media = {}});
         input.messages.push_back(std::move(followup));
@@ -202,7 +202,7 @@ int exercise_vision(ninfer::Engine& engine) {
             ninfer::PromptInput input = followup_input(old_bytes, first);
             input.messages.push_back(assistant_message(second));
             ninfer::ChatMessage followup;
-            followup.role = "user";
+            followup.role = ninfer::ChatRole::User;
             followup.parts.push_back(image_part(new_bytes, "second.ppm"));
             followup.parts.push_back(ninfer::MessagePart{
                 .kind = ninfer::MessagePartKind::Text, .text = "Compare the images.", .media = {}});

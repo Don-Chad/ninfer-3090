@@ -83,8 +83,11 @@ Run message files from the repository root when they contain repository-relative
   --vision
 ```
 
-Supported roles are `system`, `developer`, `user`, `assistant`, and `tool`. Message content
-may be a string or an ordered array containing:
+Supported roles are `system`, `developer`, `user`, `assistant`, and `tool`.
+System and developer messages retain their array positions; the Qwen family frontend renders both
+as system-class ChatML turns rather than moving later instructions to the beginning.
+
+Message content may be a string or an ordered array containing:
 
 | Content type | Source field | Accepted source |
 |---|---|---|

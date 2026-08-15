@@ -9,8 +9,7 @@ namespace ninfer::serve {
 namespace {
 
 std::size_t estimate_turn_bytes(const ChatTurn& turn) {
-    std::size_t bytes = sizeof(ChatTurn) + turn.role.size() + turn.tool_call_id.size() +
-                        turn.reasoning_content.size();
+    std::size_t bytes = sizeof(ChatTurn) + turn.tool_call_id.size() + turn.reasoning_content.size();
     for (const ContentPart& part : turn.content) {
         bytes += sizeof(ContentPart) + part.text.size() + part.type_raw.size() +
                  part.source.value.size() + part.source.media_type.size() +

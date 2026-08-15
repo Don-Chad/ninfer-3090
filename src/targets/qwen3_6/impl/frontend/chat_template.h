@@ -56,7 +56,7 @@ struct ChatPart {
 };
 
 struct ChatMessage {
-    std::string role;
+    ChatRole role = ChatRole::User;
     std::vector<ChatPart> parts;
     std::string reasoning_content;
     std::vector<ToolCall> tool_calls;

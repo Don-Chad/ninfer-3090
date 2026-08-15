@@ -49,7 +49,7 @@ ninfer::PromptInput initial_conversation() {
     input.options.enable_thinking = false;
 
     ninfer::ChatMessage user;
-    user.role = "user";
+    user.role = ninfer::ChatRole::User;
     user.parts.push_back(ninfer::MessagePart{
         .kind = ninfer::MessagePartKind::Text, .text = "Name one prime number.", .media = {}});
     input.messages.push_back(std::move(user));
@@ -60,14 +60,14 @@ ninfer::PromptInput followup_conversation(const ninfer::GenerationResult& first,
                                           std::string followup) {
     ninfer::PromptInput input = initial_conversation();
     ninfer::ChatMessage assistant;
-    assistant.role              = "assistant";
+    assistant.role              = ninfer::ChatRole::Assistant;
     assistant.reasoning_content = first.reasoning;
     assistant.parts.push_back(ninfer::MessagePart{
         .kind = ninfer::MessagePartKind::Text, .text = first.content, .media = {}});
     input.messages.push_back(std::move(assistant));
 
     ninfer::ChatMessage next;
-    next.role = "user";
+    next.role = ninfer::ChatRole::User;
     next.parts.push_back(ninfer::MessagePart{
         .kind = ninfer::MessagePartKind::Text, .text = std::move(followup), .media = {}});
     input.messages.push_back(std::move(next));
@@ -77,13 +77,13 @@ ninfer::PromptInput followup_conversation(const ninfer::GenerationResult& first,
 ninfer::PromptInput altered_history_after_boundary() {
     ninfer::PromptInput input = initial_conversation();
     ninfer::ChatMessage assistant;
-    assistant.role = "assistant";
+    assistant.role = ninfer::ChatRole::Assistant;
     assistant.parts.push_back(ninfer::MessagePart{
         .kind = ninfer::MessagePartKind::Text, .text = "This history was changed.", .media = {}});
     input.messages.push_back(std::move(assistant));
 
     ninfer::ChatMessage next;
-    next.role = "user";
+    next.role = ninfer::ChatRole::User;
     next.parts.push_back(ninfer::MessagePart{
         .kind = ninfer::MessagePartKind::Text, .text = "Continue briefly.", .media = {}});
     input.messages.push_back(std::move(next));

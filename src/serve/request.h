@@ -2,6 +2,8 @@
 
 #include "product/media_acquire/source.h"
 
+#include <ninfer/types.h>
+
 // Internal, wire-format-independent representation of a generation request.
 //
 // OpenAI and Anthropic schemas both map into this wire-independent value.
@@ -93,7 +95,7 @@ struct ToolChoice {
 };
 
 struct ChatTurn {
-    std::string role; // system | user | assistant | tool (validated in translate)
+    ChatRole role = ChatRole::User;
     std::vector<ContentPart>
         content; // one or more parts; assistant content may be empty with tool_calls
     std::vector<ToolCall> tool_calls;
@@ -186,7 +188,7 @@ struct GenerationRequest {
 
     [[nodiscard]] bool has_tool_history() const noexcept {
         for (const ChatTurn& message : messages) {
-            if (!message.tool_calls.empty() || message.role == "tool") { return true; }
+            if (!message.tool_calls.empty() || message.role == ChatRole::Tool) { return true; }
         }
         return false;
     }

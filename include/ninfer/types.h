@@ -208,6 +208,16 @@ struct ToolCall {
     std::string arguments_json;
 };
 
+// Wire-independent conversation authority. Protocol adapters preserve these roles and their
+// ordering; a target frontend owns any model-specific role lowering.
+enum class ChatRole : std::uint8_t {
+    System,
+    Developer,
+    User,
+    Assistant,
+    Tool,
+};
+
 enum class MessagePartKind : std::uint8_t {
     Text,
     Media,
@@ -220,7 +230,7 @@ struct MessagePart {
 };
 
 struct ChatMessage {
-    std::string role;
+    ChatRole role = ChatRole::User;
     std::vector<MessagePart> parts;
     std::string reasoning_content;
     std::vector<ToolCall> tool_calls;
