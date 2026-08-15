@@ -30,7 +30,7 @@ void launch_active_cols(const Tensor& x, const Weight& weight, Tensor& out, cuda
                               : ActiveCols <= 32 ? 32
                               : ActiveCols <= 40 ? 40
                                                  : 48;
-#if defined(NINFER_SM86)
+#if defined(NINFER_SM8X_COMPAT)
     constexpr int KWarps    = 4;
     constexpr int MinBlocks = 2;
 #else
@@ -130,7 +130,7 @@ void launch_w8_dflash_medium(const Tensor& x, const Weight& w, Tensor& out, cuda
         throw std::invalid_argument("W8 DFlash medium route requires T=49..128");
     }
 
-#if defined(NINFER_SM86)
+#if defined(NINFER_SM8X_COMPAT)
     launch_w8_exact_t_composite(x, w, out, stream);
 #else
     if (t <= 64) {
@@ -160,7 +160,7 @@ void launch_w8_dflash_medium(const Tensor& x, const Weight& w, Tensor& out, cuda
 
 void launch_w8_medium_splitk_c144(const Tensor& x, const Weight& w, Tensor& out,
                                   cudaStream_t stream) {
-#if defined(NINFER_SM86)
+#if defined(NINFER_SM8X_COMPAT)
     launch_w8_exact_t_composite(x, w, out, stream);
 #else
     launch_medium_route<144, 2, 9, 2>(x, w, out, stream);

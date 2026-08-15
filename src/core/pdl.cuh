@@ -20,7 +20,7 @@ struct LaunchConfig {
 template <class... KernelArgs, class... CallArgs>
 [[nodiscard]] inline cudaError_t
 launch_dependent(const LaunchConfig& launch, void (*kernel)(KernelArgs...), CallArgs&&... args) {
-#if defined(NINFER_SM86)
+#if defined(NINFER_SM8X_COMPAT)
     kernel<<<launch.grid, launch.block, launch.dynamic_smem_bytes, launch.stream>>>(
         std::forward<CallArgs>(args)...);
     return cudaGetLastError();
@@ -44,14 +44,14 @@ launch_dependent(const LaunchConfig& launch, void (*kernel)(KernelArgs...), Call
 // Every producer CTA must call this at least once or exit. This enables dependent scheduling but
 // does not make producer writes visible to the consumer.
 __device__ __forceinline__ void trigger_dependents() {
-#if !defined(NINFER_SM86)
+#if !defined(NINFER_SM8X_COMPAT)
     cudaTriggerProgrammaticLaunchCompletion();
 #endif
 }
 
 // Call on every consumer control path before its first access to producer-dependent data.
 __device__ __forceinline__ void wait_for_dependencies() {
-#if !defined(NINFER_SM86)
+#if !defined(NINFER_SM8X_COMPAT)
     cudaGridDependencySynchronize();
 #endif
 }

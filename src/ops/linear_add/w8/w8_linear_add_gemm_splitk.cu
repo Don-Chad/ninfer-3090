@@ -16,7 +16,7 @@ namespace {
 constexpr int kRows           = 2048;
 constexpr int kRowsPerCta     = 16;
 constexpr int kFirstExactCols = 2;
-#if defined(NINFER_SM86)
+#if defined(NINFER_SM8X_COMPAT)
 constexpr int kLastExactCols = 32;
 #else
 constexpr int kLastExactCols = 48;
@@ -32,7 +32,7 @@ void launch_active_cols(const Tensor& x, const Weight& weight, Tensor& residual_
                              : ActiveCols <= 32 ? 32
                              : ActiveCols <= 40 ? 40
                                                 : 48;
-#if defined(NINFER_SM86)
+#if defined(NINFER_SM8X_COMPAT)
     constexpr int KWarps = ActiveCols <= 32 ? 8 : 4;
 #else
     constexpr int KWarps =
@@ -97,7 +97,7 @@ void w8_linear_add_splitk_mma_launch(const Tensor& x, const Weight& weight, Tens
     if (x.ne[1] < kFirstExactCols || x.ne[1] > 48) {
         throw std::invalid_argument("W8 linear_add split-K MMA requires exact T=2..48");
     }
-#if defined(NINFER_SM86)
+#if defined(NINFER_SM8X_COMPAT)
     if (x.ne[1] > kLastExactCols) {
         std::int32_t offset = 0;
         while (x.ne[1] - offset >= kLastExactCols) {
@@ -133,7 +133,7 @@ void w8_linear_add_medium_splitk_launch(const Tensor& x, const Weight& weight, T
     if ((weight.k != 4096 && weight.k != 6144) || t < 49 || t > 128) {
         throw std::invalid_argument("W8 linear_add medium split-K requires T=49..128");
     }
-#if defined(NINFER_SM86)
+#if defined(NINFER_SM8X_COMPAT)
     std::int32_t offset = 0;
     while (offset < t) {
         const std::int32_t count = std::min<std::int32_t>(kLastExactCols, t - offset);

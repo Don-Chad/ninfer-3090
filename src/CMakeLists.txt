@@ -240,12 +240,12 @@ add_library(ninfer_ops STATIC
   ops/wrapper/sparse_moe.cpp
   ops/wrapper/vision_attention.cpp
   ops/wrapper/vision_pos_embed.cpp)
-if(CMAKE_CUDA_ARCHITECTURES STREQUAL "86")
+if(CMAKE_CUDA_ARCHITECTURES MATCHES "^(86|89)$")
   get_target_property(ninfer_ops_sources ninfer_ops SOURCES)
   list(FILTER ninfer_ops_sources EXCLUDE REGEX "nvfp4/.+_w4a4\\.cu$")
   set_property(TARGET ninfer_ops PROPERTY SOURCES ${ninfer_ops_sources})
   target_sources(ninfer_ops PRIVATE ops/nvfp4_sm86_stubs.cpp)
-  target_compile_definitions(ninfer_ops PUBLIC NINFER_SM86=1)
+  target_compile_definitions(ninfer_ops PUBLIC NINFER_SM8X_COMPAT=1)
 endif()
 ninfer_internal_includes(ninfer_ops)
 ninfer_cuda_archive(ninfer_ops)

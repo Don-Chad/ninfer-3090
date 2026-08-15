@@ -646,7 +646,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                     const std::uint64_t final_visible = std::min<std::uint64_t>(
                         impl->capacity,
                         static_cast<std::uint64_t>(profile.max) + 2ULL * impl->draft_window);
-#ifdef NINFER_SM86
+#ifdef NINFER_SM8X_COMPAT
                     if (final_visible <= 4096) {
                         // The reduced-startup graph set still consumes 35.8 MiB at C1/K3 and
                         // 43.1 MiB at C1/K4 on SM86. K2 retains the smaller qualified allowance;
