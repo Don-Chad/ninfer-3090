@@ -56,6 +56,26 @@ C1 is the responsive choice for a single user. C8 delivers **2.3x the total thro
 several requests are active. The C8 long-output test uses a 16K shared KV pool so all eight
 1,024-token responses can be admitted together.
 
+### Prompt-processing speed
+
+Prompt processing was tested separately with **4,362 fresh input tokens per request**, an 8,192-token
+per-request context window, 512-token prefill chunks, INT8 KV, ReplaySSM/MTP3, CUDA Graphs, and
+prefix reuse disabled. Each request generated only 16 tokens so the run measures prefill rather
+than long decode.
+
+| Cohort | Total fresh input | Aggregate prefill | Active-prefill speed | Mean TTFT | Peak VRAM |
+|---:|---:|---:|---:|---:|---:|
+| C1 | 4,362 tokens | **861.51 tok/s** | 893.98 tok/s | 4,893 ms | 19,114 MiB |
+| C2 | 8,724 tokens | **853.86 tok/s** | 883.95 tok/s | 7,478 ms | 19,697 MiB |
+| C4 | 17,448 tokens | **847.26 tok/s** | 874.49 tok/s | 12,692 ms | 20,894 MiB |
+| C8 | 34,896 tokens | **844.10 tok/s** | 870.94 tok/s | 23,028 ms | 23,207 MiB |
+
+`Aggregate prefill` is total fresh input tokens divided by the complete request-wave time, so it is
+the user-facing throughput number. NInfer currently processes one long prefill at a time; cohort
+batching accelerates decode, but does not multiply prompt ingestion. Consequently C1-C8 remain near
+844-862 input tok/s while queued requests increase mean TTFT. `Active-prefill speed` excludes queue
+waiting and measures only the server's recorded prefill phase.
+
 ### Optional RotorQuant KV for longer context
 
 `rk8v4` is an **experimental, opt-in** KV-cache mode for Qwen3.8-27B. INT8 remains the default and
@@ -258,6 +278,11 @@ source releases.
 NInfer-3090 is derived from [Neroued/ninfer](https://github.com/Neroued/ninfer). The upstream project
 targets RTX 5090/`sm_120a`; this fork carries the Windows and SM86 compatibility layer, compact 35B
 artifact support, and RTX 3090-specific schedules and memory planning.
+
+## Contributors
+
+- [airtonix](https://github.com/airtonix) added Linux and Docker build and release support in
+  [PR #1](https://github.com/Don-Chad/ninfer-3090/pull/1).
 
 ## License
 
