@@ -187,17 +187,31 @@ def main() -> None:
         results.append(run_round("generation_1k", generation_prompt, OUTPUT_TOKENS, cohort))
     for cohort in COHORTS:
         results.append(run_round("prefill", prefill_prompt, 16, cohort))
-    (OUTPUT_ROOT / "scores.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
-    score_lines = ["round,cohort,prompt_tokens,completion_tokens,prefill_tok_s,e2e_output_tok_s,decode_tok_s,mtp_acceptance_pct,ttft_ms,peak_vram_mib"]
+    headline_results = [
+        {
+            "round": result["round"],
+            "cohort": result["cohort"],
+            "prompt_tokens_per_second": result["prefill_tokens_per_second"],
+            "decode_tokens_per_second": result["decode_tokens_per_second"],
+        }
+        for result in results
+    ]
+    (OUTPUT_ROOT / "scores.json").write_text(json.dumps(headline_results, indent=2), encoding="utf-8")
+    score_lines = ["round,cohort,prompt_tokens,completion_tokens,prompt_tok_s,decode_tok_s"]
     for result in results:
         score_lines.append(
             f"{result['round']},C{result['cohort']},{result['prompt_tokens']},{result['completion_tokens']},"
-            f"{result['prefill_tokens_per_second']:.2f},{result['end_to_end_output_tokens_per_second']:.2f},"
-            f"{result['decode_tokens_per_second']:.2f},{result['mtp_acceptance_percent']:.2f},"
-            f"{result['ttft_ms']:.0f},{result['peak_gpu_memory_mib']}"
+            f"{result['prefill_tokens_per_second']:.2f},{result['decode_tokens_per_second']:.2f}"
         )
     (OUTPUT_ROOT / "scores.csv").write_text("\n".join(score_lines) + "\n", encoding="utf-8")
-    print(json.dumps(results, indent=2))
+    print("\nHeadline scores (server compute time):")
+    print("Round           Cohort   Prompt tok/s   Decode tok/s")
+    for result in results:
+        print(
+            f"{result['round']:<15} C{result['cohort']:<7} "
+            f"{result['prefill_tokens_per_second']:>12.2f} "
+            f"{result['decode_tokens_per_second']:>14.2f}"
+        )
     print(f"Scores saved to: {OUTPUT_ROOT}")
 
 
