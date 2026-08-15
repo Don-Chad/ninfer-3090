@@ -26,25 +26,27 @@ struct RouteSpec {
     Bf16GdnGatingScheduleId schedule;
 };
 
-constexpr std::array<RouteSpec, 6> k27Routes{{
+constexpr std::array<RouteSpec, 5> k27Routes{{
     {{1, 1}, Bf16GdnGatingScheduleId::GemvPairedRows},
     {{2, 8}, Bf16GdnGatingScheduleId::SmallTSplit10},
-    // As token tiles double, halve SplitK. This keeps the cooperative grid near 192 CTAs instead
-    // of making T a launch limit. Once the unsplit grid has enough independent work, it also
-    // removes the cooperative-residency constraint.
-    {{9, 1024}, Bf16GdnGatingScheduleId::MmaCooperativeSplit8},
-    {{1025, 2048}, Bf16GdnGatingScheduleId::MmaCooperativeSplit4},
-    {{2049, 4096}, Bf16GdnGatingScheduleId::MmaCooperativeSplit2},
-    {{4097, kAnyCols}, Bf16GdnGatingScheduleId::MmaUnsplit},
+    // sm_86 has 82 SMs. Split8 (256 threads, 65 regs) admits 2 CTAs/SM -> 164 device-wide;
+    // split4/2 (512 threads, 74 regs) admit 1 CTA/SM -> 82. Grid is ceil(T/128)*3*SplitK, so
+    // split8 is legal to T<=768 and split2 to T<=1664. Split4 reaches the same 768 ceiling as
+    // split8 while doing less work per launch, so it is unreachable on this target.
+    {{9, 768}, Bf16GdnGatingScheduleId::MmaCooperativeSplit8},
+    {{769, 1664}, Bf16GdnGatingScheduleId::MmaCooperativeSplit2},
+    {{1665, kAnyCols}, Bf16GdnGatingScheduleId::MmaUnsplit},
 }};
 
 constexpr std::array<RouteSpec, 5> k35Routes{{
-    // The same progression keeps the long-range cooperative routes near 256 CTAs.
+    // Same progression, clamped to the sm_86 residency ceilings. Grid is ceil(T/64)*2*SplitK, so
+    // with 328 CTAs for split16 and 246 for split8/4/2 the legal ends are 640 / 960 / 1920 / 3904.
+    // The upstream bounds (1024 / 2048 / 4096) each land on 256 CTAs and exceed the 246 limit.
     {{1, 127}, Bf16GdnGatingScheduleId::MmaCooperativeSplit16},
-    {{128, 1024}, Bf16GdnGatingScheduleId::MmaCooperativeSplit8},
-    {{1025, 2048}, Bf16GdnGatingScheduleId::MmaCooperativeSplit4},
-    {{2049, 4096}, Bf16GdnGatingScheduleId::MmaCooperativeSplit2},
-    {{4097, kAnyCols}, Bf16GdnGatingScheduleId::MmaUnsplit},
+    {{128, 960}, Bf16GdnGatingScheduleId::MmaCooperativeSplit8},
+    {{961, 1920}, Bf16GdnGatingScheduleId::MmaCooperativeSplit4},
+    {{1921, 3904}, Bf16GdnGatingScheduleId::MmaCooperativeSplit2},
+    {{3905, kAnyCols}, Bf16GdnGatingScheduleId::MmaUnsplit},
 }};
 
 template <std::size_t N>
@@ -60,6 +62,60 @@ constexpr bool catalog_is_closed(const std::array<RouteSpec, N>& routes,
 
 static_assert(catalog_is_closed(k27Routes, kAnyCols));
 static_assert(catalog_is_closed(k35Routes, kAnyCols));
+
+// Device-wide resident-CTA budgets, measured on the sm_86 build. These are the single source of
+// truth: both the runtime residency predicates and the compile-time catalog guard below read them,
+// so a retuned constant cannot silently disagree with the route table it is meant to bound.
+constexpr std::int32_t resident_ctas_27(Bf16GdnGatingScheduleId schedule) noexcept {
+    return schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit8 ? 164 : 82;
+}
+
+constexpr std::int32_t resident_ctas_35(Bf16GdnGatingScheduleId schedule) noexcept {
+    if (schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit32) { return 164; }
+    if (schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit16) { return 328; }
+    return 246;
+}
+
+// Zero marks a schedule that is not launched cooperatively and therefore carries no residency
+// constraint at all.
+constexpr std::int32_t cooperative_split_k(Bf16GdnGatingScheduleId schedule) noexcept {
+    switch (schedule) {
+    case Bf16GdnGatingScheduleId::MmaCooperativeSplit32:
+        return 32;
+    case Bf16GdnGatingScheduleId::MmaCooperativeSplit16:
+        return 16;
+    case Bf16GdnGatingScheduleId::MmaCooperativeSplit8:
+        return 8;
+    case Bf16GdnGatingScheduleId::MmaCooperativeSplit4:
+        return 4;
+    case Bf16GdnGatingScheduleId::MmaCooperativeSplit2:
+        return 2;
+    default:
+        return 0;
+    }
+}
+
+// A cooperative launch requires the entire grid to be simultaneously resident. A route whose upper
+// bound exceeds the budget is not merely slow: the driver rejects the launch outright with
+// cudaErrorCooperativeLaunchTooLarge on the first prefill wide enough to reach it. Checking the
+// catalog at compile time turns that class of regression into a build failure.
+template <std::size_t N, typename Budget>
+constexpr bool catalog_is_resident(const std::array<RouteSpec, N>& routes, std::int32_t tile_cols,
+                                   std::int32_t row_tiles, Budget budget) noexcept {
+    for (const RouteSpec& route : routes) {
+        const std::int32_t split_k = cooperative_split_k(route.schedule);
+        if (split_k == 0) { continue; }
+        const std::int64_t column_tiles =
+            (static_cast<std::int64_t>(route.cols.last) + tile_cols - 1) / tile_cols;
+        if (column_tiles * row_tiles * split_k > budget(route.schedule)) { return false; }
+    }
+    return true;
+}
+
+static_assert(catalog_is_resident(k27Routes, 128, 3, resident_ctas_27),
+              "a 27B cooperative route exceeds the sm_86 resident-CTA budget at its upper bound");
+static_assert(catalog_is_resident(k35Routes, 64, 2, resident_ctas_35),
+              "a 35B cooperative route exceeds the sm_86 resident-CTA budget at its upper bound");
 
 bool is_27(const Bf16GdnGatingProblem& problem) noexcept {
     return problem.heads == 48 && problem.input_rows == 5120;
@@ -124,20 +180,21 @@ bool cooperative_grid_is_resident(Bf16GdnGatingScheduleId schedule, std::int32_t
 }
 
 bool cooperative_27_grid_is_resident(Bf16GdnGatingScheduleId schedule, std::int32_t cols) noexcept {
-    // BN128 uses 40 KiB of dynamic shared memory. Split8 uses 71 registers with 256 threads;
-    // split4/2 use 62 registers with 512 threads. Each specialization admits two CTAs/SM, hence
-    // 340 resident CTAs device-wide. There are three 16-row tiles per token tile.
-    return cooperative_grid_is_resident(schedule, cols, 128, 3, 340);
+    // sm_86, 82 SMs, 65,536 regs/SM, 100 KiB smem/SM. BN128 uses 40 KiB of dynamic shared memory,
+    // capping every specialization at two CTAs/SM by shared memory alone. Measured on the sm_86
+    // build (cuobjdump -res-usage): split8 uses 65 registers with 256 threads and reaches that
+    // 2 CTAs/SM -> 164 device-wide; split4/2 use 74 registers with 512 threads and are register
+    // bound to 1 CTA/SM -> 82. There are three 16-row tiles per token tile.
+    return cooperative_grid_is_resident(schedule, cols, 128, 3, resident_ctas_27(schedule));
 }
 
 bool cooperative_35_grid_is_resident(Bf16GdnGatingScheduleId schedule, std::int32_t cols) noexcept {
-    // BN64 uses 24 KiB of dynamic shared memory and two 16-row tiles. With the registered CUDA
-    // 13.1/sm_120a build, split32 uses 91/93 registers per thread and admits two CTAs/SM;
-    // split16/8/4/2 use at most 62 registers and admit four CTAs/SM. Across 170 SMs the
-    // device-wide limits are 340 and 680 CTAs respectively.
-    const std::int32_t resident_ctas =
-        schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit32 ? 340 : 680;
-    return cooperative_grid_is_resident(schedule, cols, 64, 2, resident_ctas);
+    // BN64 uses 24 KiB of dynamic shared memory and two 16-row tiles, so shared memory alone
+    // admits four CTAs/SM. Measured on the sm_86 build (cuobjdump -res-usage): split32 uses
+    // 122-126 registers with 256 threads and is register bound to 2 CTAs/SM -> 164 device-wide
+    // across 82 SMs; split16 uses 56 registers and reaches the shared-memory bound of
+    // 4 CTAs/SM -> 328; split8/4/2 use 74 registers and are register bound to 3 CTAs/SM -> 246.
+    return cooperative_grid_is_resident(schedule, cols, 64, 2, resident_ctas_35(schedule));
 }
 
 bool candidate_is_legal(Bf16GdnGatingScheduleId schedule,
