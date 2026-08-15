@@ -105,6 +105,31 @@ Add these options to the native CMake command:
 -DVCPKG_TARGET_TRIPLET=x64-linux
 ```
 
+## Bash scripts
+
+The `scripts/` directory contains Bash versions of each Windows download, launcher, and packaging
+script. Download scripts save models under `scripts/models` by default:
+
+```bash
+./scripts/download-qwen38.sh
+./scripts/download-qwen36-35b-vision.sh
+```
+
+Set `NINFER_MODEL_DIR` to use another model directory. Each launcher also accepts a model path:
+
+```bash
+./scripts/run-qwen38-c1.sh /path/to/qwen3_8_27b.ninfer
+./scripts/run-qwen38-c8.sh /path/to/qwen3_8_27b.ninfer
+./scripts/run-qwen38-vision.sh /path/to/qwen3_8_27b.ninfer
+./scripts/run-qwen36-35b-vision.sh /path/to/qwen3_6_35b_a3b.ninfer
+```
+
+The launchers use `build-sm86/apps/ninfer-serve` when the executable is not beside the script.
+Set `NINFER_SERVER` to select another executable.
+
+The `package-release-v*.sh` scripts create Linux `tar.gz` archives from their matching historical
+build directories. The PowerShell scripts continue to create Windows ZIP archives.
+
 ## Validation
 
 Make sure that the applications start:

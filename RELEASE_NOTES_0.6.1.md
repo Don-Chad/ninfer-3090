@@ -8,6 +8,7 @@ It does not change model execution, artifact compatibility, or the qualified Win
 - Adds an Ubuntu 24.04 and Docker build guide for `sm_86`.
 - Supports the pinned vcpkg manifest on Linux.
 - Documents Linux and Windows as separate delivery paths.
+- Adds Bash download, launcher, and historical packaging scripts.
 - Keeps the existing pkg-config dependency path for normal Linux packages.
 - Keeps all RTX 3090 kernel schedules and memory profiles unchanged.
 

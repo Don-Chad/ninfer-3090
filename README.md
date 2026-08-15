@@ -26,8 +26,9 @@ The Dockerfile gives the shortest build path on Bazzite and other Linux distribu
 docker build --tag ninfer-3090:sm86 .
 ```
 
-The Linux guide contains the GPU check, native Ubuntu build, model mount, and server command.
-The project does not publish a prebuilt Linux archive or qualified Linux performance results yet.
+The Linux guide contains the GPU check, native Ubuntu build, model mount, server command, and Bash
+launchers. The project does not publish a prebuilt Linux archive or qualified Linux performance
+results yet.
 
 ### Windows 11
 
