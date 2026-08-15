@@ -48,6 +48,31 @@ C1 is the responsive choice for a single user. C8 delivers **2.3x the total thro
 several requests are active. The C8 long-output test uses a 16K shared KV pool so all eight
 1,024-token responses can be admitted together.
 
+### Optional RotorQuant KV for longer context
+
+`rk8v4` is an **experimental, opt-in** KV-cache mode for Qwen3.8-27B. INT8 remains the default and
+the recommended quality setting. RotorQuant applies the same normalized transform to queries and
+keys, rotates values before four-bit storage, and reverses the value transform after attention.
+This reduces the V-cache footprint while keeping keys at eight bits.
+
+Add `--kv-dtype rk8v4` to either `ninfer.exe` or `ninfer-serve.exe`. For example, from Command
+Prompt:
+
+```bat
+ninfer-serve.exe qwen3_8_27b.ninfer --max-context 131072 --kv-capacity auto --max-concurrency 1 --prefill-chunk 1024 --kv-dtype rk8v4 --spec mtp --draft-tokens 3 --lm-head-draft
+```
+
+On the development RTX 3090, C1 with MTP and CUDA Graphs disabled fit a **226,560-token** logical
+context with the normal 1 GiB automatic-sizing headroom; 226,624 was rejected. The comparable INT8
+boundary was 171,648 tokens, so `rk8v4` increased measured allocatable context by about **32%**.
+This is an allocation plus short-execution boundary, not a full 226K prefill quality claim.
+
+The matched 1,024-token hard coding test reduced 4K KV payload from 140.38 MiB to 106.35 MiB and
+decoded at 84.07 tok/s versus 85.72 tok/s for INT8. Quality was not equivalent: the RotorQuant
+answer introduced a faulty nested-rollback design that the INT8 answer avoided, and both answers
+hit their output limit. Use `rk8v4` only when its context gain is worth task-specific quality
+validation; do not use it as the default for correctness-sensitive work.
+
 ### Qwen3.8 vision
 
 The same Qwen3.8 artifact supports images. Run `download-qwen38.bat` once, then double-click
@@ -203,8 +228,8 @@ a 24 GB card and the server can reuse fast CUDA Graphs instead of rebuilding wor
 - No multi-GPU execution or CPU/GPU weight offload.
 - Tool calls are returned to the client but are not executed by NInfer.
 - NVFP4 A4 and TMA kernels require Blackwell and are unavailable on SM86.
-- The paged runtime exposes BF16 and INT8 KV. Legacy RotorQuant/KV4 paths are not ported to paged
-  append, prefix reuse, batched decode, and provisional MTP state.
+- The paged runtime exposes BF16, INT8, and experimental opt-in `rk8v4` KV. INT8 remains the
+  quality-default path.
 
 ## Validation
 

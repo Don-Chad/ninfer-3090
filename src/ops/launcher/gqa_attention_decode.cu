@@ -111,7 +111,8 @@ void launch_tc_partial_bf16(const Tensor& q, CacheInput input, const Tensor& pos
     CUDA_CHECK(cudaGetLastError());
 }
 
-template <typename Geometry, int TokenTile, bool MultiBatch, bool Masked, typename CacheInput>
+template <typename Geometry, int TokenTile, bool PackedV, bool RotateK, bool RotateV,
+          bool MultiBatch, bool Masked, typename CacheInput>
 void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, float scale,
                           PagedKVBatchLayerView cache, const GqaSmallTInvocation& invocation,
                           std::int32_t logical_capacity, std::int32_t implementation_window,
@@ -129,16 +130,18 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
             static const cudaError_t attr = cudaFuncSetAttribute(
                 gqa_attention_decode_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta,
                                                      MinBlocksPerSm, KeyBlock, DynamicArena,
-                                                     MultiBatch, Masked, CacheInput>,
+                                                     PackedV, RotateK, RotateV, MultiBatch, Masked,
+                                                     CacheInput>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kDynamicBytes));
             CUDA_CHECK(attr);
         }
         gqa_attention_decode_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta, MinBlocksPerSm,
-                                             KeyBlock, DynamicArena, MultiBatch, Masked, CacheInput>
+                                             KeyBlock, DynamicArena, PackedV, RotateK, RotateV,
+                                             MultiBatch, Masked, CacheInput>
             <<<grid, WarpsPerCta * 32, kDynamicBytes, stream>>>(
                 static_cast<const __nv_bfloat16*>(q.data), input,
                 static_cast<const std::int32_t*>(pos.data), static_cast<std::int8_t*>(cache_k.data),
-                static_cast<std::int8_t*>(cache_v.data), static_cast<__half*>(cache_k_scale.data),
+                static_cast<std::uint8_t*>(cache_v.data), static_cast<__half*>(cache_k_scale.data),
                 static_cast<__half*>(cache_v_scale.data),
                 static_cast<const std::int32_t*>(cache.block_tables.data),
                 invocation.valid_columns == nullptr
@@ -210,6 +213,9 @@ PagedKVBatchLayerView single_row_batch_view(const PagedKVLayerView& cache) {
         .num_kv_heads  = cache.num_kv_heads,
         .dtype         = cache.dtype,
         .quant_group   = cache.quant_group,
+        .packed_v      = cache.packed_v,
+        .rotate_k      = cache.rotate_k,
+        .rotate_v      = cache.rotate_v,
     };
 }
 
@@ -250,9 +256,16 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
     do {                                                                                           \
         const auto launch_profile = [&]<bool MultiBatch, bool Masked>() {                          \
             if (cache.dtype == DType::I8) {                                                        \
-                launch_tc_partial_i8<Geometry, (TOKENS), MultiBatch, Masked>(                      \
-                    q, input, pos, scale, cache, invocation, logical_capacity,                     \
-                    implementation_window, splits, partial_acc, partial_m, partial_l, stream);     \
+                if (cache.packed_v) {                                                              \
+                    launch_tc_partial_i8<Geometry, (TOKENS), true, true, true, MultiBatch, Masked>(\
+                        q, input, pos, scale, cache, invocation, logical_capacity,                 \
+                        implementation_window, splits, partial_acc, partial_m, partial_l, stream); \
+                } else {                                                                           \
+                    launch_tc_partial_i8<Geometry, (TOKENS), false, false, false, MultiBatch,      \
+                                         Masked>(q, input, pos, scale, cache, invocation,          \
+                                                 logical_capacity, implementation_window, splits,  \
+                                                 partial_acc, partial_m, partial_l, stream);        \
+                }                                                                                  \
             } else {                                                                               \
                 launch_tc_partial_bf16<Geometry, (TOKENS), (WARPS), MultiBatch, Masked>(           \
                     q, input, pos, scale, cache, invocation, logical_capacity, splits,             \
@@ -342,6 +355,17 @@ void gqa_attention_small_t_launch_for(const Tensor& q, CacheInput input, const T
         launch_for_dtype.template operator()<false>();
     }
     CUDA_CHECK(cudaGetLastError());
+    if (cache.rotate_v) {
+        const int units = invocation.batch_size * invocation.width * Geometry::QHeads *
+                          kGqaKvQuantGroups;
+        gqa_kv_inverse_rotate_output_kernel<Geometry::QHeads><<<units, 32, 0, stream>>>(
+            static_cast<__nv_bfloat16*>(out.data), invocation.width, invocation.full_width,
+            invocation.column_begin,
+            invocation.valid_columns == nullptr
+                ? nullptr
+                : static_cast<const std::int32_t*>(invocation.valid_columns->data));
+        CUDA_CHECK(cudaGetLastError());
+    }
 }
 
 void gqa_attention_small_t_launch(const Tensor& q, const Tensor& k, const Tensor& v,

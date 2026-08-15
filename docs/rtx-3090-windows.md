@@ -90,8 +90,10 @@ top-level field `"reasoning_effort": "xhigh"`; Responses uses
 `"reasoning": {"effort": "xhigh"}`. The CLI accepts
 `--reasoning-effort low|medium|xhigh`.
 
-The paged cache supports BF16 and INT8 storage. RotorQuant/KV4 from older contiguous-cache work is
-not a supported v0.5 paged-cache mode.
+The paged cache supports BF16, INT8, and experimental opt-in `rk8v4` storage. INT8 remains the
+recommended default. On the development RTX 3090, `rk8v4` raised the measured C1 automatic-sizing
+boundary from 171,648 to 226,560 tokens with MTP and CUDA Graphs disabled and 1 GiB headroom, but a
+matched hard-output test was not quality-equivalent. Use it only after validating your workload.
 
 ## Measured 35B capacity
 
