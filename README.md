@@ -9,16 +9,27 @@ reasoning-effort control, ReplaySSM state transactions, and concurrent cohorts t
 This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. DFlash is not part
 of the recommended RTX 3090 path; use MTP speculative decoding.
 
-## Build for Linux
+Release notes for this branch: [v0.6.1](RELEASE_NOTES_0.6.1.md).
 
-The source builds native Linux applications for the RTX 3090 and RTX 3090 Ti. The repository
-Dockerfile gives the shortest path on Bazzite and other Linux distributions. A native Ubuntu 24.04
-build can use system packages or the pinned vcpkg manifest.
+## Choose a platform
 
-See the [RTX 3090 Linux build guide](docs/rtx-3090-linux.md) for the exact container and native
-commands. The project does not publish a qualified Linux binary release yet.
+| Platform | Delivery | Guide |
+|---|---|---|
+| Linux | Docker image or native source build | [Linux build guide](docs/rtx-3090-linux.md) |
+| Windows 11 | Prebuilt release archive | [Windows guide](docs/rtx-3090-windows.md) |
 
-## Start Qwen3.8 in three steps
+### Linux
+
+The Dockerfile gives the shortest build path on Bazzite and other Linux distributions:
+
+```bash
+docker build --tag ninfer-3090:sm86 .
+```
+
+The Linux guide contains the GPU check, native Ubuntu build, model mount, and server command.
+The project does not publish a prebuilt Linux archive or qualified Linux performance results yet.
+
+### Windows 11
 
 1. Download and unzip the latest [Windows release](https://github.com/Don-Chad/ninfer-3090/releases/latest).
 2. Double-click `download-qwen38.bat` to download the model. Interrupted downloads resume.
@@ -31,8 +42,8 @@ commands. The project does not publish a qualified Linux binary release yet.
 | `run-qwen38-vision.bat` | Qwen3.8 image understanding, one user, 32K context, MTP3 |
 | `run-qwen36-35b-vision.bat` | Image understanding with Qwen3.6-35B-A3B, one user, 32K context |
 
-The OpenAI-compatible API is then available at `http://127.0.0.1:8080/v1`. No Python environment,
-CMake, or PowerShell commands are required for the release build.
+The API is then available at `http://127.0.0.1:8080/v1`. The Windows archive includes the required
+applications and DLLs.
 
 ## Qwen3.8-27B support and RTX 3090 results
 
@@ -59,9 +70,8 @@ several requests are active. The C8 long-output test uses a 16K shared KV pool s
 
 ### Qwen3.8 vision
 
-The same Qwen3.8 artifact supports images. Run `download-qwen38.bat` once, then double-click
-`run-qwen38-vision.bat`. The tested RTX 3090 profile uses **one request, 32K maximum context,
-INT8 KV, ReplaySSM, and MTP3**.
+The same Qwen3.8 artifact supports images. Start the server with `--vision`, MTP3, INT8 KV, and a
+32K maximum context. The Windows archive includes `run-qwen38-vision.bat` for this profile.
 
 A 1,920×1,080 image expanded to 2,074 prompt tokens and was read correctly. Measured TTFT was
 3.29 seconds, decode reached 98.1 tok/s, MTP acceptance was 96.7%, and startup retained 2.16 GiB
@@ -91,8 +101,8 @@ reducing measured prefill from 371 ms to 10 ms.
 ### Qwen3.6-35B vision
 
 The compact 35B artifact includes its vision encoder and accepts images through the same OpenAI-
-compatible API. Run `download-qwen36-35b-vision.bat` once, then double-click
-`run-qwen36-35b-vision.bat`.
+compatible API. Start the server with `--vision` and leave speculative decoding disabled. The
+Windows archive includes `run-qwen36-35b-vision.bat` for this profile.
 
 The safe RTX 3090 profile is **one request, 32K maximum context, INT8 KV, vision enabled, and MTP
 disabled**. A current v0.6 test processed three 1,920×1,080 images correctly. Each image expanded
@@ -103,16 +113,17 @@ MTP is intentionally off for this profile. At 32K, speculative recurrent state w
 3090 memory budget; KV compression alone does not recover enough memory. Text-only 35B profiles can
 still use MTP3 as documented above.
 
-## What the release gives you
+## Capabilities
 
-- A native Windows server that runs Qwen3.8-27B on one RTX 3090.
+- Native SM86 CLI and server applications for Linux and Windows.
+- A prebuilt Windows archive with tested launchers.
 - OpenAI Chat Completions, Responses, and Anthropic-compatible APIs.
 - ReplaySSM and MTP3 for higher throughput without exceeding 24 GB VRAM.
 - `low`, `medium`, and `xhigh` reasoning modes.
 - Qwen3.8 image understanding with ReplaySSM and MTP3.
 - Prefix reuse for faster repeated or shared prompts.
 - Qwen3.6-35B image understanding with a guarded 32K profile.
-- One-user and eight-user launchers with safe tested defaults.
+- Windows one-user and eight-user launchers with safe tested defaults.
 
 ## Supported artifacts
 
@@ -128,14 +139,14 @@ artifact contains additional DFlash weights and is not the artifact used for the
 3090 concurrency results. The pinned compact v1 artifact keeps the measured model payload and
 omits DFlash, providing the known 24 GB memory profile.
 
-## Downloads and compatibility
+## Models and platform support
 
-The release requires Windows 11, an RTX 3090, and a recent NVIDIA driver. The archive already
-contains the native applications and required DLLs.
+Linux users build the applications from source or use the Docker image. Windows users can use the
+prebuilt archive, which includes the applications and required DLLs. Both platforms require an
+RTX 3090 or RTX 3090 Ti and a recent NVIDIA driver.
 
-For Qwen3.8, use `download-qwen38.bat` or download the
-[official artifact](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) manually and save it as
-`models\qwen3_8_27b.ninfer` beside the launchers.
+Download the [official Qwen3.8 artifact](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) as
+`models/qwen3_8_27b.ninfer`. Windows users can run `download-qwen38.bat` instead.
 
 For Qwen3.6-35B-A3B, the smaller
 [pinned container-v1 artifact](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer/tree/c8b8c1c0df4c74df3c190c6aa3a7f24dc614721c)
@@ -220,10 +231,12 @@ a 24 GB card and the server can reuse fast CUDA Graphs instead of rebuilding wor
 
 ## Validation
 
-The v0.5 release gate includes Qwen3.8 artifact loading/generation, materialization, request memory, admission policy,
-paged KV, prefix append, speculative rounds, and SM86 W8 linear paths. The focused Windows gate
-passed 11/11 tests. Benchmark logs remain local under `benchmark_results/` and are not included in
-source releases.
+The v0.6.0 Windows gate covered Qwen3.8 generation, materialization, request memory, admission,
+paged KV, prefix reuse, speculative rounds, and SM86 W8 Linear paths.
+
+The v0.6.1 Linux source gate completed all 245 Docker compile and link steps with CUDA 13.1 on
+Ubuntu 24.04. Both Linux applications returned their `--help` output with GPU access enabled.
+A real-artifact Linux generation and Linux performance qualification remain open.
 
 ## Upstream
 
