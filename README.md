@@ -6,6 +6,14 @@ runtime loads its official groupwise `.ninfer` artifact, serves OpenAI- and Anth
 APIs, and supports paged KV, compatible-prefix reuse, CUDA Graphs, MTP speculative decoding,
 reasoning-effort control, ReplaySSM state transactions, and concurrent cohorts through **C8**.
 
+On an RTX 3090, Qwen3.8-27B supports a measured **171K-token INT8 context** with the standard
+1 GiB safety headroom. The optional RotorQuant `rk8v4` cache raises this to **226K tokens with
+1 GiB headroom**, or **247,872 tokens (about 248K)** in a tightly packed 300 MiB-headroom profile.
+RotorQuant is an opt-in feature; INT8 remains the default because `rk8v4` is lossy.
+
+Community project, maintained on a best-effort basis. Issues and PRs are very welcome, but support
+and feature requests are not guaranteed.
+
 This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. DFlash is not part
 of the recommended RTX 3090 path; use MTP speculative decoding.
 
@@ -66,6 +74,13 @@ On the development RTX 3090, C1 with MTP and CUDA Graphs disabled fit a **226,56
 context with the normal 1 GiB automatic-sizing headroom; 226,624 was rejected. The comparable INT8
 boundary was 171,648 tokens, so `rk8v4` increased measured allocatable context by about **32%**.
 This is an allocation plus short-execution boundary, not a full 226K prefill quality claim.
+
+A second explicit-reservation test reduced operational headroom to approximately 300 MiB.
+`rk8v4` successfully started and generated at **247,872 tokens**, leaving **302.97 MiB** physically
+free after startup. The next 64-token page boundary, 247,936, left only 274.58 MiB because it crossed
+a CUDA allocation granularity. Therefore 247,872 is the measured maximum that retained at least
+300 MiB—not 2x INT8 capacity, but about **44% more** than the 171,648-token INT8/1 GiB baseline.
+This tight profile leaves little tolerance for other GPU users and is not the recommended default.
 
 The matched 1,024-token hard coding test reduced 4K KV payload from 140.38 MiB to 106.35 MiB and
 decoded at 84.07 tok/s versus 85.72 tok/s for INT8. Quality was not equivalent: the RotorQuant
