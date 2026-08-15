@@ -1,7 +1,8 @@
-"""C1 RTX 3090 prefill and 1K-generation benchmark configured by the companion BAT file."""
+"""C1/C2/C4/C8 RTX 3090 prefill and 1K-generation benchmark configured by the companion BAT."""
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import math
 import os
@@ -19,11 +20,13 @@ MODEL = Path(os.environ.get("NINFER_BENCH_MODEL", ROOT.parent / "qwen3_8_27b.nin
 MAX_CONTEXT = int(os.environ.get("NINFER_BENCH_MAX_CONTEXT", "65536"))
 OUTPUT_TOKENS = int(os.environ.get("NINFER_BENCH_OUTPUT_TOKENS", "1024"))
 PREFILL_PROMPT_CHARACTERS = int(os.environ.get("NINFER_BENCH_PREFILL_CHARS", "28000"))
+COHORTS = tuple(int(value) for value in os.environ.get("NINFER_BENCH_COHORTS", "1,2,4,8").split(","))
+KV_DTYPE = os.environ.get("NINFER_BENCH_KV_DTYPE", "int8")
 PORT = 8093
 STARTUP_TIMEOUT_SECONDS = 90
 REQUEST_TIMEOUT_SECONDS = 900
 RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
-OUTPUT_ROOT = ROOT / "benchmark_results" / f"windows_3090_c1_{RUN_ID}"
+OUTPUT_ROOT = ROOT / "benchmark_results" / f"windows_3090_c1_c8_{RUN_ID}"
 
 PARAGRAPH = (
     "A reliable GPU inference service separates admission control, prompt ingestion, decode "
@@ -55,34 +58,42 @@ def gpu_used_mib() -> int:
     return int(result.stdout.strip().splitlines()[0])
 
 
-def request(prompt: str, max_tokens: int) -> tuple[dict, float]:
+def request(prompt: str, max_tokens: int, index: int, barrier: threading.Barrier) -> tuple[dict, float]:
     body = json.dumps({
         "model": "qwen3.8-27b",
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": prompt + f"\nRequest number: {index + 1}."}],
         "max_tokens": max_tokens,
         "temperature": 0,
-        "seed": 57004,
+        "seed": 57004 + index,
         "reasoning_effort": "medium",
     }).encode("utf-8")
     req = urllib.request.Request(
         f"http://127.0.0.1:{PORT}/v1/chat/completions", data=body,
         headers={"Content-Type": "application/json"},
     )
+    barrier.wait()
     started = time.perf_counter()
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as response:
         return json.load(response), time.perf_counter() - started
 
 
-def run_round(name: str, prompt: str, max_tokens: int) -> dict:
-    out = OUTPUT_ROOT / name
+def run_round(name: str, prompt: str, max_tokens: int, cohort: int) -> dict:
+    out = OUTPUT_ROOT / name / f"c{cohort}"
     out.mkdir(parents=True)
     request_log = out / "requests.jsonl"
+    context_per_request = MAX_CONTEXT // cohort
+    if cohort == 8:
+        # MTP3 C8 needs the qualified 8K lane envelope on a 24 GB RTX 3090.
+        context_per_request = min(context_per_request, 8192)
+    kv_capacity = min(MAX_CONTEXT, context_per_request * cohort)
+    if context_per_request < max_tokens + 1024:
+        raise ValueError(f"C{cohort} context {context_per_request} is too small for this round")
     command = [
         str(SERVER), str(MODEL), "--host", "127.0.0.1", "--port", str(PORT),
-        "--max-context", str(MAX_CONTEXT), "--kv-capacity", str(MAX_CONTEXT),
-        "--max-concurrency", "1", "--max-pending-requests", "4",
+        "--max-context", str(context_per_request), "--kv-capacity", str(kv_capacity),
+        "--max-concurrency", str(cohort), "--max-pending-requests", "8",
         "--pending-timeout-ms", "900000", "--prefill-chunk", "512",
-        "--kv-dtype", "int8", "--spec", "mtp", "--draft-tokens", "3",
+        "--kv-dtype", KV_DTYPE, "--spec", "mtp", "--draft-tokens", "3",
         "--lm-head-draft", "--greedy", "--no-prefix-reuse",
         "--request-log-jsonl", str(request_log),
     ]
@@ -102,7 +113,13 @@ def run_round(name: str, prompt: str, max_tokens: int) -> dict:
             peak_mib = gpu_used_mib()
             poller = threading.Thread(target=poll_gpu, daemon=True)
             poller.start()
-            response, wall_seconds = request(prompt, max_tokens)
+            barrier = threading.Barrier(cohort + 1)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=cohort) as executor:
+                futures = [executor.submit(request, prompt, max_tokens, index, barrier) for index in range(cohort)]
+                barrier.wait()
+                wave_started = time.perf_counter()
+                clients = [future.result() for future in futures]
+                wall_seconds = time.perf_counter() - wave_started
             stop.set()
             poller.join()
         finally:
@@ -114,22 +131,23 @@ def run_round(name: str, prompt: str, max_tokens: int) -> dict:
                 process.kill()
                 process.wait(timeout=10)
 
-    (out / "response.json").write_text(json.dumps(response, indent=2), encoding="utf-8")
+    (out / "responses.json").write_text(json.dumps([client[0] for client in clients], indent=2), encoding="utf-8")
     records = [json.loads(line) for line in request_log.read_text(encoding="utf-8").splitlines()]
     done = [record for record in records if record.get("event") == "request_done"]
-    if len(done) != 1:
-        raise RuntimeError(f"{name}: expected one completed request, found {len(done)}")
-    record = done[0]
-    generated = record["result"]["completion_tokens"]
-    prompt_tokens = record["result"]["prompt_tokens"]
-    computed_prefill = record["result"]["computed_prefill_tokens"]
-    prefill_seconds = record["timings_seconds"]["prefill"]
-    decode_seconds = record["timings_seconds"]["decode"]
-    drafted = record["speculative"]["drafted_tokens"]
-    accepted = record["speculative"]["accepted_tokens"]
+    if len(done) != cohort:
+        raise RuntimeError(f"{name} C{cohort}: expected {cohort} completed requests, found {len(done)}")
+    generated = sum(record["result"]["completion_tokens"] for record in done)
+    prompt_tokens = sum(record["result"]["prompt_tokens"] for record in done)
+    computed_prefill = sum(record["result"]["computed_prefill_tokens"] for record in done)
+    prefill_seconds = sum(record["timings_seconds"]["prefill"] for record in done)
+    decode_seconds = max(record["timings_seconds"]["decode"] for record in done)
+    drafted = sum(record["speculative"]["drafted_tokens"] for record in done)
+    accepted = sum(record["speculative"]["accepted_tokens"] for record in done)
     result = {
         "round": name,
-        "max_context": MAX_CONTEXT,
+        "cohort": cohort,
+        "max_context_per_request": context_per_request,
+        "shared_kv_capacity": kv_capacity,
         "prompt_tokens": prompt_tokens,
         "computed_prefill_tokens": computed_prefill,
         "completion_tokens": generated,
@@ -138,14 +156,16 @@ def run_round(name: str, prompt: str, max_tokens: int) -> dict:
         "end_to_end_output_tokens_per_second": generated / wall_seconds,
         "decode_tokens_per_second": generated / decode_seconds,
         "mtp_acceptance_percent": 100 * accepted / drafted if drafted else 0,
-        "ttft_ms": 1000 * record["timings_seconds"]["ttft"],
+        "ttft_ms": 1000 * sum(record["timings_seconds"]["ttft"] for record in done) / cohort,
         "peak_gpu_memory_mib": peak_mib,
     }
     for key, value in result.items():
         if isinstance(value, float) and not math.isfinite(value):
             raise RuntimeError(f"{name}: invalid {key}: {value}")
-    if name == "generation_1k" and generated != OUTPUT_TOKENS:
-        raise RuntimeError(f"generation_1k: generated {generated} of {OUTPUT_TOKENS} required tokens")
+    if name == "generation_1k" and generated != cohort * OUTPUT_TOKENS:
+        raise RuntimeError(
+            f"generation_1k C{cohort}: generated {generated} of {cohort * OUTPUT_TOKENS} required tokens"
+        )
     (out / "summary.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 
@@ -157,20 +177,21 @@ def main() -> None:
     configuration = {
         "server": str(SERVER), "model": str(MODEL), "max_context": MAX_CONTEXT,
         "output_tokens": OUTPUT_TOKENS, "prefill_prompt_characters": PREFILL_PROMPT_CHARACTERS,
-        "mtp_draft_tokens": 3,
+        "mtp_draft_tokens": 3, "cohorts": COHORTS, "kv_dtype": KV_DTYPE,
     }
     (OUTPUT_ROOT / "configuration.json").write_text(json.dumps(configuration, indent=2), encoding="utf-8")
     generation_prompt = "Write a detailed technical guide to reliable local GPU inference. Continue until the requested output limit."
     prefill_prompt = (PARAGRAPH * (PREFILL_PROMPT_CHARACTERS // len(PARAGRAPH) + 2))[:PREFILL_PROMPT_CHARACTERS]
-    results = [
-        run_round("generation_1k", generation_prompt, OUTPUT_TOKENS),
-        run_round("prefill", prefill_prompt, 16),
-    ]
+    results = []
+    for cohort in COHORTS:
+        results.append(run_round("generation_1k", generation_prompt, OUTPUT_TOKENS, cohort))
+    for cohort in COHORTS:
+        results.append(run_round("prefill", prefill_prompt, 16, cohort))
     (OUTPUT_ROOT / "scores.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
-    score_lines = ["round,prompt_tokens,completion_tokens,prefill_tok_s,e2e_output_tok_s,decode_tok_s,mtp_acceptance_pct,ttft_ms,peak_vram_mib"]
+    score_lines = ["round,cohort,prompt_tokens,completion_tokens,prefill_tok_s,e2e_output_tok_s,decode_tok_s,mtp_acceptance_pct,ttft_ms,peak_vram_mib"]
     for result in results:
         score_lines.append(
-            f"{result['round']},{result['prompt_tokens']},{result['completion_tokens']},"
+            f"{result['round']},C{result['cohort']},{result['prompt_tokens']},{result['completion_tokens']},"
             f"{result['prefill_tokens_per_second']:.2f},{result['end_to_end_output_tokens_per_second']:.2f},"
             f"{result['decode_tokens_per_second']:.2f},{result['mtp_acceptance_percent']:.2f},"
             f"{result['ttft_ms']:.0f},{result['peak_gpu_memory_mib']}"

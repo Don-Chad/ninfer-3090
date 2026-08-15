@@ -2,9 +2,11 @@
 setlocal
 
 rem ======================== EDITABLE SETTINGS ========================
-set "MAX_CONTEXT=65536"
+set "MAX_CONTEXT=131072"
 set "OUTPUT_TOKENS=1024"
 set "PREFILL_PROMPT_CHARACTERS=28000"
+set "COHORTS=1,2,4,8"
+set "KV_DTYPE=rk8v4"
 set "START_DELAY_SECONDS=10"
 set "MODEL=%~dp0..\..\qwen3_8_27b.ninfer"
 set "SERVER=%~dp0..\build-sm86-replayssm\apps\Release\ninfer-serve.exe"
@@ -26,10 +28,12 @@ where uv >nul 2>nul || (
 
 echo.
 echo RTX 3090 Qwen3.8 benchmark
-echo   Context window : %MAX_CONTEXT%
+echo   Shared context : %MAX_CONTEXT% tokens ^(C1 full; C8 capped at 8K per request^)
 echo   Decode output  : %OUTPUT_TOKENS% tokens
+echo   Cohorts        : C1, C2, C4, C8
+echo   KV cache       : %KV_DTYPE%
 echo   Results        : %REPO%\benchmark_results\windows_3090_*
-if %MAX_CONTEXT% GTR 65536 echo WARNING: Contexts above 65536 are not qualified on a 24 GB RTX 3090.
+if /I "%KV_DTYPE%"=="int8" if %MAX_CONTEXT% GTR 65536 echo WARNING: This high-context INT8 profile is not the recommended 3090 benchmark setting.
 echo.
 echo Starting in %START_DELAY_SECONDS% seconds. Press Ctrl+C to cancel.
 timeout /t %START_DELAY_SECONDS% /nobreak >nul
@@ -39,6 +43,8 @@ set "NINFER_BENCH_MODEL=%MODEL%"
 set "NINFER_BENCH_MAX_CONTEXT=%MAX_CONTEXT%"
 set "NINFER_BENCH_OUTPUT_TOKENS=%OUTPUT_TOKENS%"
 set "NINFER_BENCH_PREFILL_CHARS=%PREFILL_PROMPT_CHARACTERS%"
+set "NINFER_BENCH_COHORTS=%COHORTS%"
+set "NINFER_BENCH_KV_DTYPE=%KV_DTYPE%"
 
 pushd "%REPO%"
 uv run tools\bench\run_qwen38_windows_3090_benchmarks.py
