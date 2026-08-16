@@ -6,16 +6,19 @@ runtime loads its official groupwise `.ninfer` artifact, serves OpenAI- and Anth
 APIs, and supports paged KV, compatible-prefix reuse, CUDA Graphs, MTP speculative decoding,
 reasoning-effort control, ReplaySSM state transactions, and concurrent cohorts through **C8**.
 
+Community project, maintained on a best-effort basis. Issues and PRs are very welcome, but support
+and feature requests are not guaranteed.
+
+
+
 On an RTX 3090, Qwen3.8-27B supports a measured **171K-token INT8 context** with the standard
 1 GiB safety headroom. The optional RotorQuant `rk8v4` cache raises this to **226K tokens with
 1 GiB headroom**, or **247,872 tokens (about 248K)** in a tightly packed 300 MiB-headroom profile.
 RotorQuant is an opt-in feature; INT8 remains the default because `rk8v4` is lossy.
 
-Community project, maintained on a best-effort basis. Issues and PRs are very welcome, but support
-and feature requests are not guaranteed.
+This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. 
 
-This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. DFlash is not part
-of the recommended RTX 3090 path; use MTP speculative decoding.
+The goal is the make the utmost rippin Qwen inference stack for the 3000 series. Gladly taking PR's, all help much appreciated. 
 
 Release notes for this branch: [v0.6.1](RELEASE_NOTES_0.6.1.md).
 
