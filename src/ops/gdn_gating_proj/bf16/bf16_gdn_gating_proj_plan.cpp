@@ -26,16 +26,17 @@ struct RouteSpec {
     Bf16GdnGatingScheduleId schedule;
 };
 
-constexpr std::array<RouteSpec, 5> k27Routes{{
+constexpr std::array<RouteSpec, 6> k27Routes{{
     {{1, 1}, Bf16GdnGatingScheduleId::GemvPairedRows},
     {{2, 8}, Bf16GdnGatingScheduleId::SmallTSplit10},
-    // sm_86 has 82 SMs. Split8 (256 threads, 65 regs) admits 2 CTAs/SM -> 164 device-wide;
-    // split4/2 (512 threads, 74 regs) admit 1 CTA/SM -> 82. Grid is ceil(T/128)*3*SplitK, so
-    // split8 is legal to T<=768 and split2 to T<=1664. Split4 reaches the same 768 ceiling as
-    // split8 while doing less work per launch, so it is unreachable on this target.
+    // sm_86 has 82 SMs, 64 Ki registers and 100 KiB of shared memory per SM. Every MMA route runs
+    // 8 warps at 65 registers, so 8*32*72 = 18,432 registers admits three CTAs/SM while the 40 KiB
+    // of dynamic shared memory admits two. Shared memory binds: 2 CTAs/SM -> 164 device-wide.
+    // Grid is ceil(T/128)*3*SplitK, so the legal ends are 768 / 1664 / 3456.
     {{9, 768}, Bf16GdnGatingScheduleId::MmaCooperativeSplit8},
-    {{769, 1664}, Bf16GdnGatingScheduleId::MmaCooperativeSplit2},
-    {{1665, kAnyCols}, Bf16GdnGatingScheduleId::MmaUnsplit},
+    {{769, 1664}, Bf16GdnGatingScheduleId::MmaCooperativeSplit4},
+    {{1665, 3456}, Bf16GdnGatingScheduleId::MmaCooperativeSplit2},
+    {{3457, kAnyCols}, Bf16GdnGatingScheduleId::MmaUnsplit},
 }};
 
 constexpr std::array<RouteSpec, 5> k35Routes{{
@@ -66,8 +67,10 @@ static_assert(catalog_is_closed(k35Routes, kAnyCols));
 // Device-wide resident-CTA budgets, measured on the sm_86 build. These are the single source of
 // truth: both the runtime residency predicates and the compile-time catalog guard below read them,
 // so a retuned constant cannot silently disagree with the route table it is meant to bound.
-constexpr std::int32_t resident_ctas_27(Bf16GdnGatingScheduleId schedule) noexcept {
-    return schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit8 ? 164 : 82;
+constexpr std::int32_t resident_ctas_27(Bf16GdnGatingScheduleId) noexcept {
+    // Uniform across split8/4/2: all three are 8-warp, 65-register CTAs bounded by the same 40 KiB
+    // shared-memory allocation, so all three admit two CTAs per SM.
+    return 164;
 }
 
 constexpr std::int32_t resident_ctas_35(Bf16GdnGatingScheduleId schedule) noexcept {
