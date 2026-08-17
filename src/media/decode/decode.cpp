@@ -118,6 +118,32 @@ int read_packet(void* opaque, std::uint8_t* output, int size) {
     return static_cast<int>(amount);
 }
 
+class AvImageBuffer {
+public:
+    AvImageBuffer(int width, int height, AVPixelFormat format) {
+        constexpr int alignment = 64;
+        const int rc =
+            av_image_alloc(data_.data(), linesize_.data(), width, height, format, alignment);
+        if (rc == AVERROR(ENOMEM)) { throw std::bad_alloc(); }
+        if (rc < 0) {
+            throw std::runtime_error("failed to allocate media conversion buffer: " + av_error(rc));
+        }
+    }
+
+    ~AvImageBuffer() { av_freep(data_.data()); }
+
+    AvImageBuffer(const AvImageBuffer&)            = delete;
+    AvImageBuffer& operator=(const AvImageBuffer&) = delete;
+
+    [[nodiscard]] std::uint8_t* const* data() const noexcept { return data_.data(); }
+
+    [[nodiscard]] const int* linesize() const noexcept { return linesize_.data(); }
+
+private:
+    std::array<std::uint8_t*, 4> data_{};
+    std::array<int, 4> linesize_{};
+};
+
 std::int64_t seek_packet(void* opaque, std::int64_t offset, int whence) {
     auto& cursor = *static_cast<BufferCursor*>(opaque);
     if (whence == AVSEEK_SIZE) { return static_cast<std::int64_t>(cursor.size); }
@@ -259,25 +285,37 @@ public:
             av_pix_fmt_desc_get(static_cast<AVPixelFormat>(frame->format));
         const bool alpha = composite_alpha && descriptor != nullptr &&
                            (descriptor->flags & AV_PIX_FMT_FLAG_ALPHA) != 0;
-        const int channels = alpha ? 4 : 3;
-        std::vector<std::uint8_t> converted(static_cast<std::size_t>(width) * height * channels);
+        const AVPixelFormat destination_format = alpha ? AV_PIX_FMT_RGBA : AV_PIX_FMT_RGB24;
+        AvImageBuffer converted(width, height, destination_format);
         sws_ = sws_getCachedContext(sws_, width, height, static_cast<AVPixelFormat>(frame->format),
-                                    width, height, alpha ? AV_PIX_FMT_RGBA : AV_PIX_FMT_RGB24,
-                                    SWS_POINT, nullptr, nullptr, nullptr);
+                                    width, height, destination_format, SWS_POINT, nullptr, nullptr,
+                                    nullptr);
         if (sws_ == nullptr) { throw std::runtime_error("failed to create media color converter"); }
-        std::uint8_t* dst[] = {converted.data(), nullptr, nullptr, nullptr};
-        int stride[]        = {width * channels, 0, 0, 0};
-        const int rows      = sws_scale(sws_, frame->data, frame->linesize, 0, height, dst, stride);
+        const int rows = sws_scale(sws_, frame->data, frame->linesize, 0, height, converted.data(),
+                                   converted.linesize());
         if (rows != height) { throw std::runtime_error("failed to convert media frame to RGB"); }
-        out.rgb.resize(static_cast<std::size_t>(width) * height * 3);
+        const std::size_t pixels = static_cast<std::size_t>(width) * height;
+        out.rgb.resize(pixels * 3);
         if (!alpha) {
-            out.rgb = std::move(converted);
+            const std::size_t row_bytes = static_cast<std::size_t>(width) * 3;
+            for (int y = 0; y < height; ++y) {
+                std::memcpy(out.rgb.data() + static_cast<std::size_t>(y) * row_bytes,
+                            converted.data()[0] +
+                                static_cast<std::size_t>(y) * converted.linesize()[0],
+                            row_bytes);
+            }
         } else {
-            for (std::size_t i = 0; i < static_cast<std::size_t>(width) * height; ++i) {
-                const int a = converted[4 * i + 3];
-                for (int c = 0; c < 3; ++c) {
-                    out.rgb[3 * i + c] = static_cast<std::uint8_t>(
-                        ((255 - a) * 255 + a * converted[4 * i + c] + 127) / 255);
+            for (int y = 0; y < height; ++y) {
+                const std::uint8_t* source =
+                    converted.data()[0] + static_cast<std::size_t>(y) * converted.linesize()[0];
+                std::uint8_t* destination =
+                    out.rgb.data() + static_cast<std::size_t>(y) * width * 3;
+                for (int x = 0; x < width; ++x) {
+                    const int a = source[4 * x + 3];
+                    for (int c = 0; c < 3; ++c) {
+                        destination[3 * x + c] = static_cast<std::uint8_t>(
+                            ((255 - a) * 255 + a * source[4 * x + c] + 127) / 255);
+                    }
                 }
             }
         }
