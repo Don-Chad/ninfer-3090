@@ -1334,13 +1334,24 @@ void ProgramImplCore::prepare_graphs() {
 
     std::size_t free_after = 0;
     CUDA_CHECK(cudaMemGetInfo(&free_after, &total_bytes));
+    // cudaMemGetInfo reports free memory for the whole device, so this delta measures every other
+    // GPU consumer's allocations and frees during capture as well as our own. On any machine with a
+    // display attached that is not a small correction. Measured on an RTX 3090 with a Windows
+    // desktop present, twelve identical runs at a 2048-token capacity: 0, 0, 0, 8.00, 9.44, 9.89,
+    // 14.77, 21.11, 21.75, 26.44, 84.50, 101.00 MiB. The zeroes are the clamp below firing because
+    // another process freed more than we allocated. Ten identical runs at 131072 spanned 0 to
+    // 277.25 MiB; variance grows as the KV cache squeezes the desktop, which is why the failures
+    // looked capacity-dependent.
+    //
+    // Aborting startup on that reading rejected more than half of otherwise valid configurations.
+    // The number cannot be isolated either: these graphs contain no memory nodes, every buffer
+    // comes from the planned arena, so cudaDeviceGetGraphMemAttribute reads zero and what remains
+    // is opaque cudaGraphInstantiate bookkeeping. It is kept as a reported diagnostic instead of a
+    // precondition. graph_allowance_bytes still reserves its share of device_reservation_bytes, so
+    // planning is unchanged, and a genuine over-allocation now surfaces as a real CUDA OOM naming
+    // the allocation that failed rather than as a spurious startup error naming this one.
     const std::size_t consumed = free_before > free_after ? free_before - free_after : 0;
     graph_observed_bytes       = consumed;
-    if (consumed > graph_allowance_bytes) {
-        throw std::runtime_error("CUDA Graph preparation consumed " + std::to_string(consumed) +
-                                 " bytes, exceeding the planned allowance of " +
-                                 std::to_string(graph_allowance_bytes) + " bytes");
-    }
     for (PagedKVAllocation& allocation : dflash_capture_allocations) { allocation.unbind_row(); }
     dflash_capture_allocations.clear();
     for (PagedKVAllocation& allocation : mtp_capture_allocations) { allocation.unbind_row(); }
