@@ -55,11 +55,12 @@ __device__ __forceinline__ void gqa_small_t_i8_store_swz(std::int8_t* tile, int 
 // dequantize V while producers execute QK. After both consume the code tile, the
 // next K/V tile is prefetched into the same arena while the current PV runs.
 template <typename Geometry, int TokenTile, int WarpsPerCta, int MinBlocksPerSm, int KeyBlock,
-          bool DynamicArena, bool MultiBatch, bool Masked, typename CacheInput>
+          bool DynamicArena, bool PackedV, bool RotateK, bool RotateV, bool MultiBatch, bool Masked,
+          typename CacheInput>
 __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     void gqa_attention_decode_i8_tiled_kernel(
         const __nv_bfloat16* q, CacheInput input, const std::int32_t* pos, std::int8_t* cache_k_i8,
-        std::int8_t* cache_v_i8, __half* cache_k_scale, __half* cache_v_scale,
+        std::uint8_t* cache_v_codes, __half* cache_k_scale, __half* cache_v_scale,
         const std::int32_t* block_tables, const std::int32_t* valid_columns,
         const std::int32_t* table_rows, std::int32_t table_stride, std::int32_t full_width,
         std::int32_t column_begin, std::int32_t logical_capacity, float scale,
@@ -219,16 +220,19 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
             const int d1            = d0 + 32;
             const std::int64_t src0 = gqa_kv_new_index<Geometry>(kv_head, d0, token);
             const std::int64_t src1 = gqa_kv_new_index<Geometry>(kv_head, d1, token);
-            const float kv0         = __bfloat162float(input.k[src0]);
-            const float kv1         = __bfloat162float(input.k[src1]);
-            const float vv0         = __bfloat162float(input.v[src0]);
-            const float vv1         = __bfloat162float(input.v[src1]);
+            float kv0               = __bfloat162float(input.k[src0]);
+            float kv1               = __bfloat162float(input.k[src1]);
+            float vv0               = __bfloat162float(input.v[src0]);
+            float vv1               = __bfloat162float(input.v[src1]);
+            if constexpr (RotateK) { gqa_kv_hadamard64(kv0, kv1, FullMask); }
+            if constexpr (RotateV) { gqa_kv_hadamard64(vv0, vv1, FullMask); }
             float kamax             = fmaxf(fabsf(kv0), fabsf(kv1));
             float vamax             = fmaxf(fabsf(vv0), fabsf(vv1));
             kamax                   = warp_max(kamax, FullMask);
             vamax                   = warp_max(vamax, FullMask);
             const __half ksh        = __float2half_rn(kamax > 0.0f ? kamax / 127.0f : 0.0f);
-            const __half vsh        = __float2half_rn(vamax > 0.0f ? vamax / 127.0f : 0.0f);
+            const __half vsh = __float2half_rn(vamax > 0.0f ? vamax / (PackedV ? 7.0f : 127.0f)
+                                                                : 0.0f);
             const float ks          = __half2float(ksh);
             const float vs          = __half2float(vsh);
             const float k_inv       = ks > 0.0f ? 1.0f / ks : 0.0f;
@@ -238,10 +242,28 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                 gqa_kv_quant_code(kv0, k_inv);
             cache_k_i8[gqa_kv_quant_code_index<Geometry>(physical_page, kv_head, d1, page_offset)] =
                 gqa_kv_quant_code(kv1, k_inv);
-            cache_v_i8[gqa_kv_quant_code_index<Geometry>(physical_page, kv_head, d0, page_offset)] =
-                gqa_kv_quant_code(vv0, v_inv);
-            cache_v_i8[gqa_kv_quant_code_index<Geometry>(physical_page, kv_head, d1, page_offset)] =
-                gqa_kv_quant_code(vv1, v_inv);
+            if constexpr (PackedV) {
+                const float vv0_hi = __shfl_down_sync(FullMask, vv0, 1);
+                const float vv1_hi = __shfl_down_sync(FullMask, vv1, 1);
+                if ((lane & 1) == 0) {
+                    cache_v_codes[gqa_kv_i4_code_index<Geometry>(physical_page, kv_head, d0 / 2,
+                                                                 page_offset)] =
+                        gqa_kv_pack_i4(gqa_kv_quant_i4_code(vv0, v_inv),
+                                       gqa_kv_quant_i4_code(vv0_hi, v_inv));
+                    cache_v_codes[gqa_kv_i4_code_index<Geometry>(physical_page, kv_head, d1 / 2,
+                                                                 page_offset)] =
+                        gqa_kv_pack_i4(gqa_kv_quant_i4_code(vv1, v_inv),
+                                       gqa_kv_quant_i4_code(vv1_hi, v_inv));
+                }
+            } else {
+                auto* cache_v_i8 = reinterpret_cast<std::int8_t*>(cache_v_codes);
+                cache_v_i8[gqa_kv_quant_code_index<Geometry>(physical_page, kv_head, d0,
+                                                              page_offset)] =
+                    gqa_kv_quant_code(vv0, v_inv);
+                cache_v_i8[gqa_kv_quant_code_index<Geometry>(physical_page, kv_head, d1,
+                                                              page_offset)] =
+                    gqa_kv_quant_code(vv1, v_inv);
+            }
             if (lane == 0) {
                 const std::int64_t so =
                     gqa_kv_quant_scale_index<Geometry>(physical_page, kv_head, grp, page_offset);
@@ -264,8 +286,9 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         int q_head    = 0;
         int token     = 0;
         gqa_small_t_tc_row_to_qt<Geometry>(row, TokenTile, kv_head, q_head, token);
-        const float x0  = __bfloat162float(q[gqa_q_index<Geometry>(q_head, d0, token)]);
-        const float x1  = __bfloat162float(q[gqa_q_index<Geometry>(q_head, d1, token)]);
+        float x0        = __bfloat162float(q[gqa_q_index<Geometry>(q_head, d0, token)]);
+        float x1        = __bfloat162float(q[gqa_q_index<Geometry>(q_head, d1, token)]);
+        if constexpr (RotateK) { gqa_kv_hadamard64(x0, x1, FullMask); }
         float amax      = fmaxf(fabsf(x0), fabsf(x1));
         amax            = warp_max(amax, FullMask);
         const float qs  = amax > 0.0f ? amax / 127.0f : 0.0f;
@@ -338,7 +361,14 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                     physical_page, kv_head, d, key & kPagedKVPageMask);
                 std::int8_t* dst = &k_i8[key_l * D + gqa_small_t_tc_swz(key_l, dc * 8) * 2];
                 ninfer::ops::cp_async<16>(dst, &cache_k_i8[off]);
-                ninfer::ops::cp_async<16>(&v_i8[key_l * D + d], &cache_v_i8[off]);
+                if constexpr (PackedV) {
+                    const std::int64_t voff = gqa_kv_i4_code_index<Geometry>(
+                        physical_page, kv_head, d / 2, key & kPagedKVPageMask);
+                    gqa_kv_unpack_i4x16(&cache_v_codes[voff], &v_i8[key_l * D + d]);
+                } else {
+                    ninfer::ops::cp_async<16>(&v_i8[key_l * D + d],
+                                              &reinterpret_cast<std::int8_t*>(cache_v_codes)[off]);
+                }
             } else {
                 std::int8_t* dst = &k_i8[key_l * D + gqa_small_t_tc_swz(key_l, dc * 8) * 2];
                 store_vec(dst, make_int4(0, 0, 0, 0));

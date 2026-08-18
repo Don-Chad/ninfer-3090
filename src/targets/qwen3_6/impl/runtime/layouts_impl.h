@@ -117,6 +117,9 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
                      .attention_head_dim        = TextConfig::head_dim,
                      .kv_dtype                  = plan.kv_dtype,
                      .kv_quant_group            = plan.kv_quant_group,
+                     .kv_packed_v               = plan.kv_packed_v,
+                     .kv_rotate_k               = plan.kv_rotate_k,
+                     .kv_rotate_v               = plan.kv_rotate_v,
                      .enable_mtp                = plan.features.mtp(),
                      .kv_table_rows             = static_cast<std::int32_t>(plan.max_concurrency),
                      .text_physical_page_groups = physical_pages,
@@ -596,8 +599,9 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
         }
         break;
     }
-    if (device.sm() != 86) {
-        throw std::invalid_argument("Qwen3.6 family runtime requires compute capability 8.6");
+    if (device.sm() != 86 && device.sm() != 89) {
+        throw std::invalid_argument(
+            "Qwen3.6 family runtime requires compute capability 8.6 or 8.9");
     }
 }
 
@@ -623,6 +627,9 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->device              = inputs.device;
     impl->kv_dtype            = inputs.kv_dtype;
     impl->kv_quant_group      = inputs.kv_quant_group;
+    impl->kv_packed_v         = inputs.kv_packed_v;
+    impl->kv_rotate_k         = inputs.kv_rotate_k;
+    impl->kv_rotate_v         = inputs.kv_rotate_v;
     impl->persistent          = persistent_layout(*impl);
     impl->workspace           = build_workspace_plan(*impl);
     if (impl->features.vision) {
@@ -646,7 +653,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                     const std::uint64_t final_visible = std::min<std::uint64_t>(
                         impl->capacity,
                         static_cast<std::uint64_t>(profile.max) + 2ULL * impl->draft_window);
-#ifdef NINFER_SM86
+#ifdef NINFER_SM8X_COMPAT
                     if (final_visible <= 4096) {
                         // The reduced-startup graph set still consumes 35.8 MiB at C1/K3 and
                         // 43.1 MiB at C1/K4 on SM86. K2 retains the smaller qualified allowance;
@@ -707,6 +714,9 @@ make_sequence_planner_impl(DeviceContext& device, const EngineOptions& options,
         .speculative_backend = options.speculative.backend,
         .kv_dtype       = options.kv_cache == KvCacheStorage::BFloat16 ? DType::BF16 : DType::I8,
         .kv_quant_group = options.kv_cache == KvCacheStorage::BFloat16 ? 0 : qwen3_6::kKvQuantGroup,
+        .kv_packed_v = options.kv_cache == KvCacheStorage::RotatedInt8KeyInt4ValueGroup64,
+        .kv_rotate_k = options.kv_cache == KvCacheStorage::RotatedInt8KeyInt4ValueGroup64,
+        .kv_rotate_v = options.kv_cache == KvCacheStorage::RotatedInt8KeyInt4ValueGroup64,
         .proposal_head  = options.speculative.proposal_head,
         .features       = qwen3_6::startup_features(options),
         .use_cuda_graph = options.use_cuda_graph,

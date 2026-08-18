@@ -129,7 +129,7 @@ void w8_pair_splitk_medium_launch(W8PairScheduleId schedule, const Tensor& x,
         first_out.ne[1] != x.ne[1] || second_out.ne[0] != kRows || second_out.ne[1] != x.ne[1]) {
         throw std::invalid_argument("W8 medium pair requires [1024,2048] and T>=33");
     }
-#if defined(NINFER_SM86)
+#if defined(NINFER_SM8X_COMPAT)
     (void)schedule;
     std::int32_t offset = 0;
     while (offset < x.ne[1]) {

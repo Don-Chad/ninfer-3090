@@ -6,7 +6,19 @@ runtime loads its official groupwise `.ninfer` artifact, serves OpenAI- and Anth
 APIs, and supports paged KV, compatible-prefix reuse, CUDA Graphs, MTP speculative decoding,
 reasoning-effort control, ReplaySSM state transactions, and concurrent cohorts through **C8**.
 
-This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. The goal is the make the utmost rippin Qwen inference stack for the 3000 series. Gladly taking PR's, all help much appreciated. 
+Community project, maintained on a best-effort basis. Issues and PRs are very welcome, but support
+and feature requests are not guaranteed.
+
+
+
+On an RTX 3090, Qwen3.8-27B supports a measured **171K-token INT8 context** with the standard
+1 GiB safety headroom. The optional RotorQuant `rk8v4` cache raises this to **226K tokens with
+1 GiB headroom**, or **247,872 tokens (about 248K)** in a tightly packed 300 MiB-headroom profile.
+RotorQuant is an opt-in feature; INT8 remains the default because `rk8v4` is lossy.
+
+This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. 
+
+The goal is the make the utmost rippin Qwen inference stack for the 3000 series. Gladly taking PR's, all help much appreciated. 
 
 Release notes for this branch: [v0.6.1](RELEASE_NOTES_0.6.1.md).
 
@@ -67,6 +79,58 @@ could be admitted simultaneously.
 C1 is the responsive choice for a single user. C8 delivers **2.3x the total throughput** when
 several requests are active. The C8 long-output test uses a 16K shared KV pool so all eight
 1,024-token responses can be admitted together.
+
+### Prompt-processing speed
+
+Prompt processing was tested separately with **4,362 fresh input tokens per request**, an 8,192-token
+per-request context window, 512-token prefill chunks, INT8 KV, ReplaySSM/MTP3, CUDA Graphs, and
+prefix reuse disabled. Each request generated only 16 tokens so the run measures prefill rather
+than long decode.
+
+| Cohort | Total fresh input | Aggregate prefill | Active-prefill speed | Mean TTFT | Peak VRAM |
+|---:|---:|---:|---:|---:|---:|
+| C1 | 4,362 tokens | **861.51 tok/s** | 893.98 tok/s | 4,893 ms | 19,114 MiB |
+| C2 | 8,724 tokens | **853.86 tok/s** | 883.95 tok/s | 7,478 ms | 19,697 MiB |
+| C4 | 17,448 tokens | **847.26 tok/s** | 874.49 tok/s | 12,692 ms | 20,894 MiB |
+| C8 | 34,896 tokens | **844.10 tok/s** | 870.94 tok/s | 23,028 ms | 23,207 MiB |
+
+`Aggregate prefill` is total fresh input tokens divided by the complete request-wave time, so it is
+the user-facing throughput number. NInfer currently processes one long prefill at a time; cohort
+batching accelerates decode, but does not multiply prompt ingestion. Consequently C1-C8 remain near
+844-862 input tok/s while queued requests increase mean TTFT. `Active-prefill speed` excludes queue
+waiting and measures only the server's recorded prefill phase.
+
+### Optional RotorQuant KV for longer context
+
+`rk8v4` is an **experimental, opt-in** KV-cache mode for Qwen3.8-27B. INT8 remains the default and
+the recommended quality setting. RotorQuant applies the same normalized transform to queries and
+keys, rotates values before four-bit storage, and reverses the value transform after attention.
+This reduces the V-cache footprint while keeping keys at eight bits.
+
+Add `--kv-dtype rk8v4` to either `ninfer.exe` or `ninfer-serve.exe`. For example, from Command
+Prompt:
+
+```bat
+ninfer-serve.exe qwen3_8_27b.ninfer --max-context 131072 --kv-capacity auto --max-concurrency 1 --prefill-chunk 1024 --kv-dtype rk8v4 --spec mtp --draft-tokens 3 --lm-head-draft
+```
+
+On the development RTX 3090, C1 with MTP and CUDA Graphs disabled fit a **226,560-token** logical
+context with the normal 1 GiB automatic-sizing headroom; 226,624 was rejected. The comparable INT8
+boundary was 171,648 tokens, so `rk8v4` increased measured allocatable context by about **32%**.
+This is an allocation plus short-execution boundary, not a full 226K prefill quality claim.
+
+A second explicit-reservation test reduced operational headroom to approximately 300 MiB.
+`rk8v4` successfully started and generated at **247,872 tokens**, leaving **302.97 MiB** physically
+free after startup. The next 64-token page boundary, 247,936, left only 274.58 MiB because it crossed
+a CUDA allocation granularity. Therefore 247,872 is the measured maximum that retained at least
+300 MiB—not 2x INT8 capacity, but about **44% more** than the 171,648-token INT8/1 GiB baseline.
+This tight profile leaves little tolerance for other GPU users and is not the recommended default.
+
+The matched 1,024-token hard coding test reduced 4K KV payload from 140.38 MiB to 106.35 MiB and
+decoded at 84.07 tok/s versus 85.72 tok/s for INT8. Quality was not equivalent: the RotorQuant
+answer introduced a faulty nested-rollback design that the INT8 answer avoided, and both answers
+hit their output limit. Use `rk8v4` only when its context gain is worth task-specific quality
+validation; do not use it as the default for correctness-sensitive work.
 
 ### Qwen3.8 vision
 
@@ -226,8 +290,8 @@ a 24 GB card and the server can reuse fast CUDA Graphs instead of rebuilding wor
 - No multi-GPU execution or CPU/GPU weight offload.
 - Tool calls are returned to the client but are not executed by NInfer.
 - NVFP4 A4 and TMA kernels require Blackwell and are unavailable on SM86.
-- The paged runtime exposes BF16 and INT8 KV. Legacy RotorQuant/KV4 paths are not ported to paged
-  append, prefix reuse, batched decode, and provisional MTP state.
+- The paged runtime exposes BF16, INT8, and experimental opt-in `rk8v4` KV. INT8 remains the
+  quality-default path.
 
 ## Validation
 
@@ -243,6 +307,11 @@ A real-artifact Linux generation and Linux performance qualification remain open
 NInfer-3090 is derived from [Neroued/ninfer](https://github.com/Neroued/ninfer). The upstream project
 targets RTX 5090/`sm_120a`; this fork carries the Windows and Linux SM86 compatibility layer,
 compact 35B artifact support, and RTX 3090-specific schedules and memory planning.
+
+## Contributors
+
+- [airtonix](https://github.com/airtonix) added Linux and Docker build and release support in
+  [PR #1](https://github.com/Don-Chad/ninfer-3090/pull/1).
 
 ## License
 

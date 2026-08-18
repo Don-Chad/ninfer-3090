@@ -137,7 +137,7 @@ measured recommendation rather than a semantic limit.
 | `--prefill-chunk N` | positive text-prefill chunk, in multiples of 128 | `1024` |
 | `--max-new N` | requested output-token limit | `128` |
 | `--device N` | CUDA device index | `0` |
-| `--kv-dtype bf16\|int8` | KV-cache storage | `bf16` |
+| `--kv-dtype bf16\|int8\|rk8v4` | KV-cache storage; `rk8v4` is experimental and lossy | `bf16` |
 | `--spec mtp\|dflash` | speculative backend | off |
 | `--draft-tokens N` | MTP `1..5`; DFlash `1..15` | unset |
 | `--lm-head-draft` | optimized proposal head | off |
@@ -180,7 +180,9 @@ Run `./build/apps/ninfer --help` for the exact option contract.
 The registered model IDs have a native context limit of 262,144 tokens. The practical
 allocation on one RTX 5090 depends on the selected artifact, media workload, output budget, and
 KV-cache type.
-Use `--kv-dtype int8` for large context allocations. The prepared prompt must fit
+Use `--kv-dtype int8` for the recommended large-context quality profile. Experimental `rk8v4`
+stores rotated values at four bits and keeps rotated keys at eight bits; it increases capacity but
+is not quality-equivalent to INT8. The prepared prompt must fit
 `--max-context`; generation stops at the remaining context capacity when necessary.
 `--kv-capacity N` controls the shared physical Main Text KV pool independently and is rounded up to
 the 64-token page size. `--kv-capacity auto` loads the selected weights, measures the remaining GPU
