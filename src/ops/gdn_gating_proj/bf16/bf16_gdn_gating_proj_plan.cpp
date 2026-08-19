@@ -2,6 +2,8 @@
 
 #include "ninfer/ops/rmsnorm.h"
 
+#include <cuda_runtime_api.h>
+
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -29,7 +31,7 @@ struct RouteSpec {
 constexpr std::array<RouteSpec, 6> k27Routes{{
     {{1, 1}, Bf16GdnGatingScheduleId::GemvPairedRows},
     {{2, 8}, Bf16GdnGatingScheduleId::SmallTSplit10},
-    // sm_86 has 82 SMs, 64 Ki registers and 100 KiB of shared memory per SM. Every MMA route runs
+    // sm_86 has 64 Ki registers and 100 KiB of shared memory per SM. Every MMA route runs
     // 8 warps at 65 registers, so 8*32*72 = 18,432 registers admits three CTAs/SM while the 40 KiB
     // of dynamic shared memory admits two. Shared memory binds: 2 CTAs/SM -> 164 device-wide.
     // Grid is ceil(T/128)*3*SplitK, so the legal ends are 768 / 1664 / 3456.
@@ -64,19 +66,57 @@ constexpr bool catalog_is_closed(const std::array<RouteSpec, N>& routes,
 static_assert(catalog_is_closed(k27Routes, kAnyCols));
 static_assert(catalog_is_closed(k35Routes, kAnyCols));
 
-// Device-wide resident-CTA budgets, measured on the sm_86 build. These are the single source of
-// truth: both the runtime residency predicates and the compile-time catalog guard below read them,
-// so a retuned constant cannot silently disagree with the route table it is meant to bound.
-constexpr std::int32_t resident_ctas_27(Bf16GdnGatingScheduleId) noexcept {
+// Per-SM resident-CTA occupancy, measured on the sm_86 build with cuobjdump -res-usage. These are
+// the single source of truth: both the runtime residency predicates and the compile-time catalog
+// guard below read them, so a retuned constant cannot silently disagree with the route table it is
+// meant to bound.
+//
+// Occupancy is a property of the compiled kernel (registers, shared memory, block size) and so is
+// fixed for a given sm_86 build. The device-wide budget is this figure times the SM count, which is
+// NOT fixed across sm_86: the RTX 3090 has 82 SMs and the RTX 3090 Ti has 84. Keep the two separate
+// -- multiply by the runtime SM count for the residency predicate, and by the minimum supported SM
+// count for the compile-time guard.
+constexpr std::int32_t ctas_per_sm_27(Bf16GdnGatingScheduleId) noexcept {
     // Uniform across split8/4/2: all three are 8-warp, 65-register CTAs bounded by the same 40 KiB
     // shared-memory allocation, so all three admit two CTAs per SM.
-    return 164;
+    return 2;
 }
 
-constexpr std::int32_t resident_ctas_35(Bf16GdnGatingScheduleId schedule) noexcept {
-    if (schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit32) { return 164; }
-    if (schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit16) { return 328; }
-    return 246;
+constexpr std::int32_t ctas_per_sm_35(Bf16GdnGatingScheduleId schedule) noexcept {
+    if (schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit32) { return 2; }
+    if (schedule == Bf16GdnGatingScheduleId::MmaCooperativeSplit16) { return 4; }
+    return 3;
+}
+
+// Fewest SMs of any device this build supports. The RTX 3090 is the smallest sm_86 part the fork
+// targets, so the compile-time catalog guard is checked against it: a route that fits on 82 SMs
+// fits on every supported device. Overshooting the real budget is not merely slow -- the driver
+// rejects the launch with cudaErrorCooperativeLaunchTooLarge -- so this must stay a lower bound.
+inline constexpr std::int32_t kMinSupportedSmCount = 82;
+
+// Cached SM count of the active device. cudaDeviceGetAttribute is cheap but this sits on the
+// per-request planning path, so read it once. Falling back to the documented minimum keeps the
+// predicate safe if the query ever fails.
+std::int32_t device_sm_count() noexcept {
+    static const std::int32_t count = [] {
+        int device = 0;
+        if (cudaGetDevice(&device) != cudaSuccess) { return kMinSupportedSmCount; }
+        int sms = 0;
+        if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess ||
+            sms <= 0) {
+            return kMinSupportedSmCount;
+        }
+        return static_cast<std::int32_t>(sms);
+    }();
+    return count;
+}
+
+std::int32_t resident_ctas_27(Bf16GdnGatingScheduleId schedule) noexcept {
+    return ctas_per_sm_27(schedule) * device_sm_count();
+}
+
+std::int32_t resident_ctas_35(Bf16GdnGatingScheduleId schedule) noexcept {
+    return ctas_per_sm_35(schedule) * device_sm_count();
 }
 
 // Zero marks a schedule that is not launched cooperatively and therefore carries no residency
@@ -115,10 +155,18 @@ constexpr bool catalog_is_resident(const std::array<RouteSpec, N>& routes, std::
     return true;
 }
 
-static_assert(catalog_is_resident(k27Routes, 128, 3, resident_ctas_27),
-              "a 27B cooperative route exceeds the sm_86 resident-CTA budget at its upper bound");
-static_assert(catalog_is_resident(k35Routes, 64, 2, resident_ctas_35),
-              "a 35B cooperative route exceeds the sm_86 resident-CTA budget at its upper bound");
+static_assert(catalog_is_resident(k27Routes, 128, 3,
+                                  [](Bf16GdnGatingScheduleId schedule) constexpr noexcept {
+                                      return ctas_per_sm_27(schedule) * kMinSupportedSmCount;
+                                  }),
+              "a 27B cooperative route exceeds the sm_86 resident-CTA budget at its upper bound "
+              "on the smallest supported device");
+static_assert(catalog_is_resident(k35Routes, 64, 2,
+                                  [](Bf16GdnGatingScheduleId schedule) constexpr noexcept {
+                                      return ctas_per_sm_35(schedule) * kMinSupportedSmCount;
+                                  }),
+              "a 35B cooperative route exceeds the sm_86 resident-CTA budget at its upper bound "
+              "on the smallest supported device");
 
 bool is_27(const Bf16GdnGatingProblem& problem) noexcept {
     return problem.heads == 48 && problem.input_rows == 5120;
@@ -183,20 +231,21 @@ bool cooperative_grid_is_resident(Bf16GdnGatingScheduleId schedule, std::int32_t
 }
 
 bool cooperative_27_grid_is_resident(Bf16GdnGatingScheduleId schedule, std::int32_t cols) noexcept {
-    // sm_86, 82 SMs, 65,536 regs/SM, 100 KiB smem/SM. BN128 uses 40 KiB of dynamic shared memory,
-    // capping every specialization at two CTAs/SM by shared memory alone. Measured on the sm_86
-    // build (cuobjdump -res-usage): split8 uses 65 registers with 256 threads and reaches that
-    // 2 CTAs/SM -> 164 device-wide; split4/2 use 74 registers with 512 threads and are register
-    // bound to 1 CTA/SM -> 82. There are three 16-row tiles per token tile.
+    // sm_86, 65,536 regs/SM, 100 KiB smem/SM. BN128 uses 40 KiB of dynamic shared memory, capping
+    // every specialization at two CTAs/SM by shared memory alone. Measured on the sm_86 build
+    // (cuobjdump -res-usage): split8 uses 65 registers with 256 threads and reaches that 2 CTAs/SM.
+    // split4/2 were rebuilt at 8 warps and now reach the same 2 CTAs/SM; ctas_per_sm_27 is uniform
+    // for that reason. There are three 16-row tiles per token tile. The device-wide budget is this
+    // per-SM figure times the runtime SM count -- 82 on an RTX 3090, 84 on an RTX 3090 Ti.
     return cooperative_grid_is_resident(schedule, cols, 128, 3, resident_ctas_27(schedule));
 }
 
 bool cooperative_35_grid_is_resident(Bf16GdnGatingScheduleId schedule, std::int32_t cols) noexcept {
     // BN64 uses 24 KiB of dynamic shared memory and two 16-row tiles, so shared memory alone
     // admits four CTAs/SM. Measured on the sm_86 build (cuobjdump -res-usage): split32 uses
-    // 122-126 registers with 256 threads and is register bound to 2 CTAs/SM -> 164 device-wide
-    // across 82 SMs; split16 uses 56 registers and reaches the shared-memory bound of
-    // 4 CTAs/SM -> 328; split8/4/2 use 74 registers and are register bound to 3 CTAs/SM -> 246.
+    // 122-126 registers with 256 threads and is register bound to 2 CTAs/SM; split16 uses 56
+    // registers and reaches the shared-memory bound of 4 CTAs/SM; split8/4/2 use 74 registers and
+    // are register bound to 3 CTAs/SM. Multiply by the runtime SM count for the device-wide budget.
     return cooperative_grid_is_resident(schedule, cols, 64, 2, resident_ctas_35(schedule));
 }
 
