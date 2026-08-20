@@ -59,3 +59,15 @@ Per-map cost ≈ 150–300 µs → even a 3.35 GiB full-ladder evict ≈ 25–50
 - The engine has ONE GPU worker thread and serial GPU units (concurrent-inference-architecture
   §2.6/§7): the overlay window runs inside the existing prefill-begin unit; no new locking is
   required for any `--max-concurrency` — waiting requests keep their KV by construction.
+
+## Implementation-phase measurements (2026-08-20)
+
+- `ninfer_vmm_graph_remap_test` (GPU1, 64 MiB chunks): evict maps 502 µs, restore maps 206 µs.
+- `ninfer_evictable_weight_pool_test` (GPU1, 16 MiB chunks, 2-chunk transaction over a 96 MiB
+  arena): evict 0.94 ms, restore (remap + 24 MiB mirror H2D + sync) 12.8 ms.
+- Full farm test suite on GPU1 (sm_89 build): 77/85 pass; the 8 failures are pre-existing
+  `NVFP4 A4 execution requires an sm_120a GPU` capability rejections (nvfp4/gdn-nvfp4 suites),
+  unrelated to this branch.
+- Latent upstream bug found and fixed en route: materializer direct-I/O staging slots relied on
+  `cudaMallocHost` returning 4096-aligned pointers; any small prior pinned allocation (e.g. the
+  new pinned weight block) broke direct reads. Slots now align explicitly.
