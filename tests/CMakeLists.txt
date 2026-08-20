@@ -65,6 +65,9 @@ ninfer_add_test(ninfer_arena_test        SOURCES test_arena.cpp)
 ninfer_add_test(ninfer_request_memory_test SOURCES test_request_memory.cpp)
 ninfer_add_test(ninfer_admission_policy_test SOURCES test_admission_policy.cpp)
 ninfer_add_test(ninfer_kv_capacity_test SOURCES test_kv_capacity.cpp)
+ninfer_add_test(ninfer_vmm_graph_remap_test SOURCES test_vmm_graph_remap.cu)
+target_link_libraries(ninfer_vmm_graph_remap_test PRIVATE CUDA::cuda_driver)
+set_tests_properties(ninfer_vmm_graph_remap_test PROPERTIES SKIP_RETURN_CODE 77)
 ninfer_add_test(ninfer_sampling_defaults_test
   SOURCES test_sampling_defaults.cpp
   LIBRARIES ninfer_engine)
