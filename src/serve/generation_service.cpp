@@ -262,10 +262,12 @@ GenerationService::GenerationService(ServeOptions options, LoadProgress load_pro
             props.ECCEnabled != 0) {
             write_console_log(ConsoleLogLevel::Warning,
                               std::string("ECC is ENABLED on ") + props.name +
-                                  ": expect markedly lower decode throughput and ~6.25% less "
-                                  "usable VRAM than published RTX 3090/3090 Ti results. If this "
-                                  "is not a deliberate reliability choice, disable it with "
-                                  "`nvidia-smi -e 0` and reboot.");
+                                  ": GDDR6X stores ECC checksums in VRAM, costing ~6.25% of "
+                                  "capacity (23,028 vs 24,564 MiB on a 24 GB card) and ~12% of "
+                                  "memory bandwidth (measured 803 vs 902 GB/s on an RTX 3090 Ti). "
+                                  "KV capacity and prefill suffer accordingly. ECC is off by "
+                                  "default on GeForce; if this is not a deliberate reliability "
+                                  "choice, disable it with `nvidia-smi -e 0` and reboot.");
         }
     }
     ninfer::EngineOptions engine_options;
