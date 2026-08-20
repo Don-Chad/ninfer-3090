@@ -576,6 +576,15 @@ runtime::PrefillStepResult ProgramImplCore::start_prefill_lane(std::uint32_t lan
         if (staged.vision_plan) {
             staged.vision = std::make_unique<schedule::VisionPrefillSession>(
                 device, model, work, staged.prompt, *staged.vision_plan, staged.transient);
+            if (model.vision_overlay) {
+                // Exclusive GPU turn: encode every item through the overlay
+                // window now and hand prefill the pinned embeddings.
+                schedule::VisionOverlayWindowStats window_stats{};
+                auto preencoded = schedule::encode_items_overlay(
+                    device, model, work, staged.prompt, *staged.vision_plan, staged.transient,
+                    &window_stats);
+                staged.vision->set_preencoded(std::move(preencoded), window_stats);
+            }
         }
         staged.elapsed_seconds = std::chrono::duration<double>(Clock::now() - started).count();
         request.lifecycle      = Lifecycle::Prefilling;
@@ -1647,6 +1656,14 @@ runtime::PrefillStepResult ProgramImplCore::advance_prefill(SequenceState& seque
         }
         sequence.tail_hidden_valid      = true;
         request.timings.vision_seconds  = vision_seconds;
+        if (staged.vision && staged.vision->overlay_stats()) {
+            const auto& overlay                     = *staged.vision->overlay_stats();
+            request.timings.overlay_window_seconds  = overlay.window_seconds;
+            request.timings.overlay_evict_seconds   = overlay.evict_seconds;
+            request.timings.overlay_restore_seconds = overlay.restore_seconds;
+            request.timings.overlay_evicted_bytes   = overlay.evicted_bytes;
+            request.timings.overlay_staged_bytes    = overlay.staged_bytes;
+        }
         request.timings.prefill_seconds = std::max(0.0, staged.elapsed_seconds - vision_seconds);
         if (turn_checkpoint_capture_frontier) {
             const std::uint32_t frontier = *turn_checkpoint_capture_frontier;

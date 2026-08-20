@@ -47,6 +47,8 @@ public:
     LoadPlan& operator=(const LoadPlan&) = delete;
 
     [[nodiscard]] const artifact::MaterializationPlan& materialization() const;
+    // The 35B-A3B target has no overlay vision plan; always 0.
+    [[nodiscard]] std::size_t overlay_staging_bytes() const;
 
 private:
     class Impl;

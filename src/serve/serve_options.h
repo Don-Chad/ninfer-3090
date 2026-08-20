@@ -40,6 +40,7 @@ struct ServeOptions {
     KvCacheStorage kv_cache                = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
     bool enable_vision      = false;
+    ninfer::VisionResidency vision_residency = ninfer::VisionResidency::Resident;
     bool use_cuda_graph     = true;
     bool allow_prefix_reuse = true;
     bool enable_thinking =

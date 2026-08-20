@@ -13,6 +13,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -40,15 +41,38 @@ struct VisionScheduleConfig {
     static constexpr float norm_eps          = VisionConfig::norm_epsilon;
 };
 
+class VisionWeightStream;
+
+// One vision item's merged embeddings, parked in pinned host memory by an
+// overlay window and re-uploaded into the request transient when prefill
+// consumes the item.
+struct PinnedVisionResult {
+    PinnedHostBuffer buffer;
+    std::size_t bytes = 0;
+};
+
+struct VisionOverlayWindowStats {
+    double window_seconds  = 0.0;
+    double evict_seconds   = 0.0;
+    double restore_seconds = 0.0;
+    std::size_t evicted_bytes = 0;
+    std::size_t staged_bytes  = 0;
+};
+
 class VisionContext {
 public:
     VisionContext(DeviceContext& device, const LoadedModelData& model);
+    // Overlay windows bind against a rebased per-window weight view.
+    VisionContext(DeviceContext& device, const qwen3_6::VisionWeights& weights);
 
     [[nodiscard]] static std::size_t output_transient_bytes(std::size_t merged_tokens);
     [[nodiscard]] static std::size_t workspace_bytes(const qwen3_6::VisionItemControl& item);
     [[nodiscard]] static std::size_t workspace_capacity_bytes(std::uint32_t max_merged_tokens,
                                                               std::uint32_t max_segments);
-    void encode(const VisionItemView& item, Tensor& output, WorkspaceArena& workspace) const;
+    // weight_stream, when set, gates each stage on the streamed uploads of an
+    // overlay window; resident execution passes nullptr.
+    void encode(const VisionItemView& item, Tensor& output, WorkspaceArena& workspace,
+                VisionWeightStream* weight_stream = nullptr) const;
 
 private:
     struct BlockW {
@@ -98,6 +122,14 @@ public:
     [[nodiscard]] VisionChunk prepare_chunk(std::uint32_t begin, std::uint32_t nominal_length);
     [[nodiscard]] bool release_consumed_media_payload() noexcept;
     [[nodiscard]] double elapsed_seconds() const;
+    // Install embeddings produced by an overlay window: prepare_chunk then
+    // uploads them instead of encoding, and the media payload becomes
+    // releasable immediately.
+    void set_preencoded(std::vector<PinnedVisionResult> results,
+                        const VisionOverlayWindowStats& stats);
+    [[nodiscard]] const std::optional<VisionOverlayWindowStats>& overlay_stats() const noexcept {
+        return overlay_stats_;
+    }
 
 private:
     DeviceContext& device_;
@@ -111,6 +143,8 @@ private:
     bool final_item_encoded_  = false;
     bool payload_released_    = false;
     std::vector<CudaEventTimer> timers_;
+    std::vector<PinnedVisionResult> preencoded_;
+    std::optional<VisionOverlayWindowStats> overlay_stats_;
 };
 
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule

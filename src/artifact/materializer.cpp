@@ -155,9 +155,9 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
                 throw ArtifactError("pinned materialization does not match artifact payload");
             }
             std::memcpy(block + placement.offset, payload.data.data(), payload.data.size());
-            ObjectStorage& storage = out.objects_.at(placement.object.index);
-            storage.pinned         = block + placement.offset;
-            storage.pinned_offset  = static_cast<std::size_t>(placement.offset);
+            auto& storage         = out.objects_.at(placement.object.index);
+            storage.pinned        = block + placement.offset;
+            storage.pinned_offset = static_cast<std::size_t>(placement.offset);
             out.stats_.pinned_weight_bytes += placement.bytes;
             out.stats_.file_bytes = checked_add(out.stats_.file_bytes, placement.bytes,
                                                 "artifact read bytes overflow u64");

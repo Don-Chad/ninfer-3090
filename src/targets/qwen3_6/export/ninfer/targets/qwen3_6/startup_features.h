@@ -6,6 +6,7 @@ namespace ninfer::targets::qwen3_6 {
 
 struct StartupFeatures {
     bool vision                    = false;
+    bool overlay_vision            = false;
     SpeculativeBackend speculative = SpeculativeBackend::None;
     ProposalHead proposal_head     = ProposalHead::Full;
 
@@ -26,9 +27,11 @@ struct StartupFeatures {
 
 [[nodiscard]] inline StartupFeatures startup_features(const EngineOptions& options) noexcept {
     return StartupFeatures{
-        .vision        = options.enable_vision,
-        .speculative   = options.speculative.backend,
-        .proposal_head = options.speculative.proposal_head,
+        .vision         = options.enable_vision,
+        .overlay_vision = options.enable_vision &&
+                          options.vision_residency == VisionResidency::Overlay,
+        .speculative    = options.speculative.backend,
+        .proposal_head  = options.speculative.proposal_head,
     };
 }
 
