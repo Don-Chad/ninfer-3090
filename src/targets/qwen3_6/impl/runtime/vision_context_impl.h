@@ -138,11 +138,15 @@ void copy_host(const void* src, Tensor& dst, cudaStream_t stream) {
 
 } // namespace
 
-VisionContext::VisionContext(DeviceContext& ctx, const LoadedModelData& weights) : ctx_(ctx) {
-    if (!weights.vision) {
-        throw std::invalid_argument("Vision execution was requested without materialized weights");
-    }
-    const auto& vision = *weights.vision;
+VisionContext::VisionContext(DeviceContext& ctx, const LoadedModelData& weights)
+    : VisionContext(ctx, weights.vision
+                             ? *weights.vision
+                             : throw std::invalid_argument(
+                                   "Vision execution was requested without materialized weights")) {
+}
+
+VisionContext::VisionContext(DeviceContext& ctx, const qwen3_6::VisionWeights& vision)
+    : ctx_(ctx) {
     patch_embed_       = &vision.common.patch_embedding;
     patch_embed_bias_  = &vision.common.patch_embedding_bias;
     position_embed_    = &vision.common.position_embedding;
@@ -200,8 +204,8 @@ std::size_t VisionContext::workspace_capacity_bytes(std::uint32_t max_merged_tok
         .bytes;
 }
 
-void VisionContext::encode(const VisionItemView& item, Tensor& output,
-                           WorkspaceArena& workspace) const {
+void VisionContext::encode(const VisionItemView& item, Tensor& output, WorkspaceArena& workspace,
+                           VisionWeightStream* weight_stream) const {
     if (item.control == nullptr) { throw std::invalid_argument("Vision item control is null"); }
     const qwen3_6::VisionItemControl& control = *item.control;
     const auto patches64                      = control.patch_count;
@@ -239,6 +243,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output,
     Tensor patch_bf16 = layout.patch_bf16.bind(backing);
     Tensor patch_f32  = layout.patch_f32.bind(backing);
     copy_host(item.patches.data(), patch_f32, stream);
+    if (weight_stream != nullptr) { weight_stream->prelude_ready(stream); }
     ops::cast_fp32_to_bf16(patch_f32, patch_bf16, stream);
     ops::linear(patch_bf16, *patch_embed_, x, stream);
     ops::add_bias(*patch_embed_bias_, x, stream);
@@ -249,6 +254,9 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output,
         {VisionScheduleConfig::hidden, VisionScheduleConfig::position_embeddings});
     ops::vision_pos_embed_add(position_table, pos_indices, pos_weights, x, stream);
     for (std::size_t layer = 0; layer < blocks_.size(); ++layer) {
+        if (weight_stream != nullptr) {
+            weight_stream->arrive(static_cast<std::uint32_t>(layer), stream);
+        }
         const BlockW& block = blocks_[layer];
         {
             Tensor attended = layout.attended.bind(backing);
@@ -305,6 +313,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output,
         }
     }
 
+    if (weight_stream != nullptr) { weight_stream->merger_ready(stream); }
     Tensor normalized = layout.normalized.bind(backing);
     ops::layer_norm(x, *merger_.norm_weight, *merger_.norm_bias, VisionScheduleConfig::norm_eps,
                     normalized, stream);
@@ -387,25 +396,37 @@ VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32
         if (active_item_ && active->item_index <= *active_item_) {
             throw std::logic_error("Vision items are not consumed in strictly increasing order");
         }
-        const std::size_t patch_offset = checked_mul(
-            control.patch_begin, static_cast<std::size_t>(VisionScheduleConfig::patch_dim),
-            "item patch offset");
-        const std::size_t patch_elements = checked_mul(
-            control.patch_count, static_cast<std::size_t>(VisionScheduleConfig::patch_dim),
-            "item patch elements");
-        if (patch_offset > prompt_.patches.size() ||
-            patch_elements > prompt_.patches.size() - patch_offset) {
-            throw std::invalid_argument("Vision item patch range exceeds prepared payload");
+        if (!preencoded_.empty()) {
+            if (active->item_index >= preencoded_.size()) {
+                throw std::logic_error("Vision item has no preencoded overlay embeddings");
+            }
+            const PinnedVisionResult& ready = preencoded_[active->item_index];
+            if (ready.bytes != output_bytes) {
+                throw std::logic_error("preencoded vision embeddings do not match the item");
+            }
+            CUDA_CHECK(cudaMemcpyAsync(output.data, ready.buffer.data(), ready.bytes,
+                                       cudaMemcpyHostToDevice, device_.stream));
+        } else {
+            const std::size_t patch_offset = checked_mul(
+                control.patch_begin, static_cast<std::size_t>(VisionScheduleConfig::patch_dim),
+                "item patch offset");
+            const std::size_t patch_elements = checked_mul(
+                control.patch_count, static_cast<std::size_t>(VisionScheduleConfig::patch_dim),
+                "item patch elements");
+            if (patch_offset > prompt_.patches.size() ||
+                patch_elements > prompt_.patches.size() - patch_offset) {
+                throw std::invalid_argument("Vision item patch range exceeds prepared payload");
+            }
+            timers_.emplace_back(device_);
+            timers_.back().start();
+            context_.encode(
+                VisionItemView{
+                    std::span<const float>(prompt_.patches).subspan(patch_offset, patch_elements),
+                    &control},
+                output, workspace_);
+            timers_.back().record_stop();
+            workspace_.reset();
         }
-        timers_.emplace_back(device_);
-        timers_.back().start();
-        context_.encode(
-            VisionItemView{
-                std::span<const float>(prompt_.patches).subspan(patch_offset, patch_elements),
-                &control},
-            output, workspace_);
-        timers_.back().record_stop();
-        workspace_.reset();
         active_item_        = active->item_index;
         final_item_encoded_ = active->item_index == final_item_;
     }
@@ -419,10 +440,21 @@ bool VisionPrefillSession::release_consumed_media_payload() noexcept {
     return true;
 }
 
+void VisionPrefillSession::set_preencoded(std::vector<PinnedVisionResult> results,
+                                          const VisionOverlayWindowStats& stats) {
+    if (results.size() != plan_.control->items.size()) {
+        throw std::invalid_argument("preencoded results must cover every vision item");
+    }
+    preencoded_    = std::move(results);
+    overlay_stats_ = stats;
+    // The overlay window consumed the media payload for every item.
+    final_item_encoded_ = true;
+}
+
 double VisionPrefillSession::elapsed_seconds() const {
     double milliseconds = 0.0;
     for (const CudaEventTimer& timer : timers_) { milliseconds += timer.elapsed_ms(); }
-    return milliseconds / 1000.0;
+    return milliseconds / 1000.0 + (overlay_stats_ ? overlay_stats_->window_seconds : 0.0);
 }
 
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule

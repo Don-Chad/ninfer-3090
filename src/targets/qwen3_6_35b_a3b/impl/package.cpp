@@ -26,6 +26,8 @@ LoadPlan::LoadPlan(LoadPlan&&) noexcept            = default;
 LoadPlan& LoadPlan::operator=(LoadPlan&&) noexcept = default;
 LoadPlan::~LoadPlan()                              = default;
 
+std::size_t LoadPlan::overlay_staging_bytes() const { return 0; }
+
 const artifact::MaterializationPlan& LoadPlan::materialization() const {
     if (impl_ == nullptr) { throw std::logic_error("target load plan is empty"); }
     return impl_->plan.materialization;

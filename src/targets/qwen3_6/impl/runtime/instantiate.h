@@ -15,6 +15,7 @@
 #include "targets/qwen3_6/impl/runtime/layouts_impl.h"
 #include "targets/qwen3_6/impl/runtime/dflash_context_impl.h"
 #include "targets/qwen3_6/impl/runtime/text_context_impl.h"
+#include "targets/qwen3_6/impl/runtime/vision_overlay_impl.h"
 #include "targets/qwen3_6/impl/runtime/vision_context_impl.h"
 #include "targets/qwen3_6/impl/runtime/text_prefill_impl.h"
 #include "targets/qwen3_6/impl/runtime/graph_impl.h"

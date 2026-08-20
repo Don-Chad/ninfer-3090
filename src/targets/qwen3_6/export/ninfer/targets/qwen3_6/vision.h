@@ -6,8 +6,13 @@
 #include <array>
 #include <cstddef>
 
+namespace ninfer {
+class EvictableWeightPool;
+}
+
 namespace ninfer::artifact {
 class MaterializedArtifact;
+struct MaterializationPlan;
 }
 
 namespace ninfer::targets::qwen3_6 {
@@ -91,6 +96,34 @@ struct VisionWeights {
     Weight merger_fc2;
     Tensor merger_fc2_bias;
 };
+
+// Byte ranges of the vision groups inside the pinned weight block, used by the
+// overlay window to stage weights through borrowed device memory. Ranges are
+// contiguous by binding order; slot_bytes is the largest single layer range.
+struct VisionOverlayLayout {
+    std::size_t prelude_begin = 0;   // patch embedding .. position embedding
+    std::size_t prelude_bytes = 0;
+    std::array<std::size_t, VisionBackboneConfig::layers> layer_begin{};
+    std::array<std::size_t, VisionBackboneConfig::layers> layer_bytes{};
+    std::size_t merger_begin = 0;    // merger fc1 .. merger norm bias
+    std::size_t merger_bytes = 0;
+    std::size_t slot_bytes    = 0;
+    std::size_t staging_bytes = 0;   // prelude + merger + two layer slots, aligned
+};
+
+// Runtime assets the overlay window needs, published on the model view when the
+// engine runs with VisionResidency::Overlay.
+struct VisionOverlayAssets {
+    ninfer::EvictableWeightPool* pool  = nullptr;
+    const std::byte* pinned_block      = nullptr;
+    std::size_t pinned_bytes           = 0;
+    VisionOverlayLayout layout;
+};
+
+[[nodiscard]] VisionOverlayLayout compute_vision_overlay_layout(
+    const VisionBackbonePlan& backbone, const VisionMergerInputPlan& merger_input,
+    artifact::ObjectHandle merger_fc2, artifact::ObjectHandle merger_fc2_bias,
+    const VisionMergerNormPlan& merger_norm, const artifact::MaterializationPlan& plan);
 
 [[nodiscard]] VisionBackbonePlan bind_vision_backbone(artifact::Binder& binder,
                                                       artifact::TensorPlacement placement);

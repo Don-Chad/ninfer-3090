@@ -49,6 +49,9 @@ public:
     LoadPlan& operator=(const LoadPlan&) = delete;
 
     [[nodiscard]] const artifact::MaterializationPlan& materialization() const;
+    // Bytes of borrowed device staging one overlay window needs; 0 when the plan
+    // was built for resident vision.
+    [[nodiscard]] std::size_t overlay_staging_bytes() const;
 
 private:
     class Impl;

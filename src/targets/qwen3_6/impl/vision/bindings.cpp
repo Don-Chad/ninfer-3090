@@ -3,13 +3,95 @@
 #include "artifact/materializer.h"
 #include "artifact/typed_binding.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <unordered_map>
+#include <utility>
 
 namespace ninfer::targets::qwen3_6 {
+namespace {
+
+struct PinnedRangeIndex {
+    std::unordered_map<std::size_t, std::pair<std::size_t, std::size_t>> by_object;
+
+    explicit PinnedRangeIndex(const artifact::MaterializationPlan& plan) {
+        by_object.reserve(plan.pinned_objects.size());
+        for (const artifact::PinnedMaterialization& placement : plan.pinned_objects) {
+            by_object.emplace(placement.object.index,
+                              std::make_pair(static_cast<std::size_t>(placement.offset),
+                                             static_cast<std::size_t>(placement.bytes)));
+        }
+    }
+
+    // Contiguous extent covering every listed object; throws when the objects
+    // are not pinned or leave a gap larger than alignment padding.
+    template <class Handles>
+    std::pair<std::size_t, std::size_t> extent(const Handles& handles) const {
+        std::size_t begin = SIZE_MAX;
+        std::size_t end   = 0;
+        std::size_t sum   = 0;
+        for (const artifact::ObjectHandle handle : handles) {
+            const auto it = by_object.find(handle.index);
+            if (it == by_object.end()) {
+                throw std::logic_error("vision overlay group tensor is not pinned");
+            }
+            begin = std::min(begin, it->second.first);
+            end   = std::max(end, it->second.first + it->second.second);
+            sum += it->second.second;
+        }
+        if (begin == SIZE_MAX || end <= begin || end - begin > sum + handles.size() * 4096) {
+            throw std::logic_error("vision overlay group is not contiguous in the pinned block");
+        }
+        return {begin, end - begin};
+    }
+};
+
+constexpr std::size_t kStagingAlignment = 256;
+
+std::size_t staging_align(std::size_t bytes) {
+    return (bytes + kStagingAlignment - 1) / kStagingAlignment * kStagingAlignment;
+}
+
+} // namespace
+
+VisionOverlayLayout compute_vision_overlay_layout(const VisionBackbonePlan& backbone,
+                                                  const VisionMergerInputPlan& merger_input,
+                                                  artifact::ObjectHandle merger_fc2,
+                                                  artifact::ObjectHandle merger_fc2_bias,
+                                                  const VisionMergerNormPlan& merger_norm,
+                                                  const artifact::MaterializationPlan& plan) {
+    const PinnedRangeIndex index(plan);
+    VisionOverlayLayout out;
+
+    const std::array<artifact::ObjectHandle, 3> prelude = {
+        backbone.patch_embedding, backbone.patch_embedding_bias, backbone.position_embedding};
+    std::tie(out.prelude_begin, out.prelude_bytes) = index.extent(prelude);
+
+    for (std::size_t layer = 0; layer < backbone.layers.size(); ++layer) {
+        const VisionLayerPlan& source                        = backbone.layers[layer];
+        const std::array<artifact::ObjectHandle, 12> handles = {
+            source.qkv,      source.qkv_bias,     source.output,       source.output_bias,
+            source.fc1,      source.fc1_bias,     source.fc2,          source.fc2_bias,
+            source.norm1_weight, source.norm1_bias, source.norm2_weight, source.norm2_bias};
+        std::tie(out.layer_begin[layer], out.layer_bytes[layer]) = index.extent(handles);
+        out.slot_bytes = std::max(out.slot_bytes, out.layer_bytes[layer]);
+    }
+
+    const std::array<artifact::ObjectHandle, 6> merger = {
+        merger_input.fc1, merger_input.fc1_bias, merger_fc2,
+        merger_fc2_bias,  merger_norm.weight,    merger_norm.bias};
+    std::tie(out.merger_begin, out.merger_bytes) = index.extent(merger);
+
+    out.staging_bytes = staging_align(out.prelude_bytes) + staging_align(out.merger_bytes) +
+                        2 * staging_align(out.slot_bytes);
+    return out;
+}
 
 VisionBackbonePlan bind_vision_backbone(artifact::Binder& binder,
                                         artifact::TensorPlacement placement) {

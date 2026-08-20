@@ -4,6 +4,7 @@
 #include "artifact/materializer.h"
 #include "artifact/reader.h"
 #include "core/device.h"
+#include "core/evictable_weight_pool.h"
 #include "runtime/engine/kv_capacity.h"
 
 #include <chrono>
@@ -95,9 +96,33 @@ ConstructedTarget construct_registered(const EngineOptions& options, DeviceConte
         runtime_bytes_after_planned_weights(load_plan.materialization().device_capacity_bytes);
     (void)runtime::resolve_kv_capacity(options.kv_capacity, curve, preflight_runtime_bytes);
 
+    const bool overlay_vision =
+        options.enable_vision && options.vision_residency == VisionResidency::Overlay;
+    const std::size_t overlay_staging = load_plan.overlay_staging_bytes();
+    std::unique_ptr<EvictableWeightPool> pool;
+    if (overlay_vision) {
+        if (overlay_staging == 0) {
+            throw std::invalid_argument(
+                "the selected target does not support --vision-residency overlay");
+        }
+        if (!EvictableWeightPool::supported(device.device)) {
+            throw std::invalid_argument(
+                "overlay vision requires CUDA virtual memory management support");
+        }
+        pool = std::make_unique<EvictableWeightPool>(EvictableWeightPool::Config{
+            .arena_bytes          = load_plan.materialization().device_capacity_bytes,
+            .evictable_tail_bytes = load_plan.materialization().evictable_tail_bytes,
+            .overlay_bytes        = overlay_staging,
+            .device               = device.device,
+        });
+    }
     auto progress     = artifact_progress(options.load_progress);
     auto materialized = artifact::materialize(reader, load_plan.materialization(), device,
-                                              progress.callback ? &progress : nullptr);
+                                              progress.callback ? &progress : nullptr,
+                                              std::move(pool));
+    if (overlay_vision) {
+        materialized.eviction_pool()->capture_tail_mirror(device.load_stream);
+    }
     const artifact::MaterializationStats stats = materialized.stats();
 
     auto model = Target::construct_loaded_model(std::move(load_plan), std::move(materialized));

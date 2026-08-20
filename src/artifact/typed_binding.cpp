@@ -112,13 +112,14 @@ Weight row_split_weight(const MaterializedArtifact& materialized, ObjectHandle h
 } // namespace
 
 ObjectHandle bind_tensor(Binder& binder, std::string_view name, NumericFormat format,
-                         std::initializer_list<std::uint64_t> shape, TensorPlacement placement) {
+                         std::initializer_list<std::uint64_t> shape, TensorPlacement placement,
+                         std::uint32_t evict_rank) {
     const ObjectHandle handle =
         binder.require_tensor(name, format, storage_layout_for(format),
                               std::span<const std::uint64_t>(shape.begin(), shape.size()));
     switch (placement) {
     case TensorPlacement::Device:
-        binder.materialize_on_device(handle);
+        binder.materialize_on_device(handle, evict_rank);
         break;
     case TensorPlacement::HostPinned:
         binder.materialize_on_host_pinned(handle);

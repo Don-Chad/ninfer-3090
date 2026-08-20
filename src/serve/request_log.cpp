@@ -318,6 +318,13 @@ std::string format_request_done(const RequestLogContext& context,
         << " decode=" << rate(decode_tokens, metrics.decode_seconds)
         << " wall=" << seconds_str(metrics.total_seconds)
         << " speculative=" << speculative_str(metrics);
+    if (metrics.overlay_window_seconds > 0.0) {
+        out << " overlay=" << std::setprecision(0) << metrics.overlay_window_seconds * 1000.0
+            << "ms (evict " << metrics.overlay_evicted_bytes / (1024 * 1024) << "MiB "
+            << std::setprecision(1) << metrics.overlay_evict_seconds * 1000.0 << "ms, restore "
+            << metrics.overlay_restore_seconds * 1000.0 << "ms, staged "
+            << metrics.overlay_staged_bytes / (1024 * 1024) << "MiB)";
+    }
     return out.str();
 }
 
