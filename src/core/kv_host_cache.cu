@@ -176,7 +176,7 @@ bool KvHostCache::stage_page(PageKind kind, std::uint64_t key,
     for (const StagedPage& staged : staged_pages_) {
         if (staged.kind == kind && staged.key == key) { return true; }
     }
-    Slot slot;
+    Slot slot{};
     if (!reserve_slot(page_bytes(kind), &slot)) { return false; }
     copy_slices(slot.host, device_slices, slot.bytes, cudaMemcpyDeviceToHost, stream);
     stats_.writeback_bytes += slot.bytes;
@@ -191,11 +191,11 @@ bool KvHostCache::stage_anchor(std::uint64_t chain_key, const AnchorMeta& meta,
         touch_segment(chain_key);
         return false;
     }
-    Slot slot;
+    Slot slot{};
     if (!reserve_slot(config_.anchor_state_bytes, &slot)) { return false; }
     copy_slices(slot.host, state_slices, slot.bytes, cudaMemcpyDeviceToHost, stream);
     stats_.writeback_bytes += slot.bytes;
-    Segment segment;
+    Segment segment{};
     segment.meta        = meta;
     segment.anchor_slot = slot;
     staged_anchor_.emplace(chain_key, std::move(segment));

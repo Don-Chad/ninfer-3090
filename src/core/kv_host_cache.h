@@ -38,10 +38,11 @@ public:
         std::size_t anchor_state_bytes = 0;
     };
 
+    // NVCC: nested aggregates stay NSDMI-free; construct with {} at every use site.
     struct AnchorMeta {
-        std::uint32_t frontier       = 0;
-        std::uint32_t backend_tokens = 0;
-        std::int32_t rope_delta      = 0;
+        std::uint32_t frontier;
+        std::uint32_t backend_tokens;
+        std::int32_t rope_delta;
     };
 
     struct Stats {
@@ -95,19 +96,19 @@ public:
 
 private:
     struct Slot {
-        std::byte* host   = nullptr;
-        std::size_t bytes = 0;
+        std::byte* host;
+        std::size_t bytes;
     };
     struct PageEntry {
         Slot slot;
-        std::uint32_t refcount = 0;
+        std::uint32_t refcount;
     };
     struct Segment {
         AnchorMeta meta;
         Slot anchor_slot;
         std::vector<std::uint64_t> text_keys;
         std::vector<std::uint64_t> backend_keys;
-        std::uint64_t index_page_key = 0;
+        std::uint64_t index_page_key;
         std::list<std::uint64_t>::iterator lru_position;
     };
 
