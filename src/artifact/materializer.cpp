@@ -34,9 +34,19 @@ std::uint64_t align_up(std::uint64_t value, std::uint64_t alignment, const char*
 
 class Slot {
 public:
-    explicit Slot(std::size_t bytes) : buffer(bytes) {
+    // cudaMallocHost only guarantees sub-page alignment once other pinned
+    // allocations exist in the process; direct I/O requires 4096. Over-allocate
+    // and align the staging pointer explicitly.
+    explicit Slot(std::size_t bytes) : buffer(bytes + Reader::direct_io_alignment) {
+        const auto raw = reinterpret_cast<std::uintptr_t>(buffer.data());
+        const auto aligned =
+            (raw + Reader::direct_io_alignment - 1) / Reader::direct_io_alignment *
+            Reader::direct_io_alignment;
+        aligned_data = reinterpret_cast<std::byte*>(aligned);
         CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
     }
+
+    [[nodiscard]] std::byte* data() const noexcept { return aligned_data; }
 
     ~Slot() {
         if (pending) { (void)cudaEventSynchronize(event); }
@@ -51,8 +61,9 @@ public:
     }
 
     PinnedHostBuffer buffer;
-    cudaEvent_t event = nullptr;
-    bool pending      = false;
+    std::byte* aligned_data = nullptr;
+    cudaEvent_t event       = nullptr;
+    bool pending            = false;
 };
 
 struct CopyRange {
@@ -252,7 +263,7 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
                 slot_bytes,
                 align_up(remaining, alignment, "artifact direct I/O request overflows u64")));
             auto destination =
-                std::span<std::byte>(static_cast<std::byte*>(slot.buffer.data()), request);
+                std::span<std::byte>(slot.data(), request);
             const std::size_t bytes_read = reader.read_direct(source, destination);
             const std::uint64_t required = std::min<std::uint64_t>(request, remaining);
             if (bytes_read < required) {
@@ -276,8 +287,7 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
                     CUDA_CHECK(cudaMemcpyAsync(
                         range.destination +
                             static_cast<std::size_t>(copy_begin - range.source_begin),
-                        static_cast<std::byte*>(slot.buffer.data()) +
-                            static_cast<std::size_t>(copy_begin - source),
+                        slot.data() + static_cast<std::size_t>(copy_begin - source),
                         amount, cudaMemcpyHostToDevice, device.load_stream));
                     copied =
                         checked_add(copied, amount, "artifact copied byte count overflows u64");
