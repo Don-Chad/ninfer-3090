@@ -117,6 +117,7 @@ struct VisionOverlayAssets {
     ninfer::EvictableWeightPool* pool  = nullptr;
     const std::byte* pinned_block      = nullptr;
     std::size_t pinned_bytes           = 0;
+    std::size_t ladder_bytes           = 0;   // evictable tail a window may borrow
     VisionOverlayLayout layout;
 };
 

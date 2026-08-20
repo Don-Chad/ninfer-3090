@@ -90,6 +90,10 @@ struct EngineOptions {
     SpeculativeOptions speculative;
     bool enable_vision  = false;
     VisionResidency vision_residency = VisionResidency::Resident;
+    // Largest merged vision-token count a single item may carry. Bounds the
+    // vision share of the startup workspace/transient reservations; smaller
+    // values return the difference to KV capacity.
+    std::uint32_t vision_max_merged_tokens = 32768;
     bool use_cuda_graph = true;
     LoadProgress load_progress;
 };

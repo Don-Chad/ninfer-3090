@@ -186,6 +186,7 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
       kv_dtype(plan.kv_dtype), kv_quant_group(plan.kv_quant_group),
       kv_packed_v(plan.kv_packed_v), kv_rotate_k(plan.kv_rotate_k), kv_rotate_v(plan.kv_rotate_v),
       proposal_head(plan.proposal_head), vision_enabled(plan.features.vision),
+      vision_max_merged(plan.vision_max_merged),
       use_cuda_graph(plan.use_cuda_graph), kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
       persistent(plan.persistent.bytes), workspace_storage(plan.workspace.capacity),
@@ -590,8 +591,8 @@ runtime::PrefillStepResult ProgramImplCore::start_prefill_lane(std::uint32_t lan
                 std::vector<schedule::PinnedVisionResult> preencoded;
                 if (first_needed < staged.vision_plan->control->items.size()) {
                     preencoded = schedule::encode_items_overlay(
-                        device, model, work, staged.prompt, *staged.vision_plan, staged.transient,
-                        first_needed, &window_stats);
+                        device, model, staged.prompt, *staged.vision_plan, first_needed,
+                        &window_stats);
                 } else {
                     // Every span is prefix-reused; install null placeholders so the
                     // session never falls back to host-pointer resident encode.

@@ -213,11 +213,11 @@ private:
 // restore the evicted text weights before returning. The caller must hold the
 // engine's exclusive GPU execution turn with no other work in flight.
 inline std::vector<PinnedVisionResult>
-encode_items_overlay(DeviceContext& device, const LoadedModelData& model, WorkspaceArena& work,
+encode_items_overlay(DeviceContext& device, const LoadedModelData& model,
                      qwen3_6::PreparedPromptData& prompt, const VisionPrefillPlan& plan,
-                     runtime::TransientRegion transient, std::size_t first_item,
-                     VisionOverlayWindowStats* stats) {
+                     std::size_t first_item, VisionOverlayWindowStats* stats) {
     using overlay_detail::OverlayClock;
+    using overlay_detail::staging_align;
     if (!model.vision || !model.vision_overlay) {
         throw std::logic_error("overlay window requires vision weights and overlay assets");
     }
@@ -227,9 +227,27 @@ encode_items_overlay(DeviceContext& device, const LoadedModelData& model, Worksp
         throw std::invalid_argument("overlay window has no vision items");
     }
 
+    // The window is self-contained: weight staging, encode workspace, and the
+    // item output all live in memory borrowed from the evicted weight tail, so
+    // the resident workspace/transient reservations carry no vision terms.
+    std::size_t workspace_need = 0;
+    std::size_t output_need    = 0;
+    for (std::size_t index = first_item; index < plan.control->items.size(); ++index) {
+        const qwen3_6::VisionItemControl& control = plan.control->items[index];
+        workspace_need =
+            std::max(workspace_need, VisionContext::workspace_bytes(control));
+        output_need = std::max(
+            output_need, VisionContext::output_transient_bytes(control.merged_count));
+    }
+
     const auto window_start = OverlayClock::now();
     std::size_t mapped      = 0;
-    std::byte* staging      = pool.evict(assets.layout.staging_bytes, &mapped);
+    std::byte* staging      = pool.evict(assets.layout.staging_bytes +
+                                             staging_align(output_need) +
+                                             staging_align(workspace_need),
+                                         &mapped);
+    std::byte* lease_output    = staging + staging_align(assets.layout.staging_bytes);
+    std::byte* lease_workspace = lease_output + staging_align(output_need);
 
     struct RestoreGuard {
         EvictableWeightPool& pool;
@@ -253,6 +271,7 @@ encode_items_overlay(DeviceContext& device, const LoadedModelData& model, Worksp
             results.push_back(PinnedVisionResult{});   // prefix-reused: never consumed
         }
 
+        WorkspaceArena window_workspace(DeviceSpan{lease_workspace, workspace_need});
         for (std::size_t index = first_item; index < plan.control->items.size(); ++index) {
             const qwen3_6::VisionItemControl& control = plan.control->items[index];
             const qwen3_6::VisionItem& source         = prompt.vision_items.at(index);
@@ -265,22 +284,17 @@ encode_items_overlay(DeviceContext& device, const LoadedModelData& model, Worksp
                 patch_elements > prompt.patches.size() - patch_offset) {
                 throw std::invalid_argument("overlay item patch range exceeds prepared payload");
             }
-            const std::size_t output_bytes =
-                VisionContext::output_transient_bytes(control.merged_count);
-            if (output_bytes > transient.size) {
-                throw std::invalid_argument("overlay item output exceeds the transient region");
-            }
-            Tensor output(transient.data, DType::BF16,
+            Tensor output(lease_output, DType::BF16,
                           {VisionScheduleConfig::out_hidden,
                            static_cast<std::int32_t>(control.merged_count)});
 
-            if (index != 0) { stream.reset(device.stream); }
+            if (index != first_item) { stream.reset(device.stream); }
             context.encode(
                 VisionItemView{
                     std::span<const float>(prompt.patches).subspan(patch_offset, patch_elements),
                     &control},
-                output, work, &stream);
-            work.reset();
+                output, window_workspace, &stream);
+            window_workspace.reset();
 
             const std::size_t embedding_bytes = output.bytes();
             results.push_back(PinnedVisionResult{
