@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -214,7 +215,8 @@ private:
 inline std::vector<PinnedVisionResult>
 encode_items_overlay(DeviceContext& device, const LoadedModelData& model, WorkspaceArena& work,
                      qwen3_6::PreparedPromptData& prompt, const VisionPrefillPlan& plan,
-                     runtime::TransientRegion transient, VisionOverlayWindowStats* stats) {
+                     runtime::TransientRegion transient, std::size_t first_item,
+                     VisionOverlayWindowStats* stats) {
     using overlay_detail::OverlayClock;
     if (!model.vision || !model.vision_overlay) {
         throw std::logic_error("overlay window requires vision weights and overlay assets");
@@ -247,8 +249,11 @@ encode_items_overlay(DeviceContext& device, const LoadedModelData& model, Worksp
         const qwen3_6::VisionWeights window_view = stream.window_weights(*model.vision);
         const VisionContext context(device, window_view);
         results.reserve(plan.control->items.size());
+        for (std::size_t skipped = 0; skipped < first_item; ++skipped) {
+            results.push_back(PinnedVisionResult{});   // prefix-reused: never consumed
+        }
 
-        for (std::size_t index = 0; index < plan.control->items.size(); ++index) {
+        for (std::size_t index = first_item; index < plan.control->items.size(); ++index) {
             const qwen3_6::VisionItemControl& control = plan.control->items[index];
             const qwen3_6::VisionItem& source         = prompt.vision_items.at(index);
             const std::size_t patch_offset =
@@ -278,9 +283,9 @@ encode_items_overlay(DeviceContext& device, const LoadedModelData& model, Worksp
             work.reset();
 
             const std::size_t embedding_bytes = output.bytes();
-            results.push_back(PinnedVisionResult{PinnedHostBuffer(embedding_bytes),
-                                                 embedding_bytes});
-            CUDA_CHECK(cudaMemcpyAsync(results.back().buffer.data(), output.data, embedding_bytes,
+            results.push_back(PinnedVisionResult{
+                std::make_unique<PinnedHostBuffer>(embedding_bytes), embedding_bytes});
+            CUDA_CHECK(cudaMemcpyAsync(results.back().buffer->data(), output.data, embedding_bytes,
                                        cudaMemcpyDeviceToHost, device.stream));
         }
         CUDA_CHECK(cudaStreamSynchronize(device.stream));

@@ -47,7 +47,7 @@ class VisionWeightStream;
 // overlay window and re-uploaded into the request transient when prefill
 // consumes the item.
 struct PinnedVisionResult {
-    PinnedHostBuffer buffer;
+    std::unique_ptr<PinnedHostBuffer> buffer;   // null for prefix-reused items
     std::size_t bytes = 0;
 };
 

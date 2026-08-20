@@ -401,10 +401,10 @@ VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32
                 throw std::logic_error("Vision item has no preencoded overlay embeddings");
             }
             const PinnedVisionResult& ready = preencoded_[active->item_index];
-            if (ready.bytes != output_bytes) {
+            if (ready.buffer == nullptr || ready.bytes != output_bytes) {
                 throw std::logic_error("preencoded vision embeddings do not match the item");
             }
-            CUDA_CHECK(cudaMemcpyAsync(output.data, ready.buffer.data(), ready.bytes,
+            CUDA_CHECK(cudaMemcpyAsync(output.data, ready.buffer->data(), ready.bytes,
                                        cudaMemcpyHostToDevice, device_.stream));
         } else {
             const std::size_t patch_offset = checked_mul(
