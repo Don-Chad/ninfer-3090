@@ -42,6 +42,7 @@ def chat(base_url: str, model: str, messages: list, max_tokens: int, timeout: fl
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": 0,
+        "enable_thinking": False,
     }).encode()
     request = urllib.request.Request(
         base_url + "/v1/chat/completions", data=payload,
