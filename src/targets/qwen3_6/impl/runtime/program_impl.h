@@ -581,7 +581,7 @@ runtime::PrefillStepResult ProgramImplCore::start_prefill_lane(std::uint32_t lan
                 // consume (spans past the prefix-reuse boundary) through one
                 // overlay window and hand prefill the pinned embeddings.
                 std::size_t first_needed = staged.vision_plan->control->items.size();
-                for (const schedule::VisionUseSpan& use : staged.vision_plan->uses) {
+                for (const VisionUseSpan& use : staged.vision_plan->uses) {
                     if (use.end > base) {
                         first_needed = std::min<std::size_t>(first_needed, use.item_index);
                     }
