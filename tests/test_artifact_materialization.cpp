@@ -237,8 +237,12 @@ int main() {
                         pinned_plan.pinned_capacity_bytes == kSecondTensor.size(),
                     "pinned placement was not planned into the pinned block");
 
+            std::cout << "pinned: plan device=" << pinned_plan.device_objects.size()
+                      << " pinned=" << pinned_plan.pinned_objects.size()
+                      << " cap=" << pinned_plan.device_capacity_bytes << "\n";
             auto pinned_materialized =
                 ninfer::artifact::materialize(reader, pinned_plan, device);
+            std::cout << "pinned: materialized\n";
             require(pinned_materialized.is_host_pinned(pinned_tensor),
                     "pinned tensor is not reported as host pinned");
             const auto block = pinned_materialized.pinned_block();
