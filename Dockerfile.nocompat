@@ -1,5 +1,0 @@
-FROM ninfer-3090:sm86-stock
-# CUDA forward-compatibility libs (libcuda.so.590) are datacenter-only and break
-# GeForce cards with cudaErrorCompatNotSupportedOnDevice. Remove them so the
-# container uses the host driver via normal CUDA minor-version compatibility.
-RUN rm -rf /usr/local/cuda-13.1/compat /usr/local/cuda-13/compat /usr/local/cuda/compat
