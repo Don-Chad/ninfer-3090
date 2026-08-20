@@ -491,3 +491,22 @@ requests running around the image request behave identically to resident semanti
 figures repeat within noise (`overlay=386–389 ms`, evict 0.7–1.0 ms, restore 11.1–11.4 ms).
 The overlay's steady-state cost is zero: outside windows no vision bytes are resident, and the
 evicted text weights are restored before the next text unit runs.
+
+### Reclaiming the vision workspace and transient reservations
+
+The measurements above predate `--vision-max-merged` and the overlay workspace exclusion. With
+`--vision` at 120K+ context, the shared workspace envelope carried a ~1.4 GiB vision-encode term
+(32768-merged-token capacity) and the request transient reserved 320 MiB for the maximum vision
+output — both regardless of actual image sizes. In overlay mode the window now stages the encode
+workspace and the item output inside the evicted weight tail, and `--vision-max-merged` bounds the
+remaining transient. Same hardware and profile, `--vision-max-merged 12288`:
+
+| Explicit KV capacity that boots | `resident` (pre-change) | `overlay` + reclaim |
+|---|---|---|
+| tokens | 120000 | **181376 (+61376, +51%)** |
+| startup line | runtime 5.44 GiB, free-after-startup 111 MiB | runtime 5.27 GiB, free-after-startup 539 MiB |
+| overlay window (1080p) | — | 402 ms: evict 208 MiB in 1.6 ms, restore 31.9 ms, 282 MiB streamed |
+
+Completions remain byte-identical; the follow-up turn over the same image still opens no window.
+The true rk8v4 KV cost is ~32 KiB/token — the earlier "runtime" figures bundled the
+vision-conditional reservations with the KV pool.
