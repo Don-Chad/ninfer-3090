@@ -106,11 +106,10 @@ EvictableWeightPool::EvictableWeightPool(const Config& config) : impl_(std::make
     impl.arena_reserved = align_up(config.arena_bytes, kChunkBytes);
     // Chunk-align INTO the evictable suffix so no chunk ever covers non-evictable bytes.
     impl.tail_begin = align_up(config.arena_bytes - config.evictable_tail_bytes, kChunkBytes);
-    impl.overlay_reserved = align_up(std::max(config.overlay_bytes, kChunkBytes), kChunkBytes) +
-                            kChunkBytes;   // room for the ceil() chunk past the request
-    if (impl.overlay_reserved > impl.arena_reserved - impl.tail_begin) {
-        impl.overlay_reserved = impl.arena_reserved - impl.tail_begin;
-    }
+    // Address space is free: reserve overlay VA for the whole evictable tail so
+    // a window may borrow any extent the ladder can supply, regardless of the
+    // planning hint in config.overlay_bytes.
+    impl.overlay_reserved = impl.arena_reserved - impl.tail_begin;
 
     NINFER_CU_CHECK(cuMemAddressReserve(&impl.home, impl.arena_reserved, kChunkBytes, 0, 0));
     NINFER_CU_CHECK(cuMemAddressReserve(&impl.overlay, impl.overlay_reserved, kChunkBytes, 0, 0));

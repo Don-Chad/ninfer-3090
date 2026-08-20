@@ -528,13 +528,18 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
     if (plan.features.vision) {
         constexpr std::uint32_t kFrontendMergedLimit  = 32768;
         constexpr std::uint32_t kFrontendSegmentLimit = 768 / 2;
-        const std::uint32_t merged = std::min(plan.capacity, kFrontendMergedLimit);
-        out.vision_encode          = schedule::VisionContext::workspace_capacity_bytes(
+        const std::uint32_t merged =
+            std::min({plan.capacity, kFrontendMergedLimit, plan.vision_max_merged});
+        out.vision_encode = schedule::VisionContext::workspace_capacity_bytes(
             merged, std::min(merged, kFrontendSegmentLimit));
     }
 
+    // Overlay residency serves the vision-encode workspace from device memory
+    // borrowed inside the window, so it does not reserve resident capacity.
+    const std::size_t resident_vision =
+        plan.features.overlay_vision ? 0 : out.vision_encode;
     out.capacity = std::max({out.text_prefill, out.ordinary_round, out.mtp_prefill, out.mtp_round,
-                             out.dflash_context, out.dflash_round, out.vision_encode});
+                             out.dflash_context, out.dflash_round, resident_vision});
     return out;
 }
 
@@ -623,6 +628,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->speculative_backend = inputs.speculative_backend;
     impl->proposal_head       = inputs.proposal_head;
     impl->features            = inputs.features;
+    impl->vision_max_merged   = inputs.vision_max_merged;
     impl->use_cuda_graph      = inputs.use_cuda_graph;
     impl->device              = inputs.device;
     impl->kv_dtype            = inputs.kv_dtype;
@@ -634,7 +640,8 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->workspace           = build_workspace_plan(*impl);
     if (impl->features.vision) {
         constexpr std::uint32_t kFrontendMergedLimit = 32768;
-        const std::uint32_t merged = std::min(impl->capacity, kFrontendMergedLimit);
+        const std::uint32_t merged =
+            std::min({impl->capacity, kFrontendMergedLimit, impl->vision_max_merged});
         impl->request_transient_capacity_bytes =
             schedule::VisionContext::output_transient_bytes(merged);
     }
@@ -718,6 +725,7 @@ make_sequence_planner_impl(DeviceContext& device, const EngineOptions& options,
         .kv_rotate_k = options.kv_cache == KvCacheStorage::RotatedInt8KeyInt4ValueGroup64,
         .kv_rotate_v = options.kv_cache == KvCacheStorage::RotatedInt8KeyInt4ValueGroup64,
         .proposal_head  = options.speculative.proposal_head,
+        .vision_max_merged = std::max<std::uint32_t>(1, options.vision_max_merged_tokens),
         .features       = qwen3_6::startup_features(options),
         .use_cuda_graph = options.use_cuda_graph,
         .device         = options.device,

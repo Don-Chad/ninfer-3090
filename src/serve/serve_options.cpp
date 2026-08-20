@@ -72,7 +72,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|rk8v4] [--spec mtp|dflash --draft-tokens N] "
            "[--default-max-tokens N] "
-           "[--vision] [--vision-residency resident|overlay] [--no-cuda-graph] [--no-prefix-reuse] "
+           "[--vision] [--vision-residency resident|overlay] [--vision-max-merged N] [--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -202,6 +202,13 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             default_max_tokens_explicit = true;
         } else if (arg == "--vision") {
             options.enable_vision = true;
+        } else if (arg == "--vision-max-merged") {
+            const int value =
+                parse_nonnegative_int(require_value("--vision-max-merged"), "vision-max-merged");
+            if (value < 64 || value > 32768) {
+                throw std::invalid_argument("--vision-max-merged must be in [64, 32768]");
+            }
+            options.vision_max_merged_tokens = static_cast<std::uint32_t>(value);
         } else if (arg == "--vision-residency") {
             const std::string_view value = require_value("--vision-residency");
             if (value == "resident") {

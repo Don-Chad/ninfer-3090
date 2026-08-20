@@ -551,6 +551,7 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
         overlay.pool         = backing.eviction_pool();
         overlay.pinned_block = backing.pinned_block().data();
         overlay.pinned_bytes = backing.pinned_block().size();
+        overlay.ladder_bytes = backing.eviction_pool()->evictable_tail_bytes();
         overlay.layout       = *plan.vision_overlay;
     }
 }

@@ -135,7 +135,20 @@ ProgramImplCore::plan_request_base(const PreparedPromptData& prompt,
             if (end > base->summary.prompt_tokens) {
                 throw std::invalid_argument("vision item consumer span exceeds prompt");
             }
-            if (schedule::VisionContext::workspace_bytes(item) > work.capacity()) {
+            if (item.merged_count > vision_max_merged) {
+                throw std::invalid_argument(
+                    "vision item exceeds the configured vision-max-merged limit");
+            }
+            if (model.vision_overlay) {
+                const std::size_t window_need =
+                    model.vision_overlay->layout.staging_bytes +
+                    schedule::VisionContext::workspace_bytes(item) +
+                    schedule::VisionContext::output_transient_bytes(item.merged_count);
+                if (window_need > model.vision_overlay->ladder_bytes) {
+                    throw std::invalid_argument(
+                        "vision item exceeds the overlay window budget");
+                }
+            } else if (schedule::VisionContext::workspace_bytes(item) > work.capacity()) {
                 throw std::invalid_argument("vision item exceeds the Program workspace envelope");
             }
             previous_end = end;
