@@ -1,3 +1,4 @@
+#include "targets/qwen3_6/impl/runtime/content_kv_cache_impl.h"
 #include "targets/qwen3_6/impl/runtime/instance.h"
 #include "targets/qwen3_6/impl/runtime/program.h"
 
