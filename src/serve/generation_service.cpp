@@ -5,6 +5,8 @@
 #include "serve/tool_call_parser.h"
 #include "serve/translate.h"
 
+#include <cuda_runtime_api.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -249,6 +251,25 @@ private:
 
 GenerationService::GenerationService(ServeOptions options, LoadProgress load_progress)
     : options_(std::move(options)) {
+    // Inline ECC on GDDR6X GeForce cards reserves ~6.25% of VRAM for checksums and taxes
+    // memory bandwidth on every access. Decode is bandwidth-bound, so an ECC-enabled card
+    // silently loses a large share of its published throughput and KV capacity while looking
+    // exactly like an engine regression. ECC is off by default on GeForce; warn loudly when
+    // someone (or some tool) left it on.
+    {
+        cudaDeviceProp props{};
+        if (cudaGetDeviceProperties(&props, options_.device) == cudaSuccess &&
+            props.ECCEnabled != 0) {
+            write_console_log(ConsoleLogLevel::Warning,
+                              std::string("ECC is ENABLED on ") + props.name +
+                                  ": GDDR6X stores ECC checksums in VRAM, costing ~6.25% of "
+                                  "capacity (23,028 vs 24,564 MiB on a 24 GB card) and ~12% of "
+                                  "memory bandwidth (measured 803 vs 902 GB/s on an RTX 3090 Ti). "
+                                  "KV capacity and prefill suffer accordingly. ECC is off by "
+                                  "default on GeForce; if this is not a deliberate reliability "
+                                  "choice, disable it with `nvidia-smi -e 0` and reboot.");
+        }
+    }
     ninfer::EngineOptions engine_options;
     engine_options.artifact_path        = options_.artifact_path;
     engine_options.device               = options_.device;

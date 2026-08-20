@@ -25,6 +25,10 @@ struct DeviceContext {
     DeviceContext& operator=(DeviceContext&& other) noexcept;
 
     int sm() const noexcept;
+    // Streaming-multiprocessor count of the attached device. Distinct from sm(), which returns
+    // the compute capability: every sm_86 part shares capability 86 but not this count (RTX 3090
+    // has 82, RTX 3090 Ti has 84), so any device-wide residency budget must read this, not sm().
+    int sm_count() const noexcept;
     std::size_t total_vram() const noexcept;
     void synchronize() const;
 };
