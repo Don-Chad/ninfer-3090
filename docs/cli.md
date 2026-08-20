@@ -45,6 +45,9 @@ GPU residency is frozen when the Engine starts:
   pinned host memory and streams through a small borrowed staging window during each encode,
   while the evicted text weights are restored byte-for-byte from pinned mirrors afterwards.
   With `--kv-capacity auto` the freed memory becomes additional KV capacity automatically.
+  Overlay also drops the resident vision-encode workspace reservation entirely (the window
+  borrows it from the evicted tail), leaving only the `--vision-max-merged`-bounded output
+  transient resident.
 
 The complete `.ninfer` inventory is still validated. These choices are not lazy loading: a
 text-only Engine rejects media and cannot enable Vision later. DFlash and Vision are mutually

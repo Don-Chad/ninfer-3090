@@ -115,7 +115,9 @@ Start the server with `--vision` before sending media. Add `--vision-residency o
 the Vision tower out of resident device memory: images then encode inside a bounded exclusive
 window that borrows device memory from temporarily evicted read-only text weights and restores
 them before the next text step; the request log reports each window as
-`overlay=<ms> (evict <MiB> <ms>, restore <ms>, staged <MiB>)`. Concurrent text requests wait for
+`overlay=<ms> (evict <MiB> <ms>, restore <ms>, staged <MiB>)`. In overlay mode the encode
+workspace and item output live inside the borrowed window as well, so `--vision` adds no resident
+workspace reservation; `--vision-max-merged` bounds the remaining per-request output transient. Concurrent text requests wait for
 the window at any `--max-concurrency` and their KV/session state is untouched. Media semantics,
 routes, and outputs are identical in both residency modes:
 
