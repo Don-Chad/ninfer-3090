@@ -163,7 +163,6 @@ int main() {
         // Overlay plan mechanics: an evict-ranked tensor lands in a chunk-aligned
         // arena tail backed by the eviction pool, a HostPinned tensor lands in the
         // pinned block, and an evict/restore transaction preserves every byte.
-        std::cout << "section: overlay\n";
         if (ninfer::EvictableWeightPool::supported(device.device)) {
             constexpr std::size_t kChunk = ninfer::EvictableWeightPool::kChunkBytes;
             ninfer::artifact::Binder overlay_binder(reader);
@@ -204,6 +203,8 @@ int main() {
             std::size_t mapped   = 0;
             std::byte* staging   = live_pool->evict(kChunk, &mapped);
             CUDA_CHECK(cudaMemset(staging, 0x5A, mapped));
+            // The pool contract requires a quiesced device before remapping.
+            CUDA_CHECK(cudaDeviceSynchronize());
             live_pool->restore(device.stream);
             require(overlay_materialized.device_data(evictable) == evictable_home,
                     "evictable tensor address changed across the overlay transaction");
@@ -216,7 +217,6 @@ int main() {
             std::cout << "note: VMM unsupported, overlay plan mechanics not exercised\n";
         }
 
-        std::cout << "section: pinned\n";
         {
             // HostPinned placement: payload lands in the pinned block, never on device.
             ninfer::artifact::Binder pinned_binder(reader);
@@ -237,12 +237,8 @@ int main() {
                         pinned_plan.pinned_capacity_bytes == kSecondTensor.size(),
                     "pinned placement was not planned into the pinned block");
 
-            std::cout << "pinned: plan device=" << pinned_plan.device_objects.size()
-                      << " pinned=" << pinned_plan.pinned_objects.size()
-                      << " cap=" << pinned_plan.device_capacity_bytes << "\n";
             auto pinned_materialized =
                 ninfer::artifact::materialize(reader, pinned_plan, device);
-            std::cout << "pinned: materialized\n";
             require(pinned_materialized.is_host_pinned(pinned_tensor),
                     "pinned tensor is not reported as host pinned");
             const auto block = pinned_materialized.pinned_block();
