@@ -577,13 +577,22 @@ runtime::PrefillStepResult ProgramImplCore::start_prefill_lane(std::uint32_t lan
             staged.vision = std::make_unique<schedule::VisionPrefillSession>(
                 device, model, work, staged.prompt, *staged.vision_plan, staged.transient);
             if (model.vision_overlay) {
-                // Exclusive GPU turn: encode every item through the overlay
-                // window now and hand prefill the pinned embeddings.
-                schedule::VisionOverlayWindowStats window_stats{};
-                auto preencoded = schedule::encode_items_overlay(
-                    device, model, work, staged.prompt, *staged.vision_plan, staged.transient,
-                    &window_stats);
-                staged.vision->set_preencoded(std::move(preencoded), window_stats);
+                // Exclusive GPU turn: encode the items prefill will actually
+                // consume (spans past the prefix-reuse boundary) through one
+                // overlay window and hand prefill the pinned embeddings.
+                std::size_t first_needed = staged.vision_plan->control->items.size();
+                for (const schedule::VisionUseSpan& use : staged.vision_plan->uses) {
+                    if (use.end > base) {
+                        first_needed = std::min<std::size_t>(first_needed, use.item_index);
+                    }
+                }
+                if (first_needed < staged.vision_plan->control->items.size()) {
+                    schedule::VisionOverlayWindowStats window_stats{};
+                    auto preencoded = schedule::encode_items_overlay(
+                        device, model, work, staged.prompt, *staged.vision_plan, staged.transient,
+                        first_needed, &window_stats);
+                    staged.vision->set_preencoded(std::move(preencoded), window_stats);
+                }
             }
         }
         staged.elapsed_seconds = std::chrono::duration<double>(Clock::now() - started).count();
