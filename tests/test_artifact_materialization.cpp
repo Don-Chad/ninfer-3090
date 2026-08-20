@@ -163,6 +163,7 @@ int main() {
         // Overlay plan mechanics: an evict-ranked tensor lands in a chunk-aligned
         // arena tail backed by the eviction pool, a HostPinned tensor lands in the
         // pinned block, and an evict/restore transaction preserves every byte.
+        std::cout << "section: overlay\n";
         if (ninfer::EvictableWeightPool::supported(device.device)) {
             constexpr std::size_t kChunk = ninfer::EvictableWeightPool::kChunkBytes;
             ninfer::artifact::Binder overlay_binder(reader);
@@ -215,6 +216,7 @@ int main() {
             std::cout << "note: VMM unsupported, overlay plan mechanics not exercised\n";
         }
 
+        std::cout << "section: pinned\n";
         {
             // HostPinned placement: payload lands in the pinned block, never on device.
             ninfer::artifact::Binder pinned_binder(reader);
