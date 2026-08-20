@@ -71,6 +71,8 @@ ninfer_add_test(ninfer_kv_capacity_test SOURCES test_kv_capacity.cpp)
 ninfer_add_test(ninfer_vmm_graph_remap_test SOURCES test_vmm_graph_remap.cu)
 target_link_libraries(ninfer_vmm_graph_remap_test PRIVATE CUDA::cuda_driver)
 set_tests_properties(ninfer_vmm_graph_remap_test PROPERTIES SKIP_RETURN_CODE 77)
+ninfer_add_test(ninfer_evictable_weight_pool_test SOURCES test_evictable_weight_pool.cu)
+set_tests_properties(ninfer_evictable_weight_pool_test PROPERTIES SKIP_RETURN_CODE 77)
 ninfer_add_test(ninfer_sampling_defaults_test
   SOURCES test_sampling_defaults.cpp
   LIBRARIES ninfer_engine)
