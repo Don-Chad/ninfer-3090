@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -74,6 +75,32 @@ void* MaterializedArtifact::device_data(ObjectHandle handle) const {
     return objects_[handle.index].device;
 }
 
+void* MaterializedArtifact::storage_data(ObjectHandle handle) const {
+    if (handle.index >= objects_.size()) {
+        throw ArtifactError("object handle does not name a materialized tensor");
+    }
+    const ObjectStorage& storage = objects_[handle.index];
+    if (storage.device != nullptr) { return storage.device; }
+    if (storage.pinned != nullptr) { return storage.pinned; }
+    throw ArtifactError("object handle does not name a materialized tensor");
+}
+
+bool MaterializedArtifact::is_host_pinned(ObjectHandle handle) const noexcept {
+    return handle.index < objects_.size() && objects_[handle.index].pinned != nullptr;
+}
+
+std::size_t MaterializedArtifact::pinned_offset(ObjectHandle handle) const {
+    if (handle.index >= objects_.size() || objects_[handle.index].pinned == nullptr) {
+        throw ArtifactError("object handle does not name a pinned tensor");
+    }
+    return objects_[handle.index].pinned_offset;
+}
+
+std::span<const std::byte> MaterializedArtifact::pinned_block() const noexcept {
+    if (pinned_block_ == nullptr) { return {}; }
+    return {static_cast<const std::byte*>(pinned_block_->data()), pinned_block_->size()};
+}
+
 std::span<const std::byte> MaterializedArtifact::resource_bytes(ObjectHandle handle) const {
     if (handle.index >= objects_.size() || objects_[handle.index].resource.empty()) {
         throw ArtifactError("object handle does not name a materialized resource");
@@ -96,17 +123,46 @@ DeviceArena& MaterializedArtifact::device_arena() {
 }
 
 MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan& plan,
-                                 DeviceContext& device, LoadProgress* progress) {
+                                 DeviceContext& device, LoadProgress* progress,
+                                 std::unique_ptr<EvictableWeightPool> backing_pool) {
     MaterializedArtifact out;
     out.objects_.resize(plan.object_count);
     const std::uint64_t capacity = plan.device_capacity_bytes;
     if (capacity == 0 || capacity > static_cast<std::uint64_t>(SIZE_MAX)) {
         throw ArtifactError("artifact tensor backing size is invalid");
     }
-    out.device_arena_ = std::make_unique<DeviceArena>(static_cast<std::size_t>(capacity));
+    if (backing_pool != nullptr) {
+        const DeviceSpan backing = backing_pool->arena();
+        if (backing.bytes < capacity) {
+            throw ArtifactError("eviction pool arena is smaller than the materialization plan");
+        }
+        out.pool_         = std::move(backing_pool);
+        out.device_arena_ = std::make_unique<DeviceArena>(out.pool_->arena());
+    } else {
+        out.device_arena_ = std::make_unique<DeviceArena>(static_cast<std::size_t>(capacity));
+    }
     out.stats_.device_capacity_bytes = capacity;
-    out.stats_.tensor_count          = plan.device_objects.size();
+    out.stats_.tensor_count          = plan.device_objects.size() + plan.pinned_objects.size();
     out.stats_.resource_count        = plan.host_objects.size();
+
+    if (!plan.pinned_objects.empty()) {
+        out.pinned_block_ = std::make_unique<PinnedHostBuffer>(
+            static_cast<std::size_t>(plan.pinned_capacity_bytes));
+        auto* block = static_cast<std::byte*>(out.pinned_block_->data());
+        for (const PinnedMaterialization& placement : plan.pinned_objects) {
+            const PayloadSpan payload = reader.payload(reader.objects().at(placement.object.index));
+            if (payload.data.size() != placement.bytes) {
+                throw ArtifactError("pinned materialization does not match artifact payload");
+            }
+            std::memcpy(block + placement.offset, payload.data.data(), payload.data.size());
+            ObjectStorage& storage = out.objects_.at(placement.object.index);
+            storage.pinned         = block + placement.offset;
+            storage.pinned_offset  = static_cast<std::size_t>(placement.offset);
+            out.stats_.pinned_weight_bytes += placement.bytes;
+            out.stats_.file_bytes = checked_add(out.stats_.file_bytes, placement.bytes,
+                                                "artifact read bytes overflow u64");
+        }
+    }
 
     for (const HostMaterialization& placement : plan.host_objects) {
         auto& resource            = out.objects_.at(placement.object.index).resource;
