@@ -165,7 +165,10 @@ public:
     // slot upload, then refills the slot the previous layer just vacated.
     void arrive(std::uint32_t layer, cudaStream_t compute) {
         CUDA_CHECK(cudaStreamWaitEvent(compute, uploaded_[layer % 2], 0));
-        if (next_upload_ == layer + 2 &&
+        // At this point every op of layers < layer is issued; the fence makes the
+        // copy stream wait for them before refilling the slot that layer-1 held
+        // with layer+1's weights.
+        if (next_upload_ == layer + 1 &&
             next_upload_ < static_cast<std::uint32_t>(VisionScheduleConfig::layers)) {
             CUDA_CHECK(cudaEventRecord(compute_fence_, compute));
             CUDA_CHECK(cudaStreamWaitEvent(copy_stream(), compute_fence_, 0));
@@ -229,7 +232,12 @@ encode_items_overlay(DeviceContext& device, const LoadedModelData& model, Worksp
     struct RestoreGuard {
         EvictableWeightPool& pool;
         cudaStream_t stream;
-        ~RestoreGuard() { pool.restore(stream); }
+        ~RestoreGuard() {
+            // On the failure path in-flight work may still reference the overlay
+            // range; quiesce before remapping so restore stays safe.
+            (void)cudaDeviceSynchronize();
+            pool.restore(stream);
+        }
     } restore_guard{pool, device.stream};
 
     std::vector<PinnedVisionResult> results;
