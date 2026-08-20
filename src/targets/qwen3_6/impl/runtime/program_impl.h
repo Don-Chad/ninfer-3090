@@ -586,13 +586,18 @@ runtime::PrefillStepResult ProgramImplCore::start_prefill_lane(std::uint32_t lan
                         first_needed = std::min<std::size_t>(first_needed, use.item_index);
                     }
                 }
+                schedule::VisionOverlayWindowStats window_stats{};
+                std::vector<schedule::PinnedVisionResult> preencoded;
                 if (first_needed < staged.vision_plan->control->items.size()) {
-                    schedule::VisionOverlayWindowStats window_stats{};
-                    auto preencoded = schedule::encode_items_overlay(
+                    preencoded = schedule::encode_items_overlay(
                         device, model, work, staged.prompt, *staged.vision_plan, staged.transient,
                         first_needed, &window_stats);
-                    staged.vision->set_preencoded(std::move(preencoded), window_stats);
+                } else {
+                    // Every span is prefix-reused; install null placeholders so the
+                    // session never falls back to host-pointer resident encode.
+                    preencoded.resize(staged.vision_plan->control->items.size());
                 }
+                staged.vision->set_preencoded(std::move(preencoded), window_stats);
             }
         }
         staged.elapsed_seconds = std::chrono::duration<double>(Clock::now() - started).count();
