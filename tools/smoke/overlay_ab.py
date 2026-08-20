@@ -100,11 +100,14 @@ def main() -> int:
     results["followup"] = chat(args.base_url, args.model, followup, 16)
 
     for name, body in results.items():
-        choice = body["choices"][0]["message"].get("content", "")
+        message = body["choices"][0]["message"]
         usage = body.get("usage", {})
         print(f"[{args.label}:{name}] wall={body['_wall_seconds']}s "
               f"prompt={usage.get('prompt_tokens')} completion={usage.get('completion_tokens')}")
-        print(f"[{args.label}:{name}] text={json.dumps(choice, ensure_ascii=False)}")
+        print(f"[{args.label}:{name}] text={json.dumps(message.get('content', ''), ensure_ascii=False)}")
+        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+        if reasoning:
+            print(f"[{args.label}:{name}] reasoning={json.dumps(reasoning[:600], ensure_ascii=False)}")
     return 0
 
 
