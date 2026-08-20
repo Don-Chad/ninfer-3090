@@ -467,3 +467,27 @@ Each category contains three fixtures and five seeds per fixture, for 15 samples
 
 The baseline and speculative-decode suites intentionally measure different supported workloads.
 No per-scenario baseline/speculative speedup is reported.
+
+## Vision residency: resident vs overlay (RTX 3090)
+
+Qwen3.8-27B `groupwise-int`, `--kv-dtype rk8v4 --spec mtp --draft-tokens 3 --lm-head-draft`,
+`--max-concurrency 1`, CUDA graphs on, one 1920x1080 image (2074 merged vision tokens,
+prompt 2106 tokens), greedy. `tools/smoke/overlay_ab.py` against `ninfer-serve`; identical
+completions in both modes.
+
+| Metric | `resident` | `overlay` |
+|---|---|---|
+| Free after weights | 5.47 GiB | 5.72 GiB (+250 MiB) |
+| Explicit KV capacity that boots | 120000 tokens (5.44 GiB) | **126208 tokens (5.59 GiB, +6208)** |
+| Free after startup | 111 MiB | 209 MiB |
+| Image request TTFT | 4109 ms | 4146 ms (+37 ms, +0.9%) |
+| Long prefill | 849.6 tok/s | 845.9 tok/s |
+| Short-request decode | 60–71 tok/s | 58–72 tok/s |
+| Overlay window | — | 386 ms total: evict 80 MiB in 0.9 ms, restore in 11.4 ms, 282 MiB streamed |
+| Follow-up turn over the same image | ttft 1113 ms, prefix reuse, no encode | ttft 1094 ms, prefix reuse, **no window** |
+
+Auxiliary cells: `--kv-dtype int8` (90048 tokens) and `--max-concurrency 2` with two text
+requests running around the image request behave identically to resident semantics; the window
+figures repeat within noise (`overlay=386–389 ms`, evict 0.7–1.0 ms, restore 11.1–11.4 ms).
+The overlay's steady-state cost is zero: outside windows no vision bytes are resident, and the
+evicted text weights are restored before the next text unit runs.
