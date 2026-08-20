@@ -1,4 +1,5 @@
 #include "targets/qwen3_6/impl/runtime/instance.h"
+#include "targets/qwen3_6/impl/runtime/content_kv_cache_impl.h"
 #include "targets/qwen3_6/impl/runtime/program.h"
 
 #include "targets/qwen3_6/impl/runtime/schedule.h"
@@ -304,6 +305,19 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
     CUDA_CHECK(cudaMemsetAsync(token_counts.data, 0, token_counts.bytes(), device.stream));
     CUDA_CHECK(cudaMemsetAsync(sampling_config.data, 0, sampling_config.bytes(), device.stream));
     device.synchronize();
+    if (plan.kv_host_cache_bytes != 0 && speculative_backend != SpeculativeBackend::DFlash) {
+        std::uint64_t salt = content_chain::fold(0x6b76636163686531ULL,
+                                                 static_cast<std::uint64_t>(kv_dtype));
+        salt               = content_chain::fold(salt, static_cast<std::uint64_t>(kv_quant_group));
+        salt = content_chain::fold(salt, (kv_packed_v ? 1ULL : 0ULL) | (kv_rotate_k ? 2ULL : 0ULL) |
+                                             (kv_rotate_v ? 4ULL : 0ULL));
+        salt = content_chain::fold(salt, static_cast<std::uint64_t>(speculative_backend));
+        salt = content_chain::fold(salt, draft_window);
+        content_cache = std::make_unique<ContentKvCache>(
+            plan.kv_host_cache_bytes, salt, decoder->text_kv.pool(),
+            backend_kv_cache() != nullptr ? &backend_kv_cache()->pool() : nullptr,
+            decoder->linear_attention, max_concurrency);
+    }
     prepare_graphs();
     work.reset();
     work.reset_peak();
@@ -423,6 +437,7 @@ runtime::PrefillStepResult ProgramImplCore::start_prefill_lane(std::uint32_t lan
         throw std::invalid_argument("request transient region does not satisfy the plan");
     }
     if (request_plan.reuse != ReusePath::FullReset &&
+        request_plan.reuse != ReusePath::ContentRestore &&
         (!sequence.retained ||
          !qwen3_6::detail::prefix_matches(prompt, sequence.ledger, sequence.prefix_identity,
                                           request_plan.reuse_base))) {
@@ -488,6 +503,30 @@ runtime::PrefillStepResult ProgramImplCore::start_prefill_lane(std::uint32_t lan
                                            request_plan.backend_kv_page_entitlement);
             sequence.text_kv_valid = base;
             sequence.ledger.resize(base);
+        } else if (request_plan.reuse == ReusePath::ContentRestore) {
+            if (!content_cache || !request_plan.content_restore) {
+                throw std::logic_error("content restore was planned without a host cache");
+            }
+            sequence.kv.reset();
+            ordered_reset(sequence);
+            sequence.ledger.clear();
+            sequence.text_kv_valid = 0;
+            sequence.mtp_kv_valid  = 0;
+            reserve_sequence_kv(sequence, request_plan.text_kv_page_entitlement,
+                                request_plan.backend_kv_page_entitlement);
+            sequence.kv->text.materialize_tokens(base);
+            if (sequence.kv->backend) {
+                sequence.kv->backend->materialize_tokens(request_plan.content_restore->backend_tokens);
+            }
+            sequence.text_kv_valid = base;
+            if (speculative_backend == SpeculativeBackend::Mtp) {
+                const std::uint32_t mtp_base = base == 0 ? 0 : base - 1;
+                if (!request_plan.prepare_mtp ||
+                    request_plan.content_restore->backend_tokens < mtp_base) {
+                    throw std::logic_error("content restore lacks the MTP bridge frontier");
+                }
+                sequence.mtp_kv_valid = mtp_base;
+            }
         } else {
             if (!sequence.kv || sequence.text_kv_valid < base) {
                 throw std::logic_error("resident turn checkpoint has no complete KV allocation");
@@ -527,6 +566,9 @@ runtime::PrefillStepResult ProgramImplCore::start_prefill_lane(std::uint32_t lan
             : speculative_backend == SpeculativeBackend::DFlash ? prompt_tokens
                                                                 : 0U;
         materialize_sequence_kv(sequence, prompt_tokens, backend_materialized);
+        if (request_plan.reuse == ReusePath::ContentRestore) {
+            content_cache->restore(sequence, *request_plan.content_restore, prompt, work, device);
+        }
         install_sampling(sequence, request, request_plan.sampling);
         sequence.rope_delta = prompt.rope_delta;
         set_device_i32(io.rope_delta, sequence.rope_delta);
@@ -810,6 +852,7 @@ void ProgramImplCore::resolve_pending_batch(std::span<const std::uint32_t> lanes
                 release_sequence_growth_entitlement(sequence);
                 unbind_sequence_kv(sequence);
                 sequence.retained = true;
+                if (content_cache) { content_cache->save(sequence, work, device); }
                 request.lifecycle = Lifecycle::Complete;
             } else {
                 request.lifecycle = Lifecycle::Active;
@@ -2199,6 +2242,7 @@ void ProgramImplCore::resolve_non_speculative_pending(SequenceState& sequence,
         release_sequence_growth_entitlement(sequence);
         unbind_sequence_kv(sequence);
         sequence.retained = true;
+        if (content_cache) { content_cache->save(sequence, work, device); }
     }
     request.lifecycle = terminal ? Lifecycle::Complete : Lifecycle::Active;
     request.pending   = {};

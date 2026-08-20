@@ -211,6 +211,19 @@ RequestPlan ProgramImplCore::plan_request_for_lane(std::uint32_t lane,
         }
     }
 
+    if (plan->reuse == ReusePath::FullReset && content_cache != nullptr &&
+        base.allow_prefix_reuse && prompt.identity.reusable) {
+        if (const auto restore = content_cache->probe(prompt)) {
+            const std::uint32_t mtp_base = restore->frontier == 0 ? 0 : restore->frontier - 1;
+            if (speculative_backend != SpeculativeBackend::Mtp ||
+                restore->backend_tokens >= mtp_base) {
+                plan->reuse           = ReusePath::ContentRestore;
+                plan->reuse_base      = restore->frontier;
+                plan->content_restore = *restore;
+            }
+        }
+    }
+
     if (speculative_backend == SpeculativeBackend::Mtp) {
         const bool append_ready =
             plan->reuse == ReusePath::AppendAtFrontier && sequence.tail_hidden_valid &&
@@ -219,7 +232,8 @@ RequestPlan ProgramImplCore::plan_request_for_lane(std::uint32_t lane,
         const bool checkpoint_ready = plan->reuse == ReusePath::RestoreTurnCheckpoint &&
                                       decoder->mtp_cache() != nullptr &&
                                       sequence.mtp_kv_valid >= plan->reuse_base - 1;
-        if (plan->reuse != ReusePath::FullReset && !append_ready && !checkpoint_ready) {
+        if (plan->reuse != ReusePath::FullReset && plan->reuse != ReusePath::ContentRestore &&
+            !append_ready && !checkpoint_ready) {
             plan->reuse      = ReusePath::FullReset;
             plan->reuse_base = 0;
         }
@@ -243,10 +257,13 @@ RequestPlan ProgramImplCore::plan_request_for_lane(std::uint32_t lane,
         plan->turn_checkpoint_action = TurnCheckpointAction::Drop;
     } else if (can_keep) {
         plan->turn_checkpoint_action = TurnCheckpointAction::KeepExisting;
+    } else if (*desired <= plan->reuse_base && plan->reuse == ReusePath::ContentRestore) {
+        plan->turn_checkpoint_action = TurnCheckpointAction::Drop;
     } else {
         if (*desired <= plan->reuse_base) {
             plan->reuse      = ReusePath::FullReset;
             plan->reuse_base = 0;
+            plan->content_restore.reset();
         }
         plan->turn_checkpoint_action           = TurnCheckpointAction::CaptureNew;
         plan->turn_checkpoint_capture_frontier = desired;
@@ -261,7 +278,8 @@ RequestPlan ProgramImplCore::plan_request_for_lane(std::uint32_t lane,
             plan->mtp_bridge  = plan->reuse_base < plan->summary.prompt_tokens
                                     ? MtpBridgeMode::BeforeSuffix
                                     : MtpBridgeMode::AfterExactHit;
-        } else if (plan->reuse == ReusePath::RestoreTurnCheckpoint) {
+        } else if (plan->reuse == ReusePath::RestoreTurnCheckpoint ||
+                   plan->reuse == ReusePath::ContentRestore) {
             plan->prepare_mtp = true;
             plan->mtp_bridge  = MtpBridgeMode::BeforeSuffix;
         }
