@@ -575,7 +575,7 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
     switch (options.speculative.backend) {
     case SpeculativeBackend::None:
         if (options.speculative.draft_tokens != 0 ||
-            options.speculative.proposal_head != ProposalHead::Full) {
+            options.speculative.proposal_head != ProposalHead::Full || options.speculative.context_lookup) {
             throw std::invalid_argument(
                 "disabled speculative decoding requires draft_tokens=0 and the full proposal head");
         }
@@ -587,6 +587,9 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
         }
         break;
     case SpeculativeBackend::DFlash:
+        if (options.speculative.context_lookup) {
+            throw std::invalid_argument("context_lookup requires the MTP backend");
+        }
         if (kMaximumDFlashDraftTokens == 0) {
             throw std::invalid_argument("DFlash is not supported by this target");
         }
@@ -622,6 +625,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->draft_window        = inputs.draft_window;
     impl->speculative_backend = inputs.speculative_backend;
     impl->proposal_head       = inputs.proposal_head;
+    impl->context_lookup      = inputs.context_lookup;
     impl->features            = inputs.features;
     impl->use_cuda_graph      = inputs.use_cuda_graph;
     impl->device              = inputs.device;
@@ -718,6 +722,7 @@ make_sequence_planner_impl(DeviceContext& device, const EngineOptions& options,
         .kv_rotate_k = options.kv_cache == KvCacheStorage::RotatedInt8KeyInt4ValueGroup64,
         .kv_rotate_v = options.kv_cache == KvCacheStorage::RotatedInt8KeyInt4ValueGroup64,
         .proposal_head  = options.speculative.proposal_head,
+        .context_lookup = options.speculative.context_lookup,
         .features       = qwen3_6::startup_features(options),
         .use_cuda_graph = options.use_cuda_graph,
         .device         = options.device,

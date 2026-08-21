@@ -62,6 +62,9 @@ struct SpeculativeOptions {
     SpeculativeBackend backend = SpeculativeBackend::None;
     std::uint32_t draft_tokens = 0;
     ProposalHead proposal_head = ProposalHead::Full;
+    // Host-only suffix lookup fused into MTP proposals. This changes no model weights, device
+    // allocation, or graph topology, but is frozen with the Engine startup profile.
+    bool context_lookup = false;
 };
 
 struct LoadProgress {

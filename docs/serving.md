@@ -37,6 +37,8 @@ server must accept image or video input. Speculative residency is likewise froze
 `--spec mtp|dflash` and `--draft-tokens`; omitting `--spec` loads neither backend.
 `--lm-head-draft` additionally loads the optimized proposal head. DFlash is 35B-A3B text-only and
 cannot be combined with `--vision`. A later request cannot enable a capability omitted at startup.
+`--context-lookup` is an MTP-only, startup-fixed host suffix-lookup fusion; it leaves the fixed
+MTP draft/verification width and CUDA Graph topology unchanged and is compatible with Vision.
 
 ### Owned RTX 3090 Huihui candidate
 

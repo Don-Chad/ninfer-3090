@@ -240,6 +240,7 @@ public:
     const bool kv_rotate_k;
     const bool kv_rotate_v;
     const ProposalHead proposal_head;
+    const bool context_lookup_enabled;
     const bool vision_enabled;
     const bool use_cuda_graph;
     const std::size_t kv_payload_bytes;

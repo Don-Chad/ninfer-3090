@@ -3,6 +3,7 @@
 
 #include "targets/qwen3_6/impl/runtime/schedule.h"
 #include "ninfer/ops/gdn_replay.h"
+#include "ninfer/ops/context_lookup.h"
 #include "ninfer/ops/prepare_ragged_prefix.h"
 #include "ninfer/ops/scatter.h"
 #include "ninfer/ops/speculative_round.h"
@@ -185,7 +186,8 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
       draft_window(plan.draft_window), speculative_backend(plan.speculative_backend),
       kv_dtype(plan.kv_dtype), kv_quant_group(plan.kv_quant_group),
       kv_packed_v(plan.kv_packed_v), kv_rotate_k(plan.kv_rotate_k), kv_rotate_v(plan.kv_rotate_v),
-      proposal_head(plan.proposal_head), vision_enabled(plan.features.vision),
+      proposal_head(plan.proposal_head), context_lookup_enabled(plan.context_lookup),
+      vision_enabled(plan.features.vision),
       use_cuda_graph(plan.use_cuda_graph), kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
       persistent(plan.persistent.bytes), workspace_storage(plan.workspace.capacity),
@@ -216,6 +218,9 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
     }
     if (model.mtp.has_value() && model.dflash.has_value()) {
         throw std::invalid_argument("MTP and DFlash model views are mutually exclusive");
+    }
+    if (context_lookup_enabled && speculative_backend != SpeculativeBackend::Mtp) {
+        throw std::invalid_argument("context lookup requires the MTP backend");
     }
     if (model.dflash.has_value() && model.vision.has_value()) {
         throw std::invalid_argument("DFlash and Vision model views are mutually exclusive");
@@ -1854,9 +1859,23 @@ ProgramImplCore::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                 checked_i32(budgets[row].generated_tokens_remaining, "MTP batch remaining budget");
             mtp_host_ingress->current_extents[row]      = static_cast<std::int32_t>(extent);
             mtp_host_ingress->target_valid_columns[row] = static_cast<std::int32_t>(extent + 1);
+            std::array<TokenId, qwen3_6::kMtpDecodeMaximumDrafts> fused_drafts{};
+            std::span<const TokenId> mtp_drafts(sequence.mtp_drafts.data(), extent);
+            std::span<TokenId> proposal_row(fused_drafts.data(), extent);
+            if (context_lookup_enabled && extent != 0) {
+                std::array<TokenId, qwen3_6::kMtpDecodeMaximumDrafts> lookup_drafts{};
+                const auto lookup = ops::context_lookup(
+                    std::span<const TokenId>(sequence.ledger.data(), sequence.ledger.size()),
+                    std::span<TokenId>(lookup_drafts.data(), extent));
+                (void)ops::fuse_context_lookup(
+                    mtp_drafts, std::span<const TokenId>(lookup_drafts.data(), lookup.proposal_tokens),
+                    lookup.match_tokens, proposal_row);
+            } else {
+                std::copy(mtp_drafts.begin(), mtp_drafts.end(), proposal_row.begin());
+            }
             for (std::uint32_t j = 0; j < draft_window; ++j) {
                 mtp_host_ingress->current_drafts[row * draft_window + j] =
-                    j < extent ? sequence.mtp_drafts[j] : sequence.ledger.back();
+                    j < extent ? fused_drafts[j] : sequence.ledger.back();
             }
             for (std::uint32_t j = 0; j < width; ++j) {
                 const std::uint32_t position = frontier + std::min(j, extent);

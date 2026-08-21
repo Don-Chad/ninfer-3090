@@ -56,6 +56,7 @@ int main() {
     options.speculative.backend            = ninfer::SpeculativeBackend::Mtp;
     options.speculative.draft_tokens       = 3;
     options.speculative.proposal_head      = ninfer::ProposalHead::Optimized;
+    options.speculative.context_lookup     = true;
     options.enable_vision                  = false;
     options.allow_prefix_reuse             = false;
     options.preserve_thinking              = true;
@@ -139,6 +140,8 @@ int main() {
     failures += check(server.at("engine").at("vision") == false, "Vision state missing");
     failures += check(server.at("engine").at("speculative_backend") == "mtp",
                       "speculative backend missing");
+    failures += check(server.at("engine").at("context_lookup") == true,
+                      "context lookup activation missing");
     failures +=
         check(server.at("engine").at("proposal_head") == "optimized", "proposal head missing");
     failures +=

@@ -85,6 +85,25 @@ int main() {
     failures += check(dflash.speculative.proposal_head == ninfer::ProposalHead::Optimized,
                       "--lm-head-draft did not select the optimized proposal head");
 
+    const ServeOptions lookup = parse({"ninfer-serve", "model.ninfer", "--spec", "mtp",
+                                       "--draft-tokens", "3", "--context-lookup"});
+    failures += check(lookup.speculative.context_lookup,
+                      "--context-lookup did not enable MTP lookup fusion");
+
+    bool lookup_without_mtp_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--context-lookup"});
+    } catch (const std::invalid_argument&) { lookup_without_mtp_rejected = true; }
+    failures += check(lookup_without_mtp_rejected,
+                      "--context-lookup was accepted without the MTP backend");
+
+    bool lookup_dflash_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--spec", "dflash", "--draft-tokens", "3",
+                     "--context-lookup"});
+    } catch (const std::invalid_argument&) { lookup_dflash_rejected = true; }
+    failures += check(lookup_dflash_rejected, "--context-lookup was accepted with DFlash");
+
     bool dflash_vision_rejected = false;
     try {
         (void)parse({"ninfer-serve", "model.ninfer", "--spec", "dflash", "--draft-tokens", "15",
@@ -172,6 +191,9 @@ int main() {
               "serve help omits --preserve-thinking");
     failures += check(serve_usage_text("ninfer-serve").find("--vision") != std::string::npos,
                       "serve help omits --vision");
+    failures += check(serve_usage_text("ninfer-serve").find("--context-lookup") !=
+                          std::string::npos,
+                      "serve help omits --context-lookup");
     failures +=
         check(serve_usage_text("ninfer-serve").find("--log-stats-interval-ms") != std::string::npos,
               "serve help omits --log-stats-interval-ms");

@@ -131,6 +131,19 @@ use MTP with three draft tokens and DFlash with seven draft tokens (block length
 the optimized proposal head. DFlash accepts up to fifteen draft tokens; seven is the current
 measured recommendation rather than a semantic limit.
 
+`--context-lookup` is an optional, startup-fixed MTP-only host proposal fusion. At each decode
+round it searches the committed token ledger for the longest repeated suffix from 6 through 12
+tokens (strong override at 12), then fills only the existing MTP draft width. It does not change
+the MTP verification width, retain lookup state, mutate KV state, or change CUDA Graph topology.
+Shorter matches must agree with MTP's first draft token; a strong match may override it. It is
+intended for repeated-context workloads and remains off by default:
+
+```bash
+./build/apps/ninfer models/huihui_qwen3_8_27b_abliterated.ninfer \
+  --prompt "Continue the repeated document." --max-new 512 \
+  --spec mtp --draft-tokens 3 --lm-head-draft --context-lookup --vision
+```
+
 ## Common options
 
 | Option | Meaning | Default |
@@ -144,6 +157,7 @@ measured recommendation rather than a semantic limit.
 | `--spec mtp\|dflash` | speculative backend | off |
 | `--draft-tokens N` | MTP `1..5`; DFlash `1..15` | unset |
 | `--lm-head-draft` | optimized proposal head | off |
+| `--context-lookup` | MTP-only host suffix lookup fusion (6-token minimum, 12-token strong override) | off |
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-thinking` | disable thinking in prompt rendering | thinking on |
