@@ -88,6 +88,7 @@ public:
     [[nodiscard]] const EngineOptions& options() const;
     [[nodiscard]] LoadSummary load_summary() const;
     [[nodiscard]] MemorySummary memory_summary() const;
+    [[nodiscard]] KvHostCacheStats host_cache_stats() const;
     [[nodiscard]] RuntimeStats runtime_stats() const;
     void reset_memory_peaks() noexcept;
 
