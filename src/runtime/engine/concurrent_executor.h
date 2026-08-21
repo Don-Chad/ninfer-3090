@@ -299,6 +299,7 @@ private:
         std::string content;
         std::string reasoning;
         std::optional<std::uint32_t> lane;
+        std::uint64_t content_identity = 0;
         std::atomic<bool> cancelled{false};
         bool decode_ready = false;
 
@@ -505,8 +506,34 @@ private:
 
     std::uint64_t observed_store_epoch_ = 0;
 
+    // When identical prompts wait in the queue, publish this lane's prompt-boundary anchor
+    // into the host cache now (one D2H of the prompt state) so the twins content-restore in
+    // milliseconds instead of repeating the full prefill they were held back from.
+    void maybe_publish_prefill_checkpoint(std::uint32_t lane) {
+        const std::uint64_t identity = lane_identities_[lane];
+        if (identity == 0) { return; }
+        bool waiting = false;
+        {
+            std::lock_guard lock(queue_mutex_);
+            for (const auto& pending : pending_) {
+                if (pending->content_identity == identity) {
+                    waiting = true;
+                    break;
+                }
+            }
+        }
+        if (!waiting) { return; }
+        if (instance_.program->save_prefill_checkpoint(lane)) {
+            observed_store_epoch_ = instance_.program->host_cache_epoch();
+            for (std::uint32_t index = 0; index < max_concurrency_; ++index) {
+                invalidate_lane_plans(index);
+            }
+        }
+    }
+
     void remove_completed_slot(std::uint32_t lane) {
         slots_[lane].reset();
+        lane_identities_[lane] = 0;
         // Completion runs the host-cache save, whose staging may evict store segments that
         // other lanes' cached plans reference (ContentRestore anchors), and whose sealed
         // segment may improve waiting plans. Replan everyone only when the store actually
@@ -657,6 +684,7 @@ private:
             instance_.request_memory.deactivate();
             prefill_lane_.reset();
         }
+        maybe_publish_prefill_checkpoint(*request->lane);
         request->begin = step.summary;
         if (step.round.tokens.size() != 1) {
             throw std::logic_error("prefill did not license exactly one token");
@@ -719,6 +747,8 @@ private:
         request->lane_plans[lane].emplace(
             instance_.program->plan_request_for_lane(lane, request->prompt, *request->base_plan));
         request->lane_plan_versions[lane] = lane_plan_versions_[lane];
+        request->content_identity =
+            instance_.program->content_identity(*request->lane_plans[lane]);
     }
 
     [[nodiscard]] std::optional<LaneChoice>
@@ -728,6 +758,15 @@ private:
         for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
             if (slots_[lane] != nullptr) { continue; }
             ensure_lane_plan(request, lane);
+            // An identical prompt is being prefilled right now: admitting this twin would pay
+            // the same full prefill on the exclusive prefill slot. Hold it; when the twin's
+            // prefill completes, its checkpoint anchor is published and this request replans
+            // into a content restore of the boundary.
+            if (request->content_identity != 0 && prefill_lane_ &&
+                slots_[*prefill_lane_] != nullptr &&
+                lane_identities_[*prefill_lane_] == request->content_identity) {
+                return std::nullopt;
+            }
             const Plan& plan          = *request->lane_plans[lane];
             const std::uint32_t reuse = plan.summary().reusable_prompt_tokens;
             if (instance_.program->can_admit_lane(lane, plan) &&
@@ -809,6 +848,7 @@ private:
             invalidate_lane_plans(lane);
             ensure_lane_plan(request, lane);
         }
+        const std::uint64_t plan_identity = request->content_identity;
         Plan selected_plan = std::move(*request->lane_plans[lane]);
         request->lane_plans[lane].reset();
         if (!erase_pending(request)) { return AdmissionProgress::None; }
@@ -836,6 +876,7 @@ private:
             request->backfill_epoch         = backfill_epoch;
             request->backfill_class         = backfill_class;
             slots_[lane]                    = request;
+            lane_identities_[lane]          = plan_identity;
             invalidate_lane_plans(lane);
 
             TransientRegion transient;
@@ -1198,6 +1239,7 @@ private:
     std::array<std::shared_ptr<Request>, kMaximumConcurrency> slots_{};
     std::optional<std::uint32_t> prefill_lane_;
     std::array<std::uint64_t, kMaximumConcurrency> lane_plan_versions_{};
+    std::array<std::uint64_t, kMaximumConcurrency> lane_identities_{};
     std::optional<AdmissionProtection> protection_;
     std::uint64_t next_protection_epoch_ = 1;
     RuntimeStats cumulative_stats_;

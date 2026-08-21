@@ -63,11 +63,13 @@ public:
     }
     [[nodiscard]] std::size_t budget_bytes() const noexcept { return store_->budget_bytes(); }
 
-    [[nodiscard]] std::optional<RestorePlan> probe(const PreparedPromptData& prompt) const {
+    [[nodiscard]] std::optional<RestorePlan> probe(const PreparedPromptData& prompt,
+                                                   std::uint64_t* identity = nullptr) const {
         const auto tokens = static_cast<std::uint32_t>(prompt.token_ids.size());
         if (tokens < 2 * kPagedKVPageSize) { return std::nullopt; }
         const auto stream                = content_chain::stream_of(prompt);
         const content_chain::Chain chain = content_chain::build(stream, tokens, salt_);
+        if (identity != nullptr) { *identity = chain.final_key; }
         const std::uint32_t present =
             store_->present_prefix(KvHostCache::PageKind::Text, chain.page_keys);
         for (std::uint32_t pages = present; pages >= 1; --pages) {
@@ -121,6 +123,35 @@ public:
         store_->restore_anchor_state(plan.anchor_key, slices, device.stream);
         store_->note_hit(plan.frontier);
         store_->touch_segment(plan.anchor_key);
+    }
+
+    // Publishes just the rewrite-checkpoint anchor of an active lane (called right after its
+    // prefill completes, before decode). Pages up to the checkpoint frontier and the checkpoint
+    // state slot/hidden are stable during generation, so identical queued prompts can content-
+    // restore the boundary instead of re-prefilling while this lane is still generating.
+    [[nodiscard]] bool save_checkpoint(const SequenceState& sequence, WorkspaceArena& work,
+                                       DeviceContext& device) {
+        if (!sequence.kv || !sequence.rewrite_checkpoint.valid) { return false; }
+        const std::uint32_t checkpoint = sequence.rewrite_checkpoint.frontier;
+        if (checkpoint < 2 * kPagedKVPageSize || sequence.ledger.size() < checkpoint ||
+            sequence.prefix_identity.size() < checkpoint ||
+            sequence.text_kv_valid < checkpoint) {
+            return false;
+        }
+        const auto stream = content_chain::stream_of(sequence.ledger, sequence.prefix_identity);
+        const content_chain::Chain chain = content_chain::build(stream, checkpoint, salt_);
+        if (store_->find_anchor(chain.final_key)) {
+            store_->touch_segment(chain.final_key);
+            return true;
+        }
+        const std::uint32_t backend_tokens =
+            sequence.kv->backend ? std::min(sequence.mtp_kv_valid, checkpoint) : 0;
+        const bool staged = stage_segment(
+            sequence, chain, checkpoint, chain.final_key, backend_tokens,
+            LinearStateSlots::rewrite_checkpoint_state_slot(sequence.lane, max_concurrency_),
+            sequence.rewrite_checkpoint_hidden, work, device);
+        if (staged) { CUDA_CHECK(cudaStreamSynchronize(device.stream)); }
+        return staged;
     }
 
     void save(const SequenceState& sequence, WorkspaceArena& work, DeviceContext& device) {
