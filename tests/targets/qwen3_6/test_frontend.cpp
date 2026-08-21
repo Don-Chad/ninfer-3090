@@ -2,6 +2,7 @@
 #include <ninfer/targets/qwen3_6/frontend_resources.h>
 
 #include "targets/qwen3_6/impl/frontend/chat_template.h"
+#include "targets/qwen3_6/impl/frontend/processor.h"
 #include "targets/qwen3_6/impl/frontend/test_access.h"
 #include "targets/qwen3_6/impl/frontend/tokenizer.h"
 
@@ -43,6 +44,7 @@ std::string read_file(const char* path) {
 
 std::string read_template_fixture(const char* path) {
     std::string source = read_file(path);
+    source.erase(std::remove(source.begin(), source.end(), '\r'), source.end());
     if (!source.empty() && source.back() == '\n') { source.pop_back(); }
     return source;
 }
@@ -762,6 +764,50 @@ int test_video_prepare(const Frontend& frontend) {
     return failures;
 }
 
+int test_adaptive_mixed_media_budget() {
+    const FrontendResources owned = resources();
+    const fi::Tokenizer tokenizer({.tokenizer_json         = owned.tokenizer_json,
+                                   .tokenizer_config_json  = owned.tokenizer_config_json,
+                                   .generation_config_json = owned.generation_config_json});
+    fi::ProcessorOptions options;
+    options.image_min_pixels    = 32ULL * 32ULL;
+    options.image_max_pixels    = 64ULL * 64ULL;
+    options.video_min_pixels    = 2ULL * 32ULL * 32ULL;
+    options.video_max_pixels    = 2ULL * 64ULL * 64ULL;
+    options.max_attention_pairs = 64;
+    options.max_raw_patches     = 1'024;
+    options.max_vision_tokens   = 1'024;
+    options.max_prompt_tokens   = 1'024;
+    const fi::Processor processor(tokenizer, thinking_toggle_template(), options);
+
+    const auto run_order = [&](bool video_first) {
+        fi::MediaData media;
+        media.bytes       = gradient_ppm();
+        media.media_type  = "image/x-portable-pixmap";
+        media.source_name = "mixed.ppm";
+        fi::ChatMessage message;
+        message.role = ninfer::ChatRole::User;
+        if (video_first) {
+            message.parts.push_back(fi::ChatPart::video(media));
+            message.parts.push_back(fi::ChatPart::image(std::move(media)));
+        } else {
+            message.parts.push_back(fi::ChatPart::image(media));
+            message.parts.push_back(fi::ChatPart::video(std::move(media)));
+        }
+        return processor.process({std::move(message)});
+    };
+
+    const fi::ProcessedInput video_first = run_order(true);
+    const fi::ProcessedInput image_first = run_order(false);
+    int failures = check(video_first.vision_items.size() == 2 &&
+                             video_first.stats.attention_pairs <= options.max_attention_pairs,
+                         "video-first mixed media exceeded the adaptive attention budget");
+    failures += check(image_first.vision_items.size() == 2 &&
+                          image_first.stats.attention_pairs <= options.max_attention_pairs,
+                      "image-first mixed media exceeded the adaptive attention budget");
+    return failures;
+}
+
 int test_cross_round_stop(const Frontend& frontend) {
     auto prompt = frontend.prepare_tokens({0});
     ninfer::StopPolicy stop;
@@ -934,6 +980,7 @@ int main() {
     failures += test_official_resource_guards();
     failures += test_text_and_image_prepare(frontend);
     failures += test_video_prepare(frontend);
+    failures += test_adaptive_mixed_media_budget();
     failures += test_cross_round_stop(frontend);
     failures += test_same_token_stop_priority(frontend);
     failures += test_terminal_flush(frontend);

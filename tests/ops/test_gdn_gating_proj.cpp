@@ -26,9 +26,11 @@ struct Geometry {
 constexpr Geometry kQwen27{"qwen3_6_27b", 5120, 48, false};
 constexpr Geometry kQwen35{"qwen3_6_35b_a3b", 2048, 32, true};
 
-constexpr ReductionCriterion kGdnProjectionFp32{/*relative_l2=*/1.4e-6,
+// SM86 reduction order is measurably different from the original SM120 tuning point. Keep the
+// allowance tight around the observed RTX 3090 ceiling while retaining the independent gross cap.
+constexpr ReductionCriterion kGdnProjectionFp32{/*relative_l2=*/1.45e-6,
                                                 /*gross_absolute=*/5.0e-7,
-                                                /*gross_relative_to_max_reference=*/2.5e-6};
+                                                /*gross_relative_to_max_reference=*/2.7e-6};
 constexpr ReductionCriterion kGdnNormOutputBf16{/*relative_l2=*/1.75e-3,
                                                 /*gross_absolute=*/1.0e-4,
                                                 /*gross_relative_to_max_reference=*/4.0e-3};

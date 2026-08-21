@@ -69,10 +69,13 @@ struct PreparedRequest {
     int prompt_tokens                      = 0;
     bool include_usage                     = false;
     bool tool_capable                      = false;
+    bool parallel_tool_calls               = true;
+    ToolChoice tool_choice;
     std::size_t tool_name_max_length       = 64;
     bool enable_thinking                   = true;
     bool preserve_thinking                 = false;
     bool preserve_thinking_semantic_change = false;
+    std::vector<ToolCallRoute> tool_routes;
     std::shared_ptr<RequestLifetime> lifetime;
 };
 

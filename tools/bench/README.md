@@ -3,6 +3,30 @@
 Offline helper for the `ninfer_bench` throughput tool. Correctness/parity tooling lives separately
 under [`tools/parity`](../parity).
 
+## Huihui RTX 3090 MTP-depth sweep
+
+[`run_huihui_mtp_sweep.py`](run_huihui_mtp_sweep.py) is the exact-artifact, single-request serving
+measurement for the owned RTX 3090 Huihui candidate. It starts a fresh local server per depth,
+sends four fixed non-thinking Chat Completions prompts with greedy decoding, records response
+SHA-256 values, and derives committed decode throughput from the request JSONL. It is deliberately
+separate from `ninfer_bench`: Vision stays resident and the actual HTTP serving/frontend path is
+included.
+
+```bash
+python tools/bench/run_huihui_mtp_sweep.py \
+  --serve build-huihui-sm86-vcpkg/apps/ninfer-serve.exe \
+  --artifact ../models/huihui_qwen3_8_27b_abliterated.ninfer \
+  --draft-depths 0,2,3,4 \
+  --output benchmark_results/huihui_rtx3090_mtp_nonthinking_repro
+```
+
+The 2026-08-20 matched non-thinking result is
+[`benchmark_results/huihui_rtx3090_mtp_nonthinking_20260820/summary.json`](../../benchmark_results/huihui_rtx3090_mtp_nonthinking_20260820/summary.json): K0 34.9239, K2 66.2380,
+K3 74.6566, and K4 69.7622 committed decode tok/s. K3 is the provisional RTX 3090 candidate
+default because it is fastest in that matched sample. It is not a general MTP-depth recommendation
+or a quality/parity result: K3 differed from K0 on one of four response hashes. The earlier
+thinking-on K0--K5 sweep is exploratory only and must not be used to promote the candidate.
+
 ## Corpus baker
 
 `ninfer_bench` benchmarks prefill at an exact length by slicing the first `P` token ids of a

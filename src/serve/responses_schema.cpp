@@ -91,6 +91,28 @@ std::string require_function_name(const Json& object, const char* param) {
     return name;
 }
 
+std::string optional_tool_namespace(const Json& object, const char* param) {
+    if (!object.contains("namespace") || object.at("namespace").is_null()) { return {}; }
+    if (!object.at("namespace").is_string() || object.at("namespace").get<std::string>().empty()) {
+        bad_request("tool namespace must be a non-empty string", param);
+    }
+    const std::string value = object.at("namespace").get<std::string>();
+    if (value.size() > 64) { bad_request("tool namespace must be at most 64 characters", param); }
+    return value;
+}
+
+std::string model_tool_name(const std::string& tool_namespace, const std::string& wire_name) {
+    if (tool_namespace.empty() || tool_namespace == "functions") { return wire_name; }
+    std::string encoded;
+    encoded.reserve(tool_namespace.size() + 2 + wire_name.size());
+    for (const unsigned char c : tool_namespace) {
+        encoded.push_back(std::isalnum(c) != 0 || c == '_' || c == '-' ? static_cast<char>(c) : '_');
+    }
+    encoded += "__";
+    encoded += wire_name;
+    return encoded;
+}
+
 std::string item_id(const Json& item, const char* prefix, const char* param) {
     if (!item.contains("id") || item.at("id").is_null()) { return new_response_item_id(prefix); }
     if (!item.at("id").is_string() || item.at("id").get<std::string>().empty()) {
@@ -113,8 +135,9 @@ ninfer::product::media_acquire::Source parse_image_source(const Json& part) {
             bad_request("input_image.detail must be a string", "input");
         }
         const std::string detail = part.at("detail").get<std::string>();
-        if (detail != "auto") {
-            bad_request("only input_image detail 'auto' is supported", "input",
+        if (detail != "auto" && detail != "low" && detail != "high" &&
+            detail != "original") {
+            bad_request("input_image detail must be 'auto', 'low', 'high', or 'original'", "input",
                         "image_detail_not_supported");
         }
     }
@@ -171,8 +194,9 @@ ParsedMessage parse_message_item(const Json& item, std::size_t index) {
     } else {
         bad_request("unsupported input message role: " + role, "input", "unsupported_role");
     }
-    if (item.contains("phase") && !item.at("phase").is_null()) {
-        bad_request("message phase is not supported", "input", "phase_not_supported");
+    if (item.contains("phase") && !item.at("phase").is_null() &&
+        !item.at("phase").is_string()) {
+        bad_request("message phase must be a string or null", "input");
     }
     if (item.contains("status") && !item.at("status").is_null()) {
         if (!item.at("status").is_string() || item.at("status").get<std::string>() != "completed") {
@@ -261,18 +285,22 @@ ParsedMessage parse_message_item(const Json& item, std::size_t index) {
 }
 
 std::string parse_reasoning_item(const Json& item, Json& canonical) {
-    if (item.contains("encrypted_content") && !item.at("encrypted_content").is_null()) {
-        bad_request("encrypted reasoning content is not supported", "input",
-                    "encrypted_reasoning_not_supported");
+    if (item.contains("encrypted_content") && !item.at("encrypted_content").is_null() &&
+        !item.at("encrypted_content").is_string()) {
+        bad_request("encrypted reasoning content must be a string or null", "input");
     }
     if (item.contains("summary") && !item.at("summary").is_null()) {
         if (!item.at("summary").is_array()) {
             bad_request("reasoning summary must be an array", "input");
         }
-        if (!item.at("summary").empty()) {
-            bad_request("reasoning summaries are not supported; replay raw reasoning_text", "input",
-                        "reasoning_summary_not_supported");
-        }
+    }
+    if ((!item.contains("content") || item.at("content").is_null()) &&
+        item.contains("encrypted_content") && !item.at("encrypted_content").is_null()) {
+        canonical = { {"id", item_id(item, "rs", "input")},
+                      {"type", "reasoning"},
+                      {"summary", Json::array()},
+                      {"content", Json::array()} };
+        return {};
     }
     if (!item.contains("content") || !item.at("content").is_array()) {
         bad_request("reasoning Item must contain a content array", "input");
@@ -301,8 +329,10 @@ ToolCall parse_function_call_item(const Json& item, Json& canonical) {
         item.at("call_id").get<std::string>().empty()) {
         bad_request("function_call must contain a non-empty call_id", "input");
     }
-    call.id   = item.at("call_id").get<std::string>();
-    call.name = require_function_name(item, "input");
+    call.id                       = item.at("call_id").get<std::string>();
+    const std::string wire_name   = require_function_name(item, "input");
+    call.namespace_name           = optional_tool_namespace(item, "input");
+    call.name                     = model_tool_name(call.namespace_name, wire_name);
     if (!item.contains("arguments") || !item.at("arguments").is_string()) {
         bad_request("function_call arguments must be a JSON string", "input");
     }
@@ -319,8 +349,66 @@ ToolCall parse_function_call_item(const Json& item, Json& canonical) {
                  {"type", "function_call"},
                  {"status", "completed"},
                  {"call_id", call.id},
-                 {"name", call.name},
+                 {"name", wire_name},
                  {"arguments", call.arguments_json}};
+    if (!call.namespace_name.empty()) { canonical["namespace"] = call.namespace_name; }
+    return call;
+}
+
+ToolCall parse_custom_tool_call_item(const Json& item, Json& canonical) {
+    ToolCall call;
+    if (!item.contains("call_id") || !item.at("call_id").is_string() ||
+        item.at("call_id").get<std::string>().empty()) {
+        bad_request("custom_tool_call must contain a non-empty call_id", "input");
+    }
+    call.id                     = item.at("call_id").get<std::string>();
+    const std::string wire_name = require_function_name(item, "input");
+    call.namespace_name         = optional_tool_namespace(item, "input");
+    call.name                   = model_tool_name(call.namespace_name, wire_name);
+    call.custom                 = true;
+    if (!item.contains("input") || !item.at("input").is_string()) {
+        bad_request("custom_tool_call input must be a string", "input");
+    }
+    call.custom_input   = item.at("input").get<std::string>();
+    call.arguments_json = Json{{"input", call.custom_input}}.dump();
+    if (item.contains("status") && !item.at("status").is_null() &&
+        (!item.at("status").is_string() || item.at("status").get<std::string>() != "completed")) {
+        bad_request("custom_tool_call status must be 'completed'", "input");
+    }
+    canonical = {{"id", item_id(item, "ctc", "input")},
+                 {"type", "custom_tool_call"},
+                 {"status", "completed"},
+                 {"call_id", call.id},
+                 {"name", wire_name},
+                 {"input", call.custom_input}};
+    if (!call.namespace_name.empty()) { canonical["namespace"] = call.namespace_name; }
+    return call;
+}
+
+ToolCall parse_tool_search_call_item(const Json& item, Json& canonical) {
+    ToolCall call;
+    if (!item.contains("call_id") || !item.at("call_id").is_string() ||
+        item.at("call_id").get<std::string>().empty()) {
+        bad_request("tool_search_call must contain a non-empty call_id", "input");
+    }
+    if (!item.contains("execution") || !item.at("execution").is_string() ||
+        item.at("execution").get<std::string>() != "client") {
+        bad_request("tool_search_call execution must be 'client'", "input");
+    }
+    if (!item.contains("arguments") || !item.at("arguments").is_object()) {
+        bad_request("tool_search_call arguments must be an object", "input");
+    }
+    call.id                    = item.at("call_id").get<std::string>();
+    call.name                  = "tool_search";
+    call.arguments_json        = item.at("arguments").dump();
+    call.tool_search           = true;
+    call.tool_search_execution = "client";
+    canonical = {{"id", item_id(item, "ts", "input")},
+                 {"type", "tool_search_call"},
+                 {"status", "completed"},
+                 {"call_id", call.id},
+                 {"execution", "client"},
+                 {"arguments", item.at("arguments")}};
     return call;
 }
 
@@ -329,8 +417,9 @@ ChatTurn parse_function_call_output_item(const Json& item, Json& canonical) {
         item.at("call_id").get<std::string>().empty()) {
         bad_request("function_call_output must contain a non-empty call_id", "input");
     }
-    if (!item.contains("output") || !item.at("output").is_string()) {
-        bad_request("function_call_output output must be a string", "input");
+    if (!item.contains("output") ||
+        (!item.at("output").is_string() && !item.at("output").is_array())) {
+        bad_request("function_call_output output must be a string or content array", "input");
     }
     if (item.contains("status") && !item.at("status").is_null() &&
         (!item.at("status").is_string() || item.at("status").get<std::string>() != "completed")) {
@@ -339,16 +428,92 @@ ChatTurn parse_function_call_output_item(const Json& item, Json& canonical) {
     ChatTurn turn;
     turn.role         = ChatRole::Tool;
     turn.tool_call_id = item.at("call_id").get<std::string>();
-    ContentPart content;
-    content.kind     = ContentKind::Text;
-    content.type_raw = "input_text";
-    content.text     = item.at("output").get<std::string>();
-    turn.content.push_back(std::move(content));
+    const auto append_text = [&](const std::string& text) {
+        ContentPart content;
+        content.kind     = ContentKind::Text;
+        content.type_raw = "input_text";
+        content.text     = text;
+        turn.content.push_back(std::move(content));
+    };
+    if (item.at("output").is_string()) {
+        append_text(item.at("output").get<std::string>());
+    } else {
+        if (item.at("output").empty()) {
+            bad_request("function_call_output content array must not be empty", "input");
+        }
+        for (const Json& value : item.at("output")) {
+            if (!value.is_object() || !value.contains("type") ||
+                !value.at("type").is_string()) {
+                bad_request("function_call_output content items require a string type", "input");
+            }
+            const std::string type = value.at("type").get<std::string>();
+            if (type == "input_text") {
+                if (!value.contains("text") || !value.at("text").is_string()) {
+                    bad_request("function_call_output input_text requires text", "input");
+                }
+                append_text(value.at("text").get<std::string>());
+            } else if (type == "input_image") {
+                ContentPart content;
+                content.kind     = ContentKind::Image;
+                content.type_raw = type;
+                content.source   = parse_image_source(value);
+                turn.content.push_back(std::move(content));
+            } else if (type == "input_audio") {
+                bad_request("function_call_output input_audio is not supported", "input",
+                            "audio_inputs_not_supported");
+            } else if (type == "encrypted_content") {
+                if (!value.contains("encrypted_content") ||
+                    !value.at("encrypted_content").is_string()) {
+                    bad_request("encrypted_content requires encrypted_content", "input");
+                }
+            } else {
+                bad_request("unsupported function_call_output content type: " + type, "input",
+                            "modality_not_supported");
+            }
+        }
+        if (turn.content.empty()) {
+            bad_request("function_call_output contains no locally usable content", "input",
+                        "modality_not_supported");
+        }
+    }
     canonical = {{"id", item_id(item, "fco", "input")},
                  {"type", "function_call_output"},
                  {"status", "completed"},
                  {"call_id", turn.tool_call_id},
                  {"output", item.at("output")}};
+    return turn;
+}
+
+ChatTurn parse_custom_tool_call_output_item(const Json& item, Json& canonical) {
+    ChatTurn turn     = parse_function_call_output_item(item, canonical);
+    canonical["type"] = "custom_tool_call_output";
+    return turn;
+}
+
+ChatTurn parse_tool_search_output_item(const Json& item, Json& canonical) {
+    if (!item.contains("call_id") || !item.at("call_id").is_string() ||
+        item.at("call_id").get<std::string>().empty() || !item.contains("tools") ||
+        !item.at("tools").is_array()) {
+        bad_request("tool_search_output requires call_id and a tools array", "input");
+    }
+    if (!item.contains("execution") || !item.at("execution").is_string() ||
+        item.at("execution").get<std::string>() != "client") {
+        bad_request("tool_search_output execution must be 'client'", "input");
+    }
+    ChatTurn turn;
+    turn.role         = ChatRole::Tool;
+    turn.tool_call_id = item.at("call_id").get<std::string>();
+    ContentPart content;
+    content.kind     = ContentKind::Text;
+    content.type_raw = "input_text";
+    content.text     = item.at("tools").dump();
+    turn.content.push_back(std::move(content));
+    canonical = {{"id", item_id(item, "tso", "input")},
+                 {"type", "tool_search_output"},
+                 {"status", "completed"},
+                 {"call_id", turn.tool_call_id},
+                 {"execution", "client"},
+                 {"tools", item.at("tools")}};
     return turn;
 }
 
@@ -406,8 +571,11 @@ void parse_input(const Json& input, ResponsesRequest& out) {
             pending_reasoning         = parse_reasoning_item(item, canonical);
             pending_reasoning_present = true;
             can_group_function_calls  = false;
-        } else if (type == "function_call") {
-            ToolCall call = parse_function_call_item(item, canonical);
+        } else if (type == "function_call" || type == "custom_tool_call" ||
+                   type == "tool_search_call") {
+            ToolCall call = type == "function_call"    ? parse_function_call_item(item, canonical)
+                            : type == "custom_tool_call" ? parse_custom_tool_call_item(item, canonical)
+                                                          : parse_tool_search_call_item(item, canonical);
             if (can_group_function_calls && !pending_reasoning_present &&
                 !out.input_turns.empty() && out.input_turns.back().role == ChatRole::Assistant &&
                 out.input_turns.back().content.empty() &&
@@ -423,12 +591,18 @@ void parse_input(const Json& input, ResponsesRequest& out) {
                 out.input_turns.push_back(std::move(turn));
             }
             can_group_function_calls = true;
-        } else if (type == "function_call_output") {
+        } else if (type == "function_call_output" || type == "custom_tool_call_output" ||
+                   type == "tool_search_output") {
             if (pending_reasoning_present) {
                 bad_request("a reasoning Item must be followed by an assistant output Item",
                             "input");
             }
-            out.input_turns.push_back(parse_function_call_output_item(item, canonical));
+            out.input_turns.push_back(
+                type == "function_call_output"
+                    ? parse_function_call_output_item(item, canonical)
+                : type == "custom_tool_call_output"
+                    ? parse_custom_tool_call_output_item(item, canonical)
+                    : parse_tool_search_output_item(item, canonical));
             can_group_function_calls = false;
         } else if (type == "input_file") {
             bad_request("input_file is not supported", "input", "file_inputs_not_supported");
@@ -449,54 +623,156 @@ void parse_tools(const Json& body, ResponsesRequest& out) {
     if (!body.contains("tools") || body.at("tools").is_null()) { return; }
     if (!body.at("tools").is_array()) { bad_request("tools must be an array", "tools"); }
     std::unordered_set<std::string> names;
-    for (const Json& item : body.at("tools")) {
+    std::unordered_set<std::string> loaded_names;
+    auto add_tool = [&](const Json& item, const std::string& tool_namespace, bool is_tool_search,
+                        const std::string& tool_search_execution, bool discovered = false) {
         if (!item.is_object() || !item.contains("type") || !item.at("type").is_string()) {
             bad_request("tools entries must be objects with a string type", "tools");
         }
-        if (item.at("type").get<std::string>() != "function") {
-            bad_request("only function tools are supported", "tools", "tool_type_not_supported");
+        const std::string type = item.at("type").get<std::string>();
+        if (!is_tool_search && type != "function" && type != "custom") {
+            bad_request("only function and custom tools are supported inside namespaces; got " +
+                            type,
+                        "tools",
+                        "tool_type_not_supported");
         }
         ToolDefinition tool;
-        tool.name = require_function_name(item, "tools");
-        if (!names.insert(tool.name).second) {
-            bad_request("duplicate function tool name: " + tool.name, "tools");
+        tool.wire_name      = is_tool_search ? "tool_search" : require_function_name(item, "tools");
+        tool.wire_namespace = tool_namespace;
+        tool.name           = model_tool_name(tool_namespace, tool.wire_name);
+        tool.custom         = !is_tool_search && type == "custom";
+        tool.tool_search    = is_tool_search;
+        tool.tool_search_execution = tool_search_execution;
+        bool defer_loading  = false;
+        if (item.contains("defer_loading") && !item.at("defer_loading").is_null()) {
+            if (!item.at("defer_loading").is_boolean()) {
+                bad_request("tool defer_loading must be a boolean", "tools");
+            }
+            defer_loading = item.at("defer_loading").get<bool>();
+        }
+        const bool already_declared = !names.insert(tool.name).second;
+        if (!discovered && already_declared) {
+            bad_request("duplicate or colliding model tool name: " + tool.name, "tools");
         }
         if (item.contains("description") && !item.at("description").is_null()) {
             if (!item.at("description").is_string()) {
-                bad_request("function description must be a string", "tools");
+                bad_request("tool description must be a string", "tools");
             }
             tool.description = item.at("description").get<std::string>();
         }
-        Json parameters = Json{{"type", "object"}, {"properties", Json::object()}};
-        if (item.contains("parameters") && !item.at("parameters").is_null()) {
+        if (tool.custom && item.contains("format") && !item.at("format").is_null()) {
+            const Json& format = item.at("format");
+            if (!format.is_object() || !format.contains("type") ||
+                !format.at("type").is_string()) {
+                bad_request("custom tool format must contain a string type", "tools");
+            }
+            if (format.at("type").get<std::string>() == "grammar") {
+                if (!format.contains("syntax") || !format.at("syntax").is_string() ||
+                    !format.contains("definition") || !format.at("definition").is_string()) {
+                    bad_request("custom grammar format requires syntax and definition", "tools");
+                }
+                tool.description += "\n\nThe raw input must follow this " +
+                                    format.at("syntax").get<std::string>() +
+                                    " grammar exactly:\n" +
+                                    format.at("definition").get<std::string>();
+            } else if (format.at("type").get<std::string>() != "text") {
+                bad_request("unsupported custom tool format type", "tools",
+                            "tool_type_not_supported");
+            }
+        }
+        if (tool.custom && tool.wire_name == "apply_patch") {
+            tool.description +=
+                "\n\nUse workspace-relative file paths in patch headers. Do not use absolute "
+                "Windows drive paths or duplicate the workspace prefix.";
+        }
+        Json parameters = tool.custom
+                              ? Json{{"type", "object"},
+                                     {"properties", Json{{"input", Json{{"type", "string"}}}}},
+                                     {"required", Json::array({"input"})},
+                                     {"additionalProperties", false}}
+                              : Json{{"type", "object"}, {"properties", Json::object()}};
+        if (!tool.custom && item.contains("parameters") && !item.at("parameters").is_null()) {
             if (!item.at("parameters").is_object()) {
                 bad_request("function parameters must be a JSON object", "tools");
             }
             parameters = item.at("parameters");
         }
-        if (item.contains("strict") && !item.at("strict").is_null()) {
+        if (!tool.custom && item.contains("strict") && !item.at("strict").is_null()) {
             if (!item.at("strict").is_boolean()) {
                 bad_request("function strict must be a boolean", "tools");
-            }
-            if (item.at("strict").get<bool>()) {
-                bad_request("strict function schema enforcement is not supported", "tools",
-                            "strict_tools_not_supported");
             }
         }
         tool.strict          = false;
         tool.parameters_json = parameters.dump();
-        Json canonical       = {{"type", "function"},
-                                {"name", tool.name},
-                                {"parameters", parameters},
-                                {"strict", false}};
-        if (!tool.description.empty()) { canonical["description"] = tool.description; }
         Json nested = {
             {"type", "function"},
             {"function", Json{{"name", tool.name}, {"parameters", parameters}, {"strict", false}}}};
         if (!tool.description.empty()) { nested["function"]["description"] = tool.description; }
         tool.definition_json = nested.dump();
+        // Deferred tools are registry metadata for Codex tool_search. They must not be expanded
+        // into the model prompt until Codex returns them in a tool_search_output.
+        if (defer_loading && !discovered) { return; }
+        if (!loaded_names.insert(tool.name).second) { return; }
+        out.generation.tool_name_max_length =
+            std::max(out.generation.tool_name_max_length, tool.name.size());
         out.generation.tools.push_back(std::move(tool));
-        out.tools.push_back(std::move(canonical));
+    };
+
+    for (const Json& item : body.at("tools")) {
+        if (!item.is_object() || !item.contains("type") || !item.at("type").is_string()) {
+            bad_request("tools entries must be objects with a string type", "tools");
+        }
+        const std::string type = item.at("type").get<std::string>();
+        if (type == "namespace") {
+            const std::string tool_namespace = require_function_name(item, "tools");
+            if (!item.contains("tools") || !item.at("tools").is_array() || item.at("tools").empty()) {
+                bad_request("namespace tools must contain a non-empty tools array", "tools");
+            }
+            for (const Json& child : item.at("tools")) {
+                add_tool(child, tool_namespace, false, {}, false);
+            }
+            out.tools.push_back(item);
+        } else if (type == "function" || type == "custom") {
+            add_tool(item, {}, false, {}, false);
+            out.tools.push_back(item);
+        } else if (type == "tool_search") {
+            if (!item.contains("execution") || !item.at("execution").is_string() ||
+                item.at("execution").get<std::string>() != "client") {
+                bad_request("tool_search execution must be 'client'", "tools");
+            }
+            add_tool(item, {}, true, item.at("execution").get<std::string>(), false);
+            out.tools.push_back(item);
+        } else {
+            bad_request("unsupported tool type: " + type, "tools", "tool_type_not_supported");
+        }
+    }
+
+    for (const Json& input_item : out.input_items) {
+        if (!input_item.is_object() || input_item.value("type", "") != "tool_search_output" ||
+            !input_item.contains("tools") || !input_item.at("tools").is_array()) {
+            continue;
+        }
+        for (const Json& discovered : input_item.at("tools")) {
+            if (!discovered.is_object() || !discovered.contains("type") ||
+                !discovered.at("type").is_string()) {
+                bad_request("tool_search_output tools require a string type", "input");
+            }
+            const std::string type = discovered.at("type").get<std::string>();
+            if (type == "namespace") {
+                const std::string tool_namespace = require_function_name(discovered, "input");
+                if (!discovered.contains("tools") || !discovered.at("tools").is_array()) {
+                    bad_request("discovered namespace requires a tools array", "input");
+                }
+                for (const Json& child : discovered.at("tools")) {
+                    add_tool(child, tool_namespace, false, {}, true);
+                }
+            } else if (type == "function" || type == "custom") {
+                add_tool(discovered, {}, false, {}, true);
+            } else {
+                bad_request("unsupported discovered tool type: " + type, "input",
+                            "tool_type_not_supported");
+            }
+        }
     }
 }
 
@@ -513,17 +789,48 @@ void parse_tool_choice(const Json& body, ResponsesRequest& out) {
         } else if (value == "none") {
             out.generation.tool_choice.mode = ToolChoiceMode::None;
         } else if (value == "required") {
-            bad_request("tool_choice 'required' is not supported", "tool_choice",
-                        "tool_choice_not_supported");
+            out.generation.tool_choice.mode = ToolChoiceMode::Required;
         } else {
-            bad_request("tool_choice must be 'auto' or 'none'", "tool_choice");
+            bad_request("tool_choice must be 'auto', 'none', or 'required'", "tool_choice");
         }
         out.tool_choice = value;
     } else if (choice.is_object()) {
-        bad_request("named tool_choice is not supported", "tool_choice",
-                    "tool_choice_not_supported");
+        if (!choice.contains("type") || !choice.at("type").is_string() ||
+            (choice.at("type").get<std::string>() != "function" &&
+             choice.at("type").get<std::string>() != "custom")) {
+            bad_request("only function and custom tool_choice objects are supported", "tool_choice",
+                        "tool_type_not_supported");
+        }
+        const Json* function = &choice;
+        if (choice.contains("function")) {
+            if (!choice.at("function").is_object()) {
+                bad_request("tool_choice.function must be an object", "tool_choice");
+            }
+            function = &choice.at("function");
+        }
+        out.generation.tool_choice.mode = ToolChoiceMode::Named;
+        out.generation.tool_choice.name = model_tool_name(
+            optional_tool_namespace(*function, "tool_choice"),
+            require_function_name(*function, "tool_choice"));
+        out.tool_choice                 = choice;
     } else {
         bad_request("tool_choice must be a string or object", "tool_choice");
+    }
+    if ((out.generation.tool_choice.mode == ToolChoiceMode::Required ||
+         out.generation.tool_choice.mode == ToolChoiceMode::Named) &&
+        out.generation.tools.empty()) {
+        bad_request("tool_choice requires tools", "tool_choice");
+    }
+    if (out.generation.tool_choice.mode == ToolChoiceMode::Named) {
+        const bool found = std::ranges::any_of(
+            out.generation.tools, [&](const ToolDefinition& tool) {
+                return tool.name == out.generation.tool_choice.name;
+            });
+        if (!found) {
+            bad_request("tool_choice references unknown function: " +
+                            out.generation.tool_choice.name,
+                        "tool_choice");
+        }
     }
 }
 
@@ -532,9 +839,17 @@ void parse_reasoning(const Json& body, ResponsesRequest& out) {
     const Json& reasoning = body.at("reasoning");
     if (!reasoning.is_object()) { bad_request("reasoning must be an object", "reasoning"); }
     for (auto it = reasoning.begin(); it != reasoning.end(); ++it) {
-        if (it.key() != "effort" && !it.value().is_null()) {
+        if (it.key() != "effort" && it.key() != "summary" && it.key() != "context" &&
+            !it.value().is_null()) {
             bad_request("reasoning." + it.key() + " is not supported", "reasoning",
                         "reasoning_option_not_supported");
+        }
+    }
+    for (const char* key : {"summary", "context"}) {
+        if (reasoning.contains(key) && !reasoning.at(key).is_null() &&
+            !reasoning.at(key).is_string()) {
+            bad_request(std::string("reasoning.") + key + " must be a string or null",
+                        "reasoning");
         }
     }
     if (!reasoning.contains("effort") || reasoning.at("effort").is_null()) { return; }
@@ -573,6 +888,7 @@ void reject_unknown_top_level(const Json& body) {
     static const std::unordered_set<std::string> allowed = {
         "background",
         "chat_template_kwargs",
+        "client_metadata",
         "context_management",
         "conversation",
         "include",
@@ -614,7 +930,7 @@ void reject_unknown_top_level(const Json& body) {
 
 void reject_server_managed_features(const Json& body) {
     for (const char* key : {"context_management", "conversation", "max_tool_calls", "moderation",
-                            "prompt", "prompt_cache_key", "prompt_cache_options",
+                            "prompt", "prompt_cache_options",
                             "prompt_cache_retention", "safety_identifier", "user"}) {
         if (body.contains(key) && !body.at(key).is_null()) {
             bad_request(std::string(key) + " is not supported", key, "parameter_not_supported");
@@ -629,20 +945,23 @@ void reject_server_managed_features(const Json& body) {
                         "background_not_supported");
         }
     }
+    if (body.contains("client_metadata") && !body.at("client_metadata").is_null() &&
+        !body.at("client_metadata").is_object()) {
+        bad_request("client_metadata must be an object or null", "client_metadata");
+    }
+    if (body.contains("prompt_cache_key") && !body.at("prompt_cache_key").is_null() &&
+        !body.at("prompt_cache_key").is_string()) {
+        bad_request("prompt_cache_key must be a string or null", "prompt_cache_key");
+    }
     if (body.contains("include") && !body.at("include").is_null()) {
         if (!body.at("include").is_array()) { bad_request("include must be an array", "include"); }
-        if (!body.at("include").empty()) {
-            bad_request("additional response fields are not supported", "include",
-                        "include_not_supported");
+        for (const Json& value : body.at("include")) {
+            if (!value.is_string()) { bad_request("include entries must be strings", "include"); }
         }
     }
     if (body.contains("parallel_tool_calls") && !body.at("parallel_tool_calls").is_null()) {
         if (!body.at("parallel_tool_calls").is_boolean()) {
             bad_request("parallel_tool_calls must be a boolean", "parallel_tool_calls");
-        }
-        if (!body.at("parallel_tool_calls").get<bool>()) {
-            bad_request("parallel_tool_calls=false cannot be enforced", "parallel_tool_calls",
-                        "parallel_tool_calls_not_supported");
         }
     }
     if (body.contains("top_logprobs") && !body.at("top_logprobs").is_null()) {
@@ -684,10 +1003,15 @@ void reject_server_managed_features(const Json& body) {
     if (body.contains("text") && !body.at("text").is_null()) {
         if (!body.at("text").is_object()) { bad_request("text must be an object", "text"); }
         for (auto it = body.at("text").begin(); it != body.at("text").end(); ++it) {
-            if (it.key() != "format" && !it.value().is_null()) {
+            if (it.key() != "format" && it.key() != "verbosity" && !it.value().is_null()) {
                 bad_request("text." + it.key() + " is not supported", "text",
                             "text_option_not_supported");
             }
+        }
+        if (body.at("text").contains("verbosity") &&
+            !body.at("text").at("verbosity").is_null() &&
+            !body.at("text").at("verbosity").is_string()) {
+            bad_request("text.verbosity must be a string or null", "text");
         }
         if (body.at("text").contains("format") && !body.at("text").at("format").is_null()) {
             const Json& format = body.at("text").at("format");
@@ -737,6 +1061,7 @@ ResponsesRequest parse_request_impl(const Json& body, const RequestLimits& limit
     out.store             = optional_bool(body, "store", true);
     out.stream            = optional_bool(body, "stream", false);
     out.generation.stream = out.stream;
+    out.generation.parallel_tool_calls = optional_bool(body, "parallel_tool_calls", true);
     validate_metadata(body, out);
     parse_tools(body, out);
     parse_tool_choice(body, out);
@@ -823,7 +1148,7 @@ Json response_common(const std::string& id, std::int64_t created_at,
         {"max_tool_calls", nullptr},
         {"metadata", request.metadata},
         {"model", request.generation.model},
-        {"parallel_tool_calls", true},
+        {"parallel_tool_calls", request.generation.parallel_tool_calls},
         {"previous_response_id",
          request.previous_response_id ? Json(*request.previous_response_id) : Json(nullptr)},
         {"reasoning", reasoning},
@@ -845,20 +1170,6 @@ BuiltResponse build_response(const std::string& id, std::int64_t created_at,
     const std::string status      = response_status(outcome.finish_reason);
     const std::string item_status = status == "completed" ? "completed" : "incomplete";
 
-    if (!outcome.reasoning.empty()) {
-        if (ids.reasoning.empty()) { ids.reasoning = new_response_item_id("rs"); }
-        const char* reasoning_status = (!outcome.text.empty() || !outcome.tool_calls.empty())
-                                           ? "completed"
-                                           : item_status.c_str();
-        built.output_items.push_back(
-            Json{{"id", ids.reasoning},
-                 {"type", "reasoning"},
-                 {"status", reasoning_status},
-                 {"summary", Json::array()},
-                 {"content",
-                  Json::array({Json{{"type", "reasoning_text"}, {"text", outcome.reasoning}}})}});
-    }
-
     if (!outcome.text.empty() || outcome.tool_calls.empty()) {
         if (ids.message.empty()) { ids.message = new_response_item_id("msg"); }
         built.output_items.push_back(
@@ -877,12 +1188,28 @@ BuiltResponse build_response(const std::string& id, std::int64_t created_at,
             ids.function_calls[index] = new_response_item_id("fc");
         }
         const ToolCall& call = outcome.tool_calls[index];
-        built.output_items.push_back(Json{{"id", ids.function_calls[index]},
-                                          {"type", "function_call"},
-                                          {"status", "completed"},
-                                          {"call_id", call.id},
-                                          {"name", call.name},
-                                          {"arguments", call.arguments_json}});
+        const char* call_type = call.tool_search ? "tool_search_call"
+                                : call.custom    ? "custom_tool_call"
+                                                 : "function_call";
+        Json item = {{"id", ids.function_calls[index]},
+                     {"type", call_type},
+                     {"status", "completed"},
+                     {"call_id", call.id}};
+        if (call.tool_search) {
+            Json arguments = Json::parse(call.arguments_json, nullptr, false);
+            if (arguments.is_discarded()) { arguments = Json::object(); }
+            item["execution"] = call.tool_search_execution.empty() ? "client"
+                                                                    : call.tool_search_execution;
+            item["arguments"] = std::move(arguments);
+        } else if (call.custom) {
+            item["name"]  = call.name;
+            item["input"] = call.custom_input;
+        } else {
+            item["name"]      = call.name;
+            item["arguments"] = call.arguments_json;
+        }
+        if (!call.namespace_name.empty()) { item["namespace"] = call.namespace_name; }
+        built.output_items.push_back(std::move(item));
     }
 
     ChatTurn history;
@@ -1139,14 +1466,8 @@ std::vector<std::string> ResponsesEventStream::reasoning_delta(const std::string
         throw std::logic_error("invalid reasoning delta event state");
     }
     if (text.empty()) { return {}; }
-    std::vector<std::string> events = impl_->ensure_reasoning();
     impl_->reasoning_text += text;
-    events.push_back(sse(
-        impl_->event("response.reasoning_text.delta", Json{{"item_id", impl_->ids.reasoning},
-                                                           {"output_index", impl_->reasoning_index},
-                                                           {"content_index", 0},
-                                                           {"delta", text}})));
-    return events;
+    return {};
 }
 
 std::vector<std::string> ResponsesEventStream::content_delta(const std::string& text) {
@@ -1154,8 +1475,8 @@ std::vector<std::string> ResponsesEventStream::content_delta(const std::string& 
         throw std::logic_error("invalid content delta event state");
     }
     if (text.empty()) { return {}; }
-    std::vector<std::string> events = impl_->close_reasoning(impl_->reasoning_text);
-    std::vector<std::string> added  = impl_->ensure_message();
+    std::vector<std::string> events;
+    std::vector<std::string> added = impl_->ensure_message();
     events.insert(events.end(), std::make_move_iterator(added.begin()),
                   std::make_move_iterator(added.end()));
     impl_->content_text += text;
@@ -1182,19 +1503,6 @@ ResponsesStreamFinish ResponsesEventStream::finish(const GenerationOutcome& outc
                                                std::make_move_iterator(events.begin()),
                                                std::make_move_iterator(events.end()));
     };
-    if (!outcome.reasoning.empty() && !impl_->reasoning_started) {
-        append(impl_->ensure_reasoning());
-        impl_->reasoning_text = outcome.reasoning;
-        finished.events_before_terminal.push_back(sse(impl_->event(
-            "response.reasoning_text.delta", Json{{"item_id", impl_->ids.reasoning},
-                                                  {"output_index", impl_->reasoning_index},
-                                                  {"content_index", 0},
-                                                  {"delta", outcome.reasoning}})));
-    }
-    const char* reasoning_status =
-        (!outcome.text.empty() || !outcome.tool_calls.empty()) ? "completed" : item_status;
-    append(impl_->close_reasoning(outcome.reasoning, reasoning_status));
-
     const bool needs_message = !outcome.text.empty() || outcome.tool_calls.empty();
     if (needs_message) {
         append(impl_->ensure_message());
@@ -1218,29 +1526,62 @@ ResponsesStreamFinish ResponsesEventStream::finish(const GenerationOutcome& outc
 
     impl_->ids.function_calls.reserve(outcome.tool_calls.size());
     for (const ToolCall& call : outcome.tool_calls) {
-        const std::string item_id = new_response_item_id("fc");
+        const std::string item_id =
+            new_response_item_id(call.tool_search ? "ts" : call.custom ? "ctc" : "fc");
         impl_->ids.function_calls.push_back(item_id);
         const int output_index = impl_->next_output_index++;
-        const Json added_item  = {{"id", item_id},           {"type", "function_call"},
-                                  {"status", "in_progress"}, {"call_id", call.id},
-                                  {"name", call.name},       {"arguments", ""}};
+        const char* call_type = call.tool_search ? "tool_search_call"
+                                : call.custom    ? "custom_tool_call"
+                                                 : "function_call";
+        Json added_item = {{"id", item_id},
+                           {"type", call_type},
+                           {"status", "in_progress"},
+                           {"call_id", call.id}};
+        if (call.tool_search) {
+            added_item["execution"] = call.tool_search_execution.empty()
+                                           ? "client"
+                                           : call.tool_search_execution;
+            added_item["arguments"] = Json::object();
+        } else {
+            added_item["name"] = call.name;
+            added_item[call.custom ? "input" : "arguments"] = "";
+        }
+        if (!call.namespace_name.empty()) { added_item["namespace"] = call.namespace_name; }
         finished.events_before_terminal.push_back(
             sse(impl_->event("response.output_item.added",
                              Json{{"output_index", output_index}, {"item", added_item}})));
-        if (!call.arguments_json.empty()) {
+        if (!call.custom && !call.tool_search && !call.arguments_json.empty()) {
             finished.events_before_terminal.push_back(sse(impl_->event(
                 "response.function_call_arguments.delta", Json{{"item_id", item_id},
                                                                {"output_index", output_index},
                                                                {"delta", call.arguments_json}})));
         }
-        finished.events_before_terminal.push_back(sse(impl_->event(
-            "response.function_call_arguments.done", Json{{"item_id", item_id},
-                                                          {"output_index", output_index},
-                                                          {"name", call.name},
-                                                          {"arguments", call.arguments_json}})));
-        const Json done_item = {{"id", item_id},         {"type", "function_call"},
-                                {"status", "completed"}, {"call_id", call.id},
-                                {"name", call.name},     {"arguments", call.arguments_json}};
+        if (!call.custom && !call.tool_search) {
+            Json done = {{"item_id", item_id},
+                         {"output_index", output_index},
+                         {"name", call.name},
+                         {"arguments", call.arguments_json}};
+            if (!call.namespace_name.empty()) { done["namespace"] = call.namespace_name; }
+            finished.events_before_terminal.push_back(
+                sse(impl_->event("response.function_call_arguments.done", std::move(done))));
+        }
+        Json search_arguments = Json::parse(call.arguments_json, nullptr, false);
+        if (search_arguments.is_discarded()) { search_arguments = Json::object(); }
+        Json done_item = {{"id", item_id},
+                          {"type", call_type},
+                          {"status", "completed"},
+                          {"call_id", call.id}};
+        if (call.tool_search) {
+            done_item["execution"] = call.tool_search_execution.empty()
+                                          ? "client"
+                                          : call.tool_search_execution;
+            done_item["arguments"] = std::move(search_arguments);
+        } else {
+            done_item["name"] = call.name;
+            done_item[call.custom ? "input" : "arguments"] =
+                call.custom ? call.custom_input : call.arguments_json;
+        }
+        if (!call.namespace_name.empty()) { done_item["namespace"] = call.namespace_name; }
         finished.events_before_terminal.push_back(
             sse(impl_->event("response.output_item.done",
                              Json{{"output_index", output_index}, {"item", done_item}})));

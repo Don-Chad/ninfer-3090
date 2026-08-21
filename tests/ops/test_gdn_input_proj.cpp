@@ -210,10 +210,12 @@ int run_nvfp4() {
     int failures = 0;
     failures += run_nvfp4_case(parent, 1, ops::LinearPolicy::A16Only);
     failures += run_nvfp4_case(parent, 4, ops::LinearPolicy::A16Only);
-    failures += run_nvfp4_case(parent, 1, ops::LinearPolicy::AllowA4);
-    failures += run_nvfp4_case(parent, 2, ops::LinearPolicy::AllowA4);
-    failures += run_nvfp4_case(parent, 17, ops::LinearPolicy::AllowA4);
-    failures += run_nvfp4_case(parent, 1024, ops::LinearPolicy::AllowA4);
+    if (cuda_supports_nvfp4_a4()) {
+        failures += run_nvfp4_case(parent, 1, ops::LinearPolicy::AllowA4);
+        failures += run_nvfp4_case(parent, 2, ops::LinearPolicy::AllowA4);
+        failures += run_nvfp4_case(parent, 17, ops::LinearPolicy::AllowA4);
+        failures += run_nvfp4_case(parent, 1024, ops::LinearPolicy::AllowA4);
+    }
     return failures;
 }
 

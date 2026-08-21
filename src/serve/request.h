@@ -69,17 +69,38 @@ struct ContentPart {
 };
 
 struct ToolDefinition {
+    // `name` is the model-facing identifier embedded in the Qwen template.
+    // The wire fields preserve Responses namespace/custom-tool semantics.
     std::string name;
+    std::string wire_name;
+    std::string wire_namespace;
     std::string description;
     std::string parameters_json;
     std::string definition_json; // normalized OpenAI function-tool object for Qwen prompt rendering
     bool strict = false;
+    bool custom = false;
+    bool tool_search = false;
+    std::string tool_search_execution;
 };
 
 struct ToolCall {
     std::string id;
     std::string name;
     std::string arguments_json;
+    std::string namespace_name;
+    std::string custom_input;
+    bool custom = false;
+    bool tool_search = false;
+    std::string tool_search_execution;
+};
+
+struct ToolCallRoute {
+    std::string model_name;
+    std::string wire_name;
+    std::string wire_namespace;
+    bool custom = false;
+    bool tool_search = false;
+    std::string tool_search_execution;
 };
 
 enum class ToolChoiceMode {
@@ -175,6 +196,7 @@ struct GenerationRequest {
     bool max_tokens_set = false;
     bool stream         = false;
     bool include_usage  = false;
+    bool parallel_tool_calls = true;
     std::optional<bool> enable_thinking; // non-standard extension; falls back to server default
     std::optional<RequestedReasoningEffort> reasoning_effort;
     std::string reasoning_effort_param = "reasoning_effort";

@@ -92,12 +92,13 @@ Size smart_resize_video(int frames, int height, int width, std::uint64_t min_pix
         checked_mul(static_cast<std::uint64_t>(h), static_cast<std::uint64_t>(w), "video area"),
         "video pixels");
     if (volume > max_pixels) {
-        const double beta = std::sqrt(static_cast<double>(frames) * height * width / max_pixels);
+        const double beta =
+            std::sqrt(static_cast<double>(padded_frames) * height * width / max_pixels);
         h = std::max(kFactor, static_cast<int>(std::floor(height / beta / kFactor)) * kFactor);
         w = std::max(kFactor, static_cast<int>(std::floor(width / beta / kFactor)) * kFactor);
     } else if (volume < min_pixels) {
         const double beta = std::sqrt(static_cast<double>(min_pixels) /
-                                      (static_cast<double>(frames) * height * width));
+                                      (static_cast<double>(padded_frames) * height * width));
         h                 = static_cast<int>(std::ceil(height * beta / kFactor)) * kFactor;
         w                 = static_cast<int>(std::ceil(width * beta / kFactor)) * kFactor;
     }
@@ -252,15 +253,26 @@ Prepared prepare_image(const ChatPart& part, const ProcessorOptions& options,
 }
 
 Prepared prepare_video(const ChatPart& part, const ProcessorOptions& options,
-                       const media::decode::Policy& policy, PreprocessStats& stats) {
+                       const media::decode::Policy& policy, std::uint64_t attention_budget,
+                       PreprocessStats& stats) {
     media::decode::Video video =
         media::decode::decode_video(part.media.bytes, policy, options.video_fps,
                                     options.video_min_frames, options.video_max_frames);
-    const Size size =
-        smart_resize_video(static_cast<int>(video.frames.size()), video.height, video.width,
-                           options.video_min_pixels, options.video_max_pixels);
     const bool pad_temporal = video.frames.size() % kTemporal != 0;
     const int gt            = static_cast<int>((video.frames.size() + kTemporal - 1) / kTemporal);
+    const std::uint64_t safe_spatial_patches = static_cast<std::uint64_t>(std::floor(
+        std::sqrt(static_cast<double>(attention_budget) / static_cast<double>(gt))));
+    const std::uint64_t safe_pixels_per_frame =
+        checked_mul(safe_spatial_patches, kPatch * kPatch, "safe video pixels");
+    const std::uint64_t safe_video_pixels = checked_mul(
+        safe_pixels_per_frame, static_cast<std::uint64_t>(gt * kTemporal), "safe video volume");
+    if (safe_video_pixels < options.video_min_pixels) {
+        throw ProcessorError(ProcessorErrorKind::BudgetExceeded,
+                             "vision attention budget cannot fit remaining video");
+    }
+    const Size size = smart_resize_video(
+        static_cast<int>(video.frames.size()), video.height, video.width, options.video_min_pixels,
+        std::min(options.video_max_pixels, safe_video_pixels));
     const int gh            = size.h / kPatch;
     const int gw            = size.w / kPatch;
     Prepared out;
@@ -411,8 +423,11 @@ void enforce_budget(const PreprocessStats& stats, const ProcessorOptions& option
                              "vision attention pairs exceed processor budget");
     }
     if (stats.prompt_tokens > options.max_prompt_tokens) {
-        throw ProcessorError(ProcessorErrorKind::BudgetExceeded,
-                             "prompt tokens exceed processor budget");
+        throw ProcessorError(
+            ProcessorErrorKind::BudgetExceeded,
+            "prompt tokens exceed processor budget (required " +
+                std::to_string(stats.prompt_tokens) + ", maximum " +
+                std::to_string(options.max_prompt_tokens) + ")");
     }
 }
 
@@ -581,12 +596,32 @@ ProcessedInput Processor::process(const std::vector<ChatMessage>& messages,
     items.reserve(parts.size());
     PreprocessStats stats;
     stats.media_items = parts.size();
-    for (const ChatPart* part : parts) {
+    for (std::size_t index = 0; index < parts.size(); ++index) {
+        const ChatPart* part = parts[index];
+        ProcessorOptions item_options = options_;
+        const std::uint64_t remaining_attention =
+            stats.attention_pairs < options_.max_attention_pairs
+                ? options_.max_attention_pairs - stats.attention_pairs
+                : 0;
+        const std::uint64_t remaining_items = parts.size() - index;
+        const std::uint64_t per_item_attention = remaining_attention / remaining_items;
+        if (part->kind == ChatPartKind::Image) {
+            const std::uint64_t safe_spatial_patches = static_cast<std::uint64_t>(
+                std::floor(std::sqrt(static_cast<double>(per_item_attention))));
+            const std::uint64_t safe_pixels =
+                checked_mul(safe_spatial_patches, kPatch * kPatch, "safe image pixels");
+            if (safe_pixels < item_options.image_min_pixels) {
+                throw ProcessorError(ProcessorErrorKind::BudgetExceeded,
+                                     "vision attention budget cannot fit remaining images");
+            }
+            item_options.image_max_pixels =
+                std::min(item_options.image_max_pixels, safe_pixels);
+        }
         Prepared media;
         try {
             media = part->kind == ChatPartKind::Image
-                        ? prepare_image(*part, options_, policy, stats)
-                        : prepare_video(*part, options_, policy, stats);
+                        ? prepare_image(*part, item_options, policy, stats)
+                        : prepare_video(*part, item_options, policy, per_item_attention, stats);
         } catch (const media::decode::Error& error) {
             if (error.kind() == media::decode::ErrorKind::BudgetExceeded) {
                 throw ProcessorError(ProcessorErrorKind::BudgetExceeded, error.what());

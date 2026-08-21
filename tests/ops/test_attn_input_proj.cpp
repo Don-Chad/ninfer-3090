@@ -300,9 +300,11 @@ int run_nvfp4_target() {
     for (const std::int32_t tokens : {1, 2, 4, 8, 16, 20, 32, 33}) {
         failures += run_nvfp4_target_case(parent, tokens);
     }
-    failures += run_nvfp4_target_case(parent, 4, ops::LinearPolicy::AllowA4);
-    failures += run_nvfp4_target_case(parent, 17, ops::LinearPolicy::AllowA4);
-    failures += run_nvfp4_target_case(parent, 1024, ops::LinearPolicy::AllowA4);
+    if (cuda_supports_nvfp4_a4()) {
+        failures += run_nvfp4_target_case(parent, 4, ops::LinearPolicy::AllowA4);
+        failures += run_nvfp4_target_case(parent, 17, ops::LinearPolicy::AllowA4);
+        failures += run_nvfp4_target_case(parent, 1024, ops::LinearPolicy::AllowA4);
+    }
     return failures;
 }
 

@@ -38,6 +38,66 @@ server must accept image or video input. Speculative residency is likewise froze
 `--lm-head-draft` additionally loads the optimized proposal head. DFlash is 35B-A3B text-only and
 cannot be combined with `--vision`. A later request cannot enable a capability omitted at startup.
 
+### Owned RTX 3090 Huihui candidate
+
+The owned `MaxKerkula/ninfer-3090` fork maintains the exact abliterated candidate separately from
+the existing production router. Its loaded artifact and public model slug are both exact:
+`huihui_qwen3_8_27b_abliterated.ninfer` and `huihui-qwen3.8-27b-abliterated`. On the RTX 3090
+candidate, use the `sm_86` build and keep Vision and MTP resident at startup:
+
+```text
+artifact: C:\Users\MaxKe\ninfer-3090\models\huihui_qwen3_8_27b_abliterated.ninfer
+endpoint: http://127.0.0.1:8090/v1
+server:   --max-context 65536 --kv-capacity auto --max-concurrency 1
+          --max-pending-requests 16 --prefill-chunk 1024 --kv-dtype rk8v4
+          --spec mtp --draft-tokens 3 --lm-head-draft --vision --no-cuda-graph
+```
+
+The Codex catalog intentionally budgets this candidate at 32768 tokens even though the server has
+a 65536-token logical limit. That leaves server-side tokenizer and prompt headroom; it is not a
+claim that every 65536-token client request has been qualified. The candidate uses port 8090 and
+its own request log so it can be stopped, rebuilt, or rolled back without changing the production
+router. This profile is machine-specific. Upstream NInfer examples and non-SM86 performance claims
+remain compatibility references, not deployment guarantees. Codex Remote and production promotion
+require their own end-to-end evidence and are not implied by this candidate configuration.
+
+### RTX 3090 Huihui MTP-depth measurement
+
+`--draft-tokens 3` is the provisional candidate default for the exact Huihui artifact on this RTX
+3090. It is a measured throughput choice, not a general quality or compatibility claim. The
+matched non-thinking sweep used four fixed prompts, greedy decoding, 928 completion tokens per
+mode, `rk8v4` KV, `--no-prefix-reuse`, `--vision`, `--no-cuda-graph`, and a 4096-token
+context/KV capacity. It measures committed decode tokens per second only.
+The recorded result is
+[`benchmark_results/huihui_rtx3090_mtp_nonthinking_20260820/summary.json`](../benchmark_results/huihui_rtx3090_mtp_nonthinking_20260820/summary.json).
+
+| MTP depth | Committed decode tok/s | Change from K3 |
+|---|---:|---:|
+| K0 | 34.9239 | -53.2% |
+| K2 | 66.2380 | -11.2% |
+| **K3** | **74.6566** | baseline |
+| K4 | 69.7622 | -6.6% |
+
+K3 is 113.8% faster than K0, 12.7% faster than K2, and 7.0% faster than K4 on this sample.
+Increasing beyond K3 added speculative work faster than it added accepted committed tokens: K4 is
+therefore slower in the matched sweep. The earlier thinking-on K0--K5 sweep also put K4 and K5
+below K3, but it is exploratory and is not quality evidence or part of this default decision.
+
+Reproduce a fresh non-thinking result with a new output directory:
+
+```bash
+python tools/bench/run_huihui_mtp_sweep.py \
+  --serve build-huihui-sm86-vcpkg/apps/ninfer-serve.exe \
+  --artifact ../models/huihui_qwen3_8_27b_abliterated.ninfer \
+  --draft-depths 0,2,3,4 \
+  --output benchmark_results/huihui_rtx3090_mtp_nonthinking_repro
+```
+
+The K3 result matched K0 response hashes for prompts 1, 2, and 4. Prompt 3 differed. Treat that
+as a deterministic numeric/path divergence that still needs explanation, not as output parity or a
+general quality result. Re-run the complete quality, tool, Vision, lifecycle, and Remote gates
+before promoting this candidate.
+
 ## Endpoints
 
 | Method and path | Behavior |
@@ -194,8 +254,8 @@ wire response contains typed `output` Items.
 | `chat_template_kwargs.preserve_thinking` | optional boolean controlling whether closed-turn reasoning remains in reconstructed prompts |
 | `preserve_thinking` | top-level alias for the same option; conflicting values are rejected |
 | `text.format` | omitted or `{"type":"text"}` only |
-| `tools` | flat Responses function definitions; see below |
-| `tool_choice` | `auto` or `none` |
+| `tools` | function, custom, namespace, and client `tool_search` definitions; see below |
+| `tool_choice` | `auto`, `none`, `required`, or a named function/custom selection; `required` and named selections require a loaded tool |
 | `parallel_tool_calls` | omitted or `true` |
 | `truncation` | omitted or `disabled`; overlong input fails instead of silently dropping Items |
 | `top_logprobs` | omitted or `0` |
@@ -216,11 +276,13 @@ String `input` is normalized to one user `message` with an `input_text` part. Ar
 | `message` | roles `user`, `assistant`, `system`, and `developer`; string content or typed content array |
 | `input_text` | message content part containing string `text` |
 | `output_text` | assistant-message replay part containing string `text` |
-| `input_image` | user-message part with HTTP(S) or data-URI `image_url`; detail omitted or `auto`; requires server `--vision` |
+| `input_image` | user-message part with HTTP(S) or data-URI `image_url`; `detail` may be omitted or `auto`, `low`, `high`, or `original`; requires server `--vision` |
 | `input_video` | NInfer extension with HTTP(S) or data-URI `video_url`; requires server `--vision` |
 | `reasoning` | raw replay Item with an empty `summary` and `reasoning_text` content parts |
 | `function_call` | completed assistant call with optional `id`, and required `call_id`, `name`, and JSON-object string `arguments` |
-| `function_call_output` | completed tool result with required `call_id` and string `output` |
+| `function_call_output` | completed tool result with required `call_id` and string `output`, or a non-empty content array of `input_text` and `input_image` parts |
+| `custom_tool_call` / `custom_tool_call_output` | completed custom call and result; the call carries raw string `input`, and the result uses the same string/content-array output grammar as `function_call_output` |
+| `tool_search_call` / `tool_search_output` | completed client-side discovery call and its returned tool list; see below |
 
 Adjacent function-call Items are grouped into one assistant history turn. A reasoning Item attaches
 to the following assistant message or function call. Input Item IDs are preserved when supplied and
@@ -230,8 +292,10 @@ System and developer message Items retain their positions in the input array. To
 `instructions` is represented as a leading developer turn for the current request; target-specific
 role lowering occurs only in the Qwen family frontend.
 
-`input_file`, `input_audio`, image `file_id`, non-`auto` image detail, reasoning summaries or
-encrypted reasoning, message `phase`, and other Item/content types are not supported. HTTP media
+`input_file`, `input_audio`, image `file_id`, reasoning summaries or encrypted reasoning, message
+`phase`, and other Item/content types are not supported. The accepted `input_image.detail` values
+are syntax and compatibility hints; NInfer applies the loaded artifact's native Vision preprocessor
+rather than an OpenAI-hosted low/high/original resampling policy. HTTP media
 URLs stored in a response chain are fetched again when that chain is continued; use data URIs when
 the historical media bytes must be immutable.
 
@@ -253,12 +317,47 @@ Responses function definitions are flat rather than Chat Completions' nested `fu
 }
 ```
 
-NInfer renders these definitions in the Qwen prompt and parses model output into separate
+NInfer renders loaded definitions in the Qwen prompt and parses model output into separate
 `function_call` output Items. Each output has a protocol Item `id` (`fc_...`) and a distinct
 `call_id` (`call_...`). The client executes the function and sends a `function_call_output` Item in
-a later request. NInfer does not execute functions or enforce JSON Schema through constrained
-decoding, so `strict:true`, `tool_choice:required`, named tool choice, hosted tools, MCP tools, and
-custom free-form tools are rejected.
+a later request. NInfer does not execute functions or enforce the supplied JSON Schema through
+constrained decoding; `strict` is accepted as advisory and emitted calls must still be validated by
+the client.
+
+Namespaces preserve the Responses wire identity while creating a Qwen-safe model-facing name. Use
+`functions` for a flat name, or a named namespace with child `function` or `custom` definitions:
+
+```json
+{
+  "type": "namespace",
+  "name": "github",
+  "description": "Repository operations",
+  "tools": [
+    {"type": "function", "name": "list_repositories", "parameters": {"type": "object"}},
+    {"type": "custom", "name": "apply_patch", "description": "Apply a unified diff",
+     "format": {"type": "grammar", "syntax": "lark", "definition": "start: /[\\s\\S]+/"}}
+  ]
+}
+```
+
+The model sees a collision-safe encoded tool name such as `github__list_repositories`; generated
+items retain `namespace: "github"` and the original `name`. A custom call is emitted as
+`custom_tool_call` with raw string `input` (rather than JSON-string `arguments`). Its optional
+`format` is `{"type":"text"}` or a grammar object containing `syntax` and `definition`; the
+grammar informs the model prompt but is not constrained decoding.
+
+Codex can avoid injecting a large tool catalog by declaring client-side discovery:
+
+```json
+{"type":"tool_search","execution":"client"}
+```
+
+NInfer emits `tool_search_call` with `execution: "client"`, a `call_id`, and object `arguments`.
+The client returns a `tool_search_output` input Item with the same `call_id`, `execution: "client"`,
+and a `tools` array of discovered function/custom definitions or namespaces. Only the returned
+definitions become model-callable on the next turn. Definitions marked `defer_loading: true` are
+also retained as discovery metadata rather than expanded into the first prompt. This is client-side
+tool discovery, not execution of an OpenAI-hosted or MCP tool by NInfer.
 
 ### Response object and usage
 
@@ -366,7 +465,8 @@ curl http://127.0.0.1:8080/v1/responses/input_tokens \
 Unsupported Create fields include Conversations, prompt templates, context management, hosted
 moderation, prompt-cache controls, safety/user identifiers, Structured Outputs/JSON mode,
 non-empty `include`, background execution, compaction, files/audio, and OpenAI-hosted/MCP/custom
-tools. These are compatibility boundaries, not silently accepted placeholders.
+tool execution. Client-defined function/custom tools and client-side `tool_search` are supported as
+described above. These are compatibility boundaries, not silently accepted placeholders.
 
 ## Anthropic Messages
 

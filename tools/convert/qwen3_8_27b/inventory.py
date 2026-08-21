@@ -11,6 +11,8 @@ from tools.convert.qwen3_6_27b import inventory as qwen3_6_inventory
 
 
 MODEL_ID = "qwen3.8-27b"
+HUIHUI_ABLITERATED_MODEL_ID = "huihui-qwen3.8-27b-abliterated"
+MODEL_IDS = (MODEL_ID, HUIHUI_ABLITERATED_MODEL_ID)
 WEIGHTS_ID = "groupwise-int"
 TARGET_KEY = "qwen3_8_27b"
 

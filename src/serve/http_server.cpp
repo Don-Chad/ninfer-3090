@@ -185,7 +185,10 @@ void HttpServer::stop_stats_reporter() {
 
 void HttpServer::register_routes() {
     server_.set_error_handler([](const httplib::Request& req, httplib::Response& res) {
-        if (res.status != 413) { return; }
+        // cpp-httplib invokes the error handler for route-generated 4xx responses
+        // as well as parser failures. Preserve the more specific media-budget
+        // error already serialized by the Responses/Chat handler.
+        if (res.status != 413 || !res.body.empty()) { return; }
         ApiError error;
         error.status  = 413;
         error.type    = "invalid_request_error";

@@ -3,9 +3,11 @@
 from .inventory import (
     ALIAS_SPECS,
     FORMAT_COUNTS,
+    HUIHUI_ABLITERATED_MODEL_ID,
     LAYOUT_COUNTS,
     LOGICAL_ROW_VIEW_SPECS,
     MODEL_ID,
+    MODEL_IDS,
     OBJECT_SPECS,
     RESOURCE_SPECS,
     TARGET_KEY,
@@ -15,9 +17,11 @@ from .inventory import (
 __all__ = [
     "ALIAS_SPECS",
     "FORMAT_COUNTS",
+    "HUIHUI_ABLITERATED_MODEL_ID",
     "LAYOUT_COUNTS",
     "LOGICAL_ROW_VIEW_SPECS",
     "MODEL_ID",
+    "MODEL_IDS",
     "OBJECT_SPECS",
     "RESOURCE_SPECS",
     "TARGET_KEY",

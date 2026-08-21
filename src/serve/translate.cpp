@@ -1,5 +1,7 @@
 #include "serve/translate.h"
 
+#include <nlohmann/json.hpp>
+
 #include <cmath>
 #include <cstdint>
 #include <random>
@@ -83,19 +85,34 @@ ninfer::SamplingOverrides resolve_sampling_overrides(const SamplingParams& reque
 }
 
 std::vector<std::string> effective_tool_jsons(const GenerationRequest& request) {
+    const auto with_choice_instruction = [&](const ToolDefinition& tool) {
+        nlohmann::json definition = nlohmann::json::parse(tool.definition_json);
+        nlohmann::json& function  = definition.at("function");
+        std::string description   = function.value("description", "");
+        const bool named          = request.tool_choice.mode == ToolChoiceMode::Named;
+        const std::string mandate =
+            named ? "MANDATORY: Call this function. Do not answer with ordinary text."
+                  : "MANDATORY: Call exactly one available function. Do not answer with ordinary text.";
+        function["description"] = mandate + (description.empty() ? "" : "\n\n" + description);
+        return definition.dump();
+    };
     std::vector<std::string> tools;
     if (!request.uses_tools()) { return tools; }
     if (request.tool_choice.mode == ToolChoiceMode::Named) {
         for (const ToolDefinition& tool : request.tools) {
             if (tool.name == request.tool_choice.name) {
-                tools.push_back(tool.definition_json);
+                tools.push_back(with_choice_instruction(tool));
                 break;
             }
         }
         return tools;
     }
     tools.reserve(request.tools.size());
-    for (const ToolDefinition& tool : request.tools) { tools.push_back(tool.definition_json); }
+    for (const ToolDefinition& tool : request.tools) {
+        tools.push_back(request.tool_choice.mode == ToolChoiceMode::Required
+                            ? with_choice_instruction(tool)
+                            : tool.definition_json);
+    }
     return tools;
 }
 

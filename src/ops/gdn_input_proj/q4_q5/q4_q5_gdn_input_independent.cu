@@ -28,7 +28,7 @@ using Q4GdnSimtR8C8Schedule = Q4RowSplitSimtGemmSchedule<8, 8, 16, 2, Cache::ca,
 void launch_q4_gemv(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream) {
     using Schedule = Q4GemvR1W8DirectSchedule;
     const dim3 grid(static_cast<unsigned>(div_up(kQkRows, Schedule::kRowsPerCta)), 1u, 1u);
-    constexpr dim3 block(static_cast<unsigned>(Schedule::kThreads), 1u, 1u);
+    const dim3 block(static_cast<unsigned>(Schedule::kThreads), 1u, 1u);
     q4_rowsplit_gemv_kernel<Schedule><<<grid, block, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(weight.qdata),
         static_cast<const std::uint8_t*>(weight.scales), static_cast<__nv_bfloat16*>(out.data),

@@ -104,11 +104,20 @@ intermediate artifacts are excluded unless requested or themselves the deliverab
 
 ## Current product contract
 
+This checkout is the owned `MaxKerkula/ninfer-3090` fork. Its active hardware authority is the
+single NVIDIA GeForce RTX 3090 workstation and `sm_86` CUDA build. Upstream NInfer documentation,
+source history, and generalized hardware claims are useful compatibility references, but they are
+not performance, deployment, or promotion authority for this fork. Do not turn an upstream result
+on another GPU, CUDA toolchain, artifact, or serving stack into an RTX 3090 claim without a matching
+local check.
+
 NInfer is a from-scratch C++/CUDA inference engine for maximum single-GPU inference performance on
 a small set of explicitly registered checkpoint artifacts. The supported identities are
-`qwen3.6-27b/groupwise-int`, `qwen3.6-27b/nvfp4`, `qwen3.8-27b/groupwise-int`, and
-`qwen3.6-35b-a3b/groupwise-int`. The current implementation is compiled for `sm_120a` and tuned
-and measured on NVIDIA GeForce RTX 5090. All identities execute Text, image/video Vision, MTP,
+`qwen3.6-27b/groupwise-int`, `qwen3.6-27b/nvfp4`, `qwen3.8-27b/groupwise-int`,
+`huihui-qwen3.8-27b-abliterated/groupwise-int`, and `qwen3.6-35b-a3b/groupwise-int`. This owned
+fork is compiled and tuned for `sm_86` on NVIDIA GeForce RTX 3090. General upstream support may
+cover other architectures, but those configurations are not maintained performance targets here.
+All identities execute Text, image/video Vision, MTP,
 prefix reuse, CLI, OpenAI/Anthropic serving, and measurement through the same public `.ninfer`
 Engine route; the 35B-A3B target additionally supports text-only DFlash.
 
@@ -120,6 +129,11 @@ platform are outside the current product. This is a local, single-owner project.
 generated artifacts, and the local workflow are trusted.
 Requirements derived from a different workload, trust model, or deployment model are out of scope
 until that product contract is explicitly changed.
+
+The Huihui abliterated deployment is a candidate lane, not a replacement for the existing production
+router. Keep its artifact, scheduled startup, port, request log, and Codex catalog isolated until
+the relevant local lifecycle and end-to-end checks explicitly promote it. In particular, do not
+claim cloud passthrough or Codex Remote behavior merely from local Responses compatibility tests.
 
 The 27B and 35B-A3B execution packages are peer compile-time Variants of one identity-free Qwen3.6
 family runtime. The family owns the shared `SequencePlan<Variant>`, `RequestPlan<Variant>`, and
@@ -310,7 +324,7 @@ These are conventional project resources, not a checklist of resources every tas
 | conversion report | `out/qwen3_6_27b.ninfer.conversion.json` |
 | normal build | `build/` |
 | profiler output | `profiles/ncu/`, `profiles/nsys/`, `profiles/bench/` |
-| hardware/toolchain | RTX 5090, `sm_120a`, CUDA 13.1 |
+| hardware/toolchain | NVIDIA GeForce RTX 3090, `sm_86`, selected local CUDA/MSVC toolchain |
 
 Use the selected Python 3.11 interpreter explicitly. Do not install or upgrade dependencies unless
 the task requires it. Never select an artifact by glob, modification time, or an unqualified

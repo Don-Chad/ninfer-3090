@@ -1,4 +1,5 @@
 #include "ops/linear/linear_test_common.h"
+#include "ops/op_tester.h"
 
 #include <array>
 #include <exception>
@@ -49,6 +50,10 @@ int run_nvfp4_a4() {
 int main() {
     if (!ninfer::test::linear::cuda_available()) {
         std::cout << "SKIP: no usable CUDA device\n";
+        return 77;
+    }
+    if (!ninfer::test::cuda_supports_nvfp4_a4()) {
+        std::cout << "SKIP: NVFP4 A4 requires an sm_120-class GPU\n";
         return 77;
     }
     try {

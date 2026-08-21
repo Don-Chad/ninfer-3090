@@ -5,6 +5,8 @@
 #include "serve/tool_call_parser.h"
 #include "serve/translate.h"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -67,6 +69,15 @@ using Clock                              = std::chrono::steady_clock;
 constexpr std::size_t kMaximumMediaItems = 16;
 
 [[noreturn]] void throw_preparation_cancelled();
+
+[[noreturn]] void throw_tool_choice_not_satisfied() {
+    ApiError error;
+    error.status  = 502;
+    error.type    = "server_error";
+    error.code    = "tool_choice_not_satisfied";
+    error.message = "the model did not satisfy the requested tool_choice";
+    throw ApiException(std::move(error));
+}
 
 [[noreturn]] void throw_media_error(const ninfer::product::media_acquire::Error& exception) {
     ApiError error;
@@ -334,7 +345,16 @@ PreparedRequest GenerationService::prepare(const GenerationRequest& request,
     ninfer::RequestOptions request_options = to_request_options(request, options_);
     prepared.include_usage                 = request.include_usage;
     prepared.tool_capable                  = request.uses_tools() || request.has_tool_history();
+    prepared.parallel_tool_calls           = request.parallel_tool_calls;
+    prepared.tool_choice                   = request.tool_choice;
     prepared.tool_name_max_length          = request.tool_name_max_length;
+    prepared.tool_routes.reserve(request.tools.size());
+    for (const ToolDefinition& tool : request.tools) {
+        prepared.tool_routes.push_back(
+            ToolCallRoute{tool.name, tool.wire_name.empty() ? tool.name : tool.wire_name,
+                          tool.wire_namespace, tool.custom, tool.tool_search,
+                          tool.tool_search_execution});
+    }
     const ResolvedPromptSemantics semantics =
         resolve_prompt_semantics(request, options_, prompt_capabilities_);
     prepared.enable_thinking                   = semantics.enable_thinking;
@@ -465,7 +485,44 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
             parse_qwen_tool_call_output(outcome.text, prepared.tool_name_max_length);
         outcome.text          = std::move(parsed.content);
         is_tool_call_response = parsed.is_tool_call_response;
-        if (is_tool_call_response) { outcome.tool_calls = std::move(parsed.tool_calls); }
+        if (is_tool_call_response) {
+            outcome.tool_calls = std::move(parsed.tool_calls);
+            if (!prepared.parallel_tool_calls && outcome.tool_calls.size() > 1) {
+                outcome.tool_calls.resize(1);
+            }
+            if (prepared.tool_choice.mode == ToolChoiceMode::Named &&
+                std::ranges::any_of(outcome.tool_calls, [&](const ToolCall& call) {
+                    return call.name != prepared.tool_choice.name;
+                })) {
+                throw_tool_choice_not_satisfied();
+            }
+            for (ToolCall& call : outcome.tool_calls) {
+                const auto route = std::ranges::find_if(
+                    prepared.tool_routes,
+                    [&](const ToolCallRoute& candidate) { return candidate.model_name == call.name; });
+                if (route == prepared.tool_routes.end()) { continue; }
+                call.name           = route->wire_name;
+                call.namespace_name = route->wire_namespace;
+                call.custom         = route->custom;
+                call.tool_search    = route->tool_search;
+                call.tool_search_execution = route->tool_search_execution;
+                if (call.custom) {
+                    const nlohmann::json arguments =
+                        nlohmann::json::parse(call.arguments_json, nullptr, false);
+                    if (arguments.is_object() && arguments.contains("input") &&
+                        arguments.at("input").is_string()) {
+                        call.custom_input = arguments.at("input").get<std::string>();
+                    } else {
+                        call.custom_input = call.arguments_json;
+                    }
+                }
+            }
+        }
+        if ((prepared.tool_choice.mode == ToolChoiceMode::Required ||
+             prepared.tool_choice.mode == ToolChoiceMode::Named) &&
+            outcome.tool_calls.empty()) {
+            throw_tool_choice_not_satisfied();
+        }
     }
     if (output_sink) {
         outcome.streamed_content_bytes = output_sink->finish(is_tool_call_response);
