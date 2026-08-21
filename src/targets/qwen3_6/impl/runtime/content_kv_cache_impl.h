@@ -46,7 +46,14 @@ public:
         config.text_page_bytes    = text_geometry_.packed_page_bytes;
         config.backend_page_bytes = has_backend_ ? backend_geometry_.packed_page_bytes : 0;
         config.anchor_state_bytes = anchor_state_bytes();
-        store_                    = std::make_unique<KvHostCache>(config);
+        const std::size_t floor_bytes =
+            config.anchor_state_bytes + 16 * config.text_page_bytes + config.backend_page_bytes;
+        if (budget_bytes < floor_bytes) {
+            throw std::invalid_argument(
+                "--kv-host-cache-mib is below the usable minimum for this model (need at least " +
+                std::to_string((floor_bytes >> 20) + 1) + " MiB)");
+        }
+        store_ = std::make_unique<KvHostCache>(config);
     }
 
     [[nodiscard]] const KvHostCache::Stats& stats() const noexcept { return store_->stats(); }
@@ -98,7 +105,8 @@ public:
                          work, device);
         }
         const auto slices = anchor_state_slices(
-            LinearStateSlots::current_state_slot(sequence.lane, max_concurrency_));
+            LinearStateSlots::current_state_slot(sequence.lane, max_concurrency_),
+            sequence.turn_checkpoint_hidden);
         store_->restore_anchor_state(plan.anchor_key, slices, device.stream);
         store_->note_hit(plan.frontier);
         store_->touch_segment(plan.anchor_key);
@@ -120,8 +128,8 @@ public:
         if (!store_->find_anchor(chain.final_key)) {
             copied |= stage_segment(
                 sequence, chain, frontier, chain.final_key, backend_tokens,
-                LinearStateSlots::current_state_slot(sequence.lane, max_concurrency_), work,
-                device);
+                LinearStateSlots::current_state_slot(sequence.lane, max_concurrency_),
+                sequence.tail_hidden, work, device);
         } else {
             store_->touch_segment(chain.final_key);
         }
@@ -134,15 +142,19 @@ public:
                     sequence, chain, checkpoint, checkpoint_key,
                     std::min(backend_tokens, checkpoint),
                     LinearStateSlots::turn_checkpoint_state_slot(sequence.lane, max_concurrency_),
-                    work, device);
+                    sequence.turn_checkpoint_hidden, work, device);
             }
         }
         if (copied) { CUDA_CHECK(cudaStreamSynchronize(device.stream)); }
     }
 
 private:
+    [[nodiscard]] static std::size_t boundary_hidden_bytes() {
+        return static_cast<std::size_t>(TextConfig::hidden) * 2; // BF16 [hidden, 1]
+    }
+
     [[nodiscard]] std::size_t anchor_state_bytes() const {
-        std::size_t bytes = 0;
+        std::size_t bytes = boundary_hidden_bytes();
         for (std::uint32_t layer = 0; layer < linear_.layer_count(); ++layer) {
             bytes += slot_bytes(linear_.conv[layer]);
             bytes += slot_bytes(linear_.recurrent[layer]);
@@ -157,9 +169,12 @@ private:
         return total / static_cast<std::size_t>(linear_.slot_count());
     }
 
-    [[nodiscard]] std::vector<KvHostCopySlice> anchor_state_slices(std::int32_t slot) const {
+    // The MTP BeforeSuffix bridge consumes the boundary hidden state after a restore; it is
+    // part of the anchor so a displaced lane never bridges from another trajectory's tensor.
+    [[nodiscard]] std::vector<KvHostCopySlice> anchor_state_slices(std::int32_t slot,
+                                                                   const Tensor& hidden) const {
         std::vector<KvHostCopySlice> slices;
-        slices.reserve(2ULL * linear_.layer_count() + 1);
+        slices.reserve(2ULL * linear_.layer_count() + 2);
         for (std::uint32_t layer = 0; layer < linear_.layer_count(); ++layer) {
             for (const Tensor* tensor : {&linear_.conv[layer], &linear_.recurrent[layer]}) {
                 const std::size_t bytes = slot_bytes(*tensor);
@@ -168,6 +183,7 @@ private:
                     bytes});
             }
         }
+        slices.push_back(KvHostCopySlice{hidden.data, boundary_hidden_bytes()});
         slices.push_back(KvHostCopySlice{sentinel_.p, 16});
         return slices;
     }
@@ -224,8 +240,8 @@ private:
     [[nodiscard]] bool stage_segment(const SequenceState& sequence,
                                      const content_chain::Chain& chain, std::uint32_t frontier,
                                      std::uint64_t anchor_key, std::uint32_t backend_tokens,
-                                     std::int32_t state_slot, WorkspaceArena& work,
-                                     DeviceContext& device) {
+                                     std::int32_t state_slot, const Tensor& boundary_hidden,
+                                     WorkspaceArena& work, DeviceContext& device) {
         const std::vector<std::uint64_t> text_keys =
             page_keys_for(KvHostCache::PageKind::Text, chain, frontier, anchor_key);
         const std::vector<std::uint64_t> backend_keys =
@@ -244,7 +260,8 @@ private:
         meta.rope_delta     = sequence.rope_delta;
         const bool staged_anchor =
             staged_text && staged_backend &&
-            store_->stage_anchor(anchor_key, meta, anchor_state_slices(state_slot), device.stream);
+            store_->stage_anchor(anchor_key, meta,
+                                 anchor_state_slices(state_slot, boundary_hidden), device.stream);
         if (!staged_anchor) {
             store_->abort_segment();
             return false;

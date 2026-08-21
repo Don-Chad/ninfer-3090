@@ -1581,7 +1581,8 @@ runtime::PrefillStepResult ProgramImplCore::advance_prefill(SequenceState& seque
                 throw std::logic_error("staged MTP bridge is outside the reusable suffix");
             }
             mark_workspace_usage(workspace_plan.mtp_prefill);
-            const Tensor& previous_hidden = staged.reuse == ReusePath::RestoreTurnCheckpoint
+            const Tensor& previous_hidden = staged.reuse == ReusePath::RestoreTurnCheckpoint ||
+                                                    staged.reuse == ReusePath::ContentRestore
                                                 ? sequence.turn_checkpoint_hidden
                                                 : sequence.tail_hidden;
             const schedule::MtpBridgeInput bridge{

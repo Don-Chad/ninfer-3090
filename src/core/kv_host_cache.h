@@ -118,6 +118,7 @@ private:
     table(PageKind kind) const noexcept;
     [[nodiscard]] bool reserve_slot(std::size_t bytes, Slot* out);
     void release_slot(const Slot& slot) noexcept;
+    void unpin_staged() noexcept;
     [[nodiscard]] bool evict_one_idle_segment();
     void drop_segment(std::uint64_t chain_key, Segment& segment) noexcept;
     static void copy_slices(std::byte* host, std::span<const KvHostCopySlice> device_slices,
@@ -144,7 +145,9 @@ private:
         Slot slot;
     };
     std::vector<StagedPage> staged_pages_;
+    std::vector<std::pair<PageKind, std::uint64_t>> staged_pins_;
     std::optional<std::pair<std::uint64_t, Segment>> staged_anchor_;
+    std::size_t carved_bytes_ = 0;
 };
 
 } // namespace ninfer

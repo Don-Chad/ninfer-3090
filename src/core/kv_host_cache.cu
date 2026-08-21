@@ -84,21 +84,38 @@ bool KvHostCache::reserve_slot(std::size_t bytes, Slot* out) {
             used_bytes_ += bytes;
             return true;
         }
-        const std::size_t carved = chunks_.size() * kChunkBytes;
-        if (carved + kChunkBytes <= config_.budget_bytes) {
+        const std::size_t chunk_bytes =
+            std::min(kChunkBytes, config_.budget_bytes - carved_bytes_);
+        if (chunk_bytes >= bytes) {
             void* host = nullptr;
-            if (cudaHostAlloc(&host, kChunkBytes, cudaHostAllocPortable) != cudaSuccess) {
+            if (cudaHostAlloc(&host, chunk_bytes, cudaHostAllocPortable) != cudaSuccess) {
                 cudaGetLastError();
                 if (!evict_one_idle_segment()) { return false; }
                 continue;
             }
             chunks_.push_back(static_cast<std::byte*>(host));
+            carved_bytes_ += chunk_bytes;
             next_chunk_offset_  = 0;
-            current_chunk_left_ = kChunkBytes;
+            current_chunk_left_ = chunk_bytes;
             continue;
         }
         if (!evict_one_idle_segment()) { return false; }
     }
+}
+
+void KvHostCache::unpin_staged() noexcept {
+    for (const auto& [kind, key] : staged_pins_) {
+        auto& entries    = table(kind);
+        const auto entry = entries.find(key);
+        if (entry == entries.end()) { continue; }
+        if (--entry->second.refcount == 0) {
+            release_slot(entry->second.slot);
+            stats_.stored_bytes -= entry->second.slot.bytes;
+            --stats_.stored_pages;
+            entries.erase(entry);
+        }
+    }
+    staged_pins_.clear();
 }
 
 void KvHostCache::release_slot(const Slot& slot) noexcept {
@@ -172,7 +189,13 @@ void KvHostCache::copy_slices(std::byte* host, std::span<const KvHostCopySlice> 
 
 bool KvHostCache::stage_page(PageKind kind, std::uint64_t key,
                              std::span<const KvHostCopySlice> device_slices, cudaStream_t stream) {
-    if (table(kind).contains(key)) { return true; }
+    if (const auto existing = table(kind).find(key); existing != table(kind).end()) {
+        // Pin shared pages so budget-driven eviction of their owning segment cannot free
+        // them between the missing-page scan and seal_segment.
+        ++existing->second.refcount;
+        staged_pins_.emplace_back(kind, key);
+        return true;
+    }
     for (const StagedPage& staged : staged_pages_) {
         if (staged.kind == kind && staged.key == key) { return true; }
     }
@@ -234,6 +257,7 @@ void KvHostCache::seal_segment(std::uint64_t chain_key, std::span<const std::uin
     };
     bump(PageKind::Text, text_keys);
     bump(PageKind::Backend, backend_keys);
+    unpin_staged();
     Segment segment        = std::move(staged_anchor_->second);
     segment.text_keys      = {text_keys.begin(), text_keys.end()};
     segment.backend_keys   = {backend_keys.begin(), backend_keys.end()};
@@ -247,6 +271,7 @@ void KvHostCache::seal_segment(std::uint64_t chain_key, std::span<const std::uin
 }
 
 void KvHostCache::abort_segment() {
+    unpin_staged();
     for (const StagedPage& staged : staged_pages_) { release_slot(staged.slot); }
     staged_pages_.clear();
     if (staged_anchor_) {
