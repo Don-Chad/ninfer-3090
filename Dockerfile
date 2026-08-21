@@ -3,6 +3,8 @@
 FROM nvidia/cuda:13.1.2-devel-ubuntu24.04 AS build
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG NINFER_SOURCE_REVISION=unknown
+ENV NINFER_BUILD_ID=$NINFER_SOURCE_REVISION
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         cmake \
