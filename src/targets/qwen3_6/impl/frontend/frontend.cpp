@@ -828,7 +828,8 @@ Frontend make_frontend(const FrontendResources& resources, bool vision_enabled,
 
 Frontend FrontendTestAccess::create_component(const FrontendResources& resources,
                                               bool vision_enabled) {
-    return Frontend(std::make_shared<const Frontend::Impl>(resources, false, vision_enabled));
+    return Frontend(
+        std::make_shared<const Frontend::Impl>(resources, false, vision_enabled, 32768u));
 }
 
 const PreparedPromptData& PreparedPromptAccess::view(const PreparedPrompt& prompt) {
