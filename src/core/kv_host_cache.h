@@ -63,6 +63,9 @@ public:
     KvHostCache& operator=(const KvHostCache&) = delete;
 
     [[nodiscard]] bool has_page(PageKind kind, std::uint64_t key) const noexcept;
+    // Pins an already-stored page for the open staging transaction (refcount +1, released by
+    // seal/abort). Returns false when the key is absent — the caller stages it instead.
+    [[nodiscard]] bool pin_page(PageKind kind, std::uint64_t key);
     [[nodiscard]] std::uint32_t present_prefix(PageKind kind,
                                                std::span<const std::uint64_t> keys) const;
     [[nodiscard]] std::optional<AnchorMeta> find_anchor(std::uint64_t chain_key) const;

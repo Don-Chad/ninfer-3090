@@ -275,9 +275,12 @@ private:
                                   const PagedKVAllocation& allocation,
                                   std::span<const std::uint64_t> keys, WorkspaceArena& work,
                                   DeviceContext& device) {
+        // Pin every already-stored shared page for the whole transaction: staging the missing
+        // pages below can evict their owning segments, and an unpinned shared page freed there
+        // would leave this segment referencing a hole at seal time.
         std::vector<std::uint32_t> missing;
         for (std::uint32_t page = 0; page < keys.size(); ++page) {
-            if (!store_->has_page(kind, keys[page])) { missing.push_back(page); }
+            if (!store_->pin_page(kind, keys[page])) { missing.push_back(page); }
         }
         if (missing.empty()) { return true; }
         const std::size_t batch_pages                = staging_batch_pages(geometry, work);

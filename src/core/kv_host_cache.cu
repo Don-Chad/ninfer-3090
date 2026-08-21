@@ -40,6 +40,15 @@ bool KvHostCache::has_page(PageKind kind, std::uint64_t key) const noexcept {
     return table(kind).contains(key);
 }
 
+bool KvHostCache::pin_page(PageKind kind, std::uint64_t key) {
+    auto& entries    = table(kind);
+    const auto entry = entries.find(key);
+    if (entry == entries.end()) { return false; }
+    ++entry->second.refcount;
+    staged_pins_.emplace_back(kind, key);
+    return true;
+}
+
 std::uint32_t KvHostCache::present_prefix(PageKind kind,
                                           std::span<const std::uint64_t> keys) const {
     const auto& entries = table(kind);
@@ -237,6 +246,23 @@ void KvHostCache::seal_segment(std::uint64_t chain_key, std::span<const std::uin
                                std::uint64_t index_page_key) {
     if (!staged_anchor_ || staged_anchor_->first != chain_key) {
         throw std::logic_error("sealing a KV host cache segment without a staged anchor");
+    }
+    // Validate the whole reference set before mutating anything, so an invariant violation
+    // leaves the store consistent and the transaction abortable.
+    const auto covered = [&](PageKind kind, std::span<const std::uint64_t> keys) {
+        for (const std::uint64_t key : keys) {
+            if (table(kind).contains(key)) { continue; }
+            const bool staged =
+                std::any_of(staged_pages_.begin(), staged_pages_.end(),
+                            [&](const StagedPage& page) {
+                                return page.kind == kind && page.key == key;
+                            });
+            if (!staged) { return false; }
+        }
+        return true;
+    };
+    if (!covered(PageKind::Text, text_keys) || !covered(PageKind::Backend, backend_keys)) {
+        throw std::logic_error("KV host cache segment references a missing page");
     }
     for (const StagedPage& staged : staged_pages_) {
         auto& entries = table(staged.kind);
