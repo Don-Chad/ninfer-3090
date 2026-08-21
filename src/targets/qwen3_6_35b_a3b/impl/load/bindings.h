@@ -101,6 +101,7 @@ struct BindingPlan {
     artifact::ObjectHandle vision_merger_fc2;
     artifact::ObjectHandle vision_merger_fc2_bias;
     qwen3_6::VisionMergerNormPlan vision_merger_norm;
+    std::optional<qwen3_6::VisionOverlayLayout> vision_overlay;
     DFlashPlan dflash;
 };
 
