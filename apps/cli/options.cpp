@@ -79,7 +79,7 @@ std::string usage_text(const char* argv0) {
            "       [--max-context N] [--kv-capacity N|auto] [--prefill-chunk N] [--max-new N]\n"
            "       [--device N]\n"
            "       [--kv-dtype bf16|int8|rk8v4] [--spec mtp|dflash --draft-tokens N]\n"
-           "       [--lm-head-draft] [--context-lookup]\n"
+           "       [--lm-head-draft] [--context-lookup [--context-lookup-verify-tokens N]]\n"
            "       [--temperature F] [--top-p F] [--top-k N] [--min-p F]\n"
            "       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--stop-token-id N]... [--stop <text>]... [--reasoning-stop <text>]...\n"
@@ -140,6 +140,12 @@ Options parse_options(int argc, char** argv) {
             options.speculative.proposal_head = ProposalHead::Optimized;
         } else if (arg == "--context-lookup") {
             options.speculative.context_lookup = true;
+            if (options.speculative.context_lookup_verify_tokens == 0) {
+                options.speculative.context_lookup_verify_tokens = 5;
+            }
+        } else if (arg == "--context-lookup-verify-tokens") {
+            options.speculative.context_lookup_verify_tokens =
+                parse_u32(value(arg), "context-lookup-verify-tokens");
         } else if (arg == "--raw-output") {
             options.raw_output = true;
         } else if (arg == "--print-token-ids") {

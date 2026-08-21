@@ -65,6 +65,9 @@ struct SpeculativeOptions {
     // Host-only suffix lookup fused into MTP proposals. This changes no model weights, device
     // allocation, or graph topology, but is frozen with the Engine startup profile.
     bool context_lookup = false;
+    // Total MTP target verification draft slots when context lookup is enabled. Zero means the
+    // ordinary MTP proposal depth. The owned candidate supports at most five verification slots.
+    std::uint32_t context_lookup_verify_tokens = 0;
 };
 
 struct LoadProgress {
@@ -352,10 +355,14 @@ struct SpeculativeStats {
     SpeculativeBackend backend    = SpeculativeBackend::None;
     bool enabled                  = false;
     std::uint32_t draft_window    = 0;
+    std::uint32_t verification_window = 0;
     std::uint64_t rounds          = 0;
     std::uint64_t drafted_tokens  = 0;
     std::uint64_t accepted_tokens = 0;
     std::uint64_t fallback_steps  = 0;
+    std::uint64_t lookup_long_rounds = 0;
+    std::uint64_t lookup_tail_offered_tokens = 0;
+    std::uint64_t lookup_tail_accepted_tokens = 0;
     std::vector<std::uint64_t> accepted_per_position;
 };
 

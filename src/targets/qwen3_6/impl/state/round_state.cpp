@@ -36,6 +36,13 @@ void validate_spec(const RoundStateSpec& spec) {
     if (spec.enable_mtp && spec.draft_window > kMtpDecodeMaximumDrafts) {
         throw std::invalid_argument("RoundState MTP draft window exceeds the decode frame domain");
     }
+    const std::uint32_t mtp_verify =
+        spec.mtp_verify_window == 0 ? spec.draft_window : spec.mtp_verify_window;
+    if (spec.enable_mtp &&
+        (mtp_verify < spec.draft_window || mtp_verify > kMtpDecodeMaximumDrafts)) {
+        throw std::invalid_argument(
+            "RoundState MTP verify window must be in [proposal depth,5]");
+    }
     if (spec.enable_dflash &&
         (spec.draft_window == 0 || spec.draft_window > kDFlashDecodeMaximumDrafts)) {
         throw std::invalid_argument(
@@ -112,8 +119,12 @@ OrdinaryDecodeState::OrdinaryDecodeState(DeviceSpan backing,
 void complete_round_state_layout(LayoutBuilder& builder, RoundStateLayout& layout) {
     if (layout.complete) { throw std::logic_error("RoundState layout is already complete"); }
     validate_spec(layout.spec);
+    const std::uint32_t decode_window =
+        layout.spec.enable_mtp && layout.spec.mtp_verify_window != 0
+            ? layout.spec.mtp_verify_window
+            : layout.spec.draft_window;
     const std::int32_t columns =
-        checked_i32(static_cast<std::uint64_t>(layout.spec.draft_window) + 1ULL,
+        checked_i32(static_cast<std::uint64_t>(decode_window) + 1ULL,
                     "RoundState columns exceed int32");
     const std::int32_t drafts = checked_i32(std::max<std::uint64_t>(1ULL, layout.spec.draft_window),
                                             "RoundState drafts exceed int32");
@@ -122,6 +133,9 @@ void complete_round_state_layout(LayoutBuilder& builder, RoundStateLayout& layou
     };
     if (layout.spec.enable_mtp) {
         layout.mtp.emplace();
+        const auto proposal_columns = checked_i32(
+            static_cast<std::uint64_t>(layout.spec.draft_window) + 1ULL,
+            "RoundState MTP proposal columns exceed int32");
         const auto ar_steps =
             checked_i32(std::max<std::uint64_t>(1ULL, layout.spec.draft_window - 1ULL),
                         "RoundState MTP AR steps exceed int32");
@@ -129,8 +143,8 @@ void complete_round_state_layout(LayoutBuilder& builder, RoundStateLayout& layou
         layout.mtp->ar_hidden        = add_tensor(builder, DType::BF16, {layout.spec.hidden, 1},
                                                   "MTP prefill autoregressive hidden");
         layout.mtp->draft_tokens     = i32(drafts, "MTP prefill draft tokens");
-        layout.mtp->target_input_ids = i32(columns, "MTP prefill target input ids");
-        layout.mtp->target_positions = i32(columns, "MTP prefill target positions");
+        layout.mtp->target_input_ids = i32(proposal_columns, "MTP prefill target input ids");
+        layout.mtp->target_positions = i32(proposal_columns, "MTP prefill target positions");
 
         layout.mtp_decode.emplace();
         MtpDecodeStateLayout& decode = *layout.mtp_decode;
@@ -213,17 +227,20 @@ DFlashPrefillState::DFlashPrefillState(DeviceSpan backing, const DFlashPrefillSt
     : produced_count(layout.produced_count.bind(backing)) {}
 
 MtpDecodeState::MtpDecodeState(DeviceSpan backing, const MtpDecodeStateLayout& layout,
-                               std::uint32_t batch_capacity, std::uint32_t draft_window) {
-    if (batch_capacity == 0 || batch_capacity > kMaximumConcurrency || draft_window == 0 ||
-        draft_window > kMtpDecodeMaximumDrafts) {
+                               std::uint32_t batch_capacity, std::uint32_t proposal_depth,
+                               std::uint32_t verify_window) {
+    if (batch_capacity == 0 || batch_capacity > kMaximumConcurrency || proposal_depth == 0 ||
+        proposal_depth > kMtpDecodeMaximumDrafts || verify_window < proposal_depth ||
+        verify_window > kMtpDecodeMaximumDrafts) {
         throw std::invalid_argument("MTP decode state dimensions are outside the supported domain");
     }
     static_assert(std::is_standard_layout_v<MtpDecodeIngress>);
     static_assert(std::is_standard_layout_v<MtpDecodeEgress>);
     const auto batch          = static_cast<std::int32_t>(batch_capacity);
-    const auto drafts         = static_cast<std::int32_t>(draft_window);
+    const auto proposals      = static_cast<std::int32_t>(proposal_depth);
+    const auto drafts         = static_cast<std::int32_t>(verify_window);
     const auto width          = drafts + 1;
-    const auto steps          = std::max(drafts - 1, 1);
+    const auto steps          = std::max(proposals - 1, 1);
     ingress                   = layout.ingress.bind(backing);
     egress                    = layout.egress.bind(backing);
     const auto ingress_tensor = [&](std::size_t offset, DType dtype,
@@ -263,7 +280,7 @@ MtpDecodeState::MtpDecodeState(DeviceSpan backing, const MtpDecodeStateLayout& l
     accepted_drafts =
         egress_tensor(offsetof(MtpDecodeEgress, accepted_drafts), DType::I32, {batch});
     next_drafts =
-        egress_tensor(offsetof(MtpDecodeEgress, next_drafts), DType::I32, {batch, drafts});
+        egress_tensor(offsetof(MtpDecodeEgress, next_drafts), DType::I32, {batch, proposals});
     next_extents     = egress_tensor(offsetof(MtpDecodeEgress, next_extents), DType::I32, {batch});
     verify_ids       = layout.verify_ids.bind(backing);
     target_positions = layout.target_positions.bind(backing);
@@ -355,8 +372,10 @@ RoundState::RoundState(DeviceSpan backing, const RoundStateLayout& layout) {
     if (layout.mtp) { mtp.emplace(backing, *layout.mtp); }
     if (layout.dflash_prefill) { dflash_prefill.emplace(backing, *layout.dflash_prefill); }
     if (layout.mtp_decode) {
-        mtp_decode.emplace(backing, *layout.mtp_decode, layout.spec.batch_capacity,
-                           layout.spec.draft_window);
+        mtp_decode.emplace(
+            backing, *layout.mtp_decode, layout.spec.batch_capacity, layout.spec.draft_window,
+            layout.spec.mtp_verify_window == 0 ? layout.spec.draft_window
+                                               : layout.spec.mtp_verify_window);
     }
     if (layout.dflash_decode) {
         dflash_decode.emplace(backing, *layout.dflash_decode, layout.spec.batch_capacity,

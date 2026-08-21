@@ -165,6 +165,7 @@ struct RequestControl {
     ops::SamplingConfig sampling_host;
     GenerationTimings timings;
     SpeculativeStats speculative_stats;
+    std::uint32_t fully_accepted_mtp_rounds = 0;
 
     struct Prefill {
         PreparedPromptData prompt;
@@ -233,6 +234,7 @@ public:
     const std::uint32_t max_concurrency;
     const std::uint32_t prefill_chunk;
     const std::uint32_t draft_window;
+    const std::uint32_t mtp_verify_window;
     const SpeculativeBackend speculative_backend;
     const DType kv_dtype;
     const std::int32_t kv_quant_group;

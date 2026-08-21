@@ -129,6 +129,23 @@ void test_round_layout() {
                round.mtp_decode->alignment_ids.shape[1] == 1,
            "MTP decode frame is explicit");
 
+    ninfer::LayoutBuilder split_builder;
+    q36::RoundStateLayout split = q36::begin_round_state_layout(
+        split_builder, q36::RoundStateSpec{.hidden = 32,
+                                           .output_rows = 128,
+                                           .draft_window = 3,
+                                           .mtp_verify_window = 5,
+                                           .enable_mtp = true});
+    q36::complete_round_state_layout(split_builder, split);
+    (void)split_builder.finish(256);
+    expect(split.mtp && split.mtp->draft_tokens.shape[0] == 3 &&
+               split.mtp->target_input_ids.shape[0] == 4,
+           "P=3 keeps MTP prefill proposal storage at P");
+    expect(split.mtp_decode && split.mtp_decode->verify_ids.shape[0] == 6 &&
+               split.mtp_decode->alignment_ids.shape[0] == 6 &&
+               split.mtp_decode->ar_positions.shape[1] == 2,
+           "P=3/V=5 widens verification and alignment without widening MTP AR");
+
     ninfer::LayoutBuilder speculative_builder;
     q36::RoundStateLayout dflash = q36::begin_round_state_layout(
         speculative_builder,

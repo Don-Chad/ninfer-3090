@@ -141,7 +141,11 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
             builder, GdnReplayRecordSpec{
                          .layers          = TextConfig::gdn_layers(),
                          .record_capacity = static_cast<std::int32_t>(plan.max_concurrency),
-                         .width           = static_cast<std::int32_t>(plan.draft_window + 1U),
+                         .width           = static_cast<std::int32_t>(
+                             (plan.speculative_backend == SpeculativeBackend::Mtp
+                                  ? plan.mtp_verify_window
+                                  : plan.draft_window) +
+                             1U),
                          .conv_channels   = TextConfig::convolution_dim,
                          .qk_heads        = TextConfig::gdn_key_heads,
                          .value_heads     = TextConfig::gdn_value_heads,
@@ -198,6 +202,7 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
                                          .output_rows    = TextConfig::output_rows,
                                          .batch_capacity = plan.max_concurrency,
                                          .draft_window   = plan.draft_window,
+                                         .mtp_verify_window = plan.mtp_verify_window,
                                          .enable_mtp     = plan.features.mtp(),
                                          .enable_dflash  = plan.features.dflash()});
     out.prefill_hidden = add_tensor(
@@ -236,7 +241,9 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
     }
     const auto chunk  = static_cast<std::int32_t>(chunk_u32);
     const auto drafts = static_cast<std::int32_t>(plan.draft_window);
-    const auto verify = drafts + 1;
+    const auto mtp_verify_drafts = static_cast<std::int32_t>(plan.mtp_verify_window);
+    const auto verify =
+        plan.speculative_backend == SpeculativeBackend::Mtp ? mtp_verify_drafts + 1 : drafts + 1;
     const ops::GqaExecutionEnvelope text_envelope{1, plan.capacity};
 
     const auto matrix  = [](WorkspaceLayoutBuilder& layout, DType dtype, std::int32_t rows,
@@ -414,7 +421,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
         WorkspaceLayoutBuilder mtp_proposal;
         proposal_scratch(mtp_proposal, 1);
         const std::size_t accept = ops::speculative_accept_greedy_drafts_workspace_capacity_bytes(
-            TextConfig::token_domain, drafts, drafts, 1, 1);
+            TextConfig::token_domain, mtp_verify_drafts, mtp_verify_drafts, 1, 1);
         out.mtp_round = std::max({accept, finish(mtp_batch), finish(mtp_ar), finish(mtp_proposal)});
         out.ordinary_round = std::max(out.ordinary_round, finish(mtp_align));
 
@@ -449,7 +456,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
             proposal_scratch(proposal, batch);
             const std::size_t batch_accept =
                 ops::speculative_accept_greedy_drafts_workspace_capacity_bytes(
-                    TextConfig::token_domain, drafts, drafts, batch, batch);
+                    TextConfig::token_domain, mtp_verify_drafts, mtp_verify_drafts, batch, batch);
             out.mtp_round = std::max({out.mtp_round, finish(target), finish(alignment), finish(ar),
                                       finish(proposal), batch_accept});
         }
@@ -575,19 +582,39 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
     switch (options.speculative.backend) {
     case SpeculativeBackend::None:
         if (options.speculative.draft_tokens != 0 ||
-            options.speculative.proposal_head != ProposalHead::Full || options.speculative.context_lookup) {
+            options.speculative.proposal_head != ProposalHead::Full || options.speculative.context_lookup ||
+            options.speculative.context_lookup_verify_tokens != 0) {
             throw std::invalid_argument(
                 "disabled speculative decoding requires draft_tokens=0 and the full proposal head");
         }
         break;
-    case SpeculativeBackend::Mtp:
+    case SpeculativeBackend::Mtp: {
         if (options.speculative.draft_tokens == 0 ||
             options.speculative.draft_tokens > kMaximumMtpDraftTokens) {
             throw std::invalid_argument("MTP draft window must be in [1,5]");
         }
+        if (!options.speculative.context_lookup &&
+            options.speculative.context_lookup_verify_tokens != 0) {
+            throw std::invalid_argument("context lookup verification window requires context_lookup");
+        }
+        const std::uint32_t verify_tokens =
+            options.speculative.context_lookup_verify_tokens == 0
+                ? options.speculative.draft_tokens
+                : options.speculative.context_lookup_verify_tokens;
+        if (options.speculative.context_lookup &&
+            (verify_tokens < options.speculative.draft_tokens ||
+             verify_tokens > kMaximumMtpDraftTokens)) {
+            throw std::invalid_argument("MTP context lookup verification window must be in [P,5]");
+        }
+        if (options.speculative.context_lookup && options.use_cuda_graph) {
+            throw std::invalid_argument(
+                "MTP context lookup verification-window split requires --no-cuda-graph");
+        }
         break;
+    }
     case SpeculativeBackend::DFlash:
-        if (options.speculative.context_lookup) {
+        if (options.speculative.context_lookup ||
+            options.speculative.context_lookup_verify_tokens != 0) {
             throw std::invalid_argument("context_lookup requires the MTP backend");
         }
         if (kMaximumDFlashDraftTokens == 0) {
@@ -623,6 +650,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->max_concurrency     = inputs.max_concurrency;
     impl->prefill_chunk       = inputs.prefill_chunk;
     impl->draft_window        = inputs.draft_window;
+    impl->mtp_verify_window   = inputs.mtp_verify_window;
     impl->speculative_backend = inputs.speculative_backend;
     impl->proposal_head       = inputs.proposal_head;
     impl->context_lookup      = inputs.context_lookup;
@@ -715,6 +743,13 @@ make_sequence_planner_impl(DeviceContext& device, const EngineOptions& options,
         .max_concurrency     = options.max_concurrency,
         .prefill_chunk       = std::min(options.prefill_chunk, options.max_context),
         .draft_window        = options.speculative.draft_tokens,
+        .mtp_verify_window =
+            options.speculative.backend == SpeculativeBackend::Mtp
+                ? (options.speculative.context_lookup &&
+                           options.speculative.context_lookup_verify_tokens != 0
+                       ? options.speculative.context_lookup_verify_tokens
+                       : options.speculative.draft_tokens)
+                : 0U,
         .speculative_backend = options.speculative.backend,
         .kv_dtype       = options.kv_cache == KvCacheStorage::BFloat16 ? DType::BF16 : DType::I8,
         .kv_quant_group = options.kv_cache == KvCacheStorage::BFloat16 ? 0 : qwen3_6::kKvQuantGroup,

@@ -37,8 +37,11 @@ server must accept image or video input. Speculative residency is likewise froze
 `--spec mtp|dflash` and `--draft-tokens`; omitting `--spec` loads neither backend.
 `--lm-head-draft` additionally loads the optimized proposal head. DFlash is 35B-A3B text-only and
 cannot be combined with `--vision`. A later request cannot enable a capability omitted at startup.
-`--context-lookup` is an MTP-only, startup-fixed host suffix-lookup fusion; it leaves the fixed
-MTP draft/verification width and CUDA Graph topology unchanged and is compatible with Vision.
+`--context-lookup` is an MTP-only, startup-fixed host suffix-lookup tail compatible with Vision.
+MTP proposal depth P remains `--draft-tokens`; the target verification window V defaults to 5 and
+can be set with `--context-lookup-verify-tokens` in `[P,5]`. Lookup only fills `[P,V)` after a
+12-token match, exact agreement with the complete MTP head, and one fully accepted MTP round.
+This candidate requires `--no-cuda-graph`; graph-enabled startup is rejected explicitly.
 
 ### Owned RTX 3090 Huihui candidate
 
@@ -650,7 +653,7 @@ is also rejected if it resolves to the model artifact.
   --request-log-jsonl profiles/bench/run/server.requests.jsonl
 ```
 
-Every line is one `ninfer_serve_request_log` schema-v8 JSON object. All events carry
+Every line is one `ninfer_serve_request_log` schema-v9 JSON object. All events carry
 `timestamp_unix_ms` and a process-unique `server_instance_id`; request IDs are monotonic only within
 that server instance.
 
@@ -663,8 +666,10 @@ that server instance.
 | `throughput` | interval token deltas and rates, scheduler occupancy, and decode-round batch statistics |
 
 `request_done.timings_seconds` contains `prepare`, `ttft`, `vision`, `prefill`, `decode`, and `total`
-as full-precision JSON numbers. Its `speculative` object contains `backend`, `draft_window`, `rounds`,
-`drafted_tokens`, `accepted_tokens`, `fallback_steps`, and `accepted_per_position`. Rates can be
+as full-precision JSON numbers. Its `speculative` object contains `backend`, `draft_window`,
+`verification_window`, `rounds`, `drafted_tokens`, `accepted_tokens`, `fallback_steps`,
+`accepted_per_position`, `lookup_long_rounds`, `lookup_tail_offered_tokens`, and
+`lookup_tail_accepted_tokens`. Rates can be
 derived downstream from raw token counts and seconds instead of rounded stderr strings.
 
 The JSONL file contains no generated response text and never records an API-key value; `argv`

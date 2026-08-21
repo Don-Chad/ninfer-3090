@@ -15,13 +15,14 @@ void mtp_prepare_next_round_launch(const Tensor& verify_ids, const Tensor& next_
                                    const Tensor& rope_deltas, Tensor& alignment_ids,
                                    Tensor& next_extents, Tensor& ar_positions,
                                    Tensor& ar_rope_positions, Tensor& ar_valid_columns,
-                                   std::int32_t max_context, cudaStream_t stream) {
+                                   std::int32_t proposal_depth, std::int32_t max_context,
+                                   cudaStream_t stream) {
     constexpr int kBlock = 32;
-    const int k          = verify_ids.ne[0] - 1;
+    const int verify_window = verify_ids.ne[0] - 1;
     const int batch      = verify_ids.ne[1];
     const int ar_step_stride =
         static_cast<int>(ar_positions.nb[1] / static_cast<std::int64_t>(sizeof(std::int32_t)));
-    const dim3 grid(static_cast<unsigned int>((k + kBlock) / kBlock),
+    const dim3 grid(static_cast<unsigned int>((verify_window + kBlock) / kBlock),
                     static_cast<unsigned int>(batch));
     mtp_prepare_next_round_kernel<<<grid, kBlock, 0, stream>>>(
         static_cast<const std::int32_t*>(verify_ids.data),
@@ -35,7 +36,8 @@ void mtp_prepare_next_round_launch(const Tensor& verify_ids, const Tensor& next_
         static_cast<std::int32_t*>(next_extents.data),
         static_cast<std::int32_t*>(ar_positions.data),
         static_cast<std::int32_t*>(ar_rope_positions.data),
-        static_cast<std::int32_t*>(ar_valid_columns.data), k, ar_step_stride, max_context);
+        static_cast<std::int32_t*>(ar_valid_columns.data), verify_window, proposal_depth,
+        ar_step_stride, max_context);
     CUDA_CHECK(cudaGetLastError());
 }
 

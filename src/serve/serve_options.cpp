@@ -71,7 +71,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-request-mib N] [--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|rk8v4] [--spec mtp|dflash --draft-tokens N] "
-           "[--context-lookup] "
+           "[--context-lookup [--context-lookup-verify-tokens N]] "
            "[--default-max-tokens N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
@@ -207,6 +207,13 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.speculative.proposal_head = ProposalHead::Optimized;
         } else if (arg == "--context-lookup") {
             options.speculative.context_lookup = true;
+            if (options.speculative.context_lookup_verify_tokens == 0) {
+                options.speculative.context_lookup_verify_tokens = 5;
+            }
+        } else if (arg == "--context-lookup-verify-tokens") {
+            options.speculative.context_lookup_verify_tokens = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--context-lookup-verify-tokens"),
+                                      "context-lookup-verify-tokens"));
         } else if (arg == "--no-thinking") {
             options.enable_thinking = false;
         } else if (arg == "--preserve-thinking") {

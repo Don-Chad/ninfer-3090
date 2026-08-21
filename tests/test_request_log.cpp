@@ -57,6 +57,7 @@ int main() {
     options.speculative.draft_tokens       = 3;
     options.speculative.proposal_head      = ninfer::ProposalHead::Optimized;
     options.speculative.context_lookup     = true;
+    options.speculative.context_lookup_verify_tokens = 5;
     options.enable_vision                  = false;
     options.allow_prefix_reuse             = false;
     options.preserve_thinking              = true;
@@ -119,6 +120,7 @@ int main() {
                       "server record artifact type mismatch");
     failures += check(server.at("schema_version") == kRequestLogSchemaVersion,
                       "server record schema mismatch");
+    failures += check(kRequestLogSchemaVersion == 9, "request log schema was not advanced");
     failures += check(server.at("event") == "server_start", "server event mismatch");
     failures += check(server.at("server").at("public_model_id") == "deployment-alias",
                       "resolved public model id missing");
@@ -142,6 +144,8 @@ int main() {
                       "speculative backend missing");
     failures += check(server.at("engine").at("context_lookup") == true,
                       "context lookup activation missing");
+    failures += check(server.at("engine").at("speculative_verification_window") == 5,
+                      "context lookup verification window missing");
     failures +=
         check(server.at("engine").at("proposal_head") == "optimized", "proposal head missing");
     failures +=
@@ -224,11 +228,15 @@ int main() {
     outcome.metrics.prefix_reuse_path           = ninfer::PrefixReusePath::RestoreTurnCheckpoint;
     outcome.metrics.speculative_backend         = ninfer::SpeculativeBackend::Mtp;
     outcome.metrics.speculative_draft_window    = 3;
+    outcome.metrics.speculative_verification_window = 5;
     outcome.metrics.speculative_rounds          = 300;
     outcome.metrics.speculative_draft_tokens    = 900;
     outcome.metrics.speculative_accepted_tokens = 720;
     outcome.metrics.speculative_fallback_steps  = 2;
-    outcome.metrics.speculative_accepted_per_position = {290, 240, 190};
+    outcome.metrics.speculative_lookup_long_rounds = 40;
+    outcome.metrics.speculative_lookup_tail_offered_tokens = 80;
+    outcome.metrics.speculative_lookup_tail_accepted_tokens = 65;
+    outcome.metrics.speculative_accepted_per_position = {290, 240, 190, 38, 27};
 
     const Json done = Json::parse(format_request_done_json("serve-test", 3000, context, outcome));
     failures +=
@@ -247,11 +255,18 @@ int main() {
     failures += check(done.at("speculative").at("backend") == "mtp", "speculative backend missing");
     failures +=
         check(done.at("speculative").at("draft_window") == 3, "speculative draft window missing");
+    failures += check(done.at("speculative").at("verification_window") == 5,
+                      "speculative verification window missing");
     failures += check(done.at("speculative").at("fallback_steps") == 2,
                       "speculative fallback count missing");
     failures +=
-        check(done.at("speculative").at("accepted_per_position") == Json::array({290, 240, 190}),
+        check(done.at("speculative").at("accepted_per_position") ==
+                  Json::array({290, 240, 190, 38, 27}),
               "speculative position counts missing");
+    failures += check(done.at("speculative").at("lookup_long_rounds") == 40 &&
+                          done.at("speculative").at("lookup_tail_offered_tokens") == 80 &&
+                          done.at("speculative").at("lookup_tail_accepted_tokens") == 65,
+                      "lookup tail attribution missing");
 
     const Json error =
         Json::parse(format_request_error_json("serve-test", 4000, context, "generation failed"));

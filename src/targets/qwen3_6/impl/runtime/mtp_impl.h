@@ -67,16 +67,18 @@ void mtp_bridge_and_propose(PrefillContext& state, const Tensor& next_token,
     }
 }
 
-auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std::uint32_t k,
+auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size,
+                           std::uint32_t proposal_depth, std::uint32_t verify_window,
                            MtpGqaEnvelopes envelopes) {
-    return [&state, batch_size, k, envelopes] {
+    return [&state, batch_size, proposal_depth, verify_window, envelopes] {
         if (batch_size <= 0 || batch_size > static_cast<std::int32_t>(kMaximumConcurrency) ||
-            k == 0 || k > kMtpDecodeMaximumDrafts) {
+            proposal_depth == 0 || proposal_depth > kMtpDecodeMaximumDrafts ||
+            verify_window < proposal_depth || verify_window > kMtpDecodeMaximumDrafts) {
             throw std::logic_error("MTP decode batch state is incomplete");
         }
 
         qwen3_6::MtpDecodeState& frame = state.frame;
-        const std::int32_t width       = static_cast<std::int32_t>(k) + 1;
+        const std::int32_t width       = static_cast<std::int32_t>(verify_window) + 1;
         CUDA_CHECK(cudaMemcpyAsync(frame.ingress.data, &state.host_ingress,
                                    sizeof(qwen3_6::MtpDecodeIngress), cudaMemcpyHostToDevice,
                                    state.execution.device.stream));
@@ -145,6 +147,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
         ops::mtp_prepare_next_round(verify_ids, anchors, accepted, frontiers, budgets,
                                     licensed_counts, rope_deltas, alignment_ids, next_extents,
                                     ar_positions, ar_rope_positions, ar_valid_columns,
+                                    static_cast<std::int32_t>(proposal_depth),
                                     static_cast<std::int32_t>(state.text_cache.max_context()),
                                     state.execution.device.stream);
         card.mtp_forward_decode_batch(alignment_ids, target_hidden, target_positions, target_rope,
@@ -155,7 +158,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
         Tensor proposal_logits = frame.proposal_logits.slice(1, 0, batch_size);
         Tensor draft0          = next_drafts.slice(1, 0, 1).view({batch_size});
         card.mtp_propose_batch(ar_hidden, proposal_logits, draft0);
-        for (std::uint32_t step = 0; step + 1 < k; ++step) {
+        for (std::uint32_t step = 0; step + 1 < proposal_depth; ++step) {
             Tensor previous =
                 next_drafts.slice(1, static_cast<std::int32_t>(step), 1).view({batch_size});
             Tensor next =
@@ -182,15 +185,19 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
     };
 }
 
-void capture_mtp_decode_batch(MtpBatchContext& state, std::int32_t batch_size, std::uint32_t k,
+void capture_mtp_decode_batch(MtpBatchContext& state, std::int32_t batch_size,
+                              std::uint32_t proposal_depth, std::uint32_t verify_window,
                               MtpGqaEnvelopes envelopes, DecodeGraphDefinition& definition) {
-    auto body = mtp_decode_batch_body(state, batch_size, k, envelopes);
+    auto body =
+        mtp_decode_batch_body(state, batch_size, proposal_depth, verify_window, envelopes);
     capture_graph(state, definition, body);
 }
 
-void mtp_decode_batch(MtpBatchContext& state, std::int32_t batch_size, std::uint32_t k,
+void mtp_decode_batch(MtpBatchContext& state, std::int32_t batch_size,
+                      std::uint32_t proposal_depth, std::uint32_t verify_window,
                       MtpGqaEnvelopes envelopes, DecodeGraphExecutable* executable) {
-    auto body = mtp_decode_batch_body(state, batch_size, k, envelopes);
+    auto body =
+        mtp_decode_batch_body(state, batch_size, proposal_depth, verify_window, envelopes);
     run_prepared(state, executable, body);
 }
 

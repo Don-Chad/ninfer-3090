@@ -22,6 +22,9 @@ struct RoundStateSpec {
     std::int32_t output_rows     = 0;
     std::uint32_t batch_capacity = 1;
     std::uint32_t draft_window   = 0;
+    // MTP target verifier width in draft tokens. Zero selects draft_window. DFlash always uses
+    // draft_window for both proposal and verification.
+    std::uint32_t mtp_verify_window = 0;
     bool enable_mtp              = false;
     bool enable_dflash           = false;
 };
@@ -237,7 +240,8 @@ struct MtpDecodeState {
 
     MtpDecodeState() = default;
     MtpDecodeState(DeviceSpan backing, const MtpDecodeStateLayout& layout,
-                   std::uint32_t batch_capacity, std::uint32_t draft_window);
+                   std::uint32_t batch_capacity, std::uint32_t proposal_depth,
+                   std::uint32_t verify_window);
 };
 
 struct DFlashDecodeState {

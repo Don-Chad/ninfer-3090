@@ -472,10 +472,16 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     outcome.metrics.prefix_reuse_path           = result.prefix_reuse_path;
     outcome.metrics.speculative_backend         = result.speculative.backend;
     outcome.metrics.speculative_draft_window    = result.speculative.draft_window;
+    outcome.metrics.speculative_verification_window = result.speculative.verification_window;
     outcome.metrics.speculative_rounds          = result.speculative.rounds;
     outcome.metrics.speculative_draft_tokens    = result.speculative.drafted_tokens;
     outcome.metrics.speculative_accepted_tokens = result.speculative.accepted_tokens;
     outcome.metrics.speculative_fallback_steps  = result.speculative.fallback_steps;
+    outcome.metrics.speculative_lookup_long_rounds = result.speculative.lookup_long_rounds;
+    outcome.metrics.speculative_lookup_tail_offered_tokens =
+        result.speculative.lookup_tail_offered_tokens;
+    outcome.metrics.speculative_lookup_tail_accepted_tokens =
+        result.speculative.lookup_tail_accepted_tokens;
     outcome.metrics.speculative_accepted_per_position =
         std::move(result.speculative.accepted_per_position);
 

@@ -131,17 +131,21 @@ use MTP with three draft tokens and DFlash with seven draft tokens (block length
 the optimized proposal head. DFlash accepts up to fifteen draft tokens; seven is the current
 measured recommendation rather than a semantic limit.
 
-`--context-lookup` is an optional, startup-fixed MTP-only host proposal fusion. At each decode
-round it searches the committed token ledger for the longest repeated suffix from 6 through 12
-tokens (strong override at 12), then fills only the existing MTP draft width. It does not change
-the MTP verification width, retain lookup state, mutate KV state, or change CUDA Graph topology.
-Shorter matches must agree with MTP's first draft token; a strong match may override it. It is
-intended for repeated-context workloads and remains off by default:
+`--context-lookup` is an optional, startup-fixed MTP tail proposal for repeated-context workloads.
+The MTP model still proposes exactly `P=--draft-tokens` tokens. After one fully accepted MTP round,
+a bounded 12-token suffix match may append ledger continuation tokens only in positions `[P,V)`,
+where `V=--context-lookup-verify-tokens` (default 5). Lookup must agree exactly with all P MTP head
+tokens, so it can never override an MTP proposal. Each row clamps V to its remaining output budget
+and context capacity. Lookup does not retain a cross-request cursor or mutate ledger, KV, or GDN
+state; the normal speculative commit/rollback transaction remains authoritative. The candidate is
+off by default and currently requires `--no-cuda-graph` so an unsupported P/V graph topology fails
+at startup instead of silently changing execution mode:
 
 ```bash
 ./build/apps/ninfer models/huihui_qwen3_8_27b_abliterated.ninfer \
   --prompt "Continue the repeated document." --max-new 512 \
-  --spec mtp --draft-tokens 3 --lm-head-draft --context-lookup --vision
+  --spec mtp --draft-tokens 3 --lm-head-draft --context-lookup \
+  --context-lookup-verify-tokens 5 --no-cuda-graph --vision
 ```
 
 ## Common options
@@ -157,7 +161,8 @@ intended for repeated-context workloads and remains off by default:
 | `--spec mtp\|dflash` | speculative backend | off |
 | `--draft-tokens N` | MTP `1..5`; DFlash `1..15` | unset |
 | `--lm-head-draft` | optimized proposal head | off |
-| `--context-lookup` | MTP-only host suffix lookup fusion (6-token minimum, 12-token strong override) | off |
+| `--context-lookup` | MTP-only 12-token suffix lookup tail; requires eager execution | off |
+| `--context-lookup-verify-tokens N` | MTP target verify window V in `[P,5]` with context lookup | 5 when lookup is on |
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-thinking` | disable thinking in prompt rendering | thinking on |

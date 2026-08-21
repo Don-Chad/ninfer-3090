@@ -30,18 +30,31 @@ inline void validate_speculative_cli_options(const SpeculativeOptions& options) 
     switch (options.backend) {
     case SpeculativeBackend::None:
         if (options.draft_tokens != 0 || options.proposal_head != ProposalHead::Full ||
-            options.context_lookup) {
+            options.context_lookup || options.context_lookup_verify_tokens != 0) {
             throw std::invalid_argument(
                 "--draft-tokens, --lm-head-draft, and --context-lookup require --spec mtp|dflash");
         }
         return;
-    case SpeculativeBackend::Mtp:
+    case SpeculativeBackend::Mtp: {
         if (options.draft_tokens == 0 || options.draft_tokens > 5) {
             throw std::invalid_argument("--spec mtp requires --draft-tokens in [1,5]");
         }
+        if (!options.context_lookup && options.context_lookup_verify_tokens != 0) {
+            throw std::invalid_argument(
+                "--context-lookup-verify-tokens requires --context-lookup");
+        }
+        const std::uint32_t verify_tokens = options.context_lookup_verify_tokens == 0
+                                                ? options.draft_tokens
+                                                : options.context_lookup_verify_tokens;
+        if (options.context_lookup &&
+            (verify_tokens < options.draft_tokens || verify_tokens > 5)) {
+            throw std::invalid_argument(
+                "--context-lookup requires a verification window in [draft-tokens,5]");
+        }
         return;
+    }
     case SpeculativeBackend::DFlash:
-        if (options.context_lookup) {
+        if (options.context_lookup || options.context_lookup_verify_tokens != 0) {
             throw std::invalid_argument("--context-lookup requires --spec mtp");
         }
         if (options.draft_tokens == 0 || options.draft_tokens > 15) {

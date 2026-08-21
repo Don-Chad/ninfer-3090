@@ -208,6 +208,16 @@ void print_generation_summary(const ninfer::GenerationResult& result,
         const std::string backend =
             speculative.backend == ninfer::SpeculativeBackend::DFlash ? "dflash" : "mtp";
         print_metric(backend + " draft window", std::to_string(speculative.draft_window));
+        print_metric(backend + " verification window",
+                     std::to_string(speculative.verification_window));
+        if (speculative.lookup_long_rounds != 0 ||
+            speculative.lookup_tail_offered_tokens != 0) {
+            print_metric("lookup long rounds", std::to_string(speculative.lookup_long_rounds));
+            print_metric("lookup tail offered",
+                         std::to_string(speculative.lookup_tail_offered_tokens));
+            print_metric("lookup tail accepted",
+                         std::to_string(speculative.lookup_tail_accepted_tokens));
+        }
         print_metric(backend + " rounds", std::to_string(speculative.rounds));
         print_metric(backend + " fallback steps", std::to_string(speculative.fallback_steps));
         print_metric(backend + " drafted tokens", std::to_string(speculative.drafted_tokens));

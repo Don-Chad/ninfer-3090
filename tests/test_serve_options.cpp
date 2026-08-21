@@ -1,5 +1,6 @@
 #include "serve/serve_options.h"
 #include "serve/translate.h"
+#include "product/speculative_options.h"
 
 #include <iostream>
 #include <string>
@@ -89,6 +90,42 @@ int main() {
                                        "--draft-tokens", "3", "--context-lookup"});
     failures += check(lookup.speculative.context_lookup,
                       "--context-lookup did not enable MTP lookup fusion");
+    failures += check(lookup.speculative.context_lookup_verify_tokens == 5,
+                      "--context-lookup did not select V=5");
+
+    ninfer::SpeculativeOptions api_lookup;
+    api_lookup.backend                      = ninfer::SpeculativeBackend::Mtp;
+    api_lookup.draft_tokens                 = 3;
+    api_lookup.context_lookup               = true;
+    api_lookup.context_lookup_verify_tokens = 0;
+    bool api_lookup_default_accepted        = true;
+    try {
+        ninfer::product::validate_speculative_cli_options(api_lookup);
+    } catch (const std::invalid_argument&) { api_lookup_default_accepted = false; }
+    failures += check(api_lookup_default_accepted,
+                      "documented API lookup verification default was rejected");
+
+    const ServeOptions lookup_v4 = parse(
+        {"ninfer-serve", "model.ninfer", "--spec", "mtp", "--draft-tokens", "3",
+         "--context-lookup", "--context-lookup-verify-tokens", "4", "--no-cuda-graph"});
+    failures += check(lookup_v4.speculative.context_lookup_verify_tokens == 4,
+                      "explicit context lookup verification window was lost");
+
+    bool lookup_window_below_p_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--spec", "mtp", "--draft-tokens", "3",
+                     "--context-lookup", "--context-lookup-verify-tokens", "2"});
+    } catch (const std::invalid_argument&) { lookup_window_below_p_rejected = true; }
+    failures += check(lookup_window_below_p_rejected,
+                      "context lookup accepted V below P");
+
+    bool lookup_window_without_lookup_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--spec", "mtp", "--draft-tokens", "3",
+                     "--context-lookup-verify-tokens", "5"});
+    } catch (const std::invalid_argument&) { lookup_window_without_lookup_rejected = true; }
+    failures += check(lookup_window_without_lookup_rejected,
+                      "verification window was accepted without context lookup");
 
     bool lookup_without_mtp_rejected = false;
     try {
@@ -194,6 +231,9 @@ int main() {
     failures += check(serve_usage_text("ninfer-serve").find("--context-lookup") !=
                           std::string::npos,
                       "serve help omits --context-lookup");
+    failures += check(serve_usage_text("ninfer-serve").find("--context-lookup-verify-tokens") !=
+                          std::string::npos,
+                      "serve help omits --context-lookup-verify-tokens");
     failures +=
         check(serve_usage_text("ninfer-serve").find("--log-stats-interval-ms") != std::string::npos,
               "serve help omits --log-stats-interval-ms");

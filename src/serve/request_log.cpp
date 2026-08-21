@@ -200,10 +200,16 @@ Json arena_json(const ninfer::ArenaMemorySummary& arena) {
 Json speculative_json(const GenerationMetrics& metrics) {
     return Json{{"backend", product::speculative_backend_name(metrics.speculative_backend)},
                 {"draft_window", metrics.speculative_draft_window},
+                {"verification_window", metrics.speculative_verification_window},
                 {"rounds", metrics.speculative_rounds},
                 {"drafted_tokens", metrics.speculative_draft_tokens},
                 {"accepted_tokens", metrics.speculative_accepted_tokens},
                 {"fallback_steps", metrics.speculative_fallback_steps},
+                {"lookup_long_rounds", metrics.speculative_lookup_long_rounds},
+                {"lookup_tail_offered_tokens",
+                 metrics.speculative_lookup_tail_offered_tokens},
+                {"lookup_tail_accepted_tokens",
+                 metrics.speculative_lookup_tail_accepted_tokens},
                 {"accepted_per_position", metrics.speculative_accepted_per_position}};
 }
 
@@ -402,6 +408,12 @@ std::string format_server_start_json(
           {"prefix_reuse", options.allow_prefix_reuse},
           {"speculative_backend", product::speculative_backend_name(options.speculative.backend)},
           {"speculative_draft_window", options.speculative.draft_tokens},
+          {"speculative_verification_window",
+           options.speculative.backend == SpeculativeBackend::Mtp
+               ? (options.speculative.context_lookup
+                      ? options.speculative.context_lookup_verify_tokens
+                      : options.speculative.draft_tokens)
+               : options.speculative.draft_tokens},
           {"context_lookup", options.speculative.context_lookup},
           {"proposal_head", proposal_head_name(options.speculative.proposal_head)}};
     record["sampling_defaults"] =

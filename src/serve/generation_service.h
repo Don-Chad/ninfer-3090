@@ -32,10 +32,14 @@ struct GenerationMetrics {
 
     SpeculativeBackend speculative_backend    = SpeculativeBackend::None;
     std::uint32_t speculative_draft_window    = 0;
+    std::uint32_t speculative_verification_window = 0;
     std::uint64_t speculative_rounds          = 0;
     std::uint64_t speculative_draft_tokens    = 0;
     std::uint64_t speculative_accepted_tokens = 0;
     std::uint64_t speculative_fallback_steps  = 0;
+    std::uint64_t speculative_lookup_long_rounds = 0;
+    std::uint64_t speculative_lookup_tail_offered_tokens = 0;
+    std::uint64_t speculative_lookup_tail_accepted_tokens = 0;
     std::vector<std::uint64_t> speculative_accepted_per_position;
     std::uint32_t prefix_cache_hit_tokens     = 0;
     ninfer::PrefixReusePath prefix_reuse_path = ninfer::PrefixReusePath::FullReset;
