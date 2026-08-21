@@ -758,17 +758,22 @@ private:
         for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
             if (slots_[lane] != nullptr) { continue; }
             ensure_lane_plan(request, lane);
-            // An identical prompt is being prefilled right now: admitting this twin would pay
-            // the same full prefill on the exclusive prefill slot. Hold it; when the twin's
-            // prefill completes, its checkpoint anchor is published and this request replans
-            // into a content restore of the boundary.
-            if (request->content_identity != 0 && prefill_lane_ &&
-                slots_[*prefill_lane_] != nullptr &&
-                lane_identities_[*prefill_lane_] == request->content_identity) {
-                return std::nullopt;
-            }
             const Plan& plan          = *request->lane_plans[lane];
             const std::uint32_t reuse = plan.summary().reusable_prompt_tokens;
+            // An identical prompt is active on another lane and this plan would still pay the
+            // full prefill: hold it. When the twin's prefill completes its prompt-boundary
+            // anchor is published, the replan turns into a content restore (reuse > 0) and
+            // this gate stops matching. Checked against every active lane, not just the one
+            // currently prefilling — a burst can admit two twins in one scheduling pass
+            // before the first prefill starts.
+            if (request->content_identity != 0 && reuse == 0) {
+                for (std::uint32_t occupied = 0; occupied < max_concurrency_; ++occupied) {
+                    if (slots_[occupied] != nullptr &&
+                        lane_identities_[occupied] == request->content_identity) {
+                        return std::nullopt;
+                    }
+                }
+            }
             if (instance_.program->can_admit_lane(lane, plan) &&
                 (!selected || reuse > selected_reuse)) {
                 selected       = LaneChoice{.lane = lane};
