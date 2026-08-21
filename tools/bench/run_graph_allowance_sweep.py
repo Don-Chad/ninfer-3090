@@ -28,13 +28,13 @@ so each point costs roughly one model load rather than a benchmark run.
 Usage::
 
     export LD_LIBRARY_PATH=/usr/lib/wsl/drivers/nvddi.inf_amd64_dabe455c4b5cf6f0:/usr/lib/wsl/lib
-    python3 -m tools.bench.run_graph_allowance_sweep --repeats 3
-    python3 -m tools.bench.run_graph_allowance_sweep --spec mtp --draft-tokens 3
+    uv run python -m tools.bench.run_graph_allowance_sweep
+
+Edit the configuration constants below before running the sweep.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import statistics
@@ -60,6 +60,18 @@ DEFAULT_CAPACITIES = (
     2048, 4096, 8198, 16390,
     32768, 32832, 40960, 49152, 65536, 81920, 103424, 131072,
 )
+
+# Editable sweep configuration. Keep these values explicit so saved benchmark artifacts identify
+# the exact workload without depending on shell history.
+CLI = DEFAULT_CLI
+MODEL = DEFAULT_MODEL
+CAPACITIES = DEFAULT_CAPACITIES
+REPEATS = 3
+SPEC: str | None = None
+DRAFT_TOKENS = 3
+KV_DTYPE = "int8"
+PREFILL_CHUNK = 640
+OUT = ROOT / "out/graph_allowance"
 
 SUMMARY = re.compile(r"^\s*([a-zA-Z][a-zA-Z0-9 _/-]*?)\s{2,}(.+?)\s*$")
 # A bare "B" unit is not a formatting curiosity: the engine clamps a negative device-wide delta to
@@ -145,35 +157,24 @@ def measure(cli: Path, model: Path, capacity: int, spec: str | None, draft_token
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--cli", type=Path, default=DEFAULT_CLI)
-    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
-    parser.add_argument("--capacities", type=int, nargs="*", default=list(DEFAULT_CAPACITIES))
-    parser.add_argument("--repeats", type=int, default=3,
-                        help="runs per capacity; >1 is required to separate curve from noise")
-    parser.add_argument("--spec", choices=["mtp"], default=None)
-    parser.add_argument("--draft-tokens", type=int, default=3)
-    parser.add_argument("--kv-dtype", default="int8")
-    parser.add_argument("--prefill-chunk", type=int, default=640)
-    parser.add_argument("--out", type=Path, default=ROOT / "out/graph_allowance")
-    args = parser.parse_args()
+    if SPEC not in (None, "mtp"):
+        raise SystemExit(f"unsupported speculative mode: {SPEC}")
+    if REPEATS < 2:
+        raise SystemExit("REPEATS must be at least 2 to separate signal from device-wide noise")
+    if not CLI.exists():
+        raise SystemExit(f"engine binary not found: {CLI}")
+    if not MODEL.exists():
+        raise SystemExit(f"model artifact not found: {MODEL}")
 
-    if not args.cli.exists():
-        raise SystemExit(f"engine binary not found: {args.cli}")
-    if not args.model.exists():
-        raise SystemExit(f"model artifact not found: {args.model}")
-
-    args.out.mkdir(parents=True, exist_ok=True)
+    OUT.mkdir(parents=True, exist_ok=True)
     rows: list[dict] = []
 
     print(f"{'capacity':>9}  {'graphs':>6}  {'observed':>12}  {'allowance':>10}  {'per graph':>10}  "
           f"{'spread':>8}  result")
-    for capacity in args.capacities:
+    for capacity in CAPACITIES:
         runs = [
-            measure(args.cli, args.model, capacity, args.spec, args.draft_tokens,
-                    args.kv_dtype, args.prefill_chunk)
-            for _ in range(args.repeats)
+            measure(CLI, MODEL, capacity, SPEC, DRAFT_TOKENS, KV_DTYPE, PREFILL_CHUNK)
+            for _ in range(REPEATS)
         ]
         rows.extend(runs)
 
@@ -194,14 +195,14 @@ def main() -> int:
 
     report = {
         "config": {
-            "cli": str(args.cli), "model": str(args.model), "repeats": args.repeats,
-            "spec": args.spec, "draft_tokens": args.draft_tokens if args.spec else None,
-            "kv_dtype": args.kv_dtype, "prefill_chunk": args.prefill_chunk,
+            "cli": str(CLI), "model": str(MODEL), "repeats": REPEATS,
+            "spec": SPEC, "draft_tokens": DRAFT_TOKENS if SPEC else None,
+            "kv_dtype": KV_DTYPE, "prefill_chunk": PREFILL_CHUNK,
         },
         "runs": rows,
     }
-    label = args.spec or "ordinary"
-    destination = args.out / f"graph-allowance-{label}-{args.kv_dtype}.json"
+    label = SPEC or "ordinary"
+    destination = OUT / f"graph-allowance-{label}-{KV_DTYPE}.json"
     destination.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"\nwrote {destination}")
     return 0
