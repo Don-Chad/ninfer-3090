@@ -142,18 +142,24 @@ def main() -> int:
         return ask(args.base_url, args.model, payload(long_gen), max_tokens=256)
     walls_e: list[float] = []
     errors_e: list[str] = []
+    answers_e: list[str] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
         futures = [pool.submit(ask_long, i) for i in range(n)]
         for future in concurrent.futures.as_completed(futures):
             try:
-                _, wall = future.result()
+                answer, wall = future.result()
+                answers_e.append(answer)
                 walls_e.append(wall)
             except (urllib.error.URLError, urllib.error.HTTPError, OSError) as error:
                 errors_e.append(str(error))
     spread = f"walls {min(walls_e):.2f}s..{max(walls_e):.2f}s" if walls_e else "no walls"
+    # Greedy twins share the prefill state (one prefilled, the rest restored the boundary), so
+    # every 256-token continuation must be byte-identical — the prefiller is the cold reference.
+    parity_ok = len(set(answers_e)) <= 1
+    ok_e = not errors_e and parity_ok
     print(f"E long-gen identical burst: errors={len(errors_e)} {spread} "
-          f"[{'ok' if not errors_e else 'FAIL'}]")
-    passed &= not errors_e
+          f"distinct_answers={len(set(answers_e))} [{'ok' if ok_e else 'FAIL'}]")
+    passed &= ok_e
 
     print("concurrency battery:", "OK" if passed else "FAIL")
     return 0 if passed else 1
