@@ -89,10 +89,11 @@ Package::construct_loaded_model(LoadPlan&& plan, artifact::MaterializedArtifact&
     return std::unique_ptr<LoadedModel>(new LoadedModel(std::move(impl)));
 }
 
-Package::Frontend Package::make_frontend(const LoadedModel& model) {
+Package::Frontend Package::make_frontend(const LoadedModel& model,
+                                         std::uint32_t vision_max_merged_tokens) {
     if (model.impl_ == nullptr) { throw std::invalid_argument("loaded model is empty"); }
     return qwen3_6::make_frontend(model.impl_->data.frontend,
-                                  model.impl_->data.runtime.features.vision);
+                                  model.impl_->data.runtime.features.vision, vision_max_merged_tokens);
 }
 
 Package::SequencePlanner Package::make_sequence_planner(DeviceContext& device,

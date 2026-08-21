@@ -52,6 +52,18 @@ std::uint64_t checked_mul(std::uint64_t a, std::uint64_t b, std::string_view lab
 
 int round_even(double value) { return static_cast<int>(std::nearbyint(value)); }
 
+} // namespace
+
+std::uint64_t merged_token_image_pixels() {
+    return static_cast<std::uint64_t>(kFactor) * kFactor;
+}
+
+std::uint64_t merged_token_video_pixels() {
+    return static_cast<std::uint64_t>(kTemporal) * kFactor * kFactor;
+}
+
+namespace {
+
 Size smart_resize_image(int height, int width, std::uint64_t min_pixels, std::uint64_t max_pixels) {
     if (height <= 0 || width <= 0 || min_pixels == 0 || max_pixels < min_pixels) {
         throw std::invalid_argument("invalid image resize configuration");

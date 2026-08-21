@@ -159,7 +159,8 @@ ConstructedTarget construct_registered(const EngineOptions& options, DeviceConte
 } // namespace
 
 LoadedQwen3_6_27B::LoadedQwen3_6_27B(std::unique_ptr<Qwen3_6_27B::LoadedModel> stable_model)
-    : model(std::move(stable_model)), frontend(Qwen3_6_27B::make_frontend(*model)) {}
+    : model(std::move(stable_model)),
+      frontend(Qwen3_6_27B::make_frontend(*model, options.vision_max_merged_tokens)) {}
 
 LoadedQwen3_6_27B::~LoadedQwen3_6_27B() = default;
 
@@ -176,7 +177,8 @@ Qwen3_6_27BInstance::~Qwen3_6_27BInstance() = default;
 
 LoadedQwen3_6_35BA3B::LoadedQwen3_6_35BA3B(
     std::unique_ptr<Qwen3_6_35BA3B::LoadedModel> stable_model)
-    : model(std::move(stable_model)), frontend(Qwen3_6_35BA3B::make_frontend(*model)) {}
+    : model(std::move(stable_model)),
+      frontend(Qwen3_6_35BA3B::make_frontend(*model, options.vision_max_merged_tokens)) {}
 
 LoadedQwen3_6_35BA3B::~LoadedQwen3_6_35BA3B() = default;
 

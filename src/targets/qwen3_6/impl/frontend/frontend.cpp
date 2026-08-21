@@ -140,7 +140,8 @@ void validate_pixel_pipeline(const Json& config, std::string_view resource) {
     }
 }
 
-fi::ProcessorOptions processor_options(const FrontendResources& resources) {
+fi::ProcessorOptions processor_options(const FrontendResources& resources,
+                                       std::uint32_t vision_max_merged_tokens) {
     const Json image =
         parse_resource_json(resources.preprocessor_config_json, "preprocessor_config.json");
     const Json video = parse_resource_json(resources.video_preprocessor_config_json,
@@ -176,6 +177,18 @@ fi::ProcessorOptions processor_options(const FrontendResources& resources) {
             "video_preprocessor_config.json does not match registered sampling defaults");
     }
 
+        if (vision_max_merged_tokens != 0) {
+        // Fit-and-scale: bound each item's merged tokens via the smart-resize ceilings so an
+        // oversized source downscales at preprocessing instead of being rejected at admission.
+        options.image_max_pixels = std::min<std::uint64_t>(
+            options.image_max_pixels,
+            static_cast<std::uint64_t>(vision_max_merged_tokens) *
+                fi::merged_token_image_pixels());
+        options.video_max_pixels = std::min<std::uint64_t>(
+            options.video_max_pixels,
+            static_cast<std::uint64_t>(vision_max_merged_tokens) *
+                fi::merged_token_video_pixels());
+    }
     return options;
 }
 
@@ -593,13 +606,15 @@ DecoderState terminal_state(DecoderState state) {
 
 class Frontend::Impl {
 public:
-    Impl(const FrontendResources& resources, bool registered_checkpoint, bool vision_enabled_)
+    Impl(const FrontendResources& resources, bool registered_checkpoint, bool vision_enabled_,
+         std::uint32_t vision_max_merged_tokens)
         : chat_template(compile_chat_template(resources)),
           tokenizer(std::make_shared<const fi::Tokenizer>(
               fi::TokenizerResources{.tokenizer_json         = resources.tokenizer_json,
                                      .tokenizer_config_json  = resources.tokenizer_config_json,
                                      .generation_config_json = resources.generation_config_json})),
-          processor(processor_options(resources)), vision_enabled(vision_enabled_) {
+          processor(processor_options(resources, vision_max_merged_tokens)),
+          vision_enabled(vision_enabled_) {
         if (registered_checkpoint) { validate_registered_tokenizer(*tokenizer); }
         for (const int token : tokenizer->default_stop_token_ids()) {
             if (!tokenizer->is_valid_token(token)) {
@@ -806,8 +821,9 @@ Frontend::Frontend(Frontend&&) noexcept            = default;
 Frontend& Frontend::operator=(Frontend&&) noexcept = default;
 Frontend::~Frontend()                              = default;
 
-Frontend make_frontend(const FrontendResources& resources, bool vision_enabled) {
-    return Frontend(std::make_shared<const Frontend::Impl>(resources, true, vision_enabled));
+Frontend make_frontend(const FrontendResources& resources, bool vision_enabled,
+                       std::uint32_t vision_max_merged_tokens) {
+    return Frontend(std::make_shared<const Frontend::Impl>(resources, true, vision_enabled, vision_max_merged_tokens));
 }
 
 Frontend FrontendTestAccess::create_component(const FrontendResources& resources,
