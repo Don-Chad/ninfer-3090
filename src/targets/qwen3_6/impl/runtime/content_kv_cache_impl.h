@@ -190,23 +190,35 @@ private:
         return keys;
     }
 
+    [[nodiscard]] std::size_t staging_batch_pages(const HostpackGeometry& geometry,
+                                                  const WorkspaceArena& work) const {
+        const std::size_t usable = std::max<std::size_t>(work.capacity() / 2,
+                                                         geometry.packed_page_bytes);
+        return std::max<std::size_t>(1, usable / geometry.packed_page_bytes);
+    }
+
     void restore_pool(KvHostCache::PageKind kind, const HostpackGeometry& geometry,
                       const PagedKVAllocation& allocation, std::span<const std::uint64_t> keys,
                       WorkspaceArena& work, DeviceContext& device) {
         if (keys.empty()) { return; }
-        const auto scope = work.scope();
-        auto* staging    = static_cast<std::byte*>(
-            work.alloc_bytes(geometry.packed_page_bytes * keys.size()).data);
-        for (std::size_t page = 0; page < keys.size(); ++page) {
-            const KvHostCopySlice slice{staging + geometry.packed_page_bytes * page,
-                                        geometry.packed_page_bytes};
-            store_->restore_page(kind, keys[page], std::span(&slice, 1), device.stream);
+        const std::size_t batch_pages = staging_batch_pages(geometry, work);
+        for (std::size_t begin = 0; begin < keys.size(); begin += batch_pages) {
+            const std::size_t count = std::min(batch_pages, keys.size() - begin);
+            const auto scope        = work.scope();
+            auto* staging           = static_cast<std::byte*>(
+                work.alloc_bytes(geometry.packed_page_bytes * count).data);
+            for (std::size_t page = 0; page < count; ++page) {
+                const KvHostCopySlice slice{staging + geometry.packed_page_bytes * page,
+                                            geometry.packed_page_bytes};
+                store_->restore_page(kind, keys[begin + page], std::span(&slice, 1),
+                                     device.stream);
+            }
+            upload_page_ids(allocation.page_ids().subspan(begin, count), device);
+            hostpack_scatter(geometry, static_cast<const std::int32_t*>(page_ids_device_.p),
+                             static_cast<std::uint32_t>(count), staging, device.stream);
+            // Same-stream ordering lets the next batch reuse the arena staging safely.
+            CUDA_CHECK(cudaStreamSynchronize(device.stream));
         }
-        upload_page_ids(allocation.page_ids().subspan(0, keys.size()), device);
-        hostpack_scatter(geometry, static_cast<const std::int32_t*>(page_ids_device_.p),
-                         static_cast<std::uint32_t>(keys.size()), staging, device.stream);
-        // Arena staging is reused stream-ordered; the scatter completes before any later
-        // same-stream producer can overwrite it.
     }
 
     [[nodiscard]] bool stage_segment(const SequenceState& sequence,
@@ -251,27 +263,31 @@ private:
             if (!store_->has_page(kind, keys[page])) { missing.push_back(page); }
         }
         if (missing.empty()) { return true; }
-        const auto scope = work.scope();
-        auto* staging    = static_cast<std::byte*>(
-            work.alloc_bytes(geometry.packed_page_bytes * missing.size()).data);
-        std::vector<std::int32_t> gather_ids(missing.size());
+        const std::size_t batch_pages                = staging_batch_pages(geometry, work);
         const std::span<const std::int32_t> page_ids = allocation.page_ids();
-        for (std::size_t index = 0; index < missing.size(); ++index) {
-            gather_ids[index] = page_ids[missing[index]];
-        }
-        upload_page_ids(gather_ids, device);
-        hostpack_gather(geometry, static_cast<const std::int32_t*>(page_ids_device_.p),
-                        static_cast<std::uint32_t>(missing.size()), staging, device.stream);
-        for (std::size_t index = 0; index < missing.size(); ++index) {
-            const KvHostCopySlice slice{staging + geometry.packed_page_bytes * index,
-                                        geometry.packed_page_bytes};
-            if (!store_->stage_page(kind, keys[missing[index]], std::span(&slice, 1),
-                                    device.stream)) {
-                return false;
+        for (std::size_t begin = 0; begin < missing.size(); begin += batch_pages) {
+            const std::size_t count = std::min(batch_pages, missing.size() - begin);
+            const auto scope        = work.scope();
+            auto* staging           = static_cast<std::byte*>(
+                work.alloc_bytes(geometry.packed_page_bytes * count).data);
+            std::vector<std::int32_t> gather_ids(count);
+            for (std::size_t index = 0; index < count; ++index) {
+                gather_ids[index] = page_ids[missing[begin + index]];
             }
+            upload_page_ids(gather_ids, device);
+            hostpack_gather(geometry, static_cast<const std::int32_t*>(page_ids_device_.p),
+                            static_cast<std::uint32_t>(count), staging, device.stream);
+            for (std::size_t index = 0; index < count; ++index) {
+                const KvHostCopySlice slice{staging + geometry.packed_page_bytes * index,
+                                            geometry.packed_page_bytes};
+                if (!store_->stage_page(kind, keys[missing[begin + index]], std::span(&slice, 1),
+                                        device.stream)) {
+                    return false;
+                }
+            }
+            // Staged D2H copies read arena staging that the scope releases per batch.
+            CUDA_CHECK(cudaStreamSynchronize(device.stream));
         }
-        // Staged D2H copies read arena staging that the scope releases on return.
-        CUDA_CHECK(cudaStreamSynchronize(device.stream));
         return true;
     }
 
