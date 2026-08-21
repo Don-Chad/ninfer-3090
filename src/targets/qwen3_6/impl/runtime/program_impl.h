@@ -346,7 +346,7 @@ std::uint64_t ProgramImplCore::content_identity(const RequestPlan& plan) const n
 
 bool ProgramImplCore::save_prefill_checkpoint(std::uint32_t lane) {
     if (!content_cache || lane >= max_concurrency) { return false; }
-    return content_cache->save_checkpoint(sequences[lane], work, device);
+    return content_cache->save_prompt_anchor(sequences[lane], work, device);
 }
 
 bool ProgramImplCore::can_admit_lane(std::uint32_t lane, const RequestPlan& plan) const noexcept {
