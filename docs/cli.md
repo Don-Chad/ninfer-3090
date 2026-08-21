@@ -135,18 +135,23 @@ measured recommendation rather than a semantic limit.
 The MTP model still proposes exactly `P=--draft-tokens` tokens. After one fully accepted MTP round,
 a bounded 12-token suffix match may append ledger continuation tokens only in positions `[P,V)`,
 where `V=--context-lookup-verify-tokens` (default 5). Lookup must agree exactly with all P MTP head
-tokens, so it can never override an MTP proposal. Each row clamps V to its remaining output budget
-and context capacity. Lookup does not retain a cross-request cursor or mutate ledger, KV, or GDN
-state; the normal speculative commit/rollback transaction remains authoritative. The candidate is
-off by default and currently requires `--no-cuda-graph` so an unsupported P/V graph topology fails
-at startup instead of silently changing execution mode:
+tokens, so it can never override an MTP proposal. The target executes the ordinary P-wide shape
+unless the complete V-wide window fits the remaining output budget and context capacity and
+qualifies; shorter continuations never create an intermediate width. Lookup does not retain
+a cross-request cursor or mutate ledger, KV, or GDN state; the normal speculative commit/rollback
+transaction remains authoritative. The candidate is off by default and currently requires eager
+execution with `--max-concurrency 1`. CUDA Graph or higher-concurrency startup fails explicitly
+instead of silently changing execution mode:
 
 ```bash
 ./build/apps/ninfer models/huihui_qwen3_8_27b_abliterated.ninfer \
   --prompt "Continue the repeated document." --max-new 512 \
   --spec mtp --draft-tokens 3 --lm-head-draft --context-lookup \
-  --context-lookup-verify-tokens 5 --no-cuda-graph --vision
+  --context-lookup-verify-tokens 4 --no-cuda-graph --vision
 ```
+
+The owned RTX 3090 Huihui profile uses `P=3,V=4`: its one-token tail produced the best measured
+net copy throughput while keeping ordinary coding rounds on the original P-wide path.
 
 ## Common options
 
@@ -161,7 +166,7 @@ at startup instead of silently changing execution mode:
 | `--spec mtp\|dflash` | speculative backend | off |
 | `--draft-tokens N` | MTP `1..5`; DFlash `1..15` | unset |
 | `--lm-head-draft` | optimized proposal head | off |
-| `--context-lookup` | MTP-only 12-token suffix lookup tail; requires eager execution | off |
+| `--context-lookup` | MTP-only 12-token suffix lookup tail; requires eager execution and concurrency 1 | off |
 | `--context-lookup-verify-tokens N` | MTP target verify window V in `[P,5]` with context lookup | 5 when lookup is on |
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |

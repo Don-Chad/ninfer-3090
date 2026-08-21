@@ -23,6 +23,18 @@ struct ContextLookupTail {
     std::uint32_t tail_tokens   = 0;
 };
 
+// Host round gate used before lookup. A long traversal is considered only when the complete MTP
+// head and the complete configured V window fit; otherwise the caller must execute its ordinary
+// P-wide target shape. This deliberately has no partial-width outcome.
+inline bool context_lookup_long_round_ready(std::uint32_t proposal_depth,
+                                            std::uint32_t long_verify_tokens,
+                                            std::uint32_t available_verify_tokens,
+                                            std::uint32_t mtp_extent,
+                                            bool controller_ready) noexcept {
+    return controller_ready && long_verify_tokens > proposal_depth &&
+           mtp_extent == proposal_depth && available_verify_tokens >= long_verify_tokens;
+}
+
 // Finds the longest suffix with an earlier occurrence in ledger. Ties select the most recent
 // occurrence. Earlier and suffix ranges may overlap; continuation reads stay within ledger.
 inline ContextLookupResult context_lookup(std::span<const TokenId> ledger,
@@ -54,8 +66,9 @@ inline ContextLookupResult context_lookup(std::span<const TokenId> ledger,
 
 // Preserves every MTP proposal and appends only the lookup continuation beyond it. A tail is
 // licensed only after a full 12-token match, caller-owned controller gating, and exact agreement
-// between lookup and MTP across the complete model proposal. output.size() is the row's already
-// budget/context-clamped maximum verification extent.
+// between lookup and MTP across the complete model proposal. The caller passes either the ordinary
+// P-wide target span or the complete long V-wide target span. A short continuation never creates
+// an intermediate target width: the result is exactly P or exactly output.size().
 inline ContextLookupTail append_context_lookup_tail(std::span<const TokenId> mtp,
                                                     std::span<const TokenId> lookup,
                                                     std::uint32_t match_tokens,
@@ -65,11 +78,11 @@ inline ContextLookupTail append_context_lookup_tail(std::span<const TokenId> mtp
     std::copy(mtp.begin(), mtp.end(), output.begin());
     ContextLookupTail result{.verify_tokens = static_cast<std::uint32_t>(mtp.size())};
     if (!controller_ready || match_tokens < kContextLookupStrongMatchTokens ||
-        lookup.size() <= mtp.size() ||
+        output.size() == mtp.size() || lookup.size() < output.size() ||
         !std::equal(mtp.begin(), mtp.end(), lookup.begin())) {
         return result;
     }
-    const std::size_t tail = std::min(output.size() - mtp.size(), lookup.size() - mtp.size());
+    const std::size_t tail = output.size() - mtp.size();
     std::copy_n(lookup.begin() + static_cast<std::ptrdiff_t>(mtp.size()), tail,
                 output.begin() + static_cast<std::ptrdiff_t>(mtp.size()));
     result.verify_tokens += static_cast<std::uint32_t>(tail);

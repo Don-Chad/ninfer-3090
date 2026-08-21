@@ -94,6 +94,10 @@ struct PendingCandidate {
     std::uint32_t base_S        = 0;
     std::uint32_t prompt_tokens = 0;
     std::uint32_t produced      = 0;
+    // Actual speculative target geometry used by the pending traversal. Context lookup selects
+    // P or V per B=1 round, so resolution must not reconstruct either value from startup maxima.
+    std::uint32_t speculative_row_stride = 0;
+    std::uint32_t target_width            = 0;
 };
 
 enum class Lifecycle : std::uint8_t {

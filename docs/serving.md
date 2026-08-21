@@ -41,7 +41,9 @@ cannot be combined with `--vision`. A later request cannot enable a capability o
 MTP proposal depth P remains `--draft-tokens`; the target verification window V defaults to 5 and
 can be set with `--context-lookup-verify-tokens` in `[P,5]`. Lookup only fills `[P,V)` after a
 12-token match, exact agreement with the complete MTP head, and one fully accepted MTP round.
-This candidate requires `--no-cuda-graph`; graph-enabled startup is rejected explicitly.
+Ordinary rounds execute the P-wide target shape; the engine selects V only when the complete long
+window fits and qualifies, with no partial intermediate width. This candidate requires
+`--no-cuda-graph` and `--max-concurrency 1`; unsupported startup is rejected explicitly.
 
 ### Owned RTX 3090 Huihui candidate
 
@@ -71,9 +73,10 @@ then releases it after its configured idle timeout. Its child keeps Vision and M
 artifact: C:\Users\MaxKe\ninfer-3090\models\huihui_qwen3_8_27b_abliterated.ninfer
 engine:   http://127.0.0.1:8080/v1 (gateway-owned; do not target from Codex)
 gateway:  http://127.0.0.1:8081/v1 (the Codex base URL)
-server:   --max-context 65536 --kv-capacity auto --max-concurrency 1
+server:   --max-context 65536 --kv-capacity 65536 --max-concurrency 1
           --max-pending-requests 16 --prefill-chunk 1024 --kv-dtype rk8v4
-          --spec mtp --draft-tokens 3 --lm-head-draft --vision --no-cuda-graph
+          --spec mtp --draft-tokens 3 --lm-head-draft --context-lookup
+          --context-lookup-verify-tokens 4 --vision --no-cuda-graph
 ```
 
 The Codex catalog at `%USERPROFILE%\.codex\model-catalogs\huihui-combined.json` intentionally

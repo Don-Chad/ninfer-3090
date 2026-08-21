@@ -55,6 +55,10 @@ struct GdnReplayRecords {
     GdnReplayRecords() = default;
     GdnReplayRecords(DeviceSpan backing, const GdnReplayRecordLayout& layout);
 
+    // Returns a B=1 recording view over the leading active_width columns. The owning storage
+    // remains planned at the maximum verification width; layer() converts the selected layer's
+    // physical row into a contiguous active-width prefix before it reaches the record kernels.
+    [[nodiscard]] GdnReplayRecords active_width_b1(std::int32_t active_width) const;
     [[nodiscard]] GdnReplayRecordLayer layer(std::int32_t layer, std::int32_t rows) const;
 };
 

@@ -718,10 +718,11 @@ def default_launch_spec() -> LaunchSpec:
     command = (
         str(executable), str(artifact),
         "--host", "127.0.0.1", "--port", str(local_port),
-        "--max-context", "65536", "--kv-capacity", "auto",
+        "--max-context", "65536", "--kv-capacity", "65536",
         "--max-concurrency", "1", "--max-pending-requests", "16",
         "--prefill-chunk", "1024", "--kv-dtype", "rk8v4",
         "--spec", "mtp", "--draft-tokens", "3", "--lm-head-draft",
+        "--context-lookup", "--context-lookup-verify-tokens", "4",
         "--vision", "--no-cuda-graph",
         "--request-log-jsonl", str(root / "logs" / "huihui-gateway.requests.jsonl"),
     )

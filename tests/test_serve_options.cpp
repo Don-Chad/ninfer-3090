@@ -93,6 +93,14 @@ int main() {
     failures += check(lookup.speculative.context_lookup_verify_tokens == 5,
                       "--context-lookup did not select V=5");
 
+    bool lookup_batch_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--spec", "mtp", "--draft-tokens", "3",
+                     "--context-lookup", "--max-concurrency", "2", "--no-cuda-graph"});
+    } catch (const std::invalid_argument&) { lookup_batch_rejected = true; }
+    failures += check(lookup_batch_rejected,
+                      "context lookup accepted max_concurrency greater than one");
+
     ninfer::SpeculativeOptions api_lookup;
     api_lookup.backend                      = ninfer::SpeculativeBackend::Mtp;
     api_lookup.draft_tokens                 = 3;

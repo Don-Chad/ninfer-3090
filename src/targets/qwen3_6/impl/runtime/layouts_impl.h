@@ -610,6 +610,9 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
             throw std::invalid_argument(
                 "MTP context lookup verification-window split requires --no-cuda-graph");
         }
+        if (options.speculative.context_lookup && options.max_concurrency != 1) {
+            throw std::invalid_argument("MTP context lookup requires max_concurrency=1");
+        }
         break;
     }
     case SpeculativeBackend::DFlash:

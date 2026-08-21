@@ -133,6 +133,36 @@ int main() {
     failures += expect_throw([&] { (void)records.layer(0, 0); }, "zero active rows");
     failures += expect_throw([&] { (void)records.layer(0, 6); }, "excess active rows");
 
+    const ninfer::GdnReplayRecordSpec b1_spec{
+        .layers          = 3,
+        .record_capacity = 1,
+        .width           = 6,
+        .conv_channels   = 256,
+        .qk_heads        = 2,
+        .value_heads     = 6,
+        .key_dim         = 128,
+        .value_dim       = 128,
+    };
+    ninfer::LayoutBuilder b1_builder;
+    const auto b1_layout       = ninfer::plan_gdn_replay_records(b1_builder, b1_spec);
+    const std::size_t b1_bytes = b1_builder.finish(256);
+    auto b1_backing            = make_backing(b1_bytes);
+    const ninfer::GdnReplayRecords b1_records({b1_backing.get(), b1_bytes}, b1_layout);
+    const ninfer::GdnReplayRecords b1_prefix = b1_records.active_width_b1(4);
+    const auto b1_layer2                  = b1_prefix.layer(2, 1);
+    failures += expect_shape(b1_layer2.conv, 256, 4, 1, 1, "B1 prefix conv slice");
+    failures += expect_shape(b1_layer2.key, 128, 2, 4, 1, "B1 prefix key slice");
+    failures += expect(b1_layer2.conv.is_contiguous() && b1_layer2.key.is_contiguous() &&
+                           b1_layer2.value.is_contiguous() && b1_layer2.gate.is_contiguous(),
+                       "B1 active-width layer prefix is not contiguous");
+    failures += expect(
+        static_cast<std::byte*>(b1_layer2.conv.data) -
+                static_cast<std::byte*>(b1_records.conv.data) ==
+            static_cast<std::ptrdiff_t>(2 * b1_records.conv.nb[2]),
+        "B1 prefix layer offset lost the maximum-width storage stride");
+    failures += expect_throw([&] { (void)records.active_width_b1(3); },
+                             "multi-row active-width view");
+
     failures += expect_size(record_bytes({.layers          = 48,
                                           .record_capacity = 8,
                                           .width           = 6,

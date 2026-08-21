@@ -500,6 +500,7 @@ int run_record_fold_rounds() {
     constexpr std::int32_t kZRows        = 4096;
     constexpr std::int32_t kParentRows   = 12288;
     constexpr std::int32_t kWidth        = 2;
+    constexpr std::int32_t kStorageWidth = 6;
     constexpr std::int32_t kStateSlots   = 3;
     constexpr std::int32_t kInitialSlot  = 2;
     constexpr std::int32_t kSnapshotBase = 0;
@@ -522,7 +523,7 @@ int run_record_fold_rounds() {
     const GdnReplayRecordLayout record_layout =
         plan_gdn_replay_records(record_builder, {.layers          = kProfile.layers,
                                                  .record_capacity = 1,
-                                                 .width           = kWidth,
+                                                 .width           = kStorageWidth,
                                                  .conv_channels   = kProfile.conv_channels,
                                                  .qk_heads        = kQkHeads,
                                                  .value_heads     = kProfile.value_heads,
@@ -531,6 +532,7 @@ int run_record_fold_rounds() {
     DeviceBuffer record_storage(record_builder.finish(256));
     record_storage.fill(0xff);
     GdnReplayRecords records({record_storage.p, record_storage.bytes}, record_layout);
+    const GdnReplayRecords active_records = records.active_width_b1(kWidth);
 
     LayoutBuilder state_builder;
     const LinearAttentionStatePoolLayout state_layout = plan_linear_attention_state_pool(
@@ -625,7 +627,7 @@ int run_record_fold_rounds() {
         device_beta.copy_from_host(beta_host.data(), device_beta.bytes);
 
         for (std::int32_t layer = 0; layer < kProfile.layers; ++layer) {
-            GdnReplayRecordLayer layer_records = records.layer(layer, 1);
+            GdnReplayRecordLayer layer_records = active_records.layer(layer, 1);
             Tensor& conv_states                = state_pool.conv[static_cast<std::size_t>(layer)];
             ops::gdn_input_proj_conv_snapshot(x, parent.view(), conv_weight, conv_states, valid,
                                               initial_selector, snapshot_selector, snapshot_query,

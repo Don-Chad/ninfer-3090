@@ -273,6 +273,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         throw std::invalid_argument("--prefill-chunk must be a positive multiple of 128");
     }
     product::validate_speculative_cli_options(options.speculative);
+    if (options.speculative.context_lookup && options.max_concurrency != 1) {
+        throw std::invalid_argument("--context-lookup requires --max-concurrency 1");
+    }
     if (options.speculative.backend == SpeculativeBackend::DFlash && options.enable_vision) {
         throw std::invalid_argument("--spec dflash cannot be combined with --vision");
     }

@@ -122,6 +122,19 @@ GdnReplayRecords::GdnReplayRecords(DeviceSpan backing, const GdnReplayRecordLayo
     validate_layout(layout);
 }
 
+GdnReplayRecords GdnReplayRecords::active_width_b1(std::int32_t active_width) const {
+    validate_spec(spec);
+    if (spec.record_capacity != 1) {
+        throw std::logic_error("GDN replay active-width view requires record capacity one");
+    }
+    if (active_width <= 0 || active_width > spec.width) {
+        throw std::out_of_range("GDN replay active width is out of range");
+    }
+    GdnReplayRecords out = *this;
+    out.spec.width        = active_width;
+    return out;
+}
+
 GdnReplayRecordLayer GdnReplayRecords::layer(std::int32_t layer_index, std::int32_t rows) const {
     validate_spec(spec);
     if (layer_index < 0 || layer_index >= spec.layers) {
@@ -130,12 +143,22 @@ GdnReplayRecordLayer GdnReplayRecords::layer(std::int32_t layer_index, std::int3
     if (rows <= 0 || rows > spec.record_capacity) {
         throw std::out_of_range("GDN replay active row count out of range");
     }
+    const std::int32_t storage_width = conv.ne[1];
+    if (storage_width < spec.width || key.ne[2] != storage_width || value.ne[2] != storage_width ||
+        gate.ne[2] != storage_width) {
+        throw std::logic_error("GDN replay storage width does not contain the active prefix");
+    }
+    if (storage_width != spec.width && (spec.record_capacity != 1 || rows != 1)) {
+        throw std::logic_error("GDN replay active-width prefix is only valid for B=1");
+    }
     const std::int32_t outer_begin = layer_index * spec.record_capacity;
     return GdnReplayRecordLayer{
-        .conv  = conv.slice(2, outer_begin, rows).view({spec.conv_channels, spec.width, rows}),
-        .key   = key.slice(3, outer_begin, rows),
-        .value = value.slice(3, outer_begin, rows),
-        .gate  = gate.slice(3, outer_begin, rows),
+        .conv  = conv.slice(2, outer_begin, rows)
+                    .slice(1, 0, spec.width)
+                    .view({spec.conv_channels, spec.width, rows}),
+        .key   = key.slice(3, outer_begin, rows).slice(2, 0, spec.width),
+        .value = value.slice(3, outer_begin, rows).slice(2, 0, spec.width),
+        .gate  = gate.slice(3, outer_begin, rows).slice(2, 0, spec.width),
     };
 }
 

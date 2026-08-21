@@ -42,6 +42,12 @@ int main() {
                       "lookup did not clamp to the caller-owned row extent");
 
     const std::array<TokenId, 3> mtp{30, 31, 32};
+    failures += check(context_lookup_long_round_ready(3, 5, 5, 3, true),
+                      "full P/V round did not qualify for long verification");
+    failures += check(!context_lookup_long_round_ready(3, 5, 4, 3, true) &&
+                          !context_lookup_long_round_ready(3, 5, 5, 2, true) &&
+                          !context_lookup_long_round_ready(3, 5, 5, 3, false),
+                      "budget/context/controller gate admitted a partial long width");
     std::array<TokenId, 5> verify{};
     const auto controller_blocked = append_context_lookup_tail(
         mtp, lookup_tokens, kContextLookupStrongMatchTokens, false, verify);
@@ -65,12 +71,21 @@ int main() {
                           equals(std::span<const TokenId>(verify.data(), 3), {30, 31, 32}),
                       "lookup disagreement overrode an MTP head token");
 
-    std::array<TokenId, 4> partial_verify{};
-    const auto partial = append_context_lookup_tail(
-        mtp, lookup_tokens, kContextLookupStrongMatchTokens, true, partial_verify);
-    failures += check(partial.verify_tokens == 4 && partial.tail_tokens == 1 &&
-                          equals(partial_verify, {30, 31, 32, 33}),
-                      "budget/context-sized verification span did not clamp the tail");
+    std::array<TokenId, 4> intermediate_verify{};
+    const auto intermediate = append_context_lookup_tail(
+        mtp, lookup_tokens, kContextLookupStrongMatchTokens, true, intermediate_verify);
+    failures += check(intermediate.verify_tokens == 4 && intermediate.tail_tokens == 1 &&
+                          equals(intermediate_verify, {30, 31, 32, 33}),
+                      "explicit V=4 qualification did not produce its full target width");
+
+    std::array<TokenId, 5> short_lookup_verify{};
+    const std::array<TokenId, 4> short_lookup{30, 31, 32, 33};
+    const auto no_partial_width = append_context_lookup_tail(
+        mtp, short_lookup, kContextLookupStrongMatchTokens, true, short_lookup_verify);
+    failures += check(no_partial_width.verify_tokens == 3 && no_partial_width.tail_tokens == 0 &&
+                          equals(std::span<const TokenId>(short_lookup_verify.data(), 3),
+                                 {30, 31, 32}),
+                      "short lookup continuation created a partial long target width");
 
     std::array<TokenId, 3> no_tail_verify{};
     const auto no_tail = append_context_lookup_tail(

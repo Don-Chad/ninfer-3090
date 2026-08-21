@@ -79,6 +79,13 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size,
 
         qwen3_6::MtpDecodeState& frame = state.frame;
         const std::int32_t width       = static_cast<std::int32_t>(verify_window) + 1;
+        const std::int32_t stored_verify_window = frame.current_drafts.ne[0];
+        if (verify_window > static_cast<std::uint32_t>(stored_verify_window) ||
+            (verify_window != static_cast<std::uint32_t>(stored_verify_window) &&
+             batch_size != 1)) {
+            throw std::logic_error(
+                "dynamic MTP verification width requires a B=1 storage-prefix traversal");
+        }
         CUDA_CHECK(cudaMemcpyAsync(frame.ingress.data, &state.host_ingress,
                                    sizeof(qwen3_6::MtpDecodeIngress), cudaMemcpyHostToDevice,
                                    state.execution.device.stream));
@@ -92,24 +99,28 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size,
         Tensor budgets           = frame.remaining_budgets.slice(0, 0, batch_size);
         Tensor current_extents   = frame.current_extents.slice(0, 0, batch_size);
         Tensor target_valid      = frame.target_valid_columns.slice(0, 0, batch_size);
-        Tensor current_drafts    = frame.current_drafts.slice(1, 0, batch_size);
-        Tensor target_rope       = frame.target_rope_positions.slice(1, 0, batch_size);
+        Tensor current_drafts = frame.current_drafts.slice(1, 0, batch_size).slice(
+            0, 0, static_cast<std::int32_t>(verify_window));
+        Tensor target_rope = frame.target_rope_positions.slice(1, 0, batch_size).slice(
+            0, 0, width);
         Tensor text_rows         = frame.text_kv_table_rows.slice(0, 0, batch_size);
         Tensor mtp_rows          = frame.mtp_kv_table_rows.slice(0, 0, batch_size);
         Tensor lanes             = frame.lanes.slice(0, 0, batch_size);
         Tensor rope_deltas       = frame.rope_deltas.slice(0, 0, batch_size);
-        Tensor verify_ids        = frame.verify_ids.slice(1, 0, batch_size);
-        Tensor target_positions  = frame.target_positions.slice(1, 0, batch_size);
-        Tensor target_tokens     = frame.target_argmax.slice(1, 0, batch_size);
-        Tensor target_logits     = frame.target_logits.slice(2, 0, batch_size);
-        Tensor target_hidden     = frame.target_hidden.slice(2, 0, batch_size);
+        Tensor verify_ids = frame.verify_ids.slice(1, 0, batch_size).slice(0, 0, width);
+        Tensor target_positions =
+            frame.target_positions.slice(1, 0, batch_size).slice(0, 0, width);
+        Tensor target_tokens = frame.target_argmax.slice(1, 0, batch_size).slice(0, 0, width);
+        Tensor target_logits = frame.target_logits.slice(2, 0, batch_size).slice(1, 0, width);
+        Tensor target_hidden = frame.target_hidden.slice(2, 0, batch_size).slice(1, 0, width);
         Tensor selected_hidden   = frame.target_continuation_hidden.slice(1, 0, batch_size);
-        Tensor licensed_tokens   = frame.licensed_tokens.slice(1, 0, batch_size);
+        Tensor licensed_tokens = frame.licensed_tokens.slice(1, 0, batch_size).slice(0, 0, width);
         Tensor licensed_counts   = frame.licensed_counts.slice(0, 0, batch_size);
         Tensor accepted          = frame.accepted_drafts.slice(0, 0, batch_size);
         Tensor next_extents      = frame.next_extents.slice(0, 0, batch_size);
-        Tensor alignment_ids     = frame.alignment_ids.slice(1, 0, batch_size);
-        Tensor alignment_hidden  = frame.alignment_hidden.slice(2, 0, batch_size);
+        Tensor alignment_ids = frame.alignment_ids.slice(1, 0, batch_size).slice(0, 0, width);
+        Tensor alignment_hidden =
+            frame.alignment_hidden.slice(2, 0, batch_size).slice(1, 0, width);
         Tensor ar_hidden         = frame.ar_hidden.slice(1, 0, batch_size);
         Tensor next_hidden       = frame.next_hidden.slice(1, 0, batch_size);
         Tensor ar_positions      = frame.ar_positions.slice(0, 0, batch_size);
@@ -120,6 +131,12 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size,
         ops::speculative_prepare_verify_inputs(anchors, current_drafts, frontiers, current_extents,
                                                verify_ids, target_positions,
                                                state.execution.device.stream);
+        std::optional<GdnReplayRecords> active_replay;
+        const GdnReplayRecords* target_replay = state.execution.replay_records;
+        if (target_replay != nullptr && target_replay->spec.width != width) {
+            active_replay.emplace(target_replay->active_width_b1(width));
+            target_replay = &*active_replay;
+        }
         target_verify_accept(state.execution, state.continuation_hidden_store, card,
                              TargetVerifyFrameView{
                                  .ids             = verify_ids,
@@ -139,7 +156,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size,
                                  .licensed_counts = licensed_counts,
                                  .accepted_drafts = accepted,
                                  .selected_hidden = selected_hidden,
-                                 .replay_records  = state.execution.replay_records,
+                                 .replay_records  = target_replay,
                                  .sampling        = frame.sampling,
                              },
                              envelopes.target_verify);

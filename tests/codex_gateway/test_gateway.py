@@ -668,8 +668,11 @@ def test_default_engine_contract_is_exact_huihui_vision_mtp_on_port_8080(
     assert command[1].endswith("models\\huihui_qwen3_8_27b_abliterated.ninfer")
     assert command[command.index("--port") + 1] == "8080"
     assert command[command.index("--max-context") + 1] == "65536"
+    assert command[command.index("--kv-capacity") + 1] == "65536"
     assert command[command.index("--kv-dtype") + 1] == "rk8v4"
     assert command[command.index("--spec") + 1] == "mtp"
     assert command[command.index("--draft-tokens") + 1] == "3"
     assert "--lm-head-draft" in command
+    assert "--context-lookup" in command
+    assert command[command.index("--context-lookup-verify-tokens") + 1] == "4"
     assert "--vision" in command
