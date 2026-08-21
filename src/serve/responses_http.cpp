@@ -401,14 +401,41 @@ void HttpServer::handle_response_cancel(const httplib::Request& req, httplib::Re
     write_error(res, error);
 }
 
-void HttpServer::handle_response_compact(const httplib::Request&, httplib::Response& res) {
-    ApiError error;
-    error.status  = 400;
-    error.type    = "invalid_request_error";
-    error.param   = "context_management";
-    error.code    = "compaction_not_supported";
-    error.message = "Responses compaction is not supported";
-    write_error(res, error);
+void HttpServer::handle_response_compact(const httplib::Request& req, httplib::Response& res) {
+    ResponsesCompactRequest request;
+    PreparedRequest prepared;
+    try {
+        RequestLimits limits;
+        limits.default_max_tokens = options_.default_max_tokens;
+        request = parse_responses_compact_request(parse_json_body(req), limits);
+        validate_model(request.generation.model, public_model_id_);
+        prepared = service_->prepare(request.generation, [&req] { return disconnected(req); });
+    } catch (const ApiException& exception) {
+        write_error(res, responses_error(exception.error()));
+        return;
+    } catch (const std::exception& exception) {
+        write_error(res, internal_error(exception));
+        return;
+    }
+
+    const std::uint64_t req_id = ++request_seq_;
+    const RequestLogContext log_context =
+        make_request_log_context(req_id, "openai_responses_compact", request.generation, prepared);
+    log_request_start(log_context);
+    try {
+        const GenerationOutcome outcome =
+            service_->run(prepared, nullptr, [&req] { return disconnected(req); });
+        const std::string body = make_responses_compact_body(outcome);
+        log_request_done(log_context, outcome);
+        set_owned_content(res, body, prepared.lifetime);
+    } catch (const ApiException& exception) {
+        const ApiError error = responses_error(exception.error());
+        log_request_error(log_context, error.message);
+        write_error(res, error);
+    } catch (const std::exception& exception) {
+        log_request_error(log_context, exception.what());
+        write_error(res, internal_error(exception));
+    }
 }
 
 } // namespace ninfer::serve

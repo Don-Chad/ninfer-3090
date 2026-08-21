@@ -611,6 +611,177 @@ GenerationOutcome sample_outcome() {
     return outcome;
 }
 
+int test_legacy_compact_request_and_portable_response() {
+    const Json body = {
+        {"model", "huihui-qwen3.8-27b-abliterated"},
+        {"instructions", "base coding instructions"},
+        {"input",
+         Json::array(
+             {Json{{"id", "msg_user"},
+                   {"type", "message"},
+                   {"role", "user"},
+                   {"content",
+                    Json::array({Json{{"type", "input_text"}, {"text", "inspect image"}},
+                                 Json{{"type", "input_image"},
+                                      {"image_url", "data:image/png;base64,AA=="},
+                                      {"detail", "original"}}})}},
+              Json{{"id", "fc_1"},
+                   {"type", "function_call"},
+                   {"status", "completed"},
+                   {"call_id", "call_1"},
+                   {"name", "inspect"},
+                   {"arguments", R"({"path":"image.png"})"}},
+              Json{{"id", "fco_1"},
+                   {"type", "function_call_output"},
+                   {"status", "completed"},
+                   {"call_id", "call_1"},
+                   {"output", "640x480"}},
+              Json{{"id", "msg_assistant"},
+                   {"type", "message"},
+                   {"role", "assistant"},
+                   {"content",
+                    Json::array(
+                        {Json{{"type", "output_text"}, {"text", "Image inspected"}}})}}})},
+        {"tools",
+         Json::array({Json{{"type", "function"},
+                           {"name", "inspect"},
+                           {"description", "Inspect an image"},
+                           {"parameters", Json{{"type", "object"}}}},
+                      Json{{"type", "web_search"}}})},
+        {"parallel_tool_calls", true},
+        {"reasoning", Json{{"effort", "medium"}}},
+        {"service_tier", "default"},
+        {"prompt_cache_key", "thread-key"},
+        {"text", Json{{"format", Json{{"type", "text"}}}}},
+    };
+
+    const ResponsesCompactRequest compact = parse_responses_compact_request(body, limits());
+    const GenerationRequest& generation    = compact.generation;
+    int failures                           = 0;
+    failures += check(generation.model == "huihui-qwen3.8-27b-abliterated",
+                      "compact model was not parsed");
+    failures += check(!generation.stream && generation.tools.empty() &&
+                          generation.tool_choice.mode == ToolChoiceMode::None &&
+                          !generation.parallel_tool_calls,
+                      "compact generation exposed request tools");
+    failures += check(generation.messages.size() == 6 &&
+                          generation.messages.front().role == ninfer::ChatRole::Developer &&
+                          generation.messages.front().content[0].text == "base coding instructions",
+                      "compact instructions were not composed ahead of history");
+    failures += check(generation.messages[1].content.size() == 2 &&
+                          generation.messages[1].content[1].kind == ContentKind::Image &&
+                          generation.messages[1].content[1].source.value ==
+                              "data:image/png;base64,AA==",
+                      "compact history did not preserve original-detail vision input");
+    failures += check(generation.messages[2].tool_calls.size() == 1 &&
+                          generation.messages[2].tool_calls[0].id == "call_1" &&
+                          generation.messages[3].role == ninfer::ChatRole::Tool &&
+                          generation.messages[3].tool_call_id == "call_1",
+                      "compact history did not preserve a completed tool exchange");
+    failures += check(generation.messages.back().role == ninfer::ChatRole::User &&
+                          generation.messages.back().content[0].text.find(
+                              "CONTEXT CHECKPOINT COMPACTION") != std::string::npos,
+                      "compact summarization prompt was not appended last");
+
+    const Json response = Json::parse(make_responses_compact_body(sample_outcome()));
+    failures += check(response.size() == 1 && response.at("output").size() == 1,
+                      "compact response must contain only replacement output");
+    const Json& summary_item = response.at("output").at(0);
+    const std::string summary = summary_item.at("content").at(0).at("text");
+    failures += check(summary_item.at("type") == "message" &&
+                          summary_item.at("role") == "user" &&
+                          summary.find("Another language model started") == 0 &&
+                          summary.ends_with("answer") && !summary_item.contains("encrypted_content"),
+                      "compact response was not a portable plaintext user summary");
+
+    ResponsesRequest replay = parse_responses_request(
+        Json{{"model", "huihui-qwen3.8-27b-abliterated"},
+             {"input", response.at("output")},
+             {"max_output_tokens", 32}},
+        limits());
+    compose_responses_generation_messages(replay, {});
+    failures += check(replay.generation.messages.size() == 1 &&
+                          replay.generation.messages[0].role == ninfer::ChatRole::User &&
+                          replay.generation.messages[0].content[0].text == summary,
+                      "next-turn Responses parsing did not preserve the compact summary");
+    return failures;
+}
+
+int test_legacy_compact_rejections() {
+    const Json valid = {{"model", "huihui-qwen3.8-27b-abliterated"},
+                        {"input",
+                         Json::array({Json{{"type", "message"},
+                                           {"role", "user"},
+                                           {"content", "history"}}})},
+                        {"parallel_tool_calls", false}};
+    int failures     = 0;
+    Json unknown     = valid;
+    unknown["stream"] = false;
+    failures += check(api_code([&] { (void)parse_responses_compact_request(unknown, limits()); }) ==
+                          "unknown_parameter",
+                      "compact accepted an out-of-contract parameter");
+    Json invalid_tools = valid;
+    invalid_tools["tools"] = Json::object();
+    failures += check(throws_api(
+                          [&] { (void)parse_responses_compact_request(invalid_tools, limits()); }),
+                      "compact accepted non-array tools");
+    failures += check(throws_api([&] {
+                          (void)parse_responses_compact_request(
+                              Json{{"input", valid.at("input")},
+                                   {"parallel_tool_calls", false}},
+                              limits());
+                      }),
+                      "compact accepted a missing model");
+    const auto rejects_compact = [&](Json candidate, const std::string& failure) {
+        failures += check(throws_api([&] {
+                              (void)parse_responses_compact_request(candidate, limits());
+                          }),
+                          failure);
+    };
+    Json missing_input = valid;
+    missing_input.erase("input");
+    rejects_compact(std::move(missing_input), "compact accepted missing input");
+    Json null_input = valid;
+    null_input["input"] = nullptr;
+    rejects_compact(std::move(null_input), "compact accepted null input");
+    Json string_input = valid;
+    string_input["input"] = "history";
+    rejects_compact(std::move(string_input), "compact accepted string input");
+    Json empty_input = valid;
+    empty_input["input"] = Json::array();
+    rejects_compact(std::move(empty_input), "compact accepted empty input");
+    Json missing_parallel = valid;
+    missing_parallel.erase("parallel_tool_calls");
+    rejects_compact(std::move(missing_parallel),
+                    "compact accepted missing parallel_tool_calls");
+    Json null_parallel = valid;
+    null_parallel["parallel_tool_calls"] = nullptr;
+    rejects_compact(std::move(null_parallel),
+                    "compact accepted null parallel_tool_calls");
+    Json string_parallel = valid;
+    string_parallel["parallel_tool_calls"] = "false";
+    rejects_compact(std::move(string_parallel),
+                    "compact accepted non-boolean parallel_tool_calls");
+
+    GenerationOutcome incomplete = sample_outcome();
+    incomplete.finish_reason     = ninfer::FinishReason::OutputLimit;
+    failures += check(api_code([&] { (void)make_responses_compact_body(incomplete); }) ==
+                          "compaction_generation_failed",
+                      "compact serialized an incomplete summary");
+    GenerationOutcome unfinished = sample_outcome();
+    unfinished.finish_reason     = ninfer::FinishReason::None;
+    failures += check(api_code([&] { (void)make_responses_compact_body(unfinished); }) ==
+                          "compaction_generation_failed",
+                      "compact serialized a summary without a terminal finish reason");
+    GenerationOutcome tool = sample_outcome();
+    tool.text.clear();
+    tool.tool_calls.push_back(ToolCall{"call_1", "inspect", "{}"});
+    failures += check(api_code([&] { (void)make_responses_compact_body(tool); }) ==
+                          "compaction_generation_failed",
+                      "compact serialized a tool call instead of a summary");
+    return failures;
+}
+
 int test_response_object() {
     ResponsesRequest request = parse_responses_request(Json{{"model", "qwen3.6-27b"},
                                                             {"input", "hello"},
@@ -773,6 +944,8 @@ int main() {
     failures += test_codex_namespace_and_custom_tools();
     failures += test_codex_tool_search_wire_items();
     failures += test_explicit_rejections();
+    failures += test_legacy_compact_request_and_portable_response();
+    failures += test_legacy_compact_rejections();
     failures += test_response_object();
     failures += test_sse_sequence();
     failures += test_sse_function_call();

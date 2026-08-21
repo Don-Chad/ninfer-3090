@@ -42,24 +42,78 @@ cannot be combined with `--vision`. A later request cannot enable a capability o
 
 The owned `MaxKerkula/ninfer-3090` fork maintains the exact abliterated candidate separately from
 the existing production router. Its loaded artifact and public model slug are both exact:
-`huihui_qwen3_8_27b_abliterated.ninfer` and `huihui-qwen3.8-27b-abliterated`. On the RTX 3090
-candidate, use the `sm_86` build and keep Vision and MTP resident at startup:
+`huihui_qwen3_8_27b_abliterated.ninfer` and `huihui-qwen3.8-27b-abliterated`. The canonical
+workstation route is loopback-only:
+
+```text
+Codex (cloud and local model selection) -> http://127.0.0.1:8081/v1 gateway
+Huihui local selection                 -> lifecycle-owned NInfer child on 127.0.0.1:8080
+all other model selections             -> gateway cloud passthrough
+```
+
+The gateway starts the exact `sm_86` NInfer executable only when the Huihui slug receives a request,
+then releases it after its configured idle timeout. Its child keeps Vision and MTP resident:
 
 ```text
 artifact: C:\Users\MaxKe\ninfer-3090\models\huihui_qwen3_8_27b_abliterated.ninfer
-endpoint: http://127.0.0.1:8090/v1
+engine:   http://127.0.0.1:8080/v1 (gateway-owned; do not target from Codex)
+gateway:  http://127.0.0.1:8081/v1 (the Codex base URL)
 server:   --max-context 65536 --kv-capacity auto --max-concurrency 1
           --max-pending-requests 16 --prefill-chunk 1024 --kv-dtype rk8v4
           --spec mtp --draft-tokens 3 --lm-head-draft --vision --no-cuda-graph
 ```
 
-The Codex catalog intentionally budgets this candidate at 32768 tokens even though the server has
-a 65536-token logical limit. That leaves server-side tokenizer and prompt headroom; it is not a
-claim that every 65536-token client request has been qualified. The candidate uses port 8090 and
-its own request log so it can be stopped, rebuilt, or rolled back without changing the production
-router. This profile is machine-specific. Upstream NInfer examples and non-SM86 performance claims
-remain compatibility references, not deployment guarantees. Codex Remote and production promotion
-require their own end-to-end evidence and are not implied by this candidate configuration.
+The Codex catalog at `%USERPROFILE%\.codex\model-catalogs\huihui-combined.json` intentionally
+budgets this candidate at 32768 tokens even though the server has a 65536-token logical limit. That
+leaves server-side tokenizer and prompt headroom; it is not a claim that every 65536-token client
+request has been qualified. The installed catalog must retain the exact slug, `text` and `image`
+input modalities, `supports_image_detail_original: true`, and `supports_search_tool: true`.
+
+Install or remove the route only with the deployment scripts from an elevated-free PowerShell owned
+by the signed-in user:
+
+```powershell
+Set-Location C:\Users\MaxKe\ninfer-3090\huihui-engine
+.\tools\codex_gateway\Install-HuihuiCodexGateway.ps1
+# Later, after closing/restarting Codex as appropriate:
+.\tools\codex_gateway\Uninstall-HuihuiCodexGateway.ps1
+```
+
+This workstation was manually promoted before the scripts existed. Adopt that exact state only with
+an explicit declaration of its dated rollback assets; it does not guess those assets and pins the
+required explicit Responses-compaction setting while preserving the dated config pre-image:
+
+```powershell
+.\tools\codex_gateway\Install-HuihuiCodexGateway.ps1 -AdoptExistingDeployment `
+  -PreGatewayConfigBackupPath C:\Users\MaxKe\.codex\config.toml.backup-20260821-huihui-gateway `
+  -ExistingDisabledShimPath "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\NInfer-Codex-Shim.cmd.disabled-20260821" `
+  -LegacyTaskPreStagingEnabled
+```
+
+Install validates the exact executable, artifact, combined catalog, and config paths; pins
+`[features] remote_compaction_v2 = false` so Codex uses the implemented legacy
+`/v1/responses/compact` route; saves the
+pre-install `%USERPROFILE%\.codex\config.toml`; writes the 8081 base URL/catalog entries; installs
+the per-user Startup watcher; and disables the legacy direct `8090` scheduled candidate task and
+active legacy shim if present. Before its first managed mutation it atomically writes a schema-3,
+hash-bound transaction journal. Every install and uninstall step reconciles its exact pre/post image,
+so re-running the same command safely resumes after interruption. It snapshots the legacy task XML
+and enabled state before disabling it, so rollback restores both. Startup is *logon*, not boot: the
+gateway becomes available after
+this user signs in, and the watcher restarts a failed gateway, but it deliberately does not provide
+pre-logon service availability. The deployment state records what it changed so uninstall restores
+the prior config, task definition/enabled state, and shim only when doing so is safe. Uninstall
+preflights every required restore asset before changing state, stops only the exact managed watcher
+and gateway, then requires the gateway's Windows Job to make the `8080` engine disappear; it never
+identifies or terminates an engine from its command line. If the config changed after installation,
+uninstall refuses to overwrite it unless `-ForceRestoreConfig` is explicitly chosen.
+
+The direct `8090` task/profile is legacy and must stay disabled while the canonical 8081 route is
+installed, otherwise both paths can attempt to reserve the single RTX 3090. This profile is
+machine-specific. Upstream NInfer examples and non-SM86 performance claims remain compatibility
+references, not deployment guarantees. Cloud passthrough, Desktop selector activation after an
+app-server restart, Codex Remote, and phone Remote behavior each require their own end-to-end
+evidence; none is implied by installing this candidate configuration.
 
 ### RTX 3090 Huihui MTP-depth measurement
 

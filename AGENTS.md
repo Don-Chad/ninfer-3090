@@ -131,9 +131,18 @@ Requirements derived from a different workload, trust model, or deployment model
 until that product contract is explicitly changed.
 
 The Huihui abliterated deployment is a candidate lane, not a replacement for the existing production
-router. Keep its artifact, scheduled startup, port, request log, and Codex catalog isolated until
-the relevant local lifecycle and end-to-end checks explicitly promote it. In particular, do not
-claim cloud passthrough or Codex Remote behavior merely from local Responses compatibility tests.
+router. Its canonical workstation route is the loopback-only Codex gateway on `8081`; that gateway
+owns the lazy NInfer child on `8080`, including its idle shutdown. Do not run the legacy direct
+candidate server on `8090` alongside that gateway: it is disabled while this route is installed to
+avoid two resident copies competing for the RTX 3090. The per-user Startup entry launches the
+gateway watchdog after that user signs in; it is not a Windows boot service. Keep the artifact,
+request log, and Codex catalog isolated until the relevant local lifecycle and end-to-end checks
+explicitly promote it. In particular, do not claim cloud passthrough or Codex Remote behavior merely
+from local Responses compatibility tests. `tools/codex_gateway/Install-HuihuiCodexGateway.ps1` and
+`Uninstall-HuihuiCodexGateway.ps1` are the reversible workstation deployment authority; do not
+hand-edit their managed Startup/configuration state without recording an equivalent rollback path.
+Keep Codex's built-in `openai` provider identity and set `[features] remote_compaction_v2 = false`
+for this route so compaction uses the supported legacy Responses endpoint.
 
 The 27B and 35B-A3B execution packages are peer compile-time Variants of one identity-free Qwen3.6
 family runtime. The family owns the shared `SequencePlan<Variant>`, `RequestPlan<Variant>`, and

@@ -36,6 +36,12 @@ struct ResponsesRequest {
     bool stream                = false;
 };
 
+// Parsed POST /v1/responses/compact request. Codex's legacy compact endpoint is unary and
+// returns replacement Responses Items rather than a Response object.
+struct ResponsesCompactRequest {
+    GenerationRequest generation;
+};
+
 struct ResponsesRuntimeValues {
     float temperature       = 1.0F;
     float top_p             = 1.0F;
@@ -56,6 +62,15 @@ ResponsesRequest parse_responses_request(const nlohmann::json& body, const Reque
 // model + input; the result still uses GenerationRequest for shared translation.
 ResponsesRequest parse_response_input_tokens_request(const nlohmann::json& body,
                                                      const RequestLimits& limits);
+
+// Parse the Codex/OpenAI legacy compact request. Tool declarations are validated as an array but
+// intentionally withheld from the summarization generation; tool-call history remains in input.
+ResponsesCompactRequest parse_responses_compact_request(const nlohmann::json& body,
+                                                        const RequestLimits& limits);
+
+// Build the unary legacy compact response. The replacement history is a portable plaintext user
+// summary that both local and cloud Responses providers can replay.
+std::string make_responses_compact_body(const GenerationOutcome& outcome);
 
 // Compose the stateless GenerationRequest submitted to Engine. Current
 // instructions are first, followed by the stored response context and current

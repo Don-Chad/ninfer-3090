@@ -24,6 +24,23 @@ namespace {
 
 using Json = nlohmann::json;
 
+constexpr std::string_view kCompactionPrompt =
+    "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another "
+    "LLM that will resume the task.\n\n"
+    "Include:\n"
+    "- Current progress and key decisions made\n"
+    "- Important context, constraints, or user preferences\n"
+    "- What remains to be done (clear next steps)\n"
+    "- Any critical data, examples, or references needed to continue\n\n"
+    "Be concise, structured, and focused on helping the next LLM seamlessly continue the work.";
+
+constexpr std::string_view kCompactionSummaryPrefix =
+    "Another language model started to solve this problem and produced a summary of its thinking "
+    "process. You also have access to the state of the tools that were used by that language "
+    "model. Use this to build on the work that has already been done and avoid duplicating work. "
+    "Here is the summary produced by the other language model, use the information in this summary "
+    "to assist with your own analysis:";
+
 [[noreturn]] void bad_request(std::string message, std::string param = {}, std::string code = {}) {
     ApiError error;
     error.status  = 400;
@@ -1282,6 +1299,76 @@ ResponsesRequest parse_response_input_tokens_request(const Json& body,
     parsed.stream            = false;
     parsed.generation.stream = false;
     return parsed;
+}
+
+ResponsesCompactRequest parse_responses_compact_request(const Json& body,
+                                                        const RequestLimits& limits) {
+    require_object(body);
+    static const std::unordered_set<std::string> allowed = {
+        "input",          "instructions",       "model",     "parallel_tool_calls",
+        "prompt_cache_key", "reasoning",          "service_tier", "text",
+        "tools",
+    };
+    for (auto it = body.begin(); it != body.end(); ++it) {
+        if (!allowed.contains(it.key())) {
+            bad_request("unknown parameter: " + it.key(), it.key(), "unknown_parameter");
+        }
+    }
+    if (!body.contains("input") || !body.at("input").is_array() ||
+        body.at("input").empty()) {
+        bad_request("input must be a non-empty array", "input");
+    }
+    if (!body.contains("parallel_tool_calls") ||
+        !body.at("parallel_tool_calls").is_boolean()) {
+        bad_request("parallel_tool_calls must be a boolean", "parallel_tool_calls");
+    }
+    if (body.contains("tools") && !body.at("tools").is_null() &&
+        !body.at("tools").is_array()) {
+        bad_request("tools must be an array", "tools");
+    }
+
+    // Compact requests carry the current model-visible tool registry so the remote service can
+    // understand history. Local summarization needs the history, but must never call those tools.
+    Json generation_body = body;
+    generation_body.erase("tools");
+    ResponsesRequest parsed = parse_request_impl(generation_body, limits);
+    compose_responses_generation_messages(parsed, {});
+
+    ChatTurn prompt;
+    prompt.role = ChatRole::User;
+    ContentPart content;
+    content.kind     = ContentKind::Text;
+    content.type_raw = "input_text";
+    content.text     = std::string(kCompactionPrompt);
+    prompt.content.push_back(std::move(content));
+    parsed.generation.messages.push_back(std::move(prompt));
+
+    ResponsesCompactRequest compact;
+    compact.generation = std::move(parsed.generation);
+    compact.generation.stream = false;
+    compact.generation.tools.clear();
+    compact.generation.tool_choice.mode = ToolChoiceMode::None;
+    compact.generation.parallel_tool_calls = false;
+    return compact;
+}
+
+std::string make_responses_compact_body(const GenerationOutcome& outcome) {
+    if ((outcome.finish_reason != ninfer::FinishReason::StopToken &&
+         outcome.finish_reason != ninfer::FinishReason::StopString) ||
+        outcome.text.empty() || !outcome.tool_calls.empty()) {
+        ApiError error;
+        error.status  = 500;
+        error.type    = "server_error";
+        error.code    = "compaction_generation_failed";
+        error.message = "compaction generation did not produce a complete plaintext summary";
+        throw ApiException(std::move(error));
+    }
+    const std::string summary = std::string(kCompactionSummaryPrefix) + "\n" + outcome.text;
+    const Json item = {{"type", "message"},
+                       {"role", "user"},
+                       {"content", Json::array({Json{{"type", "input_text"},
+                                                       {"text", summary}}})}};
+    return Json{{"output", Json::array({item})}}.dump();
 }
 
 void inherit_responses_preserve_thinking(ResponsesRequest& request, bool parent_value) {
