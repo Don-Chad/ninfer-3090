@@ -67,6 +67,11 @@ struct PreprocessStats {
     [[nodiscard]] std::string summary() const;
 };
 
+// Pixel cost of one merged Vision token, for converting a merged-token budget into the
+// smart-resize pixel ceilings.
+[[nodiscard]] std::uint64_t merged_token_image_pixels();
+[[nodiscard]] std::uint64_t merged_token_video_pixels();
+
 struct ProcessorOptions {
     std::uint64_t image_min_pixels         = 32ULL * 32ULL;
     std::uint64_t image_max_pixels         = 1024ULL * 1024ULL;
