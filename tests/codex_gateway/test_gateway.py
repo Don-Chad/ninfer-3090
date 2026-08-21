@@ -200,7 +200,12 @@ def test_nonlocal_model_cloud_body_is_byte_exact_and_destination_is_fixed() -> N
         body = b'{ "model" : "gpt-cloud", "input" : [1, 2, 3] }\n'
         status, _, raw = request(
             server, "POST", "/v1/responses?trace=yes", body,
-            {"Authorization": "Bearer cloud-token", "Cookie": "session=cloud"},
+            {
+                "Authorization": "Bearer cloud-token",
+                "Cookie": "session=cloud",
+                "ChatGPT-Account-ID": "account-cloud",
+                "x-oai-attestation": "attestation-cloud",
+            },
         )
 
         assert status == 200
@@ -213,6 +218,8 @@ def test_nonlocal_model_cloud_body_is_byte_exact_and_destination_is_fixed() -> N
         assert isinstance(headers, dict)
         assert headers["authorization"] == "Bearer cloud-token"
         assert headers["cookie"] == "session=cloud"
+        assert headers["chatgpt-account-id"] == "account-cloud"
+        assert headers["x-oai-attestation"] == "attestation-cloud"
         assert destinations == [("cloud", CLOUD_HOST, CLOUD_PORT)]
 
 
@@ -227,6 +234,8 @@ def test_exact_local_slug_routes_local_and_strips_all_credentials() -> None:
                 "Cookie": "session=secret",
                 "Cookie2": "legacy=secret",
                 "X-Api-Key": "secret",
+                "ChatGPT-Account-ID": "account-secret",
+                "x-oai-attestation": "attestation-secret",
                 "X-Request-Id": "safe",
                 "Accept-Encoding": "gzip",
             },
@@ -239,7 +248,10 @@ def test_exact_local_slug_routes_local_and_strips_all_credentials() -> None:
         wait_for_no_active_lease(lifecycle)
         headers = local.records[0]["headers"]
         assert isinstance(headers, dict)
-        for name in ("authorization", "proxy-authorization", "cookie", "cookie2", "x-api-key"):
+        for name in (
+            "authorization", "proxy-authorization", "cookie", "cookie2", "x-api-key",
+            "chatgpt-account-id", "x-oai-attestation",
+        ):
             assert name not in headers
         assert headers["x-request-id"] == "safe"
         assert headers["accept-encoding"] == "identity"
@@ -618,10 +630,20 @@ def test_local_transport_failure_invalidates_owned_generation() -> None:
     assert lifecycle.active == 0
 
 
-def test_websocket_upgrade_is_declined_without_touching_remote_channel() -> None:
+@pytest.mark.parametrize("routing_model", [LOCAL_MODEL_SLUG, "gpt-5.6-luna"])
+def test_websocket_upgrade_is_declined_without_trusting_routing_hint(
+    routing_model: str,
+) -> None:
     with gateway_fixture() as (server, cloud, local, lifecycle, _):
         status, _, raw = request(
-            server, "GET", "/v1/responses", headers={"Connection": "Upgrade", "Upgrade": "websocket"}
+            server,
+            "GET",
+            "/v1/responses",
+            headers={
+                "Connection": "Upgrade",
+                "Upgrade": "websocket",
+                "x-codex-routing-hint": f"model={routing_model}",
+            },
         )
         assert status == 426
         assert json.loads(raw)["error"]["type"] == "websocket_not_supported"

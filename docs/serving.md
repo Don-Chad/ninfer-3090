@@ -51,6 +51,14 @@ Huihui local selection                 -> lifecycle-owned NInfer child on 127.0.
 all other model selections             -> gateway cloud passthrough
 ```
 
+The gateway intentionally returns HTTP `426` for every Responses WebSocket upgrade, including
+upgrades whose `x-codex-routing-hint` names a cloud model. Codex can reuse that connection after a
+model switch even though the handshake hint still names the model that opened it. A hint-routed
+cloud tunnel could therefore disclose a later local Huihui prompt. The rejection occurs before any
+frame is read and makes Codex use its session-scoped HTTP/SSE fallback, where each model-bearing
+request is routed independently. The Codex app-server's separate Remote control-plane WebSocket is
+not sent through this gateway.
+
 The gateway starts the exact `sm_86` NInfer executable only when the Huihui slug receives a request,
 then releases it after its configured idle timeout. Its child keeps Vision and MTP resident:
 

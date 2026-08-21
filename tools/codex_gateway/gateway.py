@@ -30,6 +30,7 @@ HOP_BY_HOP_HEADERS = frozenset({
 })
 LOCAL_SECRET_HEADERS = frozenset({
     "authorization", "proxy-authorization", "cookie", "cookie2", "x-api-key",
+    "chatgpt-account-id", "x-oai-attestation",
 })
 CATALOG_CONDITIONAL_HEADERS = frozenset({
     "if-match", "if-none-match", "if-modified-since", "if-unmodified-since", "if-range",
@@ -319,6 +320,11 @@ class Gateway:
             if parsed.path == "/gateway/health" and handler.command == "GET":
                 self._send_json(handler, 200, {"status": "ok", **self.lifecycle.status()})
                 return
+            # Codex reuses one Responses WebSocket across model switches, while its
+            # handshake routing hint describes only the model that opened the socket.
+            # Tunneling by that hint could therefore send a later local Huihui prompt
+            # to cloud. Reject every upgrade before reading frames; Codex then uses its
+            # session-scoped HTTP fallback, whose model-bearing requests route safely.
             if (handler.headers.get("Upgrade") or "").lower() == "websocket":
                 self._send_json(handler, 426, {
                     "error": {
