@@ -320,6 +320,12 @@ compact 35B artifact support, and RTX 3090-specific schedules and memory plannin
 - [sry9681](https://github.com/sry9681) contributed the device-wide GPU-memory startup fix in
   [PR #6](https://github.com/Don-Chad/ninfer-3090/pull/6).
 
+## Contributing
+
+Please read the [Pull Request Policy](PR_POLICY.md) before opening an issue or pull request.
+It explains how to keep changes focused and how to document correctness, performance, VRAM, and
+compatibility evidence.
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
