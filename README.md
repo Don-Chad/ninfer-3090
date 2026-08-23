@@ -312,6 +312,13 @@ compact 35B artifact support, and RTX 3090-specific schedules and memory plannin
 
 - [airtonix](https://github.com/airtonix) added Linux and Docker build and release support in
   [PR #1](https://github.com/Don-Chad/ninfer-3090/pull/1).
+- [ColeWheatley](https://github.com/ColeWheatley) contributed SM86 runtime-count/GDN residency
+  fixes, ECC diagnostics, and the GeForce-safe Docker fix in
+  [PR #7](https://github.com/Don-Chad/ninfer-3090/pull/7).
+- [justinlime](https://github.com/justinlime) added NixOS build support in
+  [PR #5](https://github.com/Don-Chad/ninfer-3090/pull/5).
+- [sry9681](https://github.com/sry9681) contributed the device-wide GPU-memory startup fix in
+  [PR #6](https://github.com/Don-Chad/ninfer-3090/pull/6).
 
 ## License
 
