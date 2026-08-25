@@ -335,12 +335,6 @@ int test_official_chat_template() {
                               no_generation);
                       }),
                       "direct developer role was accepted by the model frontend");
-    failures +=
-        check(throws_invalid_argument([&] {
-                  (void)render_chat({chat_message("user", "hi"), chat_message("system", "late")},
-                                    no_generation);
-              }),
-              "late system role was accepted by the model frontend");
     failures += check(throws_invalid_argument([&] {
                           (void)render_chat({chat_message("system", "only")}, no_generation);
                       }),
@@ -351,6 +345,29 @@ int test_official_chat_template() {
                                     no_generation);
               }),
               "unexpected chat role was accepted");
+    return failures;
+}
+
+int test_mid_conversation_system_render() {
+    int failures = 0;
+    fi::ChatRenderOptions no_generation;
+    no_generation.add_generation_prompt = false;
+    // A system turn after the first non-system message renders in place. Hoisting
+    // it into the leading block would change the start of the rendered prompt on
+    // every turn, which invalidates any prefix cache built on earlier requests.
+    failures += check(
+        render_chat_text({chat_message("user", "hello"), chat_message("system", "reminder")},
+                         no_generation) == "<|im_start|>user\nhello<|im_end|>\n"
+                                           "<|im_start|>system\nreminder<|im_end|>\n",
+        "mid-conversation system turn was not rendered in place");
+    failures += check(
+        render_chat_text({chat_message("system", "lead"), chat_message("user", "hello"),
+                          chat_message("system", "reminder"), chat_message("user", "next")},
+                         no_generation) == "<|im_start|>system\nlead<|im_end|>\n"
+                                           "<|im_start|>user\nhello<|im_end|>\n"
+                                           "<|im_start|>system\nreminder<|im_end|>\n"
+                                           "<|im_start|>user\nnext<|im_end|>\n",
+        "leading system merges while later system turns stay in place");
     return failures;
 }
 
@@ -810,6 +827,7 @@ int main() {
     int failures                  = 0;
     failures += test_official_tokenizer_merge();
     failures += test_official_chat_template();
+    failures += test_mid_conversation_system_render();
     failures += test_reasoning_effort_chat_template();
     failures += test_turn_rewrite_trace();
     failures += test_official_resource_guards();
