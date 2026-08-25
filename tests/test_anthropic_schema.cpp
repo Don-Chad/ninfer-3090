@@ -151,7 +151,7 @@ int test_parse_system_array_and_blocks() {
 // field). Earlier we rejected those with 400 "message role must be 'user' or
 // 'assistant'". They must instead fold into the single leading system turn so the
 // Qwen template (which drops non-leading system turns) keeps the content.
-int test_system_role_in_messages_folds() {
+int test_system_role_in_messages_placement() {
     int failures    = 0;
     const Json body = {
         {"model", "m"},
@@ -162,15 +162,22 @@ int test_system_role_in_messages_folds() {
                          Json{{"role", "system"}, {"content", "reminder from messages"}},
                      })}};
     const GenerationRequest req = parse_messages_request(body, default_limits());
-    // Exactly one leading system turn (top-level + in-array folded), then the user.
-    failures += check(req.messages.size() == 2, "system folded, user kept");
-    failures += check(req.messages[0].role == "system", "single leading system turn");
-    failures += check(req.messages[0].content[0].text == "top-level system\nreminder from messages",
-                      "top-level + in-array system merged in order");
+    // The top-level system value stays the single leading system turn. A
+    // system-role message that arrives after the conversation has started must
+    // keep its position: folding it into the leading block rewrites the head of
+    // the prompt on every request and defeats prefix reuse (Claude Code appends
+    // a fresh reminder like this on every turn).
+    failures += check(req.messages.size() == 3, "leading system, user, in-place reminder");
+    failures += check(req.messages[0].role == "system" &&
+                          req.messages[0].content[0].text == "top-level system",
+                      "top-level system leads");
     failures += check(req.messages[1].role == "user" && req.messages[1].content[0].text == "hello",
                       "user turn preserved");
+    failures += check(req.messages[2].role == "system" &&
+                          req.messages[2].content[0].text == "reminder from messages",
+                      "in-array reminder stays in place");
 
-    // Also works with array-of-text-blocks content and no top-level system.
+    // Array-of-text-blocks content, no top-level system.
     const Json blocks_body = {
         {"model", "m"},
         {"max_tokens", 16},
@@ -180,9 +187,25 @@ int test_system_role_in_messages_folds() {
                               {"content", Json::array({Json{{"type", "text"}, {"text", "r"}}})}},
                      })}};
     const GenerationRequest breq = parse_messages_request(blocks_body, default_limits());
-    failures += check(breq.messages.size() == 2 && breq.messages[0].role == "system" &&
-                          breq.messages[0].content[0].text == "r",
-                      "in-array system text block folded without top-level system");
+    failures += check(breq.messages.size() == 2 && breq.messages[0].role == "user" &&
+                          breq.messages[1].role == "system" &&
+                          breq.messages[1].content[0].text == "r",
+                      "block-content reminder stays in place");
+
+    // System-role messages before the first user/assistant turn still fold.
+    const Json lead_body = {
+        {"model", "m"},
+        {"max_tokens", 16},
+        {"messages", Json::array({
+                         Json{{"role", "system"}, {"content", "a"}},
+                         Json{{"role", "system"}, {"content", "b"}},
+                         Json{{"role", "user"}, {"content", "hi"}},
+                     })}};
+    const GenerationRequest lreq = parse_messages_request(lead_body, default_limits());
+    failures += check(lreq.messages.size() == 2 && lreq.messages[0].role == "system" &&
+                          lreq.messages[0].content[0].text == "a\nb" &&
+                          lreq.messages[1].role == "user",
+                      "leading in-array system messages fold in order");
     return failures;
 }
 
@@ -650,7 +673,7 @@ int main() {
     int failures = 0;
     failures += test_parse_basic_and_system();
     failures += test_parse_system_array_and_blocks();
-    failures += test_system_role_in_messages_folds();
+    failures += test_system_role_in_messages_placement();
     failures += test_missing_and_bad_fields();
     failures += test_parse_image();
     failures += test_tools_and_choice();

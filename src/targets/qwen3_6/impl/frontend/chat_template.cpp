@@ -351,14 +351,24 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
     for (std::size_t i = 0; i < messages.size(); ++i) {
         const ChatMessage& message = messages[i];
         if (i < num_sys) { continue; }
-        if (message.role == "system") {
-            throw std::invalid_argument("system message must be at the beginning");
-        }
         if (!is_allowed_role(message.role)) {
             throw std::invalid_argument("unsupported chat role: " + message.role);
         }
         const std::string content = trim_ascii_whitespace(
             message.rendered_content(options.add_vision_id, &image_count, &video_count));
+        if (message.role == "system") {
+            if (message.has_media()) {
+                throw std::invalid_argument("system message cannot contain images or videos");
+            }
+            // Mid-conversation system turn (e.g. Claude Code per-turn reminders).
+            // Rendered in place so earlier prompt bytes stay stable for prefix reuse;
+            // hoisting these to the leading system block rewrites the prompt head on
+            // every turn and defeats KV caching entirely.
+            rendered += "<|im_start|>system\n";
+            rendered += content;
+            rendered += "<|im_end|>\n";
+            continue;
+        }
         if (message.role == "user") {
             rendered += "<|im_start|>user\n";
             rendered += content;
