@@ -1,4 +1,4 @@
-# NInfer-3090 v0.5.0 for Windows
+# NInfer-3090 v0.6.1 for Windows
 
 This native Windows release supports Qwen3.8-27B, Qwen3.6-27B, and the compact, text-only
 Qwen3.6-35B-A3B v0.3.1 artifact. The runtime provides paged KV, concurrent request execution,

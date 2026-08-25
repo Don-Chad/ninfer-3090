@@ -1,7 +1,7 @@
 # Build NInfer for RTX 3090 on Linux
 
 This guide builds the `sm_86` runtime for one NVIDIA GeForce RTX 3090 or RTX 3090 Ti.
-The project does not publish a qualified Linux binary release yet.
+NInfer-3090 v0.6.1 publishes a Linux x64 archive built for this exact SM86 target.
 
 Do not change `CMAKE_CUDA_ARCHITECTURES` to `89`.
 The RTX 4090 fork uses Ada-specific schedules that do not apply to the RTX 3090.
