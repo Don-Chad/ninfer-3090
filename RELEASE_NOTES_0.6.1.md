@@ -13,15 +13,18 @@ both platforms.
 - Streams tool-call whitespace without repeatedly scanning the buffered prefix.
 - Ships Windows ZIP and Linux tarball packages with their platform launch helpers.
 
+## Contributors
+
+- [iamwavecut](https://github.com/iamwavecut) — JPEG safety fix, [PR #11](https://github.com/Don-Chad/ninfer-3090/pull/11).
+- [nasedkinpv](https://github.com/nasedkinpv) — tool-call parser crash fix, [PR #12](https://github.com/Don-Chad/ninfer-3090/pull/12).
+- [wmehanna](https://github.com/wmehanna) — in-place system turns, [PR #13](https://github.com/Don-Chad/ninfer-3090/pull/13).
+
 ## Validation
 
 The release build and smoke gate uses these components:
 
-- Ubuntu 24.04
-- CUDA Toolkit 13.1
-- GCC 13
-- CMake and Ninja
-- FFmpeg and curl system packages
+- Windows: Visual Studio 2022 and CUDA 12.8
+- Linux: Ubuntu 22.04, CUDA Toolkit 12.8, GCC 11, CMake 3.28, Ninja, and vcpkg FFmpeg
 
 Each packaged `ninfer` binary completes a real RTX 3090 Qwen3.8-27B generation before publication.
 
