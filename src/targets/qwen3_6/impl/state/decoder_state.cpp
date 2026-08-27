@@ -31,8 +31,8 @@ PagedKVCacheLayout plan_cache(LayoutBuilder& builder, std::uint32_t layers, std:
     if (!valid_profile) {
         throw std::invalid_argument("Paged KV cache dtype or quantization is invalid");
     }
-    if ((packed_v || rotate_k || rotate_v) && !quantized) {
-        throw std::invalid_argument("Packed or rotated KV requires quantized storage");
+    if ((packed_v || rotate_k || rotate_v) && dtype != DType::I8) {
+        throw std::invalid_argument("Packed or rotated KV requires INT8 storage");
     }
     if (rotate_v && !packed_v) {
         throw std::invalid_argument("Rotated V requires packed V4 storage");

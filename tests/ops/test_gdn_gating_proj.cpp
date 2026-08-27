@@ -27,9 +27,13 @@ constexpr Geometry kQwen27{"qwen3_6_27b", 5120, 48, false};
 constexpr Geometry kQwen38Parent{"qwen3_8_27b_parent", 5120, 48, true};
 constexpr Geometry kQwen35{"qwen3_6_35b_a3b", 2048, 32, true};
 
-constexpr ReductionCriterion kGdnProjectionFp32{/*relative_l2=*/1.4e-6,
+// The projection envelope below was qualified on sm_120a (RTX 5090). The SM86 warps-8
+// split4/split2 gating route uses a different reduction tree and lands at relative_l2 up to
+// 1.70e-6 with a worst component of 8.70e-6 at max|ref| 3.29 (measured on RTX 3090, CUDA 13.1,
+// qwen3_6_27b T=3457); the bounds carry ~1.3x margin over that profile.
+constexpr ReductionCriterion kGdnProjectionFp32{/*relative_l2=*/2.2e-6,
                                                 /*gross_absolute=*/5.0e-7,
-                                                /*gross_relative_to_max_reference=*/2.5e-6};
+                                                /*gross_relative_to_max_reference=*/3.5e-6};
 constexpr ReductionCriterion kGdnNormOutputBf16{/*relative_l2=*/1.75e-3,
                                                 /*gross_absolute=*/1.0e-4,
                                                 /*gross_relative_to_max_reference=*/4.0e-3};

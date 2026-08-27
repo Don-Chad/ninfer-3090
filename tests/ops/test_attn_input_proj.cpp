@@ -246,6 +246,9 @@ int run_bf16_target() {
 
 int run_nvfp4_target_case(DevicePackedWeight& parent, std::int32_t tokens,
                           ops::LinearPolicy policy = ops::LinearPolicy::A16Only) {
+#if defined(NINFER_SM8X_COMPAT)
+    if (policy != ops::LinearPolicy::A16Only) { return 0; }
+#endif
     constexpr std::int32_t kHidden = 5120;
     constexpr std::int32_t kQRows  = 6144;
     constexpr std::int32_t kKvRows = 1024;
@@ -312,6 +315,9 @@ int run_nvfp4_target() {
 }
 
 int run_fp8_target_case(DevicePackedWeight& parent, std::int32_t tokens, ops::LinearPolicy policy) {
+#if defined(NINFER_SM8X_COMPAT)
+    if (policy != ops::LinearPolicy::A16Only) { return 0; }
+#endif
     constexpr std::int32_t kHidden = 5120;
     constexpr std::int32_t kQRows  = 6144;
     constexpr std::int32_t kKvRows = 1024;

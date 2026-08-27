@@ -324,6 +324,9 @@ int run_nvfp4() {
     int failures   = 0;
     const auto run = [&](std::int32_t width, std::int32_t batch, std::vector<std::int32_t> valid,
                          ops::LinearPolicy policy, std::uint32_t seed) {
+#if defined(NINFER_SM8X_COMPAT)
+        if (policy != ops::LinearPolicy::A16Only) { return 0; }
+#endif
         const std::size_t snapshot_bytes =
             ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(QType::NVFP4, kRows, kHidden,
                                                                        policy, batch, width, width);
@@ -363,6 +366,9 @@ int run_nvfp4() {
 int run_fp8_oracle_case(DevicePackedWeight& parent, std::int32_t width, std::int32_t batch,
                         std::vector<std::int32_t> valid_columns, ops::LinearPolicy policy,
                         std::uint32_t seed) {
+#if defined(NINFER_SM8X_COMPAT)
+    if (policy != ops::LinearPolicy::A16Only) { return 0; }
+#endif
     constexpr std::int32_t kHidden    = 5120;
     constexpr std::int32_t kValueRows = 6144;
     constexpr std::int32_t kZRows     = 6144;

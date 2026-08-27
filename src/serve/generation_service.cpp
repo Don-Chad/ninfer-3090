@@ -1,6 +1,7 @@
 #include "serve/generation_service.h"
 
 #include "product/media_acquire/acquire.h"
+#include "serve/console_log.h"
 #include "serve/tool_call_parser.h"
 #include "serve/translate.h"
 

@@ -158,6 +158,9 @@ int verify_output_range_sampled(std::string_view label, const GuardedBf16Tensor&
 }
 
 int run_nvfp4_case(DevicePackedWeight& parent, std::int32_t tokens, ops::LinearPolicy policy) {
+#if defined(NINFER_SM8X_COMPAT)
+    if (policy != ops::LinearPolicy::A16Only) { return 0; }
+#endif
     constexpr std::int32_t kHidden      = 5120;
     constexpr std::int32_t kQkvRows     = 10240;
     constexpr std::int32_t kZRows       = 6144;
@@ -223,6 +226,9 @@ int run_nvfp4() {
 
 int run_fp8_case(DevicePackedWeight& parent, std::int32_t tokens, ops::LinearPolicy policy,
                  bool convenience = false) {
+#if defined(NINFER_SM8X_COMPAT)
+    if (policy != ops::LinearPolicy::A16Only) { return 0; }
+#endif
     constexpr std::int32_t kHidden  = 5120;
     constexpr std::int32_t kQkvRows = 10240;
     constexpr std::int32_t kZRows   = 6144;

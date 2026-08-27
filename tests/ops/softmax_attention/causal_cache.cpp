@@ -1497,9 +1497,11 @@ int run_batch_cases() {
                        {6, {61, 127, 511}, {6, 3, 0}, {2, 0, 1}, MappingPattern::Fragmented, 503u});
     failures += run_batch_case(kGeometries[1], DType::BF16,
                                {16, {49, 2041}, {16, 7}, {1, 0}, MappingPattern::Identity, 504u});
+#if !defined(NINFER_SM8X_COMPAT)
     failures +=
         run_batch_case(kGeometries[0], DType::FP8_E4M3FN,
                        {6, {61, 127, 511}, {6, 3, 0}, {2, 0, 1}, MappingPattern::Fragmented, 505u});
+#endif
     return failures;
 }
 
@@ -1545,6 +1547,9 @@ int run_geometry(const Geometry& geometry) {
 
 int run_fp8_cases() {
     int failures = 0;
+#if defined(NINFER_SM8X_COMPAT)
+    return failures;
+#endif
     for (const Geometry& geometry : kGeometries) {
         failures += run_a1_case(geometry, DType::FP8_E4M3FN, {65, 63, 192, 601u},
                                 MappingPattern::Fragmented);

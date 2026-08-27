@@ -1,6 +1,7 @@
 #include "ninfer/ops/kv_cache_append.h"
 
 #include "ops/kv_cache/append/launch.h"
+#include "ops/softmax_attention/dense/causal_cache/rk8v4/gqa_attention.h"
 #include "ops/kv_cache/d256_profile.h"
 
 #include <cstdint>
@@ -52,12 +53,20 @@ std::uint32_t validate_full_cache(const PagedKVLayerView& cache, std::int32_t kv
         throw std::invalid_argument("kv_cache_append: invalid cache capacity");
     }
 
-    if (cache.k_pages.dtype != profile.code_dtype || cache.v_pages.dtype != profile.code_dtype) {
+    if (cache.packed_v && (cache.dtype != DType::I8 || !cache.rotate_k || !cache.rotate_v)) {
+        throw std::invalid_argument("kv_cache_append: packed V requires rotated I8 cache");
+    }
+    if (!cache.packed_v && (cache.rotate_k || cache.rotate_v)) {
+        throw std::invalid_argument("kv_cache_append: rotated cache requires packed V");
+    }
+    const DType v_code_dtype     = cache.packed_v ? DType::U8 : profile.code_dtype;
+    const std::int32_t v_leading = cache.packed_v ? kFullHeadDim / 2 : kFullHeadDim;
+    if (cache.k_pages.dtype != profile.code_dtype || cache.v_pages.dtype != v_code_dtype) {
         throw std::invalid_argument("kv_cache_append: invalid cache code dtype");
     }
     require_shape(cache.k_pages, kFullHeadDim, kPagedKVPageSize, kv_heads, physical_pages,
                   kAppendOp, "cache k pages");
-    require_shape(cache.v_pages, kFullHeadDim, kPagedKVPageSize, kv_heads, physical_pages,
+    require_shape(cache.v_pages, v_leading, kPagedKVPageSize, kv_heads, physical_pages,
                   kAppendOp, "cache v pages");
     require_contiguous_nonnull(cache.k_pages, kAppendOp, "cache k pages");
     require_contiguous_nonnull(cache.v_pages, kAppendOp, "cache v pages");
@@ -196,6 +205,10 @@ void kv_cache_append(const Tensor& k, const Tensor& v, const Tensor& positions,
     const std::uint32_t capacity = validate_full_cache(cache, kv_heads);
     if (static_cast<std::uint32_t>(tokens) > capacity) {
         throw std::invalid_argument("kv_cache_append: T exceeds cache capacity");
+    }
+    if (cache.packed_v) {
+        detail::gqa_kv_append_launch(k, v, positions, cache, stream);
+        return;
     }
     detail::kv_cache_append_launch(k, v, positions, cache, stream);
 }

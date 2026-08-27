@@ -685,6 +685,9 @@ int run_w8() {
 
 int run_nvfp4_case(DevicePackedWeight& parent, std::int32_t tokens, ops::LinearPolicy policy,
                    std::int32_t initial_slot) {
+#if defined(NINFER_SM8X_COMPAT)
+    if (policy != ops::LinearPolicy::A16Only) { return 0; }
+#endif
     constexpr std::int32_t kHidden           = 5120;
     constexpr std::int32_t kValueRows        = 6144;
     constexpr std::int32_t kZRows            = 6144;
@@ -797,6 +800,7 @@ int run_nvfp4() {
     constexpr std::int32_t kBatch     = 3;
     const std::vector<std::int32_t> valid_columns{6, 3, 1};
     const std::vector<float> conv_weight = make_conv_weight(kChannels, 829U);
+#if !defined(NINFER_SM8X_COMPAT)
     const std::size_t workspace_bytes = ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
         QType::NVFP4, kRows, kHidden, ops::LinearPolicy::AllowA4, kBatch, kWidth, kWidth);
     failures += run_batched_case(
@@ -819,6 +823,7 @@ int run_nvfp4() {
                                               snapshot_base, q, k, v, z, ops::LinearPolicy::AllowA4,
                                               workspace, nullptr);
         });
+#endif
     failures += parent.verify_preserved("batched NVFP4 parent weight");
     return failures;
 }
@@ -826,6 +831,9 @@ int run_nvfp4() {
 int run_fp8_case(DevicePackedWeight& parent, std::int32_t tokens, ops::LinearPolicy policy,
                  std::int32_t initial_slot, bool convenience = false,
                  bool shared_state_selectors = false) {
+#if defined(NINFER_SM8X_COMPAT)
+    if (policy != ops::LinearPolicy::A16Only) { return 0; }
+#endif
     constexpr std::int32_t kHidden               = 5120;
     constexpr std::int32_t kValueRows            = 6144;
     constexpr std::int32_t kZRows                = 6144;
@@ -979,8 +987,12 @@ int run_fp8() {
                                                   ops::LinearPolicy::AllowA8, workspace, nullptr);
             });
     };
+#if !defined(NINFER_SM8X_COMPAT)
     failures += run_batched(4, 2, {4, 2}, 937U);
     failures += run_batched(16, 8, {16, 13, 11, 7, 5, 3, 2, 1}, 941U);
+#else
+    (void)run_batched;
+#endif
     failures += parent.verify_preserved("batched FP8 parent weight");
     return failures;
 }

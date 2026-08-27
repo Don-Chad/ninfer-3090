@@ -275,8 +275,13 @@ add_library(ninfer_ops STATIC
 if(CMAKE_CUDA_ARCHITECTURES MATCHES "^(86|89)$")
   get_target_property(ninfer_ops_sources ninfer_ops SOURCES)
   list(FILTER ninfer_ops_sources EXCLUDE REGEX "nvfp4/.+_w4a4\\.cu$")
+  # FP8 A8 execution and the FP8 attention KV kernels use the Blackwell-only
+  # mma .kind::f8f6f4 encoding; SM8X serves FP8 weights through the A16 routes
+  # and rejects the FP8 KV cache at startup.
+  list(FILTER ninfer_ops_sources EXCLUDE REGEX "fp8/.+_a8\\.cu$")
+  list(FILTER ninfer_ops_sources EXCLUDE REGEX "causal_cache/(small_t|prompt)_fp8\\.cu$")
   set_property(TARGET ninfer_ops PROPERTY SOURCES ${ninfer_ops_sources})
-  target_sources(ninfer_ops PRIVATE ops/nvfp4_sm86_stubs.cpp)
+  target_sources(ninfer_ops PRIVATE ops/nvfp4_sm86_stubs.cpp ops/fp8_sm8x_stubs.cpp)
   target_compile_definitions(ninfer_ops PUBLIC NINFER_SM8X_COMPAT=1)
 endif()
 ninfer_internal_includes(ninfer_ops)

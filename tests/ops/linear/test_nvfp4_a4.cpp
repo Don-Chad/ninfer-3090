@@ -47,6 +47,10 @@ int run_nvfp4_a4() {
 } // namespace
 
 int main() {
+#if defined(NINFER_SM8X_COMPAT)
+    std::cout << "skip: NVFP4 A4 routes require an sm_120a GPU\n";
+    return 0;
+#endif
     if (!ninfer::test::linear::cuda_available()) {
         std::cout << "SKIP: no usable CUDA device\n";
         return 77;

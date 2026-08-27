@@ -80,7 +80,12 @@ TargetKVCacheProfile target_kv_cache_profile(KvCacheStorage storage) {
                 .rotate_k = true,
                 .rotate_v = true};
     case KvCacheStorage::Fp8E4M3Row256:
+#if defined(NINFER_SM8X_COMPAT)
+        throw std::invalid_argument(
+            "the FP8 KV cache requires Blackwell mma support; use int8 or rk8v4 on SM8X");
+#else
         return {DType::FP8_E4M3FN, qwen3_6::kKvFp8QuantGroup};
+#endif
     }
     throw std::invalid_argument("unknown KV-cache storage profile");
 }

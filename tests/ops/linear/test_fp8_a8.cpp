@@ -109,6 +109,10 @@ int run_fp8_a8() {
 } // namespace
 
 int main() {
+#if defined(NINFER_SM8X_COMPAT)
+    std::cout << "skip: FP8 A8 routes require an sm_120a GPU\n";
+    return 0;
+#endif
     if (!ninfer::test::linear::cuda_available()) {
         std::cout << "SKIP: no usable CUDA device\n";
         return 77;
