@@ -1330,8 +1330,8 @@ std::uint32_t Frontend::count_tokens(PromptInput input, const PreparationControl
     if (!has_media) {
         const fi::RenderedChat rendered =
             impl_->chat_template.render(messages, render_options(options));
-        const std::uint32_t count =
-            checked_token_count(impl_->tokenizer->encode(rendered.text).size());
+        const std::uint32_t count = checked_token_count(
+            fi::encode_rendered_chat(*impl_->tokenizer, rendered).input_ids.size());
         fi::check_preparation_control(control, "tokenization");
         return count;
     }

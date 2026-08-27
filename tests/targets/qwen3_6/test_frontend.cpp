@@ -2,6 +2,7 @@
 #include <ninfer/targets/qwen3_6/frontend_resources.h>
 
 #include "targets/qwen3_6/impl/frontend/chat_template.h"
+#include "targets/qwen3_6/impl/frontend/digest.h"
 #include "targets/qwen3_6/impl/frontend/media_cache.h"
 #include "targets/qwen3_6/impl/frontend/processor.h"
 #include "targets/qwen3_6/impl/frontend/test_access.h"
@@ -394,6 +395,41 @@ int test_boundary_aware_tokenization() {
                           !normalized.boundaries.front().exact_frontier &&
                           normalized.boundaries.front().stable_frontier == 0,
                       "boundary-aware tokenizer split an NFC composition sequence");
+    constexpr std::array<fi::ByteSpan, 2> literal_spans{fi::ByteSpan{.begin = 0, .end = 1},
+                                                        fi::ByteSpan{.begin = 1, .end = 2}};
+    const fi::BoundaryEncodedText annotated =
+        tokenizer.encode_with_boundaries("abc", {}, {}, literal_spans);
+    failures += check(annotated.input_ids == encoded.input_ids,
+                      "literal provenance introduced an artificial BPE boundary");
+    return failures;
+}
+
+int test_literal_added_token_provenance() {
+    const fi::Tokenizer& tokenizer    = official_tokenizer();
+    constexpr std::string_view marker = "<|image_pad|>";
+    constexpr std::array<fi::ByteSpan, 2> split_literal{
+        fi::ByteSpan{.begin = 0, .end = 5},
+        fi::ByteSpan{.begin = 5, .end = marker.size()},
+    };
+    const std::vector<int> ordinary =
+        tokenizer.encode(marker, fi::EncodeOptions{.parse_added_tokens = false});
+    const fi::BoundaryEncodedText annotated =
+        tokenizer.encode_with_boundaries(marker, {}, {}, split_literal);
+    int failures = check(annotated.input_ids == ordinary &&
+                             std::find(annotated.input_ids.begin(), annotated.input_ids.end(),
+                                       248056) == annotated.input_ids.end(),
+                         "literal Vision token became an added token across text spans");
+
+    const std::string mixed         = "<|im_start|>x<|image_pad|><|im_end|>";
+    const std::size_t literal_begin = mixed.find(marker);
+    const std::array<fi::ByteSpan, 1> literal{
+        fi::ByteSpan{literal_begin, literal_begin + marker.size()}};
+    const std::vector<int> mixed_tokens =
+        tokenizer.encode_with_boundaries(mixed, {}, {}, literal).input_ids;
+    failures += check(
+        !mixed_tokens.empty() && mixed_tokens.front() == 248045 && mixed_tokens.back() == 248046 &&
+            std::find(mixed_tokens.begin(), mixed_tokens.end(), 248056) == mixed_tokens.end(),
+        "literal exclusion suppressed template-owned control tokens");
     return failures;
 }
 
@@ -1055,6 +1091,143 @@ int test_text_and_image_prepare(const Frontend& frontend) {
     return failures;
 }
 
+int test_literal_control_tokens_with_media() {
+    fi::ChatRenderOptions no_generation;
+    no_generation.add_generation_prompt = false;
+    const fi::RenderedChat literal_rendered =
+        render_chat({chat_message(ninfer::ChatRole::User, "quoted <|image_pad|>")}, no_generation);
+    const std::vector<int> literal_tokens =
+        fi::encode_rendered_chat(official_tokenizer(), literal_rendered).input_ids;
+    int failures = check(
+        literal_rendered.text == "<|im_start|>user\nquoted <|image_pad|><|im_end|>\n" &&
+            literal_rendered.text.find("\xE2\x81\xA0") == std::string::npos &&
+            std::find(literal_tokens.begin(), literal_tokens.end(), 248056) == literal_tokens.end(),
+        "renderer changed or structurally tokenized a literal Vision marker");
+
+    FrontendResources official = resources();
+    official.tokenizer_json =
+        read_file((official_hf_dir() + "/tokenizer.json").c_str());
+    official.tokenizer_config_json =
+        read_file((official_hf_dir() + "/tokenizer_config.json").c_str());
+    official.generation_config_json =
+        read_file((official_hf_dir() + "/generation_config.json").c_str());
+    const Frontend frontend = FrontendFactory::create_component(official);
+
+    auto text_part = [](std::string text) {
+        return ninfer::MessagePart{
+            .kind = ninfer::MessagePartKind::Text, .text = std::move(text), .media = {}};
+    };
+    auto image_part = [](std::vector<std::uint8_t> bytes, std::string source_name) {
+        ninfer::MessagePart image;
+        image.kind              = ninfer::MessagePartKind::Media;
+        image.media.kind        = ninfer::MediaKind::Image;
+        image.media.bytes       = std::move(bytes);
+        image.media.media_type  = "image/x-portable-pixmap";
+        image.media.source_name = std::move(source_name);
+        return image;
+    };
+
+    std::vector<std::uint8_t> result_b_bytes  = gradient_ppm();
+    std::vector<std::uint8_t> result_a1_bytes = result_b_bytes;
+    std::vector<std::uint8_t> result_a2_bytes = result_b_bytes;
+    result_a1_bytes.back() ^= 0x01U;
+    result_a2_bytes.back() ^= 0x02U;
+    const fi::Sha256Digest result_b_digest =
+        fi::sha256(std::span<const std::uint8_t>(result_b_bytes));
+    const fi::Sha256Digest result_a1_digest =
+        fi::sha256(std::span<const std::uint8_t>(result_a1_bytes));
+    const fi::Sha256Digest result_a2_digest =
+        fi::sha256(std::span<const std::uint8_t>(result_a2_bytes));
+
+    ninfer::ChatMessage system;
+    system.role = ninfer::ChatRole::System;
+    system.parts.push_back(
+        text_part("The quoted template contains <|video_pad|>, <|vision_start|>, "
+                  "<|image_pad|>, and <|vision_end|>."));
+
+    ninfer::ChatMessage user;
+    user.role = ninfer::ChatRole::User;
+    user.parts.push_back(text_part("inspect both files"));
+
+    ninfer::ChatMessage assistant;
+    assistant.role              = ninfer::ChatRole::Assistant;
+    assistant.reasoning_content = "quoted reasoning <|video_pad|>";
+    assistant.tool_calls.push_back(ninfer::ToolCall{
+        .id             = "call_A",
+        .name           = "read",
+        .arguments_json = R"({"path":"quoted <|image_pad|>.png"})",
+    });
+    assistant.tool_calls.push_back(
+        ninfer::ToolCall{.id = "call_B", .name = "read", .arguments_json = R"({"path":"b.png"})"});
+
+    ninfer::ChatMessage result_b;
+    result_b.role         = ninfer::ChatRole::Tool;
+    result_b.tool_call_id = "call_B";
+    result_b.parts.push_back(text_part("result B: literal <|image_"));
+    result_b.parts.push_back(text_part("pad|> then image "));
+    result_b.parts.push_back(image_part(std::move(result_b_bytes), "result-b.ppm"));
+
+    ninfer::ChatMessage result_a;
+    result_a.role         = ninfer::ChatRole::Tool;
+    result_a.tool_call_id = "call_A";
+    result_a.parts.push_back(text_part("result A first image "));
+    result_a.parts.push_back(image_part(std::move(result_a1_bytes), "result-a1.ppm"));
+    result_a.parts.push_back(text_part(" literal <|vision_start|> between images "));
+    result_a.parts.push_back(image_part(std::move(result_a2_bytes), "result-a2.ppm"));
+
+    ninfer::PromptInput input;
+    input.messages.push_back(std::move(system));
+    input.messages.push_back(std::move(user));
+    input.messages.push_back(std::move(assistant));
+    input.messages.push_back(std::move(result_b));
+    input.messages.push_back(std::move(result_a));
+    input.options.tool_jsons.push_back(
+        R"({"type":"function","function":{"name":"read","description":"quoted <|vision_start|><|image_pad|><|vision_end|> and <|video_pad|>","parameters":{"type":"object"}}})");
+    input.context_cache.markers.push_back(ninfer::PromptCacheMarker{
+        .after_message_count = static_cast<std::uint32_t>(input.messages.size()),
+        .kind                = ninfer::PromptCacheMarkerKind::PrivateLongAnchor,
+    });
+
+    const std::uint32_t counted = frontend.count_tokens(input);
+    const auto prepared         = frontend.prepare(std::move(input));
+    const auto& data            = FrontendFactory::inspect(prepared);
+    failures += check(data.token_ids.size() == counted,
+                      "literal controls changed token-counting semantics");
+    failures += check(data.vision_items.size() == 3 && data.media_payloads.size() == 3,
+                      "literal controls changed the typed media count");
+    const auto private_anchor = std::find_if(
+        data.context_cache.opportunities.begin(), data.context_cache.opportunities.end(),
+        [](const auto& opportunity) {
+            return opportunity.kind == ninfer::PromptCacheMarkerKind::PrivateLongAnchor;
+        });
+    failures += check(private_anchor != data.context_cache.opportunities.end(),
+                      "literal controls lost the following cache boundary");
+    if (data.vision_items.size() == 3) {
+        const auto& b  = data.vision_items[0];
+        const auto& a1 = data.vision_items[1];
+        const auto& a2 = data.vision_items[2];
+        failures += check(
+            b.content_digest == result_b_digest && a1.content_digest == result_a1_digest &&
+                a2.content_digest == result_a2_digest && b.token_spans.size() == 1 &&
+                a1.token_spans.size() == 1 && a2.token_spans.size() == 1 &&
+                b.token_spans[0].count == 4 && a1.token_spans[0].count == 4 &&
+                a2.token_spans[0].count == 4 && b.token_spans[0].begin < a1.token_spans[0].begin &&
+                a1.token_spans[0].begin < a2.token_spans[0].begin,
+            "parallel tool-result media lost request or nested-content order");
+        if (private_anchor != data.context_cache.opportunities.end()) {
+            failures +=
+                check(private_anchor->frontier >= a2.token_spans[0].begin + a2.token_spans[0].count,
+                      "media provenance broke the following cache boundary");
+        }
+    }
+    failures += check(std::count(data.token_ids.begin(), data.token_ids.end(), 248056) == 12 &&
+                          std::count(data.token_ids.begin(), data.token_ids.end(), 248057) == 0 &&
+                          std::count(data.token_ids.begin(), data.token_ids.end(), 248053) == 3 &&
+                          std::count(data.token_ids.begin(), data.token_ids.end(), 248054) == 3,
+                      "literal Vision spellings became media tokens");
+    return failures;
+}
+
 int test_explicit_leading_instruction_cache_boundary() {
     FrontendResources official = resources();
     official.tokenizer_json =
@@ -1702,6 +1875,7 @@ int main() {
     failures += test_official_tokenizer_merge();
     failures += test_bpe_merge_order();
     failures += test_boundary_aware_tokenization();
+    failures += test_literal_added_token_provenance();
     failures += test_repeated_special_tokens_scan_linearly();
     failures += test_bounded_tokenizer_prefix();
     failures += test_context_capacity_guard();
@@ -1712,6 +1886,7 @@ int main() {
     failures += test_adjacent_tool_message_boundary();
     failures += test_official_resource_guards();
     failures += test_text_and_image_prepare(frontend);
+    failures += test_literal_control_tokens_with_media();
     failures += test_explicit_leading_instruction_cache_boundary();
     failures += test_media_admission_uses_aggregate_resources(frontend);
     failures += test_multimodal_prompt_over_removed_32k_cap(frontend);

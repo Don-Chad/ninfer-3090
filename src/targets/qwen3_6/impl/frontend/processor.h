@@ -37,11 +37,6 @@ private:
     ProcessorErrorKind kind_;
 };
 
-enum class Modality : std::uint8_t {
-    Image = 1,
-    Video = 2,
-};
-
 struct VisionGrid {
     int t = 0;
     int h = 0;
@@ -122,6 +117,15 @@ struct ProcessedInput {
 
 struct EncodedChat {
     std::vector<int> input_ids;
+
+    struct MediaTokenRun {
+        TokenSpan tokens;
+        Modality modality       = Modality::Image;
+        std::size_t item_index  = 0;
+        std::size_t frame_index = 0;
+    };
+
+    std::vector<MediaTokenRun> media_token_runs;
     std::optional<RewriteCheckpointSpec> rewrite_checkpoint;
     std::vector<std::uint32_t> rewrite_execution_frontiers;
     std::vector<std::optional<std::uint32_t>> message_boundaries;

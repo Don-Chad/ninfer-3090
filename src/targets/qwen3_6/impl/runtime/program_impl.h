@@ -70,6 +70,24 @@ runtime::PrefillWork validated_rebuild_work(runtime::PrefillWork work, std::uint
     return work;
 }
 
+void validate_long_anchor_ordinals(std::span<const LongAnchorCheckpoint> anchors,
+                                   std::size_t capacity) {
+    if (anchors.size() > capacity) {
+        throw std::logic_error("long-anchor set exceeds configured capacity");
+    }
+    for (std::size_t index = 0; index < anchors.size(); ++index) {
+        const std::uint32_t ordinal = anchors[index].ordinal;
+        if (ordinal == 0 || ordinal > capacity) {
+            throw std::logic_error("long-anchor ordinal is outside configured slots");
+        }
+        for (std::size_t previous = 0; previous < index; ++previous) {
+            if (anchors[previous].ordinal == ordinal) {
+                throw std::logic_error("long-anchor ordinals are not unique");
+            }
+        }
+    }
+}
+
 runtime::PrefillWork interval_rebuild_work(std::uint32_t begin_frontier,
                                            runtime::PrefillWork begin_work,
                                            std::uint32_t end_frontier,
@@ -6672,6 +6690,8 @@ ProgramImplCore::continuation_summary(const SequenceState& sequence) const {
 
 void ProgramImplCore::populate_continuation_summary(const SequenceState& sequence,
                                                     qwen3_6::ContinuationSummary& summary) const {
+    validate_long_anchor_ordinals(sequence.long_anchors,
+                                  context_cache.max_long_anchors_per_continuation.value_or(0));
     if (summary.long_anchors.capacity() < sequence.long_anchors.size()) {
         throw std::logic_error("continuation summary backing was not reserved");
     }
@@ -7164,7 +7184,8 @@ ProgramImplCore::install_private_capture(SequenceState& sequence, const CaptureG
     }
     if (group.long_anchor && context_cache.max_long_anchors_per_continuation.value_or(0) != 0) {
         const std::size_t capacity_limit = context_cache.max_long_anchors_per_continuation.value();
-        std::uint32_t ordinal            = 0;
+        validate_long_anchor_ordinals(sequence.long_anchors, capacity_limit);
+        std::uint32_t ordinal = 0;
         if (sequence.long_anchors.size() == capacity_limit) {
             if (!replacement || replacement->kind != runtime::CheckpointKind::LongAnchor) {
                 throw std::logic_error("full long-anchor set has no selected replacement");
@@ -7185,14 +7206,18 @@ ProgramImplCore::install_private_capture(SequenceState& sequence, const CaptureG
             if (replacement) {
                 throw std::logic_error("non-full long-anchor set has a replacement");
             }
-            for (; ordinal < capacity_limit; ++ordinal) {
+            for (std::size_t candidate = 1; candidate <= capacity_limit; ++candidate) {
                 if (std::none_of(sequence.long_anchors.begin(), sequence.long_anchors.end(),
-                                 [ordinal](const LongAnchorCheckpoint& anchor) {
-                                     return anchor.ordinal == ordinal;
+                                 [candidate](const LongAnchorCheckpoint& anchor) {
+                                     return anchor.ordinal == candidate;
                                  })) {
+                    ordinal = static_cast<std::uint32_t>(candidate);
                     break;
                 }
             }
+        }
+        if (ordinal == 0 || ordinal > capacity_limit) {
+            throw std::logic_error("long-anchor capture has no valid ordinal");
         }
         state_store->retain_checkpoint_reference(checkpoint);
         sequence.long_anchors.push_back(LongAnchorCheckpoint{
@@ -7201,6 +7226,7 @@ ProgramImplCore::install_private_capture(SequenceState& sequence, const CaptureG
             .ordinal      = ordinal,
             .rebuild_work = validated_rebuild_work(group.identity->rebuild_work, group.frontier),
         });
+        validate_long_anchor_ordinals(sequence.long_anchors, capacity_limit);
     }
     return removed;
 }

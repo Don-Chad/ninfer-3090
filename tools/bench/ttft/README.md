@@ -126,6 +126,7 @@ checkpoint capacity beyond active lanes.
 | `cache-pressure-device` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
 | `cache-pressure-state-host` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 0 --host-state-slots 4 --host-kv-mib 0 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
 | `cache-pressure-kv-host` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 2 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 8192 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
+| `cache-swap-64k-host` | `--max-context 65536 --kv-capacity 65536 --max-concurrency 2 --device-state-slots 4 --host-state-slots 0 --host-kv-mib 4608 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
 | `cache-pressure-both-host` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 2 --device-state-slots 0 --host-state-slots 4 --host-kv-mib 8192 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
 | `cache-pressure-evict` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 2 --device-state-slots 1 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
 | `cache-pressure-catalog` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 2 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
@@ -162,6 +163,7 @@ Baseline and cache cases:
 | `anonymous-hot-continuation` | `cache-hot` | Chat source then exact full-history continuation; private typed rewrite. |
 | `session-hot-continuation` | `cache-hot` | Stored Responses source then `previous_response_id` continuation. |
 | `session-alternating` | `cache-pressure-device` | `A1, B1, A2, B2` across two stored Responses lineages. |
+| `session-alternating-64k-host-swap` | `cache-swap-64k-host` | Two early-divergent 64512-token sessions run as `A1, B1, A2, B2`; one fits Device, the pair requires two Host KV covers for bidirectional rotation. |
 | `unmarked-common-prefix-miss` | `cache-hot` | Two standalone user messages share over 4096 tokens but no legal marker. |
 | `resume-after-interference-device` | `cache-pressure-device` | Fixed A/B/C/A2 graph with source placement available on Device. |
 | `resume-after-interference-state-host` | `cache-pressure-state-host` | Same graph with checkpoint State available only on Host. |
@@ -231,8 +233,9 @@ The normal entry point is one managed command:
 python3 tools/bench/run_serve_ttft_campaign.py --campaign resource --samples 5
 ```
 
-`smoke` runs the short baseline, `resource` runs the six Device/Host/eviction/catalog comparisons,
-and `full` runs all 50 audited cases. `resource` is the default and `--samples` defaults to one.
+`smoke` runs the short baseline, `resource` runs the six Device/Host/eviction/catalog comparisons
+plus the 64K bidirectional Host-swap case, and `full` runs all 51 audited cases. `resource` is the
+default and `--samples` defaults to one.
 Repeat `--case NAME` instead of `--campaign` to run a focused subset through the same managed
 lifecycle, for example:
 

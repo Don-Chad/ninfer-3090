@@ -562,6 +562,46 @@ int test_tool_use_result_roundtrip() {
                           prompt.messages[2].parts[1].media.kind == ninfer::MediaKind::Image,
                       "tool_result image translated to structured chat");
     failures += check(req.has_tool_history(), "tool history detected");
+
+    const Json image =
+        Json{{"type", "image"},
+             {"source", Json{{"type", "base64"}, {"media_type", "image/png"}, {"data", "AA=="}}}};
+    const auto tool_use = [](const char* id) {
+        return Json{{"type", "tool_use"},
+                    {"id", id},
+                    {"name", "read"},
+                    {"input", Json{{"path", std::string(id) + ".png"}}}};
+    };
+    const auto tool_result = [](const char* id, Json content) {
+        return Json{{"type", "tool_result"}, {"tool_use_id", id}, {"content", content}};
+    };
+    const Json parallel_body = {
+        {"model", "m"},
+        {"max_tokens", 8},
+        {"messages",
+         Json::array(
+             {Json{{"role", "user"}, {"content", "inspect"}},
+              Json{{"role", "assistant"},
+                   {"content", Json::array({tool_use("call_A"), tool_use("call_B")})}},
+              Json{{"role", "user"},
+                   {"content",
+                    Json::array(
+                        {tool_result("call_B", Json::array({image})),
+                         tool_result("call_A",
+                                     Json::array({Json{{"type", "text"}, {"text", "first"}}, image,
+                                                  Json{{"type", "text"}, {"text", "second"}},
+                                                  image}))})}}})}};
+    const GenerationRequest parallel = parse_messages_request(parallel_body, default_limits());
+    const ninfer::PromptInput parallel_prompt = translate(parallel);
+    failures +=
+        check(parallel.messages.size() == 4 && parallel.messages[2].tool_call_id == "call_B" &&
+                  parallel.messages[3].tool_call_id == "call_A" &&
+                  parallel.messages[3].content.size() == 4 &&
+                  parallel_prompt.messages[2].parts.size() == 1 &&
+                  parallel_prompt.messages[3].parts.size() == 4 &&
+                  parallel_prompt.messages[3].parts[1].kind == ninfer::MessagePartKind::Media &&
+                  parallel_prompt.messages[3].parts[3].kind == ninfer::MessagePartKind::Media,
+              "parallel tool results lost completion or nested-content order");
     return failures;
 }
 

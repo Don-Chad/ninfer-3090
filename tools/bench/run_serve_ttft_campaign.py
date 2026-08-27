@@ -40,6 +40,7 @@ RESOURCE_CASES = (
     "resume-after-interference-both-host",
     "resume-after-interference-evicted",
     "resume-after-interference-catalog",
+    "session-alternating-64k-host-swap",
 )
 CAMPAIGNS = {
     "smoke": ("cold-short",),

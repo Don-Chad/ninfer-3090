@@ -969,12 +969,19 @@ private:
              !valid_checkpoint_summary(*summary.rewrite, CheckpointScope::Private))) {
             return false;
         }
-        for (const auto& anchor : summary.long_anchors) {
+        for (std::size_t index = 0; index < summary.long_anchors.size(); ++index) {
+            const auto& anchor = summary.long_anchors[index];
             if (anchor.ref.kind != CheckpointKind::LongAnchor || anchor.ref.ordinal == 0 ||
-                anchor.ref.frontier == 0 || anchor.scope != CheckpointScope::Private ||
+                anchor.ref.ordinal > max_long_anchors_ || anchor.ref.frontier == 0 ||
+                anchor.scope != CheckpointScope::Private ||
                 anchor.shortlist_key.frontier != anchor.ref.frontier ||
                 anchor.required_kv.main_pages == 0 || anchor.rebuild_work.tokens == 0) {
                 return false;
+            }
+            for (std::size_t previous = 0; previous < index; ++previous) {
+                if (summary.long_anchors[previous].ref.ordinal == anchor.ref.ordinal) {
+                    return false;
+                }
             }
         }
         return true;

@@ -185,6 +185,39 @@ def _session_alternating(context: CaseContext, corpus: Corpus) -> None:
     context.require_success(b2)
 
 
+def _session_alternating_64k_host_swap(context: CaseContext, corpus: Corpus) -> None:
+    a1 = _responses_shape(
+        context, corpus, "long-64k-32", "a1", store=True
+    )
+    context.require_success(a1)
+    b1 = _responses_shape(
+        context, corpus, "long-64k-independent-32", "b1", store=True
+    )
+    context.require_success(b1)
+    a2 = context.start(
+        "a2",
+        responses_request(
+            context.model,
+            "Continue session A briefly.",
+            32,
+            store=True,
+            previous_response_id=_response_id(a1),
+        ),
+    )
+    context.require_success(a2)
+    b2 = context.start(
+        "b2",
+        responses_request(
+            context.model,
+            "Continue session B briefly.",
+            32,
+            store=True,
+            previous_response_id=_response_id(b1),
+        ),
+    )
+    context.require_success(b2)
+
+
 def _unmarked_common(context: CaseContext, corpus: Corpus) -> None:
     first = _chat_shape(context, corpus, "unmarked-common-a", "first")
     context.require_success(first)
@@ -909,6 +942,7 @@ _DEFINITIONS = (
     _definition("anonymous-hot-continuation", "openai_chat", "cache-hot", "private", ("long-8k-16",), "Anonymous full-history continuation.", _anonymous_hot),
     _definition("session-hot-continuation", "openai_responses", "cache-hot", "session", ("long-8k-16",), "Named Responses session continuation.", _session_hot),
     _definition("session-alternating", "openai_responses", "cache-pressure-device", "session", ("long-8k-16",), "Alternating named sessions.", _session_alternating),
+    _definition("session-alternating-64k-host-swap", "openai_responses", "cache-swap-64k-host", "resource", ("long-64k-32", "long-64k-independent-32"), "Two near-capacity sessions alternate through Host KV.", _session_alternating_64k_host_swap),
     _definition("unmarked-common-prefix-miss", "openai_chat", "cache-hot", "private", ("unmarked-common-a", "unmarked-common-b"), "Raw token commonality without a checkpoint.", _unmarked_common),
     _definition("resume-after-interference-device", "openai_responses", "cache-pressure-device", "resource", ("long-8k-16", "interferer-256"), "Pressure graph with Device-resident source.", _pressure_graph, symmetric_role_groups=(SymmetricRoleGroup("interferers", ("interferer-b", "interferer-c")),)),
     _definition("resume-after-interference-state-host", "openai_responses", "cache-pressure-state-host", "resource", ("long-8k-16", "interferer-256"), "Pressure graph with Host State restore.", _pressure_graph, symmetric_role_groups=(SymmetricRoleGroup("interferers", ("interferer-b", "interferer-c")),)),

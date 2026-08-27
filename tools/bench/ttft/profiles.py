@@ -84,6 +84,18 @@ PROFILE_ARGS: dict[str, tuple[str, ...]] = {
         "--max-long-anchors-per-continuation", 0,
         "--max-cache-markers-per-request", 0,
     ),
+    "cache-swap-64k-host": _args(
+        "--max-context", 65536,
+        "--kv-capacity", 65536,
+        "--max-concurrency", 2,
+        "--device-state-slots", 4,
+        "--host-state-slots", 0,
+        "--host-kv-mib", 4608,
+        "--max-private-continuations", 4,
+        "--max-shared-prefixes", 0,
+        "--max-long-anchors-per-continuation", 0,
+        "--max-cache-markers-per-request", 0,
+    ),
     "cache-pressure-both-host": _args(
         "--max-context", 8192,
         "--kv-capacity", 8192,

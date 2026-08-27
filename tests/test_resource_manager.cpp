@@ -124,6 +124,19 @@ FakeCheckpointSummary endpoint(std::uint32_t digest, std::uint32_t frontier) {
     };
 }
 
+FakeCheckpointSummary long_anchor(std::uint32_t digest, std::uint32_t frontier,
+                                  std::uint32_t ordinal) {
+    return FakeCheckpointSummary{
+        .ref           = CheckpointRef{.kind     = CheckpointKind::LongAnchor,
+                                       .frontier = frontier,
+                                       .ordinal  = ordinal},
+        .scope         = CheckpointScope::Private,
+        .shortlist_key = FakeShortlistKey{.digest = digest, .frontier = frontier},
+        .required_kv   = FakeRequiredKV{.main_pages = 1, .backend_pages = 0},
+        .rebuild_work  = PrefillWork{.tokens = frontier},
+    };
+}
+
 struct FakeContextCache {
     std::optional<FakeCacheSessionKey> session_key;
     RetentionClass retention  = RetentionClass::RecentPrivate;
@@ -1763,6 +1776,7 @@ void test_in_progress_adoption_and_private_capture() {
         .publishes_private = true,
     };
     program.capture_summary.endpoint = endpoint(12, 24);
+    program.capture_summary.long_anchors.push_back(long_anchor(12, 16, 1));
     const auto reserved =
         manager.reserve_active_capture(program, active.lane, FakeCaptureOffer{.id = 1}, true, {});
     require(reserved == FakeManager::ActiveCaptureReserveResult::Reserved,
