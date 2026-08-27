@@ -10,8 +10,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <limits>
 #include <iterator>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -159,7 +159,16 @@ ParsedMessage parse_message_item(const Json& item, std::size_t index) {
                     "input");
     }
     const std::string role = item.at("role").get<std::string>();
-    if (role != "user" && role != "assistant" && role != "system" && role != "developer") {
+    ChatRole parsed_role;
+    if (role == "user") {
+        parsed_role = ChatRole::User;
+    } else if (role == "assistant") {
+        parsed_role = ChatRole::Assistant;
+    } else if (role == "system") {
+        parsed_role = ChatRole::System;
+    } else if (role == "developer") {
+        parsed_role = ChatRole::Developer;
+    } else {
         bad_request("unsupported input message role: " + role, "input", "unsupported_role");
     }
     if (item.contains("phase") && !item.at("phase").is_null()) {
@@ -175,7 +184,7 @@ ParsedMessage parse_message_item(const Json& item, std::size_t index) {
     }
 
     ParsedMessage parsed;
-    parsed.turn.role       = role;
+    parsed.turn.role       = parsed_role;
     Json content           = Json::array();
     const auto append_text = [&](const std::string& text, const std::string& wire_type) {
         ContentPart part;
@@ -190,7 +199,7 @@ ParsedMessage parse_message_item(const Json& item, std::size_t index) {
 
     if (item.at("content").is_string()) {
         append_text(item.at("content").get<std::string>(),
-                    role == "assistant" ? "output_text" : "input_text");
+                    parsed_role == ChatRole::Assistant ? "output_text" : "input_text");
     } else if (item.at("content").is_array()) {
         for (const Json& value : item.at("content")) {
             if (!value.is_object() || !value.contains("type") || !value.at("type").is_string()) {
@@ -201,12 +210,12 @@ ParsedMessage parse_message_item(const Json& item, std::size_t index) {
                 if (!value.contains("text") || !value.at("text").is_string()) {
                     bad_request(type + " must contain a string text", "input");
                 }
-                if (type == "output_text" && role != "assistant") {
+                if (type == "output_text" && parsed_role != ChatRole::Assistant) {
                     bad_request("output_text is only valid on assistant messages", "input");
                 }
                 append_text(value.at("text").get<std::string>(), type);
             } else if (type == "input_image") {
-                if (role != "user") {
+                if (parsed_role != ChatRole::User) {
                     bad_request("input_image is only supported on user messages", "input");
                 }
                 ContentPart part;
@@ -218,7 +227,7 @@ ParsedMessage parse_message_item(const Json& item, std::size_t index) {
                                        {"image_url", value.at("image_url")},
                                        {"detail", "auto"}});
             } else if (type == "input_video") {
-                if (role != "user") {
+                if (parsed_role != ChatRole::User) {
                     bad_request("input_video is only supported on user messages", "input");
                 }
                 ContentPart part;
@@ -328,7 +337,7 @@ ChatTurn parse_function_call_output_item(const Json& item, Json& canonical) {
         bad_request("function_call_output status must be 'completed'", "input");
     }
     ChatTurn turn;
-    turn.role         = "tool";
+    turn.role         = ChatRole::Tool;
     turn.tool_call_id = item.at("call_id").get<std::string>();
     ContentPart content;
     content.kind     = ContentKind::Text;
@@ -379,7 +388,7 @@ void parse_input(const Json& input, ResponsesRequest& out) {
         if (type == "message") {
             ParsedMessage message = parse_message_item(item, index);
             if (pending_reasoning_present) {
-                if (message.turn.role != "assistant") {
+                if (message.turn.role != ChatRole::Assistant) {
                     bad_request("a reasoning Item must be followed by an assistant output Item",
                                 "input");
                 }
@@ -400,13 +409,13 @@ void parse_input(const Json& input, ResponsesRequest& out) {
         } else if (type == "function_call") {
             ToolCall call = parse_function_call_item(item, canonical);
             if (can_group_function_calls && !pending_reasoning_present &&
-                !out.input_turns.empty() && out.input_turns.back().role == "assistant" &&
+                !out.input_turns.empty() && out.input_turns.back().role == ChatRole::Assistant &&
                 out.input_turns.back().content.empty() &&
                 !out.input_turns.back().tool_calls.empty()) {
                 out.input_turns.back().tool_calls.push_back(std::move(call));
             } else {
                 ChatTurn turn;
-                turn.role              = "assistant";
+                turn.role              = ChatRole::Assistant;
                 turn.reasoning_content = std::move(pending_reasoning);
                 pending_reasoning.clear();
                 pending_reasoning_present = false;
@@ -877,7 +886,7 @@ BuiltResponse build_response(const std::string& id, std::int64_t created_at,
     }
 
     ChatTurn history;
-    history.role              = "assistant";
+    history.role              = ChatRole::Assistant;
     history.reasoning_content = outcome.reasoning;
     history.tool_calls        = outcome.tool_calls;
     if (!outcome.text.empty()) {
@@ -958,13 +967,14 @@ void inherit_responses_preserve_thinking(ResponsesRequest& request, bool parent_
 }
 
 void compose_responses_generation_messages(ResponsesRequest& request,
-                                           const std::vector<ChatTurn>& previous_context) {
+                                           std::vector<ChatTurn> previous_context) {
+    std::vector<ChatTurn> current_input = std::move(request.generation.messages);
     std::vector<ChatTurn> messages;
     messages.reserve((request.instructions ? 1U : 0U) + previous_context.size() +
-                     request.input_turns.size());
+                     current_input.size());
     if (request.instructions) {
         ChatTurn instructions;
-        instructions.role = "developer";
+        instructions.role = ChatRole::Developer;
         ContentPart part;
         part.kind     = ContentKind::Text;
         part.type_raw = "input_text";
@@ -972,8 +982,10 @@ void compose_responses_generation_messages(ResponsesRequest& request,
         instructions.content.push_back(std::move(part));
         messages.push_back(std::move(instructions));
     }
-    messages.insert(messages.end(), previous_context.begin(), previous_context.end());
-    messages.insert(messages.end(), request.input_turns.begin(), request.input_turns.end());
+    messages.insert(messages.end(), std::make_move_iterator(previous_context.begin()),
+                    std::make_move_iterator(previous_context.end()));
+    messages.insert(messages.end(), std::make_move_iterator(current_input.begin()),
+                    std::make_move_iterator(current_input.end()));
     request.generation.messages = std::move(messages);
 }
 

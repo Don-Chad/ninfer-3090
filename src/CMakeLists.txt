@@ -21,20 +21,23 @@ add_library(ninfer_core STATIC
   core/arena.cu
   core/device.cu
   core/dtype.cpp
+  core/host_worker_pool.cpp
   core/gdn_replay_records.cpp
   core/cyclic_kv_cache.cpp
+  core/host_kv_arena.cpp
   core/paged_kv_cache.cpp
   core/linear_attention_state.cpp
   core/layout.cpp
   core/tensor.cpp
   core/decode_graph.cpp
   runtime/engine/admission_policy.cpp
+  runtime/engine/context_cost.cpp
+  runtime/engine/context_cost_defaults.cpp
   runtime/engine/kv_capacity.cpp
-  runtime/engine/public_types.cpp
-  runtime/engine/request_memory.cpp)
+  runtime/engine/public_types.cpp)
 ninfer_internal_includes(ninfer_core)
 ninfer_cuda_archive(ninfer_core)
-target_link_libraries(ninfer_core PUBLIC ${NINFER_CUDART_TARGET} CUDA::nvtx3)
+target_link_libraries(ninfer_core PUBLIC ${NINFER_CUDART_TARGET} CUDA::nvtx3 Threads::Threads)
 
 # Generic .ninfer framing, binding, and direct final materialization.
 add_library(ninfer_artifact STATIC
@@ -72,11 +75,6 @@ add_library(ninfer_ops STATIC
   ops/launcher/embed_gather.cu
   ops/launcher/gdn_gating.cu
   ops/launcher/gelu.cu
-  ops/launcher/bidirectional_gqa_attention.cu
-  ops/launcher/swa.cu
-  ops/launcher/gqa_attention_decode.cu
-  ops/launcher/gqa_attention_prefill.cu
-  ops/launcher/kv_cache_append_prefix.cu
   ops/launcher/l2norm.cu
   ops/launcher/layer_norm.cu
   ops/launcher/mtp_pack.cu
@@ -93,8 +91,23 @@ add_library(ninfer_ops STATIC
   ops/launcher/scatter.cu
   ops/launcher/sigmoid_gate_mul.cu
   ops/launcher/silu_and_mul.cu
-  ops/launcher/vision_attention.cu
   ops/launcher/vision_pos_embed.cu
+  # Softmax Attention and KV-cache state transitions.
+  ops/softmax_attention/dense/causal_cache/causal_softmax_attention.cpp
+  ops/softmax_attention/dense/causal_cache/small_t.cu
+  ops/softmax_attention/dense/causal_cache/rk8v4/gqa_attention_decode.cu
+  ops/softmax_attention/dense/causal_cache/rk8v4/gqa_attention_prefill.cu
+  ops/softmax_attention/dense/causal_cache/small_t_fp8.cu
+  ops/softmax_attention/dense/causal_cache/prompt.cu
+  ops/softmax_attention/dense/causal_cache/prompt_fp8.cu
+  ops/softmax_attention/dense/packed/packed_softmax_attention.cpp
+  ops/softmax_attention/dense/packed/launch.cu
+  ops/softmax_attention/dense/context/context_softmax_attention.cpp
+  ops/softmax_attention/dense/context/launch.cu
+  ops/softmax_attention/sliding_window/sliding_window_attention.cpp
+  ops/softmax_attention/sliding_window/launch.cu
+  ops/kv_cache/append/kv_cache_append.cpp
+  ops/kv_cache/append/launch.cu
   # Gated DeltaNet Linear Attention core.
   ops/linear_attention/gated_delta_net/gated_delta_net.cpp
   ops/linear_attention/gated_delta_net/replay.cpp
@@ -107,6 +120,10 @@ add_library(ninfer_ops STATIC
   ops/attn_input_proj/bf16/bf16_attn_input_gemm_mma.cu
   ops/attn_input_proj/bf16/bf16_attn_input_small_t.cu
   ops/attn_input_proj/bf16/bf16_attn_input_plan.cpp
+  ops/attn_input_proj/fp8/fp8_attn_input_decode.cu
+  ops/attn_input_proj/fp8/fp8_attn_input_small_t.cu
+  ops/attn_input_proj/fp8/fp8_attn_input_a8.cu
+  ops/attn_input_proj/fp8/fp8_attn_input_plan.cpp
   ops/attn_input_proj/nvfp4/nvfp4_attn_input_decode.cu
   ops/attn_input_proj/nvfp4/nvfp4_attn_input_small_t.cu
   ops/attn_input_proj/nvfp4/nvfp4_attn_input_w4a4.cu
@@ -119,6 +136,12 @@ add_library(ninfer_ops STATIC
   ops/attn_input_proj/w8/w8_attn_input_gemm_simt.cu
   ops/attn_input_proj/w8/w8_attn_input_gemm_splitk.cu
   ops/attn_input_proj/w8/w8_attn_input_plan.cpp
+  ops/gdn_input_proj/fp8/fp8_gdn_input_decode.cu
+  ops/gdn_input_proj/fp8/fp8_gdn_input_small_t.cu
+  ops/gdn_input_proj/fp8/fp8_gdn_input_a8.cu
+  ops/gdn_input_proj/fp8/fp8_gdn_input_plan.cpp
+  ops/gdn_input_proj/fp8/fp8_gdn_conv_fused.cu
+  ops/gdn_input_proj/fp8/fp8_gdn_conv_plan.cpp
   ops/gdn_input_proj/nvfp4/nvfp4_gdn_input_decode.cu
   ops/gdn_input_proj/nvfp4/nvfp4_gdn_input_small_t.cu
   ops/gdn_input_proj/nvfp4/nvfp4_gdn_input_w4a4.cu
@@ -142,6 +165,12 @@ add_library(ninfer_ops STATIC
   ops/linear/bf16/bf16_gemm_mma.cu
   ops/linear/bf16/bf16_small_t.cu
   ops/linear/bf16/bf16_dispatch.cpp
+  ops/linear/fp8/fp8_format.cpp
+  ops/linear/fp8/fp8_gemv.cu
+  ops/linear/fp8/fp8_small_t.cu
+  ops/linear/fp8/fp8_a16_mma.cu
+  ops/linear/fp8/fp8_a8.cu
+  ops/linear/fp8/fp8_dispatch.cpp
   ops/linear/nvfp4/nvfp4_format.cpp
   ops/linear/nvfp4/nvfp4_gemv.cu
   ops/linear/nvfp4/nvfp4_small_t.cu
@@ -164,6 +193,10 @@ add_library(ninfer_ops STATIC
   ops/linear_add/nvfp4/nvfp4_linear_add_small_t.cu
   ops/linear_add/nvfp4/nvfp4_linear_add_w4a4.cu
   ops/linear_add/nvfp4/nvfp4_linear_add_plan.cpp
+  ops/linear_add/fp8/fp8_linear_add_decode.cu
+  ops/linear_add/fp8/fp8_linear_add_small_t.cu
+  ops/linear_add/fp8/fp8_linear_add_a8.cu
+  ops/linear_add/fp8/fp8_linear_add_plan.cpp
   ops/linear_add/q5/q5_linear_add_gemm_mma.cu
   ops/linear_add/q5/q5_linear_add_gemm_simt.cu
   ops/linear_add/q5/q5_linear_add_gemv.cu
@@ -179,6 +212,10 @@ add_library(ninfer_ops STATIC
   ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_small_t.cu
   ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_w4a4.cu
   ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_plan.cpp
+  ops/linear_swiglu/fp8/fp8_linear_swiglu_decode.cu
+  ops/linear_swiglu/fp8/fp8_linear_swiglu_small_t.cu
+  ops/linear_swiglu/fp8/fp8_linear_swiglu_a8.cu
+  ops/linear_swiglu/fp8/fp8_linear_swiglu_plan.cpp
   ops/linear_swiglu/w8/w8_linear_swiglu_decode.cu
   ops/linear_swiglu/w8/w8_linear_swiglu_gemm_mma.cu
   ops/linear_swiglu/w8/w8_linear_swiglu_gemm_splitk.cu
@@ -213,10 +250,6 @@ add_library(ninfer_ops STATIC
   ops/wrapper/gdn_gating_proj.cpp
   ops/wrapper/gdn_input_proj.cpp
   ops/wrapper/gelu.cpp
-  ops/wrapper/bidirectional_gqa_attention.cpp
-  ops/wrapper/swa.cpp
-  ops/wrapper/gqa_attention.cpp
-  ops/wrapper/kv_cache_append_prefix.cpp
   ops/wrapper/attn_input_proj.cpp
   ops/wrapper/l2norm.cpp
   ops/wrapper/layer_norm.cpp
@@ -238,7 +271,6 @@ add_library(ninfer_ops STATIC
   ops/wrapper/sigmoid_mul.cpp
   ops/wrapper/silu_mul.cpp
   ops/wrapper/sparse_moe.cpp
-  ops/wrapper/vision_attention.cpp
   ops/wrapper/vision_pos_embed.cpp)
 if(CMAKE_CUDA_ARCHITECTURES MATCHES "^(86|89)$")
   get_target_property(ninfer_ops_sources ninfer_ops SOURCES)

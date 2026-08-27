@@ -204,6 +204,8 @@ __global__ void sparse_moe_prefill_scan_kernel(const int* __restrict__ tile_coun
         cursor += tile_counts[index];
     }
 
+    // Reuse scan only after every expert has consumed the assignment prefix.
+    __syncthreads();
     scan[expert] = (count + job_bn - 1) / job_bn;
     __syncthreads();
 #pragma unroll

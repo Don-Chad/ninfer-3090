@@ -3,6 +3,7 @@
 #include "targets/qwen3_6_27b/impl/load/bindings.h"
 #include "targets/qwen3_6_27b/impl/variant.h"
 
+#include <ninfer/targets/qwen3_6/prepared_prompt.h>
 #include <ninfer/targets/qwen3_6_27b/package.h>
 
 #include <bit>
@@ -45,13 +46,13 @@ bool valid_divisors(const WeightPlan& weight) {
 
 int verify_groupwise(const std::filesystem::path& path) {
     ninfer::artifact::Reader reader(path);
-    if (Package::resolve_weights(reader.identity()) != WeightsProfile::GroupwiseInt) {
+    if (Package::resolve_weights(reader.identity()) != WeightsProfile::Qwen36GroupwiseInt) {
         std::cerr << "groupwise identity resolved to the wrong profile\n";
         return 1;
     }
     ninfer::artifact::Binder binder(reader);
     const ArtifactLoadPlan plan =
-        bind_artifact(binder, WeightsProfile::GroupwiseInt, all_features());
+        bind_artifact(binder, WeightsProfile::Qwen36GroupwiseInt, all_features());
     if (plan.materialization.object_count != 1124 ||
         plan.materialization.device_objects.size() != 1118 ||
         plan.materialization.host_objects.size() != 6 ||
@@ -86,12 +87,13 @@ int verify_groupwise(const std::filesystem::path& path) {
 
 int verify_nvfp4(const std::filesystem::path& path) {
     ninfer::artifact::Reader reader(path);
-    if (Package::resolve_weights(reader.identity()) != WeightsProfile::Nvfp4) {
+    if (Package::resolve_weights(reader.identity()) != WeightsProfile::Qwen36Nvfp4) {
         std::cerr << "NVFP4 identity resolved to the wrong profile\n";
         return 1;
     }
     ninfer::artifact::Binder binder(reader);
-    const ArtifactLoadPlan plan = bind_artifact(binder, WeightsProfile::Nvfp4, all_features());
+    const ArtifactLoadPlan plan =
+        bind_artifact(binder, WeightsProfile::Qwen36Nvfp4, all_features());
     if (plan.materialization.object_count != 1307 ||
         plan.materialization.device_objects.size() != 1054 ||
         plan.materialization.host_objects.size() != 6 ||
@@ -174,22 +176,59 @@ int verify_rejection() {
 int verify_profile_mismatch_rejection() {
     ninfer::DeviceContext device(0);
     ninfer::EngineOptions options;
-    options.max_context    = 128;
-    options.kv_capacity    = ninfer::KvCapacityPolicy::explicit_capacity(128);
-    options.prefill_chunk  = 128;
-    options.use_cuda_graph = false;
-    auto planner = Package::make_sequence_planner(device, options, WeightsProfile::GroupwiseInt);
+    options.max_context                      = 128;
+    options.kv_capacity                      = ninfer::KvCapacityPolicy::explicit_capacity(128);
+    options.prefill_chunk                    = 128;
+    options.use_cuda_graph                   = false;
+    options.context_cache.device_state_slots = options.max_concurrency;
+    auto planner =
+        Package::make_sequence_planner(device, options, WeightsProfile::Qwen36GroupwiseInt);
     const std::uint32_t pages = planner.capacity_curve().minimum_main_page_groups;
     auto sequence             = std::move(planner).finalize(pages);
     RuntimeModelView empty_model;
     try {
-        (void)ninfer::targets::qwen3_6::create_program<Variant>(empty_model, WeightsProfile::Nvfp4,
-                                                                std::move(sequence), device);
+        (void)ninfer::targets::qwen3_6::create_program<Variant>(
+            empty_model, WeightsProfile::Qwen36Nvfp4, std::move(sequence), device);
     } catch (const std::invalid_argument& error) {
         if (std::string(error.what()).find("weights profile") != std::string::npos) { return 0; }
     }
     std::cerr << "mismatched load/sequence weights profiles were not rejected\n";
     return 1;
+}
+
+int verify_vision_workspace_planning() {
+    static_assert(ninfer::targets::qwen3_6::kMaximumPromptVisionTokens == 32768);
+    static_assert(ninfer::targets::qwen3_6::kMaximumVisionItemTokens == 16384);
+    constexpr std::size_t kExpectedMaximumItemWorkspace = 866'648'064;
+
+    ninfer::DeviceContext device(0);
+    const auto workspace_capacity = [&](std::uint32_t max_context) {
+        ninfer::EngineOptions options;
+        options.max_context              = max_context;
+        options.kv_capacity              = ninfer::KvCapacityPolicy::explicit_capacity(max_context);
+        options.prefill_chunk            = 1024;
+        options.kv_cache                 = ninfer::KvCacheStorage::Fp8E4M3Row256;
+        options.speculative.backend      = ninfer::SpeculativeBackend::Mtp;
+        options.speculative.draft_tokens = 3;
+        options.speculative.proposal_head        = ninfer::ProposalHead::Optimized;
+        options.enable_vision                    = true;
+        options.use_cuda_graph                   = false;
+        options.context_cache.device_state_slots = 1;
+        auto planner = Package::make_sequence_planner(device, options, WeightsProfile::Qwen36Nvfp4);
+        const std::uint32_t pages = planner.capacity_curve().minimum_main_page_groups;
+        return std::move(planner).finalize(pages).workspace_capacity_bytes();
+    };
+
+    const std::size_t at_item_limit    = workspace_capacity(16384);
+    const std::size_t above_item_limit = workspace_capacity(131072);
+    if (at_item_limit != kExpectedMaximumItemWorkspace ||
+        above_item_limit != kExpectedMaximumItemWorkspace) {
+        std::cerr << "Vision workspace does not clamp Device execution at the 16K item bound: "
+                  << "at_limit=" << at_item_limit << " above_limit=" << above_item_limit
+                  << " expected=" << kExpectedMaximumItemWorkspace << '\n';
+        return 1;
+    }
+    return 0;
 }
 
 } // namespace
@@ -204,6 +243,7 @@ int main() {
                   << " nvfp4=" << nvfp4 << '\n';
         return 77;
     }
+    if (const int result = verify_vision_workspace_planning(); result != 0) { return result; }
     if (const int result = verify_rejection(); result != 0) { return result; }
     if (const int result = verify_profile_mismatch_rejection(); result != 0) { return result; }
     if (const int result = verify_groupwise(groupwise); result != 0) { return result; }

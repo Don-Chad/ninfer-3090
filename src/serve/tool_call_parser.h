@@ -3,6 +3,7 @@
 #include "serve/request.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -15,8 +16,34 @@ struct ParsedToolCallOutput {
     std::vector<ToolCall> tool_calls;
 };
 
+// The Qwen tool syntax carries each top-level argument as untyped text between
+// <parameter> tags. This request-owned contract retains only whether an explicit
+// JSON Schema type admits a string or requires JSON decoding.
+struct ToolArgumentTypeContracts {
+    enum class Encoding : std::uint8_t {
+        Json,
+        String,
+    };
+
+    struct Parameter {
+        std::string name;
+        Encoding encoding = Encoding::Json;
+    };
+
+    struct Tool {
+        std::string name;
+        std::vector<Parameter> parameters;
+        bool unambiguous = true;
+    };
+
+    std::vector<Tool> tools;
+};
+
+ToolArgumentTypeContracts build_tool_argument_type_contracts(const GenerationRequest& request);
+
 ParsedToolCallOutput parse_qwen_tool_call_output(const std::string& text,
-                                                 std::size_t max_tool_name_length);
+                                                 std::size_t max_tool_name_length,
+                                                 const ToolArgumentTypeContracts& contracts);
 
 // Incrementally publishes text that is provably outside a possible Qwen
 // <tool_call> suffix. At terminal time, a valid tool response discards the

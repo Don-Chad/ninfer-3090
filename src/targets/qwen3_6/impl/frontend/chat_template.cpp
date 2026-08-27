@@ -4,11 +4,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 
 namespace ninfer::targets::qwen3_6::frontend_internal {
 namespace {
@@ -34,8 +36,19 @@ constexpr std::string_view kXHighReasoningInstructions =
     "assumptions, consider plausible alternatives, and prioritize correctness, consistency, and "
     "clarity in the final answer.";
 
-bool is_allowed_role(const std::string& role) {
-    return role == "system" || role == "user" || role == "assistant" || role == "tool";
+bool is_instruction_role(ChatRole role) noexcept {
+    return role == ChatRole::System || role == ChatRole::Developer;
+}
+
+void validate_instruction_message(const ChatMessage& message) {
+    if (message.has_media()) {
+        throw std::invalid_argument(
+            "system and developer messages cannot contain images or videos");
+    }
+    if (!message.reasoning_content.empty() || !message.tool_calls.empty() ||
+        !message.tool_call_id.empty()) {
+        throw std::invalid_argument("system and developer messages may contain only text content");
+    }
 }
 
 std::string trim_ascii_whitespace(const std::string& text) {
@@ -47,6 +60,16 @@ std::string trim_ascii_whitespace(const std::string& text) {
     std::size_t end = text.size();
     while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])) != 0) { --end; }
     return text.substr(begin, end - begin);
+}
+
+std::pair<std::size_t, std::size_t> trim_ascii_whitespace_bounds(const std::string& text) {
+    std::size_t begin = 0;
+    while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
+        ++begin;
+    }
+    std::size_t end = text.size();
+    while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])) != 0) { --end; }
+    return {begin, end};
 }
 
 bool starts_with(const std::string& text, std::string_view prefix) {
@@ -61,7 +84,7 @@ bool ends_with(const std::string& text, std::string_view suffix) {
 long last_real_user_query(const std::vector<ChatMessage>& messages) {
     for (long i = static_cast<long>(messages.size()) - 1; i >= 0; --i) {
         const ChatMessage& message = messages[static_cast<std::size_t>(i)];
-        if (message.role != "user") { continue; }
+        if (message.role != ChatRole::User) { continue; }
         const std::string content = trim_ascii_whitespace(message.rendered_content());
         if (!(starts_with(content, "<tool_response>") && ends_with(content, "</tool_response>"))) {
             return i;
@@ -191,10 +214,18 @@ std::string render_tool_call(const ToolCall& call, bool allow_empty_arguments) {
     return rendered;
 }
 
-std::string render_tools_system_block(const std::vector<std::string>& tool_jsons,
-                                      const std::string& merged_system,
-                                      std::string_view reasoning_instructions) {
-    std::string rendered;
+struct RenderedToolsSystemBlock {
+    std::string text;
+    std::vector<std::size_t> tool_boundaries;
+    std::optional<std::size_t> instruction_begin;
+};
+
+RenderedToolsSystemBlock render_tools_system_block(const std::vector<std::string>& tool_jsons,
+                                                   const std::string& leading_instruction,
+                                                   std::string_view reasoning_instructions) {
+    RenderedToolsSystemBlock out;
+    std::string& rendered = out.text;
+    out.tool_boundaries.reserve(tool_jsons.size());
     rendered += "<|im_start|>system\n";
     if (!reasoning_instructions.empty()) {
         rendered += reasoning_instructions;
@@ -204,15 +235,17 @@ std::string render_tools_system_block(const std::vector<std::string>& tool_jsons
     for (const std::string& tool : tool_jsons) {
         rendered += "\n";
         rendered += tojson_text(OrderedJson::parse(tool));
+        out.tool_boundaries.push_back(rendered.size());
     }
     rendered += "\n</tools>";
     rendered += std::string(kToolInstructions);
-    if (!merged_system.empty()) {
+    if (!leading_instruction.empty()) {
         rendered += "\n\n";
-        rendered += merged_system;
+        out.instruction_begin = rendered.size();
+        rendered += leading_instruction;
     }
     rendered += "<|im_end|>\n";
-    return rendered;
+    return out;
 }
 
 std::string_view resolve_reasoning_instructions(ChatTemplateSemantics semantics,
@@ -310,31 +343,40 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
     const std::string_view reasoning_instructions =
         resolve_reasoning_instructions(semantics_, options);
 
-    std::size_t num_sys = 0;
-    std::string merged_system;
-    while (num_sys < messages.size() && messages[num_sys].role == "system") {
-        if (messages[num_sys].has_media()) {
-            throw std::invalid_argument("system message cannot contain images or videos");
-        }
-        const std::string block = trim_ascii_whitespace(messages[num_sys].rendered_content());
-        if (!merged_system.empty() && !block.empty()) { merged_system += "\n\n"; }
-        merged_system += block;
-        ++num_sys;
+    std::size_t message_begin = 0;
+    std::string leading_instruction_raw;
+    std::string leading_instruction;
+    std::size_t leading_trim_begin = 0;
+    std::size_t leading_trim_end   = 0;
+    if (is_instruction_role(messages[0].role)) {
+        validate_instruction_message(messages[0]);
+        leading_instruction_raw = messages[0].rendered_content();
+        std::tie(leading_trim_begin, leading_trim_end) =
+            trim_ascii_whitespace_bounds(leading_instruction_raw);
+        leading_instruction = leading_instruction_raw.substr(leading_trim_begin,
+                                                             leading_trim_end - leading_trim_begin);
+        message_begin       = 1;
     }
 
     std::string rendered;
+    std::vector<std::size_t> tool_boundaries;
+    std::optional<std::size_t> instruction_begin;
     const bool has_tools = !options.tool_jsons.empty();
     if (has_tools) {
-        rendered +=
-            render_tools_system_block(options.tool_jsons, merged_system, reasoning_instructions);
-    } else if (num_sys != 0) {
-        if (!effort_template || !merged_system.empty() || !reasoning_instructions.empty()) {
+        RenderedToolsSystemBlock preamble = render_tools_system_block(
+            options.tool_jsons, leading_instruction, reasoning_instructions);
+        rendered          = std::move(preamble.text);
+        tool_boundaries   = std::move(preamble.tool_boundaries);
+        instruction_begin = preamble.instruction_begin;
+    } else if (message_begin == 1) {
+        if (!effort_template || !leading_instruction.empty() || !reasoning_instructions.empty()) {
             rendered += "<|im_start|>system\n";
             if (!reasoning_instructions.empty()) {
                 rendered += reasoning_instructions;
-                if (!merged_system.empty()) { rendered += "\n\n"; }
+                if (!leading_instruction.empty()) { rendered += "\n\n"; }
             }
-            rendered += merged_system;
+            if (!leading_instruction.empty()) { instruction_begin = rendered.size(); }
+            rendered += leading_instruction;
             rendered += "<|im_end|>\n";
         }
     } else if (!reasoning_instructions.empty()) {
@@ -343,47 +385,62 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         rendered += "<|im_end|>\n";
     }
 
-    const long last_query_index = last_real_user_query(messages);
-    std::optional<std::size_t> turn_rewrite_byte_offset;
+    std::vector<std::optional<std::size_t>> message_boundaries(messages.size() + 1U);
+    if (message_begin == 0) {
+        message_boundaries[0] = rendered.size();
+    } else {
+        // The first instruction message is folded into the system preamble by this template.
+        message_boundaries[1] = rendered.size();
+    }
+
+    const long last_query_index  = last_real_user_query(messages);
+    const bool preserve_thinking = options.preserve_thinking.value_or(effort_template);
+    std::optional<RewriteCheckpointByteSpec> rewrite_checkpoint;
+    std::vector<std::size_t> rewrite_execution_boundaries;
+    const auto add_rewrite_execution_boundary = [&] {
+        if (rewrite_execution_boundaries.empty() ||
+            rewrite_execution_boundaries.back() != rendered.size()) {
+            rewrite_execution_boundaries.push_back(rendered.size());
+        }
+    };
 
     int image_count = 0;
     int video_count = 0;
     for (std::size_t i = 0; i < messages.size(); ++i) {
         const ChatMessage& message = messages[i];
-        if (i < num_sys) { continue; }
-        if (!is_allowed_role(message.role)) {
-            throw std::invalid_argument("unsupported chat role: " + message.role);
-        }
+        if (i < message_begin) { continue; }
+        if (is_instruction_role(message.role)) { validate_instruction_message(message); }
         const std::string content = trim_ascii_whitespace(
             message.rendered_content(options.add_vision_id, &image_count, &video_count));
-        if (message.role == "system") {
-            if (message.has_media()) {
-                throw std::invalid_argument("system message cannot contain images or videos");
-            }
-            // Mid-conversation system turn (e.g. Claude Code per-turn reminders).
-            // Rendered in place so earlier prompt bytes stay stable for prefix reuse;
-            // hoisting these to the leading system block rewrites the prompt head on
-            // every turn and defeats KV caching entirely.
+        if (is_instruction_role(message.role)) {
             rendered += "<|im_start|>system\n";
             rendered += content;
             rendered += "<|im_end|>\n";
+            message_boundaries[i + 1U] = rendered.size();
             continue;
         }
-        if (message.role == "user") {
+        if (message.role == ChatRole::User) {
             rendered += "<|im_start|>user\n";
             rendered += content;
             rendered += "<|im_end|>\n";
+            message_boundaries[i + 1U] = rendered.size();
             continue;
         }
-        if (message.role == "tool") {
-            const bool opens_group  = i > 0 && messages[i - 1].role != "tool";
-            const bool closes_group = i + 1 == messages.size() || messages[i + 1].role != "tool";
+        if (message.role == ChatRole::Tool) {
+            const bool opens_group = i > 0 && messages[i - 1].role != ChatRole::Tool;
+            const bool closes_group =
+                i + 1 == messages.size() || messages[i + 1].role != ChatRole::Tool;
             if (opens_group) { rendered += "<|im_start|>user"; }
             rendered += "\n<tool_response>\n";
             rendered += content;
             rendered += "\n</tool_response>";
             if (closes_group) { rendered += "<|im_end|>\n"; }
+            message_boundaries[i + 1U] = rendered.size();
             continue;
+        }
+
+        if (message.role != ChatRole::Assistant) {
+            throw std::invalid_argument("unsupported chat role value");
         }
 
         // assistant
@@ -398,16 +455,23 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         }
         reasoning = trim_ascii_whitespace(reasoning);
 
-        const bool preserve_thinking = options.preserve_thinking.value_or(effort_template);
         const bool keep_thinking = preserve_thinking || (static_cast<long>(i) > last_query_index);
-        rendered += "<|im_start|>assistant\n";
-        if (!turn_rewrite_byte_offset && static_cast<long>(i) > last_query_index) {
-            turn_rewrite_byte_offset = rendered.size();
+        if (!preserve_thinking && !rewrite_checkpoint && static_cast<long>(i) > last_query_index) {
+            // Closing the current turn may rewrite everything beginning with this assistant
+            // segment. Keep the stable history before the opener recoverable; retaining the
+            // deterministic opener itself is not worth losing the whole prefix when a caller
+            // branches with a new user message instead.
+            rewrite_checkpoint = RewriteCheckpointByteSpec{
+                .kind = RewriteCheckpointKind::TurnClosure, .offset = rendered.size()};
         }
+        rendered += "<|im_start|>assistant\n";
+        add_rewrite_execution_boundary();
         if (keep_thinking) {
             rendered += "<think>\n";
+            add_rewrite_execution_boundary();
             rendered += reasoning;
             rendered += "\n</think>\n\n";
+            add_rewrite_execution_boundary();
         }
         rendered += body;
         if (!message.tool_calls.empty()) {
@@ -422,19 +486,64 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             }
         }
         rendered += "<|im_end|>\n";
+        message_boundaries[i + 1U] = rendered.size();
     }
 
     if (options.add_generation_prompt) {
+        // The generation suffix is replaceable as a unit. An immediate successor may replay the
+        // response, close the turn, or branch by appending a different user message directly to
+        // the input history. The rolling private checkpoint must therefore precede the assistant
+        // opener; placing it after the deterministic prologue makes the complete history
+        // unrecoverable for the branch case merely to save a handful of prompt tokens.
+        const std::size_t generation_begin = rendered.size();
+        if (preserve_thinking) {
+            rewrite_checkpoint = RewriteCheckpointByteSpec{
+                .kind = RewriteCheckpointKind::ResponseReplay, .offset = generation_begin};
+        } else if (!rewrite_checkpoint) {
+            rewrite_checkpoint = RewriteCheckpointByteSpec{
+                .kind = RewriteCheckpointKind::TurnClosure, .offset = generation_begin};
+        }
         rendered += "<|im_start|>assistant\n";
-        if (!turn_rewrite_byte_offset) { turn_rewrite_byte_offset = rendered.size(); }
+        add_rewrite_execution_boundary();
         if (options.enable_thinking) {
             rendered += "<think>\n";
+            add_rewrite_execution_boundary();
         } else {
-            rendered += "<think>\n\n</think>\n\n";
+            rendered += "<think>\n";
+            add_rewrite_execution_boundary();
+            rendered += "\n</think>\n\n";
+            add_rewrite_execution_boundary();
         }
     }
-    return RenderedChat{.text                     = std::move(rendered),
-                        .turn_rewrite_byte_offset = turn_rewrite_byte_offset};
+    std::vector<std::optional<std::size_t>> cache_boundaries(options.cache_markers.size());
+    for (std::size_t index = 0; index < options.cache_markers.size(); ++index) {
+        const PromptCacheMarker marker = options.cache_markers[index];
+        switch (marker.location) {
+        case PromptCacheMarkerLocation::MessageBoundary:
+            if (marker.after_message_count < message_boundaries.size()) {
+                cache_boundaries[index] = message_boundaries[marker.after_message_count];
+            }
+            break;
+        case PromptCacheMarkerLocation::LeadingInstructionBoundary:
+            if (message_begin == 1 && instruction_begin &&
+                marker.leading_instruction_bytes <= leading_instruction_raw.size()) {
+                const std::size_t clamped = std::clamp<std::size_t>(
+                    marker.leading_instruction_bytes, leading_trim_begin, leading_trim_end);
+                cache_boundaries[index] = *instruction_begin + clamped - leading_trim_begin;
+            }
+            break;
+        case PromptCacheMarkerLocation::ToolBoundary:
+            if (marker.after_tool_count != 0 && marker.after_tool_count <= tool_boundaries.size()) {
+                cache_boundaries[index] = tool_boundaries[marker.after_tool_count - 1U];
+            }
+            break;
+        }
+    }
+    return RenderedChat{.text                         = std::move(rendered),
+                        .rewrite_checkpoint           = rewrite_checkpoint,
+                        .rewrite_execution_boundaries = std::move(rewrite_execution_boundaries),
+                        .message_boundaries           = std::move(message_boundaries),
+                        .cache_boundaries             = std::move(cache_boundaries)};
 }
 
 } // namespace ninfer::targets::qwen3_6::frontend_internal

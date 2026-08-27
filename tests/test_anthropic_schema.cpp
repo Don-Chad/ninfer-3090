@@ -81,6 +81,13 @@ ninfer::PromptInput translate(const GenerationRequest& req) {
                            fake_media);
 }
 
+ninfer::RequestOptions translate_options(const GenerationRequest& req) {
+    const ServeOptions server = default_server();
+    return to_request_options(req, server,
+                              resolve_prompt_semantics(req, server, effort_capabilities()),
+                              server.allow_prefix_reuse);
+}
+
 std::string joined_text(const ninfer::ChatMessage& message) {
     std::string text;
     for (const ninfer::MessagePart& part : message.parts) {
@@ -118,9 +125,9 @@ int test_parse_basic_and_system() {
     failures += check(req.model == "claude-sonnet-4-5", "model echoed verbatim");
     failures += check(req.max_tokens == 256 && req.max_tokens_set, "max_tokens parsed");
     failures += check(req.messages.size() == 2, "system + user turns");
-    failures += check(req.messages[0].role == "system", "system turn is first");
+    failures += check(req.messages[0].role == ninfer::ChatRole::System, "system turn is first");
     failures += check(req.messages[0].content[0].text == "be terse", "system text carried");
-    failures += check(req.messages[1].role == "user", "user turn follows system");
+    failures += check(req.messages[1].role == ninfer::ChatRole::User, "user turn follows system");
     failures += check(req.messages[1].content[0].text == "hello", "user text carried");
     failures += check(!req.stream, "stream defaults false");
     return failures;
@@ -138,7 +145,7 @@ int test_parse_system_array_and_blocks() {
                            {"content", Json::array({Json{{"type", "text"}, {"text", "x"}},
                                                     Json{{"type", "text"}, {"text", "y"}}})}}})}};
     const GenerationRequest req = parse_messages_request(body, default_limits());
-    failures += check(req.messages[0].role == "system", "system first");
+    failures += check(req.messages[0].role == ninfer::ChatRole::System, "system first");
     failures += check(req.messages[0].content[0].text == "a\nb", "system blocks joined");
     const ninfer::PromptInput prompt = translate(req);
     failures += check(prompt.messages.size() == 2, "flattened system + user");
@@ -146,12 +153,96 @@ int test_parse_system_array_and_blocks() {
     return failures;
 }
 
-// Regression: Claude Code (v2.1.x) injects "system reminders" as system-role
-// messages inside the messages array (in addition to the top-level `system`
-// field). Earlier we rejected those with 400 "message role must be 'user' or
-// 'assistant'". They must instead fold into the single leading system turn so the
-// Qwen template (which drops non-leading system turns) keeps the content.
-int test_system_role_in_messages_placement() {
+int test_cache_control_boundaries() {
+    const Json ephemeral = Json{{"type", "ephemeral"}};
+    const Json body      = {
+        {"model", "m"},
+        {"max_tokens", 16},
+        {"system",
+              Json::array(
+             {Json{{"type", "text"}, {"text", "stable system"}, {"cache_control", ephemeral}},
+                   Json{{"type", "text"}, {"text", "dynamic tail"}}})},
+        {"tools", Json::array({Json{{"name", "inspect"},
+                                         {"input_schema", Json{{"type", "object"}}},
+                                         {"cache_control", ephemeral}}})},
+        {"messages", Json::array({Json{{"role", "user"}, {"content", "hello"}}})},
+    };
+    const GenerationRequest request  = parse_messages_request(body, default_limits());
+    const ninfer::PromptInput prompt = translate(request);
+    int failures = check(request.messages[0].shared_cache_boundaries_after_text_bytes.size() == 1 &&
+                             request.messages[0].shared_cache_boundaries_after_text_bytes[0] ==
+                                 std::string("stable system").size(),
+                         "Anthropic system cache_control boundary was flattened away");
+    failures += check(request.tools.size() == 1 && request.tools[0].cache_boundary_after,
+                      "Anthropic tool cache_control boundary was discarded");
+    failures += check(prompt.context_cache.markers.size() == 1 &&
+                          prompt.context_cache.markers[0].location ==
+                              ninfer::PromptCacheMarkerLocation::LeadingInstructionBoundary &&
+                          prompt.context_cache.markers[0].leading_instruction_bytes ==
+                              std::string("stable system").size(),
+                      "latest Anthropic cache_control boundary did not reach PromptInput");
+
+    Json tool_only      = body;
+    tool_only["system"] = "dynamic system";
+    const ninfer::PromptInput tool_prompt =
+        translate(parse_messages_request(tool_only, default_limits()));
+    failures += check(tool_prompt.context_cache.markers.size() == 1 &&
+                          tool_prompt.context_cache.markers[0].location ==
+                              ninfer::PromptCacheMarkerLocation::ToolBoundary &&
+                          tool_prompt.context_cache.markers[0].after_tool_count == 1,
+                      "Anthropic tool cache_control boundary did not reach PromptInput");
+
+    const Json message_cached = {
+        {"model", "m"},
+        {"max_tokens", 16},
+        {"messages",
+         Json::array({Json{{"role", "user"},
+                           {"content", Json::array({Json{{"type", "text"},
+                                                         {"text", "question"},
+                                                         {"cache_control", ephemeral}}})}},
+                      Json{{"role", "assistant"},
+                           {"content", Json::array({Json{{"type", "text"},
+                                                         {"text", "answer"},
+                                                         {"cache_control", ephemeral}}})}},
+                      Json{{"role", "user"}, {"content", "next"}}})},
+    };
+    const GenerationRequest message_request =
+        parse_messages_request(message_cached, default_limits());
+    const ninfer::PromptInput message_prompt = translate(message_request);
+    failures += check(message_request.messages.size() == 3 &&
+                          message_request.messages[0].private_cache_boundary_after &&
+                          message_request.messages[1].private_cache_boundary_after &&
+                          !message_request.messages[2].private_cache_boundary_after,
+                      "Anthropic message cache_control boundary was discarded during parsing");
+    failures +=
+        check(message_prompt.context_cache.markers.size() == 2 &&
+                  message_prompt.context_cache.markers[0].kind ==
+                      ninfer::PromptCacheMarkerKind::PrivateLongAnchor &&
+                  message_prompt.context_cache.markers[0].location ==
+                      ninfer::PromptCacheMarkerLocation::MessageBoundary &&
+                  message_prompt.context_cache.markers[0].after_message_count == 1 &&
+                  message_prompt.context_cache.markers[1].kind ==
+                      ninfer::PromptCacheMarkerKind::PrivateLongAnchor &&
+                  message_prompt.context_cache.markers[1].location ==
+                      ninfer::PromptCacheMarkerLocation::MessageBoundary &&
+                  message_prompt.context_cache.markers[1].after_message_count == 2,
+              "Anthropic conversation cache_control did not become private message anchors");
+
+    Json unsupported_position = message_cached;
+    unsupported_position["messages"][0]["content"].push_back(
+        Json{{"type", "text"}, {"text", "dynamic tail"}});
+    failures += check(
+        throws_api([&] { (void)parse_messages_request(unsupported_position, default_limits()); }),
+        "non-terminal Anthropic message cache_control was silently approximated");
+
+    Json invalid                          = body;
+    invalid["system"][0]["cache_control"] = Json{{"type", "unknown"}};
+    failures += check(throws_api([&] { (void)parse_messages_request(invalid, default_limits()); }),
+                      "invalid Anthropic cache_control type was accepted");
+    return failures;
+}
+
+int test_ordered_system_messages() {
     int failures    = 0;
     const Json body = {
         {"model", "m"},
@@ -162,22 +253,23 @@ int test_system_role_in_messages_placement() {
                          Json{{"role", "system"}, {"content", "reminder from messages"}},
                      })}};
     const GenerationRequest req = parse_messages_request(body, default_limits());
-    // The top-level system value stays the single leading system turn. A
-    // system-role message that arrives after the conversation has started must
-    // keep its position: folding it into the leading block rewrites the head of
-    // the prompt on every request and defeats prefix reuse (Claude Code appends
-    // a fresh reminder like this on every turn).
-    failures += check(req.messages.size() == 3, "leading system, user, in-place reminder");
-    failures += check(req.messages[0].role == "system" &&
+    failures += check(req.messages.size() == 3, "top-level, user, and dynamic system kept");
+    failures += check(req.messages[0].role == ninfer::ChatRole::System &&
                           req.messages[0].content[0].text == "top-level system",
-                      "top-level system leads");
-    failures += check(req.messages[1].role == "user" && req.messages[1].content[0].text == "hello",
-                      "user turn preserved");
-    failures += check(req.messages[2].role == "system" &&
+                      "top-level system was not preserved independently");
+    failures += check(req.messages[1].role == ninfer::ChatRole::User &&
+                          req.messages[1].content[0].text == "hello",
+                      "user turn moved around dynamic system");
+    failures += check(req.messages[2].role == ninfer::ChatRole::System &&
                           req.messages[2].content[0].text == "reminder from messages",
-                      "in-array reminder stays in place");
+                      "dynamic system was not preserved at its message-array position");
+    const ninfer::PromptInput prompt = translate(req);
+    failures +=
+        check(prompt.messages.size() == 3 && prompt.messages[0].role == ninfer::ChatRole::System &&
+                  prompt.messages[1].role == ninfer::ChatRole::User &&
+                  prompt.messages[2].role == ninfer::ChatRole::System,
+              "translation reordered or lowered Anthropic system turns");
 
-    // Array-of-text-blocks content, no top-level system.
     const Json blocks_body = {
         {"model", "m"},
         {"max_tokens", 16},
@@ -187,25 +279,101 @@ int test_system_role_in_messages_placement() {
                               {"content", Json::array({Json{{"type", "text"}, {"text", "r"}}})}},
                      })}};
     const GenerationRequest breq = parse_messages_request(blocks_body, default_limits());
-    failures += check(breq.messages.size() == 2 && breq.messages[0].role == "user" &&
-                          breq.messages[1].role == "system" &&
-                          breq.messages[1].content[0].text == "r",
-                      "block-content reminder stays in place");
+    failures +=
+        check(breq.messages.size() == 2 && breq.messages[0].role == ninfer::ChatRole::User &&
+                  breq.messages[1].role == ninfer::ChatRole::System &&
+                  breq.messages[1].content[0].text == "r",
+              "array-valued dynamic system did not retain its position");
 
-    // System-role messages before the first user/assistant turn still fold.
-    const Json lead_body = {
+    const Json consecutive = {
         {"model", "m"},
         {"max_tokens", 16},
-        {"messages", Json::array({
-                         Json{{"role", "system"}, {"content", "a"}},
-                         Json{{"role", "system"}, {"content", "b"}},
-                         Json{{"role", "user"}, {"content", "hi"}},
-                     })}};
-    const GenerationRequest lreq = parse_messages_request(lead_body, default_limits());
-    failures += check(lreq.messages.size() == 2 && lreq.messages[0].role == "system" &&
-                          lreq.messages[0].content[0].text == "a\nb" &&
-                          lreq.messages[1].role == "user",
-                      "leading in-array system messages fold in order");
+        {"messages", Json::array({Json{{"role", "user"}, {"content", "hi"}},
+                                  Json{{"role", "system"}, {"content", "first"}},
+                                  Json{{"role", "system"}, {"content", "second"}},
+                                  Json{{"role", "assistant"}, {"content", "answer"}}})}};
+    const GenerationRequest creq = parse_messages_request(consecutive, default_limits());
+    failures +=
+        check(creq.messages.size() == 4 && creq.messages[1].role == ninfer::ChatRole::System &&
+                  creq.messages[1].content[0].text == "first" &&
+                  creq.messages[2].role == ninfer::ChatRole::System &&
+                  creq.messages[2].content[0].text == "second",
+              "consecutive dynamic system turns were merged or reordered");
+
+    const Json leading = {{"model", "m"},
+                          {"max_tokens", 16},
+                          {"messages", Json::array({Json{{"role", "system"}, {"content", "bad"}},
+                                                    Json{{"role", "user"}, {"content", "hi"}}})}};
+    failures += check(api_code([&] { (void)parse_messages_request(leading, default_limits()); }) ==
+                          "invalid_message_order",
+                      "leading array system was not rejected by the Anthropic schema");
+
+    const Json followed_by_user = {
+        {"model", "m"},
+        {"max_tokens", 16},
+        {"messages", Json::array({Json{{"role", "user"}, {"content", "first"}},
+                                  Json{{"role", "system"}, {"content", "bad"}},
+                                  Json{{"role", "user"}, {"content", "second"}}})}};
+    failures += check(api_code([&] {
+                          (void)parse_messages_request(followed_by_user, default_limits());
+                      }) == "invalid_message_order",
+                      "system section followed by user was not rejected by the Anthropic schema");
+
+    const Json tool_use          = Json{{"role", "assistant"},
+                                        {"content", Json::array({Json{{"type", "tool_use"},
+                                                                      {"id", "toolu_1"},
+                                                                      {"name", "inspect"},
+                                                                      {"input", Json::object()}}})}};
+    const Json tool_result       = Json{{"role", "user"},
+                                        {"content", Json::array({Json{{"type", "tool_result"},
+                                                                      {"tool_use_id", "toolu_1"},
+                                                                      {"content", "done"}}})}};
+    const Json after_tool_result = {
+        {"model", "m"},
+        {"max_tokens", 16},
+        {"messages",
+         Json::array({Json{{"role", "user"}, {"content", "inspect"}}, tool_use, tool_result,
+                      Json{{"role", "system"}, {"content", "diagnostics"}}})}};
+    const GenerationRequest tool_req = parse_messages_request(after_tool_result, default_limits());
+    failures += check(tool_req.messages.size() == 4 &&
+                          tool_req.messages[0].role == ninfer::ChatRole::User &&
+                          tool_req.messages[1].role == ninfer::ChatRole::Assistant &&
+                          tool_req.messages[2].role == ninfer::ChatRole::Tool &&
+                          tool_req.messages[3].role == ninfer::ChatRole::System,
+                      "system after tool_result did not retain the expected semantic position");
+
+    const Json interrupted_tool_pair = {
+        {"model", "m"},
+        {"max_tokens", 16},
+        {"messages", Json::array({Json{{"role", "user"}, {"content", "inspect"}}, tool_use,
+                                  Json{{"role", "system"}, {"content", "bad"}}, tool_result})}};
+    failures += check(api_code([&] {
+                          (void)parse_messages_request(interrupted_tool_pair, default_limits());
+                      }) == "invalid_message_order",
+                      "system interrupting tool_use/tool_result was not rejected");
+    return failures;
+}
+
+int test_user_content_block_order() {
+    const Json body = {
+        {"model", "m"},
+        {"max_tokens", 16},
+        {"messages", Json::array({Json{
+                         {"role", "user"},
+                         {"content", Json::array({Json{{"type", "text"}, {"text", "before"}},
+                                                  Json{{"type", "tool_result"},
+                                                       {"tool_use_id", "toolu_1"},
+                                                       {"content", "result"}},
+                                                  Json{{"type", "text"}, {"text", "after"}}})}}})}};
+    const GenerationRequest req = parse_messages_request(body, default_limits());
+    int failures = check(req.messages.size() == 3, "mixed user content did not expand in place");
+    failures += check(req.messages[0].role == ninfer::ChatRole::User &&
+                          req.messages[0].content[0].text == "before" &&
+                          req.messages[1].role == ninfer::ChatRole::Tool &&
+                          req.messages[1].content[0].text == "result" &&
+                          req.messages[2].role == ninfer::ChatRole::User &&
+                          req.messages[2].content[0].text == "after",
+                      "tool_result expansion reordered surrounding user blocks");
     return failures;
 }
 
@@ -285,7 +453,7 @@ int test_tools_and_choice() {
     failures += check(req.tools[0].name == "get_weather", "tool name parsed");
     failures += check(req.tool_choice.mode == ToolChoiceMode::Auto, "auto -> Auto");
     failures += check(req.uses_tools(), "uses_tools true");
-    failures += check(to_request_options(req, default_server()).output.preserve_special_tokens,
+    failures += check(translate_options(req).output.preserve_special_tokens,
                       "active tools preserve special tokens in Engine output");
     // definition_json must be a normalized OpenAI function-tool object for the
     // Qwen <tools> renderer.
@@ -375,14 +543,14 @@ int test_tool_use_result_roundtrip() {
     const GenerationRequest req = parse_messages_request(body, default_limits());
     // user, assistant, tool
     failures += check(req.messages.size() == 3, "user + assistant + tool turns");
-    failures += check(req.messages[1].role == "assistant", "assistant turn");
+    failures += check(req.messages[1].role == ninfer::ChatRole::Assistant, "assistant turn");
     failures += check(req.messages[1].tool_calls.size() == 1, "assistant tool_call parsed");
     failures += check(req.messages[1].tool_calls[0].id == "toolu_1", "tool_use id carried");
     failures += check(req.messages[1].tool_calls[0].name == "get_weather", "tool_use name carried");
     const Json args = Json::parse(req.messages[1].tool_calls[0].arguments_json);
     failures += check(args.at("city") == "Paris", "tool_use input stringified to arguments");
     failures += check(req.messages[1].content[0].text == "let me check", "assistant text carried");
-    failures += check(req.messages[2].role == "tool", "tool_result -> tool turn");
+    failures += check(req.messages[2].role == ninfer::ChatRole::Tool, "tool_result -> tool turn");
     failures += check(req.messages[2].tool_call_id == "toolu_1", "tool_result tool_use_id carried");
     failures += check(req.messages[2].content[0].text == "sunny", "tool_result text carried");
     failures += check(req.messages[2].content.size() == 2 &&
@@ -417,9 +585,11 @@ int test_thinking_and_sampling() {
     failures += check(req.enable_thinking.has_value() && *req.enable_thinking, "thinking enabled");
     failures += check(!req.preserve_thinking.has_value(),
                       "Anthropic thinking.type unexpectedly enabled history preservation");
-    const ninfer::RequestOptions options = to_request_options(req, default_server());
+    const ninfer::RequestOptions options = translate_options(req);
     failures +=
         check(options.execution.requested_output_tokens == 8, "max_tokens reaches Engine options");
+    failures += check(!options.execution.thinking.budget,
+                      "Anthropic budget_tokens unexpectedly became a request-level thinking cap");
     failures += check(options.execution.sampling.temperature == 0.3F &&
                           options.execution.sampling.top_p == 0.8F &&
                           options.execution.sampling.top_k == 40 &&
@@ -673,7 +843,9 @@ int main() {
     int failures = 0;
     failures += test_parse_basic_and_system();
     failures += test_parse_system_array_and_blocks();
-    failures += test_system_role_in_messages_placement();
+    failures += test_cache_control_boundaries();
+    failures += test_ordered_system_messages();
+    failures += test_user_content_block_order();
     failures += test_missing_and_bad_fields();
     failures += test_parse_image();
     failures += test_tools_and_choice();
