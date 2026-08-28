@@ -237,15 +237,19 @@ struct PrefillWork {
     result.tokens                       = suffix_tokens;
     result.vision_items                 = vision_items;
     result.vision_patches               = vision_patches;
-    const unsigned __int128 suffix      = suffix_tokens;
-    const unsigned __int128 linear      = static_cast<unsigned __int128>(prefix_tokens) * suffix;
-    const unsigned __int128 triangular  = suffix * (suffix + 1U) / 2U;
-    constexpr unsigned __int128 maximum = ~static_cast<unsigned __int128>(0);
-    const unsigned __int128 attention =
-        triangular > maximum - linear ? maximum : linear + triangular;
-    result.attention_pairs = attention > std::numeric_limits<std::uint64_t>::max()
-                                 ? std::numeric_limits<std::uint64_t>::max()
-                                 : static_cast<std::uint64_t>(attention);
+    constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+    const auto saturating_product = [maximum](std::uint64_t left, std::uint64_t right) constexpr {
+        return left != 0 && right > maximum / left ? maximum : left * right;
+    };
+    const auto saturating_add = [maximum](std::uint64_t left, std::uint64_t right) constexpr {
+        return right > maximum - left ? maximum : left + right;
+    };
+    const std::uint64_t linear = saturating_product(prefix_tokens, suffix_tokens);
+    // Divide the even factor before multiplying so n*(n + 1)/2 is exact without a 128-bit type.
+    const std::uint64_t triangular = (suffix_tokens & 1U) == 0
+                                         ? saturating_product(suffix_tokens / 2U, suffix_tokens + 1U)
+                                         : saturating_product(suffix_tokens, suffix_tokens / 2U + 1U);
+    result.attention_pairs = saturating_add(linear, triangular);
     return result;
 }
 

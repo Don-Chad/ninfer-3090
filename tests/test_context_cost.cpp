@@ -13,13 +13,25 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 
 namespace {
 
 using Json = nlohmann::json;
 
 int failures = 0;
+
+long long current_process_id() noexcept {
+#ifdef _WIN32
+    return static_cast<long long>(::_getpid());
+#else
+    return static_cast<long long>(::getpid());
+#endif
+}
 
 void expect(bool condition, const char* message) {
     if (condition) { return; }
@@ -241,7 +253,7 @@ void test_schema_validation() {
 void test_resolution_and_atomic_upserts() {
     const std::filesystem::path directory =
         std::filesystem::temp_directory_path() /
-        ("ninfer-context-cost-test-" + std::to_string(static_cast<long long>(::getpid())));
+        ("ninfer-context-cost-test-" + std::to_string(current_process_id()));
     std::filesystem::create_directories(directory);
     const std::filesystem::path path = directory / "presets.json";
     try {
