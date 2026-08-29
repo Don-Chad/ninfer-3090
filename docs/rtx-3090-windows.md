@@ -91,9 +91,19 @@ top-level field `"reasoning_effort": "xhigh"`; Responses uses
 `--reasoning-effort low|medium|xhigh`.
 
 The paged cache supports BF16, INT8, and experimental opt-in `rk8v4` storage. INT8 remains the
-recommended default. On the development RTX 3090, `rk8v4` raised the measured C1 automatic-sizing
-boundary from 171,648 to 226,560 tokens with MTP and CUDA Graphs disabled and 1 GiB headroom, but a
-matched hard-output test was not quality-equivalent. Use it only after validating your workload.
+recommended default. On the development RTX 3090, `rk8v4` raises the measured automatic-sizing
+boundary from 171,648 to 226,560 tokens at 1 GiB headroom, in the same 5.40 GiB of KV.
+
+Since the port onto the `kv_cache_append` Op, that context gain has a measured quality cost of
+**+0.146% perplexity** (`ninfer-perplexity`, `ninfer-ppl-1m-v1` quick, 261,167 scored tokens:
+4.343263 on INT8 against 4.349587 on rk8v4). Values are no longer rotated, so there is no
+inverse-rotation pass over the attention output.
+
+Decode cost depends on speculation. Without it the packed value plane is within about 1% of INT8,
+because halved value traffic and the added unpack nearly cancel. With MTP3, end-to-end C1 decode
+falls about 6% (80.54 to 75.74 tok/s) because the lower value precision reduces draft acceptance
+from 71.3% to 64.9%. Prefer `rk8v4` when context is the binding constraint, and INT8 when decode
+throughput under speculation matters more.
 
 ## Measured 35B capacity
 

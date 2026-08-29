@@ -12,14 +12,12 @@ and feature requests are not guaranteed.
 
 
 On an RTX 3090, Qwen3.8-27B supports a measured **171K-token INT8 context** with the standard
-1 GiB safety headroom.
+1 GiB safety headroom, or **226K tokens** with the opt-in RotorQuant `rk8v4` profile.
 
-> **RotorQuant `rk8v4` is temporarily unavailable.** Upstream moved KV quantization out of the
-> fused GQA attention kernels into a dedicated `kv_cache_append` Op whose contract defines K
-> rotation as H256 and V as unrotated BF16. The rk8v4 int4-V representation has not been ported
-> to that contract yet, so `--kv-dtype rk8v4` is rejected at startup. The previously published
-> 226K/248K RotorQuant context figures do not apply to this build. INT8 remains the default and
-> recommended quantized profile.
+> **RotorQuant `rk8v4` is available again**, ported onto the `kv_cache_append` Op that now owns KV
+> quantization. `--kv-dtype rk8v4` reaches a measured **226,560-token context** in the same 5.40 GiB
+> of KV the INT8 profile spends on 171,648 tokens, for **+0.146% perplexity**. It is opt-in; INT8
+> remains the default and the quality-default profile.
 
 This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 and FP8 A8 tensor-core execution are
 unavailable. FP8 and NVFP4 *weights* are admitted through their A16 dequantizing routes, but the
@@ -107,21 +105,36 @@ batching accelerates decode, but does not multiply prompt ingestion. Consequentl
 844-862 input tok/s while queued requests increase mean TTFT. `Active-prefill speed` excludes queue
 waiting and measures only the server's recorded prefill phase.
 
-### RotorQuant KV (`rk8v4`) — currently unavailable
+### RotorQuant KV (`rk8v4`)
 
-`rk8v4` was an experimental, opt-in KV-cache mode for Qwen3.8-27B that applied a normalized
-transform to queries and keys, rotated values before four-bit storage, and reversed the value
-transform after attention.
+`rk8v4` is an experimental, opt-in KV-cache mode for Qwen3.8-27B: keys keep the rotated INT8
+group-64 encoding, and values are stored as signed 4-bit codes, two per byte, with the group-64
+scale plane unchanged. It buys context, not speed.
 
-It is **not available in this build**. Upstream now owns KV quantization in a dedicated
-`kv_cache_append` Op, whose published numerical contract rotates K with a normalized H256
-transform and stores V from unrotated BF16 source values. rk8v4's H64 rotation and int4-V
-representation have no implementation against that contract yet, so `--kv-dtype rk8v4` parses but
-is rejected during engine construction rather than silently degrading to INT8.
+Unlike the pre-merge implementation, **values are not rotated**. The old code applied an H64
+rotation to both K and V and undid the value rotation with a separate pass over the attention
+output. Upstream's `kv_cache_append` contract stores values from the represented BF16 source
+directly, and measurement showed that is sufficient, so this port keeps it: there is no
+inverse-rotation kernel and no extra pass over the output.
 
-Porting RotorQuant onto the new Op is tracked as follow-up work. Until then the previously
-published 226,560-token and 247,872-token RotorQuant context measurements do not describe this
-build. Use `--kv-dtype int8`, which reaches 171,648 tokens at the 1 GiB headroom boundary.
+| KV profile | Context at 5.40 GiB of KV | KV bytes at 2,048 tokens | Perplexity |
+|---|---:|---:|---:|
+| `bf16` | — | 128.00 MiB | 4.343225 |
+| `int8` | 171,648 tokens | 66.00 MiB | 4.343263 |
+| `rk8v4` | **226,560 tokens** | **50.00 MiB** | 4.349587 |
+
+Perplexity is `ninfer-perplexity` on the fixed `ninfer-ppl-1m-v1` corpus, `--quick`, context/stride
+4096/2048, 261,167 scored tokens. **32% more context costs 0.146% perplexity.**
+
+Decode cost depends on whether you speculate. The packed value plane halves value traffic but adds
+an unpack, and those very nearly cancel: without speculation, decode measured 39.07 tok/s on INT8
+against 38.91 on rk8v4, and C1 prefill 995.1 against 986.3 tok/s, both within about 1%. With MTP3
+the end-to-end C1 figure falls about 6%, from 80.54 to 75.74 tok/s, because slightly lower value
+precision reduces draft acceptance from 71.3% to 64.9%. That is an accuracy effect on speculation
+rather than a slower kernel.
+
+Use `rk8v4` when context is the binding constraint. Use `--kv-dtype int8`, which reaches 171,648
+tokens at the 1 GiB headroom boundary, when decode throughput under speculation matters more.
 
 ### Qwen3.8 vision
 
@@ -282,8 +295,9 @@ a 24 GB card and the server can reuse fast CUDA Graphs instead of rebuilding wor
 - Tool calls are returned to the client but are not executed by NInfer.
 - NVFP4 A4, FP8 A8, and TMA kernels require Blackwell and are unavailable on SM86. FP8 and NVFP4
   weights are admitted through their A16 dequantizing routes.
-- The paged runtime exposes BF16 and INT8 group-64 KV; INT8 remains the quality-default path.
-  Upstream's row-scaled FP8 E4M3 KV profile and `rk8v4` both parse but are rejected on SM86.
+- The paged runtime exposes BF16, INT8 group-64 and RotorQuant `rk8v4` KV; INT8 remains the
+  quality-default path and `rk8v4` is opt-in. Upstream's row-scaled FP8 E4M3 KV profile parses but
+  is rejected on SM86, because its causal-attention kernels are Blackwell-only.
 
 ## Validation
 
