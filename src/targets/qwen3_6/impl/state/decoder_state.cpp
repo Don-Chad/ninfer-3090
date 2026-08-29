@@ -51,7 +51,10 @@ PagedKVCacheLayout plan_cache(LayoutBuilder& builder, std::uint32_t layers, std:
                                    packed_values ? head_dim / 2 : head_dim, kv_heads, 256});
         if (scaled) {
             geometry.planes.push_back({DType::FP16, head_dim / quant_group, kv_heads, 256});
-            geometry.planes.push_back({DType::FP16, head_dim / quant_group, kv_heads, 256});
+            // Packed int4 values use a 32-value group, so their scale plane is twice as wide.
+            geometry.planes.push_back(
+                {DType::FP16, packed_values ? head_dim / 32 : head_dim / quant_group, kv_heads,
+                 256});
         }
     }
     return PagedKVCacheLayout{

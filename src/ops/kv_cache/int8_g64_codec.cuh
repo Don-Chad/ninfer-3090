@@ -73,6 +73,20 @@ __device__ __forceinline__ std::int8_t kv_cache_int8_quant_code(float x, float i
 // signed 4-bit code can represent.
 inline constexpr int kKVCacheInt4Max = 7;
 
+// Values use a finer group than keys. Four-bit codes resolve a group to 15 levels, so the group
+// absmax sets the step for every member and one outlier costs the whole group precision. Halving
+// the group to 32 halves the number of values a single outlier can degrade, at the price of four
+// extra FP16 scales per row.
+inline constexpr int kKVCacheInt4ValueGroup  = 32;
+inline constexpr int kKVCacheInt4ValueGroups = kKVCacheInt8HeadDim / kKVCacheInt4ValueGroup;
+
+template <typename Geometry>
+__device__ __forceinline__ std::int64_t
+kv_cache_int4_value_scale_index(int physical_page, int kv_head, int group, int page_offset) {
+    return paged_kv_element_offset<kKVCacheInt4ValueGroups, Geometry::KVHeads>(
+        physical_page, kv_head, page_offset, group);
+}
+
 template <typename Geometry>
 __device__ __forceinline__ std::int64_t
 kv_cache_int4_value_code_index(int physical_page, int kv_head, int packed_d, int page_offset) {

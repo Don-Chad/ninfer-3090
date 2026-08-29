@@ -225,28 +225,31 @@ void encode_full_group(const std::vector<float>& source, std::size_t source_base
         scale_bits;
 }
 
-// Independent CPU oracle for the rk8v4 value coding: FP16-RNE(absmax/7) group scale, RNE-even
-// codes clamped to +-7, and two codes per byte with dimension d in the low nibble of byte d/2 when
-// d is even and the high nibble when d is odd.
+// Independent CPU oracle for the rk8v4 value coding: FP16-RNE(absmax/7) scale over a 32-value
+// group, RNE-even codes clamped to +-7, and two codes per byte with dimension d in the low nibble
+// of byte d/2 when d is even and the high nibble when d is odd.
+constexpr int kFullValueGroup  = 32;
+constexpr int kFullValueGroups = kFullHeadDim / kFullValueGroup;
+
 void encode_full_group_i4(const std::vector<float>& source, std::size_t source_base,
                           std::vector<std::uint8_t>& packed, int head, int position,
                           int physical_page, int group, int kv_heads,
                           std::vector<std::uint16_t>& scales) {
     float absmax = 0.0f;
-    for (int i = 0; i < kFullGroup; ++i) {
+    for (int i = 0; i < kFullValueGroup; ++i) {
         absmax = std::max(absmax, std::abs(source[source_base + static_cast<std::size_t>(i)]));
     }
     const std::uint16_t scale_bits = f32_to_f16_bits(absmax / 7.0f);
     const float scale              = f16_bits_to_f32(scale_bits);
     const float inverse            = scale == 0.0f ? 0.0f : 1.0f / scale;
-    for (int i = 0; i < kFullGroup; ++i) {
+    for (int i = 0; i < kFullValueGroup; ++i) {
         const int code =
             scale == 0.0f
                 ? 0
                 : std::clamp(round_even_to_i32(source[source_base + static_cast<std::size_t>(i)] *
                                                inverse),
                              -7, 7);
-        const int d       = group * kFullGroup + i;
+        const int d       = group * kFullValueGroup + i;
         const auto target =
             full_cache_index(kFullHeadDim / 2, d / 2, head, position, physical_page, kv_heads);
         const auto nibble = static_cast<std::uint8_t>(static_cast<unsigned>(code) & 0x0fu);
@@ -256,7 +259,7 @@ void encode_full_group_i4(const std::vector<float>& source, std::size_t source_b
             packed[target] = static_cast<std::uint8_t>((packed[target] & 0x0fu) | (nibble << 4));
         }
     }
-    scales[full_cache_index(kFullGroups, group, head, position, physical_page, kv_heads)] =
+    scales[full_cache_index(kFullValueGroups, group, head, position, physical_page, kv_heads)] =
         scale_bits;
 }
 
@@ -299,6 +302,9 @@ int full_append_case_rk8v4(int kv_heads, int tokens = 3) {
     const std::size_t scale_count  = static_cast<std::size_t>(kFullGroups) * kPage *
                                     static_cast<std::size_t>(kv_heads) *
                                     static_cast<std::size_t>(physical_pages);
+    const std::size_t value_scale_count = static_cast<std::size_t>(kFullValueGroups) * kPage *
+                                          static_cast<std::size_t>(kv_heads) *
+                                          static_cast<std::size_t>(physical_pages);
 
     DeviceBuffer d_k         = to_device(input_k);
     DeviceBuffer d_v         = to_device(input_v);
@@ -311,12 +317,12 @@ int full_append_case_rk8v4(int kv_heads, int tokens = 3) {
     GuardedDeviceBuffer cache_k(code_count);
     GuardedDeviceBuffer cache_v(packed_count);
     GuardedDeviceBuffer scale_k(scale_count * sizeof(std::uint16_t));
-    GuardedDeviceBuffer scale_v(scale_count * sizeof(std::uint16_t));
+    GuardedDeviceBuffer scale_v(value_scale_count * sizeof(std::uint16_t));
 
     std::vector<std::int8_t> initial_k(code_count, static_cast<std::int8_t>(0x55));
     std::vector<std::uint8_t> expected_v(packed_count, 0xa5U);
     auto expected_scale_k = patterned_bits(scale_count, 0x01234567u);
-    auto expected_scale_v = patterned_bits(scale_count, 0x89abcdefu);
+    auto expected_scale_v = patterned_bits(value_scale_count, 0x89abcdefu);
     cache_k.copy_from_host(initial_k.data(), initial_k.size());
     cache_v.copy_from_host(expected_v.data(), expected_v.size());
     scale_k.copy_from_host(expected_scale_k.data(),
@@ -331,8 +337,8 @@ int full_append_case_rk8v4(int kv_heads, int tokens = 3) {
                           {kFullHeadDim / 2, kPage, kv_heads, physical_pages}),
         .k_scale_pages =
             Tensor(scale_k.data(), DType::FP16, {kFullGroups, kPage, kv_heads, physical_pages}),
-        .v_scale_pages =
-            Tensor(scale_v.data(), DType::FP16, {kFullGroups, kPage, kv_heads, physical_pages}),
+        .v_scale_pages = Tensor(scale_v.data(), DType::FP16,
+                                {kFullValueGroups, kPage, kv_heads, physical_pages}),
         .block_table  = Tensor(d_mapping.p, DType::I32, {logical_pages}),
         .head_dim     = kFullHeadDim,
         .num_kv_heads = kv_heads,
@@ -344,8 +350,9 @@ int full_append_case_rk8v4(int kv_heads, int tokens = 3) {
         const int position = positions[static_cast<std::size_t>(token)];
         const int page     = mapping[static_cast<std::size_t>(position / kPage)];
         for (int head = 0; head < kv_heads; ++head) {
-            for (int group = 0; group < kFullGroups; ++group) {
-                const auto source = full_input_index(group * kFullGroup, head, token, kv_heads);
+            for (int group = 0; group < kFullValueGroups; ++group) {
+                const auto source =
+                    full_input_index(group * kFullValueGroup, head, token, kv_heads);
                 encode_full_group_i4(host_v, source, expected_v, head, position, page, group,
                                      kv_heads, expected_scale_v);
             }
@@ -362,7 +369,7 @@ int full_append_case_rk8v4(int kv_heads, int tokens = 3) {
     failures += verify_exact((label + " v codes").c_str(),
                              from_device<std::uint8_t>(cache_v.data(), packed_count), expected_v);
     failures += verify_exact((label + " v scales").c_str(),
-                             from_device<std::uint16_t>(scale_v.data(), scale_count),
+                             from_device<std::uint16_t>(scale_v.data(), value_scale_count),
                              expected_scale_v);
     failures += cache_k.verify_guards((label + " k guards").c_str());
     failures += cache_v.verify_guards((label + " v guards").c_str());

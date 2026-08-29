@@ -95,7 +95,8 @@ std::uint32_t validate_cache(const PagedKVLayerView& cache, std::int32_t kv_head
     }
     require_shape(cache.k_scale_pages, profile.scale_leading_extent, kPagedKVPageSize, kv_heads,
                   physical_pages, op, "cache k scale pages");
-    require_shape(cache.v_scale_pages, profile.scale_leading_extent, kPagedKVPageSize, kv_heads,
+    require_shape(cache.v_scale_pages, profile.value_scale_leading_extent, kPagedKVPageSize,
+                  kv_heads,
                   physical_pages, op, "cache v scale pages");
     require_contiguous_nonnull(cache.k_scale_pages, op, "cache k scale pages");
     require_contiguous_nonnull(cache.v_scale_pages, op, "cache v scale pages");
@@ -152,7 +153,8 @@ std::uint32_t validate_batch_cache(const PagedKVBatchLayerView& cache, std::int3
     }
     require_shape(cache.k_scale_pages, profile.scale_leading_extent, kPagedKVPageSize, kv_heads,
                   physical_pages, op, "cache k scale pages");
-    require_shape(cache.v_scale_pages, profile.scale_leading_extent, kPagedKVPageSize, kv_heads,
+    require_shape(cache.v_scale_pages, profile.value_scale_leading_extent, kPagedKVPageSize,
+                  kv_heads,
                   physical_pages, op, "cache v scale pages");
     require_contiguous_nonnull(cache.k_scale_pages, op, "cache k scale pages");
     require_contiguous_nonnull(cache.v_scale_pages, op, "cache v scale pages");

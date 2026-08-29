@@ -15,8 +15,8 @@ On an RTX 3090, Qwen3.8-27B supports a measured **171K-token INT8 context** with
 1 GiB safety headroom, or **226K tokens** with the opt-in RotorQuant `rk8v4` profile.
 
 > **RotorQuant `rk8v4` is available again**, ported onto the `kv_cache_append` Op that now owns KV
-> quantization. `--kv-dtype rk8v4` reaches a measured **226,560-token context** in the same 5.40 GiB
-> of KV the INT8 profile spends on 171,648 tokens, for **+0.146% perplexity**. It is opt-in; INT8
+> quantization. `--kv-dtype rk8v4` reaches a measured **226,560-token context** in about the same
+> KV the INT8 profile spends on 171,648 tokens, for **+0.082% perplexity**. It is opt-in; INT8
 > remains the default and the quality-default profile.
 
 This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 and FP8 A8 tensor-core execution are
@@ -108,8 +108,13 @@ waiting and measures only the server's recorded prefill phase.
 ### RotorQuant KV (`rk8v4`)
 
 `rk8v4` is an experimental, opt-in KV-cache mode for Qwen3.8-27B: keys keep the rotated INT8
-group-64 encoding, and values are stored as signed 4-bit codes, two per byte, with the group-64
-scale plane unchanged. It buys context, not speed.
+group-64 encoding, and values are stored as signed 4-bit codes, two per byte, over a **group-32**
+scale. It buys context, not speed.
+
+Values use a finer group than keys because four bits resolve a group to only 15 levels, so a single
+outlier would otherwise set the quantization step for 64 neighbours. Halving the value group to 32
+costs one extra FP16 scale per 64 dimensions and **halves the perplexity penalty**, from +0.146% to
++0.082%, without costing any context at the automatic-sizing boundary.
 
 Unlike the pre-merge implementation, **values are not rotated**. The old code applied an H64
 rotation to both K and V and undid the value rotation with a separate pass over the attention
@@ -117,21 +122,24 @@ output. Upstream's `kv_cache_append` contract stores values from the represented
 directly, and measurement showed that is sufficient, so this port keeps it: there is no
 inverse-rotation kernel and no extra pass over the output.
 
-| KV profile | Context at 5.40 GiB of KV | KV bytes at 2,048 tokens | Perplexity |
+| KV profile | Automatic-sizing context | KV bytes at 2,048 tokens | Perplexity |
 |---|---:|---:|---:|
 | `bf16` | — | 128.00 MiB | 4.343225 |
 | `int8` | 171,648 tokens | 66.00 MiB | 4.343263 |
-| `rk8v4` | **226,560 tokens** | **50.00 MiB** | 4.349587 |
+| `rk8v4` | **226,560 tokens** | **51.00 MiB** | 4.346811 |
 
 Perplexity is `ninfer-perplexity` on the fixed `ninfer-ppl-1m-v1` corpus, `--quick`, context/stride
-4096/2048, 261,167 scored tokens. **32% more context costs 0.146% perplexity.**
+4096/2048, 261,167 scored tokens. **32% more context costs 0.082% perplexity.** INT8 spends
+5.40 GiB of KV on its 171,648 tokens; rk8v4 spends 5.51 GiB on 226,560.
 
 Decode cost depends on whether you speculate. The packed value plane halves value traffic but adds
 an unpack, and those very nearly cancel: without speculation, decode measured 39.07 tok/s on INT8
-against 38.91 on rk8v4, and C1 prefill 995.1 against 986.3 tok/s, both within about 1%. With MTP3
-the end-to-end C1 figure falls about 6%, from 80.54 to 75.74 tok/s, because slightly lower value
-precision reduces draft acceptance from 71.3% to 64.9%. That is an accuracy effect on speculation
-rather than a slower kernel.
+against 38.91 on rk8v4, and C1 prefill within about 1%. With MTP3, C1 decode falls about 5%, from a
+mean 81.61 tok/s across three runs to 77.39, because lower value precision reduces draft acceptance
+from 71.27% to 65.86%. That is an accuracy effect on speculation rather than a slower kernel, and it
+is the part the finer value group does **not** fix: group-32 recovers 44% of the perplexity penalty
+but only about 15% of the acceptance loss, because acceptance turns on exact token agreement rather
+than on mean error.
 
 Use `rk8v4` when context is the binding constraint. Use `--kv-dtype int8`, which reaches 171,648
 tokens at the 1 GiB headroom boundary, when decode throughput under speculation matters more.

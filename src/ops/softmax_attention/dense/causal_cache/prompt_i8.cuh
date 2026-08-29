@@ -35,8 +35,14 @@ inline constexpr int kCausalPromptI8VStageBytes =
     kCausalPromptI8Bc * kCausalPromptHeadDim * static_cast<int>(sizeof(__half));
 inline constexpr int kCausalPromptI8PBytes =
     kCausalPromptI8Br * kCausalPromptI8Bc * static_cast<int>(sizeof(__half));
+inline constexpr int kCausalPromptI8VGroups =
+    kCausalPromptHeadDim / kKVCacheInt4ValueGroup;
+// Key scale rows plus value scale rows. Value rows are always the wider packed-int4 stride so
+// both codings share one arena layout; INT8 uses the leading kCausalPromptI8Groups entries. The
+//512 extra bytes do not change occupancy, which is one CTA per SM either way.
 inline constexpr int kCausalPromptI8ScaleBytes =
-    2 * kCausalPromptI8Bc * kCausalPromptI8Groups * static_cast<int>(sizeof(__half));
+    kCausalPromptI8Bc * (kCausalPromptI8Groups + kCausalPromptI8VGroups) *
+    static_cast<int>(sizeof(__half));
 inline constexpr int kCausalPromptI8StatsBytes =
     2 * kCausalPromptI8Br * static_cast<int>(sizeof(float));
 inline constexpr int kCausalPromptI8SmemBytes =
@@ -46,7 +52,7 @@ inline constexpr int kCausalPromptI8SmemBytes =
 
 static_assert(kCausalPromptI8Groups == 4);
 static_assert(kCausalPromptI8DConsumers == 4);
-static_assert(kCausalPromptI8SmemBytes == 92672);
+static_assert(kCausalPromptI8SmemBytes == 93184);
 
 __device__ __forceinline__ void causal_prompt_i8_store_swz(std::int8_t* tile, int row, int d,
                                                            std::int8_t code) {
@@ -139,7 +145,8 @@ __global__ __maxnreg__(120) void causal_attention_prompt_i8_kernel(
     __half* k_scale_s =
         reinterpret_cast<__half*>(reinterpret_cast<unsigned char*>(p_s) + kCausalPromptI8PBytes);
     __half* v_scale_s    = k_scale_s + Bc * Groups;
-    float* alpha_s       = reinterpret_cast<float*>(v_scale_s + Bc * Groups);
+    constexpr int VGroups = kCausalPromptI8VGroups;
+    float* alpha_s       = reinterpret_cast<float*>(v_scale_s + Bc * VGroups);
     float* final_l_s     = alpha_s + Br;
     __nv_bfloat16* q_b16 = reinterpret_cast<__nv_bfloat16*>(q_i8);
     __nv_bfloat16* k_b16 = reinterpret_cast<__nv_bfloat16*>(k_i8);
@@ -201,15 +208,25 @@ __global__ __maxnreg__(120) void causal_attention_prompt_i8_kernel(
         for (int key_l = tid; key_l < Bc; key_l += kCausalPromptI8Threads) {
             const int key = tile_k0 + key_l;
             __half* kd    = &k_scale_s[key_l * Groups];
-            __half* vd    = &v_scale_s[key_l * Groups];
+            __half* vd    = &v_scale_s[key_l * VGroups];
             if (key <= max_query_abs) {
                 const std::int64_t off =
                     kv_cache_int8_quant_scale_index<Geometry>(physical_page, kv_head, 0, key_l);
                 ninfer::ops::cp_async<8>(kd, &cache_k_scale[off]);
-                ninfer::ops::cp_async<8>(vd, &cache_v_scale[off]);
+                if constexpr (PackedValues) {
+                    const std::int64_t voff = kv_cache_int4_value_scale_index<Geometry>(
+                        physical_page, kv_head, 0, key_l);
+                    ninfer::ops::cp_async<16>(vd, &cache_v_scale[voff]);
+                } else {
+                    ninfer::ops::cp_async<8>(vd, &cache_v_scale[off]);
+                }
             } else {
                 store_vec(kd, make_int2(0, 0));
-                store_vec(vd, make_int2(0, 0));
+                if constexpr (PackedValues) {
+                    store_vec(vd, make_int4(0, 0, 0, 0));
+                } else {
+                    store_vec(vd, make_int2(0, 0));
+                }
             }
         }
 #pragma unroll 1
@@ -431,10 +448,16 @@ __global__ __maxnreg__(120) void causal_attention_prompt_i8_kernel(
                 const int key   = k0 + key_l;
                 __half* dst     = &v_f16[key_l * D + causal_prompt_swz(key_l, d)];
                 if (key <= max_query_abs) {
-                    const int grp = d >> 6;
+                    // dc == lane here, so a value group spans D/8/VGroups consecutive lanes:
+                    // eight for the INT8 G64 coding and four for the packed G32 one. One lane per
+                    // group loads the scale and broadcasts it to the rest of that group.
+                    constexpr int VLanesPerGroup = PackedValues ? 4 : 8;
+                    const int grp = PackedValues ? (d >> 5) : (d >> 6);
                     __half vs     = __float2half_rn(0.0f);
-                    if ((lane & 7) == 0) { vs = v_scale_s[key_l * Groups + grp]; }
-                    vs = __shfl_sync(FullMask, vs, grp * 8);
+                    if ((lane & (VLanesPerGroup - 1)) == 0) {
+                        vs = v_scale_s[key_l * VGroups + grp];
+                    }
+                    vs = __shfl_sync(FullMask, vs, lane & ~(VLanesPerGroup - 1));
                     if constexpr (PackedValues) {
                         store_vec(dst, causal_prompt_i4_dequant_f16x8(
                                            reinterpret_cast<const std::uint8_t*>(v_i8) +

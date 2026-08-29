@@ -80,7 +80,8 @@ std::uint32_t validate_full_cache(const PagedKVLayerView& cache, std::int32_t kv
     }
     require_shape(cache.k_scale_pages, profile.scale_leading_extent, kPagedKVPageSize, kv_heads,
                   physical_pages, kAppendOp, "cache k scale pages");
-    require_shape(cache.v_scale_pages, profile.scale_leading_extent, kPagedKVPageSize, kv_heads,
+    require_shape(cache.v_scale_pages, profile.value_scale_leading_extent, kPagedKVPageSize,
+                  kv_heads,
                   physical_pages, kAppendOp, "cache v scale pages");
     require_contiguous_nonnull(cache.k_scale_pages, kAppendOp, "cache k scale pages");
     require_contiguous_nonnull(cache.v_scale_pages, kAppendOp, "cache v scale pages");

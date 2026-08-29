@@ -47,8 +47,10 @@ struct KVCacheAppendPrefixExecutionEnvelope {
  * A cache whose value plane is DType::U8 selects the rk8v4 profile: keys keep the INT8-G64
  * encoding above and values are stored as signed 4-bit codes, two per byte, in a value plane of
  * half the head dimension. Dimension d occupies the low nibble of byte d/2 when d is even and the
- * high nibble when d is odd. The G64 scale plane is unchanged, and the group encoding is the INT8
- * one with 7 in place of 127:
+ * high nibble when d is odd. Values use a 32-value group rather than the key plane's 64, so their
+ * scale plane has twice the key plane's leading extent: four bits resolve a group to 15 levels, so
+ * one outlier would otherwise set the step for 64 neighbours. The group encoding is the INT8 one
+ * with 7 in place of 127, over that 32-value group:
  *
  *   a          = max_i abs(FP32(x[i]))
  *   scale_bits = FP16_RNE(a / 7)

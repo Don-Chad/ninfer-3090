@@ -238,7 +238,7 @@ Upstream's row-scaled `fp8` E4M3 KV profile is **not available on SM86**: its ca
 kernels use the Blackwell-only `mma.sync...kind::f8f6f4` instruction and there is no dequantizing
 attention route for FP8 KV. It parses and then fails at engine construction with a specific
 diagnostic. The experimental `rk8v4` RotorQuant profile is available and opt-in: it stores rotated
-INT8 keys with a packed signed int4 value plane, buying about 32% more context for about 0.146%
+INT8 keys with a packed signed int4 value plane, buying about 32% more context for about 0.082%
 perplexity. The prepared prompt must fit
 `--max-context`; generation stops at the remaining context capacity when necessary.
 `--kv-capacity N` controls the shared physical Main Text KV pool independently and is rounded up to
