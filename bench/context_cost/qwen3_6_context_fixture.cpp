@@ -1,4 +1,5 @@
 #include "qwen3_6_context_fixture.h"
+#include "core/wide_math.h"
 
 #include "artifact/reader.h"
 #include "core/arena.h"
@@ -399,12 +400,17 @@ std::vector<TextCase> text_cases(std::uint32_t chunk) {
 }
 
 std::uint64_t attention_pairs(std::uint32_t prefix, std::uint32_t suffix) {
-    const unsigned __int128 pairs = static_cast<unsigned __int128>(prefix) * suffix +
-                                    static_cast<unsigned __int128>(suffix) * (suffix + 1ULL) / 2U;
-    if (pairs > std::numeric_limits<std::uint64_t>::max()) {
+    // Both inputs are 32-bit, so the triangular term stays below 2^63 and needs no wide
+    // intermediate; only the sum with prefix*suffix can leave uint64.
+    const std::uint64_t triangular = static_cast<std::uint64_t>(suffix) * (suffix + 1ULL) / 2ULL;
+    bool overflowed                = false;
+    const ninfer::core::Uint128 pairs =
+        ninfer::core::wide_add(ninfer::core::wide_multiply(prefix, suffix),
+                               ninfer::core::Uint128{triangular, 0}, overflowed);
+    if (overflowed || !ninfer::core::wide_fits_uint64(pairs)) {
         throw std::overflow_error("prefill attention-pair count exceeds uint64");
     }
-    return static_cast<std::uint64_t>(pairs);
+    return pairs.low;
 }
 
 std::vector<std::uint8_t> block_ppm(int width, int height, std::uint8_t value) {

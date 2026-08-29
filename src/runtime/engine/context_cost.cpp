@@ -1,5 +1,7 @@
 #include "runtime/engine/context_cost.h"
 
+#include "core/wide_math.h"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -12,7 +14,11 @@
 #include <system_error>
 #include <utility>
 
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 
 namespace ninfer::runtime {
 
@@ -23,10 +29,17 @@ const std::vector<ContextCostMachinePreset>& compiled_context_cost_defaults();
 namespace {
 
 using Json = nlohmann::json;
-using U128 = unsigned __int128;
 
 constexpr std::size_t direction_index(ContextTransferDirection direction) noexcept {
     return static_cast<std::size_t>(direction);
+}
+
+int current_process_id() noexcept {
+#ifdef _WIN32
+    return ::_getpid();
+#else
+    return ::getpid();
+#endif
 }
 
 std::uint64_t saturating_add(std::uint64_t left, std::uint64_t right) noexcept {
@@ -36,18 +49,22 @@ std::uint64_t saturating_add(std::uint64_t left, std::uint64_t right) noexcept {
 }
 
 std::uint64_t saturating_product(std::uint64_t left, std::uint64_t right) noexcept {
-    const U128 product = static_cast<U128>(left) * right;
-    return product > std::numeric_limits<std::uint64_t>::max()
-               ? std::numeric_limits<std::uint64_t>::max()
-               : static_cast<std::uint64_t>(product);
+    return core::wide_clamp_to_uint64(core::wide_multiply(left, right));
 }
 
 std::uint64_t q32_product_ns(std::uint64_t coefficient, std::uint64_t units) noexcept {
     if (coefficient == 0 || units == 0) { return 0; }
-    const U128 product        = static_cast<U128>(coefficient) * units;
-    const U128 maximum_scaled = static_cast<U128>(std::numeric_limits<std::uint64_t>::max()) << 32U;
-    if (product >= maximum_scaled) { return std::numeric_limits<std::uint64_t>::max(); }
-    return static_cast<std::uint64_t>((product + kContextCostQ32One - 1U) >> 32U);
+    const core::Uint128 product = core::wide_multiply(coefficient, units);
+    // UINT64_MAX << 32: the largest product whose Q32 quotient still fits uint64.
+    constexpr core::Uint128 maximum_scaled =
+        core::wide_multiply(std::numeric_limits<std::uint64_t>::max(), 1ULL << 32U);
+    if (!core::wide_less(product, maximum_scaled)) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    bool overflowed = false;
+    const core::Uint128 rounded =
+        core::wide_add(product, core::Uint128{kContextCostQ32One - 1U, 0}, overflowed);
+    return core::wide_clamp_to_uint64(core::wide_shift_right(rounded, 32U));
 }
 
 void require_object(const Json& value, std::string_view context) {
@@ -296,7 +313,7 @@ void write_document_atomic(const std::filesystem::path& path, const Json& docume
     if (!path.parent_path().empty()) { std::filesystem::create_directories(path.parent_path()); }
 
     std::filesystem::path temporary = path;
-    temporary += ".tmp." + std::to_string(static_cast<long long>(::getpid())) + "." +
+    temporary += ".tmp." + std::to_string(static_cast<long long>(current_process_id())) + "." +
                  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     try {
         {

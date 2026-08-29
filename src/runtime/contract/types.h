@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/nvtx.h"
+#include "core/wide_math.h"
 #include "core/transfer_work.h"
 #include "ninfer/types.h"
 
@@ -237,15 +238,18 @@ struct PrefillWork {
     result.tokens                       = suffix_tokens;
     result.vision_items                 = vision_items;
     result.vision_patches               = vision_patches;
-    const unsigned __int128 suffix      = suffix_tokens;
-    const unsigned __int128 linear      = static_cast<unsigned __int128>(prefix_tokens) * suffix;
-    const unsigned __int128 triangular  = suffix * (suffix + 1U) / 2U;
-    constexpr unsigned __int128 maximum = ~static_cast<unsigned __int128>(0);
-    const unsigned __int128 attention =
-        triangular > maximum - linear ? maximum : linear + triangular;
-    result.attention_pairs = attention > std::numeric_limits<std::uint64_t>::max()
-                                 ? std::numeric_limits<std::uint64_t>::max()
-                                 : static_cast<std::uint64_t>(attention);
+    const core::Uint128 linear = core::wide_multiply(prefix_tokens, suffix_tokens);
+    // suffix*(suffix+1)/2 without a 128-bit divide. Exactly one of the two factors is even, so
+    // halving that one first keeps both operands inside uint64 even at suffix_tokens ==
+    // UINT64_MAX, where suffix_tokens + 1 would otherwise wrap.
+    const core::Uint128 triangular =
+        (suffix_tokens & 1U) == 0U
+            ? core::wide_multiply(suffix_tokens >> 1U, suffix_tokens + 1U)
+            : core::wide_multiply(suffix_tokens, (suffix_tokens >> 1U) + 1U);
+    bool overflowed               = false;
+    const core::Uint128 attention = core::wide_add(linear, triangular, overflowed);
+    result.attention_pairs        = overflowed ? std::numeric_limits<std::uint64_t>::max()
+                                               : core::wide_clamp_to_uint64(attention);
     return result;
 }
 

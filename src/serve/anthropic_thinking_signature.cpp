@@ -1,7 +1,19 @@
+// rand_s is the CRT's cryptographically secure generator (backed by RtlGenRandom). _CRT_RAND_S
+// must be defined before <stdlib.h> is reached through any path, including transitively through
+// the headers below, so it precedes every include in this file. Unlike BCryptGenRandom it needs
+// no extra link library.
+#ifdef _WIN32
+#define _CRT_RAND_S
+#include <stdlib.h>
+#endif
+
 #include "serve/anthropic_thinking_signature.h"
 
+#ifndef _WIN32
 #include <sys/random.h>
+#endif
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cerrno>
@@ -188,6 +200,19 @@ bool decode_digest(std::string_view encoded, Digest& digest) {
 AnthropicThinkingSigner::Key random_key() {
     AnthropicThinkingSigner::Key key{};
     std::size_t offset = 0;
+#ifdef _WIN32
+    while (offset < key.size()) {
+        unsigned int word = 0;
+        if (::rand_s(&word) != 0) {
+            throw std::runtime_error("operating-system random source failed to produce key bytes");
+        }
+        const std::size_t take = std::min(sizeof(word), key.size() - offset);
+        for (std::size_t byte = 0; byte < take; ++byte) {
+            key[offset + byte] = static_cast<std::uint8_t>((word >> (8U * byte)) & 0xffU);
+        }
+        offset += take;
+    }
+#else
     while (offset < key.size()) {
         const ssize_t count = ::getrandom(key.data() + offset, key.size() - offset, 0);
         if (count < 0) {
@@ -200,6 +225,7 @@ AnthropicThinkingSigner::Key random_key() {
         }
         offset += static_cast<std::size_t>(count);
     }
+#endif
     return key;
 }
 
