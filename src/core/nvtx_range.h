@@ -1,5 +1,9 @@
 #pragma once
 
+// See core/nvtx.h: nvtx3's initialization path calls _wgetenv on Windows without including
+// <stdlib.h> itself, so it must be reached first.
+#include <cstdlib>
+
 #include <nvtx3/nvToolsExt.h>
 
 #include <string>
