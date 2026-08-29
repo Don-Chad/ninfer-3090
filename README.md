@@ -1,29 +1,28 @@
 # NInfer-3090
 
-NInfer-3090 runs **Qwen3.8-27B locally on one 24 GB RTX 3090** with native Windows and Linux
-binaries. Download the release, run the included launcher, and get an OpenAI- or
-Anthropic-compatible local API - without a cloud account or datacenter GPU.
-
-**Why use v0.6.2:** on the tested Windows RTX 3090 profile, MTP3 delivers **79.88 decode tok/s for
-one user**, **90.35 at C2**, **108.66 at C4**, and **184.86 aggregate tok/s at C8**. It also brings
-the current upstream resource scheduling/context-cache work while retaining explicit SM86 guards:
-Blackwell-only execution paths are fenced off instead of being offered as unsafe RTX 3090 options.
-The release includes paged INT8 KV, compatible-prefix reuse, CUDA Graphs, MTP speculative decoding,
-reasoning-effort control, ReplaySSM state transactions, and concurrent cohorts through **C8**.
-
-Community project, maintained on a best-effort basis. Issues and PRs are very welcome, but support
-and feature requests are not guaranteed.
-
-
+NInfer-3090 is a specialized C++20/CUDA inference engine for **Qwen3.8-27B** and Qwen3.6 on one
+24 GB NVIDIA GeForce RTX 3090. Qwen3.8-27B is a first-class, tested target: the native SM86 runtime
+loads its official groupwise `.ninfer` artifact, serves OpenAI- and Anthropic-compatible APIs, and
+supports paged KV, compatible-prefix reuse, CUDA Graphs, MTP speculative decoding, reasoning-effort
+control, ReplaySSM state transactions, and concurrent cohorts through **C8**.
 
 On an RTX 3090, Qwen3.8-27B supports a measured **171K-token INT8 context** with the standard
 1 GiB safety headroom. The optional RotorQuant `rk8v4` cache raises this to **226K tokens with
 1 GiB headroom**, or **247,872 tokens (about 248K)** in a tightly packed 300 MiB-headroom profile.
-RotorQuant is an opt-in feature; INT8 remains the default because `rk8v4` is lossy.
+RotorQuant is opt-in because it is lossy, but it is useful when a much longer context is more valuable
+than exact INT8 KV fidelity: it reduces V-cache memory while retaining eight-bit keys, which can make
+larger documents, more conversation history, or more concurrent long-context work fit on the same GPU.
+INT8 remains the default for quality-sensitive work.
 
-This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. 
+**v0.6.2 performance:** the tested Windows RTX 3090 MTP3 profile delivers **79.88 decode tok/s at
+C1**, **90.35 at C2**, **108.66 at C4**, and **184.86 aggregate tok/s at C8**. It also includes the
+current upstream resource scheduling and context-cache work, with Blackwell-only paths fenced off
+instead of being offered as unsafe RTX 3090 options.
 
-The goal is the make the utmost rippin Qwen inference stack for the 3000 series. Gladly taking PR's, all help much appreciated. 
+This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable.
+
+The goal is to make the utmost rippin Qwen inference stack for the 3000 series. Gladly taking PRs;
+all help is much appreciated. Maintained on a best-effort basis.
 
 Release notes for this branch: [v0.6.2](RELEASE_NOTES_0.6.2.md).
 
