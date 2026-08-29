@@ -2,6 +2,8 @@
 
 #include "product/media_acquire/source.h"
 
+#include <ninfer/types.h>
+
 // Internal, wire-format-independent representation of a generation request.
 //
 // OpenAI and Anthropic schemas both map into this wire-independent value.
@@ -71,7 +73,8 @@ struct ToolDefinition {
     std::string description;
     std::string parameters_json;
     std::string definition_json; // normalized OpenAI function-tool object for Qwen prompt rendering
-    bool strict = false;
+    bool strict               = false;
+    bool cache_boundary_after = false;
 };
 
 struct ToolCall {
@@ -93,13 +96,17 @@ struct ToolChoice {
 };
 
 struct ChatTurn {
-    std::string role; // system | user | assistant | tool (validated in translate)
+    ChatRole role = ChatRole::User;
     std::vector<ContentPart>
         content; // one or more parts; assistant content may be empty with tool_calls
     std::vector<ToolCall> tool_calls;
     std::string tool_call_id;      // populated for role=tool
     std::string reasoning_content; // assistant thinking carried across turns (round-tripped to the
                                    // template)
+    std::vector<std::uint32_t> shared_cache_boundaries_after_text_bytes;
+    // Anthropic conversation cache_control on the terminal content block names the exact
+    // boundary after this normalized turn. It remains private to the continuation lineage.
+    bool private_cache_boundary_after = false;
 };
 
 // OpenAI sampling fields carried by the protocol adapter. `logit_bias` remains
@@ -184,9 +191,19 @@ struct GenerationRequest {
         return !tools.empty() && tool_choice.mode != ToolChoiceMode::None;
     }
 
+    [[nodiscard]] std::size_t media_item_count() const noexcept {
+        std::size_t count = 0;
+        for (const ChatTurn& message : messages) {
+            for (const ContentPart& part : message.content) {
+                if (part.kind == ContentKind::Image || part.kind == ContentKind::Video) { ++count; }
+            }
+        }
+        return count;
+    }
+
     [[nodiscard]] bool has_tool_history() const noexcept {
         for (const ChatTurn& message : messages) {
-            if (!message.tool_calls.empty() || message.role == "tool") { return true; }
+            if (!message.tool_calls.empty() || message.role == ChatRole::Tool) { return true; }
         }
         return false;
     }

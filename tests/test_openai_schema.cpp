@@ -79,6 +79,13 @@ ninfer::PromptInput translate(const GenerationRequest& req) {
                            fake_media);
 }
 
+ninfer::RequestOptions translate_options(const GenerationRequest& req) {
+    const ServeOptions server = default_server();
+    return to_request_options(req, server,
+                              resolve_prompt_semantics(req, server, effort_capabilities()),
+                              server.allow_prefix_reuse);
+}
+
 std::string joined_text(const ninfer::ChatMessage& message) {
     std::string text;
     for (const ninfer::MessagePart& part : message.parts) {
@@ -107,7 +114,7 @@ int test_parse_string_content() {
     const GenerationRequest req = parse_chat_completion_request(body, default_limits());
     failures += check(req.model == "qwen3.6-27b", "model parsed");
     failures += check(req.messages.size() == 1, "one message parsed");
-    failures += check(req.messages[0].role == "user", "role parsed");
+    failures += check(req.messages[0].role == ninfer::ChatRole::User, "role parsed");
     failures += check(req.messages[0].content.size() == 1, "one content part");
     failures += check(req.messages[0].content[0].kind == ContentKind::Text, "text part kind");
     failures += check(req.messages[0].content[0].text == "hello", "text part content");
@@ -304,16 +311,25 @@ int test_parse_media_in_translate() {
     return failures;
 }
 
-int test_developer_role_mapped() {
+int test_instruction_roles_preserved() {
     const Json body = {
         {"model", "m"},
         {"messages", Json::array({Json{{"role", "developer"}, {"content", "be terse"}},
-                                  Json{{"role", "user"}, {"content", "hi"}}})}};
+                                  Json{{"role", "user"}, {"content", "hi"}},
+                                  Json{{"role", "system"}, {"content", "new context"}}})}};
     const GenerationRequest req      = parse_chat_completion_request(body, default_limits());
     const ninfer::PromptInput prompt = translate(req);
     int failures                     = 0;
-    failures += check(prompt.messages.size() == 2, "developer + user parsed");
-    failures += check(prompt.messages[0].role == "system", "developer role mapped to system");
+    failures +=
+        check(req.messages.size() == 3 && req.messages[0].role == ninfer::ChatRole::Developer &&
+                  req.messages[1].role == ninfer::ChatRole::User &&
+                  req.messages[2].role == ninfer::ChatRole::System,
+              "schema did not preserve ordered developer/system roles");
+    failures += check(prompt.messages.size() == 3 &&
+                          prompt.messages[0].role == ninfer::ChatRole::Developer &&
+                          prompt.messages[1].role == ninfer::ChatRole::User &&
+                          prompt.messages[2].role == ninfer::ChatRole::System,
+                      "translation changed roles before target-specific lowering");
     return failures;
 }
 
@@ -400,7 +416,7 @@ int test_parse_function_tools_and_choices() {
                       "tool definition json carried");
     failures += check(req.tool_choice.mode == ToolChoiceMode::Auto, "default tool choice is auto");
     failures += check(req.uses_tools(), "tools enabled by default");
-    failures += check(to_request_options(req, default_server()).output.preserve_special_tokens,
+    failures += check(translate_options(req).output.preserve_special_tokens,
                       "active tools preserve special tokens in Engine output");
 
     Json none           = base;
@@ -408,7 +424,7 @@ int test_parse_function_tools_and_choices() {
     req                 = parse_chat_completion_request(none, default_limits());
     failures += check(req.tool_choice.mode == ToolChoiceMode::None, "tool_choice none parsed");
     failures += check(!req.uses_tools(), "tool_choice none disables tools");
-    failures += check(!to_request_options(req, default_server()).output.preserve_special_tokens,
+    failures += check(!translate_options(req).output.preserve_special_tokens,
                       "disabled tools do not preserve special tokens");
 
     Json required           = base;
@@ -446,19 +462,51 @@ int test_parse_tool_history_messages() {
                                       {"function", Json{{"name", "get_weather"},
                                                         {"arguments", R"({"city":"Paris"})"}}}}})}},
               Json{{"role", "tool"}, {"tool_call_id", "call_1"}, {"content", R"({"temp":20})"}}})}};
-    const GenerationRequest req = parse_chat_completion_request(body, default_limits());
-    failures += check(req.messages.size() == 3, "tool history message count");
-    failures += check(req.messages[1].tool_calls.size() == 1, "assistant tool call parsed");
-    failures += check(req.messages[1].tool_calls[0].id == "call_1", "tool call id parsed");
-    failures += check(req.messages[1].tool_calls[0].name == "get_weather", "tool call name parsed");
-    failures += check(req.messages[1].tool_calls[0].arguments_json == R"({"city":"Paris"})",
-                      "tool call arguments parsed");
-    failures += check(req.messages[2].role == "tool", "tool role parsed");
-    failures += check(req.messages[2].tool_call_id == "call_1", "tool_call_id parsed");
+    const GenerationRequest string_req = parse_chat_completion_request(body, default_limits());
+    failures += check(string_req.messages.size() == 3, "tool history message count");
+    failures += check(string_req.messages[1].tool_calls.size() == 1, "assistant tool call parsed");
+    failures += check(string_req.messages[1].tool_calls[0].id == "call_1", "tool call id parsed");
     failures +=
-        check(req.messages[2].content.at(0).text == R"({"temp":20})", "tool content parsed");
-    failures += check(to_request_options(req, default_server()).output.preserve_special_tokens,
+        check(string_req.messages[1].tool_calls[0].name == "get_weather", "tool call name parsed");
+    failures += check(string_req.messages[1].tool_calls[0].arguments_json == R"({"city":"Paris"})",
+                      "tool call arguments parsed");
+    failures += check(string_req.messages[2].role == ninfer::ChatRole::Tool, "tool role parsed");
+    failures += check(string_req.messages[2].tool_call_id == "call_1", "tool_call_id parsed");
+    failures += check(string_req.messages[2].content.at(0).text == R"({"temp":20})",
+                      "string tool content parsed");
+    failures += check(translate_options(string_req).output.preserve_special_tokens,
                       "tool history preserves special tokens in Engine output");
+
+    Json parts_body = body;
+    parts_body["messages"][2]["content"] =
+        Json::array({Json{{"type", "text"}, {"text", R"({"temp":20})"}},
+                     Json{{"type", "text"}, {"text", "sunny"}}});
+    const GenerationRequest parts_req = parse_chat_completion_request(parts_body, default_limits());
+    failures += check(parts_req.messages[2].content.size() == 2,
+                      "tool text-part array preserves every part");
+    failures += check(parts_req.messages[2].content[0].kind == ContentKind::Text &&
+                          parts_req.messages[2].content[0].text == R"({"temp":20})" &&
+                          parts_req.messages[2].content[1].kind == ContentKind::Text &&
+                          parts_req.messages[2].content[1].text == "sunny",
+                      "tool text-part array preserves order and text");
+
+    Json missing_content = body;
+    missing_content["messages"][2].erase("content");
+    failures += check(
+        throws_api([&] { (void)parse_chat_completion_request(missing_content, default_limits()); }),
+        "tool content is required");
+
+    for (const Json& invalid_content :
+         {Json(nullptr), Json::array(), Json(7), Json::array({Json{{"type", "text"}}}),
+          Json::array({Json{{"type", "text"}, {"text", 7}}}),
+          Json::array({Json{{"type", "image_url"},
+                            {"image_url", Json{{"url", "data:image/png;base64,AA=="}}}}})}) {
+        Json invalid                      = body;
+        invalid["messages"][2]["content"] = invalid_content;
+        failures += check(
+            throws_api([&] { (void)parse_chat_completion_request(invalid, default_limits()); }),
+            "invalid tool content rejected");
+    }
 
     Json bad_args                                                     = body;
     bad_args["messages"][1]["tool_calls"][0]["function"]["arguments"] = R"(["Paris"])";
@@ -478,7 +526,7 @@ int test_parse_stop_and_max_tokens() {
     failures += check(req.stop_strings.size() == 2, "two stop strings");
     failures += check(req.stop_strings[0] == "</s>", "stop string 0");
     failures += check(req.max_tokens == 42 && req.max_tokens_set, "max_completion_tokens alias");
-    const ninfer::RequestOptions options = to_request_options(req, default_server());
+    const ninfer::RequestOptions options = translate_options(req);
     failures += check(options.execution.requested_output_tokens == 42,
                       "max_completion_tokens reaches Engine options");
     failures += check(options.stop.strings.size() == 2 && options.stop.strings[0].text == "</s>" &&
@@ -511,7 +559,7 @@ int test_parse_sampling_carried() {
     failures +=
         check(req.sampling.logit_bias.count(5) == 1 && req.sampling.logit_bias.at(5) == -1.5,
               "logit_bias carried");
-    const ninfer::RequestOptions options = to_request_options(req, default_server());
+    const ninfer::RequestOptions options = translate_options(req);
     failures += check(options.execution.sampling.temperature == 0.7F,
                       "temperature reaches Engine overrides");
     failures += check(options.execution.sampling.top_p == 0.9F, "top_p reaches Engine overrides");
@@ -703,7 +751,7 @@ int main() {
     failures += test_preserve_thinking_options();
     failures += test_reasoning_effort();
     failures += test_parse_parts_and_flatten();
-    failures += test_developer_role_mapped();
+    failures += test_instruction_roles_preserved();
     failures += test_parse_media_in_translate();
     failures += test_reject_unsupported();
     failures += test_parse_function_tools_and_choices();

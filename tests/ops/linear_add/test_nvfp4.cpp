@@ -115,6 +115,9 @@ int run_shape(std::int32_t n, std::int32_t k, std::uint32_t seed) {
 
     int failures = 0;
     for (const Invocation invocation : invocations) {
+#if defined(NINFER_SM8X_COMPAT)
+        if (invocation.policy != ops::LinearPolicy::A16Only) { continue; }
+#endif
         const std::size_t output_words = static_cast<std::size_t>(n) * invocation.tokens;
         GuardedDeviceBuffer output(output_words * sizeof(std::uint16_t));
         output.copy_from_host(initial_residual.data(), output.bytes());

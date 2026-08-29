@@ -31,6 +31,10 @@ constexpr ReductionCriterion tolerance_for(ActivationCompute activation_compute)
     switch (activation_compute) {
     case ActivationCompute::A16:
         return {3.3e-3, 5.0e-3, 6.3e-3};
+    case ActivationCompute::A8:
+        // Both independently A8-quantized projections feed the nonlinear product, so this profile
+        // allows twice Linear's relative-L2 quantization allowance plus a bounded gross tail.
+        return {8.0e-2, 1.0e-2, 1.2e-1};
     case ActivationCompute::A4:
         return {1.6e-1, 1.0e-2, 1.6e-1};
     }
@@ -66,9 +70,10 @@ std::vector<std::uint16_t> make_activation(const Profile& profile, std::int32_t 
     // Later tokens use exact zeros plus a rotating set of nonzeros. This keeps a full-output,
     // full-formula oracle practical at large registered T boundaries without adopting any
     // production staging or reduction behavior.
-    const float dense_scale = profile.qtype == QType::Q4G64_F16S
-                                  ? 1.25e-4F
-                                  : (profile.qtype == QType::NVFP4 ? 1.0e-3F : 1.0e-5F);
+    const bool native_float_weight =
+        profile.qtype == QType::NVFP4 || profile.qtype == QType::FP8_E4M3FN_ROW_BF16S;
+    const float dense_scale =
+        profile.qtype == QType::Q4G64_F16S ? 1.25e-4F : (native_float_weight ? 1.0e-3F : 1.0e-5F);
     for (std::int32_t column = 0; column < profile.input_rows; ++column) {
         const std::uint64_t mixed = mix64((static_cast<std::uint64_t>(profile.seed) << 32) |
                                           static_cast<std::uint32_t>(column));
@@ -79,9 +84,8 @@ std::vector<std::uint16_t> make_activation(const Profile& profile, std::int32_t 
     }
 
     constexpr std::int32_t kNonzerosPerSparseToken = 4;
-    const float sparse_scale                       = profile.qtype == QType::Q4G64_F16S
-                                                         ? 1.5e-2F
-                                                         : (profile.qtype == QType::NVFP4 ? 2.0e-2F : 1.5e-3F);
+    const float sparse_scale =
+        profile.qtype == QType::Q4G64_F16S ? 1.5e-2F : (native_float_weight ? 2.0e-2F : 1.5e-3F);
     for (std::int32_t token = 1; token < tokens; ++token) {
         for (std::int32_t lane = 0; lane < kNonzerosPerSparseToken; ++lane) {
             const std::uint64_t mixed =
@@ -217,12 +221,17 @@ void validate_profile(const Profile& profile) {
                     profile.input_rows == 2048 && profile.output_rows == 6144;
     const bool nvfp4 = profile.qtype == QType::NVFP4 && profile.gate_up_rows == 34816 &&
                        profile.input_rows == 5120 && profile.output_rows == 17408;
-    if ((!q4 && !w8 && !nvfp4) || profile.gate_up_rows != 2 * profile.output_rows) {
+    const bool fp8 = profile.qtype == QType::FP8_E4M3FN_ROW_BF16S &&
+                     profile.gate_up_rows == 34816 && profile.input_rows == 5120 &&
+                     profile.output_rows == 17408;
+    if ((!q4 && !w8 && !nvfp4 && !fp8) || profile.gate_up_rows != 2 * profile.output_rows) {
         throw std::invalid_argument("linear_swiglu test: profile is not registered");
     }
     if ((nvfp4 && profile.activation_compute != ActivationCompute::A16 &&
          profile.activation_compute != ActivationCompute::A4) ||
-        (!nvfp4 && profile.activation_compute != ActivationCompute::A16)) {
+        (fp8 && profile.activation_compute != ActivationCompute::A16 &&
+         profile.activation_compute != ActivationCompute::A8) ||
+        (!nvfp4 && !fp8 && profile.activation_compute != ActivationCompute::A16)) {
         throw std::invalid_argument("linear_swiglu test: invalid activation-compute profile");
     }
 }
@@ -266,9 +275,11 @@ int run_profile(std::string_view label, const Profile& profile,
     device_activation.copy_from_host(host_activation.data(),
                                      host_activation.size() * sizeof(std::uint16_t));
 
-    const ops::LinearPolicy policy    = profile.activation_compute == ActivationCompute::A4
-                                            ? ops::LinearPolicy::AllowA4
-                                            : ops::LinearPolicy::A16Only;
+    const ops::LinearPolicy policy =
+        profile.activation_compute == ActivationCompute::A4
+            ? ops::LinearPolicy::AllowA4
+            : (profile.activation_compute == ActivationCompute::A8 ? ops::LinearPolicy::AllowA8
+                                                                   : ops::LinearPolicy::A16Only);
     const std::size_t workspace_bytes = ops::linear_swiglu_workspace_capacity_bytes(
         profile.qtype, profile.gate_up_rows, profile.input_rows, policy, 1, maximum_tokens);
     WorkspaceArena workspace(std::max<std::size_t>(workspace_bytes, 256));

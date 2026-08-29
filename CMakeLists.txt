@@ -90,9 +90,7 @@ else()
     set(NINFER_CURL_TARGET PkgConfig::LIBCURL)
   endif()
 endif()
-if(NINFER_BUILD_SERVE)
-  find_package(Threads REQUIRED)
-endif()
+find_package(Threads REQUIRED)
 
 # --- Subdirectories ----------------------------------------------------------
 add_subdirectory(src)

@@ -109,6 +109,16 @@ std::string require_string_field(const Json& block, const char* field, const cha
     return block.at(field).get<std::string>();
 }
 
+bool has_ephemeral_cache_control(const Json& value, const char* param) {
+    if (!value.contains("cache_control") || value.at("cache_control").is_null()) { return false; }
+    const Json& control = value.at("cache_control");
+    if (!control.is_object() || !control.contains("type") || !control.at("type").is_string() ||
+        control.at("type").get<std::string>() != "ephemeral") {
+        bad_request("cache_control must be an object with type 'ephemeral'", param);
+    }
+    return true;
+}
+
 ninfer::product::media_acquire::Source parse_image_source(const Json& block) {
     if (!block.contains("source") || !block.at("source").is_object()) {
         bad_request("image block must contain a source object", "messages");
@@ -170,6 +180,7 @@ void parse_tools(const Json& body, GenerationRequest& out) {
         // Normalized OpenAI-style function tool object consumed verbatim by the
         // Qwen chat template's <tools> block (render_tools_system_block).
         tool.definition_json = Json{{"type", "function"}, {"function", std::move(function)}}.dump();
+        tool.cache_boundary_after = has_ephemeral_cache_control(item, "tools");
         out.tools.push_back(std::move(tool));
     }
 }
@@ -202,29 +213,45 @@ void parse_tool_choice(const Json& body, GenerationRequest& out) {
     }
 }
 
-// Flatten a system value (string or array of text blocks) into plain text. Used
-// for both the top-level `system` field and any system-role turn Claude Code
-// injects into the messages array.
-std::string flatten_system_value(const Json& value, const char* param) {
+// Flatten only the content blocks within one system value. Callers preserve the
+// containing turn and its position in the conversation.
+struct FlattenedSystemValue {
     std::string text;
+    std::vector<std::uint32_t> cache_boundaries;
+};
+
+FlattenedSystemValue flatten_system_value(const Json& value, const char* param) {
+    FlattenedSystemValue out;
     if (value.is_string()) {
-        text = value.get<std::string>();
+        out.text = value.get<std::string>();
     } else if (value.is_array()) {
         for (const Json& block : value) {
             if (require_block_type(block, param) != "text") {
                 bad_request("only text system blocks are supported", param);
             }
-            append_text(text, require_string_field(block, "text", "system text block"));
+            append_text(out.text, require_string_field(block, "text", "system text block"));
+            if (has_ephemeral_cache_control(block, param)) {
+                if (out.text.empty() ||
+                    out.text.size() > std::numeric_limits<std::uint32_t>::max()) {
+                    bad_request("cacheable system prefix is empty or too large", param);
+                }
+                out.cache_boundaries.push_back(static_cast<std::uint32_t>(out.text.size()));
+            }
         }
     } else {
         bad_request("system content must be a string or an array of text blocks", param);
     }
-    return text;
+    return out;
 }
 
-void parse_system(const Json& body, std::string& system_text) {
+void parse_system(const Json& body, GenerationRequest& out) {
     if (!body.contains("system") || body.at("system").is_null()) { return; }
-    append_text(system_text, flatten_system_value(body.at("system"), "system"));
+    FlattenedSystemValue system = flatten_system_value(body.at("system"), "system");
+    ChatTurn turn;
+    turn.role = ChatRole::System;
+    turn.content.push_back(ContentPart{ContentKind::Text, std::move(system.text), "text"});
+    turn.shared_cache_boundaries_after_text_bytes = std::move(system.cache_boundaries);
+    out.messages.push_back(std::move(turn));
 }
 
 ToolCall parse_tool_use(const Json& block) {
@@ -275,10 +302,17 @@ std::vector<ContentPart> parse_tool_result_content(const Json& block) {
 
 void parse_assistant_content(const Json& content, GenerationRequest& out) {
     ChatTurn turn;
-    turn.role = "assistant";
+    turn.role = ChatRole::Assistant;
     std::string text;
-    for (const Json& block : content) {
-        const std::string type = require_block_type(block, "messages");
+    for (std::size_t index = 0; index < content.size(); ++index) {
+        const Json& block      = content.at(index);
+        const bool cache_after = has_ephemeral_cache_control(block, "messages");
+        if (cache_after && index + 1U != content.size()) {
+            bad_request("message cache_control is supported only on the final content block",
+                        "messages", "cache_control_position_not_supported");
+        }
+        turn.private_cache_boundary_after = cache_after;
+        const std::string type            = require_block_type(block, "messages");
         if (type == "text") {
             append_text(text, require_string_field(block, "text", "text block"));
         } else if (type == "thinking") {
@@ -303,13 +337,27 @@ void parse_assistant_content(const Json& content, GenerationRequest& out) {
 }
 
 void parse_user_content(const Json& content, GenerationRequest& out) {
-    // A user turn may carry tool_result blocks (each -> its own tool turn) and/or
-    // text blocks (folded into one user turn emitted after the tool turns, matching
-    // the Qwen template's assistant-tool_calls -> tool-responses -> user order).
+    // Anthropic represents tool results as blocks within a user message. Expand
+    // them into protocol-neutral Tool turns without moving text/media blocks
+    // across the position at which each tool result appeared.
     ChatTurn user_turn;
-    user_turn.role = "user";
-    for (const Json& block : content) {
-        const std::string type = require_block_type(block, "messages");
+    user_turn.role             = ChatRole::User;
+    const auto flush_user_turn = [&] {
+        if (user_turn.content.empty()) { return; }
+        out.messages.push_back(std::move(user_turn));
+        user_turn      = ChatTurn{};
+        user_turn.role = ChatRole::User;
+    };
+    bool private_cache_boundary_after = false;
+    for (std::size_t index = 0; index < content.size(); ++index) {
+        const Json& block      = content.at(index);
+        const bool cache_after = has_ephemeral_cache_control(block, "messages");
+        if (cache_after && index + 1U != content.size()) {
+            bad_request("message cache_control is supported only on the final content block",
+                        "messages", "cache_control_position_not_supported");
+        }
+        private_cache_boundary_after = cache_after;
+        const std::string type       = require_block_type(block, "messages");
         if (type == "text") {
             std::string text = require_string_field(block, "text", "text block");
             user_turn.content.push_back(ContentPart{ContentKind::Text, std::move(text), "text"});
@@ -318,8 +366,9 @@ void parse_user_content(const Json& content, GenerationRequest& out) {
                 block.at("tool_use_id").get<std::string>().empty()) {
                 bad_request("tool_result blocks must contain a string tool_use_id", "messages");
             }
+            flush_user_turn();
             ChatTurn tool_turn;
-            tool_turn.role         = "tool";
+            tool_turn.role         = ChatRole::Tool;
             tool_turn.tool_call_id = block.at("tool_use_id").get<std::string>();
             tool_turn.content      = parse_tool_result_content(block);
             out.messages.push_back(std::move(tool_turn));
@@ -333,15 +382,24 @@ void parse_user_content(const Json& content, GenerationRequest& out) {
             bad_request("unsupported user content block: " + type, "messages");
         }
     }
-    if (!user_turn.content.empty()) { out.messages.push_back(std::move(user_turn)); }
+    flush_user_turn();
+    if (private_cache_boundary_after) {
+        if (out.messages.empty()) {
+            throw std::logic_error("cacheable user content produced no normalized turn");
+        }
+        out.messages.back().private_cache_boundary_after = true;
+    }
 }
 
-void parse_messages(const Json& body, GenerationRequest& out, std::string& system_text) {
+void parse_messages(const Json& body, GenerationRequest& out) {
     if (!body.contains("messages")) { bad_request("missing required field: messages", "messages"); }
     const Json& messages = body.at("messages");
     if (!messages.is_array() || messages.empty()) {
         bad_request("messages must be a non-empty array", "messages");
     }
+
+    std::vector<ChatRole> roles;
+    roles.reserve(messages.size());
     for (std::size_t i = 0; i < messages.size(); ++i) {
         const Json& item = messages.at(i);
         if (!item.is_object()) {
@@ -351,28 +409,48 @@ void parse_messages(const Json& body, GenerationRequest& out, std::string& syste
             bad_request("message " + std::to_string(i) + " must have a string role", "messages");
         }
         const std::string role = item.at("role").get<std::string>();
-        if (role != "user" && role != "assistant" && role != "system") {
+        if (role == "user") {
+            roles.push_back(ChatRole::User);
+        } else if (role == "assistant") {
+            roles.push_back(ChatRole::Assistant);
+        } else if (role == "system") {
+            roles.push_back(ChatRole::System);
+        } else {
             bad_request("message role must be 'user', 'assistant', or 'system'", "messages",
                         "unsupported_role");
         }
         if (!item.contains("content") || item.at("content").is_null()) {
             bad_request("message " + std::to_string(i) + " must have content", "messages");
         }
+    }
+
+    for (std::size_t i = 0; i < roles.size();) {
+        if (roles[i] != ChatRole::System) {
+            ++i;
+            continue;
+        }
+        const std::size_t section_begin = i;
+        while (i < roles.size() && roles[i] == ChatRole::System) { ++i; }
+        if (section_begin == 0 || roles[section_begin - 1] != ChatRole::User ||
+            (i < roles.size() && roles[i] != ChatRole::Assistant)) {
+            bad_request(
+                "system messages must follow a user/tool_result message and be final or precede "
+                "an assistant message",
+                "messages", "invalid_message_order");
+        }
+    }
+
+    for (std::size_t i = 0; i < messages.size(); ++i) {
+        const Json& item    = messages.at(i);
+        const ChatRole role = roles[i];
         const Json& content = item.at("content");
-        if (role == "system") {
-            // Claude Code injects system reminders as system-role messages inside
-            // the messages array. Leading ones merge into the system block; later
-            // ones must stay in place - hoisting content from the newest turn to
-            // the top of the prompt invalidates the whole prefix cache every turn.
-            if (out.messages.empty()) {
-                append_text(system_text, flatten_system_value(content, "messages"));
-            } else {
-                ChatTurn turn;
-                turn.role = "system";
-                turn.content.push_back(ContentPart{
-                    ContentKind::Text, flatten_system_value(content, "messages"), "text"});
-                out.messages.push_back(std::move(turn));
-            }
+        if (role == ChatRole::System) {
+            FlattenedSystemValue system = flatten_system_value(content, "messages");
+            ChatTurn turn;
+            turn.role = ChatRole::System;
+            turn.content.push_back(ContentPart{ContentKind::Text, std::move(system.text), "text"});
+            turn.shared_cache_boundaries_after_text_bytes = std::move(system.cache_boundaries);
+            out.messages.push_back(std::move(turn));
             continue;
         }
         if (content.is_string()) {
@@ -382,7 +460,7 @@ void parse_messages(const Json& body, GenerationRequest& out, std::string& syste
                 ContentPart{ContentKind::Text, content.get<std::string>(), "text"});
             out.messages.push_back(std::move(turn));
         } else if (content.is_array()) {
-            if (role == "assistant") {
+            if (role == ChatRole::Assistant) {
                 parse_assistant_content(content, out);
             } else {
                 parse_user_content(content, out);
@@ -493,17 +571,8 @@ GenerationRequest parse_messages_request(const Json& body, const RequestLimits& 
 
     parse_tools(body, out);
     parse_tool_choice(body, out);
-    std::string system_text;
-    parse_system(body, system_text);
-    parse_messages(body, out, system_text);
-    // The leading system turn combines the top-level `system` field with any
-    // system-role reminders folded out of the messages array.
-    if (!system_text.empty()) {
-        ChatTurn turn;
-        turn.role = "system";
-        turn.content.push_back(ContentPart{ContentKind::Text, std::move(system_text), "text"});
-        out.messages.insert(out.messages.begin(), std::move(turn));
-    }
+    parse_system(body, out);
+    parse_messages(body, out);
     parse_stop_sequences(body, out);
     parse_sampling(body, out);
     parse_thinking(body, out);

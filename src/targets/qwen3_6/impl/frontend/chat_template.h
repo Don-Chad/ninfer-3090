@@ -1,5 +1,8 @@
 #pragma once
 
+#include "targets/qwen3_6/impl/frontend/tokenizer.h"
+
+#include <ninfer/targets/qwen3_6/prepared_prompt.h>
 #include <ninfer/types.h>
 
 #include <cstddef>
@@ -21,6 +24,30 @@ enum class ChatPartKind {
     Text,
     Image,
     Video,
+};
+
+enum class Modality : std::uint8_t {
+    Image = 1,
+    Video = 2,
+};
+
+struct MediaPlaceholderByteSpec {
+    ByteSpan bytes;
+    Modality modality      = Modality::Image;
+    std::size_t item_index = 0;
+};
+
+struct MediaTokenRunByteSpec {
+    ByteSpan bytes;
+    Modality modality       = Modality::Image;
+    std::size_t item_index  = 0;
+    std::size_t frame_index = 0;
+};
+
+struct RenderedFragment {
+    std::string text;
+    std::vector<ByteSpan> literal_spans;
+    std::vector<MediaPlaceholderByteSpec> media_placeholders;
 };
 
 struct MediaData {
@@ -56,16 +83,17 @@ struct ChatPart {
 };
 
 struct ChatMessage {
-    std::string role;
+    ChatRole role = ChatRole::User;
     std::vector<ChatPart> parts;
     std::string reasoning_content;
     std::vector<ToolCall> tool_calls;
     std::string tool_call_id;
 
     [[nodiscard]] bool has_media() const noexcept;
-    [[nodiscard]] std::string rendered_content(bool add_vision_id = false,
-                                               int* image_count   = nullptr,
-                                               int* video_count   = nullptr) const;
+    [[nodiscard]] RenderedFragment rendered_content(bool add_vision_id       = false,
+                                                    int* image_count         = nullptr,
+                                                    int* video_count         = nullptr,
+                                                    std::size_t* media_count = nullptr) const;
 };
 
 struct ChatRenderOptions {
@@ -75,11 +103,27 @@ struct ChatRenderOptions {
     std::optional<bool> preserve_thinking;
     bool add_vision_id = false;
     std::vector<std::string> tool_jsons;
+    std::vector<PromptCacheMarker> cache_markers;
+};
+
+struct RewriteCheckpointByteSpec {
+    RewriteCheckpointKind kind = RewriteCheckpointKind::TurnClosure;
+    std::size_t offset         = 0;
 };
 
 struct RenderedChat {
     std::string text;
-    std::optional<std::size_t> turn_rewrite_byte_offset;
+    std::vector<ByteSpan> literal_spans;
+    std::vector<MediaPlaceholderByteSpec> media_placeholders;
+    std::vector<MediaTokenRunByteSpec> media_token_runs;
+    std::optional<RewriteCheckpointByteSpec> rewrite_checkpoint;
+    std::vector<std::size_t> rewrite_execution_boundaries;
+    // Index n is the exact byte frontier after serializing the first n input messages. A missing
+    // value means the template has no independent boundary there (for example, before a leading
+    // instruction message folded into the system preamble).
+    std::vector<std::optional<std::size_t>> message_boundaries;
+    // One rendered byte boundary per requested cache marker.
+    std::vector<std::optional<std::size_t>> cache_boundaries;
 };
 
 enum class ChatTemplateSemantics : std::uint8_t {

@@ -24,6 +24,18 @@ using Json = nlohmann::json;
     throw ApiException(std::move(error));
 }
 
+ChatRole parse_message_role(const std::string& role) {
+    if (role == "system") { return ChatRole::System; }
+    if (role == "developer") { return ChatRole::Developer; }
+    if (role == "user") { return ChatRole::User; }
+    if (role == "assistant") { return ChatRole::Assistant; }
+    if (role == "tool") { return ChatRole::Tool; }
+    if (role == "function") {
+        bad_request("role 'function' is not supported yet", "messages", "unsupported_role");
+    }
+    bad_request("unsupported role: " + role, "messages", "unsupported_role");
+}
+
 const Json& require_object(const Json& body) {
     if (!body.is_object()) { bad_request("request body must be a JSON object"); }
     return body;
@@ -140,6 +152,11 @@ void parse_content_parts(const Json& content, ChatTurn& turn, std::size_t index)
                         "messages");
         }
         const std::string type = part.at("type").get<std::string>();
+        if (turn.role == ChatRole::Tool && type != "text") {
+            bad_request("tool message " + std::to_string(index) +
+                            " content parts must have type 'text'",
+                        "messages");
+        }
         ContentPart out;
         out.type_raw = type;
         if (type == "text") {
@@ -222,21 +239,15 @@ void parse_messages(const Json& body, GenerationRequest& out) {
         if (!item.contains("role") || !item.at("role").is_string()) {
             bad_request("message " + std::to_string(i) + " must have a string role", "messages");
         }
-        const std::string role = item.at("role").get<std::string>();
+        const std::string role     = item.at("role").get<std::string>();
+        const ChatRole parsed_role = parse_message_role(role);
         if (item.contains("function_call") && !item.at("function_call").is_null()) {
             bad_request("message function_call is not supported", "messages",
                         "tools_not_supported");
         }
-        if (role == "function") {
-            ApiError error;
-            error.message = "role '" + role + "' is not supported yet";
-            error.param   = "messages";
-            error.code    = "unsupported_role";
-            throw ApiException(std::move(error));
-        }
         ChatTurn turn;
-        turn.role = role;
-        if (role == "tool") {
+        turn.role = parsed_role;
+        if (parsed_role == ChatRole::Tool) {
             if (item.contains("tool_calls") && !item.at("tool_calls").is_null()) {
                 bad_request("tool messages must not contain tool_calls", "messages");
             }
@@ -244,19 +255,18 @@ void parse_messages(const Json& body, GenerationRequest& out) {
                 item.at("tool_call_id").get<std::string>().empty()) {
                 bad_request("tool messages must contain a string tool_call_id", "messages");
             }
-            if (!item.contains("content") || !item.at("content").is_string()) {
-                bad_request("tool messages must contain string content", "messages");
+            if (!item.contains("content") || item.at("content").is_null()) {
+                bad_request("tool messages must contain content", "messages");
             }
             turn.tool_call_id = item.at("tool_call_id").get<std::string>();
-            turn.content.push_back(
-                ContentPart{ContentKind::Text, item.at("content").get<std::string>(), "text"});
+            parse_content_parts(item.at("content"), turn, i);
             out.messages.push_back(std::move(turn));
             continue;
         }
         if (item.contains("tool_call_id") && !item.at("tool_call_id").is_null()) {
             bad_request("tool_call_id is only valid on tool messages", "messages");
         }
-        if (role == "assistant") {
+        if (parsed_role == ChatRole::Assistant) {
             turn.tool_calls = parse_assistant_tool_calls(item, i);
             if (item.contains("content") && !item.at("content").is_null()) {
                 parse_content_parts(item.at("content"), turn, i);
