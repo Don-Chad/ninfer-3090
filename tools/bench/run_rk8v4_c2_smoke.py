@@ -1,3 +1,6 @@
+# NOTE: --kv-dtype rk8v4 is currently rejected at engine construction. RotorQuant has not
+# been ported to the kv_cache_append Op that now owns KV quantization, so this script will
+# fail until that port lands. Kept as the measurement harness for that work.
 import json
 import subprocess
 import time
