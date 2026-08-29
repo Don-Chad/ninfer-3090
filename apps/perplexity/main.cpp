@@ -153,10 +153,20 @@ std::string safe_component(std::string_view value) {
     return out.empty() ? "unknown" : out;
 }
 
+// gmtime_r is POSIX. MSVC provides gmtime_s with the destination first, the reverse of the
+// POSIX argument order, so the two cannot be swapped by macro alone.
+bool to_utc(const std::time_t& source, std::tm& out) {
+#ifdef _WIN32
+    return ::gmtime_s(&out, &source) == 0;
+#else
+    return ::gmtime_r(&source, &out) != nullptr;
+#endif
+}
+
 std::string timestamp() {
     const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     std::tm utc{};
-    gmtime_r(&now, &utc);
+    if (!to_utc(now, utc)) { throw std::runtime_error("failed to convert timestamp to UTC"); }
     std::ostringstream out;
     out << std::put_time(&utc, "%Y%m%d-%H%M%S");
     return out.str();

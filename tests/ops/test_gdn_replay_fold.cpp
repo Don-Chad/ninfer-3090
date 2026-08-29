@@ -314,7 +314,7 @@ int run_case(const FoldProfile profile, std::int32_t width, std::int32_t rows,
     Tensor local_state_tensor(local_state.p, DType::FP32,
                               {kStateDim, kStateDim, profile.value_heads});
     Tensor output(out.p, DType::BF16, {kStateDim, profile.value_heads, width, 1});
-    constexpr float kScale = 1.0F / std::sqrt(128.0F);
+    const float kScale = 1.0F / std::sqrt(128.0F);
     WorkspaceArena reference_workspace(256);
 
     for (std::int32_t layer = 0; layer < profile.layers; ++layer) {
@@ -542,7 +542,7 @@ int run_record_fold_rounds() {
     constexpr std::int32_t kStateSlots   = 3;
     constexpr std::int32_t kInitialSlot  = 2;
     constexpr std::int32_t kSnapshotBase = 0;
-    constexpr float kScale               = 1.0F / std::sqrt(128.0F);
+    const float kScale               = 1.0F / std::sqrt(128.0F);
 
     DevicePackedWeight parent(
         quantized_weight::make_patterned_weight(QType::W8G32_F16S, kParentRows, kHidden, 1901U));
