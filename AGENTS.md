@@ -106,11 +106,11 @@ intermediate artifacts are excluded unless requested or themselves the deliverab
 
 NInfer is a from-scratch C++/CUDA inference engine for maximum single-GPU inference performance on
 a small set of explicitly registered checkpoint artifacts. The supported identities are
-`qwen3.6-27b/groupwise-int`, `qwen3.6-27b/nvfp4`, `qwen3.8-27b/groupwise-int`, and
-`qwen3.6-35b-a3b/groupwise-int`. The current implementation is compiled for `sm_120a` and tuned
-and measured on NVIDIA GeForce RTX 5090. All identities execute Text, image/video Vision, MTP,
-prefix reuse, CLI, OpenAI/Anthropic serving, and measurement through the same public `.ninfer`
-Engine route; the 35B-A3B target additionally supports text-only DFlash.
+`qwen3.6-27b/groupwise-int`, `qwen3.6-27b/nvfp4`, `qwen3.8-27b/groupwise-int`,
+`qwen3.8-27b/nvfp4`, and `qwen3.6-35b-a3b/groupwise-int`. The current implementation is compiled
+for `sm_120a` and tuned and measured on NVIDIA GeForce RTX 5090. All identities execute Text,
+image/video Vision, MTP, prefix reuse, CLI, OpenAI/Anthropic serving, and measurement through the
+same public `.ninfer` Engine route; the 35B-A3B target additionally supports text-only DFlash.
 
 The current workload is one GPU and one resident model instance with a startup-fixed one to eight
 active requests. The Engine forms one compact decode batch at every round boundary and uses bounded
@@ -156,8 +156,11 @@ routing map, not a mandatory reading list:
 - `docs/cli.md`: CLI input, output, sampling, MTP, and runtime options;
 - `docs/serving.md`: OpenAI/Anthropic HTTP behavior;
 - `docs/performance.md`: published performance methodology and results;
-- `docs/maintainer/concurrent-inference-architecture.md`: bounded ingress, request/slot lifecycle,
-  scheduling, batched execution, CUDA Graph, and speculative-concurrency semantics;
+- `docs/maintainer/engine-architecture.md`: Gateway/Frontend/Engine/Runtime boundaries, execution
+  ownership, request/response/continuation lifecycles, admission, scheduling, output transactions,
+  batched execution, and CUDA Graph semantics;
+- `docs/maintainer/resource-scheduling-and-context-cache.md`: resource selection and accounting,
+  continuation/checkpoint ownership, materialization transactions, and Device/Host replica policy;
 - `docs/maintainer/paged-kv-cache.md`: shared KV capacity, page ownership, retention, physical
   layouts, and paged consumer contracts;
 - `docs/maintainer/artifact-container.md`, `storage-layouts.md`, and `tensor-formats.md`:
@@ -298,6 +301,9 @@ Do not replace weak verification with low-value tests. State clearly when a rele
 run and why.
 
 ## Local environment
+
+Use unrestricted build-tool parallelism for repository compilation. Invoke CMake builds as
+`cmake --build <build-dir> -j`; do not supply a numeric job limit such as `-j2` or `-j32`.
 
 These are conventional project resources, not a checklist of resources every task must use:
 

@@ -14,6 +14,14 @@ endif()
 
 project(ninfer LANGUAGES C CXX CUDA)
 
+# NINFER_SM8X_COMPAT gates every Ampere/early-Ada compatibility path. ninfer_ops also sets it
+# PUBLIC for its own consumers, but that link is PRIVATE through ninfer_engine, so apps and tests
+# would not otherwise see it. Defining it globally keeps a single consistent answer for every
+# target, including apps/ninfer-perplexity, whose upstream default KV profile is FP8.
+if(CMAKE_CUDA_ARCHITECTURES MATCHES "^(86|89)$")
+  add_compile_definitions(NINFER_SM8X_COMPAT=1)
+endif()
+
 # --- Global settings ---------------------------------------------------------
 option(NINFER_BUILD_APPS "Build the NInfer CLI and server" ON)
 option(BUILD_TESTING "Build NInfer tests" OFF)
@@ -90,9 +98,7 @@ else()
     set(NINFER_CURL_TARGET PkgConfig::LIBCURL)
   endif()
 endif()
-if(NINFER_BUILD_SERVE)
-  find_package(Threads REQUIRED)
-endif()
+find_package(Threads REQUIRED)
 
 # --- Subdirectories ----------------------------------------------------------
 add_subdirectory(src)

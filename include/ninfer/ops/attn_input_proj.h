@@ -38,8 +38,8 @@ void attn_input_proj(const Tensor& x, const Weight& query_key_weight,
  *
  * The parent stores rows in physical order query, key, output gate, value while the public output
  * argument order is q, gate, k, v. Every route writes the four independently contiguous final
- * allocations directly; no packed parent output is materialized. The NVFP4 A4 profile may use
- * caller-owned transient storage for its private quantized activation.
+ * allocations directly; no packed parent output is materialized. The NVFP4 A4 and FP8 A8
+ * profiles may use caller-owned transient storage for their private quantized activation.
  *
  * Registered parent forms are:
  *
@@ -49,10 +49,15 @@ void attn_input_proj(const Tensor& x, const Weight& query_key_weight,
  *   BF16 `[5120,T]`, q/gate are BF16 `[6144,T]`, and k/v are BF16 `[1024,T]`.
  * - NVFP4 BlockScaleK16M128x4 `[14336,5120]`, with the same logical row and tensor shapes as
  *   BF16_CTRL.
+ * - FP8_E4M3FN_ROW_BF16S RowScale `[14336,5120]`, with the same logical row and tensor shapes as
+ *   BF16_CTRL.
  *
  * `T` is the positive token extent of the Op contract. BF16_CTRL and W8G32_F16S admit only
  * LinearPolicy::A16Only. NVFP4 admits A16Only and AllowA4; AllowA4 permits the private resolver to
  * select either a qualified A16 route or activation quantization to NVFP4 at every positive T.
+ * FP8 admits A16Only and AllowA8 at every positive T. AllowA8 currently resolves T<=10 to the
+ * qualified A16 CUDA-core route and every T>=11 to private activation quantization followed by the
+ * A8 Tensor Core route. A16Only uses the A16 route for every positive T.
  *
  * The oracle evaluates every projection independently with naive FP64 accumulation from the
  * logical values represented by the persistent weight and BF16 activation. The final four BF16
