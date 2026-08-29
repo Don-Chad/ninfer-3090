@@ -352,10 +352,20 @@ int run_nvfp4() {
     };
     failures += run(2, 1, {}, ops::LinearPolicy::A16Only, 1611U);
     failures += run(16, 1, {11}, ops::LinearPolicy::A16Only, 1621U);
-    failures += run(3, 1, {2}, ops::LinearPolicy::AllowA4, 1631U);
-    failures += run(4, 1, {}, ops::LinearPolicy::AllowA4, 1641U);
-    failures += run(16, 1, {13}, ops::LinearPolicy::AllowA4, 1651U);
-    failures += run(6, 3, {6, 4, 1}, ops::LinearPolicy::AllowA4, 1661U);
+    const auto run_a4 = [&](std::int32_t width, std::int32_t batch,
+                            std::vector<std::int32_t> valid, std::uint32_t seed) {
+        return run_case_allowing_arch_skip("gdn_input_proj_conv_record NVFP4 A4 B=" +
+                                               std::to_string(batch) + " W=" +
+                                               std::to_string(width),
+                                           [&] {
+                                               return run(width, batch, std::move(valid),
+                                                          ops::LinearPolicy::AllowA4, seed);
+                                           });
+    };
+    failures += run_a4(3, 1, {2}, 1631U);
+    failures += run_a4(4, 1, {}, 1641U);
+    failures += run_a4(16, 1, {13}, 1651U);
+    failures += run_a4(6, 3, {6, 4, 1}, 1661U);
     failures += parent.verify_preserved("NVFP4 record parent weight");
     return failures;
 }
@@ -527,15 +537,26 @@ int run_fp8() {
     failures += run_fp8_oracle_case(parent, 3, 1, {2}, ops::LinearPolicy::A16Only, 1721U);
     failures += run_fp8_oracle_case(parent, 4, 1, {}, ops::LinearPolicy::A16Only, 1731U);
     failures += run_fp8_oracle_case(parent, 6, 1, {5}, ops::LinearPolicy::A16Only, 1741U);
-    failures += run_fp8_oracle_case(parent, 7, 1, {}, ops::LinearPolicy::AllowA8, 1751U);
-    failures += run_fp8_oracle_case(parent, 9, 1, {7}, ops::LinearPolicy::AllowA8, 1761U);
-    failures += run_fp8_oracle_case(parent, 10, 1, {}, ops::LinearPolicy::AllowA8, 1771U);
+    const auto run_a8 = [&](std::int32_t width, std::int32_t batch,
+                            std::vector<std::int32_t> valid, std::uint32_t seed) {
+        return run_case_allowing_arch_skip("gdn_input_proj_conv_record FP8 A8 B=" +
+                                               std::to_string(batch) + " W=" +
+                                               std::to_string(width),
+                                           [&] {
+                                               return run_fp8_oracle_case(parent, width, batch,
+                                                                          std::move(valid),
+                                                                          ops::LinearPolicy::AllowA8,
+                                                                          seed);
+                                           });
+    };
+    failures += run_a8(7, 1, {}, 1751U);
+    failures += run_a8(9, 1, {7}, 1761U);
+    failures += run_a8(10, 1, {}, 1771U);
     failures += run_fp8_oracle_case(parent, 10, 1, {8}, ops::LinearPolicy::A16Only, 1781U);
     failures += run_fp8_oracle_case(parent, 11, 1, {9}, ops::LinearPolicy::A16Only, 1791U);
-    failures += run_fp8_oracle_case(parent, 3, 2, {3, 1}, ops::LinearPolicy::AllowA8, 1801U);
-    failures += run_fp8_oracle_case(parent, 4, 2, {4, 2}, ops::LinearPolicy::AllowA8, 1811U);
-    failures += run_fp8_oracle_case(parent, 16, 8, {16, 13, 11, 7, 5, 3, 2, 1},
-                                    ops::LinearPolicy::AllowA8, 1821U);
+    failures += run_a8(3, 2, {3, 1}, 1801U);
+    failures += run_a8(4, 2, {4, 2}, 1811U);
+    failures += run_a8(16, 8, {16, 13, 11, 7, 5, 3, 2, 1}, 1821U);
     return failures;
 }
 

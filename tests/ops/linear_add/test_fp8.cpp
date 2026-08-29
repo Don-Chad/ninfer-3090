@@ -125,8 +125,15 @@ int run_shape(std::int32_t n, std::int32_t k, std::int32_t first_a8, std::uint32
             QType::FP8_E4M3FN_ROW_BF16S, n, k, invocation.policy, invocation.tokens,
             invocation.tokens);
         WorkspaceArena workspace(std::max<std::size_t>(capacity, 256));
-        ops::linear_add(x, weight, residual, invocation.policy, workspace, nullptr);
-        cuda_check(cudaDeviceSynchronize(), "synchronize FP8 linear_add");
+        try {
+            ops::linear_add(x, weight, residual, invocation.policy, workspace, nullptr);
+            cuda_check(cudaDeviceSynchronize(), "synchronize FP8 linear_add");
+        } catch (const std::exception& error) {
+            if (!unsupported_arch_refusal(error)) { throw; }
+            std::cout << "SKIP FP8 linear_add T=" << invocation.tokens << ": "
+                      << error.what() << "\n";
+            continue;
+        }
 
         const bool a8 =
             invocation.policy == ops::LinearPolicy::AllowA8 && invocation.tokens >= first_a8;

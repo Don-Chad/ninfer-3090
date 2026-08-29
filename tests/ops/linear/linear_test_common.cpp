@@ -343,6 +343,10 @@ int run_shape(std::string_view label, ActivationCompute activation_compute,
             }
             cuda_check(cudaDeviceSynchronize(), "synchronize linear");
         } catch (const std::exception& error) {
+            if (unsupported_arch_refusal(error)) {
+                std::cout << "SKIP " << case_label << ": " << error.what() << '\n';
+                continue;
+            }
             std::cerr << case_label << ": unexpected exception: " << error.what() << '\n';
             ++failures;
             continue;

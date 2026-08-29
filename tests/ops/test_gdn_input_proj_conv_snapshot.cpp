@@ -786,10 +786,13 @@ int run_nvfp4() {
 
     int failures = 0;
     failures += run_nvfp4_case(parent, 1, ops::LinearPolicy::A16Only, 2);
-    failures += run_nvfp4_case(parent, 3, ops::LinearPolicy::AllowA4, 4);
-    failures += run_nvfp4_case(parent, 4, ops::LinearPolicy::AllowA4, 5);
-    failures += run_nvfp4_case(parent, 17, ops::LinearPolicy::AllowA4, 0);
-    failures += run_nvfp4_case(parent, 1024, ops::LinearPolicy::AllowA4, 1025);
+    for (const auto [tokens, initial_slot] : {std::pair{3, 4}, std::pair{4, 5},
+                                              std::pair{17, 0}, std::pair{1024, 1025}}) {
+        failures += run_case_allowing_arch_skip(
+            "gdn_input_proj_conv_snapshot NVFP4 A4 T=" + std::to_string(tokens), [&] {
+                return run_nvfp4_case(parent, tokens, ops::LinearPolicy::AllowA4, initial_slot);
+            });
+    }
     constexpr std::int32_t kValueRows = 6144;
     constexpr std::int32_t kZRows     = 6144;
     constexpr std::int32_t kChannels  = 10240;
@@ -799,7 +802,8 @@ int run_nvfp4() {
     const std::vector<float> conv_weight = make_conv_weight(kChannels, 829U);
     const std::size_t workspace_bytes = ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
         QType::NVFP4, kRows, kHidden, ops::LinearPolicy::AllowA4, kBatch, kWidth, kWidth);
-    failures += run_batched_case(
+    failures += run_case_allowing_arch_skip("gdn_input_proj_conv_snapshot NVFP4 A4 B=3 W=6", [&] {
+    return run_batched_case(
         "NVFP4 A4 B=3 W=6 masked", kHidden, kValueRows, kZRows, kWidth, kBatch, valid_columns,
         conv_weight, workspace_bytes, kGdnInputProjConvSnapshotA4Tolerance,
         [&](std::int32_t row, std::int32_t flat_column, const std::vector<float>& activation) {
@@ -819,6 +823,7 @@ int run_nvfp4() {
                                               snapshot_base, q, k, v, z, ops::LinearPolicy::AllowA4,
                                               workspace, nullptr);
         });
+    });
     failures += parent.verify_preserved("batched NVFP4 parent weight");
     return failures;
 }
@@ -941,11 +946,17 @@ int run_fp8() {
     failures += run_fp8_case(parent, 4, ops::LinearPolicy::A16Only, 5);
     failures += run_fp8_case(parent, 6, ops::LinearPolicy::A16Only, 7);
     failures += run_fp8_case(parent, 7, ops::LinearPolicy::A16Only, 8);
-    failures += run_fp8_case(parent, 9, ops::LinearPolicy::AllowA8, 10);
-    failures += run_fp8_case(parent, 10, ops::LinearPolicy::AllowA8, 11);
+    for (const auto [tokens, initial_slot] : {std::pair{9, 10}, std::pair{10, 11}}) {
+        failures += run_case_allowing_arch_skip(
+            "gdn_input_proj_conv_snapshot FP8 A8 T=" + std::to_string(tokens), [&] {
+                return run_fp8_case(parent, tokens, ops::LinearPolicy::AllowA8, initial_slot);
+            });
+    }
     failures += run_fp8_case(parent, 10, ops::LinearPolicy::A16Only, 11);
     failures += run_fp8_case(parent, 11, ops::LinearPolicy::A16Only, 12);
-    failures += run_fp8_case(parent, 17, ops::LinearPolicy::AllowA8, 1);
+    failures += run_case_allowing_arch_skip(
+        "gdn_input_proj_conv_snapshot FP8 A8 T=17",
+        [&] { return run_fp8_case(parent, 17, ops::LinearPolicy::AllowA8, 1); });
 
     const auto run_batched = [&](std::int32_t width, std::int32_t batch,
                                  std::vector<std::int32_t> valid_columns, std::uint32_t seed) {
@@ -979,8 +990,12 @@ int run_fp8() {
                                                   ops::LinearPolicy::AllowA8, workspace, nullptr);
             });
     };
-    failures += run_batched(4, 2, {4, 2}, 937U);
-    failures += run_batched(16, 8, {16, 13, 11, 7, 5, 3, 2, 1}, 941U);
+    failures += run_case_allowing_arch_skip(
+        "gdn_input_proj_conv_snapshot FP8 A8 B=2 W=4",
+        [&] { return run_batched(4, 2, {4, 2}, 937U); });
+    failures += run_case_allowing_arch_skip(
+        "gdn_input_proj_conv_snapshot FP8 A8 B=8 W=16",
+        [&] { return run_batched(16, 8, {16, 13, 11, 7, 5, 3, 2, 1}, 941U); });
     failures += parent.verify_preserved("batched FP8 parent weight");
     return failures;
 }

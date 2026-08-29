@@ -111,13 +111,41 @@ const fi::CompiledChatTemplate& reasoning_effort_template() {
     return value;
 }
 
+// The official Qwen3.6-27B HF export is not redistributable and lives outside the repository.
+// Upstream hardcodes one maintainer's absolute path; keep that as the default so upstream runs are
+// unchanged, but let any other machine point at its own copy and skip the dependent cases when the
+// export is not present rather than aborting the whole binary.
+const std::string& official_resource_dir() {
+    static const std::string dir = [] {
+        const char* override_dir = std::getenv("NINFER_QWEN3_6_27B_HF_DIR");
+        if (override_dir != nullptr && override_dir[0] != '\0') { return std::string(override_dir); }
+        return std::string("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16");
+    }();
+    return dir;
+}
+
+std::string official_resource_path(const char* name) {
+    return official_resource_dir() + "/" + name;
+}
+
+bool official_resources_available() {
+    static const bool available = [] {
+        for (const char* name : {"tokenizer.json", "tokenizer_config.json", "generation_config.json"}) {
+            std::ifstream stream(official_resource_path(name), std::ios::binary);
+            if (!stream) { return false; }
+        }
+        return true;
+    }();
+    return available;
+}
+
 const fi::Tokenizer& official_tokenizer() {
     static const std::string tokenizer_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer.json");
+        read_file(official_resource_path("tokenizer.json").c_str());
     static const std::string tokenizer_config_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer_config.json");
+        read_file(official_resource_path("tokenizer_config.json").c_str());
     static const std::string generation_config_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/generation_config.json");
+        read_file(official_resource_path("generation_config.json").c_str());
     static const fi::Tokenizer tokenizer({.tokenizer_json         = tokenizer_json,
                                           .tokenizer_config_json  = tokenizer_config_json,
                                           .generation_config_json = generation_config_json});
@@ -1221,11 +1249,11 @@ int test_literal_control_tokens_with_media() {
 
     FrontendResources official = resources();
     official.tokenizer_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer.json");
+        read_file(official_resource_path("tokenizer.json").c_str());
     official.tokenizer_config_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer_config.json");
+        read_file(official_resource_path("tokenizer_config.json").c_str());
     official.generation_config_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/generation_config.json");
+        read_file(official_resource_path("generation_config.json").c_str());
     const Frontend frontend = FrontendFactory::create_component(official);
 
     auto text_part = [](std::string text) {
@@ -1372,11 +1400,11 @@ int test_image_resize_rejection_policy() {
 int test_explicit_leading_instruction_cache_boundary() {
     FrontendResources official = resources();
     official.tokenizer_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer.json");
+        read_file(official_resource_path("tokenizer.json").c_str());
     official.tokenizer_config_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer_config.json");
+        read_file(official_resource_path("tokenizer_config.json").c_str());
     official.generation_config_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/generation_config.json");
+        read_file(official_resource_path("generation_config.json").c_str());
     const Frontend frontend           = FrontendFactory::create_component(official, false);
     constexpr std::string_view stable = "stable cache section.";
     ninfer::ChatMessage system;
@@ -1616,11 +1644,11 @@ int test_terminal_flush(const Frontend& frontend) {
 int test_structured_tool_output() {
     FrontendResources owned = resources();
     owned.tokenizer_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer.json");
+        read_file(official_resource_path("tokenizer.json").c_str());
     owned.tokenizer_config_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/tokenizer_config.json");
+        read_file(official_resource_path("tokenizer_config.json").c_str());
     owned.generation_config_json =
-        read_file("/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16/generation_config.json");
+        read_file(official_resource_path("generation_config.json").c_str());
     const Frontend frontend = FrontendFactory::create_component(owned);
 
     ninfer::ChatMessage message;
@@ -2165,33 +2193,40 @@ int main() {
     const FrontendResources owned = resources();
     const Frontend frontend       = FrontendFactory::create_component(owned);
     int failures                  = 0;
-    failures += test_official_tokenizer_merge();
+    // Cases that encode with the official tokenizer or read the official generation config.
+    if (official_resources_available()) {
+        failures += test_official_tokenizer_merge();
+        failures += test_boundary_aware_tokenization();
+        failures += test_literal_added_token_provenance();
+        failures += test_repeated_special_tokens_scan_linearly();
+        failures += test_bounded_tokenizer_prefix();
+        failures += test_ordered_instruction_turns();
+        failures += test_adjacent_tool_message_boundary();
+        failures += test_literal_control_tokens_with_media();
+        failures += test_explicit_leading_instruction_cache_boundary();
+        failures += test_media_admission_uses_aggregate_resources(frontend);
+        failures += test_structured_tool_output();
+    } else {
+        std::cout << "SKIP: official Qwen3.6-27B HF export not found at "
+                  << official_resource_dir()
+                  << "; set NINFER_QWEN3_6_27B_HF_DIR to run the cases that need it\n";
+    }
     failures += test_bpe_merge_order();
-    failures += test_boundary_aware_tokenization();
-    failures += test_literal_added_token_provenance();
-    failures += test_repeated_special_tokens_scan_linearly();
-    failures += test_bounded_tokenizer_prefix();
     failures += test_context_capacity_guard();
     failures += test_official_chat_template();
-    failures += test_ordered_instruction_turns();
     failures += test_assistant_continuation();
     failures += test_reasoning_effort_chat_template();
     failures += test_rewrite_checkpoint_trace();
-    failures += test_adjacent_tool_message_boundary();
     failures += test_official_resource_guards();
     failures += test_invalid_public_part_enums(frontend);
     failures += test_text_and_image_prepare(frontend);
-    failures += test_literal_control_tokens_with_media();
     failures += test_image_resize_rejection_policy();
-    failures += test_explicit_leading_instruction_cache_boundary();
-    failures += test_media_admission_uses_aggregate_resources(frontend);
     failures += test_multimodal_prompt_over_removed_32k_cap(frontend);
     failures += test_attention_pairs_are_diagnostic(frontend);
     failures += test_video_prepare(frontend);
     failures += test_cross_round_stop(frontend);
     failures += test_same_token_stop_priority(frontend);
     failures += test_terminal_flush(frontend);
-    failures += test_structured_tool_output();
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
     failures += test_utf8_and_hidden_eos(frontend);

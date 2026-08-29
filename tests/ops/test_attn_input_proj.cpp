@@ -305,9 +305,11 @@ int run_nvfp4_target() {
     for (const std::int32_t tokens : {1, 2, 4, 8, 16, 20, 32, 33}) {
         failures += run_nvfp4_target_case(parent, tokens);
     }
-    failures += run_nvfp4_target_case(parent, 4, ops::LinearPolicy::AllowA4);
-    failures += run_nvfp4_target_case(parent, 17, ops::LinearPolicy::AllowA4);
-    failures += run_nvfp4_target_case(parent, 1024, ops::LinearPolicy::AllowA4);
+    for (const std::int32_t tokens : {4, 17, 1024}) {
+        failures += run_case_allowing_arch_skip(
+            "attn_input_proj NVFP4 A4 T=" + std::to_string(tokens),
+            [&] { return run_nvfp4_target_case(parent, tokens, ops::LinearPolicy::AllowA4); });
+    }
     return failures;
 }
 
@@ -392,7 +394,9 @@ int run_fp8_target() {
     failures += run_fp8_target_case(parent, 1, ops::LinearPolicy::A16Only);
     failures += run_fp8_target_case(parent, 2, ops::LinearPolicy::A16Only);
     for (const std::int32_t tokens : {1, 2, 10, 11, 48, 65, 1024}) {
-        failures += run_fp8_target_case(parent, tokens, ops::LinearPolicy::AllowA8);
+        failures += run_case_allowing_arch_skip(
+            "attn_input_proj FP8 A8 T=" + std::to_string(tokens),
+            [&] { return run_fp8_target_case(parent, tokens, ops::LinearPolicy::AllowA8); });
     }
     return failures;
 }

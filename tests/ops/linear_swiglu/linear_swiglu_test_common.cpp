@@ -300,6 +300,10 @@ int run_profile(std::string_view label, const Profile& profile,
             ops::linear_swiglu(x, weight, destination, policy, workspace, nullptr);
             test::cuda_check(cudaDeviceSynchronize(), "synchronize LinearSwiGLU");
         } catch (const std::exception& error) {
+            if (unsupported_arch_refusal(error)) {
+                std::cout << "SKIP " << case_label << ": " << error.what() << '\n';
+                continue;
+            }
             std::cerr << case_label << ": unexpected exception: " << error.what() << '\n';
             ++failures;
             continue;
