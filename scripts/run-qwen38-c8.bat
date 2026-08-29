@@ -7,7 +7,7 @@ if "%MODEL%"=="" set "MODEL=%ROOT%models\qwen3_8_27b.ninfer"
 
 if not exist "%SERVER%" (
   echo Missing %SERVER%
-  echo Put this launcher beside the v0.6.1 release files.
+  echo Put this launcher beside the v0.6.2 release files.
   exit /b 1
 )
 if not exist "%MODEL%" (

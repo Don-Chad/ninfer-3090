@@ -1,9 +1,14 @@
 # NInfer-3090
 
-NInfer-3090 is a specialized C++20/CUDA inference engine for **Qwen3.8-27B** and Qwen3.6 on one
-24 GB NVIDIA GeForce RTX 3090. Qwen3.8-27B is a first-class, tested target: the native SM86
-runtime loads its official groupwise `.ninfer` artifact, serves OpenAI- and Anthropic-compatible
-APIs, and supports paged KV, compatible-prefix reuse, CUDA Graphs, MTP speculative decoding,
+NInfer-3090 runs **Qwen3.8-27B locally on one 24 GB RTX 3090** with native Windows and Linux
+binaries. Download the release, run the included launcher, and get an OpenAI- or
+Anthropic-compatible local API - without a cloud account or datacenter GPU.
+
+**Why use v0.6.2:** on the tested Windows RTX 3090 profile, MTP3 delivers **79.88 decode tok/s for
+one user**, **90.35 at C2**, **108.66 at C4**, and **184.86 aggregate tok/s at C8**. It also brings
+the current upstream resource scheduling/context-cache work while retaining explicit SM86 guards:
+Blackwell-only execution paths are fenced off instead of being offered as unsafe RTX 3090 options.
+The release includes paged INT8 KV, compatible-prefix reuse, CUDA Graphs, MTP speculative decoding,
 reasoning-effort control, ReplaySSM state transactions, and concurrent cohorts through **C8**.
 
 Community project, maintained on a best-effort basis. Issues and PRs are very welcome, but support
@@ -20,13 +25,13 @@ This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable.
 
 The goal is the make the utmost rippin Qwen inference stack for the 3000 series. Gladly taking PR's, all help much appreciated. 
 
-Release notes for this branch: [v0.6.1](RELEASE_NOTES_0.6.1.md).
+Release notes for this branch: [v0.6.2](RELEASE_NOTES_0.6.2.md).
 
 ## Choose a platform
 
 | Platform | Delivery | Guide |
 |---|---|---|
-| Linux | Docker image or native source build | [Linux build guide](docs/rtx-3090-linux.md) |
+| Linux | Prebuilt release archive, Docker image, or native source build | [Linux build guide](docs/rtx-3090-linux.md) |
 | Windows 11 | Prebuilt release archive | [Windows guide](docs/rtx-3090-windows.md) |
 
 ### Linux
@@ -37,9 +42,9 @@ The Dockerfile gives the shortest build path on Bazzite and other Linux distribu
 docker build --tag ninfer-3090:sm86 .
 ```
 
-The Linux guide contains the GPU check, native Ubuntu build, model mount, server command, and Bash
-launchers. The project does not publish a prebuilt Linux archive or qualified Linux performance
-results yet.
+The Linux release archive includes the same CLI, server, model downloader, and launch helpers as
+Windows. The Linux guide also covers the GPU check, native Ubuntu build, Docker, model mount, and
+Bash launchers.
 
 ### Windows 11
 
@@ -60,45 +65,44 @@ applications and DLLs.
 ## Qwen3.8-27B support and RTX 3090 results
 
 Qwen3.8-27B is validated from one through eight simultaneous users. ReplaySSM cuts the memory cost
-of speculative decoding, allowing the faster MTP3 mode to remain enabled at C8. The table below is
-the new sustained test: every request generated 1,024 tokens with CUDA Graphs enabled.
+of speculative decoding, allowing the faster MTP3 mode to remain enabled at C8. The sustained test
+uses a fixed short technical prompt, greedy MTP3 decoding, CUDA Graphs, INT8 KV, no prefix reuse,
+and 1,024 generated tokens per request.
 
-The prompts were **29-34 input tokens** and the server's maximum context window was **8,192 tokens
-per request**. Each measured sequence therefore reached roughly 1,053-1,058 tokens including its
-generated output. This is a long-output/decode benchmark, not an 8K-prompt or long-prefill test.
-C1-C4 used an 8,192-token shared KV pool; C8 used 16,384 tokens so all eight requested outputs
-could be admitted simultaneously.
+This is a long-output/decode benchmark, not an 8K-prompt or long-prefill test. The server used a
+65,536-token shared context/KV capacity; the C1/C2/C4/C8 lanes were sized at 65K/32K/16K/8K tokens
+per request. Each cohort used a freshly started server. `Decode throughput` is NInfer's server-side
+compute metric; `End-to-end throughput` includes the complete request wave.
 
 | Cohort | Total output | End-to-end throughput | Decode throughput | MTP acceptance | Mean TTFT | Peak VRAM |
 |---:|---:|---:|---:|---:|---:|---:|
-| C1 | 1,024 tokens | **70.19 tok/s** | **71.00 tok/s** | 61.13% | 149 ms | 19,641 MiB |
-| C2 | 2,048 tokens | **89.43 tok/s** | **90.66 tok/s** | 59.66% | 262 ms | 20,022 MiB |
-| C4 | 4,096 tokens | **97.89 tok/s** | **100.28 tok/s** | 59.63% | 538 ms | 20,641 MiB |
-| C8 | 8,192 tokens | **161.28 tok/s** | **165.33 tok/s** | 56.84% | 1,215 ms | 22,138 MiB |
+| C1 | 1,024 tokens | **78.89 tok/s** | **79.88 tok/s** | 71.27% | 146 ms | 20,463 MiB |
+| C2 | 2,048 tokens | **89.02 tok/s** | **90.35 tok/s** | 58.69% | 240 ms | 20,627 MiB |
+| C4 | 4,096 tokens | **106.95 tok/s** | **108.66 tok/s** | 66.52% | 456 ms | 20,957 MiB |
+| C8 | 8,192 tokens | **177.39 tok/s** | **184.86 tok/s** | 67.39% | 957 ms | 21,613 MiB |
 
 C1 is the responsive choice for a single user. C8 delivers **2.3x the total throughput** when
-several requests are active. The C8 long-output test uses a 16K shared KV pool so all eight
-1,024-token responses can be admitted together.
+several requests are active, while keeping the full 64K shared KV pool available for the cohort.
 
 ### Prompt-processing speed
 
-Prompt processing was tested separately with **4,362 fresh input tokens per request**, an 8,192-token
-per-request context window, 512-token prefill chunks, INT8 KV, ReplaySSM/MTP3, CUDA Graphs, and
+Prompt processing was tested separately with **4,403 fresh input tokens per request**, a 65,536-token
+shared context/KV capacity, 512-token prefill chunks, INT8 KV, ReplaySSM/MTP3, CUDA Graphs, and
 prefix reuse disabled. Each request generated only 16 tokens so the run measures prefill rather
 than long decode.
 
 | Cohort | Total fresh input | Aggregate prefill | Active-prefill speed | Mean TTFT | Peak VRAM |
 |---:|---:|---:|---:|---:|---:|
-| C1 | 4,362 tokens | **861.51 tok/s** | 893.98 tok/s | 4,893 ms | 19,114 MiB |
-| C2 | 8,724 tokens | **853.86 tok/s** | 883.95 tok/s | 7,478 ms | 19,697 MiB |
-| C4 | 17,448 tokens | **847.26 tok/s** | 874.49 tok/s | 12,692 ms | 20,894 MiB |
-| C8 | 34,896 tokens | **844.10 tok/s** | 870.94 tok/s | 23,028 ms | 23,207 MiB |
+| C1 | 4,403 tokens | **872.80 tok/s** | 872.80 tok/s | 5,048 ms | 20,463 MiB |
+| C2 | 8,806 tokens | **871.40 tok/s** | 871.40 tok/s | 7,692 ms | 20,627 MiB |
+| C4 | 17,612 tokens | **870.40 tok/s** | 870.40 tok/s | 12,939 ms | 20,957 MiB |
+| C8 | 35,224 tokens | **869.27 tok/s** | 869.27 tok/s | 23,515 ms | 21,613 MiB |
 
 `Aggregate prefill` is total fresh input tokens divided by the complete request-wave time, so it is
 the user-facing throughput number. NInfer currently processes one long prefill at a time; cohort
 batching accelerates decode, but does not multiply prompt ingestion. Consequently C1-C8 remain near
-844-862 input tok/s while queued requests increase mean TTFT. `Active-prefill speed` excludes queue
-waiting and measures only the server's recorded prefill phase.
+869-873 input tok/s while queued requests increase mean TTFT. `Active-prefill speed` is the same
+server-recorded prefill metric in this fresh-prompt campaign.
 
 ### Optional RotorQuant KV for longer context
 
