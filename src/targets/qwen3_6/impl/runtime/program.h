@@ -599,6 +599,7 @@ public:
     const SpeculativeBackend speculative_backend;
     const DType kv_dtype;
     const std::int32_t kv_quant_group;
+    const bool kv_packed_values;
     const ProposalHead proposal_head;
     const bool vision_enabled;
     const bool use_cuda_graph;

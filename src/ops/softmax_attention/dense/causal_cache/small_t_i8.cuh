@@ -53,8 +53,11 @@ __device__ __forceinline__ void causal_small_t_i8_store_swz(std::int8_t* tile, i
 // at a time. K/V codes and scales are staged asynchronously; non-producer warps
 // dequantize V while producers execute QK. After both consume the code tile, the
 // next K/V tile is prefetched into the same arena while the current PV runs.
+// PackedValues selects the rk8v4 half-width value plane, for both the fused append this kernel
+// performs and the value staging it consumes. The key path is unchanged in both instantiations.
 template <typename Geometry, int TokenTile, int WarpsPerCta, int MinBlocksPerSm, int KeyBlock,
-          bool DynamicArena, bool MultiBatch, bool Masked, typename CacheInput>
+          bool DynamicArena, bool MultiBatch, bool Masked, typename CacheInput,
+          bool PackedValues = false>
 __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     void causal_attention_small_t_i8_tiled_kernel(
         const __nv_bfloat16* q, CacheInput input, const std::int32_t* pos, std::int8_t* cache_k_i8,
@@ -262,19 +265,37 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
             kamax              = warp_max(kamax, FullMask);
             vamax              = warp_max(vamax, FullMask);
             const auto k_quant = kv_cache_int8_quant_params(kamax);
-            const auto v_quant = kv_cache_int8_quant_params(vamax);
+            const auto v_quant = PackedValues ? kv_cache_int4_quant_params(vamax)
+                                              : kv_cache_int8_quant_params(vamax);
             cache_k_i8[kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d0,
                                                                 page_offset)] =
                 kv_cache_int8_quant_code(kv0, k_quant.inverse_scale);
             cache_k_i8[kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d1,
                                                                 page_offset)] =
                 kv_cache_int8_quant_code(kv1, k_quant.inverse_scale);
-            cache_v_i8[kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d0,
-                                                                page_offset)] =
-                kv_cache_int8_quant_code(vv0, v_quant.inverse_scale);
-            cache_v_i8[kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d1,
-                                                                page_offset)] =
-                kv_cache_int8_quant_code(vv1, v_quant.inverse_scale);
+            if constexpr (PackedValues) {
+                // A packed byte holds the adjacent dimension pair, which spans lanes l and l^1.
+                const std::int8_t c0 = kv_cache_int4_quant_code(vv0, v_quant.inverse_scale);
+                const std::int8_t c1 = kv_cache_int4_quant_code(vv1, v_quant.inverse_scale);
+                const int partner0   = __shfl_xor_sync(FullMask, static_cast<int>(c0), 1);
+                const int partner1   = __shfl_xor_sync(FullMask, static_cast<int>(c1), 1);
+                if ((lane & 1) == 0) {
+                    auto* packed_v = reinterpret_cast<std::uint8_t*>(cache_v_i8);
+                    const std::int64_t packed_base = kv_cache_int4_value_code_index<Geometry>(
+                        physical_page, kv_head, grp * (kKVCacheInt8Group / 2), page_offset);
+                    packed_v[packed_base + (lane >> 1)] =
+                        kv_cache_int4_pack(c0, static_cast<std::int8_t>(partner0));
+                    packed_v[packed_base + (lane >> 1) + 16] =
+                        kv_cache_int4_pack(c1, static_cast<std::int8_t>(partner1));
+                }
+            } else {
+                cache_v_i8[kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d0,
+                                                                    page_offset)] =
+                    kv_cache_int8_quant_code(vv0, v_quant.inverse_scale);
+                cache_v_i8[kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d1,
+                                                                    page_offset)] =
+                    kv_cache_int8_quant_code(vv1, v_quant.inverse_scale);
+            }
             if (lane == 0) {
                 const std::int64_t so = kv_cache_int8_quant_scale_index<Geometry>(
                     physical_page, kv_head, grp, page_offset);
@@ -380,11 +401,25 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                     physical_page, kv_head, d, key & kPagedKVPageMask);
                 std::int8_t* dst = &k_i8[key_l * D + causal_small_t_tc_swz(key_l, dc * 8) * 2];
                 ninfer::ops::cp_async<16>(dst, &cache_k_i8[off]);
-                ninfer::ops::cp_async<16>(&v_i8[key_l * D + d], &cache_v_i8[off]);
+                if constexpr (PackedValues) {
+                    // Sixteen dimensions occupy eight packed bytes, staged into the leading half
+                    // of the same value slot so the arena footprint matches the INT8 coding.
+                    const std::int64_t voff = kv_cache_int4_value_code_index<Geometry>(
+                        physical_page, kv_head, d >> 1, key & kPagedKVPageMask);
+                    ninfer::ops::cp_async<8>(
+                        &v_i8[key_l * D + (d >> 1)],
+                        reinterpret_cast<const std::uint8_t*>(cache_v_i8) + voff);
+                } else {
+                    ninfer::ops::cp_async<16>(&v_i8[key_l * D + d], &cache_v_i8[off]);
+                }
             } else {
                 std::int8_t* dst = &k_i8[key_l * D + causal_small_t_tc_swz(key_l, dc * 8) * 2];
                 store_vec(dst, make_int4(0, 0, 0, 0));
-                store_vec(&v_i8[key_l * D + d], make_int4(0, 0, 0, 0));
+                if constexpr (PackedValues) {
+                    store_vec(&v_i8[key_l * D + (d >> 1)], make_int2(0, 0));
+                } else {
+                    store_vec(&v_i8[key_l * D + d], make_int4(0, 0, 0, 0));
+                }
             }
         }
         ninfer::ops::cp_commit();
@@ -550,7 +585,14 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
                     float vs      = 0.0f;
                     if ((lane & 7) == 0) { vs = __half2float(v_scale_s[key_l * Groups + grp]); }
                     vs = __shfl_sync(FullMask, vs, grp * 8);
-                    store_vec(dst, kv_cache_int8_dequant_i8x8_from(&v_i8[key_l * D + d], vs));
+                    if constexpr (PackedValues) {
+                        store_vec(dst, kv_cache_int4_dequant_i4x8_from(
+                                           reinterpret_cast<const std::uint8_t*>(v_i8) +
+                                               key_l * D + (d >> 1),
+                                           vs));
+                    } else {
+                        store_vec(dst, kv_cache_int8_dequant_i8x8_from(&v_i8[key_l * D + d], vs));
+                    }
                 } else {
                     store_vec(dst, make_int4(0, 0, 0, 0));
                 }
