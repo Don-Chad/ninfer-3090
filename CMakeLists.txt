@@ -14,6 +14,14 @@ endif()
 
 project(ninfer LANGUAGES C CXX CUDA)
 
+# NINFER_SM8X_COMPAT gates every Ampere/early-Ada compatibility path. ninfer_ops also sets it
+# PUBLIC for its own consumers, but that link is PRIVATE through ninfer_engine, so apps and tests
+# would not otherwise see it. Defining it globally keeps a single consistent answer for every
+# target, including apps/ninfer-perplexity, whose upstream default KV profile is FP8.
+if(CMAKE_CUDA_ARCHITECTURES MATCHES "^(86|89)$")
+  add_compile_definitions(NINFER_SM8X_COMPAT=1)
+endif()
+
 # --- Global settings ---------------------------------------------------------
 option(NINFER_BUILD_APPS "Build the NInfer CLI and server" ON)
 option(BUILD_TESTING "Build NInfer tests" OFF)
@@ -26,9 +34,15 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)        # clangd / IDE tooling
 if(MSVC)
   add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+  # /Zc:__cplusplus makes MSVC report the standard it is actually compiling. Without it the macro
+  # stays at 199711L even under /std:c++20, and CUDA's <vector_types.h> then hides the constexpr
+  # dim3 constructors behind its own __cplusplus >= 201103L test, which fails to compile every
+  # translation unit that builds a dim3 in a constant expression.
   add_compile_options(
     $<$<COMPILE_LANGUAGE:C,CXX>:/Zc:preprocessor>
-    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>
+    $<$<COMPILE_LANGUAGE:C,CXX>:/Zc:__cplusplus>
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:__cplusplus>)
   # CUDA's static runtime requests LIBCMT even when the application and vcpkg dependencies use
   # the project-wide /MD runtime. Keep one CRT in the final process.
   add_link_options(/NODEFAULTLIB:LIBCMT)
@@ -90,9 +104,7 @@ else()
     set(NINFER_CURL_TARGET PkgConfig::LIBCURL)
   endif()
 endif()
-if(NINFER_BUILD_SERVE)
-  find_package(Threads REQUIRED)
-endif()
+find_package(Threads REQUIRED)
 
 # --- Subdirectories ----------------------------------------------------------
 add_subdirectory(src)

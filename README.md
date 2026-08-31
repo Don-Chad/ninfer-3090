@@ -12,11 +12,18 @@ and feature requests are not guaranteed.
 
 
 On an RTX 3090, Qwen3.8-27B supports a measured **171K-token INT8 context** with the standard
-1 GiB safety headroom. The optional RotorQuant `rk8v4` cache raises this to **226K tokens with
-1 GiB headroom**, or **247,872 tokens (about 248K)** in a tightly packed 300 MiB-headroom profile.
-RotorQuant is an opt-in feature; INT8 remains the default because `rk8v4` is lossy.
+1 GiB safety headroom.
 
-This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 execution is unavailable. 
+> **RotorQuant `rk8v4` is temporarily unavailable.** Upstream moved KV quantization out of the
+> fused GQA attention kernels into a dedicated `kv_cache_append` Op whose contract defines K
+> rotation as H256 and V as unrotated BF16. The rk8v4 int4-V representation has not been ported
+> to that contract yet, so `--kv-dtype rk8v4` is rejected at startup. The previously published
+> 226K/248K RotorQuant context figures do not apply to this build. INT8 remains the default and
+> recommended quantized profile.
+
+This fork targets `sm_86`. Blackwell-only NVFP4/W4A4 and FP8 A8 tensor-core execution are
+unavailable. FP8 and NVFP4 *weights* are admitted through their A16 dequantizing routes, but the
+FP8 E4M3 *KV-cache* profile is not: its attention kernels have no SM86 implementation. 
 
 The goal is the make the utmost rippin Qwen inference stack for the 3000 series. Gladly taking PR's, all help much appreciated. 
 
@@ -100,37 +107,21 @@ batching accelerates decode, but does not multiply prompt ingestion. Consequentl
 844-862 input tok/s while queued requests increase mean TTFT. `Active-prefill speed` excludes queue
 waiting and measures only the server's recorded prefill phase.
 
-### Optional RotorQuant KV for longer context
+### RotorQuant KV (`rk8v4`) — currently unavailable
 
-`rk8v4` is an **experimental, opt-in** KV-cache mode for Qwen3.8-27B. INT8 remains the default and
-the recommended quality setting. RotorQuant applies the same normalized transform to queries and
-keys, rotates values before four-bit storage, and reverses the value transform after attention.
-This reduces the V-cache footprint while keeping keys at eight bits.
+`rk8v4` was an experimental, opt-in KV-cache mode for Qwen3.8-27B that applied a normalized
+transform to queries and keys, rotated values before four-bit storage, and reversed the value
+transform after attention.
 
-Add `--kv-dtype rk8v4` to either `ninfer.exe` or `ninfer-serve.exe`. For example, from Command
-Prompt:
+It is **not available in this build**. Upstream now owns KV quantization in a dedicated
+`kv_cache_append` Op, whose published numerical contract rotates K with a normalized H256
+transform and stores V from unrotated BF16 source values. rk8v4's H64 rotation and int4-V
+representation have no implementation against that contract yet, so `--kv-dtype rk8v4` parses but
+is rejected during engine construction rather than silently degrading to INT8.
 
-```bat
-ninfer-serve.exe qwen3_8_27b.ninfer --max-context 131072 --kv-capacity auto --max-concurrency 1 --prefill-chunk 1024 --kv-dtype rk8v4 --spec mtp --draft-tokens 3 --lm-head-draft
-```
-
-On the development RTX 3090, C1 with MTP and CUDA Graphs disabled fit a **226,560-token** logical
-context with the normal 1 GiB automatic-sizing headroom; 226,624 was rejected. The comparable INT8
-boundary was 171,648 tokens, so `rk8v4` increased measured allocatable context by about **32%**.
-This is an allocation plus short-execution boundary, not a full 226K prefill quality claim.
-
-A second explicit-reservation test reduced operational headroom to approximately 300 MiB.
-`rk8v4` successfully started and generated at **247,872 tokens**, leaving **302.97 MiB** physically
-free after startup. The next 64-token page boundary, 247,936, left only 274.58 MiB because it crossed
-a CUDA allocation granularity. Therefore 247,872 is the measured maximum that retained at least
-300 MiB—not 2x INT8 capacity, but about **44% more** than the 171,648-token INT8/1 GiB baseline.
-This tight profile leaves little tolerance for other GPU users and is not the recommended default.
-
-The matched 1,024-token hard coding test reduced 4K KV payload from 140.38 MiB to 106.35 MiB and
-decoded at 84.07 tok/s versus 85.72 tok/s for INT8. Quality was not equivalent: the RotorQuant
-answer introduced a faulty nested-rollback design that the INT8 answer avoided, and both answers
-hit their output limit. Use `rk8v4` only when its context gain is worth task-specific quality
-validation; do not use it as the default for correctness-sensitive work.
+Porting RotorQuant onto the new Op is tracked as follow-up work. Until then the previously
+published 226,560-token and 247,872-token RotorQuant context measurements do not describe this
+build. Use `--kv-dtype int8`, which reaches 171,648 tokens at the 1 GiB headroom boundary.
 
 ### Qwen3.8 vision
 
@@ -289,9 +280,10 @@ a 24 GB card and the server can reuse fast CUDA Graphs instead of rebuilding wor
 - This is bounded small-scale batching, not preemptive large-scale continuous batching.
 - No multi-GPU execution or CPU/GPU weight offload.
 - Tool calls are returned to the client but are not executed by NInfer.
-- NVFP4 A4 and TMA kernels require Blackwell and are unavailable on SM86.
-- The paged runtime exposes BF16, INT8, and experimental opt-in `rk8v4` KV. INT8 remains the
-  quality-default path.
+- NVFP4 A4, FP8 A8, and TMA kernels require Blackwell and are unavailable on SM86. FP8 and NVFP4
+  weights are admitted through their A16 dequantizing routes.
+- The paged runtime exposes BF16 and INT8 group-64 KV; INT8 remains the quality-default path.
+  Upstream's row-scaled FP8 E4M3 KV profile and `rk8v4` both parse but are rejected on SM86.
 
 ## Validation
 

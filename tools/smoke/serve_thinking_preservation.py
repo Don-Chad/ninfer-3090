@@ -190,13 +190,13 @@ def exercise(base_url: str, fixture: dict[str, Any], log_path: Path, backend: st
     paths = [item.get("result", {}).get("prefix_reuse_path") for item in chat_done]
     require(
         paths == [
-            "full_reset",
-            "restore_turn_checkpoint",
-            "restore_turn_checkpoint",
-            "full_reset",
-            "full_reset",
-            "restore_turn_checkpoint",
-            "full_reset",
+            "root",
+            "private_turn_closure",
+            "private_turn_closure",
+            "root",
+            "root",
+            "private_turn_closure",
+            "root",
         ],
         f"unexpected Chat reuse paths: {paths}",
     )
@@ -237,6 +237,16 @@ def exercise(base_url: str, fixture: dict[str, Any], log_path: Path, backend: st
         response_semantics == [(True, False), (True, False), (False, True)],
         f"unexpected Responses preserve semantics: {response_semantics}",
     )
+    responses_done = protocol_events(events, "request_done", "openai_responses")
+    require(len(responses_done) == 3, "expected three Responses request_done events")
+    response_paths = [
+        item.get("result", {}).get("prefix_reuse_path") for item in responses_done
+    ]
+    require(
+        response_paths
+        == ["root", "private_response_replay", "root"],
+        f"unexpected Responses reuse paths: {response_paths}",
+    )
 
     return {
         "backend": backend,
@@ -248,6 +258,7 @@ def exercise(base_url: str, fixture: dict[str, Any], log_path: Path, backend: st
             "preserved": preserved_prompt_tokens,
         },
         "responses_preserve_semantics": response_semantics,
+        "responses_reuse_paths": response_paths,
     }
 
 

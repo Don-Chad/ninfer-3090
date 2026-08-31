@@ -290,6 +290,10 @@ int run_w8_a16_shape(std::string_view label, const ShapeCase& shape) {
             ops::linear_pair(input, first_weight, second_weight, first, second, nullptr);
             test::cuda_check(cudaDeviceSynchronize(), "synchronize linear_pair");
         } catch (const std::exception& error) {
+            if (unsupported_arch_refusal(error)) {
+                std::cout << "SKIP " << case_label << ": " << error.what() << '\n';
+                continue;
+            }
             std::cerr << case_label << ": unexpected exception: " << error.what() << '\n';
             ++failures;
             continue;
