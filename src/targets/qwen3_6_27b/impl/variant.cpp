@@ -13,6 +13,7 @@
 
 
 #include <algorithm>
+#include <cstdlib>
 #include <stdexcept>
 
 #define NINFER_QWEN36_VARIANT    ::ninfer::targets::qwen3_6_27b::detail::Variant
@@ -59,7 +60,29 @@ constexpr ops::LinearPolicy kFp8TextPolicy   = ops::LinearPolicy::AllowA8;
 constexpr ops::LinearPolicy kGroupwiseIntTextPolicy = ops::LinearPolicy::A16Only;
 #endif
 
+// PR_POLICY asks for invasive runtime changes -- custom kernels and quantization among them --
+// to arrive behind a flag and default to off until they have proven stable. The Op-level
+// registration of AllowA8Int is unconditional and fully tested; this gate only decides whether the
+// 27B target asks for it. Set NINFER_W4A8_PREFILL=1 to opt in.
+bool integer_activation_prefill_enabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NINFER_W4A8_PREFILL");
+        return value != nullptr && value[0] == '1' && value[1] == 0;
+    }();
+    return enabled;
+}
+
 ops::LinearPolicy text_policy(const Weight& weight) {
+    if (!integer_activation_prefill_enabled()) {
+        switch (weight.qtype) {
+        case QType::NVFP4:
+            return kNvfp4TextPolicy;
+        case QType::FP8_E4M3FN_ROW_BF16S:
+            return kFp8TextPolicy;
+        default:
+            return ops::LinearPolicy::A16Only;
+        }
+    }
     switch (weight.qtype) {
     case QType::NVFP4:
         return kNvfp4TextPolicy;
