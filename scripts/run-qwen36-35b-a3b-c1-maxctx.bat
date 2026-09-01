@@ -31,12 +31,41 @@ rem verifying one, and the amortisation is weaker. The 35B is also already fast 
 rem (183 vs 40 tok/s) because only ~3B of 35B parameters are active per token, which leaves
 rem speculation less memory wall to hide.
 rem
-rem --lm-head-draft is worth including: it took 253.50 to 280.38 tok/s, +10.6%, while acceptance
-rem did not move (0.6615 -> 0.6602). It is not drafting better, it is drafting more cheaply -- a
-rem 131,072-row draft head instead of the full 248,320-row output head.
+rem --lm-head-draft is worth including. It drafts over 131,072 rows instead of the full 248,320
+rem output head: cheaper to draft, but it cannot propose anything outside that subset, so it trades
+rem acceptance for speed. Whether that trade pays is entirely content-dependent, and the synthetic
+rem benchmark corpus is a poor guide -- on the dense 27B it reverses the sign outright. Re-measured
+rem on this model with real content, rk8v4, MTP3, greedy:
 rem
-rem WHY rk8v4 KV: 7,969 bytes/token against int8's ~10,560, roughly 32% more context for +0.082%
-rem perplexity. Neither profile above fits on int8.
+rem   content                        without    with     delta   acceptance without -> with
+rem   ---------------------------------------------------------------------------------------
+rem   ninfer_bench tg512 (synthetic)  253.50   280.38   +10.6%     66.15% -> 66.02%
+rem   pure code generation            320.32   326.32    +1.9%     89.81% -> 83.82%
+rem   mixed prose + code              188.08   217.42   +15.6%     39.09% -> 41.12%
+rem
+rem So it helps on every content type here, though by very different margins, and on mixed content
+rem it actually *raises* acceptance rather than costing any. Note how far apart the content types
+rem are in absolute terms: 320 tok/s on pure code against 188 on mixed prose, because code is much
+rem more predictable and speculation gets far more out of it. Any single decode figure for this
+rem model is really a statement about the text being generated.
+rem
+rem For contrast, the same flag on the dense Qwen3.8-27B loses 7.1% on the synthetic corpus but
+rem gains 2.6% on code and 6.6% on mixed -- see run-qwen38-c1.bat. Benchmark-corpus numbers for
+rem this flag should not be trusted on either model.
+rem
+rem WHY rk8v4 KV: 7,969 bytes/token against int8's ~10,560, for +0.082% perplexity. Measured max
+rem context on this machine, both KV profiles, C1:
+rem
+rem   KV       speculation        max context   free after startup
+rem   ------------------------------------------------------------
+rem   rk8v4    none                   262,144         ~256 MiB       <- profile B, native maximum
+rem   rk8v4    MTP3 + draft head      131,072         ~184 MiB       <- profile A
+rem   int8     none                   196,608         ~344 MiB
+rem   int8     MTP3 + draft head       94,208         ~292 MiB
+rem
+rem rk8v4 is worth +33% context unspeculated and +39% with speculation. int8 cannot reach the
+rem model's native 262,144 at all: 204,800 already asks for more runtime reservation than exists.
+rem Switch by changing --kv-dtype below and setting CONTEXT to the matching row.
 rem
 rem VRAM headroom is thin in both profiles because the request was for the largest context that
 rem fits. The binding constraint is whatever else Windows puts on the GPU. Each 32,768 tokens is
