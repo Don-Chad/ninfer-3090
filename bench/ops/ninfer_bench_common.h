@@ -22,13 +22,89 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 namespace ninfer::bench {
 
-constexpr double kRooflineGBs = 1792.0; // RTX 5090 GDDR7 bandwidth roofline.
+// ---- Device-derived hardware ceilings ---------------------------------------------------------
+//
+// This harness was written against upstream's RTX 5090 target and carried its ceilings as
+// literals: 1792 GB/s DRAM, 1674.5 GB/s sustained read, and the GB202 FP8 tensor peaks. On the
+// sm_86 fork target those overstate DRAM bandwidth by 1.91x, so every DRAM_%, READ_%, mem_% and
+// TC_% column printed by a bench binary is wrong by that factor on the hardware this fork exists
+// to serve. Derive the DRAM spec from the device itself and keep measured per-architecture
+// ceilings beside it.
+//
+// The sm_86 figures are measured on an RTX 3090 (82 SM, 1695 MHz boost, 384-bit GDDR6X):
+// sustained read from tools/hbm_bandwidth_probe.cu, tensor peaks from a register-resident MMA
+// issue-rate probe. Measured integer rates run about 18% above the GA102 whitepaper's dense
+// figures, which are quoted at a lower clock; the float rates match it.
+struct DeviceSpecs {
+    double dram_spec_gbs      = 0.0;
+    double sustained_read_gbs = 0.0;
+    double bf16_f32acc_tflops = 0.0; // BF16 MMA, f32 accumulate — what the A16 routes issue.
+    double int8_tops          = 0.0; // s8 MMA, s32 accumulate — what mma_s8 issues.
+    double fp8_f16acc_tflops  = 0.0; // NaN where the architecture has no FP8 tensor path.
+    double fp8_f32acc_tflops  = 0.0;
+    const char* reference     = "unknown";
+};
+
+inline const DeviceSpecs& device_specs() {
+    static const DeviceSpecs specs = [] {
+        DeviceSpecs out;
+        int device = 0;
+        if (cudaGetDevice(&device) != cudaSuccess) { return out; }
+        // cudaDeviceProp lost its memory-clock fields in CUDA 13; the attribute queries survive
+        // both toolkits, so ask for them that way rather than through the struct.
+        int clock_khz = 0;
+        int bus_bits  = 0;
+        int major     = 0;
+        int minor     = 0;
+        if (cudaDeviceGetAttribute(&clock_khz, cudaDevAttrMemoryClockRate, device) != cudaSuccess ||
+            cudaDeviceGetAttribute(&bus_bits, cudaDevAttrGlobalMemoryBusWidth, device) !=
+                cudaSuccess ||
+            cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device) !=
+                cudaSuccess ||
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device) !=
+                cudaSuccess) {
+            return out;
+        }
+        // The reported memory clock is the single-data-rate figure; GDDR transfers on both edges.
+        out.dram_spec_gbs =
+            2.0 * static_cast<double>(clock_khz) * 1.0e3 * (static_cast<double>(bus_bits) / 8.0) /
+            1.0e9;
+        const int arch = major * 10 + minor;
+        if (arch == 86) {
+            out.reference          = "RTX_3090";
+            out.sustained_read_gbs = 894.5;
+            out.bf16_f32acc_tflops = 70.7;
+            out.int8_tops          = 335.3;
+            out.fp8_f16acc_tflops  = std::numeric_limits<double>::quiet_NaN();
+            out.fp8_f32acc_tflops  = std::numeric_limits<double>::quiet_NaN();
+        } else if (arch >= 120) {
+            out.reference          = "RTX_5090";
+            out.sustained_read_gbs = 1674.5;
+            out.bf16_f32acc_tflops = std::numeric_limits<double>::quiet_NaN();
+            out.int8_tops          = std::numeric_limits<double>::quiet_NaN();
+            out.fp8_f16acc_tflops  = 838.0;
+            out.fp8_f32acc_tflops  = 419.0;
+        } else {
+            // Unmeasured architecture: the DRAM spec is still exact, the rest is not claimed.
+            // 0.93 is the sustained-read fraction both measured architectures land on.
+            out.reference          = "device-derived";
+            out.sustained_read_gbs = out.dram_spec_gbs * 0.93;
+            out.bf16_f32acc_tflops = std::numeric_limits<double>::quiet_NaN();
+            out.int8_tops          = std::numeric_limits<double>::quiet_NaN();
+            out.fp8_f16acc_tflops  = std::numeric_limits<double>::quiet_NaN();
+            out.fp8_f32acc_tflops  = std::numeric_limits<double>::quiet_NaN();
+        }
+        return out;
+    }();
+    return specs;
+}
 
 inline std::uint16_t f32_to_bf16(float f) {
     std::uint32_t u;
@@ -54,10 +130,9 @@ inline DeviceBuffer make_zeros(std::size_t bytes) {
     return d;
 }
 
-// cudaDeviceProp memory-clock fields were removed in CUDA 13; the in-process
-// GB/s is informational anyway (ncu is the acceptance gate), so report against
-// the known RTX 5090 roofline constant.
-inline double device_peak_bw_gbs(int /*dev*/ = 0) { return kRooflineGBs; }
+// The in-process GB/s stays informational (ncu is the acceptance gate), but it now reports
+// against this device's own DRAM spec instead of a hardcoded RTX 5090 roofline.
+inline double device_peak_bw_gbs(int /*dev*/ = 0) { return device_specs().dram_spec_gbs; }
 
 struct ColdTiming {
     double median_us = 0.0;
@@ -333,7 +408,8 @@ inline void print_result(const char* tag, const Result& r) {
     std::printf(
         "%-32s median=%8.2f us  min=%8.2f us  p95=%8.2f us  %8.1f GB/s  (%.1f%% of %.0f GB/s "
         "roofline)\n",
-        tag, r.median_us, r.min_us, r.p95_us, r.gbs, r.gbs / kRooflineGBs * 100.0, kRooflineGBs);
+        tag, r.median_us, r.min_us, r.p95_us, r.gbs,
+        r.gbs / device_specs().dram_spec_gbs * 100.0, device_specs().dram_spec_gbs);
 }
 
 } // namespace ninfer::bench
