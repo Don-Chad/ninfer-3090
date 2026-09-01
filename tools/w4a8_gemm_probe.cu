@@ -16,18 +16,36 @@
 //
 // Measured on an RTX 3090 (build: nvcc -O3 -arch=sm_86):
 //
-//   step                                        us      TOP/s   vs A16
-//   first working version                   2254.8      80.95    1.49x
-//   + word stores for the unpack, hoisted B 2183.2      83.61    1.54x
-//   + global loads pipelined one group ahead1780.7     102.51    1.89x
-//   + per-token scale factored to epilogue  1700.9     107.32    1.97x
+//   step                                          us      TOP/s   vs A16
+//   first working version                     2254.8      80.95    1.49x
+//   + word stores for the unpack, hoisted B   2183.2      83.61    1.54x
+//   + global loads pipelined one group ahead  1780.7     102.51    1.89x
+//   + per-token scale factored to epilogue    1700.9     107.32    1.97x
+//   + permuted shared k, forced LDS.128       1719.3     106.17    1.95x  (no change)
 //
-// The inner-loop probe says the arithmetic supports 3.45x, so at 1.97x this kernel reaches 57%
-// of what the MMAs alone would allow. What did NOT move it: raising occupancy from 8 to 16 warps
-// per SM (98 vs 160 registers, identical time), and cutting from two barriers per group to one.
-// The remaining gap is the shared-memory operand path -- 32 separate LDS.32 per warp per group to
-// build fragments. ldmatrix over a swizzled stage is the next thing to try, then cp.async for the
-// global path.
+// The inner-loop probe (w4a8_inner_loop_probe.cu) says the arithmetic supports 3.45x, so at 1.96x
+// this kernel reaches 57% of what the MMAs alone would allow.
+//
+// Four things were tried and did NOT move it, recorded so they are not retried:
+//
+//   1. Occupancy. 160 registers (8 warps/SM) vs 98 (16 warps/SM): identical time.
+//   2. Barrier count. Two __syncthreads per group vs one, with two alternating stages: identical.
+//   3. Fewer, wider shared loads -- the fix Nsight Compute itself prescribes. Its profile of the
+//      1700.9us version reports MIO throttle as the top stall (4.8 of 13.7 warp cycles between
+//      issues, "Est. Local Speedup: 34.62%") and advises "fewer but wider loads". Permuting k
+//      inside each shared row collapses 32 LDS.32 per thread per group into 8 LDS.128, which was
+//      then confirmed to emit as vector loads by issuing ld.shared.v4.u32 directly. Time did not
+//      change. The MIO stall is a symptom here, not the constraint.
+//   4. Pointer arrays for the two stages. sa_b[2] indexed by a runtime buffer number spills to
+//      local memory (48-byte stack frame) and cost 32%; offset arithmetic fixes it.
+//
+// What the profile leaves as the live hypothesis: Tensor is the busiest pipe at only 41.7%, DRAM
+// at 23.7%, IPC 1.15 of 4. Each (m,n) tile issues two MMAs that are serially dependent through
+// one s32 accumulator, and at 102 registers there is not room to keep many tiles' accumulators
+// live at once, so few independent MMA chains are in flight. The inner-loop probe hit 3.45x with
+// four explicitly independent chains. Splitting BK to 32 would give one MMA per tile per step and
+// eight independent chains -- exact, since rescaling two half-groups by the same group scale is
+// the same sum -- at the cost of doubling the rescale count. That is the next thing to measure.
 
 #include <cstdio>
 #include <cstdlib>
@@ -66,6 +84,18 @@ __device__ __forceinline__ void mma_s8(int& c0, int& c1, int& c2, int& c3, unsig
 
 // Two Q4 codes per byte: low nibble is the even k, high nibble the odd k. Codes are offset
 // binary, so subtract 8 to centre. __vsub4 does the four lanes at once.
+// A uint4 read through an int8_t* is emitted as four LDS.32 unless the compiler can prove the
+// 16-byte alignment, which it cannot through this pointer arithmetic. Issue the vector load
+// directly so the shared path actually gets the wider instruction it was restructured for.
+__device__ __forceinline__ uint4 lds128(const void* p) {
+    uint4 r;
+    const unsigned addr = static_cast<unsigned>(__cvta_generic_to_shared(p));
+    asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                 : "=r"(r.x), "=r"(r.y), "=r"(r.z), "=r"(r.w)
+                 : "r"(addr));
+    return r;
+}
+
 __device__ __forceinline__ void unpack8(unsigned packed, unsigned& even, unsigned& odd) {
     const unsigned mask = 0x0f0f0f0fu;
     even                = __vsub4(packed & mask, 0x08080808u);
@@ -133,20 +163,36 @@ __global__ __launch_bounds__(512) void w4a8_gemm(const uint2* __restrict__ w_pac
         f.x = *reinterpret_cast<const uint4*>(x_q + x_row + (size_t)(g * BK));
         if (tid < BM) { f.ws = __half2float(w_scale[ws_row + g]); }
     };
+    // Shared rows hold k permuted, not in order. A thread's MMA operands for one row are the
+    // four k-chunks [t*4, t*4+16, t*4+32, t*4+48) for its t = lane%4; storing them adjacent turns
+    // the whole fragment assembly into one 128-bit load per row instead of four 32-bit ones.
+    // Permutation: k = t*4 + c*16 + j  ->  position t*16 + c*4 + j.
+    // A thread owning 16 consecutive k (ld_q*16 + i) therefore writes four words, at byte offsets
+    // ld_q*4 + {0,16,32,48}, which stays conflict-free.
     auto store_smem = [&](const GlobalFrag& f, int buf) {
         int8_t* const sa_w  = s_base + buf * STAGE;
         const unsigned p[2] = {f.w.x, f.w.y};
-        unsigned* dst       = reinterpret_cast<unsigned*>(sa_w + ld_row * SROW + ld_q * 16);
+        int8_t* const wrow  = sa_w + ld_row * SROW + ld_q * 4;
+        unsigned wq[4];
 #pragma unroll
         for (int i = 0; i < 2; ++i) {
             unsigned even, odd;
             unpack8(p[i], even, odd);
-            // Interleave back into k order: byte j of the packed word holds k=2j (low nibble)
-            // and k=2j+1 (high). byte_perm builds both output words without byte stores.
-            dst[i * 2]     = __byte_perm(even, odd, 0x5140);
-            dst[i * 2 + 1] = __byte_perm(even, odd, 0x7362);
+            // byte j of the packed word holds k=2j (low nibble) and k=2j+1 (high).
+            wq[i * 2]     = __byte_perm(even, odd, 0x5140);
+            wq[i * 2 + 1] = __byte_perm(even, odd, 0x7362);
         }
-        *reinterpret_cast<uint4*>(sa_w + BM * SROW + ld_row * SROW + ld_q * 16) = f.x;
+#pragma unroll
+        for (int w = 0; w < 4; ++w) {
+            *reinterpret_cast<unsigned*>(wrow + w * 16) = wq[w];
+        }
+        // X takes the same permutation, so its one 128-bit arrival becomes four word stores.
+        const unsigned xq[4] = {f.x.x, f.x.y, f.x.z, f.x.w};
+        int8_t* const xrow   = sa_w + BM * SROW + ld_row * SROW + ld_q * 4;
+#pragma unroll
+        for (int w = 0; w < 4; ++w) {
+            *reinterpret_cast<unsigned*>(xrow + w * 16) = xq[w];
+        }
         if (tid < BM) { sws_base[buf * BM + tid] = f.ws; }
     };
 
@@ -168,31 +214,21 @@ __global__ __launch_bounds__(512) void w4a8_gemm(const uint2* __restrict__ w_pac
         // group rather than once per (m,n) pair.
         unsigned af[2][2][4];
         unsigned bf[4][2][2];
+        // Permuted rows: one 128-bit load yields (ks0.reg0, ks0.reg2, ks1.reg0, ks1.reg2).
 #pragma unroll
         for (int m = 0; m < 2; ++m) {
-            const int r0 = warp_m * 32 + m * 16 + group_id;
-#pragma unroll
-            for (int ks = 0; ks < 2; ++ks) {
-                const int k0 = ks * 32;
-                af[m][ks][0] = *reinterpret_cast<const unsigned*>(sa + r0 * SROW + k0 + tig * 4);
-                af[m][ks][1] =
-                    *reinterpret_cast<const unsigned*>(sa + (r0 + 8) * SROW + k0 + tig * 4);
-                af[m][ks][2] =
-                    *reinterpret_cast<const unsigned*>(sa + r0 * SROW + k0 + tig * 4 + 16);
-                af[m][ks][3] =
-                    *reinterpret_cast<const unsigned*>(sa + (r0 + 8) * SROW + k0 + tig * 4 + 16);
-            }
+            const int r0   = warp_m * 32 + m * 16 + group_id;
+            const uint4 lo = lds128(sa + r0 * SROW + tig * 16);
+            const uint4 hi = lds128(sa + (r0 + 8) * SROW + tig * 16);
+            af[m][0][0] = lo.x; af[m][0][1] = hi.x; af[m][0][2] = lo.y; af[m][0][3] = hi.y;
+            af[m][1][0] = lo.z; af[m][1][1] = hi.z; af[m][1][2] = lo.w; af[m][1][3] = hi.w;
         }
 #pragma unroll
         for (int n = 0; n < 4; ++n) {
             const int c0col = warp_n * 32 + n * 8 + group_id;
-#pragma unroll
-            for (int ks = 0; ks < 2; ++ks) {
-                const int k0 = ks * 32;
-                bf[n][ks][0] = *reinterpret_cast<const unsigned*>(sb + c0col * SROW + k0 + tig * 4);
-                bf[n][ks][1] =
-                    *reinterpret_cast<const unsigned*>(sb + c0col * SROW + k0 + tig * 4 + 16);
-            }
+            const uint4 b   = lds128(sb + c0col * SROW + tig * 16);
+            bf[n][0][0] = b.x; bf[n][0][1] = b.y;
+            bf[n][1][0] = b.z; bf[n][1][1] = b.w;
         }
 #pragma unroll
         for (int m = 0; m < 2; ++m) {
