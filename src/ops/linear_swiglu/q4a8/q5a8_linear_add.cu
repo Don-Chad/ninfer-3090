@@ -248,6 +248,8 @@ __global__ __launch_bounds__(kThreads) void q5a8_add_kernel(
 
 } // namespace
 
+bool q5a8_tokens_supported(std::int32_t tokens) { return tokens >= kBN && tokens % kBN == 0; }
+
 bool q5a8_add_supported(const Weight& down, std::int32_t tokens) {
     return down.qtype == QType::Q5G64_F16S && down.layout == QuantLayout::RowSplit &&
            down.n == kRows && down.k == kCols && down.group == kGroup && down.qdata != nullptr &&

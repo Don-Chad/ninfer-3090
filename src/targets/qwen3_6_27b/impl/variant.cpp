@@ -11,9 +11,6 @@
 #include "ninfer/ops/residual_add.h"
 #include "ninfer/ops/silu_mul.h"
 
-#include "ops/linear_swiglu/q4a8/q4a8_linear_swiglu.h"
-
-#include <cstdlib>
 
 #include <algorithm>
 #include <stdexcept>
@@ -52,9 +49,14 @@ void validate_token_interval(std::int32_t first, std::int32_t last) {
 // through their A16 routes, which dequantize the stored codes to BF16 before the MMA.
 constexpr ops::LinearPolicy kNvfp4TextPolicy = ops::LinearPolicy::A16Only;
 constexpr ops::LinearPolicy kFp8TextPolicy   = ops::LinearPolicy::A16Only;
+// The integer-activation route for groupwise-int weights is an sm_86 addition: it feeds the s8
+// tensor cores, which Ampere has and which no A16 route uses.
+constexpr ops::LinearPolicy kGroupwiseIntTextPolicy = ops::LinearPolicy::AllowA8Int;
 #else
 constexpr ops::LinearPolicy kNvfp4TextPolicy = ops::LinearPolicy::AllowA4;
 constexpr ops::LinearPolicy kFp8TextPolicy   = ops::LinearPolicy::AllowA8;
+// Not built for sm_120a; groupwise-int keeps its A16 route there.
+constexpr ops::LinearPolicy kGroupwiseIntTextPolicy = ops::LinearPolicy::A16Only;
 #endif
 
 ops::LinearPolicy text_policy(const Weight& weight) {
@@ -63,6 +65,12 @@ ops::LinearPolicy text_policy(const Weight& weight) {
         return kNvfp4TextPolicy;
     case QType::FP8_E4M3FN_ROW_BF16S:
         return kFp8TextPolicy;
+    case QType::Q4G64_F16S:
+    case QType::Q5G64_F16S:
+        // Permissive: the Op resolver takes the integer-activation route where it is registered
+        // and falls back to A16 everywhere else, which is every decode step and every partial
+        // prefill tile. Held to the A8 activation allowance.
+        return kGroupwiseIntTextPolicy;
     default:
         return ops::LinearPolicy::A16Only;
     }
@@ -106,18 +114,6 @@ std::size_t gdn_record_workspace_bytes(const Tensor& hidden,
             parent.qtype, parent.n, parent.k, text_policy(parent), batch, width, width));
 }
 
-// Opt-in integer-activation route for the MLP gate_up projection. It trades roughly 0.9%
-// relative L2 on that projection -- well inside upstream's own 4% A8 activation allowance -- for
-// about twice the prefill GEMM rate, and only engages on full 128-token prefill tiles, so decode
-// and partial chunks keep the A16 route untouched.
-bool q4a8_swiglu_enabled() {
-    static const bool enabled = [] {
-        const char* v = std::getenv("NINFER_W4A8_PREFILL");
-        return v != nullptr && v[0] == '1' && v[1] == '\0';
-    }();
-    return enabled;
-}
-
 std::size_t post_mixer_workspace_bytes(QType gate_up_qtype, QType down_qtype,
                                        ops::LinearPolicy policy, std::int32_t first,
                                        std::int32_t last) {
@@ -125,23 +121,13 @@ std::size_t post_mixer_workspace_bytes(QType gate_up_qtype, QType down_qtype,
     (void)layout.alloc(DType::BF16, {TextConfig::intermediate, last});
     {
         auto scope = layout.scope();
-        std::size_t swiglu_bytes = ops::linear_swiglu_workspace_capacity_bytes(
-            gate_up_qtype, 2 * TextConfig::intermediate, TextConfig::hidden, policy, first, last);
-        if (q4a8_swiglu_enabled() && gate_up_qtype == QType::Q4G64_F16S) {
-            swiglu_bytes = std::max(
-                swiglu_bytes, ops::detail::q4a8_swiglu_workspace_capacity_bytes(first, last));
-        }
-        (void)layout.alloc_bytes(swiglu_bytes);
+        (void)layout.alloc_bytes(ops::linear_swiglu_workspace_capacity_bytes(
+            gate_up_qtype, 2 * TextConfig::intermediate, TextConfig::hidden, policy, first, last));
     }
     {
         auto scope              = layout.scope();
-        std::size_t down_bytes  = ops::linear_add_workspace_capacity_bytes(
-            down_qtype, TextConfig::hidden, TextConfig::intermediate, policy, first, last);
-        if (q4a8_swiglu_enabled() && down_qtype == QType::Q5G64_F16S) {
-            down_bytes = std::max(down_bytes,
-                                  ops::detail::q5a8_add_workspace_capacity_bytes(first, last));
-        }
-        (void)layout.alloc_bytes(down_bytes);
+        (void)layout.alloc_bytes(ops::linear_add_workspace_capacity_bytes(
+            down_qtype, TextConfig::hidden, TextConfig::intermediate, policy, first, last));
     }
     return layout.peak_bytes(1);
 }
@@ -328,18 +314,10 @@ void Variant::post_mixer(const Tensor& hidden, const PostMixerWeights& weights, 
                          qwen3_6::TextPhase, WorkspaceArena& workspace, cudaStream_t stream) {
     auto scope        = workspace.scope();
     Tensor activation = workspace.alloc(DType::BF16, {TextConfig::intermediate, hidden.ne[1]});
-    if (q4a8_swiglu_enabled() && ops::detail::q4a8_swiglu_supported(weights.gate_up, hidden.ne[1])) {
-        ops::detail::q4a8_swiglu_launch(hidden, weights.gate_up, activation, workspace, stream);
-    } else {
-        ops::linear_swiglu(hidden, weights.gate_up, activation, text_policy(weights.gate_up),
-                           workspace, stream);
-    }
-    if (q4a8_swiglu_enabled() && ops::detail::q5a8_add_supported(weights.down, activation.ne[1])) {
-        ops::detail::q5a8_add_launch(activation, weights.down, residual, workspace, stream);
-    } else {
-        ops::linear_add(activation, weights.down, residual, text_policy(weights.down), workspace,
-                        stream);
-    }
+    ops::linear_swiglu(hidden, weights.gate_up, activation, text_policy(weights.gate_up), workspace,
+                       stream);
+    ops::linear_add(activation, weights.down, residual, text_policy(weights.down), workspace,
+                    stream);
 }
 
 void Variant::mtp_post_mixer(const Tensor& hidden, const MtpPostMixerWeights& weights,
