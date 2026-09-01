@@ -26,7 +26,7 @@
 // The inner-loop probe (w4a8_inner_loop_probe.cu) says the arithmetic supports 3.45x, so at 1.96x
 // this kernel reaches 57% of what the MMAs alone would allow.
 //
-// Four things were tried and did NOT move it, recorded so they are not retried:
+// Six things were tried and did NOT move it, recorded so they are not retried:
 //
 //   1. Occupancy. 160 registers (8 warps/SM) vs 98 (16 warps/SM): identical time.
 //   2. Barrier count. Two __syncthreads per group vs one, with two alternating stages: identical.
@@ -36,16 +36,29 @@
 //      inside each shared row collapses 32 LDS.32 per thread per group into 8 LDS.128, which was
 //      then confirmed to emit as vector loads by issuing ld.shared.v4.u32 directly. Time did not
 //      change. The MIO stall is a symptom here, not the constraint.
-//   4. Pointer arrays for the two stages. sa_b[2] indexed by a runtime buffer number spills to
+//   4. More independent MMA chains. Giving all eight (m,n) tiles their own s32 accumulator with
+//      the k-halves as the outer loop compiled to 102 registers -- byte for byte the same as
+//      before -- so the scheduler was already interleaving them. A semantic no-op.
+//   5. More work per shared byte. Widening the warp tile from 2x4 to 4x4 m16n8 tiles raises the
+//      MMA-per-shared-byte ratio by a third, but costs 173 registers and so halves resident warps
+//      (16 -> 8). Net 1890.3us, 10% worse. Latency hiding beats operand reuse at this size.
+//   6. Pointer arrays for the two stages. sa_b[2] indexed by a runtime buffer number spills to
 //      local memory (48-byte stack frame) and cost 32%; offset arithmetic fixes it.
 //
-// What the profile leaves as the live hypothesis: Tensor is the busiest pipe at only 41.7%, DRAM
-// at 23.7%, IPC 1.15 of 4. Each (m,n) tile issues two MMAs that are serially dependent through
-// one s32 accumulator, and at 102 registers there is not room to keep many tiles' accumulators
-// live at once, so few independent MMA chains are in flight. The inner-loop probe hit 3.45x with
-// four explicitly independent chains. Splitting BK to 32 would give one MMA per tile per step and
-// eight independent chains -- exact, since rescaling two half-groups by the same group scale is
-// the same sum -- at the cost of doubling the rescale count. That is the next thing to measure.
+// Where that leaves it. Nothing is saturated: Tensor 41.7%, MIO 52.65%, L1/TEX 55.3%, DRAM
+// 23.7%, IPC 1.15 of 4. Six changes aimed at four different resources all failed to move the
+// time, which is the signature of a broad latency plateau rather than one bottleneck. Note also
+// that a wider shared load moves the same number of 128-byte wavefronts as a narrow one, so
+// instruction count was never going to be the lever -- only fewer shared *bytes* would be.
+//
+// The one structural tool not yet used is cp.async. It would take global->shared off the compute
+// warps' critical path and free the register staging. It cannot scatter, though, so it needs the
+// shared stage to be a contiguous copy -- which means the permutation has to move into the weight
+// layout itself rather than happening on the store. That is the right shape for the real Op
+// anyway: ninfer already carries fragment-friendly storage layouts (RowSplit, BlockScaleK16M128x4)
+// precisely so the shared stage can be a straight copy, and a repack at materialization is free.
+// Storing packed nibbles in shared rather than unpacked bytes would also halve A's shared traffic.
+// That is the next thing worth building, and it is a layout change, not a kernel tweak.
 
 #include <cstdio>
 #include <cstdlib>
