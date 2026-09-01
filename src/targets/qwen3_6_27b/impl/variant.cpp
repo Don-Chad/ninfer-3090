@@ -65,12 +65,21 @@ ops::LinearPolicy text_policy(const Weight& weight) {
         return kNvfp4TextPolicy;
     case QType::FP8_E4M3FN_ROW_BF16S:
         return kFp8TextPolicy;
+    // Permissive only for the two profiles that have a registered integer route -- the MLP
+    // gate_up and down projections. The resolver then takes it on full prefill tiles and falls
+    // back to A16 everywhere else, including every decode step and every partial tile.
+    //
+    // Deliberately keyed on shape rather than qtype alone: attn_input_proj and gdn_input_proj
+    // also receive text_policy() and neither admits AllowA8Int, so handing it to them would
+    // throw. Today the groupwise-int artifact reaches those through their split payloads, which
+    // pass no policy at all, so a broader rule happens not to fire -- but that is luck, not
+    // design, and the fused payloads would hit it.
     case QType::Q4G64_F16S:
+        return (weight.n == 34816 && weight.k == 5120) ? kGroupwiseIntTextPolicy
+                                                        : ops::LinearPolicy::A16Only;
     case QType::Q5G64_F16S:
-        // Permissive: the Op resolver takes the integer-activation route where it is registered
-        // and falls back to A16 everywhere else, which is every decode step and every partial
-        // prefill tile. Held to the A8 activation allowance.
-        return kGroupwiseIntTextPolicy;
+        return (weight.n == 5120 && weight.k == 17408) ? kGroupwiseIntTextPolicy
+                                                        : ops::LinearPolicy::A16Only;
     default:
         return ops::LinearPolicy::A16Only;
     }
