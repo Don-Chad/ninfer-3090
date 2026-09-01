@@ -329,6 +329,57 @@ MODEL=/path/to/Qwen3.6-27B
 NINFER_WEIGHTS=out/qwen3_6_27b.ninfer
 ```
 
+### Windows build environment (RTX 3090 fork host)
+
+Verified 2026-08: this host is Windows-only and does not match the RTX 5090 product
+contract above. Build with `CMAKE_CUDA_ARCHITECTURES=86` (the top-level CMakeLists accepts
+only `86` or `89`); CUDA 12.8 is on the path and satisfies the `>= 12.8` check. CMake is
+`C:\Program Files\CMake` (3.31.3) and Ninja comes from the Python 3.13 pip install.
+
+Toolchain facts that make naive configure fail — handle all three, in order:
+
+1. **CUDA 12.8 rejects the installed MSVC.** The only installed compiler is VS 2026
+   Community, MSVC v145 `14.50.35717` under
+   `C:\Program Files\Microsoft Visual Studio\18\Community`. The `C:\Program Files\Microsoft
+   Visual Studio\2022` folder is an installer stub; VS 2022 BuildTools is **not** installed,
+   so old build caches that pin `14.44.35207` (`build-ninja/`, `build-windows/`,
+   `build-fixcheck/`) are stale — reconfigure fresh instead of reusing them. CUDA 12.8's
+   `host_config.h` hard-errors on v145 (`C1189: unsupported Microsoft Visual Studio
+   version!`), so configure must pass `-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler`
+   (it stays in `CMAKE_CUDA_FLAGS` in the cache; plain `cmake --build` afterwards needs
+   nothing).
+2. **Do not invoke `vcvars64.bat` from a non-interactive shell.** It emits a broken
+   environment here (mangled `WindowsSDKVersion` with doubled backslashes, a VS 2026 debug
+   variable flood), which makes CMake's ABI and link checks fail (`rc ... no such file or
+   directory`). Windows SDK `10.0.26100.0` is complete; set the environment by hand instead.
+   An untracked starting template, `config.bat`, sits in the repo root with the exact
+   `INCLUDE`/`LIB`/`PATH` lines (v145 `14.50.35717` + SDK `10.0.26100.0`) that then run
+   `cmake -S . -B build -G Ninja ...`.
+3. **FFMPEG is required on Windows and was missing on this host.** With `BUILD_TESTING=ON`
+   or `NINFER_BUILD_APPS=ON` the CMakeLists forces `NINFER_BUILD_MEDIA_ACQUIRE`/`SERVE` and
+   `find_package(FFMPEG REQUIRED)`; without it configure aborts before any compilation
+   (checked `C:\ProgramData\chocolatey\lib`, `C:\ffmpeg`, `C:\Program Files\ffmpeg`: absent).
+   Until a Windows FFmpeg build is present, the best achievable verification is host-side
+   only. When one is available, point at it with `-DFFMPEG_DIR=<prefix>` (the prefix must
+   contain `FFMPEGConfig.cmake` / `ffmpeg-config.cmake` exposing `FFMPEG_INCLUDE_DIRS`,
+   `FFMPEG_LIBRARY_DIRS`, `FFMPEG_LIBRARIES`); media decode is not needed to build the Op
+   tests, but the find_package is unconditional, so the prefix is still required.
+
+Canonical configure for this host, run from the `config.bat` environment once FFMPEG exists:
+
+```bat
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=86 \
+  -DBUILD_TESTING=ON -DNINFER_BUILD_APPS=OFF \
+  -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler -DFFMPEG_DIR=<ffmpeg-prefix>
+cmake --build build -j
+targeted tests: cmake --build build -j --target <test> && build\tests\...<test>.exe
+```
+
+The GPU is routinely occupied (no free VRAM): `nvcc`/`cicc`/`ptxas` compilation needs no
+device access, so compiling the test binaries is always possible; **executing** any CUDA
+test or perplexity run must wait for free VRAM. Never `rm -rf build/` unless a
+reconfigure is intended — configure on this host is slow and fragile.
+
 ## Commits
 
 Create a commit only when the user requests one. Use Conventional Commit-style subjects, for
