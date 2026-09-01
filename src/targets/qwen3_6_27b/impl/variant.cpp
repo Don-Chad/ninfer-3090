@@ -134,9 +134,14 @@ std::size_t post_mixer_workspace_bytes(QType gate_up_qtype, QType down_qtype,
         (void)layout.alloc_bytes(swiglu_bytes);
     }
     {
-        auto scope = layout.scope();
-        (void)layout.alloc_bytes(ops::linear_add_workspace_capacity_bytes(
-            down_qtype, TextConfig::hidden, TextConfig::intermediate, policy, first, last));
+        auto scope              = layout.scope();
+        std::size_t down_bytes  = ops::linear_add_workspace_capacity_bytes(
+            down_qtype, TextConfig::hidden, TextConfig::intermediate, policy, first, last);
+        if (q4a8_swiglu_enabled() && down_qtype == QType::Q5G64_F16S) {
+            down_bytes = std::max(down_bytes,
+                                  ops::detail::q5a8_add_workspace_capacity_bytes(first, last));
+        }
+        (void)layout.alloc_bytes(down_bytes);
     }
     return layout.peak_bytes(1);
 }
@@ -329,8 +334,12 @@ void Variant::post_mixer(const Tensor& hidden, const PostMixerWeights& weights, 
         ops::linear_swiglu(hidden, weights.gate_up, activation, text_policy(weights.gate_up),
                            workspace, stream);
     }
-    ops::linear_add(activation, weights.down, residual, text_policy(weights.down), workspace,
-                    stream);
+    if (q4a8_swiglu_enabled() && ops::detail::q5a8_add_supported(weights.down, activation.ne[1])) {
+        ops::detail::q5a8_add_launch(activation, weights.down, residual, workspace, stream);
+    } else {
+        ops::linear_add(activation, weights.down, residual, text_policy(weights.down), workspace,
+                        stream);
+    }
 }
 
 void Variant::mtp_post_mixer(const Tensor& hidden, const MtpPostMixerWeights& weights,

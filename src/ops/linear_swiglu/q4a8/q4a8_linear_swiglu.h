@@ -37,4 +37,13 @@ namespace ninfer::ops::detail {
 void q4a8_swiglu_launch(const Tensor& x, const Weight& gate_up, Tensor& out,
                         WorkspaceArena& workspace, cudaStream_t stream);
 
+// Companion route for mlp/down, a Q5G64 row-split LinearAdd. Q5 adds an 8-byte-per-group high
+// plane carrying each code's fifth bit; a code decodes as ((low4 | hbit << 4) ^ 0x10) - 0x10 over
+// [-16,15], which int8 still holds exactly.
+[[nodiscard]] bool q5a8_add_supported(const Weight& down, std::int32_t tokens);
+[[nodiscard]] std::size_t q5a8_add_workspace_capacity_bytes(std::int32_t min_tokens,
+                                                            std::int32_t max_tokens);
+void q5a8_add_launch(const Tensor& x, const Weight& down, Tensor& residual,
+                     WorkspaceArena& workspace, cudaStream_t stream);
+
 } // namespace ninfer::ops::detail
