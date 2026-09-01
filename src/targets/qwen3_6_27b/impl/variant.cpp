@@ -11,7 +11,9 @@
 #include "ninfer/ops/residual_add.h"
 #include "ninfer/ops/silu_mul.h"
 
+
 #include <algorithm>
+#include <cstdlib>
 #include <stdexcept>
 
 #define NINFER_QWEN36_VARIANT    ::ninfer::targets::qwen3_6_27b::detail::Variant
@@ -48,17 +50,59 @@ void validate_token_interval(std::int32_t first, std::int32_t last) {
 // through their A16 routes, which dequantize the stored codes to BF16 before the MMA.
 constexpr ops::LinearPolicy kNvfp4TextPolicy = ops::LinearPolicy::A16Only;
 constexpr ops::LinearPolicy kFp8TextPolicy   = ops::LinearPolicy::A16Only;
+// The integer-activation route for groupwise-int weights is an sm_86 addition: it feeds the s8
+// tensor cores, which Ampere has and which no A16 route uses.
+constexpr ops::LinearPolicy kGroupwiseIntTextPolicy = ops::LinearPolicy::AllowA8Int;
 #else
 constexpr ops::LinearPolicy kNvfp4TextPolicy = ops::LinearPolicy::AllowA4;
 constexpr ops::LinearPolicy kFp8TextPolicy   = ops::LinearPolicy::AllowA8;
+// Not built for sm_120a; groupwise-int keeps its A16 route there.
+constexpr ops::LinearPolicy kGroupwiseIntTextPolicy = ops::LinearPolicy::A16Only;
 #endif
 
+// PR_POLICY asks for invasive runtime changes -- custom kernels and quantization among them --
+// to arrive behind a flag and default to off until they have proven stable. The Op-level
+// registration of AllowA8Int is unconditional and fully tested; this gate only decides whether the
+// 27B target asks for it. Set NINFER_W4A8_PREFILL=1 to opt in.
+bool integer_activation_prefill_enabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NINFER_W4A8_PREFILL");
+        return value != nullptr && value[0] == '1' && value[1] == 0;
+    }();
+    return enabled;
+}
+
 ops::LinearPolicy text_policy(const Weight& weight) {
+    if (!integer_activation_prefill_enabled()) {
+        switch (weight.qtype) {
+        case QType::NVFP4:
+            return kNvfp4TextPolicy;
+        case QType::FP8_E4M3FN_ROW_BF16S:
+            return kFp8TextPolicy;
+        default:
+            return ops::LinearPolicy::A16Only;
+        }
+    }
     switch (weight.qtype) {
     case QType::NVFP4:
         return kNvfp4TextPolicy;
     case QType::FP8_E4M3FN_ROW_BF16S:
         return kFp8TextPolicy;
+    // Permissive only for the two profiles that have a registered integer route -- the MLP
+    // gate_up and down projections. The resolver then takes it on full prefill tiles and falls
+    // back to A16 everywhere else, including every decode step and every partial tile.
+    //
+    // Deliberately keyed on shape rather than qtype alone: attn_input_proj and gdn_input_proj
+    // also receive text_policy() and neither admits AllowA8Int, so handing it to them would
+    // throw. Today the groupwise-int artifact reaches those through their split payloads, which
+    // pass no policy at all, so a broader rule happens not to fire -- but that is luck, not
+    // design, and the fused payloads would hit it.
+    case QType::Q4G64_F16S:
+        return (weight.n == 34816 && weight.k == 5120) ? kGroupwiseIntTextPolicy
+                                                        : ops::LinearPolicy::A16Only;
+    case QType::Q5G64_F16S:
+        return (weight.n == 5120 && weight.k == 17408) ? kGroupwiseIntTextPolicy
+                                                        : ops::LinearPolicy::A16Only;
     default:
         return ops::LinearPolicy::A16Only;
     }
@@ -113,7 +157,7 @@ std::size_t post_mixer_workspace_bytes(QType gate_up_qtype, QType down_qtype,
             gate_up_qtype, 2 * TextConfig::intermediate, TextConfig::hidden, policy, first, last));
     }
     {
-        auto scope = layout.scope();
+        auto scope              = layout.scope();
         (void)layout.alloc_bytes(ops::linear_add_workspace_capacity_bytes(
             down_qtype, TextConfig::hidden, TextConfig::intermediate, policy, first, last));
     }
