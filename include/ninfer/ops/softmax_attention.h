@@ -41,7 +41,10 @@ struct ContextAttentionExecutionEnvelope {
  * is not reproduced by the oracle.
  *
  * A causal INT8-G64 V row is interpreted by decoding each signed code c with its stored FP16 scale
- * bits: FP32(c) * FP32(scale_bits). A causal FP8-E4M3FN V row has one stored FP16 scale for D256;
+ * bits: FP32(c) * FP32(scale_bits). A causal rk8v4 (packed INT4) V row stores two signed 4-bit
+ * codes per byte - the even dimension d in the low nibble, the odd dimension d+1 in the high
+ * nibble - plus one stored FP16 scale per 32-value group, and each code c is decoded as
+ * FP32(c) * FP32(scale_bits). A causal FP8-E4M3FN V row has one stored FP16 scale for D256;
  * each finite code e is decoded as FP32(e) * FP32(scale_bits). Quantized K uses the paired physical
  * representation written by kv_cache_append; its original-coordinate logical row is consumed
  * through the matching private Q/K profile. The fixed orthogonal preparation and transient Q
