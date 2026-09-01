@@ -29,6 +29,10 @@ namespace ninfer::ops::detail {
 // fall through to the A16 route.
 [[nodiscard]] bool q4a8_swiglu_supported(const Weight& gate_up, std::int32_t tokens);
 
+// Token half of the admission rule, for the workspace query, which sees the profile but not
+// the Weight. A single-T capacity query must report the route that will actually run.
+[[nodiscard]] bool q4a8_tokens_supported(std::int32_t tokens);
+
 // Transient bytes this route needs for the quantised activation planes over [min,max] tokens.
 [[nodiscard]] std::size_t q4a8_swiglu_workspace_capacity_bytes(std::int32_t min_tokens,
                                                                std::int32_t max_tokens);
@@ -41,6 +45,7 @@ void q4a8_swiglu_launch(const Tensor& x, const Weight& gate_up, Tensor& out,
 // plane carrying each code's fifth bit; a code decodes as ((low4 | hbit << 4) ^ 0x10) - 0x10 over
 // [-16,15], which int8 still holds exactly.
 [[nodiscard]] bool q5a8_add_supported(const Weight& down, std::int32_t tokens);
+[[nodiscard]] bool q5a8_tokens_supported(std::int32_t tokens);
 [[nodiscard]] std::size_t q5a8_add_workspace_capacity_bytes(std::int32_t min_tokens,
                                                             std::int32_t max_tokens);
 void q5a8_add_launch(const Tensor& x, const Weight& down, Tensor& residual,
