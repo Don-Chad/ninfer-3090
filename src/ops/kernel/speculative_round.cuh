@@ -95,6 +95,18 @@ __launch_bounds__(kSamplerBlock) __global__ void speculative_accept_greedy_draft
             const int t_star = row_targets[a];
 
             for (int i = 0; i <= k; ++i) { row_tokens[i] = 0; }
+            // A diverged forward pass gives this column an all-NaN logit row, which makes the
+            // acceptance comparisons meaningless as well as the correction token. Fail the whole
+            // round rather than licensing plausible-looking garbage.
+            const std::int64_t t_star_base = static_cast<std::int64_t>(a) * physical_rows;
+            if (!sampling_selected_logit_is_finite(row_logits, t_star_base, t_star)) {
+                row_tokens[0]        = kSamplerNonFiniteToken;
+                licensed_counts[row] = 1;
+                accepted[row]        = 0;
+                anchors[row]         = kSamplerNonFiniteToken;
+                lengths[row] += 1;
+                return;
+            }
             for (int i = 0; i < a; ++i) { row_tokens[i] = row_drafts[i]; }
             row_tokens[a] = t_star;
 
@@ -180,6 +192,15 @@ __launch_bounds__(kSamplerBlock) __global__ void speculative_accept_greedy_draft
             const int tstar = tstar_sh;
             const int L     = L_sh;
             for (int i = 0; i <= k; ++i) { row_tokens[i] = 0; }
+            const std::int64_t tstar_base = static_cast<std::int64_t>(a) * physical_rows;
+            if (!sampling_selected_logit_is_finite(row_logits, tstar_base, tstar)) {
+                row_tokens[0]        = kSamplerNonFiniteToken;
+                licensed_counts[row] = 1;
+                accepted[row]        = 0;
+                anchors[row]         = kSamplerNonFiniteToken;
+                lengths[row]         = L + 1;
+                return;
+            }
             for (int i = 0; i < a; ++i) { row_tokens[i] = row_drafts[i]; }
             row_tokens[a]        = tstar;
             const int produced   = a + 1;
@@ -247,6 +268,15 @@ __launch_bounds__(kSamplerBlock) __global__ void speculative_accept_greedy_draft
         const int L     = L_sh;
 
         for (int i = 0; i <= k; ++i) { row_tokens[i] = 0; }
+        const std::int64_t tstar_base = static_cast<std::int64_t>(a) * physical_rows;
+        if (!sampling_selected_logit_is_finite(row_logits, tstar_base, tstar)) {
+            row_tokens[0]        = kSamplerNonFiniteToken;
+            licensed_counts[row] = 1;
+            accepted[row]        = 0;
+            anchors[row]         = kSamplerNonFiniteToken;
+            lengths[row]         = L + 1;
+            return;
+        }
         for (int i = 0; i < a; ++i) { row_tokens[i] = row_drafts[i]; }
         row_tokens[a] = tstar;
 
@@ -504,6 +534,10 @@ __launch_bounds__(kSamplerGroupBlock) __global__ void speculative_sampling_group
             const int L = lengths[row];
             int a       = 0;
             int tstar   = 0;
+            // This kernel is fed by the partial/group workspace and never sees the logits, so the
+            // selected column's own normalized distribution carries the divergence check: NaN
+            // logits normalize to NaN probabilities.
+            float tstar_prob = 0.0f;
             for (int i = 0; i <= extent; ++i) {
                 const int n            = workspace.dist_support[i];
                 const int* dist_idx    = workspace.dist_idx + sampling_dist_offset(i, 0);
@@ -526,13 +560,24 @@ __launch_bounds__(kSamplerGroupBlock) __global__ void speculative_sampling_group
                     const float ur = sampling_uniform(cfg.seed, L + i + 1,
                                                       kSamplePurposeSpeculativeCorrection, 0u);
                     tstar          = sampling_pick_from_support(dist_idx, dist_prob, n, d, ur);
+                    tstar_prob     = dist_prob[0];
                     break;
                 }
                 const float u =
                     sampling_uniform(cfg.seed, L + extent + 1, kSamplePurposeSpeculativeBonus, 0u);
-                tstar = sampling_pick_from_support(dist_idx, dist_prob, n, -1, u);
+                tstar      = sampling_pick_from_support(dist_idx, dist_prob, n, -1, u);
+                tstar_prob = dist_prob[0];
             }
             for (int i = 0; i <= k; ++i) { row_tokens[i] = 0; }
+            if (!sampling_value_is_finite(tstar_prob)) {
+                row_tokens[0]                         = kSamplerNonFiniteToken;
+                licensed_counts[row]                  = 1;
+                accepted[row]                         = 0;
+                anchors[row]                          = kSamplerNonFiniteToken;
+                lengths[row]                          = L + 1;
+                *workspace.speculative_finalize_count = 0;
+                return;
+            }
             for (int i = 0; i < a; ++i) { row_tokens[i] = row_drafts[i]; }
             row_tokens[a]        = tstar;
             const int produced   = a + 1;
