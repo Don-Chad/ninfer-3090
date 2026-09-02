@@ -961,6 +961,17 @@ private:
     [[nodiscard]] std::size_t host_kv_prefix_bytes(const KVAddressSpaceStore& addresses,
                                                    KVAddressSpaceHandle address,
                                                    std::uint32_t frontier) const noexcept;
+    // The value coding joins the tag because rk8v4 and plain INT8 share kv_dtype, and a
+    // checkpoint captured under one must never be replayed under the other. Capture and
+    // reuse-lookup must derive the tag from this one place: when the lookup side omitted the
+    // coding bit, every stored rk8v4 checkpoint carried a tag no lookup could ever produce, so
+    // prefix reuse missed unconditionally under that profile.
+    [[nodiscard]] std::uint32_t capture_identity_tag() const noexcept {
+        return static_cast<std::uint32_t>(speculative_backend) |
+               (static_cast<std::uint32_t>(proposal_head) << 8U) |
+               (static_cast<std::uint32_t>(kv_dtype) << 16U) |
+               (kv_packed_values ? (1U << 24U) : 0U);
+    }
     [[nodiscard]] qwen3_6::CheckpointSummary
     checkpoint_summary(const SequenceState& sequence, runtime::CheckpointRef checkpoint,
                        StateImageHandle state, runtime::PrefillWork rebuild_work) const;

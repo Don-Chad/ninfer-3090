@@ -6821,12 +6821,7 @@ ProgramImplCore::checkpoint_summary(const SequenceState& sequence,
         speculative_backend == SpeculativeBackend::Mtp      ? checkpoint.frontier - 1U
         : speculative_backend == SpeculativeBackend::DFlash ? checkpoint.frontier
                                                             : 0U;
-    // The value coding joins the tag because rk8v4 and plain INT8 share kv_dtype, and a
-    // checkpoint captured under one must never be replayed under the other.
-    const std::uint32_t identity_tag = static_cast<std::uint32_t>(speculative_backend) |
-                                       (static_cast<std::uint32_t>(proposal_head) << 8U) |
-                                       (static_cast<std::uint32_t>(kv_dtype) << 16U) |
-                                       (kv_packed_values ? (1U << 24U) : 0U);
+    const std::uint32_t identity_tag = capture_identity_tag();
     return qwen3_6::CheckpointSummary{
         .ref   = checkpoint,
         .scope = runtime::CheckpointScope::Private,
