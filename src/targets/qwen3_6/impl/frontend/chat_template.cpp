@@ -167,8 +167,8 @@ std::string parameter_text(const OrderedJson& value) {
     return tojson_text(value);
 }
 
-std::string render_tool_call(const ToolCall& call, bool allow_empty_arguments) {
-    if (allow_empty_arguments && call.arguments_json.empty()) {
+std::string render_tool_call(const ToolCall& call) {
+    if (call.arguments_json.empty()) {
         return "<tool_call>\n<function=" + call.name + ">\n</function>\n</tool_call>";
     }
     OrderedJson args = OrderedJson::parse(call.arguments_json);
@@ -418,7 +418,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                 } else {
                     rendered += "\n";
                 }
-                rendered += render_tool_call(message.tool_calls[call_index], effort_template);
+                rendered += render_tool_call(message.tool_calls[call_index]);
             }
         }
         rendered += "<|im_end|>\n";
