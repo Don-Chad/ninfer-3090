@@ -106,11 +106,11 @@ intermediate artifacts are excluded unless requested or themselves the deliverab
 
 NInfer is a from-scratch C++/CUDA inference engine for maximum single-GPU inference performance on
 a small set of explicitly registered checkpoint artifacts. The supported identities are
-`qwen3.6-27b/groupwise-int`, `qwen3.6-27b/nvfp4`, `qwen3.8-27b/groupwise-int`, and
-`qwen3.6-35b-a3b/groupwise-int`. The current implementation is compiled for `sm_120a` and tuned
-and measured on NVIDIA GeForce RTX 5090. All identities execute Text, image/video Vision, MTP,
-prefix reuse, CLI, OpenAI/Anthropic serving, and measurement through the same public `.ninfer`
-Engine route; the 35B-A3B target additionally supports text-only DFlash.
+`qwen3.6-27b/groupwise-int`, `qwen3.6-27b/nvfp4`, `qwen3.8-27b/groupwise-int`,
+`qwen3.8-27b/nvfp4`, and `qwen3.6-35b-a3b/groupwise-int`. The current implementation is compiled
+for `sm_120a` and tuned and measured on NVIDIA GeForce RTX 5090. All identities execute Text,
+image/video Vision, MTP, prefix reuse, CLI, OpenAI/Anthropic serving, and measurement through the
+same public `.ninfer` Engine route; the 35B-A3B target additionally supports text-only DFlash.
 
 The current workload is one GPU and one resident model instance with a startup-fixed one to eight
 active requests. The Engine forms one compact decode batch at every round boundary and uses bounded
@@ -156,8 +156,11 @@ routing map, not a mandatory reading list:
 - `docs/cli.md`: CLI input, output, sampling, MTP, and runtime options;
 - `docs/serving.md`: OpenAI/Anthropic HTTP behavior;
 - `docs/performance.md`: published performance methodology and results;
-- `docs/maintainer/concurrent-inference-architecture.md`: bounded ingress, request/slot lifecycle,
-  scheduling, batched execution, CUDA Graph, and speculative-concurrency semantics;
+- `docs/maintainer/engine-architecture.md`: Gateway/Frontend/Engine/Runtime boundaries, execution
+  ownership, request/response/continuation lifecycles, admission, scheduling, output transactions,
+  batched execution, and CUDA Graph semantics;
+- `docs/maintainer/resource-scheduling-and-context-cache.md`: resource selection and accounting,
+  continuation/checkpoint ownership, materialization transactions, and Device/Host replica policy;
 - `docs/maintainer/paged-kv-cache.md`: shared KV capacity, page ownership, retention, physical
   layouts, and paged consumer contracts;
 - `docs/maintainer/artifact-container.md`, `storage-layouts.md`, and `tensor-formats.md`:
@@ -299,6 +302,9 @@ run and why.
 
 ## Local environment
 
+Use unrestricted build-tool parallelism for repository compilation. Invoke CMake builds as
+`cmake --build <build-dir> -j`; do not supply a numeric job limit such as `-j2` or `-j32`.
+
 These are conventional project resources, not a checklist of resources every task must use:
 
 | Purpose | Path |
@@ -322,6 +328,89 @@ PYTHON=python3
 MODEL=/path/to/Qwen3.6-27B
 NINFER_WEIGHTS=out/qwen3_6_27b.ninfer
 ```
+
+### Windows build environment (RTX 3090 fork host)
+
+Verified 2026-09 by building all 444 targets and running the full 100-test suite. An earlier
+revision of this section was wrong on four points and sent at least one agent down a dead end;
+the corrections are called out at the bottom so anyone reading git history is not re-confused.
+
+**Use the existing `build-ninja/` tree. Do not reconfigure and do not delete it.** It is already
+configured correctly: Release, `CMAKE_CUDA_ARCHITECTURES=86`, `BUILD_TESTING=ON`,
+`NINFER_BUILD_APPS=ON`, FFMPEG resolved through the vcpkg manifest into
+`build-ninja/vcpkg_installed/x64-windows`. Configure on this host is slow; there is nothing to
+gain by redoing it.
+
+The one real trap is that **two MSVC toolchains are installed and the wrong one is first on
+PATH**:
+
+| | version | path |
+|---|---|---|
+| VS 2026 Community | MSVC v145 `14.50.35717` | `C:\Program Files\Microsoft Visual Studio\18\Community` |
+| VS 2022 BuildTools | MSVC v143 `14.44.35207` | `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools` |
+
+CUDA 12.8 hard-errors on v145 (`C1189: unsupported Microsoft Visual Studio version!`), and
+`nvcc` picks up whatever `cl.exe` PATH offers, which by default is VS 2026. `build-ninja`'s cache
+pins the VS 2022 compiler, so the fix is simply to put that environment in front before building.
+Note the `(x86)` in the path — that is the detail the earlier revision missed when it concluded
+VS 2022 was absent.
+
+From PowerShell, import the VS 2022 BuildTools environment and build:
+
+```powershell
+$vcvars = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
+  if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($matches[1])" -Value $matches[2] }
+}
+Set-Location C:\ninfer-fork\ninfer-3090\build-ninja
+cmake --build .                                  # everything
+cmake --build . --target <name>                  # one target
+ctest -j2                                        # full suite, ~70 s
+ctest -R <regex> --output-on-failure             # one test
+```
+
+That import is reliable; the environment it produces builds cleanly. Adding only the compiler's
+`bin` directory to PATH is *not* enough — the standard library headers go missing
+(`fatal error C1083: Cannot open include file: 'cstdint'`), because `INCLUDE` and `LIB` come from
+vcvars too.
+
+For a standalone `.cu` probe outside the build tree, `nvcc` can be driven directly. Git Bash
+mangles MSVC-style flags (`/wd4819` becomes a path), so use PowerShell:
+
+```powershell
+nvcc -O3 -arch=sm_86 -allow-unsupported-compiler probe.cu -o probe.exe
+```
+
+`-allow-unsupported-compiler` is needed there and only there, because a bare `nvcc` invocation
+finds VS 2026 on PATH. It is not needed for the CMake build and is not in the cache.
+
+Other host facts:
+
+- CMake 3.31.3 at `C:\Program Files\CMake`; Ninja 1.11.1 from the Python 3.13 pip install.
+- Profilers are installed: Nsight Systems 2024.6.2 (`nsys.exe` under
+  `target-windows-x64/`) and Nsight Compute 2025.1.0 (`ncu.bat`). `ncu` needs GPU performance
+  counters, which are admin-only by default — run it from an elevated shell rather than changing
+  `RmProfilingAdminOnly`, which needs two reboots and loosens a system-wide setting.
+- Compilation needs no GPU, so building is always possible. **Executing** CUDA tests, benchmarks
+  or perplexity runs needs free VRAM, and the user often has the server loaded — ask before
+  assuming the device is free.
+- `nvcc` writes `.exp`/`.lib` next to any `-o` target; keep probe builds out of the repo root.
+- An untracked `config.bat` in the repo root is a leftover from the earlier, incorrect recipe. It
+  sets up the VS 2026 v145 environment with `-allow-unsupported-compiler` and reconfigures into
+  `build/`. It is not the supported path; prefer `build-ninja` as above.
+
+Corrections to the previous revision of this section, all verified false:
+
+1. "VS 2022 BuildTools is **not** installed, so caches pinning `14.44.35207` are stale —
+   reconfigure fresh." It is installed, under `Program Files (x86)`, and those caches are live and
+   correct. Reconfiguring is the one thing that actually breaks the build here.
+2. "Do not invoke `vcvars64.bat` from a non-interactive shell." The VS 2022 BuildTools vcvars
+   imports cleanly and non-interactively, as above. The variable flood described belongs to the
+   VS 2026 vcvars, not this one.
+3. "FFMPEG is required and was missing." It is provided by the vcpkg manifest and already present
+   in `build-ninja/vcpkg_installed/x64-windows`. No `-DFFMPEG_DIR` is needed.
+4. "Configure must pass `-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler`." Not for this build;
+   the cache carries `-Xcompiler=/Zc:__cplusplus` and nothing else, because it uses v143.
 
 ## Commits
 

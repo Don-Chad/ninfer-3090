@@ -12,8 +12,14 @@ using ninfer::test::linear_add::WeightFormat;
 int w8_a16_conformance() {
     int failures = 0;
 
+    // The sm_86 (NINFER_SM8X_COMPAT) split-K and medium split-K launchers slice tokens into
+    // 32-column groups, so any T congruent to 1 mod 32 above 32 leaves a single-column tail. That
+    // tail used to go unconditionally to the DecodeR16 kernel, which bakes in K=6144 and so read
+    // past the end of x on the K=4096 geometry -- an all-NaN output column, not a failure. 96 was
+    // covered here but 97 was not. Keep 33/65/97 on both shapes.
     constexpr std::array<std::int32_t, 4> kK4096RouteStarts{2, 49, 129, 641};
-    constexpr std::array<std::int32_t, 5> kK4096RouteInteriors{1, 24, 96, 256, 1024};
+    constexpr std::array<std::int32_t, 8> kK4096RouteInteriors{1,  24,  96,  256,
+                                                              1024, 33,  65,  97};
     failures += ninfer::test::linear_add::run_shape(
         "W8_A16 LinearAdd", WeightFormat::W8G32F16S,
         ShapeCase{2048, 4096, 419U, kK4096RouteStarts, kK4096RouteInteriors});
@@ -23,10 +29,10 @@ int w8_a16_conformance() {
         481,  641,  673,  705,  785,  897,  961,  1024, 1025, 1121, 1281,
         1345, 1409, 1681, 1792, 1793, 1920, 1921, 2017, 2048, 2049,
     };
-    constexpr std::array<std::int32_t, 33> kK6144RouteInteriors{
-        1,    24,   96,   160,  192,  224,  320,  392,  400,  424,  448,
-        464,  560,  656,  688,  744,  840,  928,  992,  1024, 1072, 1200,
-        1312, 1376, 1544, 1736, 1792, 1856, 1920, 1968, 2032, 2048, 4096,
+    constexpr std::array<std::int32_t, 36> kK6144RouteInteriors{
+        1,    24,   96,   160,  192,  224,  320,  392,  400,  424,  448,  464,
+        560,  656,  688,  744,  840,  928,  992,  1024, 1072, 1200, 1312, 1376,
+        1544, 1736, 1792, 1856, 1920, 1968, 2032, 2048, 4096, 33,   65,   97,
     };
     failures += ninfer::test::linear_add::run_shape(
         "W8_A16 LinearAdd", WeightFormat::W8G32F16S,

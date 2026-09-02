@@ -55,6 +55,50 @@ inline void cuda_synchronize(cudaStream_t stream) {
     cuda_check(cudaStreamSynchronize(stream), "cudaStreamSynchronize");
 }
 
+// FP8 A8 and NVFP4 A4 execution issue tensor-core instructions that exist only on sm_100a /
+// sm_120a and have no Ampere fallback, so those translation units are compiled out under
+// NINFER_SM8X_COMPAT and their entry points throw instead.
+#if defined(NINFER_SM8X_COMPAT)
+inline constexpr bool kA8ExecutionAvailable = false;
+inline constexpr bool kA4ExecutionAvailable = false;
+#else
+inline constexpr bool kA8ExecutionAvailable = true;
+inline constexpr bool kA4ExecutionAvailable = true;
+#endif
+
+// True when an exception is one of the A8/A4 units refusing to run because this build targets an
+// architecture whose kernels were compiled out. On a build where those kernels exist the answer is
+// always false, so such a throw still fails the test.
+inline bool unsupported_arch_refusal(const std::exception& error) {
+    if constexpr (kA8ExecutionAvailable && kA4ExecutionAvailable) {
+        (void)error;
+        return false;
+    } else {
+        return std::string_view(error.what()).find("requires an sm_") != std::string_view::npos;
+    }
+}
+
+// Runs one Op test case, reporting an unsupported-architecture refusal as a skip rather than a
+// failure. Whether a given shape actually takes the A8/A4 route is the plan's decision and the
+// threshold differs per Op, so the test asks the engine instead of restating those rules: only a
+// case the engine really refused is skipped, and every case that resolves to the A16 route still
+// runs and is checked.
+template <typename Case>
+int run_case_allowing_arch_skip(std::string_view label, Case&& body) {
+    if constexpr (kA8ExecutionAvailable && kA4ExecutionAvailable) {
+        (void)label;
+        return body();
+    } else {
+        try {
+            return body();
+        } catch (const std::exception& error) {
+            if (!unsupported_arch_refusal(error)) { throw; }
+            std::cout << "SKIP " << label << ": " << error.what() << "\n";
+            return 0;
+        }
+    }
+}
+
 inline bool cuda_unavailable() {
     int n               = 0;
     const cudaError_t e = cudaGetDeviceCount(&n);

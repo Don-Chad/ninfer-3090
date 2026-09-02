@@ -3,6 +3,7 @@
 // Examples:
 //   ./build/bench/ninfer_linear_bench --qtype q4 --n 4096 --k 5120 --t 8
 //   ./build/bench/ninfer_linear_bench --qtype q4 --n 4096 --k 5120 --sweep 1:32:1
+//   ./build/bench/ninfer_linear_bench --qtype fp8 --policy a8 --n 14336 --k 5120 --t 1
 //   ./build/bench/ninfer_linear_bench --suite qwen3_6_27b
 //   ncu --profile-from-start off ./build/bench/ninfer_linear_bench \
 //       --qtype q4 --n 4096 --k 5120 --t 8 --profile
@@ -38,8 +39,12 @@ using ninfer::ops::LinearPolicy;
 
 namespace {
 
-constexpr double kRtx5090DramGBs           = 1792.0;
-constexpr double kRtx5090SustainedReadGBs  = 1674.5;
+// Hardware ceilings come from bench::device_specs(), which derives the DRAM spec from the device
+// and carries measured per-architecture sustained-read and tensor-core rates. They were literals
+// for the RTX 5090 before, which made every percentage column here wrong by 1.91x on sm_86.
+inline double dram_spec_gbs() { return bench::device_specs().dram_spec_gbs; }
+inline double sustained_read_gbs() { return bench::device_specs().sustained_read_gbs; }
+
 constexpr std::uint64_t kDefaultFlushBytes = 256ULL << 20;
 constexpr int kDefaultWarmup               = 3;
 constexpr int kDefaultRepeat               = 20;
@@ -152,6 +157,9 @@ struct Result {
     double dram_spec_pct           = 0.0;
     double sustained_read_pct      = 0.0;
     double useful_tflops           = 0.0;
+    const char* tensor_profile     = "";
+    double tensor_peak_tflops      = std::numeric_limits<double>::quiet_NaN();
+    double tensor_peak_pct         = std::numeric_limits<double>::quiet_NaN();
     double memory_floor_us         = 0.0;
     double memory_floor_pct        = 0.0;
     double t1_linear_extrapolation = std::numeric_limits<double>::quiet_NaN();
@@ -226,6 +234,8 @@ const char* qtype_name(QType qtype) {
         return "BF16";
     case QType::NVFP4:
         return "NVFP4";
+    case QType::FP8_E4M3FN_ROW_BF16S:
+        return "FP8";
     default:
         break;
     }
@@ -234,6 +244,7 @@ const char* qtype_name(QType qtype) {
 
 const char* policy_name(LinearPolicy policy) {
     if (policy == LinearPolicy::A16Only) { return "A16"; }
+    if (policy == LinearPolicy::AllowA8) { return "A8"; }
     if (policy == LinearPolicy::AllowA4) { return "A4"; }
     throw std::invalid_argument("unsupported Linear benchmark policy");
 }
@@ -246,14 +257,16 @@ QType parse_qtype(std::string_view text) {
     if (value == "w8" || value == "w8g32" || value == "w8g32_f16s") { return QType::W8G32_F16S; }
     if (value == "bf16" || value == "bf16_ctrl") { return QType::BF16_CTRL; }
     if (value == "nvfp4") { return QType::NVFP4; }
+    if (value == "fp8" || value == "fp8_e4m3fn_row_bf16s") { return QType::FP8_E4M3FN_ROW_BF16S; }
     throw std::invalid_argument("unknown qtype: " + std::string(text));
 }
 
 LinearPolicy parse_policy(std::string_view text) {
     const std::string value = lower(text);
     if (value == "a16" || value == "a16only") { return LinearPolicy::A16Only; }
+    if (value == "a8" || value == "allowa8") { return LinearPolicy::AllowA8; }
     if (value == "a4" || value == "allowa4") { return LinearPolicy::AllowA4; }
-    throw std::invalid_argument("Linear benchmark policy must be a16 or a4");
+    throw std::invalid_argument("Linear benchmark policy must be a16, a8, or a4");
 }
 
 std::uint64_t parse_u64(std::string_view text, const char* label) {
@@ -309,21 +322,21 @@ Sweep parse_sweep(std::string_view text) {
 }
 
 void usage(const char* argv0) {
-    std::fprintf(
-        stderr,
-        "Usage:\n"
-        "  %s --qtype Q4|Q5|Q6|W8|BF16|NVFP4 --n N --k K --t T [options]\n"
-        "  %s --qtype Q4|Q5|Q6|W8|BF16|NVFP4 --n N --k K --sweep START:END[:STEP] [options]\n"
-        "  %s --suite qwen3_6_27b|qwen3_6_35b_a3b|all [options]\n\n"
-        "Options:\n"
-        "  --policy a16|a4    Activation-compute policy (default a16).\n"
-        "  --profile          Capture exactly one post-warmup public Linear call.\n"
-        "  --warmup N         Warmup calls per point (default %d).\n"
-        "  --repeat N         Measured cold-cache samples per point (default %d).\n"
-        "  --flush-mib N      L2 eviction buffer size (default 256 MiB).\n"
-        "  --csv-out PATH     Write all ordinary measurement rows as CSV.\n"
-        "  -h, --help         Show this text.\n",
-        argv0, argv0, argv0, kDefaultWarmup, kDefaultRepeat);
+    std::fprintf(stderr,
+                 "Usage:\n"
+                 "  %s --qtype Q4|Q5|Q6|W8|BF16|NVFP4|FP8 --n N --k K --t T [options]\n"
+                 "  %s --qtype Q4|Q5|Q6|W8|BF16|NVFP4|FP8 --n N --k K --sweep START:END[:STEP] "
+                 "[options]\n"
+                 "  %s --suite qwen3_6_27b|qwen3_6_35b_a3b|all [options]\n\n"
+                 "Options:\n"
+                 "  --policy a16|a8|a4 Activation-compute policy (default a16).\n"
+                 "  --profile          Capture exactly one post-warmup public Linear call.\n"
+                 "  --warmup N         Warmup calls per point (default %d).\n"
+                 "  --repeat N         Measured cold-cache samples per point (default %d).\n"
+                 "  --flush-mib N      L2 eviction buffer size (default 256 MiB).\n"
+                 "  --csv-out PATH     Write all ordinary measurement rows as CSV.\n"
+                 "  -h, --help         Show this text.\n",
+                 argv0, argv0, argv0, kDefaultWarmup, kDefaultRepeat);
 }
 
 Options parse_args(int argc, char** argv) {
@@ -494,6 +507,11 @@ LinearBenchWeight make_weight(QType qtype, std::int32_t n, std::int32_t k) {
         const std::uint64_t model_bytes     = packed.model_weight_bytes();
         return {std::move(packed.storage), packed.weight, model_bytes};
     }
+    if (qtype == QType::FP8_E4M3FN_ROW_BF16S) {
+        bench::PackedQuantizedWeight packed = bench::make_fp8_weight(n, k);
+        const std::uint64_t model_bytes     = packed.model_weight_bytes();
+        return {std::move(packed.storage), packed.weight, model_bytes};
+    }
     const std::uint64_t padded_k_u64 = align_up(static_cast<std::uint64_t>(k), 128);
     if (padded_k_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
         throw std::overflow_error("padded K does not fit int32");
@@ -520,6 +538,41 @@ std::string join_labels(const std::vector<std::string>& labels) {
     return out;
 }
 
+double registered_tensor_peak_tflops(const BenchPoint& point, const char*& profile) {
+    // This mirrors the production FP8 selector. A permissive policy alone does not prove that an
+    // A8 route ran, so only the registered problem and extents currently dispatched to
+    // FP8/FP32-accumulate MMA get a Tensor Core utilization result.
+    const bool fp8_problem =
+        (point.n == 14336 && point.k == 5120) || (point.n == 16384 && point.k == 5120) ||
+        (point.n == 34816 && point.k == 5120) || (point.n == 5120 && point.k == 6144) ||
+        (point.n == 5120 && point.k == 17408);
+    const bool fp8_tensor_route =
+        (point.n == 14336 && point.k == 5120 && point.t >= 12) ||
+        (point.n == 16384 && point.k == 5120 && point.t >= 11) ||
+        (point.n == 34816 && point.k == 5120 && (point.t == 1 || point.t >= 5)) ||
+        (point.n == 5120 && (point.k == 6144 || point.k == 17408) && point.t >= 25);
+    if (point.qtype == QType::FP8_E4M3FN_ROW_BF16S && point.policy == LinearPolicy::AllowA8 &&
+        fp8_problem && fp8_tensor_route) {
+        profile = "FP8_F32ACC";
+        return bench::device_specs().fp8_f32acc_tflops;
+    }
+    // Groupwise-int weights on an A16 policy bottom out in the dequantizing GEMM, which issues
+    // mma_bf16 with f32 accumulate. Reporting that ceiling is what makes it visible how much
+    // headroom an integer-activation route would actually be competing for.
+    const bool groupwise_int =
+        point.qtype == QType::Q4G64_F16S || point.qtype == QType::Q5G64_F16S ||
+        point.qtype == QType::Q6G64_F16S || point.qtype == QType::W8G32_F16S;
+    if (groupwise_int) {
+        const double peak = bench::device_specs().bf16_f32acc_tflops;
+        if (std::isfinite(peak)) {
+            profile = "BF16_F32ACC";
+            return peak;
+        }
+    }
+    profile = "";
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
 Result make_result(const BenchPoint& point, const LinearBenchWeight& weight,
                    const bench::ColdTiming& timing, const Options& opt) {
     const std::uint64_t x_elements =
@@ -534,7 +587,7 @@ Result make_result(const BenchPoint& point, const LinearBenchWeight& weight,
                                 static_cast<double>(point.t);
     const double seconds = timing.median_us * 1.0e-6;
     const double memory_floor_us =
-        static_cast<double>(model_bytes) / (kRtx5090DramGBs * 1.0e9) * 1.0e6;
+        static_cast<double>(model_bytes) / (dram_spec_gbs() * 1.0e9) * 1.0e6;
 
     Result result;
     result.labels             = join_labels(point.labels);
@@ -552,14 +605,18 @@ Result make_result(const BenchPoint& point, const LinearBenchWeight& weight,
     result.min_us             = timing.min_us;
     result.p95_us             = timing.p95_us;
     result.effective_gbs      = static_cast<double>(model_bytes) / seconds / 1.0e9;
-    result.dram_spec_pct      = result.effective_gbs / kRtx5090DramGBs * 100.0;
-    result.sustained_read_pct = result.effective_gbs / kRtx5090SustainedReadGBs * 100.0;
+    result.dram_spec_pct      = result.effective_gbs / dram_spec_gbs() * 100.0;
+    result.sustained_read_pct = result.effective_gbs / sustained_read_gbs() * 100.0;
     result.useful_tflops      = useful_flops / seconds / 1.0e12;
-    result.memory_floor_us    = memory_floor_us;
-    result.memory_floor_pct   = memory_floor_us / timing.median_us * 100.0;
-    result.warmup             = opt.warmup;
-    result.repeat             = opt.repeat;
-    result.flush_bytes        = opt.flush_bytes;
+    result.tensor_peak_tflops = registered_tensor_peak_tflops(point, result.tensor_profile);
+    if (std::isfinite(result.tensor_peak_tflops)) {
+        result.tensor_peak_pct = result.useful_tflops / result.tensor_peak_tflops * 100.0;
+    }
+    result.memory_floor_us  = memory_floor_us;
+    result.memory_floor_pct = memory_floor_us / timing.median_us * 100.0;
+    result.warmup           = opt.warmup;
+    result.repeat           = opt.repeat;
+    result.flush_bytes      = opt.flush_bytes;
     return result;
 }
 
@@ -668,20 +725,27 @@ void print_header() {
     CUDA_CHECK(cudaGetDevice(&device));
     cudaDeviceProp properties{};
     CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
-    std::printf("# actual_gpu=%s sm=%d%d reference_gpu=RTX_5090\n", properties.name,
-                properties.major, properties.minor);
-    std::printf("# dram_spec_gbs=%.1f sustained_read_gbs=%.1f cache=cold\n", kRtx5090DramGBs,
-                kRtx5090SustainedReadGBs);
+    std::printf("# actual_gpu=%s sm=%d%d reference_gpu=%s\n", properties.name, properties.major,
+                properties.minor, bench::device_specs().reference);
+    std::printf("# dram_spec_gbs=%.1f sustained_read_gbs=%.1f cache=cold\n", dram_spec_gbs(),
+                sustained_read_gbs());
+    std::printf("# dense_tensor_peak bf16_f32acc=%.1f int8=%.1f fp8_f16acc=%.1f fp8_f32acc=%.1f\n",
+                bench::device_specs().bf16_f32acc_tflops, bench::device_specs().int8_tops,
+                bench::device_specs().fp8_f16acc_tflops,
+                bench::device_specs().fp8_f32acc_tflops);
 }
 
 void print_results(const std::vector<Result>& results) {
-    std::printf("%-44s %5s %3s %8s %8s %6s %11s %11s %11s %10s %7s %7s %10s %9s %9s %8s\n", "label",
-                "qt", "pol", "N", "K", "T", "median_us", "min_us", "p95_us", "eff_GB/s", "DRAM_%",
-                "READ_%", "TFLOP/s", "mem_%", "T1_lin_x", "delta_%");
+    std::printf("%-44s %5s %3s %8s %8s %6s %11s %11s %11s %10s %7s %7s %10s %11s %8s "
+                "%9s %9s %8s\n",
+                "label", "qt", "pol", "N", "K", "T", "median_us", "min_us", "p95_us", "eff_GB/s",
+                "DRAM_%", "READ_%", "TFLOP/s", "TC_profile", "TC_%", "mem_%", "T1_lin_x",
+                "delta_%");
     for (const Result& result : results) {
         const bool have_delta = std::isfinite(result.delta_pct);
         char delta[32];
         char t1_linear[32];
+        char tensor_peak[32];
         if (have_delta) {
             std::snprintf(delta, sizeof(delta), "%.2f", result.delta_pct);
         } else {
@@ -692,12 +756,19 @@ void print_results(const std::vector<Result>& results) {
         } else {
             std::snprintf(t1_linear, sizeof(t1_linear), "-");
         }
+        if (std::isfinite(result.tensor_peak_pct)) {
+            std::snprintf(tensor_peak, sizeof(tensor_peak), "%.2f", result.tensor_peak_pct);
+        } else {
+            std::snprintf(tensor_peak, sizeof(tensor_peak), "-");
+        }
         std::printf("%-44s %5s %3s %8d %8d %6d %11.3f %11.3f %11.3f %10.1f %7.2f "
-                    "%7.2f %10.2f %9.2f %9s %8s\n",
+                    "%7.2f %10.2f %11s %8s %9.2f %9s %8s\n",
                     result.labels.c_str(), result.qtype_name, result.policy_name, result.n,
                     result.k, result.t, result.median_us, result.min_us, result.p95_us,
                     result.effective_gbs, result.dram_spec_pct, result.sustained_read_pct,
-                    result.useful_tflops, result.memory_floor_pct, t1_linear, delta);
+                    result.useful_tflops,
+                    result.tensor_profile[0] == '\0' ? "-" : result.tensor_profile, tensor_peak,
+                    result.memory_floor_pct, t1_linear, delta);
     }
 }
 
@@ -717,7 +788,8 @@ void write_csv(const std::filesystem::path& path, const std::vector<Result>& res
     if (!out) { throw std::runtime_error("failed to open CSV output: " + path.string()); }
     out << "label,qtype,policy,N,K,T,weight_bytes,x_bytes,out_bytes,model_bytes,"
            "useful_flops,median_us,min_us,p95_us,effective_gbs,dram_spec_gbs,dram_spec_pct,"
-           "sustained_read_gbs,sustained_read_pct,useful_tflops,memory_floor_us,memory_floor_pct,"
+           "sustained_read_gbs,sustained_read_pct,useful_tflops,tensor_profile,"
+           "tensor_peak_tflops,tensor_peak_pct,memory_floor_us,memory_floor_pct,"
            "t1_linear_extrapolation,delta_pct,"
            "warmup,repeat,flush_bytes\n";
     for (const Result& result : results) {
@@ -725,10 +797,14 @@ void write_csv(const std::filesystem::path& path, const std::vector<Result>& res
             << ',' << result.n << ',' << result.k << ',' << result.t << ',' << result.weight_bytes
             << ',' << result.x_bytes << ',' << result.out_bytes << ',' << result.model_bytes << ','
             << result.useful_flops << ',' << result.median_us << ',' << result.min_us << ','
-            << result.p95_us << ',' << result.effective_gbs << ',' << kRtx5090DramGBs << ','
-            << result.dram_spec_pct << ',' << kRtx5090SustainedReadGBs << ','
+            << result.p95_us << ',' << result.effective_gbs << ',' << dram_spec_gbs() << ','
+            << result.dram_spec_pct << ',' << sustained_read_gbs() << ','
             << result.sustained_read_pct << ',' << result.useful_tflops << ','
-            << result.memory_floor_us << ',' << result.memory_floor_pct << ',';
+            << result.tensor_profile << ',';
+        if (std::isfinite(result.tensor_peak_tflops)) { out << result.tensor_peak_tflops; }
+        out << ',';
+        if (std::isfinite(result.tensor_peak_pct)) { out << result.tensor_peak_pct; }
+        out << ',' << result.memory_floor_us << ',' << result.memory_floor_pct << ',';
         if (std::isfinite(result.t1_linear_extrapolation)) {
             out << result.t1_linear_extrapolation;
         }

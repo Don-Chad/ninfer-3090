@@ -15,9 +15,13 @@ namespace {
 
 using Json = nlohmann::json;
 
-bool supported_role(std::string_view role) {
-    return role == "system" || role == "developer" || role == "user" || role == "assistant" ||
-           role == "tool";
+ChatRole parse_chat_role(std::string_view role) {
+    if (role == "system") { return ChatRole::System; }
+    if (role == "developer") { return ChatRole::Developer; }
+    if (role == "user") { return ChatRole::User; }
+    if (role == "assistant") { return ChatRole::Assistant; }
+    if (role == "tool") { return ChatRole::Tool; }
+    throw std::invalid_argument("unsupported chat role: " + std::string(role));
 }
 
 std::string media_value(const Json& part, MediaKind kind) {
@@ -189,10 +193,7 @@ ChatMessage parse_message(const Json& item, std::size_t index, bool vision_enabl
     }
 
     ChatMessage message;
-    message.role = item.at("role").get<std::string>();
-    if (!supported_role(message.role)) {
-        throw std::invalid_argument("unsupported chat role: " + message.role);
-    }
+    message.role  = parse_chat_role(item.at("role").get_ref<const std::string&>());
     message.parts = parse_content(item.at("content"), index, vision_enabled);
 
     if (item.contains("reasoning_content")) {
@@ -202,13 +203,13 @@ ChatMessage parse_message(const Json& item, std::size_t index, bool vision_enabl
         message.reasoning_content = item.at("reasoning_content").get<std::string>();
     }
     if (item.contains("tool_calls")) {
-        if (message.role != "assistant") {
+        if (message.role != ChatRole::Assistant) {
             throw std::invalid_argument("only assistant messages may contain tool_calls");
         }
         message.tool_calls = parse_tool_calls(item.at("tool_calls"), index);
     }
     if (item.contains("tool_call_id")) {
-        if (message.role != "tool" || !item.at("tool_call_id").is_string()) {
+        if (message.role != ChatRole::Tool || !item.at("tool_call_id").is_string()) {
             throw std::invalid_argument("tool_call_id must be a string on a tool message");
         }
         message.tool_call_id = item.at("tool_call_id").get<std::string>();
@@ -226,7 +227,7 @@ PromptInput prompt_from_text(std::string text, bool enable_thinking) {
     MessagePart part;
     part.text = std::move(text);
     ChatMessage message;
-    message.role = "user";
+    message.role = ChatRole::User;
     message.parts.push_back(std::move(part));
     PromptInput input;
     input.messages.push_back(std::move(message));

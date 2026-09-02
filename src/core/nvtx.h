@@ -2,8 +2,9 @@
 
 // NVTX3's initialization path calls _wgetenv on Windows (getenv elsewhere) without including
 // <stdlib.h> itself, so it relies on the includer having reached it first. This header is the
-// project's only entry point to nvtx3, so pulling <cstdlib> in here satisfies that dependency
-// once, for every consumer, whatever order its own includes happen to land in.
+// project's only entry point to nvtx3, and since runtime/contract/types.h began including it,
+// translation units whose first include is their own header reach nvtx3 before any standard
+// header. Pulling <cstdlib> in here satisfies that dependency once, for every consumer.
 #include <cstdlib>
 
 #include <nvtx3/nvToolsExt.h>
@@ -31,6 +32,15 @@ enum class Name : std::size_t {
     Generate,
     Prefill,
     Decode,
+    EngineBoundary,
+    ProgramSubmit,
+    DeviceWait,
+    ProgramPost,
+    EngineCommitOutput,
+    EngineMaintenance,
+    AdmissionPolicy,
+    ContextProgress,
+    StatsPublication,
     DecodeMtpRound,
     DecodeOrdinaryRound,
     DecodeMtpSubmit,
@@ -107,6 +117,15 @@ enum class Name : std::size_t {
         "generate",
         "prefill",
         "decode",
+        "engine.boundary",
+        "program.submit",
+        "device.wait",
+        "program.post",
+        "engine.commit_output",
+        "engine.maintenance",
+        "engine.admission_policy",
+        "engine.context_progress",
+        "engine.stats_publication",
         "decode.mtp_round",
         "decode.ordinary_round",
         "decode.mtp.submit",

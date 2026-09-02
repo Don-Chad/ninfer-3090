@@ -30,15 +30,16 @@ using namespace ninfer;
 namespace {
 
 constexpr std::size_t kFlushBytes = std::size_t{256} << 20;
-constexpr double kRtx5090DramGBs  = 1792.0;
+const double kRtx5090DramGBs = bench::device_specs().dram_spec_gbs;
 
-enum class Format : std::uint8_t { Q4Q5, W8Qgkv, W8Qkv, Bf16, Nvfp4, All };
+enum class Format : std::uint8_t { Q4Q5, W8Qgkv, W8Qkv, Bf16, Nvfp4, Fp8, All };
 enum class CacheMode : std::uint8_t { Cold, Warm, Both };
 enum class CacheState : std::uint8_t { Cold, Warm };
 
 struct Options {
     Format format                  = Format::All;
     ops::LinearPolicy nvfp4_policy = ops::LinearPolicy::AllowA4;
+    ops::LinearPolicy fp8_policy   = ops::LinearPolicy::AllowA8;
     CacheMode cache                = CacheMode::Cold;
     std::vector<std::int32_t> tokens{1, 2, 4, 8, 12, 16, 32, 64, 128, 256, 512, 1024};
     int warmup   = 5;
@@ -62,8 +63,9 @@ struct Result {
     std::fprintf(stderr,
                  "error: %s\n"
                  "usage: ninfer_attn_input_proj_bench "
-                 "[--format q4q5|w8-qgkv|w8-qkv|bf16|nvfp4|all] "
-                 "[--nvfp4-policy a16|a4] [--tokens T,...] [--cache cold|warm|both] "
+                 "[--format q4q5|w8-qgkv|w8-qkv|bf16|nvfp4|fp8|all] "
+                 "[--nvfp4-policy a16|a4] [--fp8-policy a16|a8] "
+                 "[--tokens T,...] [--cache cold|warm|both] "
                  "[--warmup N] [--repeat N] [--profile] [--csv-out PATH]\n",
                  message);
     std::exit(2);
@@ -117,10 +119,12 @@ Options parse_options(int argc, char** argv) {
                 options.format = Format::Bf16;
             else if (value == "nvfp4")
                 options.format = Format::Nvfp4;
+            else if (value == "fp8")
+                options.format = Format::Fp8;
             else if (value == "all")
                 options.format = Format::All;
             else
-                usage("--format expects q4q5, w8-qgkv, w8-qkv, bf16, nvfp4, or all");
+                usage("--format expects q4q5, w8-qgkv, w8-qkv, bf16, nvfp4, fp8, or all");
         } else if (argument == "--nvfp4-policy") {
             const std::string_view value(next("--nvfp4-policy requires a value"));
             if (value == "a16")
@@ -129,6 +133,14 @@ Options parse_options(int argc, char** argv) {
                 options.nvfp4_policy = ops::LinearPolicy::AllowA4;
             else
                 usage("--nvfp4-policy expects a16 or a4");
+        } else if (argument == "--fp8-policy") {
+            const std::string_view value(next("--fp8-policy requires a value"));
+            if (value == "a16")
+                options.fp8_policy = ops::LinearPolicy::A16Only;
+            else if (value == "a8")
+                options.fp8_policy = ops::LinearPolicy::AllowA8;
+            else
+                usage("--fp8-policy expects a16 or a8");
         } else if (argument == "--tokens") {
             options.tokens = parse_list(next("--tokens requires a value"), "--tokens");
         } else if (argument == "--cache") {
@@ -165,7 +177,15 @@ Options parse_options(int argc, char** argv) {
 const char* cache_name(CacheState cache) { return cache == CacheState::Cold ? "cold" : "warm"; }
 
 const char* policy_name(ops::LinearPolicy policy) {
-    return policy == ops::LinearPolicy::AllowA4 ? "a4" : "a16";
+    switch (policy) {
+    case ops::LinearPolicy::A16Only:
+        return "a16";
+    case ops::LinearPolicy::AllowA8:
+        return "a8";
+    case ops::LinearPolicy::AllowA4:
+        return "a4";
+    }
+    throw std::invalid_argument("unknown linear policy");
 }
 
 template <class Launch>
@@ -360,6 +380,13 @@ void run_w8_qkv(const Options& options, DeviceBuffer& flush, cudaStream_t stream
     }
 }
 
+void run_fp8(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
+             std::vector<Result>& results) {
+    auto weight = bench::make_fp8_weight(14336, 5120);
+    run_four_output(options, "fp8", QType::FP8_E4M3FN_ROW_BF16S, options.fp8_policy, false, 5120,
+                    6144, 1024, 14336, weight, flush, stream, results);
+}
+
 void write_csv(const Options& options, const std::vector<Result>& results) {
     if (options.csv_out.empty()) return;
     const std::filesystem::path path(options.csv_out);
@@ -416,6 +443,7 @@ int main(int argc, char** argv) {
             run_four_output(options, "nvfp4", QType::NVFP4, options.nvfp4_policy, false, 5120, 6144,
                             1024, 14336, weight, flush, stream, results);
         }
+        if (selected(options.format, Format::Fp8)) { run_fp8(options, flush, stream, results); }
         write_csv(options, results);
         CUDA_CHECK(cudaStreamDestroy(stream));
         return 0;
