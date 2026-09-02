@@ -1,5 +1,11 @@
 #pragma once
 
+// NVTX3's initialization path calls _wgetenv on Windows (getenv elsewhere) without including
+// <stdlib.h> itself, so it relies on the includer having reached it first. This header is the
+// project's only entry point to nvtx3, so pulling <cstdlib> in here satisfies that dependency
+// once, for every consumer, whatever order its own includes happen to land in.
+#include <cstdlib>
+
 #include <nvtx3/nvToolsExt.h>
 
 #include <array>
