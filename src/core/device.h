@@ -14,6 +14,9 @@ struct DeviceContext {
     int device                   = 0;
     cudaStream_t stream          = nullptr;
     cudaStream_t transfer_stream = nullptr;
+    // Carries a vision encode that runs beside the decode of other lanes. Empty unless a window
+    // borrows free KV memory, which is what makes the overlap safe.
+    cudaStream_t vision_stream = nullptr;
     cudaDeviceProp props{};
 
     explicit DeviceContext(int device_id = 0);
