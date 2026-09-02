@@ -80,7 +80,8 @@ rem ----------------------------------------------------------------------------
 set "MODEL=C:\Ninefer-3090\models\qwen3_6_35b_a3b.ninfer"
 
 rem Profile A (active): speculation on. Rungs: 81920 / 90112 / 98304 / 114688 / 131072.
-set "CONTEXT=81920"
+rem set "CONTEXT=81920"
+set "CONTEXT=114688"
 rem Profile B: comment out the line above, uncomment this, and swap the commands at the bottom.
 rem Rungs: 196608 / 212992 / 229376 / 245760 / 262144.
 rem set "CONTEXT=196608"
