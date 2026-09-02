@@ -164,6 +164,34 @@ int main() {
         check(!resolve_prompt_semantics(request, configured, prompt_capabilities).preserve_thinking,
               "request preserve-thinking override did not win");
 
+    // Client effort vocabularies are wider than the three rungs any Qwen3.6 template exposes:
+    // OpenAI and Claude Code send 'high', pi sends 'minimal' and 'max'. Those collapse onto the
+    // nearest rung rather than failing the request.
+    ninfer::PromptCapabilities effort_capabilities;
+    effort_capabilities.enable_thinking                 = true;
+    effort_capabilities.reasoning_effort.low            = true;
+    effort_capabilities.reasoning_effort.xhigh          = true;
+    effort_capabilities.reasoning_effort.default_effort = ninfer::ReasoningEffort::XHigh;
+    const auto collapses = [&](RequestedReasoningEffort wire) {
+        GenerationRequest aliased = GenerationRequest{};
+        aliased.max_tokens        = 1;
+        aliased.reasoning_effort  = wire;
+        return resolve_prompt_semantics(aliased, defaults, effort_capabilities).reasoning_effort;
+    };
+    failures += check(collapses(RequestedReasoningEffort::Minimal) == ninfer::ReasoningEffort::Low,
+                      "'minimal' did not collapse onto the template's low rung");
+    failures += check(collapses(RequestedReasoningEffort::High) == ninfer::ReasoningEffort::XHigh,
+                      "'high' did not collapse onto the template's xhigh rung");
+    failures += check(collapses(RequestedReasoningEffort::Max) == ninfer::ReasoningEffort::XHigh,
+                      "'max' did not collapse onto the template's xhigh rung");
+    // Collapsing is not a licence to invent a rung the template lacks: medium is absent here.
+    bool unsupported_rung_rejected = false;
+    try {
+        (void)collapses(RequestedReasoningEffort::Medium);
+    } catch (const ApiException&) { unsupported_rung_rejected = true; }
+    failures += check(unsupported_rung_rejected,
+                      "an effort rung the template lacks survived the capability gate");
+
     failures +=
         check(serve_usage_text("ninfer-serve").find("--no-prefix-reuse") != std::string::npos,
               "serve help omits --no-prefix-reuse");

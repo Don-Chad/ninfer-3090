@@ -489,11 +489,10 @@ int test_reasoning_effort() {
     Json high                            = base;
     high["output_config"]                = Json{{"effort", "high"}};
     const GenerationRequest high_request = parse_messages_request(high, default_limits());
-    failures += check(api_code([&] {
-                          (void)resolve_prompt_semantics(high_request, default_server(),
-                                                         effort_capabilities());
-                      }) == "reasoning_effort_not_supported",
-                      "Anthropic high effort bypassed template capability validation");
+    failures += check(resolve_prompt_semantics(high_request, default_server(),
+                                               effort_capabilities())
+                              .reasoning_effort == ninfer::ReasoningEffort::XHigh,
+                      "Anthropic high effort did not collapse onto the xhigh rung");
 
     Json conflict        = low;
     conflict["thinking"] = Json{{"type", "disabled"}};
