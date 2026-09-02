@@ -820,6 +820,7 @@ public:
             validate_registered_processor(processor);
             validate_registered_tokenizer(*tokenizer);
         }
+        fi::bound_merged_tokens(processor, options.vision_max_merged_tokens);
         for (const int token : tokenizer->default_stop_token_ids()) {
             if (!tokenizer->is_valid_token(token)) {
                 throw std::invalid_argument(

@@ -5,11 +5,16 @@
 namespace ninfer::targets::qwen3_6 {
 
 struct StartupFeatures {
-    bool vision                    = false;
-    SpeculativeBackend speculative = SpeculativeBackend::None;
-    ProposalHead proposal_head     = ProposalHead::Full;
+    bool vision                      = false;
+    VisionResidency vision_residency = VisionResidency::Resident;
+    SpeculativeBackend speculative   = SpeculativeBackend::None;
+    ProposalHead proposal_head       = ProposalHead::Full;
 
     bool operator==(const StartupFeatures&) const = default;
+
+    [[nodiscard]] bool overlay_vision() const noexcept {
+        return vision && vision_residency == VisionResidency::Overlay;
+    }
 
     [[nodiscard]] bool speculative_enabled() const noexcept {
         return speculative != SpeculativeBackend::None;
@@ -26,9 +31,10 @@ struct StartupFeatures {
 
 [[nodiscard]] inline StartupFeatures startup_features(const EngineOptions& options) noexcept {
     return StartupFeatures{
-        .vision        = options.enable_vision,
-        .speculative   = options.speculative.backend,
-        .proposal_head = options.speculative.proposal_head,
+        .vision           = options.enable_vision,
+        .vision_residency = options.vision_residency,
+        .speculative      = options.speculative.backend,
+        .proposal_head    = options.speculative.proposal_head,
     };
 }
 

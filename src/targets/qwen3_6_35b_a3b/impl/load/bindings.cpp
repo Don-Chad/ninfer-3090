@@ -1,6 +1,7 @@
 #include "targets/qwen3_6_35b_a3b/impl/load/bindings.h"
 
 #include "artifact/typed_binding.h"
+#include "core/evictable_weight_pool.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -94,13 +95,23 @@ void validate_draft_ids(const artifact::Binder& binder, artifact::ObjectHandle h
 
 } // namespace
 
+// Overlay eviction ladder, shared semantics with the 27B target: higher ranks sit at the arena end
+// and are borrowed first.
+constexpr std::uint32_t kEvictRankMtp       = 400;
+constexpr std::uint32_t kEvictRankDraftHead = 500;
+constexpr std::uint32_t kEvictRankEmbedding = 600;
+constexpr std::uint32_t kEvictRankLmHead    = 700;
+
 ArtifactLoadPlan bind_artifact(artifact::Binder& binder, qwen3_6::StartupFeatures features) {
     ArtifactLoadPlan load_plan;
     BindingPlan& out    = load_plan.bindings;
     out.frontend        = qwen3_6::bind_frontend_resources(binder);
     out.features        = features;
-    out.token_embedding = artifact::bind_device_tensor(binder, "text/token_embedding",
-                                                       NumericFormat::W8G32_F16S, {248320, 2048});
+    const bool overlay  = features.overlay_vision();
+    out.token_embedding = artifact::bind_tensor(binder, "text/token_embedding",
+                                                NumericFormat::W8G32_F16S, {248320, 2048},
+                                                artifact::TensorPlacement::Device,
+                                                overlay ? kEvictRankEmbedding : 0);
 
     for (std::size_t layer = 0; layer < kTextLayers; ++layer) {
         TextLayerPlan& target    = out.text_layers[layer];
@@ -142,13 +153,15 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, qwen3_6::StartupFeature
 
     out.final_norm =
         artifact::bind_device_tensor(binder, "text/final_norm", NumericFormat::BF16, {2048});
-    out.output_head = artifact::bind_device_tensor(binder, "text/output_head",
-                                                   NumericFormat::Q6G64_F16S, {248320, 2048});
+    out.output_head = artifact::bind_tensor(binder, "text/output_head", NumericFormat::Q6G64_F16S,
+                                            {248320, 2048}, artifact::TensorPlacement::Device,
+                                            overlay ? kEvictRankLmHead : 0);
     const artifact::TensorPlacement proposal_placement =
         features.optimized_proposal() ? artifact::TensorPlacement::Device
                                       : artifact::TensorPlacement::ValidateOnly;
     out.draft_head = artifact::bind_tensor(binder, "text/draft_head", NumericFormat::Q4G64_F16S,
-                                           {131072, 2048}, proposal_placement);
+                                           {131072, 2048}, proposal_placement,
+                                           overlay ? kEvictRankDraftHead : 0);
     out.draft_head_token_ids = artifact::bind_tensor(
         binder, "text/draft_head_token_ids", NumericFormat::I32, {131072}, proposal_placement);
     validate_draft_ids(binder, out.draft_head_token_ids);
@@ -158,7 +171,8 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, qwen3_6::StartupFeature
                                                         : artifact::TensorPlacement::ValidateOnly;
     const auto bind_mtp                           = [&](std::string_view name, NumericFormat format,
                               std::initializer_list<std::uint64_t> shape) {
-        return artifact::bind_tensor(binder, name, format, shape, mtp_placement);
+        return artifact::bind_tensor(binder, name, format, shape, mtp_placement,
+                                     overlay ? kEvictRankMtp : 0);
     };
     out.mtp.input_projection =
         bind_mtp("mtp/input_projection", NumericFormat::W8G32_F16S, {2048, 4096});
@@ -180,8 +194,9 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, qwen3_6::StartupFeature
     out.mtp.final_norm = bind_mtp("mtp/final_norm", NumericFormat::BF16, {2048});
 
     const artifact::TensorPlacement vision_placement =
-        features.vision ? artifact::TensorPlacement::Device
-                        : artifact::TensorPlacement::ValidateOnly;
+        overlay           ? artifact::TensorPlacement::HostPinned
+        : features.vision ? artifact::TensorPlacement::Device
+                          : artifact::TensorPlacement::ValidateOnly;
     out.vision_backbone     = qwen3_6::bind_vision_backbone(binder, vision_placement);
     out.vision_merger_input = qwen3_6::bind_vision_merger_input(binder, vision_placement);
     out.vision_merger_fc2   = artifact::bind_tensor(
@@ -224,7 +239,13 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, qwen3_6::StartupFeature
         out.dflash.final_norm = bind_dflash("dflash/final_norm", NumericFormat::BF16, {2048});
     }
 
-    load_plan.materialization = binder.finish();
+    load_plan.materialization =
+        binder.finish(overlay ? ninfer::EvictableWeightPool::kChunkBytes : 1);
+    if (overlay) {
+        out.vision_overlay = qwen3_6::compute_vision_overlay_layout(
+            out.vision_backbone, out.vision_merger_input, out.vision_merger_fc2,
+            out.vision_merger_fc2_bias, out.vision_merger_norm, load_plan.materialization);
+    }
     return load_plan;
 }
 
@@ -332,13 +353,28 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
     }
 
     if (plan.features.vision) {
-        auto& vision  = runtime.vision.emplace();
+        qwen3_6::VisionWeights vision;
         vision.common = qwen3_6::materialize_vision_common(
             backing, plan.vision_backbone, plan.vision_merger_input, plan.vision_merger_norm);
         vision.merger_fc2      = artifact::materialized_weight(backing, plan.vision_merger_fc2,
                                                                NumericFormat::W8G32_F16S, 2048, 4608);
         vision.merger_fc2_bias = artifact::materialized_tensor(backing, plan.vision_merger_fc2_bias,
                                                                NumericFormat::BF16, {2048});
+        if (plan.features.overlay_vision()) {
+            if (!plan.vision_overlay || backing.eviction_pool() == nullptr ||
+                backing.pinned_block().empty()) {
+                throw std::logic_error(
+                    "overlay vision requires a pool-backed pinned materialization");
+            }
+            auto& overlay                = runtime.vision_overlay.emplace();
+            overlay.pool                 = backing.eviction_pool();
+            overlay.pinned_block         = backing.pinned_block();
+            overlay.host.weights         = vision;
+            overlay.layout               = *plan.vision_overlay;
+            overlay.window_capacity_bytes = backing.eviction_pool()->window_capacity_bytes();
+        } else {
+            runtime.vision = vision;
+        }
     }
 
     if (plan.features.dflash()) {

@@ -102,6 +102,11 @@ struct ContextCostOptions {
     std::filesystem::path preset_path;
 };
 
+enum class VisionResidency : std::uint8_t {
+    Resident, // fixed Vision GPU allocations for the process lifetime
+    Overlay,  // tower host-pinned; each image borrows device memory inside a bounded window
+};
+
 struct EngineOptions {
     std::filesystem::path artifact_path;
     int device                         = 0;
@@ -118,6 +123,10 @@ struct EngineOptions {
     // Zero selects a bounded worker count from the detected host concurrency.
     std::uint32_t media_preprocess_threads = 0;
     bool enable_vision                     = false;
+    VisionResidency vision_residency       = VisionResidency::Resident;
+    // Largest merged-token count one media item may occupy; larger media is downscaled at
+    // preprocessing. Also bounds the overlay window.
+    std::uint32_t vision_max_merged_tokens = 16384;
     bool use_cuda_graph                    = true;
     ContextCacheOptions context_cache;
     ContextCostOptions context_cost;
@@ -457,6 +466,15 @@ struct GenerationTimings {
     double first_token_seconds = 0.0;
     double vision_seconds      = 0.0;
     double prefill_seconds     = 0.0;
+    // Overlay vision residency: per-request sums over the image windows.
+    std::uint32_t overlay_windows      = 0;
+    double overlay_window_seconds      = 0.0;
+    double overlay_evict_seconds       = 0.0;
+    double overlay_restore_seconds     = 0.0;
+    std::size_t overlay_evicted_bytes  = 0;
+    std::size_t overlay_staged_bytes   = 0;
+    // Windows that had to borrow the text weights, which stalls every other lane.
+    std::uint32_t overlay_exclusive_windows = 0;
     double decode_seconds      = 0.0;
     double total_seconds       = 0.0;
 };
@@ -598,6 +616,10 @@ struct VisionWorkspaceMemorySummary {
     std::size_t handoff_capacity_bytes    = 0;
     std::size_t handoff_active_bytes      = 0;
     std::size_t handoff_peak_bytes        = 0;
+    VisionResidency residency             = VisionResidency::Resident;
+    std::size_t window_capacity_bytes     = 0; // overlay: device bytes one window borrows
+    std::size_t pinned_weight_bytes       = 0; // overlay: host-pinned tower bytes
+    std::size_t mirror_bytes              = 0; // overlay: pinned mirror of the borrowable tail
 };
 
 struct MemorySummary {
@@ -775,6 +797,8 @@ struct LoadSummary {
     std::uint64_t artifact_bytes_read  = 0;
     std::uint64_t host_to_device_bytes = 0;
     std::uint64_t peak_staging_bytes   = 0;
+    std::uint64_t pinned_weight_bytes  = 0; // host-pinned weights (overlay vision tower)
+    std::uint64_t overlay_window_bytes = 0; // device bytes one overlay vision window borrows
     std::size_t tensor_count           = 0;
     std::size_t resource_count         = 0;
     ContextCostSummary context_cost;

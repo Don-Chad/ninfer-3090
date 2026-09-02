@@ -711,6 +711,31 @@ void instantiate_graph_family(DecodeGraphFamily& family, const char* label, Devi
     }
 }
 
+// Overlay residency backs the persistent arena with virtual memory so free KV granules can be
+// lent to a vision window. The lendable prefix ends past the last page-major KV plane; block
+// tables and the stores above it live in the same range but are never selected by the planner.
+std::unique_ptr<EvictableKVPool> make_kv_arena(DeviceContext& device,
+                                               const LoadedModelData& model,
+                                               const SequencePlanImpl& plan) {
+    if (!model.vision_overlay) { return nullptr; }
+    const std::size_t window      = model.vision_overlay->window_capacity_bytes;
+    const std::size_t granularity = EvictableKVPool::device_granularity(device);
+    if (window == 0 || granularity == 0 || plan.persistent.lendable_kv_end_bytes == 0) {
+        return nullptr;
+    }
+    // A KV cache smaller than one window can never fund a concurrent encode. The engine still
+    // runs: every window then borrows the weight tail, exactly as it did before this tier.
+    const std::size_t lendable =
+        (plan.persistent.lendable_kv_end_bytes / granularity) * granularity;
+    if (window > lendable) { return nullptr; }
+    return std::make_unique<EvictableKVPool>(
+        device, EvictableKVPool::Config{
+                    .arena_bytes           = plan.persistent.bytes,
+                    .lendable_prefix_bytes = plan.persistent.lendable_kv_end_bytes,
+                    .window_capacity_bytes = window,
+                });
+}
+
 } // namespace
 
 ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const SequencePlanImpl& plan,
@@ -724,10 +749,14 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
       kv_quant_group(plan.kv_quant_group), kv_packed_v(plan.kv_packed_v),
       kv_rotate_k(plan.kv_rotate_k), kv_rotate_v(plan.kv_rotate_v),
       proposal_head(plan.proposal_head),
-      vision_enabled(plan.features.vision), use_cuda_graph(plan.use_cuda_graph),
+      vision_enabled(plan.features.vision),
+      vision_overlay(model.vision_overlay ? &*model.vision_overlay : nullptr),
+      use_cuda_graph(plan.use_cuda_graph),
       kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
-      persistent(plan.persistent.bytes), workspace_storage(plan.workspace.capacity),
+      kv_arena(make_kv_arena(device_in, model_in, plan)),
+      persistent(kv_arena ? DeviceArena(kv_arena->arena()) : DeviceArena(plan.persistent.bytes)),
+      workspace_storage(plan.workspace.capacity),
       work(DeviceSpan{workspace_storage.base(), plan.workspace.general_capacity}),
       continuation_states(continuation_capacity), continuation_slots(continuation_capacity),
       shared_prefix_states(shared_prefix_capacity), shared_prefix_slots(shared_prefix_capacity),
@@ -755,7 +784,8 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
     if (model.features != plan.features || model.mtp.has_value() != plan.features.mtp() ||
         model.dflash.has_value() != plan.features.dflash() ||
         model.optimized_proposal.has_value() != plan.features.optimized_proposal() ||
-        model.vision.has_value() != plan.features.vision) {
+        model.vision.has_value() != (plan.features.vision && !plan.features.overlay_vision()) ||
+        model.vision_overlay.has_value() != plan.features.overlay_vision()) {
         throw std::invalid_argument(
             "Qwen3.6 loaded weights do not match the frozen startup features");
     }
@@ -767,9 +797,17 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
     }
     if (workspace_plan.general_capacity == 0 ||
         workspace_plan.vision.has_value() != vision_enabled ||
+        workspace_plan.vision_resident != !plan.features.overlay_vision() ||
         (workspace_plan.vision &&
          workspace_plan.vision->general_capacity_bytes != workspace_plan.general_capacity)) {
         throw std::invalid_argument("Qwen3.6 workspace plan does not match startup features");
+    }
+    if (vision_overlay != nullptr) {
+        if (vision_overlay->pool == nullptr || !workspace_plan.vision) {
+            throw std::invalid_argument("overlay vision assets are incomplete");
+        }
+        vision_broker.emplace(device, *vision_overlay->pool);
+        vision_results.emplace(max_concurrency, workspace_plan.vision->handoff_capacity_bytes);
     }
     const DeviceSpan backing = persistent.alloc_bytes(plan.persistent.bytes, 256);
     if (!plan.context_cache.max_private_continuations || !plan.context_cache.max_shared_prefixes) {
@@ -808,6 +846,15 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
     text_kv_addresses = std::make_unique<KVAddressSpaceStore>(
         *text_kv_pages, decoder->text_kv.execution_tables(), address_capacity,
         decoder->text_kv.execution_tables().logical_page_capacity());
+    if (vision_broker && kv_arena) {
+        // A loan changes the admission capacity, so it may not race a sealed plan: refuse one
+        // while a context transaction or a pressure-planning session is in flight, and advance
+        // the revision whenever the capacity moves.
+        vision_broker->enable_kv_tier(
+            *kv_arena, decoder->text_kv.page_pool(),
+            [this] { return !has_context_transaction() && !pressure_planning_active_; },
+            [this] { advance_resource_revision(); });
+    }
     state_images =
         std::make_unique<qwen3_6::StateImageDevicePool>(backing, plan.persistent.state_images);
     if (plan.context_cache.host_state_slots != 0) {
@@ -4094,10 +4141,21 @@ ProgramImplCore::reserve_materialization(AdmissionCandidate&& plan, PreparedProm
             if (!workspace_plan.vision) {
                 throw std::logic_error("Vision prefill has no startup workspace plan");
             }
-            request.prefill->vision = std::make_unique<schedule::VisionPrefillSession>(
-                device, model, DeviceSpan{workspace_storage.base(), workspace_storage.capacity()},
-                *workspace_plan.vision, request.prefill->prompt, *request.prefill->vision_plan,
-                vision_handoff_peak_bytes);
+            if (vision_overlay != nullptr) {
+                request.prefill->vision = std::make_unique<schedule::VisionPrefillSession>(
+                    device, *workspace_plan.vision, request.prefill->prompt,
+                    *request.prefill->vision_plan, vision_handoff_peak_bytes, *vision_broker,
+                    *vision_overlay, vision_results->acquire());
+                // Start the first image now so its window overlaps the decode rounds that run
+                // before this lane gets a prefill unit.
+                request.prefill->vision->submit_next_item();
+            } else {
+                request.prefill->vision = std::make_unique<schedule::VisionPrefillSession>(
+                    device, model,
+                    DeviceSpan{workspace_storage.base(), workspace_storage.capacity()},
+                    *workspace_plan.vision, request.prefill->prompt,
+                    *request.prefill->vision_plan, vision_handoff_peak_bytes);
+            }
         }
         request.prefill->elapsed_seconds =
             std::chrono::duration<double>(Clock::now() - host_started).count();
@@ -6778,6 +6836,13 @@ ProgramImplCore::shared_prefix_summary(const SharedPrefixState& shared) const {
     };
 }
 
+bool ProgramImplCore::vision_pending(SequenceHandle sequence) const noexcept {
+    if (!valid_sequence(sequence)) { return false; }
+    const std::uint32_t lane = ContractAccess::lane(sequence).value;
+    const RequestControl& request = requests[lane];
+    return request.prefill && request.prefill->vision && request.prefill->vision->vision_pending();
+}
+
 PrefillProgress ProgramImplCore::advance_prefill(SequenceHandle sequence,
                                                  runtime::ExecutionTiming* failed_timing) {
     if (pending_transaction_ || !valid_sequence(sequence)) {
@@ -8262,8 +8327,8 @@ detail::PhysicalResources ProgramImplCore::admission_capacity() const noexcept {
             {
                 .active_lanes     = max_concurrency,
                 .state_slots      = static_cast<std::uint32_t>(state_images->slot_count()),
-                .main_kv_pages    = decoder->text_kv.page_pool().capacity_pages(),
-                .backend_kv_pages = backend != nullptr ? backend->page_pool().capacity_pages() : 0U,
+                .main_kv_pages    = decoder->text_kv.page_pool().usable_pages(),
+                .backend_kv_pages = backend != nullptr ? backend->page_pool().usable_pages() : 0U,
             },
         .host =
             {
@@ -10213,6 +10278,16 @@ ProgramImplCore::advance_prefill(SequenceState& sequence, RequestControl& reques
         sequence.tail_hidden_valid      = true;
         request.timings.vision_seconds  = vision_seconds;
         request.timings.prefill_seconds = std::max(0.0, staged.elapsed_seconds - vision_seconds);
+        if (staged.vision) {
+            const schedule::VisionOverlayWindowStats overlay = staged.vision->overlay_stats();
+            request.timings.overlay_windows         = overlay.windows;
+            request.timings.overlay_window_seconds  = overlay.window_seconds;
+            request.timings.overlay_evict_seconds   = overlay.evict_seconds;
+            request.timings.overlay_restore_seconds = overlay.restore_seconds;
+            request.timings.overlay_evicted_bytes   = overlay.evicted_bytes;
+            request.timings.overlay_staged_bytes    = overlay.staged_bytes;
+            request.timings.overlay_exclusive_windows = overlay.exclusive_windows;
+        }
         staged.prompt.release_all_media_payloads();
         if (staged.vision) { staged.vision->retire_handoff(); }
 
@@ -10831,6 +10906,13 @@ MemorySummary ProgramImplCore::memory_summary() const noexcept {
             .handoff_capacity_bytes = workspace_plan.vision->handoff_capacity_bytes,
             .handoff_active_bytes   = active_handoff_bytes,
             .handoff_peak_bytes     = vision_handoff_peak_bytes,
+            .residency = vision_overlay != nullptr ? VisionResidency::Overlay
+                                                   : VisionResidency::Resident,
+            .window_capacity_bytes =
+                vision_overlay != nullptr ? vision_overlay->window_capacity_bytes : 0,
+            .pinned_weight_bytes =
+                vision_overlay != nullptr ? vision_overlay->pinned_block.size() : 0,
+            .mirror_bytes = vision_overlay != nullptr ? vision_overlay->pool->mirror_bytes() : 0,
         };
     }
     out.workspace_logical_peak_bytes = workspace_logical_peak_bytes;

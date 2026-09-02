@@ -72,6 +72,15 @@ const runtime::SequenceCapacityCurve& SequencePlanner<Variant>::capacity_curve()
 }
 
 template <>
+std::size_t SequencePlanner<Variant>::vision_window_bytes() const noexcept {
+    if (impl_ == nullptr || impl_->minimum == nullptr || !impl_->minimum->workspace.vision) {
+        return 0;
+    }
+    const auto& vision = *impl_->minimum->workspace.vision;
+    return vision.encode_peak_bytes + vision.handoff_capacity_bytes;
+}
+
+template <>
 SequencePlan<Variant> SequencePlanner<Variant>::finalize(std::uint32_t main_page_groups) && {
     if (impl_ == nullptr) { throw std::logic_error("sequence planner is empty"); }
     return SequencePlan<Variant>(detail::NINFER_QWEN36_RUNTIME_NS::finalize_sequence_plan_impl(
@@ -274,6 +283,11 @@ void Program<Variant>::finalize_context_transaction() noexcept {
 template <>
 bool Program<Variant>::has_context_transaction() const noexcept {
     return impl_->has_context_transaction();
+}
+
+template <>
+bool Program<Variant>::vision_pending(SequenceHandle<Variant> sequence) const noexcept {
+    return impl_->vision_pending(sequence);
 }
 
 template <>

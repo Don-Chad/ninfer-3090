@@ -41,6 +41,9 @@ struct PersistentLayout {
     TensorLayout sampling_config;
     std::size_t bytes            = 0;
     std::size_t kv_payload_bytes = 0;
+    // Arena offset just past the last page-major KV plane. Everything a vision window may borrow
+    // lies below it; block tables and other stores interleaved there are simply never selected.
+    std::size_t lendable_kv_end_bytes = 0;
 };
 
 struct VisionWorkspacePlan {
@@ -61,6 +64,9 @@ struct WorkspacePlan {
     std::size_t dflash_round     = 0;
     std::size_t general_capacity = 0;
     std::optional<VisionWorkspacePlan> vision;
+    // False in overlay residency: the vision encode workspace and handoff are borrowed per
+    // window instead of being folded into capacity.
+    bool vision_resident = true;
     std::size_t capacity = 0;
 };
 
@@ -78,6 +84,7 @@ struct SequencePlanningInputs {
     bool kv_rotate_v                       = false;
     ProposalHead proposal_head             = ProposalHead::Full;
     StartupFeatures features;
+    std::uint32_t vision_max_merged = 16384;
     bool use_cuda_graph = true;
     int device          = 0;
     ContextCacheOptions context_cache;
@@ -104,6 +111,7 @@ struct SequencePlanImpl<NINFER_QWEN36_VARIANT> {
     bool kv_rotate_v                       = false;
     ProposalHead proposal_head             = ProposalHead::Full;
     StartupFeatures features;
+    std::uint32_t vision_max_merged = 16384;
     bool use_cuda_graph = true;
     int device          = 0;
     ContextCacheOptions context_cache;

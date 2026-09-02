@@ -321,5 +321,38 @@ int main() {
     failures += check(redaction_present, "startup argv omitted the API-key redaction marker");
 
     if (failures == 0) { std::cout << "ok\n"; }
+
+    {
+        const ServeOptions overlay =
+            parse({"ninfer-serve", "model.ninfer", "--vision", "--vision-residency", "overlay",
+                   "--vision-max-merged", "12288"});
+        failures += check(overlay.vision_residency == ninfer::VisionResidency::Overlay,
+                          "--vision-residency overlay did not select overlay residency");
+        failures += check(overlay.vision_max_merged_tokens == 12288U,
+                          "--vision-max-merged did not set the merged-token budget");
+        const ServeOptions resident = parse({"ninfer-serve", "model.ninfer", "--vision"});
+        failures += check(resident.vision_residency == ninfer::VisionResidency::Resident,
+                          "vision residency does not default to resident");
+        failures += check(resident.vision_max_merged_tokens == 16384U,
+                          "vision merged-token budget does not default to the item maximum");
+        bool overlay_without_vision_rejected = false;
+        try {
+            (void)parse({"ninfer-serve", "model.ninfer", "--vision-residency", "overlay"});
+        } catch (const std::invalid_argument&) { overlay_without_vision_rejected = true; }
+        failures += check(overlay_without_vision_rejected,
+                          "--vision-residency overlay without --vision was accepted");
+        bool small_budget_rejected = false;
+        try {
+            (void)parse({"ninfer-serve", "model.ninfer", "--vision", "--vision-max-merged", "32"});
+        } catch (const std::invalid_argument&) { small_budget_rejected = true; }
+        failures += check(small_budget_rejected, "--vision-max-merged 32 was accepted");
+        bool unknown_mode_rejected = false;
+        try {
+            (void)parse(
+                {"ninfer-serve", "model.ninfer", "--vision", "--vision-residency", "sometimes"});
+        } catch (const std::invalid_argument&) { unknown_mode_rejected = true; }
+        failures += check(unknown_mode_rejected, "--vision-residency sometimes was accepted");
+    }
+
     return failures == 0 ? 0 : 1;
 }
