@@ -10145,6 +10145,15 @@ void ProgramImplCore::enqueue_dflash_context_append(std::span<const std::uint32_
 
 void ProgramImplCore::validate_licensed_tokens(std::span<const TokenId> tokens) const {
     for (const TokenId token : tokens) {
+        if (token == ops::kSamplerNonFiniteToken) {
+            // The sampler refused to turn a non-finite logit row into a token id. Reaching here
+            // means the forward pass diverged, so say that rather than reporting a domain error:
+            // the alternative is streaming whatever the reductions make of NaN, which reads like
+            // ordinary output and hides the fault.
+            throw std::runtime_error(
+                "the forward pass produced non-finite logits (NaN or infinity); the sampler "
+                "refused to emit a token for this round");
+        }
         if (token < 0 || token >= TextConfig::token_domain) {
             throw std::runtime_error("target returned a token outside the 248077-token domain");
         }

@@ -10,6 +10,15 @@
 
 namespace ninfer::ops {
 
+// Written to the token output instead of a vocabulary id when the selected token's own logit is
+// not finite. A diverged forward pass produces an all-NaN logits row, and because every ordering
+// comparison against NaN is false the reductions then return whatever index they started from,
+// after which top_k and the presence penalty walk the lowest token ids. That output reads like a
+// plausible sampling artefact rather than a fault, so the Ops emit this out-of-domain value and
+// let the runtime reject the round. The check is O(1) on the selected logit, not an exhaustive
+// scan: a row that still has a finite maximum samples normally.
+inline constexpr std::int32_t kSamplerNonFiniteToken = -1;
+
 // Counter-based RNG subkey. Distinct purposes keep draws at the same logical position separate.
 enum SamplePurpose : std::int32_t {
     kSamplePurposePrefill               = 0,
