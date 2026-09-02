@@ -69,6 +69,11 @@ ninfer_add_test(ninfer_admission_policy_test SOURCES test_admission_policy.cpp)
 ninfer_add_test(ninfer_context_cost_test SOURCES test_context_cost.cpp)
 ninfer_add_test(ninfer_resource_manager_test SOURCES test_resource_manager.cpp)
 ninfer_add_test(ninfer_kv_capacity_test SOURCES test_kv_capacity.cpp)
+ninfer_add_test(ninfer_vmm_graph_remap_test SOURCES test_vmm_graph_remap.cu)
+target_link_libraries(ninfer_vmm_graph_remap_test PRIVATE CUDA::cuda_driver)
+ninfer_add_test(ninfer_evictable_kv_pool_test SOURCES test_evictable_kv_pool.cu)
+target_link_libraries(ninfer_evictable_kv_pool_test PRIVATE CUDA::cuda_driver)
+ninfer_add_test(ninfer_evictable_weight_pool_test SOURCES test_evictable_weight_pool.cu)
 ninfer_add_test(ninfer_sampling_defaults_test
   SOURCES test_sampling_defaults.cpp
   LIBRARIES ninfer_engine ninfer_core)

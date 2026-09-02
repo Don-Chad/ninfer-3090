@@ -47,6 +47,9 @@ public:
     LoadPlan& operator=(const LoadPlan&) = delete;
 
     [[nodiscard]] const artifact::MaterializationPlan& materialization() const;
+    // Device staging bytes one overlay window needs for streamed vision weights; 0 when the plan
+    // was built for resident vision.
+    [[nodiscard]] std::size_t overlay_staging_bytes() const;
 
 private:
     class Impl;

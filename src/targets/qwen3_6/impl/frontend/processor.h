@@ -97,6 +97,10 @@ struct ProcessorOptions {
     int video_max_frames                   = 768;
 };
 
+// Clamps the smart-resize pixel ceilings so one image, or one two-frame video group, never
+// exceeds merged_tokens after resizing; oversized media downscales instead of being rejected.
+void bound_merged_tokens(ProcessorOptions& options, std::uint64_t merged_tokens);
+
 struct ProcessedInput {
     std::vector<int> input_ids;
     std::vector<std::uint8_t> token_types;

@@ -79,7 +79,8 @@ std::string serve_usage_text(const char* argv0) {
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|rk8v4|fp8] [--spec mtp|dflash --draft-tokens N] "
            "[--default-max-tokens N] [--default-thinking-budget N] "
-           "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
+           "[--vision] [--vision-residency resident|overlay] [--vision-max-merged N] "
+           "[--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -97,6 +98,10 @@ std::string serve_usage_text(const char* argv0) {
            "default\n"
            "       --log-stats-interval-ms defaults to 5000; 0 disables periodic throughput logs\n"
            "       --vision enables media and loads the fixed Vision GPU allocations\n"
+           "       --vision-residency overlay keeps the Vision tower in host memory and borrows "
+           "device memory per image\n"
+           "       --vision-max-merged bounds the merged tokens of one media item (default 16384); "
+           "larger media is downscaled\n"
            "       --kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom\n"
@@ -283,6 +288,22 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.default_thinking_budget = static_cast<std::uint32_t>(budget);
         } else if (arg == "--vision") {
             options.enable_vision = true;
+        } else if (arg == "--vision-residency") {
+            const std::string_view mode = require_value("--vision-residency");
+            if (mode == "resident") {
+                options.vision_residency = VisionResidency::Resident;
+            } else if (mode == "overlay") {
+                options.vision_residency = VisionResidency::Overlay;
+            } else {
+                throw std::invalid_argument("--vision-residency must be resident or overlay");
+            }
+        } else if (arg == "--vision-max-merged") {
+            const std::uint64_t merged =
+                parse_u64(require_value("--vision-max-merged"), "vision-max-merged");
+            if (merged < 64 || merged > 16384) {
+                throw std::invalid_argument("--vision-max-merged must be in [64, 16384]");
+            }
+            options.vision_max_merged_tokens = static_cast<std::uint32_t>(merged);
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "--no-prefix-reuse") {
@@ -359,6 +380,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     product::validate_speculative_cli_options(options.speculative);
     if (options.speculative.backend == SpeculativeBackend::DFlash && options.enable_vision) {
         throw std::invalid_argument("--spec dflash cannot be combined with --vision");
+    }
+    if (options.vision_residency == VisionResidency::Overlay && !options.enable_vision) {
+        throw std::invalid_argument("--vision-residency overlay requires --vision");
     }
     if (default_max_tokens_explicit) {
         if (options.default_max_tokens <= 0) {

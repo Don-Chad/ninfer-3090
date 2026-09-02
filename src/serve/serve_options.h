@@ -45,6 +45,8 @@ struct ServeOptions {
     SpeculativeOptions speculative;
     ContextCacheOptions context_cache;
     bool enable_vision      = false;
+    VisionResidency vision_residency       = VisionResidency::Resident;
+    std::uint32_t vision_max_merged_tokens = 16384;
     bool use_cuda_graph     = true;
     bool allow_prefix_reuse = true;
     bool enable_thinking =

@@ -86,12 +86,15 @@ std::string usage_text(const char* argv0) {
            "       [--stop-token-id N]... [--stop <text>]... [--reasoning-stop <text>]...\n"
            "       [--raw-output] [--print-token-ids] [--no-thinking] [--thinking-budget N]\n"
            "       [--reasoning-effort low|medium|xhigh] [--vision]\n"
+           "       [--vision-residency resident|overlay] [--vision-max-merged N]\n"
            "       [--no-cuda-graph]\n"
            "\n"
            "Streams answer content to stdout and reasoning plus diagnostics to stderr.\n"
            "Structured message content accepts text, image/image_url, and video/video_url parts;\n"
            "media sources may be local paths, HTTP(S) URLs, or base64 data URIs.\n"
            "--vision enables image/video input and loads the fixed Vision GPU allocations.\n"
+           "--vision-residency overlay keeps the Vision tower in host memory and borrows device "
+           "memory per image; --vision-max-merged bounds one item's merged tokens (default 16384).\n"
            "--thinking-budget caps model-origin thinking tokens; inserted control tokens count "
            "toward --max-new.\n"
            "--kv-capacity auto leaves " +
@@ -153,6 +156,20 @@ Options parse_options(int argc, char** argv) {
             options.reasoning_effort = parse_reasoning_effort(value(arg));
         } else if (arg == "--vision") {
             options.enable_vision = true;
+        } else if (arg == "--vision-residency") {
+            const std::string_view mode = value(arg);
+            if (mode == "resident") {
+                options.vision_residency = VisionResidency::Resident;
+            } else if (mode == "overlay") {
+                options.vision_residency = VisionResidency::Overlay;
+            } else {
+                throw std::invalid_argument("--vision-residency must be resident or overlay");
+            }
+        } else if (arg == "--vision-max-merged") {
+            options.vision_max_merged_tokens = parse_u32(value(arg), "vision-max-merged");
+            if (options.vision_max_merged_tokens < 64 || options.vision_max_merged_tokens > 16384) {
+                throw std::invalid_argument("--vision-max-merged must be in [64, 16384]");
+            }
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "--stop-token-id") {
@@ -216,6 +233,9 @@ Options parse_options(int argc, char** argv) {
     product::validate_speculative_cli_options(options.speculative);
     if (options.speculative.backend == SpeculativeBackend::DFlash && options.enable_vision) {
         throw std::invalid_argument("--spec dflash cannot be combined with --vision");
+    }
+    if (options.vision_residency == VisionResidency::Overlay && !options.enable_vision) {
+        throw std::invalid_argument("--vision-residency overlay requires --vision");
     }
     if (!options.enable_thinking && options.reasoning_effort) {
         throw std::invalid_argument("--reasoning-effort cannot be combined with --no-thinking");

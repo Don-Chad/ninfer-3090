@@ -936,7 +936,7 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
                 const std::uint32_t required = pages_for_tokens(frontier);
                 const std::uint64_t final_without_release =
                     static_cast<std::uint64_t>(required) + active_pages;
-                const std::uint32_t capacity = pages.physical_pool().capacity_pages();
+                const std::uint32_t capacity = pages.physical_pool().usable_pages();
                 if (final_without_release <= capacity) { return true; }
                 if (!prefix_fork || frontier == 0 ||
                     frontier % static_cast<std::uint32_t>(kPagedKVPageSize) == 0 ||
