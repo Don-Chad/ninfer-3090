@@ -271,6 +271,27 @@ int main() {
         check(explicit_effort.reasoning_effort == ninfer::ReasoningEffort::Low &&
                   explicit_effort.effective_reasoning_effort == ninfer::ReasoningEffort::Low,
               "explicit reasoning effort did not remain the effective effort");
+
+    // Client vocabularies wider than the template's three rungs collapse onto the nearest one:
+    // pi sends minimal/max, OpenAI and Claude Code send high. None of these may 400.
+    const auto collapses = [&](RequestedReasoningEffort wire) {
+        GenerationRequest aliased = request;
+        aliased.reasoning_effort  = wire;
+        return resolve_prompt_semantics(aliased, defaults, prompt_capabilities).reasoning_effort;
+    };
+    failures += check(collapses(RequestedReasoningEffort::Minimal) == ninfer::ReasoningEffort::Low,
+                      "'minimal' did not collapse onto the template's low rung");
+    failures += check(collapses(RequestedReasoningEffort::High) == ninfer::ReasoningEffort::XHigh,
+                      "'high' did not collapse onto the template's xhigh rung");
+    failures += check(collapses(RequestedReasoningEffort::Max) == ninfer::ReasoningEffort::XHigh,
+                      "'max' did not collapse onto the template's xhigh rung");
+    // Collapsing is not a licence to invent a rung the template lacks: medium is absent here.
+    bool unsupported_rung_rejected = false;
+    try {
+        (void)collapses(RequestedReasoningEffort::Medium);
+    } catch (const ApiException&) { unsupported_rung_rejected = true; }
+    failures += check(unsupported_rung_rejected,
+                      "an effort rung the template lacks survived the capability gate");
     request.reasoning_effort.reset();
     failures +=
         check(resolve_prompt_semantics(request, configured, prompt_capabilities).preserve_thinking,
