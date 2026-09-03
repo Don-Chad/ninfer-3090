@@ -185,10 +185,25 @@ resolve_openai_responses_prompt(const OpenAIResponsesPromptRequest& request,
         } else if (store_response) {
             resolved.session_key = *response_id;
         }
-        resolved.cache_hints.session_key = resolved.session_key;
-        resolved.cache_hints.retention =
-            store_response ? CacheRetentionHint::LiveSession : CacheRetentionHint::Disposable;
-        resolved.cache_hints.update_session_index = store_response;
+
+        // Cache retention identity is independent of `store`: `store` only controls whether this
+        // Response object becomes retrievable by id later. A client that manages its own history
+        // client-side (never sends previous_response_id, never wants a retrievable Response) can
+        // still name its own conversation lineage via prompt_cache_key, so the Engine keeps its
+        // checkpoints instead of grading them Disposable and losing them to the first request from
+        // any other lineage. Only take this path when there is no parent chain and no store-based
+        // session already in play, so it never changes behavior for clients using those mechanisms
+        // (in particular, a stored parent consumed by a store=false reply must stay Disposable and
+        // must not advance the session index).
+        const bool use_prompt_cache_key =
+            !parent_record && !store_response && request.prompt_cache_key.has_value();
+
+        resolved.cache_hints.session_key =
+            use_prompt_cache_key ? request.prompt_cache_key : resolved.session_key;
+        resolved.cache_hints.retention = (store_response || use_prompt_cache_key)
+                                             ? CacheRetentionHint::LiveSession
+                                             : CacheRetentionHint::Disposable;
+        resolved.cache_hints.update_session_index = store_response || use_prompt_cache_key;
     }
     return resolved;
 }
