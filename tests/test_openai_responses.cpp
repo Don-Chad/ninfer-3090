@@ -826,6 +826,11 @@ int test_prompt_cache_key_retention() {
         parse_openai_responses_create_request(keyed, limits());
     failures += check(keyed_request.prompt.prompt_cache_key == "pi-session-1",
                       "prompt_cache_key reaches the wire-independent prompt");
+    failures += check(
+        keyed_request.prompt.generation.private_cache_boundary_at_prompt_end,
+        "prompt_cache_key grants a private long-anchor opportunity, matching the Anthropic "
+        "cache_control:ephemeral path, so a growing tool-calling exchange keeps a resumable point "
+        "past the single automatic TurnClosure boundary");
     const OpenAIResponsesResolvedPrompt keyed_resolved =
         resolve_openai_responses_prompt(keyed_request.prompt, store, "resp_keyed_1", false);
     failures += check(
@@ -845,6 +850,8 @@ int test_prompt_cache_key_retention() {
                               ninfer::CacheRetentionHint::Disposable &&
                           !unkeyed_resolved.cache_hints.update_session_index,
                       "store=false with no prompt_cache_key stays Disposable as before");
+    failures += check(!unkeyed_request.prompt.generation.private_cache_boundary_at_prompt_end,
+                      "no prompt_cache_key grants no private long-anchor opportunity, unchanged");
 
     // prompt_cache_key must never override an existing previous_response_id chain: the
     // store=false-consumes-parent-without-advancing behavior must be unchanged.
