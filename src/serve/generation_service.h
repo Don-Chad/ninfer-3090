@@ -26,6 +26,13 @@ struct GenerationMetrics {
     double ttft_seconds    = 0.0;
     double vision_seconds  = 0.0;
     double prefill_seconds = 0.0;
+    std::uint32_t overlay_windows           = 0;
+    std::uint32_t overlay_exclusive_windows = 0;
+    double overlay_window_seconds     = 0.0;
+    double overlay_evict_seconds      = 0.0;
+    double overlay_restore_seconds    = 0.0;
+    std::size_t overlay_evicted_bytes = 0;
+    std::size_t overlay_staged_bytes  = 0;
     double decode_seconds  = 0.0;
     double total_seconds   = 0.0;
     ninfer::GenerationEngineTiming engine_timing;

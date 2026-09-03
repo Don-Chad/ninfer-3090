@@ -158,6 +158,62 @@ bool page_payload_zero(ninfer::HostKVAllocationConstView view, std::uint32_t pag
     return true;
 }
 
+int exercise_page_lending(ninfer::DeviceContext& context) {
+    (void)context;
+    int failures = 0;
+    ninfer::KVPageGeometry geometry{
+        .planes = {{ninfer::DType::I8, 8, 2, 256}, {ninfer::DType::FP16, 1, 2, 256}},
+    };
+    PlannedCache plan = plan_cache(16, 16, 1, geometry);
+    ninfer::DeviceArena arena(plan.bytes);
+    ninfer::DeviceKVPagePool pool({arena.base(), arena.capacity()}, plan.pages);
+
+    failures += expect_size(pool.free_runs().size(), 1, "a fresh pool has one free run");
+    failures += expect_size(pool.free_runs()[0].count, 16, "the free run covers the pool");
+
+    const ninfer::KVPlaneByteRange range = pool.plane_page_range(0, 4, 2);
+    const std::size_t page_bytes         = static_cast<std::size_t>(pool.plane(0).nb[3]);
+    failures += expect(range.base == static_cast<const std::byte*>(pool.plane(0).data) +
+                                         4 * page_bytes,
+                       "plane_page_range starts at the first page of the run");
+    failures += expect_size(range.bytes, 2 * page_bytes, "plane_page_range covers both pages");
+
+    pool.lend_pages(8, 4);
+    failures += expect_size(pool.lent_pages(), 4, "lent pages are counted");
+    failures += expect_size(pool.capacity_pages(), 16, "the physical extent is unchanged");
+    failures += expect_size(pool.usable_pages(), 12, "usable pages exclude the loan");
+    failures += expect_size(pool.available_pages(), 12, "available pages exclude the loan");
+    failures += expect_size(pool.free_runs().size(), 2, "the loan splits the free run");
+
+    // Every page the pool hands out while the loan is open must avoid the lent range: the twelve
+    // usable pages are 0-7 and 12-15, which the allocator can only deliver as two runs.
+    std::vector<ninfer::DeviceKVPageLease> leases = materialize(pool, 12);
+    failures += expect(!pool.reserve(1).has_value(), "a lent page cannot be reserved");
+    failures += expect_size(pool.available_pages(), 0, "no page is left while the loan is open");
+    failures += expect(pool.contiguous_run_count(handles(leases)) == 2,
+                       "materialization crossed the lent range");
+
+    bool overlap_rejected = false;
+    try {
+        pool.lend_pages(0, 2);
+    } catch (const std::invalid_argument&) { overlap_rejected = true; }
+    failures += expect(overlap_rejected, "lending allocated pages is rejected");
+
+    leases.clear();
+    pool.return_pages(8, 4);
+    failures += expect_size(pool.lent_pages(), 0, "the loan is returned");
+    failures += expect_size(pool.usable_pages(), 16, "usable pages recover");
+    failures += expect_size(pool.free_runs().size(), 1, "the returned run coalesces");
+    failures += expect_size(pool.free_runs()[0].count, 16, "the free run covers the pool again");
+
+    bool outside_rejected = false;
+    try {
+        pool.lend_pages(14, 4);
+    } catch (const std::out_of_range&) { outside_rejected = true; }
+    failures += expect(outside_rejected, "a loan past the pool is rejected");
+    return failures;
+}
+
 int exercise_reservation_and_mapping(ninfer::DeviceContext& context) {
     int failures = 0;
     ninfer::KVPageGeometry geometry{
@@ -434,6 +490,7 @@ int main() {
     try {
         ninfer::DeviceContext context(0);
         int failures = exercise_reservation_and_mapping(context);
+        failures += exercise_page_lending(context);
         failures += exercise_layout_and_transfer(
             context,
             ninfer::KVPageGeometry{

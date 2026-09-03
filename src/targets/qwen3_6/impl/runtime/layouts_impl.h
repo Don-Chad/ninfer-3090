@@ -271,6 +271,18 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     out.bytes = builder.finish(kArenaAlign, "persistent layout");
     out.kv_payload_bytes =
         out.decoder.kv_payload_bytes() + (out.dflash ? out.dflash->kv_payload_bytes() : 0);
+    const auto plane_end = [](const qwen3_6::PagedKVCacheLayout& cache) {
+        std::size_t end = 0;
+        if (cache.pages.spec.geometry.device_plane_order != PagedKVPlaneOrder::PageMajor) {
+            return end;
+        }
+        for (const DeviceKVPlaneLayout& plane : cache.pages.planes) {
+            end = std::max(end, plane.storage.region.offset + plane.storage.region.bytes);
+        }
+        return end;
+    };
+    out.lendable_kv_end_bytes = std::max(
+        plane_end(out.decoder.text_kv), out.decoder.mtp_kv ? plane_end(*out.decoder.mtp_kv) : 0);
     return out;
 }
 
@@ -297,7 +309,8 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
 
     const auto text_common_root = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens) {
         (void)workspace_recipe::text_prefill_roots<TextConfig>(
-            layout, tokens, plan.features.vision ? 3 : 0, plan.features.vision ? tokens : 0);
+            layout, tokens, plan.features.vision ? 3 : 0, plan.features.vision ? tokens : 0,
+            plan.features.overlay_vision());
     };
     const auto attention_stage = [&](WorkspaceLayoutBuilder& layout, std::int32_t first,
                                      std::int32_t last, qwen3_6::TextPhase phase,
@@ -597,10 +610,13 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                   out.dflash_context, out.dflash_round, out.causal_score});
     out.capacity = out.general_capacity;
     if (plan.features.vision) {
-        const std::uint32_t merged = static_cast<std::uint32_t>(
-            std::min<std::uint64_t>(plan.capacity, kMaximumVisionItemTokens));
-        out.vision   = schedule::VisionContext::plan_workspace(merged, out.general_capacity);
-        out.capacity = std::max(out.capacity, out.vision->capacity_bytes);
+        const std::uint32_t merged = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+            {plan.capacity, kMaximumVisionItemTokens, plan.vision_max_merged}));
+        out.vision          = schedule::VisionContext::plan_workspace(merged, out.general_capacity);
+        out.vision_resident = !plan.features.overlay_vision();
+        if (out.vision_resident) {
+            out.capacity = std::max(out.capacity, out.vision->capacity_bytes);
+        }
     }
     return out;
 }
@@ -690,6 +706,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->speculative_backend = inputs.speculative_backend;
     impl->proposal_head       = inputs.proposal_head;
     impl->features            = inputs.features;
+    impl->vision_max_merged   = inputs.vision_max_merged;
     impl->use_cuda_graph      = inputs.use_cuda_graph;
     impl->causal_scoring      = inputs.causal_scoring;
     impl->device              = inputs.device;
@@ -777,6 +794,7 @@ make_sequence_planner_impl(DeviceContext& device, const EngineOptions& options,
         .kv_packed_values    = kv_profile.packed_values,
         .proposal_head       = options.speculative.proposal_head,
         .features            = qwen3_6::startup_features(options),
+        .vision_max_merged   = std::max<std::uint32_t>(1, options.vision_max_merged_tokens),
         .use_cuda_graph      = options.use_cuda_graph,
         .causal_scoring      = options.purpose == EnginePurpose::CausalScoring,
         .device              = options.device,

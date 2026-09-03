@@ -1853,7 +1853,12 @@ private:
                     if (slots_[*lane] == nullptr || !slots_[*lane]->is_prefilling()) {
                         throw std::logic_error("prefill owner has no active Engine request");
                     }
-                    prefill_runnable = !slots_[*lane]->capture_pending;
+                    // A lane whose image is still encoding in a concurrent window yields its
+                    // prefill unit; the decode of the other lanes runs meanwhile.
+                    prefill_runnable =
+                        !slots_[*lane]->capture_pending &&
+                        !(slots_[*lane]->sequence &&
+                          instance_.program->vision_pending(*slots_[*lane]->sequence));
                 }
                 const ExecutionAction action = scheduler_.choose_execution(
                     !membership.empty(), prefill_runnable, previous_unit_was_decode);
