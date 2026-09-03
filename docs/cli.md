@@ -188,7 +188,7 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | `--prefill-chunk N` | positive text-prefill chunk, in multiples of 128 | `1024` |
 | `--max-new N` | requested output-token limit | `128` |
 | `--device N` | CUDA device index | `0` |
-| `--kv-dtype bf16\|int8` | KV-cache storage. `fp8` and `rk8v4` parse but are rejected on SM86 | `bf16` |
+| `--kv-dtype bf16\|int8\|rk8v4` | KV-cache storage. `rk8v4` is opt-in RotorQuant; `fp8` parses but is rejected on SM86 | `bf16` |
 | `--spec mtp\|dflash` | speculative backend | off |
 | `--draft-tokens N` | MTP `1..5`; DFlash `1..15` | unset |
 | `--lm-head-draft` | optimized proposal head | off |
@@ -236,9 +236,10 @@ Artifact identity selects the weight profile; `--kv-dtype` selects runtime KV st
 
 Upstream's row-scaled `fp8` E4M3 KV profile is **not available on SM86**: its causal attention
 kernels use the Blackwell-only `mma.sync...kind::f8f6f4` instruction and there is no dequantizing
-attention route for FP8 KV. The experimental `rk8v4` RotorQuant profile is likewise rejected
-pending a port to the `kv_cache_append` Op. Both values parse and then fail at engine construction
-with a specific diagnostic. The prepared prompt must fit
+attention route for FP8 KV. It parses and then fails at engine construction with a specific
+diagnostic. The experimental `rk8v4` RotorQuant profile is available and opt-in: it stores rotated
+INT8 keys with a packed signed int4 value plane, buying about 32% more context for about 0.082%
+perplexity. The prepared prompt must fit
 `--max-context`; generation stops at the remaining context capacity when necessary.
 `--kv-capacity N` controls the shared physical Main Text KV pool independently and is rounded up to
 the 64-token page size. `--kv-capacity auto` loads the selected weights, measures the remaining GPU

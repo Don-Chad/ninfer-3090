@@ -130,21 +130,24 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
     Tensor& cache_v       = cache.v_pages;
     Tensor& cache_k_scale = cache.k_scale_pages;
     Tensor& cache_v_scale = cache.v_scale_pages;
+    // A U8 value plane is the rk8v4 packed signed int4 coding.
+    const bool packed_values = cache_v.dtype == DType::U8;
     auto launch = [&]<int WarpsPerCta, int MinBlocksPerSm, int KeyBlock, bool DynamicArena>() {
         const dim3 grid(Geometry::KVHeads, splits, invocation.batch_size);
         constexpr std::size_t kDynamicBytes =
             DynamicArena ? static_cast<std::size_t>(4 * KeyBlock * kCausalHeadDim) : 0u;
-        if constexpr (DynamicArena) {
-            static const cudaError_t attr = cudaFuncSetAttribute(
-                causal_attention_small_t_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta,
-                                                         MinBlocksPerSm, KeyBlock, DynamicArena,
-                                                         MultiBatch, Masked, CacheInput>,
-                cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kDynamicBytes));
-            CUDA_CHECK(attr);
-        }
-        causal_attention_small_t_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta, MinBlocksPerSm,
-                                                 KeyBlock, DynamicArena, MultiBatch, Masked,
-                                                 CacheInput>
+        auto issue = [&]<bool PackedValues>() {
+            if constexpr (DynamicArena) {
+                static const cudaError_t attr = cudaFuncSetAttribute(
+                    causal_attention_small_t_i8_tiled_kernel<
+                        Geometry, TokenTile, WarpsPerCta, MinBlocksPerSm, KeyBlock, DynamicArena,
+                        MultiBatch, Masked, CacheInput, PackedValues>,
+                    cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kDynamicBytes));
+                CUDA_CHECK(attr);
+            }
+            causal_attention_small_t_i8_tiled_kernel<Geometry, TokenTile, WarpsPerCta,
+                                                     MinBlocksPerSm, KeyBlock, DynamicArena,
+                                                     MultiBatch, Masked, CacheInput, PackedValues>
             <<<grid, WarpsPerCta * 32, kDynamicBytes, stream>>>(
                 static_cast<const __nv_bfloat16*>(q.data), input,
                 static_cast<const std::int32_t*>(pos.data), static_cast<std::int8_t*>(cache_k.data),
@@ -160,6 +163,12 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
                 cache.block_tables.ne[0], invocation.full_width, invocation.column_begin,
                 logical_capacity, scale, static_cast<__nv_bfloat16*>(partial_acc.data),
                 static_cast<float*>(partial_m.data), static_cast<float*>(partial_l.data));
+        };
+        if (packed_values) {
+            issue.template operator()<true>();
+        } else {
+            issue.template operator()<false>();
+        }
     };
     if constexpr (TokenTile == 6) {
         // Small grids need more warps per CTA. From 2K to 8K, Bc=64 halves key
