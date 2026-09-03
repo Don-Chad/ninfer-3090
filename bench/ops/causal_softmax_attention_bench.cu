@@ -36,10 +36,10 @@ constexpr std::int32_t kFp8KvGroup       = 256;
 constexpr float kScale                   = 0.0625F;
 constexpr std::size_t kFlushBytes        = std::size_t{256} << 20;
 constexpr double kDenseF16Bf16TcTflops   = 209.5;
-constexpr double kDenseFp8TcTflops       = 419.0;
+const double kDenseFp8TcTflops = bench::device_specs().fp8_f32acc_tflops;
 constexpr double kMixedFp8F16TcTflops    = 279.333;
-constexpr double kRtx5090DramGBs         = 1792.0;
-constexpr double kColdPureReadCeilingGBs = 1674.5;
+const double kRtx5090DramGBs = bench::device_specs().dram_spec_gbs;
+const double kColdPureReadCeilingGBs = bench::device_specs().sustained_read_gbs;
 
 enum class Entry : std::uint8_t { Append, Cached, Both };
 enum class GeometryChoice : std::uint8_t { H24Kv4, H16Kv2, All };

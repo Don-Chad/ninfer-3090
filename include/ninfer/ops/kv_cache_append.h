@@ -44,10 +44,27 @@ struct KVCacheAppendPrefixExecutionEnvelope {
  *           code[i]    = E4M3FN_RNE_SATFINITE(FP32(x[i]) * inv)
  *   decode[i] = FP32(E4M3FN(code[i])) * s.
  *
- * V uses represented BF16 source values directly as x. For both quantized profiles, K is a paired
- * physical representation for causal Attention: its implementation-owned fixed orthogonal
- * preparation selects x, and the causal consumer applies the matching private Q preparation. The
- * transform and raw K code/scale bytes are not standalone mathematical outputs. Standalone and
+ * A cache whose value plane is DType::U8 selects the rk8v4 profile: keys keep the INT8-G64
+ * encoding above and values are stored as signed 4-bit codes, two per byte, in a value plane of
+ * half the head dimension. Dimension d occupies the low nibble of byte d/2 when d is even and the
+ * high nibble when d is odd. Values use a 32-value group rather than the key plane's 64, so their
+ * scale plane has twice the key plane's leading extent: four bits resolve a group to 15 levels, so
+ * one outlier would otherwise set the step for 64 neighbours. The group encoding is the INT8 one
+ * with 7 in place of 127, over that 32-value group:
+ *
+ *   a          = max_i abs(FP32(x[i]))
+ *   scale_bits = FP16_RNE(a / 7)
+ *   s          = FP32(scale_bits)
+ *   inv        = s == 0 ? 0 : FP32(1 / s)
+ *   code[i]    = s == 0 ? 0 : I4(clamp(RNE_even(FP32(x[i]) * inv), -7, 7))
+ *   decode[i]  = FP32(code[i]) * s.
+ *
+ * V uses represented BF16 source values directly as x under every profile, including rk8v4: values
+ * are never rotated, so no inverse preparation is applied to the attention output. For every
+ * quantized profile, K is a paired physical representation for causal Attention: its
+ * implementation-owned fixed orthogonal preparation selects x, and the causal consumer applies the
+ * matching private Q preparation. The transform and raw K code/scale bytes are not standalone
+ * mathematical outputs. Standalone and
  * fused append produce the same consumable K representation. Every addressed code/value and scale
  * is overwritten, and no unrelated cache row is read or written. Inputs and every cache
  * plane/table are pairwise non-overlapping. The Op owns no persistent allocation, frontier,

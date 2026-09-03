@@ -30,9 +30,9 @@ enum class KvCacheStorage : std::uint8_t {
     BFloat16,
     Int8Group64,
     Fp8E4M3Row256,
-    // RotorQuant rk8v4. Retained so the CLI/serve surface can reject it with a precise
-    // diagnostic; the sm_86 implementation is not yet ported to the kv_cache_append op that
-    // now owns KV quantization. See docs/rtx-3090-windows.md.
+    // RotorQuant rk8v4: rotated INT8 keys with a packed signed int4 value plane over a group-32
+    // scale. Ported onto the kv_cache_append Op that owns KV quantization, and opt-in through
+    // --kv-dtype rk8v4. See docs/rtx-3090-windows.md.
     RotatedInt8KeyInt4ValueGroup64,
 };
 

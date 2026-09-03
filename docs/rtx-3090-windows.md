@@ -91,9 +91,23 @@ top-level field `"reasoning_effort": "xhigh"`; Responses uses
 `--reasoning-effort low|medium|xhigh`.
 
 The paged cache supports BF16, INT8, and experimental opt-in `rk8v4` storage. INT8 remains the
-recommended default. On the development RTX 3090, `rk8v4` raised the measured C1 automatic-sizing
-boundary from 171,648 to 226,560 tokens with MTP and CUDA Graphs disabled and 1 GiB headroom, but a
-matched hard-output test was not quality-equivalent. Use it only after validating your workload.
+recommended default. On the development RTX 3090, `rk8v4` raises the measured automatic-sizing
+boundary from 171,648 to 226,560 tokens at 1 GiB headroom, for 5.51 GiB of KV against INT8's
+5.40 GiB.
+
+Since the port onto the `kv_cache_append` Op, that context gain has a measured quality cost of
+**+0.082% perplexity** (`ninfer-perplexity`, `ninfer-ppl-1m-v1` quick, 261,167 scored tokens:
+4.343263 on INT8 against 4.346811 on rk8v4). Values are not rotated, so there is no
+inverse-rotation pass over the attention output. Values do use a finer group than keys, 32 against
+64, which halved that penalty from +0.146% at no cost in context.
+
+Decode cost depends on speculation. Without it the packed value plane is within about 1% of INT8,
+because halved value traffic and the added unpack nearly cancel. With MTP3, C1 decode falls about
+5%, from a mean 81.61 tok/s across three runs to 77.39, because the lower value precision reduces
+draft acceptance from 71.27% to 65.86%. The finer value group does not fix that: it recovers 44% of
+the perplexity penalty but only about 15% of the acceptance loss, because acceptance turns on exact
+token agreement rather than on mean error. Prefer `rk8v4` when context is the binding constraint,
+and INT8 when decode throughput under speculation matters more.
 
 ## Measured 35B capacity
 

@@ -29,8 +29,8 @@ namespace {
 
 constexpr std::int32_t kRows               = 5120;
 constexpr std::int32_t kHidden             = 6144;
-constexpr double kRtx5090DramGBs           = 1792.0;
-constexpr double kRtx5090SustainedReadGBs  = 1674.5;
+const double kRtx5090DramGBs = bench::device_specs().dram_spec_gbs;
+const double kRtx5090SustainedReadGBs = bench::device_specs().sustained_read_gbs;
 constexpr double kRtx5090DenseBf16Tflops   = 209.5;
 constexpr std::uint64_t kDefaultFlushBytes = 256ULL << 20;
 constexpr int kDefaultWarmup               = 3;
