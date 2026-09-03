@@ -220,7 +220,7 @@ DeviceKVPagePool::DeviceKVPagePool(DeviceSpan backing, const DeviceKVPagePoolLay
     page_generations_.assign(spec_.page_group_count, 1);
     page_allocated_.assign(spec_.page_group_count, false);
     validation_marks_.assign(spec_.page_group_count, 0);
-    free_page_runs_.push_back(FreePageRun{.begin = 0, .count = spec_.page_group_count});
+    free_page_runs_.push_back(KVPageRun{.begin = 0, .count = spec_.page_group_count});
 }
 
 std::uint32_t DeviceKVPagePool::capacity_pages() const noexcept { return spec_.page_group_count; }
@@ -229,13 +229,70 @@ std::uint32_t DeviceKVPagePool::allocated_pages() const noexcept { return alloca
 
 std::uint32_t DeviceKVPagePool::reserved_pages() const noexcept { return reserved_pages_; }
 
+std::uint32_t DeviceKVPagePool::usable_pages() const noexcept {
+    return capacity_pages() - lent_pages_;
+}
+
+std::uint32_t DeviceKVPagePool::lent_pages() const noexcept { return lent_pages_; }
+
 std::uint32_t DeviceKVPagePool::available_pages() const noexcept {
-    return capacity_pages() - allocated_pages_ - reserved_pages_;
+    return usable_pages() - allocated_pages_ - reserved_pages_;
 }
 
 std::size_t DeviceKVPagePool::plane_count() const noexcept { return planes_.size(); }
 
 const Tensor& DeviceKVPagePool::plane(std::size_t index) const { return planes_.at(index); }
+
+std::span<const KVPageRun> DeviceKVPagePool::free_runs() const noexcept {
+    return {free_page_runs_.data(), free_page_runs_.size()};
+}
+
+KVPlaneByteRange DeviceKVPagePool::plane_page_range(std::size_t plane_index,
+                                                    std::int32_t first_page,
+                                                    std::uint32_t count) const {
+    if (spec_.geometry.device_plane_order != PagedKVPlaneOrder::PageMajor) {
+        throw std::logic_error("Paged KV page ranges require page-major planes");
+    }
+    if (count == 0 || first_page < 0 ||
+        static_cast<std::int64_t>(first_page) + count > capacity_pages()) {
+        throw std::out_of_range("Paged KV page range is outside the pool");
+    }
+    const Tensor& plane          = planes_.at(plane_index);
+    const std::size_t page_bytes = static_cast<std::size_t>(plane.nb[3]);
+    return KVPlaneByteRange{.base  = static_cast<const std::byte*>(plane.data) +
+                                    static_cast<std::size_t>(first_page) * page_bytes,
+                            .bytes = page_bytes * count};
+}
+
+void DeviceKVPagePool::lend_pages(std::int32_t begin, std::uint32_t count) {
+    if (count == 0 || begin < 0 || static_cast<std::int64_t>(begin) + count > capacity_pages()) {
+        throw std::out_of_range("Paged KV loan is outside the pool");
+    }
+    const std::int64_t end = static_cast<std::int64_t>(begin) + count;
+    for (std::size_t index = 0; index < free_page_runs_.size(); ++index) {
+        const KVPageRun& run       = free_page_runs_[index];
+        const std::int64_t run_end = static_cast<std::int64_t>(run.begin) + run.count;
+        if (run.begin <= begin && end <= run_end) {
+            consume_free_run(index, begin, count);
+            lent_pages_ += count;
+            return;
+        }
+    }
+    throw std::invalid_argument("Paged KV loan does not cover wholly free pages");
+}
+
+void DeviceKVPagePool::return_pages(std::int32_t begin, std::uint32_t count) {
+    if (count == 0 || begin < 0 || static_cast<std::int64_t>(begin) + count > capacity_pages()) {
+        throw std::out_of_range("Paged KV loan return is outside the pool");
+    }
+    if (count > lent_pages_) {
+        throw std::invalid_argument("Paged KV loan return exceeds the lent pages");
+    }
+    for (std::uint32_t offset = 0; offset < count; ++offset) {
+        release_free_page(begin + static_cast<std::int32_t>(offset));
+    }
+    lent_pages_ -= count;
+}
 
 std::uint32_t
 DeviceKVPagePool::contiguous_run_count(std::span<const DeviceKVPageHandle> pages) const {
@@ -262,7 +319,7 @@ bool DeviceKVPagePool::can_resize_reservation(const DeviceKVPageReservation& res
     const std::uint64_t used = static_cast<std::uint64_t>(allocated_pages_) +
                                static_cast<std::uint64_t>(reserved_pages_ - reservation.pages_) +
                                new_reserved_pages;
-    return used <= capacity_pages();
+    return used <= usable_pages();
 }
 
 void DeviceKVPagePool::resize_reservation(DeviceKVPageReservation& reservation,
@@ -291,7 +348,7 @@ void DeviceKVPagePool::materialize(DeviceKVPageReservation& reservation,
         }
     }
     if (count == 0) { return; }
-    if (count > capacity_pages() - allocated_pages_) {
+    if (count > usable_pages() - allocated_pages_) {
         throw std::logic_error("Paged KV reservation invariant was violated");
     }
 
@@ -307,7 +364,7 @@ void DeviceKVPagePool::materialize(DeviceKVPageReservation& reservation,
     if (preferred && *preferred >= 0) {
         const auto upper = std::upper_bound(
             free_page_runs_.begin(), free_page_runs_.end(), *preferred,
-            [](std::int32_t page, const FreePageRun& run) { return page < run.begin; });
+            [](std::int32_t page, const KVPageRun& run) { return page < run.begin; });
         if (upper != free_page_runs_.begin()) {
             const auto candidate = upper - 1;
             const std::uint64_t run_end =
@@ -322,7 +379,7 @@ void DeviceKVPagePool::materialize(DeviceKVPageReservation& reservation,
     if (selected == free_page_runs_.size()) {
         const auto contiguous =
             std::find_if(free_page_runs_.begin(), free_page_runs_.end(),
-                         [count](const FreePageRun& run) { return run.count >= count; });
+                         [count](const KVPageRun& run) { return run.count >= count; });
         if (contiguous != free_page_runs_.end()) {
             selected       = static_cast<std::size_t>(contiguous - free_page_runs_.begin());
             selected_begin = contiguous->begin;
@@ -343,7 +400,7 @@ void DeviceKVPagePool::materialize(DeviceKVPageReservation& reservation,
         std::uint32_t remaining   = count;
         std::size_t consumed_runs = 0;
         for (std::size_t run_index = 0; remaining != 0; ++run_index) {
-            FreePageRun& run         = free_page_runs_[run_index];
+            KVPageRun& run         = free_page_runs_[run_index];
             const std::uint32_t take = std::min(remaining, run.count);
             for (std::uint32_t offset = 0; offset < take; ++offset) {
                 append_page(run.begin + static_cast<std::int32_t>(offset));
@@ -371,7 +428,7 @@ DeviceKVPageLease DeviceKVPagePool::materialize_one(DeviceKVPageReservation& res
     if (free_page_runs_.empty()) {
         throw std::logic_error("Paged KV reservation invariant was violated");
     }
-    FreePageRun& run        = free_page_runs_.front();
+    KVPageRun& run        = free_page_runs_.front();
     const std::int32_t page = run.begin++;
     if (--run.count == 0) { free_page_runs_.erase(free_page_runs_.begin()); }
     page_allocated_[static_cast<std::size_t>(page)] = true;
@@ -462,7 +519,7 @@ void DeviceKVPagePool::release_page(std::int32_t index, std::uint32_t generation
 void DeviceKVPagePool::consume_free_run(std::size_t run_index, std::int32_t begin,
                                         std::uint32_t count) noexcept {
     if (run_index >= free_page_runs_.size() || count == 0) { std::terminate(); }
-    FreePageRun& run                = free_page_runs_[run_index];
+    KVPageRun& run                = free_page_runs_[run_index];
     const std::int64_t run_end      = static_cast<std::int64_t>(run.begin) + run.count;
     const std::int64_t consumed_end = static_cast<std::int64_t>(begin) + count;
     if (begin < run.begin || consumed_end > run_end) { std::terminate(); }
@@ -479,7 +536,7 @@ void DeviceKVPagePool::consume_free_run(std::size_t run_index, std::int32_t begi
         run.count = static_cast<std::uint32_t>(begin - run.begin);
         return;
     }
-    const FreePageRun right{.begin = static_cast<std::int32_t>(consumed_end),
+    const KVPageRun right{.begin = static_cast<std::int32_t>(consumed_end),
                             .count = static_cast<std::uint32_t>(run_end - consumed_end)};
     run.count = static_cast<std::uint32_t>(begin - run.begin);
     free_page_runs_.insert(free_page_runs_.begin() + static_cast<std::ptrdiff_t>(run_index + 1),
@@ -489,7 +546,7 @@ void DeviceKVPagePool::consume_free_run(std::size_t run_index, std::int32_t begi
 void DeviceKVPagePool::release_free_page(std::int32_t index) noexcept {
     const auto next = std::lower_bound(
         free_page_runs_.begin(), free_page_runs_.end(), index,
-        [](const FreePageRun& run, std::int32_t page) { return run.begin < page; });
+        [](const KVPageRun& run, std::int32_t page) { return run.begin < page; });
     const bool joins_right = next != free_page_runs_.end() && index + 1 == next->begin;
     const bool joins_left =
         next != free_page_runs_.begin() &&
@@ -504,7 +561,7 @@ void DeviceKVPagePool::release_free_page(std::int32_t index) noexcept {
         next->begin = index;
         ++next->count;
     } else {
-        free_page_runs_.insert(next, FreePageRun{.begin = index, .count = 1});
+        free_page_runs_.insert(next, KVPageRun{.begin = index, .count = 1});
     }
 }
 

@@ -8,6 +8,7 @@
 #include "runtime/engine/context_cost.h"
 #include "ninfer/ops/gdn_replay.h"
 #include "ninfer/ops/sampling.h"
+#include "core/evictable_kv_pool.h"
 #include "core/decode_graph.h"
 #include <ninfer/targets/qwen3_6/prepared_prompt.h>
 
@@ -19,6 +20,7 @@
 #include "targets/qwen3_6/impl/runtime/prefix_identity.h"
 #include "targets/qwen3_6/impl/runtime/text_context.h"
 #include "targets/qwen3_6/impl/runtime/vision_context.h"
+#include "targets/qwen3_6/impl/runtime/vision_overlay.h"
 #include "targets/qwen3_6/impl/runtime/vision_prefill.h"
 
 #include <algorithm>
@@ -542,6 +544,9 @@ public:
     progress_context_transaction(runtime::CancellationFlagView cancellation);
     void finalize_context_transaction() noexcept;
     [[nodiscard]] bool has_context_transaction() const noexcept;
+    // True while this sequence waits for an image it submitted to a concurrent window: the lane
+    // must not be given a prefill unit, and every other lane keeps running.
+    [[nodiscard]] bool vision_pending(SequenceHandle sequence) const noexcept;
     [[nodiscard]] PrefillProgress advance_prefill(SequenceHandle sequence,
                                                   runtime::ExecutionTiming* failed_timing);
     [[nodiscard]] CaptureAssessment
@@ -602,12 +607,17 @@ public:
     const bool kv_packed_values;
     const ProposalHead proposal_head;
     const bool vision_enabled;
+    // Non-null in overlay residency: pool, pinned tower and window layout from the model view.
+    const VisionOverlayAssets* const vision_overlay;
     const bool use_cuda_graph;
     const bool causal_scoring;
     const std::size_t kv_payload_bytes;
     const std::size_t graph_allowance_bytes;
     const WorkspacePlan workspace_plan;
 
+    // Overlay residency only: the persistent arena is VMM-backed so free KV granules can be lent
+    // to a vision window. Null everywhere else, where `persistent` owns a plain allocation.
+    std::unique_ptr<EvictableKVPool> kv_arena;
     DeviceArena persistent;
     DeviceArena workspace_storage;
     WorkspaceArena work;
@@ -659,6 +669,9 @@ public:
 
     std::size_t workspace_logical_peak_bytes = 0;
     std::size_t vision_handoff_peak_bytes    = 0;
+    // Overlay residency only: the one-window broker and the per-lane pinned result slots.
+    std::optional<schedule::VisionResidencyBroker> vision_broker;
+    std::optional<schedule::PinnedResultPool> vision_results;
 
 private:
     void advance_resource_revision() noexcept {

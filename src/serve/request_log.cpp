@@ -589,6 +589,21 @@ std::string format_request_done(const RequestLogContext& context,
         << " decode=" << rate(decode_tokens, metrics.decode_seconds)
         << " wall=" << seconds_str(metrics.total_seconds) << " host=" << std::setprecision(2)
         << request_host_exposed_seconds(metrics.engine_timing) * 1000.0 << "ms";
+    if (metrics.overlay_windows != 0) {
+        const auto mib = [](std::size_t bytes) {
+            return static_cast<double>(bytes) / (1024.0 * 1024.0);
+        };
+        out << " overlay=" << metrics.overlay_windows << "x"
+            << (metrics.overlay_exclusive_windows == metrics.overlay_windows ? "excl"
+                : metrics.overlay_exclusive_windows == 0                     ? "conc"
+                                                                            : "mixed")
+            << " " << std::setprecision(0)
+            << metrics.overlay_window_seconds * 1000.0 << "ms (evict " << std::setprecision(0)
+            << mib(metrics.overlay_evicted_bytes) << "MiB " << std::setprecision(1)
+            << metrics.overlay_evict_seconds * 1000.0 << "ms, restore " << std::setprecision(1)
+            << metrics.overlay_restore_seconds * 1000.0 << "ms, staged " << std::setprecision(0)
+            << mib(metrics.overlay_staged_bytes) << "MiB)" << std::setprecision(2);
+    }
     if (metrics.engine_timing.decode_rounds == 0) {
         out << " decode-host=n/a wait=n/a";
     } else {
@@ -698,6 +713,8 @@ std::string format_server_start_json(
                                                           {"bytes_read", load.artifact_bytes_read},
                                                           {"host_to_device_bytes", load.host_to_device_bytes},
                                                           {"peak_staging_bytes", load.peak_staging_bytes},
+                                                          {"pinned_weight_bytes", load.pinned_weight_bytes},
+                                                          {"overlay_window_bytes", load.overlay_window_bytes},
                                                           {"tensor_count", load.tensor_count},
                                                           {"resource_count", load.resource_count},
                                                           {"load_seconds", load.load_seconds},
@@ -827,6 +844,14 @@ std::string format_request_done_json(const std::string& server_instance_id, std:
         {"prepare", outcome.metrics.prepare_seconds}, {"ttft", outcome.metrics.ttft_seconds},
         {"vision", outcome.metrics.vision_seconds},   {"prefill", outcome.metrics.prefill_seconds},
         {"decode", outcome.metrics.decode_seconds},   {"total", outcome.metrics.total_seconds}};
+    record["vision_overlay"] = Json{{"windows", outcome.metrics.overlay_windows},
+                                    {"window_seconds", outcome.metrics.overlay_window_seconds},
+                                    {"evict_seconds", outcome.metrics.overlay_evict_seconds},
+                                    {"restore_seconds", outcome.metrics.overlay_restore_seconds},
+                                    {"evicted_bytes", outcome.metrics.overlay_evicted_bytes},
+                                    {"staged_bytes", outcome.metrics.overlay_staged_bytes},
+                                    {"exclusive_windows",
+                                     outcome.metrics.overlay_exclusive_windows}};
     record["engine_timing"]   = request_engine_timing_json(outcome.metrics.engine_timing);
     record["speculative"]     = speculative_json(outcome.metrics);
     record["materialization"] = materialization_json(outcome.metrics.materialization);

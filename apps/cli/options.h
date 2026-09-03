@@ -26,6 +26,8 @@ struct Options {
     KvCacheStorage kv_cache = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
     bool enable_vision  = false;
+    VisionResidency vision_residency       = VisionResidency::Resident;
+    std::uint32_t vision_max_merged_tokens = 16384;
     bool use_cuda_graph = true;
 
     bool raw_output      = false;

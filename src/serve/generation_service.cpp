@@ -271,6 +271,8 @@ GenerationService::GenerationService(ServeOptions options, LoadProgress load_pro
     engine_options.prefill_chunk            = options_.prefill_chunk;
     engine_options.kv_cache                 = options_.kv_cache;
     engine_options.enable_vision            = options_.enable_vision;
+    engine_options.vision_residency         = options_.vision_residency;
+    engine_options.vision_max_merged_tokens = options_.vision_max_merged_tokens;
     engine_options.use_cuda_graph           = options_.use_cuda_graph;
     engine_options.speculative              = options_.speculative;
     engine_options.context_cache            = options_.context_cache;
@@ -450,6 +452,13 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
         prepared.prepare_seconds +
         std::max(0.0, result.timings.first_token_seconds - result.timings.prepare_seconds);
     outcome.metrics.vision_seconds  = result.timings.vision_seconds;
+    outcome.metrics.overlay_windows           = result.timings.overlay_windows;
+    outcome.metrics.overlay_exclusive_windows = result.timings.overlay_exclusive_windows;
+    outcome.metrics.overlay_window_seconds  = result.timings.overlay_window_seconds;
+    outcome.metrics.overlay_evict_seconds   = result.timings.overlay_evict_seconds;
+    outcome.metrics.overlay_restore_seconds = result.timings.overlay_restore_seconds;
+    outcome.metrics.overlay_evicted_bytes   = result.timings.overlay_evicted_bytes;
+    outcome.metrics.overlay_staged_bytes    = result.timings.overlay_staged_bytes;
     outcome.metrics.prefill_seconds = result.timings.prefill_seconds;
     outcome.metrics.decode_seconds  = result.timings.decode_seconds;
     outcome.metrics.total_seconds =

@@ -1136,8 +1136,10 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
             }
 
             const std::int32_t rope_axes = multimodal != nullptr ? 3 : (rope_delta_ != 0 ? 1 : 0);
+            const bool overlay_staging   = !vision_chunk.host_embeddings.empty();
             const auto roots             = workspace_recipe::text_prefill_roots<TextConfig>(
-                work_, len, rope_axes, static_cast<std::int32_t>(local_scatter_indices.size()));
+                work_, len, rope_axes, static_cast<std::int32_t>(local_scatter_indices.size()),
+                overlay_staging);
             Tensor ids_device = roots.ids;
             copy_i32(ids.data() + t0, ids_device, s);
 
@@ -1172,8 +1174,30 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
             if (!local_scatter_indices.empty()) {
                 Tensor indices_device = roots.scatter_indices;
                 copy_i32(local_scatter_indices.data(), indices_device, s);
-                Tensor embeddings = vision_chunk.embeddings.slice(
-                    1, visual_begin, static_cast<std::int32_t>(local_scatter_indices.size()));
+                const auto count = static_cast<std::int32_t>(local_scatter_indices.size());
+                Tensor embeddings;
+                if (overlay_staging) {
+                    // Overlay residency keeps the item embeddings pinned on the host; only the
+                    // columns of this chunk travel to the device.
+                    const std::size_t column_bytes =
+                        static_cast<std::size_t>(TextConfig::hidden) * sizeof(std::uint16_t);
+                    // Stage the chunk's columns plus the following one: the shifted MTP input of
+                    // the chunk's last visual token is the next visual column.
+                    const auto merged = static_cast<std::int32_t>(vision_chunk.control->merged_count);
+                    const std::int32_t staged_columns =
+                        std::min<std::int32_t>(count + 1, merged - visual_begin);
+                    const std::size_t offset = static_cast<std::size_t>(visual_begin) * column_bytes;
+                    const std::size_t bytes  = static_cast<std::size_t>(staged_columns) * column_bytes;
+                    if (staged_columns < count || offset + bytes > vision_chunk.host_embeddings.size()) {
+                        throw std::logic_error("vision chunk columns exceed the item embeddings");
+                    }
+                    CUDA_CHECK(cudaMemcpyAsync(roots.visual_embeddings.data,
+                                               vision_chunk.host_embeddings.data() + offset, bytes,
+                                               cudaMemcpyHostToDevice, s));
+                    embeddings = roots.visual_embeddings.slice(1, 0, count);
+                } else {
+                    embeddings = vision_chunk.embeddings.slice(1, visual_begin, count);
+                }
                 ops::scatter(embeddings, indices_device, x, s);
             }
             if constexpr (Tap::enabled) { tap.begin(x); }
@@ -1245,9 +1269,15 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
                         if (!overlap.empty()) {
                             Tensor shifted_indices = workspace_recipe::visual_scatter_indices(
                                 work_, static_cast<std::int32_t>(overlap.size()));
-                            qwen3_6::detail::scatter_shifted_visual_embeddings(
-                                mtp_input_embeddings, vision_chunk.embeddings, overlap,
-                                shifted_indices, s);
+                            if (overlay_staging) {
+                                qwen3_6::detail::scatter_shifted_visual_embeddings(
+                                    mtp_input_embeddings, roots.visual_embeddings, overlap,
+                                    shifted_indices, s, static_cast<std::size_t>(visual_begin));
+                            } else {
+                                qwen3_6::detail::scatter_shifted_visual_embeddings(
+                                    mtp_input_embeddings, vision_chunk.embeddings, overlap,
+                                    shifted_indices, s);
+                            }
                         }
                     }
                     mtp_input_embeddings_ptr = &mtp_input_embeddings;

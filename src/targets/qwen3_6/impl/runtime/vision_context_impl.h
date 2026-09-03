@@ -1,5 +1,6 @@
 #include "targets/qwen3_6/impl/runtime/instance.h"
 #include "targets/qwen3_6/impl/runtime/vision_context.h"
+#include "targets/qwen3_6/impl/runtime/vision_overlay_impl.h"
 
 #include "core/device.h"
 #include "core/layout.h"
@@ -173,11 +174,15 @@ void copy_host(const void* src, Tensor& dst, cudaStream_t stream) {
 
 } // namespace
 
-VisionContext::VisionContext(DeviceContext& ctx, const LoadedModelData& weights) : ctx_(ctx) {
-    if (!weights.vision) {
-        throw std::invalid_argument("Vision execution was requested without materialized weights");
-    }
-    const auto& vision = *weights.vision;
+VisionContext::VisionContext(DeviceContext& ctx, const LoadedModelData& weights)
+    : VisionContext(ctx, weights.vision ? *weights.vision
+                                        : throw std::invalid_argument(
+                                              "Vision execution was requested without "
+                                              "materialized weights")) {}
+
+VisionContext::VisionContext(DeviceContext& ctx, const qwen3_6::VisionWeights& vision,
+                             cudaStream_t stream)
+    : ctx_(ctx), stream_(stream != nullptr ? stream : ctx.stream) {
     patch_embed_       = &vision.common.patch_embedding;
     patch_embed_bias_  = &vision.common.patch_embedding_bias;
     position_embed_    = &vision.common.position_embedding;
@@ -258,7 +263,8 @@ Tensor VisionContext::bind_output(DeviceSpan backing, const VisionWorkspacePlan&
 }
 
 void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpan backing,
-                           const VisionWorkspacePlan& plan) const {
+                           const VisionWorkspacePlan& plan,
+                           VisionWeightStream* weight_stream) const {
     if (item.control == nullptr) { throw std::invalid_argument("Vision item control is null"); }
     const qwen3_6::VisionItemControl& control = *item.control;
     const auto patches64                      = control.patch_count;
@@ -282,7 +288,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
     }
     const auto patches  = static_cast<std::int32_t>(patches64);
     const auto tokens   = static_cast<std::int32_t>(tokens64);
-    cudaStream_t stream = ctx_.stream;
+    cudaStream_t stream = stream_;
 
     Tensor position_ids = layout.position_ids.bind(backing);
     copy_host(control.position_ids.data(), position_ids, stream);
@@ -290,6 +296,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
     Tensor x          = layout.x.bind(backing);
     Tensor patch_bf16 = layout.patch_bf16.bind(backing);
     copy_host(item.patches.data(), patch_bf16, stream);
+    if (weight_stream != nullptr) { weight_stream->prelude_ready(stream); }
     ops::linear(patch_bf16, *patch_embed_, x, stream);
     ops::add_bias(*patch_embed_bias_, x, stream);
     // The artifact records the source table shape [rows,hidden], while Tensor's
@@ -304,6 +311,9 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
     ops::vision_pos_embed_add(position_table, pos_indices, pos_weights, x, stream);
     for (std::size_t layer = 0; layer < blocks_.size(); ++layer) {
         const BlockW& block = blocks_[layer];
+        if (weight_stream != nullptr) {
+            weight_stream->arrive(static_cast<std::uint32_t>(layer), stream);
+        }
         {
             Tensor attended = layout.attended.bind(backing);
             {
@@ -360,6 +370,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
     }
 
     Tensor normalized = layout.normalized.bind(backing);
+    if (weight_stream != nullptr) { weight_stream->merger_ready(stream); }
     ops::layer_norm(x, *merger_.norm_weight, *merger_.norm_bias, VisionScheduleConfig::norm_eps,
                     normalized, stream);
     Tensor merged = normalized.view({VisionScheduleConfig::merger_hidden, tokens});
@@ -378,12 +389,36 @@ VisionPrefillSession::VisionPrefillSession(DeviceContext& device, const LoadedMo
                                            const VisionPrefillPlan& plan,
                                            std::size_t& handoff_peak_bytes)
     : device_(device), workspace_(workspace), workspace_plan_(workspace_plan), prompt_(prompt),
-      plan_(plan), handoff_peak_bytes_(handoff_peak_bytes), context_(device, model) {
+      plan_(plan), handoff_peak_bytes_(handoff_peak_bytes) {
+    context_.emplace(device, model);
+    if (workspace_.data == nullptr || workspace_.bytes < workspace_plan_.capacity_bytes) {
+        throw std::invalid_argument("Vision prefill workspace plan is invalid");
+    }
+    validate_plan();
+}
+
+VisionPrefillSession::VisionPrefillSession(DeviceContext& device,
+                                           const VisionWorkspacePlan& workspace_plan,
+                                           qwen3_6::PreparedPromptData& prompt,
+                                           const VisionPrefillPlan& plan,
+                                           std::size_t& handoff_peak_bytes,
+                                           VisionResidencyBroker& broker,
+                                           const qwen3_6::VisionOverlayAssets& assets,
+                                           PinnedResultPool::Handle result)
+    : device_(device), workspace_{}, workspace_plan_(workspace_plan), prompt_(prompt),
+      plan_(plan), handoff_peak_bytes_(handoff_peak_bytes) {
+    overlay_ = std::make_unique<VisionOverlaySession>(device, broker, assets, workspace_plan,
+                                                      std::move(result));
+    validate_plan();
+}
+
+VisionPrefillSession::~VisionPrefillSession() = default;
+
+void VisionPrefillSession::validate_plan() const {
     if (plan_.control == nullptr || plan_.control->items.empty() || plan_.uses.empty()) {
         throw std::invalid_argument("Vision prefill plan has no suffix item spans");
     }
-    if (workspace_.data == nullptr || workspace_.bytes < workspace_plan_.capacity_bytes ||
-        plan_.max_merged_count == 0 || plan_.max_merged_count > workspace_plan_.max_merged_tokens) {
+    if (plan_.max_merged_count == 0 || plan_.max_merged_count > workspace_plan_.max_merged_tokens) {
         throw std::invalid_argument("Vision prefill workspace plan is invalid");
     }
     std::uint32_t previous_end = 0;
@@ -415,13 +450,15 @@ VisionPrefillSession::VisionPrefillSession(DeviceContext& device, const LoadedMo
         if (control.merged_count > plan_.max_merged_count) {
             throw std::invalid_argument("Vision suffix item exceeds its request workspace extent");
         }
-        const Tensor output =
-            VisionContext::bind_output(workspace_, workspace_plan_, control.merged_count);
+        const std::size_t output_bytes =
+            checked_mul(static_cast<std::size_t>(control.merged_count),
+                        static_cast<std::size_t>(VisionScheduleConfig::out_hidden) * 2,
+                        "item handoff bytes");
         const std::size_t patch_elements = checked_mul(
             control.patch_count, static_cast<std::size_t>(VisionScheduleConfig::patch_dim),
             "item patch elements");
         const auto& payload = prompt_.media_payloads[use.prepared_item_index];
-        if (output.bytes() > workspace_plan_.handoff_capacity_bytes || !payload ||
+        if (output_bytes > workspace_plan_.handoff_capacity_bytes || !payload ||
             payload->patch_elements != patch_elements) {
             throw std::invalid_argument("Vision suffix item storage has an invalid shape");
         }
@@ -435,8 +472,6 @@ VisionPrefillSession::VisionPrefillSession(DeviceContext& device, const LoadedMo
                      })) {
         throw std::invalid_argument("Vision request workspace extent has no matching suffix item");
     }
-    encoded_payloads_pending_release_.reserve(plan_.uses.size());
-    timers_.reserve(plan_.uses.size());
 }
 
 VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32_t nominal_length) {
@@ -461,21 +496,57 @@ VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32
         return VisionChunk{static_cast<std::int32_t>(end - begin), nullptr, {}};
     }
     const qwen3_6::VisionItemControl& control = plan_.control->items[active->control_index];
+    if (overlay_ != nullptr) {
+        if (!active_item_ || *active_item_ != active->prepared_item_index) {
+            if (submitted_item_ && *submitted_item_ == active->prepared_item_index) {
+                // Submitted ahead of this unit: the encode has already run beside other lanes.
+                host_result_ = overlay_->complete_item();
+                submitted_item_.reset();
+            } else {
+                const auto& payload = prompt_.media_payloads[active->prepared_item_index];
+                host_result_ =
+                    overlay_->encode_item(VisionItemView{payload->span(), &control}, control);
+            }
+            active_item_ = active->prepared_item_index;
+            encoded_payloads_pending_release_.push_back(active->prepared_item_index);
+        }
+        return VisionChunk{static_cast<std::int32_t>(end - begin), &control, Tensor{},
+                           host_result_};
+    }
     Tensor output = VisionContext::bind_output(workspace_, workspace_plan_, control.merged_count);
 
     if (!active_item_ || *active_item_ != active->prepared_item_index) {
         const auto& payload = prompt_.media_payloads[active->prepared_item_index];
         timers_.emplace_back(device_);
         timers_.back().start();
-        context_.encode(VisionItemView{payload->span(), &control}, output, workspace_,
-                        workspace_plan_);
+        context_->encode(VisionItemView{payload->span(), &control}, output, workspace_,
+                         workspace_plan_);
         timers_.back().record_stop();
         active_item_          = active->prepared_item_index;
         active_handoff_bytes_ = output.bytes();
         handoff_peak_bytes_   = std::max(handoff_peak_bytes_, active_handoff_bytes_);
         encoded_payloads_pending_release_.push_back(active->prepared_item_index);
     }
-    return VisionChunk{static_cast<std::int32_t>(end - begin), &control, output};
+    return VisionChunk{static_cast<std::int32_t>(end - begin), &control, output, {}};
+}
+
+void VisionPrefillSession::submit_next_item() {
+    // One pinned result slot per session: an item may only be submitted while no other item's
+    // embeddings are still being consumed by the prefill.
+    if (overlay_ == nullptr || overlay_->pending() || active_item_) { return; }
+    if (next_use_ >= plan_.uses.size()) { return; }
+    const std::uint32_t item = plan_.uses[next_use_].prepared_item_index;
+    const auto& payload      = prompt_.media_payloads[item];
+    if (!payload) { return; }
+    const qwen3_6::VisionItemControl& control =
+        plan_.control->items[plan_.uses[next_use_].control_index];
+    if (overlay_->submit_item(VisionItemView{payload->span(), &control}, control)) {
+        submitted_item_ = item;
+    }
+}
+
+bool VisionPrefillSession::vision_pending() const noexcept {
+    return overlay_ != nullptr && overlay_->pending() && !overlay_->item_ready();
 }
 
 void VisionPrefillSession::release_encoded_media_payloads() noexcept {
@@ -488,13 +559,20 @@ void VisionPrefillSession::release_encoded_media_payloads() noexcept {
 
 void VisionPrefillSession::retire_handoff() noexcept {
     active_item_.reset();
+    submitted_item_.reset();
     active_handoff_bytes_ = 0;
+    host_result_          = {};
 }
 
 double VisionPrefillSession::elapsed_seconds() const {
+    if (overlay_ != nullptr) { return overlay_->stats().window_seconds; }
     double milliseconds = 0.0;
     for (const CudaEventTimer& timer : timers_) { milliseconds += timer.elapsed_ms(); }
     return milliseconds / 1000.0;
+}
+
+VisionOverlayWindowStats VisionPrefillSession::overlay_stats() const noexcept {
+    return overlay_ != nullptr ? overlay_->stats() : VisionOverlayWindowStats{};
 }
 
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule

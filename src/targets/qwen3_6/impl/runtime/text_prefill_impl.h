@@ -119,8 +119,22 @@ void mtp_bridge_multimodal(PrefillContext& state, const PreparedPromptData& prom
                 prompt.token_types[state.text_kv_base]) {
             throw std::logic_error("visual MTP bridge does not match Vision scatter metadata");
         }
-        visual_embedding =
-            chunk.embeddings.slice(1, static_cast<std::int32_t>(column - scatter.begin()), 1);
+        const auto column_index = static_cast<std::int32_t>(column - scatter.begin());
+        if (!chunk.host_embeddings.empty()) {
+            const std::size_t column_bytes =
+                static_cast<std::size_t>(TextConfig::hidden) * sizeof(std::uint16_t);
+            const std::size_t offset = static_cast<std::size_t>(column_index) * column_bytes;
+            if (offset + column_bytes > chunk.host_embeddings.size()) {
+                throw std::logic_error("visual MTP bridge column exceeds the item embeddings");
+            }
+            visual_embedding =
+                state.execution.work.alloc(DType::BF16, {TextConfig::hidden, 1});
+            CUDA_CHECK(cudaMemcpyAsync(visual_embedding.data, chunk.host_embeddings.data() + offset,
+                                       column_bytes, cudaMemcpyHostToDevice,
+                                       state.execution.device.stream));
+        } else {
+            visual_embedding = chunk.embeddings.slice(1, column_index, 1);
+        }
         composed_embedding = &visual_embedding;
     }
 

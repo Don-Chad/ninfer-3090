@@ -44,6 +44,33 @@ frozen by `--spec mtp|dflash` and `--draft-tokens`; omitting `--spec` loads neit
 `--lm-head-draft` additionally loads the optimized proposal head. DFlash is 35B-A3B text-only and
 cannot be combined with `--vision`. A later request cannot enable a capability omitted at startup.
 
+### Vision residency
+
+`--vision` keeps the Vision tower, its encode workspace and the item handoff resident for the
+process lifetime. `--vision-residency overlay` removes that cost on memory-tight cards: the tower
+lives in pinned host memory, the sequence plan reserves nothing for Vision, and each image is
+encoded inside a bounded window whose device memory is borrowed for the duration of the encode.
+
+A window is funded from free KV pages when they cover it. Those pages hold nothing, so nothing is
+copied, the text weights stay mapped, and the encode runs on its own stream while other lanes keep
+decoding: the lane that owns the image simply yields its prefill units until the encode completes.
+The pages are out of circulation while the loan is open, so the admission capacity shrinks with it
+and no request is ever admitted into memory that has been lent away.
+
+When free pages cannot cover the window, it falls back to the evict-ranked tail of the text weights
+(lm_head, token embedding, draft head, MTP head), restored from a pinned mirror before the prefill
+unit ends. That window is exclusive: the borrowed weights are unmapped, so nothing else runs until
+it closes. The fallback is always available, so a vision request never fails for lack of memory,
+and a KV cache smaller than one window simply uses it for every image.
+
+Either way the window streams the tower through two layer slots, lands the embeddings in pinned
+memory, and the prefill then uploads only each chunk's embedding columns. A follow-up turn over the
+same image reuses the prefix and opens no window. Embeddings are produced by the same kernels on the
+same bytes, so completions are identical between residencies. `--vision-max-merged N` bounds one
+item's merged tokens (media above it is downscaled at preprocessing) and sizes the window. The
+request log line reports `overlay=<windows>x<conc|excl|mixed> <ms> (evict <MiB> <ms>, restore <ms>,
+staged <MiB>)` and the JSON record carries `vision_overlay`, including `exclusive_windows`.
+
 ## Endpoints
 
 | Method and path | Behavior |
@@ -655,6 +682,8 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--default-max-tokens N` | output limit when omitted by a request | `8192` |
 | `--default-thinking-budget N` | positive thinking cap inherited by thinking-enabled requests | unset |
 | `--vision` | enable media input and load Vision GPU allocations | off |
+| `--vision-residency resident\|overlay` | `overlay` keeps the Vision tower in pinned host memory and encodes each image inside a window borrowed from the evict-ranked text weight tail, so `--vision` no longer reserves device memory and `--kv-capacity auto` resolves the no-vision capacity; requires `--vision` and CUDA virtual memory management | `resident` |
+| `--vision-max-merged N` | merged-token budget of one media item, `[64, 16384]`; larger images and video frame pairs are downscaled at preprocessing instead of being rejected, and the overlay window is sized for it | 16384 |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
 | `--device-state-slots N` | extra Device checkpoint StateImages beyond the active-lane guarantee | `max-concurrency` |

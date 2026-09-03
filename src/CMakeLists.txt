@@ -30,6 +30,8 @@ add_library(ninfer_core STATIC
   core/layout.cpp
   core/tensor.cpp
   core/decode_graph.cpp
+  core/evictable_kv_pool.cu
+  core/evictable_weight_pool.cu
   runtime/engine/admission_policy.cpp
   runtime/engine/context_cost.cpp
   runtime/engine/context_cost_defaults.cpp
@@ -37,7 +39,7 @@ add_library(ninfer_core STATIC
   runtime/engine/public_types.cpp)
 ninfer_internal_includes(ninfer_core)
 ninfer_cuda_archive(ninfer_core)
-target_link_libraries(ninfer_core PUBLIC ${NINFER_CUDART_TARGET} CUDA::nvtx3 Threads::Threads)
+target_link_libraries(ninfer_core PUBLIC ${NINFER_CUDART_TARGET} CUDA::nvtx3 Threads::Threads CUDA::cuda_driver)
 
 # Generic .ninfer framing, binding, and direct final materialization.
 add_library(ninfer_artifact STATIC

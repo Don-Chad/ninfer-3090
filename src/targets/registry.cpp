@@ -4,6 +4,7 @@
 #include "artifact/materializer.h"
 #include "artifact/reader.h"
 #include "core/device.h"
+#include "core/evictable_weight_pool.h"
 #include "runtime/engine/kv_capacity.h"
 #include "runtime/engine/context_cost.h"
 
@@ -111,10 +112,39 @@ ConstructedTarget construct_registered(const EngineOptions& options, DeviceConte
         runtime_bytes_after_planned_weights(load_plan.materialization().device_capacity_bytes);
     (void)runtime::resolve_kv_capacity(options.kv_capacity, curve, preflight_runtime_bytes);
 
+    const bool overlay_vision =
+        options.enable_vision && options.vision_residency == VisionResidency::Overlay;
+    std::unique_ptr<EvictableWeightPool> pool;
+    std::size_t overlay_window_bytes = 0;
+    if (overlay_vision) {
+        const std::size_t staging = load_plan.overlay_staging_bytes();
+        if (staging == 0) {
+            throw std::invalid_argument(
+                "the selected target does not support --vision-residency overlay");
+        }
+        if (!EvictableWeightPool::supported(device)) {
+            throw std::invalid_argument(
+                "--vision-residency overlay requires CUDA virtual memory management support");
+        }
+        overlay_window_bytes = staging + sequence_planner.vision_window_bytes();
+        pool                 = std::make_unique<EvictableWeightPool>(
+            device, EvictableWeightPool::Config{
+                        .arena_bytes           = load_plan.materialization().device_capacity_bytes,
+                        .evictable_tail_bytes  = load_plan.materialization().evictable_tail_bytes,
+                        .window_capacity_bytes = overlay_window_bytes,
+                    });
+        overlay_window_bytes = pool->window_capacity_bytes();
+    }
     auto progress     = artifact_progress(options.load_progress);
     auto materialized = artifact::materialize(reader, load_plan.materialization(), device,
-                                              progress.callback ? &progress : nullptr);
+                                              progress.callback ? &progress : nullptr,
+                                              std::move(pool));
     const artifact::MaterializationStats stats = materialized.stats();
+    if (overlay_vision) {
+        // The mirror must see the final weight bytes: the upload stream is drained by
+        // materialize(), and no tail chunk changes afterwards.
+        materialized.eviction_pool()->capture_window_mirror(device.transfer_stream);
+    }
 
     auto model = Target::construct_loaded_model(std::move(load_plan), std::move(materialized));
     device.synchronize();
@@ -140,6 +170,8 @@ ConstructedTarget construct_registered(const EngineOptions& options, DeviceConte
     summary.artifact_bytes_read  = stats.file_bytes;
     summary.host_to_device_bytes = stats.h2d_bytes;
     summary.peak_staging_bytes   = stats.peak_staging_bytes;
+    summary.pinned_weight_bytes  = stats.pinned_weight_bytes;
+    summary.overlay_window_bytes = overlay_window_bytes;
     summary.tensor_count         = stats.tensor_count;
     summary.resource_count       = stats.resource_count;
     summary.context_cost         = context_cost.summary;
