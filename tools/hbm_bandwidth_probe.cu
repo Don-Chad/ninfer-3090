@@ -33,7 +33,10 @@
 namespace {
 
 constexpr int kThreads                 = 256;
-constexpr double kDefaultPeakGBps      = 1792.0;
+// 0 means "derive from the device": 2 x memory clock x bus width. The literal here used to be
+// the RTX 5090's 1792 GB/s, which on the sm_86 fork target reported every rate as roughly half
+// its true fraction of peak. --peak still overrides.
+constexpr double kDefaultPeakGBps      = 0.0;
 constexpr double kDefaultTrialSeconds  = 0.25;
 constexpr int kDefaultTrials           = 5;
 constexpr std::size_t kDefaultMaxBytes = std::size_t{4} << 30;
@@ -187,9 +190,9 @@ void print_help(const char* argv0) {
                 "  --size-gib N    bytes per large buffer (default: min(4, 20%% free))\n"
                 "  --seconds N     target duration of each timed trial (default: %.2f)\n"
                 "  --trials N      timed trials per method (default: %d)\n"
-                "  --peak-gbps N   advertised bus bandwidth (default: %.0f)\n"
+                "  --peak-gbps N   advertised bus bandwidth (default: derived from the device)\n"
                 "  --help          show this text\n",
-                argv0, kDefaultTrialSeconds, kDefaultTrials, kDefaultPeakGBps);
+                argv0, kDefaultTrialSeconds, kDefaultTrials);
 }
 
 Options parse_options(int argc, char** argv) {
@@ -281,7 +284,7 @@ void print_result(const Result& result) {
 } // namespace
 
 int main(int argc, char** argv) {
-    const Options options = parse_options(argc, argv);
+    Options options = parse_options(argc, argv);
 
     int device = 0;
     CUDA_CHECK(cudaGetDevice(&device));
@@ -319,6 +322,13 @@ int main(int argc, char** argv) {
     const int copy_grid            = resident_grid(copy_u128_kernel, prop.multiProcessorCount);
     const int copy_x4_grid         = resident_grid(copy_u128x4_kernel, prop.multiProcessorCount);
 
+    const bool derived_peak = options.peak_gbps <= 0.0;
+    if (derived_peak) {
+        // memoryClockRate is the single-data-rate clock in kHz; GDDR transfers on both edges.
+        options.peak_gbps = 2.0 * static_cast<double>(prop.memoryClockRate) * 1.0e3 *
+                            (static_cast<double>(prop.memoryBusWidth) / 8.0) / 1.0e9;
+    }
+
     std::printf("GPU:               %s\n", prop.name);
     std::printf("SMs / L2:          %d / %.1f MiB\n", prop.multiProcessorCount,
                 static_cast<double>(prop.l2CacheSize) / (1 << 20));
@@ -329,7 +339,8 @@ int main(int argc, char** argv) {
     std::printf("Working set:       %.2f GiB per buffer (%.1fx L2)\n",
                 static_cast<double>(bytes) / (std::size_t{1} << 30),
                 static_cast<double>(bytes) / prop.l2CacheSize);
-    std::printf("Advertised peak:   %.1f GB/s\n", options.peak_gbps);
+    std::printf("Advertised peak:   %.1f GB/s%s\n", options.peak_gbps,
+                derived_peak ? " (derived from device)" : " (--peak)");
     std::printf("Trial policy:      %d trials, >= %.2f s each, best + median\n", options.trials,
                 options.seconds);
     std::printf("Resident grids:    write=%d read=%d copy=%d copy-x4=%d blocks x %d threads\n\n",

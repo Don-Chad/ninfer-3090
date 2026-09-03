@@ -724,7 +724,8 @@ ProgramImplCore::ProgramImplCore(const LoadedModelData& model_in, const Sequence
       shared_prefix_capacity(plan.context_cache.max_shared_prefixes.value_or(0)),
       prefill_chunk(plan.prefill_chunk), draft_window(plan.draft_window),
       speculative_backend(plan.speculative_backend), kv_dtype(plan.kv_dtype),
-      kv_quant_group(plan.kv_quant_group), proposal_head(plan.proposal_head),
+      kv_quant_group(plan.kv_quant_group), kv_packed_values(plan.kv_packed_values),
+      proposal_head(plan.proposal_head),
       vision_enabled(plan.features.vision), use_cuda_graph(plan.use_cuda_graph),
       causal_scoring(plan.causal_scoring), kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
@@ -6820,9 +6821,7 @@ ProgramImplCore::checkpoint_summary(const SequenceState& sequence,
         speculative_backend == SpeculativeBackend::Mtp      ? checkpoint.frontier - 1U
         : speculative_backend == SpeculativeBackend::DFlash ? checkpoint.frontier
                                                             : 0U;
-    const std::uint32_t identity_tag = static_cast<std::uint32_t>(speculative_backend) |
-                                       (static_cast<std::uint32_t>(proposal_head) << 8U) |
-                                       (static_cast<std::uint32_t>(kv_dtype) << 16U);
+    const std::uint32_t identity_tag = capture_identity_tag();
     return qwen3_6::CheckpointSummary{
         .ref   = checkpoint,
         .scope = runtime::CheckpointScope::Private,
@@ -10145,6 +10144,15 @@ void ProgramImplCore::enqueue_dflash_context_append(std::span<const std::uint32_
 
 void ProgramImplCore::validate_licensed_tokens(std::span<const TokenId> tokens) const {
     for (const TokenId token : tokens) {
+        if (token == ops::kSamplerNonFiniteToken) {
+            // The sampler refused to turn a non-finite logit row into a token id. Reaching here
+            // means the forward pass diverged, so say that rather than reporting a domain error:
+            // the alternative is streaming whatever the reductions make of NaN, which reads like
+            // ordinary output and hides the fault.
+            throw std::runtime_error(
+                "the forward pass produced non-finite logits (NaN or infinity); the sampler "
+                "refused to emit a token for this round");
+        }
         if (token < 0 || token >= TextConfig::token_domain) {
             throw std::runtime_error("target returned a token outside the 248077-token domain");
         }
@@ -10978,7 +10986,8 @@ MemorySummary ProgramImplCore::memory_summary() const noexcept {
         out.kv_cache = KvCacheStorage::BFloat16;
         break;
     case DType::I8:
-        out.kv_cache = KvCacheStorage::Int8Group64;
+        out.kv_cache = kv_packed_values ? KvCacheStorage::RotatedInt8KeyInt4ValueGroup64
+                                        : KvCacheStorage::Int8Group64;
         break;
     case DType::FP8_E4M3FN:
         out.kv_cache = KvCacheStorage::Fp8E4M3Row256;

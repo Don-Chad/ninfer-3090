@@ -62,14 +62,17 @@ std::uint32_t page_count(std::uint32_t capacity) {
 struct TargetKVCacheProfile {
     DType dtype;
     std::int32_t quant_group;
+    // rk8v4 stores keys as rotated INT8 and values as two signed 4-bit codes per byte, so the
+    // value coding is not implied by dtype.
+    bool packed_values = false;
 };
 
 TargetKVCacheProfile target_kv_cache_profile(KvCacheStorage storage) {
     switch (storage) {
     case KvCacheStorage::BFloat16:
-        return {DType::BF16, 0};
+        return {DType::BF16, 0, false};
     case KvCacheStorage::Int8Group64:
-        return {DType::I8, qwen3_6::kKvInt8QuantGroup};
+        return {DType::I8, qwen3_6::kKvInt8QuantGroup, false};
     case KvCacheStorage::Fp8E4M3Row256:
 #if defined(NINFER_SM8X_COMPAT)
         // The FP8 KV profile is only consumable by the causal attention FP8 kernels, which use
@@ -80,18 +83,14 @@ TargetKVCacheProfile target_kv_cache_profile(KvCacheStorage storage) {
             "KV-cache storage 'fp8' requires an sm_100a or sm_120a GPU: FP8 E4M3 causal "
             "attention has no sm_86 implementation. Use --kv-dtype int8 or --kv-dtype bf16.");
 #else
-        return {DType::FP8_E4M3FN, qwen3_6::kKvFp8QuantGroup};
+        return {DType::FP8_E4M3FN, qwen3_6::kKvFp8QuantGroup, false};
 #endif
     case KvCacheStorage::RotatedInt8KeyInt4ValueGroup64:
-        // RotorQuant rk8v4 quantized and rotated K/V inside the fused GQA attention kernels.
-        // KV quantization is now owned by the kv_cache_append Op, which defines K rotation as
-        // H256 and V as unrotated BF16 source values. The rk8v4 int4-V representation has no
-        // implementation against that contract yet, so the profile is rejected rather than
-        // silently served as int8.
-        throw std::invalid_argument(
-            "KV-cache storage 'rk8v4' is unavailable in this build: the RotorQuant sm_86 path "
-            "has not been ported to the kv_cache_append Op that now owns KV quantization. Use "
-            "--kv-dtype int8 for the qualified quantized profile.");
+        // RotorQuant rk8v4: the key plane is the same rotated INT8 representation Int8Group64
+        // uses, and the value plane holds two signed 4-bit codes per byte with the G64 scale
+        // plane unchanged. Values are not rotated, so the kv_cache_append contract's statement
+        // that values come from the represented BF16 source holds for this profile too.
+        return {DType::I8, qwen3_6::kKvInt8QuantGroup, true};
     }
     throw std::invalid_argument("unknown KV-cache storage profile");
 }
@@ -156,6 +155,7 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
                      .attention_head_dim        = TextConfig::head_dim,
                      .kv_dtype                  = plan.kv_dtype,
                      .kv_quant_group            = plan.kv_quant_group,
+                     .kv_packed_values          = plan.kv_packed_values,
                      .enable_mtp                = plan.features.mtp(),
                      .kv_table_rows             = static_cast<std::int32_t>(plan.max_concurrency),
                      .text_physical_page_groups = physical_pages,
@@ -696,6 +696,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->context_cache       = inputs.context_cache;
     impl->kv_dtype            = inputs.kv_dtype;
     impl->kv_quant_group      = inputs.kv_quant_group;
+    impl->kv_packed_values    = inputs.kv_packed_values;
     impl->persistent          = persistent_layout(*impl);
     impl->workspace           = build_workspace_plan(*impl);
     if (impl->use_cuda_graph) {
@@ -773,6 +774,7 @@ make_sequence_planner_impl(DeviceContext& device, const EngineOptions& options,
         .speculative_backend = options.speculative.backend,
         .kv_dtype            = kv_profile.dtype,
         .kv_quant_group      = kv_profile.quant_group,
+        .kv_packed_values    = kv_profile.packed_values,
         .proposal_head       = options.speculative.proposal_head,
         .features            = qwen3_6::startup_features(options),
         .use_cuda_graph      = options.use_cuda_graph,

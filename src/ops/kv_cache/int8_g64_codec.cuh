@@ -66,6 +66,83 @@ __device__ __forceinline__ std::int8_t kv_cache_int8_quant_code(float x, float i
     return static_cast<std::int8_t>(q);
 }
 
+// --- packed signed int4 value codec (rk8v4) ---------------------------------------------------
+// The rk8v4 profile keeps K as rotated INT8 and stores V as two signed 4-bit codes per byte, so a
+// V plane is half as wide as its INT8 counterpart while the G64 scale plane is unchanged. The
+// group encoding mirrors the INT8 one with 7 in place of 127, which is the largest magnitude a
+// signed 4-bit code can represent.
+inline constexpr int kKVCacheInt4Max = 7;
+
+// Values use a finer group than keys. Four-bit codes resolve a group to 15 levels, so the group
+// absmax sets the step for every member and one outlier costs the whole group precision. Halving
+// the group to 32 halves the number of values a single outlier can degrade, at the price of four
+// extra FP16 scales per row.
+inline constexpr int kKVCacheInt4ValueGroup  = 32;
+inline constexpr int kKVCacheInt4ValueGroups = kKVCacheInt8HeadDim / kKVCacheInt4ValueGroup;
+
+template <typename Geometry>
+__device__ __forceinline__ std::int64_t
+kv_cache_int4_value_scale_index(int physical_page, int kv_head, int group, int page_offset) {
+    return paged_kv_element_offset<kKVCacheInt4ValueGroups, Geometry::KVHeads>(
+        physical_page, kv_head, page_offset, group);
+}
+
+template <typename Geometry>
+__device__ __forceinline__ std::int64_t
+kv_cache_int4_value_code_index(int physical_page, int kv_head, int packed_d, int page_offset) {
+    return paged_kv_element_offset<kKVCacheInt8HeadDim / 2, Geometry::KVHeads>(
+        physical_page, kv_head, page_offset, packed_d);
+}
+
+// Persistent group-scale boundary for packed int4 values: FP16-RNE(absmax/7). Codes always use
+// the reciprocal of that represented FP16 value, exactly as the INT8 codec does.
+__device__ __forceinline__ KVCacheInt8QuantParams kv_cache_int4_quant_params(float absmax) {
+    const __half scale = __float2half_rn(
+        absmax > 0.0f ? absmax / static_cast<float>(kKVCacheInt4Max) : 0.0f);
+    const float represented_scale = __half2float(scale);
+    return {
+        .scale         = scale,
+        .inverse_scale = represented_scale > 0.0f ? 1.0f / represented_scale : 0.0f,
+    };
+}
+
+__device__ __forceinline__ std::int8_t kv_cache_int4_quant_code(float x, float inv_scale) {
+    if (inv_scale == 0.0f) { return static_cast<std::int8_t>(0); }
+    int q = __float2int_rn(x * inv_scale);
+    q     = max(-kKVCacheInt4Max, min(kKVCacheInt4Max, q));
+    return static_cast<std::int8_t>(q);
+}
+
+// Byte layout: dimension d occupies the low nibble when d is even and the high nibble when odd,
+// so a packed byte holds the adjacent pair (2p, 2p+1).
+__device__ __forceinline__ std::uint8_t kv_cache_int4_pack(std::int8_t low, std::int8_t high) {
+    return static_cast<std::uint8_t>((static_cast<unsigned>(low) & 0x0fu) |
+                                     ((static_cast<unsigned>(high) & 0x0fu) << 4));
+}
+
+__device__ __forceinline__ std::int8_t kv_cache_int4_unpack(std::uint8_t packed, int high) {
+    const unsigned nibble = high != 0 ? (packed >> 4) : (packed & 0x0fu);
+    return static_cast<std::int8_t>(static_cast<int>(nibble ^ 8u) - 8);
+}
+
+// Dequantize the eight consecutive dimensions [d, d+8) that one INT8 call would have produced,
+// reading the four bytes that hold them. Returns the same packed bf16 int4 as the INT8 path so
+// the consuming kernels differ only in which loader they call.
+__device__ __forceinline__ int4 kv_cache_int4_dequant_i4x8_from(const std::uint8_t* packed4,
+                                                                float s) {
+    const unsigned raw          = load_vec<unsigned>(packed4);
+    const std::uint8_t* bytes   = reinterpret_cast<const std::uint8_t*>(&raw);
+    unsigned out[4];
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        const float x0 = static_cast<float>(kv_cache_int4_unpack(bytes[i], 0)) * s;
+        const float x1 = static_cast<float>(kv_cache_int4_unpack(bytes[i], 1)) * s;
+        out[i]         = pack_bf16x2(x0, x1);
+    }
+    return make_int4(static_cast<int>(out[0]), static_cast<int>(out[1]), static_cast<int>(out[2]),
+                     static_cast<int>(out[3]));
+}
+
 __device__ __forceinline__ int4 kv_cache_int8_dequant_i8x8_from(const std::int8_t* codes8,
                                                                 float s) {
     const int2 raw       = load_vec<int2>(codes8);
