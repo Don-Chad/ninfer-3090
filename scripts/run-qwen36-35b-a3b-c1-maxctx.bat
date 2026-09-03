@@ -119,7 +119,8 @@ rem --- Profile A: speculation on. ~240 tok/s decode. ---
   --kv-dtype rk8v4 ^
   --spec mtp --draft-tokens 3 --lm-head-draft ^
   --prefill-chunk 512 ^
-  --max-pending-requests 16
+  --max-pending-requests 16 ^
+  --max-private-continuations 8 --max-shared-prefixes 4 --host-state-slots 16 --host-kv-mib 8192
 
 rem --- Profile B: maximum context, no speculation. ~183 tok/s decode. ---
 rem "%SERVER%" "%MODEL%" ^
