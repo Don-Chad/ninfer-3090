@@ -1246,6 +1246,14 @@ OpenAIResponsesCreateRequest parse_openai_responses_create_request(const Json& b
     OpenAIResponsesCreateRequest out;
     out.prompt                  = std::move(parsed.prompt);
     out.prompt.prompt_cache_key = std::move(prompt_cache_key);
+    // Anthropic clients get a private long-anchor checkpoint at the prompt end whenever they send
+    // cache_control:ephemeral (anthropic_messages_request.cpp), so a growing tool-calling exchange
+    // -- many requests, no new user turn between them -- keeps a resumable point past the single
+    // automatic TurnClosure boundary (which sits before the *last user message*, not the latest
+    // request). The Responses API has no equivalent client-supplied marker, so grant the same
+    // opportunity whenever the client has signaled caching intent via prompt_cache_key.
+    out.prompt.generation.private_cache_boundary_at_prompt_end =
+        out.prompt.prompt_cache_key.has_value();
     out.tools                   = std::move(parsed.wire_tools);
     out.tool_choice             = std::move(parsed.wire_tool_choice);
     out.tool_identities         = std::move(parsed.tool_identities);
