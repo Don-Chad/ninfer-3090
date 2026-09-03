@@ -21,6 +21,11 @@ enum class LinearPolicy : std::uint8_t {
     A16Only, ///< Admit only A16 compute profiles.
     AllowA8, ///< Admit either A16 or A8 compute profiles.
     AllowA4, ///< Admit either A16 or A4 compute profiles.
+    /// Admit either A16 or integer-A8 compute profiles. Distinct from AllowA8, which selects the
+    /// FP8 activation path against FP8 weights; this one quantises activations to s8 with one
+    /// scale per weight group and feeds groupwise-int weights to the integer tensor cores. Held
+    /// to the same A8 activation allowance.
+    AllowA8Int,
 };
 
 /**

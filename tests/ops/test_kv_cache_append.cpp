@@ -225,6 +225,159 @@ void encode_full_group(const std::vector<float>& source, std::size_t source_base
         scale_bits;
 }
 
+// Independent CPU oracle for the rk8v4 value coding: FP16-RNE(absmax/7) scale over a 32-value
+// group, RNE-even codes clamped to +-7, and two codes per byte with dimension d in the low nibble
+// of byte d/2 when d is even and the high nibble when d is odd.
+constexpr int kFullValueGroup  = 32;
+constexpr int kFullValueGroups = kFullHeadDim / kFullValueGroup;
+
+void encode_full_group_i4(const std::vector<float>& source, std::size_t source_base,
+                          std::vector<std::uint8_t>& packed, int head, int position,
+                          int physical_page, int group, int kv_heads,
+                          std::vector<std::uint16_t>& scales) {
+    float absmax = 0.0f;
+    for (int i = 0; i < kFullValueGroup; ++i) {
+        absmax = std::max(absmax, std::abs(source[source_base + static_cast<std::size_t>(i)]));
+    }
+    const std::uint16_t scale_bits = f32_to_f16_bits(absmax / 7.0f);
+    const float scale              = f16_bits_to_f32(scale_bits);
+    const float inverse            = scale == 0.0f ? 0.0f : 1.0f / scale;
+    for (int i = 0; i < kFullValueGroup; ++i) {
+        const int code =
+            scale == 0.0f
+                ? 0
+                : std::clamp(round_even_to_i32(source[source_base + static_cast<std::size_t>(i)] *
+                                               inverse),
+                             -7, 7);
+        const int d       = group * kFullValueGroup + i;
+        const auto target =
+            full_cache_index(kFullHeadDim / 2, d / 2, head, position, physical_page, kv_heads);
+        const auto nibble = static_cast<std::uint8_t>(static_cast<unsigned>(code) & 0x0fu);
+        if ((d & 1) == 0) {
+            packed[target] = static_cast<std::uint8_t>((packed[target] & 0xf0u) | nibble);
+        } else {
+            packed[target] = static_cast<std::uint8_t>((packed[target] & 0x0fu) | (nibble << 4));
+        }
+    }
+    scales[full_cache_index(kFullValueGroups, group, head, position, physical_page, kv_heads)] =
+        scale_bits;
+}
+
+// rk8v4: rotated INT8 keys with a half-width packed signed int4 value plane. Keys are a paired
+// physical representation and are not standalone-verifiable, so this checks the value plane and
+// its scales against the oracle, exactly as the INT8 case does.
+int full_append_case_rk8v4(int kv_heads, int tokens = 3) {
+    const int first_position = tokens >= 128 ? 61 : 63;
+    const int logical_pages  = (first_position + tokens + kPage - 1) / kPage;
+    const int physical_pages = 2 * logical_pages + 1;
+    std::vector<std::int32_t> mapping(static_cast<std::size_t>(logical_pages));
+    for (int page = 0; page < logical_pages; ++page) {
+        mapping[static_cast<std::size_t>(page)] = logical_pages - page;
+    }
+    std::vector<std::int32_t> positions(static_cast<std::size_t>(tokens));
+    for (int token = 0; token < tokens; ++token) {
+        positions[static_cast<std::size_t>(token)] = first_position + token;
+    }
+
+    const std::size_t elements = static_cast<std::size_t>(kFullHeadDim) *
+                                 static_cast<std::size_t>(kv_heads) *
+                                 static_cast<std::size_t>(tokens);
+    std::vector<float> host_k(elements);
+    std::vector<float> host_v(elements);
+    fill_uniform(host_k, 0x51u, -6.0f, 6.0f);
+    fill_uniform(host_v, 0x52u, -6.0f, 6.0f);
+    round_to_bf16(host_k);
+    round_to_bf16(host_v);
+    std::vector<std::uint16_t> input_k(elements);
+    std::vector<std::uint16_t> input_v(elements);
+    for (std::size_t i = 0; i < elements; ++i) {
+        input_k[i] = f32_to_bf16(host_k[i]);
+        input_v[i] = f32_to_bf16(host_v[i]);
+    }
+
+    const std::size_t code_count = static_cast<std::size_t>(kFullHeadDim) * kPage *
+                                   static_cast<std::size_t>(kv_heads) *
+                                   static_cast<std::size_t>(physical_pages);
+    const std::size_t packed_count = code_count / 2;
+    const std::size_t scale_count  = static_cast<std::size_t>(kFullGroups) * kPage *
+                                    static_cast<std::size_t>(kv_heads) *
+                                    static_cast<std::size_t>(physical_pages);
+    const std::size_t value_scale_count = static_cast<std::size_t>(kFullValueGroups) * kPage *
+                                          static_cast<std::size_t>(kv_heads) *
+                                          static_cast<std::size_t>(physical_pages);
+
+    DeviceBuffer d_k         = to_device(input_k);
+    DeviceBuffer d_v         = to_device(input_v);
+    DeviceBuffer d_positions = to_device(positions);
+    DeviceBuffer d_mapping   = to_device(mapping);
+    Tensor k(d_k.p, DType::BF16, {kFullHeadDim, kv_heads, tokens});
+    Tensor v(d_v.p, DType::BF16, {kFullHeadDim, kv_heads, tokens});
+    Tensor position_tensor(d_positions.p, DType::I32, {tokens});
+
+    GuardedDeviceBuffer cache_k(code_count);
+    GuardedDeviceBuffer cache_v(packed_count);
+    GuardedDeviceBuffer scale_k(scale_count * sizeof(std::uint16_t));
+    GuardedDeviceBuffer scale_v(value_scale_count * sizeof(std::uint16_t));
+
+    std::vector<std::int8_t> initial_k(code_count, static_cast<std::int8_t>(0x55));
+    std::vector<std::uint8_t> expected_v(packed_count, 0xa5U);
+    auto expected_scale_k = patterned_bits(scale_count, 0x01234567u);
+    auto expected_scale_v = patterned_bits(value_scale_count, 0x89abcdefu);
+    cache_k.copy_from_host(initial_k.data(), initial_k.size());
+    cache_v.copy_from_host(expected_v.data(), expected_v.size());
+    scale_k.copy_from_host(expected_scale_k.data(),
+                           expected_scale_k.size() * sizeof(std::uint16_t));
+    scale_v.copy_from_host(expected_scale_v.data(),
+                           expected_scale_v.size() * sizeof(std::uint16_t));
+
+    PagedKVLayerView cache{
+        .k_pages =
+            Tensor(cache_k.data(), DType::I8, {kFullHeadDim, kPage, kv_heads, physical_pages}),
+        .v_pages = Tensor(cache_v.data(), DType::U8,
+                          {kFullHeadDim / 2, kPage, kv_heads, physical_pages}),
+        .k_scale_pages =
+            Tensor(scale_k.data(), DType::FP16, {kFullGroups, kPage, kv_heads, physical_pages}),
+        .v_scale_pages = Tensor(scale_v.data(), DType::FP16,
+                                {kFullValueGroups, kPage, kv_heads, physical_pages}),
+        .block_table  = Tensor(d_mapping.p, DType::I32, {logical_pages}),
+        .head_dim     = kFullHeadDim,
+        .num_kv_heads = kv_heads,
+        .dtype        = DType::I8,
+        .quant_group  = kFullGroup,
+    };
+
+    for (int token = 0; token < tokens; ++token) {
+        const int position = positions[static_cast<std::size_t>(token)];
+        const int page     = mapping[static_cast<std::size_t>(position / kPage)];
+        for (int head = 0; head < kv_heads; ++head) {
+            for (int group = 0; group < kFullValueGroups; ++group) {
+                const auto source =
+                    full_input_index(group * kFullValueGroup, head, token, kv_heads);
+                encode_full_group_i4(host_v, source, expected_v, head, position, page, group,
+                                     kv_heads, expected_scale_v);
+            }
+        }
+    }
+
+    ops::kv_cache_append(k, v, position_tensor, cache, nullptr);
+    cuda_synchronize();
+
+    const std::string label = "kv_cache_append full rk8v4 Hkv=" + std::to_string(kv_heads) +
+                              " T=" + std::to_string(tokens) +
+                              " P=" + std::to_string(first_position);
+    int failures = 0;
+    failures += verify_exact((label + " v codes").c_str(),
+                             from_device<std::uint8_t>(cache_v.data(), packed_count), expected_v);
+    failures += verify_exact((label + " v scales").c_str(),
+                             from_device<std::uint16_t>(scale_v.data(), value_scale_count),
+                             expected_scale_v);
+    failures += cache_k.verify_guards((label + " k guards").c_str());
+    failures += cache_v.verify_guards((label + " v guards").c_str());
+    failures += scale_k.verify_guards((label + " k scale guards").c_str());
+    failures += scale_v.verify_guards((label + " v scale guards").c_str());
+    return failures;
+}
+
 int full_append_case(int kv_heads, DType dtype, int tokens = 3) {
     const int first_position = tokens >= 128 ? 61 : 63;
     const int logical_pages  = (first_position + tokens + kPage - 1) / kPage;
@@ -847,6 +1000,10 @@ int main() {
         failures += full_append_case(kv_heads, DType::FP8_E4M3FN);
     }
     failures += full_append_case(2, DType::I8, 129);
+    // rk8v4 exercises both append kernels: the general one, and at T>=128 with Hkv==2
+    // the tiled page kernel.
+    for (const int kv_heads : {2, 4}) { failures += full_append_case_rk8v4(kv_heads); }
+    failures += full_append_case_rk8v4(2, 129);
     failures += full_append_case(2, DType::FP8_E4M3FN, 129);
     failures += run_case(1, 0, 0, false, {0, 1, 2});
     failures += run_case(1, 1, 63, false, {2, 3, 4});

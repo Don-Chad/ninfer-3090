@@ -58,7 +58,7 @@ struct Options {
                                 "\nusage: ninfer-perplexity <model.ninfer> "
                                 "(--corpus <manifest.json> [--quick] | --text <utf8-file>) "
                                 "[--context N] [--stride N] [--device N] "
-                                "[--kv-dtype bf16|int8|fp8] [--output <directory>]");
+                                "[--kv-dtype bf16|int8|fp8|rk8v4] [--output <directory>]");
 }
 
 template <class Integer>
@@ -76,7 +76,7 @@ Options parse_options(int argc, char** argv) {
         std::cout << "usage: ninfer-perplexity <model.ninfer> "
                      "(--corpus <manifest.json> [--quick] | --text <utf8-file>)\n"
                      "       [--context N] [--stride N] [--device N]\n"
-                     "       [--kv-dtype bf16|int8|fp8] [--output <directory>]\n";
+                     "       [--kv-dtype bf16|int8|fp8|rk8v4] [--output <directory>]\n";
         std::exit(0);
     }
     if (argc < 2 || std::string_view(argv[1]).starts_with("--")) {
@@ -110,8 +110,10 @@ Options parse_options(int argc, char** argv) {
                 out.kv = ninfer::KvCacheStorage::Int8Group64;
             } else if (dtype == "fp8") {
                 out.kv = ninfer::KvCacheStorage::Fp8E4M3Row256;
+            } else if (dtype == "rk8v4") {
+                out.kv = ninfer::KvCacheStorage::RotatedInt8KeyInt4ValueGroup64;
             } else {
-                usage_error("--kv-dtype must be bf16, int8, or fp8");
+                usage_error("--kv-dtype must be bf16, int8, fp8, or rk8v4");
             }
         } else if (option == "--output") {
             out.output = std::filesystem::path(value("--output"));
@@ -138,7 +140,7 @@ std::string kv_name(ninfer::KvCacheStorage value) {
     case ninfer::KvCacheStorage::Fp8E4M3Row256:
         return "fp8-e4m3-r256";
     case ninfer::KvCacheStorage::RotatedInt8KeyInt4ValueGroup64:
-        return "rotated-k8-v4-g64";
+        return "rotated-k8g64-v4g32";
     }
     throw std::logic_error("unknown KV dtype");
 }

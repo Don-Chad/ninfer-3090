@@ -50,7 +50,7 @@ void require_contiguous_nonnull(const Tensor& tensor, const char* op, const char
 std::uint32_t validate_cache(const PagedKVLayerView& cache, std::int32_t kv_heads, const char* op) {
     D256KVCacheProfile profile{};
     try {
-        profile = d256_kv_cache_profile(cache.dtype);
+        profile = d256_kv_cache_profile(cache.dtype, cache.v_pages.dtype);
     } catch (const std::invalid_argument&) {
         throw std::invalid_argument(std::string(op) + ": invalid KV cache geometry or dtype");
     }
@@ -67,13 +67,14 @@ std::uint32_t validate_cache(const PagedKVLayerView& cache, std::int32_t kv_head
         throw std::invalid_argument(std::string(op) + ": invalid KV cache capacity");
     }
 
-    if (cache.k_pages.dtype != profile.code_dtype || cache.v_pages.dtype != profile.code_dtype) {
+    if (cache.k_pages.dtype != profile.key_code_dtype ||
+        cache.v_pages.dtype != profile.value_code_dtype) {
         throw std::invalid_argument(std::string(op) + ": invalid KV cache code dtype");
     }
     require_shape(cache.k_pages, kHeadDim, kPagedKVPageSize, kv_heads, physical_pages, op,
                   "cache k pages");
-    require_shape(cache.v_pages, kHeadDim, kPagedKVPageSize, kv_heads, physical_pages, op,
-                  "cache v pages");
+    require_shape(cache.v_pages, profile.value_leading_extent, kPagedKVPageSize, kv_heads,
+                  physical_pages, op, "cache v pages");
     require_contiguous_nonnull(cache.k_pages, op, "cache k pages");
     require_contiguous_nonnull(cache.v_pages, op, "cache v pages");
     if (cache.block_table.dtype != DType::I32) {
@@ -94,7 +95,8 @@ std::uint32_t validate_cache(const PagedKVLayerView& cache, std::int32_t kv_head
     }
     require_shape(cache.k_scale_pages, profile.scale_leading_extent, kPagedKVPageSize, kv_heads,
                   physical_pages, op, "cache k scale pages");
-    require_shape(cache.v_scale_pages, profile.scale_leading_extent, kPagedKVPageSize, kv_heads,
+    require_shape(cache.v_scale_pages, profile.value_scale_leading_extent, kPagedKVPageSize,
+                  kv_heads,
                   physical_pages, op, "cache v scale pages");
     require_contiguous_nonnull(cache.k_scale_pages, op, "cache k scale pages");
     require_contiguous_nonnull(cache.v_scale_pages, op, "cache v scale pages");
@@ -105,7 +107,7 @@ std::uint32_t validate_batch_cache(const PagedKVBatchLayerView& cache, std::int3
                                    const char* op) {
     D256KVCacheProfile profile{};
     try {
-        profile = d256_kv_cache_profile(cache.dtype);
+        profile = d256_kv_cache_profile(cache.dtype, cache.v_pages.dtype);
     } catch (const std::invalid_argument&) {
         throw std::invalid_argument(std::string(op) + ": invalid KV cache geometry or dtype");
     }
@@ -123,13 +125,14 @@ std::uint32_t validate_batch_cache(const PagedKVBatchLayerView& cache, std::int3
         throw std::invalid_argument(std::string(op) + ": invalid KV cache capacity");
     }
 
-    if (cache.k_pages.dtype != profile.code_dtype || cache.v_pages.dtype != profile.code_dtype) {
+    if (cache.k_pages.dtype != profile.key_code_dtype ||
+        cache.v_pages.dtype != profile.value_code_dtype) {
         throw std::invalid_argument(std::string(op) + ": invalid KV cache code dtype");
     }
     require_shape(cache.k_pages, kHeadDim, kPagedKVPageSize, kv_heads, physical_pages, op,
                   "cache k pages");
-    require_shape(cache.v_pages, kHeadDim, kPagedKVPageSize, kv_heads, physical_pages, op,
-                  "cache v pages");
+    require_shape(cache.v_pages, profile.value_leading_extent, kPagedKVPageSize, kv_heads,
+                  physical_pages, op, "cache v pages");
     require_contiguous_nonnull(cache.k_pages, op, "cache k pages");
     require_contiguous_nonnull(cache.v_pages, op, "cache v pages");
     if (cache.block_tables.dtype != DType::I32) {
@@ -150,7 +153,8 @@ std::uint32_t validate_batch_cache(const PagedKVBatchLayerView& cache, std::int3
     }
     require_shape(cache.k_scale_pages, profile.scale_leading_extent, kPagedKVPageSize, kv_heads,
                   physical_pages, op, "cache k scale pages");
-    require_shape(cache.v_scale_pages, profile.scale_leading_extent, kPagedKVPageSize, kv_heads,
+    require_shape(cache.v_scale_pages, profile.value_scale_leading_extent, kPagedKVPageSize,
+                  kv_heads,
                   physical_pages, op, "cache v scale pages");
     require_contiguous_nonnull(cache.k_scale_pages, op, "cache k scale pages");
     require_contiguous_nonnull(cache.v_scale_pages, op, "cache v scale pages");

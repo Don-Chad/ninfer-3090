@@ -810,6 +810,70 @@ int test_previous_response_call_graph() {
     return failures;
 }
 
+// A client that never sends previous_response_id or store=true (it manages its own history
+// client-side, e.g. resending the full growing transcript every turn) can still name its own
+// conversation lineage via prompt_cache_key. That must grant the same cache retention a stored
+// session gets, without ever depending on a retrievable Response object.
+int test_prompt_cache_key_retention() {
+    OpenAIResponsesStore store(16, 1ULL << 20);
+    const Json base = {{"model", "m"}, {"input", "hello"}};
+    int failures    = 0;
+
+    Json keyed                = base;
+    keyed["prompt_cache_key"] = "pi-session-1";
+    keyed["store"]            = false;
+    const OpenAIResponsesCreateRequest keyed_request =
+        parse_openai_responses_create_request(keyed, limits());
+    failures += check(keyed_request.prompt.prompt_cache_key == "pi-session-1",
+                      "prompt_cache_key reaches the wire-independent prompt");
+    failures += check(
+        keyed_request.prompt.generation.private_cache_boundary_at_prompt_end,
+        "prompt_cache_key grants a private long-anchor opportunity, matching the Anthropic "
+        "cache_control:ephemeral path, so a growing tool-calling exchange keeps a resumable point "
+        "past the single automatic TurnClosure boundary");
+    const OpenAIResponsesResolvedPrompt keyed_resolved =
+        resolve_openai_responses_prompt(keyed_request.prompt, store, "resp_keyed_1", false);
+    failures += check(
+        keyed_resolved.cache_hints.session_key == "pi-session-1" &&
+            keyed_resolved.cache_hints.retention == ninfer::CacheRetentionHint::LiveSession &&
+            keyed_resolved.cache_hints.update_session_index && !keyed_resolved.session_key,
+        "prompt_cache_key grants LiveSession retention without store or a stored session_key");
+
+    Json unkeyed     = base;
+    unkeyed["store"] = false;
+    const OpenAIResponsesCreateRequest unkeyed_request =
+        parse_openai_responses_create_request(unkeyed, limits());
+    const OpenAIResponsesResolvedPrompt unkeyed_resolved =
+        resolve_openai_responses_prompt(unkeyed_request.prompt, store, "resp_unkeyed_1", false);
+    failures += check(!unkeyed_resolved.cache_hints.session_key &&
+                          unkeyed_resolved.cache_hints.retention ==
+                              ninfer::CacheRetentionHint::Disposable &&
+                          !unkeyed_resolved.cache_hints.update_session_index,
+                      "store=false with no prompt_cache_key stays Disposable as before");
+    failures += check(!unkeyed_request.prompt.generation.private_cache_boundary_at_prompt_end,
+                      "no prompt_cache_key grants no private long-anchor opportunity, unchanged");
+
+    // prompt_cache_key must never override an existing previous_response_id chain: the
+    // store=false-consumes-parent-without-advancing behavior must be unchanged.
+    const OpenAIResponseContext context =
+        append_openai_response_context({}, {text_turn(ninfer::ChatRole::User, "hi")});
+    store.put(stored_parent(context));
+    Json chained = {{"model", "m"},
+                    {"previous_response_id", "resp_parent"},
+                    {"prompt_cache_key", "pi-session-1"},
+                    {"input", "next"}};
+    const OpenAIResponsesCreateRequest chained_request =
+        parse_openai_responses_create_request(chained, limits());
+    const OpenAIResponsesResolvedPrompt chained_resolved =
+        resolve_openai_responses_prompt(chained_request.prompt, store, "resp_chained_1", false);
+    failures += check(
+        chained_resolved.session_key == "responses-session" &&
+            chained_resolved.cache_hints.retention == ninfer::CacheRetentionHint::Disposable &&
+            !chained_resolved.cache_hints.update_session_index,
+        "prompt_cache_key does not upgrade a store=false reply to an existing parent session");
+    return failures;
+}
+
 int test_response_object() {
     const OpenAIResponsesCreateRequest request =
         parse_openai_responses_create_request(Json{{"model", "m"},
@@ -968,6 +1032,7 @@ int main() {
     failures += test_namespace_tools();
     failures += test_explicit_rejections();
     failures += test_previous_response_call_graph();
+    failures += test_prompt_cache_key_retention();
     failures += test_response_object();
     failures += test_sse_sequence_and_failures();
     failures += test_input_tokens_uses_shared_state_path();

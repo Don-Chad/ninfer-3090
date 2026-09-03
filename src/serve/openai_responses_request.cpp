@@ -1101,10 +1101,20 @@ void validate_metadata(const Json& body, Json& metadata) {
     metadata = body.at("metadata");
 }
 
-void parse_prompt_cache_hints(const Json& body) {
-    require_string_hint(body, "prompt_cache_key");
+// Returns the validated prompt_cache_key, if any. It identifies a client-managed conversation
+// lineage for cache retention purposes; it is independent of `store` (response-object
+// persistence) and of prompt_cache_options.mode (explicit shared-prefix breakpoints).
+std::optional<std::string> parse_prompt_cache_hints(const Json& body) {
+    require_string_hint(body, "prompt_cache_key", ninfer::kMaximumContextCacheSessionKeyBytes);
     require_string_hint(body, "safety_identifier", 64);
     require_string_hint(body, "user");
+    std::optional<std::string> prompt_cache_key;
+    if (body.contains("prompt_cache_key") && !body.at("prompt_cache_key").is_null()) {
+        prompt_cache_key = body.at("prompt_cache_key").get<std::string>();
+        if (prompt_cache_key->empty()) {
+            bad_request("prompt_cache_key must not be empty", "prompt_cache_key");
+        }
+    }
 
     if (body.contains("prompt_cache_retention") && !body.at("prompt_cache_retention").is_null()) {
         if (!body.at("prompt_cache_retention").is_string()) {
@@ -1117,7 +1127,7 @@ void parse_prompt_cache_hints(const Json& body) {
         }
     }
     if (!body.contains("prompt_cache_options") || body.at("prompt_cache_options").is_null()) {
-        return;
+        return prompt_cache_key;
     }
     const Json& options = body.at("prompt_cache_options");
     if (!options.is_object()) {
@@ -1139,6 +1149,7 @@ void parse_prompt_cache_hints(const Json& body) {
         (!options.at("ttl").is_string() || options.at("ttl").get<std::string>() != "30m")) {
         bad_request("prompt_cache_options.ttl must be '30m'", "prompt_cache_options");
     }
+    return prompt_cache_key;
 }
 
 void reject_unsupported_platform_fields(const Json& body) {
@@ -1229,17 +1240,26 @@ OpenAIResponsesCreateRequest parse_openai_responses_create_request(const Json& b
     require_object(body);
     validate_common_top_level(body, true);
     reject_unsupported_platform_fields(body);
-    parse_prompt_cache_hints(body);
+    std::optional<std::string> prompt_cache_key = parse_prompt_cache_hints(body);
 
     ParsedPromptFields parsed = parse_prompt_fields(body, limits);
     OpenAIResponsesCreateRequest out;
-    out.prompt              = std::move(parsed.prompt);
-    out.tools               = std::move(parsed.wire_tools);
-    out.tool_choice         = std::move(parsed.wire_tool_choice);
-    out.tool_identities     = std::move(parsed.tool_identities);
-    out.parallel_tool_calls = parsed.parallel_tool_calls;
-    out.store               = optional_bool(body, "store", true);
-    out.stream              = optional_bool(body, "stream", false);
+    out.prompt                  = std::move(parsed.prompt);
+    out.prompt.prompt_cache_key = std::move(prompt_cache_key);
+    // Anthropic clients get a private long-anchor checkpoint at the prompt end whenever they send
+    // cache_control:ephemeral (anthropic_messages_request.cpp), so a growing tool-calling exchange
+    // -- many requests, no new user turn between them -- keeps a resumable point past the single
+    // automatic TurnClosure boundary (which sits before the *last user message*, not the latest
+    // request). The Responses API has no equivalent client-supplied marker, so grant the same
+    // opportunity whenever the client has signaled caching intent via prompt_cache_key.
+    out.prompt.generation.private_cache_boundary_at_prompt_end =
+        out.prompt.prompt_cache_key.has_value();
+    out.tools                   = std::move(parsed.wire_tools);
+    out.tool_choice             = std::move(parsed.wire_tool_choice);
+    out.tool_identities         = std::move(parsed.tool_identities);
+    out.parallel_tool_calls     = parsed.parallel_tool_calls;
+    out.store                   = optional_bool(body, "store", true);
+    out.stream                  = optional_bool(body, "stream", false);
     validate_metadata(body, out.metadata);
 
     // Codex attaches per-request tracing information here. It is an opaque client hint and has no
