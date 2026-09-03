@@ -34,6 +34,10 @@ struct OpenAIResponsesPromptRequest {
     std::vector<nlohmann::json> input_items;
     std::optional<std::string> instructions;
     std::optional<std::string> previous_response_id;
+    // Client-supplied cache bucketing hint (OpenAI's prompt_cache_key). Independent of `store`:
+    // it identifies a client-managed conversation lineage for cache retention purposes even when
+    // the caller never wants a retrievable Response object.
+    std::optional<std::string> prompt_cache_key;
 };
 
 struct OpenAIResponsesCreateRequest {
