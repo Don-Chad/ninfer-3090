@@ -74,7 +74,16 @@ rem acceptance rather than costing any. Note the spread in absolute terms: 320 t
 rem against 188 on mixed prose, because code is far more predictable. Any single decode figure for
 rem this model is really a statement about the text being generated.
 rem
-rem Vision is off in both profiles: the vision tower is another 261 MiB and there is no room.
+rem VISION: on, via --vision-residency overlay (ported from Don-Chad/ninfer-3090#21). Resident
+rem residency cost 261 MiB of the ~450 MiB this profile has free after startup -- too tight to risk.
+rem Overlay keeps the Vision tower host-pinned and streams each image through a borrowed device
+rem window instead, so --vision no longer costs any resident capacity at this context. Measured on
+rem this exact profile: KV capacity still resolves the full 114,688 tokens, free-after-startup was
+rem 453.86 MiB (this boot; it moves with desktop GPU load like everything else on this page), and a
+rem real image request completed in 0.52 s wall (overlay window 180 ms, 60 MiB evicted in 5.2 ms,
+rem restored in 4.7 ms, 268 MiB staged from host) with decode unaffected at 284.6 tok/s. If VRAM is
+rem tighter on a given boot and the server refuses to start, drop --vision first before dropping the
+rem context rung -- it is the newest addition, not the load-bearing one.
 rem ---------------------------------------------------------------------------------------------
 
 set "MODEL=C:\Ninefer-3090\models\qwen3_6_35b_a3b.ninfer"
@@ -106,7 +115,7 @@ if not exist "%MODEL%" (
   exit /b 1
 )
 
-echo Qwen3.6-35B-A3B  ^|  C1  ^|  context %CONTEXT%  ^|  rk8v4 KV  ^|  MTP3 + draft head
+echo Qwen3.6-35B-A3B  ^|  C1  ^|  context %CONTEXT%  ^|  rk8v4 KV  ^|  MTP3 + draft head  ^|  Vision (overlay)
 echo API: http://%HOST%:%PORT%/v1
 echo.
 
@@ -120,6 +129,7 @@ rem --- Profile A: speculation on. ~240 tok/s decode. ---
   --spec mtp --draft-tokens 3 --lm-head-draft ^
   --prefill-chunk 512 ^
   --max-pending-requests 16 ^
+  --vision --vision-residency overlay ^
   --max-private-continuations 8 --max-shared-prefixes 4 --host-state-slots 16 --host-kv-mib 8192
 
 rem --- Profile B: maximum context, no speculation. ~183 tok/s decode. ---
