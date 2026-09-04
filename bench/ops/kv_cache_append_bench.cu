@@ -362,7 +362,7 @@ PagedKVBatchLayerView make_prefix_paged_view(DeviceBuffer& k, DeviceBuffer& v,
             k.p, DType::BF16,
             {kPrefixHeadDim, kPagedKVPageSize, kRingCapacity / kPagedKVPageSize, kPrefixKvHeads}),
         .v_pages = Tensor(
-            v.p, DType::FP16,
+            v.p, DType::BF16,
             {kPrefixHeadDim, kPagedKVPageSize, kRingCapacity / kPagedKVPageSize, kPrefixKvHeads}),
         .block_tables = Tensor(block_tables.p, DType::I32, {kRingCapacity / kPagedKVPageSize, 1}),
         .head_dim     = kPrefixHeadDim,
@@ -374,7 +374,7 @@ PagedKVBatchLayerView make_prefix_paged_view(DeviceBuffer& k, DeviceBuffer& v,
 CyclicKVCacheLayerView make_prefix_cyclic_view(DeviceBuffer& k, DeviceBuffer& v) {
     return {
         .k        = Tensor(k.p, DType::BF16, {kPrefixHeadDim, kRingCapacity, kPrefixKvHeads, 1}),
-        .v        = Tensor(v.p, DType::FP16, {kPrefixHeadDim, kRingCapacity, kPrefixKvHeads, 1}),
+        .v        = Tensor(v.p, DType::BF16, {kPrefixHeadDim, kRingCapacity, kPrefixKvHeads, 1}),
         .capacity = kRingCapacity,
         .padded_capacity = kRingCapacity,
         .num_kv_heads    = kPrefixKvHeads,
