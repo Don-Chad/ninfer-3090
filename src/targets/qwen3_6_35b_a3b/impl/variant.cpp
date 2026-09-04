@@ -207,9 +207,10 @@ void Variant::gdn_output_projection(const Tensor& hidden, const Weight& weight, 
 void Variant::gdn_norm_control_projection(const Tensor& residual, const Tensor& norm_weight,
                                           float eps, const GdnProjectionWeights& weights,
                                           Tensor& hidden, Tensor& g, Tensor& beta,
-                                          WorkspaceArena& workspace, cudaStream_t stream) {
+                                          WorkspaceArena& workspace,
+                                          DeviceExecutionView execution) {
     ops::gdn_norm_gating_proj(residual, norm_weight, eps, weights.a_b_projection, weights.a_log,
-                              weights.dt_bias, workspace, hidden, g, beta, stream);
+                              weights.dt_bias, workspace, hidden, g, beta, execution);
 }
 
 void Variant::post_mixer(const Tensor& hidden, const PostMixerWeights& weights, Tensor& residual,

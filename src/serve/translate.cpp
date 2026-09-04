@@ -1,4 +1,5 @@
 #include "serve/translate.h"
+#include "serve/request_json.h"
 
 #include <nlohmann/json.hpp>
 
@@ -95,7 +96,7 @@ std::vector<const ToolDefinition*> effective_tools(const GenerationRequest& requ
 }
 
 std::string render_tool_definition(const ToolDefinition& tool) {
-    using Json  = nlohmann::json;
+    using Json  = RequestJson;
     Json schema = Json::parse(tool.input_schema_json);
     Json function{{"name", tool.name}, {"parameters", std::move(schema)}, {"strict", false}};
     if (!tool.description.empty()) { function["description"] = tool.description; }
@@ -147,23 +148,24 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
         return complete();
     }
 
+    // Clients carry a wider effort vocabulary than any Qwen3.6 template exposes: OpenAI and
+    // Claude Code send 'high', pi sends 'minimal' and 'max'. The template offers three rungs,
+    // so the outer values collapse onto the nearest one rather than failing the request --
+    // rejecting 'high' is what makes Claude Code unusable against a stock Qwen3.8 template
+    // (QwenLM/Qwen3.8#217). A template that lacks the resolved rung is still rejected below.
     switch (requested) {
+    case RequestedReasoningEffort::Minimal:
     case RequestedReasoningEffort::Low:
         result.reasoning_effort = ninfer::ReasoningEffort::Low;
         break;
     case RequestedReasoningEffort::Medium:
         result.reasoning_effort = ninfer::ReasoningEffort::Medium;
         break;
+    case RequestedReasoningEffort::High:
     case RequestedReasoningEffort::XHigh:
+    case RequestedReasoningEffort::Max:
         result.reasoning_effort = ninfer::ReasoningEffort::XHigh;
         break;
-    case RequestedReasoningEffort::Minimal:
-    case RequestedReasoningEffort::High:
-    case RequestedReasoningEffort::Max:
-        invalid_prompt_option("reasoning effort '" +
-                                  std::string(requested_reasoning_effort_name(requested)) +
-                                  "' is not supported by the loaded chat template",
-                              "reasoning_effort", "reasoning_effort_not_supported");
     case RequestedReasoningEffort::None:
         break;
     }
@@ -236,14 +238,16 @@ ninfer::PromptInput to_prompt_input(const GenerationRequest& request,
                     part.kind == ContentKind::Text;
                 if (leading_instruction) {
                     input.context_cache.markers.push_back(ninfer::PromptCacheMarker{
-                        .kind     = *part.cache_boundary_after,
+                        .kind     = part.cache_boundary_after->kind,
+                        .evidence = part.cache_boundary_after->evidence,
                         .location = ninfer::PromptCacheMarkerLocation::LeadingInstructionBoundary,
                         .leading_instruction_bytes = static_cast<std::uint32_t>(text_bytes),
                     });
                 } else {
                     input.context_cache.markers.push_back(ninfer::PromptCacheMarker{
                         .after_message_count = static_cast<std::uint32_t>(turn_index + 1U),
-                        .kind                = *part.cache_boundary_after,
+                        .kind                = part.cache_boundary_after->kind,
+                        .evidence            = part.cache_boundary_after->evidence,
                         .location = ninfer::PromptCacheMarkerLocation::MessagePartBoundary,
                         .after_message_part_count =
                             static_cast<std::uint32_t>(message.parts.size()),
@@ -258,7 +262,8 @@ ninfer::PromptInput to_prompt_input(const GenerationRequest& request,
             }
             input.context_cache.markers.push_back(ninfer::PromptCacheMarker{
                 .after_message_count = static_cast<std::uint32_t>(input.messages.size()),
-                .kind                = *turn.cache_boundary_after,
+                .kind                = turn.cache_boundary_after->kind,
+                .evidence            = turn.cache_boundary_after->evidence,
                 .location            = ninfer::PromptCacheMarkerLocation::MessageBoundary,
             });
         }
@@ -271,30 +276,19 @@ ninfer::PromptInput to_prompt_input(const GenerationRequest& request,
     input.options.add_vision_id                    = false;
     const std::vector<const ToolDefinition*> tools = effective_tools(request);
     input.options.tool_jsons.reserve(tools.size());
-    std::optional<std::uint32_t> last_tool_cache_boundary;
     for (std::size_t index = 0; index < tools.size(); ++index) {
         input.options.tool_jsons.push_back(render_tool_definition(*tools[index]));
-        if (tools[index]->shared_cache_boundary_after) {
-            last_tool_cache_boundary = static_cast<std::uint32_t>(index + 1U);
+        if (tools[index]->cache_boundary_after) {
+            input.context_cache.markers.push_back(ninfer::PromptCacheMarker{
+                .kind             = tools[index]->cache_boundary_after->kind,
+                .evidence         = tools[index]->cache_boundary_after->evidence,
+                .location         = ninfer::PromptCacheMarkerLocation::ToolBoundary,
+                .after_tool_count = static_cast<std::uint32_t>(index + 1U),
+            });
         }
     }
-    // Qwen renders tools before the leading instruction. One shared descriptor is enough for an
-    // Anthropic request: the latest explicit breakpoint contains every earlier stable section and
-    // avoids pinning the sole shared slot with an earlier tool-only prefix during the same request.
-    bool has_shared_marker = false;
-    for (const ninfer::PromptCacheMarker& marker : input.context_cache.markers) {
-        has_shared_marker =
-            has_shared_marker || marker.kind == ninfer::PromptCacheMarkerKind::SharedStablePrefix;
-    }
-    if (!has_shared_marker && last_tool_cache_boundary) {
-        input.context_cache.markers.insert(
-            input.context_cache.markers.begin(),
-            ninfer::PromptCacheMarker{
-                .kind             = ninfer::PromptCacheMarkerKind::SharedStablePrefix,
-                .location         = ninfer::PromptCacheMarkerLocation::ToolBoundary,
-                .after_tool_count = *last_tool_cache_boundary,
-            });
-    }
+    input.context_cache.allow_engine_automatic_shared_prefixes =
+        request.allow_engine_automatic_shared_prefixes;
     if (request.private_cache_boundary_at_prompt_end && !input.messages.empty()) {
         const ninfer::PromptCacheMarker automatic{
             .after_message_count = static_cast<std::uint32_t>(input.messages.size()),

@@ -50,6 +50,9 @@ public:
     LoadPlan& operator=(const LoadPlan&) = delete;
 
     [[nodiscard]] const artifact::MaterializationPlan& materialization() const;
+    // Device staging bytes one overlay window needs for streamed vision weights; 0 when the plan
+    // was built for resident vision.
+    [[nodiscard]] std::size_t overlay_staging_bytes() const;
 
 private:
     class Impl;
@@ -106,6 +109,8 @@ struct Package {
     using SharedPrefixSummary        = qwen3_6::SharedPrefixSummary;
     using PressurePlanningSession    = qwen3_6::PressurePlanningSession<detail::Variant>;
     using PressureTargetHandle       = qwen3_6::PressureTargetHandle;
+    using AssessedPressureTarget     = qwen3_6::AssessedPressureTarget<detail::Variant>;
+    using CapturePressurePlan        = qwen3_6::CapturePressurePlan<detail::Variant>;
     using MaterializationResult      = qwen3_6::MaterializationResult<detail::Variant>;
     using ContextTransactionProgress = qwen3_6::ContextTransactionProgress<detail::Variant>;
     using CaptureAssessment          = qwen3_6::CaptureAssessment;
@@ -132,7 +137,8 @@ struct Package {
                                                                const EngineOptions& options,
                                                                WeightsProfile weights_profile);
     [[nodiscard]] static std::unique_ptr<Program>
-    create_program(const LoadedModel& model, SequencePlan&& plan, DeviceContext& device);
+    create_program(const LoadedModel& model, SequencePlan&& plan, DeviceContext& device,
+                   const StartupObserver& startup_observer);
 };
 
 } // namespace targets::qwen3_6_27b

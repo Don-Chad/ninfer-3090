@@ -13,6 +13,13 @@ frontend resources embedded in every registered artifact.
 prompt size as the seed but diverges at the first system-content token, so the completed seed
 cannot turn that arm into a stable-prefix hit.
 
+`rotation_55k_0.json` through `rotation_55k_5.json` are six byte-distinct, exactly 55000-token
+Responses roots. They diverge at the first system-content token so the six-session Host-KV
+rotation case measures independent private owners rather than accidental shared-prefix reuse.
+The two-cohort stream case derives its second cohort by replacing each leading session label with
+a distinct same-length label. It therefore preserves the frozen long-request shape without adding
+a second copy of the large corpus, while still diverging at the first system-content token.
+
 The generated media consists of 56 deterministic, byte-distinct 1024×1024 PNGs. The two legal
 heavy inputs use disjoint sets of 28 images each. Every image expands to a 12 MiB Vision
 preprocessing patch tensor (this is media payload, not KV storage), so the files exercise media

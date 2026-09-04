@@ -2,6 +2,7 @@
 
 #include "core/arena.h"
 #include "core/layout.h"
+#include "core/paged_kv_storage.h"
 #include "core/tensor.h"
 
 #include <cuda_runtime_api.h>
@@ -25,8 +26,7 @@ struct PagedKVLayerView {
     Tensor block_table;
     std::int32_t head_dim     = 0;
     std::int32_t num_kv_heads = 0;
-    DType dtype               = DType::BF16;
-    std::int32_t quant_group  = 0;
+    KvCacheStorage storage    = KvCacheStorage::BFloat16;
 };
 
 /** Non-owning multi-sequence view consumed by batched growing-cache Ops. */
@@ -38,9 +38,11 @@ struct PagedKVBatchLayerView {
     Tensor block_tables;
     std::int32_t head_dim     = 0;
     std::int32_t num_kv_heads = 0;
-    DType dtype               = DType::BF16;
-    std::int32_t quant_group  = 0;
+    KvCacheStorage storage    = KvCacheStorage::BFloat16;
 };
+
+/** Rebinds one checked single-sequence table row as a one-row batched view. */
+[[nodiscard]] PagedKVBatchLayerView single_row_paged_kv_batch_view(const PagedKVLayerView& cache);
 
 // A plane is storage-only. Target code assigns K/V/layer meaning to plane indices.
 struct KVPlaneGeometry {
@@ -78,6 +80,19 @@ struct KVExecutionTableSpec {
 struct DeviceKVPlaneLayout {
     KVPlaneGeometry geometry;
     TensorRegion storage;
+};
+
+// Consecutive physical pages of one pool. The free list is kept sorted and coalesced, so a run
+// is the natural unit for both allocation and lending.
+struct KVPageRun {
+    std::int32_t begin  = 0;
+    std::uint32_t count = 0;
+};
+
+// Device bytes one plane devotes to a page run.
+struct KVPlaneByteRange {
+    const void* base  = nullptr;
+    std::size_t bytes = 0;
 };
 
 struct DeviceKVPagePoolLayout {
@@ -195,12 +210,26 @@ public:
 
     [[nodiscard]] const KVPageGeometry& geometry() const noexcept { return spec_.geometry; }
 
+    // Physical extent of the pool; page indices are validated against it and it never changes.
     [[nodiscard]] std::uint32_t capacity_pages() const noexcept;
+    // Pages the pool may still hand out: the physical extent minus the pages lent away.
+    [[nodiscard]] std::uint32_t usable_pages() const noexcept;
     [[nodiscard]] std::uint32_t allocated_pages() const noexcept;
     [[nodiscard]] std::uint32_t reserved_pages() const noexcept;
+    [[nodiscard]] std::uint32_t lent_pages() const noexcept;
     [[nodiscard]] std::uint32_t available_pages() const noexcept;
     [[nodiscard]] std::size_t plane_count() const noexcept;
     [[nodiscard]] const Tensor& plane(std::size_t index) const;
+    [[nodiscard]] std::span<const KVPageRun> free_runs() const noexcept;
+    // Device bytes one plane devotes to a run of consecutive pages. Page-major geometry only:
+    // a run is one contiguous block there, which is what makes a run lendable.
+    [[nodiscard]] KVPlaneByteRange plane_page_range(std::size_t plane, std::int32_t first_page,
+                                                    std::uint32_t count) const;
+
+    // Removes a wholly free run from circulation so its device memory can be lent elsewhere, and
+    // puts it back. The caller owns the memory only between these two calls.
+    void lend_pages(std::int32_t begin, std::uint32_t count);
+    void return_pages(std::int32_t begin, std::uint32_t count);
     [[nodiscard]] std::uint32_t
     contiguous_run_count(std::span<const DeviceKVPageHandle> pages) const;
 
@@ -249,20 +278,16 @@ private:
     void release_page(std::int32_t index, std::uint32_t generation) noexcept;
     void release_reservation(std::uint32_t pages) noexcept;
 
-    struct FreePageRun {
-        std::int32_t begin  = 0;
-        std::uint32_t count = 0;
-    };
-
     DeviceKVPagePoolSpec spec_;
     std::vector<Tensor> planes_;
-    std::vector<FreePageRun> free_page_runs_;
+    std::vector<KVPageRun> free_page_runs_;
     std::vector<std::uint32_t> page_generations_;
     std::vector<bool> page_allocated_;
     mutable std::vector<std::uint32_t> validation_marks_;
     mutable std::uint32_t validation_stamp_ = 0;
     std::uint32_t allocated_pages_          = 0;
     std::uint32_t reserved_pages_           = 0;
+    std::uint32_t lent_pages_               = 0;
 };
 
 struct DeviceKVPageReservationRequest {

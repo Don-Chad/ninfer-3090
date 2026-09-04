@@ -62,14 +62,17 @@ std::uint32_t page_count(std::uint32_t capacity) {
 struct TargetKVCacheProfile {
     DType dtype;
     std::int32_t quant_group;
+    // rk8v4 stores keys as rotated INT8 and values as two signed 4-bit codes per byte, so the
+    // value coding is not implied by dtype.
+    bool packed_values = false;
 };
 
 TargetKVCacheProfile target_kv_cache_profile(KvCacheStorage storage) {
     switch (storage) {
     case KvCacheStorage::BFloat16:
-        return {DType::BF16, 0};
+        return {DType::BF16, 0, false};
     case KvCacheStorage::Int8Group64:
-        return {DType::I8, qwen3_6::kKvInt8QuantGroup};
+        return {DType::I8, qwen3_6::kKvInt8QuantGroup, false};
     case KvCacheStorage::Fp8E4M3Row256:
 #if defined(NINFER_SM8X_COMPAT)
         // The FP8 KV profile is only consumable by the causal attention FP8 kernels, which use
@@ -80,20 +83,40 @@ TargetKVCacheProfile target_kv_cache_profile(KvCacheStorage storage) {
             "KV-cache storage 'fp8' requires an sm_100a or sm_120a GPU: FP8 E4M3 causal "
             "attention has no sm_86 implementation. Use --kv-dtype int8 or --kv-dtype bf16.");
 #else
-        return {DType::FP8_E4M3FN, qwen3_6::kKvFp8QuantGroup};
+        return {DType::FP8_E4M3FN, qwen3_6::kKvFp8QuantGroup, false};
 #endif
     case KvCacheStorage::RotatedInt8KeyInt4ValueGroup64:
-        // RotorQuant rk8v4 quantized and rotated K/V inside the fused GQA attention kernels.
-        // KV quantization is now owned by the kv_cache_append Op, which defines K rotation as
-        // H256 and V as unrotated BF16 source values. The rk8v4 int4-V representation has no
-        // implementation against that contract yet, so the profile is rejected rather than
-        // silently served as int8.
+        // RotorQuant rk8v4: the key plane is the same rotated INT8 representation Int8Group64
+        // uses, and the value plane holds two signed 4-bit codes per byte with the G64 scale
+        // plane unchanged. Values are not rotated, so the kv_cache_append contract's statement
+        // that values come from the represented BF16 source holds for this profile too.
+        return {DType::I8, qwen3_6::kKvInt8QuantGroup, true};
+    case KvCacheStorage::Nvfp4Group16:
+    case KvCacheStorage::Fp8KeyNvfp4Value:
+        // Recognized but not yet ported on this fork; see d256_kv_cache_profile's
+        // KvCacheStorage overload for the same rejection at engine-construction time.
         throw std::invalid_argument(
-            "KV-cache storage 'rk8v4' is unavailable in this build: the RotorQuant sm_86 path "
-            "has not been ported to the kv_cache_append Op that now owns KV quantization. Use "
-            "--kv-dtype int8 for the qualified quantized profile.");
+            "KV-cache storage 'nvfp4'/'k8v4' is not yet ported on this fork. Use --kv-dtype "
+            "bf16, int8, fp8, or rk8v4.");
     }
     throw std::invalid_argument("unknown KV-cache storage profile");
+}
+
+// Inverse of target_kv_cache_profile(), for call sites (workspace sizing) that only need the
+// public KvCacheStorage selection back from a resolved plan's dtype/packed_values pair.
+KvCacheStorage kv_cache_storage_of(DType dtype, bool packed_values) {
+    if (packed_values) { return KvCacheStorage::RotatedInt8KeyInt4ValueGroup64; }
+    switch (dtype) {
+    case DType::BF16:
+        return KvCacheStorage::BFloat16;
+    case DType::I8:
+        return KvCacheStorage::Int8Group64;
+    case DType::FP8_E4M3FN:
+        return KvCacheStorage::Fp8E4M3Row256;
+    default:
+        break;
+    }
+    throw std::invalid_argument("unrecognized Qwen3.6 KV-cache dtype");
 }
 
 template <class ProfileAllowance>
@@ -156,6 +179,7 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
                      .attention_head_dim        = TextConfig::head_dim,
                      .kv_dtype                  = plan.kv_dtype,
                      .kv_quant_group            = plan.kv_quant_group,
+                     .kv_packed_values          = plan.kv_packed_values,
                      .enable_mtp                = plan.features.mtp(),
                      .kv_table_rows             = static_cast<std::int32_t>(plan.max_concurrency),
                      .text_physical_page_groups = physical_pages,
@@ -202,13 +226,17 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     if constexpr (Variant::supports_dflash) {
         if (plan.features.dflash()) {
             DFlashPersistentLayout& dflash = out.dflash.emplace();
+            const PagedKVStorageLayout full_storage =
+                paged_kv_storage_layout(KvCacheStorage::BFloat16, DFlashConfig::head_dim);
             KVPageGeometry full_geometry{
                 .page_tokens        = kPagedKVPageSize,
                 .device_plane_order = PagedKVPlaneOrder::HeadMajor,
                 .planes =
                     {
-                        {DType::BF16, DFlashConfig::head_dim, DFlashConfig::kv_heads, 256},
-                        {DType::BF16, DFlashConfig::head_dim, DFlashConfig::kv_heads, 256},
+                        {full_storage.key.data_dtype, full_storage.key.data_leading_extent,
+                         DFlashConfig::kv_heads, 256},
+                        {full_storage.value.data_dtype, full_storage.value.data_leading_extent,
+                         DFlashConfig::kv_heads, 256},
                     },
             };
             dflash.full = qwen3_6::PagedKVCacheLayout{
@@ -271,6 +299,18 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     out.bytes = builder.finish(kArenaAlign, "persistent layout");
     out.kv_payload_bytes =
         out.decoder.kv_payload_bytes() + (out.dflash ? out.dflash->kv_payload_bytes() : 0);
+    const auto plane_end = [](const qwen3_6::PagedKVCacheLayout& cache) {
+        std::size_t end = 0;
+        if (cache.pages.spec.geometry.device_plane_order != PagedKVPlaneOrder::PageMajor) {
+            return end;
+        }
+        for (const DeviceKVPlaneLayout& plane : cache.pages.planes) {
+            end = std::max(end, plane.storage.region.offset + plane.storage.region.bytes);
+        }
+        return end;
+    };
+    out.lendable_kv_end_bytes = std::max(
+        plane_end(out.decoder.text_kv), out.decoder.mtp_kv ? plane_end(*out.decoder.mtp_kv) : 0);
     return out;
 }
 
@@ -297,7 +337,8 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
 
     const auto text_common_root = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens) {
         (void)workspace_recipe::text_prefill_roots<TextConfig>(
-            layout, tokens, plan.features.vision ? 3 : 0, plan.features.vision ? tokens : 0);
+            layout, tokens, plan.features.vision ? 3 : 0, plan.features.vision ? tokens : 0,
+            plan.features.overlay_vision());
     };
     const auto attention_stage = [&](WorkspaceLayoutBuilder& layout, std::int32_t first,
                                      std::int32_t last, qwen3_6::TextPhase phase,
@@ -311,7 +352,8 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
         (void)workspace_recipe::text_attention_results<TextConfig>(layout, last);
         scratch(layout, ops::causal_softmax_attention_workspace_capacity_bytes(
                             {TextConfig::head_dim, TextConfig::query_heads, TextConfig::kv_heads},
-                            plan.kv_dtype, envelope, batch_size, min_width, max_width));
+                            kv_cache_storage_of(plan.kv_dtype, plan.kv_packed_values), envelope,
+                            batch_size, min_width, max_width));
         scratch(layout, Variant::attention_output_projection_workspace_capacity_bytes(
                             plan.weights_profile, phase, first, last));
     };
@@ -378,7 +420,8 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
         (void)workspace_recipe::mtp_attention_results<TextConfig>(layout, tokens);
         scratch(layout, ops::causal_softmax_attention_workspace_capacity_bytes(
                             {TextConfig::head_dim, TextConfig::query_heads, TextConfig::kv_heads},
-                            plan.kv_dtype, envelope, 1, tokens, tokens));
+                            kv_cache_storage_of(plan.kv_dtype, plan.kv_packed_values), envelope, 1,
+                            tokens, tokens));
         (void)workspace_recipe::mtp_post_attention<TextConfig>(layout, tokens);
         scratch(layout, Variant::mtp_post_mixer_workspace_capacity_bytes(tokens, tokens));
     };
@@ -414,7 +457,8 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
         matrix(layout, DType::BF16, TextConfig::query_size, 1);
         scratch(layout, ops::causal_softmax_attention_workspace_capacity_bytes(
                             {TextConfig::head_dim, TextConfig::query_heads, TextConfig::kv_heads},
-                            plan.kv_dtype, text_envelope, 1, 1, 1));
+                            kv_cache_storage_of(plan.kv_dtype, plan.kv_packed_values),
+                            text_envelope, 1, 1, 1));
         matrix(layout, DType::BF16, TextConfig::hidden, 1);
         matrix(layout, DType::BF16, TextConfig::hidden, 1);
         scratch(layout, Variant::mtp_post_mixer_workspace_capacity_bytes(1, 1));
@@ -498,7 +542,8 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                 scratch(layout,
                         ops::causal_softmax_attention_workspace_capacity_bytes(
                             {TextConfig::head_dim, TextConfig::query_heads, TextConfig::kv_heads},
-                            plan.kv_dtype, text_envelope, batch, width, width));
+                            kv_cache_storage_of(plan.kv_dtype, plan.kv_packed_values),
+                            text_envelope, batch, width, width));
                 (void)workspace_recipe::mtp_post_attention<TextConfig>(layout, tokens);
                 scratch(layout, Variant::mtp_post_mixer_workspace_capacity_bytes(tokens, tokens));
             };
@@ -597,10 +642,13 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                   out.dflash_context, out.dflash_round, out.causal_score});
     out.capacity = out.general_capacity;
     if (plan.features.vision) {
-        const std::uint32_t merged = static_cast<std::uint32_t>(
-            std::min<std::uint64_t>(plan.capacity, kMaximumVisionItemTokens));
-        out.vision   = schedule::VisionContext::plan_workspace(merged, out.general_capacity);
-        out.capacity = std::max(out.capacity, out.vision->capacity_bytes);
+        const std::uint32_t merged = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+            {plan.capacity, kMaximumVisionItemTokens, plan.vision_max_merged}));
+        out.vision          = schedule::VisionContext::plan_workspace(merged, out.general_capacity);
+        out.vision_resident = !plan.features.overlay_vision();
+        if (out.vision_resident) {
+            out.capacity = std::max(out.capacity, out.vision->capacity_bytes);
+        }
     }
     return out;
 }
@@ -666,7 +714,7 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
         }
         break;
     }
-    if (device.sm() != 86 && device.sm() != 89) {
+    if (device.compute_capability() != 86 && device.compute_capability() != 89) {
         throw std::invalid_argument(
             "Qwen3.6 family runtime requires compute capability 8.6 or 8.9");
     }
@@ -690,12 +738,14 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->speculative_backend = inputs.speculative_backend;
     impl->proposal_head       = inputs.proposal_head;
     impl->features            = inputs.features;
+    impl->vision_max_merged   = inputs.vision_max_merged;
     impl->use_cuda_graph      = inputs.use_cuda_graph;
     impl->causal_scoring      = inputs.causal_scoring;
     impl->device              = inputs.device;
     impl->context_cache       = inputs.context_cache;
     impl->kv_dtype            = inputs.kv_dtype;
     impl->kv_quant_group      = inputs.kv_quant_group;
+    impl->kv_packed_values    = inputs.kv_packed_values;
     impl->persistent          = persistent_layout(*impl);
     impl->workspace           = build_workspace_plan(*impl);
     if (impl->use_cuda_graph) {
@@ -763,7 +813,6 @@ make_sequence_planner_impl(DeviceContext& device, const EngineOptions& options,
                            WeightsProfile weights_profile) {
     validate_target_options(device, options);
     const TargetKVCacheProfile kv_profile = target_kv_cache_profile(options.kv_cache);
-
     SequencePlanningInputs inputs{
         .weights_profile     = weights_profile,
         .capacity            = options.max_context,
@@ -773,8 +822,10 @@ make_sequence_planner_impl(DeviceContext& device, const EngineOptions& options,
         .speculative_backend = options.speculative.backend,
         .kv_dtype            = kv_profile.dtype,
         .kv_quant_group      = kv_profile.quant_group,
+        .kv_packed_values    = kv_profile.packed_values,
         .proposal_head       = options.speculative.proposal_head,
         .features            = qwen3_6::startup_features(options),
+        .vision_max_merged   = std::max<std::uint32_t>(1, options.vision_max_merged_tokens),
         .use_cuda_graph      = options.use_cuda_graph,
         .causal_scoring      = options.purpose == EnginePurpose::CausalScoring,
         .device              = options.device,

@@ -42,8 +42,8 @@ void require_contiguous_nonnull(const Tensor& tensor, const char* op, const char
 }
 
 std::uint32_t validate_context(const PagedKVBatchLayerView& context, const char* op) {
-    if (context.dtype != DType::BF16 || context.quant_group != 0 ||
-        context.num_kv_heads != kKVHeads || context.head_dim != kHeadDim) {
+    if (context.storage != KvCacheStorage::BFloat16 || context.num_kv_heads != kKVHeads ||
+        context.head_dim != kHeadDim) {
         throw std::invalid_argument(std::string(op) + ": invalid context geometry or dtype");
     }
     const std::int32_t physical_pages = context.k_pages.ne[2];

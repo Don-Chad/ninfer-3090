@@ -30,6 +30,8 @@ add_library(ninfer_core STATIC
   core/layout.cpp
   core/tensor.cpp
   core/decode_graph.cpp
+  core/evictable_kv_pool.cu
+  core/evictable_weight_pool.cu
   runtime/engine/admission_policy.cpp
   runtime/engine/context_cost.cpp
   runtime/engine/context_cost_defaults.cpp
@@ -37,7 +39,7 @@ add_library(ninfer_core STATIC
   runtime/engine/public_types.cpp)
 ninfer_internal_includes(ninfer_core)
 ninfer_cuda_archive(ninfer_core)
-target_link_libraries(ninfer_core PUBLIC ${NINFER_CUDART_TARGET} CUDA::nvtx3 Threads::Threads)
+target_link_libraries(ninfer_core PUBLIC ${NINFER_CUDART_TARGET} CUDA::nvtx3 Threads::Threads CUDA::cuda_driver)
 
 # Generic .ninfer framing, binding, and direct final materialization.
 add_library(ninfer_artifact STATIC
@@ -97,8 +99,12 @@ add_library(ninfer_ops STATIC
   ops/softmax_attention/dense/causal_cache/causal_softmax_attention.cpp
   ops/softmax_attention/dense/causal_cache/small_t.cu
   ops/softmax_attention/dense/causal_cache/small_t_fp8.cu
+  ops/softmax_attention/dense/causal_cache/small_t_nvfp4.cu
+  ops/softmax_attention/dense/causal_cache/small_t_k8v4.cu
   ops/softmax_attention/dense/causal_cache/prompt.cu
   ops/softmax_attention/dense/causal_cache/prompt_fp8.cu
+  ops/softmax_attention/dense/causal_cache/prompt_nvfp4.cu
+  ops/softmax_attention/dense/causal_cache/prompt_k8v4.cu
   ops/softmax_attention/dense/packed/packed_softmax_attention.cpp
   ops/softmax_attention/dense/packed/launch.cu
   ops/softmax_attention/dense/context/context_softmax_attention.cpp
@@ -107,6 +113,8 @@ add_library(ninfer_ops STATIC
   ops/softmax_attention/sliding_window/launch.cu
   ops/kv_cache/append/kv_cache_append.cpp
   ops/kv_cache/append/launch.cu
+  ops/kv_cache/append/nvfp4_launch.cu
+  ops/kv_cache/append/k8v4_launch.cu
   # Gated DeltaNet Linear Attention core.
   ops/linear_attention/gated_delta_net/gated_delta_net.cpp
   ops/linear_attention/gated_delta_net/replay.cpp
@@ -208,6 +216,8 @@ add_library(ninfer_ops STATIC
   ops/linear_swiglu/q4/q4_linear_swiglu_gemm_mma.cu
   ops/linear_swiglu/q4/q4_linear_swiglu_gemv.cu
   ops/linear_swiglu/q4/q4_linear_swiglu_plan.cpp
+  ops/linear_swiglu/q4a8/q4a8_linear_swiglu.cu
+  ops/linear_swiglu/q4a8/q5a8_linear_add.cu
   ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_decode.cu
   ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_small_t.cu
   ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_w4a4.cu
@@ -282,6 +292,11 @@ if(CMAKE_CUDA_ARCHITECTURES MATCHES "^(86|89)$")
   list(FILTER ninfer_ops_sources EXCLUDE REGEX "nvfp4/.+_w4a4\\.cu$")
   list(FILTER ninfer_ops_sources EXCLUDE REGEX "fp8/.+_a8\\.cu$")
   list(FILTER ninfer_ops_sources EXCLUDE REGEX "causal_cache/(prompt|small_t)_fp8\\.cu$")
+  # NVFP4/K8V4 KV-cache causal attention and append kernels use cvt.rn.satfinite.e2m1x2, also
+  # Blackwell-only (confirmed: ptxas rejects it on sm_86). This fork recognizes but does not port
+  # these two KvCacheStorage selections; see ops/nvfp4_sm86_stubs.cpp for the link-boundary stubs.
+  list(FILTER ninfer_ops_sources EXCLUDE REGEX "causal_cache/(prompt|small_t)_(nvfp4|k8v4)\\.cu$")
+  list(FILTER ninfer_ops_sources EXCLUDE REGEX "kv_cache/append/(nvfp4|k8v4)_launch\\.cu$")
   set_property(TARGET ninfer_ops PROPERTY SOURCES ${ninfer_ops_sources})
   target_sources(ninfer_ops PRIVATE ops/nvfp4_sm86_stubs.cpp ops/fp8_sm86_stubs.cpp)
   target_compile_definitions(ninfer_ops PUBLIC NINFER_SM8X_COMPAT=1)
@@ -325,9 +340,12 @@ if(NINFER_BUILD_PROMPT_INPUT)
 endif()
 
 if(NINFER_BUILD_APPS OR BUILD_TESTING)
-  add_library(ninfer_product_load_progress STATIC
-    product/load_progress/load_progress.cpp)
-  ninfer_internal_includes(ninfer_product_load_progress)
+  add_library(ninfer_product_logging STATIC
+    product/logging/logging.cpp
+    product/logging/pretty_format.cpp
+    product/logging/startup_log.cpp)
+  ninfer_internal_includes(ninfer_product_logging)
+  target_link_libraries(ninfer_product_logging PUBLIC spdlog::spdlog)
 endif()
 
 # One cold closed registry plus the opaque public product Engine. Family and exact-target
@@ -356,6 +374,7 @@ if(NINFER_BUILD_SERVE)
   # HTTP protocol/product adapter. No serving header is part of the public API.
   add_library(ninfer_serve STATIC
     serve/http_transport.cpp
+    serve/console_log.cpp
     serve/request_validation.cpp
     serve/openai_chat_request.cpp
     serve/openai_chat_response.cpp
@@ -364,14 +383,14 @@ if(NINFER_BUILD_SERVE)
     serve/openai_responses_request.cpp
     serve/openai_responses_state.cpp
     serve/openai_responses_response.cpp
-    serve/anthropic_thinking_signature.cpp
     serve/anthropic_messages_request.cpp
     serve/anthropic_messages_response.cpp
     serve/anthropic_messages_http.cpp
     serve/openai_responses_store.cpp
     serve/translate.cpp
-    serve/console_log.cpp
     serve/generation_service.cpp
+    serve/request_events.cpp
+    serve/operational_log.cpp
     serve/request_log.cpp
     serve/http_server.cpp
     serve/openai_responses_http.cpp
@@ -381,5 +400,5 @@ if(NINFER_BUILD_SERVE)
     ${PROJECT_SOURCE_DIR}/third_party/cpp-httplib)
   target_link_libraries(ninfer_serve
     PUBLIC ninfer_engine Threads::Threads
-    PRIVATE ninfer_media_acquire ${NINFER_CUDART_TARGET})
+    PRIVATE ninfer_media_acquire ninfer_product_logging ${NINFER_CUDART_TARGET})
 endif()

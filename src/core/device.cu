@@ -61,6 +61,7 @@ DeviceContext::DeviceContext(int device_id) : device(device_id) {
 
     cudaStream_t compute = nullptr;
     cudaStream_t load    = nullptr;
+    cudaStream_t vision  = nullptr;
     err                  = cudaStreamCreateWithFlags(&compute, cudaStreamNonBlocking);
     if (err != cudaSuccess) {
         throw std::runtime_error(
@@ -74,27 +75,39 @@ DeviceContext::DeviceContext(int device_id) : device(device_id) {
             cuda_error_message("cudaStreamCreateWithFlags(transfer_stream) failed", err));
     }
 
+    err = cudaStreamCreateWithFlags(&vision, cudaStreamNonBlocking);
+    if (err != cudaSuccess) {
+        destroy_stream(load);
+        destroy_stream(compute);
+        throw std::runtime_error(
+            cuda_error_message("cudaStreamCreateWithFlags(vision_stream) failed", err));
+    }
+
     stream          = compute;
     transfer_stream = load;
+    vision_stream   = vision;
 }
 
 DeviceContext::~DeviceContext() {
     if (stream != nullptr || transfer_stream != nullptr) { bind_to_current_thread_noexcept(); }
+    destroy_stream(vision_stream);
     destroy_stream(transfer_stream);
     destroy_stream(stream);
 }
 
 DeviceContext::DeviceContext(DeviceContext&& other) noexcept
     : device(other.device), stream(other.stream), transfer_stream(other.transfer_stream),
-      props(other.props) {
+      vision_stream(other.vision_stream), props(other.props) {
     other.stream          = nullptr;
     other.transfer_stream = nullptr;
+    other.vision_stream   = nullptr;
 }
 
 DeviceContext& DeviceContext::operator=(DeviceContext&& other) noexcept {
     if (this == &other) { return *this; }
 
     if (stream != nullptr || transfer_stream != nullptr) { bind_to_current_thread_noexcept(); }
+    destroy_stream(vision_stream);
     destroy_stream(transfer_stream);
     destroy_stream(stream);
 
@@ -102,9 +115,11 @@ DeviceContext& DeviceContext::operator=(DeviceContext&& other) noexcept {
     props           = other.props;
     stream          = other.stream;
     transfer_stream = other.transfer_stream;
+    vision_stream   = other.vision_stream;
 
     other.stream          = nullptr;
     other.transfer_stream = nullptr;
+    other.vision_stream   = nullptr;
     return *this;
 }
 
@@ -119,9 +134,13 @@ void DeviceContext::bind_to_current_thread_noexcept() const noexcept {
     log_cuda_error("cudaSetDevice", cudaSetDevice(device));
 }
 
-int DeviceContext::sm() const noexcept { return props.major * 10 + props.minor; }
+int DeviceContext::compute_capability() const noexcept { return props.major * 10 + props.minor; }
 
-int DeviceContext::sm_count() const noexcept { return props.multiProcessorCount; }
+int DeviceContext::multiprocessor_count() const noexcept { return props.multiProcessorCount; }
+
+DeviceExecutionView DeviceContext::execution_view() const noexcept {
+    return {.stream = stream, .multiprocessor_count = multiprocessor_count()};
+}
 
 std::size_t DeviceContext::total_vram() const noexcept { return props.totalGlobalMem; }
 

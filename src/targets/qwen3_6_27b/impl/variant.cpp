@@ -11,6 +11,7 @@
 #include "ninfer/ops/residual_add.h"
 #include "ninfer/ops/silu_mul.h"
 
+
 #include <algorithm>
 #include <stdexcept>
 
@@ -48,9 +49,14 @@ void validate_token_interval(std::int32_t first, std::int32_t last) {
 // through their A16 routes, which dequantize the stored codes to BF16 before the MMA.
 constexpr ops::LinearPolicy kNvfp4TextPolicy = ops::LinearPolicy::A16Only;
 constexpr ops::LinearPolicy kFp8TextPolicy   = ops::LinearPolicy::A16Only;
+// The integer-activation route for groupwise-int weights is an sm_86 addition: it feeds the s8
+// tensor cores, which Ampere has and which no A16 route uses.
+constexpr ops::LinearPolicy kGroupwiseIntTextPolicy = ops::LinearPolicy::AllowA8Int;
 #else
 constexpr ops::LinearPolicy kNvfp4TextPolicy = ops::LinearPolicy::AllowA4;
 constexpr ops::LinearPolicy kFp8TextPolicy   = ops::LinearPolicy::AllowA8;
+// Not built for sm_120a; groupwise-int keeps its A16 route there.
+constexpr ops::LinearPolicy kGroupwiseIntTextPolicy = ops::LinearPolicy::A16Only;
 #endif
 
 ops::LinearPolicy text_policy(const Weight& weight) {
@@ -59,6 +65,21 @@ ops::LinearPolicy text_policy(const Weight& weight) {
         return kNvfp4TextPolicy;
     case QType::FP8_E4M3FN_ROW_BF16S:
         return kFp8TextPolicy;
+    // Permissive only for the two profiles that have a registered integer route -- the MLP
+    // gate_up and down projections. The resolver then takes it on full prefill tiles and falls
+    // back to A16 everywhere else, including every decode step and every partial tile.
+    //
+    // Deliberately keyed on shape rather than qtype alone: attn_input_proj and gdn_input_proj
+    // also receive text_policy() and neither admits AllowA8Int, so handing it to them would
+    // throw. Today the groupwise-int artifact reaches those through their split payloads, which
+    // pass no policy at all, so a broader rule happens not to fire -- but that is luck, not
+    // design, and the fused payloads would hit it.
+    case QType::Q4G64_F16S:
+        return (weight.n == 34816 && weight.k == 5120) ? kGroupwiseIntTextPolicy
+                                                        : ops::LinearPolicy::A16Only;
+    case QType::Q5G64_F16S:
+        return (weight.n == 5120 && weight.k == 17408) ? kGroupwiseIntTextPolicy
+                                                        : ops::LinearPolicy::A16Only;
     default:
         return ops::LinearPolicy::A16Only;
     }
@@ -113,7 +134,7 @@ std::size_t post_mixer_workspace_bytes(QType gate_up_qtype, QType down_qtype,
             gate_up_qtype, 2 * TextConfig::intermediate, TextConfig::hidden, policy, first, last));
     }
     {
-        auto scope = layout.scope();
+        auto scope              = layout.scope();
         (void)layout.alloc_bytes(ops::linear_add_workspace_capacity_bytes(
             down_qtype, TextConfig::hidden, TextConfig::intermediate, policy, first, last));
     }
@@ -284,18 +305,19 @@ void Variant::gdn_output_projection(const Tensor& hidden, const Weight& weight, 
 void Variant::gdn_norm_control_projection(const Tensor& residual, const Tensor& norm_weight,
                                           float eps, const GdnProjectionWeights& weights,
                                           Tensor& hidden, Tensor& g, Tensor& beta,
-                                          WorkspaceArena& workspace, cudaStream_t stream) {
+                                          WorkspaceArena& workspace,
+                                          DeviceExecutionView execution) {
     if (const auto* split =
             std::get_if<SplitGdnControlProjectionPayload>(&weights.control_projection)) {
         ops::gdn_norm_gating_proj(residual, norm_weight, eps, split->a_projection,
                                   split->b_projection, weights.a_log, weights.dt_bias, workspace,
-                                  hidden, g, beta, stream);
+                                  hidden, g, beta, execution);
         return;
     }
     const Weight& fused =
         std::get<FusedGdnControlProjectionPayload>(weights.control_projection).a_b_projection;
     ops::gdn_norm_gating_proj(residual, norm_weight, eps, fused, weights.a_log, weights.dt_bias,
-                              workspace, hidden, g, beta, stream);
+                              workspace, hidden, g, beta, execution);
 }
 
 void Variant::post_mixer(const Tensor& hidden, const PostMixerWeights& weights, Tensor& residual,

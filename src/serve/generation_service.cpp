@@ -224,6 +224,14 @@ public:
         if (sink_->on_start) { sink_->on_start(start); }
     }
 
+    void progress(ninfer::PromptProgress progress) override {
+        if (sink_->on_progress) { sink_->on_progress(progress); }
+    }
+
+    void timing(ninfer::GenerationTimingObservation timing) override {
+        if (sink_->on_timing) { sink_->on_timing(timing); }
+    }
+
     void publish(ninfer::OutputDelta delta) override {
         if (delta.text.empty()) { return; }
         if (delta.channel == ninfer::OutputChannel::Reasoning) {
@@ -239,7 +247,7 @@ private:
 
 } // namespace
 
-GenerationService::GenerationService(ServeOptions options, LoadProgress load_progress)
+GenerationService::GenerationService(ServeOptions options, StartupObserver startup_observer)
     : options_(std::move(options)) {
     // Inline ECC on GDDR6X GeForce cards reserves ~6.25% of VRAM for checksums and taxes
     // memory bandwidth on every access. Decode is bandwidth-bound, so an ECC-enabled card
@@ -271,6 +279,8 @@ GenerationService::GenerationService(ServeOptions options, LoadProgress load_pro
     engine_options.prefill_chunk            = options_.prefill_chunk;
     engine_options.kv_cache                 = options_.kv_cache;
     engine_options.enable_vision            = options_.enable_vision;
+    engine_options.vision_residency         = options_.vision_residency;
+    engine_options.vision_max_merged_tokens = options_.vision_max_merged_tokens;
     engine_options.use_cuda_graph           = options_.use_cuda_graph;
     engine_options.speculative              = options_.speculative;
     engine_options.context_cache            = options_.context_cache;
@@ -278,7 +288,7 @@ GenerationService::GenerationService(ServeOptions options, LoadProgress load_pro
     engine_options.media_cache_bytes        = options_.media_cache_bytes;
     engine_options.media_live_bytes         = options_.media_live_bytes;
     engine_options.media_preprocess_threads = options_.media_preprocess_threads;
-    engine_options.load_progress            = std::move(load_progress);
+    engine_options.startup_observer         = std::move(startup_observer);
     engine_              = std::make_unique<ninfer::Engine>(std::move(engine_options));
     prompt_capabilities_ = engine_->prompt_capabilities();
     request_capacity_    = std::make_shared<RequestCapacity>(
@@ -311,16 +321,18 @@ GenerationService::acquire_request_lifetime(DeadlinePolicy deadline_policy) cons
 
 PreparedRequest GenerationService::prepare(const GenerationRequest& request,
                                            GenerationConsumerMode consumer_mode,
+                                           ninfer::GenerationObservationOptions observation,
                                            std::function<bool()> is_cancelled,
                                            ContextCacheHints context_cache) const {
-    return prepare_impl(request, consumer_mode, std::move(is_cancelled), std::move(context_cache),
-                        options_.allow_prefix_reuse ? CacheParticipation::ReadWrite
-                                                    : CacheParticipation::Disabled,
-                        DeadlinePolicy::ClientPendingTimeout);
+    return prepare_impl(
+        request, consumer_mode, observation, std::move(is_cancelled), std::move(context_cache),
+        options_.allow_prefix_reuse ? CacheParticipation::ReadWrite : CacheParticipation::Disabled,
+        DeadlinePolicy::ClientPendingTimeout);
 }
 
 PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request,
                                                 GenerationConsumerMode consumer_mode,
+                                                ninfer::GenerationObservationOptions observation,
                                                 std::function<bool()> is_cancelled,
                                                 ContextCacheHints context_cache,
                                                 CacheParticipation cache_participation,
@@ -351,10 +363,15 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
                                      remaining_media_bytes);
             });
         std::vector<PromptCacheMarker> protocol_markers = std::move(input.context_cache.markers);
-        input.context_cache                             = std::move(context_cache);
+        const bool protocol_allows_engine_automatic =
+            input.context_cache.allow_engine_automatic_shared_prefixes;
+        input.context_cache = std::move(context_cache);
         input.context_cache.markers.insert(input.context_cache.markers.end(),
                                            std::make_move_iterator(protocol_markers.begin()),
                                            std::make_move_iterator(protocol_markers.end()));
+        input.context_cache.allow_engine_automatic_shared_prefixes =
+            input.context_cache.allow_engine_automatic_shared_prefixes &&
+            protocol_allows_engine_automatic;
         trim_cache_markers(input.context_cache.markers,
                            engine_->options().context_cache.max_cache_markers_per_request.value());
         prepared.acquisition_seconds =
@@ -374,7 +391,7 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
                                               consumer_mode == GenerationConsumerMode::Streaming
                                                   ? ninfer::OutputConsumerMode::Streaming
                                                   : ninfer::OutputConsumerMode::Aggregate,
-                                              prepared.lifetime->deadline);
+                                              observation, prepared.lifetime->deadline);
         prepared.sampling   = prepared.generation.resolved_sampling();
     } catch (const ApiException&) { throw; } catch (const ninfer::RequestError& exception) {
         throw_request_error(exception);
@@ -450,8 +467,17 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
         prepared.prepare_seconds +
         std::max(0.0, result.timings.first_token_seconds - result.timings.prepare_seconds);
     outcome.metrics.vision_seconds  = result.timings.vision_seconds;
-    outcome.metrics.prefill_seconds = result.timings.prefill_seconds;
-    outcome.metrics.decode_seconds  = result.timings.decode_seconds;
+    outcome.metrics.overlay_windows           = result.timings.overlay_windows;
+    outcome.metrics.overlay_exclusive_windows = result.timings.overlay_exclusive_windows;
+    outcome.metrics.overlay_window_seconds  = result.timings.overlay_window_seconds;
+    outcome.metrics.overlay_evict_seconds   = result.timings.overlay_evict_seconds;
+    outcome.metrics.overlay_restore_seconds = result.timings.overlay_restore_seconds;
+    outcome.metrics.overlay_evicted_bytes   = result.timings.overlay_evicted_bytes;
+    outcome.metrics.overlay_staged_bytes    = result.timings.overlay_staged_bytes;
+    outcome.metrics.prefill_seconds         = result.timings.prefill_seconds;
+    outcome.metrics.decode_seconds          = result.timings.decode_seconds;
+    outcome.metrics.prompt_wall_seconds     = result.timings.prompt_wall_seconds;
+    outcome.metrics.generation_wall_seconds = result.timings.generation_wall_seconds;
     outcome.metrics.total_seconds =
         prepared.prepare_seconds +
         std::max(0.0, result.timings.total_seconds - result.timings.prepare_seconds);
@@ -468,7 +494,8 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     outcome.metrics.speculative_accepted_per_position =
         std::move(result.speculative.accepted_per_position);
 
-    outcome.tool_calls = std::move(result.tool_calls);
+    outcome.tool_calls      = std::move(result.tool_calls);
+    outcome.tool_call_parse = result.tool_call_parse;
     return outcome;
 }
 
@@ -484,7 +511,7 @@ void GenerationService::warmup() {
     request.messages.push_back(std::move(turn));
     request.max_tokens = 4;
     PreparedRequest prepared =
-        prepare_impl(request, GenerationConsumerMode::Aggregate, {}, {},
+        prepare_impl(request, GenerationConsumerMode::Aggregate, {}, {}, {},
                      CacheParticipation::Disabled, DeadlinePolicy::UnboundedStartup);
     run(prepared, nullptr);
 }

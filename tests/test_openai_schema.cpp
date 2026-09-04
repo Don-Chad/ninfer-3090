@@ -15,7 +15,7 @@
 
 namespace {
 
-using Json = nlohmann::json;
+using Json = ninfer::serve::RequestJson;
 using namespace ninfer::serve;
 
 int check(bool condition, const std::string& label) {
@@ -87,10 +87,14 @@ int test_request_envelope_and_sampling() {
     body["seed"]                  = -1;
     body["top_k"]                 = 17;
     body["min_p"]                 = 0.05;
+    body["timings_per_token"]     = true;
+    body["return_progress"]       = true;
 
     const OpenAIChatRequest request = parse(body);
     failures += check(request.model == "qwen", "model remains in OpenAI envelope");
     failures += check(request.stream && request.include_usage, "stream metadata parsed");
+    failures += check(request.timings_per_token && request.return_progress,
+                      "llama.cpp response observations remain in the protocol envelope");
     failures += check(request.output_tokens_explicit && request.generation.max_tokens == 48,
                       "max_completion_tokens wins and explicitness stays in envelope");
     failures += check(request.generation.sampling.seed == std::numeric_limits<std::uint64_t>::max(),
@@ -111,6 +115,7 @@ int test_request_envelope_and_sampling() {
     const OpenAIChatRequest defaults = parse(base_request());
     failures +=
         check(!defaults.stream && !defaults.include_usage && !defaults.output_tokens_explicit &&
+                  !defaults.timings_per_token && !defaults.return_progress &&
                   defaults.generation.max_tokens == limits().default_max_tokens,
               "protocol defaults remain outside GenerationRequest");
 
@@ -118,6 +123,14 @@ int test_request_envelope_and_sampling() {
     malformed["stream_options"] = true;
     failures += check(api_error([&] { (void)parse(malformed); }).param == "stream_options",
                       "malformed stream_options rejected");
+    malformed                      = base_request();
+    malformed["timings_per_token"] = "yes";
+    failures += check(api_error([&] { (void)parse(malformed); }).param == "timings_per_token",
+                      "non-boolean timings_per_token rejected");
+    malformed                    = base_request();
+    malformed["return_progress"] = 1;
+    failures += check(api_error([&] { (void)parse(malformed); }).param == "return_progress",
+                      "non-boolean return_progress rejected");
     return failures;
 }
 
@@ -309,6 +322,35 @@ int test_tools() {
                      Json{{"role", "tool"}, {"tool_call_id", "call_1"}, {"content", "sunny"}}});
     failures += check(parse(history).generation.has_tool_history(),
                       "tool-call history follows wire types without inventing JSON validation");
+
+    Json mixed_assistant        = base_request();
+    mixed_assistant["messages"] = Json::array(
+        {Json{{"role", "user"}, {"content", "inspect"}},
+         Json{{"role", "assistant"},
+              {"content", "I will inspect it"},
+              {"tool_calls",
+               Json::array({Json{
+                   {"id", "call_2"},
+                   {"type", "function"},
+                   {"function", Json{{"name", "inspect"}, {"arguments", R"({"path":"a"})"}}}}})}}});
+    const GenerationRequest mixed_request  = parse(mixed_assistant).generation;
+    const ninfer::PromptInput mixed_prompt = prompt(mixed_request);
+    failures += check(mixed_request.messages[1].cache_boundary_after &&
+                          !mixed_request.messages[1].content[0].cache_boundary_after &&
+                          !mixed_prompt.context_cache.markers.empty() &&
+                          mixed_prompt.context_cache.markers.back().location ==
+                              ninfer::PromptCacheMarkerLocation::MessageBoundary &&
+                          mixed_prompt.context_cache.markers.back().after_message_count == 2,
+                      "automatic caching stops after a complete assistant text/tool-call turn");
+
+    const Json ordered = Json::parse(
+        R"({"model":"qwen","messages":[{"role":"user","content":"probe"}],"tools":[{"type":"function","function":{"name":"probe","parameters":{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"integer"}}}}}]})");
+    const ninfer::PromptInput ordered_prompt = prompt(parse(ordered).generation);
+    failures += check(
+        ordered_prompt.options.tool_jsons.size() == 1 &&
+            ordered_prompt.options.tool_jsons.front() ==
+                R"({"type":"function","function":{"name":"probe","parameters":{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"integer"}}},"strict":false}})",
+        "OpenAI Chat changed tool-schema member order before PromptInput");
     return failures;
 }
 
@@ -553,13 +595,17 @@ int test_stops_and_ranges() {
 
 GenerationOutcome sample_outcome() {
     GenerationOutcome outcome;
-    outcome.text                            = "answer";
-    outcome.reasoning                       = "thought";
-    outcome.prompt_tokens                   = 20;
-    outcome.completion_tokens               = 7;
-    outcome.reasoning_tokens                = 3;
-    outcome.finish_reason                   = ninfer::FinishReason::StopToken;
-    outcome.metrics.prefix_cache_hit_tokens = 12;
+    outcome.text                                = "answer";
+    outcome.reasoning                           = "thought";
+    outcome.prompt_tokens                       = 20;
+    outcome.completion_tokens                   = 7;
+    outcome.reasoning_tokens                    = 3;
+    outcome.finish_reason                       = ninfer::FinishReason::StopToken;
+    outcome.metrics.prefix_cache_hit_tokens     = 12;
+    outcome.metrics.prompt_wall_seconds         = 0.04;
+    outcome.metrics.generation_wall_seconds     = 0.03;
+    outcome.metrics.speculative_draft_tokens    = 9;
+    outcome.metrics.speculative_accepted_tokens = 6;
     return outcome;
 }
 
@@ -580,18 +626,30 @@ int test_aggregate_response() {
     failures += check(response["usage"]["prompt_tokens_details"]["cached_tokens"] == 12 &&
                           response["usage"]["completion_tokens_details"]["reasoning_tokens"] == 3,
                       "aggregate usage exposes cache hits and reasoning tokens");
+    failures += check(
+        response["timings"]["cache_n"] == 12 && response["timings"]["prompt_n"] == 8 &&
+            response["timings"]["prompt_ms"] == 40.0 &&
+            response["timings"]["prompt_per_second"] == 200.0 &&
+            response["timings"]["predicted_n"] == 7 &&
+            response["timings"]["predicted_ms"] == 30.0 &&
+            response["timings"]["predicted_per_second"] == 200.0 &&
+            response["timings"]["draft_n"] == 9 && response["timings"]["draft_n_accepted"] == 6,
+        "aggregate timings use exact cache and N-1 generation intervals");
 
     outcome.text.clear();
-    outcome.tool_calls.push_back(
-        ninfer::GeneratedToolCall{.name = "weather", .arguments_json = R"({"city":"Paris"})"});
+    outcome.tool_calls.push_back(ninfer::GeneratedToolCall{
+        .name = "Edit",
+        .arguments_json =
+            R"({"file_path":"/tmp/probe.cpp","old_string":"old","new_string":"new"})"});
     response         = Json::parse(make_chat_completion_response(identity(), outcome));
     const Json& call = response["choices"][0]["message"]["tool_calls"][0];
     failures += check(response["choices"][0]["finish_reason"] == "tool_calls" &&
                           response["choices"][0]["message"]["content"].is_null(),
                       "aggregate tool call has OpenAI terminal shape");
-    failures += check(call["id"].get<std::string>().starts_with("call_") &&
-                          call["function"]["name"] == "weather",
-                      "OpenAI adapter owns wire tool-call identifiers");
+    failures += check(
+        call["id"].get<std::string>().starts_with("call_") && call["function"]["name"] == "Edit" &&
+            !Json::parse(call["function"]["arguments"].get<std::string>()).contains("replace_all"),
+        "OpenAI adapter owns wire tool-call identifiers");
     return failures;
 }
 
@@ -619,8 +677,9 @@ int test_stream_response() {
     const Json usage = parse_sse(events[2]);
     failures += check(usage["choices"].empty() &&
                           usage["usage"]["prompt_tokens_details"]["cached_tokens"] == 12 &&
-                          usage["usage"]["completion_tokens_details"]["reasoning_tokens"] == 3,
-                      "dedicated stream usage carries detailed token accounting");
+                          usage["usage"]["completion_tokens_details"]["reasoning_tokens"] == 3 &&
+                          usage["timings"]["predicted_n"] == 7,
+                      "dedicated stream usage carries token accounting and terminal timings");
     failures += check(events.back() == "data: [DONE]\n\n", "stream ends with DONE sentinel");
 
     OpenAIChatStream mismatch(identity(), false);
@@ -632,16 +691,74 @@ int test_stream_response() {
     OpenAIChatStream tool_stream(identity(), false);
     (void)tool_stream.start();
     GenerationOutcome tool_outcome;
-    tool_outcome.tool_calls.push_back(
-        ninfer::GeneratedToolCall{.name = "weather", .arguments_json = "{}"});
+    tool_outcome.tool_calls.push_back(ninfer::GeneratedToolCall{
+        .name = "Edit", .arguments_json = R"({"file_path":"/tmp/probe.cpp"})"});
     tool_outcome.finish_reason                 = ninfer::FinishReason::StopToken;
     const std::vector<std::string> tool_events = tool_stream.finish(tool_outcome);
     const Json tool_delta                      = parse_sse(tool_events[0]);
     failures += check(
         tool_delta["choices"][0]["delta"]["tool_calls"][0]["id"].get<std::string>().starts_with(
             "call_") &&
+            tool_delta["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "Edit" &&
             parse_sse(tool_events[1])["choices"][0]["finish_reason"] == "tool_calls",
         "stream encoder owns stable OpenAI tool-call shape");
+    return failures;
+}
+
+int test_stream_observations() {
+    int failures = 0;
+    OpenAIChatStream stream(identity(), true, true, true);
+    const Json role = parse_sse(stream.start());
+    failures += check(!role.contains("timings") && !role.contains("prompt_progress"),
+                      "transport role chunk precedes Engine observations");
+
+    stream.note_start(
+        ninfer::GenerationStart{.prompt = {.prompt_tokens = 32}, .reused_prompt_tokens = 12});
+    const Json initial = parse_sse(stream.initial_prompt_progress());
+    failures +=
+        check(initial["choices"][0]["delta"].empty() && initial["prompt_progress"]["total"] == 32 &&
+                  initial["prompt_progress"]["cache"] == 12 &&
+                  initial["prompt_progress"]["processed"] == 12 &&
+                  initial["prompt_progress"]["time_ms"] == 0,
+              "initial prompt progress begins at the admitted cache frontier");
+
+    const Json middle = parse_sse(stream.prompt_progress(ninfer::PromptProgress{
+        .total_prompt_tokens     = 32,
+        .reused_prompt_tokens    = 12,
+        .processed_prompt_tokens = 20,
+        .elapsed_ns              = 57000000,
+    }));
+    failures += check(middle["prompt_progress"]["processed"] == 20 &&
+                          middle["prompt_progress"]["time_ms"] == 57,
+                      "prompt progress exposes a cumulative completed frontier");
+    const Json complete = parse_sse(stream.prompt_progress(ninfer::PromptProgress{
+        .total_prompt_tokens     = 32,
+        .reused_prompt_tokens    = 12,
+        .processed_prompt_tokens = 32,
+        .elapsed_ns              = 100000000,
+    }));
+    failures +=
+        check(complete["prompt_progress"]["processed"] == complete["prompt_progress"]["total"],
+              "final prompt progress reaches the complete prompt");
+
+    stream.note_timing(ninfer::GenerationTimingObservation{
+        .generated_tokens = 1, .prompt_elapsed_ns = 110000000, .generation_elapsed_ns = 0});
+    stream.note_timing(ninfer::GenerationTimingObservation{
+        .generated_tokens      = 3,
+        .prompt_elapsed_ns     = 110000000,
+        .generation_elapsed_ns = 20000000,
+    });
+    const Json content = parse_sse(stream.content_delta("answer"));
+    failures +=
+        check(content["timings"]["prompt_n"] == 20 && content["timings"]["predicted_n"] == 3 &&
+                  content["timings"]["predicted_per_second"] == 100.0,
+              "visible output uses the latest independent commit observation");
+
+    GenerationOutcome outcome = sample_outcome();
+    outcome.reasoning.clear();
+    const std::vector<std::string> terminal = stream.finish(outcome);
+    failures += check(parse_sse(terminal[1])["timings"]["predicted_n"] == 7,
+                      "terminal usage replaces live timing with exact final accounting");
     return failures;
 }
 
@@ -674,6 +791,7 @@ int main() {
     failures += test_stops_and_ranges();
     failures += test_aggregate_response();
     failures += test_stream_response();
+    failures += test_stream_observations();
     failures += test_common_objects();
     if (failures == 0) { std::cout << "OpenAI Chat protocol tests passed\n"; }
     return failures == 0 ? 0 : 1;

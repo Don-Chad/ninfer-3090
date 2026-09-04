@@ -15,7 +15,7 @@
 namespace ninfer::serve {
 namespace {
 
-using Json = nlohmann::json;
+using Json = RequestJson;
 
 void require_object(const Json& value, std::string_view name = "request body") {
     if (!value.is_object()) { bad_request(std::string(name) + " must be a JSON object"); }
@@ -105,21 +105,6 @@ std::string item_id(const Json& item, const char* prefix) {
     return item.at("id").get<std::string>();
 }
 
-bool prompt_cache_breakpoint(const Json& value) {
-    if (!value.contains("prompt_cache_breakpoint") ||
-        value.at("prompt_cache_breakpoint").is_null()) {
-        return false;
-    }
-    const Json& breakpoint = value.at("prompt_cache_breakpoint");
-    if (!breakpoint.is_object() || breakpoint.size() != 1 || !breakpoint.contains("mode") ||
-        !breakpoint.at("mode").is_string() ||
-        breakpoint.at("mode").get<std::string>() != "explicit") {
-        bad_request("prompt_cache_breakpoint must be {mode:'explicit'}", "input",
-                    "invalid_cache_breakpoint");
-    }
-    return true;
-}
-
 ninfer::product::media_acquire::Source parse_image_source(const Json& part) {
     if (part.contains("file_id") && !part.at("file_id").is_null()) {
         bad_request("input_image.file_id requires a Files API, which NInfer does not provide",
@@ -169,13 +154,9 @@ ninfer::product::media_acquire::Source parse_video_source(const Json& part) {
 }
 
 void apply_shared_breakpoint(ContentPart& part, const Json& wire, std::size_t& breakpoint_count) {
-    if (!prompt_cache_breakpoint(wire)) { return; }
+    if (!parse_openai_prompt_cache_breakpoint(wire, "input")) { return; }
     ++breakpoint_count;
-    if (breakpoint_count > 4) {
-        bad_request("at most four prompt_cache_breakpoint values are supported per request",
-                    "input", "too_many_cache_breakpoints");
-    }
-    part.cache_boundary_after = ninfer::PromptCacheMarkerKind::SharedStablePrefix;
+    part.cache_boundary_after = CacheBoundary{};
 }
 
 struct ParsedMessage {
@@ -1083,7 +1064,7 @@ ParsedPromptFields parse_prompt_fields(const Json& body, const RequestLimits& li
     return out;
 }
 
-void validate_metadata(const Json& body, Json& metadata) {
+void validate_metadata(const Json& body, nlohmann::json& metadata) {
     if (!body.contains("metadata") || body.at("metadata").is_null()) { return; }
     if (!body.at("metadata").is_object()) { bad_request("metadata must be an object", "metadata"); }
     if (body.at("metadata").size() > 16) {
@@ -1101,10 +1082,20 @@ void validate_metadata(const Json& body, Json& metadata) {
     metadata = body.at("metadata");
 }
 
-void parse_prompt_cache_hints(const Json& body) {
-    require_string_hint(body, "prompt_cache_key");
+// Returns the validated prompt_cache_key, if any. It identifies a client-managed conversation
+// lineage for cache retention purposes; it is independent of `store` (response-object
+// persistence) and of prompt_cache_options.mode (explicit shared-prefix breakpoints).
+std::optional<std::string> parse_prompt_cache_hints(const Json& body) {
+    require_string_hint(body, "prompt_cache_key", ninfer::kMaximumContextCacheSessionKeyBytes);
     require_string_hint(body, "safety_identifier", 64);
     require_string_hint(body, "user");
+    std::optional<std::string> prompt_cache_key;
+    if (body.contains("prompt_cache_key") && !body.at("prompt_cache_key").is_null()) {
+        prompt_cache_key = body.at("prompt_cache_key").get<std::string>();
+        if (prompt_cache_key->empty()) {
+            bad_request("prompt_cache_key must not be empty", "prompt_cache_key");
+        }
+    }
 
     if (body.contains("prompt_cache_retention") && !body.at("prompt_cache_retention").is_null()) {
         if (!body.at("prompt_cache_retention").is_string()) {
@@ -1116,29 +1107,13 @@ void parse_prompt_cache_hints(const Json& body) {
                         "prompt_cache_retention");
         }
     }
-    if (!body.contains("prompt_cache_options") || body.at("prompt_cache_options").is_null()) {
-        return;
-    }
-    const Json& options = body.at("prompt_cache_options");
-    if (!options.is_object()) {
-        bad_request("prompt_cache_options must be an object", "prompt_cache_options");
-    }
-    static const std::unordered_set<std::string> allowed = {"mode", "ttl"};
-    reject_nonnull_unknown_members(options, allowed, "prompt_cache_options");
-    if (options.contains("mode") && !options.at("mode").is_null()) {
-        if (!options.at("mode").is_string()) {
-            bad_request("prompt_cache_options.mode must be a string", "prompt_cache_options");
-        }
-        const std::string mode = options.at("mode").get<std::string>();
-        if (mode != "implicit" && mode != "explicit") {
-            bad_request("prompt_cache_options.mode must be 'implicit' or 'explicit'",
-                        "prompt_cache_options");
-        }
-    }
-    if (options.contains("ttl") && !options.at("ttl").is_null() &&
-        (!options.at("ttl").is_string() || options.at("ttl").get<std::string>() != "30m")) {
-        bad_request("prompt_cache_options.ttl must be '30m'", "prompt_cache_options");
-    }
+    // prompt_cache_options.mode/ttl validation lives solely in
+    // parse_openai_prompt_cache_policy() (see openai_common.cpp), which every caller of this
+    // function also invokes. That parser is intentionally forward-compatible: it ignores
+    // unrecognized members instead of rejecting them, so a client sending a newer hint this
+    // fork doesn't understand yet still gets served. Re-validating here would just re-enforce
+    // the stricter, non-forward-compatible behavior this function no longer owns.
+    return prompt_cache_key;
 }
 
 void reject_unsupported_platform_fields(const Json& body) {
@@ -1229,17 +1204,28 @@ OpenAIResponsesCreateRequest parse_openai_responses_create_request(const Json& b
     require_object(body);
     validate_common_top_level(body, true);
     reject_unsupported_platform_fields(body);
-    parse_prompt_cache_hints(body);
+    std::optional<std::string> prompt_cache_key = parse_prompt_cache_hints(body);
+    const OpenAIPromptCachePolicy cache_policy   = parse_openai_prompt_cache_policy(body);
 
     ParsedPromptFields parsed = parse_prompt_fields(body, limits);
+    apply_openai_prompt_cache_policy(parsed.prompt.generation, cache_policy);
     OpenAIResponsesCreateRequest out;
-    out.prompt              = std::move(parsed.prompt);
-    out.tools               = std::move(parsed.wire_tools);
-    out.tool_choice         = std::move(parsed.wire_tool_choice);
-    out.tool_identities     = std::move(parsed.tool_identities);
-    out.parallel_tool_calls = parsed.parallel_tool_calls;
-    out.store               = optional_bool(body, "store", true);
-    out.stream              = optional_bool(body, "stream", false);
+    out.prompt                  = std::move(parsed.prompt);
+    out.prompt.prompt_cache_key = std::move(prompt_cache_key);
+    // Anthropic clients get a private long-anchor checkpoint at the prompt end whenever they send
+    // cache_control:ephemeral (anthropic_messages_request.cpp), so a growing tool-calling exchange
+    // -- many requests, no new user turn between them -- keeps a resumable point past the single
+    // automatic TurnClosure boundary (which sits before the *last user message*, not the latest
+    // request). The Responses API has no equivalent client-supplied marker, so grant the same
+    // opportunity whenever the client has signaled caching intent via prompt_cache_key.
+    out.prompt.generation.private_cache_boundary_at_prompt_end =
+        out.prompt.prompt_cache_key.has_value();
+    out.tools                   = std::move(parsed.wire_tools);
+    out.tool_choice             = std::move(parsed.wire_tool_choice);
+    out.tool_identities         = std::move(parsed.tool_identities);
+    out.parallel_tool_calls     = parsed.parallel_tool_calls;
+    out.store                   = optional_bool(body, "store", true);
+    out.stream                  = optional_bool(body, "stream", false);
     validate_metadata(body, out.metadata);
 
     // Codex attaches per-request tracing information here. It is an opaque client hint and has no

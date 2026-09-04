@@ -14,6 +14,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "ops/linear_swiglu/q4a8/q4a8_linear_swiglu.h"
+
 namespace ninfer::ops {
 namespace {
 
@@ -64,6 +66,7 @@ void validate_policy(LinearPolicy policy) {
     case LinearPolicy::A16Only:
     case LinearPolicy::AllowA8:
     case LinearPolicy::AllowA4:
+    case LinearPolicy::AllowA8Int:
         return;
     }
     throw std::invalid_argument("linear_add: invalid compute policy");
@@ -102,11 +105,20 @@ std::size_t linear_add_workspace_capacity_bytes(QType qtype, std::int32_t output
         return 0;
     }
     if (qtype == QType::Q5G64_F16S) {
-        if (policy != LinearPolicy::A16Only) {
-            throw std::invalid_argument("linear_add workspace: Q5 admits only A16");
+        if (policy != LinearPolicy::A16Only && policy != LinearPolicy::AllowA8Int) {
+            throw std::invalid_argument("linear_add workspace: Q5 admits A16 or integer A8");
         }
-        return detail::q5_linear_add_capacity_workspace_bytes(output_rows, input_rows, input_rows,
-                                                              min_tokens, max_tokens);
+        const std::size_t a16 = detail::q5_linear_add_capacity_workspace_bytes(
+            output_rows, input_rows, input_rows, min_tokens, max_tokens);
+        if (policy != LinearPolicy::AllowA8Int || output_rows != 5120 || input_rows != 17408) {
+            return a16;
+        }
+        if (min_tokens == max_tokens) {
+            return detail::q5a8_tokens_supported(min_tokens)
+                       ? detail::q5a8_add_workspace_capacity_bytes(min_tokens, max_tokens)
+                       : a16;
+        }
+        return std::max(a16, detail::q5a8_add_workspace_capacity_bytes(min_tokens, max_tokens));
     }
     if (qtype == QType::NVFP4) {
         const bool supported = (output_rows == detail::Nvfp4Residual6144Geometry::kOutputRows &&
@@ -168,8 +180,12 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPo
     }
 
     if (w.qtype == QType::Q5G64_F16S) {
-        if (policy != LinearPolicy::A16Only) {
-            throw std::invalid_argument("Q5 linear_add admits only A16");
+        if (policy == LinearPolicy::AllowA8Int && detail::q5a8_add_supported(w, x.ne[1])) {
+            detail::q5a8_add_launch(x, w, residual_out, ws, stream);
+            return;
+        }
+        if (policy != LinearPolicy::A16Only && policy != LinearPolicy::AllowA8Int) {
+            throw std::invalid_argument("Q5 linear_add admits A16 or integer A8");
         }
         require_q5(w);
         const bool supported_shape = (w.n == 5120 && w.k == 17408) || (w.n == 5120 && w.k == 6144);
