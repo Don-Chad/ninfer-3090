@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
@@ -218,6 +220,215 @@ def _session_alternating_64k_host_swap(context: CaseContext, corpus: Corpus) -> 
     context.require_success(b2)
 
 
+def _session_rotation_55k_host(context: CaseContext, corpus: Corpus) -> None:
+    source_ids: list[str] = []
+    for index in range(6):
+        source = _responses_shape(
+            context,
+            corpus,
+            f"rotation-55k-{index}",
+            f"source-{index}",
+            store=True,
+        )
+        context.require_success(source)
+        source_ids.append(_response_id(source))
+
+    def resume(role: str, source_index: int) -> None:
+        request = context.start(
+            role,
+            responses_request(
+                context.model,
+                "Return the retained answer and its session marker in one short line.",
+                32,
+                store=True,
+                previous_response_id=source_ids[source_index],
+            ),
+        )
+        context.require_success(request)
+
+    resume("warm-context-0", 0)
+    for round_index in range(1, 4):
+        for source_index in range(6):
+            resume(f"round-{round_index}-context-{source_index}", source_index)
+
+
+class _BackgroundResponseLoops:
+    """Keep two store-free streamed generations active across a long foreground history."""
+
+    def __init__(self, context: CaseContext, initial: list[RequestHandle]) -> None:
+        self._context = context
+        self._current = list(initial)
+        self._generations = [0 for _ in initial]
+        self._errors: list[str] = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._threads = [
+            threading.Thread(
+                target=self._run,
+                args=(index,),
+                name=f"ttft-background-loop-{index}",
+            )
+            for index in range(len(initial))
+        ]
+        for thread in self._threads:
+            thread.start()
+
+    @staticmethod
+    def _request(context: CaseContext, index: int) -> Any:
+        return responses_request(
+            context.model,
+            (
+                f"Background decode worker {index}: emit a long numbered sequence, one short "
+                "item per line, until the output limit."
+            ),
+            900,
+            store=False,
+        )
+
+    @classmethod
+    def start(cls, context: CaseContext) -> _BackgroundResponseLoops:
+        handles = context.barrier(
+            (
+                (f"background-{index}-generation-0", cls._request(context, index))
+                for index in range(2)
+            )
+        )
+        for handle in handles:
+            handle.wait_first_output(context.timeout)
+        return cls(context, handles)
+
+    def _record_error(self, index: int, error: BaseException) -> None:
+        with self._lock:
+            self._errors.append(f"background loop {index}: {type(error).__name__}: {error}")
+            self._stop.set()
+
+    def _run(self, index: int) -> None:
+        try:
+            while True:
+                with self._lock:
+                    handle = self._current[index]
+                handle.wait_done(self._context.timeout)
+                if self._stop.is_set():
+                    return
+                if handle.outcome() != "success":
+                    raise CaseExecutionError(
+                        f"{handle.role} ended before its replacement: {handle.outcome()}"
+                    )
+                with self._lock:
+                    if self._stop.is_set():
+                        return
+                    self._generations[index] += 1
+                    generation = self._generations[index]
+                    handle = self._context.start(
+                        f"background-{index}-generation-{generation}",
+                        self._request(self._context, index),
+                    )
+                    self._current[index] = handle
+                handle.wait_first_output(self._context.timeout)
+        except BaseException as error:
+            self._record_error(index, error)
+
+    def require_active(self) -> None:
+        deadline = time.monotonic() + self._context.timeout
+        while True:
+            with self._lock:
+                errors = list(self._errors)
+                current = list(self._current)
+            if errors:
+                raise CaseExecutionError(errors[0])
+            if all(handle.first_output_ns is not None and not handle.is_done for handle in current):
+                return
+            if self._stop.is_set() or time.monotonic() >= deadline:
+                detail = ", ".join(
+                    f"{handle.role}:{handle.outcome()}" for handle in current
+                )
+                raise CaseExecutionError(
+                    f"background streams were not simultaneously active: {detail}"
+                )
+            time.sleep(0.01)
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stop.set()
+            current = list(self._current)
+        for handle in current:
+            if not handle.is_done:
+                handle.cancel()
+        for thread in self._threads:
+            thread.join(timeout=min(self._context.timeout, 5.0))
+        live_threads = [thread.name for thread in self._threads if thread.is_alive()]
+        with self._lock:
+            errors = list(self._errors)
+            generations = list(self._generations)
+        self._context.notes["background_stream_generations"] = generations
+        if live_threads:
+            raise CaseExecutionError(
+                f"background stream loops did not terminate: {', '.join(live_threads)}"
+            )
+        if errors:
+            raise CaseExecutionError(errors[0])
+
+
+def _second_rotation_messages(corpus: Corpus, index: int) -> list[dict[str, Any]]:
+    facts = corpus.shape(f"rotation-55k-{index}")
+    messages = corpus.shape_messages(f"rotation-55k-{index}")
+    if not messages or messages[0].get("role") != "system":
+        raise CaseExecutionError("55K rotation fixture has no leading system marker")
+    content = messages[0].get("content")
+    if not isinstance(content, str):
+        raise CaseExecutionError("55K rotation system marker is not text")
+    original, separator, suffix = content.partition(" ")
+    replacement = facts.get("second_cohort_label")
+    if not isinstance(replacement, str):
+        raise CaseExecutionError("55K rotation fixture has no second-cohort marker")
+    if not separator or len(original) != len(replacement):
+        raise CaseExecutionError("second 55K cohort marker does not preserve fixture shape")
+    messages[0]["content"] = replacement + separator + suffix
+    return messages
+
+
+def _session_rotation_55k_two_cohort_stream(context: CaseContext, corpus: Corpus) -> None:
+    # Reproduce the process history from #144: first establish the complete sequential rotation
+    # estate, then keep two store-free streams live while a distinct second cohort is created and
+    # resumed. Same-length leading marker replacements preserve the frozen 55K request shape while
+    # making every second-cohort root diverge at the first system-content token.
+    _session_rotation_55k_host(context, corpus)
+    background = _BackgroundResponseLoops.start(context)
+    try:
+        source_ids: list[str] = []
+        for index in range(6):
+            background.require_active()
+            facts = corpus.shape(f"rotation-55k-{index}")
+            source = context.start(
+                f"cohort-b-source-{index}",
+                responses_request(
+                    context.model,
+                    _second_rotation_messages(corpus, index),
+                    facts["max_output_tokens"],
+                    store=True,
+                ),
+            )
+            context.require_success(source)
+            source_ids.append(_response_id(source))
+
+        for round_index in range(1, 4):
+            for source_index in range(6):
+                background.require_active()
+                request = context.start(
+                    f"cohort-b-round-{round_index}-context-{source_index}",
+                    responses_request(
+                        context.model,
+                        "Return the retained answer and its session marker in one short line.",
+                        32,
+                        store=True,
+                        previous_response_id=source_ids[source_index],
+                    ),
+                )
+                context.require_success(request)
+    finally:
+        background.stop()
+
+
 def _unmarked_common(context: CaseContext, corpus: Corpus) -> None:
     first = _chat_shape(context, corpus, "unmarked-common-a", "first")
     context.require_success(first)
@@ -299,6 +510,91 @@ def _shared_sequential(context: CaseContext, corpus: Corpus) -> None:
     context.require_success(second)
 
 
+def _openai_explicit_shared(context: CaseContext, corpus: Corpus) -> None:
+    system = [
+        {
+            "type": "text",
+            "text": corpus.shared_system("system-a"),
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        }
+    ]
+    first = context.start(
+        "first",
+        chat_request(
+            context.model,
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": "Suffix one: answer briefly."},
+            ],
+            32,
+        ),
+    )
+    context.require_success(first)
+    second = context.start(
+        "second",
+        chat_request(
+            context.model,
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": "Suffix two: answer briefly."},
+            ],
+            32,
+        ),
+    )
+    context.require_success(second)
+
+
+def _openai_implicit_shared(context: CaseContext, corpus: Corpus) -> None:
+    messages = corpus.shape_messages("unmarked-common-a")
+    facts = corpus.shape("unmarked-common-a")
+    first = context.start(
+        "first", chat_request(context.model, messages, facts["max_output_tokens"])
+    )
+    context.require_success(first)
+    filler = context.start(
+        "private-filler",
+        chat_request(
+            context.model,
+            [{"role": "user", "content": "Independent private filler."}],
+            32,
+        ),
+    )
+    context.require_success(filler)
+    reuse = context.start(
+        "reuse", chat_request(context.model, messages, facts["max_output_tokens"])
+    )
+    context.require_success(reuse)
+
+
+def _observed_shared_promotion(context: CaseContext, corpus: Corpus) -> None:
+    messages = corpus.shape_messages("unmarked-common-a")
+    facts = corpus.shape("unmarked-common-a")
+    first = context.start(
+        "first-observation",
+        anthropic_request(context.model, messages, facts["max_output_tokens"]),
+    )
+    context.require_success(first)
+    promotion = context.start(
+        "promotion",
+        anthropic_request(context.model, messages, facts["max_output_tokens"]),
+    )
+    context.require_success(promotion)
+    filler = context.start(
+        "private-filler",
+        anthropic_request(
+            context.model,
+            [{"role": "user", "content": "Independent private filler."}],
+            32,
+        ),
+    )
+    context.require_success(filler)
+    reuse = context.start(
+        "shared-reuse",
+        anthropic_request(context.model, messages, facts["max_output_tokens"]),
+    )
+    context.require_success(reuse)
+
+
 def _shared_fanout(context: CaseContext, corpus: Corpus) -> None:
     system = corpus.shared_system("system-a")
     seed = _anthropic_system(context, system, "Establish this stable prefix.", "seed")
@@ -328,12 +624,12 @@ def _shared_fanout(context: CaseContext, corpus: Corpus) -> None:
     _require_successes(context, branches)
 
 
-def _shared_replacement(context: CaseContext, corpus: Corpus) -> None:
+def _shared_slot_retention(context: CaseContext, corpus: Corpus) -> None:
     system_a = corpus.shared_system("system-a")
     system_b = corpus.shared_system("system-b")
     first_a = _anthropic_system(context, system_a, "Prefix A first use.", "a-first")
     context.require_success(first_a)
-    first_b = _anthropic_system(context, system_b, "Prefix B replaces A.", "b")
+    first_b = _anthropic_system(context, system_b, "Prefix B competes with A.", "b")
     context.require_success(first_b)
     filler = context.start(
         "private-filler",
@@ -344,8 +640,54 @@ def _shared_replacement(context: CaseContext, corpus: Corpus) -> None:
         ),
     )
     context.require_success(filler)
-    second_a = _anthropic_system(context, system_a, "Prefix A after replacement.", "a-final")
+    second_a = _anthropic_system(context, system_a, "Prefix A after competition.", "a-final")
     context.require_success(second_a)
+
+
+def _shared_value_replacement(context: CaseContext, corpus: Corpus) -> None:
+    system = corpus.shared_system("system-a")
+    first_a = _anthropic_system(context, system, "Establish prefix A.", "a")
+    context.require_success(first_a)
+    tools = corpus.client_tools()
+    first_b = context.start(
+        "b-first",
+        anthropic_request(
+            context.model,
+            [
+                {
+                    "role": "user",
+                    "content": "Do not call a tool. Summarize what these tools can inspect.",
+                }
+            ],
+            32,
+            tools=tools,
+        ),
+    )
+    context.require_success(first_b)
+    filler = context.start(
+        "private-filler",
+        anthropic_request(
+            context.model,
+            [{"role": "user", "content": "Independent private filler."}],
+            32,
+        ),
+    )
+    context.require_success(filler)
+    second_b = context.start(
+        "b-reuse",
+        anthropic_request(
+            context.model,
+            [
+                {
+                    "role": "user",
+                    "content": "Do not call a tool. Name one safe repository operation.",
+                }
+            ],
+            32,
+            tools=tools,
+        ),
+    )
+    context.require_success(second_b)
 
 
 def _shared_tools(context: CaseContext, corpus: Corpus, *, changed: bool) -> None:
@@ -943,6 +1285,28 @@ _DEFINITIONS = (
     _definition("session-hot-continuation", "openai_responses", "cache-hot", "session", ("long-8k-16",), "Named Responses session continuation.", _session_hot),
     _definition("session-alternating", "openai_responses", "cache-pressure-device", "session", ("long-8k-16",), "Alternating named sessions.", _session_alternating),
     _definition("session-alternating-64k-host-swap", "openai_responses", "cache-swap-64k-host", "resource", ("long-64k-32", "long-64k-independent-32"), "Two near-capacity sessions alternate through Host KV.", _session_alternating_64k_host_swap),
+    _definition("session-rotation-55k-host", "openai_responses", "cache-rotation-55k-host", "resource", tuple(f"rotation-55k-{index}" for index in range(6)), "Six early-divergent 55K Responses roots, one warm branch, then three sequential round-robin branch rounds under Device/Host KV pressure.", _session_rotation_55k_host),
+    _definition(
+        "session-rotation-55k-two-cohort-stream",
+        "openai_responses",
+        "cache-rotation-55k-host",
+        "resource",
+        tuple(f"rotation-55k-{index}" for index in range(6)),
+        "A complete first 55K rotation estate followed by two continuous store-free streams, "
+        "six distinct second-cohort roots, and three second-cohort resume rounds under saturated "
+        "Host State descriptors.",
+        _session_rotation_55k_two_cohort_stream,
+        symmetric_role_groups=tuple(
+            SymmetricRoleGroup(
+                f"cohort-b-round-{round_index}",
+                tuple(
+                    f"cohort-b-round-{round_index}-context-{source_index}"
+                    for source_index in range(6)
+                ),
+            )
+            for round_index in range(1, 4)
+        ),
+    ),
     _definition("unmarked-common-prefix-miss", "openai_chat", "cache-hot", "private", ("unmarked-common-a", "unmarked-common-b"), "Raw token commonality without a checkpoint.", _unmarked_common),
     _definition("resume-after-interference-device", "openai_responses", "cache-pressure-device", "resource", ("long-8k-16", "interferer-256"), "Pressure graph with Device-resident source.", _pressure_graph, symmetric_role_groups=(SymmetricRoleGroup("interferers", ("interferer-b", "interferer-c")),)),
     _definition("resume-after-interference-state-host", "openai_responses", "cache-pressure-state-host", "resource", ("long-8k-16", "interferer-256"), "Pressure graph with Host State restore.", _pressure_graph, symmetric_role_groups=(SymmetricRoleGroup("interferers", ("interferer-b", "interferer-c")),)),
@@ -951,9 +1315,13 @@ _DEFINITIONS = (
     _definition("resume-after-interference-evicted", "openai_responses", "cache-pressure-evict", "resource", ("long-8k-16", "interferer-256"), "Pressure graph with no legal retained replica.", _pressure_graph, symmetric_role_groups=(SymmetricRoleGroup("interferers", ("interferer-b", "interferer-c")),)),
     _definition("resume-after-interference-catalog", "openai_responses", "cache-pressure-catalog", "resource", ("long-8k-16", "interferer-256"), "Descriptor pressure with spare physical capacity.", _pressure_graph, symmetric_role_groups=(SymmetricRoleGroup("interferers", ("interferer-b", "interferer-c")),)),
     _definition("continuation-cache-off", "openai_responses", "cache-off", "control", ("long-8k-16",), "Full-history Responses control with Engine reuse disabled.", _cache_off),
-    _definition("shared-sequential", "anthropic_messages", "shared-prefix", "shared", ("system-a",), "Marked shared prefix sequential reuse.", _shared_sequential),
+    _definition("shared-sequential", "anthropic_messages", "shared-prefix", "shared", ("system-a",), "Marked Anthropic shared prefix sequential reuse.", _shared_sequential),
+    _definition("shared-openai-explicit", "openai_chat", "shared-prefix", "shared", ("system-a",), "OpenAI explicit system boundary shared by different suffixes.", _openai_explicit_shared),
+    _definition("shared-openai-implicit", "openai_chat", "shared-value", "shared", ("unmarked-common-a",), "OpenAI default implicit full-prompt owner survives private displacement.", _openai_implicit_shared),
+    _definition("shared-observed-promotion", "anthropic_messages", "shared-value", "shared", ("unmarked-common-a",), "Two independent unmarked observations promote a private base before private displacement.", _observed_shared_promotion),
     _definition("shared-fanout", "anthropic_messages", "shared-prefix", "shared", ("system-a",), "Concurrent branches from a non-aligned shared prefix.", _shared_fanout, symmetric_role_groups=(SymmetricRoleGroup("branches", ("branch-b", "branch-c")),)),
-    _definition("shared-replacement", "anthropic_messages", "shared-replacement", "shared", ("system-a", "system-b"), "S=1 replacement with private endpoint excluded.", _shared_replacement),
+    _definition("shared-slot-retention", "anthropic_messages", "shared-value", "shared", ("system-a", "system-b"), "Equal-value S=1 challenger must justify replacing the established owner.", _shared_slot_retention),
+    _definition("shared-value-replacement", "anthropic_messages", "shared-value", "shared", ("system-a", "client-tools-32"), "A higher-value tool frontier competes for one shared slot.", _shared_value_replacement),
     _definition("shared-tools-sequential", "anthropic_messages", "shared-prefix", "shared", ("client-tools-32",), "Stable 32-tool prefix reuse.", _shared_tools_sequential),
     _definition("shared-tools-changed", "anthropic_messages", "shared-prefix", "shared", ("client-tools-32",), "Early tool identity change invalidates the marked prefix.", _shared_tools_changed),
     _definition("short-during-prefill-128", "openai_chat", "scheduler-prefill-128", "scheduling", ("long-8k-32", "short-32"), "Arrival during prefill with 128-token chunks.", _short_during_prefill),

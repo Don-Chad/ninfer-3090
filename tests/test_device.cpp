@@ -35,8 +35,8 @@ int check_context(const ninfer::DeviceContext& ctx, const char* label) {
         std::cerr << label << " load stream is null\n";
         ++failures;
     }
-    if (ctx.sm() <= 0) {
-        std::cerr << label << " sm is not positive\n";
+    if (ctx.compute_capability() <= 0) {
+        std::cerr << label << " compute capability is not positive\n";
         ++failures;
     }
     if (ctx.total_vram() == 0) {

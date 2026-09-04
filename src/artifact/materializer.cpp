@@ -1,5 +1,7 @@
 #include "artifact/materializer.h"
 
+#include "core/startup.h"
+
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -133,8 +135,17 @@ DeviceArena& MaterializedArtifact::device_arena() {
 }
 
 MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan& plan,
-                                 DeviceContext& device, LoadProgress* progress,
+                                 DeviceContext& device, const StartupObserver* startup_observer,
                                  std::unique_ptr<EvictableWeightPool> backing_pool) {
+    const StartupObserver no_startup_observer;
+    const StartupObserver& startup =
+        startup_observer == nullptr ? no_startup_observer : *startup_observer;
+    std::uint64_t total = 0;
+    for (const DeviceMaterialization& placement : plan.device_objects) {
+        total = checked_add(total, placement.bytes, "artifact tensor byte count overflows u64");
+    }
+    StartupPhaseScope materialize_phase(startup, StartupPhase::WeightsMaterialize,
+                                        StartupProgressUnit::Bytes, total);
     MaterializedArtifact out;
     out.objects_.resize(plan.object_count);
     const std::uint64_t capacity = plan.device_capacity_bytes;
@@ -188,7 +199,6 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
     ranges.reserve(plan.device_objects.size());
     std::uint64_t copied         = 0;
     std::uint64_t last_published = 0;
-    std::uint64_t total          = 0;
     // Objects sit at the offsets the plan assigned; the plan owns the whole arena.
     auto* const arena_base     = static_cast<std::byte*>(out.device_arena_->base());
     std::uint64_t previous_end = 0;
@@ -208,7 +218,6 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
                                         "artifact tensor source range overflows u64"),
             .destination  = dst,
         });
-        total = checked_add(total, placement.bytes, "artifact tensor byte count overflows u64");
     }
     if (ranges.empty()) { throw ArtifactError("materialization plan has no device tensors"); }
     (void)out.device_arena_->alloc_bytes(static_cast<std::size_t>(capacity), 1);
@@ -246,15 +255,19 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
         std::min<std::uint64_t>(kMaximumSlotCount, 1 + (aligned_read_bytes - 1) / slot_bytes));
     std::vector<std::unique_ptr<Slot>> slots;
     slots.reserve(slot_count);
+    const std::uint64_t staging_bytes = static_cast<std::uint64_t>(slot_bytes) * slot_count;
+    StartupPhaseScope staging_phase(startup, StartupPhase::WeightsStagingPin,
+                                    StartupProgressUnit::Bytes, staging_bytes);
     for (std::size_t i = 0; i < slot_count; ++i) {
         slots.push_back(std::make_unique<Slot>(slot_bytes));
     }
-    out.stats_.peak_staging_bytes = static_cast<std::uint64_t>(slot_bytes) * slot_count;
+    staging_phase.complete(staging_bytes, staging_bytes);
+    out.stats_.peak_staging_bytes = staging_bytes;
+    materialize_phase.progress(0, total);
 
     std::size_t next_slot  = 0;
     std::size_t next_range = 0;
     const auto start       = std::chrono::steady_clock::now();
-    if (progress != nullptr && progress->callback) { progress->callback("weights", 0, total); }
     for (const ReadSpan& span : read_spans) {
         for (std::uint64_t source = span.begin; source < span.end; source += slot_bytes) {
             Slot& slot = *slots[next_slot++ % slot_count];
@@ -303,10 +316,9 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
             CUDA_CHECK(cudaEventRecord(slot.event, device.transfer_stream));
             slot.pending = true;
 
-            if (progress != nullptr && progress->callback && copied != last_published &&
-                copied < total) {
+            if (copied != last_published && copied < total) {
                 last_published = copied;
-                progress->callback("weights", copied, total);
+                materialize_phase.progress(copied, total);
             }
         }
     }
@@ -318,7 +330,8 @@ MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan
     out.stats_.h2d_bytes = copied;
     out.stats_.upload_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    if (progress != nullptr && progress->callback) { progress->callback("weights", copied, total); }
+    slots.clear();
+    materialize_phase.complete(copied, total);
     return out;
 }
 

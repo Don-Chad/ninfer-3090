@@ -118,6 +118,12 @@ std::uint64_t projected_service_work(const runtime::RequestPlanSummary& summary,
     }
     const std::uint64_t suffix = summary.prompt_tokens - segment_begin;
     prefill_units += suffix == 0 ? 1ULL : 1ULL + (suffix - 1ULL) / prefill_chunk;
+    // A shared promotion at the selected reuse base is offered before the ordinary zero/suffix
+    // prefill step. It executes no model work, but it is still one scheduler service unit.
+    prefill_units += static_cast<std::uint64_t>(
+        std::count_if(captures.begin(), captures.end(), [reuse_base](const CaptureGroup& capture) {
+            return capture.frontier == reuse_base;
+        }));
     prefill_units += prefill_splits;
     const std::uint64_t decode_units =
         summary.effective_output_tokens == 0 ? 0ULL : summary.effective_output_tokens - 1ULL;
@@ -320,44 +326,56 @@ RequestBasePlan ProgramImplCore::plan_request(const PreparedPromptData& prompt,
     if (options.allow_prefix_reuse && prompt.identity.reusable && context_cache.enabled) {
         const auto add_capture = [&](std::uint32_t frontier, std::uint32_t input_order,
                                      std::optional<RewriteCheckpointKind> rewrite, bool shared,
-                                     bool long_anchor) {
+                                     bool long_anchor, SharedCandidateEvidence evidence) {
             if (frontier == 0 || frontier > base->summary.prompt_tokens) {
                 throw std::invalid_argument("capture opportunity frontier is invalid");
             }
+            auto& groups = shared ? base->shared_candidates : base->capture_groups;
             auto existing =
-                std::find_if(base->capture_groups.begin(), base->capture_groups.end(),
+                std::find_if(groups.begin(), groups.end(),
                              [&](const CaptureGroup& group) { return group.frontier == frontier; });
-            if (existing == base->capture_groups.end()) {
+            if (existing == groups.end()) {
                 CaptureGroup group;
                 group.frontier    = frontier;
                 group.input_order = input_order;
-                base->capture_groups.push_back(std::move(group));
-                existing = std::prev(base->capture_groups.end());
+                groups.push_back(std::move(group));
+                existing = std::prev(groups.end());
             }
             existing->input_order = std::min(existing->input_order, input_order);
             if (rewrite) { existing->rewrite = rewrite; }
             existing->shared      = existing->shared || shared;
             existing->long_anchor = existing->long_anchor || long_anchor;
+            if (shared) { existing->shared_evidence |= evidence; }
         };
         if (base->rewrite_checkpoint) {
             add_capture(base->rewrite_checkpoint->frontier, 0, base->rewrite_checkpoint->kind,
-                        false, false);
+                        false, false, SharedCandidateEvidence::None);
         }
         for (const qwen3_6::PreparedCacheOpportunity& opportunity :
              base->context_cache.opportunities) {
             add_capture(opportunity.frontier, opportunity.input_order, std::nullopt,
                         opportunity.kind == PromptCacheMarkerKind::SharedStablePrefix,
-                        opportunity.kind == PromptCacheMarkerKind::PrivateLongAnchor);
+                        opportunity.kind == PromptCacheMarkerKind::PrivateLongAnchor,
+                        opportunity.evidence);
         }
         std::sort(base->capture_groups.begin(), base->capture_groups.end(),
                   [](const CaptureGroup& left, const CaptureGroup& right) {
                       return std::tie(left.frontier, left.input_order) <
                              std::tie(right.frontier, right.input_order);
                   });
+        std::sort(base->shared_candidates.begin(), base->shared_candidates.end(),
+                  [](const CaptureGroup& left, const CaptureGroup& right) {
+                      return std::tie(left.frontier, left.input_order) <
+                             std::tie(right.frontier, right.input_order);
+                  });
         std::shared_ptr<const PreparedCaptureBacking> capture_backing;
-        if (!base->capture_groups.empty()) {
-            auto backing                         = std::make_shared<PreparedCaptureBacking>();
-            const std::uint32_t backing_frontier = base->capture_groups.back().frontier;
+        if (!base->capture_groups.empty() || !base->shared_candidates.empty()) {
+            auto backing = std::make_shared<PreparedCaptureBacking>();
+            const std::uint32_t capture_frontier =
+                base->capture_groups.empty() ? 0U : base->capture_groups.back().frontier;
+            const std::uint32_t shared_frontier =
+                base->shared_candidates.empty() ? 0U : base->shared_candidates.back().frontier;
+            const std::uint32_t backing_frontier = std::max(capture_frontier, shared_frontier);
             backing->ledger.assign(prompt.token_ids.begin(),
                                    prompt.token_ids.begin() +
                                        static_cast<std::ptrdiff_t>(backing_frontier));
@@ -372,7 +390,20 @@ RequestBasePlan ProgramImplCore::plan_request(const PreparedPromptData& prompt,
                 prompt, group.frontier, prefill_chunk, base->capture_groups,
                 prompt.identity.rewrite_execution_frontiers);
             identity->shortlist_key = qwen3_6::PrefixShortlistKey{
-                .digest       = base->prefix_digests.at(group.frontier),
+                .digests      = base->prefix_digests.at(group.frontier),
+                .frontier     = group.frontier,
+                .identity_tag = base->prefix_identity_tag,
+            };
+            group.identity = std::move(identity);
+        }
+        for (CaptureGroup& group : base->shared_candidates) {
+            auto identity          = std::make_shared<PreparedCaptureIdentity>();
+            identity->backing      = capture_backing;
+            identity->rebuild_work = rebuild_work_at_frontier(
+                prompt, group.frontier, prefill_chunk, base->capture_groups,
+                prompt.identity.rewrite_execution_frontiers);
+            identity->shortlist_key = qwen3_6::PrefixShortlistKey{
+                .digests      = base->prefix_digests.at(group.frontier),
                 .frontier     = group.frontier,
                 .identity_tag = base->prefix_identity_tag,
             };
@@ -448,13 +479,13 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
         }
         plan->reuse              = ReusePath::SharedStablePrefix;
         plan->reuse_base         = selected.frontier;
-        plan->source_disposition = runtime::ClaimDisposition::Retained;
+        plan->source_mode = runtime::PrivateSourceMode::Retain;
     } else if (source != nullptr) {
         const runtime::CheckpointRef selected = *checkpoint;
         plan->selected_checkpoint             = selected;
-        plan->source_disposition              = must_retain_private_source
-                                                    ? runtime::ClaimDisposition::Retained
-                                                    : runtime::ClaimDisposition::ConsumedToActive;
+        plan->source_mode                     = must_retain_private_source
+                                                     ? runtime::PrivateSourceMode::Retain
+                                                     : runtime::PrivateSourceMode::ConsumeToActive;
         if (!base.allow_prefix_reuse || !prompt.identity.reusable) { return std::nullopt; }
         if (selected.kind == runtime::CheckpointKind::SessionEndpoint) {
             if (selected.ordinal != 0) {
@@ -485,7 +516,7 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
             }
             plan->reuse              = ReusePath::PrivateLongAnchor;
             plan->reuse_base         = selected.frontier;
-            plan->source_disposition = runtime::ClaimDisposition::Retained;
+            plan->source_mode = runtime::PrivateSourceMode::Retain;
         } else {
             if (selected.ordinal != 0) {
                 throw std::logic_error("private rewrite checkpoint ordinal is invalid");
@@ -537,7 +568,7 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
     const std::optional<RewriteCheckpointSpec>& desired = base.rewrite_checkpoint;
     const bool can_retain_rewrite =
         desired && source != nullptr &&
-        plan->source_disposition == runtime::ClaimDisposition::ConsumedToActive &&
+        plan->source_mode == runtime::PrivateSourceMode::ConsumeToActive &&
         can_retain_rewrite_checkpoint(prompt, *desired, *source, plan->reuse, plan->reuse_base);
     if (!base.summary.publish_continuation || !desired) {
         plan->rewrite_disposition = RewriteCheckpointDisposition::DropOptional;
@@ -555,7 +586,7 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
     // checkpoint aliases the endpoint image, that image must remain immutable and the whole source
     // is preserved through the normal Fork path.
     if (source != nullptr && plan->reuse == ReusePath::PrivateEndpoint &&
-        plan->source_disposition == runtime::ClaimDisposition::ConsumedToActive) {
+        plan->source_mode == runtime::PrivateSourceMode::ConsumeToActive) {
         const StateImageHandle endpoint =
             selected_state(*source, plan->reuse, plan->selected_checkpoint);
         std::vector<StateImageHandle> optional_states;
@@ -569,7 +600,7 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
         }
         if (std::find(optional_states.begin(), optional_states.end(), endpoint) !=
             optional_states.end()) {
-            plan->source_disposition = runtime::ClaimDisposition::Retained;
+            plan->source_mode = runtime::PrivateSourceMode::Retain;
         } else {
             std::vector<StateImageHandle> unique;
             unique.reserve(optional_states.size());
@@ -592,13 +623,13 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
         }
     }
     if (source != nullptr &&
-        plan->source_disposition == runtime::ClaimDisposition::ConsumedToActive) {
+        plan->source_mode == runtime::PrivateSourceMode::ConsumeToActive) {
         plan->state_fork_required =
             selected_state_requires_fork(*source, plan->reuse, plan->rewrite_disposition,
                                          plan->selected_checkpoint, plan->reuse_base);
     }
     if (source != nullptr && is_rewrite_checkpoint_restore(plan->reuse) &&
-        plan->source_disposition == runtime::ClaimDisposition::ConsumedToActive) {
+        plan->source_mode == runtime::PrivateSourceMode::ConsumeToActive) {
         std::vector<StateImageHandle> optional_states;
         optional_states.reserve(1U + source->long_anchors.size());
         if (plan->rewrite_disposition == RewriteCheckpointDisposition::RetainExisting &&
@@ -641,6 +672,12 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
         }
         if (!group.rewrite && !group.shared && !group.long_anchor) { continue; }
         plan->capture_groups.push_back(std::move(group));
+    }
+    plan->shared_candidates.reserve(base.shared_candidates.size());
+    for (CaptureGroup group : base.shared_candidates) {
+        if (group.frontier >= plan->reuse_base) {
+            plan->shared_candidates.push_back(std::move(group));
+        }
     }
     plan->summary.reusable_prompt_tokens = plan->reuse_base;
     plan->summary.prefix_reuse_path      = plan->reuse;
@@ -786,9 +823,9 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
         const bool splits_private_both =
             source != nullptr && selected_state_residency == StateReplicaResidency::Both;
         const bool forks_device_state =
-            (plan->source_disposition == runtime::ClaimDisposition::Retained &&
+            (plan->source_mode == runtime::PrivateSourceMode::Retain &&
              !splits_private_both) ||
-            (plan->source_disposition == runtime::ClaimDisposition::ConsumedToActive &&
+            (plan->source_mode == runtime::PrivateSourceMode::ConsumeToActive &&
              plan->state_fork_required);
         if (speculative_backend == SpeculativeBackend::DFlash && forks_device_state &&
             selected_state_residency != StateReplicaResidency::HostOnly) {
@@ -804,7 +841,7 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
         if (source_kv == nullptr) { throw std::logic_error("checkpoint has no KV address space"); }
         const std::uint32_t backend_frontier =
             backend_frontier_at(speculative_backend, plan->reuse_base);
-        if (plan->source_disposition == runtime::ClaimDisposition::Retained) {
+        if (plan->source_mode == runtime::PrivateSourceMode::Retain) {
             plan->text_prefix_fork_required    = true;
             plan->backend_prefix_fork_required = source_kv->backend && backend_frontier != 0;
         } else if (source != nullptr) {
@@ -874,7 +911,7 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
     }
     active.state_slots += plan->active_optional_resources.device.state_slots;
     if ((source != nullptr || shared_source != nullptr) &&
-        plan->source_disposition == runtime::ClaimDisposition::Retained) {
+        plan->source_mode == runtime::PrivateSourceMode::Retain) {
         const SequenceKVBundle* source_kv =
             source != nullptr ? (source->kv ? &*source->kv : nullptr)
                               : (shared_source->kv ? &*shared_source->kv : nullptr);
@@ -1186,6 +1223,82 @@ std::optional<AdmissionCandidate> ProgramImplCore::inspect_lane(
         .final_added              = final_added,
     };
     return AdmissionCandidate(std::move(plan));
+}
+
+void ProgramImplCore::select_shared_captures(AdmissionCandidate& candidate,
+                                             const PreparedPromptData& prompt,
+                                             std::span<const std::uint32_t> frontiers) {
+    if (candidate.impl_ == nullptr || candidate.impl_->planning_revision != resource_revision()) {
+        throw std::logic_error("shared capture selection observes a stale admission candidate");
+    }
+    if (!std::is_sorted(frontiers.begin(), frontiers.end()) ||
+        std::adjacent_find(frontiers.begin(), frontiers.end()) != frontiers.end()) {
+        throw std::invalid_argument("selected shared capture frontiers must be ordered unique");
+    }
+    AdmissionCandidateImpl& plan = *candidate.impl_;
+    for (const std::uint32_t frontier : frontiers) {
+        const auto selected =
+            std::find_if(plan.shared_candidates.begin(), plan.shared_candidates.end(),
+                         [&](const CaptureGroup& group) { return group.frontier == frontier; });
+        if (selected == plan.shared_candidates.end() || frontier < plan.reuse_base ||
+            !selected->shared || !selected->identity) {
+            throw std::invalid_argument("selected shared capture frontier is unavailable");
+        }
+        auto existing =
+            std::find_if(plan.capture_groups.begin(), plan.capture_groups.end(),
+                         [&](const CaptureGroup& group) { return group.frontier == frontier; });
+        if (existing == plan.capture_groups.end()) {
+            plan.capture_groups.push_back(*selected);
+        } else {
+            existing->shared = true;
+            existing->shared_evidence |= selected->shared_evidence;
+            existing->input_order = std::min(existing->input_order, selected->input_order);
+        }
+    }
+    plan.shared_candidates.clear();
+    std::sort(plan.capture_groups.begin(), plan.capture_groups.end(),
+              [](const CaptureGroup& left, const CaptureGroup& right) {
+                  return std::tie(left.frontier, left.input_order) <
+                         std::tie(right.frontier, right.input_order);
+              });
+
+    const std::size_t prefill_splits = plan.vision ? plan.vision->uses.size() : 0ULL;
+    plan.summary.service_work_quanta =
+        projected_service_work(plan.summary, plan.reuse_base, prefill_chunk, prefill_splits,
+                               plan.capture_groups, prompt.identity.rewrite_execution_frontiers);
+    std::uint64_t vision_items   = 0;
+    std::uint64_t vision_patches = 0;
+    if (plan.vision) {
+        std::vector<bool> counted(prompt.vision_items.size(), false);
+        for (const VisionUseSpan& use : plan.vision->uses) {
+            if (use.prepared_item_index >= counted.size()) {
+                throw std::logic_error("selected shared capture Vision use is invalid");
+            }
+            if (counted[use.prepared_item_index]) { continue; }
+            counted[use.prepared_item_index] = true;
+            ++vision_items;
+            const std::size_t patches = prompt.vision_items[use.prepared_item_index].patch_count;
+            if (patches > std::numeric_limits<std::uint64_t>::max() - vision_patches) {
+                throw std::overflow_error("selected shared capture Vision work exceeds uint64");
+            }
+            vision_patches += patches;
+        }
+    }
+    plan.remaining_prefill_work = scheduled_prefill_work(
+        plan.reuse_base, plan.summary.prompt_tokens, vision_items, vision_patches, prefill_chunk,
+        plan.capture_groups, prompt.identity.rewrite_execution_frontiers);
+}
+
+runtime::PrefillWork
+ProgramImplCore::shared_capture_split_prefill_work(const AdmissionCandidate& candidate,
+                                                   const PreparedPromptData& prompt,
+                                                   std::span<const std::uint32_t> frontiers) {
+    if (candidate.impl_ == nullptr || candidate.impl_->planning_revision != resource_revision()) {
+        throw std::logic_error("shared capture projection observes a stale admission candidate");
+    }
+    AdmissionCandidate projected(std::make_unique<AdmissionCandidateImpl>(*candidate.impl_));
+    select_shared_captures(projected, prompt, frontiers);
+    return projected.impl_->remaining_prefill_work;
 }
 
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS

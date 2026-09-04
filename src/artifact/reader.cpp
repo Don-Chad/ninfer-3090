@@ -423,7 +423,7 @@ struct Reader::Impl {
             const auto& raw_identity = directory.at("identity");
             static constexpr std::array identity_members = {"model_id", "weights_id"};
             require_members(raw_identity, identity_members, "artifact identity");
-            identity.model_id = require_string(raw_identity.at("model_id"), "model_id");
+            identity.model_id   = require_string(raw_identity.at("model_id"), "model_id");
             identity.weights_id = require_string(raw_identity.at("weights_id"), "weights_id");
         }
 

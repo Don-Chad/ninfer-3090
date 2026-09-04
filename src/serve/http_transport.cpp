@@ -27,15 +27,13 @@ void set_socket_option(socket_t socket, int level, int option, const T& value) n
 
 } // namespace
 
-nlohmann::json parse_json_body(const httplib::Request& request) {
+RequestJson parse_json_body(const httplib::Request& request) {
     try {
-        return nlohmann::json::parse(request.body);
+        return RequestJson::parse(request.body);
     } catch (const std::exception&) { bad_request("request body is not valid JSON"); }
 }
 
-bool client_disconnected(const httplib::Request& request) {
-    return request.is_connection_alive && !request.is_connection_alive();
-}
+bool client_disconnected(const httplib::Request& request) { return request.is_connection_closed(); }
 
 void prepare_sse_response(httplib::Response& response) {
     response.set_header("Cache-Control", "no-cache");
@@ -94,7 +92,7 @@ void configure_http_server_socket(socket_t socket) noexcept {
 void set_owned_json_content(httplib::Response& response, std::string body,
                             std::shared_ptr<RequestLifetime> lifetime) {
     response.set_content(std::move(body), "application/json");
-    response.hold_resource(std::move(lifetime));
+    response.user_data.set("ninfer.request_lifetime", std::move(lifetime));
 }
 
 } // namespace ninfer::serve

@@ -2,11 +2,11 @@
 
 // Anthropic Messages wire adapter. Request parsing lowers executable semantics into the common
 // GenerationRequest; response construction owns Anthropic aggregate, SSE, usage, and error shapes.
+// Visible Thinking text owns prompt semantics. Its wire signature is response metadata and never
+// enters common request or Engine state.
 
 #include "serve/request.h"
-#include "serve/anthropic_thinking_signature.h"
-
-#include <nlohmann/json.hpp>
+#include "serve/request_json.h"
 
 #include <optional>
 #include <string>
@@ -28,12 +28,9 @@ struct AnthropicCountTokensRequest {
     GenerationRequest generation;
 };
 
-AnthropicMessagesRequest parse_anthropic_messages_request(const nlohmann::json& body,
-                                                          const RequestLimits& limits,
-                                                          const AnthropicThinkingSigner& signer);
-AnthropicCountTokensRequest
-parse_anthropic_count_tokens_request(const nlohmann::json& body,
-                                     const AnthropicThinkingSigner& signer);
+AnthropicMessagesRequest parse_anthropic_messages_request(const RequestJson& body,
+                                                          const RequestLimits& limits);
+AnthropicCountTokensRequest parse_anthropic_count_tokens_request(const RequestJson& body);
 
 struct AnthropicResponseIdentity {
     std::string request_id;
@@ -50,14 +47,12 @@ std::string make_anthropic_error_body(const ApiError& error, const std::string& 
 std::string make_anthropic_sse_error(const ApiError& error, const std::string& request_id);
 
 std::string make_anthropic_messages_response(const AnthropicResponseIdentity& identity,
-                                             const GenerationOutcome& outcome,
-                                             const AnthropicThinkingSigner& signer);
+                                             const GenerationOutcome& outcome);
 std::string make_anthropic_count_tokens_response(int input_tokens);
 
 class AnthropicMessagesStream {
 public:
-    AnthropicMessagesStream(AnthropicResponseIdentity identity, int input_tokens,
-                            AnthropicThinkingSigner signer);
+    AnthropicMessagesStream(AnthropicResponseIdentity identity, int input_tokens);
 
     // The Engine start event is exact for normal streams. The no-argument form is reserved for an
     // error raised before admission, so an Anthropic error event still has a valid stream prefix.
@@ -77,18 +72,16 @@ private:
     std::vector<std::string> close_text();
 
     AnthropicResponseIdentity identity_;
-    AnthropicThinkingSigner signer_;
     std::string reasoning_;
     std::string content_;
-    int input_tokens_    = 0;
-    int next_index_      = 0;
-    int thinking_index_  = -1;
-    int text_index_      = -1;
-    bool started_        = false;
-    bool finished_       = false;
-    bool thinking_open_  = false;
-    bool signature_sent_ = false;
-    bool text_open_      = false;
+    int input_tokens_   = 0;
+    int next_index_     = 0;
+    int thinking_index_ = -1;
+    int text_index_     = -1;
+    bool started_       = false;
+    bool finished_      = false;
+    bool thinking_open_ = false;
+    bool text_open_     = false;
 };
 
 } // namespace ninfer::serve

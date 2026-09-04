@@ -429,6 +429,8 @@ void TextContext::mtp_forward_core(const Tensor& ids, const Tensor& hidden, cons
                                    ops::CausalAttentionExecutionEnvelope envelope,
                                    Tensor& mtp_hidden, const Tensor* input_embeddings) {
     if (batch_mtp_kv_ == nullptr) { throw std::runtime_error("MTP forward is not enabled"); }
+    nvtx::ScopedRange forward_range(nvtx::Name::MtpForward, nvtx::Category::Mtp,
+                                    static_cast<std::uint64_t>(ids.numel()));
     auto scratch_scope = work_.scope();
     Tensor x;
     Tensor ah;
@@ -558,6 +560,8 @@ void TextContext::proposal_argmax(const Tensor& hidden, Tensor& logits, Tensor& 
     require_tensor_shape(hidden, DType::BF16, {kCfg.hidden, T}, "proposal hidden");
     require_tensor_shape(proposal_tokens, DType::I32, {T}, "proposal tokens");
     require_tensor_window(logits, DType::BF16, kCfg.vocab, T, "proposal logits");
+    nvtx::ScopedRange proposal_range(nvtx::Name::MtpProposal, nvtx::Category::Mtp,
+                                     static_cast<std::uint64_t>(T));
     if (proposal_head_ != nullptr) {
         Tensor proposal_logits = work_.alloc(DType::BF16, {proposal_head_n_, T});
         ops::linear(hidden, *proposal_head_, proposal_logits, ctx_.stream);
@@ -881,7 +885,7 @@ void TextContext::gdn_mix(const GdnLayerW& w, Tensor& x, int gidx, Phase ph) {
     Tensor g           = control.g;
     Tensor beta        = control.beta;
     Variant::gdn_norm_control_projection(x, *w.input_norm, kCfg.rms_eps, *w.projection, h, g, beta,
-                                         work_, s);
+                                         work_, ctx_.execution_view());
 
     const auto projection = workspace_recipe::gdn_projection<TextConfig>(work_, T);
     Tensor z              = projection.output_gate.view({kCfg.gdn_v_dim, kCfg.gdn_v_heads, T});

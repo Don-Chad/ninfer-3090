@@ -181,8 +181,8 @@ govern a live decision in the current task.
 These boundaries govern ordinary implementation work. An explicit architecture task may revise
 them, but must update the corresponding active authorities and affected implementation together.
 
-- `.ninfer` is the only C++ product artifact. Do not add `.qus` fallback, extension detection,
-  compatibility shims, or a second product lane.
+- `.ninfer` is the only C++ product artifact. Do not add extension detection, compatibility shims,
+  or a second product lane.
 - `include/ninfer/engine.h` and `include/ninfer/types.h` are the opaque Engine interface used by
   in-tree applications and owning host values. NInfer does not currently install or export a C++
   SDK. `include/ninfer/ops/` contains repository-internal semantic Op contracts.
@@ -214,8 +214,8 @@ them, but must update the corresponding active authorities and affected implemen
 - `src/product/prompt_input` owns the shared product-side JSON/message-to-owning-input adapter.
 - `src/serve` owns protocol translation and transport. CLI, server, and benchmark call only the
   public Engine for inference.
-- `tools/convert/<target>`, `tools/reference/<target>`, and `tools/parity/<target>` remain
-  target-private conversion, correctness, and diagnostic implementations.
+- `tools/convert/<target>` owns target-private artifact inventories, source recipes, conversion,
+  and converter-side payload verification. NInfer maintains no Python model-inference route.
 
 ## Compatibility and document lifecycle
 

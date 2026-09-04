@@ -2,6 +2,8 @@
 
 #include "core/dtype.h"
 
+#include <ninfer/types.h>
+
 #include <cstdint>
 #include <stdexcept>
 
@@ -51,6 +53,29 @@ inline D256KVCacheProfile d256_kv_cache_profile(DType dtype, DType value_code_dt
 // Overload for call sites that describe a cache whose two planes share one coding.
 inline D256KVCacheProfile d256_kv_cache_profile(DType dtype) {
     return d256_kv_cache_profile(dtype, dtype);
+}
+
+// Overload for call sites that only carry the public KvCacheStorage selection (PagedKVLayerView
+// and friends). Nvfp4Group16 and Fp8KeyNvfp4Value are recognized upstream selections this fork has
+// not yet ported a kernel for; rejecting them here keeps that gap a single clear diagnostic instead
+// of a silent miscode if a caller ever reaches this profile lookup with one selected.
+inline D256KVCacheProfile d256_kv_cache_profile(ninfer::KvCacheStorage storage) {
+    switch (storage) {
+    case ninfer::KvCacheStorage::BFloat16:
+        return d256_kv_cache_profile(DType::BF16);
+    case ninfer::KvCacheStorage::Int8Group64:
+        return d256_kv_cache_profile(DType::I8, DType::I8);
+    case ninfer::KvCacheStorage::Fp8E4M3Row256:
+        return d256_kv_cache_profile(DType::FP8_E4M3FN);
+    case ninfer::KvCacheStorage::RotatedInt8KeyInt4ValueGroup64:
+        return d256_kv_cache_profile(DType::I8, DType::U8);
+    case ninfer::KvCacheStorage::Nvfp4Group16:
+    case ninfer::KvCacheStorage::Fp8KeyNvfp4Value:
+        throw std::invalid_argument(
+            "KV-cache storage 'nvfp4'/'k8v4' requires an sm_100a or sm_120a GPU; use --kv-dtype "
+            "bf16, int8, fp8, or rk8v4.");
+    }
+    throw std::invalid_argument("unknown KV-cache storage profile");
 }
 
 } // namespace ninfer::ops

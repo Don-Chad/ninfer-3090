@@ -6,18 +6,18 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <array>
 #include <functional>
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace {
 
-using Json = nlohmann::json;
+using Json = ninfer::serve::RequestJson;
 using namespace ninfer::serve;
 
 int check(bool condition, const std::string& message) {
@@ -38,19 +38,8 @@ RequestLimits limits() {
     return value;
 }
 
-const AnthropicThinkingSigner& thinking_signer() {
-    static const AnthropicThinkingSigner value = [] {
-        AnthropicThinkingSigner::Key key{};
-        for (std::size_t index = 0; index < key.size(); ++index) {
-            key[index] = static_cast<std::uint8_t>(index + 1U);
-        }
-        return AnthropicThinkingSigner(key);
-    }();
-    return value;
-}
-
 AnthropicMessagesRequest parse(const Json& body) {
-    return parse_anthropic_messages_request(body, limits(), thinking_signer());
+    return parse_anthropic_messages_request(body, limits());
 }
 
 std::string api_code(const std::function<void()>& action) {
@@ -204,6 +193,76 @@ int test_message_normalization() {
     return failures;
 }
 
+int test_attribution_system_block() {
+    const auto attributed = [](std::string fingerprint) {
+        Json body        = base_request();
+        body["thinking"] = Json{{"type", "disabled"}};
+        body["system"]   = Json::array(
+            {Json{{"type", "text"},
+                    {"text", "x-anthropic-billing-header: cc_version=2.1; cch=" + fingerprint}},
+               Json{{"type", "text"},
+                    {"text", "real system"},
+                    {"cache_control", Json{{"type", "ephemeral"}}}}});
+        return body;
+    };
+
+    const Json first_body                 = attributed(".89c");
+    const GenerationRequest first_request = parse(first_body).generation;
+    const ninfer::PromptInput first       = prompt(first_request);
+    const ninfer::PromptInput second      = prompt(parse(attributed(".8f7")).generation);
+    const ninfer::PromptInput counted =
+        prompt(parse_anthropic_count_tokens_request(first_body).generation);
+
+    const auto has_real_system = [](const ninfer::PromptInput& input) {
+        return input.messages.size() == 2 &&
+               input.messages.front().role == ninfer::ChatRole::System &&
+               input.messages.front().parts.size() == 1 &&
+               input.messages.front().parts.front().text == "real system" &&
+               input.context_cache.markers.size() == 1 &&
+               input.context_cache.markers.front().location ==
+                   ninfer::PromptCacheMarkerLocation::LeadingInstructionBoundary;
+    };
+    int failures =
+        check(has_real_system(first) && has_real_system(second) && has_real_system(counted) &&
+                  first.messages.front().parts.front().text ==
+                      second.messages.front().parts.front().text &&
+                  first.context_cache.markers == second.context_cache.markers &&
+                  first.context_cache.markers == counted.context_cache.markers,
+              "Anthropic attribution changed model input or Count Tokens lowering");
+
+    Json attribution_only        = base_request();
+    attribution_only["thinking"] = Json{{"type", "disabled"}};
+    attribution_only["system"]   = Json::array(
+        {Json{{"type", "text"}, {"text", "x-anthropic-billing-header: cc_version=2.1"}}});
+    const GenerationRequest without_empty = parse(attribution_only).generation;
+    failures += check(without_empty.messages.size() == 1 &&
+                          without_empty.messages.front().role == ninfer::ChatRole::User,
+                      "attribution-only system produced an empty model turn");
+
+    Json non_first        = base_request();
+    non_first["thinking"] = Json{{"type", "disabled"}};
+    non_first["system"] =
+        Json::array({Json{{"type", "text"}, {"text", "real system"}},
+                     Json{{"type", "text"}, {"text", "x-anthropic-billing-header: user text"}}});
+    const GenerationRequest preserved_non_first = parse(non_first).generation;
+    failures += check(preserved_non_first.messages.size() == 2 &&
+                          preserved_non_first.messages.front().content.size() == 2 &&
+                          preserved_non_first.messages.front().content.back().text ==
+                              "x-anthropic-billing-header: user text",
+                      "non-first attribution-like system text was consumed");
+
+    Json string_system                       = base_request();
+    string_system["thinking"]                = Json{{"type", "disabled"}};
+    string_system["system"]                  = "x-anthropic-billing-header: ordinary string";
+    const GenerationRequest preserved_string = parse(string_system).generation;
+    failures += check(preserved_string.messages.size() == 2 &&
+                          preserved_string.messages.front().content.size() == 1 &&
+                          preserved_string.messages.front().content.front().text ==
+                              "x-anthropic-billing-header: ordinary string",
+                      "ordinary string system content was consumed as attribution");
+    return failures;
+}
+
 Json tool_use(std::string id, std::string name = "lookup") {
     return Json{{"type", "tool_use"},
                 {"id", std::move(id)},
@@ -241,8 +300,9 @@ int test_tool_history() {
                                                             normalized.messages[2].tool_call_id == "toolu_b" &&
                                                             normalized.messages[2].content[0].text == "result B" &&
                                                             normalized.messages[2].tool_result_is_error &&
-                                                            normalized.messages[2].cache_boundary_after ==
-                                                                ninfer::PromptCacheMarkerKind::PrivateLongAnchor &&
+                                                            normalized.messages[2].cache_boundary_after &&
+                                                            normalized.messages[2].cache_boundary_after->kind ==
+                                                                ninfer::PromptCacheMarkerKind::SharedStablePrefix &&
                                                             normalized.messages[3].role == ninfer::ChatRole::User &&
                                                             normalized.messages[3].content[0].text == "continue",
                                                         "valid out-of-order tool results were not associated by ID");
@@ -306,9 +366,8 @@ int test_tool_history() {
          Json{{"role", "user"}, {"content", Json::array({tool_result("toolu_same", "result")})}}});
     failures += check(api_code([&] { (void)parse(body); }) == "invalid_tool_history",
                       "duplicate tool_use ID was accepted");
-    failures += check(api_code([&] {
-                          (void)parse_anthropic_count_tokens_request(body, thinking_signer());
-                      }) == "invalid_tool_history",
+    failures += check(api_code([&] { (void)parse_anthropic_count_tokens_request(body); }) ==
+                          "invalid_tool_history",
                       "Count Tokens did not share Messages tool-history validation");
     return failures;
 }
@@ -370,6 +429,42 @@ int test_tools() {
     return failures;
 }
 
+int test_prompt_object_order() {
+    const auto parse_raw = [](std::string_view input) {
+        const std::string body =
+            R"({"model":"claude-local","thinking":{"type":"disabled"},"tools":[{"name":"probe","input_schema":{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"object","properties":{"yankee":{"type":"integer"},"bravo":{"type":"boolean"}}}}}}],"messages":[{"role":"user","content":"run probe"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_order","name":"probe","input":)" +
+            std::string(input) +
+            R"(}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_order","content":"done"}]}],"max_tokens":32})";
+        return parse(Json::parse(body)).generation;
+    };
+
+    const std::string original      = R"({"zeta":"last","alpha":{"yankee":2,"bravo":true}})";
+    const GenerationRequest request = parse_raw(original);
+    const auto assistant =
+        std::find_if(request.messages.begin(), request.messages.end(),
+                     [](const ChatTurn& turn) { return turn.role == ninfer::ChatRole::Assistant; });
+    const ninfer::PromptInput translated = prompt(request);
+    const std::string expected_tool =
+        R"({"type":"function","function":{"name":"probe","parameters":{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"object","properties":{"yankee":{"type":"integer"},"bravo":{"type":"boolean"}}}}},"strict":false}})";
+    int failures = check(assistant != request.messages.end() && assistant->tool_calls.size() == 1 &&
+                             assistant->tool_calls.front().arguments_json == original &&
+                             translated.options.tool_jsons.size() == 1 &&
+                             translated.options.tool_jsons.front() == expected_tool,
+                         "Anthropic request changed prompt-bearing object member order");
+
+    const GenerationRequest reordered =
+        parse_raw(R"({"alpha":{"yankee":2,"bravo":true},"zeta":"last"})");
+    const auto reordered_assistant =
+        std::find_if(reordered.messages.begin(), reordered.messages.end(),
+                     [](const ChatTurn& turn) { return turn.role == ninfer::ChatRole::Assistant; });
+    failures +=
+        check(reordered_assistant != reordered.messages.end() &&
+                  reordered_assistant->tool_calls.size() == 1 &&
+                  reordered_assistant->tool_calls.front().arguments_json != original,
+              "Anthropic request treated reordered tool input as the original representation");
+    return failures;
+}
+
 int test_thinking_and_count_tokens() {
     Json body = base_request();
     body["thinking"] =
@@ -393,11 +488,10 @@ int test_thinking_and_count_tokens() {
     failures += check(api_code([&] { (void)parse(body); }) == "thinking_display_not_supported",
                       "hidden Thinking was accepted without restore semantics");
 
-    body["max_tokens"]    = 0;
-    body["temperature"]   = "ignored for counting";
-    body["output_config"] = Json{{"format", Json{{"type", "json_schema"}}}};
-    const AnthropicCountTokensRequest counted =
-        parse_anthropic_count_tokens_request(body, thinking_signer());
+    body["max_tokens"]                        = 0;
+    body["temperature"]                       = "ignored for counting";
+    body["output_config"]                     = Json{{"format", Json{{"type", "json_schema"}}}};
+    const AnthropicCountTokensRequest counted = parse_anthropic_count_tokens_request(body);
     failures += check(counted.generation.enable_thinking == true,
                       "Count Tokens did not share prompt-affecting Thinking parsing");
 
@@ -413,73 +507,50 @@ int test_thinking_and_count_tokens() {
     return failures;
 }
 
-int test_thinking_history_integrity() {
-    constexpr std::string_view thought = "thought";
-    const std::string signature        = thinking_signer().sign(thought, 0);
-    int failures =
-        check(signature ==
-                  "sig_ninfer_v1_72f7f5bccf8a10a8e5de051274eb2643f6a0fe99764bf463f935af5e2b845198",
-              "Anthropic Thinking signature does not match the HMAC-SHA256 contract");
-    AnthropicThinkingSigner::Key other_key{};
-    other_key.fill(0xa5U);
-    const AnthropicThinkingSigner other_process(other_key);
-    failures += check(!other_process.verify(thought, 0, signature),
-                      "Thinking signature remained valid under another process key");
-    std::string changed_encoding = signature;
-    const std::size_t hex_letter = changed_encoding.find_first_of("abcdef");
-    changed_encoding[hex_letter] = static_cast<char>(changed_encoding[hex_letter] - 'a' + 'A');
-    failures += check(!thinking_signer().verify(thought, 0, changed_encoding),
-                      "textually modified Thinking signature was accepted");
-
-    Json body        = base_request();
-    body["messages"] = Json::array(
-        {Json{{"role", "user"}, {"content", "before"}},
-         Json{{"role", "assistant"},
-              {"content",
-               Json::array(
-                   {Json{{"type", "thinking"}, {"thinking", thought}, {"signature", signature}},
-                    Json{{"type", "text"}, {"text", "answer"}}})}},
-         Json{{"role", "user"}, {"content", "after"}}});
+int test_thinking_history_transport_metadata() {
+    Json body = base_request();
+    body["messages"] =
+        Json::array({Json{{"role", "user"}, {"content", "before"}},
+                     Json{{"role", "assistant"},
+                          {"content", Json::array({Json{{"type", "thinking"},
+                                                        {"thinking", "thought"},
+                                                        {"signature", "opaque-from-stopped-serve"}},
+                                                   Json{{"type", "text"}, {"text", "answer"}}})}},
+                     Json{{"role", "user"}, {"content", "after"}}});
     const GenerationRequest accepted = parse(body).generation;
-    failures +=
-        check(accepted.messages.size() == 3 && accepted.messages[1].reasoning_content == thought &&
-                  accepted.messages[1].content[0].text == "answer",
-              "valid signed Thinking history was not lowered");
-
-    Json changed_text                                     = body;
-    changed_text["messages"][1]["content"][0]["thinking"] = "changed";
-    failures += check(api_code([&] { (void)parse(changed_text); }) == "invalid_thinking_signature",
-                      "Thinking text changed under an existing signature was accepted");
+    int failures                     = check(accepted.messages.size() == 3 &&
+                                                 accepted.messages[1].reasoning_content == "thought" &&
+                                                 accepted.messages[1].content[0].text == "answer",
+                                             "Thinking history with opaque transport metadata was not lowered");
 
     Json changed_signature                                      = body;
-    std::string invalid                                         = signature;
-    invalid.back()                                              = invalid.back() == '0' ? '1' : '0';
-    changed_signature["messages"][1]["content"][0]["signature"] = invalid;
-    failures +=
-        check(api_code([&] { (void)parse(changed_signature); }) == "invalid_thinking_signature",
-              "changed Thinking signature was accepted");
+    changed_signature["messages"][1]["content"][0]["signature"] = "different";
+    const GenerationRequest changed_metadata = parse(changed_signature).generation;
+    failures += check(changed_metadata.messages[1].reasoning_content == "thought",
+                      "opaque Thinking signature changed prompt semantics");
 
     Json missing_signature = body;
     missing_signature["messages"][1]["content"][0].erase("signature");
-    failures +=
-        check(api_code([&] { (void)parse(missing_signature); }) == "invalid_thinking_signature",
-              "missing Thinking signature was accepted");
+    const GenerationRequest missing_metadata = parse(missing_signature).generation;
+    failures += check(missing_metadata.messages[1].reasoning_content == "thought",
+                      "missing Thinking signature blocked visible history");
 
-    Json wrong_type                                      = body;
-    wrong_type["messages"][1]["content"][0]["signature"] = 1;
-    failures += check(api_code([&] { (void)parse(wrong_type); }) == "invalid_thinking_signature",
-                      "non-string Thinking signature was accepted");
+    Json structured_signature                                      = body;
+    structured_signature["messages"][1]["content"][0]["signature"] = Json{{"provider", "external"}};
+    const GenerationRequest structured_metadata = parse(structured_signature).generation;
+    failures += check(structured_metadata.messages[1].reasoning_content == "thought",
+                      "non-semantic Thinking metadata was interpreted by request lowering");
 
-    Json reordered = body;
-    reordered["messages"][1]["content"].insert(reordered["messages"][1]["content"].begin(),
-                                               Json{{"type", "text"}, {"text", "first"}});
-    failures += check(api_code([&] { (void)parse(reordered); }) == "invalid_thinking_signature",
-                      "signed Thinking block was accepted at a changed content position");
-    failures +=
-        check(api_code([&] {
-                  (void)parse_anthropic_count_tokens_request(missing_signature, thinking_signer());
-              }) == "invalid_thinking_signature",
-              "Count Tokens bypassed Thinking signature validation");
+    Json changed_thinking                                     = body;
+    changed_thinking["messages"][1]["content"][0]["thinking"] = "changed";
+    const GenerationRequest changed_semantics                 = parse(changed_thinking).generation;
+    failures += check(changed_semantics.messages[1].reasoning_content == "changed",
+                      "visible Thinking text did not own prompt semantics");
+
+    const AnthropicCountTokensRequest counted =
+        parse_anthropic_count_tokens_request(missing_signature);
+    failures += check(counted.generation.messages[1].reasoning_content == "thought",
+                      "Count Tokens assigned semantics to Thinking signature metadata");
     return failures;
 }
 
@@ -496,11 +567,14 @@ int test_content_and_cache_hints() {
                                           {"source", Json{{"type", "url"}, {"url", "https://example/image.png"}}},
                                           {"transformations", Json{{"oversized_image", "error"}}}}})}}});
     const GenerationRequest request = parse(body).generation;
-    int failures =
-        check(request.private_cache_boundary_at_prompt_end && request.media_item_count() == 1 &&
-                  request.messages[0].content[1].image_resize_policy ==
-                      ninfer::ImageResizePolicy::RejectOversized,
-              "automatic caching or image transformation policy was lost");
+    int failures                    = check(request.messages[0].content[1].cache_boundary_after &&
+                                                ninfer::has_shared_candidate_evidence(
+                                 request.messages[0].content[1].cache_boundary_after->evidence,
+                                 ninfer::SharedCandidateEvidence::RequestedAutomatic) &&
+                                                request.media_item_count() == 1 &&
+                                                request.messages[0].content[1].image_resize_policy ==
+                                                    ninfer::ImageResizePolicy::RejectOversized,
+                                            "automatic caching or image transformation policy was lost");
     const ninfer::PromptInput translated = prompt(request);
     failures += check(translated.context_cache.markers.size() == 2 &&
                           translated.context_cache.markers[1].location ==
@@ -536,15 +610,12 @@ int test_aggregate_and_errors() {
     const AnthropicResponseIdentity identity =
         make_anthropic_response_identity("req_test", "claude-local");
     GenerationOutcome outcome = sample_outcome();
-    const Json response =
-        Json::parse(make_anthropic_messages_response(identity, outcome, thinking_signer()));
-    int failures = check(
-        response["content"].size() == 2 && response["content"][0]["type"] == "thinking" &&
-            !response["content"][0]["signature"].get<std::string>().empty() &&
-            thinking_signer().verify(response["content"][0]["thinking"].get<std::string>(), 0,
-                                     response["content"][0]["signature"].get<std::string>()) &&
-            response["stop_reason"] == "stop_sequence" && response["stop_sequence"] == "STOP",
-        "aggregate Thinking or stop-sequence presentation is incomplete");
+    const Json response       = Json::parse(make_anthropic_messages_response(identity, outcome));
+    int failures =
+        check(response["content"].size() == 2 && response["content"][0]["type"] == "thinking" &&
+                  response["content"][0]["signature"] == identity.message_id &&
+                  response["stop_reason"] == "stop_sequence" && response["stop_sequence"] == "STOP",
+              "aggregate Thinking or stop-sequence presentation is incomplete");
     failures += check(response["usage"]["input_tokens"] == 40 &&
                           response["usage"]["cache_read_input_tokens"] == 60 &&
                           response["usage"]["cache_creation_input_tokens"].is_null() &&
@@ -553,16 +624,14 @@ int test_aggregate_and_errors() {
 
     outcome.prompt_tokens                   = 10;
     outcome.metrics.prefix_cache_hit_tokens = 1000;
-    const Json clamped =
-        Json::parse(make_anthropic_messages_response(identity, outcome, thinking_signer()));
+    const Json clamped = Json::parse(make_anthropic_messages_response(identity, outcome));
     failures += check(clamped["usage"]["input_tokens"] == 0 &&
                           clamped["usage"]["cache_read_input_tokens"] == 10,
                       "cache-read usage was not clamped to the prompt token count");
 
     outcome               = {};
     outcome.finish_reason = ninfer::FinishReason::ContextCapacity;
-    const Json empty =
-        Json::parse(make_anthropic_messages_response(identity, outcome, thinking_signer()));
+    const Json empty      = Json::parse(make_anthropic_messages_response(identity, outcome));
     failures +=
         check(empty["content"].empty() && empty["stop_reason"] == "model_context_window_exceeded",
               "empty output was fabricated or context capacity was misclassified");
@@ -580,10 +649,61 @@ int test_aggregate_and_errors() {
     return failures;
 }
 
+int test_tool_call_presentation() {
+    const AnthropicResponseIdentity identity =
+        make_anthropic_response_identity("req_tool", "claude-local");
+    GenerationOutcome outcome;
+    outcome.text                = "I need one more check.";
+    outcome.finish_reason       = ninfer::FinishReason::StopToken;
+    const std::string arguments = R"({"zeta":"last","alpha":{"yankee":2,"bravo":true}})";
+    outcome.tool_calls.push_back(ninfer::GeneratedToolCall{
+        .name           = "Edit",
+        .arguments_json = arguments,
+    });
+
+    const Json aggregate = Json::parse(make_anthropic_messages_response(identity, outcome));
+    int failures =
+        check(aggregate.at("stop_reason") == "tool_use" && aggregate.at("content").size() == 2 &&
+                  aggregate.at("content").at(0).at("type") == "text" &&
+                  aggregate.at("content").at(1).at("type") == "tool_use" &&
+                  aggregate.at("content").at(1).at("name") == "Edit" &&
+                  aggregate.at("content").at(1).at("input").dump() == arguments &&
+                  !aggregate.at("content").at(1).at("input").contains("replace_all"),
+              "aggregate Anthropic response changed ordered tool input");
+
+    AnthropicMessagesStream stream(identity, 10);
+    std::vector<std::string> events{stream.start()};
+    std::vector<std::string> content = stream.content_delta(outcome.text);
+    events.insert(events.end(), std::make_move_iterator(content.begin()),
+                  std::make_move_iterator(content.end()));
+    std::vector<std::string> terminal = stream.finish(outcome);
+    events.insert(events.end(), std::make_move_iterator(terminal.begin()),
+                  std::make_move_iterator(terminal.end()));
+
+    bool saw_edit_start = false;
+    bool saw_arguments  = false;
+    bool saw_tool_stop  = false;
+    for (const std::string& wire : events) {
+        const Json event = parse_event(wire);
+        if (event.at("type") == "content_block_start" &&
+            event.at("content_block").at("type") == "tool_use") {
+            saw_edit_start = event.at("content_block").at("name") == "Edit";
+        } else if (event.at("type") == "content_block_delta" &&
+                   event.at("delta").at("type") == "input_json_delta") {
+            saw_arguments = event.at("delta").at("partial_json").get<std::string>() == arguments;
+        } else if (event.at("type") == "message_delta") {
+            saw_tool_stop = event.at("delta").at("stop_reason") == "tool_use";
+        }
+    }
+    failures += check(saw_edit_start && saw_arguments && saw_tool_stop,
+                      "Anthropic stream did not terminate the recovered Edit as tool_use");
+    return failures;
+}
+
 int test_stream() {
     const AnthropicResponseIdentity identity =
         make_anthropic_response_identity("req_stream", "claude-local");
-    AnthropicMessagesStream stream(identity, 100, thinking_signer());
+    AnthropicMessagesStream stream(identity, 100);
     const ninfer::GenerationStart warm_start{
         .prompt               = ninfer::PromptSummary{.prompt_tokens = 100},
         .reused_prompt_tokens = 60,
@@ -611,7 +731,7 @@ int test_stream() {
         if (parsed.at("type") == "content_block_delta" &&
             parsed["delta"]["type"] == "signature_delta") {
             const std::string signature = parsed["delta"]["signature"].get<std::string>();
-            saw_signature               = thinking_signer().verify("thought", 0, signature);
+            saw_signature               = signature == identity.message_id;
         }
         if (parsed.at("type") == "message_delta") { terminal_usage = parsed.at("usage"); }
     }
@@ -627,14 +747,14 @@ int test_stream() {
     });
     failures += check(signature_position < text_position,
                       "Thinking signature was emitted after the text block began");
-    const Json aggregate = Json::parse(
-        make_anthropic_messages_response(identity, sample_outcome(), thinking_signer()));
+    const Json aggregate =
+        Json::parse(make_anthropic_messages_response(identity, sample_outcome()));
     failures +=
         check(terminal_usage == aggregate.at("usage") && terminal_usage["input_tokens"] == 40 &&
                   terminal_usage["cache_read_input_tokens"] == 60,
               "terminal stream usage did not match aggregate cache usage");
 
-    AnthropicMessagesStream cold_stream(identity, 25, thinking_signer());
+    AnthropicMessagesStream cold_stream(identity, 25);
     (void)cold_stream.start(ninfer::GenerationStart{
         .prompt               = ninfer::PromptSummary{.prompt_tokens = 25},
         .reused_prompt_tokens = 0,
@@ -649,7 +769,7 @@ int test_stream() {
                           cold_delta["usage"]["output_tokens"] == 3,
                       "cold terminal stream usage was not cumulative and exact");
 
-    AnthropicMessagesStream pre_admission_error(identity, 25, thinking_signer());
+    AnthropicMessagesStream pre_admission_error(identity, 25);
     const Json provisional = parse_event(pre_admission_error.start());
     failures += check(provisional["message"]["usage"]["input_tokens"] == 25 &&
                           provisional["message"]["usage"]["cache_read_input_tokens"].is_null(),
@@ -663,12 +783,15 @@ int main() {
     int failures = 0;
     failures += test_envelope_and_field_policy();
     failures += test_message_normalization();
+    failures += test_attribution_system_block();
     failures += test_tool_history();
     failures += test_tools();
+    failures += test_prompt_object_order();
     failures += test_thinking_and_count_tokens();
-    failures += test_thinking_history_integrity();
+    failures += test_thinking_history_transport_metadata();
     failures += test_content_and_cache_hints();
     failures += test_aggregate_and_errors();
+    failures += test_tool_call_presentation();
     failures += test_stream();
     if (failures != 0) {
         std::cerr << failures << " Anthropic adapter checks failed\n";

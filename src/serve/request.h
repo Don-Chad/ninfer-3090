@@ -53,13 +53,27 @@ enum class ContentKind {
     Video,
 };
 
+struct CacheBoundary {
+    enum class Ttl : std::uint8_t {
+        Default,
+        FiveMinutes,
+        OneHour,
+    };
+
+    ninfer::PromptCacheMarkerKind kind       = ninfer::PromptCacheMarkerKind::SharedStablePrefix;
+    ninfer::SharedCandidateEvidence evidence = ninfer::SharedCandidateEvidence::ExplicitBoundary;
+    Ttl ttl                                  = Ttl::Default;
+
+    [[nodiscard]] friend constexpr bool operator==(CacheBoundary, CacheBoundary) noexcept = default;
+};
+
 struct ContentPart {
     ContentKind kind = ContentKind::Text;
     std::string text;     // populated for Text
     std::string type_raw; // original wire "type" string for diagnostics
     ninfer::product::media_acquire::Source source;
     ninfer::ImageResizePolicy image_resize_policy = ninfer::ImageResizePolicy::Downsize;
-    std::optional<ninfer::PromptCacheMarkerKind> cache_boundary_after;
+    std::optional<CacheBoundary> cache_boundary_after;
 };
 
 struct ToolDefinition {
@@ -67,7 +81,7 @@ struct ToolDefinition {
     std::string description;
     std::string input_schema_json;
     std::optional<std::string> input_examples_json;
-    bool shared_cache_boundary_after = false;
+    std::optional<CacheBoundary> cache_boundary_after;
 };
 
 struct ToolCall {
@@ -96,7 +110,7 @@ struct ChatTurn {
     bool tool_result_is_error = false;
     std::string reasoning_content; // assistant thinking carried across turns (round-tripped to the
                                    // template)
-    std::optional<ninfer::PromptCacheMarkerKind> cache_boundary_after;
+    std::optional<CacheBoundary> cache_boundary_after;
 };
 
 // Sampling overrides that have an executable Engine meaning. Protocol-only
@@ -171,6 +185,7 @@ struct GenerationRequest {
     std::optional<bool> preserve_thinking;
     ninfer::PromptContinuationMode continuation = ninfer::PromptContinuationMode::NewAssistantTurn;
     bool private_cache_boundary_at_prompt_end   = false;
+    bool allow_engine_automatic_shared_prefixes = true;
     SamplingParams sampling;
 
     [[nodiscard]] bool uses_tools() const noexcept {

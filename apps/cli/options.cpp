@@ -58,6 +58,8 @@ KvCacheStorage parse_kv_cache(std::string_view text) {
     if (text == "fp8") { return KvCacheStorage::Fp8E4M3Row256; }
     // RotorQuant rk8v4: rotated INT8 keys with a packed signed int4 value plane. Opt-in.
     if (text == "rk8v4") { return KvCacheStorage::RotatedInt8KeyInt4ValueGroup64; }
+    if (text == "nvfp4") { return KvCacheStorage::Nvfp4Group16; }
+    if (text == "k8v4") { return KvCacheStorage::Fp8KeyNvfp4Value; }
     throw std::invalid_argument("invalid kv-dtype: " + std::string(text));
 }
 
@@ -80,7 +82,7 @@ std::string usage_text(const char* argv0) {
            " <model.ninfer> (--prompt <text>|--messages <messages.json>)\n"
            "       [--max-context N] [--kv-capacity N|auto] [--prefill-chunk N] [--max-new N]\n"
            "       [--device N]\n"
-           "       [--kv-dtype bf16|int8|fp8|rk8v4] [--spec mtp|dflash --draft-tokens N]\n"
+           "       [--kv-dtype bf16|int8|fp8|rk8v4|nvfp4|k8v4] [--spec mtp|dflash --draft-tokens N]\n"
            "       [--lm-head-draft]\n"
            "       [--temperature F] [--top-p F] [--top-k N] [--min-p F]\n"
            "       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -89,6 +91,7 @@ std::string usage_text(const char* argv0) {
            "       [--reasoning-effort low|medium|xhigh] [--vision]\n"
            "       [--vision-residency resident|overlay] [--vision-max-merged N]\n"
            "       [--no-cuda-graph]\n"
+           "       [--log-level trace|debug|info|warning|error|critical|off]\n"
            "\n"
            "Streams answer content to stdout and reasoning plus diagnostics to stderr.\n"
            "Structured message content accepts text, image/image_url, and video/video_url parts;\n"
@@ -208,6 +211,8 @@ Options parse_options(int argc, char** argv) {
             options.sampling.seed = parse_u64(value(arg), "seed");
         } else if (arg == "--greedy") {
             options.greedy = true;
+        } else if (arg == "--log-level") {
+            options.log_level = product::parse_log_level(value(arg));
         } else {
             throw std::invalid_argument("unknown argument: " + std::string(arg));
         }

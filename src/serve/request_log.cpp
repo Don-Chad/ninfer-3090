@@ -1,6 +1,8 @@
 #include "serve/request_log.h"
+#include "product/logging/pretty_format.h"
 #include "product/speculative_options.h"
-#include "serve/console_log.h"
+
+#include <spdlog/logger.h>
 
 #include <cuda_runtime.h>
 #include <nlohmann/json.hpp>
@@ -91,6 +93,15 @@ const char* finish_reason_name(ninfer::FinishReason reason) {
     return "unknown";
 }
 
+Json tool_call_parse_json(const ninfer::ToolCallParseDiagnostics& diagnostics) {
+    return Json{{"marker_seen", diagnostics.marker_seen},
+                {"structured_call_count", diagnostics.structured_call_count},
+                {"empty_arguments_omitted", diagnostics.empty_arguments_omitted},
+                {"schema_mismatch_arguments", diagnostics.schema_mismatch_arguments},
+                {"fallback_reason",
+                 ninfer::tool_call_parse_fallback_reason_name(diagnostics.fallback_reason)}};
+}
+
 std::string tool_choice_name(const ToolChoice& choice) {
     switch (choice.mode) {
     case ToolChoiceMode::Auto:
@@ -139,6 +150,10 @@ const char* kv_cache_name(ninfer::KvCacheStorage storage) {
         return "fp8-e4m3-row256";
     case ninfer::KvCacheStorage::RotatedInt8KeyInt4ValueGroup64:
         return "rotated-k8g64-v4g32";
+    case ninfer::KvCacheStorage::Nvfp4Group16:
+        return "nvfp4";
+    case ninfer::KvCacheStorage::Fp8KeyNvfp4Value:
+        return "k8v4";
     }
     return "unknown";
 }
@@ -326,11 +341,7 @@ Json materialization_json(const ninfer::MaterializationDiagnostics& diagnostics)
         {"planning_elapsed_ns", diagnostics.planning_elapsed_ns},
         {"search_elapsed_ns", diagnostics.search_elapsed_ns},
         {"stop_reason", ninfer::materialization_stop_reason_name(diagnostics.stop_reason)},
-        {"model_optimal", diagnostics.model_optimal},
         {"budget_exhausted", diagnostics.budget_exhausted},
-        {"best_remaining_lower_bound_ns", diagnostics.best_remaining_lower_bound_ns},
-        {"absolute_bound_gap_ns", diagnostics.absolute_bound_gap_ns},
-        {"relative_bound_gap", diagnostics.relative_bound_gap},
         {"selected_degradation_units", diagnostics.selected_degradation_units},
         {"selected_maximal_fallback", diagnostics.selected_maximal_fallback},
     };
@@ -467,56 +478,6 @@ std::string speculative_str(const GenerationMetrics& metrics) {
 }
 
 } // namespace
-
-RequestLogContext make_request_log_context(std::uint64_t id, std::string protocol,
-                                           const GenerationRequest& request,
-                                           const RequestLogMetadata& metadata,
-                                           const PreparedRequest& prepared) {
-    RequestLogContext context;
-    context.id                                 = id;
-    context.protocol                           = std::move(protocol);
-    context.model                              = metadata.model;
-    context.stream                             = metadata.stream;
-    context.message_count                      = request.messages.size();
-    context.media_item_count                   = request.media_item_count();
-    context.requested_output_tokens            = request.max_tokens;
-    context.requested_output_tokens_client_set = metadata.output_tokens_explicit;
-    context.tool_count                         = request.tools.size();
-    context.tool_choice                        = request.tool_choice;
-    context.has_tool_history                   = request.has_tool_history();
-    context.enable_thinking                    = prepared.enable_thinking;
-    context.thinking_budget                    = prepared.thinking_budget;
-    context.requested_reasoning_effort         = request.reasoning_effort;
-    context.resolved_reasoning_effort          = prepared.effective_reasoning_effort;
-    context.preserve_thinking                  = prepared.preserve_thinking;
-    context.preserve_thinking_semantic_change  = metadata.preserve_thinking_semantic_change;
-    context.sampling                           = prepared.sampling;
-    context.acquisition_seconds                = prepared.acquisition_seconds;
-    context.preparation                        = prepared.preparation;
-    return context;
-}
-
-RequestRejectionLogContext make_request_rejection_log_context(std::uint64_t id,
-                                                              std::string protocol,
-                                                              const GenerationRequest& request,
-                                                              const RequestLogMetadata& metadata,
-                                                              ApiError error) {
-    RequestRejectionLogContext context;
-    context.id                                 = id;
-    context.protocol                           = std::move(protocol);
-    context.model                              = metadata.model;
-    context.stream                             = metadata.stream;
-    context.message_count                      = request.messages.size();
-    context.media_item_count                   = request.media_item_count();
-    context.requested_output_tokens            = request.max_tokens;
-    context.requested_output_tokens_client_set = metadata.output_tokens_explicit;
-    context.tool_count                         = request.tools.size();
-    context.tool_choice                        = request.tool_choice;
-    context.has_tool_history                   = request.has_tool_history();
-    context.requested_reasoning_effort         = request.reasoning_effort;
-    context.error                              = std::move(error);
-    return context;
-}
 
 std::string format_request_start(const RequestLogContext& context) {
     std::ostringstream out;
@@ -724,45 +685,46 @@ std::string format_server_start_json(
     const std::uint64_t total_device_state_slots =
         static_cast<std::uint64_t>(engine_options.max_concurrency) +
         cache.device_state_slots.value();
-    record["engine"] = Json{
-        {"device", engine_options.device},
-        {"max_context", engine_options.max_context},
-        {"kv_capacity_mode", kv_capacity_mode_name(memory.kv_capacity_mode)},
-        {"kv_capacity", memory.kv_capacity},
-        {"kv_capacity_page_groups", memory.kv_capacity_page_groups},
-        {"kv_capacity_max_page_groups", memory.kv_capacity_max_page_groups},
-        {"max_concurrency", engine_options.max_concurrency},
-        {"max_pending_requests", engine_options.max_pending_requests},
-        {"pending_timeout_ms", engine_options.pending_timeout_ms},
-        {"prefill_chunk", engine_options.prefill_chunk},
-        {"log_stats_interval_ms", options.log_stats_interval_ms},
-        {"kv_cache", kv_cache_name(engine_options.kv_cache)},
-        {"vision", engine_options.enable_vision},
-        {"cuda_graph", engine_options.use_cuda_graph},
-        {"prefix_reuse", options.allow_prefix_reuse},
-        {"speculative_backend",
-         product::speculative_backend_name(engine_options.speculative.backend)},
-        {"speculative_draft_window", engine_options.speculative.draft_tokens},
-        {"proposal_head", proposal_head_name(engine_options.speculative.proposal_head)},
-        {"context_cost", Json{{"transfer_source", ninfer::context_cost_preset_source_name(
-                                                      context_cost.transfer_source)},
-                              {"prefill_source", ninfer::context_cost_preset_source_name(
-                                                     context_cost.prefill_source)},
-                              {"hardware_class", context_cost.hardware_class},
-                              {"model_id", context_cost.model_id},
-                              {"weights_id", context_cost.weights_id},
-                              {"preset_path", context_cost.preset_path.string()}}},
-        {"context_cache",
-         Json{
-             {"enabled", cache.enabled},
-             {"device_state_slots", cache.device_state_slots.value()},
-             {"total_device_state_slots", total_device_state_slots},
-             {"host_state_slots", cache.host_state_slots},
-             {"host_kv_capacity_bytes", cache.host_kv_capacity_bytes},
-             {"max_private_continuations", cache.max_private_continuations.value()},
-             {"max_shared_prefixes", cache.max_shared_prefixes.value()},
-             {"max_long_anchors_per_continuation", cache.max_long_anchors_per_continuation.value()},
-             {"max_cache_markers_per_request", cache.max_cache_markers_per_request.value()}}}};
+    record["engine"] =
+        Json{{"device", engine_options.device},
+             {"max_context", engine_options.max_context},
+             {"kv_capacity_mode", kv_capacity_mode_name(memory.kv_capacity_mode)},
+             {"kv_capacity", memory.kv_capacity},
+             {"kv_capacity_page_groups", memory.kv_capacity_page_groups},
+             {"kv_capacity_max_page_groups", memory.kv_capacity_max_page_groups},
+             {"max_concurrency", engine_options.max_concurrency},
+             {"max_pending_requests", engine_options.max_pending_requests},
+             {"pending_timeout_ms", engine_options.pending_timeout_ms},
+             {"prefill_chunk", engine_options.prefill_chunk},
+             {"log_stats_interval_ms", options.log_stats_interval_ms},
+             {"kv_cache", kv_cache_name(engine_options.kv_cache)},
+             {"vision", engine_options.enable_vision},
+             {"cuda_graph", engine_options.use_cuda_graph},
+             {"prefix_reuse", options.allow_prefix_reuse},
+             {"speculative_backend",
+              product::speculative_backend_name(engine_options.speculative.backend)},
+             {"speculative_draft_window", engine_options.speculative.draft_tokens},
+             {"proposal_head", proposal_head_name(engine_options.speculative.proposal_head)},
+             {"context_cost", Json{{"transfer_source", ninfer::context_cost_preset_source_name(
+                                                           context_cost.transfer_source)},
+                                   {"prefill_source", ninfer::context_cost_preset_source_name(
+                                                          context_cost.prefill_source)},
+                                   {"hardware_class", context_cost.hardware_class},
+                                   {"model_id", context_cost.model_id},
+                                   {"weights_id", context_cost.weights_id},
+                                   {"preset_path", context_cost.preset_path.string()}}},
+             {"context_cache",
+              Json{{"enabled", cache.enabled},
+                   {"device_state_slots", cache.device_state_slots.value()},
+                   {"total_device_state_slots", total_device_state_slots},
+                   {"host_state_slots", cache.host_state_slots},
+                   {"host_kv_capacity_bytes", cache.host_kv_capacity_bytes},
+                   {"max_private_continuations", cache.max_private_continuations.value()},
+                   {"max_shared_prefixes", cache.max_shared_prefixes.value()},
+                   {"max_long_anchors_per_continuation",
+                    cache.max_long_anchors_per_continuation.value()},
+                   {"max_cache_markers_per_request",
+                    cache.max_cache_markers_per_request.value()}}}};
     record["sampling_defaults"] =
         Json{{"thinking", preset_json(sampling_defaults.thinking)},
              {"non_thinking", preset_json(sampling_defaults.non_thinking)},
@@ -839,7 +801,8 @@ std::string format_request_done_json(const std::string& server_instance_id, std:
              {"model_thinking_tokens", outcome.thinking.model_thinking_tokens},
              {"thinking_control_tokens", outcome.thinking.injected_tokens},
              {"thinking_control_applied", outcome.thinking.applied},
-             {"tool_call_count", outcome.tool_calls.size()}};
+             {"tool_call_count", outcome.tool_calls.size()},
+             {"tool_call_parse", tool_call_parse_json(outcome.tool_call_parse)}};
     record["timings_seconds"] = Json{
         {"prepare", outcome.metrics.prepare_seconds}, {"ttft", outcome.metrics.ttft_seconds},
         {"vision", outcome.metrics.vision_seconds},   {"prefill", outcome.metrics.prefill_seconds},
@@ -1082,8 +1045,9 @@ ServerLogEnvironment query_server_log_environment(int device) {
 }
 
 JsonlRequestLog::JsonlRequestLog(const std::string& path,
-                                 const std::string& protected_artifact_path)
-    : path_(path) {
+                                 const std::string& protected_artifact_path,
+                                 std::shared_ptr<spdlog::logger> logger)
+    : path_(path), logger_(std::move(logger)) {
     if (path_.empty()) { return; }
     if (!protected_artifact_path.empty() &&
         normalized_absolute_path(path_) == normalized_absolute_path(protected_artifact_path)) {
@@ -1140,13 +1104,20 @@ void JsonlRequestLog::write_throughput(const ThroughputReport& report) {
 }
 
 void JsonlRequestLog::append(std::string record) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (failed_) { return; }
-    output_ << record << '\n';
-    output_.flush();
-    if (!output_) {
-        failed_ = true;
-        write_console_log(ConsoleLogLevel::Error, "request JSONL logging failed for " + path_);
+    bool report_failure = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (failed_) { return; }
+        output_ << record << '\n';
+        output_.flush();
+        if (!output_) {
+            failed_        = true;
+            report_failure = true;
+        }
+    }
+    if (report_failure && logger_ != nullptr) {
+        logger_->error("request log disabled | write failed | {}",
+                       product::format_pretty_text(path_));
     }
 }
 

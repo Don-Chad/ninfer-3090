@@ -102,9 +102,10 @@ struct PreparedSessionKey {
 };
 
 struct PreparedCacheOpportunity {
-    PromptCacheMarkerKind kind = PromptCacheMarkerKind::SharedStablePrefix;
-    std::uint32_t frontier     = 0;
-    std::uint32_t input_order  = 0;
+    PromptCacheMarkerKind kind       = PromptCacheMarkerKind::SharedStablePrefix;
+    SharedCandidateEvidence evidence = SharedCandidateEvidence::None;
+    std::uint32_t frontier           = 0;
+    std::uint32_t input_order        = 0;
 
     [[nodiscard]] friend bool operator==(PreparedCacheOpportunity,
                                          PreparedCacheOpportunity) noexcept = default;

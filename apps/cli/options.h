@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ninfer/types.h"
+#include "product/logging/logging.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -41,7 +42,8 @@ struct Options {
 
     // Omitted fields are resolved from the loaded model and rendered prompt mode by Engine.
     SamplingOverrides sampling;
-    bool greedy = false;
+    bool greedy                 = false;
+    product::LogLevel log_level = product::LogLevel::Info;
 };
 
 [[nodiscard]] Options parse_options(int argc, char** argv);

@@ -109,6 +109,20 @@ int test_sse_response_headers() {
                  "SSE response lost its no-cache or anti-buffering header");
 }
 
+int test_prompt_json_member_order() {
+    httplib::Request request;
+    request.body =
+        R"({"model":"claude-local","tools":[{"name":"probe","input_schema":{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"object","properties":{"yankee":{"type":"integer"},"bravo":{"type":"boolean"}}}}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"probe","input":{"zeta":"last","alpha":{"yankee":2,"bravo":true}}}]}],"max_tokens":32})";
+
+    const auto parsed = ninfer::serve::parse_json_body(request);
+    return check(
+        parsed.at("tools").at(0).at("input_schema").at("properties").dump() ==
+                R"({"zeta":{"type":"string"},"alpha":{"type":"object","properties":{"yankee":{"type":"integer"},"bravo":{"type":"boolean"}}}})" &&
+            parsed.at("messages").at(0).at("content").at(0).at("input").dump() ==
+                R"({"zeta":"last","alpha":{"yankee":2,"bravo":true}})",
+        "HTTP request JSON changed prompt-bearing object member order");
+}
+
 #if defined(__linux__)
 class Socket final {
 public:
@@ -180,7 +194,8 @@ int test_inherited_socket_liveness() {
 } // namespace
 
 int main() {
-    int failures = test_sse_transport() + test_sse_response_headers();
+    int failures =
+        test_sse_transport() + test_sse_response_headers() + test_prompt_json_member_order();
 #if defined(__linux__)
     failures += test_inherited_socket_liveness();
 #endif

@@ -85,6 +85,10 @@ class Corpus:
             "long-8k-independent-32": (7680, 32, 7744),
             "long-64k-32": (64512, 32, 64576),
             "long-64k-independent-32": (64512, 32, 64576),
+            **{
+                f"rotation-55k-{index}": (55000, 32, 55040)
+                for index in range(6)
+            },
             "long-256k-32": (260096, 32, 260160),
             "interferer-256": (127, 256, 384),
             "holder-4096": (127, 4096, 4224),
@@ -129,6 +133,44 @@ class Corpus:
             and 2 * long_64k_entitlement > 65536
         ):
             raise CorpusError("64K Host-swap entitlement relation no longer holds")
+
+        rotation = [shapes[f"rotation-55k-{index}"] for index in range(6)]
+        if len({record["path"] for record in rotation}) != 6 or len(
+            {record["sha256"] for record in rotation}
+        ) != 6:
+            raise CorpusError("55K rotation shapes are not byte-distinct")
+        if any(record.get("max_peer_common_prefix_tokens", 4) > 3 for record in rotation):
+            raise CorpusError("55K rotation shapes do not diverge at the first content token")
+        original_labels: list[str] = []
+        for record in rotation:
+            messages = self._read_json(self._path(record))
+            if not isinstance(messages, list) or not messages:
+                raise CorpusError("55K rotation fixture has no messages")
+            system = messages[0].get("content") if isinstance(messages[0], dict) else None
+            original, separator, _ = system.partition(" ") if isinstance(system, str) else ("", "", "")
+            if not original or not separator:
+                raise CorpusError("55K rotation fixture has no system label")
+            original_labels.append(original)
+        if len(set(original_labels)) != len(rotation):
+            raise CorpusError("55K rotation system labels are not distinct")
+
+        second_labels: list[str] = []
+        for record, original in zip(rotation, original_labels, strict=True):
+            label = record.get("second_cohort_label")
+            if (
+                not isinstance(label, str)
+                or not label
+                or record.get("second_cohort_prompt_tokens") != 55000
+            ):
+                raise CorpusError("55K second-cohort shape facts are invalid")
+            if len(original) != len(label):
+                raise CorpusError("55K second-cohort label changes the frozen text shape")
+            second_labels.append(label)
+        if len(set(second_labels)) != len(rotation) or set(second_labels) & set(original_labels):
+            raise CorpusError("55K second-cohort roots are not distinct from the first cohort")
+        rotation_entitlement = entitlement(55000, 32)
+        if not 4 * rotation_entitlement <= 240000 < 5 * rotation_entitlement:
+            raise CorpusError("55K rotation Device-KV pressure relation no longer holds")
 
         for name in ("system-a", "system-b"):
             frontier = self.manifest["shared"][name]["marked_frontier_tokens"]

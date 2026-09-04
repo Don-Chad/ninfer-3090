@@ -64,13 +64,29 @@ PagedKVCacheLayout plan_cache(LayoutBuilder& builder, std::uint32_t layers, std:
         .execution_tables = plan_kv_execution_tables(
             builder,
             KVExecutionTableSpec{.logical_page_capacity = logical_pages, .table_rows = table_rows}),
-        .layers      = layers,
-        .max_context = capacity,
-        .kv_heads    = kv_heads,
-        .head_dim    = head_dim,
-        .dtype       = dtype,
-        .quant_group = quant_group,
+        .layers         = layers,
+        .max_context    = capacity,
+        .kv_heads       = kv_heads,
+        .head_dim       = head_dim,
+        .dtype          = dtype,
+        .quant_group    = quant_group,
+        .packed_values  = packed_values,
     };
+}
+
+KvCacheStorage kv_cache_storage_of(DType dtype, bool packed_values) {
+    if (packed_values) { return KvCacheStorage::RotatedInt8KeyInt4ValueGroup64; }
+    switch (dtype) {
+    case DType::BF16:
+        return KvCacheStorage::BFloat16;
+    case DType::I8:
+        return KvCacheStorage::Int8Group64;
+    case DType::FP8_E4M3FN:
+        return KvCacheStorage::Fp8E4M3Row256;
+    default:
+        break;
+    }
+    throw std::invalid_argument("unrecognized Paged KV cache dtype");
 }
 
 } // namespace
@@ -93,7 +109,8 @@ DecoderStateLayout plan_decoder_state(LayoutBuilder& builder, const DecoderState
 PagedKVCache::PagedKVCache(DeviceSpan backing, const PagedKVCacheLayout& layout)
     : pages_(backing, layout.pages), execution_tables_(backing, layout.execution_tables, pages_),
       layers_(layout.layers), max_context_(layout.max_context), kv_heads_(layout.kv_heads),
-      head_dim_(layout.head_dim), dtype_(layout.dtype), quant_group_(layout.quant_group) {}
+      head_dim_(layout.head_dim), dtype_(layout.dtype), quant_group_(layout.quant_group),
+      packed_values_(layout.packed_values) {}
 
 PagedKVCacheView::PagedKVCacheView(const PagedKVCache& cache, Tensor block_table) noexcept
     : cache_(&cache), block_table_(block_table) {}
@@ -127,26 +144,21 @@ PagedKVLayerView PagedKVCache::layer_view(std::uint32_t layer, Tensor block_tabl
         .block_table   = block_table,
         .head_dim      = head_dim_,
         .num_kv_heads  = kv_heads_,
-        .dtype         = dtype_,
-        .quant_group   = quant_group_,
+        .storage       = kv_cache_storage_of(dtype_, packed_values_),
     };
 }
 
 PagedKVBatchLayerView PagedKVCache::batch_layer_view(std::uint32_t layer) const {
-    if (layer >= layers_) { throw std::out_of_range("Paged KV layer is out of range"); }
-    const bool scaled        = dtype_ == DType::I8 || dtype_ == DType::FP8_E4M3FN;
-    const std::size_t stride = scaled ? 4ULL : 2ULL;
-    const std::size_t base   = static_cast<std::size_t>(layer) * stride;
+    const PagedKVLayerView direct = layer_view(layer, Tensor());
     return PagedKVBatchLayerView{
-        .k_pages       = pages_.plane(base),
-        .v_pages       = pages_.plane(base + 1),
-        .k_scale_pages = scaled ? pages_.plane(base + 2) : Tensor(),
-        .v_scale_pages = scaled ? pages_.plane(base + 3) : Tensor(),
+        .k_pages       = direct.k_pages,
+        .v_pages       = direct.v_pages,
+        .k_scale_pages = direct.k_scale_pages,
+        .v_scale_pages = direct.v_scale_pages,
         .block_tables  = execution_tables_.matrix(),
-        .head_dim      = head_dim_,
-        .num_kv_heads  = kv_heads_,
-        .dtype         = dtype_,
-        .quant_group   = quant_group_,
+        .head_dim      = direct.head_dim,
+        .num_kv_heads  = direct.num_kv_heads,
+        .storage       = direct.storage,
     };
 }
 

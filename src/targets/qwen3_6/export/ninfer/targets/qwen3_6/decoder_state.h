@@ -36,6 +36,8 @@ struct PagedKVCacheLayout {
     std::int32_t head_dim     = 0;
     DType dtype               = DType::BF16;
     std::int32_t quant_group  = 0;
+    // rk8v4 keeps dtype at I8 for the key plane, so the value coding has to travel beside dtype.
+    bool packed_values        = false;
 
     [[nodiscard]] std::size_t payload_bytes() const noexcept { return pages.payload_bytes(); }
 };
@@ -98,6 +100,7 @@ private:
     std::int32_t head_dim_     = 0;
     DType dtype_               = DType::BF16;
     std::int32_t quant_group_  = 0;
+    bool packed_values_        = false;
 };
 
 struct DecoderStateLayout {

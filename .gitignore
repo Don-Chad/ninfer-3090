@@ -19,6 +19,7 @@ CMakeUserPresets.json
 # Python tooling
 __pycache__/
 *.pyc
+.pytest_cache/
 .venv/
 .venv-*/
 venv/
@@ -29,10 +30,25 @@ venv/
 *.bin
 *.safetensors
 *.gguf
+*.ninfer
+*.ninfer.conversion.json
+/models/
 out/
 models/
 vcpkg_installed/
+
+# Local workspace and transient runtime output
+/.local/
+/temp/
+/temp-*/
+/tmp/
+/tmp-*/
+/AGENTS.override.md
+/logs/
 *.log
+*.tmp
+/core
+/core.*
 
 # Measurement raw corpora & intermediates (large; produced by offline tooling).
 # The small final frequency stats under fixtures/ranking/ ARE tracked; the rest is ignored.

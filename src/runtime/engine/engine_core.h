@@ -21,6 +21,7 @@
 #include <deque>
 #include <exception>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -29,6 +30,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace ninfer::runtime {
@@ -164,6 +166,7 @@ public:
 
     Submission submit(PreparedPrompt prompt, PromptSummary prompt_summary, double prepare_seconds,
                       ResolvedRequestOptions options, OutputConsumerMode consumer_mode,
+                      GenerationObservationOptions observation,
                       Clock::time_point pending_deadline = {}) {
         const Clock::time_point submitted = Clock::now();
         if (pending_deadline == Clock::time_point{}) {
@@ -206,9 +209,10 @@ public:
                 throw RequestError(RequestErrorKind::ThinkingBudgetCapacityInsufficient,
                                    error.what());
             }
-            request = std::make_shared<Request>(
-                request_id, publication_order, std::move(prompt), std::move(output), prompt_summary,
-                prepare_seconds, std::move(options), consumer_mode, pending_deadline, submitted);
+            request = std::make_shared<Request>(request_id, publication_order, std::move(prompt),
+                                                std::move(output), prompt_summary, prepare_seconds,
+                                                std::move(options), consumer_mode, observation,
+                                                pending_deadline, submitted);
         } catch (...) {
             release_reserved_capacity();
             throw;
@@ -248,6 +252,11 @@ public:
     [[nodiscard]] RuntimeStats runtime_stats() const {
         std::lock_guard lock(stats_mutex_);
         return published_stats_;
+    }
+
+    [[nodiscard]] bool is_available() const {
+        std::lock_guard lock(queue_mutex_);
+        return !stopping_ && !failed_;
     }
 
     void reset_memory_peaks() noexcept {
@@ -577,19 +586,23 @@ private:
 
         std::exception_ptr caller_error;
         std::optional<GenerationStart> start;
-        std::vector<OutputDelta> events;
+        std::optional<PromptProgress> progress;
+        std::vector<typename Request::StreamEvent> events;
         for (;;) {
             start.reset();
+            progress.reset();
             events.clear();
             bool done = false;
             {
                 std::unique_lock lock(request->mutex);
                 request->cv.wait_for(lock, std::chrono::milliseconds(10), [&] {
                     return request->response_done || request->stream_start.has_value() ||
-                           !request->events.empty();
+                           request->stream_progress.has_value() || !request->events.empty();
                 });
                 start = std::move(request->stream_start);
                 request->stream_start.reset();
+                progress = std::move(request->stream_progress);
+                request->stream_progress.reset();
                 events.swap(request->events);
                 done = request->response_done;
             }
@@ -597,7 +610,14 @@ private:
             if (caller_error == nullptr && sink != nullptr) {
                 try {
                     if (start) { sink->start(std::move(*start)); }
-                    for (OutputDelta& event : events) { sink->publish(std::move(event)); }
+                    if (progress) { sink->progress(std::move(*progress)); }
+                    for (auto& event : events) {
+                        if (auto* timing = std::get_if<GenerationTimingObservation>(&event)) {
+                            sink->timing(std::move(*timing));
+                        } else {
+                            sink->publish(std::move(std::get<OutputDelta>(event)));
+                        }
+                    }
                 } catch (...) {
                     caller_error = std::current_exception();
                     request->cancelled.store(true, std::memory_order_release);
@@ -654,19 +674,70 @@ private:
         Clock::time_point started;
     };
 
-    void append_output(const std::shared_ptr<Request>& request, PublishedOutput output) {
-        if (output.empty()) { return; }
+    [[nodiscard]] std::optional<GenerationTimingObservation>
+    record_committed_output(const std::shared_ptr<Request>& request,
+                            std::uint32_t accepted_tokens) {
+        if (accepted_tokens == 0) { return std::nullopt; }
+        const bool observe_wall =
+            request->observation.phase_timings || request->observation.live_timings;
+        const bool need_now         = !request->first_token || observe_wall;
+        const Clock::time_point now = need_now ? Clock::now() : Clock::time_point{};
+        if (!request->first_token) { request->first_token = now; }
+        if (!observe_wall) { return std::nullopt; }
+        if (!request->admitted_at || !request->first_token) {
+            throw std::logic_error("committed output has no observed admission boundary");
+        }
+        request->last_token = now;
+        if (!request->observation.live_timings) { return std::nullopt; }
+        if (request->generated.size() > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::overflow_error("generated token count exceeds observation domain");
+        }
+        return GenerationTimingObservation{
+            .generated_tokens      = static_cast<std::uint32_t>(request->generated.size()),
+            .prompt_elapsed_ns     = elapsed_ns(*request->admitted_at, *request->first_token),
+            .generation_elapsed_ns = elapsed_ns(*request->first_token, *request->last_token),
+        };
+    }
+
+    void append_output(const std::shared_ptr<Request>& request, PublishedOutput output,
+                       std::optional<GenerationTimingObservation> timing = std::nullopt) {
+        if (output.empty() && !timing) { return; }
         const bool streaming = request->consumer_mode == OutputConsumerMode::Streaming;
         {
             std::lock_guard lock(request->mutex);
+            if (streaming && timing) { request->events.emplace_back(std::move(*timing)); }
             for (OutputDelta& delta : output) {
                 std::string& full = delta.channel == OutputChannel::Reasoning ? request->reasoning
                                                                               : request->content;
                 full += delta.text;
-                if (streaming) { request->events.push_back(std::move(delta)); }
+                if (streaming) { request->events.emplace_back(std::move(delta)); }
             }
         }
         if (streaming) { request->cv.notify_one(); }
+    }
+
+    void publish_prompt_progress(const std::shared_ptr<Request>& request) {
+        if (!request->observation.prompt_progress) { return; }
+        if (!request->admitted_begin || !request->admitted_at) {
+            throw std::logic_error("prompt progress has no admitted request boundary");
+        }
+        const BeginSummary& begin = *request->admitted_begin;
+        if (begin.reused_prompt_tokens > begin.prompt_tokens ||
+            request->computed_prompt_tokens > begin.prompt_tokens - begin.reused_prompt_tokens) {
+            throw std::logic_error("prompt progress exceeds the admitted prompt frontier");
+        }
+        const PromptProgress progress{
+            .total_prompt_tokens     = begin.prompt_tokens,
+            .reused_prompt_tokens    = begin.reused_prompt_tokens,
+            .processed_prompt_tokens = begin.reused_prompt_tokens + request->computed_prompt_tokens,
+            .elapsed_ns              = elapsed_ns(*request->admitted_at, Clock::now()),
+        };
+        {
+            std::lock_guard lock(request->mutex);
+            if (request->response_done) { return; }
+            request->stream_progress = progress;
+        }
+        request->cv.notify_one();
     }
 
     void publish_generation_start(const std::shared_ptr<Request>& request, BeginSummary begin) {
@@ -674,6 +745,10 @@ private:
             throw std::logic_error("request admission published generation start twice");
         }
         request->admitted_begin = begin;
+        if (request->observation.phase_timings || request->observation.live_timings ||
+            request->observation.prompt_progress) {
+            request->admitted_at = Clock::now();
+        }
         if (request->consumer_mode != OutputConsumerMode::Streaming) { return; }
         {
             std::lock_guard lock(request->mutex);
@@ -749,6 +824,18 @@ private:
 
     void complete_success(const std::shared_ptr<Request>& request, FinishReason reason) {
         HostPhaseMeasurement completion = begin_host_phase();
+        double prompt_wall_seconds      = 0.0;
+        double generation_wall_seconds  = 0.0;
+        if (request->observation.phase_timings && request->first_token) {
+            if (!request->admitted_at || !request->last_token) {
+                throw std::logic_error("observed request completed without stable timing bounds");
+            }
+            prompt_wall_seconds =
+                std::chrono::duration<double>(*request->first_token - *request->admitted_at)
+                    .count();
+            generation_wall_seconds =
+                std::chrono::duration<double>(*request->last_token - *request->first_token).count();
+        }
         release_planning_state(request);
         request->prompt      = {};
         request->model_state = EngineRequestState::ModelFinished;
@@ -762,6 +849,7 @@ private:
         result.content                 = std::move(request->content);
         result.reasoning               = std::move(request->reasoning);
         result.tool_calls              = request->output.take_tool_calls();
+        result.tool_call_parse         = request->output.tool_call_parse_diagnostics();
         result.reasoning_tokens        = request->output.reasoning_tokens();
         result.finish_reason           = reason;
         result.matched_stop_string     = request->output.matched_stop_string();
@@ -780,6 +868,8 @@ private:
                 request->prepare_seconds +
                 std::chrono::duration<double>(*request->first_token - request->submitted).count();
         }
+        result.timings.prompt_wall_seconds     = prompt_wall_seconds;
+        result.timings.generation_wall_seconds = generation_wall_seconds;
         result.timings.total_seconds =
             request->prepare_seconds +
             std::chrono::duration<double>(Clock::now() - request->submitted).count();
@@ -1023,13 +1113,17 @@ private:
                     row_tokens, request->budget->remaining(), request->budget->limit_reason());
                 if (decision.accepted_tokens == 0 || decision.accepted_tokens > count ||
                     (!decision.finished() && decision.accepted_tokens != count) ||
-                    (decision.finished() && decision.continuation != ContinuationAction::Decode)) {
+                    (decision.finished() && decision.continuation != ContinuationAction::Decode) ||
+                    (decision.prefix_execution_split_after &&
+                     (*decision.prefix_execution_split_after == 0 ||
+                      *decision.prefix_execution_split_after > decision.accepted_tokens))) {
                     throw std::logic_error("output policy returned an invalid licensed prefix");
                 }
                 decisions[row] = CommitDecision{
-                    .accepted_tokens = decision.accepted_tokens,
-                    .terminal        = decision.finished(),
-                    .cancelled       = false,
+                    .accepted_tokens              = decision.accepted_tokens,
+                    .terminal                     = decision.finished(),
+                    .cancelled                    = false,
+                    .prefix_execution_split_after = decision.prefix_execution_split_after,
                 };
                 finish_reasons[row] = decision.finish_reason;
                 continuations[row]  = decision.continuation;
@@ -1129,8 +1223,8 @@ private:
                     if (decode_round) { Scheduling::consume_service_work(*request, accepted); }
                 }
                 auto published = request->output.commit_preview();
-                if (!request->first_token && accepted != 0) { request->first_token = Clock::now(); }
-                append_output(request, std::move(published));
+                auto timing    = record_committed_output(request, accepted);
+                append_output(request, std::move(published), std::move(timing));
                 if (decisions[row].terminal) {
                     if (cancelled[row]) {
                         terminal_requests[terminal_count] = request;
@@ -1208,9 +1302,20 @@ private:
             post_capture_state == EngineRequestState::ModelFinished) {
             throw std::logic_error("committed capture offer has invalid Engine ownership");
         }
-        const bool permit_transfer = !has_pending_requests();
-        const auto reserved        = resources_.reserve_active_capture(
-            *instance_.program, *request->lane, std::move(offer), permit_transfer,
+        std::uint64_t blocked = 0;
+        {
+            std::lock_guard lock(queue_mutex_);
+            blocked = pending_.size();
+        }
+        for (const auto& active : slots_) {
+            if (active != nullptr && active != request && !active->terminal_reason) { ++blocked; }
+        }
+        const std::uint32_t blocked_runnable_requests =
+            blocked > std::numeric_limits<std::uint32_t>::max()
+                ? std::numeric_limits<std::uint32_t>::max()
+                : static_cast<std::uint32_t>(blocked);
+        const auto reserved = resources_.reserve_active_capture(
+            *instance_.program, *request->lane, std::move(offer), blocked_runnable_requests,
             CancellationFlagView{&request->cancelled});
         if (reserved == ResourceManagement::ActiveCaptureReserveResult::Skipped) { return; }
         request->capture_pending    = true;
@@ -1227,6 +1332,23 @@ private:
         ++request->host_timing.prefill_units;
         cumulative_stats_.computed_prefill_tokens += progress.processed_prompt_tokens;
         Scheduling::consume_service_work(*request, 1);
+        if (!request->admitted_begin) {
+            throw std::logic_error("prefill progress has no committed admission summary");
+        }
+        const BeginSummary& begin = *request->admitted_begin;
+        if (begin.reused_prompt_tokens > begin.prompt_tokens) {
+            throw std::logic_error("admitted prefix exceeds its prompt");
+        }
+        const std::uint32_t suffix_tokens = begin.prompt_tokens - begin.reused_prompt_tokens;
+        if (request->computed_prompt_tokens > suffix_tokens ||
+            progress.processed_prompt_tokens > suffix_tokens - request->computed_prompt_tokens) {
+            throw std::logic_error("prefill unit exceeded the admitted prompt suffix");
+        }
+        request->computed_prompt_tokens += progress.processed_prompt_tokens;
+        if (progress.complete && request->computed_prompt_tokens != suffix_tokens) {
+            throw std::logic_error("completed prefill did not reach the admitted prompt frontier");
+        }
+        if (progress.processed_prompt_tokens != 0) { publish_prompt_progress(request); }
         if (progress.capture) {
             if (progress.complete || progress.pending) {
                 throw std::logic_error("prefill capture offer overlaps prompt completion");
@@ -1256,6 +1378,7 @@ private:
     }
 
     void run_prefill_step(const std::array<bool, kMaximumConcurrency>& cancelled_at_unit_start) {
+        nvtx::ScopedRange prefill_range(nvtx::Name::Prefill, nvtx::Category::Prefill);
         EnginePhaseScope setup(*this, EngineHostPhase::CommitOutput);
         const auto prefill_lane = scheduler_.prefill_lane();
         if (!prefill_lane) { throw std::logic_error("no request owns staged prefill"); }
@@ -1669,6 +1792,8 @@ private:
 
     void run_decode_round(const RoundMembership& membership,
                           const std::array<bool, kMaximumConcurrency>& cancelled_at_unit_start) {
+        nvtx::ScopedRange decode_range(nvtx::Name::Decode, nvtx::Category::Decode,
+                                       static_cast<std::uint64_t>(membership.size));
         ProgramCallScope program_call(*this);
         auto pending = instance_.program->decode(
             membership.sequence_span(), membership.budget_span(), &program_call.failed_timing());
@@ -1678,6 +1803,8 @@ private:
     }
 
     void run_control_batch(const ControlMembership& membership) {
+        nvtx::ScopedRange control_range(nvtx::Name::ControlBatch, nvtx::Category::Control,
+                                        static_cast<std::uint64_t>(membership.size));
         EnginePhaseScope phase(*this, EngineHostPhase::CommitOutput);
         if (membership.empty() || membership.row_stride == 0 ||
             membership.tokens.size() !=
@@ -1686,6 +1813,7 @@ private:
         }
 
         std::array<std::size_t, kMaximumConcurrency> generated_sizes{};
+        std::array<std::optional<std::uint32_t>, kMaximumConcurrency> prefix_execution_splits{};
         bool generated_staged         = false;
         const auto rollback_generated = [&]() noexcept {
             if (!generated_staged) { return; }
@@ -1721,9 +1849,13 @@ private:
                 const OutputDecision decision =
                     request->output.preview_control(tokens, request->budget->remaining());
                 if (decision.accepted_tokens != membership.row_stride || decision.finished() ||
-                    decision.continuation != ContinuationAction::Decode) {
+                    decision.continuation != ContinuationAction::Decode ||
+                    (decision.prefix_execution_split_after &&
+                     (*decision.prefix_execution_split_after == 0 ||
+                      *decision.prefix_execution_split_after > decision.accepted_tokens))) {
                     throw std::logic_error("target control preview returned an invalid decision");
                 }
+                prefix_execution_splits[row] = decision.prefix_execution_split_after;
                 if (request->generated.size() > request->generated.capacity() ||
                     tokens.size() > request->generated.capacity() - request->generated.size()) {
                     throw std::logic_error(
@@ -1735,6 +1867,8 @@ private:
             ProgramCallScope program_call(*this);
             const runtime::ExecutionTiming timing = instance_.program->append_forced_tokens(
                 membership.sequence_span(), membership.tokens, membership.row_stride,
+                std::span<const std::optional<std::uint32_t>>(prefix_execution_splits.data(),
+                                                              membership.size),
                 &program_call.failed_timing());
             program_call.finish(timing);
             phase.resume_range();
@@ -1755,7 +1889,8 @@ private:
             request->budget->commit(membership.row_stride);
             Scheduling::consume_service_work(*request, membership.row_stride);
             cumulative_stats_.committed_decode_tokens += membership.row_stride;
-            append_output(request, request->output.commit_preview());
+            auto timing = record_committed_output(request, membership.row_stride);
+            append_output(request, request->output.commit_preview(), std::move(timing));
             request->model_state = EngineRequestState::DecodeReady;
         }
         publish_runtime_stats();

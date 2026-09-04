@@ -15,7 +15,7 @@
 namespace ninfer::serve {
 namespace {
 
-using Json = nlohmann::json;
+using Json = RequestJson;
 
 void require_object(const Json& value, std::string_view name = "request body") {
     if (!value.is_object()) { bad_request(std::string(name) + " must be a JSON object"); }
@@ -105,21 +105,6 @@ std::string item_id(const Json& item, const char* prefix) {
     return item.at("id").get<std::string>();
 }
 
-bool prompt_cache_breakpoint(const Json& value) {
-    if (!value.contains("prompt_cache_breakpoint") ||
-        value.at("prompt_cache_breakpoint").is_null()) {
-        return false;
-    }
-    const Json& breakpoint = value.at("prompt_cache_breakpoint");
-    if (!breakpoint.is_object() || breakpoint.size() != 1 || !breakpoint.contains("mode") ||
-        !breakpoint.at("mode").is_string() ||
-        breakpoint.at("mode").get<std::string>() != "explicit") {
-        bad_request("prompt_cache_breakpoint must be {mode:'explicit'}", "input",
-                    "invalid_cache_breakpoint");
-    }
-    return true;
-}
-
 ninfer::product::media_acquire::Source parse_image_source(const Json& part) {
     if (part.contains("file_id") && !part.at("file_id").is_null()) {
         bad_request("input_image.file_id requires a Files API, which NInfer does not provide",
@@ -169,13 +154,9 @@ ninfer::product::media_acquire::Source parse_video_source(const Json& part) {
 }
 
 void apply_shared_breakpoint(ContentPart& part, const Json& wire, std::size_t& breakpoint_count) {
-    if (!prompt_cache_breakpoint(wire)) { return; }
+    if (!parse_openai_prompt_cache_breakpoint(wire, "input")) { return; }
     ++breakpoint_count;
-    if (breakpoint_count > 4) {
-        bad_request("at most four prompt_cache_breakpoint values are supported per request",
-                    "input", "too_many_cache_breakpoints");
-    }
-    part.cache_boundary_after = ninfer::PromptCacheMarkerKind::SharedStablePrefix;
+    part.cache_boundary_after = CacheBoundary{};
 }
 
 struct ParsedMessage {
@@ -1083,7 +1064,7 @@ ParsedPromptFields parse_prompt_fields(const Json& body, const RequestLimits& li
     return out;
 }
 
-void validate_metadata(const Json& body, Json& metadata) {
+void validate_metadata(const Json& body, nlohmann::json& metadata) {
     if (!body.contains("metadata") || body.at("metadata").is_null()) { return; }
     if (!body.at("metadata").is_object()) { bad_request("metadata must be an object", "metadata"); }
     if (body.at("metadata").size() > 16) {
@@ -1126,29 +1107,12 @@ std::optional<std::string> parse_prompt_cache_hints(const Json& body) {
                         "prompt_cache_retention");
         }
     }
-    if (!body.contains("prompt_cache_options") || body.at("prompt_cache_options").is_null()) {
-        return prompt_cache_key;
-    }
-    const Json& options = body.at("prompt_cache_options");
-    if (!options.is_object()) {
-        bad_request("prompt_cache_options must be an object", "prompt_cache_options");
-    }
-    static const std::unordered_set<std::string> allowed = {"mode", "ttl"};
-    reject_nonnull_unknown_members(options, allowed, "prompt_cache_options");
-    if (options.contains("mode") && !options.at("mode").is_null()) {
-        if (!options.at("mode").is_string()) {
-            bad_request("prompt_cache_options.mode must be a string", "prompt_cache_options");
-        }
-        const std::string mode = options.at("mode").get<std::string>();
-        if (mode != "implicit" && mode != "explicit") {
-            bad_request("prompt_cache_options.mode must be 'implicit' or 'explicit'",
-                        "prompt_cache_options");
-        }
-    }
-    if (options.contains("ttl") && !options.at("ttl").is_null() &&
-        (!options.at("ttl").is_string() || options.at("ttl").get<std::string>() != "30m")) {
-        bad_request("prompt_cache_options.ttl must be '30m'", "prompt_cache_options");
-    }
+    // prompt_cache_options.mode/ttl validation lives solely in
+    // parse_openai_prompt_cache_policy() (see openai_common.cpp), which every caller of this
+    // function also invokes. That parser is intentionally forward-compatible: it ignores
+    // unrecognized members instead of rejecting them, so a client sending a newer hint this
+    // fork doesn't understand yet still gets served. Re-validating here would just re-enforce
+    // the stricter, non-forward-compatible behavior this function no longer owns.
     return prompt_cache_key;
 }
 
@@ -1241,8 +1205,10 @@ OpenAIResponsesCreateRequest parse_openai_responses_create_request(const Json& b
     validate_common_top_level(body, true);
     reject_unsupported_platform_fields(body);
     std::optional<std::string> prompt_cache_key = parse_prompt_cache_hints(body);
+    const OpenAIPromptCachePolicy cache_policy   = parse_openai_prompt_cache_policy(body);
 
     ParsedPromptFields parsed = parse_prompt_fields(body, limits);
+    apply_openai_prompt_cache_policy(parsed.prompt.generation, cache_policy);
     OpenAIResponsesCreateRequest out;
     out.prompt                  = std::move(parsed.prompt);
     out.prompt.prompt_cache_key = std::move(prompt_cache_key);

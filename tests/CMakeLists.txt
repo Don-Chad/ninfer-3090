@@ -64,6 +64,12 @@ ninfer_add_test(ninfer_artifact_materialization_test
 ninfer_add_test(ninfer_media_decode_test
   SOURCES test_media_decode.cpp
   LIBRARIES ninfer_media_decode)
+ninfer_add_test(ninfer_prompt_input_test
+  SOURCES test_prompt_input.cpp
+  LIBRARIES ninfer_product_prompt_input)
+ninfer_add_test(ninfer_pretty_logging_test
+  SOURCES test_pretty_logging.cpp
+  LIBRARIES ninfer_product_logging)
 ninfer_add_test(ninfer_device_test       SOURCES test_device.cpp)
 ninfer_add_test(ninfer_decode_graph_test SOURCES test_decode_graph.cpp)
 ninfer_add_test(ninfer_tensor_test       SOURCES test_tensor.cpp)
@@ -90,7 +96,8 @@ ninfer_add_test(ninfer_perplexity_evaluation_test
 target_include_directories(ninfer_perplexity_evaluation_test PRIVATE
   ${PROJECT_SOURCE_DIR}/apps/perplexity)
 ninfer_add_test(ninfer_cli_options_test
-  SOURCES test_cli_options.cpp ${PROJECT_SOURCE_DIR}/apps/cli/options.cpp)
+  SOURCES test_cli_options.cpp ${PROJECT_SOURCE_DIR}/apps/cli/options.cpp
+  LIBRARIES ninfer_core ninfer_product_logging)
 target_include_directories(ninfer_cli_options_test PRIVATE ${PROJECT_SOURCE_DIR}/apps/cli)
 ninfer_add_test(ninfer_kv_cache_test
   SOURCES test_kv_cache.cpp
@@ -265,12 +272,28 @@ ninfer_add_op_test(ninfer_softmax_attention_test
           ops/softmax_attention/plain_and_packed.cpp
           ops/softmax_attention/context.cpp
   LIBRARIES ninfer_ops)
+add_test(NAME ninfer_softmax_attention_nvfp4_test
+  COMMAND ninfer_softmax_attention_test --nvfp4-only)
+add_test(NAME ninfer_softmax_attention_k8v4_test
+  COMMAND ninfer_softmax_attention_test --k8v4-only)
+set_tests_properties(
+  ninfer_softmax_attention_nvfp4_test
+  ninfer_softmax_attention_k8v4_test
+  PROPERTIES SKIP_RETURN_CODE 77)
 ninfer_add_op_test(ninfer_sliding_window_attention_test
   SOURCES ops/test_sliding_window_attention.cpp
   LIBRARIES ninfer_ops)
 ninfer_add_op_test(ninfer_kv_cache_append_test
   SOURCES ops/test_kv_cache_append.cpp
   LIBRARIES ninfer_ops)
+add_test(NAME ninfer_kv_cache_append_nvfp4_test
+  COMMAND ninfer_kv_cache_append_test --nvfp4-only)
+add_test(NAME ninfer_kv_cache_append_k8v4_test
+  COMMAND ninfer_kv_cache_append_test --k8v4-only)
+set_tests_properties(
+  ninfer_kv_cache_append_nvfp4_test
+  ninfer_kv_cache_append_k8v4_test
+  PROPERTIES SKIP_RETURN_CODE 77)
 ninfer_add_op_test(ninfer_prepare_masked_block_test
   SOURCES ops/test_prepare_masked_block.cpp
   LIBRARIES ninfer_ops)

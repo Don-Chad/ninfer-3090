@@ -134,9 +134,13 @@ void DeviceContext::bind_to_current_thread_noexcept() const noexcept {
     log_cuda_error("cudaSetDevice", cudaSetDevice(device));
 }
 
-int DeviceContext::sm() const noexcept { return props.major * 10 + props.minor; }
+int DeviceContext::compute_capability() const noexcept { return props.major * 10 + props.minor; }
 
-int DeviceContext::sm_count() const noexcept { return props.multiProcessorCount; }
+int DeviceContext::multiprocessor_count() const noexcept { return props.multiProcessorCount; }
+
+DeviceExecutionView DeviceContext::execution_view() const noexcept {
+    return {.stream = stream, .multiprocessor_count = multiprocessor_count()};
+}
 
 std::size_t DeviceContext::total_vram() const noexcept { return props.totalGlobalMem; }
 

@@ -4,20 +4,15 @@
 #include "core/arena.h"
 #include "core/device.h"
 #include "core/evictable_weight_pool.h"
+#include "ninfer/types.h"
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <span>
-#include <string_view>
 #include <vector>
 
 namespace ninfer::artifact {
-
-struct LoadProgress {
-    std::function<void(std::string_view, std::uint64_t, std::uint64_t)> callback;
-};
 
 struct MaterializationStats {
     std::uint64_t file_bytes              = 0;
@@ -57,7 +52,7 @@ public:
 
 private:
     friend MaterializedArtifact materialize(const Reader&, const MaterializationPlan&,
-                                            DeviceContext&, LoadProgress*,
+                                            DeviceContext&, const StartupObserver*,
                                             std::unique_ptr<EvictableWeightPool>);
 
     struct ObjectStorage {
@@ -78,7 +73,8 @@ private:
 // artifact. Its window mirror is not captured here; the caller captures it once the upload stream
 // is synchronized.
 MaterializedArtifact materialize(const Reader& reader, const MaterializationPlan& plan,
-                                 DeviceContext& device, LoadProgress* progress = nullptr,
+                                 DeviceContext& device,
+                                 const StartupObserver* startup_observer = nullptr,
                                  std::unique_ptr<EvictableWeightPool> backing_pool = nullptr);
 
 } // namespace ninfer::artifact

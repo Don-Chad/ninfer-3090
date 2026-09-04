@@ -6,6 +6,7 @@
 
 #include "serve/openai_responses_store.h"
 #include "serve/request.h"
+#include "serve/request_json.h"
 
 #include <nlohmann/json.hpp>
 
@@ -75,12 +76,11 @@ struct BuiltOpenAIResponse {
     std::vector<ChatTurn> output_history;
 };
 
-OpenAIResponsesCreateRequest parse_openai_responses_create_request(const nlohmann::json& body,
+OpenAIResponsesCreateRequest parse_openai_responses_create_request(const RequestJson& body,
                                                                    const RequestLimits& limits);
 
 OpenAIResponsesPromptRequest
-parse_openai_responses_input_tokens_request(const nlohmann::json& body,
-                                            const RequestLimits& limits);
+parse_openai_responses_input_tokens_request(const RequestJson& body, const RequestLimits& limits);
 
 OpenAIResponsesResolvedPrompt
 resolve_openai_responses_prompt(const OpenAIResponsesPromptRequest& request,
