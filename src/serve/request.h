@@ -187,6 +187,8 @@ struct GenerationRequest {
     std::optional<RequestedReasoningEffort> reasoning_effort;
     std::optional<bool> preserve_thinking;
     std::string chat_template_kwargs_json;
+    // NInfer extension: name of a phantom-kv graft loaded with --graft; empty for none.
+    std::string graft;
     ninfer::PromptContinuationMode continuation = ninfer::PromptContinuationMode::NewAssistantTurn;
     bool private_cache_boundary_at_prompt_end   = false;
     bool allow_engine_automatic_shared_prefixes = true;

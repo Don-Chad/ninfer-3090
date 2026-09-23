@@ -3,6 +3,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -185,6 +186,16 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
             break;
         }
     }
+    if (!request.graft.empty()) {
+        const bool loaded = std::any_of(
+            server.grafts.begin(), server.grafts.end(),
+            [&](const ninfer::GraftSource& source) { return source.name == request.graft; });
+        if (!loaded) {
+            invalid_prompt_option("graft '" + request.graft + "' is not loaded on this server",
+                                  "graft", "unknown_graft");
+        }
+        result.graft = request.graft;
+    }
     if (request.continuation == ninfer::PromptContinuationMode::ContinueFinalAssistant &&
         result.enable_thinking == true) {
         invalid_prompt_option("assistant prefill cannot be combined with enabled thinking",
@@ -288,6 +299,7 @@ ninfer::PromptInput to_prompt_input(const GenerationRequest& request,
     input.options.reasoning_effort                 = semantics.reasoning_effort;
     input.options.preserve_thinking                = semantics.preserve_thinking;
     input.options.chat_template_kwargs_json        = semantics.chat_template_kwargs_json;
+    input.options.graft                            = semantics.graft;
     input.options.add_vision_id                    = false;
     const std::vector<const ToolDefinition*> tools = effective_tools(request);
     input.options.tool_jsons.reserve(tools.size());

@@ -817,8 +817,22 @@ int test_common_objects() {
 
 } // namespace
 
+int test_graft_extension() {
+    Json body       = base_request();
+    int failures    = check(parse(body).generation.graft.empty(), "absent graft selected one");
+    body["graft"]   = nullptr;
+    failures       += check(parse(body).generation.graft.empty(), "null graft selected one");
+    body["graft"]   = "product";
+    failures       += check(parse(body).generation.graft == "product", "graft name was not parsed");
+    body["graft"]   = 5;
+    failures       += check(api_error([&] { (void)parse(body); }).param == "graft",
+                            "non-string graft was accepted");
+    return failures;
+}
+
 int main() {
     int failures = 0;
+    failures += test_graft_extension();
     failures += test_request_envelope_and_sampling();
     failures += test_standard_field_policy();
     failures += test_constrained_decoding_extensions();

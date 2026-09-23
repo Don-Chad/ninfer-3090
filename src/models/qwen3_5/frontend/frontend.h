@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ninfer/types.h"
+#include "models/qwen3_5/frontend/graft.h"
 #include "models/qwen3_5/frontend/output_session.h"
 #include "models/registry.h"
 #include "runtime/contract/request.h"
@@ -28,6 +29,8 @@ struct FrontendOptions {
     // Largest merged-token count one media item may occupy; larger media is downscaled at
     // preprocessing instead of being rejected. Zero leaves the artifact's pixel ceilings.
     std::uint32_t vision_max_merged_tokens = 16384;
+    // Hidden prompt prefixes a request may select through PromptOptions::graft.
+    std::vector<PromptGraft> grafts;
 };
 
 struct FrontendResources;

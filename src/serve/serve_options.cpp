@@ -92,7 +92,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--gdn-state-fp16] "
            "[--mlp-a8-decode] [--no-prefill-a8] "
            "[--prefill-cublas [--no-prefill-cublas-projections]] [--lookup-ngram N] "
-           "[--no-thinking] [--preserve-thinking] [--cors] "
+           "[--no-thinking] [--preserve-thinking] [--graft NAME=PATH]... [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
@@ -135,6 +135,9 @@ std::string serve_usage_text(const char* argv0) {
            "       --default-thinking-budget caps model-origin thinking for enabled requests; "
            "control tokens count toward the request output limit\n"
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
+           "       --graft NAME=PATH loads a phantom-kv prefill graft (a safetensors container with a "
+           ".json sidecar beside it); a request selecting it with \"graft\": \"NAME\" runs as if the "
+           "graft's hidden turn preceded its own messages. Repeatable\n"
            "       sampler defaults come from the loaded model and resolved thinking mode; "
            "server flags and request fields override individual values.\n"
            "       --greedy forces temperature 0 (exact argmax).\n";
@@ -417,6 +420,14 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.enable_thinking = false;
         } else if (arg == "--preserve-thinking") {
             options.preserve_thinking = true;
+        } else if (arg == "--graft") {
+            const std::string_view spec = require_value("--graft");
+            const std::size_t equals    = spec.find('=');
+            if (equals == 0 || equals == std::string_view::npos || equals + 1 == spec.size()) {
+                throw std::invalid_argument("--graft must be NAME=PATH");
+            }
+            options.grafts.push_back(GraftSource{.name = std::string(spec.substr(0, equals)),
+                                                 .path = std::string(spec.substr(equals + 1))});
         } else if (arg == "--cors") {
             options.enable_cors = true;
         } else if (arg == "--temperature") {

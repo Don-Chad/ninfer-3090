@@ -1136,6 +1136,113 @@ int test_media_token_ids_come_from_tokenizer() {
                  "Vision preparation ignored the loaded image token ID");
 }
 
+// A graft is a hidden token prefix: the grafted prompt must be exactly the graft followed by the
+// ungrafted prompt, with every later position, frontier and Vision span moved by the graft length.
+int test_prompt_graft() {
+    const ninfer::models::qwen3_5::PromptGraft graft{
+        .name   = "product",
+        .tokens = {248045, fixture_byte_token('s'), fixture_byte_token('y'), 248046, 32}};
+    const std::size_t n = graft.tokens.size();
+    ninfer::models::qwen3_5::FrontendOptions options;
+    options.vision_enabled = true;
+    options.max_context    = std::numeric_limits<std::uint32_t>::max();
+    options.grafts         = {graft};
+    const Frontend frontend = make_frontend(resources(), options);
+
+    const auto text_input = [](std::string graft_name) {
+        ninfer::ChatMessage message;
+        message.role = ninfer::ChatRole::User;
+        message.parts.push_back(
+            ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
+        ninfer::PromptInput input;
+        input.messages.push_back(std::move(message));
+        input.options.graft = std::move(graft_name);
+        return input;
+    };
+    const auto plain_prompt   = frontend.prepare(text_input(""));
+    const auto grafted_prompt = frontend.prepare(text_input("product"));
+    const auto& plain         = FrontendFactory::inspect(plain_prompt);
+    const auto& grafted       = FrontendFactory::inspect(grafted_prompt);
+
+    std::vector<ninfer::TokenId> expected = graft.tokens;
+    expected.insert(expected.end(), plain.token_ids.begin(), plain.token_ids.end());
+    int failures = check(grafted.token_ids == expected,
+                         "grafted prompt is not the graft followed by the plain prompt");
+    bool positions = true;
+    for (int axis = 0; axis < 3; ++axis) {
+        const auto shifted = grafted.position_axis(axis);
+        const auto base    = plain.position_axis(axis);
+        for (std::size_t i = 0; i < n; ++i) { positions &= shifted[i] == static_cast<int>(i); }
+        for (std::size_t i = 0; i < base.size(); ++i) {
+            positions &= shifted[n + i] == base[i] + static_cast<int>(n);
+        }
+    }
+    failures += check(positions && grafted.rope_delta == plain.rope_delta,
+                      "graft positions are not contiguous with the prompt");
+    failures += check(grafted.identity.rewrite_checkpoint && plain.identity.rewrite_checkpoint &&
+                          grafted.identity.rewrite_checkpoint->frontier ==
+                              plain.identity.rewrite_checkpoint->frontier + n,
+                      "rewrite checkpoint did not move past the graft");
+    const auto& opportunities = grafted.context_cache.opportunities;
+    failures += check(std::any_of(opportunities.begin(), opportunities.end(),
+                                  [&](const auto& opportunity) {
+                                      return opportunity.frontier == n &&
+                                             opportunity.kind ==
+                                                 ninfer::PromptCacheMarkerKind::SharedStablePrefix;
+                                  }),
+                      "the end of the graft is not offered as a shared prefix");
+    failures += check(frontend.count_tokens(text_input("product")) ==
+                          frontend.count_tokens(text_input("")) + n,
+                      "token counting ignored the graft");
+    bool unknown = false;
+    try {
+        (void)frontend.prepare(text_input("missing"));
+    } catch (const std::invalid_argument&) { unknown = true; }
+    failures += check(unknown, "an unknown graft name was accepted");
+
+    // Vision spans and their M-RoPE positions move by the graft length too.
+    auto image_plain   = image_input();
+    auto image_grafted = image_input();
+    image_grafted.options.graft = "product";
+    const auto plain_image      = frontend.prepare(std::move(image_plain));
+    const auto grafted_image    = frontend.prepare(std::move(image_grafted));
+    const auto& plain_media     = FrontendFactory::inspect(plain_image);
+    const auto& grafted_media   = FrontendFactory::inspect(grafted_image);
+    bool media = grafted_media.vision_items.size() == plain_media.vision_items.size() &&
+                 grafted_media.rope_delta == plain_media.rope_delta &&
+                 grafted_media.token_types.size() == plain_media.token_types.size() + n;
+    for (std::size_t item = 0; media && item < plain_media.vision_items.size(); ++item) {
+        const auto& before = plain_media.vision_items[item].token_spans;
+        const auto& after  = grafted_media.vision_items[item].token_spans;
+        media &= before.size() == after.size();
+        for (std::size_t span = 0; media && span < before.size(); ++span) {
+            media &= after[span].begin == before[span].begin + n &&
+                     after[span].count == before[span].count;
+        }
+    }
+    for (int axis = 0; media && axis < 3; ++axis) {
+        const auto shifted = grafted_media.position_axis(axis);
+        const auto base    = plain_media.position_axis(axis);
+        for (std::size_t i = 0; i < base.size(); ++i) {
+            media &= shifted[n + i] == base[i] + static_cast<int>(n);
+        }
+    }
+    failures += check(media, "graft did not shift Vision spans and positions");
+
+    // The graft consumes context: a prompt that fits exactly without it no longer fits.
+    ninfer::models::qwen3_5::FrontendOptions tight = options;
+    tight.max_context =
+        static_cast<std::uint32_t>(FrontendFactory::inspect(frontend.prepare(text_input("")))
+                                       .token_ids.size());
+    const Frontend tight_frontend = make_frontend(resources(), tight);
+    failures += check(tight_frontend.prepare(text_input("")).summary().prompt_tokens ==
+                          tight.max_context,
+                      "tight frontend rejected the ungrafted prompt");
+    failures += check(throws_context_length([&] { (void)tight_frontend.prepare(text_input("product")); }),
+                      "grafted prompt beyond max_context was accepted");
+    return failures;
+}
+
 int test_text_and_image_prepare(const Frontend& frontend) {
     ninfer::ChatMessage text_message;
     text_message.role = ninfer::ChatRole::User;
@@ -2179,6 +2286,7 @@ int main() {
     failures += test_template_file_execution();
     failures += test_invalid_public_part_enums(frontend);
     failures += test_text_and_image_prepare(frontend);
+    failures += test_prompt_graft();
     failures += test_media_token_ids_come_from_tokenizer();
     failures += test_template_media_contract();
     failures += test_image_resize_rejection_policy();

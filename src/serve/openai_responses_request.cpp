@@ -1056,6 +1056,7 @@ ParsedPromptFields parse_prompt_fields(const Json& body, const RequestLimits& li
     parse_text(body);
     parse_truncation(body);
     parse_preserve_thinking(body, out.prompt);
+    out.prompt.generation.graft      = parse_graft_field(body);
     out.prompt.generation.max_tokens = limits.default_max_tokens;
     return out;
 }
@@ -1141,6 +1142,7 @@ void validate_common_top_level(const Json& body, bool create) {
                                                                   "client_metadata",
                                                                   "context_management",
                                                                   "conversation",
+                                                                  "graft",
                                                                   "include",
                                                                   "input",
                                                                   "instructions",
@@ -1172,6 +1174,7 @@ void validate_common_top_level(const Json& body, bool create) {
                                                                   "user"};
     static const std::unordered_set<std::string> count_fields  = {"chat_template_kwargs",
                                                                   "conversation",
+                                                                  "graft",
                                                                   "input",
                                                                   "instructions",
                                                                   "model",

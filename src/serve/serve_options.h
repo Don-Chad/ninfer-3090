@@ -77,6 +77,8 @@ struct ServeOptions {
     bool auto_prefix_grid = false;
     std::optional<bool> enable_thinking;
     std::optional<bool> preserve_thinking;
+    // --graft NAME=PATH, repeatable: phantom-kv grafts a request may select with "graft": NAME.
+    std::vector<GraftSource> grafts;
     std::optional<std::uint32_t> default_thinking_budget;
     int default_max_tokens = kDefaultMaxTokens;
     bool enable_cors       = false; // send permissive CORS headers for browser UIs

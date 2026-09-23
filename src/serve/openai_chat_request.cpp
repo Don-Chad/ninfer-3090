@@ -913,6 +913,7 @@ OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestL
     output.generation.enable_thinking           = template_options.enable_thinking;
     output.generation.preserve_thinking         = template_options.preserve_thinking;
     output.generation.chat_template_kwargs_json = template_options.kwargs_json;
+    output.generation.graft                     = parse_graft_field(body);
     apply_openai_prompt_cache_policy(output.generation, cache_policy);
     return output;
 }

@@ -1066,8 +1066,23 @@ int test_input_tokens_uses_shared_state_path() {
 
 } // namespace
 
+int test_graft_extension() {
+    Json body = {{"model", "m"}, {"input", "hello"}, {"graft", "product"}};
+    int failures =
+        check(parse_openai_responses_create_request(body, limits()).prompt.generation.graft ==
+                  "product",
+              "Responses graft name was not parsed");
+    body["graft"] = true;
+    failures += check(api_error([&] {
+                          (void)parse_openai_responses_create_request(body, limits());
+                      }).param == "graft",
+                      "non-string Responses graft was accepted");
+    return failures;
+}
+
 int main() {
     int failures = 0;
+    failures += test_graft_extension();
     failures += test_basic_request_and_resolution();
     failures += test_budgets_and_nonsemantic_hints();
     failures += test_typed_items_and_cache_markers();
