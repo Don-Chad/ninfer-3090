@@ -2,7 +2,6 @@
 # default whitespace checks.
 /third_party/spdlog/include/** -whitespace
 /third_party/spdlog/src/** -whitespace
-
 # Shell scripts must be LF in the repository and in every checkout, not merely normalised on
 # commit. `core.autocrlf=input` was not enough: every .sh in scripts/ had CRLF committed, and
 # the two Linux launchers the README recommends (then run-qwen36-35b-a3b-c1-maxctx.sh and
@@ -15,9 +14,9 @@
 # script healthy; the breakage only appears for the people the Linux archive ships to.
 *.sh text eol=lf
 *.bash text eol=lf
-
 # The Windows counterparts want CRLF for the same reason, and pinning both directions keeps the
 # pairs from drifting apart on whichever platform last touched them.
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
+artifacts/grafts/*.bin filter=lfs diff=lfs merge=lfs -text
