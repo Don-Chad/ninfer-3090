@@ -815,8 +815,6 @@ int test_common_objects() {
     return failures;
 }
 
-} // namespace
-
 int test_graft_extension() {
     Json body       = base_request();
     int failures    = check(parse(body).generation.graft.empty(), "absent graft selected one");
@@ -829,6 +827,8 @@ int test_graft_extension() {
                             "non-string graft was accepted");
     return failures;
 }
+
+} // namespace
 
 int main() {
     int failures = 0;

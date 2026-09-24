@@ -143,6 +143,40 @@ void expect_tensor(const std::map<std::string, TensorEntry>& tensors, const std:
 
 } // namespace
 
+GraftKind parse_graft_kind(const std::string& kind, const GraftError& error) {
+    if (kind == "prefill_kv") { return GraftKind::PrefillKV; }
+    if (kind == "direct_kv") { return GraftKind::DirectKV; }
+    if (kind == "softprompt_kv") { return GraftKind::SoftpromptKV; }
+    error.fail("unknown graft kind '" + kind + "'");
+}
+
+void validate_common(const Json& meta, const TextConfig& text, const GraftError& error) {
+    error.require(json_u64(meta, "format_version", error) == 1,
+                  "only phantom-kv format_version 1 is supported");
+    error.require(meta.contains("layer_types") && meta.at("layer_types").is_array(),
+                  "metadata field 'layer_types' must be an array");
+    const Json& layer_types = meta.at("layer_types");
+    error.require(layer_types.size() == text.layer_types.size(),
+                  "graft has " + std::to_string(layer_types.size()) + " layers, the model has " +
+                      std::to_string(text.layer_types.size()));
+    for (std::size_t layer = 0; layer < layer_types.size(); ++layer) {
+        const std::string type = layer_types[layer].is_string()
+                                     ? layer_types[layer].get<std::string>()
+                                     : std::string();
+        const MixerKind expected = text.layer_types[layer];
+        const bool matches =
+            (type == "full_attention" && expected == MixerKind::FullAttention) ||
+            (type == "linear_attention" && expected == MixerKind::LinearAttention);
+        error.require(matches, "layer " + std::to_string(layer) + " is '" + type +
+                                   "' in the graft but not in the model");
+    }
+    error.require(json_u64(meta, "n_layers", error) == text.layer_types.size() &&
+                      json_u64(meta, "n_attn_layers", error) == text.full_attention_layers,
+                  "n_layers/n_attn_layers disagree with layer_types");
+    error.require(text.attention.has_value() && text.gdn.has_value(),
+                  "the model is not a hybrid attention/Gated DeltaNet model");
+}
+
 PromptGraft load_prompt_graft(const GraftSource& source, const TextConfig& text) {
     const GraftError error(source);
     error.require(!source.name.empty(), "graft name is empty");
@@ -158,42 +192,10 @@ PromptGraft load_prompt_graft(const GraftSource& source, const TextConfig& text)
     }
     error.require(meta.is_object(), "sidecar is not a JSON object");
 
-    error.require(json_u64(meta, "format_version", error) == 1,
-                  "only phantom-kv format_version 1 is supported");
-    const std::string kind = json_string(meta, "kind", error);
-    // Replaying ids is the whole mechanism here. direct_kv and softprompt_kv grafts carry no token
-    // ids and would need their tensors written into the cache directly.
-    error.require(kind == "prefill_kv",
-                  "kind '" + kind + "' has no replayable token ids; only prefill_kv is supported");
-    error.require(json_string(meta, "replay", error) == "ids",
-                  "prefill_kv graft does not carry replay ids");
-
-    // The hybrid layout must be this model's, layer for layer: the graft's attention and linear
-    // layers are the ones it was computed through.
-    error.require(meta.contains("layer_types") && meta.at("layer_types").is_array(),
-                  "metadata field 'layer_types' must be an array");
-    const Json& layer_types = meta.at("layer_types");
-    error.require(layer_types.size() == text.layer_types.size(),
-                  "graft has " + std::to_string(layer_types.size()) + " layers, the model has " +
-                      std::to_string(text.layer_types.size()));
-    for (std::size_t layer = 0; layer < layer_types.size(); ++layer) {
-        const std::string type = layer_types[layer].is_string() ? layer_types[layer].get<std::string>()
-                                                               : std::string();
-        const MixerKind expected = text.layer_types[layer];
-        const bool matches =
-            (type == "full_attention" && expected == MixerKind::FullAttention) ||
-            (type == "linear_attention" && expected == MixerKind::LinearAttention);
-        error.require(matches, "layer " + std::to_string(layer) + " is '" + type +
-                                   "' in the graft but not in the model");
-    }
-    error.require(json_u64(meta, "n_layers", error) == text.layer_types.size() &&
-                      json_u64(meta, "n_attn_layers", error) == text.full_attention_layers,
-                  "n_layers/n_attn_layers disagree with layer_types");
-    error.require(text.attention.has_value() && text.gdn.has_value(),
-                  "the model is not a hybrid attention/Gated DeltaNet model");
+    validate_common(meta, text, error);
+    const GraftKind kind = parse_graft_kind(json_string(meta, "kind", error), error);
     const AttentionConfig& attention = *text.attention;
     const GdnConfig& gdn             = *text.gdn;
-
     const std::uint64_t slots = json_u64(meta, "n_slots", error);
     error.require(slots > 0, "graft has no slots");
     error.require(json_u64(meta, "n_kv_heads", error) == attention.num_key_value_heads &&
@@ -231,21 +233,57 @@ PromptGraft load_prompt_graft(const GraftSource& source, const TextConfig& text)
                   {linear_layers, gdn.linear_num_value_heads, gdn.linear_key_head_dim,
                    gdn.linear_value_head_dim},
                   error);
-    expect_tensor(tensors, "replay_ids", "I64", {slots}, error);
-    error.require(tensors.size() == 5, "container holds tensors beyond k, v, conv, rec, replay_ids");
 
-    const TensorEntry& ids = tensors.at("replay_ids");
     PromptGraft graft;
     graft.name           = source.name;
+    graft.kind           = kind;
+    graft.n_slots        = static_cast<std::uint32_t>(slots);
     graft.payload_sha256 = actual_sha256;
-    graft.tokens.reserve(static_cast<std::size_t>(slots));
-    for (std::uint64_t index = 0; index < slots; ++index) {
-        std::int64_t token = 0;
-        std::memcpy(&token, payload.data() + ids.begin + index * sizeof(token), sizeof(token));
-        error.require(token >= 0 && static_cast<std::uint64_t>(token) < text.vocab_size,
-                      "replay id " + std::to_string(token) + " at slot " + std::to_string(index) +
-                          " is outside the model vocabulary");
-        graft.tokens.push_back(static_cast<TokenId>(token));
+
+    if (kind == GraftKind::PrefillKV) {
+        error.require(meta.contains("replay") && json_string(meta, "replay", error) == "ids",
+                      "prefill_kv graft does not carry replay ids");
+        expect_tensor(tensors, "replay_ids", "I64", {slots}, error);
+        error.require(tensors.size() == 5,
+                      "container holds tensors beyond k, v, conv, rec, replay_ids");
+        const TensorEntry& ids = tensors.at("replay_ids");
+        graft.tokens.reserve(static_cast<std::size_t>(slots));
+        for (std::uint64_t index = 0; index < slots; ++index) {
+            std::int64_t token = 0;
+            std::memcpy(&token, payload.data() + ids.begin + index * sizeof(token), sizeof(token));
+            error.require(
+                token >= 0 && static_cast<std::uint64_t>(token) < text.vocab_size,
+                "replay id " + std::to_string(token) + " at slot " + std::to_string(index) +
+                    " is outside the model vocabulary");
+            graft.tokens.push_back(static_cast<TokenId>(token));
+        }
+    } else {
+        // direct_kv and softprompt_kv: carry the raw tensor bytes for injection
+        const std::size_t expected_tensors = (kind == GraftKind::DirectKV) ? 4 : 5;
+        if (kind == GraftKind::SoftpromptKV) {
+            expect_tensor(tensors, "replay_embeds", "BF16",
+                          {slots, text.hidden_size}, error);
+        }
+        error.require(tensors.size() == expected_tensors,
+                      "container holds an unexpected number of tensors");
+
+        GraftTensors data;
+        data.payload.assign(payload.begin(), payload.end());
+        data.k    = {tensors.at("k").begin, tensors.at("k").end};
+        data.v    = {tensors.at("v").begin, tensors.at("v").end};
+        data.conv = {tensors.at("conv").begin, tensors.at("conv").end};
+        data.rec  = {tensors.at("rec").begin, tensors.at("rec").end};
+        data.n_slots         = slots;
+        data.n_attn_layers   = attention_layers;
+        data.n_linear_layers = linear_layers;
+        data.n_kv_heads      = attention.num_key_value_heads;
+        data.head_dim        = attention.head_dim;
+        data.conv_channels   = gdn.conv_channels();
+        data.conv_width      = gdn.linear_conv_kernel_dim;
+        data.value_heads     = gdn.linear_num_value_heads;
+        data.key_head_dim    = gdn.linear_key_head_dim;
+        data.value_head_dim  = gdn.linear_value_head_dim;
+        graft.tensors        = std::move(data);
     }
     return graft;
 }

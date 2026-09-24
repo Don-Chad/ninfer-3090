@@ -767,8 +767,6 @@ int test_stream() {
     return failures;
 }
 
-} // namespace
-
 int test_graft_extension() {
     Json body     = base_request();
     body["graft"] = "product";
@@ -779,6 +777,8 @@ int test_graft_extension() {
                       "non-string Messages graft was accepted");
     return failures;
 }
+
+} // namespace
 
 int main() {
     int failures = 0;

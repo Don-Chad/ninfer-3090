@@ -2,6 +2,7 @@
 
 // Small fixed-capacity request execution for every backend.
 
+#include <cstdio>
 #include "core/device.h"
 #include "core/nvtx.h"
 #include "ninfer/types.h"
@@ -81,6 +82,11 @@ public:
         if (!options.context_cache.max_private_continuations ||
             !options.context_cache.max_shared_prefixes) {
             throw std::logic_error("target admission capacity does not match the Engine");
+        }
+        for (auto& entry : instance_.program->graft_catalog_entries()) {
+            std::uint32_t rm_slot = resources_.register_external_shared_prefix(
+                std::move(entry.handle), std::move(entry.summary));
+            instance_.program->set_graft_rm_slot(entry.name, rm_slot);
         }
         std::promise<void> startup;
         std::future<void> started = startup.get_future();
@@ -2025,7 +2031,16 @@ private:
                 }
                 set_host_work_class(HostWorkClass::Control);
                 finish_engine_phase(boundary, EngineHostPhase::Boundary);
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "ENGINE FATAL: %s\n", e.what());
+                std::fflush(stderr);
+                const std::exception_ptr error = std::current_exception();
+                HostPhaseMeasurement cleanup   = begin_host_phase();
+                fail_all_locked(error);
+                finish_engine_phase(cleanup, EngineHostPhase::Maintenance);
             } catch (...) {
+                std::fprintf(stderr, "ENGINE FATAL: unknown exception\n");
+                std::fflush(stderr);
                 const std::exception_ptr error = std::current_exception();
                 HostPhaseMeasurement cleanup   = begin_host_phase();
                 fail_all_locked(error);

@@ -2,6 +2,7 @@
 #include "artifact/reader.h"
 #include "artifact/formats.h"
 #include "core/startup.h"
+#include "models/qwen3_5/frontend/graft.h"
 #include "models/qwen3_5/load.h"
 #include "models/qwen3_5/measurement.h"
 
@@ -228,6 +229,11 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
     StartupPhaseScope program(options.startup_observer, StartupPhase::ProgramInitialize);
     instance->program = models::qwen3_5::create_program(instance->parameters, std::move(sequence),
                                                         device, options.startup_observer);
+    for (const auto& graft : instance->frontend.grafts()) {
+        if (graft.kind != models::qwen3_5::GraftKind::PrefillKV) {
+            instance->program->inject_graft(graft);
+        }
+    }
     device.synchronize();
     program.complete();
     instance->kv_capacity_resolution.available_after_startup_bytes = current_free_device_bytes();

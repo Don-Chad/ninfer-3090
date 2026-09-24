@@ -1064,8 +1064,6 @@ int test_input_tokens_uses_shared_state_path() {
     return failures;
 }
 
-} // namespace
-
 int test_graft_extension() {
     Json body = {{"model", "m"}, {"input", "hello"}, {"graft", "product"}};
     int failures =
@@ -1079,6 +1077,8 @@ int test_graft_extension() {
                       "non-string Responses graft was accepted");
     return failures;
 }
+
+} // namespace
 
 int main() {
     int failures = 0;

@@ -323,6 +323,37 @@ std::optional<AdmissionCandidate> ProgramImpl::inspect_admission(
         active_continuations[lane] < continuation_capacity) {
         throw std::logic_error("admission destination is active");
     }
+
+    // Graft bypass: when no external source is provided but the prompt names a graft, resolve the
+    // graft's pinned shared prefix internally. This avoids threading graft handles through the
+    // resource manager's catalog/prefix-index system which requires token-based identity matching.
+    bool is_graft = false;
+    std::optional<std::uint32_t> graft_shared_slot;
+    std::optional<SharedPrefixHandle> graft_handle_storage;
+    if (source == nullptr && shared_source == nullptr && !prompt.graft_name.empty()) {
+        auto it = graft_prefix_slots.find(prompt.graft_name);
+        if (it != graft_prefix_slots.end()) {
+            const auto& entry = it->second;
+            if (entry.slot_index < shared_prefix_capacity &&
+                is_live_shared_prefix_role(shared_prefix_slots[entry.slot_index].role) &&
+                shared_prefix_slots[entry.slot_index].generation == entry.generation) {
+                graft_handle_storage.emplace(
+                    ContractAccess::make_shared_prefix(this, entry.slot_index, entry.generation));
+                shared_source = &*graft_handle_storage;
+                checkpoint    = runtime::CheckpointRef{
+                       .kind     = runtime::CheckpointKind::SharedStablePrefix,
+                       .frontier = shared_prefix_states[entry.slot_index].frontier,
+                       .ordinal  = 0,
+                };
+                is_graft = true;
+                auto rm_it = graft_rm_catalog_slots.find(prompt.graft_name);
+                if (rm_it != graft_rm_catalog_slots.end()) {
+                    graft_shared_slot = rm_it->second;
+                }
+            }
+        }
+    }
+
     if ((source != nullptr && shared_source != nullptr) ||
         ((source == nullptr && shared_source == nullptr) != !checkpoint.has_value())) {
         throw std::invalid_argument("admission source and checkpoint must be specified together");
@@ -343,8 +374,12 @@ std::optional<AdmissionCandidate> ProgramImpl::inspect_admission(
     }
 
     std::optional<AdmissionCandidate> plan = inspect_lane(
-        lane, prompt, base, source_state, shared_state, checkpoint, must_retain_private_source);
+        lane, prompt, base, source_state, shared_state, checkpoint, must_retain_private_source,
+        is_graft);
     if (!plan) { return std::nullopt; }
+    if (graft_shared_slot) {
+        plan->impl_->graft_shared_slot_index = graft_shared_slot;
+    }
     plan->impl_->destination       = destination;
     plan->impl_->destination_epoch = lane_epochs[lane];
     plan->impl_->has_source        = source != nullptr;
@@ -459,8 +494,8 @@ ProgramImpl::materialization_source_protection(const ResourceCandidateState& adm
         }
     } else if (admission.has_shared_source) {
         if (admission.shared_source_index >= shared_prefix_capacity ||
-            shared_prefix_slots[admission.shared_source_index].role !=
-                SharedPrefixSlotRole::Catalogued ||
+            !is_live_shared_prefix_role(
+                shared_prefix_slots[admission.shared_source_index].role) ||
             shared_prefix_slots[admission.shared_source_index].generation !=
                 admission.shared_source_generation) {
             return std::nullopt;
@@ -1966,9 +2001,14 @@ std::optional<AdmissionCandidate> ProgramImpl::seal_materialization(
     if (!compose_pressure_candidate(*copy.impl_, pressure_owners, pressure_owner_ids,
                                     pressure_options, shared_pressure_owners,
                                     shared_pressure_owner_ids, shared_pressure_options) ||
-        copy.impl_->blocked_host_allocation_bytes != 0 ||
-        revalidate_materialization(copy, prompt) != runtime::PreflightStatus::Ready) {
+        copy.impl_->blocked_host_allocation_bytes != 0) {
         return std::nullopt;
+    }
+    {
+        const auto sm_status = revalidate_materialization(copy, prompt);
+        if (sm_status != runtime::PreflightStatus::Ready) {
+            return std::nullopt;
+        }
     }
     return copy;
 }
@@ -2344,7 +2384,9 @@ ProgramImpl::revalidate_materialization(const AdmissionCandidate& plan,
     }
     const std::optional<MaterializationSourceProtection> protection =
         materialization_source_protection(details);
-    if (!protection) { return runtime::PreflightStatus::StalePolicyState; }
+    if (!protection) {
+        return runtime::PreflightStatus::StalePolicyState;
+    }
     if (!physical_peak_fits(details.demand.physical_peak_additional)) {
         return runtime::PreflightStatus::StalePolicyState;
     }
@@ -2381,8 +2423,8 @@ ProgramImpl::revalidate_materialization(const AdmissionCandidate& plan,
     const SharedPrefixState* shared_state = nullptr;
     if (details.has_shared_source) {
         if (details.shared_source_index >= shared_prefix_capacity ||
-            shared_prefix_slots[details.shared_source_index].role !=
-                SharedPrefixSlotRole::Catalogued ||
+            !is_live_shared_prefix_role(
+                shared_prefix_slots[details.shared_source_index].role) ||
             shared_prefix_slots[details.shared_source_index].generation !=
                 details.shared_source_generation) {
             return runtime::PreflightStatus::StalePolicyState;
@@ -2405,7 +2447,9 @@ ProgramImpl::revalidate_materialization(const AdmissionCandidate& plan,
             matches = pressure_decision_valid(continuation_states[index],
                                               details.pressure_options[victim], &*protection);
         }
-        if (!matches) { return runtime::PreflightStatus::StalePolicyState; }
+        if (!matches) {
+            return runtime::PreflightStatus::StalePolicyState;
+        }
         if (details.has_source && index == details.source_index &&
             generation == details.source_generation) {
             return runtime::PreflightStatus::InvariantFailure;
@@ -2489,7 +2533,9 @@ ProgramImpl::revalidate_materialization(const AdmissionCandidate& plan,
     const std::optional<detail::PressureTargetProjection> projected_pressure =
         evaluate_pressure_target(&*protection, projected_private_owners, details.pressure_options,
                                  projected_shared_owners, details.shared_pressure_options, nullptr);
-    if (!projected_pressure) { return runtime::PreflightStatus::StalePolicyState; }
+    if (!projected_pressure) {
+        return runtime::PreflightStatus::StalePolicyState;
+    }
 
     const std::uint32_t prompt_tokens = static_cast<std::uint32_t>(prompt.token_ids.size());
     if (prompt_tokens != details.summary.prompt_tokens ||
@@ -2503,7 +2549,7 @@ ProgramImpl::revalidate_materialization(const AdmissionCandidate& plan,
                                          source_state->prefix_identity, details.reuse_base)) {
         return runtime::PreflightStatus::StalePolicyState;
     }
-    if (shared_state != nullptr &&
+    if (prompt.graft_frontier == 0 && shared_state != nullptr &&
         (!shared_state->identity || shared_state->identity->prefix_identity() == nullptr ||
          !qwen3_5::detail::prefix_matches(prompt, shared_state->identity->ledger(),
                                           *shared_state->identity->prefix_identity(),

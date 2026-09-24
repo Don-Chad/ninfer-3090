@@ -6,6 +6,7 @@ target_sources(ninfer_model_runtime PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/program/planning/pressure_planner.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/planning/startup.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/planning/graph_profiles.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/program/graft_injection.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/program.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/program_impl.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/context_work.cpp"

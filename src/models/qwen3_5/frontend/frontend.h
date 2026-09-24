@@ -84,6 +84,7 @@ public:
                         const ThinkingControlOptions& thinking = {}) const;
     [[nodiscard]] const StopPolicy& default_stop_policy() const noexcept;
     [[nodiscard]] const ModelSamplingDefaults& sampling_defaults() const noexcept;
+    [[nodiscard]] const std::vector<PromptGraft>& grafts() const noexcept;
 
 private:
     class Impl;

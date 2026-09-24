@@ -3,6 +3,7 @@
 #include "ninfer/types.h"
 #include "runtime/contract/execution.h"
 #include "runtime/contract/resources.h"
+#include "models/qwen3_5/frontend/graft.h"
 #include "models/qwen3_5/frontend/prepared_prompt.h"
 
 #include <cstddef>
@@ -219,6 +220,7 @@ public:
     [[nodiscard]] const runtime::RequestPlanSummary& summary() const noexcept;
     [[nodiscard]] const runtime::IdentityMaterializationAssessment&
     identity_assessment() const noexcept;
+    [[nodiscard]] std::optional<std::uint32_t> graft_shared_slot() const noexcept;
 
 public:
     // Family-private construction/storage seam. Exact packages expose only the completed alias;
@@ -943,6 +945,18 @@ public:
     [[nodiscard]] PhysicalUsageSnapshot physical_usage() const noexcept;
     [[nodiscard]] MemorySummary memory_summary() const noexcept;
     void reset_memory_peaks() noexcept;
+
+    // Inject a direct_kv or softprompt_kv graft into a synthesized shared-prefix entry.
+    // Called once at startup before any request is admitted.
+    void inject_graft(const PromptGraft& graft);
+
+    struct GraftCatalogEntry {
+        std::string name;
+        SharedPrefixHandle handle;
+        SharedPrefixSummary summary;
+    };
+    [[nodiscard]] std::vector<GraftCatalogEntry> graft_catalog_entries();
+    void set_graft_rm_slot(const std::string& name, std::uint32_t rm_slot);
 
 private:
     explicit Program(std::unique_ptr<detail::ProgramImpl> impl) noexcept;

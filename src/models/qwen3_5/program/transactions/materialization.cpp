@@ -209,7 +209,7 @@ ProgramImpl::reserve_materialization(AdmissionCandidate&& plan, PreparedPromptDa
                                              request_plan.reuse_base)) {
             throw std::logic_error("planned resident prefix is no longer reusable");
         }
-        if (shared_state != nullptr &&
+        if (shared_state != nullptr && prompt.graft_frontier == 0 &&
             (!shared_state->identity || shared_state->identity->prefix_identity() == nullptr ||
              !qwen3_5::detail::prefix_matches(prompt, shared_state->identity->ledger(),
                                               *shared_state->identity->prefix_identity(),
@@ -637,8 +637,8 @@ void ProgramImpl::prepare_materialization(MaterializationTransaction& transactio
     }
     if (transaction.has_shared_source &&
         (transaction.shared_source_index >= shared_prefix_capacity ||
-         shared_prefix_slots[transaction.shared_source_index].role !=
-             SharedPrefixSlotRole::Catalogued ||
+         !is_live_shared_prefix_role(
+             shared_prefix_slots[transaction.shared_source_index].role) ||
          shared_prefix_slots[transaction.shared_source_index].generation !=
              transaction.shared_source_generation)) {
         throw std::logic_error("materialization shared source changed during capacity preparation");
@@ -1808,8 +1808,8 @@ ProgramImpl::progress_materialization_transaction(runtime::CancellationFlagView 
     const auto complete_shared_source_acknowledgement = [&](bool published) {
         if (!transaction.has_shared_source) { return; }
         if (transaction.shared_source_index >= shared_prefix_capacity ||
-            shared_prefix_slots[transaction.shared_source_index].role !=
-                SharedPrefixSlotRole::Catalogued ||
+            !is_live_shared_prefix_role(
+                shared_prefix_slots[transaction.shared_source_index].role) ||
             shared_prefix_slots[transaction.shared_source_index].generation !=
                 transaction.shared_source_generation) {
             throw std::logic_error("retained materialization shared source is unavailable");

@@ -433,7 +433,8 @@ RequestBasePlan ProgramImpl::plan_request(const PreparedPromptData& prompt,
 std::optional<AdmissionCandidate> ProgramImpl::inspect_lane(
     std::uint32_t lane, const PreparedPromptData& prompt, const RequestBasePlan& base_plan,
     const SequenceState* source, const SharedPrefixState* shared_source,
-    std::optional<runtime::CheckpointRef> checkpoint, bool must_retain_private_source) {
+    std::optional<runtime::CheckpointRef> checkpoint, bool must_retain_private_source,
+    bool is_graft) {
     if (lane >= max_concurrency) { throw std::out_of_range("request lane is out of range"); }
     const RequestControl& request = requests[lane];
     if (request.lifecycle != Lifecycle::Empty) {
@@ -457,22 +458,35 @@ std::optional<AdmissionCandidate> ProgramImpl::inspect_lane(
     if (shared_source != nullptr) {
         const runtime::CheckpointRef selected = *checkpoint;
         plan->selected_checkpoint             = selected;
-        if (selected.kind != runtime::CheckpointKind::SharedStablePrefix || selected.ordinal != 0 ||
-            selected.frontier == 0 || selected.frontier != shared_source->frontier ||
-            !shared_source->identity || !shared_source->kv ||
-            !state_store->valid(shared_source->state)) {
-            throw std::logic_error("catalog shared-prefix summary disagrees with Program state");
+        if (is_graft) {
+            if (selected.kind != runtime::CheckpointKind::SharedStablePrefix ||
+                selected.ordinal != 0 || selected.frontier == 0 ||
+                selected.frontier != shared_source->frontier || !shared_source->kv ||
+                !state_store->valid(shared_source->state)) {
+                throw std::logic_error("graft shared-prefix state is invalid");
+            }
+            plan->reuse       = ReusePath::SharedStablePrefix;
+            plan->reuse_base  = selected.frontier;
+            plan->source_mode = runtime::PrivateSourceMode::Retain;
+        } else {
+            if (selected.kind != runtime::CheckpointKind::SharedStablePrefix ||
+                selected.ordinal != 0 || selected.frontier == 0 ||
+                selected.frontier != shared_source->frontier || !shared_source->identity ||
+                !shared_source->kv || !state_store->valid(shared_source->state)) {
+                throw std::logic_error(
+                    "catalog shared-prefix summary disagrees with Program state");
+            }
+            if (!base.allow_prefix_reuse || !prompt.identity.reusable) { return std::nullopt; }
+            const auto* shared_identity = shared_source->identity->prefix_identity();
+            if (shared_identity == nullptr ||
+                !qwen3_5::detail::prefix_matches(prompt, shared_source->identity->ledger(),
+                                                 *shared_identity, selected.frontier)) {
+                return std::nullopt;
+            }
+            plan->reuse       = ReusePath::SharedStablePrefix;
+            plan->reuse_base  = selected.frontier;
+            plan->source_mode = runtime::PrivateSourceMode::Retain;
         }
-        if (!base.allow_prefix_reuse || !prompt.identity.reusable) { return std::nullopt; }
-        const auto* shared_identity = shared_source->identity->prefix_identity();
-        if (shared_identity == nullptr ||
-            !qwen3_5::detail::prefix_matches(prompt, shared_source->identity->ledger(),
-                                             *shared_identity, selected.frontier)) {
-            return std::nullopt;
-        }
-        plan->reuse              = ReusePath::SharedStablePrefix;
-        plan->reuse_base         = selected.frontier;
-        plan->source_mode = runtime::PrivateSourceMode::Retain;
     } else if (source != nullptr) {
         const runtime::CheckpointRef selected = *checkpoint;
         plan->selected_checkpoint             = selected;
@@ -546,7 +560,8 @@ std::optional<AdmissionCandidate> ProgramImpl::inspect_lane(
         }
     }
 
-    if ((is_rewrite_checkpoint_restore(plan->reuse) ||
+    if (!is_graft &&
+        (is_rewrite_checkpoint_restore(plan->reuse) ||
          plan->reuse == ReusePath::PrivateLongAnchor ||
          plan->reuse == ReusePath::SharedStablePrefix) &&
         is_masked_draft_backend(speculative_backend) &&
