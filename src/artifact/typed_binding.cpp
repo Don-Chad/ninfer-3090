@@ -69,7 +69,7 @@ DType dtype_for(NumericFormat format) {
 Weight contiguous_weight(const MaterializedArtifact& materialized, ObjectHandle handle,
                          NumericFormat format, std::int32_t rows, std::int32_t columns) {
     Weight out{};
-    out.payload       = materialized.device_data(handle);
+    out.payload       = materialized.storage_data(handle);
     out.qdata         = out.payload;
     out.payload_bytes = static_cast<std::uint64_t>(rows) * columns * dtype_size(dtype_for(format));
     out.qtype         = qtype_for(format);
@@ -89,7 +89,7 @@ Weight row_split_weight(const MaterializedArtifact& materialized, ObjectHandle h
     const std::array<std::uint64_t, 2> shape = {static_cast<std::uint64_t>(rows),
                                                 static_cast<std::uint64_t>(columns)};
     const RowSplitGeometry geometry          = row_split_geometry(format, shape);
-    const auto* bytes = static_cast<const std::byte*>(materialized.device_data(handle));
+    const auto* bytes = static_cast<const std::byte*>(materialized.storage_data(handle));
 
     Weight out{};
     out.payload          = bytes;
@@ -118,7 +118,7 @@ Weight row_scale_weight(const MaterializedArtifact& materialized, ObjectHandle h
     const std::array<std::uint64_t, 2> shape = {static_cast<std::uint64_t>(rows),
                                                 static_cast<std::uint64_t>(columns)};
     const RowScaleGeometry geometry          = row_scale_geometry(format, shape);
-    const auto* bytes = static_cast<const std::byte*>(materialized.device_data(handle));
+    const auto* bytes = static_cast<const std::byte*>(materialized.storage_data(handle));
 
     Weight out{};
     out.payload         = bytes;
@@ -148,14 +148,21 @@ Weight row_scale_weight(const MaterializedArtifact& materialized, ObjectHandle h
 } // namespace
 
 ObjectHandle bind_tensor(Binder& binder, std::string_view name, NumericFormat format,
-                         std::initializer_list<std::uint64_t> shape, TensorPlacement placement) {
+                         std::initializer_list<std::uint64_t> shape, TensorPlacement placement,
+                         std::uint32_t evict_rank) {
     const ObjectHandle handle =
         binder.require_tensor(name, format, storage_layout_for(format),
                               std::span<const std::uint64_t>(shape.begin(), shape.size()));
-    if (placement == TensorPlacement::Device) {
-        binder.materialize_on_device(handle);
-    } else {
+    switch (placement) {
+    case TensorPlacement::Device:
+        binder.materialize_on_device(handle, evict_rank);
+        break;
+    case TensorPlacement::HostPinned:
+        binder.materialize_on_host_pinned(handle);
+        break;
+    case TensorPlacement::ValidateOnly:
         binder.validate_only(handle);
+        break;
     }
     return handle;
 }
@@ -174,7 +181,7 @@ ObjectHandle bind_raw_resource(Binder& binder, std::string_view name) {
 Tensor materialized_tensor(const MaterializedArtifact& materialized, ObjectHandle handle,
                            NumericFormat format,
                            std::initializer_list<std::int32_t> internal_shape) {
-    return Tensor(materialized.device_data(handle), dtype_for(format), internal_shape);
+    return Tensor(materialized.storage_data(handle), dtype_for(format), internal_shape);
 }
 
 Weight materialized_weight(const MaterializedArtifact& materialized, ObjectHandle handle,

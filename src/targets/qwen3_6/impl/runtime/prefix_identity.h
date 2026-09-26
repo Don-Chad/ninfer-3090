@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -18,7 +19,8 @@ public:
     void clear() noexcept;
     void assign(const PreparedPromptData& prompt);
     void swap(ResidentPrefixIdentity& other) noexcept;
-    void append_generated(std::size_t count, std::int32_t rope_delta);
+    void append_generated(std::size_t count, std::int32_t rope_delta,
+                          std::optional<std::uint32_t> execution_split_after = std::nullopt);
     void truncate(std::size_t tokens);
 
     [[nodiscard]] std::size_t size() const noexcept { return token_types_.size(); }
@@ -43,17 +45,18 @@ public:
     void clear() noexcept;
     void assign(const PreparedPromptData& prompt);
     void swap(PrefixShortlistDigests& other) noexcept;
-    void append_generated(std::span<const TokenId> tokens, std::int32_t rope_delta);
+    void append_generated(std::span<const TokenId> tokens, std::int32_t rope_delta,
+                          std::optional<std::uint32_t> execution_split_after = std::nullopt);
     void truncate(std::size_t tokens);
 
     [[nodiscard]] std::size_t size() const noexcept {
         return digests_.empty() ? 0 : digests_.size() - 1U;
     }
 
-    [[nodiscard]] std::uint64_t at(std::size_t frontier) const;
+    [[nodiscard]] std::array<std::uint64_t, 2> at(std::size_t frontier) const;
 
 private:
-    std::vector<std::uint64_t> digests_;
+    std::vector<std::array<std::uint64_t, 2>> digests_;
 };
 
 [[nodiscard]] bool prefix_matches(const PreparedPromptData& prompt,

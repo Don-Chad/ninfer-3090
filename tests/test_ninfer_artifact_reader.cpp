@@ -200,6 +200,13 @@ void test_common_validation() {
             throw std::runtime_error("legacy v1 identity mapping mismatch");
         }
     }
+    {
+        constexpr std::array<std::uint8_t, 8> invalid_magic = {
+            'I', 'N', 'V', 'A', 'L', 'I', 'D', '!',
+        };
+        auto fixture = write_fixture(normative_directory(), "invalid_magic", invalid_magic);
+        expect_artifact_error([&] { Reader reader(fixture.path); }, "invalid magic");
+    }
 }
 
 } // namespace

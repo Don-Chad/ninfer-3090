@@ -4,6 +4,8 @@
 #include "artifact/materializer.h"
 #include "artifact/reader.h"
 #include "core/device.h"
+#include "core/evictable_weight_pool.h"
+#include "core/startup.h"
 #include "runtime/engine/kv_capacity.h"
 #include "runtime/engine/context_cost.h"
 
@@ -63,10 +65,6 @@ void validate_options(const EngineOptions& options) {
     }
 }
 
-artifact::LoadProgress artifact_progress(const LoadProgress& progress) {
-    return artifact::LoadProgress{.callback = progress.callback};
-}
-
 std::size_t runtime_bytes_after_planned_weights(std::uint64_t weight_bytes) {
     std::size_t free_bytes  = 0;
     std::size_t total_bytes = 0;
@@ -91,6 +89,7 @@ template <class Target, class Loaded, class Instance>
 ConstructedTarget construct_registered(const EngineOptions& options, DeviceContext& device,
                                        artifact::Reader& reader, Clock::time_point load_start,
                                        std::string_view target_key) {
+    StartupPhaseScope target_plan_phase(options.startup_observer, StartupPhase::TargetPlan);
     const auto& identity                          = reader.identity();
     const auto weights_profile                    = Target::resolve_weights(identity);
     const ModelSamplingDefaults sampling_defaults = Target::sampling_defaults(identity.model_id);
@@ -110,12 +109,41 @@ ConstructedTarget construct_registered(const EngineOptions& options, DeviceConte
     const std::size_t preflight_runtime_bytes =
         runtime_bytes_after_planned_weights(load_plan.materialization().device_capacity_bytes);
     (void)runtime::resolve_kv_capacity(options.kv_capacity, curve, preflight_runtime_bytes);
+    target_plan_phase.complete();
 
-    auto progress     = artifact_progress(options.load_progress);
+    const bool overlay_vision =
+        options.enable_vision && options.vision_residency == VisionResidency::Overlay;
+    std::unique_ptr<EvictableWeightPool> pool;
+    std::size_t overlay_window_bytes = 0;
+    if (overlay_vision) {
+        const std::size_t staging = load_plan.overlay_staging_bytes();
+        if (staging == 0) {
+            throw std::invalid_argument(
+                "the selected target does not support --vision-residency overlay");
+        }
+        if (!EvictableWeightPool::supported(device)) {
+            throw std::invalid_argument(
+                "--vision-residency overlay requires CUDA virtual memory management support");
+        }
+        overlay_window_bytes = staging + sequence_planner.vision_window_bytes();
+        pool                 = std::make_unique<EvictableWeightPool>(
+            device, EvictableWeightPool::Config{
+                        .arena_bytes           = load_plan.materialization().device_capacity_bytes,
+                        .evictable_tail_bytes  = load_plan.materialization().evictable_tail_bytes,
+                        .window_capacity_bytes = overlay_window_bytes,
+                    });
+        overlay_window_bytes = pool->window_capacity_bytes();
+    }
     auto materialized = artifact::materialize(reader, load_plan.materialization(), device,
-                                              progress.callback ? &progress : nullptr);
+                                              &options.startup_observer, std::move(pool));
     const artifact::MaterializationStats stats = materialized.stats();
+    if (overlay_vision) {
+        // The mirror must see the final weight bytes: the upload stream is drained by
+        // materialize(), and no tail chunk changes afterwards.
+        materialized.eviction_pool()->capture_window_mirror(device.transfer_stream);
+    }
 
+    StartupPhaseScope target_finalize_phase(options.startup_observer, StartupPhase::TargetFinalize);
     auto model = Target::construct_loaded_model(std::move(load_plan), std::move(materialized));
     device.synchronize();
     runtime::KvCapacityResolution capacity_resolution =
@@ -125,10 +153,18 @@ ConstructedTarget construct_registered(const EngineOptions& options, DeviceConte
         sequence_plan.kv_capacity() != capacity_resolution.resolved_tokens) {
         throw std::logic_error("resolved KV capacity does not match the finalized target plan");
     }
-    auto loaded   = std::make_unique<Loaded>(std::move(model), options);
-    auto instance = std::make_unique<Instance>(std::move(loaded), capacity_resolution,
-                                               std::move(sequence_plan), device);
+    target_finalize_phase.complete();
+
+    StartupPhaseScope frontend_phase(options.startup_observer, StartupPhase::FrontendInitialize);
+    auto loaded = std::make_unique<Loaded>(std::move(model), options);
+    frontend_phase.complete();
+
+    StartupPhaseScope program_phase(options.startup_observer, StartupPhase::ProgramInitialize);
+    auto instance =
+        std::make_unique<Instance>(std::move(loaded), capacity_resolution, std::move(sequence_plan),
+                                   device, options.startup_observer);
     device.synchronize();
+    program_phase.complete();
     instance->kv_capacity_resolution.available_after_startup_bytes = current_free_device_bytes();
 
     LoadSummary summary;
@@ -140,6 +176,8 @@ ConstructedTarget construct_registered(const EngineOptions& options, DeviceConte
     summary.artifact_bytes_read  = stats.file_bytes;
     summary.host_to_device_bytes = stats.h2d_bytes;
     summary.peak_staging_bytes   = stats.peak_staging_bytes;
+    summary.pinned_weight_bytes  = stats.pinned_weight_bytes;
+    summary.overlay_window_bytes = overlay_window_bytes;
     summary.tensor_count         = stats.tensor_count;
     summary.resource_count       = stats.resource_count;
     summary.context_cost         = context_cost.summary;
@@ -160,10 +198,12 @@ LoadedQwen3_6_27B::~LoadedQwen3_6_27B() = default;
 Qwen3_6_27BInstance::Qwen3_6_27BInstance(std::unique_ptr<LoadedQwen3_6_27B> stable_loaded,
                                          runtime::KvCapacityResolution resolution,
                                          Qwen3_6_27B::SequencePlan sequence_plan,
-                                         DeviceContext& device)
+                                         DeviceContext& device,
+                                         const StartupObserver& startup_observer)
     : loaded(std::move(stable_loaded)), kv_capacity_resolution(resolution),
       capacity(sequence_plan.capacity()),
-      program(Qwen3_6_27B::create_program(*loaded->model, std::move(sequence_plan), device)) {}
+      program(Qwen3_6_27B::create_program(*loaded->model, std::move(sequence_plan), device,
+                                          startup_observer)) {}
 
 Qwen3_6_27BInstance::~Qwen3_6_27BInstance() = default;
 
@@ -176,10 +216,12 @@ LoadedQwen3_6_35BA3B::~LoadedQwen3_6_35BA3B() = default;
 Qwen3_6_35BA3BInstance::Qwen3_6_35BA3BInstance(std::unique_ptr<LoadedQwen3_6_35BA3B> stable_loaded,
                                                runtime::KvCapacityResolution resolution,
                                                Qwen3_6_35BA3B::SequencePlan sequence_plan,
-                                               DeviceContext& device)
+                                               DeviceContext& device,
+                                               const StartupObserver& startup_observer)
     : loaded(std::move(stable_loaded)), kv_capacity_resolution(resolution),
       capacity(sequence_plan.capacity()),
-      program(Qwen3_6_35BA3B::create_program(*loaded->model, std::move(sequence_plan), device)) {}
+      program(Qwen3_6_35BA3B::create_program(*loaded->model, std::move(sequence_plan), device,
+                                             startup_observer)) {}
 
 Qwen3_6_35BA3BInstance::~Qwen3_6_35BA3BInstance() = default;
 
@@ -187,7 +229,9 @@ ConstructedTarget construct_target(const EngineOptions& options, DeviceContext& 
     validate_options(options);
     const auto load_start = Clock::now();
 
+    StartupPhaseScope inspect_phase(options.startup_observer, StartupPhase::ArtifactInspect);
     artifact::Reader reader(options.artifact_path);
+    inspect_phase.complete();
     const auto& identity = reader.identity();
     if (identity.model_id == Qwen3_6_27B::model_id) {
         return construct_registered<Qwen3_6_27B, LoadedQwen3_6_27B, Qwen3_6_27BInstance>(

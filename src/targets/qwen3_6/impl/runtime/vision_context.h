@@ -9,11 +9,13 @@
 #include "core/weight.h"
 #include <ninfer/targets/qwen3_6/vision_control.h>
 #include "targets/qwen3_6/impl/runtime/layouts.h"
+#include "targets/qwen3_6/impl/runtime/vision_overlay.h"
 #include "targets/qwen3_6/impl/runtime/vision_prefill.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -45,6 +47,11 @@ struct VisionScheduleConfig {
 class VisionContext {
 public:
     VisionContext(DeviceContext& device, const LoadedModelData& model);
+    // Binds an explicit weight view; the overlay window uses it with weights rebased onto its
+    // borrowed staging. `stream` overrides the compute stream, which lets a window encode beside
+    // the decode of other lanes; null means the device's main stream.
+    VisionContext(DeviceContext& device, const qwen3_6::VisionWeights& weights,
+                  cudaStream_t stream = nullptr);
 
     [[nodiscard]] static std::size_t workspace_bytes(const qwen3_6::VisionItemControl& item);
     [[nodiscard]] static std::size_t workspace_bytes(std::size_t patches,
@@ -53,8 +60,9 @@ public:
                                                             std::size_t general_capacity_bytes);
     [[nodiscard]] static Tensor bind_output(DeviceSpan backing, const VisionWorkspacePlan& plan,
                                             std::size_t merged_tokens);
+    // weight_stream, when given, gates each layer on its streamed upload (overlay window).
     void encode(const VisionItemView& item, Tensor& output, DeviceSpan backing,
-                const VisionWorkspacePlan& plan) const;
+                const VisionWorkspacePlan& plan, VisionWeightStream* weight_stream = nullptr) const;
 
 private:
     struct BlockW {
@@ -82,6 +90,7 @@ private:
     };
 
     DeviceContext& ctx_;
+    cudaStream_t stream_            = nullptr;
     const Weight* patch_embed_      = nullptr;
     const Tensor* patch_embed_bias_ = nullptr;
     const Tensor* position_embed_   = nullptr;
@@ -92,7 +101,10 @@ private:
 struct VisionChunk {
     std::int32_t length                       = 0;
     const qwen3_6::VisionItemControl* control = nullptr;
+    // Resident residency: the item's device handoff [out_hidden, merged].
     Tensor embeddings;
+    // Overlay residency: the item's pinned embeddings; the prefill uploads the chunk's columns.
+    std::span<const std::byte> host_embeddings;
 };
 
 class VisionPrefillSession {
@@ -101,8 +113,20 @@ public:
                          const VisionWorkspacePlan& workspace_plan,
                          qwen3_6::PreparedPromptData& prompt, const VisionPrefillPlan& plan,
                          std::size_t& handoff_peak_bytes);
+    // Overlay residency: items are encoded inside windows brokered by the Program.
+    VisionPrefillSession(DeviceContext& device, const VisionWorkspacePlan& workspace_plan,
+                         qwen3_6::PreparedPromptData& prompt, const VisionPrefillPlan& plan,
+                         std::size_t& handoff_peak_bytes, VisionResidencyBroker& broker,
+                         const qwen3_6::VisionOverlayAssets& assets, PinnedResultPool::Handle result);
+    ~VisionPrefillSession();
 
     [[nodiscard]] VisionChunk prepare_chunk(std::uint32_t begin, std::uint32_t nominal_length);
+    // Overlay residency: starts the encode of the next unencoded item ahead of its prefill unit,
+    // so its window overlaps the decode of other lanes. A no-op when a window is already open,
+    // when the item is encoded, or under resident residency; the synchronous path then stands.
+    void submit_next_item();
+    // True while a submitted item has not finished: the lane must not be given a prefill unit.
+    [[nodiscard]] bool vision_pending() const noexcept;
     void release_encoded_media_payloads() noexcept;
     void retire_handoff() noexcept;
     [[nodiscard]] double elapsed_seconds() const;
@@ -110,17 +134,23 @@ public:
     [[nodiscard]] std::size_t active_handoff_bytes() const noexcept {
         return active_handoff_bytes_;
     }
+    [[nodiscard]] VisionOverlayWindowStats overlay_stats() const noexcept;
 
 private:
+    void validate_plan() const;
+
     DeviceContext& device_;
     DeviceSpan workspace_;
     const VisionWorkspacePlan& workspace_plan_;
     qwen3_6::PreparedPromptData& prompt_;
     const VisionPrefillPlan& plan_;
     std::size_t& handoff_peak_bytes_;
-    VisionContext context_;
+    std::optional<VisionContext> context_;
+    std::unique_ptr<VisionOverlaySession> overlay_;
+    std::span<const std::byte> host_result_;
     std::size_t next_use_ = 0;
     std::optional<std::uint32_t> active_item_;
+    std::optional<std::uint32_t> submitted_item_;
     std::size_t active_handoff_bytes_ = 0;
     std::vector<std::uint32_t> encoded_payloads_pending_release_;
     std::vector<CudaEventTimer> timers_;

@@ -35,6 +35,11 @@ constexpr ReductionCriterion tolerance_for(ActivationCompute activation_compute)
         // Both independently A8-quantized projections feed the nonlinear product, so this profile
         // allows twice Linear's relative-L2 quantization allowance plus a bounded gross tail.
         return {8.0e-2, 1.0e-2, 1.2e-1};
+    case ActivationCompute::A8Int:
+        // Same structure as A8: gate and up are each quantized independently before feeding the
+        // nonlinear product, so the same allowance applies. Only the activation format differs --
+        // s8 with one scale per weight group rather than FP8.
+        return {8.0e-2, 1.0e-2, 1.2e-1};
     case ActivationCompute::A4:
         return {1.6e-1, 1.0e-2, 1.6e-1};
     }
@@ -231,7 +236,8 @@ void validate_profile(const Profile& profile) {
          profile.activation_compute != ActivationCompute::A4) ||
         (fp8 && profile.activation_compute != ActivationCompute::A16 &&
          profile.activation_compute != ActivationCompute::A8) ||
-        (!nvfp4 && !fp8 && profile.activation_compute != ActivationCompute::A16)) {
+        (!nvfp4 && !fp8 && profile.activation_compute != ActivationCompute::A16 &&
+         profile.activation_compute != ActivationCompute::A8Int)) {
         throw std::invalid_argument("linear_swiglu test: invalid activation-compute profile");
     }
 }
@@ -278,8 +284,11 @@ int run_profile(std::string_view label, const Profile& profile,
     const ops::LinearPolicy policy =
         profile.activation_compute == ActivationCompute::A4
             ? ops::LinearPolicy::AllowA4
-            : (profile.activation_compute == ActivationCompute::A8 ? ops::LinearPolicy::AllowA8
-                                                                   : ops::LinearPolicy::A16Only);
+            : (profile.activation_compute == ActivationCompute::A8
+                   ? ops::LinearPolicy::AllowA8
+                   : (profile.activation_compute == ActivationCompute::A8Int
+                          ? ops::LinearPolicy::AllowA8Int
+                          : ops::LinearPolicy::A16Only));
     const std::size_t workspace_bytes = ops::linear_swiglu_workspace_capacity_bytes(
         profile.qtype, profile.gate_up_rows, profile.input_rows, policy, 1, maximum_tokens);
     WorkspaceArena workspace(std::max<std::size_t>(workspace_bytes, 256));

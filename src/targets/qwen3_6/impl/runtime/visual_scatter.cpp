@@ -21,15 +21,19 @@ void copy_i32(const std::int32_t* source, Tensor& destination, cudaStream_t stre
 
 void scatter_shifted_visual_embeddings(Tensor& input_embeddings, const Tensor& visual_embeddings,
                                        const qwen3_6::MtpVisualOverlap& overlap,
-                                       Tensor& destination_indices, cudaStream_t stream) {
+                                       Tensor& destination_indices, cudaStream_t stream,
+                                       std::size_t source_column_base) {
     if (overlap.empty() || destination_indices.dtype != DType::I32 ||
         destination_indices.ne[0] != static_cast<std::int32_t>(overlap.size())) {
         throw std::invalid_argument("shifted visual scatter has invalid destination indices");
     }
     const auto count = static_cast<std::int32_t>(overlap.size());
     copy_i32(overlap.destination_columns.data(), destination_indices, stream);
-    Tensor embeddings =
-        visual_embeddings.slice(1, static_cast<std::int32_t>(overlap.source_begin), count);
+    if (overlap.source_begin < source_column_base) {
+        throw std::invalid_argument("shifted visual scatter source precedes the staged columns");
+    }
+    Tensor embeddings = visual_embeddings.slice(
+        1, static_cast<std::int32_t>(overlap.source_begin - source_column_base), count);
     ops::scatter(embeddings, destination_indices, input_embeddings, stream);
 }
 

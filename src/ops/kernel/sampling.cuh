@@ -58,8 +58,13 @@ __launch_bounds__(kSamplerBlock) __global__
             __syncthreads();
         }
         if (tid == 0) {
-            out[row] = red_idx[0];
-            if (cfg.token_counts != nullptr) { atomicAdd(&cfg.token_counts[red_idx[0]], 1); }
+            const int picked = red_idx[0];
+            if (!sampling_selected_logit_is_finite(logits, base, picked)) {
+                out[row] = kSamplerNonFiniteToken;
+            } else {
+                out[row] = picked;
+                if (cfg.token_counts != nullptr) { atomicAdd(&cfg.token_counts[picked], 1); }
+            }
         }
         return;
     }
@@ -98,6 +103,10 @@ __launch_bounds__(kSamplerBlock) __global__
             picked = cand_idx[j];
             break;
         }
+    }
+    if (!sampling_selected_logit_is_finite(logits, base, picked)) {
+        out[row] = kSamplerNonFiniteToken;
+        return;
     }
     out[row] = picked;
     if (cfg.token_counts != nullptr) { atomicAdd(&cfg.token_counts[picked], 1); }
@@ -209,8 +218,14 @@ __launch_bounds__(kSamplerGroupBlock) __global__ void sampling_group_finalize_sa
         best = sampling_block_max_key(best, greedy_warp_keys);
         if (tid == 0) {
             const int picked = sampling_key_index(best);
-            out[col]         = picked;
-            if (cfg.token_counts != nullptr) { atomicAdd(&cfg.token_counts[picked], 1); }
+            // This kernel never sees the logits, so the winner's own ordered value carries the
+            // check. An empty key (0ull) decodes to NaN, which is the same rejection.
+            if (picked == INT_MAX || !sampling_value_is_finite(sampling_key_float(best))) {
+                out[col] = kSamplerNonFiniteToken;
+            } else {
+                out[col] = picked;
+                if (cfg.token_counts != nullptr) { atomicAdd(&cfg.token_counts[picked], 1); }
+            }
             workspace.group_done[col] = 0;
         }
         return;
@@ -281,15 +296,23 @@ __launch_bounds__(kSamplerGroupBlock) __global__ void sampling_group_finalize_sa
         const float u     = sampling_uniform(cfg.seed, logical_positions[col], purpose, 0u);
         float acc         = 0.0f;
         int picked        = cand_idx[support - 1];
+        float picked_val  = cand_val[support - 1];
         for (int j = 0; j < support; ++j) {
             acc += prob[j];
             if (u < acc) {
-                picked = cand_idx[j];
+                picked     = cand_idx[j];
+                picked_val = cand_val[j];
                 break;
             }
         }
-        out[col] = picked;
-        if (cfg.token_counts != nullptr) { atomicAdd(&cfg.token_counts[picked], 1); }
+        // The candidate's own adjusted value stands in for the logit: this kernel is fed by the
+        // partial/group workspace and never receives the logits themselves.
+        if (!sampling_value_is_finite(picked_val)) {
+            out[col] = kSamplerNonFiniteToken;
+        } else {
+            out[col] = picked;
+            if (cfg.token_counts != nullptr) { atomicAdd(&cfg.token_counts[picked], 1); }
+        }
         workspace.group_done[col] = 0;
     }
 }

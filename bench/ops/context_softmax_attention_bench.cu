@@ -38,7 +38,7 @@ constexpr float kScale             = 0.08838834764831844055F;
 constexpr ops::AttentionHeadGeometry kGeometry{kHeadDim, kQueryHeads, kKvHeads};
 constexpr std::size_t kFlushBytes   = std::size_t{256} << 20;
 constexpr double kDenseBf16TcTflops = 209.5;
-constexpr double kRtx5090DramGBs    = 1792.0;
+const double kRtx5090DramGBs = bench::device_specs().dram_spec_gbs;
 
 enum class Execution : std::uint8_t { Eager, Graph, Both };
 enum class CacheMode : std::uint8_t { Cold, Warm, Both };
@@ -174,8 +174,7 @@ PagedKVBatchLayerView make_context_view(DeviceBuffer& k, DeviceBuffer& v,
         .block_tables = Tensor(block_tables.p, DType::I32, {pages, 1}),
         .head_dim     = kHeadDim,
         .num_kv_heads = kKvHeads,
-        .dtype        = DType::BF16,
-        .quant_group  = 0,
+        .storage      = KvCacheStorage::BFloat16,
     };
 }
 

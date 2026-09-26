@@ -18,9 +18,9 @@ namespace ninfer::serve {
     throw ApiException(std::move(error));
 }
 
-std::optional<int> optional_int(const nlohmann::json& object, const char* key) {
+std::optional<int> optional_int(const RequestJson& object, const char* key) {
     if (!object.contains(key) || object.at(key).is_null()) { return std::nullopt; }
-    const nlohmann::json& value = object.at(key);
+    const RequestJson& value = object.at(key);
     if (!value.is_number_integer()) { bad_request(std::string(key) + " must be an integer", key); }
     if (value.is_number_unsigned()) {
         const std::uint64_t converted = value.get<std::uint64_t>();
@@ -37,7 +37,7 @@ std::optional<int> optional_int(const nlohmann::json& object, const char* key) {
     return static_cast<int>(converted);
 }
 
-std::optional<double> optional_number(const nlohmann::json& object, const char* key) {
+std::optional<double> optional_number(const RequestJson& object, const char* key) {
     if (!object.contains(key) || object.at(key).is_null()) { return std::nullopt; }
     if (!object.at(key).is_number()) { bad_request(std::string(key) + " must be a number", key); }
     const double value = object.at(key).get<double>();
@@ -45,7 +45,7 @@ std::optional<double> optional_number(const nlohmann::json& object, const char* 
     return value;
 }
 
-bool optional_bool(const nlohmann::json& object, const char* key, bool fallback) {
+bool optional_bool(const RequestJson& object, const char* key, bool fallback) {
     if (!object.contains(key) || object.at(key).is_null()) { return fallback; }
     if (!object.at(key).is_boolean()) { bad_request(std::string(key) + " must be a boolean", key); }
     return object.at(key).get<bool>();

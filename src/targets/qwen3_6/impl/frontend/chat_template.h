@@ -9,10 +9,13 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace ninfer::targets::qwen3_6::frontend_internal {
+
+inline constexpr std::string_view kCanonicalReasoningCloseSerialization = "\n</think>\n\n";
 
 struct ToolCall {
     std::string id;

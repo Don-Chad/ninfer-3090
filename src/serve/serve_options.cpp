@@ -50,9 +50,12 @@ KvCacheStorage parse_kv_dtype(const char* text) {
     if (value == "bf16") { return KvCacheStorage::BFloat16; }
     if (value == "int8") { return KvCacheStorage::Int8Group64; }
     if (value == "fp8") { return KvCacheStorage::Fp8E4M3Row256; }
-    // Still parsed so an existing rk8v4 launch fails naming the feature and its replacement,
-    // rather than reporting an unknown --kv-dtype value. Rejected in target_kv_cache_profile.
+    // RotorQuant rk8v4: rotated INT8 keys with a packed signed int4 value plane. Opt-in.
     if (value == "rk8v4") { return KvCacheStorage::RotatedInt8KeyInt4ValueGroup64; }
+    // Recognized but not yet ported on this fork; d256_kv_cache_profile rejects these with a
+    // clear diagnostic at engine construction, matching how fp8 is rejected on SM86.
+    if (value == "nvfp4") { return KvCacheStorage::Nvfp4Group16; }
+    if (value == "k8v4") { return KvCacheStorage::Fp8KeyNvfp4Value; }
     throw std::invalid_argument("invalid kv-dtype: " + value);
 }
 
@@ -79,12 +82,14 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-long-anchors-per-continuation N] [--max-cache-markers-per-request N] "
            "[--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
-           "[--kv-dtype bf16|int8|fp8] [--spec mtp|dflash --draft-tokens N] "
+           "[--kv-dtype bf16|int8|fp8|rk8v4|nvfp4|k8v4] [--spec mtp|dflash --draft-tokens N] "
            "[--default-max-tokens N] [--default-thinking-budget N] "
-           "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
+           "[--vision] [--vision-residency resident|overlay] [--vision-max-merged N] "
+           "[--no-cuda-graph] [--no-prefix-reuse] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
+           "       [--log-level trace|debug|info|warning|error|critical|off]\n"
            "       serves OpenAI Responses/Chat Completions and Anthropic Messages endpoints\n"
            "       --default-max-tokens defaults to " +
            std::to_string(kDefaultMaxTokens) +
@@ -99,12 +104,16 @@ std::string serve_usage_text(const char* argv0) {
            "default\n"
            "       --log-stats-interval-ms defaults to 5000; 0 disables periodic throughput logs\n"
            "       --vision enables media and loads the fixed Vision GPU allocations\n"
+           "       --vision-residency overlay keeps the Vision tower in host memory and borrows "
+           "device memory per image\n"
+           "       --vision-max-merged bounds the merged tokens of one media item (default 16384); "
+           "larger media is downscaled\n"
            "       --kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom\n"
            "       --no-prefix-reuse disables compatible-prefix caching (enabled by default)\n"
            "       context cache defaults: device-state=max-concurrency, private=2x concurrency, "
-           "shared=concurrency, anchors=2, markers=4; Host state=8 slots, Host KV=8192 MiB\n"
+           "shared=max(max-concurrency,4), anchors=2; Host state=8 slots, Host KV=8192 MiB\n"
            "       --device-state-slots is extra checkpoint capacity beyond active lanes; "
            "--host-kv-mib uses MiB\n"
            "       --default-thinking-budget caps model-origin thinking for enabled requests; "
@@ -285,6 +294,22 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.default_thinking_budget = static_cast<std::uint32_t>(budget);
         } else if (arg == "--vision") {
             options.enable_vision = true;
+        } else if (arg == "--vision-residency") {
+            const std::string_view mode = require_value("--vision-residency");
+            if (mode == "resident") {
+                options.vision_residency = VisionResidency::Resident;
+            } else if (mode == "overlay") {
+                options.vision_residency = VisionResidency::Overlay;
+            } else {
+                throw std::invalid_argument("--vision-residency must be resident or overlay");
+            }
+        } else if (arg == "--vision-max-merged") {
+            const std::uint64_t merged =
+                parse_u64(require_value("--vision-max-merged"), "vision-max-merged");
+            if (merged < 64 || merged > 16384) {
+                throw std::invalid_argument("--vision-max-merged must be in [64, 16384]");
+            }
+            options.vision_max_merged_tokens = static_cast<std::uint32_t>(merged);
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "--no-prefix-reuse") {
@@ -320,6 +345,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.sampling_overrides.seed = parse_u64(require_value("--seed"), "seed");
         } else if (arg == "--greedy") {
             options.greedy = true;
+        } else if (arg == "--log-level") {
+            options.log_level = product::parse_log_level(require_value("--log-level"));
         } else {
             throw std::invalid_argument("unknown argument: " + arg);
         }
@@ -362,6 +389,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     product::validate_speculative_cli_options(options.speculative);
     if (options.speculative.backend == SpeculativeBackend::DFlash && options.enable_vision) {
         throw std::invalid_argument("--spec dflash cannot be combined with --vision");
+    }
+    if (options.vision_residency == VisionResidency::Overlay && !options.enable_vision) {
+        throw std::invalid_argument("--vision-residency overlay requires --vision");
     }
     if (default_max_tokens_explicit) {
         if (options.default_max_tokens <= 0) {

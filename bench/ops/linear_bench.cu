@@ -39,15 +39,15 @@ using ninfer::ops::LinearPolicy;
 
 namespace {
 
-constexpr double kRtx5090DramGBs          = 1792.0;
-constexpr double kRtx5090SustainedReadGBs = 1674.5;
-// NVIDIA's GB202 table reports dense/sparse pairs at boost clock. Keep accumulator precision
-// explicit: this benchmark's FP8 MMA route uses e4m3 inputs with FP32 accumulation.
-constexpr double kRtx5090Fp8Fp16AccumulateTFLOPs = 838.0;
-constexpr double kRtx5090Fp8Fp32AccumulateTFLOPs = 419.0;
-constexpr std::uint64_t kDefaultFlushBytes       = 256ULL << 20;
-constexpr int kDefaultWarmup                     = 3;
-constexpr int kDefaultRepeat                     = 20;
+// Hardware ceilings come from bench::device_specs(), which derives the DRAM spec from the device
+// and carries measured per-architecture sustained-read and tensor-core rates. They were literals
+// for the RTX 5090 before, which made every percentage column here wrong by 1.91x on sm_86.
+inline double dram_spec_gbs() { return bench::device_specs().dram_spec_gbs; }
+inline double sustained_read_gbs() { return bench::device_specs().sustained_read_gbs; }
+
+constexpr std::uint64_t kDefaultFlushBytes = 256ULL << 20;
+constexpr int kDefaultWarmup               = 3;
+constexpr int kDefaultRepeat               = 20;
 
 enum class TClass : std::uint8_t {
     Continuous,
@@ -554,7 +554,20 @@ double registered_tensor_peak_tflops(const BenchPoint& point, const char*& profi
     if (point.qtype == QType::FP8_E4M3FN_ROW_BF16S && point.policy == LinearPolicy::AllowA8 &&
         fp8_problem && fp8_tensor_route) {
         profile = "FP8_F32ACC";
-        return kRtx5090Fp8Fp32AccumulateTFLOPs;
+        return bench::device_specs().fp8_f32acc_tflops;
+    }
+    // Groupwise-int weights on an A16 policy bottom out in the dequantizing GEMM, which issues
+    // mma_bf16 with f32 accumulate. Reporting that ceiling is what makes it visible how much
+    // headroom an integer-activation route would actually be competing for.
+    const bool groupwise_int =
+        point.qtype == QType::Q4G64_F16S || point.qtype == QType::Q5G64_F16S ||
+        point.qtype == QType::Q6G64_F16S || point.qtype == QType::W8G32_F16S;
+    if (groupwise_int) {
+        const double peak = bench::device_specs().bf16_f32acc_tflops;
+        if (std::isfinite(peak)) {
+            profile = "BF16_F32ACC";
+            return peak;
+        }
     }
     profile = "";
     return std::numeric_limits<double>::quiet_NaN();
@@ -574,7 +587,7 @@ Result make_result(const BenchPoint& point, const LinearBenchWeight& weight,
                                 static_cast<double>(point.t);
     const double seconds = timing.median_us * 1.0e-6;
     const double memory_floor_us =
-        static_cast<double>(model_bytes) / (kRtx5090DramGBs * 1.0e9) * 1.0e6;
+        static_cast<double>(model_bytes) / (dram_spec_gbs() * 1.0e9) * 1.0e6;
 
     Result result;
     result.labels             = join_labels(point.labels);
@@ -592,8 +605,8 @@ Result make_result(const BenchPoint& point, const LinearBenchWeight& weight,
     result.min_us             = timing.min_us;
     result.p95_us             = timing.p95_us;
     result.effective_gbs      = static_cast<double>(model_bytes) / seconds / 1.0e9;
-    result.dram_spec_pct      = result.effective_gbs / kRtx5090DramGBs * 100.0;
-    result.sustained_read_pct = result.effective_gbs / kRtx5090SustainedReadGBs * 100.0;
+    result.dram_spec_pct      = result.effective_gbs / dram_spec_gbs() * 100.0;
+    result.sustained_read_pct = result.effective_gbs / sustained_read_gbs() * 100.0;
     result.useful_tflops      = useful_flops / seconds / 1.0e12;
     result.tensor_peak_tflops = registered_tensor_peak_tflops(point, result.tensor_profile);
     if (std::isfinite(result.tensor_peak_tflops)) {
@@ -712,12 +725,14 @@ void print_header() {
     CUDA_CHECK(cudaGetDevice(&device));
     cudaDeviceProp properties{};
     CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
-    std::printf("# actual_gpu=%s sm=%d%d reference_gpu=RTX_5090\n", properties.name,
-                properties.major, properties.minor);
-    std::printf("# dram_spec_gbs=%.1f sustained_read_gbs=%.1f cache=cold\n", kRtx5090DramGBs,
-                kRtx5090SustainedReadGBs);
-    std::printf("# dense_fp8_tensor_tflops fp16_acc=%.1f fp32_acc=%.1f\n",
-                kRtx5090Fp8Fp16AccumulateTFLOPs, kRtx5090Fp8Fp32AccumulateTFLOPs);
+    std::printf("# actual_gpu=%s sm=%d%d reference_gpu=%s\n", properties.name, properties.major,
+                properties.minor, bench::device_specs().reference);
+    std::printf("# dram_spec_gbs=%.1f sustained_read_gbs=%.1f cache=cold\n", dram_spec_gbs(),
+                sustained_read_gbs());
+    std::printf("# dense_tensor_peak bf16_f32acc=%.1f int8=%.1f fp8_f16acc=%.1f fp8_f32acc=%.1f\n",
+                bench::device_specs().bf16_f32acc_tflops, bench::device_specs().int8_tops,
+                bench::device_specs().fp8_f16acc_tflops,
+                bench::device_specs().fp8_f32acc_tflops);
 }
 
 void print_results(const std::vector<Result>& results) {
@@ -782,8 +797,8 @@ void write_csv(const std::filesystem::path& path, const std::vector<Result>& res
             << ',' << result.n << ',' << result.k << ',' << result.t << ',' << result.weight_bytes
             << ',' << result.x_bytes << ',' << result.out_bytes << ',' << result.model_bytes << ','
             << result.useful_flops << ',' << result.median_us << ',' << result.min_us << ','
-            << result.p95_us << ',' << result.effective_gbs << ',' << kRtx5090DramGBs << ','
-            << result.dram_spec_pct << ',' << kRtx5090SustainedReadGBs << ','
+            << result.p95_us << ',' << result.effective_gbs << ',' << dram_spec_gbs() << ','
+            << result.dram_spec_pct << ',' << sustained_read_gbs() << ','
             << result.sustained_read_pct << ',' << result.useful_tflops << ','
             << result.tensor_profile << ',';
         if (std::isfinite(result.tensor_peak_tflops)) { out << result.tensor_peak_tflops; }

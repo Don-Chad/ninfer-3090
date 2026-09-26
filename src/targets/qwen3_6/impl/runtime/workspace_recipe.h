@@ -26,11 +26,15 @@ struct TextPrefillRoots {
     Tensor rope_positions;
     Tensor residual;
     Tensor scatter_indices;
+    // Overlay vision only: per-chunk device staging for the visual embeddings uploaded from the
+    // pinned window result, [hidden, scatter_tokens + 1].
+    Tensor visual_embeddings;
 };
 
 template <class Config, class Allocator>
 TextPrefillRoots text_prefill_roots(Allocator& allocator, std::int32_t tokens,
-                                    std::int32_t rope_axes, std::int32_t scatter_tokens) {
+                                    std::int32_t rope_axes, std::int32_t scatter_tokens,
+                                    bool overlay_staging = false) {
     TextPrefillRoots out;
     out.ids       = vector(allocator, DType::I32, tokens);
     out.positions = vector(allocator, DType::I32, tokens);
@@ -38,6 +42,12 @@ TextPrefillRoots text_prefill_roots(Allocator& allocator, std::int32_t tokens,
     out.residual = matrix(allocator, DType::BF16, Config::hidden, tokens);
     if (scatter_tokens != 0) {
         out.scatter_indices = vector(allocator, DType::I32, scatter_tokens);
+        if (overlay_staging) {
+            // One extra column: the shifted MTP input of the chunk's last visual token is the next
+            // visual column, which may belong to the following chunk.
+            out.visual_embeddings =
+                matrix(allocator, DType::BF16, Config::hidden, scatter_tokens + 1);
+        }
     }
     return out;
 }

@@ -29,7 +29,7 @@ using namespace ninfer;
 namespace {
 
 constexpr std::size_t kFlushBytes = std::size_t{256} << 20;
-constexpr double kRtx5090DramGBs  = 1792.0;
+const double kRtx5090DramGBs = bench::device_specs().dram_spec_gbs;
 
 enum class Format : std::uint8_t { Q4Q5, W8, Nvfp4, Fp8, All };
 enum class CacheMode : std::uint8_t { Cold, Warm, Both };

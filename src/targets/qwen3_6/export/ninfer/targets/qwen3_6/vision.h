@@ -5,9 +5,15 @@
 
 #include <array>
 #include <cstddef>
+#include <span>
+
+namespace ninfer {
+class EvictableWeightPool;
+}
 
 namespace ninfer::artifact {
 class MaterializedArtifact;
+struct MaterializationPlan;
 }
 
 namespace ninfer::targets::qwen3_6 {
@@ -91,6 +97,44 @@ struct VisionWeights {
     Weight merger_fc2;
     Tensor merger_fc2_bias;
 };
+
+// Vision weights whose payload pointers address pinned host memory. Distinct from VisionWeights
+// so a device-side VisionContext can never be bound over host pointers by mistake; the overlay
+// window rebases these onto its borrowed device staging.
+struct HostVisionWeights {
+    VisionWeights weights;
+};
+
+struct PinnedRange {
+    std::size_t offset = 0;
+    std::size_t bytes  = 0;
+};
+
+// Byte ranges of the vision groups inside the pinned weight block, used by the overlay window to
+// stage weights through borrowed device memory. Each range covers exactly the objects of its
+// group; slot_bytes is the largest single layer range.
+struct VisionOverlayLayout {
+    PinnedRange prelude; // patch embedding, its bias, position embedding
+    std::array<PinnedRange, VisionBackboneConfig::layers> layers{};
+    PinnedRange merger;        // merger fc1/fc2 (+biases) and merger norm
+    std::size_t slot_bytes    = 0;
+    std::size_t staging_bytes = 0; // prelude + merger + two layer slots, each 256-aligned
+};
+
+// Runtime assets the overlay window needs, published on the model view when the engine runs with
+// VisionResidency::Overlay.
+struct VisionOverlayAssets {
+    ninfer::EvictableWeightPool* pool = nullptr;
+    std::span<const std::byte> pinned_block;
+    HostVisionWeights host;
+    VisionOverlayLayout layout;
+    std::size_t window_capacity_bytes = 0;
+};
+
+[[nodiscard]] VisionOverlayLayout compute_vision_overlay_layout(
+    const VisionBackbonePlan& backbone, const VisionMergerInputPlan& merger_input,
+    artifact::ObjectHandle merger_fc2, artifact::ObjectHandle merger_fc2_bias,
+    const VisionMergerNormPlan& merger_norm, const artifact::MaterializationPlan& plan);
 
 [[nodiscard]] VisionBackbonePlan bind_vision_backbone(artifact::Binder& binder,
                                                       artifact::TensorPlacement placement);

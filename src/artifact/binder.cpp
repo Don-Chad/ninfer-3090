@@ -83,7 +83,7 @@ PayloadSpan Binder::payload(ObjectHandle handle) const {
     return reader_.payload(descriptor(handle));
 }
 
-void Binder::materialize_on_device(ObjectHandle handle) {
+void Binder::materialize_on_device(ObjectHandle handle, std::uint32_t evict_rank) {
     const auto* tensor = std::get_if<TensorDescriptor>(&descriptor(handle));
     if (tensor == nullptr) {
         throw ArtifactError("resource cannot be materialized as a device tensor");
@@ -93,13 +93,40 @@ void Binder::materialize_on_device(ObjectHandle handle) {
                             std::string(tensor->name));
     }
     const std::uint64_t alignment = tensor_alignment(tensor->layout);
-    const std::uint64_t offset    = align_up(materialization_.device_capacity_bytes, alignment);
+    if (evict_rank != 0) {
+        // Evictable tensors receive their offsets in finish(): they are packed into the arena
+        // suffix so that higher ranks sit closer to the end.
+        evictable_.push_back(PendingEvictable{handle, tensor->bytes, alignment, evict_rank});
+        planned_[handle.index] = true;
+        return;
+    }
+    const std::uint64_t offset = align_up(materialization_.device_capacity_bytes, alignment);
     if (tensor->bytes > std::numeric_limits<std::uint64_t>::max() - offset) {
         throw ArtifactError("materialization plan size overflows u64");
     }
     materialization_.device_objects.push_back(
         DeviceMaterialization{handle, offset, tensor->bytes, alignment});
     materialization_.device_capacity_bytes = offset + tensor->bytes;
+    planned_[handle.index]                 = true;
+}
+
+void Binder::materialize_on_host_pinned(ObjectHandle handle) {
+    const auto* tensor = std::get_if<TensorDescriptor>(&descriptor(handle));
+    if (tensor == nullptr) {
+        throw ArtifactError("resource cannot be materialized as a pinned host tensor");
+    }
+    if (planned_[handle.index]) {
+        throw ArtifactError("artifact object has more than one materialization placement: " +
+                            std::string(tensor->name));
+    }
+    const std::uint64_t alignment = tensor_alignment(tensor->layout);
+    const std::uint64_t offset    = align_up(materialization_.pinned_capacity_bytes, alignment);
+    if (tensor->bytes > std::numeric_limits<std::uint64_t>::max() - offset) {
+        throw ArtifactError("materialization plan size overflows u64");
+    }
+    materialization_.pinned_objects.push_back(
+        PinnedMaterialization{handle, offset, tensor->bytes, alignment});
+    materialization_.pinned_capacity_bytes = offset + tensor->bytes;
     planned_[handle.index]                 = true;
 }
 
@@ -125,7 +152,7 @@ void Binder::validate_only(ObjectHandle handle) {
     planned_[handle.index] = true;
 }
 
-MaterializationPlan Binder::finish() {
+MaterializationPlan Binder::finish(std::uint64_t evictable_alignment) {
     const auto it = std::find(consumed_.begin(), consumed_.end(), false);
     if (it != consumed_.end()) {
         const auto index = static_cast<std::size_t>(it - consumed_.begin());
@@ -137,6 +164,34 @@ MaterializationPlan Binder::finish() {
         const auto index = static_cast<std::size_t>(unplanned - planned_.begin());
         throw ArtifactError("artifact object has no materialization placement: " +
                             std::string(object_name(reader_.objects()[index])));
+    }
+    if (!evictable_.empty()) {
+        if (evictable_alignment == 0) {
+            throw ArtifactError("evictable tail alignment must be nonzero");
+        }
+        // Ascending rank order packs the highest rank at the arena end, which the eviction pool
+        // unmaps first. Ties keep their registration order.
+        std::stable_sort(evictable_.begin(), evictable_.end(),
+                         [](const PendingEvictable& a, const PendingEvictable& b) {
+                             return a.rank < b.rank;
+                         });
+        const std::uint64_t tail_begin =
+            align_up(materialization_.device_capacity_bytes, evictable_alignment);
+        materialization_.evictable_tail_offset = tail_begin;
+        materialization_.device_capacity_bytes = tail_begin;
+        for (const PendingEvictable& pending : evictable_) {
+            const std::uint64_t offset =
+                align_up(materialization_.device_capacity_bytes, pending.alignment);
+            if (pending.bytes > std::numeric_limits<std::uint64_t>::max() - offset) {
+                throw ArtifactError("materialization plan size overflows u64");
+            }
+            materialization_.device_objects.push_back(
+                DeviceMaterialization{pending.handle, offset, pending.bytes, pending.alignment});
+            materialization_.device_capacity_bytes = offset + pending.bytes;
+        }
+        materialization_.evictable_tail_bytes =
+            materialization_.device_capacity_bytes - tail_begin;
+        evictable_.clear();
     }
     return std::move(materialization_);
 }

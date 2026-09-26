@@ -98,6 +98,7 @@ struct ModelView {
     std::optional<MtpLayer> mtp;
     std::optional<DFlashPayload> dflash;
     std::optional<VisionWeights> vision;
+    std::optional<VisionOverlayAssets> vision_overlay;
 };
 
 } // namespace targets::qwen3_6

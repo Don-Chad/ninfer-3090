@@ -82,6 +82,7 @@ Frontend 拥有模型家族的输入与输出语义：
 - tokenizer、chat template、Vision preprocessing 和 MRoPE prompt construction；
 - owning `PreparedPrompt` 及其内容 identity；
 - stop、thinking/content channel、detokenization、最终文本和模型私有结构化输出；
+- model output 中可由历史 renderer 精确重建的 prefix-execution boundary；
 - 每个请求独占的 `OutputSession`。
 
 Frontend 可以预览一次模型输出将产生的语义效果，但只有 Engine 完成提交后才能发布该效果。
@@ -96,7 +97,8 @@ Engine 是请求控制平面，拥有：
 - Scheduler 与 ResourceManager；
 - admission、prefill、decode、control、capture 和 terminal 的编排；
 - 模型提交、输出提交和 response publication 的顺序；
-- Engine-wide failure cleanup。
+- Engine-wide failure cleanup；
+- 可供 Gateway 读取的 Engine availability；其事实仍只由 EngineCore 的 failure/lifecycle 状态拥有。
 
 Engine 理解请求、预算、finish reason 和可发布输出，不解释 transformer layer、KV plane 或 allocator。
 
@@ -108,6 +110,7 @@ Program 是 exact target package 的唯一物理执行入口，拥有：
 - State/KV stores、allocator、replica、reference 和 reservation；
 - prefill、ordinary decode、MTP/DFlash 和 forced control；
 - provisional model state 及 accepted-prefix commit/rollback；
+- resident prefix identity、shortlist digest 及 committed execution provenance；
 - resource feasibility、物理 transition 和 `ResourceResult`；
 - workspace、CUDA Graph 和 target execution schedule；
 - CausalScoring 窗口的临时 State/KV 与 `lm_head`/logprob staging。
@@ -123,8 +126,11 @@ Program 不维护 FIFO、SessionIndex、cache retention 价值或用户可见输
 | 协议、连接、transport | Gateway |
 | prompt 与 output 语义 | Frontend |
 | waiting queue、request record、response event | EngineCore |
+| Engine availability | EngineCore；Gateway 只读取并映射为外部 readiness |
 | FIFO head、backfill、prefill/decode 顺序、round membership | Scheduler |
 | logical lane、cache catalog、session binding、retention policy | ResourceManager |
+| model-output reconstruction-boundary 语义与 preview state | Frontend |
+| committed resident prefix execution provenance | Program；Engine 只验证并搬运 metadata |
 | physical State/KV、reservation、placement、model state | Program |
 
 其他组件可以读取 owner 发布的稳定 summary，但不能复制一份可独立修改的同类状态。
@@ -352,6 +358,7 @@ Prefill finalization、decode 和 control execution 可以产生 move-only `Pend
 frozen sequence membership
 provisional tokens
 per-row produced extent
+per-row accepted-prefix execution metadata
 Program-owned provisional state
 ```
 
@@ -376,7 +383,7 @@ terminal    -> accepted_tokens may be a produced prefix
 
 ```text
 Frontend preview
-  -> Program commits accepted model state
+  -> Program commits accepted model state and resident prefix execution provenance
   -> terminal resource result, when required
   -> generation budget and scheduler accounting
   -> OutputSession commits preview
@@ -385,6 +392,11 @@ Frontend preview
 
 因此 consumer 不会看到尚未提交的 token，也不会看到与 Program frontier 不一致的 continuation。
 Forced control 使用同一提交顺序，但 token 由 Frontend 提供，不调用 sampler，也不推进 sampling RNG。
+
+Frontend 产生的 boundary metadata 只描述当前 accepted span 内的相对位置。Engine 验证它落在该 span 内并随
+对应 row 搬运，不解释 delimiter，也不修改 resident identity。Program 使用 pending row 的 base frontier
+转换为绝对位置，并与 accepted token、Main/backend state 及 prefix digest 原子提交。Program commit 失败时，
+`OutputSession` 的 preview state 同样不提交；ordinary、MTP、DFlash 和 forced control 共享这一所有权链。
 
 ---
 

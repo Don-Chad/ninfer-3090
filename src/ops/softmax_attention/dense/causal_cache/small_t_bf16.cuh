@@ -4,7 +4,7 @@
 // Standalone from the int8 kernel (causal_attention_small_t_i8.cuh): shared scaffolding
 // lives in causal_attention_small_t.cuh, but the body/append/load are not shared so the
 // bf16 path can be tuned independently. Processes one KV head, one query-head
-// subgroup, and one token tile; a reducer combines the split-local partials.
+// subgroup, and one token tile; a reducer combines FP32 split-local partials.
 
 #include <cuda_bf16.h>
 #include <math_constants.h>
@@ -22,7 +22,7 @@ __launch_bounds__(128, 2) __global__ void causal_attention_small_t_tc_partial_bf
     __nv_bfloat16* cache_v, const std::int32_t* block_tables, const std::int32_t* valid_columns,
     const std::int32_t* table_rows, std::int32_t table_stride, std::int32_t tokens,
     std::int32_t full_width, std::int32_t column_begin, std::int32_t logical_capacity, float scale,
-    __nv_bfloat16* partial_acc, float* partial_m, float* partial_l) {
+    float* partial_acc, float* partial_m, float* partial_l) {
     static_assert(TokenTile >= 1 && TokenTile <= 6);
     static_assert(WarpsPerCta >= 1 && WarpsPerCta <= 4);
 
@@ -100,7 +100,7 @@ __launch_bounds__(128, 2) __global__ void causal_attention_small_t_tc_partial_bf
             causal_small_t_tc_row_to_qt<Geometry>(row, tokens, kv_head, q_head, token);
             if (causal_valid_q_head<Geometry>(kv_head, q_head)) {
                 partial_acc[causal_partial_acc_index<Geometry>(q_head, d, token, split, tokens)] =
-                    __float2bfloat16(0.0f);
+                    0.0f;
             }
         }
     };
@@ -192,7 +192,7 @@ __launch_bounds__(128, 2) __global__ void causal_attention_small_t_tc_partial_bf
     const int b_koff   = ((lane >> 3) & 1) << 3;
 
     const int warp_row0 = warp * 16;
-    __nv_bfloat16* p_sw = &p_s[warp * 16 * Bc];
+    __nv_bfloat16* p_sw  = &p_s[warp * 16 * Bc];
 
     unsigned af_q[QKKs][4];
 #pragma unroll
@@ -395,35 +395,26 @@ __launch_bounds__(128, 2) __global__ void causal_attention_small_t_tc_partial_bf
         }
     }
 
-    // MMA fragments hold each row in four-lane groups. Stage the final split-local
-    // accumulator through shared memory so partial_acc is written as contiguous d-vector stores.
 #pragma unroll
     for (int n = 0; n < PVNt; ++n) {
         const int d0   = n * 8 + 2 * lid;
-        const int d1   = d0 + 1;
         const int row0 = warp_row0 + gid;
         const int row1 = row0 + 8;
         if (row0 < row_count) {
-            qkv_s[row0 * D + d0] = __float2bfloat16(acc[n][0]);
-            qkv_s[row0 * D + d1] = __float2bfloat16(acc[n][1]);
+            int q_head = 0;
+            int token  = 0;
+            causal_small_t_tc_row_to_qt<Geometry>(row0, tokens, kv_head, q_head, token);
+            const std::int64_t dst =
+                causal_partial_acc_index<Geometry>(q_head, d0, token, split, tokens);
+            *reinterpret_cast<float2*>(&partial_acc[dst]) = make_float2(acc[n][0], acc[n][1]);
         }
         if (row1 < row_count) {
-            qkv_s[row1 * D + d0] = __float2bfloat16(acc[n][2]);
-            qkv_s[row1 * D + d1] = __float2bfloat16(acc[n][3]);
-        }
-    }
-    __syncthreads();
-
-    for (int chunk = tid; chunk < row_count * (D / 8); chunk += Threads) {
-        const int row = chunk / (D / 8);
-        const int d   = (chunk - row * (D / 8)) * 8;
-        int q_head    = 0;
-        int token     = 0;
-        causal_small_t_tc_row_to_qt<Geometry>(row, tokens, kv_head, q_head, token);
-        if (causal_valid_q_head<Geometry>(kv_head, q_head)) {
+            int q_head = 0;
+            int token  = 0;
+            causal_small_t_tc_row_to_qt<Geometry>(row1, tokens, kv_head, q_head, token);
             const std::int64_t dst =
-                causal_partial_acc_index<Geometry>(q_head, d, token, split, tokens);
-            store_vec(&partial_acc[dst], load_vec<int4>(&qkv_s[row * D + d]));
+                causal_partial_acc_index<Geometry>(q_head, d0, token, split, tokens);
+            *reinterpret_cast<float2*>(&partial_acc[dst]) = make_float2(acc[n][2], acc[n][3]);
         }
     }
 }

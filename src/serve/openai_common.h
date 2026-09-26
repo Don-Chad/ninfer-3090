@@ -3,12 +3,30 @@
 // OpenAI wire objects shared by Chat Completions and Responses HTTP handlers.
 
 #include "serve/request.h"
+#include "serve/request_json.h"
+
+#include <nlohmann/json.hpp>
 
 #include <cstdint>
 #include <string>
 #include <string_view>
 
 namespace ninfer::serve {
+
+enum class OpenAIPromptCacheAutomatic : std::uint8_t {
+    Default,
+    Requested,
+    Disabled,
+};
+
+struct OpenAIPromptCachePolicy {
+    OpenAIPromptCacheAutomatic automatic = OpenAIPromptCacheAutomatic::Default;
+};
+
+[[nodiscard]] bool parse_openai_prompt_cache_breakpoint(const RequestJson& value,
+                                                        std::string_view param);
+[[nodiscard]] OpenAIPromptCachePolicy parse_openai_prompt_cache_policy(const RequestJson& body);
+void apply_openai_prompt_cache_policy(GenerationRequest& request, OpenAIPromptCachePolicy policy);
 
 std::string make_models_list(const std::string& model_id, std::int64_t created,
                              std::uint32_t max_model_len);

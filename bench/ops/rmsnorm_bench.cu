@@ -161,14 +161,14 @@ template <int Block>
 void launch_plain_candidate(const Shape& shape, const void* x, const void* weight, void* out,
                             int rows, cudaStream_t stream) {
     if (shape.d == 128) {
-        ops::rmsnorm_warp_bf16x2_kernel<ops::RmsEpilogue::Plain, Block>
+        ops::rmsnorm_warp_bf16x2_kernel<ops::RmsEpilogue::Plain, Block, false>
             <<<static_cast<unsigned int>((rows + Block / 32 - 1) / (Block / 32)), Block, 0,
                stream>>>(static_cast<const __nv_bfloat162*>(x),
                          static_cast<const __nv_bfloat162*>(weight), nullptr,
                          static_cast<__nv_bfloat162*>(out), shape.d, rows, 1.0e-6f);
     } else if (shape.d == 2048) {
         constexpr int kMaxPairsPerThread = 1024 / Block;
-        ops::rmsnorm_cta_bf16x2_kernel<ops::RmsEpilogue::Plain, Block, kMaxPairsPerThread>
+        ops::rmsnorm_cta_bf16x2_kernel<ops::RmsEpilogue::Plain, Block, kMaxPairsPerThread, false>
             <<<static_cast<unsigned int>(rows), Block, 0, stream>>>(
                 static_cast<const __nv_bfloat162*>(x), static_cast<const __nv_bfloat162*>(weight),
                 nullptr, static_cast<__nv_bfloat162*>(out), shape.d, rows, 1.0e-6f);

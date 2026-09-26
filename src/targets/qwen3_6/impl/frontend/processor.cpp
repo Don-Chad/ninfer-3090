@@ -911,6 +911,21 @@ std::size_t Processor::count_tokens(std::vector<ChatMessage> messages,
     return count;
 }
 
+void bound_merged_tokens(ProcessorOptions& options, std::uint64_t merged_tokens) {
+    if (merged_tokens == 0) { return; }
+    const auto factor_pixels =
+        static_cast<std::uint64_t>(kFactor) * static_cast<std::uint64_t>(kFactor);
+    if (merged_tokens > std::numeric_limits<std::uint64_t>::max() / (factor_pixels * kTemporal)) {
+        return;
+    }
+    const std::uint64_t image_pixels = merged_tokens * factor_pixels;
+    const std::uint64_t video_pixels = image_pixels * static_cast<std::uint64_t>(kTemporal);
+    options.image_max_pixels         = std::min(options.image_max_pixels, image_pixels);
+    options.video_max_pixels         = std::min(options.video_max_pixels, video_pixels);
+    options.image_min_pixels         = std::min(options.image_min_pixels, options.image_max_pixels);
+    options.video_min_pixels         = std::min(options.video_min_pixels, options.video_max_pixels);
+}
+
 ProcessedInput Processor::process(std::vector<ChatMessage> messages,
                                   ChatRenderOptions render_options,
                                   const PreparationControl& control,

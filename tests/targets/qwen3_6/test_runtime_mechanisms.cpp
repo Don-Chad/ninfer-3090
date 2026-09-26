@@ -9,6 +9,7 @@
 #include "targets/qwen3_6/impl/runtime/rebuild_work.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <string_view>
@@ -40,15 +41,17 @@ void test_topology() {
     }
 }
 
-q36::DecoderStateSpec decoder_spec(ninfer::DType dtype, bool mtp) {
+q36::DecoderStateSpec decoder_spec(ninfer::DType dtype, std::int32_t quant_group, bool mtp,
+                                   bool packed_values = false) {
     return q36::DecoderStateSpec{
         .full_attention_layers     = 2,
         .mtp_layers                = 1,
         .capacity                  = 129,
         .kv_heads                  = 2,
-        .attention_head_dim        = 64,
+        .attention_head_dim        = 256,
         .kv_dtype                  = dtype,
-        .kv_quant_group            = dtype == ninfer::DType::I8 ? q36::kKvInt8QuantGroup : 0,
+        .kv_quant_group            = quant_group,
+        .kv_packed_values          = packed_values,
         .enable_mtp                = mtp,
         .text_physical_page_groups = 5,
         .mtp_physical_page_groups  = mtp ? 4U : 0U,
@@ -58,7 +61,7 @@ q36::DecoderStateSpec decoder_spec(ninfer::DType dtype, bool mtp) {
 void test_decoder_layout() {
     ninfer::LayoutBuilder bf16_builder;
     const q36::DecoderStateLayout bf16 =
-        q36::plan_decoder_state(bf16_builder, decoder_spec(ninfer::DType::BF16, false));
+        q36::plan_decoder_state(bf16_builder, decoder_spec(ninfer::DType::BF16, 0, false));
     (void)bf16_builder.finish(256);
     expect(bf16.text_kv.pages.planes.size() == 4, "BF16 Text KV has K/V planes per layer");
     expect(bf16.text_kv.pages.spec.page_group_count == 5 &&
@@ -75,7 +78,7 @@ void test_decoder_layout() {
 
     ninfer::LayoutBuilder int8_builder;
     const q36::DecoderStateLayout int8 =
-        q36::plan_decoder_state(int8_builder, decoder_spec(ninfer::DType::I8, true));
+        q36::plan_decoder_state(int8_builder, decoder_spec(ninfer::DType::I8, 64, true));
     (void)int8_builder.finish(256);
     expect(int8.text_kv.pages.planes.size() == 8 &&
                int8.text_kv.pages.planes[2].geometry.dtype == ninfer::DType::FP16 &&
@@ -92,9 +95,7 @@ void test_decoder_layout() {
     expect(int8.kv_payload_bytes() == int8.text_kv.payload_bytes() + int8.mtp_kv->payload_bytes(),
            "INT8 Text/MTP KV payload accounting");
 
-    q36::DecoderStateSpec fp8_spec = decoder_spec(ninfer::DType::FP8_E4M3FN, true);
-    fp8_spec.attention_head_dim    = q36::kKvFp8QuantGroup;
-    fp8_spec.kv_quant_group        = q36::kKvFp8QuantGroup;
+    q36::DecoderStateSpec fp8_spec = decoder_spec(ninfer::DType::FP8_E4M3FN, 256, true);
     ninfer::LayoutBuilder fp8_builder;
     const q36::DecoderStateLayout fp8 = q36::plan_decoder_state(fp8_builder, fp8_spec);
     (void)fp8_builder.finish(256);
@@ -109,6 +110,28 @@ void test_decoder_layout() {
            "FP8 MTP KV has row-scaled code and scale planes");
     expect(fp8.kv_payload_bytes() == fp8.text_kv.payload_bytes() + fp8.mtp_kv->payload_bytes(),
            "FP8 Text/MTP KV payload accounting");
+
+    // NVFP4 and K8V4 (FP8 key / NVFP4 value) are recognized KvCacheStorage selections but are not
+    // yet ported on this fork (their attention/append kernels use the Blackwell-only
+    // cvt.rn.satfinite.e2m1x2 instruction, unavailable on sm_86). This fork's DecoderStateSpec
+    // plans layouts from a DType + quant_group + packed_values triple rather than a KvCacheStorage
+    // selection, and that triple has no representation for the NVFP4 E2M1 code family, so those
+    // two formats are rejected at engine-construction time (see target_kv_cache_profile in
+    // layouts_impl.h) rather than exercised at this lower layer.
+
+    ninfer::LayoutBuilder rk8v4_builder;
+    const q36::DecoderStateLayout rk8v4 = q36::plan_decoder_state(
+        rk8v4_builder, decoder_spec(ninfer::DType::I8, 64, true, /*packed_values=*/true));
+    (void)rk8v4_builder.finish(256);
+    expect(rk8v4.text_kv.pages.planes.size() == 8 &&
+               rk8v4.text_kv.pages.planes[0].geometry.dtype == ninfer::DType::I8 &&
+               rk8v4.text_kv.pages.planes[0].geometry.leading_extent == 256 &&
+               rk8v4.text_kv.pages.planes[1].geometry.dtype == ninfer::DType::U8 &&
+               rk8v4.text_kv.pages.planes[1].geometry.leading_extent == 128,
+           "rk8v4 Text KV has a rotated INT8 key plane and a packed int4 value plane");
+    expect(rk8v4.kv_payload_bytes() ==
+               rk8v4.text_kv.payload_bytes() + rk8v4.mtp_kv->payload_bytes(),
+           "rk8v4 Text/MTP KV payload accounting");
 }
 
 void test_round_layout() {
@@ -323,6 +346,28 @@ void test_prefix_identity() {
            "incremental generated-token shortlist diverged from a full rebuild");
     expect(q36::detail::prefix_matches(original, ledger, resident, ledger.size()),
            "generated multimodal continuation identity");
+
+    q36::PreparedPromptData accepted_rebuild = identity_prompt();
+    const std::array<ninfer::TokenId, 3> proposed{20, 21, 22};
+    const std::span<const ninfer::TokenId> accepted(proposed.data(), 2);
+    std::vector<ninfer::TokenId> accepted_ledger = accepted_rebuild.token_ids;
+    accepted_ledger.insert(accepted_ledger.end(), accepted.begin(), accepted.end());
+    q36::detail::ResidentPrefixIdentity accepted_resident;
+    q36::detail::PrefixShortlistDigests accepted_digests;
+    accepted_resident.assign(accepted_rebuild);
+    accepted_digests.assign(accepted_rebuild);
+    accepted_resident.append_generated(accepted.size(), accepted_rebuild.rope_delta, 1);
+    accepted_digests.append_generated(accepted, accepted_rebuild.rope_delta, 1);
+    append_text_token(accepted_rebuild, accepted[0], 4);
+    append_text_token(accepted_rebuild, accepted[1], 5);
+    accepted_rebuild.identity.rewrite_execution_frontiers = {5};
+    q36::detail::PrefixShortlistDigests rebuilt_accepted_digests;
+    rebuilt_accepted_digests.assign(accepted_rebuild);
+    expect(q36::detail::prefix_matches(accepted_rebuild, accepted_ledger, accepted_resident,
+                                       accepted_ledger.size()) &&
+               accepted_digests.at(accepted_ledger.size()) ==
+                   rebuilt_accepted_digests.at(accepted_ledger.size()),
+           "accepted generated prefix and rebuilt history formed different cache identities");
 
     const q36::PreparedPromptData prompt_only = identity_prompt();
     resident.truncate(prompt_only.token_ids.size());

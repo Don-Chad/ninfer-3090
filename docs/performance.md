@@ -556,3 +556,64 @@ Each category contains three fixtures and five seeds per fixture, for 15 samples
 | Story | 15 | 126.1 ± 10.9 | 37.4% ± 5.8% | 2.12 ± 0.17 |
 | Translation | 15 | 192.3 ± 11.9 | 75.0% ± 6.5% | 3.25 ± 0.19 |
 | Structured | 15 | 219.8 ± 8.6 | 90.8% ± 5.1% | 3.72 ± 0.15 |
+
+### Vision residency on RTX 3090 (`groupwise-int`, sm_86)
+
+Dedicated RunPod RTX 3090 (24 GiB, driver 580.159, CUDA 13.1 build, nothing else on the GPU).
+Server flags common to every row: `--kv-capacity auto --max-concurrency 1 --prefill-chunk 1024
+--spec mtp --draft-tokens 3 --lm-head-draft`; the vision rows add `--vision --vision-max-merged
+12288` with `--vision-residency resident` or `overlay`. Maximum `--max-context` that boots,
+bisected to 8192 tokens:
+
+| `--kv-dtype` | no `--vision` (auto / explicit) | resident Vision (auto / explicit) | overlay Vision (auto / explicit) |
+|---|---|---|---|
+| `int8` | 147 456 / 180 224 | 122 880 / 159 744 | **147 456 / 180 224** |
+| `rk8v4` | 196 608 / 237 568 | 163 840 / 210 944 | **196 608 / 237 568** |
+| `bf16` | 73 728 / 92 160 | 65 536 / 81 920 | **73 728 / 92 160** |
+
+`auto` is `--kv-capacity auto` (keeps 1 GiB of automatic headroom); `explicit` is the largest `--kv-capacity N --max-context N` that boots, bisected to 2048 tokens, with a 1920×1080 image request completing at the overlay maximum.
+
+Overlay boots the no-vision capacity in every storage mode: the resident Vision cost
+(24 576 / 32 768 / 8 192 tokens) is gone. `free-after-weights` rises by 0.26 GiB (the tower is
+host-pinned) and the startup runtime reservation drops from 2.66 GiB to 2.23 GiB at 65 536 tokens.
+
+Greedy completions of a 1920×1080 gradient image (2074 merged tokens), of a 4000×3000 image
+downscaled by the budget to 11 767 merged tokens, and of their follow-up turns are byte-identical
+between residencies (`tools/smoke/overlay_ab.py`). The follow-up turn reuses the prefix and opens
+no window. At `--max-concurrency 2` two text requests complete alongside the image request.
+
+Text throughput without images is unchanged between residencies (7.7k-token prefill / 320-token
+decode, three runs each in one boot order): `int8` 852–862 vs 846–852 tok/s prefill and 53–62 vs
+55–60 tok/s decode, `rk8v4` 845–870 vs 857–875 tok/s prefill and 55–57 vs 57–58 tok/s decode.
+
+Per-image cost of a window (rk8v4, `--max-concurrency 1`): the 1920×1080 image reaches its first
+token in 3.55 s under overlay against 3.47 s resident (window 477 ms: 192 MiB evicted in 4 ms,
+restored in 11 ms, 282 MiB of tower streamed behind compute); the 4000×3000 image reaches it in
+22.8 s against 23.0 s (window 6.65 s, 784 MiB evicted in 10 ms, restored in 49 ms). Boot-to-boot
+prefill throughput on the rented card varies by about ±15 % (GPU clocks), so residencies are only
+compared within one run.
+
+#### Where a window borrows its memory
+
+An overlay window is funded from free KV pages when they cover it, and from the evict-ranked
+weight tail otherwise. The request log names the tier: `overlay=1xconc` for the KV-funded window,
+which leaves the text weights mapped so other lanes keep decoding, and `overlay=1xexcl` for the
+weight-tail window, which stops every lane until it closes.
+
+`tools/smoke/vision_stall_probe.py` streams one text completion and sends a 1920×1080 image
+request while it runs (`--max-concurrency 2`, `--prefill-chunk 256`, rk8v4). Inter-token gaps of
+the text stream:
+
+| window | KV capacity | gap p50 | gap p99 | gap max | window |
+|---|---|---|---|---|---|
+| `conc` (free KV pages) | 65 536 | 40 ms | 340 ms | 413 ms | 408 ms |
+| `excl` (weight tail) | 20 480 | 40 ms | 670 ms | 670 ms | 356 ms |
+
+The exclusive window adds its whole duration to the worst gap; the concurrent one does not, and
+what remains is the image prompt's own prefill chunks, which block decode in either case. A KV
+cache smaller than one window (the 20 480-token row) simply has no pages to lend, so every window
+there is exclusive and the engine behaves exactly as it did before this tier existed.
+
+The remapping itself is cheap on both paths: 192 MiB left the arena in 3.9–31 ms and came back in
+12–32 ms. The KV path pays more of it because it remaps 2 MiB granules where the weight path
+remaps 16 MiB chunks.

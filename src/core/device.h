@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 
 #include <cstddef>
+#include <cstdint>
 
 namespace ninfer {
 
@@ -10,10 +11,20 @@ void cuda_check(cudaError_t err, const char* expr, const char* file, int line);
 
 #define CUDA_CHECK(expr) ::ninfer::cuda_check((expr), #expr, __FILE__, __LINE__)
 
+// Non-owning execution facts passed to Ops whose launch policy depends on physical device
+// capacity. DeviceContext remains the owner and authoritative source of both values.
+struct DeviceExecutionView {
+    cudaStream_t stream               = nullptr;
+    std::int32_t multiprocessor_count = 0;
+};
+
 struct DeviceContext {
     int device                   = 0;
     cudaStream_t stream          = nullptr;
     cudaStream_t transfer_stream = nullptr;
+    // Carries a vision encode that runs beside the decode of other lanes. Empty unless a window
+    // borrows free KV memory, which is what makes the overlap safe.
+    cudaStream_t vision_stream = nullptr;
     cudaDeviceProp props{};
 
     explicit DeviceContext(int device_id = 0);
@@ -26,11 +37,12 @@ struct DeviceContext {
 
     void bind_to_current_thread() const;
     void bind_to_current_thread_noexcept() const noexcept;
-    int sm() const noexcept;
-    // Streaming-multiprocessor count of the attached device. Distinct from sm(), which returns
-    // the compute capability: every sm_86 part shares capability 86 but not this count (RTX 3090
-    // has 82, RTX 3090 Ti has 84), so any device-wide residency budget must read this, not sm().
-    int sm_count() const noexcept;
+    int compute_capability() const noexcept;
+    // Streaming-multiprocessor count of the attached device. Distinct from compute_capability():
+    // every sm_86 part shares capability 86 but not this count (RTX 3090 has 82, RTX 3090 Ti has
+    // 84), so any device-wide residency budget must read this, not compute_capability().
+    int multiprocessor_count() const noexcept;
+    DeviceExecutionView execution_view() const noexcept;
     std::size_t total_vram() const noexcept;
     void synchronize() const;
 };

@@ -92,6 +92,38 @@ bool needs_message_item(const GenerationOutcome& outcome, const std::string& sta
     return status == "completed";
 }
 
+Json timings_json(const GenerationOutcome& outcome) {
+    const double prefill_sec = outcome.metrics.prefill_seconds;
+    const double decode_sec  = outcome.metrics.decode_seconds;
+
+    const double computed_prefill_tokens = static_cast<double>(
+        std::max(0, outcome.prompt_tokens - static_cast<int>(outcome.metrics.prefix_cache_hit_tokens)));
+    const double prompt_tokens_for_rate = (computed_prefill_tokens > 0.0)
+        ? computed_prefill_tokens
+        : static_cast<double>(outcome.prompt_tokens);
+
+    const double prompt_per_second = (prefill_sec > 0.0 && prompt_tokens_for_rate > 0.0)
+        ? (prompt_tokens_for_rate / prefill_sec)
+        : 0.0;
+
+    const double decode_tokens = static_cast<double>(outcome.completion_tokens);
+    const double predicted_per_second = (decode_sec > 0.0 && decode_tokens > 0.0)
+        ? (decode_tokens / decode_sec)
+        : 0.0;
+
+    return Json{
+        {"prompt_n", outcome.prompt_tokens},
+        {"prompt_ms", prefill_sec * 1000.0},
+        {"prompt_per_second", prompt_per_second},
+        {"predicted_n", outcome.completion_tokens},
+        {"predicted_ms", decode_sec * 1000.0},
+        {"predicted_per_second", predicted_per_second},
+        {"cache_n", outcome.metrics.prefix_cache_hit_tokens},
+        {"draft_n", outcome.metrics.speculative_draft_tokens},
+        {"draft_n_accepted", outcome.metrics.speculative_accepted_tokens},
+    };
+}
+
 BuiltOpenAIResponse build_response(const std::string& id, std::int64_t created_at,
                                    const OpenAIResponsesCreateRequest& request,
                                    const OpenAIResponsesRuntimeValues& runtime,
@@ -183,6 +215,7 @@ BuiltOpenAIResponse build_response(const std::string& id, std::int64_t created_a
              {"output_tokens", outcome.completion_tokens},
              {"output_tokens_details", Json{{"reasoning_tokens", outcome.reasoning_tokens}}},
              {"total_tokens", outcome.prompt_tokens + outcome.completion_tokens}};
+    response["timings"] = timings_json(outcome);
     built.body = std::move(response);
     return built;
 }

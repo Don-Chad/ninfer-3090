@@ -12,6 +12,9 @@ enum class ActivationCompute : std::uint8_t {
     A16,
     A8,
     A4,
+    // Integer activations against groupwise-int weights, distinct from A8's FP8 path. Held to the
+    // same A8 activation allowance.
+    A8Int,
 };
 
 struct Profile {

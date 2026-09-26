@@ -4,6 +4,7 @@
 #include "artifact/typed_binding.h"
 #include "artifact_fixture.h"
 #include "core/device.h"
+#include "core/evictable_weight_pool.h"
 
 #include <cuda_runtime.h>
 
@@ -12,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 
 namespace {
@@ -196,6 +198,118 @@ int main() {
         require(materialized.device_arena().capacity() == plan.device_capacity_bytes &&
                     materialized.device_arena().used() == plan.device_capacity_bytes,
                 "materialized tensor does not own the planned device backing");
+        // Overlay plan mechanics: an evict-ranked tensor lands in a chunk-aligned arena tail
+        // backed by the eviction pool, a HostPinned tensor lands in the pinned block, and a
+        // transaction preserves every byte of the borrowed chunk.
+        if (ninfer::EvictableWeightPool::supported(device)) {
+            constexpr std::size_t kChunk = ninfer::EvictableWeightPool::kChunkBytes;
+            ninfer::artifact::Binder overlay_binder(reader);
+            const auto overlay_resource = overlay_binder.require_resource(
+                "frontend/test.json", ninfer::artifact::ResourceEncoding::RawBytesV1);
+            overlay_binder.retain_on_host(overlay_resource);
+            const auto resident =
+                overlay_binder.require_tensor("weights/test", ninfer::artifact::NumericFormat::BF16,
+                                              ninfer::artifact::StorageLayout::ContiguousLeV1,
+                                              tensor_shape);
+            overlay_binder.materialize_on_device(resident);
+            const auto evictable = overlay_binder.require_tensor(
+                "weights/second", ninfer::artifact::NumericFormat::BF16,
+                ninfer::artifact::StorageLayout::ContiguousLeV1, second_shape);
+            overlay_binder.materialize_on_device(evictable, /*evict_rank=*/700);
+            const auto overlay_fp8 = overlay_binder.require_tensor(
+                "weights/fp8", ninfer::artifact::NumericFormat::FP8_E4M3FN_ROW_BF16S,
+                ninfer::artifact::StorageLayout::RowScaleV1, fp8_shape);
+            overlay_binder.validate_only(overlay_fp8);
+            const ninfer::artifact::MaterializationPlan overlay_plan =
+                overlay_binder.finish(kChunk);
+            require(overlay_plan.evictable_tail_offset == kChunk &&
+                        overlay_plan.evictable_tail_bytes == kSecondTensor.size() &&
+                        overlay_plan.device_objects.back().offset ==
+                            overlay_plan.evictable_tail_offset &&
+                        overlay_plan.device_objects.back().alignment ==
+                            overlay_plan.device_objects.front().alignment &&
+                        overlay_plan.device_capacity_bytes == kChunk + kSecondTensor.size(),
+                    "evict-ranked tensor was not planned into a chunk-aligned arena tail");
+
+            auto pool = std::make_unique<ninfer::EvictableWeightPool>(
+                device, ninfer::EvictableWeightPool::Config{
+                            .arena_bytes           = overlay_plan.device_capacity_bytes,
+                            .evictable_tail_bytes  = overlay_plan.evictable_tail_bytes,
+                            .window_capacity_bytes = kChunk,
+                        });
+            auto overlay_materialized = ninfer::artifact::materialize(
+                reader, overlay_plan, device, nullptr, std::move(pool));
+            ninfer::EvictableWeightPool* live_pool = overlay_materialized.eviction_pool();
+            require(live_pool != nullptr, "pool-backed materialization dropped the pool");
+            require(overlay_materialized.device_arena().used() ==
+                        overlay_plan.device_capacity_bytes,
+                    "pool-backed arena does not account the planned capacity");
+            live_pool->capture_window_mirror(device.transfer_stream);
+
+            void* evictable_home = overlay_materialized.device_data(evictable);
+            {
+                auto transaction = live_pool->evict(kChunk, device.stream);
+                require(transaction.leased().bytes == kChunk,
+                        "window transaction mapped an unexpected extent");
+                CUDA_CHECK(cudaMemsetAsync(transaction.leased().data, 0x5A,
+                                           transaction.leased().bytes, device.stream));
+                CUDA_CHECK(cudaStreamSynchronize(device.stream));
+                transaction.close();
+                require(!live_pool->poisoned(), "window transaction poisoned the pool");
+            }
+            require(overlay_materialized.device_data(evictable) == evictable_home,
+                    "evictable tensor address changed across the overlay transaction");
+            std::array<std::byte, kSecondTensor.size()> roundtrip{};
+            CUDA_CHECK(cudaMemcpy(roundtrip.data(), evictable_home, roundtrip.size(),
+                                  cudaMemcpyDeviceToHost));
+            require(roundtrip == kSecondTensor,
+                    "evictable tensor bytes were not restored from the mirror");
+        } else {
+            std::cout << "note: VMM unsupported, overlay plan mechanics not exercised\n";
+        }
+
+        {
+            // HostPinned placement: payload lands in the pinned block, never on device.
+            ninfer::artifact::Binder pinned_binder(reader);
+            const auto pinned_resource = pinned_binder.require_resource(
+                "frontend/test.json", ninfer::artifact::ResourceEncoding::RawBytesV1);
+            pinned_binder.retain_on_host(pinned_resource);
+            const auto device_tensor =
+                pinned_binder.require_tensor("weights/test", ninfer::artifact::NumericFormat::BF16,
+                                             ninfer::artifact::StorageLayout::ContiguousLeV1,
+                                             tensor_shape);
+            pinned_binder.materialize_on_device(device_tensor);
+            const auto pinned_tensor = pinned_binder.require_tensor(
+                "weights/second", ninfer::artifact::NumericFormat::BF16,
+                ninfer::artifact::StorageLayout::ContiguousLeV1, second_shape);
+            pinned_binder.materialize_on_host_pinned(pinned_tensor);
+            const auto pinned_fp8 = pinned_binder.require_tensor(
+                "weights/fp8", ninfer::artifact::NumericFormat::FP8_E4M3FN_ROW_BF16S,
+                ninfer::artifact::StorageLayout::RowScaleV1, fp8_shape);
+            pinned_binder.validate_only(pinned_fp8);
+            const ninfer::artifact::MaterializationPlan pinned_plan = pinned_binder.finish();
+            require(pinned_plan.pinned_objects.size() == 1 &&
+                        pinned_plan.pinned_capacity_bytes == kSecondTensor.size() &&
+                        pinned_plan.device_capacity_bytes == kTensor.size(),
+                    "pinned placement was not planned into the pinned block");
+
+            auto pinned_materialized =
+                ninfer::artifact::materialize(reader, pinned_plan, device);
+            require(pinned_materialized.is_host_pinned(pinned_tensor) &&
+                        !pinned_materialized.is_host_pinned(device_tensor),
+                    "pinned residency is not reported per object");
+            const auto block = pinned_materialized.pinned_block();
+            require(block.size() == kSecondTensor.size() &&
+                        std::equal(block.begin(), block.end(), kSecondTensor.begin(),
+                                   kSecondTensor.end()),
+                    "pinned block content differs from the artifact payload");
+            require(pinned_materialized.storage_data(pinned_tensor) ==
+                        const_cast<std::byte*>(block.data()) +
+                            pinned_materialized.pinned_offset(pinned_tensor),
+                    "pinned tensor storage pointer is outside the pinned block");
+            require(pinned_materialized.stats().pinned_weight_bytes == kSecondTensor.size(),
+                    "pinned weight bytes are not accounted");
+        }
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -73,6 +73,7 @@ grow KV. Fixed pressure shapes are:
 | short | 30 | 32 | 64 |
 | long source | 7680 | 16 | 7744 |
 | independent long prefill | 7680 | 32 | 7744 |
+| rotation source | 55000 | 32 | 55040 |
 | interferer | 127 | 256 | 384 |
 | decode holder | 127 | 4096 | 4224 |
 | unsafe borrower | 30 | 3000 | 3072 |
@@ -91,6 +92,20 @@ e(A) + e(B) + e(C) = 8512 > 8192
 ```
 
 Changing the profile changes the legal placement of A; it does not change the requests.
+
+The six-session rotation uses six byte-distinct, early-divergent 55000-token Responses roots. Each
+root has `e=55040`; therefore four roots fit the 240000-token Device KV capacity, while five do not:
+
+```text
+4 * 55040 = 220160 <= 240000
+5 * 55040 = 275200 > 240000
+```
+
+After all six roots complete, the graph warms root 0 once and then branches from each original root
+in three sequential round-robin passes. Host KV makes retention physically possible while the
+number of parked owners and checkpoints forces the materialization planner beyond the small
+A/B/C pressure graph. The report declares paired round-2 versus round-1 TTFT comparisons for every
+rotation position; cross-campaign comparison also matches every role independently.
 
 ## Serve profiles
 
@@ -122,18 +137,19 @@ checkpoint capacity beyond active lanes.
 | `text-cold-8k` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 1 --no-prefix-reuse` |
 | `text-cold-64k` | `--max-context 65536 --kv-capacity 65536 --max-concurrency 1 --no-prefix-reuse` |
 | `text-cold-256k` | `--max-context 262144 --kv-capacity 262144 --max-concurrency 1 --no-prefix-reuse` |
-| `cache-hot` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 1 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 2 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
-| `cache-pressure-device` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
-| `cache-pressure-state-host` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 0 --host-state-slots 4 --host-kv-mib 0 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
-| `cache-pressure-kv-host` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 2 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 8192 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
-| `cache-swap-64k-host` | `--max-context 65536 --kv-capacity 65536 --max-concurrency 2 --device-state-slots 4 --host-state-slots 0 --host-kv-mib 4608 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
-| `cache-pressure-both-host` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 2 --device-state-slots 0 --host-state-slots 4 --host-kv-mib 8192 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
-| `cache-pressure-evict` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 2 --device-state-slots 1 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
-| `cache-pressure-catalog` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 2 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
+| `cache-hot` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 1 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 2 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0` |
+| `cache-pressure-device` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0` |
+| `cache-pressure-state-host` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 0 --host-state-slots 4 --host-kv-mib 0 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0` |
+| `cache-pressure-kv-host` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 2 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 8192 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0` |
+| `cache-swap-64k-host` | `--max-context 65536 --kv-capacity 65536 --max-concurrency 2 --device-state-slots 4 --host-state-slots 0 --host-kv-mib 4608 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0` |
+| `cache-rotation-55k-host` | `--max-context 240000 --kv-capacity 240000 --max-concurrency 4 --max-pending-requests 32 --pending-timeout-ms 120000 --spec mtp --draft-tokens 3 --lm-head-draft --device-state-slots 2 --host-state-slots 24 --host-kv-mib 49152 --max-private-continuations 24 --max-shared-prefixes 24 --max-long-anchors-per-continuation 0` |
+| `cache-pressure-both-host` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 2 --device-state-slots 0 --host-state-slots 4 --host-kv-mib 8192 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0` |
+| `cache-pressure-evict` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 2 --device-state-slots 1 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0` |
+| `cache-pressure-catalog` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 2 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0` |
 | `cache-off` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 1 --no-prefix-reuse` |
-| `shared-prefix` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 2 --max-shared-prefixes 1 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 1` |
-| `shared-replacement` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 1 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 1 --max-shared-prefixes 1 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 1` |
-| `session-order` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 8 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0` |
+| `shared-prefix` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 2 --max-shared-prefixes 1 --max-long-anchors-per-continuation 0` |
+| `shared-value` | `--max-context 16384 --kv-capacity 16384 --max-concurrency 1 --device-state-slots 3 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 1 --max-shared-prefixes 1 --max-long-anchors-per-continuation 0` |
+| `session-order` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --device-state-slots 8 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 4 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0` |
 | `scheduler-overlap` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --prefill-chunk 1024 --no-prefix-reuse` |
 | `scheduler-prefill-128` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --prefill-chunk 128 --no-prefix-reuse` |
 | `scheduler-prefill-4096` | `--max-context 8192 --kv-capacity 16384 --max-concurrency 2 --prefill-chunk 4096 --no-prefix-reuse` |
@@ -141,8 +157,8 @@ checkpoint capacity beyond active lanes.
 | `lane-limit-8` | `--max-context 4224 --kv-capacity 33792 --max-concurrency 8 --max-pending-requests 1 --pending-timeout-ms 120000 --no-prefix-reuse` |
 | `pending-timeout` | `--max-context 4224 --kv-capacity 4224 --max-concurrency 1 --max-pending-requests 1 --pending-timeout-ms 100 --no-prefix-reuse` |
 | `context-boundary` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 1 --no-prefix-reuse` |
-| `vision-cache` | `--max-context 32768 --kv-capacity 32768 --max-concurrency 1 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 2 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0 --vision --media-cache-mib 512 --media-live-mib 512` |
-| `vision-thread-1` | `--max-context 32768 --kv-capacity 32768 --max-concurrency 1 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 2 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --max-cache-markers-per-request 0 --vision --media-cache-mib 512 --media-live-mib 512 --media-preprocess-threads 1` |
+| `vision-cache` | `--max-context 32768 --kv-capacity 32768 --max-concurrency 1 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 2 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --vision --media-cache-mib 512 --media-live-mib 512` |
+| `vision-thread-1` | `--max-context 32768 --kv-capacity 32768 --max-concurrency 1 --device-state-slots 2 --host-state-slots 0 --host-kv-mib 0 --max-private-continuations 2 --max-shared-prefixes 0 --max-long-anchors-per-continuation 0 --vision --media-cache-mib 512 --media-live-mib 512 --media-preprocess-threads 1` |
 | `vision-concurrent` | `--max-context 32768 --kv-capacity 65536 --max-concurrency 2 --vision --media-cache-mib 512 --media-live-mib 1024 --no-prefix-reuse` |
 | `media-cache-tight` | `--max-context 8192 --kv-capacity 8192 --max-concurrency 1 --vision --media-cache-mib 16 --media-live-mib 128 --no-prefix-reuse` |
 | `vision-boundary` | `--max-context 65536 --kv-capacity 65536 --max-concurrency 1 --vision --no-prefix-reuse` |
@@ -164,6 +180,8 @@ Baseline and cache cases:
 | `session-hot-continuation` | `cache-hot` | Stored Responses source then `previous_response_id` continuation. |
 | `session-alternating` | `cache-pressure-device` | `A1, B1, A2, B2` across two stored Responses lineages. |
 | `session-alternating-64k-host-swap` | `cache-swap-64k-host` | Two early-divergent 64512-token sessions run as `A1, B1, A2, B2`; one fits Device, the pair requires two Host KV covers for bidirectional rotation. |
+| `session-rotation-55k-host` | `cache-rotation-55k-host` | Six early-divergent 55000-token stored Responses roots, one warm branch from root 0, then three sequential six-root rounds; covers the large materialization target graph behind sequential Host-KV rotation. |
+| `session-rotation-55k-two-cohort-stream` | `cache-rotation-55k-host` | Replays the complete sequential rotation estate, keeps two 900-token store-free Responses streams continuously active, creates six distinct second-cohort 55000-token roots, then runs three second-cohort resume rounds. This is the process-history, concurrency, and Host State descriptor-pressure graph reported in issue #144. |
 | `unmarked-common-prefix-miss` | `cache-hot` | Two standalone user messages share over 4096 tokens but no legal marker. |
 | `resume-after-interference-device` | `cache-pressure-device` | Fixed A/B/C/A2 graph with source placement available on Device. |
 | `resume-after-interference-state-host` | `cache-pressure-state-host` | Same graph with checkpoint State available only on Host. |
@@ -172,9 +190,13 @@ Baseline and cache cases:
 | `resume-after-interference-evicted` | `cache-pressure-evict` | Source can publish initially, then pressure has no Host fallback. |
 | `resume-after-interference-catalog` | `cache-pressure-catalog` | Logical catalog fills while physical capacity remains. |
 | `continuation-cache-off` | `cache-off` | Stored Responses control with Engine prefix reuse disabled. |
-| `shared-sequential` | `shared-prefix` | Marked system prefix followed by a second suffix. |
+| `shared-sequential` | `shared-prefix` | Anthropic-marked system prefix followed by a second suffix. |
+| `shared-openai-explicit` | `shared-prefix` | OpenAI explicit system breakpoint followed by a different suffix. |
+| `shared-openai-implicit` | `shared-value` | OpenAI's default full-prompt candidate, private displacement, then the identical prompt. |
+| `shared-observed-promotion` | `shared-value` | Two independent unmarked Anthropic requests establish demand; a filler removes the private endpoint before a third identical request. |
 | `shared-fanout` | `shared-prefix` | Seed then two simultaneous branches from a 4149-token, non-page-aligned frontier. |
-| `shared-replacement` | `shared-replacement` | Shared A, shared B, private filler, then A; both shared and private fallbacks are excluded. |
+| `shared-slot-retention` | `shared-value` | Equal-size marked A and B compete for `S=1` while physical capacity can retain A; a filler removes A's private fallback before A returns. |
+| `shared-value-replacement` | `shared-value` | A 4149-token system owner and a 5074-token tool candidate compete for `S=1`; a filler removes B's private fallback before B returns. |
 | `shared-tools-sequential` | `shared-prefix` | Two requests with the same marked 32-tool prefix. |
 | `shared-tools-changed` | `shared-prefix` | The first tool identity changes, invalidating the marked tool prefix. |
 
@@ -233,8 +255,9 @@ The normal entry point is one managed command:
 python3 tools/bench/run_serve_ttft_campaign.py --campaign resource --samples 5
 ```
 
-`smoke` runs the short baseline, `resource` runs the six Device/Host/eviction/catalog comparisons
-plus the 64K bidirectional Host-swap case, and `full` runs all 51 audited cases. `resource` is the
+`smoke` runs the short baseline. `resource` runs the six Device/Host/eviction/catalog comparisons,
+the 64K bidirectional Host-swap case, the original six-session 55K Host-rotation case, and its
+two-cohort concurrent-stream pressure case. `full` runs every audited case. `resource` is the
 default and `--samples` defaults to one.
 Repeat `--case NAME` instead of `--campaign` to run a focused subset through the same managed
 lifecycle, for example:

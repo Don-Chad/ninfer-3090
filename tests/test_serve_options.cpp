@@ -70,6 +70,16 @@ int main() {
     const ServeOptions fp8 = parse({"ninfer-serve", "model.ninfer", "--kv-dtype", "fp8"});
     failures += check(fp8.kv_cache == ninfer::KvCacheStorage::Fp8E4M3Row256,
                       "--kv-dtype fp8 did not select row-scaled E4M3 KV");
+    const ServeOptions nvfp4 = parse({"ninfer-serve", "model.ninfer", "--kv-dtype", "nvfp4"});
+    failures += check(nvfp4.kv_cache == ninfer::KvCacheStorage::Nvfp4Group16,
+                      "--kv-dtype nvfp4 did not select group-16 NVFP4 KV");
+    const ServeOptions k8v4 = parse({"ninfer-serve", "model.ninfer", "--kv-dtype", "k8v4"});
+    failures += check(k8v4.kv_cache == ninfer::KvCacheStorage::Fp8KeyNvfp4Value,
+                      "--kv-dtype k8v4 did not select asymmetric K8V4 KV");
+    const std::string kv_help = serve_usage_text("ninfer-serve");
+    failures += check(kv_help.find("nvfp4") != std::string::npos &&
+                          kv_help.find("k8v4") != std::string::npos,
+                      "serve help omits a production KV storage mode");
 
     // rk8v4 still parses to its storage value; the engine rejects it in
     // target_kv_cache_profile so the failure names the unported feature rather than an
@@ -178,18 +188,21 @@ int main() {
                           configured.media_preprocess_threads == 6,
                       "media preparation limits did not reach serving options");
 
-    const ServeOptions context_cache = parse(
-        {"ninfer-serve", "model.ninfer", "--device-state-slots", "3", "--host-state-slots", "5",
-         "--host-kv-mib", "64", "--max-private-continuations", "9", "--max-shared-prefixes", "4",
-         "--max-long-anchors-per-continuation", "2", "--max-cache-markers-per-request", "6"});
+    const ServeOptions logging = parse({"ninfer-serve", "model.ninfer", "--log-level", "debug"});
+    failures += check(logging.log_level == ninfer::product::LogLevel::Debug,
+                      "log level did not reach serving options");
+
+    const ServeOptions context_cache =
+        parse({"ninfer-serve", "model.ninfer", "--device-state-slots", "3", "--host-state-slots",
+               "5", "--host-kv-mib", "64", "--max-private-continuations", "9",
+               "--max-shared-prefixes", "4", "--max-long-anchors-per-continuation", "2"});
     failures += check(context_cache.context_cache.enabled &&
                           context_cache.context_cache.device_state_slots == 3 &&
                           context_cache.context_cache.host_state_slots == 5 &&
                           context_cache.context_cache.host_kv_capacity_bytes == (64ULL << 20) &&
                           context_cache.context_cache.max_private_continuations == 9 &&
                           context_cache.context_cache.max_shared_prefixes == 4 &&
-                          context_cache.context_cache.max_long_anchors_per_continuation == 2 &&
-                          context_cache.context_cache.max_cache_markers_per_request == 6,
+                          context_cache.context_cache.max_long_anchors_per_continuation == 2,
                       "context-cache capacities did not reach serving options");
     bool disabled_cache_capacity_rejected = false;
     try {
@@ -271,6 +284,7 @@ int main() {
         check(explicit_effort.reasoning_effort == ninfer::ReasoningEffort::Low &&
                   explicit_effort.effective_reasoning_effort == ninfer::ReasoningEffort::Low,
               "explicit reasoning effort did not remain the effective effort");
+
     request.reasoning_effort.reset();
     failures +=
         check(resolve_prompt_semantics(request, configured, prompt_capabilities).preserve_thinking,
@@ -279,6 +293,34 @@ int main() {
     failures +=
         check(!resolve_prompt_semantics(request, configured, prompt_capabilities).preserve_thinking,
               "request preserve-thinking override did not win");
+
+    // Client effort vocabularies are wider than the three rungs any Qwen3.6 template exposes:
+    // OpenAI and Claude Code send 'high', pi sends 'minimal' and 'max'. Those collapse onto the
+    // nearest rung rather than failing the request.
+    ninfer::PromptCapabilities effort_capabilities;
+    effort_capabilities.enable_thinking                 = true;
+    effort_capabilities.reasoning_effort.low            = true;
+    effort_capabilities.reasoning_effort.xhigh          = true;
+    effort_capabilities.reasoning_effort.default_effort = ninfer::ReasoningEffort::XHigh;
+    const auto collapses = [&](RequestedReasoningEffort wire) {
+        GenerationRequest aliased = GenerationRequest{};
+        aliased.max_tokens        = 1;
+        aliased.reasoning_effort  = wire;
+        return resolve_prompt_semantics(aliased, defaults, effort_capabilities).reasoning_effort;
+    };
+    failures += check(collapses(RequestedReasoningEffort::Minimal) == ninfer::ReasoningEffort::Low,
+                      "'minimal' did not collapse onto the template's low rung");
+    failures += check(collapses(RequestedReasoningEffort::High) == ninfer::ReasoningEffort::XHigh,
+                      "'high' did not collapse onto the template's xhigh rung");
+    failures += check(collapses(RequestedReasoningEffort::Max) == ninfer::ReasoningEffort::XHigh,
+                      "'max' did not collapse onto the template's xhigh rung");
+    // Collapsing is not a licence to invent a rung the template lacks: medium is absent here.
+    bool unsupported_rung_rejected = false;
+    try {
+        (void)collapses(RequestedReasoningEffort::Medium);
+    } catch (const ApiException&) { unsupported_rung_rejected = true; }
+    failures += check(unsupported_rung_rejected,
+                      "an effort rung the template lacks survived the capability gate");
 
     failures +=
         check(serve_usage_text("ninfer-serve").find("--no-prefix-reuse") != std::string::npos,
@@ -299,6 +341,8 @@ int main() {
     failures +=
         check(serve_usage_text("ninfer-serve").find("--log-stats-interval-ms") != std::string::npos,
               "serve help omits --log-stats-interval-ms");
+    failures += check(serve_usage_text("ninfer-serve").find("--log-level") != std::string::npos,
+                      "serve help omits the log-level control");
     failures += check(serve_usage_text("ninfer-serve").find("--media-preprocess-threads") !=
                           std::string::npos,
                       "serve help omits media preparation controls");
@@ -344,5 +388,38 @@ int main() {
     failures += check(redaction_present, "startup argv omitted the API-key redaction marker");
 
     if (failures == 0) { std::cout << "ok\n"; }
+
+    {
+        const ServeOptions overlay =
+            parse({"ninfer-serve", "model.ninfer", "--vision", "--vision-residency", "overlay",
+                   "--vision-max-merged", "12288"});
+        failures += check(overlay.vision_residency == ninfer::VisionResidency::Overlay,
+                          "--vision-residency overlay did not select overlay residency");
+        failures += check(overlay.vision_max_merged_tokens == 12288U,
+                          "--vision-max-merged did not set the merged-token budget");
+        const ServeOptions resident = parse({"ninfer-serve", "model.ninfer", "--vision"});
+        failures += check(resident.vision_residency == ninfer::VisionResidency::Resident,
+                          "vision residency does not default to resident");
+        failures += check(resident.vision_max_merged_tokens == 16384U,
+                          "vision merged-token budget does not default to the item maximum");
+        bool overlay_without_vision_rejected = false;
+        try {
+            (void)parse({"ninfer-serve", "model.ninfer", "--vision-residency", "overlay"});
+        } catch (const std::invalid_argument&) { overlay_without_vision_rejected = true; }
+        failures += check(overlay_without_vision_rejected,
+                          "--vision-residency overlay without --vision was accepted");
+        bool small_budget_rejected = false;
+        try {
+            (void)parse({"ninfer-serve", "model.ninfer", "--vision", "--vision-max-merged", "32"});
+        } catch (const std::invalid_argument&) { small_budget_rejected = true; }
+        failures += check(small_budget_rejected, "--vision-max-merged 32 was accepted");
+        bool unknown_mode_rejected = false;
+        try {
+            (void)parse(
+                {"ninfer-serve", "model.ninfer", "--vision", "--vision-residency", "sometimes"});
+        } catch (const std::invalid_argument&) { unknown_mode_rejected = true; }
+        failures += check(unknown_mode_rejected, "--vision-residency sometimes was accepted");
+    }
+
     return failures == 0 ? 0 : 1;
 }

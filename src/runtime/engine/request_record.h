@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/nvtx.h"
 #include "ninfer/types.h"
 #include "runtime/contract/types.h"
 #include "runtime/engine/admission_policy.h"
@@ -14,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace ninfer::runtime {
@@ -107,16 +109,19 @@ struct RequestRecord {
     using OutputSession  = typename Package::OutputSession;
     using BasePlan       = typename Package::RequestBasePlan;
     using SequenceHandle = typename Package::SequenceHandle;
+    using StreamEvent    = std::variant<GenerationTimingObservation, OutputDelta>;
 
     RequestRecord(std::uint64_t request_identity, std::uint64_t publication_sequence,
                   PreparedPrompt input, OutputSession output_session, PromptSummary summary,
                   double frontend_seconds, ResolvedRequestOptions request_options,
-                  OutputConsumerMode output_consumer, Clock::time_point limit,
-                  Clock::time_point submit_time)
-        : id(request_identity), publication_order(publication_sequence), prompt(std::move(input)),
+                  OutputConsumerMode output_consumer, GenerationObservationOptions observation,
+                  Clock::time_point limit, Clock::time_point submit_time)
+        : generation_range(nvtx::Name::Generate, nvtx::Category::Runtime, request_identity),
+          id(request_identity), publication_order(publication_sequence), prompt(std::move(input)),
           output(std::move(output_session)), prompt_summary(std::move(summary)),
           prepare_seconds(frontend_seconds), options(std::move(request_options)),
-          consumer_mode(output_consumer), deadline(limit), submitted(submit_time) {}
+          consumer_mode(output_consumer), observation(observation), deadline(limit),
+          submitted(submit_time) {}
 
     RequestRecord(const RequestRecord&)            = delete;
     RequestRecord& operator=(const RequestRecord&) = delete;
@@ -145,6 +150,8 @@ struct RequestRecord {
         return model_state == EngineRequestState::ModelFinished;
     }
 
+    // The process range follows Request ownership across submit, worker, and consumer threads.
+    nvtx::ScopedAsyncRange generation_range;
     const std::uint64_t id;
     const std::uint64_t publication_order;
     PreparedPrompt prompt;
@@ -153,9 +160,12 @@ struct RequestRecord {
     double prepare_seconds = 0.0;
     ResolvedRequestOptions options;
     const OutputConsumerMode consumer_mode;
+    const GenerationObservationOptions observation;
     Clock::time_point deadline;
     Clock::time_point submitted;
+    std::optional<Clock::time_point> admitted_at;
     std::optional<Clock::time_point> first_token;
+    std::optional<Clock::time_point> last_token;
     bool queue_wait_recorded = false;
     std::optional<GenerationBudget> budget;
     std::optional<BeginSummary> admitted_begin;
@@ -175,6 +185,7 @@ struct RequestRecord {
     std::uint64_t remaining_service_work = 0;
     std::uint64_t backfill_epoch         = 0;
     BackfillClass backfill_class         = BackfillClass::None;
+    std::uint32_t computed_prompt_tokens = 0;
     GenerationTimings generation_timings;
     RequestHostTiming host_timing;
     SpeculativeStats speculative_stats;
@@ -183,7 +194,8 @@ struct RequestRecord {
     std::mutex mutex;
     std::condition_variable cv;
     std::optional<GenerationStart> stream_start;
-    std::vector<OutputDelta> events;
+    std::optional<PromptProgress> stream_progress;
+    std::vector<StreamEvent> events;
     GenerationResult result;
     std::exception_ptr error;
     bool response_done     = false;
