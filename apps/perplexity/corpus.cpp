@@ -1,7 +1,11 @@
 #include "corpus.h"
 
+#include "digest.h"
+
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <fstream>
 #include <stdexcept>
@@ -71,6 +75,12 @@ void validate_text(const std::string& text, const std::filesystem::path& path) {
     }
 }
 
+bool valid_sha256(std::string_view value) noexcept {
+    return value.size() == 64 && std::all_of(value.begin(), value.end(), [](unsigned char c) {
+               return std::isdigit(c) || (c >= 'a' && c <= 'f');
+           });
+}
+
 std::filesystem::path checked_relative_path(std::string_view value) {
     std::filesystem::path path(value);
     if (path.empty() || path.is_absolute()) {
@@ -112,6 +122,8 @@ CorpusSelection load_corpus(const std::filesystem::path& manifest, bool quick) {
     struct Metadata {
         std::string domain;
         std::filesystem::path path;
+        std::uint64_t bytes = 0;
+        std::string digest;
     };
 
     std::unordered_map<std::string, Metadata> metadata;
@@ -121,7 +133,13 @@ CorpusSelection load_corpus(const std::filesystem::path& manifest, bool quick) {
         Metadata item;
         item.domain = required_string(stream, "domain");
         item.path   = checked_relative_path(required_string(stream, "path"));
-        if (!metadata.emplace(id, std::move(item)).second) {
+        item.digest = required_string(stream, "sha256");
+        if (!valid_sha256(item.digest) || !stream.contains("bytes") ||
+            !stream.at("bytes").is_number_unsigned()) {
+            throw std::runtime_error("corpus stream has invalid bytes or SHA-256");
+        }
+        item.bytes = stream.at("bytes").get<std::uint64_t>();
+        if (item.bytes == 0 || !metadata.emplace(id, std::move(item)).second) {
             throw std::runtime_error("corpus stream identity is empty or duplicated");
         }
     }
@@ -158,10 +176,15 @@ CorpusSelection load_corpus(const std::filesystem::path& manifest, bool quick) {
         const std::filesystem::path path = root_directory / item.path;
         std::string text                 = read_bytes(path);
         validate_text(text, path);
+        const std::string actual = sha256_hex(sha256(text));
+        if (text.size() != item.bytes || actual != item.digest) {
+            throw std::runtime_error("corpus stream bytes/SHA-256 mismatch: " + id);
+        }
         result.streams.push_back(CorpusStream{.id     = id,
                                               .domain = item.domain,
                                               .path   = item.path,
-                                              .text   = std::move(text)});
+                                              .text   = std::move(text),
+                                              .sha256 = actual});
     }
     return result;
 }
@@ -169,14 +192,16 @@ CorpusSelection load_corpus(const std::filesystem::path& manifest, bool quick) {
 CorpusSelection load_custom_text(const std::filesystem::path& path) {
     std::string text = read_bytes(path);
     validate_text(text, path);
+    const std::string digest = sha256_hex(sha256(text));
     CorpusSelection result;
-    result.corpus_id = "custom-" + path.filename().string();
+    result.corpus_id = "custom-" + digest.substr(0, 12);
     result.mode      = "custom";
     result.source    = std::filesystem::absolute(path).lexically_normal();
     result.streams.push_back(CorpusStream{.id     = path.filename().string(),
                                           .domain = "custom",
                                           .path   = result.source,
-                                          .text   = std::move(text)});
+                                          .text   = std::move(text),
+                                          .sha256 = digest});
     return result;
 }
 

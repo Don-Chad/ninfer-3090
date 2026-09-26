@@ -1,7 +1,6 @@
 #pragma once
 
 #include "core/arena.h"
-#include "core/device.h"
 #include "core/tensor.h"
 
 #include <cuda_runtime.h>
@@ -41,12 +40,10 @@ namespace ninfer::ops {
  * with that oracle under the Op's named criterion. All inputs and outputs are non-overlapping.
  * `ws` provides the transient capacity reported above and is scoped to the call; there is no
  * persistent state side effect.
- * `execution` supplies the stream and the selected device's physical multiprocessor count. The
- * latter may change private launch decomposition but never the mathematical result.
  */
 void gdn_gating_proj(const Tensor& x, const Weight& a_weight, const Weight& b_weight,
                      const Tensor& A_log, const Tensor& dt_bias, WorkspaceArena& ws, Tensor& g,
-                     Tensor& beta, DeviceExecutionView execution);
+                     Tensor& beta, cudaStream_t stream);
 
 /**
  * Registered contiguous-parent storage forms of gdn_gating_proj:
@@ -60,7 +57,7 @@ void gdn_gating_proj(const Tensor& x, const Weight& a_weight, const Weight& b_we
  */
 void gdn_gating_proj(const Tensor& x, const Weight& ab_weight, const Tensor& A_log,
                      const Tensor& dt_bias, WorkspaceArena& ws, Tensor& g, Tensor& beta,
-                     DeviceExecutionView execution);
+                     cudaStream_t stream);
 
 /**
  * Applies the Qwen3.6 GDN input RMSNorm and control projection as one semantic Op:
@@ -83,12 +80,12 @@ void gdn_gating_proj(const Tensor& x, const Weight& ab_weight, const Tensor& A_l
 void gdn_norm_gating_proj(const Tensor& x, const Tensor& norm_weight, float eps,
                           const Weight& a_weight, const Weight& b_weight, const Tensor& A_log,
                           const Tensor& dt_bias, WorkspaceArena& ws, Tensor& h, Tensor& g,
-                          Tensor& beta, DeviceExecutionView execution);
+                          Tensor& beta, cudaStream_t stream);
 
 /** The Qwen3.8-27B and Qwen3.6-35B-A3B contiguous-parent storage forms described above. */
 void gdn_norm_gating_proj(const Tensor& x, const Tensor& norm_weight, float eps,
                           const Weight& ab_weight, const Tensor& A_log, const Tensor& dt_bias,
                           WorkspaceArena& ws, Tensor& h, Tensor& g, Tensor& beta,
-                          DeviceExecutionView execution);
+                          cudaStream_t stream);
 
 } // namespace ninfer::ops

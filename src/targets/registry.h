@@ -39,8 +39,7 @@ struct Qwen3_6_27BInstance {
 
     Qwen3_6_27BInstance(std::unique_ptr<LoadedQwen3_6_27B> stable_loaded,
                         runtime::KvCapacityResolution resolution,
-                        Qwen3_6_27B::SequencePlan sequence_plan, DeviceContext& device,
-                        const StartupObserver& startup_observer);
+                        Qwen3_6_27B::SequencePlan sequence_plan, DeviceContext& device);
     ~Qwen3_6_27BInstance();
 
     Qwen3_6_27BInstance(const Qwen3_6_27BInstance&)            = delete;
@@ -69,8 +68,7 @@ struct Qwen3_6_35BA3BInstance {
 
     Qwen3_6_35BA3BInstance(std::unique_ptr<LoadedQwen3_6_35BA3B> stable_loaded,
                            runtime::KvCapacityResolution resolution,
-                           Qwen3_6_35BA3B::SequencePlan sequence_plan, DeviceContext& device,
-                           const StartupObserver& startup_observer);
+                           Qwen3_6_35BA3B::SequencePlan sequence_plan, DeviceContext& device);
     ~Qwen3_6_35BA3BInstance();
 
     Qwen3_6_35BA3BInstance(const Qwen3_6_35BA3BInstance&)            = delete;

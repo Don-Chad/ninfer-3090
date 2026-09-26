@@ -12,6 +12,7 @@ struct CorpusStream {
     std::string domain;
     std::filesystem::path path;
     std::string text;
+    std::string sha256;
 };
 
 struct CorpusSelection {

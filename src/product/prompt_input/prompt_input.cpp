@@ -13,7 +13,7 @@
 namespace ninfer::product {
 namespace {
 
-using Json = nlohmann::ordered_json;
+using Json = nlohmann::json;
 
 ChatRole parse_chat_role(std::string_view role) {
     if (role == "system") { return ChatRole::System; }
