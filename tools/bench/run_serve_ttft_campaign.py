@@ -41,8 +41,6 @@ RESOURCE_CASES = (
     "resume-after-interference-evicted",
     "resume-after-interference-catalog",
     "session-alternating-64k-host-swap",
-    "session-rotation-55k-host",
-    "session-rotation-55k-two-cohort-stream",
 )
 CAMPAIGNS = {
     "smoke": ("cold-short",),
@@ -352,7 +350,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     selection.add_argument(
         "--campaign",
         choices=tuple(CAMPAIGNS),
-        help="smoke=one baseline, resource=pressure and Host-rotation cases, full=all audited cases",
+        help="smoke=one baseline, resource=six placement comparisons, full=all audited cases",
     )
     selection.add_argument(
         "--case",
@@ -363,7 +361,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--startup-timeout-seconds", type=float, default=300.0)
+    parser.add_argument("--startup-timeout-seconds", type=float, default=120.0)
     parser.add_argument("--request-timeout-seconds", type=float, default=600.0)
     args = parser.parse_args(argv)
     if args.samples <= 0:

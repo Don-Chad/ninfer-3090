@@ -432,7 +432,6 @@ class CaseContext:
         self.model = model
         self.timeout = timeout_seconds
         self._on_progress = on_progress
-        self._handles_lock = threading.Lock()
         self.handles: list[RequestHandle] = []
         self.failures: list[FailedCondition] = []
         self.notes: dict[str, Any] = {}
@@ -442,30 +441,27 @@ class CaseContext:
             self._on_progress(stage, time.perf_counter_ns(), fields)
 
     def prepare(self, role: str, request: ProtocolRequest) -> RequestHandle:
-        # A case may maintain background streaming loops while the main thread submits the
-        # workload under test. Serialize handle creation so roles retain one exact request order.
-        with self._handles_lock:
-            order = len(self.handles)
+        order = len(self.handles)
+        self.progress(
+            "request.prepare",
+            role=role,
+            order=order,
+            protocol=request.protocol,
+            path=request.path,
+            stream=request.stream,
+        )
+        try:
+            prepared = self.client.prepare(request)
+        except Exception as error:
             self.progress(
-                "request.prepare",
+                "request.prepare_failed",
                 role=role,
                 order=order,
-                protocol=request.protocol,
-                path=request.path,
-                stream=request.stream,
+                error=f"{type(error).__name__}: {error}",
             )
-            try:
-                prepared = self.client.prepare(request)
-            except Exception as error:
-                self.progress(
-                    "request.prepare_failed",
-                    role=role,
-                    order=order,
-                    error=f"{type(error).__name__}: {error}",
-                )
-                raise
-            handle = RequestHandle(role, order, prepared, self._on_progress)
-            self.handles.append(handle)
+            raise
+        handle = RequestHandle(role, order, prepared, self._on_progress)
+        self.handles.append(handle)
         handle._progress(
             "request.prepared",
             protocol=request.protocol,
@@ -522,26 +518,20 @@ class CaseContext:
             raise CaseExecutionError(f"prerequisite {handle.role} failed: {outcome}")
 
     def wait_all(self, handles: Iterable[RequestHandle] | None = None) -> None:
-        if handles is not None:
-            selected = list(handles)
-        else:
-            with self._handles_lock:
-                selected = list(self.handles)
+        selected = list(handles) if handles is not None else list(self.handles)
         self.progress("case.wait_all", roles=[handle.role for handle in selected])
         for handle in selected:
             handle.wait_done(self.timeout)
         self.progress("case.wait_all_done", roles=[handle.role for handle in selected])
 
     def cancel_live(self) -> None:
-        with self._handles_lock:
-            handles = list(self.handles)
-        live = [handle.role for handle in handles if not handle.is_done]
+        live = [handle.role for handle in self.handles if not handle.is_done]
         if live:
             self.progress("case.cleanup_cancel", roles=live)
-        for handle in handles:
+        for handle in self.handles:
             if not handle.is_done:
                 handle.cancel()
-        for handle in handles:
+        for handle in self.handles:
             if not handle.is_done:
                 try:
                     handle.wait_done(min(self.timeout, 5.0))
@@ -556,6 +546,4 @@ class CaseContext:
                     )
 
     def records(self) -> list[dict[str, Any]]:
-        with self._handles_lock:
-            handles = list(self.handles)
-        return [handle.as_record() for handle in sorted(handles, key=lambda item: item.order)]
+        return [handle.as_record() for handle in sorted(self.handles, key=lambda item: item.order)]

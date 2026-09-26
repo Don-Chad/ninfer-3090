@@ -1,6 +1,5 @@
 #pragma once
 
-#include "core/device.h"
 #include "targets/qwen3_6_27b/impl/config.h"
 #include "targets/qwen3_6_27b/impl/load/bindings.h"
 #include <ninfer/targets/qwen3_6/runtime.h>
@@ -77,8 +76,7 @@ struct Variant {
     static void gdn_norm_control_projection(const Tensor& residual, const Tensor& norm_weight,
                                             float eps, const GdnProjectionWeights& weights,
                                             Tensor& hidden, Tensor& g, Tensor& beta,
-                                            WorkspaceArena& workspace,
-                                            DeviceExecutionView execution);
+                                            WorkspaceArena& workspace, cudaStream_t stream);
     static void post_mixer(const Tensor& hidden, const PostMixerWeights& weights, Tensor& residual,
                            qwen3_6::TextPhase phase, WorkspaceArena& workspace,
                            cudaStream_t stream);

@@ -146,13 +146,14 @@ x = x + o_projection(a)
 ```
 
 Prefill appends all K/V columns and evaluates causal attention for the chunk. Decode appends one
-column and attends over the resident prefix. KV storage may be BF16, INT8-G64,
-FP8-E4M3FN-row256, NVFP4-G16, or K8V4. The exact runtime
+column and attends over the resident prefix. KV storage may be BF16, INT8-G64, or
+FP8-E4M3FN-row256. The exact runtime
 cache codec is defined by the repository-internal
 [`kv_cache_append.h`](../../include/ninfer/ops/kv_cache_append.h) contract; append-and-attend and
 cached-only computation use
-[`softmax_attention.h`](../../include/ninfer/ops/softmax_attention.h). Paging and cache codecs are
-runtime representation choices rather than model math.
+[`softmax_attention.h`](../../include/ninfer/ops/softmax_attention.h). All cache formats and their
+optimized compute profiles are judged by the common ideal Attention oracle rather than by
+implementation-mirroring references.
 
 Text-only positions use the same scalar position for temporal, height, and width MRoPE sections.
 Multimodal prefill supplies distinct three-axis positions. Only 64 of each 256-dimensional head are
@@ -381,11 +382,16 @@ remain consistent.
 - ordinary and Q/K norm oracles evaluate their reductions in FP32/FP64 and compare the declared
   BF16 outputs; production reduction and staging are route-private choices;
 - GDN `g`, `beta`, and recurrent state are FP32;
-- the unquantized GQA oracle evaluates dot products, stable softmax, and value reduction in FP64
-  from BF16 Q/K/V; it is the semantic reference used to report cache-quantization quality;
-- runtime KV representations and their production criteria are owned by the cache and Attention Op
-  contracts named above;
+- the ideal GQA oracle evaluates dot products, stable softmax, and value reduction in FP64 from
+  BF16 Q and logical cache values; the BF16 Op output is promoted to FP64 for comparison;
 - low-bit weight storage changes representation, not the intended dequantized matrix;
+- INT8-G64 KV stores FP16 scales and signed codes, and its ideal logical K/V values are their FP32
+  decode;
+- FP8-E4M3FN-row256 KV stores one FP16 scale per complete D256 row; its ideal logical K/V values
+  are the persistent codec's FP32 decode, including the fixed inverse K rotation;
+- the target's INT8 and FP8 attention paths intentionally quantize Q for production computation;
+  those native compute profiles do not replace BF16 Q in the common ideal oracle, and their deltas
+  are accepted through separate named cache-profile criteria;
 - the full target `lm_head` is used for prefill, verification, and ordinary decode regardless of
   draft-head mode.
 
@@ -394,8 +400,13 @@ operation order. Private accumulator precision, Tensor Core operand staging, int
 materialization, workspace dtype, and reduction association are selected by each implementation
 route and accepted against the Op's criterion for that implementation profile.
 
-GQA production entries are checked directly against their owning Op oracles. Equality between
-different production paths is not a contract or acceptance test.
+GQA numerical qualification covers both registered geometries, supported prompt and small-T
+regimes, the maintained conformance matrix, and target-representative activation ranges. Its
+BF16-cache, INT8-cache, and FP8-cache compute-profile criteria are explicitly named in the GQA
+conformance suite; they are not claimed as pointwise bounds for every arbitrary or adversarial BF16
+tensor. A1 append-and-attend and A3 cached-only attention are each checked directly against the
+common ideal oracle. Equality between those different numerical paths is not a contract or
+acceptance test.
 
 ## 13. State inventory
 
@@ -447,9 +458,13 @@ still validated before these resident views are published.
 | GDN layout/views/reset/copy and Text/MTP/GDN composition | `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/decoder_state.h`, `src/targets/qwen3_6/impl/state/decoder_state.cpp` |
 | fixed all-layer GDN state pool, ReplaySSM record arena, and Fold contract | `src/core/linear_attention_state.*`, `src/core/gdn_replay_records.*`, `include/ninfer/ops/gdn_replay.h`, `src/ops/linear_attention/gated_delta_net/replay.cpp` |
 | generated-round buffer schema, MTP alignment, and Vision control | `src/targets/qwen3_6/export/ninfer/targets/qwen3_6/`, `src/targets/qwen3_6/impl/state/round_state.cpp`, `src/targets/qwen3_6/impl/vision/control.cpp` |
-| `.ninfer` tensor assignment and binding | [`qwen3.6-27b-artifact.md`](qwen3.6-27b-artifact.md), `tools/convert/qwen3_6_27b/`, `src/targets/qwen3_6_27b/impl/load/` |
+| `.ninfer` tensor assignment and binding | [`qwen3.6-27b-artifact.md`](qwen3.6-27b-artifact.md), `tools/reference/qwen3_6_27b/bindings.py` |
 | native `.ninfer` converter and verifier | `tools/convert/qwen3_6_27b` |
+| artifact-native Python Text/Vision/MTP reference | `tools/reference/qwen3_6_27b` |
 
-NInfer maintains no second Python model implementation. Each Op is checked against its own naive
-FP32/FP64 or exact oracle, while the C++ target implements the complete Text/Vision/MTP product over
-`.ninfer` through the closed Engine architecture.
+The Python reference is an independent executable implementation for model/artifact inspection and
+diagnosis; it is not the per-Op mathematical oracle, does not prescribe private C++ kernel
+precision, and does not define cross-runtime generated-token equality. Each Op is checked against
+its own naive FP32/FP64 or exact oracle. The C++ target
+implements the complete Text/Vision/MTP product over `.ninfer` through the closed Engine
+architecture.

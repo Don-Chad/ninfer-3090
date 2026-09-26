@@ -18,6 +18,10 @@ namespace ninfer {
 struct DeviceContext;
 }
 
+namespace ninfer::runtime {
+struct ContextMachineCostModel;
+}
+
 namespace ninfer::targets::qwen3_6 {
 
 namespace detail {
@@ -27,7 +31,7 @@ struct CaptureAssessmentImpl;
 
 // Read-only diagnostics sampled from the real Program stores.  This is not an accounting input.
 struct PhysicalUsageSnapshot {
-    runtime::ProgramResourceRevision resource_revision;
+    std::uint64_t resource_revision       = 0;
     std::uint32_t device_state_slots      = 0;
     std::uint32_t host_state_slots        = 0;
     std::uint32_t device_main_kv_pages    = 0;
@@ -52,7 +56,7 @@ struct GraphExecutionProfile {
 // Program-minted shortlist metadata. It only narrows catalog inspection; Program still performs
 // exact token, position, media and runtime-mode verification before a checkpoint can be selected.
 struct PrefixShortlistKey {
-    std::array<std::uint64_t, 2> digests{};
+    std::uint64_t digest       = 0;
     std::uint32_t frontier     = 0;
     std::uint32_t identity_tag = 0;
 
@@ -108,8 +112,6 @@ struct SequencePlannerImpl;
 template <class Variant>
 struct AdmissionCandidateImpl;
 template <class Variant>
-struct CapturePressureCandidateImpl;
-template <class Variant>
 struct RequestBasePlanImpl;
 template <class Variant>
 struct PressurePlanningSessionImpl;
@@ -125,12 +127,6 @@ template <class Variant>
 class Program;
 template <class Variant>
 class PressurePlanningSession;
-template <class Variant>
-class CapturePressurePlanningSession;
-template <class Variant>
-class CapturePressurePlan;
-template <class Variant>
-class CapturePressureCandidate;
 
 // These are the complete family execution types. Exact packages bind them to a private Variant;
 // target selection remains outside this layer and happens once in the closed Engine registry.
@@ -172,10 +168,6 @@ public:
     SequencePlanner& operator=(const SequencePlanner&) = delete;
 
     [[nodiscard]] const runtime::SequenceCapacityCurve& capacity_curve() const noexcept;
-    // Device bytes one overlay vision window needs beyond the streamed weights: the encode
-    // workspace peak plus the output handoff for the planned merged-token budget. Zero without
-    // vision.
-    [[nodiscard]] std::size_t vision_window_bytes() const noexcept;
     [[nodiscard]] SequencePlan<Variant> finalize(std::uint32_t main_page_groups) &&;
 
 public:
@@ -201,8 +193,6 @@ public:
     [[nodiscard]] const PreparedContextCache& context_cache() const noexcept;
     [[nodiscard]] std::optional<PrefixShortlistKey>
     prefix_shortlist_key(std::uint32_t frontier) const noexcept;
-    [[nodiscard]] std::optional<runtime::PrefillWork>
-    shared_candidate_rebuild_work(std::uint32_t frontier) const noexcept;
 
 public:
     explicit RequestBasePlan(std::unique_ptr<detail::RequestBasePlanImpl<Variant>> impl) noexcept;
@@ -235,57 +225,6 @@ public:
     friend struct detail::PressurePlanningSessionImpl<Variant>;
 };
 
-// Family-private owning wrapper for the physical capture-pressure candidate. It intentionally has
-// no request summary or admission API.
-template <class Variant>
-class CapturePressureCandidate {
-public:
-    CapturePressureCandidate(CapturePressureCandidate&&) noexcept;
-    CapturePressureCandidate& operator=(CapturePressureCandidate&&) noexcept;
-    ~CapturePressureCandidate();
-
-    CapturePressureCandidate(const CapturePressureCandidate&)            = delete;
-    CapturePressureCandidate& operator=(const CapturePressureCandidate&) = delete;
-
-public:
-    explicit CapturePressureCandidate(
-        std::unique_ptr<detail::CapturePressureCandidateImpl<Variant>> impl) noexcept;
-    std::unique_ptr<detail::CapturePressureCandidateImpl<Variant>> impl_;
-
-    friend class Program<Variant>;
-    friend class PressurePlanningSession<Variant>;
-    friend class CapturePressurePlan<Variant>;
-    friend struct detail::PressurePlanningSessionImpl<Variant>;
-};
-
-// A sealed pressure-only post-state for one active capture. Its payload is Program-private and
-// cannot be inspected or executed through the request-admission interface.
-template <class Variant>
-class CapturePressurePlan {
-public:
-    CapturePressurePlan(CapturePressurePlan&&) noexcept            = default;
-    CapturePressurePlan& operator=(CapturePressurePlan&&) noexcept = default;
-    ~CapturePressurePlan()                                         = default;
-
-    CapturePressurePlan(const CapturePressurePlan&)            = delete;
-    CapturePressurePlan& operator=(const CapturePressurePlan&) = delete;
-
-    [[nodiscard]] runtime::ProgramResourceRevision resource_revision() const noexcept {
-        return revision_;
-    }
-
-private:
-    CapturePressurePlan(CapturePressureCandidate<Variant>&& pressure,
-                        runtime::ProgramResourceRevision revision) noexcept
-        : pressure_(std::move(pressure)), revision_(revision) {}
-
-    CapturePressureCandidate<Variant> pressure_;
-    runtime::ProgramResourceRevision revision_;
-
-    friend class Program<Variant>;
-    friend class PressurePlanningSession<Variant>;
-};
-
 // A sealed Program-owned physical decision.  ResourceManager may retain it and inspect the
 // request-level summary, but cannot see allocator quantities, references, reservations, or stage
 // deltas.  Start validates the bound Program revision before performing any mutation.
@@ -305,18 +244,16 @@ public:
 
     [[nodiscard]] bool needs_transfer() const noexcept { return needs_transfer_; }
 
-    [[nodiscard]] runtime::ProgramResourceRevision resource_revision() const noexcept {
-        return revision_;
-    }
+    [[nodiscard]] std::uint64_t resource_revision() const noexcept { return revision_; }
 
 private:
-    ResourcePlan(AdmissionCandidate<Variant>&& admission, runtime::ProgramResourceRevision revision,
+    ResourcePlan(AdmissionCandidate<Variant>&& admission, std::uint64_t revision,
                  bool needs_transfer) noexcept
         : admission_(std::move(admission)), revision_(revision), needs_transfer_(needs_transfer) {}
 
     AdmissionCandidate<Variant> admission_;
-    runtime::ProgramResourceRevision revision_;
-    bool needs_transfer_ = false;
+    std::uint64_t revision_ = 0;
+    bool needs_transfer_    = false;
 
     friend class Program<Variant>;
     friend class PressurePlanningSession<Variant>;
@@ -334,15 +271,12 @@ public:
     PersistentBackfillProof(const PersistentBackfillProof&)            = delete;
     PersistentBackfillProof& operator=(const PersistentBackfillProof&) = delete;
 
-    [[nodiscard]] runtime::ProgramResourceRevision resource_revision() const noexcept {
-        return revision_;
-    }
+    [[nodiscard]] std::uint64_t resource_revision() const noexcept { return revision_; }
 
 private:
-    explicit PersistentBackfillProof(runtime::ProgramResourceRevision revision) noexcept
-        : revision_(revision) {}
+    explicit PersistentBackfillProof(std::uint64_t revision) noexcept : revision_(revision) {}
 
-    runtime::ProgramResourceRevision revision_;
+    std::uint64_t revision_ = 0;
 
     friend class Program<Variant>;
 };
@@ -425,81 +359,6 @@ private:
 };
 
 template <class Variant>
-class AssessedPressureTarget {
-public:
-    AssessedPressureTarget(AssessedPressureTarget&& other) noexcept
-        : session_(std::exchange(other.session_, nullptr)),
-          session_generation_(std::exchange(other.session_generation_, 0)),
-          target_index_(other.target_index_), assessment_(other.assessment_),
-          assessment_slot_(std::exchange(other.assessment_slot_, 0)),
-          assessment_slot_generation_(std::exchange(other.assessment_slot_generation_, 0)),
-          release_slot_(std::exchange(other.release_slot_, nullptr)),
-          executable_(std::move(other.executable_)),
-          capture_executable_(std::move(other.capture_executable_)) {}
-
-    ~AssessedPressureTarget() { reset(); }
-
-    AssessedPressureTarget& operator=(AssessedPressureTarget&& other) noexcept {
-        if (this == &other) { return *this; }
-        reset();
-        session_                    = std::exchange(other.session_, nullptr);
-        session_generation_         = std::exchange(other.session_generation_, 0);
-        target_index_               = other.target_index_;
-        assessment_                 = other.assessment_;
-        assessment_slot_            = std::exchange(other.assessment_slot_, 0);
-        assessment_slot_generation_ = std::exchange(other.assessment_slot_generation_, 0);
-        release_slot_               = std::exchange(other.release_slot_, nullptr);
-        executable_                 = std::move(other.executable_);
-        capture_executable_         = std::move(other.capture_executable_);
-        return *this;
-    }
-
-    AssessedPressureTarget(const AssessedPressureTarget&)            = delete;
-    AssessedPressureTarget& operator=(const AssessedPressureTarget&) = delete;
-
-    [[nodiscard]] const runtime::PressureTargetAssessment& assessment() const noexcept {
-        return assessment_;
-    }
-
-private:
-    AssessedPressureTarget(
-        const void* session, std::uint32_t session_generation, std::uint32_t target_index,
-        runtime::PressureTargetAssessment assessment, std::uint32_t assessment_slot,
-        std::uint32_t assessment_slot_generation,
-        void (*release_slot)(const void*, std::uint32_t, std::uint32_t) noexcept,
-        std::optional<AdmissionCandidate<Variant>>&& executable,
-        std::optional<CapturePressureCandidate<Variant>>&& capture_executable) noexcept
-        : session_(session), session_generation_(session_generation), target_index_(target_index),
-          assessment_(assessment), assessment_slot_(assessment_slot),
-          assessment_slot_generation_(assessment_slot_generation), release_slot_(release_slot),
-          executable_(std::move(executable)), capture_executable_(std::move(capture_executable)) {}
-
-    void reset() noexcept {
-        if (session_ != nullptr && release_slot_ != nullptr) {
-            release_slot_(session_, assessment_slot_, assessment_slot_generation_);
-        }
-        session_                    = nullptr;
-        session_generation_         = 0;
-        assessment_slot_            = 0;
-        assessment_slot_generation_ = 0;
-        release_slot_               = nullptr;
-    }
-
-    const void* session_              = nullptr;
-    std::uint32_t session_generation_ = 0;
-    std::uint32_t target_index_       = 0;
-    runtime::PressureTargetAssessment assessment_;
-    std::uint32_t assessment_slot_                                            = 0;
-    std::uint32_t assessment_slot_generation_                                 = 0;
-    void (*release_slot_)(const void*, std::uint32_t, std::uint32_t) noexcept = nullptr;
-    std::optional<AdmissionCandidate<Variant>> executable_;
-    std::optional<CapturePressureCandidate<Variant>> capture_executable_;
-
-    friend class PressurePlanningSession<Variant>;
-    friend struct detail::PressurePlanningSessionImpl<Variant>;
-};
-
-template <class Variant>
 class PreparedPressureExpansion {
 public:
     PreparedPressureExpansion(PreparedPressureExpansion&& other) noexcept
@@ -550,70 +409,22 @@ public:
     PressurePlanningSession& operator=(const PressurePlanningSession&) = delete;
 
     [[nodiscard]] PressureTargetHandle
-    identity_target(runtime::PlanningCandidateId candidate) const;
+    identity_target(const AdmissionCandidate<Variant>& candidate) const;
     [[nodiscard]] PressureTargetHandle
-    root_maximal_target(runtime::PlanningCandidateId root_candidate);
-    [[nodiscard]] std::optional<PressureTargetHandle>
-    guided_closure_target(runtime::PlanningCandidateId candidate,
-                          std::span<const runtime::PlanningOwnerId> preferred_owner_ids);
-    [[nodiscard]] runtime::PressureTargetGuidance guidance(PressureTargetHandle target);
-    [[nodiscard]] AssessedPressureTarget<Variant> assess(PressureTargetHandle target);
+    root_maximal_target(const AdmissionCandidate<Variant>& root_candidate);
+    [[nodiscard]] runtime::PressureTargetAssessment assess(PressureTargetHandle target);
     [[nodiscard]] PreparedPressureExpansion<Variant> prepare_expansion(PressureTargetHandle parent);
     [[nodiscard]] PressureExpansionView
     commit_expansion(PreparedPressureExpansion<Variant>&& prepared);
     void discard_expansion(PreparedPressureExpansion<Variant>&& prepared) noexcept;
-    [[nodiscard]] runtime::PrefillWork
-    shared_capture_split_prefill_work(const AssessedPressureTarget<Variant>& assessed,
-                                      const PreparedPrompt& prompt,
-                                      std::span<const std::uint32_t> frontiers) const;
-    [[nodiscard]] std::optional<ResourcePlan<Variant>>
-    seal(AssessedPressureTarget<Variant>&& assessed, const PreparedPrompt& prompt,
-         runtime::FinalScheduleIntent intent);
-    [[nodiscard]] std::optional<CapturePressurePlan<Variant>>
-    seal_capture(AssessedPressureTarget<Variant>&& assessed);
+    [[nodiscard]] std::optional<ResourcePlan<Variant>> seal(PressureTargetHandle target,
+                                                            const PreparedPrompt& prompt);
 
 private:
     explicit PressurePlanningSession(
         std::unique_ptr<detail::PressurePlanningSessionImpl<Variant>> impl) noexcept;
 
     std::unique_ptr<detail::PressurePlanningSessionImpl<Variant>> impl_;
-
-    friend class Program<Variant>;
-};
-
-// Typed pressure domain for one active capture. The capture candidate remains Program-owned and
-// cannot be inspected, sealed, or executed as a request admission candidate.
-template <class Variant>
-class CapturePressurePlanningSession {
-public:
-    CapturePressurePlanningSession(CapturePressurePlanningSession&&) noexcept;
-    CapturePressurePlanningSession& operator=(CapturePressurePlanningSession&&) noexcept;
-    ~CapturePressurePlanningSession();
-
-    CapturePressurePlanningSession(const CapturePressurePlanningSession&)            = delete;
-    CapturePressurePlanningSession& operator=(const CapturePressurePlanningSession&) = delete;
-
-    [[nodiscard]] PressureTargetHandle identity_target() const;
-    [[nodiscard]] runtime::PressureTargetGuidance guidance(PressureTargetHandle target);
-    [[nodiscard]] AssessedPressureTarget<Variant> assess(PressureTargetHandle target);
-    [[nodiscard]] PreparedPressureExpansion<Variant> prepare_expansion(PressureTargetHandle parent);
-    [[nodiscard]] PressureExpansionView
-    commit_expansion(PreparedPressureExpansion<Variant>&& prepared);
-    void discard_expansion(PreparedPressureExpansion<Variant>&& prepared) noexcept;
-    [[nodiscard]] std::optional<CapturePressurePlan<Variant>>
-    seal(AssessedPressureTarget<Variant>&& assessed);
-
-    [[nodiscard]] static constexpr runtime::PlanningCandidateId candidate_id() noexcept {
-        return runtime::PlanningCandidateId{.value = 0};
-    }
-
-private:
-    CapturePressurePlanningSession(CapturePressureCandidate<Variant>&& candidate,
-                                   PressurePlanningSession<Variant>&& session) noexcept
-        : candidate_(std::move(candidate)), session_(std::move(session)) {}
-
-    CapturePressureCandidate<Variant> candidate_;
-    PressurePlanningSession<Variant> session_;
 
     friend class Program<Variant>;
 };
@@ -706,16 +517,13 @@ struct CaptureAssessment {
     // Program retains the physical assessment in this opaque package-private payload.
     std::shared_ptr<detail::CaptureAssessmentImpl> implementation;
     PrefixShortlistKey shortlist_key;
-    SharedCandidateEvidence shared_evidence = SharedCandidateEvidence::None;
     runtime::PrefillWork protected_rebuild_work;
     std::vector<runtime::ContextTransferRequirement> transfer_requirements;
-    std::vector<runtime::CheckpointRecoveryAlternativeWork> projected_recovery_work;
     std::vector<runtime::CheckpointRef> private_replacement_candidates;
     std::uint32_t frontier                = 0;
     bool publishes_private                = false;
     bool publishes_shared                 = false;
     bool needs_transfer                   = false;
-    bool physically_feasible              = false;
     bool recycles_private_state           = false;
     CaptureStatePlacement state_placement = CaptureStatePlacement::DeviceFork;
 };
@@ -726,17 +534,12 @@ struct SharedPrefixPublication {
     SharedPrefixSummary summary;
 };
 
-struct MaterializationVictimResult;
-struct MaterializationSharedVictimResult;
-
 template <class Variant>
 struct ActiveCaptureResult {
     runtime::ContextTransactionStatus status = runtime::ContextTransactionStatus::Aborted;
     bool capacity_preparation_committed      = false;
     ContinuationSummary active_summary;
     std::optional<SharedPrefixPublication<Variant>> shared;
-    std::vector<MaterializationVictimResult> victims;
-    std::vector<MaterializationSharedVictimResult> shared_victims;
     std::vector<runtime::ContextTransferObservation> transfer_observations;
     runtime::ContextOperationCounts operations;
 };
@@ -747,25 +550,24 @@ struct StartResult {
 };
 
 struct MaterializationVictimResult {
-    runtime::PlanningOwnerId owner;
-    runtime::VictimDisposition disposition = runtime::VictimDisposition::Retained;
-    bool pressure_committed                = false;
+    runtime::ClaimDisposition disposition = runtime::ClaimDisposition::Retained;
+    bool pressure_committed               = false;
     std::optional<ContinuationSummary> final_summary;
 };
 
 struct MaterializationSharedVictimResult {
-    runtime::PlanningOwnerId owner;
-    runtime::VictimDisposition disposition = runtime::VictimDisposition::Retained;
-    bool pressure_committed                = false;
+    runtime::ClaimDisposition disposition = runtime::ClaimDisposition::Retained;
+    bool pressure_committed               = false;
     std::optional<SharedPrefixSummary> final_summary;
 };
 
 struct MaterializationSourceResult {
-    runtime::PrivateSourceMode mode = runtime::PrivateSourceMode::Retain;
+    runtime::ClaimDisposition disposition = runtime::ClaimDisposition::Retained;
     std::optional<ContinuationSummary> final_summary;
 };
 
 struct MaterializationSharedSourceResult {
+    runtime::ClaimDisposition disposition = runtime::ClaimDisposition::Retained;
     std::optional<SharedPrefixSummary> final_summary;
 };
 
@@ -851,21 +653,17 @@ public:
                       runtime::LaneId destination, const ContinuationHandle<Variant>* source,
                       const SharedPrefixHandle<Variant>* shared_source,
                       std::optional<runtime::CheckpointRef> checkpoint,
-                      bool must_retain_private_source);
+                      bool must_retain_private_source,
+                      const runtime::ContextMachineCostModel& machine_cost);
     [[nodiscard]] std::optional<ResourcePlan<Variant>>
-    seal_identity(const AdmissionCandidate<Variant>& candidate, const PreparedPrompt& prompt,
-                  runtime::FinalScheduleIntent intent);
+    seal_identity(const AdmissionCandidate<Variant>& candidate, const PreparedPrompt& prompt);
     [[nodiscard]] PressurePlanningSession<Variant>
-    begin_pressure_planning(std::span<const AdmissionCandidate<Variant>* const> candidates,
-                            std::span<const runtime::PlanningCandidateId> candidate_ids,
+    begin_pressure_planning(const runtime::ContextMachineCostModel& machine_cost,
+                            std::span<const AdmissionCandidate<Variant>* const> candidates,
                             std::span<const ContinuationHandle<Variant>* const> private_owners,
-                            std::span<const runtime::PlanningOwnerId> private_owner_ids,
+                            std::span<const std::uint32_t> private_owner_ordinals,
                             std::span<const SharedPrefixHandle<Variant>* const> shared_owners,
-                            std::span<const runtime::PlanningOwnerId> shared_owner_ids);
-    [[nodiscard]] runtime::PrefillWork
-    shared_capture_split_prefill_work(const AdmissionCandidate<Variant>& candidate,
-                                      const PreparedPrompt& prompt,
-                                      std::span<const std::uint32_t> frontiers);
+                            std::span<const std::uint32_t> shared_owner_ordinals);
     [[nodiscard]] runtime::ContextTransactionReserveStatus
     start_resource_transaction(ResourcePlan<Variant>&& plan, PreparedPrompt&& prompt,
                                runtime::CancellationFlagView cancellation);
@@ -877,8 +675,6 @@ public:
     progress_context_transaction(runtime::CancellationFlagView cancellation);
     void finalize_context_transaction() noexcept;
     [[nodiscard]] bool has_context_transaction() const noexcept;
-    // True while the sequence waits for an image encoding in a concurrent window.
-    [[nodiscard]] bool vision_pending(SequenceHandle<Variant> sequence) const noexcept;
     [[nodiscard]] PrefillProgress<Variant>
     advance_prefill(SequenceHandle<Variant> sequence,
                     runtime::ExecutionTiming* failed_timing = nullptr);
@@ -886,43 +682,24 @@ public:
     inspect_capture(const CaptureOffer<Variant>& offer,
                     const SharedPrefixHandle<Variant>* exact_shared,
                     const SharedPrefixHandle<Variant>* replacement,
-                    std::optional<runtime::CheckpointRef> private_replacement,
-                    bool permit_shared_publication) const;
-    [[nodiscard]] std::vector<runtime::CheckpointRecoveryAlternativeWork>
-    checkpoint_recovery_work(const ContinuationHandle<Variant>& owner,
-                             runtime::CheckpointRef checkpoint) const;
-    [[nodiscard]] std::vector<runtime::CheckpointRecoveryAlternativeWork>
-    checkpoint_recovery_work(const SharedPrefixHandle<Variant>& owner,
-                             runtime::CheckpointRef checkpoint) const;
-    [[nodiscard]] CapturePressurePlanningSession<Variant> begin_capture_pressure_planning(
-        const CaptureAssessment& assessment,
-        std::span<const ContinuationHandle<Variant>* const> private_owners,
-        std::span<const runtime::PlanningOwnerId> private_owner_ids,
-        std::span<const SharedPrefixHandle<Variant>* const> shared_owners,
-        std::span<const runtime::PlanningOwnerId> shared_owner_ids);
+                    std::optional<runtime::CheckpointRef> private_replacement) const;
     [[nodiscard]] bool shared_capture_matches(const CaptureOffer<Variant>& offer,
                                               const SharedPrefixHandle<Variant>& shared) const;
     void skip_capture(CaptureOffer<Variant>&& offer);
-    [[nodiscard]] runtime::ContextTransactionReserveStatus reserve_active_capture(
-        CaptureOffer<Variant>&& offer, const SharedPrefixHandle<Variant>* exact_shared,
-        const SharedPrefixHandle<Variant>* replacement,
-        std::optional<runtime::CheckpointRef> private_replacement, bool permit_shared_publication,
-        runtime::CancellationFlagView cancellation);
-    [[nodiscard]] runtime::ContextTransactionReserveStatus reserve_active_capture_with_pressure(
-        CaptureOffer<Variant>&& offer, const SharedPrefixHandle<Variant>* exact_shared,
-        const SharedPrefixHandle<Variant>* replacement,
-        std::optional<runtime::CheckpointRef> private_replacement, bool permit_shared_publication,
-        CapturePressurePlan<Variant>&& pressure, runtime::CancellationFlagView cancellation);
+    [[nodiscard]] runtime::ContextTransactionReserveStatus
+    reserve_active_capture(CaptureOffer<Variant>&& offer,
+                           const SharedPrefixHandle<Variant>* exact_shared,
+                           const SharedPrefixHandle<Variant>* replacement,
+                           std::optional<runtime::CheckpointRef> private_replacement,
+                           runtime::CancellationFlagView cancellation);
     [[nodiscard]] PendingBatch<Variant> decode(std::span<const SequenceHandle<Variant>> sequences,
                                                std::span<const runtime::RoundBudget> budgets,
                                                runtime::ExecutionTiming* failed_timing = nullptr);
     // Advance each live sequence with its exact target-owned token row. This does not sample or
     // advance sampler RNG/occurrence state; callers own output publication and budget accounting.
-    // Each optional execution split is relative to its row's forced-token span.
     [[nodiscard]] runtime::ExecutionTiming
     append_forced_tokens(std::span<const SequenceHandle<Variant>> sequences,
                          std::span<const TokenId> row_major_tokens, std::uint32_t row_stride,
-                         std::span<const std::optional<std::uint32_t>> prefix_execution_splits,
                          runtime::ExecutionTiming* failed_timing = nullptr);
     [[nodiscard]] CommitResult<Variant>
     commit(PendingBatch<Variant>&& pending, std::span<const runtime::CommitDecision> decisions,
@@ -939,7 +716,7 @@ public:
 
     [[nodiscard]] bool
     isolated_request_feasible(const RequestBasePlan<Variant>& base) const noexcept;
-    [[nodiscard]] runtime::ProgramResourceRevision resource_revision() const noexcept;
+    [[nodiscard]] std::uint64_t resource_revision() const noexcept;
     [[nodiscard]] PhysicalUsageSnapshot physical_usage() const noexcept;
     [[nodiscard]] MemorySummary memory_summary() const noexcept;
     void reset_memory_peaks() noexcept;
@@ -951,7 +728,7 @@ private:
     template <class V>
     friend std::unique_ptr<Program<V>> create_program(const typename V::ModelView&,
                                                       typename V::WeightsProfile, SequencePlan<V>&&,
-                                                      DeviceContext&, const StartupObserver&);
+                                                      DeviceContext&);
 };
 
 namespace detail {
@@ -1116,6 +893,6 @@ template <class Variant>
 [[nodiscard]] std::unique_ptr<Program<Variant>>
 create_program(const typename Variant::ModelView& model,
                typename Variant::WeightsProfile weights_profile, SequencePlan<Variant>&& plan,
-               DeviceContext& device, const StartupObserver& startup_observer);
+               DeviceContext& device);
 
 } // namespace ninfer::targets::qwen3_6

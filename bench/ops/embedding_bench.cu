@@ -24,7 +24,7 @@ namespace {
 
 constexpr std::int32_t kVocab             = 248320;
 constexpr std::size_t kL2FlushBytes       = 256ULL << 20;
-const double kRtx5090SustainedReadGBs = bench::device_specs().sustained_read_gbs;
+constexpr double kRtx5090SustainedReadGBs = 1674.5;
 
 enum class Profile {
     Q6D5120,

@@ -1,4 +1,0 @@
-# Preserve repository-pinned upstream sources byte-for-byte; NInfer-owned files retain Git's
-# default whitespace checks.
-/third_party/spdlog/include/** -whitespace
-/third_party/spdlog/src/** -whitespace
