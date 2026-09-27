@@ -23,6 +23,18 @@ using SamplingPartialSort =
 using SamplingGroupSort =
     cub::BlockMergeSort<unsigned long long, kSamplerGroupBlock, kSamplerGroupItemsPerThread>;
 
+// True when the value is a real number. Used to fail a round whose logits diverged instead of
+// sampling a plausible-looking token out of NaN (see kSamplerNonFiniteToken).
+__device__ __forceinline__ bool sampling_value_is_finite(float value) {
+    return value == value && value < CUDART_INF_F && value > -CUDART_INF_F;
+}
+
+__device__ __forceinline__ bool sampling_selected_logit_is_finite(const __nv_bfloat16* logits,
+                                                                  std::int64_t base,
+                                                                  std::int32_t index) {
+    return index >= 0 && sampling_value_is_finite(__bfloat162float(logits[base + index]));
+}
+
 struct SamplingKeyGreater {
     __device__ __forceinline__ bool operator()(unsigned long long a, unsigned long long b) const {
         return a > b;
