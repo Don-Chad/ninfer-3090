@@ -68,6 +68,20 @@ constexpr auto kK4096ProjectionLaunchers = make_projection_launchers<4096>(
 constexpr auto kK6144ProjectionLaunchers = make_projection_launchers<6144>(
     std::make_index_sequence<kLastExactCols - kFirstExactCols + 1>{});
 
+// decode_r16 is specialised for K=6144 and takes no runtime K, so it must never see the K=4096
+// geometry -- that is exactly why kK4096Routes sends T=1 to the SIMT schedule while kK6144Routes
+// sends it to DecodeR16. The sm_86 tail paths below slice tokens into kLastExactCols groups and can
+// leave a single-column tail (T = 33, 65, 97 for this shape), so they have to make the same choice
+// the route table does instead of always reaching for the decode kernel.
+void launch_single_column_tail(const Tensor& x, const Weight& weight, Tensor& residual_out,
+                               cudaStream_t stream) {
+    if (weight.k == 6144) {
+        w8_linear_add_decode_r16_launch(x, weight, residual_out, stream);
+        return;
+    }
+    w8_linear_add_simt_r8_c4_launch(/*full=*/false, x, weight, residual_out, stream);
+}
+
 template <int Hidden, int TileCols, int KSplits, int NGroups, int MinBlocks>
 void launch_medium(const Tensor& x, Tensor& residual_out, const Weight& weight,
                    cudaStream_t stream) {
@@ -110,7 +124,7 @@ void w8_linear_add_splitk_mma_launch(const Tensor& x, const Weight& weight, Tens
         if (tail == 1) {
             const Tensor x_slice = x.slice(1, offset, 1);
             Tensor residual_slice = residual_out.slice(1, offset, 1);
-            w8_linear_add_decode_r16_launch(x_slice, weight, residual_slice, stream);
+            launch_single_column_tail(x_slice, weight, residual_slice, stream);
         } else if (tail >= kFirstExactCols) {
             const Tensor x_slice = x.slice(1, offset, tail);
             Tensor residual_slice = residual_out.slice(1, offset, tail);
@@ -140,7 +154,7 @@ void w8_linear_add_medium_splitk_launch(const Tensor& x, const Weight& weight, T
         const Tensor x_slice = x.slice(1, offset, count);
         Tensor residual_slice = residual_out.slice(1, offset, count);
         if (count == 1) {
-            w8_linear_add_decode_r16_launch(x_slice, weight, residual_slice, stream);
+            launch_single_column_tail(x_slice, weight, residual_slice, stream);
         } else {
             w8_linear_add_splitk_mma_launch(x_slice, weight, residual_slice, stream);
         }

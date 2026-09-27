@@ -73,6 +73,17 @@ __global__ __launch_bounds__(RowsPerCta * 32, 2) void w8_linear_add_decode_kerne
 template <int RowsPerCta>
 void launch_decode(const Tensor& x, const Weight& w, Tensor& residual_out, cudaStream_t stream) {
     static_assert((2048 % RowsPerCta) == 0);
+    // w8_linear_add_decode_kernel bakes K into kDecodeK: it walks exactly 6144 activations and
+    // strides both the code and scale rows by that same constant, taking no runtime K. Handing it
+    // the K=4096 geometry therefore reads 2048 BF16 past the end of x and indexes the weights with
+    // the wrong row stride, which surfaced as an all-NaN column rather than a failure. The sibling
+    // decode kernels in linear/ and linear_pair/ assert their own K; this one did not.
+    if (x.ne[0] != kDecodeK || w.k != kDecodeK || w.padded_shape[1] != kDecodeK) {
+        throw std::invalid_argument("w8 linear_add decode: kernel is specialised for K=6144");
+    }
+    if (x.ne[1] != 1 || residual_out.ne[1] != 1) {
+        throw std::invalid_argument("w8 linear_add decode: kernel requires a single column");
+    }
     w8_linear_add_decode_kernel<RowsPerCta><<<2048 / RowsPerCta, RowsPerCta * 32, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
         static_cast<const std::uint8_t*>(w.scales), static_cast<__nv_bfloat16*>(residual_out.data));
