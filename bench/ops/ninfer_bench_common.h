@@ -106,7 +106,7 @@ inline const DeviceSpecs& device_specs() {
     return specs;
 }
 
-inline std::uint16_t f32_to_bf16(float f) {
+__host__ __device__ inline std::uint16_t f32_to_bf16(float f) {
     std::uint32_t u;
     std::memcpy(&u, &f, 4);
     const std::uint32_t lsb = (u >> 16) & 1u;
@@ -114,13 +114,45 @@ inline std::uint16_t f32_to_bf16(float f) {
     return std::uint16_t(u >> 16);
 }
 
-// Device bf16 buffer filled with a small varied ramp (avoids all-zero special
-// paths; exact values are irrelevant to bandwidth). Returns an owning DeviceBuffer.
-inline DeviceBuffer make_bf16(std::size_t n) {
-    std::vector<std::uint16_t> h(n);
-    for (std::size_t i = 0; i < n; ++i) h[i] = f32_to_bf16(0.5f - float(i % 251) / 250.0f);
+namespace detail {
+
+__host__ __device__ inline std::uint32_t bench_fixture_hash32(std::uint32_t x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    return x ^ (x >> 16);
+}
+
+// A short repeating ramp is L2- and compression-friendly in a way real activations are not, which
+// can make a GEMM/attention schedule look faster on the bench than it is in the Engine. Every
+// element gets its own hash of (index, seed) instead, so no window of the buffer repeats.
+static __global__ void fill_bf16_uniform_kernel(std::uint16_t* values, std::size_t count,
+                                                std::uint32_t seed) {
+    const auto stride = static_cast<std::size_t>(gridDim.x) * blockDim.x;
+    for (auto i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < count;
+         i += stride) {
+        const std::uint32_t bits = bench_fixture_hash32(static_cast<std::uint32_t>(i) ^ seed);
+        const float u = static_cast<float>(bits >> 8) * (1.0f / 16777216.0f) - 0.5f;
+        values[i]     = f32_to_bf16(u);
+    }
+}
+
+} // namespace detail
+
+// Device bf16 buffer filled with pseudo-random values in [-0.5, 0.5), varied by element index and
+// `seed` (avoids all-zero special paths; exact values are otherwise irrelevant to bandwidth or
+// timing). Returns an owning DeviceBuffer.
+inline DeviceBuffer make_bf16(std::size_t n, std::uint32_t seed = 0x9e3779b9u) {
     DeviceBuffer d(n * 2);
-    d.copy_from_host(h.data(), d.bytes);
+    if (n != 0) {
+        constexpr int block = 256;
+        const int grid = static_cast<int>(std::min<std::size_t>(4096, (n + block - 1) / block));
+        detail::fill_bf16_uniform_kernel<<<grid, block>>>(static_cast<std::uint16_t*>(d.p), n,
+                                                          seed);
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
     return d;
 }
 
