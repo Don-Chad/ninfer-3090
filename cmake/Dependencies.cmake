@@ -34,6 +34,9 @@ target_include_directories(ninfer::json INTERFACE
 # Source base for the custom-template frontend; consumers will link it explicitly.
 add_subdirectory(third_party/llama-jinja EXCLUDE_FROM_ALL)
 
+# Tokenizer-aware grammar compiler and matcher behind structured (JSON) output.
+add_subdirectory(third_party/xgrammar EXCLUDE_FROM_ALL)
+
 if(NINFER_BUILD_PRODUCT_SUPPORT)
   # Media acquisition uses CURLOPT_PROTOCOLS_STR and CURLOPT_REDIR_PROTOCOLS_STR,
   # introduced in libcurl 7.85 (not merely the version of the maintainer environment).

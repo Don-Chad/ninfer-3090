@@ -2,6 +2,8 @@
 # default whitespace checks.
 /third_party/spdlog/include/** -whitespace
 /third_party/spdlog/src/** -whitespace
+/third_party/xgrammar/** -whitespace
+
 # Shell scripts must be LF in the repository and in every checkout, not merely normalised on
 # commit. `core.autocrlf=input` was not enough: every .sh in scripts/ had CRLF committed, and
 # the two Linux launchers the README recommends (then run-qwen36-35b-a3b-c1-maxctx.sh and
