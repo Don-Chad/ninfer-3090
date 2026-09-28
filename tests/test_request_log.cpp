@@ -422,6 +422,7 @@ int main() {
                           .search_renewals            = 1,
                           .search_discovery_used      = true,
                           .search_overshoot_ns        = 0,
+                          .best_reuse_prompt_tokens   = 4096,
     };
     outcome.thinking = ninfer::ThinkingBudgetStats{.configured_budget     = 256,
                                                    .model_thinking_tokens = 256,
@@ -433,7 +434,8 @@ int main() {
                           done.at("materialization").at("first_improvement_ns") == 2000 &&
                           done.at("materialization").at("search_granted_ns") == 8000 &&
                           done.at("materialization").at("search_renewals") == 1 &&
-                          done.at("materialization").at("search_discovery_used") == true,
+                          done.at("materialization").at("search_discovery_used") == true &&
+                          done.at("materialization").at("best_reuse_prompt_tokens") == 4096,
                       "materialization search quality or cumulative budget diagnostics missing");
     failures +=
         check(done.at("result").at("finish_reason") == "output_limit", "finish reason missing");

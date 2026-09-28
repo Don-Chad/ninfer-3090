@@ -325,6 +325,7 @@ Json materialization_json(const ninfer::MaterializationDiagnostics& diagnostics)
         {"budget_exhausted", diagnostics.budget_exhausted},
         {"selected_degradation_units", diagnostics.selected_degradation_units},
         {"selected_maximal_fallback", diagnostics.selected_maximal_fallback},
+        {"best_reuse_prompt_tokens", diagnostics.best_reuse_prompt_tokens},
         {"initial_predicted_total_ns", diagnostics.initial_predicted_total_ns},
         {"first_improvement_ns", diagnostics.first_improvement_ns
                                      ? Json(*diagnostics.first_improvement_ns)
