@@ -1130,7 +1130,8 @@ int exercise_shared_anchor_entitlement(const char* artifact) {
 
 ninfer::EngineOptions automatic_anchor_engine_options(const char* artifact,
                                                       std::uint32_t device_state_slots,
-                                                      std::uint32_t host_state_slots) {
+                                                      std::uint32_t host_state_slots,
+                                                      std::uint32_t shared_prefixes) {
     ninfer::EngineOptions options;
     options.artifact_path                        = artifact;
     options.max_context                          = 1024;
@@ -1145,17 +1146,23 @@ ninfer::EngineOptions automatic_anchor_engine_options(const char* artifact,
     options.context_cache.host_state_slots       = host_state_slots;
     options.context_cache.host_kv_capacity_bytes = std::size_t{64} << 20U;
     options.context_cache.max_private_continuations         = 2;
-    options.context_cache.max_shared_prefixes               = 0;
+    options.context_cache.max_shared_prefixes               = shared_prefixes;
     options.context_cache.max_long_anchors_per_continuation = 2;
     return options;
 }
 
+// Turns alternate User/Assistant; with `leading_system` the first turn is the System message and
+// the alternation starts after it.
 ninfer::PromptInput automatic_anchor_conversation(const std::vector<std::string>& turns,
-                                                  std::uint32_t automatic_anchors) {
+                                                  std::uint32_t automatic_anchors,
+                                                  bool leading_system = false) {
     ninfer::PromptInput prompt;
     for (std::size_t index = 0; index < turns.size(); ++index) {
         ninfer::ChatMessage message;
-        message.role = index % 2 == 0 ? ninfer::ChatRole::User : ninfer::ChatRole::Assistant;
+        const std::size_t turn = leading_system ? index - 1U : index;
+        message.role           = leading_system && index == 0 ? ninfer::ChatRole::System
+                                 : turn % 2 == 0              ? ninfer::ChatRole::User
+                                                              : ninfer::ChatRole::Assistant;
         message.parts.push_back(ninfer::MessagePart{
             .kind = ninfer::MessagePartKind::Text, .text = turns[index], .media = {}});
         prompt.messages.push_back(std::move(message));
@@ -1168,9 +1175,11 @@ ninfer::PromptInput automatic_anchor_conversation(const std::vector<std::string>
 // Chat Completions and Anthropic requests carry no PrivateLongAnchor marker, so the serve layer
 // stamps automatic anchors on every prompt. An edit below the rewrite checkpoint must then restore
 // at the anchor under the edit; with automatic anchors off the same edit has no such candidate.
-// A second phase interleaves two growing conversations on one lane with a one-slot Device state
-// pool, so anchors are demoted to Host and consumed endpoints carry anchors that other owners
-// also reference - the shape that latched the engine through a miscounted active entitlement.
+// A second phase interleaves two growing conversations behind one common system prompt on one lane
+// with a one-slot Device state pool and shared prefixes enabled. The automatic anchor after the
+// system message then lands on the structural shared-prefix frontier and aliases its StateImage,
+// anchors are demoted to Host, and a consumed endpoint carries an anchor another owner also
+// references - the shape that latched the engine through a miscounted active entitlement.
 int exercise_automatic_private_anchors(const char* artifact) {
     ninfer::RequestOptions request;
     request.execution.requested_output_tokens = 1;
@@ -1189,7 +1198,7 @@ int exercise_automatic_private_anchors(const char* artifact) {
     edited[3] = "Mount it on the ceiling above the lathe and drop hoses to each machine.";
 
     const auto edit_reuse = [&](std::uint32_t automatic_anchors, ninfer::GenerationResult& out) {
-        ninfer::Engine engine(automatic_anchor_engine_options(artifact, 4, 4));
+        ninfer::Engine engine(automatic_anchor_engine_options(artifact, 4, 4, 0));
         const ninfer::GenerationResult first = engine.generate(
             engine.prepare(automatic_anchor_conversation(original, automatic_anchors)), request);
         if (first.generated_token_ids.size() != 1) { return false; }
@@ -1216,15 +1225,24 @@ int exercise_automatic_private_anchors(const char* artifact) {
         return 1;
     }
 
-    ninfer::Engine engine(automatic_anchor_engine_options(artifact, 1, 4));
+    ninfer::Engine engine(automatic_anchor_engine_options(artifact, 1, 4, 4));
+    std::string system =
+        "You are a careful engineering assistant. Follow the house style: short sentences, units "
+        "on every number, and name the assumption behind every estimate.";
+    for (int line = 0; line < 12; ++line) {
+        system += " Rule " + std::to_string(line) +
+                  ": prefer measured figures to recalled ones, and say which you used.";
+    }
     std::array<std::vector<std::string>, 2> conversations{
-        std::vector<std::string>{"Plan a three-day walking route through the lake district."},
-        std::vector<std::string>{"Summarise the trade-offs between paged and contiguous KV."}};
-    for (std::uint32_t round = 0; round < 4; ++round) {
+        std::vector<std::string>{system,
+                                 "Plan a three-day walking route through the lake district."},
+        std::vector<std::string>{system,
+                                 "Summarise the trade-offs between paged and contiguous KV."}};
+    for (std::uint32_t round = 0; round < 5; ++round) {
         for (std::size_t lineage = 0; lineage < conversations.size(); ++lineage) {
             std::vector<std::string>& turns = conversations[lineage];
             const ninfer::GenerationResult result = engine.generate(
-                engine.prepare(automatic_anchor_conversation(turns, 2)), request);
+                engine.prepare(automatic_anchor_conversation(turns, 2, true)), request);
             if (result.generated_token_ids.size() != 1 || !engine.is_available()) {
                 std::cerr << "interleaved automatic-anchor conversation failed: round=" << round
                           << " lineage=" << lineage << '\n';
