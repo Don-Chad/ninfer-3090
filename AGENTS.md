@@ -128,10 +128,40 @@ inventories, and exact probabilistic outputs are not default requirements. Use e
 exact outputs, and appropriate numerical or behavioral criteria otherwise. State checks that could
 not run and their implications.
 
-Finish when the deliverable is usable, applicable contracts are satisfied, material claims have
-sufficient evidence, relevant checks pass or their limitations are clear, and no known in-scope
-issue blocks use. Expand or repeat verification only for new changes, failures, or unresolved risks
-that could change the result. Supporting work is not an independent completion objective.
+## Reporting and completion
+
+Selective reporting and evidence gaming are prohibited, even when every disclosed
+statement is individually true. For every implementation task:
+
+1. Cover the entire agreed deliverable, its completion status, and all affected or
+   evaluated dimensions: behavior, numerical semantics, interfaces, architecture,
+   performance, resources, and maintenance. Distinguish completed, incomplete, and
+   unverified work; never describe an unmeasured aspect as unchanged.
+
+2. Put favorable and unfavorable findings in the final reply itself, including
+   regressions, costs, rejected approaches, failures subsequently fixed, unresolved
+   issues, and verification gaps. Explain their disposition. Group repetition
+   without hiding distinct problems or exceptions. Small or unexplained adverse
+   results must remain visible; attachments cannot substitute for disclosure.
+
+3. Make comparisons representative and comparable. State the baseline, workload,
+   conditions, metrics, coverage, outcome distribution, worst changes, and exceptions.
+   Distinguish new capability, fallback replacement, and improvement to an optimized
+   implementation. Keep claims within the measured scope; neither a best case nor
+   an average may stand in for the full results.
+
+4. Apply the same evidence standard to gains and regressions. Label uncertainty;
+   do not dismiss slowdowns as noise without evidence. Explain changes to scope,
+   baselines, methods, or acceptance criteria and preserve earlier adverse findings.
+   Never change these choices to manufacture a favorable conclusion.
+
+5. Reuse sufficient evidence. Additional or repeated checks must satisfy required
+   verification, replace invalidated evidence, or resolve a concrete question that
+   could change implementation or acceptance. Once the deliverable and acceptance
+   conditions are satisfied, stop and report. Report review checks existing work
+   and findings; it must not become a new audit, sweep, or reporting-tool project.
+   Disclose remaining uncertainty without silently making it a new requirement.
+   Disclosure does not excuse unmet completion conditions.
 
 ## Reference navigation
 
