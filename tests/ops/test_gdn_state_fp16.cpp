@@ -72,8 +72,13 @@ int main(int argc, char** argv) {
         const std::size_t out_bytes = static_cast<std::size_t>(kDim) * kHv * width * 2;
         ninfer::test::GuardedDeviceBuffer o32(out_bytes), o16(out_bytes);
         ninfer::WorkspaceArena ws(std::max<std::size_t>(
-            256, ninfer::ops::gated_delta_net_workspace_capacity_bytes(kQk, kHv, true, width,
-                                                                        width)));
+            256, ninfer::ops::gated_delta_net_workspace_capacity_bytes(kQk, kHv, width, width)));
+        int device = 0;
+        ninfer::test::cuda_check(cudaGetDevice(&device), "cudaGetDevice");
+        cudaDeviceProp props{};
+        ninfer::test::cuda_check(cudaGetDeviceProperties(&props, device),
+                                 "cudaGetDeviceProperties");
+        const ninfer::DeviceExecutionView execution{nullptr, props.multiProcessorCount};
         Tensor state32(s32.data(), DType::FP32, {kDim, kDim, kHv});
         Tensor state16(s16.data(), DType::FP16, {kDim, kDim, kHv});
         const float scale = 1.0F / std::sqrt(static_cast<float>(kDim));
@@ -97,9 +102,9 @@ int main(int argc, char** argv) {
             Tensor out32(o32.data(), DType::BF16, {kDim, kHv, width});
             Tensor out16(o16.data(), DType::BF16, {kDim, kHv, width});
             ninfer::ops::gated_delta_net(tq, tk, tv, tg, tb, scale, true, ws, state32, out32,
-                                         nullptr);
+                                         execution);
             ninfer::ops::gated_delta_net(tq, tk, tv, tg, tb, scale, true, ws, state16, out16,
-                                         nullptr);
+                                         execution);
             ninfer::test::cuda_check(cudaDeviceSynchronize(), "gated_delta_net");
             o32.copy_to_host(h32.data(), h32.size() * 2);
             o16.copy_to_host(h16.data(), h16.size() * 2);

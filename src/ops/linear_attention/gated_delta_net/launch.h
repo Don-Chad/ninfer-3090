@@ -6,7 +6,6 @@
 
 #include <cuda_runtime.h>
 
-#include <cstddef>
 #include <cstdint>
 
 namespace ninfer::ops::detail::gated_delta_net {
@@ -48,15 +47,8 @@ void launch_replay_fold(const GdnReplayRecords& records, LinearAttentionStateAll
                         const GdnReplayFoldKernelRows& rows, std::int32_t active_rows,
                         cudaStream_t stream);
 
-std::size_t chunked_workspace_bytes(std::int32_t value_heads, std::int32_t tokens);
-
 // FP16 recurrent-state storage around the FP32-interfaced chunked kernels.
 void widen_state_fp16_to_fp32(const Tensor& in, Tensor& out, cudaStream_t stream);
 void narrow_state_fp32_to_fp16(const Tensor& in, Tensor& out, cudaStream_t stream);
-
-void launch_chunked(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& g,
-                    const Tensor& beta, float scale, const Tensor& ssm_state_in,
-                    Tensor& ssm_state_out, Tensor& out, void* workspace,
-                    std::size_t workspace_bytes, cudaStream_t stream);
 
 } // namespace ninfer::ops::detail::gated_delta_net
