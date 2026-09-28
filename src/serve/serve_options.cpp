@@ -1,4 +1,6 @@
 #include "serve/serve_options.h"
+
+#include <algorithm>
 #include "product/speculative_options.h"
 
 #include <cerrno>
@@ -79,7 +81,8 @@ std::string serve_usage_text(const char* argv0) {
            "[--media-preprocess-threads N] "
            "[--device-state-slots N] [--host-state-slots N] [--host-kv-mib N] "
            "[--max-private-continuations N] [--max-shared-prefixes N] "
-           "[--max-long-anchors-per-continuation N] [--max-cache-markers-per-request N] "
+           "[--max-long-anchors-per-continuation N] [--auto-long-anchors N] "
+           "[--max-cache-markers-per-request N] "
            "[--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|rk8v4|rk4v4|nvfp4|k8v4] "
@@ -128,6 +131,11 @@ std::string serve_usage_text(const char* argv0) {
            "       --auto-prefix-grid offers shared candidates on a token grid so unrelated "
            "callers whose prompts start alike share a cached prefix without any client hint; a grid "
            "frontier is only published once two callers have both asked for it\n"
+           "       --auto-long-anchors N proposes a private long anchor at each of the last N "
+           "message boundaries of every prompt, so a client that rewrites recent history "
+           "restores at the anchor below the edit instead of re-prefilling from zero; it "
+           "defaults to and is clamped to --max-long-anchors-per-continuation (raise that and "
+           "--host-state-slots for deeper edits); 0 disables\n"
            "       context cache defaults: device-state=max-concurrency, private=2x concurrency, "
            "shared=max(max-concurrency,4), anchors=2; Host state=8 slots, Host KV=8192 MiB\n"
            "       --device-state-slots is extra checkpoint capacity beyond active lanes; "
@@ -315,6 +323,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 parse_nonnegative_int(require_value("--max-long-anchors-per-continuation"),
                                       "max-long-anchors-per-continuation"));
             context_capacity_explicit = true;
+        } else if (arg == "--auto-long-anchors") {
+            options.auto_long_anchors = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--auto-long-anchors"), "auto-long-anchors"));
         } else if (arg == "--max-cache-markers-per-request") {
             options.context_cache.max_cache_markers_per_request = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--max-cache-markers-per-request"),
@@ -471,6 +482,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             throw std::invalid_argument(
                 "--no-prefix-reuse cannot be combined with --auto-prefix-grid");
         }
+        if (options.auto_long_anchors.value_or(0U) != 0) {
+            throw std::invalid_argument(
+                "--no-prefix-reuse cannot be combined with --auto-long-anchors");
+        }
         options.context_cache.enabled                = false;
         options.context_cache.host_state_slots       = 0;
         options.context_cache.host_kv_capacity_bytes = 0;
@@ -523,6 +538,13 @@ std::string resolve_public_model_id(const ServeOptions& options,
         throw std::logic_error("loaded artifact model name must not be empty");
     }
     return std::string(artifact_model_name);
+}
+
+std::uint32_t resolve_automatic_private_anchors(const ServeOptions& options,
+                                                const ContextCacheOptions& resolved) {
+    if (!resolved.enabled || !options.allow_prefix_reuse) { return 0; }
+    const std::uint32_t cap = resolved.max_long_anchors_per_continuation.value_or(0U);
+    return std::min(options.auto_long_anchors.value_or(cap), cap);
 }
 
 } // namespace ninfer::serve

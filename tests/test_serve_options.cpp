@@ -257,6 +257,40 @@ int main() {
     failures += check(grid_without_reuse_rejected,
                       "--auto-prefix-grid was accepted with prefix reuse disabled");
 
+    ninfer::ContextCacheOptions resolved_cache;
+    resolved_cache.enabled                           = true;
+    resolved_cache.max_long_anchors_per_continuation = 2U;
+    failures += check(resolve_automatic_private_anchors(parse({"ninfer-serve", "model.ninfer"}),
+                                                        resolved_cache) == 2U,
+                      "automatic long anchors did not default to the retained-anchor cap");
+    failures += check(
+        resolve_automatic_private_anchors(
+            parse({"ninfer-serve", "model.ninfer", "--auto-long-anchors", "1"}), resolved_cache) ==
+            1U,
+        "--auto-long-anchors did not select fewer anchors than the cap");
+    failures += check(
+        resolve_automatic_private_anchors(
+            parse({"ninfer-serve", "model.ninfer", "--auto-long-anchors", "9"}), resolved_cache) ==
+            2U,
+        "--auto-long-anchors was not clamped to the retained-anchor cap");
+    failures += check(
+        resolve_automatic_private_anchors(
+            parse({"ninfer-serve", "model.ninfer", "--auto-long-anchors", "0"}), resolved_cache) ==
+            0U,
+        "--auto-long-anchors 0 did not disable automatic anchors");
+    ninfer::ContextCacheOptions disabled_cache = resolved_cache;
+    disabled_cache.enabled                     = false;
+    failures += check(resolve_automatic_private_anchors(parse({"ninfer-serve", "model.ninfer"}),
+                                                        disabled_cache) == 0U,
+                      "automatic long anchors survived a disabled context cache");
+    bool anchors_without_reuse_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--no-prefix-reuse", "--auto-long-anchors",
+                     "2"});
+    } catch (const std::invalid_argument&) { anchors_without_reuse_rejected = true; }
+    failures += check(anchors_without_reuse_rejected,
+                      "--auto-long-anchors was accepted with prefix reuse disabled");
+
     const ServeOptions response_store =
         parse({"ninfer-serve", "model.ninfer", "--response-store-max-records", "42",
                "--response-store-max-mib", "8"});
@@ -356,6 +390,9 @@ int main() {
     failures +=
         check(serve_usage_text("ninfer-serve").find("--auto-prefix-grid") != std::string::npos,
               "serve help omits --auto-prefix-grid");
+    failures +=
+        check(serve_usage_text("ninfer-serve").find("--auto-long-anchors") != std::string::npos,
+              "serve help omits --auto-long-anchors");
 
     // --devices selects the ordered CUDA devices the model's pipeline stages run on. Only the shape
     // is parsed here; matching compute capability is the engine's to validate, because it needs real

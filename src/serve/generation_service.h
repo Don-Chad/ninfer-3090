@@ -115,6 +115,12 @@ public:
     // value instead of reinterpreting optional defaults from ServeOptions.
     [[nodiscard]] const ninfer::EngineOptions& engine_options() const { return engine_->options(); }
 
+    // Engine-automatic private long anchors stamped on every read-write prompt; see
+    // resolve_automatic_private_anchors.
+    [[nodiscard]] std::uint32_t automatic_private_anchors() const noexcept {
+        return automatic_private_anchors_;
+    }
+
     [[nodiscard]] ninfer::LoadSummary load_summary() const { return engine_->load_summary(); }
 
     [[nodiscard]] ninfer::MemorySummary memory_summary() const { return engine_->memory_summary(); }
@@ -169,6 +175,7 @@ private:
 
     ServeOptions options_;
     std::unique_ptr<ninfer::Engine> engine_;
+    std::uint32_t automatic_private_anchors_ = 0;
     std::shared_ptr<RequestCapacity> request_capacity_;
 };
 

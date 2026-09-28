@@ -1493,6 +1493,74 @@ int test_explicit_leading_instruction_cache_boundary() {
                  "full-system marker");
 }
 
+std::vector<std::uint32_t> automatic_anchor_frontiers(const Frontend& frontend,
+                                                      std::uint32_t automatic_anchors,
+                                                      bool explicit_anchor_after_fifth,
+                                                      std::size_t* token_count = nullptr) {
+    ninfer::PromptInput input;
+    const auto add = [&](ninfer::ChatRole role, const char* text) {
+        ninfer::ChatMessage message;
+        message.role = role;
+        message.parts.push_back(
+            ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = text, .media = {}});
+        input.messages.push_back(std::move(message));
+    };
+    add(ninfer::ChatRole::System, "system preamble");
+    add(ninfer::ChatRole::User, "first question");
+    add(ninfer::ChatRole::Assistant, "first answer");
+    add(ninfer::ChatRole::User, "second question");
+    add(ninfer::ChatRole::Assistant, "second answer");
+    add(ninfer::ChatRole::User, "third question");
+    input.context_cache.automatic_private_anchors = automatic_anchors;
+    if (explicit_anchor_after_fifth) {
+        input.context_cache.markers.push_back(ninfer::PromptCacheMarker{
+            .after_message_count = 5,
+            .kind                = ninfer::PromptCacheMarkerKind::PrivateLongAnchor,
+            .location            = ninfer::PromptCacheMarkerLocation::MessageBoundary,
+        });
+    }
+    const auto prepared = frontend.prepare(std::move(input));
+    const auto& data    = FrontendFactory::inspect(prepared);
+    if (token_count != nullptr) { *token_count = data.token_ids.size(); }
+    std::vector<std::uint32_t> frontiers;
+    for (const auto& opportunity : data.context_cache.opportunities) {
+        if (opportunity.kind == ninfer::PromptCacheMarkerKind::PrivateLongAnchor) {
+            frontiers.push_back(opportunity.frontier);
+        }
+    }
+    return frontiers;
+}
+
+int test_automatic_private_long_anchors() {
+    const Frontend frontend = make_frontend(resources(), false);
+    int failures            = 0;
+    failures += check(automatic_anchor_frontiers(frontend, 0, false).empty(),
+                      "automatic long anchors were proposed while disabled");
+
+    std::size_t tokens               = 0;
+    const std::vector<std::uint32_t> two = automatic_anchor_frontiers(frontend, 2, false, &tokens);
+    failures += check(two.size() == 2 && two[0] > two[1] && two[1] > 0 && two[0] < tokens,
+                      "automatic long anchors did not take the last two interior boundaries");
+
+    // More anchors than interior boundaries: every boundary after messages 1..5 and none at the
+    // preamble or after the final message.
+    const std::vector<std::uint32_t> all = automatic_anchor_frontiers(frontend, 16, false);
+    bool descending                      = true;
+    for (std::size_t index = 1; index < all.size(); ++index) {
+        descending = descending && all[index] < all[index - 1];
+    }
+    failures += check(all.size() == 5 && descending && all.front() == two.front() &&
+                          all.front() < tokens && all.back() > 0,
+                      "automatic long anchors left the interior message boundaries");
+
+    // An explicit anchor at the same boundary merges instead of proposing a duplicate.
+    const std::vector<std::uint32_t> merged = automatic_anchor_frontiers(frontend, 2, true);
+    failures += check(merged.size() == 2 &&
+                          std::count(merged.begin(), merged.end(), two.front()) == 1,
+                      "an explicit anchor duplicated the automatic anchor at its boundary");
+    return failures;
+}
+
 int test_media_admission_uses_aggregate_resources(const Frontend& frontend) {
     constexpr std::size_t kMediaItems     = 17;
     const std::vector<std::uint8_t> bytes = gradient_ppm();
@@ -2291,6 +2359,7 @@ int main() {
     failures += test_template_media_contract();
     failures += test_image_resize_rejection_policy();
     failures += test_explicit_leading_instruction_cache_boundary();
+    failures += test_automatic_private_long_anchors();
     failures += test_media_admission_uses_aggregate_resources(frontend);
     failures += test_multimodal_prompt_over_removed_32k_cap(frontend);
     failures += test_attention_pairs_are_diagnostic(frontend);

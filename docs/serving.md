@@ -845,6 +845,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--max-private-continuations N` | private continuation descriptor capacity | `2 * max-concurrency` |
 | `--max-shared-prefixes N` | shared stable-prefix descriptor capacity | `max-concurrency` |
 | `--max-long-anchors-per-continuation N` | private long-anchor limit per continuation | `2` |
+| `--auto-long-anchors N` | propose a private long anchor at each of the last `N` interior message boundaries of every prompt, so a rewrite of recent history restores at the anchor below the edit instead of re-prefilling from token zero; clamped to the anchor limit, `0` disables | the anchor limit |
 | `--max-cache-markers-per-request N` | caller marker input-complexity bound | `4` |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |

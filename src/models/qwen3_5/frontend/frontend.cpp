@@ -590,7 +590,8 @@ PreparedContextCache prepare_context_cache(
         }
     }
 
-    out.opportunities.reserve(8U + (hints.allow_engine_prefix_grid ? kPrefixGridCandidates : 0U));
+    out.opportunities.reserve(8U + hints.automatic_private_anchors +
+                              (hints.allow_engine_prefix_grid ? kPrefixGridCandidates : 0U));
     const auto add_opportunity = [&](PromptCacheMarkerKind kind, SharedCandidateEvidence evidence,
                                      std::uint32_t frontier, std::uint32_t input_order) {
         if (frontier == 0 || !exact_vision_frontier(frontier, vision_items)) { return; }
@@ -629,6 +630,22 @@ PreparedContextCache prepare_context_cache(
     if (graft_frontier != 0) {
         add_opportunity(PromptCacheMarkerKind::SharedStablePrefix,
                         SharedCandidateEvidence::EngineStructural, graft_frontier, engine_order++);
+    }
+    // Automatic private long anchors sit at the boundaries after the last N messages, newest
+    // first. The boundary after the final message is skipped (the endpoint and rewrite
+    // checkpoints cover the tail), as is the empty boundary before the first message. An
+    // unresolved boundary still consumes one of the N positions: N counts boundaries, not anchors.
+    if (hints.automatic_private_anchors != 0 && message_count > 1) {
+        std::uint32_t remaining = hints.automatic_private_anchors;
+        for (std::size_t after = message_count - 1U; after != 0 && remaining != 0;
+             --after, --remaining) {
+            if (after >= message_boundaries.size() || !message_boundaries[after] ||
+                *message_boundaries[after] >= full_prompt_frontier) {
+                continue;
+            }
+            add_opportunity(PromptCacheMarkerKind::PrivateLongAnchor, SharedCandidateEvidence::None,
+                            *message_boundaries[after], engine_order++);
+        }
     }
     if (hints.allow_engine_automatic_shared_prefixes) {
         if (engine_tool_marker_index && *engine_tool_marker_index < cache_boundaries.size() &&
