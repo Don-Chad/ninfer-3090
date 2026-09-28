@@ -288,6 +288,22 @@ int main() {
             const ninfer::KVLoanPlan huge =
                 ninfer::plan_kv_loan(fixture, pages, 64ULL * granule);
             failures += expect(huge.granules.empty(), "a request beyond the pool is refused");
+
+            // A reservation that has not materialized yet still leaves its pages inside
+            // free_runs(): they are physically unmapped, only logically claimed. A loan must not
+            // draw them out from under the request that reserved them, or that request's later
+            // materialize() call violates its own page-count invariant. Reserve down to fewer
+            // pages than one granule's loan needs, leaving the pool almost entirely reserved but
+            // still fully free physically, so a loan ignoring the reservation would still succeed.
+            const std::uint32_t reserve_pages = pages.capacity_pages() - unit + 1;
+            std::optional<ninfer::DeviceKVPageReservation> pending = pages.reserve(reserve_pages);
+            failures += expect(pages.available_pages() == unit - 1,
+                               "reserving pages lowers available_pages without touching free_runs");
+            const ninfer::KVLoanPlan against_reservation =
+                ninfer::plan_kv_loan(fixture, pages, granule);
+            failures += expect(against_reservation.granules.empty(),
+                               "a loan may not eat into an unmaterialized reservation");
+            pending.reset();
         }
 
         if (failures != 0) {

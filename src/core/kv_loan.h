@@ -72,6 +72,12 @@ inline void collect_loan_granules(const EvictableKVPool& arena, const DeviceKVPa
     const std::size_t want = (bytes + granularity - 1) / granularity;
     if (want > arena.window_capacity_bytes() / granularity) { return plan; }
 
+    // free_runs() tracks physically-unmapped pages only; it does not know about pages an active
+    // request's DeviceKVPageReservation is counting on but has not materialized yet. Cap what this
+    // loan may take at available_pages() so it never eats into a live reservation.
+    const std::uint32_t available = pages.available_pages();
+    if (available == 0) { return plan; }
+
     const std::span<const KVPageRun> free_runs = pages.free_runs();
     std::vector<std::size_t> collected;
     for (auto run = free_runs.rbegin(); run != free_runs.rend() && plan.granules.size() < want;
@@ -96,6 +102,9 @@ inline void collect_loan_granules(const EvictableKVPool& arena, const DeviceKVPa
     plan.granules.erase(std::unique(plan.granules.begin(), plan.granules.end()),
                         plan.granules.end());
     if (plan.granules.size() < want) { return KVLoanPlan{}; }
+    std::uint32_t total_loan_pages = 0;
+    for (const auto& run : plan.runs) { total_loan_pages += run.count; }
+    if (total_loan_pages > available) { return KVLoanPlan{}; }
     // Lease exactly what the window needs; the extra granules stay mapped inside the lent pages.
     plan.granules.resize(want);
     plan.bytes = want * granularity;
