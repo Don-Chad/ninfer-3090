@@ -3,6 +3,7 @@
 #include "serve/request_validation.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -128,19 +129,6 @@ void validate_standard_output_controls(const Json& body) {
                 "nonzero top_logprobs requires alternative-token probabilities in the response, "
                 "which NInfer does not provide",
                 "top_logprobs", "logprobs_not_supported");
-        }
-    }
-
-    if (body.contains("response_format") && !body.at("response_format").is_null()) {
-        const Json& format = body.at("response_format");
-        if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
-            bad_request("response_format must contain a string type", "response_format");
-        }
-        if (format.at("type").get<std::string>() != "text") {
-            bad_request(
-                "this response_format requires constrained output, which NInfer cannot guarantee; "
-                "only {\"type\":\"text\"} is available",
-                "response_format", "response_format_not_supported");
         }
     }
 
@@ -756,6 +744,59 @@ void parse_parallel_tool_calls(const Json& body, GenerationRequest& output) {
     output.parallel_tool_calls = body.at("parallel_tool_calls").get<bool>();
 }
 
+// OpenAI response_format: text, json_object, or json_schema {name, description?, schema?,
+// strict?}. An omitted schema admits any JSON value.
+void parse_response_format(const Json& body, GenerationRequest& output) {
+    if (!body.contains("response_format") || body.at("response_format").is_null()) { return; }
+    const Json& format = body.at("response_format");
+    if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
+        bad_request("response_format must contain a string type", "response_format");
+    }
+    const std::string type = format.at("type").get<std::string>();
+    if (type == "text") { return; }
+    if (type == "json_object") {
+        output.output_format.kind = ninfer::OutputFormatKind::JsonObject;
+    } else if (type == "json_schema") {
+        if (!format.contains("json_schema") || !format.at("json_schema").is_object()) {
+            bad_request("response_format.json_schema must be an object",
+                        "response_format.json_schema");
+        }
+        const Json& definition = format.at("json_schema");
+        if (!definition.contains("name") || !definition.at("name").is_string() ||
+            definition.at("name").get_ref<const std::string&>().empty() ||
+            definition.at("name").get_ref<const std::string&>().size() > 64 ||
+            !std::all_of(definition.at("name").get_ref<const std::string&>().begin(),
+                         definition.at("name").get_ref<const std::string&>().end(),
+                         [](unsigned char c) { return std::isalnum(c) != 0 || c == '_' || c == '-'; })) {
+            bad_request("response_format.json_schema.name must be 1-64 characters of a-z, A-Z, "
+                        "0-9, underscores and dashes",
+                        "response_format.json_schema.name");
+        }
+        if (definition.contains("description") && !definition.at("description").is_null() &&
+            !definition.at("description").is_string()) {
+            bad_request("response_format.json_schema.description must be a string",
+                        "response_format.json_schema.description");
+        }
+        bool strict = false;
+        if (definition.contains("strict") && !definition.at("strict").is_null()) {
+            if (!definition.at("strict").is_boolean()) {
+                bad_request("response_format.json_schema.strict must be a boolean",
+                            "response_format.json_schema.strict");
+            }
+            strict = definition.at("strict").get<bool>();
+        }
+        const Json schema = definition.contains("schema") && !definition.at("schema").is_null()
+                                ? definition.at("schema")
+                                : Json::object();
+        output.output_format =
+            json_schema_output_format(schema, strict, "response_format.json_schema.schema");
+    } else {
+        bad_request("response_format.type must be 'text', 'json_object' or 'json_schema'",
+                    "response_format.type");
+    }
+    validate_output_format_compatibility(output, "response_format");
+}
+
 void parse_stop(const Json& body, GenerationRequest& output) {
     output.ignore_eos = get_bool(body, "ignore_eos", false);
     if (!body.contains("stop") || body.at("stop").is_null()) { return; }
@@ -904,6 +945,7 @@ OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestL
     parse_parallel_tool_calls(body, output.generation);
     parse_messages(body, output.generation);
     parse_stop(body, output.generation);
+    parse_response_format(body, output.generation);
     parse_sampling(body, output.generation);
     parse_stream_options(body, output);
     parse_response_observations(body, output);

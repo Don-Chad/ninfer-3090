@@ -744,10 +744,37 @@ int test_explicit_rejections() {
 
     value         = base;
     value["text"] = Json{{"format", Json{{"type", "json_schema"}}}};
-    failures += check(api_code([&] {
+    failures += check(api_error([&] {
                           (void)parse_openai_responses_create_request(value, limits());
-                      }) == "structured_outputs_not_supported",
-                      "structured output is rejected explicitly");
+                      }).param == "text.format.name",
+                      "json_schema text.format without a name is rejected");
+    const Json schema = Json{{"type", "object"},
+                             {"properties", Json{{"z", Json{{"type", "boolean"}}}}},
+                             {"required", Json::array({"z"})}};
+    value["text"] = Json{{"format", Json{{"type", "json_schema"}, {"name", "flag"}, {"schema", schema},
+                                         {"strict", true}}}};
+    {
+        const auto parsed = parse_openai_responses_create_request(value, limits());
+        failures += check(parsed.prompt.generation.output_format.kind ==
+                                  ninfer::OutputFormatKind::JsonSchema &&
+                              parsed.prompt.generation.output_format.strict &&
+                              parsed.prompt.generation.output_format.json_schema == schema.dump(),
+                          "json_schema text.format reaches the request verbatim");
+        failures += check(parsed.text_format.at("type") == "json_schema" &&
+                              parsed.text_format.at("name") == "flag",
+                          "accepted text.format is echoed");
+    }
+    value["text"] = Json{{"format", Json{{"type", "json_object"}}}};
+    failures += check(parse_openai_responses_create_request(value, limits())
+                              .prompt.generation.output_format.kind ==
+                          ninfer::OutputFormatKind::JsonObject,
+                      "json_object text.format reaches the request");
+    value["text"] = Json{{"format", Json{{"type", "json_schema"}, {"name", "flag"},
+                                         {"schema", schema}, {"bogus", 1}}}};
+    failures += check(api_error([&] {
+                          (void)parse_openai_responses_create_request(value, limits());
+                      }).param == "text.format",
+                      "unknown json_schema text.format member is rejected");
 
     value               = base;
     value["background"] = true;

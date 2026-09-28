@@ -658,6 +658,8 @@ and the design are in `docs/maintainer/pipeline-parallel-plan.md`.
 - Native SM86 CLI and server applications for Linux and Windows.
 - A prebuilt Windows archive with tested launchers.
 - OpenAI Chat Completions, Responses, and Anthropic-compatible APIs.
+- Structured JSON output (`response_format` / `text.format` / `output_config.format`), enforced
+  during sampling under every speculative backend; see [docs/serving.md](docs/serving.md#structured-output).
 - ReplaySSM and MTP3 for higher throughput without exceeding 24 GB VRAM.
 - `low`, `medium`, and `xhigh` reasoning modes.
 - Qwen3.8 image understanding with ReplaySSM and MTP3.

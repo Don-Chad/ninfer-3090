@@ -197,6 +197,9 @@ struct GenerationRequest {
     // client can actually observe.
     bool parallel_tool_calls = true;
     SamplingParams sampling;
+    // Protocol-normalized structured-output contract (OpenAI response_format, Responses
+    // text.format, Anthropic output_config.format).
+    ninfer::OutputFormat output_format;
 
     [[nodiscard]] bool uses_tools() const noexcept {
         return !tools.empty() && tool_choice.mode != ToolChoiceMode::None;

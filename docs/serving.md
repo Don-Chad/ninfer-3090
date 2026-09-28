@@ -306,7 +306,10 @@ The endpoint supports:
   it first. Caller stop strings still apply; any other value type is rejected with 400. Output past
   the model's natural end is not meaningful text. `/v1/responses` and `/v1/messages` do not
   honor it;
-- `n:1`, text-only `modalities`, and `response_format: {"type":"text"}`;
+- `n:1` and text-only `modalities`;
+- `response_format` of type `text`, `json_object`, or `json_schema` (`name`, optional
+  `description`, `schema` and `strict`); JSON formats are enforced token by token, see
+  [Structured output](#structured-output);
 - non-streaming responses and server-sent event streams;
 - `stream_options.include_usage`;
 - non-strict function tools with `tool_choice` `auto`, `none`, or `allowed_tools` in `auto` mode,
@@ -319,14 +322,14 @@ The endpoint supports:
 - Assistant `reasoning_content` and `reasoning` history aliases.
 
 Options whose observable behavior the Engine cannot provide are rejected when they request that
-behavior. This includes JSON constrained output, nonzero `logit_bias`, requested log probabilities,
+behavior. This includes nonzero `logit_bias`, requested log probabilities,
 audio/file input or audio output, `strict:true`, required or named tool choice,
 `parallel_tool_calls:false` with enabled tools, explicit low/high image detail, web search,
 moderation, low/high verbosity, stored Chat Completions, and non-empty legacy `functions`.
 Each capability rejection identifies the affected field and the guarantee NInfer cannot provide.
-Known constrained-decoding aliases (`grammar`, `structured_outputs`, `guided_json`, `guided_regex`,
-`guided_choice`, and `guided_grammar`) receive the same explicit rejection instead of being treated
-as unknown hints.
+The vLLM/llama.cpp constrained-decoding extensions (`grammar`, `structured_outputs`, `guided_json`,
+`guided_regex`, `guided_choice`, and `guided_grammar`) are rejected explicitly instead of being
+treated as unknown hints; structured JSON is requested through `response_format`.
 
 Semantically neutral fields do not make an otherwise executable request fail. All-zero
 `logit_bias`, `logprobs:false`, `top_logprobs:0`, `verbosity:"medium"`, empty legacy tool controls,
@@ -519,7 +522,7 @@ wire response contains typed `output` Items.
 | `chat_template_kwargs` | template parameters as a JSON object; standard options merge with typed fields |
 | `preserve_thinking` | alias for `chat_template_kwargs.preserve_thinking`; conflicting values are rejected |
 | `graft` | NInfer extension: name of a [prompt graft](#prompt-grafts), or `null`; also accepted by input token count |
-| `text.format` | omitted or `{"type":"text"}` only |
+| `text.format` | `{"type":"text"}`, `{"type":"json_object"}`, or `{"type":"json_schema","name",...,"schema",...}` with optional `description` and `strict`; JSON formats are enforced (see [Structured output](#structured-output)) and echoed in the Response object |
 | `tools` | direct function definitions or namespace groups containing function definitions; see below |
 | `tool_choice` | `auto`, `none`, or function-only `allowed_tools` with mode `auto`; a namespaced selection carries both `namespace` and `name` |
 | `parallel_tool_calls` | `true` by default; `false` is accepted only when no effective tool is callable |
@@ -743,6 +746,49 @@ moderation, Structured Outputs/JSON mode, non-empty `include`, background execut
 files/audio, and OpenAI-hosted/MCP/custom tools. These are compatibility boundaries, not silently
 accepted placeholders.
 
+
+## Structured output
+
+All three generation endpoints can require the answer to be JSON:
+
+| Endpoint | Field | Formats |
+|---|---|---|
+| `/v1/chat/completions` | `response_format` | `json_object`; `json_schema` with `json_schema.{name, description?, schema?, strict?}` |
+| `/v1/responses` | `text.format` | `json_object`; `json_schema` with `{name, schema, description?, strict?}` |
+| `/v1/messages` | `output_config.format` | `json_schema` with `schema` (always strict) |
+
+The format is enforced during sampling, not checked afterwards: before every sampled position the
+Engine restricts the vocabulary to the tokens that keep the output a valid prefix of the requested
+JSON, so the answer cannot leave the grammar. `json_object` admits any JSON object;
+`json_schema` admits JSON conforming to the schema (types, `properties`/`required`, `enum`/`const`,
+arrays, `anyOf`, string `pattern`/`format`, numeric bounds and the other constructs supported by
+XGrammar's JSON Schema converter; `$ref` into `$defs`/`definitions` is resolved). With `strict:true`
+an object schema without `additionalProperties` admits only its declared properties, as OpenAI's
+and Anthropic's strict mode require; with `strict:false` or omitted, standard JSON Schema defaults
+apply. A chat `json_schema` without `schema` admits any JSON value. Properties are emitted in
+schema order. A schema the converter cannot represent is rejected with 400
+`invalid_output_format` before the request is queued; compilation happens on the request thread
+and repeated schemas are served from a cache.
+
+Reasoning is not constrained. When Thinking is on, the model reasons freely and the format applies
+to the answer after `</think>`; with Thinking off it applies from the first token. The answer may
+start with at most two whitespace characters and, once the JSON value is complete, only an end of
+turn may follow, so `finish_reason` is `stop`. The value can still be cut short by `max_tokens`
+(`finish_reason:"length"`), a caller stop string, or a Thinking run that never closes; give
+structured requests an output budget that covers the reasoning as well as the answer, or disable
+Thinking or cap it with a thinking budget.
+
+Structured output cannot be combined with active tools (a tool call is not a JSON value; send
+`tool_choice:"none"` or omit the format) or with `ignore_eos` (a completed value can only be followed
+by the stop token); both combinations are rejected with 400.
+
+Every speculative backend stays active for structured requests. MTP and context-lookup drafts are
+known before a round, so their verification masks are built first; DFlash/DFlash2 propose inside
+the round, so the Engine reads the proposal back after the draft pass and builds the masks while the
+target verifies it. Each verification column uses the mask for its own position: a draft token the
+grammar forbids is rejected there, and the correction or bonus token is sampled from the licensed
+set, so constrained output has the same distribution as non-speculative constrained sampling.
+
 ## Anthropic Messages
 
 ```bash
@@ -780,7 +826,8 @@ signatures belong to the current serve process and are invalid after it restarts
 `display:"omitted"` is rejected because NInfer cannot provide Anthropic's
 encrypted hidden-reasoning restore semantics. `preserve_thinking` remains a NInfer extension for
 closed-turn reasoning history, and `graft` selects a [prompt graft](#prompt-grafts). `output_config.effort` passes its protocol-validated value to the
-selected template.
+selected template. `output_config.format` accepts `{"type":"json_schema","schema":{...}}`, enforced
+strictly (see [Structured output](#structured-output)); Count Tokens ignores it.
 
 User-defined, non-strict tools support `name`, `description`, object `input_schema`, and
 `input_examples`. `tool_choice:auto` and `none` are executable. Forced or named choice,
@@ -801,7 +848,7 @@ creation unknown. Streaming emits `message_start` after Engine admission commits
 selection and before transfer/prefill output, so its uncached/cache-read split is already exact;
 terminal cumulative usage matches the aggregate response.
 
-Documents, Search Results, Files, Structured Outputs, server-tool results, container uploads, and
+Documents, Search Results, Files, server-tool results, container uploads, and
 other execution-dependent blocks are rejected with the missing capability identified. Metadata,
 service tier, inference geography, protocol-version/beta headers, cache TTL, and unknown advisory
 fields do not block an otherwise executable request. The request `model` is any non-empty local

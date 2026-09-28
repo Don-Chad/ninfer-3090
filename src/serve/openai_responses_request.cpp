@@ -666,6 +666,7 @@ struct ParsedPromptFields {
     OpenAIResponsesPromptRequest prompt;
     Json wire_tools          = Json::array();
     Json wire_tool_choice    = "auto";
+    Json wire_text_format    = Json{{"type", "text"}};
     bool parallel_tool_calls = true;
     std::unordered_map<std::string, OpenAIResponsesFunctionIdentity> tool_identities;
 };
@@ -953,22 +954,74 @@ void parse_reasoning(const Json& body, OpenAIResponsesPromptRequest& out) {
     out.generation.reasoning_effort = *effort;
 }
 
-void parse_text(const Json& body) {
+// Responses text.format: {type: text}, {type: json_object}, or {type: json_schema, name, schema,
+// description?, strict?}.
+void parse_text_format(const Json& format, ParsedPromptFields& out) {
+    if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
+        bad_request("text.format must be a typed object", "text.format");
+    }
+    const std::string type = format.at("type").get<std::string>();
+    GenerationRequest& generation = out.prompt.generation;
+    if (type == "text") {
+        if (format.size() != 1) {
+            bad_request("text.format of type text takes no other members", "text.format");
+        }
+        return;
+    }
+    if (type == "json_object") {
+        if (format.size() != 1) {
+            bad_request("text.format of type json_object takes no other members", "text.format");
+        }
+        generation.output_format.kind = ninfer::OutputFormatKind::JsonObject;
+        out.wire_text_format          = Json{{"type", "json_object"}};
+    } else if (type == "json_schema") {
+        static const std::unordered_set<std::string> allowed = {"type", "name", "schema",
+                                                                "description", "strict"};
+        reject_nonnull_unknown_members(format, allowed, "text.format");
+        if (!format.contains("name") || !format.at("name").is_string() ||
+            format.at("name").get_ref<const std::string&>().empty() ||
+            format.at("name").get_ref<const std::string&>().size() > 64) {
+            bad_request("text.format.name must be a non-empty string of at most 64 characters",
+                        "text.format.name");
+        }
+        if (!format.contains("schema") || !format.at("schema").is_object()) {
+            bad_request("text.format.schema must be a JSON Schema object", "text.format.schema");
+        }
+        if (format.contains("description") && !format.at("description").is_null() &&
+            !format.at("description").is_string()) {
+            bad_request("text.format.description must be a string", "text.format.description");
+        }
+        bool strict = false;
+        if (format.contains("strict") && !format.at("strict").is_null()) {
+            if (!format.at("strict").is_boolean()) {
+                bad_request("text.format.strict must be a boolean", "text.format.strict");
+            }
+            strict = format.at("strict").get<bool>();
+        }
+        generation.output_format =
+            json_schema_output_format(format.at("schema"), strict, "text.format.schema");
+        out.wire_text_format = Json{{"type", "json_schema"},
+                                    {"name", format.at("name")},
+                                    {"schema", format.at("schema")},
+                                    {"strict", strict}};
+        if (format.contains("description") && format.at("description").is_string()) {
+            out.wire_text_format["description"] = format.at("description");
+        }
+    } else {
+        bad_request("text.format.type must be 'text', 'json_object' or 'json_schema'",
+                    "text.format.type");
+    }
+    validate_output_format_compatibility(generation, "text.format");
+}
+
+void parse_text(const Json& body, ParsedPromptFields& out) {
     if (!body.contains("text") || body.at("text").is_null()) { return; }
     const Json& text = body.at("text");
     if (!text.is_object()) { bad_request("text must be an object", "text"); }
     static const std::unordered_set<std::string> allowed = {"format", "verbosity"};
     reject_nonnull_unknown_members(text, allowed, "text");
     if (text.contains("format") && !text.at("format").is_null()) {
-        const Json& format = text.at("format");
-        if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
-            bad_request("text.format must be a typed object", "text");
-        }
-        if (format.at("type").get<std::string>() != "text" || format.size() != 1) {
-            bad_request("structured text output requires constrained decoding, which the Engine "
-                        "does not provide",
-                        "text", "structured_outputs_not_supported");
-        }
+        parse_text_format(text.at("format"), out);
     }
     if (text.contains("verbosity") && !text.at("verbosity").is_null()) {
         if (!text.at("verbosity").is_string()) {
@@ -1053,7 +1106,7 @@ ParsedPromptFields parse_prompt_fields(const Json& body, const RequestLimits& li
     // Honoured by trimming the response to one tool call rather than refused; see the chat parser.
     out.prompt.generation.parallel_tool_calls = out.parallel_tool_calls;
     parse_reasoning(body, out.prompt);
-    parse_text(body);
+    parse_text(body, out);
     parse_truncation(body);
     parse_preserve_thinking(body, out.prompt);
     out.prompt.generation.graft      = parse_graft_field(body);
@@ -1221,6 +1274,7 @@ OpenAIResponsesCreateRequest parse_openai_responses_create_request(const Json& b
         out.prompt.prompt_cache_key.has_value();
     out.tools                   = std::move(parsed.wire_tools);
     out.tool_choice             = std::move(parsed.wire_tool_choice);
+    out.text_format             = std::move(parsed.wire_text_format);
     out.tool_identities         = std::move(parsed.tool_identities);
     out.parallel_tool_calls     = parsed.parallel_tool_calls;
     out.store                   = optional_bool(body, "store", true);

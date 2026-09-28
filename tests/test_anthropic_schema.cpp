@@ -132,10 +132,38 @@ int test_envelope_and_field_policy() {
     body["top_k"] = 21;
     failures += check(api_param([&] { (void)parse(body); }) == "top_k",
                       "Engine top_k range was not enforced");
+    const Json schema = Json{{"type", "object"},
+                             {"properties", Json{{"b", Json{{"type", "integer"}}},
+                                                 {"a", Json{{"type", "string"}}}}},
+                             {"required", Json::array({"b", "a"})},
+                             {"additionalProperties", false}};
     body                  = base_request();
+    body["output_config"] = Json{{"format", Json{{"type", "json_schema"}, {"schema", schema}}}};
+    {
+        const auto parsed = parse(body);
+        failures += check(parsed.generation.output_format.kind ==
+                                  ninfer::OutputFormatKind::JsonSchema &&
+                              parsed.generation.output_format.strict &&
+                              parsed.generation.output_format.json_schema == schema.dump(),
+                          "output_config.format json_schema did not reach the request strictly "
+                          "and verbatim");
+    }
     body["output_config"] = Json{{"format", Json{{"type", "json_schema"}}}};
-    failures += check(api_code([&] { (void)parse(body); }) == "output_config_format_not_supported",
-                      "structured output was silently downgraded");
+    failures += check(api_param([&] { (void)parse(body); }) == "output_config.format.schema",
+                      "output_config.format without a schema was accepted");
+    body["output_config"] = Json{{"format", Json{{"type", "json_object"}}}};
+    failures += check(api_param([&] { (void)parse(body); }) == "output_config.format.type",
+                      "an unknown output_config.format type was accepted");
+    body["output_config"] =
+        Json{{"format", Json{{"type", "json_schema"}, {"schema", schema}, {"extra", 1}}}};
+    failures += check(api_param([&] { (void)parse(body); }) == "output_config.format",
+                      "an unknown output_config.format member was accepted");
+    body["output_config"] = Json{{"format", Json{{"type", "json_schema"}, {"schema", schema}}}};
+    body["tools"]         = Json::array({Json{{"name", "lookup"},
+                                              {"input_schema", Json{{"type", "object"}}}}});
+    failures += check(api_code([&] { (void)parse(body); }) ==
+                          "output_format_with_tools_not_supported",
+                      "structured output with active tools was accepted");
     body              = base_request();
     body["container"] = "container_1";
     failures += check(api_code([&] { (void)parse(body); }) == "container_not_supported",
