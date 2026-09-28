@@ -197,24 +197,34 @@ void apply_openai_prompt_cache_policy(GenerationRequest& request, OpenAIPromptCa
 
 std::string make_models_list(const std::string& model_id, std::int64_t created,
                              std::uint32_t max_model_len) {
-    // vLLM/llama.cpp-compatible discovery metadata for the configured per-request context limit.
+    // No client ecosystem agrees on one name for this: max_model_len is vLLM/llama.cpp's
+    // discovery field, context_window is Anthropic's Models API field, and context_length is the
+    // OpenRouter/Ollama convention. OpenAI's own /v1/models spec has none of them. Mirror the same
+    // value under all three so whichever a client reads, it gets the configured context limit.
     const Json payload = {{"object", "list"},
                           {"data", Json::array({Json{{"id", model_id},
                                                      {"object", "model"},
                                                      {"created", created},
                                                      {"owned_by", "ninfer"},
-                                                     {"max_model_len", max_model_len}}})}};
+                                                     {"max_model_len", max_model_len},
+                                                     {"context_window", max_model_len},
+                                                     {"context_length", max_model_len}}})}};
     return payload.dump();
 }
 
 std::string make_model_object(const std::string& model_id, std::int64_t created,
                               std::uint32_t max_model_len) {
-    // vLLM/llama.cpp-compatible discovery metadata for the configured per-request context limit.
+    // No client ecosystem agrees on one name for this: max_model_len is vLLM/llama.cpp's
+    // discovery field, context_window is Anthropic's Models API field, and context_length is the
+    // OpenRouter/Ollama convention. OpenAI's own /v1/models spec has none of them. Mirror the same
+    // value under all three so whichever a client reads, it gets the configured context limit.
     const Json payload = {{"id", model_id},
                           {"object", "model"},
                           {"created", created},
                           {"owned_by", "ninfer"},
-                          {"max_model_len", max_model_len}};
+                          {"max_model_len", max_model_len},
+                          {"context_window", max_model_len},
+                          {"context_length", max_model_len}};
     return payload.dump();
 }
 
