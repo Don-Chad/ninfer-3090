@@ -117,6 +117,14 @@ dispatch remain in C++; CMake only selects translation units.
 `ninfer_core` and `ninfer_ops` enable separable compilation (RDC) and resolve device symbols in
 the static archive build. Keep this device-link boundary explicit.
 
+Nothing in `src/` currently needs RDC (no `extern __device__`/`__constant__`, no cross-TU device
+declarations, no device function pointers or dynamic parallelism), so whole-program compilation is
+a supported alternative. It was measured on the RTX 3090 (sm_86, CUDA 12.8, 27B DFlash2 bundle,
+rk4v4 KV, three interleaved rounds) and bought nothing: pp512/pp2048/pp8192 +0.4/-0.6/-1.4% and
+decode within +-0.3%, all inside run-to-run spread; kernels with a stack frame went 839 -> 855 and
+`ninfer_bench.exe` shrank 0.7%. The sm_89 fork reported +2.7-4.9% prefill from the same switch;
+re-measure before adopting it on a new architecture or toolchain.
+
 `ninfer_nvfp4_non_rdc` disables separable compilation and device-symbol resolution. It contains
 the warp-specialized Linear, LinearSwiGLU and causal-attention NVFP4 sources that depend on
 `setmaxnreg` register transfer. Their owning family manifests register these sources into the

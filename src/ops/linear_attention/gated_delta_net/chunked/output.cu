@@ -6,6 +6,10 @@ namespace {
 
 namespace kernel = output;
 
+// Measured on the 3090 rather than rescaled to its 82 SMs: a 4 x 82 = 328-CTA target is 12% faster
+// on this stage at T=1024 but 7% slower at T=4096 (the DFlash2 launcher's prefill chunk), where
+// the ceil to 10 jobs per block leaves an eight-CTA second wave. The stage is about 1% of 27B
+// prefill at either chunk, so the 5090 target stays.
 constexpr std::int64_t kRtx5090SmCount = 170;
 constexpr std::int64_t kCtasPerSm      = 4;
 constexpr std::int64_t kTargetCtas     = kRtx5090SmCount * kCtasPerSm;

@@ -16,7 +16,9 @@ namespace {
 // second resident block already supplies that overlap and only the register cost is left (35 -> 50
 // on the warp kernel), which measures 1.02x to 1.14x. Swept over grid size on both gated shapes
 // the crossing sits between 176 and 192 blocks; this is the 170 SMs of this part, a literal
-// because nothing in the tree queries the device, so it is not portable.
+// because nothing in the tree queries the device, so it is not portable. On the 3090 moving it to
+// one block per SM (82) was indistinguishable at the timer's 1 us resolution for gated27 T=8..64,
+// so it was left alone rather than re-tuned blind.
 constexpr std::int64_t kRmsPrefetchBlocks = 170;
 
 template <RmsEpilogue Epilogue>
