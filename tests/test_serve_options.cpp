@@ -68,6 +68,25 @@ int main() {
     failures += check(resolve_public_model_id(defaults, "artifact-model") == "artifact-model",
                       "artifact model id was not selected by default");
 
+    // An omitted request limit defaults to the sequence's remaining context: the full --max-context,
+    // which Engine clamps to context minus prompt. --default-max-tokens replaces it with a cap.
+    failures += check(!defaults.default_max_tokens &&
+                          default_output_tokens(defaults) == static_cast<int>(defaults.max_context),
+                      "omitted --default-max-tokens did not default to the remaining context");
+    const ServeOptions long_context =
+        parse({"ninfer-serve", "model.ninfer", "--max-context", "262144"});
+    failures += check(default_output_tokens(long_context) == 262144,
+                      "default output limit did not follow --max-context");
+    const ServeOptions capped = parse(
+        {"ninfer-serve", "model.ninfer", "--max-context", "262144", "--default-max-tokens", "4096"});
+    failures += check(default_output_tokens(capped) == 4096,
+                      "explicit --default-max-tokens was not the default output limit");
+    bool zero_default_output_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--default-max-tokens", "0"});
+    } catch (const std::invalid_argument&) { zero_default_output_rejected = true; }
+    failures += check(zero_default_output_rejected, "--default-max-tokens 0 was accepted");
+
     const ServeOptions fp8 = parse({"ninfer-serve", "model.ninfer", "--kv-dtype", "fp8"});
     failures += check(fp8.kv_cache == ninfer::KvCacheStorage::Fp8E4M3Row256,
                       "--kv-dtype fp8 did not select row-scaled E4M3 KV");

@@ -100,9 +100,8 @@ std::string serve_usage_text(const char* argv0) {
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
            "       serves OpenAI Responses/Chat Completions and Anthropic Messages endpoints\n"
-           "       --default-max-tokens defaults to " +
-           std::to_string(kDefaultMaxTokens) +
-           " when omitted\n"
+           "       --default-max-tokens caps the output of requests that omit a limit; unset, such "
+           "a request may generate until its --max-context sequence is full\n"
            "       --max-request-mib defaults to 384 and is enforced before JSON parsing\n"
            "       --media-cache-mib defaults to 1024; 0 disables retained media reuse\n"
            "       --media-live-mib defaults to 2048 and bounds all live BF16 patch payloads\n"
@@ -217,7 +216,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         options.startup_argv.emplace_back(argv[i] == nullptr ? "" : argv[i]);
         redact_next = options.startup_argv.back() == "--api-key";
     }
-    bool default_max_tokens_explicit = false;
     bool kv_capacity_explicit        = false;
     bool device_explicit             = false;
     bool context_capacity_explicit   = false;
@@ -373,7 +371,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--default-max-tokens") {
             options.default_max_tokens =
                 parse_nonnegative_int(require_value("--default-max-tokens"), "default-max-tokens");
-            default_max_tokens_explicit = true;
         } else if (arg == "--default-thinking-budget") {
             const std::uint64_t budget =
                 parse_u64(require_value("--default-thinking-budget"), "default-thinking-budget");
@@ -542,10 +539,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.vision_residency == VisionResidency::Overlay && !options.enable_vision) {
         throw std::invalid_argument("--vision-residency overlay requires --vision");
     }
-    if (default_max_tokens_explicit) {
-        if (options.default_max_tokens <= 0) {
-            throw std::invalid_argument("--default-max-tokens must be positive");
-        }
+    if (options.default_max_tokens && *options.default_max_tokens <= 0) {
+        throw std::invalid_argument("--default-max-tokens must be positive");
     }
     return options;
 }

@@ -12,9 +12,6 @@
 
 namespace ninfer::serve {
 
-// Protocol default when the client omits max_tokens. Engine independently
-// clamps the request to its effective context capacity.
-inline constexpr int kDefaultMaxTokens                    = 8192;
 inline constexpr std::size_t kDefaultMaxRequestBytes      = 384ULL << 20;
 inline constexpr std::size_t kDefaultResponseStoreRecords = 1024;
 inline constexpr std::size_t kDefaultResponseStoreBytes   = 256ULL << 20;
@@ -89,7 +86,9 @@ struct ServeOptions {
     // --graft NAME=PATH, repeatable: phantom-kv grafts a request may select with "graft": NAME.
     std::vector<GraftSource> grafts;
     std::optional<std::uint32_t> default_thinking_budget;
-    int default_max_tokens = kDefaultMaxTokens;
+    // Output limit for a request that omits one. Unset means the sequence's remaining context:
+    // see default_output_tokens().
+    std::optional<int> default_max_tokens;
     bool enable_cors       = false; // send permissive CORS headers for browser UIs
     // Process-level explicit overrides layered between registered model/mode defaults and request
     // fields. An omitted seed is replaced per request with a fresh random seed.
@@ -101,6 +100,14 @@ struct ServeOptions {
     // while parsing; this is provenance only and never affects execution.
     std::vector<std::string> startup_argv;
 };
+
+// The output budget a request receives when it omits max_tokens / max_completion_tokens /
+// max_output_tokens. Without --default-max-tokens this is --max-context: Engine clamps every
+// request to `max_context - prompt_tokens + 1`, so the default resolves per request to exactly the
+// context the sequence has left, and a run that fills it finishes with the context-capacity reason.
+[[nodiscard]] inline int default_output_tokens(const ServeOptions& options) noexcept {
+    return options.default_max_tokens.value_or(static_cast<int>(options.max_context));
+}
 
 ServeOptions parse_serve_options(int argc, char** argv);
 // The per-request ContextCacheHints::automatic_private_anchors for this server: the explicit

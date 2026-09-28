@@ -653,7 +653,10 @@ std::string format_server_start_json(
              {"media_live_bytes", options.media_live_bytes},
              {"media_preprocess_threads", options.media_preprocess_threads},
              {"request_log_jsonl", options.request_log_jsonl},
-             {"default_output_tokens", options.default_max_tokens},
+             // null: requests that omit a limit may use their remaining context.
+             {"default_output_tokens", options.default_max_tokens
+                                           ? Json(*options.default_max_tokens)
+                                           : Json(nullptr)},
              {"default_thinking",
               options.enable_thinking ? Json(*options.enable_thinking) : Json(nullptr)},
              {"default_thinking_budget", std::move(default_thinking_budget)},

@@ -296,7 +296,8 @@ The endpoint supports:
 - User `image_url` parts, tool-result `image_url` parts used by compatible clients, and the User
   `video_url` extension using HTTP(S) or data URIs; image detail is omitted or `auto`;
 - nonnegative `max_completion_tokens` and the legacy `max_tokens` spelling; zero performs prompt
-  processing without generation;
+  processing without generation, and omitting both applies the
+  [default output limit](#default-output-limit);
 - `temperature`, `top_p`, presence/frequency penalties, and signed integer `seed`;
 - the compatible `top_k` (`0..20`) and `min_p` (`0..1`) sampler extensions;
 - up to four non-empty stop strings, applied to both reasoning and answer output;
@@ -508,7 +509,7 @@ wire response contains typed `output` Items.
 | `input` | string or typed Item array; it may be omitted or empty only when `previous_response_id` already supplies a user query |
 | `instructions` | optional string, inserted before the reconstructed conversation for this request only |
 | `previous_response_id` | optional ID of a retained local Response |
-| `max_output_tokens` | non-negative integer; omission executes with `--default-max-tokens` but remains `null` in the Response object |
+| `max_output_tokens` | non-negative integer; omission executes with the [default output limit](#default-output-limit) but remains `null` in the Response object |
 | `stream` | boolean; `true` selects Responses SSE rather than a JSON body |
 | `store` | boolean, default `true`; controls local retrieval and continuation state |
 | `temperature` | finite number in `[0,2]` |
@@ -765,7 +766,8 @@ is an Assistant prefill: generation continues its existing text instead of openi
 Assistant prefill cannot contain media, Thinking, or tool calls and cannot start with Thinking
 enabled.
 
-`max_tokens` is optional for local clients and otherwise uses `--default-max-tokens`; a positive
+`max_tokens` is optional for local clients and otherwise uses the
+[default output limit](#default-output-limit); a positive
 value is the complete output budget. `max_tokens:0` is rejected because NInfer does not expose a
 completed zero-output cache-prewarm lifecycle. `temperature`, `top_p`, `top_k`, and
 `stop_sequences` enter Engine execution. A matched custom stop is returned as
@@ -920,7 +922,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--lookup-ngram N` | context-lookup drafting alongside `--spec`: the last `N` tokens are matched against the sequence so far and what followed is proposed; exact, since verification rejects a wrong guess | `0` (off) |
 | `--prefill-cublas` | hand wide prefill GEMMs to cuBLAS: a large prefill speedup for a small perplexity cost, and it wants a larger `--prefill-chunk` to pay (see [performance](performance.md)) | off |
 | `--no-prefill-cublas-projections` | with `--prefill-cublas`, keep the attention and GDN input projections off that route | projections on |
-| `--default-max-tokens N` | output limit when omitted by a request | `8192` |
+| `--default-max-tokens N` | output limit when omitted by a request; see [default output limit](#default-output-limit) | remaining context |
 | `--default-thinking-budget N` | positive thinking cap inherited by thinking-enabled requests | unset |
 | `--vision` | enable media input and load Vision GPU allocations | off |
 | `--vision-residency resident\|overlay` | `overlay` keeps the Vision tower in pinned host memory and encodes each image inside a window borrowed from the evict-ranked text weight tail, so `--vision` no longer reserves device memory and `--kv-capacity auto` resolves the no-vision capacity; requires `--vision` and CUDA virtual memory management | `resident` |
@@ -1123,6 +1125,22 @@ resolves once at startup.
 
 Admission reserves the full prompt-plus-effective-output page entitlement through request
 completion. A request remains queued until a legal resource plan can satisfy that entitlement.
+
+### Default output limit
+
+A request that omits its output limit (`max_completion_tokens`/`max_tokens` on Chat Completions,
+`max_output_tokens` on Responses, `max_tokens` on Messages) may generate until its sequence reaches
+`--max-context`: its budget is `--max-context` minus its prompt tokens, so long reasoning runs are
+not cut at an arbitrary fixed count. Such a run that fills the context finishes with
+`finish_reason:"length"`, Responses `incomplete` with reason `max_output_tokens`, or Anthropic
+`stop_reason:"model_context_window_exceeded"`. `--default-max-tokens N` replaces that default with
+a fixed cap, still bounded by the remaining context; an explicit request limit always wins.
+
+Because admission reserves the effective output entitlement, a request without a limit holds
+Main KV pages for its whole remaining context. When `--kv-capacity` is smaller than
+`--max-concurrency` times `--max-context`, two such requests cannot both be admitted and the
+later one waits in the FIFO. Clients that send their own limit are unaffected; set
+`--default-max-tokens` when clients that omit it should still run concurrently.
 
 Each reusable checkpoint contains KV and complete continuation state. At admission, capture, and
 finish boundaries, resource pressure may keep it on Device, move its StateImage and/or KV replicas
