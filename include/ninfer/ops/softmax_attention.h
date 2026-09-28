@@ -183,6 +183,27 @@ void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
     std::int32_t max_tokens);
 
 /**
+ * How one causal_softmax_attention call executes at an exact W, B, head geometry, cache dtype and
+ * envelope. `route` identifies the selected implementation; a frontier range whose envelopes share
+ * it runs the same kernels. `kernel_nodes` is the number of kernels the call enqueues, in a fixed
+ * order: CUDA Graphs recorded under two envelopes with equal counts can be updated in place from
+ * one to the other (only launch parameters and kernel instantiations differ), and graphs with
+ * different counts cannot. Both values are opaque and only compared for equality. Invalid profiles
+ * throw.
+ */
+struct CausalAttentionLaunchShape {
+    std::uint32_t route        = 0;
+    std::uint32_t kernel_nodes = 0;
+
+    friend bool operator==(const CausalAttentionLaunchShape&,
+                           const CausalAttentionLaunchShape&) = default;
+};
+
+[[nodiscard]] CausalAttentionLaunchShape causal_softmax_attention_launch_shape(
+    AttentionHeadGeometry geometry, KvCacheStorage cache_storage,
+    CausalAttentionExecutionEnvelope envelope, std::int32_t batch_size, std::int32_t tokens);
+
+/**
  * Non-causal grouped-query attention over persistent context plus one live query block.
  *
  * The registered profile is D=128, Hq=32, Hkv=8 (group 4), scale=1/sqrt(128), T=1..16, and

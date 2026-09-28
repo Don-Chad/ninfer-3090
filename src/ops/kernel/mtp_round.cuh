@@ -1,7 +1,7 @@
 #pragma once
 
 // Implements: include/ninfer/ops/mtp_round.h
-// Match: request-major fixed K=1..5 autoregressive MTP round transition.
+// Match: request-major fixed K=1..15 autoregressive MTP round transition.
 
 #include <cstdint>
 

@@ -59,7 +59,7 @@ struct Options {
 
 void usage(const char* argv0) {
     std::printf("usage: %s [--sample|--mtp|--dflash2|--matrix] [--mode greedy|stochastic] "
-                "[--batch 1..8] [--mtp-k 1..5] [--drafts 1..15] [--extent 0..K] [--top-k 1..20] "
+                "[--batch 1..8] [--mtp-k 1..15] [--drafts 1..15] [--extent 0..K] [--top-k 1..20] "
                 "[--no-counts] [--general] [--mixed] [--reject-at J] [--warmup N] [--repeat N] "
                 "[--graph-calls N]\n",
                 argv0);
@@ -145,8 +145,8 @@ Options parse_args(int argc, char** argv) {
     if (options.dflash2 && (options.sample || options.mtp)) {
         throw std::invalid_argument("--dflash2 cannot be combined with --sample or --mtp");
     }
-    if (options.mtp_k < 1 || options.mtp_k > 5) {
-        throw std::invalid_argument("--mtp-k must be in [1,5]");
+    if (options.mtp_k < 1 || options.mtp_k > 15) {
+        throw std::invalid_argument("--mtp-k must be in [1,15]");
     }
     if (options.batch < 1 || options.batch > 8) {
         throw std::invalid_argument("--batch must be in [1,8]");

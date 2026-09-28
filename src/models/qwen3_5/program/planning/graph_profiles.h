@@ -1,11 +1,19 @@
 #pragma once
 #include "models/qwen3_5/program/program.h"
+#include "ninfer/ops/attention_geometry.h"
 
 namespace ninfer::models::qwen3_5::detail {
 
 [[nodiscard]] std::vector<GraphExecutionProfile> ordinary_graph_profiles(std::uint32_t capacity);
-[[nodiscard]] std::vector<GraphExecutionProfile> mtp_graph_profiles(std::uint32_t capacity,
-                                                                    std::uint32_t draft_window);
+// The target's full-attention geometry and KV storage, which select the attention routes an MTP
+// round records and therefore where its graph topology classes break.
+struct MtpGraphAttention {
+    ops::AttentionHeadGeometry geometry;
+    KvCacheStorage storage = KvCacheStorage::BFloat16;
+};
+
+[[nodiscard]] std::vector<GraphExecutionProfile> mtp_graph_profiles(
+    std::uint32_t capacity, std::uint32_t draft_window, const MtpGraphAttention& attention);
 [[nodiscard]] std::vector<GraphExecutionProfile> dflash_graph_profiles(SpeculativeBackend backend,
                                                                        std::uint32_t capacity,
                                                                        std::uint32_t draft_window,

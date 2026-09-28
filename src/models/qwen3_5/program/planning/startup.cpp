@@ -893,8 +893,8 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         break;
     case SpeculativeBackend::Mtp:
         if (options.speculative.draft_tokens == 0 ||
-            options.speculative.draft_tokens > kMaximumMtpDraftTokens) {
-            throw std::invalid_argument("MTP draft window must be in [1,5]");
+            options.speculative.draft_tokens > kMtpDecodeMaximumDrafts) {
+            throw std::invalid_argument("MTP draft window must be in [1,15]");
         }
         break;
     case SpeculativeBackend::DFlash:
@@ -950,7 +950,13 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
             impl->graph_allowance_bytes = checked_mul(12ULL * kMiB, impl->max_concurrency,
                                                       "ordinary exact-b graph allowance");
         } else if (impl->speculative_backend == SpeculativeBackend::Mtp) {
-            const auto profiles = mtp_graph_profiles(impl->capacity, impl->draft_window);
+            const auto& attention = *impl->parameters->model.config().text.attention;
+            const auto profiles   = mtp_graph_profiles(
+                impl->capacity, impl->draft_window,
+                {.geometry = {dimension(attention.head_dim),
+                              dimension(attention.num_attention_heads),
+                              dimension(attention.num_key_value_heads)},
+                 .storage  = impl->kv_storage});
             const std::size_t per_batch_allowance = graph_topology_allowance(
                 profiles,
                 [&](GraphExecutionProfile profile) {

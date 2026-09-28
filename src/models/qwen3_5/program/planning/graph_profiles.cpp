@@ -1,4 +1,5 @@
 #include "models/qwen3_5/program/planning/graph_profiles.h"
+#include "ninfer/ops/softmax_attention.h"
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -43,6 +44,7 @@ std::vector<GraphExecutionProfile> dflash_base_profiles(std::uint32_t capacity,
     return graph_profiles_through(max_frontier, ends);
 }
 
+// Mirror of the 35B (16 query heads) verify route table, which is the geometry DFlash targets.
 bool verify_uses_chunked_small_t(std::uint32_t draft_window, std::uint32_t batch_size,
                                  std::uint32_t max_visible_keys) {
     const std::uint32_t tokens = draft_window + 1;
@@ -57,24 +59,45 @@ bool verify_uses_chunked_small_t(std::uint32_t draft_window, std::uint32_t batch
     return max_visible_keys > prompt_visible_limit;
 }
 
-// Largest target size that still resolves away from ChunkedSmallT for this verify width, or zero
-// when the route does not depend on the target at all. Found by bisecting
-// verify_uses_chunked_small_t itself, which is monotone in max_visible_keys, so a planner that
-// needs to break its frontier at the route flip never restates the route table to do it.
-std::uint32_t verify_route_flip_target(std::uint32_t draft_window) {
-    constexpr std::uint32_t kUnbounded = std::numeric_limits<std::uint32_t>::max();
-    if (!verify_uses_chunked_small_t(draft_window, 1U, kUnbounded)) { return 0U; }
-    std::uint32_t prompt_side  = 0U;
-    std::uint32_t chunked_side = kUnbounded;
-    while (chunked_side - prompt_side > 1U) {
-        const std::uint32_t mid = prompt_side + (chunked_side - prompt_side) / 2U;
-        if (verify_uses_chunked_small_t(draft_window, 1U, mid)) {
-            chunked_side = mid;
-        } else {
-            prompt_side = mid;
-        }
+// How every causal attention an MTP round records at one execution frontier executes: the target
+// verify and the MTP batch forward (both T=K+1 over E+K+1 keys), then each of the K-1
+// autoregressive draft steps (T=1). The round's envelopes carry only a maximum, so this is exactly
+// what a profile captured at that frontier records.
+std::vector<ops::CausalAttentionLaunchShape> mtp_attention_shapes(
+    std::uint32_t capacity, std::uint32_t draft_window, std::uint32_t frontier,
+    const MtpGraphAttention& attention) {
+    const auto visible = [capacity](std::uint64_t value) {
+        return static_cast<std::uint32_t>(std::min<std::uint64_t>(capacity, value));
+    };
+    std::vector<ops::CausalAttentionLaunchShape> shapes;
+    shapes.reserve(draft_window);
+    shapes.push_back(ops::causal_softmax_attention_launch_shape(
+        attention.geometry, attention.storage,
+        {1U, visible(static_cast<std::uint64_t>(frontier) + draft_window + 1ULL)}, 1,
+        static_cast<std::int32_t>(draft_window) + 1));
+    for (std::uint32_t step = 0; step + 1 < draft_window; ++step) {
+        shapes.push_back(ops::causal_softmax_attention_launch_shape(
+            attention.geometry, attention.storage,
+            {1U, visible(static_cast<std::uint64_t>(frontier) + draft_window + step + 2ULL)}, 1,
+            1));
     }
-    return prompt_side;
+    return shapes;
+}
+
+// Every frontier f in (lo, hi] whose shapes differ from f-1's. Each attention route is a
+// monotone step function of its visible-key maximum, so an interval whose ends agree holds no
+// change and bisection finds them all in O(changes * log capacity).
+template <class Shapes>
+void collect_shape_changes(std::uint32_t lo, std::uint32_t hi, const Shapes& shapes,
+                           std::vector<std::uint32_t>& changes) {
+    if (hi <= lo || shapes(lo) == shapes(hi)) { return; }
+    if (hi - lo == 1U) {
+        changes.push_back(hi);
+        return;
+    }
+    const std::uint32_t mid = lo + (hi - lo) / 2U;
+    collect_shape_changes(lo, mid, shapes, changes);
+    collect_shape_changes(mid, hi, shapes, changes);
 }
 
 } // namespace
@@ -86,7 +109,8 @@ std::vector<GraphExecutionProfile> ordinary_graph_profiles(std::uint32_t capacit
 }
 
 std::vector<GraphExecutionProfile> mtp_graph_profiles(std::uint32_t capacity,
-                                                      std::uint32_t draft_window) {
+                                                      std::uint32_t draft_window,
+                                                      const MtpGraphAttention& attention) {
     if (draft_window == 0 || capacity == 0) { return {}; }
     // Bound the final AR window E+2K at split-policy transitions until the grid reaches its cap.
     std::vector<std::uint32_t> ends;
@@ -109,22 +133,31 @@ std::vector<GraphExecutionProfile> mtp_graph_profiles(std::uint32_t capacity,
             add_shifted(visible_end, draft_window + 1);
         }
     }
-    // instantiate_graph_family builds one executable per topology class and installs the other
-    // profiles of that class through an in-place update, which cannot cross a change of node
-    // count. Past a verify width of six the attention route turns on the envelope visible-key
-    // count, so the frontier breaks where the route flips and the class follows the same
-    // predicate; the MTP draft cap (five) keeps both inert today.
-    const std::uint32_t flip_target = verify_route_flip_target(draft_window);
-    if (flip_target != 0U) { add_shifted(flip_target, draft_window + 1); }
+    // Each profile replays the attention routes its maximum selects across its whole range, so
+    // the frontier breaks wherever any route changes. instantiate_graph_family builds one
+    // executable per topology class and installs the other profiles of that class through an
+    // in-place update, which cannot cross a change of kernel-node count; profiles share a class
+    // exactly when every attention in the round enqueues the same number of kernels.
+    const std::uint32_t max_frontier = capacity - 1;
+    const auto shapes                = [&](std::uint32_t frontier) {
+        return mtp_attention_shapes(capacity, draft_window, frontier, attention);
+    };
+    std::vector<std::uint32_t> changes;
+    collect_shape_changes(0U, max_frontier, shapes, changes);
+    for (const std::uint32_t change : changes) { ends.push_back(change - 1U); }
     std::sort(ends.begin(), ends.end());
     ends.erase(std::unique(ends.begin(), ends.end()), ends.end());
 
-    std::vector<GraphExecutionProfile> profiles = graph_profiles_through(capacity - 1, ends);
+    std::vector<GraphExecutionProfile> profiles = graph_profiles_through(max_frontier, ends);
+    std::vector<std::vector<std::uint32_t>> classes;
     for (GraphExecutionProfile& profile : profiles) {
-        const std::uint32_t target_max = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-            capacity, static_cast<std::uint64_t>(profile.max) + draft_window + 1ULL));
-        profile.topology_class =
-            verify_uses_chunked_small_t(draft_window, 1U, target_max) ? 1U : 0U;
+        std::vector<std::uint32_t> nodes;
+        for (const ops::CausalAttentionLaunchShape shape : shapes(profile.max)) {
+            nodes.push_back(shape.kernel_nodes);
+        }
+        const auto found       = std::find(classes.begin(), classes.end(), nodes);
+        profile.topology_class = static_cast<std::uint32_t>(found - classes.begin());
+        if (found == classes.end()) { classes.push_back(std::move(nodes)); }
     }
     return profiles;
 }

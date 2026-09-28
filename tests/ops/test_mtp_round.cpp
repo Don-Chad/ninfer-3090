@@ -35,7 +35,7 @@ int run_case(int k, const std::vector<std::int32_t>& accepted) {
         frontiers[static_cast<std::size_t>(b)] =
             20 + 17 * b + licensed[static_cast<std::size_t>(b)];
         budgets[static_cast<std::size_t>(b)] =
-            b == batch - 1 ? licensed[static_cast<std::size_t>(b)] : 12 - b;
+            b == batch - 1 ? licensed[static_cast<std::size_t>(b)] : k + 7 - b;
         rope_deltas[static_cast<std::size_t>(b)] = 3 * b - 2;
         for (int j = 0; j < T; ++j) {
             verify[static_cast<std::size_t>(b * T + j)] = 1000 + 101 * b + 7 * j;
@@ -135,6 +135,7 @@ int main() {
     int failures = 0;
     failures += run_case(1, {0});
     failures += run_case(5, {0, 2, 5});
+    failures += run_case(15, {0, 7, 15, 3});
 
     if (failures != 0) {
         std::cerr << "mtp_round failures=" << failures << '\n';

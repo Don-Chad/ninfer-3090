@@ -221,7 +221,7 @@ The artifact supports:
 
 - text generation in thinking and non-thinking modes;
 - image, multi-image, video, and mixed multimodal messages;
-- MTP speculative decoding with draft windows from one to five;
+- MTP speculative decoding with draft windows from one to fifteen;
 - DFlash2 with draft windows from one to fifteen using the included
   DFlash2 companion weights (`--spec dflash2 --draft-tokens 7`, optionally `--lm-head-draft`);
 - BF16, INT8, FP8, NVFP4, and K8V4 KV cache;

@@ -12,7 +12,7 @@
 
 namespace ninfer::models::qwen3_5 {
 
-inline constexpr std::uint32_t kMtpDecodeMaximumDrafts    = 5;
+inline constexpr std::uint32_t kMtpDecodeMaximumDrafts    = 15;
 inline constexpr std::uint32_t kMtpDecodeMaximumWidth     = kMtpDecodeMaximumDrafts + 1;
 inline constexpr std::uint32_t kDFlashDecodeMaximumDrafts = 15;
 inline constexpr std::uint32_t kDFlashDecodeMaximumWidth  = kDFlashDecodeMaximumDrafts + 1;

@@ -33,6 +33,9 @@
 #     --kv-dtype rk4v4 --embedding-q4 --lm-head-q6 --gdn-state-fp16 \
 #     --vision --vision-residency overlay
 #
+#   MTP accepts NINFER_DRAFT_TOKENS up to 15. Three suits chat and prose; for coding work that
+#   returns edited files, 11-15 decodes up to 1.85x faster (docs/cli.md has the table).
+#
 # rk4v4 KV (Lloyd-Max 4-bit keys) is 31% smaller than rk8v4 at the same decode speed, for +0.10%
 # perplexity over it. Measured beside a desktop on an RTX 3090 (2026-09-24), the DFlash2 set starts
 # at up to 180,224 tokens and needs about 1.45 GB more for 262,144 -- roughly what a headless card
