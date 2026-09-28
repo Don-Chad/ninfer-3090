@@ -867,7 +867,10 @@ unspecified. `enable_thinking` records whether the response starts in thinking m
 immediate, future-loss and total nanoseconds (`predicted_now_ns`, `predicted_future_loss_ns`,
 `predicted_total_ns`, and `initial_predicted_total_ns` before search); `targets_evaluated`,
 `projection_work`, `planning_elapsed_ns` and `search_elapsed_ns`; `stop_reason`; `budget_exhausted`;
-`selected_degradation_units` and `selected_maximal_fallback`; and the optional-search accounting
+`selected_degradation_units` and `selected_maximal_fallback`; `best_reuse_prompt_tokens`, the most
+prompt reuse any admission candidate offered regardless of the plan chosen (beside a `root` plan, 0
+means no reusable prefix was found and a large value means the planner priced reuse out); and the
+optional-search accounting
 `first_improvement_ns` (or `null`), `incumbent_improvements`, `search_work`, `search_granted_ns`,
 `search_renewals`, `search_discovery_used`, `search_overshoot_ns`, `search_stop_phase` and
 `search_boundary_limited`. Stop reasons are `no_pressure`, `queue_exhausted`, `target_budget`,

@@ -886,6 +886,10 @@ struct MaterializationDiagnostics {
     std::uint64_t search_overshoot_ns            = 0;
     MaterializationSearchPhase search_stop_phase = MaterializationSearchPhase::None;
     bool search_boundary_limited                 = false;
+    // The most prompt reuse any admission candidate offered, independent of the plan that won.
+    // Beside a root plan, 0 points at prefix matching (nothing was on the table); a large value
+    // points at the planner's pricing.
+    std::uint32_t best_reuse_prompt_tokens = 0;
 
     [[nodiscard]] friend constexpr bool
     operator==(const MaterializationDiagnostics&,
