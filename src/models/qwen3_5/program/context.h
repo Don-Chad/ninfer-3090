@@ -96,7 +96,7 @@ struct DFlashAppendContext {
 struct MtpCausalAttentionEnvelopes {
     ops::CausalAttentionExecutionEnvelope target_verify;
     ops::CausalAttentionExecutionEnvelope batch;
-    std::array<ops::CausalAttentionExecutionEnvelope, kMaximumMtpDraftTokens - 1> ar;
+    std::array<ops::CausalAttentionExecutionEnvelope, kMtpDecodeMaximumDrafts - 1> ar;
 };
 
 struct DFlashEnvelopes {

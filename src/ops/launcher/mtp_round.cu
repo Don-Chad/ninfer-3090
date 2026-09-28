@@ -1,5 +1,5 @@
 // Implements: include/ninfer/ops/mtp_round.h
-// Match: validated request-major K=1..5 MTP round transition.
+// Match: validated request-major K=1..15 MTP round transition.
 #include "ops/launcher/mtp_round.h"
 
 #include "core/device.h"

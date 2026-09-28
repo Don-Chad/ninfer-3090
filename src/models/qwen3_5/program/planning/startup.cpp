@@ -893,8 +893,8 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         break;
     case SpeculativeBackend::Mtp:
         if (options.speculative.draft_tokens == 0 ||
-            options.speculative.draft_tokens > kMaximumMtpDraftTokens) {
-            throw std::invalid_argument("MTP draft window must be in [1,5]");
+            options.speculative.draft_tokens > kMtpDecodeMaximumDrafts) {
+            throw std::invalid_argument("MTP draft window must be in [1,15]");
         }
         break;
     case SpeculativeBackend::DFlash:

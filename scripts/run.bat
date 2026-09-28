@@ -36,6 +36,9 @@ rem     --vision --vision-residency overlay
 rem
 rem   set NINFER_SPEC=mtp && run.bat qwen38-27b
 rem
+rem   MTP accepts NINFER_DRAFT_TOKENS up to 15. Three suits chat and prose; for coding work that
+rem   returns edited files, 11-15 decodes up to 1.85x faster (docs\cli.md has the table).
+rem
 rem rk4v4 KV (Lloyd-Max 4-bit keys) is 31%% smaller than rk8v4 at the same decode speed, for +0.10%%
 rem perplexity over it. Measured on a desktop RTX 3090 (2026-09-24), the DFlash2 set starts at up to
 rem 180,224 tokens (rk8v4: 131,072) and the default keeps a rung of margin; its draft weights and its

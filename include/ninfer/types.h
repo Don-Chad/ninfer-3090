@@ -98,7 +98,7 @@ enum class SpeculativeBackend : std::uint8_t {
 
 struct SpeculativeOptions {
     SpeculativeBackend backend = SpeculativeBackend::None;
-    // Startup-fixed K: MTP 1..5; DFlash and DFlash2 1..15 (query width K+1).
+    // Startup-fixed K: 1..15 for MTP, DFlash and DFlash2 (query width K+1).
     std::uint32_t draft_tokens = 0;
     ProposalHead proposal_head = ProposalHead::Full;
     // Context-lookup drafting: match this many trailing tokens against the sequence so far and
