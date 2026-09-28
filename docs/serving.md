@@ -789,6 +789,14 @@ target verifies it. Each verification column uses the mask for its own position:
 grammar forbids is rejected there, and the correction or bonus token is sampled from the licensed
 set, so constrained output has the same distribution as non-speculative constrained sampling.
 
+Cost, measured 2026-09-28 on one RTX 3090 with Qwen3.8-27B (rk4v4 KV, thinking off, greedy, the
+same 823-token JSON answer with and without `json_object`): decode 187.3 → 183.3 tok/s with
+DFlash2 K=7 (-2%), 96.6 → 90.8 tok/s with MTP3 plus context lookup (-6%; its masks are built
+before the round rather than beside the target), and 46.7 → 45.9 tok/s without speculation (-2%).
+Unconstrained requests are unaffected (DFlash2 tg256 63.6 vs 63.5 tok/s, MTP3 79.5 vs 79.6 tok/s
+before/after). The first structured request after startup builds the tokenizer index (about
+0.1 s); a new schema compiles in milliseconds and a repeated one is cached.
+
 ## Anthropic Messages
 
 ```bash
