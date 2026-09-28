@@ -278,12 +278,14 @@ void HttpServer::record_request_rejected(const RequestRejectionLogContext& conte
 void HttpServer::record_request_done(const RequestLogContext& context,
                                      const GenerationOutcome& outcome) {
     request_jsonl_.write_request_done(context, outcome);
+    metrics_.record_done(outcome);
     operational_log_.request_done(context, outcome);
 }
 
 void HttpServer::record_request_failure(const RequestLogContext& context,
                                         const RequestFailure& failure) {
     request_jsonl_.write_request_error(context, failure.machine_message);
+    metrics_.record_failure();
     operational_log_.request_failure(context, failure);
 }
 
@@ -465,6 +467,13 @@ void HttpServer::register_routes() {
     });
     server_.Post(R"(/slots/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
         handle_slot_action(req, res);
+    });
+    server_.Get("/metrics", [this](const httplib::Request&, httplib::Response& res) {
+        // Pre-routing answers 503 until attach(), so service_ is published here.
+        res.set_header("Cache-Control", "no-store");
+        res.set_content(metrics_.render(options_.max_concurrency, service_->runtime_stats(),
+                                        service_->admitted_requests()),
+                        "text/plain; version=0.0.4");
     });
     server_.Get("/v1/load", [this](const httplib::Request& req, httplib::Response& res) {
         handle_load(req, res);
