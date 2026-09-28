@@ -80,6 +80,14 @@ std::int32_t causal_small_t_split_count(std::int32_t window, std::int32_t tokens
     }
     // Bc=64 is one CTA/SM on these model shapes. Keep the 8K grid at or below
     // one 170-SM wave after accounting for the geometry's KV-head count.
+    //
+    // The 42 is an RTX 5090 number, and was re-measured on the 3090 (82 SMs) rather than rescaled:
+    // one 82-SM wave (20 splits, mirrored in causal_small_t_active_splits) makes the exact-window
+    // Bc=64 kernel 23-33% faster in the op bench at 5.5K-8.1K keys, T=8, rk4v4, but DFlash2
+    // captures its verify graphs over [2048, 8191]-frontier envelopes whose upper end (8199)
+    // selects the Bc=32, two-CTA/SM route instead. There 37-42 splits already fit one 164-CTA wave,
+    // and the 20-split cap measured -0.2 to -1.2% end to end (27B, 5.5K/7K/8K + 128, three
+    // interleaved rounds). Only eager T>=6 verification would gain, so the cap stays.
     if (i8_family && tokens >= 6 && window > 5000 && window <= 8198) {
         const std::int32_t splits   = div_up(window, 192 / Geometry::SmallTSplitScale);
         constexpr std::int32_t kMin = 4 * Geometry::SmallTSplitScale;

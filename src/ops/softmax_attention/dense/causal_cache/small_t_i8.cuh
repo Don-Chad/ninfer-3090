@@ -362,6 +362,10 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     const int b_rin    = lane & 7;
     const int b_koff   = ((lane >> 3) & 1) << 3;
 
+    // Replacing these runtime-lane __shfl_sync broadcasts (and the k/v-scale ones below) with
+    // direct shared-memory reads was tried on the 3090: it removed every SHFL.IDX but grew the
+    // stack frame of the production T=8 Bc=32 rk4v4 instantiations (16/48 -> 48/80 bytes at the
+    // 168-register cap) and measured -0.1 to -0.9% end to end, so the shuffles stay.
     float q_scale_r0[Groups];
     float q_scale_r1[Groups];
     if (warp < RowTiles) {
