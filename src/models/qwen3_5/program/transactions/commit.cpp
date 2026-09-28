@@ -12,6 +12,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <stdexcept>
 #include <utility>
 #include <variant>
@@ -117,7 +118,17 @@ StartResult ProgramImpl::start_request(MaterializationTransaction& transaction) 
         actual.device.active_lanes               = 1;
         const detail::PhysicalResources expected = active;
         if (actual != expected) {
-            throw std::logic_error("materialized sequence does not match its active entitlement");
+            const auto describe = [](const detail::PhysicalResources& r) {
+                return "lanes " + std::to_string(r.device.active_lanes) + " state_slots " +
+                       std::to_string(r.device.state_slots) + " main_kv_pages " +
+                       std::to_string(r.device.main_kv_pages) + " backend_kv_pages " +
+                       std::to_string(r.device.backend_kv_pages) + " host_state_slots " +
+                       std::to_string(r.host.state_slots) + " host_kv_bytes " +
+                       std::to_string(r.host.kv_bytes);
+            };
+            throw std::logic_error(
+                "materialized sequence does not match its active entitlement (actual: " +
+                describe(actual) + "; expected: " + describe(expected) + ")");
         }
         if (details.reuse != ReusePath::Root) {
             if (transaction.state_restored) {
