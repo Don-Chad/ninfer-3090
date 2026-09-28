@@ -1,7 +1,7 @@
 #pragma once
 
 // Shared causal-attention dimensions and leaf PTX helpers used by the independently tuned
-// BF16 and INT8 prompt kernels. This file deliberately owns no staging policy,
+// quantized-cache prompt kernels. This file deliberately owns no staging policy,
 // shared-memory arena, warp schedule, or kernel body.
 
 #include "ops/common/math.cuh"
@@ -17,13 +17,6 @@
 namespace ninfer::ops {
 
 inline constexpr int kCausalPromptHeadDim = 256;
-
-inline constexpr int kCausalPromptBr        = 64;
-inline constexpr int kCausalPromptBc        = 64;
-inline constexpr int kCausalPromptThreads   = 128;
-inline constexpr int kCausalPromptSmemBytes = (kCausalPromptBr + 2 * kCausalPromptBc) *
-                                              kCausalPromptHeadDim *
-                                              static_cast<int>(sizeof(__nv_bfloat16));
 
 template <typename Geometry>
 __device__ __forceinline__ std::int64_t causal_prompt_q_index(int q_head, int d, int token) {

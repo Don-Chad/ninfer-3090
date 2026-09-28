@@ -2390,8 +2390,20 @@ int run_a1_case(const Geometry& geometry, const CachePlan& plan, const Attention
     return failures;
 }
 
+// Qualify large production widths against selected independent oracle rows;
+// execution, cache-state checks and guards still cover the entire request.
+template <class T>
+std::vector<T> select_query_columns(const std::vector<T>& values, std::size_t stride,
+                                    std::span<const int> queries) {
+    if (queries.empty()) return values;
+    std::vector<T> result(stride * queries.size());
+    for (std::size_t i = 0; i < queries.size(); ++i)
+        std::copy_n(values.begin() + queries[i] * stride, stride, result.begin() + i * stride);
+    return result;
+}
+
 int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const AttentionCase& test_case,
-                MappingPattern mapping) {
+                MappingPattern mapping, std::span<const int> oracle_queries = {}) {
     const std::int32_t total       = test_case.base + test_case.tokens;
     const std::int32_t max_context = static_cast<std::int32_t>(
         std::max<std::uint32_t>(static_cast<std::uint32_t>(total + 3), test_case.envelope_max));
@@ -2416,7 +2428,9 @@ int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
     const HostCache initial = make_cache(geometry, storage, max_context, test_case.seed + 10u);
     HostCache expected      = initial;
     append_cache(expected, k, v, positions);
-    const std::vector<double> reference = ideal_attention(q, expected, positions);
+    const std::vector<double> reference =
+        ideal_attention(select_query_columns(q, kHeadDim * geometry.q_heads, oracle_queries),
+                        expected, select_query_columns(positions, 1, oracle_queries));
     DeviceCache cache(initial, mapping);
 
     const std::vector<std::uint16_t> q_bits = to_bf16_bits(q);
@@ -2460,8 +2474,10 @@ int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
         case_label("causal_softmax_attention", geometry, storage, test_case, mapping);
     const std::vector<std::uint16_t> output_bits =
         copy_from_guarded<std::uint16_t>(dout, q_bits.size());
-    int failures = verify_attention(label, bf16_bits_to_double(output_bits), reference,
-                                    attention_criterion(storage));
+    int failures = verify_attention(label,
+                                    bf16_bits_to_double(select_query_columns(
+                                        output_bits, kHeadDim * geometry.q_heads, oracle_queries)),
+                                    reference, attention_criterion(storage));
     failures += verify_cache(label, cache.snapshot(), expected,
                              storage == KvCacheStorage::BFloat16 ||
                                  storage == KvCacheStorage::Nvfp4Group16 ||
@@ -2555,7 +2571,7 @@ int run_a3_case(const Geometry& geometry, const CachePlan& plan, const Attention
 }
 
 int run_a3_case(const Geometry& geometry, KvCacheStorage storage, const AttentionCase& test_case,
-                MappingPattern mapping) {
+                MappingPattern mapping, std::span<const int> oracle_queries = {}) {
     const std::int32_t total       = test_case.base + test_case.tokens;
     const std::int32_t max_context = static_cast<std::int32_t>(
         std::max<std::uint32_t>(static_cast<std::uint32_t>(total + 3), test_case.envelope_max));
@@ -2572,7 +2588,9 @@ int run_a3_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
                                                          test_case.envelope_max};
 
     const HostCache cache_host = make_cache(geometry, storage, max_context, test_case.seed + 10u);
-    const std::vector<double> reference = ideal_attention(q, cache_host, positions);
+    const std::vector<double> reference =
+        ideal_attention(select_query_columns(q, kHeadDim * geometry.q_heads, oracle_queries),
+                        cache_host, select_query_columns(positions, 1, oracle_queries));
     DeviceCache cache(cache_host, mapping);
 
     const std::vector<std::uint16_t> q_bits = to_bf16_bits(q);
@@ -2603,8 +2621,10 @@ int run_a3_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
         case_label("causal_softmax_attention_cached", geometry, storage, test_case, mapping);
     const std::vector<std::uint16_t> output_bits =
         copy_from_guarded<std::uint16_t>(dout, q_bits.size());
-    int failures = verify_attention(label, bf16_bits_to_double(output_bits), reference,
-                                    attention_criterion(storage));
+    int failures = verify_attention(label,
+                                    bf16_bits_to_double(select_query_columns(
+                                        output_bits, kHeadDim * geometry.q_heads, oracle_queries)),
+                                    reference, attention_criterion(storage));
     failures += verify_cache(label + " cache unchanged", cache.snapshot(), cache_host, true);
     failures += verify_input(label + " q unchanged", dq, q_bits);
     failures += verify_positions(label + " positions unchanged", dp, positions);
@@ -3667,6 +3687,14 @@ int run_softmax_attention_causal_cache_tests() {
     failures += run_rk8v4_cases();
     failures += run_rk4v4_cases();
     failures += run_batch_cases();
+    const std::array<int, 7> prefill_queries{0, 63, 64, 127, 128, 511, 1023};
+    for (const auto& geometry : kGeometries)
+        failures += run_a1_case(geometry, KvCacheStorage::BFloat16, {1024, 8192, 9216, 951u},
+                                MappingPattern::Fragmented, prefill_queries);
+    failures += run_a3_case(kGeometries[1], KvCacheStorage::BFloat16, {1024, 8192, 9216, 952u},
+                            MappingPattern::Fragmented, prefill_queries);
+    failures += run_a3_case(kGeometries[0], KvCacheStorage::BFloat16, {1, 131072, 262144, 953u},
+                            MappingPattern::Fragmented);
     std::cout << (failures == 0 ? "PASS" : "FAIL")
               << " causal_softmax_attention public-contract correctness\n";
     return failures == 0 ? 0 : 1;

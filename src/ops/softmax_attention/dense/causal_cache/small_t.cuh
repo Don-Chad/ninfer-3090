@@ -1,10 +1,7 @@
 #pragma once
 
-// ninfer::ops - split-KV causal small-T attention shared scaffolding. The BF16 and
-// int8 partial kernels live in causal_attention_small_t_bf16.cuh and
-// causal_attention_small_t_i8.cuh respectively; they are fully separate kernels (no
-// shared body) so each KV format can be optimized independently. This header owns
-// only what both share: layout constants, device helpers, and the split reducer.
+// Quantized-cache split-KV scaffolding: layout helpers, split policies and the
+// INT8 reducer. BF16 templates own their geometry, policy and merge in bf16/.
 
 #include "ops/common/math.cuh"
 #include "ops/common/mma.cuh"

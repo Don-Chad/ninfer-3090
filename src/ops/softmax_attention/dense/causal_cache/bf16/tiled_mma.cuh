@@ -1,95 +1,38 @@
 #pragma once
 
-// BF16-cache causal prompt kernel. INT8 has an independent kernel body and resource
-// policy in causal_attention_prompt_i8.cuh.
-//
-//   * Br = 64 query rows and Bc = 64 key columns per CTA tile.
-//   * 4 warps / 128 threads; each warp owns 16 query rows of the tile.
-//   * Q, K, V staged in 96 KiB of dynamic shared memory (single-buffered), with
-//     the cp.async of the next K/V tile overlapped against the current
-//     QK / PV tensor-core work (exactly FA's single-buffer overlap pattern).
-//   * m16n8k16 bf16 MMA for both S = Q Kᵀ and O += P V, online softmax in exp2.
-//
-// The op first writes the new chunk K/V into absolute positions in the paged cache,
-// then computes causal attention for
-// every chunk token over all cached history using bottom-right causal alignment
-// (query row i attends to keys [0, base_pos + i]).
-
+#include "ops/softmax_attention/dense/causal_cache/bf16/tile_io.cuh"
+#include "ops/softmax_attention/dense/causal_cache/bf16/softmax.cuh"
+#include "ops/softmax_attention/dense/causal_cache/bf16/epilogue.cuh"
 #include <math_constants.h>
 
-#include "ops/softmax_attention/dense/causal_cache/prompt_common.cuh"
+namespace ninfer::ops::detail {
 
-namespace ninfer::ops {
-
-// Stage one [Bc, D] K or V tile from the per-kv-head contiguous cache into the
-// swizzled smem buffer. Keys beyond max_query_abs (which the causal mask always
-// drops) are zeroed so the padded/uninitialized cache tail never feeds NaNs into
-// the tensor cores. Mirrors FA's predicated K/V cp.async + Clear_OOB path.
-template <typename Geometry>
-__device__ __forceinline__ void
-causal_prompt_stage_kv(__nv_bfloat16* dst, const __nv_bfloat16* cache, int kv_head, int k0,
-                       int max_query_abs, int physical_page, int tid) {
-    constexpr int D         = kCausalPromptHeadDim;
-    constexpr int Bc        = kCausalPromptBc;
-    constexpr int Threads   = kCausalPromptThreads;
-    constexpr int VecPerRow = D / 8; // 8 bf16 per 16B cp.async
-    const bool full_tile    = (k0 + Bc - 1) <= max_query_abs;
-    // Block base pointer computed once (int64); per-element offsets stay 32-bit.
-    const __nv_bfloat16* cache_block =
-        cache + paged_kv_element_offset<kCausalPromptHeadDim, Geometry::KVHeads>(
-                    physical_page, kv_head, k0 & kPagedKVPageMask, 0);
-    if (full_tile) {
-#pragma unroll
-        for (int chunk = tid; chunk < Bc * VecPerRow; chunk += Threads) {
-            const int key_l  = chunk >> 5;        // / VecPerRow (32)
-            const int d      = (chunk & 31) << 3; // (chunk % 32) * 8
-            __nv_bfloat16* p = &dst[key_l * D + causal_prompt_swz(key_l, d)];
-            cp_async<16, Cache::cg>(p, &cache_block[key_l * D + d]);
-        }
-    } else {
-#pragma unroll
-        for (int chunk = tid; chunk < Bc * VecPerRow; chunk += Threads) {
-            const int key_l  = chunk >> 5;        // / VecPerRow (32)
-            const int d      = (chunk & 31) << 3; // (chunk % 32) * 8
-            __nv_bfloat16* p = &dst[key_l * D + causal_prompt_swz(key_l, d)];
-            if ((k0 + key_l) <= max_query_abs) {
-                cp_async<16, Cache::cg>(p, &cache_block[key_l * D + d]);
-            } else {
-                store_vec(p, make_int4(0, 0, 0, 0));
-            }
-        }
-    }
-}
-
-// FlashAttention-2 forward, one CTA per (query 64-row block, query head). Grid is
-// (ceil(tokens/64), q_heads). seqlen_q = tokens, seqlen_k = base_pos + tokens, with
+// Online attention, one CTA per (query tile, query head), with
 // bottom-right causal alignment (query row i sees keys [0, base_pos + i]).
-template <typename Geometry, typename Metadata>
-__launch_bounds__(kCausalPromptThreads, 1) __global__
-    void causal_attention_prompt_bf16_kernel(const __nv_bfloat16* __restrict__ q,
-                                             const __nv_bfloat16* __restrict__ cache_k,
-                                             const __nv_bfloat16* __restrict__ cache_v,
-                                             Metadata metadata,
-                                             const std::int32_t* __restrict__ positions,
-                                             float scale, __nv_bfloat16* __restrict__ out,
-                                             std::int32_t width) {
-    constexpr int D             = kCausalPromptHeadDim; // 256
-    constexpr int Br            = kCausalPromptBr;      // 64 query rows
-    constexpr int Bc            = kCausalPromptBc;      // 64 key cols
-    constexpr int Threads       = kCausalPromptThreads; // 128
+template <typename Geometry, class Schedule, typename Metadata>
+__launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
+    void bf16_kv_tiled_mma_kernel(const __nv_bfloat16* __restrict__ q,
+                                  const __nv_bfloat16* __restrict__ cache_k,
+                                  const __nv_bfloat16* __restrict__ cache_v, Metadata metadata,
+                                  const std::int32_t* __restrict__ positions, float scale,
+                                  __nv_bfloat16* __restrict__ out, std::int32_t width) {
+    constexpr int D             = Geometry::kHeadDim;   // 256
+    constexpr int Br            = Schedule::kQueryRows; // 64 query rows
+    constexpr int Bc            = Schedule::kKeyRows;   // 64 key cols
+    constexpr int Threads       = Schedule::kThreads;   // 128
     constexpr int QKNt          = Bc / 8;               // 8  QK score n-tiles
     constexpr int QKKs          = D / 16;               // 16 QK contraction steps over head_dim
     constexpr int PVNt          = D / 8;                // 32 PV output n-tiles
-    constexpr int PVKs          = Bc / 16;              // 4  PV contraction steps over keys
-    constexpr float Log2E       = 1.4426950408889634074f;
+    constexpr int PVKs          = Bc / 16;               // 4  PV contraction steps over keys
     constexpr unsigned FullMask = 0xffffffffu;
 
-    static_assert(Threads == 128);
+    static_assert(Br == Schedule::kWarps * 16);
+    static_assert(bf16_kv_tiled_shared_bytes<Geometry, Schedule> <= 99 * 1024);
 
     extern __shared__ __align__(16) __nv_bfloat16 causal_smem[];
     __nv_bfloat16* q_s = causal_smem;  // [Br, D] swizzled
     __nv_bfloat16* k_s = q_s + Br * D; // [Bc, D] swizzled
-    __nv_bfloat16* v_s = k_s + Bc * D; // [Bc, D] swizzled
+    __nv_bfloat16* v_s = k_s + Bc * D; // [Bc, D] swizzled, pure BF16 (this fork's KV-plane typing)
 
     const int q_block = static_cast<int>(blockIdx.x);
     const int q_head  = static_cast<int>(blockIdx.y);
@@ -102,8 +45,7 @@ __launch_bounds__(kCausalPromptThreads, 1) __global__
 
     if (q_head >= Geometry::QHeads || q0 >= width) { return; }
     if (q0 >= tokens) {
-        causal_prompt_zero_output_rows<Geometry>(out, q_head, q0, min(q0 + Br, width), tid,
-                                                 Threads);
+        bf16_kv_zero_rows<Geometry>(out, q_head, q0, min(q0 + Br, width), tid, Threads);
         return;
     }
     const int base_pos              = positions[0];
@@ -119,48 +61,47 @@ __launch_bounds__(kCausalPromptThreads, 1) __global__
     const int b_koff    = ((lane >> 3) & 1) << 3;
     const int warp_row0 = warp * 16; // this warp owns rows [warp_row0, warp_row0+16)
 
-    // Per-lane precomputed swizzled ldmatrix base addresses (see causal_prompt_swz_addr).
+    // Per-lane precomputed swizzled ldmatrix base addresses (see bf16_kv_swizzle_address).
     const unsigned q_sbase = smem_addr(q_s);
     const unsigned k_sbase = smem_addr(k_s);
     const unsigned v_sbase = smem_addr(v_s);
     // Q A-fragment: row = warp_row0 + a_rowoff, col = k*16 + a_coloff.
-    const unsigned q_lane_base = q_sbase + static_cast<unsigned>((warp_row0 + a_rowoff) * 512);
+    const unsigned q_lane_base = q_sbase + static_cast<unsigned>((warp_row0 + a_rowoff) * (D * 2));
     const unsigned q_as        = static_cast<unsigned>((a_mat >> 1) << 4);
     const unsigned q_r         = static_cast<unsigned>(a_rin << 4);
     // K B-fragment via ldmatrix.x4 (2 n-tiles/instr): lanes 16-31 fetch the +8-key
-    // half (extra 4096 bytes), lanes with bit3 set fetch the +8 d-contract half.
-    const unsigned k_lane_base =
-        k_sbase + static_cast<unsigned>(b_rin * 512) + (static_cast<unsigned>(lane >> 4) << 12);
+    // half (eight D-wide rows), lanes with bit3 set fetch the +8 d-contract half.
+    const unsigned k_lane_base = k_sbase + static_cast<unsigned>(b_rin * (D * 2)) +
+                                 (static_cast<unsigned>(lane >> 4) * (8 * D * 2));
     const unsigned k_as = static_cast<unsigned>((b_koff >> 3) << 4);
     const unsigned k_r  = static_cast<unsigned>(b_rin << 4);
     // V B-fragment via ldmatrix.x4.trans (2 n-tiles/instr): row = k*16 + (bit3)*8 + b_rin,
     // col = n*8 + (lane>>4)*8.
-    const unsigned v_lane_base = v_sbase + static_cast<unsigned>(((lane >> 3) & 1) * 4096) +
-                                 static_cast<unsigned>(b_rin * 512);
+    const unsigned v_lane_base = v_sbase + static_cast<unsigned>(((lane >> 3) & 1) * (8 * D * 2)) +
+                                 static_cast<unsigned>(b_rin * (D * 2));
     const unsigned v_as = static_cast<unsigned>((lane >> 4) << 4);
     const unsigned v_r  = static_cast<unsigned>(b_rin << 4);
 
     // Stage Q into smem once via cp.async (overlaps with the K(0) prologue load
-    // below); it stays resident for the whole key loop. Global Q rows are 256 bf16
-    // contiguous, with a token stride of 256*QHeads.
+    // below); it stays resident for the key loop. Global token stride is D*QHeads.
     {
         constexpr int VecPerRow      = D / 8;
         constexpr int QRowStride     = D * Geometry::QHeads; // global stride between tokens
-        const __nv_bfloat16* q_block = q + causal_prompt_q_index<Geometry>(q_head, 0, q0);
+        const __nv_bfloat16* q_block = q + bf16_kv_q_index<Geometry>(q_head, 0, q0);
         if (q0 + Br <= tokens) {
 #pragma unroll
             for (int chunk = tid; chunk < Br * VecPerRow; chunk += Threads) {
-                const int row    = chunk >> 5;
-                const int d      = (chunk & 31) << 3;
-                __nv_bfloat16* p = &q_s[row * D + causal_prompt_swz(row, d)];
+                const int row    = chunk / VecPerRow;
+                const int d      = (chunk % VecPerRow) * 8;
+                __nv_bfloat16* p = &q_s[row * D + bf16_kv_swizzle(row, d)];
                 cp_async<16, Cache::cg>(p, &q_block[row * QRowStride + d]);
             }
         } else {
 #pragma unroll
             for (int chunk = tid; chunk < Br * VecPerRow; chunk += Threads) {
-                const int row    = chunk >> 5;
-                const int d      = (chunk & 31) << 3;
-                __nv_bfloat16* p = &q_s[row * D + causal_prompt_swz(row, d)];
+                const int row    = chunk / VecPerRow;
+                const int d      = (chunk % VecPerRow) * 8;
+                __nv_bfloat16* p = &q_s[row * D + bf16_kv_swizzle(row, d)];
                 if (q0 + row < tokens) {
                     cp_async<16, Cache::cg>(p, &q_block[row * QRowStride + d]);
                 } else {
@@ -176,7 +117,7 @@ __launch_bounds__(kCausalPromptThreads, 1) __global__
 #pragma unroll
         for (int i = 0; i < 4; ++i) { acc[n][i] = 0.0f; }
     }
-    float m0 = -CUDART_INF_F, m1 = -CUDART_INF_F, l0 = 0.0f, l1 = 0.0f;
+    Bf16KvSoftmaxRow state0, state1;
 
     const int tile_rows     = min(Br, tokens - q0);
     const int max_query_abs = base_pos + q0 + tile_rows - 1;
@@ -184,24 +125,28 @@ __launch_bounds__(kCausalPromptThreads, 1) __global__
 
     // Fold softmax_scale into the exp2 (FA-style): scores stay raw, so the
     // per-element "* scale" multiply drops out of the QK epilogue entirely.
-    const float scale_l2 = scale * Log2E;
+    const float scale_l2 = scale * kBf16KvLog2E;
     int physical_page    = block_table[0];
 
     // Prologue: commit Q, then kick off K(0). The loop's wait<0> below drains both.
     ninfer::ops::cp_commit();
-    causal_prompt_stage_kv<Geometry>(k_s, cache_k, kv_head, 0, max_query_abs, physical_page, tid);
+    bf16_kv_stage_tile<Geometry, Schedule>(k_s, cache_k, kv_head, 0, max_query_abs, physical_page,
+                                           tid);
     ninfer::ops::cp_commit();
 
-    for (int kb = 0; kb < n_block_max; ++kb) {
+    const auto step = [&]<bool FullTile>(int kb) {
         const int k0                 = kb * Bc;
-        const int next_physical_page = (kb + 1 < n_block_max) ? block_table[kb + 1] : physical_page;
+        const int next_physical_page = (kb + 1 < n_block_max)
+                                           ? block_table[((kb + 1) * Bc) >> kPagedKVPageShift]
+                                           : physical_page;
 
         ninfer::ops::cp_wait<0>(); // K(kb) landed (also publishes q_s / prev PV done)
         __syncthreads();
 
-        // Overlap V(kb) load against the QK MMA below.
-        causal_prompt_stage_kv<Geometry>(v_s, cache_v, kv_head, k0, max_query_abs, physical_page,
-                                         tid);
+        // Overlap V(kb) load against the QK MMA below. V is pure BF16 in the cache
+        // (this fork's KV-plane typing), not the mixed-precision FP16 V upstream ships.
+        bf16_kv_stage_tile<Geometry, Schedule>(v_s, cache_v, kv_head, k0, max_query_abs,
+                                               physical_page, tid);
         ninfer::ops::cp_commit();
 
         // S = Q Kᵀ for this warp's 16 rows over all Bc keys, in registers.
@@ -218,12 +163,13 @@ __launch_bounds__(kCausalPromptThreads, 1) __global__
         unsigned bf[2][QKNt][2];
         {
             ldmatrix_x4(af[0][0], af[0][1], af[0][2], af[0][3],
-                        causal_prompt_swz_addr(q_lane_base, 0u, q_as, q_r));
+                        bf16_kv_swizzle_address(q_lane_base, 0u, q_as, q_r));
 #pragma unroll
             for (int nt2 = 0; nt2 < QKNt; nt2 += 2) {
-                ldmatrix_x4(bf[0][nt2][0], bf[0][nt2][1], bf[0][nt2 + 1][0], bf[0][nt2 + 1][1],
-                            causal_prompt_swz_addr(k_lane_base + static_cast<unsigned>(nt2 * 4096),
-                                                   0u, k_as, k_r));
+                ldmatrix_x4(
+                    bf[0][nt2][0], bf[0][nt2][1], bf[0][nt2 + 1][0], bf[0][nt2 + 1][1],
+                    bf16_kv_swizzle_address(k_lane_base + static_cast<unsigned>(nt2 * (8 * D * 2)),
+                                            0u, k_as, k_r));
             }
         }
 #pragma unroll
@@ -233,13 +179,13 @@ __launch_bounds__(kCausalPromptThreads, 1) __global__
             if (k + 1 < QKKs) {
                 const unsigned ck = static_cast<unsigned>((k + 1) << 5);
                 ldmatrix_x4(af[nxt][0], af[nxt][1], af[nxt][2], af[nxt][3],
-                            causal_prompt_swz_addr(q_lane_base, ck, q_as, q_r));
+                            bf16_kv_swizzle_address(q_lane_base, ck, q_as, q_r));
 #pragma unroll
                 for (int nt2 = 0; nt2 < QKNt; nt2 += 2) {
                     ldmatrix_x4(
                         bf[nxt][nt2][0], bf[nxt][nt2][1], bf[nxt][nt2 + 1][0], bf[nxt][nt2 + 1][1],
-                        causal_prompt_swz_addr(k_lane_base + static_cast<unsigned>(nt2 * 4096), ck,
-                                               k_as, k_r));
+                        bf16_kv_swizzle_address(
+                            k_lane_base + static_cast<unsigned>(nt2 * (8 * D * 2)), ck, k_as, k_r));
                 }
             }
 #pragma unroll
@@ -249,17 +195,27 @@ __launch_bounds__(kCausalPromptThreads, 1) __global__
             }
         }
 
-        const int row0             = warp_row0 + gid;
-        const int row1             = warp_row0 + gid + 8;
-        const int qrow0            = q0 + row0;
-        const int qrow1            = q0 + row1;
-        const int qabs0            = (qrow0 < tokens) ? base_pos + qrow0 : -1;
-        const int qabs1            = (qrow1 < tokens) ? base_pos + qrow1 : -1;
-        const bool full_score_tile = (q0 + Br <= tokens) && ((k0 + Bc - 1) <= (base_pos + q0));
+        ninfer::ops::cp_wait<0>(); // V(kb) landed; QK done reading k_s.
+        __syncthreads();
+
+        // Prefetch K(kb+1) into the (now-free) K buffer, overlapping the PV MMA.
+        if (kb + 1 < n_block_max) {
+            physical_page = next_physical_page;
+            bf16_kv_stage_tile<Geometry, Schedule>(k_s, cache_k, kv_head, (kb + 1) * Bc,
+                                                   max_query_abs, physical_page, tid);
+            ninfer::ops::cp_commit();
+        }
+
+        const int row0  = warp_row0 + gid;
+        const int row1  = warp_row0 + gid + 8;
+        const int qrow0 = q0 + row0;
+        const int qrow1 = q0 + row1;
+        const int qabs0 = (qrow0 < tokens) ? base_pos + qrow0 : -1;
+        const int qabs1 = (qrow1 < tokens) ? base_pos + qrow1 : -1;
 
         // block row-max on raw (unscaled) scores; scale is folded into exp2 below
         float bm0 = -CUDART_INF_F, bm1 = -CUDART_INF_F;
-        if (full_score_tile) {
+        if constexpr (FullTile) {
 #pragma unroll
             for (int nt = 0; nt < QKNt; ++nt) {
                 bm0 = fmaxf(bm0, fmaxf(score[nt][0], score[nt][1]));
@@ -281,18 +237,16 @@ __launch_bounds__(kCausalPromptThreads, 1) __global__
         bm0 = warp_max<4>(bm0, FullMask);
         bm1 = warp_max<4>(bm1, FullMask);
 
-        const float nm0        = fmaxf(m0, bm0);
-        const float nm1        = fmaxf(m1, bm1);
-        const float nm0_scaled = nm0 * scale_l2;
-        const float nm1_scaled = nm1 * scale_l2;
-        const float alpha0     = exp2_approx(__fmaf_rn(m0, scale_l2, -nm0_scaled));
-        const float alpha1     = exp2_approx(__fmaf_rn(m1, scale_l2, -nm1_scaled));
+        const float alpha0     = state0.update<!FullTile>(bm0, scale_l2);
+        const float alpha1     = state1.update<!FullTile>(bm1, scale_l2);
+        const float nm0_scaled = state0.scaled_maximum;
+        const float nm1_scaled = state1.scaled_maximum;
 
         // P = exp2(S - m), repacked into the PV A-fragment layout, plus local block row-sum.
         // The row-sum allreduce is deferred to the epilogue; only row max must be reduced per tile.
         float bl0 = 0.0f, bl1 = 0.0f;
         unsigned p_frag[PVKs][4];
-        if (full_score_tile) {
+        if constexpr (FullTile) {
 #pragma unroll
             for (int nt = 0; nt < QKNt; ++nt) {
                 const float p00 = exp2_approx(__fmaf_rn(score[nt][0], scale_l2, -nm0_scaled));
@@ -338,27 +292,14 @@ __launch_bounds__(kCausalPromptThreads, 1) __global__
             }
         }
 
-        l0 = __fmaf_rn(l0, alpha0, bl0);
-        l1 = __fmaf_rn(l1, alpha1, bl1);
-        m0 = nm0;
-        m1 = nm1;
+        state0.accumulate(alpha0, bl0);
+        state1.accumulate(alpha1, bl1);
 #pragma unroll
         for (int n = 0; n < PVNt; ++n) {
             acc[n][0] *= alpha0;
             acc[n][1] *= alpha0;
             acc[n][2] *= alpha1;
             acc[n][3] *= alpha1;
-        }
-
-        ninfer::ops::cp_wait<0>(); // V(kb) landed; QK done reading k_s
-        __syncthreads();
-
-        // Prefetch K(kb+1) into the (now-free) K buffer, overlapping the PV MMA.
-        if (kb + 1 < n_block_max) {
-            physical_page = next_physical_page;
-            causal_prompt_stage_kv<Geometry>(k_s, cache_k, kv_head, (kb + 1) * Bc, max_query_abs,
-                                             physical_page, tid);
-            ninfer::ops::cp_commit();
         }
 
         // O += P V, contracting over the Bc keys. The (k, n) iteration space is
@@ -372,7 +313,7 @@ __launch_bounds__(kCausalPromptThreads, 1) __global__
         unsigned vf[2][4];
         {
             ldmatrix_x4_t(vf[0][0], vf[0][1], vf[0][2], vf[0][3],
-                          causal_prompt_swz_addr(v_lane_base, 0u, v_as, v_r));
+                          bf16_kv_swizzle_address(v_lane_base, 0u, v_as, v_r));
         }
 #pragma unroll
         for (int li = 0; li < PVLoads; ++li) {
@@ -384,39 +325,40 @@ __launch_bounds__(kCausalPromptThreads, 1) __global__
                 const int k2       = (li + 1) / PVHalf;
                 const int n2b      = ((li + 1) % PVHalf) * 2;
                 const unsigned ckv = static_cast<unsigned>(n2b << 4);
-                ldmatrix_x4_t(vf[nxt][0], vf[nxt][1], vf[nxt][2], vf[nxt][3],
-                              causal_prompt_swz_addr(v_lane_base + static_cast<unsigned>(k2 * 8192),
-                                                     ckv, v_as, v_r));
+                ldmatrix_x4_t(
+                    vf[nxt][0], vf[nxt][1], vf[nxt][2], vf[nxt][3],
+                    bf16_kv_swizzle_address(v_lane_base + static_cast<unsigned>(k2 * (16 * D * 2)),
+                                            ckv, v_as, v_r));
             }
             mma_bf16(acc[n2][0], acc[n2][1], acc[n2][2], acc[n2][3], p_frag[k][0], p_frag[k][1],
                      p_frag[k][2], p_frag[k][3], vf[cur][0], vf[cur][1]);
             mma_bf16(acc[n2 + 1][0], acc[n2 + 1][1], acc[n2 + 1][2], acc[n2 + 1][3], p_frag[k][0],
                      p_frag[k][1], p_frag[k][2], p_frag[k][3], vf[cur][2], vf[cur][3]);
         }
-    }
+    };
+    const int full_blocks = q0 + Br <= tokens ? min(n_block_max, (base_pos + q0 + 1) / Bc) : 0;
+    for (int kb = 0; kb < full_blocks; ++kb) step.template operator()<true>(kb);
+    for (int kb = full_blocks; kb < n_block_max; ++kb) step.template operator()<false>(kb);
 
-    l0 = warp_sum<4>(l0, FullMask);
-    l1 = warp_sum<4>(l1, FullMask);
+    state0.finish();
+    state1.finish();
 
-    // Normalize once per row via reciprocal-multiply instead of 128 IEEE divides.
-    const float inv_l0 = (l0 > 0.0f) ? __frcp_rn(l0) : 0.0f;
-    const float inv_l1 = (l1 > 0.0f) ? __frcp_rn(l1) : 0.0f;
 #pragma unroll
     for (int n = 0; n < PVNt; ++n) {
         const int d0    = n * 8 + 2 * lid;
         const int qrow0 = q0 + warp_row0 + gid;
         const int qrow1 = q0 + warp_row0 + gid + 8;
         if (qrow0 < tokens) {
-            *reinterpret_cast<unsigned*>(&out[causal_prompt_q_index<Geometry>(q_head, d0, qrow0)]) =
-                pack_bf16x2(acc[n][0] * inv_l0, acc[n][1] * inv_l0);
+            bf16_kv_store_pair<Geometry, false>({}, out, q_head, qrow0, d0, width, 0, acc[n][0],
+                                                acc[n][1], state0.scaled_maximum, state0.sum);
         }
         if (qrow1 < tokens) {
-            *reinterpret_cast<unsigned*>(&out[causal_prompt_q_index<Geometry>(q_head, d0, qrow1)]) =
-                pack_bf16x2(acc[n][2] * inv_l1, acc[n][3] * inv_l1);
+            bf16_kv_store_pair<Geometry, false>({}, out, q_head, qrow1, d0, width, 0, acc[n][2],
+                                                acc[n][3], state1.scaled_maximum, state1.sum);
         }
     }
-    causal_prompt_zero_output_rows<Geometry>(out, q_head, tokens, min(q0 + Br, width), tid,
-                                             Threads);
+    bf16_kv_zero_rows<Geometry>(out, q_head, tokens, min(q0 + Br, width), tid, Threads);
 }
 
-} // namespace ninfer::ops
+
+} // namespace ninfer::ops::detail
