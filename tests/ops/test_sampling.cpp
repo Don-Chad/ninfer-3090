@@ -4,7 +4,8 @@
 // argmax.  The stochastic branch is checked against one FP64 mathematical
 // distribution oracle built from the BF16 values represented at the public
 // input.  The test never reproduces the device RNG algorithm or uses another
-// production path as a golden.
+// production path as a golden. Token masks are applied by the oracles as plain set exclusion
+// before any filter.
 #include "ninfer/ops/sampling.h"
 #include "ops/op_tester.h"
 
@@ -14,6 +15,7 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -33,6 +35,23 @@ struct Distribution {
     std::vector<double> probabilities;
 };
 
+using TokenMask = std::vector<std::uint32_t>;
+
+TokenMask make_mask(int token_domain, const std::vector<int>& licensed) {
+    TokenMask mask(static_cast<std::size_t>((token_domain + 31) / 32), 0U);
+    for (const int token : licensed) {
+        mask[static_cast<std::size_t>(token) / 32U] |= 1U << (static_cast<unsigned>(token) % 32U);
+    }
+    return mask;
+}
+
+bool licensed(const TokenMask* mask, int token) {
+    return mask == nullptr || mask->empty() ||
+           (((*mask)[static_cast<std::size_t>(token) / 32U] >>
+             (static_cast<unsigned>(token) % 32U)) &
+            1U) != 0U;
+}
+
 struct RunResult {
     std::vector<int> tokens;
     std::vector<std::vector<int>> counts;
@@ -43,7 +62,8 @@ bool same_config(const ops::SamplingConfig& a, const ops::SamplingConfig& b) {
     return a.temperature == b.temperature && a.top_k == b.top_k && a.top_p == b.top_p &&
            a.min_p == b.min_p && a.presence_penalty == b.presence_penalty &&
            a.frequency_penalty == b.frequency_penalty && a.seed == b.seed &&
-           a.token_counts == b.token_counts;
+           a.token_counts == b.token_counts && a.token_mask == b.token_mask &&
+           a.token_mask_words == b.token_mask_words;
 }
 
 std::vector<std::uint16_t> bf16_bits(const std::vector<float>& values) {
@@ -63,18 +83,21 @@ std::vector<float> repeat_column(const std::vector<float>& column, int columns) 
 
 std::vector<int> greedy_oracle(const std::vector<float>& logits, int physical_rows,
                                int token_domain, int columns, const ops::SamplingConfig& config,
-                               const std::vector<int>& counts) {
+                               const std::vector<int>& counts,
+                               const std::vector<TokenMask>& masks = {}) {
     std::vector<int> expected(static_cast<std::size_t>(columns));
     for (int t = 0; t < columns; ++t) {
         const std::size_t base = static_cast<std::size_t>(t) * physical_rows;
-        int best               = 0;
-        for (int token = 1; token < token_domain; ++token) {
+        const TokenMask* mask  = masks.empty() ? nullptr : &masks[static_cast<std::size_t>(t)];
+        int best               = -1;
+        for (int token = 0; token < token_domain; ++token) {
+            if (!licensed(mask, token)) { continue; }
             const auto adjusted = [&](int candidate) {
                 const int count = counts[static_cast<std::size_t>(candidate)];
                 return logits[base + candidate] - config.presence_penalty * (count > 0) -
                        config.frequency_penalty * count;
             };
-            if (adjusted(token) > adjusted(best)) { best = token; }
+            if (best < 0 || adjusted(token) > adjusted(best)) { best = token; }
         }
         expected[static_cast<std::size_t>(t)] = best;
     }
@@ -83,14 +106,17 @@ std::vector<int> greedy_oracle(const std::vector<float>& logits, int physical_ro
 
 Distribution distribution_oracle(const std::vector<float>& column, int token_domain,
                                  const ops::SamplingConfig& config,
-                                 const std::vector<int>* counts = nullptr) {
-    std::vector<Candidate> candidates(static_cast<std::size_t>(token_domain));
+                                 const std::vector<int>* counts = nullptr,
+                                 const TokenMask* mask          = nullptr) {
+    std::vector<Candidate> candidates;
+    candidates.reserve(static_cast<std::size_t>(token_domain));
     for (int token = 0; token < token_domain; ++token) {
+        if (!licensed(mask, token)) { continue; }
         const int count = counts == nullptr ? 0 : (*counts)[static_cast<std::size_t>(token)];
         double adjusted = static_cast<double>(column[static_cast<std::size_t>(token)]);
         if (count > 0) { adjusted -= static_cast<double>(config.presence_penalty); }
         adjusted -= static_cast<double>(config.frequency_penalty) * static_cast<double>(count);
-        candidates[static_cast<std::size_t>(token)] = {adjusted, token};
+        candidates.push_back({adjusted, token});
     }
     std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
         if (a.adjusted != b.adjusted) { return a.adjusted > b.adjusted; }
@@ -99,7 +125,7 @@ Distribution distribution_oracle(const std::vector<float>& column, int token_dom
 
     int cap = 20;
     if (config.top_k > 0 && config.top_k < 20) { cap = config.top_k; }
-    cap = std::min(cap, token_domain);
+    cap = std::min(cap, static_cast<int>(candidates.size()));
     candidates.resize(static_cast<std::size_t>(cap));
 
     std::vector<double> weights(static_cast<std::size_t>(cap));
@@ -143,12 +169,22 @@ Distribution distribution_oracle(const std::vector<float>& column, int token_dom
 RunResult run_batch(const std::vector<float>& logits, int physical_rows, int token_domain,
                     std::vector<ops::SamplingConfig> configs,
                     const std::vector<int>& logical_positions, int purpose,
-                    const std::vector<std::vector<int>>& initial_counts = {}) {
+                    const std::vector<std::vector<int>>& initial_counts = {},
+                    const std::vector<TokenMask>& masks                 = {}) {
     const int batch = static_cast<int>(configs.size());
     if (batch <= 0 || logical_positions.size() != configs.size() ||
         logits.size() != static_cast<std::size_t>(physical_rows) * configs.size() ||
-        (!initial_counts.empty() && initial_counts.size() != configs.size())) {
+        (!initial_counts.empty() && initial_counts.size() != configs.size()) ||
+        (!masks.empty() && masks.size() != configs.size())) {
         throw std::invalid_argument("invalid sample batch fixture");
+    }
+    std::vector<DeviceBuffer> device_masks;
+    device_masks.reserve(masks.size());
+    for (std::size_t row = 0; row < masks.size(); ++row) {
+        if (masks[row].empty()) { continue; }
+        device_masks.push_back(to_device(masks[row]));
+        configs[row].token_mask       = static_cast<const std::uint32_t*>(device_masks.back().p);
+        configs[row].token_mask_words = static_cast<std::int32_t>(masks[row].size());
     }
     const std::vector<std::uint16_t> input_bits = bf16_bits(logits);
     DeviceBuffer device_logits                  = to_device(input_bits);
@@ -236,9 +272,16 @@ RunResult run_homogeneous_batch(const std::vector<float>& logits, int physical_r
 }
 
 RunResult run_repeated(const std::vector<float>& column, int token_domain, int total, int batch,
-                       ops::SamplingConfig config, int position, int purpose) {
+                       ops::SamplingConfig config, int position, int purpose,
+                       const TokenMask* mask = nullptr) {
     if (batch <= 0 || total <= 0 || total % batch != 0) {
         throw std::invalid_argument("repeated sample count must be a positive batch multiple");
+    }
+    std::optional<DeviceBuffer> device_mask;
+    if (mask != nullptr) {
+        device_mask.emplace(to_device(*mask));
+        config.token_mask       = static_cast<const std::uint32_t*>(device_mask->p);
+        config.token_mask_words = static_cast<std::int32_t>(mask->size());
     }
     const int physical_rows                     = static_cast<int>(column.size());
     const std::vector<float> logits             = repeat_column(column, batch);
@@ -591,6 +634,113 @@ int workspace_route_boundary_contract() {
     return failures;
 }
 
+// Token masks: every route (single-block and multi-block, greedy with and without penalties,
+// stochastic with filters) selects from the licensed set only, with filters applied after masking.
+int token_mask_greedy_contract() {
+    int failures = 0;
+    for (const int token_domain : {5, 248077}) {
+        const int physical_rows = token_domain == 5 ? 8 : 248320;
+        constexpr int batch     = 4;
+        std::vector<float> logits(static_cast<std::size_t>(physical_rows) * batch, -9.0f);
+        std::vector<TokenMask> masks;
+        for (int row = 0; row < batch; ++row) {
+            const std::size_t base = static_cast<std::size_t>(row) * physical_rows;
+            const int best         = (1 + 3 * row) % token_domain;
+            const int second       = (best + 2) % token_domain;
+            const int third        = (best + 1) % token_domain;
+            logits[base + best]    = 9.0f;
+            logits[base + second]  = 5.0f;
+            logits[base + third]   = 4.0f;
+            // The unmasked winner is never licensed; row 3 licenses a single token.
+            masks.push_back(row == 3 ? make_mask(token_domain, {third})
+                                     : make_mask(token_domain, {second, third}));
+            if (physical_rows > token_domain) { logits[base + token_domain] = 100.0f; }
+        }
+        round_to_bf16(logits);
+        for (const float penalty : {0.0f, 1.5f}) {
+            ops::SamplingConfig config;
+            config.presence_penalty = penalty;
+            std::vector<int> counts(static_cast<std::size_t>(token_domain), 0);
+            std::vector<std::vector<int>> row_counts;
+            if (penalty != 0.0f) {
+                // Penalise each row's best licensed token so the second licensed one wins.
+                row_counts.assign(batch, counts);
+                for (int row = 0; row < 3; ++row) {
+                    const int best = (1 + 3 * row) % token_domain;
+                    row_counts[static_cast<std::size_t>(row)][static_cast<std::size_t>(
+                        (best + 2) % token_domain)] = 1;
+                }
+            }
+            std::vector<int> positions(batch, 0);
+            const RunResult result =
+                run_batch(logits, physical_rows, token_domain,
+                          std::vector<ops::SamplingConfig>(batch, config), positions,
+                          ops::kSamplePurposeDecode, row_counts, masks);
+            std::vector<int> expected(batch);
+            for (int row = 0; row < batch; ++row) {
+                const std::vector<float> column(
+                    logits.begin() + static_cast<std::ptrdiff_t>(row) * physical_rows,
+                    logits.begin() + static_cast<std::ptrdiff_t>(row + 1) * physical_rows);
+                expected[static_cast<std::size_t>(row)] =
+                    greedy_oracle(column, physical_rows, token_domain, 1, config,
+                                  row_counts.empty() ? counts
+                                                     : row_counts[static_cast<std::size_t>(row)],
+                                  {masks[static_cast<std::size_t>(row)]})
+                        .front();
+            }
+            failures += result.integrity_failures;
+            failures += verify_exact(token_domain == 5 ? "sample masked greedy single block"
+                                                       : "sample masked greedy real shape",
+                                     result.tokens, expected);
+        }
+    }
+    return failures;
+}
+
+int token_mask_distribution_contract() {
+    int failures = 0;
+    // Small domain, single-block route. The two highest logits are unlicensed; top-k=3 then keeps
+    // the three best licensed tokens, which the unmasked distribution would not.
+    {
+        std::vector<float> column = {4.0f, 3.8f, 1.2f, 1.0f, 0.8f, 0.5f, -1.0f, -2.0f};
+        round_to_bf16(column);
+        const TokenMask mask = make_mask(8, {2, 3, 4, 5, 7});
+        ops::SamplingConfig config;
+        config.temperature        = 0.9f;
+        config.top_k              = 3;
+        config.seed               = 5150;
+        const Distribution oracle = distribution_oracle(column, 8, config, nullptr, &mask);
+        const RunResult result =
+            run_repeated(column, 8, 16384, 8, config, 300, ops::kSamplePurposeDecode, &mask);
+        failures += result.integrity_failures +
+                    verify_distribution("sample masked top-k single block", result.tokens, oracle);
+    }
+    // Real token domain, multi-block route, with fewer licensed tokens than the top-k cap: the
+    // zero-weight tail must never be drawn.
+    {
+        constexpr int physical_rows = 248320;
+        constexpr int token_domain  = 248077;
+        std::vector<float> column(physical_rows, -20.0f);
+        column[17]                = 6.0f;
+        column[7919]              = 2.0f;
+        column[65537]             = 1.5f;
+        column[200003]            = 5.0f;
+        column[token_domain]      = 100.0f;
+        round_to_bf16(column);
+        const TokenMask mask = make_mask(token_domain, {7919, 65537});
+        ops::SamplingConfig config;
+        config.temperature        = 1.0f;
+        config.top_k              = 20;
+        config.seed               = 31337;
+        const Distribution oracle = distribution_oracle(column, token_domain, config, nullptr, &mask);
+        const RunResult result    = run_repeated(column, token_domain, 4096, 8, config, 5000,
+                                                 ops::kSamplePurposeDecode, &mask);
+        failures += result.integrity_failures +
+                    verify_distribution("sample masked real token-domain", result.tokens, oracle);
+    }
+    return failures;
+}
+
 int increment_counts_contract() {
     const std::vector<std::int32_t> ids{1, 3, 1, 7};
     const std::vector<std::int32_t> initial{0, 2, 0, 4, 0, 0, 0, 1};
@@ -641,6 +791,8 @@ int main() {
     failures += real_shape_distribution_contract();
     failures += rng_key_contract();
     failures += workspace_route_boundary_contract();
+    failures += token_mask_greedy_contract();
+    failures += token_mask_distribution_contract();
     failures += increment_counts_contract();
 
     std::cout << (failures == 0 ? "OK" : "FAIL") << " sample public contract\n";

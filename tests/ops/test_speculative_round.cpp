@@ -975,8 +975,15 @@ int execute_accept_case(const std::string& label, const std::vector<std::int32_t
                         const std::vector<std::int32_t>& drafts, std::int32_t initial_length,
                         int token_domain, ops::SamplingConfig config,
                         const std::vector<std::int32_t>& initial_token_counts,
-                        const AcceptExpected& expected) {
+                        const AcceptExpected& expected,
+                        const std::vector<std::uint32_t>& token_masks = {}) {
     const int k              = static_cast<int>(drafts.size());
+    DeviceBuffer d_masks;
+    if (!token_masks.empty()) {
+        d_masks                 = to_device(token_masks);
+        config.token_mask       = static_cast<const std::uint32_t*>(d_masks.p);
+        config.token_mask_words = (token_domain + 31) / 32;
+    }
     DeviceBuffer d_targets   = to_device(target_tokens);
     DeviceBuffer d_logits    = to_device(logits_bits);
     DeviceBuffer d_drafts    = to_device(drafts);
@@ -1402,6 +1409,149 @@ int remap_case(int token_count) {
     return failures;
 }
 
+// Token masks, per verification column. Column i applies mask column i: a draft outside its
+// column's licensed set is rejected there, and the correction or bonus comes from the licensed set.
+// The oracle is set arithmetic on a fixture whose licensed winners are unique.
+std::vector<std::uint32_t> column_masks(int token_domain, int columns,
+                                        const std::vector<std::pair<int, int>>& excluded) {
+    const int words = (token_domain + 31) / 32;
+    std::vector<std::uint32_t> masks(static_cast<std::size_t>(words) * columns, ~0U);
+    for (const auto& [column, token] : excluded) {
+        masks[static_cast<std::size_t>(column) * words + static_cast<std::size_t>(token) / 32U] &=
+            ~(1U << (static_cast<unsigned>(token) % 32U));
+    }
+    return masks;
+}
+
+int masked_accept_case(int token_domain, bool sampling, bool reject_draft) {
+    const int physical_rows = token_domain > 256 ? 248320 : token_domain;
+    constexpr int k         = 3;
+    const std::vector<std::int32_t> drafts{5, 9, 13};
+    // Raw winners per column: the drafts, then a bonus winner. Each column also has a unique
+    // runner-up, which becomes the winner once its column mask excludes the raw winner.
+    const std::vector<std::int32_t> raw_winners{5, 9, 13, 20};
+    const std::vector<std::int32_t> runners_up{6, 30, 14, 40};
+    std::vector<float> logits(static_cast<std::size_t>(physical_rows) * (k + 1), -20.0f);
+    for (int column = 0; column <= k; ++column) {
+        const std::size_t base = static_cast<std::size_t>(column) * physical_rows;
+        logits[base + static_cast<std::size_t>(raw_winners[static_cast<std::size_t>(column)])] =
+            20.0f;
+        logits[base + static_cast<std::size_t>(runners_up[static_cast<std::size_t>(column)])] =
+            15.0f;
+        if (physical_rows > token_domain) { logits[base + token_domain] = 100.0f; }
+    }
+    round_to_bf16(logits);
+    std::vector<std::uint16_t> bits(logits.size());
+    for (std::size_t i = 0; i < logits.size(); ++i) bits[i] = f32_to_bf16(logits[i]);
+
+    // Either draft 1 is unlicensed at column 1, or every draft is licensed and the bonus column
+    // excludes its raw winner. A mask applied to column 0 only would pass neither.
+    const std::vector<std::uint32_t> masks =
+        reject_draft ? column_masks(token_domain, k + 1, {{1, 9}})
+                     : column_masks(token_domain, k + 1, {{3, 20}});
+    const std::int32_t initial_length = 700;
+    const AcceptExpected expected =
+        reject_draft ? accept_state_oracle(drafts, 1, 30, initial_length)
+                     : accept_state_oracle(drafts, 3, 40, initial_length);
+    ops::SamplingConfig config{};
+    if (sampling) {
+        config.temperature = 1.0f;
+        config.top_k       = 1;
+        config.seed        = 424242;
+    }
+    const std::string label = std::string("speculative masked ") +
+                              (sampling ? "sampling" : "greedy") +
+                              (reject_draft ? " draft rejection" : " bonus") +
+                              " V=" + std::to_string(token_domain);
+    return execute_accept_case(label, raw_winners, bits, physical_rows, drafts, initial_length,
+                               token_domain, config,
+                               std::vector<std::int32_t>(static_cast<std::size_t>(token_domain), 0),
+                               expected, masks);
+}
+
+// The DFlash2 sparse route with a one-hot proposal: a proposed token outside its column's mask
+// has target probability zero and is rejected even though q is one.
+int masked_sparse_accept_case(bool sampling) {
+    constexpr int k    = 2;
+    constexpr int cols = k + 1;
+    const std::vector<std::int32_t> drafts{5, 9};
+    const std::vector<std::int32_t> raw_winners{5, 9, 13};
+    std::vector<float> logits(static_cast<std::size_t>(kSparsePhysicalRows) * cols, -20.0f);
+    for (int column = 0; column < cols; ++column) {
+        const std::size_t base = static_cast<std::size_t>(column) * kSparsePhysicalRows;
+        logits[base + static_cast<std::size_t>(raw_winners[static_cast<std::size_t>(column)])] =
+            20.0f;
+        logits[base + 30U + static_cast<std::size_t>(column)] = 15.0f;
+        logits[base + kSparseTokenDomain]                     = 100.0f;
+    }
+    round_to_bf16(logits);
+    std::vector<std::uint16_t> bits(logits.size());
+    for (std::size_t i = 0; i < logits.size(); ++i) bits[i] = f32_to_bf16(logits[i]);
+    std::vector<std::int32_t> candidates(static_cast<std::size_t>(kSparseCandidates) * k);
+    std::vector<float> q(candidates.size(), 0.0f);
+    for (int draft = 0; draft < k; ++draft) {
+        for (int candidate = 0; candidate < kSparseCandidates; ++candidate) {
+            candidates[static_cast<std::size_t>(draft * kSparseCandidates + candidate)] =
+                candidate == 0 ? drafts[static_cast<std::size_t>(draft)] : 1000 + candidate;
+        }
+        q[static_cast<std::size_t>(draft * kSparseCandidates)] = 1.0f;
+    }
+    const std::vector<std::uint32_t> masks = column_masks(kSparseTokenDomain, cols, {{1, 9}});
+
+    DeviceBuffer d_targets    = to_device(raw_winners);
+    DeviceBuffer d_logits     = to_device(bits);
+    DeviceBuffer d_drafts     = to_device(drafts);
+    DeviceBuffer d_candidates = to_device(candidates);
+    DeviceBuffer d_q          = to_device(q);
+    DeviceBuffer d_extent     = to_device<std::int32_t>({k});
+    DeviceBuffer d_length     = to_device<std::int32_t>({100});
+    DeviceBuffer d_anchor     = to_device<std::int32_t>({-1});
+    DeviceBuffer d_licensed   = to_device(std::vector<std::int32_t>(cols, -5));
+    DeviceBuffer d_count      = to_device<std::int32_t>({-5});
+    DeviceBuffer d_accepted   = to_device<std::int32_t>({-5});
+    DeviceBuffer d_masks      = to_device(masks);
+    ops::SamplingConfig config{};
+    if (sampling) {
+        config.temperature = 1.0f;
+        config.top_k       = 1;
+        config.seed        = 77;
+    }
+    config.token_mask       = static_cast<const std::uint32_t*>(d_masks.p);
+    config.token_mask_words = (kSparseTokenDomain + 31) / 32;
+    DeviceBuffer d_config   = device_config(config);
+
+    Tensor targets(d_targets.p, DType::I32, {cols, 1});
+    Tensor logits_tensor(d_logits.p, DType::BF16, {kSparsePhysicalRows, cols, 1});
+    Tensor drafts_tensor(d_drafts.p, DType::I32, {k, 1});
+    Tensor candidate_tensor(d_candidates.p, DType::I32, {kSparseCandidates, k, 1});
+    Tensor q_tensor(d_q.p, DType::FP32, {kSparseCandidates, k, 1});
+    Tensor extent(d_extent.p, DType::I32, {1});
+    Tensor lengths(d_length.p, DType::I32, {1});
+    Tensor anchors(d_anchor.p, DType::I32, {1});
+    Tensor licensed(d_licensed.p, DType::I32, {cols, 1});
+    Tensor counts(d_count.p, DType::I32, {1});
+    Tensor accepted(d_accepted.p, DType::I32, {1});
+    const std::size_t workspace_bytes = ops::speculative_accept_sparse_drafts_workspace_capacity_bytes(
+        kSparseTokenDomain, {false}, k, k, 1, 1);
+    WorkspaceArena workspace(std::max<std::size_t>(256, workspace_bytes));
+    ops::speculative_accept_sparse_drafts(targets, logits_tensor, drafts_tensor, candidate_tensor,
+                                          q_tensor, extent, lengths, anchors, licensed, counts,
+                                          accepted, kSparseTokenDomain,
+                                          static_cast<const ops::SamplingConfig*>(d_config.p),
+                                          {false}, workspace, nullptr);
+    cuda_synchronize();
+    const std::string label =
+        std::string("sparse masked ") + (sampling ? "sampling" : "greedy") + " draft rejection";
+    int failures = verify_exact((label + " tokens").c_str(),
+                                from_device<std::int32_t>(d_licensed, cols), {5, 31, 0});
+    failures += verify_exact((label + " count").c_str(), from_device<std::int32_t>(d_count, 1), {2});
+    failures +=
+        verify_exact((label + " accepted").c_str(), from_device<std::int32_t>(d_accepted, 1), {1});
+    failures +=
+        verify_exact((label + " anchor").c_str(), from_device<std::int32_t>(d_anchor, 1), {31});
+    return failures;
+}
+
 int transforms_conformance() {
     int failures = 0;
     for (int k = 1; k <= 15; ++k)
@@ -1491,6 +1641,15 @@ int main(int argc, char** argv) {
             ++failures;
         } catch (const std::invalid_argument&) {}
     }
+    for (const int domain : {64, 248077}) {
+        for (const bool sampling : {false, true}) {
+            for (const bool reject_draft : {true, false}) {
+                failures += masked_accept_case(domain, sampling, reject_draft);
+            }
+        }
+    }
+    failures += masked_sparse_accept_case(false);
+    failures += masked_sparse_accept_case(true);
     for (int k : {1, 7, 15}) {
         SparseAcceptSuite suite(k, 8);
         failures += suite.sparse_general_mixed_case();

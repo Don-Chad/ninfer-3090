@@ -248,17 +248,35 @@ __device__ __forceinline__ int sampling_dist_offset(int col, int j) {
     return col * kSamplerCandidateCap + j;
 }
 
-// Applies presence/frequency penalties to a raw logit. `overlay`/`overlay_len`
-// carry a round-local count overlay: tokens already committed earlier in the
-// current speculative round but not yet flushed to the global `token_counts`. For speculative
-// verify column `col` the overlay is exactly drafts[0..col-1] (statically known,
-// since column `col` is only consumed when every earlier draft was accepted), so
-// the penalty at each column sees the same prefix a per-token sampler would.
-// Non-speculative callers pass no overlay. The scan is bounded by k and
-// only runs when penalties are active, so it is free on the no-penalty path.
+// Whether column `column` of this decision may select token v (sampling.h token_mask).
+__device__ __forceinline__ bool sampling_token_licensed(const SamplingConfig& c, int column, int v) {
+    if (c.token_mask == nullptr) { return true; }
+    const std::uint32_t word =
+        c.token_mask[static_cast<std::int64_t>(column) * c.token_mask_words + (v >> 5)];
+    return ((word >> (static_cast<unsigned int>(v) & 31U)) & 1U) != 0U;
+}
+
+// True when the decision's scores are the raw logits: no penalty and no token mask. Only such rows
+// may use the fused raw-argmax or raw-BF16 routes.
+__device__ __forceinline__ bool sampling_uses_raw_logits(const SamplingConfig& c) {
+    return c.presence_penalty == 0.0f && c.frequency_penalty == 0.0f && c.token_mask == nullptr;
+}
+
+// Applies the token mask and presence/frequency penalties to a raw logit. `column` is the
+// decision's column: 0 for an ordinary sample, the verification column for speculative
+// acceptance. `overlay` carries a round-local count overlay of `column` tokens: tokens already
+// committed earlier in the current speculative round but not yet flushed to the global
+// `token_counts`. For speculative verify column `col` the overlay is exactly drafts[0..col-1]
+// (statically known, since column `col` is only consumed when every earlier draft was accepted),
+// so the penalty at each column sees the same prefix a per-token sampler would. Non-speculative
+// callers pass no overlay. The scan is bounded by k and only runs when penalties are active, so it
+// is free on the no-penalty path. An unlicensed token scores -inf before any filter, so top-k,
+// min-p and top-p operate on the licensed tokens only.
 __device__ __forceinline__ float sampling_adjusted_logit(float raw, int v, const SamplingConfig& c,
                                                          const std::int32_t* overlay = nullptr,
-                                                         int overlay_len             = 0) {
+                                                         int column                  = 0) {
+    // Masking comes first: an unlicensed token must never win, not even through a NaN key.
+    if (!sampling_token_licensed(c, column, v)) { return -CUDART_INF_F; }
     // A non-finite raw logit must sort as itself, unperturbed. Penalty subtraction on NaN is legal
     // IEEE-754 but not required to preserve the operand's bit pattern, and CUDA's hardware NaN
     // canonicalization does not: `NaN - presence_penalty` comes back as a different NaN encoding
@@ -273,7 +291,7 @@ __device__ __forceinline__ float sampling_adjusted_logit(float raw, int v, const
     float x = raw;
     if (c.presence_penalty == 0.0f && c.frequency_penalty == 0.0f) { return x; }
     int cnt = c.token_counts != nullptr ? c.token_counts[v] : 0;
-    for (int j = 0; j < overlay_len; ++j) {
+    for (int j = 0; j < column; ++j) {
         if (overlay[j] == v) { ++cnt; }
     }
     if (cnt > 0) { x -= c.presence_penalty; }
@@ -340,6 +358,9 @@ __device__ inline void sampling_normalize_support(const SamplingConfig& cfg, flo
         float cum                = 0.0f;
         int support              = 0;
         for (int j = 0; j < n; ++j) {
+            // Candidates are sorted, so a zero weight ends the support: every later candidate is
+            // an unlicensed (-inf) or underflowed token that must not be reachable by rounding.
+            if (j != 0 && !(prob[j] > 0.0f)) { break; }
             if (min_p_thresh >= 0.0f && prob[j] < min_p_thresh) { break; }
             cum += prob[j];
             support = j + 1;
@@ -362,13 +383,13 @@ __device__ inline void
 sampling_build_truncated_small(const __nv_bfloat16* logits, std::int64_t base, std::int32_t vocab,
                                const SamplingConfig& cfg, float* tile_val, int* tile_idx,
                                float* cand_val, int* cand_idx, float* prob, int* n_support,
-                               const std::int32_t* overlay = nullptr, int overlay_len = 0) {
+                               const std::int32_t* overlay = nullptr, int column = 0) {
     const int tid = threadIdx.x;
     const int cap = sampling_candidate_cap(cfg, vocab);
     if (tid < kSamplerTileItems) {
         if (tid < vocab) {
             const float x = sampling_adjusted_logit(__bfloat162float(logits[base + tid]), tid, cfg,
-                                                    overlay, overlay_len);
+                                                    overlay, column);
             tile_val[tid] = x;
             tile_idx[tid] = tid;
         } else {
@@ -392,7 +413,7 @@ sampling_build_truncated_small(const __nv_bfloat16* logits, std::int64_t base, s
 __device__ inline void sampling_build_truncated_block_fast(
     const __nv_bfloat16* logits, std::int64_t base, std::int32_t vocab, const SamplingConfig& cfg,
     float* merge_val, int* merge_idx, float* cand_val, int* cand_idx, float* prob, int* n_support,
-    const std::int32_t* overlay = nullptr, int overlay_len = 0) {
+    const std::int32_t* overlay = nullptr, int column = 0) {
     const int tid = threadIdx.x;
     const int cap = sampling_candidate_cap(cfg, vocab); // always <= kSamplerFastCandidates
 
@@ -407,7 +428,7 @@ __device__ inline void sampling_build_truncated_block_fast(
     const int fast_cap = cap;
     for (int v = tid; v < vocab; v += blockDim.x) {
         const float x = sampling_adjusted_logit(__bfloat162float(logits[base + v]), v, cfg, overlay,
-                                                overlay_len);
+                                                column);
         sampling_insert_candidate(local_val, local_idx, fast_cap, x, v);
     }
 
