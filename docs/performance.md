@@ -467,6 +467,16 @@ figures are stated against those rather than this table's. See the README's
 [`rk4v4` section](../README.md#lloyd-max-4-bit-keys-rk4v4).
 See [the README](../README.md#choosing-a-kv-format) for the fuller writeup and recommendations.
 
+**Not built: `rk2v4-e8` (2-bit E8 root keys).** The sibling RTX 4090 forks ship an `rk2v4-e8` mode:
+keys as one E8 root index, a 4-bit log radius and a 4-bit axis correction per 8 dimensions, about
+216 B per head and token here against `rk4v4`'s 280. Simulated on this build by passing `int8`'s
+rotated keys through that fork's encoder and decoder (`absmax/7` G64 scale) and storing the decoded
+keys as INT8, with values left at INT8, the same quick protocol measured **4.476942 against
+4.343155 (+3.08%)**, with every domain between +2.2% and +3.9% (2026-09-29). That is the keys
+alone, about fourteen times `rk4v4`'s whole +0.214%, and it agrees with the rule `rk4v4` found that
+any 3-bit key coding costs +0.7% or more. `rk4v4` already reaches the model's native 262,144-token
+context on the 27B, so the extra headroom does not pay for the quality.
+
 ## Published coverage
 
 Published measurements use one NVIDIA GeForce RTX 5090 through NInfer's public HTTP serving route.
