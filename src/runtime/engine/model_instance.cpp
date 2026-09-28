@@ -233,6 +233,7 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
     LoadSummary summary;
     summary.architecture = models::architecture_name(instance->model->config().text.architecture);
     summary.model_name   = instance->model->info().name;
+    summary.cuda_sync_mode = device.sync_mode();
     summary.prefill_signature = signature;
     std::set<std::string> formats;
     for (const auto& weight : instance->model->weight_data()) {
