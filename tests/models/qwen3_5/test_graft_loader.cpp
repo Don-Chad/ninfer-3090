@@ -204,8 +204,21 @@ int main() {
     {
         Container c   = valid_container();
         c.meta["kind"] = "direct_kv";
-        failures += expect_rejected(write(dir, "direct", c), "direct_kv",
-                                    "a direct_kv graft (no replay ids) was accepted");
+        failures += expect_rejected(write(dir, "direct_ids", c), "unexpected number of tensors",
+                                    "a direct_kv graft carrying replay ids was accepted");
+    }
+    {
+        Container c = valid_container();
+        c.tensors.erase("replay_ids");
+        c.meta["kind"] = "direct_kv";
+        c.meta.erase("replay");
+        const q::PromptGraft graft = q::load_prompt_graft(
+            ninfer::GraftSource{.name = "direct", .path = write(dir, "direct", c)}, model());
+        failures += check(graft.kind == q::GraftKind::DirectKV && graft.tokens.empty() &&
+                              graft.tensors.has_value() && graft.tensors->n_slots == 3 &&
+                              graft.tensors->k.end - graft.tensors->k.begin ==
+                                  1U * 3U * 2U * 8U * 2U,
+                          "a direct_kv graft did not load its KV tensors for injection");
     }
     {
         Container c = valid_container();

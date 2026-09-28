@@ -306,8 +306,13 @@ struct FakeAdmissionCandidate {
     std::uint32_t shared_source_id          = 0;
     std::uint32_t shared_source_content_key = 0;
     std::uint32_t shared_source_frontier    = 0;
+    std::optional<std::uint32_t> graft_slot;
 
     [[nodiscard]] const RequestPlanSummary& summary() const noexcept { return value; }
+
+    [[nodiscard]] std::optional<std::uint32_t> graft_shared_slot() const noexcept {
+        return graft_slot;
+    }
 
     [[nodiscard]] const ninfer::runtime::IdentityMaterializationAssessment&
     identity_assessment() const noexcept {
