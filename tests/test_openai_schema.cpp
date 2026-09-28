@@ -800,11 +800,14 @@ int test_common_objects() {
     int failures      = 0;
     const Json models = Json::parse(make_models_list("qwen", 7, 240000));
     failures +=
-        check(models["data"][0]["id"] == "qwen" && models["data"][0]["max_model_len"] == 240000,
-              "models list advertises the configured context limit");
+        check(models["data"][0]["id"] == "qwen" && models["data"][0]["max_model_len"] == 240000 &&
+                  models["data"][0]["context_window"] == 240000 &&
+                  models["data"][0]["context_length"] == 240000,
+              "models list advertises the configured context limit under every field name");
     const Json model = Json::parse(make_model_object("qwen", 7, 240000));
-    failures += check(model["max_model_len"] == 240000,
-                      "model lookup advertises the configured context limit");
+    failures += check(model["max_model_len"] == 240000 && model["context_window"] == 240000 &&
+                          model["context_length"] == 240000,
+                      "model lookup advertises the configured context limit under every field name");
     const Json error = Json::parse(make_error_body(
         ApiError{.status = 400, .message = "bad", .param = "messages", .code = "invalid"}));
     failures += check(error["error"]["param"] == "messages" && error["error"]["code"] == "invalid",
