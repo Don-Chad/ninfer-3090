@@ -578,6 +578,53 @@ int test_reasoning_and_extensions() {
     failures +=
         check(api_error([&] { (void)parse(body); }).code == "mm_processor_kwargs_not_supported",
               "non-empty media processor kwargs rejected");
+
+    // Request efforts collapse onto the template's three rungs; Claude Code sends 'high'.
+    body                     = base_request();
+    body["reasoning_effort"] = "high";
+    ResolvedPromptSemantics resolved = semantics(parse(body).generation);
+    failures += check(resolved.reasoning_effort == ninfer::ReasoningEffort::XHigh &&
+                          resolved.enable_thinking == true,
+                      "request effort high did not select the xhigh rung");
+    body["reasoning_effort"] = "minimal";
+    failures += check(semantics(parse(body).generation).reasoning_effort ==
+                          ninfer::ReasoningEffort::Low,
+                      "request effort minimal did not select the low rung");
+
+    // --reasoning-effort fills in for thinking requests that state no effort, collapsed alike.
+    ServeOptions server;
+    server.default_reasoning_effort = RequestedReasoningEffort::Max;
+    const GenerationRequest plain   = parse(base_request()).generation;
+    resolved                        = resolve_prompt_semantics(plain, server);
+    failures += check(resolved.reasoning_effort == ninfer::ReasoningEffort::XHigh &&
+                          !resolved.enable_thinking.has_value(),
+                      "server effort default did not apply to a request without one");
+    server.default_reasoning_effort = RequestedReasoningEffort::Medium;
+    body                            = base_request();
+    body["reasoning_effort"]        = "low";
+    failures += check(resolve_prompt_semantics(parse(body).generation, server).reasoning_effort ==
+                          ninfer::ReasoningEffort::Low,
+                      "request effort did not override the server default");
+    body                         = base_request();
+    body["chat_template_kwargs"] = Json{{"reasoning_effort", "xhigh"}};
+    failures += check(resolve_prompt_semantics(parse(body).generation, server).reasoning_effort ==
+                          ninfer::ReasoningEffort::XHigh,
+                      "template-kwargs effort did not override the server default");
+    body                    = base_request();
+    body["enable_thinking"] = false;
+    resolved                = resolve_prompt_semantics(parse(body).generation, server);
+    failures += check(!resolved.reasoning_effort && resolved.enable_thinking == false,
+                      "server effort default applied to a non-thinking request");
+    server.enable_thinking = false;
+    resolved               = resolve_prompt_semantics(plain, server);
+    failures += check(!resolved.reasoning_effort && resolved.enable_thinking == false,
+                      "server effort default overrode --no-thinking");
+    body                     = base_request();
+    body["reasoning_effort"] = "medium";
+    resolved                 = resolve_prompt_semantics(parse(body).generation, server);
+    failures += check(resolved.reasoning_effort == ninfer::ReasoningEffort::Medium &&
+                          resolved.enable_thinking == true,
+                      "request effort under --no-thinking did not enable thinking");
     return failures;
 }
 

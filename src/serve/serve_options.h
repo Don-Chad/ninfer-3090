@@ -2,6 +2,7 @@
 
 #include "ninfer/types.h"
 #include "product/logging/logging.h"
+#include "serve/request.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -89,6 +90,9 @@ struct ServeOptions {
     // Output limit for a request that omits one. Unset means the sequence's remaining context:
     // see default_output_tokens().
     std::optional<int> default_max_tokens;
+    // Reasoning effort for a thinking-enabled request that states none. Never None: disabling
+    // thinking by default is --no-thinking.
+    std::optional<RequestedReasoningEffort> default_reasoning_effort;
     bool enable_cors       = false; // send permissive CORS headers for browser UIs
     // Process-level explicit overrides layered between registered model/mode defaults and request
     // fields. An omitted seed is replaced per request with a fresh random seed.

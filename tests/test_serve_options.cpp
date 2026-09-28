@@ -87,6 +87,20 @@ int main() {
     } catch (const std::invalid_argument&) { zero_default_output_rejected = true; }
     failures += check(zero_default_output_rejected, "--default-max-tokens 0 was accepted");
 
+    failures += check(!defaults.default_reasoning_effort,
+                      "a reasoning effort is unexpectedly configured by default");
+    failures += check(parse({"ninfer-serve", "model.ninfer", "--reasoning-effort", "high"})
+                              .default_reasoning_effort == RequestedReasoningEffort::High,
+                      "--reasoning-effort high was not parsed");
+    for (const char* rejected : {"none", "extreme"}) {
+        bool effort_rejected = false;
+        try {
+            (void)parse({"ninfer-serve", "model.ninfer", "--reasoning-effort", rejected});
+        } catch (const std::invalid_argument&) { effort_rejected = true; }
+        const std::string message = std::string("--reasoning-effort ") + rejected + " was accepted";
+        failures += check(effort_rejected, message.c_str());
+    }
+
     const ServeOptions fp8 = parse({"ninfer-serve", "model.ninfer", "--kv-dtype", "fp8"});
     failures += check(fp8.kv_cache == ninfer::KvCacheStorage::Fp8E4M3Row256,
                       "--kv-dtype fp8 did not select row-scaled E4M3 KV");

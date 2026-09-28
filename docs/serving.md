@@ -403,8 +403,16 @@ post-close model token, preparation is rejected with HTTP 400 code
 `thinking_budget_capacity_insufficient` rather than partially inserting control. The server does
 not promise that the model will emit nonempty content or a tool call after the marker.
 
-For Chat Completions, `reasoning_effort: "none"` requests disabled thinking. The selected template
-interprets the other standard values (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`).
+For Chat Completions, `reasoning_effort: "none"` requests disabled thinking. The other standard
+values (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) reach the template on its three rungs:
+`minimal` runs as `low`, `high` and `max` as `xhigh`, so clients such as Claude Code that send
+`high` work against the bundled Qwen templates.
+
+`--reasoning-effort minimal|low|medium|high|xhigh|max` sets the effort of every thinking-enabled
+request that states none on any endpoint, collapsed onto the same rungs. A request effort
+(`reasoning_effort`, Responses `reasoning.effort`, Anthropic `output_config.effort`, or
+`chat_template_kwargs.reasoning_effort`) overrides it. The default never enables thinking: requests
+that run without thinking, through `--no-thinking` or their own options, receive no effort.
 Conflicting explicit `enable_thinking` and effort values return `conflicting_template_option`.
 
 `preserve_thinking` controls reasoning retention according to the selected template. Request
@@ -942,6 +950,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
 | `--graft NAME=PATH` | load a [prompt graft](#prompt-grafts) a request may select by name; repeatable | none |
+| `--reasoning-effort minimal\|low\|medium\|high\|xhigh\|max` | effort for thinking-enabled requests that state none | template default |
 | `--cors` | permissive browser CORS headers | off |
 | `--temperature F` | process-level temperature override | unset |
 | `--top-p F` | process-level top-p override | unset |

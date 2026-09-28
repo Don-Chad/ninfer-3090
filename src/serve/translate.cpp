@@ -107,6 +107,28 @@ std::string render_tool_definition(const ToolDefinition& tool) {
     return Json{{"type", "function"}, {"function", std::move(function)}}.dump();
 }
 
+// Clients carry a wider effort vocabulary than the Qwen templates expose: OpenAI and Claude Code
+// send 'high', pi sends 'minimal' and 'max'. The maintained templates offer three rungs (low,
+// medium, xhigh) and raise on anything else, so the outer values collapse onto the nearest rung
+// rather than failing the request -- rejecting 'high' is what makes Claude Code unusable against a
+// stock Qwen3.8 template (QwenLM/Qwen3.8#217).
+ninfer::ReasoningEffort template_reasoning_effort(RequestedReasoningEffort effort) {
+    switch (effort) {
+    case RequestedReasoningEffort::None:
+        return ninfer::ReasoningEffort::None;
+    case RequestedReasoningEffort::Minimal:
+    case RequestedReasoningEffort::Low:
+        return ninfer::ReasoningEffort::Low;
+    case RequestedReasoningEffort::Medium:
+        return ninfer::ReasoningEffort::Medium;
+    case RequestedReasoningEffort::High:
+    case RequestedReasoningEffort::XHigh:
+    case RequestedReasoningEffort::Max:
+        return ninfer::ReasoningEffort::XHigh;
+    }
+    throw std::logic_error("invalid requested reasoning effort");
+}
+
 } // namespace
 
 ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& request,
@@ -162,29 +184,13 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
             invalid_prompt_option("reasoning effort conflicts with enable_thinking",
                                   "reasoning_effort", "conflicting_template_option");
         // A request effort overrides the server's thinking default.
-        result.enable_thinking = enables;
-        // Clients carry a wider effort vocabulary than the Qwen templates expose: OpenAI and
-        // Claude Code send 'high', pi sends 'minimal' and 'max'. The maintained templates offer
-        // three rungs (low, medium, xhigh) and raise on anything else, so the outer values collapse
-        // onto the nearest rung rather than failing the request -- rejecting 'high' is what makes
-        // Claude Code unusable against a stock Qwen3.8 template (QwenLM/Qwen3.8#217).
-        switch (*effort) {
-        case RequestedReasoningEffort::None:
-            result.reasoning_effort = ninfer::ReasoningEffort::None;
-            break;
-        case RequestedReasoningEffort::Minimal:
-        case RequestedReasoningEffort::Low:
-            result.reasoning_effort = ninfer::ReasoningEffort::Low;
-            break;
-        case RequestedReasoningEffort::Medium:
-            result.reasoning_effort = ninfer::ReasoningEffort::Medium;
-            break;
-        case RequestedReasoningEffort::High:
-        case RequestedReasoningEffort::XHigh:
-        case RequestedReasoningEffort::Max:
-            result.reasoning_effort = ninfer::ReasoningEffort::XHigh;
-            break;
-        }
+        result.enable_thinking  = enables;
+        result.reasoning_effort = template_reasoning_effort(*effort);
+    } else if (server.default_reasoning_effort && result.enable_thinking != false &&
+               request.continuation != ninfer::PromptContinuationMode::ContinueFinalAssistant) {
+        // The server default only shapes requests that think; it never turns thinking on, and an
+        // assistant prefill opens no new reasoning turn for it to shape.
+        result.reasoning_effort = template_reasoning_effort(*server.default_reasoning_effort);
     }
     if (!request.graft.empty()) {
         const bool loaded = std::any_of(

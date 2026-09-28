@@ -95,7 +95,8 @@ std::string serve_usage_text(const char* argv0) {
            "[--gdn-state-fp16] "
            "[--mlp-a8-decode] [--no-prefill-a8] "
            "[--prefill-cublas [--no-prefill-cublas-projections]] [--lookup-ngram N] "
-           "[--no-thinking] [--preserve-thinking] [--graft NAME=PATH]... [--cors] "
+           "[--no-thinking] [--preserve-thinking] [--graft NAME=PATH]... "
+           "[--reasoning-effort minimal|low|medium|high|xhigh|max] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
@@ -150,6 +151,9 @@ std::string serve_usage_text(const char* argv0) {
            "       --graft NAME=PATH loads a phantom-kv prefill graft (a safetensors container with a "
            ".json sidecar beside it); a request selecting it with \"graft\": \"NAME\" runs as if the "
            "graft's hidden turn preceded its own messages. Repeatable\n"
+           "       --reasoning-effort is the effort of thinking-enabled requests that state none; "
+           "request values override it; like request values, minimal runs as low and high/max as "
+           "xhigh\n"
            "       sampler defaults come from the loaded model and resolved thinking mode; "
            "server flags and request fields override individual values.\n"
            "       --greedy forces temperature 0 (exact argmax).\n";
@@ -448,6 +452,16 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             }
             options.grafts.push_back(GraftSource{.name = std::string(spec.substr(0, equals)),
                                                  .path = std::string(spec.substr(equals + 1))});
+        } else if (arg == "--reasoning-effort") {
+            const std::string value = require_value("--reasoning-effort");
+            const std::optional<RequestedReasoningEffort> effort =
+                parse_requested_reasoning_effort(value);
+            if (!effort) { throw std::invalid_argument("invalid reasoning-effort: " + value); }
+            if (*effort == RequestedReasoningEffort::None) {
+                throw std::invalid_argument(
+                    "--reasoning-effort none is not a default effort; use --no-thinking");
+            }
+            options.default_reasoning_effort = *effort;
         } else if (arg == "--cors") {
             options.enable_cors = true;
         } else if (arg == "--temperature") {
