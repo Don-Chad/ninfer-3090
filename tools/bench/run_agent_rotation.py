@@ -127,7 +127,9 @@ def summarize(samples: list[Sample]) -> dict[str, Any]:
         out[kind] = {
             "requests": len(selected),
             "weighted_hit_rate": cached / prompt if prompt else 0.0,
-            "cold_requests": sum(1 for s in selected if s.cached_tokens == 0),
+            # A shared system-prompt hit is not reuse of the conversation: count a visit as cold
+            # when under 5% of its prompt came from the cache.
+            "cold_requests": sum(1 for s in selected if s.cached_tokens < 0.05 * s.prompt_tokens),
             "ttft_p50": percentile(ttfts, 0.5),
             "ttft_p95": percentile(ttfts, 0.95),
             "ttft_max": max(ttfts) if ttfts else None,
