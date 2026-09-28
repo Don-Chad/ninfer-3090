@@ -325,17 +325,20 @@ struct SequenceKVBundle {
     std::optional<KVAddressSpaceHandle> backend;
 };
 
+// A decode round is captured as one or more consecutive graph segments. Segment boundaries are
+// the points where the host must observe device results before the round can continue (DFlash
+// proposes drafts inside the round; a structured-output request needs them to build its masks).
 struct DecodeGraphProfile {
     std::uint32_t batch_size             = 1;
     std::uint32_t min_execution_frontier = 0;
     std::uint32_t max_execution_frontier = 0;
     std::uint32_t topology_class         = 0;
-    DecodeGraphDefinition definition;
+    std::vector<DecodeGraphDefinition> segments;
 };
 
 struct DecodeGraphTopology {
     std::uint32_t topology_class = 0;
-    DecodeGraphExecutable executable;
+    std::vector<DecodeGraphExecutable> segments;
     std::optional<std::size_t> installed_profile;
 };
 
@@ -517,6 +520,7 @@ public:
     // the lane must not be given a prefill unit, and every other lane keeps running.
     [[nodiscard]] bool vision_pending(SequenceHandle sequence) const noexcept;
     [[nodiscard]] PrefillProgress advance_prefill(SequenceHandle sequence,
+                                                  runtime::TokenMaskSource* constraint,
                                                   runtime::ExecutionTiming* failed_timing);
     [[nodiscard]] CaptureAssessment
     inspect_capture(const CaptureOffer& offer, const SharedPrefixHandle* exact_shared,
@@ -545,6 +549,7 @@ public:
         CapturePressureCandidate&& pressure, runtime::CancellationFlagView cancellation);
     [[nodiscard]] PendingBatch decode(std::span<const SequenceHandle> sequences,
                                       std::span<const runtime::RoundBudget> budgets,
+                                      std::span<runtime::TokenMaskSource* const> constraints,
                                       runtime::ExecutionTiming* failed_timing);
     [[nodiscard]] runtime::ExecutionTiming
     append_forced_tokens(std::span<const SequenceHandle> sequences,
@@ -659,6 +664,11 @@ public:
     std::optional<Tensor> score_hidden;
     Tensor sampling_config;
     Tensor token_counts;
+    // Structured-output token masks: U32 bitsets [token_mask_words, draft_window + 1,
+    // max_concurrency]. Each lane owns one slab whose column c masks decision column c of its
+    // current round (sampling.h token_mask).
+    Tensor token_masks;
+    std::uint32_t token_mask_words = 0;
 
     std::vector<SequenceState> continuation_states;
     std::vector<ContinuationSlot> continuation_slots;
@@ -694,6 +704,11 @@ public:
     std::optional<PinnedHostBuffer> dflash_host;
     qwen3_5::DFlashDecodeIngress* dflash_host_ingress = nullptr;
     qwen3_5::DFlashDecodeEgress* dflash_host_egress   = nullptr;
+    // DFlash proposal copied back after the proposal segment, I32 [draft_window, B].
+    std::optional<PinnedHostBuffer> dflash_draft_host;
+    std::optional<CudaCompletionEvent> dflash_proposal_ready;
+    // Host staging with the geometry of token_masks.
+    std::optional<PinnedHostBuffer> token_mask_host;
 
     std::size_t workspace_logical_peak_bytes = 0;
     std::size_t vision_handoff_peak_bytes    = 0;
@@ -898,6 +913,10 @@ private:
     };
 
     std::uint64_t next_materialization_id_ = 1;
+    // Output-language constraints of the current decode()/advance_prefill() call, by lane.
+    std::array<runtime::TokenMaskSource*, kMaximumConcurrency> lane_constraints_{};
+    // Whether a lane's device mask slab currently licenses every token in every column.
+    std::array<bool, kMaximumConcurrency> token_mask_slab_open_{};
     // Every rank's compute and transfer stream. Context transactions fan their copies out across
     // ranks and fence on all of them.
     RankStreams compute_streams;
@@ -1211,6 +1230,36 @@ private:
     void prepare_graphs();
     void install_sampling(SequenceState& sequence, RequestControl& request,
                           const ops::SamplingConfig& config);
+
+    // Borrows the caller's output-language constraints for one decode() or advance_prefill() call.
+    class TokenConstraintBinding {
+    public:
+        TokenConstraintBinding(ProgramImpl& program, std::span<const std::uint32_t> lanes,
+                               std::span<runtime::TokenMaskSource* const> constraints);
+        ~TokenConstraintBinding();
+
+        TokenConstraintBinding(const TokenConstraintBinding&)            = delete;
+        TokenConstraintBinding& operator=(const TokenConstraintBinding&) = delete;
+
+    private:
+        ProgramImpl& program_;
+        std::span<const std::uint32_t> lanes_;
+    };
+
+    [[nodiscard]] bool lane_constrained(std::uint32_t lane) const noexcept {
+        return lane_constraints_[lane] != nullptr;
+    }
+    [[nodiscard]] const std::uint32_t* token_mask_slab(std::uint32_t lane) const;
+    // Builds `lane`'s masks for the `columns` decisions that follow `speculative` and enqueues them
+    // on the compute stream. Returns the mask pointer for the lane's sampling config: null when the
+    // lane is unconstrained, or when no column restricts and `keep_slab` is false. With
+    // `keep_slab`, a constrained lane always gets its slab, holding all-licensed masks when nothing
+    // restricts.
+    [[nodiscard]] const std::uint32_t* stage_token_masks(std::uint32_t lane,
+                                                         std::span<const TokenId> speculative,
+                                                         std::uint32_t columns, bool keep_slab);
+    [[nodiscard]] ops::SamplingConfig masked_sampling(const ops::SamplingConfig& base,
+                                                      const std::uint32_t* mask) const noexcept;
     void set_device_i32(Tensor& tensor, std::int32_t value);
     void copy_tail(SequenceState& sequence, const Tensor& source);
     void copy_round_token();

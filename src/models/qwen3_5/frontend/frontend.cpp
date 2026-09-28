@@ -6,6 +6,7 @@
 #include "models/qwen3_5/frontend/chat_template.h"
 #include "models/qwen3_5/frontend/media_cache.h"
 #include "models/qwen3_5/frontend/processor.h"
+#include "models/qwen3_5/frontend/structured_output.h"
 #include "models/qwen3_5/frontend/test_access.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
 #include "models/qwen3_5/frontend/tool_call_parser.h"
@@ -784,6 +785,7 @@ public:
                 }
             }
         }
+        structured_output       = std::make_shared<const fi::StructuredOutputCompiler>(tokenizer);
     }
 
     // The graft a request names, or null for none.
@@ -802,6 +804,7 @@ public:
     StopPolicy defaults;
     ModelSamplingDefaults sampling;
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens;
+    std::shared_ptr<const fi::StructuredOutputCompiler> structured_output;
     bool vision_enabled       = true;
     std::uint32_t max_context = 0;
     std::vector<PromptGraft> grafts;
@@ -1103,9 +1106,17 @@ OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
     if (prompt.data_ == nullptr) { throw std::invalid_argument("prepared prompt is empty"); }
     StopPolicy policy = merge_stop_policy(*impl_->tokenizer, caller_stop);
     if (output.raw) { policy.publish_stop_token = true; }
+    std::unique_ptr<fi::StructuredOutputConstraint> structured;
+    if (output.format.kind != OutputFormatKind::Text) {
+        // Compilation runs on the submitting thread, before the request reaches the Engine worker.
+        structured = std::make_unique<fi::StructuredOutputConstraint>(
+            impl_->tokenizer, impl_->structured_output->compile(output.format), policy.token_ids,
+            prompt.data_->starts_in_reasoning);
+    }
     return OutputSession(impl_->tokenizer, std::move(policy), output,
                          prompt.data_->starts_in_reasoning, thinking,
-                         impl_->thinking_control_tokens, prompt.data_->tool_call_output);
+                         impl_->thinking_control_tokens, prompt.data_->tool_call_output,
+                         std::move(structured));
 }
 
 const StopPolicy& Frontend::default_stop_policy() const noexcept { return impl_->defaults; }

@@ -972,6 +972,11 @@ bool Tokenizer::is_special_token(int id) const noexcept {
            special_token_ids_[static_cast<std::size_t>(id)];
 }
 
+bool Tokenizer::is_added_token(int id) const noexcept {
+    return std::any_of(added_tokens_.begin(), added_tokens_.end(),
+                       [id](const AddedToken& token) { return token.id == id; });
+}
+
 bool Tokenizer::is_valid_token(int id) const noexcept {
     return id >= 0 && static_cast<std::size_t>(id) < valid_token_ids_.size() &&
            valid_token_ids_[static_cast<std::size_t>(id)];

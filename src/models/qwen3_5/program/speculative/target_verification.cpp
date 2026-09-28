@@ -5,9 +5,8 @@
 
 namespace ninfer::models::qwen3_5::execution {
 
-void target_verify_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,
-                          TextContext& card, TargetVerifyFrameView frame,
-                          ops::CausalAttentionExecutionEnvelope envelope) {
+void target_verify(TextContext& card, TargetVerifyFrameView frame,
+                   ops::CausalAttentionExecutionEnvelope envelope) {
     if (frame.replay_records == nullptr) {
         throw std::logic_error("speculative target verify has no ReplaySSM record storage");
     }
@@ -23,6 +22,10 @@ void target_verify_accept(ExecutionCore& execution, Tensor& continuation_hidden_
                                  envelope, frame.target_hidden, frame.target_logits,
                                  frame.target_tokens);
     }
+}
+
+void target_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,
+                   TargetVerifyFrameView frame) {
     if (frame.proposal_q.data != nullptr) {
         ops::speculative_accept_sparse_drafts(
             frame.target_tokens, frame.target_logits, frame.drafts, frame.candidate_ids,
@@ -42,6 +45,13 @@ void target_verify_accept(ExecutionCore& execution, Tensor& continuation_hidden_
                                             frame.selected_hidden, execution.device.stream);
     ops::scatter(frame.selected_hidden, frame.state_destination_slots, continuation_hidden_store,
                  execution.device.stream);
+}
+
+void target_verify_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,
+                          TextContext& card, TargetVerifyFrameView frame,
+                          ops::CausalAttentionExecutionEnvelope envelope) {
+    target_verify(card, frame, envelope);
+    target_accept(execution, continuation_hidden_store, frame);
 }
 
 } // namespace ninfer::models::qwen3_5::execution

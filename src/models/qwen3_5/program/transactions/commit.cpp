@@ -163,9 +163,11 @@ StartResult ProgramImpl::start_request(MaterializationTransaction& transaction) 
 
 PendingBatch ProgramImpl::decode(std::span<const SequenceHandle> members,
                                  std::span<const runtime::RoundBudget> budgets,
+                                 std::span<runtime::TokenMaskSource* const> constraints,
                                  runtime::ExecutionTiming* failed_timing) {
     if (pending_transaction_ || members.empty() || members.size() > max_concurrency ||
-        budgets.size() != members.size()) {
+        budgets.size() != members.size() ||
+        (!constraints.empty() && constraints.size() != members.size())) {
         throw std::invalid_argument("decode membership is invalid");
     }
     std::array<std::uint32_t, kMaximumConcurrency> lanes{};
@@ -182,6 +184,7 @@ PendingBatch ProgramImpl::decode(std::span<const SequenceHandle> members,
         lanes[row] = lane;
     }
     const auto lane_span = std::span<const std::uint32_t>(lanes.data(), members.size());
+    const TokenConstraintBinding binding(*this, lane_span, constraints);
     try {
         runtime::BatchedGeneratedRound round = decode_raw(lane_span, budgets, failed_timing);
         if (failed_timing != nullptr) { *failed_timing += round.timing; }
