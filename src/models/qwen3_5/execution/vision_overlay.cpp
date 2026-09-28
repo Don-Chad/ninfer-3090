@@ -116,6 +116,9 @@ std::optional<VisionWindow> VisionResidencyBroker::try_acquire_kv(std::size_t by
     }
     KVLoanPlan plan = plan_kv_loan(*kv_arena_, *kv_pages_, bytes);
     if (plan.granules.empty()) { return std::nullopt; }
+    std::uint32_t total_loan_pages = 0;
+    for (const KVPageRun& run : plan.runs) { total_loan_pages += run.count; }
+    if (total_loan_pages > kv_pages_->available_pages()) { return std::nullopt; }
     // Lending mutates the page pool before any VisionWindow owns the loan, so a throw part-way
     // through this loop would strand the runs already lent: capacity the pool never gets back,
     // because no destructor knows about them. Unwind what this loop did before the failure leaves.
