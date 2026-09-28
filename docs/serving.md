@@ -769,7 +769,11 @@ curl http://127.0.0.1:8080/v1/messages \
 The endpoint accepts top-level System text, ordered User/Assistant/System history, text and image
 blocks, Thinking history, tool-use history, tool results, user-defined tools, aggregate responses,
 and Anthropic SSE. Consecutive User or Assistant messages are joined without adding separators.
-Mid-conversation System messages retain their input position. A final text-only Assistant message
+System messages in `messages` may appear anywhere, including first, between two User messages,
+directly after an Assistant message, or last; each renders as its own System turn at that position
+after the top-level `system` text, so appending one keeps the earlier rendered prompt reusable. The
+one excluded position is between an Assistant `tool_use` and the User message carrying its
+`tool_result`, which is rejected as invalid tool history. A final text-only Assistant message
 is an Assistant prefill: generation continues its existing text instead of opening another turn.
 Assistant prefill cannot contain media, Thinking, or tool calls and cannot start with Thinking
 enabled.
