@@ -776,8 +776,11 @@ Startup validates each graft against the loaded model and refuses to start on an
 - the sidecar's payload sha256;
 - the replay ids against the vocabulary.
 
-Only `prefill_kv` grafts are supported. Trained `softprompt_kv` and `direct_kv` grafts carry no
-replayable token ids.
+Trained `softprompt_kv` and `direct_kv` grafts carry no replayable token ids. Their stored K/V and
+Gated DeltaNet state are instead written at startup into a pinned shared-prefix slot, and grafted
+requests start from it. Because nothing is replayed, these grafts cover the text layers only: a
+grafted request does not use DFlash2 drafting. With `--devices`, each layer's K/V and state are
+written on the device of the stage that holds that layer.
 
 ## Authentication and CORS
 

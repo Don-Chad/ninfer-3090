@@ -539,7 +539,7 @@ std::unique_ptr<Program> create_program(const execution::Parameters& parameters,
 }
 
 void Program::inject_graft(const PromptGraft& graft) {
-    inject_direct_graft(*impl_, graft, impl_->device.stream);
+    inject_direct_graft(*impl_, graft);
 }
 
 std::vector<Program::GraftCatalogEntry> Program::graft_catalog_entries() {

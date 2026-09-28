@@ -17,6 +17,10 @@
 // pair of cards that cannot hold the model alone:
 //   NINFER_TEST_SPLIT_INVARIANCE=1  compare every row with the first row instead of one device
 //   NINFER_TEST_MAX_STAGES=2        skip rows with more stages than that
+//
+// NINFER_TEST_GRAFT=<container.bin> also loads that prompt graft and compares a grafted chat request
+// across the rows. A direct_kv graft's K/V and Gated DeltaNet state are written at startup onto the
+// rank that owns each layer, so a wrong shard, local layer index or block-table replica shows here.
 
 #include "guarded_main.h"
 #include "ninfer/engine.h"
@@ -79,6 +83,9 @@ ninfer::EngineOptions engine_options(const char* artifact, const Configuration& 
     }
     options.devices               = stage_devices(configuration.devices);
     options.stage_layers          = configuration.stage_layers;
+    if (const char* graft = std::getenv("NINFER_TEST_GRAFT"); graft != nullptr && *graft != '\0') {
+        options.grafts.push_back(ninfer::GraftSource{.name = "g", .path = graft});
+    }
     return options;
 }
 
@@ -111,6 +118,8 @@ struct Outputs {
     // its state and KV come back from the cache, on whichever devices hold them.
     std::vector<ninfer::TokenId> continued_run;
     std::uint32_t reused_tokens = 0;
+    // A chat request selecting NINFER_TEST_GRAFT; empty without it.
+    std::vector<ninfer::TokenId> graft_run;
 };
 
 Outputs generate(const char* artifact, const Configuration& configuration) {
@@ -132,6 +141,16 @@ Outputs generate(const char* artifact, const Configuration& configuration) {
         engine.generate(engine.prepare_tokens(std::move(continuation)), greedy(8, true));
     out.continued_run = continued.generated_token_ids;
     out.reused_tokens = continued.reused_prompt_tokens;
+
+    const char* graft = std::getenv("NINFER_TEST_GRAFT");
+    if (graft != nullptr && *graft != '\0') {
+        ninfer::PromptInput input;
+        input.messages.push_back(ninfer::ChatMessage{
+            .role = ninfer::ChatRole::User, .parts = {ninfer::MessagePart{.text = "Who are you?"}}});
+        input.options.graft = "g";
+        out.graft_run =
+            engine.generate(engine.prepare(std::move(input)), greedy(24)).generated_token_ids;
+    }
     return out;
 }
 
@@ -155,6 +174,11 @@ int run() {
     if (reference.short_run.size() != 24 || reference.long_run.size() != 24 ||
         reference.continued_run.size() != 8 || reference.reused_tokens == 0) {
         std::cerr << "the single-device reference did not generate its tokens or reuse its prefix\n";
+        return 1;
+    }
+    const char* graft = std::getenv("NINFER_TEST_GRAFT");
+    if (graft != nullptr && *graft != '\0' && reference.graft_run.size() != 24) {
+        std::cerr << "the reference did not generate the grafted request's tokens\n";
         return 1;
     }
     // MTP needs a model that carries MTP weights; when it does not, the MTP rows are skipped.
@@ -191,11 +215,23 @@ int run() {
         const bool long_ok      = outputs.long_run == expected.long_run;
         const bool cache_ok     = outputs.continued_run == expected.continued_run &&
                               outputs.reused_tokens == expected.reused_tokens;
+        const bool graft_ok     = outputs.graft_run == expected.graft_run;
         std::cout << configuration.label << ": short " << (short_ok ? "identical" : "DIFFERS")
                   << ", long " << (long_ok ? "identical" : "DIFFERS") << ", prefix reuse ("
-                  << outputs.reused_tokens << " tokens) " << (cache_ok ? "identical" : "DIFFERS")
-                  << '\n';
-        if (!short_ok || !long_ok || !cache_ok) {
+                  << outputs.reused_tokens << " tokens) " << (cache_ok ? "identical" : "DIFFERS");
+        if (!expected.graft_run.empty()) {
+            std::cout << ", graft " << (graft_ok ? "identical" : "DIFFERS");
+        }
+        std::cout << '\n';
+        if (!graft_ok && short_ok && long_ok && cache_ok) {
+            ++failures;
+            std::size_t first = 0;
+            while (first < expected.graft_run.size() && first < outputs.graft_run.size() &&
+                   expected.graft_run[first] == outputs.graft_run[first]) {
+                ++first;
+            }
+            std::cerr << "  graft: first difference at token " << first << '\n';
+        } else if (!short_ok || !long_ok || !cache_ok) {
             ++failures;
             const auto& want = short_ok ? expected.long_run : expected.short_run;
             const auto& got  = short_ok ? outputs.long_run : outputs.short_run;
