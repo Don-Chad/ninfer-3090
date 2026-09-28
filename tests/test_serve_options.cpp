@@ -1,6 +1,9 @@
 #include "serve/generation_service.h"
+#include "serve/props.h"
 #include "serve/serve_options.h"
 #include "serve/translate.h"
+
+#include <nlohmann/json.hpp>
 
 #include <iostream>
 #include <string>
@@ -649,6 +652,49 @@ int main() {
         graft_request.graft.clear();
         failures += check(resolve_prompt_semantics(graft_request, grafted).graft.empty(),
                           "a request without a graft selected one");
+    }
+
+    {
+        // /props reports what a request that states nothing actually inherits.
+        const ninfer::ModelSamplingDefaults presets{
+            .thinking     = {.temperature = 1.0F, .top_k = 20, .top_p = 0.95F},
+            .non_thinking = {.temperature = 0.7F, .top_k = 20, .top_p = 0.8F,
+                             .presence_penalty = 1.5F}};
+        const ServeOptions served =
+            parse({"ninfer-serve", "model.ninfer", "--max-context", "65536", "--max-concurrency",
+                   "2", "--top-p", "0.9"});
+        const nlohmann::json props = nlohmann::json::parse(make_props(
+            served, ModelDescription{.id = "qwen", .max_model_len = 65536, .vision = true},
+            presets));
+        const nlohmann::json& settings = props.at("default_generation_settings");
+        const nlohmann::json& params   = settings.at("params");
+        failures += check(settings.at("n_ctx") == 65536 && props.at("total_slots") == 2 &&
+                              props.at("model_alias") == "qwen" &&
+                              props.at("model_path") == "model.ninfer",
+                          "/props context, slots or identity mismatch");
+        failures += check(params.at("n_predict") == -1 && params.at("max_tokens") == -1,
+                          "/props did not report the remaining-context output default as -1");
+        failures += check(params.at("temperature") == 1.0 && params.at("top_k") == 20 &&
+                              params.at("top_p") == 0.9F && !params.contains("seed"),
+                          "/props sampler is not the thinking preset under process overrides");
+        failures += check(props.at("modalities") ==
+                              nlohmann::json{{"vision", true}, {"audio", false}},
+                          "/props modalities mismatch");
+
+        const ServeOptions capped =
+            parse({"ninfer-serve", "model.ninfer", "--no-thinking", "--default-max-tokens",
+                   "2048", "--greedy", "--seed", "7"});
+        const nlohmann::json capped_params =
+            nlohmann::json::parse(
+                make_props(capped, ModelDescription{.id = "qwen", .max_model_len = 8192}, presets))
+                .at("default_generation_settings")
+                .at("params");
+        failures += check(capped_params.at("n_predict") == 2048 &&
+                              capped_params.at("temperature") == 0.0 &&
+                              capped_params.at("presence_penalty") == 1.5F &&
+                              capped_params.at("seed") == 7,
+                          "/props did not follow --default-max-tokens, --no-thinking, --greedy "
+                          "and --seed");
     }
 
     return failures == 0 ? 0 : 1;

@@ -4,6 +4,7 @@
 #include "serve/anthropic_messages.h"
 #include "serve/http_transport.h"
 #include "serve/openai_common.h"
+#include "serve/props.h"
 #include "serve/request_log.h"
 
 #include <nlohmann/json.hpp>
@@ -479,6 +480,9 @@ void HttpServer::register_routes() {
     server_.Get("/v1/load", [this](const httplib::Request& req, httplib::Response& res) {
         handle_load(req, res);
     });
+    server_.Get("/props", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_props(req, res);
+    });
     server_.Get("/v1/models", [this](const httplib::Request& req, httplib::Response& res) {
         handle_models(req, res);
     });
@@ -665,6 +669,11 @@ void HttpServer::handle_load(const httplib::Request&, httplib::Response& res) co
     sample.stats             = service_->runtime_stats();
     res.set_header("Cache-Control", "no-store");
     res.set_content(make_load_report(load_capacity_, sample), "application/json");
+}
+
+void HttpServer::handle_props(const httplib::Request&, httplib::Response& res) const {
+    res.set_content(make_props(options_, model_description(), service_->sampling_defaults()),
+                    "application/json");
 }
 
 ModelDescription HttpServer::model_description() const {

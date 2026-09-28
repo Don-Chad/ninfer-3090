@@ -90,6 +90,7 @@ staged <MiB>)` and the JSON record carries `vision_overlay`, including `exclusiv
 | `GET /metrics` | Prometheus text counters, llama.cpp-compatible names (see [Metrics](#metrics)) |
 | `GET /v1/models` | configured OpenAI model alias, effective context limit (`max_model_len`/`context_window`/`context_length`) and input modalities (see [Model discovery](#model-discovery)) |
 | `GET /v1/models/{id}` | lookup of the same model object by its alias |
+| `GET /props` | read-only llama.cpp-style server properties (see [Model discovery](#model-discovery)) |
 | `POST /v1/chat/completions` | OpenAI-style chat generation |
 | `POST /v1/responses` | OpenAI Responses Core generation, state, typed Items, and SSE |
 | `POST /v1/responses/input_tokens` | Responses prompt-token count without generation |
@@ -132,6 +133,27 @@ The context limit is `--max-context`, mirrored under the vLLM/llama.cpp, Anthrop
 OpenRouter/Ollama field names. `architecture` uses the OpenRouter shape that llama.cpp's router-mode
 `/models` also emits; `input_modalities` lists `image` and `video` only when the server runs with
 `--vision`, and is `["text"]` otherwise.
+
+`GET /props` serves clients that discover a llama.cpp server. It is read-only and fills only the
+llama.cpp fields NInfer can state truthfully:
+
+```json
+{"default_generation_settings": {"n_ctx": 65536,
+   "params": {"n_predict": -1, "max_tokens": -1, "temperature": 1.0, "top_k": 20, "top_p": 0.95,
+              "min_p": 0.0, "presence_penalty": 0.0, "frequency_penalty": 0.0}},
+ "total_slots": 1, "model_alias": "qwen3.8-27b", "model_path": "models/qwen3_8_27b.ninfer",
+ "modalities": {"vision": false, "audio": false}}
+```
+
+`n_ctx` is `--max-context` and `total_slots` is `--max-concurrency`. `n_predict` and its alias
+`max_tokens` are the [default output limit](#default-output-limit): `-1`, llama.cpp's "until the
+context is full", unless `--default-max-tokens` sets a cap. The sampler is the loaded model's preset
+for the default thinking mode (thinking unless `--no-thinking`) under the process sampling flags and
+`--greedy`; request fields still override it per request. `seed` appears only with `--seed`, since
+requests otherwise draw a fresh random seed. `model_alias` is the public model id and `model_path`
+the artifact path the server was started with. There is no `build_info`, `chat_template`, or
+writable `POST /props`, and `/slots`, `/metrics`, and llama.cpp's non-`/v1` route aliases are not
+served.
 
 ### Startup readiness
 

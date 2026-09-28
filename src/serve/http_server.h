@@ -119,6 +119,7 @@ private:
     void handle_slots(const httplib::Request& req, httplib::Response& res) const;
     void handle_slot_action(const httplib::Request& req, httplib::Response& res);
     [[nodiscard]] ModelDescription model_description() const;
+    void handle_props(const httplib::Request& req, httplib::Response& res) const;
     void handle_models(const httplib::Request& req, httplib::Response& res) const;
     void handle_model(const httplib::Request& req, httplib::Response& res) const;
 
