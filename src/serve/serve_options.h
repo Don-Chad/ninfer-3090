@@ -79,6 +79,11 @@ struct ServeOptions {
     // boundaries of every prompt. Unset resolves to the retained-anchor cap once the Engine has
     // normalized it; 0 disables. See resolve_automatic_private_anchors.
     std::optional<std::uint32_t> auto_long_anchors;
+    // Directory for /slots session files; empty disables slot save/restore.
+    std::filesystem::path slot_save_path;
+    // Spill an involuntarily evicted session back to the slot file it was last saved to or
+    // restored from. Requires slot_save_path.
+    bool auto_save_evicted = false;
     std::optional<bool> enable_thinking;
     std::optional<bool> preserve_thinking;
     // --graft NAME=PATH, repeatable: phantom-kv grafts a request may select with "graft": NAME.

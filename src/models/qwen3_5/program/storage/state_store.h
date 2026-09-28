@@ -3,6 +3,7 @@
 #include "models/qwen3_5/state/state_image.h"
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -233,6 +234,40 @@ public:
             throw std::logic_error("StateImage has no published Device replica");
         }
         return *object.device_slot;
+    }
+
+    // Session snapshots read a demoted image from its published Host replica without forcing it
+    // back onto the Device.
+    [[nodiscard]] qwen3_5::HostStateImageConstView host_view(StateImageHandle handle) const {
+        const Object& object = require(handle);
+        if (host_ == nullptr || !object.host_slot) {
+            throw std::logic_error("StateImage has no published Host replica");
+        }
+        return host_->view(*object.host_slot);
+    }
+
+    // Session restore lands a checkpoint image from snapshot bytes as a HostOnly
+    // CheckpointImmutable image, the shape a demoted checkpoint has, so it needs no Device slot.
+    // Returns nullopt when the Host pool is absent or full.
+    [[nodiscard]] std::optional<StateImageHandle>
+    adopt_host_image(const qwen3_5::HostStateImageConstView& source) {
+        if (host_ == nullptr || source.data == nullptr || source.layout == nullptr ||
+            source.layout->image_bytes != host_->layout().image_bytes) {
+            return std::nullopt;
+        }
+        std::optional<StateImageHandle> handle =
+            allocate(StateImageRole::CheckpointImmutable, false);
+        if (!handle) { return std::nullopt; }
+        std::optional<qwen3_5::HostStateSlotHandle> slot = host_->allocate();
+        if (!slot) {
+            (void)release(*handle);
+            return std::nullopt;
+        }
+        Object& object = require(*handle);
+        std::memcpy(host_->writable_view(*slot).data, source.data, source.layout->image_bytes);
+        object.host_slot     = *slot;
+        object.content_epoch = next_epoch();
+        return handle;
     }
 
     void move_checkpoint_to_active(StateImageHandle handle) {

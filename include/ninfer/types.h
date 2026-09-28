@@ -152,6 +152,27 @@ struct StartupObserver {
     std::function<void(const StartupEvent& event)> callback;
 };
 
+// One spill of an involuntarily evicted session to its slot file, reported from the writer thread.
+struct SlotAutoSaveEvent {
+    std::string path;
+    std::uint32_t tokens = 0;
+    std::uint64_t bytes  = 0;
+    double seconds       = 0.0;
+    // Empty on success.
+    std::string error;
+    // Set when the spill was skipped because the file already holds a deeper snapshot of the
+    // session; the value is that depth.
+    std::optional<std::uint32_t> skipped_behind_tokens;
+};
+
+struct SlotAutoSaveOptions {
+    // Before an involuntary eviction destroys a retained session that was last saved to or
+    // restored from a slot file, snapshot it and write it back to that file off-thread.
+    bool enabled = false;
+    // Called on the writer thread after each spill. Exceptions are ignored.
+    std::function<void(const SlotAutoSaveEvent& event)> listener;
+};
+
 struct ContextCacheOptions {
     // Engine resolves every optional once at construction. With C=max_concurrency, the enabled
     // defaults are H=C, R=8, Host KV=8 GiB, P=2C, S=max(C,4) and L=2;
@@ -268,6 +289,7 @@ struct EngineOptions {
     // validated against the resident model at construction.
     std::vector<GraftSource> grafts;
     StartupObserver startup_observer;
+    SlotAutoSaveOptions slot_auto_save;
 };
 
 enum class SamplingMode : std::uint8_t {
@@ -934,6 +956,10 @@ struct GenerationResult {
     std::uint32_t reused_prompt_tokens = 0;
     PrefixReusePath prefix_reuse_path  = PrefixReusePath::Root;
     MaterializationDiagnostics materialization;
+    // The private catalog cell the finished session was retained in and its session digest, or
+    // -1 and empty when the session was not retained.
+    std::int32_t slot = -1;
+    std::string session_digest;
     GenerationTimings timings;
     GenerationEngineTiming engine_timing;
     SpeculativeStats speculative;
@@ -1126,6 +1152,48 @@ struct ContextCostSummary {
     std::string hardware_class;
     std::string prefill_signature;
     std::filesystem::path preset_path;
+};
+
+// Session persistence. A slot is one private context-cache catalog cell; a retained session in it
+// can be saved to a file and a saved file restored into it. Session digests are FNV-1a 64 over the
+// token ledger as 16 lowercase hex characters.
+struct SlotCheckpoint {
+    std::uint32_t frontier = 0;
+    std::string session_digest;
+};
+
+struct SlotState {
+    // An active request will publish into this cell.
+    bool processing = false;
+    // The cell holds a retained session.
+    bool retained = false;
+    // Retained: the session depth. Processing: the request's prompt tokens.
+    std::uint32_t prompt_tokens = 0;
+    // Retained: the session depth. Processing: the prompt tokens reused from the cache.
+    std::uint32_t cached_tokens = 0;
+    std::string session_digest;
+    // Restorable checkpoints of a retained session, ascending by frontier.
+    std::vector<SlotCheckpoint> checkpoints;
+};
+
+struct SlotSaveResult {
+    std::uint32_t tokens = 0;
+    std::uint64_t bytes  = 0;
+    double seconds       = 0.0;
+    std::string session_digest;
+};
+
+struct SlotRestoreResult {
+    std::uint32_t tokens = 0;
+    std::uint64_t bytes  = 0;
+    double seconds       = 0.0;
+    std::string session_digest;
+};
+
+// A slot operation's expected session digest did not match the slot's resident session.
+class SlotSessionMismatch final : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
 };
 
 struct LoadSummary {

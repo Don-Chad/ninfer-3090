@@ -4,6 +4,7 @@
 #include <iterator>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace ninfer::models::qwen3_5::detail {
 namespace {
@@ -199,6 +200,37 @@ void ResidentPrefixIdentity::append_generated(std::size_t count, std::int32_t ro
     if (execution_frontier) { rewrite_execution_frontiers_.push_back(*execution_frontier); }
 }
 
+void ResidentPrefixIdentity::restore(std::vector<std::uint8_t> token_types,
+                                     std::array<std::vector<std::int32_t>, 3> positions,
+                                     std::vector<VisionItem> vision_items,
+                                     std::vector<std::uint32_t> rewrite_execution_frontiers) {
+    const std::size_t tokens = token_types.size();
+    for (const auto& axis : positions) {
+        if (axis.size() != tokens) {
+            throw std::invalid_argument("restored prefix identity axes have inconsistent shapes");
+        }
+    }
+    std::size_t prefix_items = 0;
+    if (!prefix_item_count(vision_items, tokens, &prefix_items) ||
+        prefix_items != vision_items.size()) {
+        throw std::invalid_argument("restored prefix identity vision items exceed its tokens");
+    }
+    std::uint32_t previous_rewrite = 0;
+    for (const std::uint32_t frontier : rewrite_execution_frontiers) {
+        if (frontier == 0 || frontier > tokens || frontier <= previous_rewrite) {
+            throw std::invalid_argument(
+                "restored rewrite execution frontiers must be ordered unique prompt positions");
+        }
+        previous_rewrite = frontier;
+    }
+    token_types_ = std::move(token_types);
+    for (std::size_t axis = 0; axis < positions_.size(); ++axis) {
+        positions_[axis] = std::move(positions[axis]);
+    }
+    vision_items_                = std::move(vision_items);
+    rewrite_execution_frontiers_ = std::move(rewrite_execution_frontiers);
+}
+
 void ResidentPrefixIdentity::truncate(std::size_t tokens) {
     if (tokens > size()) {
         throw std::out_of_range("cannot extend resident prefix identity by truncation");
@@ -390,6 +422,20 @@ void PrefixShortlistDigests::append_generated(std::span<const TokenId> tokens,
     if (next_rewrite != rewrite_frontiers.size()) {
         throw std::logic_error("generated shortlist did not commit its execution split");
     }
+}
+
+void PrefixShortlistDigests::restore(std::vector<std::array<std::uint64_t, 2>> image) {
+    if (image.empty() || image.front() != kDigestOffset) {
+        throw std::invalid_argument("restored prefix shortlist image has no digest seed");
+    }
+    for (std::size_t index = 1; index < image.size(); ++index) {
+        for (const std::uint64_t lane : image[index]) {
+            if (lane == 0) {
+                throw std::invalid_argument("restored prefix shortlist digest lane is zero");
+            }
+        }
+    }
+    digests_ = std::move(image);
 }
 
 void PrefixShortlistDigests::truncate(std::size_t tokens) {

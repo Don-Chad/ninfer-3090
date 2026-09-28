@@ -132,6 +132,7 @@ plan_device_kv_page_pool(std::span<LayoutBuilder* const> builders,
 class DeviceKVPagePool;
 class KVExecutionTablePool;
 class HostKVAllocationView;
+struct HostKVPageLayout;
 class HostKVAllocationConstView;
 
 /** Copyable, non-owning physical-page capability minted by one DeviceKVPagePool. */
@@ -289,6 +290,13 @@ public:
     void copy_to_host(std::span<const DeviceKVPageHandle> source, HostKVAllocationView destination,
                       RankStreams streams = {}) const;
     void copy_from_host(HostKVAllocationConstView source,
+                        std::span<const DeviceKVPageHandle> destination,
+                        RankStreams streams = {}) const;
+    // The same copies against caller-owned memory laid out by `host`, for images that do not live
+    // in a Host KV arena (session snapshots). `host` must describe this pool's geometry.
+    void copy_to_host(std::span<const DeviceKVPageHandle> source, std::byte* destination,
+                      const HostKVPageLayout& host, RankStreams streams = {}) const;
+    void copy_from_host(const std::byte* source, const HostKVPageLayout& host,
                         std::span<const DeviceKVPageHandle> destination,
                         RankStreams streams = {}) const;
 

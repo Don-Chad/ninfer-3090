@@ -30,6 +30,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -436,6 +437,11 @@ struct RequestControl {
     std::optional<Prefill> prefill;
 };
 
+// FNV-1a 64 over the token ids of a ledger prefix, as 16 lowercase hex characters. Session and
+// checkpoint digests both use it, so a checkpoint digest equals the session digest of the same
+// prefix.
+[[nodiscard]] std::string ledger_prefix_digest(std::span<const TokenId> tokens);
+
 class ProgramImpl {
 public:
     struct PressureRecoveryScratch {
@@ -553,6 +559,18 @@ public:
     [[nodiscard]] FinishResult finish(SequenceHandle sequence) noexcept;
     [[nodiscard]] AbortResult abort(SequenceHandle sequence) noexcept;
     [[nodiscard]] ReleaseResult release_continuation(ContinuationHandle&& continuation) noexcept;
+
+    [[nodiscard]] qwen3_5::SessionSnapshot
+    save_continuation(const ContinuationHandle& continuation, std::string_view model_binding);
+    [[nodiscard]] ContinuationHandle restore_continuation(std::span<const std::uint8_t> snapshot,
+                                                          std::string_view model_binding);
+    [[nodiscard]] std::uint32_t
+    continuation_depth(const ContinuationHandle& continuation) const noexcept;
+    [[nodiscard]] std::string continuation_digest(const ContinuationHandle& continuation) const;
+    [[nodiscard]] std::vector<SlotCheckpoint>
+    continuation_checkpoints(const ContinuationHandle& continuation) const;
+    [[nodiscard]] qwen3_5::ContinuationSummary
+    continuation_summary(const ContinuationHandle& continuation) const;
     [[nodiscard]] ReleaseResult release_shared_prefix(SharedPrefixHandle&& shared) noexcept;
     void fail_all_cleanup() noexcept;
     [[nodiscard]] detail::PhysicalResources admission_capacity() const noexcept;

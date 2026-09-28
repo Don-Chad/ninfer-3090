@@ -83,7 +83,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-private-continuations N] [--max-shared-prefixes N] "
            "[--max-long-anchors-per-continuation N] [--auto-long-anchors N] "
            "[--max-cache-markers-per-request N] "
-           "[--request-log-jsonl FILE] "
+           "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|rk8v4|rk4v4|nvfp4|k8v4] "
            "[--spec mtp|dflash|dflash2 --draft-tokens N] "
@@ -136,6 +136,11 @@ std::string serve_usage_text(const char* argv0) {
            "restores at the anchor below the edit instead of re-prefilling from zero; it "
            "defaults to and is clamped to --max-long-anchors-per-continuation (raise that and "
            "--host-state-slots for deeper edits); 0 disables\n"
+           "       --slot-save-path DIR enables POST /slots/{id}?action=save|restore|erase, which "
+           "writes a retained session to a file in DIR or restores one from it\n"
+           "       --auto-save-evicted writes a retained session back to the slot file it was last "
+           "saved to or restored from before an involuntary eviction destroys it (requires "
+           "--slot-save-path; erase never saves)\n"
            "       context cache defaults: device-state=max-concurrency, private=2x concurrency, "
            "shared=max(max-concurrency,4), anchors=2; Host state=8 slots, Host KV=8192 MiB\n"
            "       --device-state-slots is extra checkpoint capacity beyond active lanes; "
@@ -398,6 +403,13 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.use_cuda_graph = false;
         } else if (arg == "--no-prefix-reuse") {
             options.allow_prefix_reuse = false;
+        } else if (arg == "--slot-save-path") {
+            options.slot_save_path = require_value("--slot-save-path");
+            if (options.slot_save_path.empty()) {
+                throw std::invalid_argument("--slot-save-path must not be empty");
+            }
+        } else if (arg == "--auto-save-evicted") {
+            options.auto_save_evicted = true;
         } else if (arg == "--auto-prefix-grid") {
             options.auto_prefix_grid = true;
         } else if (arg == "--lm-head-draft") {
@@ -486,6 +498,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             throw std::invalid_argument(
                 "--no-prefix-reuse cannot be combined with --auto-long-anchors");
         }
+        if (!options.slot_save_path.empty()) {
+            throw std::invalid_argument(
+                "--no-prefix-reuse cannot be combined with --slot-save-path");
+        }
         options.context_cache.enabled                = false;
         options.context_cache.host_state_slots       = 0;
         options.context_cache.host_kv_capacity_bytes = 0;
@@ -495,6 +511,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (!options.stage_layers.empty() && options.devices.size() < 2) {
         throw std::invalid_argument("--stage-layers needs --devices naming more than one device");
+    }
+    if (options.auto_save_evicted && options.slot_save_path.empty()) {
+        throw std::invalid_argument("--auto-save-evicted requires --slot-save-path");
     }
     if (options.port <= 0 || options.port > 65535) {
         throw std::invalid_argument("--port must be in [1,65535]");

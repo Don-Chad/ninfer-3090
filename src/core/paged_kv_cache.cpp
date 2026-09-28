@@ -678,10 +678,18 @@ void DeviceKVPagePool::copy_to_host(std::span<const DeviceKVPageHandle> source,
         destination.layout().geometry != geometry()) {
         throw std::invalid_argument("Paged KV D2H geometry or extent is inconsistent");
     }
+    copy_to_host(source, destination.data(), destination.layout(), streams);
+}
+
+void DeviceKVPagePool::copy_to_host(std::span<const DeviceKVPageHandle> source,
+                                    std::byte* destination, const HostKVPageLayout& host,
+                                    RankStreams streams) const {
+    if (destination == nullptr || host.geometry != geometry()) {
+        throw std::invalid_argument("Paged KV D2H geometry or extent is inconsistent");
+    }
     for (DeviceKVPageHandle page : source) { (void)physical_index(page); }
 
-    const HostKVPageLayout& host = destination.layout();
-    std::size_t begin            = 0;
+    std::size_t begin = 0;
     while (begin < source.size()) {
         std::size_t end = begin + 1;
         while (end < source.size() && source[end].index_ == source[end - 1].index_ + 1) { ++end; }
@@ -691,7 +699,7 @@ void DeviceKVPagePool::copy_to_host(std::span<const DeviceKVPageHandle> source,
             const Tensor& plane                 = planes_[plane_index];
             const cudaStream_t stream           = streams[plane_ranks_[plane_index]];
             const HostKVPlaneLayout& host_plane = host.planes[plane_index];
-            auto* host_base = destination.data() + begin * host.page_stride + host_plane.offset;
+            auto* host_base = destination + begin * host.page_stride + host_plane.offset;
             const auto* device_base = static_cast<const unsigned char*>(plane.data);
             if (geometry().device_plane_order == PagedKVPlaneOrder::PageMajor) {
                 CUDA_CHECK(cudaMemcpy2DAsync(
@@ -721,10 +729,18 @@ void DeviceKVPagePool::copy_from_host(HostKVAllocationConstView source,
         source.layout().geometry != geometry()) {
         throw std::invalid_argument("Paged KV H2D geometry or extent is inconsistent");
     }
+    copy_from_host(source.data(), source.layout(), destination, streams);
+}
+
+void DeviceKVPagePool::copy_from_host(const std::byte* source, const HostKVPageLayout& host,
+                                      std::span<const DeviceKVPageHandle> destination,
+                                      RankStreams streams) const {
+    if (source == nullptr || host.geometry != geometry()) {
+        throw std::invalid_argument("Paged KV H2D geometry or extent is inconsistent");
+    }
     validate_distinct_pages(destination, "Paged KV H2D destination contains duplicate pages");
 
-    const HostKVPageLayout& host = source.layout();
-    std::size_t begin            = 0;
+    std::size_t begin = 0;
     while (begin < destination.size()) {
         std::size_t end = begin + 1;
         while (end < destination.size() &&
@@ -737,7 +753,7 @@ void DeviceKVPagePool::copy_from_host(HostKVAllocationConstView source,
             const Tensor& plane                 = planes_[plane_index];
             const cudaStream_t stream           = streams[plane_ranks_[plane_index]];
             const HostKVPlaneLayout& host_plane = host.planes[plane_index];
-            const auto* host_base = source.data() + begin * host.page_stride + host_plane.offset;
+            const auto* host_base = source + begin * host.page_stride + host_plane.offset;
             auto* device_base     = static_cast<unsigned char*>(plane.data);
             if (geometry().device_plane_order == PagedKVPlaneOrder::PageMajor) {
                 CUDA_CHECK(cudaMemcpy2DAsync(

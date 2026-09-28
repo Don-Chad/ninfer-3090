@@ -669,6 +669,14 @@ int test_aggregate_response() {
             response["timings"]["predicted_per_second"] == 200.0 &&
             response["timings"]["draft_n"] == 9 && response["timings"]["draft_n_accepted"] == 6,
         "aggregate timings use exact cache and N-1 generation intervals");
+    failures += check(!response.contains("id_slot") && !response.contains("session_digest"),
+                      "an unretained session advertised a slot identity");
+    GenerationOutcome retained = outcome;
+    retained.id_slot           = 3;
+    retained.session_digest    = "0123456789abcdef";
+    const Json slotted = Json::parse(make_chat_completion_response(identity(), retained));
+    failures += check(slotted["id_slot"] == 3 && slotted["session_digest"] == "0123456789abcdef",
+                      "aggregate response omits the retained slot identity");
 
     outcome.text.clear();
     outcome.tool_calls.push_back(ninfer::GeneratedToolCall{
@@ -715,6 +723,25 @@ int test_stream_response() {
                           usage["timings"]["predicted_n"] == 7,
                       "dedicated stream usage carries token accounting and terminal timings");
     failures += check(events.back() == "data: [DONE]\n\n", "stream ends with DONE sentinel");
+
+    // The retained slot identity rides the last chunk that carries terminal timings: the usage
+    // chunk when usage is requested, otherwise the finish chunk.
+    GenerationOutcome retained = sample_outcome();
+    retained.id_slot           = 1;
+    retained.session_digest    = "fedcba9876543210";
+    OpenAIChatStream with_usage(identity(), true);
+    (void)with_usage.start();
+    const std::vector<std::string> usage_events = with_usage.finish(retained);
+    failures += check(parse_sse(usage_events[usage_events.size() - 2])["id_slot"] == 1 &&
+                          !parse_sse(usage_events[usage_events.size() - 3]).contains("id_slot"),
+                      "stream usage chunk omits the retained slot identity");
+    OpenAIChatStream without_usage(identity(), false);
+    (void)without_usage.start();
+    const std::vector<std::string> plain_events = without_usage.finish(retained);
+    const Json plain_finish = parse_sse(plain_events[plain_events.size() - 2]);
+    failures += check(plain_finish["choices"][0]["finish_reason"] == "stop" &&
+                          plain_finish["session_digest"] == "fedcba9876543210",
+                      "stream finish chunk omits the retained slot identity without usage");
 
     OpenAIChatStream mismatch(identity(), false);
     (void)mismatch.start();
