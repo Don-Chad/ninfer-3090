@@ -258,13 +258,15 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
         }
     };
 
-    auto issue_kv_tile = [&](int tile_k0) {
+    // A FullTile lies wholly at or below the first query row, so every key is visible and the
+    // per-key causal test drops out of the staging.
+    auto issue_kv_tile = [&]<bool FullTile>(int tile_k0) {
         const int physical_page = block_table[tile_k0 >> kPagedKVPageShift];
         for (int key_l = tid; key_l < Bc; key_l += kCausalPromptI8Threads) {
             const int key = tile_k0 + key_l;
             __half* kd    = &k_scale_s[key_l * Groups];
             __half* vd    = &v_scale_s[key_l * VGroups];
-            if (key <= max_query_abs) {
+            if (FullTile || key <= max_query_abs) {
                 const std::int64_t off =
                     kv_cache_int8_quant_scale_index<Geometry>(physical_page, kv_head, 0, key_l);
                 ninfer::ops::cp_async<8>(kd, &cache_k_scale[off]);
@@ -295,7 +297,7 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
                     const int d     = dc * 16;
                     const int key   = tile_k0 + key_l;
                     k_packed[i]     = make_uint2(0u, 0u);
-                    if (key <= max_query_abs) {
+                    if (FullTile || key <= max_query_abs) {
                         // Both planes are 128 bytes per row, so one offset addresses both.
                         const std::int64_t off = kv_cache_int4_value_code_index<Geometry>(
                             physical_page, kv_head, d >> 1, key_l);
@@ -320,7 +322,7 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
             const int key   = tile_k0 + key_l;
             std::int8_t* kd = &k_i8[(key_l * DB16 + causal_prompt_swz(key_l, dc * 8)) * 2];
             std::int8_t* vd = &v_i8[key_l * D + d];
-            if (key <= max_query_abs) {
+            if (FullTile || key <= max_query_abs) {
                 const std::int64_t off =
                     kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d, key_l);
                 cp_async<16, Cache::cg>(kd, &cache_k[off]);
@@ -346,7 +348,17 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
         ninfer::ops::cp_commit();
     };
 
-    issue_kv_tile(0);
+    // Leading key blocks lie wholly at or below the first query row of a full query tile. They run a
+    // FullTile body: no causal mask, no zero-selects in the softmax, and unconditional staging.
+    // Only the blocks crossing the diagonal, and every block of a partial tail tile, keep the
+    // masked path.
+    const int full_blocks =
+        q0 + Br <= tokens ? min(key_blocks, (base_pos + q0 + 1) / Bc) : 0;
+    if (full_blocks > 0) {
+        issue_kv_tile.template operator()<true>(0);
+    } else {
+        issue_kv_tile.template operator()<false>(0);
+    }
     commit_k_tile();
     ninfer::ops::cp_wait<0>();
     __syncthreads();
@@ -387,7 +399,7 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
     float running_l0     = 0.0f;
     float running_l1     = 0.0f;
     const float scale_l2 = scale * Log2E;
-    for (int kb = 0; kb < key_blocks; ++kb) {
+    const auto step      = [&]<bool FullTile>(int kb) {
         const int k0 = kb * Bc;
         if (warp < ProducerWarps) {
             const int row_base = warp * 16;
@@ -458,14 +470,13 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
             const int row1             = row0 + 8;
             const int qabs0            = row0 < tile_rows ? base_pos + q0 + row0 : -1;
             const int qabs1            = row1 < tile_rows ? base_pos + q0 + row1 : -1;
-            const bool full_score_tile = q0 + Br <= tokens && k0 + Bc - 1 <= base_pos + q0;
-            float bm0                  = -CUDART_INF_F;
-            float bm1                  = -CUDART_INF_F;
+            float bm0 = -CUDART_INF_F;
+            float bm1 = -CUDART_INF_F;
 #pragma unroll
             for (int nt = 0; nt < QKNt; ++nt) {
                 const int key0 = k0 + nt * 8 + 2 * lid;
                 const int key1 = key0 + 1;
-                if (!full_score_tile) {
+                if constexpr (!FullTile) {
                     score[nt][0] = key0 <= qabs0 ? score[nt][0] : -CUDART_INF_F;
                     score[nt][1] = key1 <= qabs0 ? score[nt][1] : -CUDART_INF_F;
                     score[nt][2] = key0 <= qabs1 ? score[nt][2] : -CUDART_INF_F;
@@ -493,16 +504,17 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
             for (int nt = 0; nt < QKNt; ++nt) {
                 const int col0  = nt * 8 + 2 * lid;
                 const int col1  = col0 + 1;
-                const float p00 = score[nt][0] > -CUDART_INF_F
+                // A FullTile has no masked score, so no probability needs the zero-select.
+                const float p00 = FullTile || score[nt][0] > -CUDART_INF_F
                                       ? exp2_approx(__fmaf_rn(score[nt][0], scale_l2, -nm0_scaled))
                                       : 0.0f;
-                const float p01 = score[nt][1] > -CUDART_INF_F
+                const float p01 = FullTile || score[nt][1] > -CUDART_INF_F
                                       ? exp2_approx(__fmaf_rn(score[nt][1], scale_l2, -nm0_scaled))
                                       : 0.0f;
-                const float p10 = score[nt][2] > -CUDART_INF_F
+                const float p10 = FullTile || score[nt][2] > -CUDART_INF_F
                                       ? exp2_approx(__fmaf_rn(score[nt][2], scale_l2, -nm1_scaled))
                                       : 0.0f;
-                const float p11 = score[nt][3] > -CUDART_INF_F
+                const float p11 = FullTile || score[nt][3] > -CUDART_INF_F
                                       ? exp2_approx(__fmaf_rn(score[nt][3], scale_l2, -nm1_scaled))
                                       : 0.0f;
                 // Quantise before the sum as well as before the store, so the denominator matches
@@ -537,7 +549,7 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
                 const int d     = dc * 8;
                 const int key   = k0 + key_l;
                 __half* dst     = &v_f16[key_l * D + causal_prompt_swz(key_l, d)];
-                if (key <= max_query_abs) {
+                if (FullTile || key <= max_query_abs) {
                     // dc == lane here, so a value group spans D/8/VGroups consecutive lanes:
                     // eight for the INT8 G64 coding and four for the packed G32 one. One lane per
                     // group loads the scale and broadcasts it to the rest of that group.
@@ -570,7 +582,13 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
         __syncthreads();
 
         const bool has_next = kb + 1 < key_blocks;
-        if (has_next) { issue_kv_tile((kb + 1) * Bc); }
+        if (has_next) {
+            if (kb + 1 < full_blocks) {
+                issue_kv_tile.template operator()<true>((kb + 1) * Bc);
+            } else {
+                issue_kv_tile.template operator()<false>((kb + 1) * Bc);
+            }
+        }
 
         const int row_tile = warp % kCausalPromptI8RowTiles;
         const int d_slice  = warp / kCausalPromptI8RowTiles;
@@ -613,7 +631,9 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
             ninfer::ops::cp_wait<0>();
         }
         __syncthreads();
-    }
+    };
+    for (int kb = 0; kb < full_blocks; ++kb) { step.template operator()<true>(kb); }
+    for (int kb = full_blocks; kb < key_blocks; ++kb) { step.template operator()<false>(kb); }
 
     if (warp < ProducerWarps && lid == 0) {
         const int row0  = warp * 16 + gid;
