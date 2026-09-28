@@ -1,7 +1,11 @@
-// Contract of Variant::mtp_graph_profiles: profiles that resolve to different attention routes
-// must not share a topology class, because instantiate_graph_family instantiates one
-// cudaGraphExec_t per class and installs every other profile of that class through
-// cudaGraphExecUpdate, which cannot cross a change of node count.
+// Contract of mtp_graph_profiles: every profile stays on one attention route, and a topology class
+// never mixes the chunked small-T route (two kernels per chunk) with the single-launch routes,
+// because instantiate_graph_family instantiates one cudaGraphExec_t per class and installs every
+// other profile of that class through cudaGraphExecUpdate, which cannot cross a change of node
+// count. An MTP round records the target verify and the MTP batch forward
+// at T=K+1 and K-1 autoregressive draft steps at T=1, each over its own visible-key maximum, and
+// the route table differs between the 27B and 35B head geometries -- so every one of those
+// attentions is checked, for both geometries, rather than the verify alone.
 
 #include "models/qwen3_5/program/planning/graph_profiles.h"
 #include "models/qwen3_5/program/round_buffers.h"
@@ -12,18 +16,22 @@
 #include <cstdint>
 #include <iostream>
 #include <map>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace {
 
 using ninfer::KvCacheStorage;
+using ninfer::models::qwen3_5::detail::MtpGraphAttention;
+using ninfer::ops::AttentionHeadGeometry;
 using ninfer::ops::CausalAttentionExecutionEnvelope;
 using ninfer::ops::detail::causal_attention_resolve_route;
 using ninfer::ops::detail::causal_attention_route_name;
 using ninfer::ops::detail::CausalAttentionRoute;
-// The official Qwen3.6-35B-A3B MoE attention geometry, whose verify route table the predicate
-// in graph_profiles.cpp mirrors.
-constexpr std::int32_t kQueryHeads = 16;
+
+// The official Qwen3.6/3.8-27B dense and Qwen3.6-35B-A3B MoE full-attention geometries.
+constexpr AttentionHeadGeometry kGeometries[] = {{256, 24, 4}, {256, 16, 2}};
 
 // Every KV storage the engine can be configured with. The route table branches on storage, so a
 // planner that is right for one of them is not thereby right for the rest.
@@ -33,22 +41,49 @@ constexpr KvCacheStorage kStorages[] = {
     KvCacheStorage::RotatedInt8KeyInt4ValueGroup64, KvCacheStorage::RotatedLloyd4KeyInt4Value,
 };
 
-CausalAttentionRoute route_at(std::uint32_t capacity, std::uint32_t draft_window,
-                              std::uint32_t frontier, KvCacheStorage storage) {
-    const std::uint64_t target =
-        std::min<std::uint64_t>(capacity, static_cast<std::uint64_t>(frontier) + draft_window + 1);
-    return causal_attention_resolve_route(
-        kQueryHeads, static_cast<std::int32_t>(draft_window) + 1, 1, storage,
-        CausalAttentionExecutionEnvelope{1U, static_cast<std::uint32_t>(target)});
+// Routes of every attention one round records at this frontier: verify first, then each AR step.
+std::vector<CausalAttentionRoute> routes_at(std::uint32_t capacity, std::uint32_t draft_window,
+                                            std::uint32_t frontier,
+                                            const MtpGraphAttention& attention) {
+    const auto visible = [capacity](std::uint64_t value) {
+        return static_cast<std::uint32_t>(std::min<std::uint64_t>(capacity, value));
+    };
+    std::vector<CausalAttentionRoute> routes;
+    routes.push_back(causal_attention_resolve_route(
+        attention.geometry.query_heads, static_cast<std::int32_t>(draft_window) + 1, 1,
+        attention.storage,
+        CausalAttentionExecutionEnvelope{
+            1U, visible(static_cast<std::uint64_t>(frontier) + draft_window + 1ULL)}));
+    for (std::uint32_t step = 0; step + 1 < draft_window; ++step) {
+        routes.push_back(causal_attention_resolve_route(
+            attention.geometry.query_heads, 1, 1, attention.storage,
+            CausalAttentionExecutionEnvelope{
+                1U, visible(static_cast<std::uint64_t>(frontier) + draft_window + step + 2ULL)}));
+    }
+    return routes;
+}
+
+std::string describe(const std::vector<CausalAttentionRoute>& routes) {
+    std::string out;
+    for (const CausalAttentionRoute route : routes) {
+        if (!out.empty()) { out += ','; }
+        out += causal_attention_route_name(route);
+    }
+    return out;
 }
 
 int failures = 0;
 
-void check(std::uint32_t capacity, std::uint32_t draft_window, KvCacheStorage storage) {
-    const int kv        = static_cast<int>(storage);
-    const auto profiles = ninfer::models::qwen3_5::detail::mtp_graph_profiles(capacity, draft_window);
+void check(std::uint32_t capacity, std::uint32_t draft_window, const MtpGraphAttention& attention) {
+    const auto profiles =
+        ninfer::models::qwen3_5::detail::mtp_graph_profiles(capacity, draft_window, attention);
+    const auto label = [&] {
+        return "capacity=" + std::to_string(capacity) + " k=" + std::to_string(draft_window) +
+               " heads=" + std::to_string(attention.geometry.query_heads) +
+               " kv=" + std::to_string(static_cast<int>(attention.storage));
+    };
     if (profiles.empty()) {
-        std::cerr << "capacity=" << capacity << " k=" << draft_window << ": no profiles\n";
+        std::cerr << label() << ": no profiles\n";
         ++failures;
         return;
     }
@@ -56,45 +91,51 @@ void check(std::uint32_t capacity, std::uint32_t draft_window, KvCacheStorage st
     std::uint32_t expected_min = 0;
     for (const auto& profile : profiles) {
         if (profile.min != expected_min || profile.max < profile.min) {
-            std::cerr << "capacity=" << capacity << " k=" << draft_window
-                      << ": frontier coverage has a hole at [" << profile.min << "," << profile.max
-                      << "]\n";
+            std::cerr << label() << ": frontier coverage has a hole at [" << profile.min << ","
+                      << profile.max << "]\n";
             ++failures;
         }
         expected_min = profile.max + 1;
     }
     if (profiles.back().max != capacity - 1) {
-        std::cerr << "capacity=" << capacity << " k=" << draft_window << ": coverage stops at "
-                  << profiles.back().max << "\n";
+        std::cerr << label() << ": coverage stops at " << profiles.back().max << "\n";
         ++failures;
     }
 
     // 1. one route per profile: the executable installed for a profile is replayed across the
-    //    whole frontier range of that profile.
+    //    whole frontier range of that profile, so the range should not straddle a route flip.
     for (const auto& profile : profiles) {
-        const CausalAttentionRoute lo = route_at(capacity, draft_window, profile.min, storage);
-        const CausalAttentionRoute hi = route_at(capacity, draft_window, profile.max, storage);
+        const auto lo = routes_at(capacity, draft_window, profile.min, attention);
+        const auto hi = routes_at(capacity, draft_window, profile.max, attention);
         if (lo != hi) {
-            std::cerr << "capacity=" << capacity << " k=" << draft_window << " kv=" << kv
-                      << ": profile [" << profile.min << "," << profile.max << "] class "
-                      << profile.topology_class << " spans a route flip "
-                      << causal_attention_route_name(lo) << " -> "
-                      << causal_attention_route_name(hi) << "\n";
+            std::cerr << label() << ": profile [" << profile.min << "," << profile.max
+                      << "] class " << profile.topology_class << " spans a route flip "
+                      << describe(lo) << " -> " << describe(hi) << "\n";
             ++failures;
         }
     }
 
-    // 2. one class per route: profiles of different routes must not share an executable.
-    std::map<std::uint32_t, CausalAttentionRoute> route_of_class;
+    // 2. one node structure per class: prompt and small-T each enqueue two kernels and may share
+    //    an executable, but the chunked route enqueues two per chunk and must not share one with
+    //    them.
+    const auto chunked = [&](std::uint32_t frontier) {
+        std::vector<bool> out;
+        for (const CausalAttentionRoute route :
+             routes_at(capacity, draft_window, frontier, attention)) {
+            out.push_back(route == CausalAttentionRoute::ChunkedSmallT);
+        }
+        return out;
+    };
+    std::map<std::uint32_t, std::pair<std::vector<bool>, std::vector<CausalAttentionRoute>>>
+        of_class;
     for (const auto& profile : profiles) {
-        const CausalAttentionRoute route = route_at(capacity, draft_window, profile.max, storage);
-        const auto [it, inserted]        = route_of_class.emplace(profile.topology_class, route);
-        if (!inserted && it->second != route) {
-            std::cerr << "capacity=" << capacity << " k=" << draft_window << " kv=" << kv
-                      << ": class " << profile.topology_class << " carries both "
-                      << causal_attention_route_name(it->second) << " and "
-                      << causal_attention_route_name(route) << " (profile [" << profile.min << ","
-                      << profile.max << "])\n";
+        const auto routes         = routes_at(capacity, draft_window, profile.max, attention);
+        const auto [it, inserted] = of_class.emplace(profile.topology_class,
+                                                     std::pair{chunked(profile.max), routes});
+        if (!inserted && it->second.first != chunked(profile.max)) {
+            std::cerr << label() << ": class " << profile.topology_class << " carries both "
+                      << describe(it->second.second) << " and " << describe(routes)
+                      << " (profile [" << profile.min << "," << profile.max << "])\n";
             ++failures;
         }
     }
@@ -103,15 +144,17 @@ void check(std::uint32_t capacity, std::uint32_t draft_window, KvCacheStorage st
 } // namespace
 
 int main() {
-    // One past the widest window any registered verify path can request today
-    // (kMtpDecodeMaximumDrafts is 5, kDFlashDecodeMaximumDrafts is 15), so the guard that adds
-    // the route-flip boundary is itself covered rather than trusted.
+    // Every window the MTP decode frame admits, and one past it, so a cap raise that outgrows the
+    // verify route table is caught here rather than by a failed graph update at startup.
     constexpr std::uint32_t kSweptDraftWindows =
-        ninfer::models::qwen3_5::kDFlashDecodeMaximumDrafts + 1U;
-    for (const std::uint32_t capacity : {2048U, 16384U, 65536U, 262144U}) {
-        for (std::uint32_t draft_window = 1; draft_window <= kSweptDraftWindows; ++draft_window) {
-            for (const KvCacheStorage storage : kStorages) {
-                check(capacity, draft_window, storage);
+        ninfer::models::qwen3_5::kMtpDecodeMaximumDrafts + 1U;
+    for (const AttentionHeadGeometry geometry : kGeometries) {
+        for (const std::uint32_t capacity : {2048U, 16384U, 65536U, 262144U}) {
+            for (std::uint32_t draft_window = 1; draft_window <= kSweptDraftWindows;
+                 ++draft_window) {
+                for (const KvCacheStorage storage : kStorages) {
+                    check(capacity, draft_window, {.geometry = geometry, .storage = storage});
+                }
             }
         }
     }
@@ -119,6 +162,7 @@ int main() {
         std::cerr << failures << " MTP graph-profile contract violation(s)\n";
         return 1;
     }
-    std::cout << "MTP graph profiles keep one attention route per topology class\n";
+    std::cout << "MTP graph profiles keep one attention route per profile and one node structure "
+                 "per class\n";
     return 0;
 }

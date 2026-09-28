@@ -337,7 +337,12 @@ void ProgramImpl::prepare_graphs() {
     }
 
     if (speculative_backend == SpeculativeBackend::Mtp) {
-        const auto planned_profiles = mtp_graph_profiles(capacity, draft_window);
+        const auto& attention       = *parameters.model.config().text.attention;
+        const auto planned_profiles = mtp_graph_profiles(
+            capacity, draft_window,
+            {.geometry = {dimension(attention.head_dim), dimension(attention.num_attention_heads),
+                          dimension(attention.num_key_value_heads)},
+             .storage  = kv_storage});
         validate_graph_profiles(planned_profiles, capacity - 1, "MTP");
         execution::MtpBatchContext mtp_state{execution_core(),
                                              decoder->text_kv,

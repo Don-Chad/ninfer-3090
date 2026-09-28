@@ -950,7 +950,13 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
             impl->graph_allowance_bytes = checked_mul(12ULL * kMiB, impl->max_concurrency,
                                                       "ordinary exact-b graph allowance");
         } else if (impl->speculative_backend == SpeculativeBackend::Mtp) {
-            const auto profiles = mtp_graph_profiles(impl->capacity, impl->draft_window);
+            const auto& attention = *impl->parameters->model.config().text.attention;
+            const auto profiles   = mtp_graph_profiles(
+                impl->capacity, impl->draft_window,
+                {.geometry = {dimension(attention.head_dim),
+                              dimension(attention.num_attention_heads),
+                              dimension(attention.num_key_value_heads)},
+                 .storage  = impl->kv_storage});
             const std::size_t per_batch_allowance = graph_topology_allowance(
                 profiles,
                 [&](GraphExecutionProfile profile) {

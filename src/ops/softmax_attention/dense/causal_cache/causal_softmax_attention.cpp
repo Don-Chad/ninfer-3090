@@ -441,6 +441,32 @@ std::size_t causal_softmax_attention_workspace_capacity_bytes(
     return maximum;
 }
 
+CausalAttentionLaunchShape causal_softmax_attention_launch_shape(
+    AttentionHeadGeometry geometry, KvCacheStorage cache_storage,
+    CausalAttentionExecutionEnvelope envelope, std::int32_t batch_size, std::int32_t tokens) {
+    require_causal_geometry(geometry, "causal_softmax_attention launch shape");
+    (void)d256_kv_cache_profile(cache_storage);
+    if (batch_size <= 0 || batch_size > kMaximumBatchSize || tokens <= 0 ||
+        (batch_size > 1 && tokens > kMaximumVerifyTokens) || envelope.min_visible_keys == 0 ||
+        envelope.min_visible_keys > envelope.max_visible_keys ||
+        envelope.max_visible_keys > kCausalAttentionMaximumVisibleKeys) {
+        throw std::invalid_argument("causal_softmax_attention launch shape: invalid profile");
+    }
+    const detail::CausalAttentionRoute route = detail::causal_attention_resolve_route(
+        geometry.query_heads, tokens, batch_size, cache_storage, envelope);
+    // The prompt route appends the new K/V and then attends; a small-T launch appends inside its
+    // partial kernel and then reduces. Both are two kernels, and the chunked route repeats the
+    // small-T pair once per chunk.
+    CausalAttentionLaunchShape shape{.route = static_cast<std::uint32_t>(route), .kernel_nodes = 2U};
+    if (route == detail::CausalAttentionRoute::ChunkedSmallT) {
+        const auto chunk = static_cast<std::uint32_t>(causal_attention_chunk_tokens(
+            geometry.query_heads, tokens, batch_size, cache_storage, envelope));
+        shape.route |= chunk << 8U;
+        shape.kernel_nodes = 2U * ((static_cast<std::uint32_t>(tokens) + chunk - 1U) / chunk);
+    }
+    return shape;
+}
+
 void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
                               const Tensor& positions, const Tensor& valid_columns,
                               const Tensor& kv_table_rows, AttentionHeadGeometry geometry,
