@@ -37,10 +37,15 @@ void apply_openai_prompt_cache_policy(GenerationRequest& request, OpenAIPromptCa
 // call that can never arrive, which is worse than a clear error.
 [[nodiscard]] bool is_hosted_openai_tool_type(std::string_view type) noexcept;
 
-std::string make_models_list(const std::string& model_id, std::int64_t created,
-                             std::uint32_t max_model_len);
-std::string make_model_object(const std::string& model_id, std::int64_t created,
-                              std::uint32_t max_model_len);
+// What /v1/models advertises about the one resident model.
+struct ModelDescription {
+    std::string id;
+    std::uint32_t max_model_len = 0; // --max-context, each sequence's ceiling
+    bool vision                 = false;
+};
+
+std::string make_models_list(const ModelDescription& model, std::int64_t created);
+std::string make_model_object(const ModelDescription& model, std::int64_t created);
 std::string make_error_body(const ApiError& error);
 std::int64_t unix_time_now();
 

@@ -195,37 +195,43 @@ void apply_openai_prompt_cache_policy(GenerationRequest& request, OpenAIPromptCa
     request.allow_engine_automatic_shared_prefixes = true;
 }
 
-std::string make_models_list(const std::string& model_id, std::int64_t created,
-                             std::uint32_t max_model_len) {
-    // No client ecosystem agrees on one name for this: max_model_len is vLLM/llama.cpp's
-    // discovery field, context_window is Anthropic's Models API field, and context_length is the
-    // OpenRouter/Ollama convention. OpenAI's own /v1/models spec has none of them. Mirror the same
-    // value under all three so whichever a client reads, it gets the configured context limit.
-    const Json payload = {{"object", "list"},
-                          {"data", Json::array({Json{{"id", model_id},
-                                                     {"object", "model"},
-                                                     {"created", created},
-                                                     {"owned_by", "ninfer"},
-                                                     {"max_model_len", max_model_len},
-                                                     {"context_window", max_model_len},
-                                                     {"context_length", max_model_len}}})}};
-    return payload.dump();
+namespace {
+
+Json model_json(const ModelDescription& model, std::int64_t created) {
+    // No client ecosystem agrees on one name for the context limit: max_model_len is
+    // vLLM/llama.cpp's discovery field, context_window is Anthropic's Models API field, and
+    // context_length is the OpenRouter/Ollama convention. OpenAI's own /v1/models spec has none of
+    // them. Mirror the same value under all three so whichever a client reads, it gets the
+    // configured context limit.
+    //
+    // Modalities follow the OpenRouter `architecture` object, which llama.cpp's router-mode
+    // /models also emits: clients that gate image attachments on it see image and video input only
+    // when the server was started with --vision.
+    Json input = Json::array({"text"});
+    if (model.vision) {
+        input.push_back("image");
+        input.push_back("video");
+    }
+    return Json{{"id", model.id},
+                {"object", "model"},
+                {"created", created},
+                {"owned_by", "ninfer"},
+                {"max_model_len", model.max_model_len},
+                {"context_window", model.max_model_len},
+                {"context_length", model.max_model_len},
+                {"architecture",
+                 Json{{"input_modalities", std::move(input)},
+                      {"output_modalities", Json::array({"text"})}}}};
 }
 
-std::string make_model_object(const std::string& model_id, std::int64_t created,
-                              std::uint32_t max_model_len) {
-    // No client ecosystem agrees on one name for this: max_model_len is vLLM/llama.cpp's
-    // discovery field, context_window is Anthropic's Models API field, and context_length is the
-    // OpenRouter/Ollama convention. OpenAI's own /v1/models spec has none of them. Mirror the same
-    // value under all three so whichever a client reads, it gets the configured context limit.
-    const Json payload = {{"id", model_id},
-                          {"object", "model"},
-                          {"created", created},
-                          {"owned_by", "ninfer"},
-                          {"max_model_len", max_model_len},
-                          {"context_window", max_model_len},
-                          {"context_length", max_model_len}};
-    return payload.dump();
+} // namespace
+
+std::string make_models_list(const ModelDescription& model, std::int64_t created) {
+    return Json{{"object", "list"}, {"data", Json::array({model_json(model, created)})}}.dump();
+}
+
+std::string make_model_object(const ModelDescription& model, std::int64_t created) {
+    return model_json(model, created).dump();
 }
 
 std::string make_error_body(const ApiError& error) {

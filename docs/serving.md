@@ -88,8 +88,8 @@ staged <MiB>)` and the JSON record carries `vision_overlay`, including `exclusiv
 | `GET /slots` | per-slot occupancy of the private context cache (see [Slots](#slots)) |
 | `POST /slots/{id}?action=save\|restore\|erase` | save a retained session to a file, restore one, or evict one (see [Slots](#slots)) |
 | `GET /metrics` | Prometheus text counters, llama.cpp-compatible names (see [Metrics](#metrics)) |
-| `GET /v1/models` | configured OpenAI model alias and effective context limit (`max_model_len`/`context_window`/`context_length`) |
-| `GET /v1/models/{id}` | lookup of the configured alias and effective context limit (`max_model_len`/`context_window`/`context_length`) |
+| `GET /v1/models` | configured OpenAI model alias, effective context limit (`max_model_len`/`context_window`/`context_length`) and input modalities (see [Model discovery](#model-discovery)) |
+| `GET /v1/models/{id}` | lookup of the same model object by its alias |
 | `POST /v1/chat/completions` | OpenAI-style chat generation |
 | `POST /v1/responses` | OpenAI Responses Core generation, state, typed Items, and SSE |
 | `POST /v1/responses/input_tokens` | Responses prompt-token count without generation |
@@ -117,6 +117,21 @@ worker per admissible request (`max_concurrency + max_pending_requests + 1`) and
 to 64 further workers for connections that are merely open; the extra workers retire once idle.
 Without that headroom a client-side connection pool of otherwise idle sockets occupies every worker
 and the server accepts real requests strictly one at a time.
+
+### Model discovery
+
+`/v1/models` lists one model object:
+
+```json
+{"id": "qwen3.8-27b", "object": "model", "created": 1790000000, "owned_by": "ninfer",
+ "max_model_len": 65536, "context_window": 65536, "context_length": 65536,
+ "architecture": {"input_modalities": ["text", "image", "video"], "output_modalities": ["text"]}}
+```
+
+The context limit is `--max-context`, mirrored under the vLLM/llama.cpp, Anthropic, and
+OpenRouter/Ollama field names. `architecture` uses the OpenRouter shape that llama.cpp's router-mode
+`/models` also emits; `input_modalities` lists `image` and `video` only when the server runs with
+`--vision`, and is `["text"]` otherwise.
 
 ### Startup readiness
 
