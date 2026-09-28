@@ -423,6 +423,12 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
             prepared.thinking_budget.reset();
         }
         prepared.prompt_tokens = static_cast<int>(prompt.summary().prompt_tokens);
+        if (request.derive_output_budget) {
+            request_options.execution.requested_output_tokens =
+                engine_->concurrent_output_budget(prompt);
+        }
+        prepared.requested_output_tokens =
+            static_cast<int>(request_options.execution.requested_output_tokens);
         prepared.preparation   = prompt.preparation_stats();
         prepared.prepare_seconds =
             std::chrono::duration<double>(Clock::now() - prepared.lifetime->started).count();

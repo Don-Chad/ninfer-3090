@@ -256,11 +256,14 @@ int main() {
                       "server argv did not retain the redaction marker");
 
     GenerationRequest request;
-    request.max_tokens = 4096;
+    // A derived budget: the parse-time context bound is replaced by what was actually submitted.
+    request.max_tokens           = 65536;
+    request.derive_output_budget = true;
     request.messages.resize(2);
     request.messages.front().content.push_back(ContentPart{.kind = ContentKind::Image});
 
     PreparedRequest prepared;
+    prepared.requested_output_tokens                   = 4096;
     prepared.enable_thinking                           = true;
     prepared.thinking_budget                           = 256;
     prepared.reasoning_effort                          = ninfer::ReasoningEffort::XHigh;

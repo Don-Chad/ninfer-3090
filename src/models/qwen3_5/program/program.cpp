@@ -510,6 +510,10 @@ PhysicalUsageSnapshot Program::physical_usage() const noexcept { return impl_->p
 
 MemorySummary Program::memory_summary() const noexcept { return impl_->memory_summary(); }
 
+std::uint32_t Program::concurrent_output_budget(std::uint32_t prompt_tokens) const noexcept {
+    return impl_->concurrent_output_budget(prompt_tokens);
+}
+
 void Program::reset_memory_peaks() noexcept { impl_->reset_memory_peaks(); }
 
 SequencePlanner make_sequence_planner(const execution::Parameters& parameters,

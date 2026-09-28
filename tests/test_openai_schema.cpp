@@ -116,6 +116,19 @@ int test_request_envelope_and_sampling() {
                   !defaults.timings_per_token && !defaults.return_progress &&
                   defaults.generation.max_tokens == limits().default_max_tokens,
               "protocol defaults remain outside GenerationRequest");
+    failures += check(!defaults.generation.derive_output_budget,
+                      "a --default-max-tokens cap was marked for derivation");
+    const RequestLimits derived{.max_context = 4096};
+    const OpenAIChatRequest derived_omitted = parse_chat_completion_request(base_request(), derived);
+    failures += check(derived_omitted.generation.derive_output_budget &&
+                          derived_omitted.generation.max_tokens == 4096,
+                      "an omitted limit without a server cap was not marked for derivation");
+    Json explicit_limit          = base_request();
+    explicit_limit["max_tokens"] = 32;
+    const OpenAIChatRequest derived_explicit = parse_chat_completion_request(explicit_limit, derived);
+    failures += check(!derived_explicit.generation.derive_output_budget &&
+                          derived_explicit.generation.max_tokens == 32,
+                      "an explicit limit was marked for derivation");
 
     Json malformed              = base_request();
     malformed["stream_options"] = true;

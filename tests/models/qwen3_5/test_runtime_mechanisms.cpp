@@ -5,6 +5,7 @@
 #include "models/qwen3_5/program/vision_control.h"
 
 #include "models/qwen3_5/program/prefix_identity.h"
+#include "models/qwen3_5/program/planning/output_budget.h"
 #include "models/qwen3_5/program/planning/rebuild_work.h"
 
 #include <algorithm>
@@ -438,9 +439,89 @@ void test_rebuild_work_prompt_frontier_boundary() {
            "continuation growth did not preserve the prompt-frontier rebuild split");
 }
 
+// Independent oracle: the largest output in [1, remaining] whose reserved tokens -- prompt plus
+// output minus the unwritten last token, plus MTP's draft window up to the context -- fit a lane's
+// share of each pool in whole 64-token pages, found by a linear scan.
+std::uint32_t scanned_budget(std::uint32_t capacity, std::uint32_t draft_window,
+                             ninfer::SpeculativeBackend backend, std::uint32_t main_share,
+                             std::uint32_t backend_share, std::uint32_t prompt) {
+    const auto pages = [](std::uint64_t tokens) { return (tokens + 63U) / 64U; };
+    const std::uint32_t remaining = capacity - prompt + 1U;
+    std::uint32_t best            = 0;
+    for (std::uint32_t output = 1; output <= remaining; ++output) {
+        const std::uint64_t reserved = std::uint64_t{prompt} + output - 1U;
+        std::uint64_t backend_tokens = 0;
+        if (backend == ninfer::SpeculativeBackend::Mtp) {
+            backend_tokens = std::min<std::uint64_t>(capacity, reserved + draft_window - 1U);
+        } else if (backend == ninfer::SpeculativeBackend::DFlash) {
+            backend_tokens = reserved;
+        }
+        if (pages(reserved) <= main_share && pages(backend_tokens) <= backend_share) {
+            best = output;
+        }
+    }
+    return best == 0 ? remaining : best;
+}
+
+void test_concurrent_output_budget() {
+    using ninfer::SpeculativeBackend;
+    using q36::detail::KVEntitlementShape;
+    struct Case {
+        KVEntitlementShape shape;
+        std::uint32_t main_share;
+        std::uint32_t backend_share;
+        std::uint32_t prompt;
+        std::uint32_t expected;
+        const char* what;
+    };
+    const KVEntitlementShape plain{.capacity = 2048, .backend = SpeculativeBackend::None};
+    const KVEntitlementShape mtp{
+        .capacity = 2048, .draft_window = 4, .backend = SpeculativeBackend::Mtp};
+    const KVEntitlementShape dflash{
+        .capacity = 2048, .draft_window = 8, .backend = SpeculativeBackend::DFlash};
+    const std::array cases{
+        // One lane owning a 2048-token pool: exactly the remaining context.
+        Case{plain, 32, 0, 17, 2032, "one lane did not receive the remaining context"},
+        // Two lanes share it: reserved prompt+output-1 must fit 16 pages (1024 tokens).
+        Case{plain, 16, 0, 17, 1008, "two lanes did not split the Main pool"},
+        Case{plain, 16, 0, 1024, 1, "a prompt filling its share left no single token"},
+        // MTP's draft window reserves three tokens beyond the Main frontier.
+        Case{mtp, 16, 16, 17, 1005, "MTP draft reservation was not charged"},
+        // A smaller DFlash backend pool binds before the Main share.
+        Case{dflash, 16, 8, 17, 496, "the DFlash backend share did not bind"},
+        // A prompt beyond one lane's share keeps the remaining context.
+        Case{plain, 16, 0, 1100, 949, "an over-share prompt did not keep the remaining context"},
+    };
+    for (const Case& value : cases) {
+        const std::uint32_t budget = q36::detail::concurrent_output_budget(
+            value.shape, value.main_share, value.backend_share, value.prompt);
+        expect(budget == value.expected, value.what);
+        expect(budget == scanned_budget(value.shape.capacity, value.shape.draft_window,
+                                        value.shape.backend, value.main_share,
+                                        value.backend_share, value.prompt),
+               value.what);
+    }
+    expect(q36::detail::concurrent_output_budget(plain, 32, 0, 2049) == 0 &&
+               q36::detail::concurrent_output_budget(plain, 32, 0, 0) == 0,
+           "an empty or over-context prompt received a budget");
+    // Agreement with the scan across prompts and odd shares.
+    for (const KVEntitlementShape& shape : {plain, mtp, dflash}) {
+        for (std::uint32_t prompt = 1; prompt <= 2048; prompt += 37) {
+            const std::uint32_t budget =
+                q36::detail::concurrent_output_budget(shape, 11, 7, prompt);
+            if (budget != scanned_budget(shape.capacity, shape.draft_window, shape.backend, 11, 7,
+                                         prompt)) {
+                expect(false, "concurrent output budget disagreed with the linear scan");
+                return;
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main() {
+    test_concurrent_output_budget();
     test_decoder_layout();
     test_round_layout();
     test_mtp_alignment();

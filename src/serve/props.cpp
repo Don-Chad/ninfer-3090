@@ -17,8 +17,8 @@ std::string make_props(const ServeOptions& options, const ModelDescription& mode
     const ninfer::SamplingOverrides& process = options.sampling_overrides;
     const float temperature = options.greedy ? 0.0F : process.temperature.value_or(preset.temperature);
 
-    // llama.cpp's -1 means "until the context is full", which is exactly NInfer's default when
-    // --default-max-tokens is unset.
+    // llama.cpp's -1 means "no fixed cap": without --default-max-tokens NInfer derives each
+    // request's budget from its prompt and the lane share, so no single number applies.
     const int n_predict = options.default_max_tokens.value_or(-1);
     Json params{{"n_predict", n_predict},
                 {"max_tokens", n_predict},

@@ -146,8 +146,9 @@ llama.cpp fields NInfer can state truthfully:
 ```
 
 `n_ctx` is `--max-context` and `total_slots` is `--max-concurrency`. `n_predict` and its alias
-`max_tokens` are the [default output limit](#default-output-limit): `-1`, llama.cpp's "until the
-context is full", unless `--default-max-tokens` sets a cap. The sampler is the loaded model's preset
+`max_tokens` are the [default output limit](#default-output-limit): `-1`, llama.cpp's "no fixed
+cap", when it is derived per request from the prompt and lane share, or the `--default-max-tokens`
+cap. The sampler is the loaded model's preset
 for the default thinking mode (thinking unless `--no-thinking`) under the process sampling flags and
 `--greedy`; request fields still override it per request. `seed` appears only with `--seed`, since
 requests otherwise draw a fresh random seed. `model_alias` is the public model id and `model_path`
@@ -971,7 +972,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--lookup-ngram N` | context-lookup drafting alongside `--spec`: the last `N` tokens are matched against the sequence so far and what followed is proposed; exact, since verification rejects a wrong guess | `0` (off) |
 | `--prefill-cublas` | hand wide prefill GEMMs to cuBLAS: a large prefill speedup for a small perplexity cost, and it wants a larger `--prefill-chunk` to pay (see [performance](performance.md)) | off |
 | `--no-prefill-cublas-projections` | with `--prefill-cublas`, keep the attention and GDN input projections off that route | projections on |
-| `--default-max-tokens N` | output limit when omitted by a request; see [default output limit](#default-output-limit) | remaining context |
+| `--default-max-tokens N` | output limit when omitted by a request; see [default output limit](#default-output-limit) | largest budget that keeps every lane admissible |
 | `--default-thinking-budget N` | positive thinking cap inherited by thinking-enabled requests | unset |
 | `--vision` | enable media input and load Vision GPU allocations | off |
 | `--vision-residency resident\|overlay` | `overlay` keeps the Vision tower in pinned host memory and encodes each image inside a window borrowed from the evict-ranked text weight tail, so `--vision` no longer reserves device memory and `--kv-capacity auto` resolves the no-vision capacity; requires `--vision` and CUDA virtual memory management | `resident` |
@@ -1179,18 +1180,23 @@ completion. A request remains queued until a legal resource plan can satisfy tha
 ### Default output limit
 
 A request that omits its output limit (`max_completion_tokens`/`max_tokens` on Chat Completions,
-`max_output_tokens` on Responses, `max_tokens` on Messages) may generate until its sequence reaches
-`--max-context`: its budget is `--max-context` minus its prompt tokens, so long reasoning runs are
-not cut at an arbitrary fixed count. Such a run that fills the context finishes with
-`finish_reason:"length"`, Responses `incomplete` with reason `max_output_tokens`, or Anthropic
-`stop_reason:"model_context_window_exceeded"`. `--default-max-tokens N` replaces that default with
-a fixed cap, still bounded by the remaining context; an explicit request limit always wins.
+`max_output_tokens` on Responses, `max_tokens` on Messages) receives the largest budget that still
+lets every configured lane be admitted at the same time. Once its prompt is prepared, the Engine
+finds the largest output whose admission entitlement -- Main KV pages for the prompt and output,
+plus the MTP draft-window or DFlash backend KV pages when speculation is on -- fits one lane's share
+(`1/--max-concurrency`) of each KV pool, and clamps it to the remaining context
+(`--max-context` minus the prompt). With one lane, or a pool of at least `--max-concurrency` times
+`--max-context`, that is the whole remaining context, so long reasoning runs are not cut at an
+arbitrary count; with several lanes over a smaller pool, each limitless request stays inside its
+share and they all run concurrently. A prompt that alone overruns one lane's share can never run
+beside full-share lanes, so it keeps the whole remaining context.
 
-Because admission reserves the effective output entitlement, a request without a limit holds
-Main KV pages for its whole remaining context. When `--kv-capacity` is smaller than
-`--max-concurrency` times `--max-context`, two such requests cannot both be admitted and the
-later one waits in the FIFO. Clients that send their own limit are unaffected; set
-`--default-max-tokens` when clients that omit it should still run concurrently.
+A run that exhausts the budget finishes with `finish_reason:"length"`, Responses `incomplete` with
+reason `max_output_tokens`, or Anthropic `stop_reason:"max_tokens"`, or
+`stop_reason:"model_context_window_exceeded"` when the budget was the remaining context. An explicit
+request limit always wins, and `--default-max-tokens N` replaces the derived default with a fixed cap
+(still bounded by the remaining context). The JSONL request record reports the budget actually
+submitted as `requested_output_tokens`.
 
 Each reusable checkpoint contains KV and complete continuation state. At admission, capture, and
 finish boundaries, resource pressure may keep it on Device, move its StateImage and/or KV replicas

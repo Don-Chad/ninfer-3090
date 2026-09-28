@@ -1055,7 +1055,7 @@ AnthropicMessagesRequest parse_anthropic_messages_request(const Json& body,
         if (*max_tokens < 0) { bad_request("max_tokens must be positive", "max_tokens"); }
         result.generation.max_tokens = *max_tokens;
     } else {
-        result.generation.max_tokens = limits.default_max_tokens;
+        apply_default_output_limit(result.generation, limits);
     }
 
     parse_common_prompt(body, result.generation, ParsePurpose::Messages,

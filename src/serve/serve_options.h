@@ -87,8 +87,8 @@ struct ServeOptions {
     // --graft NAME=PATH, repeatable: phantom-kv grafts a request may select with "graft": NAME.
     std::vector<GraftSource> grafts;
     std::optional<std::uint32_t> default_thinking_budget;
-    // Output limit for a request that omits one. Unset means the sequence's remaining context:
-    // see default_output_tokens().
+    // Output limit for a request that omits one. Unset means the Engine's concurrent lane budget:
+    // see request_limits().
     std::optional<int> default_max_tokens;
     // Reasoning effort for a thinking-enabled request that states none. Never None: disabling
     // thinking by default is --no-thinking.
@@ -105,12 +105,13 @@ struct ServeOptions {
     std::vector<std::string> startup_argv;
 };
 
-// The output budget a request receives when it omits max_tokens / max_completion_tokens /
-// max_output_tokens. Without --default-max-tokens this is --max-context: Engine clamps every
-// request to `max_context - prompt_tokens + 1`, so the default resolves per request to exactly the
-// context the sequence has left, and a run that fills it finishes with the context-capacity reason.
-[[nodiscard]] inline int default_output_tokens(const ServeOptions& options) noexcept {
-    return options.default_max_tokens.value_or(static_cast<int>(options.max_context));
+// Parse-time limits. A request that omits max_tokens / max_completion_tokens / max_output_tokens
+// gets --default-max-tokens when set; otherwise GenerationService asks the Engine for the largest
+// budget that still lets every configured lane be admitted at once (the remaining context with one
+// lane).
+[[nodiscard]] inline RequestLimits request_limits(const ServeOptions& options) noexcept {
+    return RequestLimits{.default_max_tokens = options.default_max_tokens,
+                         .max_context        = static_cast<int>(options.max_context)};
 }
 
 ServeOptions parse_serve_options(int argc, char** argv);

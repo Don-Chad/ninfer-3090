@@ -180,6 +180,23 @@ int test_budgets_and_nonsemantic_hints() {
                           "non-negative output budget accepted");
     }
 
+    // Without --default-max-tokens an omitted budget is derived from the Engine's lane budget; an
+    // explicit one never is.
+    const RequestLimits derived{.max_context = 4096};
+    const OpenAIResponsesCreateRequest derived_omitted =
+        parse_openai_responses_create_request(base, derived);
+    failures += check(derived_omitted.prompt.generation.derive_output_budget &&
+                          derived_omitted.prompt.generation.max_tokens == 4096 &&
+                          !derived_omitted.requested_max_output_tokens,
+                      "omitted output budget was not marked for the concurrent lane budget");
+    Json explicit_budget                 = base;
+    explicit_budget["max_output_tokens"] = 64;
+    const OpenAIResponsesCreateRequest derived_explicit =
+        parse_openai_responses_create_request(explicit_budget, derived);
+    failures += check(!derived_explicit.prompt.generation.derive_output_budget &&
+                          derived_explicit.prompt.generation.max_tokens == 64,
+                      "an explicit output budget was replaced by the derived default");
+
     Json hints = base;
     hints.update({{"background", false},
                   {"client_metadata", Json{{"session_id", "session-1"}, {"trace", Json::array()}}},
