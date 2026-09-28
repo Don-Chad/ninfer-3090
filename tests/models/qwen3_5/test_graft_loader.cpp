@@ -108,7 +108,8 @@ Container valid_container() {
 // Writes <dir>/<stem>.bin and .json; the sidecar sha256 covers the payload unless overridden.
 std::filesystem::path write(const std::filesystem::path& dir, const std::string& stem,
                             Container container,
-                            const std::function<void(std::vector<std::uint8_t>&)>& corrupt = {}) {
+                            const std::function<void(std::vector<std::uint8_t>&)>& corrupt = {},
+                            const std::function<void(Json&)>& edit_header = {}) {
     Json header = Json::object();
     std::vector<std::uint8_t> payload;
     for (const auto& [name, tensor] : container.tensors) {
@@ -122,6 +123,7 @@ std::filesystem::path write(const std::filesystem::path& dir, const std::string&
         container.meta["sha256"] = q::frontend::sha256_hex(q::frontend::sha256(payload));
     }
     if (corrupt) { corrupt(payload); }
+    if (edit_header) { edit_header(header); }
 
     const std::string header_text = header.dump();
     std::vector<std::uint8_t> file(8);
@@ -195,6 +197,20 @@ int main() {
         failures += expect_rejected(write(dir, "rec_dtype", c), "rec",
                                     "a recurrent state stored below FP32 was accepted");
     }
+    {
+        Container c        = valid_container();
+        c.meta["rec_shape"] = {4, "4", 4};
+        failures += expect_rejected(write(dir, "rec_shape_type", c), "rec_shape",
+                                    "a non-integer rec_shape entry escaped the graft error");
+    }
+    failures += expect_rejected(
+        write(dir, "shape_type", valid_container(), {},
+              [](Json& header) { header["k"]["shape"] = {1, 3, "2", 8}; }),
+        "tensor 'k' shape", "a non-integer tensor shape escaped the graft error");
+    failures += expect_rejected(
+        write(dir, "dtype_type", valid_container(), {},
+              [](Json& header) { header["v"]["dtype"] = 16; }),
+        "tensor 'v' dtype", "a non-string tensor dtype escaped the graft error");
     {
         Container c         = valid_container();
         c.meta["n_kv_heads"] = 4;

@@ -73,6 +73,19 @@ std::string json_string(const Json& meta, const char* key, const GraftError& err
     return meta.at(key).get<std::string>();
 }
 
+std::vector<std::uint64_t> json_u64_array(const Json& value, const std::string& what,
+                                          const GraftError& error) {
+    error.require(value.is_array(), what + " must be an array of non-negative integers");
+    std::vector<std::uint64_t> values;
+    values.reserve(value.size());
+    for (const Json& element : value) {
+        error.require(element.is_number_unsigned(),
+                      what + " must be an array of non-negative integers");
+        values.push_back(element.get<std::uint64_t>());
+    }
+    return values;
+}
+
 std::string shape_text(std::span<const std::uint64_t> shape) {
     std::string text = "[";
     for (std::size_t index = 0; index < shape.size(); ++index) {
@@ -108,10 +121,12 @@ std::map<std::string, TensorEntry> parse_safetensors(std::span<const std::uint8_
         error.require(value.is_object() && value.contains("dtype") && value.contains("shape") &&
                           value.contains("data_offsets"),
                       "tensor '" + name + "' has an incomplete safetensors entry");
+        error.require(value.at("dtype").is_string(), "tensor '" + name + "' dtype is not a string");
         TensorEntry entry;
-        entry.dtype                  = value.at("dtype").get<std::string>();
-        entry.shape                  = value.at("shape").get<std::vector<std::uint64_t>>();
-        const auto offsets           = value.at("data_offsets").get<std::vector<std::uint64_t>>();
+        entry.dtype = value.at("dtype").get<std::string>();
+        entry.shape = json_u64_array(value.at("shape"), "tensor '" + name + "' shape", error);
+        const std::vector<std::uint64_t> offsets =
+            json_u64_array(value.at("data_offsets"), "tensor '" + name + "' data_offsets", error);
         std::uint64_t expected_bytes = element_bytes(entry.dtype, error);
         for (const std::uint64_t dimension : entry.shape) {
             error.require(dimension == 0 ||
@@ -204,11 +219,11 @@ PromptGraft load_prompt_graft(const GraftSource& source, const TextConfig& text)
     error.require(json_u64(meta, "conv_dim", error) == gdn.conv_channels() &&
                       json_u64(meta, "conv_k", error) == gdn.linear_conv_kernel_dim,
                   "Gated DeltaNet convolution geometry differs from the model");
-    error.require(meta.contains("rec_shape") && meta.at("rec_shape").is_array() &&
-                      meta.at("rec_shape").get<std::vector<std::uint64_t>>() ==
-                          std::vector<std::uint64_t>{gdn.linear_num_value_heads,
-                                                     gdn.linear_key_head_dim,
-                                                     gdn.linear_value_head_dim},
+    error.require(meta.contains("rec_shape"), "metadata field 'rec_shape' is missing");
+    error.require(json_u64_array(meta.at("rec_shape"), "metadata field 'rec_shape'", error) ==
+                      std::vector<std::uint64_t>{gdn.linear_num_value_heads,
+                                                 gdn.linear_key_head_dim,
+                                                 gdn.linear_value_head_dim},
                   "Gated DeltaNet recurrent-state geometry differs from the model");
     const std::string expected_sha256 = json_string(meta, "sha256", error);
 
