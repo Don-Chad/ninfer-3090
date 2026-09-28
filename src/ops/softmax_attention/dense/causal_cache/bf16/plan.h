@@ -12,12 +12,9 @@ struct Bf16KvCausalPlan {
     int query_heads;
     int width;
     int batch;
-    int query_tiles;
     CausalAttentionExecutionEnvelope envelope;
 
     bool grouped() const { return bf16_kv_instance_description(instance).grouped; }
-
-    bool partial() const { return grouped() && partition.capacity > 1; }
 };
 
 Bf16KvCausalPlan make_bf16_kv_causal_plan(int query_heads, int width, int batch,

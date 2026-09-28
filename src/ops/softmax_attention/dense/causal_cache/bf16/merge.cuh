@@ -62,12 +62,12 @@ __launch_bounds__(Schedule::kThreads) __global__
     }
 
     if constexpr (MultiBatch) { positions += batch * tokens; }
-    const int last_pos = positions[tokens - 1];
-    int output_column  = token;
+    const int live_columns = Masked ? valid_columns[batch] : tokens;
+    int output_column      = token;
     if constexpr (MultiBatch) { output_column += batch * tokens; }
     if constexpr (Masked) {
         const int absolute_column = token;
-        if (absolute_column >= valid_columns[batch]) {
+        if (absolute_column >= live_columns) {
             if (tid < DChunk && d_start + tid < Geometry::kHeadDim)
                 out[bf16_kv_q_index<Geometry>(q_head, d_start + tid, output_column)] =
                     __float2bfloat16(0.0f);
@@ -86,8 +86,8 @@ __launch_bounds__(Schedule::kThreads) __global__
         partial_l += partial_stat_row;
     }
 
-    const int window             = last_pos + 1;
-    const int active_split_count = partition.active_splits(window);
+    const int window             = positions[live_columns - 1] + 1;
+    const int active_split_count = partition.live(window).splits;
 
     __shared__ float weights[Schedule::kThreads], warp_sums[Schedule::kWarps], scalars[2];
     const float head_l = bf16_kv_merge_statistics<Geometry, Schedule>(

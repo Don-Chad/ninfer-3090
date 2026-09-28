@@ -13,9 +13,8 @@ void grouped(const Bf16KvOperands& p, Bf16KvCacheView<Writable> cache, Input inp
     const auto invoke = [&]<bool MultiBatch, bool Masked>() {
         launch_bf16_kv_grouped_mma<G, S, MultiBatch, Masked>(p, cache, input, plan.partition,
                                                              partial, stream);
-        if (plan.partial())
-            launch_bf16_kv_merge<G, Bf16KvMergeSchedule<256>, MultiBatch, Masked>(
-                p, cache, plan.partition, partial, stream);
+        launch_bf16_kv_merge<G, Bf16KvMergeSchedule<256>, MultiBatch, Masked>(
+            p, cache, plan.partition, partial, stream);
     };
     if (p.batch == 1) {
         if (cache.valid_columns)
@@ -69,14 +68,12 @@ void execute_grouped(const Tensor& q, Input input, const Tensor& positions, floa
                      PagedKVBatchLayerView cache, const Tensor* valid, const Tensor* rows,
                      const Bf16KvCausalPlan& plan, WorkspaceArena& workspace, Tensor& out,
                      cudaStream_t stream) {
-    auto scope = workspace.scope();
-    Bf16KvPartialStorage storage{};
-    if (plan.partial())
-        storage = bf16_kv_allocate_partials(workspace, plan.query_heads, plan.width,
-                                            plan.partition.capacity, plan.batch);
+    auto scope         = workspace.scope();
+    auto storage       = bf16_kv_allocate_partials(workspace, plan.query_heads, plan.width,
+                                                   plan.partition.capacity, plan.batch);
     const auto p       = bf16_kv_operands(q, positions, out, scale, plan.envelope.max_visible_keys);
     const auto view    = bf16_kv_cache_view<Input::writes_cache>(cache, valid, rows);
-    const auto partial = storage.view(plan.partition.capacity);
+    const auto partial = storage.view();
     if (p.query_heads == 24)
         grouped_instance<Bf16KvD256H24Kv4>(p, view, input, plan, partial, stream);
     else

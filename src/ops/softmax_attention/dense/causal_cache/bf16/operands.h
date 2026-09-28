@@ -53,7 +53,6 @@ struct Bf16KvPartialView {
     float* acc;
     float* maximum;
     float* sum;
-    int splits;
 };
 
 inline Bf16KvOperands bf16_kv_operands(const Tensor& q, const Tensor& positions, Tensor& out,
@@ -86,9 +85,9 @@ Bf16KvCacheView<Writable> bf16_kv_cache_view(const PagedKVBatchLayerView& cache,
 struct Bf16KvPartialStorage {
     Tensor acc, maximum, sum;
 
-    Bf16KvPartialView view(int splits) const {
+    Bf16KvPartialView view() const {
         return {static_cast<float*>(acc.data), static_cast<float*>(maximum.data),
-                static_cast<float*>(sum.data), splits};
+                static_cast<float*>(sum.data)};
     }
 };
 

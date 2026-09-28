@@ -20,10 +20,7 @@ Bf16KvCausalPlan make_bf16_kv_causal_plan(int heads, int width, int batch,
             heads == 16 && width >= 1024 && width % 128 == 0 && visible - width >= 8192
                 ? Bf16KvInstance::Tiled128
                 : Bf16KvInstance::Tiled64;
-        return {instance, {1, visible},
-                heads,    width,
-                batch,    ceil_div(width, bf16_kv_instance_description(instance).query_rows),
-                envelope};
+        return {instance, {}, heads, width, batch, envelope};
     }
     const int rows         = width * group;
     const auto instance    = width == 1   ? Bf16KvInstance::GroupedDecode
@@ -36,13 +33,18 @@ Bf16KvCausalPlan make_bf16_kv_causal_plan(int heads, int width, int batch,
     const int independent_tiles     = batch * kv_heads * tiles;
     const bool many_memory_tiles    = description.query_rows == 32 && independent_tiles >= 16;
     const bool multiple_query_tiles = tiles > 1;
-    const int target_ctas = visible >= 32768 && (many_memory_tiles || multiple_query_tiles)
-                                ? std::clamp(85 * independent_tiles, 340, 1020)
-                                : 340;
-    const int target = visible <= 128 ? 1 : std::clamp(target_ctas / independent_tiles, 1, 256);
-    const int chunk  = std::max(64, ceil_div(ceil_div(visible, target), description.key_rows) *
-                                        description.key_rows);
-    return {instance, {ceil_div(visible, chunk), chunk}, heads, width, batch, tiles, envelope};
+    const int long_ctas             = many_memory_tiles || multiple_query_tiles
+                                          ? std::clamp(85 * independent_tiles, 340, 1020)
+                                          : 340;
+    Bf16KvPartition partition{1, std::clamp(340 / independent_tiles, 1, 256),
+                              std::clamp(long_ctas / independent_tiles, 1, 256),
+                              description.key_rows};
+    // The envelope bounds the largest live row. Other batch rows may be shorter.
+    const int low      = batch == 1 ? static_cast<int>(envelope.min_visible_keys) : 1;
+    partition.capacity = std::max(
+        partition.interval_capacity(low, std::min(visible, 32767), partition.normal_target),
+        partition.interval_capacity(std::max(low, 32768), visible, partition.long_target));
+    return {instance, partition, heads, width, batch, envelope};
 }
 
 std::size_t bf16_kv_workspace_bytes(int heads, int batch, int min_width, int max_width,
@@ -51,7 +53,6 @@ std::size_t bf16_kv_workspace_bytes(int heads, int batch, int min_width, int max
     const int group     = heads == 24 ? 6 : 8;
     for (int width = min_width; width <= std::min(max_width, 128 / group); ++width) {
         const auto plan = make_bf16_kv_causal_plan(heads, width, batch, envelope);
-        if (!plan.partial()) continue;
         WorkspaceLayoutBuilder layout;
         (void)bf16_kv_allocate_partials(layout, heads, width, plan.partition.capacity, batch);
         maximum = std::max(maximum, layout.peak_bytes(1));

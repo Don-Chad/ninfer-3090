@@ -42,15 +42,14 @@ bf16_kv_load_grouped_tile(__nv_bfloat16* key_tile, __nv_bfloat16* value_tile,
 
 // Packed-query tiles and KV partitions are independent grid axes. Each KV row
 // has one append owner; all query CTAs read new rows from the immutable inputs.
-template <class G, class S, bool MultiBatch, bool Masked, class Input, bool Partial>
+template <class G, class S, bool MultiBatch, bool Masked, class Input>
 __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
     void bf16_kv_grouped_mma_kernel(const __nv_bfloat16* q, Input input, const int* positions,
                                     typename Bf16KvCacheView<Input::writes_cache>::Key* cache_k,
                                     typename Bf16KvCacheView<Input::writes_cache>::Value* cache_v,
                                     const int* tables, const int* validity, const int* table_rows,
                                     int table_stride, int runtime_width, float scale,
-                                    Bf16KvPartition partition, Bf16KvPartialView partial,
-                                    __nv_bfloat16* out) {
+                                    Bf16KvPartition partition, Bf16KvPartialView partial) {
     const int width = S::kFixedWidth ? S::kFixedWidth : runtime_width;
     constexpr int D = G::kHeadDim, M = S::kQueryRows, N = S::kKeyRows;
     constexpr int NK = N / S::kWarpsKV, QKNt = NK / 8, QKKs = D / 16;
@@ -75,38 +74,35 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
     const int row_begin = tile * M, packed_rows = width * G::GroupSize;
     const int live = Masked ? validity[batch] : width;
     q += static_cast<std::int64_t>(batch) * width * D * G::QHeads;
-    out += static_cast<std::int64_t>(batch) * width * D * G::QHeads;
     positions += batch * width;
     if constexpr (Input::writes_cache) {
         input.k += static_cast<std::int64_t>(batch) * width * D * G::KVHeads;
         input.v += static_cast<std::int64_t>(batch) * width * D * G::KVHeads;
     }
-    if constexpr (Partial) {
+    {
         partial.acc +=
             static_cast<std::int64_t>(batch) * width * G::QHeads * D * partition.capacity;
         partial.maximum +=
             static_cast<std::int64_t>(batch) * width * G::QHeads * partition.capacity;
         partial.sum += static_cast<std::int64_t>(batch) * width * G::QHeads * partition.capacity;
     }
-    const auto neutral = [&]<bool StorePartial>() {
+    const auto neutral = [&]() {
         for (int i = tid; i < M * (D / 2); i += S::kThreads) {
             const int row = row_begin + i / (D / 2), d = i % (D / 2) * 2;
             if (row < packed_rows) {
                 const int token = row / G::GroupSize;
                 const int h     = head * G::GroupSize + row % G::GroupSize;
-                bf16_kv_store_pair<G, StorePartial>(partial, out, h, token, d, width, split, 0.0f,
-                                                    0.0f, -CUDART_INF_F, 0.0f);
+                bf16_kv_store_pair<G, true>(partial, nullptr, h, token, d, width, split, 0.0f, 0.0f,
+                                            -CUDART_INF_F, 0.0f);
             }
         }
     };
-    if (row_begin >= live * G::GroupSize) {
-        if constexpr (!Partial) neutral.template operator()<false>();
-        return;
-    }
+    if (row_begin >= live * G::GroupSize) return;
     const int first = positions[0], window = positions[live - 1] + 1;
-    if (split >= partition.active_splits(window)) return;
-    const int start     = split * partition.keys_per_split;
-    const int stop      = min(window, start + partition.keys_per_split);
+    const auto work = partition.live(window);
+    if (split >= work.splits) return;
+    const int start     = split * work.keys_per_split;
+    const int stop      = min(window, start + work.keys_per_split);
     const int table_row = table_rows ? table_rows[batch] : 0;
     const int* table    = tables + static_cast<std::int64_t>(table_row) * table_stride;
     if constexpr (Input::writes_cache) {
@@ -126,7 +122,7 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
     const int last_token = min(live, div_up(row_begin + M, G::GroupSize)) - 1;
     const int end        = min(stop, positions[last_token] + 1);
     if (start >= end) {
-        neutral.template operator()<Partial>();
+        neutral();
         return;
     }
     for (int i = tid; i < M * (D / 8); i += S::kThreads) {
@@ -224,9 +220,9 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
             acc[n][2] *= alpha[1];
             acc[n][3] *= alpha[1];
         }
-        // The larger row tile benefits from paired V loads; for two query
-        // warps, scalar fragments leave more registers for addresses/state.
-        if constexpr (S::kWarpsQ >= 4) {
+        // Batched and read-only wide tiles benefit from paired V loads. Single-row
+        // fused append uses scalar fragments to leave room for its input state.
+        if constexpr (S::kWarpsQ >= 4 && (MultiBatch || !Input::writes_cache)) {
             unsigned vf[2][4];
             const auto load_v = [&](int i, int slot) {
                 const int k = i / (PVNt / 2), n = i % (PVNt / 2) * 2;
@@ -319,9 +315,8 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
             const int h = head * G::GroupSize + rows[j] % G::GroupSize;
 #pragma unroll
             for (int n = 0; n < PVNt; ++n)
-                bf16_kv_store_pair<G, Partial>(partial, out, h, tokens[j], n * 8 + 2 * lid, width,
-                                               split, acc[n][2 * j], acc[n][2 * j + 1], m[j],
-                                               sums[j]);
+                bf16_kv_store_pair<G, true>(partial, nullptr, h, tokens[j], n * 8 + 2 * lid, width,
+                                            split, acc[n][2 * j], acc[n][2 * j + 1], m[j], sums[j]);
         }
     }
 }

@@ -553,6 +553,10 @@ submission gaps. Reported times are normalized per Op, and the CSV records `grap
 append calls overwrite the same positions with identical values; this is a warm Op measurement,
 not 32 speculative rounds. Cold measurements require one call per graph.
 
+`--envelope-max N` uses a fixed `[1,N]` execution envelope while actual contexts vary; N must
+cover every visible row. The default uses the exact visible length. CSV rows record both bounds,
+so broad Graph-envelope measurements can be distinguished from exact-length measurements.
+
 ```bash
 cmake --build build --parallel --target ninfer_benches
 ./build/bench/ninfer_benches ninfer_causal_softmax_attention_bench \

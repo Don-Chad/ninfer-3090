@@ -147,6 +147,8 @@ void packed_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
  * The caller guarantees that the maximum p+1 over live rows lies within envelope. The envelope is
  * a host launch/workspace resource promise over that batch maximum, not a mask and not persistent
  * state. A masked physical width may exceed max_visible_keys when its live prefix is shorter.
+ * With fixed tensor views and geometry, BF16 calls with W<=16 remain CUDA Graph update-compatible
+ * across valid envelopes. Live row lengths determine the KV work partition within each capture.
  * Inputs, output, every cache plane/table, and live workspace suballocations are pairwise
  * non-overlapping. The Op overwrites every addressed cache row but owns no cache allocation,
  * frontier, request identity, or commit authority.

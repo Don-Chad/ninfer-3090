@@ -9,24 +9,23 @@ enum class Bf16KvInstance { Grouped32, Grouped64, Tiled64, Tiled128, GroupedDeco
 struct Bf16KvInstanceDescription {
     int query_rows;
     int key_rows;
-    int kv_warps;
     bool grouped;
 };
 
 template <Bf16KvInstance>
 struct Bf16KvInstanceTraits;
-#define NINFER_BF16_KV_INSTANCE(ID, GROUPED, KVWARPS, ...)                                         \
+#define NINFER_BF16_KV_INSTANCE(ID, GROUPED, ...)                                                  \
     template <>                                                                                    \
     struct Bf16KvInstanceTraits<Bf16KvInstance::ID> {                                              \
         using Schedule = __VA_ARGS__;                                                              \
-        static constexpr Bf16KvInstanceDescription description{                                    \
-            Schedule::kQueryRows, Schedule::kKeyRows, KVWARPS, GROUPED};                           \
+        static constexpr Bf16KvInstanceDescription description{Schedule::kQueryRows,               \
+                                                               Schedule::kKeyRows, GROUPED};       \
     }
-NINFER_BF16_KV_INSTANCE(Grouped32, true, 1, Bf16KvGroupedMmaSchedule<32, 32>);
-NINFER_BF16_KV_INSTANCE(Grouped64, true, 1, Bf16KvGroupedMmaSchedule<64, 32>);
-NINFER_BF16_KV_INSTANCE(Tiled64, false, 1, Bf16KvTiledMmaSchedule<64, 64>);
-NINFER_BF16_KV_INSTANCE(Tiled128, false, 1, Bf16KvTiledMmaSchedule<128, 32>);
-NINFER_BF16_KV_INSTANCE(GroupedDecode, true, 1, Bf16KvGroupedMmaSchedule<32, 32, 1, 2, 1>);
+NINFER_BF16_KV_INSTANCE(Grouped32, true, Bf16KvGroupedMmaSchedule<32, 32>);
+NINFER_BF16_KV_INSTANCE(Grouped64, true, Bf16KvGroupedMmaSchedule<64, 32>);
+NINFER_BF16_KV_INSTANCE(Tiled64, false, Bf16KvTiledMmaSchedule<64, 64>);
+NINFER_BF16_KV_INSTANCE(Tiled128, false, Bf16KvTiledMmaSchedule<128, 32>);
+NINFER_BF16_KV_INSTANCE(GroupedDecode, true, Bf16KvGroupedMmaSchedule<16, 32, 2, 2, 1>);
 #undef NINFER_BF16_KV_INSTANCE
 
 constexpr Bf16KvInstanceDescription bf16_kv_instance_description(Bf16KvInstance id) {
