@@ -350,6 +350,28 @@ if [[ -n "${NINFER_TEST_FAKE_SIZE:-}" ]]; then
 fi
 CURL
 chmod +x "$tmp/bin/curl"
+# download-model.sh prefers aria2c over curl when aria2c is on PATH, and GitHub's hosted runner
+# image ships aria2c -- so without a stub here, every case below that reaches the fetch branch
+# would download the real multi-GB artifact from Hugging Face instead of exercising the fixture,
+# which is what made this suite take minutes instead of seconds. -d/-o mirror aria2c's own flags
+# (see download-model.sh's invocation), not curl's --output.
+cat > "$tmp/bin/aria2c" <<'ARIA2C'
+#!/usr/bin/env bash
+dir='.' out=''
+while (( $# )); do
+  case "$1" in
+    -d) dir="$2"; shift 2 ;;
+    -o) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+output="$dir/$out"
+: > "$output"
+if [[ -n "${NINFER_TEST_FAKE_SIZE:-}" ]]; then
+  truncate -s "$NINFER_TEST_FAKE_SIZE" "$output"
+fi
+ARIA2C
+chmod +x "$tmp/bin/aria2c"
 # Stubs sha256sum for the checksum-rejection fixture below. verify() hashes whatever it is given,
 # and a real sha256sum reads every logical byte even of a sparse file -- tens of GB per downloader,
 # which is instant to allocate but not free to read, and turned this fixture into a multi-minute
@@ -396,7 +418,8 @@ for key in "${models[@]}"; do
 done
 
 # A model name is required and must be one of the pinned ones. Neither case may touch the network or
-# the models directory: exit 2 with a usage message that names every model, before any curl runs.
+# the models directory: exit 2 with a usage message that names every model, before any curl or
+# aria2c runs.
 # The models directory it is pointed at does not exist, so creating it would be caught below.
 for bad in '' 'qwen38-27' 'qwen3_8_27b'; do
   if [[ -z "$bad" ]]; then bad_args=(); else bad_args=("$bad"); fi
@@ -419,11 +442,13 @@ for bad in '' 'qwen38-27' 'qwen3_8_27b'; do
   fi
 done
 
-# An artifact that already verifies is left alone: no download, not even an attempted one. The curl
-# stub in this directory fails every call, so a script that fetched again would exit non-zero.
+# An artifact that already verifies is left alone: no download, not even an attempted one. Both
+# stubs in this directory fail every call, so a script that fetched again -- via either path --
+# would exit non-zero instead of quietly reaching the real network.
 mkdir -- "$tmp/failing-curl"
 printf '#!/usr/bin/env bash\nexit 22\n' > "$tmp/failing-curl/curl"
 chmod +x "$tmp/failing-curl/curl"
+cp -- "$tmp/failing-curl/curl" "$tmp/failing-curl/aria2c"
 for key in "${models[@]}"; do
   model="$(artifact_of "$key")"
   size="$(expected_size_of "$key")"
