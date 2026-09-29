@@ -170,6 +170,9 @@ void validate_chunked(const Tensor& q, const Tensor& k, const Tensor& v, const T
     require_shape(ssm_state_in, detail::gated_delta_net::kStateDim,
                   detail::gated_delta_net::kStateDim, geometry.value_heads, 1, "ssm_state_in");
     require_contiguous_nonnull(ssm_state_in, "ssm_state_in");
+    if (ssm_state_in.dtype != ssm_state_out.dtype) {
+        throw std::invalid_argument("gated_delta_net: state read/write dtypes differ");
+    }
 }
 
 } // namespace
@@ -244,13 +247,8 @@ void gated_delta_net(const Tensor& q, const Tensor& k, const Tensor& v, const Te
     if (ssm_state_out.dtype == DType::FP16) {
         state_fp32 = ws.alloc(DType::FP32, {detail::gated_delta_net::kStateDim,
                                             detail::gated_delta_net::kStateDim, v.ne[1]});
-        if (ssm_state_in.dtype == DType::FP16) {
-            detail::gated_delta_net::widen_state_fp16_to_fp32(ssm_state_in, state_fp32,
-                                                              execution.stream);
-        } else {
-            CUDA_CHECK(cudaMemcpyAsync(state_fp32.data, ssm_state_in.data, ssm_state_in.bytes(),
-                                       cudaMemcpyDeviceToDevice, execution.stream));
-        }
+        detail::gated_delta_net::widen_state_fp16_to_fp32(ssm_state_in, state_fp32,
+                                                          execution.stream);
         state_in  = &state_fp32;
         state_out = &state_fp32;
     }

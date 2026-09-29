@@ -35,6 +35,16 @@ __device__ __forceinline__ std::uint32_t pack_f16x2(float lo, float hi) {
     return load_vec<std::uint32_t>(&packed);
 }
 
+// BF16 shares FP32's exponent range and mantissa is FP32's mantissa truncated to its 7 high bits,
+// so each packed lane's bit pattern is already the high 16 bits of the equivalent FP32 value --
+// widening is a plain left shift into an otherwise-zero low half (used to feed TF32 MMA, which
+// takes each element in its own 32-bit register).
+__device__ __forceinline__ void unpack_bf16x2_to_fp32_bits(std::uint32_t packed, unsigned& lo_bits,
+                                                            unsigned& hi_bits) {
+    lo_bits = (packed & 0xFFFFu) << 16;
+    hi_bits = packed & 0xFFFF0000u;
+}
+
 __device__ __forceinline__ std::uint32_t bf16x2_bits_to_f16x2_bits(std::uint32_t bits) {
     const __nv_bfloat162 source = load_vec<__nv_bfloat162>(&bits);
     const __half2 converted =

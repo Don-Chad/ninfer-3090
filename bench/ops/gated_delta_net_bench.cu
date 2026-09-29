@@ -573,7 +573,10 @@ std::vector<BenchRow> run_prefill(const Options& options, std::int32_t tokens, D
     const int tile =
         chunked ? chunked_detail::value_tile(problem.value_heads, execution.multiprocessor_count)
                 : 0;
-    const auto prep_io          = prepare_traffic(problem, bytes);
+    // `bytes` sizes the arena (it also reserves FP32 state-staging scratch on the public path,
+    // for FP16-storage callers); prepare only ever touches the packed QkChunk/ControlChunk layout,
+    // so traffic accounting uses `layout.total_bytes` instead of the full reserved capacity.
+    const auto prep_io          = prepare_traffic(problem, layout.total_bytes);
     const auto rec_io           = recurrence_traffic(problem, tile ? state_dim / tile : 0);
     const TrafficBytes total_io = chunked ? TrafficBytes{prep_io.total + rec_io.total,
                                                          prep_io.intermediate + rec_io.intermediate}
