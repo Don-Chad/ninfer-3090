@@ -32,8 +32,41 @@ void transpose_conv_layer(const std::uint8_t* src, std::uint8_t* dst,
     }
 }
 
+// IEEE binary32 -> binary16, round to nearest even, with subnormals, overflow to infinity and NaN
+// preserved: the same narrowing the runtime applies to recurrent state under gdn_state_fp16.
+std::uint16_t float_to_half_rne(float value) {
+    std::uint32_t x;
+    std::memcpy(&x, &value, 4);
+    const std::uint32_t sign = (x >> 16U) & 0x8000U;
+    const std::uint32_t ax   = x & 0x7fffffffU;
+    if (ax >= 0x7f800000U) {
+        return static_cast<std::uint16_t>(sign | 0x7c00U | ((ax & 0x007fffffU) != 0 ? 0x0200U : 0U));
+    }
+    const auto round_shift = [](std::uint32_t v, int shift) {
+        const std::uint32_t base = v >> shift;
+        const std::uint32_t rem  = v & ((1U << shift) - 1U);
+        const std::uint32_t half = 1U << (shift - 1);
+        return base + ((rem > half || (rem == half && (base & 1U) != 0U)) ? 1U : 0U);
+    };
+    int exponent       = static_cast<int>(ax >> 23U) - 127 + 15;
+    const std::uint32_t mant = ax & 0x007fffffU;
+    if (exponent <= 0) {
+        if (exponent < -10) { return static_cast<std::uint16_t>(sign); }
+        return static_cast<std::uint16_t>(sign | round_shift(mant | 0x00800000U, 14 - exponent));
+    }
+    if (exponent >= 31) { return static_cast<std::uint16_t>(sign | 0x7c00U); }
+    std::uint32_t half_mant = round_shift(mant, 13);
+    if (half_mant == 0x0400U) {
+        half_mant = 0;
+        if (++exponent >= 31) { return static_cast<std::uint16_t>(sign | 0x7c00U); }
+    }
+    return static_cast<std::uint16_t>(sign | (static_cast<std::uint32_t>(exponent) << 10U) |
+                                      half_mant);
+}
+
 // Transpose graft recurrent data from safetensors row-major [Hv, Dk, Dv] (FP32) to ninfer's
-// column-major [Dk, Dv, Hv] layout. When the target dtype is FP16, also truncate each float.
+// column-major [Dk, Dv, Hv] layout. When the target dtype is FP16, also narrow each float with
+// round-to-nearest-even.
 void transpose_rec_layer(const std::uint8_t* src_fp32, std::uint8_t* dst,
                          std::uint64_t Hv, std::uint64_t Dk, std::uint64_t Dv,
                          DType target_dtype) {
@@ -48,27 +81,9 @@ void transpose_rec_layer(const std::uint8_t* src_fp32, std::uint8_t* dst,
                 if (target_dtype == DType::FP32) {
                     std::memcpy(dst + dst_off, src_fp32 + src_off, 4);
                 } else {
-                    // FP32 -> FP16 truncation: drop the lower 16 bits of the mantissa.
-                    // This is a rough truncation (not IEEE round-to-nearest-even) but matches
-                    // what ninfer does when gdn_state_fp16 is enabled.
                     float val;
                     std::memcpy(&val, src_fp32 + src_off, 4);
-                    std::uint32_t bits;
-                    std::memcpy(&bits, &val, 4);
-                    // IEEE FP32 -> FP16: shift sign+exponent+mantissa, clamp to FP16 range.
-                    const std::uint32_t sign     = (bits >> 16U) & 0x8000U;
-                    const std::int32_t exponent  = static_cast<std::int32_t>((bits >> 23U) & 0xFFU) - 127;
-                    const std::uint32_t mantissa = bits & 0x7FFFFFU;
-                    std::uint16_t fp16;
-                    if (exponent > 15) {
-                        fp16 = static_cast<std::uint16_t>(sign | 0x7C00U);
-                    } else if (exponent < -14) {
-                        fp16 = static_cast<std::uint16_t>(sign);
-                    } else {
-                        fp16 = static_cast<std::uint16_t>(
-                            sign | (static_cast<std::uint32_t>(exponent + 15) << 10U) |
-                            (mantissa >> 13U));
-                    }
+                    const std::uint16_t fp16 = float_to_half_rne(val);
                     std::memcpy(dst + dst_off, &fp16, 2);
                 }
             }

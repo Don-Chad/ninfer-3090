@@ -226,6 +226,17 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
     }
     instance->kv_capacity_resolution = resolution;
     planning.complete();
+    // A direct graft is injected into the target text state only, so it carries no draft-backend
+    // state and a speculative backend cannot draft from it.
+    if (options.speculative.backend != SpeculativeBackend::None) {
+        for (const auto& graft : instance->frontend.grafts()) {
+            if (graft.kind != models::qwen3_5::GraftKind::PrefillKV) {
+                throw std::invalid_argument(
+                    "graft '" + graft.name + "' is a direct graft, which cannot be combined with "
+                    "speculative decoding; start without --spec or use a prefill_kv graft");
+            }
+        }
+    }
     StartupPhaseScope program(options.startup_observer, StartupPhase::ProgramInitialize);
     instance->program = models::qwen3_5::create_program(instance->parameters, std::move(sequence),
                                                         device, options.startup_observer);

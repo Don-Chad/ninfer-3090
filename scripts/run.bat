@@ -297,7 +297,7 @@ set "GRAFT_ARGS="
 if /i "%NINFER_GRAFTS%"=="off" goto :graft_done
 if "%GRAFT_FILE%"=="" goto :graft_done
 if not exist "%GRAFT_DIR%\%GRAFT_FILE%" goto :graft_done
-set "GRAFT_ARGS=--graft v1=%GRAFT_DIR%\%GRAFT_FILE%"
+set "GRAFT_ARGS=--graft "v1=%GRAFT_DIR%\%GRAFT_FILE%""
 :graft_done
 if not exist "%SERVER%" (
   echo Missing %SERVER%
