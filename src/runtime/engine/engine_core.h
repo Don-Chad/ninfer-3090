@@ -11,6 +11,7 @@
 #include "runtime/engine/context_cache/resource_manager.h"
 #include "runtime/engine/scheduler.h"
 #include "runtime/engine/generation_budget.h"
+#include "runtime/engine/worker_fault.h"
 
 #include <algorithm>
 #include <array>
@@ -1671,6 +1672,7 @@ private:
         program_call.finish(progress.timing);
         cumulative_stats_.prefill_seconds_total +=
             static_cast<double>(progress.timing.elapsed_ns()) * 1e-9;
+        consume_armed_worker_failure();
         resolve_prefill_progress(request, std::move(progress), cancelled_at_unit_start);
         publish_runtime_stats();
     }

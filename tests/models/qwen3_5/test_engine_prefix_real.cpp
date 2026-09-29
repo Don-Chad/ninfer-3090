@@ -1,5 +1,6 @@
 #include "guarded_main.h"
 #include "ninfer/engine.h"
+#include "runtime/engine/worker_fault.h"
 
 #include <array>
 #include <cstdint>
@@ -1454,12 +1455,11 @@ int exercise_slot_persistence(const char* artifact) {
     return 0;
 }
 
-// A host-side failure in the worker must fail only the requests it touched, not latch the
-// Engine. Two conversations share a system prompt and each places an explicit long anchor on the
-// system boundary, where it aliases the structural shared-prefix StateImage, on one lane with one
-// spare Device state slot: the shape of the entitlement miscount behind the sibling fork's issue
-// #9. Whether or not that fault fires on this build, every request after a failure must be served,
-// and the Engine must stay available.
+// A host-side failure in the worker must fail only the request it touched, keep the FIFO queue,
+// and leave the Engine serving; the third consecutive failure latches it. Failures are armed
+// through the worker-fault seam and thrown after a prefill unit has executed, so each recovery
+// releases a lane holding live KV pages and state. The conversations share a system prompt and
+// place long anchors on it under Host pressure, so the cache the recovery clears is non-trivial.
 int exercise_worker_failure_recovery(const char* artifact) {
     ninfer::EngineOptions options;
     options.artifact_path                        = artifact;
@@ -1515,64 +1515,78 @@ int exercise_worker_failure_recovery(const char* artifact) {
         return prompt;
     };
 
+    enum class Outcome { Served, Failed, Unavailable, Malformed };
+    const auto wait_for = [](ninfer::GenerationHandle& handle) {
+        try {
+            const ninfer::GenerationResult result = handle.wait();
+            return result.generated_token_ids.size() == 1 ? Outcome::Served : Outcome::Malformed;
+        } catch (const ninfer::RequestError& error) {
+            return error.kind() == ninfer::RequestErrorKind::Unavailable ? Outcome::Unavailable
+                                                                         : Outcome::Failed;
+        } catch (const std::exception&) { return Outcome::Failed; }
+    };
+
     std::array<std::vector<std::string>, 2> turns{
         std::vector<std::string>{"Plan a three-day walking route through the lake district."},
         std::vector<std::string>{"Summarise the trade-offs between paged and contiguous KV."}};
-    // Both conversations are submitted before either is waited on, so while the first runs (and
-    // may fail during materialization) the second sits in the FIFO queue. A recovery must keep
-    // that queued request and serve it from the cleared cache.
-    std::uint32_t failures               = 0;
-    std::uint32_t queued_after_recovery  = 0;
-    const auto wait_for = [&](ninfer::GenerationHandle& handle) -> std::optional<bool> {
-        try {
-            const ninfer::GenerationResult result = handle.wait();
-            if (result.generated_token_ids.size() != 1) { return std::nullopt; }
-            return true;
-        } catch (const ninfer::RequestError& error) {
-            if (error.kind() == ninfer::RequestErrorKind::Unavailable) {
-                std::cerr << "Engine latched unavailable after a worker failure: " << error.what()
-                          << "\n";
-                return std::nullopt;
-            }
-            throw;
-        } catch (const std::exception&) {
-            ++failures;
-            return false;
-        }
-    };
-    for (std::uint32_t round = 0; round < 5; ++round) {
-        ninfer::GenerationHandle first =
-            engine.submit(engine.prepare(conversation(turns[0])), request);
-        ninfer::GenerationHandle second =
-            engine.submit(engine.prepare(conversation(turns[1])), request);
-        const std::optional<bool> first_ok  = wait_for(first);
-        const std::optional<bool> second_ok = wait_for(second);
-        if (!first_ok || !second_ok) {
-            std::cerr << "worker-recovery round " << round << " did not complete\n";
-            return 1;
-        }
-        if (!*first_ok) {
-            if (!*second_ok) {
-                std::cerr << "the request queued behind a recovered failure was not served\n";
-                return 1;
-            }
-            ++queued_after_recovery;
-        }
+    const auto grow = [&](std::uint32_t round) {
         for (std::size_t lineage = 0; lineage < turns.size(); ++lineage) {
             turns[lineage].push_back("Answer " + std::to_string(round) + " for lineage " +
                                      std::to_string(lineage) + ", with enough detail to fill a page.");
             turns[lineage].push_back("Continue with part " + std::to_string(round + 1) + ".");
         }
+    };
+
+    // Recovery: one failure per round, with the second conversation queued behind it. Three
+    // rounds pass the latch threshold only because each served request resets the streak.
+    constexpr std::uint32_t kRecoveryRounds = 3;
+    for (std::uint32_t round = 0; round < kRecoveryRounds; ++round) {
+        ninfer::runtime::arm_worker_failures(1);
+        ninfer::GenerationHandle first =
+            engine.submit(engine.prepare(conversation(turns[0])), request);
+        ninfer::GenerationHandle second =
+            engine.submit(engine.prepare(conversation(turns[1])), request);
+        const Outcome first_outcome  = wait_for(first);
+        const Outcome second_outcome = wait_for(second);
+        if (first_outcome != Outcome::Failed || second_outcome != Outcome::Served ||
+            !engine.is_available()) {
+            ninfer::runtime::arm_worker_failures(0);
+            std::cerr << "worker-recovery round " << round
+                      << ": first=" << static_cast<int>(first_outcome)
+                      << " second=" << static_cast<int>(second_outcome)
+                      << " available=" << engine.is_available() << "\n";
+            return 1;
+        }
+        grow(round);
     }
-    const ninfer::RuntimeStats stats = engine.runtime_stats();
-    if (!engine.is_available() || stats.engine_recoveries != failures) {
-        std::cerr << "worker recovery accounting is inconsistent: failures=" << failures
-                  << " recoveries=" << stats.engine_recoveries << "\n";
+    const std::uint64_t recoveries = engine.runtime_stats().engine_recoveries;
+    if (recoveries != kRecoveryRounds) {
+        std::cerr << "worker recovery accounting is inconsistent: recoveries=" << recoveries
+                  << "\n";
         return 1;
     }
-    std::cout << "worker-failure-recovery: failures=" << failures
-              << " recoveries=" << stats.engine_recoveries
-              << " queued_after_recovery=" << queued_after_recovery << "\n";
+
+    // Latch: three consecutive failures with no served request between them. The first two
+    // recover; the third latches, and the Engine then refuses work.
+    ninfer::runtime::arm_worker_failures(3);
+    std::array<Outcome, 3> streak{};
+    for (std::size_t index = 0; index < streak.size(); ++index) {
+        ninfer::GenerationHandle handle =
+            engine.submit(engine.prepare(conversation(turns[index % 2])), request);
+        streak[index] = wait_for(handle);
+    }
+    ninfer::runtime::arm_worker_failures(0);
+    const std::uint64_t streak_recoveries = engine.runtime_stats().engine_recoveries - recoveries;
+    if (streak[0] != Outcome::Failed || streak[1] != Outcome::Failed ||
+        streak[2] == Outcome::Served || streak_recoveries != 2 || engine.is_available()) {
+        std::cerr << "consecutive worker failures did not latch on the third: outcomes="
+                  << static_cast<int>(streak[0]) << ',' << static_cast<int>(streak[1]) << ','
+                  << static_cast<int>(streak[2]) << " recoveries=" << streak_recoveries
+                  << " available=" << engine.is_available() << "\n";
+        return 1;
+    }
+    std::cout << "worker-failure-recovery: recoveries=" << recoveries
+              << " queued_served=" << kRecoveryRounds << " latched_after=3\n";
     return 0;
 }
 
