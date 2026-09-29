@@ -5,6 +5,7 @@
 #include "serve/operational_log.h"
 #include "serve/openai_responses_store.h"
 #include "serve/request_log.h"
+#include "serve/serve_metrics.h"
 #include "serve/serve_options.h"
 
 #include <httplib.h>
@@ -143,6 +144,7 @@ private:
     OpenAIResponsesStore openai_responses_store_;
     OperationalLog operational_log_;
     JsonlRequestLog request_jsonl_;
+    ServeMetrics metrics_;
     httplib::Server server_;
     std::atomic<std::uint64_t> request_seq_{0};
     std::mutex stats_mutex_;

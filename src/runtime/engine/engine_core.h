@@ -1429,6 +1429,11 @@ private:
                 std::move(pending), std::span<const CommitDecision>(decisions.data(), row_count),
                 CommitObservation::ReleasedRowsOnly, &program_call.failed_timing());
             program_call.finish(committed.timing);
+            // The commit samples and settles the unit's output, so its time belongs to the unit:
+            // a decode round, or the prefill unit that emitted the first token.
+            (decode_round ? cumulative_stats_.decode_seconds_total
+                          : cumulative_stats_.prefill_seconds_total) +=
+                static_cast<double>(committed.timing.elapsed_ns()) * 1e-9;
             committed_storage.emplace(std::move(committed));
             phase.resume_range();
         } catch (...) {
@@ -1661,6 +1666,8 @@ private:
         auto progress =
             instance_.program->advance_prefill(*request->sequence, &program_call.failed_timing());
         program_call.finish(progress.timing);
+        cumulative_stats_.prefill_seconds_total +=
+            static_cast<double>(progress.timing.elapsed_ns()) * 1e-9;
         resolve_prefill_progress(request, std::move(progress), cancelled_at_unit_start);
         publish_runtime_stats();
     }
@@ -2076,6 +2083,8 @@ private:
         auto pending = instance_.program->decode(
             membership.sequence_span(), membership.budget_span(), &program_call.failed_timing());
         program_call.finish(pending.execution_timing());
+        cumulative_stats_.decode_seconds_total +=
+            static_cast<double>(pending.execution_timing().elapsed_ns()) * 1e-9;
         commit_pending(std::move(pending), membership.lane_span(), true, cancelled_at_unit_start);
         publish_runtime_stats();
     }
@@ -2149,6 +2158,10 @@ private:
                                                               membership.size),
                 &program_call.failed_timing());
             program_call.finish(timing);
+            // Forced control tokens are counted as committed decode tokens below, so their
+            // execution time belongs to the decode total as well.
+            cumulative_stats_.decode_seconds_total +=
+                static_cast<double>(timing.elapsed_ns()) * 1e-9;
             phase.resume_range();
         } catch (...) {
             rollback_generated();

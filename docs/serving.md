@@ -87,6 +87,7 @@ staged <MiB>)` and the JSON record carries `vision_overlay`, including `exclusiv
 | `GET /v1/load` | serving capacity, current load, and monotonic token counters (see [Load](#load)) |
 | `GET /slots` | per-slot occupancy of the private context cache (see [Slots](#slots)) |
 | `POST /slots/{id}?action=save\|restore\|erase` | save a retained session to a file, restore one, or evict one (see [Slots](#slots)) |
+| `GET /metrics` | Prometheus text counters, llama.cpp-compatible names (see [Metrics](#metrics)) |
 | `GET /v1/models` | configured OpenAI model alias and effective context limit (`max_model_len`/`context_window`/`context_length`) |
 | `GET /v1/models/{id}` | lookup of the configured alias and effective context limit (`max_model_len`/`context_window`/`context_length`) |
 | `POST /v1/chat/completions` | OpenAI-style chat generation |
@@ -249,6 +250,28 @@ reads, so it reads the newest state). The operational log reports each spill, sk
 image per checkpoint it retains (endpoint, rewrite checkpoint, long anchors), about 150 MB each on
 the 27B, so even a short session is a few hundred MB: a 39-token Qwen3.8-27B session saved as
 295 MiB, with save and restore at about 0.3 s each on an RTX 3090.
+
+### Metrics
+
+`GET /metrics` serves Prometheus text format. Like `/v1/load` it requires the API key when one is
+configured and reads only already-published counters. The `llamacpp:` series use llama.cpp's
+`--metrics` names and meaning, so dashboards built for llama.cpp work unchanged; they come from the
+Engine's per-unit totals and advance during a request rather than at its completion.
+
+| Series | Type | Meaning |
+|---|---|---|
+| `llamacpp:prompt_tokens_total` | counter | prompt tokens computed by prefill; prefix-cache hits excluded |
+| `llamacpp:prompt_seconds_total` | counter | prefill execution time |
+| `llamacpp:tokens_predicted_total` | counter | tokens committed by decode rounds |
+| `llamacpp:tokens_predicted_seconds_total` | counter | decode execution time |
+| `llamacpp:requests_processing` | gauge | admitted requests up to `--max-concurrency` |
+| `llamacpp:requests_deferred` | gauge | admitted requests waiting beyond `--max-concurrency` |
+| `ninfer:requests_total` | counter | requests completed with an outcome |
+| `ninfer:requests_failed_total` | counter | accepted requests that ended in an error |
+| `ninfer:requests_rejected_total` | counter | generation requests rejected during preparation, one per `request_rejected` request-log event: overload, invalid or oversized prompt or media. Unparseable and oversized (413) HTTP bodies are not counted; failures after acceptance, including a queue timeout after submission, count in `requests_failed_total` |
+| `ninfer:prefix_cache_hit_tokens_total` | counter | prompt tokens served from the context cache |
+| `ninfer:draft_tokens_total` | counter | speculative draft tokens proposed |
+| `ninfer:draft_accepted_tokens_total` | counter | speculative draft tokens accepted |
 
 ## OpenAI Chat Completions
 
@@ -853,7 +876,7 @@ of the stage that holds that layer.
 
 Pass `--api-key VALUE` to require the same value as an OpenAI bearer token or Anthropic
 `x-api-key` header. `GET /health` and CORS preflight requests remain unauthenticated; `GET /v1/load`
-requires the key.
+and `GET /metrics` require the key.
 
 ```bash
 curl http://127.0.0.1:8080/v1/models \
