@@ -174,9 +174,10 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
     }
     kwargs.erase("reasoning_effort");
     ResolvedPromptSemantics result{
-        .enable_thinking           = thinking ? thinking : server.enable_thinking,
-        .preserve_thinking         = preserve ? preserve : server.preserve_thinking,
-        .chat_template_kwargs_json = kwargs.dump(),
+        .enable_thinking             = thinking ? thinking : server.enable_thinking,
+        .preserve_thinking           = preserve ? preserve : server.preserve_thinking,
+        .requested_preserve_thinking = preserve,
+        .chat_template_kwargs_json   = kwargs.dump(),
     };
     if (effort) {
         const bool enables = *effort != RequestedReasoningEffort::None;
@@ -184,8 +185,9 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
             invalid_prompt_option("reasoning effort conflicts with enable_thinking",
                                   "reasoning_effort", "conflicting_template_option");
         // A request effort overrides the server's thinking default.
-        result.enable_thinking  = enables;
-        result.reasoning_effort = template_reasoning_effort(*effort);
+        result.enable_thinking            = enables;
+        result.reasoning_effort           = template_reasoning_effort(*effort);
+        result.requested_reasoning_effort = *effort;
     } else if (server.default_reasoning_effort && result.enable_thinking != false &&
                request.continuation != ninfer::PromptContinuationMode::ContinueFinalAssistant) {
         // The server default only shapes requests that think; it never turns thinking on, and an

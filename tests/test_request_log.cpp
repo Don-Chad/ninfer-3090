@@ -267,7 +267,9 @@ int main() {
     prepared.enable_thinking                           = true;
     prepared.thinking_budget                           = 256;
     prepared.reasoning_effort                          = ninfer::ReasoningEffort::XHigh;
+    prepared.requested_reasoning_effort                = RequestedReasoningEffort::XHigh;
     prepared.preserve_thinking                         = true;
+    prepared.requested_preserve_thinking               = true;
     prepared.sampling.temperature                      = 0.6F;
     prepared.sampling.top_p                            = 0.95F;
     prepared.sampling.top_k                            = 20;
@@ -318,6 +320,28 @@ int main() {
     failures += check(started.at("request").at("requested_reasoning_effort") == "xhigh" &&
                           !started.at("request").contains("resolved_reasoning_effort"),
                       "requested and resolved reasoning effort are not distinguished");
+
+    // A request that stated neither effort nor preserve_thinking but got the server
+    // --reasoning-effort/--preserve-thinking defaults applied still resolves
+    // prepared.reasoning_effort/preserve_thinking (the template and Responses state need concrete
+    // values to run with), so the start record must read the separate requested_* fields, or a
+    // server policy gets logged as if the client had asked for it.
+    PreparedRequest server_defaulted;
+    server_defaulted.requested_output_tokens = prepared.requested_output_tokens;
+    server_defaulted.enable_thinking         = prepared.enable_thinking;
+    server_defaulted.thinking_budget         = prepared.thinking_budget;
+    server_defaulted.reasoning_effort        = prepared.reasoning_effort;
+    server_defaulted.preserve_thinking       = prepared.preserve_thinking;
+    // requested_reasoning_effort and requested_preserve_thinking stay unset: the resolved values
+    // above came from the server default, not a client choice.
+    const RequestLogContext defaulted_context =
+        make_request_log_context(9, "openai_chat_completions", request, metadata, server_defaulted);
+    const Json defaulted_started =
+        Json::parse(format_request_start_json("serve-test", 2000, defaulted_context));
+    failures += check(defaulted_started.at("request").at("requested_reasoning_effort").is_null(),
+                      "a server-defaulted reasoning effort was logged as client-requested");
+    failures += check(defaulted_started.at("request").at("preserve_thinking").is_null(),
+                      "a server-defaulted preserve_thinking was logged as client-requested");
     failures += check(started.at("request").at("preserve_thinking") == true &&
                           started.at("request").at("preserve_thinking_semantic_change") == true,
                       "resolved preserve-thinking metadata missing");

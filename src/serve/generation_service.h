@@ -101,7 +101,13 @@ struct PreparedRequest {
     bool enable_thinking = true;
     std::optional<std::uint32_t> thinking_budget;
     std::optional<ninfer::ReasoningEffort> reasoning_effort;
+    // The client's own effort choice, or unset when the server default resolved reasoning_effort
+    // instead. Logging reports this, not reasoning_effort, so a defaulted request logs null.
+    std::optional<RequestedReasoningEffort> requested_reasoning_effort;
     std::optional<bool> preserve_thinking;
+    // The client's own choice, or unset when the server default resolved preserve_thinking
+    // instead. Logging reports this, not preserve_thinking, so a defaulted request logs null.
+    std::optional<bool> requested_preserve_thinking;
     // False trims the finished response to a single tool call. See GenerationRequest.
     bool parallel_tool_calls = true;
     std::shared_ptr<RequestLifetime> lifetime;
