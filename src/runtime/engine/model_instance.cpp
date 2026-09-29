@@ -90,6 +90,9 @@ EngineOptions normalize_engine_options(EngineOptions options) {
     case EnginePurpose::Generation:
         break;
     case EnginePurpose::CausalScoring:
+        if (!options.grafts.empty()) {
+            throw std::invalid_argument("a CausalScoring Engine takes no prompt grafts");
+        }
         options.max_concurrency      = 1;
         options.max_pending_requests = 1;
         options.prefill_chunk        = 1024;
@@ -110,10 +113,7 @@ EngineOptions normalize_engine_options(EngineOptions options) {
     const std::uint32_t concurrency = options.max_concurrency;
     // Injected grafts stay resident for the life of the Engine, each in a StateImage and a
     // shared-prefix slot of its own, so the pools grow by that many beyond what requests use.
-    const std::uint32_t direct_grafts =
-        options.purpose == EnginePurpose::Generation
-            ? models::qwen3_5::count_direct_grafts(options.grafts)
-            : 0U;
+    const std::uint32_t direct_grafts = models::qwen3_5::count_direct_grafts(options.grafts);
     if (!cache.enabled && direct_grafts != 0) {
         throw std::invalid_argument(
             "direct grafts are held in the context cache, which is disabled");

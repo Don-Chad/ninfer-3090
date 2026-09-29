@@ -3,6 +3,7 @@
 #include "models/qwen3_5/config.h"
 #include "models/qwen3_5/frontend/digest.h"
 #include "models/qwen3_5/frontend/graft.h"
+#include "runtime/engine/model_instance.h"
 
 #include <nlohmann/json.hpp>
 
@@ -250,6 +251,40 @@ int main() {
                                                       {.name = "b", .path = injected},
                                                       {.name = "c", .path = injected}}) == 2,
                           "direct grafts were not counted apart from replayed ones");
+    }
+    {
+        // Engine sizing: a direct graft is one more resident StateImage and shared prefix; a
+        // scoring Engine and a disabled context cache cannot hold one.
+        Container direct = valid_container();
+        direct.tensors.erase("replay_ids");
+        direct.meta["kind"] = "direct_kv";
+        direct.meta.erase("replay");
+        const ninfer::GraftSource source{.name = "g", .path = write(dir, "sized", direct)};
+
+        ninfer::EngineOptions plain;
+        plain.max_concurrency = 2;
+        const auto base       = ninfer::runtime::normalize_engine_options(plain);
+        ninfer::EngineOptions with_graft = plain;
+        with_graft.grafts.push_back(source);
+        const auto grown = ninfer::runtime::normalize_engine_options(with_graft);
+        failures += check(*grown.context_cache.device_state_slots ==
+                                  *base.context_cache.device_state_slots + 1 &&
+                              *grown.context_cache.max_shared_prefixes ==
+                                  *base.context_cache.max_shared_prefixes + 1,
+                          "a direct graft was not counted in the state and shared-prefix pools");
+
+        const auto rejected = [](ninfer::EngineOptions options) {
+            try {
+                (void)ninfer::runtime::normalize_engine_options(std::move(options));
+            } catch (const std::invalid_argument&) { return true; }
+            return false;
+        };
+        ninfer::EngineOptions scoring = with_graft;
+        scoring.purpose               = ninfer::EnginePurpose::CausalScoring;
+        failures += check(rejected(scoring), "a CausalScoring Engine accepted a graft");
+        ninfer::EngineOptions uncached = with_graft;
+        uncached.context_cache.enabled = false;
+        failures += check(rejected(uncached), "a disabled context cache accepted a direct graft");
     }
     {
         Container c = valid_container();
