@@ -88,8 +88,9 @@ staged <MiB>)` and the JSON record carries `vision_overlay`, including `exclusiv
 | `GET /slots` | per-slot occupancy of the private context cache (see [Slots](#slots)) |
 | `POST /slots/{id}?action=save\|restore\|erase` | save a retained session to a file, restore one, or evict one (see [Slots](#slots)) |
 | `GET /metrics` | Prometheus text counters, llama.cpp-compatible names (see [Metrics](#metrics)) |
-| `GET /v1/models` | configured OpenAI model alias and effective context limit (`max_model_len`/`context_window`/`context_length`) |
-| `GET /v1/models/{id}` | lookup of the configured alias and effective context limit (`max_model_len`/`context_window`/`context_length`) |
+| `GET /v1/models` | configured OpenAI model alias, effective context limit (`max_model_len`/`context_window`/`context_length`) and input modalities (see [Model discovery](#model-discovery)) |
+| `GET /v1/models/{id}` | lookup of the same model object by its alias |
+| `GET /props` | read-only llama.cpp-style server properties (see [Model discovery](#model-discovery)) |
 | `POST /v1/chat/completions` | OpenAI-style chat generation |
 | `POST /v1/responses` | OpenAI Responses Core generation, state, typed Items, and SSE |
 | `POST /v1/responses/input_tokens` | Responses prompt-token count without generation |
@@ -117,6 +118,43 @@ worker per admissible request (`max_concurrency + max_pending_requests + 1`) and
 to 64 further workers for connections that are merely open; the extra workers retire once idle.
 Without that headroom a client-side connection pool of otherwise idle sockets occupies every worker
 and the server accepts real requests strictly one at a time.
+
+### Model discovery
+
+`/v1/models` lists one model object:
+
+```json
+{"id": "qwen3.8-27b", "object": "model", "created": 1790000000, "owned_by": "ninfer",
+ "max_model_len": 65536, "context_window": 65536, "context_length": 65536,
+ "architecture": {"input_modalities": ["text", "image", "video"], "output_modalities": ["text"]}}
+```
+
+The context limit is `--max-context`, mirrored under the vLLM/llama.cpp, Anthropic, and
+OpenRouter/Ollama field names. `architecture` uses the OpenRouter shape that llama.cpp's router-mode
+`/models` also emits; `input_modalities` lists `image` and `video` only when the server runs with
+`--vision`, and is `["text"]` otherwise.
+
+`GET /props` serves clients that discover a llama.cpp server. It is read-only and fills only the
+llama.cpp fields NInfer can state truthfully:
+
+```json
+{"default_generation_settings": {"n_ctx": 65536,
+   "params": {"n_predict": -1, "max_tokens": -1, "temperature": 1.0, "top_k": 20, "top_p": 0.95,
+              "min_p": 0.0, "presence_penalty": 0.0, "frequency_penalty": 0.0}},
+ "total_slots": 1, "model_alias": "qwen3.8-27b", "model_path": "models/qwen3_8_27b.ninfer",
+ "modalities": {"vision": false, "audio": false}}
+```
+
+`n_ctx` is `--max-context` and `total_slots` is `--max-concurrency`. `n_predict` and its alias
+`max_tokens` are the [default output limit](#default-output-limit): `-1`, llama.cpp's "no fixed
+cap", when it is derived per request from the prompt and lane share, or the `--default-max-tokens`
+cap. The sampler is the loaded model's preset
+for the default thinking mode (thinking unless `--no-thinking`) under the process sampling flags and
+`--greedy`; request fields still override it per request. `seed` appears only with `--seed`, since
+requests otherwise draw a fresh random seed. `model_alias` is the public model id and `model_path`
+the artifact path the server was started with. There is no `build_info`, `chat_template`, or
+writable `POST /props`, and `/slots`, `/metrics`, and llama.cpp's non-`/v1` route aliases are not
+served.
 
 ### Startup readiness
 
@@ -296,7 +334,8 @@ The endpoint supports:
 - User `image_url` parts, tool-result `image_url` parts used by compatible clients, and the User
   `video_url` extension using HTTP(S) or data URIs; image detail is omitted or `auto`;
 - nonnegative `max_completion_tokens` and the legacy `max_tokens` spelling; zero performs prompt
-  processing without generation;
+  processing without generation, and omitting both applies the
+  [default output limit](#default-output-limit);
 - `temperature`, `top_p`, presence/frequency penalties, and signed integer `seed`;
 - the compatible `top_k` (`0..20`) and `min_p` (`0..1`) sampler extensions;
 - up to four non-empty stop strings, applied to both reasoning and answer output;
@@ -402,8 +441,16 @@ post-close model token, preparation is rejected with HTTP 400 code
 `thinking_budget_capacity_insufficient` rather than partially inserting control. The server does
 not promise that the model will emit nonempty content or a tool call after the marker.
 
-For Chat Completions, `reasoning_effort: "none"` requests disabled thinking. The selected template
-interprets the other standard values (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`).
+For Chat Completions, `reasoning_effort: "none"` requests disabled thinking. The other standard
+values (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) reach the template on its three rungs:
+`minimal` runs as `low`, `high` and `max` as `xhigh`, so clients such as Claude Code that send
+`high` work against the bundled Qwen templates.
+
+`--reasoning-effort minimal|low|medium|high|xhigh|max` sets the effort of every thinking-enabled
+request that states none on any endpoint, collapsed onto the same rungs. A request effort
+(`reasoning_effort`, Responses `reasoning.effort`, Anthropic `output_config.effort`, or
+`chat_template_kwargs.reasoning_effort`) overrides it. The default never enables thinking: requests
+that run without thinking, through `--no-thinking` or their own options, receive no effort.
 Conflicting explicit `enable_thinking` and effort values return `conflicting_template_option`.
 
 `preserve_thinking` controls reasoning retention according to the selected template. Request
@@ -508,7 +555,7 @@ wire response contains typed `output` Items.
 | `input` | string or typed Item array; it may be omitted or empty only when `previous_response_id` already supplies a user query |
 | `instructions` | optional string, inserted before the reconstructed conversation for this request only |
 | `previous_response_id` | optional ID of a retained local Response |
-| `max_output_tokens` | non-negative integer; omission executes with `--default-max-tokens` but remains `null` in the Response object |
+| `max_output_tokens` | non-negative integer; omission executes with the [default output limit](#default-output-limit) but remains `null` in the Response object |
 | `stream` | boolean; `true` selects Responses SSE rather than a JSON body |
 | `store` | boolean, default `true`; controls local retrieval and continuation state |
 | `temperature` | finite number in `[0,2]` |
@@ -760,12 +807,17 @@ curl http://127.0.0.1:8080/v1/messages \
 The endpoint accepts top-level System text, ordered User/Assistant/System history, text and image
 blocks, Thinking history, tool-use history, tool results, user-defined tools, aggregate responses,
 and Anthropic SSE. Consecutive User or Assistant messages are joined without adding separators.
-Mid-conversation System messages retain their input position. A final text-only Assistant message
+System messages in `messages` may appear anywhere, including first, between two User messages,
+directly after an Assistant message, or last; each renders as its own System turn at that position
+after the top-level `system` text, so appending one keeps the earlier rendered prompt reusable. The
+one excluded position is between an Assistant `tool_use` and the User message carrying its
+`tool_result`, which is rejected as invalid tool history. A final text-only Assistant message
 is an Assistant prefill: generation continues its existing text instead of opening another turn.
 Assistant prefill cannot contain media, Thinking, or tool calls and cannot start with Thinking
 enabled.
 
-`max_tokens` is optional for local clients and otherwise uses `--default-max-tokens`; a positive
+`max_tokens` is optional for local clients and otherwise uses the
+[default output limit](#default-output-limit); a positive
 value is the complete output budget. `max_tokens:0` is rejected because NInfer does not expose a
 completed zero-output cache-prewarm lifecycle. `temperature`, `top_p`, `top_k`, and
 `stop_sequences` enter Engine execution. A matched custom stop is returned as
@@ -920,7 +972,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--lookup-ngram N` | context-lookup drafting alongside `--spec`: the last `N` tokens are matched against the sequence so far and what followed is proposed; exact, since verification rejects a wrong guess | `0` (off) |
 | `--prefill-cublas` | hand wide prefill GEMMs to cuBLAS: a large prefill speedup for a small perplexity cost, and it wants a larger `--prefill-chunk` to pay (see [performance](performance.md)) | off |
 | `--no-prefill-cublas-projections` | with `--prefill-cublas`, keep the attention and GDN input projections off that route | projections on |
-| `--default-max-tokens N` | output limit when omitted by a request | `8192` |
+| `--default-max-tokens N` | output limit when omitted by a request; see [default output limit](#default-output-limit) | largest budget that keeps every lane admissible |
 | `--default-thinking-budget N` | positive thinking cap inherited by thinking-enabled requests | unset |
 | `--vision` | enable media input and load Vision GPU allocations | off |
 | `--vision-residency resident\|overlay` | `overlay` keeps the Vision tower in pinned host memory and encodes each image inside a window borrowed from the evict-ranked text weight tail, so `--vision` no longer reserves device memory and `--kv-capacity auto` resolves the no-vision capacity; requires `--vision` and CUDA virtual memory management | `resident` |
@@ -940,6 +992,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
 | `--graft NAME=PATH` | load a [prompt graft](#prompt-grafts) a request may select by name; repeatable | none |
+| `--reasoning-effort minimal\|low\|medium\|high\|xhigh\|max` | effort for thinking-enabled requests that state none | template default |
 | `--cors` | permissive browser CORS headers | off |
 | `--temperature F` | process-level temperature override | unset |
 | `--top-p F` | process-level top-p override | unset |
@@ -1123,6 +1176,27 @@ resolves once at startup.
 
 Admission reserves the full prompt-plus-effective-output page entitlement through request
 completion. A request remains queued until a legal resource plan can satisfy that entitlement.
+
+### Default output limit
+
+A request that omits its output limit (`max_completion_tokens`/`max_tokens` on Chat Completions,
+`max_output_tokens` on Responses, `max_tokens` on Messages) receives the largest budget that still
+lets every configured lane be admitted at the same time. Once its prompt is prepared, the Engine
+finds the largest output whose admission entitlement -- Main KV pages for the prompt and output,
+plus the MTP draft-window or DFlash backend KV pages when speculation is on -- fits one lane's share
+(`1/--max-concurrency`) of each KV pool, and clamps it to the remaining context
+(`--max-context` minus the prompt). With one lane, or a pool of at least `--max-concurrency` times
+`--max-context`, that is the whole remaining context, so long reasoning runs are not cut at an
+arbitrary count; with several lanes over a smaller pool, each limitless request stays inside its
+share and they all run concurrently. A prompt that alone overruns one lane's share can never run
+beside full-share lanes, so it keeps the whole remaining context.
+
+A run that exhausts the budget finishes with `finish_reason:"length"`, Responses `incomplete` with
+reason `max_output_tokens`, or Anthropic `stop_reason:"max_tokens"`, or
+`stop_reason:"model_context_window_exceeded"` when the budget was the remaining context. An explicit
+request limit always wins, and `--default-max-tokens N` replaces the derived default with a fixed cap
+(still bounded by the remaining context). The JSONL request record reports the budget actually
+submitted as `requested_output_tokens`.
 
 Each reusable checkpoint contains KV and complete continuation state. At admission, capture, and
 finish boundaries, resource pressure may keep it on Device, move its StateImage and/or KV replicas

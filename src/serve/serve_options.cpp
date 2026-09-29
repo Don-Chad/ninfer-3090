@@ -95,14 +95,15 @@ std::string serve_usage_text(const char* argv0) {
            "[--gdn-state-fp16] "
            "[--mlp-a8-decode] [--no-prefill-a8] "
            "[--prefill-cublas [--no-prefill-cublas-projections]] [--lookup-ngram N] "
-           "[--no-thinking] [--preserve-thinking] [--graft NAME=PATH]... [--cors] "
+           "[--no-thinking] [--preserve-thinking] [--graft NAME=PATH]... "
+           "[--reasoning-effort minimal|low|medium|high|xhigh|max] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
            "       serves OpenAI Responses/Chat Completions and Anthropic Messages endpoints\n"
-           "       --default-max-tokens defaults to " +
-           std::to_string(kDefaultMaxTokens) +
-           " when omitted\n"
+           "       --default-max-tokens fixes the output budget of requests that omit a limit; "
+           "unset, such a request gets the largest budget that still lets every lane be admitted "
+           "at once (the remaining context with one lane)\n"
            "       --max-request-mib defaults to 384 and is enforced before JSON parsing\n"
            "       --media-cache-mib defaults to 1024; 0 disables retained media reuse\n"
            "       --media-live-mib defaults to 2048 and bounds all live BF16 patch payloads\n"
@@ -151,6 +152,9 @@ std::string serve_usage_text(const char* argv0) {
            "       --graft NAME=PATH loads a phantom-kv prefill graft (a safetensors container with a "
            ".json sidecar beside it); a request selecting it with \"graft\": \"NAME\" runs as if the "
            "graft's hidden turn preceded its own messages. Repeatable\n"
+           "       --reasoning-effort is the effort of thinking-enabled requests that state none; "
+           "request values override it; like request values, minimal runs as low and high/max as "
+           "xhigh\n"
            "       sampler defaults come from the loaded model and resolved thinking mode; "
            "server flags and request fields override individual values.\n"
            "       --greedy forces temperature 0 (exact argmax).\n";
@@ -217,7 +221,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         options.startup_argv.emplace_back(argv[i] == nullptr ? "" : argv[i]);
         redact_next = options.startup_argv.back() == "--api-key";
     }
-    bool default_max_tokens_explicit = false;
     bool kv_capacity_explicit        = false;
     bool device_explicit             = false;
     bool context_capacity_explicit   = false;
@@ -373,7 +376,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--default-max-tokens") {
             options.default_max_tokens =
                 parse_nonnegative_int(require_value("--default-max-tokens"), "default-max-tokens");
-            default_max_tokens_explicit = true;
         } else if (arg == "--default-thinking-budget") {
             const std::uint64_t budget =
                 parse_u64(require_value("--default-thinking-budget"), "default-thinking-budget");
@@ -451,6 +453,16 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             }
             options.grafts.push_back(GraftSource{.name = std::string(spec.substr(0, equals)),
                                                  .path = std::string(spec.substr(equals + 1))});
+        } else if (arg == "--reasoning-effort") {
+            const std::string value = require_value("--reasoning-effort");
+            const std::optional<RequestedReasoningEffort> effort =
+                parse_requested_reasoning_effort(value);
+            if (!effort) { throw std::invalid_argument("invalid reasoning-effort: " + value); }
+            if (*effort == RequestedReasoningEffort::None) {
+                throw std::invalid_argument(
+                    "--reasoning-effort none is not a default effort; use --no-thinking");
+            }
+            options.default_reasoning_effort = *effort;
         } else if (arg == "--cors") {
             options.enable_cors = true;
         } else if (arg == "--temperature") {
@@ -542,10 +554,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.vision_residency == VisionResidency::Overlay && !options.enable_vision) {
         throw std::invalid_argument("--vision-residency overlay requires --vision");
     }
-    if (default_max_tokens_explicit) {
-        if (options.default_max_tokens <= 0) {
-            throw std::invalid_argument("--default-max-tokens must be positive");
-        }
+    if (options.default_max_tokens && *options.default_max_tokens <= 0) {
+        throw std::invalid_argument("--default-max-tokens must be positive");
     }
     return options;
 }

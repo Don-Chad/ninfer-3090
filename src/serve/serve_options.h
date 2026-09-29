@@ -2,6 +2,7 @@
 
 #include "ninfer/types.h"
 #include "product/logging/logging.h"
+#include "serve/request.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -12,9 +13,6 @@
 
 namespace ninfer::serve {
 
-// Protocol default when the client omits max_tokens. Engine independently
-// clamps the request to its effective context capacity.
-inline constexpr int kDefaultMaxTokens                    = 8192;
 inline constexpr std::size_t kDefaultMaxRequestBytes      = 384ULL << 20;
 inline constexpr std::size_t kDefaultResponseStoreRecords = 1024;
 inline constexpr std::size_t kDefaultResponseStoreBytes   = 256ULL << 20;
@@ -89,7 +87,12 @@ struct ServeOptions {
     // --graft NAME=PATH, repeatable: phantom-kv grafts a request may select with "graft": NAME.
     std::vector<GraftSource> grafts;
     std::optional<std::uint32_t> default_thinking_budget;
-    int default_max_tokens = kDefaultMaxTokens;
+    // Output limit for a request that omits one. Unset means the Engine's concurrent lane budget:
+    // see request_limits().
+    std::optional<int> default_max_tokens;
+    // Reasoning effort for a thinking-enabled request that states none. Never None: disabling
+    // thinking by default is --no-thinking.
+    std::optional<RequestedReasoningEffort> default_reasoning_effort;
     bool enable_cors       = false; // send permissive CORS headers for browser UIs
     // Process-level explicit overrides layered between registered model/mode defaults and request
     // fields. An omitted seed is replaced per request with a fresh random seed.
@@ -101,6 +104,15 @@ struct ServeOptions {
     // while parsing; this is provenance only and never affects execution.
     std::vector<std::string> startup_argv;
 };
+
+// Parse-time limits. A request that omits max_tokens / max_completion_tokens / max_output_tokens
+// gets --default-max-tokens when set; otherwise GenerationService asks the Engine for the largest
+// budget that still lets every configured lane be admitted at once (the remaining context with one
+// lane).
+[[nodiscard]] inline RequestLimits request_limits(const ServeOptions& options) noexcept {
+    return RequestLimits{.default_max_tokens = options.default_max_tokens,
+                         .max_context        = static_cast<int>(options.max_context)};
+}
 
 ServeOptions parse_serve_options(int argc, char** argv);
 // The per-request ContextCacheHints::automatic_private_anchors for this server: the explicit

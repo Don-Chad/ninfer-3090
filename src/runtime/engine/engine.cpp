@@ -591,6 +591,15 @@ LoadSummary Engine::load_summary() const {
     return impl_->load;
 }
 
+std::uint32_t Engine::concurrent_output_budget(const PreparedPrompt& prompt) const {
+    if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
+    if (impl_->options.purpose != EnginePurpose::Generation) {
+        throw std::logic_error("concurrent_output_budget requires a Generation Engine");
+    }
+    if (prompt.impl_ == nullptr) { throw std::invalid_argument("PreparedPrompt is empty"); }
+    return impl_->active->program->concurrent_output_budget(prompt.impl_->summary.prompt_tokens);
+}
+
 MemorySummary Engine::memory_summary() const {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
     return std::visit(

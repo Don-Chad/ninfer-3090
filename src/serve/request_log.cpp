@@ -653,10 +653,19 @@ std::string format_server_start_json(
              {"media_live_bytes", options.media_live_bytes},
              {"media_preprocess_threads", options.media_preprocess_threads},
              {"request_log_jsonl", options.request_log_jsonl},
-             {"default_output_tokens", options.default_max_tokens},
+             // null: requests that omit a limit get the Engine's concurrent lane budget.
+             {"default_output_tokens", options.default_max_tokens
+                                           ? Json(*options.default_max_tokens)
+                                           : Json(nullptr)},
+             {"default_output_policy",
+              options.default_max_tokens ? "fixed" : "concurrent_lane_budget"},
              {"default_thinking",
               options.enable_thinking ? Json(*options.enable_thinking) : Json(nullptr)},
              {"default_thinking_budget", std::move(default_thinking_budget)},
+             {"default_reasoning_effort",
+              options.default_reasoning_effort
+                  ? Json(requested_reasoning_effort_name(*options.default_reasoning_effort))
+                  : Json(nullptr)},
              {"default_preserve_thinking",
               options.preserve_thinking ? Json(*options.preserve_thinking) : Json(nullptr)}};
     record["artifact"]                             = Json{{"path", options.artifact_path},

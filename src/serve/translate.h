@@ -18,7 +18,15 @@ using MediaAcquirer = std::function<ninfer::OwnedMedia(const ContentPart&)>;
 struct ResolvedPromptSemantics {
     std::optional<bool> enable_thinking;
     std::optional<ninfer::ReasoningEffort> reasoning_effort;
+    // The client's own effort choice (top-level field or chat_template_kwargs), or unset when the
+    // server default filled it in. Distinct from reasoning_effort, which also carries the resolved
+    // server-default value so the template still has one place to read the effective effort from.
+    std::optional<RequestedReasoningEffort> requested_reasoning_effort;
     std::optional<bool> preserve_thinking;
+    // The client's own preserve_thinking choice (top-level field or chat_template_kwargs), or
+    // unset when the server --preserve-thinking default filled it in. Distinct from
+    // preserve_thinking, which also carries the resolved server-default value for execution.
+    std::optional<bool> requested_preserve_thinking;
     std::string chat_template_kwargs_json;
     std::string graft;
 };

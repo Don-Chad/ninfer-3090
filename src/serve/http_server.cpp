@@ -4,6 +4,7 @@
 #include "serve/anthropic_messages.h"
 #include "serve/http_transport.h"
 #include "serve/openai_common.h"
+#include "serve/props.h"
 #include "serve/request_log.h"
 
 #include <nlohmann/json.hpp>
@@ -479,6 +480,9 @@ void HttpServer::register_routes() {
     server_.Get("/v1/load", [this](const httplib::Request& req, httplib::Response& res) {
         handle_load(req, res);
     });
+    server_.Get("/props", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_props(req, res);
+    });
     server_.Get("/v1/models", [this](const httplib::Request& req, httplib::Response& res) {
         handle_models(req, res);
     });
@@ -667,9 +671,19 @@ void HttpServer::handle_load(const httplib::Request&, httplib::Response& res) co
     res.set_content(make_load_report(load_capacity_, sample), "application/json");
 }
 
-void HttpServer::handle_models(const httplib::Request&, httplib::Response& res) const {
-    res.set_content(make_models_list(public_model_id_, unix_time_now(), options_.max_context),
+void HttpServer::handle_props(const httplib::Request&, httplib::Response& res) const {
+    res.set_content(make_props(options_, model_description(), service_->sampling_defaults()),
                     "application/json");
+}
+
+ModelDescription HttpServer::model_description() const {
+    return ModelDescription{.id            = public_model_id_,
+                            .max_model_len = options_.max_context,
+                            .vision        = service_->engine_options().enable_vision};
+}
+
+void HttpServer::handle_models(const httplib::Request&, httplib::Response& res) const {
+    res.set_content(make_models_list(model_description(), unix_time_now()), "application/json");
 }
 
 void HttpServer::handle_model(const httplib::Request& req, httplib::Response& res) const {
@@ -683,8 +697,7 @@ void HttpServer::handle_model(const httplib::Request& req, httplib::Response& re
         write_openai_error(res, error);
         return;
     }
-    res.set_content(make_model_object(public_model_id_, unix_time_now(), options_.max_context),
-                    "application/json");
+    res.set_content(make_model_object(model_description(), unix_time_now()), "application/json");
 }
 
 bool HttpServer::bind() { return server_.bind_to_port(options_.host, options_.port); }

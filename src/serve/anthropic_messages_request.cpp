@@ -506,9 +506,13 @@ void normalize_tool_history(std::vector<ParsedMessage>& messages) {
         paired_result_turn[index + 1U] = true;
     }
 
+    // A history whose opening turn was trimmed may start with the results of calls it no longer
+    // shows. Only System messages can precede that opening User turn.
+    std::size_t opening = 0;
+    while (opening < messages.size() && messages[opening].role == ChatRole::System) { ++opening; }
     for (std::size_t index = 0; index < messages.size(); ++index) {
         if (result_counts[index] == 0 || paired_result_turn[index]) { continue; }
-        if (index == 0 && messages[index].role == ChatRole::User) { continue; }
+        if (index == opening && messages[index].role == ChatRole::User) { continue; }
         const ParsedToolResult& result =
             std::get<ParsedToolResult>(messages[index].user_blocks.front());
         invalid_tool_history("tool_result id '" + result.tool_use_id +
@@ -577,21 +581,9 @@ void parse_messages(const Json& body, GenerationRequest& request) {
         }
     }
 
-    for (std::size_t index = 0; index < roles.size();) {
-        if (roles[index] != ChatRole::System) {
-            ++index;
-            continue;
-        }
-        const std::size_t begin = index;
-        while (index < roles.size() && roles[index] == ChatRole::System) { ++index; }
-        if (begin == 0 || roles[begin - 1U] != ChatRole::User ||
-            (index < roles.size() && roles[index] != ChatRole::Assistant)) {
-            bad_request("system messages must follow a user message and be final or precede an "
-                        "assistant message",
-                        "messages", "invalid_message_order");
-        }
-    }
-
+    // A System message may sit anywhere in the history and renders as its own turn at that
+    // position, so an appended one leaves the rendered prefix intact for reuse. The one position it
+    // cannot take is between a tool_use and its tool_result; normalize_tool_history() rejects that.
     std::vector<ParsedMessage> parsed;
     parsed.reserve(messages.size());
     for (std::size_t index = 0; index < messages.size(); ++index) {
@@ -1063,7 +1055,7 @@ AnthropicMessagesRequest parse_anthropic_messages_request(const Json& body,
         if (*max_tokens < 0) { bad_request("max_tokens must be positive", "max_tokens"); }
         result.generation.max_tokens = *max_tokens;
     } else {
-        result.generation.max_tokens = limits.default_max_tokens;
+        apply_default_output_limit(result.generation, limits);
     }
 
     parse_common_prompt(body, result.generation, ParsePurpose::Messages,

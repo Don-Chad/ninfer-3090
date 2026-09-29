@@ -15,18 +15,15 @@ RequestLogContext make_request_log_context(std::uint64_t id, std::string protoco
     context.stream                             = metadata.stream;
     context.message_count                      = request.messages.size();
     context.media_item_count                   = request.media_item_count();
-    context.requested_output_tokens            = request.max_tokens;
+    context.requested_output_tokens            = prepared.requested_output_tokens;
     context.requested_output_tokens_client_set = metadata.output_tokens_explicit;
     context.tool_count                         = request.tools.size();
     context.tool_choice                        = request.tool_choice;
     context.has_tool_history                   = request.has_tool_history();
     context.enable_thinking                    = prepared.enable_thinking;
     context.thinking_budget                    = prepared.thinking_budget;
-    context.requested_reasoning_effort =
-        prepared.reasoning_effort ? parse_requested_reasoning_effort(
-                                        ninfer::reasoning_effort_name(*prepared.reasoning_effort))
-                                  : std::nullopt;
-    context.preserve_thinking                 = prepared.preserve_thinking;
+    context.requested_reasoning_effort = prepared.requested_reasoning_effort;
+    context.preserve_thinking                 = prepared.requested_preserve_thinking;
     context.preserve_thinking_semantic_change = metadata.preserve_thinking_semantic_change;
     context.sampling                          = prepared.sampling;
     context.acquisition_seconds               = prepared.acquisition_seconds;

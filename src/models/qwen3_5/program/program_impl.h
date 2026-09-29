@@ -16,6 +16,7 @@
 #include "models/qwen3_5/program/storage/kv_store.h"
 #include "models/qwen3_5/program/storage/state_store.h"
 #include "models/qwen3_5/program/prefix_identity.h"
+#include "models/qwen3_5/program/planning/output_budget.h"
 #include "models/qwen3_5/program/planning/resource_projection.h"
 #include "models/qwen3_5/execution/text.h"
 #include "models/qwen3_5/execution/vision.h"
@@ -574,6 +575,8 @@ public:
     [[nodiscard]] ReleaseResult release_shared_prefix(SharedPrefixHandle&& shared) noexcept;
     void fail_all_cleanup() noexcept;
     [[nodiscard]] detail::PhysicalResources admission_capacity() const noexcept;
+    [[nodiscard]] KVEntitlementShape kv_entitlement_shape() const noexcept;
+    [[nodiscard]] std::uint32_t concurrent_output_budget(std::uint32_t prompt_tokens) const noexcept;
     [[nodiscard]] bool isolated_request_feasible(const RequestBasePlan& base) const noexcept;
 
     [[nodiscard]] runtime::ProgramResourceRevision resource_revision() const noexcept {

@@ -970,6 +970,11 @@ public:
     [[nodiscard]] runtime::ProgramResourceRevision resource_revision() const noexcept;
     [[nodiscard]] PhysicalUsageSnapshot physical_usage() const noexcept;
     [[nodiscard]] MemorySummary memory_summary() const noexcept;
+    // Largest output budget for a prompt of `prompt_tokens` whose admission entitlement (main KV and
+    // any MTP/DFlash backend KV, draft window included) fits one lane's share of each pool, so that
+    // every configured lane can hold such a request at once; clamped to the remaining context. Reads
+    // only fixed startup capacities, so any thread may call it.
+    [[nodiscard]] std::uint32_t concurrent_output_budget(std::uint32_t prompt_tokens) const noexcept;
     void reset_memory_peaks() noexcept;
 
     // Inject a direct_kv or softprompt_kv graft into a synthesized shared-prefix entry.

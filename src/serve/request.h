@@ -44,7 +44,10 @@ private:
 
 // Server-side context needed while parsing/validating a request.
 struct RequestLimits {
-    int default_max_tokens = 8192;
+    // --default-max-tokens: the fixed budget of a request that omits its limit. Unset, such a
+    // request receives the Engine's concurrent lane budget once its prompt is prepared.
+    std::optional<int> default_max_tokens;
+    int max_context = 8192; // --max-context, the upper bound of any derived budget
 };
 
 enum class ContentKind {
@@ -182,6 +185,9 @@ struct GenerationRequest {
     // Caller-supplied stop tokens and stop strings still apply.
     bool ignore_eos = false;
     int max_tokens                       = 0; // resolved budget; zero means immediate output limit
+    // The request omitted its limit and the server has no fixed default: GenerationService replaces
+    // max_tokens (then the --max-context upper bound) with Engine::concurrent_output_budget().
+    bool derive_output_budget = false;
     std::optional<bool> enable_thinking;      // unset => use the server default
     std::optional<std::uint32_t> thinking_budget;
     std::optional<RequestedReasoningEffort> reasoning_effort;
@@ -219,5 +225,11 @@ struct GenerationRequest {
         return false;
     }
 };
+
+// The output limit of a request that omitted one.
+inline void apply_default_output_limit(GenerationRequest& request, const RequestLimits& limits) {
+    request.derive_output_budget = !limits.default_max_tokens.has_value();
+    request.max_tokens           = limits.default_max_tokens.value_or(limits.max_context);
+}
 
 } // namespace ninfer::serve

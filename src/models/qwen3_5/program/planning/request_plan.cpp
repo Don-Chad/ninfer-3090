@@ -200,6 +200,22 @@ detail::PhysicalResources positive_difference(detail::PhysicalResources value,
 
 } // namespace
 
+KVEntitlementShape ProgramImpl::kv_entitlement_shape() const noexcept {
+    return KVEntitlementShape{
+        .capacity = capacity, .draft_window = draft_window, .backend = speculative_backend};
+}
+
+std::uint32_t ProgramImpl::concurrent_output_budget(std::uint32_t prompt_tokens) const noexcept {
+    // Each lane's fair share of every pool admission reserves from, at the pools' fixed physical
+    // extent: an overlay Vision window's transient loan is not a reason to shrink the budget.
+    const std::uint32_t main_share = decoder->text_kv.page_pool().capacity_pages() / max_concurrency;
+    const qwen3_5::PagedKVCache* backend = backend_kv_cache();
+    const std::uint32_t backend_share =
+        backend != nullptr ? backend->page_pool().capacity_pages() / max_concurrency : 0U;
+    return detail::concurrent_output_budget(kv_entitlement_shape(), main_share, backend_share,
+                                            prompt_tokens);
+}
+
 RequestBasePlan ProgramImpl::plan_request(const PreparedPromptData& prompt,
                                           const runtime::ResolvedExecutionOptions& options) {
     if (prompt.token_ids.empty()) { throw std::invalid_argument("prompt must contain tokens"); }
@@ -249,18 +265,10 @@ RequestBasePlan ProgramImpl::plan_request(const PreparedPromptData& prompt,
     base->allow_prefix_reuse             = options.allow_prefix_reuse;
     base->summary.publish_continuation =
         options.allow_prefix_reuse && prompt.identity.reusable && context_cache.enabled;
-    const std::uint32_t reserved_context_tokens =
-        base->summary.prompt_tokens + (base->summary.effective_output_tokens == 0
-                                           ? 0U
-                                           : base->summary.effective_output_tokens - 1U);
-    base->text_kv_page_entitlement = pages_for_tokens(reserved_context_tokens);
-    if (speculative_backend == SpeculativeBackend::Mtp) {
-        const std::uint32_t mtp_tokens    = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-            capacity, static_cast<std::uint64_t>(reserved_context_tokens) + draft_window - 1ULL));
-        base->backend_kv_page_entitlement = pages_for_tokens(mtp_tokens);
-    } else if (speculative_backend == SpeculativeBackend::DFlash) {
-        base->backend_kv_page_entitlement = pages_for_tokens(reserved_context_tokens);
-    }
+    const KVPageEntitlement entitlement = kv_page_entitlement(
+        kv_entitlement_shape(), base->summary.prompt_tokens, base->summary.effective_output_tokens);
+    base->text_kv_page_entitlement    = entitlement.main_pages;
+    base->backend_kv_page_entitlement = entitlement.backend_pages;
     detail::PhysicalDeviceResources root_active{
         .active_lanes     = 1,
         .state_slots      = 1U,

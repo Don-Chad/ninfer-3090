@@ -116,6 +116,19 @@ int test_request_envelope_and_sampling() {
                   !defaults.timings_per_token && !defaults.return_progress &&
                   defaults.generation.max_tokens == limits().default_max_tokens,
               "protocol defaults remain outside GenerationRequest");
+    failures += check(!defaults.generation.derive_output_budget,
+                      "a --default-max-tokens cap was marked for derivation");
+    const RequestLimits derived{.max_context = 4096};
+    const OpenAIChatRequest derived_omitted = parse_chat_completion_request(base_request(), derived);
+    failures += check(derived_omitted.generation.derive_output_budget &&
+                          derived_omitted.generation.max_tokens == 4096,
+                      "an omitted limit without a server cap was not marked for derivation");
+    Json explicit_limit          = base_request();
+    explicit_limit["max_tokens"] = 32;
+    const OpenAIChatRequest derived_explicit = parse_chat_completion_request(explicit_limit, derived);
+    failures += check(!derived_explicit.generation.derive_output_budget &&
+                          derived_explicit.generation.max_tokens == 32,
+                      "an explicit limit was marked for derivation");
 
     Json malformed              = base_request();
     malformed["stream_options"] = true;
@@ -578,6 +591,53 @@ int test_reasoning_and_extensions() {
     failures +=
         check(api_error([&] { (void)parse(body); }).code == "mm_processor_kwargs_not_supported",
               "non-empty media processor kwargs rejected");
+
+    // Request efforts collapse onto the template's three rungs; Claude Code sends 'high'.
+    body                     = base_request();
+    body["reasoning_effort"] = "high";
+    ResolvedPromptSemantics resolved = semantics(parse(body).generation);
+    failures += check(resolved.reasoning_effort == ninfer::ReasoningEffort::XHigh &&
+                          resolved.enable_thinking == true,
+                      "request effort high did not select the xhigh rung");
+    body["reasoning_effort"] = "minimal";
+    failures += check(semantics(parse(body).generation).reasoning_effort ==
+                          ninfer::ReasoningEffort::Low,
+                      "request effort minimal did not select the low rung");
+
+    // --reasoning-effort fills in for thinking requests that state no effort, collapsed alike.
+    ServeOptions server;
+    server.default_reasoning_effort = RequestedReasoningEffort::Max;
+    const GenerationRequest plain   = parse(base_request()).generation;
+    resolved                        = resolve_prompt_semantics(plain, server);
+    failures += check(resolved.reasoning_effort == ninfer::ReasoningEffort::XHigh &&
+                          !resolved.enable_thinking.has_value(),
+                      "server effort default did not apply to a request without one");
+    server.default_reasoning_effort = RequestedReasoningEffort::Medium;
+    body                            = base_request();
+    body["reasoning_effort"]        = "low";
+    failures += check(resolve_prompt_semantics(parse(body).generation, server).reasoning_effort ==
+                          ninfer::ReasoningEffort::Low,
+                      "request effort did not override the server default");
+    body                         = base_request();
+    body["chat_template_kwargs"] = Json{{"reasoning_effort", "xhigh"}};
+    failures += check(resolve_prompt_semantics(parse(body).generation, server).reasoning_effort ==
+                          ninfer::ReasoningEffort::XHigh,
+                      "template-kwargs effort did not override the server default");
+    body                    = base_request();
+    body["enable_thinking"] = false;
+    resolved                = resolve_prompt_semantics(parse(body).generation, server);
+    failures += check(!resolved.reasoning_effort && resolved.enable_thinking == false,
+                      "server effort default applied to a non-thinking request");
+    server.enable_thinking = false;
+    resolved               = resolve_prompt_semantics(plain, server);
+    failures += check(!resolved.reasoning_effort && resolved.enable_thinking == false,
+                      "server effort default overrode --no-thinking");
+    body                     = base_request();
+    body["reasoning_effort"] = "medium";
+    resolved                 = resolve_prompt_semantics(parse(body).generation, server);
+    failures += check(resolved.reasoning_effort == ninfer::ReasoningEffort::Medium &&
+                          resolved.enable_thinking == true,
+                      "request effort under --no-thinking did not enable thinking");
     return failures;
 }
 
@@ -825,16 +885,31 @@ int test_stream_observations() {
 
 int test_common_objects() {
     int failures      = 0;
-    const Json models = Json::parse(make_models_list("qwen", 7, 240000));
+    const ModelDescription text_only{.id = "qwen", .max_model_len = 240000, .vision = false};
+    const Json models = Json::parse(make_models_list(text_only, 7));
     failures +=
         check(models["data"][0]["id"] == "qwen" && models["data"][0]["max_model_len"] == 240000 &&
                   models["data"][0]["context_window"] == 240000 &&
                   models["data"][0]["context_length"] == 240000,
               "models list advertises the configured context limit under every field name");
-    const Json model = Json::parse(make_model_object("qwen", 7, 240000));
+    failures += check(models["data"][0]["architecture"] ==
+                          Json{{"input_modalities", Json::array({"text"})},
+                               {"output_modalities", Json::array({"text"})}},
+                      "a text-only server advertised media input");
+    const Json model = Json::parse(make_model_object(text_only, 7));
     failures += check(model["max_model_len"] == 240000 && model["context_window"] == 240000 &&
                           model["context_length"] == 240000,
                       "model lookup advertises the configured context limit under every field name");
+
+    const ModelDescription vision{.id = "qwen", .max_model_len = 240000, .vision = true};
+    const Json vision_input = Json::array({"text", "image", "video"});
+    failures += check(Json::parse(make_models_list(vision, 7))["data"][0]["architecture"]
+                                                                  ["input_modalities"] ==
+                              vision_input &&
+                          Json::parse(make_model_object(vision, 7))["architecture"]
+                                                                    ["input_modalities"] ==
+                              vision_input,
+                      "a --vision server did not advertise image and video input");
     const Json error = Json::parse(make_error_body(
         ApiError{.status = 400, .message = "bad", .param = "messages", .code = "invalid"}));
     failures += check(error["error"]["param"] == "messages" && error["error"]["code"] == "invalid",

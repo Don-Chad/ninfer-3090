@@ -1056,8 +1056,8 @@ ParsedPromptFields parse_prompt_fields(const Json& body, const RequestLimits& li
     parse_text(body);
     parse_truncation(body);
     parse_preserve_thinking(body, out.prompt);
-    out.prompt.generation.graft      = parse_graft_field(body);
-    out.prompt.generation.max_tokens = limits.default_max_tokens;
+    out.prompt.generation.graft = parse_graft_field(body);
+    apply_default_output_limit(out.prompt.generation, limits);
     return out;
 }
 
@@ -1304,8 +1304,9 @@ OpenAIResponsesCreateRequest parse_openai_responses_create_request(const Json& b
         if (*max_output < 0) {
             bad_request("max_output_tokens must be non-negative", "max_output_tokens");
         }
-        out.requested_max_output_tokens  = *max_output;
-        out.prompt.generation.max_tokens = *max_output;
+        out.requested_max_output_tokens            = *max_output;
+        out.prompt.generation.max_tokens           = *max_output;
+        out.prompt.generation.derive_output_budget = false;
     }
     return out;
 }

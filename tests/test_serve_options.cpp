@@ -1,6 +1,9 @@
 #include "serve/generation_service.h"
+#include "serve/props.h"
 #include "serve/serve_options.h"
 #include "serve/translate.h"
+
+#include <nlohmann/json.hpp>
 
 #include <iostream>
 #include <string>
@@ -67,6 +70,43 @@ int main() {
         "server defaults unexpectedly override registered model sampling");
     failures += check(resolve_public_model_id(defaults, "artifact-model") == "artifact-model",
                       "artifact model id was not selected by default");
+
+    // Without --default-max-tokens an omitted request limit is derived per request from the Engine's
+    // concurrent lane budget, bounded above by --max-context; the flag replaces it with a fixed cap.
+    const ServeOptions long_context =
+        parse({"ninfer-serve", "model.ninfer", "--max-context", "262144"});
+    const RequestLimits derived = request_limits(long_context);
+    failures += check(!derived.default_max_tokens && derived.max_context == 262144,
+                      "omitted --default-max-tokens did not select the derived lane budget");
+    GenerationRequest omitted;
+    apply_default_output_limit(omitted, derived);
+    failures += check(omitted.derive_output_budget && omitted.max_tokens == 262144,
+                      "an omitted limit was not marked for derivation under the context bound");
+    const ServeOptions capped = parse(
+        {"ninfer-serve", "model.ninfer", "--max-context", "262144", "--default-max-tokens", "4096"});
+    GenerationRequest fixed;
+    apply_default_output_limit(fixed, request_limits(capped));
+    failures += check(!fixed.derive_output_budget && fixed.max_tokens == 4096,
+                      "explicit --default-max-tokens was not the default output limit");
+    bool zero_default_output_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--default-max-tokens", "0"});
+    } catch (const std::invalid_argument&) { zero_default_output_rejected = true; }
+    failures += check(zero_default_output_rejected, "--default-max-tokens 0 was accepted");
+
+    failures += check(!defaults.default_reasoning_effort,
+                      "a reasoning effort is unexpectedly configured by default");
+    failures += check(parse({"ninfer-serve", "model.ninfer", "--reasoning-effort", "high"})
+                              .default_reasoning_effort == RequestedReasoningEffort::High,
+                      "--reasoning-effort high was not parsed");
+    for (const char* rejected : {"none", "extreme"}) {
+        bool effort_rejected = false;
+        try {
+            (void)parse({"ninfer-serve", "model.ninfer", "--reasoning-effort", rejected});
+        } catch (const std::invalid_argument&) { effort_rejected = true; }
+        const std::string message = std::string("--reasoning-effort ") + rejected + " was accepted";
+        failures += check(effort_rejected, message.c_str());
+    }
 
     const ServeOptions fp8 = parse({"ninfer-serve", "model.ninfer", "--kv-dtype", "fp8"});
     failures += check(fp8.kv_cache == ninfer::KvCacheStorage::Fp8E4M3Row256,
@@ -616,6 +656,49 @@ int main() {
         graft_request.graft.clear();
         failures += check(resolve_prompt_semantics(graft_request, grafted).graft.empty(),
                           "a request without a graft selected one");
+    }
+
+    {
+        // /props reports what a request that states nothing actually inherits.
+        const ninfer::ModelSamplingDefaults presets{
+            .thinking     = {.temperature = 1.0F, .top_k = 20, .top_p = 0.95F},
+            .non_thinking = {.temperature = 0.7F, .top_k = 20, .top_p = 0.8F,
+                             .presence_penalty = 1.5F}};
+        const ServeOptions served =
+            parse({"ninfer-serve", "model.ninfer", "--max-context", "65536", "--max-concurrency",
+                   "2", "--top-p", "0.9"});
+        const nlohmann::json props = nlohmann::json::parse(make_props(
+            served, ModelDescription{.id = "qwen", .max_model_len = 65536, .vision = true},
+            presets));
+        const nlohmann::json& settings = props.at("default_generation_settings");
+        const nlohmann::json& params   = settings.at("params");
+        failures += check(settings.at("n_ctx") == 65536 && props.at("total_slots") == 2 &&
+                              props.at("model_alias") == "qwen" &&
+                              props.at("model_path") == "model.ninfer",
+                          "/props context, slots or identity mismatch");
+        failures += check(params.at("n_predict") == -1 && params.at("max_tokens") == -1,
+                          "/props did not report the remaining-context output default as -1");
+        failures += check(params.at("temperature") == 1.0 && params.at("top_k") == 20 &&
+                              params.at("top_p") == 0.9F && !params.contains("seed"),
+                          "/props sampler is not the thinking preset under process overrides");
+        failures += check(props.at("modalities") ==
+                              nlohmann::json{{"vision", true}, {"audio", false}},
+                          "/props modalities mismatch");
+
+        const ServeOptions capped =
+            parse({"ninfer-serve", "model.ninfer", "--no-thinking", "--default-max-tokens",
+                   "2048", "--greedy", "--seed", "7"});
+        const nlohmann::json capped_params =
+            nlohmann::json::parse(
+                make_props(capped, ModelDescription{.id = "qwen", .max_model_len = 8192}, presets))
+                .at("default_generation_settings")
+                .at("params");
+        failures += check(capped_params.at("n_predict") == 2048 &&
+                              capped_params.at("temperature") == 0.0 &&
+                              capped_params.at("presence_penalty") == 1.5F &&
+                              capped_params.at("seed") == 7,
+                          "/props did not follow --default-max-tokens, --no-thinking, --greedy "
+                          "and --seed");
     }
 
     return failures == 0 ? 0 : 1;

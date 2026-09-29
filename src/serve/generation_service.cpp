@@ -370,9 +370,11 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
     const ResolvedPromptSemantics semantics = resolve_prompt_semantics(request, options_);
     ninfer::RequestOptions request_options  = to_request_options(
         request, options_, semantics, cache_participation == CacheParticipation::ReadWrite);
-    prepared.thinking_budget     = request_options.execution.thinking.budget;
-    prepared.reasoning_effort    = semantics.reasoning_effort;
-    prepared.preserve_thinking   = semantics.preserve_thinking;
+    prepared.thinking_budget             = request_options.execution.thinking.budget;
+    prepared.reasoning_effort            = semantics.reasoning_effort;
+    prepared.requested_reasoning_effort  = semantics.requested_reasoning_effort;
+    prepared.preserve_thinking           = semantics.preserve_thinking;
+    prepared.requested_preserve_thinking = semantics.requested_preserve_thinking;
     prepared.parallel_tool_calls = request.parallel_tool_calls;
     const bool request_has_media = request.media_item_count() != 0;
     if (request_has_media && !options_.enable_vision) {
@@ -423,6 +425,12 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
             prepared.thinking_budget.reset();
         }
         prepared.prompt_tokens = static_cast<int>(prompt.summary().prompt_tokens);
+        if (request.derive_output_budget) {
+            request_options.execution.requested_output_tokens =
+                engine_->concurrent_output_budget(prompt);
+        }
+        prepared.requested_output_tokens =
+            static_cast<int>(request_options.execution.requested_output_tokens);
         prepared.preparation   = prompt.preparation_stats();
         prepared.prepare_seconds =
             std::chrono::duration<double>(Clock::now() - prepared.lifetime->started).count();

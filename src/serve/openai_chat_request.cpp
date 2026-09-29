@@ -878,7 +878,7 @@ void parse_output_limit(const Json& body, const RequestLimits& limits, OpenAICha
         output.generation.max_tokens  = *limit;
         output.output_tokens_explicit = true;
     } else {
-        output.generation.max_tokens = limits.default_max_tokens;
+        apply_default_output_limit(output.generation, limits);
     }
 }
 
