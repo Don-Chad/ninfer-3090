@@ -1,5 +1,6 @@
 #include "guarded_main.h"
 #include "ninfer/engine.h"
+#include "speculative_graft.h"
 #include "speculative_page_boundary.h"
 
 #include <algorithm>
@@ -410,9 +411,13 @@ int run() {
         }
     }
 
-    ninfer::Engine engine(dflash_engine_options(artifact, ninfer::ProposalHead::Optimized, 4352));
+    ninfer::EngineOptions engine_options =
+        dflash_engine_options(artifact, ninfer::ProposalHead::Optimized, 4352);
+    ninfer::test::add_test_graft(engine_options);
+    ninfer::Engine engine(std::move(engine_options));
     if (const int result = verify_dflash_load(engine); result != 0) { return result; }
     ninfer::test::speculative_page_boundary(engine);
+    ninfer::test::speculative_graft(engine, ninfer::SpeculativeBackend::DFlash, 1);
     engine.reset_memory_peaks();
     const ninfer::GenerationResult dflash =
         engine.generate(engine.prepare_tokens(prompt), greedy_options(24, false));

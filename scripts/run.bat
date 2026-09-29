@@ -316,16 +316,9 @@ set "PROFILE_ARGS=%PROFILE_ARGS% --max-pending-requests 16 --pending-timeout-ms 
 
 :launch
 set "GRAFT_ARGS="
-set "GRAFT_NOTE="
 if /i "%NINFER_GRAFTS%"=="off" goto :graft_done
 if "%GRAFT_FILE%"=="" goto :graft_done
 if not exist "%GRAFT_DIR%\%GRAFT_FILE%" goto :graft_done
-rem The shipped grafts are direct_kv, which startup refuses together with --spec. Speculative
-rem profiles therefore launch without the graft; NINFER_GRAFTS=off documents the same choice.
-if not "%PROFILE_ARGS:--spec=%"=="%PROFILE_ARGS%" (
-  set "GRAFT_NOTE=Graft skipped: direct grafts cannot be combined with speculative decoding"
-  goto :graft_done
-)
 set "GRAFT_ARGS=--graft "v1=%GRAFT_DIR%\%GRAFT_FILE%""
 :graft_done
 if not exist "%SERVER%" (
@@ -343,7 +336,6 @@ echo %TITLE%  ^|  %LABEL%
 if not "%PREFILL_NOTE%"=="" echo %PREFILL_NOTE%
 if /i "%PROFILE%"=="tuned" echo Cache: 8 shared / 8 private / %HOST_STATE_SLOTS% host states  ^|  automatic prefix grid on
 if not "%GRAFT_ARGS%"=="" echo Graft: v1 = %GRAFT_FILE%
-if not "%GRAFT_NOTE%"=="" echo %GRAFT_NOTE%
 if not "%HINT%"=="" echo %HINT%
 echo API: http://%HOST%:%PORT%/v1
 echo.

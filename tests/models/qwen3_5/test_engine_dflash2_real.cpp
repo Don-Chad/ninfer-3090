@@ -1,4 +1,5 @@
 #include "ninfer/engine.h"
+#include "speculative_graft.h"
 #include "speculative_page_boundary.h"
 
 #include <algorithm>
@@ -91,9 +92,12 @@ int main(int argc, char** argv) {
         options.speculative.draft_tokens             = k;
         options.speculative.proposal_head =
             optimized ? ninfer::ProposalHead::Optimized : ninfer::ProposalHead::Full;
+        ninfer::test::add_test_graft(options);
         ninfer::Engine engine(options);
         const auto prompt = engine.tokenize_text("Count from one to twenty: one, two, three,");
         ninfer::test::speculative_page_boundary(engine);
+        ninfer::test::speculative_graft(engine, ninfer::SpeculativeBackend::DFlash2,
+                                        std::min(batch, 4U));
         const auto first = engine.generate(engine.prepare_tokens(prompt), request(24));
         valid(first, 24);
         const auto& reference = first.generated_token_ids;
