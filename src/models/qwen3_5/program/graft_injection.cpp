@@ -260,6 +260,39 @@ void inject_direct_graft(detail::ProgramImpl& program, const PromptGraft& graft)
         ops::kv_cache_append(k_tensor, v_tensor, positions_tensor, layer_view, rank_stream);
     }
 
+    // --- Step 3b: give a speculative backend an address space of its own ---
+    // A graft carries only the target's text state, so the draft has nothing to attend to at these
+    // positions. Its cache is mapped over the prefix and zeroed so every read is finite and the
+    // fork/CoW machinery treats the entry like a captured one. This costs the draft context, not
+    // correctness: the target verifies every proposal against the injected state.
+    std::optional<detail::KVAddressSpaceHandle> backend_kv;
+    const std::uint32_t backend_frontier =
+        detail::backend_frontier_at(program.speculative_backend, n_slots);
+    if (qwen3_5::PagedKVCache* backend_cache = program.backend_kv_cache()) {
+        backend_kv = program.backend_kv_addresses->create_inactive();
+        if (!backend_kv) {
+            throw std::runtime_error("inject_direct_graft: no free backend KV address space for "
+                                     "graft '" + graft.name + "'");
+        }
+        if (backend_frontier != 0) {
+            const std::uint32_t backend_pages =
+                (backend_frontier + static_cast<std::uint32_t>(kPagedKVPageSize) - 1U) /
+                static_cast<std::uint32_t>(kPagedKVPageSize);
+            program.backend_kv_addresses->activate(*backend_kv, backend_pages, 0, streams);
+            program.backend_kv_addresses->ensure_mapped_to_tokens(*backend_kv, backend_frontier,
+                                                                  streams);
+            std::vector<DeviceKVPageHandle> backend_page_handles;
+            backend_page_handles.reserve(backend_pages);
+            for (std::uint32_t page = 0; page < backend_pages; ++page) {
+                backend_page_handles.push_back(
+                    program.backend_kv_addresses->physical_page(*backend_kv, page));
+            }
+            backend_cache->page_pool().zero_pages(backend_page_handles, streams);
+            program.backend_kv_addresses->commit_frontier(*backend_kv, backend_frontier);
+            program.backend_kv_addresses->deactivate(*backend_kv);
+        }
+    }
+
     synchronize_all_ranks(device);
     for (std::size_t rank = 0; rank < staging.size(); ++rank) {
         RankBinding bind(device, rank);
@@ -273,11 +306,11 @@ void inject_direct_graft(detail::ProgramImpl& program, const PromptGraft& graft)
     auto& shared       = program.shared_prefix_states[slot_index];
     auto& slot         = program.shared_prefix_slots[slot_index];
 
-    shared.kv = detail::SequenceKVBundle{.text = *text_kv, .backend = std::nullopt};
+    shared.kv = detail::SequenceKVBundle{.text = *text_kv, .backend = backend_kv};
     shared.state             = *state_handle;
     shared.identity          = nullptr; // grafted requests bypass identity matching
     shared.frontier          = n_slots;
-    shared.backend_frontier  = 0;
+    shared.backend_frontier  = backend_frontier;
     shared.rope_delta        = 0;
     shared.tail_hidden_valid = false;
     shared.rebuild_work      = runtime::PrefillWork{.tokens = n_slots};

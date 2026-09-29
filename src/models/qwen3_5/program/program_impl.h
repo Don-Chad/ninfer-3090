@@ -8,6 +8,7 @@
 #include "ninfer/ops/sampling.h"
 #include "core/decode_graph.h"
 #include "models/qwen3_5/frontend/prepared_prompt.h"
+#include "models/qwen3_5/program/graft_injection.h"
 
 #include "models/qwen3_5/program/planning/startup.h"
 #include "models/qwen3_5/program/storage/draft_context.h"
@@ -680,6 +681,8 @@ public:
     std::size_t vision_handoff_peak_bytes    = 0;
 
     friend class Program;
+    // Injection builds the shared-prefix entry's backend KV through the private accessor.
+    friend void qwen3_5::inject_direct_graft(ProgramImpl&, const PromptGraft&);
 
 private:
     void advance_resource_revision() noexcept {

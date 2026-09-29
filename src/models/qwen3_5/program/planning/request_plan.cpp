@@ -560,8 +560,7 @@ std::optional<AdmissionCandidate> ProgramImpl::inspect_lane(
         }
     }
 
-    if (!is_graft &&
-        (is_rewrite_checkpoint_restore(plan->reuse) ||
+    if ((is_rewrite_checkpoint_restore(plan->reuse) ||
          plan->reuse == ReusePath::PrivateLongAnchor ||
          plan->reuse == ReusePath::SharedStablePrefix) &&
         is_masked_draft_backend(speculative_backend) &&
