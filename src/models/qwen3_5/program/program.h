@@ -184,7 +184,7 @@ public:
     std::unique_ptr<detail::SequencePlannerImpl> impl_;
 
     friend SequencePlanner make_sequence_planner(const execution::Parameters&, DeviceContext&,
-                                                 const EngineOptions&);
+                                                 const EngineOptions&, std::uint32_t);
 };
 
 class RequestBasePlan {
@@ -1116,7 +1116,8 @@ struct RuntimeContractAccess {
 
 [[nodiscard]] SequencePlanner make_sequence_planner(const execution::Parameters& parameters,
                                                     DeviceContext& device,
-                                                    const EngineOptions& options);
+                                                    const EngineOptions& options,
+                                                    std::uint32_t resident_main_pages = 0);
 
 // Overlay Vision residency: sizes one encode window for these options, checks that the evictable
 // weight tail covers it and captures the weight pool's window mirror. Call once after load and

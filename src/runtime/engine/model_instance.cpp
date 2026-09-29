@@ -1,6 +1,7 @@
 #include "runtime/engine/model_instance.h"
 #include "artifact/reader.h"
 #include "artifact/formats.h"
+#include "core/paged_kv_cache.h"
 #include "core/startup.h"
 #include "models/qwen3_5/frontend/graft.h"
 #include "models/qwen3_5/load.h"
@@ -224,7 +225,17 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
                 context_cost_hardware_class(device.props.name, device.props.major, device.props.minor),
             .prefill_signature = signature},
         options.context_cost.preset_path);
-    auto planner    = models::qwen3_5::make_sequence_planner(instance->parameters, device, options);
+    // Each injected graft keeps its text KV pages for good; the pool grows by that many so a request
+    // can still use all the capacity that was asked for.
+    std::uint32_t graft_main_pages = 0;
+    for (const auto& graft : instance->frontend.grafts()) {
+        if (graft.kind != models::qwen3_5::GraftKind::PrefillKV) {
+            const auto page_tokens = static_cast<std::uint32_t>(kPagedKVPageSize);
+            graft_main_pages += (graft.n_slots + page_tokens - 1U) / page_tokens;
+        }
+    }
+    auto planner = models::qwen3_5::make_sequence_planner(instance->parameters, device, options,
+                                                          graft_main_pages);
     const std::vector<std::size_t> free_by_rank = free_bytes_by_rank(device);
     auto resolution = resolve_kv_capacity(
         options.kv_capacity, planner.capacity_curve(), free_by_rank.front(),

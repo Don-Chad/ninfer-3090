@@ -100,6 +100,9 @@ struct SequencePlanningInputs {
     bool causal_scoring = false;
     int device          = 0;
     ContextCacheOptions context_cache;
+    // Main KV pages that stay allocated for the life of the Engine (injected graft prefixes). The
+    // pool grows by this many so requests keep the capacity that was asked for.
+    std::uint32_t resident_main_pages = 0;
 };
 
 } // namespace ninfer::models::qwen3_5::detail
@@ -157,7 +160,7 @@ namespace ninfer::models::qwen3_5::detail {
 
 [[nodiscard]] std::unique_ptr<qwen3_5::detail::SequencePlannerImpl>
 make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContext& device,
-                           const EngineOptions& options);
+                           const EngineOptions& options, std::uint32_t resident_main_pages);
 [[nodiscard]] std::unique_ptr<SequencePlanImpl>
 finalize_sequence_plan_impl(std::unique_ptr<qwen3_5::detail::SequencePlannerImpl> planner,
                             std::uint32_t main_page_groups);

@@ -2,7 +2,6 @@
 
 // Small fixed-capacity request execution for every backend.
 
-#include <cstdio>
 #include "core/device.h"
 #include "core/nvtx.h"
 #include "ninfer/types.h"
@@ -2031,16 +2030,7 @@ private:
                 }
                 set_host_work_class(HostWorkClass::Control);
                 finish_engine_phase(boundary, EngineHostPhase::Boundary);
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "ENGINE FATAL: %s\n", e.what());
-                std::fflush(stderr);
-                const std::exception_ptr error = std::current_exception();
-                HostPhaseMeasurement cleanup   = begin_host_phase();
-                fail_all_locked(error);
-                finish_engine_phase(cleanup, EngineHostPhase::Maintenance);
             } catch (...) {
-                std::fprintf(stderr, "ENGINE FATAL: unknown exception\n");
-                std::fflush(stderr);
                 const std::exception_ptr error = std::current_exception();
                 HostPhaseMeasurement cleanup   = begin_host_phase();
                 fail_all_locked(error);

@@ -44,6 +44,22 @@ int main() {
                   explicit_capacity.runtime_reservation_bytes == 1128,
               "explicit KV capacity did not use page-aligned token semantics");
 
+    // Pages an injected graft holds for good come on top of the request: an explicit capacity still
+    // leaves the asked-for tokens free, and the range moves up by the same amount.
+    ninfer::runtime::SequenceCapacityCurve resident = curve;
+    resident.minimum_main_page_groups += 3;
+    resident.maximum_main_page_groups += 3;
+    resident.resident_main_pages = 3;
+    const auto with_resident = ninfer::runtime::resolve_kv_capacity(
+        ninfer::KvCapacityPolicy::explicit_capacity(129), resident, 2000);
+    failures += check(with_resident.main_page_groups == 3 + 3 &&
+                          with_resident.resolved_tokens == (3 + 3) * 64,
+                      "explicit KV capacity did not add the resident graft pages");
+    const auto resident_auto = ninfer::runtime::resolve_kv_capacity(
+        ninfer::KvCapacityPolicy::automatic(50), resident, 10000);
+    failures += check(resident_auto.main_page_groups == 6 + 3,
+                      "automatic KV capacity did not include the resident graft pages");
+
     bool insufficient_rejected = false;
     try {
         (void)ninfer::runtime::resolve_kv_capacity(ninfer::KvCapacityPolicy::automatic(50), curve,

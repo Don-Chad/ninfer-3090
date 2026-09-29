@@ -46,10 +46,10 @@ std::uint32_t explicit_page_groups(const KvCapacityPolicy& policy,
     }
     const std::uint64_t pages =
         1ULL + (static_cast<std::uint64_t>(policy.explicit_tokens) - 1ULL) / curve.main_page_tokens;
-    if (pages > std::numeric_limits<std::uint32_t>::max()) {
+    if (pages + curve.resident_main_pages > std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("explicit KV page count exceeds uint32");
     }
-    return static_cast<std::uint32_t>(pages);
+    return static_cast<std::uint32_t>(pages + curve.resident_main_pages);
 }
 
 } // namespace
