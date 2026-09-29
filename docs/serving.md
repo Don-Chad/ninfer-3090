@@ -268,7 +268,7 @@ Engine's per-unit totals and advance during a request rather than at its complet
 | `llamacpp:requests_deferred` | gauge | admitted requests waiting beyond `--max-concurrency` |
 | `ninfer:requests_total` | counter | requests completed with an outcome |
 | `ninfer:requests_failed_total` | counter | accepted requests that ended in an error |
-| `ninfer:requests_rejected_total` | counter | requests refused before reaching the Engine: overload, queue timeout, invalid or oversized prompt |
+| `ninfer:requests_rejected_total` | counter | generation requests rejected during preparation, one per `request_rejected` request-log event: overload, invalid or oversized prompt or media. Unparseable and oversized (413) HTTP bodies are not counted; failures after acceptance, including a queue timeout after submission, count in `requests_failed_total` |
 | `ninfer:prefix_cache_hit_tokens_total` | counter | prompt tokens served from the context cache |
 | `ninfer:draft_tokens_total` | counter | speculative draft tokens proposed |
 | `ninfer:draft_accepted_tokens_total` | counter | speculative draft tokens accepted |

@@ -76,8 +76,10 @@ std::string ServeMetrics::render(std::uint32_t max_concurrency, const ninfer::Ru
     append_metric(out, "ninfer:requests_failed_total", "counter",
                   "Accepted requests that ended in an error.", requests_failed_total_);
     append_metric(out, "ninfer:requests_rejected_total", "counter",
-                  "Requests refused before reaching the Engine (overload, queue timeout, invalid "
-                  "or oversized prompt).",
+                  "Generation requests rejected during preparation, one per request_rejected "
+                  "log event (overload, invalid or oversized prompt or media). Unparseable and "
+                  "oversized HTTP bodies are not counted; failures after acceptance, including "
+                  "a queue timeout after submission, count in ninfer:requests_failed_total.",
                   requests_rejected_total_);
     append_metric(out, "ninfer:prefix_cache_hit_tokens_total", "counter",
                   "Prompt tokens served from the context cache instead of prefill.",
