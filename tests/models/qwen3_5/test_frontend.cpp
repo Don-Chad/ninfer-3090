@@ -205,7 +205,8 @@ FrontendResources resources(const std::string& chat_template = thinking_toggle_t
     FrontendResources result;
     result.chat_template_jinja  = chat_template;
     const nlohmann::json tokens = nlohmann::json::array(
-        {added(1, "helloST"), added(2, "OPtail"), added(3, "thought</thi"),
+        {added(1, "helloST"), added(2, "OPtail"), added(5, "}STOPgarbage"),
+         added(3, "thought</thi"),
          added(4, "nk>\n\nanswer"), added(6, "<eos>", true), added(7, "<0.0 seconds>"),
          added(8, std::string(kThinkingControlGuidance)), added(30, "user\n"),
          added(31, "assistant\n"), added(32, "\n"), added(248045, "<|im_start|>", true),
@@ -1920,6 +1921,45 @@ int test_structured_output(const Frontend& frontend) {
     return failures;
 }
 
+// A caller stop string can land inside the same token that completes the licensed JSON value, so
+// the byte-level cut it applies (mid-token) must be what the grammar is asked to license, not the
+// token's full decoded text (which also carries the stop marker and whatever the model emitted
+// past it -- neither of those is ever published).
+int test_structured_output_same_token_stop(const Frontend& frontend) {
+    const ninfer::OutputOptions schema_output{
+        .format = ninfer::OutputFormat{
+            .kind        = ninfer::OutputFormatKind::JsonSchema,
+            .json_schema = R"({"type":"object","properties":{"a":{"enum":["x","y"]}},)"
+                           R"("required":["a"],"additionalProperties":false})",
+            .strict      = true}};
+    ninfer::StopPolicy stop;
+    stop.strings.push_back(ninfer::StopString{.text = "STOP"});
+
+    auto prompt  = frontend.prepare_tokens({0});
+    auto session = frontend.make_output_session(prompt, stop, schema_output);
+
+    const std::vector<ninfer::TokenId> prefix = fixture_tokenizer().encode(R"({"a":"x")");
+    const auto prefix_decision                = session.preview_model(
+        prefix, static_cast<std::uint32_t>(prefix.size() + 2U), ninfer::FinishReason::OutputLimit);
+    int failures = check(prefix_decision.accepted_tokens == prefix.size() &&
+                             !prefix_decision.finished(),
+                         "structured-output stop setup unexpectedly finished");
+    (void)session.commit_preview();
+
+    // Token 5 decodes to "}STOPgarbage": the closing brace completes the licensed value, "STOP" is
+    // the caller's stop string, and "garbage" is text the model would never have been licensed to
+    // emit as JSON. Only the leading "}" may ever reach the client.
+    const auto decision =
+        session.preview_model(std::array<ninfer::TokenId, 1>{5}, 2, ninfer::FinishReason::OutputLimit);
+    failures += check(decision.accepted_tokens == 1 &&
+                          decision.finish_reason == ninfer::FinishReason::StopString,
+                      "a same-token stop after a completed value was treated as a format violation");
+    const auto output = session.commit_preview();
+    failures += check(channel_text(output, ninfer::OutputChannel::Content) == "}",
+                      "same-token stop under structured output published the wrong prefix");
+    return failures;
+}
+
 int test_reasoning_split(const Frontend& frontend) {
     ninfer::ChatMessage message;
     message.role = ninfer::ChatRole::User;
@@ -2478,6 +2518,7 @@ int main() {
     failures += test_terminal_flush(frontend);
     failures += test_structured_tool_output();
     failures += test_structured_output(frontend);
+    failures += test_structured_output_same_token_stop(frontend);
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
     failures += test_utf8_and_hidden_eos(frontend);

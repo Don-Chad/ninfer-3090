@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -58,8 +59,12 @@ public:
 
     void begin_preview();
     // Advances the preview by one generated token. Returns false when the token is outside the
-    // licensed language; the preview is then unusable.
-    [[nodiscard]] bool preview_token(TokenId token);
+    // licensed language; the preview is then unusable. `stop_prefix_bytes`, when set, is the
+    // number of leading bytes of this token's decoded text that a caller stop string still lets
+    // through (0 when none of it will be published); only that prefix is validated instead of the
+    // full token. Leave unset when no stop match was found in this token.
+    [[nodiscard]] bool preview_token(TokenId token,
+                                     std::optional<std::size_t> stop_prefix_bytes = std::nullopt);
     void commit_preview() noexcept;
 
     [[nodiscard]] bool fill_token_masks(std::span<const TokenId> speculative,

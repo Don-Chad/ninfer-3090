@@ -164,7 +164,8 @@ void StructuredOutputConstraint::begin_preview() {
     preview_ = std::make_unique<State>(*committed_);
 }
 
-bool StructuredOutputConstraint::preview_token(TokenId token) {
+bool StructuredOutputConstraint::preview_token(TokenId token,
+                                               std::optional<std::size_t> stop_prefix_bytes) {
     if (!preview_) { throw std::logic_error("structured output has no open preview"); }
     State& state = *preview_;
     if (!tokenizer_->is_valid_token(token)) { return false; }
@@ -172,7 +173,12 @@ bool StructuredOutputConstraint::preview_token(TokenId token) {
         state.gate.feed(tokenizer_->decoded_token(token).bytes);
         return true;
     }
-    return !state.matcher->IsTerminated() && state.matcher->AcceptToken(token);
+    if (state.matcher->IsTerminated()) { return false; }
+    if (!stop_prefix_bytes) { return state.matcher->AcceptToken(token); }
+    if (*stop_prefix_bytes == 0) { return true; }
+    const std::string_view bytes = tokenizer_->decoded_token(token).bytes;
+    const std::size_t limit      = std::min(*stop_prefix_bytes, bytes.size());
+    return state.matcher->AcceptString(std::string(bytes.substr(0, limit)));
 }
 
 void StructuredOutputConstraint::commit_preview() noexcept {

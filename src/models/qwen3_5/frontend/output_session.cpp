@@ -459,11 +459,6 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
         const std::uint32_t count          = static_cast<std::uint32_t>(index + 1);
         const TokenId token                = tokens[index];
         const fi::DecodedTokenView decoded = impl_->tokenizer->decoded_token(token);
-        if (impl_->structured_output && !impl_->structured_output->preview_token(token)) {
-            // Program samples every constrained position from the licensed set, so this is an
-            // execution fault rather than a model choice.
-            throw std::logic_error("generated token is outside the requested output format");
-        }
 
         if (const auto boundary = impl_->preview_prefix_execution.feed(decoded.bytes);
             boundary && *boundary == decoded.bytes.size()) {
@@ -491,10 +486,30 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
         }
 
         StopMatch match;
+        const std::uint64_t decoded_bytes_before = impl_->preview_state.decoded_bytes;
         const std::string_view bytes =
             !impl_->preserve_special && decoded.special ? std::string_view{} : decoded.bytes;
         feed_token_bytes(impl_->preview_state, bytes, impl_->policy, impl_->preview_output, count,
                          &match);
+
+        if (impl_->structured_output) {
+            // A caller stop string can end generation partway through this token's own decoded
+            // bytes (`match.byte_cut` then falls inside it). The bytes at and after that cut are
+            // never published, so the grammar must license only the prefix that is, not the whole
+            // token -- otherwise a grammar-invalid tail the client will never see aborts a request
+            // that should have stopped cleanly.
+            std::optional<std::size_t> stop_prefix_bytes;
+            if (match.found) {
+                const auto relative = static_cast<std::int64_t>(match.byte_cut) -
+                                      static_cast<std::int64_t>(decoded_bytes_before);
+                stop_prefix_bytes = static_cast<std::size_t>(std::max<std::int64_t>(0, relative));
+            }
+            if (!impl_->structured_output->preview_token(token, stop_prefix_bytes)) {
+                // Program samples every constrained position from the licensed set, so this is an
+                // execution fault rather than a model choice.
+                throw std::logic_error("generated token is outside the requested output format");
+            }
+        }
 
         if (match.found) {
             impl_->preview_state = terminal_state(std::move(impl_->preview_state));
