@@ -98,10 +98,6 @@
 #define CPPHTTPLIB_PAYLOAD_MAX_LENGTH ((std::numeric_limits<size_t>::max)())
 #endif
 
-#ifndef CPPHTTPLIB_FORM_URL_ENCODED_PAYLOAD_MAX_LENGTH
-#define CPPHTTPLIB_FORM_URL_ENCODED_PAYLOAD_MAX_LENGTH 8192
-#endif
-
 #ifndef CPPHTTPLIB_RANGE_MAX_COUNT
 #define CPPHTTPLIB_RANGE_MAX_COUNT 1024
 #endif
@@ -6568,10 +6564,6 @@ inline bool Server::read_content(Stream &strm, Request &req, Response &res) {
           })) {
     const auto &content_type = req.get_header_value("Content-Type");
     if (!content_type.find("application/x-www-form-urlencoded")) {
-      if (req.body.size() > CPPHTTPLIB_FORM_URL_ENCODED_PAYLOAD_MAX_LENGTH) {
-        res.status = StatusCode::PayloadTooLarge_413; // NOTE: should be 414?
-        return false;
-      }
       detail::parse_query_text(req.body, req.params);
     }
     return true;
