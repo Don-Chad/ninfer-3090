@@ -1518,36 +1518,47 @@ int exercise_worker_failure_recovery(const char* artifact) {
     std::array<std::vector<std::string>, 2> turns{
         std::vector<std::string>{"Plan a three-day walking route through the lake district."},
         std::vector<std::string>{"Summarise the trade-offs between paged and contiguous KV."}};
-    std::uint32_t failures = 0;
-    bool failure_pending   = false;
-    for (std::uint32_t round = 0; round < 5; ++round) {
-        for (std::size_t lineage = 0; lineage < turns.size(); ++lineage) {
-            try {
-                const ninfer::GenerationResult result =
-                    engine.generate(engine.prepare(conversation(turns[lineage])), request);
-                if (result.generated_token_ids.size() != 1) {
-                    std::cerr << "worker-recovery request generated no token\n";
-                    return 1;
-                }
-                failure_pending = false;
-            } catch (const ninfer::RequestError& error) {
-                if (error.kind() == ninfer::RequestErrorKind::Unavailable) {
-                    std::cerr << "Engine latched unavailable after a worker failure: "
-                              << error.what() << "\n";
-                    return 1;
-                }
-                throw;
-            } catch (const std::exception& error) {
-                // One failed request is the recovery contract; two in a row would mean the
-                // recovered Engine cannot serve.
-                if (failure_pending) {
-                    std::cerr << "request after a recovered failure also failed: " << error.what()
-                              << "\n";
-                    return 1;
-                }
-                failure_pending = true;
-                ++failures;
+    // Both conversations are submitted before either is waited on, so while the first runs (and
+    // may fail during materialization) the second sits in the FIFO queue. A recovery must keep
+    // that queued request and serve it from the cleared cache.
+    std::uint32_t failures               = 0;
+    std::uint32_t queued_after_recovery  = 0;
+    const auto wait_for = [&](ninfer::GenerationHandle& handle) -> std::optional<bool> {
+        try {
+            const ninfer::GenerationResult result = handle.wait();
+            if (result.generated_token_ids.size() != 1) { return std::nullopt; }
+            return true;
+        } catch (const ninfer::RequestError& error) {
+            if (error.kind() == ninfer::RequestErrorKind::Unavailable) {
+                std::cerr << "Engine latched unavailable after a worker failure: " << error.what()
+                          << "\n";
+                return std::nullopt;
             }
+            throw;
+        } catch (const std::exception&) {
+            ++failures;
+            return false;
+        }
+    };
+    for (std::uint32_t round = 0; round < 5; ++round) {
+        ninfer::GenerationHandle first =
+            engine.submit(engine.prepare(conversation(turns[0])), request);
+        ninfer::GenerationHandle second =
+            engine.submit(engine.prepare(conversation(turns[1])), request);
+        const std::optional<bool> first_ok  = wait_for(first);
+        const std::optional<bool> second_ok = wait_for(second);
+        if (!first_ok || !second_ok) {
+            std::cerr << "worker-recovery round " << round << " did not complete\n";
+            return 1;
+        }
+        if (!*first_ok) {
+            if (!*second_ok) {
+                std::cerr << "the request queued behind a recovered failure was not served\n";
+                return 1;
+            }
+            ++queued_after_recovery;
+        }
+        for (std::size_t lineage = 0; lineage < turns.size(); ++lineage) {
             turns[lineage].push_back("Answer " + std::to_string(round) + " for lineage " +
                                      std::to_string(lineage) + ", with enough detail to fill a page.");
             turns[lineage].push_back("Continue with part " + std::to_string(round + 1) + ".");
@@ -1560,7 +1571,8 @@ int exercise_worker_failure_recovery(const char* artifact) {
         return 1;
     }
     std::cout << "worker-failure-recovery: failures=" << failures
-              << " recoveries=" << stats.engine_recoveries << "\n";
+              << " recoveries=" << stats.engine_recoveries
+              << " queued_after_recovery=" << queued_after_recovery << "\n";
     return 0;
 }
 

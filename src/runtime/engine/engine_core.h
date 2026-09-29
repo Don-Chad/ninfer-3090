@@ -1066,7 +1066,6 @@ private:
     }
 
     void complete_success(const std::shared_ptr<Request>& request, FinishReason reason) {
-        consecutive_recoveries_         = 0;
         HostPhaseMeasurement completion = begin_host_phase();
         double prompt_wall_seconds      = 0.0;
         double generation_wall_seconds  = 0.0;
@@ -1133,6 +1132,9 @@ private:
         }
         if (mark_completed(request)) { release_reserved_capacity(); }
         request->cv.notify_one();
+        // Only a published, uncancelled result shows the Engine serving again; a cancellation,
+        // or a completion that threw before publication, leaves the recovery streak standing.
+        if (reason != FinishReason::Cancelled) { consecutive_recoveries_ = 0; }
     }
 
     void complete_cancelled(const std::shared_ptr<Request>& request) {
@@ -2223,12 +2225,12 @@ private:
     // synchronized, when the cleanup leaves physical resources behind (the Program's state is
     // then not known to be sound), or when failures repeat with no request completing between
     // them, so a persistent fault cannot spin.
+    // The caller synchronizes the device first: the cleanup frees pages and StateImages that work
+    // issued before the failure may still reference.
     [[nodiscard]] bool recover_locked(std::exception_ptr error) noexcept {
-        if (consecutive_recoveries_ >= kMaximumConsecutiveRecoveries) { return false; }
-        try {
-            // Work issued before the failure may still reference pages the cleanup frees.
-            device_.synchronize();
-        } catch (...) { return false; }
+        // The failure being handled counts toward the streak, so the third consecutive one
+        // latches rather than the fourth.
+        if (consecutive_recoveries_ + 1U >= kMaximumConsecutiveRecoveries) { return false; }
         scheduler_.reset();
         const std::shared_ptr<Request> materializing_request =
             materializing_ ? materializing_->request : nullptr;
@@ -2347,7 +2349,12 @@ private:
             } catch (...) {
                 const std::exception_ptr error = std::current_exception();
                 HostPhaseMeasurement cleanup   = begin_host_phase();
-                const bool recovered           = recover_locked(error);
+                // Both recovery and the latch free physical state, so both wait for the device.
+                bool fenced = true;
+                try {
+                    device_.synchronize();
+                } catch (...) { fenced = false; }
+                const bool recovered = fenced && recover_locked(error);
                 if (!recovered) { fail_all_locked(error); }
                 finish_engine_phase(cleanup, EngineHostPhase::Maintenance);
                 try {

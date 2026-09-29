@@ -515,11 +515,12 @@ Cancellation 不修改 in-flight mapping，也不从未完成的 active state �
 Cleanup 顺序必须先终止 Program 中未决的 resource/model transaction，再释放 active state，最后清空
 ResourceManager 与完成所有 request response。内部不变量错误不能降级成 cache miss、等待或重试。
 
-Worker 捕获的 host 侧异常（CUDA 错误直接终止进程，不会到达这里）先尝试恢复而不是永久锁存：
-同步 device，执行同样的 Program cleanup 与 ResourceManager 清空，以错误完成 active lanes 与
-materializing request，保留尚未触及物理状态的 FIFO 队列。只有 cleanup 后 Program 没有打开的
-transaction、`physical_usage()` 的 Device/Host State 与 KV 占用全部为零时才继续服务；否则，或在两次
-成功完成之间连续恢复达到三次时，才锁存为 Engine-wide failure，`is_available()` 此后为 false。
+Worker 捕获的 host 侧异常（CUDA 错误直接终止进程，不会到达这里）先同步 device（恢复与锁存都会释放
+物理状态，二者都必须先等待已发出的工作），再尝试恢复而不是永久锁存：执行同样的 Program cleanup 与
+ResourceManager 清空，以错误完成 active lanes 与 materializing request，保留尚未触及物理状态的 FIFO
+队列。只有 cleanup 后 Program 没有打开的 transaction、`physical_usage()` 的 Device/Host State 与 KV
+占用全部为零时才继续服务；否则，或第三次连续失败（其间没有未取消的请求发布成功结果）时，才锁存为
+Engine-wide failure，`is_available()` 此后为 false。
 恢复清空整个 context cache 而不是把不变量错误解释成 cache miss；`RuntimeStats::engine_recoveries`
 计数每次恢复。
 
