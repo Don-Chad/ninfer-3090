@@ -1,5 +1,7 @@
 #include "guarded_main.h"
+#include "speculative_graft.h"
 #include "ninfer/engine.h"
+#include "runtime/engine/worker_fault.h"
 
 #include <array>
 #include <cstdint>
@@ -1454,6 +1456,171 @@ int exercise_slot_persistence(const char* artifact) {
     return 0;
 }
 
+// A host-side failure in the worker must fail only the request it touched, keep the FIFO queue,
+// and leave the Engine serving; the third consecutive failure latches it. Failures are armed
+// through the worker-fault seam and thrown after a prefill unit has executed, so each recovery
+// releases a lane holding live KV pages and state. The conversations share a system prompt and
+// place long anchors on it under Host pressure, so the cache the recovery clears is non-trivial.
+// With NINFER_TEST_GRAFT set, the startup-pinned graft the recovery also releases must be
+// reinstalled: a grafted request after the failures starts from the graft, as before them.
+int exercise_worker_failure_recovery(const char* artifact) {
+    ninfer::EngineOptions options;
+    options.artifact_path                        = artifact;
+    options.max_context                          = 1024;
+    options.kv_capacity                          = ninfer::KvCapacityPolicy::explicit_capacity(1024);
+    options.prefill_chunk                        = 256;
+    options.speculative.backend                  = ninfer::SpeculativeBackend::Mtp;
+    options.speculative.draft_tokens             = 3;
+    options.speculative.proposal_head            = ninfer::ProposalHead::Optimized;
+    options.max_concurrency                      = 1;
+    options.max_pending_requests                 = 1;
+    options.context_cache.device_state_slots     = 1;
+    options.context_cache.host_state_slots       = 4;
+    options.context_cache.host_kv_capacity_bytes = std::size_t{64} << 20U;
+    options.context_cache.max_private_continuations         = 2;
+    options.context_cache.max_shared_prefixes               = 4;
+    options.context_cache.max_long_anchors_per_continuation = 2;
+    ninfer::test::add_test_graft(options);
+    ninfer::Engine engine(std::move(options));
+
+    ninfer::RequestOptions request;
+    request.execution.requested_output_tokens = 1;
+    request.execution.sampling.temperature    = 0.0F;
+    request.execution.allow_prefix_reuse      = true;
+    request.stop.include_model_defaults       = false;
+
+    const auto grafted = [&]() -> std::optional<ninfer::GenerationResult> {
+        if (!ninfer::test::graft_configured()) { return std::nullopt; }
+        ninfer::PromptInput input;
+        input.messages.push_back(ninfer::ChatMessage{
+            .role = ninfer::ChatRole::User, .parts = {ninfer::MessagePart{.text = "Who are you?"}}});
+        input.options.graft = "g";
+        ninfer::RequestOptions graft_request = request;
+        graft_request.execution.requested_output_tokens = 8;
+        return engine.generate(engine.prepare(std::move(input)), graft_request);
+    };
+    const std::optional<ninfer::GenerationResult> graft_before = grafted();
+    if (graft_before && graft_before->reused_prompt_tokens == 0) {
+        std::cerr << "grafted request did not start from the graft\n";
+        return 1;
+    }
+
+    std::string system =
+        "You are a careful engineering assistant. Follow the house style: short sentences, units "
+        "on every number, and name the assumption behind every estimate.";
+    for (int line = 0; line < 12; ++line) {
+        system += " Rule " + std::to_string(line) +
+                  ": prefer measured figures to recalled ones, and say which you used.";
+    }
+    const auto conversation = [&](const std::vector<std::string>& turns) {
+        ninfer::PromptInput prompt;
+        ninfer::ChatMessage head;
+        head.role = ninfer::ChatRole::System;
+        head.parts.push_back(ninfer::MessagePart{
+            .kind = ninfer::MessagePartKind::Text, .text = system, .media = {}});
+        prompt.messages.push_back(std::move(head));
+        for (std::size_t index = 0; index < turns.size(); ++index) {
+            ninfer::ChatMessage message;
+            message.role = index % 2 == 0 ? ninfer::ChatRole::User : ninfer::ChatRole::Assistant;
+            message.parts.push_back(ninfer::MessagePart{
+                .kind = ninfer::MessagePartKind::Text, .text = turns[index], .media = {}});
+            prompt.messages.push_back(std::move(message));
+        }
+        prompt.options.enable_thinking = false;
+        prompt.context_cache.markers.push_back(ninfer::PromptCacheMarker{
+            .after_message_count = 1,
+            .kind                = ninfer::PromptCacheMarkerKind::PrivateLongAnchor,
+            .location            = ninfer::PromptCacheMarkerLocation::MessageBoundary,
+        });
+        return prompt;
+    };
+
+    enum class Outcome { Served, Failed, Unavailable, Malformed };
+    const auto wait_for = [](ninfer::GenerationHandle& handle) {
+        try {
+            const ninfer::GenerationResult result = handle.wait();
+            return result.generated_token_ids.size() == 1 ? Outcome::Served : Outcome::Malformed;
+        } catch (const ninfer::RequestError& error) {
+            return error.kind() == ninfer::RequestErrorKind::Unavailable ? Outcome::Unavailable
+                                                                         : Outcome::Failed;
+        } catch (const std::exception&) { return Outcome::Failed; }
+    };
+
+    std::array<std::vector<std::string>, 2> turns{
+        std::vector<std::string>{"Plan a three-day walking route through the lake district."},
+        std::vector<std::string>{"Summarise the trade-offs between paged and contiguous KV."}};
+    const auto grow = [&](std::uint32_t round) {
+        for (std::size_t lineage = 0; lineage < turns.size(); ++lineage) {
+            turns[lineage].push_back("Answer " + std::to_string(round) + " for lineage " +
+                                     std::to_string(lineage) + ", with enough detail to fill a page.");
+            turns[lineage].push_back("Continue with part " + std::to_string(round + 1) + ".");
+        }
+    };
+
+    // Recovery: one failure per round, with the second conversation queued behind it. Three
+    // rounds pass the latch threshold only because each served request resets the streak.
+    constexpr std::uint32_t kRecoveryRounds = 3;
+    for (std::uint32_t round = 0; round < kRecoveryRounds; ++round) {
+        ninfer::runtime::arm_worker_failures(1);
+        ninfer::GenerationHandle first =
+            engine.submit(engine.prepare(conversation(turns[0])), request);
+        ninfer::GenerationHandle second =
+            engine.submit(engine.prepare(conversation(turns[1])), request);
+        const Outcome first_outcome  = wait_for(first);
+        const Outcome second_outcome = wait_for(second);
+        if (first_outcome != Outcome::Failed || second_outcome != Outcome::Served ||
+            !engine.is_available()) {
+            ninfer::runtime::arm_worker_failures(0);
+            std::cerr << "worker-recovery round " << round
+                      << ": first=" << static_cast<int>(first_outcome)
+                      << " second=" << static_cast<int>(second_outcome)
+                      << " available=" << engine.is_available() << "\n";
+            return 1;
+        }
+        grow(round);
+    }
+    const std::uint64_t recoveries = engine.runtime_stats().engine_recoveries;
+    if (recoveries != kRecoveryRounds) {
+        std::cerr << "worker recovery accounting is inconsistent: recoveries=" << recoveries
+                  << "\n";
+        return 1;
+    }
+    if (graft_before) {
+        const std::optional<ninfer::GenerationResult> graft_after = grafted();
+        if (graft_after->reused_prompt_tokens != graft_before->reused_prompt_tokens ||
+            graft_after->generated_token_ids != graft_before->generated_token_ids) {
+            std::cerr << "the pinned graft was not reinstalled by recovery: reused before="
+                      << graft_before->reused_prompt_tokens
+                      << " after=" << graft_after->reused_prompt_tokens << "\n";
+            return 1;
+        }
+    }
+
+    // Latch: three consecutive failures with no served request between them. The first two
+    // recover; the third latches, and the Engine then refuses work.
+    ninfer::runtime::arm_worker_failures(3);
+    std::array<Outcome, 3> streak{};
+    for (std::size_t index = 0; index < streak.size(); ++index) {
+        ninfer::GenerationHandle handle =
+            engine.submit(engine.prepare(conversation(turns[index % 2])), request);
+        streak[index] = wait_for(handle);
+    }
+    ninfer::runtime::arm_worker_failures(0);
+    const std::uint64_t streak_recoveries = engine.runtime_stats().engine_recoveries - recoveries;
+    if (streak[0] != Outcome::Failed || streak[1] != Outcome::Failed ||
+        streak[2] == Outcome::Served || streak_recoveries != 2 || engine.is_available()) {
+        std::cerr << "consecutive worker failures did not latch on the third: outcomes="
+                  << static_cast<int>(streak[0]) << ',' << static_cast<int>(streak[1]) << ','
+                  << static_cast<int>(streak[2]) << " recoveries=" << streak_recoveries
+                  << " available=" << engine.is_available() << "\n";
+        return 1;
+    }
+    std::cout << "worker-failure-recovery: recoveries=" << recoveries
+              << " queued_served=" << kRecoveryRounds << " latched_after=3"
+              << " graft_reinstalled=" << (graft_before ? "yes" : "not configured") << "\n";
+    return 0;
+}
+
 int exercise_private_long_anchor_capture_and_replacement(const char* artifact) {
     ninfer::Engine engine(private_long_anchor_engine_options(artifact));
 
@@ -2599,6 +2766,8 @@ int run() {
         result = exercise_automatic_private_anchors(artifact);
     } else if (scenario == "slot-persistence") {
         result = exercise_slot_persistence(artifact);
+    } else if (scenario == "worker-failure-recovery") {
+        result = exercise_worker_failure_recovery(artifact);
     } else if (scenario == "private-long-anchor") {
         result = exercise_private_long_anchor_capture_and_replacement(artifact);
     } else if (scenario == "rewrite-checkpoint-shared") {

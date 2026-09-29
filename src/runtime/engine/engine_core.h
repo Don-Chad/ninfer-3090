@@ -11,6 +11,7 @@
 #include "runtime/engine/context_cache/resource_manager.h"
 #include "runtime/engine/scheduler.h"
 #include "runtime/engine/generation_budget.h"
+#include "runtime/engine/worker_fault.h"
 
 #include <algorithm>
 #include <array>
@@ -85,11 +86,7 @@ public:
             !options.context_cache.max_shared_prefixes) {
             throw std::logic_error("target admission capacity does not match the Engine");
         }
-        for (auto& entry : instance_.program->graft_catalog_entries()) {
-            std::uint32_t rm_slot = resources_.register_external_shared_prefix(
-                std::move(entry.handle), std::move(entry.summary));
-            instance_.program->set_graft_rm_slot(entry.name, rm_slot);
-        }
+        catalog_pinned_grafts();
         slot_session_paths_.resize(resources_.catalog_capacity());
         slot_digest_cache_.resize(resources_.catalog_capacity());
         resources_.set_eviction_observer(
@@ -1132,6 +1129,9 @@ private:
         }
         if (mark_completed(request)) { release_reserved_capacity(); }
         request->cv.notify_one();
+        // Only a published, uncancelled result shows the Engine serving again; a cancellation,
+        // or a completion that threw before publication, leaves the recovery streak standing.
+        if (reason != FinishReason::Cancelled) { consecutive_recoveries_ = 0; }
     }
 
     void complete_cancelled(const std::shared_ptr<Request>& request) {
@@ -1668,6 +1668,7 @@ private:
         program_call.finish(progress.timing);
         cumulative_stats_.prefill_seconds_total +=
             static_cast<double>(progress.timing.elapsed_ns()) * 1e-9;
+        consume_armed_worker_failure();
         resolve_prefill_progress(request, std::move(progress), cancelled_at_unit_start);
         publish_runtime_stats();
     }
@@ -2213,6 +2214,64 @@ private:
         publish_runtime_stats();
     }
 
+    // A host-side failure in the worker (an invariant or capacity error from the context cache, a
+    // planner, or a unit's host bookkeeping; CUDA errors abort the process instead) used to latch
+    // the Engine: every request failed and it served nothing more until a restart. Recover
+    // instead: fail only the requests the failure could have corrupted -- the running lanes and
+    // the one materializing -- clear the Program and the context cache as the latch does, and
+    // keep the queue. Recovery is refused, and the latch taken, when the device cannot be
+    // synchronized, when the cleanup leaves physical resources behind (the Program's state is
+    // then not known to be sound), or when failures repeat with no request completing between
+    // them, so a persistent fault cannot spin.
+    // The caller synchronizes the device first: the cleanup frees pages and StateImages that work
+    // issued before the failure may still reference.
+    // Catalogs each graft the Program holds pinned as an external shared prefix, so requests that
+    // select it by name plan against it.
+    void catalog_pinned_grafts() {
+        for (auto& entry : instance_.program->graft_catalog_entries()) {
+            const std::uint32_t rm_slot = resources_.register_external_shared_prefix(
+                std::move(entry.handle), std::move(entry.summary));
+            instance_.program->set_graft_rm_slot(entry.name, rm_slot);
+        }
+    }
+
+    [[nodiscard]] bool recover_locked(std::exception_ptr error) noexcept {
+        // The failure being handled counts toward the streak, so the third consecutive one
+        // latches rather than the fourth.
+        if (consecutive_recoveries_ + 1U >= kMaximumConsecutiveRecoveries) { return false; }
+        scheduler_.reset();
+        const std::shared_ptr<Request> materializing_request =
+            materializing_ ? materializing_->request : nullptr;
+        materializing_.reset();
+        instance_.program->fail_all_cleanup();
+        resources_.clear_after_program_cleanup();
+        for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+            if (slots_[lane] != nullptr) {
+                complete_error(slots_[lane], error);
+                slots_[lane].reset();
+            }
+        }
+        if (materializing_request != nullptr) { complete_error(materializing_request, error); }
+        const auto usage = instance_.program->physical_usage();
+        if (instance_.program->has_context_transaction() || usage.device_state_slots != 0 ||
+            usage.host_state_slots != 0 || usage.device_main_kv_pages != 0 ||
+            usage.device_backend_kv_pages != 0 || usage.host_kv_bytes != 0) {
+            return false;
+        }
+        // The cleanup released the startup-pinned grafts with everything else. With the empty
+        // baseline verified above, reinstall them exactly as startup did; an Engine that cannot is
+        // not serving what it was configured with.
+        try {
+            instance_.inject_pinned_grafts();
+            device_.synchronize();
+            catalog_pinned_grafts();
+        } catch (...) { return false; }
+        ++consecutive_recoveries_;
+        ++cumulative_stats_.engine_recoveries;
+        request_admission_check();
+        return true;
+    }
+
     void worker_loop() noexcept {
         bool previous_unit_was_decode = false;
         for (;;) {
@@ -2306,12 +2365,19 @@ private:
             } catch (...) {
                 const std::exception_ptr error = std::current_exception();
                 HostPhaseMeasurement cleanup   = begin_host_phase();
-                fail_all_locked(error);
+                // Both recovery and the latch free physical state, so both wait for the device.
+                bool fenced = true;
+                try {
+                    device_.synchronize();
+                } catch (...) { fenced = false; }
+                const bool recovered = fenced && recover_locked(error);
+                if (!recovered) { fail_all_locked(error); }
                 finish_engine_phase(cleanup, EngineHostPhase::Maintenance);
                 try {
                     publish_runtime_stats();
                 } catch (...) {}
-                return;
+                if (!recovered) { return; }
+                continue;
             }
             execution_lock.unlock();
             std::unique_lock wait_lock(queue_mutex_);
@@ -2340,6 +2406,9 @@ private:
     std::optional<MaterializingRequest> materializing_;
     Scheduling scheduler_;
     std::atomic<bool> admission_check_pending_{false};
+    // Worker-only: recoveries since the last request completed successfully.
+    static constexpr std::uint32_t kMaximumConsecutiveRecoveries = 3;
+    std::uint32_t consecutive_recoveries_                         = 0;
     std::uint64_t worker_accounted_elapsed_ns_ = 0;
     HostWorkClass current_host_work_class_     = HostWorkClass::Control;
     std::array<std::uint32_t, kMaximumConcurrency> current_decode_lanes_{};

@@ -24,6 +24,10 @@ struct ModelInstance {
 
     ModelInstance(std::unique_ptr<models::qwen3_5::Model> model, const EngineOptions& options);
     ~ModelInstance();
+
+    // Writes every startup-pinned graft (all but PrefillKV) into the Program's shared prefixes. At
+    // startup, and again after a worker recovery has released them with the rest of the cache.
+    void inject_pinned_grafts();
     ModelInstance(const ModelInstance&)            = delete;
     ModelInstance& operator=(const ModelInstance&) = delete;
 };

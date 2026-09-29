@@ -600,6 +600,7 @@ int main() {
     throughput.decode_row_rounds                        = 18;
     throughput.previous.root_selections                 = 2;
     throughput.previous.state_h2d_bytes                 = 100;
+    throughput.previous.engine_recoveries               = 1;
     throughput.current.running_requests                 = 2;
     throughput.current.prefilling_requests              = 1;
     throughput.current.decode_ready_requests            = 1;
@@ -618,6 +619,7 @@ int main() {
     throughput.current.pressure_private_owners_degraded = 1;
     throughput.current.pressure_checkpoints_dropped     = 1;
     throughput.current.pressure_searches                = 1;
+    throughput.current.engine_recoveries                = 3;
     throughput.current.host_work                        = {
                                .engine_boundary_ns            = 1000000,
                                .program_submit_ns             = 2000000,
@@ -675,6 +677,10 @@ int main() {
                           throughput_json.at("scheduler").at("capture_pending") == 1 &&
                           throughput_json.at("scheduler").at("terminal_pending") == 1,
                       "context scheduler gauges missing");
+    failures += check(throughput_json.at("engine_recoveries") == 2 &&
+                          !throughput_json.at("context_cache").contains("engine_recoveries"),
+                      "engine_recoveries must be a top-level interval delta, not nested under "
+                      "context_cache");
     failures += check(
         std::abs(throughput_json.at("host_work").at("elapsed_seconds").at("total").get<double>() -
                  0.015) < 1.0e-15 &&

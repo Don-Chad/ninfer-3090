@@ -178,6 +178,12 @@ endpoints:
 A readiness probe should poll `GET /health` (or any endpoint) and expect `503` until the model is
 ready rather than treating an accepted TCP connection as a signal of readiness.
 
+After startup, an internal host-side failure fails only the requests that were running or being
+admitted, clears the context cache, and keeps serving the queue; each such recovery is counted as
+a top-level `engine_recoveries` counter on the request log's `throughput` event. `GET /health` turns
+`503` for good only when the engine cannot verify a clean recovery, or after three failures with no
+request completing between them, and then the server needs a restart.
+
 ### Load
 
 `GET /v1/load` is a cheap, pollable snapshot for load balancers and gateways that schedule across
@@ -1036,7 +1042,7 @@ is also rejected if it resolves to the model artifact.
 Add `--request-log-jsonl profiles/bench/run/server.requests.jsonl` to the startup command to write
 the log at that path.
 
-Every line is one `ninfer_serve_request_log` schema-v21 JSON object. All events carry
+Every line is one `ninfer_serve_request_log` schema-v22 JSON object. All events carry
 `timestamp_unix_ms` and a process-unique `server_instance_id`; request IDs are monotonic only within
 that server instance. Successful request-start records include request-scoped acquisition,
 media-preprocessing wall/work, tokenizer, cache hit/miss/single-flight, and payload-size fields;
@@ -1117,7 +1123,10 @@ same interval. The
 `context_cache` object reports selection, capture, transfer, COW, pressure spill, private/shared
 owner degradation and eviction, checkpoint drop, pressure search, budget exhaustion, maximal fallback, and historical-fork
 counters as interval deltas; `occupancy` and `last_selection` are end-of-interval gauges. Materialization predictions are
-request-owned and appear only on the corresponding `request_done` event.
+request-owned and appear only on the corresponding `request_done` event. The top-level
+`engine_recoveries` field is the interval delta of the worker-recovery counter described above; it
+is not part of `context_cache` because a recovery is an engine-wide event, not a context-cache
+operation.
 `pressure.searches` counts plans accepted into Program resource transactions, including a transaction that later ends in
 request-local abort; committed victim counters likewise report the resulting stable cache changes.
 
