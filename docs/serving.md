@@ -222,8 +222,9 @@ evictions. Without it the route answers `501 slot_persistence_disabled`.
 | `restore` | `{"filename": NAME}` | `id_slot`, `filename`, `n_restored` tokens, `n_read` bytes, `session_digest`, `timings.restore_ms` |
 | `erase` | `{"if_digest": DIGEST?}` | `id_slot`, `n_erased` tokens (0 for an empty slot) |
 
-`NAME` is 1-128 characters of `[A-Za-z0-9._-]`, may not start with a dot, and may not be a Windows
-device name; files live directly in `DIR`. `if_digest` makes save or erase conditional on the slot
+`NAME` is 1-128 characters of `[A-Za-z0-9._-]`, may not start or end with a dot, and may not be a
+Windows device name; files live directly in `DIR`. Names are case-insensitive: the server stores and
+reports them lowercase, so one file never has two names. `if_digest` makes save or erase conditional on the slot
 still holding that session, checked atomically with the operation. Restore replaces whatever the
 slot held and makes the restored session an ordinary cache entry that any request with a matching
 prefix reuses, including from its checkpoints. A snapshot restores only on a server with the same

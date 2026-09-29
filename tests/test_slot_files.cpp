@@ -21,8 +21,15 @@ int main() {
 
     failures += check(sanitize_slot_filename("session.bin") == "session.bin",
                       "plain filename was rejected");
-    failures += check(sanitize_slot_filename("A-1_b.2") == "A-1_b.2",
+    failures += check(sanitize_slot_filename("a-1_b.2") == "a-1_b.2",
                       "allowlisted punctuation was rejected");
+    // One file, one name: case-insensitive filesystems and Windows' trailing-dot stripping would
+    // otherwise let two names reach the same file under different slot bindings.
+    failures += check(sanitize_slot_filename("Session.BIN") == "session.bin",
+                      "a mixed-case name was not canonicalized to lowercase");
+    failures += check(!sanitize_slot_filename("session.") && !sanitize_slot_filename("session..") &&
+                          !sanitize_slot_filename("session.bin."),
+                      "a trailing-dot alias was accepted");
     failures += check(sanitize_slot_filename(std::string(kSlotFilenameMaxBytes, 'a')).has_value(),
                       "maximum-length filename was rejected");
 

@@ -609,8 +609,8 @@ void HttpServer::handle_slot_action(const httplib::Request& req, httplib::Respon
         if (!sanitized) {
             fail(400, "invalid_filename",
                  "filename must be 1-" + std::to_string(kSlotFilenameMaxBytes) +
-                     " characters of [A-Za-z0-9._-], must not start with a dot, and must not "
-                     "name a device");
+                     " characters of [A-Za-z0-9._-], must not start or end with a dot, and "
+                     "must not name a device");
             return;
         }
         const std::string path = (options_.slot_save_path / *sanitized).string();

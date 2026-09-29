@@ -13,12 +13,18 @@ namespace ninfer::serve {
 
 inline constexpr std::size_t kSlotFilenameMaxBytes = 128;
 
-// Returns the validated filename, or nullopt when the name is empty, too long, dot-leading, holds
-// anything outside [A-Za-z0-9._-], or names a Windows device (CON, NUL, COM1, ...) whatever its
-// extension. A leading-dot ban removes ".", ".." and hidden files in one rule; the allowlist keeps
-// every separator out.
+// Returns the canonical filename, or nullopt when the name is empty, too long, starts or ends with
+// a dot, holds anything outside [A-Za-z0-9._-], or names a Windows device (CON, NUL, COM1, ...)
+// whatever its extension. A leading-dot ban removes ".", ".." and hidden files in one rule; the
+// allowlist keeps every separator out.
+//
+// The canonical name is lowercase and the trailing-dot ban is absolute, so two accepted names
+// reach the same file exactly when they are the same string, on case-insensitive filesystems and
+// under Windows' trailing-dot stripping alike. The Engine keys the slot-file binding and the spill
+// high-water marks on the path string, and relies on that.
 [[nodiscard]] inline std::optional<std::string> sanitize_slot_filename(std::string_view name) {
-    if (name.empty() || name.size() > kSlotFilenameMaxBytes || name.front() == '.') {
+    if (name.empty() || name.size() > kSlotFilenameMaxBytes || name.front() == '.' ||
+        name.back() == '.') {
         return std::nullopt;
     }
     for (const char c : name) {
@@ -38,7 +44,11 @@ inline constexpr std::size_t kSlotFilenameMaxBytes = 128;
         stem[3] >= '0' && stem[3] <= '9') {
         return std::nullopt;
     }
-    return std::string(name);
+    std::string canonical(name);
+    for (char& c : canonical) {
+        if (c >= 'A' && c <= 'Z') { c = static_cast<char>(c - 'A' + 'a'); }
+    }
+    return canonical;
 }
 
 } // namespace ninfer::serve
