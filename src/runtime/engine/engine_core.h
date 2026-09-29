@@ -86,11 +86,7 @@ public:
             !options.context_cache.max_shared_prefixes) {
             throw std::logic_error("target admission capacity does not match the Engine");
         }
-        for (auto& entry : instance_.program->graft_catalog_entries()) {
-            std::uint32_t rm_slot = resources_.register_external_shared_prefix(
-                std::move(entry.handle), std::move(entry.summary));
-            instance_.program->set_graft_rm_slot(entry.name, rm_slot);
-        }
+        catalog_pinned_grafts();
         slot_session_paths_.resize(resources_.catalog_capacity());
         slot_digest_cache_.resize(resources_.catalog_capacity());
         resources_.set_eviction_observer(
@@ -2229,6 +2225,16 @@ private:
     // them, so a persistent fault cannot spin.
     // The caller synchronizes the device first: the cleanup frees pages and StateImages that work
     // issued before the failure may still reference.
+    // Catalogs each graft the Program holds pinned as an external shared prefix, so requests that
+    // select it by name plan against it.
+    void catalog_pinned_grafts() {
+        for (auto& entry : instance_.program->graft_catalog_entries()) {
+            const std::uint32_t rm_slot = resources_.register_external_shared_prefix(
+                std::move(entry.handle), std::move(entry.summary));
+            instance_.program->set_graft_rm_slot(entry.name, rm_slot);
+        }
+    }
+
     [[nodiscard]] bool recover_locked(std::exception_ptr error) noexcept {
         // The failure being handled counts toward the streak, so the third consecutive one
         // latches rather than the fourth.
@@ -2252,6 +2258,14 @@ private:
             usage.device_backend_kv_pages != 0 || usage.host_kv_bytes != 0) {
             return false;
         }
+        // The cleanup released the startup-pinned grafts with everything else. With the empty
+        // baseline verified above, reinstall them exactly as startup did; an Engine that cannot is
+        // not serving what it was configured with.
+        try {
+            instance_.inject_pinned_grafts();
+            device_.synchronize();
+            catalog_pinned_grafts();
+        } catch (...) { return false; }
         ++consecutive_recoveries_;
         ++cumulative_stats_.engine_recoveries;
         request_admission_check();

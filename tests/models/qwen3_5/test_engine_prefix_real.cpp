@@ -1,4 +1,5 @@
 #include "guarded_main.h"
+#include "speculative_graft.h"
 #include "ninfer/engine.h"
 #include "runtime/engine/worker_fault.h"
 
@@ -1460,6 +1461,8 @@ int exercise_slot_persistence(const char* artifact) {
 // through the worker-fault seam and thrown after a prefill unit has executed, so each recovery
 // releases a lane holding live KV pages and state. The conversations share a system prompt and
 // place long anchors on it under Host pressure, so the cache the recovery clears is non-trivial.
+// With NINFER_TEST_GRAFT set, the startup-pinned graft the recovery also releases must be
+// reinstalled: a grafted request after the failures starts from the graft, as before them.
 int exercise_worker_failure_recovery(const char* artifact) {
     ninfer::EngineOptions options;
     options.artifact_path                        = artifact;
@@ -1477,6 +1480,7 @@ int exercise_worker_failure_recovery(const char* artifact) {
     options.context_cache.max_private_continuations         = 2;
     options.context_cache.max_shared_prefixes               = 4;
     options.context_cache.max_long_anchors_per_continuation = 2;
+    ninfer::test::add_test_graft(options);
     ninfer::Engine engine(std::move(options));
 
     ninfer::RequestOptions request;
@@ -1484,6 +1488,22 @@ int exercise_worker_failure_recovery(const char* artifact) {
     request.execution.sampling.temperature    = 0.0F;
     request.execution.allow_prefix_reuse      = true;
     request.stop.include_model_defaults       = false;
+
+    const auto grafted = [&]() -> std::optional<ninfer::GenerationResult> {
+        if (!ninfer::test::graft_configured()) { return std::nullopt; }
+        ninfer::PromptInput input;
+        input.messages.push_back(ninfer::ChatMessage{
+            .role = ninfer::ChatRole::User, .parts = {ninfer::MessagePart{.text = "Who are you?"}}});
+        input.options.graft = "g";
+        ninfer::RequestOptions graft_request = request;
+        graft_request.execution.requested_output_tokens = 8;
+        return engine.generate(engine.prepare(std::move(input)), graft_request);
+    };
+    const std::optional<ninfer::GenerationResult> graft_before = grafted();
+    if (graft_before && graft_before->reused_prompt_tokens == 0) {
+        std::cerr << "grafted request did not start from the graft\n";
+        return 1;
+    }
 
     std::string system =
         "You are a careful engineering assistant. Follow the house style: short sentences, units "
@@ -1565,6 +1585,16 @@ int exercise_worker_failure_recovery(const char* artifact) {
                   << "\n";
         return 1;
     }
+    if (graft_before) {
+        const std::optional<ninfer::GenerationResult> graft_after = grafted();
+        if (graft_after->reused_prompt_tokens != graft_before->reused_prompt_tokens ||
+            graft_after->generated_token_ids != graft_before->generated_token_ids) {
+            std::cerr << "the pinned graft was not reinstalled by recovery: reused before="
+                      << graft_before->reused_prompt_tokens
+                      << " after=" << graft_after->reused_prompt_tokens << "\n";
+            return 1;
+        }
+    }
 
     // Latch: three consecutive failures with no served request between them. The first two
     // recover; the third latches, and the Engine then refuses work.
@@ -1586,7 +1616,8 @@ int exercise_worker_failure_recovery(const char* artifact) {
         return 1;
     }
     std::cout << "worker-failure-recovery: recoveries=" << recoveries
-              << " queued_served=" << kRecoveryRounds << " latched_after=3\n";
+              << " queued_served=" << kRecoveryRounds << " latched_after=3"
+              << " graft_reinstalled=" << (graft_before ? "yes" : "not configured") << "\n";
     return 0;
 }
 

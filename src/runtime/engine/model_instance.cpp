@@ -188,6 +188,12 @@ ModelInstance::ModelInstance(std::unique_ptr<models::qwen3_5::Model> source,
 
 ModelInstance::~ModelInstance() = default;
 
+void ModelInstance::inject_pinned_grafts() {
+    for (const auto& graft : frontend.grafts()) {
+        if (graft.kind != models::qwen3_5::GraftKind::PrefillKV) { program->inject_graft(graft); }
+    }
+}
+
 ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& device) {
     validate_options(requested);
     const auto start = Clock::now();
@@ -252,11 +258,7 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
     StartupPhaseScope program(options.startup_observer, StartupPhase::ProgramInitialize);
     instance->program = models::qwen3_5::create_program(instance->parameters, std::move(sequence),
                                                         device, options.startup_observer);
-    for (const auto& graft : instance->frontend.grafts()) {
-        if (graft.kind != models::qwen3_5::GraftKind::PrefillKV) {
-            instance->program->inject_graft(graft);
-        }
-    }
+    instance->inject_pinned_grafts();
     device.synchronize();
     program.complete();
     instance->kv_capacity_resolution.available_after_startup_bytes = current_free_device_bytes();
