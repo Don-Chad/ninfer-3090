@@ -5,7 +5,6 @@
 #include "ops/common/math.h"
 #include "ops/kv_cache/append/launch.h"
 #include "ops/kv_cache/d256_profile.h"
-#include "ops/softmax_attention/dense/causal_cache/prompt_bf16.cuh"
 #include "ops/softmax_attention/dense/causal_cache/prompt_i8.cuh"
 #include "core/device.h" // CUDA_CHECK
 
@@ -21,11 +20,9 @@ void causal_attention_prompt_attention_launch_for(const Tensor& q, const Tensor&
                                                   cudaStream_t stream) {
     const Tensor& cache_k = cache.k_pages;
     const Tensor& cache_v = cache.v_pages;
-    // Both dtype-specialized kernels exceed the default 48 KiB dynamic-smem ceiling.
-    configure_cuda_device_once([&] {
-        return cudaFuncSetAttribute(causal_attention_prompt_bf16_kernel<Geometry, Metadata>,
-                                 cudaFuncAttributeMaxDynamicSharedMemorySize, kCausalPromptSmemBytes);
-    });
+    // BFloat16 storage never reaches this function: both causal_softmax_attention and
+    // causal_softmax_attention_cached early-return to bf16_kv_{append,cached}_attention
+    // before route resolution, so only the int8 family (int8-g64, rk8v4, rk4v4) lands here.
     configure_cuda_device_once([&] {
         return cudaFuncSetAttribute(causal_attention_prompt_i8_kernel<Geometry, Metadata, false>,
                                  cudaFuncAttributeMaxDynamicSharedMemorySize, kCausalPromptI8SmemBytes);
@@ -41,59 +38,47 @@ void causal_attention_prompt_attention_launch_for(const Tensor& q, const Tensor&
     });
 
     const auto tokens = static_cast<std::int32_t>(q.ne[2]);
-    if (kv_cache_is_int8_family(cache.storage)) {
-        const dim3 attention_grid(static_cast<unsigned>(div_up(tokens, kCausalPromptI8Br)),
-                                  static_cast<unsigned>(Geometry::QHeads), 1u);
-        const Tensor& cache_k_scale = cache.k_scale_pages;
-        const Tensor& cache_v_scale = cache.v_scale_pages;
-        // The INT8 family is the one place that deliberately does not take its plane types from
-        // ops/kv_cache/plane_types.h. One kernel serves both codings, so its value parameter is
-        // std::int8_t* for int8-g64 and for rk8v4 alike, and the packed-int4 path re-casts to
-        // std::uint8_t where it unpacks (causal_prompt_i4_dequant_f16x8). Substituting
-        // KvValueCodeT<RotatedInt8KeyInt4ValueGroup64>, which is U8 because the profile describes
-        // the plane's storage rather than this kernel's signature, would not be a cleanup. Leave
-        // it; the dtype check below is the guard that matters here.
-        // A U8 key plane is the rk4v4 Lloyd-Max coding; a U8 value plane is the packed signed
-        // int4 coding it shares with rk8v4.
-        if (cache_k.dtype == DType::U8) {
-            causal_attention_prompt_i8_kernel<Geometry, Metadata, true, true>
-                <<<attention_grid, kCausalPromptI8Threads, kCausalPromptI8SmemBytes, stream>>>(
-                    static_cast<const __nv_bfloat16*>(q.data),
-                    static_cast<const std::int8_t*>(cache_k.data),
-                    static_cast<const std::int8_t*>(cache_v.data),
-                    static_cast<const __half*>(cache_k_scale.data),
-                    static_cast<const __half*>(cache_v_scale.data), metadata,
-                    static_cast<const std::int32_t*>(positions.data), scale,
-                    static_cast<__nv_bfloat16*>(out.data), tokens);
-        } else if (cache_v.dtype == DType::U8) {
-            causal_attention_prompt_i8_kernel<Geometry, Metadata, true>
-                <<<attention_grid, kCausalPromptI8Threads, kCausalPromptI8SmemBytes, stream>>>(
-                    static_cast<const __nv_bfloat16*>(q.data),
-                    static_cast<const std::int8_t*>(cache_k.data),
-                    static_cast<const std::int8_t*>(cache_v.data),
-                    static_cast<const __half*>(cache_k_scale.data),
-                    static_cast<const __half*>(cache_v_scale.data), metadata,
-                    static_cast<const std::int32_t*>(positions.data), scale,
-                    static_cast<__nv_bfloat16*>(out.data), tokens);
-        } else {
-            causal_attention_prompt_i8_kernel<Geometry, Metadata, false>
-                <<<attention_grid, kCausalPromptI8Threads, kCausalPromptI8SmemBytes, stream>>>(
-                    static_cast<const __nv_bfloat16*>(q.data),
-                    static_cast<const std::int8_t*>(cache_k.data),
-                    static_cast<const std::int8_t*>(cache_v.data),
-                    static_cast<const __half*>(cache_k_scale.data),
-                    static_cast<const __half*>(cache_v_scale.data), metadata,
-                    static_cast<const std::int32_t*>(positions.data), scale,
-                    static_cast<__nv_bfloat16*>(out.data), tokens);
-        }
-    } else {
-        const dim3 attention_grid(static_cast<unsigned>(div_up(tokens, kCausalPromptBr)),
-                                  static_cast<unsigned>(Geometry::QHeads), 1u);
-        causal_attention_prompt_bf16_kernel<Geometry, Metadata>
-            <<<attention_grid, kCausalPromptThreads, kCausalPromptSmemBytes, stream>>>(
+    const dim3 attention_grid(static_cast<unsigned>(div_up(tokens, kCausalPromptI8Br)),
+                              static_cast<unsigned>(Geometry::QHeads), 1u);
+    const Tensor& cache_k_scale = cache.k_scale_pages;
+    const Tensor& cache_v_scale = cache.v_scale_pages;
+    // The INT8 family is the one place that deliberately does not take its plane types from
+    // ops/kv_cache/plane_types.h. One kernel serves both codings, so its value parameter is
+    // std::int8_t* for int8-g64 and for rk8v4 alike, and the packed-int4 path re-casts to
+    // std::uint8_t where it unpacks (causal_prompt_i4_dequant_f16x8). Substituting
+    // KvValueCodeT<RotatedInt8KeyInt4ValueGroup64>, which is U8 because the profile describes
+    // the plane's storage rather than this kernel's signature, would not be a cleanup. Leave
+    // it; the dtype check below is the guard that matters here.
+    // A U8 key plane is the rk4v4 Lloyd-Max coding; a U8 value plane is the packed signed
+    // int4 coding it shares with rk8v4.
+    if (cache_k.dtype == DType::U8) {
+        causal_attention_prompt_i8_kernel<Geometry, Metadata, true, true>
+            <<<attention_grid, kCausalPromptI8Threads, kCausalPromptI8SmemBytes, stream>>>(
                 static_cast<const __nv_bfloat16*>(q.data),
-                static_cast<const __nv_bfloat16*>(cache_k.data),
-                static_cast<const __nv_bfloat16*>(cache_v.data), metadata,
+                static_cast<const std::int8_t*>(cache_k.data),
+                static_cast<const std::int8_t*>(cache_v.data),
+                static_cast<const __half*>(cache_k_scale.data),
+                static_cast<const __half*>(cache_v_scale.data), metadata,
+                static_cast<const std::int32_t*>(positions.data), scale,
+                static_cast<__nv_bfloat16*>(out.data), tokens);
+    } else if (cache_v.dtype == DType::U8) {
+        causal_attention_prompt_i8_kernel<Geometry, Metadata, true>
+            <<<attention_grid, kCausalPromptI8Threads, kCausalPromptI8SmemBytes, stream>>>(
+                static_cast<const __nv_bfloat16*>(q.data),
+                static_cast<const std::int8_t*>(cache_k.data),
+                static_cast<const std::int8_t*>(cache_v.data),
+                static_cast<const __half*>(cache_k_scale.data),
+                static_cast<const __half*>(cache_v_scale.data), metadata,
+                static_cast<const std::int32_t*>(positions.data), scale,
+                static_cast<__nv_bfloat16*>(out.data), tokens);
+    } else {
+        causal_attention_prompt_i8_kernel<Geometry, Metadata, false>
+            <<<attention_grid, kCausalPromptI8Threads, kCausalPromptI8SmemBytes, stream>>>(
+                static_cast<const __nv_bfloat16*>(q.data),
+                static_cast<const std::int8_t*>(cache_k.data),
+                static_cast<const std::int8_t*>(cache_v.data),
+                static_cast<const __half*>(cache_k_scale.data),
+                static_cast<const __half*>(cache_v_scale.data), metadata,
                 static_cast<const std::int32_t*>(positions.data), scale,
                 static_cast<__nv_bfloat16*>(out.data), tokens);
     }

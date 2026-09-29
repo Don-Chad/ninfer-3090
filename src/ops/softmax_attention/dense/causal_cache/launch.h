@@ -12,7 +12,13 @@
 
 namespace ninfer::ops::detail {
 
-enum class CausalAttentionRoute { SmallT, ChunkedSmallT, Prompt };
+// Bf16 is never dispatched through the switch below in production -- causal_softmax_attention
+// special-cases KvCacheStorage::BFloat16 before ever calling causal_attention_resolve_route, and
+// routes it through Bf16KvCausalPlan (bf16/plan.h) instead. It exists as a route value (rather
+// than the resolver throwing for that storage) purely so callers that enumerate every
+// KvCacheStorage to classify routes -- e.g. the MTP graph-profile topology-class test -- get a
+// real, distinct answer instead of an exception.
+enum class CausalAttentionRoute { SmallT, ChunkedSmallT, Prompt, Bf16 };
 
 struct CausalSmallTInvocation {
     const Tensor* valid_columns = nullptr;
