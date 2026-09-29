@@ -230,16 +230,36 @@ ninfer::PromptInput chinese_chat(bool enable_thinking) {
     return input;
 }
 
+// Token counts of one short Chinese chat under each registered chat template. Qwen3.8's template
+// states the default xhigh reasoning effort in thinking mode, which Qwen3.6's does not, so the
+// thinking count differs by family while the non-thinking count does not.
 int exercise_registered_frontend(const ninfer::Engine& engine) {
-    if (engine.count_tokens(chinese_chat(true)) != 16) {
-        std::cerr << "registered tokenizer/chat template changed the thinking prompt golden\n";
-        return 1;
+    struct Golden {
+        std::string_view family;
+        std::uint32_t thinking;
+        std::uint32_t non_thinking;
+    };
+    constexpr Golden kGoldens[] = {
+        {"qwen3.6", 16, 18},
+        {"qwen3.8", 58, 18},
+    };
+    const std::string model       = engine.load_summary().model_name;
+    const std::uint32_t thinking     = engine.count_tokens(chinese_chat(true));
+    const std::uint32_t non_thinking = engine.count_tokens(chinese_chat(false));
+    for (const Golden& golden : kGoldens) {
+        if (!model.starts_with(golden.family)) { continue; }
+        if (thinking != golden.thinking || non_thinking != golden.non_thinking) {
+            std::cerr << "registered tokenizer/chat template changed the prompt golden for " << model
+                      << ": thinking " << thinking << " (expected " << golden.thinking
+                      << "), non-thinking " << non_thinking << " (expected "
+                      << golden.non_thinking << ")\n";
+            return 1;
+        }
+        return 0;
     }
-    if (engine.count_tokens(chinese_chat(false)) != 18) {
-        std::cerr << "registered tokenizer/chat template changed the no-thinking prompt golden\n";
-        return 1;
-    }
-    return 0;
+    std::cerr << "no registered prompt golden for model " << model << ": thinking " << thinking
+              << ", non-thinking " << non_thinking << "\n";
+    return 1;
 }
 
 class ObservationSink final : public ninfer::OutputSink {
@@ -497,8 +517,13 @@ int exercise_host_restore(const char* artifact) {
     ninfer::ChatMessage assistant;
     assistant.role              = ninfer::ChatRole::Assistant;
     assistant.reasoning_content = retained.reasoning;
-    assistant.parts.push_back(ninfer::MessagePart{
-        .kind = ninfer::MessagePartKind::Text, .text = retained.content, .media = {}});
+    // The replayed reply diverges from its first generated token on purpose. Qwen3.8's template
+    // re-renders a non-thinking reply token for token, so a replay that keeps the generated tokens
+    // as its prefix correctly reuses the whole endpoint and never reaches the turn-closure
+    // checkpoint this scenario restores from Host.
+    assistant.parts.push_back(ninfer::MessagePart{.kind  = ninfer::MessagePartKind::Text,
+                                                  .text  = "Edited reply. " + retained.content,
+                                                  .media = {}});
     continuation.messages.push_back(std::move(assistant));
     ninfer::ChatMessage followup;
     followup.role = ninfer::ChatRole::User;
