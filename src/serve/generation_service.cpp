@@ -63,6 +63,12 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception) {
         error.status = 400;
         error.code   = "invalid_media";
         break;
+    case ninfer::RequestErrorKind::InvalidOutputFormat:
+        // Protocol adapters rename the parameter to their own spelling of the format field.
+        error.param  = "response_format";
+        error.status = 400;
+        error.code   = "invalid_output_format";
+        break;
     case ninfer::RequestErrorKind::Overloaded:
         error.param.clear();
         error.status = 429;

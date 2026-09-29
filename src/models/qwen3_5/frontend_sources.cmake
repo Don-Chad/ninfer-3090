@@ -8,4 +8,5 @@ target_sources(ninfer_model_runtime PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/frontend/processor.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/frontend/media_cache.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/frontend/tool_call_parser.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/frontend/structured_output.cpp"
 )

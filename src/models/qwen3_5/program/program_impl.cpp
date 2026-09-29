@@ -178,6 +178,18 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
                       ? std::make_optional<PinnedHostBuffer>(sizeof(qwen3_5::DFlashDecodeIngress) +
                                                              sizeof(qwen3_5::DFlashDecodeEgress))
                       : std::nullopt),
+      dflash_draft_host(is_masked_draft_backend(plan.speculative_backend)
+                            ? std::make_optional<PinnedHostBuffer>(
+                                  sizeof(TokenId) * qwen3_5::kDFlashDecodeMaximumDrafts *
+                                  kMaximumConcurrency)
+                            : std::nullopt),
+      dflash_proposal_ready(is_masked_draft_backend(plan.speculative_backend)
+                                ? std::make_optional<CudaCompletionEvent>(device_in)
+                                : std::nullopt),
+      token_mask_host(plan.persistent.token_masks
+                          ? std::make_optional<PinnedHostBuffer>(
+                                plan.persistent.token_masks->region.bytes)
+                          : std::nullopt),
       compute_streams(RankStreams::compute(device_in)),
       transfer_streams(RankStreams::transfer(device_in)), context_source_ready_(device_in),
       context_completion_(device_in),
@@ -455,6 +467,10 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     }
     if (plan.persistent.sampling_config) {
         sampling_config = plan.persistent.sampling_config->bind(backing);
+    }
+    if (plan.persistent.token_masks) {
+        token_masks      = plan.persistent.token_masks->bind(backing);
+        token_mask_words = static_cast<std::uint32_t>(token_masks.ne[0]);
     }
     active_continuations.fill(continuation_capacity);
     for (std::uint32_t lane = 0; lane < max_concurrency; ++lane) { lane_epochs[lane] = 1; }

@@ -357,8 +357,9 @@ bool Program::vision_pending(SequenceHandle sequence) const noexcept {
 }
 
 PrefillProgress Program::advance_prefill(SequenceHandle sequence,
+                                         runtime::TokenMaskSource* constraint,
                                          runtime::ExecutionTiming* failed_timing) {
-    return impl_->advance_prefill(sequence, failed_timing);
+    return impl_->advance_prefill(sequence, constraint, failed_timing);
 }
 
 CaptureAssessment
@@ -433,8 +434,9 @@ runtime::ContextTransactionReserveStatus Program::reserve_active_capture_with_pr
 
 PendingBatch Program::decode(std::span<const SequenceHandle> sequences,
                              std::span<const runtime::RoundBudget> budgets,
+                             std::span<runtime::TokenMaskSource* const> constraints,
                              runtime::ExecutionTiming* failed_timing) {
-    return impl_->decode(sequences, budgets, failed_timing);
+    return impl_->decode(sequences, budgets, constraints, failed_timing);
 }
 
 runtime::ExecutionTiming

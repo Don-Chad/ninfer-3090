@@ -1,5 +1,6 @@
 #include "models/qwen3_5/frontend/output_session.h"
 #include "models/qwen3_5/frontend/chat_template.h"
+#include "models/qwen3_5/frontend/structured_output.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
 #include "models/qwen3_5/frontend/tool_call_parser.h"
 #include "text/unicode.h"
@@ -331,9 +332,11 @@ public:
     Impl(std::shared_ptr<const fi::Tokenizer> tokenizer_, StopPolicy policy_, OutputOptions output,
          bool starts_in_reasoning, ThinkingControlOptions thinking,
          std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens_,
-         std::shared_ptr<const fi::ToolCallOutputContract> tool_call_output_)
+         std::shared_ptr<const fi::ToolCallOutputContract> tool_call_output_,
+         std::unique_ptr<fi::StructuredOutputConstraint> structured_output_)
         : tokenizer(std::move(tokenizer_)), policy(std::move(policy_)),
           thinking_control_tokens(std::move(thinking_control_tokens_)),
+          structured_output(std::move(structured_output_)),
           preserve_special(output.raw || output.preserve_special_tokens),
           split_reasoning(starts_in_reasoning && !output.raw),
           tool_call_output(output.raw ? nullptr : std::move(tool_call_output_),
@@ -353,6 +356,7 @@ public:
     std::shared_ptr<const fi::Tokenizer> tokenizer;
     StopPolicy policy;
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens;
+    std::unique_ptr<fi::StructuredOutputConstraint> structured_output;
     bool preserve_special = false;
     bool split_reasoning  = false;
     DecoderState state;
@@ -401,10 +405,12 @@ OutputSession::OutputSession(
     std::shared_ptr<const frontend::Tokenizer> tokenizer, StopPolicy policy, OutputOptions output,
     bool starts_in_reasoning, ThinkingControlOptions thinking,
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens,
-    std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output)
-    : impl_(std::make_unique<Impl>(
-          std::move(tokenizer), std::move(policy), output, starts_in_reasoning, thinking,
-          std::move(thinking_control_tokens), std::move(tool_call_output))) {}
+    std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output,
+    std::unique_ptr<frontend::StructuredOutputConstraint> structured_output)
+    : impl_(std::make_unique<Impl>(std::move(tokenizer), std::move(policy), output,
+                                   starts_in_reasoning, thinking,
+                                   std::move(thinking_control_tokens),
+                                   std::move(tool_call_output), std::move(structured_output))) {}
 
 runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> tokens,
                                                      std::uint32_t total_budget_remaining,
@@ -431,6 +437,7 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
     impl_->preview_prefix_execution = impl_->prefix_execution;
     impl_->preview_execution_split_after.reset();
     impl_->preview_output.clear();
+    if (impl_->structured_output) { impl_->structured_output->begin_preview(); }
 
     const auto complete = [&](std::uint32_t count, FinishReason reason,
                               runtime::ContinuationAction continuation =
@@ -479,10 +486,30 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
         }
 
         StopMatch match;
+        const std::uint64_t decoded_bytes_before = impl_->preview_state.decoded_bytes;
         const std::string_view bytes =
             !impl_->preserve_special && decoded.special ? std::string_view{} : decoded.bytes;
         feed_token_bytes(impl_->preview_state, bytes, impl_->policy, impl_->preview_output, count,
                          &match);
+
+        if (impl_->structured_output) {
+            // A caller stop string can end generation partway through this token's own decoded
+            // bytes (`match.byte_cut` then falls inside it). The bytes at and after that cut are
+            // never published, so the grammar must license only the prefix that is, not the whole
+            // token -- otherwise a grammar-invalid tail the client will never see aborts a request
+            // that should have stopped cleanly.
+            std::optional<std::size_t> stop_prefix_bytes;
+            if (match.found) {
+                const auto relative = static_cast<std::int64_t>(match.byte_cut) -
+                                      static_cast<std::int64_t>(decoded_bytes_before);
+                stop_prefix_bytes = static_cast<std::size_t>(std::max<std::int64_t>(0, relative));
+            }
+            if (!impl_->structured_output->preview_token(token, stop_prefix_bytes)) {
+                // Program samples every constrained position from the licensed set, so this is an
+                // execution fault rather than a model choice.
+                throw std::logic_error("generated token is outside the requested output format");
+            }
+        }
 
         if (match.found) {
             impl_->preview_state = terminal_state(std::move(impl_->preview_state));
@@ -554,9 +581,13 @@ runtime::OutputDecision OutputSession::preview_control(std::span<const TokenId> 
     impl_->preview_prefix_execution = impl_->prefix_execution;
     impl_->preview_execution_split_after.reset();
     impl_->preview_output.clear();
+    if (impl_->structured_output) { impl_->structured_output->begin_preview(); }
     for (std::size_t index = 0; index < tokens.size(); ++index) {
         const TokenId token                = tokens[index];
         const fi::DecodedTokenView decoded = impl_->tokenizer->decoded_token(token);
+        if (impl_->structured_output && !impl_->structured_output->preview_token(token)) {
+            throw std::logic_error("thinking control suffix is outside the requested output format");
+        }
         if (const auto boundary = impl_->preview_prefix_execution.feed(decoded.bytes);
             boundary && *boundary == decoded.bytes.size()) {
             impl_->preview_execution_split_after = static_cast<std::uint32_t>(index + 1U);
@@ -615,6 +646,7 @@ runtime::OutputDecision OutputSession::preview_terminal(FinishReason reason) {
     impl_->preview_execution_split_after.reset();
     impl_->preview_semantic.control_pending = false;
     impl_->preview_output.clear();
+    if (impl_->structured_output) { impl_->structured_output->begin_preview(); }
     terminalize(impl_->preview_state, impl_->policy, impl_->preview_output, 0);
     impl_->preview_ready = true;
     return runtime::OutputDecision{.accepted_tokens = 0, .finish_reason = reason};
@@ -626,6 +658,7 @@ PublishedOutput OutputSession::commit_preview() {
     swap(impl_->state, impl_->preview_state);
     swap(impl_->semantic, impl_->preview_semantic);
     swap(impl_->prefix_execution, impl_->preview_prefix_execution);
+    if (impl_->structured_output) { impl_->structured_output->commit_preview(); }
     PublishedOutput output = std::move(impl_->preview_output);
     impl_->preview_output.clear();
     impl_->preview_ready = false;
@@ -675,6 +708,10 @@ ThinkingBudgetStats OutputSession::thinking_stats() const noexcept {
         .injected_tokens       = impl_->semantic.injected_tokens,
         .applied               = impl_->semantic.applied,
     };
+}
+
+runtime::TokenMaskSource* OutputSession::token_constraint() noexcept {
+    return impl_ != nullptr ? impl_->structured_output.get() : nullptr;
 }
 
 std::optional<std::string> OutputSession::matched_stop_string() const {

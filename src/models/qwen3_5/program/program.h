@@ -4,6 +4,7 @@
 #include "runtime/contract/execution.h"
 #include "runtime/contract/resources.h"
 #include "models/qwen3_5/frontend/graft.h"
+#include "runtime/contract/token_constraint.h"
 #include "models/qwen3_5/frontend/prepared_prompt.h"
 
 #include <cstddef>
@@ -895,8 +896,10 @@ public:
     // True while the sequence's next media item is still encoding in a concurrent overlay Vision
     // window; the Engine gives that lane no prefill unit until it completes.
     [[nodiscard]] bool vision_pending(SequenceHandle sequence) const noexcept;
+    // `constraint` (borrowed for this call) restricts the token sampled at prompt completion.
     [[nodiscard]] PrefillProgress
-    advance_prefill(SequenceHandle sequence, runtime::ExecutionTiming* failed_timing = nullptr);
+    advance_prefill(SequenceHandle sequence, runtime::TokenMaskSource* constraint = nullptr,
+                    runtime::ExecutionTiming* failed_timing = nullptr);
     [[nodiscard]] CaptureAssessment
     inspect_capture(const CaptureOffer& offer, const SharedPrefixHandle* exact_shared,
                     const SharedPrefixHandle* replacement,
@@ -928,8 +931,12 @@ public:
         const SharedPrefixHandle* replacement,
         std::optional<runtime::CheckpointRef> private_replacement, bool permit_shared_publication,
         CapturePressurePlan&& pressure, runtime::CancellationFlagView cancellation);
+    // `constraints` is empty or row-aligned with `sequences`; each non-null entry (borrowed for
+    // this call) restricts every token that row samples, including every speculative
+    // verification column.
     [[nodiscard]] PendingBatch decode(std::span<const SequenceHandle> sequences,
                                       std::span<const runtime::RoundBudget> budgets,
+                                      std::span<runtime::TokenMaskSource* const> constraints = {},
                                       runtime::ExecutionTiming* failed_timing = nullptr);
     // Advance each live sequence with its exact target-owned token row. This does not sample or
     // advance sampler RNG/occurrence state; callers own output publication and budget accounting.

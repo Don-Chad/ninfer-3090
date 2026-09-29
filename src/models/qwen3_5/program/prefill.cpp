@@ -990,6 +990,15 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
     std::uint32_t processed_prompt_tokens = 0;
     const auto started                    = Clock::now();
     try {
+        if (lane_constrained(sequence.lane)) {
+            // Prompt completion samples the request's first generated token from the lane config.
+            const ops::SamplingConfig config = masked_sampling(
+                request.sampling_host, stage_token_masks(sequence.lane, {}, 1, false));
+            Tensor config_lane =
+                sampling_config.slice(1, static_cast<std::int32_t>(sequence.lane), 1);
+            CUDA_CHECK(cudaMemcpyAsync(config_lane.data, &config, sizeof(config),
+                                       cudaMemcpyHostToDevice, device.stream));
+        }
         if (staged.next_capture < staged.capture_groups.size() &&
             staged.capture_groups[staged.next_capture].frontier == staged.cursor) {
             if (staged.cursor != staged.base ||

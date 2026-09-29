@@ -159,7 +159,6 @@ int test_standard_field_policy() {
     rejected("logit_bias", Json{{"12", 1}}, "logit_bias_not_supported");
     rejected("logprobs", true, "logprobs_not_supported");
     rejected("top_logprobs", 2, "logprobs_not_supported");
-    rejected("response_format", Json{{"type", "json_schema"}}, "response_format_not_supported");
     rejected("modalities", Json::array({"text", "audio"}), "modality_not_supported");
     rejected("web_search_options", Json::object(), "web_search_not_supported");
     rejected("moderation", Json::object(), "moderation_not_supported");
@@ -196,6 +195,88 @@ int test_standard_field_policy() {
     const OpenAIChatRequest zero        = parse(zero_limit);
     failures += check(zero.output_tokens_explicit && zero.generation.max_tokens == 0,
                       "an explicit zero output limit reaches Engine's no-generation path");
+    return failures;
+}
+
+int test_response_format() {
+    int failures = 0;
+    const auto with_format = [](Json format) {
+        Json body               = base_request();
+        body["response_format"] = std::move(format);
+        return body;
+    };
+
+    const OpenAIChatRequest text = parse(with_format(Json{{"type", "text"}}));
+    failures += check(options(text.generation).output.format.kind == ninfer::OutputFormatKind::Text,
+                      "response_format text stays unconstrained");
+
+    const OpenAIChatRequest object = parse(with_format(Json{{"type", "json_object"}}));
+    failures +=
+        check(options(object.generation).output.format.kind == ninfer::OutputFormatKind::JsonObject,
+              "response_format json_object reaches Engine options");
+
+    const Json schema = Json{{"type", "object"},
+                             {"properties", Json{{"zeta", Json{{"type", "string"}}},
+                                                 {"alpha", Json{{"enum", Json::array({"a", "b"})}}}}},
+                             {"required", Json::array({"zeta", "alpha"})},
+                             {"additionalProperties", false}};
+    const OpenAIChatRequest strict = parse(with_format(
+        Json{{"type", "json_schema"},
+             {"json_schema",
+              Json{{"name", "pick_1"}, {"description", "d"}, {"strict", true}, {"schema", schema}}}}));
+    const ninfer::OutputFormat strict_format = options(strict.generation).output.format;
+    failures += check(strict_format.kind == ninfer::OutputFormatKind::JsonSchema && strict_format.strict,
+                      "response_format json_schema strict reaches Engine options");
+    failures += check(strict_format.json_schema == schema.dump(),
+                      "json_schema is forwarded verbatim, member order preserved");
+
+    const OpenAIChatRequest lenient = parse(
+        with_format(Json{{"type", "json_schema"}, {"json_schema", Json{{"name", "any"}}}}));
+    const ninfer::OutputFormat lenient_format = options(lenient.generation).output.format;
+    failures += check(lenient_format.kind == ninfer::OutputFormatKind::JsonSchema &&
+                          !lenient_format.strict && lenient_format.json_schema == "{}",
+                      "json_schema without schema admits any JSON value and defaults to non-strict");
+
+    const auto rejected = [&](Json body, const std::string& param, const std::string& label,
+                              const std::string& code = {}) {
+        const ApiError error = api_error([&] { (void)parse(std::move(body)); });
+        failures += check(error.status == 400 && error.param == param &&
+                              (code.empty() || error.code == code),
+                          label);
+    };
+    rejected(with_format(Json{{"type", "json_ish"}}), "response_format.type",
+             "unknown response_format type rejected");
+    rejected(with_format(Json{{"kind", "json_object"}}), "response_format",
+             "untyped response_format rejected");
+    rejected(with_format(Json{{"type", "json_schema"}}), "response_format.json_schema",
+             "json_schema without definition rejected");
+    rejected(with_format(Json{{"type", "json_schema"}, {"json_schema", Json{{"schema", schema}}}}),
+             "response_format.json_schema.name", "json_schema without name rejected");
+    rejected(with_format(Json{{"type", "json_schema"},
+                              {"json_schema", Json{{"name", "has space"}, {"schema", schema}}}}),
+             "response_format.json_schema.name", "json_schema name outside [a-zA-Z0-9_-] rejected");
+    rejected(with_format(Json{{"type", "json_schema"},
+                              {"json_schema", Json{{"name", "n"}, {"schema", "object"}}}}),
+             "response_format.json_schema.schema", "non-object schema rejected");
+    rejected(with_format(Json{{"type", "json_schema"},
+                              {"json_schema", Json{{"name", "n"}, {"strict", "yes"}}}}),
+             "response_format.json_schema.strict", "non-boolean strict rejected");
+
+    Json with_tools     = with_format(Json{{"type", "json_object"}});
+    with_tools["tools"] = Json::array({Json{
+        {"type", "function"},
+        {"function", Json{{"name", "lookup"}, {"parameters", Json{{"type", "object"}}}}}}});
+    rejected(with_tools, "response_format", "structured output with active tools rejected",
+             "output_format_with_tools_not_supported");
+    with_tools["tool_choice"] = "none";
+    failures += check(parse(with_tools).generation.output_format.kind ==
+                          ninfer::OutputFormatKind::JsonObject,
+                      "structured output with tool_choice none accepted");
+
+    Json ignore_eos          = with_format(Json{{"type", "json_object"}});
+    ignore_eos["ignore_eos"] = true;
+    rejected(ignore_eos, "response_format", "structured output with ignore_eos rejected",
+             "output_format_with_ignore_eos_not_supported");
     return failures;
 }
 
@@ -937,6 +1018,7 @@ int main() {
     failures += test_graft_extension();
     failures += test_request_envelope_and_sampling();
     failures += test_standard_field_policy();
+    failures += test_response_format();
     failures += test_constrained_decoding_extensions();
     failures += test_tools();
     failures += test_messages_and_media();

@@ -885,15 +885,39 @@ void parse_thinking(const Json& body, GenerationRequest& request, ParsePurpose p
     }
 }
 
+// Anthropic structured outputs: output_config.format = {type: json_schema, schema}. The Messages
+// API always follows the schema strictly (declared properties only), so the schema is strict.
+void parse_output_format(const Json& format, GenerationRequest& request) {
+    if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
+        bad_request("output_config.format must be an object with a string type",
+                    "output_config.format");
+    }
+    if (format.at("type").get<std::string>() != "json_schema") {
+        bad_request("output_config.format.type must be 'json_schema'", "output_config.format.type");
+    }
+    for (auto member = format.begin(); member != format.end(); ++member) {
+        if (member.key() != "type" && member.key() != "schema" && !member.value().is_null()) {
+            bad_request("unknown output_config.format member: " + member.key(),
+                        "output_config.format");
+        }
+    }
+    if (!format.contains("schema") || !format.at("schema").is_object()) {
+        bad_request("output_config.format.schema must be a JSON Schema object",
+                    "output_config.format.schema");
+    }
+    request.output_format =
+        json_schema_output_format(format.at("schema"), true, "output_config.format.schema");
+    validate_output_format_compatibility(request, "output_config.format");
+}
+
 void parse_effort(const Json& body, GenerationRequest& request, ParsePurpose purpose) {
     if (!body.contains("output_config") || body.at("output_config").is_null()) { return; }
     const Json& config = body.at("output_config");
     if (!config.is_object()) { bad_request("output_config must be an object", "output_config"); }
+    // count_tokens counts the prompt only; the output format does not change it.
     if (purpose == ParsePurpose::Messages && config.contains("format") &&
         !config.at("format").is_null()) {
-        bad_request("output_config.format requires constrained decoding, which NInfer does not "
-                    "provide",
-                    "output_config.format", "output_config_format_not_supported");
+        parse_output_format(config.at("format"), request);
     }
     if (!config.contains("effort") || config.at("effort").is_null()) { return; }
     if (!config.at("effort").is_string()) {

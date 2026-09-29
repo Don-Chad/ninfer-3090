@@ -350,9 +350,8 @@ __launch_bounds__(kSamplerBlock) __global__ void speculative_accept_greedy_draft
     std::int32_t* row_tokens        = licensed_tokens + row * cols;
     const __nv_bfloat16* row_logits =
         logits + static_cast<std::int64_t>(row) * cols * physical_rows;
-    const bool penalties = cfg.presence_penalty != 0.0f || cfg.frequency_penalty != 0.0f;
 
-    if (!(cfg.temperature > 0.0f) && !penalties) {
+    if (!(cfg.temperature > 0.0f) && sampling_uses_raw_logits(cfg)) {
         if (tid == 0) {
             int a = 0;
             while (a < extent && row_targets[a] == row_drafts[a]) { ++a; }
@@ -520,8 +519,8 @@ __launch_bounds__(kSamplerBlock) __global__ void speculative_sampling_partial_to
     if (col > extent) { return; }
     const SamplingConfig cfg = configs[row];
     const bool greedy        = !(cfg.temperature > 0.0f);
-    const bool penalties     = cfg.presence_penalty != 0.0f || cfg.frequency_penalty != 0.0f;
-    if ((greedy && !penalties) || token_domain <= kSamplerTileItems) { return; }
+    const bool raw_scores    = sampling_uses_raw_logits(cfg);
+    if ((greedy && raw_scores) || token_domain <= kSamplerTileItems) { return; }
     workspace = speculative_workspace_row(workspace, workspace_row_stride, row);
     if (partial == 0 && threadIdx.x == 0) {
         workspace.group_done[col] = 0;
@@ -535,7 +534,7 @@ __launch_bounds__(kSamplerBlock) __global__ void speculative_sampling_partial_to
     const std::int64_t base        = (static_cast<std::int64_t>(row) * cols + col) * physical_rows;
     const std::int32_t* row_drafts = drafts + row * k;
     const int tile_start           = partial * kSamplerPartialTileItems;
-    if (!penalties) {
+    if (raw_scores) {
         unsigned int keys[kSamplerItemsPerThread];
 #pragma unroll
         for (int item = 0; item < kSamplerItemsPerThread; ++item) {
@@ -550,9 +549,9 @@ __launch_bounds__(kSamplerBlock) __global__ void speculative_sampling_partial_to
     }
 
     unsigned long long keys[kSamplerItemsPerThread];
-    // Column col's penalty overlay is the first `col` drafts (see accept loop);
-    // applying it before top-k selection lets it change the candidate set, not
-    // just the post-truncation probabilities.
+    // Column col's penalty overlay is the first `col` drafts (see accept loop), and its token mask
+    // is the col-th mask; applying both before top-k selection lets them change the candidate set,
+    // not just the post-truncation probabilities.
 #pragma unroll
     for (int item = 0; item < kSamplerItemsPerThread; ++item) {
         const int v = tile_start + item * blockDim.x + threadIdx.x;
@@ -602,10 +601,9 @@ __launch_bounds__(kSamplerGroupBlock) __global__ void speculative_sampling_group
     const std::int32_t* row_drafts  = drafts + row * k;
     std::int32_t* row_tokens        = licensed_tokens + row * cols;
     if (token_domain <= kSamplerTileItems) { return; }
-    const bool greedy    = !(cfg.temperature > 0.0f);
-    const bool penalties = cfg.presence_penalty != 0.0f || cfg.frequency_penalty != 0.0f;
+    const bool greedy = !(cfg.temperature > 0.0f);
 
-    if (greedy && !penalties) {
+    if (greedy && sampling_uses_raw_logits(cfg)) {
         if constexpr (SparseProposal) {
             if (tid < 32 && col == 0 && group == 0)
                 speculative_sparse_warp_greedy(target_tokens, logits, drafts, lengths, anchors,

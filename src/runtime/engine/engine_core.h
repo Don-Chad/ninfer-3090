@@ -7,6 +7,7 @@
 #include "ninfer/types.h"
 #include "runtime/contract/execution.h"
 #include "runtime/contract/resources.h"
+#include "runtime/contract/token_constraint.h"
 #include "runtime/engine/request_record.h"
 #include "runtime/engine/context_cache/resource_manager.h"
 #include "runtime/engine/scheduler.h"
@@ -1663,8 +1664,8 @@ private:
         }
         setup.finish();
         ProgramCallScope program_call(*this);
-        auto progress =
-            instance_.program->advance_prefill(*request->sequence, &program_call.failed_timing());
+        auto progress = instance_.program->advance_prefill(
+            *request->sequence, request->output.token_constraint(), &program_call.failed_timing());
         program_call.finish(progress.timing);
         cumulative_stats_.prefill_seconds_total +=
             static_cast<double>(progress.timing.elapsed_ns()) * 1e-9;
@@ -2080,9 +2081,15 @@ private:
                           const std::array<bool, kMaximumConcurrency>& cancelled_at_unit_start) {
         nvtx::ScopedRange decode_range(nvtx::Name::Decode, nvtx::Category::Decode,
                                        static_cast<std::uint64_t>(membership.size));
+        std::array<TokenMaskSource*, kMaximumConcurrency> constraints{};
+        for (std::size_t row = 0; row < membership.size; ++row) {
+            constraints[row] = slots_[membership.lanes[row]]->output.token_constraint();
+        }
         ProgramCallScope program_call(*this);
         auto pending = instance_.program->decode(
-            membership.sequence_span(), membership.budget_span(), &program_call.failed_timing());
+            membership.sequence_span(), membership.budget_span(),
+            std::span<TokenMaskSource* const>(constraints.data(), membership.size),
+            &program_call.failed_timing());
         program_call.finish(pending.execution_timing());
         cumulative_stats_.decode_seconds_total +=
             static_cast<double>(pending.execution_timing().elapsed_ns()) * 1e-9;

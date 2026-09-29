@@ -375,12 +375,35 @@ struct ExecutionOptions {
     ThinkingControlOptions thinking;
 };
 
+enum class OutputFormatKind : std::uint8_t {
+    Text,       // unconstrained
+    JsonObject, // any JSON object
+    JsonSchema, // a JSON value conforming to json_schema
+};
+
+// Language of the final model output, enforced token by token during sampling. When the prompt
+// opens a reasoning (thinking) section, the reasoning stays unconstrained and the format applies
+// to the output after the section closes; otherwise it applies from the first generated token.
+// Up to two leading whitespace characters are admitted before the JSON value, after which only
+// the model's stop tokens may follow it. An output limit or caller stop string can still end the
+// output before the value is complete.
+struct OutputFormat {
+    OutputFormatKind kind = OutputFormatKind::Text;
+    // Serialized JSON Schema object; JsonSchema only.
+    std::string json_schema;
+    // JsonSchema only. When true, object schemas without additionalProperties (or
+    // unevaluatedProperties) admit only their declared properties, following the OpenAI/Anthropic
+    // strict structured-output convention. When false, standard JSON Schema defaults apply.
+    bool strict = false;
+};
+
 struct OutputOptions {
     bool raw                     = false;
     bool preserve_special_tokens = false;
     // Presentation constraint supplied by the protocol adapter. It bounds only Qwen's emitted
     // function-name grammar; it does not require the name to match a currently declared tool.
     std::uint32_t tool_name_max_length = 128;
+    OutputFormat format;
 };
 
 struct RequestOptions {
@@ -639,6 +662,7 @@ enum class RequestErrorKind : std::uint8_t {
     ThinkingBudgetCapacityInsufficient,
     MediaBudgetExceeded,
     InvalidMedia,
+    InvalidOutputFormat,
     Overloaded,
     QueueTimeout,
     Cancelled,

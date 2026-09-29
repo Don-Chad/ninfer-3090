@@ -872,6 +872,7 @@ ProgramImpl::shared_prefix_summary(const SharedPrefixState& shared) const {
 }
 
 PrefillProgress ProgramImpl::advance_prefill(SequenceHandle sequence,
+                                             runtime::TokenMaskSource* constraint,
                                              runtime::ExecutionTiming* failed_timing) {
     if (pending_transaction_ || !valid_sequence(sequence)) {
         throw std::logic_error("prefill sequence capability is invalid");
@@ -880,6 +881,9 @@ PrefillProgress ProgramImpl::advance_prefill(SequenceHandle sequence,
     if (requests[lane].lifecycle != Lifecycle::Prefilling) {
         throw std::logic_error("prefill advance requires a prefilling sequence");
     }
+    runtime::TokenMaskSource* const constraints[] = {constraint};
+    const TokenConstraintBinding binding(*this, std::span<const std::uint32_t>(&lane, 1),
+                                         constraints);
     try {
         runtime::PrefillStepResult step = advance_prefill_raw(lane, failed_timing);
         if (failed_timing != nullptr) { *failed_timing += step.timing; }

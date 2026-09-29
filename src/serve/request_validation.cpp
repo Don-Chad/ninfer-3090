@@ -18,6 +18,29 @@ namespace ninfer::serve {
     throw ApiException(std::move(error));
 }
 
+ninfer::OutputFormat json_schema_output_format(const RequestJson& schema, bool strict,
+                                               const std::string& param) {
+    if (!schema.is_object()) { bad_request(param + " schema must be a JSON object", param); }
+    return ninfer::OutputFormat{.kind        = ninfer::OutputFormatKind::JsonSchema,
+                                .json_schema = schema.dump(),
+                                .strict      = strict};
+}
+
+void validate_output_format_compatibility(const GenerationRequest& request,
+                                          const std::string& param) {
+    if (request.output_format.kind == ninfer::OutputFormatKind::Text) { return; }
+    if (request.uses_tools()) {
+        bad_request("structured output cannot be combined with tool calling: a tool call is not "
+                    "a JSON value; send tool_choice none or omit the output format",
+                    param, "output_format_with_tools_not_supported");
+    }
+    if (request.ignore_eos) {
+        bad_request("structured output cannot be combined with ignore_eos: a completed JSON value "
+                    "can only be followed by a stop token",
+                    param, "output_format_with_ignore_eos_not_supported");
+    }
+}
+
 std::optional<int> optional_int(const RequestJson& object, const char* key) {
     if (!object.contains(key) || object.at(key).is_null()) { return std::nullopt; }
     const RequestJson& value = object.at(key);

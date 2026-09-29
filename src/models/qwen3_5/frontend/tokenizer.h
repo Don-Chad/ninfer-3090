@@ -149,6 +149,8 @@ public:
     [[nodiscard]] std::size_t vocab_size() const noexcept { return decoded_token_bytes_.size(); }
 
     [[nodiscard]] bool is_special_token(int id) const noexcept;
+    // True for an added (control-vocabulary) token, special or not, e.g. `<think>`.
+    [[nodiscard]] bool is_added_token(int id) const noexcept;
     [[nodiscard]] bool is_valid_token(int id) const noexcept;
     [[nodiscard]] bool has_exact_token_domain(std::size_t size) const noexcept;
 
