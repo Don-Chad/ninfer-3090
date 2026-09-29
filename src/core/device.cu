@@ -1,11 +1,12 @@
 #include "core/device.h"
 
-#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace ninfer {
@@ -38,6 +39,40 @@ unsigned int sync_schedule_from_environment() {
 
 std::string cuda_error_message(const char* prefix, cudaError_t err) {
     return std::string(prefix) + ": " + cudaGetErrorName(err) + ": " + cudaGetErrorString(err);
+}
+
+// cudaSetDeviceFlags fails once a device's primary context exists, and that context outlives any
+// single DeviceContext -- release() tears down streams and events, not the primary context. A
+// later DeviceContext on the same physical device must therefore not call cudaSetDeviceFlags
+// again; it reuses the schedule already active there, validating that this construction is not
+// silently asking for a different one it has no way to honor.
+struct DeviceSyncState {
+    std::mutex mutex;
+    std::unordered_map<int, unsigned int> applied_flags;
+};
+
+DeviceSyncState& device_sync_state() {
+    static DeviceSyncState state;
+    return state;
+}
+
+void apply_sync_schedule_once(int device, unsigned int sync_flags) {
+    DeviceSyncState& state = device_sync_state();
+    const std::scoped_lock lock(state.mutex);
+    const auto existing = state.applied_flags.find(device);
+    if (existing != state.applied_flags.end()) {
+        if (existing->second != sync_flags) {
+            throw std::runtime_error(
+                "NINFER_CUDA_SYNC schedule for CUDA device " + std::to_string(device) +
+                " is already fixed by an earlier DeviceContext in this process and cannot change");
+        }
+        return;
+    }
+    const cudaError_t err = cudaSetDeviceFlags(sync_flags);
+    if (err != cudaSuccess) {
+        throw std::runtime_error(cuda_error_message("cudaSetDeviceFlags failed", err));
+    }
+    state.applied_flags.emplace(device, sync_flags);
 }
 
 void log_cuda_error(const char* op, cudaError_t err) noexcept {
@@ -118,7 +153,6 @@ DeviceContext::DeviceContext(std::span<const int> device_ids) {
     }
 
     endpoints_.resize(device_ids_.size());
-    std::vector<int> flagged_devices;
     try {
         for (std::size_t rank = 0; rank < device_ids_.size(); ++rank) {
             RankContext& endpoint = endpoints_[rank];
@@ -128,16 +162,10 @@ DeviceContext::DeviceContext(std::span<const int> device_ids) {
             if (err != cudaSuccess) {
                 throw std::runtime_error(cuda_error_message("cudaSetDevice failed", err));
             }
-            // cudaSetDeviceFlags fails once a device's primary context exists, which the first
-            // rank's stream creation below triggers; a repeated device id (several ranks on one
-            // physical GPU) must not flag it twice.
-            if (std::ranges::find(flagged_devices, endpoint.device) == flagged_devices.end()) {
-                err = cudaSetDeviceFlags(sync_flags);
-                if (err != cudaSuccess) {
-                    throw std::runtime_error(cuda_error_message("cudaSetDeviceFlags failed", err));
-                }
-                flagged_devices.push_back(endpoint.device);
-            }
+            // Flags a physical device's schedule exactly once for the life of the process --
+            // covers both a repeated device id within this construction (several ranks on one
+            // GPU) and an earlier, already-destroyed DeviceContext that flagged it first.
+            apply_sync_schedule_once(endpoint.device, sync_flags);
             err = cudaGetDeviceProperties(&endpoint.props, endpoint.device);
             if (err != cudaSuccess) {
                 throw std::runtime_error(

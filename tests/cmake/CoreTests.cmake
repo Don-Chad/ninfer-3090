@@ -52,17 +52,26 @@ set_tests_properties(ninfer_device_test PROPERTIES
 set(sync_modes spin blocking yield auto)
 set(sync_flags 1 4 2 0)
 foreach(mode flags IN ZIP_LISTS sync_modes sync_flags)
-  add_test(NAME ninfer_device_sync_${mode}_test COMMAND ninfer_device_test ${flags})
+  add_test(NAME ninfer_device_sync_${mode}_test COMMAND ninfer_tests ninfer_device_test ${flags})
   set_tests_properties(ninfer_device_sync_${mode}_test PROPERTIES
     ENVIRONMENT "NINFER_CUDA_SYNC=${mode}" SKIP_RETURN_CODE 77)
 endforeach()
-foreach(mode IN ITEMS invalid empty)
-  add_test(NAME ninfer_device_sync_${mode}_test COMMAND ninfer_device_test --invalid-sync)
-endforeach()
+add_test(NAME ninfer_device_sync_invalid_test COMMAND ninfer_tests ninfer_device_test --invalid-sync)
 set_tests_properties(ninfer_device_sync_invalid_test PROPERTIES
   ENVIRONMENT "NINFER_CUDA_SYNC=invalid")
-set_tests_properties(ninfer_device_sync_empty_test PROPERTIES
-  ENVIRONMENT "NINFER_CUDA_SYNC=")
+
+# A present-but-empty NINFER_CUDA_SYNC is only reachable through CTest's ENVIRONMENT property on
+# POSIX. On Windows, CTest sets test-process environment variables the same way `_putenv`/
+# SetEnvironmentVariable does: an empty value deletes the variable instead of setting it, so the
+# child process sees NINFER_CUDA_SYNC unset (defaulting to spin) rather than empty-and-invalid --
+# confirmed by running the same binary with the same env var set outside CTest's launch path, where
+# it correctly throws. There is no Windows-side way to express "set to empty" through this
+# mechanism, so this case is POSIX-only.
+if(NOT WIN32)
+  add_test(NAME ninfer_device_sync_empty_test COMMAND ninfer_tests ninfer_device_test --invalid-sync)
+  set_tests_properties(ninfer_device_sync_empty_test PROPERTIES
+    ENVIRONMENT "NINFER_CUDA_SYNC=")
+endif()
 
 ninfer_add_test(ninfer_decode_graph_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_decode_graph.cpp"
   LIBRARIES ninfer_core)
