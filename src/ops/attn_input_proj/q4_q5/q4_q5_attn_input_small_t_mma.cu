@@ -24,7 +24,6 @@ std::int32_t leading_dimension(const Tensor& t) {
 }
 
 struct AttnQueryKeyGeometry {
-    static constexpr int kOutputRows   = kParentRows;
     static constexpr int kInputRows    = kHidden;
     static constexpr int kGroupsPerRow = kHidden / 64;
 };

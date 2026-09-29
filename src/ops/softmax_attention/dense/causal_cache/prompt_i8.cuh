@@ -311,37 +311,36 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
                     }
                 }
             }
-            ninfer::ops::cp_commit();
-            return;
-        }
+        } else {
 #pragma unroll 1
-        for (int chunk = tid; chunk < Bc * (D / 16); chunk += kCausalPromptI8Threads) {
-            const int key_l = chunk / (D / 16);
-            const int dc    = chunk - key_l * (D / 16);
-            const int d     = dc * 16;
-            const int key   = tile_k0 + key_l;
-            std::int8_t* kd = &k_i8[(key_l * DB16 + causal_prompt_swz(key_l, dc * 8)) * 2];
-            std::int8_t* vd = &v_i8[key_l * D + d];
-            if (FullTile || key <= max_query_abs) {
-                const std::int64_t off =
-                    kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d, key_l);
-                cp_async<16, Cache::cg>(kd, &cache_k[off]);
-                if constexpr (PackedValues) {
-                    // Sixteen dimensions occupy eight packed bytes.
-                    const std::int64_t voff = kv_cache_int4_value_code_index<Geometry>(
-                        physical_page, kv_head, d >> 1, key_l);
-                    // cp.async.cg is 16-byte only; the 8-byte form uses the default policy.
-                    ninfer::ops::cp_async<8>(&v_i8[key_l * D + (d >> 1)],
-                                             reinterpret_cast<const std::uint8_t*>(cache_v) + voff);
+            for (int chunk = tid; chunk < Bc * (D / 16); chunk += kCausalPromptI8Threads) {
+                const int key_l = chunk / (D / 16);
+                const int dc    = chunk - key_l * (D / 16);
+                const int d     = dc * 16;
+                const int key   = tile_k0 + key_l;
+                std::int8_t* kd = &k_i8[(key_l * DB16 + causal_prompt_swz(key_l, dc * 8)) * 2];
+                if (FullTile || key <= max_query_abs) {
+                    const std::int64_t off =
+                        kv_cache_int8_quant_code_index<Geometry>(physical_page, kv_head, d, key_l);
+                    cp_async<16, Cache::cg>(kd, &cache_k[off]);
+                    if constexpr (PackedValues) {
+                        // Sixteen dimensions occupy eight packed bytes.
+                        const std::int64_t voff = kv_cache_int4_value_code_index<Geometry>(
+                            physical_page, kv_head, d >> 1, key_l);
+                        // cp.async.cg is 16-byte only; the 8-byte form uses the default policy.
+                        ninfer::ops::cp_async<8>(
+                            &v_i8[key_l * D + (d >> 1)],
+                            reinterpret_cast<const std::uint8_t*>(cache_v) + voff);
+                    } else {
+                        cp_async<16, Cache::cg>(&v_i8[key_l * D + d], &cache_v[off]);
+                    }
                 } else {
-                    cp_async<16, Cache::cg>(vd, &cache_v[off]);
-                }
-            } else {
-                store_vec(kd, make_int4(0, 0, 0, 0));
-                if constexpr (PackedValues) {
-                    store_vec(&v_i8[key_l * D + (d >> 1)], make_int2(0, 0));
-                } else {
-                    store_vec(vd, make_int4(0, 0, 0, 0));
+                    store_vec(kd, make_int4(0, 0, 0, 0));
+                    if constexpr (PackedValues) {
+                        store_vec(&v_i8[key_l * D + (d >> 1)], make_int2(0, 0));
+                    } else {
+                        store_vec(&v_i8[key_l * D + d], make_int4(0, 0, 0, 0));
+                    }
                 }
             }
         }
