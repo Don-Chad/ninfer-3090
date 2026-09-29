@@ -76,6 +76,7 @@ constexpr ninfer::TokenId kFixtureByteTokenBase = 1'000;
 // a caller stop string "STOP" can cut. Decode-only: the fixture has no merges to produce them.
 constexpr ninfer::TokenId kStopCutToken  = 2'000; // "}STOPjunk"
 constexpr ninfer::TokenId kStopTailToken = 2'001; // "OPend"
+constexpr ninfer::TokenId kThinkCloseStopToken = 2'002; // "</think>STOP"
 
 constexpr ninfer::TokenId fixture_byte_token(std::uint8_t byte) {
     // Preserve IDs already used by the output-session fixtures. All other bytes live outside the
@@ -225,6 +226,7 @@ FrontendResources resources(const std::string& chat_template = thinking_toggle_t
     }
     vocab["}STOPjunk"]  = kStopCutToken;
     vocab["OPend"]      = kStopTailToken;
+    vocab["</think>STOP"] = kThinkCloseStopToken;
     result.tokenizer_json = nlohmann::json{
         {"model",
          {{"type", "BPE"}, {"vocab", std::move(vocab)}, {"merges", nlohmann::json::array()}}},
@@ -2077,6 +2079,25 @@ int test_structured_output_stop_masks(const Frontend& frontend) {
         ++exercised;
     }
     failures += check(exercised >= 2, "the licensed-token consistency check exercised nothing");
+
+    // A token that closes the reasoning and then hits a content stop terminates the output, so the
+    // columns after it are all-licensed even though the reasoning gate consumed the token.
+    ninfer::ChatMessage message;
+    message.role = ninfer::ChatRole::User;
+    message.parts.push_back(
+        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
+    ninfer::PromptInput input;
+    input.messages.push_back(std::move(message));
+    input.options.enable_thinking = true;
+    auto thinking_prompt          = frontend.prepare(std::move(input));
+    auto thinking =
+        frontend.make_output_session(thinking_prompt, stop_policy(false), value_output);
+    const std::array<ninfer::TokenId, 1> close_and_stop{kThinkCloseStopToken};
+    std::vector<std::uint32_t> thinking_masks(2U * words);
+    (void)thinking.token_constraint()->fill_token_masks(close_and_stop, 2, thinking_masks, words);
+    failures += check(std::all_of(thinking_masks.begin() + static_cast<std::ptrdiff_t>(words),
+                                  thinking_masks.end(), [](std::uint32_t word) { return word == ~0U; }),
+                      "column after a reasoning-close-and-stop token is constrained");
     return failures;
 }
 

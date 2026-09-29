@@ -388,18 +388,20 @@ public:
             // Impl is heap-allocated and never moved, so the probe may keep `this`.
             structured_output->set_stop_prefix_probe(
                 [this](std::span<const TokenId> speculative, std::span<const TokenId> candidates,
-                       std::span<std::optional<std::size_t>> published) {
-                    probe_stop_prefixes(speculative, candidates, published);
+                       std::size_t always_count, std::span<fi::StructuredOutputConstraint::StopCut> cuts) {
+                    probe_stop_prefixes(speculative, candidates, always_count, cuts);
                 });
         }
     }
 
-    // For mask construction: the published prefix of each candidate token if the committed output
-    // continued with `speculative` and then that candidate. Runs the same decoder as
-    // `preview_model` on copies, so the mask licenses exactly what preview will accept.
+    // For mask construction: what a stop string does to each candidate token if the committed
+    // output continued with `speculative` and then that candidate. Runs the same decoder as
+    // `preview_model` on copies, so the mask licenses exactly what preview will accept. Candidates
+    // past `always_count` only continue a stop string begun earlier, so they are skipped while the
+    // decoder holds no partial stop match.
     void probe_stop_prefixes(std::span<const TokenId> speculative,
-                             std::span<const TokenId> candidates,
-                             std::span<std::optional<std::size_t>> published) const {
+                             std::span<const TokenId> candidates, std::size_t always_count,
+                             std::span<fi::StructuredOutputConstraint::StopCut> cuts) const {
         const auto text = [this](TokenId token) {
             const fi::DecodedTokenView decoded = tokenizer->decoded_token(token);
             return !preserve_special && decoded.special ? std::string_view{} : decoded.bytes;
@@ -411,13 +413,15 @@ public:
             scratch.clear();
         }
         const TokenDecodeMark mark = decode_mark(base);
-        for (std::size_t index = 0; index < candidates.size(); ++index) {
+        const bool holding = !base.stop_pending[0].empty() || !base.stop_pending[1].empty();
+        const std::size_t limit = holding ? candidates.size() : std::min(always_count, candidates.size());
+        for (std::size_t index = 0; index < limit; ++index) {
             DecoderState next = base;
             StopMatch match;
             const std::string_view bytes = text(candidates[index]);
             feed_token_bytes(next, bytes, policy, scratch, 1, &match);
             scratch.clear();
-            published[index] = published_token_prefix(match, policy, mark, next, bytes.size());
+            cuts[index] = {match.found, published_token_prefix(match, policy, mark, next, bytes.size())};
         }
     }
 

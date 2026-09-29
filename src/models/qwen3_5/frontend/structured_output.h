@@ -55,13 +55,24 @@ private:
 // closes the section.
 class StructuredOutputConstraint final : public runtime::TokenMaskSource {
 public:
-    // For every candidate token, the number of leading bytes of its decoded text that the
-    // caller's stop strings still publish when the output continues with `speculative` and then
-    // that candidate; nullopt when no stop string lands in it (or the byte mapping is not exact).
-    // `published.size() == candidates.size()`.
+    // What a caller stop string does to one token that follows the speculative continuation.
+    // `ends` is true when a stop string ends the output inside the token, whatever the channel or
+    // byte mapping. `published` is the number of leading bytes of its decoded text that are still
+    // published; nullopt when the byte mapping is not exact (a UTF-8 sequence split or repaired,
+    // leading whitespace stripped, reasoning text), in which case the whole token is published.
+    struct StopCut {
+        bool ends = false;
+        std::optional<std::size_t> published;
+    };
+
+    // For every candidate token, its StopCut when the output continues with `speculative` and then
+    // that candidate. `cuts.size() == candidates.size()`. The first `always_count` candidates are
+    // probed unconditionally; the rest only complete a stop string begun earlier, so they are
+    // probed only while the decoder holds back a partial stop match and are left default otherwise.
     using StopPrefixProbe = std::function<void(std::span<const TokenId> speculative,
                                                std::span<const TokenId> candidates,
-                                               std::span<std::optional<std::size_t>> published)>;
+                                               std::size_t always_count,
+                                               std::span<StopCut> cuts)>;
 
     // `content_stops` are the caller's stop strings that apply to the content channel, the only
     // channel the grammar constrains.
@@ -100,15 +111,17 @@ private:
     [[nodiscard]] bool stop_cuts(std::span<const TokenId> speculative, TokenId token) const;
     void license_stop_cut_tokens(xgrammar::GrammarMatcher& matcher,
                                  std::span<const TokenId> speculative, std::span<std::uint32_t> mask,
-                                 std::span<std::optional<std::size_t>> published) const;
+                                 std::vector<TokenId>& probed, std::vector<StopCut>& cuts) const;
 
     std::shared_ptr<const Tokenizer> tokenizer_;
     std::unique_ptr<State> committed_;
     std::unique_ptr<State> preview_;
-    // Vocabulary tokens whose decoded text can complete one of the stop strings: it contains a
-    // stop string, or begins with the remainder of a stop string whose first part was already
-    // emitted. Only these can be judged differently by a published prefix than by the full token.
+    // Vocabulary tokens whose decoded text can complete one of the stop strings. Only these can be
+    // judged differently by a published prefix than by the full token. The first
+    // `stop_contained_count_` contain a stop string outright; the rest only begin with the
+    // remainder of a stop string whose first part was already emitted.
     std::vector<TokenId> stop_candidates_;
+    std::size_t stop_contained_count_ = 0;
     StopPrefixProbe stop_probe_;
 };
 

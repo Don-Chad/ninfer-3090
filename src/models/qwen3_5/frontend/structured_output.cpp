@@ -76,23 +76,34 @@ bool is_licensable_token(const Tokenizer& tokenizer, TokenId id) {
 // The tokens a stop string can cut. Text that never reaches a stop string is published whole, so
 // the grammar's full-token judgement is already exact for every other token: a token contains a
 // stop string outright, or begins with the remainder of one whose first part was emitted earlier.
+// Tokens containing a stop string come first (`contained` of them), then the continuation-only ones.
 std::vector<TokenId> stop_candidate_tokens(const Tokenizer& tokenizer,
-                                           std::span<const std::string> stops) {
+                                           std::span<const std::string> stops,
+                                           std::size_t& contained) {
     std::vector<TokenId> result;
+    std::vector<TokenId> continuations;
+    contained = 0;
     if (stops.empty()) { return result; }
     const auto vocab = static_cast<TokenId>(tokenizer.vocab_size());
     for (TokenId id = 0; id < vocab; ++id) {
         if (!is_licensable_token(tokenizer, id)) { continue; }
         const std::string_view bytes = tokenizer.decoded_token(id).bytes;
-        const auto cut_by = [&](const std::string& stop) {
-            if (bytes.find(stop) != std::string_view::npos) { return true; }
+        if (std::any_of(stops.begin(), stops.end(), [&](const std::string& stop) {
+                return bytes.find(stop) != std::string_view::npos;
+            })) {
+            result.push_back(id);
+            continue;
+        }
+        const auto continues = [&](const std::string& stop) {
             for (std::size_t tail = 1; tail < stop.size(); ++tail) {
                 if (bytes.starts_with(std::string_view(stop).substr(tail))) { return true; }
             }
             return false;
         };
-        if (std::any_of(stops.begin(), stops.end(), cut_by)) { result.push_back(id); }
+        if (std::any_of(stops.begin(), stops.end(), continues)) { continuations.push_back(id); }
     }
+    contained = result.size();
+    result.insert(result.end(), continuations.begin(), continuations.end());
     return result;
 }
 
@@ -182,7 +193,7 @@ StructuredOutputConstraint::StructuredOutputConstraint(
     committed_ = std::make_unique<State>(
         format->grammar, std::vector<int>(stop_tokens.begin(), stop_tokens.end()),
         starts_in_reasoning);
-    stop_candidates_ = stop_candidate_tokens(*tokenizer_, content_stops);
+    stop_candidates_ = stop_candidate_tokens(*tokenizer_, content_stops, stop_contained_count_);
 }
 
 StructuredOutputConstraint::~StructuredOutputConstraint() = default;
@@ -214,9 +225,9 @@ void StructuredOutputConstraint::commit_preview() noexcept {
 
 bool StructuredOutputConstraint::stop_cuts(std::span<const TokenId> speculative,
                                            TokenId token) const {
-    std::optional<std::size_t> published;
-    stop_probe_(speculative, std::span<const TokenId>(&token, 1), std::span(&published, 1));
-    return published.has_value();
+    StopCut cut;
+    stop_probe_(speculative, std::span<const TokenId>(&token, 1), 1, std::span(&cut, 1));
+    return cut.ends;
 }
 
 // XGrammar judged every token by its full decoded text. A token a stop string cuts publishes only
@@ -224,19 +235,30 @@ bool StructuredOutputConstraint::stop_cuts(std::span<const TokenId> speculative,
 // same test `preview_token` applies once the token is sampled.
 void StructuredOutputConstraint::license_stop_cut_tokens(
     xgrammar::GrammarMatcher& matcher, std::span<const TokenId> speculative,
-    std::span<std::uint32_t> mask, std::span<std::optional<std::size_t>> published) const {
-    stop_probe_(speculative, stop_candidates_, published);
+    std::span<std::uint32_t> mask, std::vector<TokenId>& probed, std::vector<StopCut>& cuts) const {
+    // A candidate the grammar already licenses by its full text needs no probe.
+    probed.clear();
+    std::size_t always = 0;
     for (std::size_t index = 0; index < stop_candidates_.size(); ++index) {
         const TokenId token = stop_candidates_[index];
+        const std::uint32_t word = mask[static_cast<std::size_t>(token) >> 5];
+        if ((word & (1U << (static_cast<unsigned>(token) & 31U))) != 0U) { continue; }
+        probed.push_back(token);
+        if (index < stop_contained_count_) { ++always; }
+    }
+    cuts.assign(probed.size(), StopCut{});
+    stop_probe_(speculative, probed, always, cuts);
+    for (std::size_t index = 0; index < probed.size(); ++index) {
+        const TokenId token = probed[index];
         std::uint32_t& word = mask[static_cast<std::size_t>(token) >> 5];
         const std::uint32_t bit = 1U << (static_cast<unsigned>(token) & 31U);
-        if (!published[index] || (word & bit) != 0U) { continue; }
-        if (*published[index] == 0) {
+        if (!cuts[index].published) { continue; }
+        if (*cuts[index].published == 0) {
             word |= bit;
             continue;
         }
         const std::string_view bytes = tokenizer_->decoded_token(token).bytes;
-        const std::size_t limit      = std::min(*published[index], bytes.size());
+        const std::size_t limit      = std::min(*cuts[index].published, bytes.size());
         if (matcher.AcceptString(std::string(bytes.substr(0, limit)))) {
             matcher.Rollback(1);
             word |= bit;
@@ -259,7 +281,8 @@ bool StructuredOutputConstraint::fill_token_masks(std::span<const TokenId> specu
     std::int64_t bitmask_words        = static_cast<std::int64_t>(xgrammar::GetBitmaskSize(
         static_cast<int>(vocab)));
     const bool cuttable               = stop_probe_ && !stop_candidates_.empty();
-    std::vector<std::optional<std::size_t>> published(cuttable ? stop_candidates_.size() : 0U);
+    std::vector<TokenId> probed;
+    std::vector<StopCut> cuts;
     bool restricted = false;
     bool reachable  = true;
     int accepted    = 0;
@@ -279,18 +302,19 @@ bool StructuredOutputConstraint::fill_token_masks(std::span<const TokenId> specu
             const bool column_restricted = matcher.FillNextTokenBitmask(&tensor);
             restricted                   = column_restricted || restricted;
             if (column_restricted && cuttable) {
-                license_stop_cut_tokens(matcher, speculative.first(column), mask, published);
+                license_stop_cut_tokens(matcher, speculative.first(column), mask, probed, cuts);
             }
         }
         if (column >= speculative.size() || !reachable) { continue; }
         const TokenId token = speculative[column];
         if (!tokenizer_->is_valid_token(token)) {
             reachable = false;
+        } else if (cuttable && stop_cuts(speculative.first(column), token)) {
+            // A stop string ends the output inside this token -- in either channel, and whether or
+            // not the grammar accepts its published prefix -- so no later column is consumed.
+            reachable = false;
         } else if (gate.open) {
             gate.feed(tokenizer_->decoded_token(token).bytes);
-        } else if (cuttable && !matcher.IsTerminated() && stop_cuts(speculative.first(column), token)) {
-            // A stop string ends the output inside this token, so no later column is consumed.
-            reachable = false;
         } else if (!matcher.IsTerminated() && matcher.AcceptToken(token)) {
             ++accepted;
         } else {
