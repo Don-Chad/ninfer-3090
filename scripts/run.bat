@@ -335,7 +335,10 @@ if not exist "%MODEL%" (
 echo %TITLE%  ^|  %LABEL%
 if not "%PREFILL_NOTE%"=="" echo %PREFILL_NOTE%
 if /i "%PROFILE%"=="tuned" echo Cache: 8 shared / 8 private / %HOST_STATE_SLOTS% host states  ^|  automatic prefix grid on
-if not "%GRAFT_ARGS%"=="" echo Graft: v1 = %GRAFT_FILE%
+rem GRAFT_ARGS carries literal embedded quotes (--graft "v1=<path>"), so re-quoting it for a
+rem string comparison here garbles the quoting and breaks the if statement. `defined` sidesteps
+rem that: it tests the variable directly, with no substitution.
+if defined GRAFT_ARGS echo Graft: v1 = %GRAFT_FILE%
 if not "%HINT%"=="" echo %HINT%
 echo API: http://%HOST%:%PORT%/v1
 echo.
