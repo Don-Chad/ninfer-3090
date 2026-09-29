@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ninfer/types.h"
 #include "serve/request_events.h"
 
 #include <cstdint>
@@ -50,6 +51,12 @@ public:
     void http_failure(std::string_view endpoint, const RequestFailure& failure,
                       std::string_view request_id = {}) const;
     void engine_capacity(const GenerationService& service) const;
+    void slot_saved(std::uint32_t slot, std::string_view filename,
+                    const ninfer::SlotSaveResult& result) const;
+    void slot_restored(std::uint32_t slot, std::string_view filename,
+                       const ninfer::SlotRestoreResult& result) const;
+    void slot_erased(std::uint32_t slot, std::uint32_t tokens) const;
+    void slot_auto_save(const ninfer::SlotAutoSaveEvent& event) const;
     void warmup_started() const;
     void warmup_complete(double seconds) const;
     void warmup_failure(double seconds, std::string_view detail) const;

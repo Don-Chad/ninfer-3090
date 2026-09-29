@@ -276,6 +276,7 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
     engine_options.prefill_cublas_projections = options.prefill_cublas_projections;
     engine_options.speculative              = options.speculative;
     engine_options.context_cache            = options.context_cache;
+    engine_options.slot_auto_save.enabled   = options.auto_save_evicted;
     engine_options.devices                  = options.devices;
     engine_options.stage_layers             = options.stage_layers;
     engine_options.context_cost.preset_path = options.context_cost_presets;
@@ -285,7 +286,9 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
     return engine_options;
 }
 
-GenerationService::GenerationService(ServeOptions options, StartupObserver startup_observer)
+GenerationService::GenerationService(
+    ServeOptions options, StartupObserver startup_observer,
+    std::function<void(const ninfer::SlotAutoSaveEvent&)> auto_save_listener)
     : options_(std::move(options)) {
     // Inline ECC on GDDR6X GeForce cards reserves ~6.25% of VRAM for checksums and taxes
     // memory bandwidth on every access. Decode is bandwidth-bound, so an ECC-enabled card
@@ -308,6 +311,7 @@ GenerationService::GenerationService(ServeOptions options, StartupObserver start
     }
     ninfer::EngineOptions engine_options = make_engine_options(options_);
     engine_options.startup_observer      = std::move(startup_observer);
+    engine_options.slot_auto_save.listener = std::move(auto_save_listener);
     engine_           = std::make_unique<ninfer::Engine>(std::move(engine_options));
     automatic_private_anchors_ =
         resolve_automatic_private_anchors(options_, engine_->options().context_cache);
@@ -517,6 +521,8 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
         std::max(0.0, result.timings.total_seconds - result.timings.prepare_seconds);
     outcome.metrics.engine_timing               = result.engine_timing;
     outcome.metrics.prefix_cache_hit_tokens     = result.reused_prompt_tokens;
+    outcome.id_slot                             = result.slot;
+    outcome.session_digest                      = result.session_digest;
     outcome.metrics.prefix_reuse_path           = result.prefix_reuse_path;
     outcome.metrics.materialization             = result.materialization;
     outcome.metrics.speculative_backend         = result.speculative.backend;

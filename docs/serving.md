@@ -83,6 +83,8 @@ staged <MiB>)` and the JSON record carries `vision_overlay`, including `exclusiv
 |---|---|
 | `GET /health` | process health |
 | `GET /v1/load` | serving capacity, current load, and monotonic token counters (see [Load](#load)) |
+| `GET /slots` | per-slot occupancy of the private context cache (see [Slots](#slots)) |
+| `POST /slots/{id}?action=save\|restore\|erase` | save a retained session to a file, restore one, or evict one (see [Slots](#slots)) |
 | `GET /v1/models` | configured OpenAI model alias and effective context limit (`max_model_len`/`context_window`/`context_length`) |
 | `GET /v1/models/{id}` | lookup of the configured alias and effective context limit (`max_model_len`/`context_window`/`context_length`) |
 | `POST /v1/chat/completions` | OpenAI-style chat generation |
@@ -187,6 +189,64 @@ curl http://127.0.0.1:8080/v1/load -H 'Authorization: Bearer local-secret'
   several tokens per row. `decode_row_rounds` is the sum of decode batch sizes over `decode_rounds`.
 - Gauges and counters come from the snapshot the Engine publishes at execution boundaries, so they
   can trail the instant of the poll by up to one boundary.
+
+### Slots
+
+A slot is one private context-cache cell: the place a finished conversation is retained so its next
+turn reuses the cached prefix. There are `--max-private-continuations` slots. `GET /slots` lists them
+like llama.cpp's endpoint and reads only published state, so it never waits on the GPU:
+
+```json
+[{"id": 0, "is_processing": false, "retained": true, "session_digest": "8c3f1e0a7b2d4c19",
+  "checkpoints": [{"frontier": 1812, "session_digest": "51d0..."},
+                  {"frontier": 2409, "session_digest": "e27a90c4d15b3f68"}],
+  "n_ctx": 131072, "n_prompt_tokens": 2410, "n_prompt_tokens_cache": 2410, "speculative": true}]
+```
+
+A retained slot reports the session depth as both token counts, its session digest (FNV-1a 64 of
+the token ids, 16 hex characters) and the checkpoints a later request can resume from, each with the
+digest of its prefix. The endpoint checkpoint sits at the executed frontier, which is usually one
+token short of the session: the last sampled token is recorded but not yet in the KV or the
+recurrent state, so the next turn executes it first. A slot an
+active request will publish into reports `is_processing` with that request's prompt and reused
+tokens. Chat Completions responses carry the slot and digest a finished session was retained under
+as top-level `id_slot` and `session_digest`, on the aggregate response and on the final streamed
+chunk that carries timings.
+
+With `--slot-save-path DIR`, `POST /slots/{id}?action=...` persists sessions across restarts and
+evictions. Without it the route answers `501 slot_persistence_disabled`.
+
+| Action | Body | Response |
+|---|---|---|
+| `save` | `{"filename": NAME, "if_digest": DIGEST?}` | `id_slot`, `filename`, `n_saved` tokens, `n_written` bytes, `session_digest`, `timings.save_ms` |
+| `restore` | `{"filename": NAME}` | `id_slot`, `filename`, `n_restored` tokens, `n_read` bytes, `session_digest`, `timings.restore_ms` |
+| `erase` | `{"if_digest": DIGEST?}` | `id_slot`, `n_erased` tokens (0 for an empty slot) |
+
+`NAME` is 1-128 characters of `[A-Za-z0-9._-]`, may not start or end with a dot, and may not be a
+Windows device name; files live directly in `DIR`. Names are case-insensitive: the server stores and
+reports them lowercase, so one file never has two names. `if_digest` makes save or erase conditional on the slot
+still holding that session, checked atomically with the operation. Restore replaces whatever the
+slot held and makes the restored session an ordinary cache entry that any request with a matching
+prefix reuses, including from its checkpoints. A snapshot restores only on a server with the same
+model artifact, weight formats, KV dtype, speculative backend, draft tokens and draft head; DFlash
+servers do not support persistence. Files are written to a temporary name and renamed, and end
+with a checksum that restore verifies before it allocates anything.
+
+Errors: `409 slot_busy` while the slot or any context-cache transaction is in use (retry),
+`409 slot_session_mismatch` for a failed `if_digest`, `400 invalid_slot`, `invalid_action`,
+`invalid_filename`, and `400 slot_save_failed`/`slot_restore_failed` for a missing, corrupt or
+incompatible file or a slot with nothing to save. A failed restore leaves the slot empty.
+
+With `--auto-save-evicted`, a session last saved to or restored from a file is written back to that
+file, on a background thread, before an involuntary eviction destroys it. Continuing the
+conversation keeps the binding, so the file tracks its newest turn. An explicit erase never writes.
+A spill never replaces a file with a shallower copy of the session than the last save or restore
+recorded, and at most two spills wait for the writer. An explicit save, restore or erase of a file
+supersedes every spill of it still waiting (a restore first writes the waiting spills of the file it
+reads, so it reads the newest state). The operational log reports each spill, skip or failure. Snapshots are uncompressed. Besides its KV pages, a session stores one recurrent-state
+image per checkpoint it retains (endpoint, rewrite checkpoint, long anchors), about 150 MB each on
+the 27B, so even a short session is a few hundred MB: a 39-token Qwen3.8-27B session saved as
+295 MiB, with save and restore at about 0.3 s each on an RTX 3090.
 
 ## OpenAI Chat Completions
 
@@ -850,6 +910,8 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--max-long-anchors-per-continuation N` | private long-anchor limit per continuation | `2` |
 | `--auto-long-anchors N` | propose a private long anchor at each of the last `N` interior message boundaries of every prompt, so a rewrite of recent history restores at the anchor below the edit instead of re-prefilling from token zero; clamped to the anchor limit, `0` disables | the anchor limit |
 | `--max-cache-markers-per-request N` | caller marker input-complexity bound | `4` |
+| `--slot-save-path DIR` | enable `POST /slots/{id}` save/restore/erase with files in `DIR` (created at startup) | disabled |
+| `--auto-save-evicted` | write an evicted session back to its bound slot file; requires `--slot-save-path` | off |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
 | `--graft NAME=PATH` | load a [prompt graft](#prompt-grafts) a request may select by name; repeatable | none |

@@ -29,6 +29,25 @@ public:
     [[nodiscard]] bool equals(const ResidentPrefixIdentity& other) const;
     [[nodiscard]] bool prefix_equals(const ResidentPrefixIdentity& other, std::size_t count) const;
 
+    // Session snapshots export the identity verbatim and restore it into a fresh sequence. The
+    // restored identity must be internally consistent; it is not rederived from a prompt.
+    [[nodiscard]] const std::vector<std::uint8_t>& token_types() const noexcept {
+        return token_types_;
+    }
+    [[nodiscard]] const std::vector<std::int32_t>& position_axis(std::size_t axis) const {
+        return positions_.at(axis);
+    }
+    [[nodiscard]] const std::vector<VisionItem>& vision_items() const noexcept {
+        return vision_items_;
+    }
+    [[nodiscard]] const std::vector<std::uint32_t>& rewrite_execution_frontiers() const noexcept {
+        return rewrite_execution_frontiers_;
+    }
+    void restore(std::vector<std::uint8_t> token_types,
+                 std::array<std::vector<std::int32_t>, 3> positions,
+                 std::vector<VisionItem> vision_items,
+                 std::vector<std::uint32_t> rewrite_execution_frontiers);
+
 private:
     std::vector<std::uint8_t> token_types_;
     std::array<std::vector<std::int32_t>, 3> positions_;
@@ -54,6 +73,13 @@ public:
     }
 
     [[nodiscard]] std::array<std::uint64_t, 2> at(std::size_t frontier) const;
+
+    // The full digest image (seed plus one entry per token) for session snapshots, so a restored
+    // continuation shortlists under bit-identical keys.
+    [[nodiscard]] const std::vector<std::array<std::uint64_t, 2>>& image() const noexcept {
+        return digests_;
+    }
+    void restore(std::vector<std::array<std::uint64_t, 2>> image);
 
 private:
     std::vector<std::array<std::uint64_t, 2>> digests_;

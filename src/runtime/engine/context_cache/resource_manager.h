@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <span>
@@ -439,6 +440,8 @@ public:
         }
         validate_choice(choice, resource_revision);
         MaterializationRecord record = take_materialization_record(choice);
+        // The observer reads the claims while every victim's physical state is still intact.
+        observe_planned_evictions(record.private_claims);
         transaction_.template emplace<MaterializationRecord>(std::move(record));
         MaterializationRecord& open = std::get<MaterializationRecord>(transaction_);
         reserve_logical_materialization(open);
@@ -913,6 +916,7 @@ public:
             throw std::logic_error("selected shared replacement changed before reservation");
         }
 
+        observe_planned_evictions(record.private_claims);
         transaction_.template emplace<ActiveCaptureRecord>(std::move(record));
         ActiveCaptureRecord& open = std::get<ActiveCaptureRecord>(transaction_);
         reserve_logical_active_capture(open);
@@ -1129,6 +1133,111 @@ public:
 
     [[nodiscard]] LogicalLaneState lane_state(LaneId lane) const noexcept {
         return lane.value < lane_count_ ? lanes_[lane.value] : LogicalLaneState::Free;
+    }
+
+    // Session persistence addresses retained sessions by private catalog cell. These entry points
+    // expose read-only cell state, surrender an idle catalogued continuation, adopt a restored one
+    // into a vacant cell, and observe the loss of a cell's session so a slot file bound to it can
+    // be written before the state is destroyed.
+    struct CatalogSlotView {
+        CatalogState state               = CatalogState::Vacant;
+        std::uint64_t id                 = 0;
+        std::uint64_t revision           = 0;
+        bool active_edge                 = false;
+        const ContinuationHandle* handle = nullptr;
+    };
+
+    [[nodiscard]] std::uint32_t catalog_capacity() const noexcept { return catalog_count_; }
+
+    [[nodiscard]] CatalogSlotView catalog_slot(std::uint32_t slot) const noexcept {
+        if (slot >= catalog_count_) { return {}; }
+        const CatalogEntry& entry = catalog_[slot];
+        return CatalogSlotView{
+            .state       = entry.state,
+            .id          = entry.id,
+            .revision    = entry.revision,
+            .active_edge = entry.summary.active_references != 0 || private_has_active_edge(slot),
+            .handle      = entry.handle ? &*entry.handle : nullptr,
+        };
+    }
+
+    // The private catalog cell an active lane will publish into, if it publishes at all.
+    [[nodiscard]] std::optional<std::uint32_t> lane_publication_slot(LaneId lane) const noexcept {
+        if (lane.value >= lane_count_ || !active_[lane.value].occupied ||
+            active_[lane.value].publication_slot >= catalog_count_) {
+            return std::nullopt;
+        }
+        return active_[lane.value].publication_slot;
+    }
+
+    // The private catalog cell an active lane reads as a retained source (PrivateSourceMode::Retain),
+    // if any: the lane continues that conversation while the source stays catalogued.
+    [[nodiscard]] std::optional<std::uint32_t>
+    lane_retained_private_source_slot(LaneId lane) const noexcept {
+        if (lane.value >= lane_count_ || !active_[lane.value].occupied ||
+            !active_[lane.value].retained_private_source ||
+            active_[lane.value].retained_private_source->slot >= catalog_count_) {
+            return std::nullopt;
+        }
+        return active_[lane.value].retained_private_source->slot;
+    }
+
+    // Surrenders one idle catalogued continuation: the caller releases the returned handle at the
+    // Program and the cell becomes vacant.
+    [[nodiscard]] ContinuationHandle take_catalogued(std::uint32_t slot) {
+        if (slot >= catalog_count_) { throw std::invalid_argument("catalog slot is out of range"); }
+        CatalogEntry& entry = catalog_[slot];
+        if (!std::holds_alternative<std::monostate>(transaction_) ||
+            entry.state != CatalogState::Catalogued || !entry.handle ||
+            entry.summary.active_references != 0 || private_has_active_edge(slot)) {
+            throw std::logic_error("catalog slot is not releasable");
+        }
+        ContinuationHandle handle = std::move(*entry.handle);
+        erase_session_if_owner(entry.id);
+        clear_catalog_entry(entry);
+        return handle;
+    }
+
+    // Adopts a Program-restored continuation into a vacant cell as an anonymous RecentPrivate
+    // owner, reachable by prefix match. Throws, leaving the handle with the caller, when the cell
+    // or summary is unusable; never throws after taking the handle.
+    void adopt_restored(std::uint32_t slot, ContinuationHandle&& handle,
+                        const ContinuationSummary& summary) {
+        if (slot >= catalog_count_) {
+            throw std::invalid_argument("restored continuation slot is out of range");
+        }
+        CatalogEntry& entry = catalog_[slot];
+        if (!std::holds_alternative<std::monostate>(transaction_) ||
+            entry.state != CatalogState::Vacant || entry.handle ||
+            !valid_continuation_summary(summary) || summary.active_references != 0) {
+            throw std::logic_error("restored continuation has no vacant catalog cell");
+        }
+        entry.state = CatalogState::Catalogued;
+        entry.id    = next_continuation_id_++;
+        if (entry.id == 0) { entry.id = next_continuation_id_++; }
+        entry.session.reset();
+        entry.retention = RetentionClass::RecentPrivate;
+        assign_continuation_summary(entry.summary, summary);
+        migrate_observations(entry, summary, entry.retention);
+        advance_revision(entry.revision);
+        entry.handle.emplace(std::move(handle));
+    }
+
+    // Called with each catalogued continuation a reserved transaction plans to evict, before any
+    // physical state is destroyed. An aborted transaction leaves the session alive, so a spurious
+    // observation costs one redundant but valid slot file.
+    using EvictionObserver = std::function<void(std::uint32_t, const ContinuationHandle&)>;
+    // Called whenever a cell stops holding the session it held, by any route: eviction,
+    // consumption, release, abort or cleanup. Engine state keyed by cell (the slot file binding)
+    // must end here, or it would apply to whichever session lands in the cell next.
+    using SlotReleaseObserver = std::function<void(std::uint32_t)>;
+
+    void set_eviction_observer(EvictionObserver observer) {
+        eviction_observer_ = std::move(observer);
+    }
+
+    void set_slot_release_observer(SlotReleaseObserver observer) {
+        slot_release_observer_ = std::move(observer);
     }
 
     void clear_after_program_cleanup() noexcept {
@@ -1579,6 +1688,7 @@ private:
     }
 
     void clear_catalog_entry(CatalogEntry& entry) noexcept {
+        notify_slot_released(entry);
         entry.state = CatalogState::Vacant;
         entry.id    = 0;
         entry.summary.endpoint.reset();
@@ -2297,6 +2407,29 @@ private:
             .diagnostics          = choice.diagnostics_,
             .demand               = std::move(choice.demand_),
         };
+    }
+
+    // catalog_ is contiguous, so the entry recovers its own cell index. Runs before the entry is
+    // reset so an observer can still read it.
+    void notify_slot_released(const CatalogEntry& entry) const noexcept {
+        if (!slot_release_observer_ || catalog_.empty()) { return; }
+        const std::ptrdiff_t index = &entry - catalog_.data();
+        if (index < 0 || static_cast<std::size_t>(index) >= catalog_.size()) { return; }
+        try {
+            slot_release_observer_(static_cast<std::uint32_t>(index));
+        } catch (...) {}
+    }
+
+    void observe_planned_evictions(const std::vector<OwnerClaim>& claims) noexcept {
+        if (!eviction_observer_) { return; }
+        for (const OwnerClaim& claim : claims) {
+            if (claim.disposition != VictimDisposition::Evicted) { continue; }
+            const std::uint32_t slot = claim.capability.slot;
+            if (slot >= catalog_count_ || !catalog_[slot].handle) { continue; }
+            try {
+                eviction_observer_(slot, *catalog_[slot].handle);
+            } catch (...) {}
+        }
     }
 
     void reserve_logical_materialization(const MaterializationRecord& record) noexcept {
@@ -3424,6 +3557,8 @@ private:
     ContextMachineCostModel cost_model_;
     Planner planner_;
     CapturePlanner capture_planner_;
+    EvictionObserver eviction_observer_;
+    SlotReleaseObserver slot_release_observer_;
     RuntimeStats context_stats_;
     std::uint64_t next_continuation_id_  = 1;
     std::uint64_t next_shared_prefix_id_ = 1;

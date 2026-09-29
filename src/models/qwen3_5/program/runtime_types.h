@@ -39,6 +39,7 @@ struct RuntimeTypes {
     using FinishResult               = qwen3_5::FinishResult;
     using AbortResult                = qwen3_5::AbortResult;
     using ReleaseResult              = qwen3_5::ReleaseResult;
+    using SessionSnapshot            = qwen3_5::SessionSnapshot;
     using Program                    = qwen3_5::Program;
 };
 

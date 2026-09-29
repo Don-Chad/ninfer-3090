@@ -279,6 +279,16 @@ Shared prefix 是不可变的复用来源，可以被多个 private branches For
 checkpoints 可以引用相同 address space 的不同 prefix，但每个 checkpoint 都有自己的完整 StateImage
 identity。
 
+Session persistence（`ninfer-serve --slot-save-path`）是唯一一条不经 materialization 或 capture
+transaction 就发布 catalog owner 的路径。它只在没有打开的 context transaction、目标 cell 没有 active
+edge 时于 execution mutex 下运行：`Program::save_continuation` 只读地把 catalogued continuation 的
+ledger、exact identity、shortlist digests、checkpoint 目录、去重后的 StateImage 和 committed frontier
+以内的 KV pages 复制到 host bytes；`Program::restore_continuation` 在空闲 lane 的 execution row 上临时
+激活新的 address space 上传 pages，StateImage 优先落 Device slot、否则落 HostOnly replica，endpoint
+必需、放不下的可选 checkpoint 被丢弃，然后以 `Catalogued` 角色发布并推进 resource revision；
+`ResourceManager::adopt_restored` 把它作为匿名 `RecentPrivate` owner 放入空 cell，之后只按 prefix
+匹配复用。格式与字段见 `src/models/qwen3_5/program/storage/session_snapshot.cpp`。
+
 ### 4.3 Checkpoint 种类
 
 | Kind | 语义 |

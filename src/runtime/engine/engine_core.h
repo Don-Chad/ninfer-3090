@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <exception>
 #include <future>
 #include <limits>
@@ -29,6 +30,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -69,6 +71,7 @@ public:
           max_outstanding_(static_cast<std::size_t>(options.max_concurrency) +
                            options.max_pending_requests),
           pending_timeout_(std::chrono::milliseconds(options.pending_timeout_ms)),
+          context_cache_enabled_(options.context_cache.enabled),
           resources_(max_concurrency_, options.context_cache.max_private_continuations.value(),
                      options.context_cache.max_shared_prefixes.value(),
                      options.context_cache.enabled,
@@ -87,6 +90,17 @@ public:
                 std::move(entry.handle), std::move(entry.summary));
             instance_.program->set_graft_rm_slot(entry.name, rm_slot);
         }
+        slot_session_paths_.resize(resources_.catalog_capacity());
+        slot_digest_cache_.resize(resources_.catalog_capacity());
+        resources_.set_eviction_observer(
+            [this](std::uint32_t slot, const typename ModelContract::ContinuationHandle& handle) {
+                spill_catalog_slot(slot, handle);
+            });
+        // A slot file binding belongs to the session that saved or restored it; the cell is only
+        // where that session lives now. Ending the binding with the catalog entry keeps it from
+        // being inherited by the next session in the cell.
+        resources_.set_slot_release_observer(
+            [this](std::uint32_t slot) { clear_slot_session(slot); });
         std::promise<void> startup;
         std::future<void> started = startup.get_future();
         worker_                   = std::thread([this, startup = std::move(startup)]() mutable {
@@ -263,6 +277,123 @@ public:
     [[nodiscard]] bool is_available() const {
         std::lock_guard lock(queue_mutex_);
         return !stopping_ && !failed_;
+    }
+
+    // Session persistence. A slot is one private catalog cell. Each entry point takes the
+    // execution mutex, so its copies run between units, and refuses (Overloaded) rather than
+    // waits when a resource transaction is open or the cell is in use. A non-empty
+    // expected_digest is a precondition on the cell's resident session, checked atomically with
+    // the operation. A successful save or restore binds the cell to session_path so an
+    // involuntary eviction can write the session back there (see spill_catalog_slot).
+    // `claim` runs under the execution mutex once the operation has succeeded, so the caller can
+    // mark every spill queued before it as superseded and every spill queued after it as newer.
+    [[nodiscard]] typename ModelContract::SessionSnapshot
+    save_slot(std::uint32_t slot, std::string_view model_binding,
+              std::string_view expected_digest, std::string_view session_path,
+              const std::function<void()>& claim) {
+        std::scoped_lock lock(execution_mutex_);
+        device_.bind_to_current_thread();
+        require_settled_slot(slot);
+        const auto view = resources_.catalog_slot(slot);
+        if (view.state != ResourceManagement::CatalogState::Catalogued || view.handle == nullptr) {
+            throw std::invalid_argument("slot holds no retained session");
+        }
+        require_session_digest(view, expected_digest);
+        auto snapshot = instance_.program->save_continuation(*view.handle, model_binding);
+        bind_slot_session(slot, session_path);
+        claim();
+        return snapshot;
+    }
+
+    [[nodiscard]] std::pair<std::uint32_t, std::string>
+    restore_slot(std::uint32_t slot, std::span<const std::uint8_t> snapshot,
+                 std::string_view model_binding, std::string_view session_path,
+                 const std::function<void()>& claim) {
+        std::scoped_lock lock(execution_mutex_);
+        device_.bind_to_current_thread();
+        if (!context_cache_enabled_) {
+            // Without the cache no finished request can reuse a retained session.
+            throw std::invalid_argument("session restore requires the context cache to be enabled");
+        }
+        require_settled_slot(slot);
+        bool idle_lane = false;
+        for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+            idle_lane = idle_lane || slots_[lane] == nullptr;
+        }
+        if (!idle_lane || materializing_) {
+            throw RequestError(RequestErrorKind::Overloaded,
+                               "session restore requires an idle Engine lane");
+        }
+        const auto view = resources_.catalog_slot(slot);
+        if (view.state == ResourceManagement::CatalogState::Catalogued && view.handle != nullptr) {
+            // Involuntary for the session that held the cell: the client asked for a restore,
+            // not for that session's destruction. A resident bound to the very file being
+            // restored is not written back over it: the client has declared the file's content.
+            if (slot < slot_session_paths_.size() && slot_session_paths_[slot] == session_path) {
+                clear_slot_session(slot);
+            }
+            spill_catalog_slot(slot, *view.handle);
+            auto evicted = resources_.take_catalogued(slot);
+            (void)instance_.program->release_continuation(std::move(evicted));
+        }
+        clear_slot_session(slot);
+        auto restored = instance_.program->restore_continuation(snapshot, model_binding);
+        const std::uint32_t tokens = instance_.program->continuation_depth(restored);
+        std::string digest         = instance_.program->continuation_digest(restored);
+        try {
+            const auto summary = instance_.program->continuation_summary(restored);
+            resources_.adopt_restored(slot, std::move(restored), summary);
+        } catch (...) {
+            // adopt_restored throws only before taking the handle.
+            (void)instance_.program->release_continuation(std::move(restored));
+            throw;
+        }
+        bind_slot_session(slot, session_path);
+        claim();
+        publish_runtime_stats();
+        return {tokens, std::move(digest)};
+    }
+
+    // `claim` receives the file the erased session was bound to, if any, so spills of it still
+    // queued are superseded: an explicit erase never writes the slot file.
+    std::uint32_t erase_slot(std::uint32_t slot, std::string_view expected_digest,
+                             const std::function<void(const std::string&)>& claim) {
+        std::scoped_lock lock(execution_mutex_);
+        require_settled_slot(slot);
+        const auto view = resources_.catalog_slot(slot);
+        require_session_digest(view, expected_digest);
+        const std::string bound_path =
+            slot < slot_session_paths_.size() ? slot_session_paths_[slot] : std::string();
+        clear_slot_session(slot);
+        if (!bound_path.empty()) { claim(bound_path); }
+        if (view.state != ResourceManagement::CatalogState::Catalogued || view.handle == nullptr) {
+            return 0;
+        }
+        const std::uint32_t tokens = instance_.program->continuation_depth(*view.handle);
+        auto evicted               = resources_.take_catalogued(slot);
+        (void)instance_.program->release_continuation(std::move(evicted));
+        publish_runtime_stats();
+        return tokens;
+    }
+
+    // Served from the snapshot the worker publishes at unit boundaries: the execution mutex is
+    // held for most of a running request, so a reader that waited on it would stall behind a
+    // long prefill.
+    [[nodiscard]] std::vector<SlotState> slot_states() const {
+        std::lock_guard lock(stats_mutex_);
+        std::vector<SlotState> states = published_slots_;
+        states.resize(resources_.catalog_capacity());
+        return states;
+    }
+
+    // Installs the auto-save sink: the model binding a snapshot carries, and a consumer that
+    // takes each spilled session's (path, snapshot) and writes the file off-thread.
+    void set_eviction_sink(
+        std::string model_binding,
+        std::function<void(std::string, typename ModelContract::SessionSnapshot&&)> sink) {
+        std::scoped_lock lock(execution_mutex_);
+        eviction_model_binding_ = std::move(model_binding);
+        eviction_sink_          = std::move(sink);
     }
 
     void reset_memory_peaks() noexcept {
@@ -546,6 +677,7 @@ private:
             if (slots_[lane]->capture_pending) { ++snapshot.capture_pending_requests; }
             if (slots_[lane]->terminal_reason) { ++snapshot.terminal_pending_requests; }
         }
+        std::vector<SlotState> slot_snapshot = collect_slot_states();
         detail_range.reset();
         record_detail(&RuntimeHostWorkStats::stats_publication_ns,
                       &RuntimeHostWorkStats::stats_publication_invocations, detail_started);
@@ -554,6 +686,111 @@ private:
         snapshot.host_work = cumulative_stats_.host_work;
         std::lock_guard lock(stats_mutex_);
         published_stats_ = snapshot;
+        published_slots_ = std::move(slot_snapshot);
+    }
+
+    void require_settled_slot(std::uint32_t slot) const {
+        if (slot >= resources_.catalog_capacity()) {
+            throw std::invalid_argument("slot id is outside the retained-session catalog");
+        }
+        if (instance_.program->has_context_transaction() ||
+            resources_.context_transaction_kind()) {
+            throw RequestError(RequestErrorKind::Overloaded,
+                               "slot catalog is busy with a resource transaction");
+        }
+        const auto view = resources_.catalog_slot(slot);
+        if (view.state == ResourceManagement::CatalogState::Claimed ||
+            view.state == ResourceManagement::CatalogState::ReservedForActive || view.active_edge) {
+            throw RequestError(RequestErrorKind::Overloaded, "slot is in use by an active request");
+        }
+    }
+
+    void require_session_digest(const typename ResourceManagement::CatalogSlotView& view,
+                                std::string_view expected_digest) const {
+        if (expected_digest.empty()) { return; }
+        const std::string digest =
+            view.state == ResourceManagement::CatalogState::Catalogued && view.handle != nullptr
+                ? instance_.program->continuation_digest(*view.handle)
+                : std::string();
+        if (digest != expected_digest) {
+            throw SlotSessionMismatch("slot session does not match if_digest");
+        }
+    }
+
+    // Best-effort spill of a retained session about to be destroyed involuntarily. The snapshot
+    // runs on the calling thread; the file write runs on the Engine's writer thread through the
+    // sink. Only sessions bound to a slot file spill, and a failed spill never blocks the
+    // eviction: it costs the client one cold prefill, as without the feature.
+    void spill_catalog_slot(std::uint32_t slot,
+                            const typename ModelContract::ContinuationHandle& handle) noexcept {
+        if (!eviction_sink_ || slot >= slot_session_paths_.size() ||
+            slot_session_paths_[slot].empty()) {
+            return;
+        }
+        try {
+            auto snapshot = instance_.program->save_continuation(handle, eviction_model_binding_);
+            eviction_sink_(slot_session_paths_[slot], std::move(snapshot));
+        } catch (...) {}
+        // The binding stays: a planned eviction whose transaction aborts leaves the session in the
+        // cell, still bound. The release observer clears it when the entry really goes.
+    }
+
+    void clear_slot_session(std::uint32_t slot) noexcept {
+        if (slot < slot_session_paths_.size()) { slot_session_paths_[slot].clear(); }
+    }
+
+    // A slot file binds to at most one cell. A conversation's live continuation can move to a
+    // new cell turn to turn (an anchor or rewrite restore retains its source), leaving an older
+    // copy in another cell bound to the same file; if that copy were evicted later it would
+    // overwrite the newer save. Whoever saved or restored a path last owns it, and every other
+    // cell holding it is unbound. Called under execution_mutex_.
+    void bind_slot_session(std::uint32_t slot, std::string_view session_path) {
+        if (session_path.empty() || slot >= slot_session_paths_.size()) { return; }
+        for (std::size_t other = 0; other < slot_session_paths_.size(); ++other) {
+            if (other != slot && slot_session_paths_[other] == session_path) {
+                slot_session_paths_[other].clear();
+            }
+        }
+        slot_session_paths_[slot] = std::string(session_path);
+    }
+
+    // Per-cell occupancy for slot readers. Digests come from a cache keyed by the catalog
+    // entry's (id, revision), so an unchanged session is not rehashed every unit.
+    [[nodiscard]] std::vector<SlotState> collect_slot_states() {
+        std::vector<SlotState> out(resources_.catalog_capacity());
+        for (std::uint32_t slot = 0; slot < out.size(); ++slot) {
+            const auto view = resources_.catalog_slot(slot);
+            if (view.state != ResourceManagement::CatalogState::Catalogued ||
+                view.handle == nullptr) {
+                continue;
+            }
+            SlotDigestCacheEntry& cache = slot_digest_cache_[slot];
+            if (cache.id != view.id || cache.revision != view.revision) {
+                cache.id          = view.id;
+                cache.revision    = view.revision;
+                cache.depth       = instance_.program->continuation_depth(*view.handle);
+                cache.digest      = instance_.program->continuation_digest(*view.handle);
+                cache.checkpoints = instance_.program->continuation_checkpoints(*view.handle);
+            }
+            SlotState& state     = out[slot];
+            state.retained       = true;
+            state.prompt_tokens  = cache.depth;
+            state.cached_tokens  = cache.depth;
+            state.session_digest = cache.digest;
+            state.checkpoints    = cache.checkpoints;
+        }
+        for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+            if (slots_[lane] == nullptr) { continue; }
+            const std::optional<std::uint32_t> publication =
+                resources_.lane_publication_slot(LaneId{lane});
+            if (!publication || *publication >= out.size()) { continue; }
+            SlotState& state    = out[*publication];
+            state.processing    = true;
+            state.prompt_tokens = slots_[lane]->prompt_summary.prompt_tokens;
+            state.cached_tokens =
+                slots_[lane]->begin ? slots_[lane]->begin->reused_prompt_tokens : 0U;
+        }
+        return out;
     }
 
     void record_prefix_selection(const RequestPlanSummary& summary) noexcept {
@@ -869,6 +1106,8 @@ private:
         result.speculative             = std::move(request->speculative_stats);
         result.thinking                = request->output.thinking_stats();
         result.materialization         = request->materialization_diagnostics;
+        result.slot                    = request->retained_slot;
+        result.session_digest          = request->retained_session_digest;
         if (request->first_token) {
             result.timings.first_token_seconds =
                 request->prepare_seconds +
@@ -959,10 +1198,31 @@ private:
                 throw std::logic_error("terminal-pending request has invalid ownership");
             }
             const FinishReason reason = *request->terminal_reason;
+            const std::optional<std::uint32_t> publication =
+                resources_.lane_publication_slot(*request->lane);
+            const std::optional<std::uint32_t> retained_source =
+                resources_.lane_retained_private_source_slot(*request->lane);
             auto finished =
                 resources_.finish(*instance_.program, *request->lane, *request->sequence);
             request->generation_timings = finished.timings;
             request->speculative_stats  = std::move(finished.speculative);
+            if (finished.disposition == FinishDisposition::Catalogued && publication) {
+                const auto view = resources_.catalog_slot(*publication);
+                if (view.state == ResourceManagement::CatalogState::Catalogued &&
+                    view.handle != nullptr) {
+                    request->retained_slot = static_cast<std::int32_t>(*publication);
+                    request->retained_session_digest =
+                        instance_.program->continuation_digest(*view.handle);
+                    // A conversation continued from a retained source lives on in the new cell;
+                    // its slot file follows it there, leaving the older copy unbound.
+                    if (retained_source && *retained_source != *publication &&
+                        *retained_source < slot_session_paths_.size() &&
+                        !slot_session_paths_[*retained_source].empty()) {
+                        const std::string path = slot_session_paths_[*retained_source];
+                        bind_slot_session(*publication, path);
+                    }
+                }
+            }
             request->terminal_reason.reset();
 
             finish_engine_phase(boundary, EngineHostPhase::Boundary);
@@ -2052,6 +2312,7 @@ private:
     const std::uint32_t max_concurrency_;
     const std::size_t max_outstanding_;
     const std::chrono::milliseconds pending_timeout_;
+    const bool context_cache_enabled_;
     ResourceManagement resources_;
 
     mutable std::mutex execution_mutex_;
@@ -2072,6 +2333,21 @@ private:
     std::size_t current_decode_lane_count_ = 0;
     RuntimeStats cumulative_stats_;
     RuntimeStats published_stats_;
+    // Guarded by stats_mutex_, republished with the runtime stats.
+    std::vector<SlotState> published_slots_;
+    // Session persistence, guarded by execution_mutex_: the file each cell is bound to, the
+    // auto-save sink, and the per-cell digest cache.
+    struct SlotDigestCacheEntry {
+        std::uint64_t id       = 0;
+        std::uint64_t revision = 0;
+        std::uint32_t depth    = 0;
+        std::string digest;
+        std::vector<SlotCheckpoint> checkpoints;
+    };
+    std::vector<std::string> slot_session_paths_;
+    std::vector<SlotDigestCacheEntry> slot_digest_cache_;
+    std::string eviction_model_binding_;
+    std::function<void(std::string, typename ModelContract::SessionSnapshot&&)> eviction_sink_;
     bool stopping_ = false;
     bool failed_   = false;
     std::thread worker_;

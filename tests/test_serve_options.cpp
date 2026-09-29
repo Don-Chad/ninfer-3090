@@ -245,6 +245,30 @@ int main() {
     failures += check(disabled_cache_capacity_rejected,
                       "root-only server mode accepted context-cache capacity options");
 
+    const ServeOptions no_slots = parse({"ninfer-serve", "model.ninfer"});
+    failures += check(no_slots.slot_save_path.empty() && !no_slots.auto_save_evicted,
+                      "slot persistence was on by default");
+    const ServeOptions slots = parse(
+        {"ninfer-serve", "model.ninfer", "--slot-save-path", "sessions", "--auto-save-evicted"});
+    failures += check(slots.slot_save_path == "sessions" && slots.auto_save_evicted,
+                      "slot persistence options did not reach serving options");
+    const auto rejected = [&](std::vector<std::string> argv) {
+        try {
+            (void)parse(std::move(argv));
+        } catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--auto-save-evicted"}),
+                      "--auto-save-evicted was accepted without --slot-save-path");
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--slot-save-path", ""}),
+                      "an empty --slot-save-path was accepted");
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--no-prefix-reuse",
+                                "--slot-save-path", "sessions"}),
+                      "--slot-save-path was accepted with prefix reuse disabled");
+    failures += check(serve_usage_text("ninfer-serve").find("--slot-save-path") !=
+                          std::string::npos,
+                      "serve help omits --slot-save-path");
+
     failures += check(!parse({"ninfer-serve", "model.ninfer"}).auto_prefix_grid,
                       "automatic prefix grid was on without --auto-prefix-grid");
     failures +=

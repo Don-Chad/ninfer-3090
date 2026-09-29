@@ -465,6 +465,33 @@ ReleaseResult Program::release_continuation(ContinuationHandle&& continuation) n
     return impl_->release_continuation(std::move(continuation));
 }
 
+SessionSnapshot Program::save_continuation(const ContinuationHandle& continuation,
+                                           std::string_view model_binding) {
+    return impl_->save_continuation(continuation, model_binding);
+}
+
+ContinuationHandle Program::restore_continuation(std::span<const std::uint8_t> snapshot,
+                                                 std::string_view model_binding) {
+    return impl_->restore_continuation(snapshot, model_binding);
+}
+
+std::uint32_t Program::continuation_depth(const ContinuationHandle& continuation) const noexcept {
+    return impl_->continuation_depth(continuation);
+}
+
+std::string Program::continuation_digest(const ContinuationHandle& continuation) const {
+    return impl_->continuation_digest(continuation);
+}
+
+std::vector<SlotCheckpoint>
+Program::continuation_checkpoints(const ContinuationHandle& continuation) const {
+    return impl_->continuation_checkpoints(continuation);
+}
+
+ContinuationSummary Program::continuation_summary(const ContinuationHandle& continuation) const {
+    return impl_->continuation_summary(continuation);
+}
+
 ReleaseResult Program::release_shared_prefix(SharedPrefixHandle&& shared) noexcept {
     return impl_->release_shared_prefix(std::move(shared));
 }

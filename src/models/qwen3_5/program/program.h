@@ -12,6 +12,8 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -96,6 +98,14 @@ struct ContinuationSummary {
 
     [[nodiscard]] friend bool operator==(const ContinuationSummary&,
                                          const ContinuationSummary&) noexcept = default;
+};
+
+// A retained continuation serialized for disk: the session snapshot bytes, the resident depth
+// and the session digest (FNV-1a 64 of the token ledger, 16 hex characters).
+struct SessionSnapshot {
+    std::vector<std::uint8_t> bytes;
+    std::uint32_t tokens = 0;
+    std::string session_digest;
 };
 
 struct SharedPrefixSummary {
@@ -939,6 +949,22 @@ public:
     [[nodiscard]] ReleaseResult release_continuation(ContinuationHandle&& continuation) noexcept;
     [[nodiscard]] ReleaseResult release_shared_prefix(SharedPrefixHandle&& shared) noexcept;
     void fail_all_cleanup() noexcept;
+
+    // Session persistence. Both run only when no context transaction is open. Save copies a
+    // catalogued continuation to host bytes without changing it. Restore builds a new catalogued
+    // continuation from bytes a server with the same model binding and execution configuration
+    // saved; the caller adopts the returned handle into its catalog or releases it.
+    [[nodiscard]] SessionSnapshot save_continuation(const ContinuationHandle& continuation,
+                                                    std::string_view model_binding);
+    [[nodiscard]] ContinuationHandle restore_continuation(std::span<const std::uint8_t> snapshot,
+                                                          std::string_view model_binding);
+    [[nodiscard]] std::uint32_t
+    continuation_depth(const ContinuationHandle& continuation) const noexcept;
+    [[nodiscard]] std::string continuation_digest(const ContinuationHandle& continuation) const;
+    [[nodiscard]] std::vector<SlotCheckpoint>
+    continuation_checkpoints(const ContinuationHandle& continuation) const;
+    [[nodiscard]] ContinuationSummary
+    continuation_summary(const ContinuationHandle& continuation) const;
 
     [[nodiscard]] bool isolated_request_feasible(const RequestBasePlan& base) const noexcept;
     [[nodiscard]] runtime::ProgramResourceRevision resource_revision() const noexcept;

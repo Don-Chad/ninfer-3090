@@ -189,21 +189,32 @@ Json stream_choice(Json delta, Json finish_reason = nullptr) {
 
 std::string event(Json payload) { return "data: " + payload.dump() + "\n\n"; }
 
+// The catalog cell and session digest a retained session can be saved from, beside the final
+// usage and timings; absent when the session was not retained.
+void add_slot_identity(Json& payload, const GenerationOutcome* outcome) {
+    if (outcome == nullptr) { return; }
+    if (outcome->id_slot >= 0) { payload["id_slot"] = outcome->id_slot; }
+    if (!outcome->session_digest.empty()) { payload["session_digest"] = outcome->session_digest; }
+}
+
 std::string chunk(const OpenAIChatResponseIdentity& identity, Json delta, Json finish_reason,
-                  bool include_usage, Json timings = nullptr) {
+                  bool include_usage, Json timings = nullptr,
+                  const GenerationOutcome* slot_identity = nullptr) {
     Json payload       = base_payload(identity, "chat.completion.chunk");
     payload["choices"] = Json::array({stream_choice(std::move(delta), std::move(finish_reason))});
     if (include_usage) { payload["usage"] = nullptr; }
     if (!timings.is_null()) { payload["timings"] = std::move(timings); }
+    add_slot_identity(payload, slot_identity);
     return event(std::move(payload));
 }
 
 std::string usage_chunk(const OpenAIChatResponseIdentity& identity, const CompletionUsage& usage,
-                        Json timings) {
+                        Json timings, const GenerationOutcome& outcome) {
     Json payload       = base_payload(identity, "chat.completion.chunk");
     payload["choices"] = Json::array();
     payload["usage"]   = usage_json(usage);
     payload["timings"] = std::move(timings);
+    add_slot_identity(payload, &outcome);
     return event(std::move(payload));
 }
 
@@ -245,6 +256,7 @@ std::string make_chat_completion_response(const OpenAIChatResponseIdentity& iden
                has_tool_calls ? Json("tool_calls") : Json(finish_reason(outcome.finish_reason))}}});
     payload["usage"]   = usage_json(usage_from(outcome));
     payload["timings"] = timings_json(outcome_timings(outcome));
+    add_slot_identity(payload, &outcome);
     return payload.dump();
 }
 
@@ -373,13 +385,15 @@ std::vector<std::string> OpenAIChatStream::finish(const GenerationOutcome& outco
         events.push_back(chunk(identity_, Json{{"tool_calls", tool_calls_json(calls, true)}},
                                nullptr, include_usage_, output_timings));
         events.push_back(chunk(identity_, Json::object(), "tool_calls", include_usage_,
-                               include_usage_ ? Json(nullptr) : final_timings));
+                               include_usage_ ? Json(nullptr) : final_timings,
+                               include_usage_ ? nullptr : &outcome));
     } else {
         events.push_back(chunk(identity_, Json::object(), finish_reason(outcome.finish_reason),
-                               include_usage_, include_usage_ ? Json(nullptr) : final_timings));
+                               include_usage_, include_usage_ ? Json(nullptr) : final_timings,
+                               include_usage_ ? nullptr : &outcome));
     }
     if (include_usage_) {
-        events.push_back(usage_chunk(identity_, usage_from(outcome), final_timings));
+        events.push_back(usage_chunk(identity_, usage_from(outcome), final_timings, outcome));
     }
     events.emplace_back("data: [DONE]\n\n");
     return events;
