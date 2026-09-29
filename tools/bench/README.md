@@ -57,6 +57,21 @@ client, stages the NVFP4 artifact once in `/dev/shm`, stores raw/progress/Serve 
 JSON, and CSV summaries. The case catalog, exact profiles, TTFT boundary, and fixture qualification
 are documented in the dedicated README.
 
+## Agent rotation (context-cache retention)
+
+`run_agent_rotation.py` drives an already-running `ninfer-serve` with N independent agent
+conversations visited round-robin, each growing by one long user turn per visit until it reaches
+`--target-tokens`. With more agents than `--max-concurrency`, most visits must restore their
+conversation from the Host tier or re-prefill it, and every `--edit-every`th visit rewrites the user
+turn two back, which only a long anchor below the edit can serve. The client reports TTFT from the
+stream and the weighted cache hit rate from the usage `cached_tokens`, split by first, append and
+edit visits; run the server with `--request-log-jsonl` for the reuse path and transfers.
+
+```bash
+python3 tools/bench/run_agent_rotation.py --agents 4 --target-tokens 200000 \
+    --out profiles/bench/agent-rotation/run.jsonl
+```
+
 ## Corpus baker
 
 `ninfer_bench` benchmarks prefill at an exact length by slicing the first `P` token ids of a
