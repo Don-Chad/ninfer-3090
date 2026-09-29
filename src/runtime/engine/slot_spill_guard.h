@@ -42,9 +42,24 @@ public:
         if (tokens > depth) { depth = tokens; }
     }
 
+    // An explicit save, restore or erase claims its path, which supersedes every spill queued
+    // for it before the claim. A spill records the generation when it is queued and is written
+    // only if the path's generation is unchanged.
+    void claim(const std::string& path) {
+        std::scoped_lock lock(mutex_);
+        ++generation_[path];
+    }
+
+    [[nodiscard]] std::uint64_t generation(const std::string& path) const {
+        std::scoped_lock lock(mutex_);
+        const auto it = generation_.find(path);
+        return it == generation_.end() ? 0U : it->second;
+    }
+
 private:
     mutable std::mutex mutex_;
     std::unordered_map<std::string, std::uint32_t> depth_;
+    std::unordered_map<std::string, std::uint64_t> generation_;
 };
 
 } // namespace ninfer

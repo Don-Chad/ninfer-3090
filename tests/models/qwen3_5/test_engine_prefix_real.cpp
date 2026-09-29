@@ -1359,7 +1359,7 @@ int exercise_slot_persistence(const char* artifact) {
         const auto states = engine.slot_states();
         if (states.size() != 1 || !states[0].retained ||
             states[0].session_digest != reply.session_digest || states[0].checkpoints.empty() ||
-            states[0].checkpoints.back().session_digest != reply.session_digest) {
+            states[0].checkpoints.back().frontier + 1U != states[0].prompt_tokens) {
             std::cerr << "slot listing does not describe the retained session\n";
             return 1;
         }

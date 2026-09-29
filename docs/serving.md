@@ -199,12 +199,15 @@ like llama.cpp's endpoint and reads only published state, so it never waits on t
 ```json
 [{"id": 0, "is_processing": false, "retained": true, "session_digest": "8c3f1e0a7b2d4c19",
   "checkpoints": [{"frontier": 1812, "session_digest": "51d0..."},
-                  {"frontier": 2410, "session_digest": "8c3f1e0a7b2d4c19"}],
+                  {"frontier": 2409, "session_digest": "e27a90c4d15b3f68"}],
   "n_ctx": 131072, "n_prompt_tokens": 2410, "n_prompt_tokens_cache": 2410, "speculative": true}]
 ```
 
 A retained slot reports the session depth as both token counts, its session digest (FNV-1a 64 of
-the token ids, 16 hex characters) and the checkpoints a later request can resume from. A slot an
+the token ids, 16 hex characters) and the checkpoints a later request can resume from, each with the
+digest of its prefix. The endpoint checkpoint sits at the executed frontier, which is usually one
+token short of the session: the last sampled token is recorded but not yet in the KV or the
+recurrent state, so the next turn executes it first. A slot an
 active request will publish into reports `is_processing` with that request's prompt and reused
 tokens. Chat Completions responses carry the slot and digest a finished session was retained under
 as top-level `id_slot` and `session_digest`, on the aggregate response and on the final streamed
@@ -225,7 +228,8 @@ still holding that session, checked atomically with the operation. Restore repla
 slot held and makes the restored session an ordinary cache entry that any request with a matching
 prefix reuses, including from its checkpoints. A snapshot restores only on a server with the same
 model artifact, weight formats, KV dtype, speculative backend, draft tokens and draft head; DFlash
-servers do not support persistence. Files are written to a temporary name and renamed.
+servers do not support persistence. Files are written to a temporary name and renamed, and end
+with a checksum that restore verifies before it allocates anything.
 
 Errors: `409 slot_busy` while the slot or any context-cache transaction is in use (retry),
 `409 slot_session_mismatch` for a failed `if_digest`, `400 invalid_slot`, `invalid_action`,
@@ -236,8 +240,9 @@ With `--auto-save-evicted`, a session last saved to or restored from a file is w
 file, on a background thread, before an involuntary eviction destroys it. Continuing the
 conversation keeps the binding, so the file tracks its newest turn. An explicit erase never writes.
 A spill never replaces a file with a shallower copy of the session than the last save or restore
-recorded, and at most two spills wait for the writer; the operational log reports each spill, skip
-or failure. Snapshots are uncompressed. Besides its KV pages, a session stores one recurrent-state
+recorded, and at most two spills wait for the writer. An explicit save, restore or erase of a file
+supersedes every spill of it still waiting (a restore first writes the waiting spills of the file it
+reads, so it reads the newest state). The operational log reports each spill, skip or failure. Snapshots are uncompressed. Besides its KV pages, a session stores one recurrent-state
 image per checkpoint it retains (endpoint, rewrite checkpoint, long anchors), about 150 MB each on
 the 27B, so even a short session is a few hundred MB: a 39-token Qwen3.8-27B session saved as
 295 MiB, with save and restore at about 0.3 s each on an RTX 3090.

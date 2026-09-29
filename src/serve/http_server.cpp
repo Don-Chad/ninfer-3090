@@ -561,20 +561,22 @@ void HttpServer::handle_slot_action(const httplib::Request& req, httplib::Respon
         return;
     }
     const std::string id_text = req.matches.size() > 1 ? req.matches[1].str() : std::string();
-    std::uint32_t slot        = 0;
+    unsigned long long parsed = 0;
     try {
-        slot = static_cast<std::uint32_t>(std::stoul(id_text));
+        parsed = std::stoull(id_text);
     } catch (const std::exception&) {
         fail(400, "invalid_slot", "slot id is not a number");
         return;
     }
+    // Range-checked before narrowing, so an id past 2^32 is refused rather than wrapped.
     const std::size_t slot_count = service_->slot_states().size();
-    if (slot >= slot_count) {
+    if (parsed >= slot_count) {
         fail(400, "invalid_slot",
              "slot " + id_text + " is outside this server's " + std::to_string(slot_count) +
                  " slots");
         return;
     }
+    const auto slot = static_cast<std::uint32_t>(parsed);
     const std::string action = req.get_param_value("action");
 
     std::string filename;

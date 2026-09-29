@@ -163,6 +163,9 @@ struct SlotAutoSaveEvent {
     // Set when the spill was skipped because the file already holds a deeper snapshot of the
     // session; the value is that depth.
     std::optional<std::uint32_t> skipped_behind_tokens;
+    // Set when the spill was skipped because an explicit save, restore or erase of the path
+    // happened after it was queued.
+    bool superseded = false;
 };
 
 struct SlotAutoSaveOptions {

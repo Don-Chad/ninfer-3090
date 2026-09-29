@@ -46,6 +46,17 @@ int main() {
     failures += check(!guard.blocks(f, 20'000) && guard.blocks("/slots/other.bin", 4).has_value(),
                       "marks bled between paths");
 
+    // A spill queued before an explicit claim of its path is superseded; one queued after is not.
+    const std::string g         = "/slots/claimed.bin";
+    const auto queued_before    = guard.generation(g);
+    guard.claim(g);
+    const auto queued_after     = guard.generation(g);
+    failures += check(queued_before != guard.generation(g),
+                      "a claim did not supersede a spill queued before it");
+    failures += check(queued_after == guard.generation(g),
+                      "a spill queued after the claim was superseded");
+    failures += check(guard.generation(f) == 0U, "a claim advanced another path's generation");
+
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }

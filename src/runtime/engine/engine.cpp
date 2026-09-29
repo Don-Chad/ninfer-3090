@@ -258,11 +258,30 @@ public:
         } catch (...) {}
     }
 
-    // Blocks until every queued auto-save has been written, so an explicit save or restore never
-    // reads a file a pending spill is about to replace, or lands before it.
-    void drain_writes() {
-        std::unique_lock lock(writer_mutex);
-        writer_cv.wait(lock, [this] { return pending_writes.empty() && !write_in_flight; });
+    // File I/O on slot paths is serialized by slot_io_mutex: the writer holds it for each spill,
+    // from popping the item to publishing the file, and every explicit save, restore and erase
+    // holds it for its whole operation. An explicit operation first claims its path, which
+    // advances the path's generation; a spill queued under an older generation is then skipped as
+    // superseded, since the client has just declared the file's content. Spills queued after the
+    // claim are newer states of the session and are written after the explicit operation.
+
+    // Writes the spills still queued for `path`, so a restore reads the newest saved state instead
+    // of the file a pending spill was about to replace. Called with slot_io_mutex held; the writer
+    // cannot be part-way through one of them, because it pops items only under that mutex.
+    void flush_pending_for_path(const std::string& path) {
+        std::deque<PendingWrite> matching;
+        {
+            std::scoped_lock lock(writer_mutex);
+            for (auto it = pending_writes.begin(); it != pending_writes.end();) {
+                if (it->path == path) {
+                    matching.push_back(std::move(*it));
+                    it = pending_writes.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (PendingWrite& item : matching) { write_spill(item); }
     }
 
     [[nodiscard]] GenerationCore& generation_core() {
@@ -288,11 +307,14 @@ public:
     ModelSamplingDefaults sampling_defaults;
     Core core;
     SlotSpillGuard spill_guard;
+    std::mutex slot_io_mutex;
 
 private:
     struct PendingWrite {
         std::string path;
         runtime::ModelInstance::ModelContract::SessionSnapshot snapshot;
+        // The path's generation when the spill was queued; a later explicit claim supersedes it.
+        std::uint64_t generation = 0;
     };
 
     void enqueue_write(std::string path, runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
@@ -308,7 +330,8 @@ private:
             return;
         }
         if (!writer.joinable()) { writer = std::thread([this] { writer_loop(); }); }
-        pending_writes.push_back(PendingWrite{std::move(path), std::move(snapshot)});
+        const std::uint64_t generation = spill_guard.generation(path);
+        pending_writes.push_back(PendingWrite{std::move(path), std::move(snapshot), generation});
         lock.unlock();
         writer_cv.notify_one();
     }
@@ -320,39 +343,50 @@ private:
         } catch (...) {}
     }
 
+    // One spill, with slot_io_mutex held: skipped when an explicit operation has claimed the path
+    // since it was queued, or when the file already holds a deeper state of the session.
+    void write_spill(PendingWrite& item) {
+        SlotAutoSaveEvent event;
+        event.path         = item.path;
+        event.tokens       = item.snapshot.tokens;
+        event.bytes        = item.snapshot.bytes.size();
+        const auto started = std::chrono::steady_clock::now();
+        try {
+            if (spill_guard.generation(item.path) != item.generation) {
+                event.superseded = true;
+            } else if (const std::optional<std::uint32_t> deeper =
+                           spill_guard.blocks(item.path, item.snapshot.tokens)) {
+                event.skipped_behind_tokens = deeper;
+            } else {
+                write_snapshot_file(item.path, item.snapshot.bytes);
+                spill_guard.note_spilled(item.path, item.snapshot.tokens);
+            }
+        } catch (const std::exception& error) {
+            event.error = error.what();
+        } catch (...) { event.error = "unknown auto-save failure"; }
+        event.seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        notify(event);
+    }
+
     void writer_loop() {
-        std::unique_lock lock(writer_mutex);
-        while (true) {
-            writer_cv.wait(lock, [this] { return writer_stop || !pending_writes.empty(); });
-            if (pending_writes.empty()) { break; }
-            PendingWrite item = std::move(pending_writes.front());
-            pending_writes.pop_front();
-            write_in_flight = true;
-            lock.unlock();
-
-            SlotAutoSaveEvent event;
-            event.path         = item.path;
-            event.tokens       = item.snapshot.tokens;
-            event.bytes        = item.snapshot.bytes.size();
-            const auto started = std::chrono::steady_clock::now();
-            try {
-                if (const std::optional<std::uint32_t> deeper =
-                        spill_guard.blocks(item.path, item.snapshot.tokens)) {
-                    event.skipped_behind_tokens = deeper;
-                } else {
-                    write_snapshot_file(item.path, item.snapshot.bytes);
-                    spill_guard.note_spilled(item.path, item.snapshot.tokens);
-                }
-            } catch (const std::exception& error) {
-                event.error = error.what();
-            } catch (...) { event.error = "unknown auto-save failure"; }
-            event.seconds =
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-            notify(event);
-
-            lock.lock();
-            write_in_flight = false;
-            writer_cv.notify_all();
+        for (;;) {
+            {
+                std::unique_lock lock(writer_mutex);
+                writer_cv.wait(lock, [this] { return writer_stop || !pending_writes.empty(); });
+                if (pending_writes.empty()) { return; }
+            }
+            // Take slot_io_mutex before popping, so an explicit operation holding it sees every
+            // spill still queued and none half-taken.
+            std::scoped_lock io(slot_io_mutex);
+            std::optional<PendingWrite> item;
+            {
+                std::scoped_lock lock(writer_mutex);
+                if (pending_writes.empty()) { continue; }
+                item.emplace(std::move(pending_writes.front()));
+                pending_writes.pop_front();
+            }
+            write_spill(*item);
         }
     }
 
@@ -373,8 +407,7 @@ private:
     std::mutex writer_mutex;
     std::condition_variable writer_cv;
     std::deque<PendingWrite> pending_writes;
-    bool write_in_flight = false;
-    bool writer_stop     = false;
+    bool writer_stop = false;
     std::thread writer;
 };
 
@@ -576,9 +609,10 @@ SlotSaveResult Engine::save_slot(std::uint32_t slot, const std::string& path,
                                  const std::string& expected_digest) {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
     const auto started = std::chrono::steady_clock::now();
-    impl_->drain_writes();
+    std::scoped_lock io(impl_->slot_io_mutex);
     auto snapshot = impl_->generation_core().save_slot(
-        slot, slot_model_binding(impl_->options, impl_->load), expected_digest, path);
+        slot, slot_model_binding(impl_->options, impl_->load), expected_digest, path,
+        [&] { impl_->spill_guard.claim(path); });
     write_snapshot_file(path, snapshot.bytes);
     impl_->spill_guard.note_authoritative(path, snapshot.tokens);
 
@@ -594,7 +628,8 @@ SlotSaveResult Engine::save_slot(std::uint32_t slot, const std::string& path,
 SlotRestoreResult Engine::restore_slot(std::uint32_t slot, const std::string& path) {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
     const auto started = std::chrono::steady_clock::now();
-    impl_->drain_writes();
+    std::scoped_lock io(impl_->slot_io_mutex);
+    impl_->flush_pending_for_path(path);
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file.is_open()) { throw std::invalid_argument("session snapshot file is unavailable"); }
     const std::streamsize size = file.tellg();
@@ -607,7 +642,8 @@ SlotRestoreResult Engine::restore_slot(std::uint32_t slot, const std::string& pa
 
     auto [tokens, digest] = impl_->generation_core().restore_slot(
         slot, std::span<const std::uint8_t>(bytes.data(), bytes.size()),
-        slot_model_binding(impl_->options, impl_->load), path);
+        slot_model_binding(impl_->options, impl_->load), path,
+        [&] { impl_->spill_guard.claim(path); });
     impl_->spill_guard.note_authoritative(path, tokens);
 
     SlotRestoreResult result;
@@ -621,7 +657,10 @@ SlotRestoreResult Engine::restore_slot(std::uint32_t slot, const std::string& pa
 
 std::uint32_t Engine::erase_slot(std::uint32_t slot, const std::string& expected_digest) {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
-    return impl_->generation_core().erase_slot(slot, expected_digest);
+    std::scoped_lock io(impl_->slot_io_mutex);
+    return impl_->generation_core().erase_slot(
+        slot, expected_digest,
+        [&](const std::string& bound_path) { impl_->spill_guard.claim(bound_path); });
 }
 
 std::vector<SlotState> Engine::slot_states() const {

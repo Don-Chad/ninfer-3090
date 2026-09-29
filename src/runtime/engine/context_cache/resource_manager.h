@@ -1170,6 +1170,18 @@ public:
         return active_[lane.value].publication_slot;
     }
 
+    // The private catalog cell an active lane reads as a retained source (PrivateSourceMode::Retain),
+    // if any: the lane continues that conversation while the source stays catalogued.
+    [[nodiscard]] std::optional<std::uint32_t>
+    lane_retained_private_source_slot(LaneId lane) const noexcept {
+        if (lane.value >= lane_count_ || !active_[lane.value].occupied ||
+            !active_[lane.value].retained_private_source ||
+            active_[lane.value].retained_private_source->slot >= catalog_count_) {
+            return std::nullopt;
+        }
+        return active_[lane.value].retained_private_source->slot;
+    }
+
     // Surrenders one idle catalogued continuation: the caller releases the returned handle at the
     // Program and the cell becomes vacant.
     [[nodiscard]] ContinuationHandle take_catalogued(std::uint32_t slot) {

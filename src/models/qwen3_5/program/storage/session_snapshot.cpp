@@ -287,6 +287,26 @@ SnapshotSession read_session(SnapshotReader& reader) {
     return session;
 }
 
+// Integrity check over the whole snapshot, stored as a trailing u64. A bit flip that keeps every
+// length and domain valid would otherwise restore silently corrupted KV or state. Word-wise, so a
+// multi-GB snapshot hashes at memory speed; not cryptographic, since the files are trusted local
+// state and the threat is corruption, not tampering.
+std::uint64_t snapshot_checksum(std::span<const std::uint8_t> bytes) {
+    std::uint64_t hash    = 0x9e3779b97f4a7c15ULL ^ static_cast<std::uint64_t>(bytes.size());
+    const std::size_t words = bytes.size() / sizeof(std::uint64_t);
+    for (std::size_t index = 0; index < words; ++index) {
+        std::uint64_t word = 0;
+        std::memcpy(&word, bytes.data() + index * sizeof(std::uint64_t), sizeof(word));
+        hash = (hash ^ word) * 0xff51afd7ed558ccdULL;
+        hash ^= hash >> 32U;
+    }
+    for (std::size_t index = words * sizeof(std::uint64_t); index < bytes.size(); ++index) {
+        hash = (hash ^ bytes[index]) * 0xc4ceb9fe1a85ec53ULL;
+        hash ^= hash >> 29U;
+    }
+    return hash;
+}
+
 void synchronize_streams(RankStreams streams) {
     for (std::size_t rank = 0; rank < streams.size(); ++rank) {
         CUDA_CHECK(cudaStreamSynchronize(streams[rank]));
@@ -338,7 +358,9 @@ ProgramImpl::continuation_checkpoints(const ContinuationHandle& continuation) co
     if (sequence.rewrite_checkpoint.valid) {
         frontiers.push_back(sequence.rewrite_checkpoint.frontier);
     }
-    if (sequence.endpoint_valid) { frontiers.push_back(depth); }
+    // The endpoint restores at the executed frontier: the ledger's last token is sampled but not
+    // yet in the KV or the state.
+    if (sequence.endpoint_valid) { frontiers.push_back(sequence.execution_frontier); }
     std::sort(frontiers.begin(), frontiers.end());
     frontiers.erase(std::unique(frontiers.begin(), frontiers.end()), frontiers.end());
 
@@ -519,6 +541,7 @@ SessionSnapshot ProgramImpl::save_continuation(const ContinuationHandle& continu
         writer.reserve_payload(config.text_page_stride * session.text_pages);
     const std::size_t backend_kv_offset =
         writer.reserve_payload(config.backend_page_stride * session.backend_pages);
+    const std::size_t checksum_offset = writer.reserve_payload(sizeof(std::uint64_t));
 
     // The catalogued images and pages are immutable and no transaction is open, but the unit that
     // last wrote them may still be in flight on the compute streams, which also order these
@@ -592,6 +615,9 @@ SessionSnapshot ProgramImpl::save_continuation(const ContinuationHandle& continu
                            session.backend_pages, *backend_layout, backend_kv_offset);
     }
     synchronize_streams(streams);
+    const std::uint64_t checksum =
+        snapshot_checksum(std::span<const std::uint8_t>(snapshot.bytes.data(), checksum_offset));
+    std::memcpy(snapshot.bytes.data() + checksum_offset, &checksum, sizeof(checksum));
     return snapshot;
 }
 
@@ -604,11 +630,21 @@ ContinuationHandle ProgramImpl::restore_continuation(std::span<const std::uint8_
         throw std::invalid_argument("session persistence does not support the DFlash backend");
     }
 
-    SnapshotReader reader(snapshot);
+    if (snapshot.size() < sizeof(kSessionSnapshotMagic) + sizeof(std::uint64_t)) {
+        throw std::invalid_argument("session snapshot is truncated");
+    }
+    const std::span<const std::uint8_t> body = snapshot.first(snapshot.size() - sizeof(std::uint64_t));
+    std::uint64_t stored_checksum            = 0;
+    std::memcpy(&stored_checksum, snapshot.data() + body.size(), sizeof(stored_checksum));
+    SnapshotReader reader(body);
     char magic[sizeof(kSessionSnapshotMagic)] = {};
     reader.bytes(magic, sizeof(magic));
     if (std::memcmp(magic, kSessionSnapshotMagic, sizeof(magic)) != 0) {
         throw std::invalid_argument("file is not a session snapshot");
+    }
+    // Verified before anything is allocated or uploaded.
+    if (snapshot_checksum(body) != stored_checksum) {
+        throw std::invalid_argument("session snapshot is corrupt: checksum mismatch");
     }
     if (reader.pod<std::uint32_t>() != kSessionSnapshotVersion) {
         throw std::invalid_argument("session snapshot version is unsupported");

@@ -437,7 +437,9 @@ void OperationalLog::slot_auto_save(const ninfer::SlotAutoSaveEvent& event) cons
         write({.severity = OperationalSeverity::Warning, .message = out.str()});
         return;
     }
-    if (event.skipped_behind_tokens) {
+    if (event.superseded) {
+        out << " | skipped: superseded by an explicit save, restore or erase";
+    } else if (event.skipped_behind_tokens) {
         out << " | skipped: the file holds a deeper snapshot of " << *event.skipped_behind_tokens
             << " tokens";
     } else {
