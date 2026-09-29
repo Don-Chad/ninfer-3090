@@ -510,5 +510,39 @@ int main() {
         failures += check(unknown_mode_rejected, "--vision-residency sometimes was accepted");
     }
 
+    {
+        const ServeOptions grafted = parse({"ninfer-serve", "model.ninfer", "--graft",
+                                            "product=C:/grafts/p.bin", "--graft", "b=b.bin"});
+        failures += check(grafted.grafts.size() == 2 && grafted.grafts[0].name == "product" &&
+                              grafted.grafts[0].path == "C:/grafts/p.bin" &&
+                              grafted.grafts[1].name == "b",
+                          "--graft NAME=PATH was not parsed in order");
+        for (const char* malformed : {"product", "=p.bin", "product="}) {
+            bool rejected = false;
+            try {
+                (void)parse({"ninfer-serve", "model.ninfer", "--graft", malformed});
+            } catch (const std::invalid_argument&) { rejected = true; }
+            failures += check(rejected, "malformed --graft was accepted");
+        }
+
+        GenerationRequest graft_request;
+        graft_request.max_tokens = 1;
+        graft_request.graft      = "product";
+        failures += check(resolve_prompt_semantics(graft_request, grafted).graft == "product" &&
+                              to_prompt_input(graft_request,
+                                              resolve_prompt_semantics(graft_request, grafted), {})
+                                      .options.graft == "product",
+                          "a loaded graft did not reach the Engine prompt options");
+        std::string unknown_code;
+        try {
+            (void)resolve_prompt_semantics(graft_request, defaults);
+        } catch (const ApiException& error) { unknown_code = error.error().code; }
+        failures += check(unknown_code == "unknown_graft",
+                          "a graft the server did not load was not rejected");
+        graft_request.graft.clear();
+        failures += check(resolve_prompt_semantics(graft_request, grafted).graft.empty(),
+                          "a request without a graft selected one");
+    }
+
     return failures == 0 ? 0 : 1;
 }

@@ -182,6 +182,16 @@ enum class VisionResidency : std::uint8_t {
     Overlay,  // tower host-pinned; each image borrows device memory inside a bounded window
 };
 
+// A phantom-kv prompt graft: a hidden conversation prefix (e.g. a system turn plus an assistant
+// acknowledgement) that sits in front of every request selecting it. `path` names the safetensors
+// container; its metadata sidecar is the same path with a .json extension. The graft's tokens occupy
+// positions [0, n) and the request's own rendered prompt starts at position n, exactly as if the
+// hidden turn had been sent as text. They count toward max_context and the reported prompt tokens.
+struct GraftSource {
+    std::string name;
+    std::filesystem::path path;
+};
+
 struct EngineOptions {
     std::filesystem::path artifact_path;
     std::filesystem::path chat_template_path;
@@ -254,6 +264,9 @@ struct EngineOptions {
     bool use_cuda_graph                    = true;
     ContextCacheOptions context_cache;
     ContextCostOptions context_cost;
+    // Prompt grafts a request may select by name through PromptOptions::graft. Each is loaded and
+    // validated against the resident model at construction.
+    std::vector<GraftSource> grafts;
     StartupObserver startup_observer;
 };
 
@@ -496,6 +509,9 @@ struct PromptOptions {
     std::string chat_template_kwargs_json;
     bool add_vision_id = false;
     std::vector<std::string> tool_jsons;
+    // Name of an EngineOptions::grafts entry to place in front of the rendered prompt; empty for
+    // none. The rendered prompt should carry no system turn of its own: the graft already holds one.
+    std::string graft;
 };
 
 enum class CacheRetentionHint : std::uint8_t {

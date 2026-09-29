@@ -317,7 +317,15 @@ public:
         std::optional<AdmissionCandidate> root = program.inspect_admission(
             prompt, base, *destination, nullptr, nullptr, std::nullopt, false);
         if (!root) { throw std::logic_error("Program rejected isolated root planning"); }
-        candidates.push_back(Candidate{.plan = std::move(*root)});
+        Candidate root_candidate{.plan = std::move(*root)};
+        if (const auto graft_slot = root_candidate.plan->graft_shared_slot()) {
+            if (*graft_slot < shared_catalog_count_ &&
+                shared_catalog_[*graft_slot].state == SharedCatalogState::Catalogued &&
+                shared_catalog_[*graft_slot].handle) {
+                root_candidate.shared_source = shared_capability(*graft_slot);
+            }
+        }
+        candidates.push_back(std::move(root_candidate));
 
         if (cache_enabled_) {
             for (const PrefixIndexEntry& index : prefix_index_) {
@@ -1140,6 +1148,26 @@ public:
         }
         demand_window_.clear();
         demand_epoch_ = 0;
+    }
+
+    std::uint32_t register_external_shared_prefix(SharedPrefixHandle handle,
+                                                   SharedPrefixSummary summary) {
+        for (std::uint32_t slot = 0; slot < shared_catalog_count_; ++slot) {
+            if (shared_catalog_[slot].state == SharedCatalogState::Vacant) {
+                SharedCatalogEntry& entry = shared_catalog_[slot];
+                entry.state               = SharedCatalogState::Catalogued;
+                entry.id                  = next_shared_prefix_id_++;
+                if (entry.id == 0) { entry.id = next_shared_prefix_id_++; }
+                entry.summary         = summary;
+                entry.handle.emplace(std::move(handle));
+                entry.observation     = RetentionObservation{.retention_class = RetentionClass::SharedStable};
+                entry.transaction_pins = 1;
+                entry.explicit_credit  = true;
+                advance_revision(entry.revision);
+                return slot;
+            }
+        }
+        throw std::runtime_error("no vacant shared catalog slot for graft registration");
     }
 
 private:

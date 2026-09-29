@@ -48,11 +48,13 @@ rem The qwen3_8_27b.ninfer that download-model.bat fetches is the DFlash2 bundle
 rem MTP weights too, so one file serves both.
 rem
 rem OVERRIDES, from the environment. All profiles: NINFER_MODEL (artifact path), NINFER_MODEL_DIR,
-rem NINFER_SERVER, NINFER_HOST, NINFER_PORT. `tuned` also: NINFER_CONTEXT, NINFER_CONCURRENCY, NINFER_KV_DTYPE,
-rem NINFER_SPEC, NINFER_DRAFT_TOKENS, NINFER_PREFILL_CHUNK, NINFER_VISION (on^|off),
-rem NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS. Each spec's defaults (context, lanes, chunk)
-rem are the ones measured to fit beside a desktop, which holds roughly 1.5 GiB of the card; if startup
-rem refuses, drop a rung of NINFER_CONTEXT: 229376 / 196608 / 163840 / 131072 / 98304 / 65536.
+rem NINFER_SERVER, NINFER_HOST, NINFER_PORT, NINFER_GRAFT_DIR (phantom-kv graft directory),
+rem NINFER_GRAFTS (set to "off" to disable graft loading). `tuned` also: NINFER_CONTEXT,
+rem NINFER_CONCURRENCY, NINFER_KV_DTYPE, NINFER_SPEC, NINFER_DRAFT_TOKENS, NINFER_PREFILL_CHUNK,
+rem NINFER_VISION (on^|off), NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS. Each spec's defaults
+rem (context, lanes, chunk) are the ones measured to fit beside a desktop, which holds roughly 1.5 GiB
+rem of the card; if startup refuses, drop a rung of NINFER_CONTEXT: 229376 / 196608 / 163840 / 131072 /
+rem 98304 / 65536.
 rem
 rem IF THE CARD IS BUSY. A desktop (or another job) holding VRAM can leave too little for the default
 rem context. When the `tuned` profile is refused at startup for lack of GPU memory, this launcher
@@ -86,11 +88,13 @@ if /i "%MODEL_KEY%"=="--help" goto :help
 if /i "%MODEL_KEY%"=="qwen38-27b" (
   set "ARTIFACT=qwen3_8_27b.ninfer"
   set "TITLE=Qwen3.8-27B"
+  set "GRAFT_FILE=v1_q38_nf4_trained.bin"
   goto :model_known
 )
 if /i "%MODEL_KEY%"=="qwen36-35b-a3b" (
   set "ARTIFACT=qwen3_6_35b_a3b.ninfer"
   set "TITLE=Qwen3.6-35B-A3B"
+  set "GRAFT_FILE=v1_q36_35b_nf4_trained.bin"
   goto :model_known
 )
 echo Unknown model: %MODEL_KEY% 1>&2
@@ -141,6 +145,12 @@ if not "%NINFER_PORT%"=="" set "PORT=%NINFER_PORT%"
 set "SERVER=%ROOT%\build-ninja\apps\ninfer-serve.exe"
 if not exist "%SERVER%" set "SERVER=%~dp0ninfer-serve.exe"
 if not "%NINFER_SERVER%"=="" set "SERVER=%NINFER_SERVER%"
+
+rem Phantom-KV graft: default directory is artifacts\grafts in this repo. The graft
+rem file name is set per model key above. NINFER_GRAFTS=off disables graft loading entirely;
+rem NINFER_GRAFT_DIR overrides where to look.
+set "GRAFT_DIR=%ROOT%\artifacts\grafts"
+if not "%NINFER_GRAFT_DIR%"=="" set "GRAFT_DIR=%NINFER_GRAFT_DIR%"
 
 rem The profile fixes the whole serving shape. LABEL is the banner; PROFILE_ARGS is everything
 rem after --host/--port. Values below use ^| for the separator: a bare pipe inside an expanded
@@ -305,6 +315,19 @@ exit /b 2
 set "PROFILE_ARGS=%PROFILE_ARGS% --max-pending-requests 16 --pending-timeout-ms 600000 %VISION_ARGS% --max-private-continuations 8 --max-shared-prefixes 8 --host-state-slots %HOST_STATE_SLOTS% --host-kv-mib 8192 --auto-prefix-grid"
 
 :launch
+set "GRAFT_ARGS="
+set "GRAFT_NOTE="
+if /i "%NINFER_GRAFTS%"=="off" goto :graft_done
+if "%GRAFT_FILE%"=="" goto :graft_done
+if not exist "%GRAFT_DIR%\%GRAFT_FILE%" goto :graft_done
+rem The shipped grafts are direct_kv, which startup refuses together with --spec. Speculative
+rem profiles therefore launch without the graft; NINFER_GRAFTS=off documents the same choice.
+if not "%PROFILE_ARGS:--spec=%"=="%PROFILE_ARGS%" (
+  set "GRAFT_NOTE=Graft skipped: direct grafts cannot be combined with speculative decoding"
+  goto :graft_done
+)
+set "GRAFT_ARGS=--graft "v1=%GRAFT_DIR%\%GRAFT_FILE%""
+:graft_done
 if not exist "%SERVER%" (
   echo Missing %SERVER%
   echo Build it first:  .\scripts\build.ps1
@@ -319,6 +342,8 @@ if not exist "%MODEL%" (
 echo %TITLE%  ^|  %LABEL%
 if not "%PREFILL_NOTE%"=="" echo %PREFILL_NOTE%
 if /i "%PROFILE%"=="tuned" echo Cache: 8 shared / 8 private / %HOST_STATE_SLOTS% host states  ^|  automatic prefix grid on
+if not "%GRAFT_ARGS%"=="" echo Graft: v1 = %GRAFT_FILE%
+if not "%GRAFT_NOTE%"=="" echo %GRAFT_NOTE%
 if not "%HINT%"=="" echo %HINT%
 echo API: http://%HOST%:%PORT%/v1
 echo.
@@ -333,7 +358,7 @@ rem zero. Do not read "8192" as a description of this machine. See
 rem docs\maintainer\launcher-profiles.md.
 if /i not "%PROFILE%"=="tuned" set "LADDER=0"
 if "%LADDER%"=="0" (
-  "%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS%
+  "%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %GRAFT_ARGS%
   endlocal
   exit /b %ERRORLEVEL%
 )
@@ -347,7 +372,7 @@ if "%RUNG%"=="0" (
   set "BASE_SLOTS=%HOST_STATE_SLOTS%"
 )
 set "SERVER_LOG=%TEMP%\ninfer-run-%RANDOM%%RANDOM%.log"
-"%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% 2>&1 | powershell -NoProfile -Command "$input | ForEach-Object { $_; Add-Content -LiteralPath '%SERVER_LOG%' -Value $_ -Encoding Ascii }"
+"%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %GRAFT_ARGS% 2>&1 | powershell -NoProfile -Command "$input | ForEach-Object { $_; Add-Content -LiteralPath '%SERVER_LOG%' -Value $_ -Encoding Ascii }"
 findstr /c:"runtime reservation requires" /c:"cudaMallocHost failed" "%SERVER_LOG%" >nul 2>&1
 if errorlevel 1 goto :server_done
 if %RUNG% GEQ 5 goto :server_done

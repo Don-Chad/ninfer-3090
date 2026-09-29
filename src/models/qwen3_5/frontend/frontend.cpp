@@ -336,6 +336,103 @@ void assign_text_positions(PreparedPromptData& prompt) {
     prompt.rope_delta = 0;
 }
 
+// Returns the number of context positions a graft occupies.
+std::uint32_t graft_context_slots(const PromptGraft& graft) {
+    if (graft.kind == GraftKind::PrefillKV) {
+        return static_cast<std::uint32_t>(graft.tokens.size());
+    }
+    return graft.n_slots;
+}
+
+// Places a graft's tokens at positions [0, n) and shifts everything the rendered prompt produced by
+// n. Text-only positions advance by one per token on every M-RoPE axis, so a text prefix moves each
+// later position -- Vision grids included -- by exactly n and leaves rope_delta unchanged.
+void prepend_graft(const PromptGraft& graft, PreparedPromptData& prompt,
+                   std::vector<std::optional<std::uint32_t>>& message_boundaries,
+                   std::vector<std::optional<std::uint32_t>>& cache_boundaries) {
+    const std::size_t shift = graft.tokens.size();
+    const std::size_t count = prompt.token_ids.size();
+    const auto shifted      = [shift](std::uint32_t frontier) {
+        return static_cast<std::uint32_t>(frontier + shift);
+    };
+
+    prompt.token_ids.insert(prompt.token_ids.begin(), graft.tokens.begin(), graft.tokens.end());
+    prompt.token_types.insert(prompt.token_types.begin(), shift, 0);
+    std::vector<std::int32_t> positions((count + shift) * 3);
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        std::int32_t* out = positions.data() + axis * (count + shift);
+        for (std::size_t index = 0; index < shift; ++index) {
+            out[index] = static_cast<std::int32_t>(index);
+        }
+        for (std::size_t index = 0; index < count; ++index) {
+            out[shift + index] = prompt.positions[axis * count + index] +
+                                 static_cast<std::int32_t>(shift);
+        }
+    }
+    prompt.positions = std::move(positions);
+    for (VisionItem& item : prompt.vision_items) {
+        for (TokenSpan& span : item.token_spans) { span.begin += shift; }
+    }
+    if (prompt.identity.rewrite_checkpoint) {
+        prompt.identity.rewrite_checkpoint->frontier =
+            shifted(prompt.identity.rewrite_checkpoint->frontier);
+    }
+    for (std::uint32_t& frontier : prompt.identity.rewrite_execution_frontiers) {
+        frontier = shifted(frontier);
+    }
+    for (std::optional<std::uint32_t>& boundary : message_boundaries) {
+        if (boundary) { boundary = shifted(*boundary); }
+    }
+    for (std::optional<std::uint32_t>& boundary : cache_boundaries) {
+        if (boundary) { boundary = shifted(*boundary); }
+    }
+}
+
+// For direct_kv/softprompt_kv grafts: prepend n_slots placeholder tokens so that token_ids.size()
+// includes the graft's pre-populated positions. The placeholders are never prefilled — they're
+// covered by the SharedStablePrefix reuse path — but their presence keeps downstream index
+// arithmetic consistent (reuse_base <= prompt_tokens). Positions are extended to form a
+// contiguous sequence [0, 1, ..., n_slots + original_count - 1].
+void apply_direct_graft(const PromptGraft& graft, PreparedPromptData& prompt,
+                        std::vector<std::optional<std::uint32_t>>& message_boundaries,
+                        std::vector<std::optional<std::uint32_t>>& cache_boundaries) {
+    const auto n_slots   = static_cast<std::size_t>(graft.n_slots);
+    const auto count     = prompt.token_ids.size();
+    const auto new_count = n_slots + count;
+    const auto shifted   = [n_slots](std::uint32_t frontier) {
+        return static_cast<std::uint32_t>(frontier + n_slots);
+    };
+
+    prompt.token_ids.insert(prompt.token_ids.begin(), n_slots, TokenId{0});
+    prompt.token_types.insert(prompt.token_types.begin(), n_slots, std::uint8_t{0});
+
+    std::vector<std::int32_t> new_positions(3 * new_count);
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        for (std::size_t i = 0; i < n_slots; ++i) {
+            new_positions[axis * new_count + i] = static_cast<std::int32_t>(i);
+        }
+        for (std::size_t i = 0; i < count; ++i) {
+            new_positions[axis * new_count + n_slots + i] =
+                prompt.positions[axis * count + i] + static_cast<std::int32_t>(n_slots);
+        }
+    }
+    prompt.positions = std::move(new_positions);
+
+    for (VisionItem& item : prompt.vision_items) {
+        for (TokenSpan& span : item.token_spans) { span.begin += n_slots; }
+    }
+    prompt.identity.rewrite_checkpoint.reset();
+    prompt.identity.rewrite_execution_frontiers.clear();
+    for (std::optional<std::uint32_t>& boundary : message_boundaries) {
+        if (boundary) { boundary = shifted(*boundary); }
+    }
+    for (std::optional<std::uint32_t>& boundary : cache_boundaries) {
+        if (boundary) { boundary = shifted(*boundary); }
+    }
+    prompt.graft_name     = graft.name;
+    prompt.graft_frontier = static_cast<std::uint32_t>(n_slots);
+}
+
 VisionItem convert_vision_item(fi::VisionItem item) {
     VisionItem result;
     result.modality =
@@ -411,7 +508,8 @@ PreparedContextCache prepare_context_cache(
     std::span<const PromptCacheMarker> rendered_markers,
     std::span<const std::optional<std::uint32_t>> cache_boundaries,
     std::span<const VisionItem> vision_items, std::optional<std::size_t> engine_tool_marker_index,
-    std::optional<std::uint32_t> leading_boundary, std::uint32_t full_prompt_frontier) {
+    std::optional<std::uint32_t> leading_boundary, std::uint32_t full_prompt_frontier,
+    std::uint32_t graft_frontier) {
     if (hints.markers.size() > kMaximumExplicitPromptCacheMarkers) {
         throw std::invalid_argument("PromptInput supports at most four explicit cache markers");
     }
@@ -492,7 +590,7 @@ PreparedContextCache prepare_context_cache(
         }
     }
 
-    out.opportunities.reserve(7U + (hints.allow_engine_prefix_grid ? kPrefixGridCandidates : 0U));
+    out.opportunities.reserve(8U + (hints.allow_engine_prefix_grid ? kPrefixGridCandidates : 0U));
     const auto add_opportunity = [&](PromptCacheMarkerKind kind, SharedCandidateEvidence evidence,
                                      std::uint32_t frontier, std::uint32_t input_order) {
         if (frontier == 0 || !exact_vision_frontier(frontier, vision_items)) { return; }
@@ -525,6 +623,13 @@ PreparedContextCache prepare_context_cache(
     }
 
     std::uint32_t engine_order = static_cast<std::uint32_t>(hints.markers.size());
+    // Every request selecting a graft starts with the same tokens, so the end of the graft is a
+    // prefix other requests will match whatever the protocol's own cache policy says. Publishing it
+    // is what makes a graft cost one replay instead of one per conversation.
+    if (graft_frontier != 0) {
+        add_opportunity(PromptCacheMarkerKind::SharedStablePrefix,
+                        SharedCandidateEvidence::EngineStructural, graft_frontier, engine_order++);
+    }
     if (hints.allow_engine_automatic_shared_prefixes) {
         if (engine_tool_marker_index && *engine_tool_marker_index < cache_boundaries.size() &&
             cache_boundaries[*engine_tool_marker_index]) {
@@ -595,7 +700,8 @@ public:
         : chat_template(compile_chat_template(resources, options.chat_template_path)),
           tokenizer(resources.tokenizer),
           processor(options.vision_enabled ? processor_options(resources) : fi::ProcessorOptions{}),
-          vision_enabled(options.vision_enabled), max_context(options.max_context) {
+          vision_enabled(options.vision_enabled), max_context(options.max_context),
+          grafts(std::move(options.grafts)) {
         fi::bound_merged_tokens(processor, options.vision_max_merged_tokens);
         if (options.max_context == 0) {
             throw std::invalid_argument("frontend max_context must be nonzero");
@@ -648,6 +754,28 @@ public:
             }
         }
         thinking_control_tokens = std::make_shared<const std::vector<TokenId>>(std::move(encoded));
+        for (const PromptGraft& graft : grafts) {
+            const std::uint32_t slots = graft_context_slots(graft);
+            if (slots == 0 || slots >= options.max_context) {
+                throw std::invalid_argument("graft '" + graft.name +
+                                            "' leaves no room for a prompt within max_context");
+            }
+            for (const TokenId token : graft.tokens) {
+                if (!tokenizer->is_valid_token(token)) {
+                    throw std::invalid_argument("graft '" + graft.name +
+                                                "' contains a token outside the vocabulary");
+                }
+            }
+        }
+    }
+
+    // The graft a request names, or null for none.
+    [[nodiscard]] const PromptGraft* find_graft(const std::string& name) const {
+        if (name.empty()) { return nullptr; }
+        for (const PromptGraft& graft : grafts) {
+            if (graft.name == name) { return &graft; }
+        }
+        throw std::invalid_argument("unknown graft '" + name + "'");
     }
 
     fi::CompiledChatTemplate chat_template;
@@ -659,6 +787,7 @@ public:
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens;
     bool vision_enabled       = true;
     std::uint32_t max_context = 0;
+    std::vector<PromptGraft> grafts;
 };
 
 std::span<const std::int32_t> PreparedPromptData::position_axis(int axis) const {
@@ -747,6 +876,10 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
     if (cache_hints.markers.size() > kMaximumExplicitPromptCacheMarkers) {
         throw std::invalid_argument("PromptInput supports at most four explicit cache markers");
     }
+    const PromptGraft* graft = impl_->find_graft(options.graft);
+    // The rendered prompt gets whatever context the graft leaves.
+    const std::uint32_t prompt_context =
+        impl_->max_context - (graft ? graft_context_slots(*graft) : 0U);
     std::vector<ChatRole> message_roles;
     message_roles.reserve(input.messages.size());
     for (const ChatMessage& message : input.messages) { message_roles.push_back(message.role); }
@@ -786,7 +919,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
         try {
             processed =
                 processor.process(std::move(messages), render_options(options, rendered_markers),
-                                  control, impl_->max_context);
+                                  control, prompt_context);
         } catch (const fi::ProcessorError& error) { throw_processor_error(error); }
         result.token_ids.assign(processed.input_ids.begin(), processed.input_ids.end());
         result.starts_in_reasoning = processed.starts_in_reasoning;
@@ -824,11 +957,11 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
         result.starts_in_reasoning  = rendered.starts_in_reasoning;
         const auto tokenize_started = Clock::now();
         fi::EncodedChat encoded     = fi::encode_rendered_chat(
-            *impl_->tokenizer, rendered, static_cast<std::size_t>(impl_->max_context) + 1U);
+            *impl_->tokenizer, rendered, static_cast<std::size_t>(prompt_context) + 1U);
         result.prepare.tokenize_seconds =
             std::chrono::duration<double>(Clock::now() - tokenize_started).count();
         fi::check_preparation_control(control, "tokenization");
-        if (encoded.input_ids.size() > impl_->max_context) {
+        if (encoded.input_ids.size() > prompt_context) {
             throw_context_length_exceeded(impl_->max_context);
         }
         result.token_ids                   = std::move(encoded.input_ids);
@@ -840,11 +973,28 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
         assign_text_positions(result);
     }
     (void)checked_token_count(result.token_ids.size());
-    result.identity.reusable = true;
-    result.context_cache     = prepare_context_cache(
-        std::move(cache_hints), message_count, message_boundaries, rendered_markers,
-        cache_boundaries, result.vision_items, engine_tool_marker_index, leading_boundary,
-        checked_token_count(result.token_ids.size()));
+    if (graft) {
+        if (graft->kind == GraftKind::PrefillKV) {
+            prepend_graft(*graft, result, message_boundaries, cache_boundaries);
+        } else {
+            apply_direct_graft(*graft, result, message_boundaries, cache_boundaries);
+        }
+    }
+    const bool is_direct_graft = graft && graft->kind != GraftKind::PrefillKV;
+    result.identity.reusable = !is_direct_graft;
+    if (is_direct_graft) {
+        // Direct grafts use the pinned graft slot for KV reuse (inspect_admission bypass), not the
+        // regular context cache. Shifted boundaries would produce out-of-range capture frontiers, so
+        // skip context cache setup entirely for these requests.
+        result.context_cache.retention            = runtime::RetentionClass::Disposable;
+        result.context_cache.update_session_index = false;
+    } else {
+        result.context_cache = prepare_context_cache(
+            std::move(cache_hints), message_count, message_boundaries, rendered_markers,
+            cache_boundaries, result.vision_items, engine_tool_marker_index, leading_boundary,
+            checked_token_count(result.token_ids.size()),
+            graft ? graft_context_slots(*graft) : 0U);
+    }
     result.prepare.seconds = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
 }
@@ -852,6 +1002,8 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
 std::uint32_t Frontend::count_tokens(PromptInput input, const PreparationControl& control) const {
     fi::check_preparation_control(control);
     const PromptOptions options           = input.options;
+    const PromptGraft* graft              = impl_->find_graft(options.graft);
+    const std::size_t graft_tokens        = graft ? graft_context_slots(*graft) : 0U;
     std::vector<fi::ChatMessage> messages = convert_messages(std::move(input.messages));
     const bool has_media =
         std::any_of(messages.begin(), messages.end(),
@@ -863,7 +1015,7 @@ std::uint32_t Frontend::count_tokens(PromptInput input, const PreparationControl
         const fi::RenderedChat rendered =
             impl_->chat_template.render(messages, render_options(options), control);
         const std::uint32_t count = checked_token_count(
-            fi::encode_rendered_chat(*impl_->tokenizer, rendered).input_ids.size());
+            graft_tokens + fi::encode_rendered_chat(*impl_->tokenizer, rendered).input_ids.size());
         fi::check_preparation_control(control, "tokenization");
         return count;
     }
@@ -872,6 +1024,7 @@ std::uint32_t Frontend::count_tokens(PromptInput input, const PreparationControl
                             impl_->media_cache);
     try {
         return checked_token_count(
+            graft_tokens +
             processor.count_tokens(std::move(messages), render_options(options), control));
     } catch (const fi::ProcessorError& error) { throw_processor_error(error); }
 }
@@ -939,5 +1092,7 @@ OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
 }
 
 const StopPolicy& Frontend::default_stop_policy() const noexcept { return impl_->defaults; }
+
+const std::vector<PromptGraft>& Frontend::grafts() const noexcept { return impl_->grafts; }
 
 } // namespace ninfer::models::qwen3_5

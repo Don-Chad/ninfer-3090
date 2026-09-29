@@ -28,6 +28,8 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -252,6 +254,7 @@ struct AdmissionCandidateImpl : ResourceCandidateState {
     std::uint32_t root_rebuild_tail_begin = 0;
     bool text_retained_tail_release       = false;
     bool backend_retained_tail_release    = false;
+    std::optional<std::uint32_t> graft_shared_slot_index;
 };
 
 struct CapturePressureCandidateImpl : ResourceCandidateState {};
@@ -388,7 +391,12 @@ enum class SharedPrefixSlotRole : std::uint8_t {
     ReservedCapture,
     ReservedReplacement,
     Catalogued,
+    Pinned,
 };
+
+constexpr bool is_live_shared_prefix_role(SharedPrefixSlotRole role) noexcept {
+    return role == SharedPrefixSlotRole::Catalogued || role == SharedPrefixSlotRole::Pinned;
+}
 
 struct SharedPrefixSlot {
     SharedPrefixSlotRole role = SharedPrefixSlotRole::Free;
@@ -637,6 +645,12 @@ public:
     std::vector<ContinuationSlot> continuation_slots;
     std::vector<SharedPrefixState> shared_prefix_states;
     std::vector<SharedPrefixSlot> shared_prefix_slots;
+    struct GraftPrefixEntry {
+        std::uint32_t slot_index;
+        std::uint64_t generation;
+    };
+    std::unordered_map<std::string, GraftPrefixEntry> graft_prefix_slots;
+    std::unordered_map<std::string, std::uint32_t> graft_rm_catalog_slots;
     std::array<std::uint32_t, kMaximumConcurrency> active_continuations{};
     // Overlay Vision residency only: the one-window broker and the per-lane pinned result slots.
     // Declared before `requests`, whose Vision sessions borrow both.
@@ -664,6 +678,8 @@ public:
 
     std::size_t workspace_logical_peak_bytes = 0;
     std::size_t vision_handoff_peak_bytes    = 0;
+
+    friend class Program;
 
 private:
     void advance_resource_revision() noexcept {
@@ -939,7 +955,8 @@ private:
     [[nodiscard]] std::optional<AdmissionCandidate>
     inspect_lane(std::uint32_t lane, const PreparedPromptData& prompt, const RequestBasePlan& base,
                  const SequenceState* source, const SharedPrefixState* shared_source,
-                 std::optional<runtime::CheckpointRef> checkpoint, bool must_retain_private_source);
+                 std::optional<runtime::CheckpointRef> checkpoint, bool must_retain_private_source,
+                 bool is_graft = false);
     [[nodiscard]] StartResult start_request(MaterializationTransaction& transaction);
     void prepare_materialization(MaterializationTransaction& transaction);
     void enqueue_materialization_transfers(MaterializationTransaction& transaction);

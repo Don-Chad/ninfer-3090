@@ -1,5 +1,6 @@
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/frontend/prepared_prompt.h"
+#include "models/qwen3_5/program/graft_injection.h"
 #include "models/qwen3_5/program/planning/startup.h"
 #include "models/qwen3_5/program/program_impl.h"
 #include <stdexcept>
@@ -274,11 +275,13 @@ std::optional<ResourcePlan> Program::seal_identity(const AdmissionCandidate& adm
                                                    runtime::FinalScheduleIntent intent) {
     std::optional<AdmissionCandidate> sealed = impl_->seal_materialization(
         admission, PreparedPromptAccess::view(prompt), {}, {}, {}, {}, {}, {});
-    if (!sealed) { return std::nullopt; }
+    if (!sealed) {
+        return std::nullopt;
+    }
     impl_->select_shared_captures(*sealed, PreparedPromptAccess::view(prompt),
                                   intent.shared_capture_frontiers);
-    if (impl_->revalidate_materialization(*sealed, PreparedPromptAccess::view(prompt)) !=
-        runtime::PreflightStatus::Ready) {
+    const auto seal_status = impl_->revalidate_materialization(*sealed, PreparedPromptAccess::view(prompt));
+    if (seal_status != runtime::PreflightStatus::Ready) {
         return std::nullopt;
     }
     const bool needs_transfer = sealed->impl_->needs_transfer;
@@ -483,8 +486,10 @@ MemorySummary Program::memory_summary() const noexcept { return impl_->memory_su
 void Program::reset_memory_peaks() noexcept { impl_->reset_memory_peaks(); }
 
 SequencePlanner make_sequence_planner(const execution::Parameters& parameters,
-                                      DeviceContext& device, const EngineOptions& options) {
-    return SequencePlanner(detail::make_sequence_planner_impl(parameters, device, options));
+                                      DeviceContext& device, const EngineOptions& options,
+                                      std::uint32_t resident_main_pages) {
+    return SequencePlanner(
+        detail::make_sequence_planner_impl(parameters, device, options, resident_main_pages));
 }
 
 std::size_t prepare_vision_overlay(const execution::Parameters& parameters, DeviceContext& device,
@@ -535,6 +540,26 @@ std::unique_ptr<Program> create_program(const execution::Parameters& parameters,
     return std::unique_ptr<Program>(new Program(std::move(impl)));
 }
 
+void Program::inject_graft(const PromptGraft& graft) {
+    inject_direct_graft(*impl_, graft);
+}
+
+std::vector<Program::GraftCatalogEntry> Program::graft_catalog_entries() {
+    std::vector<GraftCatalogEntry> result;
+    for (const auto& [name, entry] : impl_->graft_prefix_slots) {
+        auto handle = detail::RuntimeContractAccess::make_shared_prefix(
+            impl_.get(), entry.slot_index, entry.generation);
+        const auto& shared = impl_->shared_prefix_states[entry.slot_index];
+        auto summary = impl_->shared_prefix_summary(shared);
+        result.push_back({name, std::move(handle), summary});
+    }
+    return result;
+}
+
+void Program::set_graft_rm_slot(const std::string& name, std::uint32_t rm_slot) {
+    impl_->graft_rm_catalog_slots[name] = rm_slot;
+}
+
 } // namespace ninfer::models::qwen3_5
 
 namespace ninfer::models::qwen3_5 {
@@ -572,6 +597,10 @@ const runtime::IdentityMaterializationAssessment&
 AdmissionCandidate::identity_assessment() const noexcept {
     static const runtime::IdentityMaterializationAssessment empty;
     return impl_ != nullptr ? impl_->identity_assessment : empty;
+}
+
+std::optional<std::uint32_t> AdmissionCandidate::graft_shared_slot() const noexcept {
+    return impl_ != nullptr ? impl_->graft_shared_slot_index : std::nullopt;
 }
 
 } // namespace ninfer::models::qwen3_5

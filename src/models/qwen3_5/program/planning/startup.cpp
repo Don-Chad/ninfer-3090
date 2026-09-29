@@ -1036,7 +1036,7 @@ std::uint32_t vision_item_token_bound(std::uint32_t capacity, const models::Load
 
 std::unique_ptr<qwen3_5::detail::SequencePlannerImpl>
 make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContext& device,
-                           const EngineOptions& options) {
+                           const EngineOptions& options, std::uint32_t resident_main_pages) {
     validate_target_options(parameters, device, options);
     SequencePlanningInputs inputs{
         .parameters          = &parameters,
@@ -1053,14 +1053,18 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
         .causal_scoring      = options.purpose == EnginePurpose::CausalScoring,
         .device              = options.device,
         .context_cache       = options.context_cache,
+        .resident_main_pages = resident_main_pages,
     };
     const std::uint32_t logical_pages = page_count(inputs.capacity);
-    const std::uint32_t minimum_pages = std::max(logical_pages, inputs.max_concurrency);
+    const std::uint64_t minimum_pages64 =
+        static_cast<std::uint64_t>(std::max(logical_pages, inputs.max_concurrency)) +
+        resident_main_pages;
     const std::uint64_t maximum_pages64 =
-        static_cast<std::uint64_t>(inputs.max_concurrency) * logical_pages;
+        static_cast<std::uint64_t>(inputs.max_concurrency) * logical_pages + resident_main_pages;
     if (maximum_pages64 > std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("maximum Main KV page count exceeds uint32");
     }
+    const auto minimum_pages = static_cast<std::uint32_t>(minimum_pages64);
     const auto maximum_pages = static_cast<std::uint32_t>(maximum_pages64);
 
     auto planner     = std::make_unique<qwen3_5::detail::SequencePlannerImpl>();
@@ -1072,6 +1076,7 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
           .maximum_main_page_groups             = maximum_pages,
           .minimum_device_reservation_bytes     = planner->minimum->device_reservation_bytes,
           .bytes_per_additional_main_page_group = 0,
+          .resident_main_pages                  = resident_main_pages,
     };
     for (const std::size_t bytes : planner->minimum->extra_rank_reservation_bytes) {
         planner->curve.extra_ranks.push_back({.minimum_device_reservation_bytes = bytes});

@@ -395,6 +395,9 @@ struct SequenceCapacityCurve {
     std::uint32_t maximum_main_page_groups           = 0;
     std::size_t minimum_device_reservation_bytes     = 0;
     std::size_t bytes_per_additional_main_page_group = 0;
+    // Pages held for good by injected graft prefixes. They sit inside the range above, so an
+    // explicit capacity asks for them on top of the requested tokens.
+    std::uint32_t resident_main_pages = 0;
     std::vector<RankCapacityCurve> extra_ranks;
 
     [[nodiscard]] std::size_t reservation_bytes(std::uint32_t main_page_groups) const;

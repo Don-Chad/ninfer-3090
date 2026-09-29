@@ -245,8 +245,8 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
             const bool shared_source_ready =
                 transaction.has_shared_source &&
                 transaction.shared_source_index < shared_prefix_capacity &&
-                shared_prefix_slots[transaction.shared_source_index].role ==
-                    SharedPrefixSlotRole::Catalogued;
+                is_live_shared_prefix_role(
+                    shared_prefix_slots[transaction.shared_source_index].role);
             if (private_source_ready == shared_source_ready ||
                 transaction.reserved_state_count != state_slots || state_slots == 0 ||
                 !transaction.root_text_address || !transaction.text_prefix_fork ||

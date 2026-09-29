@@ -30,6 +30,8 @@ venv/
 *.bin
 *.safetensors
 *.gguf
+# Phantom-KV grafts are tracked via LFS
+!artifacts/grafts/*.bin
 *.ninfer
 *.ninfer.conversion.json
 /models/

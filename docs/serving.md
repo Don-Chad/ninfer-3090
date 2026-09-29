@@ -230,6 +230,7 @@ The endpoint supports:
 - the top-level `reasoning_effort` field;
 - `enable_thinking` and `preserve_thinking`, either at top level or in
   `chat_template_kwargs`;
+- the `graft` extension selecting a [prompt graft](#prompt-grafts);
 - Assistant `reasoning_content` and `reasoning` history aliases.
 
 Options whose observable behavior the Engine cannot provide are rejected when they request that
@@ -432,6 +433,7 @@ wire response contains typed `output` Items.
 | `reasoning.effort` | `none` requests disabled thinking; other standard effort values pass to the selected template |
 | `chat_template_kwargs` | template parameters as a JSON object; standard options merge with typed fields |
 | `preserve_thinking` | alias for `chat_template_kwargs.preserve_thinking`; conflicting values are rejected |
+| `graft` | NInfer extension: name of a [prompt graft](#prompt-grafts), or `null`; also accepted by input token count |
 | `text.format` | omitted or `{"type":"text"}` only |
 | `tools` | direct function definitions or namespace groups containing function definitions; see below |
 | `tool_choice` | `auto`, `none`, or function-only `allowed_tools` with mode `auto`; a namespaced selection carries both `namespace` and `name` |
@@ -692,7 +694,7 @@ closing the block. Assistant Thinking blocks must be passed back unmodified with
 signatures belong to the current serve process and are invalid after it restarts.
 `display:"omitted"` is rejected because NInfer cannot provide Anthropic's
 encrypted hidden-reasoning restore semantics. `preserve_thinking` remains a NInfer extension for
-closed-turn reasoning history. `output_config.effort` passes its protocol-validated value to the
+closed-turn reasoning history, and `graft` selects a [prompt graft](#prompt-grafts). `output_config.effort` passes its protocol-validated value to the
 selected template.
 
 User-defined, non-strict tools support `name`, `description`, object `input_schema`, and
@@ -737,6 +739,50 @@ curl http://127.0.0.1:8080/v1/messages/count_tokens \
     "messages": [{"role": "user", "content": "Count this prompt."}]
   }'
 ```
+
+## Prompt grafts
+
+A prompt graft is a hidden conversation prefix, for example a system turn plus an assistant
+acknowledgement, which the operator loads at startup and a request selects by name. Grafts are the
+[phantom-kv](https://github.com/lordx64/phantom-kv) `prefill_kv` container (format_version 1): a
+safetensors file plus a `.json` sidecar beside it.
+
+```bash
+ninfer-serve model.ninfer --graft v1=C:/grafts/v1_q38_nf4.bin --graft red=C:/grafts/red.bin
+```
+
+A request selects one with the top-level `"graft": "NAME"` field on OpenAI Chat Completions,
+Responses (create and input token count) and Anthropic Messages. `null` or absence selects none.
+A name the server did not load fails with `400 unknown_graft`, and a non-string value fails as a
+malformed `graft` field.
+
+A grafted request runs exactly as if the graft's hidden turns preceded its own messages. The
+graft's tokens occupy positions `[0, n)` and the request's own rendered prompt starts at `n`. With
+greedy decoding, output is identical to sending those turns as literal messages. The rendered
+prompt should carry no system turn of its own, because the graft already holds one. Graft tokens
+count toward `--max-context` and the reported prompt/input tokens.
+
+The container also stores the cache state that phantom-kv computed for the graft (attention K/V
+and Gated DeltaNet conv/recurrent state). NInfer does not inject that state. It replays the
+graft's own token ids through its own prefill, which is exact for the loaded weights and KV
+storage and covers every layer, including the MTP draft layer. The end of the graft is offered to
+the shared-prefix cache, so conversations after the first reuse the whole graft instead of
+re-prefilling it. When the shared catalog is already full of other prefixes, the engine's
+admission rule for structural candidates admits the graft on its second use.
+
+Startup validates each graft against the loaded model and refuses to start on any mismatch:
+- the per-layer attention/linear-attention layout;
+- the KV-head, conv and recurrent-state geometry;
+- the sidecar's payload sha256;
+- the replay ids against the vocabulary.
+
+Trained `softprompt_kv` and `direct_kv` grafts carry no replayable token ids. Their stored K/V and
+Gated DeltaNet state are instead written at startup into a pinned shared-prefix slot, and grafted
+requests start from it. Because nothing is replayed, these grafts cover the text layers only and
+carry no draft-backend state, so startup refuses them together with `--spec`. Each one holds a
+Device StateImage and a shared-prefix slot for the life of the server; startup adds them on top of
+`--device-state-slots` and `--max-shared-prefixes`, and a disabled context cache refuses them. With
+`--devices`, each layer's K/V and state are written on the device of the stage that holds that layer.
 
 ## Authentication and CORS
 
@@ -802,6 +848,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--max-cache-markers-per-request N` | caller marker input-complexity bound | `4` |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
+| `--graft NAME=PATH` | load a [prompt graft](#prompt-grafts) a request may select by name; repeatable | none |
 | `--cors` | permissive browser CORS headers | off |
 | `--temperature F` | process-level temperature override | unset |
 | `--top-p F` | process-level top-p override | unset |

@@ -1,7 +1,9 @@
 #include "runtime/engine/model_instance.h"
 #include "artifact/reader.h"
 #include "artifact/formats.h"
+#include "core/paged_kv_cache.h"
 #include "core/startup.h"
+#include "models/qwen3_5/frontend/graft.h"
 #include "models/qwen3_5/load.h"
 #include "models/qwen3_5/measurement.h"
 
@@ -89,6 +91,9 @@ EngineOptions normalize_engine_options(EngineOptions options) {
     case EnginePurpose::Generation:
         break;
     case EnginePurpose::CausalScoring:
+        if (!options.grafts.empty()) {
+            throw std::invalid_argument("a CausalScoring Engine takes no prompt grafts");
+        }
         options.max_concurrency      = 1;
         options.max_pending_requests = 1;
         options.prefill_chunk        = 1024;
@@ -107,6 +112,13 @@ EngineOptions normalize_engine_options(EngineOptions options) {
 
     ContextCacheOptions& cache      = options.context_cache;
     const std::uint32_t concurrency = options.max_concurrency;
+    // Injected grafts stay resident for the life of the Engine, each in a StateImage and a
+    // shared-prefix slot of its own, so the pools grow by that many beyond what requests use.
+    const std::uint32_t direct_grafts = models::qwen3_5::count_direct_grafts(options.grafts);
+    if (!cache.enabled && direct_grafts != 0) {
+        throw std::invalid_argument(
+            "direct grafts are held in the context cache, which is disabled");
+    }
     if (!cache.enabled) {
         if ((cache.device_state_slots && *cache.device_state_slots != 0) ||
             (cache.max_private_continuations && *cache.max_private_continuations != concurrency) ||
@@ -125,12 +137,14 @@ EngineOptions normalize_engine_options(EngineOptions options) {
         return options;
     }
 
-    cache.device_state_slots            = cache.device_state_slots.value_or(concurrency);
+    cache.device_state_slots = cache.device_state_slots.value_or(concurrency) + direct_grafts;
     const std::uint64_t default_private = 2ULL * concurrency;
     cache.max_private_continuations =
         cache.max_private_continuations.value_or(static_cast<std::uint32_t>(default_private));
-    cache.max_shared_prefixes = cache.max_shared_prefixes.value_or(
-        std::max(concurrency, static_cast<std::uint32_t>(kMaximumExplicitPromptCacheMarkers)));
+    cache.max_shared_prefixes =
+        cache.max_shared_prefixes.value_or(
+            std::max(concurrency, static_cast<std::uint32_t>(kMaximumExplicitPromptCacheMarkers))) +
+        direct_grafts;
     cache.max_long_anchors_per_continuation = cache.max_long_anchors_per_continuation.value_or(2U);
     cache.max_cache_markers_per_request     = cache.max_cache_markers_per_request.value_or(4U);
 
@@ -167,7 +181,9 @@ ModelInstance::ModelInstance(std::unique_ptr<models::qwen3_5::Model> source,
                                .media_cache_bytes        = options.media_cache_bytes,
                                .media_live_bytes         = options.media_live_bytes,
                                .media_preprocess_threads = options.media_preprocess_threads,
-                               .vision_max_merged_tokens = options.vision_max_merged_tokens})),
+                               .vision_max_merged_tokens = options.vision_max_merged_tokens,
+                               .grafts                   = models::qwen3_5::load_prompt_grafts(
+                                   options.grafts, model->config().text)})),
       capacity(options.max_context) {}
 
 ModelInstance::~ModelInstance() = default;
@@ -209,7 +225,17 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
                 context_cost_hardware_class(device.props.name, device.props.major, device.props.minor),
             .prefill_signature = signature},
         options.context_cost.preset_path);
-    auto planner    = models::qwen3_5::make_sequence_planner(instance->parameters, device, options);
+    // Each injected graft keeps its text KV pages for good; the pool grows by that many so a request
+    // can still use all the capacity that was asked for.
+    std::uint32_t graft_main_pages = 0;
+    for (const auto& graft : instance->frontend.grafts()) {
+        if (graft.kind != models::qwen3_5::GraftKind::PrefillKV) {
+            const auto page_tokens = static_cast<std::uint32_t>(kPagedKVPageSize);
+            graft_main_pages += (graft.n_slots + page_tokens - 1U) / page_tokens;
+        }
+    }
+    auto planner = models::qwen3_5::make_sequence_planner(instance->parameters, device, options,
+                                                          graft_main_pages);
     const std::vector<std::size_t> free_by_rank = free_bytes_by_rank(device);
     auto resolution = resolve_kv_capacity(
         options.kv_capacity, planner.capacity_curve(), free_by_rank.front(),
@@ -223,9 +249,25 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
     }
     instance->kv_capacity_resolution = resolution;
     planning.complete();
+    // A direct graft is injected into the target text state only, so it carries no draft-backend
+    // state and a speculative backend cannot draft from it.
+    if (options.speculative.backend != SpeculativeBackend::None) {
+        for (const auto& graft : instance->frontend.grafts()) {
+            if (graft.kind != models::qwen3_5::GraftKind::PrefillKV) {
+                throw std::invalid_argument(
+                    "graft '" + graft.name + "' is a direct graft, which cannot be combined with "
+                    "speculative decoding; start without --spec or use a prefill_kv graft");
+            }
+        }
+    }
     StartupPhaseScope program(options.startup_observer, StartupPhase::ProgramInitialize);
     instance->program = models::qwen3_5::create_program(instance->parameters, std::move(sequence),
                                                         device, options.startup_observer);
+    for (const auto& graft : instance->frontend.grafts()) {
+        if (graft.kind != models::qwen3_5::GraftKind::PrefillKV) {
+            instance->program->inject_graft(graft);
+        }
+    }
     device.synchronize();
     program.complete();
     instance->kv_capacity_resolution.available_after_startup_bytes = current_free_device_bytes();

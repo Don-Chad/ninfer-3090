@@ -767,10 +767,22 @@ int test_stream() {
     return failures;
 }
 
+int test_graft_extension() {
+    Json body     = base_request();
+    body["graft"] = "product";
+    int failures  = check(parse(body).generation.graft == "product",
+                          "Messages graft name was not parsed");
+    body["graft"] = Json::array();
+    failures += check(api_param([&] { (void)parse(body); }) == "graft",
+                      "non-string Messages graft was accepted");
+    return failures;
+}
+
 } // namespace
 
 int main() {
     int failures = 0;
+    failures += test_graft_extension();
     failures += test_envelope_and_field_policy();
     failures += test_message_normalization();
     failures += test_attribution_system_block();

@@ -1348,8 +1348,11 @@ PressurePlanningSessionImpl::seal(qwen3_5::AssessedPressureTarget&& assessed,
     std::optional<AdmissionCandidate> sealed = std::move(assessed.executable_);
     assessed.reset();
     program->select_shared_captures(*sealed, prompt, intent.shared_capture_frontiers);
-    if (sealed->impl_->blocked_host_allocation_bytes != 0 ||
-        program->revalidate_materialization(*sealed, prompt) != runtime::PreflightStatus::Ready) {
+    if (sealed->impl_->blocked_host_allocation_bytes != 0) {
+        return std::nullopt;
+    }
+    const auto pp_status = program->revalidate_materialization(*sealed, prompt);
+    if (pp_status != runtime::PreflightStatus::Ready) {
         return std::nullopt;
     }
     return sealed;

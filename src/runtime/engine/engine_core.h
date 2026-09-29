@@ -82,6 +82,11 @@ public:
             !options.context_cache.max_shared_prefixes) {
             throw std::logic_error("target admission capacity does not match the Engine");
         }
+        for (auto& entry : instance_.program->graft_catalog_entries()) {
+            std::uint32_t rm_slot = resources_.register_external_shared_prefix(
+                std::move(entry.handle), std::move(entry.summary));
+            instance_.program->set_graft_rm_slot(entry.name, rm_slot);
+        }
         std::promise<void> startup;
         std::future<void> started = startup.get_future();
         worker_                   = std::thread([this, startup = std::move(startup)]() mutable {
