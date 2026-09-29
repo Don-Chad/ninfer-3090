@@ -1117,7 +1117,7 @@ OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
         }
         structured = std::make_unique<fi::StructuredOutputConstraint>(
             impl_->tokenizer, impl_->structured_output->compile(output.format), policy.token_ids,
-            prompt.data_->starts_in_reasoning, content_stops);
+            prompt.data_->starts_in_reasoning, content_stops, !policy.strings.empty());
     }
     return OutputSession(impl_->tokenizer, std::move(policy), output,
                          prompt.data_->starts_in_reasoning, thinking,

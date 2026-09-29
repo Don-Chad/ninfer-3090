@@ -185,8 +185,8 @@ struct StructuredOutputConstraint::State {
 StructuredOutputConstraint::StructuredOutputConstraint(
     std::shared_ptr<const Tokenizer> tokenizer, std::shared_ptr<const CompiledOutputFormat> format,
     std::vector<TokenId> stop_tokens, bool starts_in_reasoning,
-    std::span<const std::string> content_stops)
-    : tokenizer_(std::move(tokenizer)) {
+    std::span<const std::string> content_stops, bool has_stop_strings)
+    : tokenizer_(std::move(tokenizer)), has_stop_strings_(has_stop_strings) {
     if (!tokenizer_ || !format) {
         throw std::invalid_argument("structured output constraint requires a compiled format");
     }
@@ -280,7 +280,10 @@ bool StructuredOutputConstraint::fill_token_masks(std::span<const TokenId> specu
     ReasoningGate gate                = committed_->gate;
     std::int64_t bitmask_words        = static_cast<std::int64_t>(xgrammar::GetBitmaskSize(
         static_cast<int>(vocab)));
-    const bool cuttable               = stop_probe_ && !stop_candidates_.empty();
+    // Any stop string can end the output inside a speculative token; only content stops change
+    // which tokens the grammar licenses.
+    const bool terminal_probe         = stop_probe_ && has_stop_strings_;
+    const bool licensing              = terminal_probe && !stop_candidates_.empty();
     std::vector<TokenId> probed;
     std::vector<StopCut> cuts;
     bool restricted = false;
@@ -301,7 +304,7 @@ bool StructuredOutputConstraint::fill_token_masks(std::span<const TokenId> specu
             tensor.shape  = &bitmask_words;
             const bool column_restricted = matcher.FillNextTokenBitmask(&tensor);
             restricted                   = column_restricted || restricted;
-            if (column_restricted && cuttable) {
+            if (column_restricted && licensing) {
                 license_stop_cut_tokens(matcher, speculative.first(column), mask, probed, cuts);
             }
         }
@@ -309,7 +312,7 @@ bool StructuredOutputConstraint::fill_token_masks(std::span<const TokenId> specu
         const TokenId token = speculative[column];
         if (!tokenizer_->is_valid_token(token)) {
             reachable = false;
-        } else if (cuttable && stop_cuts(speculative.first(column), token)) {
+        } else if (terminal_probe && stop_cuts(speculative.first(column), token)) {
             // A stop string ends the output inside this token -- in either channel, and whether or
             // not the grammar accepts its published prefix -- so no later column is consumed.
             reachable = false;

@@ -2098,6 +2098,20 @@ int test_structured_output_stop_masks(const Frontend& frontend) {
     failures += check(std::all_of(thinking_masks.begin() + static_cast<std::ptrdiff_t>(words),
                                   thinking_masks.end(), [](std::uint32_t word) { return word == ~0U; }),
                       "column after a reasoning-close-and-stop token is constrained");
+
+    // A stop string that applies to the reasoning channel alone still ends the output, so the
+    // reasoning close that follows it in the same round is unreachable.
+    ninfer::StopPolicy reasoning_stop;
+    reasoning_stop.strings.push_back(
+        ninfer::StopString{.text = "STOP", .channel = ninfer::OutputChannel::Reasoning});
+    auto reasoning_only = frontend.make_output_session(thinking_prompt, reasoning_stop, value_output);
+    const std::array<ninfer::TokenId, 2> stop_then_close{kStopCutToken, 248069};
+    std::vector<std::uint32_t> reasoning_masks(3U * words);
+    (void)reasoning_only.token_constraint()->fill_token_masks(stop_then_close, 3, reasoning_masks,
+                                                              words);
+    failures += check(std::all_of(reasoning_masks.begin() + static_cast<std::ptrdiff_t>(2U * words),
+                                  reasoning_masks.end(), [](std::uint32_t word) { return word == ~0U; }),
+                      "column after a reasoning-channel stop is constrained");
     return failures;
 }
 

@@ -75,11 +75,13 @@ public:
                                                std::span<StopCut> cuts)>;
 
     // `content_stops` are the caller's stop strings that apply to the content channel, the only
-    // channel the grammar constrains.
+    // channel the grammar constrains. `has_stop_strings` is true when the caller configured any
+    // stop string, in either channel: a stop in the reasoning channel still ends the output, and so
+    // the speculative columns after it.
     StructuredOutputConstraint(std::shared_ptr<const Tokenizer> tokenizer,
                                std::shared_ptr<const CompiledOutputFormat> format,
                                std::vector<TokenId> stop_tokens, bool starts_in_reasoning,
-                               std::span<const std::string> content_stops);
+                               std::span<const std::string> content_stops, bool has_stop_strings);
     ~StructuredOutputConstraint() override;
 
     StructuredOutputConstraint(const StructuredOutputConstraint&)            = delete;
@@ -122,6 +124,7 @@ private:
     // remainder of a stop string whose first part was already emitted.
     std::vector<TokenId> stop_candidates_;
     std::size_t stop_contained_count_ = 0;
+    bool has_stop_strings_            = false;
     StopPrefixProbe stop_probe_;
 };
 
