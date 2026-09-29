@@ -3,8 +3,6 @@ target_sources(ninfer_ops PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/gated_delta_net/replay.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/gated_delta_net/recurrent.cu"
   "${CMAKE_CURRENT_LIST_DIR}/gated_delta_net/state_convert.cu"
-  "${CMAKE_CURRENT_LIST_DIR}/gated_delta_net/chunked/launch.cu"
-  "${CMAKE_CURRENT_LIST_DIR}/gated_delta_net/chunked/prepare_wy_wu.cu"
-  "${CMAKE_CURRENT_LIST_DIR}/gated_delta_net/chunked/state_passing.cu"
-  "${CMAKE_CURRENT_LIST_DIR}/gated_delta_net/chunked/output.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/gated_delta_net/chunked/prepare.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/gated_delta_net/chunked/recurrence.cu"
 )

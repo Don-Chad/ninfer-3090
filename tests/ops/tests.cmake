@@ -167,6 +167,13 @@ ninfer_add_op_test(ninfer_gdn_state_fp16_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_gdn_state_fp16.cpp"
   LIBRARIES ninfer_ops)
 
+# Width 1 above covers the recurrent (T < 16) launcher only; this width-16 case is the smallest
+# call that dispatches into the chunked staging/narrowing path added alongside FP16 state support.
+ninfer_add_op_test(ninfer_gdn_state_fp16_chunked_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_gdn_state_fp16.cpp"
+  LIBRARIES ninfer_ops
+  TEST_ARGS 16)
+
 ninfer_add_op_test(ninfer_vocabulary_transcode_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_vocabulary_transcode.cpp"
   LIBRARIES ninfer_ops ninfer_artifact)

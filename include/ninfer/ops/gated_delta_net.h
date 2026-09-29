@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/arena.h"
+#include "core/device.h"
 #include "core/tensor.h"
 
 #include <cuda_runtime.h>
@@ -15,10 +16,15 @@ namespace ninfer::ops {
  * zero when the private implementation requires no transient storage. The state/head dimension is
  * fixed at 128; `value_heads` must be at least `qk_heads` and divisible by it. The query covers
  * every T in the inclusive interval and throws for an invalid profile or interval.
+ *
+ * This is a worst-case bound, not an exact figure: the query takes no state dtype (a call's future
+ * ssm_state_out dtype is not yet known here), so it unconditionally reserves the FP32 state-staging
+ * scratch that execution allocates only when narrowing to an FP16 state. A call with an FP32 state
+ * uses strictly less than this bound; callers must size their arena to this value but must not
+ * assert execution's high-water mark equals it.
  */
 [[nodiscard]] std::size_t gated_delta_net_workspace_capacity_bytes(std::int32_t qk_heads,
                                                                    std::int32_t value_heads,
-                                                                   bool normalize_qk,
                                                                    std::int32_t min_tokens,
                                                                    std::int32_t max_tokens);
 
@@ -39,9 +45,11 @@ namespace ninfer::ops {
  * q/k are consumed as supplied. The oracle evaluates the complete recurrence and `ideal` naively
  * in FP64 from the represented inputs and FP32 initial state. The BF16 out is promoted and
  * compared directly with that result; output storage rounding belongs to the Op's numerical
- * criterion, not the oracle. Recurrent implementations may apply the normalization directly;
- * chunked implementations may use private normalized staging. The corresponding private storage
- * is included by gated_delta_net_workspace_capacity_bytes when `normalize_qk` is true.
+ * criterion, not the oracle. The chunked route fuses normalization into preparation and stores
+ * one private BF16 Q/K packet per Q/K head. FP32 control matrices and residuals feed native TF32
+ * products; readout and state updates use BF16 MMA operands with FP32 accumulators. The master
+ * state remains FP32 throughout. Scratch capacity is independent of normalize_qk.
+ * `execution` supplies the stream and physical SM count for launch decomposition.
  * Inputs and out do not overlap state or one another. `ws` supplies transient storage reported by
  * gated_delta_net_workspace_capacity_bytes; scratch is scoped to the call. T may be any positive
  * value.
@@ -50,7 +58,7 @@ namespace ninfer::ops {
  */
 void gated_delta_net(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& g,
                      const Tensor& beta, float scale, bool normalize_qk, WorkspaceArena& ws,
-                     Tensor& ssm_state, Tensor& out, cudaStream_t stream);
+                     Tensor& ssm_state, Tensor& out, DeviceExecutionView execution);
 
 /**
  * Distinct-state form of the same recurrence. `ssm_state_out` receives the final state;
@@ -60,7 +68,7 @@ void gated_delta_net(const Tensor& q, const Tensor& k, const Tensor& v, const Te
 void gated_delta_net(const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& g,
                      const Tensor& beta, float scale, bool normalize_qk, WorkspaceArena& ws,
                      const Tensor& ssm_state_in, Tensor& ssm_state_out, Tensor& out,
-                     cudaStream_t stream);
+                     DeviceExecutionView execution);
 
 /**
  * One-token update for B independent state-pool slots. q/k are contiguous BF16 [128,Hqk,1,B],
