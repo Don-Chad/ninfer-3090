@@ -211,11 +211,18 @@ For DFlash:
 ```
 
 For Qwen3.8-27B artifacts containing the DFlash2 companion weights, select
-`--spec dflash2 --draft-tokens 4`, optionally with `--lm-head-draft` and `--vision`.
-DFlash2 accepts every draft count from 1 through 15. Seven is the checkpoint recommendation and
-what `docs/performance.md` was measured with, but **four is faster on this hardware** — measured
-on the RTX 3090, 27B, INT8 KV, greedy, generating 256 tokens of ordinary prose, mean of three
-runs:
+`--spec dflash2 --draft-tokens 7`, optionally with `--lm-head-draft` and `--vision`; this is what
+the launchers pass. DFlash2 accepts every draft count from 1 through 15. Seven is the checkpoint
+recommendation and the best mean on this card after the v0.10.0 small-T kernels: swept on a
+reasoning, a code and a summarisation prompt, K = 3/4/5/6/7/8/9/10/12 averaged
+128.0/146.0/159.0/169.6/**172.3**/163.7/163.3/160.2/159.2 tok/s. The best K still depends on the
+workload — the reasoning prompt kept improving to K=12 while summarisation fell sharply there — so
+a deployment serving one kind of work should sweep its own
+([performance](performance.md#choosing-a-speculative-backend-by-concurrency-rtx-3090-qwen38-27b)).
+
+An earlier sweep, before the small-T kernels made wide verify rounds cheap, favoured four. It was
+measured on the RTX 3090, 27B, INT8 KV, greedy, generating 256 tokens of ordinary prose, mean of
+three runs, and is kept for the record; it no longer describes the current build:
 
 | `--draft-tokens` | decode | vs no speculation |
 |---:|---:|---:|
