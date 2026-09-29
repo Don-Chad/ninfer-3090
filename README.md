@@ -1,10 +1,11 @@
 # NInfer-3090
 
 NInfer-3090 is a specialized C++20/CUDA inference engine for **Qwen3.8-27B** and Qwen3.6 on one
-24 GB NVIDIA GeForce RTX 3090. The native SM86 runtime loads the official groupwise `.ninfer`
-artifacts, serves OpenAI- and Anthropic-compatible APIs, and supports paged KV, compatible-prefix
-reuse, CUDA Graphs, MTP and DFlash2 speculative decoding, vision, reasoning-effort control,
-ReplaySSM state transactions, and concurrent cohorts through **C8**.
+24 GB NVIDIA GeForce RTX 3090, or split as a pipeline across several GPUs on Linux. The native SM86
+runtime loads the official groupwise `.ninfer` artifacts, serves OpenAI- and Anthropic-compatible
+APIs, and supports paged KV, compatible-prefix reuse, structured JSON output, CUDA Graphs, MTP and
+DFlash2 speculative decoding, vision, reasoning-effort control, ReplaySSM state transactions, and
+concurrent cohorts through **C8**.
 
 **One RTX 3090, Linux launcher defaults (`rk4v4` KV):**
 
@@ -32,14 +33,19 @@ requests are not guaranteed.
 > your desktop's GPU? Plans start with a day pass, and every verified account gets a few free
 > requests a day. Thank you to NeverMetered for supporting this project.
 
-**New in v0.11.0: prompt processing is roughly twice as fast, and the recommended profile is the
-fast one.** Qwen3.8-27B prefill reaches 2,989 tok/s at 4K (`--prefill-cublas --prefill-chunk 4096`,
-+0.156% perplexity, opt-in) and 1,649 tok/s on the default route, single-stream decode reaches
-187 tok/s with DFlash2 (+39% over MTP3), and one `run` launcher picks the flags for you. See the
-[v0.11.0 release notes](RELEASE_NOTES_0.11.0.md) and the
-[measured configurations](docs/performance.md#recommended-configurations-rtx-3090-qwen38-27b).
-Previous: [v0.10.0](RELEASE_NOTES_0.10.0.md) (tensor-core small-T kernels: MTP3 decode 1.5x at C1
-and 1.7x at C8), [v0.9.1](RELEASE_NOTES_0.9.1.md), [v0.9.0](RELEASE_NOTES_0.9.0.md).
+**New in v0.12.0: real multi-GPU, structured JSON output under every speculative backend, and an
+engine that recovers instead of latching.** Pipeline parallelism is verified on rented 2x RTX 3090
+and 2x RTX A4000 hardware; the new `rk4v4` KV format reaches the 27B's native 262,144-token context
+at `rk8v4`'s speed in NVFP4's memory; grammar-constrained JSON now works under MTP, DFlash2 and no
+speculation alike; and a worker-level fault now recovers automatically instead of latching the
+whole engine unavailable. Plus Prometheus metrics, on-disk session persistence via `/slots`,
+per-request prompt grafts under speculation, and a first (untuned) look at the CMP 170HX. 35 merged
+PRs in eight days — see the [v0.12.0 release notes](RELEASE_NOTES_0.12.0.md) for every change and
+its measurement.
+
+Previous: [v0.11.0](RELEASE_NOTES_0.11.0.md) (prefill roughly 2x faster, DFlash2 the recommended
+decode backend), [v0.10.0](RELEASE_NOTES_0.10.0.md) (tensor-core small-T kernels: MTP3 decode 1.5x
+at C1 and 1.7x at C8), [v0.9.1](RELEASE_NOTES_0.9.1.md), [v0.9.0](RELEASE_NOTES_0.9.0.md).
 
 > **Model files are v3.** A v2 `.ninfer` from an earlier release is refused at load. Upgrade it
 > instead of re-downloading — see [Models](#models).
@@ -230,7 +236,10 @@ On Bazzite and other distributions the Dockerfile is the shortest path:
 - Prefix reuse and a host-tier context cache for repeated or shared prompts.
 - `none`, `low`, `medium`, and `xhigh` reasoning effort on Qwen3.8.
 - Concurrent cohorts of one to eight requests.
-- Layer-pipeline execution across several GPUs on Linux.
+- Layer-pipeline execution across several GPUs on Linux, verified on real 2x RTX 3090 and 2x RTX
+  A4000 hardware.
+- Per-request prompt grafts: named phantom-KV prefixes injected by token replay or direct KV
+  injection, including under MTP and DFlash2 speculation.
 
 ## Serving APIs
 
@@ -240,7 +249,10 @@ The server supports:
 - OpenAI Responses Core with streaming and local continuation state;
 - Anthropic Messages;
 - structured output ([docs](docs/serving.md#structured-output));
-- compatible-prefix reuse;
+- compatible-prefix reuse, with automatic long anchors so an edited mid-history turn does not force
+  a re-prefill from zero;
+- Prometheus metrics at `GET /metrics` ([docs](docs/serving.md#metrics)) and a read-only `GET /props`;
+- session persistence to disk through `GET`/`POST /slots` ([docs](docs/serving.md#slots));
 - prompt-rendered function tools and parsed tool calls (returned to the client, not executed);
 - bounded pending-request admission and JSONL request logs.
 
@@ -561,6 +573,9 @@ and the design are in `docs/maintainer/pipeline-parallel-plan.md`.
   Blackwell and are unavailable; FP8 and NVFP4 weights are admitted through their A16 dequantizing
   routes. KV-cache storage is a separate axis: all seven KV formats, including row-scaled FP8 E4M3,
   run on SM86.
+- `sm_80` (Ampere GA100, e.g. an unlocked NVIDIA CMP 170HX) is an added but **unmeasured**
+  compatibility target: it shares sm_86's instruction set and runs Qwen3.8-27B correctly at roughly
+  3090-like speed with no route tables tuned for it yet.
 
 ## Upstream
 
