@@ -482,7 +482,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             throw std::invalid_argument(
                 "--no-prefix-reuse cannot be combined with --auto-prefix-grid");
         }
-        if (options.auto_long_anchors.value_or(0U) != 0) {
+        if (options.auto_long_anchors) {
             throw std::invalid_argument(
                 "--no-prefix-reuse cannot be combined with --auto-long-anchors");
         }

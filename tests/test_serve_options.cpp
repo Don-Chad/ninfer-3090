@@ -290,6 +290,19 @@ int main() {
     } catch (const std::invalid_argument&) { anchors_without_reuse_rejected = true; }
     failures += check(anchors_without_reuse_rejected,
                       "--auto-long-anchors was accepted with prefix reuse disabled");
+    // The conflict is on presence, like --auto-prefix-grid: even the disabling value is refused
+    // in root-only mode, while it stays valid when prefix reuse is on.
+    bool zero_anchors_without_reuse_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--no-prefix-reuse", "--auto-long-anchors",
+                     "0"});
+    } catch (const std::invalid_argument&) { zero_anchors_without_reuse_rejected = true; }
+    failures += check(zero_anchors_without_reuse_rejected,
+                      "--auto-long-anchors 0 was accepted with prefix reuse disabled");
+    failures +=
+        check(parse({"ninfer-serve", "model.ninfer", "--auto-long-anchors", "0"}).auto_long_anchors ==
+                  0U,
+              "--auto-long-anchors 0 was not accepted with prefix reuse enabled");
 
     const ServeOptions response_store =
         parse({"ninfer-serve", "model.ninfer", "--response-store-max-records", "42",
