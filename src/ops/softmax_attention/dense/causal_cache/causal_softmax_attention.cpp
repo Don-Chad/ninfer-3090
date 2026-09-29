@@ -336,8 +336,7 @@ namespace detail {
 CausalAttentionRoute causal_attention_resolve_route(std::int32_t q_heads, std::int32_t width,
                                                     std::int32_t batch_size, KvCacheStorage storage,
                                                     CausalAttentionExecutionEnvelope envelope) {
-    if (storage == KvCacheStorage::BFloat16)
-        throw std::logic_error("BF16 attention has its own plan");
+    if (storage == KvCacheStorage::BFloat16) return CausalAttentionRoute::Bf16;
     if (q_heads == 24 && width <= kMaximumVerifyTokens) {
         if (batch_size == 1) {
             std::uint32_t prompt_limit = 0;
@@ -385,6 +384,8 @@ const char* causal_attention_route_name(CausalAttentionRoute route) {
         return "chunked_small_t";
     case CausalAttentionRoute::Prompt:
         return "prompt";
+    case CausalAttentionRoute::Bf16:
+        return "bf16";
     }
     return "unknown";
 }

@@ -62,7 +62,9 @@ __launch_bounds__(Schedule::kThreads) __global__
     }
 
     if constexpr (MultiBatch) { positions += batch * tokens; }
-    const int live_columns = Masked ? valid_columns[batch] : tokens;
+    // Same unchecked-caller-bound hazard as bf16_kv_grouped_mma_kernel: clamp to [0, tokens]
+    // before it drives positions[live_columns - 1] below.
+    const int live_columns = Masked ? min(max(valid_columns[batch], 0), tokens) : tokens;
     int output_column      = token;
     if constexpr (MultiBatch) { output_column += batch * tokens; }
     if constexpr (Masked) {

@@ -28,9 +28,9 @@ template <int Bytes, auto Kernel>
 int bf16_kv_dynamic_shared() {
     static_assert(Bytes <= 99 * 1024);
     if constexpr (Bytes > 48 * 1024) {
-        static const auto status =
-            cudaFuncSetAttribute(Kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, Bytes);
-        CUDA_CHECK(status);
+        configure_cuda_device_once([] {
+            return cudaFuncSetAttribute(Kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, Bytes);
+        });
     }
     return Bytes;
 }

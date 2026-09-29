@@ -72,7 +72,11 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
     const int tile  = S::kFixedWidth ? 0 : blockIdx.x / G::KVHeads;
     const int split = blockIdx.y, batch = MultiBatch ? blockIdx.z : 0;
     const int row_begin = tile * M, packed_rows = width * G::GroupSize;
-    const int live = Masked ? validity[batch] : width;
+    // validity[batch] is caller-supplied and not bounds-checked by the public validator (only its
+    // dtype/shape are), so clamp it here the same way PagedKVBatchMetadata::valid_tokens does for
+    // the tiled path -- an out-of-range value would otherwise drive positions[live - 1] and the
+    // KV-append loop below past the supplied position/K/V tensors.
+    const int live = Masked ? min(max(validity[batch], 0), width) : width;
     q += static_cast<std::int64_t>(batch) * width * D * G::QHeads;
     positions += batch * width;
     if constexpr (Input::writes_cache) {
