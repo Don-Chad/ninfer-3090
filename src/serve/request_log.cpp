@@ -1017,9 +1017,9 @@ std::string format_throughput_json(const std::string& server_instance_id, std::u
                            {"host_kv_bytes", current.host_kv_occupied_bytes},
                            {"shared_active_references", current.shared_active_references}}},
         {"actual_transfer_seconds", monotonic_delta(previous.actual_context_transfer_seconds,
-                                                    current.actual_context_transfer_seconds)},
-        {"engine_recoveries",
-         monotonic_delta(previous.engine_recoveries, current.engine_recoveries)}};
+                                                    current.actual_context_transfer_seconds)}};
+    record["engine_recoveries"] =
+        monotonic_delta(previous.engine_recoveries, current.engine_recoveries);
     return record.dump();
 }
 
