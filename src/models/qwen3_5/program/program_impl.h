@@ -701,7 +701,7 @@ public:
     std::size_t workspace_logical_peak_bytes = 0;
     std::size_t vision_handoff_peak_bytes    = 0;
 
-    friend class Program;
+    friend class qwen3_5::Program;
     // Injection builds the shared-prefix entry's backend KV through the private accessor.
     friend void qwen3_5::inject_direct_graft(ProgramImpl&, const PromptGraft&);
 
