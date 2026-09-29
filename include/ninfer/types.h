@@ -1132,6 +1132,9 @@ struct RuntimeStats {
     std::uint32_t shared_active_references             = 0;
     std::uint64_t historical_fork_hits                 = 0;
     double actual_context_transfer_seconds             = 0.0;
+    // Host-side failures the worker survived by failing the in-flight requests and clearing the
+    // context cache instead of latching the Engine unavailable.
+    std::uint64_t engine_recoveries = 0;
 };
 
 enum class ContextCostPresetSource : std::uint8_t {

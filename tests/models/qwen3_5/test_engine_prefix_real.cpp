@@ -1454,6 +1454,116 @@ int exercise_slot_persistence(const char* artifact) {
     return 0;
 }
 
+// A host-side failure in the worker must fail only the requests it touched, not latch the
+// Engine. Two conversations share a system prompt and each places an explicit long anchor on the
+// system boundary, where it aliases the structural shared-prefix StateImage, on one lane with one
+// spare Device state slot: the shape of the entitlement miscount behind the sibling fork's issue
+// #9. Whether or not that fault fires on this build, every request after a failure must be served,
+// and the Engine must stay available.
+int exercise_worker_failure_recovery(const char* artifact) {
+    ninfer::EngineOptions options;
+    options.artifact_path                        = artifact;
+    options.max_context                          = 1024;
+    options.kv_capacity                          = ninfer::KvCapacityPolicy::explicit_capacity(1024);
+    options.prefill_chunk                        = 256;
+    options.speculative.backend                  = ninfer::SpeculativeBackend::Mtp;
+    options.speculative.draft_tokens             = 3;
+    options.speculative.proposal_head            = ninfer::ProposalHead::Optimized;
+    options.max_concurrency                      = 1;
+    options.max_pending_requests                 = 1;
+    options.context_cache.device_state_slots     = 1;
+    options.context_cache.host_state_slots       = 4;
+    options.context_cache.host_kv_capacity_bytes = std::size_t{64} << 20U;
+    options.context_cache.max_private_continuations         = 2;
+    options.context_cache.max_shared_prefixes               = 4;
+    options.context_cache.max_long_anchors_per_continuation = 2;
+    ninfer::Engine engine(std::move(options));
+
+    ninfer::RequestOptions request;
+    request.execution.requested_output_tokens = 1;
+    request.execution.sampling.temperature    = 0.0F;
+    request.execution.allow_prefix_reuse      = true;
+    request.stop.include_model_defaults       = false;
+
+    std::string system =
+        "You are a careful engineering assistant. Follow the house style: short sentences, units "
+        "on every number, and name the assumption behind every estimate.";
+    for (int line = 0; line < 12; ++line) {
+        system += " Rule " + std::to_string(line) +
+                  ": prefer measured figures to recalled ones, and say which you used.";
+    }
+    const auto conversation = [&](const std::vector<std::string>& turns) {
+        ninfer::PromptInput prompt;
+        ninfer::ChatMessage head;
+        head.role = ninfer::ChatRole::System;
+        head.parts.push_back(ninfer::MessagePart{
+            .kind = ninfer::MessagePartKind::Text, .text = system, .media = {}});
+        prompt.messages.push_back(std::move(head));
+        for (std::size_t index = 0; index < turns.size(); ++index) {
+            ninfer::ChatMessage message;
+            message.role = index % 2 == 0 ? ninfer::ChatRole::User : ninfer::ChatRole::Assistant;
+            message.parts.push_back(ninfer::MessagePart{
+                .kind = ninfer::MessagePartKind::Text, .text = turns[index], .media = {}});
+            prompt.messages.push_back(std::move(message));
+        }
+        prompt.options.enable_thinking = false;
+        prompt.context_cache.markers.push_back(ninfer::PromptCacheMarker{
+            .after_message_count = 1,
+            .kind                = ninfer::PromptCacheMarkerKind::PrivateLongAnchor,
+            .location            = ninfer::PromptCacheMarkerLocation::MessageBoundary,
+        });
+        return prompt;
+    };
+
+    std::array<std::vector<std::string>, 2> turns{
+        std::vector<std::string>{"Plan a three-day walking route through the lake district."},
+        std::vector<std::string>{"Summarise the trade-offs between paged and contiguous KV."}};
+    std::uint32_t failures = 0;
+    bool failure_pending   = false;
+    for (std::uint32_t round = 0; round < 5; ++round) {
+        for (std::size_t lineage = 0; lineage < turns.size(); ++lineage) {
+            try {
+                const ninfer::GenerationResult result =
+                    engine.generate(engine.prepare(conversation(turns[lineage])), request);
+                if (result.generated_token_ids.size() != 1) {
+                    std::cerr << "worker-recovery request generated no token\n";
+                    return 1;
+                }
+                failure_pending = false;
+            } catch (const ninfer::RequestError& error) {
+                if (error.kind() == ninfer::RequestErrorKind::Unavailable) {
+                    std::cerr << "Engine latched unavailable after a worker failure: "
+                              << error.what() << "\n";
+                    return 1;
+                }
+                throw;
+            } catch (const std::exception& error) {
+                // One failed request is the recovery contract; two in a row would mean the
+                // recovered Engine cannot serve.
+                if (failure_pending) {
+                    std::cerr << "request after a recovered failure also failed: " << error.what()
+                              << "\n";
+                    return 1;
+                }
+                failure_pending = true;
+                ++failures;
+            }
+            turns[lineage].push_back("Answer " + std::to_string(round) + " for lineage " +
+                                     std::to_string(lineage) + ", with enough detail to fill a page.");
+            turns[lineage].push_back("Continue with part " + std::to_string(round + 1) + ".");
+        }
+    }
+    const ninfer::RuntimeStats stats = engine.runtime_stats();
+    if (!engine.is_available() || stats.engine_recoveries != failures) {
+        std::cerr << "worker recovery accounting is inconsistent: failures=" << failures
+                  << " recoveries=" << stats.engine_recoveries << "\n";
+        return 1;
+    }
+    std::cout << "worker-failure-recovery: failures=" << failures
+              << " recoveries=" << stats.engine_recoveries << "\n";
+    return 0;
+}
+
 int exercise_private_long_anchor_capture_and_replacement(const char* artifact) {
     ninfer::Engine engine(private_long_anchor_engine_options(artifact));
 
@@ -2599,6 +2709,8 @@ int run() {
         result = exercise_automatic_private_anchors(artifact);
     } else if (scenario == "slot-persistence") {
         result = exercise_slot_persistence(artifact);
+    } else if (scenario == "worker-failure-recovery") {
+        result = exercise_worker_failure_recovery(artifact);
     } else if (scenario == "private-long-anchor") {
         result = exercise_private_long_anchor_capture_and_replacement(artifact);
     } else if (scenario == "rewrite-checkpoint-shared") {

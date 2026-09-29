@@ -140,6 +140,12 @@ endpoints:
 A readiness probe should poll `GET /health` (or any endpoint) and expect `503` until the model is
 ready rather than treating an accepted TCP connection as a signal of readiness.
 
+After startup, an internal host-side failure fails only the requests that were running or being
+admitted, clears the context cache, and keeps serving the queue; each such recovery is counted as
+`engine_recoveries` in the request log's context statistics. `GET /health` turns `503` for good only
+when the engine cannot verify a clean recovery, or after three failures with no request completing
+between them, and then the server needs a restart.
+
 ### Load
 
 `GET /v1/load` is a cheap, pollable snapshot for load balancers and gateways that schedule across

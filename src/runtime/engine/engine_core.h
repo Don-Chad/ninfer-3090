@@ -1066,6 +1066,7 @@ private:
     }
 
     void complete_success(const std::shared_ptr<Request>& request, FinishReason reason) {
+        consecutive_recoveries_         = 0;
         HostPhaseMeasurement completion = begin_host_phase();
         double prompt_wall_seconds      = 0.0;
         double generation_wall_seconds  = 0.0;
@@ -2213,6 +2214,46 @@ private:
         publish_runtime_stats();
     }
 
+    // A host-side failure in the worker (an invariant or capacity error from the context cache, a
+    // planner, or a unit's host bookkeeping; CUDA errors abort the process instead) used to latch
+    // the Engine: every request failed and it served nothing more until a restart. Recover
+    // instead: fail only the requests the failure could have corrupted -- the running lanes and
+    // the one materializing -- clear the Program and the context cache as the latch does, and
+    // keep the queue. Recovery is refused, and the latch taken, when the device cannot be
+    // synchronized, when the cleanup leaves physical resources behind (the Program's state is
+    // then not known to be sound), or when failures repeat with no request completing between
+    // them, so a persistent fault cannot spin.
+    [[nodiscard]] bool recover_locked(std::exception_ptr error) noexcept {
+        if (consecutive_recoveries_ >= kMaximumConsecutiveRecoveries) { return false; }
+        try {
+            // Work issued before the failure may still reference pages the cleanup frees.
+            device_.synchronize();
+        } catch (...) { return false; }
+        scheduler_.reset();
+        const std::shared_ptr<Request> materializing_request =
+            materializing_ ? materializing_->request : nullptr;
+        materializing_.reset();
+        instance_.program->fail_all_cleanup();
+        resources_.clear_after_program_cleanup();
+        for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+            if (slots_[lane] != nullptr) {
+                complete_error(slots_[lane], error);
+                slots_[lane].reset();
+            }
+        }
+        if (materializing_request != nullptr) { complete_error(materializing_request, error); }
+        const auto usage = instance_.program->physical_usage();
+        if (instance_.program->has_context_transaction() || usage.device_state_slots != 0 ||
+            usage.host_state_slots != 0 || usage.device_main_kv_pages != 0 ||
+            usage.device_backend_kv_pages != 0 || usage.host_kv_bytes != 0) {
+            return false;
+        }
+        ++consecutive_recoveries_;
+        ++cumulative_stats_.engine_recoveries;
+        request_admission_check();
+        return true;
+    }
+
     void worker_loop() noexcept {
         bool previous_unit_was_decode = false;
         for (;;) {
@@ -2306,12 +2347,14 @@ private:
             } catch (...) {
                 const std::exception_ptr error = std::current_exception();
                 HostPhaseMeasurement cleanup   = begin_host_phase();
-                fail_all_locked(error);
+                const bool recovered           = recover_locked(error);
+                if (!recovered) { fail_all_locked(error); }
                 finish_engine_phase(cleanup, EngineHostPhase::Maintenance);
                 try {
                     publish_runtime_stats();
                 } catch (...) {}
-                return;
+                if (!recovered) { return; }
+                continue;
             }
             execution_lock.unlock();
             std::unique_lock wait_lock(queue_mutex_);
@@ -2340,6 +2383,9 @@ private:
     std::optional<MaterializingRequest> materializing_;
     Scheduling scheduler_;
     std::atomic<bool> admission_check_pending_{false};
+    // Worker-only: recoveries since the last request completed successfully.
+    static constexpr std::uint32_t kMaximumConsecutiveRecoveries = 3;
+    std::uint32_t consecutive_recoveries_                         = 0;
     std::uint64_t worker_accounted_elapsed_ns_ = 0;
     HostWorkClass current_host_work_class_     = HostWorkClass::Control;
     std::array<std::uint32_t, kMaximumConcurrency> current_decode_lanes_{};
