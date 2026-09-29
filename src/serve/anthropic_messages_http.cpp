@@ -112,6 +112,13 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
             return;
         }
         lifecycle->done(outcome);
+        if (outcome.finish_reason == ninfer::FinishReason::Cancelled) {
+            // The client disconnected: an Anthropic message cannot express a cancelled
+            // outcome, and there is nobody left to answer.
+            lifecycle->response_failure(
+                make_client_disconnected_failure(RequestFailurePhase::Transport));
+            return;
+        }
         try {
             set_owned_json_content(res, make_anthropic_messages_response(identity, outcome),
                                    prepared.lifetime);
@@ -203,6 +210,13 @@ void HttpServer::handle_messages(const httplib::Request& req, httplib::Response&
                 }
 
                 lifecycle->done(outcome);
+                if (outcome.finish_reason == ninfer::FinishReason::Cancelled) {
+                    // The client disconnected mid-stream: terminal events have no recipient,
+                    // and rendering a cancelled outcome would be reported as a 500.
+                    lifecycle->response_failure(
+                        make_client_disconnected_failure(RequestFailurePhase::Transport));
+                    return false;
+                }
                 std::vector<std::string> terminal;
                 try {
                     terminal = encoder->finish(outcome);

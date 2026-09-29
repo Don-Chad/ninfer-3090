@@ -1,6 +1,7 @@
 #include "guarded_main.h"
 #include "ninfer/engine.h"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -1033,6 +1034,95 @@ int exercise_shared_rewrite_materialization(const char* artifact) {
                   << " third_outputs=" << third.generated_token_ids.size()
                   << " forks=" << before_third.historical_fork_hits << '/'
                   << after_third.historical_fork_hits << '\n';
+        return 1;
+    }
+    return 0;
+}
+
+// A consumed private endpoint whose long anchor aliases a StateImage another owner also holds
+// must not count that image in its active entitlement. Two conversations share a system prompt and
+// each places an explicit long anchor on the system boundary, where it aliases the structural
+// shared-prefix image; one lane with one spare Device state slot forces anchors onto the Host.
+// Counting the shared anchor made start_request's actual-vs-expected invariant throw (or the
+// state reservation raise bad_alloc) and latched the Engine within a few turns.
+int exercise_shared_anchor_entitlement(const char* artifact) {
+    ninfer::EngineOptions options;
+    options.artifact_path                        = artifact;
+    options.max_context                          = 1024;
+    options.kv_capacity                          = ninfer::KvCapacityPolicy::explicit_capacity(1024);
+    options.prefill_chunk                        = 256;
+    options.speculative.backend                  = ninfer::SpeculativeBackend::Mtp;
+    options.speculative.draft_tokens             = 3;
+    options.speculative.proposal_head            = ninfer::ProposalHead::Optimized;
+    options.max_concurrency                      = 1;
+    options.max_pending_requests                 = 1;
+    options.context_cache.device_state_slots     = 1;
+    options.context_cache.host_state_slots       = 4;
+    options.context_cache.host_kv_capacity_bytes = std::size_t{64} << 20U;
+    options.context_cache.max_private_continuations         = 2;
+    options.context_cache.max_shared_prefixes               = 4;
+    options.context_cache.max_long_anchors_per_continuation = 2;
+    ninfer::Engine engine(std::move(options));
+
+    ninfer::RequestOptions request;
+    request.execution.requested_output_tokens = 1;
+    request.execution.sampling.temperature    = 0.0F;
+    request.execution.allow_prefix_reuse      = true;
+    request.stop.include_model_defaults       = false;
+
+    std::string system =
+        "You are a careful engineering assistant. Follow the house style: short sentences, units "
+        "on every number, and name the assumption behind every estimate.";
+    for (int line = 0; line < 12; ++line) {
+        system += " Rule " + std::to_string(line) +
+                  ": prefer measured figures to recalled ones, and say which you used.";
+    }
+    const auto conversation = [&](const std::vector<std::string>& turns) {
+        ninfer::PromptInput prompt;
+        ninfer::ChatMessage head;
+        head.role = ninfer::ChatRole::System;
+        head.parts.push_back(ninfer::MessagePart{
+            .kind = ninfer::MessagePartKind::Text, .text = system, .media = {}});
+        prompt.messages.push_back(std::move(head));
+        for (std::size_t index = 0; index < turns.size(); ++index) {
+            ninfer::ChatMessage message;
+            message.role = index % 2 == 0 ? ninfer::ChatRole::User : ninfer::ChatRole::Assistant;
+            message.parts.push_back(ninfer::MessagePart{
+                .kind = ninfer::MessagePartKind::Text, .text = turns[index], .media = {}});
+            prompt.messages.push_back(std::move(message));
+        }
+        prompt.options.enable_thinking = false;
+        prompt.context_cache.markers.push_back(ninfer::PromptCacheMarker{
+            .after_message_count = 1,
+            .kind                = ninfer::PromptCacheMarkerKind::PrivateLongAnchor,
+            .location            = ninfer::PromptCacheMarkerLocation::MessageBoundary,
+        });
+        return prompt;
+    };
+
+    std::array<std::vector<std::string>, 2> turns{
+        std::vector<std::string>{"Plan a three-day walking route through the lake district."},
+        std::vector<std::string>{"Summarise the trade-offs between paged and contiguous KV."}};
+    std::uint32_t reused_requests = 0;
+    for (std::uint32_t round = 0; round < 5; ++round) {
+        for (std::size_t lineage = 0; lineage < turns.size(); ++lineage) {
+            const ninfer::GenerationResult result =
+                engine.generate(engine.prepare(conversation(turns[lineage])), request);
+            if (result.generated_token_ids.size() != 1) {
+                std::cerr << "shared-anchor request generated no token: round=" << round
+                          << " lineage=" << lineage << "\n";
+                return 1;
+            }
+            if (result.reused_prompt_tokens != 0) { ++reused_requests; }
+            turns[lineage].push_back("Answer " + std::to_string(round) + " for lineage " +
+                                     std::to_string(lineage) + ", with enough detail to fill a page.");
+            turns[lineage].push_back("Continue with part " + std::to_string(round + 1) + ".");
+        }
+    }
+    const ninfer::RuntimeStats stats = engine.runtime_stats();
+    if (!engine.is_available() || reused_requests == 0 || stats.state_d2h_count == 0) {
+        std::cerr << "shared-anchor scenario did not exercise reuse under Host pressure: reused="
+                  << reused_requests << " state_d2h=" << stats.state_d2h_count << "\n";
         return 1;
     }
     return 0;
@@ -2177,6 +2267,8 @@ int run() {
         result = exercise_materialization_source_pressure_protection(artifact);
     } else if (scenario == "shared-replacement") {
         result = exercise_shared_replacement_and_full_capacity_reuse(artifact);
+    } else if (scenario == "shared-anchor-entitlement") {
+        result = exercise_shared_anchor_entitlement(artifact);
     } else if (scenario == "private-long-anchor") {
         result = exercise_private_long_anchor_capture_and_replacement(artifact);
     } else if (scenario == "rewrite-checkpoint-shared") {
