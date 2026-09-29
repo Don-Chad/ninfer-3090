@@ -500,8 +500,13 @@ int run_case(const Case& test_case, std::uint32_t seed,
     }
     failures += verify_common_inputs_unchanged(label, in, device.q, device.k, device.v, device.g,
                                                device.beta);
-    if (workspace.peak_used() != workspace_bytes) {
-        std::cerr << label << ": workspace query/execution high-water mismatch\n";
+    // gated_delta_net_workspace_capacity_bytes is a worst-case bound over both output-state
+    // dtypes (see its doc comment): an FP32 state, as used throughout this file, never allocates
+    // the FP32 staging scratch an FP16 state would, so high water is strictly less than capacity
+    // here. test_gdn_state_fp16.cpp asserts the tight bound for the FP16 case that actually
+    // reaches it.
+    if (workspace.peak_used() > workspace_bytes) {
+        std::cerr << label << ": workspace execution exceeded its queried capacity\n";
         ++failures;
     }
     return failures;

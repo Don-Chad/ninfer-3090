@@ -16,6 +16,12 @@ namespace ninfer::ops {
  * zero when the private implementation requires no transient storage. The state/head dimension is
  * fixed at 128; `value_heads` must be at least `qk_heads` and divisible by it. The query covers
  * every T in the inclusive interval and throws for an invalid profile or interval.
+ *
+ * This is a worst-case bound, not an exact figure: the query takes no state dtype (a call's future
+ * ssm_state_out dtype is not yet known here), so it unconditionally reserves the FP32 state-staging
+ * scratch that execution allocates only when narrowing to an FP16 state. A call with an FP32 state
+ * uses strictly less than this bound; callers must size their arena to this value but must not
+ * assert execution's high-water mark equals it.
  */
 [[nodiscard]] std::size_t gated_delta_net_workspace_capacity_bytes(std::int32_t qk_heads,
                                                                    std::int32_t value_heads,
