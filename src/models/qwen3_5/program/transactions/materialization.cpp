@@ -352,9 +352,6 @@ ProgramImpl::reserve_materialization(AdmissionCandidate&& plan, PreparedPromptDa
                     DeviceSpan{static_cast<std::byte*>(workspace_storage.base()) +
                                    workspace_plan.vision_bridge_offset,
                                workspace_plan.vision_bridge_bytes});
-                // Start the first item now so its window overlaps the decode rounds that run
-                // before this lane gets a prefill unit.
-                request.prefill->vision->submit_next_item();
             } else {
                 request.prefill->vision = std::make_unique<execution::VisionPrefillSession>(
                     device, parameters,
@@ -2211,19 +2208,40 @@ ProgramImpl::progress_context_transaction(runtime::CancellationFlagView cancella
 }
 
 void ProgramImpl::finalize_context_transaction() noexcept {
+    std::optional<std::uint32_t> vision_ready_lane;
     const bool terminal = std::visit(
-        [](const auto& transaction) {
+        [&](const auto& transaction) {
             using T = std::decay_t<decltype(transaction)>;
             if constexpr (std::is_same_v<T, std::monostate>) {
                 return false;
             } else if constexpr (std::is_same_v<T, ActiveCaptureTransaction>) {
                 return transaction.published;
             } else {
+                if (transaction.terminal) { vision_ready_lane = transaction.destination.value; }
                 return transaction.terminal;
             }
         },
         context_transaction_);
     if (terminal) { context_transaction_.emplace<std::monostate>(); }
+    // has_context_transaction() is false from here on, so the KV-lending gate in
+    // program_impl.cpp no longer blocks on this transaction. Start the lane's vision encode now,
+    // rather than earlier while the gate would have refused the loan: its own KV entitlement is
+    // already bound (prefill.cpp sets Lifecycle::Prefilling before start_request() returns), and
+    // its own prefill unit still runs later via the scheduler, so the window still overlaps
+    // decode rounds that run before then. A cancelled/aborted admission clears requests[lane]
+    // .prefill before reaching here, so this is a no-op in that case.
+    if (vision_ready_lane) {
+        RequestControl& request = requests[*vision_ready_lane];
+        if (request.prefill && request.prefill->vision) {
+            // Best effort: this is an opportunistic overlap optimization, not a correctness
+            // requirement. A failed submission just leaves the item to prepare_chunk()'s
+            // synchronous encode fallback, so a failure here (this function is noexcept) must not
+            // propagate.
+            try {
+                request.prefill->vision->submit_next_item();
+            } catch (...) {}
+        }
+    }
 }
 
 bool ProgramImpl::has_context_transaction() const noexcept {
