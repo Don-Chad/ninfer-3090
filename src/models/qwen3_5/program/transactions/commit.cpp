@@ -141,6 +141,9 @@ StartResult ProgramImpl::start_request(MaterializationTransaction& transaction) 
                 ++transaction.operations.state_moves;
             }
         }
+        if (requests[lane].prefill && requests[lane].prefill->vision) {
+            requests[lane].prefill->vision->submit_next_item();
+        }
         requests[lane].active_resources   = active;
         requests[lane].optional_resources = details.active_optional_resources;
         invalidate_lane(lane);
