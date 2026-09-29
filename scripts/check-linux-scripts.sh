@@ -169,14 +169,16 @@ banner="$(clear_env NINFER_SERVER="$tmp/ninfer-serve" NINFER_TEST_ARGS="$tmp/unu
   exit 1
 }
 
-# The reference profiles are fixed and minimal: no cache tuning, no vision.
+# The reference profiles are fixed and minimal: no vision, and only c8 sizes its context cache,
+# per lane (two retained conversations and two host states per lane, one device state per lane).
 recorded="$(record int8 -- qwen38-27b int8)"
 expect_flags '27B int8' "$recorded" '--max-context 65536' '--max-concurrency 1' '--kv-dtype int8' \
   '--spec mtp --draft-tokens 3 --lm-head-draft'
 refuse_flag '27B int8' "$recorded" '--vision'
 recorded="$(record c8 -- qwen38-27b c8)"
 expect_flags '27B c8' "$recorded" '--max-concurrency 8' '--max-context 8192' '--kv-capacity 16384' \
-  '--kv-dtype int8' '--spec mtp --draft-tokens 3 --lm-head-draft'
+  '--kv-dtype int8' '--spec mtp --draft-tokens 3 --lm-head-draft' \
+  '--max-private-continuations 16' '--device-state-slots 8' '--host-state-slots 16'
 refuse_flag '27B c8' "$recorded" '--auto-prefix-grid'
 
 # Qwen3.6-35B-A3B `tuned`: MoE, so no cuBLAS route and no Q4 embedding; its own draft head flags.

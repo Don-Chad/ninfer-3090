@@ -254,7 +254,22 @@ set "LABEL=one request  ^|  64K context  ^|  INT8 KV  ^|  MTP3, ReplaySSM"
 goto :launch
 
 :profile_27b_c8
-set "PROFILE_ARGS=--max-context 8192 --kv-capacity 16384 --max-concurrency 8 --max-pending-requests 32 --pending-timeout-ms 600000 --prefill-chunk 512 --kv-dtype int8 --spec mtp --draft-tokens 3 --lm-head-draft"
+rem Context cache sized per lane, so several agents rotating through the lanes find their own
+rem conversation still cached instead of re-prefilling it: two retained conversations per lane,
+rem one checkpoint StateImage per lane on the card beyond the active ones, and two per lane in
+rem pinned host memory. Measured at one lane on the default of two retained conversations, four
+rem rotating agents reused 12%% of their prompts (TTFT 14 s); with room for all of them, 76%% (2.9 s).
+rem MEMORY COST: this profile keeps the GDN state in BF16, so a StateImage is 147 MiB. The device
+rem slots take 8 x 147 MiB = 1.15 GiB of VRAM, the engine default at eight lanes, so that is
+rem unchanged; the host slots pin 16 x 147 MiB = 2.3 GiB of RAM, which WDDM also charges against the
+rem card. Lower C8_HOST_STATES_PER_LANE first if startup runs short. Retention is still bounded by
+rem the 16,384-token KV pool below.
+set "C8_LANES=8"
+set /a C8_PRIVATE=C8_LANES*2
+set /a C8_DEVICE_STATES=C8_LANES
+set "C8_HOST_STATES_PER_LANE=2"
+set /a C8_HOST_STATES=C8_LANES*C8_HOST_STATES_PER_LANE
+set "PROFILE_ARGS=--max-context 8192 --kv-capacity 16384 --max-concurrency %C8_LANES% --max-pending-requests 32 --pending-timeout-ms 600000 --prefill-chunk 512 --kv-dtype int8 --spec mtp --draft-tokens 3 --lm-head-draft --max-private-continuations %C8_PRIVATE% --device-state-slots %C8_DEVICE_STATES% --host-state-slots %C8_HOST_STATES%"
 set "LABEL=up to eight requests  ^|  8K context  ^|  INT8 KV  ^|  MTP3, ReplaySSM"
 goto :launch
 
@@ -269,6 +284,10 @@ if not "%NINFER_VISION_RESIDENCY%"=="" set "VISION_RESIDENCY=%NINFER_VISION_RESI
 set "VISION_ARGS="
 rem Pinned host memory for the context cache: 74.5 MiB per slot on the 27B. WDDM charges it against
 rem the card, so a busy desktop needs fewer (see the README on startup).
+rem --max-private-continuations 8 below is what keeps several rotating conversations cached: the
+rem engine default is two per lane, and four agents on one lane then evict each other on every turn
+rem (12%% prompt reuse against 76%% with room for all four, measured 2026-09-28). A retained
+rem conversation costs no memory by itself; its KV pages and StateImages come from the pools above.
 set "HOST_STATE_SLOTS=32"
 if not "%NINFER_HOST_STATE_SLOTS%"=="" set "HOST_STATE_SLOTS=%NINFER_HOST_STATE_SLOTS%"
 if /i "%VISION%"=="on" (
