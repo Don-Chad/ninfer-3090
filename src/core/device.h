@@ -128,6 +128,10 @@ struct DeviceContext {
 
     void bind_to_current_thread() const;
     void bind_to_current_thread_noexcept() const noexcept;
+    // The active rank's device synchronization schedule ("spin", "blocking", "yield" or "auto"),
+    // as selected by NINFER_CUDA_SYNC at construction. Reads the live CUDA flags rather than a
+    // cached value, so it always reflects the device this rank is actually bound to.
+    [[nodiscard]] const char* sync_mode() const;
     int compute_capability() const noexcept;
     // Streaming-multiprocessor count of the attached device. Distinct from compute_capability():
     // every sm_86 part shares capability 86 but not this count (RTX 3090 has 82, RTX 3090 Ti has

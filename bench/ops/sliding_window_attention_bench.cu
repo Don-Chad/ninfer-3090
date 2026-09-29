@@ -215,17 +215,22 @@ std::size_t workspace_capacity(std::int32_t window, std::int32_t tokens, std::in
         kGeometry, static_cast<std::uint32_t>(window), envelope, tokens, tokens, batch);
 }
 
-__global__ void fill_context_values(__half* values, std::size_t elements) {
+// A short repeating ramp is L2- and compression-friendly in a way real activations are not; hash
+// each element's index instead so no window of the buffer repeats (see bench::make_bf16).
+__global__ void fill_context_values(__half* values, std::size_t elements, std::uint32_t seed) {
     const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (index < elements) {
-        const float value = 0.5f - static_cast<float>(index % 251) / 250.0f;
+        const std::uint32_t bits =
+            bench::detail::bench_fixture_hash32(static_cast<std::uint32_t>(index) ^ seed);
+        const float value = static_cast<float>(bits >> 8) * (1.0f / 16777216.0f) - 0.5f;
         values[index]     = __float2half_rn(__bfloat162float(__float2bfloat16_rn(value)));
     }
 }
 
 DeviceBuffer make_context_values(std::size_t elements) {
     DeviceBuffer result(elements * sizeof(__half));
-    fill_context_values<<<(elements + 255) / 256, 256>>>(static_cast<__half*>(result.p), elements);
+    fill_context_values<<<(elements + 255) / 256, 256>>>(static_cast<__half*>(result.p), elements,
+                                                         401U);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     return result;
