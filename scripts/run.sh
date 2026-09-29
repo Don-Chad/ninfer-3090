@@ -188,11 +188,24 @@ case "$model_key/$profile" in
     label='one request  |  64K context  |  INT8 KV  |  MTP3, ReplaySSM' ;;
 
   qwen38-27b/c8)
+    # Context cache sized per lane, so several agents rotating through the lanes find their own
+    # conversation still cached instead of re-prefilling it: two retained conversations per lane,
+    # one checkpoint StateImage per lane on the card beyond the active ones, and two per lane in
+    # pinned host memory. Measured at one lane on the default of two retained conversations, four
+    # rotating agents reused 12% of their prompts (TTFT 14 s); with room for all of them, 76% (2.9 s).
+    # MEMORY COST: this profile keeps the GDN state in BF16, so a StateImage is 147 MiB. The device
+    # slots take 8 x 147 MiB = 1.15 GiB of VRAM, the engine default at eight lanes, so that is
+    # unchanged; the host slots pin 16 x 147 MiB = 2.3 GiB of RAM. Retention is still bounded by the
+    # 16,384-token KV pool.
+    c8_lanes=8
+    c8_host_states_per_lane=2
     profile_args=(
       --max-context 8192 --kv-capacity 16384
-      --max-concurrency 8 --max-pending-requests 32 --pending-timeout-ms 600000
+      --max-concurrency "$c8_lanes" --max-pending-requests 32 --pending-timeout-ms 600000
       --prefill-chunk 512 --kv-dtype int8
       --spec mtp --draft-tokens 3 --lm-head-draft
+      --max-private-continuations "$((c8_lanes * 2))" --device-state-slots "$c8_lanes"
+      --host-state-slots "$((c8_lanes * c8_host_states_per_lane))"
     )
     label='up to eight requests  |  8K context  |  INT8 KV  |  MTP3, ReplaySSM' ;;
 
@@ -216,6 +229,10 @@ if [[ "$profile" == 'tuned' ]]; then
   label="$label  |  $vision_label"
   # Pinned host memory for the context cache: 74.5 MiB per slot on the 27B. Free on Linux; on Windows
   # WDDM charges it against the card, so a busy desktop needs fewer (see the README on startup).
+  # --max-private-continuations 8 below is what keeps several rotating conversations cached: the
+  # engine default is two per lane, and four agents on one lane then evict each other on every turn
+  # (12% prompt reuse against 76% with room for all four, measured 2026-09-28). A retained
+  # conversation costs no memory by itself; its KV pages and StateImages come from the pools above.
   HOST_STATE_SLOTS="${NINFER_HOST_STATE_SLOTS:-32}"
   profile_args+=(
     --max-pending-requests 16 --pending-timeout-ms 600000

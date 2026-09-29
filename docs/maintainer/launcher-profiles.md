@@ -16,7 +16,12 @@ the `tuned` profiles set both to the same value. Any one request can use the who
 lanes' requests together hold at most that many tokens at a time.
 
 `tuned` is the recommended profile. `int8` (one user, 64K of INT8 KV, the quality default) and `c8`
-(eight lanes at 8K) are the older reference profiles, with every serving flag fixed. The former
+(eight lanes at 8K) are the older reference profiles, with every serving flag fixed. `c8` sizes its
+context cache per lane -- two retained conversations and two host StateImages per lane, one extra
+device StateImage per lane -- so rotating agents keep their conversations cached; at 147 MiB per
+BF16 StateImage the host slots pin 2.3 GiB, and on Windows it still starts with about 2 GiB of the
+card free (2026-09-29). With engine defaults, a single lane keeps only two conversations, and four
+rotating agents reused 12% of their prompts against 76% with room for all four. The former
 vision-only launchers are gone: `tuned` serves vision in overlay residency, which costs about
 10 MiB, and `NINFER_VISION=off` turns it off.
 
