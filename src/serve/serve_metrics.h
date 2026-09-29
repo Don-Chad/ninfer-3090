@@ -25,6 +25,9 @@ public:
     void record_done(const GenerationOutcome& outcome);
     // Counts one request that ended in an error instead of an outcome.
     void record_failure();
+    // Counts one request refused before it reached the Engine: overload, queue timeout, an
+    // invalid or oversized prompt.
+    void record_rejection();
 
     // One complete Prometheus text body without HTTP framing. `admitted_requests` counts requests
     // from admission to response release, so a request is visible while it waits for a lane.
@@ -36,6 +39,7 @@ private:
     mutable std::mutex mutex_;
     std::uint64_t requests_total_                    = 0;
     std::uint64_t requests_failed_total_             = 0;
+    std::uint64_t requests_rejected_total_           = 0;
     std::uint64_t prefix_cache_hit_tokens_total_     = 0;
     std::uint64_t speculative_draft_tokens_total_    = 0;
     std::uint64_t speculative_accepted_tokens_total_ = 0;

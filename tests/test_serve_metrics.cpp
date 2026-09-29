@@ -59,9 +59,12 @@ int main() {
     metrics.record_done(outcome);
     metrics.record_done(outcome);
     metrics.record_failure();
+    metrics.record_rejection();
+    metrics.record_rejection();
     const std::string after = metrics.render(2, live, 0);
     failures += check(has_sample(after, "ninfer:requests_total 2") &&
                           has_sample(after, "ninfer:requests_failed_total 1") &&
+                          has_sample(after, "ninfer:requests_rejected_total 2") &&
                           has_sample(after, "ninfer:prefix_cache_hit_tokens_total 1800") &&
                           has_sample(after, "ninfer:draft_tokens_total 120") &&
                           has_sample(after, "ninfer:draft_accepted_tokens_total 90"),

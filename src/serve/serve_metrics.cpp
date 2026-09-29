@@ -45,6 +45,11 @@ void ServeMetrics::record_failure() {
     ++requests_failed_total_;
 }
 
+void ServeMetrics::record_rejection() {
+    const std::lock_guard lock(mutex_);
+    ++requests_rejected_total_;
+}
+
 std::string ServeMetrics::render(std::uint32_t max_concurrency, const ninfer::RuntimeStats& live,
                                  std::size_t admitted_requests) const {
     const std::uint64_t admitted   = admitted_requests;
@@ -69,7 +74,11 @@ std::string ServeMetrics::render(std::uint32_t max_concurrency, const ninfer::Ru
     append_metric(out, "ninfer:requests_total", "counter", "Requests completed with an outcome.",
                   requests_total_);
     append_metric(out, "ninfer:requests_failed_total", "counter",
-                  "Requests that ended in an error.", requests_failed_total_);
+                  "Accepted requests that ended in an error.", requests_failed_total_);
+    append_metric(out, "ninfer:requests_rejected_total", "counter",
+                  "Requests refused before reaching the Engine (overload, queue timeout, invalid "
+                  "or oversized prompt).",
+                  requests_rejected_total_);
     append_metric(out, "ninfer:prefix_cache_hit_tokens_total", "counter",
                   "Prompt tokens served from the context cache instead of prefill.",
                   prefix_cache_hit_tokens_total_);

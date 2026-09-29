@@ -2158,6 +2158,10 @@ private:
                                                               membership.size),
                 &program_call.failed_timing());
             program_call.finish(timing);
+            // Forced control tokens are counted as committed decode tokens below, so their
+            // execution time belongs to the decode total as well.
+            cumulative_stats_.decode_seconds_total +=
+                static_cast<double>(timing.elapsed_ns()) * 1e-9;
             phase.resume_range();
         } catch (...) {
             rollback_generated();

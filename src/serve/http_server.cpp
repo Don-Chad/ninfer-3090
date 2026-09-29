@@ -272,6 +272,7 @@ void HttpServer::record_request_start(const RequestLogContext& context) {
 
 void HttpServer::record_request_rejected(const RequestRejectionLogContext& context) {
     request_jsonl_.write_request_rejected(context);
+    metrics_.record_rejection();
     operational_log_.request_rejected(context);
 }
 
