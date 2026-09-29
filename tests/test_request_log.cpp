@@ -585,6 +585,13 @@ int main() {
         check(internal_failure.severity == OperationalSeverity::Error &&
                   internal_failure.message.find("sentinel-internal-detail") == std::string::npos,
               "operational internal failure severity or data policy mismatch");
+    const OperationalRecord internal_failure_tagged = render_request_failure(
+        context,
+        make_internal_request_failure(RequestFailurePhase::Http, "sentinel-internal-detail"));
+    failures += check(
+        internal_failure_tagged.message.find("internal error http") != std::string::npos &&
+            internal_failure_tagged.message.find("sentinel-internal-detail") == std::string::npos,
+        "internal failure should render a phase-derived error code without the raw machine message");
     const OperationalRecord disconnected = render_request_failure(
         context, make_client_disconnected_failure(RequestFailurePhase::Transport));
     failures += check(disconnected.severity == OperationalSeverity::Info &&

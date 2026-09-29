@@ -4,6 +4,22 @@
 
 namespace ninfer::serve {
 
+namespace {
+
+const char* internal_error_tag(RequestFailurePhase phase) noexcept {
+    switch (phase) {
+    case RequestFailurePhase::Prepare:        return "internal_error_prepare";
+    case RequestFailurePhase::Generation:     return "internal_error_generation";
+    case RequestFailurePhase::ResponseRender: return "internal_error_response_render";
+    case RequestFailurePhase::ResponseStore:  return "internal_error_response_store";
+    case RequestFailurePhase::Transport:      return "internal_error_transport";
+    case RequestFailurePhase::Http:           return "internal_error_http";
+    }
+    return "internal_error";
+}
+
+} // namespace
+
 RequestLogContext make_request_log_context(std::uint64_t id, std::string protocol,
                                            const GenerationRequest& request,
                                            const RequestLogMetadata& metadata,
@@ -95,6 +111,7 @@ RequestFailure make_internal_request_failure(RequestFailurePhase phase,
         .classification  = RequestFailureClass::Internal,
         .http_status     = 500,
         .error_type      = "internal_error",
+        .error_code      = internal_error_tag(phase),
         .machine_message = std::move(machine_message),
     };
 }
