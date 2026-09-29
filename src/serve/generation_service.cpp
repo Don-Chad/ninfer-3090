@@ -309,6 +309,8 @@ GenerationService::GenerationService(ServeOptions options, StartupObserver start
     ninfer::EngineOptions engine_options = make_engine_options(options_);
     engine_options.startup_observer      = std::move(startup_observer);
     engine_           = std::make_unique<ninfer::Engine>(std::move(engine_options));
+    automatic_private_anchors_ =
+        resolve_automatic_private_anchors(options_, engine_->options().context_cache);
     request_capacity_ = std::make_shared<RequestCapacity>(
         static_cast<std::size_t>(options_.max_concurrency) + options_.max_pending_requests);
 }
@@ -396,6 +398,10 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
             protocol_allows_engine_automatic;
         input.context_cache.allow_engine_prefix_grid =
             input.context_cache.allow_engine_prefix_grid || options_.auto_prefix_grid;
+        // Server policy, not protocol: every read-write prompt gets the same trailing-boundary
+        // anchors whichever endpoint it came through.
+        input.context_cache.automatic_private_anchors =
+            cache_participation == CacheParticipation::ReadWrite ? automatic_private_anchors_ : 0U;
         trim_cache_markers(input.context_cache.markers,
                            engine_->options().context_cache.max_cache_markers_per_request.value());
         prepared.acquisition_seconds =

@@ -521,6 +521,15 @@ frontier。栅格 candidate 只带 `EngineObserved`，既不是 declared 也不�
 占用空闲 shared slot；只有当两个独立 reuse domain 都提出同一个 key 时才会发布。开启后单请求最多十五个
 prepared candidates。
 
+`ContextCacheHints::automatic_private_anchors`（`ninfer-serve --auto-long-anchors N`，默认等于
+`max_long_anchors_per_continuation`）让 Frontend 在最后 `N` 个位于 prompt 内部的 message boundary 上各提出一个
+`PrivateLongAnchor` candidate：跳过第一条 message 之前的空 boundary，也跳过最后一条 message 之后的 boundary
+（endpoint 与 rewrite checkpoint 已覆盖尾部）。Chat Completions 与 Anthropic 请求无法表达显式的
+`PrivateLongAnchor` marker，没有它们时，改写 rewrite checkpoint 以下历史的请求没有 reuse candidate，只能从
+token 0 重新 prefill。它们是 candidates 而非 markers：不计入显式 marker 上限，与同一 frontier 上的显式 anchor
+合并，并使单请求 prepared candidates 上限增加 `N`；保留数量仍受 `max_long_anchors_per_continuation` 限制，满额时替换最浅的
+anchor。
+
 Shared catalog 是 Engine-wide 公共容量，不是每条 lineage 的配额。启用 context cache 时，默认 logical
 capacity 同时覆盖 active concurrency 下限和单请求最多四个显式 markers，即
 `max(max_concurrency, kMaximumExplicitPromptCacheMarkers)`；显式配置仍完整覆盖默认值。这个下限允许较早的

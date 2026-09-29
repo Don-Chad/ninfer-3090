@@ -75,6 +75,10 @@ struct ServeOptions {
     // prompts merely start alike converge on the same frontier. Off by default: it adds host-side
     // candidate work to every request and only pays for itself on a multi-tenant preamble.
     bool auto_prefix_grid = false;
+    // --auto-long-anchors N: propose a private long anchor at each of the last N message
+    // boundaries of every prompt. Unset resolves to the retained-anchor cap once the Engine has
+    // normalized it; 0 disables. See resolve_automatic_private_anchors.
+    std::optional<std::uint32_t> auto_long_anchors;
     std::optional<bool> enable_thinking;
     std::optional<bool> preserve_thinking;
     // --graft NAME=PATH, repeatable: phantom-kv grafts a request may select with "graft": NAME.
@@ -94,6 +98,12 @@ struct ServeOptions {
 };
 
 ServeOptions parse_serve_options(int argc, char** argv);
+// The per-request ContextCacheHints::automatic_private_anchors for this server: the explicit
+// --auto-long-anchors when given, else the resolved anchor cap, never more than that cap. Zero
+// when the context cache is disabled. `resolved` must be the Engine's normalized options, whose
+// optional capacities are filled in.
+std::uint32_t resolve_automatic_private_anchors(const ServeOptions& options,
+                                                const ContextCacheOptions& resolved);
 std::string resolve_public_model_id(const ServeOptions& options,
                                     std::string_view artifact_model_name);
 std::string serve_usage_text(const char* argv0);
