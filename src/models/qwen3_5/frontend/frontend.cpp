@@ -1109,9 +1109,15 @@ OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
     std::unique_ptr<fi::StructuredOutputConstraint> structured;
     if (output.format.kind != OutputFormatKind::Text) {
         // Compilation runs on the submitting thread, before the request reaches the Engine worker.
+        // The grammar constrains the content channel only, so only its stop strings can cut a
+        // token the grammar has to judge.
+        std::vector<std::string> content_stops;
+        for (const StopString& stop : policy.strings) {
+            if (stop.channel == OutputChannel::Content) { content_stops.push_back(stop.text); }
+        }
         structured = std::make_unique<fi::StructuredOutputConstraint>(
             impl_->tokenizer, impl_->structured_output->compile(output.format), policy.token_ids,
-            prompt.data_->starts_in_reasoning);
+            prompt.data_->starts_in_reasoning, content_stops);
     }
     return OutputSession(impl_->tokenizer, std::move(policy), output,
                          prompt.data_->starts_in_reasoning, thinking,

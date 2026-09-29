@@ -72,6 +72,10 @@ constexpr std::string_view kThinkingControl =
 constexpr std::string_view kUtf8Replacement = "\xef\xbf\xbd";
 
 constexpr ninfer::TokenId kFixtureByteTokenBase = 1'000;
+// Ordinary vocabulary tokens (not added tokens, so the output grammar can license them) whose text
+// a caller stop string "STOP" can cut. Decode-only: the fixture has no merges to produce them.
+constexpr ninfer::TokenId kStopCutToken  = 2'000; // "}STOPjunk"
+constexpr ninfer::TokenId kStopTailToken = 2'001; // "OPend"
 
 constexpr ninfer::TokenId fixture_byte_token(std::uint8_t byte) {
     // Preserve IDs already used by the output-session fixtures. All other bytes live outside the
@@ -219,6 +223,8 @@ FrontendResources resources(const std::string& chat_template = thinking_toggle_t
         const auto byte                = static_cast<std::uint8_t>(value);
         vocab[byte_level_symbol(byte)] = fixture_byte_token(byte);
     }
+    vocab["}STOPjunk"]  = kStopCutToken;
+    vocab["OPend"]      = kStopTailToken;
     result.tokenizer_json = nlohmann::json{
         {"model",
          {{"type", "BPE"}, {"vocab", std::move(vocab)}, {"merges", nlohmann::json::array()}}},
@@ -1960,6 +1966,120 @@ int test_structured_output_same_token_stop(const Frontend& frontend) {
     return failures;
 }
 
+// Mask construction must judge a token a caller stop string cuts by the prefix that is published,
+// exactly as preview does once the token is sampled -- not by its full decoded text.
+int test_structured_output_stop_masks(const Frontend& frontend) {
+    const auto byte = [](char value) { return fixture_byte_token(static_cast<std::uint8_t>(value)); };
+    const std::size_t words = (fixture_tokenizer().vocab_size() + 31U) / 32U;
+    const auto licensed = [&](const std::vector<std::uint32_t>& masks, std::size_t column,
+                              ninfer::TokenId token) {
+        return ((masks[column * words + static_cast<std::size_t>(token) / 32U] >>
+                 (static_cast<unsigned>(token) % 32U)) &
+                1U) != 0U;
+    };
+    const auto make_output = [](const char* schema) {
+        return ninfer::OutputOptions{.format = ninfer::OutputFormat{
+                                         .kind        = ninfer::OutputFormatKind::JsonSchema,
+                                         .json_schema = schema,
+                                         .strict      = true}};
+    };
+    const ninfer::OutputOptions value_output = make_output(
+        R"({"type":"object","properties":{"a":{"enum":["x","y"]}},"required":["a"],)"
+        R"("additionalProperties":false})");
+    const ninfer::OutputOptions word_output = make_output(
+        R"({"type":"object","properties":{"a":{"enum":["ST","x"]}},"required":["a"],)"
+        R"("additionalProperties":false})");
+    const auto stop_policy = [](bool include) {
+        ninfer::StopPolicy stop;
+        stop.strings.push_back(ninfer::StopString{.text = "STOP", .include_in_output = include});
+        return stop;
+    };
+    // A session whose committed output is `text`, and the mask row for the next token after
+    // `speculative`.
+    const auto masks_after = [&](const ninfer::StopPolicy& stop, const ninfer::OutputOptions& output,
+                                 const std::string& text,
+                                 std::span<const ninfer::TokenId> speculative) {
+        auto prompt  = frontend.prepare_tokens({0});
+        auto session = frontend.make_output_session(prompt, stop, output);
+        const std::vector<ninfer::TokenId> tokens = fixture_tokenizer().encode(text);
+        if (!tokens.empty()) {
+            (void)session.preview_model(tokens, static_cast<std::uint32_t>(tokens.size() + 4U),
+                                        ninfer::FinishReason::OutputLimit);
+            (void)session.commit_preview();
+        }
+        std::vector<std::uint32_t> masks((speculative.size() + 1U) * words);
+        (void)session.token_constraint()->fill_token_masks(
+            speculative, static_cast<std::uint32_t>(speculative.size() + 1U), masks, words);
+        return masks;
+    };
+    int failures = 0;
+
+    // kStopCutToken is "}STOPjunk": only its leading "}" is published under the stop string "STOP".
+    const std::string complete = R"({"a":"x")";
+    auto plain = masks_after({}, value_output, complete, {});
+    auto cut   = masks_after(stop_policy(false), value_output, complete, {});
+    failures += check(!licensed(plain, 0, kStopCutToken) && licensed(plain, 0, byte('}')),
+                      "a token with an ungrammatical tail was licensed without a stop string");
+    failures += check(licensed(cut, 0, kStopCutToken) && licensed(cut, 0, byte('}')),
+                      "a token cut by a stop string was not licensed for its published prefix");
+    failures += check(!licensed(cut, 0, kStopTailToken),
+                      "a token that no stop string cuts was licensed");
+    plain[static_cast<std::size_t>(kStopCutToken) / 32U] |=
+        1U << (static_cast<unsigned>(kStopCutToken) % 32U);
+    failures += check(plain == cut, "a stop string changed the mask beyond the tokens it cuts");
+    plain[static_cast<std::size_t>(kStopCutToken) / 32U] &=
+        ~(1U << (static_cast<unsigned>(kStopCutToken) % 32U));
+
+    // The published prefix decides: with the stop text published too, the prefix is "}STOP".
+    auto included = masks_after(stop_policy(true), value_output, complete, {});
+    failures += check(!licensed(included, 0, kStopCutToken),
+                      "a published stop string was not judged by the grammar");
+
+    // The stop string can begin in an earlier token: after "ST" only "OP..." completes it, and
+    // nothing of that token is published.
+    auto partial_plain = masks_after({}, word_output, R"({"a":"ST)", {});
+    auto partial_cut   = masks_after(stop_policy(false), word_output, R"({"a":"ST)", {});
+    failures += check(!licensed(partial_plain, 0, kStopTailToken) && licensed(partial_cut, 0, kStopTailToken) &&
+                          licensed(partial_cut, 0, byte('"')),
+                      "a token completing a stop string begun earlier was not licensed");
+    auto fresh_cut = masks_after(stop_policy(false), word_output, R"({"a":")", {});
+    failures += check(!licensed(fresh_cut, 0, kStopTailToken),
+                      "a stop-completing token was licensed without the stop string's first part");
+
+    // Speculative columns follow the same rule, and a token a stop string cuts ends the round.
+    const std::vector<ninfer::TokenId> value = fixture_tokenizer().encode(complete);
+    auto speculative_cut = masks_after(stop_policy(false), value_output, "", value);
+    failures += check(licensed(speculative_cut, value.size(), kStopCutToken),
+                      "speculative column did not license a stop-cut token");
+    std::vector<ninfer::TokenId> through_cut = value;
+    through_cut.push_back(kStopCutToken);
+    auto ended = masks_after(stop_policy(false), value_output, "", through_cut);
+    failures += check(std::all_of(ended.begin() + static_cast<std::ptrdiff_t>((value.size() + 1U) * words),
+                                  ended.end(), [](std::uint32_t word) { return word == ~0U; }),
+                      "column after a stop-cut speculative token is not all-licensed");
+
+    // Every token the mask licenses must be one the session then accepts.
+    std::size_t exercised = 0;
+    for (ninfer::TokenId token = 0; token < static_cast<ninfer::TokenId>(words * 32U); ++token) {
+        if (!licensed(cut, 0, token)) { continue; }
+        auto prompt  = frontend.prepare_tokens({0});
+        auto session = frontend.make_output_session(prompt, stop_policy(false), value_output);
+        const std::vector<ninfer::TokenId> tokens = fixture_tokenizer().encode(complete);
+        (void)session.preview_model(tokens, static_cast<std::uint32_t>(tokens.size() + 4U),
+                                    ninfer::FinishReason::OutputLimit);
+        (void)session.commit_preview();
+        bool accepted = true;
+        try {
+            (void)session.preview_model(std::array<ninfer::TokenId, 1>{token}, 2,
+                                        ninfer::FinishReason::OutputLimit);
+        } catch (const std::logic_error&) { accepted = false; }
+        failures += check(accepted, "a licensed token was rejected by the output session");
+        ++exercised;
+    }
+    failures += check(exercised >= 2, "the licensed-token consistency check exercised nothing");
+    return failures;
+}
+
 int test_reasoning_split(const Frontend& frontend) {
     ninfer::ChatMessage message;
     message.role = ninfer::ChatRole::User;
@@ -2519,6 +2639,7 @@ int main() {
     failures += test_structured_tool_output();
     failures += test_structured_output(frontend);
     failures += test_structured_output_same_token_stop(frontend);
+    failures += test_structured_output_stop_masks(frontend);
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
     failures += test_utf8_and_hidden_eos(frontend);

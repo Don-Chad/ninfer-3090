@@ -5,12 +5,18 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
+
+namespace xgrammar {
+class GrammarMatcher;
+}
 
 namespace ninfer::models::qwen3_5::frontend {
 
@@ -49,9 +55,20 @@ private:
 // closes the section.
 class StructuredOutputConstraint final : public runtime::TokenMaskSource {
 public:
+    // For every candidate token, the number of leading bytes of its decoded text that the
+    // caller's stop strings still publish when the output continues with `speculative` and then
+    // that candidate; nullopt when no stop string lands in it (or the byte mapping is not exact).
+    // `published.size() == candidates.size()`.
+    using StopPrefixProbe = std::function<void(std::span<const TokenId> speculative,
+                                               std::span<const TokenId> candidates,
+                                               std::span<std::optional<std::size_t>> published)>;
+
+    // `content_stops` are the caller's stop strings that apply to the content channel, the only
+    // channel the grammar constrains.
     StructuredOutputConstraint(std::shared_ptr<const Tokenizer> tokenizer,
                                std::shared_ptr<const CompiledOutputFormat> format,
-                               std::vector<TokenId> stop_tokens, bool starts_in_reasoning);
+                               std::vector<TokenId> stop_tokens, bool starts_in_reasoning,
+                               std::span<const std::string> content_stops);
     ~StructuredOutputConstraint() override;
 
     StructuredOutputConstraint(const StructuredOutputConstraint&)            = delete;
@@ -67,15 +84,32 @@ public:
                                      std::optional<std::size_t> stop_prefix_bytes = std::nullopt);
     void commit_preview() noexcept;
 
+    // Installs the decoder-side view of the stop strings. Mask construction uses it to license
+    // tokens that a stop string cuts, on the same terms `preview_token` applies. Without a probe
+    // (or without stop strings) masks judge every token by its full decoded text.
+    void set_stop_prefix_probe(StopPrefixProbe probe) { stop_probe_ = std::move(probe); }
+
     [[nodiscard]] bool fill_token_masks(std::span<const TokenId> speculative,
                                         std::uint32_t columns, std::span<std::uint32_t> masks,
                                         std::size_t words_per_mask) override;
 
 private:
     struct State;
+
+    // True when a stop string ends the output inside `token` after `speculative`.
+    [[nodiscard]] bool stop_cuts(std::span<const TokenId> speculative, TokenId token) const;
+    void license_stop_cut_tokens(xgrammar::GrammarMatcher& matcher,
+                                 std::span<const TokenId> speculative, std::span<std::uint32_t> mask,
+                                 std::span<std::optional<std::size_t>> published) const;
+
     std::shared_ptr<const Tokenizer> tokenizer_;
     std::unique_ptr<State> committed_;
     std::unique_ptr<State> preview_;
+    // Vocabulary tokens whose decoded text can complete one of the stop strings: it contains a
+    // stop string, or begins with the remainder of a stop string whose first part was already
+    // emitted. Only these can be judged differently by a published prefix than by the full token.
+    std::vector<TokenId> stop_candidates_;
+    StopPrefixProbe stop_probe_;
 };
 
 } // namespace ninfer::models::qwen3_5::frontend

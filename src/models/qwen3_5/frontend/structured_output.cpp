@@ -68,6 +68,34 @@ struct ReasoningGate {
 
 void fill_all(std::span<std::uint32_t> mask) { std::fill(mask.begin(), mask.end(), ~0U); }
 
+bool is_licensable_token(const Tokenizer& tokenizer, TokenId id) {
+    return tokenizer.is_valid_token(id) && !tokenizer.is_added_token(id) &&
+           !tokenizer.is_special_token(id);
+}
+
+// The tokens a stop string can cut. Text that never reaches a stop string is published whole, so
+// the grammar's full-token judgement is already exact for every other token: a token contains a
+// stop string outright, or begins with the remainder of one whose first part was emitted earlier.
+std::vector<TokenId> stop_candidate_tokens(const Tokenizer& tokenizer,
+                                           std::span<const std::string> stops) {
+    std::vector<TokenId> result;
+    if (stops.empty()) { return result; }
+    const auto vocab = static_cast<TokenId>(tokenizer.vocab_size());
+    for (TokenId id = 0; id < vocab; ++id) {
+        if (!is_licensable_token(tokenizer, id)) { continue; }
+        const std::string_view bytes = tokenizer.decoded_token(id).bytes;
+        const auto cut_by = [&](const std::string& stop) {
+            if (bytes.find(stop) != std::string_view::npos) { return true; }
+            for (std::size_t tail = 1; tail < stop.size(); ++tail) {
+                if (bytes.starts_with(std::string_view(stop).substr(tail))) { return true; }
+            }
+            return false;
+        };
+        if (std::any_of(stops.begin(), stops.end(), cut_by)) { result.push_back(id); }
+    }
+    return result;
+}
+
 } // namespace
 
 struct StructuredOutputCompiler::State {
@@ -96,10 +124,7 @@ StructuredOutputCompiler::State& StructuredOutputCompiler::state() const {
         // complete.
         std::vector<std::string> vocabulary(static_cast<std::size_t>(vocab));
         for (int id = 0; id < vocab; ++id) {
-            if (!tokenizer_->is_valid_token(id) || tokenizer_->is_added_token(id) ||
-                tokenizer_->is_special_token(id)) {
-                continue;
-            }
+            if (!is_licensable_token(*tokenizer_, id)) { continue; }
             vocabulary[static_cast<std::size_t>(id)] = std::string(tokenizer_->decoded_token(id).bytes);
         }
         const std::vector<int> stops(tokenizer_->default_stop_token_ids().begin(),
@@ -148,7 +173,8 @@ struct StructuredOutputConstraint::State {
 
 StructuredOutputConstraint::StructuredOutputConstraint(
     std::shared_ptr<const Tokenizer> tokenizer, std::shared_ptr<const CompiledOutputFormat> format,
-    std::vector<TokenId> stop_tokens, bool starts_in_reasoning)
+    std::vector<TokenId> stop_tokens, bool starts_in_reasoning,
+    std::span<const std::string> content_stops)
     : tokenizer_(std::move(tokenizer)) {
     if (!tokenizer_ || !format) {
         throw std::invalid_argument("structured output constraint requires a compiled format");
@@ -156,6 +182,7 @@ StructuredOutputConstraint::StructuredOutputConstraint(
     committed_ = std::make_unique<State>(
         format->grammar, std::vector<int>(stop_tokens.begin(), stop_tokens.end()),
         starts_in_reasoning);
+    stop_candidates_ = stop_candidate_tokens(*tokenizer_, content_stops);
 }
 
 StructuredOutputConstraint::~StructuredOutputConstraint() = default;
@@ -185,6 +212,38 @@ void StructuredOutputConstraint::commit_preview() noexcept {
     if (preview_) { committed_ = std::move(preview_); }
 }
 
+bool StructuredOutputConstraint::stop_cuts(std::span<const TokenId> speculative,
+                                           TokenId token) const {
+    std::optional<std::size_t> published;
+    stop_probe_(speculative, std::span<const TokenId>(&token, 1), std::span(&published, 1));
+    return published.has_value();
+}
+
+// XGrammar judged every token by its full decoded text. A token a stop string cuts publishes only
+// its leading `published` bytes, so it is licensed whenever that prefix is grammar-valid -- the
+// same test `preview_token` applies once the token is sampled.
+void StructuredOutputConstraint::license_stop_cut_tokens(
+    xgrammar::GrammarMatcher& matcher, std::span<const TokenId> speculative,
+    std::span<std::uint32_t> mask, std::span<std::optional<std::size_t>> published) const {
+    stop_probe_(speculative, stop_candidates_, published);
+    for (std::size_t index = 0; index < stop_candidates_.size(); ++index) {
+        const TokenId token = stop_candidates_[index];
+        std::uint32_t& word = mask[static_cast<std::size_t>(token) >> 5];
+        const std::uint32_t bit = 1U << (static_cast<unsigned>(token) & 31U);
+        if (!published[index] || (word & bit) != 0U) { continue; }
+        if (*published[index] == 0) {
+            word |= bit;
+            continue;
+        }
+        const std::string_view bytes = tokenizer_->decoded_token(token).bytes;
+        const std::size_t limit      = std::min(*published[index], bytes.size());
+        if (matcher.AcceptString(std::string(bytes.substr(0, limit)))) {
+            matcher.Rollback(1);
+            word |= bit;
+        }
+    }
+}
+
 bool StructuredOutputConstraint::fill_token_masks(std::span<const TokenId> speculative,
                                                   std::uint32_t columns,
                                                   std::span<std::uint32_t> masks,
@@ -199,6 +258,8 @@ bool StructuredOutputConstraint::fill_token_masks(std::span<const TokenId> specu
     ReasoningGate gate                = committed_->gate;
     std::int64_t bitmask_words        = static_cast<std::int64_t>(xgrammar::GetBitmaskSize(
         static_cast<int>(vocab)));
+    const bool cuttable               = stop_probe_ && !stop_candidates_.empty();
+    std::vector<std::optional<std::size_t>> published(cuttable ? stop_candidates_.size() : 0U);
     bool restricted = false;
     bool reachable  = true;
     int accepted    = 0;
@@ -215,7 +276,11 @@ bool StructuredOutputConstraint::fill_token_masks(std::span<const TokenId> specu
             tensor.ndim   = 1;
             tensor.dtype  = xgrammar::GetBitmaskDLType();
             tensor.shape  = &bitmask_words;
-            restricted    = matcher.FillNextTokenBitmask(&tensor) || restricted;
+            const bool column_restricted = matcher.FillNextTokenBitmask(&tensor);
+            restricted                   = column_restricted || restricted;
+            if (column_restricted && cuttable) {
+                license_stop_cut_tokens(matcher, speculative.first(column), mask, published);
+            }
         }
         if (column >= speculative.size() || !reachable) { continue; }
         const TokenId token = speculative[column];
@@ -223,6 +288,9 @@ bool StructuredOutputConstraint::fill_token_masks(std::span<const TokenId> specu
             reachable = false;
         } else if (gate.open) {
             gate.feed(tokenizer_->decoded_token(token).bytes);
+        } else if (cuttable && !matcher.IsTerminated() && stop_cuts(speculative.first(column), token)) {
+            // A stop string ends the output inside this token, so no later column is consumed.
+            reachable = false;
         } else if (!matcher.IsTerminated() && matcher.AcceptToken(token)) {
             ++accepted;
         } else {

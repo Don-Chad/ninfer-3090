@@ -325,6 +325,39 @@ DecoderState terminal_state(DecoderState state) {
     return state;
 }
 
+// Where one token's decoded text begins in the decoded stream, and whether its bytes will map onto
+// that stream one-to-one.
+struct TokenDecodeMark {
+    std::uint64_t decoded_bytes = 0;
+    bool aligned                = false;
+};
+
+TokenDecodeMark decode_mark(const DecoderState& state) noexcept {
+    return TokenDecodeMark{.decoded_bytes = state.decoded_bytes,
+                           .aligned = !state.in_reasoning && state.utf8_pending.empty()};
+}
+
+// The leading bytes of one token's text that a caller stop string still publishes when it ends
+// the output inside that token (`match` came from feeding it). This is what the output grammar
+// must license instead of the whole token. nullopt when no stop string lands in the token, or when
+// its bytes do not map one-to-one onto the decoded stream -- a UTF-8 sequence split across tokens
+// or repaired, or leading whitespace stripped -- because the cut offset is then not an offset into
+// the token.
+std::optional<std::size_t> published_token_prefix(const StopMatch& match, const StopPolicy& policy,
+                                                  const TokenDecodeMark& before,
+                                                  const DecoderState& after,
+                                                  std::size_t token_bytes) {
+    if (!match.found || !before.aligned ||
+        after.decoded_bytes - before.decoded_bytes != token_bytes) {
+        return std::nullopt;
+    }
+    const StopString& stop  = policy.strings.at(match.declaration_order);
+    const std::uint64_t end = match.byte_cut + (stop.include_in_output ? stop.text.size() : 0U);
+    // The match can begin in an earlier token, whose held-back bytes are not this token's.
+    const std::uint64_t relative = end > before.decoded_bytes ? end - before.decoded_bytes : 0U;
+    return static_cast<std::size_t>(std::min<std::uint64_t>(relative, token_bytes));
+}
+
 } // namespace
 
 class OutputSession::Impl {
@@ -351,6 +384,41 @@ public:
         // semantic tracker dormant unless a cap needs it, so the default unlimited path does not
         // decode every model token twice.
         semantic.in_reasoning = starts_in_reasoning && thinking.budget.has_value();
+        if (structured_output) {
+            // Impl is heap-allocated and never moved, so the probe may keep `this`.
+            structured_output->set_stop_prefix_probe(
+                [this](std::span<const TokenId> speculative, std::span<const TokenId> candidates,
+                       std::span<std::optional<std::size_t>> published) {
+                    probe_stop_prefixes(speculative, candidates, published);
+                });
+        }
+    }
+
+    // For mask construction: the published prefix of each candidate token if the committed output
+    // continued with `speculative` and then that candidate. Runs the same decoder as
+    // `preview_model` on copies, so the mask licenses exactly what preview will accept.
+    void probe_stop_prefixes(std::span<const TokenId> speculative,
+                             std::span<const TokenId> candidates,
+                             std::span<std::optional<std::size_t>> published) const {
+        const auto text = [this](TokenId token) {
+            const fi::DecodedTokenView decoded = tokenizer->decoded_token(token);
+            return !preserve_special && decoded.special ? std::string_view{} : decoded.bytes;
+        };
+        DecoderState base = state;
+        PublishedOutput scratch;
+        for (const TokenId token : speculative) {
+            feed_token_bytes(base, text(token), policy, scratch, 1, nullptr);
+            scratch.clear();
+        }
+        const TokenDecodeMark mark = decode_mark(base);
+        for (std::size_t index = 0; index < candidates.size(); ++index) {
+            DecoderState next = base;
+            StopMatch match;
+            const std::string_view bytes = text(candidates[index]);
+            feed_token_bytes(next, bytes, policy, scratch, 1, &match);
+            scratch.clear();
+            published[index] = published_token_prefix(match, policy, mark, next, bytes.size());
+        }
     }
 
     std::shared_ptr<const fi::Tokenizer> tokenizer;
@@ -486,7 +554,7 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
         }
 
         StopMatch match;
-        const std::uint64_t decoded_bytes_before = impl_->preview_state.decoded_bytes;
+        const TokenDecodeMark mark = decode_mark(impl_->preview_state);
         const std::string_view bytes =
             !impl_->preserve_special && decoded.special ? std::string_view{} : decoded.bytes;
         feed_token_bytes(impl_->preview_state, bytes, impl_->policy, impl_->preview_output, count,
@@ -494,16 +562,12 @@ runtime::OutputDecision OutputSession::preview_model(std::span<const TokenId> to
 
         if (impl_->structured_output) {
             // A caller stop string can end generation partway through this token's own decoded
-            // bytes (`match.byte_cut` then falls inside it). The bytes at and after that cut are
-            // never published, so the grammar must license only the prefix that is, not the whole
-            // token -- otherwise a grammar-invalid tail the client will never see aborts a request
-            // that should have stopped cleanly.
-            std::optional<std::size_t> stop_prefix_bytes;
-            if (match.found) {
-                const auto relative = static_cast<std::int64_t>(match.byte_cut) -
-                                      static_cast<std::int64_t>(decoded_bytes_before);
-                stop_prefix_bytes = static_cast<std::size_t>(std::max<std::int64_t>(0, relative));
-            }
+            // bytes. The bytes at and after that cut are never published, so the grammar must
+            // license only the prefix that is, not the whole token -- otherwise a grammar-invalid
+            // tail the client will never see aborts a request that should have stopped cleanly.
+            // Mask construction applies the same prefix (`stop_prefix_probe`).
+            const std::optional<std::size_t> stop_prefix_bytes = published_token_prefix(
+                match, impl_->policy, mark, impl_->preview_state, bytes.size());
             if (!impl_->structured_output->preview_token(token, stop_prefix_bytes)) {
                 // Program samples every constrained position from the licensed set, so this is an
                 // execution fault rather than a model choice.
