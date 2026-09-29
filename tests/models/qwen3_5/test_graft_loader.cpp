@@ -209,6 +209,10 @@ int main() {
               [](Json& header) { header["k"]["shape"] = {1, 3, "2", 8}; }),
         "tensor 'k' shape", "a non-integer tensor shape escaped the graft error");
     failures += expect_rejected(
+        write(dir, "aliased", valid_container(), {},
+              [](Json& header) { header["v"]["data_offsets"] = header["k"]["data_offsets"]; }),
+        "overlap", "two tensors sharing payload bytes were accepted");
+    failures += expect_rejected(
         write(dir, "dtype_type", valid_container(), {},
               [](Json& header) { header["v"]["dtype"] = 16; }),
         "tensor 'v' dtype", "a non-string tensor dtype escaped the graft error");

@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -13,6 +14,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 
 namespace ninfer::models::qwen3_5 {
 namespace {
@@ -140,6 +142,19 @@ std::map<std::string, TensorEntry> parse_safetensors(std::span<const std::uint8_
         entry.begin = offsets[0];
         entry.end   = offsets[1];
         tensors.emplace(name, std::move(entry));
+    }
+    // Each range is valid alone; two tensors sharing payload bytes would still inject one tensor's
+    // data as the other's while the digest matches.
+    std::vector<std::pair<const std::string*, const TensorEntry*>> by_offset;
+    for (const auto& [name, entry] : tensors) {
+        if (entry.begin != entry.end) { by_offset.emplace_back(&name, &entry); }
+    }
+    std::sort(by_offset.begin(), by_offset.end(),
+              [](const auto& left, const auto& right) { return left.second->begin < right.second->begin; });
+    for (std::size_t index = 1; index < by_offset.size(); ++index) {
+        error.require(by_offset[index - 1].second->end <= by_offset[index].second->begin,
+                      "tensors '" + *by_offset[index - 1].first + "' and '" +
+                          *by_offset[index].first + "' overlap in the payload");
     }
     return tensors;
 }
