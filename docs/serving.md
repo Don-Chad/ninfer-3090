@@ -782,8 +782,10 @@ requests start from it. Because nothing is replayed, these grafts cover the text
 graft carries no draft-backend state, so under `--spec` the MTP or DFlash cache over the graft's
 positions is zero-filled and the draft proposes without graft context there. Output is unchanged,
 because the target verifies every proposal against the injected state; only the acceptance rate
-can fall. With `--devices`, each layer's K/V and state are
-written on the device of the stage that holds that layer.
+can fall. Each one holds a Device StateImage and a shared-prefix slot for the life of the server;
+startup adds them on top of `--device-state-slots` and `--max-shared-prefixes`, and a disabled
+context cache refuses them. With `--devices`, each layer's K/V and state are written on the device
+of the stage that holds that layer.
 
 ## Authentication and CORS
 

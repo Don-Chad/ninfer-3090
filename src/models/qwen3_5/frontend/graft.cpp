@@ -303,6 +303,27 @@ PromptGraft load_prompt_graft(const GraftSource& source, const TextConfig& text)
     return graft;
 }
 
+std::uint32_t count_direct_grafts(const std::vector<GraftSource>& sources) {
+    std::uint32_t direct = 0;
+    for (const GraftSource& source : sources) {
+        const GraftError error(source);
+        std::filesystem::path sidecar_path = source.path;
+        sidecar_path.replace_extension(".json");
+        const std::vector<std::uint8_t> sidecar_bytes = read_file(sidecar_path, error);
+        Json meta;
+        try {
+            meta = Json::parse(sidecar_bytes.begin(), sidecar_bytes.end());
+        } catch (const Json::exception& parse_error) {
+            error.fail("sidecar " + sidecar_path.string() + " is not JSON: " + parse_error.what());
+        }
+        error.require(meta.is_object(), "sidecar is not a JSON object");
+        if (parse_graft_kind(json_string(meta, "kind", error), error) != GraftKind::PrefillKV) {
+            ++direct;
+        }
+    }
+    return direct;
+}
+
 std::vector<PromptGraft> load_prompt_grafts(const std::vector<GraftSource>& sources,
                                             const TextConfig& text) {
     std::vector<PromptGraft> grafts;

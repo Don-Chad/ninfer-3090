@@ -313,7 +313,8 @@ if not exist "%MODEL%" (
 echo %TITLE%  ^|  %LABEL%
 if not "%PREFILL_NOTE%"=="" echo %PREFILL_NOTE%
 if /i "%PROFILE%"=="tuned" echo Cache: 8 shared / 8 private / %HOST_STATE_SLOTS% host states  ^|  automatic prefix grid on
-if not "%GRAFT_ARGS%"=="" echo Graft: v1 = %GRAFT_FILE%if not "%HINT%"=="" echo %HINT%
+if not "%GRAFT_ARGS%"=="" echo Graft: v1 = %GRAFT_FILE%
+if not "%HINT%"=="" echo %HINT%
 echo API: http://%HOST%:%PORT%/v1
 echo.
 
