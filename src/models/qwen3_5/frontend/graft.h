@@ -79,6 +79,11 @@ struct PromptGraft {
 // the first inconsistency found.
 [[nodiscard]] PromptGraft load_prompt_graft(const GraftSource& source, const TextConfig& text);
 
+// How many of `sources` are direct_kv or softprompt_kv, from their sidecars alone. Each one
+// permanently holds a StateImage and a shared-prefix slot once injected, so option normalization
+// sizes those pools before the containers themselves are loaded.
+[[nodiscard]] std::uint32_t count_direct_grafts(const std::vector<GraftSource>& sources);
+
 [[nodiscard]] std::vector<PromptGraft> load_prompt_grafts(const std::vector<GraftSource>& sources,
                                                          const TextConfig& text);
 

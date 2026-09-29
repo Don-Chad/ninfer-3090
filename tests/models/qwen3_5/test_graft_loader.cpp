@@ -237,6 +237,21 @@ int main() {
                           "a direct_kv graft did not load its KV tensors for injection");
     }
     {
+        // Only the injected kinds hold a StateImage and a shared-prefix slot for the server's life.
+        Container direct = valid_container();
+        direct.tensors.erase("replay_ids");
+        direct.meta["kind"] = "direct_kv";
+        direct.meta.erase("replay");
+        const std::filesystem::path replayed = write(dir, "count_replay", valid_container());
+        const std::filesystem::path injected = write(dir, "count_direct", direct);
+        failures += check(q::count_direct_grafts({}) == 0 &&
+                              q::count_direct_grafts({{.name = "a", .path = replayed}}) == 0 &&
+                              q::count_direct_grafts({{.name = "a", .path = replayed},
+                                                      {.name = "b", .path = injected},
+                                                      {.name = "c", .path = injected}}) == 2,
+                          "direct grafts were not counted apart from replayed ones");
+    }
+    {
         Container c = valid_container();
         c.tensors.insert_or_assign("replay_ids", replay_ids({11, 1000, 33}));
         failures += expect_rejected(write(dir, "vocab", c), "vocabulary",

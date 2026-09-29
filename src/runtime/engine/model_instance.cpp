@@ -108,6 +108,16 @@ EngineOptions normalize_engine_options(EngineOptions options) {
 
     ContextCacheOptions& cache      = options.context_cache;
     const std::uint32_t concurrency = options.max_concurrency;
+    // Injected grafts stay resident for the life of the Engine, each in a StateImage and a
+    // shared-prefix slot of its own, so the pools grow by that many beyond what requests use.
+    const std::uint32_t direct_grafts =
+        options.purpose == EnginePurpose::Generation
+            ? models::qwen3_5::count_direct_grafts(options.grafts)
+            : 0U;
+    if (!cache.enabled && direct_grafts != 0) {
+        throw std::invalid_argument(
+            "direct grafts are held in the context cache, which is disabled");
+    }
     if (!cache.enabled) {
         if ((cache.device_state_slots && *cache.device_state_slots != 0) ||
             (cache.max_private_continuations && *cache.max_private_continuations != concurrency) ||
@@ -126,12 +136,14 @@ EngineOptions normalize_engine_options(EngineOptions options) {
         return options;
     }
 
-    cache.device_state_slots            = cache.device_state_slots.value_or(concurrency);
+    cache.device_state_slots = cache.device_state_slots.value_or(concurrency) + direct_grafts;
     const std::uint64_t default_private = 2ULL * concurrency;
     cache.max_private_continuations =
         cache.max_private_continuations.value_or(static_cast<std::uint32_t>(default_private));
-    cache.max_shared_prefixes = cache.max_shared_prefixes.value_or(
-        std::max(concurrency, static_cast<std::uint32_t>(kMaximumExplicitPromptCacheMarkers)));
+    cache.max_shared_prefixes =
+        cache.max_shared_prefixes.value_or(
+            std::max(concurrency, static_cast<std::uint32_t>(kMaximumExplicitPromptCacheMarkers))) +
+        direct_grafts;
     cache.max_long_anchors_per_continuation = cache.max_long_anchors_per_continuation.value_or(2U);
     cache.max_cache_markers_per_request     = cache.max_cache_markers_per_request.value_or(4U);
 

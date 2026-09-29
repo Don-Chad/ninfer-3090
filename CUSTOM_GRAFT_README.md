@@ -4,8 +4,10 @@
 
 Direct KV graft injection lets you bake product knowledge, brand guidelines, or
 other static context into the model's KV cache at server startup. Grafted
-requests start generating from that cached state with zero prompt tokens — the
-graft never appears in message history and costs no prefill compute.
+requests start generating from that cached state — the graft never appears in
+message history and costs no prefill compute after startup. Its positions still
+count as prompt tokens: they occupy the front of the context and are included in
+the reported prompt/input token counts.
 
 ---
 
@@ -120,8 +122,8 @@ No system turn is needed — the graft already holds one.
 
 ### Key properties
 
-- **Zero prompt token cost.** The graft's slots don't consume any of the
-  request's context budget.
+- **No prefill cost.** The graft is not prefilled per request, but its slots
+  count toward `--max-context` and the reported prompt tokens.
 - **Pinned lifetime.** The slot is never evicted by cache pressure; it lives
   for the duration of the server process.
 - **Multiple grafts.** Each occupies its own shared-prefix slot. Requests
