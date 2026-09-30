@@ -2278,6 +2278,92 @@ int test_thinking_budget_control(const Frontend& frontend) {
     return failures;
 }
 
+int test_thinking_budget_fitting(const Frontend& frontend) {
+    auto prompt = thinking_prompt(frontend);
+    auto sample_session =
+        frontend.make_output_session(prompt, {}, {}, ninfer::ThinkingControlOptions{.budget = 2});
+    const std::array<ninfer::TokenId, 2> model_tokens{0, 0};
+    (void)sample_session.preview_model(model_tokens, 20, ninfer::FinishReason::OutputLimit);
+    (void)sample_session.commit_preview();
+    const std::span<const ninfer::TokenId> pending = sample_session.pending_control_tokens();
+    const std::uint32_t required = static_cast<std::uint32_t>(pending.size() + 1);
+
+    int failures = 0;
+    failures += check(required >= 3, "test fixture assumes required control tokens >= 3");
+
+    // 1. C == R boundary: clamped budget would be 0, so fit_thinking_budget must reject
+    // with 400 (invalid_argument)
+    {
+        const std::uint32_t budget = required - 2U; // B < R
+        auto session = frontend.make_output_session(
+            prompt, {}, {}, ninfer::ThinkingControlOptions{.budget = budget});
+        failures += check(
+            throws_invalid_argument([&] { session.fit_thinking_budget(required); }),
+            "fit_thinking_budget accepted a capacity exactly equal to required control tokens");
+    }
+
+    // 2. C == R + 1 boundary: clamps budget to 1
+    {
+        const std::uint32_t budget = required; // B < R + 1
+        auto session = frontend.make_output_session(
+            prompt, {}, {}, ninfer::ThinkingControlOptions{.budget = budget});
+        session.fit_thinking_budget(required + 1U);
+        failures += check(
+            session.thinking_stats().configured_budget == 1,
+            "fit_thinking_budget did not clamp budget to 1 at R + 1 boundary");
+    }
+
+    // 3. B < C < R boundary: clamps budget to C
+    {
+        const std::uint32_t budget = 1;
+        const std::uint32_t cap    = required - 1U; // 1 < cap < required
+        auto session = frontend.make_output_session(
+            prompt, {}, {}, ninfer::ThinkingControlOptions{.budget = budget});
+        session.fit_thinking_budget(cap);
+        failures += check(
+            session.thinking_stats().configured_budget == cap,
+            "fit_thinking_budget did not clamp budget to C when B < C < R");
+    }
+
+    // 4. C > R + 1 and C - B < R: clamps budget to C - R
+    {
+        const std::uint32_t budget = 10;
+        const std::uint32_t cap    = budget + required - 2U; // C - B = required - 2 < required
+        auto session = frontend.make_output_session(
+            prompt, {}, {}, ninfer::ThinkingControlOptions{.budget = budget});
+        session.fit_thinking_budget(cap);
+        failures += check(
+            session.thinking_stats().configured_budget == cap - required,
+            "fit_thinking_budget did not clamp budget to C - R when C > R + 1 and C - B < R");
+    }
+
+    // 5. C - B >= R: budget is unchanged
+    {
+        const std::uint32_t budget = 10;
+        const std::uint32_t cap    = budget + required + 5U;
+        auto session = frontend.make_output_session(
+            prompt, {}, {}, ninfer::ThinkingControlOptions{.budget = budget});
+        session.fit_thinking_budget(cap);
+        failures += check(
+            session.thinking_stats().configured_budget == budget,
+            "fit_thinking_budget modified budget when capacity was sufficient");
+    }
+
+    // 6. C <= B: budget is unchanged
+    {
+        const std::uint32_t budget = 50;
+        const std::uint32_t cap    = 30;
+        auto session = frontend.make_output_session(
+            prompt, {}, {}, ninfer::ThinkingControlOptions{.budget = budget});
+        session.fit_thinking_budget(cap);
+        failures += check(
+            session.thinking_stats().configured_budget == budget,
+            "fit_thinking_budget modified budget when C <= B");
+    }
+
+    return failures;
+}
+
 int test_utf8_and_hidden_eos(const Frontend& frontend) {
     auto prompt             = frontend.prepare_tokens({0});
     auto session            = frontend.make_output_session(prompt, {});
@@ -2677,6 +2763,7 @@ int main() {
     failures += test_structured_output_stop_masks(frontend);
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
+    failures += test_thinking_budget_fitting(frontend);
     failures += test_utf8_and_hidden_eos(frontend);
     failures += test_media_cache_reuses_immutable_payload();
     failures += test_media_payload_outlives_frontend_cache();

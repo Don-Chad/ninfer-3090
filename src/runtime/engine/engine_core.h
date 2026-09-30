@@ -221,7 +221,7 @@ public:
             const std::uint32_t capacity_output =
                 max_context_ - prompt_summary.prompt_tokens + static_cast<std::uint32_t>(1);
             try {
-                output.validate_generation_capacity(
+                output.fit_thinking_budget(
                     std::min(options.execution.requested_output_tokens, capacity_output));
             } catch (const std::invalid_argument& error) {
                 throw RequestError(RequestErrorKind::ThinkingBudgetCapacityInsufficient,

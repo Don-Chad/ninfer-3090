@@ -72,6 +72,7 @@ public:
     [[nodiscard]] std::span<const TokenId> pending_control_tokens() const noexcept;
     [[nodiscard]] runtime::OutputDecision preview_control(std::span<const TokenId> tokens,
                                                           std::uint32_t total_budget_remaining);
+    void fit_thinking_budget(std::uint32_t effective_output_tokens);
     void validate_generation_capacity(std::uint32_t effective_output_tokens) const;
     [[nodiscard]] runtime::OutputDecision preview_terminal(FinishReason reason);
     [[nodiscard]] PublishedOutput commit_preview();
