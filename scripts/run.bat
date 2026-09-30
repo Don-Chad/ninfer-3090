@@ -320,7 +320,7 @@ if /i "%NINFER_GRAFTS%"=="off" goto :graft_done
 if "%GRAFT_FILE%"=="" goto :graft_done
 if exist "%GRAFT_DIR%\%GRAFT_FILE%" goto :graft_found
 rem No parenthesised block here: GRAFT_DIR may contain ")" (e.g. "Program Files (x86)").
-echo WARNING: graft file not found, serving without a graft: %GRAFT_DIR%\%GRAFT_FILE%
+echo WARNING: graft file not found, serving without a graft: "%GRAFT_DIR%\%GRAFT_FILE%"
 echo          Requests naming "godmode" will fail with unknown_graft.
 goto :graft_done
 :graft_found
