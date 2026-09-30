@@ -147,10 +147,8 @@ runtime::PrefillWork rebuild_work_at_frontier(const PreparedPromptData& prompt,
         }
         vision_patches += static_cast<std::uint64_t>(item.patch_count);
     }
-    // A direct graft's positions are restored from its pinned slot rather than prefilled, so a
-    // rebuild starts where the graft ends.
-    return scheduled_prefill_work(prompt.graft_frontier, frontier, vision_items, vision_patches,
-                                  prefill_chunk, captures, rewrite_frontiers);
+    return scheduled_prefill_work(0, frontier, vision_items, vision_patches, prefill_chunk,
+                                  captures, rewrite_frontiers);
 }
 
 detail::PhysicalDeviceResources
