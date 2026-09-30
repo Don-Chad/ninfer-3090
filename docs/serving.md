@@ -446,17 +446,24 @@ guidance and close marker to the same model sequence without sampling, streams t
 reasoning delta, and continues normal content or tool-call generation. Inserted tokens count in
 completion usage and the request's `max_tokens`/`max_output_tokens` budget.
 
-When effective output capacity extends past the configured thinking budget but cannot fit the
-complete tokenizer-derived control suffix plus one post-close model token, Engine automatically
-adjusts the effective thinking budget:
-- If capacity is greater than the required control tokens (C > R, where R is the control suffix
-  length plus one token; R = 28 for Qwen 3.5/3.8), the thinking budget is clamped to C - R so
-  early-close guidance and at least one post-close model token can be generated.
-- If capacity is less than or equal to the required control tokens (C <= R), the thinking budget
-  is raised to C; reasoning proceeds up to the output limit without inserting early-close control
-  tokens (consistent with C <= B), and generation terminates at the output limit (which may leave
-  an empty answer).
+When output capacity falls around the requested thinking budget, Engine derives an effective
+budget using three quantities:
+- B: the client's requested thinking budget (`options.execution.thinking.budget`).
+- C: the effective output capacity, min(requested_output_tokens, max_context - prompt_tokens + 1).
+- R: the required early-close control tokens, equal to thinking_control_tokens.size() + 1
+  (R = 28 for Qwen 3.5/3.8).
 
+The pure function effective_thinking_budget(B, C, R) resolves generation behavior into three
+cases:
+- C <= B or C - B >= R: effective budget is B, and early close is available (unchanged behavior).
+- C > R (and C - B < R): effective budget is C - R, and early close is available. This always
+  lowers B so early-close guidance and at least one post-close model token can be generated.
+- C <= R (and C > B): B is unchanged, and early close is not available; thinking runs to the
+  output limit with no control token insertion.
+
+A request never fails because remaining capacity falls in the boundary window B < C < B + R. The
+client's requested budget is never silently replaced: both requested and effective budgets are
+reported separately in thinking stats (`ThinkingBudgetStats`), request logs, and operational logs.
 The server does not promise that the model will emit nonempty content or a tool call after the
 marker.
 

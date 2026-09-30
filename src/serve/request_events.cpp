@@ -38,6 +38,7 @@ RequestLogContext make_request_log_context(std::uint64_t id, std::string protoco
     context.has_tool_history                   = request.has_tool_history();
     context.enable_thinking                    = prepared.enable_thinking;
     context.thinking_budget                    = prepared.thinking_budget;
+    context.effective_thinking_budget          = prepared.effective_thinking_budget;
     context.requested_reasoning_effort = prepared.requested_reasoning_effort;
     context.preserve_thinking                 = prepared.requested_preserve_thinking;
     context.preserve_thinking_semantic_change = metadata.preserve_thinking_semantic_change;

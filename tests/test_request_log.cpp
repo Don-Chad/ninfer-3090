@@ -1,3 +1,5 @@
+#include "serve/http_transport.h"
+#include "serve/openai_chat.h"
 #include "serve/operational_log.h"
 #include "serve/request_log.h"
 
@@ -266,6 +268,7 @@ int main() {
     prepared.requested_output_tokens                   = 4096;
     prepared.enable_thinking                           = true;
     prepared.thinking_budget                           = 256;
+    prepared.effective_thinking_budget                 = 256;
     prepared.reasoning_effort                          = ninfer::ReasoningEffort::XHigh;
     prepared.requested_reasoning_effort                = RequestedReasoningEffort::XHigh;
     prepared.preserve_thinking                         = true;
@@ -317,6 +320,8 @@ int main() {
                       "resolved thinking mode missing");
     failures += check(started.at("request").at("thinking_budget") == 256,
                       "resolved thinking budget missing");
+    failures += check(started.at("request").at("effective_thinking_budget") == 256,
+                      "resolved effective thinking budget missing");
     failures += check(started.at("request").at("requested_reasoning_effort") == "xhigh" &&
                           !started.at("request").contains("resolved_reasoning_effort"),
                       "requested and resolved reasoning effort are not distinguished");
@@ -330,6 +335,7 @@ int main() {
     server_defaulted.requested_output_tokens = prepared.requested_output_tokens;
     server_defaulted.enable_thinking         = prepared.enable_thinking;
     server_defaulted.thinking_budget         = prepared.thinking_budget;
+    server_defaulted.effective_thinking_budget = prepared.effective_thinking_budget;
     server_defaulted.reasoning_effort        = prepared.reasoning_effort;
     server_defaulted.preserve_thinking       = prepared.preserve_thinking;
     // requested_reasoning_effort and requested_preserve_thinking stay unset: the resolved values
@@ -451,7 +457,8 @@ int main() {
                           .search_overshoot_ns        = 0,
                           .best_reuse_prompt_tokens   = 4096,
     };
-    outcome.thinking = ninfer::ThinkingBudgetStats{.configured_budget     = 256,
+    outcome.thinking = ninfer::ThinkingBudgetStats{.requested_budget      = 256,
+                                                   .effective_budget      = 256,
                                                    .model_thinking_tokens = 256,
                                                    .injected_tokens       = 19,
                                                    .applied               = true};
@@ -472,6 +479,7 @@ int main() {
     failures += check(done.at("result").at("prefix_reuse_path") == "private_turn_closure",
                       "prefix reuse path missing");
     failures += check(done.at("result").at("thinking_budget") == 256 &&
+                          done.at("result").at("effective_thinking_budget") == 256 &&
                           done.at("result").at("model_thinking_tokens") == 256 &&
                           done.at("result").at("thinking_control_tokens") == 19 &&
                           done.at("result").at("thinking_control_applied") == true,
@@ -769,6 +777,150 @@ int main() {
     }
     input.close();
     std::filesystem::remove(log_path);
+
+    // Serve-level test: a request in the boundary window returns 200, and request/operational
+    // logs report both budgets identically. Also tests the derive_output_budget path.
+    {
+        // 1. Boundary window where C <= R and C > B (Case 3):
+        // B = 10, C = 20, R = 28. Early close is unavailable, thinking runs to output limit without control tokens.
+        // Effective budget is unchanged: requested = 10, effective = 10 (identical budgets).
+        GenerationRequest boundary_req;
+        boundary_req.max_tokens           = 20;
+        boundary_req.derive_output_budget = false;
+        boundary_req.thinking_budget      = 10;
+        boundary_req.messages.resize(1);
+
+        PreparedRequest boundary_prep;
+        boundary_prep.requested_output_tokens   = 20;
+        boundary_prep.enable_thinking           = true;
+        boundary_prep.thinking_budget           = 10;
+        boundary_prep.effective_thinking_budget = 10;
+
+        const RequestLogMetadata boundary_meta{
+            .model                  = "qwen3.6-27b",
+            .stream                 = false,
+            .output_tokens_explicit = true,
+        };
+        const RequestLogContext boundary_ctx = make_request_log_context(
+            10, "openai_chat_completions", boundary_req, boundary_meta, boundary_prep);
+
+        // Verify request start log reports both budgets identically (both = 10, no '(effective ...)' divergence)
+        const OperationalRecord boundary_start_pretty = render_request_start(boundary_ctx);
+        failures += check(
+            boundary_start_pretty.message.find("budget 10") != std::string::npos &&
+                boundary_start_pretty.message.find("effective") == std::string::npos,
+            "boundary start operational log diverged when budgets were identical");
+
+        const Json boundary_started_json =
+            Json::parse(format_request_start_json("serve-test", 2100, boundary_ctx));
+        failures += check(
+            boundary_started_json.at("request").at("thinking_budget") == 10 &&
+                boundary_started_json.at("request").at("effective_thinking_budget") == 10,
+            "boundary start JSON log did not report both budgets identically");
+
+        // The request successfully completes (returns HTTP 200)
+        GenerationOutcome boundary_outcome;
+        boundary_outcome.prompt_tokens     = 100;
+        boundary_outcome.completion_tokens = 20;
+        boundary_outcome.finish_reason     = ninfer::FinishReason::OutputLimit;
+        boundary_outcome.thinking          = ninfer::ThinkingBudgetStats{
+            .requested_budget      = 10,
+            .effective_budget      = 10,
+            .model_thinking_tokens = 20,
+            .injected_tokens       = 0,
+            .applied               = false,
+        };
+
+        const OpenAIChatResponseIdentity identity =
+            make_openai_chat_response_identity("qwen3.6-27b");
+        httplib::Response http_res;
+        http_res.status = 200;
+        set_owned_json_content(http_res,
+                               make_chat_completion_response(identity, boundary_outcome),
+                               boundary_prep.lifetime);
+        failures += check(http_res.status == 200, "boundary request response status is not 200");
+
+        // Done log: request and operational logs report both budgets identically
+        const OperationalRecord boundary_done_pretty =
+            render_request_done(boundary_ctx, boundary_outcome);
+        failures += check(
+            boundary_done_pretty.message.find("thinking 20/10") != std::string::npos &&
+                boundary_done_pretty.message.find("effective") == std::string::npos,
+            "boundary done operational log diverged when budgets were identical");
+
+        const Json boundary_done_json = Json::parse(
+            format_request_done_json("serve-test", 3100, boundary_ctx, boundary_outcome));
+        failures += check(
+            boundary_done_json.at("result").at("thinking_budget") == 10 &&
+                boundary_done_json.at("result").at("effective_thinking_budget") == 10,
+            "boundary done JSON log did not report both budgets identically");
+
+        // 2. Boundary window where C > R and C - B < R (Case 2):
+        // B = 512, C = 520, R = 28. Effective budget is lowered to C - R = 492.
+        // Both budgets are reported separately and consistently.
+        GenerationRequest clamped_req;
+        clamped_req.max_tokens           = 520;
+        clamped_req.derive_output_budget = true; // Exercise derive_output_budget path
+        clamped_req.thinking_budget      = 512;
+        clamped_req.messages.resize(1);
+
+        PreparedRequest clamped_prep;
+        clamped_prep.requested_output_tokens   = 520;
+        clamped_prep.enable_thinking           = true;
+        clamped_prep.thinking_budget           = 512;
+        clamped_prep.effective_thinking_budget = 492;
+
+        const RequestLogContext clamped_ctx = make_request_log_context(
+            11, "openai_chat_completions", clamped_req, boundary_meta, clamped_prep);
+
+        const OperationalRecord clamped_start_pretty = render_request_start(clamped_ctx);
+        failures += check(
+            clamped_start_pretty.message.find("budget 512 (effective 492)") != std::string::npos,
+            "clamped start operational log did not report requested and effective budgets");
+
+        const Json clamped_started_json =
+            Json::parse(format_request_start_json("serve-test", 2101, clamped_ctx));
+        failures += check(
+            clamped_started_json.at("request").at("thinking_budget") == 512 &&
+                clamped_started_json.at("request").at("effective_thinking_budget") == 492,
+            "clamped start JSON log did not report requested and effective budgets");
+
+        // The request successfully completes (returns HTTP 200)
+        GenerationOutcome clamped_outcome;
+        clamped_outcome.prompt_tokens     = 100;
+        clamped_outcome.completion_tokens = 520;
+        clamped_outcome.finish_reason     = ninfer::FinishReason::OutputLimit;
+        clamped_outcome.thinking          = ninfer::ThinkingBudgetStats{
+            .requested_budget      = 512,
+            .effective_budget      = 492,
+            .model_thinking_tokens = 492,
+            .injected_tokens       = 27,
+            .applied               = true,
+        };
+
+        httplib::Response clamped_http_res;
+        clamped_http_res.status = 200;
+        set_owned_json_content(clamped_http_res,
+                               make_chat_completion_response(identity, clamped_outcome),
+                               clamped_prep.lifetime);
+        failures += check(clamped_http_res.status == 200, "clamped request response status is not 200");
+
+        const OperationalRecord clamped_done_pretty =
+            render_request_done(clamped_ctx, clamped_outcome);
+        failures += check(
+            clamped_done_pretty.message.find("thinking 492/492 (requested 512), control 27") !=
+                std::string::npos,
+            "clamped done operational log did not report requested and effective budgets");
+
+        const Json clamped_done_json = Json::parse(
+            format_request_done_json("serve-test", 3101, clamped_ctx, clamped_outcome));
+        failures += check(
+            clamped_done_json.at("result").at("thinking_budget") == 512 &&
+                clamped_done_json.at("result").at("effective_thinking_budget") == 492 &&
+                clamped_done_json.at("result").at("thinking_control_tokens") == 27 &&
+                clamped_done_json.at("result").at("thinking_control_applied") == true,
+            "clamped done JSON log did not report requested and effective budgets");
+    }
 
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;

@@ -216,6 +216,10 @@ Json overrides_json(const ninfer::SamplingOverrides& overrides) {
 Json request_json(const RequestLogContext& context) {
     Json thinking_budget = nullptr;
     if (context.thinking_budget) { thinking_budget = *context.thinking_budget; }
+    Json effective_thinking_budget = nullptr;
+    if (context.effective_thinking_budget) {
+        effective_thinking_budget = *context.effective_thinking_budget;
+    }
     return Json{{"request_id", context.id},
                 {"protocol", context.protocol},
                 {"model", context.model},
@@ -230,6 +234,7 @@ Json request_json(const RequestLogContext& context) {
                 {"has_tool_history", context.has_tool_history},
                 {"enable_thinking", context.enable_thinking},
                 {"thinking_budget", std::move(thinking_budget)},
+                {"effective_thinking_budget", std::move(effective_thinking_budget)},
                 {"requested_reasoning_effort",
                  requested_reasoning_effort_json(context.requested_reasoning_effort)},
                 {"preserve_thinking",
@@ -489,7 +494,13 @@ std::string format_request_start(const RequestLogContext& context) {
         << (context.preserve_thinking ? (*context.preserve_thinking ? "on" : "off") : "default")
         << " preserve_change=" << (context.preserve_thinking_semantic_change ? "yes" : "no")
         << " sampler=[" << sampler_str(context.sampling) << ']';
-    if (context.thinking_budget) { out << " thinking_budget=" << *context.thinking_budget; }
+    if (context.thinking_budget) {
+        out << " thinking_budget=" << *context.thinking_budget;
+        if (context.effective_thinking_budget &&
+            *context.effective_thinking_budget != *context.thinking_budget) {
+            out << " effective_thinking_budget=" << *context.effective_thinking_budget;
+        }
+    }
     if (context.media_item_count != 0) {
         out << " prepare=" << seconds_str(context.preparation.seconds)
             << " acquire=" << seconds_str(context.acquisition_seconds)
@@ -565,9 +576,13 @@ std::string format_request_done(const RequestLogContext& context,
             << "us/round";
     }
     out << " speculative=" << speculative_str(metrics);
-    if (outcome.thinking.configured_budget) {
-        out << " thinking_budget=" << *outcome.thinking.configured_budget
-            << " model_thinking=" << outcome.thinking.model_thinking_tokens
+    if (outcome.thinking.requested_budget) {
+        out << " thinking_budget=" << *outcome.thinking.requested_budget;
+        if (outcome.thinking.effective_budget &&
+            *outcome.thinking.effective_budget != *outcome.thinking.requested_budget) {
+            out << " effective_thinking_budget=" << *outcome.thinking.effective_budget;
+        }
+        out << " model_thinking=" << outcome.thinking.model_thinking_tokens
             << " control_tokens=" << outcome.thinking.injected_tokens
             << " control=" << (outcome.thinking.applied ? "applied" : "unused");
     }
@@ -805,9 +820,12 @@ std::string format_request_done_json(const std::string& server_instance_id, std:
                               static_cast<int>(outcome.metrics.prefix_cache_hit_tokens))},
              {"prefix_cache_hit_tokens", outcome.metrics.prefix_cache_hit_tokens},
              {"prefix_reuse_path", prefix_reuse_path_name(outcome.metrics.prefix_reuse_path)},
-             {"thinking_budget", outcome.thinking.configured_budget
-                                     ? Json(*outcome.thinking.configured_budget)
+             {"thinking_budget", outcome.thinking.requested_budget
+                                     ? Json(*outcome.thinking.requested_budget)
                                      : Json(nullptr)},
+             {"effective_thinking_budget", outcome.thinking.effective_budget
+                                              ? Json(*outcome.thinking.effective_budget)
+                                              : Json(nullptr)},
              {"model_thinking_tokens", outcome.thinking.model_thinking_tokens},
              {"thinking_control_tokens", outcome.thinking.injected_tokens},
              {"thinking_control_applied", outcome.thinking.applied},

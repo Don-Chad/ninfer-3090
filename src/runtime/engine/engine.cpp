@@ -115,6 +115,7 @@ public:
     public:
         virtual ~Concept() = default;
         virtual GenerationResult wait(OutputSink* sink, const CancellationView& cancellation) = 0;
+        virtual std::optional<std::uint32_t> effective_thinking_budget() const noexcept       = 0;
     };
 
     template <class Submission>
@@ -125,6 +126,10 @@ public:
 
         GenerationResult wait(OutputSink* sink, const CancellationView& cancellation) override {
             return submission_.wait(sink, cancellation);
+        }
+
+        std::optional<std::uint32_t> effective_thinking_budget() const noexcept override {
+            return submission_.effective_thinking_budget();
         }
 
     private:
@@ -146,6 +151,10 @@ public:
         return sampling_;
     }
 
+    [[nodiscard]] std::optional<std::uint32_t> effective_thinking_budget() const noexcept {
+        return state_->effective_thinking_budget();
+    }
+
 private:
     std::unique_ptr<Concept> state_;
     ResolvedSamplingParameters sampling_;
@@ -163,6 +172,10 @@ GenerationHandle::operator bool() const noexcept { return impl_ != nullptr; }
 const ResolvedSamplingParameters& GenerationHandle::resolved_sampling() const noexcept {
     static const ResolvedSamplingParameters empty;
     return impl_ != nullptr ? impl_->resolved_sampling() : empty;
+}
+
+std::optional<std::uint32_t> GenerationHandle::effective_thinking_budget() const noexcept {
+    return impl_ != nullptr ? impl_->effective_thinking_budget() : std::nullopt;
 }
 
 GenerationResult GenerationHandle::wait(OutputSink* sink, const CancellationView& cancellation) {
@@ -543,13 +556,21 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
                 if (cancellation.requested()) { result.finish_reason = FinishReason::Cancelled; }
                 return std::move(result);
             }
+
+            [[nodiscard]] std::optional<std::uint32_t> effective_thinking_budget() const noexcept {
+                return result.thinking.effective_budget;
+            }
         } immediate{.consumer_mode = consumer_mode};
 
-        immediate.result.prompt                     = prompt_summary;
-        immediate.result.finish_reason              = FinishReason::OutputLimit;
-        immediate.result.thinking.configured_budget = resolved_options.execution.thinking.budget;
-        immediate.result.timings.prepare_seconds    = prepare_seconds;
-        immediate.result.timings.total_seconds      = prepare_seconds;
+        immediate.result.prompt                    = prompt_summary;
+        immediate.result.finish_reason             = FinishReason::OutputLimit;
+        immediate.result.thinking.requested_budget = resolved_options.execution.thinking.budget;
+        immediate.result.thinking.effective_budget =
+            resolved_options.execution.thinking.effective_budget.has_value()
+                ? resolved_options.execution.thinking.effective_budget
+                : resolved_options.execution.thinking.budget;
+        immediate.result.timings.prepare_seconds = prepare_seconds;
+        immediate.result.timings.total_seconds   = prepare_seconds;
         prompt.impl_.reset();
         return GenerationHandle(std::make_unique<GenerationHandle::Impl>(
             impl_, std::move(immediate), resolved_sampling));

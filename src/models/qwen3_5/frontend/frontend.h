@@ -85,6 +85,7 @@ public:
     [[nodiscard]] const StopPolicy& default_stop_policy() const noexcept;
     [[nodiscard]] const ModelSamplingDefaults& sampling_defaults() const noexcept;
     [[nodiscard]] const std::vector<PromptGraft>& grafts() const noexcept;
+    [[nodiscard]] std::uint32_t thinking_control_token_count() const noexcept;
 
 private:
     class Impl;

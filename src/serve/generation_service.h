@@ -100,6 +100,7 @@ struct PreparedRequest {
     int requested_output_tokens = 0;
     bool enable_thinking = true;
     std::optional<std::uint32_t> thinking_budget;
+    std::optional<std::uint32_t> effective_thinking_budget;
     std::optional<ninfer::ReasoningEffort> reasoning_effort;
     // The client's own effort choice, or unset when the server default resolved reasoning_effort
     // instead. Logging reports this, not reasoning_effort, so a defaulted request logs null.

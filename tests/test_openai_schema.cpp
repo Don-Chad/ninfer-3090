@@ -129,6 +129,15 @@ int test_request_envelope_and_sampling() {
     failures += check(!derived_explicit.generation.derive_output_budget &&
                           derived_explicit.generation.max_tokens == 32,
                       "an explicit limit was marked for derivation");
+    ServeOptions server;
+    server.default_thinking_budget = 256;
+    GenerationRequest gen_req = derived_omitted.generation;
+    gen_req.thinking_budget = 256;
+    const ninfer::RequestOptions translated_derived =
+        to_request_options(gen_req, server, semantics(gen_req), true);
+    failures += check(derived_omitted.generation.derive_output_budget &&
+                          translated_derived.execution.thinking.budget == 256,
+                      "derived output budget request retained thinking budget in translation");
 
     Json malformed              = base_request();
     malformed["stream_options"] = true;

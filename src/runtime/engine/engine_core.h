@@ -12,6 +12,7 @@
 #include "runtime/engine/context_cache/resource_manager.h"
 #include "runtime/engine/scheduler.h"
 #include "runtime/engine/generation_budget.h"
+#include "runtime/engine/effective_thinking_budget.h"
 #include "runtime/engine/worker_fault.h"
 
 #include <algorithm>
@@ -165,6 +166,11 @@ public:
             return owner->wait_for_request(std::exchange(request_, nullptr), sink, cancellation);
         }
 
+        [[nodiscard]] std::optional<std::uint32_t> effective_thinking_budget() const noexcept {
+            return request_ != nullptr ? request_->output.thinking_stats().effective_budget
+                                       : std::nullopt;
+        }
+
     private:
         Submission(EngineCore& owner, std::shared_ptr<Request> request) noexcept
             : owner_(&owner), request_(std::move(request)) {}
@@ -216,12 +222,19 @@ public:
 
         std::shared_ptr<Request> request;
         try {
-            auto output = instance_.frontend.make_output_session(
-                prompt, options.stop, options.output, options.execution.thinking);
             const std::uint32_t capacity_output =
                 max_context_ - prompt_summary.prompt_tokens + static_cast<std::uint32_t>(1);
-            output.fit_thinking_budget(
-                std::min(options.execution.requested_output_tokens, capacity_output));
+            const std::uint32_t C =
+                std::min(options.execution.requested_output_tokens, capacity_output);
+            if (options.execution.thinking.budget.has_value()) {
+                const std::uint32_t R = instance_.frontend.thinking_control_token_count() + 1U;
+                const auto effective  = effective_thinking_budget(
+                    *options.execution.thinking.budget, C, R);
+                options.execution.thinking.effective_budget      = effective.effective_budget;
+                options.execution.thinking.early_close_available = effective.early_close_available;
+            }
+            auto output = instance_.frontend.make_output_session(
+                prompt, options.stop, options.output, options.execution.thinking);
             request = std::make_shared<Request>(request_id, publication_order, std::move(prompt),
                                                 std::move(output), prompt_summary, prepare_seconds,
                                                 std::move(options), consumer_mode, observation,

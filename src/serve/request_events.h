@@ -24,6 +24,7 @@ struct RequestLogContext {
     bool has_tool_history = false;
     bool enable_thinking  = true;
     std::optional<std::uint32_t> thinking_budget;
+    std::optional<std::uint32_t> effective_thinking_budget;
     std::optional<RequestedReasoningEffort> requested_reasoning_effort;
     std::optional<bool> preserve_thinking;
     bool preserve_thinking_semantic_change = false;
