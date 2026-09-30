@@ -448,22 +448,17 @@ completion usage and the request's `max_tokens`/`max_output_tokens` budget.
 
 When effective output capacity extends past the configured thinking budget but cannot fit the
 complete tokenizer-derived control suffix plus one post-close model token, Engine automatically
-clamps the effective thinking budget to fit:
-- If capacity is at least the control suffix length plus two tokens ($C \ge R + 1$, where $R$
-  is the control suffix length plus one token; $R = 28$ for Qwen 3.5/3.8), the thinking budget
-  is clamped to $C - R$ so early-close guidance and at least one post-close model token can be
-  generated.
-- If capacity is smaller than the required control tokens ($B < C < R$), the thinking budget
-  is clamped to $C$; reasoning proceeds up to the output limit without inserting early-close
-  control tokens (consistent with $C \le B$), and generation terminates at the output limit
-  (which may leave an empty answer).
-- If capacity equals $R$ exactly ($C = R$) with $B < R$, a non-zero budget cannot fit the control
-  suffix and a post-close model token, so preparation is rejected with HTTP 400 code
-  `thinking_budget_capacity_insufficient` rather than partially inserting control.
+adjusts the effective thinking budget:
+- If capacity is greater than the required control tokens (C > R, where R is the control suffix
+  length plus one token; R = 28 for Qwen 3.5/3.8), the thinking budget is clamped to C - R so
+  early-close guidance and at least one post-close model token can be generated.
+- If capacity is less than or equal to the required control tokens (C <= R), the thinking budget
+  is raised to C; reasoning proceeds up to the output limit without inserting early-close control
+  tokens (consistent with C <= B), and generation terminates at the output limit (which may leave
+  an empty answer).
 
-The operational log and engine stats report this clamped effective budget under `thinking_budget`,
-while client request options reflect the original requested budget. The server does not promise that
-the model will emit nonempty content or a tool call after the marker.
+The server does not promise that the model will emit nonempty content or a tool call after the
+marker.
 
 For Chat Completions, `reasoning_effort: "none"` requests disabled thinking. The other standard
 values (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) reach the template on its three rungs:

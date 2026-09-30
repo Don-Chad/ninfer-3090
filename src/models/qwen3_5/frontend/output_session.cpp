@@ -697,30 +697,9 @@ void OutputSession::fit_thinking_budget(std::uint32_t effective_output_tokens) {
         if (effective_output_tokens > required) {
             impl_->semantic.budget =
                 static_cast<std::uint32_t>(effective_output_tokens - required);
-        } else if (effective_output_tokens < required) {
-            impl_->semantic.budget = effective_output_tokens;
         } else {
-            throw std::invalid_argument(
-                "effective output capacity after the thinking budget must fit the complete control "
-                "suffix and one post-close model token");
+            impl_->semantic.budget = effective_output_tokens;
         }
-    }
-}
-
-void OutputSession::validate_generation_capacity(std::uint32_t effective_output_tokens) const {
-    if (impl_ == nullptr) { throw std::logic_error("output session is empty"); }
-    if (!impl_->semantic.budget || !impl_->semantic.in_reasoning ||
-        effective_output_tokens <= *impl_->semantic.budget) {
-        return;
-    }
-    const std::uint64_t remaining =
-        static_cast<std::uint64_t>(effective_output_tokens) - *impl_->semantic.budget;
-    const std::uint64_t required =
-        static_cast<std::uint64_t>(impl_->thinking_control_tokens->size()) + 1U;
-    if (remaining < required) {
-        throw std::invalid_argument(
-            "effective output capacity after the thinking budget must fit the complete control "
-            "suffix and one post-close model token");
     }
 }
 

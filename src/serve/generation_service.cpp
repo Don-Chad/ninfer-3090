@@ -50,11 +50,6 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception) {
         error.status = 400;
         error.code   = "context_length_exceeded";
         break;
-    case ninfer::RequestErrorKind::ThinkingBudgetCapacityInsufficient:
-        error.param.clear();
-        error.status = 400;
-        error.code   = "thinking_budget_capacity_insufficient";
-        break;
     case ninfer::RequestErrorKind::MediaBudgetExceeded:
         error.status = 400;
         error.code   = "media_budget_exceeded";

@@ -659,7 +659,6 @@ struct PromptInput {
 
 enum class RequestErrorKind : std::uint8_t {
     ContextLengthExceeded,
-    ThinkingBudgetCapacityInsufficient,
     MediaBudgetExceeded,
     InvalidMedia,
     InvalidOutputFormat,

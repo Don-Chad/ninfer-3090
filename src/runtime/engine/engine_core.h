@@ -220,13 +220,8 @@ public:
                 prompt, options.stop, options.output, options.execution.thinking);
             const std::uint32_t capacity_output =
                 max_context_ - prompt_summary.prompt_tokens + static_cast<std::uint32_t>(1);
-            try {
-                output.fit_thinking_budget(
-                    std::min(options.execution.requested_output_tokens, capacity_output));
-            } catch (const std::invalid_argument& error) {
-                throw RequestError(RequestErrorKind::ThinkingBudgetCapacityInsufficient,
-                                   error.what());
-            }
+            output.fit_thinking_budget(
+                std::min(options.execution.requested_output_tokens, capacity_output));
             request = std::make_shared<Request>(request_id, publication_order, std::move(prompt),
                                                 std::move(output), prompt_summary, prepare_seconds,
                                                 std::move(options), consumer_mode, observation,
