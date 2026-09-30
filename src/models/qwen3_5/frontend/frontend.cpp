@@ -397,6 +397,9 @@ void prepend_graft(const PromptGraft& graft, PreparedPromptData& prompt,
 void apply_direct_graft(const PromptGraft& graft, PreparedPromptData& prompt,
                         std::vector<std::optional<std::uint32_t>>& message_boundaries,
                         std::vector<std::optional<std::uint32_t>>& cache_boundaries) {
+    if (graft.placeholder_ids.size() != graft.n_slots) {
+        throw std::logic_error("graft '" + graft.name + "' has no placeholder ids");
+    }
     const auto n_slots   = static_cast<std::size_t>(graft.n_slots);
     const auto count     = prompt.token_ids.size();
     const auto new_count = n_slots + count;
@@ -404,7 +407,8 @@ void apply_direct_graft(const PromptGraft& graft, PreparedPromptData& prompt,
         return static_cast<std::uint32_t>(frontier + n_slots);
     };
 
-    prompt.token_ids.insert(prompt.token_ids.begin(), n_slots, TokenId{0});
+    prompt.token_ids.insert(prompt.token_ids.begin(), graft.placeholder_ids.begin(),
+                            graft.placeholder_ids.end());
     prompt.token_types.insert(prompt.token_types.begin(), n_slots, std::uint8_t{0});
 
     std::vector<std::int32_t> new_positions(3 * new_count);
@@ -422,8 +426,13 @@ void apply_direct_graft(const PromptGraft& graft, PreparedPromptData& prompt,
     for (VisionItem& item : prompt.vision_items) {
         for (TokenSpan& span : item.token_spans) { span.begin += n_slots; }
     }
-    prompt.identity.rewrite_checkpoint.reset();
-    prompt.identity.rewrite_execution_frontiers.clear();
+    if (prompt.identity.rewrite_checkpoint) {
+        prompt.identity.rewrite_checkpoint->frontier =
+            shifted(prompt.identity.rewrite_checkpoint->frontier);
+    }
+    for (std::uint32_t& frontier : prompt.identity.rewrite_execution_frontiers) {
+        frontier = shifted(frontier);
+    }
     for (std::optional<std::uint32_t>& boundary : message_boundaries) {
         if (boundary) { boundary = shifted(*boundary); }
     }
@@ -510,7 +519,7 @@ PreparedContextCache prepare_context_cache(
     std::span<const std::optional<std::uint32_t>> cache_boundaries,
     std::span<const VisionItem> vision_items, std::optional<std::size_t> engine_tool_marker_index,
     std::optional<std::uint32_t> leading_boundary, std::uint32_t full_prompt_frontier,
-    std::uint32_t graft_frontier) {
+    std::uint32_t graft_frontier, std::uint32_t direct_graft_slots) {
     if (hints.markers.size() > kMaximumExplicitPromptCacheMarkers) {
         throw std::invalid_argument("PromptInput supports at most four explicit cache markers");
     }
@@ -595,7 +604,11 @@ PreparedContextCache prepare_context_cache(
                               (hints.allow_engine_prefix_grid ? kPrefixGridCandidates : 0U));
     const auto add_opportunity = [&](PromptCacheMarkerKind kind, SharedCandidateEvidence evidence,
                                      std::uint32_t frontier, std::uint32_t input_order) {
-        if (frontier == 0 || !exact_vision_frontier(frontier, vision_items)) { return; }
+        // A direct graft's positions are restored whole from its pinned slot, so nothing at or
+        // below its end is worth capturing: the slot already is that prefix.
+        if (frontier <= direct_graft_slots || !exact_vision_frontier(frontier, vision_items)) {
+            return;
+        }
         const auto duplicate = std::find_if(
             out.opportunities.begin(), out.opportunities.end(), [&](const auto& existing) {
                 return existing.kind == kind && existing.frontier == frontier;
@@ -1000,21 +1013,16 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
             apply_direct_graft(*graft, result, message_boundaries, cache_boundaries);
         }
     }
+    // A direct graft is restored whole from its pinned slot and is the root every capture of the
+    // request builds on, so it publishes no prefix of its own; a prefill graft is replayed, and its
+    // end is published as a shared prefix.
     const bool is_direct_graft = graft && graft->kind != GraftKind::PrefillKV;
-    result.identity.reusable = !is_direct_graft;
-    if (is_direct_graft) {
-        // Direct grafts use the pinned graft slot for KV reuse (inspect_admission bypass), not the
-        // regular context cache. Shifted boundaries would produce out-of-range capture frontiers, so
-        // skip context cache setup entirely for these requests.
-        result.context_cache.retention            = runtime::RetentionClass::Disposable;
-        result.context_cache.update_session_index = false;
-    } else {
-        result.context_cache = prepare_context_cache(
-            std::move(cache_hints), message_count, message_boundaries, rendered_markers,
-            cache_boundaries, result.vision_items, engine_tool_marker_index, leading_boundary,
-            checked_token_count(result.token_ids.size()),
-            graft ? graft_context_slots(*graft) : 0U);
-    }
+    result.context_cache       = prepare_context_cache(
+        std::move(cache_hints), message_count, message_boundaries, rendered_markers,
+        cache_boundaries, result.vision_items, engine_tool_marker_index, leading_boundary,
+        checked_token_count(result.token_ids.size()),
+        (graft && !is_direct_graft) ? graft_context_slots(*graft) : 0U,
+        is_direct_graft ? graft_context_slots(*graft) : 0U);
     result.prepare.seconds = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
 }

@@ -21,6 +21,27 @@ namespace {
 
 using Json = nlohmann::json;
 
+// Deterministic stand-in ids for a direct graft's injected positions, seeded by the container
+// digest. They stay inside the plain-text range so every one is a public token.
+constexpr std::uint64_t kPlaceholderIdRange = 100000;
+
+std::vector<TokenId> derive_placeholder_ids(std::string_view payload_sha256, std::uint32_t count) {
+    std::uint64_t state = 0xcbf29ce484222325ULL; // FNV-1a over the digest text
+    for (const char c : payload_sha256) {
+        state = (state ^ static_cast<std::uint8_t>(c)) * 0x100000001b3ULL;
+    }
+    std::vector<TokenId> ids(count);
+    for (TokenId& id : ids) { // splitmix64
+        state += 0x9e3779b97f4a7c15ULL;
+        std::uint64_t z = state;
+        z               = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        z               = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+        z ^= z >> 31;
+        id = static_cast<TokenId>(z % kPlaceholderIdRange);
+    }
+    return ids;
+}
+
 struct TensorEntry {
     std::string dtype;
     std::vector<std::uint64_t> shape;
@@ -314,6 +335,7 @@ PromptGraft load_prompt_graft(const GraftSource& source, const TextConfig& text)
         data.key_head_dim    = gdn.linear_key_head_dim;
         data.value_head_dim  = gdn.linear_value_head_dim;
         graft.tensors        = std::move(data);
+        graft.placeholder_ids = derive_placeholder_ids(graft.payload_sha256, graft.n_slots);
     }
     return graft;
 }

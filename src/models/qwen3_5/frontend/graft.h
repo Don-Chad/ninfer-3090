@@ -72,6 +72,10 @@ struct PromptGraft {
     std::vector<TokenId> tokens;              // replay ids (prefill_kv only)
     std::optional<GraftTensors> tensors;      // tensor data (direct_kv / softprompt_kv)
     std::uint32_t n_slots = 0;                // slot count (all kinds)
+    // direct_kv / softprompt_kv: the n_slots ids standing in for the injected positions in a
+    // prepared prompt. Derived from payload_sha256, so the cache tells two grafts, and a graft
+    // from no graft, apart by token identity alone.
+    std::vector<TokenId> placeholder_ids;
     std::string payload_sha256;
 };
 

@@ -392,6 +392,14 @@ struct SharedPrefixState {
     std::uint32_t active_references = 0;
 };
 
+// A direct graft's pinned prefix is the only shared prefix without a capture identity: it is
+// restored from its own container rather than captured from a prompt, so there is no ledger to
+// compare the request against. Its content is selected by name, and the prompt's placeholder ids
+// stand for it.
+inline bool is_pinned_graft(const SharedPrefixState& state) noexcept {
+    return state.identity == nullptr;
+}
+
 enum class SharedPrefixSlotRole : std::uint8_t {
     Free,
     ReservedCapture,

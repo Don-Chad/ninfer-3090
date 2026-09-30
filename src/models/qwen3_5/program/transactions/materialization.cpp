@@ -209,7 +209,7 @@ ProgramImpl::reserve_materialization(AdmissionCandidate&& plan, PreparedPromptDa
                                              request_plan.reuse_base)) {
             throw std::logic_error("planned resident prefix is no longer reusable");
         }
-        if (shared_state != nullptr && prompt.graft_frontier == 0 &&
+        if (shared_state != nullptr && !is_pinned_graft(*shared_state) &&
             (!shared_state->identity || shared_state->identity->prefix_identity() == nullptr ||
              !qwen3_5::detail::prefix_matches(prompt, shared_state->identity->ledger(),
                                               *shared_state->identity->prefix_identity(),
