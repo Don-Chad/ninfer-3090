@@ -933,12 +933,31 @@ void parse_reasoning(const Json& body, OpenAIResponsesPromptRequest& out) {
     static const std::unordered_set<std::string> allowed = {"effort", "context", "summary",
                                                             "generate_summary", "mode"};
     reject_nonnull_unknown_members(reasoning, allowed, "reasoning");
-    for (const char* key : {"context", "summary", "generate_summary", "mode"}) {
+    for (const char* key : {"context", "mode"}) {
         if (reasoning.contains(key) && !reasoning.at(key).is_null()) {
             bad_request("reasoning." + std::string(key) +
                             " changes reasoning input or output and is not supported",
                         "reasoning", "reasoning_option_not_supported");
         }
+    }
+    // summary and its deprecated alias generate_summary only ask for an optional summary of the
+    // reasoning ("produced, if available"). NInfer returns raw reasoning_text and never produces
+    // one, so a valid value is accepted as a hint and the response reports summary null.
+    std::optional<std::string> summary_style;
+    for (const char* key : {"summary", "generate_summary"}) {
+        if (!reasoning.contains(key) || reasoning.at(key).is_null()) { continue; }
+        const std::string param = "reasoning." + std::string(key);
+        const Json& member      = reasoning.at(key);
+        const std::string value = member.is_string() ? member.get<std::string>() : std::string();
+        if (value != "auto" && value != "concise" && value != "detailed") {
+            bad_request(param + " must be one of auto, concise, or detailed", param,
+                        "invalid_value");
+        }
+        if (summary_style && *summary_style != value) {
+            bad_request("reasoning.summary and reasoning.generate_summary conflict", param,
+                        "invalid_value");
+        }
+        summary_style = value;
     }
     if (!reasoning.contains("effort") || reasoning.at("effort").is_null()) { return; }
     if (!reasoning.at("effort").is_string()) {
