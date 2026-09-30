@@ -950,9 +950,17 @@ ninfer-serve model.ninfer --graft v1=C:/grafts/v1_q38_nf4.bin --graft red=C:/gra
 ```
 
 A request selects one with the top-level `"graft": "NAME"` field on OpenAI Chat Completions,
-Responses (create and input token count) and Anthropic Messages. `null` or absence selects none.
-A name the server did not load fails with `400 unknown_graft`, and a non-string value fails as a
-malformed `graft` field.
+Responses (create and input token count) and Anthropic Messages. A name the server did not load
+fails with `400 unknown_graft`, and a non-string value fails as a malformed `graft` field.
+
+`--default-graft NAME` makes one loaded graft the default for requests that state none. It must
+name a `--graft`, or the server refuses to start.
+
+| request `graft` | without `--default-graft` | with `--default-graft D` |
+|---|---|---|
+| absent or `null` | none | `D` |
+| `""` | none | none (explicit opt-out) |
+| `"X"` | `X` | `X` |
 
 A grafted request runs exactly as if the graft's hidden turns preceded its own messages. The
 graft's tokens occupy positions `[0, n)` and the request's own rendered prompt starts at `n`. With
@@ -1053,6 +1061,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
 | `--graft NAME=PATH` | load a [prompt graft](#prompt-grafts) a request may select by name; repeatable | none |
+| `--default-graft NAME` | apply a loaded graft to requests that state none; `"graft": ""` opts out | none |
 | `--reasoning-effort minimal\|low\|medium\|high\|xhigh\|max` | effort for thinking-enabled requests that state none | template default |
 | `--cors` | permissive browser CORS headers | off |
 | `--temperature F` | process-level temperature override | unset |

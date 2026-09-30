@@ -194,15 +194,17 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
         // assistant prefill opens no new reasoning turn for it to shape.
         result.reasoning_effort = template_reasoning_effort(*server.default_reasoning_effort);
     }
-    if (!request.graft.empty()) {
+    // An unset request field takes the server default; an explicit empty name opts out of it.
+    const std::string& graft = request.graft ? *request.graft : server.default_graft;
+    if (!graft.empty()) {
         const bool loaded = std::any_of(
             server.grafts.begin(), server.grafts.end(),
-            [&](const ninfer::GraftSource& source) { return source.name == request.graft; });
+            [&](const ninfer::GraftSource& source) { return source.name == graft; });
         if (!loaded) {
-            invalid_prompt_option("graft '" + request.graft + "' is not loaded on this server",
-                                  "graft", "unknown_graft");
+            invalid_prompt_option("graft '" + graft + "' is not loaded on this server", "graft",
+                                  "unknown_graft");
         }
-        result.graft = request.graft;
+        result.graft = graft;
     }
     if (request.continuation == ninfer::PromptContinuationMode::ContinueFinalAssistant &&
         result.enable_thinking == true) {

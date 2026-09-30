@@ -49,7 +49,8 @@ rem MTP weights too, so one file serves both.
 rem
 rem OVERRIDES, from the environment. All profiles: NINFER_MODEL (artifact path), NINFER_MODEL_DIR,
 rem NINFER_SERVER, NINFER_HOST, NINFER_PORT, NINFER_GRAFT_DIR (phantom-kv graft directory),
-rem NINFER_GRAFTS (set to "off" to disable graft loading). `tuned` also: NINFER_CONTEXT,
+rem NINFER_GRAFTS (set to "off" to disable graft loading), NINFER_DEFAULT_GRAFT (set to "on" to
+rem apply the loaded graft to every request that names none). `tuned` also: NINFER_CONTEXT,
 rem NINFER_CONCURRENCY, NINFER_KV_DTYPE, NINFER_SPEC, NINFER_DRAFT_TOKENS, NINFER_PREFILL_CHUNK,
 rem NINFER_VISION (on^|off), NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS. Each spec's defaults
 rem (context, lanes, chunk) are the ones measured to fit beside a desktop, which holds roughly 1.5 GiB
@@ -320,6 +321,9 @@ if /i "%NINFER_GRAFTS%"=="off" goto :graft_done
 if "%GRAFT_FILE%"=="" goto :graft_done
 if not exist "%GRAFT_DIR%\%GRAFT_FILE%" goto :graft_done
 set "GRAFT_ARGS=--graft "v1=%GRAFT_DIR%\%GRAFT_FILE%""
+rem Opt-in: NINFER_DEFAULT_GRAFT=on makes v1 apply to every request that states no graft
+rem (--default-graft v1); a request opts out with "graft": "". Only reached when a graft loaded.
+if /i "%NINFER_DEFAULT_GRAFT%"=="on" set "GRAFT_ARGS=%GRAFT_ARGS% --default-graft v1"
 :graft_done
 if not exist "%SERVER%" (
   echo Missing %SERVER%

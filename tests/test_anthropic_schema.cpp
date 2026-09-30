@@ -888,6 +888,11 @@ int test_graft_extension() {
     body["graft"] = "product";
     int failures  = check(parse(body).generation.graft == "product",
                           "Messages graft name was not parsed");
+    body["graft"] = "";
+    failures += check(parse(body).generation.graft == "",
+                      "empty Messages graft did not explicitly select none");
+    body["graft"] = nullptr;
+    failures += check(!parse(body).generation.graft, "null Messages graft was not left unset");
     body["graft"] = Json::array();
     failures += check(api_param([&] { (void)parse(body); }) == "graft",
                       "non-string Messages graft was accepted");
