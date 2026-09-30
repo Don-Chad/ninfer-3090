@@ -1114,6 +1114,13 @@ int test_graft_extension() {
         check(parse_openai_responses_create_request(body, limits()).prompt.generation.graft ==
                   "product",
               "Responses graft name was not parsed");
+    body["graft"] = "";
+    failures += check(parse_openai_responses_create_request(body, limits()).prompt.generation.graft ==
+                          "",
+                      "empty Responses graft did not explicitly select none");
+    body["graft"] = nullptr;
+    failures += check(!parse_openai_responses_create_request(body, limits()).prompt.generation.graft,
+                      "null Responses graft was not left unset");
     body["graft"] = true;
     failures += check(api_error([&] {
                           (void)parse_openai_responses_create_request(body, limits());

@@ -95,6 +95,10 @@ Add `"graft": "NAME"` to any OpenAI-compatible chat completion request:
 The model responds as though the brand knowledge preceded the user's message.
 No system turn is needed — the graft already holds one.
 
+To apply a graft to every request without clients sending the field, start the
+server with `--default-graft brand` (the name must match a `--graft`). A request
+can still opt out with `"graft": ""` or pick another loaded graft by name.
+
 ---
 
 ## What happens under the hood
@@ -278,6 +282,10 @@ Overrides:
 - `NINFER_GRAFTS=off` — disable graft loading entirely
 
 If the graft file doesn't exist, the server starts without it (no error).
+The graft is loaded as `v1` and selected per request. To make it apply to every
+request that names no graft, set `NINFER_DEFAULT_GRAFT=on` (passes
+`--default-graft v1`); a request can still opt out with `"graft": ""`. It has no
+effect when no graft was loaded.
 
 ### Dependencies
 

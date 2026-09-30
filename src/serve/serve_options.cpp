@@ -95,7 +95,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--gdn-state-fp16] "
            "[--mlp-a8-decode] [--no-prefill-a8] "
            "[--prefill-cublas [--no-prefill-cublas-projections]] [--lookup-ngram N] "
-           "[--no-thinking] [--preserve-thinking] [--graft NAME=PATH]... "
+           "[--no-thinking] [--preserve-thinking] [--graft NAME=PATH]... [--default-graft NAME] "
            "[--reasoning-effort minimal|low|medium|high|xhigh|max] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -152,6 +152,8 @@ std::string serve_usage_text(const char* argv0) {
            "       --graft NAME=PATH loads a phantom-kv prefill graft (a safetensors container with a "
            ".json sidecar beside it); a request selecting it with \"graft\": \"NAME\" runs as if the "
            "graft's hidden turn preceded its own messages. Repeatable\n"
+           "       --default-graft NAME applies a loaded graft to every request that states none; "
+           "a request opts out with \"graft\": \"\"\n"
            "       --reasoning-effort is the effort of thinking-enabled requests that state none; "
            "request values override it; like request values, minimal runs as low and high/max as "
            "xhigh\n"
@@ -453,6 +455,11 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             }
             options.grafts.push_back(GraftSource{.name = std::string(spec.substr(0, equals)),
                                                  .path = std::string(spec.substr(equals + 1))});
+        } else if (arg == "--default-graft") {
+            options.default_graft = require_value("--default-graft");
+            if (options.default_graft.empty()) {
+                throw std::invalid_argument("--default-graft needs a graft name");
+            }
         } else if (arg == "--reasoning-effort") {
             const std::string value = require_value("--reasoning-effort");
             const std::optional<RequestedReasoningEffort> effort =
@@ -493,6 +500,13 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else {
             throw std::invalid_argument("unknown argument: " + arg);
         }
+    }
+    if (!options.default_graft.empty() &&
+        std::none_of(options.grafts.begin(), options.grafts.end(), [&](const GraftSource& source) {
+            return source.name == options.default_graft;
+        })) {
+        throw std::invalid_argument("--default-graft '" + options.default_graft +
+                                    "' does not name a --graft");
     }
     if (!kv_capacity_explicit) {
         options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
