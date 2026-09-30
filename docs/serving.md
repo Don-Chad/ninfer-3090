@@ -572,6 +572,7 @@ wire response contains typed `output` Items.
 | `metadata` | at most 16 string pairs; keys at most 64 characters and values at most 512 |
 | `client_metadata` | Codex client extension; an object or `null`, accepted as opaque tracing metadata with no generation effect |
 | `reasoning.effort` | `none` requests disabled thinking; other standard effort values pass to the selected template |
+| `reasoning.summary`, `reasoning.generate_summary` | `auto`, `concise` or `detailed` (other values are rejected, and the two must agree when both are sent); accepted as a hint only. NInfer produces no reasoning summaries, so the response reports `reasoning.summary: null` and an empty `summary` on reasoning Items. `reasoning.context` and `reasoning.mode` are rejected with `reasoning_option_not_supported` |
 | `chat_template_kwargs` | template parameters as a JSON object; standard options merge with typed fields |
 | `preserve_thinking` | alias for `chat_template_kwargs.preserve_thinking`; conflicting values are rejected |
 | `graft` | NInfer extension: name of a [prompt graft](#prompt-grafts), or `null`; also accepted by input token count |

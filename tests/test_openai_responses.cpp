@@ -964,6 +964,59 @@ int test_prompt_cache_key_retention() {
     return failures;
 }
 
+int test_reasoning_summary_options() {
+    const auto parse = [](Json reasoning) {
+        return parse_openai_responses_create_request(
+            Json{{"model", "m"}, {"input", "hello"}, {"reasoning", std::move(reasoning)}}, limits());
+    };
+    const auto rejected = [&](Json reasoning) {
+        return api_error([&] { (void)parse(std::move(reasoning)); });
+    };
+    int failures = 0;
+
+    for (const char* style : {"auto", "concise", "detailed"}) {
+        const auto request = parse(Json{{"effort", "low"}, {"summary", style}});
+        failures += check(request.prompt.generation.reasoning_effort ==
+                              RequestedReasoningEffort::Low,
+                          "a summary hint must not disturb reasoning.effort");
+        failures += check(parse(Json{{"generate_summary", style}}).prompt.generation
+                                  .reasoning_effort == std::nullopt,
+                          "the generate_summary alias is accepted");
+    }
+    failures += check(parse(Json{{"summary", "auto"}, {"generate_summary", "auto"}})
+                              .prompt.generation.reasoning_effort == std::nullopt,
+                      "matching summary and generate_summary are accepted");
+    failures += check(parse(Json{{"summary", nullptr}}).prompt.generation.reasoning_effort ==
+                          std::nullopt,
+                      "a null summary is treated as absent");
+
+    const ApiError bad_value = rejected(Json{{"summary", "verbose"}});
+    failures += check(bad_value.status == 400 && bad_value.param == "reasoning.summary" &&
+                          bad_value.code == "invalid_value",
+                      "an unknown summary style is rejected on its own parameter");
+    failures += check(rejected(Json{{"summary", 1}}).param == "reasoning.summary",
+                      "a non-string summary is rejected");
+    failures += check(rejected(Json{{"generate_summary", "x"}}).param ==
+                          "reasoning.generate_summary",
+                      "an invalid generate_summary names its own parameter");
+    failures += check(rejected(Json{{"summary", "auto"}, {"generate_summary", "concise"}}).code ==
+                          "invalid_value",
+                      "conflicting summary and generate_summary are rejected");
+    for (const char* key : {"context", "mode"}) {
+        failures += check(rejected(Json{{key, "x"}}).code == "reasoning_option_not_supported",
+                          "reasoning options that change model input stay rejected");
+    }
+
+    const OpenAIResponsesCreateRequest request = parse(Json{{"summary", "auto"}});
+    OpenAIResponsesRuntimeValues runtime;
+    const BuiltOpenAIResponse built =
+        make_openai_response_object("resp_test", 1, request, runtime, sample_outcome());
+    failures += check(built.body.at("reasoning").at("summary").is_null() &&
+                          built.body.at("output")[0].at("summary").empty(),
+                      "no summary is reported because none was produced");
+    return failures;
+}
+
 int test_response_object() {
     const OpenAIResponsesCreateRequest request =
         parse_openai_responses_create_request(Json{{"model", "m"},
@@ -1138,6 +1191,7 @@ int main() {
     failures += test_explicit_rejections();
     failures += test_previous_response_call_graph();
     failures += test_prompt_cache_key_retention();
+    failures += test_reasoning_summary_options();
     failures += test_response_object();
     failures += test_sse_sequence_and_failures();
     failures += test_input_tokens_uses_shared_state_path();
