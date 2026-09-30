@@ -62,6 +62,10 @@ inline void speculative_graft(Engine& engine, SpeculativeBackend backend, unsign
     valid(second, 24);
     check(first.generated_token_ids == second.generated_token_ids,
           "repeating a grafted request changed its greedy output");
+    // The graft is only the root: the first request reuses just the graft, and the second must
+    // also find what the first left in the context cache beyond it.
+    check(second.reused_prompt_tokens > first.reused_prompt_tokens,
+          "a repeated grafted request reused nothing beyond the graft");
 
     // Lanes fork the same pinned prefix at once, each with its own budget.
     std::vector<GenerationHandle> handles;

@@ -240,6 +240,14 @@ int main() {
                               graft.tensors->k.end - graft.tensors->k.begin ==
                                   1U * 3U * 2U * 8U * 2U,
                           "a direct_kv graft did not load its KV tensors for injection");
+        // The ids that stand for its positions in a prompt come from the container digest alone.
+        const q::PromptGraft again = q::load_prompt_graft(
+            ninfer::GraftSource{.name = "other_name", .path = write(dir, "direct", c)}, model());
+        const bool in_range = std::all_of(graft.placeholder_ids.begin(), graft.placeholder_ids.end(),
+                                          [](ninfer::TokenId id) { return id >= 0 && id < 1000; }); // model() vocab_size
+        failures += check(graft.placeholder_ids.size() == 3 && in_range &&
+                              graft.placeholder_ids == again.placeholder_ids,
+                          "a direct_kv graft's placeholder ids are not stable public token ids");
     }
     {
         // Only the injected kinds hold a StateImage and a shared-prefix slot for the server's life.

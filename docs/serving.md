@@ -991,7 +991,10 @@ positions is zero-filled and the draft proposes without graft context there. Out
 because the target verifies every proposal against the injected state; only the acceptance rate
 can fall. Each one holds a Device StateImage and a shared-prefix slot for the life of the server;
 startup adds them on top of `--device-state-slots` and `--max-shared-prefixes`, and a disabled
-context cache refuses them. With `--devices`, each layer's K/V and state are written on the device
+context cache refuses them. Grafted requests use the context cache like any other: the pinned slot
+is the root, and later turns and shared prefixes are captured after it. In the prompt the graft's
+positions are held by ids derived from the container's sha256, so a cached prefix is only ever
+matched by requests using the same graft. With `--devices`, each layer's K/V and state are written on the device
 of the stage that holds that layer.
 
 ## Authentication and CORS

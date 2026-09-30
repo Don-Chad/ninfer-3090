@@ -352,6 +352,12 @@ std::optional<AdmissionCandidate> ProgramImpl::inspect_admission(
                 }
             }
         }
+        // The prompt's leading positions are placeholders for the graft. Without its pinned slot
+        // a Root plan would prefill them as ordinary tokens, and the request would decode against
+        // (and publish) a context that is not the graft's.
+        if (!is_graft) {
+            throw std::logic_error("graft '" + prompt.graft_name + "' is not resident");
+        }
     }
 
     if ((source != nullptr && shared_source != nullptr) ||
@@ -2549,7 +2555,7 @@ ProgramImpl::revalidate_materialization(const AdmissionCandidate& plan,
                                          source_state->prefix_identity, details.reuse_base)) {
         return runtime::PreflightStatus::StalePolicyState;
     }
-    if (prompt.graft_frontier == 0 && shared_state != nullptr &&
+    if (shared_state != nullptr && !is_pinned_graft(*shared_state) &&
         (!shared_state->identity || shared_state->identity->prefix_identity() == nullptr ||
          !qwen3_5::detail::prefix_matches(prompt, shared_state->identity->ledger(),
                                           *shared_state->identity->prefix_identity(),
