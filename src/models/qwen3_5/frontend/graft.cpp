@@ -22,10 +22,14 @@ namespace {
 using Json = nlohmann::json;
 
 // Deterministic stand-in ids for a direct graft's injected positions, seeded by the container
-// digest. They stay inside the plain-text range so every one is a public token.
+// digest. They stay inside the plain-text range, and inside the model's vocabulary, so every one is
+// a public token. Distinct grafts, or a graft and a prompt, share a sequence only if every id
+// matches: with the slot counts trained grafts have, that is not a practical collision.
 constexpr std::uint64_t kPlaceholderIdRange = 100000;
 
-std::vector<TokenId> derive_placeholder_ids(std::string_view payload_sha256, std::uint32_t count) {
+std::vector<TokenId> derive_placeholder_ids(std::string_view payload_sha256, std::uint32_t count,
+                                            std::uint64_t vocab_size) {
+    const std::uint64_t range = std::min(kPlaceholderIdRange, vocab_size);
     std::uint64_t state = 0xcbf29ce484222325ULL; // FNV-1a over the digest text
     for (const char c : payload_sha256) {
         state = (state ^ static_cast<std::uint8_t>(c)) * 0x100000001b3ULL;
@@ -37,7 +41,7 @@ std::vector<TokenId> derive_placeholder_ids(std::string_view payload_sha256, std
         z               = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
         z               = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
         z ^= z >> 31;
-        id = static_cast<TokenId>(z % kPlaceholderIdRange);
+        id = static_cast<TokenId>(z % range);
     }
     return ids;
 }
@@ -335,7 +339,7 @@ PromptGraft load_prompt_graft(const GraftSource& source, const TextConfig& text)
         data.key_head_dim    = gdn.linear_key_head_dim;
         data.value_head_dim  = gdn.linear_value_head_dim;
         graft.tensors        = std::move(data);
-        graft.placeholder_ids = derive_placeholder_ids(graft.payload_sha256, graft.n_slots);
+        graft.placeholder_ids = derive_placeholder_ids(graft.payload_sha256, graft.n_slots, text.vocab_size);
     }
     return graft;
 }

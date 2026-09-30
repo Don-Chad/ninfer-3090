@@ -244,7 +244,7 @@ int main() {
         const q::PromptGraft again = q::load_prompt_graft(
             ninfer::GraftSource{.name = "other_name", .path = write(dir, "direct", c)}, model());
         const bool in_range = std::all_of(graft.placeholder_ids.begin(), graft.placeholder_ids.end(),
-                                          [](ninfer::TokenId id) { return id >= 0 && id < 100000; });
+                                          [](ninfer::TokenId id) { return id >= 0 && id < 1000; }); // model() vocab_size
         failures += check(graft.placeholder_ids.size() == 3 && in_range &&
                               graft.placeholder_ids == again.placeholder_ids,
                           "a direct_kv graft's placeholder ids are not stable public token ids");
