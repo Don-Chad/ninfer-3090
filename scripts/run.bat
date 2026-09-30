@@ -318,7 +318,12 @@ set "PROFILE_ARGS=%PROFILE_ARGS% --max-pending-requests 16 --pending-timeout-ms 
 set "GRAFT_ARGS="
 if /i "%NINFER_GRAFTS%"=="off" goto :graft_done
 if "%GRAFT_FILE%"=="" goto :graft_done
-if not exist "%GRAFT_DIR%\%GRAFT_FILE%" goto :graft_done
+if exist "%GRAFT_DIR%\%GRAFT_FILE%" goto :graft_found
+rem No parenthesised block here: GRAFT_DIR may contain ")" (e.g. "Program Files (x86)").
+echo WARNING: graft file not found, serving without a graft: %GRAFT_DIR%\%GRAFT_FILE%
+echo          Requests naming "godmode" will fail with unknown_graft.
+goto :graft_done
+:graft_found
 set "GRAFT_ARGS=--graft "godmode=%GRAFT_DIR%\%GRAFT_FILE%""
 rem Opt-in: NINFER_DEFAULT_GRAFT=on makes godmode apply to every request that states no graft
 rem (--default-graft godmode); a request opts out with "graft": "". Only reached when a graft loaded.
