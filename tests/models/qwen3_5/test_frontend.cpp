@@ -2269,13 +2269,6 @@ int test_thinking_budget_control(const Frontend& frontend) {
     failures += check(pending.size() > 1,
                       "thinking boundary did not expose a multi-token canonical control span");
     const std::vector<ninfer::TokenId> control(pending.begin(), pending.end());
-    failures += check(
-        throws_invalid_argument([&] {
-            session.validate_generation_capacity(static_cast<std::uint32_t>(2 + control.size()));
-        }),
-        "planning accepted a capacity that cannot fit control plus a post-close model token");
-    session.validate_generation_capacity(static_cast<std::uint32_t>(3 + control.size()));
-
     const auto control_decision = session.preview_control(control, 18);
     failures +=
         check(control_decision.accepted_tokens == control.size() && !control_decision.finished() &&
@@ -2287,7 +2280,8 @@ int test_thinking_budget_control(const Frontend& frontend) {
                           channel_text(control_output, ninfer::OutputChannel::Content).empty(),
                       "thinking control was truncated by caller stops or published to content");
     const ninfer::ThinkingBudgetStats stats = session.thinking_stats();
-    failures += check(stats.configured_budget == 2 && stats.model_thinking_tokens == 2 &&
+    failures += check(stats.requested_budget == 2 && stats.effective_budget == 2 &&
+                          stats.model_thinking_tokens == 2 &&
                           stats.injected_tokens == control.size() && stats.applied &&
                           session.pending_control_tokens().empty() &&
                           session.model_token_budget_remaining(17) == 17,
@@ -2352,6 +2346,167 @@ int test_thinking_budget_control(const Frontend& frontend) {
     const auto raw_output = raw_session.commit_preview();
     failures += check(channel_text(raw_output, ninfer::OutputChannel::Content) == kThinkingControl,
                       "raw output did not preserve the inserted control representation");
+    return failures;
+}
+
+int test_thinking_budget_branches(const Frontend& frontend) {
+    auto prompt = thinking_prompt(frontend);
+    auto sample_session =
+        frontend.make_output_session(prompt, {}, {}, ninfer::ThinkingControlOptions{.budget = 2});
+    const std::array<ninfer::TokenId, 2> model_tokens{0, 0};
+    (void)sample_session.preview_model(model_tokens, 20, ninfer::FinishReason::OutputLimit);
+    (void)sample_session.commit_preview();
+    const std::span<const ninfer::TokenId> pending = sample_session.pending_control_tokens();
+    const std::uint32_t required = static_cast<std::uint32_t>(pending.size() + 1);
+
+    int failures = 0;
+    failures += check(required >= 3, "test fixture assumes required control tokens >= 3");
+
+    // Branch 1 (C <= B or C - B >= R) is the unconstrained path: test_thinking_budget_control
+    // drives the cap, control insertion and post-close token for it.
+
+    // 2. Branch 2: C > R and C - B < R (effective budget C - R, available)
+    // Multi-round execution with nonzero remaining budget before hitting the cap
+    {
+        const std::uint32_t b_requested = 10;
+        const std::uint32_t b_effective = 4;
+        const std::uint32_t total_cap   = b_effective + required;
+        auto session = frontend.make_output_session(
+            prompt, {}, {},
+            ninfer::ThinkingControlOptions{.budget                = b_requested,
+                                           .effective_budget      = b_effective,
+                                           .early_close_available = true});
+
+        failures += check(session.thinking_stats().requested_budget == b_requested &&
+                              session.thinking_stats().effective_budget == b_effective,
+                          "Branch 2 stats did not record requested and effective budgets");
+
+        // Round 1: generate 2 tokens. Remaining thinking budget is 4 - 2 = 2 > 0.
+        failures += check(session.model_token_budget_remaining(total_cap) == b_effective,
+                          "initial model token budget license mismatch");
+        const std::array<ninfer::TokenId, 2> round1_tokens{0, 0};
+        const auto r1_decision =
+            session.preview_model(round1_tokens, total_cap, ninfer::FinishReason::OutputLimit);
+        failures += check(
+            r1_decision.accepted_tokens == 2 && !r1_decision.finished() &&
+                r1_decision.continuation == ninfer::runtime::ContinuationAction::Decode,
+            "Branch 2 Round 1 did not decode normally");
+        (void)session.commit_preview();
+
+        // Verify remaining budget is nonzero (2 tokens remaining)
+        const std::uint32_t rem_cap = total_cap - 2U;
+        failures += check(session.model_token_budget_remaining(rem_cap) == 2,
+                          "Branch 2 multi-round remaining thinking budget is not 2");
+
+        // Round 2: generate 2 tokens (reaching the effective cap 4). Triggers target control.
+        const std::array<ninfer::TokenId, 2> round2_tokens{0, 0};
+        const auto r2_decision =
+            session.preview_model(round2_tokens, rem_cap, ninfer::FinishReason::OutputLimit);
+        failures += check(
+            r2_decision.accepted_tokens == 2 && !r2_decision.finished() &&
+                r2_decision.continuation ==
+                    ninfer::runtime::ContinuationAction::ApplyTargetControl,
+            "Branch 2 Round 2 did not request target control at effective budget boundary");
+        (void)session.commit_preview();
+
+        // Control insertion with prefix execution split
+        const std::span<const ninfer::TokenId> ctrl_span = session.pending_control_tokens();
+        failures += check(ctrl_span.size() == required - 1U,
+                          "pending control tokens count does not match expected");
+        const std::vector<ninfer::TokenId> ctrl_vec(ctrl_span.begin(), ctrl_span.end());
+        const auto ctrl_decision = session.preview_control(ctrl_vec, rem_cap - 2U);
+        failures += check(!ctrl_decision.finished() &&
+                              ctrl_decision.prefix_execution_split_after == ctrl_vec.size(),
+                          "Branch 2 control preview did not report atomic prefix split");
+        (void)session.commit_preview();
+
+        failures += check(session.thinking_stats().applied &&
+                              session.thinking_stats().injected_tokens == ctrl_vec.size() &&
+                              session.thinking_stats().model_thinking_tokens == b_effective,
+                          "Branch 2 thinking stats not properly updated after control commit");
+
+        // Round 3: post-control model token
+        const auto post_decision = session.preview_model(
+            std::array<ninfer::TokenId, 1>{0}, 1, ninfer::FinishReason::OutputLimit);
+        failures += check(post_decision.accepted_tokens == 1 &&
+                              post_decision.finish_reason == ninfer::FinishReason::OutputLimit,
+                          "post-control model token was not accepted at output limit");
+        const auto post_output = session.commit_preview();
+        failures += check(!channel_text(post_output, ninfer::OutputChannel::Content).empty(),
+                          "post-control model output did not publish content");
+    }
+
+    // 3. Branch 3: C <= R and C > B (early close unavailable; the cap is not enforced)
+    // Model token budget must not cut reasoning off at B and session must not request target control
+    {
+        const std::uint32_t b_requested = 2;
+        const std::uint32_t total_cap   = required; // C <= R (and C > B)
+        auto session = frontend.make_output_session(
+            prompt, {}, {},
+            ninfer::ThinkingControlOptions{.budget                = b_requested,
+                                           .effective_budget      = b_requested,
+                                           .early_close_available = false});
+
+        // The cap is not enforced, so no effective budget is reported.
+        failures += check(session.thinking_stats().requested_budget == b_requested &&
+                              !session.thinking_stats().effective_budget.has_value(),
+                          "Branch 3 reported an effective budget for an unenforced cap");
+
+        // Verify model_token_budget_remaining does NOT cut reasoning off at B
+        failures += check(session.model_token_budget_remaining(total_cap) == total_cap,
+                          "Branch 3 model_token_budget_remaining prematurely cut reasoning off at B");
+
+        // Generate tokens past B (preview 3 tokens when B = 2)
+        const std::array<ninfer::TokenId, 3> tokens_past_b{0, 0, 0};
+        const auto past_b_decision =
+            session.preview_model(tokens_past_b, total_cap, ninfer::FinishReason::OutputLimit);
+        failures += check(
+            past_b_decision.accepted_tokens == 3 && !past_b_decision.finished() &&
+                past_b_decision.continuation == ninfer::runtime::ContinuationAction::Decode,
+            "Branch 3 unexpectedly triggered target control at or past B");
+        (void)session.commit_preview();
+
+        failures += check(!session.thinking_stats().applied &&
+                              session.pending_control_tokens().empty(),
+                          "Branch 3 unexpectedly armed or applied control");
+
+        // Remaining tokens up to total_cap
+        const std::uint32_t remaining = total_cap - 3U;
+        std::vector<ninfer::TokenId> tail_tokens(remaining, 0);
+        const auto tail_decision =
+            session.preview_model(tail_tokens, remaining, ninfer::FinishReason::OutputLimit);
+        failures += check(
+            tail_decision.accepted_tokens == remaining &&
+                tail_decision.finish_reason == ninfer::FinishReason::OutputLimit &&
+                tail_decision.continuation == ninfer::runtime::ContinuationAction::Decode,
+            "Branch 3 did not run thinking to output limit");
+        (void)session.commit_preview();
+
+        const auto stats = session.thinking_stats();
+        failures += check(stats.model_thinking_tokens == total_cap &&
+                              stats.injected_tokens == 0 && !stats.applied,
+                          "Branch 3 accounting mismatch after running to output limit");
+    }
+
+    // 4. Non-reasoning session: prompt does not start in reasoning
+    {
+        auto non_reasoning_prompt = frontend.prepare_tokens({0});
+        auto session = frontend.make_output_session(
+            non_reasoning_prompt, {}, {}, ninfer::ThinkingControlOptions{.budget = 10});
+        failures += check(session.thinking_stats().requested_budget == 10 &&
+                              session.thinking_stats().effective_budget == 10,
+                          "non-reasoning session stats mismatch");
+    }
+
+    // 5. No-budget session: session has no thinking budget cap
+    {
+        auto session = frontend.make_output_session(
+            prompt, {}, {}, ninfer::ThinkingControlOptions{});
+        failures += check(!session.thinking_stats().requested_budget.has_value() &&
+                              !session.thinking_stats().effective_budget.has_value(),
+                          "uncapped session reported a thinking budget");
+    }
+
     return failures;
 }
 
@@ -2755,6 +2910,7 @@ int main() {
     failures += test_structured_output_stop_masks(frontend);
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
+    failures += test_thinking_budget_branches(frontend);
     failures += test_utf8_and_hidden_eos(frontend);
     failures += test_media_cache_reuses_immutable_payload();
     failures += test_media_payload_outlives_frontend_cache();

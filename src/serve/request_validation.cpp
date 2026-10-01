@@ -80,6 +80,13 @@ std::optional<std::string> parse_graft_field(const RequestJson& body) {
     return body.at("graft").get<std::string>();
 }
 
+std::optional<std::uint32_t> parse_thinking_budget_field(const RequestJson& body) {
+    const std::optional<int> budget = optional_int(body, "thinking_budget");
+    if (!budget) { return std::nullopt; }
+    if (*budget < 1) { bad_request("thinking_budget must be a positive integer", "thinking_budget"); }
+    return static_cast<std::uint32_t>(*budget);
+}
+
 bool valid_tool_name(std::string_view name, std::size_t maximum_length) noexcept {
     if (name.empty() || name.size() > maximum_length) { return false; }
     for (const unsigned char character : name) {

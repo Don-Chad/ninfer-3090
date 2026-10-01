@@ -364,6 +364,7 @@ The endpoint supports:
 - `enable_thinking` and `preserve_thinking`, either at top level or in
   `chat_template_kwargs`;
 - the `graft` extension selecting a [prompt graft](#prompt-grafts);
+- the `thinking_budget` extension, a positive per-request [thinking cap](#openai-chat-completions);
 - Assistant `reasoning_content` and `reasoning` history aliases.
 
 Options whose observable behavior the Engine cannot provide are rejected when they request that
@@ -434,8 +435,11 @@ special tokens cannot be overridden through kwargs.
 
 `--default-thinking-budget N` sets a positive default thinking-token cap for requests that start
 in thinking mode. Non-thinking requests receive no cap. It may coexist with `--no-thinking`
-because requests can explicitly enable thinking. Anthropic
-`thinking:{"type":"enabled","budget_tokens":N}` overrides this default for that request.
+because requests can explicitly enable thinking. A request overrides this default with a positive
+integer: `thinking_budget` on Chat Completions and Responses (a NInfer extension, accepted at top
+level), or `thinking:{"type":"enabled","budget_tokens":N}` on Anthropic Messages (a value of at
+least 1024 and below `max_tokens`, per that protocol). A request that does not think receives no
+cap, whatever it sends.
 
 Add `--default-thinking-budget 512` to the startup command to cap model-origin thinking at 512
 tokens for every thinking-enabled request.
@@ -444,11 +448,24 @@ At the cap boundary, Engine first honors a natural `</think>`, stop condition, c
 total output/context limit. If thinking remains open, it commits Qwen's canonical early-close
 guidance and close marker to the same model sequence without sampling, streams the guidance as a
 reasoning delta, and continues normal content or tool-call generation. Inserted tokens count in
-completion usage and the request's `max_tokens`/`max_output_tokens` budget. If the effective output
-capacity extends past the cap but cannot fit the complete tokenizer-derived control suffix plus one
-post-close model token, preparation is rejected with HTTP 400 code
-`thinking_budget_capacity_insufficient` rather than partially inserting control. The server does
-not promise that the model will emit nonempty content or a tool call after the marker.
+completion usage and the request's `max_tokens`/`max_output_tokens` budget.
+
+Near the end of the output window the early-close guidance may not fit. Let B be the requested
+thinking budget, C the output the request can still produce (the smaller of its output limit and
+the context left after the prompt, counting the final writable position), and R the number of tokens
+that early close needs: the tokenizer-derived guidance and close marker plus one post-close model
+token. R depends on the model's tokenizer and is not a fixed number. A request is never rejected
+because C falls in B < C < B + R; Engine resolves it as follows:
+
+- C <= B, or C - B >= R: the budget is B and early close is available, as above.
+- C > R (and C - B < R): the effective budget is C - R, which is always below B. Early-close
+  guidance and at least one post-close model token still fit.
+- C <= R (and C > B): the budget cannot be enforced, so thinking runs to the output limit with no
+  guidance inserted. The response can end inside the reasoning with empty content.
+
+Logs report the requested budget, and the effective budget when it differs. A request that cannot
+enforce its budget reports the requested value only. The server does not promise that the model will
+emit nonempty content or a tool call after the marker.
 
 For Chat Completions, `reasoning_effort: "none"` requests disabled thinking. The other standard
 values (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) reach the template on its three rungs:
@@ -576,6 +593,7 @@ wire response contains typed `output` Items.
 | `chat_template_kwargs` | template parameters as a JSON object; standard options merge with typed fields |
 | `preserve_thinking` | alias for `chat_template_kwargs.preserve_thinking`; conflicting values are rejected |
 | `graft` | NInfer extension: name of a [prompt graft](#prompt-grafts), or `null`; also accepted by input token count |
+| `thinking_budget` | NInfer extension: positive per-request [thinking cap](#openai-chat-completions), or `null`; rejected by input token count, which does not generate |
 | `text.format` | `{"type":"text"}`, `{"type":"json_object"}`, or `{"type":"json_schema","name",...,"schema",...}` with optional `description` and `strict`; JSON formats are enforced (see [Structured output](#structured-output)) and echoed in the Response object |
 | `tools` | direct function definitions or namespace groups containing function definitions; see below |
 | `tool_choice` | `auto`, `none`, or function-only `allowed_tools` with mode `auto`; a namespaced selection carries both `namespace` and `name` |

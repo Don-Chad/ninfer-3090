@@ -1137,4 +1137,10 @@ const StopPolicy& Frontend::default_stop_policy() const noexcept { return impl_-
 
 const std::vector<PromptGraft>& Frontend::grafts() const noexcept { return impl_->grafts; }
 
+std::uint32_t Frontend::thinking_control_token_count() const noexcept {
+    // Zero when the template has no early-close control; the caller then plans for a bare close.
+    if (!impl_->thinking_control_tokens) { return 0U; }
+    return static_cast<std::uint32_t>(impl_->thinking_control_tokens->size());
+}
+
 } // namespace ninfer::models::qwen3_5

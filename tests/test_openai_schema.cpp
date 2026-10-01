@@ -129,6 +129,15 @@ int test_request_envelope_and_sampling() {
     failures += check(!derived_explicit.generation.derive_output_budget &&
                           derived_explicit.generation.max_tokens == 32,
                       "an explicit limit was marked for derivation");
+    ServeOptions server;
+    server.default_thinking_budget = 256;
+    GenerationRequest gen_req = derived_omitted.generation;
+    gen_req.thinking_budget = 256;
+    const ninfer::RequestOptions translated_derived =
+        to_request_options(gen_req, server, semantics(gen_req), true);
+    failures += check(derived_omitted.generation.derive_output_budget &&
+                          translated_derived.execution.thinking.budget == 256,
+                      "derived output budget request retained thinking budget in translation");
 
     Json malformed              = base_request();
     malformed["stream_options"] = true;
@@ -998,6 +1007,27 @@ int test_common_objects() {
     return failures;
 }
 
+int test_thinking_budget_extension() {
+    Json body    = base_request();
+    int failures = check(!parse(body).generation.thinking_budget,
+                         "absent thinking_budget was not left unset");
+    body["thinking_budget"] = nullptr;
+    failures += check(!parse(body).generation.thinking_budget,
+                      "null thinking_budget was not left unset");
+    body["thinking_budget"] = 512;
+    failures += check(parse(body).generation.thinking_budget == 512U,
+                      "thinking_budget was not parsed");
+    body["thinking_budget"] = 1;
+    failures += check(parse(body).generation.thinking_budget == 1U,
+                      "the smallest positive thinking_budget was rejected");
+    for (const Json& invalid : {Json(0), Json(-5), Json("512"), Json(1.5), Json(true)}) {
+        body["thinking_budget"] = invalid;
+        failures += check(api_error([&] { (void)parse(body); }).param == "thinking_budget",
+                          "invalid thinking_budget was accepted: " + invalid.dump());
+    }
+    return failures;
+}
+
 int test_graft_extension() {
     Json body       = base_request();
     int failures    = check(!parse(body).generation.graft, "absent graft was not left unset");
@@ -1019,6 +1049,7 @@ int test_graft_extension() {
 int main() {
     int failures = 0;
     failures += test_graft_extension();
+    failures += test_thinking_budget_extension();
     failures += test_request_envelope_and_sampling();
     failures += test_standard_field_policy();
     failures += test_response_format();

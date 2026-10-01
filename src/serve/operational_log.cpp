@@ -195,6 +195,11 @@ OperationalRecord render_request_start(const RequestLogContext& context) {
         out << requested_effort_name(context);
         if (context.thinking_budget) {
             out << ", budget " << product::format_pretty_count(*context.thinking_budget);
+            if (context.effective_thinking_budget &&
+                *context.effective_thinking_budget != *context.thinking_budget) {
+                out << " (effective "
+                    << product::format_pretty_count(*context.effective_thinking_budget) << ")";
+            }
         }
     } else {
         out << "off";
@@ -284,10 +289,16 @@ OperationalRecord render_request_done(const RequestLogContext& context,
             << '/' << product::format_pretty_count(metrics.speculative_draft_tokens) << " ("
             << product::format_pretty_percent(acceptance) << ')';
     }
-    if (outcome.thinking.configured_budget) {
+    if (outcome.thinking.requested_budget) {
         out << " | thinking "
             << product::format_pretty_count(outcome.thinking.model_thinking_tokens) << '/'
-            << product::format_pretty_count(*outcome.thinking.configured_budget);
+            << product::format_pretty_count(
+                   outcome.thinking.effective_budget.value_or(*outcome.thinking.requested_budget));
+        if (outcome.thinking.effective_budget &&
+            *outcome.thinking.effective_budget != *outcome.thinking.requested_budget) {
+            out << " (requested "
+                << product::format_pretty_count(*outcome.thinking.requested_budget) << ")";
+        }
         if (outcome.thinking.injected_tokens != 0) {
             out << ", control " << product::format_pretty_count(outcome.thinking.injected_tokens);
         }

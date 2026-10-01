@@ -1161,6 +1161,35 @@ int test_input_tokens_uses_shared_state_path() {
     return failures;
 }
 
+int test_thinking_budget_extension() {
+    Json body    = {{"model", "m"}, {"input", "hello"}};
+    int failures = check(!parse_openai_responses_create_request(body, limits())
+                              .prompt.generation.thinking_budget,
+                         "absent Responses thinking_budget was not left unset");
+    body["thinking_budget"] = 512;
+    failures += check(parse_openai_responses_create_request(body, limits())
+                              .prompt.generation.thinking_budget == 512U,
+                      "Responses thinking_budget was not parsed");
+    body["thinking_budget"] = nullptr;
+    failures += check(!parse_openai_responses_create_request(body, limits())
+                           .prompt.generation.thinking_budget,
+                      "null Responses thinking_budget was not left unset");
+    for (const Json& invalid : {Json(0), Json(-5), Json("512"), Json(1.5)}) {
+        body["thinking_budget"] = invalid;
+        failures += check(api_error([&] {
+                              (void)parse_openai_responses_create_request(body, limits());
+                          }).param == "thinking_budget",
+                          "invalid Responses thinking_budget was accepted: " + invalid.dump());
+    }
+    // Input token counting never generates, so it does not accept a generation cap.
+    Json counting = {{"model", "m"}, {"input", "hello"}, {"thinking_budget", 512}};
+    failures += check(api_error([&] {
+                          (void)parse_openai_responses_input_tokens_request(counting, limits());
+                      }).param == "thinking_budget",
+                      "input token count accepted a thinking_budget");
+    return failures;
+}
+
 int test_graft_extension() {
     Json body = {{"model", "m"}, {"input", "hello"}, {"graft", "product"}};
     int failures =
@@ -1187,6 +1216,7 @@ int test_graft_extension() {
 int main() {
     int failures = 0;
     failures += test_graft_extension();
+    failures += test_thinking_budget_extension();
     failures += test_basic_request_and_resolution();
     failures += test_budgets_and_nonsemantic_hints();
     failures += test_typed_items_and_cache_markers();

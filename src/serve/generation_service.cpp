@@ -50,11 +50,6 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception) {
         error.status = 400;
         error.code   = "context_length_exceeded";
         break;
-    case ninfer::RequestErrorKind::ThinkingBudgetCapacityInsufficient:
-        error.param.clear();
-        error.status = 400;
-        error.code   = "thinking_budget_capacity_insufficient";
-        break;
     case ninfer::RequestErrorKind::MediaBudgetExceeded:
         error.status = 400;
         error.code   = "media_budget_exceeded";
@@ -429,6 +424,7 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
         if (!prepared.enable_thinking) {
             request_options.execution.thinking.budget.reset();
             prepared.thinking_budget.reset();
+            prepared.effective_thinking_budget.reset();
         }
         prepared.prompt_tokens = static_cast<int>(prompt.summary().prompt_tokens);
         if (request.derive_output_budget) {
@@ -445,7 +441,8 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
                                                   ? ninfer::OutputConsumerMode::Streaming
                                                   : ninfer::OutputConsumerMode::Aggregate,
                                               observation, prepared.lifetime->deadline);
-        prepared.sampling   = prepared.generation.resolved_sampling();
+        prepared.sampling                  = prepared.generation.resolved_sampling();
+        prepared.effective_thinking_budget = prepared.generation.effective_thinking_budget();
     } catch (const ApiException&) { throw; } catch (const ninfer::RequestError& exception) {
         throw_request_error(exception);
     } catch (const std::invalid_argument& exception) {
