@@ -1252,6 +1252,83 @@ int test_prompt_graft() {
     return failures;
 }
 
+// A direct graft is restored whole from a pinned slot, and the request's own frontiers must move
+// past it while everything else about caching stays as for any other prompt: the graft is a root,
+// not a reason to skip the cache. Its positions are told apart by token identity, so two grafts and
+// a plain prompt can never share a prefix.
+int test_direct_graft_context_cache() {
+    using ninfer::models::qwen3_5::GraftKind;
+    const auto make_graft = [](std::string name, std::vector<ninfer::TokenId> ids) {
+        ninfer::models::qwen3_5::PromptGraft graft;
+        graft.name            = std::move(name);
+        graft.kind            = GraftKind::DirectKV;
+        graft.n_slots         = static_cast<std::uint32_t>(ids.size());
+        graft.placeholder_ids = std::move(ids);
+        return graft;
+    };
+    const auto first  = make_graft("first", {101, 102, 103, 104, 105, 106});
+    const auto second = make_graft("second", {201, 202, 203, 204, 205, 206});
+    const std::size_t n = first.n_slots;
+    ninfer::models::qwen3_5::FrontendOptions options;
+    options.max_context = std::numeric_limits<std::uint32_t>::max();
+    options.grafts      = {first, second};
+    const Frontend frontend = make_frontend(resources(), options);
+
+    const auto input = [](std::string graft_name) {
+        ninfer::ChatMessage message;
+        message.role = ninfer::ChatRole::User;
+        message.parts.push_back(
+            ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
+        ninfer::PromptInput input;
+        input.messages.push_back(std::move(message));
+        input.options.graft = std::move(graft_name);
+        return input;
+    };
+    const auto plain_prompt  = frontend.prepare(input(""));
+    const auto first_prompt  = frontend.prepare(input("first"));
+    const auto second_prompt = frontend.prepare(input("second"));
+    const auto& plain        = FrontendFactory::inspect(plain_prompt);
+    const auto& grafted      = FrontendFactory::inspect(first_prompt);
+    const auto& other        = FrontendFactory::inspect(second_prompt);
+
+    int failures = check(grafted.graft_name == "first" && grafted.graft_frontier == n,
+                         "direct graft prompt does not name its pinned slot");
+    failures += check(grafted.identity.reusable,
+                      "a direct graft request is excluded from the context cache");
+    failures += check(grafted.token_ids.size() == plain.token_ids.size() + n &&
+                          std::equal(first.placeholder_ids.begin(), first.placeholder_ids.end(),
+                                     grafted.token_ids.begin()) &&
+                          std::equal(plain.token_ids.begin(), plain.token_ids.end(),
+                                     grafted.token_ids.begin() + n),
+                      "direct graft prompt is not its placeholder ids followed by the plain prompt");
+    failures += check(!std::equal(grafted.token_ids.begin(), grafted.token_ids.begin() + n,
+                                  other.token_ids.begin()),
+                      "two direct grafts share placeholder ids");
+    failures += check(grafted.identity.rewrite_checkpoint && plain.identity.rewrite_checkpoint &&
+                          grafted.identity.rewrite_checkpoint->frontier ==
+                              plain.identity.rewrite_checkpoint->frontier + n,
+                      "rewrite checkpoint did not move past the direct graft");
+    failures += check(grafted.identity.rewrite_execution_frontiers.size() ==
+                              plain.identity.rewrite_execution_frontiers.size() &&
+                          std::equal(plain.identity.rewrite_execution_frontiers.begin(),
+                                     plain.identity.rewrite_execution_frontiers.end(),
+                                     grafted.identity.rewrite_execution_frontiers.begin(),
+                                     [n](std::uint32_t before, std::uint32_t after) {
+                                         return after == before + n;
+                                     }),
+                      "rewrite execution frontiers did not move past the direct graft");
+    const auto& opportunities = grafted.context_cache.opportunities;
+    failures += check(std::none_of(opportunities.begin(), opportunities.end(),
+                                   [&](const auto& opportunity) { return opportunity.frontier <= n; }),
+                      "a direct graft offered a capture inside its own restored positions");
+    failures += check(grafted.context_cache.retention == plain.context_cache.retention &&
+                          opportunities.size() == plain.context_cache.opportunities.size(),
+                      "a direct graft changed the request's cache opportunities");
+    failures += check(frontend.count_tokens(input("first")) == frontend.count_tokens(input("")) + n,
+                      "token counting ignored the direct graft");
+    return failures;
+}
+
 int test_text_and_image_prepare(const Frontend& frontend) {
     ninfer::ChatMessage text_message;
     text_message.role = ninfer::ChatRole::User;
@@ -2838,6 +2915,7 @@ int main() {
     failures += test_invalid_public_part_enums(frontend);
     failures += test_text_and_image_prepare(frontend);
     failures += test_prompt_graft();
+    failures += test_direct_graft_context_cache();
     failures += test_media_token_ids_come_from_tokenizer();
     failures += test_template_media_contract();
     failures += test_image_resize_rejection_policy();

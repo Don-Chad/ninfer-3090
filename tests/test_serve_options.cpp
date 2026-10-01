@@ -653,9 +653,51 @@ int main() {
         } catch (const ApiException& error) { unknown_code = error.error().code; }
         failures += check(unknown_code == "unknown_graft",
                           "a graft the server did not load was not rejected");
-        graft_request.graft.clear();
+        graft_request.graft.reset();
         failures += check(resolve_prompt_semantics(graft_request, grafted).graft.empty(),
-                          "a request without a graft selected one");
+                          "a request without a graft selected one with no default configured");
+        graft_request.graft = "";
+        failures += check(resolve_prompt_semantics(graft_request, grafted).graft.empty(),
+                          "an empty graft selected one");
+    }
+
+    {
+        const ServeOptions with_default =
+            parse({"ninfer-serve", "model.ninfer", "--default-graft", "b", "--graft",
+                   "product=p.bin", "--graft", "b=b.bin"});
+        failures += check(with_default.default_graft == "b",
+                          "--default-graft was not parsed independent of --graft order");
+
+        GenerationRequest request;
+        request.max_tokens = 1;
+        failures += check(resolve_prompt_semantics(request, with_default).graft == "b",
+                          "a request without a graft did not take the server default");
+        request.graft = std::string{};
+        failures += check(resolve_prompt_semantics(request, with_default).graft.empty(),
+                          "an empty graft did not opt out of the server default");
+        request.graft = "product";
+        failures += check(resolve_prompt_semantics(request, with_default).graft == "product",
+                          "an explicit graft did not override the server default");
+        request.graft = "missing";
+        std::string unknown_code;
+        try {
+            (void)resolve_prompt_semantics(request, with_default);
+        } catch (const ApiException& error) { unknown_code = error.error().code; }
+        failures += check(unknown_code == "unknown_graft",
+                          "an unknown explicit graft was accepted under a server default");
+
+        for (const std::vector<std::string>& invalid : {
+                 std::vector<std::string>{"ninfer-serve", "model.ninfer", "--default-graft", "b"},
+                 std::vector<std::string>{"ninfer-serve", "model.ninfer", "--graft", "a=a.bin",
+                                          "--default-graft", "b"},
+                 std::vector<std::string>{"ninfer-serve", "model.ninfer", "--graft", "a=a.bin",
+                                          "--default-graft", ""}}) {
+            bool rejected = false;
+            try {
+                (void)parse(invalid);
+            } catch (const std::invalid_argument&) { rejected = true; }
+            failures += check(rejected, "--default-graft naming no loaded graft was accepted");
+        }
     }
 
     {

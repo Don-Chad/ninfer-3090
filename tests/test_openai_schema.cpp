@@ -1009,9 +1009,12 @@ int test_common_objects() {
 
 int test_graft_extension() {
     Json body       = base_request();
-    int failures    = check(parse(body).generation.graft.empty(), "absent graft selected one");
+    int failures    = check(!parse(body).generation.graft, "absent graft was not left unset");
     body["graft"]   = nullptr;
-    failures       += check(parse(body).generation.graft.empty(), "null graft selected one");
+    failures       += check(!parse(body).generation.graft, "null graft was not left unset");
+    body["graft"]   = "";
+    failures       += check(parse(body).generation.graft == "",
+                            "empty graft did not explicitly select none");
     body["graft"]   = "product";
     failures       += check(parse(body).generation.graft == "product", "graft name was not parsed");
     body["graft"]   = 5;

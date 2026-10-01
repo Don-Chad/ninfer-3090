@@ -589,6 +589,7 @@ wire response contains typed `output` Items.
 | `metadata` | at most 16 string pairs; keys at most 64 characters and values at most 512 |
 | `client_metadata` | Codex client extension; an object or `null`, accepted as opaque tracing metadata with no generation effect |
 | `reasoning.effort` | `none` requests disabled thinking; other standard effort values pass to the selected template |
+| `reasoning.summary`, `reasoning.generate_summary` | `auto`, `concise` or `detailed` (other values are rejected, and the two must agree when both are sent); accepted as a hint only. NInfer produces no reasoning summaries, so the response reports `reasoning.summary: null` and an empty `summary` on reasoning Items. `reasoning.context` and `reasoning.mode` are rejected with `reasoning_option_not_supported` |
 | `chat_template_kwargs` | template parameters as a JSON object; standard options merge with typed fields |
 | `preserve_thinking` | alias for `chat_template_kwargs.preserve_thinking`; conflicting values are rejected |
 | `graft` | NInfer extension: name of a [prompt graft](#prompt-grafts), or `null`; also accepted by input token count |
@@ -967,9 +968,17 @@ ninfer-serve model.ninfer --graft v1=C:/grafts/v1_q38_nf4.bin --graft red=C:/gra
 ```
 
 A request selects one with the top-level `"graft": "NAME"` field on OpenAI Chat Completions,
-Responses (create and input token count) and Anthropic Messages. `null` or absence selects none.
-A name the server did not load fails with `400 unknown_graft`, and a non-string value fails as a
-malformed `graft` field.
+Responses (create and input token count) and Anthropic Messages. A name the server did not load
+fails with `400 unknown_graft`, and a non-string value fails as a malformed `graft` field.
+
+`--default-graft NAME` makes one loaded graft the default for requests that state none. It must
+name a `--graft`, or the server refuses to start.
+
+| request `graft` | without `--default-graft` | with `--default-graft D` |
+|---|---|---|
+| absent or `null` | none | `D` |
+| `""` | none | none (explicit opt-out) |
+| `"X"` | `X` | `X` |
 
 A grafted request runs exactly as if the graft's hidden turns preceded its own messages. The
 graft's tokens occupy positions `[0, n)` and the request's own rendered prompt starts at `n`. With
@@ -999,7 +1008,10 @@ positions is zero-filled and the draft proposes without graft context there. Out
 because the target verifies every proposal against the injected state; only the acceptance rate
 can fall. Each one holds a Device StateImage and a shared-prefix slot for the life of the server;
 startup adds them on top of `--device-state-slots` and `--max-shared-prefixes`, and a disabled
-context cache refuses them. With `--devices`, each layer's K/V and state are written on the device
+context cache refuses them. Grafted requests use the context cache like any other: the pinned slot
+is the root, and later turns and shared prefixes are captured after it. In the prompt the graft's
+positions are held by ids derived from the container's sha256, so a cached prefix is only ever
+matched by requests using the same graft. With `--devices`, each layer's K/V and state are written on the device
 of the stage that holds that layer.
 
 ## Authentication and CORS
@@ -1070,6 +1082,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
 | `--graft NAME=PATH` | load a [prompt graft](#prompt-grafts) a request may select by name; repeatable | none |
+| `--default-graft NAME` | apply a loaded graft to requests that state none; `"graft": ""` opts out | none |
 | `--reasoning-effort minimal\|low\|medium\|high\|xhigh\|max` | effort for thinking-enabled requests that state none | template default |
 | `--cors` | permissive browser CORS headers | off |
 | `--temperature F` | process-level temperature override | unset |

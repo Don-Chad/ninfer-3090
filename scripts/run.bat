@@ -49,7 +49,8 @@ rem MTP weights too, so one file serves both.
 rem
 rem OVERRIDES, from the environment. All profiles: NINFER_MODEL (artifact path), NINFER_MODEL_DIR,
 rem NINFER_SERVER, NINFER_HOST, NINFER_PORT, NINFER_GRAFT_DIR (phantom-kv graft directory),
-rem NINFER_GRAFTS (set to "off" to disable graft loading). `tuned` also: NINFER_CONTEXT,
+rem NINFER_GRAFTS (set to "off" to disable graft loading), NINFER_DEFAULT_GRAFT (set to "on" to
+rem apply the loaded graft to every request that names none). `tuned` also: NINFER_CONTEXT,
 rem NINFER_CONCURRENCY, NINFER_KV_DTYPE, NINFER_SPEC, NINFER_DRAFT_TOKENS, NINFER_PREFILL_CHUNK,
 rem NINFER_VISION (on^|off), NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS. Each spec's defaults
 rem (context, lanes, chunk) are the ones measured to fit beside a desktop, which holds roughly 1.5 GiB
@@ -88,13 +89,12 @@ if /i "%MODEL_KEY%"=="--help" goto :help
 if /i "%MODEL_KEY%"=="qwen38-27b" (
   set "ARTIFACT=qwen3_8_27b.ninfer"
   set "TITLE=Qwen3.8-27B"
-  set "GRAFT_FILE=v1_q38_nf4_trained.bin"
+  set "GRAFT_FILE=godmode_q38_trained.bin"
   goto :model_known
 )
 if /i "%MODEL_KEY%"=="qwen36-35b-a3b" (
   set "ARTIFACT=qwen3_6_35b_a3b.ninfer"
   set "TITLE=Qwen3.6-35B-A3B"
-  set "GRAFT_FILE=v1_q36_35b_nf4_trained.bin"
   goto :model_known
 )
 echo Unknown model: %MODEL_KEY% 1>&2
@@ -318,8 +318,16 @@ set "PROFILE_ARGS=%PROFILE_ARGS% --max-pending-requests 16 --pending-timeout-ms 
 set "GRAFT_ARGS="
 if /i "%NINFER_GRAFTS%"=="off" goto :graft_done
 if "%GRAFT_FILE%"=="" goto :graft_done
-if not exist "%GRAFT_DIR%\%GRAFT_FILE%" goto :graft_done
-set "GRAFT_ARGS=--graft "v1=%GRAFT_DIR%\%GRAFT_FILE%""
+if exist "%GRAFT_DIR%\%GRAFT_FILE%" goto :graft_found
+rem No parenthesised block here: GRAFT_DIR may contain ")" (e.g. "Program Files (x86)").
+echo WARNING: graft file not found, serving without a graft: "%GRAFT_DIR%\%GRAFT_FILE%"
+echo          Requests naming "godmode" will fail with unknown_graft.
+goto :graft_done
+:graft_found
+set "GRAFT_ARGS=--graft "godmode=%GRAFT_DIR%\%GRAFT_FILE%""
+rem Opt-in: NINFER_DEFAULT_GRAFT=on makes godmode apply to every request that states no graft
+rem (--default-graft godmode); a request opts out with "graft": "". Only reached when a graft loaded.
+if /i "%NINFER_DEFAULT_GRAFT%"=="on" set "GRAFT_ARGS=%GRAFT_ARGS% --default-graft godmode"
 :graft_done
 if not exist "%SERVER%" (
   echo Missing %SERVER%
@@ -335,10 +343,10 @@ if not exist "%MODEL%" (
 echo %TITLE%  ^|  %LABEL%
 if not "%PREFILL_NOTE%"=="" echo %PREFILL_NOTE%
 if /i "%PROFILE%"=="tuned" echo Cache: 8 shared / 8 private / %HOST_STATE_SLOTS% host states  ^|  automatic prefix grid on
-rem GRAFT_ARGS carries literal embedded quotes (--graft "v1=<path>"), so re-quoting it for a
+rem GRAFT_ARGS carries literal embedded quotes (--graft "godmode=<path>"), so re-quoting it for a
 rem string comparison here garbles the quoting and breaks the if statement. `defined` sidesteps
 rem that: it tests the variable directly, with no substitution.
-if defined GRAFT_ARGS echo Graft: v1 = %GRAFT_FILE%
+if defined GRAFT_ARGS echo Graft: godmode = %GRAFT_FILE%
 if not "%HINT%"=="" echo %HINT%
 echo API: http://%HOST%:%PORT%/v1
 echo.

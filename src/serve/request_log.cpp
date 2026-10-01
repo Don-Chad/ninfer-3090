@@ -682,7 +682,9 @@ std::string format_server_start_json(
                   ? Json(requested_reasoning_effort_name(*options.default_reasoning_effort))
                   : Json(nullptr)},
              {"default_preserve_thinking",
-              options.preserve_thinking ? Json(*options.preserve_thinking) : Json(nullptr)}};
+              options.preserve_thinking ? Json(*options.preserve_thinking) : Json(nullptr)},
+             {"default_graft",
+              options.default_graft.empty() ? Json(nullptr) : Json(options.default_graft)}};
     record["artifact"]                             = Json{{"path", options.artifact_path},
                                                           {"size_bytes", std::move(artifact_size)},
                                                           {"architecture", load.architecture},

@@ -74,8 +74,8 @@ bool optional_bool(const RequestJson& object, const char* key, bool fallback) {
     return object.at(key).get<bool>();
 }
 
-std::string parse_graft_field(const RequestJson& body) {
-    if (!body.contains("graft") || body.at("graft").is_null()) { return {}; }
+std::optional<std::string> parse_graft_field(const RequestJson& body) {
+    if (!body.contains("graft") || body.at("graft").is_null()) { return std::nullopt; }
     if (!body.at("graft").is_string()) { bad_request("graft must be a string or null", "graft"); }
     return body.at("graft").get<std::string>();
 }

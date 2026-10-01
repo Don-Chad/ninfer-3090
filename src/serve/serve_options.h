@@ -86,6 +86,9 @@ struct ServeOptions {
     std::optional<bool> preserve_thinking;
     // --graft NAME=PATH, repeatable: phantom-kv grafts a request may select with "graft": NAME.
     std::vector<GraftSource> grafts;
+    // --default-graft NAME: graft applied to a request that states none ("graft": "" opts out).
+    // Empty means no default; otherwise it names an entry of `grafts`.
+    std::string default_graft;
     std::optional<std::uint32_t> default_thinking_budget;
     // Output limit for a request that omits one. Unset means the Engine's concurrent lane budget:
     // see request_limits().
