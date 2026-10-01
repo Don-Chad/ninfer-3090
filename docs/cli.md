@@ -56,10 +56,14 @@ and suppresses this insertion. The option cannot be combined with `--no-thinking
 combined with `--reasoning-effort`.
 
 `--max-new` counts every committed generated token, including internally inserted control tokens.
-When the effective output capacity extends beyond the thinking budget, it must have room for the
-complete tokenizer-derived control suffix plus one post-close model token; an undersized request is
-rejected rather than truncating the suffix. Normal output sends the inserted guidance to stderr as
-reasoning. `--print-token-ids` includes the inserted IDs, while `--raw-output` preserves the raw
+The inserted suffix is never truncated, and a request is never rejected for lacking room for it.
+When the output capacity left after the budget cannot hold the complete tokenizer-derived control
+suffix plus one post-close model token, Engine lowers the effective budget so both fit. When the
+whole capacity is no larger than that, the budget cannot be enforced, so thinking runs to the
+`--max-new` limit and may end inside the reasoning. The run summary prints `effective thinking
+budget` when it differs from the requested one, and nothing extra when the budget is unenforced; the
+exact rule is in [Chat Completions](serving.md#openai-chat-completions). Normal output sends the
+inserted guidance to stderr as reasoning. `--print-token-ids` includes the inserted IDs, while `--raw-output` preserves the raw
 control representation.
 
 For example, this allows at most 512 model-origin thinking tokens while retaining enough total
