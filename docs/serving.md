@@ -364,6 +364,7 @@ The endpoint supports:
 - `enable_thinking` and `preserve_thinking`, either at top level or in
   `chat_template_kwargs`;
 - the `graft` extension selecting a [prompt graft](#prompt-grafts);
+- the `thinking_budget` extension, a positive per-request [thinking cap](#openai-chat-completions);
 - Assistant `reasoning_content` and `reasoning` history aliases.
 
 Options whose observable behavior the Engine cannot provide are rejected when they request that
@@ -434,8 +435,11 @@ special tokens cannot be overridden through kwargs.
 
 `--default-thinking-budget N` sets a positive default thinking-token cap for requests that start
 in thinking mode. Non-thinking requests receive no cap. It may coexist with `--no-thinking`
-because requests can explicitly enable thinking. Anthropic
-`thinking:{"type":"enabled","budget_tokens":N}` overrides this default for that request.
+because requests can explicitly enable thinking. A request overrides this default with a positive
+integer: `thinking_budget` on Chat Completions and Responses (a NInfer extension, accepted at top
+level), or `thinking:{"type":"enabled","budget_tokens":N}` on Anthropic Messages (a value of at
+least 1024 and below `max_tokens`, per that protocol). A request that does not think receives no
+cap, whatever it sends.
 
 Add `--default-thinking-budget 512` to the startup command to cap model-origin thinking at 512
 tokens for every thinking-enabled request.
@@ -589,6 +593,7 @@ wire response contains typed `output` Items.
 | `chat_template_kwargs` | template parameters as a JSON object; standard options merge with typed fields |
 | `preserve_thinking` | alias for `chat_template_kwargs.preserve_thinking`; conflicting values are rejected |
 | `graft` | NInfer extension: name of a [prompt graft](#prompt-grafts), or `null`; also accepted by input token count |
+| `thinking_budget` | NInfer extension: positive per-request [thinking cap](#openai-chat-completions), or `null`; rejected by input token count, which does not generate |
 | `text.format` | `{"type":"text"}`, `{"type":"json_object"}`, or `{"type":"json_schema","name",...,"schema",...}` with optional `description` and `strict`; JSON formats are enforced (see [Structured output](#structured-output)) and echoed in the Response object |
 | `tools` | direct function definitions or namespace groups containing function definitions; see below |
 | `tool_choice` | `auto`, `none`, or function-only `allowed_tools` with mode `auto`; a namespaced selection carries both `namespace` and `name` |

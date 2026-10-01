@@ -1238,6 +1238,7 @@ void validate_common_top_level(const Json& body, bool create) {
                                                                   "stream_options",
                                                                   "temperature",
                                                                   "text",
+                                                                  "thinking_budget",
                                                                   "tool_choice",
                                                                   "tools",
                                                                   "top_logprobs",
@@ -1298,6 +1299,7 @@ OpenAIResponsesCreateRequest parse_openai_responses_create_request(const Json& b
     out.parallel_tool_calls     = parsed.parallel_tool_calls;
     out.store                   = optional_bool(body, "store", true);
     out.stream                  = optional_bool(body, "stream", false);
+    out.prompt.generation.thinking_budget = parse_thinking_budget_field(body);
     validate_metadata(body, out.metadata);
 
     // Codex attaches per-request tracing information here. It is an opaque client hint and has no
