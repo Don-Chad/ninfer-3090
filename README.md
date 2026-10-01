@@ -607,6 +607,13 @@ See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the complete, maintained credit list.
   [PR #12](https://github.com/Don-Chad/ninfer-3090/pull/12).
 - [wmehanna](https://github.com/wmehanna) contributed in-place system-turn rendering for
   Claude Code prefix reuse in [PR #13](https://github.com/Don-Chad/ninfer-3090/pull/13).
+- [mgscreativa](https://github.com/mgscreativa) contributed the thinking-budget boundary fix, so a
+  request near the end of its output window no longer fails with
+  `thinking_budget_capacity_insufficient`, in
+  [PR #156](https://github.com/ashalliants/ninfer-3090/pull/156) (continued and finished in this
+  PR), and found and fixed the premature KV-loan race behind a `std::bad_alloc` on large
+  vision prompts in [PR #138](https://github.com/ashalliants/ninfer-3090/pull/138); its
+  KV-lending gate was kept in [PR #145](https://github.com/ashalliants/ninfer-3090/pull/145).
 
 ## Contributing
 
