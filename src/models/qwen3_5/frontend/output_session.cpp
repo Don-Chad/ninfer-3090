@@ -762,7 +762,9 @@ ThinkingBudgetStats OutputSession::thinking_stats() const noexcept {
     if (impl_ == nullptr) { return {}; }
     return ThinkingBudgetStats{
         .requested_budget      = impl_->requested_budget,
-        .effective_budget      = impl_->semantic.budget,
+        // Without early close the cap is never enforced, so there is no effective budget.
+        .effective_budget      = impl_->early_close_available ? impl_->semantic.budget
+                                                              : std::nullopt,
         .model_thinking_tokens = impl_->semantic.model_thinking_tokens,
         .injected_tokens       = impl_->semantic.injected_tokens,
         .applied               = impl_->semantic.applied,

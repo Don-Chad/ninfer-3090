@@ -2362,33 +2362,8 @@ int test_thinking_budget_branches(const Frontend& frontend) {
     int failures = 0;
     failures += check(required >= 3, "test fixture assumes required control tokens >= 3");
 
-    // 1. Branch 1: C <= B or C - B >= R (effective budget B, available)
-    {
-        // 1a: C <= B
-        const std::uint32_t b_requested = 50;
-        const std::uint32_t b_effective = 50;
-        auto session_1a = frontend.make_output_session(
-            prompt, {}, {},
-            ninfer::ThinkingControlOptions{.budget                = b_requested,
-                                           .effective_budget      = b_effective,
-                                           .early_close_available = true});
-        const auto stats_1a = session_1a.thinking_stats();
-        failures += check(stats_1a.requested_budget == b_requested &&
-                              stats_1a.effective_budget == b_effective,
-                          "Branch 1a stats mismatch");
-
-        // 1b: C - B >= R
-        const std::uint32_t b_cap_sufficient = 10;
-        auto session_1b = frontend.make_output_session(
-            prompt, {}, {},
-            ninfer::ThinkingControlOptions{.budget                = b_cap_sufficient,
-                                           .effective_budget      = b_cap_sufficient,
-                                           .early_close_available = true});
-        const auto stats_1b = session_1b.thinking_stats();
-        failures += check(stats_1b.requested_budget == b_cap_sufficient &&
-                              stats_1b.effective_budget == b_cap_sufficient,
-                          "Branch 1b stats mismatch");
-    }
+    // Branch 1 (C <= B or C - B >= R) is the unconstrained path: test_thinking_budget_control
+    // drives the cap, control insertion and post-close token for it.
 
     // 2. Branch 2: C > R and C - B < R (effective budget C - R, available)
     // Multi-round execution with nonzero remaining budget before hitting the cap
@@ -2461,7 +2436,7 @@ int test_thinking_budget_branches(const Frontend& frontend) {
                           "post-control model output did not publish content");
     }
 
-    // 3. Branch 3: C <= R and C > B (B unchanged, early close UNAVAILABLE)
+    // 3. Branch 3: C <= R and C > B (early close unavailable; the cap is not enforced)
     // Model token budget must not cut reasoning off at B and session must not request target control
     {
         const std::uint32_t b_requested = 2;
@@ -2472,9 +2447,10 @@ int test_thinking_budget_branches(const Frontend& frontend) {
                                            .effective_budget      = b_requested,
                                            .early_close_available = false});
 
+        // The cap is not enforced, so no effective budget is reported.
         failures += check(session.thinking_stats().requested_budget == b_requested &&
-                              session.thinking_stats().effective_budget == b_requested,
-                          "Branch 3 stats mismatch");
+                              !session.thinking_stats().effective_budget.has_value(),
+                          "Branch 3 reported an effective budget for an unenforced cap");
 
         // Verify model_token_budget_remaining does NOT cut reasoning off at B
         failures += check(session.model_token_budget_remaining(total_cap) == total_cap,

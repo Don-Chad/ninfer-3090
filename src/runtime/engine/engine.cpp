@@ -565,10 +565,8 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
         immediate.result.prompt                    = prompt_summary;
         immediate.result.finish_reason             = FinishReason::OutputLimit;
         immediate.result.thinking.requested_budget = resolved_options.execution.thinking.budget;
-        immediate.result.thinking.effective_budget =
-            resolved_options.execution.thinking.effective_budget.has_value()
-                ? resolved_options.execution.thinking.effective_budget
-                : resolved_options.execution.thinking.budget;
+        // No output is licensed, so the cap never binds: effective equals requested.
+        immediate.result.thinking.effective_budget = resolved_options.execution.thinking.budget;
         immediate.result.timings.prepare_seconds = prepare_seconds;
         immediate.result.timings.total_seconds   = prepare_seconds;
         prompt.impl_.reset();

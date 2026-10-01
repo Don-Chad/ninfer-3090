@@ -446,26 +446,22 @@ guidance and close marker to the same model sequence without sampling, streams t
 reasoning delta, and continues normal content or tool-call generation. Inserted tokens count in
 completion usage and the request's `max_tokens`/`max_output_tokens` budget.
 
-When output capacity falls around the requested thinking budget, Engine derives an effective
-budget using three quantities:
-- B: the client's requested thinking budget (`options.execution.thinking.budget`).
-- C: the effective output capacity, min(requested_output_tokens, max_context - prompt_tokens + 1).
-- R: the required early-close control tokens, equal to thinking_control_tokens.size() + 1
-  (R = 28 for Qwen 3.5/3.8).
+Near the end of the output window the early-close guidance may not fit. Let B be the requested
+thinking budget, C the output the request can still produce (the smaller of its output limit and
+the context left after the prompt, counting the final writable position), and R the number of tokens
+that early close needs: the tokenizer-derived guidance and close marker plus one post-close model
+token. R depends on the model's tokenizer and is not a fixed number. A request is never rejected
+because C falls in B < C < B + R; Engine resolves it as follows:
 
-The pure function effective_thinking_budget(B, C, R) resolves generation behavior into three
-cases:
-- C <= B or C - B >= R: effective budget is B, and early close is available (unchanged behavior).
-- C > R (and C - B < R): effective budget is C - R, and early close is available. This always
-  lowers B so early-close guidance and at least one post-close model token can be generated.
-- C <= R (and C > B): B is unchanged, and early close is not available; thinking runs to the
-  output limit with no control token insertion.
+- C <= B, or C - B >= R: the budget is B and early close is available, as above.
+- C > R (and C - B < R): the effective budget is C - R, which is always below B. Early-close
+  guidance and at least one post-close model token still fit.
+- C <= R (and C > B): the budget cannot be enforced, so thinking runs to the output limit with no
+  guidance inserted. The response can end inside the reasoning with empty content.
 
-A request never fails because remaining capacity falls in the boundary window B < C < B + R. The
-client's requested budget is never silently replaced: both requested and effective budgets are
-reported separately in thinking stats (`ThinkingBudgetStats`), request logs, and operational logs.
-The server does not promise that the model will emit nonempty content or a tool call after the
-marker.
+Logs report the requested budget, and the effective budget when it differs. A request that cannot
+enforce its budget reports the requested value only. The server does not promise that the model will
+emit nonempty content or a tool call after the marker.
 
 For Chat Completions, `reasoning_effort: "none"` requests disabled thinking. The other standard
 values (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`) reach the template on its three rungs:

@@ -139,13 +139,15 @@ public:
         ~Submission() { reset(); }
 
         Submission(Submission&& other) noexcept
-            : owner_(std::exchange(other.owner_, nullptr)), request_(std::move(other.request_)) {}
+            : owner_(std::exchange(other.owner_, nullptr)), request_(std::move(other.request_)),
+              effective_thinking_budget_(other.effective_thinking_budget_) {}
 
         Submission& operator=(Submission&& other) noexcept {
             if (this != &other) {
                 reset();
                 owner_   = std::exchange(other.owner_, nullptr);
                 request_ = std::move(other.request_);
+                effective_thinking_budget_ = other.effective_thinking_budget_;
             }
             return *this;
         }
@@ -166,14 +168,16 @@ public:
             return owner->wait_for_request(std::exchange(request_, nullptr), sink, cancellation);
         }
 
+        // Fixed when the request was admitted; never reads the session the worker mutates.
         [[nodiscard]] std::optional<std::uint32_t> effective_thinking_budget() const noexcept {
-            return request_ != nullptr ? request_->output.thinking_stats().effective_budget
-                                       : std::nullopt;
+            return effective_thinking_budget_;
         }
 
     private:
-        Submission(EngineCore& owner, std::shared_ptr<Request> request) noexcept
-            : owner_(&owner), request_(std::move(request)) {}
+        Submission(EngineCore& owner, std::shared_ptr<Request> request,
+                   std::optional<std::uint32_t> effective_thinking_budget) noexcept
+            : owner_(&owner), request_(std::move(request)),
+              effective_thinking_budget_(effective_thinking_budget) {}
 
         void reset() noexcept {
             if (owner_ != nullptr && request_ != nullptr) {
@@ -184,6 +188,7 @@ public:
 
         EngineCore* owner_ = nullptr;
         std::shared_ptr<Request> request_;
+        std::optional<std::uint32_t> effective_thinking_budget_;
 
         friend class EngineCore;
     };
@@ -221,24 +226,20 @@ public:
         }
 
         std::shared_ptr<Request> request;
+        std::optional<std::uint32_t> effective_budget;
         try {
-            const std::uint32_t capacity_output =
-                max_context_ - prompt_summary.prompt_tokens + static_cast<std::uint32_t>(1);
-            const std::uint32_t C =
-                std::min(options.execution.requested_output_tokens, capacity_output);
-            if (options.execution.thinking.budget.has_value()) {
-                const std::uint32_t R = instance_.frontend.thinking_control_token_count() + 1U;
-                const auto effective  = effective_thinking_budget(
-                    *options.execution.thinking.budget, C, R);
-                options.execution.thinking.effective_budget      = effective.effective_budget;
-                options.execution.thinking.early_close_available = effective.early_close_available;
-            }
+            apply_effective_thinking_budget(
+                options.execution.thinking,
+                effective_output_capacity(options.execution.requested_output_tokens, max_context_,
+                                          prompt_summary.prompt_tokens),
+                instance_.frontend.thinking_control_token_count());
             auto output = instance_.frontend.make_output_session(
                 prompt, options.stop, options.output, options.execution.thinking);
             request = std::make_shared<Request>(request_id, publication_order, std::move(prompt),
                                                 std::move(output), prompt_summary, prepare_seconds,
                                                 std::move(options), consumer_mode, observation,
                                                 pending_deadline, submitted);
+            effective_budget = request->output.thinking_stats().effective_budget;
         } catch (...) {
             release_reserved_capacity();
             throw;
@@ -255,7 +256,7 @@ public:
         }
         request_admission_check();
         queue_cv_.notify_one();
-        return Submission(*this, std::move(request));
+        return Submission(*this, std::move(request), effective_budget);
     }
 
     [[nodiscard]] MemorySummary memory_summary() const {

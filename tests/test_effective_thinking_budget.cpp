@@ -211,6 +211,70 @@ int test_b_one() {
     return failures;
 }
 
+int test_output_capacity() {
+    using ninfer::runtime::effective_output_capacity;
+    int failures = 0;
+    // The request limit binds while the context has room.
+    failures += check(effective_output_capacity(100, 1000, 200) == 100,
+                      "request limit did not bind capacity");
+    // The context binds otherwise, and the last context position is writable (+1).
+    failures += check(effective_output_capacity(5000, 1000, 200) == 801,
+                      "context window did not bound capacity as max_context - prompt + 1");
+    // A prompt that fills the context still licenses exactly one token.
+    failures += check(effective_output_capacity(5000, 1000, 1000) == 1,
+                      "full-context prompt did not license exactly one token");
+    // Derived output budgets arrive as the largest representable limit.
+    failures += check(effective_output_capacity(UINT32_MAX, 159744, 143000) == 16745,
+                      "derived output limit did not collapse to the remaining context");
+    return failures;
+}
+
+int test_apply_to_request_options() {
+    using ninfer::ThinkingControlOptions;
+    using ninfer::runtime::apply_effective_thinking_budget;
+    int failures = 0;
+    constexpr std::uint32_t control_tokens = 27; // R = 28
+
+    // No cap: the options are left untouched, whatever the capacity.
+    {
+        ThinkingControlOptions options;
+        apply_effective_thinking_budget(options, 5, control_tokens);
+        failures += check(!options.effective_budget && options.early_close_available,
+                          "uncapped request was modified");
+    }
+    // Boundary window above R: the cap is lowered so control plus one token fits.
+    {
+        ThinkingControlOptions options{.budget = 100};
+        apply_effective_thinking_budget(options, 110, control_tokens);
+        failures += check(options.budget == 100 && options.effective_budget == 82 &&
+                              options.early_close_available,
+                          "boundary window did not lower the effective budget to C - R");
+    }
+    // At or below R: the requested value is kept and early close is withdrawn.
+    {
+        ThinkingControlOptions options{.budget = 10};
+        apply_effective_thinking_budget(options, 20, control_tokens);
+        failures += check(options.budget == 10 && options.effective_budget == 10 &&
+                              !options.early_close_available,
+                          "capacity below R did not disable early close");
+    }
+    // Plenty of room: unchanged.
+    {
+        ThinkingControlOptions options{.budget = 100};
+        apply_effective_thinking_budget(options, 4096, control_tokens);
+        failures += check(options.effective_budget == 100 && options.early_close_available,
+                          "ample capacity changed the budget");
+    }
+    // A template with no control suffix needs R = 1, so any C > B already fits the close.
+    {
+        ThinkingControlOptions options{.budget = 100};
+        apply_effective_thinking_budget(options, 101, 0);
+        failures += check(options.effective_budget == 100 && options.early_close_available,
+                          "bare-close template changed the budget");
+    }
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -220,6 +284,8 @@ int main() {
     failures += test_c_around_r_and_r_plus_1();
     failures += test_b_zero();
     failures += test_b_one();
+    failures += test_output_capacity();
+    failures += test_apply_to_request_options();
     if (failures == 0) {
         std::cout << "All effective_thinking_budget tests passed.\n";
     }
