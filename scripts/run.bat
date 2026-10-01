@@ -6,7 +6,7 @@ rem
 rem   run.bat [model] [profile]     (double-click it and it asks for the model)
 rem
 rem   model             profiles
-rem   qwen38-27b        tuned (default), int8, c8
+rem   qwen38-27b        tuned (default), int8, c8   <- recommended
 rem   qwen36-35b-a3b    tuned (default)
 rem
 rem `tuned` is the recommended profile: rk4v4 KV, speculation plus the draft head, the memory
@@ -37,7 +37,7 @@ rem
 rem   set NINFER_SPEC=mtp && run.bat qwen38-27b
 rem
 rem   MTP accepts NINFER_DRAFT_TOKENS up to 15. Three suits chat and prose; for coding work that
-rem   returns edited files, 11-15 decodes up to 1.85x faster (docs\cli.md has the table).
+rem   returns edited files, 11-15 decodes up to 1.85x faster (docs\performance.md has the table).
 rem
 rem rk4v4 KV (Lloyd-Max 4-bit keys) is 31%% smaller than rk8v4 at the same decode speed, for +0.10%%
 rem perplexity over it. Measured on a desktop RTX 3090 (2026-09-24), the DFlash2 set starts at up to
@@ -105,14 +105,14 @@ exit /b 2
 rem Double-clicked from Explorer there is no argument to give, so ask. choice exits 255 when it has
 rem no console to read from; that must not silently pick a model.
 echo Which model?
-echo   1  Qwen3.6-35B-A3B  (recommended)
-echo   2  Qwen3.8-27B
+echo   1  Qwen3.8-27B  (recommended)
+echo   2  Qwen3.6-35B-A3B
 choice /c 12 /n /m "Choose 1 or 2: "
 if errorlevel 255 exit /b 2
 if errorlevel 2 (
-  set "MODEL_KEY=qwen38-27b"
-) else (
   set "MODEL_KEY=qwen36-35b-a3b"
+) else (
+  set "MODEL_KEY=qwen38-27b"
 )
 goto :model_resolve
 
@@ -408,6 +408,6 @@ endlocal & exit /b %SERVER_STATUS%
 
 :usage
 echo usage: run.bat ^<model^> [profile]
-echo   qwen38-27b       tuned (default), int8, c8
+echo   qwen38-27b       tuned (default), int8, c8   (recommended)
 echo   qwen36-35b-a3b   tuned (default)
 exit /b 0

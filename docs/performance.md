@@ -510,6 +510,41 @@ picks K=15, which loses on real generation.
 costs about 65K tokens of context on this card -- 130K against 200K, both verified by loading -- so
 the choice between it and MTP3 is a speed/context trade, not a free upgrade.
 
+### Choosing the draft count (RTX 3090, Qwen3.8-27B)
+
+The MTP draft count is a trade on what the output looks like. Each round verifies K+1 columns and
+runs K draft-head steps whether or not the drafts survive, so a larger K pays only where the head
+keeps guessing right. Measured on the RTX 3090, Qwen3.8-27B, `rk4v4` KV, `--lm-head-draft
+--lm-head-q6 --embedding-q4 --gdn-state-fp16`, greedy, 512 generated tokens, one stream (decode
+tok/s; tokens emitted per round in parentheses):
+
+| `--draft-tokens` | edit code (copies the prompt) | write new code | explain a concept | short story |
+|---:|---:|---:|---:|---:|
+| (none) | 47.3 | 47.5 | 47.5 | 47.6 |
+| **3** | 141.9 (3.9) | 118.2 (3.3) | 102.1 (2.8) | 77.1 (2.1) |
+| 5 | 177.7 (5.7) | 124.8 (4.0) | 95.6 (3.1) | 75.1 (2.4) |
+| 7 | 226.0 (7.4) | 130.6 (4.3) | 103.9 (3.4) | 67.7 (2.2) |
+| 9 | 226.4 (8.8) | 129.9 (5.0) | 91.3 (3.5) | 56.3 (2.2) |
+| 11 | 244.4 (10.4) | | | |
+| 15 | 262.6 (12.5) | 114.7 (5.4) | 75.1 (3.5) | 47.6 (2.2) |
+
+Three stays the default: it is best or within 2% on prose, and larger counts lose up to 38% there.
+When the output mostly reproduces the input -- refactoring, renaming, applying an edit and
+returning the whole file -- the draft head predicts it almost perfectly and every extra position is
+nearly free, so 11 to 15 is up to 1.85x faster than three. For a coding assistant that mostly
+writes new code, seven is about 10% faster than three. `--lookup-ngram` adds nothing on top of MTP
+there: the head already copies (K=15 with and without `--lookup-ngram 8`: 262.4 and 262.6 tok/s,
+the same tokens per round). For comparison, DFlash2 at its default seven is still faster at one
+stream on the same runs (268.5 tok/s editing code, 115.7 explaining); MTP is the backend that fits
+the full context and a second lane. Draft counts of eight and above add a second CUDA Graph
+topology class on the 27B (its wide verify moves between the prompt and chunked attention routes),
+which reserves about 64 MiB more per lane.
+
+DFlash2 accepts every draft count from 1 through 15. Seven is the checkpoint recommendation and the
+best mean on this card; the sweep behind it is in
+[Choosing a speculative backend by concurrency](#choosing-a-speculative-backend-by-concurrency-rtx-3090-qwen38-27b).
+DFlash2's `--lm-head-draft` is within noise of unset at every count and can be left off.
+
 ### Choosing a KV format (RTX 3090, Qwen3.8-27B)
 
 All seven SM86 KV formats, measured on Qwen3.8-27B.

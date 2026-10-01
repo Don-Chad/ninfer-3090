@@ -48,8 +48,8 @@ goto :usage_error
 :menu
 echo Which model do you want to download?
 echo.
-echo   1 = Qwen3.6-35B-A3B (recommended)   qwen36-35b-a3b
-echo   2 = Qwen3.8-27B                     qwen38-27b
+echo   1 = Qwen3.8-27B (recommended)       qwen38-27b
+echo   2 = Qwen3.6-35B-A3B                 qwen36-35b-a3b
 echo   3 = Qwen3.6-27B                     qwen36-27b
 echo.
 choice /c 123 /n /m "Choose 1-3: "
@@ -57,8 +57,8 @@ rem choice reports 255 when it cannot read a key (no console, closed stdin). Ref
 rem let that fall through and pick a model nobody chose.
 if errorlevel 255 exit /b 2
 if errorlevel 3 goto :model_qwen36_27b
-if errorlevel 2 goto :model_qwen38_27b
-if errorlevel 1 goto :model_qwen36_35b_a3b
+if errorlevel 2 goto :model_qwen36_35b_a3b
+if errorlevel 1 goto :model_qwen38_27b
 exit /b 2
 
 :usage_help
@@ -72,7 +72,7 @@ exit /b 2
 :usage
 echo usage: %~nx0 ^<model^>
 echo.
-echo   qwen38-27b
+echo   qwen38-27b (recommended)
 echo   qwen36-27b
 echo   qwen36-35b-a3b
 exit /b 0
