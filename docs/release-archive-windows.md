@@ -91,7 +91,7 @@ Nothing here needs editing. **Every** profile reads `NINFER_MODEL`, `NINFER_MODE
 **The default profile handles this for you.** If `run.bat` is refused at startup for lack of GPU
 memory, it steps down by itself -- an eighth of the context at a time, up to five times, and from
 the second step with a 2048 prefill chunk and fewer host state slots -- says what it did, and starts. On a desktop that was
-holding 2.8 GiB of the card, `run.bat qwen38-27b` stepped from 131,072 down to 81,920 tokens and
+holding 2.8 GiB of the card, `run.bat qwen38-27b` (then defaulting to 131,072 tokens) stepped from 131,072 down to 81,920 tokens and
 served a request, at about 12 seconds per refused attempt. It only does this for the defaults: a
 `NINFER_CONTEXT`, `NINFER_PREFILL_CHUNK` or `NINFER_HOST_STATE_SLOTS` you set is honoured as given, and
 `NINFER_FALLBACK=off` turns it off.
@@ -107,8 +107,8 @@ but only 2375691264 bytes are available for runtime capacity
 
 Drop a context rung first: set `NINFER_CONTEXT` to the next rung below the profile's default; the
 rungs are listed in the `run.bat` header, measured on this card — for
-`run.bat qwen38-27b` (default 131,072 with DFlash2, 163,840 with `NINFER_SPEC=mtp`) that is
-114688, then 98304, then 81920. Speculation is the next lever (`NINFER_SPEC=none`), worth about
+`run.bat qwen38-27b` (default 172,032 with DFlash2, 262,144 with `NINFER_SPEC=mtp`) that is
+163840, then 131072, then 98304. Speculation is the next lever (`NINFER_SPEC=none`), worth about
 992 MiB on the 35B-A3B at the cost of decode speed.
 Drop vision last: in overlay residency it costs almost nothing resident.
 
