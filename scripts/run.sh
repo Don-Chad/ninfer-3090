@@ -5,7 +5,7 @@
 #   run.sh <model> [profile]
 #
 #   model             profiles
-#   qwen38-27b        tuned (default), int8, c8
+#   qwen38-27b        tuned (default), int8, c8   <- recommended
 #   qwen36-35b-a3b    tuned (default)
 #
 # `tuned` is the recommended profile: rk4v4 KV, speculation plus the draft head, the memory flags,
@@ -34,7 +34,7 @@
 #     --vision --vision-residency overlay
 #
 #   MTP accepts NINFER_DRAFT_TOKENS up to 15. Three suits chat and prose; for coding work that
-#   returns edited files, 11-15 decodes up to 1.85x faster (docs/cli.md has the table).
+#   returns edited files, 11-15 decodes up to 1.85x faster (docs/performance.md has the table).
 #
 # rk4v4 KV (Lloyd-Max 4-bit keys) is 31% smaller than rk8v4 at the same decode speed, for +0.10%
 # perplexity over it. Measured beside a desktop on an RTX 3090 (2026-09-24), the DFlash2 set starts
@@ -66,7 +66,7 @@ set -euo pipefail
 
 usage() {
   printf 'usage: %s <model> [profile]\n' "${0##*/}"
-  printf '  qwen38-27b       tuned (default), int8, c8\n'
+  printf '  qwen38-27b       tuned (default), int8, c8   (recommended)\n'
   printf '  qwen36-35b-a3b   tuned (default)\n'
 }
 

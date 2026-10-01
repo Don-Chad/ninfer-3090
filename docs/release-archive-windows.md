@@ -30,28 +30,30 @@ Model artifacts are **not** included — they are 17–21 GB each. The downloade
 From the directory you unpacked, two commands (or double-click either file and pick a model):
 
 ```powershell
-.\download-model.bat qwen36-35b-a3b    # ~21 GB, resumable, verifies size and SHA256
-.\run.bat qwen36-35b-a3b               # serves on http://127.0.0.1:8080/v1
+.\download-model.bat qwen38-27b        # ~19 GB, resumable, verifies size and SHA256; the DFlash2 bundle, it also carries the MTP weights
+.\run.bat qwen38-27b                   # serves on http://127.0.0.1:8080/v1
 ```
 
 The downloader writes into `models\` beside these files, which is where the launcher looks.
 `NINFER_MODEL_DIR` moves both: set it and the downloader puts artifacts there and the launcher looks
 there. To point the launcher at one file somewhere else, give it `NINFER_MODEL`.
 
-That is the recommended Windows profile: Qwen3.6-35B-A3B with `rk4v4` KV at the full 262,144-token
-context shared by two lanes (any one request can use all of it), MTP3 speculation plus the draft
-head, and vision in overlay residency. For the dense 27B instead:
-
-```powershell
-.\download-model.bat qwen38-27b        # ~19 GB, the DFlash2 bundle; it also carries the MTP weights
-.\run.bat qwen38-27b                   # one user, 131,072 tokens, DFlash2 (fastest)
-```
+That is the recommended Windows profile: Qwen3.8-27B, one user, 172,032 tokens, DFlash2 speculation
+plus the draft head (fastest), `rk4v4` KV, cuBLAS prefill, and vision in overlay residency.
 
 For the longest context instead, `set NINFER_SPEC=mtp && .\run.bat qwen38-27b` runs the MTP profile at
-163,840 tokens with a smaller prefill chunk and `--lm-head-q6`: slower decode, more context.
+the full 262,144 tokens shared by two lanes, with a smaller prefill chunk and `--lm-head-q6`: slower
+decode, more context.
 
 `run.bat qwen38-27b int8` and `run.bat qwen38-27b c8` are the older INT8 profiles — one user at
 65,536 tokens, and eight concurrent users at 8,192 each.
+
+For the Qwen3.6-35B-A3B MoE instead, which serves more lanes:
+
+```powershell
+.\download-model.bat qwen36-35b-a3b    # ~21 GB, resumable, verifies size and SHA256
+.\run.bat qwen36-35b-a3b               # two lanes sharing 262,144 tokens, MTP3 + draft head, vision
+```
 
 The endpoint is OpenAI-compatible, so anything that speaks `/v1/chat/completions` works. Leave the
 API key blank.

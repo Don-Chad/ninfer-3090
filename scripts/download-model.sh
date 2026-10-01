@@ -5,8 +5,8 @@ set -euo pipefail
 #
 #   download-model.sh <model>
 #
-#   qwen38-27b       Qwen3.8-27B, 19.0 GiB. The default 27B for every benchmark in this repository
-#                    and the one docs/config-calculator.html's "27b" rows are measured against. It is
+#   qwen38-27b       Qwen3.8-27B, 19.0 GiB. Recommended. The default 27B for every benchmark in this
+#                    repository and the one docs/config-calculator.html's "27b" rows are measured against. It is
 #                    the official v3 artifact with the DFlash2 bundle, and it carries the MTP weights
 #                    too, so one file serves both --spec mtp and --spec dflash2. Published
 #                    measurements were taken against the v2 pin 18dfc887, whose weight bytes the v3
@@ -34,7 +34,7 @@ set -euo pipefail
 # otherwise. `apt-get install aria2` / `brew install aria2` to opt in.
 
 usage() {
-  printf 'usage: %s <model>\n\n  qwen38-27b\n  qwen36-27b\n  qwen36-35b-a3b\n' "${0##*/}" >&2
+  printf 'usage: %s <model>\n\n  qwen38-27b (recommended)\n  qwen36-27b\n  qwen36-35b-a3b\n' "${0##*/}" >&2
 }
 
 case "${1:-}" in

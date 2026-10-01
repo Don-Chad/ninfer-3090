@@ -27,31 +27,36 @@ Model artifacts are **not** included — they are 17–21 GB each. The downloade
 From the directory you unpacked, two commands:
 
 ```bash
-./download-model.sh qwen36-35b-a3b     # ~21 GB, resumable, verifies size and SHA256
-./run.sh qwen36-35b-a3b                # serves on http://127.0.0.1:8080/v1
+./download-model.sh qwen38-27b         # ~19 GB, resumable, verifies size and SHA256; the DFlash2 bundle, it also carries the MTP weights
+./run.sh qwen38-27b                    # serves on http://127.0.0.1:8080/v1
 ```
 
 The downloader writes into `models/` beside these files, which is where the launcher looks. Set
 `NINFER_MODEL_DIR` to keep artifacts elsewhere, or `NINFER_MODEL` to point the launcher at a single
 file.
 
-That is the headless profile: three lanes, `rk4v4` KV, MTP3 speculation plus the draft head, and
-vision in overlay residency, with the lanes sharing one 262,144-token pool (any one request can
-use all of it). Three lanes start even beside a
-desktop, so a headless card has room to spare (`NINFER_CONCURRENCY=4` should fit there). Drop a lane
-or a context rung (229376 / 196608 / 163840 / 131072 / 98304) if startup refuses. For the dense 27B instead:
+That is the recommended profile: Qwen3.8-27B, one lane with all 262,144 tokens, DFlash2 speculation
+plus the draft head (fastest), `rk4v4` KV, cuBLAS prefill, and vision in overlay residency. Drop a
+context rung (229376 / 196608 / 163840 / 131072 / 98304) if startup refuses.
 
-```bash
-./download-model.sh qwen38-27b         # ~19 GB, the DFlash2 bundle; it also carries the MTP weights
-./run.sh qwen38-27b                    # one lane, 262,144 tokens, DFlash2 (fastest)
-```
-
-For the longest context instead, `NINFER_SPEC=mtp ./run.sh qwen38-27b` runs the MTP profile at two
-lanes and 262,144 tokens shared with a smaller prefill chunk and `--lm-head-q6`: slower decode, more
+For the longest context shared by two lanes instead, `NINFER_SPEC=mtp ./run.sh qwen38-27b` runs the
+MTP profile at 262,144 tokens with a smaller prefill chunk and `--lm-head-q6`: slower decode, more
 context.
 
 `./run.sh qwen38-27b int8` and `./run.sh qwen38-27b c8` are the older INT8 profiles — one user at
 65,536 tokens, and eight concurrent users at 8,192 each.
+
+For the Qwen3.6-35B-A3B MoE instead, which serves more lanes:
+
+```bash
+./download-model.sh qwen36-35b-a3b     # ~21 GB, resumable, verifies size and SHA256
+./run.sh qwen36-35b-a3b                # serves on http://127.0.0.1:8080/v1
+```
+
+That profile runs three lanes, `rk4v4` KV, MTP3 speculation plus the draft head, and vision in
+overlay residency, with the lanes sharing one 262,144-token pool (any one request can use all of
+it). Three lanes start even beside a desktop, so a headless card has room to spare
+(`NINFER_CONCURRENCY=4` should fit there).
 
 The endpoint is OpenAI-compatible, so anything that speaks `/v1/chat/completions` works. Leave the
 API key blank.

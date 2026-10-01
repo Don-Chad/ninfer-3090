@@ -20,6 +20,13 @@ OpenAI/Anthropic serving APIs.
 The bundled applications and dependency DLLs are native Windows executables. Model artifacts are
 not included in the release archive.
 
+## Recommended model: Qwen3.8-27B
+
+`scripts\download-model.bat qwen38-27b` fetches the pinned Qwen3.8-27B artifact and
+`scripts\run.bat qwen38-27b` serves it with the tuned profile (see the
+[README](../README.md#quick-start)). The rest of this guide documents the Qwen3.6-35B-A3B MoE, which
+serves more lanes.
+
 ## Download the compatible Qwen3.6-35B artifact
 
 `scripts/download-model.bat qwen36-35b-a3b` fetches this pinned revision and is the recommended way to
