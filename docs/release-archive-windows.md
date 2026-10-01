@@ -91,7 +91,7 @@ Nothing here needs editing. **Every** profile reads `NINFER_MODEL`, `NINFER_MODE
 **The default profile handles this for you.** If `run.bat` is refused at startup for lack of GPU
 memory, it steps down by itself -- an eighth of the context at a time, up to five times, and from
 the second step with a 2048 prefill chunk and fewer host state slots -- says what it did, and starts. On a desktop that was
-holding 2.8 GiB of the card, `run.bat qwen38-27b` (then defaulting to 131,072 tokens) stepped from 131,072 down to 81,920 tokens and
+holding 2.8 GiB of the card, `run.bat qwen38-27b` stepped down to 81,920 tokens and
 served a request, at about 12 seconds per refused attempt. It only does this for the defaults: a
 `NINFER_CONTEXT`, `NINFER_PREFILL_CHUNK` or `NINFER_HOST_STATE_SLOTS` you set is honoured as given, and
 `NINFER_FALLBACK=off` turns it off.
