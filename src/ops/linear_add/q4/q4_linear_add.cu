@@ -224,6 +224,9 @@ void q4_linear_add_small_t_c8_launch(const Tensor& x, const Weight& w, Tensor& r
 void q4_linear_add_small_t_c16_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
     launch_small_t<2>(x, w, r, s);
 }
+void q4_linear_add_small_t_c32_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
+    launch_small_t<4>(x, w, r, s);
+}
 
 void q4_linear_add_gemv_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
     if (w.k == kDownCols) {
@@ -305,11 +308,14 @@ Q4LinearAddLaunch select_q4_linear_add(std::int32_t rows, std::int32_t k, std::i
     //   K=6144   T=9 38.9 vs 46.1   T=12 41.0 vs 51.2   T=16 43.0 vs 58.4
     //   K=17408  T=9 89.1 vs 112.6  T=12 94.2 vs 124.9  T=16 112.6 vs 146.4
     // Through T=8 small_t_c8 ties the K-split kernels (66.6-67.6 vs 64.5-66.6 us at K=17408), so
-    // they keep 1..8.
+    // they keep 1..8. 17..32 (an MTP3 cohort of five to eight lanes) take the four-tile variant,
+    // against ksplit24 to 24 and mma_r32_c32 above (median of 15, us):
+    //   K=6144   T=17 52.2 vs 69.6   T=24 53.2 vs 71.7   T=25 54.3 vs 100.4  T=32 68.6 vs 94.2
+    //   K=17408  T=17 118.8 vs 152.6 T=24 133.1 vs 197.6 T=25 134.1 vs 267.3 T=32 147.5 vs 247.8
     if (tokens <= 4) return q4_linear_add_ksplit4_launch;
     if (tokens <= 8) return q4_linear_add_ksplit8_launch;
     if (tokens <= 16) return q4_linear_add_small_t_c16_launch;
-    if (tokens <= 24) return q4_linear_add_ksplit24_launch;
+    if (tokens <= 32) return q4_linear_add_small_t_c32_launch;
     if (tokens <= 64) return q4_linear_add_mma_r32_c32_launch;
     if (tokens <= 80) return q4_linear_add_mma_r64_c80_launch;
     if (tokens <= 96) return q4_linear_add_mma_r64_c96_launch;

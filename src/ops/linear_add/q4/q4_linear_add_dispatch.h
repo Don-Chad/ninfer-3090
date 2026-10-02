@@ -16,6 +16,7 @@ Q4LinearAddLaunch select_q4_linear_add(std::int32_t rows, std::int32_t k, std::i
 void q4_linear_add_gemv_launch(const Tensor&, const Weight&, Tensor&, cudaStream_t);
 void q4_linear_add_small_t_c8_launch(const Tensor&, const Weight&, Tensor&, cudaStream_t);
 void q4_linear_add_small_t_c16_launch(const Tensor&, const Weight&, Tensor&, cudaStream_t);
+void q4_linear_add_small_t_c32_launch(const Tensor&, const Weight&, Tensor&, cudaStream_t);
 void q4_linear_add_ksplit4_launch(const Tensor&, const Weight&, Tensor&, cudaStream_t);
 void q4_linear_add_ksplit8_launch(const Tensor&, const Weight&, Tensor&, cudaStream_t);
 void q4_linear_add_ksplit16_launch(const Tensor&, const Weight&, Tensor&, cudaStream_t);

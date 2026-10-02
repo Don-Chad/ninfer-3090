@@ -12,8 +12,8 @@ int main() {
     }
     try {
         // Route starts follow the sm_86 retunes of select_q4_linear_add (2026-09-17, and the
-        // 9..16 small-T band of 2026-10-02).
-        constexpr std::array<std::int32_t, 9> route_starts{2, 5, 9, 17, 25, 65, 81, 97, 129};
+        // 9..16 and 17..32 small-T bands of 2026-10-02).
+        constexpr std::array<std::int32_t, 9> route_starts{2, 5, 9, 17, 33, 65, 81, 97, 129};
         constexpr std::array<std::int32_t, 15> interiors{1,  4,   8,   12,  16,  24,  32, 64,
                                                          80, 96,  128, 160, 161, 192, 193};
         constexpr std::array<std::int32_t, 6> graph_tokens{1, 4, 33, 97, 193, 512};
