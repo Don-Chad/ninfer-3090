@@ -43,7 +43,7 @@
   "conversion": {
     "recipe_id": "qwen3_8_27b",
     "converter_repository": "https://github.com/ashalliants/ninfer-3090",
-    "command": "python -m tools.convert --recipe qwen3_8_27b --model Qwen3.8-27B --source dflash2=Qwen3.8-27B-DFlash2 --source imatrix=qwen3_8_27b.imatrix.safetensors --components text,vision,mtp,dflash2 --proposal",
+    "command": "python -m tools.convert --recipe qwen3_8_27b --model Qwen3.8-27B --source dflash2=Qwen3.8-27B-DFlash2 --source imatrix=qwen3_8_27b.imatrix.safetensors --components text,vision,mtp,dflash2 --proposal --name qwen3.8-27b",
     "ranking_input": {
       "path": "tools/freq_corpus/fixtures/ranking/ranking.train.counts.i64",
       "sha256": "c692dc76388132c910547589b4fb4a0503fbd6ad50aaac6a509bbcb192a8afa5"

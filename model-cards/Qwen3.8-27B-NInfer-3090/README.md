@@ -157,7 +157,7 @@ already stored in those formats.
 | DFlash2 source | `z-lab/Qwen3.8-27B-DFlash2` @ `50307d4c4cde6860d4eee73e2547cd786fe8e8a4` |
 | Importance matrix | `imatrix_unsloth.gguf` from `unsloth/Qwen3.8-27B-GGUF` @ `4ca72078` (Apache-2.0), converted with `python -m tools.convert.imatrix` |
 | Recipe | `qwen3_8_27b` in `tools/convert/official_recipes.py` |
-| Converter | `python -m tools.convert --model Qwen3.8-27B --recipe qwen3_8_27b --source imatrix=qwen3_8_27b.imatrix.safetensors --source dflash2=Qwen3.8-27B-DFlash2 --components text,vision,mtp,dflash2 --proposal` |
+| Converter | `python -m tools.convert --model Qwen3.8-27B --recipe qwen3_8_27b --source imatrix=qwen3_8_27b.imatrix.safetensors --source dflash2=Qwen3.8-27B-DFlash2 --components text,vision,mtp,dflash2 --proposal --name qwen3.8-27b` |
 
 [`artifact-manifest.json`](artifact-manifest.json) has the object inventory and every source hash.
 

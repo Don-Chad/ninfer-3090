@@ -48,7 +48,7 @@ recipe, which needs an importance matrix (see `grouped_search` below; the publis
 Unsloth's `imatrix_unsloth.gguf` for this model):
 
 ```bash
-python3 -m tools.convert   --model /path/to/Qwen3.8-27B   --recipe qwen3_8_27b   --source imatrix=qwen3_8_27b.imatrix.safetensors   --source dflash2=/path/to/Qwen3.8-27B-DFlash2   --components text,vision,mtp,dflash2   --proposal   --out models/qwen3_8_27b.ninfer
+python3 -m tools.convert   --model /path/to/Qwen3.8-27B   --recipe qwen3_8_27b   --source imatrix=qwen3_8_27b.imatrix.safetensors   --source dflash2=/path/to/Qwen3.8-27B-DFlash2   --components text,vision,mtp,dflash2   --proposal   --name qwen3.8-27b   --out models/qwen3_8_27b.ninfer
 ```
 
 `--components` defaults to `text`. Include only the optional components you want to distribute.
