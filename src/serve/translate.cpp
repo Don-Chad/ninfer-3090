@@ -147,23 +147,24 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
         return complete();
     }
 
+    // Clients carry a wider effort vocabulary than any Qwen3.6 template exposes: OpenAI and
+    // Claude Code send 'high', pi sends 'minimal' and 'max'. The template offers three rungs,
+    // so the outer values collapse onto the nearest one rather than failing the request --
+    // rejecting 'high' is what makes Claude Code unusable against a stock Qwen3.8 template
+    // (QwenLM/Qwen3.8#217). A template that lacks the resolved rung is still rejected below.
     switch (requested) {
+    case RequestedReasoningEffort::Minimal:
     case RequestedReasoningEffort::Low:
         result.reasoning_effort = ninfer::ReasoningEffort::Low;
         break;
     case RequestedReasoningEffort::Medium:
         result.reasoning_effort = ninfer::ReasoningEffort::Medium;
         break;
+    case RequestedReasoningEffort::High:
     case RequestedReasoningEffort::XHigh:
+    case RequestedReasoningEffort::Max:
         result.reasoning_effort = ninfer::ReasoningEffort::XHigh;
         break;
-    case RequestedReasoningEffort::Minimal:
-    case RequestedReasoningEffort::High:
-    case RequestedReasoningEffort::Max:
-        invalid_prompt_option("reasoning effort '" +
-                                  std::string(requested_reasoning_effort_name(requested)) +
-                                  "' is not supported by the loaded chat template",
-                              "reasoning_effort", "reasoning_effort_not_supported");
     case RequestedReasoningEffort::None:
         break;
     }
