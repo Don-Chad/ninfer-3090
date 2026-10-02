@@ -354,13 +354,19 @@ def own_code_documents(tokenizer: Tokenizer) -> list[Document]:
             author, commit, date = line[1:].split("|")
         elif line and author in OWN_CODE_AUTHORS:
             added.setdefault(line, (commit, date))  # git log is newest first; keep the newest add.
+    # Read every file from the recorded HEAD, not the working tree, so the provenance commit always
+    # names the exact bytes in the corpus (and in the chat stream derived from it) even when the
+    # checkout has uncommitted edits.
+    present = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", head], cwd=ROOT,
+                                 check=True, capture_output=True, text=True,
+                                 encoding="utf-8").stdout.splitlines())
     documents = []
     for path, (commit, date) in sorted(added.items()):
-        file = ROOT / path
         if (not path.endswith(OWN_CODE_SUFFIXES) or path.startswith(OWN_CODE_EXCLUDE)
-                or not file.is_file()):
+                or path not in present):
             continue
-        text = file.read_text(encoding="utf-8", errors="replace")
+        text = subprocess.run(["git", "show", f"{head}:{path}"], cwd=ROOT, check=True,
+                              capture_output=True).stdout.decode("utf-8", errors="replace")
         if "�" in text or len(text) < 800:
             continue
         text = cap_tokens(normalize(text), tokenizer, DOC_TOKEN_CAP // 2)

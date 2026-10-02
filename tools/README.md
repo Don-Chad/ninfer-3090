@@ -53,6 +53,7 @@ python3 -m tools.convert \
 python3 -m tools.convert \
   --model /path/to/Qwen3.8-27B \
   --recipe qwen3_8_27b --components text,vision,mtp,dflash2 --proposal \
+  --source imatrix=/path/to/qwen3_8_27b.imatrix.safetensors \
   --source dflash2=/path/to/Qwen3.8-27B-DFlash2 \
   --resource chat_template.jinja=tools/chat_templates/qwen3_8.jinja \
   --name qwen3.8-27b \

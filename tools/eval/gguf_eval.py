@@ -364,6 +364,9 @@ def reference(args) -> None:
 
 
 def score(args) -> None:
+    # No -f here: in --kl-divergence mode llama-perplexity reads n_ctx, n_chunk and the evaluated
+    # token sequence from the --kl-divergence-base file written by `reference` (perplexity.cpp,
+    # kl_divergence()), so each stream is scored on exactly the tokens its reference came from.
     args.out.mkdir(parents=True, exist_ok=True)
     results = {"name": args.name, "model": str(args.model), "streams": {}}
     for stream in args.streams:
@@ -450,21 +453,26 @@ def probe(args) -> None:
                 saved.write(handle.read(len(payload)))
                 spans.append((offset, len(payload)))
         restore_index.write_text(json.dumps(spans))
-        with args.model.open("r+b") as handle:
-            for offset, payload in payloads:
-                handle.seek(offset)
-                handle.write(payload)
-        del payloads
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # From here the original bytes are saved and indexed, so every exit -- a failed write, a
+        # failed scorer, an interrupt -- restores the template before propagating.
         streams = {}
-        for stream in args.streams:
-            text = _llama(args, ["--kl-divergence-base", str(args.base_dir / f"{stream}.kld"),
-                                 "--kl-divergence"])
-            streams[stream] = {key: (float(m.group(1)) if (m := re.search(pattern, text)) else None)
-                               for key, pattern in _METRICS.items()}
-        restore()
+        try:
+            with args.model.open("r+b") as handle:
+                for offset, payload in payloads:
+                    handle.seek(offset)
+                    handle.write(payload)
+            del payloads
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            for stream in args.streams:
+                text = _llama(args, ["--kl-divergence-base",
+                                     str(args.base_dir / f"{stream}.kld"), "--kl-divergence"])
+                streams[stream] = {key: (float(m.group(1)) if (m := re.search(pattern, text))
+                                         else None)
+                                   for key, pattern in _METRICS.items()}
+        finally:
+            restore()
         result_path.write_text(json.dumps({"unit": unit, "format": fmt, "tensors": names,
                                            "streams": streams}, indent=2) + "\n",
                                encoding="utf-8", newline="\n")
