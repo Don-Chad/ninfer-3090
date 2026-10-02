@@ -5,6 +5,7 @@
 #include "ops/linear_swiglu/fp8/fp8_linear_swiglu_plan.h"
 #include "ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_plan.h"
 #include "ops/linear_swiglu/q4/q4_linear_swiglu_plan.h"
+#include "ops/linear_swiglu/q4a8/q4a8_linear_swiglu.h"
 #include "ops/linear_swiglu/w8/w8_linear_swiglu_plan.h"
 
 #include <cstdint>
@@ -22,6 +23,7 @@ void validate_policy(LinearPolicy policy) {
     case LinearPolicy::A16Only:
     case LinearPolicy::AllowA8:
     case LinearPolicy::AllowA4:
+    case LinearPolicy::AllowA8Int:
         return;
     }
     throw std::invalid_argument("linear_swiglu: invalid compute policy");
@@ -48,11 +50,22 @@ std::size_t linear_swiglu_workspace_capacity_bytes(QType qtype, std::int32_t gat
         return 0;
     }
     if (qtype == QType::Q4G64_F16S) {
-        if (policy != LinearPolicy::A16Only) {
-            throw std::invalid_argument("linear_swiglu workspace: Q4 admits only A16");
+        if (policy != LinearPolicy::A16Only && policy != LinearPolicy::AllowA8Int) {
+            throw std::invalid_argument("linear_swiglu workspace: Q4 admits A16 or integer A8");
         }
-        return detail::q4_linear_swiglu_capacity_workspace_bytes(
+        const std::size_t a16 = detail::q4_linear_swiglu_capacity_workspace_bytes(
             gate_up_rows, gate_up_rows / 2, input_rows, input_rows, min_tokens, max_tokens);
+        if (policy != LinearPolicy::AllowA8Int || gate_up_rows != 34816 || input_rows != 5120) {
+            return a16;
+        }
+        // A single-T query must report exactly what that T will use, so it has to name the route
+        // the resolver will pick. Across an interval the answer is an upper bound over both.
+        if (min_tokens == max_tokens) {
+            return detail::q4a8_tokens_supported(min_tokens)
+                       ? detail::q4a8_swiglu_workspace_capacity_bytes(min_tokens, max_tokens)
+                       : a16;
+        }
+        return std::max(a16, detail::q4a8_swiglu_workspace_capacity_bytes(min_tokens, max_tokens));
     }
     if (qtype == QType::NVFP4 && gate_up_rows == 34816 && input_rows == 5120) {
         return detail::nvfp4_linear_swiglu_workspace_capacity_bytes(policy, min_tokens, max_tokens);
@@ -125,8 +138,13 @@ void linear_swiglu(const Tensor& x, const Weight& gate_up_weight, Tensor& out, L
         return;
     }
 
-    if (policy != LinearPolicy::A16Only) {
-        throw std::invalid_argument("linear_swiglu: Q4/W8 admit only A16");
+    if (policy == LinearPolicy::AllowA8Int && q4_weight &&
+        detail::q4a8_swiglu_supported(gate_up_weight, t)) {
+        detail::q4a8_swiglu_launch(x, gate_up_weight, out, ws, stream);
+        return;
+    }
+    if (policy != LinearPolicy::A16Only && !(policy == LinearPolicy::AllowA8Int && q4_weight)) {
+        throw std::invalid_argument("linear_swiglu: Q4 admits A16 or integer A8; W8 admits A16");
     }
     if (!aligned_to(gate_up_weight.qdata, 16) ||
         !aligned_to(gate_up_weight.scales, w8_weight ? 16 : 4)) {
