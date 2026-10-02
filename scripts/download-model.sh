@@ -5,7 +5,8 @@ set -euo pipefail
 #
 #   download-model.sh <model>
 #
-#   qwen38-27b       Qwen3.8-27B, 17.7 GiB. The default 27B for every benchmark in this repository.
+#   qwen38-27b       Qwen3.8-27B, 17.7 GiB. Recommended. The default 27B for every benchmark in this
+#                    repository.
 #                    This fork's own conversion (WarlaxZ/Qwen3.8-27B-NInfer-3090, recipe
 #                    qwen3_8_27b): the imatrix-weighted grouped_search encoder, a 4-bit embedding, a
 #                    6-bit head and 4-bit mixer outputs and MLP down in layers 36-63. It carries the
@@ -36,7 +37,7 @@ set -euo pipefail
 # otherwise. `apt-get install aria2` / `brew install aria2` to opt in.
 
 usage() {
-  printf 'usage: %s <model>\n\n  qwen38-27b\n  qwen36-27b\n  qwen36-35b-a3b\n' "${0##*/}" >&2
+  printf 'usage: %s <model>\n\n  qwen38-27b (recommended)\n  qwen36-27b\n  qwen36-35b-a3b\n' "${0##*/}" >&2
 }
 
 case "${1:-}" in

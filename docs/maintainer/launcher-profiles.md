@@ -49,7 +49,7 @@ MTP DRAFT COUNT, 2026-09-28. MTP now accepts `NINFER_DRAFT_TOKENS` up to 15 (it 
 five). The `mtp` profiles keep three: it is best or within 2% on prose, while 7, 9 and 15 lose 12%,
 27% and 38% on a short story. On output that reproduces the prompt (editing and returning a file)
 11 to 15 decode 1.7-1.85x faster than three, and on newly written code seven is about 10% faster;
-the table is in [CLI usage](../cli.md#speculative-decoding). Eight and above add a second CUDA
+the table is in [performance](../performance.md#choosing-the-draft-count-rtx-3090-qwen38-27b). Eight and above add a second CUDA
 Graph topology class on the 27B, about 64 MiB more reserved per lane, which the 27B `mtp` profile's
 ~1.2 GiB of headroom covers. Measured single-stream with the CLI; the two-lane server was not
 re-measured at larger counts.

@@ -164,6 +164,12 @@ refuse_flag '27B overrides' "$recorded" '--vision'
 expect_flags '27B default slots' "$(record slots32 -- qwen38-27b)" '--host-state-slots 32'
 expect_flags '27B slots override' "$(record slots8 NINFER_HOST_STATE_SLOTS=8 -- qwen38-27b)" '--host-state-slots 8'
 
+# NINFER_CHAT_TEMPLATE forwards straight to --chat-template, and is absent when unset.
+expect_flags '27B chat template override' \
+  "$(record chat_template NINFER_CHAT_TEMPLATE="$tmp/custom.jinja" -- qwen38-27b)" \
+  "--chat-template $tmp/custom.jinja"
+refuse_flag '27B no chat template override' "$(record no_chat_template -- qwen38-27b)" '--chat-template'
+
 # The banner reports what is being served: an explicit vision residency shows up in it, not the
 # default. (The stub server prints nothing, so stdout here is the launcher's own.)
 banner="$(clear_env NINFER_SERVER="$tmp/ninfer-serve" NINFER_TEST_ARGS="$tmp/unused.args" \
@@ -258,6 +264,12 @@ expect_eq 'NINFER_FALLBACK=off' "$(field --max-context)" '262144 '
 # Only a memory refusal steps down. Any other startup failure is not something a smaller context fixes.
 attempts 1000 NINFER_TEST_FAILURE='FATAL server failed during startup | artifact is corrupt'
 expect_eq 'other failures do not retry' "$(field --max-context)" '262144 '
+
+# NINFER_CHAT_TEMPLATE plays no part in the step-down math, but it must still ride along on every
+# retry -- a value set once should not silently drop off a later rung.
+attempts 1000 NINFER_CHAT_TEMPLATE="$tmp/custom.jinja"
+expect_eq 'chat template rides every rung' "$(field --chat-template)" \
+  "$tmp/custom.jinja $tmp/custom.jinja $tmp/custom.jinja $tmp/custom.jinja $tmp/custom.jinja $tmp/custom.jinja "
 
 # The reference profiles are fixed shapes and never step down.
 ladder_log="$tmp/ladder.fixed.log"; : > "$ladder_log"
