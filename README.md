@@ -217,6 +217,23 @@ tuning: 16 full-attention layers × 4 KV heads × 256 head_dim is **3.2× the KV
 35B-A3B's 10 × 2 × 256. The linear memory model behind these contexts is in
 [launcher profiles](docs/maintainer/launcher-profiles.md#qwen38-27b-tuned).
 
+**Fast prefill costs context.** The `tuned` profile's cuBLAS prefill at chunk 4096 is part of every
+context figure above. Its runtime reservation against leaner settings, measured 2026-10-02
+(`ninfer_bench`, DFlash2 K=7, `rk4v4`, 4K prompt; about 17 KiB of KV per token):
+
+| Prefill setting | runtime reservation | prefill | context it costs |
+|---|---:|---:|---:|
+| **cuBLAS, chunk 4096 (launcher default)** | **1,536 MiB** | **3,246 tok/s** | — |
+| default route, chunk 4096 | 1,285 MiB | 1,900 tok/s | cuBLAS itself: ~250 MiB, ~15K tokens |
+| cuBLAS, chunk 2048 | 1,298 MiB | 2,975 tok/s | ~240 MiB, ~14K tokens |
+| default route, chunk 1024 | 797 MiB | 1,773 tok/s | whole setup: ~740 MiB, ~44K tokens |
+
+On the 27B the speed comes from the cuBLAS route itself — a larger chunk on the default route barely
+helps — so the launcher trades about 44K tokens of context for 83% faster prefill, which pays for
+itself in agent sessions that ingest long prompts. `NINFER_PREFILL_CHUNK=2048` keeps 92% of the
+speed for ~14K tokens back. (The 35B-A3B makes the same trade differently: there the chunk size,
+not the route, carries most of the gain; see [its section](#qwen36-35b-a3b).)
+
 The default Qwen3.8-27B artifact stores its token embedding as Q4 and its head as Q6, so the
 `--embedding-q4` and `--lm-head-q6` load-time transcodes the upstream file needed are not passed.
 `--gdn-state-fp16` (FP16 recurrent state, -72 MiB per device state slot) is measured free on
