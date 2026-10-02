@@ -317,7 +317,7 @@ a 24 GB card and the server can reuse fast CUDA Graphs instead of rebuilding wor
 | Model | Artifact | Size | Notes |
 |---|---|---:|---|
 | Qwen3.6-35B-A3B | [pinned v3 artifact](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer/tree/ee4495803bc4f8015b8a7e22d4cf9b67de8e27c6) | 21.23 GiB | **Recommended.** Carries the DFlash bundle for `--spec dflash` |
-| **Qwen3.8-27B** | [pinned v3 artifact](https://huggingface.co/WarlaxZ/Qwen3.8-27B-NInfer-3090/tree/0b0baabf51748811d29872ba5e4d92740ace041d) | 17.68 GiB | **Validated at C1–C8 with ReplaySSM.** This fork's [3090 conversion](model-cards/Qwen3.8-27B-NInfer-3090/README.md): imatrix-weighted encoder, 4-bit embedding, 6-bit head. Carries vision, MTP and the DFlash2 bundle for `--spec dflash2` |
+| **Qwen3.8-27B** | [pinned v3 artifact](https://huggingface.co/WarlaxZ/Qwen3.8-27B-NInfer-3090/tree/d47f2732d369acaec76dc44228f67c72b081df2f) | 17.68 GiB | **Validated at C1–C8 with ReplaySSM.** This fork's [3090 conversion](model-cards/Qwen3.8-27B-NInfer-3090/README.md): imatrix-weighted encoder, 4-bit embedding, 6-bit head. Carries vision, MTP and the DFlash2 bundle for `--spec dflash2` |
 | Qwen3.6-27B | [pinned v3 artifact](https://huggingface.co/neroued/Qwen3.6-27B-NInfer/tree/3e3d9a3951c452c1ca80bd7a2860c7f3bfc5a829) | 16.29 GiB | Supported with more runtime headroom |
 
 `download-model qwen36-35b-a3b`, `qwen38-27b` or `qwen36-27b` (`.bat` on Windows, `.sh` on Linux)

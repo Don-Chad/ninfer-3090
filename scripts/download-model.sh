@@ -44,7 +44,7 @@ case "${1:-}" in
     artifact='qwen3_8_27b.ninfer'
     owner='WarlaxZ'
     repo='Qwen3.8-27B-NInfer-3090'
-    revision='0b0baabf51748811d29872ba5e4d92740ace041d'
+    revision='d47f2732d369acaec76dc44228f67c72b081df2f'
     expected_size=18982458624
     expected_sha256='7f2a0086a071ee932c66106e1552d118a85cfec8ddef13c67a54cd64abb39706'
     label='the Qwen3.8-27B model (17.7 GiB)'

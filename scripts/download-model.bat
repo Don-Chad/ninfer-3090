@@ -83,7 +83,7 @@ exit /b 0
 set "ARTIFACT=qwen3_8_27b.ninfer"
 set "OWNER=WarlaxZ"
 set "REPO=Qwen3.8-27B-NInfer-3090"
-set "REVISION=0b0baabf51748811d29872ba5e4d92740ace041d"
+set "REVISION=d47f2732d369acaec76dc44228f67c72b081df2f"
 set "EXPECTED_SIZE=18982458624"
 set "EXPECTED_SHA256=7f2a0086a071ee932c66106e1552d118a85cfec8ddef13c67a54cd64abb39706"
 set "LABEL=the Qwen3.8-27B model (17.7 GiB)"
