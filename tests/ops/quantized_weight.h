@@ -607,9 +607,28 @@ inline PackedWeight make_patterned_weight(QType qtype, std::int32_t n, std::int3
             options.row_split_codes == RowSplitCodePattern::Hashed
                 ? (detail::mix64(i ^ (static_cast<std::uint64_t>(seed) << 17)) >> 8) & 3U
                 : (row ^ (row >> 8) ^ group ^ seed) & 3U;
+        std::uint16_t scale = scales[scale_index];
+        // Store about half the groups as (-scale, -codes): the represented weights stay those of
+        // the positive pattern, so every calibrated criterion sees the same matrix statistics,
+        // while each route must apply the stored scale as a signed multiplier (tensor-formats
+        // section 6.1). -qmin is not a legal code, so a qmin lane stores qmax: one step off its
+        // positive-pattern value, and the oracle decodes the stored words either way.
+        if ((detail::mix64(i ^ 0x5bd1e995ULL) & 1U) != 0) {
+            std::uint8_t* nibble = packed.payload.data() + i * code_bytes_per_group;
+            std::uint8_t* high   = high_bytes_per_group == 0
+                                       ? nullptr
+                                       : packed.payload.data() + packed.high_plane_offset +
+                                           i * high_bytes_per_group;
+            std::int8_t codes[64]{};
+            for (std::int32_t lane = 0; lane < spec.group_size; ++lane) {
+                const int code = detail::unpack_lowbit_code(nibble, high, spec, lane);
+                codes[lane]    = static_cast<std::int8_t>(code == spec.qmin ? spec.qmax : -code);
+            }
+            detail::pack_lowbit_group(codes, spec, nibble, high);
+            scale = static_cast<std::uint16_t>(scale | 0x8000u);
+        }
         detail::store_u16_le(packed.payload,
-                             static_cast<std::size_t>(packed.scale_plane_offset + i * 2),
-                             scales[scale_index]);
+                             static_cast<std::size_t>(packed.scale_plane_offset + i * 2), scale);
     }
 
     packed.weight.qtype            = qtype;

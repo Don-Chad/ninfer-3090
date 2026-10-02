@@ -203,11 +203,16 @@ tokens, MTP3 with the draft head, rk8v4, arms interleaved in one sitting, three 
 | 1 | `--embedding-q4 --lm-head-q6` (separate sitting) | 96.78 vs 101.95 | -5.1% |
 | 4 | `--embedding-q4 --lm-head-q6` (separate sitting) | 300.44 vs 307.03 | -1.0% (mixed signs) |
 
-The embedding costs nothing: its gather touches a handful of rows per step. The Q6 head is slower
-at one lane because this shape has no Q6 small-T kernel -- T <= 7 routes to the generic
-`q6_simt_r8_c4`, where W8 has `launch_w8_small_t` and Q4 has `launch_q4_small_t_rows`. A Q6 small-T
-kernel would remove that cost; until then `--lm-head-q6` is a trade of a few percent of C1 decode
-for 12.9K tokens, and `--lm-head-q4` remains the faster (and larger, and lossier) head option.
+The embedding costs nothing: its gather touches a handful of rows per step. The Q6 head measured
+above was slower at one lane because this shape had no Q6 decode kernel -- T <= 7 routed to the
+generic 8-row SIMT tiles. Since 2026-10-02 T = 1..4 take a per-row Q6 GEMV
+(`src/ops/linear/q6/q6_rowsplit_gemv.cu`) and T = 5..16 the 64-row MMA. On the head shape
+(`bench/ops/linear_schedule_bench.cu q6:248320x5120`, sm_86) the GEMV runs 1159 us at T=1 against
+1381 us for the SIMT tile (857 GB/s), 1593 against 2509 us at T=4, and the MMA 2340 against 5209
+us at T=5. End to end, an artifact with a 6-bit head (plus 6-bit embedding and 4-bit mixer outputs
+in layers 36-63) decodes 2.4% faster than today's 8-bit-head artifact at C1 and 2.1% faster under
+MTP3 (`ninfer_bench`, three interleaved rounds, int8 KV). The decode rows in the table above
+predate the GEMV and have not been re-run with `--lm-head-q6`.
 
 **The 35B-A3B is different.** Its 2048-wide embedding does not quantize for free: `--embedding-q4`
 measured 4.373904 -> 4.389698 (**+0.36%**, same protocol), about the cost of NVFP4 KV, for 258 MiB.
@@ -319,7 +324,7 @@ Quick corpus, RTX 3090, Qwen3.8-27B groupwise-int, `--kv-dtype int8`:
 
 | arm | overall perplexity | against A16 |
 |---|---:|---:|
-| `--no-prefill-a8` (every projection A16) | 4.342982 | — |
+| `--no-prefill-a8` (every projection A16) | 4.342982 | ï¿½ |
 | every registered integer route (default) | 4.343155 | **+0.004%** |
 
 That is inside run-to-run noise, and inside the +0.05% this fork requires before a lossy route is

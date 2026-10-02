@@ -21,6 +21,9 @@ int main() {
                                  {5120, 6144, 429U, route_starts, interiors, graph_tokens});
         failures += run_shape("Q4_A16 LinearAdd full", WeightFormat::Q4G64F16S,
                               {5120, 6144, 431U, {}, full_tokens, {}, true});
+        // MLP down: the same route table at K=17408.
+        failures += run_shape("Q4_A16 LinearAdd down", WeightFormat::Q4G64F16S,
+                              {5120, 17408, 433U, route_starts, interiors, graph_tokens});
         std::cout << (failures == 0 ? "OK" : "FAIL") << " Q4_A16 LinearAdd\n";
         return failures == 0 ? 0 : 1;
     } catch (const std::exception& error) {

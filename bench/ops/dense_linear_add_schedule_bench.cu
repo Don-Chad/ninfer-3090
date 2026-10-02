@@ -4,7 +4,7 @@
 // Two tables, both new here and both measured on an RTX 5090 only:
 //
 //   Q8, rows = 5120:  {1,64} SplitKMmaCapacity   {65,kAny} GroupedSplitK
-//   Q4, rows = 5120, k = 6144:
+//   Q4, rows = 5120, k = 6144 (and k = 17408 for the MLP down projection, which shares the table):
 //       1 gemv / <=4,8,16,24,32 K-split capacities / <=96 r32_c32 / <=192 r32_c64 / r64_c128
 //
 // The Q8 table is two entries wide where the same Op's 2048-row tables are thirty-three, which is
@@ -131,9 +131,9 @@ void sweep_q8(std::int32_t hidden, const ninfer::bench::SweepOptions& base) {
     std::printf("\n");
 }
 
-void sweep_q4(const ninfer::bench::SweepOptions& base) {
-    constexpr std::int32_t kHidden = 6144;
-    const std::int32_t max_tokens  = *std::max_element(base.tokens.begin(), base.tokens.end());
+// kHidden is 6144 for the attention and GDN output projections, 17408 for the MLP down projection.
+void sweep_q4(std::int32_t kHidden, const ninfer::bench::SweepOptions& base) {
+    const std::int32_t max_tokens = *std::max_element(base.tokens.begin(), base.tokens.end());
     ninfer::bench::PackedQuantizedWeight packed = ninfer::bench::make_row_split_weight(
         QType::Q4_G64_FP16, kRows, kHidden, kHidden, {0x31, 0xa5, 0x3c00});
     ninfer::DeviceBuffer input(static_cast<std::size_t>(kHidden) * max_tokens * 2);
@@ -173,8 +173,9 @@ void sweep_q4(const ninfer::bench::SweepOptions& base) {
     }
 
     ninfer::bench::SweepOptions options = base;
-    options.title                       = "q4 dense linear_add n=5120 k=6144";
-    options.routed_name                 = [&named](std::int32_t tokens) -> const char* {
+    const std::string title             = "q4 dense linear_add n=5120 k=" + std::to_string(kHidden);
+    options.title                       = title.c_str();
+    options.routed_name                 = [&named, kHidden](std::int32_t tokens) -> const char* {
         const detail::Q4LinearAddLaunch chosen = detail::select_q4_linear_add(kRows, kHidden, tokens);
         for (const auto& entry : named) {
             if (entry.second == chosen) { return entry.first; }
@@ -208,7 +209,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (q4) {
-        sweep_q4(options);
+        sweep_q4(6144, options);
+        sweep_q4(17408, options);
     } else {
         sweep_q8(6144, options);
         sweep_q8(17408, options);

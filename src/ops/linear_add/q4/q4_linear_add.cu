@@ -24,6 +24,12 @@ struct GemvResidualEpilogue {
     }
 };
 
+// The two registered weights share the 5120-row residual: the attention and GDN output projections
+// (K=6144) and the MLP down projection (K=17408).
+constexpr std::int32_t kRows      = 5120;
+constexpr std::int32_t kMixerCols = 6144;
+constexpr std::int32_t kDownCols  = 17408;
+
 struct KSplitResidualEpilogue {
     __nv_bfloat16* residual;
     std::int32_t tokens;
@@ -42,11 +48,14 @@ struct KSplitResidualEpilogue {
     }
 };
 
+// K=6144 gives each of the eight warps 12 static groups; K=17408 would give 34, beyond the
+// 16-group warp tile, so it uses the dynamic group loop (StaticGroupsPerRow 0).
+template <std::int32_t Cols>
 using GemvR1W8 =
     Q4RowSplitGemvSchedule<1, 8, 16, 1, Q4GemvActivationAccess::Direct,
                            Q4GemvLaneMapping::PackedByte2, Q4GemvDecodeMode::ScalarInteger,
                            Q4GemvCodeTransfer::SyncVector16, Q4GemvScaleAccess::Scalar16Shuffle,
-                           Cache::ca, 6144 / 64, 1>;
+                           Cache::ca, (Cols / 64 / 8 <= 16 ? Cols / 64 : 0), 1>;
 using MmaR32C32  = Q4RowSplitMmaGemmSchedule<32, 32, 64, 16, 16, 3, 2, Q4FragmentPipeline::Serial,
                                              Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
 using MmaR32C64  = Q4RowSplitMmaGemmSchedule<32, 64, 64, 16, 32, 3, 2, Q4FragmentPipeline::Serial,
@@ -68,23 +77,36 @@ using MmaR64C112 = Q4RowSplitMmaGemmSchedule<64, 112, 64, 32, 16, 2, 1,
                                              Q4FragmentPipeline::Serial, Cache::cg, Cache::cg,
                                              Q4ScaleLoad::Pair32>;
 
-template <int Capacity>
-void launch_ksplit(const Tensor& x, const Weight& w, Tensor& residual, cudaStream_t stream) {
-    using Geometry = Q4LinearGeometry<5120, 6144>;
+template <std::int32_t Cols, int Capacity>
+void launch_ksplit_cols(const Tensor& x, const Weight& w, Tensor& residual, cudaStream_t stream) {
+    using Geometry = Q4LinearGeometry<kRows, Cols>;
     auto* output   = static_cast<__nv_bfloat16*>(residual.data);
     q4_ksplit_mma_kernel<Geometry, (Capacity + 7) / 8 * 8, Capacity, KSplitResidualEpilogue,
                          Q4KSplitIdentityRows, true>
-        <<<5120 / Q4KSplitMmaSchedule::kRowsPerCta, Q4KSplitMmaSchedule::kThreads, 0, stream>>>(
+        <<<kRows / Q4KSplitMmaSchedule::kRowsPerCta, Q4KSplitMmaSchedule::kThreads, 0, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
             static_cast<const std::uint8_t*>(w.scales), output,
             KSplitResidualEpilogue{output, x.ne[1]}, {}, x.ne[1]);
     CUDA_CHECK(cudaGetLastError());
 }
 
+template <int Capacity>
+void launch_ksplit(const Tensor& x, const Weight& w, Tensor& residual, cudaStream_t stream) {
+    if (w.k == kDownCols) {
+        launch_ksplit_cols<kDownCols, Capacity>(x, w, residual, stream);
+    } else {
+        launch_ksplit_cols<kMixerCols, Capacity>(x, w, residual, stream);
+    }
+}
+
 } // namespace
 
 void q4_linear_add_gemv_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
-    launch_q4_gemv<GemvR1W8, GemvResidualEpilogue>(x, w, r, s);
+    if (w.k == kDownCols) {
+        launch_q4_gemv<GemvR1W8<kDownCols>, GemvResidualEpilogue>(x, w, r, s);
+    } else {
+        launch_q4_gemv<GemvR1W8<kMixerCols>, GemvResidualEpilogue>(x, w, r, s);
+    }
 }
 void q4_linear_add_ksplit4_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
     launch_ksplit<4>(x, w, r, s);
@@ -129,9 +151,14 @@ void q4_linear_add_mma_r64_c128_launch(const Tensor& x, const Weight& w, Tensor&
 }
 
 Q4LinearAddLaunch select_q4_linear_add(std::int32_t rows, std::int32_t k, std::int32_t tokens) {
-    if (rows != 5120 || k != 6144 || tokens <= 0) {
+    if (rows != kRows || (k != kMixerCols && k != kDownCols) || tokens <= 0) {
         throw std::invalid_argument("q4 linear_add: unsupported shape or token extent");
     }
+    // K=17408 (MLP down) shares the table below. Swept 2026-10-02 on sm_86 with
+    // bench/ops/dense_linear_add_schedule_bench.cu --q4 (cold, median of 20, a weight conversion
+    // sharing the GPU): the routed schedule is the fastest at every measured T in 1..512 except
+    // T=32, where ksplit_c32 leads mma_r32_c32 by 2%, below the 10% bar. T=1 runs at 65.5 us,
+    // 722 GB/s of the 47 MB weight.
     // Re-measured on sm_86 2026-09-17 with bench/ops/dense_linear_add_schedule_bench.cu (--q4),
     // cold, median of 11. The narrow end and 33..64 are upstream's and hold here; the 65..192 band
     // repeats what the plain `linear` sweep found at this same geometry, that the 32-row tiles run

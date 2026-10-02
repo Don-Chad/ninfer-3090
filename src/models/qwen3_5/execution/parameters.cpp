@@ -2,6 +2,8 @@
 
 #include "core/weight_view.h"
 
+#include <algorithm>
+#include <initializer_list>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -27,11 +29,14 @@ public:
     // tensor cores, which Ampere has and which no A16 route uses. It is registered per exact shape
     // rather than per format, because a registered route exists only for the profiles a kernel was
     // written for; any other projection keeps what its Use permits.
-    void integer_route(LinearParameters& p, QType format, std::int32_t n, std::int32_t k) const {
+    void integer_route(LinearParameters& p, std::initializer_list<QType> formats, std::int32_t n,
+                       std::int32_t k) const {
 #if defined(NINFER_SM8X_COMPAT)
         if (!model_.options().prefill_a8) { return; }
-        if (p.policy == ops::LinearPolicy::A16Only && p.weight.qtype == format &&
-            p.weight.n == n && p.weight.k == k) {
+        const bool format = std::find(formats.begin(), formats.end(), p.weight.qtype) !=
+                            formats.end();
+        if (p.policy == ops::LinearPolicy::A16Only && format && p.weight.n == n &&
+            p.weight.k == k) {
             // The cuBLAS route is a superset: it admits everything AllowA8Int does and adds the
             // materialise-and-call-cuBLAS path above its width gate, so the resolver still picks
             // the integer mainloop for narrow calls.
@@ -39,7 +44,7 @@ public:
                                                        : ops::LinearPolicy::AllowA8Int;
         }
 #else
-        (void)p; (void)format; (void)n; (void)k;
+        (void)p; (void)formats; (void)n; (void)k;
 #endif
     }
 
@@ -104,8 +109,8 @@ public:
                                                  model_.input(w.gate), model_.input(w.up));
                                          }),
                             linear(w.down)};
-        integer_route(out.gate_up, QType::Q4_G64_FP16, 34816, 5120);
-        integer_route(out.down, QType::Q5_G64_FP16, 5120, 17408);
+        integer_route(out.gate_up, {QType::Q4_G64_FP16}, 34816, 5120);
+        integer_route(out.down, {QType::Q4_G64_FP16, QType::Q5_G64_FP16}, 5120, 17408);
         // --mlp-a8-decode is a separate verify-phase trade from --prefill-a8: it must admit the
         // decode route by this profile's own format/shape, not by whether prefill promotion
         // already ran, so the two flags stay orthogonal as documented.
@@ -148,7 +153,7 @@ public:
         out.ffn                 = ffn(w);
         if (const auto* a = std::get_if<AttentionWeights>(&w.mixer)) {
             LinearParameters attention_output = linear(a->output);
-            integer_route(attention_output, QType::Q5_G64_FP16, 5120, 6144);
+            integer_route(attention_output, {QType::Q4_G64_FP16, QType::Q5_G64_FP16}, 5120, 6144);
             ops::ProjectionWeights attention_projection = ops::prepare_attn_input_proj_weights(
                 model_.input(a->query), model_.input(a->key), model_.input(a->gate),
                 model_.input(a->value));
@@ -161,7 +166,7 @@ public:
         } else {
             const auto& g              = std::get<GdnWeights>(w.mixer);
             LinearParameters gdn_output = linear(g.output);
-            integer_route(gdn_output, QType::Q5_G64_FP16, 5120, 6144);
+            integer_route(gdn_output, {QType::Q4_G64_FP16, QType::Q5_G64_FP16}, 5120, 6144);
             ops::ProjectionWeights gdn_projection = ops::prepare_gdn_input_proj_weights(
                 model_.input(g.query), model_.input(g.key), model_.input(g.value),
                 model_.input(g.z));
