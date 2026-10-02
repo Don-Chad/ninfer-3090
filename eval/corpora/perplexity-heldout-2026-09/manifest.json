@@ -1,0 +1,89 @@
+{
+  "corpus_id": "ninfer-ppl-heldout-2026-09-v1",
+  "streams": [
+    {
+      "id": "wikipedia_en-00",
+      "domain": "wikipedia_en",
+      "path": "data/wikipedia_en/00.txt"
+    },
+    {
+      "id": "wikipedia_en-01",
+      "domain": "wikipedia_en",
+      "path": "data/wikipedia_en/01.txt"
+    },
+    {
+      "id": "wikipedia_zh-00",
+      "domain": "wikipedia_zh",
+      "path": "data/wikipedia_zh/00.txt"
+    },
+    {
+      "id": "wikipedia_zh-01",
+      "domain": "wikipedia_zh",
+      "path": "data/wikipedia_zh/01.txt"
+    },
+    {
+      "id": "arxiv-00",
+      "domain": "arxiv",
+      "path": "data/arxiv/00.txt"
+    },
+    {
+      "id": "arxiv-01",
+      "domain": "arxiv",
+      "path": "data/arxiv/01.txt"
+    },
+    {
+      "id": "github_code-00",
+      "domain": "github_code",
+      "path": "data/github_code/00.txt"
+    },
+    {
+      "id": "github_code-01",
+      "domain": "github_code",
+      "path": "data/github_code/01.txt"
+    },
+    {
+      "id": "own_code-00",
+      "domain": "own_code",
+      "path": "data/own_code/00.txt"
+    },
+    {
+      "id": "own_code-01",
+      "domain": "own_code",
+      "path": "data/own_code/01.txt"
+    },
+    {
+      "id": "synthetic_chat-00",
+      "domain": "synthetic_chat",
+      "path": "data/synthetic_chat/00.txt"
+    },
+    {
+      "id": "synthetic_chat-01",
+      "domain": "synthetic_chat",
+      "path": "data/synthetic_chat/01.txt"
+    }
+  ],
+  "modes": {
+    "quick": [
+      "wikipedia_en-00",
+      "wikipedia_zh-00",
+      "arxiv-00",
+      "github_code-00",
+      "own_code-00",
+      "synthetic_chat-00"
+    ],
+    "full": [
+      "wikipedia_en-00",
+      "wikipedia_zh-00",
+      "arxiv-00",
+      "github_code-00",
+      "own_code-00",
+      "synthetic_chat-00",
+      "wikipedia_en-01",
+      "wikipedia_zh-01",
+      "arxiv-01",
+      "github_code-01",
+      "own_code-01",
+      "synthetic_chat-01"
+    ]
+  }
+}

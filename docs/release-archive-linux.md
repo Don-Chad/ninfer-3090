@@ -40,7 +40,7 @@ plus the draft head (fastest), `rk4v4` KV, cuBLAS prefill, and vision in overlay
 context rung (229376 / 196608 / 163840 / 131072 / 98304) if startup refuses.
 
 For the longest context shared by two lanes instead, `NINFER_SPEC=mtp ./run.sh qwen38-27b` runs the
-MTP profile at 262,144 tokens with a smaller prefill chunk and `--lm-head-q6`: slower decode, more
+MTP profile at 262,144 tokens with a smaller prefill chunk: slower decode, more
 context.
 
 `./run.sh qwen38-27b int8` and `./run.sh qwen38-27b c8` are the older INT8 profiles — one user at

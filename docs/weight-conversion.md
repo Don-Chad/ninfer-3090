@@ -43,6 +43,14 @@ python3 -m tools.convert \
   --out models/qwen3_6_27b.ninfer
 ```
 
+The default Qwen3.8-27B artifact (`download-model qwen38-27b`) is built with the `qwen3_8_27b`
+recipe, which needs an importance matrix (see `grouped_search` below; the published artifact used
+Unsloth's `imatrix_unsloth.gguf` for this model):
+
+```bash
+python3 -m tools.convert   --model /path/to/Qwen3.8-27B   --recipe qwen3_8_27b   --source imatrix=qwen3_8_27b.imatrix.safetensors   --source dflash2=/path/to/Qwen3.8-27B-DFlash2   --components text,vision,mtp,dflash2   --proposal   --name qwen3.8-27b   --out models/qwen3_8_27b.ninfer
+```
+
 `--components` defaults to `text`. Include only the optional components you want to distribute.
 `--proposal` adds the indexed proposal head used by speculative decoding; it uses the repository's
 token ranking and defaults to 131,072 rows. The ordinary full-vocabulary output head is retained.
@@ -53,7 +61,7 @@ The built-in recipes are ordinary Python functions in
 | Recipe | Main representation choices | Additional source |
 |---|---|---|
 | `qwen3_6_27b` | Q4/Q5 projections, Q6 vocabulary weights | None |
-| `qwen3_8_27b` | Q4/Q5 projections, Q8 vocabulary weights | None |
+| `qwen3_8_27b` | `grouped_search` with signed scales; Q4/Q5 projections, Q4 mixer outputs and MLP down in layers 36–63, Q4 embedding, Q6 head | `imatrix` |
 | `qwen3_6_35b_a3b` | Q4 experts, Q5/Q6 expert down, Q8 shared/projection weights | None |
 | `qwen3_6_27b_nvfp4` | Imported NVFP4, selected BF16 projections, Q8 vocabulary weights | `quantized` |
 | `qwen3_8_27b_nvfp4` | Imported NVFP4/FP8, FP8 embedding generated from BF16 | `quantized` |
@@ -152,11 +160,27 @@ The converter currently writes these formats:
 | Format | Built-in method for floating-point input | Import of already encoded input |
 |---|---|---|
 | `bf16`, `fp32`, `int32` | `cast_direct` | Direct words through the source reader |
-| `q4_g64_fp16`, `q5_g64_fp16`, `q6_g64_fp16`, `q8_g32_fp16` | `grouped_absmax` | Supply a custom method/source if needed |
+| `q4_g64_fp16`, `q5_g64_fp16`, `q6_g64_fp16`, `q8_g32_fp16` | `grouped_absmax`, `grouped_search` | Supply a custom method/source if needed |
 | `fp8_e4m3fn_row_bf16` | `fp8_row_maxabs` | `import_encoded` |
 | `nvfp4` | Supply a custom quantizer | `import_encoded` |
 
-`grouped_absmax` stores one FP16 scale per group and signed integer codes. `fp8_row_maxabs` first
+`grouped_absmax` stores one FP16 scale per group and signed integer codes. `grouped_search` stores
+the same words but chooses each group's scale by minimizing rounding error weighted by an activation
+importance matrix. Its parameters are `imatrix` (a file from `tools.convert.imatrix`) and
+`negative_scales`:
+
+```bash
+python -m tools.convert.imatrix --gguf imatrix.gguf --config /path/to/Qwen3.8-27B/config.json \
+  --out qwen3_8_27b.imatrix.safetensors
+```
+
+```python
+recipe.assign(name, format="q4_g64_fp16", method="grouped_search",
+              parameters={"imatrix": "qwen3_8_27b.imatrix.safetensors", "negative_scales": True})
+```
+
+The importance file comes from a llama.cpp `llama-imatrix` run on calibration text; parameters it
+does not cover (the embedding and output head) are searched without weights. `fp8_row_maxabs` first
 rounds input values to BF16, then produces E4M3FN codes and one BF16 multiplier per row.
 `import_encoded` preserves compatible code and scale words, including NVFP4's matrix weight divisor.
 It does not dequantize and requantize them.

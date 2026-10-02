@@ -5,12 +5,14 @@ rem Downloads one pinned model artifact, verifies it, and only then promotes it 
 rem
 rem   download-model.bat <model>
 rem
-rem   qwen38-27b       Qwen3.8-27B, 19.0 GiB. The default 27B for every benchmark in this repository
-rem                    and the one docs\config-calculator.html's "27b" rows are measured against. It
-rem                    is the official v3 artifact with the DFlash2 bundle, and it carries the MTP
-rem                    weights too, so one file serves both --spec mtp and --spec dflash2. Published
-rem                    measurements were taken against the v2 pin 18dfc887, whose weight bytes the v3
-rem                    container preserves.
+rem   qwen38-27b       Qwen3.8-27B, 17.7 GiB. The default 27B for every benchmark in this repository.
+rem                    This fork's own conversion (WarlaxZ/Qwen3.8-27B-NInfer-3090, recipe
+rem                    qwen3_8_27b): the imatrix-weighted grouped_search encoder, a 4-bit embedding, a
+rem                    6-bit head and 4-bit mixer outputs and MLP down in layers 36-63. It carries the
+rem                    vision, MTP and DFlash2 weights, so one file serves --vision, --spec mtp and
+rem                    --spec dflash2. Executables older than the 5120x17408 Q4 linear_add route refuse
+rem                    it at startup. Figures published before 2026-10 were measured against the
+rem                    upstream neroued pin 1cbd84e7 (v2 18dfc887), 19.0 GiB.
 rem   qwen36-27b       Qwen3.6-27B groupwise-int, 16.3 GiB, target_key qwen3_6_27b. A different model
 rem                    family from qwen3_8_27b, which is why having the latter does not satisfy the
 rem                    former: four real-model tests -- ninfer_qwen3_6_27b_prefix_real_test,
@@ -79,16 +81,18 @@ exit /b 0
 
 :model_qwen38_27b
 set "ARTIFACT=qwen3_8_27b.ninfer"
-set "REPO=Qwen3.8-27B-NInfer"
-set "REVISION=1cbd84e7221e51186bd7f093a149912d2489625b"
-set "EXPECTED_SIZE=20437521664"
-set "EXPECTED_SHA256=81f924d440c27261d820c19a9f8d45794c5aee410f8a68bd358133fa8c0375da"
-set "LABEL=the Qwen3.8-27B model (19.0 GiB)"
+set "OWNER=WarlaxZ"
+set "REPO=Qwen3.8-27B-NInfer-3090"
+set "REVISION=d47f2732d369acaec76dc44228f67c72b081df2f"
+set "EXPECTED_SIZE=18982458624"
+set "EXPECTED_SHA256=7f2a0086a071ee932c66106e1552d118a85cfec8ddef13c67a54cd64abb39706"
+set "LABEL=the Qwen3.8-27B model (17.7 GiB)"
 set "TESTS_VARIABLE=NINFER_QWEN3_8_27B_WEIGHTS"
 goto :model_selected
 
 :model_qwen36_27b
 set "ARTIFACT=qwen3_6_27b.ninfer"
+set "OWNER=neroued"
 set "REPO=Qwen3.6-27B-NInfer"
 set "REVISION=3e3d9a3951c452c1ca80bd7a2860c7f3bfc5a829"
 set "EXPECTED_SIZE=17495538688"
@@ -99,6 +103,7 @@ goto :model_selected
 
 :model_qwen36_35b_a3b
 set "ARTIFACT=qwen3_6_35b_a3b.ninfer"
+set "OWNER=neroued"
 set "REPO=Qwen3.6-35B-A3B-NInfer"
 set "REVISION=ee4495803bc4f8015b8a7e22d4cf9b67de8e27c6"
 set "EXPECTED_SIZE=22790484480"
@@ -145,7 +150,7 @@ if exist "%MODEL%" (
 )
 
 echo Downloading %LABEL%...
-set "URL=https://huggingface.co/neroued/%REPO%/resolve/%REVISION%/%ARTIFACT%"
+set "URL=https://huggingface.co/%OWNER%/%REPO%/resolve/%REVISION%/%ARTIFACT%"
 set "PART_NAME=%ARTIFACT%.%REVISION%.part"
 where /q aria2c
 if not errorlevel 1 (

@@ -94,8 +94,8 @@ clear_env() { env ${ninfer_clear[@]+"${ninfer_clear[@]}"} "$@"; }
 
 # scripts/run.sh serves every shipped profile, chosen by `run.sh <model> [profile]`. The README and
 # the launcher's own header tell users which flag set to reach for, so pin each set as a whole: a
-# flag dropped from one -- or --lm-head-q6, which DFlash2 refuses, leaking into the fast profile --
-# fails here instead of at a user's first start.
+# flag dropped from one -- or a load-time transcode the 27B artifact no longer needs (it stores the
+# embedding as Q4 and the head as Q6) -- fails here instead of at a user's first start.
 record() { # record <label> [NAME=value ...] -- <run.sh arguments>; prints the recorded server args
   local label="$1"; shift
   local recorded="$tmp/run.$label.args" assignments=()
@@ -133,19 +133,23 @@ recorded="$(record dflash2 -- qwen38-27b)"
 expect_flags '27B default' "$recorded" \
   '--spec dflash2 --draft-tokens 7 --lm-head-draft' \
   '--prefill-cublas --prefill-chunk 4096' \
-  '--kv-dtype rk4v4' '--embedding-q4' '--gdn-state-fp16' \
+  '--kv-dtype rk4v4' '--gdn-state-fp16' \
   '--vision --vision-residency overlay' '--max-context 262144' '--max-concurrency 1'
 refuse_flag '27B default' "$recorded" '--lm-head-q6'
+refuse_flag '27B default' "$recorded" '--embedding-q4'
 
 recorded="$(record mtp NINFER_SPEC=mtp -- qwen38-27b tuned)"
 expect_flags '27B NINFER_SPEC=mtp' "$recorded" \
   '--spec mtp --draft-tokens 3 --lm-head-draft' \
   '--prefill-cublas --prefill-chunk 2048' \
-  '--kv-dtype rk4v4' '--embedding-q4' '--lm-head-q6' '--gdn-state-fp16' \
+  '--kv-dtype rk4v4' '--gdn-state-fp16' \
   '--vision --vision-residency overlay' '--max-context 262144' '--max-concurrency 2'
+refuse_flag '27B NINFER_SPEC=mtp' "$recorded" '--lm-head-q6'
+refuse_flag '27B NINFER_SPEC=mtp' "$recorded" '--embedding-q4'
 
 recorded="$(record none NINFER_SPEC=none -- qwen38-27b)"
-expect_flags '27B NINFER_SPEC=none' "$recorded" '--prefill-cublas --prefill-chunk 2048' '--embedding-q4'
+expect_flags '27B NINFER_SPEC=none' "$recorded" '--prefill-cublas --prefill-chunk 2048'
+refuse_flag '27B NINFER_SPEC=none' "$recorded" '--embedding-q4'
 refuse_flag '27B NINFER_SPEC=none' "$recorded" '--spec'
 refuse_flag '27B NINFER_SPEC=none' "$recorded" '--lm-head-q6'
 
@@ -187,13 +191,13 @@ expect_flags '27B c8' "$recorded" '--max-concurrency 8' '--max-context 8192' '--
   '--max-private-continuations 16' '--device-state-slots 8' '--host-state-slots 16'
 refuse_flag '27B c8' "$recorded" '--auto-prefix-grid'
 
-# Qwen3.6-35B-A3B `tuned`: MoE, so no cuBLAS route and no Q4 embedding; its own draft head flags.
+# Qwen3.6-35B-A3B `tuned`: the cuBLAS prefill route at chunk 4096 (it engages on the 35B's dense
+# projections from chunk 2048), no Q4 embedding, and its own draft head flags.
 recorded="$(record 35b -- qwen36-35b-a3b)"
 expect_flags '35B default' "$recorded" \
   '--spec mtp --draft-tokens 3 --lm-head-draft --mtp-experts-q4' \
-  '--kv-dtype rk4v4' '--gdn-state-fp16' '--prefill-chunk 512' \
+  '--kv-dtype rk4v4' '--gdn-state-fp16' '--prefill-cublas --prefill-chunk 4096' \
   '--vision --vision-residency overlay' '--max-context 262144' '--max-concurrency 3' '--auto-prefix-grid'
-refuse_flag '35B default' "$recorded" '--prefill-cublas'
 refuse_flag '35B default' "$recorded" '--embedding-q4'
 recorded="$(record 35bnone NINFER_SPEC=none -- qwen36-35b-a3b)"
 refuse_flag '35B NINFER_SPEC=none' "$recorded" '--spec'

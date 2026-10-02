@@ -1,9 +1,10 @@
-// Integer-activation route for the Q5G64 row-split LinearAdds, companion to the gate_up route.
+// Integer-activation route for the Q4G64 and Q5G64 row-split LinearAdds, companion to the gate_up
+// route.
 //
 // Two registered profiles, differing only in K: mlp/down [5120,17408], and the attention o_proj and
-// GDN out_proj [5120,6144]. Q5 adds an 8-byte-per-group high plane carrying each code's fifth bit;
-// a code decodes as ((low4 | hbit << 4) ^ 0x10) - 0x10, two's complement over [-16,15], which int8
-// represents exactly.
+// GDN out_proj [5120,6144], in either format. A Q4 code is a signed nibble in [-8,7]; Q5 adds an
+// 8-byte-per-group high plane carrying each code's fifth bit, and a code decodes as
+// ((low4 | hbit << 4) ^ 0x10) - 0x10, two's complement over [-16,15]. Int8 represents both exactly.
 //
 // The schedule, the staging and the token-tile reasoning all live in the shared header.
 
@@ -29,7 +30,7 @@ constexpr std::int32_t kMixerCols = 6144;
 
 using Rows = a8::ContiguousRows<1>;
 
-template <std::int32_t kCols, int NT>
+template <class Codec, std::int32_t kCols, int NT>
 void launch(const Tensor& x, const Weight& down, Tensor& residual, std::int32_t tokens,
             std::int8_t* codes, __half* scales, cudaStream_t stream) {
     constexpr int BN = a8::kWarpsN * NT * 8;
@@ -37,9 +38,9 @@ void launch(const Tensor& x, const Weight& down, Tensor& residual, std::int32_t 
         reinterpret_cast<const __nv_bfloat16*>(x.data), tokens, codes, scales);
     CUDA_CHECK(cudaGetLastError());
 
-    const std::size_t smem = a8::shared_bytes<a8::Q5Codec, 1, NT, Rows>(kCols);
+    const std::size_t smem = a8::shared_bytes<Codec, 1, NT, Rows>(kCols);
     const dim3 grid(kRows / Rows::kRowsPerBlock, tokens / BN);
-    auto* kernel = a8::a8_mma_kernel<a8::Q5Codec, kCols, 1, NT, Rows, a8::ResidualAddEpilogue>;
+    auto* kernel = a8::a8_mma_kernel<Codec, kCols, 1, NT, Rows, a8::ResidualAddEpilogue>;
     if (smem > 48 * 1024) {
         configure_cuda_device_once([&] {
             return cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -54,43 +55,55 @@ void launch(const Tensor& x, const Weight& down, Tensor& residual, std::int32_t 
     CUDA_CHECK(cudaGetLastError());
 }
 
-template <std::int32_t kCols>
+template <class Codec, std::int32_t kCols>
 void launch_for_tile(const Tensor& x, const Weight& down, Tensor& residual, std::int32_t tokens,
                      std::int8_t* codes, __half* scales, cudaStream_t stream) {
     switch (a8::token_tile(tokens, 512)) {
-    case 512: launch<kCols, 16>(x, down, residual, tokens, codes, scales, stream); return;
-    case 256: launch<kCols, 8>(x, down, residual, tokens, codes, scales, stream); return;
-    default: launch<kCols, 4>(x, down, residual, tokens, codes, scales, stream); return;
+    case 512: launch<Codec, kCols, 16>(x, down, residual, tokens, codes, scales, stream); return;
+    case 256: launch<Codec, kCols, 8>(x, down, residual, tokens, codes, scales, stream); return;
+    default: launch<Codec, kCols, 4>(x, down, residual, tokens, codes, scales, stream); return;
+    }
+}
+
+template <class Codec>
+void launch_for_cols(const Tensor& x, const Weight& down, Tensor& residual, std::int32_t tokens,
+                     std::int8_t* codes, __half* scales, cudaStream_t stream) {
+    if (down.k == kDownCols) {
+        launch_for_tile<Codec, kDownCols>(x, down, residual, tokens, codes, scales, stream);
+    } else {
+        launch_for_tile<Codec, kMixerCols>(x, down, residual, tokens, codes, scales, stream);
     }
 }
 
 } // namespace
 
-bool q5a8_tokens_supported(std::int32_t tokens) { return a8::tokens_supported(tokens); }
+bool a8_add_tokens_supported(std::int32_t tokens) { return a8::tokens_supported(tokens); }
 
-bool q5a8_add_supported(const Weight& down, std::int32_t tokens) {
-    return down.qtype == QType::Q5_G64_FP16 && is_row_split(down.layout) &&
-           down.n == kRows && (down.k == kDownCols || down.k == kMixerCols) &&
-           down.group == a8::kGroup && down.qdata != nullptr && down.qhigh != nullptr &&
-           down.scales != nullptr && a8::tokens_supported(tokens);
+bool a8_add_supported(const Weight& down, std::int32_t tokens) {
+    const bool q5 = down.qtype == QType::Q5_G64_FP16;
+    if (!q5 && down.qtype != QType::Q4_G64_FP16) { return false; }
+    return is_row_split(down.layout) && down.n == kRows &&
+           (down.k == kDownCols || down.k == kMixerCols) && down.group == a8::kGroup &&
+           down.qdata != nullptr && (!q5 || down.qhigh != nullptr) && down.scales != nullptr &&
+           a8::tokens_supported(tokens);
 }
 
-std::size_t q5a8_add_workspace_capacity_bytes(std::int32_t input_rows, std::int32_t min_tokens,
-                                              std::int32_t max_tokens) {
+std::size_t a8_add_workspace_capacity_bytes(std::int32_t input_rows, std::int32_t min_tokens,
+                                            std::int32_t max_tokens) {
     if (min_tokens <= 0 || max_tokens < min_tokens) {
-        throw std::invalid_argument("q5a8 add workspace: invalid token interval");
+        throw std::invalid_argument("a8 add workspace: invalid token interval");
     }
     if (input_rows != kDownCols && input_rows != kMixerCols) {
-        throw std::invalid_argument("q5a8 add workspace: unregistered input width");
+        throw std::invalid_argument("a8 add workspace: unregistered input width");
     }
     return a8::activation_workspace_bytes(input_rows, max_tokens);
 }
 
-void q5a8_add_launch(const Tensor& x, const Weight& down, Tensor& residual,
-                     WorkspaceArena& workspace, cudaStream_t stream) {
+void a8_add_launch(const Tensor& x, const Weight& down, Tensor& residual,
+                   WorkspaceArena& workspace, cudaStream_t stream) {
     const std::int32_t tokens = x.ne[1];
-    if (!q5a8_add_supported(down, tokens)) {
-        throw std::invalid_argument("q5a8 add: unsupported profile");
+    if (!a8_add_supported(down, tokens)) {
+        throw std::invalid_argument("a8 add: unsupported profile");
     }
 
     auto scope = workspace.scope();
@@ -102,10 +115,10 @@ void q5a8_add_launch(const Tensor& x, const Weight& down, Tensor& residual,
     auto* code_data  = reinterpret_cast<std::int8_t*>(codes.data);
     auto* scale_data = reinterpret_cast<__half*>(scales.data);
 
-    if (down.k == kDownCols) {
-        launch_for_tile<kDownCols>(x, down, residual, tokens, code_data, scale_data, stream);
+    if (down.qtype == QType::Q5_G64_FP16) {
+        launch_for_cols<a8::Q5Codec>(x, down, residual, tokens, code_data, scale_data, stream);
     } else {
-        launch_for_tile<kMixerCols>(x, down, residual, tokens, code_data, scale_data, stream);
+        launch_for_cols<a8::Q4Codec>(x, down, residual, tokens, code_data, scale_data, stream);
     }
 }
 

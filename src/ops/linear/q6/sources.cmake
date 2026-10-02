@@ -5,4 +5,6 @@ target_sources(ninfer_ops PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/shapes/n1152_k1536.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/q6_rowsplit_gemm_mma.cu"
   "${CMAKE_CURRENT_LIST_DIR}/q6_rowsplit_gemm_simt.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/q6_rowsplit_gemv.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/q6_small_t_mma.cu"
 )

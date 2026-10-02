@@ -8,8 +8,8 @@ run.sh <model> [profile]
 
 | model | profiles | default profile on Linux | on Windows |
 |---|---|---|---|
-| `qwen38-27b` | `tuned`, `int8`, `c8` | DFlash2, one lane, 262,144 tokens | DFlash2, one lane, 172,032 tokens |
-| `qwen36-35b-a3b` | `tuned` | MTP3, three lanes, 262,144-token pool | MTP3, two lanes, 262,144-token pool |
+| `qwen38-27b` | `tuned`, `int8`, `c8` | DFlash2, one lane, 262,144 tokens | DFlash2, one lane, 188,416 tokens |
+| `qwen36-35b-a3b` | `tuned` | MTP3, three lanes, 262,144-token pool, cuBLAS prefill | MTP3, two lanes, 212,992-token pool, cuBLAS prefill |
 
 Lanes share one KV pool: `--kv-capacity` is the pool and `--max-context` the per-request cap, and
 the `tuned` profiles set both to the same value. Any one request can use the whole context, but the
@@ -30,9 +30,15 @@ carries the context, lane count and prefill chunk that fit it:
 
 | `NINFER_SPEC` | flags | context (Linux / Windows) | lanes (Linux / Windows) |
 |---|---|---|---|
-| `dflash2` (default) | `--spec dflash2 --draft-tokens 7 --lm-head-draft --prefill-cublas --prefill-chunk 4096 --kv-dtype rk4v4 --embedding-q4 --gdn-state-fp16 --vision --vision-residency overlay` | 262,144 / 172,032 | 1 / 1 |
-| `mtp` | `--spec mtp --draft-tokens 3 --lm-head-draft --prefill-cublas --prefill-chunk 2048 --kv-dtype rk4v4 --embedding-q4 --lm-head-q6 --gdn-state-fp16 --vision --vision-residency overlay` | 262,144 / 262,144 | 2 / 2 |
-| `none` | the `mtp` set without speculation or `--lm-head-q6` | 262,144 / 262,144 | 2 / 2 |
+| `dflash2` (default) | `--spec dflash2 --draft-tokens 7 --lm-head-draft --prefill-cublas --prefill-chunk 4096 --kv-dtype rk4v4 --gdn-state-fp16 --vision --vision-residency overlay` | 262,144 / 188,416 | 1 / 1 |
+| `mtp` | `--spec mtp --draft-tokens 3 --lm-head-draft --prefill-cublas --prefill-chunk 2048 --kv-dtype rk4v4 --gdn-state-fp16 --vision --vision-residency overlay` | 262,144 / 262,144 | 2 / 2 |
+| `none` | the `mtp` set without speculation | 262,144 / 262,144 | 2 / 2 |
+
+The default artifact (`download-model qwen38-27b`) stores the token embedding as Q4 and the head as
+Q6, so none of the variants pass the `--embedding-q4` or `--lm-head-q6` load-time transcodes. The
+memory measurements below were taken with the upstream artifact: for `mtp` and `none` its
+transcodes left the same formats on the device, while under `dflash2` its head stayed Q8, so the
+DFlash2 figures overstate today's weights by about 0.7 GiB.
 
 The first is the fastest at one stream (prefill about 1.7x and decode about 1.39x the previous
 defaults) and the second is the full context with a second lane, still fast. The Qwen3.6-35B-A3B
@@ -64,8 +70,12 @@ the desktop RTX 3090 (1.35 GiB held by the desktop):
   35B mtp                      4      262,144    refused, 48 MB short
 ```
 
-The Windows defaults keep one rung of margin below the DFlash2 edge (172,032) and one lane below
-the 35B edge (two). The Linux defaults are the headless extrapolation -- the full context for
+The 35B Windows default keeps one lane below its edge (two). The 27B DFlash2 Windows default was
+172,032 (one rung below the edge above) until the 2026-10-02 artifact, whose Q6 head and Q4 mixer
+outputs and MLP down in layers 36-63 hold 0.7 GiB less on the device under DFlash2. Re-measured
+that day with the desktop holding 1.6 GiB (more than above), it starts at 188,416 with 721 MiB free
+and is refused at 196,608, so the default is 188,416; the upstream artifact under the same
+conditions had stepped down to 150,720. The Linux defaults are the headless extrapolation -- the full context for
 DFlash2 and three 35B lanes -- and the step-down ladder catches a card that falls short. DFlash2 and
 MTP generation on `rk4v4` were checked end to end through the server at these settings.
 

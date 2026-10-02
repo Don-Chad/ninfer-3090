@@ -20,18 +20,18 @@ rem
 rem QWEN3.8-27B, `tuned`: two flag sets, each measured (docs\performance.md, "Recommended
 rem configurations"), chosen with NINFER_SPEC. The default is the fast one.
 rem
-rem   NINFER_SPEC=dflash2 (default): fastest at one stream, 172,032 tokens of context
+rem   NINFER_SPEC=dflash2 (default): fastest at one stream, 188,416 tokens of context
 rem
 rem     --spec dflash2 --draft-tokens 7 --lm-head-draft
 rem     --prefill-cublas --prefill-chunk 4096
-rem     --kv-dtype rk4v4 --embedding-q4 --gdn-state-fp16
+rem     --kv-dtype rk4v4 --gdn-state-fp16
 rem     --vision --vision-residency overlay
 rem
 rem   NINFER_SPEC=mtp: the full 262,144-token native context, two lanes sharing it, still fast
 rem
 rem     --spec mtp --draft-tokens 3 --lm-head-draft
 rem     --prefill-cublas --prefill-chunk 2048
-rem     --kv-dtype rk4v4 --embedding-q4 --lm-head-q6 --gdn-state-fp16
+rem     --kv-dtype rk4v4 --gdn-state-fp16
 rem     --vision --vision-residency overlay
 rem
 rem   set NINFER_SPEC=mtp && run.bat qwen38-27b
@@ -40,12 +40,13 @@ rem   MTP accepts NINFER_DRAFT_TOKENS up to 15. Three suits chat and prose; for 
 rem   returns edited files, 11-15 decodes up to 1.85x faster (docs\performance.md has the table).
 rem
 rem rk4v4 KV (Lloyd-Max 4-bit keys) is 31%% smaller than rk8v4 at the same decode speed, for +0.10%%
-rem perplexity over it. Measured on a desktop RTX 3090 (2026-09-24), the DFlash2 set starts at up to
-rem 180,224 tokens (rk8v4: 131,072) and the default keeps a rung of margin; its draft weights and its
-rem refusal of --lm-head-q6 are why it stops short of 262,144. The mtp set starts at 262,144 with two
+rem perplexity over it. Measured on a desktop RTX 3090 (2026-10-02, 1.6 GiB held by the desktop), the
+rem DFlash2 set starts at 188,416 tokens with 721 MiB to spare and is refused at 196,608; its draft
+rem weights are why it stops short of 262,144. The mtp set starts at 262,144 with two
 rem lanes and about 1.2 GiB to spare. `none` is the mtp set without speculation.
 rem The qwen3_8_27b.ninfer that download-model.bat fetches is the DFlash2 bundle and carries the
-rem MTP weights too, so one file serves both.
+rem MTP weights too, so one file serves both. It stores the embedding as Q4 and the head as Q6, so
+rem the --embedding-q4 and --lm-head-q6 load-time transcodes the upstream file needed are not passed.
 rem
 rem OVERRIDES, from the environment. All profiles: NINFER_MODEL (artifact path), NINFER_MODEL_DIR,
 rem NINFER_SERVER, NINFER_HOST, NINFER_PORT, NINFER_GRAFT_DIR (phantom-kv graft directory),
@@ -171,8 +172,7 @@ exit /b 2
 
 :profile_27b_tuned
 rem The speculative backend fixes everything that has to move with it: the prefill chunk (the
-rem cuBLAS route's workspace scales with it), the context that fits, and --lm-head-q6, which
-rem DFlash and DFlash2 refuse. The overrides are applied after these defaults, so an explicit
+rem cuBLAS route's workspace scales with it) and the context that fits. The overrides are applied after these defaults, so an explicit
 rem NINFER_CONTEXT or NINFER_PREFILL_CHUNK always wins.
 set "SPEC=dflash2"
 if not "%NINFER_SPEC%"=="" set "SPEC=%NINFER_SPEC%"
@@ -184,11 +184,10 @@ exit /b 2
 
 :spec_dflash2
 set "SPEC=dflash2"
-set "CONTEXT=172032"
+set "CONTEXT=188416"
 set "CONCURRENCY=1"
 set "PREFILL_CHUNK=4096"
 set "DRAFT_TOKENS=7"
-set "MEMORY_ARGS="
 goto :spec_done
 
 :spec_mtp
@@ -197,7 +196,6 @@ set "CONTEXT=262144"
 set "CONCURRENCY=2"
 set "PREFILL_CHUNK=2048"
 set "DRAFT_TOKENS=3"
-set "MEMORY_ARGS=--lm-head-q6"
 goto :spec_done
 
 :spec_none
@@ -206,7 +204,6 @@ set "CONTEXT=262144"
 set "CONCURRENCY=2"
 set "PREFILL_CHUNK=2048"
 set "DRAFT_TOKENS="
-set "MEMORY_ARGS="
 
 :spec_done
 if not "%NINFER_DRAFT_TOKENS%"=="" set "DRAFT_TOKENS=%NINFER_DRAFT_TOKENS%"
@@ -217,24 +214,30 @@ if not "%NINFER_PREFILL_CHUNK%"=="" set "PREFILL_CHUNK=%NINFER_PREFILL_CHUNK%"
 set "SPEC_ARGS="
 if /i not "%SPEC%"=="none" set "SPEC_ARGS=--spec %SPEC% --draft-tokens %DRAFT_TOKENS% --lm-head-draft"
 if /i "%SPEC%"=="dflash2" set "SPEC_LABEL=DFlash2 K=%DRAFT_TOKENS% + draft head"
-if /i "%SPEC%"=="mtp" set "SPEC_LABEL=MTP%DRAFT_TOKENS% + draft head, Q6 head, full context"
+if /i "%SPEC%"=="mtp" set "SPEC_LABEL=MTP%DRAFT_TOKENS% + draft head, full context"
 if /i "%SPEC%"=="none" set "SPEC_LABEL=no speculation"
-set "PROFILE_ARGS=--max-concurrency %CONCURRENCY% --max-context %CONTEXT% --kv-capacity %CONTEXT% --kv-dtype %KV_DTYPE% %SPEC_ARGS% --embedding-q4 %MEMORY_ARGS% --gdn-state-fp16 --prefill-cublas --prefill-chunk %PREFILL_CHUNK%"
+set "PROFILE_ARGS=--max-concurrency %CONCURRENCY% --max-context %CONTEXT% --kv-capacity %CONTEXT% --kv-dtype %KV_DTYPE% %SPEC_ARGS% --gdn-state-fp16 --prefill-cublas --prefill-chunk %PREFILL_CHUNK%"
 set "LABEL=C%CONCURRENCY%  ^|  context %CONTEXT%  ^|  %KV_DTYPE% KV  ^|  %SPEC_LABEL%"
 set "PREFILL_NOTE=Prefill: cuBLAS route, chunk %PREFILL_CHUNK%"
 if /i "%SPEC%"=="dflash2" set "HINT=Need the full 262K context or a second lane? Set NINFER_SPEC=mtp: slower decode."
 goto :profile_tuned_common
 
 :profile_35b_tuned
-rem rk4v4 KV fits the full native context with two lanes beside a desktop (three measured to start,
-rem 2026-09-24; rk8v4 managed 147,456 with one). DFlash2 is a 27B-only backend. Lanes share the
+rem rk4v4 KV fits the full native context with two lanes beside a desktop on the default prefill
+rem route (three measured to start, 2026-09-24; rk8v4 managed 147,456 with one); the cuBLAS route
+rem below trades some of it for prefill speed. DFlash2 is a 27B-only backend. Lanes share the
 rem one --kv-capacity pool: any request may use all 262,144 tokens, but the lanes' requests together
 rem hold at most that many at a time.
 set "SPEC=mtp"
 if not "%NINFER_SPEC%"=="" set "SPEC=%NINFER_SPEC%"
-set "CONTEXT=262144"
+rem cuBLAS prefill at chunk 4096: 8,848 tok/s on a 4K prompt against 5,470 at the old default-route
+rem chunk 512 (2026-10-02). Its larger runtime reservation is what costs context: beside a desktop
+rem holding 1.3 GiB the old profile started at 262,144 with 154 MiB free, while this one is refused
+rem at 229,376 (27 MB short) and starts at 212,992 with 220 MiB free, so that is the default. For
+rem the full 262,144, set NINFER_PREFILL_CHUNK=1024 (7,140 tok/s, fits with 138 MiB free).
+set "CONTEXT=212992"
 set "CONCURRENCY=2"
-set "PREFILL_CHUNK=512"
+set "PREFILL_CHUNK=4096"
 set "DRAFT_TOKENS=3"
 if /i "%SPEC%"=="mtp" goto :spec35_mtp
 if /i "%SPEC%"=="none" goto :spec35_none
@@ -256,7 +259,7 @@ if not "%NINFER_PREFILL_CHUNK%"=="" set "PREFILL_CHUNK=%NINFER_PREFILL_CHUNK%"
 set "SPEC_ARGS="
 if /i "%SPEC%"=="mtp" set "SPEC_ARGS=--spec mtp --draft-tokens %DRAFT_TOKENS% --lm-head-draft --mtp-experts-q4"
 if /i "%SPEC%"=="mtp" set "SPEC_LABEL=MTP%DRAFT_TOKENS% + draft head"
-set "PROFILE_ARGS=--max-concurrency %CONCURRENCY% --max-context %CONTEXT% --kv-capacity %CONTEXT% --kv-dtype %KV_DTYPE% %SPEC_ARGS% --gdn-state-fp16 --prefill-chunk %PREFILL_CHUNK%"
+set "PROFILE_ARGS=--max-concurrency %CONCURRENCY% --max-context %CONTEXT% --kv-capacity %CONTEXT% --kv-dtype %KV_DTYPE% %SPEC_ARGS% --gdn-state-fp16 --prefill-cublas --prefill-chunk %PREFILL_CHUNK%"
 set "LABEL=C%CONCURRENCY%  ^|  context %CONTEXT%  ^|  %KV_DTYPE% KV  ^|  %SPEC_LABEL%"
 goto :profile_tuned_common
 

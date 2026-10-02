@@ -18,15 +18,26 @@ concurrent cohorts through **C8**.
 | | Qwen3.8-27B (dense) | Qwen3.6-35B-A3B (MoE) |
 |---|---:|---:|
 | **Max context** | **262,144** tokens (native) | **262,144** tokens (native), shared by 3 lanes |
-| **Prefill**, 4K prompt | **2,989 tok/s** | not yet measured on a 3090 |
-| **Decode**, one stream | **187 tok/s** (DFlash2) | **295 tok/s** (MTP3 + draft head) |
-| **Decode**, all lanes | **523 tok/s** at C8 (MTP3) | **383 tok/s** at C6 (MTP3) |
+| **Prefill**, 4K prompt | **3,185 tok/s** | **8,848 tok/s** |
+| **Decode**, one stream | **140 tok/s** (DFlash2) | **295 tok/s** (MTP3 + draft head) |
+| **Decode**, all lanes | **477 tok/s** at C8 (MTP3) | **383 tok/s** at C6 (MTP3) |
 
-The speed rows were measured with INT8 or `rk8v4` KV; `rk4v4` prefills and decodes within ±1% of
-both. The 27B's 262,144 was measured with MTP3 and the draft head; the default DFlash2 profile
-reaches it on a headless card by extrapolation and steps down if refused. Prefill uses the opt-in
-cuBLAS route the launcher enables (+0.156% perplexity; 1,649 tok/s without it). Sources and
-conditions are in [Performance on an RTX 3090](#performance-on-an-rtx-3090).
+The 27B speed rows were re-measured on 2026-10-02 for the 3090 conversion `download-model` now
+fetches, in one sitting with upstream's artifact on the same binaries. Decode is
+`tools/bench/run_chat_decode.py` on syv-ai's eight thinking-off prompts (1,024 tokens, INT8 KV,
+greedy), where upstream's artifact gives 127 tok/s at C1 and 482 at C8; prefill is `ninfer_bench`
+pp4096 on the cuBLAS route the launcher enables, `rk4v4` KV (upstream 3,196, a tie; +0.156%
+perplexity for the route). The earlier 187 and 523 came from runs whose workload was not recorded
+and that this harness does not reproduce on either artifact. The 35B prefill was measured the same day with its launcher settings (cuBLAS route, chunk 4096, `rk4v4`; 5,470 tok/s on the previous default-route chunk 512); its decode rows were not re-measured.
+The 27B's 262,144 was measured with MTP3 and the draft head; the default DFlash2 profile reaches it
+on a headless card by extrapolation and steps down if refused. Sources and conditions are in
+[Performance on an RTX 3090](#performance-on-an-rtx-3090).
+
+![Qwen3.8-27B: upstream artifact vs this fork's 3090 conversion](docs/assets/qwen38-artifact-gains.svg)
+
+The default 27B is this fork's own conversion ([model card](model-cards/Qwen3.8-27B-NInfer-3090/README.md)):
+an importance-weighted encoder with signed scales and fewer bytes per decoded token, for a smaller
+file, output closer to full precision, and faster decode on the same card.
 
 The goal is the most rippin' Qwen inference stack for the 3000 series. It is a community project
 maintained on a best-effort basis: issues and PRs are very welcome, but support and feature
@@ -79,7 +90,7 @@ platforms need an RTX 3090 or 3090 Ti and a recent NVIDIA driver.
 
 ```powershell
 .\download-model.bat qwen38-27b          # downloads qwen3_8_27b.ninfer (~19 GB, resumable)
-.\run.bat qwen38-27b                      # serves on 127.0.0.1:8080, one user, 172,032 tokens, DFlash2
+.\run.bat qwen38-27b                      # serves on 127.0.0.1:8080, one user, 188,416 tokens, DFlash2
 ```
 
 Double-clicking either file asks which model instead; Qwen3.8-27B is the recommended choice. The
@@ -108,9 +119,9 @@ The platform guides cover GPU checks, Docker, native builds and model mounts:
 
 | Command (`run.bat` / `run.sh`) | Best for |
 |---|---|
-| `run qwen38-27b` | **Recommended.** Qwen3.8-27B, one user, DFlash2, cuBLAS prefill; 172K on Windows, 262K headless |
+| `run qwen38-27b` | **Recommended.** Qwen3.8-27B, one user, DFlash2, cuBLAS prefill; 188K on Windows, 262K headless |
 | `NINFER_SPEC=mtp` + `run qwen38-27b` | Qwen3.8-27B at the full 262K with two lanes, MTP3 instead of DFlash2 |
-| `run qwen36-35b-a3b` | Qwen3.6-35B-A3B at the full 262K, two lanes (Windows) or three (Linux), MTP3, vision |
+| `run qwen36-35b-a3b` | Qwen3.6-35B-A3B, MTP3, cuBLAS prefill, vision; 213K with two lanes on Windows, 262K with three on Linux |
 | `run qwen38-27b int8` | Reference profile: one user, INT8 KV (the quality default), 64K context |
 | `run qwen38-27b c8` | Reference profile: eight lanes at 8K, highest aggregate throughput |
 
@@ -174,7 +185,7 @@ The recommended model. A dense model rather than an MoE, so slower per token but
 
 ```powershell
 .\download-model.bat qwen38-27b          # downloads qwen3_8_27b.ninfer (~19 GB, resumable)
-.\run.bat qwen38-27b                      # one user, 172,032 tokens, DFlash2, cuBLAS prefill, rk4v4, vision
+.\run.bat qwen38-27b                      # one user, 188,416 tokens, DFlash2, cuBLAS prefill, rk4v4, vision
 ```
 
 ```bash
@@ -186,41 +197,62 @@ The default is the fast profile — about 1.7x the previous prefill and 1.39x th
 
 ```
 --spec dflash2 --draft-tokens 7 --lm-head-draft --prefill-cublas --prefill-chunk 4096
---kv-dtype rk4v4 --embedding-q4 --gdn-state-fp16 --vision --vision-residency overlay
+--kv-dtype rk4v4 --gdn-state-fp16 --vision --vision-residency overlay
 ```
 
-`NINFER_SPEC=mtp` swaps to `--spec mtp --draft-tokens 3`, `--prefill-chunk 2048` and adds
-`--lm-head-q6`, which runs the full 262,144 tokens with two lanes sharing the pool:
+`NINFER_SPEC=mtp` swaps to `--spec mtp --draft-tokens 3` and `--prefill-chunk 2048`, which runs
+the full 262,144 tokens with two lanes sharing the pool:
 
 | Profile | lanes | context | KV | measured beside a desktop |
 |---|---|---|---|---|
-| **`tuned`** (default, DFlash2), Windows | 1 | 172,032 | rk4v4 | starts up to 180,224 |
+| **`tuned`** (default, DFlash2), Windows | 1 | 188,416 | rk4v4 | starts with 721 MiB spare; 196,608 refused |
 | `tuned` (default, DFlash2), Linux | 1 | 262,144 | rk4v4 | headless extrapolation; steps down if refused |
 | `NINFER_SPEC=mtp` | 2 | 262,144 | rk4v4 | 23.4 of 24.5 GiB used |
 | `int8` | 1 | 65,536 | int8 | 2.85 GiB left unused |
 
 DFlash2 takes one lane because its advantage is largest at one stream (+38.6% decode at C1, +31.6%
-at C2), and its draft weights and its refusal of `--lm-head-q6` use the ~1.45 GB that the full
-context needs beside a desktop. The 27B is tighter than the 35B-A3B because of the model, not the
+at C2), and its draft weights use most of the ~1.45 GB that the full context needs beside a
+desktop. The 27B is tighter than the 35B-A3B because of the model, not the
 tuning: 16 full-attention layers × 4 KV heads × 256 head_dim is **3.2× the KV per token** of the
 35B-A3B's 10 × 2 × 256. The linear memory model behind these contexts is in
 [launcher profiles](docs/maintainer/launcher-profiles.md#qwen38-27b-tuned).
 
-`--embedding-q4` (Q4 token embedding, -644 MiB of weights) and `--gdn-state-fp16` (FP16 recurrent
-state, -72 MiB per device state slot) are both measured free on quality. The 27B's StateImage is
+**Fast prefill costs context.** The `tuned` profile's cuBLAS prefill at chunk 4096 is part of every
+context figure above. Its runtime reservation against leaner settings, measured 2026-10-02
+(`ninfer_bench`, DFlash2 K=7, `rk4v4`, 4K prompt; about 17 KiB of KV per token):
+
+| Prefill setting | runtime reservation | prefill | context it costs |
+|---|---:|---:|---:|
+| **cuBLAS, chunk 4096 (launcher default)** | **1,536 MiB** | **3,246 tok/s** | — |
+| default route, chunk 4096 | 1,285 MiB | 1,900 tok/s | cuBLAS itself: ~250 MiB, ~15K tokens |
+| cuBLAS, chunk 2048 | 1,298 MiB | 2,975 tok/s | ~240 MiB, ~14K tokens |
+| default route, chunk 1024 | 797 MiB | 1,773 tok/s | whole setup: ~740 MiB, ~44K tokens |
+
+On the 27B the speed comes from the cuBLAS route itself — a larger chunk on the default route barely
+helps — so the launcher trades about 44K tokens of context for 83% faster prefill, which pays for
+itself in agent sessions that ingest long prompts. `NINFER_PREFILL_CHUNK=2048` keeps 92% of the
+speed for ~14K tokens back. (The 35B-A3B makes the same trade differently: there the chunk size,
+not the route, carries most of the gain; see [its section](#qwen36-35b-a3b).)
+
+The default Qwen3.8-27B artifact stores its token embedding as Q4 and its head as Q6, so the
+`--embedding-q4` and `--lm-head-q6` load-time transcodes the upstream file needed are not passed.
+`--gdn-state-fp16` (FP16 recurrent state, -72 MiB per device state slot) is measured free on
+quality. The 27B's StateImage is
 74.5 MiB with the FP16 state, so `--host-state-slots 32` pins **2.34 GiB of host RAM** — host, not
 device, and the price of 98.3% prefix reuse. Lower it if the box is short on RAM.
 
 ### Qwen3.6-35B-A3B
 
-The MoE alternative, for more lanes. The launchers run the native 262,144-token maximum with `rk4v4` KV (twice INT8's context per GiB
-for +0.21% perplexity), MTP3 speculation plus the draft head, and vision, all at once:
+The MoE alternative, for more lanes. The launchers run `rk4v4` KV (twice INT8's context per GiB for
++0.21% perplexity), MTP3 speculation plus the draft head, vision, and since 2026-10-02 the cuBLAS
+prefill route at chunk 4096 (8,848 tok/s on a 4K prompt, against 5,470 on the old default route at
+chunk 512). That route's larger runtime reservation costs context beside a desktop:
 
 | Profile (`rk4v4`, MTP3 + draft, vision) | lanes | context | starts beside a desktop |
 |---|---|---|---|
-| **Linux — default** | 3 | 262,144 | yes (measured) |
-| **Windows — default** | 2 | 262,144 | yes (measured) |
-| `NINFER_CONCURRENCY=3` on Windows | 3 | 262,144 | yes, 24.0 of 24.5 GiB used |
+| **Linux — default** | 3 | 262,144 | not re-measured with the cuBLAS route; steps down if refused |
+| **Windows — default** | 2 | 212,992 | yes, 220 MiB free (229,376 refused, 27 MB short) |
+| `NINFER_PREFILL_CHUNK=1024` on Windows | 2 | 262,144 | yes, 138 MiB free; 7,140 tok/s prefill, default route |
 | `NINFER_CONCURRENCY=4` | 4 | 262,144 | no, 48 MB short; a headless card should fit |
 
 Measured 2026-09-24. With `rk8v4` the same profile needed the ~1.5 GiB a desktop holds, so Windows
@@ -343,7 +375,7 @@ a 24 GB card and the server can reuse fast CUDA Graphs instead of rebuilding wor
 
 | Model | Artifact | Size | Notes |
 |---|---|---:|---|
-| **Qwen3.8-27B** | [pinned v3 artifact](https://huggingface.co/neroued/Qwen3.8-27B-NInfer/tree/1cbd84e7221e51186bd7f093a149912d2489625b) | 19.03 GiB | **Recommended.** Validated at C1–C8 with ReplaySSM. Carries the MTP weights and the DFlash2 bundle for `--spec dflash2` |
+| **Qwen3.8-27B** | [pinned v3 artifact](https://huggingface.co/WarlaxZ/Qwen3.8-27B-NInfer-3090/tree/d47f2732d369acaec76dc44228f67c72b081df2f) | 17.68 GiB | **Recommended.** Validated at C1–C8 with ReplaySSM. This fork's [3090 conversion](model-cards/Qwen3.8-27B-NInfer-3090/README.md): imatrix-weighted encoder, 4-bit embedding, 6-bit head. Carries vision, MTP and the DFlash2 bundle for `--spec dflash2` |
 | Qwen3.6-35B-A3B | [pinned v3 artifact](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer/tree/ee4495803bc4f8015b8a7e22d4cf9b67de8e27c6) | 21.23 GiB | Carries the DFlash bundle for `--spec dflash` |
 | Qwen3.6-27B | [pinned v3 artifact](https://huggingface.co/neroued/Qwen3.6-27B-NInfer/tree/3e3d9a3951c452c1ca80bd7a2860c7f3bfc5a829) | 16.29 GiB | Supported with more runtime headroom |
 
@@ -364,7 +396,9 @@ byte, and installs the maintained chat template ([weight conversion](docs/weight
 A load error about the container version means either an older executable reading a v3 file, or
 this executable reading a v1/v2 file that needs the upgrade. Many of the published RTX 3090 figures
 were measured against the v2 revisions (`18dfc887` for Qwen3.8-27B, `c8b8c1c0`/`560f227e` for
-Qwen3.6-35B-A3B), whose weight bytes are unchanged in v3.
+Qwen3.6-35B-A3B), whose weight bytes are unchanged in v3. Qwen3.8-27B figures published before
+2026-10 used upstream's weights (`neroued/Qwen3.8-27B-NInfer` `1cbd84e7`, 19.03 GiB); the current
+pin is a different encoding with fewer weight bytes per token and needs this fork's executables.
 
 **Every downloader shipped here is pinned and verified, with one deliberate exception.** The Nix
 app `download-qwen36-35b-v2` tracks upstream `main` to try a newer artifact than the measured one,
@@ -380,7 +414,8 @@ under `docs/performance/` were measured on an RTX 5090 and are not a statement a
 ### Qwen3.8-27B
 
 **Decode by speculative backend and concurrency.** Aggregate decode tok/s through the serving
-route, thinking off, greedy:
+route, thinking off, greedy; measured 2026-09-19 on upstream's artifact with a workload that was not
+recorded (the headline table above is the reproducible re-measurement):
 
 | C | MTP3 | DFlash2 K=7 | change |
 |---:|---:|---:|---:|
@@ -395,8 +430,9 @@ cohort batching speeds up decode but not prompt ingestion.
 
 **Against vLLM on the same card.** On the eight thinking-off prompts of
 [syv-ai/qwen38-27b-rtx3090](https://github.com/syv-ai/qwen38-27b-rtx3090) with MTP3 and INT8 KV,
-NInfer decodes 113.2 tok/s at C1 and 460.4 at C8, against the 111-124 and 407.3 that project
-reports for patched vLLM. Their card is capped at 250 W against this one's 350 W and they report 5-8%
+NInfer decodes 118.9 tok/s at C1 and 477 at C8 with the default 27B artifact (2026-10-02;
+upstream's artifact on the same binaries: 112.7 and 482), against the 111-124 and 407.3 that
+project reports for patched vLLM. Their card is capped at 250 W against this one's 350 W and they report 5-8%
 run-to-run spread, so C1 is parity and C8 a lead, measured on different machines. That comparison
 predates DFlash2 and the cuBLAS prefill route.
 

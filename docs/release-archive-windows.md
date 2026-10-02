@@ -38,11 +38,11 @@ The downloader writes into `models\` beside these files, which is where the laun
 `NINFER_MODEL_DIR` moves both: set it and the downloader puts artifacts there and the launcher looks
 there. To point the launcher at one file somewhere else, give it `NINFER_MODEL`.
 
-That is the recommended Windows profile: Qwen3.8-27B, one user, 172,032 tokens, DFlash2 speculation
+That is the recommended Windows profile: Qwen3.8-27B, one user, 188,416 tokens, DFlash2 speculation
 plus the draft head (fastest), `rk4v4` KV, cuBLAS prefill, and vision in overlay residency.
 
 For the longest context instead, `set NINFER_SPEC=mtp && .\run.bat qwen38-27b` runs the MTP profile at
-the full 262,144 tokens shared by two lanes, with a smaller prefill chunk and `--lm-head-q6`: slower
+the full 262,144 tokens shared by two lanes, with a smaller prefill chunk: slower
 decode, more context.
 
 `run.bat qwen38-27b int8` and `run.bat qwen38-27b c8` are the older INT8 profiles — one user at
@@ -52,7 +52,7 @@ For the Qwen3.6-35B-A3B MoE instead, which serves more lanes:
 
 ```powershell
 .\download-model.bat qwen36-35b-a3b    # ~21 GB, resumable, verifies size and SHA256
-.\run.bat qwen36-35b-a3b               # two lanes sharing 262,144 tokens, MTP3 + draft head, vision
+.\run.bat qwen36-35b-a3b               # two lanes sharing 212,992 tokens, MTP3 + draft head, cuBLAS prefill, vision
 ```
 
 The endpoint is OpenAI-compatible, so anything that speaks `/v1/chat/completions` works. Leave the
@@ -109,7 +109,7 @@ but only 2375691264 bytes are available for runtime capacity
 
 Drop a context rung first: set `NINFER_CONTEXT` to the next rung below the profile's default; the
 rungs are listed in the `run.bat` header, measured on this card — for
-`run.bat qwen38-27b` (default 172,032 with DFlash2, 262,144 with `NINFER_SPEC=mtp`) that is
+`run.bat qwen38-27b` (default 188,416 with DFlash2, 262,144 with `NINFER_SPEC=mtp`) that is
 163840, then 131072, then 98304. Speculation is the next lever (`NINFER_SPEC=none`), worth about
 992 MiB on the 35B-A3B at the cost of decode speed.
 Drop vision last: in overlay residency it costs almost nothing resident.

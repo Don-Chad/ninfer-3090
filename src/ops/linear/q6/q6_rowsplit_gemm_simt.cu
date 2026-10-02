@@ -11,9 +11,6 @@ namespace ninfer::ops::detail {
 namespace {
 
 using SimtR8C4Schedule = Q6RowSplitSimtGemmSchedule<8, 4, 16, 2, Cache::ca, 1>;
-using SimtR8C5Schedule = Q6RowSplitSimtGemmSchedule<8, 5, 16, 2, Cache::ca, 1>;
-using SimtR8C6Schedule = Q6RowSplitSimtGemmSchedule<8, 6, 16, 2, Cache::ca, 1>;
-using SimtR8C7Schedule = Q6RowSplitSimtGemmSchedule<8, 7, 16, 2, Cache::ca, 1>;
 
 template <class Schedule>
 void launch_schedule(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
@@ -45,18 +42,5 @@ void launch_route(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t st
 void launch_q6_simt_r8_c4(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
     launch_route<SimtR8C4Schedule>(x, w, out, stream);
 }
-
-void launch_q6_simt_r8_c5(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
-    launch_route<SimtR8C5Schedule>(x, w, out, stream);
-}
-
-void launch_q6_simt_r8_c6(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
-    launch_route<SimtR8C6Schedule>(x, w, out, stream);
-}
-
-void launch_q6_simt_r8_c7(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
-    launch_route<SimtR8C7Schedule>(x, w, out, stream);
-}
-
 
 } // namespace ninfer::ops::detail

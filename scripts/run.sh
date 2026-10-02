@@ -23,14 +23,14 @@
 #
 #     --spec dflash2 --draft-tokens 7 --lm-head-draft \
 #     --prefill-cublas --prefill-chunk 4096 \
-#     --kv-dtype rk4v4 --embedding-q4 --gdn-state-fp16 \
+#     --kv-dtype rk4v4 --gdn-state-fp16 \
 #     --vision --vision-residency overlay
 #
 #   NINFER_SPEC=mtp: the full context, two lanes sharing it, still fast
 #
 #     --spec mtp --draft-tokens 3 --lm-head-draft \
 #     --prefill-cublas --prefill-chunk 2048 \
-#     --kv-dtype rk4v4 --embedding-q4 --lm-head-q6 --gdn-state-fp16 \
+#     --kv-dtype rk4v4 --gdn-state-fp16 \
 #     --vision --vision-residency overlay
 #
 #   MTP accepts NINFER_DRAFT_TOKENS up to 15. Three suits chat and prose; for coding work that
@@ -117,23 +117,20 @@ profile_args=()
 case "$model_key/$profile" in
   qwen38-27b/tuned)
     # The speculative backend fixes everything that has to move with it: the prefill chunk (the
-    # cuBLAS route's workspace scales with it), the context and lanes that fit, and --lm-head-q6,
-    # which DFlash and DFlash2 refuse.
+    # cuBLAS route's workspace scales with it) and the context and lanes that fit. The artifact
+    # stores the embedding as Q4 and the head as Q6, so no load-time transcode is passed.
     SPEC="${NINFER_SPEC:-dflash2}"
     case "$SPEC" in
       dflash2)
         spec_args=(--spec dflash2 --draft-tokens "${NINFER_DRAFT_TOKENS:-7}" --lm-head-draft)
-        memory_args=()
         default_context=262144; default_concurrency=1; default_chunk=4096
         spec_label="DFlash2 K=${NINFER_DRAFT_TOKENS:-7} + draft head" ;;
       mtp)
         spec_args=(--spec mtp --draft-tokens "${NINFER_DRAFT_TOKENS:-3}" --lm-head-draft)
-        memory_args=(--lm-head-q6)
         default_context=262144; default_concurrency=2; default_chunk=2048
-        spec_label="MTP${NINFER_DRAFT_TOKENS:-3} + draft head, Q6 head, two lanes" ;;
+        spec_label="MTP${NINFER_DRAFT_TOKENS:-3} + draft head, two lanes" ;;
       none)
         spec_args=()
-        memory_args=()
         default_context=262144; default_concurrency=2; default_chunk=2048
         spec_label='no speculation' ;;
       *) printf 'NINFER_SPEC must be dflash2, mtp or none, got %s\n' "$SPEC" >&2; exit 2 ;;
@@ -147,7 +144,7 @@ case "$model_key/$profile" in
       --max-concurrency "$CONCURRENCY" --max-context "$CONTEXT" --kv-capacity "$KV_CAPACITY"
       --kv-dtype "$KV_DTYPE"
       ${spec_args[@]+"${spec_args[@]}"}
-      --embedding-q4 ${memory_args[@]+"${memory_args[@]}"} --gdn-state-fp16
+      --gdn-state-fp16
       --prefill-cublas --prefill-chunk "$PREFILL_CHUNK"
     )
     label="C$CONCURRENCY  |  context $CONTEXT  |  KV pool $KV_CAPACITY  |  $KV_DTYPE  |  $spec_label"
@@ -171,12 +168,14 @@ case "$model_key/$profile" in
     CONCURRENCY="${NINFER_CONCURRENCY:-3}"
     KV_CAPACITY="${NINFER_KV_CAPACITY:-$CONTEXT}"
     KV_DTYPE="${NINFER_KV_DTYPE:-rk4v4}"
-    PREFILL_CHUNK="${NINFER_PREFILL_CHUNK:-512}"
+    # cuBLAS prefill at chunk 4096: 8,848 tok/s on a 4K prompt against 5,470 at the old
+    # default-route chunk 512 (2026-10-02), for about 240 MiB more workspace.
+    PREFILL_CHUNK="${NINFER_PREFILL_CHUNK:-4096}"
     profile_args=(
       --max-concurrency "$CONCURRENCY" --max-context "$CONTEXT" --kv-capacity "$KV_CAPACITY"
       --kv-dtype "$KV_DTYPE"
       ${spec_args[@]+"${spec_args[@]}"}
-      --gdn-state-fp16 --prefill-chunk "$PREFILL_CHUNK"
+      --gdn-state-fp16 --prefill-cublas --prefill-chunk "$PREFILL_CHUNK"
     )
     label="C$CONCURRENCY  |  context $CONTEXT  |  KV pool $KV_CAPACITY  |  $KV_DTYPE  |  $spec_label" ;;
 

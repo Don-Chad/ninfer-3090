@@ -158,18 +158,16 @@
           echo "Model ready: $model"
         '';
 
-      # Qwen3.8-27B (official v3 artifact, with the DFlash2 bundle), pinned to match
-      # `scripts/download-model.{sh,bat} qwen38-27b`. The size and sha256 are what the revision's
-      # artifact-manifest.json states. Published 27B measurements in this repository were taken
-      # against the v2 pin 18dfc887, whose weight bytes the v3 container preserves; a v2 file can
-      # be upgraded locally with tools/upgrade_ninfer_v2_to_v3.py instead of re-downloading.
+      # Qwen3.8-27B (this fork's qwen3_8_27b conversion, with vision, MTP and DFlash2), pinned to
+      # match `scripts/download-model.{sh,bat} qwen38-27b`. The size and sha256 are what the
+      # revision's artifact-manifest.json states.
       download-qwen38-27b = mkDownload {
         name = "download-qwen38-27b";
         filename = "qwen3_8_27b.ninfer";
-        revision = "1cbd84e7221e51186bd7f093a149912d2489625b";
-        url = "https://huggingface.co/neroued/Qwen3.8-27B-NInfer/resolve/1cbd84e7221e51186bd7f093a149912d2489625b/qwen3_8_27b.ninfer";
-        expectedSize = 20437521664;
-        expectedSha256 = "81f924d440c27261d820c19a9f8d45794c5aee410f8a68bd358133fa8c0375da";
+        revision = "d47f2732d369acaec76dc44228f67c72b081df2f";
+        url = "https://huggingface.co/WarlaxZ/Qwen3.8-27B-NInfer-3090/resolve/d47f2732d369acaec76dc44228f67c72b081df2f/qwen3_8_27b.ninfer";
+        expectedSize = 18982458624;
+        expectedSha256 = "7f2a0086a071ee932c66106e1552d118a85cfec8ddef13c67a54cd64abb39706";
         description = "Qwen3.8-27B NInfer model";
       };
 

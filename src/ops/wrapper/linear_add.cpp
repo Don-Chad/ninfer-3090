@@ -90,6 +90,29 @@ void validate_policy(LinearPolicy policy) {
     throw std::invalid_argument("linear_add: invalid compute policy");
 }
 
+// Q4 and Q5 share the integer and cuBLAS prefill routes at the two registered shapes; a16 is the
+// format's own A16 reservation.
+std::size_t grouped_integer_workspace_bytes(std::size_t a16, std::int32_t output_rows,
+                                            std::int32_t input_rows, LinearPolicy policy,
+                                            std::int32_t min_tokens, std::int32_t max_tokens) {
+    const bool integer_shape = output_rows == 5120 && (input_rows == 17408 || input_rows == 6144);
+    if (!allows_a8_int(policy) || !integer_shape) { return a16; }
+    // See linear_swiglu: where the cuBLAS route is admitted it is the widest claimant, so any
+    // interval reaching its width gate must reserve for it.
+    if (allows_cublas_prefill(policy) && max_tokens >= kCublasPrefillMinTokens) {
+        return std::max(a16, detail::w4_cublas_prefill_workspace_capacity_bytes(
+                                 output_rows, input_rows,
+                                 std::max(min_tokens, kCublasPrefillMinTokens), max_tokens));
+    }
+    if (min_tokens == max_tokens) {
+        return detail::a8_add_tokens_supported(min_tokens)
+                   ? detail::a8_add_workspace_capacity_bytes(input_rows, min_tokens, max_tokens)
+                   : a16;
+    }
+    return std::max(a16,
+                    detail::a8_add_workspace_capacity_bytes(input_rows, min_tokens, max_tokens));
+}
+
 } // namespace
 
 std::size_t linear_add_workspace_capacity_bytes(QType qtype, std::int32_t output_rows,
@@ -114,7 +137,8 @@ std::size_t linear_add_workspace_capacity_bytes(QType qtype, std::int32_t output
     if (qtype == QType::Q4_G64_FP16) {
         (void)detail::select_q4_linear_add(output_rows, input_rows, min_tokens);
         (void)detail::select_q4_linear_add(output_rows, input_rows, max_tokens);
-        return 0;
+        return grouped_integer_workspace_bytes(0, output_rows, input_rows, policy, min_tokens,
+                                               max_tokens);
     }
     if (qtype == QType::Q8_G32_FP16) {
         (void)detail::q8_linear_add_resolve_plan({output_rows, input_rows, input_rows, min_tokens});
@@ -122,26 +146,10 @@ std::size_t linear_add_workspace_capacity_bytes(QType qtype, std::int32_t output
         return 0;
     }
     if (qtype == QType::Q5_G64_FP16) {
-        const std::size_t a16 = detail::q5_linear_add_capacity_workspace_bytes(
-            output_rows, input_rows, input_rows, min_tokens, max_tokens);
-        const bool integer_shape =
-            output_rows == 5120 && (input_rows == 17408 || input_rows == 6144);
-        if (!allows_a8_int(policy) || !integer_shape) { return a16; }
-        // See linear_swiglu: where the cuBLAS route is admitted it is the widest claimant, so any
-        // interval reaching its width gate must reserve for it.
-        if (allows_cublas_prefill(policy) && max_tokens >= kCublasPrefillMinTokens) {
-            return std::max(a16, detail::w4_cublas_prefill_workspace_capacity_bytes(
-                                     output_rows, input_rows,
-                                     std::max(min_tokens, kCublasPrefillMinTokens), max_tokens));
-        }
-        if (min_tokens == max_tokens) {
-            return detail::q5a8_tokens_supported(min_tokens)
-                       ? detail::q5a8_add_workspace_capacity_bytes(input_rows, min_tokens,
-                                                                   max_tokens)
-                       : a16;
-        }
-        return std::max(a16, detail::q5a8_add_workspace_capacity_bytes(input_rows, min_tokens,
-                                                                       max_tokens));
+        return grouped_integer_workspace_bytes(
+            detail::q5_linear_add_capacity_workspace_bytes(output_rows, input_rows, input_rows,
+                                                           min_tokens, max_tokens),
+            output_rows, input_rows, policy, min_tokens, max_tokens);
     }
     if (qtype == QType::NVFP4) {
         const bool supported = (output_rows == detail::Nvfp4N5120K6144::kOutputRows &&
@@ -207,6 +215,16 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPo
             throw std::invalid_argument(
                 "linear_add: Q4 requires 16-byte x/residual/code/scale alignment");
         }
+        // The same prefill routes as Q5 below, in the same order.
+        if (allows_cublas_prefill(policy) && t >= kCublasPrefillMinTokens &&
+            detail::w4_cublas_prefill_supported(w, t)) {
+            detail::w4_cublas_add_launch(x, w, residual_out, ws, stream);
+            return;
+        }
+        if (allows_a8_int(policy) && detail::a8_add_supported(w, t)) {
+            detail::a8_add_launch(x, w, residual_out, ws, stream);
+            return;
+        }
         launch(x, w, residual_out, stream);
         return;
     }
@@ -229,8 +247,8 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPo
             detail::w4_cublas_add_launch(x, w, residual_out, ws, stream);
             return;
         }
-        if (allows_a8_int(policy) && detail::q5a8_add_supported(w, t)) {
-            detail::q5a8_add_launch(x, w, residual_out, ws, stream);
+        if (allows_a8_int(policy) && detail::a8_add_supported(w, t)) {
+            detail::a8_add_launch(x, w, residual_out, ws, stream);
             return;
         }
         detail::q5_linear_add_dispatch(x, w, residual_out, ws, stream);

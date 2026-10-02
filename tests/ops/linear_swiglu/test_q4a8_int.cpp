@@ -212,12 +212,12 @@ int run_gate_up_small_t_i8(std::int32_t kTokens) {
 }
 
 // kCols selects the registered profile: 17408 is mlp/down, 6144 the attention o_proj and GDN
-// out_proj. They share one kernel, so both widths have to be checked against the oracle.
-int run_down(std::int32_t tokens, std::int32_t kCols = 17408) {
+// out_proj. They share one kernel per format, so both widths and both formats are checked against
+// the oracle.
+int run_down(std::int32_t tokens, std::int32_t kCols, QType format) {
     constexpr std::int32_t kRows = 5120;
 
-    const PackedWeight host_weight =
-        qw::make_patterned_weight(QType::Q5_G64_FP16, kRows, kCols, 5501U);
+    const PackedWeight host_weight = qw::make_patterned_weight(format, kRows, kCols, 5501U);
     const std::vector<std::uint16_t> activation = make_activation(kCols, tokens, 77U);
     const std::vector<std::uint16_t> residual0  = make_activation(kRows, tokens, 13U);
 
@@ -233,14 +233,15 @@ int run_down(std::int32_t tokens, std::int32_t kCols = 17408) {
     device_residual.copy_from_host(residual0.data(), res_elements * sizeof(std::uint16_t));
 
     WorkspaceArena workspace(std::max<std::size_t>(
-        ops::detail::q5a8_add_workspace_capacity_bytes(kCols, tokens, tokens), 256));
+        ops::detail::a8_add_workspace_capacity_bytes(kCols, tokens, tokens), 256));
     Tensor x(device_x.data(), DType::BF16, {kCols, tokens});
     Tensor residual(device_residual.data(), DType::BF16, {kRows, tokens});
-    ops::detail::q5a8_add_launch(x, weight, residual, workspace, nullptr);
-    test::cuda_check(cudaDeviceSynchronize(), "synchronize q5a8 add");
+    ops::detail::a8_add_launch(x, weight, residual, workspace, nullptr);
+    test::cuda_check(cudaDeviceSynchronize(), "synchronize a8 add");
 
-    const std::string label =
-        "LinearAdd Q5_A8INT K=" + std::to_string(kCols) + " T=" + std::to_string(tokens);
+    const std::string label = std::string("LinearAdd ") +
+                              (format == QType::Q5_G64_FP16 ? "Q5" : "Q4") + "_A8INT K=" +
+                              std::to_string(kCols) + " T=" + std::to_string(tokens);
     int failures            = 0;
     failures += device_residual.verify_guards(label);
 
@@ -466,6 +467,8 @@ int run_admission() {
         qw::make_patterned_weight(QType::Q5_G64_FP16, 5120, 6144, 4U);
     const PackedWeight q5_unregistered =
         qw::make_patterned_weight(QType::Q5_G64_FP16, 5120, 8192, 5U);
+    const PackedWeight q4_down = qw::make_patterned_weight(QType::Q4_G64_FP16, 5120, 17408, 6U);
+    const PackedWeight q4_mixer = qw::make_patterned_weight(QType::Q4_G64_FP16, 5120, 6144, 7U);
 
     void* fake = reinterpret_cast<void*>(static_cast<std::uintptr_t>(4096));
     struct Case {
@@ -482,13 +485,15 @@ int run_admission() {
         {"q4 declines a Q5 weight", ops::detail::q4a8_swiglu_supported(q5.device_weight(fake), 128), false},
         {"q4 declines another shape", ops::detail::q4a8_swiglu_supported(wrong_shape.device_weight(fake), 128), false},
         {"q4 declines a null payload", ops::detail::q4a8_swiglu_supported(q4.device_weight(nullptr), 128), false},
-        {"q5 accepts 128 tokens", ops::detail::q5a8_add_supported(q5.device_weight(fake), 128), true},
-        {"q5 declines decode", ops::detail::q5a8_add_supported(q5.device_weight(fake), 1), false},
-        {"q5 declines partial tile", ops::detail::q5a8_add_supported(q5.device_weight(fake), 129), false},
-        {"q5 declines a Q4 weight", ops::detail::q5a8_add_supported(q4.device_weight(fake), 128), false},
-        {"q5 declines a null high plane", ops::detail::q5a8_add_supported(q5.device_weight(nullptr), 128), false},
-        {"q5 accepts the 6144 mixer output", ops::detail::q5a8_add_supported(q5_mixer.device_weight(fake), 128), true},
-        {"q5 declines an unregistered K", ops::detail::q5a8_add_supported(q5_unregistered.device_weight(fake), 128), false},
+        {"add accepts 128 tokens", ops::detail::a8_add_supported(q5.device_weight(fake), 128), true},
+        {"add declines decode", ops::detail::a8_add_supported(q5.device_weight(fake), 1), false},
+        {"add declines partial tile", ops::detail::a8_add_supported(q5.device_weight(fake), 129), false},
+        {"add declines the gate_up shape", ops::detail::a8_add_supported(q4.device_weight(fake), 128), false},
+        {"add declines a null payload", ops::detail::a8_add_supported(q5.device_weight(nullptr), 128), false},
+        {"add accepts the Q5 6144 mixer output", ops::detail::a8_add_supported(q5_mixer.device_weight(fake), 128), true},
+        {"add declines an unregistered K", ops::detail::a8_add_supported(q5_unregistered.device_weight(fake), 128), false},
+        {"add accepts a Q4 down", ops::detail::a8_add_supported(q4_down.device_weight(fake), 128), true},
+        {"add accepts a Q4 mixer output", ops::detail::a8_add_supported(q4_mixer.device_weight(fake), 128), true},
     };
     for (const Case& c : cases) {
         if (c.got != c.want) {
@@ -507,8 +512,10 @@ int main() {
         int failures = run_admission();
         for (const std::int32_t tokens : {128, 256, 512}) {
             failures += run_gate_up(tokens);
-            failures += run_down(tokens);
-            failures += run_down(tokens, 6144);
+            for (const QType format : {QType::Q4_G64_FP16, QType::Q5_G64_FP16}) {
+                failures += run_down(tokens, 17408, format);
+                failures += run_down(tokens, 6144, format);
+            }
             failures += run_gdn_input(tokens);
             failures += run_attn_input(tokens);
         }

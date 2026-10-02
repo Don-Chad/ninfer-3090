@@ -1,0 +1,82 @@
+{
+  "schema": "ninfer.artifact-manifest",
+  "schema_version": 2,
+  "artifact": {
+    "filename": "qwen3_8_27b.ninfer",
+    "bytes": 18982458624,
+    "sha256": "7f2a0086a071ee932c66106e1552d118a85cfec8ddef13c67a54cd64abb39706",
+    "container_version": 3,
+    "architecture": "Qwen3_5ForCausalLM",
+    "name": "qwen3.8-27b",
+    "components": [
+      "text",
+      "vision",
+      "mtp",
+      "dflash2"
+    ]
+  },
+  "source": {
+    "base": {
+      "repo_id": "Qwen/Qwen3.8-27B",
+      "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "download_source": "https://modelscope.cn/models/Qwen/Qwen3.8-27B",
+      "license": "Apache-2.0"
+    },
+    "dflash2": {
+      "repo_id": "z-lab/Qwen3.8-27B-DFlash2",
+      "revision": "50307d4c4cde6860d4eee73e2547cd786fe8e8a4",
+      "license": "Apache-2.0"
+    },
+    "imatrix": {
+      "repo_id": "unsloth/Qwen3.8-27B-GGUF",
+      "revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
+      "filename": "imatrix_unsloth.gguf",
+      "sha256": "0ee5b10bd0c2fa2127c6f4b43dbfe1efd71e383b63217af9dade1de36599f1c1",
+      "license": "Apache-2.0",
+      "converted": {
+        "filename": "qwen3_8_27b.imatrix.safetensors",
+        "sha256": "28f1dd1effa1e1e3323be4dfa5dd760964e346e44367f9e9f267d977cadcacbf",
+        "tool": "python -m tools.convert.imatrix --gguf imatrix_unsloth.gguf --config <Qwen3.8-27B config.json> --out qwen3_8_27b.imatrix.safetensors"
+      }
+    }
+  },
+  "conversion": {
+    "recipe_id": "qwen3_8_27b",
+    "converter_repository": "https://github.com/ashalliants/ninfer-3090",
+    "command": "python -m tools.convert --recipe qwen3_8_27b --model Qwen3.8-27B --source dflash2=Qwen3.8-27B-DFlash2 --source imatrix=qwen3_8_27b.imatrix.safetensors --components text,vision,mtp,dflash2 --proposal --name qwen3.8-27b",
+    "ranking_input": {
+      "path": "tools/freq_corpus/fixtures/ranking/ranking.train.counts.i64",
+      "sha256": "c692dc76388132c910547589b4fb4a0503fbd6ad50aaac6a509bbcb192a8afa5"
+    }
+  },
+  "runtime": {
+    "repository": "https://github.com/ashalliants/ninfer-3090",
+    "cuda_architecture": "sm_86",
+    "dflash2_draft_tokens": {
+      "recommended": 7,
+      "minimum": 1,
+      "maximum": 15
+    }
+  },
+  "inventory": {
+    "objects": 1190,
+    "tensors": 1184,
+    "resources": 6,
+    "bindings": 1513,
+    "uses": 844,
+    "formats": {
+      "bf16": 627,
+      "fp32": 96,
+      "int32": 1,
+      "q4_g64_fp16": 240,
+      "q5_g64_fp16": 190,
+      "q6_g64_fp16": 2,
+      "q8_g32_fp16": 28
+    },
+    "layouts": {
+      "contiguous_le_v1": 724,
+      "row_split_k128_v1": 460
+    },
+    "payload_bytes": 18982085888
+  }
+}

@@ -28,6 +28,8 @@
 #include "ops/linear/q4/q4_simt_launch.cuh"
 #include "ops/linear/q5/q5_dispatch.h"
 #include "ops/linear/q5/q5_ksplit_launch.cuh"
+#include "ops/linear/q6/q6_dispatch.h"
+#include "ops/linear/q6/q6_launch.h"
 #include "ops/linear/q8/q8_dispatch.h"
 #include "ops/linear/q8/q8_ksplit_launch.cuh"
 #include "ops/linear/q8/q8_shapes.h"
@@ -247,6 +249,7 @@ void run(QType qtype, std::int32_t n, std::int32_t k,
 
     const std::string title = std::string(qtype == QType::Q4_G64_FP16   ? "q4"
                                           : qtype == QType::Q5_G64_FP16 ? "q5"
+                                          : qtype == QType::Q6_G64_FP16 ? "q6"
                                                                         : "q8") +
                               " linear n=" + std::to_string(n) + " k=" + std::to_string(k);
     ninfer::bench::SweepOptions options = base;
@@ -289,6 +292,39 @@ void sweep_q5(const ninfer::bench::SweepOptions& base) {
                           base);
 }
 
+// --- Q6 ----------------------------------------------------------------------------------------
+//
+// The per-row GEMV is exact-T (one instantiation per token count); one candidate dispatches on T
+// so the sweep can offer it across its whole 1..2 domain.
+
+void q6_gemv(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
+    if (x.ne[1] == 1) {
+        detail::launch_q6_gemv_t1(x, w, out, stream);
+    } else {
+        detail::launch_q6_gemv_t2(x, w, out, stream);
+    }
+}
+
+std::vector<Candidate<detail::Q6Launch>> q6_candidates() {
+    return {
+        {"gemv", q6_gemv, 2},
+        {"small_t_c8", detail::launch_q6_small_t_c8, 8},
+        {"small_t_c16", detail::launch_q6_small_t_c16, 16},
+        {"small_t_c32", detail::launch_q6_small_t_c32, 32},
+        {"simt_r8_c4", detail::launch_q6_simt_r8_c4, 0},
+        {"mma_r64_c16_k128", detail::launch_q6_mma_r64_c16_k128, 0},
+        {"mma_r64_c32_k128", detail::launch_q6_mma_r64_c32_k128, 0},
+        {"mma_r64_c128", detail::launch_q6_mma_r64_c128, 0},
+    };
+}
+
+template <int N, int K>
+void sweep_q6(const ninfer::bench::SweepOptions& base) {
+    run<detail::Q6Launch>(QType::Q6_G64_FP16, N, K, q6_candidates(),
+                          +[](std::int32_t t) { return detail::select_q6_a16_launch(N, K, t); },
+                          base);
+}
+
 template <class Geometry>
 void sweep_q8(const ninfer::bench::SweepOptions& base) {
     run<detail::Q8Launch>(
@@ -312,6 +348,7 @@ const Shape kShapes[] = {
     {"q5:7168x5120", sweep_q5<7168, 5120, 4>},
     {"q5:5120x6144", sweep_q5<5120, 6144, 2>},
     {"q5:5120x17408", sweep_q5<5120, 17408, 2>},
+    {"q6:248320x5120", sweep_q6<248320, 5120>},
     {"q8:5120x25600", sweep_q8<detail::Q8N5120K25600>},
     {"q8:2048x16384", sweep_q8<detail::Q8N2048K16384>},
     {"q8:5120x6144", sweep_q8<detail::Q8N5120K6144>},
