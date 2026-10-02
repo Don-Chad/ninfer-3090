@@ -43,6 +43,24 @@ report is `report.json` under `profiles/perplexity/` unless `--output` supplies 
 For KV-format comparisons, the recommended long-context profile is the full corpus with
 `--context 65536 --stride 32768` and without `--quick`.
 
+## Held-out corpus
+
+`ninfer-ppl-1m-v1` is built from public datasets that the model has almost certainly trained on,
+which can understate the cost of a weight or KV representation change. The repository also
+includes `ninfer-ppl-heldout-2026-09-v1`: 12 streams written after Qwen3.8's release, covering new
+English and Chinese Wikipedia articles, arXiv abstracts, new GitHub code in four languages, this
+fork's recent code, and chat-template conversations. Use it to judge representation quality, and
+keep `ninfer-ppl-1m-v1` for comparisons with the numbers already published against it. Its
+selection rules and limitations are in its
+[README](../eval/corpora/perplexity-heldout-2026-09/README.md).
+
+```bash
+./build/apps/ninfer-perplexity models/qwen3_8_27b.ninfer \
+  --corpus eval/corpora/perplexity-heldout-2026-09/manifest.json \
+  --quick \
+  --kv-dtype int8
+```
+
 ## Metric
 
 For a stream `x[0..N)`, every token after `x[0]` is scored exactly once. A window `[b,e)` with target

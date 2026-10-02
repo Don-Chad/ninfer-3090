@@ -1,0 +1,29 @@
+{
+  "corpus_id": "ninfer-ppl-heldout-2026-09-v1",
+  "builder": "tools/eval/build_heldout_corpus.py",
+  "window": {
+    "start": "2026-09-02T00:00:00Z",
+    "end": "2026-09-30T23:59:59Z",
+    "own_code_since": "2026-08-20"
+  },
+  "sizing": {
+    "role": "approximate stream boundary selection only",
+    "tokenizer": "qwen3_8_27b.v3.ninfer frontend/tokenizer.json",
+    "add_special_tokens": false,
+    "approximate_tokens_per_stream": 65536
+  },
+  "approximate_tokens": {
+    "wikipedia_en-00": 65479,
+    "wikipedia_en-01": 65009,
+    "wikipedia_zh-00": 65477,
+    "wikipedia_zh-01": 64956,
+    "arxiv-00": 65018,
+    "arxiv-01": 64938,
+    "github_code-00": 65380,
+    "github_code-01": 65342,
+    "own_code-00": 65099,
+    "own_code-01": 65447,
+    "synthetic_chat-00": 64553,
+    "synthetic_chat-01": 65056
+  }
+}

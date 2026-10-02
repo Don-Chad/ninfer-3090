@@ -1,0 +1,3387 @@
+<|im_start|>user
+Write the abstract for a paper titled "Intrinsic Restriction Traces and Toric Dynamics".<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Intrinsic Restriction Traces and Toric Dynamics
+
+We prove Morita invariance of the Campbell--Lind--Malkiewich--Ponto--Zakharevich restriction-system trace after passage to perfect modules. It therefore defines an intrinsic integral restriction trace for an exact endofunctor of a small idempotent-complete stable $\infty$-category. On $π_0$, the $m$-th ghost is the laced trace of the $m$-fold iterate, compatibly with Frobenius. For lattice-graded algebras, the ghost targets have twisted cocenters in degree zero; over the open parameter torus, this applies to the cyclic bimodule of Dinkins--Karpov--Krylov. For finite monomial endomorphisms of toric varieties, we construct motivic restriction classes whose ghosts are sums over cones fixed by the iterates. In one example, two classes have the same first ghost, while their second ghosts differ after rational Betti realization.<|im_end|>
+<|im_start|>user
+Tell me about God Forbid a Girl Spits Out Her Feelings!.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+God Forbid a Girl Spits Out Her Feelings!
+
+god forbid a girl spits out her feelings! is the second studio album by Canadian singer-songwriter LØLØ. It was released on April 17, 2026, by Fearless Records, and is the follow-up to her 2024 debut studio album, falling for robots & wishing i was one.
+The album explores emotional vulnerability, romantic obsession, heartbreak, self-doubt and the contradictions of knowing that a relationship may be unhealthy while continuing to pursue it. It represents a thematic reversal of LØLØ's debut, which centered on the desire to suppress emotions and become emotionally detached. On the second album, she instead embraces emotional sensitivity and the act of openly expressing her feelings.
+
+
+== Background and release ==
+Following the release and touring cycle of falling for robots & wishing i was one, LØLØ began developing material for a second album that would approach its predecessor's themes from the opposite perspective. While the debut explored the wish to become emotionally numb, she wanted the new album to embrace the experience of feeling things deeply and expressing those emotions without restraint.
+The album's title came from LØLØ's concerns about how women are perceived when they openly express their emotions. She described the phrase as sarcastic while also reflecting the criticism she had received for writing openly about romantic relationships and breakups. The title became a central statement for the album's emphasis on emotional honesty and vulnerability.
+LØLØ wrote the album with a number of collaborators, including Mike Robinson, Andrew Goldstein, David Charles Fischer, David Arkwright, Caroline Romano, Spencer Jordan, Brian Logan Dales, Taylor Acorn, Danen Reed Rector, Giordan Postorino, Braden Bales and Gus McMillan. Robinson and Goldstein produced multiple tracks, while additional production was provided by Rector, Postorino and Gus van Go.
+
+
+== Music and themes ==
+god forbid a girl spits out her feelings! has been described as a pop-rock and pop-punk album, with elements of alternative rock and acoustic singer-songwriter music.
+The album is characterized by diaristic songwriting and a mixture of humor, sarcasm and emotional vulnerability. Its songs frequently examine romantic fixation, toxic relationships, self-deprecation and the tendency to repeat unhealthy patterns despite recognizing them.
+The opening title track establishes the album's central idea of openly expressing feelings rather than suppressing them. "the dumbest girl in the world" uses self-deprecation to examine repeated romantic mistakes, while "me with no shirt on" focuses on the insecurity associated with losing another person's attention. "the punisher" addresses the compulsive behavior of monitoring an ex-partner online after a breakup.
+Several songs use humor and exaggeration to address similar themes. "007" incorporates spy-film imagery into a song about attraction and suspicion, while "american zombie" uses a zombie metaphor to describe being drawn to an emotionally damaged person. The album closes with "lobotomy & u", which returns to the desire to escape the emotional consequences of a relationship.
+
+
+== Promotion ==
+The album's promotional campaign began with "the devil wears converse", released July 25, 2025, alongside LØLØ's announcement that she had signed with Fearless Records. The song was described by LØLØ as being about the temptation of falling for someone she knows is bad for her.
+"american zombie" was released September 5, 2025, followed by "me with no shirt on" on November 7. Both songs were accompanied by music videos.
+"007" was released January 16, 2026, alongside the announcement of the album. "the punisher" was released February 27, 2026, as the final pre-release single. “the punisher” was LØLØ’s first radio single, as it’s gotten radio play on several Canadian stations and peaked at No. 17 on Billboard Canada’s CHR Airplay chart.
+
+
+== Track listing ==
+All tracks are written by Lauren Mandel, except where noted.
+
+
+== Reception ==
+
+god forbid a girl spits out her feelings! received generally positive reviews from critics. Kerrang! awarded the album four out of five stars, praising its diaristic songwriting, catchy choruses and combination of vulnerability, humor and pop-rock songwriting. The Spill Magazine gave the album 9 out of 10, emphasizing its emotional intimacy and its depiction of unreciprocated feelings and romantic uncertainty. Out of Rage awarded it 10 out of 10, praising its emotional specificity, pop-rock sound and self-aware approach to heartbreak.
+Frontstage Magazine gave the album an 8.3 out of 10, praising its combination of pop appeal and emotional openness and describing it as a development from LØLØ's debut.
+Several reviewers highlighted the album's diaristic quality and its treatment of emotional oversharing. When The Horn Blows described it as a more emotionally exposed counterpart to LØLØ's debut, noting that the album treats emotional oversharing as a source of strength while also observing that its consistent tone can cause some tracks to blur together. Melodic Magazine praised the balance between sarcasm and sincerity and highlighted "hung up on u", "me with no shirt on" and "the dumbest girl in the world" as standout tracks.
+HEAVY Magazine described the album as more intimate, immediate and stripped-back than its predecessor, with heartbreak serving as a central element of its lyrical narrative. MoreCore gave the album 6 out of 10, similarly noting its more vulnerable and subdued approach compared with the debut while praising LØLØ's humor, direct lyrics and emotional perspective.
+
+
+== Commercial performance ==
+The album reached number 80 on the UK Album Downloads Chart and number 32 on the UK Record Store Chart.
+
+
+== Personnel ==
+
+LØLØ – vocals
+Mike Robinson – production, programming, recording, songwriting
+Andrew Goldstein – production, programming, recording, background vocals, songwriting
+Danen Reed Rector – production, programming, recording, songwriting
+Giordan Postorino – production, programming, recording, mixing, songwriting
+Gus van Go – production, recording, mixing, songwriting
+Alex Ghenea – mixing
+Matt Huber – mixing
+Chris Gehringer – mastering<|im_end|>
+<|im_start|>user
+能写一篇关于福特Maverick (2022)的百科条目吗？<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+福特Maverick (2022)
+
+福特Maverick是福特汽车制造和销售的一款四门紧凑型皮卡。福特于2021年6月8日发布Maverick，作为旗下最小的皮卡车，排在中型福特游骑侠之下。
+这款皮卡采用以前轮驱动为基础、与福特锐际和烈马运动共享的承载式车身平台，动力提供汽油混动发动机或涡轮增压汽油发动机，两者都可选全轮驱动（从2025车型年开始）。卡车只提供4门双排驾驶室配短货厢。
+Maverick于2021年底作为2022车型年上市销售。卡车受到消费者强劲需求，福特无法满足2022车型年收到的全部订单，2023车型年订单只接受了一周。卡车在吸引新客户方面很成功，福特报告近60%的Maverick买家是首次购买该品牌。
+需求到2025年中仍然强劲，仅第二季度就售出48,041台，同比增长26.3%。相比之下，主要竞争对手现代Santa Cruz销量下降21%。到2025年底，年销量接近15.5万台，汽车报道指出Maverick“超出了所有人的预期”。
+
+
+== 背景 ==
+
+福特在2019年1月宣布计划推出一款基于福特福克斯所用C2平台的紧凑型皮卡，以及烈马运动和福特锐际紧凑型跨界SUV。
+前脸和前地板结构与福克斯、锐际、烈马运动以及林肯冒险家紧凑型豪华SUV通用。
+保险杠梁、前纵梁、翼子板内衬、减震塔以及仪表台与烈马运动共享，烈马运动也在同一埃莫西约装配厂生产。
+首席项目工程师Samir Raval表示，Maverick相比其他基于C2平台的车辆加大了轴距和前轮距，以腾出更多驾驶室空间。卡车使用通用车架，可适配不同（全轮驱动对前轮驱动）后悬架。
+2020年7月一张尾门照片泄露给媒体，确认卡车将使用Maverick名称，此前该名称用于福特紧凑型乘用车（1970–1979年）。福特指出选这个名字不是为了让人想起早先的乘用车，而是发现它能引起年轻、爱运动客户的共鸣。
+Maverick在墨西哥福特埃莫西约装配厂与烈马运动一同制造，面向北美和南美汽车市场。生产于2021年9月2日开始。
+2022年1月福特因车辆生产积压暂停客户订单，公司告诉经销商打算在当年晚些时候恢复接受2023车型年订单。Maverick的强劲需求被认为表明消费者支持更买得起的皮卡。
+货区以Flexbed为名销售，载货长度为4.5英尺（1.4米）（尾门半开、搭在货厢轮拱上时可放下4英尺×8英尺板材）；货厢侧壁有预冲压槽以便定制；还有内置、单独加保险丝的12伏电路，也为定制服务。
+
+
+== 动力系统 ==
+所有Maverick车型标配混动发动机配eCVT变速箱。2.5升iVCT阿特金森循环直列四缸汽油发动机配电机，在5600转/分综合输出191 hp（194 PS；142 kW）。发动机在4000转/分输出155 lb·ft（210 N·m；21.4 kg·m）扭矩，混动系统输出173 lb·ft（235 N·m；23.9 kg·m）扭矩。
+电机由福特自行设计，东芝制造，采用与共享C2平台的福特锐际相同的安装尺寸和变速箱连接，减少了开发时间和成本。
+可选2.0升EcoBoost双涡管涡轮增压直列四缸汽油发动机，在5500转/分输出250 hp（253 PS；186 kW），在3000转/分输出277 lb·ft（376 N·m；38.3 kg·m）扭矩。EcoBoost配8速自动变速箱。2022–2024车型年所有车型标配前轮驱动，全轮驱动只随EcoBoost发动机提供。从2025车型年改款起，混动动力在标配前轮驱动基础上增加全轮驱动选装，EcoBoost只提供全轮驱动。
+Maverick标配可拖2,000磅（910公斤），选装EcoBoost发动机、全轮驱动和4K拖车包（含更强发动机和变速箱冷却、拖车制动控制器和更低轴齿比）时可升级到4,000磅（1,800公斤）。2025车型年全轮驱动混动动力也可选4K拖车包。此外，仅XLT全轮驱动EcoBoost车型可选FX4越野包，含额外牵引力控制模式、陡坡缓降、护板、拖车钩和全地形轮胎。
+2022年8月1日福特宣布为2023年XLT和Lariat配置的Maverick全轮驱动车型推出新Tremor包，为Maverick增加显著越野能力。该包包含取自烈马运动Badlands、带差速锁功能的双离合器后驱动单元，可把后轴扭矩分配给任一车轮。除现有FX4包的越野特征外，还包含重新设计以改善接近角的前包围、升级悬架部件，以及使离地间隙比其他Maverick多1英寸的原厂升高。
+所有Maverick车型都用位于中控台的旋钮式换挡。
+2023年7月福特首席执行官吉姆·法利表示，56%买家为Maverick选择混动动力而非标配2.0升EcoBoost，尽管混动选装贵1500美元。到2025年上半年Maverick仍是最畅销混动皮卡。
+
+
+== 配置级别 ==
+
+Maverick提供五种配置，命名与所有福特卡车相同：基础（XL）、中级（XLT）、顶级（Lariat），以及2025年新增的两款配置，运动卡车主题LOBO和如今独立成越野配置的Tremor。
+所有车型标配前轮驱动，2.0升EcoBoost汽油发动机以及（2025年起）2.5升混动发动机都可选全轮驱动。
+所有配置的标配包括带有线Apple CarPlay和Android Auto手机互联、4G LTE功能的触摸屏信息娱乐系统，倒车影像，带自动紧急制动的预碰撞辅助，电动车窗和门锁，遥控无钥匙进入，自动大灯和自动远光，多功能方向盘，以及空调。所有车型可选电动/倾斜天窗和福特CoPilot360驾驶辅助技术套件。
+基础（XL）配置配银色喷漆钢制轮毂、黑色外饰、六扬声器音响和布艺座椅。值得注意的是2022年基础（XL）车型不提供定速巡航和电动后视镜选装，2023年定速巡航成为标配。
+中级（XLT）配置在基础配置上增加定速巡航、电动后视镜、铝合金轮毂、同色外饰、更高档布艺座椅和内饰、更大（4.2英寸）全彩液晶仪表，以及遥控启动。选装包为中级配置增加加热和电动调节座椅、真皮方向盘等。
+顶级（Lariat）配置在中级配置上增加ActiveX仿皮座椅和真皮方向盘、加热前排斗式座椅、电动座椅调节、一键启动、电动后窗等。仅顶级配置豪华包可选自适应巡航、Bang & Olufsen高级音响和SiriusXM卫星广播。
+上市时基于顶级配置提供首发版包，含2.0升EcoBoost发动机和八速自动变速箱等选装，配独特铝合金轮毂和喷漆外饰，仅在2022车型年限量供应。
+
+
+== 2025年改款 ==
+改款Maverick于2024年7月31日作为2025车型年发布。变化包括带新大灯（呈数字“7”形状）的新前脸，内饰换成13.2英寸触摸屏，用Sync 4软件，支持无线Apple CarPlay和Android Auto手机互联及5G LTE连接，可选360度影像系统，增加Pro Trailer Backup Assist和Pro Trailer Hitch Assist功能（作为2025年末生产选装），全轮驱动和4K拖车选项首次可用于混动车型。
+改款带来Lobo配置，特征是制动系统双活塞前卡钳，运动调校悬架分别降低0.5英寸（13 mm）和1.12英寸（28 mm）（前、后），重新调校全轮驱动系统带激活扭矩矢量分配的Lobo模式，更运动的外观配黑色喷漆外饰和19英寸黑色涡扇风格合金轮毂。内饰有少量区别，如专属座椅徽。Lobo由2.0升EcoBoost直列四缸驱动。
+各配置上的2.0升EcoBoost发动机从福特新Modular Power Cylinder（MPC）EcoBoost平台获得重大更新，并在直喷之外增加歧管喷射（PFDI）。尽管有更新，EcoBoost发动机功率规格与2024年相比不变。EcoBoost标配变速箱仍是8F35 8速自动，Lobo全轮驱动配置提供重新编程的Quick Shift变速箱，通过跳过二挡作为7速运行。2.5升混动动力和eCVT变速箱架构与规格不变。
+
+2025年Tremor还作为独立配置落地，此前它是加在XLT和Lariat配置上的包。
+
+
+== 安全 ==
+所有配置标配带自动紧急制动的预碰撞辅助。
+
+
+=== IIHS ===
+2022年Maverick由IIHS测试：
+
+一次让提示音更频繁、更响的软件更新把IIHS评级从差改为优。
+
+
+=== NHTSA ===
+2022年Maverick由美国国家公路交通安全管理局测试，综合获得5星中的4星。
+
+
+== 销量 ==<|im_end|>
+<|im_start|>user
+Write the abstract for a paper titled "Multivariable Extremum Seeking for Locally Lipschitz Objectives".<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Multivariable Extremum Seeking for Locally Lipschitz Objectives
+
+Classical extremum seeking (ES) is commonly interpreted as approximating gradient descent, but this interpretation is less clear for nonsmooth objectives in the continuous-time multivariable setting. We propose a minimal modification of the classical multivariable perturbation--demodulation architecture: rationally independent perturbation frequencies and matched demodulation signals. For any locally Lipschitz static objective, the Kronecker--Weyl theorem shows that, at every fixed perturbation amplitude, the long-time averaged dynamics are exactly the negative gradient of a kernel-smoothed objective. Because rationally independent frequencies render the perturbation and demodulation signals nonperiodic, we employ general averaging theory rather than periodic averaging theory. If the gradient flow of the smoothed objective is globally uniformly asymptotically stable, then the ES dynamics are practically globally uniformly asymptotically stable. We also derive a general matching condition relating the perturbation occupation density, demodulation signal, and smoothing kernel, yielding a family of alternative designs. Numerical examples include a nonsmooth objective function, which may be interpreted as the penalty function of a nonlinear program, and the Rastrigin function, for which smoothing eliminates all undesired local minima.<|im_end|>
+<|im_start|>user
+Can you write an encyclopedia-style article on Sift (company)?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Sift (company)
+
+Sift is an American software company that develops telemetry and observability infrastructure for hardware systems. The company was founded in 2022 by former SpaceX software engineers Austin Spiegel and Karthik Gollapudi. Its primary product is a platform used by engineering teams in the aerospace, defense, and autonomous systems industries to ingest, store, and analyze data from machine sensors. It is headquartered in Marina del Rey, California, and has raised approximately $67 million in venture capital.
+
+
+== History ==
+
+
+=== Founding ===
+Sift was founded in mid-2022 in Los Angeles by Austin Spiegel and Karthik Gollapudi, who had previously worked as software engineers at SpaceX. Spiegel spent nearly five years at the company working on internal tools including manufacturing systems, test automation, and the telemetry system for Starlink; Gollapudi spent four years there and led the flight software operations team for the Dragon spacecraft.
+The founders have described the 2019 failure of Boeing's Starliner Orbital Flight Test as an impetus for the company. Gollapudi has said he initially assumed the failure was mechanical and was surprised to learn that software testing and development practices were implicated, which led him to conclude that practices he had regarded as standard at SpaceX were not widely shared across the industry.
+
+
+=== Funding ===
+Sift emerged from stealth in November 2023 with a $7.5 million seed round from investors including Riot Ventures, Fika Ventures, First Resonance, Datum, and Duro; Riot Ventures had led an earlier investment in the company in 2022. At the time, the company employed about ten engineers.
+In June 2024, Sift raised a $17.5 million Series A round led by GV, bringing total funding to $25 million.
+A $42 million Series B round was announced in March 2026, led by StepStone Group with participation from GV, Riot Ventures, Fika Ventures, and CIV, bringing total funding to $67 million. Gollapudi told TechCrunch that the round had been raised in 2025 at a post-money valuation of $274 million.
+
+
+=== Leadership and expansion ===
+In May 2026, co-founder Austin Spiegel was named chief executive officer, succeeding Gollapudi, who moved to a role focused on product direction and industry outreach. The company opened a second office in San Francisco alongside its Marina del Rey headquarters and reported a workforce of approximately 80 employees.
+
+
+== Technology ==
+Sift's platform ingests, stores, visualizes, and analyzes telemetry generated by hardware during testing, manufacturing, and operation. Its early product was organized around three components: data storage, real-time analytics, and visualization. The platform can align sensor data from different sources around a common event, allowing engineers to compare readings across repeated tests such as successive firings of a rocket engine.
+The company has described telemetry in aerospace applications as sampling individual sensors up to 50,000 times per second, producing volumes of data that are difficult to store and query, and has cited the difficulty of reconciling continuously generated operational data with test data captured in discrete intervals. Sift uses object storage for data that is written once and accessed infrequently, which the company says reduces storage costs.
+Rather than requiring operators to monitor data manually, the platform encodes rules describing expected machine behavior and raises alerts when readings fall outside those parameters. The company has said the platform performs automated anomaly detection and root-cause analysis across the hardware lifecycle. By 2026, Sift reported working with vehicles carrying more than 1.5 million sensors streaming data concurrently across multiple formats and time scales.
+
+
+== Customers and applications ==
+Sift's software has been used in the aerospace, defense, rail, robotics, and advanced manufacturing sectors. As of 2024, reported users included Astranis, Astrolab, K2 Space, Mach Industries, Parallel Systems, and True Anomaly. In 2026, TechCrunch reported that customers included United Launch Alliance, other defense contractors, and robotics and power-grid startups. Impulse Space, K2 Space, and Parallel Systems have also been named among users of the platform.
+Jeff Dexter, vice president of software at the satellite manufacturer Astranis, told TechCrunch that his company uses Sift across testing, manufacturing, and operations, and cited data storage costs as a motivation for adopting it.
+Sift is listed as one of the software services available through the Knox Systems FedRAMP High Managed Platform, a managed cloud platform used to deliver commercial software to United States federal agencies.
+Fast Company named Sift to its Next Big Things in Tech list for 2024, in the transportation category, citing its approach to unifying telemetry data.<|im_end|>
+<|im_start|>user
+韓國國家主義是什么？<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+韓國國家主義
+
+韓國國家主義（英語：South Korean nationalism），全稱大韓民國國家主義（Republic of Korea nationalism），是指韓國以國家為基礎的民族主義，與以血統和族群為基礎的朝鮮民族主義（Korean [ethnic] nationalism）相對立。在20世紀，韓國國家主義與反共的韓國「民族主義」幾乎難以區分；然而到了21世紀，韓國國家主義相對削弱了「韓民族」（韓語：한민족）的族群民族主義，而「大韓民國」（韓語：대한민국）這一國家身份認同在部分青年世代中變得更加突出。
+在韓語語境中，「韓語：민족주의／民族主義」主要指代族群民族主義（Ethnic nationalism）或血統民族主義；而與國家/公民層面相關的「國家主義」（State nationalism）則嚴格使用「韓語：국가주의／國家主義」一詞以示區隔。
+在韓國國家主義者之中，對朝鮮半島統一的意見存在分歧：部分人反對朝鮮半島統一；另一部分人則支持以「大韓民國」為主體的反共「吸收統一」（韓語：흡수통일）。
+韓國是一個高度單一的同質化社會，但近幾十年來外籍居民數量已達一定規模（約4.9%）。其中許多外籍居民是擁有外國國籍的韓裔／朝鮮族（「海外同胞」）。許多來自中國、前蘇聯地區、美國和日本的居民可能符合快速取得韓國國籍的條件。近幾十年來，韓國國內外針對種族與多文化主義的討論持續進行。
+
+
+== 稱謂與概念 ==
+韓國國家主義在英語與韓語中常有以下不同的稱呼與對應概念：
+
+國家主義（韓語：국가주의／國家主義）
+國民主義（韓語：국민주의／國民主義）
+愛國主義（韓語：애국주의／愛國主義 / 韓語：애국심／愛國心）
+大韓民國主義（韓語：대한민국주의／大韓民國主義）
+大韓民國民族主義（韓語：대한민국 내셔널리즘）
+
+
+== 歷史 ==
+當今，以韓國為核心的「國家主義」主要由部分保守派勢力（包括新右派運動）所倡導；而偏左翼勢力則更傾向於反帝國主義的「民族主義」。「民族主義」的例子貫穿韓國歷史，例如日治時期的反日獨立運動，以及1980年代的反美、反獨裁民主化運動。然而，韓國「國家主義」的雛形與實踐同樣顯見於朴正熙的威權統治時期，其運作模式類似於日本的國家主義。
+
+
+=== 20世紀 ===
+1945年朝鮮半島自日本殖民統治下光復後，北部由蘇聯軍事占領，南部由美軍政廳接管。由於北方迅速由以金日成為核心的共產勢力主導，李承晚自1947年初起便主張在南部建立「韓國單獨政府」（韓語：남한 단독 정부），承認建立統一朝鮮半島政府的困難。李承晚的這一立場遭到許多泛韓「民族主義」者的反對。
+1949年，李承晚政府採納了「一民主義」（韓語：일민주의），將大韓民國的國家認同與基於族群的極端民族主義結合。儘管該官方意識形態在1952年後逐漸被廢棄，但李承晚直到下台前從未放棄一民主義的核心元素之一，即以韓國武力實現北進統一（韓語：북진통일）。
+1961年掌權的朴正熙比起李承晚主張的武力統一，更加強調韓國的經濟建設，提出「先經濟後統一」（韓語：선경제 후통일）。1972年，他主導制定了《對國旗的盟誓》（韓語：국기에 대한 맹세）。現代韓國的「國家主義」與愛國主義情緒與朴正熙遺留的政治遺產有著深厚淵源。
+
+
+=== 21世紀 ===
+
+韓國國籍法基於血統主義而非屬地主義（即根據出生地授予國籍的原則）。 2005年，在野黨大國家黨曾提議修改國籍法，允許在韓國出生的嬰兒無論父母國籍為何均可獲得韓國國籍，但因社會輿論強烈反對而作罷。
+根據峨山政策研究院2015年的一項民調顯示，20多歲的韓國人中僅有5.4%認為朝鮮人（北韓人）是「同血統的同胞」。民調還發現，僅有11%的韓國人將朝鮮與「韓民族」聯繫在一起，大多數人則聯想到軍事、戰爭或核武器等詞彙。此外，大多數韓國人表示相較於朝鮮人，他們對美國人和中國人感到更加親近。根據韓國統一研究院2017年12月發布的調查，72.1%的20多歲韓國年輕人認為「沒有必要統一」。同時，多倫多大學學者史蒂芬·丹尼（Steven Denney）指出：「韓國年輕世代雖然覺得脫北者比外籍勞工更親近，但相比於脫北者，他們會覺得在韓國本土出生的非韓裔兒童更加親近。」
+根據卡內基國際和平基金會的研究，基於血統族群的「民族主義」在韓國年輕一代中呈下降趨勢，他們更多地為韓國的民主制度、科技創新和文化軟實力感到自豪。根據鄭漢蔚（Hanwool Jeong）基於2020年韓國身份認同調查的研究，雖然對「大韓民國」的國家認同率上升至90%，但族群親和度卻下降至64%，且年輕人的下降幅度更為顯著。
+根據「華語邊界研究」（Sinophone Borderlands）計畫於2020年至2022年間針對56個國家進行的調查，韓國人對中國的負面看法位居全球首位；韓國部署薩德系統後中華人民共和國實施的經濟制裁（包括限韓令）進一步加劇了韓國國內的反華情緒，從而推動了韓國國家主義的升溫。在2024年韓國戒嚴危機後尹錫悅遭彈劾期間，反中陰謀論在其極右翼支持者中迅速傳播。（韓國的反華情緒中，反共「國家主義」比族群「民族主義」更爲主要的動機。）此外，反華情緒亦與右翼至極右翼國民力量的民粹主義緊密相連。
+
+
+== 新右派運動 ==
+
+韓國政治中的新右派（韓語：뉴라이트）運動是一股批判傳統保守派（「舊右派」）與進步派分割的政治思潮。他們反對傳統韓國「民族主義」的核心要素（包括反日情緒），比起韓國獨立運動史，他們更加重視1948年建國後的「大韓民國史」。
+
+
+== 「國吹」 ==
+
+「國吹」（韓語：국뽕）是一個韓語貶義詞，用於諷刺盲目的韓國極端國家主義者。該詞由意為「國家」的「國」（韓語：국）與源自甲基苯丙胺（安非他命，日語俗稱「覺醒劑」/ Philopon）的「뽕」組合而成，字面意思為「沉醉於國家主義毒品之中」。
+
+
+== 「建國節」爭議 ==
+在韓國社會，對於「大韓民國」究竟何時成立一直缺乏共識。
+支持「民族主義」者認為大韓民國成立於1919年：大韓民國憲法前言將爆發三一運動並成立大韓民國臨時政府的1919年視為建國之年。該觀點的支持者引用了美國與中華民國的例子：美國紀念1776年發表《美國獨立宣言》的獨立日，而非1781年邦聯成立；中華民國則紀念1911年辛亥革命爆發的雙十節，而非1912年臨時政府成立之日。
+然而，支持「國家主義」者則主張，應將1948年8月15日大韓民國政府正式成立之日定為「建國節」（韓語：건국절）。他們認為主張大韓民國建國於1919年是一種歷史修正主義，且在國際上，「韓國」普遍被視為與「大韓民國」等同，並認定其成立於1948年。
+
+
+== 地緣政治 ==
+韓國國家主義通常以強烈的反朝鮮（反北韓）為特徵，有時並伴隨著反華情緒。 親美傾向與基督教民族主義亦常與韓國國家主義相結合。
+20世紀的韓國國家主義者（包括李承晚）多數既親美又反日；然而到了21世紀，部分韓國國家主義者（包括新右派人士）則呈現出親日立場。根據日本公益財團法人新聞通信調查會在2025年底進行的一項民調，56.4%的韓國人對日本抱有好感，其中20多歲與30多歲族群的好感度尤高。
+
+
+== 觀點 ==
+根據東西大學（동서대학교）教授、韓國研究學者布萊恩·雷諾茲·邁爾斯（Brian Reynolds Myers）的觀點，韓國人傾向於將「韓民族」（minjok）與其國家（大韓民國）區分開來。 邁爾斯指出，韓國國旗在韓國人眼中往往被視為「韓民族」的象徵，而非僅代表韓國本身。 「民族主義」的優先地位也體現在2011年以前的韓國軍誓（military oath）和2007年以前的國旗誓詞（pledge of allegiance）中，兩者均宣誓效忠於「韓民族」。
+澳洲國立大學的艾瑪·坎貝爾（Emma Campbell）認為，韓國年輕一代對韓國nationalism的觀念正在演變，一種具有全球化文化特徵的新形式正在興起。 根據坎貝爾對150名二十多歲韓國人的訪問研究，對統一的渴望正在下降。然而，那些支持統一的人給出的理由與「民族主義」不同。受訪者表示，只有在統一不會打亂韓國生活，或者朝鮮在經濟上達到與韓國相當水平的情況下，他們才希望統一。少數受訪者甚至提到，他們支持「以不在有生之年發生為條件的統一」。 坎貝爾指出，她的採訪表明，許多韓國年輕人在接受外國人成為「我國」（uri nara，우리나라）的一部分方面沒有障礙。
+韓國的「國家主義」遭到韓國左翼「民族主義」者的強烈抵制， 因為其部分受到了日本準法西斯主義「国家主義」（kokkashugi）以及1945年後激進反共主義遺產（體現為政治威權主義和反共屠殺）的影響。 他們主張這種意識形態是「暴力且排他的」。
+
+
+== 國家主義團體列表 ==
+本列表列出了大韓民國境內以韓國為中心而非以泛「民族主義」為中心的「國家主義」團體。
+
+朝鮮日報（1920年至今）——1948年及之後（1948年以前不存在大韓民國這一國家）
+統一教（1954年至今）——也被歸類為支持統一的韓國「民族主義」組織，但支持由韓國主導的統一。
+大國家黨 → 新世界黨 → 自由韓國黨（1997年–2020年）
+我們共和黨（2017年–2020年）
+我們共和黨（2020年至今）
+未來統合黨 → 國民力量（2020年至今）
+未來韓國黨（2020年）→ 國民未來（2024年）<|im_end|>
+<|im_start|>user
+Write the abstract for a paper titled "Asymptotic mean value Laplacian on equiregular sub-Riemannian manifolds".<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Asymptotic mean value Laplacian on equiregular sub-Riemannian manifolds
+
+Let $(M,\mathcal{D},g)$ be a smooth equiregular sub-Riemannian manifold equipped with a smooth positive measure $μ$. We study the small-scale limit of the metric-ball mean-value operator \[ A_hf(x)=\frac{1}{h^{2}μ(B(x,h)) }\int_{B(x,h)}(f(q)-f(x))\, dμ(q). \] Exact homogeneity yields the pointwise limit on Carnot groups. On a general equiregular manifold, convergence for every smooth test function is equivalent to convergence of the rescaled horizontal first moments of metric balls in first-kind privileged coordinates. This criterion is independent of $μ$; when it holds, the principal symbol is determined by the normalized second-moment tensor of the tangent unit ball, and the drift satisfies an explicit change-of-measure formula. In step at most two, we verify the criterion by combining a real-analytic finite-jet reduction with tame integration, which rules out oscillation of the normalized moments. We also compute the limit on Lie groups and prove unconditional distributional convergence of the volume-weighted operators on every equiregular manifold.<|im_end|>
+<|im_start|>user
+Tell me about DomCon.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+DomCon
+
+DomCon is a political conference dedicated to remigration. It was organised by the Dominion Society of Canada.
+
+
+== History ==
+The event was scheduled for August 29th, 2026. According to Dominion Society chairman Daniel Tyrie, tickets for the event sold out by August 22nd, 2026. The event was originally planned to take place in Hamilton, Ontario. Later, it was moved to Burlington, Ontario.
+
+
+=== Speakers ===
+Austrian far-right activist Martin Sellner was invited to attend DomCon but was denied entry into Canada. Despite being unable to attend in person, Sellner attended and spoke at the event virtually.
+Restore Britain spokesman Charlie Downes was invited to attend DomCon. Prior to the event he was detained at the US-Canada border but was later released and attended the convention.
+British activist and White Papers Policy Institute member Lucy White spoke at Domcon where she presented the WPPI's Canadian Remigration Policy Platform.
+
+
+== Reactions ==
+
+
+=== Political reactions ===
+Mayor of West Lincoln Cheryl Ganann stated that the Dominion Society would not be permitted to host any events in the town.
+Mayor of St. Catharines Mat Siscoe condemned DomCon and the Dominion Society and stated that their views are not welcome in St. Catharines. He also urged local businesses to not rent out a space for the Dominion Society.
+B'nai Brith Canada urged the Canadian government to prevent Martin Sellner from entering the country.
+The Friends of Fort George announced that Brock's Monument would be closed for the duration of DomCon, citing the need to protect the "safety of its student employees."
+Conservative Party MP Andrew Lawton criticized police reaction to the Dominion Society, stating that the actions taken against the Dominion Society amounted to censorship.
+Former Conservative Party leader Erin O'Toole stated that while he disagrees with the Dominion Society's views, the group should be free to express their views.
+
+
+=== Counter protests ===
+
+Several counter protests took place across Ontario in response to DomCon.
+Counter protests in Hamilton, Ontario were organized by Hope Not Hate and included groups such as the Hamilton & District Labour Council, the Hamilton Centre for Civic Inclusion, and the Hamilton Anti-Racism Resource Centre. According to CBC News, more than 100 people attended the counter protest outside of Hamilton city hall.
+A counter demonstration took place in Burlington, Ontario outside of The Atrium Banquet and Conference Centre where DomCon was being hosted. Around 30 masked counter protesters took part in the demonstration while several men in suits wearing Dominion Society lanyards stood them down. Officers of the Halton Regional Police Service kept the two groups from engaging each other.
+A counter demonstration took place in Peterborough, Ontario in the morning of August 29th. It was organized by Kawarthas United Against Hate and the Peterborough-Nogojiwanong chapter of the International Socialists Canada. Peterborough mayoral candidates Keith Riel, Rob Hailman, and Jacob Méthot were in attendance at the demonstration while council candidates Joy Lachica, Chris Potter, Matt Crowley, Jen Lacey, Ashley Bonner and Charmaine Magumbe also attended the demonstration. Magumbe was the only candidate to give a speech to the crowd while she was at the same time representing the Afrocentric Awareness Network of Peterborough during the protest.<|im_end|>
+<|im_start|>user
+请介绍一下岈山村。<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+岈山村
+
+岈山村，旧称岈山庄，是中华人民共和国山东省肥城市孙伯镇下辖的一个行政村，位于孙伯镇最北端，地处群山环抱的山区盆地，与安驾庄镇和东平县接山镇接壤。相传在元末明初建村，因村东的岈山而得名。村内有众多古民居建筑、庙宇和抗战遗迹。2019年，住房城乡建设部等部门将岈山村列入第五批中国传统村落。
+
+
+== 历史及沿革 ==
+岈山村的建村年代，地方史料有两种说法。根据《张氏家谱》，岈山村在元末明初时建村，当时张姓为躲避战乱在此建村，后来李、朱、王、陈等各姓也先后迁入。而根据关帝庙碑文，岈山村系清康熙年间由张姓迁入建立。岈山村得名于附近的岈山，岈山则因主峰形状像一颗牙，因此得名牙山，后来演变成岈山。元代时期，今岈山村一带属于东平路泰安州，明朝时归济南府泰安州，清代时归泰安府泰安县西南乡。民国初年，岈山村属泰安市第十区西五分区。1929年，岈山村属泰安县新安区栾任地方
+抗日战争期间，岈山村东的岈山曾作为泰西县抗日民主政府临时驻地。1939年1月，八路军山东纵队在岈山一带建立后方医院。1939年春，八路军115师东进支队在岈山修整，代师长陈光、政治部副主任肖华曾在岈山村居住40余天，并指导当地中共党组织建设和群众运动。。5月，日军试图包围肥城中部山区的八路军115师，陆房战斗爆发，115师东进支队686团利用岈山、肥猪山一带的制高点阻击日军。突围之后，八路军伤员被分散安置在附近的五埠村、岈山村、牛山庄村等，其中部分中等伤员就安置在岈山村。村民挖掘地洞，当地俗称“土屋子”，用来隐蔽八路军伤员。1941年，伪军在岈山设置据点，驻有12人，并修筑炮楼。1943年秋，伪军自该据点撤离。
+1949年，岈山所在的泰西县十区划为肥城县第八区。1952年岈山村属肥城八区的岈山乡，1957年属孙伯乡。1959年之后岈山村归属孙伯人民公社的北栾管区。1984年人民公社撤销，设置区乡，岈山村属于孙伯区北栾乡，1985年11月撤销县辖区，岈山属孙伯乡；1996年孙伯乡撤乡设镇，岈山村继续属于孙伯镇。
+
+
+== 地理和气候 ==
+岈山村处于孙伯镇最北端，距离孙伯镇驻地约6公里，东南为刘庄村，南为五埠村，西接东平县接山镇辖区，东北为安驾庄镇辖区。村庄位于山区盆地中央，四面环山，周边有名的山顶有21个，其东部为岈山，北侧为大顶山，西侧、南侧也有一些丘陵。地势上大致东北高，西南低。其辖区总面积10574亩，其中村庄349亩、耕地2725亩，其余7500亩为山林。村内的土壤多为褐土。村辖境内有野兔、山鸡、獾等野生动物，植被则有杨树、槐树、松、柏、花椒等。
+岈山村属于暖温带季风气候，四季分明，年平均气温16.6℃，1月最冷，为-2.7℃，7月最热，月均温26.5℃。年平均降水600mm左右，雨季在7月上旬至9月上旬。
+肥城K18路公交经过岈山村。
+
+
+== 人口和教育 ==
+岈山村人口以汉族为主。1947年前后人口复查时有人口998人，此后人口快速增长，到1978年时人口达到顶峰，有约1600人。在此之后，岈山村本地农户外迁，青壮年外出打工，人口逐渐下降。1986年底有282户，1138人。至2020年前后，有210户，户籍人口不到700人，常住人口仅有200人左右。
+1995年时，岈山村有岈山小学，当年有学生103人，教师7名，设5个班。如今已经撤销。
+
+
+== 文化和民俗 ==
+
+岈山村的传统民俗有东乡调、“义士胡四比”传说和虎头鞋制作技艺。东乡调是岈山村传统民间说唱形式，最早是本地居民荒年前往东平州行乞所唱，岈山村位于东平州以东，当地人自称来自“东乡”，因此这种说唱形式被称为“东乡调”。东乡调由张家传承，代表曲目有《花木兰》、《岈山十二宝》等。虎头鞋是岈山村传统民间手工艺，虎头鞋的鞋头如其字面意思一样形似虎头，当地认为虎头鞋有驱邪避凶、祈求儿童平安的寓意。
+当地还流传着“义士胡四比”的传说：传说胡四比是明末东平州人，相传他由姑姑抚养长大，后来从军。明朝灭亡后，他不愿降清，带着姑姑流落至岈山一带，后来在与清军的战斗中受伤，突围失败后与姑姑一同身亡。这个传说在岈山村周围留下了养姑洞、舍姑顶、杀姑峪等多个地名。
+岈山村的民间信仰多样，除了关公庙、娘娘庙这些祭祀场所，当地居民还在家中供奉老天爷、灶神、保家客等各种神明。春节、八月十五等节日会供奉鸡、鱼、肉等。
+
+
+== 建筑与文物 ==
+岈山村整体呈东西长、南北窄的纺锤形。村庄有大量传统民居和建筑留存，如关公庙、三圣庙、山神庙、龙王庙、土地庙、清代药铺德泰昌、李家大院等。由于岈山村四面环山，村内传统院落大多顺应地势，布局灵活，且院落内部也有高低落差。村内有二合院、三合院、四合院、二进院落等等。建筑有土质以及石木结构的，石质房屋和院墙使用本地石灰石或花岗岩作建筑材料，以方石垒砌，内墙使用麦秸和黄土混合物涂抹，梁架为木材。石质建筑的屋檐、山墙等部位有花卉、鹿等各种纹饰，窗户为石雕窗棂，图案包括铜钱、“万”字、绳结等。
+村庄及周边还保存有一些抗日战争时期的遗迹，包括后方医院、地道洞口、用来掩蔽伤员的“土屋子”、岈山上的伪军碉堡遗址。1962年，村内修建了一座石质毛主席像台，毛主席像台两侧画有毛主席像，刻着毛主席诗词。岈山土地庙、岈山主席台、岈山碉堡遗址列入了肥城市不可移动文物名录。
+2019年6月，岈山村及附近的五埠村均列入了第五批中国传统村落名录。
+
+
+== 经济和物产 ==
+岈山村经济以养殖业和种植业为主，其中经济作物有小米、核桃等，工业及手工业方面，岈山村附近山石资源多，早年村内有大量石匠、木匠。在改革开放之后，岈山村曾经营过酒厂、油坊等，但大多倒闭。村内现存有一家豆腐厂、一家小型木材加工厂。
+本地特产包括岈山茶、岈山小米、岈山柿子和岈山竹编。其中岈山小米种植历史悠久，当地把小米当做一种孕妇食品，也有坐月子吃小米的习俗。岈山小米作为传统作物被保护下来，当地划定了保护面积，并注册了“岈山牌”商标。
+
+
+== 图集 ==<|im_end|>
+<|im_start|>user
+Write the abstract for a paper titled "Rigidity of Ricci-Pinched Complete Self-Shrinkers in Arbitrary Codimension".<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Rigidity of Ricci-Pinched Complete Self-Shrinkers in Arbitrary Codimension
+
+Let $M$ be an $n$-dimensional complete connected self-shrinker in $\mathbb{R}^{n+p}$. Denote by $\operatorname{Ric}$ and $\mathbf{H}$ the Ricci curvature tensor and the mean curvature vector of $M$, respectively. We prove that if the self-shrinker $M$ satisfies $\operatorname{Ric}\ge(\frac{n-2}{n^2}+\varepsilon_n)|\mathbf{H}|^2g$, then $M$ is either a linear subspace or a round shrinking sphere, where $\varepsilon_n$ is an explicit positive constant equal to $\frac{1}{3n^2}+O\left(\frac{1}{n^5}\right)$. Moreover, we obtain a rigidity theorem that is sharp in codimension two for the self-shrinker satisfying $\operatorname{Ric}\ge\frac{n-2}{n^2}|\mathbf{H}|^2g$.<|im_end|>
+<|im_start|>user
+Tell me about 2026 Sungai Raya school bombing.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+2026 Sungai Raya school bombing
+
+On the afternoon of February 3, 2026, a Molotov cocktail was thrown at SMP Negeri 3 Sungai Raya, Kubu Raya Regency, West Kalimantan, Indonesia, during recess at around 10:40 a.m. WIB. The incident did not result in any fatalities; only one person suffered minor injuries from shrapnel or debris during the explosion. The alleged perpetrator is a 9th grade student at the school.
+
+
+== Incident ==
+During the school break, when students were eating free nutritious meals, a 9th grade student brought and threw a homemade Molotov cocktail into the school environment. The homemade bomb was a bottle filled with fuel with a cloth wick, and when thrown, it caused sparks and smoke, accompanied by the explosion of several firecrackers that were also activated at the location. There were no fatalities, but one student suffered minor injuries from sparks or debris during the incident.
+The school and local residents immediately took initial action to prevent the fire from spreading to the main school building, while the police arrived at the scene, set up a police line, and detained the suspected perpetrator for further investigation. After the incident, the National Police's Anti-terror Densus 88 Anti-terror Team together with related officers found six additional bottles of Molotov cocktails as well as other evidence such as five portable gas with firecrackers, nails, and knives. The bomber reportedly went crazy after his action.
+
+
+== Suspected ==
+The suspect is a 9th-grade student at the school. He enjoys playing shooting games and dreams of becoming a mechanic. The police have secured the perpetrator for further investigation at the Kubu Raya Police. From the results of the initial investigation by the authorities, the perpetrator was exposed to violent content through an online community called "True Crime Community" (TCC), and the alleged relationship between this behavior and psychological pressure including experiences of bullying is being investigated; Investigators are still investigating the full background and motive.
+In his daily school life, the alleged perpetrator behaved like a typical student. However, he is suspected of experiencing psychological stress due to a number of issues possibly related to his actions. Previously, the alleged perpetrator had been under police surveillance, but this surveillance was no longer as intensive as problems within the family.
+
+
+=== Investigation ===
+He carried a bag in which, in his backpack, there were various symbols, numerology (possibly the number of kills from various mass murder events), sigils, and the names of previous school attackers such as Adam Lanza, Seung-Hui Cho, Salvador Rolando Ramos, and Timur Bekmansurov, Pulse nightclub shooter Omar Mateen, incel-misogynist killer Elliot Rodger, Las Vegas attacker Stephen Paddock, and Brenton Tarrant.
+Besides these names, there are also other inscriptions, namely #ZeroDay and TCC. Zero Day refers to a film about school shootings, while TCC stands for "True Crime Community," an online community associated with the spread of violent and extremist content.<|im_end|>
+<|im_start|>user
+布鲁诺·战锤是什么？<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+布鲁诺·战锤
+
+布鲁诺·战锤（英語：Bruenor Battlehammer）是被遗忘的国度世界观中的虚构人物，由美国作家R·A·萨尔瓦多创作，是《崔斯特传奇》的主要人物之一。官方简体中文资料亦使用“布鲁诺战锤”作为其译名。
+布鲁诺是一名盾矮人战士、铁匠和国王，是战锤氏族（Clan Battlehammer）的领袖。他幼年时随族人逃离被暗影龙占领的秘银厅，成年后长期居住于冰风谷，并最终率领族人夺回故乡。他也是“秘银厅伙伴”（Companions of the Hall）的核心成员之一，与崔斯特·杜垩登、瑞吉斯关系密切，并收养了人类女孩凯蒂布莉儿和蛮族战士沃夫加。
+布鲁诺曾多次担任秘银厅之王，在晚年寻找传说中的矮人古城冈特格林（Gauntlgrym），并在那里死亡。其后在女神梅莉凯的安排下转生为矮人雷金纳德·圆盾（Reginald Roundshield），恢复前世身份后再次成为北地重要的矮人君王，后来统治冈特格林。
+
+
+== 生平 ==
+
+
+=== 秘银厅的陷落 ===
+布鲁诺出生于矮人要塞秘银厅。当他还是儿童时，秘银厅的矮人矿工在深处挖掘时惊醒了暗影龙希默格鲁姆（Shimmergloom）。暗影龙在灰矮人的协助下攻占秘银厅，大量战锤氏族矮人在保卫家园的战斗中死亡。
+布鲁诺是少数成功逃出的战锤氏族成员之一。幸存者最终北上，并在冰风谷凯尔文石冢附近建立新的聚居地。
+布鲁诺成年后成为当地战锤氏族的首领。氏族主要依靠采矿、锻造武器和铠甲与冰风谷十镇进行贸易，但布鲁诺一直没有放弃返回秘银厅的愿望。
+
+
+=== 凯蒂布莉儿与崔斯特 ===
+布鲁诺率领矮人帮助十镇抵抗一次地精袭击时，发现一名失去父亲的人类女孩凯蒂布莉儿（Catti-brie），并将其收养。
+凯蒂布莉儿此后在战锤氏族中长大，把布鲁诺视为自己的父亲。虽然布鲁诺性格粗犷，对养女却非常疼爱。
+后来，离开幽暗地域并来到冰风谷的卓尔游侠崔斯特·杜垩登开始在十镇周围活动。布鲁诺最初和其他地表居民一样对卓尔有所戒备，但凯蒂布莉儿很早便接受崔斯特，布鲁诺也逐渐认识到崔斯特与其他卓尔不同。
+两人随后成为终生好友。
+
+
+=== 沃夫加与艾吉斯之牙 ===
+冰风谷蛮族联合进攻十镇时，年轻的麋鹿部族战士沃夫加（Wulfgar）在战斗中被布鲁诺击败。
+布鲁诺没有让十镇居民杀死沃夫加，而是要求其为自己服务五年零一天。最初沃夫加认为自己只是矮人的奴隶，但双方逐渐形成类似父子的关系。
+沃夫加服役即将结束时，布鲁诺让崔斯特教授他更加系统的战斗技巧，并亲手为其打造魔法战锤艾吉斯之牙（Aegis-fang）。
+艾吉斯之牙被认为是布鲁诺一生最杰出的锻造作品之一。战锤上刻有矮人诸神摩拉丁、克兰贾丁和杜马松的符号，并能够在被投掷后重新返回沃夫加手中。
+沃夫加后来也把布鲁诺视为父亲。
+
+
+=== 碎魔晶战争 ===
+法师阿卡尔·凯梭利用神器克林辛尼朋建立大军进攻冰风谷时，布鲁诺、崔斯特、凯蒂布莉儿、沃夫加和瑞吉斯共同参与十镇的防御。
+布鲁诺在战争中一度受重伤。战争结束后，他借机夸大自己的伤势，诱使崔斯特答应陪同自己寻找失落已久的秘银厅。
+这一冒险成为后来“秘银厅伙伴”共同旅程的开端。
+
+
+=== 寻找秘银厅 ===
+布鲁诺与崔斯特、沃夫加和瑞吉斯离开冰风谷，开始寻找秘银厅。
+由于布鲁诺离开故乡时仍然年幼，他对秘银厅具体位置的记忆已经模糊。一行人在长途旅行中最终重新找到入口，并发现秘银厅仍由灰矮人和暗影龙希默格鲁姆控制。
+在与希默格鲁姆的战斗中，布鲁诺将自己浇上油并点燃，扑到暗影龙身上，与其一同坠入深渊。
+伙伴们认为布鲁诺已经死亡，但他实际上依靠崔斯特的魔法弯刀冰亡等因素幸存下来。希默格鲁姆则在坠落过程中死亡。
+布鲁诺随后从秘银厅中逃脱，并最终重新与伙伴会合。
+暗影龙死亡后，战锤氏族和盟友开始清除秘银厅中残余的灰矮人。布鲁诺最终实现了毕生愿望，重新夺回祖先的家园，并成为秘银厅之王。
+
+
+=== 秘银厅之王 ===
+夺回秘银厅后，布鲁诺开始重新建设矮人王国。
+他与银月城、费尔巴堡、十镇以及北地其他势力建立联系，而秘银厅伙伴仍不断卷入新的冒险。
+在魔索布莱城发动针对秘银厅的大规模进攻期间，布鲁诺亲自参与保卫王国。战斗结束后，被卓尔长期囚禁的秘银厅建立者甘达卢·战锤（Gandalug Battlehammer）获得自由。
+由于甘达卢是战锤氏族古老王统的合法君王，布鲁诺主动让出王位，由甘达卢重新统治秘银厅。
+甘达卢去世后，布鲁诺再次返回秘银厅继承王位。
+
+
+=== 奥博德战争 ===
+兽人国王奥博德·众箭统一世界之脊附近大量兽人部族后，向秘银厅及银月联盟发动战争。
+布鲁诺领导秘银厅进行长期防御，并一度坚持必须彻底消灭奥博德及其兽人大军。战争造成大量矮人、兽人和北地居民死亡。
+随着战争持续，奥博德开始由单纯的征服者转向建立一个稳定兽人王国。布鲁诺也逐渐意识到，彻底消灭世界之脊的兽人并不现实。
+在《兽人王》中，布鲁诺最终放弃单纯依靠战争解决问题，与奥博德共同对付希望重新挑起全面战争的势力。
+1372 DR，两人在加伦峡谷条约（Treaty of Garumn's Gorge）上签字。秘银厅正式承认众箭王国，双方战争由此结束。
+这份和平虽然始终受到双方内部主战势力反对，却持续了超过一个世纪。
+
+
+=== 魔法瘟疫与失去伙伴 ===
+魔法瘟疫爆发后，凯蒂布莉儿受到失控魔法影响，生命陷入危险。
+布鲁诺与崔斯特等人试图寻找挽救她的方法，并参与对抗由克林辛尼朋等力量形成的幽灵王。
+最终凯蒂布莉儿和瑞吉斯均离开现世。
+随着时间推移，沃夫加也结束了原本的人生。布鲁诺由于矮人寿命较长，成为秘银厅伙伴中最后仍陪伴崔斯特的旧日成员之一。
+凯蒂布莉儿的死亡尤其给布鲁诺带来极大打击。虽然他经历过无数战争，但失去自己的养女被描写为其一生中最痛苦的事件之一。
+
+
+=== 寻找冈特格林 ===
+进入晚年的布鲁诺逐渐把注意力转向矮人传说中的古代王国冈特格林。
+他长期怀疑冈特格林仍然存在，并将寻找这座失落矮人城市视为自己生命最后阶段最重要的目标之一。
+为了摆脱国王身份带来的责任，布鲁诺离开秘银厅，与崔斯特一同寻找冈特格林。此时两人都失去了大多数旧日伙伴，因此这次旅程也成为两位老朋友最后一次长期共同冒险。
+两人最终真正找到冈特格林。
+与此同时，贾拉索和阿索盖特此前的探索导致封印在冈特格林地下的火焰原初者玛格拉（Maegera）出现失控危险。
+在最终战斗中，布鲁诺与崔斯特等人共同阻止灾难。他在战斗中遭受致命伤，却仍在生命最后时刻完成重新封印玛格拉的任务。
+布鲁诺随后在冈特格林死亡。
+
+
+=== 伊鲁拉顿与重生 ===
+布鲁诺死亡后并未立即前往传统矮人来世，而是来到由梅莉凯力量形成的伊鲁拉顿（Iruladoon）。
+在那里，他重新见到凯蒂布莉儿、瑞吉斯和沃夫加。
+为了在未来帮助仍然活着的崔斯特，梅莉凯给予四人重新进入世界的机会。布鲁诺最终接受重生，并以新的矮人身份雷金纳德·圆盾（Reginald Roundshield）出生于费尔巴堡。
+与普通转生不同，布鲁诺保留了前世的记忆和人格，因此从儿童时期便清楚自己真正的身份。
+重新经历矮人童年令他一度非常不满，他仍将自己视为布鲁诺·战锤，而不是新的雷金纳德。
+
+
+=== 伙伴重新团聚 ===
+成年后的雷金纳德离开费尔巴堡。
+他一度认为自己重生的真正使命可能是重新统治秘银厅，而不是寻找崔斯特。然而在冈特格林遇到已经变成吸血鬼的老部下西布多夫·潘特（Thibbledorf Pwent）后，潘特对布鲁诺表现出的忠诚使其重新认识到自己首先应该履行对朋友的承诺。
+布鲁诺随后前往冰风谷，与重生的凯蒂布莉儿、瑞吉斯和沃夫加会合，并最终找到濒临死亡的崔斯特。
+由此，秘银厅伙伴在相隔一个多世纪后重新聚首。
+此后，他重新使用布鲁诺·战锤之名。
+
+
+=== 银月联盟战争 ===
+秘银厅伙伴重聚不久，北地再次爆发大规模战争。
+魔索布莱城的卓尔势力暗中推动众箭王国内部主战派发动战争，兽人大军重新进攻秘银厅、银月城和埃弗伦等地。
+布鲁诺再次成为矮人抵抗力量的重要领袖。
+这场战争最终导致众箭王国旧有政治秩序崩溃，也使布鲁诺当年与奥博德签订的和平受到毁灭性打击。
+虽然布鲁诺本人曾长期怀疑与兽人和平是否正确，但一个多世纪的相对和平证明当年的条约确实改变了北地历史。
+
+
+=== 冈特格林之王 ===
+重生后的布鲁诺最终重新进入冈特格林。
+作为战锤氏族最著名的国王之一，以及寻找并重新发现冈特格林的重要人物，他逐渐成为当地矮人势力的核心领导者，并最终以冈特格林之王的身份统治这座古老矮人城市。
+《Out of the Abyss》时期，布鲁诺已明确以冈特格林国王身份活动。当幽暗地域发生恶魔危机时，他召集地表各大势力的代表来到冈特格林，并协助组织针对恶魔威胁的远征。
+此后他继续统治冈特格林，并成为北地德尔宗矮人的重要领袖。
+到1508 DR时期，布鲁诺仍然在世并统治冈特格林。崔斯特与凯蒂布莉儿的女儿布里埃内尔也将他视为自己的外祖父，其名字“Briennelle”即取自“Bruenor”的女性化形式。
+
+
+== 性格 ==
+布鲁诺具有许多传统矮人形象的典型特点：固执、直率、容易发怒，同时非常重视家族、荣誉和忠诚。
+他经常以粗鲁甚至带有攻击性的方式表达意见，但实际具有强烈的同情心。凯蒂布莉儿和沃夫加均并非矮人，他却将两人视为自己的孩子；面对最初受到北地居民排斥的卓尔崔斯特，他也最终克服了传统偏见，与其建立持续数百年的友谊。
+布鲁诺同样具有明显的冒险倾向。即使成为国王，他仍经常亲自参加战斗，并多次表现出不愿长期坐在王座上处理政务的态度。
+其政治观念也随着年龄发生变化。奥博德战争早期，他对兽人抱有强烈敌意，希望通过战争彻底解决威胁；但在长期战争后，他最终选择承认众箭王国，并与奥博德签订和平条约。
+
+
+== 能力 ==
+
+
+=== 战斗能力 ===
+布鲁诺是一名经验丰富的矮人战士。
+他的主要战斗方式是使用单刃战斧和盾牌进行近距离战斗。与崔斯特依赖速度和技巧不同，布鲁诺更依靠力量、耐力、铠甲以及矮人传统战斗方式与敌人正面对抗。
+官方游戏资料通常将其设定为高等级战士。在不同《龙与地下城》版本中具体等级有所变化，因此并不宜将单一版本的数据视为小说中的固定能力。
+布鲁诺还拥有丰富的军事指挥经验，曾长期领导战锤氏族，并指挥秘银厅抵抗卓尔、兽人以及其他敌人的多次大型战争。
+
+
+=== 锻造 ===
+布鲁诺同时是一名优秀的矮人铁匠。
+他最著名的作品是为沃夫加打造的魔法战锤艾吉斯之牙。布鲁诺在锻造过程中倾注大量心力，并使用与矮人诸神有关的符号和魔法，使这件武器与沃夫加形成特殊联系。
+在小说中，艾吉斯之牙通常被认为是布鲁诺锻造生涯中最重要的作品。
+
+
+== 装备 ==
+
+
+=== 缺口战斧 ===
+布鲁诺最常使用的武器是一把经历无数战斗、刀刃上留有大量缺口的单刃战斧。
+这把战斧不像崔斯特的冰亡和闪光那样主要依靠明确的魔法能力而闻名，其意义更多来自布鲁诺长期使用及其象征性。
+重生后，他重新取得自己的旧武器。
+
+
+=== 战锤氏族盾牌 ===
+布鲁诺通常使用一面绘有泡沫啤酒杯图案的盾牌，这一图案也是战锤氏族最具代表性的徽记之一。
+在冈特格林时期，矮人诸神曾强化布鲁诺的装备，其盾牌和战斧由此获得更加明显的神性力量。
+
+
+=== 独角头盔 ===
+布鲁诺最具辨识度的装备之一是一顶带有单角的头盔。
+在奥博德战争期间，崔斯特一度误以为布鲁诺已经死亡，并将其遗留的独角头盔放在自己藏身之处，以此提醒自己不要彻底陷入“猎人”状态。
+布鲁诺后来重新取得这顶头盔。
+
+
+== 重要关系 ==
+
+
+=== 凯蒂布莉儿 ===
+凯蒂布莉儿是布鲁诺的养女。
+她的父亲在地精袭击中死亡后，布鲁诺将其收养，并在冰风谷战锤氏族中将她抚养成人。
+两人的关系一直非常亲密。凯蒂布莉儿虽然是人类，却在语言习惯、性格和生活方式上受到矮人文化明显影响。
+她在魔法瘟疫时期死亡，是布鲁诺一生最大的精神打击之一。
+凯蒂布莉儿重生后，两人的父女关系也随之恢复。
+
+
+=== 沃夫加 ===
+沃夫加最初是布鲁诺俘获的蛮族战士。
+布鲁诺让其为自己服务五年零一天，并逐渐将其视为儿子。他亲手为沃夫加打造艾吉斯之牙，并让崔斯特负责训练他的战斗技巧。
+沃夫加后来同样把布鲁诺视为自己的父亲。
+
+
+=== 崔斯特·杜垩登 ===
+崔斯特是布鲁诺最重要的朋友之一。
+两人最初由于种族差异存在隔阂，但布鲁诺很快认识到崔斯特与魔索布莱城其他卓尔不同。
+崔斯特帮助布鲁诺寻找并重新夺回秘银厅，此后两人共同经历大量战争和冒险。
+在其他旧日伙伴相继离世之后，崔斯特陪伴年老的布鲁诺寻找冈特格林。布鲁诺死亡后，重生的他也把帮助崔斯特视为自己返回世界的重要原因之一。
+
+
+=== 瑞吉斯 ===
+瑞吉斯是布鲁诺在冰风谷时期的长期朋友，也是秘银厅伙伴之一。
+与更加冲动的布鲁诺相比，瑞吉斯经常依靠谈判、说服和政治手段处理问题，因此有时也充当布鲁诺身边较为冷静的顾问角色。
+
+
+=== 西布多夫·潘特 ===
+西布多夫·潘特（Thibbledorf Pwent）是战锤氏族著名的狂战士，也是布鲁诺最忠诚的部下之一。
+潘特以极端粗犷的战斗方式和对布鲁诺近乎绝对的忠诚著称。
+布鲁诺重生后曾一度准备放弃寻找崔斯特、重新夺回秘银厅王位，但在冈特格林再次遇到已经成为吸血鬼的潘特后，被其忠诚所触动，并重新决定履行帮助崔斯特的使命。
+
+
+=== 奥博德·众箭 ===
+奥博德最初是布鲁诺最大的政治和军事敌人之一。
+双方在兽人战争中造成巨大伤亡，但随着战争持续，两位国王都逐渐认识到继续战斗可能导致双方共同毁灭。
+最终布鲁诺与奥博德签订加伦峡谷条约，正式承认众箭王国。
+两人没有成为传统意义上的朋友，但逐渐形成建立在实力和政治现实之上的相互尊重。
+
+
+=== 甘达卢·战锤 ===
+甘达卢是秘银厅最早的建立者之一，也是战锤氏族古代君王。
+其被魔索布莱城卓尔长期囚禁后获得解救，布鲁诺主动将秘银厅王位归还给他。
+甘达卢去世后，布鲁诺才再次继承王位。
+
+
+== 信仰 ==
+布鲁诺主要信奉矮人神系。
+其信仰与摩拉丁、杜马松和克兰贾丁等矮人神祇均存在联系。作为铁匠和矮人君王，他尤其尊敬矮人诸神所代表的锻造、氏族、矿业以及战斗传统。
+布鲁诺为沃夫加打造艾吉斯之牙时，也在武器上刻下摩拉丁、杜马松和克兰贾丁的神圣符号。
+在冈特格林最后的战斗中，布鲁诺的装备得到矮人诸神力量强化，进一步强化了其作为矮人英雄和国王的宗教象征意义。
+
+
+== 相关作品 ==
+
+
+=== 小说 ===
+布鲁诺是《崔斯特传奇》中出场时间最长的主要人物之一，重要登场作品包括：
+
+《冰风谷三部曲》
+The Crystal Shard（《碎魔晶》，1988）
+Streams of Silver（《白银溪流》，1989）
+The Halfling's Gem（《半身人的宝石》，1990）
+《卓尔遗产》
+The Legacy（1992）
+Starless Night（1993）
+Siege of Darkness（1994）
+Passage to Dawn（1996）
+《黑暗之路》
+The Silent Blade（1998）
+Sea of Swords（2001）
+《猎人之刃三部曲》
+The Thousand Orcs（2002）
+The Lone Drow（2003）
+The Two Swords（2004）
+《变迁三部曲》
+The Orc King（2007）
+The Pirate King（2008）
+The Ghost King（2009）
+《无冬传奇》
+Gauntlgrym（2010）
+《第二次大分裂》
+The Companions（2013）
+《伙伴法典》
+Night of the Hunter（2014）
+Rise of the King（2014）
+Vengeance of the Iron Dwarf（2015）
+布鲁诺在之后的《归乡》《世代》《卓尔之道》及Breezy相关作品中亦继续登场或被提及。
+
+
+=== 游戏 ===
+Baldur's Gate II: Shadows of Amn（2000）——布鲁诺与崔斯特及其他秘银厅伙伴共同登场，可以协助玩家对抗吸血鬼。
+Neverwinter——布鲁诺在与冈特格林、矮人王位和幽暗地域相关的任务中登场。
+Idle Champions of the Forgotten Realms（2017）——布鲁诺是游戏开始时即可使用的核心Champion之一，并与其他秘银厅伙伴具有组合效果。
+Dungeons & Dragons: Dark Alliance（2021）——布鲁诺与崔斯特、凯蒂布莉儿和沃夫加并列为四名核心可操作角色。
+
+
+=== 卡牌与桌面作品 ===
+2021年，《万智牌》的《Adventures in the Forgotten Realms》系列收录传奇生物牌Bruenor Battlehammer。官方简体中文名称为布鲁诺战锤。
+布鲁诺也作为主要英雄出现在The Legend of Drizzt Board Game等《龙与地下城》桌面游戏及模型产品中。<|im_end|>
+<|im_start|>user
+Can you give me the full contents of evals/stages.go?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+package evals
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/dorkitude/webctl/internal/dedupe"
+	"github.com/dorkitude/webctl/internal/jev"
+	"github.com/dorkitude/webctl/internal/prompts"
+	"github.com/dorkitude/webctl/internal/provider"
+	"github.com/dorkitude/webctl/internal/scrape"
+)
+
+// Scraper is the slice of *scrape.Fetcher the scrape stage needs.
+type Scraper interface {
+	FetchAll(ctx context.Context, urls []string, concurrency int) []scrape.Page
+}
+
+// chunkFilterer is implemented by *jev.Client; the scrape stage needs it.
+type chunkFilterer interface {
+	FilterChunks(ctx context.Context, ask jev.Ask, chunks []jev.Chunk) ([]*jev.NoulAnswer, jev.Usage, error)
+}
+
+// dupConfirmer is implemented by *jev.Client; the filter stage folds
+// near-duplicates with it, as the product does.
+type dupConfirmer interface {
+	ConfirmDuplicates(ctx context.Context, ask jev.Ask, results []provider.SearchResult, pairs []jev.DuplicatePair) ([]bool, jev.Usage, error)
+}
+
+type evalConfirmer struct {
+	c     dupConfirmer
+	usage jev.Usage
+}
+
+func (e *evalConfirmer) ConfirmDuplicates(ctx context.Context, query, goal string, results []provider.SearchResult, pairs []dedupe.Pair) ([]bool, error) {
+	jp := make([]jev.DuplicatePair, len(pairs))
+	for i, p := range pairs {
+		jp[i] = jev.DuplicatePair{A: p.A, B: p.B}
+	}
+	out, usage, err := e.c.ConfirmDuplicates(ctx, jev.Ask{Query: query, Goal: goal}, results, jp)
+	e.usage.Add(usage)
+	return out, err
+}
+
+// foldDuplicates collapses confirmed duplicate groups into their
+// best-valued member and returns the survivors in order.
+func (r *Runner) foldDuplicates(ctx context.Context, ask jev.Ask, qualified []jev.Qualified) ([]jev.Qualified, int, jev.Usage) {
+	dc, ok := r.Jev.(dupConfirmer)
+	if !ok {
+		return qualified, 0, jev.Usage{}
+	}
+	results := make([]provider.SearchResult, len(qualified))
+	for i, q := range qualified {
+		results[i] = q.Result
+	}
+	ec := &evalConfirmer{c: dc}
+	groups, _, err := dedupe.Run(ctx, ec, ask.Query, ask.Goal, results)
+	if err != nil {
+		return qualified, 0, ec.usage
+	}
+	drop := map[int]bool{}
+	for _, g := range groups {
+		best := g[0]
+		for _, i := range g[1:] {
+			if qualified[i].Value() > qualified[best].Value() {
+				best = i
+			}
+		}
+		for _, i := range g {
+			if i != best {
+				drop[i] = true
+			}
+		}
+	}
+	out := make([]jev.Qualified, 0, len(qualified))
+	for i, q := range qualified {
+		if !drop[i] {
+			out = append(out, q)
+		}
+	}
+	return out, len(drop), ec.usage
+}
+
+// coverageSnippetChars caps the text per result sent to the theme judge in
+// the scrape stage, where "snippet" is a page's kept chunks.
+const coverageSnippetChars = 6000
+
+// hostMatches reports whether rawURL's host is one of domains or a subdomain
+// of one.
+func hostMatches(rawURL string, domains []string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimPrefix(u.Hostname(), "www."))
+	for _, d := range domains {
+		d = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(d), "www."))
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
+// tally fills the delivery counters of st from results. flagged holds the
+// URLs the source-quality audit marked low-value.
+func (st *Stage) tally(c Case, results []provider.SearchResult, flagged map[string]bool, chars func(provider.SearchResult) int) {
+	st.Results = len(results)
+	for _, r := range results {
+		st.Chars += chars(r)
+		st.URLs = append(st.URLs, r.URL)
+		if hostMatches(r.URL, c.JunkDomains) {
+			st.Junk++
+		}
+		if hostMatches(r.URL, c.ExpectedDomains) {
+			st.ExpectedHits++
+		}
+		if flagged[r.URL] {
+			st.Flagged++
+		}
+	}
+}
+
+// Caps on the text sent to the theme judge, so a large delivery never
+// exceeds Jev's request size. Per-result text is cut first, then results
+// are dropped from the end.
+const (
+	judgeResultChars = 2500
+	judgeTotalChars  = 30000
+)
+
+// forJudge returns results trimmed to the judge caps. A result's content
+// (the provider's excerpt) stands in for its snippet when it says more, so
+// coverage does not hinge on how terse a provider's snippets are.
+func forJudge(results []provider.SearchResult) []provider.SearchResult {
+	out := make([]provider.SearchResult, 0, len(results))
+	total := 0
+	for _, r := range results {
+		if len([]rune(r.Content)) > len([]rune(r.Snippet)) {
+			r.Snippet = r.Content
+		}
+		r.Content = ""
+		r.Snippet = scrape.Truncate(r.Snippet, judgeResultChars)
+		size := len([]rune(r.Snippet)) + len([]rune(r.Title)) + len([]rune(r.URL))
+		if total+size > judgeTotalChars && len(out) > 0 {
+			break
+		}
+		total += size
+		out = append(out, r)
+	}
+	return out
+}
+
+// AuditKey is the Jev question key for the i-th audited result.
+func AuditKey(i int) string { return "audit_" + strconv.Itoa(i) }
+
+type auditItem struct {
+	ID string `json:"id"`
+	provider.SearchResult
+}
+
+type auditState struct {
+	jev.Ask
+	Results []auditItem `json:"results"`
+}
+
+// audit asks Jev, in one batch request, which results are low-value SEO,
+// affiliate, or content-farm pages, and returns their URLs.
+func (r *Runner) audit(ctx context.Context, ask jev.Ask, results []provider.SearchResult) (map[string]bool, jev.Usage, error) {
+	flagged := map[string]bool{}
+	if len(results) == 0 {
+		return flagged, jev.Usage{}, nil
+	}
+	p, err := prompts.Load(prompts.SourceQuality)
+	if err != nil {
+		return flagged, jev.Usage{}, err
+	}
+	state := auditState{Ask: ask}
+	questions := make(map[string]jev.Question, len(results))
+	for i, res := range results {
+		id := AuditKey(i)
+		res.Content = ""
+		state.Results = append(state.Results, auditItem{ID: id, SearchResult: res})
+		instructions, err := p.Render(prompts.Data{Query: ask.Query, Goal: ask.Goal, Title: res.Title, URL: res.URL, Snippet: res.Snippet, ID: id, Index: i})
+		if err != nil {
+			return flagged, jev.Usage{}, err
+		}
+		questions[id] = jev.NoulQuestion(instructions)
+	}
+	resp, err := r.Jev.SystemOne(ctx, &jev.SystemOneRequest{State: state, Questions: questions})
+	if err != nil {
+		return flagged, jev.Usage{}, fmt.Errorf("source-quality audit: %w", err)
+	}
+	for i, res := range results {
+		if raw, ok := resp.Answers[AuditKey(i)]; ok {
+			if ans, err := raw.AsNoul(); err == nil && ans.Yes() {
+				flagged[res.URL] = true
+			}
+		}
+	}
+	return flagged, resp.Usage, nil
+}
+
+func snippetChars(r provider.SearchResult) int { return len([]rune(r.Snippet)) }
+
+func (r *Runner) threshold(c Case) float64 {
+	threshold := r.CoverageThreshold
+	if c.CoverageThreshold != nil {
+		threshold = *c.CoverageThreshold
+	}
+	if threshold <= 0 {
+		threshold = DefaultCoverageThreshold
+	}
+	return threshold
+}
+
+// judge runs theme coverage into st and records failures.
+func (r *Runner) judge(ctx context.Context, c Case, st *Stage, results []provider.SearchResult) error {
+	if len(c.ExpectedThemes) == 0 {
+		return nil
+	}
+	themes, usage, err := r.coverage(ctx, r.caseAsk(c), c.ExpectedThemes, forJudge(results), r.threshold(c))
+	st.Usage.Add(usage)
+	if err != nil {
+		return fmt.Errorf("theme coverage: %w", err)
+	}
+	st.Themes = themes
+	for _, th := range themes {
+		if th.Covered {
+			st.Covered++
+			continue
+		}
+		reason := fmt.Sprintf("theme %q not covered (P(yes)=%.2f)", th.Theme, th.Probability)
+		if th.Error != "" {
+			reason = fmt.Sprintf("theme %q not judged: %s", th.Theme, th.Error)
+		}
+		st.Failures = append(st.Failures, reason)
+	}
+	return nil
+}
+
+// stageNoFilter measures the raw results: everything the provider returned
+// would reach the context window.
+func (r *Runner) stageNoFilter(ctx context.Context, c Case, results []provider.SearchResult, flagged map[string]bool) Stage {
+	start := time.Now()
+	st := Stage{Mode: ModeNoFilter}
+	st.tally(c, results, flagged, snippetChars)
+	if err := r.judge(ctx, c, &st, results); err != nil {
+		st.Error = err.Error()
+	}
+	st.Passed = st.Error == "" && len(st.Failures) == 0
+	st.Duration = time.Since(start)
+	return st
+}
+
+// stageFilter qualifies results with Jev, keeps those at or above the
+// case threshold, and checks count bounds, theme coverage, junk, and
+// expected-domain retention.
+func (r *Runner) stageFilter(ctx context.Context, c Case, results []provider.SearchResult, flagged map[string]bool) (st Stage, out []KeptResult, judged []KeptResult, err error) {
+	start := time.Now()
+	st = Stage{Mode: ModeFilter}
+	defer func() { st.Duration = time.Since(start) }()
+
+	var kept []jev.Qualified
+	if len(results) > 0 {
+		qualified, usage, err := r.Jev.Qualify(ctx, r.caseAsk(c), results, jev.QualifyOptions{
+			Rubric: c.Rubric,
+			Noul:   c.Noul,
+			Batch:  c.Batch || r.Batch,
+		})
+		st.Usage.Add(usage)
+		if err != nil {
+			return st, nil, nil, fmt.Errorf("qualify: %w", err)
+		}
+		var folded int
+		var dupUsage jev.Usage
+		qualified, folded, dupUsage = r.foldDuplicates(ctx, r.caseAsk(c), qualified)
+		st.Usage.Add(dupUsage)
+		st.Folded = folded
+		min := c.threshold()
+		for _, q := range qualified {
+			if q.Err != nil || (q.Score == nil && q.Noul == nil) {
+				continue
+			}
+			judged = append(judged, KeptResult{SearchResult: q.Result, Value: q.Value(), Confidence: q.Confidence()})
+			if q.Value() >= min {
+				kept = append(kept, q)
+			}
+		}
+		sort.SliceStable(kept, func(i, j int) bool { return kept[i].Value() > kept[j].Value() })
+		sort.SliceStable(judged, func(i, j int) bool { return judged[i].Value > judged[j].Value })
+	}
+	out = make([]KeptResult, 0, len(kept))
+	plain := make([]provider.SearchResult, 0, len(kept))
+	for _, q := range kept {
+		out = append(out, KeptResult{SearchResult: q.Result, Value: q.Value(), Confidence: q.Confidence()})
+		plain = append(plain, q.Result)
+	}
+	st.tally(c, plain, flagged, snippetChars)
+
+	if c.MinResults > 0 && len(kept) < c.MinResults {
+		st.Failures = append(st.Failures, fmt.Sprintf("too few results: %d kept, need ≥ %d", len(kept), c.MinResults))
+	}
+	if c.MaxResults > 0 && len(kept) > c.MaxResults {
+		st.Failures = append(st.Failures, fmt.Sprintf("too many results: %d kept, want ≤ %d", len(kept), c.MaxResults))
+	}<|im_end|>
+<|im_start|>user
+Summarize the paper "On Maximizing a Weakly Submodular Function over a Matroid Constraint via the Greedy Algorithm" in one paragraph.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+On Maximizing a Weakly Submodular Function over a Matroid Constraint via the Greedy Algorithm
+
+We consider the problem of approximately maximizing a weakly submodular function using the standard greedy algorithm, which is known to give tight approximation results for such functions under a cardinality constraint. We show that this is not the case for general matroid constraints. For any $γ< 1$, we give a family of $γ$-weakly submodular functions and a simple partition matroid constraint and show that the standard greedy algorithm provides no constant approximation for the resulting constrained maximization problem.<|im_end|>
+<|im_start|>user
+Can you give me the full contents of src/ops/softmax_attention/dense/causal_cache/bf16/plan.cpp?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+#include "ops/softmax_attention/dense/causal_cache/bf16/plan.h"
+#include "ops/softmax_attention/dense/causal_cache/bf16/operands.h"
+#include <algorithm>
+#include <stdexcept>
+
+namespace ninfer::ops::detail {
+
+Bf16KvCausalPlan make_bf16_kv_causal_plan(int heads, int width, int batch,
+                                          CausalAttentionExecutionEnvelope envelope) {
+    if ((heads != 24 && heads != 16) || width < 1 || batch < 1 || batch > 8 ||
+        (batch > 1 && width > 16) || envelope.min_visible_keys == 0 ||
+        envelope.min_visible_keys > envelope.max_visible_keys ||
+        envelope.max_visible_keys > kCausalAttentionMaximumVisibleKeys)
+        throw std::invalid_argument("BF16 attention: invalid plan inputs");
+    const int kv_heads = heads == 24 ? 4 : 2, group = heads / kv_heads;
+    const auto ceil_div = [](int a, int b) { return (a + b - 1) / b; };
+    const int visible   = envelope.max_visible_keys;
+    if (width > 128 / group) {
+        const auto instance =
+            heads == 16 && width >= 1024 && width % 128 == 0 && visible - width >= 8192
+                ? Bf16KvInstance::Tiled128
+                : Bf16KvInstance::Tiled64;
+        return {instance, {}, heads, width, batch, envelope};
+    }
+    const int rows         = width * group;
+    const auto instance    = width == 1   ? Bf16KvInstance::GroupedDecode
+                             : rows <= 32 ? Bf16KvInstance::Grouped32
+                                          : Bf16KvInstance::Grouped64;
+    const auto description = bf16_kv_instance_description(instance);
+    const int tiles        = ceil_div(rows, description.query_rows);
+    // Two SM waves suffice for short partitions. For long contexts, preserve
+    // per-head parallelism until the whole grid reaches six waves on RTX 5090.
+    const int independent_tiles     = batch * kv_heads * tiles;
+    const bool many_memory_tiles    = description.query_rows == 32 && independent_tiles >= 16;
+    const bool multiple_query_tiles = tiles > 1;
+    const int long_ctas             = many_memory_tiles || multiple_query_tiles
+                                          ? std::clamp(85 * independent_tiles, 340, 1020)
+                                          : 340;
+    Bf16KvPartition partition{1, std::clamp(340 / independent_tiles, 1, 256),
+                              std::clamp(long_ctas / independent_tiles, 1, 256),
+                              description.key_rows};
+    // The envelope bounds the largest live row. Other batch rows may be shorter.
+    const int low      = batch == 1 ? static_cast<int>(envelope.min_visible_keys) : 1;
+    partition.capacity = std::max(
+        partition.interval_capacity(low, std::min(visible, 32767), partition.normal_target),
+        partition.interval_capacity(std::max(low, 32768), visible, partition.long_target));
+    return {instance, partition, heads, width, batch, envelope};
+}
+
+std::size_t bf16_kv_workspace_bytes(int heads, int batch, int min_width, int max_width,
+                                    CausalAttentionExecutionEnvelope envelope) {
+    std::size_t maximum = 0;
+    const int group     = heads == 24 ? 6 : 8;
+    for (int width = min_width; width <= std::min(max_width, 128 / group); ++width) {
+        const auto plan = make_bf16_kv_causal_plan(heads, width, batch, envelope);
+        WorkspaceLayoutBuilder layout;
+        (void)bf16_kv_allocate_partials(layout, heads, width, plan.partition.capacity, batch);
+        maximum = std::max(maximum, layout.peak_bytes(1));
+    }
+    return maximum;
+}
+
+} // namespace ninfer::ops::detail<|im_end|>
+<|im_start|>user
+Show me `evals/qwen35_small/run.py`.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+"""Reproducible live SGLang smoke matrix; no model weights are loaded here."""
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import json
+import math
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from typellm import TypeLLMClient
+
+
+def cases():
+    return [
+        ('enum', 'The expense was a train ticket.', {'answer': {'type': 'string', 'enum': ['meal', 'travel', 'equipment'], 'instructions': 'Classify the expense.', 'return_probabilities': True}}, {'answer': 'travel'}),
+        ('boolean', 'The light is on.', {'answer': {'type': 'boolean', 'instructions': 'Is the light on?', 'return_probabilities': True}}, {'answer': True}),
+        ('numeric_enum', 'The rating is 0.5.', {'answer': {'type': 'number', 'enum': [0.0, 0.5, 1.0], 'instructions': 'Extract the rating.', 'return_probabilities': True}}, {'answer': 0.5}),
+        ('integer', 'There are 42 apples.', {'answer': {'type': 'integer', 'instructions': 'How many apples?'}}, {'answer': 42}),
+        ('negative', 'The temperature is -7 degrees.', {'answer': {'type': 'integer', 'instructions': 'Extract the temperature.'}}, {'answer': -7}),
+        ('number', 'The price is 12.5 dollars.', {'answer': {'type': 'number', 'instructions': 'Extract the price.'}}, {'answer': 12.5}),
+        ('text', 'The access code is blue.', {'answer': {'type': 'string', 'instructions': 'Return only the access code.'}}, {'answer': 'blue'}),
+        ('bounded_text', 'The access code is blue.', {'answer': {'type': 'string', 'instructions': 'Return only the access code.'}}, {'answer': 'blue'}),
+        ('mixed', 'There are 3 red apples. They are fresh.', {
+            'color': {'type': 'string', 'enum': ['red', 'blue'], 'instructions': 'What color are the apples?', 'return_probabilities': True},
+            'count': {'type': 'integer', 'instructions': 'How many apples?'},
+            'fresh': {'type': 'boolean', 'instructions': 'Are the apples fresh?'},
+            'name': {'type': 'string', 'instructions': 'Name the fruit in one lowercase plural word.'},
+        }, {'color': 'red', 'count': 3, 'fresh': True, 'name': 'apples'}),
+    ]
+
+
+def validate(result, questions):
+    if set(result) != set(questions):
+        return False
+    for key, field in questions.items():
+        value = result[key]
+        if field.get('return_probabilities'):
+            if not isinstance(value, dict) or set(value) != {'value', 'probabilities'}:
+                return False
+            probs = value['probabilities']
+            candidates = field.get('enum', [True, False])
+            if set(probs) != set(candidates) or not all(math.isfinite(p) and 0 <= p <= 1 for p in probs.values()) or not math.isclose(sum(probs.values()), 1, abs_tol=1e-6):
+                return False
+            value = value['value']
+        kind = field['type']
+        valid = {'string': type(value) is str, 'integer': type(value) is int,
+                 'number': type(value) in (int, float) and math.isfinite(value) if type(value) in (int, float) else False,
+                 'boolean': type(value) is bool}[kind]
+        if not valid or ('enum' in field and value not in field['enum']):
+            return False
+    return True
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', required=True)
+    parser.add_argument('--url', default='http://127.0.0.1:30000')
+    parser.add_argument('--output', required=True)
+    parser.add_argument('--thinking-budget', type=int, default=None)
+    parser.add_argument('--workers', type=int, default=1)
+    args = parser.parse_args()
+    rows = []
+    path = Path(args.output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Warm the shared read-only tokenizer/table once; avoid concurrent cache writes.
+    warm = TypeLLMClient(args.url, model=args.model, tokenizer=args.model)
+    tokenizer = warm.sglang._get_chat_tokenizer()
+    numeric = warm.sglang.numeric_token_pieces()
+
+    def run_one(case, thinking):
+        name, context, questions, expected = case
+        client = TypeLLMClient(args.url, model=args.model, tokenizer=args.model,
+            text_max_tokens=128, timeout=180, seed=42)
+        client.sglang.thinking_budget = args.thinking_budget  # for every field that thinks
+        client.sglang._chat_tokenizer = tokenizer
+        client.sglang._numeric_tokens = numeric
+        row = dict(model=args.model, thinking=thinking, thinking_budget=args.thinking_budget,
+                   case=name, workers=args.workers)
+        reasoning = []
+        request = client.sglang._request
+        def record_request(path, payload=None, **kwargs):
+            response = request(path, payload, **kwargs)
+            params = payload.get('sampling_params', {}) if payload else {}
+            # A batch of prompts has one sampling-params dict and one response each.
+            for item_params, item in zip(params, response) if isinstance(params, list) and isinstance(response, list) else [(params, response)]:
+                if isinstance(item_params, dict) and item_params.get('stop') == ['</think>']:
+                    meta = item.get('meta_info', {})
+                    reasoning.append({k: meta.get(k) for k in ('completion_tokens', 'finish_reason')})
+            return response
+        client.sglang._request = record_request
+        start = time.monotonic()
+        try:
+            result = client.generate(context=context, questions={k: {**v, 'thinking': True} for k, v in questions.items()} if thinking else questions).result
+            values = {k: v['value'] if questions[k].get('return_probabilities') else v for k, v in result.items()}
+            row.update(result=result, type_valid=validate(result, questions), correct=values == expected)
+        except Exception as exc:
+            row.update(error=f'{type(exc).__name__}: {exc}', type_valid=False, correct=False)
+        row['seconds'] = round(time.monotonic() - start, 3)
+        row['reasoning'] = reasoning
+        return row
+
+    with path.open('w') as stream, ThreadPoolExecutor(max_workers=args.workers) as pool:
+        for thinking in (False, True):
+            futures = [pool.submit(run_one, case, thinking) for case in cases()]
+            for future in futures:
+                row = future.result()
+                rows.append(row)
+                stream.write(json.dumps(row, ensure_ascii=False) + '\n')
+                stream.flush()
+                print(json.dumps(row, ensure_ascii=False), flush=True)
+    summary = {'model': args.model, 'requests': len(rows), 'completed': sum('error' not in r for r in rows),
+               'type_valid': sum(r['type_valid'] for r in rows), 'correct': sum(r['correct'] for r in rows)}
+    path.with_suffix('.summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+
+
+if __name__ == '__main__':
+    main()<|im_end|>
+<|im_start|>user
+Summarize the paper "OBJECTION! Lawyer Agents Mitigate Guilty Bias in Legal Judgment Prediction" in one paragraph.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+OBJECTION! Lawyer Agents Mitigate Guilty Bias in Legal Judgment Prediction
+
+Legal Judgment Prediction (LJP) models are typically trained on documents that describe facts from a prosecutorial perspective. Existing datasets further exhibit severe label imbalance toward guilty outcomes. Consequently, these models suffer from "Guilty Bias", blindly accepting the prosecution's narrative as objective truth. Previous studies employing three-step reasoning structures or training on synthetically generated innocence data improve overall accuracy, but they still fail to mitigate bias at inference time. In this paper, we introduce OBJECTION, an inference-time pipeline that integrates an Adversarial Lawyer Agent into each 3-step reasoning of offense, unlawfulness, and culpability. Unlike generic critics, our agent actively challenges the model's presumptions of guilt by injecting legal defense arguments at each reasoning stage. To thoroughly evaluate this, we present a new "Natural Innocent" dataset including 3.4k real-world cases, overcoming the limitations of synthetic innocence benchmarks. Test results show that OBJECTION drastically reduces the False Guilty Rate (FGR) from 82.93% (SOTA baseline) to 16.69%, proving its capability to perform substantive legal reasoning. This work denotes a key progress toward aligning Legal AI with the presumption of innocence.<|im_end|>
+<|im_start|>user
+Write `src/ops/softmax_attention/dense/causal_cache/bf16/tile_io.cuh` for this project.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+#pragma once
+
+#include "ops/common/math.cuh"
+#include "ops/common/mma.cuh"
+#include "ops/common/warp.cuh"
+#include "ops/kernel/paged_kv_address.cuh"
+#include "ops/softmax_attention/dense/causal_cache/bf16/schedule.cuh"
+#include "ops/softmax_attention/dense/causal_cache/bf16/operands.h"
+
+namespace ninfer::ops::detail {
+
+template <class G>
+__device__ __forceinline__ std::int64_t bf16_kv_cache_index(int page, int head, int d, int offset) {
+    return paged_kv_element_offset<G::kHeadDim, G::KVHeads>(page, head, offset, d);
+}
+
+template <class G>
+__device__ __forceinline__ std::int64_t bf16_kv_q_index(int head, int d, int token = 0) {
+    return d + static_cast<std::int64_t>(G::kHeadDim) *
+                   (head + static_cast<std::int64_t>(G::QHeads) * token);
+}
+
+template <class G>
+__device__ __forceinline__ std::int64_t bf16_kv_new_index(int head, int d, int token = 0) {
+    return d + static_cast<std::int64_t>(G::kHeadDim) *
+                   (head + static_cast<std::int64_t>(G::KVHeads) * token);
+}
+
+template <class G>
+__device__ __forceinline__ std::int64_t bf16_kv_partial_index(int head, int d, int token, int split,
+                                                              int tokens) {
+    return d + static_cast<std::int64_t>(G::kHeadDim) *
+                   (head + static_cast<std::int64_t>(G::QHeads) *
+                               (token + static_cast<std::int64_t>(tokens) * split));
+}
+
+template <class G>
+__device__ __forceinline__ std::int64_t bf16_kv_stat_index(int head, int token, int split,
+                                                           int tokens) {
+    return head + static_cast<std::int64_t>(G::QHeads) *
+                      (token + static_cast<std::int64_t>(tokens) * split);
+}
+
+__device__ __forceinline__ int bf16_kv_swizzle(int row, int col) {
+    return (((col >> 3) ^ (row & 7)) << 3) | (col & 7);
+}
+
+__device__ __forceinline__ unsigned bf16_kv_swizzle_address(unsigned base, unsigned column,
+                                                            unsigned matrix, unsigned row) {
+    return base + ((column | matrix) ^ row);
+}
+
+template <class G>
+__device__ __forceinline__ void bf16_kv_zero_rows(__nv_bfloat16* out, int head, int begin, int end,
+                                                  int tid, int threads) {
+    for (int i = tid; i < (end - begin) * G::kHeadDim; i += threads)
+        out[bf16_kv_q_index<G>(head, i % G::kHeadDim, begin + i / G::kHeadDim)] =
+            __float2bfloat16(0.0f);
+}
+
+// Stage one [Bc, D] K or V tile from the per-kv-head contiguous cache into the
+// swizzled smem buffer. Keys beyond max_query_abs (which the causal mask always
+// drops) are zeroed so the padded/uninitialized cache tail never feeds NaNs into
+// the tensor cores. Mirrors FA's predicated K/V cp.async + Clear_OOB path.
+template <typename Geometry, class Schedule, typename Element>
+__device__ __forceinline__ void bf16_kv_stage_tile(Element* dst, const Element* cache, int kv_head,
+                                                   int k0, int max_query_abs, int physical_page,
+                                                   int tid) {
+    constexpr int D         = Geometry::kHeadDim;
+    constexpr int Bc        = Schedule::kKeyRows;
+    constexpr int Threads   = Schedule::kThreads;
+    constexpr int VecPerRow = D / 8; // 8 two-byte elements per 16B cp.async
+    const bool full_tile    = (k0 + Bc - 1) <= max_query_abs;
+    // Block base pointer computed once (int64); per-element offsets stay 32-bit.
+    const Element* cache_block =
+        cache + paged_kv_element_offset<Geometry::kHeadDim, Geometry::KVHeads>(
+                    physical_page, kv_head, k0 & kPagedKVPageMask, 0);
+    if (full_tile) {
+#pragma unroll
+        for (int chunk = tid; chunk < Bc * VecPerRow; chunk += Threads) {
+            const int key_l = chunk / VecPerRow;       // / VecPerRow
+            const int d     = (chunk % VecPerRow) * 8; // feature offset
+            Element* p      = &dst[key_l * D + bf16_kv_swizzle(key_l, d)];
+            cp_async<16, Cache::cg>(p, &cache_block[key_l * D + d]);
+        }
+    } else {
+#pragma unroll
+        for (int chunk = tid; chunk < Bc * VecPerRow; chunk += Threads) {
+            const int key_l = chunk / VecPerRow;       // / VecPerRow
+            const int d     = (chunk % VecPerRow) * 8; // feature offset
+            Element* p      = &dst[key_l * D + bf16_kv_swizzle(key_l, d)];
+            if ((k0 + key_l) <= max_query_abs) {
+                cp_async<16, Cache::cg>(p, &cache_block[key_l * D + d]);
+            } else {
+                store_vec(p, make_int4(0, 0, 0, 0));
+            }
+        }
+    }
+}
+
+} // namespace ninfer::ops::detail<|im_end|>
+<|im_start|>user
+Write `dsh-lazy-pack-v5/materials/skills/eni-unpack-reverse-lab/scripts/runtime_string_xrefs.py` for this project.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+# SLO-PROTECTED-WRAPPER-V1
+from __future__ import annotations
+import hashlib as _slo_hashlib
+from pathlib import Path as _SloPath
+import subprocess as _slo_subprocess
+import sys as _slo_sys
+
+_SLO_DEPTH = 1
+_SLO_ASSET_ID = '4153b22fa72f5130b40523f2cea454ce'
+_SLO_ENTRY = 'scripts/runtime_string_xrefs.py'
+_SLO_ENGINE_RELATIVE = '.slo-protected/engine/slo-engine.exe'
+_SLO_ENGINE_SHA256 = 'bf0788a71e67588e480567d6fa555173bfdb1edb80e5881ff05590ed74dad9e9'
+_SLO_DEVICE_STORE = 'C:\\Users\\Administrator\\AppData\\Local\\SLO Offline Delivery\\device-key-v2.json'
+
+def _slo_run() -> int:
+    root = _SloPath(__file__).resolve().parents[_SLO_DEPTH]
+    engine = root.joinpath(*_SLO_ENGINE_RELATIVE.split('/'))
+    if not engine.is_file():
+        raise RuntimeError('SLO protected engine is missing')
+    digest = _slo_hashlib.sha256(engine.read_bytes()).hexdigest()
+    if digest != _SLO_ENGINE_SHA256:
+        raise RuntimeError('SLO protected engine integrity check failed')
+    command = [str(engine)]
+    if engine.suffix.casefold() in {'.py', '.pyw'}:
+        command = [_slo_sys.executable, str(engine)]
+    command.extend([
+        'protected-engine',
+        '--skill-root', str(root),
+        '--asset-id', _SLO_ASSET_ID,
+        '--entry', _SLO_ENTRY,
+        '--device-store', _SLO_DEVICE_STORE,
+        '--',
+        *_slo_sys.argv[1:],
+    ])
+    return _slo_subprocess.run(command, check=False).returncode
+
+if __name__ == '__main__':
+    raise SystemExit(_slo_run())<|im_end|>
+<|im_start|>user
+Summarize the paper "Memory-Efficient Designs for Word-Wise Universal Fully Homomorphic Encryption" in one paragraph.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Memory-Efficient Designs for Word-Wise Universal Fully Homomorphic Encryption
+
+Fully Homomorphic Encryption (FHE) enables computation on encrypted data, preserving privacy throughout analysis. While its privacy is very strong, FHE is much slower to execute than the original computation. In particular, due to the recent success in accelerating its compute, the performance bottleneck shifts to the memory, especially considering that FHE magnifies the data size by orders of magnitude, resulting in a low arithmetic intensity. We propose BXT, an FHE optimization framework that mitigates the memory bottleneck through four techniques: (1) ciphertext compression, which regenerates ciphertext components from seeds during execution; (2) ciphertext serialization, which packs coefficients as bit arrays and unpacks them during L2-to-L1 transfer; (3) delayed seed generation, which defers PRNG-heavy offline work across aggregated operations; and (4) ciphertext digit pruning guided by fault-aware training tailored for Universal FHE. On CNN inference, the BXT-CSO50 configuration effectively achieves up to 3.8$\times$ speedup over the 100x GPU baseline with less than 1% accuracy loss at 50% comparison precision.<|im_end|>
+<|im_start|>user
+Show me `scripts/multi-gpu-testing/onstart-pipeline.sh`.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+#!/usr/bin/env bash
+# Does the pipeline split actually run, and does it produce the right tokens?
+#
+# The test that matters is equivalence: greedy decoding on one GPU and greedy decoding with the
+# the layers split into one pipeline stage per GPU must produce identical text. Anything else -- it
+# starts, it is fast, memory looks right -- can be true of a build that is silently reading the
+# wrong device's memory.
+#
+# It also records what each card holds, because the point of the split is the weight and KV room it
+# frees on each card, and compares the KV capacity the engine resolves in each mode.
+set -uo pipefail
+exec 2>&1
+echo "=== pipeline execution test $(date -u +%FT%TZ) ==="
+
+BRANCH="${NINFER_BRANCH:-feat/dual-gpu-graph-mode}"
+REPO="${NINFER_REPO:-https://github.com/ashalliants/ninfer-3090.git}"
+MODEL_URL="${MODEL_URL:-https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer/resolve/ee4495803bc4f8015b8a7e22d4cf9b67de8e27c6/qwen3_6_35b_a3b.ninfer}"
+MAX_RUNTIME_SECONDS="${MAX_RUNTIME_SECONDS:-7200}"
+PROMPT="${PROMPT:-List the first eight prime numbers, then explain briefly why 1 is not prime.}"
+MAX_NEW="${MAX_NEW:-120}"
+
+if [[ "$MAX_RUNTIME_SECONDS" -gt 0 ]]; then
+  ( sleep "$MAX_RUNTIME_SECONDS"; echo "=== MAX_RUNTIME reached, halting ==="; poweroff || halt -f ) \
+    >/dev/null 2>&1 &
+  echo "dead-man switch armed: ${MAX_RUNTIME_SECONDS}s"
+fi
+
+nvidia-smi --query-gpu=index,name,memory.total,compute_cap --format=csv
+nvidia-smi topo -m 2>&1 | head -6
+
+echo "--- installing build dependencies ---"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq git cmake ninja-build build-essential pkg-config \
+  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libavfilter-dev \
+  libswresample-dev >/dev/null 2>&1
+
+echo "--- cloning ${BRANCH} ---"
+git clone --depth 1 --branch "$BRANCH" "$REPO" /root/src || { echo "CLONE_FAILED"; exit 1; }
+echo "at $(git -C /root/src rev-parse --short HEAD)"
+
+echo "--- starting model download in background ---"
+# aria2c over 16 connections, not curl. A single-stream curl throttled to ~1 MB/s and then stalled
+# outright at 11 GB of 21 on one run, costing most of an hour; the same file over 16 parallel
+# ranges sustains ~98 MB/s, and -c resumes instead of restarting. HuggingFace serves ranges fine.
+mkdir -p /root/models
+apt-get install -y -qq aria2 >/dev/null 2>&1
+( aria2c -x16 -s16 -c --file-allocation=none -d /root/models \
+      -o qwen3_6_35b_a3b.ninfer "$MODEL_URL" > /root/aria.log 2>&1 \
+    && echo OK > /root/model.done || echo FAILED > /root/model.done ) &
+
+echo "--- configuring ---"
+cmake -S /root/src -B /root/build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="${NINFER_ARCH:-86}" \
+  -DCMAKE_CUDA_COMPILER="$(command -v nvcc || echo /usr/local/cuda/bin/nvcc)" \
+  2>&1 | tail -3 || { echo "CONFIGURE_FAILED"; exit 1; }
+
+# Cap parallelism by RAM: these hosts pair high core counts with variable memory and each nvcc job
+# wants on the order of a gigabyte.
+ram_gb=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)
+jobs=$(( ram_gb / 2 )); [[ "$jobs" -lt 4 ]] && jobs=4
+[[ "$jobs" -gt $(nproc) ]] && jobs=$(nproc)
+echo "--- building ninfer + ninfer-serve with -j${jobs} (${ram_gb} GB RAM, $(nproc) cores) ---"
+if ! cmake --build /root/build --target ninfer ninfer-serve -j "$jobs" 2>&1 | tail -12; then
+  echo "BUILD_FAILED"; exit 1
+fi
+
+echo "--- waiting for the model ---"
+while [[ ! -f /root/model.done ]]; do sleep 10; done
+grep -q OK /root/model.done || { echo "MODEL_MISSING"; exit 1; }
+ls -la /root/models/
+
+MODEL=/root/models/qwen3_6_35b_a3b.ninfer
+COMMON=(--prompt "$PROMPT" --max-new "$MAX_NEW" --greedy --kv-dtype int8 --no-thinking
+        --max-context 8192 --kv-capacity 8192)
+
+echo "=== A: SINGLE GPU (reference) ==="
+/root/build/apps/ninfer "$MODEL" "${COMMON[@]}" --device 0 >/root/single.txt 2>/root/single.err
+echo "SINGLE_EXIT=$?"
+grep -E "gpu weights used|free after weights|free after startup|decode speed" /root/single.err || true
+echo "--- output ---"; cat /root/single.txt
+
+echo "=== B: EXPERT OFFLOAD ACROSS TWO GPUs ==="
+/root/build/apps/ninfer "$MODEL" "${COMMON[@]}" --devices 0,1 >/root/split.txt 2>/root/split.err
+echo "SPLIT_EXIT=$?"
+grep -E "gpu weights used|free after weights|free after startup|decode speed" /root/split.err || true
+echo "--- output ---"; cat /root/split.txt
+echo "--- last stderr on failure ---"; tail -20 /root/split.err
+
+echo "=== EQUIVALENCE ==="
+if diff -q /root/single.txt /root/split.txt >/dev/null 2>&1; then
+  echo "OUTPUTS_IDENTICAL=yes"
+else
+  echo "OUTPUTS_IDENTICAL=no"
+  echo "--- diff ---"; diff /root/single.txt /root/split.txt | head -30
+fi
+
+# The headline number: how much KV the split buys on the card that serves attention.
+echo "=== KV CAPACITY, AUTOMATIC, EACH MODE ==="
+for mode in "--device 0" "--devices 0,1"; do
+  echo "--- $mode ---"
+  timeout 900 /root/build/apps/ninfer "$MODEL" --prompt hi --max-new 1 --greedy \
+    --kv-dtype int8 --max-context 262144 --kv-capacity auto $mode 2>&1 \
+    | grep -E "KV capacity|free after weights|gpu weights used|error" | head -6
+done
+
+echo "=== PIPELINE TEST END ==="
+sleep 60
+poweroff || halt -f || exit 0<|im_end|>
+<|im_start|>user
+Write the abstract for a paper titled "The Sharp Rate of Probabilistically Strong Convergence to the KPZ Equation".<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+The Sharp Rate of Probabilistically Strong Convergence to the KPZ Equation
+
+One of the most common descriptions of solutions of singular SPDEs is their characterisation as the limit of solutions of renormalised smooth random PDEs. We quantify the speed of this convergence in the case of the KPZ equation. In particular, we show that the naïve guess that the rate is given by the distance of the noise regularity from the endpoint regularity for well-posedness is not correct. Instead, we obtain convergence at the larger rate $1/2$ and show that this rate is sharp. This is achieved by considering the equation satisfied by the rescaled error, which is critical for variance blowup, and showing that this equation has a limit given by an affine linear singular SPDE driven by a new, independent noise. This result can be alternatively interpreted as identifying the asymptotic size and law of fluctuations of the solutions of the KPZ equation driven by mollified noise around their singular limit.<|im_end|>
+<|im_start|>user
+What should I know about Anthony Corcoran?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Anthony Corcoran
+
+Anthony James Corcoran, S.J. (born 19 April 1963) is an American-born Kyrgyzstani Catholic prelate who has served as Apostolic Administrator of Kyrgyzstan since 2017. He was appointed Titular Bishop of Aëtus in 2026.  He is a member of the Jesuits.
+
+
+== Early life and education ==
+Corcoran was born on 19 April 1963 in Tucson, Arizona. His parents were both born in Bisbee, Arizona, and he was baptized as an infant at St. Andrew's Catholic Church in Sierra Vista, Arizona. Although his family later moved to Texas, he maintained connections with southern Arizona and regularly returned to visit relatives.
+In 1985, Corcoran graduated from Marquette University in Milwaukee with a degree in political science. He entered the Society of Jesus on 14 August 1985. He subsequently earned a master's degree in International Political Economics of Development from Fordham University in 1990.
+From 1990 to 1992, he taught at Jesuit High School in New Orleans. He studied theology at the Weston School of Theology in Cambridge, Massachusetts, receiving a theology degree in 1995 and a licentiate in spiritual theology in 1997. He was ordained a deacon in 1995 and a priest on 8 June 1996. He later completed a doctorate in theology at Weston School of Theology in 2006.
+
+
+== Jesuit ministry ==
+After his ordination, Corcoran undertook ministry in Russia and Siberia. He served as director of the Interdiocesan Pre-Seminary in Novosibirsk from 1998 to 2000 and again from 2007 to 2008, and as its spiritual director from 2001 to 2005. He was also pastor of St. Joseph Parish in Berdsk from 1998 to 2008 and vicar general of the Diocese of the Transfiguration in Novosibirsk from 1999 to 2008.
+In 2009, Corcoran became superior of the Independent Russian Region of the Society of Jesus, a position he held until 2017.
+According to the Society of Jesus, his missionary work also included service in Cambodia and Pakistan, in addition to his long ministry in Russia and Central Asia. He became fluent in Russian and also speaks Spanish.
+Corcoran professed his final vows as a Jesuit in Moscow in 2002.
+
+
+== Apostolic Administrator of Kyrgyzstan ==
+On 29 August 2017, Pope Francis appointed Corcoran Apostolic Administrator of Kyrgyzstan. At the time of his appointment, he was serving in the Russian region of the Society of Jesus.  He was installed in the office on 17 December 2017.
+The Catholic community of Kyrgyzstan is relatively small, and the country does not constitute a Catholic diocese. Corcoran consequently served as the principal pastoral authority of the Catholic community as apostolic administrator rather than as diocesan bishop.
+The mission in Kyrgyzstan was entrusted to the Society of Jesus, and Corcoran's ministry there has included pastoral work with the country's Catholic community. The Jesuit Conference of European Provincials described his appointment to the episcopate as strengthening the local Church and emphasizing cooperation between the Catholic Church's local structures and the Jesuit order.
+
+
+== Episcopacy ==
+On 25 May 2026, Pope Leo XIV elevated Corcoran to the episcopal dignity and assigned him the titular see of Aëtus, an ancient episcopal see in Greece. He retained his position as Apostolic Administrator of Kyrgyzstan.
+The appointment made Corcoran the second Catholic bishop serving in Kyrgyzstan despite the country having no diocesan episcopal see.  The Society of Jesus described the appointment as a recognition of his long missionary service in the country.
+His episcopal ordination was on 29 September 2026 at the Basilica of Saint Paul Outside the Walls in Rome, with Cardinal Giorgio Marengo as principal consecrator.
+
+
+== Pastoral outlook ==
+Corcoran has spoken of the importance of Catholic identity transcending ethnic and cultural differences. Reflecting on his upbringing in southern Arizona, he recalled the diverse religious and ethnic community in which his parents grew up and said that these experiences influenced his understanding of the Catholic Church as a community united in faith.
+His ministry has been characterized by missionary service across several countries and cultures. Colleagues in Arizona have described him as a missionary priest with particular gifts for building relationships across cultural boundaries.<|im_end|>
+<|im_start|>user
+请介绍一下王夏紅。<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+王夏紅
+
+王夏紅（英語：Ruth Wang）是中華人民共和國律師，曾為北京凱門律師事務所合夥人。根據該事務所網站資料，她主要從事刑事辯護工作，亦曾參與政府法律顧問相關工作。
+自2025年10月起，王夏紅加入法律團隊，代理未向當局登記的北京錫安教會牧師及其他成員。其後，她向媒體表示，中華人民共和國當局要求該律師事務所的律師停止代理相關案件，並要求事務所自行解散，否則將被關閉；事務所創辦人張凱被撤銷律師執照並遭限制出境，其他律師亦受到停業處分。
+2026年夏季，王夏紅與家人身處日本期間，接獲當局要求返回北京面談的電話，其後決定不再返回中華人民共和國，並於同年9月2日抵達台灣，向主管機關尋求協助 。中華民國大陸委員會表示，已基於人道考量，對一名在機場轉機的中華人民共和國籍人士予以安置，並進行後續處理。王夏紅表示，正考慮前往美國或加拿大求學，或在海外申請庇護等安置方案。
+
+
+== 生平 ==
+王夏紅已婚，與丈夫育有兩名子女。凱門律師事務所創辦人張凱是王夏紅的導師。
+
+
+== 事蹟 ==
+
+
+=== 執業與代理錫安教案 ===
+
+王夏紅曾任北京凱門律師事務所合夥人。根據該事務所網站資料，她主要從事刑事辯護業務，亦曾參與政府法律顧問工作。2025年10月，未向當局登記的北京錫安教會遭當局查處，創辦人金明日及約18名成員因涉嫌非法利用信息網絡被扣押。其後，王夏紅加入律師團隊，代理該教會的牧師及其他成員。
+
+
+=== 律所受壓與離境 ===
+王夏紅向美聯社表示，在接辦相關案件後，當局要求該律師事務所的律師停止代理錫安教案，並要求事務所自行解散，否則將予關閉；事務所創辦人兼其導師張凱被撤銷律師執照及限制出境，其他律師則被處以約六個月停業處分，部份律師轉往其他事務所執業亦受到限制。
+她表示，2026年夏季與家人身處日本期間，接獲當局來電，要求返回北京面談，其後決定不再返回中華人民共和國。根據對華援助協會及美聯社的報導，她與家人於同年9月2日抵達台灣。部份台灣媒體另稱，一行人原計劃由東京經台灣前往新加坡，途中停用通訊工具後改於桃園機場求助。
+
+
+=== 在台暫留與安置意向 ===
+王夏紅向美聯社表示，抵達台灣後曾向當地主管機關求助，希望在聯繫其他國家期間暫時留台；據她轉述，台方同意其暫時停留，並告知台灣無法受理來自中國大陸人士的政治庇護申請。中華民國大陸委員會則表示，台灣目前並無處理政治庇護的專門法律，但設有處理相關案件的機制；其後又稱，已基於人道考量，對一名於機場轉機的中華人民共和國籍人士先行安置，並進行後續處理。
+王夏紅表示，正考慮前往美國或加拿大求學，或在海外申請庇護。中央廣播電臺引述消息人士稱，對華援助協會已透過美國及加拿大的相關管道協助提交申請。
+
+
+==== 評論 ====
+對華援助協會創辦人傅希秋表示，王夏紅僅是在履行律師最基本的職責，而其遭遇反映中華人民共和國為受迫害基督徒及其他良心犯提供辯護的律師正面臨巨大壓力。他呼籲中華民國政府保障王夏紅及其家人的安全，避免將其強制遣返中國大陸，並呼籲美國及其他民主國家準備協助台灣尋求解決方案。
+華人民主書院協會常務理事曾建元接受中央廣播電臺訪問時表示，台灣至今尚未制定《難民法》，實務上主要透過行政機制逐案處理；他認為，較理想的安排是將王夏紅轉往美國或加拿大等第三國，但此舉仍有賴相關國家的政治意願。他亦建議當局不應僅從入出境管制的角度處理此案，並可藉此進一步了解錫安教案，以及中華人民共和國政府對宗教人士和維權律師施壓的情況。
+中華人民共和國公安機關未有回應美聯社的置評要求。北京市司法局負責管理律師執業許可，該局在被問及此案時表示，無權處理國際媒體的查詢。<|im_end|>
+<|im_start|>user
+Summarize the paper "Differentiability of the Leading Lyapunov Exponent of a linear differential equation with random coefficients Application to the Calculation of the Selection Gradient in Random Environments" in one paragraph.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Differentiability of the Leading Lyapunov Exponent of a linear differential equation with random coefficients Application to the Calculation of the Selection Gradient in Random Environments
+
+The study of evolution in temporally fluctuating environments often relies on the analysis of Lyapunov exponents, which quantify the exponential growth of populations. However, when model parameters depend on a stochastic process, calculating the selection gradient, a key tool for predicting the evolution of phenotypic traits, becomes a mathematical challenge. While the periodic case has been resolved, a general approach for random environments remains to be developed. This article proposes a rigorous method to: Establish the differentiability of the leading Lyapunov exponent with respect to a parameter, providing an explicit integral formula for its derivative. Develop a numerical algorithm to approximate the derivative by solving an extended differential equation. Apply these results to the analysis of mutant invasion in a resident population at equilibrium, identifying the selection gradient as the derivative of the top Lyapunov exponent.<|im_end|>
+<|im_start|>user
+Can you write an encyclopedia-style article on Iraklis Thermaikos F.C.?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Iraklis Thermaikos F.C.
+
+Iraklis Thermaikos (Greek: Ηρακλής Θερμαϊκού), is an association football club based in Ampelokipoi, Thessaloniki, Greece.
+
+
+== History ==
+
+
+=== Foundation ===
+The club was founded in 2019, inheriting the framework and register of Rouvikonas Ampelokipoi, which had been established in 2005 and competed mainly in the lower divisions of the Macedonia FCA. The name "Iraklis" was chosen in honour of Iraklis Thessaloniki, of which Eleftherios Imionidis—president of Iraklis Thermaikos—is a devoted supporter.
+
+
+=== League history ===
+It immediately became evident that the club operated under professional standards, a fact that was soon reflected on the pitch. In the 2019–20 season, which marked the team's first official league appearance, they were close to securing promotion from the Second to the First Division before the season was suspended due to the COVID-19 pandemic. In the 2020–21 season, the club again competed in the Second Division, but the championship was once more halted after just a few matchdays for the same reason.
+From the 2021–22 season, when the FCA competitions resumed normal operation, Iraklis Thermaikos embarked on an unbroken upward trajectory. Initially, the club celebrated promotion to the First Division of the Macedonia FCA in 2022, while during the 2022–23 season, it achieved a second consecutive promotion—this time to the A1 Division (the top tier of the Macedonia FCA) for the first time in its history.
+During the 2024–25 season, Iraklis managed to finish in 2nd place in the A1 Division standings, earning a spot in the promotion play-offs for the Gamma Ethniki. In the play-offs, the team again finished in 2nd place in their group behind only Veria, securing promotion to the national divisions for the first time in its history after just five years of existence. The club matched this success in the Macedonia FCA Cup, reaching the final at Toumba Stadium where they were defeated 3–1 by Apollon Kalamarias, a Gamma Ethniki side.
+During the 2025–26 season, Iraklis Thermaikos wrote a golden page in its history by finishing fourth in Group 1 of the Gamma Ethniki, securing historic victories throughout the campaign against clubs with long-standing presences in the Super League Greece. Specifically, they defeated Doxa Drama twice (1–0 at home during the regular season and 0–2 away in the play-offs) and recorded a 0–3 away victory against Xanthi during the regular season.
+
+
+== Crest and Colours ==
+Its emblem depicts the capital Greek letter Eta (Η), while its colours are blue and white.
+
+
+== Stadium ==
+Although Iraklis Thermaikos is based in Ampelokipoi, Thessaloniki, the designation "Thermaikos" in the club's name does not refer to the Municipality of Thermaikos, but rather to the Thermaic Gulf, in an effort by the club to encompass the entire Thessaloniki urban area. As a natural consequence, the team does not play in a fixed stadium, but across various grounds throughout the Thessaloniki urban area. During the 2024–25 season, the club played at the stadium of Agios Vasileios, outside the limits of the metropolitan area, before moving to the stadium in Chalastra. In view of the team's first appearance in a national division for the 2025–26 season, it was decided that the club would continue to play its home matches in Chalastra.<|im_end|>
+<|im_start|>user
+凯迪拉克Celestiq是什么？<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+凯迪拉克Celestiq
+
+凯迪拉克Celestiq（标识化写作CELESTIQ）是美国通用汽车凯迪拉克事业部打造的一款纯电揭背车。它是品牌的旗舰轿车，最初在北美市场用于取代凯迪拉克CT6。生产于2024年启动。
+
+
+== 概述 ==
+凯迪拉克以手工方式组装Celestiq，并投入8100万美元，在密歇根州沃伦的技术中心（GMTC）建起一条小批量生产线。
+GMTC自1956年落成以来只组装过概念车和展车，Celestiq是第一款在那里组装、面向公众销售的车型。
+车辆的一大特色是由Research Frontiers公司制造的智能玻璃车顶。其他已披露的配置包括横贯仪表板的触摸屏、全轮驱动和四轮转向。整车预计使用上百个3D打印部件。Celestiq预计搭载通用下一代“Ultra Cruise”高级驾驶辅助系统，运行在高通的骁龙Ride平台上。
+和更早推出的电动SUV凯迪拉克Lyriq一样，Celestiq采用通用Ultium电池技术和BEV3平台。
+
+
+=== 概念车 ===
+
+凯迪拉克旗舰轿车的源头可追溯到Sixteen（2003）、Ciel（2011）、Elmiraj（2013）和Escala（2016）等概念车，其中最后一款在凯迪拉克转向全面电动化之前曾获准量产；后来Escala被改写为品牌电动化的光环车，Celestiq概念车正是由它衍生而来。
+在2020年3月的“EV日”活动和2021年1月的CES 2021分别放出有限的规划信息与细节之后，概念车图片直到2022年7月22日才公开——当天凯迪拉克发布了Celestiq展车，计划作为2025车型年推出。华尔街日报报道称Celestiq定价接近30万美元，2023年底前小批量投产，年产量不足500辆。2025年报道的价格为34万美元。
+Celestiq的设计师玛加莉·德贝利斯也主持了Lyriq的设计，两台电动车共享前格栅、尾灯等设计元素。总体而言，概念车从更早的凯迪拉克车型（如1957款Eldorado Brougham和1930–40年代的凯迪拉克V-16）以及埃罗·萨里宁的建筑中汲取灵感——GMTC和圣路易斯拱门都出自萨里宁之手。
+概念车于2022年8月的蒙特雷汽车周向公众展示，包括一年一度的圆石滩优雅竞赛。2022年9月，它在EyesOn Design设计奖上获评最佳概念车奖和最佳色彩/图形/材料运用奖。
+
+
+=== 量产 ===
+
+2022年10月18日的发布活动上，量产版Celestiq亮相。它保留了概念车的整体设计，只改动了揭背造型，侧视摄像头也换回传统后视镜。
+规划中的小批量生产流程让通用得以借助增材制造工艺和柔性软模来降低生产成本，整车由手工组装。在一些环节，零件数量被精简以便装配，例如主底盘由六块大型铸件构成，按前/中/后模块左右分开制造再焊接到一起。据估计，通用为Celestiq生产线投入了8100万美元。许多零件是3D打印的铝、钛或不锈钢件。
+2023年6月，伪装原型车在密歇根州路试时被拍到。该车又在2023年8月和2024年的蒙特雷汽车周展出，2024年还对最终工程验证车进行测试并向汽车媒体演示。首批交付预计在当年第四季度开始，而第一年的产量已被订购一空。
+第一辆Celestiq于2025年6月交付客户。交付仪式在密歇根州沃伦通用全球技术中心内的Vanderbilt凯迪拉克之家举行，客户可在那里与顾问一对一地订购并定制Celestiq。
+
+
+== 规格 ==
+
+
+=== 动力总成与电池 ===
+Celestiq为全轮驱动，前后桥各一台牵引电机，综合输出488千瓦（655马力）、876牛·米扭矩，0–97公里/小时（0–60英里/小时）加速估计为3.7秒。电机由总容量111千瓦·时的高压Ultium牵引电池供电。电池由一个个软包电芯按不同高度水平叠放组成：例如脚坑下方叠六层，座椅下方则叠九到十二层。直流最高充电功率200千瓦，估计续航488公里。
+
+
+=== 底盘 ===
+Celestiq基于通用BEV3平台打造，采用铝制空间框架和碳纤维车身面板；车门面板为片状模塑料（SMC），以便嵌入传感器。多连杆自适应空气悬挂配磁流变减震器，后轮可转向。
+
+
+=== 灯光 ===
+头灯采用数字微镜器件，每侧130万像素，会在驾驶员走近时播放迎宾启动动画，包括投射更新后的凯迪拉克盾徽。
+
+
+=== 内饰 ===
+车内配备杜比全景声38扬声器音响，以及四象限智能玻璃车顶，每个区域都能单独调节车顶透明度。
+
+
+=== 定制 ===
+车辆的许多方面都可定制，包括内外颜色、饰件材料和表面处理。作为起点，凯迪拉克提供四个“设计灵感”主题：Magnetic（内外深黑与蓝色）、Vale（大地色系）、Mist（银色外观配棕色真皮座椅）和Aurora（运动红色主题）。潜在客户可在Vanderbilt凯迪拉克之家与专属礼宾一起参与设计；这栋位于GMTC园区、由萨里宁设计的建筑以苏珊娜·范德堡（Suzanne Vanderbilt）命名——她1955至1977年间任凯迪拉克设计师，曾负责1958款Eldorado Seville轿跑车“Baroness”和1958款Series 62“Saxony”敞篷车。
+
+
+== 另见 ==
+凯迪拉克Sollei<|im_end|>
+<|im_start|>user
+Show me `src/planning.ts`.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+import type { CapabilityManifest, JevChoiceAnswer } from "./types.js";
+
+/**
+ * Beam-search over per-step probability distributions to pick a coherent tool
+ * sequence instead of independent per-step argmax. Repeating a tool costs
+ * `lambda` nats per prior occurrence, so degenerate sequences (same tool 5x)
+ * lose to plausible progressions while legitimate repeats (2x) can still win.
+ */
+export function beamSelectSequence(
+  stepAnswers: JevChoiceAnswer[],
+  candidateIds: string[],
+  lambda: number,
+  beamWidth = 64,
+): string[] {
+  interface Beam { seq: string[]; score: number; }
+  let beams: Beam[] = [{ seq: [], score: 0 }];
+  for (const answer of stepAnswers) {
+    const expanded: Beam[] = [];
+    for (const beam of beams) {
+      for (const id of candidateIds) {
+        const probability = answer.probabilities[id] ?? 0;
+        const repeats = beam.seq.filter((tool) => tool === id).length;
+        expanded.push({
+          seq: [...beam.seq, id],
+          score: beam.score + Math.log(Math.max(probability, 1e-9)) - lambda * repeats,
+        });
+      }
+    }
+    expanded.sort((a, b) => b.score - a.score);
+    beams = expanded.slice(0, beamWidth);
+  }
+  return beams[0]?.seq ?? stepAnswers.map((answer) => answer.choice);
+}
+
+const ORDER_MARKERS = /^(?:first|firstly|step\s+\d+|then|next|after\s+(?:that|this|wards?)|second(?:ly)?|third(?:ly)?|finally|lastly|eventually|首先|第一|第二|第三|然后|接下来|随后|接着|最后|最终)[,:：、\s]/i;
+
+/**
+ * Rule-based instruction decomposition: splits a multi-step request into
+ * ordered sub-goals using bullet/numbered lines or discourse markers
+ * (First/Then/Finally/首先/然后/最后...). Returns the whole request as a
+ * single sub-goal when no structure is found.
+ */
+export function ruleDecompose(request: string): string[] {
+  const lines = request.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const bulleted = lines.filter((line) => /^(?:[-*•]|\d+[.)、])\s+\S/.test(line));
+  let goals: string[];
+  if (bulleted.length >= 2 && bulleted.length >= lines.length / 2) {
+    goals = bulleted.map((line) => line.replace(/^(?:[-*•]|\d+[.)、])\s+/, "").trim());
+  } else {
+    const sentences = request
+      .replace(/\r?\n/g, " ")
+      .split(/(?<=[.。!?？;；])\s+/)
+      .map((sentence) => sentence.trim())
+      .filter(Boolean);
+    goals = [];
+    let current = "";
+    for (const sentence of sentences) {
+      if (ORDER_MARKERS.test(sentence) && current) {
+        goals.push(current.trim());
+        current = sentence.replace(ORDER_MARKERS, "");
+      } else {
+        current = current ? `${current} ${sentence}` : sentence.replace(ORDER_MARKERS, "");
+      }
+    }
+    if (current.trim()) goals.push(current.trim());
+  }
+  goals = goals.filter((goal) => goal.length > 0);
+  return goals.length >= 2 ? goals : [request];
+}
+
+const TARGET_PATTERNS = [
+  /`([^`]+)`/g,
+  /[\w./-]+\.(?:pdf|xlsx|xls|docx|doc|pptx|ppt|csv|tsv|tex|bib|md|txt|json|jsonl|html?|xml|ya?ml|png|jpe?g|zip|tar|gz)\b/gi,
+  /https?:\/\/[^\s)>\]"']+/g,
+  /\b\d{3,}\b/g,
+];
+
+/** Extract concrete targets (file names, URLs, identifiers) mentioned in the request. */
+export function extractTargets(request: string, max = 20): string[] {
+  const found = new Set<string>();
+  for (const pattern of TARGET_PATTERNS) {
+    for (const match of request.matchAll(pattern)) {
+      const value = (match[1] ?? match[0]).trim().replace(/[.,;:]+$/, "");
+      if (value && value.length <= 120) found.add(value);
+      if (found.size >= max) return [...found];
+    }
+  }
+  return [...found];
+}
+
+/** Group key used by hierarchical routing: manifest metadata group/server, else the capability type. */
+export function groupOf(candidate: CapabilityManifest, groupBy: "server" | "type" = "server"): string {
+  if (groupBy === "type") return candidate.type;
+  const metadata = candidate.metadata ?? {};
+  return String(metadata.group ?? metadata.server ?? candidate.type);
+}
+
+/** One-line criteria text for a candidate group in the coarse stage of hierarchical routing. */
+export function describeGroup(group: string, members: CapabilityManifest[]): string {
+  const names = members.map((member) => member.name).join(", ");
+  const truncated = names.length > 400 ? `${names.slice(0, 400)}…` : names;
+  return `${group} (${members.length} capabilities): ${truncated}`;
+}<|im_end|>
+<|im_start|>user
+Write the abstract for a paper titled "Pulse-Controlled Topologically Protected Quantum Batteries".<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Pulse-Controlled Topologically Protected Quantum Batteries
+
+Quantum batteries have emerged as a promising new generation of energy-storage devices for powering quantum technologies. Long-distance charging is particularly attractive because it minimizes interference between the charger and the battery, thereby attracting considerable interest. Here, we propose a topologically protected long-distance charging protocol for quantum batteries based on a pulse-controlled superconducting qubit chain. By dynamically modulating the pulse-mediated couplings, we realize topologically protected energy transfer from the charger to the battery. We show that the charging process is free of energy backflow and remains robust against imperfections in pulse control. Moreover, the energy stored in the battery at the target time is fully extractable, and the protocol remains effective for relatively large system sizes. To further accelerate charging, we optimize the pulse shape and elucidate the underlying physical mechanism. Our pulse-controlled topological quantum battery protocol provides a versatile framework for implementing long-distance topological charging and establishes a theoretical foundation for designing optimal-control strategies to enhance quantum battery performance.<|im_end|>
+<|im_start|>user
+Show me `src/ops/linear_swiglu/q4cublas/w4_cublas_prefill.h`.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+#pragma once
+
+#include "core/arena.h"
+#include "core/tensor.h"
+#include "core/weight.h"
+
+#include <cstddef>
+#include <cstdint>
+
+namespace ninfer::ops::detail {
+
+// Prefill by materialising the weight as int8 and handing the GEMM to cuBLAS.
+//
+// Our own W4A8 mainloop reaches about 147 TOP/s at its best measured shape against cuBLAS's 238 on
+// the same card and problem, and the gap is structural rather than a tuning knob: with streaming
+// perfectly hidden the compute path alone still costs 2,092 us, so the hand-written ceiling is near
+// 1.36x the shipped kernel (tools/w4a8_marlin_probe.cu). Handing the work to cuBLAS instead is
+// worth 2.0x, because the dequantise pass is weight-sized while the GEMM is token-sized, so its
+// overhead amortises as the prefill chunk grows -- 1.42x / 1.67x / 1.89x / 2.00x at 512 / 1024 /
+// 2048 / 4096 tokens (tools/w4_dequant_cublas_probe.cu). It therefore wants a large
+// `--prefill-chunk` to pay, and the two settings belong together.
+//
+// **It is a quality trade and that is why it is opt-in.** cuBLAS reduces over the whole of K, so it
+// cannot see a scale per 64 columns: the weight carries one scale per row and the activations one
+// per token. The weight half measures 9.7e-3 to 1.1e-2 relative L2 against the exact group-64 values
+// on the real 27B artifact, the median per projection kind and 1.5e-2 for the worst tensor
+// (tools/w4_row_scale_error.cpp, with the route's own row scale), comparable to the 9e-3 to 2.0e-2 this
+// fork already accepts from per-group activation quantisation; the activation half is the trade
+// this fork has twice declined, at 1.2e-2 rising to 1.29e-1 on outlier-heavy inputs. Whether the
+// two together are affordable is a perplexity question, which is why nothing here is on by default.
+
+// WHAT THE ROUTE COVERS, AND WHAT EACH PART COSTS. Measured at pp4096, chunk 4096, kv int8, against
+// a 1,736 tok/s baseline with the route off, and perplexity on the 1M corpus against 4.343155:
+//
+//   route off                                1,736 tok/s   4.343155
+//   MLP and out_proj                         2,673  1.54x  4.346284   +0.072%
+//   ... plus attention and GDN projections   2,998  1.73x  4.349944   +0.156%
+//
+// The second step is `prefill_cublas_projections`, separable because it is a different trade: the
+// attention and GDN input projections hold about a fifth of the linear parameters, and covering
+// them is worth +12% prefill for +0.084% perplexity. Nearly all of both sides of that come from
+// GDN rather than attention -- attention alone measured +2.4%.
+//
+// UNALIGNED TOKEN COUNTS ARE WHERE THE ROUTE IS FURTHEST AHEAD, which the aligned benchmarks hide.
+// The integer route's token tile wants an aligned width and loses about 40% without one; cuBLAS
+// does not care. gate_up, TOP/s, integer route against this one:
+//
+//   tokens     512    640   1000   1536   3000   4095
+//   integer   92.5   95.2   53.8   97.5   62.0   59.8
+//   cuBLAS   135.1  143.0  160.2  206.1  207.4  210.2
+//
+// A real prompt is an arbitrary length, so its last chunk is almost always unaligned. The end-to-end
+// numbers quoted elsewhere use round prompt sizes and therefore understate this.
+
+// CHOOSING THE PREFILL CHUNK. The route's dequantise pass is weight-sized and its GEMM is
+// token-sized, so everything about it is a function of the chunk. Measured end to end on the 27B at
+// pp4096 (local 3090, kv int8):
+//
+//   chunk   baseline   cuBLAS   speedup   workspace   one prefill step
+//     512      1,581    1,929     1.22x      268 MiB       ~265 ms
+//    1024      1,663    2,235     1.34x      365 MiB       ~460 ms
+//    2048      1,724    2,643     1.53x      543 MiB       ~775 ms
+//    4096      1,736    2,753     1.59x      661 MiB     ~1,490 ms
+//
+// The last column is the one serving cares about. The scheduler alternates prefill and decode at
+// exactly one `advance_prefill` call (runtime/engine/engine_core.h:2011-2023), which is one chunk,
+// so that is how long a concurrent decode lane stalls. 4096 buys the most throughput and stalls
+// other lanes for a second and a half; 512 still pays 1.22x and keeps steps short. 2048 is the
+// compromise. Workspace matters only near the context ceiling: 196,608 tokens loads at 512 and
+// fails at 4096, by 168 MiB.
+//
+// NOT DONE, and the measurement is why: inverting the prefill loops so the weight is materialised
+// once per *window* of chunks rather than once per chunk. It is feasible -- prefill captures no
+// CUDA graph, the layer loop is a plain for, and execution/text.cpp already has a chunk loop with
+// an unconditional break. But a window has to run inside one `advance_prefill` call, so it inherits
+// exactly the scheduling granularity of a chunk that size: it would buy the 4096 throughput at the
+// 512 workspace while stalling decode lanes as badly as 4096 does. That leaves it a pure memory
+// play, worth ~390 MiB against a restructure of the GDN state fork and capture-frontier handling.
+// Not a good trade at this size; revisit if the context ceiling ever binds.
+
+// TRIED AND REJECTED: a larger tile budget. cuBLAS re-reads the materialised weight once per token
+// tile, so a budget big enough to make gate_up one tile at 4096 tokens saves ~356 MB of reads. It
+// measures 6,822 us against 7,025 at the shipped budget -- inside the ~10% spread the same
+// configuration showed across repeats -- and it would take the workspace past 1.1 GiB, because the
+// int32 output for one gate_up tile at 4096 tokens is 570 MB on its own. Not worth it.
+
+// TRIED AND REJECTED, 2026-09-18: overlapping the weight dequantise with the GEMM.
+//
+// The dequantise is memory bound and the GEMM is tensor-core bound, so splitting the weight's rows
+// into blocks and materialising block b+1 on a side stream while block b's GEMM runs looks like it
+// should hide a cost that is 21% of the call at 1024 tokens. It does not. Measured on gate_up
+// against the unmodified serial form (cuBLAS column, us):
+//
+//                        T=1024   T=4096
+//   serial (shipped)      2,243    7,410
+//   2 blocks, no overlap  2,010    7,281
+//   4 blocks, no overlap  2,255    7,817
+//   2 blocks, overlapped  2,070    7,318
+//   4 blocks, overlapped  2,173    7,752
+//
+// Overlapping is worse than not overlapping at every block count, and the block split alone is
+// inside the machine's drift over the run -- the untouched A8Int arm moved 3,299 to 3,823 across
+// the same sweep. Two plausible reasons, neither worth chasing: cuBLAS already moves enough bytes
+// that a concurrent memory-bound kernel takes bandwidth from it rather than filling a gap, and
+// splitting one GEMM into four costs more efficiency than the overlap returns.
+//
+// So the dequantise has to be made *rarer* rather than hidden, which is a prefill-loop question --
+// materialise once per window of chunks instead of once per chunk -- not a kernel one.
+
+// The int32 output buffer a token tile needs is n * tile * 4 bytes, so the tile is chosen per shape
+// against a budget rather than fixed. A fixed 1024 costs the narrow shapes real throughput -- down
+// ran 1.54x against 1.58x for out_proj at the same token count -- because a tall-thin GEMM has less
+// parallelism to give cuBLAS than a wide one, and n varies by 7x across the parents here.
+inline constexpr std::size_t kCublasTileBudgetBytes = 256u << 20;
+
+[[nodiscard]] std::int32_t cublas_token_tile(std::int32_t rows, std::int32_t tokens);
+
+[[nodiscard]] bool w4_cublas_prefill_supported(const Weight& weight, std::int32_t tokens);
+
+[[nodiscard]] std::size_t w4_cublas_prefill_workspace_capacity_bytes(std::int32_t rows,
+                                                                    std::int32_t cols,
+                                                                    std::int32_t min_tokens,
+                                                                    std::int32_t max_tokens);
+
+// out[i, t] = silu(C[i, t]) * C[i + out_rows, t], with C the int32 GEMM rescaled by
+// row_scale[row] * token_scale[t].
+void w4_cublas_swiglu_launch(const Tensor& x, const Weight& gate_up, Tensor& out,
+                             WorkspaceArena& workspace, cudaStream_t stream);
+
+// out[i, t] += C[i, t] rescaled. `residual` is read and written in place.
+void w4_cublas_add_launch(const Tensor& x, const Weight& weight, Tensor& residual,
+                          WorkspaceArena& workspace, cudaStream_t stream);
+
+// The attention and GDN input projections read one parent weight and write several destinations
+// from disjoint row ranges of it, so they share an activation quantisation and, per parent, a
+// single materialisation. About a fifth of this model's linear parameters live here -- query_key,
+// gate_value, qk and value_z -- and they were the part of prefill the route did not reach.
+struct CublasProjectionDestination {
+    void* data             = nullptr; // BF16, leading dimension `leading`
+    std::int32_t row_begin = 0;       // first row of the parent this destination takes
+    std::int32_t rows      = 0;       // how many parent rows it takes
+    std::int32_t leading   = 0;       // rows in the destination tensor; >= begin + rows
+    std::int32_t begin     = 0;       // first row within the destination, for packed outputs
+};
+
+struct CublasProjection {
+    const Weight* weight = nullptr;
+    const CublasProjectionDestination* destinations = nullptr;
+    int destination_count = 0;
+};
+
+[[nodiscard]] bool w4_cublas_projection_supported(const CublasProjection* parents, int parent_count,
+                                                  std::int32_t tokens);
+
+[[nodiscard]] std::size_t w4_cublas_projection_workspace_capacity_bytes(std::int32_t max_rows,
+                                                                        std::int32_t cols,
+                                                                        std::int32_t min_tokens,
+                                                                        std::int32_t max_tokens);
+
+void w4_cublas_projection_launch(const Tensor& x, const CublasProjection* parents, int parent_count,
+                                 WorkspaceArena& workspace, cudaStream_t stream);
+
+} // namespace ninfer::ops::detail<|im_end|>
+<|im_start|>user
+Summarize the paper "Consensus time for asynchronous $\ell^p$ relaxation: graph dependence" in one paragraph.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Consensus time for asynchronous $\ell^p$ relaxation: graph dependence
+
+We study the asynchronous $\ell^p$ relaxation introduced by Amir, Nazarov, and Peres: at each step, a uniformly chosen vertex minimizes its incident $\ell^p$ energy. For the profile $f_t$ after $t$ updates, let $$ \mathsf T_p(G,1/2):= \sup_{\lVert f_0\rVert_\infty\le1} \mathbb{E}\bigl[\min\{t\ge0:\operatorname{osc}(f_t)\le1/2\}\bigr]. $$ For $1<p<\infty$, we obtain graph-dependent estimates for boxes, trees, and conductance expanders. On the nearest-neighbor box $[L]^d$, for $d,L\ge2$ and $n=L^d$, the answer is, up to logarithmic factors, $nd^{1/(p-1)}L^{p/(p-1)}$ for $1<p<2$ and $ndL^2$ for $p\ge2$. On bounded-degree trees, an explicit rerooting-invariant parameter $T_G$ determines the answer up to logarithmic factors; for arbitrary trees it gives upper and lower bounds that differ additionally by the maximum degree. If the volume conductance $h(G)\ge h_0>0$, then $\mathsf T_p(G,1/2)=Θ_{p,h_0}(n\log n)$ without a degree assumption. At $p=\infty$, every connected graph satisfies $\mathsf T_\infty(G,1/2)\ge c nD^2/Δ$, where $D$ and $Δ$ are its diameter and maximum degree.<|im_end|>
+<|im_start|>user
+Can you write an encyclopedia-style article on Piotr Flatau?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Piotr Flatau
+
+Piotr Jacek Flatau (born 1953) is a Polish-American atmospheric physicist and professor of physical sciences. His research concerns cloud microphysics, radiative transfer, tropical dynamics, and electromagnetic scattering. With astrophysicist Bruce T. Draine, he co-developed DDSCAT, a widely used implementation of the discrete dipole approximation for calculating scattering and absorption by irregular particles. His other work includes contributions to cloud-microphysics parameterizations and research on tropical aerosols, equatorial waves, and extreme rainfall. He has worked at the Scripps Institution of Oceanography, University of California, San Diego (UC San Diego), since
+1992 and was elected a foreign member of the Polish Academy of Sciences in 2017.
+Outside atmospheric science, Flatau has edited books and contributed translations and songs to theatrical and documentary projects concerning Polish scientific, literary, and interwar cultural history.
+
+
+== Early life and education ==
+Flatau was born in Poland in 1953. He graduated from the Tadeusz Reytan School in Warsaw in 1972. In 1977 he received an MSc in theoretical physics from the Faculty of Physics at the University of Warsaw, where his supervisor was Jerzy Mycielski. He then worked as an assistant professor at the faculty's Institute of Geophysics under Krzysztof Edward Haman.
+After moving to the United States in 1982, Flatau studied at Colorado State University. He received an MSc in atmospheric science in 1985 and a PhD in atmospheric science in 1992. His doctoral dissertation, Scattering by irregular particles in anomalous diffraction and discrete dipole approximations, was jointly supervised by William R. Cotton and Graeme Stephens.
+In 2012 Flatau received a habilitation degree in physics from the Faculty of Physics at the University of Warsaw, based on work concerning exact methods of single and multiple scattering.
+
+
+== Career ==
+Flatau joined the Climate, Atmospheric Science and Physical Oceanography division of Scripps Institution of Oceanography in 1992. At Scripps, he initially worked with Veerabhadran Ramanathan and Paul Crutzen on major climate field projects, including CEPEX, INDOEX, and MINOS. He is also a member of the scientific council of the Polish climate-education website Nauka o Klimacie.
+
+
+== Research ==
+
+
+=== Discrete dipole approximation and DDSCAT ===
+Flatau and Draine began developing DDSCAT in 1990 at Princeton University. The software implements the discrete dipole approximation to calculate electromagnetic scattering and absorption by targets such as ice crystals, dust, soot, and marine phytoplankton. Their 1994 description of the method appeared in the Journal of the Optical Society of America A. Later versions extended the method to periodic targets. An independent review described DDSCAT as the publicly available program that helped popularize the discrete dipole approximation.
+
+
+=== Cloud physics and microphysical parameterization ===
+Flatau contributed to the Colorado State University Regional Atmospheric Modeling System cloud-microphysics module and, with Johannes Verlinde and William R. Cotton, derived analytical solutions for particle-collection growth used in bulk parameterizations. The Thompson microphysics scheme for the Weather Research and Forecasting Model and MM5 cited this work, while Jerry M. Straka's textbook drew on the RAMS module. He also studied the radiative effects of cirrus clouds.
+Flatau also worked with the United States Naval Research Laboratory on aerosol modelling and high-resolution radar studies of clouds near the Kennedy Space Center. With Jerome M. Schmidt and colleagues, he reported radar observations of individual raindrops in the free atmosphere. With Schmidt and Paul R. Harasti, he proposed "mixed-phase nimbostratus uncinus" as a separate subclass of nimbostratus cloud, characterized by billow cloud structure, shallow circulation, and slanted periodic rain shafts.
+
+
+=== Tropical dynamics ===
+Flatau has studied interactions between the tropical ocean and atmosphere, including the Madden–Julian oscillation, monsoon onset, equatorial waves, and tropical cyclogenesis. With collaborators, he linked interactions between convectively coupled Kelvin and equatorial Rossby waves to extreme rainfall and flooding in southwest Sulawesi, finding that the waves' combined activity substantially increased the probability of such events.
+
+
+=== Field projects ===
+Flatau participated in the Central Equatorial Pacific Experiment (CEPEX) in 1993, where research he co-authored quantified the radiative effects of tropical convection, and in the 1999 Indian Ocean Experiment (INDOEX), where lidar observations characterized vertical aerosol-extinction profiles. During the Mediterranean Intensive Oxidant Study (MINOS) on Crete in 2001, he co-authored studies of aerosol radiative forcing and long-range pollution transport over the Mediterranean.
+In the 2004 United Arab Emirates Unified Aerosol Experiment (UAE2), Flatau was principal investigator for aerosol-scattering and radiative-forcing research, and he also worked on satellite ocean-colour validation through NASA's SIMBIOS project. In 2018–2019 he was an NSF co-principal investigator for the Equatorial Line Observations
+campaign, which examined equatorial Kelvin waves; related research studied meteorological drivers of floods on Sumatra.
+
+
+== Historical and literary work ==
+Flatau is a grandson of neurologist Edward Flatau and a son of physician Joanna Flatau.
+
+
+=== Books and publishing ===
+Flatau has edited books on the history of science, literature, and music. With Katarzyna Zimek, he edited Kilka wierszy Władysława Szlengla (Several Poems by Władysław Szlengel, 2020), a collection of prewar work by Władysław Szlengel. His Edward Flatau i jego dwie córki concerns the neurologist, his family, and the beginnings of Polish neurology.
+In 2024 Flatau edited a commemorative volume about atmospheric physicist Krzysztof Edward Haman. His Tango: Reportaże z przeszłości (Tango: Reports from the Past) traces Polish tango and its movement between continents.
+
+
+=== Theatre, music, and film ===
+Flatau translated Argentine tango lyrics into Polish for the 2014 musical Tango FM and for concerts by singer Olga Avigail Mieleszczuk. He also adapted songs for plays by Steve Hauk and Tomasz Lerski.
+He wrote the screenplay for the 2025 documentary Edward Flatau i jego dwie córki, contributed to the BBC Radio 3 documentary Tango Goes East, and wrote the Polish popular-science blog Fizyka Klimatu from 2010 to 2016.
+
+
+== Sailing and meteorology ==
+Flatau was involved in sailing from his youth and later joined the Polish Yacht Club of San Francisco. Beginning in 2005, he and Bogumił Jakubiak provided weather forecasting assistance to Poland's 470-class sailing team. In 2006 he prepared forecasts for the Polish national team during a pre-Olympic regatta in Qingdao, China. In 2011–2012 he worked as a meteorologist during Roman Paszke's attempt to sail around the world from east to west in the catamaran Gemini 3.
+
+
+== Honors and memberships ==
+Flatau received the Polish state title of professor of physical sciences on 2 December 2016. In 2017 he was elected a foreign member of the Polish Academy of Sciences.<|im_end|>
+<|im_start|>user
+卡拉图是什么？<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+卡拉图
+
+卡拉图（英語：Kara-Tur）是龙与地下城战役设定被遗忘的国度中，位于托瑞尔东方的一个大型大陆及文化区域。官方资料亦常以“东部诸国”（Eastern Realms）称呼这一地区。
+卡拉图位于费伦以东，两地之间隔着广大的无尽荒野（Endless Waste，又称Hordelands）。卡拉图并非统一的国家，而是包括翔龙（Shou Lung）、土龙（T'u Lung）、泰伯特（Tabot）、高丽（Koryo）、小樱（Kozakura）、倭（Wa）以及多个草原、岛屿和丛林地区在内的众多国家和文化区域。
+卡拉图最初出现于1985年出版的第一版《Oriental Adventures》中，当时尚未正式成为《被遗忘的国度》的一部分。1987年至1988年间，TSR逐渐将其与《被遗忘的国度》世界整合；1988年的盒装设定集《Kara-Tur: The Eastern Realms》正式将卡拉图置于托瑞尔、费伦东方，并对其主要国家、历史、宗教、政治和地理进行了系统描述。
+
+
+== 地理 ==
+卡拉图位于托瑞尔东部，与费伦所在的巨大陆块相连。由费伦向东穿越无尽荒野，可以到达卡拉图西部边缘。1989年的《Kara-Tur Trail Map》将其描述为范围极其广大的地区，从南部炎热的丛林一直延伸至北部寒冷荒原，从西部游牧民族控制的草原延伸至东部的海岛国家。
+卡拉图的地形十分多样，包括大型河谷、平原、高原、沙漠、山脉、北方寒原、热带丛林及东部群岛。
+卡拉图西方是广大的无尽荒野，这里是图坎（Tuigan）等游牧民族活动的主要地区，也是连接费伦与卡拉图最重要的陆上通道之一。
+大陆中部和东部的主要强权长期为翔龙帝国。翔龙西北边境与马之平原之间修筑有著名的龙墙（Dragonwall），作为防御北方及西方游牧民族入侵的重要防线。
+东部海域分布有高丽半岛、小樱群岛与和国等地区，而大陆南方则逐渐转变为热带和亚热带气候，分布着丛林诸地及大量岛屿国家。
+
+
+== 国家和地区 ==
+1988年的《Kara-Tur: The Eastern Realms》主要将卡拉图划分为十个国家或大型区域。
+
+
+=== 翔龙 ===
+翔龙（Shou Lung）是卡拉图面积最大、人口众多并具有长期中央集权传统的帝国，也是卡拉图最具影响力的政治力量之一。
+官方设定称翔龙拥有近三千年的有文字历史，在《Kara-Tur: The Eastern Realms》所描述的时代之前已经历多个王朝和数十位皇帝。国家以皇帝为最高统治者，并建立庞大的中央官僚体系，通过文官考试选拔部分官员。
+翔龙首都为德龙城（Kuo Te' Lung），皇帝及中央政府所在地亦位于此处。
+翔龙经济以农业、手工业和远距离贸易为基础，丝绸、茶叶、香料、玉石及其他商品通过陆路和海路传播到卡拉图其他地区乃至费伦。
+
+
+=== 土龙 ===
+土龙（T'u Lung）位于翔龙南方，其历史与翔龙密切相关。
+土龙最初属于翔龙帝国，后来在政治冲突与内战中脱离，形成独立国家。其政治制度仍保留许多翔龙传统，但地方贵族和官员拥有更大的政治影响力，中央政府的控制程度也较翔龙为弱。
+翔龙和土龙长期存在边境争端及政治敌对，但两地语言、文化和制度仍有许多共同之处。
+
+
+=== 泰伯特 ===
+泰伯特（Tabot）位于卡拉图西南部高原和山地。
+其历史与翔龙宗教政策有关。翔龙部分宗教团体遭到迫害后迁入山区，并逐渐建立独立社会。泰伯特后来形成以宗教领袖和寺院势力为重要政治力量的政体。
+由于高山及复杂地形的保护，翔龙历史上多次试图控制该地区均未能建立长期统治。
+
+
+=== 骏马平原 ===
+骏马平原（Plain of Horses）位于卡拉图西部，是广阔的草原地带，并与无尽荒野相接。
+当地居住着多个以骑马和游牧生活为主的民族，其中包括后来建立强大联盟的图坎（Tuigan）。这些草原民族长期与翔龙、土龙及西方诸国发生贸易、战争和人口迁徙。
+
+
+=== 北方荒原 ===
+北方荒原（Northern Wastes）位于卡拉图极北地区，气候寒冷，人口稀少。
+这一地区主要由冻原、森林、山区和冰雪覆盖的土地组成，生活着多个相对分散的民族和部落。与翔龙和东部海岛国家相比，北方荒原缺乏大型中央集权国家。
+
+
+=== 丛林诸地 ===
+丛林诸地（Jungle Lands）位于卡拉图南方，包含后来亦被称为马来特拉（Malatra）的广大热带地区。
+当地拥有茂密雨林、河流和山地，并分布着众多城邦、部落及地方国家。其政治与文化结构明显不同于翔龙等北方国家。
+
+
+=== 群岛国 ===
+群岛国（Island Kingdoms）是卡拉图南方及东南方海域的大量岛屿政权的总称。
+各岛屿国家之间在语言、宗教、政治制度及社会结构上存在较大差异，海上贸易在当地经济和政治生活中占有重要地位。
+
+
+=== 高丽 ===
+高丽（Koryo）位于卡拉图东北部的朝鲜半岛（Choson Peninsula）。
+高丽由此前多个政治势力逐渐统一形成，并与翔龙、倭、小樱等周边国家保持外交及贸易联系。由于其地处大陆和东部群岛之间，高丽在卡拉图东北部海上交通中占据重要位置。
+
+
+=== 小樱 ===
+小樱（Kozakura）是位于卡拉图东部海域的群岛国家，由四个大型岛屿及大量较小岛屿组成。
+最大岛屿为神国岛（Shinkoku），皇室首都亦位于该岛。小樱名义上由皇帝统治，但长期存在地方武士家族、大名和军事势力之间的斗争，中央皇室的实际权力受到限制。
+
+
+=== 倭 ===
+倭（Wa）同样位于卡拉图东部群岛。
+与长期处于地方战争和政治分裂状态的小樱相比，《Kara-Tur: The Eastern Realms》时代的和国已经形成较为稳定和集中的幕府统治。国家与外国交往受到严格控制，并拥有强大的军事政府。
+
+
+== 社会与文化 ==
+卡拉图不是一个拥有共同文化的统一地区。翔龙、土龙、高丽、小樱、倭以及南方诸国在语言、政治制度、社会结构和宗教方面均存在明显差异。
+不过，官方早期资料也设定了一些在多个卡拉图地区出现的共同元素，包括武术传统、祖先崇拜、精怪和自然灵体、以“气”（ki）为基础的特殊能力，以及与费伦奥术传统不同的法术和宗教体系。
+第一版《Oriental Adventures》为卡拉图设计了武士、剑圣、忍者、巫师（wu jen）、修验者（shukenja）等角色类型，并详细制定了武术、家族、社会身份和荣誉等规则。
+这些规则并不代表卡拉图所有国家拥有完全相同的社会制度；1988年的地区设定随后对各国文化进行了分别描述。
+
+
+== 宗教 ==
+卡拉图各地拥有不同的宗教体系，与费伦诸神信仰存在明显差别。
+第五版《Sword Coast Adventurer's Guide》明确指出，费伦人熟悉的人类神祇在卡拉图基本不为人所知，而卡拉图拥有自己的神灵、精怪和宗教传统。
+翔龙宗教中最重要的体系包括启蒙之道（Path of Enlightenment）及道（The Way）。
+启蒙之道尊奉天帝（Celestial Emperor）、九位旅者（Nine Travelers）以及众多仙人和精灵，这些超自然存在共同组成一个被称为天庭官僚体系（Celestial Bureaucracy）的宇宙秩序。
+“道”则更接近一种哲学和修行传统，强调宇宙万物之间的联系、个人修行以及对自然秩序的理解。
+祖先、地方精灵、自然灵体及其他超自然存在在许多卡拉图文化中亦具有重要地位。不过，各国具体信仰并不完全一致。
+
+
+== 魔法与生物 ==
+卡拉图的魔法传统与费伦存在明显差异。
+早期资料中的巫师（wu jen）是一类专门研究元素、自然和灵体魔法的施法者；部分宗教和修行传统则通过精神修炼或与超自然存在之间的联系获得力量。
+卡拉图亦拥有许多在费伦较少见的生物，包括多种精怪、灵体、鬼怪和独特的龙类。
+《Sword Coast Adventurer's Guide》描述卡拉图的龙既不同于费伦常见的五色龙，也不同于金属龙，并指出卡拉图法师所使用的一些魔法体系对于费伦的大法师而言同样十分陌生。
+
+
+== 与费伦的联系 ==
+卡拉图与费伦虽然距离遥远，但两地之间并非完全隔绝。
+陆路贸易主要通过无尽荒野及连接东西方的黄金之路（Golden Way）进行。来自卡拉图的丝绸、香料、玉石及其他商品可以沿贸易路线进入费伦；同时亦有商人、旅行者和移民跨越无尽荒野往返两地。
+费伦居民通常将来自卡拉图的人笼统称为“翔龙人”（Shou），即使这些人实际上来自其他卡拉图国家。
+
+
+=== 图坎入侵 ===
+1359 DR，图坎统治者雅门可汗（Yamun Khahan）统一多个草原部落后发动大规模扩张。
+图坎军队首先征服塞姆法和卡扎里，随后突破翔龙的龙墙并入侵翔龙。经过数月战争，双方停止战斗，雅穆恩随后率主力向西进入费伦。
+图坎军队随后经过塞尔和拉舍曼进入费伦东部，并最终在1360 DR的战役中被费伦诸国联军击败，雅门可汗战死。
+这一战争成为官方作品中卡拉图与费伦政治和军事联系最重要的事件之一。
+
+
+== 重要人物 ==
+
+
+=== 福农 ===
+福农（Nung Fu）是翔龙历史中的奠基人物。根据翔龙传统，他原本只是一名普通农夫。在九位旅者结束统治、重新以旅行者身份行走世间时，福农在严冬中仍以自己仅有的食物招待他们。九位旅者因此将象征统治权的皇权徽记（Emblems of Authority）交给福农，并拥立其为翔龙统治者。
+福农于−1250 DR即位，这一年后来成为翔龙历的纪元起点，同时标志翔龙历史“第三纪元”的开始。福农于−1029 DR去世，其曾孙后来成为李朝（Li Dynasty）的第一位皇帝。
+
+
+=== 秦改凿守 ===
+秦改凿守（Kai Tsao Shou Chin）是14世纪DR中叶的翔龙皇帝。在《Kara-Tur: The Eastern Realms》中，他已年过五十，被称为“龙之重建者”（Rebuilder of the Dragon）。他性格沉稳而谨慎，在其统治下翔龙重新整顿军队和海军，并与倭和小樱维持和平关系。
+1359 DR图坎大军突破龙墙、入侵翔龙时，秦改凿守仍为帝国皇帝。在战争初期翔龙军队接连失利后，他任命将领Batu Min Ho负责抵抗图坎军队。经过长期作战和政治谈判，翔龙最终与雅门可汗停战，图坎大军随后转向西方。
+
+
+=== 拔都敏和 ===
+拔都敏和（Batu Min Ho）是翔龙军队将领，也是图坎战争期间最重要的军事人物之一。他具有图坎血统，早年加入翔龙军队，并逐渐成为帝国最有前途的年轻将领之一。1359 DR图坎入侵翔龙期间，秦改凿守任命他组织反击。
+拔都以坚壁清野及集中兵力等手段阻挡雅门可汗的大军，并成为小说《Dragonwall》的主要人物。战争后期，其妻子及子女因翔龙宫廷内部的政治斗争而遇害。虽然真正的叛徒最终被查出，拔都对翔龙朝廷彻底失望，离开帝国并加入雅门可汗的军队。
+此后他随图坎军队西征，在入侵塞尔期间击败塞尔著名的狮鹫军团。1360 DR雅门可汗在塞斯克战败身亡后，拔都拒绝被俘，最终自尽。
+
+
+=== 孙莞南 ===
+孙莞南（Wanang Sun）是卡拉图高丽的建立者和国王，原为新罗将领。设定时代中约五十八岁，以武艺、军事指挥和战略能力著称。
+14世纪DR前期，新罗先后征服高句丽（Koguryo）与济州（Saishu），统一朝鲜半岛，但新罗国王随后实行高税收和军事统治。孙莞南在担任将领期间已开始谋划取代旧王室。约1350 DR，新罗国王组织舰队企图入侵小樱，却因海啸导致舰队覆灭，国王随后退位逃亡。孙莞南趁机夺取王位，并将原有的新罗帝国重组为高丽。
+孙莞南通过撤军、降低税收及任用原有地方统治者等方式整合新罗、高句丽和济州诸势力。他以军队式的方式管理首都及国家，并通过任命地方总督、修建防御设施以及维持严格行政制度加强王权。
+
+
+=== 妲摩可 ===
+妲摩可（Tamoko）是来自小樱的人类忍者，也是电子游戏《博德之门》中的重要人物。
+官方《Dragon》第262期人物资料明确称其为“小樱女性”（Kozakuran woman）。妲摩可于1350 DR出生于Mikedono岛西岸的Kiraan村，幼年被卖给Konishi氏族，并在那里接受忍术训练。成年后，她奉命刺杀一名巫师，却在行动失败后被传送至安姆附近，此后逃往北方并以刺客为业。
+妲摩可后来来到博德之门，结识巴尔之子沙洛佛克，并成为其恋人、弟子和部下。在《博德之门》的故事中，她虽然仍然关心沙洛佛克，却逐渐反对其发动战争和追求巴尔神力的计划，并试图说服主角阻止沙洛佛克而不要杀死他。
+妲摩可是《博德之门》系列中少数被官方资料明确指出具体卡拉图出身地的人物之一。
+
+
+=== 攸旭摩 ===
+攸旭摩（Yoshimo）是来自卡拉图的人类赏金猎人，也是电子游戏《博德之门II：安姆的阴影》中可以加入队伍的角色。
+游戏官方手册将他描述为来自遥远卡拉图的自由奔放的盗贼，并指出其荣誉观念和文化背景与费伦西部存在明显差异。攸旭摩来到安姆后长期在阿斯卡特拉活动，并与当地地下社会建立联系。
+主角在艾瑞尼卡斯的地下设施中首次遇到攸旭摩，他以同样遭到囚禁的冒险者身份加入队伍。实际上，艾瑞尼卡斯通过指使术（geas）强迫攸旭摩为自己效力，使他最终不得不背叛主角。在真相揭露后，攸旭摩与主角一行发生战斗并死亡；玩家可以将其心脏带到伊尔梅特神殿，使其灵魂获得宽恕。
+正式发行的游戏及官方手册只明确说明攸旭摩来自卡拉图，并未确定其属于翔龙、小樱或倭等具体国家。因此不宜仅根据姓名、太刀等日本式元素，将其直接写作小樱或倭人。
+
+
+=== 雅门可汗 ===
+雅门可汗（Yamun Khahan）是14世纪DR时期图坎人的大可汗，也是《The Horde》战役设定和《帝国三部曲》（The Empires Trilogy）的核心人物之一。
+雅门最初是图坎胡昆氏族（Hoekun clan）的贵族和战士。他杀死父亲取得可汗地位后，通过战争、结盟和威胁逐步统一图坎及无尽荒野上的多个游牧部落，最终取得大可汗（Khahan）称号，并自称“万民之王”（Emperor of All Peoples）。
+1359 DR，雅门率领图坎大军向东方扩张，先后征服卡扎里等地区并突破翔龙龙墙。经过数月激战后，他与翔龙达成停战协议，随后转而率军向西入侵费伦。
+图坎大军先后进入塞尔、莱瑟曼和塞斯克，对费伦东部造成严重威胁。1360 DR，科米尔、塞斯克、莱瑟曼等势力组成联军与图坎军队决战。雅门最终在战斗中与亚桑四世交手并被其杀死，图坎大军随后瓦解并撤回无尽荒野。
+严格而言，雅门并非卡拉图诸国居民，而是来自位于费伦与卡拉图之间的无尽荒野。但由于他的入侵是卡拉图近代史中最重要的国际战争之一，尤其直接影响翔龙，因此通常与卡拉图历史一并叙述。
+
+
+== 出版历史 ==
+卡拉图最初并不是《被遗忘的国度》世界的一部分。
+1985年，TSR出版第一版AD&D规则书《Oriental Adventures》，其中包含一段用于东方题材游戏的示范世界设定，即后来被称为卡拉图的地区。
+1986年的冒险模组《Swords of the Daimyo》进一步描述小樱及其美山省（Miyama Province），并首次提供较完整的卡拉图地图。
+1987年的初版《Forgotten Realms Campaign Set》在托瑞尔东方为未来的卡拉图设定预留位置。随后TSR决定正式将卡拉图与《被遗忘的国度》合并。
+1988年出版的《Kara-Tur: The Eastern Realms》成为卡拉图最主要的官方设定集。该盒装产品由两本各96页的设定书和多张地图组成，分别介绍：
+
+第一册：翔龙、土龙、泰伯特、马之平原及北方荒原；
+第二册：丛林诸地、群岛国、高丽、小樱及和。
+该书还专门说明如何将卡拉图与《被遗忘的国度》战役设定连接。
+1989年，TSR出版《Kara-Tur Trail Map》，将此前出版物中的主要政治和地理资料整合为大型地图。
+1990年出版的《The Horde》进一步扩展了卡拉图与费伦之间的无尽荒野，并描述雅穆恩可汗和图坎部落的崛起。同期出版的《Monstrous Compendium Kara-Tur Appendix》则将卡拉图生物转换至AD&D第二版规则。
+进入《龙与地下城》第三版后，2001年新版《Oriental Adventures》不再使用卡拉图，而改以《五轮传奇》的罗库冈（Rokugan）作为主要示范世界。因此该书不应视为卡拉图设定集。
+卡拉图本身仍继续存在于《被遗忘的国度》世界中，但第三版以后很少再获得独立的大型地区设定集。
+2015年的第五版《Sword Coast Adventurer's Guide》再次明确提到卡拉图，称其为费伦遥远东方的广大大陆，并继续提到翔龙、小樱、和以及当地独特的宗教、龙类和魔法传统。
+
+
+== 相关作品 ==
+第一版《Oriental Adventures》时期曾出版多部以卡拉图为背景的冒险：
+
+OA1 Swords of the Daimyo（1986）
+OA2 Night of the Seven Swords（1986）
+OA3 Ochimo: The Spirit Warrior（1987）
+OA4 Blood of the Yakuza（1987）
+OA5 Mad Monkey vs. the Dragon Claw（1988）
+FROA1 Ninja Wars（1990）
+OA6 Ronin Challenge（1990）
+OA7 Test of the Samurai（1990）
+《被遗忘的国度》小说《帝国三部曲》（The Empires Trilogy）亦涉及卡拉图与图坎战争。其中第二部《Dragonwall》主要以翔龙遭图坎入侵为背景。<|im_end|>
+<|im_start|>user
+Write `evals/_thinking_diagnose.py` for this project.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+"""Inspect thinking-to-numeric boundary on the failed invoice case."""
+import json
+import random
+from pathlib import Path
+from _thinking_eval import ThinkingClient
+from typellm_sglang import SGLangClient
+from typellm_runtime import Choice, _decode_numeric
+
+class Probe(ThinkingClient):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.calls=[]
+        self.capture=False
+    def _request(self, path, payload=None, **kw):
+        if payload and payload.get('return_logprob'):
+            payload={**payload, 'top_logprobs_num':20}
+        r=super()._request(path,payload,**kw)
+        if self.capture and payload and payload.get('return_logprob'):
+            self.calls.append({'prefix_tail':payload['text'][-90:], 'response':r})
+        return r
+
+c=Probe(model='qwen3.8-27b',tokenizer='RadixArk/Qwen3.8-27B-NVFP4-BF16-LMHead',timeout=180)
+d=Choice(question='What is the invoice total?',choices={},name='total',syntax='Number',numeric_type='number')
+# Match the actual compiler's syntax instead of assuming it.
+from typellm import TypeLLMClient
+from _thinking_eval import cases
+base=TypeLLMClient('http://127.0.0.1:30000',model='qwen3.8-27b',tokenizer='RadixArk/Qwen3.8-27B-NVFP4-BF16-LMHead')
+case=next(x for x in cases() if x['id']=='batch_mixed')
+d=base.compile_schema(case['schema'])[-1]
+messages=[{'role':'user','content':case['context']},{'role':'user','content':d.opening_text()}]
+p=Path('evals/thinking_diagnosis.jsonl');p.parent.mkdir(exist_ok=True)
+with p.open('w') as out:
+ for trial in range(6):
+    c.capture=False
+    try: prefix=c.render_chat(messages,add_generation_prompt=True)
+    except Exception as e:
+        out.write(json.dumps({'trial':trial,'error':str(e)})+'\n');out.flush();continue
+    row={'trial':trial,'thinking_prefix':prefix,'trace':c.traces[-1],'variants':[]}
+    for name,suffix in [('two_newlines','\n\n'),('one_newline','\n'),('no_newline','')]:
+        prompt=prefix.rsplit('</think>',1)[0]+'</think>'+suffix
+        free=c._request('/generate',{'text':prompt,'sampling_params':{'max_new_tokens':48,'temperature':0}})
+        c.calls=[];c.capture=True
+        value,_,text=_decode_numeric(c,prompt,d,'argmax',1,random.Random(0),32)
+        c.capture=False
+        row['variants'].append({'name':name,'free_answer':free.get('text'),'value':value,'numeric_text':text,'steps':list(c.calls)})
+    out.write(json.dumps(row)+'\n');out.flush()
+    print(json.dumps({'trial':trial,'variants':[{k:v for k,v in x.items() if k!='steps'} for x in row['variants']]}),flush=True)<|im_end|>
+<|im_start|>user
+Write the abstract for a paper titled "Forgetting Without Restarting: Execution-State Unlearning for Stateful LLM Agents".<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Forgetting Without Restarting: Execution-State Unlearning for Stateful LLM Agents
+
+Long-running LLM agents are stateful: beyond the transcript they accrete compressed summaries, plaintext memory, pending tool plans, and, under every serving API, a KV cache. Yet today's "forget" operations delete a plaintext memory record and stop, leaving every artifact derived from the revoked information intact. We formalize execution-state unlearning: after a forget request, the agent must behave as if it had never observed the target. Modeling the runtime as a deterministic transition system, we prove that the pre-target trajectory prefix is shared with this counterfactual world for free, that the post-target suffix is irreducibly tainted without token-level attribution, and that exact unlearning requires at least $T-τ+1$ recomputed transitions, where $τ$ is the target's injection step. Provenance-Guided Selective Replay attains this bound as a cross-layer contract spanning prompt, compressed memory, and cache: a provenance graph locates the injection point, checkpoint restoration reduces to cropping the KV cache, and sanitized replay regenerates the counterfactual suffix. Audited with elicitation, stochastic, and string-free behavioral tests across three agent suites, nine baselines, and three model families, memory deletion leaves leakage unchanged, instruction-based forgetting collapses under elicitation (Leak@probes = 1.00), and source redaction still acts on a revoked preference in 80% of episodes, while selective replay is indistinguishable from a full reset at up to 9x fewer recomputed tokens.<|im_end|>
+<|im_start|>user
+Can you give me the full contents of scripts/sweeps/kv-perplexity.ps1?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+$ErrorActionPreference = 'Continue'
+# Run from the repository root regardless of where this is invoked from, rather than a hardcoded
+# path: these are committed, and the next person's checkout will not be at C:\ninfer-fork.
+Set-Location (Resolve-Path (Join-Path $PSScriptRoot '..\..'))
+
+# Both overridable so this is not welded to one machine. The output directory is created here
+# because it does not exist in a clean checkout -- profiles/ is gitignored.
+. "$PSScriptRoot\model-dir.ps1"
+. "$PSScriptRoot\host-memory.ps1"
+$modelDir = Get-NInferModelDir
+$out      = if ($env:NINFER_SWEEP_OUT) { $env:NINFER_SWEEP_OUT } else { 'profiles\sweeps' }
+New-Item -ItemType Directory -Force -Path $out | Out-Null
+# Host memory pressure produces plausible numbers rather than an error, so it is guarded
+# rather than trusted -- see host-memory.ps1 for what goes wrong and why.
+Assert-NInferHostMemory -Artifacts @("$modelDir\qwen3_8_27b.ninfer")
+
+
+# Same corpus, mode and window as the three already recorded in README.md, so the new rows are
+# directly comparable rather than a separate experiment: ninfer-ppl-1m-v1, --quick, 4096/2048.
+# The three that were measured through the attention race #49 fixed. Override to add a control:
+# NINFER_SWEEP_DTYPES=int8,fp8,nvfp4,k8v4 checks that this harness still reproduces README's int8
+# figure, which is the only way to know a changed fp8 number means the kernel changed rather than
+# the corpus, window or build having drifted underneath it.
+$dtypes = if ($env:NINFER_SWEEP_DTYPES) {
+  $env:NINFER_SWEEP_DTYPES -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+} else {
+  @('fp8','nvfp4','k8v4')
+}
+
+foreach ($d in $dtypes) {
+    $log = "$out\$d.log"
+    # Clear any previous run's output first. ninfer-perplexity writes report.json under a
+    # timestamped subdirectory of --output, so a rerun that fails leaves the earlier report in
+    # place and the check below would pick it up and print it as a fresh result -- a stale number
+    # reported as a new measurement, which is the one failure mode a sweep must not have.
+    Remove-Item -Recurse -Force "$out\$d" -ErrorAction SilentlyContinue
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    & .\build-ninja\apps\ninfer-perplexity.exe `
+        "$modelDir\qwen3_8_27b.ninfer" `
+        --corpus 'eval\corpora\perplexity-1m\manifest.json' --quick `
+        --context 4096 --stride 2048 --kv-dtype $d `
+        --output "$out\$d" --log-level warning > $log 2>&1
+    $code = $LASTEXITCODE
+    $report = Get-ChildItem -Recurse -Filter report.json "$out\$d" -ErrorAction SilentlyContinue | Select-Object -First 1
+    # Exit code as well as the report's existence: a run that produced a report and then failed
+    # should be reported as a failure, not quietly read.
+    if ($code -eq 0 -and $report) {
+        $j = Get-Content $report.FullName -Raw | ConvertFrom-Json
+        "{0,-7} ppl={1}  tokens={2}  {3}s" -f $d, $j.overall.perplexity, $j.overall.scored_tokens, [math]::Round($sw.Elapsed.TotalSeconds,0)
+    } else {
+        "{0,-7} FAILED (exit {1})" -f $d, $code
+        Get-Content $log -Tail 3 | ForEach-Object { "        $_" }
+    }
+}<|im_end|>
+<|im_start|>user
+Write `template/src/Sheet.tsx` for this project.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+import React from 'react';
+import {AbsoluteFill, Freeze} from 'remotion';
+import type {Storyboard} from './schema';
+import {FONT} from './core/font';
+import {FPS, geometryOf} from './core/safe';
+import {schedule} from './core/timeline';
+import {Promo, framesOf, lookupFor} from './Promo';
+import {aspectOf, withStyleDefaults} from './styles';
+
+// ============================================================
+// Sheet：整片拼图（make.mjs 出 sheet.png 用，不依赖系统 ffmpeg）。
+// props: {storyboard, frames: [帧号...], cols?: 10}
+// 每个格子是把 Promo 冻结在某一帧、缩到 1/4（270×480），下面一行小字标时间和镜号。
+//   npx remotion still src/index.ts Sheet sheet.png --props=sheet-props.json
+// ============================================================
+export type SheetProps = {storyboard: Storyboard; frames?: number[]; cols?: number};
+
+export const SHEET = {thumbW: 270, thumbH: 480, pad: 5, label: 31};
+export const cellW = SHEET.thumbW + SHEET.pad * 2;
+export const cellH = SHEET.thumbH + SHEET.pad + SHEET.label;
+/** 缩略图高度按画幅算（9:16 → 480，和原来一样；4:5 → 338） */
+const thumbHOf = (sb: Storyboard) => {
+  const g = geometryOf(aspectOf(sb));
+  return Math.round((SHEET.thumbW * g.h) / g.w);
+};
+const cellHOf = (sb: Storyboard) => thumbHOf(sb) + SHEET.pad + SHEET.label;
+
+/** 默认取样：每秒一帧，取 x.5 秒（和旧的 ffmpeg 拼图一致） */
+export const sheetFrames = (sb: Storyboard) => {
+  const total = framesOf(sb);
+  const n = Math.max(1, Math.ceil(total / FPS));
+  return Array.from({length: n}, (_, k) => Math.min(total - 1, Math.round((k + 0.5) * FPS)));
+};
+
+export const sheetSize = (p: SheetProps) => {
+  const n = (p.frames?.length ? p.frames : sheetFrames(p.storyboard)).length;
+  const cols = Math.max(1, Math.min(p.cols ?? 10, n));
+  const rows = Math.max(1, Math.ceil(n / cols));
+  return {cols, rows, width: cols * cellW, height: rows * cellHOf(p.storyboard)};
+};
+
+export const Sheet: React.FC<SheetProps> = (p) => {
+  const sb = {...p.storyboard, __probe: undefined} as Storyboard;
+  const frames = p.frames?.length ? p.frames : sheetFrames(sb);
+  const {cols} = sheetSize(p);
+  const slots = schedule(withStyleDefaults(sb), lookupFor(sb).specOf);
+  const g = geometryOf(aspectOf(sb));
+  const [W, H, thumbH, cH] = [g.w, g.h, thumbHOf(sb), cellHOf(sb)];
+  const scale = SHEET.thumbW / W;
+  return (
+    <AbsoluteFill style={{background: '#ffffff', fontFamily: FONT}}>
+      {frames.map((fr, k) => {
+        const sec = fr / FPS;
+        const slot = slots.find((s) => sec >= s.start - 1e-6 && sec < s.end - 1e-6) ?? slots[slots.length - 1];
+        const x = (k % cols) * cellW;
+        const y = Math.floor(k / cols) * cH;
+        return (
+          <div key={k} style={{position: 'absolute', left: x, top: y, width: cellW, height: cH}}>
+            <div style={{position: 'absolute', left: SHEET.pad, top: SHEET.pad, width: SHEET.thumbW, height: thumbH, overflow: 'hidden', background: '#000'}}>
+              <div style={{position: 'absolute', left: 0, top: 0, width: W, height: H, transform: `scale(${scale})`, transformOrigin: '0 0'}}>
+                <Freeze frame={fr}>
+                  <Promo {...sb} />
+                </Freeze>
+              </div>
+            </div>
+            <div style={{position: 'absolute', left: SHEET.pad, top: SHEET.pad + thumbH, width: SHEET.thumbW, height: SHEET.label, display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 18, color: '#555', fontVariantNumeric: 'tabular-nums'}}>
+              <span>{sec.toFixed(1)}s</span>
+              <span>{slot ? `#${slot.i + 1} ${slot.shot.type}` : ''}</span>
+            </div>
+          </div>
+        );
+      })}
+    </AbsoluteFill>
+  );
+};<|im_end|>
+<|im_start|>user
+Write the abstract for a paper titled "Differential Privacy Meets Fixed Parameter Tractability: Algorithms and Lower Bounds".<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Differential Privacy Meets Fixed Parameter Tractability: Algorithms and Lower Bounds
+
+We study combinatorial optimization problems under the constraint of $ε$-differential privacy ($ε$-DP). Given the strong lower bounds for explicitly outputting solutions, we work within the implicit representation framework of Gupta et al. (SODA 2010), where a private polynomial-time randomized "encoder" generates a representation of a solution, and a "decoder" uses this representation along with the input to extract a valid final solution. In this work, we generalize this framework by allowing the encoder to run in fixed-parameter tractable time. This circumvents approximation barriers inherent to polynomial-time algorithms and obtains improved guarantees for many fundamental combinatorial optimization problems. Finally, we establish the first representation-independent lower bounds for our framework. Assuming a non-uniform variant of the Gap Exponential Time Hypothesis, for sufficiently small $ε> 0$, we prove that no $ε$-DP encoder-decoder pair can achieve certain approximation guarantees, if the decoder runs in subexponential time. We further provide representation-dependent lower bounds that hold even for larger $ε$.<|im_end|>
+<|im_start|>user
+Write `tools/w4a8_gemm_probe.cu` for this project.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+// W4A8 prefill GEMM for the Qwen3.8-27B mlp/gate_up shape, on sm_86.
+//
+//   C[N,T] = W[N,K] (Q4, group-64 FP16 scales) x X[K,T] (per-token s8)
+//   N = 34816, K = 5120, T = 512
+//
+// Measured against the A16 route this would replace -- q4_rowsplit_gemm_mma at the same shape,
+// 3357.7us / 54.36 TFLOP/s, itself already at 91% of the BF16 f32-accumulate tensor ceiling:
+//
+//   structure                                          us      TOP/s   vs A16
+//   ---------------------------------------------------------------------------
+//   1: shared holds unpacked bytes, register staging
+//      first working version                       2254.8      80.95    1.49x
+//      + word stores for unpack, hoisted B frags   2183.2      83.61    1.54x
+//      + global loads pipelined one group ahead    1780.7     102.51    1.89x
+//      + per-token scale factored to the epilogue  1700.9     107.32    1.97x
+//      + permuted shared k, forced LDS.128         1719.3     106.17    1.95x  (no change)
+//   2: fragment-ordered layout, cp.async, packed shared
+//      cp.async over pre-permuted W and X          1600.5     114.05    2.10x
+//      + scales as a third contiguous async plane  1427.5     127.88    2.35x
+//      + cp.async.cg rather than .ca               1415.2     128.99    2.37x
+//
+// Structure 2 is a data-layout change, not a kernel tweak, and it is what broke a plateau six
+// separate kernel-level attempts could not:
+//
+//   1. W and X are pre-permuted into MMA-fragment order, so one (block, group) is a single
+//      contiguous run and cp.async -- which cannot scatter -- can move it. In the real Op this is
+//      a repack at materialization, free at runtime, and exactly why ninfer already carries
+//      RowSplit and BlockScaleK16M128x4 layouts.
+//   2. Shared holds W as PACKED nibbles. A's shared read traffic halves from 32 to 16 bytes per
+//      m-tile; the unpack moves to the consumer, which costs ALU that was sitting idle at IPC
+//      1.15 of 4.
+//   3. cp.async removes the register staging and every shared store from the compute warps -- 16
+//      STS.32 per thread per group off the MIO pipe. Registers fell 102 -> 85, shared 42.5 -> 26 KB.
+//   4. The scales became a third async plane. Reading them synchronously inside the prefetch made
+//      the thread wait on a global load in the one path whose purpose is not to wait; fixing that
+//      alone was worth 2.10x -> 2.35x, the single largest step in this file.
+//
+// Things tried that did NOT help, recorded so they are not retried:
+//
+//   a. Occupancy. Structure 1 at 160 registers (8 warps/SM) vs 98 (16 warps/SM): identical time.
+//   b. Barrier count. Two __syncthreads per group vs one over two stages: identical.
+//   c. Fewer, wider shared loads -- the fix Nsight Compute prescribes. Its profile of the 1700.9us
+//      version reports MIO throttle as the top stall (4.8 of 13.7 warp cycles between issues,
+//      "Est. Local Speedup: 34.62%") and advises "fewer but wider loads". Permuting k inside each
+//      shared row collapsed 32 LDS.32 per thread per group into 8 LDS.128, confirmed emitted by
+//      issuing ld.shared.v4.u32 directly. No change -- because a 128-bit load moves the same four
+//      128-byte wavefronts as four 32-bit ones. Instruction count was never the lever; only fewer
+//      shared BYTES were, which is what structure 2 finally delivered.
+//   d. More independent MMA chains. Giving all eight (m,n) tiles their own s32 accumulator with
+//      the k-halves outermost compiled to 102 registers, identical to the byte: ptxas was already
+//      scheduling them that way. A semantic no-op.
+//   e. More work per shared byte. Widening the warp tile 2x4 -> 4x4 raises MMA-per-shared-byte by
+//      a third but costs 173 registers, halving resident warps. 1890.3us, 10% worse.
+//   f. A third pipeline stage. 1831.9us, worse: registers 85 -> 93, shared 26 -> 38 KB, plus a
+//      three-way branch on the wait_group immediate every iteration. Two stages is the sweet spot.
+//   g. Pointer arrays for the stages. sa_b[2] indexed by a runtime buffer number spills to local
+//      memory and cost 32%; offset arithmetic fixes it.
+//
+// At 128.99 TOP/s this reaches 61% of the 211 TOP/s the inner-loop probe says the arithmetic
+// allows (w4a8_inner_loop_probe.cu). Activations arrive pre-quantized and pre-permuted; in the Op
+// that is one fused pass over X, O(K*T) against the GEMM's O(N*K*T), so it is 0.03% of the work
+// at this shape. Correctness is checked against a double-precision reference on sampled outputs;
+// 3.4e-3 is bf16 store rounding.
+
+#include <cstdio>
+#include <cstdlib>
+#include <cmath>
+#include <vector>
+#include <algorithm>
+#include <cuda_runtime.h>
+#include <cuda_bf16.h>
+
+#define CHECK(x)                                                                                   \
+    do {                                                                                           \
+        cudaError_t e = (x);                                                                       \
+        if (e != cudaSuccess) {                                                                    \
+            printf("CUDA error %s at line %d\n", cudaGetErrorString(e), __LINE__);                 \
+            std::exit(1);                                                                          \
+        }                                                                                          \
+    } while (0)
+
+constexpr int N      = 34816;
+constexpr int K      = 5120;
+constexpr int T      = 512;
+constexpr int BM     = 128;
+constexpr int BN     = 128;
+constexpr int BK     = 64; // one Q4 scale group
+constexpr int GROUPS = K / BK;
+constexpr int MTILES = BM / 16; // 8 m-tiles per block
+constexpr int NTILES = BN / 8;  // 16 n-tiles per block
+constexpr int WSTAGE = MTILES * 32 * 16; // 4096 packed bytes
+constexpr int XSTAGE = NTILES * 32 * 16; // 8192 s8 bytes
+constexpr int SSTAGE = BM * 2;                  // 128 FP16 scales, one per row, per group
+constexpr int STAGE  = WSTAGE + XSTAGE + SSTAGE;
+constexpr int STAGES = 2;                       // deeper prefetch: two groups always in flight
+
+__device__ __forceinline__ void mma_s8(int& c0, int& c1, int& c2, int& c3, unsigned a0, unsigned a1,
+                                       unsigned a2, unsigned a3, unsigned b0, unsigned b1) {
+    asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
+                 "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                 : "+r"(c0), "+r"(c1), "+r"(c2), "+r"(c3)
+                 : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
+}
+
+__device__ __forceinline__ uint4 lds128(const void* p) {
+    uint4 r;
+    const unsigned addr = static_cast<unsigned>(__cvta_generic_to_shared(p));
+    asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                 : "=r"(r.x), "=r"(r.y), "=r"(r.z), "=r"(r.w)
+                 : "r"(addr));
+    return r;
+}
+
+__device__ __forceinline__ void cp_async16(void* smem, const void* gmem) {
+    const unsigned addr = static_cast<unsigned>(__cvta_generic_to_shared(smem));
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(addr), "l"(gmem));
+}
+
+// Four packed bytes hold eight codes as (low,high) nibble pairs. Returns the two s8 words the
+// pairs (b0,b1) and (b2,b3) decode to, centred by subtracting 8.
+__device__ __forceinline__ void unpack4b(unsigned packed, unsigned& w0, unsigned& w1) {
+    const unsigned mask = 0x0f0f0f0fu;
+    const unsigned even = __vsub4(packed & mask, 0x08080808u);
+    const unsigned odd  = __vsub4((packed >> 4) & mask, 0x08080808u);
+    w0                  = __byte_perm(even, odd, 0x5140);
+    w1                  = __byte_perm(even, odd, 0x7362);
+}
+
+__global__ __launch_bounds__(512) void w4a8_async(const char* __restrict__ w_perm,
+                                                  const __half* __restrict__ w_scale,
+                                                  const char* __restrict__ x_perm,
+                                                  const float* __restrict__ x_scale,
+                                                  __nv_bfloat16* __restrict__ out) {
+    extern __shared__ char smem[];
+    char* const s_base = smem;
+    float* const sxs   = reinterpret_cast<float*>(smem + STAGES * STAGE);
+
+    const int tid      = threadIdx.x;
+    const int lane     = tid & 31;
+    const int warp     = tid >> 5;
+    const int group_id = lane >> 2;
+    const int tig      = lane & 3;
+    const int warp_m   = warp >> 2; // 0..3
+    const int warp_n   = warp & 3;  // 0..3
+
+    const int row_block = blockIdx.x * BM;
+    const int col_block = blockIdx.y * BN;
+    if (tid < BN) { sxs[tid] = x_scale[col_block + tid]; }
+
+    // Each (block,group) reads one contiguous run from each pre-permuted tensor.
+    const char* const w_blk = w_perm + (size_t)blockIdx.x * GROUPS * WSTAGE;
+    const char* const x_blk = x_perm + (size_t)blockIdx.y * GROUPS * XSTAGE;
+    // Scales are pre-permuted to [row_block][group][BM] so a group's 128 of them are contiguous.
+    // Loading them synchronously inside the prefetch, as the first version did, made the thread
+    // wait on a global read in the very path whose point is not to wait.
+    const char* const s_blk = reinterpret_cast<const char*>(w_scale) +
+                              (size_t)blockIdx.x * GROUPS * SSTAGE;
+
+    auto issue = [&](int g, int buf) {
+        char* const dst = s_base + buf * STAGE;
+        if (tid < WSTAGE / 16) {
+            cp_async16(dst + tid * 16, w_blk + (size_t)g * WSTAGE + tid * 16);
+        }
+        cp_async16(dst + WSTAGE + tid * 16, x_blk + (size_t)g * XSTAGE + tid * 16);
+        if (tid < SSTAGE / 16) {
+            cp_async16(dst + WSTAGE + XSTAGE + tid * 16, s_blk + (size_t)g * SSTAGE + tid * 16);
+        }<|im_end|>
+<|im_start|>user
+Write the abstract for a paper titled "Ramsey properties of maximal (outer)planar graphs".<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Ramsey properties of maximal (outer)planar graphs
+
+We study a natural extension of Ramsey theory relative to the classes of maximally planar and maximally outerplanar graphs. This can be seen as a continuation of the study of `Planar Ramsey theory', introduced by Axenovich et al. The question we ask is the following: For a fixed family $\mathcal{K}$ of graphs and a pair of graphs $\{H,F\}$, does there exist an integer $r_{\mathcal{K}} (H, F)$ such that for every graph $G \in \mathcal{K}$ with $|G| \geq r_{\mathcal{K}}(H, F)$, every red/blue edge-colouring of $G$ admits a red copy of $H$ or a blue copy of $F$? When such an integer exists, we say $\{H,F\}$ is unavoidable in $\mathcal{K}$,, and otherwise $\{H,F\}$ is avoidable in $\mathcal{K}$. Our work focuses on this problem where $\mathcal{K} = \mathcal{K}_{\mathrm{MOP}}$ and $\mathcal{K} = \mathcal{K}_{\mathrm{MP}}$, which denote the families of maximal outerplanar (MOP) graphs and maximal planar (MP) graphs, respectively. This framework generalises the classical Ramsey problem relative to these classes, as the case with $\mathcal{K} = \{K_n \colon n \geq 2\}$ corresponds to classical Ramsey. We also study the corresponding Ramsey numbers for MOP and MP, which we denote as $r_{\mathrm{MOP}}(H, F)$ and $r_{\mathrm{MP}}(H, F)$. In the case when $\mathcal{K} = \mathcal{K}_{\mathrm{MOP}}$, we completely determine all unavoidable pairs $\{H, F\}$ with $|E(F)| \geq 2$, together with upper bounds and sometimes exact values of $r_{\mathrm{MOP}}(H, F)$. When $\mathcal{K} = \mathcal{K}_{\mathrm{MP}}$, we completely determine all unavoidable pairs in the diagonal case $\{H, H\}$ when $H$ is connected, showing that $H$ must be one of the graphs $P_3$, $P_4$, $P_5$, $K_{1, 3}$ or the fork graph $S_{2,1,1}$. This work opens up further possibilities in the study of Ramsey theory relative to a class, and we offer several open problems in this vein.<|im_end|>
+<|im_start|>user
+Can you write an encyclopedia-style article on Ahmad Hatoqay?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Ahmad Hatoqay
+
+Ahmad Husni Hatoqay (Arabic: أحمد حسني حتقاي, romanized: Ahmad Husni Hatoqay) is a Jordanian intelligence officer who has served as Director of the General Intelligence Department (GID) since 1 May 2019. He succeeded Adnan al-Jundi in the position and holds the rank of major general. The director of the GID reports directly to King Abdullah II.
+During his tenure, the GID has been involved in several security and intelligence matters in Jordan, including the 2021 political crisis involving Prince Hamzah bin Hussein, operations related to cross-border drug smuggling from Syria, and Jordan's security and diplomatic concerns following the fall of the Assad regime in December 2024.
+
+
+== Background ==
+Biographical information about Husni is limited. His exact date of birth has not been publicly reported. Jordanian press accounts describe him as being of Circassian descent and as coming from a family with a background in the kingdom's security services. One Jordanian outlet reported that his late father had also served in the General Intelligence Department (GID).
+
+
+== Career ==
+
+
+=== Rise through the GID ===
+Husni spent about three decades working within the General Intelligence Department (GID) before becoming its director. Jordanian and international media reports state that he served as director of the GID's Counterterrorism Bureau and later as director of its Directorate of Foreign Affairs. He subsequently served as director of intelligence for Amman, a position he reportedly held for about five years, before becoming assistant director of the GID for regional affairs. He was appointed deputy director of the GID in 2017.
+
+
+=== Appointment as director of the GID ===
+On 1 May 2019, King Abdullah II appointed Husni as Director of the General Intelligence Department, succeeding Lieutenant General Adnan Jundi, who had held the position since March 2017. A separate royal decree promoted Husni from brigadier general to major general, effective on the same date. In a letter issued with the appointment, the King described the GID as facing an "intricate phase" amid regional instability and called for continued modernization of the agency and the development of its personnel and professional standards. He also thanked Jundi for his service.
+Regional media reported that Husni's appointment formed part of a wider change in the GID's senior leadership. Some reports also attributed his selection to his close relationship with the King.
+
+
+=== Security policy and regional diplomacy ===
+Since 2019, Husni has made a number of public statements about the role of the General Intelligence Department in Jordan's political and security affairs. He expressed support for the Royal Commission for the Modernization of the Political System and said that the GID supported the development of political parties in Jordan.
+During his tenure, the GID has also been involved in efforts to combat drug and arms trafficking along Jordan's border with Syria including  Captagon. Husni has publicly discussed contacts between Jordanian and Syrian intelligence officials. In 2021, he described the restoration of intelligence contacts with the Syrian government as a "fait accompli" amid changes in regional relations.
+Following the fall of Bashar al-Assad's government in December 2024, Husni continued to participate in regional discussions concerning Syria. In October 2025, he accompanied Deputy Prime Minister and Foreign Minister Ayman Safadi and Chairman of the Joint Chiefs of Staff Major General Yousef Huneiti in meetings with Turkish officials such as Foreign Minister Hakan Fidan and intelligence chief İbrahim Kalın. The talks took place ahead of a Jordan-hosted meeting of Syria's neighboring countries and addressed counter-terrorism, drug trafficking and arms trafficking. King Abdullah has also described the GID as continuing a process of "development and modernisation" during Husni's tenure.<|im_end|>
+<|im_start|>user
+能写一篇关于帕维尔·特列季亚科夫的百科条目吗？<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+帕维尔·特列季亚科夫
+
+帕维尔·米哈伊洛维奇·特列季亚科夫（俄語：Па́вел Миха́йлович Третьяко́в，羅馬化：Pavel Mikhaylovich Tretyakov，2712［儒略曆1832］—1612［儒略曆1898］），俄罗斯帝国企业家、俄国绘画收藏家与艺术赞助人，莫斯科商人，亚历山大二世改革及其后时期莫斯科最有影响的艺术资助者之一。其弟谢尔盖·米哈伊洛维奇·特列季亚科夫亦为收藏家与社会活动家。
+他与弟共同经营纺织业，1866年起参与创办科斯特罗马新亚麻纺织厂合伙企业。所建私人收藏于1892年连同画廊建筑捐赠莫斯科市，成为今特列季亚科夫画廊的基础。
+1868年为帝国艺术学院名誉自由会员，1893年依新章程为正式院士；1896年获莫斯科名誉市民称号。
+
+
+== 生平 ==
+
+
+=== 出身与经商 ===
+特列季亚科夫生于莫斯科商人家庭，出生地为第一戈卢特温巷特列季亚科夫祖宅。通行传记取儒略历1832年12月15日（公历27日）为生日；戈卢特温圣尼古拉教堂的出生登记则记为前一日，即儒略历12月14日（公历26日）。
+他接受家庭教育，随父经商。与弟谢尔盖扩展家业，开办雇佣数千工人的纺纱厂。1866年，兄弟二人与合伙人弗拉基米尔·孔申组建“科斯特罗马新亚麻纺织厂合伙企业”（今科斯特罗马大型亚麻纺织厂前身之一）。去世时财产估约380万卢布。他亦为莫斯科商人银行股东，晚年获商业顾问衔，并任莫斯科贸易与工场委员会委员。
+
+
+=== 婚姻与家庭 ===
+1865年8月，特列季亚科夫与维拉·尼古拉耶芙娜·马蒙托娃结婚；维拉为艺术赞助人萨瓦·马蒙托夫的堂妹。子女六人：维拉（1866—1940，嫁西洛蒂）、亚历山德拉（1867—1959，嫁波特金）、柳博芙（1870—1928，先后嫁格里岑科、巴克斯特）、米哈伊尔（1871—1912）、玛丽亚（1875—1952，嫁波特金）、伊万（1878—1887）。1887年，幼子伊万死于猩红热并发脑膜炎；长子米哈伊尔自幼体弱，智力发育受限。
+克里米亚战争期间，他与母亲向军队捐款，1858年获安纳绶带青铜奖章。据记载，亚历山大三世曾拟授其贵族身份，他拒绝了。
+
+
+=== 去世与安葬 ===
+1898年12月4日（公历16日）特列季亚科夫在莫斯科去世。对亲属的临终嘱咐是：「好好照看画廊，保重身体。」初葬丹尼洛夫公墓，邻近父母与先于他去世的弟弟谢尔盖（1892年卒）的墓地；1948年，帕维尔、谢尔盖与维拉·尼古拉耶芙娜的遗骸迁至新圣女公墓第1区。
+他生前为托尔马奇圣尼古拉教堂教民；莫斯科住址包括第一戈卢特温巷祖宅与拉夫鲁申斯基巷宅邸（画廊所在），并与弟共有库兹涅茨桥等地数处公寓楼。
+
+
+== 收藏与画廊 ==
+
+
+=== 购藏方针 ===
+1850年代起，特列季亚科夫开始系统收藏俄国艺术，并几乎从一开始就打算将来捐赠给本市。通行说法认为，1856年他购入尼古拉·希尔德的《诱惑》与瓦西里·胡佳科夫的《与芬兰走私者冲突》（1853年），作为面向俄国绘画的早期藏品；英文传记亦记他约1854年曾购荷兰旧画十幅。其后陆续收入伊万·特鲁特涅夫、阿列克谢·萨伏拉索夫、康斯坦丁·特鲁托夫斯基、费奥多尔·布鲁尼、列夫·拉戈里奥等人作品。
+1860年，他在遗嘱中写道：对他这个真心喜爱绘画的人来说，最大的愿望就是创办一座向公众开放、人人可进的美术藏馆，既有益于多人，也使众人从中得到乐趣。
+1860年代购藏包括瓦列里·雅各比《囚犯歇脚》、米哈伊尔·克洛特《最后的春天》、瓦西里·马克西莫夫《祖母的故事》等。他特别推崇瓦西里·彼罗夫，1860年10月致信彼罗夫，嘱咐其「为艺术事业与友人珍重自己」；同期购入彼罗夫《复活节乡村十字架游行》《三套车》《业余爱好者》等，并多次委制肖像，参与画家身后遗作展的组织。1864年入藏的第一幅俄国历史题材油画为康斯坦丁·弗拉维茨基《塔拉卡诺娃公主》。1860年代末，他委托费奥多尔·布龙尼科夫绘制《毕达哥拉斯派向旭日颂歌》，后成为维拉·特列季亚科娃尤为喜爱的作品。
+自1870年代起，藏品重心转向当代画家，尤以巡回展览画派成员为主。他常于展览或画室直接购画，有时整批购入：如瓦西里·韦列夏金的「突厥斯坦」组画与「印度」组画习作、亚历山大·伊万诺夫大量习作、瓦西里·波列诺夫近东旅行写生，以及维克托·瓦斯涅佐夫为基辅弗拉基米尔大教堂所作草图等。彼罗夫、伊万·克拉姆斯科伊、伊利亚·列宾、瓦西里·苏里科夫、伊萨克·列维坦、瓦伦丁·谢罗夫等人均有较完整系列存于其收藏。为展示本国画派渊源，他亦补购18世纪至19世纪上半叶作品与古罗斯圣像；并有意构建「俄国名人殿堂」式肖像群，委请尼古拉·盖、克拉姆斯科伊、彼罗夫、列宾等绘制文化界人士肖像。1870—1880年代起兼收插图；1890年代起购藏圣像，生前多存于书斋，未作公开展览。
+购藏谢罗夫《阳光照耀下的少女》时，据伊戈尔·格拉巴里《我的一生》记述，弗拉基米尔·马科夫斯基曾在巡回展览派宴会上以尖刻言辞指责此举；格拉巴里认为，当时艺坛矛盾已深，新兴力量正要取代日渐衰落的巡回展览派，一如后者当年挑战学院派。
+1892年，经批评家弗拉基米尔·斯塔索夫建议，他以500卢布购得列宾《临刑前的忏悔》（亦称《拒绝忏悔》）；该作曾被禁止在俄公开展出，原藏诗人尼古拉·明斯基处。1897年斯塔索夫据此指责他「廉价购得杰作，却为平庸之作一掷千金」，二人因此争执。
+1894年夏，经列夫·托尔斯泰斡旋，他与尼古拉·盖的继承人达成口头协议，拟在画廊附设盖的专馆。次年他赴托尔斯泰处确认接收，包括当时存于雅斯纳亚波利亚纳、亚历山大三世禁止公开展出的《受死》与《十字架上的基督》（1894年）等，并承诺条件成熟后与其他藏品一并陈列，五年内另辟专室。盖家人曾要求可随时取画赴国外展出；特列季亚科夫表示，仅当该画尚未进入常设陈列时方可；并提醒盖作颜料与画布质量较差，不宜频繁搬运。
+
+
+=== 建馆与捐赠莫斯科 ===
+随着藏品增多，特列季亚科夫于拉夫鲁申斯基巷宅邸扩建陈列空间；1870—1880年代由建筑师亚历山大·卡明斯基多次改建。1874年建成专用画廊建筑，1881年对公众开放。至1885年，年参观人数约达三万。
+1892年8月31日，他致函莫斯科市杜马，决定将本人全部收藏、亡弟谢尔盖的收藏以及画廊建筑一并捐赠本市。次年定名为「帕维尔与谢尔盖·米哈伊洛维奇·特列季亚科夫市立美术画廊」。捐赠时俄派油画约1,287幅、素描版画约518件，西欧绘画约75幅及少量雕塑，另有雕塑十余件与圣像收藏。特列季亚科夫被任命为终身托管人，并获莫斯科名誉市民称号（俄文百科记1896年）。他此后仍继续购藏、编目与布展；1893年起编印藏品目录。画廊建制与后世沿革见条目特列季亚科夫画廊，此处从略。
+
+
+== 荣誉与纪念 ==
+生前主要衔级与奖项包括：帝国艺术学院名誉自由会员（1868）、正式院士（1893）、商业顾问（约1880）、莫斯科名誉市民（1896），以及克里米亚战争纪念铜章（1858）、尼古拉二世加冕纪念银章（1896）等。
+莫斯科特列季亚科夫画廊主楼前立有其纪念像。兄弟出资修建的特列季亚科夫斯基通道亦以二人得名。利佩茨克有特列季亚科夫街；新地岛马托奇金沙尔海峡有特列季亚科夫冰川。1977年苏联天文学家柳德米拉·茹拉夫廖娃发现的小行星(3925) 特列季亚科夫以兄弟二人命名。苏联与俄罗斯曾多次发行纪念画廊或本人的邮票、邮资明信片与邮资信封。<|im_end|>
+<|im_start|>user
+Summarize the paper "Accelerated Prox-Level Methods for Unknown Piecewise-Smooth Optimization II: Function-constrained Optimization" in one paragraph.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Accelerated Prox-Level Methods for Unknown Piecewise-Smooth Optimization II: Function-constrained Optimization
+
+We introduce an anytime, almost parameter-free algorithm for convex function-constrained optimization, in which the objective and constraint functions are unknown piecewise-smooth. Our algorithm, Restarted Penalty APEX (Penalty Accelerated Prox-level method for Exploring Piecewise Smoothness), is an accelerated bundle-level method based on the penalty approach. For problems satisfying quadratic growth, the proposed method is the first to achieve optimal oracle complexity without knowing the growth modulus or the exact penalty coefficient. Furthermore, Restarted Penalty APEX generates a verifiable certificate that bounds both the optimality gap and the constraint violation. This certificate also appears to be new to the literature.<|im_end|>
+<|im_start|>user
+Can you write an encyclopedia-style article on Hai Lung-class destroyer?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Hai Lung-class destroyer
+
+The Hai Lung-class destroyer was a series of four torpedo boat destroyers ordered by the Imperial Chinese Navy in 1896 to recover from the First Sino-Japanese War. Delivered in 1899, the four destroyers were captured by a Royal Navy detachment during the Battle of the Taku Forts in the Boxer Rebellion. The ships were distributed among Eight-Nation Alliance navies involved in the battle, which one destroyer going to the British, German, French, and Russian navies. Each ship was renamed either Taku or Takou, and are sometimes also referred to as the Taku-class destroyers.
+The Russian Taku was renamed Leytenant Burakov and was torpedoed during the Russian-Japanese War and sunk in 1904. The French Takou ran aground in 1911 and condemned; the German Taku was scuttled during World War I in the Siege of Tsingtao, and the British Taku was decommissioned in 1916.
+
+
+== Design and development ==
+During the First Sino-Japanese War, the Beiyang Fleet of the Qing dynasty suffered heavy losses and was unable to resist Japanese offensives. All but one ship were destroyed, and the Dynasty began to rebuilt the fleet by purchasing new ships aboard in 1894 despite a lack of funds. In 1896, four torpedo boat destroyers were ordered from the Schichau-Werke shipyard in Germany. The Hai Lung-class destroyers—Hai Lung, Hai Hua, Hai Jing, and Hai Hse—had a length between perpendiculars of 193 feet 6 inches (58.98 m), a beam of 20 feet 0 inches (6.10 m), and a draught of 6 feet 6 inches (1.98 m). They displaced 280 long tons (284 t) at normal load and 305 long tons (310 t) at full load, and carried a complement of either 50 or 57. Propulsion was provided by two propellers powered by two triple-expansion steam engines supplied by four Schichau-Thornycroft water-tube boilers, which developed 6,000 indicated horsepower (4,500 kW) and gave the ships a designed top speed of 32 knots (59 km/h; 37 mph). The destroyers carried approximately 67 long tons (68 t) of coal that enabled a range of 3,000 miles (4,800 km) at a cruising speed of 12 knots (22 km/h; 14 mph). Armament consisted of six 3-pounder guns mounted on the broadside on the bow, midship, and stern along with two single 18 in (457 mm) torpedo tubes mounted in front and behind the second funnel. The designs also featured a ram, turtledeck bow, two slender funnels, a lightly constructed hull made of galvanized steel subdivided into nine watertight compartments, a yawl, and a dingy.
+
+
+== Service history ==
+
+
+=== Chinese service ===
+
+Progress on the destroyers was slow, but they were finished and launched in late 1898. Due to the winter, delivery of the destroyers were delayed until 1899. Once in China, the ships were assigned to the rebuilt Beiyang Fleet off Taku. During the Boxer Rebellion, the four ships were moored at the Taku Dockyards when an Eight-Nation Alliance fleet arrived to relieve Peking and crush the rebellion. The allied fleet was ordered to attack enemy forces that directly opposed then and saw the torpedo boats prepare to get underway. Unbeknownst to them, the Chinese destroyers were undergoing repair and received orders to withdrawal and avoid conflict. In the opening stage of the Battle of the Taku Forts on 17 June 1900, British destroyers HMS Fame and HMS Whiting led by Roger Keyes were dispatched to seize the ships. At two in the morning, each destroyer towed a whaleboat, both loaded with 13 men, down the Peiho River. The four British vessels each targeted one of the destroyers as they pulled alongside. After a brief engagement, the Chinese crew was routed and the four destroyers were captured. British Admiral Edward Seymour ordered one of the destroyers be kept within the Royal Navy, and the remaining three given to the French, German, and Russian Navies, as they fought with the British during the battle.  The ships were all renamed Taku (spelled Takou in French), and as a result are sometimes referred to as the Taku-class destroyers.
+
+
+=== Foreign service ===
+
+
+==== Royal Navy ====
+Hai Lung was commissioned into the Royal Navy as HMS Taku and towed by HMS Fame to Hong Kong. The British were concerned that German-built destroyers had a top speed as high as 35 knots (65 km/h; 40 mph), but discovered the light and weak construction of Taku limited her practicality and was inferior to British designs. As a result, she was used as a tender ship at the Royal Navy's base in Hong Kong. The destroyer was sold off on 25 October 1916 at Hong Kong and scrapped.
+
+
+==== Imperial German Navy ====
+Hai Jing (also spelled Hai Ching) was given to the Imperial German Navy, renamed Taku, and entered service on 6 December 1900. Under German service, she was based out of Tsingtao and assigned to the East Asia Squadron and made various voyages along the Yangtze River. In 1901, her crew was reassigned to the newly commissioned gunboat SMS Vorwärts and on 13 June 1914, she was decommissioned as a result of worn-out boilers due to her voyages in the Yangtze. At the outbreak of World War I, she was recommissioned and manned by crew from several river gunboats, but the resulting voyage exposed severe issues regarding her boilers and condensers. To prevent her capture by Japanese forces during the Siege of Tsingtao, Taku and several other vessels were rigged with explosives and scuttled in the bay on 28 September 1914. The wreck rests between 50 and 60 m (160 and 200 ft) under the water.
+
+
+==== French Navy ====
+Hai Hse was given to the French Navy, renamed Takou, and commissioned on 20 June 1900. The French found her to be lightly built, lie low in the water, and bounce between the waves. Light pitching caused the propellers to briefly emerge and the ship was never able to reach her top speed. She operated as a division boat for the torpedo boat squadron assigned to Saigon. On 22 February 1911, she ran aground off Poulo Condor Island. The ship was salvaged on 27 April but was in such a poor condition that she was instead condemned on 30 September and disposed of.
+
+
+==== Imperial Russian Navy ====
+
+Hai Hua was given to the Imperial Russian Navy and was renamed Taku when she was handed over from the Royal Navy. On 27 January 1901, the destroyer was renamed Leytenant Burakov (Lieutenant Burakov) in honor of a gunnery officer killed onboard the Russian gunboat Koreetz during the battle. The destroyer was commissioned on 9 February and assigned to the Siberian Flotilla. During the Russian-Japanese War, Leytenant Burakov was assigned to the Port Arthur Squadron. As the fastest ship in the squadron, she was used as a dispatch vessel to run the Japanese blockade and maintain communication with other Russian forces. On 24 July, the destroyer was anchored off Tahe, East of Port Arthur, serving as a picket. In the early morning, Japanese battleships Mikasa and Fuji deployed one launch each to attack the anchored ships. At 2:32 am, one of the boats shot a torpedo at Leytenant Burakov, which struck her engine room on the port side. Another Russian destroyer, Grozovoi, attempted to tow the crippled Leytenant Burakov into shallow water in an attempt to save the ship. Two days after the attack, Leytenant Burakov broke in two and sank in the bay.
+
+
+== Ships in class ==<|im_end|>
+<|im_start|>user
+土星AL-51F-1是什么？<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+土星AL-51F-1
+
+土星 AL-51，內部開發代號 izdeliye 30，是一款後燃低旁通比渦輪風扇發動機，由 NPO Saturn 開發，用以取代 土星 AL-41F-1，供改良型 蘇-57 以及新型潛在戰術戰鬥機如 Su-75 Checkmate 使用。
+
+
+== 發展 ==
+1990年代，蘇聯解體導致資金中斷，並使米高揚 Project 1.44 的 MFI（Mnogofunksionalni Frontovoy Istrebitel，意為「多功能前線戰鬥機」）第五代戰鬥機計畫及其引擎——可變循環 18噸（177 kN，40,000 lbf）級 NPO Lyulka-Saturn AL-41F，內部代號 izdeliye 20——出現長期延遲。 1999年，隨著 MFI 與 LFI 計畫逐漸被放棄，俄羅斯國防部啟動更負擔得起的 PAK FA 次世代戰鬥機計畫，以取代 MiG-29 與 Su-27。競標於2001年4月宣布，蘇霍伊提交其 T-50 方案，配備兩具 14.5噸（142 kN，32,000 lbf）級 Lyulka-Saturn AL-41F1，內部代號 izdeliye 117，用於 PAK FA。 蘇霍伊於2002年4月被選為競標勝者，並於2004年4月與 Lyulka-Saturn（現為 NPO Saturn）簽約開發 AL-41F1。 儘管名稱如此，該引擎實際上是早期 Lyulka AL-31 的高度提升與改良型，原為 Su-27 設計。AL-41F1 雖採用與 AL-31 相同的基本架構，但有80%新零件，並應用了 Lyulka-Saturn 原始 AL-41F 的技術，而該引擎對 T-50 而言過大。
+雖然蘇霍伊在合約中指定 AL-41F1，該局預期其 T-50 設計（最終定名為 Su-57）將成為匿蹤作戰飛機家族的基礎，未來型號將採用更強大引擎。在 NPO Saturn 與 MMPP Salyut 的競爭後，前者獲選開發新引擎，這是一款全新設計、代號 izdeliye 30，將於2020年代中期裝備改良型 Su-57M。 與 AL-41F1 相比，新動力裝置將具有更大推力、更低成本、更好燃料效率，且運動件更少；該引擎也有玻璃纖維塑膠進氣導葉（IGV）及帶鋸齒狀葉片的新噴嘴，以降低飛機雷達訊號特徵。這些特點，加上後續提升的可靠性與較低維護成本，將改善飛機性能與可靠性。 izdeliye 30 設計上比 AL-41F1 級數更少，效能可提高達18%。 全面開發始於2011年，引擎壓縮機於2014年12月開始台架測試。 首批測試引擎於2016年完成。 新動力裝置設計為 AL-41F1 的直接替換品，機體僅需最小修改。
+引擎在 Su-57 原型機上的首飛於2017年12月5日進行，使用第二架原型機（T-50-2，機身編號 052）。 然而，該引擎的飛行測試進度緩慢；原定於2020年代初期服役，izdeliye 30 的計畫導入已延後至2020年代中期。 2023年，該引擎獲賦予代號 AL-51，基本型號為 AL-51F-1。
+2024年12月初，首次已知的 AL-51F-1 搭配新型二維推力向量噴嘴測試，使用 T-50 第二架原型機進行。為時17分鐘的試飛中，蘇霍伊首席試飛員 Sergei Bogdan 駕駛 T-50-2 原型機，從茹科夫斯基的 M.M. Gromov 飛行試驗中心起飛。
+
+
+=== izdeliye 177 ===
+AL-51F-1 的技術已與現有 AL-41F-1 衍生型結合，創造出一款名為 izdeliye 177 與 177S 的新混合型號（不要與現有 117 和 117S 混淆），設計於2023-24年。Rostec 聲稱 izdeliye 177S 達到 AL-41F-1S（117S）的推力，同時具有更好燃料經濟性與6,000小時壽命，且可替換 Su-30、Su-34 與 Su-35 上現有的 AL-31F 系列。 在2025年杜拜航空展期間，不僅 Su-57 進行飛行展示，首次暴露其側武器艙，UAC 也公開新引擎，聲稱最大後燃推力為14,500 kgf，最大乾推力為9,000 kgf，最低單位耗油率低於 0.67 kg/kgf x h。引擎乾質量為1,530 kg，進氣直徑為905 mm。 izdeliye 177 預計用於 Su-57，並聲稱最大後燃推力為16,000 kgf（157 kN，35,300 lbf），最大乾推力為11,000 kgf（108 kN，24,300 lbf），同時達到與177S相同的燃料經濟性。展示的 Su-57 比例模型配備二維（2D）推力向量引擎噴嘴構型，旨在降低雷達與熱訊號特徵。
+
+
+== 設計 ==
+AL-51F-1 是一款雙軸低旁通比後燃渦輪扇發動機。其架構為三級風扇由單級低壓渦輪驅動，以及五級高壓壓縮機由單級高壓渦輪驅動。 與前代 AL-41F1 不同，該引擎具有玻璃纖維塑膠 IGV 及使用鋸齒狀葉片的收斂-擴散噴嘴，以降低雷達訊號特徵，並具有高19%的推重比、好6.4%的單位推力，以及低9%的單位耗油率；估計推力為乾推力 107.9 kN（24,300 lbf）、後燃推力 161.8 kN（36,400 lbf）。 AL-51F-1 具備全權限數位引擎控制（FADEC），以確保其在各種操作條件下的可靠性。
+
+
+== 應用 ==
+Su-57M（計畫中）
+Su-75 Checkmate（計畫中，衍生型）
+
+
+== 規格（AL-51F-1） ==
+数据来源： Key Aero, Aviation Week, NPO Saturn 與 UMPO
+
+
+=== 概况 ===
+
+类型： 雙軸渦輪扇發動機
+长度： ~4.9米（190英寸）（與 AL-41F1 相當）
+直径： ~1.28米（50英寸）（與 AL-41F1 相當）
+淨重： 1,450公斤（3,200磅）
+
+
+=== 组件 ===
+
+压缩机： 3級低壓、5級高壓燃烧室： 環形涡轮： 單級低壓、單級高壓
+
+
+=== 性能 ===
+
+最大推力：
+11 tf（108 kN；24,251 lbf） 乾推力
+16.5 tf（162 kN；36,376 lbf） 加後燃器推力推重比： 乾推力 7.45:1，後燃推力 11.4:1。<|im_end|>
+<|im_start|>user
+Write the abstract for a paper titled "One-Cut Risk Profiles under Quadratic Loss: Discrete Convexity, Continuous Limits, and Higher Dimensions".<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+One-Cut Risk Profiles under Quadratic Loss: Discrete Convexity, Continuous Limits, and Higher Dimensions
+
+In this note we study a two-regime representation of a loss random variable under quadratic error. For a finite law we compute exactly the change of the optimal risk when one atom crosses the cut. This turns the problem into a convexity question in cumulative-mass coordinates. On an equally spaced support, log-concavity gives this convexity, while weak symmetry locates the optimal cut, with an additional correction when the mean lies between two atoms. We also discuss the continuous analogue and extend the main identities to finitely supported random vectors, where a global optimal partition may be chosen as a halfspace.<|im_end|>
+<|im_start|>user
+What should I know about Samuel Terranova?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Samuel Terranova
+
+Samuel Terranova (born March 28, 2004) is an American association football player who plays as a goalkeeper for the NC State Wolfpack. He played youth soccer for North Carolina FC for seven years and was twice signed to amateur contracts with the club's first team while retaining his college eligibility. He later played for North Carolina FC U23 in USL League Two before beginning his college career at NC State in 2023.
+
+
+== Early life and youth career ==
+Terranova is from Fayetteville, North Carolina, and attended Terry Sanford High School. He joined the North Carolina FC Academy as a youth player and remained with the academy for several years. North Carolina FC described him in 2021 as a high-school junior who had been a member of the academy for five years.
+Terranova was selected for Team North Carolina at the ICC Futures Tournament. He was also a member of the North Carolina FC U23 setup during the USL League Two period of his youth career.
+
+
+== North Carolina FC ==
+In March 2021, Terranova was one of 15 NCFC Academy players signed by North Carolina FC to academy contracts. The agreements allowed the young players to train with and play for the professional first team while maintaining their college eligibility.
+Terranova was also listed on North Carolina FC U23's 2021 USL League Two roster. He made five appearances during the 2021 regular season, playing 182 minutes.
+In April 2022, Terranova signed a second amateur contract with North Carolina FC. The club said he had been part of the NCFC Academy for six years, that he had committed to play collegiately at NC State, and that the contract was his second with the first team. Terranova said he had been with the club since age 12 and had played goalkeeper for NCFC at the US Development Academy, Elite Clubs National League, USL Academy and USL League Two levels.
+During the 2022 USL League Two season, Terranova made three appearances for North Carolina FC U23, all starts, and played 270 minutes. He conceded six goals and made 12 saves.
+Terranova was also included on North Carolina FC's 2022 USL League One roster through his amateur agreement. He did not make a USL League One appearance during the season.
+
+
+== College career ==
+
+
+=== NC State ===
+Terranova joined NC State University for the 2023 season. He was part of an incoming class of 14 players announced by the university in August 2023 and entered the program as a goalkeeper from Fayetteville.
+In his freshman season, Terranova appeared in and started five matches, playing 450 minutes. He led the team with 27 saves. On October 13, 2023, he made a career-high eight saves in a match against Duke.
+Terranova also started against High Point on October 17, recording four saves in a 0–0 draw. On October 22, he played the first half in a 1–1 draw against Syracuse, recording a shutout during his 45 minutes in goal.
+Terranova did not appear in any matches during the 2024 season.
+In 2025, Terranova played in three matches for NC State, averaging 23 minutes per appearance. He made two saves in the team's September match against William & Mary.
+Terranova returned for the 2026 season as a senior goalkeeper. He started NC State's August 20 season opener against Coastal Carolina, helping the Wolfpack record a 0–0 shutout. He also started the August 27 match against FIU. Through four matches of the 2026 season, he had started twice and played 180 minutes.
+
+
+== Career statistics ==
+
+
+=== Club ===
+
+Sources: USL League Two.
+
+
+=== College ===
+
+2023 and 2025 statistics are from NC State University Athletics; 2026 statistics are current through August 30, 2026.
+
+
+== Personal life ==
+Terranova was a member of the National Honor Society while in school. His father is the head men's soccer coach at Methodist University.<|im_end|>
+<|im_start|>user
+能写一篇关于道奇Charger (2024)的百科条目吗？<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+道奇Charger (2024)
+
+道奇Charger （2024）是2024年发布的第八代道奇Charger全尺寸轿车，由斯泰兰蒂斯北美以道奇品牌生产，电动版道奇Charger Daytona于2024年12月率先投产，汽油版Charger Sixpack于2025年12月投产。
+第八代道奇Charger提供双门和四门两种掀背溜背车身，其中双门版接替第三代道奇Challenger。
+
+
+== 概念车 ==
+名为道奇Charger Daytona SRT的概念车于2022年8月17日，在密歇根州庞蒂亚克举行的道奇速度周（Dodge Speed Week）活动第三天亮相，道奇宣布将于2024年量产。它搭载一套名为Banshee（女妖）的新动力系统，道奇称它是“肌肉兄弟会”（Brotherhood of Muscle）新的性能之巅，盖过Hemi、Hellcat和Redeye。
+概念车意在预览品牌的电动化未来，配有一套Fratzonic Chambered排气系统，声压可达126分贝，和搭载Hellcat的道奇一样响。声音经位于车尾的功放和调音腔放大传出。
+2022年11月，道奇在SEMA上展出红色Charger Daytona SRT概念车，配有类似布加迪的速度钥匙，最高可把功率释放到670马力（500千瓦、679PS）。
+该概念车还与德罗宁Alpha5一同在电影《玩命關頭X》中出镜。
+
+
+== 量产版 ==
+2026年6月8日，道奇宣布将在欧洲销售Charger。
+
+
+=== Charger Daytona ===
+2024年3月5日，道奇Charger以双门和四门两种形态预览，双门版计划2024年开售，四门版2025年开售。Charger Daytona分R/T和Scat Pack两个版本，双电机分别输出496马力（370千瓦、503PS）和670马力（500千瓦、679PS），均标配四轮驱动和100.5千瓦·时电池。
+2024年8月7日，斯泰兰蒂斯公布售价：2024年道奇Charger Daytona R/T为59595美元，Scat Pack为73190美元；以租赁方式购买时两款车都可享受7500美元联邦税收抵免。
+首批Charger Daytona于2025年1月运抵经销商。
+
+
+=== Charger Sixpack ===
+2023年8月有报道称，量产版Charger将提供汽油直列六缸Hurricane发动机，而顶配Daytona为纯电。
+Charger Sixpack搭载3.0升双涡轮增压汽油直列六缸发动机Hurricane，Charger R/T输出420马力（313千瓦、426PS），Charger Scat Pack输出550马力（410千瓦、558PS），并可在四轮驱动和后轮驱动之间切换。
+Sixpack车系中，Charger Scat Pack于2025年末率先上市，Charger R/T于2026年上半年上市，双门Scat Pack2025年12月开始交付。
+
+
+=== 特别版 ===
+2025年10月，道奇发布Hustle Stuff Drag Pak直线加速赛车，搭载5.8升机械增压HemiV8，仅生产50辆。
+2026年8月7日，道奇发布面向2027车型年的Super Bee。高功率版Hurricane发动机输出增加50马力（37千瓦、51PS），达到600马力（447千瓦、608PS）；扭矩维持720牛·米不变，但峰值扭矩转速从3500转/分提前到3000转/分。Super Bee还采用重新设计的前脸（道奇称可提升下压力），升级布雷博刹车，换装一套CDC双阀自适应减振器，后防倾杆加硬、前衬套加硬。道奇公布的0–97公里/小时加速为3.6秒，四分之一英里为11.8秒。
+
+
+== 动力总成 ==
+
+
+== 销量 ==<|im_end|>
+<|im_start|>user
+Can you give me the full contents of src/themes.ts?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+/**
+ * The named themes a file chooses with `diagram theme: <name>`, and the one it
+ * gets when it says nothing.
+ *
+ * A theme supplies every color the file does not state. It never supplies a
+ * size or a distance, so switching themes cannot move anything — geometry may
+ * not depend on appearance.
+ *
+ * Most of the palettes are borrowed from editor color schemes, all of them MIT
+ * licensed and credited in NOTICE. Those palettes were made for code, where a
+ * color marks a keyword or a string; a diagram needs a page, two box fills, a
+ * border, text and a line. So each is the scheme read as a diagram rather than
+ * a transfer of it: the page is the scheme's background, a leaf is its raised
+ * surface, a container sits between the two, and the lines take one of its
+ * accents.
+ */
+export interface Theme {
+  background: string;
+  boxFill: string;
+  boxStroke: string;
+  containerFill: string;
+  /** A container is a region rather than a thing, so its outline is quieter. */
+  containerStroke: string;
+  text: string;
+  mutedText: string;
+  edge: string;
+  /** An icon's drawn line. */
+  iconInk: string;
+  /** The body an icon's lines enclose. */
+  iconShade: string;
+  /** The theme's signature color, which `theme-primary` names. */
+  primary: Accent;
+  /** Its second color, which `theme-secondary` names. */
+  secondary: Accent;
+}
+
+/**
+ * An accent at the two strengths a file can ask for, and the text that reads
+ * on it. `subtle` is the accent mixed toward the page — dark on a dark theme,
+ * pale on a light one — so `fill: theme-primary-subtle` is a box set apart in
+ * every theme, and its text is the theme's ordinary text.
+ */
+export interface Accent {
+  color: string;
+  subtle: string;
+  /** Text on a solid fill of `color`: `theme-on-primary`. */
+  on: string;
+}
+
+/** How much of an accent survives in its subtle form; the rest is the page. */
+const SUBTLE = 0.25;
+
+function accent(color: string, page: string, on: string, subtle = mix(color, page, SUBTLE)): Accent {
+  return { color, subtle, on };
+}
+
+/** `amount` of `color` over `page`, both `#rrggbb`. */
+function mix(color: string, page: string, amount: number): string {
+  const channel = (hex: string, at: number) => parseInt(hex.slice(at, at + 2), 16);
+  let out = '#';
+  for (const at of [1, 3, 5]) {
+    const value = Math.round(channel(page, at) + (channel(color, at) - channel(page, at)) * amount);
+    out += value.toString(16).padStart(2, '0');
+  }
+  return out;
+}
+
+/**
+ * Every color a file may name from the theme, and what it is in a given one.
+ * The first six are the theme's own defaults for each part — what a line or a
+ * box gets when the file says nothing — and the rest are its two accents. All
+ * begin `theme-`, so a word that follows the theme says so, and no CSS color
+ * name is taken.
+ */
+const THEME_COLOR_OF: Readonly<Record<string, (theme: Theme) => string>> = {
+  'theme-page': (t) => t.background,
+  'theme-text': (t) => t.text,
+  'theme-muted': (t) => t.mutedText,
+  'theme-fill': (t) => t.boxFill,
+  'theme-border': (t) => t.boxStroke,
+  'theme-line': (t) => t.edge,
+  'theme-primary': (t) => t.primary.color,
+  'theme-primary-subtle': (t) => t.primary.subtle,
+  'theme-on-primary': (t) => t.primary.on,
+  'theme-secondary': (t) => t.secondary.color,
+  'theme-secondary-subtle': (t) => t.secondary.subtle,
+  'theme-on-secondary': (t) => t.secondary.on,
+};
+
+export const THEME_COLORS: readonly string[] = Object.keys(THEME_COLOR_OF);
+
+/** A color as written, with a `theme-` word replaced by the theme's value. */
+export function themeColor(value: string, theme: Theme): string {
+  const of = THEME_COLOR_OF[value];
+  return of === undefined ? value : of(theme);
+}
+
+/**
+ * The text a box gets when its fill is a theme color and its text says
+ * nothing: the accent's own `on` color for a solid accent, and otherwise
+ * whichever of the theme's text and page colors stands further from the fill.
+ * A hand-picked fill is left alone — the theme has no say over it.
+ */
+export function textOnFill(fill: string, theme: Theme): string | undefined {
+  if (fill === 'theme-primary') return theme.primary.on;
+  if (fill === 'theme-secondary') return theme.secondary.on;
+  if (THEME_COLOR_OF[fill] === undefined) return undefined;
+  // `diagram background:` and `text:` may be any CSS color, which cannot be
+  // measured here, so an overruled theme keeps its ordinary text.
+  const measured = [themeColor(fill, theme), theme.text, theme.background];
+  if (!measured.every((color) => /^#[0-9a-f]{6}$/i.test(color))) return theme.text;
+  const under = luminance(themeColor(fill, theme));
+  const apart = (color: string) => Math.abs(luminance(color) - under);
+  return apart(theme.text) >= apart(theme.background) ? theme.text : theme.background;
+}
+
+function luminance(hex: string): number {
+  const [r, g, b] = [1, 3, 5].map((at) => {
+    const c = parseInt(hex.slice(at, at + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+}
+
+/**
+ * Sampled out of `examples/reference/arch.png` rather than invented,
+ * so the benchmark render and the drawing it is measured against differ by
+ * geometry and typography alone. A container is a shade off the page and barely
+ * outlined; a leaf is the navy that carries the diagram's weight.
+ */
+export const DARK_THEME: Theme = {
+  background: '#111111',
+  boxFill: '#191728',
+  boxStroke: '#4f5367',
+  containerFill: '#191920',
+  containerStroke: '#25242f',
+  text: '#d9d9d9',
+  mutedText: '#8b8b8b',
+  edge: '#5c5c7c',
+  // Both sampled off the reference's machine glyphs. Note that the reference
+  // gives each icon its own hue — the drive is gray, the laptop periwinkle, the
+  // workstation violet — which is a drawing tool's per-shape default and not a
+  // system. One pair for the whole set is the deliberate difference: an icon
+  // should read as part of the diagram's palette, not as clip art dropped in.
+  iconInk: '#8d8d8e',
+  iconShade: '#3e3d58',
+  // The reference's two colored boxes: `synced` is the green, `dump` the red.
+  // Their fills are sampled rather than mixed, so the benchmark written in
+  // theme colors renders exactly as it did in hex.
+  primary: accent('#486544', '#111111', '#d9d9d9', '#142814'),
+  secondary: accent('#8f3a3a', '#111111', '#d9d9d9', '#460000'),
+};
+
+/** The dark theme's counterpart: the same roles, on a white page. */
+const LIGHT_THEME: Theme = {
+  background: '#ffffff',
+  boxFill: '#eef0f7',
+  boxStroke: '#8a90a8',
+  containerFill: '#f6f7fa',
+  containerStroke: '#dcdfe7',
+  text: '#1f2328',
+  mutedText: '#6e7781',
+  edge: '#7c83a0',
+  iconInk: '#57606a',
+  iconShade: '#d6d9e6',
+  primary: accent('#3a7d44', '#ffffff', '#ffffff'),
+  secondary: accent('#b3423a', '#ffffff', '#ffffff'),
+};
+
+/**
+ * Every theme a file may name, in the order they are offered. Pairs sit
+ * together, dark first, and the two that have no light half follow them.
+ */
+export const THEMES: Readonly<Record<string, Theme>> = {
+  dark: DARK_THEME,
+  light: LIGHT_THEME,
+  // Solarized, Ethan Schoonover. base03 page, base02 leaves, blue lines.
+  'solarized-dark': {
+    background: '#002b36',
+    boxFill: '#073642',
+    boxStroke: '#586e75',
+    containerFill: '#03313c',
+    containerStroke: '#0b3f4c',
+    text: '#93a1a1',
+    mutedText: '#657b83',
+    edge: '#268bd2',
+    iconInk: '#839496',
+    iconShade: '#0f4a58',
+    primary: accent('#268bd2', '#002b36', '#fdf6e3'),
+    secondary: accent('#cb4b16', '#002b36', '#fdf6e3'),
+  },
+  // base3 page, base2 leaves, the same blue.
+  'solarized-light': {
+    background: '#fdf6e3',
+    boxFill: '#eee8d5',
+    boxStroke: '#93a1a1',
+    containerFill: '#f6efdc',
+    containerStroke: '#e3dcc7',
+    text: '#586e75',
+    mutedText: '#93a1a1',
+    edge: '#268bd2',
+    iconInk: '#657b83',
+    iconShade: '#e0d9c3',
+    primary: accent('#268bd2', '#fdf6e3', '#fdf6e3'),
+    secondary: accent('#cb4b16', '#fdf6e3', '#fdf6e3'),
+  },
+  // Gruvbox, Pavel Pertsev. bg0 page, bg1 leaves, the warm yellow for lines.
+  'gruvbox-dark': {
+    background: '#282828',
+    boxFill: '#3c3836',
+    boxStroke: '#665c54',
+    containerFill: '#32302f',
+    containerStroke: '#3c3836',
+    text: '#ebdbb2',
+    mutedText: '#a89984',
+    edge: '#d79921',
+    iconInk: '#a89984',
+    iconShade: '#504945',
+    primary: accent('#fe8019', '#282828', '#282828'),
+    secondary: accent('#8ec07c', '#282828', '#282828'),
+  },
+  'gruvbox-light': {
+    background: '#fbf1c7',
+    boxFill: '#ebdbb2',
+    boxStroke: '#bdae93',
+    containerFill: '#f2e5bc',
+    containerStroke: '#e5d4a7',
+    text: '#3c3836',
+    mutedText: '#7c6f64',
+    edge: '#b57614',
+    iconInk: '#7c6f64',
+    iconShade: '#d5c4a1',
+    primary: accent('#af3a03', '#fbf1c7', '#fbf1c7'),
+    secondary: accent('#427b58', '#fbf1c7', '#fbf1c7'),
+  },
+  // Catppuccin. Mocha's base page and surface leaves, blue lines.
+  'catppuccin-mocha': {
+    background: '#1e1e2e',
+    boxFill: '#313244',<|im_end|>
+<|im_start|>user
+Write the abstract for a paper titled "TIER: Threat Implicitness Benchmark for Evaluating LLM Safety Behaviors".<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+TIER: Threat Implicitness Benchmark for Evaluating LLM Safety Behaviors
+
+Current LLM safety benchmarks largely rely on binary metrics, overlooking how models respond to harmful prompts with varying threat implicitness. We introduce TIER, a Threat Implicitness Benchmark for behavioral safety evaluation of LLMs. TIER covers four risk domains and four threat levels, from explicit harmful requests to sophisticated jailbreaks. Responses are assessed using a six-label behavior scale and two independent LLM judges. Experiments on six open-weight LLMs show that safety behaviors evolve gradually across threat levels rather than shifting directly from refusal to compliance. Contextual prompts yield the most diverse behaviors, while jailbreaks reveal the largest robustness gaps. Furthermore, models with similar Attack Success Rates can exhibit distinct response distributions, highlighting the need for behavior-aware LLM safety evaluation.<|im_end|>
+<|im_start|>user
+Write `tests/ops/linear_swiglu/test_q4_a8int.cpp` for this project.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+#include "ops/linear_swiglu/linear_swiglu_test_common.h"
+
+#include <array>
+#include <exception>
+#include <iostream>
+
+int main() {
+    using namespace ninfer;
+    using namespace ninfer::test::linear_swiglu;
+
+    try {
+        // AllowA8Int is permissive: the integer route covers token counts that are positive
+        // multiples of 128 and the resolver falls back to A16 for the rest. These cases straddle
+        // that boundary deliberately -- 127/128/129 and 511/512/513 -- so both sides of the
+        // admission rule are exercised through the public Op, and every case is held to the same
+        // A8 activation allowance whichever route ran.
+        constexpr std::array<std::int32_t, 14> kTokenCases{
+            1, 2, 33, 127, 128, 129, 256, 257, 384, 511, 512, 513, 640, 1024,
+        };
+        const int failures = run_profile(
+            "LinearSwiGLU Q4_A8INT",
+            {QType::Q4_G64_FP16, 34816, 5120, 17408, 1409U, ActivationCompute::A8Int},
+            kTokenCases);
+        std::cout << (failures == 0 ? "OK" : "FAIL") << " LinearSwiGLU Q4_A8INT correctness\n";
+        return failures == 0 ? 0 : 1;
+    } catch (const std::exception& error) {
+        std::cerr << "LinearSwiGLU Q4_A8INT test failed: " << error.what() << '\n';
+        return 1;
+    }
+}<|im_end|>
+<|im_start|>user
+Summarize the paper "Stability of independence polynomials of spiders" in one paragraph.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Stability of independence polynomials of spiders
+
+For a graph $G$, let $i_k(G)$ denote the number of independent sets of cardinality $k$, and let \[ I(G,z)=\sum_{k\ge0} i_k(G)z^k \] be its independence polynomial. Following Brown and Cameron \cite{BrownCameron2018}, a graph is called stable if all zeros of its independence polynomial lie in the closed left half-plane. They proved that every star is stable, but also constructed nonstable trees. They then asked for a characterization of stable trees. In this paper, we extend and strengthen their result by proving that every spider, obtained from a star by arbitrary and possibly nonuniform subdivisions of its edges, has all its independence roots in the open left half-plane. Hence, every spider is stable.<|im_end|>
+<|im_start|>user
+Tell me about Kiss Her Now.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Kiss Her Now
+
+"Kiss Her Now" is a 1968 show tune written by Jerry Herman for the 1969 Broadway musical Dear World. It was most notably performed by Ed Ames, who released it as a single in late 1968 for his album The Hits of Broadway and Hollywood. His version reached the US adult-oriented and pop charts and received a positive reception. The version sung by Angela Lansbury from the musical appeared in the original cast recording. It was listed among the better songs on it by reviewers.
+
+
+== Background, content, and original recording ==
+"Kiss Her Now" was written by Jerry Herman for the musical Dear World, first scheduled to open in December 1968. The show opened on Broadway on February 6, 1969, after several delays, but only ran for about six months. In the show, the song is sung by the Countess, assessed as an "urgent exhortation" for characters Nina and Jullian in the subplot with the opening lines:
+
+Before you half remember what her smile was like,
+Before you half recall the day you found her
+Kiss her now, while she's young,
+Kiss her now, while she's yours,
+Kiss her now, while she needs your arms around her.
+In the original cast soundtrack recorded at Mark Hellinger Theatre, New York City, "Kiss Her Now" was performed by Angela Lansbury (the Countess) again, and was picked as a highlight in Cashbox magazine's review of the album. Promotion for it and other songs from Dear World and Promises, Promises was handled by Edwin H. Morris, who hired several additional promoters. By December 1968, Dear World had about 18 separate recordings, with the only charting one being "Kiss Her Now" by Ed Ames.
+
+
+== Ed Ames version ==
+
+
+=== Background and release ===
+American singer Ed Ames enjoyed brief pop success in 1967 and 1968, charting several songs in the top-40 of charts. In late 1968 Ames chose another show tune for a single release, like his big hit "My Cup Runneth Over" two years earlier. The single was produced by Jim Foglesong, and arranged by Perry Botkin Jr. on both sides. The B-side was assessed by critics as a "more youth-minded" song, titled "Gloves, Pictures, Dreams (Doors, Mirrors and Heartaches)". "Kiss Her Now" was included in his concurrently released album, The Hits of Broadway and Hollywood, with songs in a similar style. The following year, it was included in his The Best of Ed Ames compilation.
+
+
+=== Critical reception ===
+
+The single received a positive critical reception upon its release. Billboard magazine stated that "...comes a poignant ballad performed to perfection by Ames in a top production arrangement with much commercial appeal." Cashbox stated that "Ames does a stunning job on a lovely song from Jerry Herman's new theater effort," adding that "Song is a
+wonderfully tender one with lyrics and arrangements that should gain attention with easy listening & middle-of-the-road outlets." Record World's editors picked the release as one of the "Singles of the Week", noting that Ames introduces the new ballad.
+
+
+=== Chart performance ===
+
+
+==== Adult-oriented charts ====
+"Kiss Her Now" became an easy-listening success. It entered the Billboard Easy Listening chart in the issue dated November 9, 1968, reaching number 22 during a four-week run on it. The track debuted on the Record World Top-Non Rock chart in the issue dated November 16, 1968, peaking at a higher number 17 during a three-week run.
+
+
+==== Pop-oriented charts ====
+The single made short appearances on the pop charts as well. "Kiss Her Now" reached No. 77 on the Cashbox Top 100 Singles chart during its five-week run there. It peaked at No. 80 on the Record World 100 Top Pops chart during a four-week run on it. In Canada, the song managed to climb to No. 65 on the RPM Singles chart.
+
+
+=== Track listing ===
+
+
+== Charts ==<|im_end|>
+<|im_start|>user
+能写一篇关于北极光号列车的百科条目吗？<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+北极光号列车
+
+北极光号（英語：Borealis）是美铁运营的一条每日城际铁路客运线路，往返于伊利诺伊州芝加哥和明尼苏达州圣保罗之间，途中经过威斯康星州密尔沃基。该线路于2024年5月21日开通，属于美铁中西部品牌。
+北极光号与长途列车帝国建设者号在圣保罗至芝加哥之间停靠大致相同的车站，但提供不同的发车时间，并以较短的区域线路提高运行可靠性。
+北极光号实际上是在芝加哥－密尔沃基海华沙号既有班次基础上向西北延伸形成，使密尔沃基至圣保罗之间的每日美铁班次数量增加一倍。
+北极光号开通后客流表现高于早期预测。美铁称，截至2025年4月底，其开通后约11个月内已有超过205,800人次乘坐；2025财年全年客运量进一步超过21.3万人次。
+
+
+== 历史 ==
+
+
+=== 早期铁路服务 ===
+在美铁成立前，多家私营铁路公司曾运营双城地区至芝加哥的旅客列车。
+芝加哥和西北铁路曾分别经麦迪逊和密尔沃基开行双城－芝加哥列车。其中经密尔沃基运行的双城400号于1963年7月23日停运。
+密尔瓦基铁路的双城－芝加哥列车均经密尔沃基运行。到1971年时，该公司在双城走廊主要仅余每日运行的晨间海华沙号以及东行Fast Mail列车。
+芝加哥、伯灵顿和昆西铁路则经萨凡纳运行一条位置更偏西的双城－芝加哥线路。该公司于1970年并入伯灵顿北方铁路。
+1971年时，伯灵顿北方铁路仍运营晨间和风号、午后和风号、帝国建设者号和北岸特快号等双城－芝加哥旅客列车。
+
+
+=== 美铁时期 ===
+1971年5月1日，美铁接管美国大部分城际铁路客运业务。
+当时双城－芝加哥之间保留下来的主要列车为帝国建设者号。为停靠密尔沃基，该列车在双城至芝加哥之间改经原密尔瓦基铁路线路运行。
+1971年6月14日，每周运行3天的北岸海华沙号开始运营，最初在明尼阿波利斯至芝加哥之间与帝国建设者号合并运行。
+同年11月14日起，北岸海华沙号在明尼阿波利斯以东独立运行。美铁同时开行一班每周4天运行的明尼阿波利斯－芝加哥海华沙号，在北岸海华沙号不运行的日期补充服务，使该走廊每天可以保持两对列车。
+1972年1月16日，这班明尼阿波利斯－芝加哥列车更名为双城海华沙号，但同年10月29日又恢复使用海华沙号名称。
+1974年至1977年夏季，北岸海华沙号曾改为每日运行，因此同期独立的海华沙号暂停运行。
+1977年9月8日，双城－芝加哥服务暂时减少至每日1对，其中帝国建设者号每周运行4天，北岸海华沙号每周运行3天。
+1977年10月30日，两班长途列车在明尼阿波利斯至芝加哥之间改为夜间运行，同时重新开行每日白天运行的双城海华沙号。
+1978年4月30日，帝国建设者号和北岸海华沙号恢复此前运行时刻。双城海华沙号则改为夜间列车，并与双城－德卢斯的箭头号贯通运行，组成北星号。
+北岸海华沙号于1979年10月停运。
+北星号于1985年4月7日停运。此后直至2024年，双城与芝加哥之间每天只有帝国建设者号一班美铁列车。
+
+
+=== TCMC计划 ===
+北极光号最初以双城－密尔沃基－芝加哥城际客运铁路计划（英語：Twin Cities–Milwaukee–Chicago Intercity Passenger Rail，简称TCMC）名义进行规划。
+TCMC计划在美铁完成可行性报告后于2015年正式启动。
+由于初步研究预测具有较好的客流和收入表现，明尼苏达州交通部随后与威斯康星州交通部、伊利诺伊州交通部、拉姆西县区域铁路管理局以及美国联邦铁路管理局合作开展第一阶段研究。
+研究内容包括服务方案、基础设施升级需求以及预计建设成本。
+第二阶段研究由威斯康星州交通部牵头，主要负责完成环境审查和服务发展计划。
+推动项目的原因之一，是帝国建设者号从西雅图等西部地区长距离运行至圣保罗后容易发生晚点。新的区域列车从圣保罗始发，可以提供更稳定的出发时间。
+项目需要在拉克罗斯、La Crescent、威诺纳和圣保罗等地升级铁路基础设施。
+项目最初估计资本成本约为5,330万美元，由联邦补助以及明尼苏达州和威斯康星州政府资金承担。
+计划曾预计于2023年开始运营，但实际开通时间后来推迟至2024年。
+
+
+=== 名称确定 ===
+2022年12月1日，美铁代表曾表示计划将新列车命名为Great River，名称来自沿线重要自然地理特征密西西比河。
+2023年期间，项目开通日期多次调整。
+2023年12月，美国联邦铁路管理局将芝加哥－拉克罗斯－圣保罗走廊纳入Corridor Identification and Development Program，并提供50万美元用于研究进一步增加列车班次。
+2024年2月，威斯康星州交通部一度披露线路将命名为Borealis，但相关名称公告在24小时内撤回。
+2024年4月30日，美铁正式宣布线路名称为Borealis，同时开始售票。
+2024年5月21日，北极光号正式开始运营。
+
+
+=== 开通后的客运量 ===
+北极光号开通前预计年客运量约124,000人次。
+开通最初11天，北极光号平均每日约604名乘客，其中西行约329人、东行约275人。
+2024年10月24日，即开通约5个月后，累计客运量已经超过100,000人次。
+截至2025年4月30日，列车开通后约11个月累计客运量超过205,800人次。
+美铁表示，包括北极光号和帝国建设者号在内的圣保罗－芝加哥走廊同期客运量超过293,000人次，与北极光号开通前相应时期相比增长227%。
+2025财年，北极光号全年客运量进一步超过213,000人次。
+2025年1月，美铁获得3,860万美元联邦补助，用于支持北极光号至2030年的运营。
+
+
+== 运营 ==
+
+北极光号每天双向各运行1班，列车编号分别为：
+
+1333次：芝加哥开往圣保罗
+1340次：圣保罗开往芝加哥
+截至2026年4月的时刻表，1333次于11:10从芝加哥联合车站出发，18:41抵达圣保罗联合车站，全程约7小时31分钟。
+1340次于11:49从圣保罗联合车站出发，19:21抵达芝加哥联合车站，全程约7小时32分钟。
+列车在两个终点之间停靠11座中途车站。
+北极光号最初由一班既有芝加哥－密尔沃基海华沙号往返班次向圣保罗延长形成，原333／340次更改为1333／1340次。
+
+
+=== 车辆 ===
+北极光号开通初期的典型编组包括4辆Horizon型客车以及1辆Amfleet咖啡／商务座车。
+牵引机车通常为1至2台通用电气创世纪型柴油机车或西门子冲锋者型柴油机车。
+2025年3月，由于美铁发现Horizon型客车存在腐蚀问题并将整个车队暂时退出运营，北极光号改用Superliner双层客车。
+改用Superliner后，由于该编组不提供北极光号此前的商务座配置，线路的商务座服务随之停止。
+美铁目前的北极光号官方页面列出的主要乘坐等级为普通座，并继续提供咖啡餐饮服务。
+
+
+=== 延伸及增加班次 ===
+过去的可行性研究曾考虑将北极光号由圣保罗继续向西北延伸，经标靶球场站、弗里德利站至圣克劳德站。
+美国联邦铁路管理局的Corridor ID Program另有研究经麦迪逊和欧克莱尔连接芝加哥与双城地区的另一班城际铁路服务。
+
+
+== 路线及车站 ==<|im_end|>
