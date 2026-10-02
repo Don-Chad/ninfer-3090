@@ -50,7 +50,9 @@ rem
 rem OVERRIDES, from the environment. All profiles: NINFER_MODEL (artifact path), NINFER_MODEL_DIR,
 rem NINFER_SERVER, NINFER_HOST, NINFER_PORT, NINFER_GRAFT_DIR (phantom-kv graft directory),
 rem NINFER_GRAFTS (set to "off" to disable graft loading), NINFER_DEFAULT_GRAFT (set to "on" to
-rem apply the loaded graft to every request that names none). `tuned` also: NINFER_CONTEXT,
+rem apply the loaded graft to every request that names none), NINFER_CHAT_TEMPLATE (path to a local
+rem Jinja file, passed straight to --chat-template; overrides the artifact's built-in template).
+rem `tuned` also: NINFER_CONTEXT,
 rem NINFER_CONCURRENCY, NINFER_KV_DTYPE, NINFER_SPEC, NINFER_DRAFT_TOKENS, NINFER_PREFILL_CHUNK,
 rem NINFER_VISION (on^|off), NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS. Each spec's defaults
 rem (context, lanes, chunk) are the ones measured to fit beside a desktop, which holds roughly 1.5 GiB
@@ -329,6 +331,8 @@ rem Opt-in: NINFER_DEFAULT_GRAFT=on makes godmode apply to every request that st
 rem (--default-graft godmode); a request opts out with "graft": "". Only reached when a graft loaded.
 if /i "%NINFER_DEFAULT_GRAFT%"=="on" set "GRAFT_ARGS=%GRAFT_ARGS% --default-graft godmode"
 :graft_done
+set "CHAT_TEMPLATE_ARGS="
+if not "%NINFER_CHAT_TEMPLATE%"=="" set "CHAT_TEMPLATE_ARGS=--chat-template "%NINFER_CHAT_TEMPLATE%""
 if not exist "%SERVER%" (
   echo Missing %SERVER%
   echo Build it first:  .\scripts\build.ps1
@@ -347,6 +351,7 @@ rem GRAFT_ARGS carries literal embedded quotes (--graft "godmode=<path>"), so re
 rem string comparison here garbles the quoting and breaks the if statement. `defined` sidesteps
 rem that: it tests the variable directly, with no substitution.
 if defined GRAFT_ARGS echo Graft: godmode = %GRAFT_FILE%
+if defined CHAT_TEMPLATE_ARGS echo Chat template: %NINFER_CHAT_TEMPLATE%
 if not "%HINT%"=="" echo %HINT%
 echo API: http://%HOST%:%PORT%/v1
 echo.
@@ -361,7 +366,7 @@ rem zero. Do not read "8192" as a description of this machine. See
 rem docs\maintainer\launcher-profiles.md.
 if /i not "%PROFILE%"=="tuned" set "LADDER=0"
 if "%LADDER%"=="0" (
-  "%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %GRAFT_ARGS%
+  "%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %GRAFT_ARGS% %CHAT_TEMPLATE_ARGS%
   endlocal
   exit /b %ERRORLEVEL%
 )
@@ -375,7 +380,7 @@ if "%RUNG%"=="0" (
   set "BASE_SLOTS=%HOST_STATE_SLOTS%"
 )
 set "SERVER_LOG=%TEMP%\ninfer-run-%RANDOM%%RANDOM%.log"
-"%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %GRAFT_ARGS% 2>&1 | powershell -NoProfile -Command "$input | ForEach-Object { $_; Add-Content -LiteralPath '%SERVER_LOG%' -Value $_ -Encoding Ascii }"
+"%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %GRAFT_ARGS% %CHAT_TEMPLATE_ARGS% 2>&1 | powershell -NoProfile -Command "$input | ForEach-Object { $_; Add-Content -LiteralPath '%SERVER_LOG%' -Value $_ -Encoding Ascii }"
 findstr /c:"runtime reservation requires" /c:"cudaMallocHost failed" "%SERVER_LOG%" >nul 2>&1
 if errorlevel 1 goto :server_done
 if %RUNG% GEQ 5 goto :server_done

@@ -119,12 +119,34 @@ device reservation), uses `rk4v4` KV and the tuned context cache (8 shared prefi
 slots, automatic prefix grid) that takes prefix reuse from 8.4% to 98.3% on a multi-preamble
 workload.
 
-**Overrides**, from the environment: `NINFER_HOST`, `NINFER_PORT`, `NINFER_MODEL`, `NINFER_SERVER`
-for every profile, plus `NINFER_CONTEXT`, `NINFER_CONCURRENCY`, `NINFER_KV_CAPACITY`,
-`NINFER_KV_DTYPE`, `NINFER_SPEC`, `NINFER_DRAFT_TOKENS`, `NINFER_PREFILL_CHUNK`, `NINFER_VISION`
-and `NINFER_HOST_STATE_SLOTS` for the default ones. The launchers bind `127.0.0.1`;
+**Overrides**, from the environment: `NINFER_HOST`, `NINFER_PORT`, `NINFER_MODEL`, `NINFER_SERVER`,
+`NINFER_CHAT_TEMPLATE` for every profile, plus `NINFER_CONTEXT`, `NINFER_CONCURRENCY`,
+`NINFER_KV_CAPACITY`, `NINFER_KV_DTYPE`, `NINFER_SPEC`, `NINFER_DRAFT_TOKENS`, `NINFER_PREFILL_CHUNK`,
+`NINFER_VISION` and `NINFER_HOST_STATE_SLOTS` for the default ones. The launchers bind `127.0.0.1`;
 `NINFER_HOST=0.0.0.0` exposes the server to the LAN, **unauthenticated**. On Windows,
 `set NINFER_SPEC=mtp && run.bat qwen38-27b`; on Linux, `NINFER_SPEC=mtp ./run.sh qwen38-27b`.
+
+**Custom chat templates.** `NINFER_CHAT_TEMPLATE` points the launcher at a local Jinja file, which
+overrides the artifact's built-in template for that run — handy for a model-specific fixed template
+instead of the maintained one. It maps straight to `ninfer-serve`'s own `--chat-template FILE`
+(`docs/serving.md`), so it works the same way if you drive the server binary directly, e.g. from an
+unpacked release archive without the launcher:
+
+```bash
+# Linux, release archive root (add whatever other serving flags you'd normally pass)
+./ninfer-serve models/qwen3_8_27b.ninfer --host 127.0.0.1 --port 8080 \
+  --chat-template my-template.jinja
+```
+
+```powershell
+:: Windows, release archive root (add whatever other serving flags you'd normally pass)
+ninfer-serve.exe models\qwen3_8_27b.ninfer --host 127.0.0.1 --port 8080 ^
+  --chat-template my-template.jinja
+```
+
+The template engine (`third_party/llama-jinja`) is from the same family llama.cpp uses, so templates
+written for llama.cpp — including third-party "fixed" chat templates distributed for specific
+models — generally work unmodified. Changes to the file take effect on the next restart.
 
 **Lanes share one KV pool.** `--kv-capacity` is the pool and `--max-context` the per-request cap,
 and the launchers set both to the profile's context. Any one request can use the full context, but
