@@ -139,8 +139,8 @@ unpacked release archive without the launcher:
 ```
 
 ```powershell
-:: Windows, release archive root (add whatever other serving flags you'd normally pass)
-ninfer-serve.exe models\qwen3_8_27b.ninfer --host 127.0.0.1 --port 8080 ^
+# Windows, release archive root (add whatever other serving flags you'd normally pass)
+ninfer-serve.exe models\qwen3_8_27b.ninfer --host 127.0.0.1 --port 8080 `
   --chat-template my-template.jinja
 ```
 

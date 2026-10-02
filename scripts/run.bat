@@ -364,13 +364,18 @@ rem and because it is harmless here: the clamp takes what is actually free after
 rem allocated, so it costs no context, and prefix reuse falls back to device pages when the pin is
 rem zero. Do not read "8192" as a description of this machine. See
 rem docs\maintainer\launcher-profiles.md.
+rem Not a parenthesised block: NINFER_CHAT_TEMPLATE (like NINFER_GRAFT_DIR) is an arbitrary local
+rem path and may contain ")" (e.g. "C:\templates\customer (v2)\chat.jinja"). Expanded inside a
+rem "( ... )" command group, that character can be taken as the group's own closing paren and
+rem break the batch parse, quoting notwithstanding -- so this invocation runs unparenthesised, with
+rem goto standing in for the ladder/non-ladder branch instead.
 if /i not "%PROFILE%"=="tuned" set "LADDER=0"
-if "%LADDER%"=="0" (
-  "%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %GRAFT_ARGS% %CHAT_TEMPLATE_ARGS%
-  endlocal
-  exit /b %ERRORLEVEL%
-)
+if not "%LADDER%"=="0" goto :launch_ladder
+"%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %GRAFT_ARGS% %CHAT_TEMPLATE_ARGS%
+endlocal
+exit /b %ERRORLEVEL%
 
+:launch_ladder
 rem Run the server with its output shown and kept, so a refusal for lack of memory can be told apart
 rem from any other failure. Only that failure steps down; a crash or a bad artifact does not. The log
 rem is written as ASCII on purpose: Tee-Object writes UTF-16, which findstr cannot search.
