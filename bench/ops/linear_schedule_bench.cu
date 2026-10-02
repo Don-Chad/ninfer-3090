@@ -310,6 +310,7 @@ std::vector<Candidate<detail::Q6Launch>> q6_candidates() {
         {"gemv", q6_gemv, 2},
         {"small_t_c8", detail::launch_q6_small_t_c8, 8},
         {"small_t_c16", detail::launch_q6_small_t_c16, 16},
+        {"small_t_c32", detail::launch_q6_small_t_c32, 32},
         {"simt_r8_c4", detail::launch_q6_simt_r8_c4, 0},
         {"mma_r64_c16_k128", detail::launch_q6_mma_r64_c16_k128, 0},
         {"mma_r64_c32_k128", detail::launch_q6_mma_r64_c32_k128, 0},

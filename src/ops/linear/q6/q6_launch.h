@@ -15,6 +15,7 @@ void launch_q6_gemv_t2(const Tensor& x, const Weight& w, Tensor& out, cudaStream
 // One m16 row tile per CTA, eight warps splitting K; up to 8 / 16 tokens (q6_small_t_mma.cu).
 void launch_q6_small_t_c8(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream);
 void launch_q6_small_t_c16(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream);
+void launch_q6_small_t_c32(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream);
 void launch_q6_simt_r8_c4(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream);
 void launch_q6_mma_r64_c16_k128(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream);
 void launch_q6_mma_r64_c24_k128(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream);

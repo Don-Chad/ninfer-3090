@@ -215,5 +215,8 @@ void launch_q6_small_t_c8(const Tensor& x, const Weight& w, Tensor& out, cudaStr
 void launch_q6_small_t_c16(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
     launch<2>(x, w, out, stream);
 }
+void launch_q6_small_t_c32(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
+    launch<4>(x, w, out, stream);
+}
 
 } // namespace ninfer::ops::detail
