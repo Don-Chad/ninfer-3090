@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 360" width="960" height="360" role="img"
-     aria-label="Qwen3.8-27B, upstream artifact against this fork's: file 20.44 to 18.98 GB; KL divergence 0.0376 to 0.0318; held-out perplexity 4.340 to 4.318; DFlash2 decode 125.9 to 133.5 tok/s on chat and 82.5 to 89.8 tok/s at 133K context; Windows DFlash2 context 172,032 to 188,416 tokens">
+     aria-label="Qwen3.8-27B, upstream artifact against this fork&#8217;s: file 20.44 to 18.98 GB, 1.46 GB smaller; KL divergence 0.0376 to 0.0318; held-out perplexity 4.340 to 4.318; DFlash2 decode 125.9 to 133.5 tok/s on chat and 82.5 to 89.8 tok/s at 133K context; Windows DFlash2 context 172,032 to 188,416 tokens">
   <title>Qwen3.8-27B: upstream artifact vs this fork's 3090 conversion</title>
   <style>
     .nb-surface  { fill: #fcfcfb; }
@@ -46,7 +46,7 @@
     <text x="194" y="153" font-size="12" class="nb-secondary">20.44</text>
     <rect x="36" y="170" width="139" height="22" rx="4" class="nb-new"/>
     <text x="183" y="185" font-size="12" font-weight="600" class="nb-primary">18.98</text>
-    <text x="36" y="230" font-size="20" font-weight="700" class="nb-good">&#8722;7.1%</text>
+    <text x="36" y="230" font-size="20" font-weight="700" class="nb-good">1.46 GB smaller</text>
     <text x="36" y="248" font-size="11" class="nb-muted">0.7 GiB less on the device</text>
     <text x="36" y="262" font-size="11" class="nb-muted">under DFlash2 (17.7 &#8594; 17.0)</text>
   </g>
