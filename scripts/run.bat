@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableDelayedExpansion
+setlocal
 rem ---------------------------------------------------------------------------------------------
 rem Serve a model on one RTX 3090.
 rem
@@ -332,13 +332,15 @@ rem (--default-graft godmode); a request opts out with "graft": "". Only reached
 if /i "%NINFER_DEFAULT_GRAFT%"=="on" set "GRAFT_ARGS=%GRAFT_ARGS% --default-graft godmode"
 :graft_done
 set "CHAT_TEMPLATE_ARGS="
-rem %NINFER_CHAT_TEMPLATE% would land outside the quoted run of the `set` line below (the quote
-rem right before it closes the first quoted span), so cmd parses the expanded text itself -- a
-rem value containing "&", "|", "<", ">" or "^" could break out of this statement and run as a
-rem separate command. !NINFER_CHAT_TEMPLATE! expands after parsing instead, so those characters
-rem land as inert literal text. The one tradeoff: a path containing "!" will not round-trip
-rem (delayed expansion treats it as another substitution), same caveat as any `^!`-escaped value.
-if not "%NINFER_CHAT_TEMPLATE%"=="" set "CHAT_TEMPLATE_ARGS=--chat-template "!NINFER_CHAT_TEMPLATE!""
+rem The wrapping "set "VAR=..."" form closes its quoted span right before a spliced %VAR%, so cmd
+rem would parse the expanded text unquoted and a value containing "&", "|", "<" or ">" could break
+rem out of the statement and run as a separate command (delayed expansion would dodge that but
+rem corrupts any "!" in every other %VAR% read later in the script -- see the prior round). The
+rem unquoted `set NAME=value` form below avoids both: it opens its own quote immediately before
+rem %NINFER_CHAT_TEMPLATE% and closes it right after, so the expansion lands inside a quoted span
+rem (metacharacters inert) while still storing that literal pair of quotes around the path, same
+rem as GRAFT_ARGS above.
+if not "%NINFER_CHAT_TEMPLATE%"=="" set CHAT_TEMPLATE_ARGS=--chat-template "%NINFER_CHAT_TEMPLATE%"
 if not exist "%SERVER%" (
   echo Missing %SERVER%
   echo Build it first:  .\scripts\build.ps1
@@ -357,7 +359,7 @@ rem GRAFT_ARGS carries literal embedded quotes (--graft "godmode=<path>"), so re
 rem string comparison here garbles the quoting and breaks the if statement. `defined` sidesteps
 rem that: it tests the variable directly, with no substitution.
 if defined GRAFT_ARGS echo Graft: godmode = %GRAFT_FILE%
-if defined CHAT_TEMPLATE_ARGS echo Chat template: !NINFER_CHAT_TEMPLATE!
+if defined CHAT_TEMPLATE_ARGS echo Chat template: "%NINFER_CHAT_TEMPLATE%"
 if not "%HINT%"=="" echo %HINT%
 echo API: http://%HOST%:%PORT%/v1
 echo.
