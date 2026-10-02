@@ -20,7 +20,7 @@ rem
 rem QWEN3.8-27B, `tuned`: two flag sets, each measured (docs\performance.md, "Recommended
 rem configurations"), chosen with NINFER_SPEC. The default is the fast one.
 rem
-rem   NINFER_SPEC=dflash2 (default): fastest at one stream, 172,032 tokens of context
+rem   NINFER_SPEC=dflash2 (default): fastest at one stream, 188,416 tokens of context
 rem
 rem     --spec dflash2 --draft-tokens 7 --lm-head-draft
 rem     --prefill-cublas --prefill-chunk 4096
@@ -40,9 +40,9 @@ rem   MTP accepts NINFER_DRAFT_TOKENS up to 15. Three suits chat and prose; for 
 rem   returns edited files, 11-15 decodes up to 1.85x faster (docs\cli.md has the table).
 rem
 rem rk4v4 KV (Lloyd-Max 4-bit keys) is 31%% smaller than rk8v4 at the same decode speed, for +0.10%%
-rem perplexity over it. Measured on a desktop RTX 3090 (2026-09-24), the DFlash2 set starts at up to
-rem 180,224 tokens (rk8v4: 131,072) and the default keeps a rung of margin; its draft weights and its
-rem refusal of --lm-head-q6 are why it stops short of 262,144. The mtp set starts at 262,144 with two
+rem perplexity over it. Measured on a desktop RTX 3090 (2026-10-02, 1.6 GiB held by the desktop), the
+rem DFlash2 set starts at 188,416 tokens with 721 MiB to spare and is refused at 196,608; its draft
+rem weights are why it stops short of 262,144. The mtp set starts at 262,144 with two
 rem lanes and about 1.2 GiB to spare. `none` is the mtp set without speculation.
 rem The qwen3_8_27b.ninfer that download-model.bat fetches is the DFlash2 bundle and carries the
 rem MTP weights too, so one file serves both. It stores the embedding as Q4 and the head as Q6, so
@@ -182,7 +182,7 @@ exit /b 2
 
 :spec_dflash2
 set "SPEC=dflash2"
-set "CONTEXT=172032"
+set "CONTEXT=188416"
 set "CONCURRENCY=1"
 set "PREFILL_CHUNK=4096"
 set "DRAFT_TOKENS=7"

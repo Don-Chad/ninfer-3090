@@ -160,7 +160,7 @@ A dense model rather than an MoE, so slower per token but more predictable:
 
 ```powershell
 .\download-model.bat qwen38-27b          # downloads qwen3_8_27b.ninfer (~19 GB, resumable)
-.\run.bat qwen38-27b                      # one user, 172,032 tokens, DFlash2, cuBLAS prefill, rk4v4, vision
+.\run.bat qwen38-27b                      # one user, 188,416 tokens, DFlash2, cuBLAS prefill, rk4v4, vision
 ```
 
 ```bash
@@ -180,7 +180,7 @@ the full 262,144 tokens with two lanes sharing the pool:
 
 | Profile | lanes | context | KV | measured beside a desktop |
 |---|---|---|---|---|
-| **`tuned`** (default, DFlash2), Windows | 1 | 172,032 | rk4v4 | starts up to 180,224 |
+| **`tuned`** (default, DFlash2), Windows | 1 | 188,416 | rk4v4 | starts with 721 MiB spare; 196,608 refused |
 | `tuned` (default, DFlash2), Linux | 1 | 262,144 | rk4v4 | headless extrapolation; steps down if refused |
 | `NINFER_SPEC=mtp` | 2 | 262,144 | rk4v4 | 23.4 of 24.5 GiB used |
 | `int8` | 1 | 65,536 | int8 | 2.85 GiB left unused |
