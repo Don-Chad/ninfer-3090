@@ -68,8 +68,10 @@ matrix the encoder used, so the artifact can be rebuilt.
 
 ## Measurements
 
-RTX 3090 (24 GB), CUDA 12.8, Windows, fork commit `66a05b72`. "Upstream" is
-`neroued/Qwen3.8-27B-NInfer` at `1cbd84e7`, run with the same binaries.
+RTX 3090 (24 GB), CUDA 12.8, Windows. "Upstream" is `neroued/Qwen3.8-27B-NInfer` at
+`1cbd84e7`, run with the same binaries. Quality was measured at fork commit `66a05b72`; speed with
+the small-T Q6 head kernel that followed it (`36b798c9`), which this artifact needs to be faster
+under speculative decoding.
 
 **Quality.** `ninfer-perplexity --quick --kv-dtype int8`:
 
@@ -97,27 +99,38 @@ repetitions each:
 
 | Workload | Upstream | This artifact | Change |
 |---|---:|---:|---:|
-| Plain decode, tg128 | 46.9 tok/s | 49.0 tok/s | +4.5% |
-| Prefill, pp4096 | 1,724 tok/s | 1,727 tok/s | +0.1% |
-| MTP3 + draft head, pp2048+tg256 decode | 147.1 tok/s | 147.2 tok/s | +0.1% |
-| DFlash2 K=7 + draft head, pp2048+tg256 decode | 250.9 tok/s | 249.5 tok/s | −0.6% |
+| Plain decode, tg128 | 47.1 tok/s | 49.2 tok/s | +4.5% |
+| Prefill, pp4096 | 1,713 tok/s | 1,727 tok/s | +0.8% |
+| MTP3 + draft head, pp2048+tg256 decode | 147.4 tok/s | 151.5 tok/s | +2.8% |
+| DFlash2 K=7 + draft head, pp2048+tg256 decode | 251.1 tok/s | 261.2 tok/s | +4.0% |
 
-Plain decode gains what its byte reduction predicts. The speculative profiles, which are what
-`run.bat` launches, do not gain:
+The bench corpus is unusually easy to draft (DFlash2 accepts 7.3 tokens per round on it), so the
+speculative rows were also measured on 24 varied chat prompts through `ninfer-serve` (greedy,
+thinking off, 512 tokens each, one stream):
 
-- MTP3 rounds are 1.6% faster, but acceptance fell from 3.82 to 3.77 tokens per round on this
-  workload, which cancels the gain.
-- DFlash2 acceptance is identical, but each round is 0.6% slower. The cause has not been
-  investigated yet; the 6-bit head's verify GEMM at 8 tokens is the first suspect.
+| Profile | Upstream | This artifact | Tokens per round |
+|---|---:|---:|---|
+| DFlash2 K=7 + draft head | 125.9 tok/s | 133.5 tok/s (+6.1%) | 3.53 → 3.57 |
+| MTP3 + draft head | 111.5 tok/s | 115.4 tok/s (+3.5%) | 2.87 → 2.84 |
 
-**Memory.** Started back to back through `run.bat qwen38-27b` on the same desktop. `run.bat`
-already transcodes upstream's embedding to 4 bits at load, so the saving is smaller than the file
+MTP acceptance is about 1-1.5% lower than upstream's, so its gain is smaller than DFlash2's.
+Before the small-T Q6 kernel, the 6-bit head's 8-token verify took 2.56 ms against 1.58 ms for
+upstream's 8-bit head and cancelled DFlash2's gain (−0.6% on the bench); with it the head reads
+at about 850 GB/s from 3 to 8 tokens.
+
+**Memory.** Started back to back through `run.bat qwen38-27b` on the same desktop. The earlier
+`run.bat` transcoded upstream's embedding to 4 bits at load, so the saving is smaller than the file
 size difference:
 
 | Profile | Upstream weights | This artifact | KV that fitted |
 |---|---:|---:|---|
-| DFlash2 (default, 172,032 requested) | 17.7 GiB | 17.0 GiB | 150,720 → 172,224 tokens |
+| DFlash2 (172,032 requested) | 17.7 GiB | 17.0 GiB | 150,720 → 172,224 tokens |
 | MTP3, two lanes, 262,144 | 15.7 GiB | 15.3 GiB | both full; free 822 MiB → 1.19 GiB |
+
+With the desktop holding 1.6 GiB, the DFlash2 profile starts at 188,416 tokens with 721 MiB free
+and is refused at 196,608, so `run.bat` now defaults to 188,416. `run.bat` no longer passes
+`--embedding-q4` or `--lm-head-q6`, which this artifact does not need; the upstream file therefore
+no longer fits the default profiles.
 
 **Smoke tests.** These all completed coherently:
 
