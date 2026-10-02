@@ -74,8 +74,9 @@ API key blank.
 
 ## Overrides
 
-Nothing here needs editing. `NINFER_SERVER`, `NINFER_MODEL_DIR`, `NINFER_MODEL`, `NINFER_HOST` and
-`NINFER_PORT` work for every profile.
+Nothing here needs editing. `NINFER_SERVER`, `NINFER_MODEL_DIR`, `NINFER_MODEL`, `NINFER_HOST`,
+`NINFER_PORT` and `NINFER_CHAT_TEMPLATE` (a local Jinja file, passed to `--chat-template`,
+overriding the artifact's built-in template) work for every profile.
 
 | profile | also reads |
 |---|---|

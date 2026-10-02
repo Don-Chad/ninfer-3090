@@ -74,7 +74,9 @@ API key blank.
 ## Overrides
 
 Nothing here needs editing. **Every** profile reads `NINFER_MODEL`, `NINFER_MODEL_DIR`,
-`NINFER_SERVER`, `NINFER_HOST` and `NINFER_PORT`. The default (`tuned`) profiles read more:
+`NINFER_SERVER`, `NINFER_HOST`, `NINFER_PORT` and `NINFER_CHAT_TEMPLATE` (a local Jinja file,
+passed to `--chat-template`, overriding the artifact's built-in template). The default (`tuned`)
+profiles read more:
 
 | profile | also reads |
 |---|---|

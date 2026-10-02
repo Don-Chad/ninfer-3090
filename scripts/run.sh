@@ -55,7 +55,9 @@
 # NINFER_FALLBACK=off turns the step-down off.
 #
 # OVERRIDES, from the environment. All profiles: NINFER_MODEL (artifact path), NINFER_MODEL_DIR,
-# NINFER_SERVER, NINFER_HOST, NINFER_PORT. `tuned` also: NINFER_CONTEXT, NINFER_CONCURRENCY,
+# NINFER_SERVER, NINFER_HOST, NINFER_PORT, NINFER_CHAT_TEMPLATE (path to a local Jinja file, passed
+# straight to --chat-template; overrides the artifact's built-in template). `tuned` also:
+# NINFER_CONTEXT, NINFER_CONCURRENCY,
 # NINFER_KV_CAPACITY, NINFER_KV_DTYPE, NINFER_SPEC, NINFER_DRAFT_TOKENS, NINFER_PREFILL_CHUNK,
 # NINFER_VISION (on|off), NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS. Each spec's defaults (context, lanes, chunk)
 # are the ones that fit; the context figures below are extrapolated for a headless card, so treat
@@ -243,6 +245,10 @@ if [[ "$profile" == 'tuned' ]]; then
   )
 fi
 
+if [[ -n "${NINFER_CHAT_TEMPLATE:-}" ]]; then
+  profile_args+=(--chat-template "$NINFER_CHAT_TEMPLATE")
+fi
+
 if [[ ! -x "$server" ]]; then
   printf 'Missing ninfer-serve (looked for %s)\n' "$server" >&2
   printf 'Build it first:  ./scripts/build.sh\n' >&2
@@ -259,6 +265,7 @@ printf '%s  |  %s\n' "$title" "$label"
 if [[ "$profile" == 'tuned' ]]; then
   printf 'Cache: 8 shared / 8 private / %s host states  |  automatic prefix grid on\n' "$HOST_STATE_SLOTS"
 fi
+[[ -z "${NINFER_CHAT_TEMPLATE:-}" ]] || printf 'Chat template: %s\n' "$NINFER_CHAT_TEMPLATE"
 [[ -z "${hint:-}" ]] || printf '%s\n' "$hint"
 printf 'API: http://%s:%s/v1\n\n' "$HOST" "$PORT"
 
