@@ -205,11 +205,13 @@ tokens, MTP3 with the draft head, rk8v4, arms interleaved in one sitting, three 
 
 The embedding costs nothing: its gather touches a handful of rows per step. The Q6 head measured
 above was slower at one lane because this shape had no Q6 decode kernel -- T <= 7 routed to the
-generic 8-row SIMT tiles. Since 2026-10-02 T = 1..4 take a per-row Q6 GEMV
-(`src/ops/linear/q6/q6_rowsplit_gemv.cu`) and T = 5..16 the 64-row MMA. On the head shape
+generic 8-row SIMT tiles. Since 2026-10-02 T = 1..2 take a per-row Q6 GEMV
+(`src/ops/linear/q6/q6_rowsplit_gemv.cu`) and T = 3..16 a small-T MMA
+(`src/ops/linear/q6/q6_small_t_mma.cu`). On the head shape
 (`bench/ops/linear_schedule_bench.cu q6:248320x5120`, sm_86) the GEMV runs 1159 us at T=1 against
-1381 us for the SIMT tile (857 GB/s), 1593 against 2509 us at T=4, and the MMA 2340 against 5209
-us at T=5. End to end, an artifact with a 6-bit head (plus 6-bit embedding and 4-bit mixer outputs
+1381 us for the SIMT tile (857 GB/s), and the small-T MMA holds 1154-1175 us from T=3 to T=8
+(T=4: 1651 for the GEMV; T=8: 2450 for the 64-row MMA it replaced, which had made a DFlash2 K=7
+verify about 1 ms slower than with the 8-bit head). End to end, an artifact with a 6-bit head (plus 6-bit embedding and 4-bit mixer outputs
 in layers 36-63) decodes 2.4% faster than today's 8-bit-head artifact at C1 and 2.1% faster under
 MTP3 (`ninfer_bench`, three interleaved rounds, int8 KV). The decode rows in the table above
 predate the GEMV and have not been re-run with `--lm-head-q6`.

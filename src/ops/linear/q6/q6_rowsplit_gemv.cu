@@ -1,11 +1,11 @@
-// Q6 row-split decode GEMV for one to four tokens.
+// Q6 row-split decode GEMV for one or two tokens.
 //
 // The 6-bit routes otherwise start at the 8-row SIMT tiles, which measured 2-5% slower C1 decode
 // than the Q8 head they would replace (docs/maintainer/quality-trade-experiments.md), so a 6-bit
 // vocabulary head read fewer bytes yet decoded no faster. This kernel follows the Q5 GEMV
 // (q5_rowsplit_gemv.cuh): one warp owns one output row and streams its 16-group tiles through a
 // cp.async ring, each lane decodes eight weights per step and the group scale is applied once per
-// group. Up to four tokens share each decoded weight, so a verify round reads the row once.
+// group. Up to two tokens share each decoded weight; from three, q6_small_t_mma.cu is faster.
 //
 // A tile is 16 groups: 512 code bytes (32 uint4, one per lane), 256 high-plane bytes (16 uint4)
 // and 32 scale bytes (2 uint4). A lane's eight weights are code-byte chunk `pos` of its group and
@@ -201,12 +201,6 @@ void launch_q6_gemv_t1(const Tensor& x, const Weight& w, Tensor& out, cudaStream
 }
 void launch_q6_gemv_t2(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
     launch<2>(x, w, out, stream);
-}
-void launch_q6_gemv_t3(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
-    launch<3>(x, w, out, stream);
-}
-void launch_q6_gemv_t4(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
-    launch<4>(x, w, out, stream);
 }
 
 } // namespace ninfer::ops::detail

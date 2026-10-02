@@ -4,15 +4,15 @@ namespace ninfer::ops::detail {
 
 Q6Launch select_q6_n248320_k5120(std::int32_t tokens) {
     // Swept on sm_86 2026-10-02 with bench/ops/linear_schedule_bench.cu q6:248320x5120 (cold,
-    // median of 20, us): the per-row GEMV against the 8-row SIMT tile it replaces,
-    //   T=1 1159 vs 1381   T=2 1170 vs 1619   T=3 1338 vs 2475   T=4 1593 vs 2509,
-    // T=1 streaming the 993 MB head at 857 GB/s. From T=5 the 64-row MMA holds at ~2.34 ms while
-    // the SIMT tiles the table used to pick ran 3.1-6.1 ms (T=5 2340 vs 5209, T=7 2380 vs 3106).
+    // median of 9-31, us). The per-row GEMV streams the 993 MB head at 857 GB/s at T=1 but grows
+    // with T (T=3 1382, T=4 1651); the small-T MMA is flat to T=8 and replaces both it and the
+    // 64-row MMA, which held ~2.4 ms from T=5 (T=4 1154 vs 1651, T=8 1175 vs 2450, T=16 1650 vs
+    // 2420). T=2 is a tie (GEMV 1143-1198, small-T 1157-1198) and T=1 stays on the GEMV (1160 vs
+    // 1304). A speculative verify is T=4 (MTP3) or T=8 (DFlash2 K=7).
     if (tokens == 1) return launch_q6_gemv_t1;
     if (tokens == 2) return launch_q6_gemv_t2;
-    if (tokens == 3) return launch_q6_gemv_t3;
-    if (tokens == 4) return launch_q6_gemv_t4;
-    if (tokens <= 16) return launch_q6_mma_r64_c16_k128;
+    if (tokens <= 8) return launch_q6_small_t_c8;
+    if (tokens <= 16) return launch_q6_small_t_c16;
     if (tokens <= 24) return launch_q6_mma_r64_c24_k128;
     if (tokens <= 32) return launch_q6_mma_r64_c32_k128;
     if (tokens <= 48) return launch_q6_mma_r64_c48_k128;

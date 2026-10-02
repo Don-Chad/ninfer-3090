@@ -295,20 +295,21 @@ void sweep_q5(const ninfer::bench::SweepOptions& base) {
 // --- Q6 ----------------------------------------------------------------------------------------
 //
 // The per-row GEMV is exact-T (one instantiation per token count); one candidate dispatches on T
-// so the sweep can offer it across its whole 1..4 domain.
+// so the sweep can offer it across its whole 1..2 domain.
 
 void q6_gemv(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
-    switch (x.ne[1]) {
-    case 1: detail::launch_q6_gemv_t1(x, w, out, stream); return;
-    case 2: detail::launch_q6_gemv_t2(x, w, out, stream); return;
-    case 3: detail::launch_q6_gemv_t3(x, w, out, stream); return;
-    default: detail::launch_q6_gemv_t4(x, w, out, stream); return;
+    if (x.ne[1] == 1) {
+        detail::launch_q6_gemv_t1(x, w, out, stream);
+    } else {
+        detail::launch_q6_gemv_t2(x, w, out, stream);
     }
 }
 
 std::vector<Candidate<detail::Q6Launch>> q6_candidates() {
     return {
-        {"gemv", q6_gemv, 4},
+        {"gemv", q6_gemv, 2},
+        {"small_t_c8", detail::launch_q6_small_t_c8, 8},
+        {"small_t_c16", detail::launch_q6_small_t_c16, 16},
         {"simt_r8_c4", detail::launch_q6_simt_r8_c4, 0},
         {"mma_r64_c16_k128", detail::launch_q6_mma_r64_c16_k128, 0},
         {"mma_r64_c32_k128", detail::launch_q6_mma_r64_c32_k128, 0},
