@@ -119,9 +119,9 @@ The platform guides cover GPU checks, Docker, native builds and model mounts:
 
 | Command (`run.bat` / `run.sh`) | Best for |
 |---|---|
-| `run qwen38-27b` | **Recommended.** Qwen3.8-27B, one user, DFlash2, cuBLAS prefill; 172K on Windows, 262K headless |
+| `run qwen38-27b` | **Recommended.** Qwen3.8-27B, one user, DFlash2, cuBLAS prefill; 188K on Windows, 262K headless |
 | `NINFER_SPEC=mtp` + `run qwen38-27b` | Qwen3.8-27B at the full 262K with two lanes, MTP3 instead of DFlash2 |
-| `run qwen36-35b-a3b` | Qwen3.6-35B-A3B at the full 262K, two lanes (Windows) or three (Linux), MTP3, vision |
+| `run qwen36-35b-a3b` | Qwen3.6-35B-A3B, MTP3, cuBLAS prefill, vision; 213K with two lanes on Windows, 262K with three on Linux |
 | `run qwen38-27b int8` | Reference profile: one user, INT8 KV (the quality default), 64K context |
 | `run qwen38-27b c8` | Reference profile: eight lanes at 8K, highest aggregate throughput |
 
