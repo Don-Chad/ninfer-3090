@@ -87,8 +87,11 @@ llama.cpp b11316 with the NInfer weights exported bit-exactly into Q8_0 blocks):
 |---|---:|
 | Upstream encoding and layout | 0.0376 |
 | This layout with a 6-bit embedding | 0.0304 |
-| This artifact (4-bit embedding) | not measured |
+| This artifact (4-bit embedding) | 0.0318 |
 | Unsloth UD-Q4_K_XL (llama.cpp formats, 17.56 GB of text weights) | 0.0156 |
+
+The 4-bit embedding costs Chinese Wikipedia (0.0794 → 0.0859) and chat (0.0355 → 0.0373) against
+a 6-bit one; English, arXiv and code streams are unchanged to the fourth decimal.
 
 Unsloth's UD-Q4_K_XL is still clearly better per byte. Their formats are not NInfer's, and
 about half of the gap is their per-tensor allocation, which needs kernel routes NInfer does not
