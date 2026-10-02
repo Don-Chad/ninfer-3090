@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 300" width="960" height="300" role="img"
-     aria-label="NInfer-3090 throughput on one RTX 3090: prefill 2,989 tok/s; decode one stream 187-295 tok/s; decode all lanes 383-523 tok/s">
+     aria-label="NInfer-3090 throughput on one RTX 3090: prefill 3,185 tok/s; decode one stream 140-295 tok/s; decode all lanes 383-477 tok/s">
   <title>NInfer-3090 throughput, one RTX 3090</title>
   <style>
     .nb-surface  { fill: #fcfcfb; }
@@ -35,7 +35,7 @@
   <text x="256" y="31" font-size="13" font-weight="600" class="nb-primary">Qwen3.6-35B-A3B &#8212; MoE</text>
 
   <!-- subtitle -->
-  <text x="36" y="50" font-size="12" class="nb-muted">tok/s on one RTX 3090 &#183; rk4v4 KV (measured at rk8v4/INT8, within &#177;1%)</text>
+  <text x="36" y="50" font-size="12" class="nb-muted">tok/s on one RTX 3090 &#183; 27B: this fork&#8217;s conversion, re-measured 2026-10-02 (8 chat prompts, INT8 KV; prefill rk4v4)</text>
 
   <line x1="36" y1="64" x2="924" y2="64" class="nb-hair" stroke-width="1"/>
 
@@ -45,9 +45,9 @@
     <line x1="56" y1="122" x2="56" y2="204" class="nb-baseline" stroke-width="1"/>
 
     <rect x="36" y="20" width="0" height="0" opacity="0"/>
-    <!-- dense: 2,989 tok/s, full scale -->
+    <!-- dense: 3,185 tok/s, full scale -->
     <rect x="56" y="128" width="190" height="22" rx="4" class="nb-s1"/>
-    <text x="256" y="143" font-size="13" class="nb-secondary">2,989 tok/s</text>
+    <text x="256" y="143" font-size="13" class="nb-secondary">3,185 tok/s</text>
     <text x="256" y="158" font-size="10" class="nb-muted">opt-in cuBLAS route</text>
 
     <!-- MoE: not yet measured -->
@@ -61,10 +61,10 @@
     <text x="340" y="112" font-size="15" font-weight="600" class="nb-primary">Decode &#183; one stream</text>
     <line x1="360" y1="122" x2="360" y2="204" class="nb-baseline" stroke-width="1"/>
 
-    <!-- dense: 187 tok/s (of 295 max) -->
-    <rect x="360" y="128" width="120" height="22" rx="4" class="nb-s1"/>
-    <text x="490" y="143" font-size="13" class="nb-secondary">187 tok/s</text>
-    <text x="490" y="158" font-size="10" class="nb-muted">DFlash2</text>
+    <!-- dense: 140 tok/s (of 295 max) -->
+    <rect x="360" y="128" width="90" height="22" rx="4" class="nb-s1"/>
+    <text x="460" y="143" font-size="13" class="nb-secondary">140 tok/s</text>
+    <text x="460" y="158" font-size="10" class="nb-muted">DFlash2</text>
 
     <!-- MoE: 295 tok/s (max) -->
     <rect x="360" y="168" width="190" height="22" rx="4" class="nb-s2"/>
@@ -77,15 +77,15 @@
     <text x="644" y="112" font-size="15" font-weight="600" class="nb-primary">Decode &#183; all lanes (max)</text>
     <line x1="664" y1="122" x2="664" y2="204" class="nb-baseline" stroke-width="1"/>
 
-    <!-- dense: 523 tok/s (max) -->
+    <!-- dense: 477 tok/s (max) -->
     <rect x="664" y="128" width="190" height="22" rx="4" class="nb-s1"/>
-    <text x="864" y="143" font-size="13" class="nb-secondary">523 tok/s</text>
+    <text x="864" y="143" font-size="13" class="nb-secondary">477 tok/s</text>
     <text x="864" y="158" font-size="10" class="nb-muted">C8 &#183; MTP3</text>
 
-    <!-- MoE: 383 tok/s (of 523 max) -->
-    <rect x="664" y="168" width="139" height="22" rx="4" class="nb-s2"/>
-    <text x="813" y="183" font-size="13" class="nb-secondary">383 tok/s</text>
-    <text x="813" y="198" font-size="10" class="nb-muted">C6 &#183; MTP3</text>
+    <!-- MoE: 383 tok/s (of 477 max) -->
+    <rect x="664" y="168" width="153" height="22" rx="4" class="nb-s2"/>
+    <text x="827" y="183" font-size="13" class="nb-secondary">383 tok/s</text>
+    <text x="827" y="198" font-size="10" class="nb-muted">C6 &#183; MTP3</text>
   </g>
 
   <!-- footer -->

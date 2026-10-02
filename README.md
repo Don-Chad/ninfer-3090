@@ -18,15 +18,26 @@ concurrent cohorts through **C8**.
 | | Qwen3.8-27B (dense) | Qwen3.6-35B-A3B (MoE) |
 |---|---:|---:|
 | **Max context** | **262,144** tokens (native) | **262,144** tokens (native), shared by 3 lanes |
-| **Prefill**, 4K prompt | **2,989 tok/s** | not yet measured on a 3090 |
-| **Decode**, one stream | **187 tok/s** (DFlash2) | **295 tok/s** (MTP3 + draft head) |
-| **Decode**, all lanes | **523 tok/s** at C8 (MTP3) | **383 tok/s** at C6 (MTP3) |
+| **Prefill**, 4K prompt | **3,185 tok/s** | not yet measured on a 3090 |
+| **Decode**, one stream | **140 tok/s** (DFlash2) | **295 tok/s** (MTP3 + draft head) |
+| **Decode**, all lanes | **477 tok/s** at C8 (MTP3) | **383 tok/s** at C6 (MTP3) |
 
-The speed rows were measured with INT8 or `rk8v4` KV; `rk4v4` prefills and decodes within ±1% of
-both. The 27B's 262,144 was measured with MTP3 and the draft head; the default DFlash2 profile
-reaches it on a headless card by extrapolation and steps down if refused. Prefill uses the opt-in
-cuBLAS route the launcher enables (+0.156% perplexity; 1,649 tok/s without it). Sources and
-conditions are in [Performance on an RTX 3090](#performance-on-an-rtx-3090).
+The 27B speed rows were re-measured on 2026-10-02 for the 3090 conversion `download-model` now
+fetches, in one sitting with upstream's artifact on the same binaries. Decode is
+`tools/bench/run_chat_decode.py` on syv-ai's eight thinking-off prompts (1,024 tokens, INT8 KV,
+greedy), where upstream's artifact gives 127 tok/s at C1 and 482 at C8; prefill is `ninfer_bench`
+pp4096 on the cuBLAS route the launcher enables, `rk4v4` KV (upstream 3,196, a tie; +0.156%
+perplexity for the route). The earlier 187 and 523 came from runs whose workload was not recorded
+and that this harness does not reproduce on either artifact. The 35B column was not re-measured.
+The 27B's 262,144 was measured with MTP3 and the draft head; the default DFlash2 profile reaches it
+on a headless card by extrapolation and steps down if refused. Sources and conditions are in
+[Performance on an RTX 3090](#performance-on-an-rtx-3090).
+
+![Qwen3.8-27B: upstream artifact vs this fork's 3090 conversion](docs/assets/qwen38-artifact-gains.svg)
+
+The default 27B is this fork's own conversion ([model card](model-cards/Qwen3.8-27B-NInfer-3090/README.md)):
+an importance-weighted encoder with signed scales and fewer bytes per decoded token, for a smaller
+file, output closer to full precision, and faster decode on the same card.
 
 The goal is the most rippin' Qwen inference stack for the 3000 series. It is a community project
 maintained on a best-effort basis: issues and PRs are very welcome, but support and feature
@@ -384,7 +395,8 @@ under `docs/performance/` were measured on an RTX 5090 and are not a statement a
 ### Qwen3.8-27B
 
 **Decode by speculative backend and concurrency.** Aggregate decode tok/s through the serving
-route, thinking off, greedy:
+route, thinking off, greedy; measured 2026-09-19 on upstream's artifact with a workload that was not
+recorded (the headline table above is the reproducible re-measurement):
 
 | C | MTP3 | DFlash2 K=7 | change |
 |---:|---:|---:|---:|
@@ -399,8 +411,9 @@ cohort batching speeds up decode but not prompt ingestion.
 
 **Against vLLM on the same card.** On the eight thinking-off prompts of
 [syv-ai/qwen38-27b-rtx3090](https://github.com/syv-ai/qwen38-27b-rtx3090) with MTP3 and INT8 KV,
-NInfer decodes 113.2 tok/s at C1 and 460.4 at C8, against the 111-124 and 407.3 that project
-reports for patched vLLM. Their card is capped at 250 W against this one's 350 W and they report 5-8%
+NInfer decodes 118.9 tok/s at C1 and 477 at C8 with the default 27B artifact (2026-10-02;
+upstream's artifact on the same binaries: 112.7 and 482), against the 111-124 and 407.3 that
+project reports for patched vLLM. Their card is capped at 250 W against this one's 350 W and they report 5-8%
 run-to-run spread, so C1 is parity and C8 a lead, measured on different machines. That comparison
 predates DFlash2 and the cuBLAS prefill route.
 

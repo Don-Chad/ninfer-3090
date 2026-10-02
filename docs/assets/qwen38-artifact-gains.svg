@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 360" width="960" height="360" role="img"
+     aria-label="Qwen3.8-27B, upstream artifact against this fork's: file 20.44 to 18.98 GB; KL divergence 0.0376 to 0.0318; held-out perplexity 4.340 to 4.318; DFlash2 decode 125.9 to 133.5 tok/s on chat and 82.5 to 89.8 tok/s at 133K context; Windows DFlash2 context 172,032 to 188,416 tokens">
+  <title>Qwen3.8-27B: upstream artifact vs this fork's 3090 conversion</title>
+  <style>
+    .nb-surface  { fill: #fcfcfb; }
+    .nb-border   { stroke: rgba(11,11,11,0.10); }
+    .nb-primary  { fill: #0b0b0b; }
+    .nb-secondary{ fill: #52514e; }
+    .nb-muted    { fill: #898781; }
+    .nb-hair     { stroke: #e1e0d9; }
+    .nb-baseline { stroke: #c3c2b7; }
+    .nb-old      { fill: #c3c2b7; }
+    .nb-new      { fill: #2a78d6; }
+    .nb-good     { fill: #1f8a4c; }
+    text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    @media (prefers-color-scheme: dark) {
+      .nb-surface  { fill: #1a1a19; }
+      .nb-border   { stroke: rgba(255,255,255,0.10); }
+      .nb-primary  { fill: #ffffff; }
+      .nb-secondary{ fill: #c3c2b7; }
+      .nb-muted    { fill: #898781; }
+      .nb-hair     { stroke: #2c2c2a; }
+      .nb-baseline { stroke: #383835; }
+      .nb-old      { fill: #4a4a46; }
+      .nb-new      { fill: #3987e5; }
+      .nb-good     { fill: #4cc27f; }
+    }
+  </style>
+
+  <rect x="1" y="1" width="958" height="358" rx="16" class="nb-surface nb-border" stroke-width="1"/>
+
+  <text x="36" y="38" font-size="17" font-weight="650" class="nb-primary">Qwen3.8-27B: smaller, closer to full precision, faster</text>
+  <rect x="604" y="25" width="14" height="14" rx="3" class="nb-old"/>
+  <text x="624" y="36" font-size="12" class="nb-secondary">upstream artifact</text>
+  <rect x="744" y="25" width="14" height="14" rx="3" class="nb-new"/>
+  <text x="764" y="36" font-size="12" class="nb-secondary">this fork's 3090 conversion</text>
+  <text x="36" y="58" font-size="12" class="nb-muted">Same model and container; importance-weighted encoder, signed scales, fewer bytes per token. One RTX 3090, same binaries.</text>
+  <line x1="36" y1="72" x2="924" y2="72" class="nb-hair" stroke-width="1"/>
+
+  <!-- Panel 1: size (lower is better) -->
+  <g>
+    <text x="36" y="104" font-size="14" font-weight="600" class="nb-primary">Artifact size</text>
+    <text x="36" y="120" font-size="11" class="nb-muted">GB on disk &#183; lower is better</text>
+    <line x1="36" y1="132" x2="36" y2="200" class="nb-baseline" stroke-width="1"/>
+    <rect x="36" y="138" width="150" height="22" rx="4" class="nb-old"/>
+    <text x="194" y="153" font-size="12" class="nb-secondary">20.44</text>
+    <rect x="36" y="170" width="139" height="22" rx="4" class="nb-new"/>
+    <text x="183" y="185" font-size="12" font-weight="600" class="nb-primary">18.98</text>
+    <text x="36" y="230" font-size="20" font-weight="700" class="nb-good">&#8722;7.1%</text>
+    <text x="36" y="248" font-size="11" class="nb-muted">0.7 GiB less on the device</text>
+    <text x="36" y="262" font-size="11" class="nb-muted">under DFlash2 (17.7 &#8594; 17.0)</text>
+  </g>
+
+  <!-- Panel 2: quality (lower is better) -->
+  <g>
+    <text x="264" y="104" font-size="14" font-weight="600" class="nb-primary">Distance from Q8_0</text>
+    <text x="264" y="120" font-size="11" class="nb-muted">mean KL divergence &#183; lower is better</text>
+    <line x1="264" y1="132" x2="264" y2="200" class="nb-baseline" stroke-width="1"/>
+    <rect x="264" y="138" width="150" height="22" rx="4" class="nb-old"/>
+    <text x="422" y="153" font-size="12" class="nb-secondary">0.0376</text>
+    <rect x="264" y="170" width="127" height="22" rx="4" class="nb-new"/>
+    <text x="399" y="185" font-size="12" font-weight="600" class="nb-primary">0.0318</text>
+    <text x="264" y="230" font-size="20" font-weight="700" class="nb-good">&#8722;15%</text>
+    <text x="264" y="248" font-size="11" class="nb-muted">perplexity &#8722;0.50% held-out,</text>
+    <text x="264" y="262" font-size="11" class="nb-muted">&#8722;0.93% on the inherited corpus</text>
+  </g>
+
+  <!-- Panel 3: decode speed (higher is better) -->
+  <g>
+    <text x="492" y="104" font-size="14" font-weight="600" class="nb-primary">Decode, DFlash2 K=7</text>
+    <text x="492" y="120" font-size="11" class="nb-muted">tok/s, one stream &#183; higher is better</text>
+    <line x1="492" y1="140" x2="492" y2="204" class="nb-baseline" stroke-width="1"/>
+    <text x="498" y="139" font-size="10" class="nb-muted">chat (24 prompts)</text>
+    <rect x="492" y="143" width="141" height="10" rx="3" class="nb-old"/>
+    <rect x="492" y="155" width="150" height="10" rx="3" class="nb-new"/>
+    <text x="650" y="164" font-size="11" class="nb-secondary">125.9 &#8594; <tspan font-weight="600" class="nb-primary">133.5</tspan></text>
+    <text x="498" y="181" font-size="10" class="nb-muted">133K-token context</text>
+    <rect x="492" y="185" width="138" height="10" rx="3" class="nb-old"/>
+    <rect x="492" y="197" width="150" height="10" rx="3" class="nb-new"/>
+    <text x="650" y="206" font-size="11" class="nb-secondary">82.5 &#8594; <tspan font-weight="600" class="nb-primary">89.8</tspan></text>
+    <text x="492" y="230" font-size="20" font-weight="700" class="nb-good">+6.1% &#183; +8.8%</text>
+    <text x="492" y="248" font-size="11" class="nb-muted">MTP3 +3.5%, plain decode +4.5%</text>
+    <text x="492" y="262" font-size="11" class="nb-muted">prefill unchanged</text>
+  </g>
+
+  <!-- Panel 4: context (higher is better) -->
+  <g>
+    <text x="736" y="104" font-size="14" font-weight="600" class="nb-primary">DFlash2 context</text>
+    <text x="736" y="120" font-size="11" class="nb-muted">Windows default, tokens</text>
+    <line x1="736" y1="132" x2="736" y2="200" class="nb-baseline" stroke-width="1"/>
+    <rect x="736" y="138" width="137" height="22" rx="4" class="nb-old"/>
+    <text x="736" y="153" font-size="12" dx="6" class="nb-primary">172,032</text>
+    <rect x="736" y="170" width="150" height="22" rx="4" class="nb-new"/>
+    <text x="736" y="185" font-size="12" dx="6" font-weight="600" fill="#ffffff">188,416</text>
+    <text x="736" y="230" font-size="20" font-weight="700" class="nb-good">+16,384</text>
+    <text x="736" y="248" font-size="11" class="nb-muted">starts beside a desktop</text>
+    <text x="736" y="262" font-size="11" class="nb-muted">holding 1.6 GiB</text>
+  </g>
+
+  <line x1="36" y1="280" x2="924" y2="280" class="nb-hair" stroke-width="1"/>
+  <text x="36" y="304" font-size="11" class="nb-muted">KL divergence vs Unsloth's Q8_0 on a held-out corpus (Wikipedia en/zh, arXiv, GitHub, own code, chat), llama.cpp with the weights exported bit-exactly.</text>
+  <text x="36" y="320" font-size="11" class="nb-muted">Speed: greedy, thinking off, interleaved A/B; the 133K row has identical acceptance in both. Unsloth's UD-Q4_K_XL still measures 0.0156.</text>
+  <text x="36" y="342" font-size="11" class="nb-muted">Sources: model-cards/Qwen3.8-27B-NInfer-3090 and PR #159.</text>
+  <text x="924" y="342" font-size="11" text-anchor="end" class="nb-muted">ashalliants/ninfer-3090</text>
+</svg>
