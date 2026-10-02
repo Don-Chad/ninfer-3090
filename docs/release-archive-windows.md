@@ -52,7 +52,7 @@ For the Qwen3.6-35B-A3B MoE instead, which serves more lanes:
 
 ```powershell
 .\download-model.bat qwen36-35b-a3b    # ~21 GB, resumable, verifies size and SHA256
-.\run.bat qwen36-35b-a3b               # two lanes sharing 262,144 tokens, MTP3 + draft head, vision
+.\run.bat qwen36-35b-a3b               # two lanes sharing 212,992 tokens, MTP3 + draft head, cuBLAS prefill, vision
 ```
 
 The endpoint is OpenAI-compatible, so anything that speaks `/v1/chat/completions` works. Leave the

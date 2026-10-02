@@ -191,13 +191,13 @@ expect_flags '27B c8' "$recorded" '--max-concurrency 8' '--max-context 8192' '--
   '--max-private-continuations 16' '--device-state-slots 8' '--host-state-slots 16'
 refuse_flag '27B c8' "$recorded" '--auto-prefix-grid'
 
-# Qwen3.6-35B-A3B `tuned`: MoE, so no cuBLAS route and no Q4 embedding; its own draft head flags.
+# Qwen3.6-35B-A3B `tuned`: the cuBLAS prefill route at chunk 4096 (it engages on the 35B's dense
+# projections from chunk 2048), no Q4 embedding, and its own draft head flags.
 recorded="$(record 35b -- qwen36-35b-a3b)"
 expect_flags '35B default' "$recorded" \
   '--spec mtp --draft-tokens 3 --lm-head-draft --mtp-experts-q4' \
-  '--kv-dtype rk4v4' '--gdn-state-fp16' '--prefill-chunk 512' \
+  '--kv-dtype rk4v4' '--gdn-state-fp16' '--prefill-cublas --prefill-chunk 4096' \
   '--vision --vision-residency overlay' '--max-context 262144' '--max-concurrency 3' '--auto-prefix-grid'
-refuse_flag '35B default' "$recorded" '--prefill-cublas'
 refuse_flag '35B default' "$recorded" '--embedding-q4'
 recorded="$(record 35bnone NINFER_SPEC=none -- qwen36-35b-a3b)"
 refuse_flag '35B NINFER_SPEC=none' "$recorded" '--spec'

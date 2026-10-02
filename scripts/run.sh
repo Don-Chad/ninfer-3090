@@ -168,12 +168,14 @@ case "$model_key/$profile" in
     CONCURRENCY="${NINFER_CONCURRENCY:-3}"
     KV_CAPACITY="${NINFER_KV_CAPACITY:-$CONTEXT}"
     KV_DTYPE="${NINFER_KV_DTYPE:-rk4v4}"
-    PREFILL_CHUNK="${NINFER_PREFILL_CHUNK:-512}"
+    # cuBLAS prefill at chunk 4096: 8,848 tok/s on a 4K prompt against 5,470 at the old
+    # default-route chunk 512 (2026-10-02), for about 240 MiB more workspace.
+    PREFILL_CHUNK="${NINFER_PREFILL_CHUNK:-4096}"
     profile_args=(
       --max-concurrency "$CONCURRENCY" --max-context "$CONTEXT" --kv-capacity "$KV_CAPACITY"
       --kv-dtype "$KV_DTYPE"
       ${spec_args[@]+"${spec_args[@]}"}
-      --gdn-state-fp16 --prefill-chunk "$PREFILL_CHUNK"
+      --gdn-state-fp16 --prefill-cublas --prefill-chunk "$PREFILL_CHUNK"
     )
     label="C$CONCURRENCY  |  context $CONTEXT  |  KV pool $KV_CAPACITY  |  $KV_DTYPE  |  $spec_label" ;;
 

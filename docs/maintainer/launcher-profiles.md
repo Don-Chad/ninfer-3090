@@ -9,7 +9,7 @@ run.sh <model> [profile]
 | model | profiles | default profile on Linux | on Windows |
 |---|---|---|---|
 | `qwen38-27b` | `tuned`, `int8`, `c8` | DFlash2, one lane, 262,144 tokens | DFlash2, one lane, 188,416 tokens |
-| `qwen36-35b-a3b` | `tuned` | MTP3, three lanes, 262,144-token pool | MTP3, two lanes, 262,144-token pool |
+| `qwen36-35b-a3b` | `tuned` | MTP3, three lanes, 262,144-token pool, cuBLAS prefill | MTP3, two lanes, 212,992-token pool, cuBLAS prefill |
 
 Lanes share one KV pool: `--kv-capacity` is the pool and `--max-context` the per-request cap, and
 the `tuned` profiles set both to the same value. Any one request can use the whole context, but the

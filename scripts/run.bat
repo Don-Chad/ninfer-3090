@@ -223,15 +223,21 @@ if /i "%SPEC%"=="dflash2" set "HINT=Need the full 262K context or a second lane?
 goto :profile_tuned_common
 
 :profile_35b_tuned
-rem rk4v4 KV fits the full native context with two lanes beside a desktop (three measured to start,
-rem 2026-09-24; rk8v4 managed 147,456 with one). DFlash2 is a 27B-only backend. Lanes share the
+rem rk4v4 KV fits the full native context with two lanes beside a desktop on the default prefill
+rem route (three measured to start, 2026-09-24; rk8v4 managed 147,456 with one); the cuBLAS route
+rem below trades some of it for prefill speed. DFlash2 is a 27B-only backend. Lanes share the
 rem one --kv-capacity pool: any request may use all 262,144 tokens, but the lanes' requests together
 rem hold at most that many at a time.
 set "SPEC=mtp"
 if not "%NINFER_SPEC%"=="" set "SPEC=%NINFER_SPEC%"
-set "CONTEXT=262144"
+rem cuBLAS prefill at chunk 4096: 8,848 tok/s on a 4K prompt against 5,470 at the old default-route
+rem chunk 512 (2026-10-02). Its larger runtime reservation is what costs context: beside a desktop
+rem holding 1.3 GiB the old profile started at 262,144 with 154 MiB free, while this one is refused
+rem at 229,376 (27 MB short) and starts at 212,992 with 220 MiB free, so that is the default. For
+rem the full 262,144, set NINFER_PREFILL_CHUNK=1024 (7,140 tok/s, fits with 138 MiB free).
+set "CONTEXT=212992"
 set "CONCURRENCY=2"
-set "PREFILL_CHUNK=512"
+set "PREFILL_CHUNK=4096"
 set "DRAFT_TOKENS=3"
 if /i "%SPEC%"=="mtp" goto :spec35_mtp
 if /i "%SPEC%"=="none" goto :spec35_none
@@ -253,7 +259,7 @@ if not "%NINFER_PREFILL_CHUNK%"=="" set "PREFILL_CHUNK=%NINFER_PREFILL_CHUNK%"
 set "SPEC_ARGS="
 if /i "%SPEC%"=="mtp" set "SPEC_ARGS=--spec mtp --draft-tokens %DRAFT_TOKENS% --lm-head-draft --mtp-experts-q4"
 if /i "%SPEC%"=="mtp" set "SPEC_LABEL=MTP%DRAFT_TOKENS% + draft head"
-set "PROFILE_ARGS=--max-concurrency %CONCURRENCY% --max-context %CONTEXT% --kv-capacity %CONTEXT% --kv-dtype %KV_DTYPE% %SPEC_ARGS% --gdn-state-fp16 --prefill-chunk %PREFILL_CHUNK%"
+set "PROFILE_ARGS=--max-concurrency %CONCURRENCY% --max-context %CONTEXT% --kv-capacity %CONTEXT% --kv-dtype %KV_DTYPE% %SPEC_ARGS% --gdn-state-fp16 --prefill-cublas --prefill-chunk %PREFILL_CHUNK%"
 set "LABEL=C%CONCURRENCY%  ^|  context %CONTEXT%  ^|  %KV_DTYPE% KV  ^|  %SPEC_LABEL%"
 goto :profile_tuned_common
 

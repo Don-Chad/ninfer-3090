@@ -18,7 +18,7 @@ concurrent cohorts through **C8**.
 | | Qwen3.8-27B (dense) | Qwen3.6-35B-A3B (MoE) |
 |---|---:|---:|
 | **Max context** | **262,144** tokens (native) | **262,144** tokens (native), shared by 3 lanes |
-| **Prefill**, 4K prompt | **3,185 tok/s** | **5,470 tok/s** (8,848 with `--prefill-cublas`) |
+| **Prefill**, 4K prompt | **3,185 tok/s** | **8,848 tok/s** |
 | **Decode**, one stream | **140 tok/s** (DFlash2) | **295 tok/s** (MTP3 + draft head) |
 | **Decode**, all lanes | **477 tok/s** at C8 (MTP3) | **383 tok/s** at C6 (MTP3) |
 
@@ -28,7 +28,7 @@ fetches, in one sitting with upstream's artifact on the same binaries. Decode is
 greedy), where upstream's artifact gives 127 tok/s at C1 and 482 at C8; prefill is `ninfer_bench`
 pp4096 on the cuBLAS route the launcher enables, `rk4v4` KV (upstream 3,196, a tie; +0.156%
 perplexity for the route). The earlier 187 and 523 came from runs whose workload was not recorded
-and that this harness does not reproduce on either artifact. The 35B prefill was measured the same day with its launcher settings (default route, chunk 512, `rk4v4`); its decode rows were not re-measured.
+and that this harness does not reproduce on either artifact. The 35B prefill was measured the same day with its launcher settings (cuBLAS route, chunk 4096, `rk4v4`; 5,470 tok/s on the previous default-route chunk 512); its decode rows were not re-measured.
 The 27B's 262,144 was measured with MTP3 and the draft head; the default DFlash2 profile reaches it
 on a headless card by extrapolation and steps down if refused. Sources and conditions are in
 [Performance on an RTX 3090](#performance-on-an-rtx-3090).
@@ -226,14 +226,16 @@ device, and the price of 98.3% prefix reuse. Lower it if the box is short on RAM
 
 ### Qwen3.6-35B-A3B
 
-The MoE alternative, for more lanes. The launchers run the native 262,144-token maximum with `rk4v4` KV (twice INT8's context per GiB
-for +0.21% perplexity), MTP3 speculation plus the draft head, and vision, all at once:
+The MoE alternative, for more lanes. The launchers run `rk4v4` KV (twice INT8's context per GiB for
++0.21% perplexity), MTP3 speculation plus the draft head, vision, and since 2026-10-02 the cuBLAS
+prefill route at chunk 4096 (8,848 tok/s on a 4K prompt, against 5,470 on the old default route at
+chunk 512). That route's larger runtime reservation costs context beside a desktop:
 
 | Profile (`rk4v4`, MTP3 + draft, vision) | lanes | context | starts beside a desktop |
 |---|---|---|---|
-| **Linux — default** | 3 | 262,144 | yes (measured) |
-| **Windows — default** | 2 | 262,144 | yes (measured) |
-| `NINFER_CONCURRENCY=3` on Windows | 3 | 262,144 | yes, 24.0 of 24.5 GiB used |
+| **Linux — default** | 3 | 262,144 | not re-measured with the cuBLAS route; steps down if refused |
+| **Windows — default** | 2 | 212,992 | yes, 220 MiB free (229,376 refused, 27 MB short) |
+| `NINFER_PREFILL_CHUNK=1024` on Windows | 2 | 262,144 | yes, 138 MiB free; 7,140 tok/s prefill, default route |
 | `NINFER_CONCURRENCY=4` | 4 | 262,144 | no, 48 MB short; a headless card should fit |
 
 Measured 2026-09-24. With `rk8v4` the same profile needed the ~1.5 GiB a desktop holds, so Windows
