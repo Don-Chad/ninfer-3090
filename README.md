@@ -172,11 +172,11 @@ The default is the fast profile — about 1.7x the previous prefill and 1.39x th
 
 ```
 --spec dflash2 --draft-tokens 7 --lm-head-draft --prefill-cublas --prefill-chunk 4096
---kv-dtype rk4v4 --embedding-q4 --gdn-state-fp16 --vision --vision-residency overlay
+--kv-dtype rk4v4 --gdn-state-fp16 --vision --vision-residency overlay
 ```
 
-`NINFER_SPEC=mtp` swaps to `--spec mtp --draft-tokens 3`, `--prefill-chunk 2048` and adds
-`--lm-head-q6`, which runs the full 262,144 tokens with two lanes sharing the pool:
+`NINFER_SPEC=mtp` swaps to `--spec mtp --draft-tokens 3` and `--prefill-chunk 2048`, which runs
+the full 262,144 tokens with two lanes sharing the pool:
 
 | Profile | lanes | context | KV | measured beside a desktop |
 |---|---|---|---|---|
@@ -186,14 +186,16 @@ The default is the fast profile — about 1.7x the previous prefill and 1.39x th
 | `int8` | 1 | 65,536 | int8 | 2.85 GiB left unused |
 
 DFlash2 takes one lane because its advantage is largest at one stream (+38.6% decode at C1, +31.6%
-at C2), and its draft weights and its refusal of `--lm-head-q6` use the ~1.45 GB that the full
-context needs beside a desktop. The 27B is tighter than the 35B-A3B because of the model, not the
+at C2), and its draft weights use most of the ~1.45 GB that the full context needs beside a
+desktop. The 27B is tighter than the 35B-A3B because of the model, not the
 tuning: 16 full-attention layers × 4 KV heads × 256 head_dim is **3.2× the KV per token** of the
 35B-A3B's 10 × 2 × 256. The linear memory model behind these contexts is in
 [launcher profiles](docs/maintainer/launcher-profiles.md#qwen38-27b-tuned).
 
-`--embedding-q4` (Q4 token embedding, -644 MiB of weights) and `--gdn-state-fp16` (FP16 recurrent
-state, -72 MiB per device state slot) are both measured free on quality. The 27B's StateImage is
+The default Qwen3.8-27B artifact stores its token embedding as Q4 and its head as Q6, so the
+`--embedding-q4` and `--lm-head-q6` load-time transcodes the upstream file needed are not passed.
+`--gdn-state-fp16` (FP16 recurrent state, -72 MiB per device state slot) is measured free on
+quality. The 27B's StateImage is
 74.5 MiB with the FP16 state, so `--host-state-slots 32` pins **2.34 GiB of host RAM** — host, not
 device, and the price of 98.3% prefix reuse. Lower it if the box is short on RAM.
 

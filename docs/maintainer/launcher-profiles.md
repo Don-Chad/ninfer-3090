@@ -30,9 +30,15 @@ carries the context, lane count and prefill chunk that fit it:
 
 | `NINFER_SPEC` | flags | context (Linux / Windows) | lanes (Linux / Windows) |
 |---|---|---|---|
-| `dflash2` (default) | `--spec dflash2 --draft-tokens 7 --lm-head-draft --prefill-cublas --prefill-chunk 4096 --kv-dtype rk4v4 --embedding-q4 --gdn-state-fp16 --vision --vision-residency overlay` | 262,144 / 172,032 | 1 / 1 |
-| `mtp` | `--spec mtp --draft-tokens 3 --lm-head-draft --prefill-cublas --prefill-chunk 2048 --kv-dtype rk4v4 --embedding-q4 --lm-head-q6 --gdn-state-fp16 --vision --vision-residency overlay` | 262,144 / 262,144 | 2 / 2 |
-| `none` | the `mtp` set without speculation or `--lm-head-q6` | 262,144 / 262,144 | 2 / 2 |
+| `dflash2` (default) | `--spec dflash2 --draft-tokens 7 --lm-head-draft --prefill-cublas --prefill-chunk 4096 --kv-dtype rk4v4 --gdn-state-fp16 --vision --vision-residency overlay` | 262,144 / 172,032 | 1 / 1 |
+| `mtp` | `--spec mtp --draft-tokens 3 --lm-head-draft --prefill-cublas --prefill-chunk 2048 --kv-dtype rk4v4 --gdn-state-fp16 --vision --vision-residency overlay` | 262,144 / 262,144 | 2 / 2 |
+| `none` | the `mtp` set without speculation | 262,144 / 262,144 | 2 / 2 |
+
+The default artifact (`download-model qwen38-27b`) stores the token embedding as Q4 and the head as
+Q6, so none of the variants pass the `--embedding-q4` or `--lm-head-q6` load-time transcodes. The
+memory measurements below were taken with the upstream artifact: for `mtp` and `none` its
+transcodes left the same formats on the device, while under `dflash2` its head stayed Q8, so the
+DFlash2 figures overstate today's weights by about 0.7 GiB.
 
 The first is the fastest at one stream (prefill about 1.7x and decode about 1.39x the previous
 defaults) and the second is the full context with a second lane, still fast. The Qwen3.6-35B-A3B
