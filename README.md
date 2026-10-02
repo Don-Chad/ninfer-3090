@@ -18,7 +18,7 @@ concurrent cohorts through **C8**.
 | | Qwen3.8-27B (dense) | Qwen3.6-35B-A3B (MoE) |
 |---|---:|---:|
 | **Max context** | **262,144** tokens (native) | **262,144** tokens (native), shared by 3 lanes |
-| **Prefill**, 4K prompt | **3,185 tok/s** | not yet measured on a 3090 |
+| **Prefill**, 4K prompt | **3,185 tok/s** | **5,470 tok/s** (8,848 with `--prefill-cublas`) |
 | **Decode**, one stream | **140 tok/s** (DFlash2) | **295 tok/s** (MTP3 + draft head) |
 | **Decode**, all lanes | **477 tok/s** at C8 (MTP3) | **383 tok/s** at C6 (MTP3) |
 
@@ -28,7 +28,7 @@ fetches, in one sitting with upstream's artifact on the same binaries. Decode is
 greedy), where upstream's artifact gives 127 tok/s at C1 and 482 at C8; prefill is `ninfer_bench`
 pp4096 on the cuBLAS route the launcher enables, `rk4v4` KV (upstream 3,196, a tie; +0.156%
 perplexity for the route). The earlier 187 and 523 came from runs whose workload was not recorded
-and that this harness does not reproduce on either artifact. The 35B column was not re-measured.
+and that this harness does not reproduce on either artifact. The 35B prefill was measured the same day with its launcher settings (default route, chunk 512, `rk4v4`); its decode rows were not re-measured.
 The 27B's 262,144 was measured with MTP3 and the draft head; the default DFlash2 profile reaches it
 on a headless card by extrapolation and steps down if refused. Sources and conditions are in
 [Performance on an RTX 3090](#performance-on-an-rtx-3090).
