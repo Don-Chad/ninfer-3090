@@ -1,5 +1,11 @@
 # NInfer-3090
 
+[![Release](https://img.shields.io/github/v/release/ashalliants/ninfer-3090?label=release&color=2a78d6)](https://github.com/ashalliants/ninfer-3090/releases/latest)
+[![License](https://img.shields.io/github/license/ashalliants/ninfer-3090?color=2a78d6)](LICENSE)
+[![Host checks](https://github.com/ashalliants/ninfer-3090/actions/workflows/host-checks.yml/badge.svg)](https://github.com/ashalliants/ninfer-3090/actions/workflows/host-checks.yml)
+
+![NInfer-3090 throughput on one RTX 3090](docs/assets/perf-banner.svg)
+
 NInfer-3090 is a specialized C++20/CUDA inference engine for **Qwen3.8-27B** and Qwen3.6 on one
 24 GB NVIDIA GeForce RTX 3090, or split as a pipeline across several GPUs on Linux. The native SM86
 runtime loads the official groupwise `.ninfer` artifacts, serves OpenAI- and Anthropic-compatible
