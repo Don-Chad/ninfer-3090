@@ -149,6 +149,8 @@ void sweep_q4(std::int32_t kHidden, const ninfer::bench::SweepOptions& base) {
 
     const std::vector<std::pair<const char*, detail::Q4LinearAddLaunch>> named{
         {"gemv", &detail::q4_linear_add_gemv_launch},
+        {"small_t_c8", &detail::q4_linear_add_small_t_c8_launch},
+        {"small_t_c16", &detail::q4_linear_add_small_t_c16_launch},
         {"ksplit_c4", &detail::q4_linear_add_ksplit4_launch},
         {"ksplit_c8", &detail::q4_linear_add_ksplit8_launch},
         {"ksplit_c16", &detail::q4_linear_add_ksplit16_launch},
@@ -165,7 +167,7 @@ void sweep_q4(std::int32_t kHidden, const ninfer::bench::SweepOptions& base) {
     };
     // The K-split capacities are masked to their compile-time extent, and the GEMV is a
     // one-column kernel; both silently do less work rather than failing past their domain.
-    const std::int32_t caps[] = {1, 4, 8, 16, 24, 32, 0, 0, 0, 0, 0, 0, 0, 0};
+    const std::int32_t caps[] = {1, 8, 16, 4, 8, 16, 24, 32, 0, 0, 0, 0, 0, 0, 0, 0};
 
     std::vector<ninfer::bench::SweepEntry> schedules;
     for (std::size_t i = 0; i < named.size(); ++i) {

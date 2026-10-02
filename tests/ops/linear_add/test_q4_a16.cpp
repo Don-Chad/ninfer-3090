@@ -11,10 +11,11 @@ int main() {
         return 77;
     }
     try {
-        // Route starts follow the 2026-09-17 sm_86 retune of select_q4_linear_add.
-        constexpr std::array<std::int32_t, 8> route_starts{2, 5, 9, 25, 65, 81, 97, 129};
-        constexpr std::array<std::int32_t, 13> interiors{1,   4,   8,   24,  32,  64, 80,
-                                                         96,  128, 160, 161, 192, 193};
+        // Route starts follow the sm_86 retunes of select_q4_linear_add (2026-09-17, and the
+        // 9..16 small-T band of 2026-10-02).
+        constexpr std::array<std::int32_t, 9> route_starts{2, 5, 9, 17, 25, 65, 81, 97, 129};
+        constexpr std::array<std::int32_t, 15> interiors{1,  4,   8,   12,  16,  24,  32, 64,
+                                                         80, 96,  128, 160, 161, 192, 193};
         constexpr std::array<std::int32_t, 6> graph_tokens{1, 4, 33, 97, 193, 512};
         constexpr std::array<std::int32_t, 3> full_tokens{1, 4, 8};
         int failures = run_shape("Q4_A16 LinearAdd", WeightFormat::Q4G64F16S,
