@@ -5,12 +5,14 @@ set -euo pipefail
 #
 #   download-model.sh <model>
 #
-#   qwen38-27b       Qwen3.8-27B, 19.0 GiB. The default 27B for every benchmark in this repository
-#                    and the one docs/config-calculator.html's "27b" rows are measured against. It is
-#                    the official v3 artifact with the DFlash2 bundle, and it carries the MTP weights
-#                    too, so one file serves both --spec mtp and --spec dflash2. Published
-#                    measurements were taken against the v2 pin 18dfc887, whose weight bytes the v3
-#                    container preserves.
+#   qwen38-27b       Qwen3.8-27B, 17.7 GiB. The default 27B for every benchmark in this repository.
+#                    This fork's own conversion (WarlaxZ/Qwen3.8-27B-NInfer-3090, recipe
+#                    qwen3_8_27b): the imatrix-weighted grouped_search encoder, a 4-bit embedding, a
+#                    6-bit head and 4-bit mixer outputs and MLP down in layers 36-63. It carries the
+#                    vision, MTP and DFlash2 weights, so one file serves --vision, --spec mtp and
+#                    --spec dflash2. Executables older than the 5120x17408 Q4 linear_add route refuse
+#                    it at startup. Figures published before 2026-10 were measured against the
+#                    upstream neroued pin 1cbd84e7 (v2 18dfc887), 19.0 GiB.
 #   qwen36-27b       Qwen3.6-27B groupwise-int, 16.3 GiB, target_key qwen3_6_27b. A different model
 #                    family from qwen3_8_27b, which is why having the latter does not satisfy the
 #                    former: four real-model tests -- ninfer_qwen3_6_27b_prefix_real_test,
@@ -40,15 +42,17 @@ usage() {
 case "${1:-}" in
   qwen38-27b)
     artifact='qwen3_8_27b.ninfer'
-    repo='Qwen3.8-27B-NInfer'
-    revision='1cbd84e7221e51186bd7f093a149912d2489625b'
-    expected_size=20437521664
-    expected_sha256='81f924d440c27261d820c19a9f8d45794c5aee410f8a68bd358133fa8c0375da'
-    label='the Qwen3.8-27B model (19.0 GiB)'
+    owner='WarlaxZ'
+    repo='Qwen3.8-27B-NInfer-3090'
+    revision='f6168599e60da708a851ab20921e9bb42e31cf2f'
+    expected_size=18982458624
+    expected_sha256='7f2a0086a071ee932c66106e1552d118a85cfec8ddef13c67a54cd64abb39706'
+    label='the Qwen3.8-27B model (17.7 GiB)'
     tests_variable='NINFER_QWEN3_8_27B_WEIGHTS'
     ;;
   qwen36-27b)
     artifact='qwen3_6_27b.ninfer'
+    owner='neroued'
     repo='Qwen3.6-27B-NInfer'
     revision='3e3d9a3951c452c1ca80bd7a2860c7f3bfc5a829'
     expected_size=17495538688
@@ -58,6 +62,7 @@ case "${1:-}" in
     ;;
   qwen36-35b-a3b)
     artifact='qwen3_6_35b_a3b.ninfer'
+    owner='neroued'
     repo='Qwen3.6-35B-A3B-NInfer'
     revision='ee4495803bc4f8015b8a7e22d4cf9b67de8e27c6'
     expected_size=22790484480
@@ -120,7 +125,7 @@ if [ -f "$model" ]; then
 fi
 
 printf '%s\n' "Downloading $label..."
-url="https://huggingface.co/neroued/$repo/resolve/$revision/$artifact"
+url="https://huggingface.co/$owner/$repo/resolve/$revision/$artifact"
 if command -v aria2c >/dev/null 2>&1; then
   # 16 parallel ranges over one file, not single-stream curl. On the Vast rental boxes this repo
   # downloads at ~98 MB/s over aria2c against the same throttled-to-~1MB/s (and once outright

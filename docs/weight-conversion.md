@@ -43,6 +43,14 @@ python3 -m tools.convert \
   --out models/qwen3_6_27b.ninfer
 ```
 
+The default Qwen3.8-27B artifact (`download-model qwen38-27b`) is built with the `qwen3_8_27b`
+recipe, which needs an importance matrix (see `grouped_search` below; the published artifact used
+Unsloth's `imatrix_unsloth.gguf` for this model):
+
+```bash
+python3 -m tools.convert   --model /path/to/Qwen3.8-27B   --recipe qwen3_8_27b   --source imatrix=qwen3_8_27b.imatrix.safetensors   --source dflash2=/path/to/Qwen3.8-27B-DFlash2   --components text,vision,mtp,dflash2   --proposal   --out models/qwen3_8_27b.ninfer
+```
+
 `--components` defaults to `text`. Include only the optional components you want to distribute.
 `--proposal` adds the indexed proposal head used by speculative decoding; it uses the repository's
 token ranking and defaults to 131,072 rows. The ordinary full-vocabulary output head is retained.
@@ -53,7 +61,7 @@ The built-in recipes are ordinary Python functions in
 | Recipe | Main representation choices | Additional source |
 |---|---|---|
 | `qwen3_6_27b` | Q4/Q5 projections, Q6 vocabulary weights | None |
-| `qwen3_8_27b` | Q4/Q5 projections, Q8 vocabulary weights | None |
+| `qwen3_8_27b` | `grouped_search` with signed scales; Q4/Q5 projections, Q4 mixer outputs and MLP down in layers 36–63, Q4 embedding, Q6 head | `imatrix` |
 | `qwen3_6_35b_a3b` | Q4 experts, Q5/Q6 expert down, Q8 shared/projection weights | None |
 | `qwen3_6_27b_nvfp4` | Imported NVFP4, selected BF16 projections, Q8 vocabulary weights | `quantized` |
 | `qwen3_8_27b_nvfp4` | Imported NVFP4/FP8, FP8 embedding generated from BF16 | `quantized` |

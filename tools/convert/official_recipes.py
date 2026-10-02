@@ -87,7 +87,40 @@ def qwen3_6_27b(model, recipe, sources):
 
 
 def qwen3_8_27b(model, recipe, sources):
-    _dense_groupwise(model, recipe, Q8)
+    """Qwen3.8-27B for one RTX 3090: the importance-weighted search encoder over every text matrix,
+    a 4-bit embedding, a 6-bit head, and 4-bit mixer outputs and MLP down in layers 36-63.
+
+    Requires ``--source imatrix=PATH``: a file from ``tools.convert.imatrix`` (the published one is
+    imported from Unsloth's Qwen3.8-27B imatrix). Vision, MTP and draft components keep the
+    grouped_absmax formats of ``_optional``. Measurements against the previous all-absmax layout
+    are in model-cards/Qwen3.8-27B-NInfer-3090/README.md.
+    """
+
+    if "num_experts" in model.config:
+        raise ValueError("this official recipe requires Qwen3.5 Dense mathematics")
+    _optional(model, recipe)
+    search = {
+        "method": "grouped_search",
+        "parameters": {"imatrix": str(sources["imatrix"].path), "negative_scales": True},
+    }
+    recipe.assign("text/token_embedding", format=Q4, **search)
+    recipe.assign("text/output_head", format=Q6, **search)
+    for name, parameter in model.parameters.items():
+        if not name.startswith("text/layers/") or not parameter.projection:
+            continue
+        if name.endswith(("/gdn/a_projection", "/gdn/b_projection")):
+            recipe.separate(name)
+            continue
+        layer = int(name.split("/")[2])
+        if name.endswith(
+            ("/attention/query", "/attention/key", "/gdn/query", "/gdn/key", "/mlp/gate", "/mlp/up")
+        ):
+            format = Q4
+        elif name.endswith(("/attention/output", "/gdn/output", "/mlp/down")) and layer >= 36:
+            format = Q4
+        else:
+            format = Q5
+        recipe.assign(name, format=format, **search)
 
 
 def qwen3_6_35b_a3b(model, recipe, sources):
