@@ -942,6 +942,19 @@ int test_reasoning_effort_chat_template() {
             .text.ends_with("<tool_call>\n<function=f>\n</function>\n"
                             "</tool_call><|im_end|>\n"),
         "empty tool arguments did not follow the reasoning-effort template");
+
+    // A zero-parameter tool call is legal on both templates: the official jinja renders the
+    // same empty <function> block either way, the reasoning-effort one via an explicit
+    // arguments != '' guard and the thinking-toggle one by iterating no arguments at all.
+    fi::ChatRenderOptions toggle_no_generation;
+    toggle_no_generation.add_generation_prompt = false;
+    failures += check(
+        thinking_toggle_template()
+            .render({chat_message(ninfer::ChatRole::User, "call"), empty_arguments},
+                    toggle_no_generation)
+            .text.ends_with("<tool_call>\n<function=f>\n</function>\n"
+                            "</tool_call><|im_end|>\n"),
+        "empty tool arguments were rejected by the thinking-toggle template");
     return failures;
 }
 

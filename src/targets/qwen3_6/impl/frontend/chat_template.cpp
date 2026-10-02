@@ -274,9 +274,9 @@ std::string parameter_text(const OrderedJson& value) {
     return tojson_text(value);
 }
 
-RenderedFragment render_tool_call(const ToolCall& call, bool allow_empty_arguments) {
+RenderedFragment render_tool_call(const ToolCall& call) {
     RenderBuilder rendered;
-    if (allow_empty_arguments && call.arguments_json.empty()) {
+    if (call.arguments_json.empty()) {
         rendered.append_template("<tool_call>\n<function=");
         rendered.append_literal(call.name);
         rendered.append_template(">\n</function>\n</tool_call>");
@@ -635,7 +635,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                 } else {
                     rendered.append_template("\n");
                 }
-                rendered.append(render_tool_call(message.tool_calls[call_index], effort_template));
+                rendered.append(render_tool_call(message.tool_calls[call_index]));
             }
         }
         rendered.append_template("<|im_end|>\n");
