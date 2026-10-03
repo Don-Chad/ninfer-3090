@@ -222,19 +222,32 @@ throughput` (generated tokens / wall clock) is printed alongside and includes pr
 Arms are interleaved, in order on even passes and reversed on odd, because between-process spread
 on one RTX 3090 is 3-5%; always A/B two binaries inside one sitting rather than across sessions.
 Each arm may drop or add server flags, so one binary can be compared against itself under different
-options.
+options, and may name its own artifact (`;model=PATH`), so two artifacts can be compared on one
+binary with the same prompts. `--spec` selects `mtp` (the default), `dflash2` or `none` and
+`--draft-tokens` the draft count; the `RESULT` line carries the decode rate, the draft acceptance
+and the tokens emitted per round, so one run answers both "faster?" and "does it still draft as
+well?". `--model-id` is the id the server publishes, which is the artifact's public name
+(`qwen3.8-27b` by default, `qwen3.6-35b-a3b` for the 35B-A3B).
 
 ```bash
+# two binaries, one artifact
 python3 tools/bench/run_chat_decode.py \
   --model models/qwen3_8_27b.ninfer --prompts prompts_real.jsonl \
   --concurrency 1 --reps 2 --out profiles/bench/chat-decode \
   --arm base=/path/to/baseline/ninfer-serve --arm new=./build/apps/ninfer-serve
+
+# one binary, two artifacts, DFlash2, drafting acceptance included
+python3 tools/bench/run_chat_decode.py --prompts bench/fixtures/chat_prompts.jsonl \
+  --spec dflash2 --draft-tokens 7 --kv-dtype rk4v4 --max-tokens 512 --out profiles/bench/chat-decode \
+  --arm old=./build/apps/ninfer-serve\;model=old.ninfer --arm new=./build/apps/ninfer-serve\;model=new.ninfer
 ```
 
-The prompt file is one JSON object per line with a `prompt` string; the comparisons in
+The prompt file is one JSON object per line with a `prompt` string. The comparisons in
 [docs/performance.md](../../docs/performance.md#small-t-tensor-core-kernels-for-verify-and-cohort-decode)
 use the eight thinking-off prompts of syv-ai/qwen38-27b-rtx3090's `bench/prompts_real.jsonl`, which
-is that project's file and is not vendored here.
+is that project's file and is not vendored here. `bench/fixtures/chat_prompts.jsonl` is this
+repository's own set of 24 mixed prompts (code in eight languages, prose, maths, translation and
+Chinese); the artifact comparisons of 2026-10 use it with greedy decoding and thinking off.
 
 ## Concurrent serving benchmark
 
