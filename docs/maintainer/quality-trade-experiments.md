@@ -339,3 +339,72 @@ than an accident of the schedule. `tools/w4a8_real_weight_probe.cu` measures a p
 what Marlin and the vLLM stacks use -- at 1.2e-2 relative L2 rising to **1.29e-1** as outlier
 channels grow, against 9e-3 to 2.0e-2 for a scale per group of 64. It is about 20% faster and it is
 not worth it here; a single large channel otherwise starves every other channel in the token.
+
+## Weight encoding and layout -- `grouped_search` and the 2026-10 27B layout
+
+Measured 2026-10-01 and -02 on this box while building the default `qwen3_8_27b` artifact
+(`docs/weight-conversion.md` describes the method). Every NInfer row is Qwen3.8-27B with the
+encoding exported bit-exactly into Q8_0 GGUF blocks (`tools/eval/gguf_eval.py export`) and scored by
+llama.cpp b11316 against Unsloth's Q8_0 on the
+[held-out corpus](../perplexity.md#held-out-corpus): 8 chunks of 4,096 tokens in each of six
+streams, averaged. *Mean KLD* is the KL divergence from the Q8_0 distribution (lower is better);
+*Text weights* are the NInfer bytes of the text layers, embedding and head; *Read per token* is what
+a decode step streams (the embedding costs one row, so it is left out). The shipped artifact's file
+is 18.98 GB because it also carries vision, MTP, DFlash2 and the proposal head.
+
+**Encoder, on the layout before 2026-10 (Q4/Q5 projections, Q8 embedding and head)**
+
+| Variant | What it is | Text weights (GB) | Read per token (GB) | Mean KLD | Top-1 same | PPL vs Q8_0 |
+|---|---|---:|---:|---:|---:|---:|
+| `rtn` | round-to-nearest, `grouped_absmax`: the upstream artifact's encoding | 17.04 | 15.69 | 0.0376 | 93.50% | +1.26% |
+| `search` | scale search, no importance weighting | 17.04 | 15.69 | 0.0371 | 93.75% | +0.71% |
+| `searchneg` | scale search with signed scales | 17.04 | 15.69 | 0.0358 | 93.97% | +0.59% |
+| `search-imatrix` | scale search weighted by Unsloth's imatrix | 17.04 | 15.69 | 0.0280 | 94.78% | +0.16% |
+| **`searchneg-imatrix`** | `grouped_search`: imatrix and signed scales (the shipped encoder) | **17.04** | **15.69** | **0.0262** | **94.91%** | **+0.06%** |
+| `autoround-g64` | the public AutoRound W4A16 g64 checkpoint's codes imported; tensors it lacks use RTN | 17.04 | 15.69 | 0.0351 | 93.97% | +0.39% |
+| `hybrid-autoround-public` | the same import; tensors it lacks use `grouped_search` | 17.04 | 15.69 | 0.0297 | 94.58% | -0.44% |
+
+**Layout, all with `grouped_search`**
+
+| Variant | What it is | Text weights (GB) | Read per token (GB) | Mean KLD | Top-1 same | PPL vs Q8_0 |
+|---|---|---:|---:|---:|---:|---:|
+| `searchneg-imatrix-allq4` | every projection Q4 | 15.63 | 14.27 | 0.0457 | 93.19% | +3.31% |
+| `searchneg-imatrix-emb4-head6` | Q4 embedding, Q6 head | 16.01 | 15.33 | 0.0282 | 94.77% | +0.20% |
+| `searchneg-imatrix-realloc` | Q4 embedding, Q6 head, attention/GDN outputs Q8 | 16.83 | 16.15 | 0.0265 | 94.88% | +0.13% |
+| `alloc-today-v1` | Q4 embedding; attention/GDN outputs Q8 in layers 0-35, Q4 in 36-63 | 16.72 | 16.04 | 0.0282 | 94.81% | +0.35% |
+| `ladder1-existing-routes` | Q6 embedding and head, outputs Q8 | 17.14 | 16.15 | 0.0256 | 94.86% | -0.01% |
+| `ladder2-mlp5-late` | ladder 1, MLP gate/up/down Q5 in layers 20-63 | 18.12 | 17.13 | 0.0176 | 95.99% | +0.05% |
+| `ladder3-down4-early` | ladder 2, MLP down Q4 in layers 0-19 | 17.90 | 16.91 | 0.0190 | 95.91% | +0.21% |
+| `ladder4-attn-kv` | ladder 3, attention key Q6 and value Q8 | 17.96 | 16.96 | 0.0168 | 96.11% | +0.37% |
+| `c1-existing` | C1: Q6 embedding and head, outputs Q4 in layers 36-63 | 16.22 | 15.22 | 0.0281 | 94.60% | +0.30% |
+| `c1-down4late` | C1b: C1 and MLP down Q4 in layers 36-63 | 15.90 | 14.91 | 0.0304 | 94.29% | +0.49% |
+| **`release-emb4`** | **shipped**: C1b with a Q4 embedding | **15.59** | **14.91** | **0.0318** | **94.25%** | **+0.59%** |
+| `c2-lean` | C2: C1b, attention key Q6 and value Q8, GDN value and z Q4 in layers 36-63 (needs kernel routes that are not built) | 15.79 | 14.80 | 0.0295 | 94.29% | +0.74% |
+| `unsloth-allocation` | Unsloth UD-Q4_K_XL's per-tensor allocation in our formats, Q4 embedding | 16.53 | 15.86 | 0.0215 | 95.63% | +0.99% |
+| `unsloth-allocation-emb6` | the same with a Q6 embedding | 16.85 | 15.86 | 0.0200 | 95.68% | +0.77% |
+
+**llama.cpp reference**
+
+| Variant | What it is | Text weights (GB) | Read per token (GB) | Mean KLD | Top-1 same | PPL vs Q8_0 |
+|---|---|---:|---:|---:|---:|---:|
+| `unsloth-ud-q4_k_xl` | Unsloth UD-Q4_K_XL, its own formats (GGUF file size) | 17.56 | n/a | 0.0156 | 96.61% | +0.34% |
+| `unsloth-ud-q5_k_xl` | Unsloth UD-Q5_K_XL, its own formats (GGUF file size) | 20.88 | n/a | 0.0095 | 97.76% | +0.13% |
+
+What the rows say:
+
+- **The imatrix is most of the encoder gain**: 0.0376 to 0.0280 for the same bytes, against 0.0371
+  from scale search alone. Signed scales take it to 0.0262 with the imatrix (0.0358 without).
+- **The public AutoRound codes lose to this encoder on the same tensors** (0.0297 against 0.0262),
+  and beat plain RTN only by a little (0.0351 against 0.0376).
+- **The shipped layout is smaller and closer to Q8_0 than the old one**: 15.59 GB and 0.0318
+  against 17.04 GB and 0.0376, and 14.91 GB read per token against 15.69. Its Q4 embedding costs
+  Chinese Wikipedia (KLD 0.0794 to 0.0859) and chat (0.0355 to 0.0373) against a Q6 one, and leaves
+  the English, arXiv and code streams within 0.0001; that is the 0.0304 to 0.0318 between `c1-down4late`
+  and `release-emb4`.
+- **C2 would be better and smaller than C1b** (0.0295 at 14.80 GB read against 0.0304 at 14.91) but
+  needs a Q4 GDN value/z pair and an attention key/value upgrade that have no kernel routes.
+- **Unsloth's allocation is worth about 45% of its lead and its formats the rest**: their layout in
+  our formats scores 0.0215 (16.53 GB), between our 0.0262 and their 0.0156. At similar bytes
+  UD-Q4_K_XL (17.56 GB, 0.0156) is still clearly better than anything NInfer's formats reach; the
+  closest, `ladder4-attn-kv`, needs 17.96 GB for 0.0168.
+- **All-Q4 is not an option**: 0.0457 and +3.31% perplexity for 1.4 GB.

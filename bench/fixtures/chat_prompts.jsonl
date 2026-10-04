@@ -1,0 +1,24 @@
+{"prompt": "Write a Python function that merges overlapping intervals, with a docstring and three test cases."}
+{"prompt": "Explain how a B-tree differs from a binary search tree and why databases prefer B-trees."}
+{"prompt": "Implement a thread-safe LRU cache in C++17 using std::list and std::unordered_map. Show the full class."}
+{"prompt": "What are the main causes of the French Revolution? Answer in four paragraphs."}
+{"prompt": "Write a bash script that finds the ten largest files under a directory and prints their sizes in human-readable form."}
+{"prompt": "Summarise the plot of Pride and Prejudice in about 200 words."}
+{"prompt": "请用中文解释什么是量子纠缠，并举一个通俗的例子。"}
+{"prompt": "Solve step by step: a train leaves at 9:40 travelling 84 km/h; a second leaves the same station at 10:10 at 105 km/h on the same track. When does the second catch the first?"}
+{"prompt": "Write a SQL query that returns, for each customer, their three most recent orders, using window functions. Explain it briefly."}
+{"prompt": "Draft a polite email to a landlord asking for a broken boiler to be repaired this week."}
+{"prompt": "Explain the CUDA memory hierarchy (registers, shared, L1/L2, global) and give tips for coalesced access."}
+{"prompt": "Write a Rust function that parses a comma-separated list of integers into a Vec<i64>, returning a Result with a custom error type."}
+{"prompt": "Give me a 5-day itinerary for a first trip to Tokyo, with one paragraph per day."}
+{"prompt": "What is the difference between TCP and UDP? Include a comparison table."}
+{"prompt": "Refactor this JavaScript to use async/await:\n\nfunction load(url, cb) {\n  fetch(url).then(r => r.json()).then(d => cb(null, d)).catch(e => cb(e));\n}\n\nExplain the changes."}
+{"prompt": "Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle."}
+{"prompt": "Explain gradient descent and the role of the learning rate to a high-school student."}
+{"prompt": "Write a TypeScript React component for a searchable dropdown list with keyboard navigation."}
+{"prompt": "List the pros and cons of remote work for software teams, then give a balanced conclusion."}
+{"prompt": "Derive the formula for the sum of the first n squares and prove it by induction."}
+{"prompt": "Translate into French and German: 'The meeting has been moved to Thursday afternoon because the client is travelling.'"}
+{"prompt": "Explain how HTTPS establishes a secure connection, step by step from the TLS handshake."}
+{"prompt": "Write a Go HTTP server with two endpoints: GET /health and POST /echo that returns the JSON body it receives."}
+{"prompt": "用中文写一段关于秋天的散文，大约200字。"}
