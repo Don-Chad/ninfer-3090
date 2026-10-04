@@ -126,7 +126,8 @@ def run_arm(name, server, drop, add, env, model, prompts, args, rep):
     command = [server, model, "--host", "127.0.0.1", "--port", str(args.port),
                "--max-context", str(args.max_context), "--kv-capacity", str(args.kv_capacity),
                "--max-concurrency", str(args.concurrency), "--prefill-chunk", "1024",
-               "--kv-dtype", args.kv_dtype, "--no-prefix-reuse", "--request-log-jsonl", str(log)]
+               "--kv-dtype", args.kv_dtype, "--no-prefix-reuse", "--request-log-jsonl", str(log),
+               "--model-id", args.model_id]
     if args.spec != "none":
         command += ["--spec", args.spec, "--draft-tokens", str(args.draft_tokens), "--lm-head-draft"]
     if args.temperature == 0:
