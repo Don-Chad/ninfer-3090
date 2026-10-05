@@ -1075,6 +1075,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--host-kv-mib N` | shared pinned Host Main/Backend KV byte capacity in MiB | `8192` |
 | `--max-private-continuations N` | private continuation descriptor capacity | `2 * max-concurrency` |
 | `--max-shared-prefixes N` | shared stable-prefix descriptor capacity | `max-concurrency` |
+| `--host-cache-reserve-mib N` | with `--auto-host-cache`, host memory left unpinned beneath what is available | `1024` |
 | `--auto-host-cache` | size `--host-state-slots`, `--host-kv-mib`, `--max-private-continuations` and `--max-shared-prefixes` from the host memory still free once the model has loaded, for a machine that exists to serve; see [automatic host cache](#automatic-host-cache). Replaces those four options and refuses them | off |
 | `--max-long-anchors-per-continuation N` | private long-anchor limit per continuation | `2` |
 | `--auto-long-anchors N` | propose a private long anchor at each of the last `N` interior message boundaries of every prompt, so a rewrite of recent history restores at the anchor below the edit instead of re-prefilling from token zero; clamped to the anchor limit, `0` disables | the anchor limit |
@@ -1283,7 +1284,12 @@ taken from the machine, once, after the model has loaded:
   available physical memory on Windows) and what remains under the container's cgroup limit, so a
   rented container is sized by its own limit rather than the host's RAM. Startup fails, naming the
   explicit options, if the platform reports neither.
-- 4 GiB is kept back, and the host cache may pin 80% of the rest. Pinned pages cannot be reclaimed.
+- The machine is assumed to serve only this process, so everything but a fixed reserve is pinned:
+  `--host-cache-reserve-mib` (default 1024) is left for what still grows after sizing, such as
+  request buffers, the Responses store (256 MiB by default) and graph instantiation. Pinned pages
+  cannot be reclaimed, and in a container exceeding the limit kills the process, so lower the reserve
+  only after watching the process's memory under load. The default was chosen by reasoning, not from
+  a measured post-startup peak.
 - An eighth of that budget buys StateImage slots (at most 128, each one whole GDN snapshot, so its
   size depends on the model and `--gdn-state-fp16`); the remainder is host KV.
 - The private-continuation catalog is the number of resident states (active lanes, device

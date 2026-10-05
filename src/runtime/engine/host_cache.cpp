@@ -19,16 +19,6 @@
 namespace ninfer::runtime {
 namespace {
 
-constexpr std::uint64_t kMiB = 1ULL << 20;
-constexpr std::uint64_t kGiB = 1ULL << 30;
-
-// What the machine keeps for itself: the OS, the HTTP server, media preparation and the allocations
-// the model makes after this point (graph instantiation, module loads).
-constexpr std::uint64_t kHostReserveBytes = 4 * kGiB;
-// Of the memory left above the reserve, the share that may be pinned. Pinned pages cannot be
-// reclaimed, so the cache never takes all of it.
-constexpr std::uint64_t kBudgetNumerator   = 4;
-constexpr std::uint64_t kBudgetDenominator = 5;
 // Of the budget, at most this share holds StateImage slots; KV pages take the rest. A state is
 // ~75 MiB on the 27B beside ~17.5 KiB of KV per token, so a resident 100k-token conversation costs
 // ~1.7 GiB of KV and one state; an eighth gives each conversation its tail plus two anchors with room
@@ -129,9 +119,11 @@ ContextCacheOptions resolve_host_cache(const ContextCacheOptions& requested,
         throw std::invalid_argument("host cache sizing needs a StateImage size and concurrency");
     }
 
-    const std::uint64_t spendable =
-        available_host_bytes > kHostReserveBytes ? available_host_bytes - kHostReserveBytes : 0;
-    std::uint64_t budget = spendable / kBudgetDenominator * kBudgetNumerator;
+    // The machine serves only this process, so everything but a fixed reserve is spent. The reserve
+    // covers what grows after this point: request buffers, the response store, graph
+    // instantiation and module loads. Pinned pages cannot be reclaimed, so it is not a fraction.
+    const std::uint64_t reserve = requested.host_cache_reserve_bytes;
+    std::uint64_t budget = available_host_bytes > reserve ? available_host_bytes - reserve : 0;
     // Where pinned host memory is charged against the GPU (Windows), the same clamp the Program
     // applies to its KV buffer bounds the whole budget, before it is split. The Program clamps the
     // KV buffer against the memory left after the state slots are pinned; with the state slots

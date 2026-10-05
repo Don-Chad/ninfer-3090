@@ -80,7 +80,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
            "[--media-preprocess-threads N] "
            "[--device-state-slots N] [--host-state-slots N] [--host-kv-mib N] "
-           "[--max-private-continuations N] [--max-shared-prefixes N] [--auto-host-cache] "
+           "[--max-private-continuations N] [--max-shared-prefixes N] [--auto-host-cache [--host-cache-reserve-mib N]] "
            "[--max-long-anchors-per-continuation N] [--auto-long-anchors N] "
            "[--max-cache-markers-per-request N] "
            "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] "
@@ -147,7 +147,7 @@ std::string serve_usage_text(const char* argv0) {
            "       --device-state-slots is extra checkpoint capacity beyond active lanes; "
            "--host-kv-mib uses MiB\n"
            "       --auto-host-cache sizes Host state slots, Host KV and both catalogs from the "
-           "host memory free after the model loads (80% of what is left above a 4 GiB reserve, "
+           "host memory free after the model loads (all but --host-cache-reserve-mib, default 1024, "
            "an eighth of it for state slots); it replaces the four explicit Host capacity "
            "options\n"
            "       --default-thinking-budget caps model-origin thinking for enabled requests; "
@@ -231,6 +231,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     bool device_explicit             = false;
     bool context_capacity_explicit   = false;
     bool host_sizing_explicit        = false;
+    bool host_reserve_explicit       = false;
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
         options.help_requested = true;
         return options;
@@ -340,6 +341,14 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--auto-host-cache") {
             options.context_cache.auto_host_cache = true;
             context_capacity_explicit             = true;
+        } else if (arg == "--host-cache-reserve-mib") {
+            const std::uint64_t mib =
+                parse_u64(require_value("--host-cache-reserve-mib"), "host-cache-reserve-mib");
+            if (mib > std::numeric_limits<std::size_t>::max() / (1ULL << 20)) {
+                throw std::invalid_argument("--host-cache-reserve-mib is out of range");
+            }
+            options.context_cache.host_cache_reserve_bytes = static_cast<std::size_t>(mib << 20);
+            host_reserve_explicit                          = true;
         } else if (arg == "--max-long-anchors-per-continuation") {
             options.context_cache.max_long_anchors_per_continuation = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--max-long-anchors-per-continuation"),
@@ -522,6 +531,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (!kv_capacity_explicit) {
         options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
+    }
+    if (host_reserve_explicit && !options.context_cache.auto_host_cache) {
+        throw std::invalid_argument("--host-cache-reserve-mib requires --auto-host-cache");
     }
     if (options.context_cache.auto_host_cache && host_sizing_explicit) {
         throw std::invalid_argument(

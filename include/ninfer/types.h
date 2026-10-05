@@ -30,6 +30,8 @@ inline constexpr std::size_t kDefaultMediaCacheBytes     = 1ULL << 30;
 inline constexpr std::size_t kDefaultMediaLiveBytes      = 2ULL << 30;
 inline constexpr std::uint32_t kDefaultHostStateSlots    = 8;
 inline constexpr std::size_t kDefaultHostKvCapacityBytes = 8ULL << 30;
+// Host memory `auto_host_cache` leaves unpinned for everything that runs after it is sized.
+inline constexpr std::size_t kDefaultHostCacheReserveBytes = 1ULL << 30;
 // Largest text hidden size among shipped targets (27B). Used only to conservatively size the
 // pinned cross-rank staging buffer for a model-parallel `DeviceContext` from the configured
 // prefill chunk, before the target's actual hidden size is known; a wider future target just
@@ -191,6 +193,8 @@ struct ContextCacheOptions {
     // refuses explicit values for any of the four. Engine::options() returns the resolved values
     // with this flag cleared.
     bool auto_host_cache = false;
+    // Memory left unpinned beneath whatever is available when auto_host_cache sizes the tier.
+    std::size_t host_cache_reserve_bytes = kDefaultHostCacheReserveBytes;
     // Bounded private/shared logical catalogs and per-continuation long-anchor count.
     std::optional<std::uint32_t> max_private_continuations;
     std::optional<std::uint32_t> max_shared_prefixes;
