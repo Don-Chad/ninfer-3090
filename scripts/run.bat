@@ -55,7 +55,8 @@ rem apply the loaded graft to every request that names none), NINFER_CHAT_TEMPLA
 rem Jinja file, passed straight to --chat-template; overrides the artifact's built-in template).
 rem `tuned` also: NINFER_CONTEXT,
 rem NINFER_CONCURRENCY, NINFER_KV_DTYPE, NINFER_SPEC, NINFER_DRAFT_TOKENS, NINFER_PREFILL_CHUNK,
-rem NINFER_VISION (on^|off), NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS. Each spec's defaults
+rem NINFER_VISION (on^|off), NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS, NINFER_MIN_P (0.03) and
+rem NINFER_PRESENCE_PENALTY (0.5), the loop guard ("default" keeps the registered preset). Each spec's defaults
 rem (context, lanes, chunk) are the ones measured to fit beside a desktop, which holds roughly 1.5 GiB
 rem of the card; if startup refuses, drop a rung of NINFER_CONTEXT: 229376 / 196608 / 163840 / 131072 /
 rem 98304 / 65536.
@@ -317,7 +318,21 @@ if /i "%VISION%"=="off" (
 echo NINFER_VISION must be on or off, got %VISION% 1>&2
 exit /b 2
 :vision_done
-set "PROFILE_ARGS=%PROFILE_ARGS% --max-pending-requests 16 --pending-timeout-ms 600000 %VISION_ARGS% --max-private-continuations 8 --max-shared-prefixes 8 --host-state-slots %HOST_STATE_SLOTS% --host-kv-mib 8192 --auto-prefix-grid"
+rem Loop guard for the small quant: a mild min-p trims the noisy token tail, and a mild presence
+rem penalty breaks repetition loops in the reasoning and the answer. These are process-level
+rem overrides, so they replace the registered presets in both thinking and non-thinking mode
+rem (thinking presence 0, non-thinking 1.5); a request that sets its own value still wins. Kept
+rem low because code legitimately repeats identifiers and syntax -- a penalty near 1.5 or any
+rem frequency penalty damages generated code. Temperature, top-p and top-k stay at the registered
+rem values. "default" omits the flag and leaves the registered preset in force.
+set "MIN_P=0.03"
+if not "%NINFER_MIN_P%"=="" set "MIN_P=%NINFER_MIN_P%"
+set "PRESENCE=0.5"
+if not "%NINFER_PRESENCE_PENALTY%"=="" set "PRESENCE=%NINFER_PRESENCE_PENALTY%"
+set "SAMPLING_ARGS="
+if /i not "%MIN_P%"=="default" set "SAMPLING_ARGS=--min-p %MIN_P%"
+if /i not "%PRESENCE%"=="default" set "SAMPLING_ARGS=%SAMPLING_ARGS% --presence-penalty %PRESENCE%"
+set "PROFILE_ARGS=%PROFILE_ARGS% --max-pending-requests 16 --pending-timeout-ms 600000 %VISION_ARGS% --max-private-continuations 8 --max-shared-prefixes 8 --host-state-slots %HOST_STATE_SLOTS% --host-kv-mib 8192 --auto-prefix-grid%SAMPLING_ARGS%"
 
 :launch
 set "GRAFT_ARGS="
@@ -358,6 +373,7 @@ if not exist "%MODEL%" (
 echo %TITLE%  ^|  %LABEL%
 if not "%PREFILL_NOTE%"=="" echo %PREFILL_NOTE%
 if /i "%PROFILE%"=="tuned" echo Cache: 8 shared / 8 private / %HOST_STATE_SLOTS% host states  ^|  automatic prefix grid on
+if /i "%PROFILE%"=="tuned" echo Sampling guard: min-p %MIN_P%, presence penalty %PRESENCE%  (NINFER_MIN_P, NINFER_PRESENCE_PENALTY; "default" = registered preset)
 rem GRAFT_ARGS carries literal embedded quotes (--graft "godmode=<path>"), so re-quoting it for a
 rem string comparison here garbles the quoting and breaks the if statement. `defined` sidesteps
 rem that: it tests the variable directly, with no substitution.

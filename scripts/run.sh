@@ -59,7 +59,8 @@
 # straight to --chat-template; overrides the artifact's built-in template). `tuned` also:
 # NINFER_CONTEXT, NINFER_CONCURRENCY,
 # NINFER_KV_CAPACITY, NINFER_KV_DTYPE, NINFER_SPEC, NINFER_DRAFT_TOKENS, NINFER_PREFILL_CHUNK,
-# NINFER_VISION (on|off), NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS. Each spec's defaults (context, lanes, chunk)
+# NINFER_VISION (on|off), NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS, NINFER_MIN_P (0.03) and
+# NINFER_PRESENCE_PENALTY (0.5), the loop guard ("default" keeps the registered preset). Each spec's defaults (context, lanes, chunk)
 # are the ones that fit; the context figures below are extrapolated for a headless card, so treat
 # the first start as the confirmation and drop a rung if it refuses:
 # 229376 / 212992 / 196608 / 163840 / 131072 / 114688 / 98304 / 65536.
@@ -242,6 +243,17 @@ if [[ "$profile" == 'tuned' ]]; then
     --host-kv-mib 8192
     --auto-prefix-grid
   )
+  # Loop guard for the small quant: a mild min-p trims the noisy token tail, and a mild presence
+  # penalty breaks repetition loops in the reasoning and the answer. These are process-level
+  # overrides, so they replace the registered presets in both thinking and non-thinking mode
+  # (thinking presence 0, non-thinking 1.5); a request that sets its own value still wins. Kept
+  # low because code legitimately repeats identifiers and syntax -- a penalty near 1.5 or any
+  # frequency penalty damages generated code. Temperature, top-p and top-k stay at the registered
+  # values. "default" omits the flag and leaves the registered preset in force.
+  MIN_P="${NINFER_MIN_P:-0.03}"
+  PRESENCE_PENALTY="${NINFER_PRESENCE_PENALTY:-0.5}"
+  [[ "$MIN_P" == 'default' ]] || profile_args+=(--min-p "$MIN_P")
+  [[ "$PRESENCE_PENALTY" == 'default' ]] || profile_args+=(--presence-penalty "$PRESENCE_PENALTY")
 fi
 
 if [[ -n "${NINFER_CHAT_TEMPLATE:-}" ]]; then
@@ -263,6 +275,8 @@ printf '%s  |  %s\n' "$title" "$label"
 [[ -z "${prefill_note:-}" ]] || printf '%s\n' "$prefill_note"
 if [[ "$profile" == 'tuned' ]]; then
   printf 'Cache: 8 shared / 8 private / %s host states  |  automatic prefix grid on\n' "$HOST_STATE_SLOTS"
+  printf 'Sampling guard: min-p %s, presence penalty %s  (NINFER_MIN_P, NINFER_PRESENCE_PENALTY; "default" = registered preset)\n' \
+    "$MIN_P" "$PRESENCE_PENALTY"
 fi
 [[ -z "${NINFER_CHAT_TEMPLATE:-}" ]] || printf 'Chat template: %s\n' "$NINFER_CHAT_TEMPLATE"
 [[ -z "${hint:-}" ]] || printf '%s\n' "$hint"
