@@ -1,4 +1,5 @@
 #include "runtime/engine/host_cache.h"
+#include "runtime/engine/model_instance.h"
 
 #include <filesystem>
 #include <fstream>
@@ -42,17 +43,31 @@ int check_cgroup_probe() {
         std::filesystem::temp_directory_path() / "ninfer_host_cache_cgroup_test";
     std::filesystem::remove_all(scratch);
 
-    // v2: root unlimited, an ancestor limited to 10 GiB with 2 GiB charged of which 1 GiB is
-    // reclaimable page cache, so 9 GiB remain; the process sits two levels below it.
+    // v2: root unlimited, an ancestor limited to 10 GiB with 2 GiB charged of which 1 GiB inactive
+    // and 512 MiB active file cache is reclaimable, so 9.5 GiB remain; the process sits two levels
+    // below it.
     const std::filesystem::path v2 = scratch / "v2";
     write(v2 / "memory.max", "max\n");
     write(v2 / "app.slice" / "memory.max", "10737418240\n");
     write(v2 / "app.slice" / "memory.current", "2147483648\n");
-    write(v2 / "app.slice" / "memory.stat", "anon 1\ninactive_file 1073741824\n");
+    write(v2 / "app.slice" / "memory.stat",
+          "anon 1\nactive_file 536870912\ninactive_file 1073741824\n");
     write(v2 / "app.slice" / "c1" / "memory.max", "max\n");
     write(v2 / "app.slice" / "c1" / "leaf" / "memory.max", "max\n");
-    failures += check(cgroup_remaining_bytes(v2, "0::/app.slice/c1/leaf\n") == 9 * kGiB,
-                      "an ancestor's memory limit was not applied to the process's cgroup");
+    failures += check(cgroup_remaining_bytes(v2, "0::/app.slice/c1/leaf\n") ==
+                          9 * kGiB + 512 * kMiB,
+                      "an ancestor's limit, less active and inactive file cache, was not applied");
+    // Each list alone: 6 GiB limit, 3 GiB charged, 1 GiB of one list reclaimable -> 4 GiB.
+    write(v2 / "inactive" / "memory.max", "6442450944\n");
+    write(v2 / "inactive" / "memory.current", "3221225472\n");
+    write(v2 / "inactive" / "memory.stat", "inactive_file 1073741824\n");
+    failures += check(cgroup_remaining_bytes(v2, "0::/inactive\n") == 4 * kGiB,
+                      "inactive file cache alone was not treated as reclaimable");
+    write(v2 / "active" / "memory.max", "6442450944\n");
+    write(v2 / "active" / "memory.current", "3221225472\n");
+    write(v2 / "active" / "memory.stat", "active_file 1073741824\n");
+    failures += check(cgroup_remaining_bytes(v2, "0::/active\n") == 4 * kGiB,
+                      "active file cache alone was not treated as reclaimable");
     // A tighter child wins over the ancestor: 4 GiB limit, 1 GiB charged -> 3 GiB.
     write(v2 / "app.slice" / "c2" / "memory.max", "4294967296\n");
     write(v2 / "app.slice" / "c2" / "memory.current", "1073741824\n");
@@ -75,10 +90,13 @@ int check_cgroup_probe() {
     const std::filesystem::path v1 = scratch / "v1";
     write(v1 / "memory" / "grp" / "memory.limit_in_bytes", "8589934592\n");
     write(v1 / "memory" / "grp" / "memory.usage_in_bytes", "3221225472\n");
-    write(v1 / "memory" / "grp" / "memory.stat", "total_inactive_file 1073741824\n");
+    write(v1 / "memory" / "grp" / "memory.stat",
+          "total_active_file 536870912\ntotal_inactive_file 1073741824\n");
+    // 8 GiB limit, 3 GiB charged, 1.5 GiB of it reclaimable file cache -> 6.5 GiB.
     failures += check(
-        cgroup_remaining_bytes(v1, "12:cpu,cpuacct:/x\n4:memory:/grp\n0::/\n") == 6 * kGiB,
-        "a cgroup v1 memory limit was not applied");
+        cgroup_remaining_bytes(v1, "12:cpu,cpuacct:/x\n4:memory:/grp\n0::/\n") ==
+            6 * kGiB + 512 * kMiB,
+        "a cgroup v1 memory limit, less active and inactive file cache, was not applied");
     write(v1 / "memory" / "free" / "memory.limit_in_bytes", "9223372036854771712\n");
     write(v1 / "memory" / "free" / "memory.usage_in_bytes", "1\n");
     failures += check(!cgroup_remaining_bytes(v1, "4:memory:/free\n").has_value(),
@@ -88,10 +106,47 @@ int check_cgroup_probe() {
     return failures;
 }
 
+// The Engine normalizes its options once before sizing. Automatic mode must accept the options as a
+// caller writes them (catalogs unset), refuse explicit catalogs, and refuse a disabled cache.
+int check_automatic_normalization() {
+    using ninfer::runtime::normalize_engine_options;
+    int failures = 0;
+    ninfer::EngineOptions options;
+    options.max_concurrency               = 4;
+    options.context_cache.auto_host_cache = true;
+
+    bool accepted = true;
+    ninfer::EngineOptions normalized;
+    try {
+        normalized = normalize_engine_options(options);
+    } catch (const std::exception&) { accepted = false; }
+    failures += check(accepted && normalized.context_cache.auto_host_cache &&
+                          normalized.context_cache.max_private_continuations == 8 &&
+                          normalized.context_cache.max_shared_prefixes == 4,
+                      "automatic mode rejected, or did not default, options with unset catalogs");
+
+    const auto rejected = [&](auto&& edit) {
+        ninfer::EngineOptions bad = options;
+        edit(bad.context_cache);
+        try {
+            (void)normalize_engine_options(bad);
+        } catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    failures += check(rejected([](ContextCacheOptions& cache) { cache.max_private_continuations = 9; }),
+                      "automatic mode accepted an explicit private-continuation capacity");
+    failures += check(rejected([](ContextCacheOptions& cache) { cache.max_shared_prefixes = 9; }),
+                      "automatic mode accepted an explicit shared-prefix capacity");
+    failures += check(rejected([](ContextCacheOptions& cache) { cache.enabled = false; }),
+                      "automatic mode was accepted with the context cache disabled");
+    return failures;
+}
+
 } // namespace
 
 int main() {
     int failures = 0;
+    failures += check_automatic_normalization();
 
     // 64 GiB free less the 3 GiB default reserve is a 61 GiB (62,464 MiB) budget; an eighth,
     // 7,808 MiB, buys 78 of the 100 MiB states.

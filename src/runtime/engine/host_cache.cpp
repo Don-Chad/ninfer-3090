@@ -39,15 +39,19 @@ std::optional<std::uint64_t> read_u64_file(const std::filesystem::path& path) {
     } catch (...) { return std::nullopt; }
 }
 
-// Page cache charged to a cgroup is reclaimable, so it does not count against what remains.
-std::uint64_t stat_value(const std::filesystem::path& path, const char* key) {
+// File-backed page cache charged to a cgroup (active and inactive lists) is reclaimable, so it does
+// not count against what remains. Counting only the inactive list would undercount what is free
+// right after a large artifact was read, because pages read more than once sit on the active list.
+std::uint64_t reclaimable_file_bytes(const std::filesystem::path& path, const char* active_key,
+                                     const char* inactive_key) {
     std::ifstream file(path);
     std::string name;
     std::uint64_t value = 0;
+    std::uint64_t total = 0;
     while (file >> name >> value) {
-        if (name == key) { return value; }
+        if (name == active_key || name == inactive_key) { total += value; }
     }
-    return 0;
+    return total;
 }
 
 // What one cgroup directory still allows: its limit less its non-reclaimable use. Empty when the
@@ -58,8 +62,9 @@ std::optional<std::uint64_t> remaining_under(const std::filesystem::path& dir, b
     if (!limit || (!v2 && *limit >= (1ULL << 60))) { return std::nullopt; }
     const auto used = read_u64_file(dir / (v2 ? "memory.current" : "memory.usage_in_bytes"));
     if (!used) { return std::nullopt; }
-    const std::uint64_t reclaimable =
-        stat_value(dir / "memory.stat", v2 ? "inactive_file" : "total_inactive_file");
+    const std::uint64_t reclaimable = reclaimable_file_bytes(
+        dir / "memory.stat", v2 ? "active_file" : "total_active_file",
+        v2 ? "inactive_file" : "total_inactive_file");
     const std::uint64_t charged = *used > reclaimable ? *used - reclaimable : 0;
     return *limit > charged ? *limit - charged : 0;
 }

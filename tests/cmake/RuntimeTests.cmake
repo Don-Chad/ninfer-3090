@@ -14,7 +14,7 @@ ninfer_add_test(ninfer_kv_capacity_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../te
   LIBRARIES ninfer_runtime_support)
 
 ninfer_add_test(ninfer_host_cache_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_host_cache.cpp"
-  LIBRARIES ninfer_runtime_support)
+  LIBRARIES ninfer_runtime_support ninfer_engine ninfer::json)
 
 ninfer_add_test(ninfer_sampling_defaults_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_sampling_defaults.cpp"
