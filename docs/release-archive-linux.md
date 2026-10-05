@@ -107,6 +107,12 @@ tail` message means the reservation is already tight rather than that the contex
 host RAM. On Windows/WDDM a pinned host allocation is charged against the card, so the runtime
 clamps it hard. Same flag, different platform behaviour, by design.
 
+On a machine that only serves this process, pass `--auto-host-cache` to ninfer-serve instead of
+`--host-kv-mib`, `--host-state-slots`, `--max-private-continuations` and `--max-shared-prefixes`: it
+sizes all four from the RAM that is free after the model loads (or from the container's memory limit),
+leaving `--host-cache-reserve-mib` (default 3072) unpinned. The launchers do not use it by default. See
+the [serving guide](https://github.com/ashalliants/ninfer-3090/blob/master/docs/serving.md#automatic-host-cache).
+
 ## Full documentation
 
 <https://github.com/ashalliants/ninfer-3090>

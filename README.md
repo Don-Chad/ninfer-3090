@@ -50,16 +50,17 @@ requests are not guaranteed.
 > your desktop's GPU? Plans start with a day pass, and every verified account gets a few free
 > requests a day. Thank you to NeverMetered for supporting this project.
 
-**New in v0.13.0: a better Qwen3.8-27B, 1.46 GB smaller.** An importance-weighted scale search
-re-encodes the 27B to 18.98 GB with 15% lower KL divergence from a Q8_0 reference and 3-6%
-faster speculative decode (DFlash2 chat 125.9 to 133.5 tok/s, a 133K-token conversation 82.5 to 89.8
-tok/s), and it is now the default 27B. Also: per-request `thinking_budget` on every endpoint, no more
-`thinking_budget_capacity_insufficient` 400s on long agent sessions, prompt grafts that use the
-context cache, and a faster-prefilling 35B-A3B launcher. 11 merged PRs — see the
-[v0.13.0 release notes](RELEASE_NOTES_0.13.0.md) for every change, its measurement and what did not
-improve.
+**New in v0.14.0: `--auto-host-cache`.** One flag now sizes the RAM tier of the context cache from
+the machine, so a server that exists to serve long agent conversations keeps them cached after they
+leave the GPU instead of re-reading them from scratch. It replaces four hand-tuned flags and respects
+a container's memory limit. Also: vision together with a multi-GPU `--devices` split, a
+`download-model` step that fetches the `godmode` graft when you have access, a repetition guard in
+the tuned launcher profiles, and a compiler cache that cuts a full rebuild from over ten minutes to
+about one and a half. 5 merged PRs — see the [v0.14.0 release notes](RELEASE_NOTES_0.14.0.md) for what
+each does and what was not verified.
 
-Previous: [v0.12.0](RELEASE_NOTES_0.12.0.md) (real multi-GPU, structured JSON output, a
+Previous: [v0.13.0](RELEASE_NOTES_0.13.0.md) (a smaller, closer-to-Q8 Qwen3.8-27B, per-request
+`thinking_budget`), [v0.12.0](RELEASE_NOTES_0.12.0.md) (real multi-GPU, structured JSON output, a
 self-healing engine), [v0.11.0](RELEASE_NOTES_0.11.0.md) (prefill roughly 2x faster, DFlash2 the recommended
 decode backend), [v0.10.0](RELEASE_NOTES_0.10.0.md) (tensor-core small-T kernels: MTP3 decode 1.5x
 at C1 and 1.7x at C8), [v0.9.1](RELEASE_NOTES_0.9.1.md), [v0.9.0](RELEASE_NOTES_0.9.0.md).
@@ -295,7 +296,8 @@ On Bazzite and other distributions the Dockerfile is the shortest path:
 - Seven KV-cache formats, from `bf16` to the 4-bit-key `rk4v4` that reaches the native 262K context.
 - Image understanding on Qwen3.8-27B and Qwen3.6-35B-A3B, with overlay residency that keeps the
   vision tower off the device between images.
-- Prefix reuse and a host-tier context cache for repeated or shared prompts.
+- Prefix reuse and a host-tier context cache for repeated or shared prompts, which `--auto-host-cache`
+  sizes from the machine's free RAM.
 - `none`, `low`, `medium`, and `xhigh` reasoning effort on Qwen3.8.
 - Concurrent cohorts of one to eight requests.
 - Layer-pipeline execution across several GPUs on Linux, verified on real 2x RTX 3090 and 2x RTX
