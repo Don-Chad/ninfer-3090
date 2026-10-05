@@ -18,6 +18,7 @@ The default configuration is Release. Ninja links and archives share the single-
 | `NINFER_BUILD_APPS` | ON | CLI, HTTP server and perplexity evaluator |
 | `BUILD_TESTING` | OFF | C++ tests and registered Python interoperability tests |
 | `NINFER_BUILD_BENCHMARKS` | OFF | Op, model, Engine and context-cost benchmarks |
+| `NINFER_COMPILER_CACHE` | ON | route C, C++ and CUDA compilation through ccache when it is installed; see [compiler cache](#compiler-cache) |
 
 Apps or tests enable the internal product support components: media acquisition, prompt input,
 logging and serving. This is one derived condition, not a separate user option. FFmpeg belongs
@@ -63,6 +64,45 @@ placeholder with the interpreter from the selected environment:
 Configure that environment with `cmake --preset local`. Compiler paths may also be supplied here;
 changing compilers requires a fresh build directory. There is no tools option, installed SDK,
 package export or configure-time dependency download.
+
+## Compiler cache
+
+A full build is 10+ minutes, dominated by a few multi-minute CUDA translation units followed by
+single-threaded device and final links (Ninja's `ninfer_link` pool), and editing a public header
+such as `include/ninfer/types.h` recompiles nearly everything. `cmake/CompilerCache.cmake` therefore
+routes C, C++ and CUDA compilation through [ccache](https://ccache.dev) whenever it is installed
+(`NINFER_COMPILER_CACHE=OFF` disables it; a language whose launcher the caller already set keeps
+it, and the other languages still use ccache). If ccache is missing, configure says so and names the
+setup script.
+
+Work happens in several git worktrees at once, each changing a few files, so the cache is shared:
+
+- The cache directory is ccache's per-user default, common to every tree.
+- ccache hashes absolute paths by default, so the same source in two worktrees would not hit.
+  The launcher sets `CCACHE_BASEDIR` to the main checkout (the parent of git's common directory,
+  which contains every worktree under `.claude/worktrees/`), so absolute paths under it are
+  rewritten relative to the build directory. Every tree has `<tree>/build-ninja` beside
+  `<tree>/src`, so identical sources then produce identical commands. `CCACHE_NOHASHDIR` keeps the
+  working directory out of the hash. A worktree outside the main checkout's directory does not
+  share, and translation units that include the shared vcpkg headers resolve those paths differently
+  per tree and may still miss.
+- `scripts/setup-ccache.{ps1,sh}` writes the same settings into ccache's user config (`base_dir`,
+  `hash_dir=false`, `max_size`) so direct `ccache` invocations agree, and on Windows installs a pinned,
+  checksum-verified ccache without administrator rights. On Linux it installs through `apt-get` or
+  `brew` when run with sudo or as root.
+- Linux and WSL keep their own cache. WSL builds are `git archive` snapshots (no `.git`), so the
+  launcher cannot find the main checkout and passes no base; `setup-ccache.sh` instead sets the config's
+  `base_dir` to `$HOME` (or `--base DIR`), which every snapshot under it shares.
+
+A cached object comes from whichever tree first compiled that source, so a `__FILE__` the compiler
+cannot remap (MSVC's, and device-side code's) can carry that tree's absolute path in assertion
+messages. This is cosmetic; the root `CMakeLists.txt` already documents that these two have no
+working remapping. On GCC/Clang the host-side `-ffile-prefix-map` option is left out of the hash for
+CUDA files because its absolute argument would otherwise give each worktree a different key; the
+remapping produces the same output in every tree.
+
+Release (the default) is cached. MSVC `/Zi` writes a shared PDB, which ccache cannot cache, so Debug
+and RelWithDebInfo builds on Windows are not. Check the hit rate with `ccache -s`.
 
 ## Targets and dependencies
 
