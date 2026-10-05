@@ -285,6 +285,26 @@ int main() {
     failures += check(disabled_cache_capacity_rejected,
                       "root-only server mode accepted context-cache capacity options");
 
+    const ServeOptions auto_cache = parse({"ninfer-serve", "model.ninfer", "--auto-host-cache"});
+    failures += check(auto_cache.context_cache.auto_host_cache && auto_cache.context_cache.enabled &&
+                          !defaults.context_cache.auto_host_cache,
+                      "--auto-host-cache did not reach serving options or is on by default");
+    for (const char* sized : {"--host-kv-mib", "--host-state-slots", "--max-private-continuations",
+                              "--max-shared-prefixes"}) {
+        bool conflict_rejected = false;
+        try {
+            (void)parse({"ninfer-serve", "model.ninfer", "--auto-host-cache", sized, "16"});
+        } catch (const std::invalid_argument&) { conflict_rejected = true; }
+        failures += check(conflict_rejected,
+                          "--auto-host-cache accepted an explicit Host capacity option");
+    }
+    bool auto_without_cache_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--no-prefix-reuse", "--auto-host-cache"});
+    } catch (const std::invalid_argument&) { auto_without_cache_rejected = true; }
+    failures += check(auto_without_cache_rejected,
+                      "--auto-host-cache was accepted with the context cache disabled");
+
     const ServeOptions no_slots = parse({"ninfer-serve", "model.ninfer"});
     failures += check(no_slots.slot_save_path.empty() && !no_slots.auto_save_evicted,
                       "slot persistence was on by default");

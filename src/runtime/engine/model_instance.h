@@ -36,6 +36,8 @@ struct ConstructedModel {
     std::unique_ptr<ModelInstance> instance;
     LoadSummary load;
     ContextMachineCostModel context_cost;
+    // The options' context cache with any automatic Host sizing resolved; the Engine adopts it.
+    ContextCacheOptions context_cache;
 };
 
 [[nodiscard]] ConstructedModel construct_model(const EngineOptions& options, DeviceContext& device);

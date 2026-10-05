@@ -80,7 +80,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
            "[--media-preprocess-threads N] "
            "[--device-state-slots N] [--host-state-slots N] [--host-kv-mib N] "
-           "[--max-private-continuations N] [--max-shared-prefixes N] "
+           "[--max-private-continuations N] [--max-shared-prefixes N] [--auto-host-cache] "
            "[--max-long-anchors-per-continuation N] [--auto-long-anchors N] "
            "[--max-cache-markers-per-request N] "
            "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] "
@@ -146,6 +146,10 @@ std::string serve_usage_text(const char* argv0) {
            "shared=max(max-concurrency,4), anchors=2; Host state=8 slots, Host KV=8192 MiB\n"
            "       --device-state-slots is extra checkpoint capacity beyond active lanes; "
            "--host-kv-mib uses MiB\n"
+           "       --auto-host-cache sizes Host state slots, Host KV and both catalogs from the "
+           "host memory free after the model loads (80% of what is left above a 4 GiB reserve, "
+           "a quarter of it for state slots); it replaces the four explicit Host capacity "
+           "options\n"
            "       --default-thinking-budget caps model-origin thinking for enabled requests; "
            "control tokens count toward the request output limit\n"
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
@@ -226,6 +230,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     bool kv_capacity_explicit        = false;
     bool device_explicit             = false;
     bool context_capacity_explicit   = false;
+    bool host_sizing_explicit        = false;
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
         options.help_requested = true;
         return options;
@@ -311,6 +316,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.context_cache.host_state_slots = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--host-state-slots"), "host-state-slots"));
             context_capacity_explicit = true;
+            host_sizing_explicit      = true;
         } else if (arg == "--host-kv-mib") {
             const std::uint64_t mib = parse_u64(require_value("--host-kv-mib"), "host-kv-mib");
             if (mib > std::numeric_limits<std::size_t>::max() / (1ULL << 20)) {
@@ -318,16 +324,22 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             }
             options.context_cache.host_kv_capacity_bytes = static_cast<std::size_t>(mib << 20);
             context_capacity_explicit                    = true;
+            host_sizing_explicit                         = true;
         } else if (arg == "--max-private-continuations") {
             options.context_cache.max_private_continuations =
                 static_cast<std::uint32_t>(parse_nonnegative_int(
                     require_value("--max-private-continuations"), "max-private-continuations"));
             context_capacity_explicit = true;
+            host_sizing_explicit      = true;
         } else if (arg == "--max-shared-prefixes") {
             options.context_cache.max_shared_prefixes =
                 static_cast<std::uint32_t>(parse_nonnegative_int(
                     require_value("--max-shared-prefixes"), "max-shared-prefixes"));
             context_capacity_explicit = true;
+            host_sizing_explicit      = true;
+        } else if (arg == "--auto-host-cache") {
+            options.context_cache.auto_host_cache = true;
+            context_capacity_explicit             = true;
         } else if (arg == "--max-long-anchors-per-continuation") {
             options.context_cache.max_long_anchors_per_continuation = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--max-long-anchors-per-continuation"),
@@ -510,6 +522,11 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (!kv_capacity_explicit) {
         options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
+    }
+    if (options.context_cache.auto_host_cache && host_sizing_explicit) {
+        throw std::invalid_argument(
+            "--auto-host-cache sizes --host-state-slots, --host-kv-mib, "
+            "--max-private-continuations and --max-shared-prefixes; do not set them as well");
     }
     if (!options.allow_prefix_reuse) {
         if (context_capacity_explicit) {

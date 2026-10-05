@@ -186,6 +186,11 @@ struct ContextCacheOptions {
     // Host StateImages and Host KV bytes are independently configured pinned-memory capacities.
     std::uint32_t host_state_slots     = kDefaultHostStateSlots;
     std::size_t host_kv_capacity_bytes = kDefaultHostKvCapacityBytes;
+    // Sizes host_state_slots, host_kv_capacity_bytes, max_private_continuations and
+    // max_shared_prefixes together from the host memory available once the model is loaded, and
+    // refuses explicit values for any of the four. Engine::options() returns the resolved values
+    // with this flag cleared.
+    bool auto_host_cache = false;
     // Bounded private/shared logical catalogs and per-continuation long-anchor count.
     std::optional<std::uint32_t> max_private_continuations;
     std::optional<std::uint32_t> max_shared_prefixes;

@@ -1075,6 +1075,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--host-kv-mib N` | shared pinned Host Main/Backend KV byte capacity in MiB | `8192` |
 | `--max-private-continuations N` | private continuation descriptor capacity | `2 * max-concurrency` |
 | `--max-shared-prefixes N` | shared stable-prefix descriptor capacity | `max-concurrency` |
+| `--auto-host-cache` | size `--host-state-slots`, `--host-kv-mib`, `--max-private-continuations` and `--max-shared-prefixes` from the host memory still free once the model has loaded, for a machine that exists to serve; see [automatic host cache](#automatic-host-cache). Replaces those four options and refuses them | off |
 | `--max-long-anchors-per-continuation N` | private long-anchor limit per continuation | `2` |
 | `--auto-long-anchors N` | propose a private long anchor at each of the last `N` interior message boundaries of every prompt, so a rewrite of recent history restores at the anchor below the edit instead of re-prefilling from token zero; clamped to the anchor limit, `0` disables | the anchor limit |
 | `--max-cache-markers-per-request N` | caller marker input-complexity bound | `4` |
@@ -1271,6 +1272,33 @@ resolves once at startup.
 
 Admission reserves the full prompt-plus-effective-output page entitlement through request
 completion. A request remains queued until a legal resource plan can satisfy that entitlement.
+
+### Automatic host cache
+
+The host tier of the context cache (pinned StateImages and KV pages that hold prefixes after they
+leave the GPU) defaults to a fixed 8 slots and 8 GiB. `--auto-host-cache` replaces that with sizes
+taken from the machine, once, after the model has loaded:
+
+- The available memory is the smaller of the system's available memory (`MemAvailable` on Linux,
+  available physical memory on Windows) and what remains under the container's cgroup limit, so a
+  rented container is sized by its own limit rather than the host's RAM. Startup fails, naming the
+  explicit options, if the platform reports neither.
+- 4 GiB is kept back, and the host cache may pin 80% of the rest. Pinned pages cannot be reclaimed.
+- A quarter of that budget buys StateImage slots (at most 128, each one whole GDN snapshot, so its
+  size depends on the model and `--gdn-state-fp16`); the remainder is host KV.
+- The private-continuation catalog is the number of resident states (active lanes, device
+  checkpoints and host slots), never below `2 * max-concurrency`; the shared-prefix catalog is a
+  quarter of that, between `max(max-concurrency, 4)` and 32, plus one per injected graft.
+
+The resolved values are what the `context cache |` startup line and the request log report. The option
+combines with `--device-state-slots` and `--max-long-anchors-per-continuation`, but not with
+`--host-state-slots`, `--host-kv-mib`, `--max-private-continuations` or `--max-shared-prefixes`, and
+not with `--no-prefix-reuse`. On Windows, pinned host memory is charged against the GPU's memory
+(see `--host-kv-mib`), so the whole budget is first clamped to half of the device memory left after
+the model and KV pool, less 1 GiB, and only then split. A card the model nearly fills therefore gets
+a small host cache, down to none, while the same machine on Linux is not limited this way. The
+logged figures are the ones pinned. The constants are conservative defaults chosen by reasoning, not
+measured against hit rates on a live workload.
 
 ### Default output limit
 

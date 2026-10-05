@@ -167,6 +167,11 @@ public:
     // What each further device reserves (device 1 first). Empty on one device.
     [[nodiscard]] std::span<const std::size_t> extra_rank_reservation_bytes() const noexcept;
     [[nodiscard]] std::size_t workspace_capacity_bytes() const noexcept;
+    // Pinned host bytes of one StateImage slot, which sizes the Host state tier.
+    [[nodiscard]] std::size_t host_state_image_bytes() const noexcept;
+    // Replaces the Host-side context-cache capacities. Device memory does not depend on them, so the
+    // plan stays valid; the Engine uses this to size them once the host's free memory is known.
+    void set_host_context_cache(const ContextCacheOptions& resolved);
 
 public:
     // Family-private construction/storage seam; exact packages expose only the completed alias.
