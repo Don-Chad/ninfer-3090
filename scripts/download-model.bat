@@ -33,7 +33,8 @@ rem models instead; an unknown name still prints the usage and exits 2. download
 rem menu and always requires the name.
 rem
 rem Environment: NINFER_MODEL_DIR (default: models\ at the repo root in a checkout, or beside this
-rem file in the release archive), NINFER_SKIP_SHA256=1 to accept a file on size alone.
+rem file in the release archive), NINFER_SKIP_SHA256=1 to accept a file on size alone. qwen38-27b also
+rem fetches the private godmode graft when HF_TOKEN, or `hf auth login`, grants access to it.
 rem
 rem Uses aria2c (16 parallel ranges) when it is on PATH, since single-stream curl against these
 rem artifacts has been observed to throttle to ~1 MB/s or stall outright; falls back to curl
@@ -142,6 +143,7 @@ if exist "%MODEL%" (
   call :verify "%MODEL%"
   if "!VERIFY_OK!"=="1" (
     echo Model already present: %MODEL%
+    call :fetch_graft
     exit /b 0
   )
   echo Existing %MODEL% did not verify against revision %REVISION%; fetching the pinned one.
@@ -180,6 +182,67 @@ if errorlevel 1 (
 )
 echo Model ready: %MODEL%
 echo Point the tests at it with:  set %TESTS_VARIABLE%=%MODEL%
+call :fetch_graft
+exit /b 0
+
+rem The qwen38-27b godmode graft lives in a private repo. Fetching it is best-effort: with no token,
+rem or a token without access, the model download still succeeds and the graft is simply skipped.
+rem Both files are pinned to a revision and sha256 and land in artifacts\grafts beside the repo root,
+rem where run.bat looks. NINFER_GRAFT_DIR overrides the directory, NINFER_GRAFTS=off skips the fetch.
+:fetch_graft
+if /i not "%ARTIFACT%"=="qwen3_8_27b.ninfer" exit /b 0
+if /i "%NINFER_GRAFTS%"=="off" exit /b 0
+set "G_REPO=WarlaxZ/Qwen3.8-27B-godmode-graft"
+set "G_REV=97a02e9bbb37d76af63256152c07fc4eeb4c40c9"
+set "G_DIR=%REPO_ROOT%\artifacts\grafts"
+if defined NINFER_GRAFT_DIR set "G_DIR=%NINFER_GRAFT_DIR%"
+set "G_TOKEN=%HF_TOKEN%"
+set "G_TOKENFILE=%USERPROFILE%\.cache\huggingface\token"
+if defined HF_HOME set "G_TOKENFILE=%HF_HOME%\token"
+if not defined G_TOKEN if exist "%G_TOKENFILE%" set /p G_TOKEN=<"%G_TOKENFILE%"
+if not defined G_TOKEN goto :graft_no_token
+if not exist "%G_DIR%" mkdir "%G_DIR%"
+set "G_STOP="
+call :graft_one godmode_q38_trained.bin a0ddecc4ca5db8b84f600d60fbf238c97e21a74069b7182e0e0e595d7a22c391
+if defined G_STOP exit /b 0
+call :graft_one godmode_q38_trained.json 2a832ea95cc1dcee1dff2b292b10ef98913594eaf1f74121b01dd03a23dee3b1
+if defined G_STOP exit /b 0
+echo Graft ready: %G_DIR%\godmode_q38_trained.bin
+exit /b 0
+:graft_no_token
+echo Graft: skipped, no Hugging Face token. Set HF_TOKEN or run "hf auth login" if you have access.
+exit /b 0
+
+rem Fetches one pinned graft file unless the one on disk already verifies. Sets G_STOP on failure.
+:graft_one
+if not exist "%G_DIR%\%~1" goto :graft_fetch
+call :sha_ok "%G_DIR%\%~1" %~2
+if "!SHA_OK!"=="1" exit /b 0
+:graft_fetch
+curl.exe -sSL --fail -H "Authorization: Bearer %G_TOKEN%" --output "%G_DIR%\%~1.part" "https://huggingface.co/%G_REPO%/resolve/%G_REV%/%~1" 2>nul
+if errorlevel 1 goto :graft_denied
+call :sha_ok "%G_DIR%\%~1.part" %~2
+if not "!SHA_OK!"=="1" goto :graft_corrupt
+move /y "%G_DIR%\%~1.part" "%G_DIR%\%~1" >nul
+exit /b 0
+:graft_denied
+del "%G_DIR%\%~1.part" >nul 2>&1
+echo Graft: skipped, no access to %G_REPO% with this token.
+set "G_STOP=1"
+exit /b 0
+:graft_corrupt
+del "%G_DIR%\%~1.part" >nul 2>&1
+echo Graft: %~1 failed sha256 verification, not installed. 1>&2
+set "G_STOP=1"
+exit /b 0
+
+rem SHA_OK=1 when the sha256 of %1 equals %2.
+:sha_ok
+set "SHA_OK=0"
+set "SHA_ACTUAL="
+for /f "skip=1 delims=" %%H in ('certutil -hashfile "%~1" SHA256') do if not defined SHA_ACTUAL set "SHA_ACTUAL=%%H"
+set "SHA_ACTUAL=!SHA_ACTUAL: =!"
+if /i "!SHA_ACTUAL!"=="%~2" set "SHA_OK=1"
 exit /b 0
 
 rem Verifies %1 against EXPECTED_SIZE and, unless NINFER_SKIP_SHA256=1, EXPECTED_SHA256, setting

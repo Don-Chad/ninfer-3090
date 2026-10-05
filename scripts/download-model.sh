@@ -30,7 +30,8 @@ set -euo pipefail
 # Changing a pin makes the staging hazard below live rather than hypothetical.
 #
 # Environment: NINFER_MODEL_DIR (default: models/ beside this script), NINFER_SKIP_SHA256=1 to accept
-# a file on size alone.
+# a file on size alone. qwen38-27b also fetches the private `godmode` graft when HF_TOKEN (or
+# `hf auth login`) grants access to it; NINFER_GRAFT_DIR and NINFER_GRAFTS=off as in run.bat.
 #
 # Uses aria2c (16 parallel ranges) when it is on PATH, since single-stream curl against these
 # artifacts has been observed to throttle to ~1 MB/s or stall outright; falls back to curl
@@ -111,11 +112,58 @@ verify() {
   [ "$actual" = "$expected_sha256" ]
 }
 
+# The qwen38-27b `godmode` graft lives in a private repo. Fetching it is best-effort: with no token,
+# or a token without access, the model download still succeeds and the graft is simply skipped.
+# Both files are pinned to a revision and sha256, and sit in artifacts/grafts/ beside the repo root,
+# where run.bat looks (NINFER_GRAFT_DIR overrides). NINFER_GRAFTS=off skips the fetch.
+fetch_graft() {
+  [ "${1:-}" = 'qwen38-27b' ] && [ "${NINFER_GRAFTS:-}" != 'off' ] || return 0
+  local repo='WarlaxZ/Qwen3.8-27B-godmode-graft' rev='97a02e9bbb37d76af63256152c07fc4eeb4c40c9'
+  local dir="${NINFER_GRAFT_DIR:-$root/../artifacts/grafts}"
+  local token="${HF_TOKEN:-}" tokfile="${HF_HOME:-$HOME/.cache/huggingface}/token"
+  [ -n "$token" ] || { [ -f "$tokfile" ] && token="$(tr -d '[:space:]' < "$tokfile")"; } || true
+  if [ -z "$token" ]; then
+    printf 'Graft: skipped (no Hugging Face token; set HF_TOKEN or run `hf auth login` if you have access).\n'
+    return 0
+  fi
+  local name sha tmp
+  mkdir -p -- "$dir"
+  for entry in \
+    'godmode_q38_trained.bin a0ddecc4ca5db8b84f600d60fbf238c97e21a74069b7182e0e0e595d7a22c391' \
+    'godmode_q38_trained.json 2a832ea95cc1dcee1dff2b292b10ef98913594eaf1f74121b01dd03a23dee3b1'; do
+    name="${entry% *}"; sha="${entry#* }"
+    if [ -f "$dir/$name" ] && graft_sha_ok "$dir/$name" "$sha"; then continue; fi
+    tmp="$dir/$name.part"
+    if ! curl -sSL --fail -H "Authorization: Bearer $token" --output "$tmp" \
+         "https://huggingface.co/$repo/resolve/$rev/$name" 2>/dev/null; then
+      rm -f -- "$tmp"
+      printf 'Graft: skipped (no access to %s with this token).\n' "$repo"
+      return 0
+    fi
+    if ! graft_sha_ok "$tmp" "$sha"; then
+      rm -f -- "$tmp"
+      printf 'Graft: %s failed sha256 verification; not installed.\n' "$name" >&2
+      return 0
+    fi
+    mv -f -- "$tmp" "$dir/$name"
+  done
+  printf 'Graft ready: %s/godmode_q38_trained.bin\n' "$dir"
+}
+
+graft_sha_ok() {
+  local actual
+  if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum -- "$1" | cut -d' ' -f1)"
+  elif command -v shasum >/dev/null 2>&1; then actual="$(shasum -a 256 -- "$1" | cut -d' ' -f1)"
+  else return 1; fi
+  [ "$actual" = "$2" ]
+}
+
 mkdir -p -- "$model_dir"
 
 if [ -f "$model" ]; then
   if verify "$model"; then
     printf 'Model already present: %s\n' "$model"
+    fetch_graft "$1"
     exit 0
   fi
   printf '%s\n' "Existing $model did not verify against revision $revision; fetching the pinned one." >&2
@@ -150,3 +198,4 @@ fi
 mv -f -- "$part" "$model"
 printf 'Model ready: %s\n' "$model"
 printf 'Point the tests at it with:  export %s=%s\n' "$tests_variable" "$model"
+fetch_graft "$1"
