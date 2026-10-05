@@ -201,37 +201,63 @@ set "G_TOKENFILE=%USERPROFILE%\.cache\huggingface\token"
 if defined HF_HOME set "G_TOKENFILE=%HF_HOME%\token"
 if not defined G_TOKEN if exist "%G_TOKENFILE%" set /p G_TOKEN=<"%G_TOKENFILE%"
 if not defined G_TOKEN goto :graft_no_token
-if not exist "%G_DIR%" mkdir "%G_DIR%"
+if not exist "%G_DIR%" mkdir "%G_DIR%" >nul 2>&1
+if not exist "%G_DIR%\" goto :graft_nodir
+rem The graft is a pair run.bat trusts by the .bin alone and the loader needs whole with its .json
+rem sidecar, so any failure below leaves neither file behind (:graft_abort).
+set "G_BIN=godmode_q38_trained.bin"
+set "G_BIN_SHA=a0ddecc4ca5db8b84f600d60fbf238c97e21a74069b7182e0e0e595d7a22c391"
+set "G_JSON=godmode_q38_trained.json"
+set "G_JSON_SHA=2a832ea95cc1dcee1dff2b292b10ef98913594eaf1f74121b01dd03a23dee3b1"
+set "G_COMPLETE=1"
+call :graft_present %G_BIN% %G_BIN_SHA%
+if not "!SHA_OK!"=="1" set "G_COMPLETE=0"
+call :graft_present %G_JSON% %G_JSON_SHA%
+if not "!SHA_OK!"=="1" set "G_COMPLETE=0"
+if "!G_COMPLETE!"=="1" goto :graft_ready
 set "G_STOP="
-call :graft_one godmode_q38_trained.bin a0ddecc4ca5db8b84f600d60fbf238c97e21a74069b7182e0e0e595d7a22c391
-if defined G_STOP exit /b 0
-call :graft_one godmode_q38_trained.json 2a832ea95cc1dcee1dff2b292b10ef98913594eaf1f74121b01dd03a23dee3b1
-if defined G_STOP exit /b 0
-echo Graft ready: %G_DIR%\godmode_q38_trained.bin
+call :graft_fetch %G_BIN% %G_BIN_SHA%
+if defined G_STOP goto :graft_abort
+call :graft_fetch %G_JSON% %G_JSON_SHA%
+if defined G_STOP goto :graft_abort
+move /y "%G_DIR%\%G_BIN%.part" "%G_DIR%\%G_BIN%" >nul 2>&1
+if errorlevel 1 goto :graft_install_failed
+move /y "%G_DIR%\%G_JSON%.part" "%G_DIR%\%G_JSON%" >nul 2>&1
+if errorlevel 1 goto :graft_install_failed
+:graft_ready
+echo Graft ready: %G_DIR%\%G_BIN%
 exit /b 0
 :graft_no_token
 echo Graft: skipped, no Hugging Face token. Set HF_TOKEN or run "hf auth login" if you have access.
 exit /b 0
+:graft_nodir
+echo Graft: skipped, cannot create %G_DIR%. 1>&2
+exit /b 0
+:graft_install_failed
+echo Graft: skipped, cannot install into %G_DIR%. 1>&2
+:graft_abort
+del "%G_DIR%\%G_BIN%" "%G_DIR%\%G_JSON%" "%G_DIR%\%G_BIN%.part" "%G_DIR%\%G_JSON%.part" >nul 2>&1
+exit /b 0
 
-rem Fetches one pinned graft file unless the one on disk already verifies. Sets G_STOP on failure.
-:graft_one
-if not exist "%G_DIR%\%~1" goto :graft_fetch
+rem SHA_OK=1 when file %1 in the graft directory exists and its sha256 equals %2.
+:graft_present
+set "SHA_OK=0"
+if not exist "%G_DIR%\%~1" exit /b 0
 call :sha_ok "%G_DIR%\%~1" %~2
-if "!SHA_OK!"=="1" exit /b 0
+exit /b 0
+
+rem Downloads one pinned graft file to its .part. Sets G_STOP on failure; the caller discards both files.
 :graft_fetch
 curl.exe -sSL --fail -H "Authorization: Bearer %G_TOKEN%" --output "%G_DIR%\%~1.part" "https://huggingface.co/%G_REPO%/resolve/%G_REV%/%~1" 2>nul
 if errorlevel 1 goto :graft_denied
 call :sha_ok "%G_DIR%\%~1.part" %~2
 if not "!SHA_OK!"=="1" goto :graft_corrupt
-move /y "%G_DIR%\%~1.part" "%G_DIR%\%~1" >nul
 exit /b 0
 :graft_denied
-del "%G_DIR%\%~1.part" >nul 2>&1
 echo Graft: skipped, no access to %G_REPO% with this token.
 set "G_STOP=1"
 exit /b 0
 :graft_corrupt
-del "%G_DIR%\%~1.part" >nul 2>&1
 echo Graft: %~1 failed sha256 verification, not installed. 1>&2
 set "G_STOP=1"
 exit /b 0

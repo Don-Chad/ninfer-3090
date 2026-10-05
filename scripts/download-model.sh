@@ -126,28 +126,51 @@ fetch_graft() {
     printf 'Graft: skipped (no Hugging Face token; set HF_TOKEN or run `hf auth login` if you have access).\n'
     return 0
   fi
-  local name sha tmp
-  mkdir -p -- "$dir"
-  for entry in \
-    'godmode_q38_trained.bin a0ddecc4ca5db8b84f600d60fbf238c97e21a74069b7182e0e0e595d7a22c391' \
-    'godmode_q38_trained.json 2a832ea95cc1dcee1dff2b292b10ef98913594eaf1f74121b01dd03a23dee3b1'; do
-    name="${entry% *}"; sha="${entry#* }"
-    if [ -f "$dir/$name" ] && graft_sha_ok "$dir/$name" "$sha"; then continue; fi
-    tmp="$dir/$name.part"
-    if ! curl -sSL --fail -H "Authorization: Bearer $token" --output "$tmp" \
-         "https://huggingface.co/$repo/resolve/$rev/$name" 2>/dev/null; then
-      rm -f -- "$tmp"
+  local names=(godmode_q38_trained.bin godmode_q38_trained.json)
+  local shas=(a0ddecc4ca5db8b84f600d60fbf238c97e21a74069b7182e0e0e595d7a22c391
+              2a832ea95cc1dcee1dff2b292b10ef98913594eaf1f74121b01dd03a23dee3b1)
+  local i complete=1
+  # The graft is a pair the launcher trusts by file presence and the loader needs whole, so every
+  # failure below leaves neither file behind: a lone or mismatched file would break a later launch.
+  if ! mkdir -p -- "$dir" 2>/dev/null; then
+    printf 'Graft: skipped (cannot create %s).\n' "$dir" >&2
+    return 0
+  fi
+  for i in 0 1; do
+    { [ -f "$dir/${names[i]}" ] && graft_sha_ok "$dir/${names[i]}" "${shas[i]}"; } || complete=0
+  done
+  if [ "$complete" = 1 ]; then
+    printf 'Graft ready: %s/%s\n' "$dir" "${names[0]}"
+    return 0
+  fi
+  # Stage both files and verify both; only then publish the pair.
+  for i in 0 1; do
+    if ! curl -sSL --fail -H "Authorization: Bearer $token" --output "$dir/${names[i]}.part" \
+         "https://huggingface.co/$repo/resolve/$rev/${names[i]}" 2>/dev/null; then
+      graft_discard "$dir"
       printf 'Graft: skipped (no access to %s with this token).\n' "$repo"
       return 0
     fi
-    if ! graft_sha_ok "$tmp" "$sha"; then
-      rm -f -- "$tmp"
-      printf 'Graft: %s failed sha256 verification; not installed.\n' "$name" >&2
+    if ! graft_sha_ok "$dir/${names[i]}.part" "${shas[i]}"; then
+      graft_discard "$dir"
+      printf 'Graft: %s failed sha256 verification; not installed.\n' "${names[i]}" >&2
       return 0
     fi
-    mv -f -- "$tmp" "$dir/$name"
   done
-  printf 'Graft ready: %s/godmode_q38_trained.bin\n' "$dir"
+  for i in 0 1; do
+    if ! mv -f -- "$dir/${names[i]}.part" "$dir/${names[i]}" 2>/dev/null; then
+      graft_discard "$dir"
+      printf 'Graft: skipped (cannot install into %s).\n' "$dir" >&2
+      return 0
+    fi
+  done
+  printf 'Graft ready: %s/%s\n' "$dir" "${names[0]}"
+}
+
+# Removes the staged and installed graft files so a failed fetch never leaves a partial or mixed pair.
+graft_discard() {
+  rm -f -- "$1"/godmode_q38_trained.bin "$1"/godmode_q38_trained.json \
+           "$1"/godmode_q38_trained.bin.part "$1"/godmode_q38_trained.json.part 2>/dev/null || true
 }
 
 graft_sha_ok() {
