@@ -67,9 +67,17 @@ second GPU. Distinct ids are refused on Windows.
 
 ## What is not covered yet
 
-- **Vision** and **DFlash/DFlash2** are refused when the model spans more than one device. DFlash reads
+- **DFlash/DFlash2** are refused when the model spans more than one device. DFlash reads
   layer outputs from several depths (its feature taps) into rank 0 buffers, which from a later stage
   are another device's memory; they need to cross the stage boundaries first.
+- **Vision works, entirely on rank 0.** The tower, its encode workspace and the handoff live on the
+  first device, and the visual columns are scattered into the residual before the stage loop, so a
+  stage sees an ordinary residual; the multimodal `[3,T]` rope positions ride the control block.
+  A resident tower is added to rank 0's share in `default_stage_layers`. `--vision-residency overlay`
+  keeps its single-device meaning: the window is borrowed from rank 0's evictable tail (embedding,
+  head, MTP) or rank 0's free KV granules (`lendable_kv_end_bytes` counts rank 0 planes only; a
+  lent granule removes those page ids from admission on every rank). Only exercised with ranks
+  sharing one device so far; distinct GPUs are unverified.
 - **Prefill does not overlap stages.** A prefill chunk runs through the stages in turn and the
   engine synchronizes after each chunk, so at any moment one stage is busy. Overlapping stages needs
   micro-chunks inside a chunk (later stages start on micro-chunk 0 while stage 0 runs micro-chunk 1);

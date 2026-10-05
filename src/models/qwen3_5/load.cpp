@@ -56,14 +56,6 @@ LoadPlan plan_load(const artifact::Reader& reader, LoadOptions options) {
     out->resources = loading::bind_resources(binder, out->config);
     loading::Bindings bindings(binder);
     const auto& text = out->config.text;
-    if (options.ranks > 1 && options.overlay_vision()) {
-        // Overlay borrows weight memory from the primary device's evictable tail; a later stage
-        // holds whole layers and nothing a Vision window could take. The two residency schemes are
-        // answers to the same question -- where the bytes for something else come from -- and no
-        // sound combination of them exists today, so say so rather than half-apply one.
-        throw std::invalid_argument(
-            "--vision-residency overlay and a multi-device --devices split cannot be combined");
-    }
     out->weights.text =
         loading::bind_text(bindings, text, options,
                            loading::plan_stage_plan(text.num_hidden_layers, options));
@@ -202,6 +194,15 @@ std::vector<std::uint32_t> default_stage_layers(const artifact::Reader& reader,
                                parameter_bytes(reader, bindings, weights.final_norm);
     if (config.mtp && options.speculative == SpeculativeBackend::Mtp) {
         head_bytes += layer_bytes_total / std::max<std::size_t>(layers.size(), 1);
+    }
+    // A resident Vision tower sits on the primary device too. An overlay tower is pinned on the
+    // host and borrows the head's evictable tail, which `head_bytes` already counts.
+    if (config.vision && options.vision && !options.overlay_vision()) {
+        const std::size_t first = bindings.weights.size();
+        (void)loading::bind_vision(bindings, *config.vision, text, artifact::Residency::Device);
+        for (std::size_t index = first; index < bindings.weights.size(); ++index) {
+            head_bytes += parameter_bytes(reader, bindings, WeightId{index});
+        }
     }
 
     std::vector<StageBudget> budgets;

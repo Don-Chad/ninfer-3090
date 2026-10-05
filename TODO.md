@@ -393,8 +393,10 @@ what it says about kernels and measurements still holds except where this sectio
       submitting the source stream's copies, so the source stalls whether or not the fence is
       there (measured both ways). The graph assertion replaces it. On Linux the same test could
       also be run as a real race; worth doing if this ever runs there.
-- [ ] **Not built for pipeline stages yet:** vision and DFlash/DFlash2 refuse a split (DFlash needs
-      its feature taps carried across stage boundaries); the default split's per-stage
+- [ ] **Not built for pipeline stages yet:** DFlash/DFlash2 refuse a split (DFlash needs
+      its feature taps carried across stage boundaries). Vision (resident and overlay) is allowed
+      but has only been exercised with `--devices 0,0`; real distinct-GPU behaviour is unverified.
+      The default split's per-stage
       overheads are constants, not measured (`default_stage_layers`);
       prefill does not overlap stages (micro-chunk wavefront); tensor parallelism is unbuilt.
       `docs/maintainer/pipeline-parallel-plan.md` is the design of record.
