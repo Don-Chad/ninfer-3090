@@ -157,7 +157,10 @@ fetch_graft() {
       return 0
     fi
   done
-  # Sidecar first, binary last: run.bat and the launcher trust the .bin, so it must never be visible without its .json.
+  # Any pair already here is invalid or partial (a verified one returned above). Clear it, binary first,
+  # so the new pair never sits beside a leftover half of the old one. Then install the sidecar first and
+  # the binary last: run.bat and the launcher trust the .bin, so it must never be visible without its .json.
+  rm -f -- "$dir/${names[0]}" "$dir/${names[1]}" 2>/dev/null || true
   for i in 1 0; do
     if ! mv -f -- "$dir/${names[i]}.part" "$dir/${names[i]}" 2>/dev/null; then
       graft_discard "$dir"

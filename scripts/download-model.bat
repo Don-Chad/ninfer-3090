@@ -220,7 +220,10 @@ call :graft_fetch %G_BIN% %G_BIN_SHA%
 if defined G_STOP goto :graft_abort
 call :graft_fetch %G_JSON% %G_JSON_SHA%
 if defined G_STOP goto :graft_abort
-rem Sidecar first, binary last: run.bat trusts the .bin alone, so it must never be visible without its .json.
+rem Any pair already here is invalid or partial (a verified one went to :graft_ready). Clear it, binary first,
+rem so the new pair never sits beside a leftover half of the old one. Then install the sidecar first and the
+rem binary last: run.bat trusts the .bin alone, so it must never be visible without its .json.
+del "%G_DIR%\%G_BIN%" "%G_DIR%\%G_JSON%" >nul 2>&1
 move /y "%G_DIR%\%G_JSON%.part" "%G_DIR%\%G_JSON%" >nul 2>&1
 if errorlevel 1 goto :graft_install_failed
 move /y "%G_DIR%\%G_BIN%.part" "%G_DIR%\%G_BIN%" >nul 2>&1
