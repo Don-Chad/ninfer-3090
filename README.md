@@ -50,17 +50,17 @@ requests are not guaranteed.
 > your desktop's GPU? Plans start with a day pass, and every verified account gets a few free
 > requests a day. Thank you to NeverMetered for supporting this project.
 
-**New in v0.12.0: real multi-GPU, structured JSON output under every speculative backend, and an
-engine that recovers instead of latching.** Pipeline parallelism is verified on rented 2x RTX 3090
-and 2x RTX A4000 hardware; the new `rk4v4` KV format reaches the 27B's native 262,144-token context
-at `rk8v4`'s speed in NVFP4's memory; grammar-constrained JSON now works under MTP, DFlash2 and no
-speculation alike; and a worker-level fault now recovers automatically instead of latching the
-whole engine unavailable. Plus Prometheus metrics, on-disk session persistence via `/slots`,
-per-request prompt grafts under speculation, and a first (untuned) look at the CMP 170HX. 35 merged
-PRs in eight days — see the [v0.12.0 release notes](RELEASE_NOTES_0.12.0.md) for every change and
-its measurement.
+**New in v0.13.0: a better Qwen3.8-27B, 1.46 GB smaller.** An importance-weighted scale search
+re-encodes the 27B to 18.98 GB with 15% lower KL divergence from a Q8_0 reference and 3-6%
+faster speculative decode (DFlash2 chat 125.9 to 133.5 tok/s, a 133K-token conversation 82.5 to 89.8
+tok/s), and it is now the default 27B. Also: per-request `thinking_budget` on every endpoint, no more
+`thinking_budget_capacity_insufficient` 400s on long agent sessions, prompt grafts that use the
+context cache, and a faster-prefilling 35B-A3B launcher. 11 merged PRs — see the
+[v0.13.0 release notes](RELEASE_NOTES_0.13.0.md) for every change, its measurement and what did not
+improve.
 
-Previous: [v0.11.0](RELEASE_NOTES_0.11.0.md) (prefill roughly 2x faster, DFlash2 the recommended
+Previous: [v0.12.0](RELEASE_NOTES_0.12.0.md) (real multi-GPU, structured JSON output, a
+self-healing engine), [v0.11.0](RELEASE_NOTES_0.11.0.md) (prefill roughly 2x faster, DFlash2 the recommended
 decode backend), [v0.10.0](RELEASE_NOTES_0.10.0.md) (tensor-core small-T kernels: MTP3 decode 1.5x
 at C1 and 1.7x at C8), [v0.9.1](RELEASE_NOTES_0.9.1.md), [v0.9.0](RELEASE_NOTES_0.9.0.md).
 
