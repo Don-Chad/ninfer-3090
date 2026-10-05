@@ -33,7 +33,8 @@ rem models instead; an unknown name still prints the usage and exits 2. download
 rem menu and always requires the name.
 rem
 rem Environment: NINFER_MODEL_DIR (default: models\ at the repo root in a checkout, or beside this
-rem file in the release archive), NINFER_SKIP_SHA256=1 to accept a file on size alone.
+rem file in the release archive), NINFER_SKIP_SHA256=1 to accept a file on size alone. qwen38-27b also
+rem fetches the private godmode graft when HF_TOKEN, or `hf auth login`, grants access to it.
 rem
 rem Uses aria2c (16 parallel ranges) when it is on PATH, since single-stream curl against these
 rem artifacts has been observed to throttle to ~1 MB/s or stall outright; falls back to curl
@@ -142,6 +143,7 @@ if exist "%MODEL%" (
   call :verify "%MODEL%"
   if "!VERIFY_OK!"=="1" (
     echo Model already present: %MODEL%
+    call :fetch_graft
     exit /b 0
   )
   echo Existing %MODEL% did not verify against revision %REVISION%; fetching the pinned one.
@@ -180,6 +182,106 @@ if errorlevel 1 (
 )
 echo Model ready: %MODEL%
 echo Point the tests at it with:  set %TESTS_VARIABLE%=%MODEL%
+call :fetch_graft
+exit /b 0
+
+rem The qwen38-27b godmode graft lives in a private repo. Fetching it is best-effort: with no token,
+rem or a token without access, the model download still succeeds and the graft is simply skipped.
+rem Both files are pinned to a revision and sha256 and land in artifacts\grafts beside the repo root,
+rem where run.bat looks. NINFER_GRAFT_DIR overrides the directory, NINFER_GRAFTS=off skips the fetch.
+:fetch_graft
+if /i not "%ARTIFACT%"=="qwen3_8_27b.ninfer" exit /b 0
+if /i "%NINFER_GRAFTS%"=="off" exit /b 0
+set "G_REPO=WarlaxZ/Qwen3.8-27B-godmode-graft"
+set "G_REV=97a02e9bbb37d76af63256152c07fc4eeb4c40c9"
+set "G_DIR=%REPO_ROOT%\artifacts\grafts"
+if defined NINFER_GRAFT_DIR set "G_DIR=%NINFER_GRAFT_DIR%"
+set "G_BIN=godmode_q38_trained.bin"
+set "G_BIN_SHA=a0ddecc4ca5db8b84f600d60fbf238c97e21a74069b7182e0e0e595d7a22c391"
+set "G_JSON=godmode_q38_trained.json"
+set "G_JSON_SHA=2a832ea95cc1dcee1dff2b292b10ef98913594eaf1f74121b01dd03a23dee3b1"
+rem The graft is a pair run.bat trusts by the .bin alone and the loader needs whole with its .json
+rem sidecar, so any failure below leaves neither file behind (:graft_abort).
+set "G_COMPLETE=1"
+call :graft_present %G_BIN% %G_BIN_SHA%
+if not "!SHA_OK!"=="1" set "G_COMPLETE=0"
+call :graft_present %G_JSON% %G_JSON_SHA%
+if not "!SHA_OK!"=="1" set "G_COMPLETE=0"
+if "!G_COMPLETE!"=="1" goto :graft_ready
+rem The token is HF_TOKEN, else the file huggingface_hub reads: HF_TOKEN_PATH, or token under HF_HOME,
+rem which itself defaults to huggingface\ under XDG_CACHE_HOME and then %USERPROFILE%\.cache.
+set "G_TOKEN=%HF_TOKEN%"
+set "G_TOKENFILE=%USERPROFILE%\.cache\huggingface\token"
+if defined XDG_CACHE_HOME set "G_TOKENFILE=%XDG_CACHE_HOME%\huggingface\token"
+if defined HF_HOME set "G_TOKENFILE=%HF_HOME%\token"
+if defined HF_TOKEN_PATH set "G_TOKENFILE=%HF_TOKEN_PATH%"
+if not defined G_TOKEN if exist "%G_TOKENFILE%" set /p G_TOKEN=<"%G_TOKENFILE%"
+if not defined G_TOKEN goto :graft_no_token
+if not exist "%G_DIR%" mkdir "%G_DIR%" >nul 2>&1
+if not exist "%G_DIR%\" goto :graft_nodir
+set "G_STOP="
+call :graft_fetch %G_BIN% %G_BIN_SHA%
+if defined G_STOP goto :graft_abort
+call :graft_fetch %G_JSON% %G_JSON_SHA%
+if defined G_STOP goto :graft_abort
+rem Any pair already here is invalid or partial (a verified one went to :graft_ready). Clear it, binary first,
+rem so the new pair never sits beside a leftover half of the old one. Then install the sidecar first and the
+rem binary last: run.bat trusts the .bin alone, so it must never be visible without its .json.
+del "%G_DIR%\%G_BIN%" "%G_DIR%\%G_JSON%" >nul 2>&1
+move /y "%G_DIR%\%G_JSON%.part" "%G_DIR%\%G_JSON%" >nul 2>&1
+if errorlevel 1 goto :graft_install_failed
+move /y "%G_DIR%\%G_BIN%.part" "%G_DIR%\%G_BIN%" >nul 2>&1
+if errorlevel 1 goto :graft_install_failed
+:graft_ready
+echo Graft ready: %G_DIR%\%G_BIN%
+exit /b 0
+:graft_no_token
+rem Nothing can be fetched, but a lone half of the pair or a staged .part would still break a launch, so
+rem drop those. A whole pair is left alone: it may be one the user supplied.
+del "%G_DIR%\%G_BIN%.part" "%G_DIR%\%G_JSON%.part" >nul 2>&1
+if exist "%G_DIR%\%G_BIN%" if not exist "%G_DIR%\%G_JSON%" del "%G_DIR%\%G_BIN%" >nul 2>&1
+if exist "%G_DIR%\%G_JSON%" if not exist "%G_DIR%\%G_BIN%" del "%G_DIR%\%G_JSON%" >nul 2>&1
+echo Graft: skipped, no Hugging Face token. Set HF_TOKEN or run "hf auth login" if you have access.
+exit /b 0
+:graft_nodir
+echo Graft: skipped, cannot create %G_DIR%. 1>&2
+exit /b 0
+:graft_install_failed
+echo Graft: skipped, cannot install into %G_DIR%. 1>&2
+:graft_abort
+del "%G_DIR%\%G_BIN%" "%G_DIR%\%G_JSON%" "%G_DIR%\%G_BIN%.part" "%G_DIR%\%G_JSON%.part" >nul 2>&1
+exit /b 0
+
+rem SHA_OK=1 when file %1 in the graft directory exists and its sha256 equals %2.
+:graft_present
+set "SHA_OK=0"
+if not exist "%G_DIR%\%~1" exit /b 0
+call :sha_ok "%G_DIR%\%~1" %~2
+exit /b 0
+
+rem Downloads one pinned graft file to its .part. Sets G_STOP on failure; the caller discards both files.
+:graft_fetch
+curl.exe -sSL --fail -H "Authorization: Bearer %G_TOKEN%" --output "%G_DIR%\%~1.part" "https://huggingface.co/%G_REPO%/resolve/%G_REV%/%~1" 2>nul
+if errorlevel 1 goto :graft_denied
+call :sha_ok "%G_DIR%\%~1.part" %~2
+if not "!SHA_OK!"=="1" goto :graft_corrupt
+exit /b 0
+:graft_denied
+echo Graft: skipped, no access to %G_REPO% with this token.
+set "G_STOP=1"
+exit /b 0
+:graft_corrupt
+echo Graft: %~1 failed sha256 verification, not installed. 1>&2
+set "G_STOP=1"
+exit /b 0
+
+rem SHA_OK=1 when the sha256 of %1 equals %2.
+:sha_ok
+set "SHA_OK=0"
+set "SHA_ACTUAL="
+for /f "skip=1 delims=" %%H in ('certutil -hashfile "%~1" SHA256') do if not defined SHA_ACTUAL set "SHA_ACTUAL=%%H"
+set "SHA_ACTUAL=!SHA_ACTUAL: =!"
+if /i "!SHA_ACTUAL!"=="%~2" set "SHA_OK=1"
 exit /b 0
 
 rem Verifies %1 against EXPECTED_SIZE and, unless NINFER_SKIP_SHA256=1, EXPECTED_SHA256, setting
