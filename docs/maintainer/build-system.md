@@ -71,8 +71,9 @@ A full build is 10+ minutes, dominated by a few multi-minute CUDA translation un
 single-threaded device and final links (Ninja's `ninfer_link` pool), and editing a public header
 such as `include/ninfer/types.h` recompiles nearly everything. `cmake/CompilerCache.cmake` therefore
 routes C, C++ and CUDA compilation through [ccache](https://ccache.dev) whenever it is installed
-(`NINFER_COMPILER_CACHE=OFF` disables it, and a launcher the caller already set is left alone). If
-ccache is missing, configure says so and names the setup script.
+(`NINFER_COMPILER_CACHE=OFF` disables it; a language whose launcher the caller already set keeps
+it, and the other languages still use ccache). If ccache is missing, configure says so and names the
+setup script.
 
 Work happens in several git worktrees at once, each changing a few files, so the cache is shared:
 

@@ -67,12 +67,23 @@ $common = git -C $PSScriptRoot rev-parse --path-format=absolute --git-common-dir
 if ($LASTEXITCODE -ne 0 -or -not $common) { throw "Not inside a git checkout; cannot find the main checkout." }
 $Base = (Resolve-Path (Join-Path $common "..")).Path -replace "\\", "/"
 
-& $Exe --set-config "base_dir=$Base"
-& $Exe --set-config "hash_dir=false"
-& $Exe --set-config "max_size=$MaxSize"
+# $ErrorActionPreference does not turn a native program's nonzero exit into an exception, so a
+# failed --set-config (bad size, unwritable config) would otherwise be followed by a success summary.
+function Invoke-Ccache {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$CcacheArgs)
+    $output = & $Exe @CcacheArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "ccache $($CcacheArgs -join ' ') failed with exit code $LASTEXITCODE"
+    }
+    $output
+}
+
+Invoke-Ccache --set-config "base_dir=$Base" | Out-Null
+Invoke-Ccache --set-config "hash_dir=false" | Out-Null
+Invoke-Ccache --set-config "max_size=$MaxSize" | Out-Null
 
 Write-Host ""
-& $Exe --version | Select-Object -First 1
-& $Exe --show-config | Select-String "cache_dir|base_dir|hash_dir|max_size"
+(Invoke-Ccache --version) | Select-Object -First 1
+(Invoke-Ccache --show-config) | Select-String "cache_dir|base_dir|hash_dir|max_size"
 Write-Host ""
 Write-Host "Reconfigure a build tree to pick it up; CMake prints 'Compiler cache: ...' when it is on."

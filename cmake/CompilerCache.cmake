@@ -17,7 +17,8 @@
 # Release is the default and is cached. MSVC /Zi (Debug, RelWithDebInfo) writes a shared PDB and
 # cannot be cached by ccache.
 #
-# NINFER_COMPILER_CACHE=OFF disables this; a launcher the caller already set is left alone.
+# NINFER_COMPILER_CACHE=OFF disables this. A language whose launcher the caller already set keeps it;
+# the other languages still go through ccache.
 
 option(NINFER_COMPILER_CACHE "Use ccache for C, C++ and CUDA compilation when it is installed" ON)
 
@@ -25,8 +26,21 @@ if(NOT NINFER_COMPILER_CACHE)
   return()
 endif()
 
-if(CMAKE_C_COMPILER_LAUNCHER OR CMAKE_CXX_COMPILER_LAUNCHER OR CMAKE_CUDA_COMPILER_LAUNCHER)
-  message(STATUS "Compiler cache: using the compiler launcher already configured")
+# A language whose launcher the caller already set keeps it; ccache still serves the others.
+set(_ninfer_ccache_languages "")
+set(_ninfer_ccache_kept "")
+foreach(_ninfer_lang C CXX CUDA)
+  if(CMAKE_${_ninfer_lang}_COMPILER_LAUNCHER)
+    list(APPEND _ninfer_ccache_kept ${_ninfer_lang})
+  else()
+    list(APPEND _ninfer_ccache_languages ${_ninfer_lang})
+  endif()
+endforeach()
+unset(_ninfer_lang)
+if(NOT _ninfer_ccache_languages)
+  message(STATUS "Compiler cache: every language already has a compiler launcher; leaving them")
+  unset(_ninfer_ccache_languages)
+  unset(_ninfer_ccache_kept)
   return()
 endif()
 
@@ -40,6 +54,8 @@ if(NOT NINFER_CCACHE_PROGRAM)
   message(STATUS
     "Compiler cache: ccache not found; builds are uncached. Run scripts/setup-ccache.ps1 "
     "(Windows) or scripts/setup-ccache.sh (Linux) once, then reconfigure.")
+  unset(_ninfer_ccache_languages)
+  unset(_ninfer_ccache_kept)
   return()
 endif()
 
@@ -80,10 +96,21 @@ else()
   set(_ninfer_ccache_base_note "base_dir from ccache config; run scripts/setup-ccache.* if unset")
 endif()
 list(APPEND _ninfer_ccache_launcher "${NINFER_CCACHE_PROGRAM}")
-set(CMAKE_C_COMPILER_LAUNCHER "${_ninfer_ccache_launcher}")
-set(CMAKE_CXX_COMPILER_LAUNCHER "${_ninfer_ccache_launcher}")
-set(CMAKE_CUDA_COMPILER_LAUNCHER "${_ninfer_ccache_launcher}")
-message(STATUS "Compiler cache: ${NINFER_CCACHE_PROGRAM} (${_ninfer_ccache_base_note})")
+foreach(_ninfer_lang IN LISTS _ninfer_ccache_languages)
+  set(CMAKE_${_ninfer_lang}_COMPILER_LAUNCHER "${_ninfer_ccache_launcher}")
+endforeach()
+unset(_ninfer_lang)
+list(JOIN _ninfer_ccache_languages ", " _ninfer_languages_text)
+message(STATUS "Compiler cache: ${NINFER_CCACHE_PROGRAM} for ${_ninfer_languages_text} "
+  "(${_ninfer_ccache_base_note})")
+if(_ninfer_ccache_kept)
+  list(JOIN _ninfer_ccache_kept ", " _ninfer_kept_text)
+  message(STATUS "Compiler cache: ${_ninfer_kept_text} keep the launcher already configured")
+  unset(_ninfer_kept_text)
+endif()
+unset(_ninfer_languages_text)
+unset(_ninfer_ccache_languages)
+unset(_ninfer_ccache_kept)
 unset(_ninfer_ccache_base_note)
 unset(_ninfer_ccache_launcher)
 unset(_ninfer_ccache_base)
