@@ -347,6 +347,11 @@ fi
 
 
 mkdir -- "$tmp/bin" "$tmp/models"
+# Everything below drives download-model.sh. Run it as a user with no Hugging Face login, so the
+# optional graft fetch after a model is in place has no token to use whatever this machine holds.
+unset HF_TOKEN HF_TOKEN_PATH HF_HOME XDG_CACHE_HOME
+mkdir -- "$tmp/no-login-home"
+export HOME="$tmp/no-login-home"
 # NINFER_TEST_FAKE_SIZE makes the fixture produce a file of exactly the pinned downloaders'
 # expected_size (via truncate, so this stays instant regardless of how large the real artifact
 # is) instead of an empty one: download-model.sh verifies size (and, unless
@@ -472,8 +477,11 @@ for key in "${models[@]}"; do
   size="$(expected_size_of "$key")"
   # Sparse, like the fixture's own payloads: instant to allocate whatever the pinned size.
   truncate -s "$size" "$tmp/models/$model"
-  if ! PATH="$tmp/failing-curl:$PATH" NINFER_MODEL_DIR="$tmp/models" NINFER_SKIP_SHA256=1 \
-       "$downloader" "$key" 2>&1 | grep -Fq 'Model already present'; then
+  # Capture rather than pipe into grep -q: the script prints more after this line, and a reader that
+  # exits at the first match would hand it SIGPIPE, failing the pipeline under pipefail.
+  present_output="$(PATH="$tmp/failing-curl:$PATH" NINFER_MODEL_DIR="$tmp/models" NINFER_SKIP_SHA256=1 \
+    "$downloader" "$key" 2>&1)" || present_output=''
+  if [[ "$present_output" != *'Model already present'* ]]; then
     printf 'download-model.sh %s did not accept an artifact that already verifies\n' "$key" >&2
     exit 1
   fi
@@ -540,5 +548,130 @@ for key in "${models[@]}"; do
   fi
   rm -f -- "$tmp/models/$model."*".part"
 done
+
+# The qwen38-27b godmode graft is fetched best-effort after the model is in place. It is a pair the
+# launcher trusts by the .bin alone and the loader needs whole with its .json, so the contract is
+# all-or-nothing: whatever happens, a failed fetch must leave a whole verified pair or neither file,
+# and must never fail the model download. These cases run the real fetch_graft against a stub curl
+# that serves tiny payloads (the model itself is a sparse file that already verifies, so nothing
+# large is fetched) and a stub sha256sum that recognises those payloads; no network is touched.
+# The graft's two pins sit in fetch_graft; the model pins earlier in the file are different hashes.
+graft_shas="$(sed -n '/^fetch_graft() {$/,/^}$/p' "$downloader" | grep -oE '[0-9a-f]{64}')"
+graft_bin_sha="$(sed -n 1p <<<"$graft_shas")"
+graft_json_sha="$(sed -n 2p <<<"$graft_shas")"
+if [[ -z "$graft_bin_sha" || -z "$graft_json_sha" ]]; then
+  printf 'download-model.sh has no graft pins to verify against\n' >&2
+  exit 1
+fi
+mkdir -- "$tmp/graft-bin" "$tmp/graft-home" "$tmp/graft-models"
+cat > "$tmp/graft-bin/curl" <<'CURL'
+#!/usr/bin/env bash
+# NINFER_TEST_GRAFT_MODE: ok (default), deny_json (the sidecar request is refused) or bad_json
+# (the sidecar arrives with the wrong content). Authorization headers are logged to GRAFT_LOG.
+header='' output='' url=''
+while (( $# )); do
+  case "$1" in
+    -H) header="$2"; shift 2 ;;
+    --output) output="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+printf '%s %s\n' "$header" "$url" >> "$GRAFT_LOG"
+if [[ "${NINFER_TEST_GRAFT_MODE:-ok}" == deny_json && "$url" == *.json ]]; then exit 22; fi
+if [[ "${NINFER_TEST_GRAFT_MODE:-ok}" == bad_json && "$url" == *.json ]]; then printf 'bad' > "$output"; exit 0; fi
+printf 'good' > "$output"
+CURL
+cat > "$tmp/graft-bin/sha256sum" <<HASH
+#!/usr/bin/env bash
+file="\${*: -1}"
+if [[ "\$(cat "\$file")" == good ]]; then
+  case "\${file%.part}" in
+    *.bin) printf '%s  %s\n' '$graft_bin_sha' "\$file" ;;
+    *) printf '%s  %s\n' '$graft_json_sha' "\$file" ;;
+  esac
+else
+  printf '%064d  %s\n' 0 "\$file"
+fi
+HASH
+chmod +x "$tmp/graft-bin/curl" "$tmp/graft-bin/sha256sum"
+graft_size="$(expected_size_of qwen38-27b)"
+truncate -s "$graft_size" "$tmp/graft-models/$(artifact_of qwen38-27b)"
+gdir="$tmp/graft-dir"
+export GRAFT_LOG="$tmp/graft.log"
+
+# Runs the downloader for qwen38-27b with no token configured anywhere unless the caller adds one.
+run_graft() {
+  env -u HF_TOKEN -u HF_TOKEN_PATH -u HF_HOME -u XDG_CACHE_HOME -u NINFER_GRAFTS \
+    HOME="$tmp/graft-home" PATH="$tmp/graft-bin:$PATH" NINFER_MODEL_DIR="$tmp/graft-models" \
+    NINFER_SKIP_SHA256=1 NINFER_GRAFT_DIR="$gdir" "$@" "$downloader" qwen38-27b 2>&1
+}
+graft_files() { (cd "$gdir" 2>/dev/null && ls -A | tr '\n' ' '); }
+graft_fail() { printf 'download-model.sh graft: %s\n' "$1" >&2; exit 1; }
+graft_reset() { rm -rf -- "$gdir"; : > "$GRAFT_LOG"; }
+pair='godmode_q38_trained.bin godmode_q38_trained.json '
+
+# No token anywhere: nothing is fetched, a lone half or a staged .part is dropped, and the model
+# download still succeeds.
+graft_reset; mkdir -- "$gdir"; printf 'good' > "$gdir/godmode_q38_trained.bin"; printf 'x' > "$gdir/godmode_q38_trained.json.part"
+out="$(run_graft)" || graft_fail 'a missing token failed the model download'
+[[ "$out" == *'no Hugging Face token'* ]] || graft_fail 'a missing token was not reported'
+[[ -s "$GRAFT_LOG" ]] && graft_fail 'a missing token still reached curl'
+[[ -z "$(graft_files)" ]] || graft_fail "a missing token left a broken pair behind: $(graft_files)"
+# A whole pair that does not match the pinned hashes may be the user's own; without a token it stays.
+printf 'mine' > "$gdir/godmode_q38_trained.bin"; printf 'mine' > "$gdir/godmode_q38_trained.json"
+run_graft >/dev/null || graft_fail 'a missing token failed the model download'
+[[ "$(graft_files)" == "$pair" ]] || graft_fail 'a whole unverified pair was deleted without a token'
+
+# Token discovery follows huggingface_hub: HF_TOKEN, HF_TOKEN_PATH, HF_HOME/token, then
+# XDG_CACHE_HOME/huggingface/token. Each must be honoured, and the pair installs whole.
+mkdir -p -- "$tmp/graft-tokens/home" "$tmp/graft-tokens/xdg/huggingface"
+printf 'tok-path\n' > "$tmp/graft-tokens/path-token"
+printf 'tok-home\n' > "$tmp/graft-tokens/home/token"
+printf 'tok-xdg\n' > "$tmp/graft-tokens/xdg/huggingface/token"
+check_token() { # <expected token> <env assignment>...
+  local expected="$1"; shift
+  graft_reset
+  out="$(run_graft "$@")" || graft_fail "the download failed with $*"
+  grep -Fq "Bearer $expected " "$GRAFT_LOG" || graft_fail "token $expected was not used with $*"
+  [[ "$(graft_files)" == "$pair" ]] || graft_fail "no whole pair after $*: $(graft_files)"
+  [[ "$out" == *'Graft ready'* ]] || graft_fail "graft not reported ready with $*"
+}
+check_token env-token HF_TOKEN=env-token HF_TOKEN_PATH="$tmp/graft-tokens/path-token"
+check_token tok-path HF_TOKEN_PATH="$tmp/graft-tokens/path-token" HF_HOME="$tmp/graft-tokens/home"
+check_token tok-home HF_HOME="$tmp/graft-tokens/home" XDG_CACHE_HOME="$tmp/graft-tokens/xdg"
+check_token tok-xdg XDG_CACHE_HOME="$tmp/graft-tokens/xdg"
+
+# A verified pair is accepted without any fetch, and a second run is idempotent.
+: > "$GRAFT_LOG"
+out="$(run_graft HF_TOKEN=t)" || graft_fail 'a verified pair failed the model download'
+[[ "$out" == *'Graft ready'* && ! -s "$GRAFT_LOG" ]] || graft_fail 'a verified pair was fetched again'
+
+# Access denied for the second file, with a stale lone .bin on disk: neither file remains.
+graft_reset; mkdir -- "$gdir"; printf 'stale' > "$gdir/godmode_q38_trained.bin"
+out="$(run_graft HF_TOKEN=t NINFER_TEST_GRAFT_MODE=deny_json)" || graft_fail 'a denied sidecar failed the model download'
+[[ "$out" == *'no access'* ]] || graft_fail 'a denied sidecar was not reported'
+[[ -z "$(graft_files)" ]] || graft_fail "a denied sidecar left files behind: $(graft_files)"
+
+# A sidecar with the wrong hash is not installed, and the binary that arrived first goes with it.
+graft_reset
+out="$(run_graft HF_TOKEN=t NINFER_TEST_GRAFT_MODE=bad_json)" || graft_fail 'a bad sidecar hash failed the model download'
+[[ "$out" == *'failed sha256 verification'* ]] || graft_fail 'a bad sidecar hash was not reported'
+[[ -z "$(graft_files)" ]] || graft_fail "a bad sidecar hash left files behind: $(graft_files)"
+
+# A mismatched pair already on disk is replaced by the verified one.
+graft_reset; mkdir -- "$gdir"; printf 'old' > "$gdir/godmode_q38_trained.bin"; printf 'old' > "$gdir/godmode_q38_trained.json"
+run_graft HF_TOKEN=t >/dev/null || graft_fail 'replacing a mismatched pair failed the model download'
+[[ "$(graft_files)" == "$pair" && "$(cat "$gdir/godmode_q38_trained.bin")" == good ]] || graft_fail 'a mismatched pair was not replaced'
+
+# A directory that cannot be created skips the graft; the model download result is unchanged.
+: > "$tmp/graft-afile"
+out="$(run_graft HF_TOKEN=t NINFER_GRAFT_DIR="$tmp/graft-afile/sub")" || graft_fail 'an uncreatable graft directory failed the model download'
+[[ "$out" == *'cannot create'* ]] || graft_fail 'an uncreatable graft directory was not reported'
+
+# NINFER_GRAFTS=off skips the graft entirely.
+graft_reset
+run_graft HF_TOKEN=t NINFER_GRAFTS=off >/dev/null || graft_fail 'NINFER_GRAFTS=off failed the model download'
+[[ ! -s "$GRAFT_LOG" && ! -e "$gdir" ]] || graft_fail 'NINFER_GRAFTS=off still fetched'
 
 printf '%s\n' 'Linux script checks passed.'

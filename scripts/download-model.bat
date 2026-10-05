@@ -196,25 +196,29 @@ set "G_REPO=WarlaxZ/Qwen3.8-27B-godmode-graft"
 set "G_REV=97a02e9bbb37d76af63256152c07fc4eeb4c40c9"
 set "G_DIR=%REPO_ROOT%\artifacts\grafts"
 if defined NINFER_GRAFT_DIR set "G_DIR=%NINFER_GRAFT_DIR%"
-set "G_TOKEN=%HF_TOKEN%"
-set "G_TOKENFILE=%USERPROFILE%\.cache\huggingface\token"
-if defined HF_HOME set "G_TOKENFILE=%HF_HOME%\token"
-if not defined G_TOKEN if exist "%G_TOKENFILE%" set /p G_TOKEN=<"%G_TOKENFILE%"
-if not defined G_TOKEN goto :graft_no_token
-if not exist "%G_DIR%" mkdir "%G_DIR%" >nul 2>&1
-if not exist "%G_DIR%\" goto :graft_nodir
-rem The graft is a pair run.bat trusts by the .bin alone and the loader needs whole with its .json
-rem sidecar, so any failure below leaves neither file behind (:graft_abort).
 set "G_BIN=godmode_q38_trained.bin"
 set "G_BIN_SHA=a0ddecc4ca5db8b84f600d60fbf238c97e21a74069b7182e0e0e595d7a22c391"
 set "G_JSON=godmode_q38_trained.json"
 set "G_JSON_SHA=2a832ea95cc1dcee1dff2b292b10ef98913594eaf1f74121b01dd03a23dee3b1"
+rem The graft is a pair run.bat trusts by the .bin alone and the loader needs whole with its .json
+rem sidecar, so any failure below leaves neither file behind (:graft_abort).
 set "G_COMPLETE=1"
 call :graft_present %G_BIN% %G_BIN_SHA%
 if not "!SHA_OK!"=="1" set "G_COMPLETE=0"
 call :graft_present %G_JSON% %G_JSON_SHA%
 if not "!SHA_OK!"=="1" set "G_COMPLETE=0"
 if "!G_COMPLETE!"=="1" goto :graft_ready
+rem The token is HF_TOKEN, else the file huggingface_hub reads: HF_TOKEN_PATH, or token under HF_HOME,
+rem which itself defaults to huggingface\ under XDG_CACHE_HOME and then %USERPROFILE%\.cache.
+set "G_TOKEN=%HF_TOKEN%"
+set "G_TOKENFILE=%USERPROFILE%\.cache\huggingface\token"
+if defined XDG_CACHE_HOME set "G_TOKENFILE=%XDG_CACHE_HOME%\huggingface\token"
+if defined HF_HOME set "G_TOKENFILE=%HF_HOME%\token"
+if defined HF_TOKEN_PATH set "G_TOKENFILE=%HF_TOKEN_PATH%"
+if not defined G_TOKEN if exist "%G_TOKENFILE%" set /p G_TOKEN=<"%G_TOKENFILE%"
+if not defined G_TOKEN goto :graft_no_token
+if not exist "%G_DIR%" mkdir "%G_DIR%" >nul 2>&1
+if not exist "%G_DIR%\" goto :graft_nodir
 set "G_STOP="
 call :graft_fetch %G_BIN% %G_BIN_SHA%
 if defined G_STOP goto :graft_abort
@@ -232,6 +236,11 @@ if errorlevel 1 goto :graft_install_failed
 echo Graft ready: %G_DIR%\%G_BIN%
 exit /b 0
 :graft_no_token
+rem Nothing can be fetched, but a lone half of the pair or a staged .part would still break a launch, so
+rem drop those. A whole pair is left alone: it may be one the user supplied.
+del "%G_DIR%\%G_BIN%.part" "%G_DIR%\%G_JSON%.part" >nul 2>&1
+if exist "%G_DIR%\%G_BIN%" if not exist "%G_DIR%\%G_JSON%" del "%G_DIR%\%G_BIN%" >nul 2>&1
+if exist "%G_DIR%\%G_JSON%" if not exist "%G_DIR%\%G_BIN%" del "%G_DIR%\%G_JSON%" >nul 2>&1
 echo Graft: skipped, no Hugging Face token. Set HF_TOKEN or run "hf auth login" if you have access.
 exit /b 0
 :graft_nodir

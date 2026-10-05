@@ -120,27 +120,32 @@ fetch_graft() {
   [ "${1:-}" = 'qwen38-27b' ] && [ "${NINFER_GRAFTS:-}" != 'off' ] || return 0
   local repo='WarlaxZ/Qwen3.8-27B-godmode-graft' rev='97a02e9bbb37d76af63256152c07fc4eeb4c40c9'
   local dir="${NINFER_GRAFT_DIR:-$root/../artifacts/grafts}"
-  local token="${HF_TOKEN:-}" tokfile="${HF_HOME:-$HOME/.cache/huggingface}/token"
-  [ -n "$token" ] || { [ -f "$tokfile" ] && token="$(tr -d '[:space:]' < "$tokfile")"; } || true
-  if [ -z "$token" ]; then
-    printf 'Graft: skipped (no Hugging Face token; set HF_TOKEN or run `hf auth login` if you have access).\n'
-    return 0
-  fi
   local names=(godmode_q38_trained.bin godmode_q38_trained.json)
   local shas=(a0ddecc4ca5db8b84f600d60fbf238c97e21a74069b7182e0e0e595d7a22c391
               2a832ea95cc1dcee1dff2b292b10ef98913594eaf1f74121b01dd03a23dee3b1)
   local i complete=1
   # The graft is a pair the launcher trusts by file presence and the loader needs whole, so every
   # failure below leaves neither file behind: a lone or mismatched file would break a later launch.
-  if ! mkdir -p -- "$dir" 2>/dev/null; then
-    printf 'Graft: skipped (cannot create %s).\n' "$dir" >&2
-    return 0
-  fi
   for i in 0 1; do
     { [ -f "$dir/${names[i]}" ] && graft_sha_ok "$dir/${names[i]}" "${shas[i]}"; } || complete=0
   done
   if [ "$complete" = 1 ]; then
     printf 'Graft ready: %s/%s\n' "$dir" "${names[0]}"
+    return 0
+  fi
+  # The token is HF_TOKEN, else the file huggingface_hub reads: HF_TOKEN_PATH, or token under HF_HOME,
+  # which itself defaults to huggingface/ under XDG_CACHE_HOME and then ~/.cache.
+  local token="${HF_TOKEN:-}" tokfile
+  if [ -n "${HF_TOKEN_PATH:-}" ]; then tokfile="$HF_TOKEN_PATH"
+  else tokfile="${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/token"; fi
+  [ -n "$token" ] || { [ -f "$tokfile" ] && token="$(tr -d '[:space:]' < "$tokfile")"; } || true
+  if [ -z "$token" ]; then
+    graft_drop_half "$dir"
+    printf 'Graft: skipped (no Hugging Face token; set HF_TOKEN or run `hf auth login` if you have access).\n'
+    return 0
+  fi
+  if ! mkdir -p -- "$dir" 2>/dev/null; then
+    printf 'Graft: skipped (cannot create %s).\n' "$dir" >&2
     return 0
   fi
   # Stage both files and verify both; only then publish the pair.
@@ -169,6 +174,17 @@ fetch_graft() {
     fi
   done
   printf 'Graft ready: %s/%s\n' "$dir" "${names[0]}"
+}
+
+# Without a token nothing can be fetched, but a lone half of the pair or a staged .part left by an
+# interrupted fetch would still break a launch (the launcher trusts the .bin, the loader needs the
+# .json), so drop those. A whole pair is left alone even if it does not match the pinned hashes: it
+# may be one the user supplied.
+graft_drop_half() {
+  local bin="$1/godmode_q38_trained.bin" json="$1/godmode_q38_trained.json"
+  rm -f -- "$bin.part" "$json.part" 2>/dev/null || true
+  if [ -f "$bin" ] && [ ! -f "$json" ]; then rm -f -- "$bin" 2>/dev/null || true
+  elif [ -f "$json" ] && [ ! -f "$bin" ]; then rm -f -- "$json" 2>/dev/null || true; fi
 }
 
 # Removes the staged and installed graft files so a failed fetch never leaves a partial or mixed pair.
