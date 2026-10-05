@@ -852,18 +852,15 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
                                     " devices are attached");
     }
     if (parameters.text.split_execution()) {
-        // The stage loop carries a plain forward pass and decode round. Everything below reads or
-        // writes state on the primary device only, and is refused until it is taught the stages.
-        const auto unsupported = [](const char* feature) {
-            throw std::invalid_argument(
-                std::string(feature) +
-                " is not yet supported with a multi-device --devices split");
-        };
+        // The stage loop carries a plain forward pass and decode round. DFlash reads or writes state
+        // on the primary device only, and is refused until it is taught the stages. Vision runs
+        // entirely on the primary device ahead of the stage loop, so it needs no refusal.
         if (options.speculative.backend == SpeculativeBackend::DFlash ||
             options.speculative.backend == SpeculativeBackend::DFlash2) {
-            unsupported("DFlash speculative decoding");
+            throw std::invalid_argument(
+                "DFlash speculative decoding is not yet supported with a multi-device --devices "
+                "split");
         }
-        if (options.enable_vision) { unsupported("vision"); }
     }
     const std::uint32_t logical_pages = page_count(options.max_context);
     const std::uint32_t minimum_pages = std::max(logical_pages, options.max_concurrency);

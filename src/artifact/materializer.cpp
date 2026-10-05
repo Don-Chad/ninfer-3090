@@ -186,12 +186,9 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
     out.stats_.device_capacity_bytes = plan.device_capacity(0);
     out.stats_.device_object_count   = plan.device_objects.size();
     out.stats_.host_object_count     = plan.host_objects.size();
-    if (backing && rank_count > 1) {
-        // The pool's window is borrowed by a Vision encode that runs on the primary device, and
-        // nothing on an offloaded rank is lendable. Combining them is a planning error, not a
-        // configuration to silently half-apply.
-        throw ArtifactError("an eviction pool backs only a single-device materialization");
-    }
+    // The pool backs rank 0's arena alone: its window is borrowed by a Vision encode on the primary
+    // device, and later ranks get ordinary arenas below. The planner already refuses an evictable
+    // placement anywhere but rank 0.
     out.arenas_.resize(rank_count);
     for (std::size_t rank = 0; rank < rank_count; ++rank) {
         const auto capacity = plan.device_capacity(rank);

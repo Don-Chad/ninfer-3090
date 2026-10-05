@@ -352,6 +352,20 @@ void pipeline_rank_placement() {
                 "one object was accepted on two different devices");
     }
     {
+        // Overlay Vision with a layer split: the evictable tail is rank 0's alone and a later
+        // stage's resident weights are planned on their own arena, neither shifting nor joining it.
+        Binder overlay(reader);
+        (void)overlay.parameter("matrix", {2, 130});
+        overlay.device_rank(matrix, 1);
+        overlay.require_device(divisors);
+        overlay.evict_device(divisors, 700);
+        const auto overlay_plan = std::move(overlay).finish(EvictableWeightPool::kChunkBytes);
+        require(overlay_plan.device_rank_count() == 2 && overlay_plan.evictable_tail_offset == 0 &&
+                    overlay_plan.evictable_tail_bytes == 8 &&
+                    overlay_plan.device_capacity(0) == 8 && overlay_plan.device_capacity(1) == 528,
+                "an evictable tail and a later stage's weights were not planned per rank");
+    }
+    {
         // An offloaded rank holds expert blocks and nothing a Vision window could borrow, so the
         // evictable tail and a non-primary rank must not be planned together.
         Binder rejected(reader);

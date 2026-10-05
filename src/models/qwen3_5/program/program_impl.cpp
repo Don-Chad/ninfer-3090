@@ -100,7 +100,9 @@ make_stage_runtime(DeviceContext& device, const execution::Parameters& parameter
     const StageLinkOptions residual{.slot_bytes   = columns * hidden * sizeof(std::uint16_t),
                                     .slots        = 2,
                                     .force_staged = force_staged};
-    // Six int32 control tensors of at most `columns` entries, plus alignment.
+    // Six int32 control tensors, plus alignment. Of the six, only the position pair is ever full
+    // width in prefill (cache `columns`, multimodal rope `3 * columns`), so the sum stays inside
+    // `6 * columns`; `run_staged` checks the packed size against this slot regardless.
     const StageLinkOptions control{.slot_bytes   = (6 * columns + 16) * sizeof(std::int32_t),
                                    .slots        = 2,
                                    .force_staged = force_staged};
