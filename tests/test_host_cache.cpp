@@ -93,13 +93,13 @@ int check_cgroup_probe() {
 int main() {
     int failures = 0;
 
-    // 64 GiB free less the 1 GiB default reserve is a 63 GiB (64,512 MiB) budget; an eighth,
-    // 8,064 MiB, buys 80 of the 100 MiB states.
+    // 64 GiB free less the 3 GiB default reserve is a 61 GiB (62,464 MiB) budget; an eighth,
+    // 7,808 MiB, buys 78 of the 100 MiB states.
     const ContextCacheOptions large = resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0);
-    failures += check(!large.auto_host_cache && large.host_state_slots == 80 &&
-                          large.host_kv_capacity_bytes == (64512 - 8000) * kMiB,
-                      "64 GiB host did not split 63 GiB into 80 states and the remaining KV");
-    failures += check(large.max_private_continuations == 96 && large.max_shared_prefixes == 24,
+    failures += check(!large.auto_host_cache && large.host_state_slots == 78 &&
+                          large.host_kv_capacity_bytes == (62464 - 7800) * kMiB,
+                      "64 GiB host did not split 61 GiB into 78 states and the remaining KV");
+    failures += check(large.max_private_continuations == 94 && large.max_shared_prefixes == 23,
                       "catalogs did not follow the resident state count");
 
     // The reserve is a setting: 512 MiB leaves a 65,024 MiB budget and 81 states.
@@ -114,11 +114,11 @@ int main() {
 
     // Injected grafts hold shared-prefix slots of their own, on top of the sized catalog.
     const ContextCacheOptions grafted = resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 2);
-    failures += check(grafted.max_shared_prefixes == 26 && grafted.max_private_continuations == 96,
+    failures += check(grafted.max_shared_prefixes == 25 && grafted.max_private_continuations == 94,
                       "pinned graft prefixes were not added to the shared catalog");
 
     // At or under the reserve nothing is pinned and the catalogs fall back to their floors.
-    const ContextCacheOptions starved = resolve_host_cache(requested(8), 1 * kGiB, 100 * kMiB, 8, 0);
+    const ContextCacheOptions starved = resolve_host_cache(requested(8), 3 * kGiB, 100 * kMiB, 8, 0);
     failures += check(starved.host_state_slots == 0 && starved.host_kv_capacity_bytes == 0 &&
                           starved.max_private_continuations == 16 &&
                           starved.max_shared_prefixes == 8,
@@ -127,15 +127,15 @@ int main() {
     // A very large host is bounded by the state-slot cap, and KV takes the rest of the budget.
     const ContextCacheOptions huge = resolve_host_cache(requested(8), 1024 * kGiB, 10 * kMiB, 8, 0);
     failures += check(huge.host_state_slots == 128 &&
-                          huge.host_kv_capacity_bytes == (1047552 - 1280) * kMiB &&
+                          huge.host_kv_capacity_bytes == (1045504 - 1280) * kMiB &&
                           huge.max_private_continuations == 144 && huge.max_shared_prefixes == 32,
                       "state-slot cap or the KV remainder is wrong on a very large host");
 
     // A state larger than an eighth of the budget is not pinned, and KV gets the whole budget:
-    // 8 GiB free less the 1 GiB reserve is 7 GiB, whose eighth is under one 3 GiB state.
+    // 8 GiB free less the 3 GiB reserve is 5 GiB, whose eighth is under one 3 GiB state.
     const ContextCacheOptions oversized = resolve_host_cache(requested(8), 8 * kGiB, 3 * kGiB, 1, 0);
     failures += check(oversized.host_state_slots == 0 &&
-                          oversized.host_kv_capacity_bytes == 7 * kGiB,
+                          oversized.host_kv_capacity_bytes == 5 * kGiB,
                       "a state slot larger than its share was still pinned");
 
     // Where pinned memory is charged to the GPU, the device headroom bounds the whole budget before

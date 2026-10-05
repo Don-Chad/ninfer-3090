@@ -147,7 +147,7 @@ std::string serve_usage_text(const char* argv0) {
            "       --device-state-slots is extra checkpoint capacity beyond active lanes; "
            "--host-kv-mib uses MiB\n"
            "       --auto-host-cache sizes Host state slots, Host KV and both catalogs from the "
-           "host memory free after the model loads (all but --host-cache-reserve-mib, default 1024, "
+           "host memory free after the model loads (all but --host-cache-reserve-mib, default 3072, "
            "an eighth of it for state slots); it replaces the four explicit Host capacity "
            "options\n"
            "       --default-thinking-budget caps model-origin thinking for enabled requests; "

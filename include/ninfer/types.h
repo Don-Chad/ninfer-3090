@@ -30,8 +30,10 @@ inline constexpr std::size_t kDefaultMediaCacheBytes     = 1ULL << 30;
 inline constexpr std::size_t kDefaultMediaLiveBytes      = 2ULL << 30;
 inline constexpr std::uint32_t kDefaultHostStateSlots    = 8;
 inline constexpr std::size_t kDefaultHostKvCapacityBytes = 8ULL << 30;
-// Host memory `auto_host_cache` leaves unpinned for everything that runs after it is sized.
-inline constexpr std::size_t kDefaultHostCacheReserveBytes = 1ULL << 30;
+// Host memory `auto_host_cache` leaves unpinned for everything that runs after it is sized. The
+// 27B server measured ~2 GiB of non-pinned growth after sizing (CUDA/cuBLAS host state, tokenizer,
+// HTTP and Program setup; two requests added ~30 MB); this keeps a margin over that.
+inline constexpr std::size_t kDefaultHostCacheReserveBytes = 3ULL << 30;
 // Largest text hidden size among shipped targets (27B). Used only to conservatively size the
 // pinned cross-rank staging buffer for a model-parallel `DeviceContext` from the configured
 // prefill chunk, before the target's actual hidden size is known; a wider future target just
