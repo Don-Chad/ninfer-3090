@@ -88,7 +88,10 @@ Overrides, from the environment, so a launcher never needs editing: `NINFER_MODE
 `NINFER_MODEL_DIR`, `NINFER_SERVER`, `NINFER_HOST`, `NINFER_PORT` for every profile; `tuned` also
 reads `NINFER_CONTEXT`, `NINFER_CONCURRENCY`, `NINFER_KV_CAPACITY` (Linux), `NINFER_KV_DTYPE`,
 `NINFER_SPEC`, `NINFER_DRAFT_TOKENS`, `NINFER_PREFILL_CHUNK`, `NINFER_VISION`,
-`NINFER_VISION_RESIDENCY`, `NINFER_HOST_STATE_SLOTS` and `NINFER_FALLBACK`. Loopback is the default host: `0.0.0.0` publishes an unauthenticated
+`NINFER_VISION_RESIDENCY`, `NINFER_HOST_STATE_SLOTS`, `NINFER_FALLBACK`, `NINFER_MIN_P` (default 0.03) and
+`NINFER_PRESENCE_PENALTY` (default 0.5). The last two are the loop guard: they are process-level sampling
+overrides for the `tuned` profile only, replacing the registered presets in thinking and non-thinking mode, and
+`default` omits the flag so the registered preset stays in force. Loopback is the default host: `0.0.0.0` publishes an unauthenticated
 endpoint to every network the machine is on, so it is opt-in per run.
 
 **When the card is busy.** A desktop or another job holding VRAM can leave too little for the default
