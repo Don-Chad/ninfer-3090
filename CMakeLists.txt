@@ -16,6 +16,9 @@ endif()
 
 project(ninfer LANGUAGES C CXX CUDA)
 
+# Before any target exists, so every target picks up the compiler launcher.
+include(cmake/CompilerCache.cmake)
+
 # NINFER_SM8X_COMPAT gates every Ampere/early-Ada compatibility path. ninfer_ops also sets it
 # PUBLIC for its own consumers, but that link is PRIVATE through ninfer_engine, so apps and tests
 # would not otherwise see it. Defining it globally keeps a single consistent answer for every

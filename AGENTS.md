@@ -251,6 +251,52 @@ Other host facts:
   sets up the VS 2026 v145 environment with `-allow-unsupported-compiler` and reconfigures into
   `build/`. It is not the supported path; prefer `build-ninja` as above.
 
+**Compiler cache (ccache) — use it, every tree shares one.** A full rebuild here is 10+ minutes
+(a few multi-minute CUDA translation units, then single-threaded device and final links), and
+editing a public header such as `include/ninfer/types.h` recompiles nearly everything. Several
+git worktrees are active at once and each changes only a few files, so builds go through one
+shared ccache. `cmake/CompilerCache.cmake` enables it automatically when ccache is found and
+prints `Compiler cache: <path> (base <main checkout>)` at configure; if it prints
+`ccache not found`, run the setup once and reconfigure:
+
+```powershell
+.\scripts\setup-ccache.ps1        # Windows: installs a pinned ccache, writes the shared settings
+scripts/setup-ccache.sh           # Linux/WSL: configures an installed ccache (apt install ccache)
+```
+
+- **Sharing across worktrees works through `base_dir`**: ccache rewrites absolute paths under
+  the main checkout (`C:\ninfer-fork\ninfer-3090`, found from git's common directory) to be relative,
+  and every tree has the same `<tree>\build-ninja` beside `<tree>\src`, so the same source hits the
+  same entry in any worktree. A worktree outside that directory (e.g. `C:\nb106`) does not share.
+  Files that include the shared vcpkg headers (FFmpeg) resolve those paths differently per tree and
+  may still miss.
+- **WSL has its own cache** (`~/.cache/ccache`; Linux objects cannot be shared with Windows ones).
+  WSL builds are `git archive` snapshots under `~` (`~/ninfer-rel-*`) with no `.git`, so CMake passes no
+  base there and ccache's own `base_dir` applies, which `scripts/setup-ccache.sh` sets to `$HOME`.
+  Install and configure once: `wsl.exe -u root -e apt-get install -y ccache`, then
+  `bash scripts/setup-ccache.sh` as the normal WSL user (it installs too when run with sudo or root).
+- **Check it:** `ccache -s` after a build. A fresh worktree configured from the same commit should
+  hit nearly everything; if it misses, `base_dir` is not set (`ccache --show-config | findstr base_dir`).
+- **Do not** clear the cache (`ccache -C`), disable it, or point `CCACHE_DIR` elsewhere to "fix" a
+  build problem; configure with `-DNINFER_COMPILER_CACHE=OFF` for a one-off uncached build instead.
+- Release is the default and is cached. MSVC `/Zi` (Debug, RelWithDebInfo) cannot be cached.
+- **A worktree session needs its own build tree** (`build-ninja` at the main checkout compiles the
+  main checkout's source, not yours). With the cache the first build of a new worktree is mostly hits:
+
+```powershell
+# from the worktree root, after importing the VS 2022 environment above
+cmake -S . -B build-ninja -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=86 `
+  -DBUILD_TESTING=ON -DNINFER_BUILD_APPS=OFF `
+  -DCMAKE_TOOLCHAIN_FILE="C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+  -DVCPKG_INSTALLED_DIR=C:/ninfer-fork/ninfer-3090/build-ninja/vcpkg_installed `
+  -DVCPKG_MANIFEST_INSTALL=OFF "-DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler -Xcompiler=/Zc:__cplusplus"
+```
+
+Tests register as phony targets that all link into `tests\ninfer_tests.exe`; build the
+`ninfer_tests` target (not a single test's name) before `ctest`. To turn the cache on in an
+existing tree such as the main `build-ninja`, re-run `cmake -S . -B build-ninja` once from the VS 2022
+environment; the next build recompiles once, filling the cache.
+
 Corrections to the previous revision of this section, all verified false:
 
 1. "VS 2022 BuildTools is **not** installed, so caches pinning `14.44.35207` are stale —
