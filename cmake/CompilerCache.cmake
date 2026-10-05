@@ -64,7 +64,15 @@ if(NOT _ninfer_ccache_base)
   endif()
 endif()
 
-set(_ninfer_ccache_launcher "${CMAKE_COMMAND}" -E env CCACHE_NOHASHDIR=1)
+# The root CMakeLists adds -Xcompiler=-ffile-prefix-map=<source dir>=. to every CUDA compile on
+# GCC/Clang so the host half of a .cu embeds relative paths. ccache rewrites an argument that is a
+# path under the base, but not one wrapped in -Xcompiler=, so the absolute source directory would
+# make every worktree's CUDA key different. The remapping yields the same output in every tree,
+# so leaving that one option out of the hash is correct. (C and C++ spell it plainly, which
+# ccache already normalizes.)
+set(_ninfer_ccache_launcher
+  "${CMAKE_COMMAND}" -E env CCACHE_NOHASHDIR=1
+  "CCACHE_IGNOREOPTIONS=-Xcompiler=-ffile-prefix-map=*")
 if(_ninfer_ccache_base)
   list(APPEND _ninfer_ccache_launcher "CCACHE_BASEDIR=${_ninfer_ccache_base}")
   set(_ninfer_ccache_base_note "base ${_ninfer_ccache_base}")

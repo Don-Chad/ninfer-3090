@@ -93,6 +93,13 @@ Work happens in several git worktrees at once, each changing a few files, so the
   launcher cannot find the main checkout and passes no base; `setup-ccache.sh` instead sets the config's
   `base_dir` to `$HOME` (or `--base DIR`), which every snapshot under it shares.
 
+A cached object comes from whichever tree first compiled that source, so a `__FILE__` the compiler
+cannot remap (MSVC's, and device-side code's) can carry that tree's absolute path in assertion
+messages. This is cosmetic; the root `CMakeLists.txt` already documents that these two have no
+working remapping. On GCC/Clang the host-side `-ffile-prefix-map` option is left out of the hash for
+CUDA files because its absolute argument would otherwise give each worktree a different key; the
+remapping produces the same output in every tree.
+
 Release (the default) is cached. MSVC `/Zi` writes a shared PDB, which ccache cannot cache, so Debug
 and RelWithDebInfo builds on Windows are not. Check the hit rate with `ccache -s`.
 
