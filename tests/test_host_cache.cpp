@@ -1,7 +1,10 @@
 #include "runtime/engine/host_cache.h"
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -23,6 +26,66 @@ ContextCacheOptions requested(std::uint32_t device_state_slots) {
     options.device_state_slots = device_state_slots;
     options.max_long_anchors_per_continuation = 2;
     return options;
+}
+
+void write(const std::filesystem::path& path, const std::string& text) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream(path) << text;
+}
+
+// A limit may sit on any ancestor of the process's cgroup, not the mount root, and the tightest
+// level decides. Each case is a fabricated tree under a scratch directory.
+int check_cgroup_probe() {
+    using ninfer::runtime::cgroup_remaining_bytes;
+    int failures = 0;
+    const std::filesystem::path scratch =
+        std::filesystem::temp_directory_path() / "ninfer_host_cache_cgroup_test";
+    std::filesystem::remove_all(scratch);
+
+    // v2: root unlimited, an ancestor limited to 10 GiB with 2 GiB charged of which 1 GiB is
+    // reclaimable page cache, so 9 GiB remain; the process sits two levels below it.
+    const std::filesystem::path v2 = scratch / "v2";
+    write(v2 / "memory.max", "max\n");
+    write(v2 / "app.slice" / "memory.max", "10737418240\n");
+    write(v2 / "app.slice" / "memory.current", "2147483648\n");
+    write(v2 / "app.slice" / "memory.stat", "anon 1\ninactive_file 1073741824\n");
+    write(v2 / "app.slice" / "c1" / "memory.max", "max\n");
+    write(v2 / "app.slice" / "c1" / "leaf" / "memory.max", "max\n");
+    failures += check(cgroup_remaining_bytes(v2, "0::/app.slice/c1/leaf\n") == 9 * kGiB,
+                      "an ancestor's memory limit was not applied to the process's cgroup");
+    // A tighter child wins over the ancestor: 4 GiB limit, 1 GiB charged -> 3 GiB.
+    write(v2 / "app.slice" / "c2" / "memory.max", "4294967296\n");
+    write(v2 / "app.slice" / "c2" / "memory.current", "1073741824\n");
+    failures += check(cgroup_remaining_bytes(v2, "0::/app.slice/c2\n") == 3 * kGiB,
+                      "the tightest limit along the cgroup path did not win");
+    // No limit anywhere on the path: no answer rather than a guess.
+    failures += check(!cgroup_remaining_bytes(v2, "0::/other/place\n").has_value(),
+                      "an unlimited cgroup path reported a limit");
+    // A deleted cgroup is still resolved by its path.
+    failures += check(cgroup_remaining_bytes(v2, "0::/app.slice/c2 (deleted)\n") == 3 * kGiB,
+                      "a deleted cgroup suffix broke path resolution");
+    // Inside a cgroup namespace the process sees itself at the mount root.
+    const std::filesystem::path ns = scratch / "ns";
+    write(ns / "memory.max", "5368709120\n");
+    write(ns / "memory.current", "1073741824\n");
+    failures += check(cgroup_remaining_bytes(ns, "0::/\n") == 4 * kGiB,
+                      "a limit at the namespace root was not applied");
+
+    // v1 (memory controller listed among others) and hybrid, where a v2 line names no controllers.
+    const std::filesystem::path v1 = scratch / "v1";
+    write(v1 / "memory" / "grp" / "memory.limit_in_bytes", "8589934592\n");
+    write(v1 / "memory" / "grp" / "memory.usage_in_bytes", "3221225472\n");
+    write(v1 / "memory" / "grp" / "memory.stat", "total_inactive_file 1073741824\n");
+    failures += check(
+        cgroup_remaining_bytes(v1, "12:cpu,cpuacct:/x\n4:memory:/grp\n0::/\n") == 6 * kGiB,
+        "a cgroup v1 memory limit was not applied");
+    write(v1 / "memory" / "free" / "memory.limit_in_bytes", "9223372036854771712\n");
+    write(v1 / "memory" / "free" / "memory.usage_in_bytes", "1\n");
+    failures += check(!cgroup_remaining_bytes(v1, "4:memory:/free\n").has_value(),
+                      "a cgroup v1 'no limit' value was treated as a limit");
+
+    std::filesystem::remove_all(scratch);
+    return failures;
 }
 
 } // namespace
@@ -102,6 +165,8 @@ int main() {
         (void)resolve_host_cache(plain, 64 * kGiB, 100 * kMiB, 8, 0);
     } catch (const std::logic_error&) { unflagged_rejected = true; }
     failures += check(unflagged_rejected, "sizing ran without auto_host_cache");
+
+    failures += check_cgroup_probe();
 
     const auto available = ninfer::runtime::available_host_memory_bytes();
     failures += check(available.has_value() && *available > 0,
