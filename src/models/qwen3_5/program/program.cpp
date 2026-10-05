@@ -44,6 +44,19 @@ std::size_t SequencePlan::workspace_capacity_bytes() const noexcept {
     return impl_ != nullptr ? impl_->workspace.capacity : 0;
 }
 
+std::size_t SequencePlan::host_state_image_bytes() const noexcept {
+    return impl_ != nullptr ? impl_->persistent.state_images.host.image_bytes : 0;
+}
+
+void SequencePlan::set_host_context_cache(const ContextCacheOptions& resolved) {
+    if (impl_ == nullptr) { throw std::logic_error("sequence plan is empty"); }
+    if (resolved.device_state_slots != impl_->context_cache.device_state_slots ||
+        resolved.enabled != impl_->context_cache.enabled) {
+        throw std::invalid_argument("resolved context cache changes the planned Device capacity");
+    }
+    impl_->context_cache = resolved;
+}
+
 SequencePlanner::SequencePlanner(std::unique_ptr<detail::SequencePlannerImpl> impl) noexcept
     : impl_(std::move(impl)) {}
 

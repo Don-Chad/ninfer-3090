@@ -6,6 +6,7 @@
 #include "models/qwen3_5/frontend/graft.h"
 #include "models/qwen3_5/load.h"
 #include "models/qwen3_5/measurement.h"
+#include "runtime/engine/host_cache.h"
 
 #include <algorithm>
 #include <chrono>
@@ -118,6 +119,15 @@ EngineOptions normalize_engine_options(EngineOptions options) {
     if (!cache.enabled && direct_grafts != 0) {
         throw std::invalid_argument(
             "direct grafts are held in the context cache, which is disabled");
+    }
+    if (cache.auto_host_cache) {
+        if (!cache.enabled) {
+            throw std::invalid_argument("auto_host_cache needs the context cache enabled");
+        }
+        if (cache.max_private_continuations || cache.max_shared_prefixes) {
+            throw std::invalid_argument(
+                "auto_host_cache sizes the private and shared catalogs; leave them unset");
+        }
     }
     if (!cache.enabled) {
         if ((cache.device_state_slots && *cache.device_state_slots != 0) ||
@@ -253,6 +263,31 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
                             resolution.extra_rank_reservation_bytes)) {
         throw std::logic_error("resolved KV capacity does not match the finalized Program plan");
     }
+    if (options.context_cache.auto_host_cache) {
+        // Sized here rather than at option parsing because a StateImage's size depends on the model
+        // and the speculative backend, and the host memory still free depends on what loading the
+        // model has already pinned. Host capacities do not enter the device plan.
+        const std::optional<std::uint64_t> available = available_host_memory_bytes();
+        if (!available) {
+            throw std::runtime_error(
+                "cannot determine the available host memory for --auto-host-cache; set "
+                "--host-kv-mib and --host-state-slots explicitly");
+        }
+        std::optional<std::uint64_t> device_free_after_startup;
+#if defined(_WIN32)
+        // WDDM charges pinned host memory against the GPU, so what the Program will leave free
+        // bounds the host tier (see program_impl.cpp).
+        device_free_after_startup =
+            free_by_rank.front() > resolution.runtime_reservation_bytes
+                ? free_by_rank.front() - resolution.runtime_reservation_bytes
+                : 0;
+#endif
+        options.context_cache = resolve_host_cache(
+            options.context_cache, *available, sequence.host_state_image_bytes(),
+            options.max_concurrency, models::qwen3_5::count_direct_grafts(options.grafts),
+            device_free_after_startup);
+        sequence.set_host_context_cache(options.context_cache);
+    }
     instance->kv_capacity_resolution = resolution;
     planning.complete();
     StartupPhaseScope program(options.startup_observer, StartupPhase::ProgramInitialize);
@@ -285,7 +320,8 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
     summary.device_object_count  = stats.device_object_count;
     summary.host_object_count    = stats.host_object_count;
     summary.context_cost         = std::move(context_cost.summary);
-    return {std::move(instance), std::move(summary), std::move(context_cost.model)};
+    return {std::move(instance), std::move(summary), std::move(context_cost.model),
+            options.context_cache};
 }
 
 } // namespace ninfer::runtime
