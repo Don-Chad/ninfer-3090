@@ -157,7 +157,8 @@ fetch_graft() {
       return 0
     fi
   done
-  for i in 0 1; do
+  # Sidecar first, binary last: run.bat and the launcher trust the .bin, so it must never be visible without its .json.
+  for i in 1 0; do
     if ! mv -f -- "$dir/${names[i]}.part" "$dir/${names[i]}" 2>/dev/null; then
       graft_discard "$dir"
       printf 'Graft: skipped (cannot install into %s).\n' "$dir" >&2
