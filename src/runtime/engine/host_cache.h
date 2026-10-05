@@ -15,7 +15,7 @@ namespace ninfer::runtime {
 // free once the model and every other startup allocation are in place.
 //
 // A fixed reserve and a fraction of the remainder are left to the operating system, the HTTP server,
-// media preparation and anything else on the machine. Of what is spent, a quarter goes to StateImage
+// media preparation and anything else on the machine. Of what is spent, an eighth goes to StateImage
 // slots (each a whole Gated DeltaNet snapshot, `state_image_bytes`) and the rest to KV pages. The
 // private and shared catalogs are sized to the number of states that can be resident, since a
 // retained continuation is only worth keeping while it has a state to resume from.

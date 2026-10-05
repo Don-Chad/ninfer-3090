@@ -29,8 +29,11 @@ constexpr std::uint64_t kHostReserveBytes = 4 * kGiB;
 // reclaimed, so the cache never takes all of it.
 constexpr std::uint64_t kBudgetNumerator   = 4;
 constexpr std::uint64_t kBudgetDenominator = 5;
-// Of the budget, at most this share holds StateImage slots; KV pages take the rest.
-constexpr std::uint64_t kStateShareDenominator = 4;
+// Of the budget, at most this share holds StateImage slots; KV pages take the rest. A state is
+// ~75 MiB on the 27B beside ~17.5 KiB of KV per token, so a resident 100k-token conversation costs
+// ~1.7 GiB of KV and one state; an eighth gives each conversation its tail plus two anchors with room
+// to spare, and leaves the rest of the budget for the KV that actually bounds how many survive.
+constexpr std::uint64_t kStateShareDenominator = 8;
 constexpr std::uint64_t kMaximumHostStateSlots = 128;
 constexpr std::uint32_t kMaximumSharedPrefixes = 32;
 

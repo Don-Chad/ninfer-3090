@@ -1284,7 +1284,7 @@ taken from the machine, once, after the model has loaded:
   rented container is sized by its own limit rather than the host's RAM. Startup fails, naming the
   explicit options, if the platform reports neither.
 - 4 GiB is kept back, and the host cache may pin 80% of the rest. Pinned pages cannot be reclaimed.
-- A quarter of that budget buys StateImage slots (at most 128, each one whole GDN snapshot, so its
+- An eighth of that budget buys StateImage slots (at most 128, each one whole GDN snapshot, so its
   size depends on the model and `--gdn-state-fp16`); the remainder is host KV.
 - The private-continuation catalog is the number of resident states (active lanes, device
   checkpoints and host slots), never below `2 * max-concurrency`; the shared-prefix catalog is a

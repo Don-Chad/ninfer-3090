@@ -30,19 +30,20 @@ ContextCacheOptions requested(std::uint32_t device_state_slots) {
 int main() {
     int failures = 0;
 
-    // 64 GiB free: 60 GiB above the 4 GiB reserve, 48 GiB budget, 12 GiB for 100 MiB states.
+    // 64 GiB free: 60 GiB above the 4 GiB reserve, 48 GiB budget, 6 GiB (an eighth) for 100 MiB
+    // states: 61 of them.
     const ContextCacheOptions large = resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0);
-    failures += check(!large.auto_host_cache && large.host_state_slots == 122 &&
-                          large.host_kv_capacity_bytes == (49152 - 12200) * kMiB,
-                      "64 GiB host did not split 48 GiB into 122 states and the remaining KV");
-    failures += check(large.max_private_continuations == 138 && large.max_shared_prefixes == 32,
+    failures += check(!large.auto_host_cache && large.host_state_slots == 61 &&
+                          large.host_kv_capacity_bytes == (49152 - 6100) * kMiB,
+                      "64 GiB host did not split 48 GiB into 61 states and the remaining KV");
+    failures += check(large.max_private_continuations == 77 && large.max_shared_prefixes == 19,
                       "catalogs did not follow the resident state count");
     failures += check(large.device_state_slots == 8 && large.max_long_anchors_per_continuation == 2,
                       "device-side fields were not carried over");
 
     // Injected grafts hold shared-prefix slots of their own, on top of the sized catalog.
     const ContextCacheOptions grafted = resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 2);
-    failures += check(grafted.max_shared_prefixes == 34 && grafted.max_private_continuations == 138,
+    failures += check(grafted.max_shared_prefixes == 21 && grafted.max_private_continuations == 77,
                       "pinned graft prefixes were not added to the shared catalog");
 
     // At or under the reserve nothing is pinned and the catalogs fall back to their floors.
@@ -67,13 +68,13 @@ int main() {
                       "a state slot larger than its share was still pinned");
 
     // Where pinned memory is charged to the GPU, the device headroom bounds the whole budget before
-    // the split. 30 GiB free: (30 - 1) / 2 = 14.5 GiB = 14,848 MiB, so 37 states (3,700 MiB) and the
+    // the split. 30 GiB free: (30 - 1) / 2 = 14.5 GiB = 14,848 MiB, so 18 states (1,800 MiB) and the
     // rest KV, instead of 48 GiB of budget.
     const ContextCacheOptions wddm =
         resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0, 30 * kGiB);
-    failures += check(wddm.host_state_slots == 37 &&
-                          wddm.host_kv_capacity_bytes == (14848 - 3700) * kMiB &&
-                          wddm.max_private_continuations == 53 && wddm.max_shared_prefixes == 13,
+    failures += check(wddm.host_state_slots == 18 &&
+                          wddm.host_kv_capacity_bytes == (14848 - 1800) * kMiB &&
+                          wddm.max_private_continuations == 34 && wddm.max_shared_prefixes == 8,
                       "device headroom did not bound the whole host budget before the split");
     // A full card: 1.5 GiB free leaves a 256 MiB budget, too small for one 100 MiB state's share.
     const ContextCacheOptions full_card =

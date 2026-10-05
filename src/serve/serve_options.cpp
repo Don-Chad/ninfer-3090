@@ -148,7 +148,7 @@ std::string serve_usage_text(const char* argv0) {
            "--host-kv-mib uses MiB\n"
            "       --auto-host-cache sizes Host state slots, Host KV and both catalogs from the "
            "host memory free after the model loads (80% of what is left above a 4 GiB reserve, "
-           "a quarter of it for state slots); it replaces the four explicit Host capacity "
+           "an eighth of it for state slots); it replaces the four explicit Host capacity "
            "options\n"
            "       --default-thinking-budget caps model-origin thinking for enabled requests; "
            "control tokens count toward the request output limit\n"
