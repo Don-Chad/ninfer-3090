@@ -2736,6 +2736,13 @@ int exercise_concurrent_resource_settlement(const char* artifact) {
     return 0;
 }
 
+// The "speculative" flavour of the interleaving scenarios: MTP unless a scenario selects DFlash2.
+ninfer::SpeculativeBackend g_interleave_speculative = ninfer::SpeculativeBackend::Mtp;
+
+const char* interleave_label(bool speculative) {
+    if (!speculative) { return "plain"; }
+    return g_interleave_speculative == ninfer::SpeculativeBackend::DFlash2 ? "DFlash2" : "MTP";
+}
 ninfer::EngineOptions interleaved_prefill_engine_options(const char* artifact,
                                                          std::uint32_t prefill_lanes, bool mtp,
                                                          std::uint32_t concurrency = 3) {
@@ -2745,8 +2752,8 @@ ninfer::EngineOptions interleaved_prefill_engine_options(const char* artifact,
     options.kv_capacity   = ninfer::KvCapacityPolicy::explicit_capacity(8192);
     options.prefill_chunk = 256;
     if (mtp) {
-        options.speculative.backend       = ninfer::SpeculativeBackend::Mtp;
-        options.speculative.draft_tokens  = 3;
+        options.speculative.backend       = g_interleave_speculative;
+        options.speculative.draft_tokens  = g_interleave_speculative == ninfer::SpeculativeBackend::DFlash2 ? 7 : 3;
         options.speculative.proposal_head = ninfer::ProposalHead::Optimized;
     } else {
         options.speculative.backend = ninfer::SpeculativeBackend::None;
@@ -2818,7 +2825,7 @@ bool interleave_engine_settles(const ninfer::Engine& engine) {
 // A long prompt submitted first must not hold back a short one submitted behind it once more than
 // one request may prefill, and interleaving must not change either request's greedy output.
 int exercise_interleaved_prefill(const char* artifact, bool mtp) {
-    const char* label = mtp ? "MTP" : "plain";
+    const char* label = interleave_label(mtp);
     const auto long_prompt  = interleave_long_prompt(3000, 0);
     const auto short_prompt = interleave_short_prompt();
     const auto references   = interleave_references(artifact, mtp, {long_prompt, short_prompt});
@@ -2906,7 +2913,7 @@ bool was_cancelled(const CancelledWait& outcome) {
 // Cancelling or abandoning one of several interleaved requests must free its lane, KV and state
 // without disturbing the others, at each point of the request's life: queued, prefilling, decoding.
 int exercise_interleaved_prefill_cancel(const char* artifact, bool mtp) {
-    const char* label       = mtp ? "MTP" : "plain";
+    const char* label       = interleave_label(mtp);
     const auto long_prompt  = interleave_long_prompt(3000, 0);
     const auto short_prompt = interleave_short_prompt();
     const auto references   = interleave_references(artifact, mtp, {long_prompt, short_prompt});
@@ -3023,7 +3030,7 @@ int exercise_interleaved_prefill_cancel(const char* artifact, bool mtp) {
 // Two long prompts and a short one. With three prefill lanes all three prefill at once; with two,
 // the short request waits for a lane. Both must reproduce the serial outputs.
 int exercise_interleaved_two_long(const char* artifact, bool mtp) {
-    const char* label = mtp ? "MTP" : "plain";
+    const char* label = interleave_label(mtp);
     const auto long_a = interleave_long_prompt(2500, 1);
     const auto long_b = interleave_long_prompt(2400, 2);
     const auto shorty = interleave_short_prompt();
@@ -3228,7 +3235,7 @@ int exercise_over_context(const char* artifact) {
 // A worker fault while two requests own a staged prefill fails both lanes, and recovery must release
 // both prefill owners: the Engine then serves two interleaved prompts again with their serial outputs.
 int exercise_interleaved_worker_failure(const char* artifact, bool mtp) {
-    const char* label = mtp ? "MTP" : "plain";
+    const char* label = interleave_label(mtp);
     const auto long_a = interleave_long_prompt(3000, 1);
     const auto long_b = interleave_long_prompt(2900, 2);
     const auto references = interleave_references(artifact, mtp, {long_a, long_b});
@@ -3662,6 +3669,9 @@ int run() {
         result = exercise_interleaved_prefill_all(artifact, false);
     } else if (scenario == "interleaved-prefill-mtp") {
         result = exercise_interleaved_prefill_all(artifact, true);
+    } else if (scenario == "interleaved-prefill-dflash2") {
+        g_interleave_speculative = ninfer::SpeculativeBackend::DFlash2;
+        result                   = exercise_interleaved_prefill_all(artifact, true);
     } else if (scenario == "interleaved-prefill-cancel") {
         result = exercise_interleaved_prefill_cancel(artifact, false);
     } else if (scenario == "interleaved-prefill-cancel-mtp") {
