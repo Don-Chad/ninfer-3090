@@ -4,6 +4,7 @@
 #include "runtime/engine/worker_fault.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -15,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1621,6 +1623,93 @@ int exercise_worker_failure_recovery(const char* artifact) {
     return 0;
 }
 
+// A request that cannot be planned fails alone. A running request is not touched, the Engine does
+// not recover (recovery would fail every running lane and clear the context cache), and the
+// failure does not count toward the latch.
+int exercise_admission_planning_failure_is_contained(const char* artifact) {
+    ninfer::EngineOptions options;
+    options.artifact_path                        = artifact;
+    options.max_context                          = 1024;
+    options.kv_capacity                          = ninfer::KvCapacityPolicy::explicit_capacity(1024);
+    options.prefill_chunk                        = 256;
+    options.speculative.backend                  = ninfer::SpeculativeBackend::Mtp;
+    options.speculative.draft_tokens             = 3;
+    options.speculative.proposal_head            = ninfer::ProposalHead::Optimized;
+    options.max_concurrency                      = 2;
+    options.max_pending_requests                 = 2;
+    options.context_cache.device_state_slots     = 1;
+    options.context_cache.host_state_slots       = 4;
+    options.context_cache.host_kv_capacity_bytes = std::size_t{64} << 20U;
+    ninfer::Engine engine(std::move(options));
+
+    const auto conversation = [](std::string text) {
+        ninfer::PromptInput prompt;
+        prompt.messages.push_back(ninfer::ChatMessage{
+            .role  = ninfer::ChatRole::User,
+            .parts = {ninfer::MessagePart{.kind  = ninfer::MessagePartKind::Text,
+                                          .text  = std::move(text),
+                                          .media = {}}}});
+        prompt.options.enable_thinking = false;
+        return prompt;
+    };
+    ninfer::RequestOptions running_request;
+    running_request.execution.requested_output_tokens = 200;
+    running_request.execution.sampling.temperature    = 0.0F;
+    running_request.stop.include_model_defaults       = false;
+    ninfer::RequestOptions short_request = running_request;
+    short_request.execution.requested_output_tokens = 1;
+
+    ninfer::GenerationHandle running = engine.submit(
+        engine.prepare(conversation("Write a long story about a lighthouse keeper.")),
+        running_request);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (engine.runtime_stats().running_requests == 0) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            std::cerr << "the running request never started\n";
+            return 1;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const std::uint64_t recoveries_before = engine.runtime_stats().engine_recoveries;
+
+    ninfer::runtime::arm_planning_failures(1);
+    ninfer::GenerationHandle poisoned = engine.submit(
+        engine.prepare(conversation("Summarise the trade-offs between paged and contiguous KV.")),
+        short_request);
+    bool poisoned_failed = false;
+    try {
+        (void)poisoned.wait();
+    } catch (const std::exception&) { poisoned_failed = true; }
+    ninfer::runtime::arm_planning_failures(0);
+
+    std::size_t running_tokens = 0;
+    bool running_failed        = false;
+    try {
+        running_tokens = running.wait().generated_token_ids.size();
+    } catch (const std::exception&) { running_failed = true; }
+
+    bool served_after = false;
+    try {
+        served_after = engine
+                           .generate(engine.prepare(conversation("Say hello.")), short_request)
+                           .generated_token_ids.size() == 1;
+    } catch (const std::exception&) {}
+
+    const std::uint64_t recoveries = engine.runtime_stats().engine_recoveries - recoveries_before;
+    if (!poisoned_failed || running_failed || running_tokens < 2 || !served_after ||
+        recoveries != 0 || !engine.is_available()) {
+        std::cerr << "admission planning failure was not contained: poisoned_failed="
+                  << poisoned_failed << " running_failed=" << running_failed
+                  << " running_tokens=" << running_tokens << " served_after=" << served_after
+                  << " recoveries=" << recoveries << " available=" << engine.is_available()
+                  << "\n";
+        return 1;
+    }
+    std::cout << "admission-planning-failure: contained, running_tokens=" << running_tokens
+              << " recoveries=0\n";
+    return 0;
+}
+
 int exercise_private_long_anchor_capture_and_replacement(const char* artifact) {
     ninfer::Engine engine(private_long_anchor_engine_options(artifact));
 
@@ -2768,6 +2857,8 @@ int run() {
         result = exercise_slot_persistence(artifact);
     } else if (scenario == "worker-failure-recovery") {
         result = exercise_worker_failure_recovery(artifact);
+    } else if (scenario == "admission-planning-failure") {
+        result = exercise_admission_planning_failure_is_contained(artifact);
     } else if (scenario == "private-long-anchor") {
         result = exercise_private_long_anchor_capture_and_replacement(artifact);
     } else if (scenario == "rewrite-checkpoint-shared") {

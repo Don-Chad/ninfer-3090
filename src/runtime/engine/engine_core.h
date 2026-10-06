@@ -1729,6 +1729,30 @@ private:
                                   request->publication_order, allowance);
     }
 
+    // Inspection plans one waiting request against the context cache and the Program. It opens no
+    // transaction and reserves nothing: a throw leaves no state behind to clean up, and the running
+    // lanes took no part in it. Failing the Engine for it would deliver the error to every running
+    // request instead of the one that cannot be planned, so fail that request alone.
+    [[nodiscard]] std::optional<ResourceInspection>
+    inspect_admission_or_fail(const std::shared_ptr<Request>& request, PlanningAllowance allowance) {
+        try {
+            consume_armed_planning_failure();
+            return inspect_admission(request, allowance);
+        } catch (...) {
+            const std::exception_ptr error = std::current_exception();
+            EngineFaultEvent fault;
+            try {
+                fault.message   = exception_text(error);
+                fault.unit      = "admission";
+                fault.contained = true;
+                fault.request_ids.push_back(request->id);
+            } catch (...) {}
+            (void)remove_pending_error(request, error);
+            notify_fault(fault);
+            return std::nullopt;
+        }
+    }
+
     [[nodiscard]] AdmissionProgress remove_pending_error(const std::shared_ptr<Request>& request,
                                                          std::exception_ptr error) {
         if (!erase_pending(request)) { return AdmissionProgress::None; }
@@ -1982,7 +2006,13 @@ private:
                 control_progress = true;
                 continue;
             }
-            auto head_inspection = inspect_admission(head, allowance);
+            std::optional<ResourceInspection> head_inspected =
+                inspect_admission_or_fail(head, allowance);
+            if (!head_inspected) {
+                control_progress = true;
+                continue;
+            }
+            auto head_inspection = std::move(*head_inspected);
             if (head_inspection.readiness == Readiness::PermanentlyInfeasible) {
                 (void)remove_pending_error(
                     head, std::make_exception_ptr(RequestError(
@@ -2056,7 +2086,13 @@ private:
                     control_progress = true;
                     continue;
                 }
-                auto candidate_inspection = inspect_admission(candidate, allowance);
+                std::optional<ResourceInspection> candidate_inspected =
+                    inspect_admission_or_fail(candidate, allowance);
+                if (!candidate_inspected) {
+                    control_progress = true;
+                    continue;
+                }
+                auto candidate_inspection = std::move(*candidate_inspected);
                 if (candidate_inspection.readiness == Readiness::PermanentlyInfeasible) {
                     (void)remove_pending_error(
                         candidate, std::make_exception_ptr(RequestError(
