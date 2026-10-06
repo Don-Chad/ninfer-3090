@@ -659,16 +659,7 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
             if (!dflash || !io.dflash_decode || (backend_kv_cache() && !sequence.kv->backend)) {
                 throw std::logic_error("DFlash prefill state is incomplete");
             }
-            *dflash_host_ingress                       = {};
-            dflash_host_ingress->active_lanes[0]       = static_cast<std::int32_t>(sequence.lane);
-            const StateImageSelectors selectors        = state_selectors(sequence);
-            dflash_host_ingress->state_source_slots[0] = selectors.source;
-            dflash_host_ingress->state_destination_slots[0] = selectors.destination;
-            dflash_host_ingress->dflash_kv_table_rows[0] =
-                sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend) : 0;
-            CUDA_CHECK(cudaMemcpyAsync(io.dflash_decode->ingress.data, dflash_host_ingress,
-                                       sizeof(qwen3_5::DFlashDecodeIngress), cudaMemcpyHostToDevice,
-                                       device.stream));
+            stage_dflash_prefill_ingress(sequence);
         }
 
         staged.elapsed_seconds += std::chrono::duration<double>(Clock::now() - started).count();
@@ -680,6 +671,19 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
         clear_lane_best_effort(sequence, request);
         throw;
     }
+}
+
+void ProgramImpl::stage_dflash_prefill_ingress(const SequenceState& sequence) {
+    *dflash_host_ingress                       = {};
+    dflash_host_ingress->active_lanes[0]       = static_cast<std::int32_t>(sequence.lane);
+    const StateImageSelectors selectors        = state_selectors(sequence);
+    dflash_host_ingress->state_source_slots[0] = selectors.source;
+    dflash_host_ingress->state_destination_slots[0] = selectors.destination;
+    dflash_host_ingress->dflash_kv_table_rows[0] =
+        sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend) : 0;
+    CUDA_CHECK(cudaMemcpyAsync(io.dflash_decode->ingress.data, dflash_host_ingress,
+                               sizeof(qwen3_5::DFlashDecodeIngress), cudaMemcpyHostToDevice,
+                               device.stream));
 }
 
 runtime::PrefillStepResult
@@ -1013,6 +1017,20 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                 .summary = summary,
                 .timing  = timing.finish(),
             };
+        }
+        // These device scalars are shared by every lane and were last written when the most
+        // recently started request bound its KV mapping. Another lane that started or prefilled
+        // since this lane's previous unit left its own values behind, so this unit rebinds its own
+        // before any chunk reads them.
+        set_device_i32(io.text_kv_table_row, text_kv_addresses->bound_row(sequence.kv->text));
+        set_device_i32(io.backend_kv_table_row,
+                       sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend)
+                                            : 0);
+        set_device_i32(io.rope_delta, sequence.rope_delta);
+        // Decode rounds and other lanes' prefill units ran since this lane's last unit and
+        // rewrote the shared one-row DFlash frame.
+        if (is_masked_draft_backend(speculative_backend)) {
+            stage_dflash_prefill_ingress(sequence);
         }
         StateImageSelectors selectors = state_selectors(sequence);
         Tensor rewrite_capture_hidden;

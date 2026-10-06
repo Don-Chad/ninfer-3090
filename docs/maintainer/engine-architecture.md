@@ -184,7 +184,7 @@ Program 不维护 FIFO、SessionIndex、cache retention 价值或用户可见输
 Scheduler 维护：
 
 - 当前 FIFO head；
-- staged-prefill owner；
+- staged-prefill owner 集合与每个 unit 的 owner 选择；
 - admission、prefill 与 decode 的公平门；
 - 每轮紧凑执行成员；
 - blocked head 的 backfill protection。
@@ -370,7 +370,14 @@ FIFO head 暂时受 active incumbents 阻塞时，Scheduler 记录 protected hea
 
 Scheduler 保证：
 
-- 同时最多一个 staged-prefill request；
+- 同时最多 `--max-prefill-lanes`（默认 1）个 staged-prefill owner，上限为 `max_concurrency`；
+- 每个 prefill unit 选一个 owner：首个 unit 尚未运行的新发布 lane 优先，其次是被跳过
+  `--prefill-max-skip`（默认 8）次的 lane，否则选剩余 prompt suffix 最短者，平局取先发布者。
+  Aging 保证长 prompt 在最坏情况下每 `K+1` 个 unit 至少获得一个，不会被饿死；
+- 新发布 lane 的首个 unit 之前不再 admission，上下文事务（materialization、active capture）
+  期间任何 lane 都不运行 prefill unit，decode 继续。这保证复用状态 fork 在下一次 capture 或
+  materialization 之前被 settle；
+- admission 仍严格按 FIFO head，owner 数未满时在边界继续 admit 后到的请求；
 - 已有 decode work 不会被连续 prefill 饿死；
 - decode round 包含所有且仅包含当前 decode-ready requests；
 - batch 使用精确 `B`，不以 inactive lane padding 到 `max_concurrency`。
@@ -384,7 +391,7 @@ prefill，不创建另一条调度路径。
 
 - waiting queue 或 FIFO head 变化；
 - lane 释放；
-- staged-prefill gate 变化；
+- staged-prefill owner 集合或新发布 lane 的首个 unit 完成；
 - resource transition 到达终态；
 - Program 的全局资源 revision 变化。
 

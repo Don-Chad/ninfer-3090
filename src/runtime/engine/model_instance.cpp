@@ -53,6 +53,11 @@ void validate_options(const EngineOptions& options) {
     if (options.max_pending_requests == 0 || options.pending_timeout_ms == 0) {
         throw std::invalid_argument("Engine pending request capacity and timeout must be nonzero");
     }
+    if (options.max_prefill_lanes == 0 || options.max_prefill_lanes > options.max_concurrency ||
+        options.prefill_max_skip == 0) {
+        throw std::invalid_argument(
+            "Engine max_prefill_lanes must be in [1,max_concurrency] and prefill_max_skip nonzero");
+    }
     if (options.enable_vision && options.media_live_bytes == 0) {
         throw std::invalid_argument(
             "Engine media_live_bytes must be nonzero when Vision is enabled");
@@ -98,7 +103,8 @@ EngineOptions normalize_engine_options(EngineOptions options) {
         options.max_concurrency      = 1;
         options.max_pending_requests = 1;
         options.prefill_chunk        = 1024;
-        options.kv_capacity          = KvCapacityPolicy::explicit_capacity(options.max_context);
+        options.max_prefill_lanes    = 1;
+        options.kv_capacity         = KvCapacityPolicy::explicit_capacity(options.max_context);
         options.speculative          = {};
         options.enable_vision        = false;
         options.use_cuda_graph       = false;

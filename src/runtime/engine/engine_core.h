@@ -90,6 +90,11 @@ public:
             !options.context_cache.max_shared_prefixes) {
             throw std::logic_error("target admission capacity does not match the Engine");
         }
+        if (options.max_prefill_lanes == 0 || options.max_prefill_lanes > max_concurrency_ ||
+            options.prefill_max_skip == 0) {
+            throw std::invalid_argument("Engine prefill lane bounds are invalid");
+        }
+        scheduler_.configure_prefill(options.max_prefill_lanes, options.prefill_max_skip);
         catalog_pinned_grafts();
         slot_session_paths_.resize(resources_.catalog_capacity());
         slot_digest_cache_.resize(resources_.catalog_capacity());
@@ -674,9 +679,11 @@ private:
             snapshot.waiting_requests = static_cast<std::uint32_t>(pending_.size());
         }
         snapshot.prefilling_requests = 0;
-        if (const auto lane = scheduler_.prefill_lane();
-            lane && slots_[*lane] != nullptr && !slots_[*lane]->capture_pending) {
-            snapshot.prefilling_requests = 1;
+        for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+            if (scheduler_.is_prefill_owner(lane) && slots_[lane] != nullptr &&
+                !slots_[lane]->capture_pending) {
+                ++snapshot.prefilling_requests;
+            }
         }
         snapshot.materializing_requests = materializing_.has_value() ? 1U : 0U;
         for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
@@ -1262,7 +1269,7 @@ private:
             auto aborted = resources_.abort(*instance_.program, *request->lane, *request->sequence);
             request->generation_timings = aborted.timings;
             request->speculative_stats  = std::move(aborted.speculative);
-            if (scheduler_.prefill_lane() == lane) { scheduler_.clear_prefill_lane(lane); }
+            if (scheduler_.is_prefill_owner(lane)) { scheduler_.clear_prefill_lane(lane); }
             append_output(request, request->output.commit_preview());
             finish_engine_phase(boundary, EngineHostPhase::Boundary);
             complete_success(request, FinishReason::Cancelled);
@@ -1649,7 +1656,7 @@ private:
             throw std::logic_error("runtime Begin summary differs from committed admission");
         }
         const std::uint32_t lane = request->lane->value;
-        if (scheduler_.prefill_lane() == lane) {
+        if (scheduler_.is_prefill_owner(lane)) {
             scheduler_.clear_prefill_lane(lane);
             request_admission_check();
         }
@@ -1660,13 +1667,43 @@ private:
         progress.pending.reset();
     }
 
-    void run_prefill_step(const std::array<bool, kMaximumConcurrency>& cancelled_at_unit_start) {
+    // Prefill owners that can run a unit now. A context transaction (materialization or capture)
+    // owns the Program's reuse state, so no lane prefills while one is open; decode continues.
+    [[nodiscard]] std::size_t
+    collect_prefill_candidates(std::array<typename Scheduling::PrefillCandidate,
+                                          kMaximumConcurrency>& candidates) const {
+        std::size_t count = 0;
+        if (instance_.program->has_context_transaction()) { return count; }
+        for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+            if (!scheduler_.is_prefill_owner(lane)) { continue; }
+            const auto& request = slots_[lane];
+            if (request == nullptr || !request->is_prefilling()) {
+                throw std::logic_error("prefill owner has no active Engine request");
+            }
+            // A lane whose media item still encodes in a concurrent overlay window yields its
+            // prefill unit; the other lanes run meanwhile.
+            if (request->capture_pending || !request->sequence || !request->admitted_begin ||
+                instance_.program->vision_pending(*request->sequence)) {
+                continue;
+            }
+            const BeginSummary& begin = *request->admitted_begin;
+            const std::uint32_t suffix = begin.prompt_tokens - begin.reused_prompt_tokens;
+            candidates[count++]        = {
+                lane, suffix > request->computed_prompt_tokens
+                             ? suffix - request->computed_prompt_tokens
+                             : 0U};
+        }
+        return count;
+    }
+
+    void run_prefill_step(std::uint32_t lane,
+                          const std::array<bool, kMaximumConcurrency>& cancelled_at_unit_start) {
         nvtx::ScopedRange prefill_range(nvtx::Name::Prefill, nvtx::Category::Prefill);
         EnginePhaseScope setup(*this, EngineHostPhase::CommitOutput);
-        const auto prefill_lane = scheduler_.prefill_lane();
-        if (!prefill_lane) { throw std::logic_error("no request owns staged prefill"); }
-        const std::uint32_t lane = *prefill_lane;
-        const auto request       = slots_[lane];
+        if (!scheduler_.is_prefill_owner(lane)) {
+            throw std::logic_error("no request owns staged prefill");
+        }
+        const auto request = slots_[lane];
         if (request == nullptr || !request->is_prefilling() || request->capture_pending) {
             throw std::logic_error("staged prefill lane has invalid request state");
         }
@@ -2447,24 +2484,24 @@ private:
                 }
                 membership = scheduler_.build_round_membership(slots_, max_concurrency_);
 
-                bool prefill_runnable = false;
-                if (const auto lane = scheduler_.prefill_lane(); lane) {
-                    if (slots_[*lane] == nullptr || !slots_[*lane]->is_prefilling()) {
-                        throw std::logic_error("prefill owner has no active Engine request");
-                    }
-                    // A lane whose media item still encodes in a concurrent overlay window yields
-                    // its prefill unit; the other lanes decode meanwhile.
-                    prefill_runnable = !slots_[*lane]->capture_pending &&
-                                       !(slots_[*lane]->sequence &&
-                                         instance_.program->vision_pending(*slots_[*lane]->sequence));
-                }
+                std::array<typename Scheduling::PrefillCandidate, kMaximumConcurrency>
+                    prefill_candidates{};
+                const std::size_t prefill_candidate_count =
+                    collect_prefill_candidates(prefill_candidates);
+                const std::span<const typename Scheduling::PrefillCandidate> candidate_span{
+                    prefill_candidates.data(), prefill_candidate_count};
+                const std::optional<std::uint32_t> prefill_lane =
+                    scheduler_.select_prefill_lane(candidate_span);
                 const ExecutionAction action = scheduler_.choose_execution(
-                    !membership.empty(), prefill_runnable, previous_unit_was_decode);
+                    !membership.empty(), prefill_lane.has_value(), previous_unit_was_decode);
                 if (action == ExecutionAction::Prefill) {
                     set_host_work_class(HostWorkClass::Prefill);
                     finish_engine_phase(boundary, EngineHostPhase::Boundary);
                     unit = "prefill";
-                    run_prefill_step(cancelled_at_unit_start);
+                    const bool was_fresh = scheduler_.is_fresh_prefill_lane(*prefill_lane);
+                    scheduler_.record_prefill_unit(*prefill_lane, candidate_span);
+                    run_prefill_step(*prefill_lane, cancelled_at_unit_start);
+                    if (was_fresh) { request_admission_check(); }
                     previous_unit_was_decode = false;
                     continue;
                 }

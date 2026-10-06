@@ -2250,10 +2250,21 @@ bool ProgramImpl::has_context_transaction() const noexcept {
 
 bool ProgramImpl::vision_pending(SequenceHandle sequence) const noexcept {
     if (!valid_sequence(sequence)) { return false; }
-    const RequestControl& request = requests[ContractAccess::lane(sequence).value];
+    const std::uint32_t lane      = ContractAccess::lane(sequence).value;
+    const RequestControl& request = requests[lane];
     if (!request.prefill || !request.prefill->vision) { return false; }
     try {
-        return request.prefill->vision->vision_pending();
+        if (request.prefill->vision->vision_pending()) { return true; }
+        // Only one overlay window can be open: while another lane's media item encodes in its
+        // window, this lane's own encode would find the window held and cannot start.
+        for (std::uint32_t other = 0; other < max_concurrency; ++other) {
+            if (other == lane) { continue; }
+            const RequestControl& peer = requests[other];
+            if (peer.prefill && peer.prefill->vision && peer.prefill->vision->vision_pending()) {
+                return true;
+            }
+        }
+        return false;
     } catch (...) {
         // A failed completion query surfaces when the prefill unit synchronizes the item.
         return false;

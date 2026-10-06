@@ -262,6 +262,24 @@ int main() {
                           configured.media_preprocess_threads == 6,
                       "media preparation limits did not reach serving options");
 
+    const ServeOptions prefill_lanes =
+        parse({"ninfer-serve", "model.ninfer", "--max-concurrency", "4", "--max-prefill-lanes", "2",
+               "--prefill-max-skip", "5"});
+    failures += check(prefill_lanes.max_prefill_lanes == 2 && prefill_lanes.prefill_max_skip == 5,
+                      "prefill lane options did not reach serving options");
+    failures += check(parse({"ninfer-serve", "model.ninfer"}).max_prefill_lanes == 1,
+                      "default prefill lanes are no longer one");
+    for (const std::vector<std::string>& bad :
+         {std::vector<std::string>{"ninfer-serve", "model.ninfer", "--max-prefill-lanes", "2"},
+          std::vector<std::string>{"ninfer-serve", "model.ninfer", "--max-prefill-lanes", "0"},
+          std::vector<std::string>{"ninfer-serve", "model.ninfer", "--prefill-max-skip", "0"}}) {
+        bool rejected = false;
+        try {
+            (void)parse(bad);
+        } catch (const std::invalid_argument&) { rejected = true; }
+        failures += check(rejected, "invalid prefill lane options were accepted");
+    }
+
     const ServeOptions logging = parse({"ninfer-serve", "model.ninfer", "--log-level", "debug"});
     failures += check(logging.log_level == ninfer::product::LogLevel::Debug,
                       "log level did not reach serving options");

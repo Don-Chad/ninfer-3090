@@ -234,7 +234,8 @@ curl http://127.0.0.1:8080/v1/load -H 'Authorization: Bearer local-secret'
 - `requests.admitted` counts requests holding ingress capacity, from preparation until the response
   is released; a new generation request is rejected with `server_overloaded` (HTTP 429, or 529 on
   Anthropic endpoints) when it would exceed `max_admitted_requests`. `running` counts occupied execution lanes (at most
-  `max_concurrency`), of which `prefilling` is the lane that owns the staged prefill and
+  `max_concurrency`), of which `prefilling` counts the lanes that own a staged prefill (at most
+  `--max-prefill-lanes`) and
   `decode_ready` the lanes in the decode batch. `waiting` counts requests submitted to the Engine
   FIFO that have not been admitted to a lane, including those held back until their KV entitlement
   fits.
@@ -1056,6 +1057,8 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--max-pending-requests N` | additional requests allowed to wait for admission | `16` |
 | `--pending-timeout-ms N` | maximum preparation-plus-admission wait | `600000` |
 | `--prefill-chunk N` | text-prefill chunk | `1024` |
+| `--max-prefill-lanes N` | requests that may prefill at once, at most `--max-concurrency`; each prefill unit goes to the lane with the shortest remaining prompt suffix, so short and prefix-cached prompts are not stuck behind a long one (see below) | `1` |
+| `--prefill-max-skip N` | prefill units a lane may be passed over before it is served ahead of shorter lanes | `8` |
 | `--log-stats-interval-ms N` | aggregate throughput report interval; `0` disables it | `5000` |
 | `--device N` | CUDA device index | `0` |
 | `--devices A,B,...` | one pipeline stage per listed CUDA device (2 to 8, Linux; see the [README](../README.md#several-gpus-pipeline-stages---devices-ab)); overrides `--device` | none |
@@ -1264,12 +1267,32 @@ response the deployment allows rather than to a connection timeout: at C1 on an 
 6,500-token response occupies the engine for about 106 seconds. The 600,000 ms default admits a
 queued caller behind roughly ten such responses; lower it only to fail fast on purpose.
 
-One request owns the staged prefill at a time, and the executor alternates a single prefill chunk
+By default one request owns the staged prefill at a time, so a very long prompt holds the lane for
+its whole prefill (340-370 s for a 200k-token prompt on an RTX 3090 with `--kv-dtype rk4v4` and
+chunk 512, about 550-590 tok/s against ~1,100 tok/s at shallow context) and a prefix-cached request
+behind it, which still needs one prefill unit, waits it out. `--max-prefill-lanes N` lets up to N
+requests hold a staged prefill. Each prefill unit then goes to the lane with the shortest remaining
+prompt suffix (a lane's first unit always runs first), and a lane passed over `--prefill-max-skip`
+units is served before any shorter one, so the long prompt is slowed but never starved. A short
+request now waits for at most the unit in flight plus one decode round plus its own units, and the
+long prompt finishes later by the prefill work of the requests that passed it. Admission stays
+FIFO, and admission reserves each request's full prompt and output KV, so the KV capacity has to
+hold the long prompt and the short ones together; a request that does not fit still waits as the
+FIFO head however many prefill lanes are configured. Measured on an RTX 3090 with the 27B and
+`--kv-dtype rk4v4`, three lanes, two 80k-token prompts and one short prompt: the short request
+finished in 3.1 s at chunk 512 and 14.8 s at `--prefill-cublas --prefill-chunk 4096` (each of its
+decode steps waits for one chunk of the long prefills), against about 170 s and 105 s behind both
+long prompts one at a time. The first long prompt's first token came 9% later than it would alone
+(92 s against 85 s at chunk 512, 57 s against 53 s with cuBLAS); the second arrived when the two
+prefills would have finished back to back (171 s and 105 s). The prompt that finishes first is the
+one with less left to prefill, not the one that arrived first.
+
+The executor alternates a single prefill chunk
 with a single decode round, so `--prefill-chunk` sets the worst-case pause every active stream sees
 while a new prompt is ingested. On an RTX 3090 ingesting a 4,900-token prompt behind four active
 streams, the largest inter-token gap measured 1,043 ms at chunk 1024, 515 ms at 512, and 312 ms at
 256, against an 82 ms median decode interval; the ingesting request's own prefill rate fell only
-from 1,135 to 1,130 to 1,110 tok/s. Prefill is not batched across requests at any chunk size, so a
+from 1,135 to 1,130 to 1,110 tok/s. Prefill units of different requests are never batched together, so a
 smaller chunk trades almost no ingestion throughput for a proportionally smaller stall. The shipped
 concurrent launcher uses 512.
 

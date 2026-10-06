@@ -273,6 +273,12 @@ struct EngineOptions {
     std::uint32_t max_pending_requests = 16;
     std::uint32_t pending_timeout_ms   = 30000;
     std::uint32_t prefill_chunk        = 1024;
+    // Requests that may hold staged prefill at once (at most max_concurrency). With more than one,
+    // each prefill unit goes to the lane with the shortest remaining prompt suffix, so a short or
+    // prefix-cached prompt is not stuck behind a long one. 1 serves one prompt at a time.
+    std::uint32_t max_prefill_lanes    = 1;
+    // A prefill lane passed over this many units is served before any shorter one.
+    std::uint32_t prefill_max_skip     = 8;
     KvCacheStorage kv_cache            = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
     std::size_t media_cache_bytes = kDefaultMediaCacheBytes;
@@ -1133,7 +1139,7 @@ struct RuntimeStats {
     std::uint64_t decode_rounds             = 0;
     std::uint64_t decode_row_rounds         = 0;
     std::uint32_t running_requests          = 0;
-    std::uint32_t prefilling_requests       = 0;
+    std::uint32_t prefilling_requests       = 0; // at most EngineOptions::max_prefill_lanes
     std::uint32_t decode_ready_requests     = 0;
     std::uint32_t waiting_requests          = 0;
     std::uint32_t materializing_requests    = 0;

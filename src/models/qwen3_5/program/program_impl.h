@@ -1194,6 +1194,9 @@ private:
     void clear_lane_best_effort(SequenceState& sequence, RequestControl& request) noexcept;
     void ordered_reset(SequenceState& sequence);
     [[nodiscard]] StateImageSelectors state_selectors(const SequenceState& sequence) const;
+    // Points the one-row DFlash ingress frame at this lane. Decode rounds and other lanes'
+    // prefill rewrite that frame, so every prefill chunk stages it again before it appends.
+    void stage_dflash_prefill_ingress(const SequenceState& sequence);
     [[nodiscard]] detail::PhysicalResources
     sequence_exclusive_state_resources(const SequenceState& sequence) const;
     [[nodiscard]] std::uint32_t owned_checkpoint_references(const SequenceState& sequence,
