@@ -583,6 +583,56 @@ void OperationalLog::server_ready(std::string_view host, int port, std::string_v
 
 void OperationalLog::server_stopped() const { logger_->info("server stopped"); }
 
+OperationalRecord render_engine_fault(const ninfer::EngineFaultEvent& event) {
+    std::ostringstream out;
+    out << "engine worker failure | unit " << event.unit << " | requests ";
+    if (event.request_ids.empty()) {
+        out << "none";
+    } else {
+        for (std::size_t i = 0; i < event.request_ids.size(); ++i) {
+            out << (i == 0 ? "" : ",") << "req#" << event.request_ids[i];
+        }
+    }
+    if (!event.lanes.empty()) {
+        out << " | lanes ";
+        for (std::size_t i = 0; i < event.lanes.size(); ++i) {
+            out << (i == 0 ? "" : ",") << event.lanes[i];
+        }
+    }
+    if (!event.queued_request_ids.empty()) {
+        out << " | queued failed ";
+        for (std::size_t i = 0; i < event.queued_request_ids.size(); ++i) {
+            out << (i == 0 ? "" : ",") << "req#" << event.queued_request_ids[i];
+        }
+    }
+    out << " | failure " << event.consecutive_failures << "/"
+        << event.maximum_consecutive_failures << " | ";
+    if (event.latched) {
+        out << "LATCHED, engine unavailable (" << product::format_pretty_text(event.latch_reason) << ")";
+    } else {
+        out << "recovered";
+    }
+    out << " | " << product::format_pretty_text(event.message);
+    return {OperationalSeverity::Error, out.str()};
+}
+
+void OperationalLog::engine_fault(const ninfer::EngineFaultEvent& event) const {
+    write(render_engine_fault(event));
+}
+
+void OperationalLog::engine_fatal_exit(double grace_seconds, bool will_exit) const {
+    if (will_exit) {
+        logger_->critical("FATAL: inference engine is permanently unavailable after repeated "
+                          "worker failures; exiting in {:.0f}s for a supervisor to restart "
+                          "(disable with --no-exit-on-engine-failure)",
+                          grace_seconds);
+    } else {
+        logger_->critical("FATAL: inference engine is permanently unavailable after repeated "
+                          "worker failures; staying up answering 503 "
+                          "(--no-exit-on-engine-failure), restart required");
+    }
+}
+
 void OperationalLog::server_failure(bool serving, std::string_view detail) const {
     logger_->critical("server failed during {} | {}", serving ? "serving" : "startup",
                       product::format_pretty_text(detail));

@@ -584,6 +584,40 @@ int main() {
     failures += check(error.at("error").at("message") == "generation failed",
                       "request error message missing");
 
+    ninfer::EngineFaultEvent fault;
+    fault.message                      = "page table\ninvariant";
+    fault.unit                         = "prefill";
+    fault.request_ids                  = {7, 9};
+    fault.lanes                        = {0, 1};
+    fault.consecutive_failures         = 2;
+    fault.maximum_consecutive_failures = 3;
+    const OperationalRecord recovered_fault = render_engine_fault(fault);
+    failures += check(recovered_fault.severity == OperationalSeverity::Error &&
+                          recovered_fault.message ==
+                              "engine worker failure | unit prefill | requests req#7,req#9 | "
+                              "lanes 0,1 | failure 2/3 | recovered | page table invariant",
+                      "recovered engine fault rendering mismatch");
+    fault.latched      = true;
+    fault.latch_reason = "failures repeated";
+    failures += check(render_engine_fault(fault).message.find("LATCHED, engine unavailable "
+                                                              "(failures repeated)") !=
+                          std::string::npos,
+                      "latched engine fault rendering mismatch");
+    // A latch reason carrying raw line breaks or control bytes must not forge log records, and the
+    // queued requests the latch fails alongside the running ones must be named.
+    fault.latch_reason       = "bad\nFATAL: forged record\x1b[31m";
+    fault.queued_request_ids = {11, 12};
+    const OperationalRecord latched_fault = render_engine_fault(fault);
+    failures += check(latched_fault.message.find('\n') == std::string::npos &&
+                          latched_fault.message.find('\x1b') == std::string::npos,
+                      "latched engine fault leaks raw control characters from the latch reason");
+    failures += check(latched_fault.message.find("queued failed req#11,req#12") !=
+                          std::string::npos,
+                      "latched engine fault omits the queued requests it fails");
+    fault.queued_request_ids.clear();
+    failures += check(render_engine_fault(fault).message.find("queued failed") == std::string::npos,
+                      "engine fault names queued requests when there are none");
+
     const OperationalRecord internal_failure = render_request_failure(
         context,
         make_internal_request_failure(RequestFailurePhase::Generation, "sentinel-internal-detail"));

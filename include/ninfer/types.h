@@ -180,6 +180,28 @@ struct SlotAutoSaveOptions {
     std::function<void(const SlotAutoSaveEvent& event)> listener;
 };
 
+// A host-side failure of the Engine worker, reported from the worker thread after the Engine has
+// recovered from it or latched. `message` is the exception text, which is operator diagnostics
+// and must not be forwarded to API clients.
+struct EngineFaultEvent {
+    std::string message;
+    // The execution unit that threw: "boundary", "admission", "control", "prefill" or "decode".
+    std::string unit;
+    // The requests the failure was delivered to: the running lanes and the one materializing.
+    std::vector<std::uint64_t> request_ids;
+    std::vector<std::uint32_t> lanes;
+    // Requests still queued that the latch fails as well; empty when the Engine recovered, since
+    // recovery keeps the queue.
+    std::vector<std::uint64_t> queued_request_ids;
+    // False: the Engine recovered and keeps serving. True: it is now permanently unavailable.
+    bool latched = false;
+    // Why recovery was refused; set only when latched.
+    std::string latch_reason;
+    // Failures in the current streak, this one included, and the count that latches.
+    std::uint32_t consecutive_failures         = 0;
+    std::uint32_t maximum_consecutive_failures = 0;
+};
+
 struct ContextCacheOptions {
     // Engine resolves every optional once at construction. With C=max_concurrency, the enabled
     // defaults are H=C, R=8, Host KV=8 GiB, P=2C, S=max(C,4) and L=2;
@@ -304,6 +326,9 @@ struct EngineOptions {
     std::vector<GraftSource> grafts;
     StartupObserver startup_observer;
     SlotAutoSaveOptions slot_auto_save;
+    // Called on the worker thread for each host-side worker failure, after recovery or latch.
+    // Must be quick; exceptions are ignored.
+    std::function<void(const EngineFaultEvent& event)> fault_listener;
 };
 
 enum class SamplingMode : std::uint8_t {

@@ -122,7 +122,8 @@ class GenerationService {
 public:
     explicit GenerationService(
         ServeOptions options, StartupObserver startup_observer = {},
-        std::function<void(const ninfer::SlotAutoSaveEvent&)> auto_save_listener = {});
+        std::function<void(const ninfer::SlotAutoSaveEvent&)> auto_save_listener = {},
+        std::function<void(const ninfer::EngineFaultEvent&)> fault_listener     = {});
 
     [[nodiscard]] const ServeOptions& options() const noexcept { return options_; }
 

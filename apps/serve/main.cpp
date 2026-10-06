@@ -9,12 +9,14 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -24,6 +26,46 @@ std::atomic<ninfer::serve::HttpServer*> g_server{nullptr};
 void handle_signal(int) {
     ninfer::serve::HttpServer* server = g_server.load();
     if (server != nullptr) { server->stop(); }
+}
+
+// Time for in-flight error responses to flush once the Engine has latched, before the exit.
+constexpr std::chrono::seconds kEngineFailureExitGrace{5};
+constexpr int kEngineFailureExitStatus = 3;
+
+// Called on the Engine worker thread after every host-side worker failure. A recovered failure is
+// only logged. A latch leaves the process alive holding VRAM and answering 503 forever, so unless
+// disabled it is logged FATAL and the process exits non-zero for a supervisor to restart; /health
+// is already 503 during the grace period.
+void handle_engine_fault(const ninfer::serve::OperationalLog& log,
+                         const std::shared_ptr<spdlog::logger>& logger, bool exit_on_failure,
+                         const ninfer::EngineFaultEvent& event) {
+    // The exit is scheduled before anything that can throw: rendering or writing the event must
+    // not be able to keep a latched process alive.
+    static std::atomic<bool> exit_scheduled{false};
+    const bool first_latch = event.latched && !exit_scheduled.exchange(true);
+    if (first_latch && exit_on_failure) {
+        try {
+            std::thread([logger] {
+                std::this_thread::sleep_for(kEngineFailureExitGrace);
+                try {
+                    logger->flush();
+                } catch (...) {}
+                std::_Exit(kEngineFailureExitStatus);
+            }).detach();
+        } catch (...) {
+            // The thread could not be started. The exit is mandatory, so take it now without the
+            // grace period rather than staying up latched.
+            std::_Exit(kEngineFailureExitStatus);
+        }
+    }
+    try {
+        log.engine_fault(event);
+        if (first_latch) {
+            log.engine_fatal_exit(std::chrono::duration<double>(kEngineFailureExitGrace).count(),
+                                  exit_on_failure);
+        }
+        logger->flush();
+    } catch (...) {}
 }
 
 } // namespace
@@ -79,6 +121,10 @@ int main(int argc, char** argv) {
         ninfer::serve::GenerationService service(
             options, startup_log.observer(), [&operational_log](const ninfer::SlotAutoSaveEvent& e) {
                 operational_log.slot_auto_save(e);
+            },
+            [operational_log, logger, exit_on_failure = options.exit_on_engine_failure](
+                const ninfer::EngineFaultEvent& event) {
+                handle_engine_fault(operational_log, logger, exit_on_failure, event);
             });
         startup_log.engine_ready(service.load_summary());
         operational_log.engine_capacity(service);

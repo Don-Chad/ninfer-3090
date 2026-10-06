@@ -83,7 +83,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-private-continuations N] [--max-shared-prefixes N] [--auto-host-cache [--host-cache-reserve-mib N]] "
            "[--max-long-anchors-per-continuation N] [--auto-long-anchors N] "
            "[--max-cache-markers-per-request N] "
-           "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] "
+           "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] [--no-exit-on-engine-failure] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|rk8v4|rk4v4|nvfp4|k8v4] "
            "[--spec mtp|dflash|dflash2 --draft-tokens N] "
@@ -142,6 +142,9 @@ std::string serve_usage_text(const char* argv0) {
            "       --auto-save-evicted writes a retained session back to the slot file it was last "
            "saved to or restored from before an involuntary eviction destroys it (requires "
            "--slot-save-path; erase never saves)\n"
+           "       --no-exit-on-engine-failure keeps the process alive when the Engine latches "
+           "unavailable after repeated worker failures; by default it logs FATAL and exits with "
+           "status 3 after a short grace period so a supervisor can restart it\n"
            "       context cache defaults: device-state=max-concurrency, private=2x concurrency, "
            "shared=max(max-concurrency,4), anchors=2; Host state=8 slots, Host KV=8192 MiB\n"
            "       --device-state-slots is extra checkpoint capacity beyond active lanes; "
@@ -435,6 +438,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             }
         } else if (arg == "--auto-save-evicted") {
             options.auto_save_evicted = true;
+        } else if (arg == "--no-exit-on-engine-failure") {
+            options.exit_on_engine_failure = false;
         } else if (arg == "--auto-prefix-grid") {
             options.auto_prefix_grid = true;
         } else if (arg == "--lm-head-draft") {

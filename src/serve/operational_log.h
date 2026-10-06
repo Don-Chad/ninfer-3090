@@ -37,6 +37,7 @@ render_tool_call_fallback(const RequestLogContext& context, const GenerationOutc
 [[nodiscard]] OperationalRecord render_response_failure(std::uint64_t request_id,
                                                         const RequestFailure& failure);
 [[nodiscard]] OperationalRecord render_throughput(const ThroughputReport& report);
+[[nodiscard]] OperationalRecord render_engine_fault(const ninfer::EngineFaultEvent& event);
 
 class OperationalLog {
 public:
@@ -66,6 +67,8 @@ public:
                       bool auth_enabled) const;
     void server_stopped() const;
     void server_failure(bool serving, std::string_view detail) const;
+    void engine_fault(const ninfer::EngineFaultEvent& event) const;
+    void engine_fatal_exit(double grace_seconds, bool will_exit) const;
 
 private:
     void write(OperationalRecord record) const;

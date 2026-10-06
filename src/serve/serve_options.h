@@ -82,6 +82,9 @@ struct ServeOptions {
     // Spill an involuntarily evicted session back to the slot file it was last saved to or
     // restored from. Requires slot_save_path.
     bool auto_save_evicted = false;
+    // Exit non-zero shortly after the Engine latches unavailable after a worker failure, so a
+    // supervisor restarts the process instead of leaving it holding VRAM and answering 503.
+    bool exit_on_engine_failure = true;
     std::optional<bool> enable_thinking;
     std::optional<bool> preserve_thinking;
     // --graft NAME=PATH, repeatable: phantom-kv grafts a request may select with "graft": NAME.

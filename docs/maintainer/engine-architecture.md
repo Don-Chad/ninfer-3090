@@ -528,8 +528,13 @@ Worker 捕获的 host 侧异常（CUDA 错误直接终止进程，不会到达�
 物理状态，二者都必须先等待已发出的工作），再尝试恢复而不是永久锁存：执行同样的 Program cleanup 与
 ResourceManager 清空，以错误完成 active lanes 与 materializing request，保留尚未触及物理状态的 FIFO
 队列。只有 cleanup 后 Program 没有打开的 transaction、`physical_usage()` 的 Device/Host State 与 KV
-占用全部为零时才继续服务；否则，或第三次连续失败（其间没有未取消的请求发布成功结果）时，才锁存为
-Engine-wide failure，`is_available()` 此后为 false。
+占用全部为零时才继续服务；否则，或第三次连续失败（其间没有未取消的请求发布成功结果，且相邻两次失败
+间隔均小于 30 秒，见 `runtime/engine/worker_recovery.h` 的 `RecoveryStreak`）时，才锁存为
+Engine-wide failure，`is_available()` 此后为 false。间隔不少于 30 秒的失败各自独立恢复：每次恢复都已
+验证空基线，此时的重复失败不是紧循环，而常是同一个客户端不断重发同一个有问题的请求（每次都在自身超时处
+被取消，因而从不“发布成功结果”）。每次失败（恢复或锁存）经 `EngineOptions::fault_listener` 以
+`EngineFaultEvent`（异常文本、执行单元、受影响请求与 lane、连续失败计数、锁存原因）报告给 serve，由其记录
+Error 日志；锁存时 `ninfer-serve` 记录 FATAL 并在宽限期后以非零状态退出。
 恢复清空整个 context cache 而不是把不变量错误解释成 cache miss；启动时 pinned 的 prompt graft 随之
 释放，因此在确认物理占用为零之后按启动时的同一路径重新注入并登记为 external shared prefix，失败则锁存；`RuntimeStats::engine_recoveries`
 计数每次恢复。修复后的缺陷不再能从公开 API 触发，因此 `runtime/engine/worker_fault.h` 提供验证
