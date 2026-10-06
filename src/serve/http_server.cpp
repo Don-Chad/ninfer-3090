@@ -6,6 +6,7 @@
 #include "serve/openai_common.h"
 #include "serve/props.h"
 #include "serve/request_log.h"
+#include "serve/slots_report.h"
 
 #include <nlohmann/json.hpp>
 
@@ -532,30 +533,13 @@ void HttpServer::register_routes() {
 
 // llama.cpp-shaped slot listing: one entry per private context-cache catalog cell. A cell an
 // active request will publish into reports that request's prompt and reused tokens; a retained
-// cell reports the session depth as both, with its session digest and restorable checkpoints.
+// cell reports the session depth as both, with its session digest and restorable checkpoints,
+// the slot file it is bound to, and how it has been used (see make_slots_report).
 void HttpServer::handle_slots(const httplib::Request&, httplib::Response& res) const {
     const bool speculative = options_.speculative.backend != ninfer::SpeculativeBackend::None;
-    const std::vector<ninfer::SlotState> states = service_->slot_states();
-    nlohmann::json slots                        = nlohmann::json::array();
-    for (std::size_t index = 0; index < states.size(); ++index) {
-        const ninfer::SlotState& state = states[index];
-        nlohmann::json checkpoints     = nlohmann::json::array();
-        for (const ninfer::SlotCheckpoint& checkpoint : state.checkpoints) {
-            checkpoints.push_back({{"frontier", checkpoint.frontier},
-                                   {"session_digest", checkpoint.session_digest}});
-        }
-        slots.push_back({{"id", index},
-                         {"is_processing", state.processing},
-                         {"retained", state.retained},
-                         {"session_digest", state.session_digest},
-                         {"checkpoints", std::move(checkpoints)},
-                         {"n_ctx", options_.max_context},
-                         {"n_prompt_tokens", state.prompt_tokens},
-                         {"n_prompt_tokens_cache", state.cached_tokens},
-                         {"speculative", speculative}});
-    }
     res.set_header("Cache-Control", "no-store");
-    res.set_content(slots.dump(), "application/json");
+    res.set_content(make_slots_report(service_->slot_states(), options_.max_context, speculative),
+                    "application/json");
 }
 
 // llama.cpp-shaped session persistence: POST /slots/{id}?action=save|restore|erase with

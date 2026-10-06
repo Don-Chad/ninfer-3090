@@ -26,6 +26,7 @@
 #include <deque>
 #include <functional>
 #include <exception>
+#include <filesystem>
 #include <future>
 #include <limits>
 #include <memory>
@@ -93,13 +94,17 @@ public:
         catalog_pinned_grafts();
         slot_session_paths_.resize(resources_.catalog_capacity());
         slot_digest_cache_.resize(resources_.catalog_capacity());
+        slot_usage_.resize(resources_.catalog_capacity());
         resources_.set_eviction_observer(
             [this](std::uint32_t slot, const typename ModelContract::ContinuationHandle& handle) {
                 spill_catalog_slot(slot, handle);
             });
         // A slot file binding belongs to the session that saved or restored it; the cell is only
         // where that session lives now. Ending the binding with the catalog entry keeps it from
-        // being inherited by the next session in the cell.
+        // being inherited by the next session in the cell. (The usage record is not cleared here:
+        // a request that continues a session in place consumes the entry and publishes into the
+        // same cell, and the record has to survive that. Nothing needs to clear it: every session
+        // enters a cell through a publication or a restore, and each writes the record afresh.)
         resources_.set_slot_release_observer(
             [this](std::uint32_t slot) { clear_slot_session(slot); });
         std::promise<void> startup;
@@ -311,6 +316,9 @@ public:
         auto snapshot = instance_.program->save_continuation(*view.handle, model_binding);
         bind_slot_session(slot, session_path);
         claim();
+        // So `GET /slots` shows the binding now, not at the next unit boundary (an idle engine
+        // may not have one for a while).
+        publish_runtime_stats();
         return snapshot;
     }
 
@@ -358,6 +366,8 @@ public:
             throw;
         }
         bind_slot_session(slot, session_path);
+        // A restored session starts a new usage record: how it was used before the restart is not known.
+        slot_usage_[slot] = SlotUsage{.last_used_unix_ms = unix_time_ms()};
         claim();
         publish_runtime_stats();
         return {tokens, std::move(digest)};
@@ -748,6 +758,13 @@ private:
         if (slot < slot_session_paths_.size()) { slot_session_paths_[slot].clear(); }
     }
 
+    [[nodiscard]] static std::uint64_t unix_time_ms() noexcept {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    }
+
     // A slot file binds to at most one cell. A conversation's live continuation can move to a
     // new cell turn to turn (an anchor or rewrite restore retains its source), leaving an older
     // copy in another cell bound to the same file; if that copy were evicted later it would
@@ -787,6 +804,15 @@ private:
             state.cached_tokens  = cache.depth;
             state.session_digest = cache.digest;
             state.checkpoints    = cache.checkpoints;
+            if (slot < slot_session_paths_.size()) {
+                state.snapshot_file =
+                    std::filesystem::path(slot_session_paths_[slot]).filename().string();
+            }
+            if (slot < slot_usage_.size()) {
+                state.last_used_unix_ms = slot_usage_[slot].last_used_unix_ms;
+                state.reuse_count       = slot_usage_[slot].reuse_count;
+                state.reused_tokens     = slot_usage_[slot].reused_tokens;
+            }
         }
         for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
             if (slots_[lane] == nullptr) { continue; }
@@ -1214,6 +1240,22 @@ private:
                 resources_.lane_publication_slot(*request->lane);
             const std::optional<std::uint32_t> retained_source =
                 resources_.lane_retained_private_source_slot(*request->lane);
+            // A turn continues a conversation when it reused a private session's prefix: from a
+            // cell it left retained (a rewrite or anchor restore) or, when the session's endpoint
+            // was consumed, from the cell it publishes into. A turn that started from the root or a
+            // shared prefix starts a conversation.
+            const bool continued =
+                retained_source.has_value() ||
+                (request->begin && request->begin->reused_prompt_tokens > 0 &&
+                 request->begin->prefix_reuse_path != PrefixReusePath::Root &&
+                 request->begin->prefix_reuse_path != PrefixReusePath::SharedStablePrefix);
+            // The usage record travels with the conversation, so it is read before `finish` can
+            // release the cell it is in.
+            const std::optional<std::uint32_t> usage_source =
+                retained_source ? retained_source : (continued ? publication : std::nullopt);
+            const SlotUsage source_usage =
+                usage_source && *usage_source < slot_usage_.size() ? slot_usage_[*usage_source]
+                                                                   : SlotUsage{};
             auto finished =
                 resources_.finish(*instance_.program, *request->lane, *request->sequence);
             request->generation_timings = finished.timings;
@@ -1233,6 +1275,14 @@ private:
                         const std::string path = slot_session_paths_[*retained_source];
                         bind_slot_session(*publication, path);
                     }
+                    SlotUsage usage         = source_usage;
+                    usage.last_used_unix_ms = unix_time_ms();
+                    if (continued) {
+                        ++usage.reuse_count;
+                        usage.reused_tokens +=
+                            request->begin ? request->begin->reused_prompt_tokens : 0U;
+                    }
+                    if (*publication < slot_usage_.size()) { slot_usage_[*publication] = usage; }
                 }
             }
             request->terminal_reason.reset();
@@ -2566,8 +2616,16 @@ private:
         std::string digest;
         std::vector<SlotCheckpoint> checkpoints;
     };
+    // How a retained session has been used, for readers deciding which are worth keeping. It
+    // belongs to the session, not the cell: when a conversation moves to a new cell it moves with it.
+    struct SlotUsage {
+        std::uint64_t last_used_unix_ms = 0;
+        std::uint32_t reuse_count       = 0;
+        std::uint64_t reused_tokens     = 0;
+    };
     std::vector<std::string> slot_session_paths_;
     std::vector<SlotDigestCacheEntry> slot_digest_cache_;
+    std::vector<SlotUsage> slot_usage_;
     std::string eviction_model_binding_;
     std::function<void(std::string, typename ModelContract::SessionSnapshot&&)> eviction_sink_;
     bool stopping_ = false;
