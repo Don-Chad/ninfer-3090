@@ -43,11 +43,13 @@ and no flag changes. 3 merged pull requests (#171, #172, #173), 7 non-merge comm
   `admission-planning-failure`. The PR record says the real-model test fails without the containment
   (running request failed, one recovery) and passes with it. I did not re-run the real-model test
   for this release.
-- **Release build:** built from master at `0c00dfc1` on Windows (MSVC 2022, CUDA 12.8) and Linux
-  (WSL, Ubuntu, CUDA 12.8), both `sm_86`. Packaging checks and a launcher smoke test on the RTX 3090
-  are recorded in the release post.
-- **Not verified:** the original production failure was reproduced by the load generator in the PR
-  work, but I did not re-run it against these exact binaries. Behaviour on other GPUs is untested.
+- **Release build and packaging:** built from master at `0c00dfc1` on Windows (MSVC 2022, CUDA 12.8)
+  and Linux (WSL Ubuntu, CUDA 12.8), both `sm_86`. Both archives' file checksums verify; the three
+  Windows executables start with only Windows on `PATH`; on Linux a fresh unpack runs
+  `./ninfer-serve --help` and `./run.sh --help`.
+- **Not verified:** I did not start the launcher or serve a request on the RTX 3090 for this release,
+  and did not re-run the test suite or the load generator against these binaries. The fixes rely on the
+  tests recorded in their PRs. Behaviour on other GPUs is untested.
 
 ## Downloads
 
