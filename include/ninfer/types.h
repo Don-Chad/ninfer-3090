@@ -1253,6 +1253,19 @@ struct SlotState {
     std::string session_digest;
     // Restorable checkpoints of a retained session, ascending by frontier.
     std::vector<SlotCheckpoint> checkpoints;
+    // Retained: the name of the slot file this session is bound to (the file a save or restore
+    // last named, which an involuntary eviction would write back to); empty when unbound. The
+    // binding follows a conversation when it moves to another cell, so this, not the cell id,
+    // says which file holds a conversation.
+    std::string snapshot_file;
+    // Retained: how the session has been used, for readers deciding which are worth keeping.
+    // It travels with a conversation from cell to cell. Wall-clock milliseconds since the Unix
+    // epoch of the last turn published (or restore), the number of turns that continued the
+    // session from a retained copy, and the prompt tokens those turns reused. A restored
+    // session starts again from zero; 0 means never.
+    std::uint64_t last_used_unix_ms = 0;
+    std::uint32_t reuse_count       = 0;
+    std::uint64_t reused_tokens     = 0;
 };
 
 struct SlotSaveResult {

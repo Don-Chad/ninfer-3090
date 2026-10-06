@@ -259,7 +259,9 @@ like llama.cpp's endpoint and reads only published state, so it never waits on t
 [{"id": 0, "is_processing": false, "retained": true, "session_digest": "8c3f1e0a7b2d4c19",
   "checkpoints": [{"frontier": 1812, "session_digest": "51d0..."},
                   {"frontier": 2409, "session_digest": "e27a90c4d15b3f68"}],
-  "n_ctx": 131072, "n_prompt_tokens": 2410, "n_prompt_tokens_cache": 2410, "speculative": true}]
+  "n_ctx": 131072, "n_prompt_tokens": 2410, "n_prompt_tokens_cache": 2410, "speculative": true,
+  "snapshot_file": "chat-7.snap", "last_used_unix_ms": 1791292927534, "reuse_count": 3,
+  "reused_tokens": 7120}]
 ```
 
 A retained slot reports the session depth as both token counts, its session digest (FNV-1a 64 of
@@ -271,6 +273,17 @@ active request will publish into reports `is_processing` with that request's pro
 tokens. Chat Completions responses carry the slot and digest a finished session was retained under
 as top-level `id_slot` and `session_digest`, on the aggregate response and on the final streamed
 chunk that carries timings.
+
+A retained slot also reports what a client needs to decide which sessions are worth saving.
+`snapshot_file` is the name of the slot file the session is bound to (the file a save or restore
+last named, which an involuntary eviction writes back to), or `null`. A conversation can move to a
+different cell from one turn to the next, and its binding moves with it, so `snapshot_file`, not
+`id`, says which file holds a conversation: save a continued conversation under the name it
+already carries and each conversation keeps one file. `last_used_unix_ms` is the wall-clock time
+the session was last published or restored, `reuse_count` the number of turns that continued it
+from a retained copy, and `reused_tokens` the prompt tokens those turns reused. These follow a
+conversation from cell to cell, and a restored session starts again from zero. A slot with no
+retained session reports `null` for all four.
 
 With `--slot-save-path DIR`, `POST /slots/{id}?action=...` persists sessions across restarts and
 evictions. Without it the route answers `501 slot_persistence_disabled`.
