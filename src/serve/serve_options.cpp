@@ -75,7 +75,8 @@ std::string serve_usage_text(const char* argv0) {
            " <model.ninfer> [--host H] [--port N] [--api-key KEY] "
            "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--max-concurrency N] "
            "[--max-pending-requests N] [--pending-timeout-ms N] "
-           "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
+           "[--prefill-chunk N] [--max-prefill-lanes N] [--prefill-max-skip N] "
+           "[--log-stats-interval-ms N] [--device N] "
            "[--context-cost-presets FILE] "
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
            "[--media-preprocess-threads N] "
@@ -121,6 +122,11 @@ std::string serve_usage_text(const char* argv0) {
            "       --kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom\n"
+           "       --max-prefill-lanes N (default 1, at most --max-concurrency) lets that many requests "
+           "prefill at once: each prefill unit goes to the lane with the shortest remaining prompt "
+           "suffix, so a short or prefix-cached prompt is not stuck behind a very long one; the KV "
+           "capacity must hold the long prompt and the short ones together. A lane passed over "
+           "--prefill-max-skip units (default 8) is served before any shorter one\n"
            "       --prefill-cublas hands wide prefill GEMMs to cuBLAS: a large prefill speedup for a "
            "small perplexity cost (docs/performance.md), off by default, and it wants a larger "
            "--prefill-chunk to pay; --no-prefill-cublas-projections keeps the attention and GDN "
@@ -279,6 +285,12 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--prefill-chunk") {
             options.prefill_chunk = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--prefill-chunk"), "prefill-chunk"));
+        } else if (arg == "--max-prefill-lanes") {
+            options.max_prefill_lanes = static_cast<std::uint32_t>(parse_nonnegative_int(
+                require_value("--max-prefill-lanes"), "max-prefill-lanes"));
+        } else if (arg == "--prefill-max-skip") {
+            options.prefill_max_skip = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--prefill-max-skip"), "prefill-max-skip"));
         } else if (arg == "--context-cost-presets") {
             options.context_cost_presets = require_value("--context-cost-presets");
             if (options.context_cost_presets.empty()) {
@@ -611,6 +623,12 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (options.prefill_chunk == 0 || options.prefill_chunk % 128 != 0) {
         throw std::invalid_argument("--prefill-chunk must be a positive multiple of 128");
+    }
+    if (options.max_prefill_lanes == 0 || options.max_prefill_lanes > options.max_concurrency) {
+        throw std::invalid_argument("--max-prefill-lanes must be in [1,--max-concurrency]");
+    }
+    if (options.prefill_max_skip == 0) {
+        throw std::invalid_argument("--prefill-max-skip must be positive");
     }
     product::validate_speculative_cli_options(options.speculative);
     if (options.vision_residency == VisionResidency::Overlay && !options.enable_vision) {

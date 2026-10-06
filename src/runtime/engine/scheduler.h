@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -230,10 +231,33 @@ public:
         request.remaining_service_work -= work;
     }
 
+    // A lane that owns staged prefill and can run a unit now. `remaining_tokens` is the part of
+    // the admitted prompt suffix not yet computed.
+    struct PrefillCandidate {
+        std::uint32_t lane             = 0;
+        std::uint32_t remaining_tokens = 0;
+    };
+
+    // At most `max_owners` requests hold staged prefill at once. A lane that has been passed over
+    // `max_skip` times is served before any shorter one, so a long prompt cannot starve.
+    void configure_prefill(std::uint32_t max_owners, std::uint32_t max_skip) {
+        if (max_owners == 0 || max_owners > kMaximumConcurrency || max_skip == 0) {
+            throw std::invalid_argument("prefill owner limit and skip bound must be positive");
+        }
+        if (prefill_owner_count_ != 0) {
+            throw std::logic_error("prefill ownership cannot be reconfigured while owned");
+        }
+        max_prefill_owners_ = max_owners;
+        prefill_max_skip_   = max_skip;
+    }
+
     [[nodiscard]] bool should_attempt_admission(bool have_pending, bool admission_check_pending,
                                                 bool have_decode, bool previous_unit_was_decode,
                                                 bool context_transaction) const noexcept {
-        return have_pending && admission_check_pending && !context_transaction && !prefill_lane_ &&
+        // A newly published lane runs its first unit before the next admission: that unit
+        // settles the reused-state fork, which a later materialization or capture must not see.
+        return have_pending && admission_check_pending && !context_transaction &&
+               prefill_owner_count_ < max_prefill_owners_ && !has_fresh_prefill_lane() &&
                (!have_decode || previous_unit_was_decode);
     }
 
@@ -246,8 +270,82 @@ public:
         return have_decode ? ExecutionAction::Decode : ExecutionAction::Wait;
     }
 
-    [[nodiscard]] std::optional<std::uint32_t> prefill_lane() const noexcept {
-        return prefill_lane_;
+    [[nodiscard]] bool is_prefill_owner(std::uint32_t lane) const noexcept {
+        return lane < kMaximumConcurrency && prefill_owner_[lane];
+    }
+
+    [[nodiscard]] std::uint32_t prefill_owner_count() const noexcept {
+        return prefill_owner_count_;
+    }
+
+    [[nodiscard]] bool is_fresh_prefill_lane(std::uint32_t lane) const noexcept {
+        return is_prefill_owner(lane) && prefill_fresh_[lane];
+    }
+
+    [[nodiscard]] bool has_fresh_prefill_lane() const noexcept {
+        for (std::uint32_t lane = 0; lane < kMaximumConcurrency; ++lane) {
+            if (prefill_owner_[lane] && prefill_fresh_[lane]) { return true; }
+        }
+        return false;
+    }
+
+    // Lane for the next prefill unit among `candidates`: a lane that has not run its first unit,
+    // else one passed over `max_skip` times (most skipped first), else the shortest remaining
+    // suffix. Ties go to the earlier-published lane.
+    [[nodiscard]] std::optional<std::uint32_t>
+    select_prefill_lane(std::span<const PrefillCandidate> candidates) const {
+        const PrefillCandidate* best = nullptr;
+        int best_class               = 0;
+        for (const PrefillCandidate& candidate : candidates) {
+            if (!is_prefill_owner(candidate.lane)) {
+                throw std::logic_error("prefill candidate does not own staged prefill");
+            }
+            const std::uint32_t lane = candidate.lane;
+            const int klass          = prefill_fresh_[lane]                          ? 3
+                                       : prefill_skips_[lane] >= prefill_max_skip_ ? 2
+                                                                                   : 1;
+            if (best == nullptr || klass > best_class) {
+                best       = &candidate;
+                best_class = klass;
+                continue;
+            }
+            if (klass < best_class) { continue; }
+            const std::uint32_t best_lane = best->lane;
+            bool better                   = false;
+            if (klass == 2) {
+                better = prefill_skips_[lane] > prefill_skips_[best_lane] ||
+                         (prefill_skips_[lane] == prefill_skips_[best_lane] &&
+                          prefill_order_[lane] < prefill_order_[best_lane]);
+            } else if (klass == 1) {
+                better = candidate.remaining_tokens < best->remaining_tokens ||
+                         (candidate.remaining_tokens == best->remaining_tokens &&
+                          prefill_order_[lane] < prefill_order_[best_lane]);
+            } else {
+                better = prefill_order_[lane] < prefill_order_[best_lane];
+            }
+            if (better) { best = &candidate; }
+        }
+        if (best == nullptr) { return std::nullopt; }
+        return best->lane;
+    }
+
+    // Accounts one executed prefill unit on `lane` against the lanes that could have run.
+    void record_prefill_unit(std::uint32_t lane,
+                             std::span<const PrefillCandidate> candidates) noexcept {
+        for (const PrefillCandidate& candidate : candidates) {
+            if (candidate.lane != lane &&
+                prefill_skips_[candidate.lane] < std::numeric_limits<std::uint32_t>::max()) {
+                ++prefill_skips_[candidate.lane];
+            }
+        }
+        if (lane < kMaximumConcurrency) { prefill_skips_[lane] = 0; }
+    }
+
+    // A published lane stays fresh until a unit has written its state (or finished the prompt):
+    // only then is its reused-state fork settled. A unit that returns without progress, such as a
+    // zero-progress capture offer, leaves the lane fresh so it runs again before any admission.
+    void mark_prefill_settled(std::uint32_t lane) noexcept {
+        if (lane < kMaximumConcurrency) { prefill_fresh_[lane] = false; }
     }
 
     [[nodiscard]] std::optional<std::uint64_t> protection_epoch() const noexcept {
@@ -255,15 +353,28 @@ public:
     }
 
     void set_prefill_lane(std::uint32_t lane) {
-        if (prefill_lane_) { throw std::logic_error("multiple requests own staged prefill"); }
-        prefill_lane_ = lane;
+        if (lane >= kMaximumConcurrency) { throw std::logic_error("prefill lane is out of range"); }
+        if (prefill_owner_[lane]) {
+            throw std::logic_error("request already owns staged prefill");
+        }
+        if (prefill_owner_count_ >= max_prefill_owners_) {
+            throw std::logic_error("too many requests own staged prefill");
+        }
+        prefill_owner_[lane] = true;
+        prefill_fresh_[lane] = true;
+        prefill_skips_[lane] = 0;
+        prefill_order_[lane] = next_prefill_order_++;
+        ++prefill_owner_count_;
     }
 
     void clear_prefill_lane(std::uint32_t lane) {
-        if (!prefill_lane_ || *prefill_lane_ != lane) {
+        if (!is_prefill_owner(lane)) {
             throw std::logic_error("request does not own staged prefill");
         }
-        prefill_lane_.reset();
+        prefill_owner_[lane] = false;
+        prefill_fresh_[lane] = false;
+        prefill_skips_[lane] = 0;
+        --prefill_owner_count_;
     }
 
     void observe_fifo_head(std::optional<std::uint64_t> request_id) noexcept {
@@ -354,13 +465,23 @@ public:
     }
 
     void reset() noexcept {
-        prefill_lane_.reset();
+        prefill_owner_.fill(false);
+        prefill_fresh_.fill(false);
+        prefill_skips_.fill(0);
+        prefill_owner_count_ = 0;
         fifo_head_id_.reset();
         protection_.reset();
     }
 
 private:
-    std::optional<std::uint32_t> prefill_lane_;
+    std::array<bool, kMaximumConcurrency> prefill_owner_{};
+    std::array<bool, kMaximumConcurrency> prefill_fresh_{};
+    std::array<std::uint32_t, kMaximumConcurrency> prefill_skips_{};
+    std::array<std::uint64_t, kMaximumConcurrency> prefill_order_{};
+    std::uint32_t prefill_owner_count_ = 0;
+    std::uint32_t max_prefill_owners_  = 1;
+    std::uint32_t prefill_max_skip_    = 8;
+    std::uint64_t next_prefill_order_  = 0;
     std::optional<std::uint64_t> fifo_head_id_;
     std::optional<AdmissionProtection> protection_;
     std::uint64_t next_protection_epoch_ = 1;

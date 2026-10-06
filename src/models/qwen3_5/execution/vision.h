@@ -95,6 +95,10 @@ public:
     void submit_next_item();
     // True while a submitted item is still encoding: the lane must not be given a prefill unit.
     [[nodiscard]] bool vision_pending() const;
+    // True from the submit of an item until its window is closed by completion, including the span
+    // where the encode has finished but the item is not yet consumed. Only one window can be open,
+    // so another lane must not start its own encode while this holds.
+    [[nodiscard]] bool overlay_window_open() const;
     [[nodiscard]] VisionOverlayWindowStats overlay_stats() const noexcept;
     void release_encoded_media_payloads() noexcept;
     void retire_handoff() noexcept;

@@ -2250,10 +2250,23 @@ bool ProgramImpl::has_context_transaction() const noexcept {
 
 bool ProgramImpl::vision_pending(SequenceHandle sequence) const noexcept {
     if (!valid_sequence(sequence)) { return false; }
-    const RequestControl& request = requests[ContractAccess::lane(sequence).value];
+    const std::uint32_t lane      = ContractAccess::lane(sequence).value;
+    const RequestControl& request = requests[lane];
     if (!request.prefill || !request.prefill->vision) { return false; }
     try {
-        return request.prefill->vision->vision_pending();
+        if (request.prefill->vision->vision_pending()) { return true; }
+        // Only one overlay window can be open, and a peer's stays open until its item is consumed,
+        // not just until its encode finishes: this lane's own encode would find the window held
+        // and fail. The peer itself drains a ready item, so it is not blocked here.
+        for (std::uint32_t other = 0; other < max_concurrency; ++other) {
+            if (other == lane) { continue; }
+            const RequestControl& peer = requests[other];
+            if (peer.prefill && peer.prefill->vision &&
+                peer.prefill->vision->overlay_window_open()) {
+                return true;
+            }
+        }
+        return false;
     } catch (...) {
         // A failed completion query surfaces when the prefill unit synchronizes the item.
         return false;

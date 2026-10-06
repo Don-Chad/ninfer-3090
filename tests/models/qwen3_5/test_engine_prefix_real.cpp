@@ -3,7 +3,9 @@
 #include "ninfer/engine.h"
 #include "runtime/engine/worker_fault.h"
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -212,6 +214,22 @@ ninfer::EngineOptions private_checkpoint_pressure_engine_options(const char* art
     options.context_cache.max_shared_prefixes               = 0;
     options.context_cache.max_long_anchors_per_continuation = 0;
     return options;
+}
+
+// A request's result is delivered before the worker releases what it held (its shared-prefix
+// reference, its lane), so a snapshot taken the moment generate() returns can still show the
+// request's references. Wait for the worker to settle so a persisting reference is a real leak.
+ninfer::RuntimeStats settled_runtime_stats(const ninfer::Engine& engine) {
+    ninfer::RuntimeStats stats = engine.runtime_stats();
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        if (stats.running_requests == 0 && stats.terminal_pending_requests == 0 &&
+            stats.shared_active_references == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        stats = engine.runtime_stats();
+    }
+    return stats;
 }
 
 std::vector<std::uint8_t> gradient_ppm(int width = 64, int height = 64) {
@@ -664,7 +682,7 @@ int exercise_shared_replacement_and_full_capacity_reuse(const char* artifact) {
         R"(","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}}})";
     const ninfer::GenerationResult replacement = engine.generate(
         engine.prepare(tool_prompt(bravo_tool, "Use bravo once.")), capture_request);
-    const ninfer::RuntimeStats after_replacement = engine.runtime_stats();
+    const ninfer::RuntimeStats after_replacement = settled_runtime_stats(engine);
     if (replacement.generated_token_ids.size() != 1) {
         std::cerr << "shared replacement fixture did not produce its deterministic stop token\n";
         return 1;
@@ -673,7 +691,7 @@ int exercise_shared_replacement_and_full_capacity_reuse(const char* artifact) {
     // identical Bravo prompt must therefore materialize from the retained shared prefix.
     const ninfer::GenerationResult filled =
         engine.generate(engine.prepare(plain_prompt("Another private endpoint.")), capture_request);
-    const ninfer::RuntimeStats after_filler = engine.runtime_stats();
+    const ninfer::RuntimeStats after_filler = settled_runtime_stats(engine);
     if (filled.generated_token_ids.size() != 1) {
         std::cerr << "shared replacement fixture did not displace the exact private endpoint\n";
         return 1;
@@ -685,7 +703,7 @@ int exercise_shared_replacement_and_full_capacity_reuse(const char* artifact) {
     full_capacity_request.stop.publish_stop_token = true;
     const ninfer::GenerationResult reused         = engine.generate(
         engine.prepare(tool_prompt(bravo_tool, "Use bravo once.")), full_capacity_request);
-    const ninfer::RuntimeStats after_reuse = engine.runtime_stats();
+    const ninfer::RuntimeStats after_reuse = settled_runtime_stats(engine);
 
     if (reused.generated_token_ids.size() != 1) {
         std::cerr << "shared replacement fixture did not complete all requests\n";
@@ -2734,6 +2752,850 @@ int exercise_concurrent_resource_settlement(const char* artifact) {
     return 0;
 }
 
+// The "speculative" flavour of the interleaving scenarios: MTP unless a scenario selects DFlash2.
+ninfer::SpeculativeBackend g_interleave_speculative = ninfer::SpeculativeBackend::Mtp;
+
+const char* interleave_label(bool speculative) {
+    if (!speculative) { return "plain"; }
+    return g_interleave_speculative == ninfer::SpeculativeBackend::DFlash2 ? "DFlash2" : "MTP";
+}
+ninfer::EngineOptions interleaved_prefill_engine_options(const char* artifact,
+                                                         std::uint32_t prefill_lanes, bool mtp,
+                                                         std::uint32_t concurrency = 3) {
+    ninfer::EngineOptions options;
+    options.artifact_path = artifact;
+    options.max_context   = 4096;
+    options.kv_capacity   = ninfer::KvCapacityPolicy::explicit_capacity(8192);
+    options.prefill_chunk = 256;
+    if (mtp) {
+        options.speculative.backend       = g_interleave_speculative;
+        options.speculative.draft_tokens  = g_interleave_speculative == ninfer::SpeculativeBackend::DFlash2 ? 7 : 3;
+        options.speculative.proposal_head = ninfer::ProposalHead::Optimized;
+    } else {
+        options.speculative.backend = ninfer::SpeculativeBackend::None;
+    }
+    options.max_concurrency                  = concurrency;
+    options.max_pending_requests             = concurrency;
+    options.max_prefill_lanes                = prefill_lanes;
+    options.context_cache.device_state_slots = 2 * concurrency;
+    options.context_cache.host_state_slots   = 0;
+    options.context_cache.host_kv_capacity_bytes            = 0;
+    options.context_cache.max_private_continuations         = concurrency;
+    options.context_cache.max_shared_prefixes               = 0;
+    options.context_cache.max_long_anchors_per_continuation = 0;
+    return options;
+}
+
+constexpr std::uint32_t kInterleaveOutputTokens = 8;
+
+std::vector<ninfer::TokenId> interleave_long_prompt(std::uint32_t tokens, std::uint32_t salt) {
+    std::vector<ninfer::TokenId> prompt(tokens);
+    for (std::uint32_t index = 0; index < tokens; ++index) {
+        prompt[index] = static_cast<ninfer::TokenId>(1000 + (index * 37U + salt * 101U) % 500U);
+    }
+    return prompt;
+}
+
+std::vector<ninfer::TokenId> interleave_short_prompt() {
+    return {248045, 846, 198, 5834, 248046, 198};
+}
+
+// Greedy output of each prompt run alone on an engine that serves one request at a time.
+std::vector<std::vector<ninfer::TokenId>>
+interleave_references(const char* artifact, bool mtp,
+                      const std::vector<std::vector<ninfer::TokenId>>& prompts) {
+    ninfer::Engine engine(interleaved_prefill_engine_options(artifact, 1, mtp));
+    std::vector<std::vector<ninfer::TokenId>> references;
+    for (const auto& prompt : prompts) {
+        references.push_back(
+            engine.generate(engine.prepare_tokens(prompt), fixed_output(kInterleaveOutputTokens, false))
+                .generated_token_ids);
+        if (references.back().size() != kInterleaveOutputTokens) {
+            std::cerr << "interleaved-prefill reference run did not produce its output\n";
+            return {};
+        }
+    }
+    return references;
+}
+
+void print_interleave_ids(const char* label, const std::vector<ninfer::TokenId>& ids) {
+    std::cerr << "  " << label << ':';
+    for (const ninfer::TokenId id : ids) { std::cerr << ' ' << id; }
+    std::cerr << '\n';
+}
+
+// The engine is idle once the worker has settled every request, including cancelled ones.
+bool interleave_engine_settles(const ninfer::Engine& engine) {
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const ninfer::RuntimeStats stats = engine.runtime_stats();
+        if (stats.running_requests == 0 && stats.prefilling_requests == 0 &&
+            stats.materializing_requests == 0 && stats.capture_pending_requests == 0 &&
+            stats.waiting_requests == 0 && stats.terminal_pending_requests == 0) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+}
+
+// A long prompt submitted first must not hold back a short one submitted behind it once more than
+// one request may prefill, and interleaving must not change either request's greedy output.
+int exercise_interleaved_prefill(const char* artifact, bool mtp) {
+    const char* label = interleave_label(mtp);
+    const auto long_prompt  = interleave_long_prompt(3000, 0);
+    const auto short_prompt = interleave_short_prompt();
+    const auto references   = interleave_references(artifact, mtp, {long_prompt, short_prompt});
+    if (references.empty()) { return 1; }
+
+    {
+        // One prefill lane, both requests in flight: separates what concurrent decode batching
+        // does to greedy output from what interleaving prefill does.
+        ninfer::Engine control(interleaved_prefill_engine_options(artifact, 1, mtp));
+        auto long_handle  = control.submit(control.prepare_tokens(long_prompt),
+                                           fixed_output(kInterleaveOutputTokens, false));
+        auto short_handle = control.submit(control.prepare_tokens(short_prompt),
+                                           fixed_output(kInterleaveOutputTokens, false));
+        const ninfer::GenerationResult control_short = short_handle.wait();
+        const ninfer::GenerationResult control_long  = long_handle.wait();
+        std::cout << label << ", 1 prefill lane : short total "
+                  << control_short.timings.total_seconds << " s, long first token "
+                  << control_long.timings.first_token_seconds << " s, long total "
+                  << control_long.timings.total_seconds << " s\n";
+        if (control_long.generated_token_ids != references[0] ||
+            control_short.generated_token_ids != references[1]) {
+            std::cerr << label
+                      << ": concurrent requests with one prefill lane already differ from serial "
+                         "runs\n";
+            print_interleave_ids("serial long ", references[0]);
+            print_interleave_ids("1-lane long ", control_long.generated_token_ids);
+            print_interleave_ids("serial short", references[1]);
+            print_interleave_ids("1-lane short", control_short.generated_token_ids);
+        }
+    }
+
+    ninfer::Engine engine(interleaved_prefill_engine_options(artifact, 2, mtp));
+    auto long_handle = engine.submit(engine.prepare_tokens(long_prompt),
+                                     fixed_output(kInterleaveOutputTokens, false));
+    auto short_handle = engine.submit(engine.prepare_tokens(short_prompt),
+                                      fixed_output(kInterleaveOutputTokens, false));
+    const ninfer::GenerationResult short_result = short_handle.wait();
+    const ninfer::GenerationResult long_result  = long_handle.wait();
+    std::cout << label << ", 2 prefill lanes: short total " << short_result.timings.total_seconds
+              << " s, long first token " << long_result.timings.first_token_seconds
+              << " s, long total " << long_result.timings.total_seconds << " s\n";
+    if (short_result.generated_token_ids != references[1] ||
+        long_result.generated_token_ids != references[0]) {
+        std::cerr << label << ": interleaved prefill changed a request's greedy output\n";
+        print_interleave_ids("serial long ", references[0]);
+        print_interleave_ids("2-lane long ", long_result.generated_token_ids);
+        print_interleave_ids("serial short", references[1]);
+        print_interleave_ids("2-lane short", short_result.generated_token_ids);
+        return 1;
+    }
+    // Serial prefill would finish the short request only after the long prompt's whole prefill
+    // (3000 tokens, twelve 256-token units), so the long request's first token comes first.
+    if (!(short_result.timings.total_seconds < long_result.timings.first_token_seconds)) {
+        std::cerr << label << ": short request did not finish before the long prompt's first token\n";
+        return 1;
+    }
+    if (!interleave_engine_settles(engine)) {
+        std::cerr << label << ": interleaved prefill left live logical membership\n";
+        return 1;
+    }
+    return 0;
+}
+
+struct CancelledWait {
+    std::optional<ninfer::GenerationResult> result;
+    // Set when wait() threw. A cancelled request completes with FinishReason::Cancelled and never
+    // throws, so an exception is a failure of the request, not a cancellation.
+    bool threw = false;
+};
+
+// Waits on `handle` with a cancellation that fires once `flag` is set.
+CancelledWait wait_with_cancellation(ninfer::GenerationHandle& handle, std::atomic<bool>& flag) {
+    CancelledWait outcome;
+    try {
+        outcome.result = handle.wait(nullptr, ninfer::CancellationView([&flag] {
+                                         return flag.load(std::memory_order_acquire);
+                                     }));
+    } catch (const std::exception& error) {
+        outcome.threw = true;
+        std::cerr << "wait() threw instead of completing: " << error.what() << '\n';
+    }
+    return outcome;
+}
+
+bool was_cancelled(const CancelledWait& outcome) {
+    return outcome.result && outcome.result->finish_reason == ninfer::FinishReason::Cancelled;
+}
+
+// Cancelling or abandoning one of several interleaved requests must free its lane, KV and state
+// without disturbing the others, at each point of the request's life: queued, prefilling, decoding.
+int exercise_interleaved_prefill_cancel(const char* artifact, bool mtp) {
+    const char* label       = interleave_label(mtp);
+    const auto long_prompt  = interleave_long_prompt(3000, 0);
+    const auto short_prompt = interleave_short_prompt();
+    const auto references   = interleave_references(artifact, mtp, {long_prompt, short_prompt});
+    if (references.empty()) { return 1; }
+    ninfer::Engine engine(interleaved_prefill_engine_options(artifact, 2, mtp));
+    const auto submit_long = [&] {
+        return engine.submit(engine.prepare_tokens(long_prompt),
+                             fixed_output(kInterleaveOutputTokens, false));
+    };
+    const auto submit_short = [&] {
+        return engine.submit(engine.prepare_tokens(short_prompt),
+                             fixed_output(kInterleaveOutputTokens, false));
+    };
+    // The follow-up request runs on the same engine: it proves the cancelled request released
+    // everything and that no state or KV it touched leaked into the next one.
+    const auto follow_up = [&](const char* what) {
+        const ninfer::GenerationResult again = engine.generate(
+            engine.prepare_tokens(short_prompt), fixed_output(kInterleaveOutputTokens, false));
+        if (again.generated_token_ids != references[1] || !interleave_engine_settles(engine)) {
+            std::cerr << label << ": engine was not clean after " << what << '\n';
+            return 1;
+        }
+        return 0;
+    };
+
+    // 1. The long prompt is cancelled while it prefills and the short request is in flight.
+    {
+        auto long_handle  = submit_long();
+        auto short_handle = submit_short();
+        std::atomic<bool> cancel{false};
+        CancelledWait long_outcome;
+        std::thread long_waiter(
+            [&] { long_outcome = wait_with_cancellation(long_handle, cancel); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        cancel.store(true, std::memory_order_release);
+        const ninfer::GenerationResult short_result = short_handle.wait();
+        long_waiter.join();
+        if (!was_cancelled(long_outcome) || short_result.generated_token_ids != references[1]) {
+            std::cerr << label << ": cancelling the long prompt mid-prefill "
+                      << (was_cancelled(long_outcome) ? "changed the short request's output"
+                                                      : "did not cancel it")
+                      << '\n';
+            return 1;
+        }
+        if (const int result = follow_up("cancelling the long prompt"); result != 0) {
+            return result;
+        }
+    }
+
+    // 2. The short request is cancelled while the long prompt prefills.
+    {
+        auto long_handle  = submit_long();
+        auto short_handle = submit_short();
+        std::atomic<bool> cancel{false};
+        CancelledWait short_outcome;
+        std::thread short_waiter(
+            [&] { short_outcome = wait_with_cancellation(short_handle, cancel); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        cancel.store(true, std::memory_order_release);
+        const ninfer::GenerationResult long_result = long_handle.wait();
+        short_waiter.join();
+        if (!was_cancelled(short_outcome) || long_result.generated_token_ids != references[0]) {
+            std::cerr << label << ": cancelling the short request "
+                      << (was_cancelled(short_outcome) ? "changed the long prompt's output"
+                                                       : "did not cancel it")
+                      << '\n';
+            return 1;
+        }
+        if (const int result = follow_up("cancelling the short request"); result != 0) {
+            return result;
+        }
+    }
+
+    // 3. The short request is cancelled before it is admitted.
+    {
+        auto long_handle  = submit_long();
+        auto short_handle = submit_short();
+        std::atomic<bool> cancel{true};
+        const CancelledWait short_outcome = wait_with_cancellation(short_handle, cancel);
+        const ninfer::GenerationResult long_result = long_handle.wait();
+        if (long_result.generated_token_ids != references[0]) {
+            std::cerr << label << ": an early cancellation changed the long prompt's output\n";
+            return 1;
+        }
+        // The flag is already set, so the request is normally cancelled; it may instead complete
+        // before the engine observes the flag, and then its output must be the serial one.
+        if (!short_outcome.result ||
+            (!was_cancelled(short_outcome) &&
+             short_outcome.result->generated_token_ids != references[1])) {
+            std::cerr << label << ": a request cancelled at submission "
+                      << (short_outcome.threw ? "failed" : "returned wrong output") << '\n';
+            return 1;
+        }
+        if (const int result = follow_up("an early cancellation"); result != 0) { return result; }
+    }
+
+    // 4. The long prompt's handle is abandoned mid-prefill.
+    {
+        auto short_handle = [&] {
+            auto long_handle = submit_long();
+            auto short_h     = submit_short();
+            std::this_thread::sleep_for(std::chrono::milliseconds(700));
+            return short_h;
+            // long_handle is destroyed here, abandoning the request mid-prefill.
+        }();
+        const ninfer::GenerationResult short_result = short_handle.wait();
+        if (short_result.generated_token_ids != references[1]) {
+            std::cerr << label << ": abandoning the long prompt changed the short output\n";
+            return 1;
+        }
+        if (const int result = follow_up("abandoning the long prompt"); result != 0) {
+            return result;
+        }
+    }
+    return 0;
+}
+
+// Two long prompts and a short one. With three prefill lanes all three prefill at once; with two,
+// the short request waits for a lane. Both must reproduce the serial outputs.
+int exercise_interleaved_two_long(const char* artifact, bool mtp) {
+    const char* label = interleave_label(mtp);
+    const auto long_a = interleave_long_prompt(2500, 1);
+    const auto long_b = interleave_long_prompt(2400, 2);
+    const auto shorty = interleave_short_prompt();
+    const auto references = interleave_references(artifact, mtp, {long_a, long_b, shorty});
+    if (references.empty()) { return 1; }
+    for (const std::uint32_t lanes : {2U, 3U}) {
+        ninfer::Engine engine(interleaved_prefill_engine_options(artifact, lanes, mtp, 4));
+        auto a_handle = engine.submit(engine.prepare_tokens(long_a),
+                                      fixed_output(kInterleaveOutputTokens, false));
+        auto b_handle = engine.submit(engine.prepare_tokens(long_b),
+                                      fixed_output(kInterleaveOutputTokens, false));
+        auto s_handle = engine.submit(engine.prepare_tokens(shorty),
+                                      fixed_output(kInterleaveOutputTokens, false));
+        const ninfer::GenerationResult s_result = s_handle.wait();
+        const ninfer::GenerationResult a_result = a_handle.wait();
+        const ninfer::GenerationResult b_result = b_handle.wait();
+        std::cout << label << ", " << lanes << " prefill lanes, two long + short: short total "
+                  << s_result.timings.total_seconds << " s, long A first token "
+                  << a_result.timings.first_token_seconds << " s total "
+                  << a_result.timings.total_seconds << " s, long B first token "
+                  << b_result.timings.first_token_seconds << " s total "
+                  << b_result.timings.total_seconds << " s\n";
+        if (a_result.generated_token_ids != references[0] ||
+            b_result.generated_token_ids != references[1] ||
+            s_result.generated_token_ids != references[2]) {
+            std::cerr << label << ", " << lanes << " lanes: two long prompts changed an output\n";
+            print_interleave_ids("serial A", references[0]);
+            print_interleave_ids("got    A", a_result.generated_token_ids);
+            print_interleave_ids("serial B", references[1]);
+            print_interleave_ids("got    B", b_result.generated_token_ids);
+            print_interleave_ids("serial S", references[2]);
+            print_interleave_ids("got    S", s_result.generated_token_ids);
+            return 1;
+        }
+        // With a lane for it, the short request must not wait out either long prefill.
+        if (lanes == 3 && !(s_result.timings.total_seconds <
+                            std::min(a_result.timings.first_token_seconds,
+                                     b_result.timings.first_token_seconds))) {
+            std::cerr << label << ": the short request waited behind two long prompts despite a "
+                                  "free prefill lane\n";
+            return 1;
+        }
+        if (!interleave_engine_settles(engine)) {
+            std::cerr << label << ", " << lanes << " lanes: left live logical membership\n";
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int exercise_interleaved_worker_failure(const char* artifact, bool mtp);
+
+int exercise_interleaved_prefill_all(const char* artifact, bool mtp) {
+    if (const int result = exercise_interleaved_prefill(artifact, mtp); result != 0) {
+        return result;
+    }
+    if (const int result = exercise_interleaved_prefill_cancel(artifact, mtp); result != 0) {
+        return result;
+    }
+    if (const int result = exercise_interleaved_two_long(artifact, mtp); result != 0) {
+        return result;
+    }
+    return exercise_interleaved_worker_failure(artifact, mtp);
+}
+
+constexpr std::uint32_t kLargeContext = 204800;
+constexpr std::uint32_t kLargePrompt  = 200000;
+
+ninfer::EngineOptions large_context_engine_options(const char* artifact,
+                                                   std::uint32_t prefill_lanes,
+                                                   std::uint32_t kv_tokens) {
+    ninfer::EngineOptions options;
+    options.artifact_path                    = artifact;
+    options.max_context                      = kLargeContext;
+    options.kv_capacity                      = ninfer::KvCapacityPolicy::explicit_capacity(kv_tokens);
+    options.kv_cache                         = ninfer::KvCacheStorage::RotatedLloyd4KeyInt4Value;
+    options.prefill_chunk                    = 512;
+    options.speculative.backend              = ninfer::SpeculativeBackend::None;
+    options.max_concurrency                  = 3;
+    options.max_pending_requests             = 3;
+    // A request that cannot fit waits out a 200k prefill (several minutes).
+    options.pending_timeout_ms               = 3600000;
+    options.max_prefill_lanes                = prefill_lanes;
+    options.context_cache.device_state_slots = 6;
+    options.context_cache.host_state_slots   = 0;
+    options.context_cache.host_kv_capacity_bytes            = 0;
+    options.context_cache.max_private_continuations         = 3;
+    options.context_cache.max_shared_prefixes               = 0;
+    options.context_cache.max_long_anchors_per_continuation = 0;
+    return options;
+}
+
+// One 200k-token prompt on its own: whether it fits and how long it takes to ingest.
+int exercise_large_probe(const char* artifact) {
+    ninfer::Engine engine(large_context_engine_options(artifact, 1, kLargeContext));
+    const ninfer::GenerationResult result =
+        engine.generate(engine.prepare_tokens(interleave_long_prompt(kLargePrompt, 0)),
+                        fixed_output(kInterleaveOutputTokens, false));
+    std::cout << "200k probe: prompt " << result.prompt.prompt_tokens << " tokens, first token "
+              << result.timings.first_token_seconds << " s, prefill "
+              << result.timings.prefill_seconds << " s, total " << result.timings.total_seconds
+              << " s\n";
+    return result.generated_token_ids.size() == kInterleaveOutputTokens ? 0 : 1;
+}
+
+// A 200k prompt with a short request behind it, then two 200k prompts whose KV cannot be held at
+// once. The second long prompt must wait for capacity without wedging the engine, and the short
+// request must still finish with its serial output.
+int exercise_large_context(const char* artifact) {
+    constexpr std::uint32_t kKvTokens = 260000; // one 200k request fits; two do not
+    const auto long_a     = interleave_long_prompt(kLargePrompt, 0);
+    const auto long_b     = interleave_long_prompt(kLargePrompt, 1);
+    const auto shorty     = interleave_short_prompt();
+    std::vector<ninfer::TokenId> reference_a;
+    std::vector<ninfer::TokenId> reference_short;
+    {
+        ninfer::Engine engine(large_context_engine_options(artifact, 1, kKvTokens));
+        const ninfer::GenerationResult a = engine.generate(
+            engine.prepare_tokens(long_a), fixed_output(kInterleaveOutputTokens, false));
+        const ninfer::GenerationResult s = engine.generate(
+            engine.prepare_tokens(shorty), fixed_output(kInterleaveOutputTokens, false));
+        reference_a     = a.generated_token_ids;
+        reference_short = s.generated_token_ids;
+        std::cout << "200k serial: long prefill " << a.timings.prefill_seconds << " s, total "
+                  << a.timings.total_seconds << " s\n";
+        if (reference_a.size() != kInterleaveOutputTokens ||
+            reference_short.size() != kInterleaveOutputTokens) {
+            std::cerr << "200k reference runs did not produce their output\n";
+            return 1;
+        }
+    }
+
+    ninfer::Engine engine(large_context_engine_options(artifact, 3, kKvTokens));
+    const auto start = std::chrono::steady_clock::now();
+    auto a_handle    = engine.submit(engine.prepare_tokens(long_a),
+                                     fixed_output(kInterleaveOutputTokens, false));
+    auto b_handle    = engine.submit(engine.prepare_tokens(long_b),
+                                     fixed_output(kInterleaveOutputTokens, false));
+    auto s_handle    = engine.submit(engine.prepare_tokens(shorty),
+                                     fixed_output(kInterleaveOutputTokens, false));
+    const ninfer::GenerationResult s_result = s_handle.wait();
+    const double short_done = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    const ninfer::GenerationResult a_result = a_handle.wait();
+    const double a_done = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    const ninfer::GenerationResult b_result = b_handle.wait();
+    const double b_done = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    std::cout << "200k x2 + short, KV for one: short done " << short_done << " s, long A done "
+              << a_done << " s (first token " << a_result.timings.first_token_seconds
+              << " s), long B done " << b_done << " s (first token "
+              << b_result.timings.first_token_seconds << " s, queue wait "
+              << b_result.engine_timing.queue_wait_seconds << " s)\n";
+    if (a_result.generated_token_ids != reference_a ||
+        s_result.generated_token_ids != reference_short ||
+        b_result.generated_token_ids.size() != kInterleaveOutputTokens) {
+        std::cerr << "200k requests that cannot all fit changed an output or failed\n";
+        print_interleave_ids("serial A", reference_a);
+        print_interleave_ids("got    A", a_result.generated_token_ids);
+        print_interleave_ids("serial S", reference_short);
+        print_interleave_ids("got    S", s_result.generated_token_ids);
+        return 1;
+    }
+    if (!interleave_engine_settles(engine)) {
+        std::cerr << "200k requests left live logical membership\n";
+        return 1;
+    }
+    return 0;
+}
+
+// A prompt over max_context must be refused up front, without prefill and without disturbing the
+// engine. A prompt of exactly max_context is valid, so it is not exercised here: it would prefill
+// 200k tokens.
+int exercise_over_context(const char* artifact) {
+    ninfer::Engine engine(large_context_engine_options(artifact, 2, kLargeContext));
+    const auto shorty = interleave_short_prompt();
+    const auto expect_refused = [&](std::uint32_t prompt_tokens, std::uint32_t output_tokens) {
+        try {
+            auto handle = engine.submit(
+                engine.prepare_tokens(interleave_long_prompt(prompt_tokens, 3)),
+                fixed_output(output_tokens, false));
+            (void)handle.wait();
+        } catch (const ninfer::RequestError& error) {
+            // Only the documented refusal counts; any other failure is a different problem.
+            if (error.kind() != ninfer::RequestErrorKind::ContextLengthExceeded) {
+                std::cerr << "oversize prompt failed with the wrong error: " << error.what() << '\n';
+                return false;
+            }
+            std::cout << "refused " << prompt_tokens << " + " << output_tokens
+                      << " tokens: " << error.what() << '\n';
+            return true;
+        } catch (const std::exception& error) {
+            std::cerr << "oversize prompt failed with an unexpected error: " << error.what() << '\n';
+            return false;
+        }
+        return false;
+    };
+    if (!expect_refused(kLargeContext + 1000, 8)) {
+        std::cerr << "a prompt over max_context was accepted\n";
+        return 1;
+    }
+    const ninfer::GenerationResult after =
+        engine.generate(engine.prepare_tokens(shorty), fixed_output(kInterleaveOutputTokens, false));
+    if (after.generated_token_ids.size() != kInterleaveOutputTokens ||
+        !interleave_engine_settles(engine)) {
+        std::cerr << "engine was not clean after refusing oversize prompts\n";
+        return 1;
+    }
+    return 0;
+}
+
+// A worker fault while two requests own a staged prefill fails both lanes, and recovery must release
+// both prefill owners: the Engine then serves two interleaved prompts again with their serial outputs.
+int exercise_interleaved_worker_failure(const char* artifact, bool mtp) {
+    const char* label = interleave_label(mtp);
+    const auto long_a = interleave_long_prompt(3000, 1);
+    const auto long_b = interleave_long_prompt(2900, 2);
+    const auto references = interleave_references(artifact, mtp, {long_a, long_b});
+    if (references.empty()) { return 1; }
+    ninfer::Engine engine(interleaved_prefill_engine_options(artifact, 2, mtp));
+    const auto submit = [&](const std::vector<ninfer::TokenId>& prompt) {
+        return engine.submit(engine.prepare_tokens(prompt),
+                             fixed_output(kInterleaveOutputTokens, false));
+    };
+    struct Result {
+        bool served      = false;
+        bool unavailable = false; // the Engine refused the request instead of failing it
+        std::vector<ninfer::TokenId> ids;
+    };
+    const auto wait_for = [](ninfer::GenerationHandle& handle) {
+        Result outcome;
+        try {
+            outcome.ids    = handle.wait().generated_token_ids;
+            outcome.served = true;
+        } catch (const ninfer::RequestError& error) {
+            outcome.unavailable = error.kind() == ninfer::RequestErrorKind::Unavailable;
+        } catch (const std::exception&) {}
+        return outcome;
+    };
+    constexpr std::uint32_t kRounds = 3;
+    for (std::uint32_t round = 0; round < kRounds; ++round) {
+        auto a = submit(long_a);
+        auto b = submit(long_b);
+        // Both requests must be prefilling before the fault, so it lands with two owners.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (engine.runtime_stats().prefilling_requests < 2) {
+            if (std::chrono::steady_clock::now() > deadline) {
+                std::cerr << label << ": two requests never prefilled at once\n";
+                return 1;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ninfer::runtime::arm_worker_failures(1);
+        const Result a_result = wait_for(a);
+        const Result b_result = wait_for(b);
+        ninfer::runtime::arm_worker_failures(0);
+        // Both lanes are failed by the fault. A request that was refused as Unavailable would mean
+        // the Engine latched or never recovered, which is a different outcome.
+        if (a_result.served || b_result.served || a_result.unavailable || b_result.unavailable ||
+            !engine.is_available() || engine.runtime_stats().engine_recoveries != round + 1) {
+            std::cerr << label << ": worker fault round " << round
+                      << ": a served=" << a_result.served << " b served=" << b_result.served
+                      << " a unavailable=" << a_result.unavailable
+                      << " b unavailable=" << b_result.unavailable
+                      << " available=" << engine.is_available()
+                      << " recoveries=" << engine.runtime_stats().engine_recoveries << '\n';
+            return 1;
+        }
+        // Recovery released both owners and every lane: interleaving works again, exactly.
+        auto a_again = submit(long_a);
+        auto b_again = submit(long_b);
+        const Result a_after = wait_for(a_again);
+        const Result b_after = wait_for(b_again);
+        if (!a_after.served || !b_after.served || a_after.ids != references[0] ||
+            b_after.ids != references[1] || !interleave_engine_settles(engine)) {
+            std::cerr << label << ": engine did not interleave correctly after recovery round "
+                      << round << '\n';
+            return 1;
+        }
+    }
+    return 0;
+}
+
+struct PrefillRoute {
+    const char* label;
+    std::uint32_t chunk;
+    bool cublas;
+};
+
+constexpr PrefillRoute kPlainRoute{"chunk 512", 512, false};
+constexpr PrefillRoute kCublasRoute{"cuBLAS, chunk 4096", 4096, true};
+
+ninfer::EngineOptions pair_engine_options(const char* artifact, std::uint32_t prefill_lanes,
+                                          const PrefillRoute& route) {
+    ninfer::EngineOptions options =
+        large_context_engine_options(artifact, prefill_lanes, 200000);
+    options.max_context    = 90000;
+    options.prefill_chunk  = route.chunk;
+    options.prefill_cublas = route.cublas;
+    return options;
+}
+
+// Two 80k prompts and a short one all fit at once. They must reproduce their serial outputs when
+// interleaved, and cancelling any of them, at 80k scale, must leave the others and the engine intact.
+int exercise_two_80k(const char* artifact, const PrefillRoute& route) {
+    constexpr std::uint32_t kPromptTokens = 80000;
+    const auto long_a = interleave_long_prompt(kPromptTokens, 1);
+    const auto long_b = interleave_long_prompt(kPromptTokens, 2);
+    const auto shorty = interleave_short_prompt();
+    const std::array<const std::vector<ninfer::TokenId>*, 3> prompts{&long_a, &long_b, &shorty};
+    std::array<std::vector<ninfer::TokenId>, 3> reference;
+    {
+        ninfer::Engine engine(pair_engine_options(artifact, 1, route));
+        for (std::size_t index = 0; index < prompts.size(); ++index) {
+            const ninfer::GenerationResult result =
+                engine.generate(engine.prepare_tokens(*prompts[index]),
+                                fixed_output(kInterleaveOutputTokens, false));
+            reference[index] = result.generated_token_ids;
+            if (reference[index].size() != kInterleaveOutputTokens) {
+                std::cerr << route.label << ": 80k reference run did not produce its output\n";
+                return 1;
+            }
+            if (index == 0) {
+                std::cout << route.label << ", 80k serial: prefill " << result.timings.prefill_seconds
+                          << " s\n";
+            }
+        }
+    }
+
+    ninfer::Engine engine(pair_engine_options(artifact, 3, route));
+    const auto submit = [&](std::size_t index) {
+        return engine.submit(engine.prepare_tokens(*prompts[index]),
+                             fixed_output(kInterleaveOutputTokens, false));
+    };
+    const auto follow_up = [&](const char* what) {
+        const ninfer::GenerationResult again = engine.generate(
+            engine.prepare_tokens(shorty), fixed_output(kInterleaveOutputTokens, false));
+        if (again.generated_token_ids != reference[2] || !interleave_engine_settles(engine)) {
+            std::cerr << route.label << ": engine was not clean after " << what << '\n';
+            return 1;
+        }
+        return 0;
+    };
+
+    {
+        auto a = submit(0);
+        auto b = submit(1);
+        auto s = submit(2);
+        const ninfer::GenerationResult s_result = s.wait();
+        const ninfer::GenerationResult a_result = a.wait();
+        const ninfer::GenerationResult b_result = b.wait();
+        std::cout << route.label << ", two 80k + short, 3 prefill lanes: short "
+                  << s_result.timings.total_seconds << " s, A first token "
+                  << a_result.timings.first_token_seconds << " s total "
+                  << a_result.timings.total_seconds << " s, B first token "
+                  << b_result.timings.first_token_seconds << " s total "
+                  << b_result.timings.total_seconds << " s\n";
+        if (a_result.generated_token_ids != reference[0] ||
+            b_result.generated_token_ids != reference[1] ||
+            s_result.generated_token_ids != reference[2]) {
+            std::cerr << route.label << ": two 80k prompts changed an output\n";
+            print_interleave_ids("serial A", reference[0]);
+            print_interleave_ids("got    A", a_result.generated_token_ids);
+            print_interleave_ids("serial B", reference[1]);
+            print_interleave_ids("got    B", b_result.generated_token_ids);
+            print_interleave_ids("serial S", reference[2]);
+            print_interleave_ids("got    S", s_result.generated_token_ids);
+            return 1;
+        }
+        if (!(s_result.timings.total_seconds < std::min(a_result.timings.first_token_seconds,
+                                                         b_result.timings.first_token_seconds))) {
+            std::cerr << route.label << ": the short request waited behind the 80k prompts\n";
+            return 1;
+        }
+        if (const int result = follow_up("two interleaved 80k prompts"); result != 0) {
+            return result;
+        }
+    }
+
+    // Cancel a subset after `delay_ms`; the rest must reproduce their serial output.
+    const auto cancel_case = [&](const char* what, std::array<bool, 3> cancel_request,
+                                 int delay_ms) {
+        std::array<ninfer::GenerationHandle, 3> handles{submit(0), submit(1), submit(2)};
+        std::array<std::atomic<bool>, 3> flags{};
+        std::array<CancelledWait, 3> outcomes;
+        std::array<std::thread, 3> waiters;
+        for (std::size_t index = 0; index < 3; ++index) {
+            waiters[index] = std::thread([&, index] {
+                outcomes[index] = wait_with_cancellation(handles[index], flags[index]);
+            });
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        for (std::size_t index = 0; index < 3; ++index) {
+            if (cancel_request[index]) { flags[index].store(true, std::memory_order_release); }
+        }
+        for (std::thread& waiter : waiters) { waiter.join(); }
+        for (std::size_t index = 0; index < 3; ++index) {
+            const bool ok = cancel_request[index]
+                                ? was_cancelled(outcomes[index])
+                                : (outcomes[index].result &&
+                                   outcomes[index].result->generated_token_ids == reference[index]);
+            if (!ok) {
+                std::cerr << route.label << ": " << what << ": request " << index
+                          << (cancel_request[index] ? " was not cancelled" : " changed its output")
+                          << '\n';
+                return 1;
+            }
+        }
+        return follow_up(what);
+    };
+    if (const int result = cancel_case("cancelling long A mid-prefill", {true, false, false}, 12000);
+        result != 0) {
+        return result;
+    }
+    if (const int result = cancel_case("cancelling long B mid-prefill", {false, true, false}, 12000);
+        result != 0) {
+        return result;
+    }
+    if (const int result = cancel_case("cancelling the short request", {false, false, true}, 1000);
+        result != 0) {
+        return result;
+    }
+    {
+        // Abandon (destroy) long A's handle while both long prompts prefill.
+        auto b = submit(1);
+        auto s = submit(2);
+        {
+            auto a = submit(0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(12000));
+        }
+        const ninfer::GenerationResult s_result = s.wait();
+        const ninfer::GenerationResult b_result = b.wait();
+        if (b_result.generated_token_ids != reference[1] ||
+            s_result.generated_token_ids != reference[2]) {
+            std::cerr << route.label << ": abandoning long A changed another request's output\n";
+            return 1;
+        }
+        if (const int result = follow_up("abandoning long A"); result != 0) { return result; }
+    }
+    return 0;
+}
+
+ninfer::EngineOptions vision_interleave_engine_options(const char* artifact,
+                                                       std::uint32_t prefill_lanes,
+                                                       ninfer::VisionResidency residency,
+                                                       bool mtp) {
+    ninfer::EngineOptions options =
+        interleaved_prefill_engine_options(artifact, prefill_lanes, mtp, 3);
+    options.max_context      = 8192;
+    options.kv_capacity      = ninfer::KvCapacityPolicy::explicit_capacity(16384);
+    options.enable_vision    = true;
+    options.vision_residency = residency;
+    return options;
+}
+
+ninfer::PromptInput vision_interleave_prompt(int width, int height, std::string_view question) {
+    ninfer::MessagePart image;
+    image.kind              = ninfer::MessagePartKind::Media;
+    image.media.kind        = ninfer::MediaKind::Image;
+    image.media.bytes       = gradient_ppm(width, height);
+    image.media.media_type  = "image/x-portable-pixmap";
+    image.media.source_name = "interleave.ppm";
+    ninfer::ChatMessage message;
+    message.role = ninfer::ChatRole::User;
+    message.parts.push_back(std::move(image));
+    message.parts.push_back(ninfer::MessagePart{
+        .kind = ninfer::MessagePartKind::Text, .text = std::string(question), .media = {}});
+    ninfer::PromptInput input;
+    input.messages.push_back(std::move(message));
+    input.options.enable_thinking = false;
+    return input;
+}
+
+// Image prompts prefill alongside a long text prompt and each other. Two images at once is the case
+// the overlay residency cannot serve concurrently: one lane's encode window blocks the other's.
+int exercise_interleaved_vision(const char* artifact, ninfer::VisionResidency residency,
+                                bool mtp) {
+    const char* label = residency == ninfer::VisionResidency::Overlay ? "overlay" : "resident";
+    const auto long_prompt = interleave_long_prompt(3000, 0);
+    const auto shorty      = interleave_short_prompt();
+    const auto make_image_a = [] { return vision_interleave_prompt(1024, 1024, "What is visible?"); };
+    const auto make_image_b = [] { return vision_interleave_prompt(512, 768, "Describe the colors."); };
+
+    std::vector<ninfer::TokenId> reference_long;
+    std::vector<ninfer::TokenId> reference_short;
+    std::vector<ninfer::TokenId> reference_a;
+    std::vector<ninfer::TokenId> reference_b;
+    {
+        ninfer::Engine engine(vision_interleave_engine_options(artifact, 1, residency, mtp));
+        const auto run = [&](ninfer::PreparedPrompt prompt) {
+            return engine.generate(std::move(prompt), fixed_output(kInterleaveOutputTokens, false));
+        };
+        reference_long  = run(engine.prepare_tokens(long_prompt)).generated_token_ids;
+        reference_short = run(engine.prepare_tokens(shorty)).generated_token_ids;
+        const ninfer::GenerationResult a = run(engine.prepare(make_image_a()));
+        const ninfer::GenerationResult b = run(engine.prepare(make_image_b()));
+        if (!a.prompt.has_media || !b.prompt.has_media) {
+            std::cerr << label << ": vision reference prompts carried no media\n";
+            return 1;
+        }
+        reference_a = a.generated_token_ids;
+        reference_b = b.generated_token_ids;
+    }
+
+    ninfer::Engine engine(vision_interleave_engine_options(artifact, 3, residency, mtp));
+    const auto submit = [&](ninfer::PreparedPrompt prompt) {
+        return engine.submit(std::move(prompt), fixed_output(kInterleaveOutputTokens, false));
+    };
+    auto long_handle  = submit(engine.prepare_tokens(long_prompt));
+    auto a_handle     = submit(engine.prepare(make_image_a()));
+    auto b_handle     = submit(engine.prepare(make_image_b()));
+    auto short_handle = submit(engine.prepare_tokens(shorty));
+    const ninfer::GenerationResult short_result = short_handle.wait();
+    const ninfer::GenerationResult long_result  = long_handle.wait();
+    const ninfer::GenerationResult a_result     = a_handle.wait();
+    const ninfer::GenerationResult b_result     = b_handle.wait();
+    std::cout << label << (mtp ? " + MTP" : "") << ", 3 prefill lanes, long text + 2 images + short: short "
+              << short_result.timings.total_seconds << " s, long " << long_result.timings.total_seconds
+              << " s, image A " << a_result.timings.total_seconds << " s (vision "
+              << a_result.timings.vision_seconds << " s), image B " << b_result.timings.total_seconds
+              << " s (vision " << b_result.timings.vision_seconds << " s)\n";
+    if (long_result.generated_token_ids != reference_long ||
+        short_result.generated_token_ids != reference_short ||
+        a_result.generated_token_ids != reference_a ||
+        b_result.generated_token_ids != reference_b) {
+        std::cerr << label << ": interleaving vision prefill changed an output\n";
+        print_interleave_ids("serial image A", reference_a);
+        print_interleave_ids("got    image A", a_result.generated_token_ids);
+        print_interleave_ids("serial image B", reference_b);
+        print_interleave_ids("got    image B", b_result.generated_token_ids);
+        print_interleave_ids("serial long   ", reference_long);
+        print_interleave_ids("got    long   ", long_result.generated_token_ids);
+        print_interleave_ids("serial short  ", reference_short);
+        print_interleave_ids("got    short  ", short_result.generated_token_ids);
+        return 1;
+    }
+    if (!interleave_engine_settles(engine)) {
+        std::cerr << label << ": interleaved vision left live logical membership\n";
+        return 1;
+    }
+    return 0;
+}
+
 int verify_loaded_product(const ninfer::Engine& engine) {
     const ninfer::LoadSummary load = engine.load_summary();
     if (load.architecture != "Qwen3_5ForCausalLM" || load.model_name.empty() ||
@@ -2816,6 +3678,11 @@ int exercise_artifact(const char* artifact) {
     if (const int result = exercise_concurrent_resource_settlement(artifact); result != 0) {
         return result;
     }
+    for (const bool mtp : {false, true}) {
+        if (const int result = exercise_interleaved_prefill_all(artifact, mtp); result != 0) {
+            return result;
+        }
+    }
     return 0;
 }
 
@@ -2837,6 +3704,41 @@ int run() {
         result = exercise_artifact(artifact);
     } else if (scenario == "concurrent") {
         result = exercise_concurrent_resource_settlement(artifact);
+    } else if (scenario == "interleaved-prefill") {
+        result = exercise_interleaved_prefill_all(artifact, false);
+    } else if (scenario == "interleaved-prefill-mtp") {
+        result = exercise_interleaved_prefill_all(artifact, true);
+    } else if (scenario == "interleaved-prefill-dflash2") {
+        g_interleave_speculative = ninfer::SpeculativeBackend::DFlash2;
+        result                   = exercise_interleaved_prefill_all(artifact, true);
+    } else if (scenario == "interleaved-prefill-cancel") {
+        result = exercise_interleaved_prefill_cancel(artifact, false);
+    } else if (scenario == "interleaved-prefill-cancel-mtp") {
+        result = exercise_interleaved_prefill_cancel(artifact, true);
+    } else if (scenario == "large-probe") {
+        result = exercise_large_probe(artifact);
+    } else if (scenario == "large-context") {
+        result = exercise_large_context(artifact);
+    } else if (scenario == "interleaved-worker-failure") {
+        result = exercise_interleaved_worker_failure(artifact, false);
+    } else if (scenario == "interleaved-worker-failure-mtp") {
+        result = exercise_interleaved_worker_failure(artifact, true);
+    } else if (scenario == "two-80k") {
+        result = exercise_two_80k(artifact, kPlainRoute);
+    } else if (scenario == "two-80k-cublas") {
+        result = exercise_two_80k(artifact, kCublasRoute);
+    } else if (scenario == "over-context") {
+        result = exercise_over_context(artifact);
+    } else if (scenario == "interleaved-vision") {
+        result = exercise_interleaved_vision(artifact, ninfer::VisionResidency::Resident, false);
+    } else if (scenario == "interleaved-vision-overlay") {
+        result = exercise_interleaved_vision(artifact, ninfer::VisionResidency::Overlay, false);
+    } else if (scenario == "interleaved-vision-mtp") {
+        result = exercise_interleaved_vision(artifact, ninfer::VisionResidency::Resident, true);
+    } else if (scenario == "interleaved-two-long") {
+        result = exercise_interleaved_two_long(artifact, false);
+    } else if (scenario == "interleaved-two-long-mtp") {
+        result = exercise_interleaved_two_long(artifact, true);
     } else if (scenario == "anthropic-prefix-regression") {
         result = exercise_anthropic_prefix_regression(artifact);
     } else if (scenario == "shared-rewrite-materialization") {

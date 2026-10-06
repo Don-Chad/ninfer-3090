@@ -620,6 +620,10 @@ bool VisionPrefillSession::vision_pending() const {
     return overlay_ != nullptr && overlay_->pending() && !overlay_->item_ready();
 }
 
+bool VisionPrefillSession::overlay_window_open() const {
+    return overlay_ != nullptr && overlay_->pending();
+}
+
 VisionOverlayWindowStats VisionPrefillSession::overlay_stats() const noexcept {
     return overlay_ != nullptr ? overlay_->stats() : VisionOverlayWindowStats{};
 }

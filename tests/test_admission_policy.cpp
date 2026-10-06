@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <initializer_list>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -187,6 +188,74 @@ int main() {
                   scheduler.choose_execution(true, true, true) == ExecutionAction::Prefill,
               "prefill/decode alternation changed");
     scheduler.clear_prefill_lane(0);
+
+    {
+        // Several prefill owners: shortest remaining suffix first, a lane's first unit before
+        // anything else, and a bounded number of times a lane can be passed over.
+        using Candidate = Scheduler::PrefillCandidate;
+        Scheduler multi;
+        multi.configure_prefill(3, 4);
+        const auto pick = [&](std::initializer_list<Candidate> candidates) {
+            return multi.select_prefill_lane(
+                std::span<const Candidate>(candidates.begin(), candidates.size()));
+        };
+
+        multi.set_prefill_lane(0); // the long prompt
+        failures += check(!multi.should_attempt_admission(true, true, false, false, false),
+                          "admission ran before a published lane's first prefill unit");
+        // A unit that returned without settling the lane's state (a zero-progress capture offer)
+        // keeps it fresh: it is selected again and admission stays closed.
+        multi.record_prefill_unit(0, std::array<Candidate, 1>{Candidate{0, 100000}});
+        failures += check(multi.is_fresh_prefill_lane(0) &&
+                              !multi.should_attempt_admission(true, true, false, false, false),
+                          "a unit without progress opened admission before the lane settled");
+        const auto again = pick({{0, 100000}});
+        failures += check(again && *again == 0, "an unsettled lane was not selected again");
+        multi.mark_prefill_settled(0);
+        failures += check(multi.should_attempt_admission(true, true, false, false, false),
+                          "a second request was not admitted while one prefills");
+
+        multi.set_prefill_lane(1); // short, just published
+        multi.set_prefill_lane(2);
+        failures += check(!multi.should_attempt_admission(true, true, false, false, false) &&
+                              multi.prefill_owner_count() == 3,
+                          "prefill owner limit did not block admission");
+        const auto first = pick({{0, 100000}, {1, 300}, {2, 50}});
+        failures += check(first && *first == 1, "fresh lane did not run before others");
+        multi.record_prefill_unit(1, std::array<Candidate, 3>{{{0, 100000}, {1, 300}, {2, 50}}});
+        multi.mark_prefill_settled(1);
+        const auto second = pick({{0, 100000}, {1, 300}, {2, 50}});
+        failures += check(second && *second == 2, "second fresh lane did not run next");
+        multi.record_prefill_unit(2, std::array<Candidate, 3>{{{0, 100000}, {1, 300}, {2, 50}}});
+        multi.mark_prefill_settled(2);
+        const auto shortest = pick({{0, 100000}, {1, 300}, {2, 50}});
+        failures += check(shortest && *shortest == 2, "shortest remaining suffix was not chosen");
+        failures += check(!pick({}).has_value(), "empty candidate set selected a lane");
+
+        // The long lane has been passed over twice (units for lanes 1 and 2); after the bound
+        // it is chosen despite the shorter suffixes.
+        const std::array<Candidate, 3> all{{{0, 100000}, {1, 300}, {2, 50}}};
+        multi.record_prefill_unit(2, all);
+        multi.record_prefill_unit(2, all);
+        const auto aged = pick({{0, 100000}, {1, 300}, {2, 50}});
+        failures += check(aged && *aged == 0, "aged lane was not served ahead of shorter lanes");
+        multi.record_prefill_unit(0, all);
+        // Lane 1 reached the same bound while lane 0 ran, so it is next; lane 0 starts over.
+        const auto after = pick({{0, 100000}, {1, 300}, {2, 50}});
+        failures += check(after && *after == 1, "served lane kept its aged priority");
+        multi.record_prefill_unit(1, all);
+        const auto settled = pick({{0, 100000}, {1, 300}, {2, 50}});
+        failures += check(settled && *settled == 2, "shortest-first did not resume after aging");
+
+        multi.clear_prefill_lane(1);
+        failures += check(multi.prefill_owner_count() == 2 && !multi.is_prefill_owner(1),
+                          "prefill owner was not released");
+        bool threw = false;
+        try {
+            multi.clear_prefill_lane(1);
+        } catch (const std::logic_error&) { threw = true; }
+        failures += check(threw, "releasing a non-owner did not fail");
+    }
 
     std::array<std::shared_ptr<SchedulerRequest>, ninfer::kMaximumConcurrency> slots{};
     slots[0]                      = std::make_shared<SchedulerRequest>();

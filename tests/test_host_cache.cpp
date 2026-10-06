@@ -142,11 +142,30 @@ int check_automatic_normalization() {
     return failures;
 }
 
+// A scoring Engine ignores the generation-only prefill scheduling options, so values it never uses
+// are normalized away instead of failing construction.
+int check_scoring_normalization() {
+    using ninfer::runtime::normalize_engine_options;
+    ninfer::EngineOptions options;
+    options.purpose           = ninfer::EnginePurpose::CausalScoring;
+    options.max_prefill_lanes = 4;
+    options.prefill_max_skip  = 0;
+    bool accepted             = true;
+    ninfer::EngineOptions normalized;
+    try {
+        normalized = normalize_engine_options(options);
+    } catch (const std::exception&) { accepted = false; }
+    return check(accepted && normalized.max_prefill_lanes == 1 &&
+                     normalized.prefill_max_skip == ninfer::EngineOptions{}.prefill_max_skip,
+                 "a CausalScoring Engine rejected or kept its generation-only prefill options");
+}
+
 } // namespace
 
 int main() {
     int failures = 0;
     failures += check_automatic_normalization();
+    failures += check_scoring_normalization();
 
     // 64 GiB free less the 3 GiB default reserve is a 61 GiB (62,464 MiB) budget; an eighth,
     // 7,808 MiB, buys 78 of the 100 MiB states.
