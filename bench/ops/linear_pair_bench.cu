@@ -29,7 +29,7 @@ constexpr std::int32_t kFirstRow    = 4096;
 constexpr std::int32_t kSecondRow   = 5120;
 constexpr std::int32_t kRows        = 1024;
 constexpr std::int32_t kHidden      = 2048;
-constexpr double kRtx5090ReadGBs    = 1674.5;
+const double kRtx5090ReadGBs = bench::device_specs().sustained_read_gbs;
 constexpr double kRtx5090Bf16Tflops = 209.5;
 
 struct Options {

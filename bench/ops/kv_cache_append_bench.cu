@@ -36,7 +36,7 @@ constexpr std::int32_t kKvGroup       = 64;
 constexpr std::int32_t kFp8KvGroup    = 256;
 constexpr std::int32_t kRingCapacity  = 4096;
 constexpr std::size_t kFlushBytes     = std::size_t{256} << 20;
-constexpr double kRtx5090DramGBs      = 1792.0;
+const double kRtx5090DramGBs = bench::device_specs().dram_spec_gbs;
 
 enum class Mode : std::uint8_t { Full, Prefix, All };
 enum class FullGeometryChoice : std::uint8_t { Kv4, Kv2, All };

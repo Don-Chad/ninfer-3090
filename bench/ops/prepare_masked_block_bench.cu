@@ -25,7 +25,7 @@ namespace {
 
 constexpr std::int32_t kMaskId    = 248077;
 constexpr std::size_t kFlushBytes = std::size_t{256} << 20;
-constexpr double kRtx5090DramGBs  = 1792.0;
+const double kRtx5090DramGBs = bench::device_specs().dram_spec_gbs;
 
 enum class Execution : std::uint8_t { Eager, Graph, Both };
 enum class CacheMode : std::uint8_t { Cold, Warm, Both };
