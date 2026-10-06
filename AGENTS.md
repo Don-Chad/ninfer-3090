@@ -217,9 +217,20 @@ cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
 Set-Location C:\ninfer-fork\ninfer-3090\build-ninja
 cmake --build .                                  # everything
 cmake --build . --target <name>                  # one target
-ctest -j2                                        # full suite, ~70 s
+ctest -j2                                        # full suite, ~13 min (159 tests, see below)
 ctest -R <regex> --output-on-failure             # one test
 ```
+
+Full-suite timing, measured 2026-10-06 on the RTX 3090 with the GPU otherwise idle: 159 tests, 768 s
+wall at `-j2`, 8 of them skipped without `NINFER_TEST_ARTIFACT` (the `*_real_test` family). The
+earlier "~70 s / 100 tests" figure is stale. Three op tests account for most of it and are not
+related to engine or scheduler changes: `ninfer_softmax_attention_dflash2_test` (~575 s),
+`ninfer_context_kv_materialize_test` (~258 s) and `ninfer_softmax_attention_test` (~184 s); exclude
+them with `ctest -E` when iterating on something else. Building only `ninfer_tests` leaves five
+standalone test programs unbuilt, so `ctest` reports `public_api`, `jinja`, `artifact_materialization`,
+`effective_thinking_budget` and `context_cost_measure` as Not Run, and `chat_templates` and
+`artifact_writer_interop` as Failed (they launch those programs). That is a missing build, not a
+failure: build `all`, or those targets, first.
 
 That import is reliable; the environment it produces builds cleanly. Adding only the compiler's
 `bin` directory to PATH is *not* enough — the standard library headers go missing
