@@ -2208,12 +2208,22 @@ private:
 
     // The worker holds execution_mutex_ across the failing operation and this cleanup, so no
     // Program introspection can observe a partially cleared physical state.
-    void fail_all_locked(std::exception_ptr error) noexcept {
+    // With a `fault`, the ids of the queued requests being failed are recorded into it from the
+    // very set swapped out under the lock, so a request enqueued concurrently is either in the
+    // event or was rejected by failed_ -- never failed but unreported.
+    void fail_all_locked(std::exception_ptr error, EngineFaultEvent* fault = nullptr) noexcept {
         std::deque<std::shared_ptr<Request>> pending;
         {
             std::lock_guard lock(queue_mutex_);
             failed_ = true;
             pending.swap(pending_);
+        }
+        if (fault != nullptr) {
+            try {
+                for (const auto& request : pending) {
+                    fault->queued_request_ids.push_back(request->id);
+                }
+            } catch (...) {}
         }
         scheduler_.reset();
         const std::shared_ptr<Request> materializing_request =
@@ -2327,13 +2337,6 @@ private:
         if (materializing_ && materializing_->request != nullptr) {
             event.request_ids.push_back(materializing_->request->id);
         }
-    }
-
-    // Latch only, before fail_all_locked swaps the queue away: the queued requests the latch fails
-    // along with the running ones.
-    void collect_queued_requests(EngineFaultEvent& event) const {
-        std::lock_guard lock(queue_mutex_);
-        for (const auto& request : pending_) { event.queued_request_ids.push_back(request->id); }
     }
 
     void notify_fault(const EngineFaultEvent& event) const noexcept {
@@ -2460,12 +2463,7 @@ private:
                 } else {
                     set_refusal(refusal, "device synchronize failed");
                 }
-                if (!recovered) {
-                    try {
-                        collect_queued_requests(fault);
-                    } catch (...) {}
-                    fail_all_locked(error);
-                }
+                if (!recovered) { fail_all_locked(error, &fault); }
                 try {
                     fault.latched      = !recovered;
                     fault.latch_reason = refusal;
