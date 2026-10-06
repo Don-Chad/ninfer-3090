@@ -167,6 +167,35 @@ int main() {
     failures += check(large.device_state_slots == 8 && large.max_long_anchors_per_continuation == 2,
                       "device-side fields were not carried over");
 
+    // A cap bounds what is pinned however much is free, after the reserve: 10 GiB (10,240 MiB) of
+    // the 61 GiB budget buys an eighth, 1,280 MiB, so 12 of the 100 MiB states and the rest KV.
+    ContextCacheOptions capped_request   = requested(8);
+    capped_request.host_cache_max_bytes = 10 * kGiB;
+    const ContextCacheOptions capped = resolve_host_cache(capped_request, 64 * kGiB, 100 * kMiB, 8, 0);
+    failures += check(capped.host_state_slots == 12 &&
+                          capped.host_kv_capacity_bytes == (10240 - 1200) * kMiB,
+                      "the cap did not bound the pinned budget");
+    failures += check(capped.host_cache_max_bytes == 10 * kGiB, "the cap was not carried over");
+    // A cap above the budget changes nothing, and so does leaving it unset.
+    ContextCacheOptions loose_request   = requested(8);
+    loose_request.host_cache_max_bytes = 100 * kGiB;
+    const ContextCacheOptions loose = resolve_host_cache(loose_request, 64 * kGiB, 100 * kMiB, 8, 0);
+    failures += check(loose.host_state_slots == large.host_state_slots &&
+                          loose.host_kv_capacity_bytes == large.host_kv_capacity_bytes,
+                      "a cap above the available budget changed the sizing");
+    // The reserve still applies first: a small machine is not pushed up to the cap.
+    const ContextCacheOptions small_machine =
+        resolve_host_cache(capped_request, 8 * kGiB, 100 * kMiB, 8, 0);
+    failures += check(small_machine.host_kv_capacity_bytes + small_machine.host_state_slots * 100 * kMiB ==
+                          5 * kGiB,
+                      "an 8 GiB machine did not keep its 3 GiB reserve under the cap");
+    // A cap of zero turns the host tier off.
+    ContextCacheOptions zero_request   = requested(8);
+    zero_request.host_cache_max_bytes = 0;
+    const ContextCacheOptions none = resolve_host_cache(zero_request, 64 * kGiB, 100 * kMiB, 8, 0);
+    failures += check(none.host_state_slots == 0 && none.host_kv_capacity_bytes == 0,
+                      "a zero cap did not leave no host cache");
+
     // Injected grafts hold shared-prefix slots of their own, on top of the sized catalog.
     const ContextCacheOptions grafted = resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 2);
     failures += check(grafted.max_shared_prefixes == 25 && grafted.max_private_continuations == 94,

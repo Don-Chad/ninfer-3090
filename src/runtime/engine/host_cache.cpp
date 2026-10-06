@@ -179,6 +179,11 @@ ContextCacheOptions resolve_host_cache(const ContextCacheOptions& requested,
     // instantiation and module loads. Pinned pages cannot be reclaimed, so it is not a fraction.
     const std::uint64_t reserve = requested.host_cache_reserve_bytes;
     std::uint64_t budget = available_host_bytes > reserve ? available_host_bytes - reserve : 0;
+    // The reserve leaves memory for what still grows; a cap leaves memory for the machine's other
+    // users, which `available_host_bytes` cannot know will want it.
+    if (requested.host_cache_max_bytes) {
+        budget = std::min<std::uint64_t>(budget, *requested.host_cache_max_bytes);
+    }
     // Where pinned host memory is charged against the GPU (Windows), the same clamp the Program
     // applies to its KV buffer bounds the whole budget, before it is split. The Program clamps the
     // KV buffer against the memory left after the state slots are pinned; with the state slots

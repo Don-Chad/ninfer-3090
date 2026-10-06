@@ -223,6 +223,11 @@ struct ContextCacheOptions {
     bool auto_host_cache = false;
     // Memory left unpinned beneath whatever is available when auto_host_cache sizes the tier.
     std::size_t host_cache_reserve_bytes = kDefaultHostCacheReserveBytes;
+    // An upper bound on what auto_host_cache pins (state slots and KV together), applied after the
+    // reserve. Empty: no bound, so a machine with a lot of free memory pins nearly all of it. Set it
+    // where memory is shared with other tenants (a rented GPU box): the reserve only protects the
+    // memory still to be used, not what a neighbour may want of the host's.
+    std::optional<std::size_t> host_cache_max_bytes;
     // Bounded private/shared logical catalogs and per-continuation long-anchor count.
     std::optional<std::uint32_t> max_private_continuations;
     std::optional<std::uint32_t> max_shared_prefixes;

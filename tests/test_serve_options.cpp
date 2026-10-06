@@ -310,6 +310,17 @@ int main() {
     } catch (const std::invalid_argument&) { reserve_without_auto_rejected = true; }
     failures += check(reserve_without_auto_rejected,
                       "--host-cache-reserve-mib was accepted without --auto-host-cache");
+    const ServeOptions host_capped = parse(
+        {"ninfer-serve", "model.ninfer", "--auto-host-cache", "--host-cache-max-mib", "10240"});
+    failures += check(host_capped.context_cache.host_cache_max_bytes == (10240ULL << 20) &&
+                          !auto_cache.context_cache.host_cache_max_bytes,
+                      "--host-cache-max-mib did not reach serving options or has a default");
+    bool max_without_auto_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--host-cache-max-mib", "1024"});
+    } catch (const std::invalid_argument&) { max_without_auto_rejected = true; }
+    failures += check(max_without_auto_rejected,
+                      "--host-cache-max-mib was accepted without --auto-host-cache");
     bool auto_without_cache_rejected = false;
     try {
         (void)parse({"ninfer-serve", "model.ninfer", "--no-prefix-reuse", "--auto-host-cache"});

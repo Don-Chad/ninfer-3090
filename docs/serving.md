@@ -1101,6 +1101,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--max-private-continuations N` | private continuation descriptor capacity | `2 * max-concurrency` |
 | `--max-shared-prefixes N` | shared stable-prefix descriptor capacity | `max-concurrency` |
 | `--host-cache-reserve-mib N` | with `--auto-host-cache`, host memory left unpinned beneath what is available | `3072` |
+| `--host-cache-max-mib N` | with `--auto-host-cache`, the most it may pin (state slots and KV together), applied after the reserve; for machines whose memory other tenants share | no cap |
 | `--auto-host-cache` | size `--host-state-slots`, `--host-kv-mib`, `--max-private-continuations` and `--max-shared-prefixes` from the host memory still free once the model has loaded, for a machine that exists to serve; see [automatic host cache](#automatic-host-cache). Replaces those four options and refuses them | off |
 | `--max-long-anchors-per-continuation N` | private long-anchor limit per continuation | `2` |
 | `--auto-long-anchors N` | propose a private long anchor at each of the last `N` interior message boundaries of every prompt, so a rewrite of recent history restores at the anchor below the edit instead of re-prefilling from token zero; clamped to the anchor limit, `0` disables | the anchor limit |
@@ -1317,6 +1318,13 @@ taken from the machine, once, after the model has loaded:
   about 30 MB; the default adds margin for long prompts. Pinned pages cannot be reclaimed, and in a
   container exceeding the limit kills the process, so lower the reserve only after watching the
   process's memory under your own load.
+- `--host-cache-max-mib` caps that budget. Without it, a machine with a lot of free memory pins
+  nearly all of it, which is only safe if nothing else will want the memory later. On a rented GPU
+  box the host's RAM is shared with other tenants: a 64 GB host with 29 GB in use by others left
+  `MemAvailable` at about 52 GB, 49 GiB was pinned, and the engine was killed by the kernel's OOM
+  killer when the neighbours grew (the container's own limit was never reached, so the reserve and
+  the cgroup term could not help). Set the cap to what the workload actually uses of the host tier;
+  `host_kv_bytes` in `GET /v1/load` shows how much of it is occupied.
 - An eighth of that budget buys StateImage slots (at most 128, each one whole GDN snapshot, so its
   size depends on the model and `--gdn-state-fp16`); the remainder is host KV.
 - The private-continuation catalog is the number of resident states (active lanes, device
