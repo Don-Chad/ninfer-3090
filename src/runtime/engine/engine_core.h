@@ -14,6 +14,7 @@
 #include "runtime/engine/generation_budget.h"
 #include "runtime/engine/effective_thinking_budget.h"
 #include "runtime/engine/worker_fault.h"
+#include "runtime/engine/worker_recovery.h"
 
 #include <algorithm>
 #include <array>
@@ -75,6 +76,7 @@ public:
                            options.max_pending_requests),
           pending_timeout_(std::chrono::milliseconds(options.pending_timeout_ms)),
           context_cache_enabled_(options.context_cache.enabled),
+          fault_listener_(options.fault_listener),
           resources_(max_concurrency_, options.context_cache.max_private_continuations.value(),
                      options.context_cache.max_shared_prefixes.value(),
                      options.context_cache.enabled,
@@ -1141,7 +1143,7 @@ private:
         request->cv.notify_one();
         // Only a published, uncancelled result shows the Engine serving again; a cancellation,
         // or a completion that threw before publication, leaves the recovery streak standing.
-        if (reason != FinishReason::Cancelled) { consecutive_recoveries_ = 0; }
+        if (reason != FinishReason::Cancelled) { recovery_streak_.record_success(); }
     }
 
     void complete_cancelled(const std::shared_ptr<Request>& request) {
@@ -2237,8 +2239,8 @@ private:
     // the one materializing -- clear the Program and the context cache as the latch does, and
     // keep the queue. Recovery is refused, and the latch taken, when the device cannot be
     // synchronized, when the cleanup leaves physical resources behind (the Program's state is
-    // then not known to be sound), or when failures repeat with no request completing between
-    // them, so a persistent fault cannot spin.
+    // then not known to be sound), or when failures repeat with no request completing and less
+    // than kRecoveryHealthyWindow between them, so a persistent fault cannot spin.
     // The caller synchronizes the device first: the cleanup frees pages and StateImages that work
     // issued before the failure may still reference.
     // Catalogs each graft the Program holds pinned as an external shared prefix, so requests that
@@ -2251,10 +2253,15 @@ private:
         }
     }
 
-    [[nodiscard]] bool recover_locked(std::exception_ptr error) noexcept {
+    // On refusal `refusal` names why, for the operator log.
+    [[nodiscard]] bool recover_locked(std::exception_ptr error, std::string& refusal) noexcept {
+        const auto failed_at = Clock::now();
         // The failure being handled counts toward the streak, so the third consecutive one
         // latches rather than the fourth.
-        if (consecutive_recoveries_ + 1U >= kMaximumConsecutiveRecoveries) { return false; }
+        if (!recovery_streak_.permits_recovery(failed_at)) {
+            refusal = "failures repeated with no request completing between them";
+            return false;
+        }
         scheduler_.reset();
         const std::shared_ptr<Request> materializing_request =
             materializing_ ? materializing_->request : nullptr;
@@ -2272,6 +2279,7 @@ private:
         if (instance_.program->has_context_transaction() || usage.device_state_slots != 0 ||
             usage.host_state_slots != 0 || usage.device_main_kv_pages != 0 ||
             usage.device_backend_kv_pages != 0 || usage.host_kv_bytes != 0) {
+            refusal = "cleanup left physical resources behind";
             return false;
         }
         // The cleanup released the startup-pinned grafts with everything else. With the empty
@@ -2281,11 +2289,35 @@ private:
             instance_.inject_pinned_grafts();
             device_.synchronize();
             catalog_pinned_grafts();
-        } catch (...) { return false; }
-        ++consecutive_recoveries_;
+        } catch (...) {
+            refusal = "pinned grafts could not be reinstalled: " +
+                      exception_text(std::current_exception());
+            return false;
+        }
+        recovery_streak_.record_recovery(failed_at);
         ++cumulative_stats_.engine_recoveries;
         request_admission_check();
         return true;
+    }
+
+    // Worker-only, before recovery clears them: the requests a failure is about to be delivered to.
+    void collect_fault_requests(EngineFaultEvent& event) const {
+        for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+            if (slots_[lane] != nullptr) {
+                event.request_ids.push_back(slots_[lane]->id);
+                event.lanes.push_back(lane);
+            }
+        }
+        if (materializing_ && materializing_->request != nullptr) {
+            event.request_ids.push_back(materializing_->request->id);
+        }
+    }
+
+    void notify_fault(const EngineFaultEvent& event) const noexcept {
+        if (!fault_listener_) { return; }
+        try {
+            fault_listener_(event);
+        } catch (...) {}
     }
 
     void worker_loop() noexcept {
@@ -2313,6 +2345,7 @@ private:
             }
 
             std::unique_lock execution_lock(execution_mutex_);
+            const char* unit = "boundary";
             try {
                 set_host_work_class(HostWorkClass::Control);
                 HostPhaseMeasurement boundary = begin_host_phase();
@@ -2329,7 +2362,9 @@ private:
                         have_pending, admission_check_pending, !membership.empty(),
                         previous_unit_was_decode, instance_.program->has_context_transaction()) &&
                     consume_admission_check()) {
+                    unit = "admission";
                     (void)try_admit_one();
+                    unit = "boundary";
                     membership = scheduler_.build_round_membership(slots_, max_concurrency_);
                 }
 
@@ -2343,6 +2378,7 @@ private:
                 if (!control_membership.empty()) {
                     set_host_work_class(HostWorkClass::Control);
                     finish_engine_phase(boundary, EngineHostPhase::Boundary);
+                    unit = "control";
                     run_control_batch(control_membership);
                     previous_unit_was_decode = true;
                     continue;
@@ -2365,6 +2401,7 @@ private:
                 if (action == ExecutionAction::Prefill) {
                     set_host_work_class(HostWorkClass::Prefill);
                     finish_engine_phase(boundary, EngineHostPhase::Boundary);
+                    unit = "prefill";
                     run_prefill_step(cancelled_at_unit_start);
                     previous_unit_was_decode = false;
                     continue;
@@ -2372,6 +2409,7 @@ private:
                 if (action == ExecutionAction::Decode) {
                     set_host_work_class(HostWorkClass::Decode, membership.lane_span());
                     finish_engine_phase(boundary, EngineHostPhase::Boundary);
+                    unit = "decode";
                     run_decode_round(membership, cancelled_at_unit_start);
                     previous_unit_was_decode = true;
                     continue;
@@ -2380,14 +2418,35 @@ private:
                 finish_engine_phase(boundary, EngineHostPhase::Boundary);
             } catch (...) {
                 const std::exception_ptr error = std::current_exception();
-                HostPhaseMeasurement cleanup   = begin_host_phase();
+                EngineFaultEvent fault;
+                try {
+                    fault.message = exception_text(error);
+                    fault.unit    = unit;
+                    collect_fault_requests(fault);
+                } catch (...) {}
+                HostPhaseMeasurement cleanup = begin_host_phase();
                 // Both recovery and the latch free physical state, so both wait for the device.
                 bool fenced = true;
                 try {
                     device_.synchronize();
                 } catch (...) { fenced = false; }
-                const bool recovered = fenced && recover_locked(error);
+                std::string refusal;
+                bool recovered = false;
+                if (fenced) {
+                    recovered = recover_locked(error, refusal);
+                } else {
+                    refusal = "device synchronize failed";
+                }
                 if (!recovered) { fail_all_locked(error); }
+                try {
+                    fault.latched      = !recovered;
+                    fault.latch_reason = refusal;
+                    fault.consecutive_failures =
+                        recovery_streak_.count() + (recovered ? 0U : 1U);
+                    fault.maximum_consecutive_failures = recovery_streak_.maximum();
+                } catch (...) {}
+                // After the latch took effect, so /health already reports unavailable.
+                notify_fault(fault);
                 finish_engine_phase(cleanup, EngineHostPhase::Maintenance);
                 try {
                     publish_runtime_stats();
@@ -2408,6 +2467,7 @@ private:
     const std::size_t max_outstanding_;
     const std::chrono::milliseconds pending_timeout_;
     const bool context_cache_enabled_;
+    const std::function<void(const EngineFaultEvent&)> fault_listener_;
     ResourceManagement resources_;
 
     mutable std::mutex execution_mutex_;
@@ -2423,8 +2483,10 @@ private:
     Scheduling scheduler_;
     std::atomic<bool> admission_check_pending_{false};
     // Worker-only: recoveries since the last request completed successfully.
+    // Failures closer together than the window count toward the latch; see RecoveryStreak.
     static constexpr std::uint32_t kMaximumConsecutiveRecoveries = 3;
-    std::uint32_t consecutive_recoveries_                         = 0;
+    static constexpr std::chrono::seconds kRecoveryHealthyWindow{30};
+    RecoveryStreak recovery_streak_{kMaximumConsecutiveRecoveries, kRecoveryHealthyWindow};
     std::uint64_t worker_accounted_elapsed_ns_ = 0;
     HostWorkClass current_host_work_class_     = HostWorkClass::Control;
     std::array<std::uint32_t, kMaximumConcurrency> current_decode_lanes_{};

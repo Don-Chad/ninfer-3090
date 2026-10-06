@@ -181,8 +181,15 @@ ready rather than treating an accepted TCP connection as a signal of readiness.
 After startup, an internal host-side failure fails only the requests that were running or being
 admitted, clears the context cache, and keeps serving the queue; each such recovery is counted as
 a top-level `engine_recoveries` counter on the request log's `throughput` event. `GET /health` turns
-`503` for good only when the engine cannot verify a clean recovery, or after three failures with no
-request completing between them, and then the server needs a restart.
+`503` for good only when the engine cannot verify a clean recovery, or after three failures in a row
+(each less than 30 seconds after the previous one, with no request completing between them), and
+then the server needs a restart. Every such failure is logged at error severity with the exception
+text, the execution unit (`boundary`, `admission`, `control`, `prefill` or `decode`), the affected
+request ids and lanes, and the streak count; a latch is logged `FATAL`, and `ninfer-serve` exits
+with status 3 after a five second grace period (so in-flight error responses flush and `/health`
+answers 503 meanwhile) for a supervisor to restart. `--no-exit-on-engine-failure` keeps the
+process alive instead. The exception text is operator diagnostics and is never sent to clients; the
+request log's `request_error` record already carries it for requests that failed this way.
 
 ### Load
 
@@ -1080,6 +1087,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--max-cache-markers-per-request N` | caller marker input-complexity bound | `4` |
 | `--slot-save-path DIR` | enable `POST /slots/{id}` save/restore/erase with files in `DIR` (created at startup) | disabled |
 | `--auto-save-evicted` | write an evicted session back to its bound slot file; requires `--slot-save-path` | off |
+| `--no-exit-on-engine-failure` | stay alive (answering 503) when the engine latches unavailable, instead of logging FATAL and exiting with status 3 after 5 s | exit |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
 | `--graft NAME=PATH` | load a [prompt graft](#prompt-grafts) a request may select by name; repeatable | none |

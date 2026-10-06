@@ -292,6 +292,10 @@ int main() {
         {"ninfer-serve", "model.ninfer", "--slot-save-path", "sessions", "--auto-save-evicted"});
     failures += check(slots.slot_save_path == "sessions" && slots.auto_save_evicted,
                       "slot persistence options did not reach serving options");
+    failures += check(no_slots.exit_on_engine_failure &&
+                          !parse({"ninfer-serve", "model.ninfer", "--no-exit-on-engine-failure"})
+                               .exit_on_engine_failure,
+                      "exit-on-engine-failure must default on and be disabled by its flag");
     const auto rejected = [&](std::vector<std::string> argv) {
         try {
             (void)parse(std::move(argv));

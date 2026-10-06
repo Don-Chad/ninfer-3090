@@ -289,7 +289,8 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
 
 GenerationService::GenerationService(
     ServeOptions options, StartupObserver startup_observer,
-    std::function<void(const ninfer::SlotAutoSaveEvent&)> auto_save_listener)
+    std::function<void(const ninfer::SlotAutoSaveEvent&)> auto_save_listener,
+    std::function<void(const ninfer::EngineFaultEvent&)> fault_listener)
     : options_(std::move(options)) {
     // Inline ECC on GDDR6X GeForce cards reserves ~6.25% of VRAM for checksums and taxes
     // memory bandwidth on every access. Decode is bandwidth-bound, so an ECC-enabled card
@@ -313,6 +314,7 @@ GenerationService::GenerationService(
     ninfer::EngineOptions engine_options = make_engine_options(options_);
     engine_options.startup_observer      = std::move(startup_observer);
     engine_options.slot_auto_save.listener = std::move(auto_save_listener);
+    engine_options.fault_listener          = std::move(fault_listener);
     engine_           = std::make_unique<ninfer::Engine>(std::move(engine_options));
     automatic_private_anchors_ =
         resolve_automatic_private_anchors(options_, engine_->options().context_cache);
