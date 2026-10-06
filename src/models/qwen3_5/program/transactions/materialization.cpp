@@ -2255,12 +2255,14 @@ bool ProgramImpl::vision_pending(SequenceHandle sequence) const noexcept {
     if (!request.prefill || !request.prefill->vision) { return false; }
     try {
         if (request.prefill->vision->vision_pending()) { return true; }
-        // Only one overlay window can be open: while another lane's media item encodes in its
-        // window, this lane's own encode would find the window held and cannot start.
+        // Only one overlay window can be open, and a peer's stays open until its item is consumed,
+        // not just until its encode finishes: this lane's own encode would find the window held
+        // and fail. The peer itself drains a ready item, so it is not blocked here.
         for (std::uint32_t other = 0; other < max_concurrency; ++other) {
             if (other == lane) { continue; }
             const RequestControl& peer = requests[other];
-            if (peer.prefill && peer.prefill->vision && peer.prefill->vision->vision_pending()) {
+            if (peer.prefill && peer.prefill->vision &&
+                peer.prefill->vision->overlay_window_open()) {
                 return true;
             }
         }

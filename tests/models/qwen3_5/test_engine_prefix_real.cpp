@@ -2891,6 +2891,8 @@ int exercise_interleaved_prefill(const char* artifact, bool mtp) {
 
 struct CancelledWait {
     std::optional<ninfer::GenerationResult> result;
+    // Set when wait() threw. A cancelled request completes with FinishReason::Cancelled and never
+    // throws, so an exception is a failure of the request, not a cancellation.
     bool threw = false;
 };
 
@@ -2901,13 +2903,15 @@ CancelledWait wait_with_cancellation(ninfer::GenerationHandle& handle, std::atom
         outcome.result = handle.wait(nullptr, ninfer::CancellationView([&flag] {
                                          return flag.load(std::memory_order_acquire);
                                      }));
-    } catch (const std::exception&) { outcome.threw = true; }
+    } catch (const std::exception& error) {
+        outcome.threw = true;
+        std::cerr << "wait() threw instead of completing: " << error.what() << '\n';
+    }
     return outcome;
 }
 
 bool was_cancelled(const CancelledWait& outcome) {
-    return outcome.threw ||
-           (outcome.result && outcome.result->finish_reason == ninfer::FinishReason::Cancelled);
+    return outcome.result && outcome.result->finish_reason == ninfer::FinishReason::Cancelled;
 }
 
 // Cancelling or abandoning one of several interleaved requests must free its lane, KV and state
@@ -2998,9 +3002,13 @@ int exercise_interleaved_prefill_cancel(const char* artifact, bool mtp) {
             std::cerr << label << ": an early cancellation changed the long prompt's output\n";
             return 1;
         }
-        if (!was_cancelled(short_outcome) && short_outcome.result &&
-            short_outcome.result->generated_token_ids != references[1]) {
-            std::cerr << label << ": a request cancelled at submission returned wrong output\n";
+        // The flag is already set, so the request is normally cancelled; it may instead complete
+        // before the engine observes the flag, and then its output must be the serial one.
+        if (!short_outcome.result ||
+            (!was_cancelled(short_outcome) &&
+             short_outcome.result->generated_token_ids != references[1])) {
+            std::cerr << label << ": a request cancelled at submission "
+                      << (short_outcome.threw ? "failed" : "returned wrong output") << '\n';
             return 1;
         }
         if (const int result = follow_up("an early cancellation"); result != 0) { return result; }
