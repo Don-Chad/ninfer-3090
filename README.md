@@ -50,7 +50,12 @@ requests are not guaranteed.
 > your desktop's GPU? Plans start with a day pass, and every verified account gets a few free
 > requests a day. Thank you to NeverMetered for supporting this project.
 
-**New in v0.14.0: `--auto-host-cache`.** One flag now sizes the RAM tier of the context cache from
+**New in v0.14.1:** a stability fix for `ninfer-serve`. A large or unplannable request no longer fails
+every running request (`internal error generation`) or clears the context cache; only that request
+fails, and a latched engine now exits so a supervisor can restart it. See the
+[v0.14.1 release notes](RELEASE_NOTES_0.14.1.md).
+
+**v0.14.0: `--auto-host-cache`.** One flag now sizes the RAM tier of the context cache from
 the machine, so a server that exists to serve long agent conversations keeps them cached after they
 leave the GPU instead of re-reading them from scratch. It replaces four hand-tuned flags and respects
 a container's memory limit. Also: vision together with a multi-GPU `--devices` split, a
