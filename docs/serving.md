@@ -178,8 +178,13 @@ endpoints:
 A readiness probe should poll `GET /health` (or any endpoint) and expect `503` until the model is
 ready rather than treating an accepted TCP connection as a signal of readiness.
 
-After startup, an internal host-side failure fails only the requests that were running or being
-admitted, clears the context cache, and keeps serving the queue; each such recovery is counted as
+A waiting request that cannot be planned for admission fails alone with HTTP 500: the requests
+already running are not touched, the context cache is kept, and the failure is logged as
+`engine admission failure ... contained` with the exception text and does not count toward the
+latch below.
+
+After startup, any other internal host-side failure fails only the requests that were running or
+being admitted, clears the context cache, and keeps serving the queue; each such recovery is counted as
 a top-level `engine_recoveries` counter on the request log's `throughput` event. `GET /health` turns
 `503` for good only when the engine cannot verify a clean recovery, or after three failures in a row
 (each less than 30 seconds after the previous one, with no request completing between them), and

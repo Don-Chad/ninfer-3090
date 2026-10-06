@@ -524,7 +524,13 @@ Cancellation 不修改 in-flight mapping，也不从未完成的 active state �
 Cleanup 顺序必须先终止 Program 中未决的 resource/model transaction，再释放 active state，最后清空
 ResourceManager 与完成所有 request response。内部不变量错误不能降级成 cache miss、等待或重试。
 
-Worker 捕获的 host 侧异常（CUDA 错误直接终止进程，不会到达这里）先同步 device（恢复与锁存都会释放
+等待中的请求在 admission 阶段的规划（`inspect_admission`）抛出的异常只属于该请求：规划只读取 context
+cache 与 Program，不打开 transaction、不预留任何资源，因此只以该异常完成这一个请求，不影响正在运行的
+lane，不恢复、不清空 context cache，也不计入下面的锁存连续失败计数；它经 `EngineFaultEvent::contained`
+报告并记录为 `engine admission failure ... contained`。`runtime/engine/worker_fault.h` 的
+`arm_planning_failures(N)` 是对应的验证接缝。
+
+Worker 捕获的其余 host 侧异常（CUDA 错误直接终止进程，不会到达这里）先同步 device（恢复与锁存都会释放
 物理状态，二者都必须先等待已发出的工作），再尝试恢复而不是永久锁存：执行同样的 Program cleanup 与
 ResourceManager 清空，以错误完成 active lanes 与 materializing request，保留尚未触及物理状态的 FIFO
 队列。只有 cleanup 后 Program 没有打开的 transaction、`physical_usage()` 的 Device/Host State 与 KV

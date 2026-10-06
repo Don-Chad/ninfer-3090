@@ -597,6 +597,17 @@ int main() {
                               "engine worker failure | unit prefill | requests req#7,req#9 | "
                               "lanes 0,1 | failure 2/3 | recovered | page table invariant",
                       "recovered engine fault rendering mismatch");
+    // A planning failure confined to the request being admitted names that request alone and
+    // makes no claim about recovery or the latch streak.
+    ninfer::EngineFaultEvent contained;
+    contained.message     = "planner\ninvariant";
+    contained.unit        = "admission";
+    contained.contained   = true;
+    contained.request_ids = {95};
+    failures += check(render_engine_fault(contained).message ==
+                          "engine admission failure | unit admission | request req#95 | "
+                          "contained, no other request affected | planner invariant",
+                      "contained admission failure rendering mismatch");
     fault.latched      = true;
     fault.latch_reason = "failures repeated";
     failures += check(render_engine_fault(fault).message.find("LATCHED, engine unavailable "

@@ -585,6 +585,15 @@ void OperationalLog::server_stopped() const { logger_->info("server stopped"); }
 
 OperationalRecord render_engine_fault(const ninfer::EngineFaultEvent& event) {
     std::ostringstream out;
+    if (event.contained) {
+        out << "engine admission failure | unit " << event.unit << " | request ";
+        for (std::size_t i = 0; i < event.request_ids.size(); ++i) {
+            out << (i == 0 ? "" : ",") << "req#" << event.request_ids[i];
+        }
+        out << " | contained, no other request affected | "
+            << product::format_pretty_text(event.message);
+        return {OperationalSeverity::Error, out.str()};
+    }
     out << "engine worker failure | unit " << event.unit << " | requests ";
     if (event.request_ids.empty()) {
         out << "none";
