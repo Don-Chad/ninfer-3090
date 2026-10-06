@@ -3219,10 +3219,18 @@ int exercise_over_context(const char* artifact) {
                 engine.prepare_tokens(interleave_long_prompt(prompt_tokens, 3)),
                 fixed_output(output_tokens, false));
             (void)handle.wait();
-        } catch (const std::exception& error) {
+        } catch (const ninfer::RequestError& error) {
+            // Only the documented refusal counts; any other failure is a different problem.
+            if (error.kind() != ninfer::RequestErrorKind::ContextLengthExceeded) {
+                std::cerr << "oversize prompt failed with the wrong error: " << error.what() << '\n';
+                return false;
+            }
             std::cout << "refused " << prompt_tokens << " + " << output_tokens
                       << " tokens: " << error.what() << '\n';
             return true;
+        } catch (const std::exception& error) {
+            std::cerr << "oversize prompt failed with an unexpected error: " << error.what() << '\n';
+            return false;
         }
         return false;
     };
@@ -3254,7 +3262,8 @@ int exercise_interleaved_worker_failure(const char* artifact, bool mtp) {
                              fixed_output(kInterleaveOutputTokens, false));
     };
     struct Result {
-        bool served = false;
+        bool served      = false;
+        bool unavailable = false; // the Engine refused the request instead of failing it
         std::vector<ninfer::TokenId> ids;
     };
     const auto wait_for = [](ninfer::GenerationHandle& handle) {
@@ -3262,6 +3271,8 @@ int exercise_interleaved_worker_failure(const char* artifact, bool mtp) {
         try {
             outcome.ids    = handle.wait().generated_token_ids;
             outcome.served = true;
+        } catch (const ninfer::RequestError& error) {
+            outcome.unavailable = error.kind() == ninfer::RequestErrorKind::Unavailable;
         } catch (const std::exception&) {}
         return outcome;
     };
@@ -3282,10 +3293,14 @@ int exercise_interleaved_worker_failure(const char* artifact, bool mtp) {
         const Result a_result = wait_for(a);
         const Result b_result = wait_for(b);
         ninfer::runtime::arm_worker_failures(0);
-        if (a_result.served || b_result.served || !engine.is_available() ||
-            engine.runtime_stats().engine_recoveries != round + 1) {
+        // Both lanes are failed by the fault. A request that was refused as Unavailable would mean
+        // the Engine latched or never recovered, which is a different outcome.
+        if (a_result.served || b_result.served || a_result.unavailable || b_result.unavailable ||
+            !engine.is_available() || engine.runtime_stats().engine_recoveries != round + 1) {
             std::cerr << label << ": worker fault round " << round
                       << ": a served=" << a_result.served << " b served=" << b_result.served
+                      << " a unavailable=" << a_result.unavailable
+                      << " b unavailable=" << b_result.unavailable
                       << " available=" << engine.is_available()
                       << " recoveries=" << engine.runtime_stats().engine_recoveries << '\n';
             return 1;
