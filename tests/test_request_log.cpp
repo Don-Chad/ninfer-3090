@@ -603,6 +603,20 @@ int main() {
                                                               "(failures repeated)") !=
                           std::string::npos,
                       "latched engine fault rendering mismatch");
+    // A latch reason carrying raw line breaks or control bytes must not forge log records, and the
+    // queued requests the latch fails alongside the running ones must be named.
+    fault.latch_reason       = "bad\nFATAL: forged record\x1b[31m";
+    fault.queued_request_ids = {11, 12};
+    const OperationalRecord latched_fault = render_engine_fault(fault);
+    failures += check(latched_fault.message.find('\n') == std::string::npos &&
+                          latched_fault.message.find('\x1b') == std::string::npos,
+                      "latched engine fault leaks raw control characters from the latch reason");
+    failures += check(latched_fault.message.find("queued failed req#11,req#12") !=
+                          std::string::npos,
+                      "latched engine fault omits the queued requests it fails");
+    fault.queued_request_ids.clear();
+    failures += check(render_engine_fault(fault).message.find("queued failed") == std::string::npos,
+                      "engine fault names queued requests when there are none");
 
     const OperationalRecord internal_failure = render_request_failure(
         context,

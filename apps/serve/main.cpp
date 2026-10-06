@@ -39,19 +39,27 @@ constexpr int kEngineFailureExitStatus = 3;
 void handle_engine_fault(const ninfer::serve::OperationalLog& log,
                          const std::shared_ptr<spdlog::logger>& logger, bool exit_on_failure,
                          const ninfer::EngineFaultEvent& event) {
-    log.engine_fault(event);
-    if (!event.latched) { return; }
+    // The exit is scheduled before anything that can throw: rendering or writing the event must
+    // not be able to keep a latched process alive.
     static std::atomic<bool> exit_scheduled{false};
-    if (exit_scheduled.exchange(true)) { return; }
-    log.engine_fatal_exit(std::chrono::duration<double>(kEngineFailureExitGrace).count(),
-                          exit_on_failure);
-    logger->flush();
-    if (!exit_on_failure) { return; }
-    std::thread([logger] {
-        std::this_thread::sleep_for(kEngineFailureExitGrace);
+    const bool first_latch = event.latched && !exit_scheduled.exchange(true);
+    if (first_latch && exit_on_failure) {
+        std::thread([logger] {
+            std::this_thread::sleep_for(kEngineFailureExitGrace);
+            try {
+                logger->flush();
+            } catch (...) {}
+            std::_Exit(kEngineFailureExitStatus);
+        }).detach();
+    }
+    try {
+        log.engine_fault(event);
+        if (first_latch) {
+            log.engine_fatal_exit(std::chrono::duration<double>(kEngineFailureExitGrace).count(),
+                                  exit_on_failure);
+        }
         logger->flush();
-        std::_Exit(kEngineFailureExitStatus);
-    }).detach();
+    } catch (...) {}
 }
 
 } // namespace

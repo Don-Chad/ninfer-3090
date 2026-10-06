@@ -599,10 +599,16 @@ OperationalRecord render_engine_fault(const ninfer::EngineFaultEvent& event) {
             out << (i == 0 ? "" : ",") << event.lanes[i];
         }
     }
+    if (!event.queued_request_ids.empty()) {
+        out << " | queued failed ";
+        for (std::size_t i = 0; i < event.queued_request_ids.size(); ++i) {
+            out << (i == 0 ? "" : ",") << "req#" << event.queued_request_ids[i];
+        }
+    }
     out << " | failure " << event.consecutive_failures << "/"
         << event.maximum_consecutive_failures << " | ";
     if (event.latched) {
-        out << "LATCHED, engine unavailable (" << event.latch_reason << ")";
+        out << "LATCHED, engine unavailable (" << product::format_pretty_text(event.latch_reason) << ")";
     } else {
         out << "recovered";
     }

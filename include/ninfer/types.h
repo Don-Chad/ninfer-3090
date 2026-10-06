@@ -186,6 +186,9 @@ struct EngineFaultEvent {
     // The requests the failure was delivered to: the running lanes and the one materializing.
     std::vector<std::uint64_t> request_ids;
     std::vector<std::uint32_t> lanes;
+    // Requests still queued that the latch fails as well; empty when the Engine recovered, since
+    // recovery keeps the queue.
+    std::vector<std::uint64_t> queued_request_ids;
     // False: the Engine recovered and keeps serving. True: it is now permanently unavailable.
     bool latched = false;
     // Why recovery was refused; set only when latched.

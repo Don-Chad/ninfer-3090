@@ -2254,12 +2254,28 @@ private:
     }
 
     // On refusal `refusal` names why, for the operator log.
+    // Assigning a refusal allocates, and recover_locked is noexcept: a failed allocation must
+    // leave the refusal empty and recovery refused, not terminate the process before the latch
+    // is published.
+    static void set_refusal(std::string& refusal, std::string_view reason,
+                            std::string_view detail = {}) noexcept {
+        try {
+            refusal.assign(reason);
+            if (!detail.empty()) {
+                refusal += ": ";
+                refusal += detail;
+            }
+        } catch (...) {
+            refusal.clear();
+        }
+    }
+
     [[nodiscard]] bool recover_locked(std::exception_ptr error, std::string& refusal) noexcept {
         const auto failed_at = Clock::now();
         // The failure being handled counts toward the streak, so the third consecutive one
         // latches rather than the fourth.
         if (!recovery_streak_.permits_recovery(failed_at)) {
-            refusal = "failures repeated with no request completing between them";
+            set_refusal(refusal, "failures repeated with no request completing between them");
             return false;
         }
         scheduler_.reset();
@@ -2279,7 +2295,7 @@ private:
         if (instance_.program->has_context_transaction() || usage.device_state_slots != 0 ||
             usage.host_state_slots != 0 || usage.device_main_kv_pages != 0 ||
             usage.device_backend_kv_pages != 0 || usage.host_kv_bytes != 0) {
-            refusal = "cleanup left physical resources behind";
+            set_refusal(refusal, "cleanup left physical resources behind");
             return false;
         }
         // The cleanup released the startup-pinned grafts with everything else. With the empty
@@ -2290,8 +2306,8 @@ private:
             device_.synchronize();
             catalog_pinned_grafts();
         } catch (...) {
-            refusal = "pinned grafts could not be reinstalled: " +
-                      exception_text(std::current_exception());
+            set_refusal(refusal, "pinned grafts could not be reinstalled",
+                        exception_text(std::current_exception()));
             return false;
         }
         recovery_streak_.record_recovery(failed_at);
@@ -2311,6 +2327,13 @@ private:
         if (materializing_ && materializing_->request != nullptr) {
             event.request_ids.push_back(materializing_->request->id);
         }
+    }
+
+    // Latch only, before fail_all_locked swaps the queue away: the queued requests the latch fails
+    // along with the running ones.
+    void collect_queued_requests(EngineFaultEvent& event) const {
+        std::lock_guard lock(queue_mutex_);
+        for (const auto& request : pending_) { event.queued_request_ids.push_back(request->id); }
     }
 
     void notify_fault(const EngineFaultEvent& event) const noexcept {
@@ -2435,9 +2458,14 @@ private:
                 if (fenced) {
                     recovered = recover_locked(error, refusal);
                 } else {
-                    refusal = "device synchronize failed";
+                    set_refusal(refusal, "device synchronize failed");
                 }
-                if (!recovered) { fail_all_locked(error); }
+                if (!recovered) {
+                    try {
+                        collect_queued_requests(fault);
+                    } catch (...) {}
+                    fail_all_locked(error);
+                }
                 try {
                     fault.latched      = !recovered;
                     fault.latch_reason = refusal;
