@@ -1639,6 +1639,14 @@ private:
             throw std::logic_error("completed prefill did not reach the admitted prompt frontier");
         }
         if (progress.processed_prompt_tokens != 0) { publish_prompt_progress(request); }
+        // The lane's first unit has settled its reused state once it wrote tokens or finished the
+        // prompt. A zero-progress unit (a capture offer at the reused frontier) has not, so the
+        // lane stays fresh and admission stays closed until a later unit does.
+        if ((progress.processed_prompt_tokens != 0 || progress.complete) && request->lane &&
+            scheduler_.is_fresh_prefill_lane(request->lane->value)) {
+            scheduler_.mark_prefill_settled(request->lane->value);
+            request_admission_check();
+        }
         if (progress.capture) {
             if (progress.complete || progress.pending) {
                 throw std::logic_error("prefill capture offer overlaps prompt completion");
@@ -2498,10 +2506,8 @@ private:
                     set_host_work_class(HostWorkClass::Prefill);
                     finish_engine_phase(boundary, EngineHostPhase::Boundary);
                     unit = "prefill";
-                    const bool was_fresh = scheduler_.is_fresh_prefill_lane(*prefill_lane);
                     scheduler_.record_prefill_unit(*prefill_lane, candidate_span);
                     run_prefill_step(*prefill_lane, cancelled_at_unit_start);
-                    if (was_fresh) { request_admission_check(); }
                     previous_unit_was_decode = false;
                     continue;
                 }

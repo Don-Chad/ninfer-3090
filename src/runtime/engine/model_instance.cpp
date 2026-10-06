@@ -104,6 +104,7 @@ EngineOptions normalize_engine_options(EngineOptions options) {
         options.max_pending_requests = 1;
         options.prefill_chunk        = 1024;
         options.max_prefill_lanes    = 1;
+        options.prefill_max_skip     = EngineOptions{}.prefill_max_skip;
         options.kv_capacity         = KvCapacityPolicy::explicit_capacity(options.max_context);
         options.speculative          = {};
         options.enable_vision        = false;

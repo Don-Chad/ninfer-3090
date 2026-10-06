@@ -216,6 +216,22 @@ ninfer::EngineOptions private_checkpoint_pressure_engine_options(const char* art
     return options;
 }
 
+// A request's result is delivered before the worker releases what it held (its shared-prefix
+// reference, its lane), so a snapshot taken the moment generate() returns can still show the
+// request's references. Wait for the worker to settle so a persisting reference is a real leak.
+ninfer::RuntimeStats settled_runtime_stats(const ninfer::Engine& engine) {
+    ninfer::RuntimeStats stats = engine.runtime_stats();
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        if (stats.running_requests == 0 && stats.terminal_pending_requests == 0 &&
+            stats.shared_active_references == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        stats = engine.runtime_stats();
+    }
+    return stats;
+}
+
 std::vector<std::uint8_t> gradient_ppm(int width = 64, int height = 64) {
     std::vector<std::uint8_t> ppm;
     const std::string header =
@@ -666,7 +682,7 @@ int exercise_shared_replacement_and_full_capacity_reuse(const char* artifact) {
         R"(","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}}})";
     const ninfer::GenerationResult replacement = engine.generate(
         engine.prepare(tool_prompt(bravo_tool, "Use bravo once.")), capture_request);
-    const ninfer::RuntimeStats after_replacement = engine.runtime_stats();
+    const ninfer::RuntimeStats after_replacement = settled_runtime_stats(engine);
     if (replacement.generated_token_ids.size() != 1) {
         std::cerr << "shared replacement fixture did not produce its deterministic stop token\n";
         return 1;
@@ -675,7 +691,7 @@ int exercise_shared_replacement_and_full_capacity_reuse(const char* artifact) {
     // identical Bravo prompt must therefore materialize from the retained shared prefix.
     const ninfer::GenerationResult filled =
         engine.generate(engine.prepare(plain_prompt("Another private endpoint.")), capture_request);
-    const ninfer::RuntimeStats after_filler = engine.runtime_stats();
+    const ninfer::RuntimeStats after_filler = settled_runtime_stats(engine);
     if (filled.generated_token_ids.size() != 1) {
         std::cerr << "shared replacement fixture did not displace the exact private endpoint\n";
         return 1;
@@ -687,7 +703,7 @@ int exercise_shared_replacement_and_full_capacity_reuse(const char* artifact) {
     full_capacity_request.stop.publish_stop_token = true;
     const ninfer::GenerationResult reused         = engine.generate(
         engine.prepare(tool_prompt(bravo_tool, "Use bravo once.")), full_capacity_request);
-    const ninfer::RuntimeStats after_reuse = engine.runtime_stats();
+    const ninfer::RuntimeStats after_reuse = settled_runtime_stats(engine);
 
     if (reused.generated_token_ids.size() != 1) {
         std::cerr << "shared replacement fixture did not complete all requests\n";

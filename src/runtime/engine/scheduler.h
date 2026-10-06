@@ -338,10 +338,14 @@ public:
                 ++prefill_skips_[candidate.lane];
             }
         }
-        if (lane < kMaximumConcurrency) {
-            prefill_skips_[lane] = 0;
-            prefill_fresh_[lane] = false;
-        }
+        if (lane < kMaximumConcurrency) { prefill_skips_[lane] = 0; }
+    }
+
+    // A published lane stays fresh until a unit has written its state (or finished the prompt):
+    // only then is its reused-state fork settled. A unit that returns without progress, such as a
+    // zero-progress capture offer, leaves the lane fresh so it runs again before any admission.
+    void mark_prefill_settled(std::uint32_t lane) noexcept {
+        if (lane < kMaximumConcurrency) { prefill_fresh_[lane] = false; }
     }
 
     [[nodiscard]] std::optional<std::uint64_t> protection_epoch() const noexcept {
