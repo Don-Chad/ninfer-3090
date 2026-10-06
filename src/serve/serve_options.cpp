@@ -80,7 +80,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
            "[--media-preprocess-threads N] "
            "[--device-state-slots N] [--host-state-slots N] [--host-kv-mib N] "
-           "[--max-private-continuations N] [--max-shared-prefixes N] [--auto-host-cache [--host-cache-reserve-mib N]] "
+           "[--max-private-continuations N] [--max-shared-prefixes N] [--auto-host-cache [--host-cache-reserve-mib N] [--host-cache-max-mib N]] "
            "[--max-long-anchors-per-continuation N] [--auto-long-anchors N] "
            "[--max-cache-markers-per-request N] "
            "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] [--no-exit-on-engine-failure] "
@@ -153,6 +153,8 @@ std::string serve_usage_text(const char* argv0) {
            "host memory free after the model loads (all but --host-cache-reserve-mib, default 3072, "
            "an eighth of it for state slots); it replaces the four explicit Host capacity "
            "options\n"
+           "       --host-cache-max-mib N caps what --auto-host-cache pins, for machines whose "
+           "memory other tenants share (default: no cap)\n"
            "       --default-thinking-budget caps model-origin thinking for enabled requests; "
            "control tokens count toward the request output limit\n"
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
@@ -235,6 +237,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     bool context_capacity_explicit   = false;
     bool host_sizing_explicit        = false;
     bool host_reserve_explicit       = false;
+    bool host_max_explicit           = false;
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
         options.help_requested = true;
         return options;
@@ -352,6 +355,14 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             }
             options.context_cache.host_cache_reserve_bytes = static_cast<std::size_t>(mib << 20);
             host_reserve_explicit                          = true;
+        } else if (arg == "--host-cache-max-mib") {
+            const std::uint64_t mib =
+                parse_u64(require_value("--host-cache-max-mib"), "host-cache-max-mib");
+            if (mib > std::numeric_limits<std::size_t>::max() / (1ULL << 20)) {
+                throw std::invalid_argument("--host-cache-max-mib is out of range");
+            }
+            options.context_cache.host_cache_max_bytes = static_cast<std::size_t>(mib << 20);
+            host_max_explicit                          = true;
         } else if (arg == "--max-long-anchors-per-continuation") {
             options.context_cache.max_long_anchors_per_continuation = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--max-long-anchors-per-continuation"),
@@ -539,6 +550,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (host_reserve_explicit && !options.context_cache.auto_host_cache) {
         throw std::invalid_argument("--host-cache-reserve-mib requires --auto-host-cache");
+    }
+    if (host_max_explicit && !options.context_cache.auto_host_cache) {
+        throw std::invalid_argument("--host-cache-max-mib requires --auto-host-cache");
     }
     if (options.context_cache.auto_host_cache && host_sizing_explicit) {
         throw std::invalid_argument(
