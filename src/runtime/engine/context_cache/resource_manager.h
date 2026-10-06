@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <numeric>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -1915,8 +1916,30 @@ private:
         std::vector<std::uint32_t> selected_frontiers;
         std::uint64_t selected_gain = 0;
         ContextPortfolioValue projected_value;
-        if (shared_candidates.size() > 7U) {
-            throw std::logic_error("prepared shared candidates exceeded the fixed subset bound");
+        // The subset search below is exhaustive, so it bounds the candidates it can weigh. How
+        // many a request offers is not bounded by it: the prefix grid alone proposes
+        // kPrefixGridCandidates, the structural boundaries and the client's own come on top, and a
+        // long prompt that a second reuse domain has also asked for passes every filter above.
+        // Narrow to the strongest instead of failing the admission, which fails every running lane.
+        constexpr std::size_t kSubsetSearchLimit = 7U;
+        if (shared_candidates.size() > kSubsetSearchLimit) {
+            std::vector<std::size_t> ranked(shared_candidates.size());
+            std::iota(ranked.begin(), ranked.end(), std::size_t{0});
+            const auto stronger = [&](std::size_t left, std::size_t right) {
+                const ProjectedSharedCandidate& a = shared_candidates[left];
+                const ProjectedSharedCandidate& b = shared_candidates[right];
+                if (a.pressure_capable != b.pressure_capable) { return a.pressure_capable; }
+                const int a_domains = std::popcount(a.demand_mask);
+                const int b_domains = std::popcount(b.demand_mask);
+                if (a_domains != b_domains) { return a_domains > b_domains; }
+                return a.rebuild_ns > b.rebuild_ns;
+            };
+            std::stable_sort(ranked.begin(), ranked.end(), stronger);
+            std::vector<bool> keep(shared_candidates.size(), false);
+            for (std::size_t rank = 0; rank < kSubsetSearchLimit; ++rank) { keep[ranked[rank]] = true; }
+            std::size_t index = 0;
+            std::erase_if(shared_candidates,
+                          [&](const ProjectedSharedCandidate&) { return !keep[index++]; });
         }
         const std::uint32_t subset_count = 1U << shared_candidates.size();
         for (std::uint32_t mask = 1; mask < subset_count; ++mask) {

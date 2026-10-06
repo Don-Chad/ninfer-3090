@@ -3013,6 +3013,25 @@ void test_shared_fanout_keeps_owner_edges_live_across_summary_refresh() {
             "shared fanout did not release both logical owner edges");
 }
 
+// A long prompt carries more shared boundaries than the projection can search exhaustively: the
+// prefix grid alone proposes kPrefixGridCandidates, and the structural and client boundaries come
+// on top. Planning must narrow them instead of failing the Engine's admission unit, which fails
+// every running lane with the request.
+void test_more_shared_boundaries_than_the_subset_search_still_plan() {
+    FakeManager manager = make_manager(1, 4, 8);
+    FakeProgram program;
+    FakeRequestBasePlan base = make_base(51);
+    for (std::uint32_t index = 1; index <= ninfer::kPrefixGridCandidates + 1U; ++index) {
+        base.cache.opportunities.push_back(FakeContextCache::Opportunity{
+            .kind     = ninfer::PromptCacheMarkerKind::SharedStablePrefix,
+            .evidence = ninfer::SharedCandidateEvidence::ExplicitBoundary,
+            .frontier = 4U * index,
+        });
+    }
+    const ActiveRequest active = start_active(manager, program, 51, base, 1);
+    (void)finish_active(manager, program, active);
+}
+
 void test_shared_capture_combines_two_pressure_owners() {
     FakeManager manager = make_manager(1, 4, 1);
     FakeProgram program;
@@ -3525,6 +3544,8 @@ int main() {
              test_shared_fanout_keeps_owner_edges_live_across_summary_refresh);
     run_test("shared capture multi-owner pressure",
              test_shared_capture_combines_two_pressure_owners);
+    run_test("shared boundaries beyond the subset search",
+             test_more_shared_boundaries_than_the_subset_search_still_plan);
     run_test("aborted shared capture logical rollback",
              test_aborted_shared_capture_start_rolls_back_logical_claims);
     run_test("validate complete capture result before adoption",
