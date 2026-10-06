@@ -36,6 +36,8 @@ using ninfer::runtime::FinishDisposition;
 using ninfer::runtime::LaneId;
 using ninfer::runtime::MaterializationMachineWork;
 using ninfer::runtime::PrefillWork;
+using ninfer::runtime::SharedCandidateRank;
+using ninfer::runtime::strongest_shared_candidates;
 using ninfer::runtime::PlanningCandidateId;
 using ninfer::runtime::PlanningOwnerId;
 using ninfer::runtime::PrivateSourceMode;
@@ -3032,6 +3034,52 @@ void test_more_shared_boundaries_than_the_subset_search_still_plan() {
     (void)finish_active(manager, program, active);
 }
 
+// Narrowing ranks by distinct reuse domains. One session asking for a prefix again and again is a
+// single domain however many demand records it leaves; two independent callers are the evidence
+// that a prefix is shared and must outrank it.
+void test_candidate_narrowing_ranks_distinct_reuse_domains() {
+    constexpr std::size_t kLimit = 7;
+    const auto rank = [](bool pressure, std::uint32_t domains, std::uint64_t rebuild_ns = 100) {
+        return SharedCandidateRank{
+            .pressure_capable = pressure, .reuse_domains = domains, .rebuild_ns = rebuild_ns};
+    };
+
+    // Seven candidates two independent callers asked for, one a single session asked for (however
+    // often), and one three callers asked for: with one slot short, the single-session candidate
+    // goes, never a cross-domain one.
+    std::vector<SharedCandidateRank> ranks(7, rank(true, 2));
+    ranks.push_back(rank(true, 1, 1'000'000)); // index 7: one session, the most expensive to rebuild
+    ranks.push_back(rank(true, 3));            // index 8: three independent callers
+    const std::vector<std::size_t> kept = strongest_shared_candidates(ranks, kLimit);
+    require(kept.size() == kLimit, "narrowing did not keep exactly the search limit");
+    require(std::find(kept.begin(), kept.end(), std::size_t{7}) == kept.end(),
+            "a single-session candidate outranked cross-domain demand");
+    require(std::find(kept.begin(), kept.end(), std::size_t{8}) != kept.end(),
+            "a three-domain candidate was dropped");
+    require(std::is_sorted(kept.begin(), kept.end()), "narrowing reordered the candidates");
+
+    // A candidate that can force an eviction outranks any amount of surplus-only demand.
+    std::vector<SharedCandidateRank> pressure(8, rank(false, 5));
+    pressure[3] = rank(true, 1);
+    const std::vector<std::size_t> pressure_kept = strongest_shared_candidates(pressure, kLimit);
+    require(std::find(pressure_kept.begin(), pressure_kept.end(), std::size_t{3}) !=
+                pressure_kept.end(),
+            "a pressure-capable candidate lost to surplus-only demand");
+
+    // Equal demand falls back to the work a hit saves, then to the earlier candidate.
+    std::vector<SharedCandidateRank> equal(8, rank(true, 2, 100));
+    equal[5] = rank(true, 2, 50);
+    const std::vector<std::size_t> equal_kept = strongest_shared_candidates(equal, kLimit);
+    require(std::find(equal_kept.begin(), equal_kept.end(), std::size_t{5}) == equal_kept.end(),
+            "the candidate saving the least rebuild work was kept over equal demand");
+
+    // At or under the limit nothing is dropped.
+    require(strongest_shared_candidates(std::span<const SharedCandidateRank>(ranks).first(kLimit),
+                                        kLimit)
+                    .size() == kLimit,
+            "narrowing dropped candidates within the search limit");
+}
+
 void test_shared_capture_combines_two_pressure_owners() {
     FakeManager manager = make_manager(1, 4, 1);
     FakeProgram program;
@@ -3546,6 +3594,8 @@ int main() {
              test_shared_capture_combines_two_pressure_owners);
     run_test("shared boundaries beyond the subset search",
              test_more_shared_boundaries_than_the_subset_search_still_plan);
+    run_test("candidate narrowing ranks reuse domains",
+             test_candidate_narrowing_ranks_distinct_reuse_domains);
     run_test("aborted shared capture logical rollback",
              test_aborted_shared_capture_start_rolls_back_logical_claims);
     run_test("validate complete capture result before adoption",

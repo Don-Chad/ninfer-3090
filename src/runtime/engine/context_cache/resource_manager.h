@@ -5,12 +5,12 @@
 #include "runtime/contract/resources.h"
 #include "runtime/engine/context_cache/context_cost.h"
 #include "runtime/engine/context_cache/materialization_planner.h"
+#include "runtime/engine/context_cache/shared_candidate_ranking.h"
 #include "runtime/engine/context_cache/shared_capture_planner.h"
 
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <numeric>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -1786,6 +1786,7 @@ private:
             SharedCandidateEvidence evidence = SharedCandidateEvidence::None;
             std::uint32_t frontier           = 0;
             std::uint32_t demand_mask        = 0;
+            std::uint32_t reuse_domains      = 0;
             std::uint64_t rebuild_ns         = 0;
             bool pressure_capable            = false;
         };
@@ -1822,7 +1823,8 @@ private:
                                               SharedCandidateEvidence::ExplicitBoundary) ||
                 has_shared_candidate_evidence(opportunity.evidence,
                                               SharedCandidateEvidence::RequestedAutomatic);
-            const bool repeated = matching_reuse_domains(*key, provisional_demand) >= 2U;
+            const std::size_t reuse_domains = matching_reuse_domains(*key, provisional_demand);
+            const bool repeated             = reuse_domains >= 2U;
             // EngineStructural marks a frontier the prompt's own shape exposes - after the
             // leading instructions, after the tools - so a differing request can plausibly
             // land on it, and spending a spare slot speculatively is a reasonable bet.
@@ -1856,6 +1858,7 @@ private:
                 .evidence         = opportunity.evidence,
                 .frontier         = opportunity.frontier,
                 .demand_mask      = demand_mask_for(*key, provisional_demand),
+                .reuse_domains    = static_cast<std::uint32_t>(reuse_domains),
                 .rebuild_ns       = cost_model_.prefill_ns(*rebuild),
                 .pressure_capable = declared || repeated,
             });
@@ -1923,23 +1926,19 @@ private:
         // Narrow to the strongest instead of failing the admission, which fails every running lane.
         constexpr std::size_t kSubsetSearchLimit = 7U;
         if (shared_candidates.size() > kSubsetSearchLimit) {
-            std::vector<std::size_t> ranked(shared_candidates.size());
-            std::iota(ranked.begin(), ranked.end(), std::size_t{0});
-            const auto stronger = [&](std::size_t left, std::size_t right) {
-                const ProjectedSharedCandidate& a = shared_candidates[left];
-                const ProjectedSharedCandidate& b = shared_candidates[right];
-                if (a.pressure_capable != b.pressure_capable) { return a.pressure_capable; }
-                const int a_domains = std::popcount(a.demand_mask);
-                const int b_domains = std::popcount(b.demand_mask);
-                if (a_domains != b_domains) { return a_domains > b_domains; }
-                return a.rebuild_ns > b.rebuild_ns;
-            };
-            std::stable_sort(ranked.begin(), ranked.end(), stronger);
-            std::vector<bool> keep(shared_candidates.size(), false);
-            for (std::size_t rank = 0; rank < kSubsetSearchLimit; ++rank) { keep[ranked[rank]] = true; }
-            std::size_t index = 0;
-            std::erase_if(shared_candidates,
-                          [&](const ProjectedSharedCandidate&) { return !keep[index++]; });
+            std::vector<SharedCandidateRank> ranks;
+            ranks.reserve(shared_candidates.size());
+            for (const ProjectedSharedCandidate& candidate : shared_candidates) {
+                ranks.push_back(SharedCandidateRank{.pressure_capable = candidate.pressure_capable,
+                                                    .reuse_domains    = candidate.reuse_domains,
+                                                    .rebuild_ns       = candidate.rebuild_ns});
+            }
+            std::vector<ProjectedSharedCandidate> strongest;
+            strongest.reserve(kSubsetSearchLimit);
+            for (const std::size_t index : strongest_shared_candidates(ranks, kSubsetSearchLimit)) {
+                strongest.push_back(std::move(shared_candidates[index]));
+            }
+            shared_candidates = std::move(strongest);
         }
         const std::uint32_t subset_count = 1U << shared_candidates.size();
         for (std::uint32_t mask = 1; mask < subset_count; ++mask) {
