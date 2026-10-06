@@ -54,16 +54,19 @@ private:
     Clock::time_point last_failure_{};
 };
 
-// The text of an in-flight exception for the operator log. Never throws.
+// The text of an in-flight exception for the operator log. Never throws: building the text
+// allocates, so if that fails the result is an empty string (which never allocates) rather than
+// a std::terminate from this noexcept function. Callers treat empty as "no detail".
 [[nodiscard]] inline std::string exception_text(std::exception_ptr error) noexcept {
     try {
-        if (error) { std::rethrow_exception(error); }
-    } catch (const std::exception& exception) {
         try {
+            if (error) { std::rethrow_exception(error); }
+        } catch (const std::exception& exception) {
             return exception.what();
         } catch (...) {}
+        return "unknown exception";
     } catch (...) {}
-    return "unknown exception";
+    return {};
 }
 
 } // namespace ninfer::runtime

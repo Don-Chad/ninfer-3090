@@ -44,13 +44,19 @@ void handle_engine_fault(const ninfer::serve::OperationalLog& log,
     static std::atomic<bool> exit_scheduled{false};
     const bool first_latch = event.latched && !exit_scheduled.exchange(true);
     if (first_latch && exit_on_failure) {
-        std::thread([logger] {
-            std::this_thread::sleep_for(kEngineFailureExitGrace);
-            try {
-                logger->flush();
-            } catch (...) {}
+        try {
+            std::thread([logger] {
+                std::this_thread::sleep_for(kEngineFailureExitGrace);
+                try {
+                    logger->flush();
+                } catch (...) {}
+                std::_Exit(kEngineFailureExitStatus);
+            }).detach();
+        } catch (...) {
+            // The thread could not be started. The exit is mandatory, so take it now without the
+            // grace period rather than staying up latched.
             std::_Exit(kEngineFailureExitStatus);
-        }).detach();
+        }
     }
     try {
         log.engine_fault(event);
