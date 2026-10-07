@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -126,6 +127,14 @@ EngineOptions normalize_engine_options(EngineOptions options) {
     if (!cache.enabled && direct_grafts != 0) {
         throw std::invalid_argument(
             "direct grafts are held in the context cache, which is disabled");
+    }
+    if (cache.host_cache_percent) {
+        if (!cache.auto_host_cache) {
+            throw std::invalid_argument("host_cache_percent needs auto_host_cache");
+        }
+        if (*cache.host_cache_percent == 0 || *cache.host_cache_percent > 100) {
+            throw std::invalid_argument("host_cache_percent must be in [1,100]");
+        }
     }
     if (cache.auto_host_cache) {
         if (!cache.enabled) {
@@ -280,11 +289,28 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
                 "cannot determine the available host memory for --auto-host-cache; set "
                 "--host-kv-mib and --host-state-slots explicitly");
         }
-        std::optional<std::uint64_t> device_free_after_startup;
+        HostCacheEnvironment environment;
+        if (options.context_cache.host_cache_percent) {
+            environment.total_host_bytes = total_host_memory_bytes();
+            if (!environment.total_host_bytes) {
+                throw std::runtime_error(
+                    "cannot determine the total host memory for --host-cache-percent; use "
+                    "--host-cache-max-mib instead");
+            }
+        }
+        // Host memory that still grows after this point and is bounded only by options: the decoded
+        // media cache and the media in flight. Counted in full so a vision workload cannot outgrow
+        // the margin the pinned tier leaves.
+        if (options.enable_vision) {
+            environment.extra_reserve_bytes =
+                options.media_cache_bytes > std::numeric_limits<std::uint64_t>::max() - options.media_live_bytes
+                    ? std::numeric_limits<std::uint64_t>::max()
+                    : options.media_cache_bytes + options.media_live_bytes;
+        }
 #if defined(_WIN32)
         // WDDM charges pinned host memory against the GPU, so what the Program will leave free
         // bounds the host tier (see program_impl.cpp).
-        device_free_after_startup =
+        environment.device_free_after_startup =
             free_by_rank.front() > resolution.runtime_reservation_bytes
                 ? free_by_rank.front() - resolution.runtime_reservation_bytes
                 : 0;
@@ -292,7 +318,7 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
         options.context_cache = resolve_host_cache(
             options.context_cache, *available, sequence.host_state_image_bytes(),
             options.max_concurrency, models::qwen3_5::count_direct_grafts(options.grafts),
-            device_free_after_startup);
+            environment);
         sequence.set_host_context_cache(options.context_cache);
     }
     instance->kv_capacity_resolution = resolution;

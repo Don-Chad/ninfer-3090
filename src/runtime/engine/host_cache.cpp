@@ -56,10 +56,19 @@ std::uint64_t reclaimable_file_bytes(const std::filesystem::path& path, const ch
 
 // What one cgroup directory still allows: its limit less its non-reclaimable use. Empty when the
 // directory sets no limit (or does not exist), which leaves the decision to its ancestors.
-std::optional<std::uint64_t> remaining_under(const std::filesystem::path& dir, bool v2) {
+std::optional<std::uint64_t> limit_under(const std::filesystem::path& dir, bool v2) {
     const auto limit = read_u64_file(dir / (v2 ? "memory.max" : "memory.limit_in_bytes"));
     // cgroup v1 reports "no limit" as a value near the top of the page-aligned 63-bit range.
     if (!limit || (!v2 && *limit >= (1ULL << 60))) { return std::nullopt; }
+    return limit;
+}
+
+enum class CgroupMeasure { Remaining, Limit };
+
+std::optional<std::uint64_t> measure_under(const std::filesystem::path& dir, bool v2,
+                                           CgroupMeasure measure) {
+    const auto limit = limit_under(dir, v2);
+    if (!limit || measure == CgroupMeasure::Limit) { return limit; }
     const auto used = read_u64_file(dir / (v2 ? "memory.current" : "memory.usage_in_bytes"));
     if (!used) { return std::nullopt; }
     const std::uint64_t reclaimable = reclaimable_file_bytes(
@@ -82,14 +91,15 @@ std::vector<std::string> path_components(std::string path) {
     return parts;
 }
 
-// The tightest remainder over `base/<path>` and every ancestor up to `base`.
-std::optional<std::uint64_t> tightest_remaining(const std::filesystem::path& base,
-                                                const std::vector<std::string>& parts, bool v2) {
+// The tightest remainder (or limit) over `base/<path>` and every ancestor up to `base`.
+std::optional<std::uint64_t> tightest(const std::filesystem::path& base,
+                                      const std::vector<std::string>& parts, bool v2,
+                                      CgroupMeasure measure) {
     std::optional<std::uint64_t> best;
     for (std::size_t depth = parts.size() + 1; depth-- > 0;) {
         std::filesystem::path dir = base;
         for (std::size_t index = 0; index < depth; ++index) { dir /= parts[index]; }
-        if (const auto remaining = remaining_under(dir, v2)) {
+        if (const auto remaining = measure_under(dir, v2, measure)) {
             best = best ? std::min(*best, *remaining) : *remaining;
         }
     }
@@ -97,14 +107,14 @@ std::optional<std::uint64_t> tightest_remaining(const std::filesystem::path& bas
 }
 
 #if defined(__linux__)
-std::optional<std::uint64_t> meminfo_available_bytes() {
+std::optional<std::uint64_t> meminfo_bytes(std::string_view wanted) {
     std::ifstream file("/proc/meminfo");
     std::string key;
     std::uint64_t kib = 0;
     std::string unit;
     while (file >> key >> kib) {
         std::getline(file, unit);
-        if (key == "MemAvailable:") { return kib * 1024ULL; }
+        if (key == wanted) { return kib * 1024ULL; }
     }
     return std::nullopt;
 }
@@ -112,8 +122,11 @@ std::optional<std::uint64_t> meminfo_available_bytes() {
 
 } // namespace
 
-std::optional<std::uint64_t> cgroup_remaining_bytes(const std::filesystem::path& cgroup_root,
-                                                    std::string_view proc_self_cgroup) {
+namespace {
+
+std::optional<std::uint64_t> cgroup_tightest(const std::filesystem::path& cgroup_root,
+                                             std::string_view proc_self_cgroup,
+                                             CgroupMeasure measure) {
     std::optional<std::uint64_t> best;
     const auto take = [&](std::optional<std::uint64_t> remaining) {
         if (remaining) { best = best ? std::min(*best, *remaining) : *remaining; }
@@ -128,12 +141,24 @@ std::optional<std::uint64_t> cgroup_remaining_bytes(const std::filesystem::path&
         const std::string controllers = line.substr(first + 1, second - first - 1);
         const std::vector<std::string> parts = path_components(line.substr(second + 1));
         if (line.compare(0, first, "0") == 0 && controllers.empty()) {
-            take(tightest_remaining(cgroup_root, parts, true));
+            take(tightest(cgroup_root, parts, true, measure));
         } else if ((',' + controllers + ',').find(",memory,") != std::string::npos) {
-            take(tightest_remaining(cgroup_root / "memory", parts, false));
+            take(tightest(cgroup_root / "memory", parts, false, measure));
         }
     }
     return best;
+}
+
+} // namespace
+
+std::optional<std::uint64_t> cgroup_remaining_bytes(const std::filesystem::path& cgroup_root,
+                                                    std::string_view proc_self_cgroup) {
+    return cgroup_tightest(cgroup_root, proc_self_cgroup, CgroupMeasure::Remaining);
+}
+
+std::optional<std::uint64_t> cgroup_limit_bytes(const std::filesystem::path& cgroup_root,
+                                                std::string_view proc_self_cgroup) {
+    return cgroup_tightest(cgroup_root, proc_self_cgroup, CgroupMeasure::Limit);
 }
 
 std::optional<std::uint64_t> available_host_memory_bytes() noexcept {
@@ -144,7 +169,7 @@ std::optional<std::uint64_t> available_host_memory_bytes() noexcept {
         if (!GlobalMemoryStatusEx(&status)) { return std::nullopt; }
         return static_cast<std::uint64_t>(status.ullAvailPhys);
 #elif defined(__linux__)
-        const std::optional<std::uint64_t> system = meminfo_available_bytes();
+        const std::optional<std::uint64_t> system = meminfo_bytes("MemAvailable:");
         std::ifstream self("/proc/self/cgroup");
         std::ostringstream self_text;
         self_text << self.rdbuf();
@@ -158,12 +183,34 @@ std::optional<std::uint64_t> available_host_memory_bytes() noexcept {
     } catch (...) { return std::nullopt; }
 }
 
+std::optional<std::uint64_t> total_host_memory_bytes() noexcept {
+    try {
+#if defined(_WIN32)
+        MEMORYSTATUSEX status{};
+        status.dwLength = sizeof(status);
+        if (!GlobalMemoryStatusEx(&status)) { return std::nullopt; }
+        return static_cast<std::uint64_t>(status.ullTotalPhys);
+#elif defined(__linux__)
+        const std::optional<std::uint64_t> system = meminfo_bytes("MemTotal:");
+        std::ifstream self("/proc/self/cgroup");
+        std::ostringstream self_text;
+        self_text << self.rdbuf();
+        const std::optional<std::uint64_t> cgroup =
+            cgroup_limit_bytes("/sys/fs/cgroup", self_text.str());
+        if (system && cgroup) { return std::min(*system, *cgroup); }
+        return system ? system : cgroup;
+#else
+        return std::nullopt;
+#endif
+    } catch (...) { return std::nullopt; }
+}
+
 ContextCacheOptions resolve_host_cache(const ContextCacheOptions& requested,
                                        std::uint64_t available_host_bytes,
                                        std::uint64_t state_image_bytes,
                                        std::uint32_t max_concurrency,
                                        std::uint32_t pinned_shared_prefixes,
-                                       std::optional<std::uint64_t> device_free_after_startup) {
+                                       const HostCacheEnvironment& environment) {
     if (!requested.auto_host_cache) {
         throw std::logic_error("host cache sizing was requested without auto_host_cache");
     }
@@ -177,19 +224,36 @@ ContextCacheOptions resolve_host_cache(const ContextCacheOptions& requested,
     // The machine serves only this process, so everything but a fixed reserve is spent. The reserve
     // covers what grows after this point: request buffers, the response store, graph
     // instantiation and module loads. Pinned pages cannot be reclaimed, so it is not a fraction.
-    const std::uint64_t reserve = requested.host_cache_reserve_bytes;
+    // Saturating add: both terms are independently accepted, and a wrapped sum would leave
+    // almost nothing reserved.
+    const std::uint64_t extra_reserve = environment.extra_reserve_bytes;
+    const std::uint64_t reserve = requested.host_cache_reserve_bytes > std::numeric_limits<std::uint64_t>::max() - extra_reserve
+                                      ? std::numeric_limits<std::uint64_t>::max()
+                                      : requested.host_cache_reserve_bytes + extra_reserve;
     std::uint64_t budget = available_host_bytes > reserve ? available_host_bytes - reserve : 0;
     // The reserve leaves memory for what still grows; a cap leaves memory for the machine's other
     // users, which `available_host_bytes` cannot know will want it.
     if (requested.host_cache_max_bytes) {
         budget = std::min<std::uint64_t>(budget, *requested.host_cache_max_bytes);
     }
+    if (requested.host_cache_percent) {
+        if (*requested.host_cache_percent == 0 || *requested.host_cache_percent > 100) {
+            throw std::invalid_argument("host cache percent must be in [1,100]");
+        }
+        if (!environment.total_host_bytes) {
+            throw std::invalid_argument("host cache percent needs the machine's total memory");
+        }
+        // total * percent / 100 without overflow, split so the remainder is not lost to rounding.
+        const std::uint64_t total   = *environment.total_host_bytes;
+        const std::uint64_t percent = *requested.host_cache_percent;
+        budget = std::min<std::uint64_t>(budget, total / 100 * percent + total % 100 * percent / 100);
+    }
     // Where pinned host memory is charged against the GPU (Windows), the same clamp the Program
     // applies to its KV buffer bounds the whole budget, before it is split. The Program clamps the
     // KV buffer against the memory left after the state slots are pinned; with the state slots
     // inside this budget that limit is always the larger, so the KV share is never cut again.
-    if (device_free_after_startup) {
-        budget = clamp_host_kv_reservation_bytes(budget, *device_free_after_startup, 1);
+    if (environment.device_free_after_startup) {
+        budget = clamp_host_kv_reservation_bytes(budget, *environment.device_free_after_startup, 1);
     }
 
     const std::uint64_t state_slots = std::min(budget / kStateShareDenominator / state_image_bytes,

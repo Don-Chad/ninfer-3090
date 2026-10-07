@@ -1105,6 +1105,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--max-shared-prefixes N` | shared stable-prefix descriptor capacity | `max-concurrency` |
 | `--host-cache-reserve-mib N` | with `--auto-host-cache`, host memory left unpinned beneath what is available | `3072` |
 | `--host-cache-max-mib N` | with `--auto-host-cache`, the most it may pin (state slots and KV together), applied after the reserve; for machines whose memory other tenants share | no cap |
+| `--host-cache-percent N` | with `--auto-host-cache`, the most it may pin as a percentage (1-100) of the machine's total memory (or its container's limit), however much is free at startup; the smallest of this, the cap and the free memory less the reserve applies | no limit |
 | `--auto-host-cache` | size `--host-state-slots`, `--host-kv-mib`, `--max-private-continuations` and `--max-shared-prefixes` from the host memory still free once the model has loaded, for a machine that exists to serve; see [automatic host cache](#automatic-host-cache). Replaces those four options and refuses them | off |
 | `--max-long-anchors-per-continuation N` | private long-anchor limit per continuation | `2` |
 | `--auto-long-anchors N` | propose a private long anchor at each of the last `N` interior message boundaries of every prompt, so a rewrite of recent history restores at the anchor below the edit instead of re-prefilling from token zero; clamped to the anchor limit, `0` disables | the anchor limit |
@@ -1348,6 +1349,17 @@ taken from the machine, once, after the model has loaded:
   killer when the neighbours grew (the container's own limit was never reached, so the reserve and
   the cgroup term could not help). Set the cap to what the workload actually uses of the host tier;
   `host_kv_bytes` in `GET /v1/load` shows how much of it is occupied.
+- With vision enabled the reserve also covers the media caches, which grow after sizing and are
+  bounded only by their options: `--media-cache-mib` and `--media-live-mib` (1 GiB and 2 GiB by
+  default) are added to `--host-cache-reserve-mib`. Without that, a vision workload could outgrow the
+  3 GiB margin, which was measured on text requests only.
+- `--host-cache-percent N` is the "take half the RAM" setting: `--host-cache-percent 50` pins at most
+  half of the machine's total memory (physical memory, or the container's cgroup limit when that is
+  lower). It does not depend on what is free at startup, so two servers started together or a
+  neighbour that was idle at launch do not change it. It only lowers the budget; the free memory less
+  the reserve, and `--host-cache-max-mib`, still apply, and the smallest of the three wins. The pinned
+  state slots and KV together never exceed that budget; pinned memory is allocated once at startup and
+  the cache evicts its oldest entries to stay inside it rather than growing.
 - An eighth of that budget buys StateImage slots (at most 128, each one whole GDN snapshot, so its
   size depends on the model and `--gdn-state-fp16`); the remainder is host KV.
 - The private-continuation catalog is the number of resident states (active lanes, device

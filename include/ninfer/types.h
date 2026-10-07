@@ -228,6 +228,11 @@ struct ContextCacheOptions {
     // where memory is shared with other tenants (a rented GPU box): the reserve only protects the
     // memory still to be used, not what a neighbour may want of the host's.
     std::optional<std::size_t> host_cache_max_bytes;
+    // An upper bound on what auto_host_cache pins as a share (1-100) of the machine's total memory
+    // (the smaller of physical memory and the container's cgroup limit). Unlike the reserve and the
+    // cap it does not depend on what happens to be free at startup, so it is the predictable way to
+    // share a box. It only lowers the budget: the reserve and the available memory still apply.
+    std::optional<std::uint32_t> host_cache_percent;
     // Bounded private/shared logical catalogs and per-continuation long-anchor count.
     std::optional<std::uint32_t> max_private_continuations;
     std::optional<std::uint32_t> max_shared_prefixes;

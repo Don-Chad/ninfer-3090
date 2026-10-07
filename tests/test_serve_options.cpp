@@ -339,6 +339,25 @@ int main() {
     } catch (const std::invalid_argument&) { max_without_auto_rejected = true; }
     failures += check(max_without_auto_rejected,
                       "--host-cache-max-mib was accepted without --auto-host-cache");
+    const ServeOptions host_percent = parse(
+        {"ninfer-serve", "model.ninfer", "--auto-host-cache", "--host-cache-percent", "50"});
+    failures += check(host_percent.context_cache.host_cache_percent == 50U &&
+                          !auto_cache.context_cache.host_cache_percent,
+                      "--host-cache-percent did not reach serving options or has a default");
+    for (const char* bad : {"0", "101", "x"}) {
+        bool rejected = false;
+        try {
+            (void)parse({"ninfer-serve", "model.ninfer", "--auto-host-cache",
+                         "--host-cache-percent", bad});
+        } catch (const std::invalid_argument&) { rejected = true; }
+        failures += check(rejected, "--host-cache-percent accepted a value outside [1,100]");
+    }
+    bool percent_without_auto_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--host-cache-percent", "50"});
+    } catch (const std::invalid_argument&) { percent_without_auto_rejected = true; }
+    failures += check(percent_without_auto_rejected,
+                      "--host-cache-percent was accepted without --auto-host-cache");
     bool auto_without_cache_rejected = false;
     try {
         (void)parse({"ninfer-serve", "model.ninfer", "--no-prefix-reuse", "--auto-host-cache"});
