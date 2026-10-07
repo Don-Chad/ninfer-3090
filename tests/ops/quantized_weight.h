@@ -884,21 +884,6 @@ inline PackedWeight pack_row_split_lowbit(const std::vector<float>& source, std:
     return out;
 }
 
-inline PackedWeight pack_q4_row_split(const std::vector<float>& source, std::int32_t n,
-                                      std::int32_t k) {
-    return pack_row_split_lowbit(source, n, k, QType::Q4_G64_FP16);
-}
-
-inline PackedWeight pack_q5_row_split(const std::vector<float>& source, std::int32_t n,
-                                      std::int32_t k) {
-    return pack_row_split_lowbit(source, n, k, QType::Q5_G64_FP16);
-}
-
-inline PackedWeight pack_q6_row_split(const std::vector<float>& source, std::int32_t n,
-                                      std::int32_t k) {
-    return pack_row_split_lowbit(source, n, k, QType::Q6_G64_FP16);
-}
-
 inline PackedWeight pack_q8_g32_row_split(const std::vector<float>& source, std::int32_t n,
                                           std::int32_t k) {
     return pack_row_split_lowbit(source, n, k, QType::Q8_G32_FP16);

@@ -29,8 +29,9 @@ Tests link into one executable, `ninfer_tests`, rather than one each: every test
 Op library would otherwise carry its own copy of the whole kernel image (~450 MB on sm_86), which
 added up to tens of GB. Each test keeps its name as a program in the bundle and still runs in its
 own process under CTest. Run one by hand with `build/tests/ninfer_tests <name> [args...]`;
-`ninfer_tests --list` prints the names. `ninfer_jinja_test` and
-`ninfer_artifact_materialization_test` stay standalone because Python tests invoke them by path.
+`ninfer_tests --list` prints the names. Tests registered `STANDALONE` in the CMake files (for example
+`ninfer_jinja_test` and `ninfer_artifact_materialization_test`, which Python tests invoke by path) stay
+in their own executables; `cmake/NinferTests.cmake` says why.
 A test's helpers and entry function must be internal (anonymous namespace) so that programs do not
 collide at link time. The mechanism is `cmake/NinferBundles.cmake`.
 `ops/op_tester.h` and `ops/op_check.h` own only reusable device/guard and comparison mechanics.
@@ -45,7 +46,7 @@ weight decoding.
 
 Select a Python environment with the dependencies for the tests first. The maintained environment
 uses Python 3.11; CMake finds Python 3 without restricting its minor version.
-`Python3_EXECUTABLE` selects the interpreter used by interop and frontend tests explicitly.
+`Python3_EXECUTABLE` selects the interpreter used by the interop tests explicitly.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
@@ -97,8 +98,8 @@ one, so the unqualified form above is safe.
 Two messages that look like failures and are not:
 
 - *"Target application terminated before first instrumented API call"* — the test made no CUDA
-  calls, usually because it skipped for a missing `NINFER_*_WEIGHTS` environment variable. Set the
-  variable, or pick a test that does not need one.
+  calls, usually because it skipped for a missing `NINFER_TEST_ARTIFACT` (or `NINFER_TEST_GRAFT`)
+  environment variable. Set the variable, or pick a test that does not need one.
 - A single `-k 'regex:a|b'`-style argument disappearing in PowerShell: `|` is parsed as a pipeline
   before the tool sees it. One pattern per invocation.
 

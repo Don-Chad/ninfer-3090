@@ -45,10 +45,6 @@ inline void cuda_check(cudaError_t status, const char* operation) {
     throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorString(status));
 }
 
-inline void cuda_check_last_launch(const char* operation) {
-    cuda_check(cudaGetLastError(), operation);
-}
-
 inline void cuda_synchronize() { cuda_check(cudaDeviceSynchronize(), "cudaDeviceSynchronize"); }
 
 inline void cuda_synchronize(cudaStream_t stream) {
@@ -137,10 +133,6 @@ inline void fill_uniform(std::vector<float>& v, std::uint32_t seed, float lo, fl
     for (auto& x : v) x = d(g);
 }
 
-inline void fill_iota_i32(std::vector<int>& v, int start = 0) {
-    for (std::size_t i = 0; i < v.size(); ++i) v[i] = start + static_cast<int>(i);
-}
-
 // --- host <-> device --------------------------------------------------------
 template <typename T>
 inline DeviceBuffer to_device(const std::vector<T>& h) {
@@ -194,13 +186,6 @@ inline std::vector<double> from_device_bf16(const void* device, std::size_t n) {
     const std::vector<std::uint16_t> b = from_device<std::uint16_t>(device, n);
     std::vector<double> o(n);
     for (std::size_t i = 0; i < n; ++i) o[i] = double(bf16_to_f32(b[i]));
-    return o;
-}
-
-inline std::vector<double> from_device_f32(const DeviceBuffer& d, std::size_t n) {
-    const std::vector<float> f = from_device<float>(d, n);
-    std::vector<double> o(n);
-    for (std::size_t i = 0; i < n; ++i) o[i] = double(f[i]);
     return o;
 }
 
