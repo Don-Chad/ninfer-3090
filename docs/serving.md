@@ -1308,11 +1308,15 @@ behind it, which still needs one prefill unit, waits it out. `--max-prefill-lane
 requests hold a staged prefill. Each prefill unit then goes to the lane with the shortest remaining
 prompt suffix (a lane's first unit always runs first), and a lane passed over `--prefill-max-skip`
 units is served before any shorter one, so the long prompt is slowed but never starved. A short
-request now waits for at most the unit in flight plus one decode round plus its own units, and the
-long prompt finishes later by the prefill work of the requests that passed it. Admission stays
+request now waits for at most the unit in flight plus `--decode-rounds-per-prefill` decode rounds
+(16 at the default chunk of 1024, one under strict alternation) between each of its prefill units,
+plus its own units, and the long prompt finishes later by the prefill work of the requests that passed it. Admission stays
 FIFO, and admission reserves each request's full prompt and output KV, so the KV capacity has to
 hold the long prompt and the short ones together; a request that does not fit still waits as the
-FIFO head however many prefill lanes are configured. Measured on an RTX 3090 with the 27B and
+FIFO head however many prefill lanes are configured. The following was measured before
+`--decode-rounds-per-prefill` existed, so it is strict alternation (`--decode-rounds-per-prefill 1`)
+and has not been re-measured with the default of more rounds, which adds the extra decode rounds to
+each wait. On an RTX 3090 with the 27B and
 `--kv-dtype rk4v4`, three lanes, two 80k-token prompts and one short prompt: the short request
 finished in 3.1 s at chunk 512 and 14.8 s at `--prefill-cublas --prefill-chunk 4096` (each of its
 decode steps waits for one chunk of the long prefills), against about 170 s and 105 s behind both
