@@ -1647,6 +1647,52 @@ int test_automatic_private_long_anchors() {
     return failures;
 }
 
+int test_progress_anchors() {
+    const Frontend frontend = make_frontend(resources(), false);
+    const auto frontiers    = [&](std::uint32_t stride, std::size_t* token_count) {
+        // One long user message: no interior message boundary exists, so every anchor below comes
+        // from the stride alone.
+        ninfer::PromptInput input;
+        ninfer::ChatMessage message;
+        message.role = ninfer::ChatRole::User;
+        message.parts.push_back(ninfer::MessagePart{
+            .kind  = ninfer::MessagePartKind::Text,
+            .text  = "one very long question that keeps going and going so the prompt spans many "
+                     "tokens before it finally ends here",
+            .media = {}});
+        input.messages.push_back(std::move(message));
+        input.context_cache.progress_anchor_stride = stride;
+        const auto prepared                        = frontend.prepare(std::move(input));
+        const auto& data                           = FrontendFactory::inspect(prepared);
+        *token_count                               = data.token_ids.size();
+        std::vector<std::uint32_t> result;
+        for (const auto& opportunity : data.context_cache.opportunities) {
+            if (opportunity.kind == ninfer::PromptCacheMarkerKind::PrivateLongAnchor) {
+                result.push_back(opportunity.frontier);
+            }
+        }
+        return result;
+    };
+
+    int failures       = 0;
+    std::size_t tokens = 0;
+    failures += check(frontiers(0, &tokens).empty(),
+                      "progress anchors were proposed while disabled");
+    constexpr std::uint32_t kStride = 4;
+    const std::vector<std::uint32_t> anchors = frontiers(kStride, &tokens);
+    failures += check(tokens > 2U * kStride && anchors.size() == (tokens - 1U) / kStride,
+                      "progress anchors did not cover every stride multiple inside the prompt");
+    bool aligned = !anchors.empty();
+    for (std::size_t index = 0; index < anchors.size(); ++index) {
+        aligned = aligned && anchors[index] == (index + 1U) * kStride && anchors[index] < tokens;
+    }
+    failures += check(aligned,
+                      "progress anchors were not at ascending absolute multiples of the stride");
+    failures += check(frontiers(static_cast<std::uint32_t>(tokens), &tokens).empty(),
+                      "a stride covering the whole prompt proposed an anchor");
+    return failures;
+}
+
 int test_media_admission_uses_aggregate_resources(const Frontend& frontend) {
     constexpr std::size_t kMediaItems     = 17;
     const std::vector<std::uint8_t> bytes = gradient_ppm();
@@ -2897,6 +2943,7 @@ int main() {
     failures += test_image_resize_rejection_policy();
     failures += test_explicit_leading_instruction_cache_boundary();
     failures += test_automatic_private_long_anchors();
+    failures += test_progress_anchors();
     failures += test_media_admission_uses_aggregate_resources(frontend);
     failures += test_multimodal_prompt_over_removed_32k_cap(frontend);
     failures += test_attention_pairs_are_diagnostic(frontend);

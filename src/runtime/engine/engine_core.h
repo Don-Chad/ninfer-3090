@@ -1316,10 +1316,23 @@ private:
                 throw std::logic_error("active cancellation has no sequence binding");
             }
             (void)request->output.preview_terminal(FinishReason::Cancelled);
-            auto aborted = resources_.abort(*instance_.program, *request->lane, *request->sequence);
-            request->generation_timings = aborted.timings;
-            request->speculative_stats  = std::move(aborted.speculative);
-            if (scheduler_.is_prefill_owner(lane)) { scheduler_.clear_prefill_lane(lane); }
+            if (scheduler_.is_prefill_owner(lane)) {
+                // The checkpoints a cancelled prompt has already captured outlive it, so the
+                // client's retry resumes from them rather than prefilling the prompt again. The
+                // Program declines when nothing can be kept and `finish` then discards the lane
+                // exactly as an abort would.
+                resources_.mark_terminal_pending(*request->lane);
+                auto finished =
+                    resources_.finish(*instance_.program, *request->lane, *request->sequence);
+                request->generation_timings = finished.timings;
+                request->speculative_stats  = std::move(finished.speculative);
+                scheduler_.clear_prefill_lane(lane);
+            } else {
+                auto aborted =
+                    resources_.abort(*instance_.program, *request->lane, *request->sequence);
+                request->generation_timings = aborted.timings;
+                request->speculative_stats  = std::move(aborted.speculative);
+            }
             append_output(request, request->output.commit_preview());
             finish_engine_phase(boundary, EngineHostPhase::Boundary);
             complete_success(request, FinishReason::Cancelled);

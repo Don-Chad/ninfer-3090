@@ -661,6 +661,19 @@ PreparedContextCache prepare_context_cache(
                             *message_boundaries[after], engine_order++);
         }
     }
+    // Progress anchors sit at absolute multiples of the stride, independent of the prompt's shape,
+    // so a prompt with no message boundary (one very long user message) still leaves a restore
+    // point behind when its prefill is cancelled. The prompt's own end is covered by the endpoint.
+    if (hints.progress_anchor_stride != 0) {
+        for (std::uint32_t frontier = hints.progress_anchor_stride; frontier < full_prompt_frontier;
+             frontier += hints.progress_anchor_stride) {
+            add_opportunity(PromptCacheMarkerKind::PrivateLongAnchor, SharedCandidateEvidence::None,
+                            frontier, engine_order++);
+            if (frontier > std::numeric_limits<std::uint32_t>::max() - hints.progress_anchor_stride) {
+                break;
+            }
+        }
+    }
     if (hints.allow_engine_automatic_shared_prefixes) {
         if (engine_tool_marker_index && *engine_tool_marker_index < cache_boundaries.size() &&
             cache_boundaries[*engine_tool_marker_index]) {

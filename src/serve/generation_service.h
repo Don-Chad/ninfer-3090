@@ -136,6 +136,11 @@ public:
     [[nodiscard]] std::uint32_t automatic_private_anchors() const noexcept {
         return automatic_private_anchors_;
     }
+    // Token spacing of the progress anchors stamped on every read-write prompt; see
+    // resolve_progress_anchor_stride. Zero disables them.
+    [[nodiscard]] std::uint32_t progress_anchor_stride() const noexcept {
+        return progress_anchor_stride_;
+    }
 
     [[nodiscard]] ninfer::LoadSummary load_summary() const { return engine_->load_summary(); }
 
@@ -208,6 +213,7 @@ private:
     ServeOptions options_;
     std::unique_ptr<ninfer::Engine> engine_;
     std::uint32_t automatic_private_anchors_ = 0;
+    std::uint32_t progress_anchor_stride_    = 0;
     std::shared_ptr<RequestCapacity> request_capacity_;
 };
 

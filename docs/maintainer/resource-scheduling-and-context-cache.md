@@ -945,6 +945,18 @@ Abort 保证：
 - unused destinations、reservations 和 pins 已释放；
 - 已安全完成的 victim demotion/deletion 被明确记录在 `ResourceResult` 中。
 
+取消一个仍在 prefill 的 active 请求时，Engine 不直接 abort，而是走 `ResourceManager::finish`：
+`ProgramImpl::finish` 对 `Lifecycle::Prefilling` 调用 `retain_prefill_progress`。若 sequence 已持有
+retained checkpoint（long anchor 或 rewrite checkpoint）、没有未应答的 capture offer、也没有未 settle 的
+state fork（active image 已是独占 writer），Program 把这些 checkpoint 作为没有 endpoint 的 continuation
+发布（`FinishDisposition::Catalogued`）：ledger、prefix identity 与 digests 截断到最深 checkpoint 的 frontier，
+KV 截断到其 required frontier，active StateImage 释放。任何条件不满足时 `finish` 在第一次 mutation 前返回
+未 Consumed，ResourceManager 沿用上面的 abort 路径，因此保证不弱于过去的行为。
+`ContextCacheHints::progress_anchor_stride`（`ninfer-serve --progress-anchor-tokens N`）让 Frontend 在 prompt
+内部按绝对 token 栅格提出 `PrivateLongAnchor` candidates，使没有 message boundary 的超长单条 prompt 在被
+取消时也有 checkpoint 可保留；它们与其他 long anchor 共用 `max_long_anchors_per_continuation`，满额时替换
+最浅的 anchor。
+
 已经发布 replacement 后完成的合法 pressure degradation 不需要逆向复制回原 placement。ResourceManager
 采用 abort result 中的实际终态，而不是回放中间 receipts。
 

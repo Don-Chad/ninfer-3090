@@ -83,6 +83,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--device-state-slots N] [--host-state-slots N] [--host-kv-mib N] "
            "[--max-private-continuations N] [--max-shared-prefixes N] [--auto-host-cache [--host-cache-reserve-mib N] [--host-cache-max-mib N]] "
            "[--max-long-anchors-per-continuation N] [--auto-long-anchors N] "
+           "[--progress-anchor-tokens N] "
            "[--max-cache-markers-per-request N] "
            "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] [--no-exit-on-engine-failure] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
@@ -143,6 +144,11 @@ std::string serve_usage_text(const char* argv0) {
            "restores at the anchor below the edit instead of re-prefilling from zero; it "
            "defaults to and is clamped to --max-long-anchors-per-continuation (raise that and "
            "--host-state-slots for deeper edits); 0 disables\n"
+           "       --progress-anchor-tokens N proposes a private long anchor at every multiple of N "
+           "tokens of a prompt (default 16384) and keeps the anchors a cancelled prefill already "
+           "holds, so a client that times out on a very long prompt and retries resumes from the "
+           "last anchor instead of prefilling from zero; it shares the "
+           "--max-long-anchors-per-continuation budget with --auto-long-anchors; 0 disables\n"
            "       --slot-save-path DIR enables POST /slots/{id}?action=save|restore|erase, which "
            "writes a retained session to a file in DIR or restores one from it\n"
            "       --auto-save-evicted writes a retained session back to the slot file it was last "
@@ -383,6 +389,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--auto-long-anchors") {
             options.auto_long_anchors = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--auto-long-anchors"), "auto-long-anchors"));
+        } else if (arg == "--progress-anchor-tokens") {
+            options.progress_anchor_tokens = static_cast<std::uint32_t>(parse_nonnegative_int(
+                require_value("--progress-anchor-tokens"), "progress-anchor-tokens"));
         } else if (arg == "--max-cache-markers-per-request") {
             options.context_cache.max_cache_markers_per_request = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--max-cache-markers-per-request"),
@@ -584,6 +593,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             throw std::invalid_argument(
                 "--no-prefix-reuse cannot be combined with --auto-long-anchors");
         }
+        if (options.progress_anchor_tokens) {
+            throw std::invalid_argument(
+                "--no-prefix-reuse cannot be combined with --progress-anchor-tokens");
+        }
         if (!options.slot_save_path.empty()) {
             throw std::invalid_argument(
                 "--no-prefix-reuse cannot be combined with --slot-save-path");
@@ -654,6 +667,15 @@ std::uint32_t resolve_automatic_private_anchors(const ServeOptions& options,
     if (!resolved.enabled || !options.allow_prefix_reuse) { return 0; }
     const std::uint32_t cap = resolved.max_long_anchors_per_continuation.value_or(0U);
     return std::min(options.auto_long_anchors.value_or(cap), cap);
+}
+
+std::uint32_t resolve_progress_anchor_stride(const ServeOptions& options,
+                                             const ContextCacheOptions& resolved) {
+    if (!resolved.enabled || !options.allow_prefix_reuse ||
+        resolved.max_long_anchors_per_continuation.value_or(0U) == 0) {
+        return 0;
+    }
+    return options.progress_anchor_tokens.value_or(kDefaultProgressAnchorTokens);
 }
 
 } // namespace ninfer::serve

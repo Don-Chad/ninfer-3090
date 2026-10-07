@@ -1192,6 +1192,10 @@ private:
     [[nodiscard]] bool can_clear_lane_strict(const SequenceState& sequence) const;
     [[nodiscard]] bool clear_lane_strict(SequenceState& sequence, RequestControl& request) noexcept;
     void clear_lane_best_effort(SequenceState& sequence, RequestControl& request) noexcept;
+    // Settles a prefilling lane that is being cancelled by publishing the checkpoints it has
+    // already captured instead of discarding them. Declines, leaving the lane untouched for the
+    // caller's abort, unless the lane holds a retained checkpoint and a settled exclusive writer.
+    [[nodiscard]] FinishResult retain_prefill_progress(std::uint32_t lane) noexcept;
     void ordered_reset(SequenceState& sequence);
     [[nodiscard]] StateImageSelectors state_selectors(const SequenceState& sequence) const;
     // Points the one-row DFlash ingress frame at this lane. Decode rounds and other lanes'
