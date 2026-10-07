@@ -446,6 +446,12 @@ int main() {
             parse({"ninfer-serve", "model.ninfer", "--progress-anchor-tokens", "0"}),
             resolved_cache) == 0U,
         "--progress-anchor-tokens 0 did not disable progress anchors");
+    bool fine_progress_stride_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--progress-anchor-tokens", "1"});
+    } catch (const std::invalid_argument&) { fine_progress_stride_rejected = true; }
+    failures += check(fine_progress_stride_rejected,
+                      "--progress-anchor-tokens below the minimum stride was accepted");
     failures += check(resolve_progress_anchor_stride(parse({"ninfer-serve", "model.ninfer"}),
                                                      disabled_cache) == 0U,
                       "progress anchors survived a disabled context cache");

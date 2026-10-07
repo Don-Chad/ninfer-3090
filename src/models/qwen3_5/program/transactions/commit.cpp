@@ -720,11 +720,30 @@ FinishResult ProgramImpl::retain_prefill_progress(std::uint32_t lane) noexcept {
             retained.backend_frontier > backend_kv_valid(state)) {
             return out;
         }
-        // The continuation's identity ends at its deepest checkpoint; the rest of the prompt has
-        // no state behind it.
-        state.ledger.resize(retained.main_frontier);
-        state.prefix_identity.truncate(retained.main_frontier);
-        state.prefix_digests.truncate(retained.main_frontier);
+        // Every release below must be known to succeed before the first one runs, so a lane that
+        // cannot be retained reaches the caller's abort untouched.
+        const bool reserved_owned_elsewhere =
+            state.reserved_state &&
+            (*state.reserved_state == state.state.write ||
+             (state.rewrite_state && *state.reserved_state == *state.rewrite_state) ||
+             std::any_of(state.long_anchors.begin(), state.long_anchors.end(),
+                         [&](const LongAnchorCheckpoint& anchor) {
+                             return anchor.state == *state.reserved_state;
+                         }));
+        const bool release_reserved = state.reserved_state && !reserved_owned_elsewhere &&
+                                      state_store->valid(*state.reserved_state) &&
+                                      state_store->checkpoint_references(*state.reserved_state) == 0;
+        if (!state_store->can_release(state.state.write) ||
+            (release_reserved && !state_store->can_release(*state.reserved_state))) {
+            return out;
+        }
+        // The released state images were the last fallible step; the KV tail is exclusively this
+        // lane's, so its truncation below follows the same checked path the abort fallback uses.
+        if (!state_store->release(state.state.write)) { return out; }
+        // can_release held, so this cannot fail short of a Host slot fault; the write image is
+        // already released, so there is nothing to fall back to.
+        if (release_reserved) { (void)state_store->release(*state.reserved_state); }
+        state.reserved_state.reset();
         text_kv_addresses->set_checkpoint_requirement(state.kv->text, retained.main_frontier);
         if (state.kv->backend) {
             backend_kv_addresses->set_checkpoint_requirement(*state.kv->backend,
@@ -737,23 +756,11 @@ FinishResult ProgramImpl::retain_prefill_progress(std::uint32_t lane) noexcept {
             backend_kv_addresses->truncate_inactive_prefix(*state.kv->backend,
                                                            retained.backend_frontier);
         }
-        if (!state_store->release(state.state.write)) { return out; }
-        if (state.reserved_state) {
-            const StateImageHandle reserved = *state.reserved_state;
-            const bool owned_elsewhere =
-                reserved == state.state.write ||
-                (state.rewrite_state && reserved == *state.rewrite_state) ||
-                std::any_of(state.long_anchors.begin(), state.long_anchors.end(),
-                            [&](const LongAnchorCheckpoint& anchor) {
-                                return anchor.state == reserved;
-                            });
-            if (!owned_elsewhere && state_store->valid(reserved) &&
-                state_store->checkpoint_references(reserved) == 0 &&
-                !state_store->release(reserved)) {
-                return out;
-            }
-            state.reserved_state.reset();
-        }
+        // The continuation's identity ends at its deepest checkpoint; the rest of the prompt has
+        // no state behind it.
+        state.ledger.resize(retained.main_frontier);
+        state.prefix_identity.truncate(retained.main_frontier);
+        state.prefix_digests.truncate(retained.main_frontier);
     } catch (...) { return out; }
 
     state.state                = {};

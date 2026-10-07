@@ -1267,31 +1267,8 @@ private:
                 resources_.finish(*instance_.program, *request->lane, *request->sequence);
             request->generation_timings = finished.timings;
             request->speculative_stats  = std::move(finished.speculative);
-            if (finished.disposition == FinishDisposition::Catalogued && publication) {
-                const auto view = resources_.catalog_slot(*publication);
-                if (view.state == ResourceManagement::CatalogState::Catalogued &&
-                    view.handle != nullptr) {
-                    request->retained_slot = static_cast<std::int32_t>(*publication);
-                    request->retained_session_digest =
-                        instance_.program->continuation_digest(*view.handle);
-                    // A conversation continued from a retained source lives on in the new cell;
-                    // its slot file follows it there, leaving the older copy unbound.
-                    if (retained_source && *retained_source != *publication &&
-                        *retained_source < slot_session_paths_.size() &&
-                        !slot_session_paths_[*retained_source].empty()) {
-                        const std::string path = slot_session_paths_[*retained_source];
-                        bind_slot_session(*publication, path);
-                    }
-                    SlotUsage usage         = source_usage;
-                    usage.last_used_unix_ms = unix_time_ms();
-                    if (continued) {
-                        ++usage.reuse_count;
-                        usage.reused_tokens +=
-                            request->begin ? request->begin->reused_prompt_tokens : 0U;
-                    }
-                    if (*publication < slot_usage_.size()) { slot_usage_[*publication] = usage; }
-                }
-            }
+            record_catalogued_publication(request, finished.disposition, publication,
+                                          retained_source, continued, source_usage);
             request->terminal_reason.reset();
 
             finish_engine_phase(boundary, EngineHostPhase::Boundary);
@@ -1317,6 +1294,15 @@ private:
             }
             (void)request->output.preview_terminal(FinishReason::Cancelled);
             if (scheduler_.is_prefill_owner(lane)) {
+                const std::optional<std::uint32_t> publication =
+                    resources_.lane_publication_slot(*request->lane);
+                const std::optional<std::uint32_t> retained_source =
+                    resources_.lane_retained_private_source_slot(*request->lane);
+                const bool continued = retained_source.has_value();
+                const SlotUsage source_usage =
+                    retained_source && *retained_source < slot_usage_.size()
+                        ? slot_usage_[*retained_source]
+                        : SlotUsage{};
                 // The checkpoints a cancelled prompt has already captured outlive it, so the
                 // client's retry resumes from them rather than prefilling the prompt again. The
                 // Program declines when nothing can be kept and `finish` then discards the lane
@@ -1326,6 +1312,8 @@ private:
                     resources_.finish(*instance_.program, *request->lane, *request->sequence);
                 request->generation_timings = finished.timings;
                 request->speculative_stats  = std::move(finished.speculative);
+                record_catalogued_publication(request, finished.disposition, publication,
+                                              retained_source, continued, source_usage);
                 scheduler_.clear_prefill_lane(lane);
             } else {
                 auto aborted =
@@ -2679,6 +2667,40 @@ private:
         std::uint32_t reuse_count       = 0;
         std::uint64_t reused_tokens     = 0;
     };
+
+    // Binds the retained slot's session file, usage record and digest once `finish` has catalogued
+    // a continuation, for both a completed request and a cancelled prefill that kept its anchors.
+    void record_catalogued_publication(const std::shared_ptr<Request>& request,
+                                       FinishDisposition disposition,
+                                       const std::optional<std::uint32_t>& publication,
+                                       const std::optional<std::uint32_t>& retained_source,
+                                       bool continued, const SlotUsage& source_usage) {
+        if (disposition == FinishDisposition::Catalogued && publication) {
+            const auto view = resources_.catalog_slot(*publication);
+            if (view.state == ResourceManagement::CatalogState::Catalogued &&
+                view.handle != nullptr) {
+                request->retained_slot = static_cast<std::int32_t>(*publication);
+                request->retained_session_digest =
+                    instance_.program->continuation_digest(*view.handle);
+                // A conversation continued from a retained source lives on in the new cell;
+                // its slot file follows it there, leaving the older copy unbound.
+                if (retained_source && *retained_source != *publication &&
+                    *retained_source < slot_session_paths_.size() &&
+                    !slot_session_paths_[*retained_source].empty()) {
+                    const std::string path = slot_session_paths_[*retained_source];
+                    bind_slot_session(*publication, path);
+                }
+                SlotUsage usage         = source_usage;
+                usage.last_used_unix_ms = unix_time_ms();
+                if (continued) {
+                    ++usage.reuse_count;
+                    usage.reused_tokens +=
+                        request->begin ? request->begin->reused_prompt_tokens : 0U;
+                }
+                if (*publication < slot_usage_.size()) { slot_usage_[*publication] = usage; }
+            }
+        }
+    }
     std::vector<std::string> slot_session_paths_;
     std::vector<SlotDigestCacheEntry> slot_digest_cache_;
     std::vector<SlotUsage> slot_usage_;

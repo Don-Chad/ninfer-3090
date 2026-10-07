@@ -145,7 +145,7 @@ std::string serve_usage_text(const char* argv0) {
            "defaults to and is clamped to --max-long-anchors-per-continuation (raise that and "
            "--host-state-slots for deeper edits); 0 disables\n"
            "       --progress-anchor-tokens N proposes a private long anchor at every multiple of N "
-           "tokens of a prompt (default 16384) and keeps the anchors a cancelled prefill already "
+           "tokens of a prompt (default 16384, minimum 256) and keeps the anchors a cancelled prefill already "
            "holds, so a client that times out on a very long prompt and retries resumes from the "
            "last anchor instead of prefilling from zero; it shares the "
            "--max-long-anchors-per-continuation budget with --auto-long-anchors; 0 disables\n"
@@ -392,6 +392,11 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--progress-anchor-tokens") {
             options.progress_anchor_tokens = static_cast<std::uint32_t>(parse_nonnegative_int(
                 require_value("--progress-anchor-tokens"), "progress-anchor-tokens"));
+            if (*options.progress_anchor_tokens != 0 &&
+                *options.progress_anchor_tokens < kMinimumProgressAnchorTokens) {
+                throw std::invalid_argument("--progress-anchor-tokens must be 0 or at least " +
+                                            std::to_string(kMinimumProgressAnchorTokens));
+            }
         } else if (arg == "--max-cache-markers-per-request") {
             options.context_cache.max_cache_markers_per_request = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--max-cache-markers-per-request"),
