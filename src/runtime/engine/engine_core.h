@@ -1248,7 +1248,7 @@ private:
                 resources_.finish(*instance_.program, *request->lane, *request->sequence);
             request->generation_timings = finished.timings;
             request->speculative_stats  = std::move(finished.speculative);
-            record_catalogued_publication(request, finished.disposition, catalog);
+            record_catalogued_publication(request, finished.disposition, catalog, true);
             request->terminal_reason.reset();
 
             finish_engine_phase(boundary, EngineHostPhase::Boundary);
@@ -1284,7 +1284,7 @@ private:
                     resources_.finish(*instance_.program, *request->lane, *request->sequence);
                 request->generation_timings = finished.timings;
                 request->speculative_stats  = std::move(finished.speculative);
-                record_catalogued_publication(request, finished.disposition, catalog);
+                record_catalogued_publication(request, finished.disposition, catalog, false);
                 scheduler_.clear_prefill_lane(lane);
             } else {
                 auto aborted =
@@ -2678,7 +2678,7 @@ private:
     // a continuation, for both a completed request and a cancelled prefill that kept its anchors.
     void record_catalogued_publication(const std::shared_ptr<Request>& request,
                                        FinishDisposition disposition,
-                                       const CatalogContext& catalog) {
+                                       const CatalogContext& catalog, bool has_endpoint) {
         const auto& [publication, retained_source, continued, reused_prompt_tokens, source_usage] =
             catalog;
         if (disposition == FinishDisposition::Catalogued && publication) {
@@ -2689,8 +2689,10 @@ private:
                 request->retained_session_digest =
                     instance_.program->continuation_digest(*view.handle);
                 // A conversation continued from a retained source lives on in the new cell;
-                // its slot file follows it there, leaving the older copy unbound.
-                if (retained_source && *retained_source != *publication &&
+                // its slot file follows it there, leaving the older copy unbound. A cancelled
+                // prefill's continuation has no endpoint and cannot be saved as a session, so it
+                // must not take the binding from a cell that still can.
+                if (has_endpoint && retained_source && *retained_source != *publication &&
                     *retained_source < slot_session_paths_.size() &&
                     !slot_session_paths_[*retained_source].empty()) {
                     const std::string path = slot_session_paths_[*retained_source];
