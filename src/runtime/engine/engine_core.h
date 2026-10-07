@@ -2698,6 +2698,9 @@ private:
                     const std::string path = slot_session_paths_[*retained_source];
                     bind_slot_session(*publication, path);
                 }
+                // The cell now holds the endpoint-less continuation, so a slot file bound to the
+                // session it replaced (an in-place reuse) no longer describes what is resident.
+                if (!has_endpoint) { clear_slot_session(*publication); }
                 SlotUsage usage         = source_usage;
                 usage.last_used_unix_ms = unix_time_ms();
                 if (continued) {

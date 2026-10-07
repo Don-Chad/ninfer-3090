@@ -1454,6 +1454,94 @@ ninfer::PromptInput slot_conversation(const std::vector<std::string>& turns) {
     return prompt;
 }
 
+// A cancelled prefill is published as a continuation with no endpoint, which cannot be saved as a
+// session. When it lands in the cell that held a saved conversation (one private cell here), the
+// slot file bound to that conversation must not stay bound to what the cell now holds: every slot
+// that still reports a snapshot file must be savable.
+int exercise_cancelled_prefill_slot_binding(const char* artifact) {
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() / "ninfer-cancelled-prefill-binding-test";
+    std::filesystem::remove_all(directory);
+    std::filesystem::create_directories(directory);
+    const std::string file  = (directory / "session.bin").string();
+    const std::string other = (directory / "probe.bin").string();
+
+    ninfer::RequestOptions request;
+    request.execution.requested_output_tokens = 8;
+    request.execution.sampling.temperature    = 0.0F;
+    request.execution.allow_prefix_reuse      = true;
+    request.stop.include_model_defaults       = false;
+
+    ninfer::EngineOptions options = slot_engine_options(artifact, false, nullptr, nullptr);
+    options.max_context           = 8192;
+    options.kv_capacity           = ninfer::KvCapacityPolicy::explicit_capacity(8192);
+    ninfer::Engine engine(options);
+
+    const std::vector<std::string> first{
+        "List three uses for a lathe in a small workshop, one line each."};
+    const ninfer::GenerationResult reply =
+        engine.generate(engine.prepare(slot_conversation(first)), request);
+    if (reply.slot < 0) {
+        std::cerr << "first turn retained no session\n";
+        return 1;
+    }
+    (void)engine.save_slot(static_cast<std::uint32_t>(reply.slot), file, reply.session_digest);
+    const auto bound = engine.slot_states();
+    if (bound.size() != 1 || bound[0].snapshot_file.empty()) {
+        std::cerr << "save did not bind the slot to its file\n";
+        return 1;
+    }
+
+    // Continue the saved conversation with a very long turn, cancelled part way through prefill.
+    std::string text = "Read the following log and answer the question at the end.";
+    for (int line = 0; line < 160; ++line) {
+        text += " Entry " + std::to_string(line) + ": the pump on line " +
+                std::to_string(line % 17) + " reported " + std::to_string(line * 37 % 1013) +
+                " kPa and the operator noted nothing unusual.";
+    }
+    std::vector<std::string> turns = first;
+    turns.push_back(reply.content);
+    turns.push_back(text);
+    ninfer::PromptInput prompt = slot_conversation(turns);
+    prompt.context_cache.progress_anchor_stride = 512;
+
+    CancelAtProgressSink sink(2048);
+    ninfer::GenerationHandle handle =
+        engine.submit(engine.prepare(std::move(prompt)), request,
+                      ninfer::OutputConsumerMode::Streaming,
+                      ninfer::GenerationObservationOptions{.prompt_progress = true});
+    const ninfer::GenerationResult cancelled =
+        handle.wait(&sink, ninfer::CancellationView([&sink] { return sink.reached(); }));
+    if (cancelled.finish_reason != ninfer::FinishReason::Cancelled) {
+        std::cerr << "the long turn was not cancelled during prefill\n";
+        return 1;
+    }
+    if (!engine.is_available()) {
+        std::cerr << "engine latched unavailable after a cancelled prefill\n";
+        return 1;
+    }
+
+    // Cancellation settles at the next Engine boundary; wait for the cell to be published.
+    auto states = engine.slot_states();
+    for (int attempt = 0; attempt < 200 && states.size() == 1 && !states[0].retained; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        states = engine.slot_states();
+    }
+    for (std::uint32_t slot = 0; slot < states.size(); ++slot) {
+        if (!states[slot].retained || states[slot].snapshot_file.empty()) { continue; }
+        try {
+            (void)engine.save_slot(slot, other);
+        } catch (const std::exception& error) {
+            std::cerr << "slot " << slot << " still reports snapshot file '"
+                      << states[slot].snapshot_file
+                      << "' but cannot be saved: " << error.what() << '\n';
+            return 1;
+        }
+    }
+    std::cout << "cancelled prefill left " << states.size() << " slot(s), none with a stale binding\n";
+    return 0;
+}
+
 // A saved session restored into a fresh Engine must behave exactly like the warm session it was
 // saved from: the continuation reuses the restored prefix, and greedy output matches a control
 // Engine that never evicted it token for token. Digest preconditions, corrupt files, and the
@@ -3989,6 +4077,8 @@ int run() {
         result = exercise_cancelled_prefill_200k(artifact);
     } else if (scenario == "cancelled-prefill-progress") {
         result = exercise_cancelled_prefill_progress(artifact);
+    } else if (scenario == "cancelled-prefill-slot-binding") {
+        result = exercise_cancelled_prefill_slot_binding(artifact);
     } else if (scenario == "slot-persistence") {
         result = exercise_slot_persistence(artifact);
     } else if (scenario == "worker-failure-recovery") {
