@@ -20,3 +20,19 @@ add_library(ninfer_product_logging STATIC
 )
 ninfer_internal_includes(ninfer_product_logging)
 target_link_libraries(ninfer_product_logging PUBLIC spdlog::spdlog)
+
+# The generated source is rewritten only when the version text changes, so the commit suffix
+# following HEAD costs one tiny translation unit, not a rebuild of every consumer. The target
+# runs on every build; a custom command alone would not notice a new commit.
+set(NINFER_VERSION_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/version/version.cpp")
+add_custom_target(ninfer_version_source
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC_DIR=${PROJECT_SOURCE_DIR}
+    -DIN=${CMAKE_CURRENT_SOURCE_DIR}/version/version.cpp.in
+    -DOUT=${NINFER_VERSION_SOURCE}
+    -P ${PROJECT_SOURCE_DIR}/cmake/NinferVersion.cmake
+  BYPRODUCTS "${NINFER_VERSION_SOURCE}"
+  VERBATIM)
+add_library(ninfer_product_version STATIC "${NINFER_VERSION_SOURCE}")
+add_dependencies(ninfer_product_version ninfer_version_source)
+ninfer_internal_includes(ninfer_product_version)

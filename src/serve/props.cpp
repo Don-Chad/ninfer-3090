@@ -1,5 +1,7 @@
 #include "serve/props.h"
 
+#include "product/version/version.h"
+
 #include <nlohmann/json.hpp>
 
 namespace ninfer::serve {
@@ -38,6 +40,7 @@ std::string make_props(const ServeOptions& options, const ModelDescription& mode
         {"model_alias", model.id},
         {"model_path", options.artifact_path},
         {"modalities", Json{{"vision", model.vision}, {"audio", false}}},
+        {"build_info", std::string("ninfer ") + std::string(ninfer::product::build_version())},
     };
     return props.dump();
 }

@@ -1,6 +1,7 @@
 #include "serve/http_server.h"
 #include "serve/slot_files.h"
 
+#include "product/version/version.h"
 #include "serve/anthropic_messages.h"
 #include "serve/http_transport.h"
 #include "serve/openai_common.h"
@@ -368,6 +369,9 @@ void HttpServer::register_routes() {
 
     server_.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
         ensure_openai_request_id(req, res);
+        // Every response, including the loading 503 and auth failures, so a caller can tell which
+        // build answered without a credential.
+        res.set_header("X-NInfer-Version", std::string(ninfer::product::build_version()));
         if (!ready_.load(std::memory_order_acquire)) {
             // Runs for every route, including /health and OPTIONS, so a caller cannot tell "not
             // ready" apart from "unauthenticated" -- and skips the API-key check below, since a
@@ -463,7 +467,9 @@ void HttpServer::register_routes() {
     server_.Get("/health", [this](const httplib::Request&, httplib::Response& res) {
         const bool available = service_ != nullptr && service_->is_available();
         res.status           = available ? 200 : 503;
-        res.set_content(nlohmann::json{{"status", available ? "ok" : "unavailable"}}.dump(),
+        res.set_content(nlohmann::json{{"status", available ? "ok" : "unavailable"},
+                                       {"version", ninfer::product::build_version()}}
+                            .dump(),
                         "application/json");
     });
     server_.Get("/slots", [this](const httplib::Request& req, httplib::Response& res) {

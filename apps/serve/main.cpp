@@ -1,5 +1,6 @@
 #include "product/logging/logging.h"
 #include "product/logging/startup_log.h"
+#include "product/version/version.h"
 #include "serve/generation_service.h"
 #include "serve/http_server.h"
 #include "serve/serve_options.h"
@@ -16,6 +17,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -71,6 +73,10 @@ void handle_engine_fault(const ninfer::serve::OperationalLog& log,
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--version") {
+        std::cout << "ninfer-serve " << ninfer::product::build_version() << '\n';
+        return 0;
+    }
     ninfer::serve::ServeOptions options;
     try {
         options = ninfer::serve::parse_serve_options(argc, argv);

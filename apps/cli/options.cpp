@@ -184,7 +184,8 @@ std::string usage_text(const char* argv0) {
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom.\n"
            "Sampling defaults come from the loaded model and thinking mode; flags override "
-           "individual fields.\n";
+           "individual fields.\n"
+           "--version prints the build version and exits.\n";
 }
 
 Options parse_options(int argc, char** argv) {
