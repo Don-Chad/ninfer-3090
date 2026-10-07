@@ -18,17 +18,12 @@
 // Swept on sm_86: the shipped 120 comes from an SM120 tuning note, and shared memory (93,184 B of
 // the 99 KiB budget) pins this kernel to one CTA per SM on either card, so registers cannot buy
 // occupancy here -- only fewer spills. 512 threads x 128 registers is exactly the 65,536 file.
-// Simulation knob for the INT8 PV question, not a production path: it rounds the probabilities onto
-// the int8 grid and immediately back, leaving the FP16 storage and the FP16 mma untouched. The point
-// is to price the *precision* of an int8 P before paying for the kernel that would exploit it, since
-// the two questions are independent and only one of them is cheap to answer.
+// Record of the INT8 PV experiment (2026-09-19). Its simulation and ablation switches were removed;
+// the conclusions stay because they decide whether the idea is worth reopening.
 //
-// The softmax here emits exp2(score - running_max), so P is already in [0, 1] with a maximum of one:
-// a fixed 1/127 needs no per-row scale. What it cannot represent is a row whose mass sits far below
-// its peak -- at a long context, entries under 1/254 of the maximum round to zero, and there can be
-// tens of thousands of them.
-//
-// MEASURED, 2026-09-19, Qwen3.8-27B, 1M corpus, kv int8:
+// Precision: P was rounded onto the int8 grid and back, leaving the FP16 storage and the FP16 mma
+// untouched. The softmax emits exp2(score - running_max), so P is already in [0, 1] with a maximum
+// of one and a fixed 1/127 needs no per-row scale. Measured on Qwen3.8-27B, 1M corpus, kv int8:
 //
 //   context   baseline    int8 P   change
 //     4,096   4.343155  4.332216   -0.25%
@@ -39,21 +34,9 @@
 // The caveat perplexity cannot cover: it is an average, and this changes a tail behaviour. Dropping
 // small distant weights is the thing a needle-in-a-haystack retrieval depends on, so a long-context
 // retrieval check belongs beside perplexity before an INT8 PV kernel ships.
-#ifndef NINFER_SIMULATE_INT8_P
-#define NINFER_SIMULATE_INT8_P 0
-#endif
-#if NINFER_SIMULATE_INT8_P
-#define NINFER_QUANTISE_P(x) (rintf((x) * 127.0f) * (1.0f / 127.0f))
-#else
-#define NINFER_QUANTISE_P(x) (x)
-#endif
-
-// Ablations for sizing the INT8 PV work. Numerically meaningless, timing only.
-//   1 = skip the PV mma (everything else runs: QK, softmax, the V dequant, the epilogue)
-//   2 = skip the V dequant as well, which is the staging an INT8 PV would delete outright
 //
-// VERDICT, 2026-09-19: **do not do it**, and this is the measurement that says so. At 25,600
-// context, 4096 tokens:
+// Throughput: VERDICT, **do not do it**. Timing-only ablations (skip the PV mma; also skip the V
+// dequant, the staging an INT8 PV would delete outright) at 25,600 context, 4096 tokens:
 //
 //   full kernel              51,621 us
 //     PV mma (fp16)          14,263 us  27.6%
@@ -70,13 +53,9 @@
 // What it *would* take is attacking the other 66.8% -- QK, the online softmax's transcendentals,
 // the KV staging and the epilogue -- which is a different and much larger piece of work.
 //
-// The precision question was settled first and separately, and favourably (see
-// NINFER_SIMULATE_INT8_P above): int8 probabilities improve perplexity. The idea died on
-// throughput, not on quality, so if the kernel's structure ever changes enough to make PV dominant,
-// the precision half of the argument is already banked.
-#ifndef NINFER_PROMPT_I8_ABLATE
-#define NINFER_PROMPT_I8_ABLATE 0
-#endif
+// The precision question was settled first and separately, and favourably: int8 probabilities
+// improve perplexity. The idea died on throughput, not on quality, so if the kernel's structure
+// ever changes enough to make PV dominant, the precision half of the argument is already banked.
 
 #ifndef NINFER_PROMPT_I8_MAXNREG
 #define NINFER_PROMPT_I8_MAXNREG 120
@@ -516,18 +495,12 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
                 const float p11 = FullTile || score[nt][3] > -CUDART_INF_F
                                       ? exp2_approx(__fmaf_rn(score[nt][3], scale_l2, -nm1_scaled))
                                       : 0.0f;
-                // Quantise before the sum as well as before the store, so the denominator matches
-                // what the PV matmul will actually accumulate.
-                const float q00 = NINFER_QUANTISE_P(p00);
-                const float q01 = NINFER_QUANTISE_P(p01);
-                const float q10 = NINFER_QUANTISE_P(p10);
-                const float q11 = NINFER_QUANTISE_P(p11);
-                bl0 += q00 + q01;
-                bl1 += q10 + q11;
-                p_s[row0 * Bc + causal_prompt_p_swz<Bc>(row0, col0)] = __float2half_rn(q00);
-                p_s[row0 * Bc + causal_prompt_p_swz<Bc>(row0, col1)] = __float2half_rn(q01);
-                p_s[row1 * Bc + causal_prompt_p_swz<Bc>(row1, col0)] = __float2half_rn(q10);
-                p_s[row1 * Bc + causal_prompt_p_swz<Bc>(row1, col1)] = __float2half_rn(q11);
+                bl0 += p00 + p01;
+                bl1 += p10 + p11;
+                p_s[row0 * Bc + causal_prompt_p_swz<Bc>(row0, col0)] = __float2half_rn(p00);
+                p_s[row0 * Bc + causal_prompt_p_swz<Bc>(row0, col1)] = __float2half_rn(p01);
+                p_s[row1 * Bc + causal_prompt_p_swz<Bc>(row1, col0)] = __float2half_rn(p10);
+                p_s[row1 * Bc + causal_prompt_p_swz<Bc>(row1, col1)] = __float2half_rn(p11);
             }
             bl0        = warp_sum<4>(bl0, FullMask);
             bl1        = warp_sum<4>(bl1, FullMask);
@@ -560,9 +533,6 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
                     }
                     vs = __shfl_sync(FullMask, vs, lane & ~(VLanesPerGroup - 1));
                     const float vsf = __half2float(vs);
-#if NINFER_PROMPT_I8_ABLATE >= 2
-                    store_vec(dst, make_int4(0, 0, 0, 0));
-#else
                     if constexpr (PackedValues) {
                         store_vec(dst, kv_cache_int4_dequant_f16x8_from(
                                            reinterpret_cast<const std::uint8_t*>(v_i8) +
@@ -572,7 +542,6 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
                         store_vec(dst,
                                   kv_cache_int8_dequant_f16x8_from(&v_i8[key_l * D + d], vsf));
                     }
-#endif
                 } else {
                     store_vec(dst, make_int4(0, 0, 0, 0));
                 }
@@ -617,12 +586,8 @@ __global__ __maxnreg__(NINFER_PROMPT_I8_MAXNREG) void causal_attention_prompt_i8
                 const int vcol = global_n * 8;
                 ldmatrix_x2_t(vf[0], vf[1],
                               smem_addr(&v_f16[vrow * D + causal_prompt_swz(vrow, vcol)]));
-#if NINFER_PROMPT_I8_ABLATE == 0
                 mma_f16(acc[n][0], acc[n][1], acc[n][2], acc[n][3], pf[0], pf[1], pf[2], pf[3],
                         vf[0], vf[1]);
-#else
-                acc[n][0] += static_cast<float>(vf[0] & 1u); // keep the loads live
-#endif
             }
         }
         if (has_next) {

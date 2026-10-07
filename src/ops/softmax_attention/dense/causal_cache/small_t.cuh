@@ -29,13 +29,6 @@ struct CausalCachedInput {
 };
 
 template <typename Geometry>
-__device__ __forceinline__ std::int64_t causal_cache_index(int physical_page, int kv_head, int d,
-                                                           int page_offset) {
-    return paged_kv_element_offset<kCausalHeadDim, Geometry::KVHeads>(physical_page, kv_head,
-                                                                      page_offset, d);
-}
-
-template <typename Geometry>
 __device__ __forceinline__ std::int64_t causal_q_index(int q_head, int d, int token = 0) {
     return static_cast<std::int64_t>(d) + static_cast<std::int64_t>(kCausalHeadDim) *
                                               (static_cast<std::int64_t>(q_head) +

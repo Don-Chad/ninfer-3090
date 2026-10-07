@@ -119,11 +119,6 @@ __device__ __forceinline__ bool sampling_better(float v, int i, float bv, int bi
     return v > bv || (v == bv && i < bi);
 }
 
-// True when (v,i) ranks strictly below pivot (pv,pi) in the ordering above.
-__device__ __forceinline__ bool sampling_worse_than(float v, int i, float pv, int pi) {
-    return pv > v || (pv == v && pi < i);
-}
-
 __device__ __forceinline__ unsigned long long sampling_sort_key(float v, int idx) {
     return score_id_order_key(v, idx);
 }

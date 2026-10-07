@@ -22,7 +22,6 @@ struct Bf16KvOperands {
 
 template <bool Writable>
 struct Bf16KvCacheView {
-    static constexpr bool kWritable = Writable;
     using Key   = std::conditional_t<Writable, __nv_bfloat16, const __nv_bfloat16>;
     // V is pure BF16 in the cache (this fork's KV-plane typing), not upstream's FP16 V.
     using Value = std::conditional_t<Writable, __nv_bfloat16, const __nv_bfloat16>;
@@ -36,8 +35,7 @@ struct Bf16KvCacheView {
     int kv_heads;
 };
 
-using Bf16KvReadView  = Bf16KvCacheView<false>;
-using Bf16KvWriteView = Bf16KvCacheView<true>;
+using Bf16KvReadView = Bf16KvCacheView<false>;
 
 struct Bf16KvAppendInput {
     static constexpr bool writes_cache = true;

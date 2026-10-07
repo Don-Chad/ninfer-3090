@@ -74,12 +74,6 @@ __device__ __forceinline__ void mma_tf32_bits(float& c0, float& c1, float& c2, f
                  : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
 }
 
-__device__ __forceinline__ void mma_tf32(float& c0, float& c1, float& c2, float& c3, float a0,
-                                         float a1, float a2, float a3, float b0, float b1) {
-    mma_tf32_bits(c0, c1, c2, c3, __float_as_uint(a0), __float_as_uint(a1), __float_as_uint(a2),
-                  __float_as_uint(a3), __float_as_uint(b0), __float_as_uint(b1));
-}
-
 __device__ __forceinline__ void mma_nvfp4_e4m3(float& c0, float& c1, float& c2, float& c3,
                                                unsigned a0, unsigned a1, unsigned a2, unsigned a3,
                                                unsigned b0, unsigned b1, unsigned sfa,
