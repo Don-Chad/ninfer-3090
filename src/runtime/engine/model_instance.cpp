@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -301,7 +302,10 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
         // media cache and the media in flight. Counted in full so a vision workload cannot outgrow
         // the margin the pinned tier leaves.
         if (options.enable_vision) {
-            environment.extra_reserve_bytes = options.media_cache_bytes + options.media_live_bytes;
+            environment.extra_reserve_bytes =
+                options.media_cache_bytes > std::numeric_limits<std::uint64_t>::max() - options.media_live_bytes
+                    ? std::numeric_limits<std::uint64_t>::max()
+                    : options.media_cache_bytes + options.media_live_bytes;
         }
 #if defined(_WIN32)
         // WDDM charges pinned host memory against the GPU, so what the Program will leave free

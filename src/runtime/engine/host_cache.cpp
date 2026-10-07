@@ -224,7 +224,12 @@ ContextCacheOptions resolve_host_cache(const ContextCacheOptions& requested,
     // The machine serves only this process, so everything but a fixed reserve is spent. The reserve
     // covers what grows after this point: request buffers, the response store, graph
     // instantiation and module loads. Pinned pages cannot be reclaimed, so it is not a fraction.
-    const std::uint64_t reserve = requested.host_cache_reserve_bytes + environment.extra_reserve_bytes;
+    // Saturating add: both terms are independently accepted, and a wrapped sum would leave
+    // almost nothing reserved.
+    const std::uint64_t extra_reserve = environment.extra_reserve_bytes;
+    const std::uint64_t reserve = requested.host_cache_reserve_bytes > std::numeric_limits<std::uint64_t>::max() - extra_reserve
+                                      ? std::numeric_limits<std::uint64_t>::max()
+                                      : requested.host_cache_reserve_bytes + extra_reserve;
     std::uint64_t budget = available_host_bytes > reserve ? available_host_bytes - reserve : 0;
     // The reserve leaves memory for what still grows; a cap leaves memory for the machine's other
     // users, which `available_host_bytes` cannot know will want it.
