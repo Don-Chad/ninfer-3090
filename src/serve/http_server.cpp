@@ -162,10 +162,17 @@ void write_anthropic_error(httplib::Response& response, const ApiError& api_erro
     response.set_content(make_anthropic_error_body(error, request_id), "application/json");
 }
 
+// Stamped on every response, including the loading 503, auth failures and malformed requests that
+// never reach the pre-routing handler, so a caller can tell which build answered.
+void set_version_header(httplib::Response& response) {
+    response.set_header("X-NInfer-Version", std::string(ninfer::product::build_version()));
+}
+
 httplib::Server::HandlerResponse handle_unrendered_http_error(const ServeOptions& options,
                                                               const httplib::Request& request,
                                                               httplib::Response& response) {
     ensure_openai_request_id(request, response);
+    set_version_header(response);
     if (!response.body.empty()) { return httplib::Server::HandlerResponse::Unhandled; }
 
     ApiError error;
@@ -369,9 +376,7 @@ void HttpServer::register_routes() {
 
     server_.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
         ensure_openai_request_id(req, res);
-        // Every response, including the loading 503 and auth failures, so a caller can tell which
-        // build answered without a credential.
-        res.set_header("X-NInfer-Version", std::string(ninfer::product::build_version()));
+        set_version_header(res);
         if (!ready_.load(std::memory_order_acquire)) {
             // Runs for every route, including /health and OPTIONS, so a caller cannot tell "not
             // ready" apart from "unauthenticated" -- and skips the API-key check below, since a
