@@ -113,7 +113,6 @@ struct ResolvedContextMachineCost {
 
 [[nodiscard]] std::string context_cost_hardware_class(std::string_view gpu_name, int major,
                                                       int minor);
-[[nodiscard]] ContextMachineCostModel generic_context_machine_cost_model();
 
 [[nodiscard]] std::vector<ContextCostMachinePreset>
 parse_context_cost_presets(std::string_view json, std::string_view source_name);

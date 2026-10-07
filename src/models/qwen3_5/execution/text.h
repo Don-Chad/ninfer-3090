@@ -107,10 +107,6 @@ public:
 
     [[nodiscard]] const LinearParameters* proposal_head() const noexcept { return proposal_head_; }
 
-    [[nodiscard]] const std::int32_t* proposal_head_ids() const noexcept {
-        return proposal_head_ids_;
-    }
-
     [[nodiscard]] int proposal_head_n() const noexcept { return proposal_head_n_; }
 
     [[nodiscard]] PrefillChunkResult prefill_chunk(std::span<const int> full_ids,

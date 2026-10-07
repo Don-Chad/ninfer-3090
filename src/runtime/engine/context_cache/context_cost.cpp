@@ -491,11 +491,6 @@ std::string context_cost_hardware_class(std::string_view gpu_name, int major, in
     return slug + "-sm" + std::to_string(major) + std::to_string(minor);
 }
 
-ContextMachineCostModel generic_context_machine_cost_model() {
-    return ContextMachineCostModel{.transfer = generic_context_transfer_cost(),
-                                   .prefill  = generic_context_prefill_cost()};
-}
-
 std::vector<ContextCostMachinePreset> parse_context_cost_presets(std::string_view json,
                                                                  std::string_view source_name) {
     const Json document = parse_document(json, source_name);

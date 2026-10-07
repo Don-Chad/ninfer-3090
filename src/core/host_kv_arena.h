@@ -172,10 +172,6 @@ public:
 
     [[nodiscard]] bool valid() const noexcept { return owner_ != nullptr; }
 
-    [[nodiscard]] std::size_t release_count() const noexcept { return releases_.size(); }
-
-    [[nodiscard]] std::size_t allocation_count() const noexcept { return targets_.size(); }
-
 private:
     struct Target {
         std::uint32_t layout = 0;

@@ -68,9 +68,6 @@ public:
     // every route answering 503 plus Retry-After. attach() then publishes the service and the same
     // loop begins serving normally, with no second bind and no handoff of the listening socket.
     void start_serving_during_startup();
-    [[nodiscard]] bool serving_during_startup() const noexcept {
-        return startup_listener_.joinable();
-    }
     // Blocks until the background accept loop returns, which happens when stop() is called.
     // Mirrors listen()'s return: true when the loop exited cleanly.
     bool await_startup_listener();

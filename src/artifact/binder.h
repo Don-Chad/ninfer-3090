@@ -88,7 +88,6 @@ private:
     const Reader& reader_;
     std::vector<Demand> demands_;
     std::uint64_t read_bytes_        = 0;
-    std::uint64_t owned_value_bytes_ = 0;
     std::uint64_t next_pinned_order_ = 0;
 };
 

@@ -247,22 +247,6 @@ DFlashContextLayerRoots dflash_context_layer(Allocator& allocator, const TextCon
     };
 }
 
-struct DFlashProposalRoots {
-    Tensor ids;
-    Tensor positions;
-    Tensor residual;
-};
-
-template <class Allocator>
-DFlashProposalRoots dflash_proposal(Allocator& allocator, const TextConfig& target,
-                                    const DraftConfig& config, std::int32_t tokens) {
-    return {
-        vector(allocator, DType::I32, tokens),
-        vector(allocator, DType::I32, tokens),
-        matrix(allocator, DType::BF16, dimension(target.hidden_size), tokens),
-    };
-}
-
 struct DFlashAttentionRoots {
     Tensor hidden;
     Tensor query_raw;

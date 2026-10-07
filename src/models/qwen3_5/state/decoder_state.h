@@ -11,9 +11,6 @@
 
 namespace ninfer::models::qwen3_5 {
 
-inline constexpr std::int32_t kKvInt8QuantGroup = 64;
-inline constexpr std::int32_t kKvFp8QuantGroup  = 256;
-
 struct DecoderStateSpec {
     std::uint32_t full_attention_layers     = 0;
     std::uint32_t mtp_layers                = 0;

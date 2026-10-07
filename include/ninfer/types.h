@@ -34,13 +34,6 @@ inline constexpr std::size_t kDefaultHostKvCapacityBytes = 8ULL << 30;
 // 27B server measured ~2 GiB of non-pinned growth after sizing (CUDA/cuBLAS host state, tokenizer,
 // HTTP and Program setup; two requests added ~30 MB); this keeps a margin over that.
 inline constexpr std::size_t kDefaultHostCacheReserveBytes = 3ULL << 30;
-// Largest text hidden size among shipped targets (27B). Used only to conservatively size the
-// pinned cross-rank staging buffer for a model-parallel `DeviceContext` from the configured
-// prefill chunk, before the target's actual hidden size is known; a wider future target just
-// widens this.
-inline constexpr std::size_t kMaxSupportedResidualHiddenSize = 5120;
-// BF16: the residual stream's dtype for every shipped target, independent of KV cache storage.
-inline constexpr std::size_t kResidualStreamBytesPerElement = 2;
 
 enum class KvCacheStorage : std::uint8_t {
     BFloat16,

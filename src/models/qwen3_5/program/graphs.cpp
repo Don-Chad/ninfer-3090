@@ -409,7 +409,7 @@ void ProgramImpl::prepare_graphs() {
         device.synchronize();
         execution::dflash_decode_propose(
             dflash_state, 1, draft_window,
-            dflash_envelopes(code_warm.min, code_warm.max, draft_window), nullptr);
+            dflash_envelopes(code_warm.max, draft_window), nullptr);
         execution::dflash_decode_verify(dflash_state, 1, draft_window, code_warm_target, nullptr);
         execution::dflash_decode_accept(dflash_state, 1, draft_window, nullptr);
         device.synchronize();
@@ -437,7 +437,7 @@ void ProgramImpl::prepare_graphs() {
                 profile.segments.resize(execution::kDFlashRoundSegments);
                 execution::capture_dflash_decode_batch(
                     dflash_state, static_cast<std::int32_t>(batch_size), draft_window,
-                    dflash_envelopes(planned.min, planned.max, draft_window), target_envelope,
+                    dflash_envelopes(planned.max, draft_window), target_envelope,
                     std::span<DecodeGraphDefinition, execution::kDFlashRoundSegments>(
                         profile.segments.data(), execution::kDFlashRoundSegments));
             }
