@@ -162,3 +162,33 @@ Wait for explicit approval, then:
 Give the release URL, asset sizes, what was verified and what was not, and any adverse findings
 from the notes (regressions, costs). Update `docs/maintainer/release-process.md` with any new trap
 hit, and clean `dist/` and the `~/ninfer-rel-*` export only after the release is confirmed.
+
+## Traps hit in v0.15.0 (all cost a retry)
+
+- **Commit the `VERSION` bump alone, with a trailing newline, before any build.** Binaries embed
+  `VERSION` plus `+<commit>` or `-dirty`; the file has a trailing newline (`echo`, not `echo -n`).
+  Add the notes in a second commit afterwards; that does not affect the built binaries. Windows then
+  reports `<VERSION>+<commit>` and the `git archive` Linux build reports `<VERSION>`; both are expected.
+- **WSL export:** from Git Bash `~` is the Windows home. Pipe it in instead:
+  `git archive HEAD | wsl.exe -e bash -c 'mkdir -p ~/ninfer-rel-X && tar -x -C ~/ninfer-rel-X'`.
+- **The `systemd-run --scope` shell has no nvcc on `PATH`.** Start the build script with
+  `export PATH=/usr/local/cuda-12.8/bin:$PATH CUDACXX=/usr/local/cuda-12.8/bin/nvcc`, or CMake fails with
+  "No CMAKE_CUDA_COMPILER could be found".
+- **`package-release.sh` looks for `build-linux/`**, not `build/`: `ln -s build build-linux` (or configure
+  into that name).
+- **Never end a `run_in_background` command with `&`**; the task "completes" at once and the real job is
+  orphaned. Redirect inside the command and let the harness background it. Foreground polling loops over
+  the 600 s limit are auto-backgrounded and waste time: use Monitor with an until-loop.
+- **Package twice.** The archives embed `RELEASE_NOTES_X.Y.Z.md`. Package once to run the checks, then fill
+  in the Verification section, commit it, and repackage both (delete the old `dist/*X.Y.Z*` outputs
+  first). The Linux export needs the final notes copied in before it is repackaged.
+- **Smoke test launch:** `Start-Process cmd -ArgumentList '/c', '"<dir>un.bat" qwen38-27b'
+  -RedirectStandardOutput ... -RedirectStandardError ...`. A `> log` inside the argument string silently
+  fails and nothing starts. The request `model` is the served id from `/v1/models` (`qwen3.8-27b`), not
+  the profile name `qwen38-27b`. Loading took about two minutes. Stop it by matching command lines that
+  contain the smoke directory.
+- `ninfer_bench` has no `--version`; check `ninfer` and `ninfer-serve` only. Windows zip was 1.7 GB, Linux
+  tar.gz 1.1 GB.
+- The notes must say which tests were not run (this time: the full suite and all real-model tests, since
+  the release only builds the three products).
+
