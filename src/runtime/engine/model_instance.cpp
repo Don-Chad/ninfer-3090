@@ -19,6 +19,11 @@ namespace ninfer::runtime {
 namespace {
 using Clock = std::chrono::steady_clock;
 
+constexpr std::uint32_t kMaximumDecodeRoundsPerPrefill = 4096;
+// Automatic decode rounds per prefill unit = prefill_chunk / this. The chunk is a multiple of 128,
+// so the ratio is exact, and decode keeps a similar share of GPU time at any chunk size.
+constexpr std::uint32_t kAutoDecodeRoundsChunkDivisor = 64;
+
 void validate_options(const EngineOptions& options) {
     if (options.artifact_path.empty()) {
         throw std::invalid_argument("Engine artifact_path must not be empty");
@@ -58,6 +63,9 @@ void validate_options(const EngineOptions& options) {
         options.prefill_max_skip == 0) {
         throw std::invalid_argument(
             "Engine max_prefill_lanes must be in [1,max_concurrency] and prefill_max_skip nonzero");
+    }
+    if (options.decode_rounds_per_prefill > kMaximumDecodeRoundsPerPrefill) {
+        throw std::invalid_argument("Engine decode_rounds_per_prefill must be in [0,4096]");
     }
     if (options.enable_vision && options.media_live_bytes == 0) {
         throw std::invalid_argument(
@@ -106,7 +114,8 @@ EngineOptions normalize_engine_options(EngineOptions options) {
         options.prefill_chunk        = 1024;
         options.max_prefill_lanes    = 1;
         options.prefill_max_skip     = EngineOptions{}.prefill_max_skip;
-        options.kv_capacity         = KvCapacityPolicy::explicit_capacity(options.max_context);
+        options.decode_rounds_per_prefill = 1;
+        options.kv_capacity        = KvCapacityPolicy::explicit_capacity(options.max_context);
         options.speculative          = {};
         options.enable_vision        = false;
         options.use_cuda_graph       = false;
@@ -118,8 +127,13 @@ EngineOptions normalize_engine_options(EngineOptions options) {
     if (options.max_concurrency == 0 || options.max_concurrency > kMaximumConcurrency) {
         throw std::invalid_argument("Engine max_concurrency must be in [1,8]");
     }
+    if (options.decode_rounds_per_prefill == 0) {
+        options.decode_rounds_per_prefill =
+            std::clamp(options.prefill_chunk / kAutoDecodeRoundsChunkDivisor, 1U,
+                       kMaximumDecodeRoundsPerPrefill);
+    }
 
-    ContextCacheOptions& cache      = options.context_cache;
+    ContextCacheOptions& cache     = options.context_cache;
     const std::uint32_t concurrency = options.max_concurrency;
     // Injected grafts stay resident for the life of the Engine, each in a StateImage and a
     // shared-prefix slot of its own, so the pools grow by that many beyond what requests use.

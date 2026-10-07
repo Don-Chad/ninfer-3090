@@ -282,7 +282,12 @@ struct EngineOptions {
     std::uint32_t max_prefill_lanes    = 1;
     // A prefill lane passed over this many units is served before any shorter one.
     std::uint32_t prefill_max_skip     = 8;
-    KvCacheStorage kv_cache            = KvCacheStorage::BFloat16;
+    // Decode rounds run after each prefill unit while other requests decode. A decode round takes
+    // tens of milliseconds and a prefill chunk hundreds, so 1 (strict alternation) leaves decode
+    // streams a few percent of the GPU during a prefill. 0 selects prefill_chunk / 64, which keeps
+    // decode's share of GPU time roughly constant across chunk sizes.
+    std::uint32_t decode_rounds_per_prefill = 0;
+    KvCacheStorage kv_cache           = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
     std::size_t media_cache_bytes = kDefaultMediaCacheBytes;
     std::size_t media_live_bytes  = kDefaultMediaLiveBytes;

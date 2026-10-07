@@ -76,7 +76,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--max-concurrency N] "
            "[--max-pending-requests N] [--pending-timeout-ms N] "
            "[--prefill-chunk N] [--max-prefill-lanes N] [--prefill-max-skip N] "
-           "[--log-stats-interval-ms N] [--device N] "
+           "[--decode-rounds-per-prefill N] [--log-stats-interval-ms N] [--device N] "
            "[--context-cost-presets FILE] "
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
            "[--media-preprocess-threads N] "
@@ -128,6 +128,11 @@ std::string serve_usage_text(const char* argv0) {
            "suffix, so a short or prefix-cached prompt is not stuck behind a very long one; the KV "
            "capacity must hold the long prompt and the short ones together. A lane passed over "
            "--prefill-max-skip units (default 8) is served before any shorter one\n"
+           "       --decode-rounds-per-prefill N runs that many decode rounds after each prefill unit "
+           "while other requests are generating (default 0 = --prefill-chunk / 64, so 16 at the "
+           "default chunk of 1024); 1 alternates strictly, which leaves a decoding stream a few "
+           "tokens per second while a long prompt prefills; a larger N keeps streams responsive and "
+           "makes the prefill finish later\n"
            "       --prefill-cublas hands wide prefill GEMMs to cuBLAS: a large prefill speedup for a "
            "small perplexity cost (docs/performance.md), off by default, and it wants a larger "
            "--prefill-chunk to pay; --no-prefill-cublas-projections keeps the attention and GDN "
@@ -303,6 +308,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--prefill-max-skip") {
             options.prefill_max_skip = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--prefill-max-skip"), "prefill-max-skip"));
+        } else if (arg == "--decode-rounds-per-prefill") {
+            options.decode_rounds_per_prefill = static_cast<std::uint32_t>(parse_nonnegative_int(
+                require_value("--decode-rounds-per-prefill"), "decode-rounds-per-prefill"));
         } else if (arg == "--context-cost-presets") {
             options.context_cost_presets = require_value("--context-cost-presets");
             if (options.context_cost_presets.empty()) {
@@ -664,6 +672,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (options.prefill_max_skip == 0) {
         throw std::invalid_argument("--prefill-max-skip must be positive");
+    }
+    if (options.decode_rounds_per_prefill > 4096) {
+        throw std::invalid_argument("--decode-rounds-per-prefill must be in [0,4096]");
     }
     product::validate_speculative_cli_options(options.speculative);
     if (options.vision_residency == VisionResidency::Overlay && !options.enable_vision) {

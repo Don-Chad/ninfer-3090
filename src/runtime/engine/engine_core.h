@@ -92,10 +92,11 @@ public:
             throw std::logic_error("target admission capacity does not match the Engine");
         }
         if (options.max_prefill_lanes == 0 || options.max_prefill_lanes > max_concurrency_ ||
-            options.prefill_max_skip == 0) {
+            options.prefill_max_skip == 0 || options.decode_rounds_per_prefill == 0) {
             throw std::invalid_argument("Engine prefill lane bounds are invalid");
         }
-        scheduler_.configure_prefill(options.max_prefill_lanes, options.prefill_max_skip);
+        scheduler_.configure_prefill(options.max_prefill_lanes, options.prefill_max_skip,
+                                     options.decode_rounds_per_prefill);
         catalog_pinned_grafts();
         slot_session_paths_.resize(resources_.catalog_capacity());
         slot_digest_cache_.resize(resources_.catalog_capacity());
@@ -2445,7 +2446,8 @@ private:
     }
 
     void worker_loop() noexcept {
-        bool previous_unit_was_decode = false;
+        // Decode and control units executed since the last prefill unit; saturates.
+        std::uint32_t decode_run = 0;
         for (;;) {
             {
                 std::unique_lock lock(queue_mutex_);
@@ -2484,7 +2486,7 @@ private:
                     admission_check_pending_.load(std::memory_order_acquire);
                 if (scheduler_.should_attempt_admission(
                         have_pending, admission_check_pending, !membership.empty(),
-                        previous_unit_was_decode, instance_.program->has_context_transaction()) &&
+                        decode_run, instance_.program->has_context_transaction()) &&
                     consume_admission_check()) {
                     unit = "admission";
                     (void)try_admit_one();
@@ -2504,7 +2506,7 @@ private:
                     finish_engine_phase(boundary, EngineHostPhase::Boundary);
                     unit = "control";
                     run_control_batch(control_membership);
-                    previous_unit_was_decode = true;
+                    decode_run += decode_run != std::numeric_limits<std::uint32_t>::max();
                     continue;
                 }
                 membership = scheduler_.build_round_membership(slots_, max_concurrency_);
@@ -2518,14 +2520,14 @@ private:
                 const std::optional<std::uint32_t> prefill_lane =
                     scheduler_.select_prefill_lane(candidate_span);
                 const ExecutionAction action = scheduler_.choose_execution(
-                    !membership.empty(), prefill_lane.has_value(), previous_unit_was_decode);
+                    !membership.empty(), prefill_lane.has_value(), decode_run);
                 if (action == ExecutionAction::Prefill) {
                     set_host_work_class(HostWorkClass::Prefill);
                     finish_engine_phase(boundary, EngineHostPhase::Boundary);
                     unit = "prefill";
                     scheduler_.record_prefill_unit(*prefill_lane, candidate_span);
                     run_prefill_step(*prefill_lane, cancelled_at_unit_start);
-                    previous_unit_was_decode = false;
+                    decode_run = 0;
                     continue;
                 }
                 if (action == ExecutionAction::Decode) {
@@ -2533,7 +2535,7 @@ private:
                     finish_engine_phase(boundary, EngineHostPhase::Boundary);
                     unit = "decode";
                     run_decode_round(membership, cancelled_at_unit_start);
-                    previous_unit_was_decode = true;
+                    decode_run += decode_run != std::numeric_limits<std::uint32_t>::max();
                     continue;
                 }
                 set_host_work_class(HostWorkClass::Control);

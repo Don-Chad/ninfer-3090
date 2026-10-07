@@ -170,12 +170,28 @@ int check_scoring_normalization() {
                  "a CausalScoring Engine rejected or kept its generation-only prefill options");
 }
 
+// Zero decode rounds per prefill unit resolves from the chunk (chunk / 64, at least one); an
+// explicit count is kept.
+int check_decode_rounds_normalization() {
+    using ninfer::runtime::normalize_engine_options;
+    const auto resolve = [](std::uint32_t chunk, std::uint32_t rounds) {
+        ninfer::EngineOptions options;
+        options.prefill_chunk             = chunk;
+        options.decode_rounds_per_prefill = rounds;
+        return normalize_engine_options(options).decode_rounds_per_prefill;
+    };
+    return check(resolve(1024, 0) == 16 && resolve(4096, 0) == 64 && resolve(128, 0) == 2 &&
+                     resolve(32, 0) == 1 && resolve(1024, 1) == 1 && resolve(1024, 7) == 7,
+                 "decode rounds per prefill unit did not resolve from the prefill chunk");
+}
+
 } // namespace
 
 int main() {
     int failures = 0;
     failures += check_automatic_normalization();
     failures += check_scoring_normalization();
+    failures += check_decode_rounds_normalization();
 
     // 64 GiB free less the 3 GiB default reserve is a 61 GiB (62,464 MiB) budget; an eighth,
     // 7,808 MiB, buys 78 of the 100 MiB states.
