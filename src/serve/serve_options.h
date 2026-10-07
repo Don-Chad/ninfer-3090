@@ -137,9 +137,7 @@ std::uint32_t resolve_automatic_private_anchors(const ServeOptions& options,
 // the context cache is disabled or retains no long anchors. `resolved` must be the Engine's
 // normalized options.
 inline constexpr std::uint32_t kDefaultProgressAnchorTokens = 16384;
-// Smallest non-zero spacing accepted: the Frontend proposes one candidate per multiple, so a finer
-// stride would make a long prompt's candidate list, and its duplicate scan, grow without bound.
-inline constexpr std::uint32_t kMinimumProgressAnchorTokens = 256;
+inline constexpr std::uint32_t kMinimumProgressAnchorTokens = kMinimumProgressAnchorStride;
 std::uint32_t resolve_progress_anchor_stride(const ServeOptions& options,
                                              const ContextCacheOptions& resolved);
 std::string resolve_public_model_id(const ServeOptions& options,

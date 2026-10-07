@@ -665,6 +665,10 @@ PreparedContextCache prepare_context_cache(
     // so a prompt with no message boundary (one very long user message) still leaves a restore
     // point behind when its prefill is cancelled. The prompt's own end is covered by the endpoint.
     if (hints.progress_anchor_stride != 0) {
+        if (hints.progress_anchor_stride < kMinimumProgressAnchorStride) {
+            throw std::invalid_argument("progress_anchor_stride must be 0 or at least " +
+                                        std::to_string(kMinimumProgressAnchorStride));
+        }
         for (std::uint32_t frontier = hints.progress_anchor_stride; frontier < full_prompt_frontier;
              frontier += hints.progress_anchor_stride) {
             add_opportunity(PromptCacheMarkerKind::PrivateLongAnchor, SharedCandidateEvidence::None,

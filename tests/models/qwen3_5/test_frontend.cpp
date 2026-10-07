@@ -1652,14 +1652,16 @@ int test_progress_anchors() {
     const auto frontiers    = [&](std::uint32_t stride, std::size_t* token_count) {
         // One long user message: no interior message boundary exists, so every anchor below comes
         // from the stride alone.
+        std::string text;
+        for (int repeat = 0; repeat < 120; ++repeat) {
+            text += "one very long question that keeps going and going so the prompt spans many "
+                    "tokens before it finally ends here. ";
+        }
         ninfer::PromptInput input;
         ninfer::ChatMessage message;
         message.role = ninfer::ChatRole::User;
         message.parts.push_back(ninfer::MessagePart{
-            .kind  = ninfer::MessagePartKind::Text,
-            .text  = "one very long question that keeps going and going so the prompt spans many "
-                     "tokens before it finally ends here",
-            .media = {}});
+            .kind = ninfer::MessagePartKind::Text, .text = std::move(text), .media = {}});
         input.messages.push_back(std::move(message));
         input.context_cache.progress_anchor_stride = stride;
         const auto prepared                        = frontend.prepare(std::move(input));
@@ -1678,7 +1680,7 @@ int test_progress_anchors() {
     std::size_t tokens = 0;
     failures += check(frontiers(0, &tokens).empty(),
                       "progress anchors were proposed while disabled");
-    constexpr std::uint32_t kStride = 4;
+    constexpr std::uint32_t kStride = ninfer::kMinimumProgressAnchorStride;
     const std::vector<std::uint32_t> anchors = frontiers(kStride, &tokens);
     failures += check(tokens > 2U * kStride && anchors.size() == (tokens - 1U) / kStride,
                       "progress anchors did not cover every stride multiple inside the prompt");
@@ -1690,6 +1692,12 @@ int test_progress_anchors() {
                       "progress anchors were not at ascending absolute multiples of the stride");
     failures += check(frontiers(static_cast<std::uint32_t>(tokens), &tokens).empty(),
                       "a stride covering the whole prompt proposed an anchor");
+    bool fine_stride_rejected = false;
+    try {
+        (void)frontiers(1, &tokens);
+    } catch (const std::invalid_argument&) { fine_stride_rejected = true; }
+    failures += check(fine_stride_rejected,
+                      "a progress anchor stride below the minimum reached the Frontend");
     return failures;
 }
 

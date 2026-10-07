@@ -2643,6 +2643,7 @@ private:
         std::optional<std::uint32_t> publication;
         std::optional<std::uint32_t> retained_source;
         bool continued = false;
+        std::uint32_t reused_prompt_tokens = 0;
         SlotUsage source_usage;
     };
 
@@ -2656,11 +2657,13 @@ private:
         // cell it left retained (a rewrite or anchor restore) or, when the session's endpoint
         // was consumed, from the cell it publishes into. A turn that started from the root or a
         // shared prefix starts a conversation.
+        const std::optional<BeginSummary>& begin = request.begin ? request.begin : request.admitted_begin;
         context.continued =
             context.retained_source.has_value() ||
-            (request.begin && request.begin->reused_prompt_tokens > 0 &&
-             request.begin->prefix_reuse_path != PrefixReusePath::Root &&
-             request.begin->prefix_reuse_path != PrefixReusePath::SharedStablePrefix);
+            (begin && begin->reused_prompt_tokens > 0 &&
+             begin->prefix_reuse_path != PrefixReusePath::Root &&
+             begin->prefix_reuse_path != PrefixReusePath::SharedStablePrefix);
+        context.reused_prompt_tokens = begin ? begin->reused_prompt_tokens : 0U;
         // The usage record travels with the conversation.
         const std::optional<std::uint32_t> usage_source =
             context.retained_source ? context.retained_source
@@ -2676,7 +2679,8 @@ private:
     void record_catalogued_publication(const std::shared_ptr<Request>& request,
                                        FinishDisposition disposition,
                                        const CatalogContext& catalog) {
-        const auto& [publication, retained_source, continued, source_usage] = catalog;
+        const auto& [publication, retained_source, continued, reused_prompt_tokens, source_usage] =
+            catalog;
         if (disposition == FinishDisposition::Catalogued && publication) {
             const auto view = resources_.catalog_slot(*publication);
             if (view.state == ResourceManagement::CatalogState::Catalogued &&
@@ -2696,8 +2700,7 @@ private:
                 usage.last_used_unix_ms = unix_time_ms();
                 if (continued) {
                     ++usage.reuse_count;
-                    usage.reused_tokens +=
-                        request->begin ? request->begin->reused_prompt_tokens : 0U;
+                    usage.reused_tokens += reused_prompt_tokens;
                 }
                 if (*publication < slot_usage_.size()) { slot_usage_[*publication] = usage; }
             }
