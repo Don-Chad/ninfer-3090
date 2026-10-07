@@ -34,6 +34,7 @@ bool active() { return trace.failure != Failure::None; }
 extern "C" {
 cudaError_t CUDARTAPI __real_cudaMalloc(void**, std::size_t);
 cudaError_t CUDARTAPI __real_cudaMallocHost(void**, std::size_t);
+cudaError_t CUDARTAPI __real_cudaHostAlloc(void**, std::size_t, unsigned int);
 cudaError_t CUDARTAPI __real_cudaFree(void*);
 cudaError_t CUDARTAPI __real_cudaFreeHost(void*);
 cudaError_t CUDARTAPI __real_cudaEventCreateWithFlags(cudaEvent_t*, unsigned int);
@@ -50,6 +51,12 @@ cudaError_t CUDARTAPI __wrap_cudaMalloc(void** pointer, std::size_t bytes) {
 
 cudaError_t CUDARTAPI __wrap_cudaMallocHost(void** pointer, std::size_t bytes) {
     const auto status = __real_cudaMallocHost(pointer, bytes);
+    if (active() && status == cudaSuccess) { ++trace.host_allocations; }
+    return status;
+}
+
+cudaError_t CUDARTAPI __wrap_cudaHostAlloc(void** pointer, std::size_t bytes, unsigned int flags) {
+    const auto status = __real_cudaHostAlloc(pointer, bytes, flags);
     if (active() && status == cudaSuccess) { ++trace.host_allocations; }
     return status;
 }

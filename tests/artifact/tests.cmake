@@ -25,6 +25,7 @@ else()
   target_link_options(ninfer_artifact_materialization_test PRIVATE
     "LINKER:--wrap=cudaMalloc"
     "LINKER:--wrap=cudaMallocHost"
+    "LINKER:--wrap=cudaHostAlloc"
     "LINKER:--wrap=cudaFree"
     "LINKER:--wrap=cudaFreeHost"
     "LINKER:--wrap=cudaEventCreateWithFlags"
