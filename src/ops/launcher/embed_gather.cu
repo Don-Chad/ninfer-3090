@@ -56,18 +56,6 @@ int grid_for_q6_grouped(std::int32_t d, std::int32_t T) {
 
 } // namespace
 
-const char* q8_embed_route_name(Q8EmbedRoute route) {
-    switch (route) {
-    case Q8EmbedRoute::Auto:
-        return "auto";
-    case Q8EmbedRoute::Grouped:
-        return "grouped-b32";
-    case Q8EmbedRoute::Row:
-        return "row-b256";
-    }
-    return "unknown";
-}
-
 void embed_gather_q8_2048_launch(const Tensor& ids, const Weight& table, Tensor& out,
                                  Q8EmbedRoute route, cudaStream_t stream) {
     const std::int32_t T = ids.ne[0];

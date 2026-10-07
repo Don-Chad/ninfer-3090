@@ -11,10 +11,6 @@ void q8_attn_input_decode_launch(const Tensor& x, const Weight& weight, Tensor& 
                                  Tensor& k, Tensor& v, cudaStream_t stream);
 void q8_attn_input_decode_launch(const Tensor& x, const Weight& weight, Tensor& q, Tensor& k,
                                  Tensor& v, cudaStream_t stream);
-void q8_companion_attn_input_decode_r4_launch(const Tensor& x, const Weight& weight, Tensor& q,
-                                              Tensor& k, Tensor& v, cudaStream_t stream);
-void q8_companion_attn_input_decode_r16_launch(const Tensor& x, const Weight& weight, Tensor& q,
-                                               Tensor& k, Tensor& v, cudaStream_t stream);
 void q8_attn_input_simt_r8_c4_launch(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate,
                                      Tensor& k, Tensor& v, cudaStream_t stream);
 void q8_attn_input_simt_r8_c4_launch(const Tensor& x, const Weight& weight, Tensor& q, Tensor& k,
@@ -34,8 +30,6 @@ void q8_attn_input_mma_r64_c128_launch(const Tensor& x, const Weight& weight, Te
 void q8_companion_attn_input_mma_r32_c64_launch(const Tensor& x, const Weight& weight, Tensor& q,
                                                 Tensor& k, Tensor& v, cudaStream_t stream);
 void q8_companion_attn_input_mma_r64_c64_launch(const Tensor& x, const Weight& weight, Tensor& q,
-                                                Tensor& k, Tensor& v, cudaStream_t stream);
-void q8_companion_attn_input_mma_r32_c96_launch(const Tensor& x, const Weight& weight, Tensor& q,
                                                 Tensor& k, Tensor& v, cudaStream_t stream);
 void q8_companion_attn_input_mma_r64_c96_launch(const Tensor& x, const Weight& weight, Tensor& q,
                                                 Tensor& k, Tensor& v, cudaStream_t stream);

@@ -81,16 +81,6 @@ ContextAttentionPlan context_attention_resolve_plan(std::int32_t tokens,
     };
 }
 
-const char* context_attention_route_name(ContextAttentionRoute route) {
-    switch (route) {
-    case ContextAttentionRoute::Direct:
-        return "direct";
-    case ContextAttentionRoute::SplitKv:
-        return "split_kv";
-    }
-    return "unknown";
-}
-
 void context_attention_launch(const Tensor& q, const Tensor& query_k, const Tensor& query_v,
                               const Tensor& context_lengths, const Tensor& valid_columns,
                               const Tensor& table_rows, float scale,

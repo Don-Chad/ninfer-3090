@@ -20,8 +20,6 @@ struct ContextAttentionPlan {
 [[nodiscard]] ContextAttentionPlan
 context_attention_resolve_plan(std::int32_t tokens, ContextAttentionExecutionEnvelope envelope);
 
-[[nodiscard]] const char* context_attention_route_name(ContextAttentionRoute route);
-
 void context_attention_launch(const Tensor& q, const Tensor& query_k, const Tensor& query_v,
                               const Tensor& context_lengths, const Tensor& valid_columns,
                               const Tensor& table_rows, float scale,

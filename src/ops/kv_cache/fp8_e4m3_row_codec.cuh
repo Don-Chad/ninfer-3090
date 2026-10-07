@@ -15,7 +15,6 @@
 namespace ninfer::ops {
 
 inline constexpr int kKVCacheFp8HeadDim        = 256;
-inline constexpr int kKVCacheFp8Group          = 256;
 inline constexpr int kKVCacheFp8Groups         = 1;
 inline constexpr float kKVCacheFp8MaxFinite    = 448.0F;
 inline constexpr float kKVCacheFp8ScaleMinimum = 0x1p-24F;
@@ -60,13 +59,6 @@ __device__ __forceinline__ KVCacheFp8QuantParams kv_cache_fp8_quant_params(float
 __device__ __forceinline__ std::uint8_t kv_cache_fp8_quant_code(float x, float inverse_scale) {
     if (inverse_scale == 0.0F) { return 0; }
     return __nv_cvt_float_to_fp8(x * inverse_scale, __NV_SATFINITE, __NV_E4M3);
-}
-
-__device__ __forceinline__ std::uint16_t kv_cache_fp8_quant_code2(float x0, float x1,
-                                                                  float inverse_scale) {
-    if (inverse_scale == 0.0F) { return 0; }
-    return __nv_cvt_float2_to_fp8x2(make_float2(x0 * inverse_scale, x1 * inverse_scale),
-                                    __NV_SATFINITE, __NV_E4M3);
 }
 
 __device__ __forceinline__ __half2 kv_cache_fp8_code2_to_half2(std::uint16_t storage) {

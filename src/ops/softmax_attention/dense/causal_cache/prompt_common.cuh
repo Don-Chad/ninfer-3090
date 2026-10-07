@@ -59,9 +59,4 @@ __device__ __forceinline__ int causal_prompt_p_swz(int row, int col) {
     return causal_prompt_swz(row, col);
 }
 
-__device__ __forceinline__ unsigned causal_prompt_swz_addr(unsigned lane_base, unsigned ck,
-                                                           unsigned as, unsigned r) {
-    return lane_base + ((ck | as) ^ r);
-}
-
 } // namespace ninfer::ops

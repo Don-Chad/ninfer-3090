@@ -52,14 +52,6 @@ __device__ __forceinline__ std::uint32_t bf16x2_bits_to_f16x2_bits(std::uint32_t
     return load_vec<std::uint32_t>(&converted);
 }
 
-__device__ __forceinline__ int4 bf16x8_bits_to_f16x8_bits(int4 bits) {
-    return make_int4(
-        static_cast<int>(bf16x2_bits_to_f16x2_bits(static_cast<std::uint32_t>(bits.x))),
-        static_cast<int>(bf16x2_bits_to_f16x2_bits(static_cast<std::uint32_t>(bits.y))),
-        static_cast<int>(bf16x2_bits_to_f16x2_bits(static_cast<std::uint32_t>(bits.z))),
-        static_cast<int>(bf16x2_bits_to_f16x2_bits(static_cast<std::uint32_t>(bits.w))));
-}
-
 __device__ __forceinline__ float2 bf16x2_to_float2(__nv_bfloat162 value) {
     return __bfloat1622float2(value);
 }

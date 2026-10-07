@@ -96,16 +96,6 @@ void q8_companion_attn_input_mma_r64_c64_launch(const Tensor& x, const Weight& w
     launch_route<Schedule, kCompanionRows>(x, weight, output, stream);
 }
 
-void q8_companion_attn_input_mma_r32_c96_launch(const Tensor& x, const Weight& weight, Tensor& q,
-                                                Tensor& k, Tensor& v, cudaStream_t stream) {
-    using Schedule = Q8RowSplitMmaGemmSchedule<32, 96, 32, 16, 2>;
-    static_assert((4096 % Schedule::BM) == 0 && (1024 % Schedule::BM) == 0);
-    const CompanionOutput output{static_cast<__nv_bfloat16*>(q.data),
-                                 static_cast<__nv_bfloat16*>(k.data),
-                                 static_cast<__nv_bfloat16*>(v.data)};
-    launch_route<Schedule, kCompanionRows>(x, weight, output, stream);
-}
-
 void q8_companion_attn_input_mma_r64_c96_launch(const Tensor& x, const Weight& weight, Tensor& q,
                                                 Tensor& k, Tensor& v, cudaStream_t stream) {
     using Schedule = Q8RowSplitMmaGemmSchedule<64, 96, 64, 16, 2, 2>;

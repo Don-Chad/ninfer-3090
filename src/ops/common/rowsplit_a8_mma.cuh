@@ -143,20 +143,6 @@ struct ContiguousRows {
     __device__ static int output_row(int warp_m, int m, int gid) { return staged_row(warp_m, m, gid); }
 };
 
-// gate_up: the block stages 64 gate rows and their 64 up partners, so one thread holds both halves
-// of a SwiGLU pair and the epilogue needs no shared exchange. MT is 2 and m selects the half.
-struct GatePairRows {
-    std::int32_t output_rows; // kOut: up row r lives at output_rows + r
-    static constexpr int kStagedRows   = 128;
-    static constexpr int kRowsPerBlock = 64;
-    __device__ std::int32_t weight_row(std::int32_t block, int staged) const {
-        const std::int32_t base = block * kRowsPerBlock;
-        return staged < 64 ? base + staged : output_rows + base + (staged - 64);
-    }
-    __device__ static int staged_row(int warp_m, int m, int gid) { return warp_m * 16 + m * 64 + gid; }
-    __device__ static int output_row(int warp_m, int /*m*/, int gid) { return warp_m * 16 + gid; }
-};
-
 // Writes each result to one destination matrix, offsetting the row. A weight whose rows feed two
 // destinations is launched once per contiguous row range.
 struct StoreEpilogue {
@@ -179,17 +165,6 @@ struct ResidualAddEpilogue {
     __device__ void operator()(std::int32_t row, std::int32_t token, float value) const {
         const std::size_t i = static_cast<std::size_t>(token) * rows + row;
         residual[i]         = __float2bfloat16(__bfloat162float(residual[i]) + value);
-    }
-};
-
-// Fused SwiGLU over a gate row and its up partner, which GatePairRows put in the same thread.
-struct SwiGluEpilogue {
-    static constexpr bool kPaired = true;
-    __nv_bfloat16* dst;
-    std::int32_t rows;
-    __device__ void operator()(std::int32_t row, std::int32_t token, float gate, float up) const {
-        dst[static_cast<std::size_t>(token) * rows + row] =
-            __float2bfloat16(gate / (1.0F + __expf(-gate)) * up);
     }
 };
 
