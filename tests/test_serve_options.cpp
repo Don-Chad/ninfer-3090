@@ -269,8 +269,14 @@ int main() {
                       "prefill lane options did not reach serving options");
     failures += check(parse({"ninfer-serve", "model.ninfer"}).max_prefill_lanes == 1,
                       "default prefill lanes are no longer one");
+    failures += check(parse({"ninfer-serve", "model.ninfer"}).decode_rounds_per_prefill == 0 &&
+                          parse({"ninfer-serve", "model.ninfer", "--decode-rounds-per-prefill", "6"})
+                                  .decode_rounds_per_prefill == 6,
+                      "--decode-rounds-per-prefill did not reach serving options");
     for (const std::vector<std::string>& bad :
-         {std::vector<std::string>{"ninfer-serve", "model.ninfer", "--max-prefill-lanes", "2"},
+         {std::vector<std::string>{"ninfer-serve", "model.ninfer", "--decode-rounds-per-prefill",
+                                   "4097"},
+          std::vector<std::string>{"ninfer-serve", "model.ninfer", "--max-prefill-lanes", "2"},
           std::vector<std::string>{"ninfer-serve", "model.ninfer", "--max-prefill-lanes", "0"},
           std::vector<std::string>{"ninfer-serve", "model.ninfer", "--prefill-max-skip", "0"}}) {
         bool rejected = false;

@@ -38,6 +38,7 @@ struct ServeOptions {
     std::uint32_t prefill_chunk        = 1024;
     std::uint32_t max_prefill_lanes    = 1;
     std::uint32_t prefill_max_skip     = 8;
+    std::uint32_t decode_rounds_per_prefill = 0; // 0 = prefill_chunk / 64
     std::filesystem::path context_cost_presets;
     std::uint32_t log_stats_interval_ms    = 5000; // 0 disables periodic Engine throughput logs
     std::size_t max_request_bytes          = kDefaultMaxRequestBytes;

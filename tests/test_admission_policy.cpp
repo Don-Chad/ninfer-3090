@@ -173,28 +173,51 @@ int main() {
     scheduler.commit_admission(std::move(head_grant));
 
     using ExecutionAction = Scheduler::ExecutionAction;
-    failures += check(scheduler.should_attempt_admission(true, true, false, false, false) &&
-                          !scheduler.should_attempt_admission(false, true, true, true, false) &&
-                          !scheduler.should_attempt_admission(true, false, true, true, false) &&
-                          !scheduler.should_attempt_admission(true, true, true, false, false) &&
-                          scheduler.should_attempt_admission(true, true, true, true, false) &&
-                          !scheduler.should_attempt_admission(true, true, false, false, true) &&
-                          scheduler.choose_execution(true, false, false) == ExecutionAction::Decode,
+    failures += check(scheduler.should_attempt_admission(true, true, false, 0, false) &&
+                          !scheduler.should_attempt_admission(false, true, true, 1, false) &&
+                          !scheduler.should_attempt_admission(true, false, true, 1, false) &&
+                          !scheduler.should_attempt_admission(true, true, true, 0, false) &&
+                          scheduler.should_attempt_admission(true, true, true, 1, false) &&
+                          !scheduler.should_attempt_admission(true, true, false, 0, true) &&
+                          scheduler.choose_execution(true, false, 0) == ExecutionAction::Decode,
                       "admission and GPU-unit fairness gates changed");
     scheduler.set_prefill_lane(0);
     failures +=
-        check(!scheduler.should_attempt_admission(true, true, true, true, false) &&
-                  scheduler.choose_execution(true, true, false) == ExecutionAction::Decode &&
-                  scheduler.choose_execution(true, true, true) == ExecutionAction::Prefill,
+        check(!scheduler.should_attempt_admission(true, true, true, 1, false) &&
+                  scheduler.choose_execution(true, true, 0) == ExecutionAction::Decode &&
+                  scheduler.choose_execution(true, true, 1) == ExecutionAction::Prefill,
               "prefill/decode alternation changed");
     scheduler.clear_prefill_lane(0);
+
+    {
+        // N decode rounds per prefill unit: prefill runs only once N decode units have run since
+        // the last one, and never waits for decode work that does not exist.
+        Scheduler ratio;
+        ratio.configure_prefill(1, 8, 4);
+        bool ratio_ok = true;
+        for (std::uint32_t run = 0; run < 4; ++run) {
+            ratio_ok = ratio_ok && ratio.choose_execution(true, true, run) == ExecutionAction::Decode;
+        }
+        failures += check(ratio_ok && ratio.choose_execution(true, true, 4) == ExecutionAction::Prefill &&
+                              ratio.choose_execution(true, true, 1000) == ExecutionAction::Prefill,
+                          "prefill ran before its decode rounds or decode ran past them");
+        failures += check(ratio.choose_execution(false, true, 0) == ExecutionAction::Prefill &&
+                              ratio.choose_execution(true, false, 9) == ExecutionAction::Decode &&
+                              ratio.choose_execution(false, false, 0) == ExecutionAction::Wait,
+                          "decode rounds changed the cases without both kinds of work");
+        bool rejected = false;
+        try {
+            ratio.configure_prefill(1, 8, 0);
+        } catch (const std::invalid_argument&) { rejected = true; }
+        failures += check(rejected, "zero decode rounds per prefill unit was accepted");
+    }
 
     {
         // Several prefill owners: shortest remaining suffix first, a lane's first unit before
         // anything else, and a bounded number of times a lane can be passed over.
         using Candidate = Scheduler::PrefillCandidate;
         Scheduler multi;
-        multi.configure_prefill(3, 4);
+        multi.configure_prefill(3, 4, 1);
         const auto pick = [&](std::initializer_list<Candidate> candidates) {
             return multi.select_prefill_lane(
                 std::span<const Candidate>(candidates.begin(), candidates.size()));

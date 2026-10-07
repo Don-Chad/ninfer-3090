@@ -240,32 +240,41 @@ public:
 
     // At most `max_owners` requests hold staged prefill at once. A lane that has been passed over
     // `max_skip` times is served before any shorter one, so a long prompt cannot starve.
-    void configure_prefill(std::uint32_t max_owners, std::uint32_t max_skip) {
-        if (max_owners == 0 || max_owners > kMaximumConcurrency || max_skip == 0) {
-            throw std::invalid_argument("prefill owner limit and skip bound must be positive");
+    //
+    // `decode_rounds` is how many decode (or forced-control) units run after each prefill unit while
+    // decode work exists. A decode round is tens of milliseconds and a prefill chunk hundreds, so
+    // strict 1:1 alternation would leave decode streams a few percent of the GPU during a prefill.
+    void configure_prefill(std::uint32_t max_owners, std::uint32_t max_skip,
+                           std::uint32_t decode_rounds) {
+        if (max_owners == 0 || max_owners > kMaximumConcurrency || max_skip == 0 ||
+            decode_rounds == 0) {
+            throw std::invalid_argument(
+                "prefill owner limit, skip bound and decode rounds must be positive");
         }
         if (prefill_owner_count_ != 0) {
             throw std::logic_error("prefill ownership cannot be reconfigured while owned");
         }
         max_prefill_owners_ = max_owners;
         prefill_max_skip_   = max_skip;
+        decode_rounds_      = decode_rounds;
     }
 
+    // `decode_run` counts the decode and control units executed since the last prefill unit.
     [[nodiscard]] bool should_attempt_admission(bool have_pending, bool admission_check_pending,
-                                                bool have_decode, bool previous_unit_was_decode,
+                                                bool have_decode, std::uint32_t decode_run,
                                                 bool context_transaction) const noexcept {
         // A newly published lane runs its first unit before the next admission: that unit
         // settles the reused-state fork, which a later materialization or capture must not see.
         return have_pending && admission_check_pending && !context_transaction &&
                prefill_owner_count_ < max_prefill_owners_ && !has_fresh_prefill_lane() &&
-               (!have_decode || previous_unit_was_decode);
+               (!have_decode || decode_run != 0);
     }
 
     [[nodiscard]] ExecutionAction choose_execution(bool have_decode, bool prefill_runnable,
-                                                   bool previous_unit_was_decode) const noexcept {
+                                                   std::uint32_t decode_run) const noexcept {
         if (prefill_runnable) {
-            return have_decode && !previous_unit_was_decode ? ExecutionAction::Decode
-                                                            : ExecutionAction::Prefill;
+            return have_decode && decode_run < decode_rounds_ ? ExecutionAction::Decode
+                                                              : ExecutionAction::Prefill;
         }
         return have_decode ? ExecutionAction::Decode : ExecutionAction::Wait;
     }
@@ -481,6 +490,7 @@ private:
     std::uint32_t prefill_owner_count_ = 0;
     std::uint32_t max_prefill_owners_  = 1;
     std::uint32_t prefill_max_skip_    = 8;
+    std::uint32_t decode_rounds_       = 1;
     std::uint64_t next_prefill_order_  = 0;
     std::optional<std::uint64_t> fifo_head_id_;
     std::optional<AdmissionProtection> protection_;

@@ -378,7 +378,10 @@ Scheduler 保证：
   期间任何 lane 都不运行 prefill unit，decode 继续。这保证复用状态 fork 在下一次 capture 或
   materialization 之前被 settle；
 - admission 仍严格按 FIFO head，owner 数未满时在边界继续 admit 后到的请求；
-- 已有 decode work 不会被连续 prefill 饿死；
+- 已有 decode work 不会被连续 prefill 饿死：每个 prefill unit 之后最多运行
+  `decode_rounds_per_prefill` 个 decode/control unit 才轮到下一个 prefill unit（默认 0 解析为
+  `prefill_chunk / 64`；1 为严格交替）。一个 decode round 只有几十毫秒而一个 prefill chunk 有数百
+  毫秒，严格交替会让 decode 只占约 4% 的 GPU 时间；没有 decode work 时 prefill 不受影响；
 - decode round 包含所有且仅包含当前 decode-ready requests；
 - batch 使用精确 `B`，不以 inactive lane padding 到 `max_concurrency`。
 
