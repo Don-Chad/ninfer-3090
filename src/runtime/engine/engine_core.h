@@ -1757,11 +1757,6 @@ private:
         return Scheduling::fifo_snapshot(pending_);
     }
 
-    [[nodiscard]] bool has_pending_requests() const {
-        std::lock_guard lock(queue_mutex_);
-        return !pending_.empty();
-    }
-
     [[nodiscard]] bool erase_pending(const std::shared_ptr<Request>& request) {
         std::lock_guard lock(queue_mutex_);
         const auto it = std::find(pending_.begin(), pending_.end(), request);

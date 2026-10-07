@@ -51,10 +51,6 @@ struct LoadOptions {
 
     bool operator==(const LoadOptions&) const = default;
 
-    [[nodiscard]] bool speculative_enabled() const noexcept {
-        return speculative != SpeculativeBackend::None;
-    }
-
     [[nodiscard]] bool overlay_vision() const noexcept {
         return vision && vision_residency == VisionResidency::Overlay;
     }

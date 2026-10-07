@@ -204,16 +204,14 @@ HostValues Binder::values(const Binding& binding, std::optional<QType> format) {
     if (destination != out.data.size()) {
         throw ArtifactError("Host value coverage is incomplete");
     }
-    owned_value_bytes_ = checked_add(owned_value_bytes_, out.data.size(), "owning value bytes");
     return out;
 }
 
 MaterializationPlan Binder::finish(std::uint64_t evictable_alignment) && {
     MaterializationPlan plan;
-    plan.source            = &reader_;
-    plan.object_count      = demands_.size();
-    plan.prior_read_bytes  = read_bytes_;
-    plan.owned_value_bytes = owned_value_bytes_;
+    plan.source           = &reader_;
+    plan.object_count     = demands_.size();
+    plan.prior_read_bytes = read_bytes_;
     const auto device_bytes = [&](std::size_t index) {
         const ObjectHandle handle{index};
         const auto& demand = demands_[index];

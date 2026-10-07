@@ -714,15 +714,14 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
         submit_range.emplace(nvtx::Name::DecodeDFlashSubmit, nvtx::Category::DFlash,
                              static_cast<std::uint64_t>(lanes.size()));
         std::span<DecodeGraphExecutable> segments;
-        execution::DFlashEnvelopes envelopes = dflash_envelopes(0, maximum_frontier, draft_window);
+        execution::DFlashEnvelopes envelopes = dflash_envelopes(maximum_frontier, draft_window);
         ops::CausalAttentionExecutionEnvelope target_envelope{1, maximum_target_tokens};
         if (use_cuda_graph) {
             DecodeGraphProfile& profile =
                 select_graph_profile(dflash_graphs, static_cast<std::uint32_t>(lanes.size()),
                                      maximum_frontier, "DFlash batch");
             segments        = install_graph_profile(dflash_graphs, profile, "DFlash batch");
-            envelopes       = dflash_envelopes(profile.min_execution_frontier,
-                                               profile.max_execution_frontier, draft_window);
+            envelopes       = dflash_envelopes(profile.max_execution_frontier, draft_window);
             target_envelope = {
                 1, static_cast<std::uint32_t>(std::min<std::uint64_t>(
                        capacity, static_cast<std::uint64_t>(profile.max_execution_frontier) +

@@ -1150,8 +1150,6 @@ OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
                          std::move(structured));
 }
 
-const StopPolicy& Frontend::default_stop_policy() const noexcept { return impl_->defaults; }
-
 const std::vector<PromptGraft>& Frontend::grafts() const noexcept { return impl_->grafts; }
 
 std::uint32_t Frontend::thinking_control_token_count() const noexcept {

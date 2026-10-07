@@ -933,18 +933,6 @@ public:
                                        std::move(reservation), std::move(row));
     }
 
-    [[nodiscard]] std::vector<LogicalKVPageHandle>
-    missing_device_pages(KVAddressSpaceHandle handle) const {
-        const Address& address = require(handle);
-        std::vector<LogicalKVPageHandle> missing;
-        missing.reserve(address.page_count);
-        for (std::uint32_t page = 0; page < address.page_count; ++page) {
-            const LogicalKVPageHandle logical = membership(address, page);
-            if (!pages_->device_resident(logical)) { missing.push_back(logical); }
-        }
-        return missing;
-    }
-
     [[nodiscard]] DeviceKVPageReservation& page_reservation(KVActivationReservation& activation) {
         if (activation.owner_ != this || !valid(activation.address_)) {
             throw std::logic_error("KV activation reservation is stale");

@@ -181,7 +181,6 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
     out.objects_.resize(plan.object_count);
     out.stats_.file_bytes            = reader.file_bytes();
     out.stats_.read_bytes            = plan.prior_read_bytes;
-    out.stats_.owned_value_bytes     = plan.owned_value_bytes;
     const std::size_t rank_count     = plan.device_rank_count();
     out.stats_.device_capacity_bytes = plan.device_capacity(0);
     out.stats_.device_object_count   = plan.device_objects.size();
@@ -246,8 +245,7 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
                 read_divisor(reader, placement.object, geometry, destination, out.stats_);
             storage.pinned = WeightParent{geometry, destination.data(), divisor};
         }
-        out.stats_.pinned_bytes        = plan.pinned_capacity_bytes;
-        out.stats_.pinned_object_count = plan.pinned_objects.size();
+        out.stats_.pinned_bytes = plan.pinned_capacity_bytes;
     }
     for (auto& placement : plan.host_objects) {
         reader.validate_object(placement.object);

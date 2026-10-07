@@ -82,7 +82,6 @@ public:
     make_output_session(const PreparedPrompt& prompt, const StopPolicy& caller_stop,
                         const OutputOptions& output            = {},
                         const ThinkingControlOptions& thinking = {}) const;
-    [[nodiscard]] const StopPolicy& default_stop_policy() const noexcept;
     [[nodiscard]] const ModelSamplingDefaults& sampling_defaults() const noexcept;
     [[nodiscard]] const std::vector<PromptGraft>& grafts() const noexcept;
     [[nodiscard]] std::uint32_t thinking_control_token_count() const noexcept;

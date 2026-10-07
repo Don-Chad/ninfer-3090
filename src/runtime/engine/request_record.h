@@ -127,10 +127,6 @@ struct RequestRecord {
     RequestRecord(const RequestRecord&)            = delete;
     RequestRecord& operator=(const RequestRecord&) = delete;
 
-    [[nodiscard]] bool is_waiting() const noexcept {
-        return model_state == EngineRequestState::Waiting;
-    }
-
     [[nodiscard]] bool is_prefilling() const noexcept {
         return model_state == EngineRequestState::Prefill;
     }

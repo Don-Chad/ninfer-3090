@@ -44,10 +44,9 @@ struct HostPlacement {
 };
 
 struct MaterializationPlan {
-    const Reader* source            = nullptr;
-    std::size_t object_count        = 0;
-    std::uint64_t prior_read_bytes  = 0;
-    std::uint64_t owned_value_bytes = 0;
+    const Reader* source           = nullptr;
+    std::size_t object_count       = 0;
+    std::uint64_t prior_read_bytes = 0;
     // One device arena per pipeline rank. Entry 0 is the primary device and always exists, so a
     // single-device plan has exactly one entry and rank 0 owns every device object.
     std::vector<std::uint64_t> device_capacity_by_rank{0};
@@ -78,11 +77,9 @@ struct MaterializationStats {
     // Expert-offload split only: the weight arenas held by the ranks past the primary device.
     std::uint64_t offloaded_device_capacity_bytes = 0;
     std::uint64_t retained_host_bytes   = 0;
-    std::uint64_t owned_value_bytes     = 0;
     std::uint64_t pinned_bytes          = 0; // page-locked Host block (Residency::Pinned)
     std::uint64_t peak_staging_bytes    = 0;
     std::size_t device_object_count     = 0;
-    std::size_t pinned_object_count     = 0;
     std::size_t host_object_count       = 0;
     double upload_seconds               = 0;
 };
