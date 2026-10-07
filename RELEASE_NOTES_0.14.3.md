@@ -92,7 +92,21 @@ directory trees). We did not test it on a real container or start a real model w
 
 ## Verification
 
-_To be filled in after the release binaries are built and tested._
+Built from master at `c53cc7b2` on Windows (MSVC 2022, CUDA 12.8; `ninfer`, `ninfer-serve`, `ninfer_bench`)
+and Linux (WSL Ubuntu, CUDA 12.8; the same three), both `sm_86`, on an RTX 3090.
+
+- **Packaged builds:** checksums match for both archives. The three Windows executables start with only
+  Windows on `PATH`. A fresh unpack of the Linux archive runs `ninfer-serve --help` and `run.sh --help`,
+  and its dynamic dependencies are unchanged from v0.14.2. Both new flags appear in `--help`.
+- **Real card:** the packaged Windows build started through `run.bat qwen38-27b` with nothing overridden.
+  The default 188,416-token context was refused because the desktop held about 2 GiB of the card, the
+  launcher stepped down to 164,864 on its own, and the server answered a chat request correctly (about
+  152 tokens/s). The startup log shows the new checkpoints ("progress every 16384 tokens").
+- **Not run for this release:** the full test suite and the real-model tests were not re-run on these
+  binaries. The figures above for retry-resume and its overhead are from #180's own measurements (one
+  machine, engine API, not these archives), and #179's tests are the unit tests it describes. We did not
+  start the server with `--host-cache-percent`, and nothing in this release was run on the Linux archive
+  beyond `--help`.
 
 ## Downloads
 
