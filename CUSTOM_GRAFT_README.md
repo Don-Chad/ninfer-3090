@@ -149,22 +149,10 @@ A graft artifact is two files side by side:
 
 The `--graft` flag points to the `.bin`; ninfer finds the `.json` beside it.
 
-## Building ninfer (Windows)
+## Building ninfer
 
-From the ninfer-3090 repo root:
-
-```
-build_merge.bat
-```
-
-This sources `vcvars64.bat` (MSVC 14.44), pins CUDA 12.8, runs CMake
-configure + ninja build. Output binaries land in `build-ninja/apps/`.
-
-For a rebuild after code changes (no reconfigure needed):
-
-```
-build_only.bat
-```
+See the Windows build section of `AGENTS.md` (use the existing `build-ninja` tree under the VS 2022
+BuildTools environment), or `scripts/build.ps1` / `scripts/build.sh`.
 
 ---
 

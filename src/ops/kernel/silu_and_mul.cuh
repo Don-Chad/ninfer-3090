@@ -3,7 +3,7 @@
 // ninfer::ops — silu_mul kernel: out = silu(gate) * up, elementwise.
 // silu(x) = x / (1 + e^-x), computed exactly in fp32 (NOT a polynomial fit).
 // Vectorized over bf16 pairs; included only by its launcher. See
-// docs/op-development.md §6 (no math approximation).
+// docs/maintainer/op-development.md §6 (no math approximation).
 
 #include "ops/common/math.cuh"
 

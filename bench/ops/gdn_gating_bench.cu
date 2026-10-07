@@ -1,7 +1,7 @@
 // Performance bench for gdn_gating at the Qwen3.6-27B Gated DeltaNet gate
 // shape ([48,T]). This binary is the ncu/nsys target; the GB/s it prints is
 // informational only -- the gate is ncu sustained DRAM % (see
-// docs/op-development.md §8).
+// docs/maintainer/op-development.md §8).
 //   ./ninfer_gdn_gating_bench [--decode] [--prefill]   (default: both)
 #include "ninfer/ops/gdn_gating.h"
 #include "ninfer_bench_common.h"

@@ -448,7 +448,7 @@
     <strong>Weight profile.</strong> Every model here is measured against the one
     groupwise-int-quantized weight artifact its download script fetches. The runtime also accepts
     other weight profiles for the same model family with different resident sizes (see
-    <code>src/runtime/engine/context_cost_defaults.cpp</code>); these figures do not apply to a
+    <code>src/runtime/engine/context_cache/context_cost_defaults.cpp</code>); these figures do not apply to a
     differently-quantized weight artifact.
   </p>
   <p>
@@ -477,7 +477,7 @@ const DATA = {
     "27b": {
       /* Measured against the official groupwise-int artifact fetched by download-model qwen38-27b
          (weights_id "groupwise-int"). The runtime also recognizes other weight profiles (see
-         src/runtime/engine/context_cost_defaults.cpp), with different resident weightsBytes;
+         src/runtime/engine/context_cache/context_cost_defaults.cpp), with different resident weightsBytes;
          these figures do not apply to a differently-quantized weight artifact of this model. */
       label: "Qwen3.8-27B (dense, groupwise-int weights)",
       weightsBytes: 17093490688,

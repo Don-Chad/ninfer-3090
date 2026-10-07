@@ -6,7 +6,7 @@
 // with inner-iter batching to amortize the per-sample host sync; throughput is
 // reported from the MEDIAN per-launch time (robust to host scheduling spikes).
 //
-// IMPORTANT (docs/op-development.md §9): the GB/s printed here is a convenience
+// IMPORTANT (docs/maintainer/op-development.md §9): the GB/s printed here is a convenience
 // readout, not a universal acceptance gate. Interpret it with cache conditions,
 // a same-topology payload control, and only the profiler evidence needed for the
 // concrete kernel question.

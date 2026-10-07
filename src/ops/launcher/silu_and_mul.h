@@ -2,7 +2,7 @@
 
 // ninfer::ops::detail — private launch prototype for silu_mul. Included by the wrapper
 // (host) and defined by the launcher (.cu). Not part of the public api.
-// See docs/op-development.md §2.
+// See docs/maintainer/op-development.md §2.
 
 #include "core/tensor.h"
 
