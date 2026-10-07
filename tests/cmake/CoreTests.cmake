@@ -42,6 +42,9 @@ ninfer_add_test(ninfer_evictable_weight_pool_test
 set_tests_properties(
   ninfer_arena_ranks_test
   ninfer_device_buffer_visibility_test
+  ninfer_vmm_graph_remap_test
+  ninfer_evictable_kv_pool_test
+  ninfer_evictable_weight_pool_test
   PROPERTIES SKIP_RETURN_CODE 77)
 
 ninfer_add_test(ninfer_device_test       SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_device.cpp"

@@ -24,7 +24,6 @@ else()
   target_compile_definitions(ninfer_artifact_materialization_test PRIVATE NINFER_TEST_LINK_WRAP=1)
   target_link_options(ninfer_artifact_materialization_test PRIVATE
     "LINKER:--wrap=cudaMalloc"
-    "LINKER:--wrap=cudaMallocHost"
     "LINKER:--wrap=cudaHostAlloc"
     "LINKER:--wrap=cudaFree"
     "LINKER:--wrap=cudaFreeHost"

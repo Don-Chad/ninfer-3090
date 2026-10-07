@@ -26,9 +26,7 @@ function(ninfer_add_test name)
   endif()
   ninfer_test_includes(${name})
   if(arg_NEEDS_SOURCE_DIR)
-    target_compile_definitions(${name} PRIVATE
-      NINFER_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
-      NINFER_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}")
+    target_compile_definitions(${name} PRIVATE NINFER_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
   endif()
   # TEST_ARGS lets a test that takes a configuration on the command line run something this box can
   # actually fit. Without it a test defaults to whatever its argv fallbacks are, which for the

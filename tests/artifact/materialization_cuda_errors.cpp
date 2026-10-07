@@ -33,7 +33,6 @@ bool active() { return trace.failure != Failure::None; }
 // Link-time wrappers affect only this test executable. The production path has no fault hooks.
 extern "C" {
 cudaError_t CUDARTAPI __real_cudaMalloc(void**, std::size_t);
-cudaError_t CUDARTAPI __real_cudaMallocHost(void**, std::size_t);
 cudaError_t CUDARTAPI __real_cudaHostAlloc(void**, std::size_t, unsigned int);
 cudaError_t CUDARTAPI __real_cudaFree(void*);
 cudaError_t CUDARTAPI __real_cudaFreeHost(void*);
@@ -46,12 +45,6 @@ cudaError_t CUDARTAPI __real_cudaStreamSynchronize(cudaStream_t);
 cudaError_t CUDARTAPI __wrap_cudaMalloc(void** pointer, std::size_t bytes) {
     const auto status = __real_cudaMalloc(pointer, bytes);
     if (active() && status == cudaSuccess) { ++trace.device_allocations; }
-    return status;
-}
-
-cudaError_t CUDARTAPI __wrap_cudaMallocHost(void** pointer, std::size_t bytes) {
-    const auto status = __real_cudaMallocHost(pointer, bytes);
-    if (active() && status == cudaSuccess) { ++trace.host_allocations; }
     return status;
 }
 
