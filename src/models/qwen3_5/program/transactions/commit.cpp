@@ -605,6 +605,9 @@ FinishResult ProgramImpl::finish(SequenceHandle sequence) noexcept {
     RequestControl& request                = requests[lane];
     SequenceState& state                   = active_sequence(lane);
     const std::uint32_t continuation_index = active_continuations[lane];
+    // A prefilling lane is only finished by cancellation, which keeps the checkpoints the prompt
+    // has already produced so the retry resumes from them.
+    if (request.lifecycle == Lifecycle::Prefilling) { return retain_prefill_progress(lane); }
     if (request.lifecycle != Lifecycle::Finishable) { return out; }
     if (!request.publish_continuation) {
         if (!clear_lane_strict(state, request)) { return out; }
@@ -668,6 +671,130 @@ FinishResult ProgramImpl::finish(SequenceHandle sequence) noexcept {
     request.pending                             = {};
     continuation_slots[continuation_index].role = ContinuationSlotRole::Catalogued;
     active_continuations[lane]                  = continuation_capacity;
+    invalidate_lane(lane);
+    out.continuation.emplace(ContractAccess::make_continuation(
+        this, continuation_index, continuation_slots[continuation_index].generation));
+    out.timings     = request.timings;
+    out.speculative = std::move(request.speculative_stats);
+    out.disposition = runtime::FinishDisposition::Catalogued;
+    advance_resource_revision();
+    out.status = runtime::ConsumeStatus::Consumed;
+    return out;
+}
+
+FinishResult ProgramImpl::retain_prefill_progress(std::uint32_t lane) noexcept {
+    FinishResult out;
+    RequestControl& request                = requests[lane];
+    SequenceState& state                   = active_sequence(lane);
+    const std::uint32_t continuation_index = active_continuations[lane];
+    // Everything below the first mutation only inspects. A lane that still holds an open state
+    // fork (its first write after a capture or reuse has not run) or an unanswered capture offer
+    // has no settled exclusive writer to release, so it is left to the caller's abort.
+    if (!request.publish_continuation || !request.prefill ||
+        request.prefill->pending_capture_offer != 0 || !state.kv || state.state.fork_pending ||
+        state.state.read != state.state.write ||
+        (state.long_anchors.empty() && !state.rewrite_checkpoint.valid)) {
+        return out;
+    }
+    qwen3_5::TargetKVRequirement retained;
+    try {
+        if (!state_store->valid(state.state.write) ||
+            state_store->role(state.state.write) != StateImageRole::ActiveMutable ||
+            state_store->checkpoint_references(state.state.write) != 0) {
+            return out;
+        }
+        out.summary.long_anchors.reserve(state.long_anchors.size());
+        populate_continuation_summary(state, out.summary);
+        const auto include = [&](const qwen3_5::CheckpointSummary& checkpoint) {
+            retained.main_frontier =
+                std::max(retained.main_frontier, checkpoint.required_kv.main_frontier);
+            retained.backend_frontier =
+                std::max(retained.backend_frontier, checkpoint.required_kv.backend_frontier);
+        };
+        if (out.summary.rewrite) { include(*out.summary.rewrite); }
+        for (const qwen3_5::CheckpointSummary& anchor : out.summary.long_anchors) {
+            include(anchor);
+        }
+        if (retained.main_frontier == 0 || retained.main_frontier > state.ledger.size() ||
+            retained.main_frontier > state.text_kv_valid ||
+            retained.backend_frontier > backend_kv_valid(state)) {
+            return out;
+        }
+        // Every release below must be known to succeed before the first one runs, so a lane that
+        // cannot be retained reaches the caller's abort untouched.
+        const bool reserved_owned_elsewhere =
+            state.reserved_state &&
+            (*state.reserved_state == state.state.write ||
+             (state.rewrite_state && *state.reserved_state == *state.rewrite_state) ||
+             std::any_of(state.long_anchors.begin(), state.long_anchors.end(),
+                         [&](const LongAnchorCheckpoint& anchor) {
+                             return anchor.state == *state.reserved_state;
+                         }));
+        const bool release_reserved = state.reserved_state && !reserved_owned_elsewhere &&
+                                      state_store->valid(*state.reserved_state) &&
+                                      state_store->checkpoint_references(*state.reserved_state) == 0;
+        if (!state_store->can_release(state.state.write) ||
+            (release_reserved && !state_store->can_release(*state.reserved_state)) ||
+            !text_kv_addresses->can_deactivate_and_truncate_prefix(state.kv->text,
+                                                                   retained.main_frontier) ||
+            (state.kv->backend &&
+             !backend_kv_addresses->can_deactivate_and_truncate_prefix(
+                 *state.kv->backend, retained.backend_frontier))) {
+            return out;
+        }
+        // Everything fallible was checked above. The KV tail goes first, then the state images
+        // whose release is irreversible, so a failure in either leaves the lane's state handles
+        // valid for the caller's strict abort.
+        text_kv_addresses->set_checkpoint_requirement(state.kv->text, retained.main_frontier);
+        if (state.kv->backend) {
+            backend_kv_addresses->set_checkpoint_requirement(*state.kv->backend,
+                                                             retained.backend_frontier);
+        }
+        release_sequence_growth_entitlement(state);
+        unbind_sequence_kv(state);
+        text_kv_addresses->truncate_inactive_prefix(state.kv->text, retained.main_frontier);
+        if (state.kv->backend) {
+            backend_kv_addresses->truncate_inactive_prefix(*state.kv->backend,
+                                                           retained.backend_frontier);
+        }
+        if (!state_store->release(state.state.write)) { return out; }
+        // can_release held, so this cannot fail short of a Host slot fault; the write image is
+        // already released, so there is nothing to fall back to.
+        if (release_reserved) { (void)state_store->release(*state.reserved_state); }
+        state.reserved_state.reset();
+        // The continuation's identity ends at its deepest checkpoint; the rest of the prompt has
+        // no state behind it.
+        state.ledger.resize(retained.main_frontier);
+        state.prefix_identity.truncate(retained.main_frontier);
+        state.prefix_digests.truncate(retained.main_frontier);
+    } catch (...) { return out; }
+
+    state.state                = {};
+    state.tail_hidden          = {};
+    state.tail_hidden_valid    = false;
+    state.endpoint_valid       = false;
+    state.execution_frontier   = retained.main_frontier;
+    state.ledger_frontier      = retained.main_frontier;
+    state.text_kv_valid        = retained.main_frontier;
+    state.mtp_draft_count      = 0;
+    if (speculative_backend == SpeculativeBackend::Mtp) {
+        state.mtp_kv_valid = retained.backend_frontier;
+    } else if (is_masked_draft_backend(speculative_backend)) {
+        state.dflash_context_frontier = retained.main_frontier;
+    }
+    try {
+        refresh_state_views(state);
+    } catch (...) {}
+    if (host_kv_extents) { (void)host_kv_extents->release_unreferenced(); }
+    release_active_shared_references(state);
+    request.prefill.reset();
+    request.active_resources                    = {};
+    request.optional_resources                  = {};
+    request.lifecycle                           = Lifecycle::Empty;
+    request.pending                             = {};
+    continuation_slots[continuation_index].role = ContinuationSlotRole::Catalogued;
+    active_continuations[lane]                  = continuation_capacity;
+    out.summary.active_references               = 0;
     invalidate_lane(lane);
     out.continuation.emplace(ContractAccess::make_continuation(
         this, continuation_index, continuation_slots[continuation_index].generation));

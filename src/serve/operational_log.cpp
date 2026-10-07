@@ -519,13 +519,16 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
         // is clamped against free VRAM at startup (program_impl.h), and can land at zero while
         // `cache.host_kv_capacity_bytes` still holds the pre-clamp --host-kv-mib target. The
         // memory summary is captured after that clamp runs, so it carries the true figure.
+        const std::uint32_t progress_stride = service.progress_anchor_stride();
         logger_->info(
             "context cache | {} active + {} cached device states | host {} states, {} KV | "
-            "private {} | shared {} | anchors {} ({} automatic)",
+            "private {} | shared {} | anchors {} ({} automatic, progress {})",
             engine.max_concurrency, *cache.device_state_slots, cache.host_state_slots,
             product::format_pretty_bytes(memory.host_kv_capacity_bytes),
             *cache.max_private_continuations, *cache.max_shared_prefixes,
-            *cache.max_long_anchors_per_continuation, service.automatic_private_anchors());
+            *cache.max_long_anchors_per_continuation, service.automatic_private_anchors(),
+            progress_stride == 0 ? std::string("off")
+                                 : "every " + std::to_string(progress_stride) + " tokens");
     } else {
         logger_->info("context cache | root only");
     }

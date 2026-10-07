@@ -683,6 +683,11 @@ struct PromptCacheMarker {
                                                    PromptCacheMarker) noexcept = default;
 };
 
+// Smallest non-zero ContextCacheHints::progress_anchor_stride. The Frontend proposes one candidate
+// per multiple, so a finer stride would make a long prompt's candidate list, and the duplicate
+// scan over it, grow without bound.
+inline constexpr std::uint32_t kMinimumProgressAnchorStride = 256;
+
 struct ContextCacheHints {
     std::optional<std::string> session_key;
     CacheRetentionHint retention = CacheRetentionHint::Default;
@@ -710,6 +715,14 @@ struct ContextCacheHints {
     // shallowest anchor. These are opportunities, not markers: they do not count against the
     // explicit marker limit and merge with an explicit anchor at the same frontier. 0 disables.
     std::uint32_t automatic_private_anchors = 0;
+    // Engine-automatic progress anchors: propose a PrivateLongAnchor capture at every multiple of
+    // this many tokens strictly inside the prompt, so a long prefill that is cancelled part way
+    // (a client timeout or disconnect) keeps its progress and the retry resumes from the deepest
+    // anchor instead of token zero. The Engine publishes the anchors a cancelled prefill holds
+    // rather than discarding them. Retention and replacement follow
+    // ContextCacheOptions::max_long_anchors_per_continuation, like any other long anchor. 0
+    // disables; a nonzero value below kMinimumProgressAnchorStride is rejected.
+    std::uint32_t progress_anchor_stride = 0;
 };
 
 struct PromptInput {

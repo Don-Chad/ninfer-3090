@@ -1281,6 +1281,136 @@ int exercise_automatic_private_anchors(const char* artifact) {
     return 0;
 }
 
+// Cancels the request once its prefill has reached `cancel_at` prompt tokens.
+class CancelAtProgressSink final : public ninfer::OutputSink {
+public:
+    explicit CancelAtProgressSink(std::uint32_t cancel_at) : cancel_at_(cancel_at) {}
+
+    void start(ninfer::GenerationStart) override {}
+    void progress(ninfer::PromptProgress progress) override {
+        if (progress.processed_prompt_tokens + progress.reused_prompt_tokens >= cancel_at_) {
+            reached_.store(true, std::memory_order_release);
+        }
+    }
+    void timing(ninfer::GenerationTimingObservation) override {}
+    void publish(ninfer::OutputDelta) override {}
+
+    [[nodiscard]] bool reached() const noexcept { return reached_.load(std::memory_order_acquire); }
+
+private:
+    std::uint32_t cancel_at_;
+    std::atomic<bool> reached_{false};
+};
+
+ninfer::PromptInput progress_anchor_prompt(std::uint32_t stride) {
+    // One long user message: no interior message boundary exists, so only the stride gives the
+    // prefill anywhere to keep its progress.
+    std::string text = "Read the following log and answer the question at the end.";
+    for (int line = 0; line < 160; ++line) {
+        text += " Entry " + std::to_string(line) + ": the pump on line " +
+                std::to_string(line % 17) + " reported " + std::to_string(line * 37 % 1013) +
+                " kPa and the operator noted nothing unusual.";
+    }
+    text += " Question: which line reported the highest pressure?";
+    ninfer::ChatMessage message;
+    message.role = ninfer::ChatRole::User;
+    message.parts.push_back(
+        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = text, .media = {}});
+    ninfer::PromptInput prompt;
+    prompt.messages.push_back(std::move(message));
+    prompt.options.enable_thinking             = false;
+    prompt.context_cache.progress_anchor_stride = stride;
+    return prompt;
+}
+
+// A client that times out part way through a very long prompt and retries must not start over.
+// The cancelled prefill publishes the anchors it had captured, the identical retry restores the
+// deepest one, and greedy output matches a request that was never cancelled. With progress anchors
+// off the same cancel leaves nothing behind, which pins that the saving comes from this feature.
+int exercise_cancelled_prefill_progress(const char* artifact) {
+    constexpr std::uint32_t kStride = 512;
+    ninfer::RequestOptions request;
+    request.execution.requested_output_tokens = 8;
+    request.execution.sampling.temperature    = 0.0F;
+    request.execution.allow_prefix_reuse      = true;
+    request.stop.include_model_defaults       = false;
+
+    const auto options = [&] {
+        ninfer::EngineOptions engine_options = automatic_anchor_engine_options(artifact, 4, 4, 0);
+        engine_options.max_context           = 8192;
+        engine_options.kv_capacity           = ninfer::KvCapacityPolicy::explicit_capacity(8192);
+        return engine_options;
+    };
+
+    ninfer::GenerationResult control;
+    {
+        ninfer::Engine engine(options());
+        control = engine.generate(engine.prepare(progress_anchor_prompt(0)), request);
+    }
+    const std::uint32_t prompt_tokens = control.prompt.prompt_tokens;
+    if (control.generated_token_ids.size() != 8 || prompt_tokens < 6U * kStride) {
+        std::cerr << "progress-anchor prompt is too short or did not generate: tokens="
+                  << prompt_tokens << '\n';
+        return 1;
+    }
+    const std::uint32_t cancel_at = prompt_tokens * 2U / 5U;
+
+    const auto cancel_then_retry = [&](std::uint32_t stride, ninfer::GenerationResult& retried,
+                                       ninfer::FinishReason& cancelled_reason) {
+        ninfer::Engine engine(options());
+        CancelAtProgressSink sink(cancel_at);
+        ninfer::GenerationHandle handle = engine.submit(
+            engine.prepare(progress_anchor_prompt(stride)), request,
+            ninfer::OutputConsumerMode::Streaming,
+            ninfer::GenerationObservationOptions{.prompt_progress = true});
+        const ninfer::GenerationResult cancelled =
+            handle.wait(&sink, ninfer::CancellationView([&sink] { return sink.reached(); }));
+        cancelled_reason = cancelled.finish_reason;
+        retried = engine.generate(engine.prepare(progress_anchor_prompt(stride)), request);
+        return engine.is_available();
+    };
+
+    ninfer::GenerationResult kept;
+    ninfer::GenerationResult dropped;
+    ninfer::FinishReason kept_reason    = ninfer::FinishReason::None;
+    ninfer::FinishReason dropped_reason = ninfer::FinishReason::None;
+    if (!cancel_then_retry(kStride, kept, kept_reason) ||
+        !cancel_then_retry(0, dropped, dropped_reason)) {
+        std::cerr << "engine latched unavailable after a cancelled prefill\n";
+        return 1;
+    }
+    if (kept_reason != ninfer::FinishReason::Cancelled ||
+        dropped_reason != ninfer::FinishReason::Cancelled) {
+        std::cerr << "prefill finished before the cancel landed; the prompt is too short for this "
+                     "GPU: kept="
+                  << static_cast<int>(kept_reason) << " dropped=" << static_cast<int>(dropped_reason)
+                  << '\n';
+        return 1;
+    }
+    if (kept.prefix_reuse_path != ninfer::PrefixReusePath::PrivateLongAnchor ||
+        kept.reused_prompt_tokens < 2U * kStride || kept.reused_prompt_tokens % kStride != 0 ||
+        kept.reused_prompt_tokens >= prompt_tokens || kept.reused_prompt_tokens > cancel_at + 2048U) {
+        std::cerr << "retry did not resume from a progress anchor: path="
+                  << static_cast<int>(kept.prefix_reuse_path)
+                  << " reused=" << kept.reused_prompt_tokens << " prompt=" << prompt_tokens
+                  << " cancel_at=" << cancel_at << '\n';
+        return 1;
+    }
+    if (dropped.reused_prompt_tokens != 0) {
+        std::cerr << "a cancelled prefill without progress anchors left reusable state: reused="
+                  << dropped.reused_prompt_tokens << '\n';
+        return 1;
+    }
+    if (kept.generated_token_ids != control.generated_token_ids ||
+        dropped.generated_token_ids != control.generated_token_ids) {
+        std::cerr << "output after a cancelled prefill differs from an uncancelled request\n";
+        return 1;
+    }
+    std::cout << "cancelled prefill kept " << kept.reused_prompt_tokens << " of " << prompt_tokens
+              << " prompt tokens (cancel at " << cancel_at << ")\n";
+    return 0;
+}
+
 ninfer::EngineOptions slot_engine_options(const char* artifact, bool auto_save,
                                            std::vector<ninfer::SlotAutoSaveEvent>* events,
                                            std::mutex* events_mutex) {
@@ -1322,6 +1452,94 @@ ninfer::PromptInput slot_conversation(const std::vector<std::string>& turns) {
     }
     prompt.options.enable_thinking = false;
     return prompt;
+}
+
+// A cancelled prefill is published as a continuation with no endpoint, which cannot be saved as a
+// session. When it lands in the cell that held a saved conversation (one private cell here), the
+// slot file bound to that conversation must not stay bound to what the cell now holds: every slot
+// that still reports a snapshot file must be savable.
+int exercise_cancelled_prefill_slot_binding(const char* artifact) {
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() / "ninfer-cancelled-prefill-binding-test";
+    std::filesystem::remove_all(directory);
+    std::filesystem::create_directories(directory);
+    const std::string file  = (directory / "session.bin").string();
+    const std::string other = (directory / "probe.bin").string();
+
+    ninfer::RequestOptions request;
+    request.execution.requested_output_tokens = 8;
+    request.execution.sampling.temperature    = 0.0F;
+    request.execution.allow_prefix_reuse      = true;
+    request.stop.include_model_defaults       = false;
+
+    ninfer::EngineOptions options = slot_engine_options(artifact, false, nullptr, nullptr);
+    options.max_context           = 8192;
+    options.kv_capacity           = ninfer::KvCapacityPolicy::explicit_capacity(8192);
+    ninfer::Engine engine(options);
+
+    const std::vector<std::string> first{
+        "List three uses for a lathe in a small workshop, one line each."};
+    const ninfer::GenerationResult reply =
+        engine.generate(engine.prepare(slot_conversation(first)), request);
+    if (reply.slot < 0) {
+        std::cerr << "first turn retained no session\n";
+        return 1;
+    }
+    (void)engine.save_slot(static_cast<std::uint32_t>(reply.slot), file, reply.session_digest);
+    const auto bound = engine.slot_states();
+    if (bound.size() != 1 || bound[0].snapshot_file.empty()) {
+        std::cerr << "save did not bind the slot to its file\n";
+        return 1;
+    }
+
+    // Continue the saved conversation with a very long turn, cancelled part way through prefill.
+    std::string text = "Read the following log and answer the question at the end.";
+    for (int line = 0; line < 160; ++line) {
+        text += " Entry " + std::to_string(line) + ": the pump on line " +
+                std::to_string(line % 17) + " reported " + std::to_string(line * 37 % 1013) +
+                " kPa and the operator noted nothing unusual.";
+    }
+    std::vector<std::string> turns = first;
+    turns.push_back(reply.content);
+    turns.push_back(text);
+    ninfer::PromptInput prompt = slot_conversation(turns);
+    prompt.context_cache.progress_anchor_stride = 512;
+
+    CancelAtProgressSink sink(2048);
+    ninfer::GenerationHandle handle =
+        engine.submit(engine.prepare(std::move(prompt)), request,
+                      ninfer::OutputConsumerMode::Streaming,
+                      ninfer::GenerationObservationOptions{.prompt_progress = true});
+    const ninfer::GenerationResult cancelled =
+        handle.wait(&sink, ninfer::CancellationView([&sink] { return sink.reached(); }));
+    if (cancelled.finish_reason != ninfer::FinishReason::Cancelled) {
+        std::cerr << "the long turn was not cancelled during prefill\n";
+        return 1;
+    }
+    if (!engine.is_available()) {
+        std::cerr << "engine latched unavailable after a cancelled prefill\n";
+        return 1;
+    }
+
+    // Cancellation settles at the next Engine boundary; wait for the cell to be published.
+    auto states = engine.slot_states();
+    for (int attempt = 0; attempt < 200 && states.size() == 1 && !states[0].retained; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        states = engine.slot_states();
+    }
+    for (std::uint32_t slot = 0; slot < states.size(); ++slot) {
+        if (!states[slot].retained || states[slot].snapshot_file.empty()) { continue; }
+        try {
+            (void)engine.save_slot(slot, other);
+        } catch (const std::exception& error) {
+            std::cerr << "slot " << slot << " still reports snapshot file '"
+                      << states[slot].snapshot_file
+                      << "' but cannot be saved: " << error.what() << '\n';
+            return 1;
+        }
+    }
+    std::cout << "cancelled prefill left " << states.size() << " slot(s), none with a stale binding\n";
+    return 0;
 }
 
 // A saved session restored into a fresh Engine must behave exactly like the warm session it was
@@ -3147,6 +3365,106 @@ ninfer::EngineOptions large_context_engine_options(const char* artifact,
     return options;
 }
 
+// The retry-loop case at its real size: a ~200k-token single-message prompt, cancelled at 150k
+// tokens (a client timeout), then retried. Serving defaults throughout: context cache on with its
+// default capacities, progress anchors at the default stride, serve's 1024-token prefill chunk.
+// Minutes of prefill on an RTX 3090; opt-in through its scenario name.
+int exercise_cancelled_prefill_200k(const char* artifact) {
+    constexpr std::uint32_t kStride     = 16384;
+    constexpr std::uint32_t kCancelAt   = 150000;
+    const auto options = [&] {
+        ninfer::EngineOptions engine_options;
+        engine_options.artifact_path = artifact;
+        engine_options.max_context   = kLargeContext;
+        engine_options.kv_capacity   = ninfer::KvCapacityPolicy::explicit_capacity(kLargeContext);
+        engine_options.kv_cache      = ninfer::KvCacheStorage::RotatedLloyd4KeyInt4Value;
+        engine_options.max_concurrency      = 1;
+        engine_options.max_pending_requests = 1;
+        engine_options.pending_timeout_ms   = 3600000;
+        return engine_options;
+    };
+    int entries = 6400;
+    const auto prompt = [&](std::uint32_t stride) {
+        std::string text = "Read the following log and answer the question at the end.";
+        for (int line = 0; line < entries; ++line) {
+            text += " Entry " + std::to_string(line) + ": the pump on line " +
+                    std::to_string(line % 17) + " reported " + std::to_string(line * 37 % 1013) +
+                    " kPa and the operator noted nothing unusual.";
+        }
+        text += " Question: which line reported the highest pressure?";
+        ninfer::ChatMessage message;
+        message.role = ninfer::ChatRole::User;
+        message.parts.push_back(
+            ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = text, .media = {}});
+        ninfer::PromptInput input;
+        input.messages.push_back(std::move(message));
+        input.options.enable_thinking              = false;
+        input.context_cache.progress_anchor_stride = stride;
+        return input;
+    };
+    ninfer::RequestOptions request;
+    request.execution.requested_output_tokens = 8;
+    request.execution.sampling.temperature    = 0.0F;
+    request.execution.allow_prefix_reuse      = true;
+    request.stop.include_model_defaults       = false;
+
+    ninfer::GenerationResult control;
+    {
+        ninfer::Engine engine(options());
+        // Entry numbers grow from one digit to four, so size the log from a measured count to
+        // land the prompt near 195k tokens.
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            const std::uint32_t counted = engine.count_tokens(prompt(0));
+            entries = static_cast<int>(static_cast<std::uint64_t>(entries) * 195000U / counted);
+        }
+        control = engine.generate(engine.prepare(prompt(0)), request);
+        std::cout << "uncancelled: prompt " << control.prompt.prompt_tokens << " tokens, prefill "
+                  << control.timings.prefill_seconds << " s\n";
+    }
+    if (control.generated_token_ids.size() != 8 || control.prompt.prompt_tokens < 180000 ||
+        control.prompt.prompt_tokens > kLargeContext - 64U) {
+        std::cerr << "200k prompt is outside the intended size: " << control.prompt.prompt_tokens
+                  << '\n';
+        return 1;
+    }
+
+    ninfer::Engine engine(options());
+    CancelAtProgressSink sink(kCancelAt);
+    const auto cancel_started = std::chrono::steady_clock::now();
+    ninfer::GenerationHandle handle =
+        engine.submit(engine.prepare(prompt(kStride)), request, ninfer::OutputConsumerMode::Streaming,
+                      ninfer::GenerationObservationOptions{.prompt_progress = true});
+    const ninfer::GenerationResult cancelled =
+        handle.wait(&sink, ninfer::CancellationView([&sink] { return sink.reached(); }));
+    const double cancel_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - cancel_started).count();
+    if (cancelled.finish_reason != ninfer::FinishReason::Cancelled || !engine.is_available()) {
+        std::cerr << "request was not cancelled mid-prefill\n";
+        return 1;
+    }
+    const ninfer::RuntimeStats after_cancel = settled_runtime_stats(engine);
+    const ninfer::GenerationResult retried  = engine.generate(engine.prepare(prompt(kStride)), request);
+    std::cout << "cancelled after " << cancel_seconds << " s at >=" << kCancelAt
+              << " tokens; retry reused " << retried.reused_prompt_tokens << " of "
+              << retried.prompt.prompt_tokens << " (path "
+              << static_cast<int>(retried.prefix_reuse_path) << "), retry prefill "
+              << retried.timings.prefill_seconds << " s vs uncancelled "
+              << control.timings.prefill_seconds << " s; running_requests "
+              << after_cancel.running_requests << '\n';
+    if (retried.prefix_reuse_path != ninfer::PrefixReusePath::PrivateLongAnchor ||
+        retried.reused_prompt_tokens < kCancelAt - kStride ||
+        retried.reused_prompt_tokens > kCancelAt + 2U * kStride ||
+        retried.reused_prompt_tokens % kStride != 0) {
+        std::cerr << "retry did not resume near the cancel point\n";
+        return 1;
+    }
+    if (retried.generated_token_ids != control.generated_token_ids) {
+        std::cerr << "output after the cancelled 200k prefill differs from an uncancelled request\n";
+        return 1;
+    }
+    return 0;
+}
+
 // One 200k-token prompt on its own: whether it fits and how long it takes to ingest.
 int exercise_large_probe(const char* artifact) {
     ninfer::Engine engine(large_context_engine_options(artifact, 1, kLargeContext));
@@ -3755,6 +4073,12 @@ int run() {
         result = exercise_shared_anchor_entitlement(artifact);
     } else if (scenario == "automatic-private-anchors") {
         result = exercise_automatic_private_anchors(artifact);
+    } else if (scenario == "cancelled-prefill-200k") {
+        result = exercise_cancelled_prefill_200k(artifact);
+    } else if (scenario == "cancelled-prefill-progress") {
+        result = exercise_cancelled_prefill_progress(artifact);
+    } else if (scenario == "cancelled-prefill-slot-binding") {
+        result = exercise_cancelled_prefill_slot_binding(artifact);
     } else if (scenario == "slot-persistence") {
         result = exercise_slot_persistence(artifact);
     } else if (scenario == "worker-failure-recovery") {

@@ -320,6 +320,8 @@ GenerationService::GenerationService(
     engine_           = std::make_unique<ninfer::Engine>(std::move(engine_options));
     automatic_private_anchors_ =
         resolve_automatic_private_anchors(options_, engine_->options().context_cache);
+    progress_anchor_stride_ =
+        resolve_progress_anchor_stride(options_, engine_->options().context_cache);
     request_capacity_ = std::make_shared<RequestCapacity>(
         static_cast<std::size_t>(options_.max_concurrency) + options_.max_pending_requests);
 }
@@ -413,6 +415,8 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
         // anchors whichever endpoint it came through.
         input.context_cache.automatic_private_anchors =
             cache_participation == CacheParticipation::ReadWrite ? automatic_private_anchors_ : 0U;
+        input.context_cache.progress_anchor_stride =
+            cache_participation == CacheParticipation::ReadWrite ? progress_anchor_stride_ : 0U;
         trim_cache_markers(input.context_cache.markers,
                            engine_->options().context_cache.max_cache_markers_per_request.value());
         prepared.acquisition_seconds =

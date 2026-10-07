@@ -79,6 +79,10 @@ struct ServeOptions {
     // boundaries of every prompt. Unset resolves to the retained-anchor cap once the Engine has
     // normalized it; 0 disables. See resolve_automatic_private_anchors.
     std::optional<std::uint32_t> auto_long_anchors;
+    // --progress-anchor-tokens N: propose a private long anchor at every multiple of N tokens of a
+    // prompt, so a long prefill cancelled part way keeps its progress for the client's retry. Unset
+    // resolves to kDefaultProgressAnchorTokens; 0 disables. See resolve_progress_anchor_stride.
+    std::optional<std::uint32_t> progress_anchor_tokens;
     // Directory for /slots session files; empty disables slot save/restore.
     std::filesystem::path slot_save_path;
     // Spill an involuntarily evicted session back to the slot file it was last saved to or
@@ -129,6 +133,13 @@ ServeOptions parse_serve_options(int argc, char** argv);
 // optional capacities are filled in.
 std::uint32_t resolve_automatic_private_anchors(const ServeOptions& options,
                                                 const ContextCacheOptions& resolved);
+// Token spacing of the progress anchors a long prefill leaves behind if it is cancelled. Zero when
+// the context cache is disabled or retains no long anchors. `resolved` must be the Engine's
+// normalized options.
+inline constexpr std::uint32_t kDefaultProgressAnchorTokens = 16384;
+inline constexpr std::uint32_t kMinimumProgressAnchorTokens = kMinimumProgressAnchorStride;
+std::uint32_t resolve_progress_anchor_stride(const ServeOptions& options,
+                                             const ContextCacheOptions& resolved);
 std::string resolve_public_model_id(const ServeOptions& options,
                                     std::string_view artifact_model_name);
 std::string serve_usage_text(const char* argv0);

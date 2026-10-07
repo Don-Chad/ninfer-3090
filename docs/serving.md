@@ -1109,6 +1109,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--auto-host-cache` | size `--host-state-slots`, `--host-kv-mib`, `--max-private-continuations` and `--max-shared-prefixes` from the host memory still free once the model has loaded, for a machine that exists to serve; see [automatic host cache](#automatic-host-cache). Replaces those four options and refuses them | off |
 | `--max-long-anchors-per-continuation N` | private long-anchor limit per continuation | `2` |
 | `--auto-long-anchors N` | propose a private long anchor at each of the last `N` interior message boundaries of every prompt, so a rewrite of recent history restores at the anchor below the edit instead of re-prefilling from token zero; clamped to the anchor limit, `0` disables | the anchor limit |
+| `--progress-anchor-tokens N` | propose a private long anchor at every multiple of `N` tokens of a prompt, and keep the anchors a cancelled prefill already holds, so a client that times out or disconnects part way through a very long prompt and retries resumes from the last anchor instead of prefilling from token zero; see the request-lifecycle section on cancelled requests. Shares the long-anchor limit with `--auto-long-anchors`; `0` disables, otherwise at least `256` | `16384` |
 | `--max-cache-markers-per-request N` | caller marker input-complexity bound | `4` |
 | `--slot-save-path DIR` | enable `POST /slots/{id}` save/restore/erase with files in `DIR` (created at startup) | disabled |
 | `--auto-save-evicted` | write an evicted session back to its bound slot file; requires `--slot-save-path` | off |
@@ -1281,6 +1282,23 @@ request waits out the generations ahead of it, so the deadline has to be scaled 
 response the deployment allows rather than to a connection timeout: at C1 on an RTX 3090 a single
 6,500-token response occupies the engine for about 106 seconds. The 600,000 ms default admits a
 queued caller behind roughly ten such responses; lower it only to fail fast on purpose.
+
+A cancelled request (a client timeout, a dropped connection) normally frees its lane and everything
+it computed. For a very long prompt that makes a retrying client livelock the server: each attempt
+is cancelled at about the same point and the next one starts again from the last cached frontier.
+With the context cache on, the Engine therefore cancels a prefilling request by publishing the
+long-anchor checkpoints it has already captured, instead of discarding them, and
+`--progress-anchor-tokens` makes sure there are some: every request proposes an anchor at each
+multiple of that many prompt tokens. The identical retry matches the deepest surviving anchor and
+prefills only the tokens after it, so a cancelled attempt loses at most the stride (plus whatever
+lies beyond the last captured anchor).
+
+The anchors share the per-continuation long-anchor budget (`--max-long-anchors-per-continuation`,
+default `2`), and a full set replaces its shallowest anchor, so a long prompt keeps its deepest
+anchors. A prefill that has captured no anchor, whose lane is still holding a just-reused
+checkpoint for its first write, or when capacity cannot hold the anchor, is discarded as before. An
+anchor occupies one cached state slot, which under pressure the context cache may evict like any
+other retained checkpoint.
 
 By default one request owns the staged prefill at a time, so a very long prompt holds the lane for
 its whole prefill (340-370 s for a 200k-token prompt on an RTX 3090 with `--kv-dtype rk4v4` and
