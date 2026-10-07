@@ -102,6 +102,16 @@ int check_cgroup_probe() {
     failures += check(!cgroup_remaining_bytes(v1, "4:memory:/free\n").has_value(),
                       "a cgroup v1 'no limit' value was treated as a limit");
 
+    // The total is the limit itself, not what remains of it: the tightest level on the path.
+    using ninfer::runtime::cgroup_limit_bytes;
+    failures += check(cgroup_limit_bytes(v2, "0::/app.slice/c1/leaf\n") == 10 * kGiB &&
+                          cgroup_limit_bytes(v2, "0::/app.slice/c2\n") == 4 * kGiB &&
+                          !cgroup_limit_bytes(v2, "0::/other/place\n").has_value(),
+                      "the cgroup limit was not the tightest limit on the path");
+    failures += check(cgroup_limit_bytes(v1, "4:memory:/grp\n") == 8 * kGiB &&
+                          !cgroup_limit_bytes(v1, "4:memory:/free\n").has_value(),
+                      "a cgroup v1 limit was misread");
+
     std::filesystem::remove_all(scratch);
     return failures;
 }
@@ -245,21 +255,82 @@ int main() {
     // the split. 30 GiB free: (30 - 1) / 2 = 14.5 GiB = 14,848 MiB, so 18 states (1,800 MiB) and the
     // rest KV, instead of 48 GiB of budget.
     const ContextCacheOptions wddm =
-        resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0, 30 * kGiB);
+        resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0, {.device_free_after_startup = 30 * kGiB});
     failures += check(wddm.host_state_slots == 18 &&
                           wddm.host_kv_capacity_bytes == (14848 - 1800) * kMiB &&
                           wddm.max_private_continuations == 34 && wddm.max_shared_prefixes == 8,
                       "device headroom did not bound the whole host budget before the split");
     // A full card: 1.5 GiB free leaves a 256 MiB budget, too small for one 100 MiB state's share.
     const ContextCacheOptions full_card =
-        resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0, 1536 * kMiB);
+        resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0, {.device_free_after_startup = 1536 * kMiB});
     failures += check(full_card.host_state_slots == 0 && full_card.host_kv_capacity_bytes == 256 * kMiB,
                       "a nearly full card still pinned state slots it could not afford");
     // At or under the 1 GiB device floor nothing is pinned at all.
     const ContextCacheOptions no_headroom =
-        resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0, 1 * kGiB);
+        resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0, {.device_free_after_startup = 1 * kGiB});
     failures += check(no_headroom.host_state_slots == 0 && no_headroom.host_kv_capacity_bytes == 0,
                       "a card with no headroom still pinned host memory");
+
+    // A share of the machine's memory bounds the budget however much is free. 50% of a 64 GiB host
+    // is 32 GiB (32,768 MiB): an eighth, 4,096 MiB, buys 40 of the 100 MiB states.
+    ContextCacheOptions half_request   = requested(8);
+    half_request.host_cache_percent = 50;
+    const ContextCacheOptions half =
+        resolve_host_cache(half_request, 64 * kGiB, 100 * kMiB, 8, 0, {.total_host_bytes = 64 * kGiB});
+    failures += check(half.host_state_slots == 40 &&
+                          half.host_kv_capacity_bytes == (32768 - 4000) * kMiB &&
+                          half.host_cache_percent == 50,
+                      "50% of a 64 GiB host did not pin 32 GiB");
+    // It only lowers the budget: when little is free the reserve still wins, and 100% of a host
+    // whose memory is mostly taken is the free memory less the reserve, not the whole host.
+    ContextCacheOptions all_request   = requested(8);
+    all_request.host_cache_percent = 100;
+    const ContextCacheOptions all_of_busy =
+        resolve_host_cache(all_request, 20 * kGiB, 100 * kMiB, 8, 0, {.total_host_bytes = 64 * kGiB});
+    const ContextCacheOptions busy = resolve_host_cache(requested(8), 20 * kGiB, 100 * kMiB, 8, 0);
+    failures += check(all_of_busy.host_state_slots == busy.host_state_slots &&
+                          all_of_busy.host_kv_capacity_bytes == busy.host_kv_capacity_bytes &&
+                          busy.host_kv_capacity_bytes + busy.host_state_slots * 100 * kMiB == 17 * kGiB,
+                      "a share larger than what is free pinned past the reserve");
+    // The percent, the cap and the free memory combine by taking the smallest.
+    ContextCacheOptions both_request   = half_request;
+    both_request.host_cache_max_bytes = 10 * kGiB;
+    const ContextCacheOptions both =
+        resolve_host_cache(both_request, 64 * kGiB, 100 * kMiB, 8, 0, {.total_host_bytes = 64 * kGiB});
+    failures += check(both.host_kv_capacity_bytes + both.host_state_slots * 100 * kMiB == 10 * kGiB,
+                      "the cap did not apply beneath the percent");
+    bool percent_needs_total = false;
+    try {
+        (void)resolve_host_cache(half_request, 64 * kGiB, 100 * kMiB, 8, 0);
+    } catch (const std::invalid_argument&) { percent_needs_total = true; }
+    failures += check(percent_needs_total, "a percent was applied without the machine's total memory");
+    for (const std::uint32_t bad : {0U, 101U}) {
+        ContextCacheOptions out_of_range   = requested(8);
+        out_of_range.host_cache_percent = bad;
+        bool refused = false;
+        try {
+            (void)resolve_host_cache(out_of_range, 64 * kGiB, 100 * kMiB, 8, 0,
+                                     {.total_host_bytes = 64 * kGiB});
+        } catch (const std::invalid_argument&) { refused = true; }
+        failures += check(refused, "an out-of-range host cache percent was accepted");
+    }
+
+    // Memory that grows after sizing and is bounded by options (the media caches) is reserved on top
+    // of the base reserve: 3 + 3 GiB of 64 GiB leaves 58 GiB pinned, never more than free less both.
+    const ContextCacheOptions with_media = resolve_host_cache(
+        requested(8), 64 * kGiB, 100 * kMiB, 8, 0, {.extra_reserve_bytes = 3 * kGiB});
+    failures += check(with_media.host_kv_capacity_bytes + with_media.host_state_slots * 100 * kMiB ==
+                          58 * kGiB,
+                      "the extra reserve did not come out of the pinned budget");
+    // Whatever the settings, the pinned total never exceeds the memory free less the reserves.
+    for (const std::uint64_t free_gib : {4ULL, 9ULL, 64ULL, 300ULL}) {
+        const ContextCacheOptions r = resolve_host_cache(
+            requested(8), free_gib * kGiB, 75 * kMiB, 8, 0, {.extra_reserve_bytes = 3 * kGiB});
+        const std::uint64_t pinned = r.host_kv_capacity_bytes + r.host_state_slots * 75 * kMiB;
+        failures += check(pinned + 6 * kGiB <= std::max(free_gib * kGiB, 6 * kGiB) &&
+                              (free_gib * kGiB > 6 * kGiB || pinned == 0),
+                          "the pinned tier left less than the reserves free");
+    }
 
     bool unflagged_rejected = false;
     try {
@@ -274,6 +345,9 @@ int main() {
     const auto available = ninfer::runtime::available_host_memory_bytes();
     failures += check(available.has_value() && *available > 0,
                       "the host memory probe returned nothing on this platform");
+    const auto total = ninfer::runtime::total_host_memory_bytes();
+    failures += check(total.has_value() && *total >= *available,
+                      "the total host memory probe returned nothing, or less than is available");
 
     return failures;
 }
