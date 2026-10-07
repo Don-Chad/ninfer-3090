@@ -1,6 +1,6 @@
 // ninfer::ops — silu_mul wrapper: implements the public api, validates parameters, and
 // dispatches to the launcher. Host-compiled; never includes the kernel header.
-// See docs/op-development.md §2.
+// See docs/maintainer/op-development.md §2.
 #include "ninfer/ops/silu_mul.h"
 
 #include "ops/launcher/silu_and_mul.h" // detail::silu_and_mul_launch

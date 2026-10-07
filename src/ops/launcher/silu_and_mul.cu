@@ -1,6 +1,6 @@
 // ninfer::ops — silu_mul launcher: grid/block/stream configuration + kernel launch.
 // The only translation unit that includes this op's kernel header.
-// See docs/op-development.md §2.
+// See docs/maintainer/op-development.md §2.
 #include "ops/launcher/silu_and_mul.h"
 
 #include "ops/common/math.h"

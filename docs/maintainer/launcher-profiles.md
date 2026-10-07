@@ -400,40 +400,6 @@ from whatever VRAM is free after the weights land, and under WSL the Windows des
 holding part of the card. The default below is sized with margin. If it fails to start, drop one
 rung: 114688 / 98304 / 90112 / 81920.
 
-CONTEXT CACHE. A checkpoint is a KV prefix plus a StateImage, and on this model the StateImage is
-61.4 MiB *flat* regardless of prefix length -- 30 GDN layers of 128x128x32 FP32 recurrent state
-plus conv. Unlike KV pages, which several checkpoints of one conversation share, it cannot be
-shared between two frontiers at all: the recurrent state at token N is a function of every token
-before it. That fixed cost is why the shipped catalog is small.
-
-Measured, eight distinct ~1430-token preambles round-robined, reuse after the first round:
-
-```
-  --max-shared-prefixes    reuse    what happens
-  ------------------------------------------------------------------------------------
-  4  (the old default)      8.4%    only one preamble ever stays cached; constant thrash
-  8                        98.3%    all eight stay; prefill 0.317 s -> 0.044 s
-  16                       98.3%    no better than 8 once the catalog fits the working set
-```
-
-Sizing rule: --max-shared-prefixes should match the number of distinct preambles in play, and
---host-state-slots roughly twice (shared + private). Raising them costs pinned HOST memory and
-nothing on the device -- measured on this profile, both settings resolve the full 114,688 tokens
-with byte-identical 492.4 MiB free after startup; the only change is host state pinned
-982.6 MiB -> 1.92 GiB.
-
---auto-prefix-grid offers shared candidates on a content-independent token grid, so two requests
-that merely start alike -- the same pasted document in two different chats, the same few-shot
-preamble inside one user message -- converge on the same frontier without any client hint. A grid
-point is only ever materialised once two independent callers have both asked for it, so it cannot
-waste a slot speculatively. Measured on a prompt with no structural boundary at all: 0% -> 82.6%
-reuse, prefill -71%, TTFT -64%, and the cold requests before it warms are unchanged.
-
-LONG CONVERSATIONS do not need any of the above -- they run on the private turn-closure path,
-which is what --max-private-continuations sizes. Measured with a 194-turn coding-agent loop
-(tool calls, file pastes, whole history resent each turn) growing to 64,668 tokens: exactly one
-cache miss, on turn 1. The limit on turn count is --max-context, not the cache.
-
 ## Pinned host KV on Windows
 
 `--host-kv-mib 8192` is not 8 GiB on Windows. WDDM maps a pinned host allocation into the GPU's address space and charges it against the card, so the runtime clamps the request to (free VRAM - 1 GiB) / 2 before the first `cudaMallocHost` -- it cannot ask and back off, because one failure poisons every later attempt in the process. At the `tuned` 27B profile's measured residency that resolves to:
