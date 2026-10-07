@@ -1611,6 +1611,23 @@ public:
         return true;
     }
 
+    // Whether deactivating this still-active address and then truncating it to `frontier` can
+    // succeed: the pages beyond the frontier must be releasable once the address drops its own
+    // active reference to them, and the frontier must not exceed what the address committed.
+    [[nodiscard]] bool can_deactivate_and_truncate_prefix(KVAddressSpaceHandle handle,
+                                                          std::uint32_t frontier) const noexcept {
+        if (!valid(handle)) { return false; }
+        const Address& address = addresses_[handle.index_];
+        if (!address.active || frontier > address.committed_frontier) { return false; }
+        const std::uint32_t target = pages_for_tokens(frontier);
+        for (std::uint32_t page = target; page < address.page_count; ++page) {
+            if (!pages_->can_release_reference_after_active_reference(membership(address, page))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void truncate_inactive_prefix(KVAddressSpaceHandle handle, std::uint32_t frontier) {
         if (!can_truncate_inactive_prefix(handle, frontier)) {
             throw std::logic_error("inactive KV checkpoint prefix is not truncatable");

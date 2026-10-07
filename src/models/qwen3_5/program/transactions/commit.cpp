@@ -734,16 +734,17 @@ FinishResult ProgramImpl::retain_prefill_progress(std::uint32_t lane) noexcept {
                                       state_store->valid(*state.reserved_state) &&
                                       state_store->checkpoint_references(*state.reserved_state) == 0;
         if (!state_store->can_release(state.state.write) ||
-            (release_reserved && !state_store->can_release(*state.reserved_state))) {
+            (release_reserved && !state_store->can_release(*state.reserved_state)) ||
+            !text_kv_addresses->can_deactivate_and_truncate_prefix(state.kv->text,
+                                                                   retained.main_frontier) ||
+            (state.kv->backend &&
+             !backend_kv_addresses->can_deactivate_and_truncate_prefix(
+                 *state.kv->backend, retained.backend_frontier))) {
             return out;
         }
-        // The released state images were the last fallible step; the KV tail is exclusively this
-        // lane's, so its truncation below follows the same checked path the abort fallback uses.
-        if (!state_store->release(state.state.write)) { return out; }
-        // can_release held, so this cannot fail short of a Host slot fault; the write image is
-        // already released, so there is nothing to fall back to.
-        if (release_reserved) { (void)state_store->release(*state.reserved_state); }
-        state.reserved_state.reset();
+        // Everything fallible was checked above. The KV tail goes first, then the state images
+        // whose release is irreversible, so a failure in either leaves the lane's state handles
+        // valid for the caller's strict abort.
         text_kv_addresses->set_checkpoint_requirement(state.kv->text, retained.main_frontier);
         if (state.kv->backend) {
             backend_kv_addresses->set_checkpoint_requirement(*state.kv->backend,
@@ -756,6 +757,11 @@ FinishResult ProgramImpl::retain_prefill_progress(std::uint32_t lane) noexcept {
             backend_kv_addresses->truncate_inactive_prefix(*state.kv->backend,
                                                            retained.backend_frontier);
         }
+        if (!state_store->release(state.state.write)) { return out; }
+        // can_release held, so this cannot fail short of a Host slot fault; the write image is
+        // already released, so there is nothing to fall back to.
+        if (release_reserved) { (void)state_store->release(*state.reserved_state); }
+        state.reserved_state.reset();
         // The continuation's identity ends at its deepest checkpoint; the rest of the prompt has
         // no state behind it.
         state.ledger.resize(retained.main_frontier);

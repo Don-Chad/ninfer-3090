@@ -1243,32 +1243,12 @@ private:
                 throw std::logic_error("terminal-pending request has invalid ownership");
             }
             const FinishReason reason = *request->terminal_reason;
-            const std::optional<std::uint32_t> publication =
-                resources_.lane_publication_slot(*request->lane);
-            const std::optional<std::uint32_t> retained_source =
-                resources_.lane_retained_private_source_slot(*request->lane);
-            // A turn continues a conversation when it reused a private session's prefix: from a
-            // cell it left retained (a rewrite or anchor restore) or, when the session's endpoint
-            // was consumed, from the cell it publishes into. A turn that started from the root or a
-            // shared prefix starts a conversation.
-            const bool continued =
-                retained_source.has_value() ||
-                (request->begin && request->begin->reused_prompt_tokens > 0 &&
-                 request->begin->prefix_reuse_path != PrefixReusePath::Root &&
-                 request->begin->prefix_reuse_path != PrefixReusePath::SharedStablePrefix);
-            // The usage record travels with the conversation, so it is read before `finish` can
-            // release the cell it is in.
-            const std::optional<std::uint32_t> usage_source =
-                retained_source ? retained_source : (continued ? publication : std::nullopt);
-            const SlotUsage source_usage =
-                usage_source && *usage_source < slot_usage_.size() ? slot_usage_[*usage_source]
-                                                                   : SlotUsage{};
+            const CatalogContext catalog = capture_catalog_context(*request);
             auto finished =
                 resources_.finish(*instance_.program, *request->lane, *request->sequence);
             request->generation_timings = finished.timings;
             request->speculative_stats  = std::move(finished.speculative);
-            record_catalogued_publication(request, finished.disposition, publication,
-                                          retained_source, continued, source_usage);
+            record_catalogued_publication(request, finished.disposition, catalog);
             request->terminal_reason.reset();
 
             finish_engine_phase(boundary, EngineHostPhase::Boundary);
@@ -1294,15 +1274,7 @@ private:
             }
             (void)request->output.preview_terminal(FinishReason::Cancelled);
             if (scheduler_.is_prefill_owner(lane)) {
-                const std::optional<std::uint32_t> publication =
-                    resources_.lane_publication_slot(*request->lane);
-                const std::optional<std::uint32_t> retained_source =
-                    resources_.lane_retained_private_source_slot(*request->lane);
-                const bool continued = retained_source.has_value();
-                const SlotUsage source_usage =
-                    retained_source && *retained_source < slot_usage_.size()
-                        ? slot_usage_[*retained_source]
-                        : SlotUsage{};
+                const CatalogContext catalog = capture_catalog_context(*request);
                 // The checkpoints a cancelled prompt has already captured outlive it, so the
                 // client's retry resumes from them rather than prefilling the prompt again. The
                 // Program declines when nothing can be kept and `finish` then discards the lane
@@ -1312,8 +1284,7 @@ private:
                     resources_.finish(*instance_.program, *request->lane, *request->sequence);
                 request->generation_timings = finished.timings;
                 request->speculative_stats  = std::move(finished.speculative);
-                record_catalogued_publication(request, finished.disposition, publication,
-                                              retained_source, continued, source_usage);
+                record_catalogued_publication(request, finished.disposition, catalog);
                 scheduler_.clear_prefill_lane(lane);
             } else {
                 auto aborted =
@@ -2668,13 +2639,44 @@ private:
         std::uint64_t reused_tokens     = 0;
     };
 
+    struct CatalogContext {
+        std::optional<std::uint32_t> publication;
+        std::optional<std::uint32_t> retained_source;
+        bool continued = false;
+        SlotUsage source_usage;
+    };
+
+    // What `finish` needs to know about the conversation a lane belongs to, read before it can
+    // release the cell the usage record is in.
+    [[nodiscard]] CatalogContext capture_catalog_context(const Request& request) const {
+        CatalogContext context;
+        context.publication     = resources_.lane_publication_slot(*request.lane);
+        context.retained_source = resources_.lane_retained_private_source_slot(*request.lane);
+        // A turn continues a conversation when it reused a private session's prefix: from a
+        // cell it left retained (a rewrite or anchor restore) or, when the session's endpoint
+        // was consumed, from the cell it publishes into. A turn that started from the root or a
+        // shared prefix starts a conversation.
+        context.continued =
+            context.retained_source.has_value() ||
+            (request.begin && request.begin->reused_prompt_tokens > 0 &&
+             request.begin->prefix_reuse_path != PrefixReusePath::Root &&
+             request.begin->prefix_reuse_path != PrefixReusePath::SharedStablePrefix);
+        // The usage record travels with the conversation.
+        const std::optional<std::uint32_t> usage_source =
+            context.retained_source ? context.retained_source
+                                    : (context.continued ? context.publication : std::nullopt);
+        if (usage_source && *usage_source < slot_usage_.size()) {
+            context.source_usage = slot_usage_[*usage_source];
+        }
+        return context;
+    }
+
     // Binds the retained slot's session file, usage record and digest once `finish` has catalogued
     // a continuation, for both a completed request and a cancelled prefill that kept its anchors.
     void record_catalogued_publication(const std::shared_ptr<Request>& request,
                                        FinishDisposition disposition,
-                                       const std::optional<std::uint32_t>& publication,
-                                       const std::optional<std::uint32_t>& retained_source,
-                                       bool continued, const SlotUsage& source_usage) {
+                                       const CatalogContext& catalog) {
+        const auto& [publication, retained_source, continued, source_usage] = catalog;
         if (disposition == FinishDisposition::Catalogued && publication) {
             const auto view = resources_.catalog_slot(*publication);
             if (view.state == ResourceManagement::CatalogState::Catalogued &&
@@ -2701,6 +2703,7 @@ private:
             }
         }
     }
+
     std::vector<std::string> slot_session_paths_;
     std::vector<SlotDigestCacheEntry> slot_digest_cache_;
     std::vector<SlotUsage> slot_usage_;
