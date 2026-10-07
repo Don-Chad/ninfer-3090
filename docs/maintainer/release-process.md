@@ -10,8 +10,12 @@ or very nearly shipped a broken archive.
    `0.11.0-rtx3090`), write `RELEASE_NOTES_X.Y.Z.md`, refresh the README highlights, open a PR and
    merge it. Everything version-specific is derived from `VERSION` by the packagers; there is nothing
    to copy and edit.
-2. **Build both platforms from the same commit.** The binaries do not embed `VERSION`, so they can be
-   built before the release PR merges. The PR adds only docs, scripts and `VERSION`.
+2. **Build both platforms from the same commit, after `VERSION` is set.** The binaries embed
+   `VERSION` (`--version`, `GET /health`, the `X-NInfer-Version` header), so build from the release
+   branch tip, not from a commit before the `VERSION` bump. A binary built from the pre-merge
+   release-branch commit reports `<VERSION>+<commit>`; the tag lands on the merge commit, so that
+   suffix is expected there, but a build from `master` before the bump would report the previous
+   release. Check `ninfer-serve --version` against the archive name in the smoke test.
    - Windows: the VS 2022 BuildTools environment and an existing Ninja tree (see `AGENTS.md`,
      "Windows build environment"). Turn `NINFER_BUILD_BENCHMARKS` on: the archive ships
      `ninfer_bench.exe`. Build only `ninfer ninfer-serve ninfer_bench`.

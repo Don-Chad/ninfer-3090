@@ -1,3 +1,4 @@
+#include "product/version/version.h"
 #include "serve/operational_log.h"
 #include "serve/request_log.h"
 
@@ -160,6 +161,9 @@ int main() {
     failures += check(server.at("schema_version") == kRequestLogSchemaVersion,
                       "server record schema mismatch");
     failures += check(server.at("event") == "server_start", "server event mismatch");
+    failures += check(!ninfer::product::build_version().empty() &&
+                          server.at("version") == std::string(ninfer::product::build_version()),
+                      "server_start must record the build version");
     failures += check(server.at("server").at("public_model_id") == "deployment-alias",
                       "resolved public model id missing");
     failures += check(server.at("artifact").at("architecture") == "Qwen3_5ForCausalLM",

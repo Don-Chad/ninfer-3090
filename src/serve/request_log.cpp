@@ -1,6 +1,7 @@
 #include "serve/request_log.h"
 #include "product/logging/pretty_format.h"
 #include "product/speculative_options.h"
+#include "product/version/version.h"
 
 #include <spdlog/logger.h>
 
@@ -657,6 +658,7 @@ std::string format_server_start_json(
         default_thinking_budget = *options.default_thinking_budget;
     }
 
+    record["version"] = ninfer::product::build_version();
     record["server"] =
         Json{{"host", options.host},
              {"port", options.port},

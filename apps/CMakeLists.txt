@@ -5,7 +5,8 @@ ninfer_internal_includes(ninfer)
 target_link_libraries(ninfer PRIVATE
   ninfer_engine
   ninfer_product_logging
-  ninfer_product_prompt_input)
+  ninfer_product_prompt_input
+  ninfer_product_version)
 
 add_executable(ninfer-serve serve/main.cpp)
 ninfer_internal_includes(ninfer-serve)

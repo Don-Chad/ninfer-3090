@@ -4,6 +4,7 @@
 #include "product/logging/startup_log.h"
 #include "product/prompt_input/prompt_input.h"
 #include "product/speculative_options.h"
+#include "product/version/version.h"
 
 #include "ninfer/engine.h"
 
@@ -238,6 +239,10 @@ void print_generation_summary(const ninfer::GenerationResult& result,
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--version") {
+        std::cout << "ninfer " << ninfer::product::build_version() << '\n';
+        return 0;
+    }
     ninfer::cli::Options cli;
     try {
         cli = ninfer::cli::parse_options(argc, argv);

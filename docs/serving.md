@@ -83,7 +83,7 @@ staged <MiB>)` and the JSON record carries `vision_overlay`, including `exclusiv
 
 | Method and path | Behavior |
 |---|---|
-| `GET /health` | process health |
+| `GET /health` | process health and build version (see [Server version](#server-version)) |
 | `GET /v1/load` | serving capacity, current load, and monotonic token counters (see [Load](#load)) |
 | `GET /slots` | per-slot occupancy of the private context cache (see [Slots](#slots)) |
 | `POST /slots/{id}?action=save\|restore\|erase` | save a retained session to a file, restore one, or evict one (see [Slots](#slots)) |
@@ -142,7 +142,7 @@ llama.cpp fields NInfer can state truthfully:
    "params": {"n_predict": -1, "max_tokens": -1, "temperature": 1.0, "top_k": 20, "top_p": 0.95,
               "min_p": 0.0, "presence_penalty": 0.0, "frequency_penalty": 0.0}},
  "total_slots": 1, "model_alias": "qwen3.8-27b", "model_path": "models/qwen3_8_27b.ninfer",
- "modalities": {"vision": false, "audio": false}}
+ "modalities": {"vision": false, "audio": false}, "build_info": "ninfer 0.14.3-rtx3090"}
 ```
 
 `n_ctx` is `--max-context` and `total_slots` is `--max-concurrency`. `n_predict` and its alias
@@ -152,9 +152,24 @@ cap. The sampler is the loaded model's preset
 for the default thinking mode (thinking unless `--no-thinking`) under the process sampling flags and
 `--greedy`; request fields still override it per request. `seed` appears only with `--seed`, since
 requests otherwise draw a fresh random seed. `model_alias` is the public model id and `model_path`
-the artifact path the server was started with. There is no `build_info`, `chat_template`, or
+the artifact path the server was started with. `build_info` is `ninfer <version>` (see
+[Server version](#server-version)). There is no `chat_template` or
 writable `POST /props`, and `/slots`, `/metrics`, and llama.cpp's non-`/v1` route aliases are not
 served.
+
+### Server version
+
+The running build is reported four ways, all from the same string: `ninfer-serve --version` (and
+`ninfer --version`) print it and exit without loading a model; `GET /health` returns it as
+`{"status": "ok", "version": "0.14.3-rtx3090"}`; every response, including the `503` during model
+load and `401` failures, carries an `X-NInfer-Version` header; and the `server_start` log record
+and `/props` `build_info` include it.
+
+The string is the repository's `VERSION` file. A build from any other commit appends
+`+<9-char commit>` (`0.14.4-rtx3090+1a2b3c4d5`), and uncommitted changes to tracked files append
+`-dirty`, so a development binary is never mistaken for the release it descends from. A build
+without git metadata, such as a `git archive` snapshot, reports `VERSION` alone, which is why a
+release must be built after `VERSION` is set.
 
 ### Startup readiness
 
@@ -1170,7 +1185,7 @@ they do not infer request behavior from process-global counter deltas.
 
 | Event | Contents |
 |---|---|
-| `server_start` | artifact path, architecture, public name, actual formats and prefill signature; resolved Engine and context-cache capacities, thinking/non-thinking sampler defaults plus process overrides, thinking-history and thinking-budget defaults, Device arenas, the optional non-additive Vision layout inside the unified workspace, Host State/KV capacity and occupancy, KV sizing ledger, CUDA Graph allowance, CUDA/GPU environment, and redacted argv |
+| `server_start` | build version, artifact path, architecture, public name, actual formats and prefill signature; resolved Engine and context-cache capacities, thinking/non-thinking sampler defaults plus process overrides, thinking-history and thinking-budget defaults, Device arenas, the optional non-additive Vision layout inside the unified workspace, Host State/KV capacity and occupancy, KV sizing ledger, CUDA Graph allowance, CUDA/GPU environment, and redacted argv |
 | `request_start` | protocol, resolved sampler and seed, requested reasoning effort, actual initial thinking mode and optional budget, Responses semantic-change flag, output budget, stream/message/tool shape |
 | `request_rejected` | parsed request shape, requested reasoning effort, media-item count, `phase: "prepare"`, and the exact HTTP status/type/code/parameter/message for a synchronous preparation rejection |
 | `request_done` | finish reason, prompt/completion/cache/computed-prefill tokens, prefix reuse path, tool-call parse diagnostics, request-owned materialization cost/search diagnostics, thinking-budget application counters, unrounded request-stage seconds, per-request Engine Host exposure, and complete speculative-decoding counters |

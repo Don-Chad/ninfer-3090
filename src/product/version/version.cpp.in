@@ -1,0 +1,7 @@
+#include "product/version/version.h"
+
+namespace ninfer::product {
+
+std::string_view build_version() { return "@NINFER_BUILD_VERSION@"; }
+
+} // namespace ninfer::product

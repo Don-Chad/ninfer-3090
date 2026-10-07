@@ -184,7 +184,8 @@ std::string serve_usage_text(const char* argv0) {
            "xhigh\n"
            "       sampler defaults come from the loaded model and resolved thinking mode; "
            "server flags and request fields override individual values.\n"
-           "       --greedy forces temperature 0 (exact argmax).\n";
+           "       --greedy forces temperature 0 (exact argmax).\n"
+           "       --version prints the build version and exits.\n";
 }
 
 // "1,2,3" selects the ordered devices the model's pipeline stages run on; the first also holds the
