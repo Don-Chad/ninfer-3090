@@ -126,9 +126,37 @@ StartResult ProgramImpl::start_request(MaterializationTransaction& transaction) 
                        std::to_string(r.host.state_slots) + " host_kv_bytes " +
                        std::to_string(r.host.kv_bytes);
             };
+            // Which StateImages the sequence owns, so a mismatch names the offender instead of
+            // only a count.
+            std::string states_dump;
+            const auto dump_state = [&](const char* role, StateImageHandle handle) {
+                if (!state_store->valid(handle)) {
+                    states_dump += std::string(" ") + role + "=stale";
+                    return;
+                }
+                const char* residency = "none";
+                switch (state_store->residency(handle)) {
+                case StateReplicaResidency::None: break;
+                case StateReplicaResidency::DeviceOnly: residency = "device"; break;
+                case StateReplicaResidency::HostOnly: residency = "host"; break;
+                case StateReplicaResidency::Both: residency = "both"; break;
+                }
+                states_dump += std::string(" ") + role + "{" + residency +
+                               ",checkpoint_refs=" +
+                               std::to_string(state_store->checkpoint_references(handle)) +
+                               ",exclusive=" +
+                               (state_exclusive_to_sequence(sequence, handle) ? "yes" : "no") + "}";
+            };
+            if (sequence.state.read.valid()) { dump_state("read", sequence.state.read); }
+            if (sequence.state.write.valid()) { dump_state("write", sequence.state.write); }
+            if (sequence.rewrite_state) { dump_state("rewrite", *sequence.rewrite_state); }
+            if (sequence.reserved_state) { dump_state("reserved", *sequence.reserved_state); }
+            for (const LongAnchorCheckpoint& anchor : sequence.long_anchors) {
+                dump_state("anchor", anchor.state);
+            }
             throw std::logic_error(
                 "materialized sequence does not match its active entitlement (actual: " +
-                describe(actual) + "; expected: " + describe(expected) + ")");
+                describe(actual) + "; expected: " + describe(expected) + ";" + states_dump + ")");
         }
         if (details.reuse != ReusePath::Root) {
             if (transaction.state_restored) {

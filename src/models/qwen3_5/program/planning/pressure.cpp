@@ -473,7 +473,14 @@ ProgramImpl::materialization_source_protection(const ResourceCandidateState& adm
                 state_store->checkpoint_references(*protection.state) !=
                 protection.consumed_state_references;
 
-            if (is_rewrite_checkpoint_restore(admission.reuse)) {
+            // The sparse anchors and the retained rewrite checkpoint travel with a consumed
+            // endpoint (see the optional-state accounting in `inspect_lane`). One that another
+            // owner also references is not exclusive yet; if the pressure target evicts that
+            // owner it becomes part of the active lineage, so it must be projected as an
+            // ownership transfer exactly like the rewrite-restore case.
+            const bool endpoint_keeps_optional_states =
+                admission.reuse == ReusePath::PrivateEndpoint;
+            if (endpoint_keeps_optional_states || is_rewrite_checkpoint_restore(admission.reuse)) {
                 const auto append_optional_state = [&](StateImageHandle state) {
                     if (!state_store->valid(state) || state_exclusive_to_sequence(source, state) ||
                         std::any_of(
@@ -492,7 +499,7 @@ ProgramImpl::materialization_source_protection(const ResourceCandidateState& adm
                     append_optional_state(*source.rewrite_state);
                 }
                 for (const LongAnchorCheckpoint& anchor : source.long_anchors) {
-                    if (anchor.frontier <= admission.reuse_base) {
+                    if (endpoint_keeps_optional_states || anchor.frontier <= admission.reuse_base) {
                         append_optional_state(anchor.state);
                     }
                 }
