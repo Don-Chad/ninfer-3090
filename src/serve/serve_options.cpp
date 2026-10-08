@@ -254,6 +254,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         options.startup_argv.emplace_back(argv[i] == nullptr ? "" : argv[i]);
         redact_next = options.startup_argv.back() == "--api-key";
     }
+    bool prefill_lanes_explicit      = false;
     bool kv_capacity_explicit        = false;
     bool device_explicit             = false;
     bool context_capacity_explicit   = false;
@@ -303,6 +304,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.prefill_chunk = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--prefill-chunk"), "prefill-chunk"));
         } else if (arg == "--max-prefill-lanes") {
+            prefill_lanes_explicit = true;
             options.max_prefill_lanes = static_cast<std::uint32_t>(parse_nonnegative_int(
                 require_value("--max-prefill-lanes"), "max-prefill-lanes"));
         } else if (arg == "--prefill-max-skip") {
@@ -667,6 +669,11 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.prefill_chunk == 0 || options.prefill_chunk % 128 != 0) {
         throw std::invalid_argument("--prefill-chunk must be a positive multiple of 128");
     }
+    // One request owning the staged prefill makes every other request wait for a long prompt's
+    // whole prefill, even a prefix-cached one that needs a single unit. From three lanes on, a
+    // second prefill lane keeps short requests moving at the cost of finishing the long prompt a
+    // little later.
+    if (!prefill_lanes_explicit && options.max_concurrency >= 3) { options.max_prefill_lanes = 2; }
     if (options.max_prefill_lanes == 0 || options.max_prefill_lanes > options.max_concurrency) {
         throw std::invalid_argument("--max-prefill-lanes must be in [1,--max-concurrency]");
     }

@@ -36,7 +36,7 @@ struct ServeOptions {
     // callers before they were ever admitted.
     std::uint32_t pending_timeout_ms   = 600000;
     std::uint32_t prefill_chunk        = 1024;
-    std::uint32_t max_prefill_lanes    = 1;
+    std::uint32_t max_prefill_lanes    = 1; // 2 from three lanes up unless --max-prefill-lanes is given
     std::uint32_t prefill_max_skip     = 8;
     std::uint32_t decode_rounds_per_prefill = 0; // 0 = prefill_chunk / 64
     std::filesystem::path context_cost_presets;

@@ -267,8 +267,18 @@ int main() {
                "--prefill-max-skip", "5"});
     failures += check(prefill_lanes.max_prefill_lanes == 2 && prefill_lanes.prefill_max_skip == 5,
                       "prefill lane options did not reach serving options");
-    failures += check(parse({"ninfer-serve", "model.ninfer"}).max_prefill_lanes == 1,
-                      "default prefill lanes are no longer one");
+    failures += check(parse({"ninfer-serve", "model.ninfer"}).max_prefill_lanes == 1 &&
+                          parse({"ninfer-serve", "model.ninfer", "--max-concurrency", "2"})
+                                  .max_prefill_lanes == 1,
+                      "default prefill lanes are no longer one below three lanes");
+    failures += check(parse({"ninfer-serve", "model.ninfer", "--max-concurrency", "3"})
+                                  .max_prefill_lanes == 2 &&
+                          parse({"ninfer-serve", "model.ninfer", "--max-concurrency", "8"})
+                                  .max_prefill_lanes == 2 &&
+                          parse({"ninfer-serve", "model.ninfer", "--max-concurrency", "4",
+                                 "--max-prefill-lanes", "1"})
+                                  .max_prefill_lanes == 1,
+                      "three or more lanes did not default to two prefill lanes");
     failures += check(parse({"ninfer-serve", "model.ninfer"}).decode_rounds_per_prefill == 0 &&
                           parse({"ninfer-serve", "model.ninfer", "--decode-rounds-per-prefill", "6"})
                                   .decode_rounds_per_prefill == 6,
