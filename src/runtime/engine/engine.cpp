@@ -320,8 +320,16 @@ public:
         device.bind_to_current_thread_noexcept();
         // Queued store writes are older than what the final flush writes: drain them first, so
         // none lands after it and replaces a newer image.
-        if (store) { stop_writer(); }
-        flush_context_store();
+        std::chrono::steady_clock::time_point flush_deadline{};
+        if (store) {
+            flush_deadline = std::chrono::steady_clock::now() + options.context_store.flush_budget;
+            {
+                std::scoped_lock lock(writer_mutex);
+                drain_deadline = flush_deadline;
+            }
+            stop_writer();
+        }
+        flush_context_store(flush_deadline);
         core.emplace<std::monostate>();
         stop_writer();
         try {
@@ -468,12 +476,13 @@ private:
                 if (info.binding != store_binding) { continue; }
                 const std::optional<std::uint32_t> slot = generation_core().first_vacant_slot();
                 if (!slot) { break; }
-                std::optional<std::vector<std::uint8_t>> bytes = store->load(info.id);
+                std::optional<std::vector<std::uint8_t>> bytes = store->load(info.id, false);
                 if (!bytes) { continue; }
                 try {
                     (void)generation_core().restore_slot(
                         *slot, std::span<const std::uint8_t>(bytes->data(), bytes->size()),
                         store_binding, std::string_view(), [] {}, true);
+                    store->touch(info.id);
                     restored_sessions.fetch_add(1, std::memory_order_relaxed);
                     restored_bytes.fetch_add(bytes->size(), std::memory_order_relaxed);
                 } catch (const RequestError&) {
@@ -490,13 +499,11 @@ private:
 
     // At shutdown, before the worker stops: everything the store does not hold in its current
     // state, most recently used first, within the flush budget.
-    void flush_context_store() noexcept {
+    void flush_context_store(std::chrono::steady_clock::time_point deadline) noexcept {
         if (!store) { return; }
         try {
             auto* generation = std::get_if<std::unique_ptr<GenerationCore>>(&core);
             if (generation == nullptr || *generation == nullptr) { return; }
-            const auto deadline =
-                std::chrono::steady_clock::now() + options.context_store.flush_budget;
             (void)(*generation)->persist_all(
                 [this](runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
                     try {
@@ -623,6 +630,13 @@ private:
                 if (pending_writes.empty()) { continue; }
                 item.emplace(std::move(pending_writes.front()));
                 pending_writes.pop_front();
+                if (drain_deadline && item->to_store &&
+                    std::chrono::steady_clock::now() >= *drain_deadline) {
+                    // Shutdown budget spent: the write is abandoned, like one that failed.
+                    store_dropped.fetch_add(1, std::memory_order_relaxed);
+                    store_write_failures.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
                 writer_active = true;
             }
             write_spill(*item);
@@ -649,6 +663,9 @@ private:
     std::condition_variable writer_cv;
     std::deque<PendingWrite> pending_writes;
     bool writer_stop   = false;
+    // Set at shutdown: queued store writes still pending after it are abandoned. A write already
+    // under way is not interrupted, so the budget can be exceeded by one write.
+    std::optional<std::chrono::steady_clock::time_point> drain_deadline;
     bool writer_active = false;
     std::thread writer;
     std::atomic<std::uint64_t> store_dropped{0};

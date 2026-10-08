@@ -616,6 +616,10 @@ ContextStore::PutResult ContextStore::put(const Description& description,
                     continue;
                 }
                 const CheckpointKey& endpoint = other.info.checkpoints.front();
+                if (!description.checkpoints.empty() &&
+                    endpoint.identity_tag != description.checkpoints.front().identity_tag) {
+                    continue;
+                }
                 if (endpoint.frontier < description.prefix_digests.size() &&
                     description.prefix_digests[endpoint.frontier] == endpoint.digests) {
                     superseded.push_back(other_id);
@@ -641,7 +645,7 @@ ContextStore::PutResult ContextStore::put(const Description& description,
     return result;
 }
 
-std::optional<std::vector<std::uint8_t>> ContextStore::load(const std::string& id) {
+std::optional<std::vector<std::uint8_t>> ContextStore::load(const std::string& id, bool touch) {
     if (!valid_id(id)) { return std::nullopt; }
     std::scoped_lock io(io_mutex_);
     Entry entry;
@@ -682,7 +686,7 @@ std::optional<std::vector<std::uint8_t>> ContextStore::load(const std::string& i
         }
     }
     if (position != image.size()) { return fail(); }
-    {
+    if (touch) {
         std::scoped_lock lock(mutex_);
         const auto found = entries_.find(id);
         if (found != entries_.end()) {

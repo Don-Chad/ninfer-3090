@@ -122,7 +122,10 @@ public:
 
     // Reassembles an image, verifying every chunk. nullopt when it is absent or damaged; a damaged
     // image is removed so it is not offered again. Counts as a use.
-    [[nodiscard]] std::optional<std::vector<std::uint8_t>> load(const std::string& id);
+    // `touch` false reads without refreshing the image's last use; the caller then calls touch()
+    // once it has actually used the image.
+    [[nodiscard]] std::optional<std::vector<std::uint8_t>> load(const std::string& id,
+                                                                bool touch = true);
 
     [[nodiscard]] std::vector<Info> list() const;
     [[nodiscard]] std::optional<Info> find(const std::string& id) const;

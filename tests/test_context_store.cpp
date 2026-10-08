@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -116,6 +118,13 @@ void test_round_trip() {
     check(info && info->tokens == 100 && info->binding == "model-a" &&
               info->checkpoints.size() == 1 && info->checkpoints[0].digests[1] == 0x2222,
           "stored description was not preserved");
+    const auto used_before = store.find("abc123")->last_used_ms;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    (void)store.load("abc123", false);
+    check(store.find("abc123")->last_used_ms == used_before,
+          "an untouched read refreshed the image's last use");
+    (void)store.load("abc123");
+    check(store.find("abc123")->last_used_ms > used_before, "a read did not refresh last use");
     check(!store.load("deadbeef").has_value(), "an unknown id loaded");
     check(!store.load("../escape").has_value(), "an unsafe id loaded");
 }
