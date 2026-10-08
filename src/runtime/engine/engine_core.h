@@ -1286,6 +1286,17 @@ private:
                 request->generation_timings = finished.timings;
                 request->speculative_stats  = std::move(finished.speculative);
                 record_catalogued_publication(request, finished.disposition, catalog, false);
+                ++cumulative_stats_.cancelled_prefills;
+                cumulative_stats_.cancelled_prefill_computed_tokens += request->computed_prompt_tokens;
+                if (request->retained_slot >= 0) {
+                    const auto kept = resources_.catalog_slot(static_cast<std::uint32_t>(request->retained_slot));
+                    if (kept.state == ResourceManagement::CatalogState::Catalogued &&
+                        kept.handle != nullptr) {
+                        ++cumulative_stats_.cancelled_prefills_retained;
+                        cumulative_stats_.cancelled_prefill_retained_tokens +=
+                            instance_.program->continuation_depth(*kept.handle);
+                    }
+                }
                 scheduler_.clear_prefill_lane(lane);
             } else {
                 auto aborted =
@@ -1323,8 +1334,12 @@ private:
             }
             have_pending = !pending_.empty();
         }
-        for (const auto& request : cancelled) { scheduler_.on_waiting_removed(request->id); }
-        for (const auto& request : expired) { scheduler_.on_waiting_removed(request->id); }
+        for (const auto& request : cancelled) {
+            on_waiting_removed(request, WaitingRemoval::Cancelled);
+        }
+        for (const auto& request : expired) {
+            on_waiting_removed(request, WaitingRemoval::Expired);
+        }
         try {
             for (const auto& request : cancelled) { complete_detached_cancelled(request); }
             for (const auto& request : expired) {
@@ -1766,7 +1781,22 @@ private:
         return true;
     }
 
-    void on_waiting_removed(const std::shared_ptr<Request>& request) noexcept {
+    // Why a request left the waiting queue. The caller states it from the decision that removed
+    // the request: re-reading the cancellation flag or the clock afterwards could attribute the
+    // removal to a cancellation or expiry that happened only after the request was already gone.
+    enum class WaitingRemoval { Cancelled, Expired, Failed };
+
+    void on_waiting_removed(const std::shared_ptr<Request>& request,
+                            WaitingRemoval reason) noexcept {
+        if (reason != WaitingRemoval::Failed) {
+            if (reason == WaitingRemoval::Cancelled) {
+                ++cumulative_stats_.waiting_cancelled_requests;
+            } else {
+                ++cumulative_stats_.waiting_expired_requests;
+            }
+            cumulative_stats_.waiting_abandoned_seconds +=
+                std::chrono::duration<double>(Clock::now() - request->submitted).count();
+        }
         scheduler_.on_waiting_removed(request->id);
     }
 
@@ -1817,9 +1847,11 @@ private:
     }
 
     [[nodiscard]] AdmissionProgress remove_pending_error(const std::shared_ptr<Request>& request,
-                                                         std::exception_ptr error) {
+                                                         std::exception_ptr error,
+                                                         WaitingRemoval reason =
+                                                             WaitingRemoval::Failed) {
         if (!erase_pending(request)) { return AdmissionProgress::None; }
-        on_waiting_removed(request);
+        on_waiting_removed(request, reason);
         complete_error(request, std::move(error));
         publish_runtime_stats();
         return AdmissionProgress::ControlProgress;
@@ -1947,13 +1979,14 @@ private:
             const AdmissionProgress progress = remove_pending_error(
                 request, std::make_exception_ptr(RequestError(
                              RequestErrorKind::QueueTimeout,
-                             "inference request expired while waiting for admission")));
+                             "inference request expired while waiting for admission")),
+                            WaitingRemoval::Expired);
             if (progress == AdmissionProgress::ControlProgress) { request_admission_check(); }
             return progress;
         }
         if (request->cancelled.load(std::memory_order_acquire)) {
             if (!erase_pending(request)) { return AdmissionProgress::None; }
-            on_waiting_removed(request);
+            on_waiting_removed(request, WaitingRemoval::Cancelled);
             complete_detached_cancelled(request);
             request_admission_check();
             publish_runtime_stats();
@@ -1999,7 +2032,7 @@ private:
             if (!erase_pending(request)) {
                 throw std::logic_error("aborted materialization lost its waiting request");
             }
-            on_waiting_removed(request);
+            on_waiting_removed(request, WaitingRemoval::Cancelled);
             complete_detached_cancelled(request);
             request_admission_check();
             publish_runtime_stats();
@@ -2046,7 +2079,7 @@ private:
             scheduler_.observe_fifo_head(head->id);
             if (head->cancelled.load(std::memory_order_acquire)) {
                 if (erase_pending(head)) {
-                    on_waiting_removed(head);
+                    on_waiting_removed(head, WaitingRemoval::Cancelled);
                     complete_detached_cancelled(head);
                     publish_runtime_stats();
                     control_progress = true;
@@ -2057,7 +2090,8 @@ private:
                 (void)remove_pending_error(
                     head, std::make_exception_ptr(RequestError(
                               RequestErrorKind::QueueTimeout,
-                              "inference request expired while waiting for admission")));
+                              "inference request expired while waiting for admission")),
+                             WaitingRemoval::Expired);
                 control_progress = true;
                 continue;
             }
@@ -2127,7 +2161,7 @@ private:
             for (const std::shared_ptr<Request>& candidate : queued.backfill_candidates()) {
                 if (candidate->cancelled.load(std::memory_order_acquire)) {
                     if (erase_pending(candidate)) {
-                        on_waiting_removed(candidate);
+                        on_waiting_removed(candidate, WaitingRemoval::Cancelled);
                         complete_detached_cancelled(candidate);
                         publish_runtime_stats();
                         control_progress = true;
@@ -2138,7 +2172,8 @@ private:
                     (void)remove_pending_error(
                         candidate, std::make_exception_ptr(RequestError(
                                        RequestErrorKind::QueueTimeout,
-                                       "inference request expired while waiting for admission")));
+                                       "inference request expired while waiting for admission")),
+                                      WaitingRemoval::Expired);
                     control_progress = true;
                     continue;
                 }

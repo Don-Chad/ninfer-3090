@@ -85,6 +85,18 @@ int main() {
                           cache.find("# TYPE ninfer:context_occupancy gauge") != std::string::npos,
                       "context-cache families are missing their Prometheus TYPE");
 
+    live.waiting_cancelled_requests        = 4;
+    live.waiting_abandoned_seconds         = 240.5;
+    live.cancelled_prefills                = 2;
+    live.cancelled_prefills_retained       = 1;
+    live.cancelled_prefill_retained_tokens = 16384;
+    const std::string abandoned            = metrics.render(2, live, 0);
+    failures += check(has_sample(abandoned, "ninfer:waiting_cancelled_requests_total 4") &&
+                          has_sample(abandoned, "ninfer:cancelled_prefills_total 2") &&
+                          has_sample(abandoned, "ninfer:cancelled_prefills_retained_total 1") &&
+                          has_sample(abandoned, "ninfer:cancelled_prefill_retained_tokens_total 16384"),
+                      "abandoned and cancelled request series are not reported");
+
     // Admitted requests beyond the lane count are deferred, not processing.
     const std::string busy = metrics.render(2, live, 5);
     failures += check(has_sample(busy, "llamacpp:requests_processing 2") &&

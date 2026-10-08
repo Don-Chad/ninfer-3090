@@ -1169,6 +1169,18 @@ struct RuntimeStats {
     std::uint64_t active_captures_completed = 0;
     std::uint64_t active_captures_aborted   = 0;
 
+    // Requests that left the queue without being admitted, and the time they had waited: the
+    // client gave up (cancelled) or the pending timeout fired (expired).
+    std::uint64_t waiting_cancelled_requests = 0;
+    std::uint64_t waiting_expired_requests   = 0;
+    double waiting_abandoned_seconds         = 0.0;
+    // Requests cancelled while their prompt was prefilling, the prompt tokens they had computed,
+    // and how many kept a checkpoint (so a retry resumes from it) and how deep it was.
+    std::uint64_t cancelled_prefills                 = 0;
+    std::uint64_t cancelled_prefill_computed_tokens  = 0;
+    std::uint64_t cancelled_prefills_retained        = 0;
+    std::uint64_t cancelled_prefill_retained_tokens  = 0;
+
     std::uint64_t root_selections                    = 0;
     std::uint64_t private_endpoint_selections        = 0;
     std::uint64_t private_turn_closure_selections    = 0;
