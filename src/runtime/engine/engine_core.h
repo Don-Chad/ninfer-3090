@@ -2895,6 +2895,12 @@ private:
     // next chunk reserved before its budget runs out, from pages nothing else holds. If none is
     // free it keeps what it has and stops, with the length finish reason, when that is spent.
     void extend_output_reservations() noexcept {
+        // Growth takes free pages and advances the resource revision, which an open context
+        // transaction's sealed plan is bound to; the next boundary without one retries.
+        if (instance_.program->has_context_transaction() ||
+            resources_.context_transaction_kind().has_value()) {
+            return;
+        }
         for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
             const auto& request = slots_[lane];
             if (request == nullptr || request->deferred_output_tokens == 0 || !request->budget ||
