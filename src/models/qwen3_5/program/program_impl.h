@@ -428,6 +428,10 @@ struct RequestControl {
     detail::PhysicalResources active_resources;
     detail::PhysicalResources optional_resources;
     bool publish_continuation = true;
+    // What the active KV reservation was sized for, so it can be extended: the prompt, and the
+    // output tokens it currently covers.
+    std::uint32_t reserved_prompt_tokens = 0;
+    std::uint32_t reserved_output_tokens = 0;
 
     struct Prefill {
         PreparedPromptData prompt;
@@ -528,6 +532,8 @@ public:
     // True while this sequence waits for a media item submitted to a concurrent overlay window:
     // the lane must not be given a prefill unit, and every other lane keeps running.
     [[nodiscard]] bool vision_pending(SequenceHandle sequence) const noexcept;
+    [[nodiscard]] bool grow_output_reservation(SequenceHandle sequence,
+                                               std::uint32_t total_output_tokens) noexcept;
     [[nodiscard]] PrefillProgress advance_prefill(SequenceHandle sequence,
                                                   runtime::TokenMaskSource* constraint,
                                                   runtime::ExecutionTiming* failed_timing);

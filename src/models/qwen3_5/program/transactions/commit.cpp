@@ -169,8 +169,10 @@ StartResult ProgramImpl::start_request(MaterializationTransaction& transaction) 
                 ++transaction.operations.state_moves;
             }
         }
-        requests[lane].active_resources   = active;
-        requests[lane].optional_resources = details.active_optional_resources;
+        requests[lane].active_resources     = active;
+        requests[lane].optional_resources   = details.active_optional_resources;
+        requests[lane].reserved_prompt_tokens = details.summary.prompt_tokens;
+        requests[lane].reserved_output_tokens = details.summary.reserved_output_tokens;
         invalidate_lane(lane);
         const SequenceHandle handle =
             ContractAccess::make_sequence(this, runtime::LaneId{lane}, lane_epochs[lane]);

@@ -4331,6 +4331,106 @@ int verify_loaded_product(const ninfer::Engine& engine) {
     return 0;
 }
 
+// Output reservation (EngineOptions::output_reservation_tokens): a request reserves KV for only part
+// of its output when it is admitted and the rest as it decodes.
+//  - growth is invisible: a long generation that crosses several reservation chunks produces exactly
+//    the tokens, and the finish reason, of one that reserved everything up front;
+//  - it is not a fixed cut: two concurrent requests whose full budgets cannot both fit are both
+//    admitted and share the free pages; one that finds none free stops, with the length finish
+//    reason, where its reservation ran out; reserving everything up front instead runs them one
+//    after the other and completes both.
+int exercise_lazy_output_reservation(const char* artifact) {
+    const auto base_options = [&](std::uint32_t context, std::uint32_t reservation,
+                                  std::uint32_t lanes) {
+        ninfer::EngineOptions options = slot_engine_options(artifact, false, nullptr, nullptr);
+        options.max_context                = context;
+        options.kv_capacity                = ninfer::KvCapacityPolicy::explicit_capacity(context);
+        options.max_concurrency            = lanes;
+        options.max_pending_requests       = 4;
+        options.output_reservation_tokens  = reservation;
+        // The cache has to be able to cover every active request.
+        options.context_cache.max_private_continuations = lanes;
+        options.context_cache.device_state_slots        = lanes + 1;
+        options.context_cache.host_state_slots          = lanes + 1;
+        return options;
+    };
+    const auto request_for = [](std::uint32_t tokens) {
+        ninfer::RequestOptions request;
+        request.execution.requested_output_tokens = tokens;
+        request.execution.sampling.temperature    = 0.0F;
+        request.execution.allow_prefix_reuse      = false;
+        request.stop.include_model_defaults       = false;
+        return request;
+    };
+    const std::vector<std::string> prompt{"Count upward from one, separated by commas."};
+
+    // Growth across several chunks equals reserving everything.
+    ninfer::GenerationResult full;
+    {
+        ninfer::Engine engine(base_options(4096, 0, 1));
+        full = engine.generate(engine.prepare(slot_conversation(prompt)), request_for(1200));
+    }
+    ninfer::GenerationResult lazy;
+    ninfer::RuntimeStats lazy_stats;
+    {
+        ninfer::Engine engine(base_options(4096, 100, 1));
+        lazy       = engine.generate(engine.prepare(slot_conversation(prompt)), request_for(1200));
+        lazy_stats = engine.runtime_stats();
+    }
+    if (full.generated_token_ids.size() != 1200 || lazy.generated_token_ids != full.generated_token_ids ||
+        lazy.finish_reason != full.finish_reason ||
+        lazy.finish_reason != ninfer::FinishReason::OutputLimit) {
+        std::cerr << "a lazily reserved generation differs from a fully reserved one: full="
+                  << full.generated_token_ids.size() << " lazy=" << lazy.generated_token_ids.size()
+                  << " finish=" << static_cast<int>(lazy.finish_reason) << '\n';
+        return 1;
+    }
+    if (lazy_stats.output_reservation_growths < 2 || lazy_stats.output_reservation_exhaustions != 0) {
+        std::cerr << "the reservation did not grow as the request decoded: growths="
+                  << lazy_stats.output_reservation_growths
+                  << " exhaustions=" << lazy_stats.output_reservation_exhaustions << '\n';
+        return 1;
+    }
+
+    // Two requests whose full budgets cannot both fit a 1024-token pool.
+    const auto run_pair = [&](std::uint32_t reservation, ninfer::RuntimeStats& stats) {
+        ninfer::Engine engine(base_options(1024, reservation, 2));
+        auto first  = engine.submit(engine.prepare(slot_conversation(prompt)), request_for(900));
+        auto second = engine.submit(engine.prepare(slot_conversation(
+                                        std::vector<std::string>{"Count down from nine hundred."})),
+                                    request_for(900));
+        std::pair<ninfer::GenerationResult, ninfer::GenerationResult> out{first.wait(), second.wait()};
+        stats = engine.runtime_stats();
+        return out;
+    };
+    ninfer::RuntimeStats serial_stats;
+    ninfer::RuntimeStats lazy_pair_stats;
+    const auto serial = run_pair(0, serial_stats);
+    const auto lazy_pair = run_pair(256, lazy_pair_stats);
+    if (serial.first.generated_token_ids.size() != 900 ||
+        serial.second.generated_token_ids.size() != 900) {
+        std::cerr << "fully reserved requests did not both complete\n";
+        return 1;
+    }
+    const std::size_t a = lazy_pair.first.generated_token_ids.size();
+    const std::size_t b = lazy_pair.second.generated_token_ids.size();
+    if (lazy_pair_stats.output_reservation_exhaustions == 0 || std::min(a, b) >= 900 ||
+        std::min(a, b) == 0) {
+        std::cerr << "expected a request to stop at its reservation, not at zero: a=" << a
+                  << " b=" << b << " exhaustions=" << lazy_pair_stats.output_reservation_exhaustions
+                  << '\n';
+        return 1;
+    }
+    if (lazy_pair.first.finish_reason != ninfer::FinishReason::OutputLimit ||
+        lazy_pair.second.finish_reason != ninfer::FinishReason::OutputLimit) {
+        std::cerr << "a request did not finish with the length reason\n";
+        return 1;
+    }
+    std::cout << "lazy: growths=" << lazy_stats.output_reservation_growths << "; pair a=" << a
+              << " b=" << b << '\n';
+    return 0;
+}
+
 } // namespace
 
 int exercise_artifact(const char* artifact) {
@@ -4473,6 +4573,8 @@ int run() {
         result = exercise_slot_persistence(artifact);
     } else if (scenario == "context-store") {
         result = exercise_context_store(artifact);
+    } else if (scenario == "lazy-output-reservation") {
+        result = exercise_lazy_output_reservation(artifact);
     } else if (scenario == "worker-failure-recovery") {
         result = exercise_worker_failure_recovery(artifact);
     } else if (scenario == "admission-planning-failure") {

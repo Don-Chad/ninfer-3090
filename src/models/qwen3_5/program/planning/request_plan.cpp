@@ -265,8 +265,12 @@ RequestBasePlan ProgramImpl::plan_request(const PreparedPromptData& prompt,
     base->allow_prefix_reuse             = options.allow_prefix_reuse;
     base->summary.publish_continuation =
         options.allow_prefix_reuse && prompt.identity.reusable && context_cache.enabled;
+    base->summary.reserved_output_tokens =
+        options.output_reservation_tokens == 0
+            ? base->summary.effective_output_tokens
+            : std::min(base->summary.effective_output_tokens, options.output_reservation_tokens);
     const KVPageEntitlement entitlement = kv_page_entitlement(
-        kv_entitlement_shape(), base->summary.prompt_tokens, base->summary.effective_output_tokens);
+        kv_entitlement_shape(), base->summary.prompt_tokens, base->summary.reserved_output_tokens);
     base->text_kv_page_entitlement    = entitlement.main_pages;
     base->backend_kv_page_entitlement = entitlement.backend_pages;
     detail::PhysicalDeviceResources root_active{

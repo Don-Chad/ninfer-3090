@@ -116,6 +116,9 @@ struct ServeOptions {
     // for its whole budget up front, so a large one evicts retained contexts for pages it never
     // writes; see docs/serving.md.
     std::optional<int> max_output_tokens;
+    // --output-reservation-tokens N: reserve KV for this many output tokens of a request when it is
+    // admitted and the rest as it decodes. 0 reserves the whole budget up front.
+    std::uint32_t output_reservation_tokens = 0;
     // Reasoning effort for a thinking-enabled request that states none. Never None: disabling
     // thinking by default is --no-thinking.
     std::optional<RequestedReasoningEffort> default_reasoning_effort;

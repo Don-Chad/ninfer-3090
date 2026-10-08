@@ -175,6 +175,11 @@ struct RequestRecord {
     std::atomic<bool> cancelled{false};
     EngineRequestState model_state        = EngineRequestState::Waiting;
     bool capture_pending                  = false;
+    // EngineOptions::output_reservation_tokens: output tokens whose KV is reserved so far, the
+    // tokens still to reserve, and the finish reason that applies once they all are.
+    std::uint32_t granted_output_tokens  = 0;
+    std::uint32_t deferred_output_tokens = 0;
+    FinishReason deferred_limit_reason   = FinishReason::None;
     EngineRequestState post_capture_state = EngineRequestState::Prefill;
     std::optional<FinishReason> terminal_reason;
 

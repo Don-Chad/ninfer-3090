@@ -319,6 +319,11 @@ struct EngineOptions {
     std::uint32_t media_preprocess_threads = 0;
     bool enable_vision                     = false;
     VisionResidency vision_residency       = VisionResidency::Resident;
+    // Output tokens of a request whose KV is reserved when it is admitted; the rest of its output
+    // budget is reserved as it decodes, from pages nothing else holds. Zero reserves the whole
+    // budget up front. A request that needs more than this and finds no free page ends with the
+    // length finish reason at the point the reservation ran out.
+    std::uint32_t output_reservation_tokens = 0;
     // Speed-for-quality trades, opt-in and off by default. Measured in
     // docs/maintainer/quality-trade-experiments.md: lm_head_q4 costs +0.69% perplexity for a
     // C8 decode gain (~3%, real chat prompts); gdn_state_fp16 is free within measurement noise
@@ -1205,6 +1210,10 @@ struct RuntimeStats {
     std::uint64_t cancelled_prefill_computed_tokens  = 0;
     std::uint64_t cancelled_prefills_retained        = 0;
     std::uint64_t cancelled_prefill_retained_tokens  = 0;
+    // EngineOptions::output_reservation_tokens: reservations extended while decoding, and
+    // requests that stopped at their reservation because no page was free.
+    std::uint64_t output_reservation_growths    = 0;
+    std::uint64_t output_reservation_exhaustions = 0;
 
     std::uint64_t root_selections                    = 0;
     std::uint64_t private_endpoint_selections        = 0;
