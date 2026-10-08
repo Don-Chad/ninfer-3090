@@ -1766,6 +1766,106 @@ int exercise_cancelled_prefill_slot_binding(const char* artifact) {
     return 0;
 }
 
+// A session evicted from the cache while the Engine keeps running is read back from the context
+// store when a request continues it, instead of being prefilled again. The prompt is long enough
+// (well past the minimum gain) for the read to pay; the continuation must reuse the stored prefix,
+// count one hydration, and produce exactly what a session that never left the device produces.
+int exercise_store_hydration(const char* artifact) {
+    namespace fs = std::filesystem;
+    const fs::path directory = fs::temp_directory_path() / "ninfer-store-hydration-test";
+    fs::remove_all(directory);
+    fs::create_directories(directory);
+
+    ninfer::RequestOptions request;
+    request.execution.requested_output_tokens = 12;
+    request.execution.sampling.temperature    = 0.0F;
+    request.execution.allow_prefix_reuse      = true;
+    request.stop.include_model_defaults       = false;
+
+    std::string log = "Read the following log and answer the question at the end.";
+    for (int line = 0; line < 300; ++line) {
+        log += " Entry " + std::to_string(line) + ": the pump on line " +
+               std::to_string(line % 17) + " reported " + std::to_string(line * 37 % 1013) +
+               " kPa and the operator noted nothing unusual.";
+    }
+    const std::vector<std::string> first{log};
+    const std::vector<std::string> unrelated{
+        "Describe how a cooling fan bearing wears out over several years of service."};
+    const auto second_turn = [&](const ninfer::GenerationResult& reply) {
+        std::vector<std::string> turns = first;
+        turns.push_back(reply.content);
+        turns.push_back("Which line reported the highest pressure?");
+        return turns;
+    };
+
+    // A context deep enough that the stored prefix is far past the minimum worth reading back, and a
+    // host tier large enough to hold the KV of one such session.
+    const auto deep_options = [&] {
+        ninfer::EngineOptions options = slot_engine_options(artifact, false, nullptr, nullptr);
+        options.max_context           = 16384;
+        options.kv_capacity           = ninfer::KvCapacityPolicy::explicit_capacity(16384);
+        options.context_cache.host_kv_capacity_bytes = std::size_t{512} << 20U;
+        return options;
+    };
+
+    std::vector<ninfer::TokenId> control_tokens;
+    std::uint32_t control_reused = 0;
+    {
+        ninfer::Engine control(deep_options());
+        const ninfer::GenerationResult reply =
+            control.generate(control.prepare(slot_conversation(first)), request);
+        const ninfer::GenerationResult next =
+            control.generate(control.prepare(slot_conversation(second_turn(reply))), request);
+        control_tokens = next.generated_token_ids;
+        control_reused = next.reused_prompt_tokens;
+        if (control_reused < 4096) {
+            std::cerr << "the control prompt is too short to exercise a hydration: reused "
+                      << control_reused << '\n';
+            return 1;
+        }
+    }
+
+    ninfer::EngineOptions options = deep_options();
+    options.context_store.directory    = directory;
+    options.context_store.idle_persist = std::chrono::seconds(0);
+    ninfer::Engine engine(std::move(options));
+    const ninfer::GenerationResult reply =
+        engine.generate(engine.prepare(slot_conversation(first)), request);
+    // One private cell: an unrelated conversation evicts the first, which writes it to the store.
+    (void)engine.generate(engine.prepare(slot_conversation(unrelated)), request);
+    bool written = false;
+    for (int attempt = 0; attempt < 600 && !written; ++attempt) {
+        written = engine.runtime_stats().context_store_writes >= 1;
+        if (!written) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
+    }
+    if (!written) {
+        std::cerr << "the evicted session was not written to the store\n";
+        return 1;
+    }
+    const ninfer::GenerationResult next =
+        engine.generate(engine.prepare(slot_conversation(second_turn(reply))), request);
+    const ninfer::RuntimeStats stats = engine.runtime_stats();
+    if (stats.context_store_hydrations != 1 || stats.context_store_hydrated_tokens < 4096) {
+        std::cerr << "the continuation did not hydrate the stored session: hydrations="
+                  << stats.context_store_hydrations
+                  << " tokens=" << stats.context_store_hydrated_tokens
+                  << " failures=" << stats.context_store_hydration_failures << '\n';
+        return 1;
+    }
+    if (next.reused_prompt_tokens + 64U < control_reused) {
+        std::cerr << "the hydrated continuation reused " << next.reused_prompt_tokens
+                  << " tokens against " << control_reused << " for the warm control\n";
+        return 1;
+    }
+    if (next.generated_token_ids != control_tokens) {
+        std::cerr << "output after a hydration differs from the warm control\n";
+        return 1;
+    }
+    std::cout << "hydrated " << stats.context_store_hydrated_tokens << " tokens in "
+              << stats.context_store_hydration_seconds << " s\n";
+    return 0;
+}
+
 // The durable context store: a retained session survives an Engine restart without any explicit
 // save or restore call, and a damaged store costs cache hits, never correctness. Four properties on
 // the real artifact, each against its own store directory:
@@ -4575,6 +4675,8 @@ int run() {
         result = exercise_context_store(artifact);
     } else if (scenario == "lazy-output-reservation") {
         result = exercise_lazy_output_reservation(artifact);
+    } else if (scenario == "store-hydration") {
+        result = exercise_store_hydration(artifact);
     } else if (scenario == "worker-failure-recovery") {
         result = exercise_worker_failure_recovery(artifact);
     } else if (scenario == "admission-planning-failure") {

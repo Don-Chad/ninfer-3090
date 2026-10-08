@@ -185,6 +185,17 @@ void append_context_store(std::string& out, const ninfer::RuntimeStats& live) {
                   "Bytes of sessions restored at start-up.", live.context_store_restored_bytes);
     append_metric(out, "ninfer:context_store_restore_seconds", "gauge",
                   "Time spent restoring sessions at start-up.", live.context_store_restore_seconds);
+    append_metric(out, "ninfer:context_store_hydrations_total", "counter",
+                  "Stored sessions read back into the cache for a request.",
+                  live.context_store_hydrations);
+    append_metric(out, "ninfer:context_store_hydrated_tokens_total", "counter",
+                  "Prompt tokens requests resumed from a hydrated session instead of prefilling.",
+                  live.context_store_hydrated_tokens);
+    append_metric(out, "ninfer:context_store_hydration_failures_total", "counter",
+                  "Hydrations that failed; the request was prefilled normally.",
+                  live.context_store_hydration_failures);
+    append_metric(out, "ninfer:context_store_hydration_seconds_total", "counter",
+                  "Worker time spent hydrating sessions.", live.context_store_hydration_seconds);
 }
 
 } // namespace

@@ -294,7 +294,7 @@ public:
                 }
                 open_context_store();
                 generation->set_context_store(
-                    slot_model_binding(options, load),
+                    slot_model_binding(options, load), store.get(),
                     [this](runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
                         return enqueue_store_write(std::move(snapshot));
                     },
@@ -395,6 +395,14 @@ public:
         out.context_store_restored       = restored_sessions.load(std::memory_order_relaxed);
         out.context_store_restored_bytes = restored_bytes.load(std::memory_order_relaxed);
         out.context_store_restore_seconds = restore_seconds;
+        if (const auto* generation = std::get_if<std::unique_ptr<GenerationCore>>(&core);
+            generation != nullptr && *generation != nullptr) {
+            const auto read = (*generation)->store_read_stats();
+            out.context_store_hydrations         = read.hydrations;
+            out.context_store_hydrated_tokens    = read.hydrated_tokens;
+            out.context_store_hydration_failures = read.failures;
+            out.context_store_hydration_seconds  = read.seconds;
+        }
     }
 
     EngineOptions options;

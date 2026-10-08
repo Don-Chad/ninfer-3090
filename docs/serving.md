@@ -353,6 +353,14 @@ requests. A request then reuses a restored conversation exactly as it would have
 There is nothing for a supervisor or gateway to call: the explicit `/slots` save and restore are
 not needed to survive a restart.
 
+The store is also read while the server runs. When a request is about to be admitted and the store
+holds a checkpoint of that very prompt at least 4,096 tokens deeper than anything in the cache (the
+session was evicted from memory since), the Engine reads the session back, giving up the least
+recently used retained sessions if it needs the room, and the request resumes from it instead of
+prefilling the difference. The read and the upload run on the Engine worker, so they pause running
+requests for as long as they take (about a second per 2 GiB from an SSD); a stored session that
+cannot be read or does not fit is a miss and the request is prefilled as without the store.
+
 The store does not support the DFlash speculative backend (its lane-local state is not captured in a
 session snapshot); the Engine refuses to start with both.
 
@@ -412,6 +420,7 @@ Engine's per-unit totals and advance during a request rather than at its complet
 | `ninfer:context_store_bytes_written_total`, `_bytes_reused_total` | counter | new chunk bytes written, and chunk bytes a write found already stored |
 | `ninfer:context_store_evicted_total`, `_corrupt_total` | counter | sessions removed for space, age or supersession, and because they could not be read back intact |
 | `ninfer:context_store_restored_sessions`, `_restored_bytes`, `_restore_seconds` | gauge | what start-up restored into the cache, and how long it took |
+| `ninfer:context_store_hydrations_total`, `_hydrated_tokens_total`, `_hydration_failures_total`, `_hydration_seconds_total` | counter | stored sessions read back for a request, the prompt tokens that saved, failures (the request was prefilled) and worker time spent |
 
 ## OpenAI Chat Completions
 

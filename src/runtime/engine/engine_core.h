@@ -10,6 +10,7 @@
 #include "runtime/contract/token_constraint.h"
 #include "runtime/engine/request_record.h"
 #include "runtime/engine/context_cache/resource_manager.h"
+#include "runtime/engine/context_store/context_store.h"
 #include "runtime/engine/scheduler.h"
 #include "runtime/engine/generation_budget.h"
 #include "runtime/engine/effective_thinking_budget.h"
@@ -332,6 +333,9 @@ public:
     // A cell that holds no session and is not reserved by a request, for restoring into.
     [[nodiscard]] std::optional<std::uint32_t> first_vacant_slot() const {
         std::scoped_lock lock(execution_mutex_);
+        return first_vacant_slot_locked();
+    }
+    [[nodiscard]] std::optional<std::uint32_t> first_vacant_slot_locked() const {
         for (std::uint32_t slot = 0; slot < resources_.catalog_capacity(); ++slot) {
             if (resources_.catalog_state(slot) == ResourceManagement::CatalogState::Vacant) {
                 return slot;
@@ -347,6 +351,28 @@ public:
                  std::string_view model_binding, std::string_view session_path,
                  const std::function<void()>& claim, bool already_durable = false) {
         std::scoped_lock lock(execution_mutex_);
+        return restore_slot_locked(slot, snapshot, model_binding, session_path, claim,
+                                   already_durable);
+    }
+
+    struct StoreReadStats {
+        std::uint64_t hydrations     = 0;
+        std::uint64_t hydrated_tokens = 0;
+        std::uint64_t failures       = 0;
+        double seconds               = 0.0;
+    };
+    [[nodiscard]] StoreReadStats store_read_stats() const noexcept {
+        return {store_hydrations_.load(std::memory_order_relaxed),
+                store_hydrated_tokens_.load(std::memory_order_relaxed),
+                store_hydration_failures_.load(std::memory_order_relaxed),
+                static_cast<double>(store_hydration_ns_.load(std::memory_order_relaxed)) * 1e-9};
+    }
+
+    // restore_slot for a caller that already holds the execution mutex (the worker).
+    [[nodiscard]] std::pair<std::uint32_t, std::string>
+    restore_slot_locked(std::uint32_t slot, std::span<const std::uint8_t> snapshot,
+                        std::string_view model_binding, std::string_view session_path,
+                        const std::function<void()>& claim, bool already_durable = false) {
         device_.bind_to_current_thread();
         if (!context_cache_enabled_) {
             // Without the cache no finished request can reuse a retained session.
@@ -446,12 +472,13 @@ public:
     // mutex held and must not block. `sink` returns whether the snapshot was accepted into the
     // write queue, not whether it reached disk; `failures` is a count of queued writes that
     // failed, and when it grows every session is treated as not stored, so it is queued again.
-    void set_context_store(std::string model_binding,
+    void set_context_store(std::string model_binding, runtime::ContextStore* store,
                            std::function<bool(typename ModelContract::SessionSnapshot&&)> sink,
                            std::function<bool()> ready, std::chrono::milliseconds idle,
                            std::function<std::uint64_t()> failures) {
         std::scoped_lock lock(execution_mutex_);
         eviction_model_binding_ = std::move(model_binding);
+        store_                  = store;
         store_sink_             = std::move(sink);
         store_ready_            = std::move(ready);
         store_failures_         = std::move(failures);
@@ -925,6 +952,121 @@ private:
             }
         } catch (...) {
             last_persist_scan_ = now + std::chrono::seconds(4);
+        }
+    }
+
+    // Prompt tokens a stored session must add beyond what the cache already offers before reading it
+    // back is worth the stall: the read and the upload run on the worker, and a few thousand
+    // tokens prefill faster than a deep image comes off a slow disk.
+    static constexpr std::uint32_t kMinimumHydrationGain = 4096;
+
+    // The retained session nothing is using that was used longest ago: the one to give up when a
+    // stored session needs the room. It is written to the store first when the store does not hold
+    // its current state, as for any eviction.
+    [[nodiscard]] bool evict_least_recently_used_session() noexcept {
+        try {
+            std::optional<std::uint32_t> victim;
+            for (std::uint32_t slot = 0; slot < resources_.catalog_capacity(); ++slot) {
+                const auto view = resources_.catalog_slot(slot);
+                if (view.state != ResourceManagement::CatalogState::Catalogued ||
+                    view.handle == nullptr || view.active_edge) {
+                    continue;
+                }
+                if (!victim ||
+                    slot_usage_[slot].last_used_unix_ms < slot_usage_[*victim].last_used_unix_ms) {
+                    victim = slot;
+                }
+            }
+            if (!victim) { return false; }
+            const auto view = resources_.catalog_slot(*victim);
+            spill_catalog_slot(*victim, *view.handle);
+            clear_slot_session(*victim);
+            auto evicted = resources_.take_catalogued(*victim);
+            (void)instance_.program->release_continuation(std::move(evicted));
+            return true;
+        } catch (...) { return false; }
+    }
+
+    // Before a request is admitted: when the context store holds a checkpoint of this very prompt
+    // deeper than anything the cache offers, read that session back so the request resumes from it
+    // instead of prefilling the difference. Called by the worker with the execution mutex held.
+    // Returns whether the cache changed (the caller must plan the request again). Every failure is
+    // a miss: the request is prefilled as it would have been without the store.
+    [[nodiscard]] bool hydrate_from_store(const std::shared_ptr<Request>& request,
+                                          std::uint32_t resident_reuse) noexcept {
+        if (store_ == nullptr || request->store_probed || !context_cache_enabled_ ||
+            !request->options.execution.allow_prefix_reuse || !request->base_plan ||
+            materializing_ || instance_.program->has_context_transaction() ||
+            resources_.context_transaction_kind()) {
+            return false;
+        }
+        bool idle_lane = false;
+        for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+            idle_lane = idle_lane || slots_[lane] == nullptr;
+        }
+        if (!idle_lane) { return false; }
+        request->store_probed = true;
+        const auto started    = Clock::now();
+        try {
+            std::string best_id;
+            std::uint32_t best_frontier = resident_reuse + kMinimumHydrationGain - 1U;
+            for (const runtime::ContextStore::Info& info : store_->list()) {
+                if (info.binding != eviction_model_binding_) { continue; }
+                for (const runtime::ContextStore::CheckpointKey& key : info.checkpoints) {
+                    if (key.frontier <= best_frontier) { continue; }
+                    const auto mine = request->base_plan->prefix_shortlist_key(key.frontier);
+                    if (mine && mine->digests == key.digests &&
+                        mine->identity_tag == key.identity_tag) {
+                        best_id       = info.id;
+                        best_frontier = key.frontier;
+                    }
+                }
+            }
+            if (best_id.empty()) { return false; }
+            std::optional<std::vector<std::uint8_t>> bytes = store_->load(best_id);
+            if (!bytes) {
+                store_hydration_failures_.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+            bool restored = false;
+            // Each refusal for room gives up one more retained session; a bounded few, so a
+            // request never empties the cache for one image.
+            for (std::uint32_t attempt = 0; attempt < 8 && !restored; ++attempt) {
+                std::optional<std::uint32_t> slot = first_vacant_slot_locked();
+                if (!slot) {
+                    if (!evict_least_recently_used_session()) { break; }
+                    slot = first_vacant_slot_locked();
+                    if (!slot) { break; }
+                }
+                try {
+                    (void)restore_slot_locked(
+                        *slot, std::span<const std::uint8_t>(bytes->data(), bytes->size()),
+                        eviction_model_binding_, std::string_view(), [] {}, true);
+                    restored = true;
+                } catch (const std::invalid_argument& error) {
+                    if (std::string_view(error.what()).find("evict other sessions first") ==
+                        std::string_view::npos) {
+                        break;
+                    }
+                    if (!evict_least_recently_used_session()) { break; }
+                }
+            }
+            if (!restored) {
+                store_hydration_failures_.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+            store_hydrations_.fetch_add(1, std::memory_order_relaxed);
+            store_hydrated_tokens_.fetch_add(best_frontier - resident_reuse,
+                                             std::memory_order_relaxed);
+            store_hydration_ns_.fetch_add(
+                static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started)
+                        .count()),
+                std::memory_order_relaxed);
+            return true;
+        } catch (...) {
+            store_hydration_failures_.fetch_add(1, std::memory_order_relaxed);
+            return false;
         }
     }
 
@@ -2284,6 +2426,20 @@ private:
                 control_progress = true;
                 continue;
             }
+            if ((head_inspected->readiness == Readiness::Ready ||
+                 head_inspected->readiness == Readiness::NeedsTransfer) &&
+                head_inspected->choice &&
+                hydrate_from_store(head, head_inspected->choice->summary().reusable_prompt_tokens)) {
+                // The cache changed: plan again against it.
+                head_inspected.reset();
+                std::optional<ResourceInspection> replanned =
+                    inspect_admission_or_fail(head, allowance);
+                if (!replanned) {
+                    control_progress = true;
+                    continue;
+                }
+                head_inspected.emplace(std::move(*replanned));
+            }
             auto head_inspection = std::move(*head_inspected);
             if (head_inspection.readiness == Readiness::PermanentlyInfeasible) {
                 (void)remove_pending_error(
@@ -2995,6 +3151,11 @@ private:
     std::string eviction_model_binding_;
     std::function<void(std::string, typename ModelContract::SessionSnapshot&&)> eviction_sink_;
     std::function<bool(typename ModelContract::SessionSnapshot&&)> store_sink_;
+    runtime::ContextStore* store_ = nullptr; // owned by the Engine, which outlives the worker
+    std::atomic<std::uint64_t> store_hydrations_{0};
+    std::atomic<std::uint64_t> store_hydrated_tokens_{0};
+    std::atomic<std::uint64_t> store_hydration_failures_{0};
+    std::atomic<std::uint64_t> store_hydration_ns_{0};
     std::function<bool()> store_ready_;
     std::function<std::uint64_t()> store_failures_;
     std::uint64_t store_failures_seen_ = 0;
