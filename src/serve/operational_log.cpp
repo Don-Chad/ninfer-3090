@@ -533,6 +533,18 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
         logger_->info("context cache | root only");
     }
 
+    if (engine.context_store.enabled()) {
+        const ninfer::RuntimeStats stats = service.runtime_stats();
+        logger_->info("context store | {} | {} sessions, {} held | restored {} sessions, {} in "
+                      "{:.1f} s",
+                      product::format_pretty_text(engine.context_store.directory.string()),
+                      stats.context_store_images,
+                      product::format_pretty_bytes(stats.context_store_used_bytes),
+                      stats.context_store_restored,
+                      product::format_pretty_bytes(stats.context_store_restored_bytes),
+                      stats.context_store_restore_seconds);
+    }
+
     if (service.options().enable_vision) {
         const ninfer::MediaCacheSummary media = service.media_cache_summary();
         logger_->info("media | {} preprocess workers | cache {} | live {}",

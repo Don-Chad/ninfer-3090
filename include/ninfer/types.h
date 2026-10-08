@@ -173,6 +173,30 @@ struct SlotAutoSaveOptions {
     std::function<void(const SlotAutoSaveEvent& event)> listener;
 };
 
+// A durable store for retained sessions, so the context cache survives a restart or a crash.
+// Disabled unless a directory is given. A retained session is written there when it is evicted,
+// when it has been idle for `idle_persist`, and (all of them) when the Engine shuts down; at start-up
+// the most recently used sessions are restored into the cache. The store holds only changed pieces
+// of each session (see ContextStore), so keeping a long conversation current is cheap.
+struct ContextStoreOptions {
+    std::filesystem::path directory;
+    // Bytes the store may hold; the least recently used sessions are removed beyond it. 0 chooses
+    // half of the free space on the volume when the Engine starts.
+    std::uint64_t max_bytes = 0;
+    // A session unused for this long is removed. Zero keeps sessions until space is needed.
+    std::chrono::seconds ttl{std::chrono::hours(24 * 7)};
+    // A retained session unused for this long, and not yet written in its current state, is written
+    // in the background so a crash loses at most this much of a conversation. Zero disables it
+    // (sessions are then written only on eviction and shutdown).
+    std::chrono::seconds idle_persist{30};
+    // Upper bound on the time spent restoring sessions into the cache at start-up.
+    std::chrono::seconds restore_budget{120};
+    // Upper bound on the time spent writing sessions at shutdown.
+    std::chrono::seconds flush_budget{60};
+
+    [[nodiscard]] bool enabled() const noexcept { return !directory.empty(); }
+};
+
 // A host-side failure of the Engine worker, reported from the worker thread after the Engine has
 // recovered from it or latched. `message` is the exception text, which is operator diagnostics
 // and must not be forwarded to API clients.
@@ -344,6 +368,7 @@ struct EngineOptions {
     std::vector<GraftSource> grafts;
     StartupObserver startup_observer;
     SlotAutoSaveOptions slot_auto_save;
+    ContextStoreOptions context_store;
     // Called on the worker thread for each host-side worker failure, after recovery or latch.
     // Must be quick; exceptions are ignored.
     std::function<void(const EngineFaultEvent& event)> fault_listener;
@@ -1243,6 +1268,20 @@ struct RuntimeStats {
     // Host-side failures the worker survived by failing the in-flight requests and clearing the
     // context cache instead of latching the Engine unavailable.
     std::uint64_t engine_recoveries = 0;
+
+    // The durable context store (zero throughout when it is disabled).
+    std::uint64_t context_store_images         = 0;
+    std::uint64_t context_store_used_bytes     = 0;
+    std::uint64_t context_store_writes         = 0; // sessions written
+    std::uint64_t context_store_write_failures = 0;
+    std::uint64_t context_store_dropped        = 0; // sessions not written: write queue full
+    std::uint64_t context_store_bytes_written  = 0; // new chunk bytes written to disk
+    std::uint64_t context_store_bytes_reused   = 0; // chunk bytes already held, not rewritten
+    std::uint64_t context_store_evicted        = 0; // removed for space, age or supersession
+    std::uint64_t context_store_corrupt        = 0; // removed because they could not be read
+    std::uint64_t context_store_restored       = 0; // sessions restored into the cache at start-up
+    std::uint64_t context_store_restored_bytes = 0;
+    double context_store_restore_seconds       = 0.0;
 };
 
 enum class ContextCostPresetSource : std::uint8_t {

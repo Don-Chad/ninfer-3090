@@ -618,6 +618,30 @@ SessionSnapshot ProgramImpl::save_continuation(const ContinuationHandle& continu
     const std::uint64_t checksum =
         snapshot_checksum(std::span<const std::uint8_t>(snapshot.bytes.data(), checksum_offset));
     std::memcpy(snapshot.bytes.data() + checksum_offset, &checksum, sizeof(checksum));
+
+    // The layout a store needs: the bulk regions, and the key of each checkpoint as the request
+    // path computes it (from the continuation summary, so the two cannot drift apart).
+    for (std::size_t index = 0; index < unique_states.size(); ++index) {
+        snapshot.regions.push_back(SessionSnapshotRegion{
+            .offset = state_offset + index * state_layout.image_bytes,
+            .length = state_layout.image_bytes});
+    }
+    snapshot.regions.push_back(SessionSnapshotRegion{
+        .offset = text_kv_offset, .length = static_cast<std::uint64_t>(config.text_page_stride) *
+                                            session.text_pages});
+    if (session.backend_pages != 0) {
+        snapshot.regions.push_back(SessionSnapshotRegion{
+            .offset = backend_kv_offset,
+            .length = static_cast<std::uint64_t>(config.backend_page_stride) *
+                      session.backend_pages});
+    }
+    const qwen3_5::ContinuationSummary summary = continuation_summary(sequence);
+    if (summary.endpoint) { snapshot.checkpoints.push_back(summary.endpoint->shortlist_key); }
+    if (summary.rewrite) { snapshot.checkpoints.push_back(summary.rewrite->shortlist_key); }
+    for (const auto& anchor : summary.long_anchors) {
+        snapshot.checkpoints.push_back(anchor.shortlist_key);
+    }
+    snapshot.prefix_digests = sequence.prefix_digests.image();
     return snapshot;
 }
 

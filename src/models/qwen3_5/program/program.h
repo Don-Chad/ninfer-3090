@@ -101,12 +101,30 @@ struct ContinuationSummary {
                                          const ContinuationSummary&) noexcept = default;
 };
 
+// Where the bulk of a snapshot lives inside its bytes: one region per StateImage and one each for
+// the Text and backend KV pages. Everything else (the header with the token ledger, the checkpoint
+// directory and the integrity trailer) is small. Two snapshots of one conversation share almost all
+// of these regions byte for byte, which is what lets a store keep them once.
+struct SessionSnapshotRegion {
+    std::uint64_t offset = 0;
+    std::uint64_t length = 0;
+};
+
 // A retained continuation serialized for disk: the session snapshot bytes, the resident depth
 // and the session digest (FNV-1a 64 of the token ledger, 16 hex characters).
 struct SessionSnapshot {
     std::vector<std::uint8_t> bytes;
     std::uint32_t tokens = 0;
     std::string session_digest;
+    // The bulk regions of `bytes`, in order and disjoint.
+    std::vector<SessionSnapshotRegion> regions;
+    // The prefix key of every checkpoint the snapshot restores (endpoint, rewrite, long anchors),
+    // exactly as a later request computes it for its own prompt, so the snapshot can be found by
+    // prefix without being opened.
+    std::vector<PrefixShortlistKey> checkpoints;
+    // The session's own prefix digest at every frontier 0..tokens, so a store can tell that an
+    // older image is an earlier state of the same conversation without opening either.
+    std::vector<std::array<std::uint64_t, 2>> prefix_digests;
 };
 
 struct SharedPrefixSummary {

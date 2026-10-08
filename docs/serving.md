@@ -337,6 +337,45 @@ image per checkpoint it retains (endpoint, rewrite checkpoint, long anchors), ab
 the 27B, so even a short session is a few hundred MB: a 39-token Qwen3.8-27B session saved as
 295 MiB, with save and restore at about 0.3 s each on an RTX 3090.
 
+### Context store
+
+`--context-store DIR` makes the context cache survive a restart or a crash. It is off by default.
+With it, a retained session is written to `DIR`
+
+- when it is evicted from the cache,
+- in the background once it has been unused for `--context-store-idle-seconds` (30 s) and has
+  changed since it was last written, so a crash loses at most that much of a conversation, and
+- at shutdown, for every session not already stored, most recently used first, within `--context-store-flush-seconds` (60 s).
+
+On start-up the most recently used sessions are restored into the cache, most recent first, until
+the cache is full or `--context-store-restore-seconds` (120 s) is spent, before the server accepts
+requests. A request then reuses a restored conversation exactly as it would have before the restart.
+There is nothing for a supervisor or gateway to call: the explicit `/slots` save and restore are
+not needed to survive a restart.
+
+The store does not support the DFlash speculative backend (its lane-local state is not captured in a
+session snapshot); the Engine refuses to start with both.
+
+A session image is several GB for a deep context (about 18 KB per token with `--kv-dtype rk4v4`,
+plus about 150 MB of recurrent state per checkpoint), and consecutive images of one conversation
+share almost all of it. The store therefore splits an image into fixed 32 MiB chunks named by a hash
+of their content and writes only chunks it does not already hold: keeping a long conversation current
+costs the newest pages and the endpoint state, not the whole session. Older images of a conversation
+are removed once a newer image of it is stored. Writes are atomic (a temporary name, then a rename),
+every chunk is verified when read, and a session that cannot be read back intact is removed and
+simply re-prefilled by the next request; a damaged store costs cache hits, never a wrong answer.
+
+The store keeps at most `--context-store-max-gib` (default: half the free space of the volume when
+the server starts), removing the least recently used sessions first, and removes sessions unused for
+`--context-store-ttl-hours` (default 168). A store written by a different model, quantization or KV
+configuration is ignored and ages out. The `ninfer:context_store_*` series (see
+[Metrics](#metrics)) report size, writes, bytes reused, what was restored at start-up and how long it
+took. A background write is skipped while any request is waiting or prefilling, and the write queue
+holds at most two sessions, so a slow disk does not hold up requests. Taking the snapshot itself
+(copying a deep session out of the GPU) is a single step of the Engine worker, so a request that
+arrives during it waits for that copy; a session that could not be queued is
+retried or, if it was being evicted, lost to the store and re-prefilled on its next request.
+
 ### Metrics
 
 `GET /metrics` serves Prometheus text format. Like `/v1/load` it requires the API key when one is
@@ -367,6 +406,11 @@ Engine's per-unit totals and advance during a request rather than at its complet
 | `ninfer:context_transfer_seconds_total` | counter | context transfer time admissions waited for |
 | `ninfer:context_historical_fork_hits_total` | counter | admissions that forked a historical checkpoint rather than the latest endpoint |
 | `ninfer:context_occupancy{pool}` | gauge | `device_state_slots`, `host_state_slots`, `device_main_kv_pages`, `device_backend_kv_pages`, `host_kv_bytes` in use |
+| `ninfer:context_store_images`, `ninfer:context_store_used_bytes` | gauge | sessions and bytes held by the [context store](#context-store) (zero when it is off) |
+| `ninfer:context_store_writes_total`, `_write_failures_total`, `_dropped_total` | counter | sessions written, writes that failed, sessions not queued because the write queue was full |
+| `ninfer:context_store_bytes_written_total`, `_bytes_reused_total` | counter | new chunk bytes written, and chunk bytes a write found already stored |
+| `ninfer:context_store_evicted_total`, `_corrupt_total` | counter | sessions removed for space, age or supersession, and because they could not be read back intact |
+| `ninfer:context_store_restored_sessions`, `_restored_bytes`, `_restore_seconds` | gauge | what start-up restored into the cache, and how long it took |
 
 ## OpenAI Chat Completions
 
@@ -1140,6 +1184,12 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--max-cache-markers-per-request N` | caller marker input-complexity bound | `4` |
 | `--slot-save-path DIR` | enable `POST /slots/{id}` save/restore/erase with files in `DIR` (created at startup) | disabled |
 | `--auto-save-evicted` | write an evicted session back to its bound slot file; requires `--slot-save-path` | off |
+| `--context-store DIR` | keep retained sessions on disk so a restart or crash does not lose the context cache; see [Context store](#context-store). Replaces `--auto-save-evicted` | off |
+| `--context-store-max-gib N` | bound the store; the least recently used sessions are removed beyond it. Requires `--context-store` | half the volume's free space |
+| `--context-store-ttl-hours N` | remove sessions unused this long; `0` keeps them until space is needed | `168` |
+| `--context-store-idle-seconds N` | write a session unused this long, and changed since it was last written, in the background; `0` writes only on eviction and shutdown | `30` |
+| `--context-store-restore-seconds N` | time budget for restoring sessions at start-up | `120` |
+| `--context-store-flush-seconds N` | time budget for writing sessions that are not yet stored at shutdown | `60` |
 | `--no-exit-on-engine-failure` | stay alive (answering 503) when the engine latches unavailable, instead of logging FATAL and exiting with status 3 after 5 s | exit |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |

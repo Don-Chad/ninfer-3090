@@ -6,11 +6,13 @@
 #include "runtime/contract/sampling.h"
 #include "runtime/contract/request.h"
 #include "runtime/engine/causal_score_core.h"
+#include "runtime/engine/context_store/context_store.h"
 #include "runtime/engine/engine_core.h"
 #include "runtime/engine/model_instance.h"
 #include "runtime/engine/slot_spill_guard.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -195,6 +197,12 @@ std::string slot_model_binding(const EngineOptions& options, const LoadSummary& 
     std::error_code size_error;
     const std::uintmax_t size = std::filesystem::file_size(options.artifact_path, size_error);
     binding += size_error ? std::string("?") : std::to_string(size);
+    // A re-converted artifact can have the same size; its modification time tells it apart.
+    std::error_code time_error;
+    const auto written = std::filesystem::last_write_time(options.artifact_path, time_error);
+    binding += '\n';
+    binding += time_error ? std::string("?")
+                          : std::to_string(written.time_since_epoch().count());
     return binding;
 }
 
@@ -226,6 +234,25 @@ void write_snapshot_file(const std::string& path, const std::vector<std::uint8_t
 // Auto-save spills queue at most this many snapshots. Each holds a whole session, several GB for
 // a deep one; beyond the bound a spill is dropped and reported rather than growing host memory.
 constexpr std::size_t kMaximumPendingSlotWrites = 2;
+constexpr std::chrono::minutes kStoreMaintenanceInterval{10};
+
+// The store keeps up to this share of the volume's free space when no limit is configured.
+constexpr std::uint64_t kAutomaticStoreShareDivisor = 2;
+constexpr std::uint64_t kFallbackStoreBytes         = std::uint64_t{64} << 30U;
+
+std::uint64_t directory_bytes(const std::filesystem::path& directory) noexcept {
+    std::uint64_t total = 0;
+    std::error_code error;
+    for (std::filesystem::recursive_directory_iterator it(directory, error), end;
+         !error && it != end; it.increment(error)) {
+        std::error_code size_error;
+        if (it->is_regular_file(size_error)) {
+            const auto size = it->file_size(size_error);
+            if (!size_error) { total += size; }
+        }
+    }
+    return total;
+}
 
 } // namespace
 
@@ -251,7 +278,32 @@ public:
         } else {
             auto generation = std::make_unique<GenerationCore>(
                 *active, device, options, std::move(constructed.context_cost));
-            if (options.slot_auto_save.enabled) {
+            if (options.context_store.enabled()) {
+                if (!options.context_cache.enabled) {
+                    throw std::invalid_argument(
+                        "the context store requires the context cache to be enabled");
+                }
+                if (options.slot_auto_save.enabled) {
+                    throw std::invalid_argument(
+                        "the context store replaces slot auto-save; enable only one");
+                }
+                if (options.speculative.backend == SpeculativeBackend::DFlash) {
+                    // Session snapshots do not capture this backend's lane-local state.
+                    throw std::invalid_argument(
+                        "the context store does not support the DFlash speculative backend");
+                }
+                open_context_store();
+                generation->set_context_store(
+                    slot_model_binding(options, load),
+                    [this](runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
+                        return enqueue_store_write(std::move(snapshot));
+                    },
+                    [this] { return store_queue_idle(); },
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        options.context_store.idle_persist),
+                    [this] { return store_write_failures.load(std::memory_order_relaxed); });
+                start_writer();
+            } else if (options.slot_auto_save.enabled) {
                 generation->set_eviction_sink(
                     slot_model_binding(options, load),
                     [this](std::string path, runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
@@ -259,12 +311,25 @@ public:
                     });
             }
             core = std::move(generation);
+            if (store) { restore_from_store(); }
         }
         finalize_phase.complete();
     }
 
     ~Impl() noexcept {
         device.bind_to_current_thread_noexcept();
+        // Queued store writes are older than what the final flush writes: drain them first, so
+        // none lands after it and replaces a newer image.
+        std::chrono::steady_clock::time_point flush_deadline{};
+        if (store) {
+            flush_deadline = std::chrono::steady_clock::now() + options.context_store.flush_budget;
+            {
+                std::scoped_lock lock(writer_mutex);
+                drain_deadline = flush_deadline;
+            }
+            stop_writer();
+        }
+        flush_context_store(flush_deadline);
         core.emplace<std::monostate>();
         stop_writer();
         try {
@@ -314,11 +379,33 @@ public:
         return **generation;
     }
 
+    // Adds the context store's counters to a RuntimeStats snapshot (all zero when it is disabled).
+    void add_store_stats(RuntimeStats& out) const {
+        if (!store) { return; }
+        const runtime::ContextStore::Stats s = store->stats();
+        out.context_store_images         = s.images;
+        out.context_store_used_bytes     = s.used_bytes;
+        out.context_store_writes         = s.puts;
+        out.context_store_write_failures = s.put_failures;
+        out.context_store_dropped        = store_dropped.load(std::memory_order_relaxed);
+        out.context_store_bytes_written  = s.bytes_written;
+        out.context_store_bytes_reused   = s.bytes_reused;
+        out.context_store_evicted        = s.evicted_for_space + s.expired + s.superseded;
+        out.context_store_corrupt        = s.corrupt_removed;
+        out.context_store_restored       = restored_sessions.load(std::memory_order_relaxed);
+        out.context_store_restored_bytes = restored_bytes.load(std::memory_order_relaxed);
+        out.context_store_restore_seconds = restore_seconds;
+    }
+
     EngineOptions options;
     DeviceContext device;
     std::unique_ptr<runtime::ModelInstance> active;
     LoadSummary load;
     ModelSamplingDefaults sampling_defaults;
+    // Declared before `core`: the worker holds sinks that reach the store, so the store must
+    // outlive it.
+    std::unique_ptr<runtime::ContextStore> store;
+    std::string store_binding;
     Core core;
     SlotSpillGuard spill_guard;
     std::mutex slot_io_mutex;
@@ -329,7 +416,125 @@ private:
         runtime::ModelInstance::ModelContract::SessionSnapshot snapshot;
         // The path's generation when the spill was queued; a later explicit claim supersedes it.
         std::uint64_t generation = 0;
+        // Written to the context store instead of a slot file.
+        bool to_store = false;
     };
+
+    void open_context_store() {
+        const ContextStoreOptions& config = options.context_store;
+        std::error_code error;
+        std::filesystem::create_directories(config.directory, error);
+        if (!std::filesystem::is_directory(config.directory)) {
+            throw std::invalid_argument("the context store directory is not usable: " +
+                                        config.directory.string());
+        }
+        std::uint64_t max_bytes = config.max_bytes;
+        if (max_bytes == 0) {
+            const std::filesystem::space_info space = std::filesystem::space(config.directory, error);
+            // If the volume cannot be queried, fall back to a bounded default rather than no limit.
+            max_bytes = error ? kFallbackStoreBytes
+                              : (space.available + directory_bytes(config.directory)) /
+                                    kAutomaticStoreShareDivisor;
+        }
+        runtime::ContextStore::Options store_options;
+        store_options.directory = config.directory;
+        store_options.max_bytes = max_bytes;
+        store_options.ttl       = config.ttl;
+        store                   = std::make_unique<runtime::ContextStore>(std::move(store_options));
+        store_binding           = slot_model_binding(options, load);
+    }
+
+    // Writes one session to the context store. Called on the writer thread, or at shutdown.
+    void store_put(const runtime::ModelInstance::ModelContract::SessionSnapshot& snapshot) {
+        runtime::ContextStore::Description description;
+        description.id      = snapshot.session_digest;
+        description.binding = store_binding;
+        description.tokens  = snapshot.tokens;
+        description.checkpoints.reserve(snapshot.checkpoints.size());
+        for (const auto& key : snapshot.checkpoints) {
+            description.checkpoints.push_back(runtime::ContextStore::CheckpointKey{
+                .frontier = key.frontier, .digests = key.digests, .identity_tag = key.identity_tag});
+        }
+        description.prefix_digests = snapshot.prefix_digests;
+        std::vector<runtime::ContextStore::Region> regions;
+        regions.reserve(snapshot.regions.size());
+        for (const auto& region : snapshot.regions) {
+            regions.push_back(
+                runtime::ContextStore::Region{.offset = region.offset, .length = region.length});
+        }
+        (void)store->put(description, snapshot.bytes, regions);
+    }
+
+    // Restores the most recently used stored sessions into the empty cache, within the configured
+    // time and capacity. Anything that cannot be restored is left in the store.
+    void restore_from_store() noexcept {
+        const auto started = std::chrono::steady_clock::now();
+        try {
+            const auto deadline = started + options.context_store.restore_budget;
+            for (const runtime::ContextStore::Info& info : store->list()) {
+                if (std::chrono::steady_clock::now() >= deadline) { break; }
+                if (info.binding != store_binding) { continue; }
+                const std::optional<std::uint32_t> slot = generation_core().first_vacant_slot();
+                if (!slot) { break; }
+                std::optional<std::vector<std::uint8_t>> bytes = store->load(info.id, false);
+                if (!bytes) { continue; }
+                try {
+                    (void)generation_core().restore_slot(
+                        *slot, std::span<const std::uint8_t>(bytes->data(), bytes->size()),
+                        store_binding, std::string_view(), [] {}, true);
+                    store->touch(info.id);
+                    restored_sessions.fetch_add(1, std::memory_order_relaxed);
+                    restored_bytes.fetch_add(bytes->size(), std::memory_order_relaxed);
+                } catch (const RequestError&) {
+                    // No idle lane or an open transaction: nothing more can be restored now.
+                    break;
+                } catch (const std::invalid_argument&) {
+                    // This session does not fit the free capacity; a smaller, older one still may.
+                }
+            }
+        } catch (...) {}
+        restore_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    }
+
+    // At shutdown, before the worker stops: everything the store does not hold in its current
+    // state, most recently used first, within the flush budget.
+    void flush_context_store(std::chrono::steady_clock::time_point deadline) noexcept {
+        if (!store) { return; }
+        try {
+            auto* generation = std::get_if<std::unique_ptr<GenerationCore>>(&core);
+            if (generation == nullptr || *generation == nullptr) { return; }
+            (void)(*generation)->persist_all(
+                [this](runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
+                    try {
+                        store_put(snapshot);
+                        return true;
+                    } catch (...) { return false; }
+                },
+                deadline);
+        } catch (...) {}
+    }
+
+    [[nodiscard]] bool store_queue_idle() {
+        std::scoped_lock lock(writer_mutex);
+        return pending_writes.empty() && !writer_active;
+    }
+
+    // Queues a session for the writer thread. Never blocks: when the queue is full the session is
+    // not written now (an evicted one is lost to the store, an idle one is tried again later).
+    bool enqueue_store_write(runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
+        std::unique_lock lock(writer_mutex);
+        if (writer_stop) { return false; } // shutting down: the final flush writes it instead
+        if (pending_writes.size() >= kMaximumPendingSlotWrites) {
+            store_dropped.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        if (!writer.joinable()) { writer = std::thread([this] { writer_loop(); }); }
+        pending_writes.push_back(PendingWrite{std::string(), std::move(snapshot), 0, true});
+        lock.unlock();
+        writer_cv.notify_one();
+        return true;
+    }
 
     void enqueue_write(std::string path, runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
         std::unique_lock lock(writer_mutex);
@@ -361,12 +566,21 @@ private:
     // since it was queued, or when the file already holds a deeper state of the session.
     void write_spill(PendingWrite& item) {
         SlotAutoSaveEvent event;
-        event.path         = item.path;
+        event.path         = item.to_store ? "context-store/" + item.snapshot.session_digest
+                                           : item.path;
         event.tokens       = item.snapshot.tokens;
         event.bytes        = item.snapshot.bytes.size();
         const auto started = std::chrono::steady_clock::now();
         try {
-            if (spill_guard.generation(item.path) != item.generation) {
+            if (item.to_store) {
+                try {
+                    store_put(item.snapshot);
+                } catch (...) {
+                    // The session was counted as stored when it was queued; have it queued again.
+                    store_write_failures.fetch_add(1, std::memory_order_relaxed);
+                    throw;
+                }
+            } else if (spill_guard.generation(item.path) != item.generation) {
                 event.superseded = true;
             } else if (const std::optional<std::uint32_t> deeper =
                            spill_guard.blocks(item.path, item.snapshot.tokens)) {
@@ -383,11 +597,28 @@ private:
         notify(event);
     }
 
+    void start_writer() {
+        std::scoped_lock lock(writer_mutex);
+        if (!writer.joinable()) { writer = std::thread([this] { writer_loop(); }); }
+    }
+
     void writer_loop() {
         for (;;) {
             {
                 std::unique_lock lock(writer_mutex);
-                writer_cv.wait(lock, [this] { return writer_stop || !pending_writes.empty(); });
+                const auto ready = [this] { return writer_stop || !pending_writes.empty(); };
+                if (store) {
+                    // A quiet server still ages sessions out: the store only trims after a write.
+                    if (!writer_cv.wait_for(lock, kStoreMaintenanceInterval, ready)) {
+                        lock.unlock();
+                        try {
+                            store->maintain();
+                        } catch (...) {}
+                        continue;
+                    }
+                } else {
+                    writer_cv.wait(lock, ready);
+                }
                 if (pending_writes.empty()) { return; }
             }
             // Take slot_io_mutex before popping, so an explicit operation holding it sees every
@@ -399,8 +630,18 @@ private:
                 if (pending_writes.empty()) { continue; }
                 item.emplace(std::move(pending_writes.front()));
                 pending_writes.pop_front();
+                if (drain_deadline && item->to_store &&
+                    std::chrono::steady_clock::now() >= *drain_deadline) {
+                    // Shutdown budget spent: the write is abandoned, like one that failed.
+                    store_dropped.fetch_add(1, std::memory_order_relaxed);
+                    store_write_failures.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+                writer_active = true;
             }
             write_spill(*item);
+            std::scoped_lock lock(writer_mutex);
+            writer_active = false;
         }
     }
 
@@ -421,8 +662,17 @@ private:
     std::mutex writer_mutex;
     std::condition_variable writer_cv;
     std::deque<PendingWrite> pending_writes;
-    bool writer_stop = false;
+    bool writer_stop   = false;
+    // Set at shutdown: queued store writes still pending after it are abandoned. A write already
+    // under way is not interrupted, so the budget can be exceeded by one write.
+    std::optional<std::chrono::steady_clock::time_point> drain_deadline;
+    bool writer_active = false;
     std::thread writer;
+    std::atomic<std::uint64_t> store_dropped{0};
+    std::atomic<std::uint64_t> store_write_failures{0};
+    std::atomic<std::uint64_t> restored_sessions{0};
+    std::atomic<std::uint64_t> restored_bytes{0};
+    double restore_seconds = 0.0;
 };
 
 Engine::Engine(EngineOptions options) {
@@ -704,7 +954,7 @@ MediaCacheSummary Engine::media_cache_summary() const {
 
 RuntimeStats Engine::runtime_stats() const {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
-    return std::visit(
+    RuntimeStats stats = std::visit(
         [](const auto& core) -> RuntimeStats {
             using CoreState = std::remove_cvref_t<decltype(core)>;
             if constexpr (std::is_same_v<CoreState, std::monostate>) {
@@ -714,6 +964,8 @@ RuntimeStats Engine::runtime_stats() const {
             }
         },
         impl_->core);
+    impl_->add_store_stats(stats);
+    return stats;
 }
 
 bool Engine::is_available() const {

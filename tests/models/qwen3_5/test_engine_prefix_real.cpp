@@ -1766,6 +1766,170 @@ int exercise_cancelled_prefill_slot_binding(const char* artifact) {
     return 0;
 }
 
+// The durable context store: a retained session survives an Engine restart without any explicit
+// save or restore call, and a damaged store costs cache hits, never correctness. Four properties on
+// the real artifact, each against its own store directory:
+//  - shutdown writes every retained session; a fresh Engine restores it at start-up, the
+//    continuation reuses the restored prefix, and greedy output matches a control that never left
+//    the device;
+//  - an unrelated conversation evicting the only private cell writes the evicted session;
+//  - a session idle for the configured interval is written in the background while the Engine
+//    runs, so a crash would lose at most that interval;
+//  - a store whose chunk has been damaged is not trusted: the session is dropped, counted, and the
+//    next request prefills from scratch.
+int exercise_context_store(const char* artifact) {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "ninfer-context-store-test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    ninfer::RequestOptions request;
+    request.execution.requested_output_tokens = 12;
+    request.execution.sampling.temperature    = 0.0F;
+    request.execution.allow_prefix_reuse      = true;
+    request.stop.include_model_defaults       = false;
+
+    const std::vector<std::string> first{
+        "List three uses for a lathe in a small workshop, one line each."};
+    const std::vector<std::string> unrelated{
+        "Describe how a cooling fan bearing wears out over several years of service."};
+    const auto second_turn = [&](const ninfer::GenerationResult& reply) {
+        std::vector<std::string> turns = first;
+        turns.push_back(reply.content);
+        turns.push_back("Which of those needs the most care with tool speed?");
+        return turns;
+    };
+    const auto store_options = [&](const fs::path& directory, std::chrono::seconds idle) {
+        ninfer::EngineOptions options = slot_engine_options(artifact, false, nullptr, nullptr);
+        options.context_store.directory    = directory;
+        options.context_store.idle_persist = idle;
+        return options;
+    };
+    const auto wait_for = [](auto&& condition) {
+        for (int attempt = 0; attempt < 400; ++attempt) {
+            if (condition()) { return true; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        return condition();
+    };
+
+    // Control: the warm session continues without ever leaving the device.
+    std::vector<ninfer::TokenId> control_tokens;
+    {
+        ninfer::Engine control(slot_engine_options(artifact, false, nullptr, nullptr));
+        const ninfer::GenerationResult reply =
+            control.generate(control.prepare(slot_conversation(first)), request);
+        const ninfer::GenerationResult next =
+            control.generate(control.prepare(slot_conversation(second_turn(reply))), request);
+        control_tokens = next.generated_token_ids;
+        if (next.reused_prompt_tokens == 0) {
+            std::cerr << "control continuation did not reuse its warm session\n";
+            return 1;
+        }
+    }
+
+    // Shutdown flush, then restore at start-up.
+    const fs::path restart_dir = root / "restart";
+    ninfer::GenerationResult reply;
+    {
+        ninfer::Engine engine(store_options(restart_dir, std::chrono::seconds(0)));
+        reply = engine.generate(engine.prepare(slot_conversation(first)), request);
+        const ninfer::RuntimeStats stats = engine.runtime_stats();
+        if (stats.context_store_writes != 0 || stats.context_store_restored != 0) {
+            std::cerr << "the store was written before any session left the cache\n";
+            return 1;
+        }
+    }
+    {
+        ninfer::Engine engine(store_options(restart_dir, std::chrono::seconds(0)));
+        const ninfer::RuntimeStats stats = engine.runtime_stats();
+        const auto states                = engine.slot_states();
+        if (stats.context_store_restored != 1 || states.size() != 1 || !states[0].retained ||
+            states[0].session_digest != reply.session_digest) {
+            std::cerr << "shutdown did not persist the session or start-up did not restore it: "
+                         "restored="
+                      << stats.context_store_restored << " images=" << stats.context_store_images
+                      << '\n';
+            return 1;
+        }
+        const ninfer::GenerationResult next =
+            engine.generate(engine.prepare(slot_conversation(second_turn(reply))), request);
+        if (next.reused_prompt_tokens == 0 ||
+            next.prefix_reuse_path == ninfer::PrefixReusePath::Root) {
+            std::cerr << "the continuation did not reuse the restored session\n";
+            return 1;
+        }
+        if (next.generated_token_ids != control_tokens) {
+            std::cerr << "output after a restart differs from the warm control\n";
+            return 1;
+        }
+    }
+
+    // Eviction writes: one private cell, so an unrelated conversation evicts the first.
+    {
+        ninfer::Engine engine(store_options(root / "evict", std::chrono::seconds(0)));
+        (void)engine.generate(engine.prepare(slot_conversation(first)), request);
+        (void)engine.generate(engine.prepare(slot_conversation(unrelated)), request);
+        if (!wait_for([&] { return engine.runtime_stats().context_store_writes >= 1; })) {
+            std::cerr << "an evicted session was not written to the store\n";
+            return 1;
+        }
+    }
+
+    // Background write of an idle session while the Engine keeps running.
+    {
+        ninfer::Engine engine(store_options(root / "idle", std::chrono::seconds(1)));
+        (void)engine.generate(engine.prepare(slot_conversation(first)), request);
+        if (!wait_for([&] { return engine.runtime_stats().context_store_writes >= 1; })) {
+            std::cerr << "an idle session was not written in the background\n";
+            return 1;
+        }
+        const ninfer::RuntimeStats stats = engine.runtime_stats();
+        if (stats.context_store_images != 1 || stats.context_store_used_bytes == 0) {
+            std::cerr << "the background write is not visible in the store statistics\n";
+            return 1;
+        }
+    }
+
+    // A damaged chunk: the session is dropped and counted, never restored.
+    {
+        fs::path chunk;
+        for (const auto& item : fs::recursive_directory_iterator(restart_dir / "chunks")) {
+            if (item.is_regular_file()) {
+                chunk = item.path();
+                break;
+            }
+        }
+        if (chunk.empty()) {
+            std::cerr << "the store holds no chunks to damage\n";
+            return 1;
+        }
+        {
+            std::fstream file(chunk, std::ios::in | std::ios::out | std::ios::binary);
+            char byte = 0;
+            file.read(&byte, 1);
+            file.seekp(0);
+            byte ^= 0x5a;
+            file.write(&byte, 1);
+        }
+        ninfer::Engine engine(store_options(restart_dir, std::chrono::seconds(0)));
+        const ninfer::RuntimeStats stats = engine.runtime_stats();
+        if (stats.context_store_restored != 0 || stats.context_store_corrupt != 1) {
+            std::cerr << "a damaged store was trusted: restored=" << stats.context_store_restored
+                      << " corrupt=" << stats.context_store_corrupt << '\n';
+            return 1;
+        }
+        const ninfer::GenerationResult next =
+            engine.generate(engine.prepare(slot_conversation(second_turn(reply))), request);
+        if (next.reused_prompt_tokens != 0 || next.generated_token_ids.empty()) {
+            std::cerr << "a request after a damaged store did not prefill from scratch\n";
+            return 1;
+        }
+    }
+    fs::remove_all(root);
+    return 0;
+}
+
 // A saved session restored into a fresh Engine must behave exactly like the warm session it was
 // saved from: the continuation reuses the restored prefix, and greedy output matches a control
 // Engine that never evicted it token for token. Digest preconditions, corrupt files, and the
@@ -4307,6 +4471,8 @@ int run() {
         result = exercise_cancelled_prefill_slot_binding(artifact);
     } else if (scenario == "slot-persistence") {
         result = exercise_slot_persistence(artifact);
+    } else if (scenario == "context-store") {
+        result = exercise_context_store(artifact);
     } else if (scenario == "worker-failure-recovery") {
         result = exercise_worker_failure_recovery(artifact);
     } else if (scenario == "admission-planning-failure") {
