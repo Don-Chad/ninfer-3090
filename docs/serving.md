@@ -148,7 +148,8 @@ llama.cpp fields NInfer can state truthfully:
 `n_ctx` is `--max-context` and `total_slots` is `--max-concurrency`. `n_predict` and its alias
 `max_tokens` are the [default output limit](#default-output-limit): `-1`, llama.cpp's "no fixed
 cap", when it is derived per request from the prompt and lane share, or the `--default-max-tokens`
-cap. The sampler is the loaded model's preset
+cap. `--max-output-tokens` bounds either, so it is reported instead when it is smaller or when
+no default is set: the largest budget any request can get. The sampler is the loaded model's preset
 for the default thinking mode (thinking unless `--no-thinking`) under the process sampling flags and
 `--greedy`; request fields still override it per request. `seed` appears only with `--seed`, since
 requests otherwise draw a fresh random seed. `model_alias` is the public model id and `model_path`
@@ -1115,6 +1116,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--prefill-cublas` | hand wide prefill GEMMs to cuBLAS: a large prefill speedup for a small perplexity cost, and it wants a larger `--prefill-chunk` to pay (see [performance](performance.md)) | off |
 | `--no-prefill-cublas-projections` | with `--prefill-cublas`, keep the attention and GDN input projections off that route | projections on |
 | `--default-max-tokens N` | output limit when omitted by a request; see [default output limit](#default-output-limit) | largest budget that keeps every lane admissible |
+| `--max-output-tokens N` | upper bound on every request's output budget, stated or derived; see [default output limit](#default-output-limit) | none |
 | `--default-thinking-budget N` | positive thinking cap inherited by thinking-enabled requests | unset |
 | `--vision` | enable media input and load Vision GPU allocations | off |
 | `--vision-residency resident\|overlay` | `overlay` keeps the Vision tower in pinned host memory and encodes each image inside a window borrowed from the evict-ranked text weight tail, so `--vision` no longer reserves device memory and `--kv-capacity auto` resolves the no-vision capacity; requires `--vision` and CUDA virtual memory management | `resident` |
@@ -1441,13 +1443,18 @@ plus the MTP draft-window or DFlash backend KV pages when speculation is on -- f
 arbitrary count; with several lanes over a smaller pool, each limitless request stays inside its
 share and they all run concurrently. A prompt that alone overruns one lane's share can never run
 beside full-share lanes, so it keeps the whole remaining context.
-
 A run that exhausts the budget finishes with `finish_reason:"length"`, Responses `incomplete` with
 reason `max_output_tokens`, or Anthropic `stop_reason:"max_tokens"`, or
 `stop_reason:"model_context_window_exceeded"` when the budget was the remaining context. An explicit
 request limit always wins, and `--default-max-tokens N` replaces the derived default with a fixed cap
-(still bounded by the remaining context). The JSONL request record reports the budget actually
-submitted as `requested_output_tokens`.
+(still bounded by the remaining context). `--max-output-tokens N` bounds every request, including
+ones that state a larger limit; the bound is not an error, the run just ends with the length finish
+reasons above. Use it when clients state very large limits: a request reserves KV for its whole
+budget before it starts, so a 200k-token limit on a long context evicts the retained contexts of
+other sessions to make room for output it almost never produces. In a local mixed-session test
+(131k KV, one 50k and three 25k-token sessions) a 70k and a 130k limit on the large session, or 32k on every request, raised
+the cold share of prompt tokens from 17% to 20%, 29% and 30%. The JSONL request record reports the
+budget actually submitted as `requested_output_tokens`.
 
 Each reusable checkpoint contains KV and complete continuation state. At admission, capture, and
 finish boundaries, resource pressure may keep it on Device, move its StateImage and/or KV replicas

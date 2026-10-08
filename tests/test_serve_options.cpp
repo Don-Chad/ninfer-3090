@@ -94,6 +94,21 @@ int main() {
     } catch (const std::invalid_argument&) { zero_default_output_rejected = true; }
     failures += check(zero_default_output_rejected, "--default-max-tokens 0 was accepted");
 
+    // --max-output-tokens bounds every request's budget, stated or derived, and is off by default.
+    failures += check(!defaults.max_output_tokens &&
+                          bounded_output_budget(200000, defaults.max_output_tokens) == 200000,
+                      "an output bound applied without --max-output-tokens");
+    const ServeOptions bounded =
+        parse({"ninfer-serve", "model.ninfer", "--max-output-tokens", "16384"});
+    failures += check(bounded_output_budget(200000, bounded.max_output_tokens) == 16384 &&
+                          bounded_output_budget(500, bounded.max_output_tokens) == 500,
+                      "--max-output-tokens did not bound large budgets only");
+    bool zero_output_bound_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--max-output-tokens", "0"});
+    } catch (const std::invalid_argument&) { zero_output_bound_rejected = true; }
+    failures += check(zero_output_bound_rejected, "--max-output-tokens 0 was accepted");
+
     failures += check(!defaults.default_reasoning_effort,
                       "a reasoning effort is unexpectedly configured by default");
     failures += check(parse({"ninfer-serve", "model.ninfer", "--reasoning-effort", "high"})
@@ -869,6 +884,24 @@ int main() {
                               capped_params.at("seed") == 7,
                           "/props did not follow --default-max-tokens, --no-thinking, --greedy "
                           "and --seed");
+
+        // --max-output-tokens bounds every budget, so /props reports it as the effective cap.
+        const auto predict = [&](std::vector<std::string> extra) {
+            std::vector<std::string> args{"ninfer-serve", "model.ninfer"};
+            args.insert(args.end(), extra.begin(), extra.end());
+            return nlohmann::json::parse(
+                       make_props(parse(args), ModelDescription{.id = "qwen", .max_model_len = 8192},
+                                  presets))
+                .at("default_generation_settings")
+                .at("params")
+                .at("n_predict");
+        };
+        failures += check(predict({"--max-output-tokens", "4096"}) == 4096 &&
+                              predict({"--default-max-tokens", "2048", "--max-output-tokens",
+                                       "4096"}) == 2048 &&
+                              predict({"--default-max-tokens", "8000", "--max-output-tokens",
+                                       "4096"}) == 4096,
+                          "/props did not report the effective --max-output-tokens cap");
     }
 
     return failures == 0 ? 0 : 1;
