@@ -1522,7 +1522,8 @@ at admission and the rest in 1,024-token chunks as the request decodes, from pag
 holds; it does not evict cached contexts to extend. A request that needs more than that and finds no
 free page stops with the length finish reason at the point its reservation ran out
 (`ninfer:output_reservation_exhaustions_total` counts them), so choose N above the longest output
-you expect; any output that fits the free pages continues exactly as before.
+you expect (values below 2 are raised to 2); any output that fits the free pages continues exactly as
+before.
 
 Each reusable checkpoint contains KV and complete continuation state. At admission, capture, and
 finish boundaries, resource pressure may keep it on Device, move its StateImage and/or KV replicas

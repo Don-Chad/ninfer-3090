@@ -1323,6 +1323,11 @@ private:
         result.timings.total_seconds =
             request->prepare_seconds +
             std::chrono::duration<double>(Clock::now() - request->submitted).count();
+        // An exhaustion counts only if the request really ended at its reserved output; one that
+        // stopped naturally in the tokens it still had was not cut short.
+        if (request->output_reservation_exhausted && reason == FinishReason::OutputLimit) {
+            ++cumulative_stats_.output_reservation_exhaustions;
+        }
         request->sequence.reset();
         request->lane.reset();
         request->budget.reset();
@@ -2928,8 +2933,8 @@ private:
                 }
                 ++cumulative_stats_.output_reservation_growths;
             } else {
-                request->deferred_output_tokens = 0;
-                ++cumulative_stats_.output_reservation_exhaustions;
+                request->deferred_output_tokens       = 0;
+                request->output_reservation_exhausted = true;
             }
         }
     }

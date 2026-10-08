@@ -268,7 +268,10 @@ RequestBasePlan ProgramImpl::plan_request(const PreparedPromptData& prompt,
     base->summary.reserved_output_tokens =
         options.output_reservation_tokens == 0
             ? base->summary.effective_output_tokens
-            : std::min(base->summary.effective_output_tokens, options.output_reservation_tokens);
+            // At least two tokens: the prompt's own first token spends one, and a request left
+            // with none would end there instead of growing its reservation while decoding.
+            : std::min(base->summary.effective_output_tokens,
+                       std::max<std::uint32_t>(options.output_reservation_tokens, 2));
     const KVPageEntitlement entitlement = kv_page_entitlement(
         kv_entitlement_shape(), base->summary.prompt_tokens, base->summary.reserved_output_tokens);
     base->text_kv_page_entitlement    = entitlement.main_pages;
