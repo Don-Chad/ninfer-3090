@@ -4,6 +4,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+
 namespace ninfer::serve {
 
 std::string make_props(const ServeOptions& options, const ModelDescription& model,
@@ -20,8 +22,13 @@ std::string make_props(const ServeOptions& options, const ModelDescription& mode
     const float temperature = options.greedy ? 0.0F : process.temperature.value_or(preset.temperature);
 
     // llama.cpp's -1 means "no fixed cap": without --default-max-tokens NInfer derives each
-    // request's budget from its prompt and the lane share, so no single number applies.
-    const int n_predict = options.default_max_tokens.value_or(-1);
+    // request's budget from its prompt and the lane share, so no single number applies, except
+    // that --max-output-tokens bounds every budget and is then the largest one a request can get.
+    int n_predict = options.default_max_tokens.value_or(-1);
+    if (options.max_output_tokens) {
+        n_predict = n_predict < 0 ? *options.max_output_tokens
+                                  : std::min(n_predict, *options.max_output_tokens);
+    }
     Json params{{"n_predict", n_predict},
                 {"max_tokens", n_predict},
                 {"temperature", temperature},

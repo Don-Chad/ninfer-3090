@@ -884,6 +884,24 @@ int main() {
                               capped_params.at("seed") == 7,
                           "/props did not follow --default-max-tokens, --no-thinking, --greedy "
                           "and --seed");
+
+        // --max-output-tokens bounds every budget, so /props reports it as the effective cap.
+        const auto predict = [&](std::vector<std::string> extra) {
+            std::vector<std::string> args{"ninfer-serve", "model.ninfer"};
+            args.insert(args.end(), extra.begin(), extra.end());
+            return nlohmann::json::parse(
+                       make_props(parse(args), ModelDescription{.id = "qwen", .max_model_len = 8192},
+                                  presets))
+                .at("default_generation_settings")
+                .at("params")
+                .at("n_predict");
+        };
+        failures += check(predict({"--max-output-tokens", "4096"}) == 4096 &&
+                              predict({"--default-max-tokens", "2048", "--max-output-tokens",
+                                       "4096"}) == 2048 &&
+                              predict({"--default-max-tokens", "8000", "--max-output-tokens",
+                                       "4096"}) == 4096,
+                          "/props did not report the effective --max-output-tokens cap");
     }
 
     return failures == 0 ? 0 : 1;

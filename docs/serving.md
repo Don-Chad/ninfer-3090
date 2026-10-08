@@ -148,7 +148,8 @@ llama.cpp fields NInfer can state truthfully:
 `n_ctx` is `--max-context` and `total_slots` is `--max-concurrency`. `n_predict` and its alias
 `max_tokens` are the [default output limit](#default-output-limit): `-1`, llama.cpp's "no fixed
 cap", when it is derived per request from the prompt and lane share, or the `--default-max-tokens`
-cap. The sampler is the loaded model's preset
+cap. `--max-output-tokens` bounds either, so it is reported instead when it is smaller or when
+no default is set: the largest budget any request can get. The sampler is the loaded model's preset
 for the default thinking mode (thinking unless `--no-thinking`) under the process sampling flags and
 `--greedy`; request fields still override it per request. `seed` appears only with `--seed`, since
 requests otherwise draw a fresh random seed. `model_alias` is the public model id and `model_path`
@@ -1442,7 +1443,6 @@ plus the MTP draft-window or DFlash backend KV pages when speculation is on -- f
 arbitrary count; with several lanes over a smaller pool, each limitless request stays inside its
 share and they all run concurrently. A prompt that alone overruns one lane's share can never run
 beside full-share lanes, so it keeps the whole remaining context.
-
 A run that exhausts the budget finishes with `finish_reason:"length"`, Responses `incomplete` with
 reason `max_output_tokens`, or Anthropic `stop_reason:"max_tokens"`, or
 `stop_reason:"model_context_window_exceeded"` when the budget was the remaining context. An explicit
