@@ -423,10 +423,19 @@ The local directory becomes a cache of the bucket.
   signing region and `--context-store-s3-prefix` namespaces the keys when a bucket is shared. Use
   an `https://` endpoint outside a trusted network: payloads are not part of the request signature.
 - The bucket is the long-term tier, so its expiry is the bucket's: add a lifecycle rule that expires
-  objects under the prefix after 7 days. A session that is used has the age of its objects restarted
-  (a server-side copy onto itself, no data transferred, at most once a day per session), so
-  something in use does not expire under it. An unreachable bucket costs the uploads and the
-  fetches, counted in `ninfer:context_store_remote_*`; the directory keeps working.
+  objects under the prefix after 7 days (the engine assumes at least a day). `--context-store-ttl-hours`
+  governs only the files in this directory; a session only the bucket holds ages there, and drops out
+  of the index at the next listing once the bucket no longer lists it. A session that is used has the
+  age of its objects restarted (a server-side copy onto itself, no data transferred, at most once a day
+  per session), and an object the bucket has lost in the meantime is uploaded again from the directory,
+  so something in use does not expire under it. A write is uploaded from a snapshot taken when it was
+  written, with its chunk files kept on disk until the upload ends (at most 16 uploads wait, each
+  newer write of a session replacing its queued upload); a chunk that is not intact on disk stops the
+  upload instead of publishing a session whose data is damaged. A chunk found damaged on disk when a
+  session is loaded is fetched again from the bucket.
+- An unreachable bucket costs the uploads and the fetches, counted in `ninfer:context_store_remote_*`;
+  the directory keeps working. Shutdown waits for queued uploads up to the remote flush budget (two
+  minutes) and then interrupts the transfer in progress, so it never waits out a stalled connection.
 
 ### Metrics
 

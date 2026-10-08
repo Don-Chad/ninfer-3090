@@ -30,6 +30,10 @@ public:
     // object is absent.
     virtual bool touch(const std::string& key) = 0;
     virtual void remove(const std::string& key) = 0;
+
+    // Makes every call in progress, and every later one, fail promptly instead of waiting on the
+    // network. For shutdown: the store is not used afterwards. May be called from any thread.
+    virtual void interrupt() noexcept {}
 };
 
 } // namespace ninfer

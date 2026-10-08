@@ -225,7 +225,7 @@ ContextStore::ContextStore(Options options) : options_(std::move(options)) {
     }
     if (options_.remote) {
         remote_thread_ = std::thread([this] { remote_loop(); });
-        enqueue_remote({RemoteTask::Kind::Refresh, std::string()});
+        enqueue_remote({RemoteTask::Kind::Refresh, std::string(), {}, {}});
     }
 }
 
@@ -235,6 +235,8 @@ ContextStore::~ContextStore() {
         remote_stopping_ = true;
     }
     remote_cv_.notify_all();
+    // A transfer in progress can take minutes on a bad link; the budget was spent before this point.
+    if (options_.remote) { options_.remote->interrupt(); }
     if (remote_thread_.joinable()) { remote_thread_.join(); }
 }
 
@@ -281,7 +283,8 @@ void ContextStore::write_atomically(const fs::path& path, std::span<const std::u
 void ContextStore::add_references(const Entry& entry) {
     for (const ChunkRef& chunk : entry.chunks) {
         ChunkUse& use = chunks_[hex_key(chunk.hash)];
-        if (use.references++ == 0) {
+        // A chunk kept alive only by a queued upload is already counted and described.
+        if (use.references++ == 0 && use.pins == 0) {
             use.length = chunk.length;
             // An image a remote holds is registered before its chunks are fetched.
             std::error_code error;
@@ -296,7 +299,19 @@ void ContextStore::release_references(const Entry& entry) {
     for (const ChunkRef& chunk : entry.chunks) {
         const auto found = chunks_.find(hex_key(chunk.hash));
         if (found == chunks_.end()) { continue; }
-        if (--found->second.references == 0) {
+        if (--found->second.references == 0 && found->second.pins == 0) {
+            if (found->second.present) { chunk_total_bytes_ -= found->second.length; }
+            remove_quietly(chunk_path(chunk.hash));
+            chunks_.erase(found);
+        }
+    }
+}
+
+void ContextStore::unpin_chunks_locked(const std::vector<ChunkRef>& chunks) {
+    for (const ChunkRef& chunk : chunks) {
+        const auto found = chunks_.find(hex_key(chunk.hash));
+        if (found == chunks_.end() || found->second.pins == 0) { continue; }
+        if (--found->second.pins == 0 && found->second.references == 0) {
             if (found->second.present) { chunk_total_bytes_ -= found->second.length; }
             remove_quietly(chunk_path(chunk.hash));
             chunks_.erase(found);
@@ -510,6 +525,9 @@ void ContextStore::maintain_locked(const std::string* protect) {
         const std::int64_t horizon = now_ms() - options_.ttl.count() * 1000;
         std::vector<std::string> expired;
         for (const auto& [id, entry] : entries_) {
+            // An image only the bucket holds ages there, by its lifecycle rule, not by this
+            // directory's TTL; the next refresh drops it from the index when the bucket does.
+            if (options_.remote && !entry_has_local_bytes_locked(entry)) { continue; }
             if ((protect == nullptr || id != *protect) && entry.info.last_used_ms < horizon) {
                 expired.push_back(id);
             }
@@ -555,6 +573,7 @@ ContextStore::PutResult ContextStore::put(const Description& description,
     std::vector<Segment> segments;
     std::vector<ChunkRef> all_chunks;
     std::vector<fs::path> written;
+    std::vector<std::string> refilled; // chunks the index knew but the directory lacked, now written
     std::unordered_set<std::string> seen_in_put;
     try {
         const auto add_inline = [&](std::uint64_t begin, std::uint64_t end) {
@@ -579,13 +598,18 @@ ContextStore::PutResult ContextStore::put(const Description& description,
                 ChunkRef chunk{.hash = hash(bytes), .length = static_cast<std::uint32_t>(size)};
                 const std::string key = hex_key(chunk.hash);
                 bool present;
+                bool known;
                 {
                     std::scoped_lock lock(mutex_);
-                    present = chunks_.find(key) != chunks_.end();
+                    const auto found = chunks_.find(key);
+                    known            = found != chunks_.end();
+                    // An image registered from the bucket names chunks the directory does not hold.
+                    present = known && found->second.present;
                 }
                 if (!present && seen_in_put.find(key) == seen_in_put.end()) {
                     write_atomically(chunk_path(chunk.hash), bytes);
                     written.push_back(chunk_path(chunk.hash));
+                    if (known) { refilled.push_back(key); }
                     result.chunk_bytes_written += size;
                 } else {
                     result.chunk_bytes_reused += size;
@@ -657,7 +681,20 @@ ContextStore::PutResult ContextStore::put(const Description& description,
             manifest_total_bytes_ -= replaced.manifest_bytes;
         }
         manifest_total_bytes_ += entry.manifest_bytes;
+        for (const std::string& key : refilled) {
+            const auto found = chunks_.find(key);
+            if (found != chunks_.end() && !found->second.present) {
+                found->second.present = true;
+                chunk_total_bytes_ += found->second.length;
+            }
+        }
         add_references(entry);
+        // The upload works from this snapshot: the entry may be replaced or evicted before it runs.
+        std::vector<ChunkRef> upload_chunks;
+        if (options_.remote) {
+            upload_chunks = entry.chunks;
+            for (const ChunkRef& chunk : upload_chunks) { ++chunks_[hex_key(chunk.hash)].pins; }
+        }
         entries_.emplace(description.id, std::move(entry));
         if (had_previous) { release_references(replaced); }
         write_used(description.id, now);
@@ -689,13 +726,16 @@ ContextStore::PutResult ContextStore::put(const Description& description,
         const std::uint64_t evictions_before = stats_.evicted_for_space + stats_.expired;
         maintain_locked(&description.id);
         result.evicted_images = stats_.evicted_for_space + stats_.expired - evictions_before;
+        if (options_.remote) {
+            enqueue_upload(description.id, std::vector<std::uint8_t>(manifest.out.begin(), manifest.out.end()),
+                           std::move(upload_chunks));
+        }
     } catch (...) {
         for (const fs::path& path : written) { remove_quietly(path); }
         std::scoped_lock lock(mutex_);
         ++stats_.put_failures;
         throw;
     }
-    enqueue_remote({RemoteTask::Kind::Upload, description.id});
     return result;
 }
 
@@ -725,55 +765,86 @@ std::optional<std::vector<std::uint8_t>> ContextStore::load(const std::string& i
             }
         }
     }
-    std::scoped_lock io(io_mutex_);
-    Entry entry;
-    std::vector<Segment> segments;
-    {
-        std::scoped_lock lock(mutex_);
-        ++stats_.loads;
-        if (entries_.find(id) == entries_.end()) {
+    // One pass reads the local files. With a remote, a local chunk found damaged is discarded and
+    // fetched again, then the pass is repeated once.
+    for (int pass = 0; pass < 2; ++pass) {
+        std::optional<ChunkRef> damaged;
+        {
+            std::scoped_lock io(io_mutex_);
+            Entry entry;
+            std::vector<Segment> segments;
+            {
+                std::scoped_lock lock(mutex_);
+                if (pass == 0) { ++stats_.loads; }
+                if (entries_.find(id) == entries_.end()) {
+                    if (pass == 0) { ++stats_.load_misses; }
+                    return std::nullopt;
+                }
+            }
+            const auto fail = [&]() -> std::optional<std::vector<std::uint8_t>> {
+                std::scoped_lock lock(mutex_);
+                remove_entry_locked(id, true);
+                ++stats_.load_misses;
+                return std::nullopt;
+            };
+            if (!read_manifest(manifest_path(id), entry, &segments)) { return fail(); }
+            std::vector<std::uint8_t> image(static_cast<std::size_t>(entry.info.image_bytes));
+            std::size_t position = 0;
+            bool intact          = true;
+            for (const Segment& segment : segments) {
+                if (!intact) { break; }
+                if (!segment.chunked) {
+                    std::memcpy(image.data() + position, segment.inline_bytes.data(),
+                                segment.inline_bytes.size());
+                    position += segment.inline_bytes.size();
+                    continue;
+                }
+                for (const ChunkRef& chunk : segment.chunks) {
+                    std::ifstream file(chunk_path(chunk.hash), std::ios::binary);
+                    if (!file ||
+                        !file.read(reinterpret_cast<char*>(image.data() + position), chunk.length) ||
+                        hash(std::span<const std::uint8_t>(image.data() + position, chunk.length)) !=
+                            chunk.hash) {
+                        if (options_.remote && pass == 0) {
+                            damaged = chunk;
+                            intact  = false;
+                            break;
+                        }
+                        return fail();
+                    }
+                    position += chunk.length;
+                }
+            }
+            if (intact) {
+                if (position != image.size()) { return fail(); }
+                if (touch) {
+                    std::scoped_lock lock(mutex_);
+                    const auto found = entries_.find(id);
+                    if (found != entries_.end()) {
+                        found->second.info.last_used_ms = now_ms();
+                        write_used(id, found->second.info.last_used_ms);
+                    }
+                }
+                enqueue_remote({RemoteTask::Kind::Touch, id, {}, {}});
+                return image;
+            }
+            // Discard the damaged local copy; the remote holds the good one.
+            std::scoped_lock lock(mutex_);
+            const auto found = chunks_.find(hex_key(damaged->hash));
+            if (found != chunks_.end() && found->second.present) {
+                found->second.present = false;
+                chunk_total_bytes_ -= found->second.length;
+            }
+            remove_quietly(chunk_path(damaged->hash));
+        }
+        if (fetch_image_chunks(id) != FetchStatus::Complete) {
+            std::scoped_lock io(io_mutex_);
+            std::scoped_lock lock(mutex_);
             ++stats_.load_misses;
             return std::nullopt;
         }
     }
-    const auto fail = [&]() -> std::optional<std::vector<std::uint8_t>> {
-        std::scoped_lock lock(mutex_);
-        remove_entry_locked(id, true);
-        ++stats_.load_misses;
-        return std::nullopt;
-    };
-    if (!read_manifest(manifest_path(id), entry, &segments)) { return fail(); }
-    std::vector<std::uint8_t> image(static_cast<std::size_t>(entry.info.image_bytes));
-    std::size_t position = 0;
-    for (const Segment& segment : segments) {
-        if (!segment.chunked) {
-            std::memcpy(image.data() + position, segment.inline_bytes.data(),
-                        segment.inline_bytes.size());
-            position += segment.inline_bytes.size();
-            continue;
-        }
-        for (const ChunkRef& chunk : segment.chunks) {
-            std::ifstream file(chunk_path(chunk.hash), std::ios::binary);
-            if (!file ||
-                !file.read(reinterpret_cast<char*>(image.data() + position), chunk.length) ||
-                hash(std::span<const std::uint8_t>(image.data() + position, chunk.length)) !=
-                    chunk.hash) {
-                return fail();
-            }
-            position += chunk.length;
-        }
-    }
-    if (position != image.size()) { return fail(); }
-    if (touch) {
-        std::scoped_lock lock(mutex_);
-        const auto found = entries_.find(id);
-        if (found != entries_.end()) {
-            found->second.info.last_used_ms = now_ms();
-            write_used(id, found->second.info.last_used_ms);
-        }
-    }
-    enqueue_remote({RemoteTask::Kind::Touch, id});
-    return image;
+    return std::nullopt;
 }
 
 std::vector<ContextStore::Info> ContextStore::list() const {
@@ -815,7 +886,7 @@ void ContextStore::touch(const std::string& id) {
     if (found == entries_.end()) { return; }
     found->second.info.last_used_ms = now_ms();
     write_used(id, found->second.info.last_used_ms);
-    enqueue_remote({RemoteTask::Kind::Touch, id});
+    enqueue_remote({RemoteTask::Kind::Touch, id, {}, {}});
 }
 
 ContextStore::Stats ContextStore::stats() const {
@@ -853,14 +924,59 @@ void ContextStore::enqueue_remote(RemoteTask task) {
     remote_cv_.notify_one();
 }
 
+// Called with io_mutex_ and mutex_ held, the chunks already pinned. One queued upload per image: a
+// newer write of the image replaces it. Each queued upload keeps its chunk files on disk, so the
+// queue is bounded and the oldest is given up beyond it (its image is uploaded again by its next write).
+void ContextStore::enqueue_upload(const std::string& id, std::vector<std::uint8_t> manifest,
+                                  std::vector<ChunkRef> chunks) {
+    constexpr std::size_t kMaximumQueuedUploads = 16;
+    std::vector<ChunkRef> unused;
+    bool queued = false;
+    {
+        std::scoped_lock lock(remote_mutex_);
+        if (remote_stopping_) {
+            unused = std::move(chunks);
+        } else {
+            std::size_t uploads = 0;
+            for (RemoteTask& task : remote_queue_) {
+                if (task.kind != RemoteTask::Kind::Upload) { continue; }
+                ++uploads;
+                if (task.id == id) {
+                    unused        = std::move(task.chunks);
+                    task.manifest = std::move(manifest);
+                    task.chunks   = std::move(chunks);
+                    queued        = true;
+                    break;
+                }
+            }
+            if (!queued) {
+                if (uploads >= kMaximumQueuedUploads) {
+                    for (auto it = remote_queue_.begin(); it != remote_queue_.end(); ++it) {
+                        if (it->kind == RemoteTask::Kind::Upload) {
+                            unused = std::move(it->chunks);
+                            remote_queue_.erase(it);
+                            break;
+                        }
+                    }
+                }
+                remote_queue_.push_back(
+                    RemoteTask{RemoteTask::Kind::Upload, id, std::move(manifest), std::move(chunks)});
+                queued = true;
+            }
+        }
+    }
+    unpin_chunks_locked(unused);
+    if (queued) { remote_cv_.notify_one(); }
+}
+
 void ContextStore::remote_loop() {
     auto next_refresh = std::chrono::steady_clock::now() + options_.remote_refresh;
     std::unique_lock lock(remote_mutex_);
     for (;;) {
         remote_cv_.wait_until(lock, next_refresh,
                               [&] { return remote_stopping_ || !remote_queue_.empty(); });
-        if (remote_stopping_) { return; }
-        RemoteTask task{RemoteTask::Kind::Refresh, std::string()};
+        if (remote_stopping_) { break; }
+        RemoteTask task{RemoteTask::Kind::Refresh, std::string(), {}, {}};
         if (!remote_queue_.empty()) {
             task = std::move(remote_queue_.front());
             remote_queue_.pop_front();
@@ -873,22 +989,41 @@ void ContextStore::remote_loop() {
         lock.unlock();
         try {
             switch (task.kind) {
-            case RemoteTask::Kind::Upload: upload_image(task.id); break;
+            case RemoteTask::Kind::Upload: upload_image(task); break;
             case RemoteTask::Kind::Refresh: (void)refresh_remote(); break;
             case RemoteTask::Kind::Touch: touch_remote_image(task.id); break;
-            case RemoteTask::Kind::Prefetch:
-                if (fetch_image_chunks(task.id) == FetchStatus::Complete) {
-                    std::scoped_lock io(io_mutex_);
-                    std::scoped_lock state(mutex_);
+            case RemoteTask::Kind::Prefetch: {
+                const FetchStatus status = fetch_image_chunks(task.id);
+                std::scoped_lock io(io_mutex_);
+                std::scoped_lock state(mutex_);
+                if (status == FetchStatus::Complete) {
                     maintain_locked(&task.id);
+                } else if (status == FetchStatus::Corrupt) {
+                    // Damaged or gone in the bucket: do not offer it again.
+                    remove_entry_locked(task.id, true);
+                    std::scoped_lock remote_lock(remote_mutex_);
+                    remote_failed_.insert(task.id);
                 }
                 break;
+            }
             }
         } catch (...) {}
         lock.lock();
         remote_busy_ = false;
         if (remote_queue_.empty()) { remote_idle_cv_.notify_all(); }
     }
+    // Uploads that never ran release the chunk files they were holding.
+    std::vector<ChunkRef> pinned;
+    for (RemoteTask& task : remote_queue_) {
+        if (task.kind == RemoteTask::Kind::Upload) {
+            pinned.insert(pinned.end(), task.chunks.begin(), task.chunks.end());
+        }
+    }
+    remote_queue_.clear();
+    lock.unlock();
+    std::scoped_lock io(io_mutex_);
+    std::scoped_lock state(mutex_);
+    unpin_chunks_locked(pinned);
 }
 
 bool ContextStore::flush_remote(std::chrono::steady_clock::time_point deadline) {
@@ -905,64 +1040,54 @@ bool ContextStore::prefetch(const std::string& id) {
         const auto found = entries_.find(id);
         if (found == entries_.end() || entry_local_locked(found->second)) { return false; }
     }
-    enqueue_remote({RemoteTask::Kind::Prefetch, id});
+    enqueue_remote({RemoteTask::Kind::Prefetch, id, {}, {}});
     return true;
 }
 
-void ContextStore::upload_image(const std::string& id) {
-    Entry entry;
-    {
-        std::scoped_lock lock(mutex_);
-        const auto found = entries_.find(id);
-        if (found == entries_.end()) { return; }
-        entry = found->second;
-    }
+void ContextStore::upload_image(RemoteTask& task) {
     std::uint64_t objects = 0;
     std::uint64_t bytes   = 0;
+    bool succeeded        = false;
     try {
+        const std::int64_t now   = now_ms();
+        const std::int64_t trust = options_.remote_touch_interval.count() * 1000;
         std::unordered_set<std::string> seen;
-        for (const ChunkRef& chunk : entry.chunks) {
+        for (const ChunkRef& chunk : task.chunks) {
             const std::string key = remote_chunk_key(chunk.hash);
-            bool known;
+            if (!seen.insert(key).second) { continue; }
             {
+                // A bucket's lifecycle rule can expire an object, so a confirmation is trusted for a
+                // while, not for good.
                 std::scoped_lock lock(remote_mutex_);
-                known = uploaded_.count(key) != 0;
+                const auto known = uploaded_.find(key);
+                if (known != uploaded_.end() && now - known->second < trust) { continue; }
             }
-            if (known || !seen.insert(key).second) { continue; }
             if (!options_.remote->exists(key)) {
-                std::vector<std::uint8_t> data;
-                try {
-                    data = read_whole_file(chunk_path(chunk.hash));
-                } catch (const std::exception&) {
-                    continue; // evicted from the directory since: nothing to upload
+                // The file is pinned, so it is there; if it is not intact the image is not published.
+                const std::vector<std::uint8_t> data = read_whole_file(chunk_path(chunk.hash));
+                if (data.size() != chunk.length || hash(data) != chunk.hash) {
+                    throw std::runtime_error("a chunk of the image is damaged on disk");
                 }
-                if (data.size() != chunk.length) { continue; }
                 options_.remote->put(key, data);
                 ++objects;
                 bytes += data.size();
             }
             std::scoped_lock lock(remote_mutex_);
-            uploaded_.insert(key);
+            uploaded_[key] = now;
         }
         // The manifest goes last: an image another engine sees always has its chunks.
-        std::vector<std::uint8_t> manifest;
-        try {
-            manifest = read_whole_file(manifest_path(id));
-        } catch (const std::exception&) {
-            return; // replaced or evicted since
-        }
-        options_.remote->put(remote_manifest_key(id), manifest);
+        options_.remote->put(remote_manifest_key(task.id), task.manifest);
         ++objects;
-        bytes += manifest.size();
-        std::scoped_lock lock(mutex_);
-        stats_.remote_uploads += objects;
-        stats_.remote_upload_bytes += bytes;
-    } catch (const std::exception&) {
-        std::scoped_lock lock(mutex_);
-        stats_.remote_uploads += objects;
-        stats_.remote_upload_bytes += bytes;
-        ++stats_.remote_upload_failures;
-    }
+        bytes += task.manifest.size();
+        succeeded = true;
+    } catch (const std::exception&) {}
+    std::scoped_lock io(io_mutex_);
+    std::scoped_lock lock(mutex_);
+    unpin_chunks_locked(task.chunks);
+    task.chunks.clear();
+    stats_.remote_uploads += objects;
+    stats_.remote_upload_bytes += bytes;
+    if (!succeeded) { ++stats_.remote_upload_failures; }
 }
 
 void ContextStore::touch_remote_image(const std::string& id) {
@@ -983,8 +1108,35 @@ void ContextStore::touch_remote_image(const std::string& id) {
         }
     }
     try {
-        for (const ChunkRef& chunk : chunks) { (void)options_.remote->touch(remote_chunk_key(chunk.hash)); }
-        (void)options_.remote->touch(remote_manifest_key(id));
+        for (const ChunkRef& chunk : chunks) {
+            const std::string key = remote_chunk_key(chunk.hash);
+            if (options_.remote->touch(key)) {
+                std::scoped_lock lock(remote_mutex_);
+                uploaded_[key] = now;
+                continue;
+            }
+            // The bucket lost it (expired under a lifecycle rule): put it back from the directory
+            // while the image is still in use, if the directory has an intact copy.
+            std::vector<std::uint8_t> data;
+            try {
+                data = read_whole_file(chunk_path(chunk.hash));
+            } catch (const std::exception&) {
+                continue;
+            }
+            if (data.size() != chunk.length || hash(data) != chunk.hash) { continue; }
+            options_.remote->put(key, data);
+            std::scoped_lock lock(mutex_);
+            ++stats_.remote_uploads;
+            stats_.remote_upload_bytes += data.size();
+            std::scoped_lock remote_lock(remote_mutex_);
+            uploaded_[key] = now;
+        }
+        if (!options_.remote->touch(remote_manifest_key(id))) {
+            try {
+                const std::vector<std::uint8_t> manifest = read_whole_file(manifest_path(id));
+                options_.remote->put(remote_manifest_key(id), manifest);
+            } catch (const std::exception&) {}
+        }
         std::scoped_lock lock(remote_mutex_);
         remote_touched_[id] = now;
     } catch (const std::exception&) {}
@@ -1043,9 +1195,7 @@ std::size_t ContextStore::refresh_remote() {
     try {
         const std::string manifests = options_.remote_prefix + "manifests/";
         const std::vector<ObjectInfo> objects = options_.remote->list(manifests);
-        const std::int64_t horizon =
-            options_.ttl.count() > 0 ? now_ms() - options_.ttl.count() * 1000
-                                     : std::numeric_limits<std::int64_t>::min();
+        std::unordered_set<std::string> listed;
         for (const ObjectInfo& object : objects) {
             constexpr std::string_view kSuffix = ".manifest";
             if (object.key.size() <= manifests.size() + kSuffix.size() ||
@@ -1054,7 +1204,10 @@ std::size_t ContextStore::refresh_remote() {
             }
             const std::string id = object.key.substr(
                 manifests.size(), object.key.size() - manifests.size() - kSuffix.size());
-            if (!valid_id(id) || object.modified_ms < horizon) { continue; }
+            // The bucket's lifecycle rule is what expires an image there; this directory's TTL
+            // governs only the files it holds.
+            if (!valid_id(id)) { continue; }
+            listed.insert(id);
             {
                 std::scoped_lock lock(mutex_);
                 if (entries_.find(id) != entries_.end()) { continue; }
@@ -1080,12 +1233,23 @@ std::size_t ContextStore::refresh_remote() {
             add_references(entry);
             {
                 std::scoped_lock remote_lock(remote_mutex_);
-                for (const ChunkRef& chunk : entry.chunks) { uploaded_.insert(remote_chunk_key(chunk.hash)); }
+                const std::int64_t confirmed = std::min(now_ms(), object.modified_ms);
+                for (const ChunkRef& chunk : entry.chunks) {
+                    uploaded_[remote_chunk_key(chunk.hash)] = confirmed;
+                }
             }
             entries_.emplace(id, std::move(entry));
             ++added;
         }
+        // An image the bucket no longer lists (expired, or removed by someone) is not offered
+        // from the index any more, unless the directory still holds some of it.
+        std::scoped_lock io(io_mutex_);
         std::scoped_lock lock(mutex_);
+        std::vector<std::string> gone;
+        for (const auto& [id, entry] : entries_) {
+            if (listed.count(id) == 0 && !entry_has_local_bytes_locked(entry)) { gone.push_back(id); }
+        }
+        for (const std::string& id : gone) { remove_entry_locked(id, false); }
         ++stats_.remote_refreshes;
     } catch (const std::exception&) {
         std::scoped_lock lock(mutex_);

@@ -3,6 +3,7 @@
 #include <curl/curl.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -99,6 +100,10 @@ bool xml_field(const std::string& xml, const char* tag, std::size_t& from, std::
     out  = xml.substr(begin + open.size(), end - begin - open.size());
     from = end + close.size();
     return true;
+}
+
+int abort_if_interrupted(void* user, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+    return static_cast<const std::atomic<bool>*>(user)->load(std::memory_order_acquire) ? 1 : 0;
 }
 
 class S3ObjectStore final : public ObjectStore {
@@ -206,6 +211,8 @@ public:
         require_success(response, "remove " + key);
     }
 
+    void interrupt() noexcept override { interrupted_.store(true, std::memory_order_release); }
+
 private:
     struct Response {
         long status = 0;
@@ -233,6 +240,9 @@ private:
                   std::span<const std::uint8_t> upload, bool is_upload) {
         std::string last_error;
         for (int attempt = 0; attempt < config_.attempts; ++attempt) {
+            if (interrupted_.load(std::memory_order_acquire)) {
+                throw std::runtime_error("S3 request interrupted");
+            }
             if (attempt != 0) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(250 << attempt));
             }
@@ -253,6 +263,9 @@ private:
             const std::string credentials = config_.access_key + ":" + config_.secret_key;
             curl_easy_setopt(h, CURLOPT_AWS_SIGV4, signature.c_str());
             curl_easy_setopt(h, CURLOPT_USERPWD, credentials.c_str());
+            curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
+            curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION, abort_if_interrupted);
+            curl_easy_setopt(h, CURLOPT_XFERINFODATA, &interrupted_);
             curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, write_to_buffer);
             curl_easy_setopt(h, CURLOPT_WRITEDATA, &response.body);
             const std::string verb = method;
@@ -292,6 +305,7 @@ private:
     }
 
     S3Config config_;
+    std::atomic<bool> interrupted_{false};
 };
 
 } // namespace

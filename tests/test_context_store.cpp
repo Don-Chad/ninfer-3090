@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <condition_variable>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -326,12 +327,14 @@ void test_invalid_input_and_failed_put() {
 class MemoryObjectStore final : public ninfer::ObjectStore {
 public:
     void put(const std::string& key, std::span<const std::uint8_t> bytes) override {
+        gate();
         std::scoped_lock lock(mutex);
         if (down) { throw std::runtime_error("the bucket is unreachable"); }
         objects[key] = {std::vector<std::uint8_t>(bytes.begin(), bytes.end()), ++clock};
         ++puts;
     }
     std::optional<std::vector<std::uint8_t>> get(const std::string& key) override {
+        gate();
         std::scoped_lock lock(mutex);
         if (down) { throw std::runtime_error("the bucket is unreachable"); }
         const auto found = objects.find(key);
@@ -339,11 +342,13 @@ public:
         return found->second.first;
     }
     bool exists(const std::string& key) override {
+        gate();
         std::scoped_lock lock(mutex);
         if (down) { throw std::runtime_error("the bucket is unreachable"); }
         return objects.find(key) != objects.end();
     }
     std::vector<ninfer::ObjectInfo> list(const std::string& prefix) override {
+        gate();
         std::scoped_lock lock(mutex);
         if (down) { throw std::runtime_error("the bucket is unreachable"); }
         std::vector<ninfer::ObjectInfo> out;
@@ -355,6 +360,7 @@ public:
         return out;
     }
     bool touch(const std::string& key) override {
+        gate();
         std::scoped_lock lock(mutex);
         const auto found = objects.find(key);
         if (found == objects.end()) { return false; }
@@ -366,6 +372,24 @@ public:
         std::scoped_lock lock(mutex);
         objects.erase(key);
     }
+    // Ends the waits in progress, which fail. (A real store is not used after interrupt(); this one
+    // is shared by the stores a test opens in turn, so later calls proceed.)
+    void interrupt() noexcept override {
+        {
+            std::scoped_lock lock(gate_mutex);
+            ++interrupt_epoch;
+        }
+        gate_cv.notify_all();
+    }
+
+    // While `hold` is set every transfer waits, as a slow link would; interrupt() ends the wait.
+    void set_hold(bool value) {
+        {
+            std::scoped_lock lock(gate_mutex);
+            hold = value;
+        }
+        gate_cv.notify_all();
+    }
 
     std::mutex mutex;
     std::map<std::string, std::pair<std::vector<std::uint8_t>, std::int64_t>> objects;
@@ -373,6 +397,18 @@ public:
     bool down          = false;
     int puts           = 0;
     int touches        = 0;
+
+private:
+    void gate() {
+        std::unique_lock lock(gate_mutex);
+        const std::uint64_t epoch = interrupt_epoch;
+        gate_cv.wait(lock, [&] { return !hold || interrupt_epoch != epoch; });
+        if (interrupt_epoch != epoch) { throw std::runtime_error("interrupted"); }
+    }
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    bool hold                     = false;
+    std::uint64_t interrupt_epoch = 0;
 };
 
 ContextStore::Options remote_options(const fs::path& directory,
@@ -505,6 +541,208 @@ void test_remote_use_restarts_the_remote_age() {
     check(remote->touches == 4, "using an image did not restart the age of its remote objects");
 }
 
+
+std::size_t chunk_objects(MemoryObjectStore& remote) {
+    std::scoped_lock lock(remote.mutex);
+    std::size_t count = 0;
+    for (const auto& [key, value] : remote.objects) {
+        if (key.find("/chunks/") != std::string::npos) { ++count; }
+    }
+    return count;
+}
+
+// An image written, then evicted or replaced before its upload ran, still reaches the bucket whole.
+void test_upload_survives_eviction_and_replacement() {
+    TempDirectory directory;
+    TempDirectory reader_directory;
+    auto remote                   = std::make_shared<MemoryObjectStore>();
+    ContextStore::Options options = remote_options(directory.path(), remote);
+    options.max_bytes             = 8000; // room for one image
+    const auto a                  = concat({pseudo_random(30, 1), pseudo_random(5000, 2)});
+    const auto b                  = concat({pseudo_random(30, 3), pseudo_random(5000, 4)});
+    const auto a2                 = concat({pseudo_random(30, 5), pseudo_random(5000, 6)});
+    {
+        ContextStore store(options);
+        remote->set_hold(true); // uploads queue up behind a slow link
+        (void)store.put(describe("0a"), a, std::array{ContextStore::Region{30, 5000}});
+        remote->clock += 10;
+        (void)store.put(describe("0b"), b, std::array{ContextStore::Region{30, 5000}});
+        check(store.stats().evicted_for_space >= 1, "the limit evicted nothing");
+        // A newer write of an image replaces its queued upload.
+        remote->clock += 10;
+        (void)store.put(describe("0b", 120), a2, std::array{ContextStore::Region{30, 5000}});
+        remote->set_hold(false);
+        check(drained(store), "uploads did not drain");
+        check(store.stats().remote_upload_failures == 0, "an upload failed");
+    }
+    ContextStore reader(remote_options(reader_directory.path(), remote));
+    (void)reader.refresh_remote();
+    const auto got_a  = reader.load("0a");
+    const auto got_b  = reader.load("0b");
+    check(got_a && *got_a == a, "an image evicted before its upload ran never reached the bucket");
+    check(got_b && *got_b == a2, "the replacing write's image is not what the bucket holds");
+}
+
+// An image registered from the bucket names chunks the directory lacks; writing another image that
+// shares them must write them, not count them as already stored.
+void test_absent_chunks_are_not_reused() {
+    TempDirectory first;
+    TempDirectory second;
+    auto remote       = std::make_shared<MemoryObjectStore>();
+    const auto shared = pseudo_random(4096, 9);
+    {
+        ContextStore store(remote_options(first.path(), remote));
+        (void)store.put(describe("0a"), concat({pseudo_random(30, 1), shared}),
+                        std::array{ContextStore::Region{30, 4096}});
+        check(drained(store), "upload a");
+    }
+    ContextStore store(remote_options(second.path(), remote));
+    check(store.refresh_remote() == 1 && !store.list()[0].local, "the image was not registered");
+    const auto result = store.put(describe("0c"), concat({pseudo_random(30, 2), shared}),
+                                  std::array{ContextStore::Region{30, 4096}});
+    check(result.chunk_bytes_reused == 0 && result.chunk_bytes_written == 4096,
+          "chunks the directory lacked were counted as reused");
+    check(drained(store), "upload c");
+    remote->down = true; // everything below must come from the directory
+    check(store.load("0c").has_value(), "an image written beside a registered one is not intact");
+}
+
+// A chunk damaged on the local disk (same size) is repaired from the bucket.
+void test_local_corruption_is_repaired_from_the_remote() {
+    TempDirectory directory;
+    auto remote      = std::make_shared<MemoryObjectStore>();
+    const auto image = concat({pseudo_random(30, 1), pseudo_random(3000, 2)});
+    ContextStore store(remote_options(directory.path(), remote));
+    (void)store.put(describe("0a"), image, std::array{ContextStore::Region{30, 3000}});
+    check(drained(store), "upload");
+    const auto files = chunk_files(directory.path());
+    check(!files.empty(), "no chunk files");
+    {
+        std::fstream file(files.front(), std::ios::binary | std::ios::in | std::ios::out);
+        char byte = 0;
+        file.read(&byte, 1);
+        file.seekp(0);
+        byte ^= 0x5a;
+        file.write(&byte, 1);
+    }
+    const auto loaded = store.load("0a");
+    check(loaded && *loaded == image, "local corruption was not repaired from the bucket");
+    check(store.stats().remote_downloads >= 1 && store.stats().corrupt_removed == 0,
+          "the repair did not come from the bucket");
+}
+
+// A background fetch that finds the bucket's copy damaged leaves nothing offered.
+void test_corrupt_prefetch_is_dropped() {
+    TempDirectory first;
+    TempDirectory second;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    {
+        ContextStore store(remote_options(first.path(), remote));
+        (void)store.put(describe("0a"), concat({pseudo_random(30, 1), pseudo_random(3000, 2)}),
+                        std::array{ContextStore::Region{30, 3000}});
+        check(drained(store), "upload");
+    }
+    for (auto& [key, value] : remote->objects) {
+        if (key.find("/chunks/") != std::string::npos) {
+            value.first[0] ^= 0xff;
+            break;
+        }
+    }
+    ContextStore store(remote_options(second.path(), remote));
+    (void)store.refresh_remote();
+    check(store.prefetch("0a"), "prefetch refused");
+    check(drained(store), "prefetch did not finish");
+    check(store.list().empty(), "a damaged prefetched image is still offered");
+}
+
+// The bucket forgot a chunk (its lifecycle rule expired it): the next write of an image that uses it
+// puts it back, and so does using the image.
+void test_expired_remote_chunks_are_put_back() {
+    TempDirectory directory;
+    auto remote       = std::make_shared<MemoryObjectStore>();
+    const auto shared = pseudo_random(4096, 9);
+    ContextStore store(remote_options(directory.path(), remote));
+    (void)store.put(describe("0a"), concat({pseudo_random(30, 1), shared}),
+                    std::array{ContextStore::Region{30, 4096}});
+    check(drained(store), "upload a");
+    const std::size_t before = chunk_objects(*remote);
+    {
+        std::scoped_lock lock(remote->mutex);
+        for (auto it = remote->objects.begin(); it != remote->objects.end();) {
+            it = it->first.find("/chunks/") != std::string::npos ? remote->objects.erase(it)
+                                                                  : std::next(it);
+        }
+    }
+    check(chunk_objects(*remote) == 0, "the chunks were not removed");
+    remote->clock += 2 * 24 * 3600 * 1000LL; // past the trust in an earlier confirmation
+    (void)store.put(describe("0c"), concat({pseudo_random(30, 2), shared}),
+                    std::array{ContextStore::Region{30, 4096}});
+    check(drained(store), "upload c");
+    check(chunk_objects(*remote) == before, "a chunk the bucket lost was not uploaded again");
+
+    // Using an image repairs the bucket the same way.
+    {
+        std::scoped_lock lock(remote->mutex);
+        for (auto it = remote->objects.begin(); it != remote->objects.end();) {
+            it = it->first.find("/chunks/") != std::string::npos ? remote->objects.erase(it)
+                                                                  : std::next(it);
+        }
+    }
+    remote->clock += 2 * 24 * 3600 * 1000LL;
+    check(store.load("0a").has_value(), "load");
+    check(drained(store), "touch drained");
+    check(chunk_objects(*remote) == before, "using an image did not put back chunks the bucket lost");
+}
+
+// This directory's TTL governs its own files: an image only the bucket holds is not hidden by it.
+void test_local_ttl_does_not_hide_remote_images() {
+    TempDirectory first;
+    TempDirectory second;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    const auto image = concat({pseudo_random(30, 1), pseudo_random(3000, 2)});
+    {
+        ContextStore store(remote_options(first.path(), remote));
+        (void)store.put(describe("0a"), image, std::array{ContextStore::Region{30, 3000}});
+        check(drained(store), "upload");
+    }
+    remote->clock += 3 * 24 * 3600 * 1000LL;
+    ContextStore::Options options = remote_options(second.path(), remote);
+    options.ttl                   = std::chrono::hours(1);
+    ContextStore store(options);
+    check(store.refresh_remote() == 1, "an image older than the local TTL was not registered");
+    store.maintain();
+    const auto loaded = store.load("0a");
+    check(loaded && *loaded == image, "an image older than the local TTL could not be used");
+    // The bucket drops it (lifecycle): a refresh drops it from the index too, once nothing local backs it.
+    TempDirectory third;
+    ContextStore other(remote_options(third.path(), remote));
+    check(other.refresh_remote() == 1, "register");
+    {
+        std::scoped_lock lock(remote->mutex);
+        remote->objects.clear();
+    }
+    (void)other.refresh_remote();
+    check(other.list().empty(), "an image the bucket no longer lists is still offered");
+}
+
+// Shutdown does not wait out a transfer stuck on the network.
+void test_shutdown_interrupts_a_blocked_transfer() {
+    TempDirectory directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    const auto started = std::chrono::steady_clock::now();
+    {
+        remote->set_hold(true);
+        ContextStore store(remote_options(directory.path(), remote));
+        (void)store.put(describe("0a"), concat({pseudo_random(30, 1), pseudo_random(3000, 2)}),
+                        std::array{ContextStore::Region{30, 3000}});
+        check(!store.flush_remote(std::chrono::steady_clock::now() + std::chrono::milliseconds(200)),
+              "a blocked upload reported a drained queue");
+    } // the destructor must interrupt the transfer rather than wait for it
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    check(seconds < 10.0, "closing the store waited on a blocked transfer");
+}
+
 } // namespace
 
 int main() {
@@ -521,6 +759,13 @@ int main() {
     test_remote_survives_local_eviction();
     test_remote_damage_and_outage_are_misses();
     test_remote_use_restarts_the_remote_age();
+    test_upload_survives_eviction_and_replacement();
+    test_absent_chunks_are_not_reused();
+    test_local_corruption_is_repaired_from_the_remote();
+    test_corrupt_prefetch_is_dropped();
+    test_expired_remote_chunks_are_put_back();
+    test_local_ttl_does_not_hide_remote_images();
+    test_shutdown_interrupts_a_blocked_transfer();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }

@@ -202,12 +202,18 @@ private:
     };
     struct ChunkUse {
         std::uint32_t references = 0;
+        // Queued uploads that still need the file: it outlives its last reference until they finish.
+        std::uint32_t pins       = 0;
         std::uint32_t length     = 0;
         bool present             = false; // the chunk file is in the directory
     };
     struct RemoteTask {
         enum class Kind : std::uint8_t { Upload, Refresh, Prefetch, Touch } kind;
         std::string id;
+        // Upload: the image as it was when it was written (the live entry may have been replaced
+        // or evicted since), with its chunk files pinned until the upload ends.
+        std::vector<std::uint8_t> manifest;
+        std::vector<ChunkRef> chunks;
     };
 
     [[nodiscard]] std::filesystem::path manifest_path(const std::string& id) const;
@@ -236,8 +242,11 @@ private:
     [[nodiscard]] std::string remote_manifest_key(const std::string& id) const;
     [[nodiscard]] std::string remote_chunk_key(const std::array<std::uint64_t, 2>& hash) const;
     void enqueue_remote(RemoteTask task);
+    void enqueue_upload(const std::string& id, std::vector<std::uint8_t> manifest,
+                        std::vector<ChunkRef> chunks);
+    void unpin_chunks_locked(const std::vector<ChunkRef>& chunks);
     void remote_loop();
-    void upload_image(const std::string& id);
+    void upload_image(RemoteTask& task);
     void touch_remote_image(const std::string& id);
     enum class FetchStatus : std::uint8_t { Complete, Transient, Corrupt };
     [[nodiscard]] FetchStatus fetch_image_chunks(const std::string& id);
@@ -262,7 +271,9 @@ private:
     std::deque<RemoteTask> remote_queue_;
     bool remote_busy_     = false;
     bool remote_stopping_ = false;
-    std::unordered_set<std::string> uploaded_;                    // keys known to be remote
+    // Chunk keys last confirmed in the bucket, and when: a lifecycle rule may have expired them
+    // since, so the confirmation is trusted for remote_touch_interval only.
+    std::unordered_map<std::string, std::int64_t> uploaded_;
     std::unordered_map<std::string, std::int64_t> remote_touched_; // id -> last touch (ms)
     std::unordered_set<std::string> remote_failed_;               // ids not worth importing again
     std::thread remote_thread_;
