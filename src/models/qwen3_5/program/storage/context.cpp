@@ -1471,6 +1471,11 @@ bool ProgramImpl::grow_output_reservation(SequenceHandle handle,
         request.active_resources.device.backend_kv_pages +=
             after.backend_pages - before.backend_pages;
         request.reserved_output_tokens = total_output_tokens;
+        // Pages taken from the free pool change global capacity, so plans sealed before this
+        // growth are stale. A growth that stays within the already-entitled pages changes nothing.
+        if (after.main_pages != before.main_pages || after.backend_pages != before.backend_pages) {
+            advance_resource_revision();
+        }
         return true;
     } catch (...) { return false; }
 }

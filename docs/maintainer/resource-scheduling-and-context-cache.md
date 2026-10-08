@@ -450,6 +450,12 @@ required Device checkpoint prefix
 这些资源绑定在返回的 `SequenceHandle` 中。物化进度只在 allocation 与 reserved-but-unmapped 之间转换，
 不会把容量交给另一个 request。
 
+默认情况下 `maximum effective output growth` 是整个有效输出预算。启用 `--output-reservation-tokens N` 后，
+admission 只保障 `min(effective output, N)` 的输出增长；其余输出由 Engine 在 decode 中以
+`Program::grow_output_reservation` 分块扩展，只取全局空闲页，不驱逐任何 inactive owner。扩展成功且
+增加页数时 Program 推进 `resource_revision`（页数不变则不推进）；没有空闲页时 request 保留已有 reservation，
+在其耗尽处以 length finish reason 结束。因此该模式下“完整输出预算在 Active 前已保障”只对已预留部分成立。
+
 Active truncate 或 speculative rollback 可以解除 mappings，但对应容量仍属于该 active reservation。
 只有 terminal release 或明确缩减 active entitlement 的资源 transition 才能把容量归还全局。
 
@@ -1049,7 +1055,7 @@ Context cache disabled 时采用 root-only 语义：不读取或发布 inactive 
 5. 每个有序 transition stage 都必须满足容量与 allocator geometry。
 6. Prefix hit 必须具有 exact identity、完整 StateImage 和全部 required typed KV coverage。
 7. Published checkpoint immutable；每条 active continuation 至多一个 mutable writer。
-8. Active completion reservation 在 terminal resource result 采用前不可被借用或回收。
+8. Active completion reservation 在 terminal resource result 采用前不可被借用或回收。（部分输出预留模式下，该保障覆盖当前已预留的输出，扩展见 6.1。）
 9. 同一时刻至多一个 global resource transition，且 sealed plan 与 `resource_revision` 绑定。
 10. Start 前 stale rejection 无物理副作用；start 后不能更换 candidate 或 target。
 11. Program commit/abort 都返回完整稳定终态；ResourceManager adoption 已预分配且不能失败。
