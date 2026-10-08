@@ -8,6 +8,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -319,6 +322,189 @@ void test_invalid_input_and_failed_put() {
           "a failed put left chunks or an entry behind");
 }
 
+// An in-memory ObjectStore with switches for the failures a bucket has.
+class MemoryObjectStore final : public ninfer::ObjectStore {
+public:
+    void put(const std::string& key, std::span<const std::uint8_t> bytes) override {
+        std::scoped_lock lock(mutex);
+        if (down) { throw std::runtime_error("the bucket is unreachable"); }
+        objects[key] = {std::vector<std::uint8_t>(bytes.begin(), bytes.end()), ++clock};
+        ++puts;
+    }
+    std::optional<std::vector<std::uint8_t>> get(const std::string& key) override {
+        std::scoped_lock lock(mutex);
+        if (down) { throw std::runtime_error("the bucket is unreachable"); }
+        const auto found = objects.find(key);
+        if (found == objects.end()) { return std::nullopt; }
+        return found->second.first;
+    }
+    bool exists(const std::string& key) override {
+        std::scoped_lock lock(mutex);
+        if (down) { throw std::runtime_error("the bucket is unreachable"); }
+        return objects.find(key) != objects.end();
+    }
+    std::vector<ninfer::ObjectInfo> list(const std::string& prefix) override {
+        std::scoped_lock lock(mutex);
+        if (down) { throw std::runtime_error("the bucket is unreachable"); }
+        std::vector<ninfer::ObjectInfo> out;
+        for (const auto& [key, value] : objects) {
+            if (key.rfind(prefix, 0) == 0) {
+                out.push_back({key, value.first.size(), value.second});
+            }
+        }
+        return out;
+    }
+    bool touch(const std::string& key) override {
+        std::scoped_lock lock(mutex);
+        const auto found = objects.find(key);
+        if (found == objects.end()) { return false; }
+        found->second.second = ++clock;
+        ++touches;
+        return true;
+    }
+    void remove(const std::string& key) override {
+        std::scoped_lock lock(mutex);
+        objects.erase(key);
+    }
+
+    std::mutex mutex;
+    std::map<std::string, std::pair<std::vector<std::uint8_t>, std::int64_t>> objects;
+    std::int64_t clock = 1'000'000'000'000;
+    bool down          = false;
+    int puts           = 0;
+    int touches        = 0;
+};
+
+ContextStore::Options remote_options(const fs::path& directory,
+                                     const std::shared_ptr<MemoryObjectStore>& remote) {
+    ContextStore::Options options = options_for(directory);
+    options.remote                = remote;
+    options.remote_prefix         = "ninfer/";
+    options.remote_refresh        = std::chrono::seconds(3600); // tests refresh explicitly
+    options.clock                 = [remote] { return remote->clock; };
+    return options;
+}
+
+bool drained(ContextStore& store) {
+    return store.flush_remote(std::chrono::steady_clock::now() + std::chrono::seconds(10));
+}
+
+void test_remote_upload_and_second_engine() {
+    TempDirectory first_directory;
+    TempDirectory second_directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    const auto kv    = pseudo_random(5000, 4);
+    const auto image = concat({pseudo_random(30, 1), kv});
+    {
+        ContextStore store(remote_options(first_directory.path(), remote));
+        (void)store.put(describe("0a"), image, std::array{ContextStore::Region{30, 5000}});
+        check(drained(store), "the upload queue did not drain");
+        const auto stats = store.stats();
+        check(stats.remote_uploads == 6 && stats.remote_upload_failures == 0,
+              "a put did not upload its chunks and manifest");
+        // Writing the next state of the conversation uploads only what is new.
+        const int before = remote->puts;
+        (void)store.put(describe("0a", 120), concat({pseudo_random(30, 1), kv, pseudo_random(500, 8)}),
+                        std::array{ContextStore::Region{30, 5500}});
+        check(drained(store), "the second upload did not drain");
+        check(remote->puts - before == 3, "a rewritten image uploaded chunks the bucket already had");
+    }
+    // A second engine with an empty directory sees the image and fetches it when asked.
+    ContextStore other(remote_options(second_directory.path(), remote));
+    check(other.refresh_remote() == 1 && other.list().size() == 1, "the remote image was not listed");
+    check(!other.list()[0].local, "an image not fetched yet reports itself local");
+    check(other.stats().remote_images == 1, "the remote-only image was not counted");
+    check(!other.list()[0].checkpoints.empty() && other.list()[0].checkpoints[0].digests[0] == 0x1111,
+          "the remote image lost its checkpoint keys");
+    const auto loaded = other.load("0a");
+    check(loaded && *loaded == concat({pseudo_random(30, 1), kv, pseudo_random(500, 8)}),
+          "an image fetched from the remote differs from what was stored");
+    check(other.list()[0].local && other.stats().remote_images == 0, "a fetched image is still remote");
+    check(other.stats().remote_downloads == 6, "the fetch did not count its chunks");
+}
+
+void test_remote_survives_local_eviction() {
+    TempDirectory directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    ContextStore::Options options = remote_options(directory.path(), remote);
+    options.max_bytes             = 8000; // room for one image
+    ContextStore store(options);
+    const auto a = concat({pseudo_random(30, 1), pseudo_random(5000, 2)});
+    const auto b = concat({pseudo_random(30, 3), pseudo_random(5000, 4)});
+    (void)store.put(describe("0a"), a, std::array{ContextStore::Region{30, 5000}});
+    check(drained(store), "upload a");
+    remote->clock += 10;
+    (void)store.put(describe("0b"), b, std::array{ContextStore::Region{30, 5000}});
+    check(drained(store), "upload b");
+    check(!store.list().empty() && store.stats().evicted_for_space >= 1, "the local limit evicted nothing");
+    // 0a was evicted locally; the remote still holds it and a refresh brings it back.
+    (void)store.refresh_remote();
+    bool found = false;
+    for (const auto& info : store.list()) {
+        if (info.id == "0a") { found = true; }
+    }
+    check(found, "an image evicted locally was not found again through the remote");
+    const auto back = store.load("0a");
+    check(back && *back == a, "an image evicted locally could not be fetched back");
+    check(store.stats().remote_downloads > 0, "the evicted image was not fetched from the remote");
+}
+
+void test_remote_damage_and_outage_are_misses() {
+    TempDirectory directory;
+    TempDirectory other_directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    {
+        ContextStore store(remote_options(directory.path(), remote));
+        (void)store.put(describe("0a"), concat({pseudo_random(30, 1), pseudo_random(3000, 2)}),
+                        std::array{ContextStore::Region{30, 3000}});
+        check(drained(store), "upload before damage");
+    }
+    // A chunk in the bucket is damaged: the load is a miss and the image is not offered again.
+    for (auto& [key, value] : remote->objects) {
+        if (key.find("/chunks/") != std::string::npos) {
+            value.first[0] ^= 0xff;
+            break;
+        }
+    }
+    ContextStore other(remote_options(other_directory.path(), remote));
+    (void)other.refresh_remote();
+    check(other.list().size() == 1, "the image was not listed before the damage was found");
+    check(!other.load("0a").has_value(), "a damaged remote chunk produced an image");
+    check(other.list().empty(), "a damaged remote image is still offered");
+    check(other.refresh_remote() == 0, "a damaged remote image was imported again");
+
+    // An unreachable bucket costs the upload, never the local write.
+    TempDirectory outage_directory;
+    auto down = std::make_shared<MemoryObjectStore>();
+    down->down = true;
+    ContextStore offline(remote_options(outage_directory.path(), down));
+    (void)offline.put(describe("0c"), concat({pseudo_random(30, 1), pseudo_random(3000, 2)}),
+                      std::array{ContextStore::Region{30, 3000}});
+    check(drained(offline), "the upload queue did not drain during an outage");
+    check(offline.load("0c").has_value(), "an outage lost a locally stored image");
+    check(offline.stats().remote_upload_failures >= 1 && offline.stats().remote_uploads == 0,
+          "an outage was not counted");
+    // The bucket comes back: the next write of the image uploads it all.
+    down->down = false;
+    (void)offline.put(describe("0c"), concat({pseudo_random(30, 1), pseudo_random(3000, 2)}),
+                      std::array{ContextStore::Region{30, 3000}});
+    check(drained(offline) && offline.stats().remote_uploads == 4, "the recovered upload was incomplete");
+}
+
+void test_remote_use_restarts_the_remote_age() {
+    TempDirectory directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    ContextStore store(remote_options(directory.path(), remote));
+    (void)store.put(describe("0a"), concat({pseudo_random(30, 1), pseudo_random(3000, 2)}),
+                    std::array{ContextStore::Region{30, 3000}});
+    check(drained(store), "upload");
+    check(remote->touches == 0, "a fresh upload was touched");
+    remote->clock += 2 * 24 * 3600 * 1000LL;
+    check(store.load("0a").has_value(), "load after a day");
+    check(drained(store), "touch drained");
+    check(remote->touches == 4, "using an image did not restart the age of its remote objects");
+}
+
 } // namespace
 
 int main() {
@@ -331,6 +517,10 @@ int main() {
     test_ttl_and_use_extend_life();
     test_supersede_and_replace();
     test_invalid_input_and_failed_put();
+    test_remote_upload_and_second_engine();
+    test_remote_survives_local_eviction();
+    test_remote_damage_and_outage_are_misses();
+    test_remote_use_restarts_the_remote_age();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }

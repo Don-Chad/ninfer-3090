@@ -1054,6 +1054,7 @@ private:
         };
         try {
             std::string best_id;
+            bool best_local             = true;
             std::uint32_t best_frontier = resident_reuse + kMinimumHydrationGain - 1U;
             const std::uint32_t resolved_tokens = instance_.kv_capacity_resolution.resolved_tokens;
             const std::uint32_t hydration_token_limit =
@@ -1071,10 +1072,18 @@ private:
                         mine->identity_tag == key.identity_tag) {
                         best_id       = info.id;
                         best_frontier = key.frontier;
+                        best_local    = info.local;
                     }
                 }
             }
             if (best_id.empty()) { return attempt; } // nothing worth reading: not an attempt
+            if (!best_local) {
+                // Only the remote holds all of it: fetching a deep session over the network on the
+                // worker would stall every running request for minutes, so it is fetched in the
+                // background for the next request that continues it, and this one is prefilled.
+                (void)store_->prefetch(best_id);
+                return attempt;
+            }
             std::optional<std::vector<std::uint8_t>> bytes = store_->load(best_id, false);
             if (!bytes) {
                 store_hydration_failures_.fetch_add(1, std::memory_order_relaxed);

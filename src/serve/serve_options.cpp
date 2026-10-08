@@ -87,7 +87,10 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-cache-markers-per-request N] "
            "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] "
            "[--context-store DIR [--context-store-max-gib N] [--context-store-ttl-hours N] "
-           "[--context-store-idle-seconds N] [--context-store-restore-seconds N] [--context-store-flush-seconds N]] "
+           "[--context-store-idle-seconds N] [--context-store-restore-seconds N] "
+           "[--context-store-flush-seconds N] "
+           "[--context-store-s3-endpoint URL --context-store-s3-bucket NAME "
+           "[--context-store-s3-prefix P] [--context-store-s3-region R]]] "
            "[--no-exit-on-engine-failure] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|rk8v4|rk4v4|nvfp4|k8v4] "
@@ -176,8 +179,17 @@ std::string serve_usage_text(const char* argv0) {
            "space); --context-store-ttl-hours N removes sessions unused that long (default 168, "
            "0 keeps them until space is needed); --context-store-idle-seconds N writes a session "
            "unused that long in the background (default 30, 0 writes only on eviction and "
-           "shutdown); --context-store-restore-seconds N bounds start-up restoring (default 120); --context-store-flush-seconds N bounds the "
-           "write at shutdown (default 60)\n"
+           "shutdown); --context-store-restore-seconds N bounds start-up restoring (default 120); "
+           "--context-store-flush-seconds N bounds the write at shutdown (default 60)\n"
+           "       --context-store-s3-endpoint URL and --context-store-s3-bucket NAME keep a copy of "
+           "the store in an S3-compatible bucket (off by default): sessions are uploaded in the "
+           "background, sessions other engines wrote become visible and are fetched when needed, "
+           "and the bucket outlives this machine. Credentials are read from "
+           "NINFER_S3_ACCESS_KEY_ID and NINFER_S3_SECRET_ACCESS_KEY (or AWS_ACCESS_KEY_ID and "
+           "AWS_SECRET_ACCESS_KEY; AWS_SESSION_TOKEN is honoured), never from the command line. "
+           "--context-store-s3-prefix P namespaces the keys (a shared bucket); "
+           "--context-store-s3-region R defaults to us-east-1. Expiry is the bucket's lifecycle "
+           "rule: use a 7-day expiration on the prefix\n"
            "       --no-exit-on-engine-failure keeps the process alive when the Engine latches "
            "unavailable after repeated worker failures; by default it logs FATAL and exits with "
            "status 3 after a short grace period so a supervisor can restart it\n"
@@ -545,6 +557,18 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.context_store_idle_seconds = static_cast<std::uint32_t>(parse_nonnegative_int(
                 require_value("--context-store-idle-seconds"), "context-store-idle-seconds"));
             context_store_tuning = true;
+        } else if (arg == "--context-store-s3-endpoint") {
+            options.context_store_s3_endpoint = require_value("--context-store-s3-endpoint");
+            context_store_tuning              = true;
+        } else if (arg == "--context-store-s3-bucket") {
+            options.context_store_s3_bucket = require_value("--context-store-s3-bucket");
+            context_store_tuning            = true;
+        } else if (arg == "--context-store-s3-prefix") {
+            options.context_store_s3_prefix = require_value("--context-store-s3-prefix");
+            context_store_tuning            = true;
+        } else if (arg == "--context-store-s3-region") {
+            options.context_store_s3_region = require_value("--context-store-s3-region");
+            context_store_tuning            = true;
         } else if (arg == "--context-store-restore-seconds") {
             options.context_store_restore_seconds = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--context-store-restore-seconds"),
@@ -704,6 +728,34 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.context_store_path.empty() &&
         (context_store_tuning || options.context_store_max_gib)) {
         throw std::invalid_argument("--context-store-* options require --context-store");
+    }
+    if (options.context_store_s3_endpoint.empty() != options.context_store_s3_bucket.empty()) {
+        throw std::invalid_argument(
+            "--context-store-s3-endpoint and --context-store-s3-bucket go together");
+    }
+    if (options.context_store_s3_endpoint.empty() &&
+        (!options.context_store_s3_prefix.empty() ||
+         options.context_store_s3_region != "us-east-1")) {
+        throw std::invalid_argument(
+            "--context-store-s3-prefix and --context-store-s3-region require "
+            "--context-store-s3-endpoint");
+    }
+    if (!options.context_store_s3_endpoint.empty()) {
+        const std::string& endpoint = options.context_store_s3_endpoint;
+        if (endpoint.rfind("http://", 0) != 0 && endpoint.rfind("https://", 0) != 0) {
+            throw std::invalid_argument("--context-store-s3-endpoint must start with http:// or https://");
+        }
+        for (const unsigned char c : options.context_store_s3_prefix) {
+            const bool plain = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                               (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' || c == '/';
+            if (!plain) {
+                throw std::invalid_argument(
+                    "--context-store-s3-prefix may contain only letters, digits and . _ - /");
+            }
+        }
+        if (!options.context_store_s3_prefix.empty() && options.context_store_s3_prefix.back() != '/') {
+            options.context_store_s3_prefix.push_back('/');
+        }
     }
     if (!options.context_store_path.empty()) {
         if (options.auto_save_evicted) {

@@ -113,6 +113,37 @@ int main() {
                                  "4096"})
                                   .output_reservation_tokens == 4096,
                       "--output-reservation-tokens did not reach serving options");
+    // The S3 copy of the context store is off unless both the endpoint and the bucket are given,
+    // needs the store, and normalises its key prefix.
+    const ServeOptions s3 = parse({"ninfer-serve", "model.ninfer", "--context-store", "dir",
+                                   "--context-store-s3-endpoint", "https://s3.example.com",
+                                   "--context-store-s3-bucket", "cache", "--context-store-s3-prefix",
+                                   "prod"});
+    failures += check(s3.context_store_s3_endpoint == "https://s3.example.com" &&
+                          s3.context_store_s3_bucket == "cache" &&
+                          s3.context_store_s3_prefix == "prod/" &&
+                          s3.context_store_s3_region == "us-east-1" &&
+                          parse({"ninfer-serve", "model.ninfer", "--context-store", "dir"})
+                              .context_store_s3_endpoint.empty(),
+                      "S3 context store options were not parsed or are not off by default");
+    const auto s3_rejected = [&](std::vector<std::string> arguments) {
+        try {
+            (void)parse(arguments);
+        } catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    failures += check(
+        s3_rejected({"ninfer-serve", "model.ninfer", "--context-store", "dir",
+                  "--context-store-s3-endpoint", "https://s3.example.com"}) &&
+            s3_rejected({"ninfer-serve", "model.ninfer", "--context-store-s3-endpoint",
+                      "https://s3.example.com", "--context-store-s3-bucket", "cache"}) &&
+            s3_rejected({"ninfer-serve", "model.ninfer", "--context-store", "dir",
+                      "--context-store-s3-endpoint", "ftp://s3.example.com",
+                      "--context-store-s3-bucket", "cache"}) &&
+            s3_rejected({"ninfer-serve", "model.ninfer", "--context-store", "dir",
+                      "--context-store-s3-endpoint", "https://s3.example.com",
+                      "--context-store-s3-bucket", "cache", "--context-store-s3-prefix", "a b"}),
+        "an invalid S3 context store configuration was accepted");
 
     failures += check(!defaults.default_reasoning_effort,
                       "a reasoning effort is unexpectedly configured by default");

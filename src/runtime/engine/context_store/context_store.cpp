@@ -217,10 +217,25 @@ ContextStore::ContextStore(Options options) : options_(std::move(options)) {
                                      (options_.directory / sub).string() + ": " + error.message());
         }
     }
-    std::scoped_lock io(io_mutex_);
-    std::scoped_lock lock(mutex_);
-    scan();
-    maintain_locked(nullptr);
+    {
+        std::scoped_lock io(io_mutex_);
+        std::scoped_lock lock(mutex_);
+        scan();
+        maintain_locked(nullptr);
+    }
+    if (options_.remote) {
+        remote_thread_ = std::thread([this] { remote_loop(); });
+        enqueue_remote({RemoteTask::Kind::Refresh, std::string()});
+    }
+}
+
+ContextStore::~ContextStore() {
+    {
+        std::scoped_lock lock(remote_mutex_);
+        remote_stopping_ = true;
+    }
+    remote_cv_.notify_all();
+    if (remote_thread_.joinable()) { remote_thread_.join(); }
 }
 
 std::int64_t ContextStore::now_ms() const { return options_.clock(); }
@@ -268,7 +283,11 @@ void ContextStore::add_references(const Entry& entry) {
         ChunkUse& use = chunks_[hex_key(chunk.hash)];
         if (use.references++ == 0) {
             use.length = chunk.length;
-            chunk_total_bytes_ += chunk.length;
+            // An image a remote holds is registered before its chunks are fetched.
+            std::error_code error;
+            const auto size = fs::file_size(chunk_path(chunk.hash), error);
+            use.present     = !error && size == chunk.length;
+            if (use.present) { chunk_total_bytes_ += chunk.length; }
         }
     }
 }
@@ -278,7 +297,7 @@ void ContextStore::release_references(const Entry& entry) {
         const auto found = chunks_.find(hex_key(chunk.hash));
         if (found == chunks_.end()) { continue; }
         if (--found->second.references == 0) {
-            chunk_total_bytes_ -= found->second.length;
+            if (found->second.present) { chunk_total_bytes_ -= found->second.length; }
             remove_quietly(chunk_path(chunk.hash));
             chunks_.erase(found);
         }
@@ -315,7 +334,15 @@ std::uint64_t ContextStore::used_bytes_locked() const {
 bool ContextStore::read_manifest(const fs::path& path, Entry& entry,
                                  std::vector<Segment>* segments) const {
     try {
-        const std::vector<std::uint8_t> data = read_whole_file(path);
+        return parse_manifest(read_whole_file(path), entry, segments);
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool ContextStore::parse_manifest(std::span<const std::uint8_t> data, Entry& entry,
+                                  std::vector<Segment>* segments) const {
+    try {
         if (data.size() < sizeof(kManifestMagic) + sizeof(std::uint64_t)) { return false; }
         const std::span<const std::uint8_t> body(data.data(), data.size() - sizeof(std::uint64_t));
         std::uint64_t stored = 0;
@@ -430,6 +457,12 @@ void ContextStore::scan() {
             std::error_code stat_error;
             const auto size = fs::file_size(chunk_path(chunk.hash), stat_error);
             if (stat_error || size != chunk.length) {
+                if (options_.remote) {
+                    // The remote still has it: a missing chunk is fetched when the image is
+                    // loaded, and a short one is discarded so it is fetched again.
+                    if (!stat_error) { remove_quietly(chunk_path(chunk.hash)); }
+                    continue;
+                }
                 broken.push_back(id);
                 break;
             }
@@ -438,18 +471,38 @@ void ContextStore::scan() {
     for (const std::string& id : broken) { remove_entry_locked(id, true); }
 }
 
-void ContextStore::evict_oldest_locked(const std::string* protect) {
+bool ContextStore::entry_local_locked(const Entry& entry) const {
+    for (const ChunkRef& chunk : entry.chunks) {
+        const auto found = chunks_.find(hex_key(chunk.hash));
+        if (found == chunks_.end() || !found->second.present) { return false; }
+    }
+    return true;
+}
+
+bool ContextStore::entry_has_local_bytes_locked(const Entry& entry) const {
+    for (const ChunkRef& chunk : entry.chunks) {
+        const auto found = chunks_.find(hex_key(chunk.hash));
+        if (found != chunks_.end() && found->second.present) { return true; }
+    }
+    return false;
+}
+
+bool ContextStore::evict_oldest_locked(const std::string* protect) {
     const Entry* oldest = nullptr;
     for (const auto& [id, entry] : entries_) {
         if (protect != nullptr && id == *protect) { continue; }
+        // An image the directory holds no chunk of costs only its manifest; dropping it frees
+        // nothing and the next refresh would register it again.
+        if (options_.remote && !entry_has_local_bytes_locked(entry)) { continue; }
         if (oldest == nullptr || entry.info.last_used_ms < oldest->info.last_used_ms) {
             oldest = &entry;
         }
     }
-    if (oldest == nullptr) { return; }
+    if (oldest == nullptr) { return false; }
     const std::string id = oldest->info.id;
     remove_entry_locked(id, false);
     ++stats_.evicted_for_space;
+    return true;
 }
 
 void ContextStore::maintain_locked(const std::string* protect) {
@@ -469,7 +522,7 @@ void ContextStore::maintain_locked(const std::string* protect) {
     if (options_.max_bytes != 0) {
         while (used_bytes_locked() > options_.max_bytes &&
                entries_.size() > (protect != nullptr ? 1U : 0U)) {
-            evict_oldest_locked(protect);
+            if (!evict_oldest_locked(protect)) { break; }
         }
     }
 }
@@ -642,11 +695,36 @@ ContextStore::PutResult ContextStore::put(const Description& description,
         ++stats_.put_failures;
         throw;
     }
+    enqueue_remote({RemoteTask::Kind::Upload, description.id});
     return result;
 }
 
 std::optional<std::vector<std::uint8_t>> ContextStore::load(const std::string& id, bool touch) {
     if (!valid_id(id)) { return std::nullopt; }
+    if (options_.remote) {
+        bool needs_fetch = false;
+        {
+            std::scoped_lock lock(mutex_);
+            const auto found = entries_.find(id);
+            needs_fetch      = found != entries_.end() && !entry_local_locked(found->second);
+        }
+        if (needs_fetch) {
+            // Network time: no lock is held, so puts and lookups carry on meanwhile.
+            const FetchStatus status = fetch_image_chunks(id);
+            if (status != FetchStatus::Complete) {
+                std::scoped_lock io(io_mutex_);
+                std::scoped_lock lock(mutex_);
+                ++stats_.loads;
+                ++stats_.load_misses;
+                if (status == FetchStatus::Corrupt) {
+                    remove_entry_locked(id, true);
+                    std::scoped_lock remote_lock(remote_mutex_);
+                    remote_failed_.insert(id);
+                }
+                return std::nullopt;
+            }
+        }
+    }
     std::scoped_lock io(io_mutex_);
     Entry entry;
     std::vector<Segment> segments;
@@ -694,6 +772,7 @@ std::optional<std::vector<std::uint8_t>> ContextStore::load(const std::string& i
             write_used(id, found->second.info.last_used_ms);
         }
     }
+    enqueue_remote({RemoteTask::Kind::Touch, id});
     return image;
 }
 
@@ -701,7 +780,10 @@ std::vector<ContextStore::Info> ContextStore::list() const {
     std::scoped_lock lock(mutex_);
     std::vector<Info> out;
     out.reserve(entries_.size());
-    for (const auto& [id, entry] : entries_) { out.push_back(entry.info); }
+    for (const auto& [id, entry] : entries_) {
+        out.push_back(entry.info);
+        out.back().local = entry_local_locked(entry);
+    }
     std::sort(out.begin(), out.end(), [](const Info& left, const Info& right) {
         return left.last_used_ms > right.last_used_ms;
     });
@@ -712,7 +794,9 @@ std::optional<ContextStore::Info> ContextStore::find(const std::string& id) cons
     std::scoped_lock lock(mutex_);
     const auto found = entries_.find(id);
     if (found == entries_.end()) { return std::nullopt; }
-    return found->second.info;
+    Info info  = found->second.info;
+    info.local = entry_local_locked(found->second);
+    return info;
 }
 
 bool ContextStore::erase(const std::string& id) {
@@ -731,6 +815,7 @@ void ContextStore::touch(const std::string& id) {
     if (found == entries_.end()) { return; }
     found->second.info.last_used_ms = now_ms();
     write_used(id, found->second.info.last_used_ms);
+    enqueue_remote({RemoteTask::Kind::Touch, id});
 }
 
 ContextStore::Stats ContextStore::stats() const {
@@ -738,7 +823,275 @@ ContextStore::Stats ContextStore::stats() const {
     Stats out        = stats_;
     out.used_bytes   = used_bytes_locked();
     out.images       = entries_.size();
+    if (options_.remote) {
+        for (const auto& [id, entry] : entries_) {
+            if (!entry_local_locked(entry)) { ++out.remote_images; }
+        }
+    }
     return out;
+}
+
+std::string ContextStore::remote_manifest_key(const std::string& id) const {
+    return options_.remote_prefix + "manifests/" + id + ".manifest";
+}
+
+std::string ContextStore::remote_chunk_key(const std::array<std::uint64_t, 2>& hash) const {
+    const std::string key = hex_key(hash);
+    return options_.remote_prefix + "chunks/" + key.substr(0, 2) + "/" + key + ".chunk";
+}
+
+void ContextStore::enqueue_remote(RemoteTask task) {
+    if (!options_.remote) { return; }
+    {
+        std::scoped_lock lock(remote_mutex_);
+        if (remote_stopping_) { return; }
+        for (const RemoteTask& queued : remote_queue_) {
+            if (queued.kind == task.kind && queued.id == task.id) { return; }
+        }
+        remote_queue_.push_back(std::move(task));
+    }
+    remote_cv_.notify_one();
+}
+
+void ContextStore::remote_loop() {
+    auto next_refresh = std::chrono::steady_clock::now() + options_.remote_refresh;
+    std::unique_lock lock(remote_mutex_);
+    for (;;) {
+        remote_cv_.wait_until(lock, next_refresh,
+                              [&] { return remote_stopping_ || !remote_queue_.empty(); });
+        if (remote_stopping_) { return; }
+        RemoteTask task{RemoteTask::Kind::Refresh, std::string()};
+        if (!remote_queue_.empty()) {
+            task = std::move(remote_queue_.front());
+            remote_queue_.pop_front();
+        } else if (std::chrono::steady_clock::now() >= next_refresh) {
+            next_refresh = std::chrono::steady_clock::now() + options_.remote_refresh;
+        } else {
+            continue;
+        }
+        remote_busy_ = true;
+        lock.unlock();
+        try {
+            switch (task.kind) {
+            case RemoteTask::Kind::Upload: upload_image(task.id); break;
+            case RemoteTask::Kind::Refresh: (void)refresh_remote(); break;
+            case RemoteTask::Kind::Touch: touch_remote_image(task.id); break;
+            case RemoteTask::Kind::Prefetch:
+                if (fetch_image_chunks(task.id) == FetchStatus::Complete) {
+                    std::scoped_lock io(io_mutex_);
+                    std::scoped_lock state(mutex_);
+                    maintain_locked(&task.id);
+                }
+                break;
+            }
+        } catch (...) {}
+        lock.lock();
+        remote_busy_ = false;
+        if (remote_queue_.empty()) { remote_idle_cv_.notify_all(); }
+    }
+}
+
+bool ContextStore::flush_remote(std::chrono::steady_clock::time_point deadline) {
+    if (!options_.remote) { return true; }
+    std::unique_lock lock(remote_mutex_);
+    return remote_idle_cv_.wait_until(
+        lock, deadline, [&] { return remote_queue_.empty() && !remote_busy_; });
+}
+
+bool ContextStore::prefetch(const std::string& id) {
+    if (!options_.remote || !valid_id(id)) { return false; }
+    {
+        std::scoped_lock lock(mutex_);
+        const auto found = entries_.find(id);
+        if (found == entries_.end() || entry_local_locked(found->second)) { return false; }
+    }
+    enqueue_remote({RemoteTask::Kind::Prefetch, id});
+    return true;
+}
+
+void ContextStore::upload_image(const std::string& id) {
+    Entry entry;
+    {
+        std::scoped_lock lock(mutex_);
+        const auto found = entries_.find(id);
+        if (found == entries_.end()) { return; }
+        entry = found->second;
+    }
+    std::uint64_t objects = 0;
+    std::uint64_t bytes   = 0;
+    try {
+        std::unordered_set<std::string> seen;
+        for (const ChunkRef& chunk : entry.chunks) {
+            const std::string key = remote_chunk_key(chunk.hash);
+            bool known;
+            {
+                std::scoped_lock lock(remote_mutex_);
+                known = uploaded_.count(key) != 0;
+            }
+            if (known || !seen.insert(key).second) { continue; }
+            if (!options_.remote->exists(key)) {
+                std::vector<std::uint8_t> data;
+                try {
+                    data = read_whole_file(chunk_path(chunk.hash));
+                } catch (const std::exception&) {
+                    continue; // evicted from the directory since: nothing to upload
+                }
+                if (data.size() != chunk.length) { continue; }
+                options_.remote->put(key, data);
+                ++objects;
+                bytes += data.size();
+            }
+            std::scoped_lock lock(remote_mutex_);
+            uploaded_.insert(key);
+        }
+        // The manifest goes last: an image another engine sees always has its chunks.
+        std::vector<std::uint8_t> manifest;
+        try {
+            manifest = read_whole_file(manifest_path(id));
+        } catch (const std::exception&) {
+            return; // replaced or evicted since
+        }
+        options_.remote->put(remote_manifest_key(id), manifest);
+        ++objects;
+        bytes += manifest.size();
+        std::scoped_lock lock(mutex_);
+        stats_.remote_uploads += objects;
+        stats_.remote_upload_bytes += bytes;
+    } catch (const std::exception&) {
+        std::scoped_lock lock(mutex_);
+        stats_.remote_uploads += objects;
+        stats_.remote_upload_bytes += bytes;
+        ++stats_.remote_upload_failures;
+    }
+}
+
+void ContextStore::touch_remote_image(const std::string& id) {
+    std::vector<ChunkRef> chunks;
+    {
+        std::scoped_lock lock(mutex_);
+        const auto found = entries_.find(id);
+        if (found == entries_.end()) { return; }
+        chunks = found->second.chunks;
+    }
+    const std::int64_t now = now_ms();
+    {
+        std::scoped_lock lock(remote_mutex_);
+        const auto last = remote_touched_.find(id);
+        if (last != remote_touched_.end() &&
+            now - last->second < options_.remote_touch_interval.count() * 1000) {
+            return;
+        }
+    }
+    try {
+        for (const ChunkRef& chunk : chunks) { (void)options_.remote->touch(remote_chunk_key(chunk.hash)); }
+        (void)options_.remote->touch(remote_manifest_key(id));
+        std::scoped_lock lock(remote_mutex_);
+        remote_touched_[id] = now;
+    } catch (const std::exception&) {}
+}
+
+ContextStore::FetchStatus ContextStore::fetch_image_chunks(const std::string& id) {
+    std::vector<ChunkRef> chunks;
+    {
+        std::scoped_lock lock(mutex_);
+        const auto found = entries_.find(id);
+        if (found == entries_.end()) { return FetchStatus::Corrupt; }
+        chunks = found->second.chunks;
+    }
+    for (const ChunkRef& chunk : chunks) {
+        {
+            std::scoped_lock lock(mutex_);
+            const auto found = chunks_.find(hex_key(chunk.hash));
+            if (found != chunks_.end() && found->second.present) { continue; }
+        }
+        std::optional<std::vector<std::uint8_t>> data;
+        try {
+            data = options_.remote->get(remote_chunk_key(chunk.hash));
+        } catch (const std::exception&) {
+            std::scoped_lock lock(mutex_);
+            ++stats_.remote_download_failures;
+            return FetchStatus::Transient;
+        }
+        if (!data || data->size() != chunk.length || hash(*data) != chunk.hash) {
+            std::scoped_lock lock(mutex_);
+            ++stats_.remote_download_failures;
+            return FetchStatus::Corrupt;
+        }
+        if (!install_chunk(chunk, *data)) { return FetchStatus::Corrupt; }
+        std::scoped_lock lock(mutex_);
+        ++stats_.remote_downloads;
+        stats_.remote_download_bytes += data->size();
+    }
+    return FetchStatus::Complete;
+}
+
+bool ContextStore::install_chunk(const ChunkRef& chunk, std::span<const std::uint8_t> bytes) {
+    std::scoped_lock io(io_mutex_);
+    std::scoped_lock lock(mutex_);
+    const auto found = chunks_.find(hex_key(chunk.hash));
+    if (found == chunks_.end() || found->second.references == 0) { return false; } // image removed
+    if (found->second.present) { return true; }
+    write_atomically(chunk_path(chunk.hash), bytes);
+    found->second.present = true;
+    chunk_total_bytes_ += chunk.length;
+    return true;
+}
+
+std::size_t ContextStore::refresh_remote() {
+    if (!options_.remote) { return 0; }
+    std::size_t added = 0;
+    try {
+        const std::string manifests = options_.remote_prefix + "manifests/";
+        const std::vector<ObjectInfo> objects = options_.remote->list(manifests);
+        const std::int64_t horizon =
+            options_.ttl.count() > 0 ? now_ms() - options_.ttl.count() * 1000
+                                     : std::numeric_limits<std::int64_t>::min();
+        for (const ObjectInfo& object : objects) {
+            constexpr std::string_view kSuffix = ".manifest";
+            if (object.key.size() <= manifests.size() + kSuffix.size() ||
+                object.key.compare(object.key.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0) {
+                continue;
+            }
+            const std::string id = object.key.substr(
+                manifests.size(), object.key.size() - manifests.size() - kSuffix.size());
+            if (!valid_id(id) || object.modified_ms < horizon) { continue; }
+            {
+                std::scoped_lock lock(mutex_);
+                if (entries_.find(id) != entries_.end()) { continue; }
+            }
+            {
+                std::scoped_lock lock(remote_mutex_);
+                if (remote_failed_.count(id) != 0) { continue; }
+            }
+            const std::optional<std::vector<std::uint8_t>> data = options_.remote->get(object.key);
+            if (!data) { continue; }
+            Entry entry;
+            if (!parse_manifest(*data, entry, nullptr) || entry.info.id != id) {
+                std::scoped_lock lock(remote_mutex_);
+                remote_failed_.insert(id);
+                continue;
+            }
+            entry.info.last_used_ms = std::max(entry.info.created_ms, object.modified_ms);
+            std::scoped_lock io(io_mutex_);
+            std::scoped_lock lock(mutex_);
+            if (entries_.find(id) != entries_.end()) { continue; }
+            write_atomically(manifest_path(id), *data);
+            manifest_total_bytes_ += entry.manifest_bytes;
+            add_references(entry);
+            {
+                std::scoped_lock remote_lock(remote_mutex_);
+                for (const ChunkRef& chunk : entry.chunks) { uploaded_.insert(remote_chunk_key(chunk.hash)); }
+            }
+            entries_.emplace(id, std::move(entry));
+            ++added;
+        }
+        std::scoped_lock lock(mutex_);
+        ++stats_.remote_refreshes;
+    } catch (const std::exception&) {
+        std::scoped_lock lock(mutex_);
+        ++stats_.remote_download_failures;
+    }
+    return added;
 }
 
 } // namespace ninfer::runtime

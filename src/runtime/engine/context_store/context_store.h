@@ -1,16 +1,23 @@
 #pragma once
 
+#include "ninfer/object_store.h"
+
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace ninfer::runtime {
@@ -46,6 +53,17 @@ public:
         std::chrono::seconds ttl{0};
         std::uint64_t chunk_bytes = std::uint64_t{32} << 20U;
         Clock clock; // defaults to the system clock
+
+        // An optional remote copy of the whole store (an S3-compatible bucket). The directory then
+        // acts as a cache of it: every image written is uploaded in the background, images other
+        // engines wrote appear in list() and are fetched when loaded, and an image evicted from
+        // the directory stays available remotely. The remote is never trusted for correctness:
+        // every chunk it returns is verified, and a failure is a miss. Expiry there is the
+        // bucket's lifecycle rule; images that are used have their age restarted.
+        std::shared_ptr<ObjectStore> remote;
+        std::string remote_prefix; // prepended to every key, e.g. "ninfer/"
+        std::chrono::seconds remote_refresh{60};
+        std::chrono::seconds remote_touch_interval{24 * 3600};
     };
 
     // Where in the image the large, deduplicated bytes are.
@@ -86,6 +104,8 @@ public:
         std::int64_t created_ms     = 0;
         std::int64_t last_used_ms   = 0;
         std::vector<CheckpointKey> checkpoints;
+        // Every chunk of the image is in the directory, so load() does not touch the network.
+        bool local = true;
     };
 
     struct PutResult {
@@ -108,11 +128,23 @@ public:
         std::uint64_t evicted_for_space = 0;
         std::uint64_t expired           = 0;
         std::uint64_t superseded        = 0;
+        // With a remote: images only the remote holds, and the traffic to it.
+        std::uint64_t remote_images          = 0;
+        std::uint64_t remote_uploads         = 0; // objects uploaded (chunks and manifests)
+        std::uint64_t remote_upload_bytes    = 0;
+        std::uint64_t remote_upload_failures = 0;
+        std::uint64_t remote_downloads       = 0;
+        std::uint64_t remote_download_bytes  = 0;
+        std::uint64_t remote_download_failures = 0;
+        std::uint64_t remote_refreshes       = 0;
     };
 
     // Creates the directory layout, reads the manifests found there and removes whatever is
     // unreadable, unreferenced or left over from an interrupted write.
     explicit ContextStore(Options options);
+    ~ContextStore();
+    ContextStore(const ContextStore&)            = delete;
+    ContextStore& operator=(const ContextStore&) = delete;
 
     // Stores `image` (its `regions` chunked, the rest inline). Idempotent for an id already held:
     // the manifest is replaced. Throws std::runtime_error when the files cannot be written; the
@@ -135,6 +167,16 @@ public:
     // Removes expired images and applies the size limit. Called after each put and at start-up;
     // exposed so a long-idle server can run it.
     void maintain();
+
+    // With a remote: stops the background transfers after the work already queued, waiting at most
+    // until `deadline`. For shutdown, after the last put. Returns whether the queue drained.
+    bool flush_remote(std::chrono::steady_clock::time_point deadline);
+    // With a remote: lists it now and registers images it holds that this store does not. Also done
+    // in the background every remote_refresh. Returns the number of images added.
+    std::size_t refresh_remote();
+    // With a remote: fetches the image's missing chunks in the background so a later load() is
+    // local. False when there is nothing to do.
+    bool prefetch(const std::string& id);
 
     [[nodiscard]] Stats stats() const;
     [[nodiscard]] const Options& options() const noexcept { return options_; }
@@ -161,6 +203,11 @@ private:
     struct ChunkUse {
         std::uint32_t references = 0;
         std::uint32_t length     = 0;
+        bool present             = false; // the chunk file is in the directory
+    };
+    struct RemoteTask {
+        enum class Kind : std::uint8_t { Upload, Refresh, Prefetch, Touch } kind;
+        std::string id;
     };
 
     [[nodiscard]] std::filesystem::path manifest_path(const std::string& id) const;
@@ -171,6 +218,8 @@ private:
     void scan();
     bool read_manifest(const std::filesystem::path& path, Entry& entry,
                        std::vector<Segment>* segments) const;
+    bool parse_manifest(std::span<const std::uint8_t> data, Entry& entry,
+                        std::vector<Segment>* segments) const;
     void write_atomically(const std::filesystem::path& path,
                           std::span<const std::uint8_t> bytes) const;
     void add_references(const Entry& entry);
@@ -179,7 +228,20 @@ private:
     void write_used(const std::string& id, std::int64_t last_used_ms) const;
     [[nodiscard]] std::uint64_t used_bytes_locked() const;
     void maintain_locked(const std::string* protect);
-    void evict_oldest_locked(const std::string* protect);
+    bool evict_oldest_locked(const std::string* protect);
+    [[nodiscard]] bool entry_local_locked(const Entry& entry) const;
+    [[nodiscard]] bool entry_has_local_bytes_locked(const Entry& entry) const;
+
+    // The remote tier (all no-ops without options_.remote).
+    [[nodiscard]] std::string remote_manifest_key(const std::string& id) const;
+    [[nodiscard]] std::string remote_chunk_key(const std::array<std::uint64_t, 2>& hash) const;
+    void enqueue_remote(RemoteTask task);
+    void remote_loop();
+    void upload_image(const std::string& id);
+    void touch_remote_image(const std::string& id);
+    enum class FetchStatus : std::uint8_t { Complete, Transient, Corrupt };
+    [[nodiscard]] FetchStatus fetch_image_chunks(const std::string& id);
+    bool install_chunk(const ChunkRef& chunk, std::span<const std::uint8_t> bytes);
 
     Options options_;
     // Serializes everything that changes files (put, load, erase, touch, maintain), so a chunk is
@@ -192,6 +254,18 @@ private:
     std::uint64_t chunk_total_bytes_ = 0;
     std::uint64_t manifest_total_bytes_ = 0;
     Stats stats_;
+
+    // Remote worker: one thread runs the queued transfers, one at a time.
+    std::mutex remote_mutex_;
+    std::condition_variable remote_cv_;
+    std::condition_variable remote_idle_cv_;
+    std::deque<RemoteTask> remote_queue_;
+    bool remote_busy_     = false;
+    bool remote_stopping_ = false;
+    std::unordered_set<std::string> uploaded_;                    // keys known to be remote
+    std::unordered_map<std::string, std::int64_t> remote_touched_; // id -> last touch (ms)
+    std::unordered_set<std::string> remote_failed_;               // ids not worth importing again
+    std::thread remote_thread_;
 };
 
 } // namespace ninfer::runtime

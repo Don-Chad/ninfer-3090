@@ -98,6 +98,12 @@ struct ServeOptions {
     std::uint32_t context_store_idle_seconds   = 30;
     std::uint32_t context_store_restore_seconds = 120;
     std::uint32_t context_store_flush_seconds   = 60;
+    // --context-store-s3-endpoint URL / --context-store-s3-bucket NAME: keep a copy of the store in
+    // an S3-compatible bucket (credentials come from the environment, never the command line).
+    std::string context_store_s3_endpoint;
+    std::string context_store_s3_bucket;
+    std::string context_store_s3_prefix; // "" or ending in '/'
+    std::string context_store_s3_region = "us-east-1";
     // Exit non-zero shortly after the Engine latches unavailable after a worker failure, so a
     // supervisor restarts the process instead of leaving it holding VRAM and answering 503.
     bool exit_on_engine_failure = true;

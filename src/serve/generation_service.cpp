@@ -1,6 +1,7 @@
 #include "serve/generation_service.h"
 
 #include "product/media_acquire/acquire.h"
+#include "product/object_store/s3_object_store.h"
 #include "serve/console_log.h"
 #include "serve/translate.h"
 
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <iterator>
 #include <mutex>
 #include <stdexcept>
@@ -292,6 +294,31 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
         std::chrono::seconds(options.context_store_restore_seconds);
     engine_options.context_store.flush_budget =
         std::chrono::seconds(options.context_store_flush_seconds);
+    if (!options.context_store_s3_endpoint.empty()) {
+        const auto environment = [](const char* primary, const char* fallback) {
+            for (const char* name : {primary, fallback}) {
+                if (const char* value = std::getenv(name); value != nullptr && *value != '\0') {
+                    return std::string(value);
+                }
+            }
+            return std::string();
+        };
+        product::S3Config s3;
+        s3.endpoint      = options.context_store_s3_endpoint;
+        s3.bucket        = options.context_store_s3_bucket;
+        s3.region        = options.context_store_s3_region;
+        s3.access_key    = environment("NINFER_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID");
+        s3.secret_key    = environment("NINFER_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY");
+        s3.session_token = environment("NINFER_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN");
+        if (s3.access_key.empty() || s3.secret_key.empty()) {
+            throw std::invalid_argument(
+                "--context-store-s3-endpoint needs NINFER_S3_ACCESS_KEY_ID and "
+                "NINFER_S3_SECRET_ACCESS_KEY (or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) in "
+                "the environment");
+        }
+        engine_options.context_store.remote        = product::make_s3_object_store(std::move(s3));
+        engine_options.context_store.remote_prefix = options.context_store_s3_prefix;
+    }
     engine_options.devices                  = options.devices;
     engine_options.stage_layers             = options.stage_layers;
     engine_options.context_cost.preset_path = options.context_cost_presets;

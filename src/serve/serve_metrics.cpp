@@ -197,6 +197,24 @@ void append_context_store(std::string& out, const ninfer::RuntimeStats& live) {
                   "Bytes of sessions restored at start-up.", live.context_store_restored_bytes);
     append_metric(out, "ninfer:context_store_restore_seconds", "gauge",
                   "Time spent restoring sessions at start-up.", live.context_store_restore_seconds);
+    append_metric(out, "ninfer:context_store_remote_images", "gauge",
+                  "Sessions the remote bucket holds that the local directory does not hold in full.",
+                  live.context_store_remote_images);
+    append_metric(out, "ninfer:context_store_remote_uploads_total", "counter",
+                  "Objects (chunks and manifests) uploaded to the remote bucket.",
+                  live.context_store_remote_uploads);
+    append_metric(out, "ninfer:context_store_remote_upload_bytes_total", "counter",
+                  "Bytes uploaded to the remote bucket.", live.context_store_remote_upload_bytes);
+    append_metric(out, "ninfer:context_store_remote_upload_failures_total", "counter",
+                  "Session uploads that failed; they are retried when the session is next written.",
+                  live.context_store_remote_upload_failures);
+    append_metric(out, "ninfer:context_store_remote_downloads_total", "counter",
+                  "Chunks fetched from the remote bucket.", live.context_store_remote_downloads);
+    append_metric(out, "ninfer:context_store_remote_download_bytes_total", "counter",
+                  "Bytes fetched from the remote bucket.", live.context_store_remote_download_bytes);
+    append_metric(out, "ninfer:context_store_remote_download_failures_total", "counter",
+                  "Remote listings or fetches that failed or returned damaged data.",
+                  live.context_store_remote_download_failures);
     append_metric(out, "ninfer:context_store_hydrations_total", "counter",
                   "Stored sessions read back into the cache for a request.",
                   live.context_store_hydrations);

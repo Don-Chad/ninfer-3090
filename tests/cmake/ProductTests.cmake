@@ -71,3 +71,8 @@ ninfer_add_test(ninfer_http_error_handler_test
 ninfer_add_test(ninfer_http_transport_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_http_transport.cpp"
   LIBRARIES ninfer_serve)
+
+ninfer_add_test(ninfer_s3_object_store_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_s3_object_store.cpp"
+  LIBRARIES ninfer_s3_object_store)
+set_tests_properties(ninfer_s3_object_store_test PROPERTIES SKIP_RETURN_CODE 77)

@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <limits>
 #include <optional>
@@ -4540,6 +4541,129 @@ int exercise_lazy_output_reservation(const char* artifact) {
     return 0;
 }
 
+// The context store's remote copy: a session written by one Engine is restored by another whose
+// directory is empty, through the bucket alone, and continues with the warm session's output.
+class MemoryBucket final : public ninfer::ObjectStore {
+public:
+    void put(const std::string& key, std::span<const std::uint8_t> bytes) override {
+        std::scoped_lock lock(mutex);
+        objects[key] = {std::vector<std::uint8_t>(bytes.begin(), bytes.end()), ++clock};
+    }
+    std::optional<std::vector<std::uint8_t>> get(const std::string& key) override {
+        std::scoped_lock lock(mutex);
+        const auto found = objects.find(key);
+        if (found == objects.end()) { return std::nullopt; }
+        return found->second.first;
+    }
+    bool exists(const std::string& key) override {
+        std::scoped_lock lock(mutex);
+        return objects.find(key) != objects.end();
+    }
+    std::vector<ninfer::ObjectInfo> list(const std::string& prefix) override {
+        std::scoped_lock lock(mutex);
+        std::vector<ninfer::ObjectInfo> out;
+        for (const auto& [key, value] : objects) {
+            if (key.rfind(prefix, 0) == 0) {
+                out.push_back({key, value.first.size(), static_cast<std::int64_t>(clock)});
+            }
+        }
+        return out;
+    }
+    bool touch(const std::string& key) override {
+        std::scoped_lock lock(mutex);
+        return objects.find(key) != objects.end();
+    }
+    void remove(const std::string& key) override {
+        std::scoped_lock lock(mutex);
+        objects.erase(key);
+    }
+    std::mutex mutex;
+    std::map<std::string, std::pair<std::vector<std::uint8_t>, std::uint64_t>> objects;
+    std::uint64_t clock = 1'800'000'000'000ULL;
+};
+
+int exercise_context_store_remote(const char* artifact) {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "ninfer-context-store-remote-test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+
+    ninfer::RequestOptions request;
+    request.execution.requested_output_tokens = 12;
+    request.execution.sampling.temperature    = 0.0F;
+    request.execution.allow_prefix_reuse      = true;
+    request.stop.include_model_defaults       = false;
+    const std::vector<std::string> first{
+        "List three uses for a lathe in a small workshop, one line each."};
+    const auto second_turn = [&](const ninfer::GenerationResult& reply) {
+        std::vector<std::string> turns = first;
+        turns.push_back(reply.content);
+        turns.push_back("Which of those needs the most care with tool speed?");
+        return turns;
+    };
+    auto bucket        = std::make_shared<MemoryBucket>();
+    const auto options = [&](const fs::path& directory) {
+        ninfer::EngineOptions engine_options = slot_engine_options(artifact, false, nullptr, nullptr);
+        engine_options.context_store.directory     = directory;
+        engine_options.context_store.idle_persist  = std::chrono::seconds(0);
+        engine_options.context_store.remote        = bucket;
+        engine_options.context_store.remote_prefix = "test/";
+        return engine_options;
+    };
+
+    std::vector<ninfer::TokenId> control_tokens;
+    {
+        ninfer::Engine control(slot_engine_options(artifact, false, nullptr, nullptr));
+        const ninfer::GenerationResult reply =
+            control.generate(control.prepare(slot_conversation(first)), request);
+        control_tokens =
+            control.generate(control.prepare(slot_conversation(second_turn(reply))), request)
+                .generated_token_ids;
+    }
+
+    ninfer::GenerationResult reply;
+    {
+        ninfer::Engine engine(options(root / "a"));
+        reply = engine.generate(engine.prepare(slot_conversation(first)), request);
+    } // shutdown writes the session and waits for its upload
+    {
+        std::scoped_lock lock(bucket->mutex);
+        bool manifest = false;
+        bool chunk    = false;
+        for (const auto& [key, value] : bucket->objects) {
+            manifest = manifest || key.find("test/manifests/") == 0;
+            chunk    = chunk || key.find("test/chunks/") == 0;
+        }
+        if (!manifest || !chunk) {
+            std::cerr << "shutdown did not upload the session to the bucket\n";
+            return 1;
+        }
+    }
+    {
+        ninfer::Engine engine(options(root / "b")); // an empty directory
+        const ninfer::RuntimeStats stats = engine.runtime_stats();
+        if (stats.context_store_restored != 1 || stats.context_store_remote_downloads == 0) {
+            std::cerr << "a fresh engine did not restore the session through the bucket: restored="
+                      << stats.context_store_restored
+                      << " downloads=" << stats.context_store_remote_downloads << '\n';
+            return 1;
+        }
+        const ninfer::GenerationResult next =
+            engine.generate(engine.prepare(slot_conversation(second_turn(reply))), request);
+        if (next.reused_prompt_tokens == 0 ||
+            next.prefix_reuse_path == ninfer::PrefixReusePath::Root) {
+            std::cerr << "the continuation did not reuse the session restored from the bucket\n";
+            return 1;
+        }
+        if (next.generated_token_ids != control_tokens) {
+            std::cerr << "output after a restore from the bucket differs from the warm control\n";
+            return 1;
+        }
+    }
+    std::cout << "restored through the bucket: " << bucket->objects.size() << " objects\n";
+    return 0;
+}
+
 } // namespace
 
 int exercise_artifact(const char* artifact) {
@@ -4684,6 +4808,8 @@ int run() {
         result = exercise_context_store(artifact);
     } else if (scenario == "lazy-output-reservation") {
         result = exercise_lazy_output_reservation(artifact);
+    } else if (scenario == "context-store-remote") {
+        result = exercise_context_store_remote(artifact);
     } else if (scenario == "store-hydration") {
         result = exercise_store_hydration(artifact);
     } else if (scenario == "worker-failure-recovery") {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ninfer/object_store.h"
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -193,6 +195,14 @@ struct ContextStoreOptions {
     std::chrono::seconds restore_budget{120};
     // Upper bound on the time spent writing sessions at shutdown.
     std::chrono::seconds flush_budget{60};
+    // A remote copy of the store (an S3-compatible bucket). The directory then caches it: sessions
+    // are uploaded in the background, sessions other engines wrote appear in the store, and one
+    // evicted from the directory stays available remotely. Null keeps the store local. Expiry
+    // there is the bucket's lifecycle rule; `remote_prefix` is prepended to every key.
+    std::shared_ptr<ObjectStore> remote;
+    std::string remote_prefix;
+    // How long shutdown waits for the uploads still queued.
+    std::chrono::seconds remote_flush_budget{120};
 
     [[nodiscard]] bool enabled() const noexcept { return !directory.empty(); }
 };
@@ -1297,6 +1307,14 @@ struct RuntimeStats {
     std::uint64_t context_store_restored       = 0; // sessions restored into the cache at start-up
     std::uint64_t context_store_restored_bytes = 0;
     double context_store_restore_seconds       = 0.0;
+    // With a remote: images only the remote holds, objects and bytes moved, and failures.
+    std::uint64_t context_store_remote_images           = 0;
+    std::uint64_t context_store_remote_uploads          = 0;
+    std::uint64_t context_store_remote_upload_bytes     = 0;
+    std::uint64_t context_store_remote_upload_failures  = 0;
+    std::uint64_t context_store_remote_downloads        = 0;
+    std::uint64_t context_store_remote_download_bytes   = 0;
+    std::uint64_t context_store_remote_download_failures = 0;
     // Stored sessions brought back into the cache for a request that would otherwise have been
     // prefilled from further back, and the prompt tokens that bought.
     std::uint64_t context_store_hydrations         = 0;

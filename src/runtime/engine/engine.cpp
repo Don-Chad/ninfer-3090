@@ -340,6 +340,11 @@ public:
         flush_context_store(flush_deadline);
         core.emplace<std::monostate>();
         stop_writer();
+        // Everything written is queued for upload by now; give the uploads their budget.
+        if (store) {
+            (void)store->flush_remote(std::chrono::steady_clock::now() +
+                                      options.context_store.remote_flush_budget);
+        }
         try {
             device.synchronize();
         } catch (...) {}
@@ -403,6 +408,13 @@ public:
         out.context_store_restored       = restored_sessions.load(std::memory_order_relaxed);
         out.context_store_restored_bytes = restored_bytes.load(std::memory_order_relaxed);
         out.context_store_restore_seconds = restore_seconds;
+        out.context_store_remote_images           = s.remote_images;
+        out.context_store_remote_uploads          = s.remote_uploads;
+        out.context_store_remote_upload_bytes     = s.remote_upload_bytes;
+        out.context_store_remote_upload_failures  = s.remote_upload_failures;
+        out.context_store_remote_downloads        = s.remote_downloads;
+        out.context_store_remote_download_bytes   = s.remote_download_bytes;
+        out.context_store_remote_download_failures = s.remote_download_failures;
         if (const auto* generation = std::get_if<std::unique_ptr<GenerationCore>>(&core);
             generation != nullptr && *generation != nullptr) {
             const auto read = (*generation)->store_read_stats();
@@ -456,8 +468,13 @@ private:
         store_options.directory = config.directory;
         store_options.max_bytes = max_bytes;
         store_options.ttl       = config.ttl;
+        store_options.remote        = config.remote;
+        store_options.remote_prefix = config.remote_prefix;
         store                   = std::make_unique<runtime::ContextStore>(std::move(store_options));
         store_binding           = slot_model_binding(options, load);
+        // Register what other engines left in the bucket before start-up restores sessions; an
+        // unreachable bucket costs the connection timeouts, then the store runs on its directory.
+        if (config.remote) { (void)store->refresh_remote(); }
     }
 
     // Writes one session to the context store. Called on the writer thread, or at shutdown.
