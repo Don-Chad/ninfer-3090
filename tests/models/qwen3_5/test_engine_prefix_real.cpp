@@ -1356,7 +1356,8 @@ int exercise_cancelled_prefill_progress(const char* artifact) {
     const std::uint32_t cancel_at = prompt_tokens * 2U / 5U;
 
     const auto cancel_then_retry = [&](std::uint32_t stride, ninfer::GenerationResult& retried,
-                                       ninfer::FinishReason& cancelled_reason) {
+                                       ninfer::FinishReason& cancelled_reason,
+                                       ninfer::RuntimeStats& stats) {
         ninfer::Engine engine(options());
         CancelAtProgressSink sink(cancel_at);
         ninfer::GenerationHandle handle = engine.submit(
@@ -1367,6 +1368,7 @@ int exercise_cancelled_prefill_progress(const char* artifact) {
             handle.wait(&sink, ninfer::CancellationView([&sink] { return sink.reached(); }));
         cancelled_reason = cancelled.finish_reason;
         retried = engine.generate(engine.prepare(progress_anchor_prompt(stride)), request);
+        stats   = engine.runtime_stats();
         return engine.is_available();
     };
 
@@ -1374,8 +1376,10 @@ int exercise_cancelled_prefill_progress(const char* artifact) {
     ninfer::GenerationResult dropped;
     ninfer::FinishReason kept_reason    = ninfer::FinishReason::None;
     ninfer::FinishReason dropped_reason = ninfer::FinishReason::None;
-    if (!cancel_then_retry(kStride, kept, kept_reason) ||
-        !cancel_then_retry(0, dropped, dropped_reason)) {
+    ninfer::RuntimeStats kept_stats;
+    ninfer::RuntimeStats dropped_stats;
+    if (!cancel_then_retry(kStride, kept, kept_reason, kept_stats) ||
+        !cancel_then_retry(0, dropped, dropped_reason, dropped_stats)) {
         std::cerr << "engine latched unavailable after a cancelled prefill\n";
         return 1;
     }
@@ -1394,6 +1398,21 @@ int exercise_cancelled_prefill_progress(const char* artifact) {
                   << static_cast<int>(kept.prefix_reuse_path)
                   << " reused=" << kept.reused_prompt_tokens << " prompt=" << prompt_tokens
                   << " cancel_at=" << cancel_at << '\n';
+        return 1;
+    }
+    // The counters tell the same story as the retry: both prefills were cancelled part way, only
+    // the one with progress anchors kept a checkpoint, and it is at least two strides deep.
+    if (kept_stats.cancelled_prefills != 1 || kept_stats.cancelled_prefills_retained != 1 ||
+        kept_stats.cancelled_prefill_retained_tokens < 2U * kStride ||
+        kept_stats.cancelled_prefill_computed_tokens < cancel_at ||
+        dropped_stats.cancelled_prefills != 1 || dropped_stats.cancelled_prefills_retained != 0 ||
+        dropped_stats.cancelled_prefill_retained_tokens != 0) {
+        std::cerr << "cancelled-prefill counters disagree with the retry: kept{cancelled="
+                  << kept_stats.cancelled_prefills << " retained=" << kept_stats.cancelled_prefills_retained
+                  << " tokens=" << kept_stats.cancelled_prefill_retained_tokens
+                  << " computed=" << kept_stats.cancelled_prefill_computed_tokens << "} dropped{cancelled="
+                  << dropped_stats.cancelled_prefills << " retained=" << dropped_stats.cancelled_prefills_retained
+                  << "}\n";
         return 1;
     }
     if (dropped.reused_prompt_tokens != 0) {

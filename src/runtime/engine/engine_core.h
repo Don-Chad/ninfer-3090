@@ -1286,6 +1286,17 @@ private:
                 request->generation_timings = finished.timings;
                 request->speculative_stats  = std::move(finished.speculative);
                 record_catalogued_publication(request, finished.disposition, catalog, false);
+                ++cumulative_stats_.cancelled_prefills;
+                cumulative_stats_.cancelled_prefill_computed_tokens += request->computed_prompt_tokens;
+                if (request->retained_slot >= 0) {
+                    const auto kept = resources_.catalog_slot(static_cast<std::uint32_t>(request->retained_slot));
+                    if (kept.state == ResourceManagement::CatalogState::Catalogued &&
+                        kept.handle != nullptr) {
+                        ++cumulative_stats_.cancelled_prefills_retained;
+                        cumulative_stats_.cancelled_prefill_retained_tokens +=
+                            instance_.program->continuation_depth(*kept.handle);
+                    }
+                }
                 scheduler_.clear_prefill_lane(lane);
             } else {
                 auto aborted =
@@ -1323,8 +1334,8 @@ private:
             }
             have_pending = !pending_.empty();
         }
-        for (const auto& request : cancelled) { scheduler_.on_waiting_removed(request->id); }
-        for (const auto& request : expired) { scheduler_.on_waiting_removed(request->id); }
+        for (const auto& request : cancelled) { on_waiting_removed(request); }
+        for (const auto& request : expired) { on_waiting_removed(request); }
         try {
             for (const auto& request : cancelled) { complete_detached_cancelled(request); }
             for (const auto& request : expired) {
@@ -1767,6 +1778,17 @@ private:
     }
 
     void on_waiting_removed(const std::shared_ptr<Request>& request) noexcept {
+        const bool cancelled = request->cancelled.load(std::memory_order_acquire);
+        const auto now       = Clock::now();
+        if (cancelled || now >= request->deadline) {
+            if (cancelled) {
+                ++cumulative_stats_.waiting_cancelled_requests;
+            } else {
+                ++cumulative_stats_.waiting_expired_requests;
+            }
+            cumulative_stats_.waiting_abandoned_seconds +=
+                std::chrono::duration<double>(now - request->submitted).count();
+        }
         scheduler_.on_waiting_removed(request->id);
     }
 

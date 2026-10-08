@@ -358,6 +358,8 @@ Engine's per-unit totals and advance during a request rather than at its complet
 | `ninfer:draft_tokens_total` | counter | speculative draft tokens proposed |
 | `ninfer:draft_accepted_tokens_total` | counter | speculative draft tokens accepted |
 | `ninfer:context_selections_total{source}` | counter | admissions by the context-cache source they started from: `root` (a miss, full prefill), `private_endpoint`, `private_turn_closure`, `private_response_replay`, `private_long_anchor`, `shared_stable_prefix`. Hit rate is `1 - root / sum` |
+| `ninfer:waiting_cancelled_requests_total`, `ninfer:waiting_expired_requests_total`, `ninfer:waiting_abandoned_seconds_total` | counter | requests the client cancelled, or the pending timeout expired, before admission, and the total time they had waited (a client that gives up after 60 s shows up here) |
+| `ninfer:cancelled_prefills_total`, `ninfer:cancelled_prefill_computed_tokens_total`, `ninfer:cancelled_prefills_retained_total`, `ninfer:cancelled_prefill_retained_tokens_total` | counter | requests cancelled while prefilling, the prompt tokens they had computed, how many kept a checkpoint a retry resumes from (see `--progress-anchor-tokens`) and the context depth of those checkpoints |
 | `ninfer:context_pressure_events_total{event}` | counter | what pressure planning did to inactive owners: `private_owner_evicted`, `private_owner_degraded`, `shared_owner_evicted`, `shared_owner_degraded`, `checkpoint_dropped` |
 | `ninfer:context_pressure_searches_total{result}` | counter | pressure searches: `started`, `budget_exhausted`, `maximal_fallback` |
 | `ninfer:context_transfer_bytes_total{object,direction}` | counter | bytes moved between Device and Host for `state`, `main_kv` and `backend_kv`, `d2h` or `h2d` |

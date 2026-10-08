@@ -46,6 +46,29 @@ void append_sample(std::string& out, std::string_view name, std::string_view lab
 // Context-cache series from the Engine's live RuntimeStats. Selections count admissions by the
 // source they started from: `root` is a miss (full prefill from token zero), every other source is
 // a reuse. Pressure events are what the planner did to inactive owners to make room.
+void append_abandoned_requests(std::string& out, const ninfer::RuntimeStats& live) {
+    append_metric(out, "ninfer:waiting_cancelled_requests_total", "counter",
+                  "Requests the client cancelled while they waited for admission.",
+                  live.waiting_cancelled_requests);
+    append_metric(out, "ninfer:waiting_expired_requests_total", "counter",
+                  "Requests that hit the pending timeout before admission.",
+                  live.waiting_expired_requests);
+    append_metric(out, "ninfer:waiting_abandoned_seconds_total", "counter",
+                  "Time cancelled and expired requests had waited before they left the queue.",
+                  live.waiting_abandoned_seconds);
+    append_metric(out, "ninfer:cancelled_prefills_total", "counter",
+                  "Requests cancelled while their prompt was prefilling.", live.cancelled_prefills);
+    append_metric(out, "ninfer:cancelled_prefill_computed_tokens_total", "counter",
+                  "Prompt tokens those requests had computed when they were cancelled.",
+                  live.cancelled_prefill_computed_tokens);
+    append_metric(out, "ninfer:cancelled_prefills_retained_total", "counter",
+                  "Cancelled prefills that kept a checkpoint a retry can resume from.",
+                  live.cancelled_prefills_retained);
+    append_metric(out, "ninfer:cancelled_prefill_retained_tokens_total", "counter",
+                  "Tokens of context held by the checkpoints cancelled prefills kept.",
+                  live.cancelled_prefill_retained_tokens);
+}
+
 void append_context_cache(std::string& out, const ninfer::RuntimeStats& live) {
     append_family_header(out, "ninfer:context_selections_total", "counter",
                          "Admissions by the context-cache source they started from; root is a "
@@ -162,6 +185,7 @@ std::string ServeMetrics::render(std::uint32_t max_concurrency, const ninfer::Ru
     append_metric(out, "llamacpp:requests_deferred", "gauge", "Number of requests deferred.",
                   admitted - processing);
 
+    append_abandoned_requests(out, live);
     append_context_cache(out, live);
 
     const std::lock_guard lock(mutex_);
