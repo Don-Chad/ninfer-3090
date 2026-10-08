@@ -2886,8 +2886,6 @@ private:
         return context;
     }
 
-    // Binds the retained slot's session file, usage record and digest once `finish` has catalogued
-    // a continuation, for both a completed request and a cancelled prefill that kept its anchors.
     // Output tokens left in a request's budget at which the next chunk of its output is reserved,
     // and the size of that chunk. The headroom covers the widest round (draft window included).
     static constexpr std::uint32_t kReservationHeadroom = 128;
@@ -2930,6 +2928,8 @@ private:
         }
     }
 
+    // Binds the retained slot's session file, usage record and digest once `finish` has catalogued
+    // a continuation, for both a completed request and a cancelled prefill that kept its anchors.
     void record_catalogued_publication(const std::shared_ptr<Request>& request,
                                        FinishDisposition disposition,
                                        const CatalogContext& catalog, bool has_endpoint) {
