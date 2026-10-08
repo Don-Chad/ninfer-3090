@@ -123,7 +123,7 @@ std::string serve_usage_text(const char* argv0) {
            "       --kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom\n"
-           "       --max-prefill-lanes N (default 1, at most --max-concurrency) lets that many requests "
+           "       --max-prefill-lanes N (default 2 when --max-concurrency is at least 3, else 1; at most --max-concurrency) lets that many requests "
            "prefill at once: each prefill unit goes to the lane with the shortest remaining prompt "
            "suffix, so a short or prefix-cached prompt is not stuck behind a very long one; the KV "
            "capacity must hold the long prompt and the short ones together. A lane passed over "
