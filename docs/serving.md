@@ -1093,7 +1093,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--max-pending-requests N` | additional requests allowed to wait for admission | `16` |
 | `--pending-timeout-ms N` | maximum preparation-plus-admission wait | `600000` |
 | `--prefill-chunk N` | text-prefill chunk | `1024` |
-| `--max-prefill-lanes N` | requests that may prefill at once, at most `--max-concurrency`; each prefill unit goes to the lane with the shortest remaining prompt suffix, so short and prefix-cached prompts are not stuck behind a long one (see below) | `1` |
+| `--max-prefill-lanes N` | requests that may prefill at once, at most `--max-concurrency`; each prefill unit goes to the lane with the shortest remaining prompt suffix, so short and prefix-cached prompts are not stuck behind a long one (see below) | `1`, or `2` with three or more `--max-concurrency` lanes |
 | `--prefill-max-skip N` | prefill units a lane may be passed over before it is served ahead of shorter lanes | `8` |
 | `--decode-rounds-per-prefill N` | decode rounds run after each prefill unit while other requests generate; `0` means `--prefill-chunk` / 64 (see below) | `0` |
 | `--log-stats-interval-ms N` | aggregate throughput report interval; `0` disables it | `5000` |
@@ -1325,10 +1325,14 @@ checkpoint for its first write, or when capacity cannot hold the anchor, is disc
 anchor occupies one cached state slot, which under pressure the context cache may evict like any
 other retained checkpoint.
 
-By default one request owns the staged prefill at a time, so a very long prompt holds the lane for
+With fewer than three lanes (or `--max-prefill-lanes 1`) one request owns the staged prefill at a time,
+so a very long prompt holds the lane for
 its whole prefill (340-370 s for a 200k-token prompt on an RTX 3090 with `--kv-dtype rk4v4` and
 chunk 512, about 550-590 tok/s against ~1,100 tok/s at shallow context) and a prefix-cached request
-behind it, which still needs one prefill unit, waits it out. `--max-prefill-lanes N` lets up to N
+behind it, which still needs one prefill unit, waits it out: with three lanes, a short request
+that arrived three seconds into a cold ~66k-token prefill finished after 112 s with one prefill lane
+and after 1.8 s with two (RTX 3090, `--kv-dtype rk4v4`, one run each). With fewer lanes than that, the
+other lane may simply be busy decoding. `--max-prefill-lanes N` lets up to N
 requests hold a staged prefill. Each prefill unit then goes to the lane with the shortest remaining
 prompt suffix (a lane's first unit always runs first), and a lane passed over `--prefill-max-skip`
 units is served before any shorter one, so the long prompt is slowed but never starved. A short
