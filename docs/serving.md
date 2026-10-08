@@ -357,6 +357,13 @@ Engine's per-unit totals and advance during a request rather than at its complet
 | `ninfer:prefix_cache_hit_tokens_total` | counter | prompt tokens served from the context cache |
 | `ninfer:draft_tokens_total` | counter | speculative draft tokens proposed |
 | `ninfer:draft_accepted_tokens_total` | counter | speculative draft tokens accepted |
+| `ninfer:context_selections_total{source}` | counter | admissions by the context-cache source they started from: `root` (a miss, full prefill), `private_endpoint`, `private_turn_closure`, `private_response_replay`, `private_long_anchor`, `shared_stable_prefix`. Hit rate is `1 - root / sum` |
+| `ninfer:context_pressure_events_total{event}` | counter | what pressure planning did to inactive owners: `private_owner_evicted`, `private_owner_degraded`, `shared_owner_evicted`, `shared_owner_degraded`, `checkpoint_dropped` |
+| `ninfer:context_pressure_searches_total{result}` | counter | pressure searches: `started`, `budget_exhausted`, `maximal_fallback` |
+| `ninfer:context_transfer_bytes_total{object,direction}` | counter | bytes moved between Device and Host for `state`, `main_kv` and `backend_kv`, `d2h` or `h2d` |
+| `ninfer:context_transfer_seconds_total` | counter | context transfer time admissions waited for |
+| `ninfer:context_historical_fork_hits_total` | counter | admissions that forked a historical checkpoint rather than the latest endpoint |
+| `ninfer:context_occupancy{pool}` | gauge | `device_state_slots`, `host_state_slots`, `device_main_kv_pages`, `device_backend_kv_pages`, `host_kv_bytes` in use |
 
 ## OpenAI Chat Completions
 

@@ -46,6 +46,45 @@ int main() {
                           idle.find("# TYPE llamacpp:requests_processing gauge") != std::string::npos,
                       "metric families are missing their Prometheus TYPE");
 
+    live.root_selections                 = 7;
+    live.private_endpoint_selections     = 31;
+    live.shared_stable_prefix_selections = 2;
+    live.pressure_private_owners_evicted = 4;
+    live.pressure_checkpoints_dropped    = 1;
+    live.pressure_searches               = 9;
+    live.main_kv_h2d_bytes               = 123456;
+    live.state_d2h_bytes                 = 777;
+    live.host_kv_occupied_bytes          = 1U << 20;
+    live.device_state_occupied_slots     = 3;
+    const std::string cache              = metrics.render(2, live, 0);
+    failures += check(has_sample(cache, "ninfer:context_selections_total{source=\"root\"} 7") &&
+                          has_sample(cache, "ninfer:context_selections_total{source=\"private_"
+                                            "endpoint\"} 31") &&
+                          has_sample(cache, "ninfer:context_selections_total{source=\"shared_"
+                                            "stable_prefix\"} 2") &&
+                          has_sample(cache, "ninfer:context_selections_total{source=\"private_"
+                                            "long_anchor\"} 0"),
+                      "context selections are not reported per source");
+    failures += check(has_sample(cache, "ninfer:context_pressure_events_total{event=\"private_"
+                                        "owner_evicted\"} 4") &&
+                          has_sample(cache, "ninfer:context_pressure_events_total{event="
+                                            "\"checkpoint_dropped\"} 1") &&
+                          has_sample(cache, "ninfer:context_pressure_searches_total{result="
+                                            "\"started\"} 9"),
+                      "pressure events are not reported");
+    failures += check(has_sample(cache, "ninfer:context_transfer_bytes_total{object=\"main_kv\","
+                                        "direction=\"h2d\"} 123456") &&
+                          has_sample(cache, "ninfer:context_transfer_bytes_total{object=\"state\","
+                                            "direction=\"d2h\"} 777"),
+                      "context transfer bytes are not reported by object and direction");
+    failures += check(has_sample(cache, "ninfer:context_occupancy{pool=\"host_kv_bytes\"} 1048576") &&
+                          has_sample(cache, "ninfer:context_occupancy{pool=\"device_state_slots\"} 3"),
+                      "context occupancy gauges are not reported");
+    failures += check(cache.find("# TYPE ninfer:context_selections_total counter") !=
+                              std::string::npos &&
+                          cache.find("# TYPE ninfer:context_occupancy gauge") != std::string::npos,
+                      "context-cache families are missing their Prometheus TYPE");
+
     // Admitted requests beyond the lane count are deferred, not processing.
     const std::string busy = metrics.render(2, live, 5);
     failures += check(has_sample(busy, "llamacpp:requests_processing 2") &&
