@@ -281,6 +281,14 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
     engine_options.speculative              = options.speculative;
     engine_options.context_cache            = options.context_cache;
     engine_options.slot_auto_save.enabled   = options.auto_save_evicted;
+    engine_options.context_store.directory  = options.context_store_path;
+    engine_options.context_store.max_bytes =
+        options.context_store_max_gib ? *options.context_store_max_gib << 30U : 0U;
+    engine_options.context_store.ttl = std::chrono::hours(options.context_store_ttl_hours);
+    engine_options.context_store.idle_persist =
+        std::chrono::seconds(options.context_store_idle_seconds);
+    engine_options.context_store.restore_budget =
+        std::chrono::seconds(options.context_store_restore_seconds);
     engine_options.devices                  = options.devices;
     engine_options.stage_layers             = options.stage_layers;
     engine_options.context_cost.preset_path = options.context_cost_presets;

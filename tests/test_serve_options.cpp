@@ -424,6 +424,41 @@ int main() {
                           std::string::npos,
                       "serve help omits --slot-save-path");
 
+    // The context store is off unless a directory is named; its tuning flags need the directory.
+    const ServeOptions no_store = parse({"ninfer-serve", "model.ninfer"});
+    failures += check(no_store.context_store_path.empty() && !no_store.context_store_max_gib &&
+                          no_store.context_store_ttl_hours == 24 * 7 &&
+                          no_store.context_store_idle_seconds == 30 &&
+                          no_store.context_store_restore_seconds == 120,
+                      "the context store was on by default or its defaults changed");
+    const ServeOptions store = parse({"ninfer-serve", "model.ninfer", "--context-store", "cache",
+                                      "--context-store-max-gib", "40", "--context-store-ttl-hours",
+                                      "48", "--context-store-idle-seconds", "10",
+                                      "--context-store-restore-seconds", "0"});
+    failures += check(store.context_store_path == "cache" && store.context_store_max_gib == 40 &&
+                          store.context_store_ttl_hours == 48 &&
+                          store.context_store_idle_seconds == 10 &&
+                          store.context_store_restore_seconds == 0,
+                      "context store options did not reach serving options");
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--context-store-max-gib", "4"}),
+                      "--context-store-max-gib was accepted without --context-store");
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--context-store-idle-seconds", "5"}),
+                      "--context-store-idle-seconds was accepted without --context-store");
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--context-store", ""}),
+                      "an empty --context-store was accepted");
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--context-store", "cache",
+                                "--context-store-max-gib", "0"}),
+                      "a zero --context-store-max-gib was accepted");
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--context-store", "cache",
+                                "--slot-save-path", "sessions", "--auto-save-evicted"}),
+                      "--context-store was accepted together with --auto-save-evicted");
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--no-prefix-reuse",
+                                "--context-store", "cache"}),
+                      "--context-store was accepted with prefix reuse disabled");
+    failures += check(serve_usage_text("ninfer-serve").find("--context-store DIR") !=
+                          std::string::npos,
+                      "serve help omits --context-store");
+
     failures += check(!parse({"ninfer-serve", "model.ninfer"}).auto_prefix_grid,
                       "automatic prefix grid was on without --auto-prefix-grid");
     failures +=

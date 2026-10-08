@@ -69,9 +69,13 @@ public:
         std::string id;      // lowercase hex, 1-64 characters
         std::string binding; // identity of the model and configuration that produced the image
         std::uint32_t tokens = 0;
+        // The first entry is the image's endpoint (the deepest state it can resume from).
         std::vector<CheckpointKey> checkpoints;
-        // The image this one replaces, if any; removed once this one is durable.
-        std::optional<std::string> supersedes;
+        // The image's own prefix digest at every token frontier 0..tokens (not stored). An older
+        // image of the same model whose endpoint key this reproduces is an earlier state of the
+        // same conversation: this image contains everything it does, so once this one is durable
+        // the older one is removed instead of being kept as a near-duplicate until it ages out.
+        std::span<const std::array<std::uint64_t, 2>> prefix_digests;
     };
 
     struct Info {
@@ -103,6 +107,7 @@ public:
         std::uint64_t corrupt_removed   = 0;
         std::uint64_t evicted_for_space = 0;
         std::uint64_t expired           = 0;
+        std::uint64_t superseded        = 0;
     };
 
     // Creates the directory layout, reads the manifests found there and removes whatever is

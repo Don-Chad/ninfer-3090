@@ -97,6 +97,20 @@ int main() {
                           has_sample(abandoned, "ninfer:cancelled_prefill_retained_tokens_total 16384"),
                       "abandoned and cancelled request series are not reported");
 
+    live.context_store_images        = 5;
+    live.context_store_used_bytes    = 123456789;
+    live.context_store_writes        = 9;
+    live.context_store_bytes_written = 1000;
+    live.context_store_bytes_reused  = 4000;
+    live.context_store_restored      = 3;
+    const std::string store          = metrics.render(2, live, 0);
+    failures += check(has_sample(store, "ninfer:context_store_images 5") &&
+                          has_sample(store, "ninfer:context_store_used_bytes 123456789") &&
+                          has_sample(store, "ninfer:context_store_writes_total 9") &&
+                          has_sample(store, "ninfer:context_store_bytes_reused_total 4000") &&
+                          has_sample(store, "ninfer:context_store_restored_sessions 3"),
+                      "context store series are not reported");
+
     // Admitted requests beyond the lane count are deferred, not processing.
     const std::string busy = metrics.render(2, live, 5);
     failures += check(has_sample(busy, "llamacpp:requests_processing 2") &&

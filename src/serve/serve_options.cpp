@@ -85,7 +85,10 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-long-anchors-per-continuation N] [--auto-long-anchors N] "
            "[--progress-anchor-tokens N] "
            "[--max-cache-markers-per-request N] "
-           "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] [--no-exit-on-engine-failure] "
+           "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] "
+           "[--context-store DIR [--context-store-max-gib N] [--context-store-ttl-hours N] "
+           "[--context-store-idle-seconds N] [--context-store-restore-seconds N]] "
+           "[--no-exit-on-engine-failure] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|rk8v4|rk4v4|nvfp4|k8v4] "
            "[--spec mtp|dflash|dflash2 --draft-tokens N] "
@@ -162,6 +165,15 @@ std::string serve_usage_text(const char* argv0) {
            "       --auto-save-evicted writes a retained session back to the slot file it was last "
            "saved to or restored from before an involuntary eviction destroys it (requires "
            "--slot-save-path; erase never saves)\n"
+           "       --context-store DIR keeps retained sessions on disk so a restart or crash does "
+           "not lose the context cache: a session is written when evicted, when idle, and at "
+           "shutdown, and the most recently used ones are restored at start-up. Only changed "
+           "pieces of a session are written. Off by default; replaces --auto-save-evicted\n"
+           "       --context-store-max-gib N bounds the store (default: half the volume's free "
+           "space); --context-store-ttl-hours N removes sessions unused that long (default 168, "
+           "0 keeps them until space is needed); --context-store-idle-seconds N writes a session "
+           "unused that long in the background (default 30, 0 writes only on eviction and "
+           "shutdown); --context-store-restore-seconds N bounds start-up restoring (default 120)\n"
            "       --no-exit-on-engine-failure keeps the process alive when the Engine latches "
            "unavailable after repeated worker failures; by default it logs FATAL and exits with "
            "status 3 after a short grace period so a supervisor can restart it\n"
@@ -262,6 +274,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     bool device_explicit             = false;
     bool context_capacity_explicit   = false;
     bool host_sizing_explicit        = false;
+    bool context_store_tuning        = false;
     bool host_reserve_explicit       = false;
     bool host_max_explicit           = false;
     bool host_percent_explicit       = false;
@@ -505,6 +518,31 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             }
         } else if (arg == "--auto-save-evicted") {
             options.auto_save_evicted = true;
+        } else if (arg == "--context-store") {
+            options.context_store_path = require_value("--context-store");
+            if (options.context_store_path.empty()) {
+                throw std::invalid_argument("--context-store must not be empty");
+            }
+        } else if (arg == "--context-store-max-gib") {
+            const std::uint64_t gib =
+                parse_u64(require_value("--context-store-max-gib"), "context-store-max-gib");
+            if (gib == 0 || gib > (std::numeric_limits<std::uint64_t>::max() >> 30)) {
+                throw std::invalid_argument("--context-store-max-gib is out of range");
+            }
+            options.context_store_max_gib = gib;
+        } else if (arg == "--context-store-ttl-hours") {
+            options.context_store_ttl_hours = static_cast<std::uint32_t>(parse_nonnegative_int(
+                require_value("--context-store-ttl-hours"), "context-store-ttl-hours"));
+            context_store_tuning = true;
+        } else if (arg == "--context-store-idle-seconds") {
+            options.context_store_idle_seconds = static_cast<std::uint32_t>(parse_nonnegative_int(
+                require_value("--context-store-idle-seconds"), "context-store-idle-seconds"));
+            context_store_tuning = true;
+        } else if (arg == "--context-store-restore-seconds") {
+            options.context_store_restore_seconds = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--context-store-restore-seconds"),
+                                      "context-store-restore-seconds"));
+            context_store_tuning = true;
         } else if (arg == "--no-exit-on-engine-failure") {
             options.exit_on_engine_failure = false;
         } else if (arg == "--auto-prefix-grid") {
@@ -651,6 +689,19 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (options.auto_save_evicted && options.slot_save_path.empty()) {
         throw std::invalid_argument("--auto-save-evicted requires --slot-save-path");
+    }
+    if (options.context_store_path.empty() &&
+        (context_store_tuning || options.context_store_max_gib)) {
+        throw std::invalid_argument("--context-store-* options require --context-store");
+    }
+    if (!options.context_store_path.empty()) {
+        if (options.auto_save_evicted) {
+            throw std::invalid_argument(
+                "--context-store replaces --auto-save-evicted; use only one");
+        }
+        if (!options.allow_prefix_reuse) {
+            throw std::invalid_argument("--no-prefix-reuse cannot be combined with --context-store");
+        }
     }
     if (options.port <= 0 || options.port > 65535) {
         throw std::invalid_argument("--port must be in [1,65535]");

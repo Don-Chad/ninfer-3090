@@ -246,14 +246,28 @@ void test_supersede_and_replace() {
     TempDirectory directory;
     ContextStore store(options_for(directory.path()));
     const auto kv = pseudo_random(3000, 1);
+    // Image 01 ends at frontier 99, with the key {0x1111, 0x2222} that describe() gives it.
     (void)store.put(describe("01"), concat({pseudo_random(30, 1), kv}),
                     std::array{ContextStore::Region{30, 3000}});
-    auto next       = describe("02", 120);
-    next.supersedes = "01";
+    // An unrelated image whose prefix digests do not reproduce that key supersedes nothing.
+    std::vector<std::array<std::uint64_t, 2>> unrelated(130, {7, 7});
+    auto stranger           = describe("03", 120);
+    stranger.prefix_digests = unrelated;
+    (void)store.put(stranger, concat({pseudo_random(40, 5), pseudo_random(500, 6)}),
+                    std::array{ContextStore::Region{40, 500}});
+    check(store.find("01") && store.find("03"), "an unrelated image superseded another");
+
+    // The next state of the same conversation reproduces 01's endpoint key at frontier 99.
+    std::vector<std::array<std::uint64_t, 2>> digests(130, {5, 5});
+    digests[99]             = {0x1111, 0x2222};
+    auto next               = describe("02", 120);
+    next.prefix_digests     = digests;
     (void)store.put(next, concat({pseudo_random(40, 2), kv, pseudo_random(1000, 3)}),
                     std::array{ContextStore::Region{40, 4000}});
     check(!store.find("01") && store.find("02"), "a superseded image was kept");
+    check(store.stats().superseded == 1, "supersession was not counted");
     check(store.load("02").has_value(), "the superseding image lost chunks it shared");
+    (void)store.erase("03");
 
     // Replacing an id keeps its shared chunks and drops the ones only the old image used.
     (void)store.put(describe("02", 130), concat({pseudo_random(40, 9), pseudo_random(500, 5)}),

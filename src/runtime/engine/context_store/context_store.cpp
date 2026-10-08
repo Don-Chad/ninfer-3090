@@ -608,9 +608,23 @@ ContextStore::PutResult ContextStore::put(const Description& description,
         entries_.emplace(description.id, std::move(entry));
         if (had_previous) { release_references(replaced); }
         write_used(description.id, now);
-        if (description.supersedes && *description.supersedes != description.id &&
-            valid_id(*description.supersedes)) {
-            remove_entry_locked(*description.supersedes, false);
+        if (!description.prefix_digests.empty()) {
+            std::vector<std::string> superseded;
+            for (const auto& [other_id, other] : entries_) {
+                if (other_id == description.id || other.info.binding != description.binding ||
+                    other.info.tokens > description.tokens || other.info.checkpoints.empty()) {
+                    continue;
+                }
+                const CheckpointKey& endpoint = other.info.checkpoints.front();
+                if (endpoint.frontier < description.prefix_digests.size() &&
+                    description.prefix_digests[endpoint.frontier] == endpoint.digests) {
+                    superseded.push_back(other_id);
+                }
+            }
+            for (const std::string& other_id : superseded) {
+                remove_entry_locked(other_id, false);
+                ++stats_.superseded;
+            }
         }
         ++stats_.puts;
         stats_.bytes_written += result.chunk_bytes_written;

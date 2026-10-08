@@ -101,6 +101,7 @@ public:
         slot_session_paths_.resize(resources_.catalog_capacity());
         slot_digest_cache_.resize(resources_.catalog_capacity());
         slot_usage_.resize(resources_.catalog_capacity());
+        slot_persisted_.resize(resources_.catalog_capacity());
         resources_.set_eviction_observer(
             [this](std::uint32_t slot, const typename ModelContract::ContinuationHandle& handle) {
                 spill_catalog_slot(slot, handle);
@@ -328,10 +329,23 @@ public:
         return snapshot;
     }
 
+    // A cell that holds no session and is not reserved by a request, for restoring into.
+    [[nodiscard]] std::optional<std::uint32_t> first_vacant_slot() const {
+        std::scoped_lock lock(execution_mutex_);
+        for (std::uint32_t slot = 0; slot < resources_.catalog_capacity(); ++slot) {
+            if (resources_.catalog_state(slot) == ResourceManagement::CatalogState::Vacant) {
+                return slot;
+            }
+        }
+        return std::nullopt;
+    }
+
+    // `already_durable` marks a session restored from the context store: it is by definition
+    // already stored, so the store is not written again until the session changes.
     [[nodiscard]] std::pair<std::uint32_t, std::string>
     restore_slot(std::uint32_t slot, std::span<const std::uint8_t> snapshot,
                  std::string_view model_binding, std::string_view session_path,
-                 const std::function<void()>& claim) {
+                 const std::function<void()>& claim, bool already_durable = false) {
         std::scoped_lock lock(execution_mutex_);
         device_.bind_to_current_thread();
         if (!context_cache_enabled_) {
@@ -374,6 +388,10 @@ public:
         bind_slot_session(slot, session_path);
         // A restored session starts a new usage record: how it was used before the restart is not known.
         slot_usage_[slot] = SlotUsage{.last_used_unix_ms = unix_time_ms()};
+        if (already_durable) {
+            const auto restored_view = resources_.catalog_slot(slot);
+            slot_persisted_[slot]    = {restored_view.id, restored_view.revision};
+        }
         claim();
         publish_runtime_stats();
         return {tokens, std::move(digest)};
@@ -419,6 +437,52 @@ public:
         std::scoped_lock lock(execution_mutex_);
         eviction_model_binding_ = std::move(model_binding);
         eviction_sink_          = std::move(sink);
+    }
+
+    // The durable context store. Every session about to be evicted is handed to `sink` whether or
+    // not it is bound to a slot file; a retained session unused for `idle` is handed over in the
+    // background (only when no request is waiting or prefilling and `ready` agrees, so a slow disk
+    // cannot build a backlog or delay admission). `ready` and `sink` are called with the execution
+    // mutex held and must not block. `sink` returns whether the snapshot was accepted.
+    void set_context_store(std::string model_binding,
+                           std::function<bool(typename ModelContract::SessionSnapshot&&)> sink,
+                           std::function<bool()> ready, std::chrono::milliseconds idle) {
+        std::scoped_lock lock(execution_mutex_);
+        eviction_model_binding_ = std::move(model_binding);
+        store_sink_             = std::move(sink);
+        store_ready_            = std::move(ready);
+        store_idle_ms_.store(idle.count(), std::memory_order_release);
+    }
+
+    // Hands every retained session that is not already stored in its current state to `write`,
+    // most recently used first, until `deadline`. For shutdown: `write` may block. Returns the
+    // number written.
+    std::uint32_t persist_all(
+        const std::function<bool(typename ModelContract::SessionSnapshot&&)>& write,
+        Clock::time_point deadline) {
+        std::scoped_lock lock(execution_mutex_);
+        device_.bind_to_current_thread();
+        std::vector<std::uint32_t> order;
+        for (std::uint32_t slot = 0; slot < resources_.catalog_capacity(); ++slot) {
+            order.push_back(slot);
+        }
+        std::sort(order.begin(), order.end(), [&](std::uint32_t left, std::uint32_t right) {
+            return slot_usage_[left].last_used_unix_ms > slot_usage_[right].last_used_unix_ms;
+        });
+        std::uint32_t written = 0;
+        for (const std::uint32_t slot : order) {
+            if (Clock::now() >= deadline) { break; }
+            if (!persistable_slot(slot)) { continue; }
+            const auto view = resources_.catalog_slot(slot);
+            try {
+                if (write(instance_.program->save_continuation(*view.handle,
+                                                               eviction_model_binding_))) {
+                    slot_persisted_[slot] = {view.id, view.revision};
+                    ++written;
+                }
+            } catch (...) {}
+        }
+        return written;
     }
 
     void reset_memory_peaks() noexcept {
@@ -750,6 +814,21 @@ private:
     // eviction: it costs the client one cold prefill, as without the feature.
     void spill_catalog_slot(std::uint32_t slot,
                             const typename ModelContract::ContinuationHandle& handle) noexcept {
+        if (store_sink_) {
+            // The durable store takes every session about to be destroyed, bound to a slot file
+            // or not, unless it already holds the session in its current state.
+            const auto view = resources_.catalog_slot(slot);
+            if (slot < slot_persisted_.size() &&
+                slot_persisted_[slot] != PersistedState{view.id, view.revision}) {
+                try {
+                    if (store_sink_(
+                            instance_.program->save_continuation(handle, eviction_model_binding_))) {
+                        slot_persisted_[slot] = {view.id, view.revision};
+                    }
+                } catch (...) {}
+            }
+            return;
+        }
         if (!eviction_sink_ || slot >= slot_session_paths_.size() ||
             slot_session_paths_[slot].empty()) {
             return;
@@ -764,6 +843,67 @@ private:
 
     void clear_slot_session(std::uint32_t slot) noexcept {
         if (slot < slot_session_paths_.size()) { slot_session_paths_[slot].clear(); }
+    }
+
+    // A retained session in a cell nothing is using, that the context store does not yet hold in
+    // its current state, and that can be snapshotted now.
+    [[nodiscard]] bool persistable_slot(std::uint32_t slot) const {
+        if (slot >= slot_persisted_.size() || instance_.program->has_context_transaction() ||
+            resources_.context_transaction_kind()) {
+            return false;
+        }
+        const auto view = resources_.catalog_slot(slot);
+        return view.state == ResourceManagement::CatalogState::Catalogued &&
+               view.handle != nullptr && !view.active_edge &&
+               slot_persisted_[slot] != PersistedState{view.id, view.revision};
+    }
+
+    // Writes at most one idle retained session to the context store. Called by the worker between
+    // units; it does nothing while a request is waiting for admission, being admitted or
+    // prefilling, so keeping the store current never delays a request, and it stays at least a
+    // second apart so a long scan or a slow disk is not a per-unit cost.
+    void persist_idle_session() noexcept {
+        const std::int64_t idle_limit_ms = store_idle_ms_.load(std::memory_order_acquire);
+        if (!store_sink_ || idle_limit_ms <= 0) { return; }
+        const auto now = Clock::now();
+        if (now - last_persist_scan_ < std::chrono::seconds(1)) { return; }
+        last_persist_scan_ = now;
+        try {
+            if (materializing_ || (store_ready_ && !store_ready_())) { return; }
+            {
+                std::lock_guard lock(queue_mutex_);
+                if (!pending_.empty()) { return; }
+            }
+            for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+                if (slots_[lane] != nullptr && !slots_[lane]->is_decode_ready()) { return; }
+            }
+            const std::uint64_t idle_ms  = static_cast<std::uint64_t>(idle_limit_ms);
+            const std::uint64_t unix_now = unix_time_ms();
+            std::optional<std::uint32_t> chosen;
+            std::uint32_t chosen_depth = 0;
+            for (std::uint32_t slot = 0; slot < resources_.catalog_capacity(); ++slot) {
+                if (!persistable_slot(slot)) { continue; }
+                const std::uint64_t last_used = slot_usage_[slot].last_used_unix_ms;
+                if (unix_now < last_used + idle_ms) { continue; }
+                // The deepest first: it is the most expensive to lose.
+                const std::uint32_t depth = instance_.program->continuation_depth(
+                    *resources_.catalog_slot(slot).handle);
+                if (chosen && depth <= chosen_depth) { continue; }
+                chosen       = slot;
+                chosen_depth = depth;
+            }
+            if (!chosen) { return; }
+            const auto view = resources_.catalog_slot(*chosen);
+            if (store_sink_(
+                    instance_.program->save_continuation(*view.handle, eviction_model_binding_))) {
+                slot_persisted_[*chosen] = {view.id, view.revision};
+            } else {
+                // The write queue is full or the write failed: try again later, not on every unit.
+                last_persist_scan_ = now + std::chrono::seconds(4);
+            }
+        } catch (...) {
+            last_persist_scan_ = now + std::chrono::seconds(4);
+        }
     }
 
     [[nodiscard]] static std::uint64_t unix_time_ms() noexcept {
@@ -2492,7 +2632,14 @@ private:
                         active = active || slots_[lane] != nullptr;
                     }
                     if (!active) {
-                        queue_cv_.wait(lock, [&] { return stopping_ || !pending_.empty(); });
+                        const auto ready = [&] { return stopping_ || !pending_.empty(); };
+                        if (store_idle_ms_.load(std::memory_order_acquire) > 0) {
+                            // An idle Engine still has retained sessions to keep current in the
+                            // store, so wake once a second to look for them.
+                            queue_cv_.wait_for(lock, std::chrono::seconds(1), ready);
+                        } else {
+                            queue_cv_.wait(lock, ready);
+                        }
                     }
                 }
                 if (stopping_) {
@@ -2528,6 +2675,8 @@ private:
                     unit = "boundary";
                     membership = scheduler_.build_round_membership(slots_, max_concurrency_);
                 }
+
+                persist_idle_session();
 
                 // Cancellation is sampled once for the execution unit. A request arriving while
                 // the GPU unit is in flight is observed at the next worker boundary; commit does
@@ -2744,11 +2893,28 @@ private:
         }
     }
 
+    // The (entry id, revision) of the session in each cell as the context store last received it. A
+    // cell whose current entry matches is already durable; any change to the session (a new turn
+    // consumes the entry and publishes a new one) makes it differ.
+    struct PersistedState {
+        std::uint64_t id       = 0;
+        std::uint64_t revision = 0;
+
+        [[nodiscard]] friend constexpr bool operator==(const PersistedState&,
+                                                       const PersistedState&) noexcept = default;
+    };
+
     std::vector<std::string> slot_session_paths_;
     std::vector<SlotDigestCacheEntry> slot_digest_cache_;
     std::vector<SlotUsage> slot_usage_;
+    std::vector<PersistedState> slot_persisted_;
     std::string eviction_model_binding_;
     std::function<void(std::string, typename ModelContract::SessionSnapshot&&)> eviction_sink_;
+    std::function<bool(typename ModelContract::SessionSnapshot&&)> store_sink_;
+    std::function<bool()> store_ready_;
+    // Read by the worker before it takes the execution mutex, hence atomic.
+    std::atomic<std::int64_t> store_idle_ms_{0};
+    Clock::time_point last_persist_scan_{};
     bool stopping_ = false;
     bool failed_   = false;
     std::thread worker_;

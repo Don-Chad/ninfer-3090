@@ -144,6 +144,40 @@ void append_context_cache(std::string& out, const ninfer::RuntimeStats& live) {
                   static_cast<std::uint64_t>(live.host_kv_occupied_bytes));
 }
 
+// The durable context store (--context-store); all zero when it is off.
+void append_context_store(std::string& out, const ninfer::RuntimeStats& live) {
+    append_metric(out, "ninfer:context_store_images", "gauge",
+                  "Sessions held by the context store.", live.context_store_images);
+    append_metric(out, "ninfer:context_store_used_bytes", "gauge",
+                  "Bytes of chunks and manifests held by the context store.",
+                  live.context_store_used_bytes);
+    append_metric(out, "ninfer:context_store_writes_total", "counter",
+                  "Sessions written to the context store.", live.context_store_writes);
+    append_metric(out, "ninfer:context_store_write_failures_total", "counter",
+                  "Context store writes that failed.", live.context_store_write_failures);
+    append_metric(out, "ninfer:context_store_dropped_total", "counter",
+                  "Sessions not written because the write queue was full.",
+                  live.context_store_dropped);
+    append_metric(out, "ninfer:context_store_bytes_written_total", "counter",
+                  "New chunk bytes written to the context store.",
+                  live.context_store_bytes_written);
+    append_metric(out, "ninfer:context_store_bytes_reused_total", "counter",
+                  "Chunk bytes a write found already stored and did not rewrite.",
+                  live.context_store_bytes_reused);
+    append_metric(out, "ninfer:context_store_evicted_total", "counter",
+                  "Sessions removed for space, age or because a newer state replaced them.",
+                  live.context_store_evicted);
+    append_metric(out, "ninfer:context_store_corrupt_total", "counter",
+                  "Sessions removed because they could not be read back intact.",
+                  live.context_store_corrupt);
+    append_metric(out, "ninfer:context_store_restored_sessions", "gauge",
+                  "Sessions restored into the cache at start-up.", live.context_store_restored);
+    append_metric(out, "ninfer:context_store_restored_bytes", "gauge",
+                  "Bytes of sessions restored at start-up.", live.context_store_restored_bytes);
+    append_metric(out, "ninfer:context_store_restore_seconds", "gauge",
+                  "Time spent restoring sessions at start-up.", live.context_store_restore_seconds);
+}
+
 } // namespace
 
 void ServeMetrics::record_done(const GenerationOutcome& outcome) {
@@ -187,6 +221,7 @@ std::string ServeMetrics::render(std::uint32_t max_concurrency, const ninfer::Ru
 
     append_abandoned_requests(out, live);
     append_context_cache(out, live);
+    append_context_store(out, live);
 
     const std::lock_guard lock(mutex_);
     append_metric(out, "ninfer:requests_total", "counter", "Requests completed with an outcome.",

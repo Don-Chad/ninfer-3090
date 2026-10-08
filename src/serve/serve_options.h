@@ -89,6 +89,14 @@ struct ServeOptions {
     // Spill an involuntarily evicted session back to the slot file it was last saved to or
     // restored from. Requires slot_save_path.
     bool auto_save_evicted = false;
+    // --context-store DIR: keep retained sessions on disk so a restart or crash does not lose the
+    // context cache. Empty disables it. The store replaces slot persistence for the same purpose.
+    std::filesystem::path context_store_path;
+    // --context-store-max-gib N: unset lets the Engine take half the volume's free space.
+    std::optional<std::uint64_t> context_store_max_gib;
+    std::uint32_t context_store_ttl_hours      = 24 * 7;
+    std::uint32_t context_store_idle_seconds   = 30;
+    std::uint32_t context_store_restore_seconds = 120;
     // Exit non-zero shortly after the Engine latches unavailable after a worker failure, so a
     // supervisor restarts the process instead of leaving it holding VRAM and answering 503.
     bool exit_on_engine_failure = true;
