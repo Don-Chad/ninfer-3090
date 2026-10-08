@@ -289,6 +289,8 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
         std::chrono::seconds(options.context_store_idle_seconds);
     engine_options.context_store.restore_budget =
         std::chrono::seconds(options.context_store_restore_seconds);
+    engine_options.context_store.flush_budget =
+        std::chrono::seconds(options.context_store_flush_seconds);
     engine_options.devices                  = options.devices;
     engine_options.stage_layers             = options.stage_layers;
     engine_options.context_cost.preset_path = options.context_cost_presets;

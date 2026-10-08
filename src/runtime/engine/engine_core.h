@@ -443,14 +443,18 @@ public:
     // not it is bound to a slot file; a retained session unused for `idle` is handed over in the
     // background (only when no request is waiting or prefilling and `ready` agrees, so a slow disk
     // cannot build a backlog or delay admission). `ready` and `sink` are called with the execution
-    // mutex held and must not block. `sink` returns whether the snapshot was accepted.
+    // mutex held and must not block. `sink` returns whether the snapshot was accepted into the
+    // write queue, not whether it reached disk; `failures` is a count of queued writes that
+    // failed, and when it grows every session is treated as not stored, so it is queued again.
     void set_context_store(std::string model_binding,
                            std::function<bool(typename ModelContract::SessionSnapshot&&)> sink,
-                           std::function<bool()> ready, std::chrono::milliseconds idle) {
+                           std::function<bool()> ready, std::chrono::milliseconds idle,
+                           std::function<std::uint64_t()> failures) {
         std::scoped_lock lock(execution_mutex_);
         eviction_model_binding_ = std::move(model_binding);
         store_sink_             = std::move(sink);
         store_ready_            = std::move(ready);
+        store_failures_         = std::move(failures);
         store_idle_ms_.store(idle.count(), std::memory_order_release);
     }
 
@@ -462,6 +466,7 @@ public:
         Clock::time_point deadline) {
         std::scoped_lock lock(execution_mutex_);
         device_.bind_to_current_thread();
+        forget_failed_store_writes();
         std::vector<std::uint32_t> order;
         for (std::uint32_t slot = 0; slot < resources_.catalog_capacity(); ++slot) {
             order.push_back(slot);
@@ -858,9 +863,21 @@ private:
                slot_persisted_[slot] != PersistedState{view.id, view.revision};
     }
 
+    // A write that was accepted into the queue and then failed left its session marked as stored.
+    // When the failure count has grown, every session is treated as not stored again.
+    bool forget_failed_store_writes() noexcept {
+        if (!store_failures_) { return false; }
+        const std::uint64_t failed = store_failures_();
+        if (failed == store_failures_seen_) { return false; }
+        store_failures_seen_ = failed;
+        std::fill(slot_persisted_.begin(), slot_persisted_.end(), PersistedState{});
+        return true;
+    }
+
     // Writes at most one idle retained session to the context store. Called by the worker between
     // units; it does nothing while a request is waiting for admission, being admitted or
-    // prefilling, so keeping the store current never delays a request, and it stays at least a
+    // prefilling, so keeping the store current does not delay a request that is already waiting (one
+    // that arrives while the snapshot is being taken waits for it), and it stays at least a
     // second apart so a long scan or a slow disk is not a per-unit cost.
     void persist_idle_session() noexcept {
         const std::int64_t idle_limit_ms = store_idle_ms_.load(std::memory_order_acquire);
@@ -869,6 +886,11 @@ private:
         if (now - last_persist_scan_ < std::chrono::seconds(1)) { return; }
         last_persist_scan_ = now;
         try {
+            if (forget_failed_store_writes()) {
+                // A failing disk: do not snapshot deep sessions over and over.
+                last_persist_scan_ = now + std::chrono::seconds(30);
+                return;
+            }
             if (materializing_ || (store_ready_ && !store_ready_())) { return; }
             {
                 std::lock_guard lock(queue_mutex_);
@@ -2912,6 +2934,8 @@ private:
     std::function<void(std::string, typename ModelContract::SessionSnapshot&&)> eviction_sink_;
     std::function<bool(typename ModelContract::SessionSnapshot&&)> store_sink_;
     std::function<bool()> store_ready_;
+    std::function<std::uint64_t()> store_failures_;
+    std::uint64_t store_failures_seen_ = 0;
     // Read by the worker before it takes the execution mutex, hence atomic.
     std::atomic<std::int64_t> store_idle_ms_{0};
     Clock::time_point last_persist_scan_{};

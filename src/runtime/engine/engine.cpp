@@ -197,6 +197,12 @@ std::string slot_model_binding(const EngineOptions& options, const LoadSummary& 
     std::error_code size_error;
     const std::uintmax_t size = std::filesystem::file_size(options.artifact_path, size_error);
     binding += size_error ? std::string("?") : std::to_string(size);
+    // A re-converted artifact can have the same size; its modification time tells it apart.
+    std::error_code time_error;
+    const auto written = std::filesystem::last_write_time(options.artifact_path, time_error);
+    binding += '\n';
+    binding += time_error ? std::string("?")
+                          : std::to_string(written.time_since_epoch().count());
     return binding;
 }
 
@@ -228,6 +234,7 @@ void write_snapshot_file(const std::string& path, const std::vector<std::uint8_t
 // Auto-save spills queue at most this many snapshots. Each holds a whole session, several GB for
 // a deep one; beyond the bound a spill is dropped and reported rather than growing host memory.
 constexpr std::size_t kMaximumPendingSlotWrites = 2;
+constexpr std::chrono::minutes kStoreMaintenanceInterval{10};
 
 // The store keeps up to this share of the volume's free space when no limit is configured.
 constexpr std::uint64_t kAutomaticStoreShareDivisor = 2;
@@ -293,7 +300,9 @@ public:
                     },
                     [this] { return store_queue_idle(); },
                     std::chrono::duration_cast<std::chrono::milliseconds>(
-                        options.context_store.idle_persist));
+                        options.context_store.idle_persist),
+                    [this] { return store_write_failures.load(std::memory_order_relaxed); });
+                start_writer();
             } else if (options.slot_auto_save.enabled) {
                 generation->set_eviction_sink(
                     slot_model_binding(options, load),
@@ -309,6 +318,9 @@ public:
 
     ~Impl() noexcept {
         device.bind_to_current_thread_noexcept();
+        // Queued store writes are older than what the final flush writes: drain them first, so
+        // none lands after it and replaces a newer image.
+        if (store) { stop_writer(); }
         flush_context_store();
         core.emplace<std::monostate>();
         stop_writer();
@@ -505,6 +517,7 @@ private:
     // not written now (an evicted one is lost to the store, an idle one is tried again later).
     bool enqueue_store_write(runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
         std::unique_lock lock(writer_mutex);
+        if (writer_stop) { return false; } // shutting down: the final flush writes it instead
         if (pending_writes.size() >= kMaximumPendingSlotWrites) {
             store_dropped.fetch_add(1, std::memory_order_relaxed);
             return false;
@@ -553,7 +566,13 @@ private:
         const auto started = std::chrono::steady_clock::now();
         try {
             if (item.to_store) {
-                store_put(item.snapshot);
+                try {
+                    store_put(item.snapshot);
+                } catch (...) {
+                    // The session was counted as stored when it was queued; have it queued again.
+                    store_write_failures.fetch_add(1, std::memory_order_relaxed);
+                    throw;
+                }
             } else if (spill_guard.generation(item.path) != item.generation) {
                 event.superseded = true;
             } else if (const std::optional<std::uint32_t> deeper =
@@ -571,11 +590,28 @@ private:
         notify(event);
     }
 
+    void start_writer() {
+        std::scoped_lock lock(writer_mutex);
+        if (!writer.joinable()) { writer = std::thread([this] { writer_loop(); }); }
+    }
+
     void writer_loop() {
         for (;;) {
             {
                 std::unique_lock lock(writer_mutex);
-                writer_cv.wait(lock, [this] { return writer_stop || !pending_writes.empty(); });
+                const auto ready = [this] { return writer_stop || !pending_writes.empty(); };
+                if (store) {
+                    // A quiet server still ages sessions out: the store only trims after a write.
+                    if (!writer_cv.wait_for(lock, kStoreMaintenanceInterval, ready)) {
+                        lock.unlock();
+                        try {
+                            store->maintain();
+                        } catch (...) {}
+                        continue;
+                    }
+                } else {
+                    writer_cv.wait(lock, ready);
+                }
                 if (pending_writes.empty()) { return; }
             }
             // Take slot_io_mutex before popping, so an explicit operation holding it sees every
@@ -616,6 +652,7 @@ private:
     bool writer_active = false;
     std::thread writer;
     std::atomic<std::uint64_t> store_dropped{0};
+    std::atomic<std::uint64_t> store_write_failures{0};
     std::atomic<std::uint64_t> restored_sessions{0};
     std::atomic<std::uint64_t> restored_bytes{0};
     double restore_seconds = 0.0;

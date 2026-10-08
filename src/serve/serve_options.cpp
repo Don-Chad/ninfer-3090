@@ -87,7 +87,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-cache-markers-per-request N] "
            "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] "
            "[--context-store DIR [--context-store-max-gib N] [--context-store-ttl-hours N] "
-           "[--context-store-idle-seconds N] [--context-store-restore-seconds N]] "
+           "[--context-store-idle-seconds N] [--context-store-restore-seconds N] [--context-store-flush-seconds N]] "
            "[--no-exit-on-engine-failure] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|rk8v4|rk4v4|nvfp4|k8v4] "
@@ -173,7 +173,8 @@ std::string serve_usage_text(const char* argv0) {
            "space); --context-store-ttl-hours N removes sessions unused that long (default 168, "
            "0 keeps them until space is needed); --context-store-idle-seconds N writes a session "
            "unused that long in the background (default 30, 0 writes only on eviction and "
-           "shutdown); --context-store-restore-seconds N bounds start-up restoring (default 120)\n"
+           "shutdown); --context-store-restore-seconds N bounds start-up restoring (default 120); --context-store-flush-seconds N bounds the "
+           "write at shutdown (default 60)\n"
            "       --no-exit-on-engine-failure keeps the process alive when the Engine latches "
            "unavailable after repeated worker failures; by default it logs FATAL and exits with "
            "status 3 after a short grace period so a supervisor can restart it\n"
@@ -542,6 +543,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.context_store_restore_seconds = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--context-store-restore-seconds"),
                                       "context-store-restore-seconds"));
+            context_store_tuning = true;
+        } else if (arg == "--context-store-flush-seconds") {
+            options.context_store_flush_seconds = static_cast<std::uint32_t>(parse_nonnegative_int(
+                require_value("--context-store-flush-seconds"), "context-store-flush-seconds"));
             context_store_tuning = true;
         } else if (arg == "--no-exit-on-engine-failure") {
             options.exit_on_engine_failure = false;

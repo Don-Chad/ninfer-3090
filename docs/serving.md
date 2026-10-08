@@ -345,7 +345,7 @@ With it, a retained session is written to `DIR`
 - when it is evicted from the cache,
 - in the background once it has been unused for `--context-store-idle-seconds` (30 s) and has
   changed since it was last written, so a crash loses at most that much of a conversation, and
-- at shutdown, for every session not already stored, most recently used first, within a 60 s budget.
+- at shutdown, for every session not already stored, most recently used first, within `--context-store-flush-seconds` (60 s).
 
 On start-up the most recently used sessions are restored into the cache, most recent first, until
 the cache is full or `--context-store-restore-seconds` (120 s) is spent, before the server accepts
@@ -371,7 +371,9 @@ the server starts), removing the least recently used sessions first, and removes
 configuration is ignored and ages out. The `ninfer:context_store_*` series (see
 [Metrics](#metrics)) report size, writes, bytes reused, what was restored at start-up and how long it
 took. A background write is skipped while any request is waiting or prefilling, and the write queue
-holds at most two sessions, so a slow disk delays nothing; a session that could not be queued is
+holds at most two sessions, so a slow disk does not hold up requests. Taking the snapshot itself
+(copying a deep session out of the GPU) is a single step of the Engine worker, so a request that
+arrives during it waits for that copy; a session that could not be queued is
 retried or, if it was being evicted, lost to the store and re-prefilled on its next request.
 
 ### Metrics
@@ -1187,6 +1189,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--context-store-ttl-hours N` | remove sessions unused this long; `0` keeps them until space is needed | `168` |
 | `--context-store-idle-seconds N` | write a session unused this long, and changed since it was last written, in the background; `0` writes only on eviction and shutdown | `30` |
 | `--context-store-restore-seconds N` | time budget for restoring sessions at start-up | `120` |
+| `--context-store-flush-seconds N` | time budget for writing sessions that are not yet stored at shutdown | `60` |
 | `--no-exit-on-engine-failure` | stay alive (answering 503) when the engine latches unavailable, instead of logging FATAL and exiting with status 3 after 5 s | exit |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |

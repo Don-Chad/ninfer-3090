@@ -429,16 +429,19 @@ int main() {
     failures += check(no_store.context_store_path.empty() && !no_store.context_store_max_gib &&
                           no_store.context_store_ttl_hours == 24 * 7 &&
                           no_store.context_store_idle_seconds == 30 &&
-                          no_store.context_store_restore_seconds == 120,
+                          no_store.context_store_restore_seconds == 120 &&
+                          no_store.context_store_flush_seconds == 60,
                       "the context store was on by default or its defaults changed");
     const ServeOptions store = parse({"ninfer-serve", "model.ninfer", "--context-store", "cache",
                                       "--context-store-max-gib", "40", "--context-store-ttl-hours",
                                       "48", "--context-store-idle-seconds", "10",
-                                      "--context-store-restore-seconds", "0"});
+                                      "--context-store-restore-seconds", "0",
+                                      "--context-store-flush-seconds", "7"});
     failures += check(store.context_store_path == "cache" && store.context_store_max_gib == 40 &&
                           store.context_store_ttl_hours == 48 &&
                           store.context_store_idle_seconds == 10 &&
-                          store.context_store_restore_seconds == 0,
+                          store.context_store_restore_seconds == 0 &&
+                          store.context_store_flush_seconds == 7,
                       "context store options did not reach serving options");
     failures += check(rejected({"ninfer-serve", "model.ninfer", "--context-store-max-gib", "4"}),
                       "--context-store-max-gib was accepted without --context-store");

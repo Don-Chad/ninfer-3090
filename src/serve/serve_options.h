@@ -97,6 +97,7 @@ struct ServeOptions {
     std::uint32_t context_store_ttl_hours      = 24 * 7;
     std::uint32_t context_store_idle_seconds   = 30;
     std::uint32_t context_store_restore_seconds = 120;
+    std::uint32_t context_store_flush_seconds   = 60;
     // Exit non-zero shortly after the Engine latches unavailable after a worker failure, so a
     // supervisor restarts the process instead of leaving it holding VRAM and answering 503.
     bool exit_on_engine_failure = true;
