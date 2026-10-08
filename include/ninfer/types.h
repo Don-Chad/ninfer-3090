@@ -151,28 +151,14 @@ struct StartupObserver {
     std::function<void(const StartupEvent& event)> callback;
 };
 
-// One spill of an involuntarily evicted session to its slot file, reported from the writer thread.
-struct SlotAutoSaveEvent {
-    std::string path;
+// One session written to the context store, reported from the writer thread.
+struct ContextStoreWriteEvent {
+    std::string id;
     std::uint32_t tokens = 0;
     std::uint64_t bytes  = 0;
     double seconds       = 0.0;
     // Empty on success.
     std::string error;
-    // Set when the spill was skipped because the file already holds a deeper snapshot of the
-    // session; the value is that depth.
-    std::optional<std::uint32_t> skipped_behind_tokens;
-    // Set when the spill was skipped because an explicit save, restore or erase of the path
-    // happened after it was queued.
-    bool superseded = false;
-};
-
-struct SlotAutoSaveOptions {
-    // Before an involuntary eviction destroys a retained session that was last saved to or
-    // restored from a slot file, snapshot it and write it back to that file off-thread.
-    bool enabled = false;
-    // Called on the writer thread after each spill. Exceptions are ignored.
-    std::function<void(const SlotAutoSaveEvent& event)> listener;
 };
 
 // A durable store for retained sessions, so the context cache survives a restart or a crash.
@@ -203,6 +189,8 @@ struct ContextStoreOptions {
     std::string remote_prefix;
     // How long shutdown waits for the uploads still queued.
     std::chrono::seconds remote_flush_budget{120};
+    // Called on the writer thread after each session is written. Exceptions are ignored.
+    std::function<void(const ContextStoreWriteEvent& event)> listener;
 
     [[nodiscard]] bool enabled() const noexcept { return !directory.empty(); }
 };
@@ -382,7 +370,6 @@ struct EngineOptions {
     // validated against the resident model at construction.
     std::vector<GraftSource> grafts;
     StartupObserver startup_observer;
-    SlotAutoSaveOptions slot_auto_save;
     ContextStoreOptions context_store;
     // Called on the worker thread for each host-side worker failure, after recovery or latch.
     // Must be quick; exceptions are ignored.
@@ -1350,9 +1337,8 @@ struct ContextCostSummary {
     std::filesystem::path preset_path;
 };
 
-// Session persistence. A slot is one private context-cache catalog cell; a retained session in it
-// can be saved to a file and a saved file restored into it. Session digests are FNV-1a 64 over the
-// token ledger as 16 lowercase hex characters.
+// Occupancy of the context cache. A slot is one private context-cache catalog cell. Session digests
+// are FNV-1a 64 over the token ledger as 16 lowercase hex characters.
 struct SlotCheckpoint {
     std::uint32_t frontier = 0;
     std::string session_digest;
@@ -1370,11 +1356,6 @@ struct SlotState {
     std::string session_digest;
     // Restorable checkpoints of a retained session, ascending by frontier.
     std::vector<SlotCheckpoint> checkpoints;
-    // Retained: the name of the slot file this session is bound to (the file a save or restore
-    // last named, which an involuntary eviction would write back to); empty when unbound. The
-    // binding follows a conversation when it moves to another cell, so this, not the cell id,
-    // says which file holds a conversation.
-    std::string snapshot_file;
     // Retained: how the session has been used, for readers deciding which are worth keeping.
     // It travels with a conversation from cell to cell. Wall-clock milliseconds since the Unix
     // epoch of the last turn published (or restore), the number of turns that continued the
@@ -1383,26 +1364,6 @@ struct SlotState {
     std::uint64_t last_used_unix_ms = 0;
     std::uint32_t reuse_count       = 0;
     std::uint64_t reused_tokens     = 0;
-};
-
-struct SlotSaveResult {
-    std::uint32_t tokens = 0;
-    std::uint64_t bytes  = 0;
-    double seconds       = 0.0;
-    std::string session_digest;
-};
-
-struct SlotRestoreResult {
-    std::uint32_t tokens = 0;
-    std::uint64_t bytes  = 0;
-    double seconds       = 0.0;
-    std::string session_digest;
-};
-
-// A slot operation's expected session digest did not match the slot's resident session.
-class SlotSessionMismatch final : public std::invalid_argument {
-public:
-    using std::invalid_argument::invalid_argument;
 };
 
 struct LoadSummary {

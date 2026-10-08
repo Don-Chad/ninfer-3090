@@ -85,7 +85,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-long-anchors-per-continuation N] [--auto-long-anchors N] "
            "[--progress-anchor-tokens N] "
            "[--max-cache-markers-per-request N] "
-           "[--request-log-jsonl FILE] [--slot-save-path DIR] [--auto-save-evicted] "
+           "[--request-log-jsonl FILE] "
            "[--context-store DIR [--context-store-max-gib N] [--context-store-ttl-hours N] "
            "[--context-store-idle-seconds N] [--context-store-restore-seconds N] "
            "[--context-store-flush-seconds N] "
@@ -166,15 +166,10 @@ std::string serve_usage_text(const char* argv0) {
            "holds, so a client that times out on a very long prompt and retries resumes from the "
            "last anchor instead of prefilling from zero; it shares the "
            "--max-long-anchors-per-continuation budget with --auto-long-anchors; 0 disables\n"
-           "       --slot-save-path DIR enables POST /slots/{id}?action=save|restore|erase, which "
-           "writes a retained session to a file in DIR or restores one from it\n"
-           "       --auto-save-evicted writes a retained session back to the slot file it was last "
-           "saved to or restored from before an involuntary eviction destroys it (requires "
-           "--slot-save-path; erase never saves)\n"
            "       --context-store DIR keeps retained sessions on disk so a restart or crash does "
            "not lose the context cache: a session is written when evicted, when idle, and at "
            "shutdown, and the most recently used ones are restored at start-up. Only changed "
-           "pieces of a session are written. Off by default; replaces --auto-save-evicted\n"
+           "pieces of a session are written. Off by default\n"
            "       --context-store-max-gib N bounds the store (default: half the volume's free "
            "space); --context-store-ttl-hours N removes sessions unused that long (default 168, "
            "0 keeps them until space is needed); --context-store-idle-seconds N writes a session "
@@ -530,13 +525,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.use_cuda_graph = false;
         } else if (arg == "--no-prefix-reuse") {
             options.allow_prefix_reuse = false;
-        } else if (arg == "--slot-save-path") {
-            options.slot_save_path = require_value("--slot-save-path");
-            if (options.slot_save_path.empty()) {
-                throw std::invalid_argument("--slot-save-path must not be empty");
-            }
-        } else if (arg == "--auto-save-evicted") {
-            options.auto_save_evicted = true;
         } else if (arg == "--context-store") {
             options.context_store_path = require_value("--context-store");
             if (options.context_store_path.empty()) {
@@ -708,10 +696,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             throw std::invalid_argument(
                 "--no-prefix-reuse cannot be combined with --progress-anchor-tokens");
         }
-        if (!options.slot_save_path.empty()) {
-            throw std::invalid_argument(
-                "--no-prefix-reuse cannot be combined with --slot-save-path");
-        }
         options.context_cache.enabled                = false;
         options.context_cache.host_state_slots       = 0;
         options.context_cache.host_kv_capacity_bytes = 0;
@@ -721,9 +705,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (!options.stage_layers.empty() && options.devices.size() < 2) {
         throw std::invalid_argument("--stage-layers needs --devices naming more than one device");
-    }
-    if (options.auto_save_evicted && options.slot_save_path.empty()) {
-        throw std::invalid_argument("--auto-save-evicted requires --slot-save-path");
     }
     if (options.context_store_path.empty() &&
         (context_store_tuning || options.context_store_max_gib)) {
@@ -758,10 +739,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         }
     }
     if (!options.context_store_path.empty()) {
-        if (options.auto_save_evicted) {
-            throw std::invalid_argument(
-                "--context-store replaces --auto-save-evicted; use only one");
-        }
         if (!options.allow_prefix_reuse) {
             throw std::invalid_argument("--no-prefix-reuse cannot be combined with --context-store");
         }

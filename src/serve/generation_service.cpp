@@ -283,7 +283,6 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
     engine_options.prefill_cublas_projections = options.prefill_cublas_projections;
     engine_options.speculative              = options.speculative;
     engine_options.context_cache            = options.context_cache;
-    engine_options.slot_auto_save.enabled   = options.auto_save_evicted;
     engine_options.context_store.directory  = options.context_store_path;
     engine_options.context_store.max_bytes =
         options.context_store_max_gib ? *options.context_store_max_gib << 30U : 0U;
@@ -330,7 +329,7 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
 
 GenerationService::GenerationService(
     ServeOptions options, StartupObserver startup_observer,
-    std::function<void(const ninfer::SlotAutoSaveEvent&)> auto_save_listener,
+    std::function<void(const ninfer::ContextStoreWriteEvent&)> store_listener,
     std::function<void(const ninfer::EngineFaultEvent&)> fault_listener)
     : options_(std::move(options)) {
     // Inline ECC on GDDR6X GeForce cards reserves ~6.25% of VRAM for checksums and taxes
@@ -354,8 +353,8 @@ GenerationService::GenerationService(
     }
     ninfer::EngineOptions engine_options = make_engine_options(options_);
     engine_options.startup_observer      = std::move(startup_observer);
-    engine_options.slot_auto_save.listener = std::move(auto_save_listener);
-    engine_options.fault_listener          = std::move(fault_listener);
+    engine_options.context_store.listener = std::move(store_listener);
+    engine_options.fault_listener         = std::move(fault_listener);
     engine_           = std::make_unique<ninfer::Engine>(std::move(engine_options));
     automatic_private_anchors_ =
         resolve_automatic_private_anchors(options_, engine_->options().context_cache);

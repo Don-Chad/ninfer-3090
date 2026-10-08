@@ -1636,9 +1636,7 @@ int exercise_cancelled_prefill_progress(const char* artifact) {
     return 0;
 }
 
-ninfer::EngineOptions slot_engine_options(const char* artifact, bool auto_save,
-                                           std::vector<ninfer::SlotAutoSaveEvent>* events,
-                                           std::mutex* events_mutex) {
+ninfer::EngineOptions store_engine_options(const char* artifact) {
     ninfer::EngineOptions options;
     options.artifact_path                        = artifact;
     options.max_context                          = 1024;
@@ -1656,17 +1654,10 @@ ninfer::EngineOptions slot_engine_options(const char* artifact, bool auto_save,
     options.context_cache.max_private_continuations         = 1;
     options.context_cache.max_shared_prefixes               = 0;
     options.context_cache.max_long_anchors_per_continuation = 2;
-    options.slot_auto_save.enabled                          = auto_save;
-    if (events != nullptr) {
-        options.slot_auto_save.listener = [events, events_mutex](const ninfer::SlotAutoSaveEvent& e) {
-            std::scoped_lock lock(*events_mutex);
-            events->push_back(e);
-        };
-    }
     return options;
 }
 
-ninfer::PromptInput slot_conversation(const std::vector<std::string>& turns) {
+ninfer::PromptInput store_conversation(const std::vector<std::string>& turns) {
     ninfer::PromptInput prompt;
     for (std::size_t index = 0; index < turns.size(); ++index) {
         ninfer::ChatMessage message;
@@ -1677,94 +1668,6 @@ ninfer::PromptInput slot_conversation(const std::vector<std::string>& turns) {
     }
     prompt.options.enable_thinking = false;
     return prompt;
-}
-
-// A cancelled prefill is published as a continuation with no endpoint, which cannot be saved as a
-// session. When it lands in the cell that held a saved conversation (one private cell here), the
-// slot file bound to that conversation must not stay bound to what the cell now holds: every slot
-// that still reports a snapshot file must be savable.
-int exercise_cancelled_prefill_slot_binding(const char* artifact) {
-    const std::filesystem::path directory =
-        std::filesystem::temp_directory_path() / "ninfer-cancelled-prefill-binding-test";
-    std::filesystem::remove_all(directory);
-    std::filesystem::create_directories(directory);
-    const std::string file  = (directory / "session.bin").string();
-    const std::string other = (directory / "probe.bin").string();
-
-    ninfer::RequestOptions request;
-    request.execution.requested_output_tokens = 8;
-    request.execution.sampling.temperature    = 0.0F;
-    request.execution.allow_prefix_reuse      = true;
-    request.stop.include_model_defaults       = false;
-
-    ninfer::EngineOptions options = slot_engine_options(artifact, false, nullptr, nullptr);
-    options.max_context           = 8192;
-    options.kv_capacity           = ninfer::KvCapacityPolicy::explicit_capacity(8192);
-    ninfer::Engine engine(options);
-
-    const std::vector<std::string> first{
-        "List three uses for a lathe in a small workshop, one line each."};
-    const ninfer::GenerationResult reply =
-        engine.generate(engine.prepare(slot_conversation(first)), request);
-    if (reply.slot < 0) {
-        std::cerr << "first turn retained no session\n";
-        return 1;
-    }
-    (void)engine.save_slot(static_cast<std::uint32_t>(reply.slot), file, reply.session_digest);
-    const auto bound = engine.slot_states();
-    if (bound.size() != 1 || bound[0].snapshot_file.empty()) {
-        std::cerr << "save did not bind the slot to its file\n";
-        return 1;
-    }
-
-    // Continue the saved conversation with a very long turn, cancelled part way through prefill.
-    std::string text = "Read the following log and answer the question at the end.";
-    for (int line = 0; line < 160; ++line) {
-        text += " Entry " + std::to_string(line) + ": the pump on line " +
-                std::to_string(line % 17) + " reported " + std::to_string(line * 37 % 1013) +
-                " kPa and the operator noted nothing unusual.";
-    }
-    std::vector<std::string> turns = first;
-    turns.push_back(reply.content);
-    turns.push_back(text);
-    ninfer::PromptInput prompt = slot_conversation(turns);
-    prompt.context_cache.progress_anchor_stride = 512;
-
-    CancelAtProgressSink sink(2048);
-    ninfer::GenerationHandle handle =
-        engine.submit(engine.prepare(std::move(prompt)), request,
-                      ninfer::OutputConsumerMode::Streaming,
-                      ninfer::GenerationObservationOptions{.prompt_progress = true});
-    const ninfer::GenerationResult cancelled =
-        handle.wait(&sink, ninfer::CancellationView([&sink] { return sink.reached(); }));
-    if (cancelled.finish_reason != ninfer::FinishReason::Cancelled) {
-        std::cerr << "the long turn was not cancelled during prefill\n";
-        return 1;
-    }
-    if (!engine.is_available()) {
-        std::cerr << "engine latched unavailable after a cancelled prefill\n";
-        return 1;
-    }
-
-    // Cancellation settles at the next Engine boundary; wait for the cell to be published.
-    auto states = engine.slot_states();
-    for (int attempt = 0; attempt < 200 && states.size() == 1 && !states[0].retained; ++attempt) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(25));
-        states = engine.slot_states();
-    }
-    for (std::uint32_t slot = 0; slot < states.size(); ++slot) {
-        if (!states[slot].retained || states[slot].snapshot_file.empty()) { continue; }
-        try {
-            (void)engine.save_slot(slot, other);
-        } catch (const std::exception& error) {
-            std::cerr << "slot " << slot << " still reports snapshot file '"
-                      << states[slot].snapshot_file
-                      << "' but cannot be saved: " << error.what() << '\n';
-            return 1;
-        }
-    }
-    std::cout << "cancelled prefill left " << states.size() << " slot(s), none with a stale binding\n";
-    return 0;
 }
 
 // A session evicted from the cache while the Engine keeps running is read back from the context
@@ -1810,7 +1713,7 @@ int exercise_store_hydration(const char* artifact) {
     // A context deep enough that the stored prefix is far past the minimum worth reading back, and a
     // host tier large enough to hold the KV of one such session.
     const auto deep_options = [&] {
-        ninfer::EngineOptions options = slot_engine_options(artifact, false, nullptr, nullptr);
+        ninfer::EngineOptions options = store_engine_options(artifact);
         options.max_context           = 16384;
         options.kv_capacity           = ninfer::KvCapacityPolicy::explicit_capacity(16384);
         options.context_cache.host_kv_capacity_bytes = std::size_t{512} << 20U;
@@ -1822,9 +1725,9 @@ int exercise_store_hydration(const char* artifact) {
     {
         ninfer::Engine control(deep_options());
         const ninfer::GenerationResult reply =
-            control.generate(control.prepare(slot_conversation(first)), request);
+            control.generate(control.prepare(store_conversation(first)), request);
         const ninfer::GenerationResult next =
-            control.generate(control.prepare(slot_conversation(second_turn(reply))), request);
+            control.generate(control.prepare(store_conversation(second_turn(reply))), request);
         control_tokens = next.generated_token_ids;
         control_reused = next.reused_prompt_tokens;
         if (control_reused < 4096) {
@@ -1839,9 +1742,9 @@ int exercise_store_hydration(const char* artifact) {
     options.context_store.idle_persist = std::chrono::seconds(0);
     ninfer::Engine engine(std::move(options));
     const ninfer::GenerationResult reply =
-        engine.generate(engine.prepare(slot_conversation(first)), request);
+        engine.generate(engine.prepare(store_conversation(first)), request);
     // One private cell: an unrelated conversation evicts the first, which writes it to the store.
-    (void)engine.generate(engine.prepare(slot_conversation(unrelated)), request);
+    (void)engine.generate(engine.prepare(store_conversation(unrelated)), request);
     bool written = false;
     for (int attempt = 0; attempt < 600 && !written; ++attempt) {
         written = engine.runtime_stats().context_store_writes >= 1;
@@ -1852,7 +1755,7 @@ int exercise_store_hydration(const char* artifact) {
         return 1;
     }
     const ninfer::GenerationResult next =
-        engine.generate(engine.prepare(slot_conversation(second_turn(reply))), request);
+        engine.generate(engine.prepare(store_conversation(second_turn(reply))), request);
     const ninfer::RuntimeStats stats = engine.runtime_stats();
     if (stats.context_store_hydrations != 1 || stats.context_store_hydrated_tokens < 4096 ||
         stats.context_store_hydration_failures != 0 || stats.context_store_hydration_seconds <= 0.0) {
@@ -1910,7 +1813,7 @@ int exercise_context_store(const char* artifact) {
         return turns;
     };
     const auto store_options = [&](const fs::path& directory, std::chrono::seconds idle) {
-        ninfer::EngineOptions options = slot_engine_options(artifact, false, nullptr, nullptr);
+        ninfer::EngineOptions options = store_engine_options(artifact);
         options.context_store.directory    = directory;
         options.context_store.idle_persist = idle;
         return options;
@@ -1926,11 +1829,11 @@ int exercise_context_store(const char* artifact) {
     // Control: the warm session continues without ever leaving the device.
     std::vector<ninfer::TokenId> control_tokens;
     {
-        ninfer::Engine control(slot_engine_options(artifact, false, nullptr, nullptr));
+        ninfer::Engine control(store_engine_options(artifact));
         const ninfer::GenerationResult reply =
-            control.generate(control.prepare(slot_conversation(first)), request);
+            control.generate(control.prepare(store_conversation(first)), request);
         const ninfer::GenerationResult next =
-            control.generate(control.prepare(slot_conversation(second_turn(reply))), request);
+            control.generate(control.prepare(store_conversation(second_turn(reply))), request);
         control_tokens = next.generated_token_ids;
         if (next.reused_prompt_tokens == 0) {
             std::cerr << "control continuation did not reuse its warm session\n";
@@ -1943,7 +1846,7 @@ int exercise_context_store(const char* artifact) {
     ninfer::GenerationResult reply;
     {
         ninfer::Engine engine(store_options(restart_dir, std::chrono::seconds(0)));
-        reply = engine.generate(engine.prepare(slot_conversation(first)), request);
+        reply = engine.generate(engine.prepare(store_conversation(first)), request);
         const ninfer::RuntimeStats stats = engine.runtime_stats();
         if (stats.context_store_writes != 0 || stats.context_store_restored != 0) {
             std::cerr << "the store was written before any session left the cache\n";
@@ -1963,7 +1866,7 @@ int exercise_context_store(const char* artifact) {
             return 1;
         }
         const ninfer::GenerationResult next =
-            engine.generate(engine.prepare(slot_conversation(second_turn(reply))), request);
+            engine.generate(engine.prepare(store_conversation(second_turn(reply))), request);
         if (next.reused_prompt_tokens == 0 ||
             next.prefix_reuse_path == ninfer::PrefixReusePath::Root) {
             std::cerr << "the continuation did not reuse the restored session\n";
@@ -1978,8 +1881,8 @@ int exercise_context_store(const char* artifact) {
     // Eviction writes: one private cell, so an unrelated conversation evicts the first.
     {
         ninfer::Engine engine(store_options(root / "evict", std::chrono::seconds(0)));
-        (void)engine.generate(engine.prepare(slot_conversation(first)), request);
-        (void)engine.generate(engine.prepare(slot_conversation(unrelated)), request);
+        (void)engine.generate(engine.prepare(store_conversation(first)), request);
+        (void)engine.generate(engine.prepare(store_conversation(unrelated)), request);
         if (!wait_for([&] { return engine.runtime_stats().context_store_writes >= 1; })) {
             std::cerr << "an evicted session was not written to the store\n";
             return 1;
@@ -1989,7 +1892,7 @@ int exercise_context_store(const char* artifact) {
     // Background write of an idle session while the Engine keeps running.
     {
         ninfer::Engine engine(store_options(root / "idle", std::chrono::seconds(1)));
-        (void)engine.generate(engine.prepare(slot_conversation(first)), request);
+        (void)engine.generate(engine.prepare(store_conversation(first)), request);
         if (!wait_for([&] { return engine.runtime_stats().context_store_writes >= 1; })) {
             std::cerr << "an idle session was not written in the background\n";
             return 1;
@@ -2030,165 +1933,13 @@ int exercise_context_store(const char* artifact) {
             return 1;
         }
         const ninfer::GenerationResult next =
-            engine.generate(engine.prepare(slot_conversation(second_turn(reply))), request);
+            engine.generate(engine.prepare(store_conversation(second_turn(reply))), request);
         if (next.reused_prompt_tokens != 0 || next.generated_token_ids.empty()) {
             std::cerr << "a request after a damaged store did not prefill from scratch\n";
             return 1;
         }
     }
     fs::remove_all(root);
-    return 0;
-}
-
-// A saved session restored into a fresh Engine must behave exactly like the warm session it was
-// saved from: the continuation reuses the restored prefix, and greedy output matches a control
-// Engine that never evicted it token for token. Digest preconditions, corrupt files, and the
-// auto-save spill on involuntary eviction are checked on the same artifact.
-int exercise_slot_persistence(const char* artifact) {
-    const std::filesystem::path directory =
-        std::filesystem::temp_directory_path() / "ninfer-slot-persistence-test";
-    std::filesystem::remove_all(directory);
-    std::filesystem::create_directories(directory);
-    const std::string file = (directory / "session.bin").string();
-
-    ninfer::RequestOptions request;
-    request.execution.requested_output_tokens = 12;
-    request.execution.sampling.temperature    = 0.0F;
-    request.execution.allow_prefix_reuse      = true;
-    request.stop.include_model_defaults       = false;
-
-    const std::vector<std::string> first{
-        "List three uses for a lathe in a small workshop, one line each."};
-    const auto second_turn = [&](const ninfer::GenerationResult& reply) {
-        std::vector<std::string> turns = first;
-        turns.push_back(reply.content);
-        turns.push_back("Which of those needs the most care with tool speed?");
-        return turns;
-    };
-
-    // Control: the warm session continues without ever leaving the device.
-    std::vector<ninfer::TokenId> control_tokens;
-    {
-        ninfer::Engine control(slot_engine_options(artifact, false, nullptr, nullptr));
-        const ninfer::GenerationResult reply =
-            control.generate(control.prepare(slot_conversation(first)), request);
-        const ninfer::GenerationResult next =
-            control.generate(control.prepare(slot_conversation(second_turn(reply))), request);
-        control_tokens = next.generated_token_ids;
-        if (next.reused_prompt_tokens == 0) {
-            std::cerr << "control continuation did not reuse its warm session\n";
-            return 1;
-        }
-    }
-
-    std::mutex events_mutex;
-    std::vector<ninfer::SlotAutoSaveEvent> events;
-    std::string saved_digest;
-    std::uint32_t saved_tokens = 0;
-    std::vector<std::string> continued;
-    {
-        ninfer::Engine engine(slot_engine_options(artifact, true, &events, &events_mutex));
-        const ninfer::GenerationResult reply =
-            engine.generate(engine.prepare(slot_conversation(first)), request);
-        if (reply.slot < 0 || reply.session_digest.size() != 16) {
-            std::cerr << "retained session reported no slot identity: slot=" << reply.slot << '\n';
-            return 1;
-        }
-        const auto states = engine.slot_states();
-        if (states.size() != 1 || !states[0].retained ||
-            states[0].session_digest != reply.session_digest || states[0].checkpoints.empty() ||
-            states[0].checkpoints.back().frontier + 1U != states[0].prompt_tokens) {
-            std::cerr << "slot listing does not describe the retained session\n";
-            return 1;
-        }
-        bool mismatch_refused = false;
-        try {
-            (void)engine.save_slot(static_cast<std::uint32_t>(reply.slot), file,
-                                   "0000000000000000");
-        } catch (const ninfer::SlotSessionMismatch&) { mismatch_refused = true; }
-        if (!mismatch_refused) {
-            std::cerr << "save accepted a mismatched if_digest\n";
-            return 1;
-        }
-        const ninfer::SlotSaveResult saved = engine.save_slot(
-            static_cast<std::uint32_t>(reply.slot), file, reply.session_digest);
-        if (saved.session_digest != reply.session_digest || saved.tokens != states[0].prompt_tokens ||
-            saved.bytes == 0 || std::filesystem::file_size(file) != saved.bytes) {
-            std::cerr << "save reported an inconsistent snapshot\n";
-            return 1;
-        }
-        saved_digest = saved.session_digest;
-        saved_tokens = saved.tokens;
-        continued    = second_turn(reply);
-
-        // Grow the bound session one turn, then let an unrelated conversation evict it: the
-        // auto-save must write the deeper session back to the bound file.
-        const ninfer::GenerationResult grown =
-            engine.generate(engine.prepare(slot_conversation(continued)), request);
-        (void)engine.generate(
-            engine.prepare(slot_conversation({"Name a hardwood that turns well on a lathe."})),
-            request);
-        const ninfer::SlotRestoreResult reread = engine.restore_slot(0, file);
-        std::scoped_lock lock(events_mutex);
-        if (events.size() != 1 || !events[0].error.empty() || events[0].skipped_behind_tokens ||
-            events[0].tokens <= saved_tokens || reread.session_digest != grown.session_digest ||
-            reread.tokens != events[0].tokens) {
-            std::cerr << "eviction did not auto-save the grown session: events=" << events.size()
-                      << " spilled=" << (events.empty() ? 0U : events[0].tokens)
-                      << " saved=" << saved_tokens << '\n';
-            return 1;
-        }
-    }
-
-    // Restore the explicit first-turn snapshot into a fresh Engine and continue it.
-    const std::string first_file = (directory / "first.bin").string();
-    {
-        ninfer::Engine writer(slot_engine_options(artifact, false, nullptr, nullptr));
-        const ninfer::GenerationResult reply =
-            writer.generate(writer.prepare(slot_conversation(first)), request);
-        const ninfer::SlotSaveResult saved =
-            writer.save_slot(static_cast<std::uint32_t>(reply.slot), first_file);
-        if (saved.session_digest != saved_digest) {
-            std::cerr << "the same first turn produced a different session digest\n";
-            return 1;
-        }
-    }
-    ninfer::Engine engine(slot_engine_options(artifact, false, nullptr, nullptr));
-    {
-        std::ofstream corrupt((directory / "corrupt.bin").string(), std::ios::binary);
-        corrupt << "not a snapshot";
-    }
-    bool corrupt_refused = false;
-    try {
-        (void)engine.restore_slot(0, (directory / "corrupt.bin").string());
-    } catch (const std::invalid_argument&) { corrupt_refused = true; }
-    if (!corrupt_refused) {
-        std::cerr << "restore accepted a corrupt snapshot\n";
-        return 1;
-    }
-    const ninfer::SlotRestoreResult restored = engine.restore_slot(0, first_file);
-    if (restored.session_digest != saved_digest || restored.tokens != saved_tokens) {
-        std::cerr << "restore did not reproduce the saved session\n";
-        return 1;
-    }
-    const ninfer::GenerationResult next =
-        engine.generate(engine.prepare(slot_conversation(continued)), request);
-    if (next.reused_prompt_tokens == 0 || next.generated_token_ids != control_tokens) {
-        std::cerr << "restored continuation diverged from the warm control: reused="
-                  << next.reused_prompt_tokens << " tokens=" << next.generated_token_ids.size()
-                  << "/" << control_tokens.size() << '\n';
-        return 1;
-    }
-    bool erase_refused = false;
-    try {
-        (void)engine.erase_slot(0, "0000000000000000");
-    } catch (const ninfer::SlotSessionMismatch&) { erase_refused = true; }
-    const std::uint32_t erased = engine.erase_slot(0, next.session_digest);
-    if (!erase_refused || erased == 0 || engine.slot_states()[0].retained) {
-        std::cerr << "erase did not honor its digest precondition or leave the slot vacant\n";
-        return 1;
-    }
-    std::filesystem::remove_all(directory);
     return 0;
 }
 
@@ -4603,7 +4354,7 @@ int exercise_context_store_remote(const char* artifact) {
     };
     auto bucket        = std::make_shared<MemoryBucket>();
     const auto options = [&](const fs::path& directory) {
-        ninfer::EngineOptions engine_options = slot_engine_options(artifact, false, nullptr, nullptr);
+        ninfer::EngineOptions engine_options = store_engine_options(artifact);
         engine_options.context_store.directory     = directory;
         engine_options.context_store.idle_persist  = std::chrono::seconds(0);
         engine_options.context_store.remote        = bucket;
@@ -4613,18 +4364,18 @@ int exercise_context_store_remote(const char* artifact) {
 
     std::vector<ninfer::TokenId> control_tokens;
     {
-        ninfer::Engine control(slot_engine_options(artifact, false, nullptr, nullptr));
+        ninfer::Engine control(store_engine_options(artifact));
         const ninfer::GenerationResult reply =
-            control.generate(control.prepare(slot_conversation(first)), request);
+            control.generate(control.prepare(store_conversation(first)), request);
         control_tokens =
-            control.generate(control.prepare(slot_conversation(second_turn(reply))), request)
+            control.generate(control.prepare(store_conversation(second_turn(reply))), request)
                 .generated_token_ids;
     }
 
     ninfer::GenerationResult reply;
     {
         ninfer::Engine engine(options(root / "a"));
-        reply = engine.generate(engine.prepare(slot_conversation(first)), request);
+        reply = engine.generate(engine.prepare(store_conversation(first)), request);
     } // shutdown writes the session and waits for its upload
     {
         std::scoped_lock lock(bucket->mutex);
@@ -4649,7 +4400,7 @@ int exercise_context_store_remote(const char* artifact) {
             return 1;
         }
         const ninfer::GenerationResult next =
-            engine.generate(engine.prepare(slot_conversation(second_turn(reply))), request);
+            engine.generate(engine.prepare(store_conversation(second_turn(reply))), request);
         if (next.reused_prompt_tokens == 0 ||
             next.prefix_reuse_path == ninfer::PrefixReusePath::Root) {
             std::cerr << "the continuation did not reuse the session restored from the bucket\n";
@@ -4800,10 +4551,6 @@ int run() {
         result = exercise_cancelled_prefill_200k(artifact);
     } else if (scenario == "cancelled-prefill-progress") {
         result = exercise_cancelled_prefill_progress(artifact);
-    } else if (scenario == "cancelled-prefill-slot-binding") {
-        result = exercise_cancelled_prefill_slot_binding(artifact);
-    } else if (scenario == "slot-persistence") {
-        result = exercise_slot_persistence(artifact);
     } else if (scenario == "context-store") {
         result = exercise_context_store(artifact);
     } else if (scenario == "lazy-output-reservation") {

@@ -279,7 +279,7 @@ Shared prefix 是不可变的复用来源，可以被多个 private branches For
 checkpoints 可以引用相同 address space 的不同 prefix，但每个 checkpoint 都有自己的完整 StateImage
 identity。
 
-Session persistence（`ninfer-serve --slot-save-path`）是唯一一条不经 materialization 或 capture
+Session persistence（`ninfer-serve --context-store`）是唯一一条不经 materialization 或 capture
 transaction 就发布 catalog owner 的路径。它只在没有打开的 context transaction、目标 cell 没有 active
 edge 时于 execution mutex 下运行：`Program::save_continuation` 只读地把 catalogued continuation 的
 ledger、exact identity、shortlist digests、checkpoint 目录、去重后的 StateImage 和 committed frontier

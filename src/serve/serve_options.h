@@ -84,13 +84,8 @@ struct ServeOptions {
     // prompt, so a long prefill cancelled part way keeps its progress for the client's retry. Unset
     // resolves to kDefaultProgressAnchorTokens; 0 disables. See resolve_progress_anchor_stride.
     std::optional<std::uint32_t> progress_anchor_tokens;
-    // Directory for /slots session files; empty disables slot save/restore.
-    std::filesystem::path slot_save_path;
-    // Spill an involuntarily evicted session back to the slot file it was last saved to or
-    // restored from. Requires slot_save_path.
-    bool auto_save_evicted = false;
     // --context-store DIR: keep retained sessions on disk so a restart or crash does not lose the
-    // context cache. Empty disables it. The store replaces slot persistence for the same purpose.
+    // context cache. Empty disables it.
     std::filesystem::path context_store_path;
     // --context-store-max-gib N: unset lets the Engine take half the volume's free space.
     std::optional<std::uint64_t> context_store_max_gib;

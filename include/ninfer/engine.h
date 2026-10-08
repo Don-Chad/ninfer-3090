@@ -120,18 +120,6 @@ public:
 
     void reset_memory_peaks() noexcept;
 
-    // Session persistence for one private context-cache catalog cell (slot_states().size()
-    // cells). save_slot writes the cell's retained session to `path`; restore_slot rebuilds the
-    // cell from a saved file, evicting what it held; erase_slot evicts the cell's session and
-    // returns its depth. A cell in use by a request, or any open resource transaction, raises
-    // RequestError(Overloaded); a missing or incompatible file raises std::invalid_argument; a
-    // non-empty expected_digest that does not match the resident session raises
-    // SlotSessionMismatch, checked atomically with the operation. Device copies run between
-    // Engine units; file I/O runs outside them.
-    [[nodiscard]] SlotSaveResult save_slot(std::uint32_t slot, const std::string& path,
-                                           const std::string& expected_digest = {});
-    [[nodiscard]] SlotRestoreResult restore_slot(std::uint32_t slot, const std::string& path);
-    std::uint32_t erase_slot(std::uint32_t slot, const std::string& expected_digest = {});
     // Per-cell occupancy as of the last Engine unit boundary.
     [[nodiscard]] std::vector<SlotState> slot_states() const;
 

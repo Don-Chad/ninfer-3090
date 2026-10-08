@@ -85,7 +85,6 @@ staged <MiB>)` and the JSON record carries `vision_overlay`, including `exclusiv
 | `GET /health` | process health and build version (see [Server version](#server-version)) |
 | `GET /v1/load` | serving capacity, current load, and monotonic token counters (see [Load](#load)) |
 | `GET /slots` | per-slot occupancy of the private context cache (see [Slots](#slots)) |
-| `POST /slots/{id}?action=save\|restore\|erase` | save a retained session to a file, restore one, or evict one (see [Slots](#slots)) |
 | `GET /metrics` | Prometheus text counters, llama.cpp-compatible names (see [Metrics](#metrics)) |
 | `GET /v1/models` | configured OpenAI model alias, effective context limit (`max_model_len`/`context_window`/`context_length`) and input modalities (see [Model discovery](#model-discovery)) |
 | `GET /v1/models/{id}` | lookup of the same model object by its alias |
@@ -279,8 +278,7 @@ like llama.cpp's endpoint and reads only published state, so it never waits on t
   "checkpoints": [{"frontier": 1812, "session_digest": "51d0..."},
                   {"frontier": 2409, "session_digest": "e27a90c4d15b3f68"}],
   "n_ctx": 131072, "n_prompt_tokens": 2410, "n_prompt_tokens_cache": 2410, "speculative": true,
-  "snapshot_file": "chat-7.snap", "last_used_unix_ms": 1791292927534, "reuse_count": 3,
-  "reused_tokens": 7120}]
+  "last_used_unix_ms": 1791292927534, "reuse_count": 3, "reused_tokens": 7120}]
 ```
 
 A retained slot reports the session depth as both token counts, its session digest (FNV-1a 64 of
@@ -293,51 +291,17 @@ tokens. Chat Completions responses carry the slot and digest a finished session 
 as top-level `id_slot` and `session_digest`, on the aggregate response and on the final streamed
 chunk that carries timings.
 
-A retained slot also reports what a client needs to decide which sessions are worth saving.
-`snapshot_file` is the name of the slot file the session is bound to (the file a save or restore
-last named, which an involuntary eviction writes back to), or `null`. A conversation can move to a
-different cell from one turn to the next, and its binding moves with it, so `snapshot_file`, not
-`id`, says which file holds a conversation: save a continued conversation under the name it
-already carries and each conversation keeps one file. `last_used_unix_ms` is the wall-clock time
-the session was last published or restored, `reuse_count` the number of turns that continued it
-from a retained copy, and `reused_tokens` the prompt tokens those turns reused. These follow a
+A retained slot also reports how the session has been used. `last_used_unix_ms` is the wall-clock
+time the session was last published or restored, `reuse_count` the number of turns that continued
+it from a retained copy, and `reused_tokens` the prompt tokens those turns reused. These follow a
 conversation from cell to cell, and a restored session starts again from zero. A slot with no
-retained session reports `null` for all four.
+retained session reports `null` for all three.
 
-With `--slot-save-path DIR`, `POST /slots/{id}?action=...` persists sessions across restarts and
-evictions. Without it the route answers `501 slot_persistence_disabled`.
-
-| Action | Body | Response |
-|---|---|---|
-| `save` | `{"filename": NAME, "if_digest": DIGEST?}` | `id_slot`, `filename`, `n_saved` tokens, `n_written` bytes, `session_digest`, `timings.save_ms` |
-| `restore` | `{"filename": NAME}` | `id_slot`, `filename`, `n_restored` tokens, `n_read` bytes, `session_digest`, `timings.restore_ms` |
-| `erase` | `{"if_digest": DIGEST?}` | `id_slot`, `n_erased` tokens (0 for an empty slot) |
-
-`NAME` is 1-128 characters of `[A-Za-z0-9._-]`, may not start or end with a dot, and may not be a
-Windows device name; files live directly in `DIR`. Names are case-insensitive: the server stores and
-reports them lowercase, so one file never has two names. `if_digest` makes save or erase conditional on the slot
-still holding that session, checked atomically with the operation. Restore replaces whatever the
-slot held and makes the restored session an ordinary cache entry that any request with a matching
-prefix reuses, including from its checkpoints. A snapshot restores only on a server with the same
-model artifact, weight formats, KV dtype, speculative backend, draft tokens and draft head; DFlash
-servers do not support persistence. Files are written to a temporary name and renamed, and end
-with a checksum that restore verifies before it allocates anything.
-
-Errors: `409 slot_busy` while the slot or any context-cache transaction is in use (retry),
-`409 slot_session_mismatch` for a failed `if_digest`, `400 invalid_slot`, `invalid_action`,
-`invalid_filename`, and `400 slot_save_failed`/`slot_restore_failed` for a missing, corrupt or
-incompatible file or a slot with nothing to save. A failed restore leaves the slot empty.
-
-With `--auto-save-evicted`, a session last saved to or restored from a file is written back to that
-file, on a background thread, before an involuntary eviction destroys it. Continuing the
-conversation keeps the binding, so the file tracks its newest turn. An explicit erase never writes.
-A spill never replaces a file with a shallower copy of the session than the last save or restore
-recorded, and at most two spills wait for the writer. An explicit save, restore or erase of a file
-supersedes every spill of it still waiting (a restore first writes the waiting spills of the file it
-reads, so it reads the newest state). The operational log reports each spill, skip or failure. Snapshots are uncompressed. Besides its KV pages, a session stores one recurrent-state
-image per checkpoint it retains (endpoint, rewrite checkpoint, long anchors), about 150 MB each on
-the 27B, so even a short session is a few hundred MB: a 39-token Qwen3.8-27B session saved as
-295 MiB, with save and restore at about 0.3 s each on an RTX 3090.
+There is no endpoint to save, restore or erase a slot: sessions survive restarts and evictions
+through the [context store](#context-store), which needs no call from a supervisor. (The
+`POST /slots/{id}?action=save|restore|erase` endpoint and its `--slot-save-path` and
+`--auto-save-evicted` options were removed in its favour: a deployment that still passes those
+options fails to start with an unknown-option error and must drop them.)
 
 ### Context store
 
@@ -352,8 +316,7 @@ With it, a retained session is written to `DIR`
 On start-up the most recently used sessions are restored into the cache, most recent first, until
 the cache is full or `--context-store-restore-seconds` (120 s) is spent, before the server accepts
 requests. A request then reuses a restored conversation exactly as it would have before the restart.
-There is nothing for a supervisor or gateway to call: the explicit `/slots` save and restore are
-not needed to survive a restart.
+There is nothing for a supervisor or gateway to call to survive a restart or an engine upgrade.
 
 The store is also read while the server runs. When a request is about to be admitted (the
 request at the head of the queue, or a backfill candidate) and the store holds a checkpoint of that
@@ -1252,9 +1215,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--auto-long-anchors N` | propose a private long anchor at each of the last `N` interior message boundaries of every prompt, so a rewrite of recent history restores at the anchor below the edit instead of re-prefilling from token zero; clamped to the anchor limit, `0` disables | the anchor limit |
 | `--progress-anchor-tokens N` | propose a private long anchor at every multiple of `N` tokens of a prompt, and keep the anchors a cancelled prefill already holds, so a client that times out or disconnects part way through a very long prompt and retries resumes from the last anchor instead of prefilling from token zero; see the request-lifecycle section on cancelled requests. Shares the long-anchor limit with `--auto-long-anchors`; `0` disables, otherwise at least `256` | `16384` |
 | `--max-cache-markers-per-request N` | caller marker input-complexity bound | `4` |
-| `--slot-save-path DIR` | enable `POST /slots/{id}` save/restore/erase with files in `DIR` (created at startup) | disabled |
-| `--auto-save-evicted` | write an evicted session back to its bound slot file; requires `--slot-save-path` | off |
-| `--context-store DIR` | keep retained sessions on disk so a restart or crash does not lose the context cache; see [Context store](#context-store). Replaces `--auto-save-evicted` | off |
+| `--context-store DIR` | keep retained sessions on disk so a restart or crash does not lose the context cache; see [Context store](#context-store). | off |
 | `--context-store-max-gib N` | bound the store; the least recently used sessions are removed beyond it. Requires `--context-store` | half the volume's free space |
 | `--context-store-ttl-hours N` | remove sessions unused this long; `0` keeps them until space is needed | `168` |
 | `--context-store-idle-seconds N` | write a session unused this long, and changed since it was last written, in the background; `0` writes only on eviction and shutdown | `30` |

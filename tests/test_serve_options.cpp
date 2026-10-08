@@ -440,12 +440,6 @@ int main() {
                       "--auto-host-cache was accepted with the context cache disabled");
 
     const ServeOptions no_slots = parse({"ninfer-serve", "model.ninfer"});
-    failures += check(no_slots.slot_save_path.empty() && !no_slots.auto_save_evicted,
-                      "slot persistence was on by default");
-    const ServeOptions slots = parse(
-        {"ninfer-serve", "model.ninfer", "--slot-save-path", "sessions", "--auto-save-evicted"});
-    failures += check(slots.slot_save_path == "sessions" && slots.auto_save_evicted,
-                      "slot persistence options did not reach serving options");
     failures += check(no_slots.exit_on_engine_failure &&
                           !parse({"ninfer-serve", "model.ninfer", "--no-exit-on-engine-failure"})
                                .exit_on_engine_failure,
@@ -456,16 +450,12 @@ int main() {
         } catch (const std::invalid_argument&) { return true; }
         return false;
     };
-    failures += check(rejected({"ninfer-serve", "model.ninfer", "--auto-save-evicted"}),
-                      "--auto-save-evicted was accepted without --slot-save-path");
-    failures += check(rejected({"ninfer-serve", "model.ninfer", "--slot-save-path", ""}),
-                      "an empty --slot-save-path was accepted");
-    failures += check(rejected({"ninfer-serve", "model.ninfer", "--no-prefix-reuse",
-                                "--slot-save-path", "sessions"}),
-                      "--slot-save-path was accepted with prefix reuse disabled");
-    failures += check(serve_usage_text("ninfer-serve").find("--slot-save-path") !=
-                          std::string::npos,
-                      "serve help omits --slot-save-path");
+    // The slot save/restore options were replaced by the context store and are no longer accepted.
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--slot-save-path", "sessions"}) &&
+                          rejected({"ninfer-serve", "model.ninfer", "--auto-save-evicted"}) &&
+                          serve_usage_text("ninfer-serve").find("--slot-save-path") ==
+                              std::string::npos,
+                      "a removed slot persistence option is still accepted or documented");
 
     // The context store is off unless a directory is named; its tuning flags need the directory.
     const ServeOptions no_store = parse({"ninfer-serve", "model.ninfer"});
@@ -495,9 +485,6 @@ int main() {
     failures += check(rejected({"ninfer-serve", "model.ninfer", "--context-store", "cache",
                                 "--context-store-max-gib", "0"}),
                       "a zero --context-store-max-gib was accepted");
-    failures += check(rejected({"ninfer-serve", "model.ninfer", "--context-store", "cache",
-                                "--slot-save-path", "sessions", "--auto-save-evicted"}),
-                      "--context-store was accepted together with --auto-save-evicted");
     failures += check(rejected({"ninfer-serve", "model.ninfer", "--no-prefix-reuse",
                                 "--context-store", "cache"}),
                       "--context-store was accepted with prefix reuse disabled");
