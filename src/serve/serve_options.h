@@ -103,6 +103,10 @@ struct ServeOptions {
     // Output limit for a request that omits one. Unset means the Engine's concurrent lane budget:
     // see request_limits().
     std::optional<int> default_max_tokens;
+    // Upper bound on the output budget of every request, stated or derived. A request reserves KV
+    // for its whole budget up front, so a large one evicts retained contexts for pages it never
+    // writes; see docs/serving.md.
+    std::optional<int> max_output_tokens;
     // Reasoning effort for a thinking-enabled request that states none. Never None: disabling
     // thinking by default is --no-thinking.
     std::optional<RequestedReasoningEffort> default_reasoning_effort;
@@ -125,6 +129,14 @@ struct ServeOptions {
 [[nodiscard]] inline RequestLimits request_limits(const ServeOptions& options) noexcept {
     return RequestLimits{.default_max_tokens = options.default_max_tokens,
                          .max_context        = static_cast<int>(options.max_context)};
+}
+
+// The output budget actually submitted: the request's own (stated or derived) budget, bounded by
+// --max-output-tokens when set.
+[[nodiscard]] inline std::uint32_t
+bounded_output_budget(std::uint32_t requested, const std::optional<int>& max_output_tokens) noexcept {
+    return max_output_tokens ? std::min(requested, static_cast<std::uint32_t>(*max_output_tokens))
+                             : requested;
 }
 
 ServeOptions parse_serve_options(int argc, char** argv);

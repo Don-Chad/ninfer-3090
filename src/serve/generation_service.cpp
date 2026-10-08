@@ -440,6 +440,8 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
             request_options.execution.requested_output_tokens =
                 engine_->concurrent_output_budget(prompt);
         }
+        request_options.execution.requested_output_tokens = bounded_output_budget(
+            request_options.execution.requested_output_tokens, options_.max_output_tokens);
         prepared.requested_output_tokens =
             static_cast<int>(request_options.execution.requested_output_tokens);
         prepared.preparation   = prompt.preparation_stats();
