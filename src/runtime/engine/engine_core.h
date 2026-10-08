@@ -987,26 +987,44 @@ private:
         } catch (...) { return false; }
     }
 
+    // A stored session read back for a request, until the request is planned again against it.
+    struct HydrationAttempt {
+        bool restored = false;
+        std::uint32_t expected_frontier = 0; // the stored checkpoint the request should resume from
+        Clock::time_point started;
+    };
+
     // Before a request is admitted: when the context store holds a checkpoint of this very prompt
-    // deeper than anything the cache offers, read that session back so the request resumes from it
-    // instead of prefilling the difference. Called by the worker with the execution mutex held.
-    // Returns whether the cache changed (the caller must plan the request again). Every failure is
-    // a miss: the request is prefilled as it would have been without the store.
-    [[nodiscard]] bool hydrate_from_store(const std::shared_ptr<Request>& request,
-                                          std::uint32_t resident_reuse) noexcept {
+    // deeper than anything the cache offers (`resident_reuse` is the deepest it can offer, selected
+    // or not), read that session back so the request resumes from it instead of prefilling the
+    // difference. Called by the worker with the execution mutex held. `restored` tells the caller
+    // the cache changed and the request must be planned again. Every failure is a miss: the
+    // request is prefilled as it would have been without the store, and the time spent trying is
+    // counted.
+    [[nodiscard]] HydrationAttempt hydrate_from_store(const std::shared_ptr<Request>& request,
+                                                      std::uint32_t resident_reuse) noexcept {
+        HydrationAttempt attempt;
         if (store_ == nullptr || request->store_probed || !context_cache_enabled_ ||
             !request->options.execution.allow_prefix_reuse || !request->base_plan ||
             materializing_ || instance_.program->has_context_transaction() ||
             resources_.context_transaction_kind()) {
-            return false;
+            return attempt;
         }
         bool idle_lane = false;
         for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
             idle_lane = idle_lane || slots_[lane] == nullptr;
         }
-        if (!idle_lane) { return false; }
+        if (!idle_lane) { return attempt; }
         request->store_probed = true;
-        const auto started    = Clock::now();
+        attempt.started       = Clock::now();
+        const auto charge     = [&] {
+            store_hydration_ns_.fetch_add(
+                static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() -
+                                                                         attempt.started)
+                        .count()),
+                std::memory_order_relaxed);
+        };
         try {
             std::string best_id;
             std::uint32_t best_frontier = resident_reuse + kMinimumHydrationGain - 1U;
@@ -1022,16 +1040,17 @@ private:
                     }
                 }
             }
-            if (best_id.empty()) { return false; }
-            std::optional<std::vector<std::uint8_t>> bytes = store_->load(best_id);
+            if (best_id.empty()) { return attempt; } // nothing worth reading: not an attempt
+            std::optional<std::vector<std::uint8_t>> bytes = store_->load(best_id, false);
             if (!bytes) {
                 store_hydration_failures_.fetch_add(1, std::memory_order_relaxed);
-                return false;
+                charge();
+                return attempt;
             }
             bool restored = false;
             // Each refusal for room gives up one more retained session; a bounded few, so a
             // request never empties the cache for one image.
-            for (std::uint32_t attempt = 0; attempt < 8 && !restored; ++attempt) {
+            for (std::uint32_t tries = 0; tries < 8 && !restored; ++tries) {
                 std::optional<std::uint32_t> slot = first_vacant_slot_locked();
                 if (!slot) {
                     if (!evict_least_recently_used_session()) { break; }
@@ -1053,21 +1072,64 @@ private:
             }
             if (!restored) {
                 store_hydration_failures_.fetch_add(1, std::memory_order_relaxed);
-                return false;
+                charge();
+                return attempt;
             }
-            store_hydrations_.fetch_add(1, std::memory_order_relaxed);
-            store_hydrated_tokens_.fetch_add(best_frontier - resident_reuse,
-                                             std::memory_order_relaxed);
-            store_hydration_ns_.fetch_add(
-                static_cast<std::uint64_t>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started)
-                        .count()),
-                std::memory_order_relaxed);
-            return true;
+            store_->touch(best_id); // it was used: restoring does not count against its age
+            attempt.restored          = true;
+            attempt.expected_frontier = best_frontier;
+            return attempt; // the caller settles the counters once the request is planned again
         } catch (...) {
             store_hydration_failures_.fetch_add(1, std::memory_order_relaxed);
+            charge();
+            return HydrationAttempt{};
+        }
+    }
+
+    // Settles a restored attempt once the request has been planned again: it counts as a hydration
+    // only if the plan now resumes from (at least) the stored checkpoint, and the tokens it counts
+    // are the ones the plan actually gained over `reuse_before`.
+    void settle_hydration(const HydrationAttempt& attempt, std::uint32_t reuse_before,
+                          std::uint32_t reuse_after) noexcept {
+        store_hydration_ns_.fetch_add(
+            static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - attempt.started)
+                    .count()),
+            std::memory_order_relaxed);
+        if (reuse_after >= attempt.expected_frontier && reuse_after > reuse_before) {
+            store_hydrations_.fetch_add(1, std::memory_order_relaxed);
+            store_hydrated_tokens_.fetch_add(reuse_after - reuse_before, std::memory_order_relaxed);
+        } else {
+            store_hydration_failures_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    // After an admissible inspection of `request`: reads a deeper stored session back into the cache
+    // when there is one and plans the request again against it, leaving the new inspection in
+    // `inspected`. False when planning again failed, which removed the request.
+    [[nodiscard]] bool hydrate_and_replan(const std::shared_ptr<Request>& request,
+                                          std::optional<ResourceInspection>& inspected,
+                                          PlanningAllowance allowance) {
+        if (store_ == nullptr || !inspected || !inspected->choice ||
+            (inspected->readiness != Readiness::Ready &&
+             inspected->readiness != Readiness::NeedsTransfer)) {
+            return true;
+        }
+        const std::uint32_t chosen = inspected->choice->summary().reusable_prompt_tokens;
+        const std::uint32_t resident =
+            std::max(chosen, resources_.max_resident_prefix_frontier(*request->base_plan));
+        const HydrationAttempt attempt = hydrate_from_store(request, resident);
+        if (!attempt.restored) { return true; }
+        inspected.reset();
+        std::optional<ResourceInspection> replanned = inspect_admission_or_fail(request, allowance);
+        if (!replanned) {
+            settle_hydration(attempt, chosen, 0);
             return false;
         }
+        inspected.emplace(std::move(*replanned));
+        settle_hydration(attempt, chosen,
+                         inspected->choice ? inspected->choice->summary().reusable_prompt_tokens : 0U);
+        return true;
     }
 
     [[nodiscard]] static std::uint64_t unix_time_ms() noexcept {
@@ -2426,19 +2488,9 @@ private:
                 control_progress = true;
                 continue;
             }
-            if ((head_inspected->readiness == Readiness::Ready ||
-                 head_inspected->readiness == Readiness::NeedsTransfer) &&
-                head_inspected->choice &&
-                hydrate_from_store(head, head_inspected->choice->summary().reusable_prompt_tokens)) {
-                // The cache changed: plan again against it.
-                head_inspected.reset();
-                std::optional<ResourceInspection> replanned =
-                    inspect_admission_or_fail(head, allowance);
-                if (!replanned) {
-                    control_progress = true;
-                    continue;
-                }
-                head_inspected.emplace(std::move(*replanned));
+            if (!hydrate_and_replan(head, head_inspected, allowance)) {
+                control_progress = true;
+                continue;
             }
             auto head_inspection = std::move(*head_inspected);
             if (head_inspection.readiness == Readiness::PermanentlyInfeasible) {
@@ -2518,6 +2570,13 @@ private:
                 std::optional<ResourceInspection> candidate_inspected =
                     inspect_admission_or_fail(candidate, allowance);
                 if (!candidate_inspected) {
+                    control_progress = true;
+                    continue;
+                }
+                // A backfill candidate resumes from a stored session too. What it reads back is
+                // ordinary cache, which planning for the blocked head may evict again, so the
+                // persistent-backfill proof below still decides whether it may run.
+                if (!hydrate_and_replan(candidate, candidate_inspected, allowance)) {
                     control_progress = true;
                     continue;
                 }

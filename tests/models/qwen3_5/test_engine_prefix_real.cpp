@@ -1845,7 +1845,8 @@ int exercise_store_hydration(const char* artifact) {
     const ninfer::GenerationResult next =
         engine.generate(engine.prepare(slot_conversation(second_turn(reply))), request);
     const ninfer::RuntimeStats stats = engine.runtime_stats();
-    if (stats.context_store_hydrations != 1 || stats.context_store_hydrated_tokens < 4096) {
+    if (stats.context_store_hydrations != 1 || stats.context_store_hydrated_tokens < 4096 ||
+        stats.context_store_hydration_failures != 0 || stats.context_store_hydration_seconds <= 0.0) {
         std::cerr << "the continuation did not hydrate the stored session: hydrations="
                   << stats.context_store_hydrations
                   << " tokens=" << stats.context_store_hydrated_tokens
