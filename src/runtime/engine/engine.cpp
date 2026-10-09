@@ -307,7 +307,8 @@ public:
         // Everything written is queued for upload by now; give the uploads their budget.
         if (store) {
             (void)store->flush_remote(std::chrono::steady_clock::now() +
-                                      options.context_store.remote_flush_budget);
+                                          options.context_store.remote_flush_budget,
+                                      true);
         }
         try {
             device.synchronize();

@@ -1052,9 +1052,15 @@ void ContextStore::remote_loop() {
     unpin_chunks_locked(pinned);
 }
 
-bool ContextStore::flush_remote(std::chrono::steady_clock::time_point deadline) {
+bool ContextStore::flush_remote(std::chrono::steady_clock::time_point deadline, bool final_flush) {
     if (!options_.remote) { return true; }
     std::unique_lock lock(remote_mutex_);
+    // At the end of the run, queued refreshes, prefetches and touches are best-effort: drop them
+    // rather than let them use the budget the uploads need.
+    if (final_flush) {
+        std::erase_if(remote_queue_,
+                      [](const RemoteTask& task) { return task.kind != RemoteTask::Kind::Upload; });
+    }
     return remote_idle_cv_.wait_until(
         lock, deadline, [&] { return remote_queue_.empty() && !remote_busy_; });
 }

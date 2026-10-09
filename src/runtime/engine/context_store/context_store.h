@@ -169,8 +169,10 @@ public:
     void maintain();
 
     // With a remote: stops the background transfers after the work already queued, waiting at most
-    // until `deadline`. For shutdown, after the last put. Returns whether the queue drained.
-    bool flush_remote(std::chrono::steady_clock::time_point deadline);
+    // until `deadline`. For shutdown, after the last put. Returns whether the queue drained. With
+    // `final_flush`, queued refreshes, prefetches and touches are dropped first so only uploads use
+    // the budget.
+    bool flush_remote(std::chrono::steady_clock::time_point deadline, bool final_flush = false);
     // With a remote: lists it now and registers images it holds that this store does not. Also done
     // in the background every remote_refresh. Returns the number of images added.
     // Lists the bucket and registers images other engines left there. Stops reading manifests at

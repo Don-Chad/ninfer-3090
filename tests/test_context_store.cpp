@@ -938,6 +938,33 @@ void test_shutdown_interrupts_a_blocked_transfer() {
     check(seconds < 10.0, "closing the store waited on a blocked transfer");
 }
 
+// The final flush spends its budget on uploads: a queued touch is dropped, not run ahead of them.
+void test_final_flush_drops_best_effort_tasks() {
+    TempDirectory directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    ContextStore store(remote_options(directory.path(), remote));
+    (void)store.put(describe("0a"), concat({pseudo_random(30, 1), pseudo_random(3000, 2)}),
+                    std::array{ContextStore::Region{30, 3000}});
+    check(drained(store), "first upload");
+    remote->clock += 2 * 24 * 3600 * 1000LL;
+    remote->set_hold(true);
+    (void)store.put(describe("0b"), concat({pseudo_random(30, 3), pseudo_random(3000, 4)}),
+                    std::array{ContextStore::Region{30, 3000}});
+    store.touch("0a"); // queued behind the blocked upload
+    remote->set_hold(false);
+    check(store.flush_remote(std::chrono::steady_clock::now() + std::chrono::seconds(10), true),
+          "the final flush did not drain");
+    check(remote->touches == 0, "a best-effort touch ran during the final flush");
+    bool uploaded = false;
+    {
+        std::scoped_lock lock(remote->mutex);
+        for (const auto& [key, value] : remote->objects) {
+            uploaded = uploaded || key.find("0b.manifest") != std::string::npos;
+        }
+    }
+    check(uploaded, "the upload queued before the flush was not completed");
+}
+
 } // namespace
 
 int main() {
@@ -968,6 +995,7 @@ int main() {
     test_expired_remote_chunks_are_put_back();
     test_local_ttl_does_not_hide_remote_images();
     test_shutdown_interrupts_a_blocked_transfer();
+    test_final_flush_drops_best_effort_tasks();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }
