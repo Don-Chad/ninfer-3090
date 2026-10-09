@@ -1172,6 +1172,12 @@ struct RuntimeHostWorkStats {
     std::uint64_t admission_policy_invocations  = 0;
     std::uint64_t context_progress_invocations  = 0;
     std::uint64_t stats_publication_invocations = 0;
+
+    // Host-active time: every engine and program phase, device wait excluded.
+    [[nodiscard]] std::uint64_t active_ns() const noexcept {
+        return engine_boundary_ns + program_submit_ns + program_post_ns + engine_commit_output_ns +
+               engine_maintenance_ns;
+    }
 };
 
 // Monotonic execution counters, boundary-consistent current gauges, and explicitly named last

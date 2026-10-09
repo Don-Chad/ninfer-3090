@@ -9,11 +9,13 @@
 // instead of jumping at its completion. The ninfer:-prefixed series report what llama.cpp has no
 // name for: completed and failed requests, prefix-cache reuse and speculative acceptance.
 
+#include "serve/generation_pace.h"
 #include "serve/generation_service.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace ninfer::serve {
@@ -29,6 +31,10 @@ public:
     // invalid or oversized prompt.
     void record_rejection();
 
+    // The most recent finished request with at least two tokens, which is the only kind that has a
+    // token interval to report. Empty until one finishes.
+    [[nodiscard]] std::optional<GenerationPace> last_generation_pace() const;
+
     // One complete Prometheus text body without HTTP framing. `admitted_requests` counts requests
     // from admission to response release, so a request is visible while it waits for a lane.
     [[nodiscard]] std::string render(std::uint32_t max_concurrency,
@@ -43,6 +49,9 @@ private:
     std::uint64_t prefix_cache_hit_tokens_total_     = 0;
     std::uint64_t speculative_draft_tokens_total_    = 0;
     std::uint64_t speculative_accepted_tokens_total_ = 0;
+    std::uint64_t token_intervals_total_             = 0;
+    double token_interval_seconds_total_             = 0.0;
+    std::optional<GenerationPace> last_pace_;
 };
 
 } // namespace ninfer::serve
