@@ -527,6 +527,97 @@ void test_remote_damage_and_outage_are_misses() {
     check(drained(offline) && offline.stats().remote_uploads == 4, "the recovered upload was incomplete");
 }
 
+// A refresh cut short by its deadline registers nothing it did not reach and, because its listing
+// is incomplete, removes nothing from the index.
+void test_remote_refresh_respects_its_deadline() {
+    TempDirectory directory;
+    TempDirectory other_directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    {
+        ContextStore store(remote_options(directory.path(), remote));
+        (void)store.put(describe("0a"), concat({pseudo_random(30, 1), pseudo_random(3000, 2)}),
+                        std::array{ContextStore::Region{30, 3000}});
+        (void)store.put(describe("0b"), concat({pseudo_random(30, 3), pseudo_random(3000, 4)}),
+                        std::array{ContextStore::Region{30, 3000}});
+        check(drained(store), "upload before the deadline test");
+    }
+    ContextStore other(remote_options(other_directory.path(), remote));
+    const auto expired = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    check(other.refresh_remote(expired) == 0 && other.list().empty(),
+          "a refresh past its deadline still read manifests");
+    check(other.refresh_remote() == 2 && other.list().size() == 2, "the images were not registered");
+    {
+        std::scoped_lock lock(remote->mutex);
+        for (auto it = remote->objects.begin(); it != remote->objects.end();) {
+            it = it->first.find("0a.manifest") != std::string::npos ? remote->objects.erase(it)
+                                                                    : std::next(it);
+        }
+    }
+    // The bucket lost 0a, but a listing cut short by the deadline cannot say so.
+    (void)other.refresh_remote(expired);
+    check(other.list().size() == 2, "an incomplete listing removed an image from the index");
+    (void)other.refresh_remote();
+    check(other.list().size() == 1 && other.list()[0].id == "0b",
+          "a complete listing did not drop an image the bucket lost");
+}
+
+// Several local chunks damaged at their original size are all discarded and fetched again; the
+// image still loads.
+void test_remote_repairs_several_damaged_local_chunks() {
+    TempDirectory directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    ContextStore store(remote_options(directory.path(), remote));
+    const std::vector<std::uint8_t> image = concat({pseudo_random(30, 1), pseudo_random(3000, 2)});
+    (void)store.put(describe("0a"), image, std::array{ContextStore::Region{30, 3000}});
+    check(drained(store), "upload before local damage");
+    int damaged = 0;
+    for (const auto& shard : fs::directory_iterator(directory.path() / "chunks")) {
+        if (!shard.is_directory()) { continue; }
+        for (const auto& item : fs::directory_iterator(shard.path())) {
+            if (item.path().extension() != ".chunk" || damaged == 2) { continue; }
+            std::fstream file(item.path(), std::ios::in | std::ios::out | std::ios::binary);
+            char byte = 0;
+            file.read(&byte, 1);
+            byte = static_cast<char>(byte ^ 0xff);
+            file.seekp(0);
+            file.write(&byte, 1);
+            ++damaged;
+        }
+    }
+    check(damaged == 2, "the test did not find two chunks to damage");
+    const auto loaded = store.load("0a");
+    check(loaded.has_value() && *loaded == image, "damaged local chunks were not repaired together");
+    check(store.stats().remote_downloads >= 2, "the damaged chunks were not fetched again");
+}
+
+// A corrupt remote copy is quarantined, but a fresh local write of the same id lifts that: once
+// the new copy is evicted the bucket's valid manifest can be offered again.
+void test_remote_rewrite_lifts_the_quarantine() {
+    TempDirectory directory;
+    TempDirectory other_directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    const std::vector<std::uint8_t> image = concat({pseudo_random(30, 1), pseudo_random(3000, 2)});
+    {
+        ContextStore store(remote_options(directory.path(), remote));
+        (void)store.put(describe("0a"), image, std::array{ContextStore::Region{30, 3000}});
+        check(drained(store), "upload before quarantine");
+    }
+    for (auto& [key, value] : remote->objects) {
+        if (key.find("/chunks/") != std::string::npos) {
+            value.first[0] ^= 0xff;
+            break;
+        }
+    }
+    ContextStore other(remote_options(other_directory.path(), remote));
+    (void)other.refresh_remote();
+    check(!other.load("0a").has_value() && other.list().empty(), "the damaged image was not quarantined");
+    check(other.refresh_remote() == 0, "a quarantined image was imported again");
+    (void)other.put(describe("0a"), image, std::array{ContextStore::Region{30, 3000}});
+    check(drained(other), "upload of the rewritten image");
+    check(other.erase("0a"), "the rewritten image was not held");
+    check(other.refresh_remote() == 1, "a rewrite did not lift the quarantine");
+}
+
 void test_remote_use_restarts_the_remote_age() {
     TempDirectory directory;
     auto remote = std::make_shared<MemoryObjectStore>();
@@ -759,6 +850,9 @@ int main() {
     test_remote_survives_local_eviction();
     test_remote_damage_and_outage_are_misses();
     test_remote_use_restarts_the_remote_age();
+    test_remote_refresh_respects_its_deadline();
+    test_remote_repairs_several_damaged_local_chunks();
+    test_remote_rewrite_lifts_the_quarantine();
     test_upload_survives_eviction_and_replacement();
     test_absent_chunks_are_not_reused();
     test_local_corruption_is_repaired_from_the_remote();

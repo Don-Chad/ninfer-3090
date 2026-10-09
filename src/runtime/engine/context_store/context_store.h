@@ -173,7 +173,10 @@ public:
     bool flush_remote(std::chrono::steady_clock::time_point deadline);
     // With a remote: lists it now and registers images it holds that this store does not. Also done
     // in the background every remote_refresh. Returns the number of images added.
-    std::size_t refresh_remote();
+    // Lists the bucket and registers images other engines left there. Stops reading manifests at
+    // `deadline`; an incomplete listing never removes anything from the index.
+    std::size_t refresh_remote(std::chrono::steady_clock::time_point deadline =
+                                   std::chrono::steady_clock::time_point::max());
     // With a remote: fetches the image's missing chunks in the background so a later load() is
     // local. False when there is nothing to do.
     bool prefetch(const std::string& id);
@@ -199,6 +202,9 @@ private:
         Info info;
         std::uint64_t manifest_bytes = 0;
         std::vector<ChunkRef> chunks; // every chunk the manifest names, in order
+        // Which write of this id this is. A transfer that outlives the entry it started from
+        // must not act on the entry that replaced it.
+        std::uint64_t generation = 0;
     };
     struct ChunkUse {
         std::uint32_t references = 0;
@@ -249,7 +255,11 @@ private:
     void upload_image(RemoteTask& task);
     void touch_remote_image(const std::string& id);
     enum class FetchStatus : std::uint8_t { Complete, Transient, Corrupt };
-    [[nodiscard]] FetchStatus fetch_image_chunks(const std::string& id);
+    // `generation` receives the generation of the entry the fetch worked from.
+    [[nodiscard]] FetchStatus fetch_image_chunks(const std::string& id, std::uint64_t& generation);
+    // A fetch of `generation` found the image damaged or gone in the bucket: drop it and do not
+    // offer it again, unless the entry has been replaced since.
+    void settle_failed_fetch(const std::string& id, std::uint64_t generation);
     bool install_chunk(const ChunkRef& chunk, std::span<const std::uint8_t> bytes);
 
     Options options_;
@@ -262,6 +272,7 @@ private:
     std::unordered_map<std::string, ChunkUse> chunks_; // keyed by hex hash
     std::uint64_t chunk_total_bytes_ = 0;
     std::uint64_t manifest_total_bytes_ = 0;
+    std::uint64_t next_generation_      = 0; // guarded by mutex_
     Stats stats_;
 
     // Remote worker: one thread runs the queued transfers, one at a time.

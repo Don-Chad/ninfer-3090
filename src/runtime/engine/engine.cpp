@@ -474,7 +474,9 @@ private:
         store_binding           = slot_model_binding(options, load);
         // Register what other engines left in the bucket before start-up restores sessions; an
         // unreachable bucket costs the connection timeouts, then the store runs on its directory.
-        if (config.remote) { (void)store->refresh_remote(); }
+        if (config.remote) {
+            (void)store->refresh_remote(std::chrono::steady_clock::now() + config.restore_budget);
+        }
     }
 
     // Writes one session to the context store. Called on the writer thread, or at shutdown.
