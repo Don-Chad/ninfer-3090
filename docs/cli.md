@@ -215,7 +215,8 @@ precise-coding profile use explicit sampling overrides.
 
 Speculative decoding is disabled by default. Select MTP, the 35B-A3B DFlash or the Qwen3.8-27B
 DFlash2 backend with one to fifteen draft positions. Only one backend can be enabled per Engine, and
-`--lm-head-draft` selects the optimized proposal head and requires a selected backend. Both
+Every backend uses the optimized proposal head: `--spec` implies it, and `--lm-head-draft` is still accepted but
+requires a selected backend. Both
 masked-draft backends may be combined with `--vision`:
 
 ```bash
@@ -239,7 +240,7 @@ For DFlash:
 ```
 
 For Qwen3.8-27B artifacts containing the DFlash2 companion weights, select
-`--spec dflash2 --draft-tokens 7`, optionally with `--lm-head-draft` and `--vision`; this is what
+`--spec dflash2 --draft-tokens 7`, optionally with `--vision`; this is what
 the launchers pass. DFlash2 accepts every draft count from 1 through 15. Both `groupwise-int` and
 `nvfp4` artifacts use the same Engine route, including CUDA Graph, concurrent requests, sampling
 penalties, and prefix reuse. An artifact without the companion weights reports a missing DFlash2
@@ -259,7 +260,8 @@ guessing right.
   MTP there, because the head already copies.
 - **DFlash2:** seven is the checkpoint recommendation and the best mean on this card. The best K
   still depends on the workload, so a deployment serving one kind of work should sweep its own.
-  `--lm-head-draft` is within noise of unset for DFlash2 at every count and can be left off.
+  The optimized proposal head, which `--spec` now always enables, measured within noise of the full head for
+  DFlash2 at every count.
 - **DFlash:** seven forms the measured block length eight; fifteen uses the maximum supported block
   length sixteen.
 
@@ -315,7 +317,7 @@ GPU residency is frozen when the Engine starts:
 - no `--spec` omits MTP/DFlash/DFlash2 weights and state and the optimized proposal head;
 - `--spec mtp`, `--spec dflash` (35B-A3B), and `--spec dflash2` (Qwen3.8-27B) load only the selected
   speculative backend;
-- a speculative backend with the full proposal head omits the optimized proposal head;
+- the optimized proposal head is loaded whenever a speculative backend is selected;
 - Vision is disabled by default, omitting its weights and Vision-specific unified-workspace extent;
 - `--vision` loads the weights, expands the one Program workspace for Vision encode/handoff, and
   enables image/video input;
