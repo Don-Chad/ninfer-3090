@@ -321,7 +321,22 @@ std::string Metrics::render(const RuntimeStats& stats, bool ready,
     COUNTER(context_store_hydration_failures, "context_store_hydration_failures_total",
             "Hydrations that failed; the request was prefilled normally.");
     COUNTER(context_store_hydration_seconds, "context_store_hydration_seconds_total",
-            "Worker time spent hydrating sessions.");
+            "Time requests waited for stored sessions to be read back, failed reads included.");
+    GAUGE(context_store_remote_images, "context_store_remote_images",
+          "Sessions the remote bucket holds that the local directory does not hold in full.");
+    COUNTER(context_store_remote_uploads, "context_store_remote_uploads_total",
+            "Objects (chunks and manifests) uploaded to the remote bucket.");
+    COUNTER(context_store_remote_upload_bytes, "context_store_remote_upload_bytes_total",
+            "Bytes uploaded to the remote bucket.");
+    COUNTER(context_store_remote_upload_failures, "context_store_remote_upload_failures_total",
+            "Session uploads that failed; they are retried when the session is next written.");
+    COUNTER(context_store_remote_downloads, "context_store_remote_downloads_total",
+            "Chunks fetched from the remote bucket.");
+    COUNTER(context_store_remote_download_bytes, "context_store_remote_download_bytes_total",
+            "Bytes fetched from the remote bucket.");
+    COUNTER(context_store_remote_download_failures,
+            "context_store_remote_download_failures_total",
+            "Remote listings or fetches that failed or returned damaged data.");
 #undef GAUGE
 #undef COUNTER
 

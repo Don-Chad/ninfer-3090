@@ -322,6 +322,48 @@ image itself (copying a deep conversation out of the GPU or the Host tier) is a 
 Engine worker, so a request that arrives during it waits for that copy; a conversation that could not
 be queued is tried again later.
 
+
+#### Keeping a copy in a bucket
+
+`--context-store-s3-endpoint URL --context-store-s3-bucket NAME` (off by default, and only with
+`--context-store`) keep a copy of the store in an S3-compatible bucket: AWS S3, MinIO, Cloudflare
+R2, Backblaze B2 or any server that speaks the S3 API with path-style addressing and Signature V4.
+The local directory becomes a cache of the bucket.
+
+- Every session written to the directory is also uploaded in the background, chunks first and its
+  manifest last, so another engine never sees a session whose chunks are missing. A chunk the bucket
+  already holds is not sent again, so a conversation that grows uploads only what changed. Shutdown
+  waits up to two minutes for the uploads still queued.
+- At start-up, and every minute after, the engine lists the bucket and registers sessions it does
+  not have. They appear in the store as not local; start-up restores the most recently used ones,
+  fetching their chunks (every chunk is verified, a damaged one makes the session a miss and it is
+  not offered again). A new engine, a replacement box or a second engine therefore starts warm from
+  what the others wrote, without sharing a disk.
+- A request that would resume from a session only the bucket holds waits for it like any stored
+  session (see above): the background reader fetches the missing chunks, within the same deadline,
+  without holding up the Engine worker or other requests.
+- A session evicted from the directory for space stays in the bucket and comes back the same way.
+- Credentials come from the environment, never the command line: `NINFER_S3_ACCESS_KEY_ID` and
+  `NINFER_S3_SECRET_ACCESS_KEY` (or `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; an
+  `AWS_SESSION_TOKEN` is honoured). `--context-store-s3-region` (default `us-east-1`) names the
+  signing region and `--context-store-s3-prefix` namespaces the keys when a bucket is shared. Use
+  an `https://` endpoint outside a trusted network: payloads are not part of the request signature.
+- The bucket is the long-term tier, so its expiry is the bucket's: add a lifecycle rule that expires
+  objects under the prefix after 7 days (the engine assumes at least a day). `--context-store-ttl-hours`
+  governs only the files in this directory; a session only the bucket holds ages there, and drops out
+  of the index at the next listing once the bucket no longer lists it. A session that is used has the
+  age of its objects restarted (a server-side copy onto itself, no data transferred, at most once a day
+  per session), and an object the bucket has lost in the meantime is uploaded again from the directory,
+  so something in use does not expire under it. A write is uploaded from a snapshot taken when it was
+  written, with its chunk files kept on disk until the upload ends (at most 16 uploads wait, each
+  newer write of a session replacing its queued upload); a chunk that is not intact on disk stops the
+  upload instead of publishing a session whose data is damaged. A chunk found damaged on disk when a
+  session is loaded is fetched again from the bucket.
+- An unreachable bucket costs the uploads and the fetches, counted in `ninfer_context_store_remote_*`;
+  the directory keeps working. Shutdown waits for queued uploads up to the remote flush budget (two
+  minutes) and then interrupts the transfer in progress, so it never waits out a stalled connection.
+
+
 ### Metrics
 
 `GET /metrics` serves Prometheus text format 0.0.4 on the same port. Like `/v1/load` it requires
@@ -382,7 +424,10 @@ server restarts.
 | `ninfer_context_store_bytes_written_total`, `_bytes_reused_total` | new chunk bytes written, and chunk bytes a write found already stored |
 | `ninfer_context_store_evicted_total`, `_corrupt_total` | sessions removed for space, age or supersession, and because they could not be read back intact |
 | `ninfer_context_store_restored_sessions`, `_restored_bytes`, `_restore_seconds` | gauges: what start-up restored into the cache, and how long it took |
-| `ninfer_context_store_hydrations_total`, `_hydrated_tokens_total`, `_hydration_failures_total`, `_hydration_seconds_total` | stored sessions read back for a request, the prompt tokens that saved, failures (the request was prefilled, or the plan did not use what was read) and worker time spent, failed attempts included |
+| `ninfer_context_store_hydrations_total`, `_hydrated_tokens_total`, `_hydration_failures_total`, `_hydration_seconds_total` | stored sessions read back for a request, the prompt tokens that saved, failures (the request was prefilled, or its admission did not use what was read) and the time requests waited for the reads, failed ones included |
+| `ninfer_context_store_remote_images` | gauge: with a bucket, sessions it holds that the directory does not hold in full |
+| `ninfer_context_store_remote_uploads_total`, `_remote_upload_bytes_total`, `_remote_upload_failures_total` | objects and bytes uploaded to the bucket, and uploads that failed |
+| `ninfer_context_store_remote_downloads_total`, `_remote_download_bytes_total`, `_remote_download_failures_total` | chunks and bytes fetched from the bucket, and listings or fetches that failed or returned damaged data |
 
 Histograms expose `_bucket`, `_sum` and `_count`. Metrics have bounded labels; they do not retain
 request IDs or request text. Rates are calculated by the consumer, for example:
@@ -1280,6 +1325,8 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--context-store-idle-seconds N` | write a session unused this long, and changed since it was last written, in the background; `0` writes only at shutdown | `30` |
 | `--context-store-restore-seconds N` | time budget for restoring sessions at start-up, and the longest a request waits for its stored session to be read back | `120` |
 | `--context-store-flush-seconds N` | time budget for writing sessions that are not yet stored at shutdown | `60` |
+| `--context-store-s3-endpoint URL`, `--context-store-s3-bucket NAME` | keep a copy of the store in an S3-compatible bucket (both required together; credentials from `NINFER_S3_ACCESS_KEY_ID` / `NINFER_S3_SECRET_ACCESS_KEY` or the `AWS_` equivalents); see [Keeping a copy in a bucket](#keeping-a-copy-in-a-bucket). Requires `--context-store` | off |
+| `--context-store-s3-prefix P`, `--context-store-s3-region R` | key prefix inside the bucket, and the signing region | none, `us-east-1` |
 | `--no-exit-on-engine-failure` | stay alive (answering 503) when the engine latches unavailable, instead of logging FATAL and exiting with status 3 after 5 s | exit |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |

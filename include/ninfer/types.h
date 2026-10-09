@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ninfer/object_store.h"
+
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -165,6 +167,14 @@ struct ContextStoreOptions {
     std::chrono::seconds restore_budget{120};
     // Upper bound on the time spent writing sessions at shutdown.
     std::chrono::seconds flush_budget{60};
+    // A remote copy of the store (an S3-compatible bucket). The directory then caches it: sessions
+    // are uploaded in the background, sessions other engines wrote appear in the store, and one
+    // evicted from the directory stays available remotely. Null keeps the store local. Expiry
+    // there is the bucket's lifecycle rule; `remote_prefix` is prepended to every key.
+    std::shared_ptr<ObjectStore> remote;
+    std::string remote_prefix;
+    // How long shutdown waits for the uploads still queued.
+    std::chrono::seconds remote_flush_budget{120};
 
     [[nodiscard]] bool enabled() const noexcept { return !directory.empty(); }
 };
@@ -1288,6 +1298,14 @@ struct RuntimeStats {
     std::uint64_t context_store_hydrated_tokens    = 0;
     std::uint64_t context_store_hydration_failures = 0;
     double context_store_hydration_seconds         = 0.0;
+    // With a remote: images only the remote holds, objects and bytes moved, and failures.
+    std::uint64_t context_store_remote_images            = 0;
+    std::uint64_t context_store_remote_uploads           = 0;
+    std::uint64_t context_store_remote_upload_bytes      = 0;
+    std::uint64_t context_store_remote_upload_failures   = 0;
+    std::uint64_t context_store_remote_downloads         = 0;
+    std::uint64_t context_store_remote_download_bytes    = 0;
+    std::uint64_t context_store_remote_download_failures = 0;
 };
 
 enum class ContextCostPresetSource : std::uint8_t {

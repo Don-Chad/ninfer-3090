@@ -1,4 +1,5 @@
 #include "ninfer/engine.h"
+#include "product/object_store/s3_object_store.h"
 
 #include <chrono>
 #include <cstdint>
@@ -334,6 +335,60 @@ int exercise_hydration(const char* artifact, const fs::path& root, const Control
     return 0;
 }
 
+// With an S3-compatible bucket (NINFER_TEST_S3_ENDPOINT, NINFER_TEST_S3_BUCKET; credentials from
+// AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY): a second Engine with an empty directory starts warm
+// from what the first uploaded at shutdown.
+int exercise_bucket(const char* artifact, const fs::path& root, const Control& control) {
+    const char* endpoint = std::getenv("NINFER_TEST_S3_ENDPOINT");
+    const char* bucket   = std::getenv("NINFER_TEST_S3_BUCKET");
+    if (endpoint == nullptr || bucket == nullptr) {
+        std::cout << "bucket: skipped (NINFER_TEST_S3_ENDPOINT / NINFER_TEST_S3_BUCKET not set)\n";
+        return 0;
+    }
+    const auto remote = [&] {
+        ninfer::product::S3Config config;
+        config.endpoint   = endpoint;
+        config.bucket     = bucket;
+        config.access_key = std::getenv("AWS_ACCESS_KEY_ID") ? std::getenv("AWS_ACCESS_KEY_ID") : "";
+        config.secret_key =
+            std::getenv("AWS_SECRET_ACCESS_KEY") ? std::getenv("AWS_SECRET_ACCESS_KEY") : "";
+        return ninfer::product::make_s3_object_store(std::move(config));
+    };
+    const std::string prefix =
+        "ninfer-real-" +
+        std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "/";
+    const auto options = [&](const fs::path& directory) {
+        auto out = with_store(store_engine_options(artifact), directory, std::chrono::seconds(0));
+        out.context_store.remote        = remote();
+        out.context_store.remote_prefix = prefix;
+        return out;
+    };
+    std::uint64_t uploaded = 0;
+    {
+        ninfer::Engine engine(options(root / "bucket-writer"));
+        (void)engine.generate(engine.prepare(conversation(kShortFirst)), greedy());
+        uploaded = engine.runtime_stats().context_store_remote_uploads;
+    }
+    ninfer::Engine engine(options(root / "bucket-reader"));
+    const auto stats = engine.runtime_stats();
+    if (stats.context_store_restored != 1 || stats.context_store_remote_downloads == 0) {
+        std::cerr << "bucket: a fresh directory did not restore from the bucket: restored="
+                  << stats.context_store_restored
+                  << " downloads=" << stats.context_store_remote_downloads
+                  << " failures=" << stats.context_store_remote_download_failures << '\n';
+        return 1;
+    }
+    const auto next = engine.generate(
+        engine.prepare(conversation(next_turn(kShortFirst, control.reply, kShortQuestion))),
+        greedy());
+    if (check_continuation(next, control, "bucket") != 0) { return 1; }
+    std::cout << "bucket: restored " << stats.context_store_restored_bytes << " bytes ("
+              << stats.context_store_remote_download_bytes << " downloaded) in "
+              << stats.context_store_restore_seconds << " s; writer uploads before shutdown "
+              << uploaded << '\n';
+    return 0;
+}
+
 int exercise_damaged(const char* artifact, const fs::path& root) {
     const fs::path directory = root / "restart";
     // Every chunk: the images of both turns share their prefix chunks, and neither may restore.
@@ -420,6 +475,9 @@ int main(int argc, char** argv) {
         }
         if (scenario == "all" || scenario == "hydration") {
             if (exercise_hydration(artifact, root, deep_control, deep_first) != 0) { return 1; }
+        }
+        if (scenario == "all" || scenario == "bucket") {
+            if (exercise_bucket(artifact, root, short_control) != 0) { return 1; }
         }
         if (scenario == "all" && exercise_damaged(artifact, root) != 0) { return 1; }
         std::cout << "ok\n";

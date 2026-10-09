@@ -289,6 +289,12 @@ public:
             flush_context_store(deadline);
         }
         core.emplace<std::monostate>();
+        // Everything written is queued for upload by now; give the uploads their budget.
+        if (store) {
+            (void)store->flush_remote(std::chrono::steady_clock::now() +
+                                          options.context_store.remote_flush_budget,
+                                      true);
+        }
         try {
             device.synchronize();
         } catch (...) {}
@@ -310,6 +316,13 @@ public:
         out.context_store_restored        = restored_sessions;
         out.context_store_restored_bytes  = restored_bytes;
         out.context_store_restore_seconds = restore_seconds;
+        out.context_store_remote_images            = s.remote_images;
+        out.context_store_remote_uploads           = s.remote_uploads;
+        out.context_store_remote_upload_bytes      = s.remote_upload_bytes;
+        out.context_store_remote_upload_failures   = s.remote_upload_failures;
+        out.context_store_remote_downloads         = s.remote_downloads;
+        out.context_store_remote_download_bytes    = s.remote_download_bytes;
+        out.context_store_remote_download_failures = s.remote_download_failures;
     }
 
     using CheckpointImage = runtime::ModelInstance::ModelContract::CheckpointImage;
@@ -359,7 +372,13 @@ private:
         store_options.directory = config.directory;
         store_options.max_bytes = max_bytes;
         store_options.ttl       = config.ttl;
+        store_options.remote        = config.remote;
+        store_options.remote_prefix = config.remote_prefix;
         store         = std::make_unique<runtime::ContextStore>(std::move(store_options));
+        if (config.remote) {
+            // Images other engines left in the bucket become restorable before start-up restores.
+            (void)store->refresh_remote(std::chrono::steady_clock::now() + config.restore_budget);
+        }
         store_binding = context_store_binding(options, load);
     }
 

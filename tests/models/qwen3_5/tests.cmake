@@ -37,7 +37,7 @@ ninfer_add_test(ninfer_qwen3_5_prefix_real_test
 
 ninfer_add_test(ninfer_qwen3_5_context_store_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_context_store_real.cpp"
-  LIBRARIES ninfer_engine)
+  LIBRARIES ninfer_engine ninfer_s3_object_store)
 
 ninfer_add_test(ninfer_qwen3_5_preemption_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_preemption_real.cpp"
