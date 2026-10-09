@@ -238,7 +238,10 @@ curl http://127.0.0.1:8080/v1/load -H 'Authorization: Bearer local-secret'
                 "device_state_slots": 5, "host_state_slots": 7, "host_kv_bytes": 2147483648},
   "counters": {"computed_prefill_tokens": 48200113, "committed_decode_tokens": 6120452,
                "reused_prompt_tokens": 30911840, "decode_rounds": 861307,
-               "decode_row_rounds": 2448180}
+               "decode_row_rounds": 2448180},
+  "host": {"active_seconds": 3120.4, "device_wait_seconds": 41872.9},
+  "last_request": {"completion_tokens": 24, "generation_wall_seconds": 0.17,
+                   "inter_token_seconds": 0.0074, "decode_host_seconds": 0.012}
 }
 ```
 
@@ -386,6 +389,15 @@ holds at most two sessions, so a slow disk does not hold up requests. Taking the
 arrives during it waits for that copy; a session that could not be queued is
 retried or, if it was being evicted, lost to the store and re-prefilled on its next request.
 
+- `host` is cumulative Engine host-active seconds (device wait excluded) and, separately, seconds
+  the host thread waited on the device. Take two polls and divide the host delta by the interval to
+  see how host-bound the Engine is.
+- `last_request` is the pace of the last finished request that produced at least two tokens, or
+  `null` before the first. `inter_token_seconds` is first-to-last token wall time over the token
+  gaps. A healthy Engine stays in milliseconds; an Engine that stalls for seconds right after every
+  first token reports whole seconds even for a short answer while `/health` stays 200, so a
+  supervisor can restart on, say, `inter_token_seconds > 0.25` for several consecutive polls.
+
 ### Metrics
 
 `GET /metrics` serves Prometheus text format. Like `/v1/load` it requires the API key when one is
@@ -407,6 +419,9 @@ Engine's per-unit totals and advance during a request rather than at its complet
 | `ninfer:prefix_cache_hit_tokens_total` | counter | prompt tokens served from the context cache |
 | `ninfer:draft_tokens_total` | counter | speculative draft tokens proposed |
 | `ninfer:draft_accepted_tokens_total` | counter | speculative draft tokens accepted |
+| `ninfer:engine_host_seconds_total`, `ninfer:engine_device_wait_seconds_total` | counter | Engine host-active seconds (device wait excluded) and seconds the host thread waited on the device |
+| `ninfer:token_intervals_total`, `ninfer:token_interval_seconds_total` | counter | gaps between output tokens of finished requests and their first-to-last-token wall time; the ratio of their rates is the mean inter-token time |
+| `ninfer:last_request_inter_token_seconds`, `ninfer:last_request_decode_host_seconds` | gauge | mean inter-token time and decode host time of the last finished request with two or more tokens (absent before the first); a stall after the first token makes this seconds instead of milliseconds |
 | `ninfer:context_selections_total{source}` | counter | admissions by the context-cache source they started from: `root` (a miss, full prefill), `private_endpoint`, `private_turn_closure`, `private_response_replay`, `private_long_anchor`, `shared_stable_prefix`. Hit rate is `1 - root / sum` |
 | `ninfer:waiting_cancelled_requests_total`, `ninfer:waiting_expired_requests_total`, `ninfer:waiting_abandoned_seconds_total` | counter | requests the client cancelled, or the pending timeout expired, before admission, and the total time they had waited (a client that gives up after 60 s shows up here) |
 | `ninfer:cancelled_prefills_total`, `ninfer:cancelled_prefill_computed_tokens_total`, `ninfer:cancelled_prefills_retained_total`, `ninfer:cancelled_prefill_retained_tokens_total` | counter | requests cancelled while prefilling, the prompt tokens they had computed, how many kept a checkpoint a retry resumes from (see `--progress-anchor-tokens`) and the context depth of those checkpoints |

@@ -1,5 +1,6 @@
 #include "serve/serve_metrics.h"
 
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -45,6 +46,17 @@ int main() {
     failures += check(idle.find("# TYPE llamacpp:prompt_tokens_total counter") != std::string::npos &&
                           idle.find("# TYPE llamacpp:requests_processing gauge") != std::string::npos,
                       "metric families are missing their Prometheus TYPE");
+
+    live.host_work.program_submit_ns  = 1'500'000'000;
+    live.host_work.engine_maintenance_ns = 500'000'000;
+    live.host_work.device_wait_ns        = 250'000'000;
+    const std::string host               = metrics.render(2, live, 0);
+    failures += check(has_sample(host, "ninfer:engine_host_seconds_total 2.000000") &&
+                          has_sample(host, "ninfer:engine_device_wait_seconds_total 0.250000"),
+                      "engine host time is not reported with device wait separated");
+    failures += check(!metrics.last_generation_pace() &&
+                          host.find("ninfer:last_request_inter_token_seconds") == std::string::npos,
+                      "last-request pace is reported before any request finished");
 
     live.root_selections                 = 7;
     live.private_endpoint_selections     = 31;
@@ -127,16 +139,35 @@ int main() {
     outcome.metrics.speculative_accepted_tokens = 45;
     metrics.record_done(outcome);
     metrics.record_done(outcome);
+    // A one-token answer has no token interval and must not reset the last-request pace.
+    failures += check(!metrics.last_generation_pace(), "single-token request produced a pace");
+    // The #208 shape: 24 tokens, a fixed ~6.3 s stall after the first.
+    GenerationOutcome slow;
+    slow.completion_tokens                                    = 24;
+    slow.metrics.generation_wall_seconds                      = 6.9;
+    slow.metrics.engine_timing.decode_host_exposed_seconds    = 6.3;
+    metrics.record_done(slow);
+    metrics.record_done(outcome);
+    const std::optional<GenerationPace> pace = metrics.last_generation_pace();
+    failures += check(pace && pace->completion_tokens == 24 &&
+                          std::abs(pace->inter_token_seconds() - 0.3) < 1e-9,
+                      "last pace is not the last multi-token request");
+    const std::string paced = metrics.render(2, live, 0);
+    failures += check(has_sample(paced, "ninfer:token_intervals_total 23") &&
+                          has_sample(paced, "ninfer:token_interval_seconds_total 6.900000") &&
+                          has_sample(paced, "ninfer:last_request_inter_token_seconds 0.300000") &&
+                          has_sample(paced, "ninfer:last_request_decode_host_seconds 6.300000"),
+                      "token pace series are not reported");
     metrics.record_failure();
     metrics.record_rejection();
     metrics.record_rejection();
     const std::string after = metrics.render(2, live, 0);
-    failures += check(has_sample(after, "ninfer:requests_total 2") &&
+    failures += check(has_sample(after, "ninfer:requests_total 4") &&
                           has_sample(after, "ninfer:requests_failed_total 1") &&
                           has_sample(after, "ninfer:requests_rejected_total 2") &&
-                          has_sample(after, "ninfer:prefix_cache_hit_tokens_total 1800") &&
-                          has_sample(after, "ninfer:draft_tokens_total 120") &&
-                          has_sample(after, "ninfer:draft_accepted_tokens_total 90"),
+                          has_sample(after, "ninfer:prefix_cache_hit_tokens_total 2700") &&
+                          has_sample(after, "ninfer:draft_tokens_total 180") &&
+                          has_sample(after, "ninfer:draft_accepted_tokens_total 135"),
                       "completed-request series did not accumulate");
     return failures == 0 ? 0 : 1;
 }
