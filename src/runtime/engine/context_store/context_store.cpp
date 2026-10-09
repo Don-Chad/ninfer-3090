@@ -1159,6 +1159,10 @@ void ContextStore::touch_remote_image(const std::string& id) {
             uploaded_[key] = now;
         }
         if (!options_.remote->touch(remote_manifest_key(id))) {
+            // A manifest goes up only after every chunk it names is confirmed or put back
+            // (manifest-last): with a chunk still missing, publishing it would offer other engines
+            // an image they cannot read. The next use retries.
+            if (!complete) { return; }
             // Republish only the manifest of the image the chunks above were taken from: if the id
             // has been rewritten since, the new image has its own upload and this one is stale.
             std::vector<std::uint8_t> manifest;
@@ -1298,14 +1302,10 @@ std::size_t ContextStore::refresh_remote(std::chrono::steady_clock::time_point d
             write_atomically(manifest_path(id), *data);
             manifest_total_bytes_ += entry.manifest_bytes;
             add_references(entry);
+            // The listing shows the manifest, not its chunks (a lifecycle rule or a person may have
+            // removed one): their bucket presence stays unknown, so a write that shares them
+            // checks before it skips the upload.
             entry.generation = ++next_generation_;
-            {
-                std::scoped_lock remote_lock(remote_mutex_);
-                const std::int64_t confirmed = std::min(now_ms(), object.modified_ms);
-                for (const ChunkRef& chunk : entry.chunks) {
-                    uploaded_[remote_chunk_key(chunk.hash)] = confirmed;
-                }
-            }
             entries_.emplace(id, std::move(entry));
             ++added;
         }

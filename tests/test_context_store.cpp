@@ -642,6 +642,39 @@ std::size_t chunk_objects(MemoryObjectStore& remote) {
     return count;
 }
 
+// Registering an image from the bucket's listing proves only its manifest exists: a chunk the bucket
+// lost since is put back by the next write that shares it, not skipped as already confirmed.
+void test_remote_listing_does_not_confirm_chunks() {
+    TempDirectory directory;
+    TempDirectory other_directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    const std::vector<std::uint8_t> shared = pseudo_random(3000, 2);
+    {
+        ContextStore store(remote_options(directory.path(), remote));
+        (void)store.put(describe("0a"), concat({pseudo_random(30, 1), shared}),
+                        std::array{ContextStore::Region{30, 3000}});
+        check(drained(store), "upload before the listing test");
+    }
+    const std::size_t complete = chunk_objects(*remote);
+    ContextStore other(remote_options(other_directory.path(), remote));
+    check(other.refresh_remote() == 1, "the image was not registered from the listing");
+    {
+        std::scoped_lock lock(remote->mutex);
+        for (auto it = remote->objects.begin(); it != remote->objects.end(); ++it) {
+            if (it->first.find("/chunks/") != std::string::npos) {
+                remote->objects.erase(it); // lifecycle expiry took one chunk, the manifest remains
+                break;
+            }
+        }
+    }
+    check(chunk_objects(*remote) + 1 == complete, "the test did not remove a chunk");
+    (void)other.put(describe("0b"), concat({pseudo_random(30, 5), shared}),
+                    std::array{ContextStore::Region{30, 3000}});
+    check(drained(other), "upload of the image sharing the chunks");
+    check(chunk_objects(*remote) == complete,
+          "a write sharing a chunk the bucket lost skipped putting it back");
+}
+
 // An image written, then evicted or replaced before its upload ran, still reaches the bucket whole.
 void test_upload_survives_eviction_and_replacement() {
     TempDirectory directory;
@@ -853,6 +886,7 @@ int main() {
     test_remote_refresh_respects_its_deadline();
     test_remote_repairs_several_damaged_local_chunks();
     test_remote_rewrite_lifts_the_quarantine();
+    test_remote_listing_does_not_confirm_chunks();
     test_upload_survives_eviction_and_replacement();
     test_absent_chunks_are_not_reused();
     test_local_corruption_is_repaired_from_the_remote();
