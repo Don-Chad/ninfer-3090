@@ -314,15 +314,20 @@ void test_kv_store(ninfer::DeviceContext& device) {
 
     // A same-frontier trim must not depend on tail-page exclusivity: the tail is not mutated, and
     // it may still carry a Host replica (auto-host-cache restore) while the address is active.
-    addresses.ensure_mapped_to_tokens(*address, 65, device.stream);
-    device.synchronize();
+    // Host backup requires an inactive address (no writer reference), so publish the replica while
+    // deactivated and reactivate before growing the suffix.
+    addresses.deactivate(*address);
     const std::array host_tail_page{addresses.logical_page(*address, 0)};
     auto host_tail_backup = extents.prepare(pages, host_tail_page);
-    expect(host_tail_backup.has_value(), "active tail Host KV backup reservation");
+    expect(host_tail_backup.has_value(), "inactive tail Host KV backup reservation");
+    if (!host_tail_backup) { return; }
     physical_pages.copy_to_host(extents.device_sources(*host_tail_backup),
                                 extents.writable_view(*host_tail_backup), device.transfer_stream);
     CUDA_CHECK(cudaStreamSynchronize(device.transfer_stream));
     (void)extents.publish(std::move(*host_tail_backup));
+    addresses.commit_activation(addresses.prepare_activation(*address, 3, 1), device.stream);
+    addresses.ensure_mapped_to_tokens(*address, 65, device.stream);
+    device.synchronize();
     expect(pages.host_resident(host_tail_page[0]), "active tail page carries a Host replica");
     addresses.destructive_truncate(*address, 32);
     expect(addresses.mapped_pages(*address) == 1 && addresses.committed_frontier(*address) == 32,
