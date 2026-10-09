@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/host_kv_arena.h"
-#include "models/qwen3_5/program/storage/kv_store.h"
+#include "models/qwen3_5/program/storage/logical_kv_store.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -66,7 +66,6 @@ public:
         affected_extents_.reserve(descriptor_capacity);
         extent_scan_scratch_.reserve(descriptor_capacity);
         partition_runs_.reserve(descriptor_capacity);
-        suballocation_scratch_.reserve(descriptor_capacity);
     }
 
     HostKVExtentStore(const HostKVExtentStore&)            = delete;
@@ -185,6 +184,7 @@ public:
             node = entry.next;
         }
         if (node != kInvalidIndex) { std::terminate(); }
+        extent.allocation->publish();
         extent.state = ExtentState::Published;
         const HostKVExtentCapability capability(this, reservation.descriptor_, extent.generation);
         node = extent.head;
@@ -294,7 +294,7 @@ public:
     can_release_page_replicas(std::span<const HostKVPageReplicaRelease> releases) const noexcept {
         begin_release_marks();
         for (const HostKVPageReplicaRelease& release : releases) {
-            if (release.pages == nullptr || !mark_release(*release.pages, release.page, false)) {
+            if (release.pages == nullptr || !mark_release(*release.pages, release.page)) {
                 return false;
             }
         }
@@ -306,51 +306,9 @@ public:
                               std::span<const LogicalKVPageHandle> releases) const noexcept {
         begin_release_marks();
         for (const LogicalKVPageHandle release : releases) {
-            if (!mark_release(pages, release, false)) { return false; }
+            if (!mark_release(pages, release)) { return false; }
         }
         return true;
-    }
-
-    [[nodiscard]] bool
-    can_allocate_after_page_releases(std::span<const HostKVPageReplicaRelease> releases,
-                                     std::span<const HostKVAllocationRequest> allocations) const {
-        return can_allocate_after_page_releases(releases, {}, allocations);
-    }
-
-    // Simulates both immediately droppable Host duplicates and Host replicas that become
-    // unreferenced when a transaction removes their last address-space membership.
-    [[nodiscard]] bool can_allocate_after_page_releases(
-        std::span<const HostKVPageReplicaRelease> releases,
-        std::span<const HostKVPageReplicaRelease> last_reference_releases,
-        std::span<const HostKVAllocationRequest> allocations) const {
-        begin_release_marks();
-        suballocation_scratch_.clear();
-        const auto append = [&](const HostKVPageReplicaRelease& release) {
-            if (release.pages == nullptr) { return false; }
-            const HostKVPageReplica replica = release.pages->host_replica(release.page);
-            const Extent& extent            = require(replica.extent);
-            if (!extent.allocation) { return false; }
-            suballocation_scratch_.push_back(HostKVSuballocationRelease{
-                .allocation = extent.allocation->handle(),
-                .begin_page = replica.page_offset,
-                .page_count = 1,
-            });
-            return true;
-        };
-        for (const HostKVPageReplicaRelease& release : releases) {
-            if (release.pages == nullptr || !mark_release(*release.pages, release.page, false) ||
-                !append(release)) {
-                return false;
-            }
-        }
-        for (const HostKVPageReplicaRelease& release : last_reference_releases) {
-            if (release.pages == nullptr || !mark_release(*release.pages, release.page, true) ||
-                !append(release)) {
-                return false;
-            }
-        }
-        return arena_->can_allocate_after_suballocation_releases(suballocation_scratch_,
-                                                                 allocations);
     }
 
     [[nodiscard]] bool release_page_replicas(std::span<const HostKVPageReplicaRelease> releases) {
@@ -478,16 +436,9 @@ private:
         }
     }
 
-    [[nodiscard]] bool mark_release(LogicalKVPageStore& pages, LogicalKVPageHandle page,
-                                    bool last_reference) const noexcept {
-        if (last_reference) {
-            if (!pages.valid(page) || !pages.host_resident(page) || pages.source_pins(page) != 0 ||
-                pages.address_references(page) != 1) {
-                return false;
-            }
-        } else if (!can_release_page_replica(pages, page)) {
-            return false;
-        }
+    [[nodiscard]] bool mark_release(LogicalKVPageStore& pages,
+                                    LogicalKVPageHandle page) const noexcept {
+        if (!can_release_page_replica(pages, page)) { return false; }
         const HostKVPageReplica replica = pages.host_replica(page);
         if (!valid(replica.extent) || replica.membership_node >= memberships_.size()) {
             return false;
@@ -698,7 +649,6 @@ private:
     mutable std::vector<std::uint32_t> release_marks_;
     mutable std::vector<std::uint32_t> extent_marks_;
     mutable std::vector<std::uint32_t> affected_extents_;
-    mutable std::vector<HostKVSuballocationRelease> suballocation_scratch_;
     mutable std::uint32_t release_stamp_ = 0;
     std::vector<std::uint32_t> extent_scan_scratch_;
     std::vector<PartitionRun> partition_runs_;

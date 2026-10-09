@@ -1,5 +1,4 @@
 #include "serve/http_server.h"
-#include "serve/slot_files.h"
 
 #include "product/version/version.h"
 #include "serve/anthropic_messages.h"
@@ -7,7 +6,6 @@
 #include "serve/openai_common.h"
 #include "serve/props.h"
 #include "serve/request_log.h"
-#include "serve/slots_report.h"
 
 #include <nlohmann/json.hpp>
 
@@ -36,8 +34,10 @@ bool is_openai_path(std::string_view path) {
     return path.starts_with("/v1/") && !is_anthropic_path(path);
 }
 
-void ensure_openai_request_id(const httplib::Request& request, httplib::Response& response) {
-    if (is_openai_path(request.path) && !response.has_header("x-request-id")) {
+void ensure_http_request_id(const httplib::Request& request, httplib::Response& response) {
+    if (is_anthropic_path(request.path) && !response.has_header("request-id")) {
+        response.set_header("request-id", new_anthropic_request_id());
+    } else if (is_openai_path(request.path) && !response.has_header("x-request-id")) {
         response.set_header("x-request-id", new_openai_request_id());
     }
 }
@@ -61,24 +61,22 @@ ThroughputReport make_throughput_report(const ninfer::RuntimeStats& previous,
 bool report_has_activity(const ThroughputReport& report) {
     return report.computed_prefill_tokens != 0 || report.committed_decode_tokens != 0 ||
            report.decode_rounds != 0 || report.current.running_requests != 0 ||
-           report.current.waiting_requests != 0 || report.current.materializing_requests != 0 ||
+           report.current.waiting_requests != 0 || report.current.paused_requests != 0 ||
+           report.current.replaying_requests != 0 || report.current.materializing_requests != 0 ||
            report.current.capture_pending_requests != 0 ||
            report.current.terminal_pending_requests != 0 ||
            report.current.active_captures_completed != report.previous.active_captures_completed ||
            report.current.active_captures_aborted != report.previous.active_captures_aborted ||
+           report.current.preemptions != report.previous.preemptions ||
+           report.current.snapshot_restores != report.previous.snapshot_restores ||
+           report.current.replay_restores != report.previous.replay_restores ||
+           report.current.replayed_tokens != report.previous.replayed_tokens ||
            report.current.root_selections != report.previous.root_selections ||
-           report.current.private_endpoint_selections !=
-               report.previous.private_endpoint_selections ||
-           report.current.private_turn_closure_selections !=
-               report.previous.private_turn_closure_selections ||
-           report.current.private_response_replay_selections !=
-               report.previous.private_response_replay_selections ||
-           report.current.private_long_anchor_selections !=
-               report.previous.private_long_anchor_selections ||
-           report.current.shared_stable_prefix_selections !=
-               report.previous.shared_stable_prefix_selections ||
+           report.current.checkpoint_selections != report.previous.checkpoint_selections ||
            report.current.state_moves != report.previous.state_moves ||
            report.current.state_forks != report.previous.state_forks ||
+           report.current.materialization_state_forks !=
+               report.previous.materialization_state_forks ||
            report.current.state_restores != report.previous.state_restores ||
            report.current.state_d2h_count != report.previous.state_d2h_count ||
            report.current.state_h2d_count != report.previous.state_h2d_count ||
@@ -91,22 +89,6 @@ bool report_has_activity(const ThroughputReport& report) {
            report.current.backend_kv_d2d_pages != report.previous.backend_kv_d2d_pages ||
            report.current.pressure_spill_pages != report.previous.pressure_spill_pages ||
            report.current.partial_tail_cow_pages != report.previous.partial_tail_cow_pages ||
-           report.current.pressure_private_owners_degraded !=
-               report.previous.pressure_private_owners_degraded ||
-           report.current.pressure_private_owners_evicted !=
-               report.previous.pressure_private_owners_evicted ||
-           report.current.pressure_shared_owners_degraded !=
-               report.previous.pressure_shared_owners_degraded ||
-           report.current.pressure_shared_owners_evicted !=
-               report.previous.pressure_shared_owners_evicted ||
-           report.current.pressure_checkpoints_dropped !=
-               report.previous.pressure_checkpoints_dropped ||
-           report.current.pressure_searches != report.previous.pressure_searches ||
-           report.current.pressure_search_budget_exhaustions !=
-               report.previous.pressure_search_budget_exhaustions ||
-           report.current.pressure_maximal_fallback_selections !=
-               report.previous.pressure_maximal_fallback_selections ||
-           report.current.historical_fork_hits != report.previous.historical_fork_hits ||
            report.current.engine_recoveries != report.previous.engine_recoveries ||
            report.current.device_state_occupied_slots !=
                report.previous.device_state_occupied_slots ||
@@ -116,7 +98,10 @@ bool report_has_activity(const ThroughputReport& report) {
            report.current.device_backend_kv_occupied_pages !=
                report.previous.device_backend_kv_occupied_pages ||
            report.current.host_kv_occupied_bytes != report.previous.host_kv_occupied_bytes ||
-           report.current.shared_active_references != report.previous.shared_active_references ||
+           report.current.host_context_occupied_bytes !=
+               report.previous.host_context_occupied_bytes ||
+           report.current.host_context_reserved_bytes !=
+               report.previous.host_context_reserved_bytes ||
            report.current.host_work.engine_boundary_ns !=
                report.previous.host_work.engine_boundary_ns ||
            report.current.host_work.program_submit_ns !=
@@ -136,7 +121,6 @@ const char* endpoint_name(std::string_view path) noexcept {
     if (path == "/v1/messages") { return "anthropic_messages"; }
     if (path == "/v1/messages/count_tokens") { return "anthropic_count_tokens"; }
     if (path == "/v1/load") { return "load"; }
-    if (path == "/slots" || path.starts_with("/slots/")) { return "slots"; }
     return "http_route";
 }
 
@@ -171,7 +155,7 @@ void set_version_header(httplib::Response& response) {
 httplib::Server::HandlerResponse handle_unrendered_http_error(const ServeOptions& options,
                                                               const httplib::Request& request,
                                                               httplib::Response& response) {
-    ensure_openai_request_id(request, response);
+    ensure_http_request_id(request, response);
     set_version_header(response);
     if (!response.body.empty()) { return httplib::Server::HandlerResponse::Unhandled; }
 
@@ -190,7 +174,7 @@ httplib::Server::HandlerResponse handle_unrendered_http_error(const ServeOptions
         return httplib::Server::HandlerResponse::Unhandled;
     }
     if (request.path.rfind("/v1/messages", 0) == 0) {
-        write_anthropic_error(response, error, new_anthropic_request_id());
+        write_anthropic_error(response, error, response.get_header_value("request-id"));
     } else {
         write_openai_error(response, error);
     }
@@ -339,11 +323,12 @@ void HttpServer::run_stats_reporter() {
 
     const ninfer::RuntimeStats current = service_->runtime_stats();
     const Clock::time_point now        = Clock::now();
-    const ThroughputReport tail        = make_throughput_report(
+    ThroughputReport tail              = make_throughput_report(
         previous, current, std::chrono::duration<double>(now - previous_time).count());
     // The exact partial interval remains useful to measurement consumers. Pretty throughput is a
     // fixed-cadence operational record and deliberately has no irregular shutdown tail.
-    if (report_has_activity(tail)) { request_jsonl_.write_throughput(tail); }
+    tail.final_interval = true;
+    request_jsonl_.write_throughput(tail);
 }
 
 void HttpServer::stop_stats_reporter() {
@@ -375,7 +360,7 @@ void HttpServer::register_routes() {
     }
 
     server_.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
-        ensure_openai_request_id(req, res);
+        ensure_http_request_id(req, res);
         set_version_header(res);
         if (!ready_.load(std::memory_order_acquire)) {
             // Runs for every route, including /health and OPTIONS, so a caller cannot tell "not
@@ -390,7 +375,7 @@ void HttpServer::register_routes() {
             // is a polite poll interval rather than a promise about when readiness arrives.
             res.set_header("Retry-After", "2");
             if (req.path.rfind("/v1/messages", 0) == 0) {
-                write_anthropic_error(res, error, new_anthropic_request_id());
+                write_anthropic_error(res, error, res.get_header_value("request-id"));
             } else {
                 write_openai_error(res, error);
             }
@@ -413,7 +398,7 @@ void HttpServer::register_routes() {
             error.message = "missing or invalid API key";
             // Render the 401 in the shape the target endpoint speaks.
             if (req.path.rfind("/v1/messages", 0) == 0) {
-                write_anthropic_error(res, error, new_anthropic_request_id());
+                write_anthropic_error(res, error, res.get_header_value("request-id"));
             } else {
                 write_openai_error(res, error);
             }
@@ -424,7 +409,7 @@ void HttpServer::register_routes() {
 
     server_.set_exception_handler(
         [this](const httplib::Request& req, httplib::Response& res, std::exception_ptr ep) {
-            ensure_openai_request_id(req, res);
+            ensure_http_request_id(req, res);
             try {
                 std::rethrow_exception(ep);
             } catch (const ApiException& e) {
@@ -435,7 +420,7 @@ void HttpServer::register_routes() {
                         response_request_id(res));
                 }
                 if (req.path.rfind("/v1/messages", 0) == 0) {
-                    write_anthropic_error(res, e.error(), new_anthropic_request_id());
+                    write_anthropic_error(res, e.error(), res.get_header_value("request-id"));
                 } else {
                     write_openai_error(res, e.error());
                 }
@@ -448,7 +433,7 @@ void HttpServer::register_routes() {
                     ApiError error;
                     error.status  = 500;
                     error.message = e.what();
-                    write_anthropic_error(res, error, new_anthropic_request_id());
+                    write_anthropic_error(res, error, res.get_header_value("request-id"));
                 } else {
                     write_exception(res, e);
                 }
@@ -462,7 +447,7 @@ void HttpServer::register_routes() {
                 error.type    = "internal_error";
                 error.message = "unknown error";
                 if (req.path.rfind("/v1/messages", 0) == 0) {
-                    write_anthropic_error(res, error, new_anthropic_request_id());
+                    write_anthropic_error(res, error, res.get_header_value("request-id"));
                 } else {
                     write_openai_error(res, error);
                 }
@@ -476,12 +461,6 @@ void HttpServer::register_routes() {
                                        {"version", ninfer::product::build_version()}}
                             .dump(),
                         "application/json");
-    });
-    server_.Get("/slots", [this](const httplib::Request& req, httplib::Response& res) {
-        handle_slots(req, res);
-    });
-    server_.Post(R"(/slots/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
-        handle_slot_action(req, res);
     });
     server_.Get("/metrics", [this](const httplib::Request&, httplib::Response& res) {
         // Pre-routing answers 503 until attach(), so service_ is published here.
@@ -540,121 +519,6 @@ void HttpServer::register_routes() {
     server_.Post("/v1/messages", [this](const httplib::Request& req, httplib::Response& res) {
         handle_messages(req, res);
     });
-}
-
-// llama.cpp-shaped slot listing: one entry per private context-cache catalog cell. A cell an
-// active request will publish into reports that request's prompt and reused tokens; a retained
-// cell reports the session depth as both, with its session digest and restorable checkpoints,
-// the slot file it is bound to, and how it has been used (see make_slots_report).
-void HttpServer::handle_slots(const httplib::Request&, httplib::Response& res) const {
-    const bool speculative = options_.speculative.backend != ninfer::SpeculativeBackend::None;
-    res.set_header("Cache-Control", "no-store");
-    res.set_content(make_slots_report(service_->slot_states(), options_.max_context, speculative),
-                    "application/json");
-}
-
-// llama.cpp-shaped session persistence: POST /slots/{id}?action=save|restore|erase with
-// {"filename": NAME} for save and restore and an optional {"if_digest": DIGEST} precondition on
-// save and erase. Enabled only by --slot-save-path; names are confined to that directory.
-void HttpServer::handle_slot_action(const httplib::Request& req, httplib::Response& res) {
-    const auto fail = [&res](int status, std::string code, std::string message) {
-        ApiError error;
-        error.status  = status;
-        error.type    = status >= 500 ? "server_error" : "invalid_request_error";
-        error.code    = std::move(code);
-        error.message = std::move(message);
-        write_openai_error(res, error);
-    };
-    if (options_.slot_save_path.empty()) {
-        fail(501, "slot_persistence_disabled",
-             "this server was started without --slot-save-path; slot save/restore is disabled");
-        return;
-    }
-    const std::string id_text = req.matches.size() > 1 ? req.matches[1].str() : std::string();
-    unsigned long long parsed = 0;
-    try {
-        parsed = std::stoull(id_text);
-    } catch (const std::exception&) {
-        fail(400, "invalid_slot", "slot id is not a number");
-        return;
-    }
-    // Range-checked before narrowing, so an id past 2^32 is refused rather than wrapped.
-    const std::size_t slot_count = service_->slot_states().size();
-    if (parsed >= slot_count) {
-        fail(400, "invalid_slot",
-             "slot " + id_text + " is outside this server's " + std::to_string(slot_count) +
-                 " slots");
-        return;
-    }
-    const auto slot = static_cast<std::uint32_t>(parsed);
-    const std::string action = req.get_param_value("action");
-
-    std::string filename;
-    std::string if_digest;
-    try {
-        const nlohmann::json body =
-            req.body.empty() ? nlohmann::json::object() : nlohmann::json::parse(req.body);
-        if (!body.is_object()) { throw std::invalid_argument("body is not an object"); }
-        filename  = body.value("filename", std::string());
-        if_digest = body.value("if_digest", std::string());
-    } catch (const std::exception&) {
-        fail(400, "invalid_request",
-             "request body must be a JSON object with string filename and if_digest");
-        return;
-    }
-
-    try {
-        if (action == "erase") {
-            const std::uint32_t erased = service_->slot_erase(slot, if_digest);
-            operational_log_.slot_erased(slot, erased);
-            res.set_content(nlohmann::json{{"id_slot", slot}, {"n_erased", erased}}.dump(),
-                            "application/json");
-            return;
-        }
-        if (action != "save" && action != "restore") {
-            fail(400, "invalid_action", "action must be save, restore, or erase");
-            return;
-        }
-        const std::optional<std::string> sanitized = sanitize_slot_filename(filename);
-        if (!sanitized) {
-            fail(400, "invalid_filename",
-                 "filename must be 1-" + std::to_string(kSlotFilenameMaxBytes) +
-                     " characters of [A-Za-z0-9._-], must not start or end with a dot, and "
-                     "must not name a device");
-            return;
-        }
-        const std::string path = (options_.slot_save_path / *sanitized).string();
-        if (action == "save") {
-            const ninfer::SlotSaveResult saved = service_->slot_save(slot, path, if_digest);
-            operational_log_.slot_saved(slot, *sanitized, saved);
-            res.set_content(nlohmann::json{{"id_slot", slot},
-                                           {"filename", *sanitized},
-                                           {"n_saved", saved.tokens},
-                                           {"n_written", saved.bytes},
-                                           {"session_digest", saved.session_digest},
-                                           {"timings", {{"save_ms", saved.seconds * 1000.0}}}}
-                                .dump(),
-                            "application/json");
-        } else {
-            const ninfer::SlotRestoreResult restored = service_->slot_restore(slot, path);
-            operational_log_.slot_restored(slot, *sanitized, restored);
-            res.set_content(
-                nlohmann::json{{"id_slot", slot},
-                               {"filename", *sanitized},
-                               {"n_restored", restored.tokens},
-                               {"n_read", restored.bytes},
-                               {"session_digest", restored.session_digest},
-                               {"timings", {{"restore_ms", restored.seconds * 1000.0}}}}
-                    .dump(),
-                "application/json");
-        }
-    } catch (const ninfer::RequestError& busy) {
-        fail(409, "slot_busy", busy.what());
-    } catch (const ninfer::SlotSessionMismatch& mismatch) {
-        fail(409, "slot_session_mismatch", mismatch.what());
-    } catch (const std::invalid_argument& rejected) {
-        fail(400, "slot_" + action + "_failed", rejected.what());
-    }
 }
 
 void HttpServer::handle_load(const httplib::Request&, httplib::Response& res) const {

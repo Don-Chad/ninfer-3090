@@ -43,9 +43,8 @@ void append_sample(std::string& out, std::string_view name, std::string_view lab
     out.append(name).append("{").append(labels).append("} ").append(text).append("\n");
 }
 
-// Context-cache series from the Engine's live RuntimeStats. Selections count admissions by the
-// source they started from: `root` is a miss (full prefill from token zero), every other source is
-// a reuse. Pressure events are what the planner did to inactive owners to make room.
+// Requests that left before they finished their prompt: from the queue (cancelled or expired)
+// or during prefill.
 void append_abandoned_requests(std::string& out, const ninfer::RuntimeStats& live) {
     append_metric(out, "ninfer:waiting_cancelled_requests_total", "counter",
                   "Requests the client cancelled while they waited for admission.",
@@ -61,60 +60,32 @@ void append_abandoned_requests(std::string& out, const ninfer::RuntimeStats& liv
     append_metric(out, "ninfer:cancelled_prefill_computed_tokens_total", "counter",
                   "Prompt tokens those requests had computed when they were cancelled.",
                   live.cancelled_prefill_computed_tokens);
-    append_metric(out, "ninfer:cancelled_prefills_retained_total", "counter",
-                  "Cancelled prefills that kept a checkpoint a retry can resume from.",
-                  live.cancelled_prefills_retained);
-    append_metric(out, "ninfer:cancelled_prefill_retained_tokens_total", "counter",
-                  "Tokens of context held by the checkpoints cancelled prefills kept.",
-                  live.cancelled_prefill_retained_tokens);
 }
 
-void append_output_reservation(std::string& out, const ninfer::RuntimeStats& live) {
-    append_metric(out, "ninfer:output_reservation_growths_total", "counter",
-                  "Times a request's KV reservation was extended while it decoded.",
-                  live.output_reservation_growths);
-    append_metric(out, "ninfer:output_reservation_exhaustions_total", "counter",
-                  "Requests that stopped at their reserved output because no KV page was free.",
-                  live.output_reservation_exhaustions);
+// Resident requests paused to let older ones advance when KV ran short, and how they came back:
+// from a Host snapshot, or by recomputing their saved frontier (replay).
+void append_scheduling(std::string& out, const ninfer::RuntimeStats& live) {
+    append_metric(out, "ninfer:preemptions_total", "counter",
+                  "Resident requests paused so an older request could advance.", live.preemptions);
+    append_family_header(out, "ninfer:context_restores_total", "counter",
+                         "Paused requests restored, by how their state came back.");
+    append_sample(out, "ninfer:context_restores_total", "route=\"snapshot\"",
+                  live.snapshot_restores);
+    append_sample(out, "ninfer:context_restores_total", "route=\"replay\"", live.replay_restores);
+    append_metric(out, "ninfer:replayed_tokens_total", "counter",
+                  "Tokens recomputed to restore paused requests, beyond their initial prefill.",
+                  live.replayed_tokens);
 }
 
+// Context-cache series from the Engine's live RuntimeStats. Selections count admissions by the
+// source they started from: `root` is a miss (full prefill from token zero), `checkpoint` a reuse.
 void append_context_cache(std::string& out, const ninfer::RuntimeStats& live) {
     append_family_header(out, "ninfer:context_selections_total", "counter",
                          "Admissions by the context-cache source they started from; root is a "
                          "miss.");
     append_sample(out, "ninfer:context_selections_total", "source=\"root\"", live.root_selections);
-    append_sample(out, "ninfer:context_selections_total", "source=\"private_endpoint\"",
-                  live.private_endpoint_selections);
-    append_sample(out, "ninfer:context_selections_total", "source=\"private_turn_closure\"",
-                  live.private_turn_closure_selections);
-    append_sample(out, "ninfer:context_selections_total", "source=\"private_response_replay\"",
-                  live.private_response_replay_selections);
-    append_sample(out, "ninfer:context_selections_total", "source=\"private_long_anchor\"",
-                  live.private_long_anchor_selections);
-    append_sample(out, "ninfer:context_selections_total", "source=\"shared_stable_prefix\"",
-                  live.shared_stable_prefix_selections);
-
-    append_family_header(out, "ninfer:context_pressure_events_total", "counter",
-                         "What pressure planning did to inactive context-cache owners.");
-    append_sample(out, "ninfer:context_pressure_events_total", "event=\"private_owner_evicted\"",
-                  live.pressure_private_owners_evicted);
-    append_sample(out, "ninfer:context_pressure_events_total", "event=\"private_owner_degraded\"",
-                  live.pressure_private_owners_degraded);
-    append_sample(out, "ninfer:context_pressure_events_total", "event=\"shared_owner_evicted\"",
-                  live.pressure_shared_owners_evicted);
-    append_sample(out, "ninfer:context_pressure_events_total", "event=\"shared_owner_degraded\"",
-                  live.pressure_shared_owners_degraded);
-    append_sample(out, "ninfer:context_pressure_events_total", "event=\"checkpoint_dropped\"",
-                  live.pressure_checkpoints_dropped);
-
-    append_family_header(out, "ninfer:context_pressure_searches_total", "counter",
-                         "Pressure planning searches by how they ended.");
-    append_sample(out, "ninfer:context_pressure_searches_total", "result=\"started\"",
-                  live.pressure_searches);
-    append_sample(out, "ninfer:context_pressure_searches_total", "result=\"budget_exhausted\"",
-                  live.pressure_search_budget_exhaustions);
-    append_sample(out, "ninfer:context_pressure_searches_total", "result=\"maximal_fallback\"",
-                  live.pressure_maximal_fallback_selections);
+    append_sample(out, "ninfer:context_selections_total", "source=\"checkpoint\"",
+                  live.checkpoint_selections);
 
     append_family_header(out, "ninfer:context_transfer_bytes_total", "counter",
                          "Context-cache bytes moved between Device and Host, by object and "
@@ -131,12 +102,12 @@ void append_context_cache(std::string& out, const ninfer::RuntimeStats& live) {
     transfer("backend_kv", "d2h", live.backend_kv_d2h_bytes);
     transfer("backend_kv", "h2d", live.backend_kv_h2d_bytes);
 
+    append_metric(out, "ninfer:context_pressure_spill_pages_total", "counter",
+                  "KV pages spilled to the Host to make room under capacity pressure.",
+                  live.pressure_spill_pages);
     append_metric(out, "ninfer:context_transfer_seconds_total", "counter",
                   "Time spent on context-cache transfers that admissions waited for.",
                   live.actual_context_transfer_seconds);
-    append_metric(out, "ninfer:context_historical_fork_hits_total", "counter",
-                  "Admissions that forked a historical checkpoint instead of the latest endpoint.",
-                  live.historical_fork_hits);
 
     append_family_header(out, "ninfer:context_occupancy", "gauge",
                          "Context-cache occupancy by pool: state slots and KV pages on the "
@@ -151,6 +122,8 @@ void append_context_cache(std::string& out, const ninfer::RuntimeStats& live) {
                   live.device_backend_kv_occupied_pages);
     append_sample(out, "ninfer:context_occupancy", "pool=\"host_kv_bytes\"",
                   static_cast<std::uint64_t>(live.host_kv_occupied_bytes));
+    append_sample(out, "ninfer:context_occupancy", "pool=\"host_context_bytes\"",
+                  static_cast<std::uint64_t>(live.host_context_occupied_bytes));
 }
 
 // The durable context store (--context-store); all zero when it is off.
@@ -240,7 +213,7 @@ std::string ServeMetrics::render(std::uint32_t max_concurrency, const ninfer::Ru
                   admitted - processing);
 
     append_abandoned_requests(out, live);
-    append_output_reservation(out, live);
+    append_scheduling(out, live);
     append_context_cache(out, live);
     append_context_store(out, live);
 

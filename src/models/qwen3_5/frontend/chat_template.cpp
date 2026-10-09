@@ -402,13 +402,54 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         result.rewrite_checkpoint = RewriteCheckpointByteSpec{
             .kind   = continuation || retain_open_turn ? RewriteCheckpointKind::ResponseReplay
                                                        : RewriteCheckpointKind::TurnClosure,
-            .offset = *generation_begin};
+            .offset = *generation_begin,
+            .recovery_offset = *generation_begin};
     }
     if (!continuation && !retain_open_turn && first_tail_assistant) {
         const auto begin = layout.messages[*first_tail_assistant].begin;
         if (begin > 0)
-            result.rewrite_checkpoint = RewriteCheckpointByteSpec{
-                .kind = RewriteCheckpointKind::TurnClosure, .offset = begin};
+            result.rewrite_checkpoint =
+                RewriteCheckpointByteSpec{.kind            = RewriteCheckpointKind::TurnClosure,
+                                          .offset          = begin,
+                                          .recovery_offset = begin};
+    }
+    const auto part_boundary = [&](std::size_t message,
+                                   std::size_t part) -> std::optional<std::size_t> {
+        const auto& origin = sources[message];
+        if (part < origin.part_ends.size())
+            return source_boundary(output, origin.tag, origin.part_ends[part]);
+        if (part < origin.part_tags.size()) {
+            if (origin.part_tags[part]) {
+                if (const auto region = unique_output_region(output, origin.part_tags[part]))
+                    return region->end;
+            } else if (origin.part_media[part]) {
+                return layout.media_placeholders[*origin.part_media[part]].bytes.end +
+                       std::string_view("<|vision_end|>").size();
+            }
+        }
+        return std::nullopt;
+    };
+    if (result.rewrite_checkpoint) {
+        auto& checkpoint = *result.rewrite_checkpoint;
+        for (std::size_t i = 0; i < messages.size(); ++i) {
+            const auto& message = messages[i];
+            if ((message.role != ChatRole::User && !instruction(message.role)) ||
+                message.parts.empty() || !message_blocks[i]) {
+                continue;
+            }
+            const auto block_index = *message_blocks[i];
+            const auto& block      = layout.messages[block_index];
+            if (!block.closed || block_users[block_index] != 1 || block.end != checkpoint.offset) {
+                continue;
+            }
+            const auto content_end = part_boundary(i, message.parts.size() - 1U);
+            if (content_end && *content_end > block.content_begin &&
+                *content_end == block.content_end &&
+                !text::overlaps(output.literal_spans, *content_end, block.end)) {
+                checkpoint.recovery_offset = *content_end;
+                break;
+            }
+        }
     }
     for (std::size_t i = 0; i < options.cache_markers.size(); ++i) {
         const auto& marker = options.cache_markers[i];
@@ -418,6 +459,20 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                 auto& boundary = result.message_boundaries[marker.after_message_count];
                 if (!boundary) boundary = prefix(marker.after_message_count);
                 result.cache_boundaries[i] = boundary;
+                const bool automatic =
+                    has_shared_candidate_evidence(
+                        marker.evidence, SharedCandidateEvidence::DefaultAutomatic |
+                                             SharedCandidateEvidence::RequestedAutomatic) &&
+                    !has_shared_candidate_evidence(marker.evidence,
+                                                   SharedCandidateEvidence::ExplicitBoundary);
+                if (!boundary && automatic && marker.after_message_count) {
+                    // Some templates have no independently serializable message closing.
+                    // An automatic hint can still retain the proven content prefix.
+                    const auto message = marker.after_message_count - 1U;
+                    if (!messages[message].parts.empty())
+                        result.cache_boundaries[i] =
+                            part_boundary(message, messages[message].parts.size() - 1U);
+                }
             }
             break;
         case PromptCacheMarkerLocation::LeadingInstructionBoundary:
@@ -435,22 +490,8 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         case PromptCacheMarkerLocation::MessagePartBoundary:
             if (marker.after_message_count && marker.after_message_count <= sources.size() &&
                 marker.after_message_part_count) {
-                const auto& origin = sources[marker.after_message_count - 1];
-                const auto part    = marker.after_message_part_count - 1;
-                if (part < origin.part_ends.size())
-                    result.cache_boundaries[i] =
-                        source_boundary(output, origin.tag, origin.part_ends[part]);
-                else if (part < origin.part_tags.size()) {
-                    if (origin.part_tags[part]) {
-                        if (const auto region =
-                                unique_output_region(output, origin.part_tags[part]))
-                            result.cache_boundaries[i] = region->end;
-                    } else if (origin.part_media[part]) {
-                        result.cache_boundaries[i] =
-                            layout.media_placeholders[*origin.part_media[part]].bytes.end +
-                            std::string_view("<|vision_end|>").size();
-                    }
-                }
+                result.cache_boundaries[i] = part_boundary(marker.after_message_count - 1U,
+                                                           marker.after_message_part_count - 1U);
             }
             break;
         }

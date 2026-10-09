@@ -62,6 +62,13 @@ int main() {
     httplib::Request messages_request;
     messages_request.path = "/v1/messages";
     httplib::Response messages_response;
+    messages_response.status = 400;
+    const auto initial_messages_result =
+        ninfer::serve::handle_unrendered_http_error(options, messages_request, messages_response);
+    const std::string messages_request_id = messages_response.get_header_value("request-id");
+    failures += check(initial_messages_result == httplib::Server::HandlerResponse::Unhandled &&
+                          messages_response.body.empty() && messages_request_id.starts_with("req_"),
+                      "Anthropic HTTP request ID was not established before error rendering");
     messages_response.status = 413;
     const auto messages_result =
         ninfer::serve::handle_unrendered_http_error(options, messages_request, messages_response);
@@ -70,6 +77,8 @@ int main() {
                           messages_body.at("type") == "error" &&
                           messages_body.at("error").at("type") == "request_too_large" &&
                           messages_body.at("request_id").get<std::string>().starts_with("req_") &&
+                          messages_body.at("request_id") == messages_request_id &&
+                          messages_response.get_header_value_count("request-id") == 1 &&
                           messages_response.get_header_value("request-id") ==
                               messages_body.at("request_id").get<std::string>() &&
                           !messages_response.has_header("x-request-id") &&
@@ -96,7 +105,7 @@ int main() {
     missing_messages_request.path = "/v1/messages/missing";
     httplib::Response missing_messages_response;
     missing_messages_response.status = 404;
-    missing_messages_response.set_header("request-id", "req_stale");
+    missing_messages_response.set_header("request-id", "req_existing");
     const auto missing_messages_result = ninfer::serve::handle_unrendered_http_error(
         options, missing_messages_request, missing_messages_response);
     const Json missing_messages_body = Json::parse(missing_messages_response.body);
@@ -105,11 +114,27 @@ int main() {
                   missing_messages_response.status == 404 &&
                   missing_messages_body.at("error").at("type") == "not_found_error" &&
                   missing_messages_body.at("request_id").get<std::string>().starts_with("req_") &&
-                  missing_messages_body.at("request_id") != "req_stale" &&
+                  missing_messages_body.at("request_id") == "req_existing" &&
                   missing_messages_response.get_header_value_count("request-id") == 1 &&
                   missing_messages_response.get_header_value("request-id") ==
                       missing_messages_body.at("request_id").get<std::string>(),
               "missing Anthropic resource did not use the protocol error envelope");
+
+    httplib::Response authored_messages_response;
+    authored_messages_response.status = 413;
+    authored_messages_response.set_header("request-id", "req_authored");
+    authored_messages_response.set_content(
+        R"({"type":"error","error":{"type":"request_too_large"},"request_id":"req_authored"})",
+        "application/json");
+    const std::string authored_messages_body = authored_messages_response.body;
+    const auto authored_messages_result      = ninfer::serve::handle_unrendered_http_error(
+        options, messages_request, authored_messages_response);
+    failures +=
+        check(authored_messages_result == httplib::Server::HandlerResponse::Unhandled &&
+                  authored_messages_response.body == authored_messages_body &&
+                  authored_messages_response.get_header_value_count("request-id") == 1 &&
+                  authored_messages_response.get_header_value("request-id") == "req_authored",
+              "application-authored Anthropic error or its request ID was overwritten");
 
     httplib::Response authored_response;
     authored_response.status = 413;

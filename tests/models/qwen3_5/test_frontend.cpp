@@ -886,6 +886,15 @@ int test_rewrite_checkpoint_trace() {
                       ninfer::models::qwen3_5::RewriteCheckpointKind::TurnClosure &&
                   open.rewrite_checkpoint->offset == first_header,
               "tool loop did not retain the stable prefix before its first assistant turn");
+    const auto initial = render_chat({tool_loop.front()});
+    failures +=
+        check(initial.rewrite_checkpoint && open.rewrite_checkpoint &&
+                  initial.rewrite_checkpoint->recovery_offset ==
+                      open.rewrite_checkpoint->recovery_offset &&
+                  open.rewrite_checkpoint->recovery_offset < open.rewrite_checkpoint->offset &&
+                  open.text.starts_with(
+                      initial.text.substr(0, initial.rewrite_checkpoint->recovery_offset)),
+              "tool history moved the retained input state away from the original user");
 
     fi::ChatRenderOptions preserve;
     preserve.preserve_thinking         = true;
@@ -895,6 +904,7 @@ int test_rewrite_checkpoint_trace() {
                           preserved.rewrite_checkpoint->kind ==
                               ninfer::models::qwen3_5::RewriteCheckpointKind::ResponseReplay &&
                           preserved.rewrite_checkpoint->offset == preserved_header &&
+                          preserved.rewrite_checkpoint->recovery_offset == preserved_header &&
                           preserved.text.ends_with("<think>\n"),
                       "preserve_thinking did not checkpoint before the generation prologue");
 
@@ -1190,7 +1200,9 @@ int test_prompt_graft() {
                       "graft positions are not contiguous with the prompt");
     failures += check(grafted.identity.rewrite_checkpoint && plain.identity.rewrite_checkpoint &&
                           grafted.identity.rewrite_checkpoint->frontier ==
-                              plain.identity.rewrite_checkpoint->frontier + n,
+                              plain.identity.rewrite_checkpoint->frontier + n &&
+                          grafted.identity.rewrite_checkpoint->recovery_frontier ==
+                              plain.identity.rewrite_checkpoint->recovery_frontier + n,
                       "rewrite checkpoint did not move past the graft");
     const auto& opportunities = grafted.context_cache.opportunities;
     failures += check(std::any_of(opportunities.begin(), opportunities.end(),
@@ -1252,80 +1264,27 @@ int test_prompt_graft() {
     return failures;
 }
 
-// A direct graft is restored whole from a pinned slot, and the request's own frontiers must move
-// past it while everything else about caching stays as for any other prompt: the graft is a root,
-// not a reason to skip the cache. Its positions are told apart by token identity, so two grafts and
-// a plain prompt can never share a prefix.
-int test_direct_graft_context_cache() {
+// direct_kv and softprompt_kv grafts need KV/state injection into a pinned context entry, which
+// the context-cache engine does not provide yet; the Frontend refuses them when it is built rather
+// than preparing prompts whose placeholder positions no Program could restore.
+int test_direct_graft_rejected() {
     using ninfer::models::qwen3_5::GraftKind;
-    const auto make_graft = [](std::string name, std::vector<ninfer::TokenId> ids) {
+    int failures = 0;
+    for (const GraftKind kind : {GraftKind::DirectKV, GraftKind::SoftpromptKV}) {
         ninfer::models::qwen3_5::PromptGraft graft;
-        graft.name            = std::move(name);
-        graft.kind            = GraftKind::DirectKV;
-        graft.n_slots         = static_cast<std::uint32_t>(ids.size());
-        graft.placeholder_ids = std::move(ids);
-        return graft;
-    };
-    const auto first  = make_graft("first", {101, 102, 103, 104, 105, 106});
-    const auto second = make_graft("second", {201, 202, 203, 204, 205, 206});
-    const std::size_t n = first.n_slots;
-    ninfer::models::qwen3_5::FrontendOptions options;
-    options.max_context = std::numeric_limits<std::uint32_t>::max();
-    options.grafts      = {first, second};
-    const Frontend frontend = make_frontend(resources(), options);
-
-    const auto input = [](std::string graft_name) {
-        ninfer::ChatMessage message;
-        message.role = ninfer::ChatRole::User;
-        message.parts.push_back(
-            ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
-        ninfer::PromptInput input;
-        input.messages.push_back(std::move(message));
-        input.options.graft = std::move(graft_name);
-        return input;
-    };
-    const auto plain_prompt  = frontend.prepare(input(""));
-    const auto first_prompt  = frontend.prepare(input("first"));
-    const auto second_prompt = frontend.prepare(input("second"));
-    const auto& plain        = FrontendFactory::inspect(plain_prompt);
-    const auto& grafted      = FrontendFactory::inspect(first_prompt);
-    const auto& other        = FrontendFactory::inspect(second_prompt);
-
-    int failures = check(grafted.graft_name == "first" && grafted.graft_frontier == n,
-                         "direct graft prompt does not name its pinned slot");
-    failures += check(grafted.identity.reusable,
-                      "a direct graft request is excluded from the context cache");
-    failures += check(grafted.token_ids.size() == plain.token_ids.size() + n &&
-                          std::equal(first.placeholder_ids.begin(), first.placeholder_ids.end(),
-                                     grafted.token_ids.begin()) &&
-                          std::equal(plain.token_ids.begin(), plain.token_ids.end(),
-                                     grafted.token_ids.begin() + n),
-                      "direct graft prompt is not its placeholder ids followed by the plain prompt");
-    failures += check(!std::equal(grafted.token_ids.begin(), grafted.token_ids.begin() + n,
-                                  other.token_ids.begin()),
-                      "two direct grafts share placeholder ids");
-    failures += check(grafted.identity.rewrite_checkpoint && plain.identity.rewrite_checkpoint &&
-                          grafted.identity.rewrite_checkpoint->frontier ==
-                              plain.identity.rewrite_checkpoint->frontier + n,
-                      "rewrite checkpoint did not move past the direct graft");
-    failures += check(grafted.identity.rewrite_execution_frontiers.size() ==
-                              plain.identity.rewrite_execution_frontiers.size() &&
-                          std::equal(plain.identity.rewrite_execution_frontiers.begin(),
-                                     plain.identity.rewrite_execution_frontiers.end(),
-                                     grafted.identity.rewrite_execution_frontiers.begin(),
-                                     [n](std::uint32_t before, std::uint32_t after) {
-                                         return after == before + n;
-                                     }),
-                      "rewrite execution frontiers did not move past the direct graft");
-    const auto& opportunities = grafted.context_cache.opportunities;
-    failures += check(std::none_of(opportunities.begin(), opportunities.end(),
-                                   [&](const auto& opportunity) { return opportunity.frontier <= n; }),
-                      "a direct graft offered a capture inside its own restored positions");
-    failures += check(grafted.context_cache.retention == plain.context_cache.retention &&
-                          opportunities.size() == plain.context_cache.opportunities.size(),
-                      "a direct graft changed the request's cache opportunities");
-    failures += check(frontend.count_tokens(input("first")) == frontend.count_tokens(input("")) + n,
-                      "token counting ignored the direct graft");
+        graft.name            = "direct";
+        graft.kind            = kind;
+        graft.n_slots         = 4;
+        graft.placeholder_ids = {101, 102, 103, 104};
+        ninfer::models::qwen3_5::FrontendOptions options;
+        options.max_context = std::numeric_limits<std::uint32_t>::max();
+        options.grafts      = {graft};
+        bool rejected       = false;
+        try {
+            (void)make_frontend(resources(), options);
+        } catch (const std::invalid_argument&) { rejected = true; }
+        failures += check(rejected, "a KV-injecting prompt graft was accepted");
+    }
     return failures;
 }
 
@@ -1357,6 +1316,7 @@ int test_text_and_image_prepare(const Frontend& frontend) {
                           text_data.identity.rewrite_checkpoint->kind ==
                               ninfer::models::qwen3_5::RewriteCheckpointKind::TurnClosure &&
                           text_data.identity.rewrite_checkpoint->frontier == 9 &&
+                          text_data.identity.rewrite_checkpoint->recovery_frontier == 7 &&
                           text_data.starts_in_reasoning && !text_data.has_media(),
                       "text frontend did not preserve prefix/thinking identity");
     failures +=
@@ -1464,6 +1424,9 @@ int test_text_and_image_prepare(const Frontend& frontend) {
             });
         failures += check(explicit_marker != prepared_data.context_cache.opportunities.end() &&
                               explicit_marker->frontier >= span.begin + span.count &&
+                              prepared_data.identity.rewrite_checkpoint &&
+                              prepared_data.identity.rewrite_checkpoint->recovery_frontier ==
+                                  explicit_marker->frontier &&
                               explicit_marker->frontier < prepared_data.token_ids.size(),
                           "media expansion did not remap the following message cache boundary");
     }
@@ -1579,125 +1542,134 @@ int test_explicit_leading_instruction_cache_boundary() {
                  "full-system marker");
 }
 
-std::vector<std::uint32_t> automatic_anchor_frontiers(const Frontend& frontend,
-                                                      std::uint32_t automatic_anchors,
-                                                      bool explicit_anchor_after_fifth,
-                                                      std::size_t* token_count = nullptr) {
-    ninfer::PromptInput input;
-    const auto add = [&](ninfer::ChatRole role, const char* text) {
-        ninfer::ChatMessage message;
-        message.role = role;
-        message.parts.push_back(
-            ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = text, .media = {}});
-        input.messages.push_back(std::move(message));
-    };
-    add(ninfer::ChatRole::System, "system preamble");
-    add(ninfer::ChatRole::User, "first question");
-    add(ninfer::ChatRole::Assistant, "first answer");
-    add(ninfer::ChatRole::User, "second question");
-    add(ninfer::ChatRole::Assistant, "second answer");
-    add(ninfer::ChatRole::User, "third question");
-    input.context_cache.automatic_private_anchors = automatic_anchors;
-    if (explicit_anchor_after_fifth) {
-        input.context_cache.markers.push_back(ninfer::PromptCacheMarker{
-            .after_message_count = 5,
-            .kind                = ninfer::PromptCacheMarkerKind::PrivateLongAnchor,
-            .location            = ninfer::PromptCacheMarkerLocation::MessageBoundary,
-        });
-    }
-    const auto prepared = frontend.prepare(std::move(input));
-    const auto& data    = FrontendFactory::inspect(prepared);
-    if (token_count != nullptr) { *token_count = data.token_ids.size(); }
-    std::vector<std::uint32_t> frontiers;
-    for (const auto& opportunity : data.context_cache.opportunities) {
-        if (opportunity.kind == ninfer::PromptCacheMarkerKind::PrivateLongAnchor) {
-            frontiers.push_back(opportunity.frontier);
+int test_source_part_recovery_boundary() {
+    const std::string custom_template =
+        "{% for m in messages %}[{{ m.role }}]{{ m.content }}[/complete-message]\n{% endfor %}"
+        "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}";
+    int failures = 0;
+    for (const bool custom : {false, true}) {
+        const auto frontend = make_frontend(
+            resources(custom ? custom_template : thinking_toggle_template_source()), false);
+        for (const auto& [role, name] : {std::pair{ninfer::ChatRole::User, "user"},
+                                         std::pair{ninfer::ChatRole::System, "system"},
+                                         std::pair{ninfer::ChatRole::Developer, "developer"}}) {
+            for (const bool preserve : {false, true}) {
+                ninfer::PromptInput input;
+                ninfer::ChatMessage seed;
+                seed.role = ninfer::ChatRole::User;
+                seed.parts.push_back({.text = "seed"});
+                input.messages.push_back(std::move(seed));
+                ninfer::ChatMessage message;
+                message.role = role;
+                message.parts.push_back({.text = "alpha"});
+                message.parts.push_back({.text = " beta"});
+                input.messages.push_back(std::move(message));
+                input.options.preserve_thinking                            = preserve;
+                input.options.enable_thinking                              = !preserve;
+                input.context_cache.allow_engine_automatic_shared_prefixes = false;
+                input.context_cache.markers.push_back({
+                    .after_message_count = 2,
+                    .evidence            = ninfer::SharedCandidateEvidence::DefaultAutomatic,
+                    .location            = ninfer::PromptCacheMarkerLocation::MessagePartBoundary,
+                    .after_message_part_count = 2,
+                });
+                const auto prepared = frontend.prepare(input);
+                const auto& data    = FrontendFactory::inspect(prepared);
+                const std::string expected =
+                    custom ? "[user]seed[/complete-message]\n[" + std::string(name) + "]alpha beta"
+                           : "<|im_start|>user\nseed<|im_end|>\n<|im_start|>" +
+                                 std::string(role == ninfer::ChatRole::User ? "user" : "system") +
+                                 "\nalpha beta";
+                const auto frontier = data.context_cache.opportunities.empty()
+                                          ? 0U
+                                          : data.context_cache.opportunities.front().frontier;
+                const auto& rewrite = data.identity.rewrite_checkpoint;
+                failures += check(
+                    frontier > 0 && frontier < data.token_ids.size() &&
+                        data.context_cache.opportunities.size() == 1 &&
+                        fixture_tokenizer().decode(std::span(data.token_ids).first(frontier)) ==
+                            expected &&
+                        rewrite && rewrite->frontier > frontier &&
+                        rewrite->recovery_frontier == (custom ? rewrite->frontier : frontier),
+                    "source-part caching or proven input recovery changed its rendered position");
+                input.messages.back().parts.back().text += " additional content";
+                const auto extended  = frontend.prepare(std::move(input));
+                const auto& expanded = FrontendFactory::inspect(extended);
+                failures +=
+                    check(frontier > 0 && frontier < expanded.token_ids.size() &&
+                              std::equal(data.token_ids.begin(), data.token_ids.begin() + frontier,
+                                         expanded.token_ids.begin()),
+                          "growing a message lost the retained source-part prefix");
+            }
         }
     }
-    return frontiers;
-}
-
-int test_automatic_private_long_anchors() {
-    const Frontend frontend = make_frontend(resources(), false);
-    int failures            = 0;
-    failures += check(automatic_anchor_frontiers(frontend, 0, false).empty(),
-                      "automatic long anchors were proposed while disabled");
-
-    std::size_t tokens               = 0;
-    const std::vector<std::uint32_t> two = automatic_anchor_frontiers(frontend, 2, false, &tokens);
-    failures += check(two.size() == 2 && two[0] > two[1] && two[1] > 0 && two[0] < tokens,
-                      "automatic long anchors did not take the last two interior boundaries");
-
-    // More anchors than interior boundaries: every boundary after messages 1..5 and none at the
-    // preamble or after the final message.
-    const std::vector<std::uint32_t> all = automatic_anchor_frontiers(frontend, 16, false);
-    bool descending                      = true;
-    for (std::size_t index = 1; index < all.size(); ++index) {
-        descending = descending && all[index] < all[index - 1];
-    }
-    failures += check(all.size() == 5 && descending && all.front() == two.front() &&
-                          all.front() < tokens && all.back() > 0,
-                      "automatic long anchors left the interior message boundaries");
-
-    // An explicit anchor at the same boundary merges instead of proposing a duplicate.
-    const std::vector<std::uint32_t> merged = automatic_anchor_frontiers(frontend, 2, true);
-    failures += check(merged.size() == 2 &&
-                          std::count(merged.begin(), merged.end(), two.front()) == 1,
-                      "an explicit anchor duplicated the automatic anchor at its boundary");
     return failures;
 }
 
-int test_progress_anchors() {
-    const Frontend frontend = make_frontend(resources(), false);
-    const auto frontiers    = [&](std::uint32_t stride, std::size_t* token_count) {
-        // One long user message: no interior message boundary exists, so every anchor below comes
-        // from the stride alone.
-        std::string text;
-        for (int repeat = 0; repeat < 120; ++repeat) {
-            text += "one very long question that keeps going and going so the prompt spans many "
-                    "tokens before it finally ends here. ";
-        }
+int test_input_recovery_requires_proven_closing() {
+    int failures = 0;
+    for (const std::string body :
+         {"{{ m.content }}template suffix", "{{ m.content }}{{ m.content }}"}) {
+        const auto compiled = fi::CompiledChatTemplate::resolve(
+            "{% for m in messages %}<|im_start|>{{ m.role }}\n" + body +
+            "<|im_end|>\n{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif "
+            "%}");
+        const auto rendered = compiled.render({chat_message(ninfer::ChatRole::User, "content")});
+        failures +=
+            check(rendered.rewrite_checkpoint && rendered.rewrite_checkpoint->recovery_offset ==
+                                                     rendered.rewrite_checkpoint->offset,
+                  "unproved custom source boundary replaced the typed recovery state");
+    }
+    const auto empty = render_chat({chat_message(ninfer::ChatRole::User, "")});
+    failures += check(empty.rewrite_checkpoint && empty.rewrite_checkpoint->recovery_offset ==
+                                                      empty.rewrite_checkpoint->offset,
+                      "empty user content fabricated an earlier source recovery point");
+    return failures;
+}
+
+int test_automatic_message_boundary_fallback() {
+    // The generation-dependent suffix prevents proving a complete-message prefix. The source
+    // content still identifies an exact last-part boundary in the actual serialized prompt.
+    const auto frontend =
+        make_frontend(resources("{% for m in messages %}{{ m.role }}:{{ m.content }}{% endfor %}"
+                                "{% if add_generation_prompt %}|live|<|im_start|>assistant\n"
+                                "{% else %}|closed|{% endif %}"),
+                      false);
+    const auto expected = fixture_tokenizer().encode("user:alpha beta");
+    using Evidence      = ninfer::SharedCandidateEvidence;
+    int failures        = 0;
+    for (const auto evidence :
+         {Evidence::DefaultAutomatic, Evidence::RequestedAutomatic, Evidence::ExplicitBoundary,
+          Evidence::ExplicitBoundary | Evidence::DefaultAutomatic}) {
         ninfer::PromptInput input;
         ninfer::ChatMessage message;
         message.role = ninfer::ChatRole::User;
-        message.parts.push_back(ninfer::MessagePart{
-            .kind = ninfer::MessagePartKind::Text, .text = std::move(text), .media = {}});
+        message.parts.push_back({.text = "alpha"});
+        message.parts.push_back({.text = " beta"});
         input.messages.push_back(std::move(message));
-        input.context_cache.progress_anchor_stride = stride;
-        const auto prepared                        = frontend.prepare(std::move(input));
-        const auto& data                           = FrontendFactory::inspect(prepared);
-        *token_count                               = data.token_ids.size();
-        std::vector<std::uint32_t> result;
-        for (const auto& opportunity : data.context_cache.opportunities) {
-            if (opportunity.kind == ninfer::PromptCacheMarkerKind::PrivateLongAnchor) {
-                result.push_back(opportunity.frontier);
-            }
+        input.context_cache.allow_engine_automatic_shared_prefixes = false;
+        input.context_cache.markers.push_back({
+            .after_message_count = 1,
+            .evidence            = evidence,
+            .location            = ninfer::PromptCacheMarkerLocation::MessageBoundary,
+        });
+        const auto prepared = frontend.prepare(std::move(input));
+        const auto& data    = FrontendFactory::inspect(prepared);
+        const bool explicit_boundary =
+            ninfer::has_shared_candidate_evidence(evidence, Evidence::ExplicitBoundary);
+        if (explicit_boundary) {
+            failures += check(data.context_cache.opportunities.empty(),
+                              "unproved explicit message boundary fell back to a content part");
+        } else {
+            failures +=
+                check(data.token_ids.size() > expected.size() &&
+                          std::equal(expected.begin(), expected.end(), data.token_ids.begin()) &&
+                          data.context_cache.opportunities.size() == 1 &&
+                          data.context_cache.opportunities.front().frontier == expected.size() &&
+                          data.context_cache.opportunities.front().evidence == evidence,
+                      "automatic message boundary lost the exact last source-part fallback");
         }
-        return result;
-    };
-
-    int failures       = 0;
-    std::size_t tokens = 0;
-    failures += check(frontiers(0, &tokens).empty(),
-                      "progress anchors were proposed while disabled");
-    constexpr std::uint32_t kStride = ninfer::kMinimumProgressAnchorStride;
-    const std::vector<std::uint32_t> anchors = frontiers(kStride, &tokens);
-    failures += check(tokens > 2U * kStride && anchors.size() == (tokens - 1U) / kStride,
-                      "progress anchors did not cover every stride multiple inside the prompt");
-    bool aligned = !anchors.empty();
-    for (std::size_t index = 0; index < anchors.size(); ++index) {
-        aligned = aligned && anchors[index] == (index + 1U) * kStride && anchors[index] < tokens;
     }
-    failures += check(aligned,
-                      "progress anchors were not at ascending absolute multiples of the stride");
-    failures += check(frontiers(static_cast<std::uint32_t>(tokens), &tokens).empty(),
-                      "a stride covering the whole prompt proposed an anchor");
-    bool fine_stride_rejected = false;
-    try {
-        (void)frontiers(1, &tokens);
-    } catch (const std::invalid_argument&) { fine_stride_rejected = true; }
-    failures += check(fine_stride_rejected,
-                      "a progress anchor stride below the minimum reached the Frontend");
     return failures;
 }
 
@@ -2945,13 +2917,14 @@ int main() {
     failures += test_invalid_public_part_enums(frontend);
     failures += test_text_and_image_prepare(frontend);
     failures += test_prompt_graft();
-    failures += test_direct_graft_context_cache();
+    failures += test_direct_graft_rejected();
     failures += test_media_token_ids_come_from_tokenizer();
     failures += test_template_media_contract();
     failures += test_image_resize_rejection_policy();
     failures += test_explicit_leading_instruction_cache_boundary();
-    failures += test_automatic_private_long_anchors();
-    failures += test_progress_anchors();
+    failures += test_source_part_recovery_boundary();
+    failures += test_input_recovery_requires_proven_closing();
+    failures += test_automatic_message_boundary_fallback();
     failures += test_media_admission_uses_aggregate_resources(frontend);
     failures += test_multimodal_prompt_over_removed_32k_cap(frontend);
     failures += test_attention_pairs_are_diagnostic(frontend);

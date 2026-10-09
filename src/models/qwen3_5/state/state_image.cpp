@@ -240,14 +240,22 @@ TransferWork dflash_local_transfer_work(const StateImageHostLayout& layout) {
                         .copy_operations = static_cast<std::uint32_t>(operations)};
 }
 
-HostStatePool::HostStatePool(StateImageHostLayout layout, std::uint32_t capacity)
-    : layout_(std::move(layout)), slots_(capacity), free_slots_(capacity), free_count_(capacity) {
+HostStatePool::HostStatePool(HostContextArena& arena, StateImageHostLayout layout)
+    : layout_(std::move(layout)), arena_(&arena) {
     if (!same_host_layout(layout_, plan_host_state_image(layout_.spec))) {
         throw std::invalid_argument("HostStatePool image layout is invalid");
     }
-    const std::size_t bytes =
-        checked_mul(layout_.image_bytes, capacity, "HostStatePool backing size overflow");
-    if (bytes != 0) { backing_.emplace(bytes); }
+    if (layout_.image_bytes < arena_->minimum_allocation_bytes()) {
+        throw std::invalid_argument("Host state geometry is below the shared arena minimum");
+    }
+    const std::size_t maximum_slots = arena_->capacity_bytes() / layout_.image_bytes;
+    if (maximum_slots > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::overflow_error("Host state descriptor capacity exceeds uint32");
+    }
+    const auto capacity = static_cast<std::uint32_t>(maximum_slots);
+    slots_.resize(capacity);
+    free_slots_.resize(capacity);
+    free_count_ = capacity;
     for (std::uint32_t index = 0; index < capacity; ++index) {
         free_slots_[index] = capacity - 1U - index;
     }
@@ -255,17 +263,29 @@ HostStatePool::HostStatePool(StateImageHostLayout layout, std::uint32_t capacity
 
 std::optional<HostStateSlotHandle> HostStatePool::allocate() noexcept {
     if (free_count_ == 0) { return std::nullopt; }
+    auto storage = arena_->allocate(layout_.image_bytes);
+    if (!storage) { return std::nullopt; }
     const std::uint32_t index = free_slots_[--free_count_];
     Slot& slot                = slots_[index];
-    slot.occupied             = true;
+    slot.storage              = std::move(*storage);
     ++occupied_;
-    return HostStateSlotHandle{.index = index, .generation = slot.generation};
+    return HostStateSlotHandle{.index = index, .generation = slot.generation, .owner = this};
+}
+
+bool HostStatePool::can_allocate() const noexcept {
+    return free_count_ != 0 && arena_->can_allocate(layout_.image_bytes);
+}
+
+bool HostStatePool::publish(HostStateSlotHandle handle) noexcept {
+    if (!valid(handle)) { return false; }
+    slots_[handle.index].storage.publish();
+    return true;
 }
 
 bool HostStatePool::release(HostStateSlotHandle handle) noexcept {
     if (!valid(handle)) { return false; }
-    Slot& slot    = slots_[handle.index];
-    slot.occupied = false;
+    Slot& slot = slots_[handle.index];
+    (void)slot.storage.release();
     if (++slot.generation == 0) { ++slot.generation; }
     free_slots_[free_count_++] = handle.index;
     --occupied_;
@@ -287,13 +307,13 @@ std::uint32_t HostStatePool::capacity() const noexcept {
 }
 
 bool HostStatePool::valid(HostStateSlotHandle handle) const noexcept {
-    return handle.index < slots_.size() && slots_[handle.index].occupied &&
+    return handle.owner == this && handle.index < slots_.size() &&
+           slots_[handle.index].storage.valid() &&
            slots_[handle.index].generation == handle.generation;
 }
 
 std::byte* HostStatePool::slot_data(std::uint32_t index) const noexcept {
-    return static_cast<std::byte*>(backing_->data()) +
-           static_cast<std::size_t>(index) * layout_.image_bytes;
+    return slots_[index].storage.data();
 }
 
 StateImageDevicePool::StateImageDevicePool(DeviceSpan backing, const StateImageDeviceLayout& layout)

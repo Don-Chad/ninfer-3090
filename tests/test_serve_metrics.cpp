@@ -46,38 +46,44 @@ int main() {
                           idle.find("# TYPE llamacpp:requests_processing gauge") != std::string::npos,
                       "metric families are missing their Prometheus TYPE");
 
-    live.root_selections                 = 7;
-    live.private_endpoint_selections     = 31;
-    live.shared_stable_prefix_selections = 2;
-    live.pressure_private_owners_evicted = 4;
-    live.pressure_checkpoints_dropped    = 1;
-    live.pressure_searches               = 9;
-    live.main_kv_h2d_bytes               = 123456;
-    live.state_d2h_bytes                 = 777;
-    live.host_kv_occupied_bytes          = 1U << 20;
-    live.device_state_occupied_slots     = 3;
-    const std::string cache              = metrics.render(2, live, 0);
+    live.root_selections             = 7;
+    live.checkpoint_selections       = 31;
+    live.preemptions                 = 4;
+    live.snapshot_restores           = 1;
+    live.replay_restores             = 2;
+    live.replayed_tokens             = 640;
+    live.pressure_spill_pages        = 9;
+    live.main_kv_h2d_bytes           = 123456;
+    live.state_d2h_bytes             = 777;
+    live.host_kv_occupied_bytes      = 1U << 20;
+    live.host_context_occupied_bytes = 3U << 20;
+    live.device_state_occupied_slots = 3;
+    const std::string cache          = metrics.render(2, live, 0);
     failures += check(has_sample(cache, "ninfer:context_selections_total{source=\"root\"} 7") &&
-                          has_sample(cache, "ninfer:context_selections_total{source=\"private_"
-                                            "endpoint\"} 31") &&
-                          has_sample(cache, "ninfer:context_selections_total{source=\"shared_"
-                                            "stable_prefix\"} 2") &&
-                          has_sample(cache, "ninfer:context_selections_total{source=\"private_"
-                                            "long_anchor\"} 0"),
+                          has_sample(cache,
+                                     "ninfer:context_selections_total{source=\"checkpoint\"} 31"),
                       "context selections are not reported per source");
-    failures += check(has_sample(cache, "ninfer:context_pressure_events_total{event=\"private_"
-                                        "owner_evicted\"} 4") &&
-                          has_sample(cache, "ninfer:context_pressure_events_total{event="
-                                            "\"checkpoint_dropped\"} 1") &&
-                          has_sample(cache, "ninfer:context_pressure_searches_total{result="
-                                            "\"started\"} 9"),
-                      "pressure events are not reported");
+    failures += check(has_sample(cache, "ninfer:preemptions_total 4") &&
+                          has_sample(cache, "ninfer:context_restores_total{route=\"snapshot\"} 1") &&
+                          has_sample(cache, "ninfer:context_restores_total{route=\"replay\"} 2") &&
+                          has_sample(cache, "ninfer:replayed_tokens_total 640") &&
+                          has_sample(cache, "ninfer:context_pressure_spill_pages_total 9"),
+                      "preemption, restore and pressure spill series are not reported");
+    for (const char* removed :
+         {"ninfer:context_pressure_events_total", "ninfer:context_pressure_searches_total",
+          "ninfer:context_historical_fork_hits_total", "ninfer:output_reservation_",
+          "ninfer:cancelled_prefills_retained", "private_endpoint"}) {
+        failures += check(cache.find(removed) == std::string::npos,
+                          "a series of the previous context-cache engine is still reported");
+    }
     failures += check(has_sample(cache, "ninfer:context_transfer_bytes_total{object=\"main_kv\","
                                         "direction=\"h2d\"} 123456") &&
                           has_sample(cache, "ninfer:context_transfer_bytes_total{object=\"state\","
                                             "direction=\"d2h\"} 777"),
                       "context transfer bytes are not reported by object and direction");
     failures += check(has_sample(cache, "ninfer:context_occupancy{pool=\"host_kv_bytes\"} 1048576") &&
+                          has_sample(cache,
+                                     "ninfer:context_occupancy{pool=\"host_context_bytes\"} 3145728") &&
                           has_sample(cache, "ninfer:context_occupancy{pool=\"device_state_slots\"} 3"),
                       "context occupancy gauges are not reported");
     failures += check(cache.find("# TYPE ninfer:context_selections_total counter") !=
@@ -88,13 +94,9 @@ int main() {
     live.waiting_cancelled_requests        = 4;
     live.waiting_abandoned_seconds         = 240.5;
     live.cancelled_prefills                = 2;
-    live.cancelled_prefills_retained       = 1;
-    live.cancelled_prefill_retained_tokens = 16384;
     const std::string abandoned            = metrics.render(2, live, 0);
     failures += check(has_sample(abandoned, "ninfer:waiting_cancelled_requests_total 4") &&
-                          has_sample(abandoned, "ninfer:cancelled_prefills_total 2") &&
-                          has_sample(abandoned, "ninfer:cancelled_prefills_retained_total 1") &&
-                          has_sample(abandoned, "ninfer:cancelled_prefill_retained_tokens_total 16384"),
+                          has_sample(abandoned, "ninfer:cancelled_prefills_total 2"),
                       "abandoned and cancelled request series are not reported");
 
     live.context_store_images        = 5;

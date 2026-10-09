@@ -2,7 +2,7 @@
 #include "models/qwen3_5/execution/linear.h"
 #include <cmath>
 #include "models/qwen3_5/program/internal.h"
-#include "models/qwen3_5/program/context.h"
+#include "models/qwen3_5/program/execution_context.h"
 #include "models/qwen3_5/execution/workspace.h"
 
 #include "core/nvtx.h"

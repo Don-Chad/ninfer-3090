@@ -20,7 +20,9 @@ class logger;
 
 namespace ninfer::serve {
 
-inline constexpr int kRequestLogSchemaVersion        = 22;
+// 22 was the fork on top of upstream 21; upstream 23 is the preemption engine; 24 is the fork
+// (structured output, thinking clamp, overlay, waiting/cancel counters) on top of upstream 23.
+inline constexpr int kRequestLogSchemaVersion        = 24;
 inline constexpr const char* kRequestLogArtifactType = "ninfer_serve_request_log";
 
 struct ServerLogEnvironment {

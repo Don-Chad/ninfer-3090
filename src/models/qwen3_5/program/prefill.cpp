@@ -1,7 +1,7 @@
-#include "models/qwen3_5/program/speculative/lookup_draft.h"
 #include "models/qwen3_5/program/program_impl.h"
+#include "models/qwen3_5/program/speculative/lookup_draft.h"
 #include "models/qwen3_5/program/context_work.h"
-#include "models/qwen3_5/program/context.h"
+#include "models/qwen3_5/program/execution_context.h"
 #include "models/qwen3_5/execution/linear.h"
 #include "core/device.h"
 #include "ninfer/ops/gdn_replay.h"
@@ -75,9 +75,10 @@ PrefillChunkResult prefill_text_chunk(PrefillContext& state, std::span<const Tok
                      state.text_kv, state.execution.linear_attention, state.execution.io,
                      state.execution.prefill_hidden, state.execution.prefill_chunk,
                      state.text_kv_base, state.mtp_kv, &state.text_cache, state.mtp_cache);
-    card.set_stage_runtime(state.execution.stages);
     configure_text_card(card, state.execution, state.sampling, state.state_source_slot,
                         state.state_destination_slot, state.mtp_proposal_extent);
+    card.set_prefill_gpu_timer(state.prefill_gpu_timer);
+    card.set_rope_delta(state.rope_delta);
     card.set_rewrite_checkpoint_hidden_output(state.rewrite_checkpoint_hidden);
     card.set_prefill_split_frontier(split_frontier ? static_cast<std::int64_t>(*split_frontier)
                                                    : -1);
@@ -99,9 +100,10 @@ PrefillChunkResult prefill_multimodal_chunk(PrefillContext& state, const Prepare
                      state.text_kv, state.execution.linear_attention, state.execution.io,
                      state.execution.prefill_hidden, state.execution.prefill_chunk,
                      state.text_kv_base, state.mtp_kv, &state.text_cache, state.mtp_cache);
-    card.set_stage_runtime(state.execution.stages);
     configure_text_card(card, state.execution, state.sampling, state.state_source_slot,
                         state.state_destination_slot, state.mtp_proposal_extent);
+    card.set_prefill_gpu_timer(state.prefill_gpu_timer);
+    card.set_rope_delta(state.rope_delta);
     card.set_rewrite_checkpoint_hidden_output(state.rewrite_checkpoint_hidden);
     card.set_prefill_split_frontier(split_frontier ? static_cast<std::int64_t>(*split_frontier)
                                                    : -1);
@@ -142,7 +144,7 @@ void mtp_bridge_multimodal(PrefillContext& state, const PreparedPromptData& prom
             throw std::logic_error("visual MTP bridge does not match Vision scatter metadata");
         }
         visual_embedding =
-            vision.bridge_column(chunk, static_cast<std::int32_t>(column - scatter.begin()));
+            chunk.embeddings.slice(1, static_cast<std::int32_t>(column - scatter.begin()), 1);
         composed_embedding = &visual_embedding;
     }
 
@@ -192,493 +194,27 @@ std::array<std::int32_t, 3> prompt_rope_position(const PreparedPromptData& promp
 
 } // namespace
 
-void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
-                                 MaterializationTransaction& transaction) {
-    if (lane >= max_concurrency) { throw std::out_of_range("request lane is out of range"); }
-    RequestControl& request = requests[lane];
-    if (!transaction.plan || transaction.plan->impl_ == nullptr || !transaction.prepared ||
-        !request.prefill) {
-        throw std::invalid_argument("materialization staging is incomplete");
+PrefillProgress ProgramImpl::advance_prefill(SequenceHandle handle,
+                                             runtime::ExecutionTiming* timing,
+                                             runtime::TokenMaskSource* constraint) {
+    if (!valid_sequence(handle)) { throw std::logic_error("prefill has a stale lane"); }
+    const auto lane = ContractAccess::lane(handle).value;
+    require_unit(lane, ExecutionUnitKind::Prefill);
+    runtime::TokenMaskSource* const constraints[1] = {constraint};
+    const TokenConstraintBinding binding(*this, std::span<const std::uint32_t>(&lane, 1),
+                                         std::span<runtime::TokenMaskSource* const>(constraints));
+    auto& state = sequences[lane];
+    prepare_capture_boundary(lane);
+    const auto permit = *requests[lane].permit;
+    ensure_sequence_kv_mapped(state, permit.main_frontier, permit.backend_frontier);
+    set_device_i32(io.text_kv_table_row, text_kv_addresses->bound_row(state.kv->text));
+    if (state.kv->backend) {
+        set_device_i32(io.backend_kv_table_row,
+                       backend_kv_addresses->bound_row(*state.kv->backend));
     }
-    AdmissionCandidateImpl& request_plan = *transaction.plan->impl_;
-    if (request.lifecycle == Lifecycle::Prefilling || request.lifecycle == Lifecycle::Active ||
-        request.lifecycle == Lifecycle::Pending) {
-        throw std::logic_error("staged prefill requires a free request lane");
-    }
-    auto& staged                           = *request.prefill;
-    const auto started                     = Clock::now();
-    const std::uint32_t prompt_tokens      = staged.prompt_tokens;
-    const std::uint32_t base               = staged.base;
-    const std::uint32_t initial_mtp_extent = staged.initial_mtp_extent;
-    request.lifecycle                      = Lifecycle::Empty;
-    try {
-        const std::uint32_t state_slots = request_plan.demand.active_entitlement.device.state_slots;
-        const bool preserving_source =
-            (transaction.has_source || transaction.has_shared_source) &&
-            transaction.source_mode == runtime::PrivateSourceMode::Retain;
-        const bool text_prefix_fork    = request_plan.text_prefix_fork_required;
-        const bool backend_prefix_fork = request_plan.backend_prefix_fork_required;
-        if (request_plan.reuse == ReusePath::Root) {
-            if (transaction.reserved_state_count != state_slots || state_slots == 0 ||
-                !transaction.root_text_address || !transaction.text_activation ||
-                transaction.root_backend_address.has_value() !=
-                    (request_plan.backend_kv_page_entitlement != 0) ||
-                transaction.backend_activation.has_value() !=
-                    (request_plan.backend_kv_page_entitlement != 0)) {
-                throw std::logic_error("root materialization reservations are incomplete");
-            }
-            release_sequence_kv(sequence);
-            release_sequence_state(sequence);
-            sequence.state = ActiveStateBinding{.read  = transaction.reserved_states[0],
-                                                .write = transaction.reserved_states[0]};
-            transaction.reserved_states[0] = {};
-            if (state_slots == 2) {
-                sequence.reserved_state        = transaction.reserved_states[1];
-                transaction.reserved_states[1] = {};
-            }
-            transaction.reserved_state_count = 0;
-
-            SequenceKVBundle bundle{.text = *transaction.root_text_address};
-            transaction.root_text_address.reset();
-            if (transaction.root_backend_address) {
-                bundle.backend = *transaction.root_backend_address;
-                transaction.root_backend_address.reset();
-            }
-            sequence.kv.emplace(bundle);
-        } else if (preserving_source) {
-            const bool private_source_ready = transaction.has_source &&
-                                              transaction.source_index < continuation_capacity &&
-                                              continuation_slots[transaction.source_index].role ==
-                                                  ContinuationSlotRole::Catalogued;
-            const bool shared_source_ready =
-                transaction.has_shared_source &&
-                transaction.shared_source_index < shared_prefix_capacity &&
-                is_live_shared_prefix_role(
-                    shared_prefix_slots[transaction.shared_source_index].role);
-            if (private_source_ready == shared_source_ready ||
-                transaction.reserved_state_count != state_slots || state_slots == 0 ||
-                !transaction.root_text_address || !transaction.text_prefix_fork ||
-                !transaction.prefix_forks_ready ||
-                transaction.root_backend_address.has_value() !=
-                    (request_plan.backend_kv_page_entitlement != 0)) {
-                throw std::logic_error("retained materialization is incomplete");
-            }
-            const StateImageHandle selected =
-                private_source_ready
-                    ? selected_state(continuation_states[transaction.source_index],
-                                     request_plan.reuse, request_plan.selected_checkpoint)
-                    : shared_prefix_states[transaction.shared_source_index].state;
-            const StateImageHandle current = transaction.reserved_states[0];
-            if (state_store->residency(selected) == StateReplicaResidency::HostOnly) {
-                if (state_store->role(current) != StateImageRole::ActiveMutable) {
-                    throw std::logic_error("Host retained Fork destination was not published");
-                }
-                sequence.state = ActiveStateBinding{.read = current, .write = current};
-            } else if (transaction.split_state_identity) {
-                if (!private_source_ready ||
-                    state_store->residency(selected) != StateReplicaResidency::Both) {
-                    throw std::logic_error("StateImage identity split source changed");
-                }
-                state_store->split_device_replica_identity(selected, current);
-                sequence.state = ActiveStateBinding{.read = current, .write = current};
-            } else {
-                const StateImageSelectors selectors = state_store->begin_fork(selected, current);
-                if (is_masked_draft_backend(speculative_backend)) {
-                    state_images->copy_dflash_local(selectors.source, selectors.destination,
-                                                    device.stream);
-                }
-                sequence.state = ActiveStateBinding{
-                    .read           = selected,
-                    .write          = current,
-                    .fork_pending   = true,
-                    .read_ownership = StateReadOwnership::ExternalOwner,
-                };
-            }
-            transaction.reserved_states[0]   = {};
-            transaction.split_state_identity = false;
-            if (state_slots == 2) {
-                sequence.reserved_state        = transaction.reserved_states[1];
-                transaction.reserved_states[1] = {};
-            }
-            transaction.reserved_state_count = 0;
-            sequence.rewrite_state.reset();
-            sequence.rewrite_checkpoint = {};
-
-            SequenceKVBundle bundle{.text = *transaction.root_text_address};
-            transaction.root_text_address.reset();
-            if (transaction.root_backend_address) {
-                bundle.backend = *transaction.root_backend_address;
-                transaction.root_backend_address.reset();
-            }
-            sequence.kv.emplace(bundle);
-        } else {
-            if (request_plan.state_fork_required !=
-                transaction.state_fork_destination.has_value()) {
-                throw std::logic_error("private materialization StateImage Fork is incomplete");
-            }
-            if (transaction.reserved_state_count > 1 ||
-                (transaction.reserved_state_count != 0 && sequence.reserved_state)) {
-                throw std::logic_error("private materialization StateImage reservation is invalid");
-            }
-            if (transaction.reserved_state_count == 1) {
-                sequence.reserved_state          = transaction.reserved_states[0];
-                transaction.reserved_states[0]   = {};
-                transaction.reserved_state_count = 0;
-            }
-        }
-
-        if (!preserving_source) {
-            std::array<HostKVPageReplicaRelease, 2> stale_tail_replicas{};
-            std::size_t stale_tail_count           = 0;
-            const auto preflight_inactive_truncate = [&](KVAddressSpaceStore& addresses,
-                                                         LogicalKVPageStore& pages,
-                                                         KVAddressSpaceHandle address,
-                                                         std::optional<std::uint32_t> frontier) {
-                if (!frontier ||
-                    (addresses.committed_frontier(address) == *frontier &&
-                     addresses.mapped_pages(address) == kv_pages_for_frontier(*frontier))) {
-                    return;
-                }
-                bool releases_tail               = false;
-                const std::uint32_t target_pages = kv_pages_for_frontier(*frontier);
-                if (target_pages != 0) {
-                    const LogicalKVPageHandle tail =
-                        addresses.logical_page(address, target_pages - 1U);
-                    const std::uint32_t columns =
-                        *frontier -
-                        (target_pages - 1U) * static_cast<std::uint32_t>(kPagedKVPageSize);
-                    if (columns != pages.committed_columns(tail) && pages.host_resident(tail)) {
-                        if (host_kv_extents == nullptr ||
-                            stale_tail_count == stale_tail_replicas.size()) {
-                            throw std::logic_error("stale Host KV tail replica is not releasable");
-                        }
-                        stale_tail_replicas[stale_tail_count++] =
-                            HostKVPageReplicaRelease{.pages = &pages, .page = tail};
-                        releases_tail = true;
-                    }
-                }
-                if (!addresses.can_destructive_truncate_inactive(address, *frontier,
-                                                                 releases_tail)) {
-                    throw std::logic_error(
-                        "selected private KV frontier is not destructively materializable");
-                }
-            };
-            if (!sequence.kv) {
-                throw std::logic_error("materialization destination has no KV address space");
-            }
-            if (!text_prefix_fork) {
-                preflight_inactive_truncate(*text_kv_addresses, *text_kv_pages, sequence.kv->text,
-                                            transaction.text_activation_frontier);
-            }
-            if (sequence.kv->backend && !backend_prefix_fork) {
-                preflight_inactive_truncate(*backend_kv_addresses, *backend_kv_pages,
-                                            *sequence.kv->backend,
-                                            transaction.backend_activation_frontier);
-            }
-            if (stale_tail_count != 0) {
-                const std::span<const HostKVPageReplicaRelease> releases(stale_tail_replicas.data(),
-                                                                         stale_tail_count);
-                if (!host_kv_extents->release_page_replicas(releases)) {
-                    throw std::logic_error(
-                        "stale Host KV tail replicas cannot be released atomically");
-                }
-            }
-            if (!text_prefix_fork && transaction.text_activation_frontier &&
-                (text_kv_addresses->committed_frontier(sequence.kv->text) !=
-                     *transaction.text_activation_frontier ||
-                 text_kv_addresses->mapped_pages(sequence.kv->text) !=
-                     kv_pages_for_frontier(*transaction.text_activation_frontier))) {
-                text_kv_addresses->destructive_truncate_inactive(
-                    sequence.kv->text, *transaction.text_activation_frontier);
-            }
-            if (!backend_prefix_fork && transaction.backend_activation_frontier &&
-                sequence.kv->backend &&
-                (backend_kv_addresses->committed_frontier(*sequence.kv->backend) !=
-                     *transaction.backend_activation_frontier ||
-                 backend_kv_addresses->mapped_pages(*sequence.kv->backend) !=
-                     kv_pages_for_frontier(*transaction.backend_activation_frontier))) {
-                backend_kv_addresses->destructive_truncate_inactive(
-                    *sequence.kv->backend, *transaction.backend_activation_frontier);
-            }
-            if (host_kv_extents) { (void)host_kv_extents->release_unreferenced(); }
-        }
-        if ((text_prefix_fork || backend_prefix_fork) && !transaction.prefix_forks_ready) {
-            throw std::logic_error("materialization prefix forks are incomplete");
-        }
-        if (text_prefix_fork) {
-            text_kv_addresses->commit_prefix_fork(std::move(*transaction.text_prefix_fork),
-                                                  compute_streams);
-            transaction.text_prefix_fork.reset();
-            if (!preserving_source) {
-                const KVAddressSpaceHandle source_address = sequence.kv->text;
-                sequence.kv->text                         = *transaction.root_text_address;
-                transaction.root_text_address.reset();
-                if (!text_kv_addresses->release(source_address)) {
-                    throw std::logic_error("consumed Text KV source remained pinned after COW");
-                }
-            }
-        } else {
-            text_kv_addresses->commit_activation(std::move(*transaction.text_activation),
-                                                 compute_streams);
-            transaction.text_activation.reset();
-        }
-        if (backend_prefix_fork) {
-            backend_kv_addresses->commit_prefix_fork(std::move(*transaction.backend_prefix_fork),
-                                                     compute_streams);
-            transaction.backend_prefix_fork.reset();
-            if (!preserving_source) {
-                const KVAddressSpaceHandle source_address = *sequence.kv->backend;
-                sequence.kv->backend                      = *transaction.root_backend_address;
-                transaction.root_backend_address.reset();
-                if (!backend_kv_addresses->release(source_address)) {
-                    throw std::logic_error("consumed Backend KV source remained pinned after COW");
-                }
-            }
-        } else if (transaction.backend_activation) {
-            backend_kv_addresses->commit_activation(std::move(*transaction.backend_activation),
-                                                    compute_streams);
-            transaction.backend_activation.reset();
-        }
-        transaction.prefix_forks_ready = false;
-        transaction.text_activation_frontier.reset();
-        transaction.backend_activation_frontier.reset();
-        transaction.prepared = false;
-
-        const bool preserve_rewrite =
-            request_plan.rewrite_disposition == RewriteCheckpointDisposition::RetainExisting;
-        const auto activate_consumed_state = [&](StateImageHandle selected) {
-            if (!request_plan.state_fork_required) {
-                if (transaction.state_fork_destination ||
-                    state_store->checkpoint_references(selected) != 0) {
-                    throw std::logic_error("planned StateImage Move is no longer valid");
-                }
-                state_store->move_checkpoint_to_active(selected);
-                sequence.state = ActiveStateBinding{.read = selected, .write = selected};
-                return;
-            }
-            if (!transaction.state_fork_destination ||
-                state_store->checkpoint_references(selected) == 0) {
-                throw std::logic_error("planned StateImage Fork is no longer valid");
-            }
-            const StateImageHandle destination = *transaction.state_fork_destination;
-            if (transaction.state_restored) {
-                if (state_store->role(destination) != StateImageRole::ActiveMutable) {
-                    throw std::logic_error("restored StateImage Fork destination is unavailable");
-                }
-                sequence.state = ActiveStateBinding{.read = destination, .write = destination};
-            } else {
-                const std::uint32_t references = state_store->checkpoint_references(selected);
-                const std::uint32_t lineage_references =
-                    owned_checkpoint_references(sequence, selected);
-                if (lineage_references > references) {
-                    throw std::logic_error("consumed StateImage Fork ownership is inconsistent");
-                }
-                const StateReadOwnership read_ownership =
-                    lineage_references == references ? StateReadOwnership::LineageCheckpoint
-                                                     : StateReadOwnership::ExternalOwner;
-                const StateImageSelectors selectors =
-                    state_store->begin_fork(selected, destination);
-                if (is_masked_draft_backend(speculative_backend)) {
-                    state_images->copy_dflash_local(selectors.source, selectors.destination,
-                                                    device.stream);
-                }
-                sequence.state = ActiveStateBinding{
-                    .read           = selected,
-                    .write          = destination,
-                    .fork_pending   = true,
-                    .read_ownership = read_ownership,
-                };
-            }
-            transaction.state_fork_destination.reset();
-        };
-        if (request_plan.reuse == ReusePath::Root) {
-            sequence.rewrite_checkpoint = {};
-            ordered_reset(sequence);
-            sequence.ledger.clear();
-            sequence.prefix_digests.clear();
-            sequence.text_kv_valid = 0;
-            sequence.mtp_kv_valid  = 0;
-        } else if (preserving_source) {
-            const SequenceState* private_source =
-                transaction.has_source ? &continuation_states[transaction.source_index] : nullptr;
-            SharedPrefixState* shared_source =
-                transaction.has_shared_source
-                    ? &shared_prefix_states[transaction.shared_source_index]
-                    : nullptr;
-            const std::uint32_t source_text_frontier =
-                private_source != nullptr ? private_source->text_kv_valid : shared_source->frontier;
-            if (!sequence.kv || source_text_frontier < base) {
-                throw std::logic_error("retained prefix has incomplete Text KV");
-            }
-            sequence.text_kv_valid = base;
-            if (speculative_backend == SpeculativeBackend::Mtp) {
-                const std::uint32_t mtp_base       = base == 0 ? 0 : base - 1U;
-                const std::uint32_t source_backend = private_source != nullptr
-                                                         ? private_source->mtp_kv_valid
-                                                         : shared_source->backend_frontier;
-                if (!request_plan.prepare_mtp || source_backend < mtp_base) {
-                    throw std::logic_error("retained prefix has incomplete MTP KV");
-                }
-                sequence.mtp_kv_valid = mtp_base;
-            } else if (is_masked_draft_backend(speculative_backend)) {
-                const std::uint32_t source_backend = private_source != nullptr
-                                                         ? private_source->dflash_context_frontier
-                                                         : shared_source->frontier;
-                if (source_backend < base) {
-                    throw std::logic_error("retained prefix has incomplete DFlash KV");
-                }
-                sequence.dflash_context_frontier = base;
-            }
-            sequence.tail_hidden_valid =
-                base == prompt_tokens &&
-                (private_source != nullptr ? private_source->tail_hidden_valid
-                                           : shared_source->tail_hidden_valid);
-            if (shared_source != nullptr) {
-                if (shared_source->active_references == std::numeric_limits<std::uint32_t>::max()) {
-                    throw std::overflow_error("shared-prefix active reference overflow");
-                }
-                ++shared_source->active_references;
-                sequence.shared_prefix_references.push_back(transaction.shared_source_index);
-            }
-            refresh_state_views(sequence);
-            bind_sequence_kv(sequence);
-        } else if (request_plan.reuse == ReusePath::PrivateEndpoint) {
-            if (!state_store->valid(sequence.state.read) ||
-                sequence.state.read != sequence.state.write || sequence.state.fork_pending ||
-                state_store->role(sequence.state.read) != StateImageRole::CheckpointImmutable) {
-                throw std::logic_error("resident endpoint StateImage is not movable");
-            }
-            if (!preserve_rewrite && sequence.rewrite_state) {
-                const StateImageHandle dropped = *sequence.rewrite_state;
-                state_store->release_checkpoint_reference(dropped);
-                sequence.rewrite_state.reset();
-                sequence.rewrite_checkpoint = {};
-                if (dropped != sequence.state.read &&
-                    state_store->checkpoint_references(dropped) == 0 &&
-                    !state_store->release(dropped)) {
-                    throw std::logic_error("dropped rewrite StateImage could not be released");
-                }
-            }
-            activate_consumed_state(sequence.state.read);
-            if (!sequence.kv) {
-                throw std::logic_error("resident prefix has no KV allocation bundle");
-            }
-            if (sequence.text_kv_valid < base) {
-                throw std::logic_error("resident Text KV is shorter than the append frontier");
-            }
-            if (speculative_backend == SpeculativeBackend::Mtp) {
-                const std::uint32_t mtp_base = base == 0 ? 0 : base - 1;
-                if (!request_plan.prepare_mtp || sequence.mtp_kv_valid < mtp_base) {
-                    throw std::logic_error("resident MTP KV is shorter than the bridge frontier");
-                }
-                sequence.mtp_kv_valid = mtp_base;
-            } else if (is_masked_draft_backend(speculative_backend) &&
-                       sequence.dflash_context_frontier != base) {
-                throw std::logic_error("resident DFlash context is not at the append frontier");
-            }
-            bind_sequence_kv(sequence);
-            trim_sequence_kv(sequence, base, backend_kv_valid(sequence));
-            resize_sequence_kv_entitlement(sequence, request_plan.text_kv_page_entitlement,
-                                           request_plan.backend_kv_page_entitlement);
-            sequence.text_kv_valid = base;
-            sequence.ledger.resize(base);
-            sequence.prefix_digests.truncate(base);
-            reserve_state_entitlement(sequence, state_slots);
-            refresh_state_views(sequence);
-        } else if (is_rewrite_checkpoint_restore(request_plan.reuse)) {
-            if (!sequence.kv || sequence.text_kv_valid < base) {
-                throw std::logic_error("resident rewrite checkpoint has no complete KV allocation");
-            }
-            if (!sequence.rewrite_state || !state_store->valid(*sequence.rewrite_state) ||
-                state_store->role(*sequence.rewrite_state) != StateImageRole::CheckpointImmutable ||
-                (sequence.endpoint_valid &&
-                 (!state_store->valid(sequence.state.read) ||
-                  sequence.state.read != sequence.state.write || sequence.state.fork_pending ||
-                  state_store->role(sequence.state.read) != StateImageRole::CheckpointImmutable))) {
-                throw std::logic_error("resident rewrite StateImage is not movable");
-            }
-            const StateImageHandle checkpoint = *sequence.rewrite_state;
-            if (sequence.endpoint_valid && sequence.state.read == checkpoint) {
-                throw std::logic_error("resident endpoint aliases its rewrite StateImage");
-            }
-            if (sequence.endpoint_valid && !state_store->release(sequence.state.read)) {
-                throw std::logic_error("superseded endpoint StateImage could not be released");
-            }
-            if (!preserve_rewrite) {
-                state_store->release_checkpoint_reference(checkpoint);
-                sequence.rewrite_state.reset();
-                sequence.rewrite_checkpoint = {};
-            }
-            activate_consumed_state(checkpoint);
-            sequence.text_kv_valid = base;
-            if (speculative_backend == SpeculativeBackend::Mtp) {
-                const std::uint32_t mtp_base = base == 0 ? 0 : base - 1;
-                if (!request_plan.prepare_mtp || sequence.mtp_kv_valid < mtp_base) {
-                    throw std::logic_error(
-                        "rewrite-checkpoint MTP KV is shorter than the bridge frontier");
-                }
-                sequence.mtp_kv_valid = mtp_base;
-            } else if (is_masked_draft_backend(speculative_backend)) {
-                if (!dflash || (backend_kv_cache() && !sequence.kv->backend) ||
-                    sequence.dflash_context_frontier < base) {
-                    throw std::logic_error("planned DFlash rewrite checkpoint is unavailable");
-                }
-                sequence.dflash_context_frontier = base;
-            }
-            bind_sequence_kv(sequence);
-            trim_sequence_kv(sequence, base, backend_kv_valid(sequence));
-            resize_sequence_kv_entitlement(sequence, request_plan.text_kv_page_entitlement,
-                                           request_plan.backend_kv_page_entitlement);
-            sequence.tail_hidden_valid = base == prompt_tokens;
-            sequence.ledger.resize(base);
-            sequence.prefix_digests.truncate(base);
-            reserve_state_entitlement(sequence, state_slots);
-            refresh_state_views(sequence);
-        } else {
-            throw std::logic_error("request plan has an invalid prefix reuse path");
-        }
-
-        sequence.endpoint_valid = false;
-        if (!preserving_source) { trim_sequence_kv(sequence, base, backend_kv_valid(sequence)); }
-        bind_sequence_kv(sequence);
-        const std::uint32_t backend_materialized =
-            speculative_backend == SpeculativeBackend::Mtp
-                ? std::min(capacity,
-                           prompt_tokens + (initial_mtp_extent == 0 ? 0U : initial_mtp_extent - 1U))
-            : speculative_backend == SpeculativeBackend::DFlash ? prompt_tokens
-                                                                : 0U;
-        ensure_sequence_kv_mapped(sequence, prompt_tokens, backend_materialized);
-        install_sampling(sequence, request, request_plan.sampling);
-        sequence.rope_delta = staged.prompt.rope_delta;
-        set_device_i32(io.rope_delta, sequence.rope_delta);
-
-        request.timings              = {};
-        request.pending              = {};
-        request.publish_continuation = request_plan.summary.publish_continuation;
-        sequence.mtp_draft_count     = 0;
-        sequence.tail_hidden_valid   = base == prompt_tokens && sequence.tail_hidden_valid;
-        sequence.ledger.swap(materialization_ledger_);
-        sequence.prefix_identity.swap(materialization_identity_);
-        sequence.prefix_digests.swap(materialization_prefix_digests_);
-        sequence.rebuild_work       = request_plan.root_rebuild_work;
-        sequence.rebuild_tail_begin = request_plan.root_rebuild_tail_begin;
-
-        if (is_masked_draft_backend(speculative_backend)) {
-            if (!dflash || !io.dflash_prefill || !dflash_prefill_host_ingress ||
-                (backend_kv_cache() && !sequence.kv->backend)) {
-                throw std::logic_error("DFlash prefill state is incomplete");
-            }
-        }
-
-        staged.elapsed_seconds += std::chrono::duration<double>(Clock::now() - started).count();
-        request.lifecycle = Lifecycle::Prefilling;
-    } catch (...) {
-        try {
-            device.synchronize();
-        } catch (...) {}
-        clear_lane_best_effort(sequence, request);
-        throw;
-    }
+    auto progress = wrap_prefill(lane, advance_prefill_raw(lane, timing));
+    if (!progress.complete) { settle_unit(lane); }
+    return progress;
 }
 
 runtime::PrefillStepResult
@@ -719,9 +255,7 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
             if (accepted_tokens.front() != 0 || !terminal.front()) {
                 throw std::logic_error("cancelled prefill pending decision is invalid");
             }
-            if (!clear_lane_strict(active_sequence(lane), requests[lane])) {
-                throw std::logic_error("cancelled prefill lane is not strictly releasable");
-            }
+            clear_lane(active_sequence(lane), requests[lane]);
         } else {
             timing.pause();
             timing.include(resolve_non_speculative_pending(
@@ -740,9 +274,7 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
                 throw std::logic_error("ordinary pending batch no longer matches Program state");
             }
             if (cancelled[row]) {
-                if (!clear_lane_strict(active_sequence(lane), requests[lane])) {
-                    throw std::logic_error("cancelled decode lane is not strictly releasable");
-                }
+                clear_lane(active_sequence(lane), requests[lane]);
             } else {
                 timing.pause();
                 timing.include(resolve_non_speculative_pending(
@@ -802,17 +334,8 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
     const auto tail_started = Clock::now();
     try {
         timing.resume_submit();
-        const std::span<const ops::GdnReplayFoldRow> fold_span(fold_rows.data(), lanes.size());
-        {
-            // Each state shard folds its own layers on its own device's stream.
-            RankBinding bind(device, state_images->shard(0).rank);
-            replay_fold->execute(fold_span, compute_streams[state_images->shard(0).rank]);
-        }
-        for (std::size_t shard = 1; shard < state_images->shard_count(); ++shard) {
-            RankBinding bind(device, state_images->shard(shard).rank);
-            extra_replay_fold[shard - 1]->execute(
-                fold_span, compute_streams[state_images->shard(shard).rank]);
-        }
+        replay_fold->execute(std::span<const ops::GdnReplayFoldRow>(fold_rows.data(), lanes.size()),
+                             device.stream);
 
         // Sparse acceptance reads counts. Publish only the prefix licensed by the Frontend.
         if (speculative_backend == SpeculativeBackend::DFlash2) {
@@ -903,9 +426,7 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
             SequenceState& sequence = active_sequence(lanes[row]);
             RequestControl& request = requests[lanes[row]];
             if (cancelled[row]) {
-                if (!clear_lane_strict(sequence, request)) {
-                    throw std::logic_error("cancelled speculative lane is not strictly releasable");
-                }
+                clear_lane(sequence, request);
                 continue;
             }
 
@@ -920,7 +441,6 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
             commit_generated_prefix_identity(sequence, pending.base_S,
                                              std::span<const TokenId>(token_base, committed),
                                              prefix_execution_splits[row]);
-            advance_rebuild_work(sequence, pending.base_E + committed, prefill_chunk);
             sequence.execution_frontier = pending.base_E + committed;
             sequence.ledger_frontier    = pending.base_S + committed;
             sequence.text_kv_valid      = sequence.execution_frontier;
@@ -943,9 +463,9 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
                     // one-hot either way, so verify treats them identically and a wrong guess costs
                     // throughput rather than correctness.
                     if (lookup_ngram != 0) {
-                        const auto found = ::ninfer::qwen3_5::lookup_draft(std::span<const TokenId>(sequence.ledger),
-                                                                 lookup_ngram, draft_window,
-                                                                 sequence.mtp_drafts.data());
+                        const std::uint32_t found = ::ninfer::qwen3_5::lookup_draft(
+                            std::span<const TokenId>(sequence.ledger), lookup_ngram, draft_window,
+                            sequence.mtp_drafts.data());
                         if (found != 0) { sequence.mtp_draft_count = found; }
                     }
                 }
@@ -980,8 +500,8 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
     }
 
     RequestControl::Prefill& staged = *request.prefill;
-    if (staged.pending_capture_offer != 0) {
-        throw std::logic_error("prefill cannot advance while a capture offer is pending");
+    if (request.capture_pending) {
+        throw std::logic_error("prefill cannot advance while a capture is pending");
     }
     const runtime::BeginSummary summary{.prompt_tokens        = staged.prompt_tokens,
                                         .reused_prompt_tokens = staged.base,
@@ -998,41 +518,17 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
             CUDA_CHECK(cudaMemcpyAsync(config_lane.data, &config, sizeof(config),
                                        cudaMemcpyHostToDevice, device.stream));
         }
-        if (staged.next_capture < staged.capture_groups.size() &&
-            staged.capture_groups[staged.next_capture].frontier == staged.cursor) {
-            if (staged.cursor != staged.base ||
-                !staged.capture_groups[staged.next_capture].shared ||
-                staged.capture_groups[staged.next_capture].rewrite ||
-                staged.capture_groups[staged.next_capture].long_anchor) {
-                throw std::logic_error("zero-prefill capture is not a shared base promotion");
-            }
-            if (++next_capture_offer_id_ == 0) { ++next_capture_offer_id_; }
-            staged.pending_capture_offer = next_capture_offer_id_;
-            return runtime::PrefillStepResult{
-                .summary = summary,
-                .timing  = timing.finish(),
-            };
-        }
-        // These device scalars are shared by every lane and were last written when the most
-        // recently started request bound its KV mapping. Another lane that started or prefilled
-        // since this lane's previous unit left its own values behind, so this unit rebinds its own
-        // before any chunk reads them.
-        set_device_i32(io.text_kv_table_row, text_kv_addresses->bound_row(sequence.kv->text));
-        set_device_i32(io.backend_kv_table_row,
-                       sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend)
-                                            : 0);
-        set_device_i32(io.rope_delta, sequence.rope_delta);
         StateImageSelectors selectors = state_selectors(sequence);
         Tensor rewrite_capture_hidden;
         Tensor* rewrite_capture_hidden_ptr = nullptr;
-        if (staged.next_capture < staged.capture_groups.size()) {
+        if (request.next_capture < request.capture_groups.size()) {
             rewrite_capture_hidden = state_images->continuation_hidden_slot(selectors.destination);
             rewrite_capture_hidden_ptr = &rewrite_capture_hidden;
         }
         execution::PrefillContext schedule_state{
-            {device, parameters, work, state_images->linear(0),
+            {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head, stage_runtime.get()},
+             proposal_head},
             text_kv_view(sequence),
             mtp_kv_view(sequence),
             decoder->text_kv,
@@ -1046,7 +542,9 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
             selectors.destination,
             staged.initial_mtp_extent,
             0,
-            dflash_prefill_host_ingress};
+            dflash_prefill_host_ingress,
+            sequence.rope_delta};
+        schedule_state.prefill_gpu_timer = &prefill_gpu_timer_;
 
         if (staged.mtp_bridge == MtpBridgeMode::BeforeSuffix) {
             if (staged.cursor != staged.base || staged.base == 0 ||
@@ -1095,7 +593,7 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                 schedule_state.dflash_kv_table_row =
                     sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend)
                                          : 0;
-                if (staged.next_capture < staged.capture_groups.size()) {
+                if (request.next_capture < request.capture_groups.size()) {
                     rewrite_capture_hidden =
                         state_images->continuation_hidden_slot(selectors.destination);
                     schedule_state.rewrite_checkpoint_hidden = &rewrite_capture_hidden;
@@ -1105,9 +603,9 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
 
                 const bool final_candidate = staged.cursor + remaining == staged.prompt_tokens;
                 const std::optional<std::uint32_t> capture_frontier =
-                    staged.next_capture < staged.capture_groups.size()
+                    request.next_capture < request.capture_groups.size()
                         ? std::optional<std::uint32_t>(
-                              staged.capture_groups[staged.next_capture].frontier)
+                              request.capture_groups[request.next_capture].frontier)
                         : std::nullopt;
                 std::optional<std::uint32_t> split_frontier = capture_frontier;
                 const auto rewrite_split                    = std::upper_bound(
@@ -1123,10 +621,7 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                     if (!workspace_plan.vision) {
                         throw std::logic_error("active Vision prefill lost its workspace plan");
                     }
-                    // An overlay window borrows its encode workspace outside this allocation.
-                    if (workspace_plan.vision_resident) {
-                        mark_workspace_usage(workspace_plan.vision->capacity_bytes);
-                    }
+                    mark_workspace_usage(workspace_plan.vision->capacity_bytes);
                     result = execution::prefill_multimodal_chunk(schedule_state, staged.prompt,
                                                                  *staged.vision, remaining,
                                                                  split_frontier, final_candidate);
@@ -1140,7 +635,6 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                 if (result.processed_tokens == 0 || result.processed_tokens > remaining) {
                     throw std::logic_error("ordinary prefill chunk made invalid progress");
                 }
-                if (staged.vision) { staged.vision->release_encoded_media_payloads(); }
                 staged.cursor += result.processed_tokens;
                 processed_prompt_tokens += result.processed_tokens;
                 remaining -= result.processed_tokens;
@@ -1155,16 +649,20 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                 // Prompt transitions are canonical immediately. If this was the first write after
                 // an immutable source, close the Fork before potentially freezing a new rewrite.
                 settle_state_fork(sequence);
+                copy_tail(sequence,
+                          prefill_hidden.slice(
+                              1, static_cast<std::int32_t>(result.processed_tokens) - 1, 1));
+                sequence.tail_hidden_valid = true;
                 const bool reached_capture = capture_frontier && staged.cursor == *capture_frontier;
                 if (reached_capture) {
                     if (result.finalized) {
                         // The prompt-frontier state becomes publishable only after the generated
-                        // Begin token is committed. commit() emits the offer for this group.
+                        // Begin token is committed. commit() marks this capture group ready.
                     } else {
                         staged.elapsed_seconds +=
                             std::chrono::duration<double>(Clock::now() - started).count();
-                        if (++next_capture_offer_id_ == 0) { ++next_capture_offer_id_; }
-                        staged.pending_capture_offer = next_capture_offer_id_;
+
+                        request.capture_pending = true;
                         return runtime::PrefillStepResult{
                             .summary                 = summary,
                             .processed_prompt_tokens = processed_prompt_tokens,
@@ -1233,7 +731,8 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
         device.synchronize();
         timing.end_wait();
         staged.elapsed_seconds += std::chrono::duration<double>(Clock::now() - started).count();
-        const double vision_seconds       = staged.vision ? staged.vision->elapsed_seconds() : 0.0;
+        const double vision_seconds = staged.retired_vision_seconds +
+                                      (staged.vision ? staged.vision->elapsed_seconds() : 0.0);
         const std::uint32_t prompt_tokens = staged.prompt_tokens;
 
         validate_licensed_tokens(std::span<const TokenId>(host_tokens, 1));
@@ -1256,25 +755,14 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                    sequence.dflash_context_frontier != prompt_tokens) {
             throw std::logic_error("staged DFlash prefill did not reach the prompt frontier");
         }
-        sequence.tail_hidden_valid      = true;
-        request.timings.vision_seconds  = vision_seconds;
+        sequence.tail_hidden_valid = true;
+        request.timings.vision_seconds += vision_seconds;
         request.timings.prefill_seconds = std::max(0.0, staged.elapsed_seconds - vision_seconds);
-        if (staged.vision) {
-            const execution::VisionOverlayWindowStats overlay = staged.vision->overlay_stats();
-            request.timings.overlay_windows           = overlay.windows;
-            request.timings.overlay_exclusive_windows = overlay.exclusive_windows;
-            request.timings.overlay_window_seconds    = overlay.window_seconds;
-            request.timings.overlay_evict_seconds     = overlay.evict_seconds;
-            request.timings.overlay_restore_seconds   = overlay.restore_seconds;
-            request.timings.overlay_evicted_bytes     = overlay.evicted_bytes;
-            request.timings.overlay_staged_bytes      = overlay.staged_bytes;
-        }
-        staged.prompt.release_all_media_payloads();
         if (staged.vision) { staged.vision->retire_handoff(); }
 
         const bool prompt_frontier_capture =
-            staged.next_capture < staged.capture_groups.size() &&
-            staged.capture_groups[staged.next_capture].frontier == prompt_tokens;
+            request.next_capture < request.capture_groups.size() &&
+            request.capture_groups[request.next_capture].frontier == prompt_tokens;
         if (!prompt_frontier_capture) { request.prefill.reset(); }
         request.pending   = PendingCandidate{.kind          = PendingKind::Begin,
                                              .base_E        = 0,

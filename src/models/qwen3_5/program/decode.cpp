@@ -1,7 +1,8 @@
 #include "models/qwen3_5/program/program_impl.h"
 #include "models/qwen3_5/program/context_work.h"
-#include "models/qwen3_5/program/context.h"
+#include "models/qwen3_5/program/execution_context.h"
 #include "models/qwen3_5/program/graph_execution.h"
+#include "models/qwen3_5/program/planning/graph_profiles.h"
 #include "core/nvtx.h"
 #include "core/device.h"
 #include "ninfer/ops/prepare_ragged_prefix.h"
@@ -289,7 +290,7 @@ void ProgramImpl::enqueue_dflash_context_append(std::span<const std::uint32_t> l
         // DFlash2 has only fixed cyclic state; DFlash also grows its Full backend KV here.
         if (sequence.kv->backend) {
             backend_kv_addresses->ensure_mapped_to_tokens(*sequence.kv->backend, end,
-                                                          compute_streams);
+                                                          device.stream);
         }
         minimum_count = std::min(minimum_count, counts[row]);
         maximum_count = std::max(maximum_count, counts[row]);
@@ -315,9 +316,9 @@ void ProgramImpl::enqueue_dflash_context_append(std::span<const std::uint32_t> l
     ops::prepare_ragged_prefix(dflash->pending_features, active_lane_tensor, device_starts,
                                device_ends, features, positions, device_counts, device.stream);
 
-    execution::DFlashAppendContext state{{device, parameters, work, state_images->linear(0),
+    execution::DFlashAppendContext state{{device, parameters, work, state_images->linear(),
                                           replay_records ? &*replay_records : nullptr, io,
-                                          prefill_hidden, prefill_chunk, proposal_head, stage_runtime.get()},
+                                          prefill_hidden, prefill_chunk, proposal_head},
                                          *dflash};
     mark_workspace_usage(workspace_plan.dflash_context);
     execution::dflash_append_context(state, features, positions, device_counts,
@@ -405,9 +406,9 @@ ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
         }
 
         execution::OrdinaryBatchContext schedule_state{
-            {device, parameters, work, state_images->linear(0),
+            {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head, stage_runtime.get()},
+             proposal_head},
             decoder->text_kv,
             *io.ordinary,
             *ordinary_host_ingress,
@@ -570,9 +571,9 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                                       std::min(capacity, frontier + extent + draft_window));
         }
 
-        execution::MtpBatchContext schedule_state{{device, parameters, work, state_images->linear(0),
+        execution::MtpBatchContext schedule_state{{device, parameters, work, state_images->linear(),
                                                    replay_records ? &*replay_records : nullptr, io,
-                                                   prefill_hidden, prefill_chunk, proposal_head, stage_runtime.get()},
+                                                   prefill_hidden, prefill_chunk, proposal_head},
                                                   decoder->text_kv,
                                                   *decoder->mtp_cache(),
                                                   *io.mtp_decode,
@@ -768,9 +769,9 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
         }
 
         execution::DFlashBatchContext schedule_state{
-            {device, parameters, work, state_images->linear(0),
+            {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head, stage_runtime.get()},
+             proposal_head},
             decoder->text_kv,
             *dflash,
             *io.dflash_decode,
@@ -921,8 +922,6 @@ runtime::ExecutionTiming ProgramImpl::resolve_non_speculative_pending(
         sequence.ledger_frontier    = request.pending.prompt_tokens + 1;
         break;
     case PendingKind::Ordinary:
-        advance_rebuild_work(sequence, request.pending.base_E + request.pending.produced,
-                             prefill_chunk);
         sequence.execution_frontier = request.pending.base_E + request.pending.produced;
         sequence.ledger_frontier    = request.pending.base_S + request.pending.produced;
         break;
@@ -943,7 +942,7 @@ runtime::ExecutionTiming ProgramImpl::resolve_non_speculative_pending(
     if (request.pending.kind == PendingKind::Begin && terminal && sequence.state.fork_pending) {
         const StateImageSelectors selectors = state_selectors(sequence);
         timing.resume_submit();
-        state_images->copy_slot(selectors.source, selectors.destination, compute_streams);
+        state_images->copy_slot(selectors.source, selectors.destination, device.stream);
         timing.begin_wait();
         device.synchronize();
         timing.end_wait();

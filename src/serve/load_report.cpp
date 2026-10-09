@@ -19,8 +19,7 @@ LoadCapacity make_load_capacity(std::string model_id, const ninfer::EngineOption
     // Engine::options() carries resolved values: C lane slots plus H extra checkpoint slots.
     capacity.device_state_slots =
         engine.max_concurrency + engine.context_cache.device_state_slots.value_or(0);
-    capacity.host_state_slots       = memory.host_state_capacity_slots;
-    capacity.host_kv_capacity_bytes = memory.host_kv_capacity_bytes;
+    capacity.host_context_capacity_bytes = memory.host_context_capacity_bytes;
     return capacity;
 }
 
@@ -48,19 +47,21 @@ std::string make_load_report(const LoadCapacity& capacity, const LoadSample& sam
               {"kv_capacity_pages", capacity.kv_capacity_pages},
               {"kv_page_tokens", page_tokens},
               {"device_state_slots", capacity.device_state_slots},
-              {"host_state_slots", capacity.host_state_slots},
-              {"host_kv_bytes", capacity.host_kv_capacity_bytes}}},
+              {"host_context_bytes", capacity.host_context_capacity_bytes}}},
         {"requests", Json{{"admitted", sample.admitted_requests},
                           {"running", stats.running_requests},
                           {"prefilling", stats.prefilling_requests},
                           {"decode_ready", stats.decode_ready_requests},
                           {"waiting", stats.waiting_requests},
+                          {"paused", stats.paused_requests},
+                          {"replaying", stats.replaying_requests},
                           {"materializing", stats.materializing_requests}}},
         {"occupancy", Json{{"device_main_kv_pages", stats.device_main_kv_occupied_pages},
                            {"device_main_kv_tokens", occupied_tokens},
                            {"device_state_slots", stats.device_state_occupied_slots},
                            {"host_state_slots", stats.host_state_occupied_slots},
-                           {"host_kv_bytes", stats.host_kv_occupied_bytes}}},
+                           {"host_kv_bytes", stats.host_kv_occupied_bytes},
+                           {"host_context_bytes", stats.host_context_occupied_bytes}}},
         {"counters", Json{{"computed_prefill_tokens", stats.computed_prefill_tokens},
                           {"committed_decode_tokens", stats.committed_decode_tokens},
                           {"reused_prompt_tokens", stats.reused_prompt_tokens},

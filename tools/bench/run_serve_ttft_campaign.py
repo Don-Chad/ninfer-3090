@@ -19,6 +19,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.bench.ttft.cases import CASES, CaseDefinition
+from tools.bench.ttft.diagnostics import attach_generation_diagnostics
 from tools.bench.ttft.profiles import COMMON_ARGS, PROFILE_ARGS
 from tools.bench.ttft.render import write_campaign_summary
 from tools.bench.ttft.report import ReportError
@@ -42,7 +43,6 @@ RESOURCE_CASES = (
     "resume-after-interference-kv-host",
     "resume-after-interference-both-host",
     "resume-after-interference-evicted",
-    "resume-after-interference-catalog",
     "session-alternating-64k-host-swap",
     "session-rotation-55k-host",
     "session-rotation-55k-two-cohort-stream",
@@ -50,6 +50,13 @@ RESOURCE_CASES = (
 CAMPAIGNS = {
     "smoke": ("cold-short",),
     "resource": RESOURCE_CASES,
+    "preemption": (
+        "preemption-replay",
+        "preemption-snapshot",
+        "shared-growth-fairness",
+        "snapshot-history-cancel",
+        "vision-growth-replay",
+    ),
     "full": tuple(CASES),
 }
 
@@ -90,19 +97,20 @@ def _ensure_port_free() -> None:
         connection.close()
 
 
-def _stage_weights() -> tuple[Path, dict[str, Any]]:
+def _stage_weights(source: Path) -> tuple[Path, dict[str, Any]]:
     """Materialize the immutable artifact once in tmpfs for all fresh Serve processes."""
 
-    source = WEIGHTS.resolve()
+    source = source.resolve()
     status = source.stat()
     # The container aligns its payload start, not its total file size.
     if status.st_size <= 0:
-        raise CampaignError("the standard artifact is empty")
+        raise CampaignError(f"the artifact is empty: {source}")
 
     fingerprint = (
         f"{status.st_dev:x}-{status.st_ino:x}-{status.st_size:x}-{status.st_mtime_ns:x}"
     )
-    cached = RAM_WEIGHTS_ROOT / f"qwen3_8_27b_nvfp4-{fingerprint}.ninfer"
+    cache_prefix = f"{source.stem}-"
+    cached = RAM_WEIGHTS_ROOT / f"{cache_prefix}{fingerprint}.ninfer"
     record: dict[str, Any] = {
         "kind": "tmpfs",
         "source": str(source),
@@ -121,8 +129,8 @@ def _stage_weights() -> tuple[Path, dict[str, Any]]:
     # interrupted staging files, obsolete source identities, and incomplete copies.
     for candidate in RAM_WEIGHTS_ROOT.iterdir():
         manager_owned = (
-            candidate.name.startswith("qwen3_8_27b_nvfp4-")
-            or candidate.name.startswith(".qwen3_8_27b_nvfp4-")
+            candidate.name.startswith(cache_prefix)
+            or candidate.name.startswith(f".{cache_prefix}")
         )
         if manager_owned and (candidate != cached or not cache_valid):
             candidate.unlink(missing_ok=True)
@@ -142,7 +150,7 @@ def _stage_weights() -> tuple[Path, dict[str, Any]]:
     available = filesystem.f_bavail * filesystem.f_frsize
     if available < status.st_size:
         raise CampaignError(
-            "insufficient /dev/shm capacity for the standard artifact: "
+            "insufficient /dev/shm capacity for the selected artifact: "
             f"need {status.st_size / 1024**3:.2f} GiB, "
             f"available {available / 1024**3:.2f} GiB"
         )
@@ -273,9 +281,15 @@ class RunningServe:
             self._log = None
 
 
-def _server_command(profile: str, weights: Path, request_log_jsonl: Path) -> list[str]:
+def _server_command(
+    serve: Path,
+    weights: Path,
+    request_log_jsonl: Path,
+    common_args: Sequence[str],
+    profile_args: Sequence[str],
+) -> list[str]:
     return [
-        str(SERVE),
+        str(serve),
         str(weights),
         "--host",
         HOST,
@@ -283,19 +297,72 @@ def _server_command(profile: str, weights: Path, request_log_jsonl: Path) -> lis
         str(PORT),
         "--request-log-jsonl",
         str(request_log_jsonl),
-        *COMMON_ARGS,
-        *PROFILE_ARGS[profile],
+        *_without_stats_interval((*common_args, *profile_args)),
+        "--log-stats-interval-ms", "1000",
     ]
+
+
+def _without_stats_interval(arguments: Sequence[str]) -> list[str]:
+    """Keep old baseline profiles while applying the campaign's shared observation cadence."""
+    result = []
+    values = iter(arguments)
+    for argument in values:
+        if argument == "--log-stats-interval-ms":
+            next(values, None)
+        elif not argument.startswith("--log-stats-interval-ms="):
+            result.append(argument)
+    return result
+
+
+def _load_profiles(path: Path | None) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    if path is None:
+        return COMMON_ARGS, dict(PROFILE_ARGS)
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise CampaignError(f"cannot read profile config {path}: {error}") from error
+    if not isinstance(value, dict) or set(value) - {"common_args", "profiles"}:
+        raise CampaignError("profile config must contain profiles and optional common_args")
+    profiles = value.get("profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        raise CampaignError("profile config profiles must be a nonempty name-to-argument-list map")
+
+    def arguments(raw: Any, name: str) -> tuple[str, ...]:
+        if not isinstance(raw, list) or not all(isinstance(arg, str) for arg in raw):
+            raise CampaignError(f"profile config {name} must be a list of argument strings")
+        return tuple(raw)
+
+    common = arguments(value.get("common_args", []), "common_args")
+    parsed: dict[str, tuple[str, ...]] = {}
+    for name, raw in profiles.items():
+        if not name:
+            raise CampaignError("profile names must not be empty")
+        parsed[name] = arguments(raw, f"profiles.{name}")
+    return common, parsed
+
+
+def _option_value(arguments: Sequence[str], option: str) -> str | None:
+    result = None
+    for index, argument in enumerate(arguments):
+        if argument == option and index + 1 < len(arguments):
+            result = arguments[index + 1]
+        elif argument.startswith(f"{option}="):
+            result = argument.partition("=")[2]
+    return result
 
 
 def _runner_command(
     definition: CaseDefinition,
     raw_path: Path,
     request_timeout: float,
+    request_log_jsonl: Path,
 ) -> list[str]:
     return [
         sys.executable,
         str(RUNNER),
+        "--request-log-jsonl",
+        str(request_log_jsonl),
         "--base-url",
         f"http://{HOST}:{PORT}",
         "--case",
@@ -351,12 +418,26 @@ def _read_run(path: Path) -> dict[str, Any]:
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=(
+            'Profile config JSON: {"common_args": ["--kv-dtype", "fp8"], '
+            '"profiles": {"text-cold-8k": ["--max-context", "8192"]}}. '
+            "All argument values are strings. A config replaces the built-in profiles entirely; "
+            "omitted common_args means no common arguments. Preserve old commands in this file "
+            "when running an earlier Serve binary as a baseline. Relative paths resolve against "
+            "the invocation directory. The manifest records effective arguments and commands."
+        ),
+    )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument(
         "--campaign",
         choices=tuple(CAMPAIGNS),
-        help="smoke=one baseline, resource=pressure and Host-rotation cases, full=all audited cases",
+        help=(
+            "smoke=one baseline, resource=pressure and Host-rotation cases, "
+            "preemption=restore, mixed scheduling, cancellation and Vision pressure cases, "
+            "full=all audited cases"
+        ),
     )
     selection.add_argument(
         "--case",
@@ -366,6 +447,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="run one named case; repeat to form a focused campaign",
     )
     parser.add_argument("--samples", type=int, default=1)
+    parser.add_argument("--serve", type=Path, default=SERVE, help="Serve executable path")
+    parser.add_argument("--artifact", type=Path, default=WEIGHTS, help="source .ninfer artifact path")
+    parser.add_argument(
+        "--profile-config", type=Path,
+        help="JSON file with profiles and optional common_args; see format below",
+    )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--startup-timeout-seconds", type=float, default=300.0)
     parser.add_argument("--request-timeout-seconds", type=float, default=600.0)
@@ -376,12 +463,16 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         parser.error("timeouts must be positive")
     if args.selected_cases and len(set(args.selected_cases)) != len(args.selected_cases):
         parser.error("--case must not repeat the same case")
+    args.serve = args.serve.expanduser().resolve()
+    args.artifact = args.artifact.expanduser().resolve()
+    if args.profile_config is not None:
+        args.profile_config = args.profile_config.expanduser().resolve()
     return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
-    for required in (SERVE, WEIGHTS, RUNNER):
+    for required in (args.serve, args.artifact, RUNNER):
         if not required.is_file():
             raise SystemExit(f"required campaign input is missing: {required}")
 
@@ -392,7 +483,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         else CAMPAIGNS[args.campaign or "resource"]
     )
     definitions = [CASES[name] for name in case_names]
-    missing_profiles = sorted({case.profile for case in definitions} - PROFILE_ARGS.keys())
+    try:
+        common_args, profiles = _load_profiles(args.profile_config)
+    except CampaignError as error:
+        raise SystemExit(str(error)) from error
+    selected_profiles = sorted({case.profile for case in definitions})
+    missing_profiles = sorted(set(selected_profiles) - profiles.keys())
     if missing_profiles:
         raise SystemExit(f"cases have no executable Serve profile: {missing_profiles}")
 
@@ -405,7 +501,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit(f"campaign output directory is not empty: {output_dir}")
 
     try:
-        runtime_weights, artifact_cache = _stage_weights()
+        runtime_weights, artifact_cache = _stage_weights(args.artifact)
     except (OSError, CampaignError) as error:
         raise SystemExit(f"cannot prepare RAM artifact cache: {error}") from error
 
@@ -440,14 +536,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "serve_log": str(serve_log),
                     "request_log_jsonl": str(request_log_jsonl),
                     "server_command": _server_command(
-                        definition.profile, runtime_weights, request_log_jsonl
+                        args.serve, runtime_weights, request_log_jsonl,
+                        common_args, profiles[definition.profile],
                     ),
                     "runner_command": _runner_command(
-                        definition, raw_path, args.request_timeout_seconds
+                        definition, raw_path, args.request_timeout_seconds, request_log_jsonl
                     ),
                 }
             )
 
+    profile_kv_dtypes = {
+        name: _option_value((*common_args, *profiles[name]), "--kv-dtype")
+        for name in selected_profiles
+    }
+    kv_dtypes = set(profile_kv_dtypes.values())
     manifest: dict[str, Any] = {
         "artifact_type": "ninfer_serve_ttft_campaign",
         "schema_version": 2,
@@ -458,11 +560,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         "samples": args.samples,
         "case_count": len(definitions),
         "run_count": total,
-        "model_profile": "qwen3.8-27b/nvfp4",
-        "kv_dtype": "fp8",
-        "serve": str(SERVE),
-        "weights_source": str(WEIGHTS),
+        "model_profile": (
+            "qwen3.8-27b/nvfp4"
+            if args.artifact == WEIGHTS.resolve()
+            else f"artifact:{args.artifact.stem}"
+        ),
+        "kv_dtype": next(iter(kv_dtypes)) if len(kv_dtypes) == 1 else None,
+        "profile_kv_dtypes": profile_kv_dtypes,
+        "serve": str(args.serve),
+        "weights_source": str(args.artifact),
         "weights_runtime": str(runtime_weights),
+        "profile_config": str(args.profile_config) if args.profile_config is not None else None,
+        "common_args": list(common_args),
+        "profile_args": {name: list(profiles[name]) for name in selected_profiles},
+        "stats_interval_ms": 1000,
+        "stats_interval_source": "campaign_override",
         "artifact_cache": artifact_cache,
         "output_dir": str(output_dir),
         "plans": plans,
@@ -501,10 +613,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     returncode = _run_client(plan["runner_command"], progress_path)
                 phase = "artifact"
                 run = _read_run(raw_path)
+                diagnostic_error = attach_generation_diagnostics(run, request_log_jsonl)
+                if diagnostic_error is not None:
+                    run["diagnostic_error"] = diagnostic_error
+                _write_json(raw_path, run)
                 server = run.get("server")
                 if isinstance(server, dict) and isinstance(server.get("model"), str):
                     valid_runs.append(raw_path)
-                phase = "construction"
+                phase = "request_outcome" if run.get("constructed") is True else "construction"
                 if returncode != 0 or run.get("constructed") is not True:
                     raise CampaignError(
                         f"runner returned {returncode}, status={run.get('status')!r}"

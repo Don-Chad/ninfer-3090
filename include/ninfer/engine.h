@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <string_view>
 #include <vector>
 
@@ -100,13 +99,6 @@ public:
            GenerationObservationOptions observation               = {},
            std::chrono::steady_clock::time_point pending_deadline = {});
 
-    // The largest requested_output_tokens for this prompt whose admission entitlement -- Main KV
-    // plus any MTP/DFlash backend KV, draft window included -- fits one lane's share of each pool,
-    // so every lane of max_concurrency can hold such a request at the same time. Clamped to the
-    // remaining context; with one lane that is the remaining context itself. A prompt that alone
-    // exceeds a lane's share receives the remaining context. Generation Engines only.
-    [[nodiscard]] std::uint32_t concurrent_output_budget(const PreparedPrompt& prompt) const;
-
     GenerationResult generate(PreparedPrompt prompt, RequestOptions options,
                               OutputSink* sink                     = nullptr,
                               const CancellationView& cancellation = {});
@@ -119,21 +111,6 @@ public:
     [[nodiscard]] bool is_available() const;
 
     void reset_memory_peaks() noexcept;
-
-    // Session persistence for one private context-cache catalog cell (slot_states().size()
-    // cells). save_slot writes the cell's retained session to `path`; restore_slot rebuilds the
-    // cell from a saved file, evicting what it held; erase_slot evicts the cell's session and
-    // returns its depth. A cell in use by a request, or any open resource transaction, raises
-    // RequestError(Overloaded); a missing or incompatible file raises std::invalid_argument; a
-    // non-empty expected_digest that does not match the resident session raises
-    // SlotSessionMismatch, checked atomically with the operation. Device copies run between
-    // Engine units; file I/O runs outside them.
-    [[nodiscard]] SlotSaveResult save_slot(std::uint32_t slot, const std::string& path,
-                                           const std::string& expected_digest = {});
-    [[nodiscard]] SlotRestoreResult restore_slot(std::uint32_t slot, const std::string& path);
-    std::uint32_t erase_slot(std::uint32_t slot, const std::string& expected_digest = {});
-    // Per-cell occupancy as of the last Engine unit boundary.
-    [[nodiscard]] std::vector<SlotState> slot_states() const;
 
 private:
     class Impl;

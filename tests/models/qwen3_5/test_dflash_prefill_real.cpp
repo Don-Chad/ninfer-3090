@@ -1,7 +1,8 @@
 #include "core/device.h"
 #include "models/qwen3_5/load.h"
-#include "models/qwen3_5/program/context.h"
+#include "models/qwen3_5/program/execution_context.h"
 #include "models/qwen3_5/program/program_impl.h"
+#include "models/qwen3_5/program/planning/startup.h"
 
 #include <algorithm>
 #include <array>
@@ -120,23 +121,19 @@ void run(const char* artifact, SpeculativeBackend backend) {
     const auto capacity = ((window + 255) / 128) * 128;
     const auto pages    = capacity / kPagedKVPageSize;
     EngineOptions options;
-    options.max_context                      = capacity;
-    options.prefill_chunk                    = capacity;
-    options.kv_capacity                      = KvCapacityPolicy::explicit_capacity(2 * capacity);
-    options.max_concurrency                  = 2;
-    options.context_cache.device_state_slots = 1;
-    options.context_cache.host_state_slots   = 0;
-    options.context_cache.host_kv_capacity_bytes            = 0;
-    options.context_cache.max_private_continuations         = 2;
-    options.context_cache.max_shared_prefixes               = 0;
-    options.context_cache.max_long_anchors_per_continuation = 0;
-    options.use_cuda_graph                                  = false;
-    options.speculative.backend                             = backend;
-    options.speculative.draft_tokens                        = 3;
-    options.speculative.proposal_head                       = ProposalHead::Full;
-    auto planner = qwen::make_sequence_planner(parameters, device, options);
-    auto plan    = std::move(planner).finalize(2 * pages);
-    qwen::detail::ProgramImpl program(parameters, *plan.impl_, device, {});
+    options.max_context                       = capacity;
+    options.prefill_chunk                     = capacity;
+    options.kv_capacity                       = KvCapacityPolicy::explicit_capacity(2 * capacity);
+    options.max_concurrency                   = 2;
+    options.context_cache.device_state_slots  = 1;
+    options.context_cache.host_capacity_bytes = 0;
+    options.use_cuda_graph                    = false;
+    options.speculative.backend               = backend;
+    options.speculative.draft_tokens          = 3;
+    options.speculative.proposal_head         = ProposalHead::Full;
+    auto planner = qwen::detail::make_sequence_planner_impl(parameters, device, options);
+    auto plan    = qwen::detail::finalize_sequence_plan_impl(std::move(planner), 2 * pages);
+    qwen::detail::ProgramImpl program(parameters, *plan, device, {});
 
     auto& states      = *program.state_store;
     const auto source = states.reserve_reset(device.stream);

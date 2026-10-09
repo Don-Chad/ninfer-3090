@@ -34,9 +34,10 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
     }
 
     const std::uint64_t req_id = ++request_seq_;
-    const RequestLogMetadata metadata{.model                  = request.model,
-                                      .stream                 = request.stream,
-                                      .output_tokens_explicit = request.output_tokens_explicit};
+    RequestLogMetadata metadata{.http_request_id        = res.get_header_value("x-request-id"),
+                                .model                  = request.model,
+                                .stream                 = request.stream,
+                                .output_tokens_explicit = request.output_tokens_explicit};
     PreparedRequest prepared;
     try {
         const ninfer::GenerationObservationOptions observation{
@@ -65,6 +66,7 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
     }
 
     const OpenAIChatResponseIdentity identity = make_openai_chat_response_identity(request.model);
+    metadata.response_id                      = identity.id;
     auto lifecycle                            = begin_request(make_request_log_context(
         req_id, "openai_chat_completions", request.generation, metadata, prepared));
 
@@ -207,6 +209,12 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                 }
 
                 lifecycle->done(outcome);
+                if (outcome.finish_reason == ninfer::FinishReason::Cancelled ||
+                    stream->cancelled.load(std::memory_order_acquire)) {
+                    lifecycle->response_failure(
+                        make_client_disconnected_failure(RequestFailurePhase::Transport));
+                    return false;
+                }
                 std::vector<std::string> terminal;
                 try {
                     terminal = encoder->finish(outcome);

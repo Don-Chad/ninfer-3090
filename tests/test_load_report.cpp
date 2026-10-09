@@ -31,8 +31,7 @@ int main() {
     memory.max_context               = 65536;
     memory.kv_capacity               = 131072; // 2048 page groups of 64 tokens
     memory.kv_capacity_page_groups   = 2048;
-    memory.host_state_capacity_slots = 24;
-    memory.host_kv_capacity_bytes    = 16ULL << 30;
+    memory.host_context_capacity_bytes = 16ULL << 30;
 
     const LoadCapacity capacity = make_load_capacity("qwen3.8-27b", engine, memory);
     failures += check(capacity.device_state_slots == 8,
@@ -45,11 +44,14 @@ int main() {
     sample.stats.prefilling_requests           = 1;
     sample.stats.decode_ready_requests         = 3;
     sample.stats.waiting_requests              = 2;
+    sample.stats.paused_requests               = 1;
+    sample.stats.replaying_requests            = 1;
     sample.stats.materializing_requests        = 0;
     sample.stats.device_main_kv_occupied_pages = 100;
     sample.stats.device_state_occupied_slots   = 5;
     sample.stats.host_state_occupied_slots     = 7;
     sample.stats.host_kv_occupied_bytes        = 1024;
+    sample.stats.host_context_occupied_bytes   = 4096;
     sample.stats.computed_prefill_tokens       = std::numeric_limits<std::uint64_t>::max() - 1;
     sample.stats.committed_decode_tokens       = 987654321;
     sample.stats.reused_prompt_tokens          = 5555;
@@ -70,14 +72,15 @@ int main() {
     failures += check(cap.at("kv_capacity_tokens") == 131072 && cap.at("kv_capacity_pages") == 2048,
                       "KV capacity");
     failures += check(cap.at("kv_page_tokens") == 64, "KV page size derives from capacity");
-    failures += check(cap.at("device_state_slots") == 8 && cap.at("host_state_slots") == 24 &&
-                          cap.at("host_kv_bytes") == (16ULL << 30),
+    failures += check(cap.at("device_state_slots") == 8 &&
+                          cap.at("host_context_bytes") == (16ULL << 30),
                       "checkpoint capacities");
 
     const Json& requests = report.at("requests");
     failures += check(requests.at("admitted") == 6 && requests.at("running") == 4 &&
                           requests.at("prefilling") == 1 && requests.at("decode_ready") == 3 &&
-                          requests.at("waiting") == 2 && requests.at("materializing") == 0,
+                          requests.at("waiting") == 2 && requests.at("paused") == 1 &&
+                          requests.at("replaying") == 1 && requests.at("materializing") == 0,
                       "request gauges");
 
     const Json& occupancy = report.at("occupancy");
@@ -86,7 +89,8 @@ int main() {
                       "KV occupancy in pages and tokens");
     failures +=
         check(occupancy.at("device_state_slots") == 5 && occupancy.at("host_state_slots") == 7 &&
-                  occupancy.at("host_kv_bytes") == 1024,
+                  occupancy.at("host_kv_bytes") == 1024 &&
+                  occupancy.at("host_context_bytes") == 4096,
               "checkpoint occupancy");
 
     const Json& counters = report.at("counters");

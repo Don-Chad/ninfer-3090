@@ -289,6 +289,102 @@ int test_response_format() {
     return failures;
 }
 
+int test_prompt_cache_boundaries() {
+    using Location = ninfer::PromptCacheMarkerLocation;
+    using Evidence = ninfer::SharedCandidateEvidence;
+    int failures   = 0;
+    for (const char* role : {"user", "system", "developer"}) {
+        Json body = base_request();
+        body["messages"].push_back(Json{{"role", role}, {"content", "complete message"}});
+        const auto prepared = prompt(parse(body).generation);
+        const auto& markers = prepared.context_cache.markers;
+        failures += check(
+            markers.size() == 1 && markers[0].location == Location::MessagePartBoundary &&
+                markers[0].after_message_count == 2 && markers[0].after_message_part_count == 1 &&
+                markers[0].evidence == Evidence::DefaultAutomatic,
+            std::string(role) + " automatic cache ends at the final source part");
+    }
+
+    Json multipart                      = base_request();
+    multipart["messages"][0]["content"] = Json::array(
+        {Json{{"type", "text"}, {"text", "first"}}, Json{{"type", "text"}, {"text", "second"}}});
+    multipart["prompt_cache_options"] = Json{{"mode", "implicit"}};
+    const auto requested              = prompt(parse(multipart).generation);
+    failures +=
+        check(requested.context_cache.markers.size() == 1 &&
+                  requested.context_cache.markers[0].location == Location::MessagePartBoundary &&
+                  requested.context_cache.markers[0].after_message_part_count == 2 &&
+                  requested.context_cache.markers[0].evidence == Evidence::RequestedAutomatic,
+              "requested implicit caching uses the final source part");
+    multipart["prompt_cache_options"] = Json{{"mode", "explicit"}};
+    const auto disabled               = prompt(parse(multipart).generation);
+    failures += check(disabled.context_cache.markers.empty() &&
+                          !disabled.context_cache.allow_engine_automatic_shared_prefixes,
+                      "explicit mode without markers disables automatic shared writes");
+
+    Json marked                      = base_request();
+    marked["messages"][0]["content"] = Json::array();
+    for (int index = 0; index < 4; ++index) {
+        marked["messages"][0]["content"].push_back(
+            Json{{"type", "text"},
+                 {"text", "section " + std::to_string(index)},
+                 {"prompt_cache_breakpoint", Json{{"mode", "explicit"}}}});
+    }
+    const auto merged = prompt(parse(marked).generation);
+    failures += check(merged.context_cache.markers.size() == 4,
+                      "automatic caching reuses an explicitly marked final part");
+    for (std::size_t index = 0; index < merged.context_cache.markers.size(); ++index) {
+        const auto& marker = merged.context_cache.markers[index];
+        failures += check(
+            marker.location == Location::MessagePartBoundary &&
+                marker.after_message_part_count == index + 1 &&
+                ninfer::has_shared_candidate_evidence(marker.evidence, Evidence::ExplicitBoundary),
+            "explicit part locations survive automatic merging");
+    }
+    failures +=
+        check(merged.context_cache.markers.size() == 4 &&
+                  ninfer::has_shared_candidate_evidence(
+                      merged.context_cache.markers.back().evidence, Evidence::DefaultAutomatic),
+              "the final explicit part also carries the automatic opportunity");
+    marked["messages"][0]["content"].push_back(Json{{"type", "text"}, {"text", "new tail"}});
+    const auto full = prompt(parse(marked).generation);
+    failures += check(full.context_cache.markers.size() == 4,
+                      "automatic caching yields to four explicit boundaries");
+    for (std::size_t index = 0; index < full.context_cache.markers.size(); ++index) {
+        const auto& marker = full.context_cache.markers[index];
+        failures += check(marker.location == Location::MessagePartBoundary &&
+                              marker.after_message_part_count == index + 1 &&
+                              marker.evidence == Evidence::ExplicitBoundary,
+                          "a later implicit target does not displace an explicit boundary");
+    }
+
+    Json assistant = base_request();
+    assistant["messages"].push_back(Json{{"role", "assistant"}, {"content", "partial answer"}});
+    const auto assistant_prompt = prompt(parse(assistant).generation);
+    failures += check(assistant_prompt.context_cache.markers.size() == 1 &&
+                          assistant_prompt.context_cache.markers[0].location ==
+                              Location::MessagePartBoundary &&
+                          assistant_prompt.context_cache.markers[0].after_message_count == 2,
+                      "assistant content retains its part boundary for continuation");
+
+    Json tool = base_request();
+    tool["messages"].push_back(
+        Json{{"role", "assistant"},
+             {"tool_calls",
+              Json::array({Json{{"id", "call_cache"},
+                                {"type", "function"},
+                                {"function", Json{{"name", "lookup"}, {"arguments", "{}"}}}}})}});
+    tool["messages"].push_back(
+        Json{{"role", "tool"}, {"tool_call_id", "call_cache"}, {"content", "result"}});
+    const auto tool_prompt = prompt(parse(tool).generation);
+    failures +=
+        check(tool_prompt.context_cache.markers.size() == 1 &&
+                  tool_prompt.context_cache.markers[0].location == Location::MessagePartBoundary &&
+                  tool_prompt.context_cache.markers[0].after_message_count == 3,
+              "tool results retain their content boundary when a result group grows");
+    return failures;
+}
+
 int test_constrained_decoding_extensions() {
     int failures                                           = 0;
     const std::vector<std::pair<const char*, Json>> active = {
@@ -820,13 +916,7 @@ int test_aggregate_response() {
             response["timings"]["draft_n"] == 9 && response["timings"]["draft_n_accepted"] == 6,
         "aggregate timings use exact cache and N-1 generation intervals");
     failures += check(!response.contains("id_slot") && !response.contains("session_digest"),
-                      "an unretained session advertised a slot identity");
-    GenerationOutcome retained = outcome;
-    retained.id_slot           = 3;
-    retained.session_digest    = "0123456789abcdef";
-    const Json slotted = Json::parse(make_chat_completion_response(identity(), retained));
-    failures += check(slotted["id_slot"] == 3 && slotted["session_digest"] == "0123456789abcdef",
-                      "aggregate response omits the retained slot identity");
+                      "aggregate response advertised a slot identity");
 
     outcome.text.clear();
     outcome.tool_calls.push_back(ninfer::GeneratedToolCall{
@@ -874,24 +964,14 @@ int test_stream_response() {
                       "dedicated stream usage carries token accounting and terminal timings");
     failures += check(events.back() == "data: [DONE]\n\n", "stream ends with DONE sentinel");
 
-    // The retained slot identity rides the last chunk that carries terminal timings: the usage
-    // chunk when usage is requested, otherwise the finish chunk.
-    GenerationOutcome retained = sample_outcome();
-    retained.id_slot           = 1;
-    retained.session_digest    = "fedcba9876543210";
-    OpenAIChatStream with_usage(identity(), true);
-    (void)with_usage.start();
-    const std::vector<std::string> usage_events = with_usage.finish(retained);
-    failures += check(parse_sse(usage_events[usage_events.size() - 2])["id_slot"] == 1 &&
-                          !parse_sse(usage_events[usage_events.size() - 3]).contains("id_slot"),
-                      "stream usage chunk omits the retained slot identity");
     OpenAIChatStream without_usage(identity(), false);
     (void)without_usage.start();
-    const std::vector<std::string> plain_events = without_usage.finish(retained);
+    const std::vector<std::string> plain_events = without_usage.finish(sample_outcome());
     const Json plain_finish = parse_sse(plain_events[plain_events.size() - 2]);
     failures += check(plain_finish["choices"][0]["finish_reason"] == "stop" &&
-                          plain_finish["session_digest"] == "fedcba9876543210",
-                      "stream finish chunk omits the retained slot identity without usage");
+                          !plain_finish.contains("id_slot") &&
+                          !plain_finish.contains("session_digest"),
+                      "stream finish chunk advertised a slot identity");
 
     OpenAIChatStream mismatch(identity(), false);
     (void)mismatch.start();
@@ -1053,6 +1133,7 @@ int main() {
     failures += test_request_envelope_and_sampling();
     failures += test_standard_field_policy();
     failures += test_response_format();
+    failures += test_prompt_cache_boundaries();
     failures += test_constrained_decoding_extensions();
     failures += test_tools();
     failures += test_messages_and_media();

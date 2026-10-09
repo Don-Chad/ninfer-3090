@@ -15,8 +15,10 @@ benchmark-report, and external protocol behavior. Repository verification princi
   opt-in real Engine integration;
 - `ops/` — semantic Op qualification with independent mathematical or state-transition oracles;
   Linear and fused Linear suites are separated by their supported weight/activation paths;
-- root C++ tests — core storage, runtime admission/resource policy, public API, serving protocols,
-  logging, benchmark reports and causal-scoring evaluation;
+- `runtime/` — scheduler fairness, cache resource policy, capacity and context-cost calculations;
+- `bench/ttft/` — HTTP measurements, campaign orchestration and workload construction;
+- root C++ tests — core storage, public API, serving protocols, logging, benchmark reports and
+  causal-scoring evaluation;
 - `test_serve_corpus.py` — agreement between the serving request-log schema and its measurement
   consumer.
 
@@ -138,11 +140,11 @@ Run the native Python suites with the project Python environment:
 
 ```bash
 python3 -m pytest \
-  tests/artifact tests/convert \
+  tests/artifact tests/convert tests/bench/ttft \
   tests/test_serve_corpus.py
 ```
 
-The Python suites exercise conversion and encoded output, without running model inference.
+The Python suites exercise conversion, encoded output and measurement tools without model inference.
 The maintained environment uses Python 3.11 with the dependencies for those suites. C++ binding and Engine tests
 cover consumption of their resulting representation.
 
@@ -179,9 +181,10 @@ NINFER_TEST_ARTIFACT=$PWD/out/qwen3_6_35b_a3b.ninfer \
   ctest --test-dir build -R ninfer_qwen3_5_moe_real_test --output-on-failure
 ```
 
-Without `NINFER_TEST_ARTIFACT`, CTest marks these real Engine tests as skipped. Run GPU integration
-tests serially. `NINFER_PREFIX_REAL_SCENARIO` selects a focused prefix scenario such as `vision`,
-`pressure-resume` or `concurrent`; the default is `all`. These integration checks
+Without `NINFER_TEST_ARTIFACT`, CTest marks these real Engine tests as skipped. Real-artifact targets
+carry the `real` label and `RUN_SERIAL` so CTest runs them alone. Run directly invoked GPU
+integration tests serially. `NINFER_PREFIX_REAL_SCENARIO` selects a focused prefix scenario such as
+`vision`, `late-instructions` or `concurrent`; the default is `all`. These integration checks
 use behavior and state accounting rather than another numerical path's generated tokens as a golden.
 
 The `attention` scenario checks the selected KV type, chunked prefill, concurrent Graph decode
@@ -199,6 +202,28 @@ KV choices are `bf16`, `int8`, `fp8`, `nvfp4`, and `k8v4`; backend choices are `
 `NINFER_TEST_DRAFT_TOKENS` overrides the default MTP3 or DFlash7 block. The DFlash2-specific
 integration executable also accepts all five KV names as its fifth positional argument and rejects
 unknown names.
+
+Continuation and pressure recovery have dedicated entries:
+
+```bash
+NINFER_TEST_ARTIFACT=$PWD/out/qwen3_8_27b_nvfp4.ninfer \
+  ctest --test-dir build -R ninfer_qwen3_5_agent_continuation_real_test --output-on-failure
+
+NINFER_TEST_ARTIFACT=$PWD/out/qwen3_8_27b_nvfp4.ninfer \
+NINFER_TEST_BACKEND=dflash2 \
+  ctest --test-dir build -R ninfer_qwen3_5_preemption_real_test --output-on-failure
+
+NINFER_TEST_ARTIFACT=$PWD/out/qwen3_8_27b_nvfp4.ninfer \
+  ./build/tests/ninfer_qwen3_5_native_transactions_test dflash2
+```
+
+The agent entry checks multi-turn continuation and branching. The preemption entry exercises
+Snapshot/Replay recovery and cancellation while paused or replaying; `NINFER_PREEMPTION_REAL_SCENARIO`
+selects `all`, `snapshot`, `replay`, `cancel-paused` or `cancel-replay`. Native transaction tests cover
+physical state/KV ownership, binding, capture, reclamation and abort; their positional backend is
+`none`, `mtp`, `dflash` or `dflash2`. Each backend requires an artifact containing that component.
+Public-HTTP latency and output gaps are measured separately by the
+[TTFT campaign](../tools/bench/ttft/README.md).
 
 The capability-evaluation coordinator has its own environment and unittest entry point:
 

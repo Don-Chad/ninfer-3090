@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+import json
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from tools.bench.ttft.corpus import Corpus
@@ -42,22 +44,33 @@ class CaseDefinition:
     symmetric_role_groups: tuple[SymmetricRoleGroup, ...] = ()
 
 
-def _response_id(handle: RequestHandle) -> str:
+def _mark_generated_input(context: CaseContext) -> None:
+    context.notes["input_dependency"] = "generated"
+    context.notes["throughput_comparable"] = False
+    reason = "Later inputs include generated assistant output or stored response history."
+    existing = context.notes.get("throughput_limitation", "")
+    if reason not in existing:
+        context.notes["throughput_limitation"] = " ".join(filter(None, (existing, reason)))
+
+
+def _response_id(context: CaseContext, handle: RequestHandle) -> str:
     if not handle.response_id:
         raise CaseExecutionError(f"request {handle.role} completed without a response id")
+    _mark_generated_input(context)
     return handle.response_id
 
 
-def _assistant(handle: RequestHandle) -> dict[str, str]:
+def _assistant(context: CaseContext, handle: RequestHandle) -> dict[str, str]:
     output = handle.output_text
     if not output:
         raise CaseExecutionError(f"request {handle.role} produced no assistant content")
+    _mark_generated_input(context)
     return {"role": "assistant", "content": output}
 
 
 def _require_successes(context: CaseContext, handles: Iterable[RequestHandle]) -> None:
     for handle in handles:
-        context.require_success(handle)
+        context.require_success(handle, prerequisite=False)
 
 
 def _require_order(
@@ -96,6 +109,8 @@ def _responses_shape(
     previous_response_id: str | None = None,
 ) -> RequestHandle:
     facts = corpus.shape(shape)
+    if previous_response_id is not None:
+        _mark_generated_input(context)
     return context.start(
         role,
         responses_request(
@@ -115,6 +130,261 @@ def _cold_shape(shape: str) -> CaseFunction:
     return run
 
 
+def _preemption_messages(corpus: Corpus, marker: str) -> list[dict[str, Any]]:
+    messages = copy.deepcopy(corpus.shape_messages("interferer-256"))
+    messages[0]["content"] = marker + "。" + messages[0]["content"]
+    messages[-1]["content"] += (
+        "\n每章写出具体场景、人物对话和连续动作。慢慢展开环境变化、人物记忆与线索发现，"
+        "详细描写每个转折的过程。让故事自然推进，保持情节连贯。"
+        "重点描写设备操作的细节，以及主角在不同阶段的观察、推理和具体行动。"
+        "保持每章的完整性。"
+    )
+    return messages
+
+
+class _LiveRequestLog:
+    def __init__(self, context: CaseContext) -> None:
+        value = context.notes.get("request_log_jsonl")
+        self.path = Path(value) if isinstance(value, str) else None
+        self.offset = self.path.stat().st_size if self.path is not None and self.path.is_file() else 0
+        self.samples = 0
+        self.error: str | None = None
+
+    def poll(self) -> list[dict[str, Any]]:
+        if self.path is None or not self.path.is_file() or self.error is not None:
+            return []
+        samples = []
+        try:
+            with self.path.open(encoding="utf-8") as source:
+                source.seek(self.offset)
+                while True:
+                    line = source.readline()
+                    if not line or not line.endswith("\n"):
+                        break
+                    self.offset = source.tell()
+                    event = json.loads(line)
+                    if isinstance(event, dict) and event.get("event") == "throughput":
+                        self.samples += 1
+                        samples.append({"event": event, "observed_ns": time.perf_counter_ns()})
+        except (OSError, UnicodeError, ValueError) as error:
+            self.error = str(error)
+        return samples
+
+
+def _fixed_request_graph(
+    context: CaseContext,
+    requests: list[tuple[str, Any]],
+    offsets_ns: tuple[int, ...],
+    facts: dict[str, tuple[int, int]],
+    on_sample: Callable[[dict[str, Any], list[RequestHandle]], None] | None = None,
+) -> list[RequestHandle]:
+    handles = [context.prepare(role, request) for role, request in requests]
+    live_log = _LiveRequestLog(context) if on_sample is not None else None
+    gates = [threading.Event() for _ in handles]
+    for handle, gate in zip(handles, gates, strict=True):
+        handle.start(gate)
+    origin_ns = time.perf_counter_ns()
+    arrivals = [
+        {"role": handle.role, "offset_ns": offset, "planned_ns": origin_ns + offset}
+        for handle, offset in zip(handles, offsets_ns, strict=True)
+    ]
+    context.notes["arrival_mode"] = "fixed_schedule"
+    context.notes["arrivals"] = arrivals
+    for gate, arrival in zip(gates, arrivals, strict=True):
+        while (remaining_ns := arrival["planned_ns"] - time.perf_counter_ns()) > 0:
+            time.sleep(remaining_ns / 1e9)
+        arrival["released_ns"] = time.perf_counter_ns()
+        gate.set()
+    try:
+        if live_log is not None and live_log.path is not None:
+            deadline = time.monotonic() + context.timeout
+            while True:
+                for sample in live_log.poll():
+                    on_sample(sample, handles)
+                if all(handle.is_done for handle in handles):
+                    break
+                if time.monotonic() >= deadline:
+                    raise CaseExecutionError("fixed request graph did not terminate")
+                time.sleep(0.01)
+        context.wait_all(handles)
+    finally:
+        observed = []
+        for handle, arrival in zip(handles, arrivals, strict=True):
+            arrival["sent_ns"] = handle.sent_ns
+            arrival["lateness_ns"] = (
+                handle.sent_ns - arrival["planned_ns"] if handle.sent_ns is not None else None
+            )
+            usage = handle.as_record()["usage"]
+            input_tokens, output_tokens = usage.get("input_tokens"), usage.get("output_tokens")
+            expected_input, output_limit = facts[handle.role]
+            observed.append({
+                "role": handle.role, "input_tokens": input_tokens, "output_tokens": output_tokens,
+                "nominal_input_matched": input_tokens == expected_input if input_tokens is not None else None,
+                "output_limit_reached": output_tokens == output_limit if output_tokens is not None else None,
+            })
+        context.notes["observed_workload"] = observed
+        if live_log is not None:
+            context.notes["live_sampling"] = {
+                "configured": live_log.path is not None, "samples_seen": live_log.samples,
+                "error": live_log.error,
+            }
+    return handles
+
+
+def _preemption_load(restore: str) -> CaseFunction:
+    def run(context: CaseContext, corpus: Corpus) -> None:
+        # Offline token counts describe the fixture; serving usage remains authoritative.
+        context.notes.update({
+            "mechanism_requirements": ["preemption", restore],
+            "workload_shape": {"requests": 2, "nominal_input_tokens": 192,
+                               "max_output_tokens": 256, "eos_policy": "normal"},
+        })
+        handles = _fixed_request_graph(
+            context,
+            [(role, chat_request(context.model, _preemption_messages(corpus, marker), 256))
+             for role, marker in (("a", "ALPHA"), ("b", "BRAVO"))],
+            (0, 10_000_000), {"a": (192, 256), "b": (192, 256)},
+        )
+        _require_successes(context, handles)
+    return run
+
+
+def _shared_growth_messages(corpus: Corpus, branch: str) -> list[dict[str, Any]]:
+    system = corpus.shape_messages("state-2k-a")[0]["content"]
+    question = corpus.shape_messages("interferer-256")[-1]["content"]
+    question += (
+        "\n每章写出具体场景、人物对话和连续动作。慢慢展开环境变化、人物记忆与线索发现，"
+        "详细描写每个转折的过程。让故事自然推进，保持情节连贯。"
+        f"\n故事分支 {branch}。"
+    )
+    return [
+        {"role": "system", "content": [{"type": "text", "text": system,
+                                        "prompt_cache_breakpoint": {"mode": "explicit"}}]},
+        {"role": "user", "content": question},
+    ]
+
+
+def _shared_growth_fairness(context: CaseContext, corpus: Corpus) -> None:
+    seed = context.start("seed", chat_request(context.model, _shared_growth_messages(corpus, "A"), 1))
+    context.require_success(seed)
+    context.notes.update({
+        "mechanism_requirements": ["preemption", "replay_restore", "sampled_replay_copresence_and_progress"],
+        "mechanism_observations": {"sampled_replay_copresence_and_progress": "unavailable"},
+        "workload_shape": {
+            "shared_system_frontier_tokens": 2026,
+            "shared_prefix_probe_roles": ["a", "b", "c"],
+            "requests": 5, "long_input_tokens": 2176, "short_input_tokens": 30,
+            "output_limits": [128, 512, 512, 16, 16], "eos_policy": "normal",
+        },
+    })
+
+    def overlap(sample: dict[str, Any], handles: list[RequestHandle]) -> None:
+        event = sample["event"]
+        scheduler = event.get("scheduler", {})
+        values = [scheduler.get(field) for field in ("replaying", "decode_ready", "prefilling")]
+        replayed = event.get("scheduling", {}).get("replayed_tokens")
+        decode_rounds = event.get("decode_batch", {}).get("rounds")
+        prefill_units = event.get("host_work", {}).get("units", {}).get("prefill")
+        if not all(type(value) is int for value in [*values, replayed, decode_rounds, prefill_units]):
+            return
+        observations = context.notes["mechanism_observations"]
+        if observations["sampled_replay_copresence_and_progress"] == "observed":
+            return
+        observations["sampled_replay_copresence_and_progress"] = "not_observed"
+        if (values[0] > 0 and replayed > 0
+                and ((values[1] > 0 and decode_rounds > 0) or (values[2] > 0 and prefill_units > 0))):
+            observations["sampled_replay_copresence_and_progress"] = "observed"
+            context.notes["replay_progress_sample"] = sample
+
+    requests = [
+        (role, chat_request(context.model, _shared_growth_messages(corpus, branch), limit))
+        for role, branch, limit in (("a", "A", 128), ("b", "B", 512), ("c", "C", 512))
+    ]
+    requests.extend(
+        (role, chat_request(context.model, corpus.shape_messages("short-32"), 16))
+        for role in ("short-1", "short-2")
+    )
+    handles = _fixed_request_graph(
+        context, requests, (0, 10_000_000, 20_000_000, 50_000_000, 100_000_000),
+        {"a": (2176, 128), "b": (2176, 512), "c": (2176, 512),
+         "short-1": (30, 16), "short-2": (30, 16)}, overlap,
+    )
+    _require_successes(context, handles)
+
+
+def _snapshot_history_cancel(context: CaseContext, corpus: Corpus) -> None:
+    history = _preemption_messages(corpus, "OMEGA")
+    for role in ("history-seed", "history-warm"):
+        context.require_success(context.start(role, chat_request(context.model, history, 16)))
+    context.notes.update({
+        "throughput_comparable": False,
+        "throughput_limitation": "Cancellation is triggered by observed pressure, so completed work is not fixed.",
+        "mechanism_requirements": ["preemption", "snapshot_restore", "pressure_cancellation"],
+        "mechanism_observations": {"pressure_cancellation": "unavailable"},
+        "workload_shape": {"history_input_tokens": 192, "pressure_input_tokens": 192,
+                           "pressure_output_limit": 256, "eos_policy": "normal"},
+    })
+
+    def cancel_during_pressure(sample: dict[str, Any], handles: list[RequestHandle]) -> None:
+        paused = sample["event"].get("scheduler", {}).get("paused")
+        if type(paused) is not int or "pressure_cancel" in context.notes:
+            return
+        context.notes["mechanism_observations"]["pressure_cancellation"] = "not_observed"
+        target = handles[0]
+        if paused > 0 and not target.is_done:
+            context.notes["pressure_cancel"] = {
+                "target_role": target.role, "target_state": "unavailable",
+                "sample": sample, "cancel_ns": target.cancel(),
+            }
+
+    handles = _fixed_request_graph(
+        context,
+        [(role, chat_request(context.model, _preemption_messages(corpus, marker), 256))
+         for role, marker in (("a", "ALPHA"), ("b", "BRAVO"))],
+        (0, 10_000_000), {"a": (192, 256), "b": (192, 256)}, cancel_during_pressure,
+    )
+    if "pressure_cancel" in context.notes:
+        target = handles[0]
+        outcome = target.outcome()
+        context.notes["pressure_cancel"]["outcome"] = outcome
+        if outcome == "cancelled":
+            context.notes["mechanism_observations"]["pressure_cancellation"] = "observed"
+        elif outcome != "success":
+            context.require(False, "cancelled stream terminated normally", outcome, dimension="request_outcome")
+        _require_successes(context, handles[1:])
+    else:
+        _require_successes(context, handles)
+    probe = context.start("history-probe", chat_request(context.model, history, 16))
+    context.require_success(probe)
+
+
+def _vision_growth_replay(context: CaseContext, corpus: Corpus) -> None:
+    messages = corpus.media_messages("image-chart")
+    prompt = corpus.shape_messages("interferer-256")[-1]["content"] + (
+        "\n详细讲述每一步的判断过程，逐段分析人物和环境的变化。保持故事连贯，不要提前结束。"
+    )
+    for part in messages[0]["content"]:
+        if part.get("type") == "text":
+            part["text"] = prompt
+    context.notes.update({
+        "mechanism_requirements": ["vision_preemption", "vision_replay"],
+        "mechanism_role_requirements": {
+            "vision_preemption": {"role": "vision", "counter": "preemptions"},
+            "vision_replay": {"role": "vision", "counter": "replay_restores"},
+        },
+        "workload_shape": {"text_input_tokens": 192, "vision_input_tokens": 512,
+                           "text_output_limit": 768, "vision_output_limit": 512,
+                           "media_fixture": "image-chart", "eos_policy": "normal"},
+    })
+    handles = _fixed_request_graph(
+        context,
+        [("text", chat_request(context.model, _preemption_messages(corpus, "ALPHA"), 768)),
+         ("vision", chat_request(context.model, messages, 512))],
+        (0, 10_000_000), {"text": (192, 768), "vision": (512, 512)},
+    )
+    _require_successes(context, handles)
+
+
 def _anonymous_hot(context: CaseContext, corpus: Corpus) -> None:
     source_messages = corpus.shape_messages("long-8k-16")
     source = context.start(
@@ -122,7 +392,7 @@ def _anonymous_hot(context: CaseContext, corpus: Corpus) -> None:
         chat_request(context.model, source_messages, 16),
     )
     context.require_success(source)
-    continuation_messages = [*source_messages, _assistant(source)]
+    continuation_messages = [*source_messages, _assistant(context, source)]
     continuation_messages.append(
         {"role": "user", "content": "Now answer with the saved code only."}
     )
@@ -151,7 +421,10 @@ def _shared_state_working_set(context: CaseContext, corpus: Corpus) -> None:
     _state_probe(context, corpus, "a", 3)
 
 
-def _private_state_working_set(context: CaseContext, corpus: Corpus) -> None:
+def _private_state_working_set(
+    context: CaseContext, corpus: Corpus, *, automatic_shared: bool = True,
+) -> None:
+    context.notes["automatic_shared_capture"] = automatic_shared
     for labels, rounds in (("ab", 2), ("cd", 4)):
         histories = {label: corpus.state_messages(label) for label in labels}
         for turn in range(rounds):
@@ -159,9 +432,12 @@ def _private_state_working_set(context: CaseContext, corpus: Corpus) -> None:
                 history = histories[label]
                 if turn:
                     history.append({"role": "user", "content": "Continue with one more detail."})
-                response = context.start(f"{label}{turn}", chat_request(context.model, history, 32))
+                request = chat_request(context.model, history, 32)
+                if not automatic_shared:
+                    request.payload["prompt_cache_options"] = {"mode": "explicit"}
+                response = context.start(f"{label}{turn}", request)
                 context.require_success(response)
-                history.append(_assistant(response))
+                history.append(_assistant(context, response))
 
 
 def _shared_state_hot_prefix(context: CaseContext, corpus: Corpus) -> None:
@@ -184,7 +460,7 @@ def _session_hot(context: CaseContext, corpus: Corpus) -> None:
             "Return the saved answer in one short line.",
             32,
             store=True,
-            previous_response_id=_response_id(source),
+            previous_response_id=_response_id(context, source),
         ),
     )
     context.require_success(continuation)
@@ -209,7 +485,7 @@ def _session_alternating(context: CaseContext, corpus: Corpus) -> None:
             "Continue session A briefly.",
             16,
             store=True,
-            previous_response_id=_response_id(a1),
+            previous_response_id=_response_id(context, a1),
         ),
     )
     context.require_success(a2)
@@ -220,7 +496,7 @@ def _session_alternating(context: CaseContext, corpus: Corpus) -> None:
             "Continue session B briefly.",
             16,
             store=True,
-            previous_response_id=_response_id(b1),
+            previous_response_id=_response_id(context, b1),
         ),
     )
     context.require_success(b2)
@@ -242,7 +518,7 @@ def _session_alternating_64k_host_swap(context: CaseContext, corpus: Corpus) -> 
             "Continue session A briefly.",
             32,
             store=True,
-            previous_response_id=_response_id(a1),
+            previous_response_id=_response_id(context, a1),
         ),
     )
     context.require_success(a2)
@@ -253,7 +529,7 @@ def _session_alternating_64k_host_swap(context: CaseContext, corpus: Corpus) -> 
             "Continue session B briefly.",
             32,
             store=True,
-            previous_response_id=_response_id(b1),
+            previous_response_id=_response_id(context, b1),
         ),
     )
     context.require_success(b2)
@@ -270,7 +546,7 @@ def _session_rotation_55k_host(context: CaseContext, corpus: Corpus) -> None:
             store=True,
         )
         context.require_success(source)
-        source_ids.append(_response_id(source))
+        source_ids.append(_response_id(context, source))
 
     def resume(role: str, source_index: int) -> None:
         request = context.start(
@@ -299,6 +575,7 @@ class _BackgroundResponseLoops:
         self._current = list(initial)
         self._generations = [0 for _ in initial]
         self._errors: list[str] = []
+        self._cancelled_handles: set[RequestHandle] = set()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._threads = [
@@ -347,11 +624,27 @@ class _BackgroundResponseLoops:
                 with self._lock:
                     handle = self._current[index]
                 handle.wait_done(self._context.timeout)
-                if self._stop.is_set():
-                    return
-                if handle.outcome() != "success":
+                record = handle.as_record()
+                with self._lock:
+                    owned_cancellation = handle in self._cancelled_handles
+                clean_cancellation = (
+                    owned_cancellation
+                    and record["outcome"] == "cancelled"
+                    and record["cancel_requested"]
+                    and record["transport_cancelled"]
+                    and (record["http_status"] is None or 200 <= record["http_status"] < 300)
+                    and all(record[key] is None for key in (
+                        "transport_error", "protocol_error", "error_code", "error_message",
+                    ))
+                    and not any(event["kind"] == "error" for event in record["events"])
+                )
+                if record["outcome"] != "success" and not clean_cancellation:
+                    errors = {key: record[key] for key in (
+                        "transport_error", "protocol_error", "error_code", "error_message",
+                    ) if record[key] is not None}
                     raise CaseExecutionError(
-                        f"{handle.role} ended before its replacement: {handle.outcome()}"
+                        f"{handle.role} ended before its replacement: {record['outcome']}, "
+                        f"HTTP {record['http_status']}, errors={errors}"
                     )
                 with self._lock:
                     if self._stop.is_set():
@@ -363,7 +656,9 @@ class _BackgroundResponseLoops:
                         self._request(self._context, index),
                     )
                     self._current[index] = handle
-                handle.wait_first_output(self._context.timeout)
+                # require_active owns the foreground's first-output condition. The loop only
+                # needs a terminal result before replacing this generation; stop can cancel it
+                # before or after first output without turning that cancellation into a wait error.
         except BaseException as error:
             self._record_error(index, error)
 
@@ -389,10 +684,9 @@ class _BackgroundResponseLoops:
     def stop(self) -> None:
         with self._lock:
             self._stop.set()
-            current = list(self._current)
-        for handle in current:
-            if not handle.is_done:
-                handle.cancel()
+            for handle in self._current:
+                if not handle.is_done and handle.cancel(only_if_unrequested=True) is not None:
+                    self._cancelled_handles.add(handle)
         for thread in self._threads:
             thread.join(timeout=min(self._context.timeout, 5.0))
         live_threads = [thread.name for thread in self._threads if thread.is_alive()]
@@ -431,6 +725,12 @@ def _session_rotation_55k_two_cohort_stream(context: CaseContext, corpus: Corpus
     # estate, then keep two store-free streams live while a distinct second cohort is created and
     # resumed. Same-length leading marker replacements preserve the frozen 55K request shape while
     # making every second-cohort root diverge at the first system-content token.
+    context.notes["arrival_mode"] = "causal_dynamic_background"
+    context.notes["throughput_comparable"] = False
+    context.notes["throughput_limitation"] = (
+        "Background streams are replaced until the foreground graph finishes; submitted work "
+        "depends on engine speed. Use this case for causal observations, not throughput comparison."
+    )
     _session_rotation_55k_host(context, corpus)
     background = _BackgroundResponseLoops.start(context)
     try:
@@ -448,7 +748,7 @@ def _session_rotation_55k_two_cohort_stream(context: CaseContext, corpus: Corpus
                 ),
             )
             context.require_success(source)
-            source_ids.append(_response_id(source))
+            source_ids.append(_response_id(context, source))
 
         for round_index in range(1, 4):
             for source_index in range(6):
@@ -514,7 +814,7 @@ def _pressure_graph(context: CaseContext, corpus: Corpus) -> None:
             "Return the retained answer in one line.",
             32,
             store=True,
-            previous_response_id=_response_id(source),
+            previous_response_id=_response_id(context, source),
         ),
     )
     context.require_success(resume)
@@ -605,7 +905,7 @@ def _openai_implicit_shared(context: CaseContext, corpus: Corpus) -> None:
     context.require_success(reuse)
 
 
-def _observed_shared_promotion(context: CaseContext, corpus: Corpus) -> None:
+def _unmarked_repeat_after_interference(context: CaseContext, corpus: Corpus) -> None:
     messages = corpus.shape_messages("unmarked-common-a")
     facts = corpus.shape("unmarked-common-a")
     first = context.start(
@@ -613,11 +913,11 @@ def _observed_shared_promotion(context: CaseContext, corpus: Corpus) -> None:
         anthropic_request(context.model, messages, facts["max_output_tokens"]),
     )
     context.require_success(first)
-    promotion = context.start(
-        "promotion",
+    second = context.start(
+        "second-observation",
         anthropic_request(context.model, messages, facts["max_output_tokens"]),
     )
-    context.require_success(promotion)
+    context.require_success(second)
     filler = context.start(
         "private-filler",
         anthropic_request(
@@ -628,7 +928,7 @@ def _observed_shared_promotion(context: CaseContext, corpus: Corpus) -> None:
     )
     context.require_success(filler)
     reuse = context.start(
-        "shared-reuse",
+        "reuse",
         anthropic_request(context.model, messages, facts["max_output_tokens"]),
     )
     context.require_success(reuse)
@@ -663,7 +963,7 @@ def _shared_fanout(context: CaseContext, corpus: Corpus) -> None:
     _require_successes(context, branches)
 
 
-def _shared_slot_retention(context: CaseContext, corpus: Corpus) -> None:
+def _shared_prefix_competition(context: CaseContext, corpus: Corpus) -> None:
     system_a = corpus.shared_system("system-a")
     system_b = corpus.shared_system("system-b")
     first_a = _anthropic_system(context, system_a, "Prefix A first use.", "a-first")
@@ -683,7 +983,7 @@ def _shared_slot_retention(context: CaseContext, corpus: Corpus) -> None:
     context.require_success(second_a)
 
 
-def _shared_value_replacement(context: CaseContext, corpus: Corpus) -> None:
+def _shared_tool_prefix_competition(context: CaseContext, corpus: Corpus) -> None:
     system = corpus.shared_system("system-a")
     first_a = _anthropic_system(context, system, "Establish prefix A.", "a")
     context.require_success(first_a)
@@ -794,43 +1094,38 @@ def _short_during_decode(context: CaseContext, corpus: Corpus) -> None:
     )
 
 
-def _protected_backfill(context: CaseContext, corpus: Corpus) -> None:
+def _short_behind_long(context: CaseContext, corpus: Corpus) -> None:
     holder = _chat_shape(context, corpus, "holder-4096", "holder")
     holder.wait_first_output(context.timeout)
     head = _chat_shape(context, corpus, "long-8k-32", "head")
     head.wait_accepted(context.timeout)
-    borrower = _chat_shape(context, corpus, "short-32", "borrower")
-    _require_successes(context, (holder, head, borrower))
+    short = _chat_shape(context, corpus, "short-32", "short")
+    _require_successes(context, (holder, head, short))
     _require_order(
         context,
-        "head.accepted < borrower.sent < borrower.first < holder.completed < head.first",
+        "head.accepted < short.sent < holder.completed",
         (
             ("head.accepted", head.accepted_ns),
-            ("borrower.sent", borrower.sent_ns),
-            ("borrower.first", borrower.first_output_ns),
+            ("short.sent", short.sent_ns),
             ("holder.completed", holder.completed_ns),
-            ("head.first", head.first_output_ns),
         ),
     )
 
 
-def _protected_no_backfill(context: CaseContext, corpus: Corpus) -> None:
+def _medium_behind_long(context: CaseContext, corpus: Corpus) -> None:
     holder = _chat_shape(context, corpus, "holder-4096", "holder")
     holder.wait_first_output(context.timeout)
     head = _chat_shape(context, corpus, "long-8k-32", "head")
     head.wait_accepted(context.timeout)
-    borrower = _chat_shape(context, corpus, "medium-3000", "unsafe-borrower")
-    _require_successes(context, (holder, head, borrower))
+    medium = _chat_shape(context, corpus, "medium-3000", "medium")
+    _require_successes(context, (holder, head, medium))
     _require_order(
         context,
-        "head.accepted < borrower.sent < holder.completed < head.first < head.completed < borrower.first",
+        "head.accepted < medium.sent < holder.completed",
         (
             ("head.accepted", head.accepted_ns),
-            ("borrower.sent", borrower.sent_ns),
+            ("medium.sent", medium.sent_ns),
             ("holder.completed", holder.completed_ns),
-            ("head.first", head.first_output_ns),
-            ("head.completed", head.completed_ns),
-            ("borrower.first", borrower.first_output_ns),
         ),
     )
 
@@ -850,9 +1145,8 @@ def _active_lanes_full(context: CaseContext, corpus: Corpus) -> None:
     earliest_holder_completion = min(int(item.completed_ns) for item in holders)
     context.require(
         isinstance(probe.sent_ns, int)
-        and isinstance(probe.first_output_ns, int)
-        and probe.sent_ns < earliest_holder_completion <= probe.first_output_ns,
-        "probe.sent < min(holder.completed) <= probe.first",
+        and probe.sent_ns < earliest_holder_completion,
+        "probe.sent < min(holder.completed)",
         f"probe.sent={probe.sent_ns}, earliest_holder_completion={earliest_holder_completion}, probe.first={probe.first_output_ns}",
     )
 
@@ -863,7 +1157,7 @@ def _session_publication_order(context: CaseContext, corpus: Corpus) -> None:
         responses_request(context.model, "Create a session root.", 16, store=True),
     )
     context.require_success(parent)
-    parent_id = _response_id(parent)
+    parent_id = _response_id(context, parent)
     older = context.start(
         "older",
         responses_request(
@@ -917,7 +1211,7 @@ def _session_publication_order(context: CaseContext, corpus: Corpus) -> None:
             "Continue the newest child.",
             16,
             store=True,
-            previous_response_id=_response_id(newer),
+            previous_response_id=_response_id(context, newer),
         ),
     )
     context.require_success(final)
@@ -1067,7 +1361,7 @@ def _mixed_four_requests(
     source_messages = corpus.shape_messages("long-8k-16")
     seed = context.start("seed", chat_request(context.model, source_messages, 16))
     context.require_success(seed)
-    continuation_messages = [*source_messages, _assistant(seed)]
+    continuation_messages = [*source_messages, _assistant(context, seed)]
     continuation_messages.append({"role": "user", "content": "Continue briefly."})
     return [
         (
@@ -1142,7 +1436,7 @@ def _media_prefix_continuation(context: CaseContext, corpus: Corpus) -> None:
     source_messages = corpus.media_messages("image-chart")
     source = context.start("source", chat_request(context.model, source_messages, 32))
     context.require_success(source)
-    history = [*source_messages, _assistant(source)]
+    history = [*source_messages, _assistant(context, source)]
     history.append({"role": "user", "content": "Recall the same image in one phrase."})
     continuation = context.start(
         "continuation", chat_request(context.model, history, 32)
@@ -1154,7 +1448,7 @@ def _media_prefix_append(context: CaseContext, corpus: Corpus) -> None:
     source_messages = corpus.media_messages("image-chart")
     source = context.start("source", chat_request(context.model, source_messages, 32))
     context.require_success(source)
-    history = [*source_messages, _assistant(source)]
+    history = [*source_messages, _assistant(context, source)]
     history.extend(corpus.load_image_messages(1, prompt="Compare this new image with the prior one."))
     continuation = context.start(
         "continuation", chat_request(context.model, history, 32)
@@ -1169,7 +1463,7 @@ def _media_prefix_changed(context: CaseContext, corpus: Corpus) -> None:
     changed = copy.deepcopy(source_messages)
     replacement = corpus.load_image_messages(2)[0]["content"][0]["image_url"]["url"]
     _replace_first_image(changed, replacement)
-    changed.append(_assistant(source))
+    changed.append(_assistant(context, source))
     changed.append({"role": "user", "content": "Answer after the earlier image changed."})
     continuation = context.start(
         "changed-continuation", chat_request(context.model, changed, 32)
@@ -1227,11 +1521,6 @@ def _text_during_media_prepare(context: CaseContext, corpus: Corpus) -> None:
             ("short.sent", short.sent_ns),
             ("media.accepted", media.accepted_ns),
         ),
-    )
-    _require_order(
-        context,
-        "short.first < media.first",
-        (("short.first", short.first_output_ns), ("media.first", media.first_output_ns)),
     )
 
 
@@ -1315,6 +1604,38 @@ def _definition(
 
 _DEFINITIONS = (
     _definition(
+        "shared-growth-fairness", "openai_chat", "shared-growth-fairness", "scheduling",
+        ("state-2k-a", "interferer-256", "short-32"),
+        "Three growing shared-prefix branches and two fixed short arrivals with Host disabled.",
+        _shared_growth_fairness,
+    ),
+    _definition(
+        "snapshot-history-cancel", "openai_chat", "snapshot-history-cancel", "scheduling",
+        ("interferer-256",),
+        "Host snapshot competes with retained history; cancel a stream only during observed pressure.",
+        _snapshot_history_cancel,
+    ),
+    _definition(
+        "vision-growth-replay", "openai_chat", "vision-growth-replay", "scheduling",
+        ("interferer-256", "image-chart"),
+        "Fixed Text/Vision growth with Host disabled; require the Vision request's own replay.",
+        _vision_growth_replay,
+    ),
+    _definition(
+        "preemption-replay", "openai_chat", "preemption-replay", "scheduling",
+        ("interferer-256",),
+        "Two fixed arrivals compete for 512 KV tokens with no Host snapshot capacity; "
+        "observe preemption and replay separately from request completion.",
+        _preemption_load("replay_restore"),
+    ),
+    _definition(
+        "preemption-snapshot", "openai_chat", "preemption-snapshot", "scheduling",
+        ("interferer-256",),
+        "The same two fixed arrivals with Host snapshot capacity; observe preemption and "
+        "snapshot restoration separately from request completion.",
+        _preemption_load("snapshot_restore"),
+    ),
+    _definition(
         "shared-state-working-set-shift", "openai_chat", "cache-state-working-set", "resource",
         tuple(f"state-2k-{label}" for label in "abcdef"),
         "Two three-conversation working sets in one process under State pressure, followed by repeated probes.",
@@ -1325,6 +1646,12 @@ _DEFINITIONS = (
         tuple(f"state-2k-{label}" for label in "abcd"),
         "Two pairs of full-history conversations compete for private checkpoint State capacity.",
         _private_state_working_set,
+    ),
+    _definition(
+        "private-only-working-set-shift", "openai_chat", "cache-private-working-set", "resource",
+        tuple(f"state-2k-{label}" for label in "abcd"),
+        "The same full-history conversation working sets with automatic shared capture explicitly disabled.",
+        lambda context, corpus: _private_state_working_set(context, corpus, automatic_shared=False),
     ),
     _definition(
         "shared-state-hot-prefix", "openai_chat", "cache-state-working-set", "resource",
@@ -1370,23 +1697,22 @@ _DEFINITIONS = (
     _definition("resume-after-interference-kv-host", "openai_responses", "cache-pressure-kv-host", "resource", ("long-8k-16", "interferer-256"), "Pressure graph with Host KV restore.", _pressure_graph, symmetric_role_groups=(SymmetricRoleGroup("interferers", ("interferer-b", "interferer-c")),)),
     _definition("resume-after-interference-both-host", "openai_responses", "cache-pressure-both-host", "resource", ("long-8k-16", "interferer-256"), "Pressure graph with State and KV restore.", _pressure_graph, symmetric_role_groups=(SymmetricRoleGroup("interferers", ("interferer-b", "interferer-c")),)),
     _definition("resume-after-interference-evicted", "openai_responses", "cache-pressure-evict", "resource", ("long-8k-16", "interferer-256"), "Pressure graph with no legal retained replica.", _pressure_graph, symmetric_role_groups=(SymmetricRoleGroup("interferers", ("interferer-b", "interferer-c")),)),
-    _definition("resume-after-interference-catalog", "openai_responses", "cache-pressure-catalog", "resource", ("long-8k-16", "interferer-256"), "Descriptor pressure with spare physical capacity.", _pressure_graph, symmetric_role_groups=(SymmetricRoleGroup("interferers", ("interferer-b", "interferer-c")),)),
     _definition("continuation-cache-off", "openai_responses", "cache-off", "control", ("long-8k-16",), "Full-history Responses control with Engine reuse disabled.", _cache_off),
     _definition("shared-sequential", "anthropic_messages", "shared-prefix", "shared", ("system-a",), "Marked Anthropic shared prefix sequential reuse.", _shared_sequential),
     _definition("shared-openai-explicit", "openai_chat", "shared-prefix", "shared", ("system-a",), "OpenAI explicit system boundary shared by different suffixes.", _openai_explicit_shared),
-    _definition("shared-openai-implicit", "openai_chat", "shared-value", "shared", ("unmarked-common-a",), "OpenAI default implicit full-prompt owner survives private displacement.", _openai_implicit_shared),
-    _definition("shared-observed-promotion", "anthropic_messages", "shared-value", "shared", ("unmarked-common-a",), "Two independent unmarked observations promote a private base before private displacement.", _observed_shared_promotion),
+    _definition("shared-openai-implicit", "openai_chat", "prefix-competition", "shared", ("unmarked-common-a",), "OpenAI automatic-prefix reuse after an independent request.", _openai_implicit_shared),
+    _definition("unmarked-repeat-after-interference", "anthropic_messages", "prefix-competition", "private", ("unmarked-common-a",), "Repeat an unmarked prompt before and after an independent request.", _unmarked_repeat_after_interference),
     _definition("shared-fanout", "anthropic_messages", "shared-prefix", "shared", ("system-a",), "Concurrent branches from a non-aligned shared prefix.", _shared_fanout, symmetric_role_groups=(SymmetricRoleGroup("branches", ("branch-b", "branch-c")),)),
-    _definition("shared-slot-retention", "anthropic_messages", "shared-value", "shared", ("system-a", "system-b"), "Equal-value S=1 challenger must justify replacing the established owner.", _shared_slot_retention),
-    _definition("shared-value-replacement", "anthropic_messages", "shared-value", "shared", ("system-a", "client-tools-32"), "A higher-value tool frontier competes for one shared slot.", _shared_value_replacement),
+    _definition("shared-prefix-competition", "anthropic_messages", "prefix-competition", "shared", ("system-a", "system-b"), "Revisit a marked prefix after a competing prefix and an independent request.", _shared_prefix_competition),
+    _definition("shared-tool-prefix-competition", "anthropic_messages", "prefix-competition", "shared", ("system-a", "client-tools-32"), "A marked system prefix and tool prefix compete for Device storage.", _shared_tool_prefix_competition),
     _definition("shared-tools-sequential", "anthropic_messages", "shared-prefix", "shared", ("client-tools-32",), "Stable 32-tool prefix reuse.", _shared_tools_sequential),
     _definition("shared-tools-changed", "anthropic_messages", "shared-prefix", "shared", ("client-tools-32",), "Early tool identity change invalidates the marked prefix.", _shared_tools_changed),
     _definition("short-during-prefill-128", "openai_chat", "scheduler-prefill-128", "scheduling", ("long-8k-32", "short-32"), "Arrival during prefill with 128-token chunks.", _short_during_prefill),
     _definition("short-during-prefill-1024", "openai_chat", "scheduler-overlap", "scheduling", ("long-8k-32", "short-32"), "Arrival during prefill with 1024-token chunks.", _short_during_prefill),
     _definition("short-during-prefill-4096", "openai_chat", "scheduler-prefill-4096", "scheduling", ("long-8k-32", "short-32"), "Arrival during prefill with 4096-token chunks.", _short_during_prefill),
     _definition("short-during-decode", "openai_chat", "scheduler-overlap", "scheduling", ("holder-4096", "short-32"), "New prefill during active decode.", _short_during_decode),
-    _definition("protected-head-backfill", "openai_chat", "scheduler-backfill", "scheduling", ("holder-4096", "long-8k-32", "short-32"), "Persistent-safe borrower may pass a protected head.", _protected_backfill),
-    _definition("protected-head-no-backfill", "openai_chat", "scheduler-backfill", "scheduling", ("holder-4096", "long-8k-32", "medium-3000"), "Unsafe borrower stays behind a protected head.", _protected_no_backfill),
+    _definition("short-behind-long", "openai_chat", "scheduler-kv-pressure", "scheduling", ("holder-4096", "long-8k-32", "short-32"), "Short arrival behind a long request while a holder is decoding.", _short_behind_long),
+    _definition("medium-behind-long", "openai_chat", "scheduler-kv-pressure", "scheduling", ("holder-4096", "long-8k-32", "medium-3000"), "Medium arrival behind a long request while a holder is decoding.", _medium_behind_long),
     _definition("active-lanes-full-8", "openai_chat", "lane-limit-8", "boundary", ("holder-4096", "short-32"), "Startup-fixed eight-lane product boundary.", _active_lanes_full, symmetric_role_groups=(SymmetricRoleGroup("holders", tuple(f"holder-{index}" for index in range(8))),)),
     _definition("session-publication-order", "openai_responses", "session-order", "boundary", ("holder-4096",), "Older late completion cannot overwrite newer session binding.", _session_publication_order),
     _definition("cancel-before-first", "openai_chat", "scheduler-overlap", "boundary", ("long-8k-32", "short-32"), "Cancellation after admission but before first output.", _cancel_before_first),
@@ -1459,6 +1785,7 @@ def run_case(
     if corpus is None:
         raise CaseExecutionError("matching profile execution requires a corpus")
 
+    context.notes.setdefault("input_dependency", "fixed")
     try:
         definition.run(context, corpus)
         context.wait_all()
@@ -1494,7 +1821,7 @@ def run_case(
             key=lambda record: record["completed_ns"],
         )
     ]
-    constructed = not context.failures
+    constructed = not any(failure.dimension == "construction" for failure in context.failures)
     context.progress(
         "case.graph_finished",
         constructed=constructed,
@@ -1511,8 +1838,14 @@ def run_case(
         "profile_label": profile_label,
         "expected_profile_label": definition.profile,
         "corpus_ids": list(definition.corpus_ids),
-        "status": "constructed" if constructed else "not_constructed",
+        "status": (
+            "request_failure" if constructed and context.failures
+            else "constructed" if constructed else "not_constructed"
+        ),
         "constructed": constructed,
+        "request_checks_passed": not any(
+            failure.dimension == "request_outcome" for failure in context.failures
+        ),
         "failed_conditions": [failure.as_json() for failure in context.failures],
         "first_output_order": first_order,
         "completion_order": completion_order,

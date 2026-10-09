@@ -49,15 +49,17 @@ route table this fork inherited and re-measured on sm_86 turned out to be wrong 
 upstream tuning constant as a hypothesis until measured on this card. The build environment and the
 compatibility constraints are in "Windows build environment (RTX 3090 fork host)" below.
 
-Generation uses one resident model on one GPU, or split into pipeline stages over up to eight
-(`--devices`, Linux only; each stage owns whole layers with their KV and state, and the head,
-round state and sampling stay on the first device; design in
-`docs/maintainer/pipeline-parallel-plan.md`). It runs startup-fixed concurrency of one to eight
-requests, bounded FIFO ingress, no active-request preemption, and one compact decode batch per
-round. Tensor parallelism is not built.
+Generation uses one resident model on one GPU, one to eight resident execution lanes fixed at
+startup, bounded FIFO ingress with finite bypass, resource-pressure preemption with
+Snapshot/Replay recovery, and one compact decode batch per round. The layer pipeline over up to
+eight GPUs (`--devices`, Linux only; each stage owns whole layers with their KV and state, and the
+head, round state and sampling stay on the first device; design in
+`docs/maintainer/pipeline-parallel-plan.md`) is parked while it is ported to the replaced context
+engine: its sources stay in the tree, and startup rejects more than one device. Tensor
+parallelism is not built.
 Generation and offline CausalScoring use the same public `.ninfer` Engine route. Delivered
 capabilities and commands are documented in `README.md`, the product guides, and executable
-`--help`. New mathematical architectures, execution platforms, large-scale/preemptive continuous
+`--help`. New mathematical architectures, execution platforms, large-scale continuous
 batching, and priority/QoS require an explicit product change. Another training instance or mixture
 of existing representations does not require a checkpoint-specific execution registration.
 

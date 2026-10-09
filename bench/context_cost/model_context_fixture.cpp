@@ -4,6 +4,7 @@
 #include "artifact/reader.h"
 #include "core/arena.h"
 #include "core/device.h"
+#include "core/host_context_arena.h"
 #include "core/host_kv_arena.h"
 #include "core/layout.h"
 #include "core/paged_kv_cache.h"
@@ -244,7 +245,8 @@ void measure_geometry(DeviceContext& device, const GeometryCase& fixture,
     const std::size_t host_bytes =
         checked_size_mul(host_layout.page_stride, region_pages, "transfer fixture Host bytes");
     const std::array<HostKVPageLayout, 1> layouts{host_layout};
-    HostKVArena host(host_bytes, layouts);
+    HostContextArena host_context(host_bytes, host_layout.page_stride);
+    HostKVArena host(host_context, layouts);
     auto allocation = host.allocate(host_layout, region_pages);
     if (!allocation) { throw std::runtime_error("failed to allocate transfer fixture Host pages"); }
     HostKVAllocationView host_view = host.writable_view(*allocation);
@@ -500,8 +502,8 @@ PrefillSuiteResult measure_prefill(const ArtifactProfile& artifact,
     engine_options.enable_vision         = true;
     engine_options.use_cuda_graph        = true;
     engine_options.context_cache.enabled = false;
-    engine_options.context_cache.host_state_slots       = 0;
-    engine_options.context_cache.host_kv_capacity_bytes = 0;
+    engine_options.context_cache.device_state_slots  = 0;
+    engine_options.context_cache.host_capacity_bytes = 0;
 
     Engine engine(engine_options);
     const auto run_root = [&](std::uint32_t tokens) {

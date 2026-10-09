@@ -12,9 +12,6 @@ namespace ninfer::runtime {
 struct ResolvedExecutionOptions {
     ResolvedSamplingParameters sampling;
     std::uint32_t requested_output_tokens = 0;
-    // 0, or the output tokens whose KV the plan reserves at admission (the rest is reserved as the
-    // request decodes).
-    std::uint32_t output_reservation_tokens = 0;
     bool allow_prefix_reuse               = true;
     ThinkingControlOptions thinking;
 };
@@ -54,15 +51,9 @@ struct CancellationFlagView {
 
 struct RequestPlanSummary {
     std::uint32_t prompt_tokens           = 0;
-    std::uint32_t reusable_prompt_tokens  = 0;
     std::uint32_t requested_output_tokens = 0;
     std::uint32_t effective_output_tokens = 0;
-    // The part of effective_output_tokens whose KV admission reserves; equal to it unless the
-    // Engine reserves output lazily.
-    std::uint32_t reserved_output_tokens  = 0;
     FinishReason effective_limit_reason   = FinishReason::None;
-    PrefixReusePath prefix_reuse_path     = PrefixReusePath::Root;
-    std::uint64_t service_work_quanta     = 0;
     bool publish_continuation             = true;
 };
 

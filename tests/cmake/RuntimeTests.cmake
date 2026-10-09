@@ -1,30 +1,31 @@
-ninfer_add_test(ninfer_admission_policy_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_admission_policy.cpp"
+ninfer_add_test(ninfer_scheduler_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../runtime/test_scheduler.cpp"
   LIBRARIES ninfer_runtime_support)
 
 ninfer_add_test(ninfer_worker_recovery_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_worker_recovery.cpp"
   LIBRARIES ninfer_runtime_support)
 
-ninfer_add_test(ninfer_context_cost_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_context_cost.cpp"
+ninfer_add_test(ninfer_context_cost_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../runtime/test_context_cost.cpp"
   LIBRARIES ninfer_runtime_support ninfer::json)
 
-ninfer_add_test(ninfer_slot_spill_guard_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_slot_spill_guard.cpp")
-
-ninfer_add_test(ninfer_resource_manager_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_resource_manager.cpp"
+ninfer_add_test(ninfer_resource_manager_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../runtime/test_resource_manager.cpp"
   LIBRARIES ninfer_runtime_support)
 
 ninfer_add_test(ninfer_context_store_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_context_store.cpp"
   LIBRARIES ninfer_runtime_support)
 
-ninfer_add_test(ninfer_kv_capacity_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_kv_capacity.cpp"
+ninfer_add_test(ninfer_kv_capacity_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../runtime/test_kv_capacity.cpp"
   LIBRARIES ninfer_runtime_support)
 
 ninfer_add_test(ninfer_host_cache_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_host_cache.cpp"
   LIBRARIES ninfer_runtime_support ninfer_engine ninfer::json)
 
 ninfer_add_test(ninfer_sampling_defaults_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_sampling_defaults.cpp"
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../runtime/test_sampling_defaults.cpp"
   LIBRARIES ninfer_engine ninfer_core)
 
 ninfer_add_test(ninfer_effective_thinking_budget_test

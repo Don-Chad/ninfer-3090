@@ -52,9 +52,6 @@ struct PersistentLayout {
     // recurrent state of the layers that stage owns. Empty on one device.
     std::vector<std::size_t> extra_rank_bytes;
     std::size_t kv_payload_bytes = 0;
-    // Arena offset just past the last page-major KV plane. Everything an overlay Vision window may
-    // borrow from free KV lies below it; stores interleaved there are simply never selected.
-    std::size_t lendable_kv_end_bytes = 0;
 };
 
 struct VisionWorkspacePlan {
@@ -76,14 +73,8 @@ struct WorkspacePlan {
     std::size_t dflash_round     = 0;
     std::size_t causal_score     = 0;
     std::size_t general_capacity = 0;
-    // Resident: folded into capacity after the general region. Overlay: the per-window encode
-    // plan, borrowed per item, and nothing but the MTP bridge column lives in this workspace.
     std::optional<VisionWorkspacePlan> vision;
-    bool vision_resident = true;
-    // Overlay only: the staged visual column of a multimodal MTP bridge, past the general region.
-    std::size_t vision_bridge_offset = 0;
-    std::size_t vision_bridge_bytes  = 0;
-    std::size_t capacity             = 0;
+    std::size_t capacity = 0;
 };
 
 struct SequencePlanningInputs {
@@ -92,7 +83,7 @@ struct SequencePlanningInputs {
     std::uint32_t max_concurrency           = 1;
     std::uint32_t prefill_chunk             = 0;
     std::uint32_t draft_window              = 0;
-    std::uint32_t lookup_ngram             = 0;
+    std::uint32_t lookup_ngram              = 0;
     SpeculativeBackend speculative_backend  = SpeculativeBackend::None;
     KvCacheStorage kv_storage               = KvCacheStorage::BFloat16;
     ProposalHead proposal_head              = ProposalHead::Full;
@@ -102,14 +93,7 @@ struct SequencePlanningInputs {
     int device                        = 0;
     std::int32_t multiprocessor_count = 0;
     ContextCacheOptions context_cache;
-    // Main KV pages that stay allocated for the life of the Engine (injected graft prefixes). The
-    // pool grows by this many so requests keep the capacity that was asked for.
-    std::uint32_t resident_main_pages = 0;
 };
-
-} // namespace ninfer::models::qwen3_5::detail
-
-namespace ninfer::models::qwen3_5::detail {
 
 struct SequencePlanImpl {
     const execution::Parameters* parameters = nullptr;
@@ -119,7 +103,7 @@ struct SequencePlanImpl {
     std::uint32_t max_concurrency           = 1;
     std::uint32_t prefill_chunk             = 0;
     std::uint32_t draft_window              = 0;
-    std::uint32_t lookup_ngram             = 0;
+    std::uint32_t lookup_ngram              = 0;
     SpeculativeBackend speculative_backend  = SpeculativeBackend::None;
     KvCacheStorage kv_storage               = KvCacheStorage::BFloat16;
     ProposalHead proposal_head              = ProposalHead::Full;
@@ -133,9 +117,6 @@ struct SequencePlanImpl {
     WorkspacePlan workspace;
     std::size_t graph_allowance_bytes    = 0;
     std::size_t device_reservation_bytes = 0;
-    // What each further device reserves (device 1 first): its persistent state, the scratch its
-    // stage runs in, and its share of the graph allowance.
-    std::vector<std::size_t> extra_rank_reservation_bytes;
 };
 
 // The widest forward pass a pipeline stage boundary carries: prefill columns, or every lane's
@@ -152,18 +133,13 @@ struct SequencePlannerImpl {
     std::unique_ptr<SequencePlanImpl> minimum;
 };
 
-} // namespace ninfer::models::qwen3_5::detail
-
-namespace ninfer::models::qwen3_5::detail {
-
-
 // Largest merged-token count one media item may occupy under these startup options.
 [[nodiscard]] std::uint32_t vision_item_token_bound(std::uint32_t capacity,
                                                     const models::LoadOptions& features);
 
 [[nodiscard]] std::unique_ptr<qwen3_5::detail::SequencePlannerImpl>
 make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContext& device,
-                           const EngineOptions& options, std::uint32_t resident_main_pages);
+                           const EngineOptions& options);
 [[nodiscard]] std::unique_ptr<SequencePlanImpl>
 finalize_sequence_plan_impl(std::unique_ptr<qwen3_5::detail::SequencePlannerImpl> planner,
                             std::uint32_t main_page_groups);

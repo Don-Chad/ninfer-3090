@@ -1,4 +1,5 @@
 #include "models/qwen3_5/program/planning/graph_profiles.h"
+#include "models/qwen3_5/program/execution_context.h"
 #include "ninfer/ops/softmax_attention.h"
 #include <algorithm>
 #include <array>
@@ -200,6 +201,29 @@ std::vector<GraphExecutionProfile> dflash_graph_profiles(SpeculativeBackend back
         profile.topology_class = (chunked_target ? 2U : 0U) | (split_swa ? 1U : 0U);
     }
     return profiles;
+}
+
+execution::MtpCausalAttentionEnvelopes mtp_causal_attention_envelopes(std::uint32_t max_frontier,
+                                                                      std::uint32_t k,
+                                                                      std::uint32_t capacity) {
+    const auto visible = [capacity](std::uint64_t value) {
+        return static_cast<std::uint32_t>(std::min<std::uint64_t>(capacity, value));
+    };
+    execution::MtpCausalAttentionEnvelopes out;
+    out.target_verify = {1, visible(static_cast<std::uint64_t>(max_frontier) + k + 1ULL)};
+    out.batch         = out.target_verify;
+    for (std::uint32_t step = 0; step + 1 < k; ++step) {
+        out.ar[step] = {1, visible(static_cast<std::uint64_t>(max_frontier) + k + step + 2ULL)};
+    }
+    return out;
+}
+
+execution::DFlashEnvelopes dflash_envelopes(std::uint32_t max_frontier, std::uint32_t k) {
+    return execution::DFlashEnvelopes{
+        .local  = {0, max_frontier},
+        .full   = {0, max_frontier},
+        .append = {0, k + 1},
+    };
 }
 
 } // namespace ninfer::models::qwen3_5::detail

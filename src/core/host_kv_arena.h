@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/arena.h"
+#include "core/host_context_arena.h"
 #include "core/paged_kv_cache.h"
 #include "core/transfer_work.h"
 
@@ -134,6 +134,7 @@ public:
 
     [[nodiscard]] HostKVAllocationHandle handle() const noexcept;
     [[nodiscard]] std::uint32_t page_count() const noexcept;
+    void publish() noexcept;
     bool release() noexcept;
 
 private:
@@ -150,60 +151,21 @@ private:
     std::uint32_t generation_ = 0;
 };
 
-struct HostKVAllocationRequest {
-    const HostKVPageLayout* layout = nullptr;
-    std::uint32_t pages            = 0;
-};
-
-struct HostKVSuballocationRelease {
-    HostKVAllocationHandle allocation;
-    std::uint32_t begin_page = 0;
-    std::uint32_t page_count = 0;
-};
-
-class HostKVAllocationRecipe {
-public:
-    HostKVAllocationRecipe() noexcept                                    = default;
-    HostKVAllocationRecipe(HostKVAllocationRecipe&&) noexcept            = default;
-    HostKVAllocationRecipe& operator=(HostKVAllocationRecipe&&) noexcept = default;
-
-    HostKVAllocationRecipe(const HostKVAllocationRecipe&)            = delete;
-    HostKVAllocationRecipe& operator=(const HostKVAllocationRecipe&) = delete;
-
-    [[nodiscard]] bool valid() const noexcept { return owner_ != nullptr; }
-
-private:
-    struct Target {
-        std::uint32_t layout = 0;
-        std::uint32_t pages  = 0;
-        std::size_t offset   = 0;
-        std::size_t bytes    = 0;
-    };
-
-    const HostKVArena* owner_     = nullptr;
-    std::uint64_t arena_revision_ = 0;
-    std::vector<HostKVAllocationHandle> releases_;
-    std::vector<Target> targets_;
-
-    friend class HostKVArena;
-};
-
 class HostKVArena {
 public:
-    HostKVArena(std::size_t capacity_bytes, std::span<const HostKVPageLayout> supported_layouts);
+    HostKVArena(HostContextArena& arena, std::span<const HostKVPageLayout> supported_layouts);
 
     HostKVArena(const HostKVArena&)            = delete;
     HostKVArena& operator=(const HostKVArena&) = delete;
     HostKVArena(HostKVArena&&)                 = delete;
     HostKVArena& operator=(HostKVArena&&)      = delete;
 
-    [[nodiscard]] std::size_t capacity_bytes() const noexcept { return capacity_bytes_; }
+    // Shared backing capacity; never add this to another typed pool's capacity.
+    [[nodiscard]] std::size_t capacity_bytes() const noexcept { return arena_->capacity_bytes(); }
 
     [[nodiscard]] std::size_t occupied_bytes() const noexcept { return occupied_bytes_; }
 
-    [[nodiscard]] std::size_t free_bytes() const noexcept {
-        return capacity_bytes_ - occupied_bytes_;
-    }
+    [[nodiscard]] std::size_t free_bytes() const noexcept { return arena_->free_bytes(); }
 
     [[nodiscard]] const HostKVPageLayout* layout_for(const KVPageGeometry& geometry) const noexcept;
 
@@ -211,20 +173,6 @@ public:
                                     std::uint32_t pages) const noexcept;
     [[nodiscard]] std::optional<HostKVAllocation> allocate(const HostKVPageLayout& layout,
                                                            std::uint32_t pages) noexcept;
-
-    [[nodiscard]] std::optional<HostKVAllocationRecipe>
-    plan_after_releases(std::span<const HostKVAllocationHandle> proposed_releases,
-                        std::span<const HostKVAllocationRequest> target_allocations) const;
-
-    [[nodiscard]] bool can_allocate_after_suballocation_releases(
-        std::span<const HostKVSuballocationRelease> proposed_releases,
-        std::span<const HostKVAllocationRequest> target_allocations) const;
-
-    // The caller supplies already-sized empty outputs so successful adoption cannot allocate.
-    // A false return leaves the arena and every input allocation unchanged.
-    [[nodiscard]] bool apply_recipe(HostKVAllocationRecipe&& recipe,
-                                    std::span<HostKVAllocation* const> proposed_releases,
-                                    std::span<HostKVAllocation> target_allocations) noexcept;
 
     [[nodiscard]] std::pair<HostKVAllocation, HostKVAllocation> split(HostKVAllocation&& allocation,
                                                                       std::uint32_t page_offset);
@@ -238,37 +186,25 @@ private:
     friend class HostKVAllocationConstView;
 
     struct Descriptor {
-        std::size_t offset       = 0;
-        std::size_t bytes        = 0;
+        HostContextAllocation storage;
         std::uint32_t layout     = 0;
         std::uint32_t pages      = 0;
         std::uint32_t generation = 1;
         bool active              = false;
     };
 
-    struct FreeExtent {
-        std::size_t offset = 0;
-        std::size_t bytes  = 0;
-    };
-
     [[nodiscard]] std::optional<std::uint32_t>
     find_layout(const HostKVPageLayout& layout) const noexcept;
-    [[nodiscard]] std::optional<std::size_t> find_free_extent(std::size_t bytes) const noexcept;
     [[nodiscard]] bool valid_handle(HostKVAllocationHandle handle) const noexcept;
     [[nodiscard]] std::uint32_t take_descriptor() noexcept;
     bool release_descriptor(std::uint32_t descriptor, std::uint32_t generation) noexcept;
-    void insert_free_extent(FreeExtent extent) noexcept;
     [[nodiscard]] std::byte* allocation_data(const Descriptor& descriptor) const noexcept;
-    void bump_revision() noexcept;
 
-    std::optional<PinnedHostBuffer> backing_;
-    std::size_t capacity_bytes_ = 0;
+    HostContextArena* arena_    = nullptr;
     std::size_t occupied_bytes_ = 0;
     std::vector<HostKVPageLayout> layouts_;
     std::vector<Descriptor> descriptors_;
     std::vector<std::uint32_t> free_descriptors_;
-    std::vector<FreeExtent> free_extents_;
-    std::uint64_t revision_ = 1;
 };
 
 } // namespace ninfer

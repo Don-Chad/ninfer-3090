@@ -20,7 +20,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace {
@@ -141,6 +140,16 @@ RoundMeasurement measure_round(qwen::Program& program, ninfer::DeviceContext& de
     }
     const auto budget_span =
         std::span<const ninfer::runtime::RoundBudget>(budgets.data(), batch_size);
+    // Resource scheduling stays outside both the GPU and wall decode/commit intervals.
+    std::array<qwen::ExecutionUnit, ninfer::kMaximumConcurrency> units{};
+    for (std::uint32_t row = 0; row < batch_size; ++row) {
+        units[row] = {.sequence = sequences[row],
+                      .kind     = qwen::ExecutionUnitKind::Decode,
+                      .tokens   = draft_tokens + 1};
+    }
+    if (!program.reserve_units(std::span<const qwen::ExecutionUnit>(units.data(), batch_size))) {
+        throw std::runtime_error("benchmark decode batch could not be reserved");
+    }
     ninfer::CudaEventTimer timer(device);
     const auto wall_start = Clock::now();
     timer.start();
@@ -220,47 +229,37 @@ int run(const Options& options) {
     std::array<qwen::SequenceHandle, ninfer::kMaximumConcurrency> active_sequences{};
     for (std::uint32_t lane = 0; lane < options.batch_size; ++lane) {
         auto prompt       = frontend.prepare_tokens(prompt_tokens(options.context_tokens), false);
-        auto request_base = program->plan_request(prompt, execution);
-        auto request_plan =
-            program->inspect_admission(prompt, request_base, ninfer::runtime::LaneId{lane}, nullptr,
-                                       nullptr, std::nullopt, false);
-        if (!request_plan) { throw std::runtime_error("benchmark root admission was rejected"); }
-        auto resource_plan = program->seal_identity(*request_plan, prompt, {});
-        if (!resource_plan) {
-            throw std::runtime_error("benchmark root resources were not sealed");
+        auto request_base = program->plan_request(std::move(prompt), execution);
+        auto source       = program->inspect_source(request_base, std::nullopt);
+        if (!source ||
+            !program->start_binding(request_base, ninfer::runtime::LaneId{lane}, *source)) {
+            throw std::runtime_error("benchmark root binding could not reserve its first unit");
         }
-        const auto reserved =
-            program->start_resource_transaction(std::move(*resource_plan), std::move(prompt), {});
-        if (reserved != ninfer::runtime::ContextTransactionReserveStatus::Reserved) {
-            throw std::runtime_error("benchmark root materialization was not reserved");
-        }
-        std::optional<qwen::MaterializationResult> published;
+        std::optional<qwen::SequenceHandle> started;
         for (;;) {
-            auto transaction = program->progress_context_transaction({});
-            if (std::holds_alternative<ninfer::runtime::ContextTransactionInProgress>(
-                    transaction)) {
-                continue;
+            auto progress = program->poll_context({});
+            if (!progress.complete) { continue; }
+            if (progress.kind != qwen::ContextOperationKind::Bind || !progress.published ||
+                !progress.sequence) {
+                throw std::runtime_error("benchmark root binding did not publish a sequence");
             }
-            if (!std::holds_alternative<qwen::MaterializationResult>(transaction)) {
-                program->finalize_context_transaction();
-                throw std::runtime_error("benchmark root returned the wrong transaction result");
-            }
-            published.emplace(std::get<qwen::MaterializationResult>(std::move(transaction)));
+            started = progress.sequence;
             break;
         }
-        if (published->status != ninfer::runtime::ContextTransactionStatus::Published ||
-            !published->published) {
-            program->finalize_context_transaction();
-            throw std::runtime_error("benchmark root materialization was not published");
-        }
-        auto started = std::move(*published->published);
-        program->finalize_context_transaction();
-        active_sequences[lane] = started.sequence;
+        active_sequences[lane]     = *started;
+        const auto advance_prefill = [&] {
+            const std::array<qwen::ExecutionUnit, 1> unit{qwen::ExecutionUnit{
+                .sequence = active_sequences[lane], .kind = qwen::ExecutionUnitKind::Prefill}};
+            if (!program->reserve_units(unit)) {
+                throw std::runtime_error("benchmark seed prefill unit could not be reserved");
+            }
+            return program->advance_prefill(active_sequences[lane]);
+        };
         std::optional<qwen::PrefillProgress> progress;
-        progress.emplace(program->advance_prefill(active_sequences[lane]));
+        progress.emplace(advance_prefill());
         while (!progress->complete) {
             progress.reset();
-            progress.emplace(program->advance_prefill(active_sequences[lane]));
+            progress.emplace(advance_prefill());
         }
         if (!progress->pending || progress->pending->tokens().size() != 1) {
             throw std::runtime_error("benchmark seed prefill did not license exactly one token");

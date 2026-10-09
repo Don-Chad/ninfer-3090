@@ -169,8 +169,8 @@ std::vector<unsigned char> read_image(const ninfer::DeviceKVPagePool& pool,
                                       const ninfer::DeviceContext& context) {
     const ninfer::HostKVPageLayout host_layout = ninfer::plan_host_kv_page_layout(pool.geometry());
     const ninfer::HostKVPageLayout layouts[]   = {host_layout};
-    ninfer::HostKVArena arena(host_layout.page_stride * (kPages + 2),
-                              std::span<const ninfer::HostKVPageLayout>(layouts));
+    ninfer::HostContextArena backing(host_layout.page_stride * (kPages + 2), host_layout.page_stride);
+    ninfer::HostKVArena arena(backing, std::span<const ninfer::HostKVPageLayout>(layouts));
     std::optional<ninfer::HostKVAllocation> allocation =
         arena.allocate(host_layout, static_cast<std::uint32_t>(pages.size()));
     if (!allocation) { throw std::runtime_error("host allocation failed"); }
@@ -276,8 +276,9 @@ int exercise(const ninfer::DeviceContext& context, ninfer::PagedKVPlaneOrder ord
     {
         const ninfer::HostKVPageLayout host_layout = ninfer::plan_host_kv_page_layout(g);
         const ninfer::HostKVPageLayout layouts[]   = {host_layout};
-        ninfer::HostKVArena arena(host_layout.page_stride * (kPages + 2),
-                                  std::span<const ninfer::HostKVPageLayout>(layouts));
+        ninfer::HostContextArena backing(host_layout.page_stride * (kPages + 2),
+                                         host_layout.page_stride);
+        ninfer::HostKVArena arena(backing, std::span<const ninfer::HostKVPageLayout>(layouts));
         auto allocation = arena.allocate(host_layout, static_cast<std::uint32_t>(rk_handles.size()));
         ninfer::HostKVAllocationView view = arena.writable_view(*allocation);
         ranked.copy_to_host(rk_handles, view, both_streams);

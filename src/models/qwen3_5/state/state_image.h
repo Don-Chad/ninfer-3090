@@ -3,6 +3,7 @@
 #include "core/arena.h"
 #include "core/cyclic_kv_cache.h"
 #include "core/device.h"
+#include "core/host_context_arena.h"
 #include "core/layout.h"
 #include "core/linear_attention_state.h"
 #include "core/tensor.h"
@@ -84,16 +85,19 @@ struct HostStateImageConstView {
     const StateImageHostLayout* layout = nullptr;
 };
 
+class HostStatePool;
+
 struct HostStateSlotHandle {
-    std::uint32_t index      = 0;
-    std::uint32_t generation = 0;
+    std::uint32_t index        = 0;
+    std::uint32_t generation   = 0;
+    const HostStatePool* owner = nullptr;
 };
 
-/** Fixed-capacity pinned storage for complete physical StateImage payloads; owns no cache policy.
+/** Typed StateImage descriptors backed on demand by the shared Host arena; owns no cache policy.
  */
 class HostStatePool {
 public:
-    HostStatePool(StateImageHostLayout layout, std::uint32_t capacity);
+    HostStatePool(HostContextArena& arena, StateImageHostLayout layout);
 
     HostStatePool(const HostStatePool&)            = delete;
     HostStatePool& operator=(const HostStatePool&) = delete;
@@ -101,6 +105,8 @@ public:
     HostStatePool& operator=(HostStatePool&&)      = delete;
 
     [[nodiscard]] std::optional<HostStateSlotHandle> allocate() noexcept;
+    [[nodiscard]] bool can_allocate() const noexcept;
+    [[nodiscard]] bool publish(HostStateSlotHandle handle) noexcept;
     [[nodiscard]] bool release(HostStateSlotHandle handle) noexcept;
 
     [[nodiscard]] HostStateImageView writable_view(HostStateSlotHandle handle);
@@ -110,19 +116,23 @@ public:
 
     [[nodiscard]] std::uint32_t occupied() const noexcept { return occupied_; }
 
+    [[nodiscard]] std::size_t occupied_bytes() const noexcept {
+        return static_cast<std::size_t>(occupied_) * layout_.image_bytes;
+    }
+
     [[nodiscard]] const StateImageHostLayout& layout() const noexcept { return layout_; }
 
 private:
     struct Slot {
+        HostContextAllocation storage;
         std::uint32_t generation = 1;
-        bool occupied            = false;
     };
 
     [[nodiscard]] bool valid(HostStateSlotHandle handle) const noexcept;
     [[nodiscard]] std::byte* slot_data(std::uint32_t index) const noexcept;
 
     StateImageHostLayout layout_;
-    std::optional<PinnedHostBuffer> backing_;
+    HostContextArena* arena_ = nullptr;
     std::vector<Slot> slots_;
     std::vector<std::uint32_t> free_slots_;
     std::uint32_t free_count_ = 0;

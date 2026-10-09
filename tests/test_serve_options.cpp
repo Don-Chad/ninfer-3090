@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <iostream>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -50,10 +51,8 @@ int main() {
     failures += check(defaults.kv_capacity.mode == ninfer::KvCapacityMode::Explicit &&
                           defaults.kv_capacity.explicit_tokens == defaults.max_context,
                       "default KV capacity does not follow max context");
-    failures += check(defaults.context_cache.host_state_slots == ninfer::kDefaultHostStateSlots &&
-                          defaults.context_cache.host_kv_capacity_bytes ==
-                              ninfer::kDefaultHostKvCapacityBytes,
-                      "Host context-cache defaults mismatch");
+    failures += check(!defaults.context_cache.host_capacity_bytes.has_value(),
+                      "default Host context capacity was resolved before Engine startup");
     failures += check(defaults.speculative.backend == ninfer::SpeculativeBackend::None,
                       "speculative decoding is not disabled by default");
     failures += check(defaults.response_store_max_records == kDefaultResponseStoreRecords &&
@@ -71,8 +70,8 @@ int main() {
     failures += check(resolve_public_model_id(defaults, "artifact-model") == "artifact-model",
                       "artifact model id was not selected by default");
 
-    // Without --default-max-tokens an omitted request limit is derived per request from the Engine's
-    // concurrent lane budget, bounded above by --max-context; the flag replaces it with a fixed cap.
+    // Without --default-max-tokens an omitted request limit is derived per request as the prompt's
+    // remaining context, bounded above by --max-context; the flag replaces it with a fixed cap.
     const ServeOptions long_context =
         parse({"ninfer-serve", "model.ninfer", "--max-context", "262144"});
     const RequestLimits derived = request_limits(long_context);
@@ -108,11 +107,6 @@ int main() {
         (void)parse({"ninfer-serve", "model.ninfer", "--max-output-tokens", "0"});
     } catch (const std::invalid_argument&) { zero_output_bound_rejected = true; }
     failures += check(zero_output_bound_rejected, "--max-output-tokens 0 was accepted");
-    failures += check(parse({"ninfer-serve", "model.ninfer"}).output_reservation_tokens == 0 &&
-                          parse({"ninfer-serve", "model.ninfer", "--output-reservation-tokens",
-                                 "4096"})
-                                  .output_reservation_tokens == 4096,
-                      "--output-reservation-tokens did not reach serving options");
 
     failures += check(!defaults.default_reasoning_effort,
                       "a reasoning effort is unexpectedly configured by default");
@@ -259,9 +253,12 @@ int main() {
                                            "6"});
     failures += check(!configured.allow_prefix_reuse,
                       "--no-prefix-reuse did not disable server prefix reuse");
-    failures += check(configured.context_cache.host_state_slots == 0 &&
-                          configured.context_cache.host_kv_capacity_bytes == 0,
-                      "root-only server mode retained default Host capacities");
+    failures += check(!configured.context_cache.enabled &&
+                          configured.context_cache.host_capacity_bytes ==
+                              defaults.context_cache.host_capacity_bytes &&
+                          configured.context_cache.device_state_slots ==
+                              defaults.context_cache.device_state_slots,
+                      "--no-prefix-reuse changed context capacities or retained cache enablement");
     failures += check(configured.enable_vision, "--vision did not enable Vision");
     failures += check(configured.preserve_thinking == true,
                       "--preserve-thinking did not reach serving options");
@@ -282,76 +279,106 @@ int main() {
                           configured.media_preprocess_threads == 6,
                       "media preparation limits did not reach serving options");
 
-    const ServeOptions prefill_lanes =
-        parse({"ninfer-serve", "model.ninfer", "--max-concurrency", "4", "--max-prefill-lanes", "2",
-               "--prefill-max-skip", "5"});
-    failures += check(prefill_lanes.max_prefill_lanes == 2 && prefill_lanes.prefill_max_skip == 5,
-                      "prefill lane options did not reach serving options");
-    failures += check(parse({"ninfer-serve", "model.ninfer"}).max_prefill_lanes == 1 &&
-                          parse({"ninfer-serve", "model.ninfer", "--max-concurrency", "2"})
-                                  .max_prefill_lanes == 1,
-                      "default prefill lanes are no longer one below three lanes");
-    failures += check(parse({"ninfer-serve", "model.ninfer", "--max-concurrency", "3"})
-                                  .max_prefill_lanes == 2 &&
-                          parse({"ninfer-serve", "model.ninfer", "--max-concurrency", "8"})
-                                  .max_prefill_lanes == 2 &&
-                          parse({"ninfer-serve", "model.ninfer", "--max-concurrency", "4",
-                                 "--max-prefill-lanes", "1"})
-                                  .max_prefill_lanes == 1,
-                      "three or more lanes did not default to two prefill lanes");
-    failures += check(parse({"ninfer-serve", "model.ninfer"}).decode_rounds_per_prefill == 0 &&
-                          parse({"ninfer-serve", "model.ninfer", "--decode-rounds-per-prefill", "6"})
-                                  .decode_rounds_per_prefill == 6,
-                      "--decode-rounds-per-prefill did not reach serving options");
-    for (const std::vector<std::string>& bad :
-         {std::vector<std::string>{"ninfer-serve", "model.ninfer", "--decode-rounds-per-prefill",
-                                   "4097"},
-          std::vector<std::string>{"ninfer-serve", "model.ninfer", "--max-prefill-lanes", "2"},
-          std::vector<std::string>{"ninfer-serve", "model.ninfer", "--max-prefill-lanes", "0"},
-          std::vector<std::string>{"ninfer-serve", "model.ninfer", "--prefill-max-skip", "0"}}) {
-        bool rejected = false;
-        try {
-            (void)parse(bad);
-        } catch (const std::invalid_argument&) { rejected = true; }
-        failures += check(rejected, "invalid prefill lane options were accepted");
-    }
-
     const ServeOptions logging = parse({"ninfer-serve", "model.ninfer", "--log-level", "debug"});
     failures += check(logging.log_level == ninfer::product::LogLevel::Debug,
                       "log level did not reach serving options");
 
-    const ServeOptions context_cache =
-        parse({"ninfer-serve", "model.ninfer", "--device-state-slots", "3", "--host-state-slots",
-               "5", "--host-kv-mib", "64", "--max-private-continuations", "9",
-               "--max-shared-prefixes", "4", "--max-long-anchors-per-continuation", "2"});
+    const ServeOptions context_cache = parse(
+        {"ninfer-serve", "model.ninfer", "--device-state-slots", "3", "--host-context-mib", "64"});
     failures += check(context_cache.context_cache.enabled &&
                           context_cache.context_cache.device_state_slots == 3 &&
-                          context_cache.context_cache.host_state_slots == 5 &&
-                          context_cache.context_cache.host_kv_capacity_bytes == (64ULL << 20) &&
-                          context_cache.context_cache.max_private_continuations == 9 &&
-                          context_cache.context_cache.max_shared_prefixes == 4 &&
-                          context_cache.context_cache.max_long_anchors_per_continuation == 2,
+                          context_cache.context_cache.host_capacity_bytes == (64ULL << 20),
                       "context-cache capacities did not reach serving options");
-    bool disabled_cache_capacity_rejected = false;
+
+    const ServeOptions zero_host_context =
+        parse({"ninfer-serve", "model.ninfer", "--host-context-mib", "0"});
+    failures += check(zero_host_context.context_cache.enabled &&
+                          zero_host_context.context_cache.host_capacity_bytes == 0,
+                      "zero Host context capacity was not retained as an explicit budget");
+
+    for (const auto& [mib, bytes] : std::vector<std::pair<std::string, std::size_t>>{
+             {"146.822265625", 153954304},
+             {"587.2890625", 615817216},
+             {"186.822265625", 195897344},
+             {"0.00000095367431640625", 1},
+             {"0.000000953674316406250000", 1},
+             {"000146.822265625000", 153954304},
+             {"64.0000", 64ULL << 20},
+             {"000.0000", 0},
+         }) {
+        const ServeOptions exact_host_context =
+            parse({"ninfer-serve", "model.ninfer", "--host-context-mib", mib});
+        failures += check(exact_host_context.context_cache.host_capacity_bytes == bytes,
+                          ("Host context MiB did not preserve exact bytes: " + mib).c_str());
+    }
+
+    constexpr std::size_t bytes_per_mib  = 1ULL << 20;
+    constexpr std::size_t max_host_bytes = std::numeric_limits<std::size_t>::max();
+    std::string maximum_host_mib         = std::to_string(max_host_bytes / bytes_per_mib);
+    std::size_t fractional_bytes         = max_host_bytes % bytes_per_mib;
+    if (fractional_bytes != 0) { maximum_host_mib += '.'; }
+    while (fractional_bytes != 0) {
+        fractional_bytes *= 10;
+        maximum_host_mib += static_cast<char>('0' + fractional_bytes / bytes_per_mib);
+        fractional_bytes %= bytes_per_mib;
+    }
+    const ServeOptions maximum_host_context =
+        parse({"ninfer-serve", "model.ninfer", "--host-context-mib", maximum_host_mib});
+    failures += check(maximum_host_context.context_cache.host_capacity_bytes == max_host_bytes,
+                      "maximum size_t Host context capacity was not accepted exactly");
+
+    bool overflowing_host_context_rejected = false;
     try {
-        (void)parse({"ninfer-serve", "model.ninfer", "--no-prefix-reuse", "--host-kv-mib", "64"});
-    } catch (const std::invalid_argument&) { disabled_cache_capacity_rejected = true; }
-    failures += check(disabled_cache_capacity_rejected,
-                      "root-only server mode accepted context-cache capacity options");
+        (void)parse({"ninfer-serve", "model.ninfer", "--host-context-mib",
+                     std::to_string(std::numeric_limits<std::size_t>::max() / (1ULL << 20) + 1)});
+    } catch (const std::invalid_argument&) { overflowing_host_context_rejected = true; }
+    failures +=
+        check(overflowing_host_context_rejected, "overflowing Host context capacity was accepted");
+
+    for (const std::string mib : {"0.1", "0.0000001", "0.000000476837158203125", "-1", "-0", "+1",
+                                  "nan", "inf", "1e3", "1.", ".5", "", " 1", "1 ", "1.2.3"}) {
+        bool invalid_host_context_rejected = false;
+        try {
+            (void)parse({"ninfer-serve", "model.ninfer", "--host-context-mib", mib});
+        } catch (const std::invalid_argument&) { invalid_host_context_rejected = true; }
+        failures +=
+            check(invalid_host_context_rejected,
+                  ("invalid or fractional-byte Host context MiB was accepted: " + mib).c_str());
+    }
+
+    for (const std::string option : {"--max-request-mib", "--media-cache-mib", "--media-live-mib",
+                                     "--response-store-max-mib"}) {
+        bool fractional_mib_rejected = false;
+        try {
+            (void)parse({"ninfer-serve", "model.ninfer", option, "1.5"});
+        } catch (const std::invalid_argument&) { fractional_mib_rejected = true; }
+        failures += check(fractional_mib_rejected,
+                          ("integer-only MiB option accepted a fraction: " + option).c_str());
+    }
+
+    for (const bool disable_first : {false, true}) {
+        std::vector<std::string> arguments = {"ninfer-serve", "model.ninfer"};
+        if (disable_first) { arguments.push_back("--no-prefix-reuse"); }
+        arguments.insert(arguments.end(),
+                         {"--device-state-slots", "3", "--host-context-mib", "64"});
+        if (!disable_first) { arguments.push_back("--no-prefix-reuse"); }
+        const ServeOptions disabled_cache = parse(std::move(arguments));
+        failures +=
+            check(!disabled_cache.allow_prefix_reuse && !disabled_cache.context_cache.enabled &&
+                      disabled_cache.context_cache.device_state_slots == 3 &&
+                      disabled_cache.context_cache.host_capacity_bytes == (64ULL << 20),
+                  "--no-prefix-reuse did not preserve independently configured capacities");
+    }
 
     const ServeOptions auto_cache = parse({"ninfer-serve", "model.ninfer", "--auto-host-cache"});
     failures += check(auto_cache.context_cache.auto_host_cache && auto_cache.context_cache.enabled &&
                           !defaults.context_cache.auto_host_cache,
                       "--auto-host-cache did not reach serving options or is on by default");
-    for (const char* sized : {"--host-kv-mib", "--host-state-slots", "--max-private-continuations",
-                              "--max-shared-prefixes"}) {
-        bool conflict_rejected = false;
-        try {
-            (void)parse({"ninfer-serve", "model.ninfer", "--auto-host-cache", sized, "16"});
-        } catch (const std::invalid_argument&) { conflict_rejected = true; }
-        failures += check(conflict_rejected,
-                          "--auto-host-cache accepted an explicit Host capacity option");
-    }
+    bool conflict_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--auto-host-cache", "--host-context-mib", "16"});
+    } catch (const std::invalid_argument&) { conflict_rejected = true; }
+    failures += check(conflict_rejected, "--auto-host-cache accepted an explicit --host-context-mib");
     const ServeOptions reserve = parse(
         {"ninfer-serve", "model.ninfer", "--auto-host-cache", "--host-cache-reserve-mib", "512"});
     failures += check(reserve.context_cache.host_cache_reserve_bytes == (512ULL << 20) &&
@@ -394,21 +421,14 @@ int main() {
     } catch (const std::invalid_argument&) { percent_without_auto_rejected = true; }
     failures += check(percent_without_auto_rejected,
                       "--host-cache-percent was accepted without --auto-host-cache");
-    bool auto_without_cache_rejected = false;
-    try {
-        (void)parse({"ninfer-serve", "model.ninfer", "--no-prefix-reuse", "--auto-host-cache"});
-    } catch (const std::invalid_argument&) { auto_without_cache_rejected = true; }
-    failures += check(auto_without_cache_rejected,
-                      "--auto-host-cache was accepted with the context cache disabled");
+    // Request pause/replay still uses the Host budget when history is off, so sizing it stays valid.
+    const ServeOptions auto_root_only =
+        parse({"ninfer-serve", "model.ninfer", "--no-prefix-reuse", "--auto-host-cache"});
+    failures += check(auto_root_only.context_cache.auto_host_cache &&
+                          !auto_root_only.context_cache.enabled,
+                      "--auto-host-cache was not kept with --no-prefix-reuse");
 
-    const ServeOptions no_slots = parse({"ninfer-serve", "model.ninfer"});
-    failures += check(no_slots.slot_save_path.empty() && !no_slots.auto_save_evicted,
-                      "slot persistence was on by default");
-    const ServeOptions slots = parse(
-        {"ninfer-serve", "model.ninfer", "--slot-save-path", "sessions", "--auto-save-evicted"});
-    failures += check(slots.slot_save_path == "sessions" && slots.auto_save_evicted,
-                      "slot persistence options did not reach serving options");
-    failures += check(no_slots.exit_on_engine_failure &&
+    failures += check(defaults.exit_on_engine_failure &&
                           !parse({"ninfer-serve", "model.ninfer", "--no-exit-on-engine-failure"})
                                .exit_on_engine_failure,
                       "exit-on-engine-failure must default on and be disabled by its flag");
@@ -418,16 +438,33 @@ int main() {
         } catch (const std::invalid_argument&) { return true; }
         return false;
     };
-    failures += check(rejected({"ninfer-serve", "model.ninfer", "--auto-save-evicted"}),
-                      "--auto-save-evicted was accepted without --slot-save-path");
-    failures += check(rejected({"ninfer-serve", "model.ninfer", "--slot-save-path", ""}),
-                      "an empty --slot-save-path was accepted");
-    failures += check(rejected({"ninfer-serve", "model.ninfer", "--no-prefix-reuse",
-                                "--slot-save-path", "sessions"}),
-                      "--slot-save-path was accepted with prefix reuse disabled");
-    failures += check(serve_usage_text("ninfer-serve").find("--slot-save-path") !=
-                          std::string::npos,
-                      "serve help omits --slot-save-path");
+    // Options of the previous context-cache engine are gone; a stale launcher must fail loudly
+    // rather than run with a silently different configuration.
+    for (const std::vector<std::string>& removed : {
+             std::vector<std::string>{"--host-kv-mib", "64"},
+             std::vector<std::string>{"--host-state-slots", "8"},
+             std::vector<std::string>{"--max-private-continuations", "4"},
+             std::vector<std::string>{"--max-shared-prefixes", "4"},
+             std::vector<std::string>{"--max-long-anchors-per-continuation", "2"},
+             std::vector<std::string>{"--max-cache-markers-per-request", "4"},
+             std::vector<std::string>{"--auto-long-anchors", "2"},
+             std::vector<std::string>{"--auto-prefix-grid"},
+             std::vector<std::string>{"--progress-anchor-tokens", "4096"},
+             std::vector<std::string>{"--max-prefill-lanes", "2"},
+             std::vector<std::string>{"--prefill-max-skip", "8"},
+             std::vector<std::string>{"--decode-rounds-per-prefill", "4"},
+             std::vector<std::string>{"--output-reservation-tokens", "4096"},
+             std::vector<std::string>{"--slot-save-path", "sessions"},
+             std::vector<std::string>{"--auto-save-evicted"}}) {
+        std::vector<std::string> argv{"ninfer-serve", "model.ninfer"};
+        argv.insert(argv.end(), removed.begin(), removed.end());
+        failures += check(rejected(argv), ("removed option was accepted: " + removed[0]).c_str());
+        failures += check(serve_usage_text("ninfer-serve").find(removed[0] + " ") ==
+                                  std::string::npos &&
+                              serve_usage_text("ninfer-serve").find(removed[0] + "]") ==
+                                  std::string::npos,
+                          ("serve help still lists a removed option: " + removed[0]).c_str());
+    }
 
     // The context store is off unless a directory is named; its tuning flags need the directory.
     const ServeOptions no_store = parse({"ninfer-serve", "model.ninfer"});
@@ -457,112 +494,12 @@ int main() {
     failures += check(rejected({"ninfer-serve", "model.ninfer", "--context-store", "cache",
                                 "--context-store-max-gib", "0"}),
                       "a zero --context-store-max-gib was accepted");
-    failures += check(rejected({"ninfer-serve", "model.ninfer", "--context-store", "cache",
-                                "--slot-save-path", "sessions", "--auto-save-evicted"}),
-                      "--context-store was accepted together with --auto-save-evicted");
     failures += check(rejected({"ninfer-serve", "model.ninfer", "--no-prefix-reuse",
                                 "--context-store", "cache"}),
                       "--context-store was accepted with prefix reuse disabled");
     failures += check(serve_usage_text("ninfer-serve").find("--context-store DIR") !=
                           std::string::npos,
                       "serve help omits --context-store");
-
-    failures += check(!parse({"ninfer-serve", "model.ninfer"}).auto_prefix_grid,
-                      "automatic prefix grid was on without --auto-prefix-grid");
-    failures +=
-        check(parse({"ninfer-serve", "model.ninfer", "--auto-prefix-grid"}).auto_prefix_grid,
-              "--auto-prefix-grid did not reach serving options");
-    bool grid_without_reuse_rejected = false;
-    try {
-        (void)parse({"ninfer-serve", "model.ninfer", "--no-prefix-reuse", "--auto-prefix-grid"});
-    } catch (const std::invalid_argument&) { grid_without_reuse_rejected = true; }
-    failures += check(grid_without_reuse_rejected,
-                      "--auto-prefix-grid was accepted with prefix reuse disabled");
-
-    ninfer::ContextCacheOptions resolved_cache;
-    resolved_cache.enabled                           = true;
-    resolved_cache.max_long_anchors_per_continuation = 2U;
-    failures += check(resolve_automatic_private_anchors(parse({"ninfer-serve", "model.ninfer"}),
-                                                        resolved_cache) == 2U,
-                      "automatic long anchors did not default to the retained-anchor cap");
-    failures += check(
-        resolve_automatic_private_anchors(
-            parse({"ninfer-serve", "model.ninfer", "--auto-long-anchors", "1"}), resolved_cache) ==
-            1U,
-        "--auto-long-anchors did not select fewer anchors than the cap");
-    failures += check(
-        resolve_automatic_private_anchors(
-            parse({"ninfer-serve", "model.ninfer", "--auto-long-anchors", "9"}), resolved_cache) ==
-            2U,
-        "--auto-long-anchors was not clamped to the retained-anchor cap");
-    failures += check(
-        resolve_automatic_private_anchors(
-            parse({"ninfer-serve", "model.ninfer", "--auto-long-anchors", "0"}), resolved_cache) ==
-            0U,
-        "--auto-long-anchors 0 did not disable automatic anchors");
-    ninfer::ContextCacheOptions disabled_cache = resolved_cache;
-    disabled_cache.enabled                     = false;
-    failures += check(resolve_automatic_private_anchors(parse({"ninfer-serve", "model.ninfer"}),
-                                                        disabled_cache) == 0U,
-                      "automatic long anchors survived a disabled context cache");
-    bool anchors_without_reuse_rejected = false;
-    try {
-        (void)parse({"ninfer-serve", "model.ninfer", "--no-prefix-reuse", "--auto-long-anchors",
-                     "2"});
-    } catch (const std::invalid_argument&) { anchors_without_reuse_rejected = true; }
-    failures += check(anchors_without_reuse_rejected,
-                      "--auto-long-anchors was accepted with prefix reuse disabled");
-    // The conflict is on presence, like --auto-prefix-grid: even the disabling value is refused
-    // in root-only mode, while it stays valid when prefix reuse is on.
-    bool zero_anchors_without_reuse_rejected = false;
-    try {
-        (void)parse({"ninfer-serve", "model.ninfer", "--no-prefix-reuse", "--auto-long-anchors",
-                     "0"});
-    } catch (const std::invalid_argument&) { zero_anchors_without_reuse_rejected = true; }
-    failures += check(zero_anchors_without_reuse_rejected,
-                      "--auto-long-anchors 0 was accepted with prefix reuse disabled");
-    failures +=
-        check(parse({"ninfer-serve", "model.ninfer", "--auto-long-anchors", "0"}).auto_long_anchors ==
-                  0U,
-              "--auto-long-anchors 0 was not accepted with prefix reuse enabled");
-
-    failures += check(resolve_progress_anchor_stride(parse({"ninfer-serve", "model.ninfer"}),
-                                                     resolved_cache) == kDefaultProgressAnchorTokens,
-                      "progress anchors were not on by default");
-    failures += check(
-        resolve_progress_anchor_stride(
-            parse({"ninfer-serve", "model.ninfer", "--progress-anchor-tokens", "4096"}),
-            resolved_cache) == 4096U,
-        "--progress-anchor-tokens did not reach the resolved stride");
-    failures += check(
-        resolve_progress_anchor_stride(
-            parse({"ninfer-serve", "model.ninfer", "--progress-anchor-tokens", "0"}),
-            resolved_cache) == 0U,
-        "--progress-anchor-tokens 0 did not disable progress anchors");
-    bool fine_progress_stride_rejected = false;
-    try {
-        (void)parse({"ninfer-serve", "model.ninfer", "--progress-anchor-tokens", "1"});
-    } catch (const std::invalid_argument&) { fine_progress_stride_rejected = true; }
-    failures += check(fine_progress_stride_rejected,
-                      "--progress-anchor-tokens below the minimum stride was accepted");
-    failures += check(resolve_progress_anchor_stride(parse({"ninfer-serve", "model.ninfer"}),
-                                                     disabled_cache) == 0U,
-                      "progress anchors survived a disabled context cache");
-    ninfer::ContextCacheOptions no_anchor_cache = resolved_cache;
-    no_anchor_cache.max_long_anchors_per_continuation = 0U;
-    failures += check(resolve_progress_anchor_stride(parse({"ninfer-serve", "model.ninfer"}),
-                                                     no_anchor_cache) == 0U,
-                      "progress anchors were proposed with no retained-anchor budget");
-    bool progress_without_reuse_rejected = false;
-    try {
-        (void)parse({"ninfer-serve", "model.ninfer", "--no-prefix-reuse",
-                     "--progress-anchor-tokens", "4096"});
-    } catch (const std::invalid_argument&) { progress_without_reuse_rejected = true; }
-    failures += check(progress_without_reuse_rejected,
-                      "--progress-anchor-tokens was accepted with prefix reuse disabled");
-    failures += check(serve_usage_text("ninfer-serve").find("--progress-anchor-tokens") !=
-                          std::string::npos,
-                      "serve help omits --progress-anchor-tokens");
 
     const ServeOptions response_store =
         parse({"ninfer-serve", "model.ninfer", "--response-store-max-records", "42",
@@ -661,11 +598,8 @@ int main() {
         check(serve_usage_text("ninfer-serve").find("--no-prefix-reuse") != std::string::npos,
               "serve help omits --no-prefix-reuse");
     failures +=
-        check(serve_usage_text("ninfer-serve").find("--auto-prefix-grid") != std::string::npos,
-              "serve help omits --auto-prefix-grid");
-    failures +=
-        check(serve_usage_text("ninfer-serve").find("--auto-long-anchors") != std::string::npos,
-              "serve help omits --auto-long-anchors");
+        check(serve_usage_text("ninfer-serve").find("--host-context-mib") != std::string::npos,
+              "serve help omits context-cache capacities");
 
     // --devices selects the ordered CUDA devices the model's pipeline stages run on. Only the shape
     // is parsed here; matching compute capability is the engine's to validate, because it needs real
@@ -725,8 +659,6 @@ int main() {
 
     failures += check(serve_usage_text("ninfer-serve").find("--devices") != std::string::npos,
                       "serve help omits --devices");
-    failures += check(serve_usage_text("ninfer-serve").find("--host-kv-mib") != std::string::npos,
-                      "serve help omits context-cache capacities");
     failures += check(serve_usage_text("ninfer-serve").find("device-state=max-concurrency") !=
                           std::string::npos,
                       "serve help omits context-cache defaults");

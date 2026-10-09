@@ -1366,6 +1366,9 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
                 multimodal->vision->prepare_chunk(prompt_t0, static_cast<std::uint32_t>(len));
             len = vision_chunk.length;
         }
+        // Vision has its own interval. The Program-owned pair measures this text chunk,
+        // including MTP alignment or the draft feature consumer submitted below.
+        if (prefill_gpu_timer_) { prefill_gpu_timer_->start(); }
         const bool is_last = finalize_at_end && (t0 + len == T);
         nvtx::ScopedRange chunk_range(nvtx::Name::PrefillChunk, nvtx::Category::Prefill,
                                       static_cast<std::uint64_t>(len));
@@ -1591,9 +1594,14 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
 
     prefill_split_frontier_ = -1;
 
+    if (prefill_gpu_timer_) { prefill_gpu_timer_->record_stop(); }
     timing.begin_wait();
     ctx_.synchronize();
     timing.end_wait();
+    if (prefill_gpu_timer_) {
+        timing.include({.gpu_elapsed_ns = static_cast<std::uint64_t>(
+                            static_cast<double>(prefill_gpu_timer_->elapsed_ms()) * 1.0e6 + 0.5)});
+    }
     work_.reset();
     return PrefillChunkResult{.processed_tokens = static_cast<std::uint32_t>(t0),
                               .finalized        = finalize_at_end && t0 == T,

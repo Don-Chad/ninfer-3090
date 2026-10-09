@@ -3,7 +3,6 @@
 #include "models/qwen3_5/state/state_image.h"
 
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -150,7 +149,7 @@ public:
         return allocate(StateImageRole::ReservedDestination, false);
     }
 
-    [[nodiscard]] std::optional<StateImageHandle> reserve_reset(RankStreams stream = {}) {
+    [[nodiscard]] std::optional<StateImageHandle> reserve_reset(cudaStream_t stream = nullptr) {
         std::optional<StateImageHandle> handle = allocate(StateImageRole::ActiveMutable, true);
         if (!handle) { return std::nullopt; }
         try {
@@ -164,7 +163,7 @@ public:
         return handle;
     }
 
-    void activate_reset(StateImageHandle handle, RankStreams stream = {}) {
+    void activate_reset(StateImageHandle handle, cudaStream_t stream = nullptr) {
         Object& object = require(handle);
         if (object.role != StateImageRole::ReservedDestination || !object.device_slot ||
             object.source_pins != 0 || object.destination_pinned || has_pending_replica(object)) {
@@ -198,6 +197,14 @@ public:
         return StateReplicaResidency::None;
     }
 
+    [[nodiscard]] bool device_resident(StateImageHandle handle) const {
+        return require(handle).device_slot.has_value();
+    }
+
+    [[nodiscard]] bool host_resident(StateImageHandle handle) const {
+        return require(handle).host_slot.has_value();
+    }
+
     [[nodiscard]] std::uint64_t content_epoch(StateImageHandle handle) const {
         return require(handle).content_epoch;
     }
@@ -217,6 +224,26 @@ public:
             throw std::logic_error("StateImage checkpoint reference is not retainable");
         }
         ++object.checkpoint_references;
+        object.release_pending = false;
+    }
+
+    [[nodiscard]] bool can_release_checkpoint_owner(StateImageHandle handle) const noexcept {
+        if (!valid(handle)) { return false; }
+        const Object& object = objects_[handle.index_];
+        return object.role == StateImageRole::CheckpointImmutable &&
+               object.checkpoint_references != 0;
+    }
+
+    // Content owners and readers retire independently. A last checkpoint can disappear while
+    // another request still reads this immutable image; that read lease keeps its replicas alive.
+    [[nodiscard]] bool release_checkpoint_owner(StateImageHandle handle) noexcept {
+        if (!can_release_checkpoint_owner(handle)) { return false; }
+        Object& object = objects_[handle.index_];
+        if (--object.checkpoint_references == 0) {
+            object.release_pending = true;
+            retire_released_owner(handle);
+        }
+        return true;
     }
 
     void release_checkpoint_reference(StateImageHandle handle) {
@@ -234,40 +261,6 @@ public:
             throw std::logic_error("StateImage has no published Device replica");
         }
         return *object.device_slot;
-    }
-
-    // Session snapshots read a demoted image from its published Host replica without forcing it
-    // back onto the Device.
-    [[nodiscard]] qwen3_5::HostStateImageConstView host_view(StateImageHandle handle) const {
-        const Object& object = require(handle);
-        if (host_ == nullptr || !object.host_slot) {
-            throw std::logic_error("StateImage has no published Host replica");
-        }
-        return host_->view(*object.host_slot);
-    }
-
-    // Session restore lands a checkpoint image from snapshot bytes as a HostOnly
-    // CheckpointImmutable image, the shape a demoted checkpoint has, so it needs no Device slot.
-    // Returns nullopt when the Host pool is absent or full.
-    [[nodiscard]] std::optional<StateImageHandle>
-    adopt_host_image(const qwen3_5::HostStateImageConstView& source) {
-        if (host_ == nullptr || source.data == nullptr || source.layout == nullptr ||
-            source.layout->image_bytes != host_->layout().image_bytes) {
-            return std::nullopt;
-        }
-        std::optional<StateImageHandle> handle =
-            allocate(StateImageRole::CheckpointImmutable, false);
-        if (!handle) { return std::nullopt; }
-        std::optional<qwen3_5::HostStateSlotHandle> slot = host_->allocate();
-        if (!slot) {
-            (void)release(*handle);
-            return std::nullopt;
-        }
-        Object& object = require(*handle);
-        std::memcpy(host_->writable_view(*slot).data, source.data, source.layout->image_bytes);
-        object.host_slot     = *slot;
-        object.content_epoch = next_epoch();
-        return handle;
     }
 
     void move_checkpoint_to_active(StateImageHandle handle) {
@@ -353,38 +346,6 @@ public:
         object.role = StateImageRole::ActiveMutable;
     }
 
-    [[nodiscard]] bool can_recycle_checkpoint_destination(StateImageHandle handle) const noexcept {
-        if (!valid(handle)) { return false; }
-        const Object& object = objects_[handle.index_];
-        return object.role == StateImageRole::CheckpointImmutable &&
-               object.device_slot.has_value() && !object.host_slot &&
-               object.checkpoint_references == 1 && object.source_pins == 0 &&
-               !object.destination_pinned && !has_pending_replica(object);
-    }
-
-    [[nodiscard]] std::uint64_t recycle_checkpoint_destination(StateImageHandle handle) {
-        if (!can_recycle_checkpoint_destination(handle)) {
-            throw std::logic_error("StateImage checkpoint is not recyclable as a destination");
-        }
-        Object& object               = require(handle);
-        const std::uint64_t epoch    = object.content_epoch;
-        object.checkpoint_references = 0;
-        object.role                  = StateImageRole::ReservedDestination;
-        return epoch;
-    }
-
-    void restore_recycled_checkpoint(StateImageHandle handle, std::uint64_t content_epoch) {
-        Object& object = require(handle);
-        if (content_epoch == 0 || object.role != StateImageRole::ReservedDestination ||
-            !object.device_slot || object.host_slot || object.checkpoint_references != 0 ||
-            object.source_pins != 0 || object.destination_pinned || has_pending_replica(object)) {
-            throw std::logic_error("StateImage recycled checkpoint is not restorable");
-        }
-        object.content_epoch         = content_epoch;
-        object.checkpoint_references = 1;
-        object.role                  = StateImageRole::CheckpointImmutable;
-    }
-
     [[nodiscard]] StateImageSelectors begin_fork(StateImageHandle source,
                                                  StateImageHandle destination) {
         Object& source_object      = require(source);
@@ -416,6 +377,7 @@ public:
         }
         --source_object.source_pins;
         destination_object.destination_pinned = false;
+        retire_released_owner(source);
     }
 
     void abort_fork(StateImageHandle source, StateImageHandle destination) {
@@ -428,6 +390,7 @@ public:
         destination_object.destination_pinned = false;
         destination_object.role               = StateImageRole::ReservedDestination;
         destination_object.content_epoch      = 0;
+        retire_released_owner(source);
     }
 
     [[nodiscard]] bool can_abort_fork(StateImageHandle source,
@@ -439,41 +402,6 @@ public:
                source_object.source_pins != 0 &&
                destination_object.role == StateImageRole::ActiveMutable &&
                destination_object.device_slot.has_value() && destination_object.destination_pinned;
-    }
-
-    [[nodiscard]] bool
-    can_release_source_after_fork_abort(StateImageHandle source, StateImageHandle destination,
-                                        std::uint32_t released_checkpoint_references) const {
-        if (!can_abort_fork(source, destination)) { return false; }
-        const Object& object = require(source);
-        if (released_checkpoint_references > object.checkpoint_references) { return false; }
-        if (object.checkpoint_references != released_checkpoint_references) { return true; }
-        // abort_fork releases exactly the pin represented by this binding. Any other source pin
-        // still protects the object and therefore prevents terminal owner settlement.
-        if (object.source_pins != 1 || object.destination_pinned || has_pending_replica(object)) {
-            return false;
-        }
-        if (object.host_slot) {
-            if (host_ == nullptr) { return false; }
-            (void)host_->view(*object.host_slot);
-        }
-        return true;
-    }
-
-    [[nodiscard]] bool
-    can_release_destination_after_fork_abort(StateImageHandle source, StateImageHandle destination,
-                                             std::uint32_t released_checkpoint_references) const {
-        if (!can_abort_fork(source, destination)) { return false; }
-        const Object& object = require(destination);
-        if (object.checkpoint_references != released_checkpoint_references ||
-            object.source_pins != 0 || has_pending_replica(object)) {
-            return false;
-        }
-        if (object.host_slot) {
-            if (host_ == nullptr) { return false; }
-            (void)host_->view(*object.host_slot);
-        }
-        return true;
     }
 
     [[nodiscard]] StateImageSelectors selectors(StateImageHandle source,
@@ -513,7 +441,7 @@ public:
                                   source);
     }
 
-    void enqueue_device_to_host(const StateImageTransfer& transfer, RankStreams stream = {}) {
+    void enqueue_device_to_host(const StateImageTransfer& transfer, cudaStream_t stream = nullptr) {
         validate_transfer(transfer);
         Object& object = require(transfer.source_);
         if (transfer.direction_ != StateTransferDirection::DeviceToHost || host_ == nullptr ||
@@ -525,7 +453,7 @@ public:
     }
 
     [[nodiscard]] std::optional<StateImageTransfer>
-    begin_device_to_host(StateImageHandle source, RankStreams stream = {}) {
+    begin_device_to_host(StateImageHandle source, cudaStream_t stream = nullptr) {
         std::optional<StateImageTransfer> transfer = reserve_device_to_host(source);
         if (!transfer) { return std::nullopt; }
         try {
@@ -538,7 +466,7 @@ public:
     }
 
     [[nodiscard]] std::optional<StateImageTransfer>
-    begin_host_to_device(StateImageHandle source, RankStreams stream = {}) {
+    begin_host_to_device(StateImageHandle source, cudaStream_t stream = nullptr) {
         Object& object = require(source);
         if (host_ == nullptr || object.role != StateImageRole::CheckpointImmutable ||
             !object.host_slot || object.device_slot || has_pending_replica(object) ||
@@ -568,7 +496,7 @@ public:
 
     [[nodiscard]] std::optional<StateImageTransfer> begin_host_fork(StateImageHandle source,
                                                                     StateImageHandle destination,
-                                                                    RankStreams stream = {}) {
+                                                                    cudaStream_t stream = nullptr) {
         Object& source_object      = require(source);
         Object& destination_object = require(destination);
         if (host_ == nullptr || source == destination ||
@@ -607,10 +535,15 @@ public:
 
     void publish_transfer(StateImageTransfer&& transfer, bool keep_source_replica) {
         validate_transfer(transfer);
-        Object& source      = require(transfer.source_);
-        Object& destination = require(transfer.destination_);
+        const StateImageHandle source_handle = transfer.source_;
+        Object& source                       = require(transfer.source_);
+        Object& destination                  = require(transfer.destination_);
         switch (transfer.direction_) {
         case StateTransferDirection::DeviceToHost:
+            if (host_ == nullptr || !source.pending_host_slot ||
+                !host_->publish(*source.pending_host_slot)) {
+                throw std::logic_error("StateImage Host destination publication failed");
+            }
             source.host_slot = source.pending_host_slot;
             source.pending_host_slot.reset();
             if (!keep_source_replica) {
@@ -643,6 +576,7 @@ public:
             break;
         }
         consume(transfer);
+        retire_released_owner(source_handle);
     }
 
     void abort_transfer(StateImageTransfer&& transfer) noexcept {
@@ -650,8 +584,9 @@ public:
             consume(transfer);
             return;
         }
-        Object& source      = objects_[transfer.source_.index_];
-        Object& destination = objects_[transfer.destination_.index_];
+        const StateImageHandle source_handle = transfer.source_;
+        Object& source                       = objects_[transfer.source_.index_];
+        Object& destination                  = objects_[transfer.destination_.index_];
         if (source.source_pins != 0) { --source.source_pins; }
         if (transfer.direction_ == StateTransferDirection::DeviceToHost) {
             if (host_ != nullptr && source.pending_host_slot) {
@@ -673,6 +608,7 @@ public:
             }
         }
         consume(transfer);
+        retire_released_owner(source_handle);
     }
 
     [[nodiscard]] bool release(StateImageHandle handle) noexcept {
@@ -728,8 +664,16 @@ private:
         std::uint32_t checkpoint_references = 0;
         std::uint32_t source_pins           = 0;
         bool destination_pinned             = false;
+        bool release_pending                = false;
         StateImageRole role                 = StateImageRole::Free;
     };
+
+    void retire_released_owner(StateImageHandle handle) noexcept {
+        if (valid(handle) && objects_[handle.index_].release_pending && can_release(handle) &&
+            !release(handle)) {
+            std::terminate();
+        }
+    }
 
     [[nodiscard]] static bool has_pending_replica(const Object& object) noexcept {
         return object.pending_device_slot.has_value() || object.pending_host_slot.has_value() ||
@@ -813,32 +757,10 @@ inline StateImageTransfer::~StateImageTransfer() {
     if (owner_ != nullptr) { owner_->abort_transfer(std::move(*this)); }
 }
 
-enum class StateReadOwnership : std::uint8_t {
-    // The primary binding owns the direct StateImage lifetime.
-    Primary,
-    // The same active lineage retains the source through an optional checkpoint reference.
-    LineageCheckpoint,
-    // A retained private or shared owner outside this active lineage retains the source.
-    ExternalOwner,
-};
-
 struct ActiveStateBinding {
     StateImageHandle read;
     StateImageHandle write;
-    bool fork_pending                 = false;
-    StateReadOwnership read_ownership = StateReadOwnership::Primary;
-
-    // A non-primary read source is pinned only for the pending Fork. Its allocation belongs to a
-    // surviving same-lineage checkpoint or external owner, never to the primary binding.
-    [[nodiscard]] bool borrows_read() const noexcept {
-        return read_ownership != StateReadOwnership::Primary;
-    }
-
-    // An external owner can be a retained private endpoint whose lifetime has no StateImage
-    // checkpoint reference, so refcount zero alone does not authorize this sequence to release it.
-    [[nodiscard]] bool read_has_external_owner() const noexcept {
-        return read_ownership == StateReadOwnership::ExternalOwner;
-    }
+    bool fork_pending = false;
 };
 
 } // namespace ninfer::models::qwen3_5::detail

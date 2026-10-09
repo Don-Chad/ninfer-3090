@@ -49,6 +49,13 @@ std::span<const WeightUse> LoadPlan::uses(WeightId id) const {
 }
 
 LoadPlan plan_load(const artifact::Reader& reader, LoadOptions options) {
+    // Overlay Vision residency is parked: its load path stays in the tree, but no Program can
+    // execute it yet. A multi-stage split still plans (its validation is exercised by tests) and is
+    // refused when a Program is planned for it.
+    if (options.overlay_vision()) {
+        throw std::invalid_argument(
+            "--vision-residency overlay is not available on this build yet; use resident");
+    }
     auto out     = std::make_unique<LoadPlan::Impl>();
     out->options = options;
     out->config  = parse_config(reader.directory(), options);

@@ -19,7 +19,8 @@ class CorpusError(RuntimeError):
     pass
 
 
-def entitlement(prompt_tokens: int, max_output_tokens: int) -> int:
+def full_length_kv_tokens(prompt_tokens: int, max_output_tokens: int) -> int:
+    """Page-rounded KV footprint if one independent request reaches its output limit."""
     if prompt_tokens < 0 or max_output_tokens <= 0:
         raise ValueError("prompt tokens must be nonnegative and max output must be positive")
     growth = max(max_output_tokens - 1, 0)
@@ -95,14 +96,14 @@ class Corpus:
             "medium-3000": (30, 3000, 3072),
             "context-exact": (8129, 64, 8192),
         }
-        for name, (prompt, output, expected_entitlement) in expected.items():
+        for name, (prompt, output, expected_kv_tokens) in expected.items():
             record = shapes.get(name)
             if not isinstance(record, dict):
                 raise CorpusError(f"missing required shape: {name}")
             if record.get("prompt_tokens") != prompt or record.get("max_output_tokens") != output:
                 raise CorpusError(f"shape facts changed for {name}")
-            if entitlement(prompt, output) != expected_entitlement:
-                raise CorpusError(f"shape entitlement changed for {name}")
+            if full_length_kv_tokens(prompt, output) != expected_kv_tokens:
+                raise CorpusError(f"full-length KV footprint changed for {name}")
 
         independent_shapes = (
             ("long-8k-16", "long-8k-independent-32", "mixed-four"),
@@ -123,16 +124,16 @@ class Corpus:
                 )
 
         if not (
-            entitlement(7680, 16) + entitlement(127, 256) <= 8192
-            and entitlement(7680, 16) + 2 * entitlement(127, 256) > 8192
+            full_length_kv_tokens(7680, 16) + full_length_kv_tokens(127, 256) <= 8192
+            and full_length_kv_tokens(7680, 16) + 2 * full_length_kv_tokens(127, 256) > 8192
         ):
-            raise CorpusError("cache-pressure entitlement relation no longer holds")
-        long_64k_entitlement = entitlement(64512, 32)
+            raise CorpusError("cache-pressure KV footprint relation no longer holds")
+        long_64k_kv_tokens = full_length_kv_tokens(64512, 32)
         if not (
-            long_64k_entitlement <= 65536
-            and 2 * long_64k_entitlement > 65536
+            long_64k_kv_tokens <= 65536
+            and 2 * long_64k_kv_tokens > 65536
         ):
-            raise CorpusError("64K Host-swap entitlement relation no longer holds")
+            raise CorpusError("64K Host-swap KV footprint relation no longer holds")
 
         rotation = [shapes[f"rotation-55k-{index}"] for index in range(6)]
         if len({record["path"] for record in rotation}) != 6 or len(
@@ -168,8 +169,8 @@ class Corpus:
             second_labels.append(label)
         if len(set(second_labels)) != len(rotation) or set(second_labels) & set(original_labels):
             raise CorpusError("55K second-cohort roots are not distinct from the first cohort")
-        rotation_entitlement = entitlement(55000, 32)
-        if not 4 * rotation_entitlement <= 240000 < 5 * rotation_entitlement:
+        rotation_kv_tokens = full_length_kv_tokens(55000, 32)
+        if not 4 * rotation_kv_tokens <= 240000 < 5 * rotation_kv_tokens:
             raise CorpusError("55K rotation Device-KV pressure relation no longer holds")
 
         for label in "abcdef":

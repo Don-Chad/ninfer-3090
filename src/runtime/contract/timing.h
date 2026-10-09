@@ -14,11 +14,16 @@ struct ExecutionTiming {
     std::uint64_t submit_host_ns = 0;
     std::uint64_t device_wait_ns = 0;
     std::uint64_t post_host_ns   = 0;
+    // CUDA-event intervals collected by the execution path, independent of Host phases.
+    // Currently measures text-prefill chunks (including their backend work), after Vision
+    // preparation. This is a stream interval, not a sum of kernels or all Program GPU work.
+    std::uint64_t gpu_elapsed_ns = 0;
 
     ExecutionTiming& operator+=(ExecutionTiming other) noexcept {
         submit_host_ns += other.submit_host_ns;
         device_wait_ns += other.device_wait_ns;
         post_host_ns += other.post_host_ns;
+        gpu_elapsed_ns += other.gpu_elapsed_ns;
         return *this;
     }
 

@@ -222,28 +222,47 @@ public:
     explicit ServiceOutputSink(const StreamSink& sink) : sink_(&sink) {}
 
     void start(ninfer::GenerationStart start) override {
-        if (sink_->on_start) { sink_->on_start(start); }
+        deliver([&] {
+            if (sink_->on_start) { sink_->on_start(start); }
+        });
     }
 
     void progress(ninfer::PromptProgress progress) override {
-        if (sink_->on_progress) { sink_->on_progress(progress); }
+        deliver([&] {
+            if (sink_->on_progress) { sink_->on_progress(progress); }
+        });
     }
 
     void timing(ninfer::GenerationTimingObservation timing) override {
-        if (sink_->on_timing) { sink_->on_timing(timing); }
+        deliver([&] {
+            if (sink_->on_timing) { sink_->on_timing(timing); }
+        });
     }
 
     void publish(ninfer::OutputDelta delta) override {
         if (delta.text.empty()) { return; }
-        if (delta.channel == ninfer::OutputChannel::Reasoning) {
-            if (sink_->on_reasoning) { sink_->on_reasoning(delta.text); }
-        } else {
-            if (sink_->on_content) { sink_->on_content(delta.text); }
-        }
+        deliver([&] {
+            if (delta.channel == ninfer::OutputChannel::Reasoning) {
+                if (sink_->on_reasoning) { sink_->on_reasoning(delta.text); }
+            } else {
+                if (sink_->on_content) { sink_->on_content(delta.text); }
+            }
+        });
     }
 
+    [[nodiscard]] bool disconnected() const noexcept { return disconnected_; }
+
 private:
+    template <class Callback>
+    void deliver(Callback&& callback) {
+        if (disconnected_) { return; }
+        try {
+            callback();
+        } catch (const ClientDisconnected&) { disconnected_ = true; }
+    }
+
     const StreamSink* sink_ = nullptr;
+    bool disconnected_      = false;
 };
 
 } // namespace
@@ -259,11 +278,7 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
     engine_options.max_pending_requests     = options.max_pending_requests;
     engine_options.pending_timeout_ms       = options.pending_timeout_ms;
     engine_options.prefill_chunk            = options.prefill_chunk;
-    engine_options.max_prefill_lanes        = options.max_prefill_lanes;
-    engine_options.output_reservation_tokens = options.output_reservation_tokens;
-    engine_options.prefill_max_skip         = options.prefill_max_skip;
-    engine_options.decode_rounds_per_prefill = options.decode_rounds_per_prefill;
-    engine_options.kv_cache                 = options.kv_cache;
+    engine_options.kv_cache                = options.kv_cache;
     engine_options.enable_vision            = options.enable_vision;
     engine_options.grafts                   = options.grafts;
     engine_options.vision_residency         = options.vision_residency;
@@ -281,7 +296,6 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
     engine_options.prefill_cublas_projections = options.prefill_cublas_projections;
     engine_options.speculative              = options.speculative;
     engine_options.context_cache            = options.context_cache;
-    engine_options.slot_auto_save.enabled   = options.auto_save_evicted;
     engine_options.context_store.directory  = options.context_store_path;
     engine_options.context_store.max_bytes =
         options.context_store_max_gib ? *options.context_store_max_gib << 30U : 0U;
@@ -303,7 +317,6 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
 
 GenerationService::GenerationService(
     ServeOptions options, StartupObserver startup_observer,
-    std::function<void(const ninfer::SlotAutoSaveEvent&)> auto_save_listener,
     std::function<void(const ninfer::EngineFaultEvent&)> fault_listener)
     : options_(std::move(options)) {
     // Inline ECC on GDDR6X GeForce cards reserves ~6.25% of VRAM for checksums and taxes
@@ -327,13 +340,8 @@ GenerationService::GenerationService(
     }
     ninfer::EngineOptions engine_options = make_engine_options(options_);
     engine_options.startup_observer      = std::move(startup_observer);
-    engine_options.slot_auto_save.listener = std::move(auto_save_listener);
-    engine_options.fault_listener          = std::move(fault_listener);
+    engine_options.fault_listener        = std::move(fault_listener);
     engine_           = std::make_unique<ninfer::Engine>(std::move(engine_options));
-    automatic_private_anchors_ =
-        resolve_automatic_private_anchors(options_, engine_->options().context_cache);
-    progress_anchor_stride_ =
-        resolve_progress_anchor_stride(options_, engine_->options().context_cache);
     request_capacity_ = std::make_shared<RequestCapacity>(
         static_cast<std::size_t>(options_.max_concurrency) + options_.max_pending_requests);
 }
@@ -421,16 +429,9 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
         input.context_cache.allow_engine_automatic_shared_prefixes =
             input.context_cache.allow_engine_automatic_shared_prefixes &&
             protocol_allows_engine_automatic;
-        input.context_cache.allow_engine_prefix_grid =
-            input.context_cache.allow_engine_prefix_grid || options_.auto_prefix_grid;
-        // Server policy, not protocol: every read-write prompt gets the same trailing-boundary
-        // anchors whichever endpoint it came through.
-        input.context_cache.automatic_private_anchors =
-            cache_participation == CacheParticipation::ReadWrite ? automatic_private_anchors_ : 0U;
-        input.context_cache.progress_anchor_stride =
-            cache_participation == CacheParticipation::ReadWrite ? progress_anchor_stride_ : 0U;
+        // Duplicate or surplus protocol markers are trimmed rather than rejected by the Frontend.
         trim_cache_markers(input.context_cache.markers,
-                           engine_->options().context_cache.max_cache_markers_per_request.value());
+                           static_cast<std::uint32_t>(ninfer::kMaximumExplicitPromptCacheMarkers));
         prepared.acquisition_seconds =
             std::chrono::duration<double>(Clock::now() - acquisition_started).count();
         check_preparation_control(prepared.lifetime->deadline, is_cancelled);
@@ -448,8 +449,13 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
         }
         prepared.prompt_tokens = static_cast<int>(prompt.summary().prompt_tokens);
         if (request.derive_output_budget) {
+            // The Engine reserves KV per execution unit and pauses a younger request when
+            // concurrent growth exhausts the pool, so an omitted limit runs to the end of the
+            // context: the same bound the Engine applies to any larger request.
+            const std::uint32_t prompt_tokens = prompt.summary().prompt_tokens;
             request_options.execution.requested_output_tokens =
-                engine_->concurrent_output_budget(prompt);
+                prompt_tokens <= options_.max_context ? options_.max_context - prompt_tokens + 1U
+                                                      : 1U;
         }
         request_options.execution.requested_output_tokens = bounded_output_budget(
             request_options.execution.requested_output_tokens, options_.max_output_tokens);
@@ -512,11 +518,12 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     if (sink != nullptr) { output_sink = std::make_unique<ServiceOutputSink>(*sink); }
     ninfer::OutputSink* public_sink = output_sink.get();
     ninfer::CancellationView cancellation;
-    if (is_cancelled || (sink != nullptr && sink->is_cancelled)) {
-        cancellation = ninfer::CancellationView([external = std::move(is_cancelled), sink]() {
-            return (external && external()) ||
-                   (sink != nullptr && sink->is_cancelled && sink->is_cancelled());
-        });
+    if (is_cancelled || sink != nullptr) {
+        cancellation = ninfer::CancellationView(
+            [external = std::move(is_cancelled), sink, observed = output_sink.get()]() {
+                return (observed && observed->disconnected()) || (external && external()) ||
+                       (sink != nullptr && sink->is_cancelled && sink->is_cancelled());
+            });
     }
 
     ninfer::GenerationResult result;
@@ -528,6 +535,7 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     outcome.reasoning           = std::move(result.reasoning);
     outcome.prompt_tokens       = static_cast<int>(result.prompt.prompt_tokens);
     outcome.completion_tokens   = static_cast<int>(result.generated_token_ids.size());
+    outcome.generated_token_ids = std::move(result.generated_token_ids);
     outcome.reasoning_tokens    = static_cast<int>(result.reasoning_tokens);
     outcome.thinking            = result.thinking;
     outcome.finish_reason       = result.finish_reason;
@@ -553,11 +561,12 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
         prepared.prepare_seconds +
         std::max(0.0, result.timings.total_seconds - result.timings.prepare_seconds);
     outcome.metrics.engine_timing               = result.engine_timing;
+    outcome.metrics.first_output_timing         = std::move(result.first_output_timing);
+    outcome.metrics.scheduling                  = result.scheduling;
+    outcome.metrics.engine_request_id           = result.engine_request_id;
+    outcome.metrics.computed_prefill_tokens     = result.computed_prefill_tokens;
     outcome.metrics.prefix_cache_hit_tokens     = result.reused_prompt_tokens;
-    outcome.id_slot                             = result.slot;
-    outcome.session_digest                      = result.session_digest;
     outcome.metrics.prefix_reuse_path           = result.prefix_reuse_path;
-    outcome.metrics.materialization             = result.materialization;
     outcome.metrics.speculative_backend         = result.speculative.backend;
     outcome.metrics.speculative_draft_window    = result.speculative.draft_window;
     outcome.metrics.speculative_rounds          = result.speculative.rounds;

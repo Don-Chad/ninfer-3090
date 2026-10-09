@@ -103,14 +103,14 @@ takes an eighth off each rung, so begin lower only if it keeps refusing). Specul
 residency it costs almost nothing resident, and an `evictable pool window exceeds the evictable
 tail` message means the reservation is already tight rather than that the context is too large.
 
-`--host-kv-mib 8192` behaves differently here than on Windows: on Linux it really does pin 8 GiB of
-host RAM. On Windows/WDDM a pinned host allocation is charged against the card, so the runtime
-clamps it hard. Same flag, different platform behaviour, by design.
+The pinned Host context budget (`--host-context-mib`, by default 8 GiB plus eight model state
+images) behaves differently here than on Windows: on Linux it really does pin that much host RAM. On
+Windows/WDDM a pinned host allocation is charged against the card, so the runtime clamps it hard.
+Same flag, different platform behaviour, by design.
 
 On a machine that only serves this process, pass `--auto-host-cache` to ninfer-serve instead of
-`--host-kv-mib`, `--host-state-slots`, `--max-private-continuations` and `--max-shared-prefixes`: it
-sizes all four from the RAM that is free after the model loads (or from the container's memory limit),
-leaving `--host-cache-reserve-mib` (default 3072) unpinned. The launchers do not use it by default. See
+`--host-context-mib`: it sizes the budget from the RAM that is free after the model loads (or from
+the container's memory limit), leaving `--host-cache-reserve-mib` (default 3072) unpinned. The launchers do not use it by default. See
 the [serving guide](https://github.com/ashalliants/ninfer-3090/blob/master/docs/serving.md#automatic-host-cache).
 
 ## Full documentation

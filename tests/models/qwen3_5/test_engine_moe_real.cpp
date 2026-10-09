@@ -58,6 +58,7 @@ ninfer::RequestOptions greedy_options(std::uint32_t outputs, bool reuse) {
     ninfer::RequestOptions options;
     options.execution.requested_output_tokens = outputs;
     options.execution.sampling.temperature    = 0.0F;
+    options.execution.sampling.seed           = 0;
     options.execution.allow_prefix_reuse      = reuse;
     options.stop.include_model_defaults       = false;
     return options;
@@ -133,12 +134,15 @@ int exercise_text_mtp_and_prefix(ninfer::Engine& engine) {
         return 1;
     }
 
-    if (first.generated_token_ids[0] == first.generated_token_ids[1]) {
+    const auto stop_reference =
+        engine.generate(engine.prepare_tokens(prompt), greedy_options(5, false));
+    if (stop_reference.generated_token_ids.size() != 5 ||
+        stop_reference.generated_token_ids[0] == stop_reference.generated_token_ids[1]) {
         std::cerr << "35B partial-terminal fixture repeats its first token\n";
         return 1;
     }
-    ninfer::RequestOptions stop_options = greedy_options(5, true);
-    stop_options.stop.token_ids.push_back(first.generated_token_ids[1]);
+    ninfer::RequestOptions stop_options = greedy_options(5, false);
+    stop_options.stop.token_ids.push_back(stop_reference.generated_token_ids[1]);
     const ninfer::GenerationResult stopped =
         engine.generate(engine.prepare_tokens(prompt), stop_options);
     if (stopped.finish_reason != ninfer::FinishReason::StopToken ||
@@ -152,13 +156,11 @@ int exercise_text_mtp_and_prefix(ninfer::Engine& engine) {
     stopped_continuation.insert(stopped_continuation.end(), stopped.generated_token_ids.begin(),
                                 stopped.generated_token_ids.end());
     stopped_continuation.push_back(198);
-    const ninfer::GenerationResult stopped_reuse = engine.generate(
-        engine.prepare_tokens(std::move(stopped_continuation)), greedy_options(1, true));
-    const std::uint32_t expected_stopped_reuse =
-        static_cast<std::uint32_t>(prompt.size() + stopped.generated_token_ids.size() - 1);
-    if (stopped_reuse.reused_prompt_tokens != expected_stopped_reuse) {
-        std::cerr << "35B partial MTP terminal reused " << stopped_reuse.reused_prompt_tokens
-                  << ", expected " << expected_stopped_reuse << '\n';
+    const ninfer::GenerationResult after_stop = engine.generate(
+        engine.prepare_tokens(std::move(stopped_continuation)), greedy_options(1, false));
+    if (after_stop.generated_token_ids.size() != 1 ||
+        after_stop.finish_reason != ninfer::FinishReason::OutputLimit) {
+        std::cerr << "35B request after partial MTP terminal did not finish its output budget\n";
         return 1;
     }
 

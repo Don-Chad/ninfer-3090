@@ -56,7 +56,7 @@ because the dedicated process stream already supplies that identity:
 
 ```text
 2026-09-02 23:12:56.607  INFO  throughput | 5.0s | decode 190.6 tok/s (953 tok) | running 1 (decode-ready 1) | batch 1.00 | host 1.5% (73.4 ms)
-2026-09-02 23:13:01.458  INFO  req#13 done | openai-chat | stop token | prompt 2,139 | output 54,088 | cache 129 (6.0%, turn closure) | TTFT 323 ms | total 5m 21.0s | prefill 6.49k tok/s | decode 169.0 tok/s
+2026-09-02 23:13:01.458  INFO  req#13 done | openai-chat | stop token | prompt 2,139 | output 54,088 | cache 129 (6.0%, checkpoint) | TTFT 323 ms | total 5m 21.0s | prefill 6.49k tok/s | decode 169.0 tok/s
 ```
 
 CLI and Perplexity use the Tool presentation: informational progress has no timestamp or level
@@ -114,7 +114,7 @@ JSONL may retain an exact error string when their independent contracts require 
 
 A producer owns the event semantics and supplies already-validated values; it does not own logger
 configuration. Cross-layer state is reported at its existing ownership boundary. In particular,
-startup pinning is reported by Program around the Host State/Host KV construction calls, not by the
+startup pinning is reported by Program around the shared Host context backing construction, not by the
 generic pinned-buffer primitive. Serve owns HTTP and request lifecycle severity. CLI owns its result
 streams and must never prefix generated answer or reasoning data with operational-log metadata.
 
@@ -141,8 +141,8 @@ pretty throughput record.
 Engine startup is an inclusive typed hierarchy. `engine-startup` contains CUDA initialization,
 artifact inspection, semantic binding, weight materialization, model/frontend construction,
 runtime resource planning, Program construction and Engine finalization. `weights-staging-pin`
-is nested in `weights-materialize`; Host State pin,
-Host KV pin, and CUDA Graph preparation are nested in `program-initialize`. Nested durations explain
+is nested in `weights-materialize`; shared Host context pinning and CUDA Graph preparation are nested in
+`program-initialize`. Nested durations explain
 their parent and must not be added to it. Disabled zero-capacity phases are omitted. Byte progress is
 reported as submitted work, while only a synchronized terminal event reports completed bytes.
 The normal pretty view retains weight materialization, enabled Host pinning, CUDA Graph preparation,

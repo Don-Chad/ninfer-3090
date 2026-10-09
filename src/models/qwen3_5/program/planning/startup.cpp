@@ -317,21 +317,6 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     }
     out.kv_payload_bytes =
         out.decoder.kv_payload_bytes() + (out.dflash ? out.dflash->kv_payload_bytes() : 0);
-    const auto plane_end = [](const qwen3_5::PagedKVCacheLayout& cache) {
-        std::size_t end = 0;
-        if (cache.pages.spec.geometry.device_plane_order != PagedKVPlaneOrder::PageMajor) {
-            return end;
-        }
-        for (const DeviceKVPlaneLayout& plane : cache.pages.planes) {
-            // Lending is a single-device mechanism: only rank 0's planes are candidates.
-            if (plane.rank != 0) { continue; }
-            end = std::max(end, plane.storage.region.offset + plane.storage.region.bytes);
-        }
-        return end;
-    };
-    out.lendable_kv_end_bytes =
-        std::max(plane_end(out.decoder.text_kv),
-                 out.decoder.mtp_kv ? plane_end(*out.decoder.mtp_kv) : std::size_t{0});
     return out;
 }
 
@@ -803,22 +788,9 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
     out.capacity = out.general_capacity;
     if (plan.features.vision) {
         const std::uint32_t merged = vision_item_token_bound(plan.capacity, plan.features);
-        if (plan.features.overlay_vision()) {
-            out.vision_resident      = false;
-            out.vision               = execution::plan_vision_window_workspace(parameters, merged);
-            out.vision_bridge_offset = checked_add(out.general_capacity, 255, "bridge offset") &
-                                       ~std::size_t{255};
-            out.vision_bridge_bytes =
-                checked_mul(static_cast<std::size_t>(out.vision->output_hidden), 2, "bridge column");
-            out.capacity = std::max(out.capacity, checked_add(out.vision_bridge_offset,
-                                                              out.vision_bridge_bytes,
-                                                              "bridge column extent"));
-        } else {
-            out.vision = execution::VisionContext::plan_workspace(
-                *parameters.model.config().vision, *parameters.vision, merged,
-                out.general_capacity);
-            out.capacity = std::max(out.capacity, out.vision->capacity_bytes);
-        }
+        out.vision = execution::VisionContext::plan_workspace(
+            *parameters.model.config().vision, *parameters.vision, merged, out.general_capacity);
+        out.capacity = std::max(out.capacity, out.vision->capacity_bytes);
     }
     return out;
 }
@@ -847,22 +819,15 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
     if (options.max_concurrency == 0 || options.max_concurrency > kMaximumConcurrency) {
         throw std::invalid_argument("max_concurrency must be in [1,8]");
     }
-    if (parameters.text.rank_count != device.size()) {
-        throw std::invalid_argument("the model is split into " +
-                                    std::to_string(parameters.text.rank_count) +
-                                    " pipeline stages but " + std::to_string(device.size()) +
-                                    " devices are attached");
+    // Parked features: their sources stay in the tree, but this Program has no execution route
+    // for them yet, so they are refused here rather than silently dropped.
+    if (options.devices.size() > 1 || options.stage_layers.size() > 1 ||
+        parameters.text.rank_count != 1 || device.size() != 1) {
+        throw std::invalid_argument("multi-GPU pipeline stages are not available on this build yet");
     }
-    if (parameters.text.split_execution()) {
-        // The stage loop carries a plain forward pass and decode round. DFlash reads or writes state
-        // on the primary device only, and is refused until it is taught the stages. Vision runs
-        // entirely on the primary device ahead of the stage loop, so it needs no refusal.
-        if (options.speculative.backend == SpeculativeBackend::DFlash ||
-            options.speculative.backend == SpeculativeBackend::DFlash2) {
-            throw std::invalid_argument(
-                "DFlash speculative decoding is not yet supported with a multi-device --devices "
-                "split");
-        }
+    if (options.enable_vision && options.vision_residency == VisionResidency::Overlay) {
+        throw std::invalid_argument(
+            "--vision-residency overlay is not available on this build yet; use resident");
     }
     const std::uint32_t logical_pages = page_count(options.max_context);
     const std::uint32_t minimum_pages = std::max(logical_pages, options.max_concurrency);
@@ -947,7 +912,15 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->context_cache        = inputs.context_cache;
     impl->kv_storage           = inputs.kv_storage;
     impl->persistent           = persistent_layout(*impl);
-    impl->workspace            = build_workspace_plan(*impl);
+    if (!impl->context_cache.host_capacity_bytes) {
+        // Default Host capacity covers 8 GiB of KV bytes plus eight complete StateImages.
+        impl->context_cache.host_capacity_bytes =
+            checked_add(8ULL * 1024 * 1024 * 1024,
+                        checked_mul(8, impl->persistent.state_images.host.image_bytes,
+                                    "Host context state default overflow"),
+                        "Host context default overflow");
+    }
+    impl->workspace = build_workspace_plan(*impl);
     if (impl->use_cuda_graph) {
         // Definitions remain per execution profile, but only one executable is instantiated for
         // each reachable node-topology class. These bounds cover the largest profile installed in
@@ -1009,19 +982,9 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->device_reservation_bytes = checked_add(
         checked_add(impl->persistent.bytes, impl->workspace.capacity, "sequence memory plan"),
         impl->graph_allowance_bytes, "sequence graph allowance");
-    // A further device runs its stage in a workspace of the same general size and holds its own
-    // persistent state. Its graph allowance is the primary device's scaled by the share of layers
-    // it runs; the primary keeps the whole figure, which only over-reserves it a little.
-    const auto& text = impl->parameters->text;
-    for (std::size_t rank = 1; rank < text.rank_count; ++rank) {
-        const std::uint64_t layers_here = text.stage_end(rank) - text.stage_begin[rank];
-        const std::size_t graph_share   = static_cast<std::size_t>(
-            (static_cast<std::uint64_t>(impl->graph_allowance_bytes) * layers_here) /
-            std::max<std::size_t>(text.layers.size(), 1));
-        impl->extra_rank_reservation_bytes.push_back(checked_add(
-            checked_add(impl->persistent.extra_rank_bytes[rank - 1],
-                        impl->workspace.general_capacity, "further device memory plan"),
-            graph_share, "further device graph allowance"));
+    if (!impl->persistent.extra_rank_bytes.empty() ||
+        !impl->persistent.extra_replay_records.empty()) {
+        throw std::logic_error("Qwen3.5 single-device sequence plan has further-device state");
     }
     return impl;
 }
@@ -1042,7 +1005,7 @@ std::uint32_t vision_item_token_bound(std::uint32_t capacity, const models::Load
 
 std::unique_ptr<qwen3_5::detail::SequencePlannerImpl>
 make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContext& device,
-                           const EngineOptions& options, std::uint32_t resident_main_pages) {
+                           const EngineOptions& options) {
     validate_target_options(parameters, device, options);
     SequencePlanningInputs inputs{
         .parameters           = &parameters,
@@ -1060,18 +1023,14 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
         .device               = options.device,
         .multiprocessor_count = device.multiprocessor_count(),
         .context_cache        = options.context_cache,
-        .resident_main_pages  = resident_main_pages,
     };
     const std::uint32_t logical_pages = page_count(inputs.capacity);
-    const std::uint64_t minimum_pages64 =
-        static_cast<std::uint64_t>(std::max(logical_pages, inputs.max_concurrency)) +
-        resident_main_pages;
+    const std::uint32_t minimum_pages = std::max(logical_pages, inputs.max_concurrency);
     const std::uint64_t maximum_pages64 =
-        static_cast<std::uint64_t>(inputs.max_concurrency) * logical_pages + resident_main_pages;
+        static_cast<std::uint64_t>(inputs.max_concurrency) * logical_pages;
     if (maximum_pages64 > std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("maximum Main KV page count exceeds uint32");
     }
-    const auto minimum_pages = static_cast<std::uint32_t>(minimum_pages64);
     const auto maximum_pages = static_cast<std::uint32_t>(maximum_pages64);
 
     auto planner     = std::make_unique<qwen3_5::detail::SequencePlannerImpl>();
@@ -1083,11 +1042,7 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
           .maximum_main_page_groups             = maximum_pages,
           .minimum_device_reservation_bytes     = planner->minimum->device_reservation_bytes,
           .bytes_per_additional_main_page_group = 0,
-          .resident_main_pages                  = resident_main_pages,
     };
-    for (const std::size_t bytes : planner->minimum->extra_rank_reservation_bytes) {
-        planner->curve.extra_ranks.push_back({.minimum_device_reservation_bytes = bytes});
-    }
     if (minimum_pages < maximum_pages) {
         auto adjacent = build_sequence_candidate(inputs, minimum_pages + 1U);
         if (adjacent->device_reservation_bytes <= planner->minimum->device_reservation_bytes) {
@@ -1095,13 +1050,6 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
         }
         planner->curve.bytes_per_additional_main_page_group =
             adjacent->device_reservation_bytes - planner->minimum->device_reservation_bytes;
-        // A further device's stride may legitimately be zero: a stage with no attention layers holds
-        // no KV.
-        for (std::size_t rank = 0; rank < planner->curve.extra_ranks.size(); ++rank) {
-            planner->curve.extra_ranks[rank].bytes_per_additional_main_page_group =
-                adjacent->extra_rank_reservation_bytes[rank] -
-                planner->minimum->extra_rank_reservation_bytes[rank];
-        }
     }
     return planner;
 }
@@ -1122,14 +1070,6 @@ finalize_sequence_plan_impl(std::unique_ptr<qwen3_5::detail::SequencePlannerImpl
     if (plan->device_reservation_bytes != expected) {
         throw std::logic_error(
             "Qwen3.5 physical sequence layout is not affine in Main KV page capacity");
-    }
-    for (std::size_t rank = 0; rank < plan->extra_rank_reservation_bytes.size(); ++rank) {
-        if (plan->extra_rank_reservation_bytes[rank] !=
-            planner->curve.extra_rank_reservation_bytes(rank, main_page_groups)) {
-            throw std::logic_error(
-                "Qwen3.5 physical sequence layout is not affine in Main KV page capacity on a "
-                "further device");
-        }
     }
     return plan;
 }

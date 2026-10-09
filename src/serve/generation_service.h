@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -22,10 +23,12 @@ struct RequestLifetime;
 struct RequestCapacity;
 
 struct GenerationMetrics {
-    double prepare_seconds = 0.0;
-    double ttft_seconds    = 0.0;
-    double vision_seconds  = 0.0;
-    double prefill_seconds = 0.0;
+    std::uint64_t engine_request_id       = 0;
+    std::uint32_t computed_prefill_tokens = 0;
+    double prepare_seconds                = 0.0;
+    double ttft_seconds                   = 0.0;
+    double vision_seconds                 = 0.0;
+    double prefill_seconds                = 0.0;
     std::uint32_t overlay_windows           = 0;
     std::uint32_t overlay_exclusive_windows = 0;
     double overlay_window_seconds     = 0.0;
@@ -33,11 +36,13 @@ struct GenerationMetrics {
     double overlay_restore_seconds    = 0.0;
     std::size_t overlay_evicted_bytes = 0;
     std::size_t overlay_staged_bytes  = 0;
-    double decode_seconds          = 0.0;
-    double prompt_wall_seconds     = 0.0;
-    double generation_wall_seconds = 0.0;
-    double total_seconds           = 0.0;
+    double decode_seconds             = 0.0;
+    double prompt_wall_seconds        = 0.0;
+    double generation_wall_seconds    = 0.0;
+    double total_seconds              = 0.0;
     ninfer::GenerationEngineTiming engine_timing;
+    std::optional<ninfer::GenerationFirstOutputTiming> first_output_timing;
+    ninfer::GenerationSchedulingStats scheduling;
 
     SpeculativeBackend speculative_backend    = SpeculativeBackend::None;
     std::uint32_t speculative_draft_window    = 0;
@@ -48,16 +53,12 @@ struct GenerationMetrics {
     std::vector<std::uint64_t> speculative_accepted_per_position;
     std::uint32_t prefix_cache_hit_tokens     = 0;
     ninfer::PrefixReusePath prefix_reuse_path = ninfer::PrefixReusePath::Root;
-    ninfer::MaterializationDiagnostics materialization;
 };
 
 struct GenerationOutcome {
-    // The catalog cell and session digest the finished session was retained under; -1 and empty
-    // when it was not retained.
-    std::int32_t id_slot = -1;
-    std::string session_digest;
     std::string text;
     std::string reasoning;
+    std::vector<ninfer::TokenId> generated_token_ids;
     std::vector<ninfer::GeneratedToolCall> tool_calls;
     ninfer::ToolCallParseDiagnostics tool_call_parse;
     int prompt_tokens     = 0;
@@ -67,6 +68,13 @@ struct GenerationOutcome {
     ninfer::FinishReason finish_reason = ninfer::FinishReason::OutputLimit;
     std::optional<std::string> matched_stop_string;
     GenerationMetrics metrics;
+};
+
+// A transport may report an interrupted stream through a callback or is_cancelled().
+// Generation still settles through Engine cancellation and returns its actual work statistics.
+class ClientDisconnected final : public std::exception {
+public:
+    [[nodiscard]] const char* what() const noexcept override { return "client disconnected"; }
 };
 
 struct StreamSink {
@@ -96,7 +104,7 @@ struct PreparedRequest {
     double acquisition_seconds = 0.0;
     PromptPreparationStats preparation;
     int prompt_tokens    = 0;
-    // The output budget submitted to the Engine, after any concurrent-lane derivation.
+    // The output budget submitted to the Engine, after any remaining-context derivation.
     int requested_output_tokens = 0;
     bool enable_thinking = true;
     std::optional<std::uint32_t> thinking_budget;
@@ -122,25 +130,13 @@ class GenerationService {
 public:
     explicit GenerationService(
         ServeOptions options, StartupObserver startup_observer = {},
-        std::function<void(const ninfer::SlotAutoSaveEvent&)> auto_save_listener = {},
-        std::function<void(const ninfer::EngineFaultEvent&)> fault_listener     = {});
+        std::function<void(const ninfer::EngineFaultEvent&)> fault_listener = {});
 
     [[nodiscard]] const ServeOptions& options() const noexcept { return options_; }
 
     // Engine owns the once-normalized startup configuration. Serving diagnostics must use this
     // value instead of reinterpreting optional defaults from ServeOptions.
     [[nodiscard]] const ninfer::EngineOptions& engine_options() const { return engine_->options(); }
-
-    // Engine-automatic private long anchors stamped on every read-write prompt; see
-    // resolve_automatic_private_anchors.
-    [[nodiscard]] std::uint32_t automatic_private_anchors() const noexcept {
-        return automatic_private_anchors_;
-    }
-    // Token spacing of the progress anchors stamped on every read-write prompt; see
-    // resolve_progress_anchor_stride. Zero disables them.
-    [[nodiscard]] std::uint32_t progress_anchor_stride() const noexcept {
-        return progress_anchor_stride_;
-    }
 
     [[nodiscard]] ninfer::LoadSummary load_summary() const { return engine_->load_summary(); }
 
@@ -149,22 +145,6 @@ public:
     [[nodiscard]] ninfer::RuntimeStats runtime_stats() const { return engine_->runtime_stats(); }
 
     [[nodiscard]] bool is_available() const { return engine_->is_available(); }
-
-    // Session persistence over the private context-cache catalog; see ninfer::Engine.
-    [[nodiscard]] std::vector<ninfer::SlotState> slot_states() const {
-        return engine_->slot_states();
-    }
-    [[nodiscard]] ninfer::SlotSaveResult slot_save(std::uint32_t slot, const std::string& path,
-                                                   const std::string& expected_digest) {
-        return engine_->save_slot(slot, path, expected_digest);
-    }
-    [[nodiscard]] ninfer::SlotRestoreResult slot_restore(std::uint32_t slot,
-                                                         const std::string& path) {
-        return engine_->restore_slot(slot, path);
-    }
-    std::uint32_t slot_erase(std::uint32_t slot, const std::string& expected_digest) {
-        return engine_->erase_slot(slot, expected_digest);
-    }
 
     // Requests currently holding ingress capacity (max_concurrency + max_pending_requests).
     [[nodiscard]] std::size_t admitted_requests() const;
@@ -212,8 +192,6 @@ private:
 
     ServeOptions options_;
     std::unique_ptr<ninfer::Engine> engine_;
-    std::uint32_t automatic_private_anchors_ = 0;
-    std::uint32_t progress_anchor_stride_    = 0;
     std::shared_ptr<RequestCapacity> request_capacity_;
 };
 
