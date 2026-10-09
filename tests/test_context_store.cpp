@@ -642,6 +642,77 @@ std::size_t chunk_objects(MemoryObjectStore& remote) {
     return count;
 }
 
+// A load that does not count as a use (a probe, or a restore that may be abandoned) leaves the age
+// of the bucket's copy alone; only a use restarts it.
+void test_remote_age_restarts_only_on_use() {
+    TempDirectory directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    ContextStore store(remote_options(directory.path(), remote));
+    (void)store.put(describe("0a"), concat({pseudo_random(30, 1), pseudo_random(3000, 2)}),
+                    std::array{ContextStore::Region{30, 3000}});
+    check(drained(store), "upload before the age test");
+    remote->clock += 2 * 24 * 3600 * 1000LL;
+    check(store.load("0a", false).has_value(), "a probing load failed");
+    check(drained(store) && remote->touches == 0, "a load that is not a use restarted the remote age");
+    store.touch("0a");
+    check(drained(store) && remote->touches == 4, "using the image did not restart the remote age");
+}
+
+// An image another engine wrote after this one gave up on the id replaces the quarantined copy: the
+// next refresh offers it.
+void test_remote_quarantine_ends_when_the_manifest_is_rewritten() {
+    TempDirectory directory;
+    TempDirectory other_directory;
+    TempDirectory writer_directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    {
+        ContextStore store(remote_options(directory.path(), remote));
+        (void)store.put(describe("0a"), concat({pseudo_random(30, 1), pseudo_random(3000, 2)}),
+                        std::array{ContextStore::Region{30, 3000}});
+        check(drained(store), "upload before quarantine");
+    }
+    for (auto& [key, value] : remote->objects) {
+        if (key.find("/chunks/") != std::string::npos) {
+            value.first[0] ^= 0xff;
+            break;
+        }
+    }
+    ContextStore other(remote_options(other_directory.path(), remote));
+    (void)other.refresh_remote();
+    check(!other.load("0a").has_value() && other.list().empty(), "the damaged image was not quarantined");
+    check(other.refresh_remote() == 0, "a quarantined image was imported again");
+    // Another engine replaces the image in the bucket.
+    remote->clock += 1000;
+    const std::vector<std::uint8_t> replacement = concat({pseudo_random(30, 7), pseudo_random(3000, 8)});
+    {
+        ContextStore writer(remote_options(writer_directory.path(), remote));
+        (void)writer.put(describe("0a"), replacement, std::array{ContextStore::Region{30, 3000}});
+        check(drained(writer), "upload of the replacement");
+    }
+    check(other.refresh_remote() == 1, "a rewritten manifest did not end the quarantine");
+    const auto loaded = other.load("0a");
+    check(loaded.has_value() && *loaded == replacement, "the replacement was not fetched");
+}
+
+// An image held entirely inline in its manifest is local; a complete listing that no longer shows it
+// does not drop it.
+void test_inline_only_image_is_not_remote_only() {
+    TempDirectory directory;
+    auto remote = std::make_shared<MemoryObjectStore>();
+    ContextStore store(remote_options(directory.path(), remote));
+    const std::vector<std::uint8_t> inline_image = pseudo_random(100, 9);
+    (void)store.put(describe("0c"), inline_image, std::span<const ContextStore::Region>{});
+    check(drained(store), "upload of the inline image");
+    {
+        std::scoped_lock lock(remote->mutex);
+        remote->objects.clear();
+    }
+    (void)store.refresh_remote();
+    const auto loaded = store.load("0c");
+    check(loaded.has_value() && *loaded == inline_image,
+          "a complete listing dropped an image the manifest holds whole");
+}
+
 // Registering an image from the bucket's listing proves only its manifest exists: a chunk the bucket
 // lost since is put back by the next write that shares it, not skipped as already confirmed.
 void test_remote_listing_does_not_confirm_chunks() {
@@ -887,6 +958,9 @@ int main() {
     test_remote_repairs_several_damaged_local_chunks();
     test_remote_rewrite_lifts_the_quarantine();
     test_remote_listing_does_not_confirm_chunks();
+    test_remote_age_restarts_only_on_use();
+    test_remote_quarantine_ends_when_the_manifest_is_rewritten();
+    test_inline_only_image_is_not_remote_only();
     test_upload_survives_eviction_and_replacement();
     test_absent_chunks_are_not_reused();
     test_local_corruption_is_repaired_from_the_remote();

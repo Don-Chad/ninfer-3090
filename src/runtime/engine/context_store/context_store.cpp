@@ -496,6 +496,8 @@ bool ContextStore::entry_local_locked(const Entry& entry) const {
 }
 
 bool ContextStore::entry_has_local_bytes_locked(const Entry& entry) const {
+    // No chunk references: the whole image is inline in the manifest, which is always local.
+    if (entry.chunks.empty()) { return true; }
     for (const ChunkRef& chunk : entry.chunks) {
         const auto found = chunks_.find(hex_key(chunk.hash));
         if (found != chunks_.end() && found->second.present) { return true; }
@@ -832,7 +834,9 @@ std::optional<std::vector<std::uint8_t>> ContextStore::load(const std::string& i
                         write_used(id, found->second.info.last_used_ms);
                     }
                 }
-                enqueue_remote({RemoteTask::Kind::Touch, id, {}, {}});
+                // Only a use restarts the age of the bucket's copy: a probe or a restore that is
+                // abandoned (touch false) must not keep a session alive there.
+                if (touch) { enqueue_remote({RemoteTask::Kind::Touch, id, {}, {}}); }
                 return image;
             }
             // Discard the damaged local copies; the remote holds the good ones.
@@ -930,8 +934,16 @@ void ContextStore::enqueue_remote(RemoteTask task) {
     {
         std::scoped_lock lock(remote_mutex_);
         if (remote_stopping_) { return; }
+        std::size_t background = 0;
         for (const RemoteTask& queued : remote_queue_) {
             if (queued.kind == task.kind && queued.id == task.id) { return; }
+            if (queued.kind != RemoteTask::Kind::Upload) { ++background; }
+        }
+        // Touches, prefetches and refreshes are best-effort and asked for again by the next use:
+        // while a stalled bucket holds the worker they must not pile up without bound.
+        constexpr std::size_t kMaximumQueuedBackgroundTasks = 64;
+        if (task.kind != RemoteTask::Kind::Upload && background >= kMaximumQueuedBackgroundTasks) {
+            return;
         }
         remote_queue_.push_back(std::move(task));
     }
@@ -1021,6 +1033,7 @@ void ContextStore::remote_loop() {
             }
             }
         } catch (...) {}
+        prune_remote_state();
         lock.lock();
         remote_busy_ = false;
         if (remote_queue_.empty()) { remote_idle_cv_.notify_all(); }
@@ -1101,6 +1114,23 @@ void ContextStore::upload_image(RemoteTask& task) {
     stats_.remote_uploads += objects;
     stats_.remote_upload_bytes += bytes;
     if (!succeeded) { ++stats_.remote_upload_failures; }
+}
+
+void ContextStore::prune_remote_state() {
+    const std::int64_t now = now_ms();
+    if (now - last_prune_ms_ < 60'000) { return; }
+    last_prune_ms_            = now;
+    const std::int64_t horizon = options_.remote_touch_interval.count() * 1000;
+    std::scoped_lock lock(remote_mutex_);
+    for (auto it = uploaded_.begin(); it != uploaded_.end();) {
+        it = now - it->second >= horizon ? uploaded_.erase(it) : std::next(it);
+    }
+    for (auto it = remote_touched_.begin(); it != remote_touched_.end();) {
+        it = now - it->second >= horizon ? remote_touched_.erase(it) : std::next(it);
+    }
+    for (auto it = remote_failed_.begin(); it != remote_failed_.end();) {
+        it = now - it->second >= horizon ? remote_failed_.erase(it) : std::next(it);
+    }
 }
 
 void ContextStore::touch_remote_image(const std::string& id) {
@@ -1252,7 +1282,7 @@ void ContextStore::settle_failed_fetch(const std::string& id, std::uint64_t gene
     if (found == entries_.end() || found->second.generation != generation) { return; }
     remove_entry_locked(id, true);
     std::scoped_lock remote_lock(remote_mutex_);
-    remote_failed_.insert(id);
+    remote_failed_[id] = now_ms();
 }
 
 std::size_t ContextStore::refresh_remote(std::chrono::steady_clock::time_point deadline) {
@@ -1285,14 +1315,20 @@ std::size_t ContextStore::refresh_remote(std::chrono::steady_clock::time_point d
             }
             {
                 std::scoped_lock lock(remote_mutex_);
-                if (remote_failed_.count(id) != 0) { continue; }
+                const auto failed = remote_failed_.find(id);
+                if (failed != remote_failed_.end()) {
+                    // Given up on: skipped until the bucket lists the manifest as written since, which
+                    // means another engine has replaced the image that failed.
+                    if (object.modified_ms <= failed->second) { continue; }
+                    remote_failed_.erase(failed);
+                }
             }
             const std::optional<std::vector<std::uint8_t>> data = options_.remote->get(object.key);
             if (!data) { continue; }
             Entry entry;
             if (!parse_manifest(*data, entry, nullptr) || entry.info.id != id) {
                 std::scoped_lock lock(remote_mutex_);
-                remote_failed_.insert(id);
+                remote_failed_[id] = now_ms();
                 continue;
             }
             entry.info.last_used_ms = std::max(entry.info.created_ms, object.modified_ms);

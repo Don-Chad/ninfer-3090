@@ -254,6 +254,9 @@ private:
     void remote_loop();
     void upload_image(RemoteTask& task);
     void touch_remote_image(const std::string& id);
+    // Drops confirmations, touches and quarantines older than remote_touch_interval: none is
+    // trusted any longer, so keeping them would only grow with every chunk ever uploaded.
+    void prune_remote_state();
     enum class FetchStatus : std::uint8_t { Complete, Transient, Corrupt };
     // `generation` receives the generation of the entry the fetch worked from.
     [[nodiscard]] FetchStatus fetch_image_chunks(const std::string& id, std::uint64_t& generation);
@@ -286,7 +289,10 @@ private:
     // since, so the confirmation is trusted for remote_touch_interval only.
     std::unordered_map<std::string, std::int64_t> uploaded_;
     std::unordered_map<std::string, std::int64_t> remote_touched_; // id -> last touch (ms)
-    std::unordered_set<std::string> remote_failed_;               // ids not worth importing again
+    // Ids not worth importing again, with when each was given up on: a manifest the bucket lists
+    // as written since is tried again, and the entry expires with the other remote bookkeeping.
+    std::unordered_map<std::string, std::int64_t> remote_failed_;
+    std::int64_t last_prune_ms_ = 0; // remote worker thread only
     std::thread remote_thread_;
 };
 
