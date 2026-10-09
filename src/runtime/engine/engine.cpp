@@ -200,7 +200,8 @@ std::string slot_model_binding(const EngineOptions& options, const LoadSummary& 
     binding += std::to_string(static_cast<unsigned>(options.kv_cache)) + ',' +
                std::to_string(static_cast<unsigned>(options.speculative.backend)) + ',' +
                std::to_string(options.speculative.draft_tokens) + ',' +
-               std::to_string(static_cast<unsigned>(options.speculative.proposal_head)) + '\n';
+               std::to_string(static_cast<unsigned>(options.speculative.proposal_head)) + ',' +
+               (options.enable_vision ? "vision" : "text") + '\n';
     std::error_code size_error;
     const std::uintmax_t size = std::filesystem::file_size(options.artifact_path, size_error);
     binding += size_error ? std::string("?") : std::to_string(size);
