@@ -180,6 +180,40 @@ public:
         return LogicalKVPageHandle(this, index, page.generation);
     }
 
+    // A descriptor for contents that exist only on the Host: a restored checkpoint page. It has no
+    // Device replica and no reference; HostKVExtentStore::import_pages attaches its Host replica and
+    // the importing address space then takes the first reference.
+    [[nodiscard]] std::optional<LogicalKVPageHandle>
+    materialize_host_only(std::uint32_t committed_columns) noexcept {
+        if (committed_columns == 0 ||
+            committed_columns > static_cast<std::uint32_t>(kPagedKVPageSize) || free_count_ == 0) {
+            return std::nullopt;
+        }
+        const std::uint32_t index = free_[--free_count_];
+        Page& page                = pages_[index];
+        page.content_epoch        = next_epoch(page.content_epoch);
+        page.committed_columns    = committed_columns;
+        page.references           = 0;
+        page.active_references    = 0;
+        page.writer_references    = 0;
+        page.protected_columns    = 0;
+        page.source_pins          = 0;
+        page.destination_pinned   = false;
+        page.occupied             = true;
+        return LogicalKVPageHandle(this, index, page.generation);
+    }
+
+    // Returns a host-only descriptor that never received its Host replica.
+    void abandon_host_only(LogicalKVPageHandle handle) noexcept {
+        if (!valid(handle)) { return; }
+        Page& page = pages_[handle.index_];
+        if (page.device_replica || page.pending_device_replica || page.host_replica ||
+            page.references != 0) {
+            return;
+        }
+        release_descriptor(handle, page);
+    }
+
     void publish_transfer_destination(LogicalKVPageHandle handle, bool writer) noexcept {
         if (!valid(handle)) { std::terminate(); }
         Page& page = pages_[handle.index_];

@@ -2,8 +2,12 @@
 
 #include "models/qwen3_5/state/state_image.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <exception>
 #include <limits>
+#include <span>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -172,6 +176,39 @@ public:
         device_->zero_slot(*object.device_slot, stream);
         object.content_epoch = next_epoch();
         object.role          = StateImageRole::ActiveMutable;
+    }
+
+    // A restored immutable image that exists only on the Host: `image` is one complete Host
+    // StateImage. It has no checkpoint reference yet. nullopt when no Host slot or logical
+    // descriptor is available now.
+    [[nodiscard]] std::optional<StateImageHandle> import_host(std::span<const std::byte> image) {
+        if (host_ == nullptr) { return std::nullopt; }
+        if (image.size() != host_->layout().image_bytes) {
+            throw std::invalid_argument("restored StateImage has the wrong size");
+        }
+        std::optional<qwen3_5::HostStateSlotHandle> slot = host_->allocate();
+        if (!slot) { return std::nullopt; }
+        std::optional<StateImageHandle> handle =
+            allocate(StateImageRole::CheckpointImmutable, false);
+        if (!handle) {
+            (void)host_->release(*slot);
+            return std::nullopt;
+        }
+        std::memcpy(host_->writable_view(*slot).data, image.data(), image.size());
+        if (!host_->publish(*slot)) { std::terminate(); }
+        Object& object       = objects_[handle->index_];
+        object.host_slot     = *slot;
+        object.content_epoch = next_epoch();
+        return handle;
+    }
+
+    // The published Host replica of an image, for a byte-exact export.
+    [[nodiscard]] qwen3_5::HostStateImageConstView host_view(StateImageHandle handle) const {
+        const Object& object = require(handle);
+        if (host_ == nullptr || !object.host_slot) {
+            throw std::logic_error("StateImage has no published Host replica");
+        }
+        return host_->view(*object.host_slot);
     }
 
     [[nodiscard]] bool valid(StateImageHandle handle) const noexcept {

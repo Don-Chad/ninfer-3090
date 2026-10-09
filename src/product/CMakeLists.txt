@@ -7,6 +7,16 @@ if(WIN32)
   target_link_libraries(ninfer_media_acquire PRIVATE ws2_32)
 endif()
 
+add_library(ninfer_s3_object_store STATIC
+  object_store/s3_object_store.cpp
+)
+ninfer_internal_includes(ninfer_s3_object_store)
+target_include_directories(ninfer_s3_object_store PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(ninfer_s3_object_store PRIVATE ${NINFER_CURL_TARGET})
+if(WIN32)
+  target_link_libraries(ninfer_s3_object_store PRIVATE ws2_32)
+endif()
+
 add_library(ninfer_product_prompt_input STATIC
   prompt_input/prompt_input.cpp
 )

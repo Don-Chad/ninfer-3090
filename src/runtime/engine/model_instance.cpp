@@ -64,15 +64,6 @@ void validate_options(const EngineOptions& options) {
     }
 }
 
-// Fork features that the current context cache and scheduler do not carry yet. Each is refused
-// before the device is initialized or anything loads, so a configuration that asks for one never
-// silently runs without it.
-void reject_unavailable_options(const EngineOptions& options) {
-    if (options.context_store.enabled()) {
-        throw std::invalid_argument("the context store is not available on this build yet");
-    }
-}
-
 std::size_t current_free_device_bytes() {
     std::size_t free_bytes  = 0;
     std::size_t total_bytes = 0;
@@ -100,7 +91,6 @@ std::vector<std::size_t> free_bytes_by_rank(const DeviceContext& device) {
 } // namespace
 
 EngineOptions normalize_engine_options(EngineOptions options) {
-    reject_unavailable_options(options);
     switch (options.purpose) {
     case EnginePurpose::Generation:
         break;

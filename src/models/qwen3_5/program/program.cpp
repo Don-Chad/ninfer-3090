@@ -311,6 +311,22 @@ MemorySummary Program::memory_summary() const noexcept { return impl_->memory_su
 
 void Program::reset_memory_peaks() noexcept { impl_->reset_memory_peaks(); }
 
+CheckpointImage Program::export_checkpoints(std::span<const CheckpointHandle> points,
+                                            const std::optional<PreparedSessionKey>& session,
+                                            std::string_view binding) const {
+    return impl_->export_checkpoints(points, session, binding);
+}
+
+std::size_t Program::checkpoint_image_host_bytes(std::span<const std::uint8_t> image,
+                                                 std::string_view binding) const {
+    return impl_->checkpoint_image_host_bytes(image, binding);
+}
+
+std::optional<ImportedCheckpoints> Program::import_checkpoints(std::span<const std::uint8_t> image,
+                                                               std::string_view binding) {
+    return impl_->import_checkpoints(image, binding);
+}
+
 SequencePlanner make_sequence_planner(const execution::Parameters& parameters,
                                       DeviceContext& device, const EngineOptions& options) {
     return SequencePlanner(detail::make_sequence_planner_impl(parameters, device, options));

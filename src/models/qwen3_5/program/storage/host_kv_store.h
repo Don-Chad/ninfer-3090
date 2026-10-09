@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <optional>
@@ -203,6 +204,80 @@ public:
         }
         consume(reservation);
         return capability;
+    }
+
+    struct ImportedExtent {
+        HostKVExtentCapability capability;
+        std::vector<LogicalKVPageHandle> pages;
+    };
+
+    // Publishes `columns.size()` new host-only logical pages whose packed contents are `payload`
+    // (one page stride each, in order) as one extent. The pages carry no reference yet: the caller
+    // adopts them into an address space before anything releases unreferenced Host pages. nullopt
+    // when the descriptors or one contiguous Host allocation are not available now.
+    [[nodiscard]] std::optional<ImportedExtent>
+    import_pages(LogicalKVPageStore& pages, std::span<const std::uint32_t> columns,
+                 std::span<const std::byte> payload) {
+        const HostKVPageLayout& layout = page_layout(pages);
+        if (columns.empty() || payload.size() != columns.size() * layout.page_stride) {
+            throw std::invalid_argument("Host KV import payload does not match its page count");
+        }
+        if (free_count_ == 0 || columns.size() > free_membership_count_) { return std::nullopt; }
+        std::optional<HostKVAllocation> allocation =
+            arena_->allocate(layout, static_cast<std::uint32_t>(columns.size()));
+        if (!allocation) { return std::nullopt; }
+        HostKVAllocationView view = arena_->writable_view(*allocation);
+        std::memcpy(view.data(), payload.data(), payload.size());
+
+        ImportedExtent imported;
+        imported.pages.reserve(columns.size());
+        for (const std::uint32_t coverage : columns) {
+            const std::optional<LogicalKVPageHandle> page = pages.materialize_host_only(coverage);
+            if (!page) {
+                for (const LogicalKVPageHandle created : imported.pages) {
+                    pages.abandon_host_only(created);
+                }
+                return std::nullopt;
+            }
+            imported.pages.push_back(*page);
+        }
+
+        const std::uint32_t descriptor = free_[--free_count_];
+        Extent& extent                 = extents_[descriptor];
+        if (extent.state != ExtentState::Free) { std::terminate(); }
+        extent.state      = ExtentState::Published;
+        extent.page_store = &pages;
+        extent.allocation = std::move(allocation);
+        extent.allocation->publish();
+        const HostKVExtentCapability capability(this, descriptor, extent.generation);
+        for (const LogicalKVPageHandle page : imported.pages) {
+            const std::uint32_t node = take_membership();
+            if (node == kInvalidIndex) { std::terminate(); }
+            Membership& entry = memberships_[node];
+            entry.page        = page;
+            entry.epoch       = pages.content_epoch(page);
+            entry.coverage    = pages.committed_columns(page);
+            entry.extent      = descriptor;
+            entry.offset      = extent.page_count;
+            entry.next        = kInvalidIndex;
+            if (extent.tail == kInvalidIndex) {
+                extent.head = node;
+            } else {
+                memberships_[extent.tail].next = node;
+            }
+            extent.tail = node;
+            try {
+                pages.attach_host_replica(page,
+                                          HostKVPageReplica{.extent            = capability,
+                                                            .page_offset       = extent.page_count,
+                                                            .membership_node   = node,
+                                                            .content_epoch     = entry.epoch,
+                                                            .committed_columns = entry.coverage});
+            } catch (...) { std::terminate(); }
+            ++extent.page_count;
+        }
+        imported.capability = capability;
+        return imported;
     }
 
     void abort(HostKVExtentReservation& reservation) noexcept {

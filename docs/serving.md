@@ -272,38 +272,53 @@ curl http://127.0.0.1:8080/v1/load -H 'Authorization: Bearer local-secret'
 
 ### Context store
 
-> **Temporarily unavailable on this build:** `--context-store` is rejected at startup while the
-> store is ported to the new context engine. The rest of this section describes the store as it ran
-> on the previous engine.
+`--context-store DIR` makes the context cache survive a restart or a crash. It is off by default
+and needs a Host context cache (the default 8 GiB, `--host-context-mib` or `--auto-host-cache`),
+because stored sessions come back into the Host tier. What is stored is one retained conversation
+(continuation) at a time: its recovery points (the endpoint of the last turn, the point where the
+next turn's input starts, any long anchors) with their KV pages and recurrent states, byte for byte
+what the Host tier would hold for them. Public shared prefixes are not stored. A conversation is
+written to `DIR`
 
-`--context-store DIR` makes the context cache survive a restart or a crash. It is off by default.
-With it, a retained session is written to `DIR`
-
-- when it is evicted from the cache,
 - in the background once it has been unused for `--context-store-idle-seconds` (30 s) and has
   changed since it was last written, so a crash loses at most that much of a conversation, and
-- at shutdown, for every session not already stored, most recently used first, within `--context-store-flush-seconds` (60 s).
+- at shutdown, for every conversation not already stored, most recently used first, within
+  `--context-store-flush-seconds` (60 s).
 
-On start-up the most recently used sessions are restored into the cache, most recent first, until
-the cache is full or `--context-store-restore-seconds` (120 s) is spent, before the server accepts
-requests. A request then reuses a restored conversation exactly as it would have before the restart.
-There is nothing for a supervisor or gateway to call.
+A conversation evicted from the cache before it was idle that long is not written; with
+`--context-store-idle-seconds 0` conversations are written only at shutdown.
 
-The store is also read while the server runs. When a request is about to be admitted (the
-request at the head of the queue, or a backfill candidate) and the store holds a checkpoint of that
-very prompt at least 4,096 tokens deeper than the deepest checkpoint the cache holds for it (the
-session was evicted from memory since), the Engine reads the session back, giving up the least
-recently used retained sessions if it needs the room, and plans the request again so it resumes from
-it instead of prefilling the difference. The read and the upload run on the Engine worker, so they
-pause running requests for as long as they take (about a second per 2 GiB from an SSD); a stored
-session that cannot be read or does not fit is a miss and the request is prefilled as without the
-store. A session read back counts as a hydration only if the new plan actually resumes from it.
+On start-up the most recently used conversations are restored into the Host tier, most recent first,
+while they fit in its free space and until `--context-store-restore-seconds` (120 s) is spent, before
+the server accepts requests. Nothing is evicted for them. A request then reuses a restored
+conversation exactly as it would have before the restart, restoring it from the Host tier to the
+GPU like any other Host-resident checkpoint. There is nothing for a supervisor or gateway to call.
 
-The store does not support the DFlash speculative backend (its lane-local state is not captured in a
-session snapshot); the Engine refuses to start with both.
+The store is also read while the server runs. When a request is about to be admitted and the store
+holds a checkpoint of that very prompt at least 4,096 tokens deeper than the deepest checkpoint the
+cache offers it (the conversation was evicted since), a background reader loads the image while the
+request waits, out of the admission order but without holding up other requests, for at most
+`--context-store-restore-seconds` or the request's queue deadline. The image is then rebuilt in the
+Host tier, giving up the cache's lowest-ranked Host contents if it needs the room (never another
+waiting request's chosen source), and the request resumes from it instead of prefilling the
+difference. A stored conversation that cannot be read, does not fit or misses its deadline is a miss,
+and the request is prefilled as without the store. A read counts as a hydration only if the
+admission actually resumes from it. On the 27B on an RTX 3090, a 7.8k-token conversation (an
+856 MB image) read back from a warm file cache in about 1.5 s gave a first token after 1.6 s, against
+5.1 s for prefilling it and 0.1 s when it had stayed resident.
+
+The store does not support the DFlash speculative backends (their draft-side state has not been
+verified through a stored image); the Engine refuses to start with both.
+
+An image does not depend on `--devices`/`--stage-layers`: a conversation stored by a server split
+into pipeline stages restores on one GPU and the reverse. A worker failure that clears the context
+cache leaves the store as it was, and the next turn of a stored conversation reads it back. Prompt
+grafts are installed context, never stored; a conversation that started from a graft is stored like
+any other, and changing the configured grafts (their names or files) makes the existing images
+misses, as a different model would.
 
 A session image is several GB for a deep context (about 18 KB per token with `--kv-dtype rk4v4`,
-plus about 150 MB of recurrent state per checkpoint), and consecutive images of one conversation
+plus about 150 MB of recurrent state per recovery point), and consecutive images of one conversation
 share almost all of it. The store therefore splits an image into fixed 32 MiB chunks named by a hash
 of their content and writes only chunks it does not already hold: keeping a long conversation current
 costs the newest pages and the endpoint state, not the whole session. Older images of a conversation
@@ -313,14 +328,56 @@ simply re-prefilled by the next request; a damaged store costs cache hits, never
 
 The store keeps at most `--context-store-max-gib` (default: half the free space of the volume when
 the server starts), removing the least recently used sessions first, and removes sessions unused for
-`--context-store-ttl-hours` (default 168). A store written by a different model, quantization or KV
-configuration is ignored and ages out. The `ninfer_context_store_*` series (see
+`--context-store-ttl-hours` (default 168). A store written by a different model, quantization, KV
+configuration or set of prompt grafts is ignored and ages out. The `ninfer_context_store_*` series (see
 [Metrics](#metrics)) report size, writes, bytes reused, what was restored at start-up and how long it
-took. A background write is skipped while any request is waiting or prefilling, and the write queue
-holds at most two sessions, so a slow disk does not hold up requests. Taking the snapshot itself
-(copying a deep session out of the GPU) is a single step of the Engine worker, so a request that
-arrives during it waits for that copy; a session that could not be queued is
-retried or, if it was being evicted, lost to the store and re-prefilled on its next request.
+took. A background write is skipped while any request is waiting, binding, prefilling or replaying,
+and the write queue holds at most two images, so a slow disk does not hold up requests. Taking the
+image itself (copying a deep conversation out of the GPU or the Host tier) is a single step of the
+Engine worker, so a request that arrives during it waits for that copy; a conversation that could not
+be queued is tried again later.
+
+
+#### Keeping a copy in a bucket
+
+`--context-store-s3-endpoint URL --context-store-s3-bucket NAME` (off by default, and only with
+`--context-store`) keep a copy of the store in an S3-compatible bucket: AWS S3, MinIO, Cloudflare
+R2, Backblaze B2 or any server that speaks the S3 API with path-style addressing and Signature V4.
+The local directory becomes a cache of the bucket.
+
+- Every session written to the directory is also uploaded in the background, chunks first and its
+  manifest last, so another engine never sees a session whose chunks are missing. A chunk the bucket
+  already holds is not sent again, so a conversation that grows uploads only what changed. Shutdown
+  waits up to two minutes for the uploads still queued.
+- At start-up, and every minute after, the engine lists the bucket and registers sessions it does
+  not have. They appear in the store as not local; start-up restores the most recently used ones,
+  fetching their chunks (every chunk is verified, a damaged one makes the session a miss and it is
+  not offered again). A new engine, a replacement box or a second engine therefore starts warm from
+  what the others wrote, without sharing a disk.
+- A request that would resume from a session only the bucket holds waits for it like any stored
+  session (see above): the background reader fetches the missing chunks, within the same deadline,
+  without holding up the Engine worker or other requests.
+- A session evicted from the directory for space stays in the bucket and comes back the same way.
+- Credentials come from the environment, never the command line: `NINFER_S3_ACCESS_KEY_ID` and
+  `NINFER_S3_SECRET_ACCESS_KEY` (or `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; an
+  `AWS_SESSION_TOKEN` is honoured). `--context-store-s3-region` (default `us-east-1`) names the
+  signing region and `--context-store-s3-prefix` namespaces the keys when a bucket is shared. Use
+  an `https://` endpoint outside a trusted network: payloads are not part of the request signature.
+- The bucket is the long-term tier, so its expiry is the bucket's: add a lifecycle rule that expires
+  objects under the prefix after 7 days (the engine assumes at least a day). `--context-store-ttl-hours`
+  governs only the files in this directory; a session only the bucket holds ages there, and drops out
+  of the index at the next listing once the bucket no longer lists it. A session that is used has the
+  age of its objects restarted (a server-side copy onto itself, no data transferred, at most once a day
+  per session), and an object the bucket has lost in the meantime is uploaded again from the directory,
+  so something in use does not expire under it. A write is uploaded from a snapshot taken when it was
+  written, with its chunk files kept on disk until the upload ends (at most 16 uploads wait, each
+  newer write of a session replacing its queued upload); a chunk that is not intact on disk stops the
+  upload instead of publishing a session whose data is damaged. A chunk found damaged on disk when a
+  session is loaded is fetched again from the bucket.
+- An unreachable bucket costs the uploads and the fetches, counted in `ninfer_context_store_remote_*`;
+  the directory keeps working. Shutdown waits for queued uploads up to the remote flush budget (two
+  minutes) and then interrupts the transfer in progress, so it never waits out a stalled connection.
+
 
 ### Metrics
 
@@ -382,7 +439,10 @@ server restarts.
 | `ninfer_context_store_bytes_written_total`, `_bytes_reused_total` | new chunk bytes written, and chunk bytes a write found already stored |
 | `ninfer_context_store_evicted_total`, `_corrupt_total` | sessions removed for space, age or supersession, and because they could not be read back intact |
 | `ninfer_context_store_restored_sessions`, `_restored_bytes`, `_restore_seconds` | gauges: what start-up restored into the cache, and how long it took |
-| `ninfer_context_store_hydrations_total`, `_hydrated_tokens_total`, `_hydration_failures_total`, `_hydration_seconds_total` | stored sessions read back for a request, the prompt tokens that saved, failures (the request was prefilled, or the plan did not use what was read) and worker time spent, failed attempts included |
+| `ninfer_context_store_hydrations_total`, `_hydrated_tokens_total`, `_hydration_failures_total`, `_hydration_seconds_total` | stored sessions read back for a request, the prompt tokens that saved, failures (the request was prefilled, or its admission did not use what was read) and the time requests waited for the reads, failed ones included |
+| `ninfer_context_store_remote_images` | gauge: with a bucket, sessions it holds that the directory does not hold in full |
+| `ninfer_context_store_remote_uploads_total`, `_remote_upload_bytes_total`, `_remote_upload_failures_total` | objects and bytes uploaded to the bucket, and uploads that failed |
+| `ninfer_context_store_remote_downloads_total`, `_remote_download_bytes_total`, `_remote_download_failures_total` | chunks and bytes fetched from the bucket, and listings or fetches that failed or returned damaged data |
 
 Histograms expose `_bucket`, `_sum` and `_count`. Metrics have bounded labels; they do not retain
 request IDs or request text. Rates are calculated by the consumer, for example:
@@ -1272,12 +1332,14 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--host-cache-reserve-mib N` | with `--auto-host-cache`, host memory left unpinned beneath what is available | `3072` |
 | `--host-cache-max-mib N` | with `--auto-host-cache`, the most it may pin, applied after the reserve; for machines whose memory other tenants share | no cap |
 | `--host-cache-percent N` | with `--auto-host-cache`, the most it may pin as a percentage (1-100) of the machine's total memory (or its container's limit), however much is free at startup; the smallest of this, the cap and the free memory less the reserve applies | no limit |
-| `--context-store DIR` | keep retained sessions on disk so a restart or crash does not lose the context cache; see [Context store](#context-store). **Temporarily rejected at startup on this build** | off |
+| `--context-store DIR` | keep retained sessions on disk so a restart or crash does not lose the context cache; see [Context store](#context-store). Needs a nonzero Host context budget | off |
 | `--context-store-max-gib N` | bound the store; the least recently used sessions are removed beyond it. Requires `--context-store` | half the volume's free space |
 | `--context-store-ttl-hours N` | remove sessions unused this long; `0` keeps them until space is needed | `168` |
-| `--context-store-idle-seconds N` | write a session unused this long, and changed since it was last written, in the background; `0` writes only on eviction and shutdown | `30` |
-| `--context-store-restore-seconds N` | time budget for restoring sessions at start-up | `120` |
+| `--context-store-idle-seconds N` | write a session unused this long, and changed since it was last written, in the background; `0` writes only at shutdown | `30` |
+| `--context-store-restore-seconds N` | time budget for restoring sessions at start-up, and the longest a request waits for its stored session to be read back | `120` |
 | `--context-store-flush-seconds N` | time budget for writing sessions that are not yet stored at shutdown | `60` |
+| `--context-store-s3-endpoint URL`, `--context-store-s3-bucket NAME` | keep a copy of the store in an S3-compatible bucket (both required together; credentials from `NINFER_S3_ACCESS_KEY_ID` / `NINFER_S3_SECRET_ACCESS_KEY` or the `AWS_` equivalents); see [Keeping a copy in a bucket](#keeping-a-copy-in-a-bucket). Requires `--context-store` | off |
+| `--context-store-s3-prefix P`, `--context-store-s3-region R` | key prefix inside the bucket, and the signing region | none, `us-east-1` |
 | `--no-exit-on-engine-failure` | stay alive (answering 503) when the engine latches unavailable, instead of logging FATAL and exiting with status 3 after 5 s | exit |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |

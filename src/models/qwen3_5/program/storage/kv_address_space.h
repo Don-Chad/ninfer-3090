@@ -218,6 +218,33 @@ public:
         return KVAddressSpaceHandle(this, index, address.generation);
     }
 
+    // Fills an empty inactive address with existing logical pages, in order, taking one reader
+    // reference to each: a restored checkpoint history. `committed_frontier` must lie in the last page.
+    void adopt_inactive(KVAddressSpaceHandle handle, std::span<const LogicalKVPageHandle> pages,
+                        std::uint32_t committed_frontier) {
+        Address& address = require(handle);
+        if (address.active || address.row || address.reservation.valid() ||
+            address.page_count != 0 || address.committed_frontier != 0 ||
+            pages.size() > page_capacity_ ||
+            pages_for_tokens(committed_frontier) != static_cast<std::uint32_t>(pages.size())) {
+            throw std::logic_error("KV address space cannot adopt the restored pages");
+        }
+        for (const LogicalKVPageHandle page : pages) {
+            if (!pages_->can_retain_reference(page, false)) {
+                throw std::logic_error("restored KV page is not retainable");
+            }
+        }
+        for (std::uint32_t index = 0; index < pages.size(); ++index) {
+            (void)directory_slot(address.directory, index);
+        }
+        for (std::uint32_t index = 0; index < pages.size(); ++index) {
+            pages_->retain_reference(pages[index], false);
+            directory_slot(address.directory, index) = pages[index];
+        }
+        address.page_count         = static_cast<std::uint32_t>(pages.size());
+        address.committed_frontier = committed_frontier;
+    }
+
     [[nodiscard]] bool valid(KVAddressSpaceHandle handle) const noexcept {
         return handle.owner_ == this && handle.index_ < addresses_.size() &&
                addresses_[handle.index_].occupied &&

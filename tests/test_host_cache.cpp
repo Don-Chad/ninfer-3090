@@ -159,8 +159,8 @@ int check_automatic_normalization() {
     return failures;
 }
 
-// Fork features this build does not carry are refused at Engine construction rather than dropped.
-int check_unavailable_options_rejected() {
+// Fork features that were once parked are accepted by option normalization again.
+int check_fork_options_accepted() {
     using ninfer::runtime::normalize_engine_options;
     const auto rejected = [](auto&& edit) {
         ninfer::EngineOptions options;
@@ -171,13 +171,18 @@ int check_unavailable_options_rejected() {
         return false;
     };
     int failures = 0;
-    failures += check(rejected([](ninfer::EngineOptions& o) {
-                          o.context_store.directory = "store";
-                      }),
-                      "the context store was accepted");
     failures += check(!rejected([](ninfer::EngineOptions& o) { o.devices = {0}; }) &&
                           !rejected([](ninfer::EngineOptions& o) { o.devices = {0, 0}; }),
-                      "a pipeline device list was refused");
+                      "a pipeline device list was refused at option normalization");
+    failures += check(!rejected([](ninfer::EngineOptions& o) {
+                          o.enable_vision    = true;
+                          o.vision_residency = ninfer::VisionResidency::Overlay;
+                      }),
+                      "overlay vision residency was refused at option normalization");
+    failures += check(!rejected([](ninfer::EngineOptions& o) {
+                          o.context_store.directory = "store";
+                      }),
+                      "the context store was refused at option normalization");
     return failures;
 }
 
@@ -186,7 +191,7 @@ int check_unavailable_options_rejected() {
 int main() {
     int failures = 0;
     failures += check_automatic_normalization();
-    failures += check_unavailable_options_rejected();
+    failures += check_fork_options_accepted();
 
     // Everything free but the 3 GiB default reserve is pinned.
     failures += check(resolve_host_capacity_bytes(requested(), 64 * kGiB) == 61 * kGiB,
