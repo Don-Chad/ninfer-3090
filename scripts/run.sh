@@ -60,7 +60,29 @@
 # NINFER_CONTEXT, NINFER_CONCURRENCY,
 # NINFER_KV_CAPACITY, NINFER_KV_DTYPE, NINFER_SPEC, NINFER_DRAFT_TOKENS, NINFER_PREFILL_CHUNK,
 # NINFER_VISION (on|off), NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS, NINFER_MIN_P (0.03) and
-# NINFER_PRESENCE_PENALTY (0.5), the loop guard ("default" keeps the registered preset). Each spec's defaults (context, lanes, chunk)
+# NINFER_PRESENCE_PENALTY (0.5), the loop guard ("default" keeps the registered preset).
+#
+# SERVING KNOBS, `tuned` only. Each is passed to ninfer-serve only when set, so leaving them all
+# unset keeps the profile exactly as measured; `ninfer-serve --help` says what each one does.
+#   NINFER_MAX_PREFILL_LANES            --max-prefill-lanes N          prefill several prompts at once, so a
+#                                                                      short request is not stuck behind a long one
+#   NINFER_DECODE_ROUNDS_PER_PREFILL    --decode-rounds-per-prefill N  decode rounds between prefill units
+#   NINFER_PROGRESS_ANCHOR_TOKENS       --progress-anchor-tokens N     checkpoint a long prefill every N tokens
+#   NINFER_AUTO_HOST_CACHE=on           --auto-host-cache              size the host context cache from free RAM.
+#                                                                      Replaces the fixed 8 private / 8 shared /
+#                                                                      host-state-slots / 8 GiB host KV sizing, so
+#                                                                      NINFER_HOST_STATE_SLOTS is then ignored
+#     NINFER_HOST_CACHE_PERCENT         --host-cache-percent N         share of free RAM to use (1-100)
+#     NINFER_HOST_CACHE_RESERVE_MIB     --host-cache-reserve-mib N     RAM to always leave free
+#     NINFER_HOST_CACHE_MAX_MIB         --host-cache-max-mib N         hard cap on pinned RAM
+#   NINFER_MAX_OUTPUT_TOKENS            --max-output-tokens N          cap every request's output budget
+#   NINFER_OUTPUT_RESERVATION_TOKENS    --output-reservation-tokens N  reserve output KV as a request decodes
+#   NINFER_LOOKUP_NGRAM                 --lookup-ngram N               context-lookup drafting beside --spec
+#   NINFER_MLP_A8_DECODE=on             --mlp-a8-decode                INT8-activation MLP decode
+#   NINFER_CONTEXT_STORE                --context-store DIR            keep the context cache across restarts
+#     NINFER_CONTEXT_STORE_MAX_GIB      --context-store-max-gib N      disk budget for the store
+#
+# Each spec's defaults (context, lanes, chunk)
 # are the ones that fit; the context figures below are extrapolated for a headless card, so treat
 # the first start as the confirmation and drop a rung if it refuses:
 # 229376 / 212992 / 196608 / 163840 / 131072 / 114688 / 98304 / 65536.
@@ -239,10 +261,47 @@ if [[ "$profile" == 'tuned' ]]; then
   profile_args+=(
     --max-pending-requests 16 --pending-timeout-ms 600000
     ${vision_args[@]+"${vision_args[@]}"}
-    --max-private-continuations 8 --max-shared-prefixes 8 --host-state-slots "$HOST_STATE_SLOTS"
-    --host-kv-mib 8192
     --auto-prefix-grid
   )
+  # --auto-host-cache sizes the host cache itself and refuses the fixed sizing, so it is either/or.
+  # The step-down ladder still sets NINFER_HOST_STATE_SLOTS; it is simply unused when auto.
+  AUTO_HOST_CACHE="${NINFER_AUTO_HOST_CACHE:-off}"
+  case "$AUTO_HOST_CACHE" in
+    on)
+      profile_args+=(--auto-host-cache)
+      [[ -z "${NINFER_HOST_CACHE_PERCENT:-}" ]] || profile_args+=(--host-cache-percent "$NINFER_HOST_CACHE_PERCENT")
+      [[ -z "${NINFER_HOST_CACHE_RESERVE_MIB:-}" ]] || profile_args+=(--host-cache-reserve-mib "$NINFER_HOST_CACHE_RESERVE_MIB")
+      [[ -z "${NINFER_HOST_CACHE_MAX_MIB:-}" ]] || profile_args+=(--host-cache-max-mib "$NINFER_HOST_CACHE_MAX_MIB")
+      cache_note='host cache sized automatically from free RAM' ;;
+    off)
+      if [[ -n "${NINFER_HOST_CACHE_PERCENT:-}${NINFER_HOST_CACHE_RESERVE_MIB:-}${NINFER_HOST_CACHE_MAX_MIB:-}" ]]; then
+        printf 'NINFER_HOST_CACHE_* needs NINFER_AUTO_HOST_CACHE=on\n' >&2; exit 2
+      fi
+      profile_args+=(
+        --max-private-continuations 8 --max-shared-prefixes 8 --host-state-slots "$HOST_STATE_SLOTS"
+        --host-kv-mib 8192
+      )
+      cache_note="8 shared / 8 private / $HOST_STATE_SLOTS host states" ;;
+    *) printf 'NINFER_AUTO_HOST_CACHE must be on or off, got %s\n' "$AUTO_HOST_CACHE" >&2; exit 2 ;;
+  esac
+  # Opt-in serving knobs: each is appended only when set, so the defaults above are untouched.
+  [[ -z "${NINFER_MAX_PREFILL_LANES:-}" ]] || profile_args+=(--max-prefill-lanes "$NINFER_MAX_PREFILL_LANES")
+  [[ -z "${NINFER_DECODE_ROUNDS_PER_PREFILL:-}" ]] || profile_args+=(--decode-rounds-per-prefill "$NINFER_DECODE_ROUNDS_PER_PREFILL")
+  [[ -z "${NINFER_PROGRESS_ANCHOR_TOKENS:-}" ]] || profile_args+=(--progress-anchor-tokens "$NINFER_PROGRESS_ANCHOR_TOKENS")
+  [[ -z "${NINFER_MAX_OUTPUT_TOKENS:-}" ]] || profile_args+=(--max-output-tokens "$NINFER_MAX_OUTPUT_TOKENS")
+  [[ -z "${NINFER_OUTPUT_RESERVATION_TOKENS:-}" ]] || profile_args+=(--output-reservation-tokens "$NINFER_OUTPUT_RESERVATION_TOKENS")
+  [[ -z "${NINFER_LOOKUP_NGRAM:-}" ]] || profile_args+=(--lookup-ngram "$NINFER_LOOKUP_NGRAM")
+  case "${NINFER_MLP_A8_DECODE:-off}" in
+    on) profile_args+=(--mlp-a8-decode) ;;
+    off) ;;
+    *) printf 'NINFER_MLP_A8_DECODE must be on or off, got %s\n' "$NINFER_MLP_A8_DECODE" >&2; exit 2 ;;
+  esac
+  if [[ -n "${NINFER_CONTEXT_STORE:-}" ]]; then
+    profile_args+=(--context-store "$NINFER_CONTEXT_STORE")
+    [[ -z "${NINFER_CONTEXT_STORE_MAX_GIB:-}" ]] || profile_args+=(--context-store-max-gib "$NINFER_CONTEXT_STORE_MAX_GIB")
+  elif [[ -n "${NINFER_CONTEXT_STORE_MAX_GIB:-}" ]]; then
+    printf 'NINFER_CONTEXT_STORE_MAX_GIB needs NINFER_CONTEXT_STORE\n' >&2; exit 2
+  fi
   # Loop guard for the small quant: a mild min-p trims the noisy token tail, and a mild presence
   # penalty breaks repetition loops in the reasoning and the answer. These are process-level
   # overrides, so they replace the registered presets in both thinking and non-thinking mode
@@ -274,7 +333,7 @@ fi
 printf '%s  |  %s\n' "$title" "$label"
 [[ -z "${prefill_note:-}" ]] || printf '%s\n' "$prefill_note"
 if [[ "$profile" == 'tuned' ]]; then
-  printf 'Cache: 8 shared / 8 private / %s host states  |  automatic prefix grid on\n' "$HOST_STATE_SLOTS"
+  printf 'Cache: %s  |  automatic prefix grid on\n' "$cache_note"
   printf 'Sampling guard: min-p %s, presence penalty %s  (NINFER_MIN_P, NINFER_PRESENCE_PENALTY; "default" = registered preset)\n' \
     "$MIN_P" "$PRESENCE_PENALTY"
 fi

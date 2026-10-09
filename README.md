@@ -145,7 +145,7 @@ workload.
 `NINFER_CHAT_TEMPLATE` for every profile, plus `NINFER_CONTEXT`, `NINFER_CONCURRENCY`,
 `NINFER_KV_CAPACITY`, `NINFER_KV_DTYPE`, `NINFER_SPEC`, `NINFER_DRAFT_TOKENS`, `NINFER_PREFILL_CHUNK`,
 `NINFER_VISION`, `NINFER_HOST_STATE_SLOTS`, `NINFER_MIN_P` (0.03) and `NINFER_PRESENCE_PENALTY` (0.5) for the
-default ones; the last two are the loop guard, and `default` leaves the registered sampling preset in force. The launchers bind `127.0.0.1`;
+default ones; the last two are the loop guard, and `default` leaves the registered sampling preset in force. The newer serving flags are opt-in overrides too: `NINFER_MAX_PREFILL_LANES`, `NINFER_DECODE_ROUNDS_PER_PREFILL`, `NINFER_PROGRESS_ANCHOR_TOKENS`, `NINFER_AUTO_HOST_CACHE=on`, `NINFER_MAX_OUTPUT_TOKENS`, `NINFER_LOOKUP_NGRAM`, `NINFER_CONTEXT_STORE` and more (listed at the top of `run.sh` / `run.bat`). The launchers bind `127.0.0.1`;
 `NINFER_HOST=0.0.0.0` exposes the server to the LAN, **unauthenticated**. On Windows,
 `set NINFER_SPEC=mtp && run.bat qwen38-27b`; on Linux, `NINFER_SPEC=mtp ./run.sh qwen38-27b`.
 
