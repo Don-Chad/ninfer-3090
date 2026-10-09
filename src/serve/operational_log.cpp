@@ -464,9 +464,7 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
                   product::format_pretty_bytes(memory.runtime_reservation_bytes),
                   product::format_pretty_bytes(memory.available_after_startup_bytes));
 
-    // Report what was actually pinned, not what was requested: on Windows the Host context budget
-    // is clamped against what WDDM can pin at startup, so the memory summary (captured after that
-    // clamp) carries the true figure.
+    // Report what the Program actually pinned (the memory summary is captured after pinning).
     logger_->info("context | history {} | {} active + {} extra device states | host {}",
                   cache.enabled ? "on" : "off", engine.max_concurrency, *cache.device_state_slots,
                   product::format_pretty_bytes(memory.host_context_capacity_bytes));

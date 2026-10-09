@@ -1591,12 +1591,13 @@ retained entries to stay inside it rather than growing. The resolved value is wh
 `context cache |` startup line and the request log report. The option combines with
 `--device-state-slots` but not with an explicit `--host-context-mib`.
 
-On Windows, pinned host memory is charged against the GPU's memory (WDDM maps it into the card's
-address space), so the Host context budget, automatic or explicit, is clamped before it is pinned to
-half of the device memory left after the model and KV pool, less 1 GiB. A card the model nearly fills
-therefore gets a small Host context, down to none, while the same machine on Linux is not limited
-this way. The logged figures are the ones pinned. The automatic sizing constants are conservative
-defaults chosen by reasoning, not measured against hit rates on a live workload.
+The budget, automatic or explicit, is pinned in full on Windows as on Linux. Earlier builds clamped
+it on Windows to half of the device memory left after the model and KV pool, less 1 GiB, because
+WDDM once charged pinned host memory against the card; on current drivers pinning no longer tracks
+free VRAM (measured on an RTX 3090, driver 616.64: 16 GiB pinned with 804 MiB of the card free), so
+the clamp was removed and an 8 GiB budget really pins 8 GiB of RAM. The logged figures are the ones
+pinned. The automatic sizing constants are conservative defaults chosen by reasoning, not measured
+against hit rates on a live workload.
 
 ### Default output limit
 

@@ -60,9 +60,8 @@ Check them with `ldd` on the new binaries and update the guide if they change.
 watch the Windows zip if more DLLs are added.
 
 **Smoke-test the launcher default on the real card.** A busy desktop holding 2-3 GiB of the 3090 refuses
-the default DFlash2 profile, both on the engine's runtime reservation and on pinned host state (on
-Windows WDDM charges pinned host memory against the card). `run.{sh,bat}` therefore steps down by itself
-when startup is refused for lack of GPU memory; see `docs/maintainer/launcher-profiles.md`. `--kv-capacity
+the default DFlash2 profile on the engine's runtime reservation. `run.{sh,bat}` therefore steps down by
+itself when startup is refused for lack of GPU memory or fails to pin the Host context budget; see `docs/maintainer/launcher-profiles.md`. `--kv-capacity
 auto` does not avoid this, because the engine still reserves room for one full `--max-context` sequence.
 Start the launcher with nothing overridden and confirm it serves a request.
 

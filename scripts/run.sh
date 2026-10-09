@@ -9,7 +9,7 @@
 #   qwen36-35b-a3b    tuned (default)
 #
 # `tuned` is the recommended profile: rk4v4 KV, speculation plus the draft head, the memory flags,
-# vision in overlay residency, and the tuned context cache with automatic prefix grid. `int8` and
+# vision in overlay residency, and an 8 GiB pinned Host context budget for the cache. `int8` and
 # `c8` are the older reference profiles for the 27B -- one user at 64K of INT8 KV (the quality
 # default), and eight lanes at 8K -- with every serving flag fixed.
 #
@@ -48,10 +48,10 @@
 # IF THE CARD IS BUSY. A desktop (or another job) holding VRAM can leave too little for the default
 # context. When the `tuned` profile is refused at startup for lack of GPU memory, this launcher steps
 # down on its own -- an eighth of the context at a time, up to five times, from the second step with a 2048 prefill chunk
-# and fewer host state slots -- and says what it did, so the first run starts instead of ending in an
+# and a smaller Host context budget -- and says what it did, so the first run starts instead of ending in an
 # error. It
 # only does that for the defaults: an explicit NINFER_CONTEXT, NINFER_PREFILL_CHUNK,
-# NINFER_HOST_STATE_SLOTS or NINFER_KV_CAPACITY is honoured as given and fails loudly, and
+# NINFER_HOST_CONTEXT_MIB or NINFER_KV_CAPACITY is honoured as given and fails loudly, and
 # NINFER_FALLBACK=off turns the step-down off.
 #
 # OVERRIDES, from the environment. All profiles: NINFER_MODEL (artifact path), NINFER_MODEL_DIR,
@@ -59,7 +59,7 @@
 # straight to --chat-template; overrides the artifact's built-in template). `tuned` also:
 # NINFER_CONTEXT, NINFER_CONCURRENCY,
 # NINFER_KV_CAPACITY, NINFER_KV_DTYPE, NINFER_SPEC, NINFER_DRAFT_TOKENS, NINFER_PREFILL_CHUNK,
-# NINFER_VISION (on|off), NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS, NINFER_MIN_P (0.03) and
+# NINFER_VISION (on|off), NINFER_VISION_RESIDENCY, NINFER_HOST_CONTEXT_MIB (8192), NINFER_MIN_P (0.03) and
 # NINFER_PRESENCE_PENALTY (0.5), the loop guard ("default" keeps the registered preset). Each spec's defaults (context, lanes, chunk)
 # are the ones that fit; the context figures below are extrapolated for a headless card, so treat
 # the first start as the confirmation and drop a rung if it refuses:
@@ -191,23 +191,19 @@ case "$model_key/$profile" in
 
   qwen38-27b/c8)
     # Context cache sized per lane, so several agents rotating through the lanes find their own
-    # conversation still cached instead of re-prefilling it: two retained conversations per lane,
-    # one checkpoint StateImage per lane on the card beyond the active ones, and two per lane in
-    # pinned host memory. Measured at one lane on the default of two retained conversations, four
-    # rotating agents reused 12% of their prompts (TTFT 14 s); with room for all of them, 76% (2.9 s).
-    # MEMORY COST: this profile keeps the GDN state in BF16, so a StateImage is 147 MiB. The device
-    # slots take 8 x 147 MiB = 1.15 GiB of VRAM, the engine default at eight lanes, so that is
-    # unchanged; the host slots pin 16 x 147 MiB = 2.3 GiB of RAM. Retention is still bounded by the
-    # 16,384-token KV pool.
+    # conversation still cached instead of re-prefilling it: one checkpoint StateImage per lane on
+    # the card beyond the active ones, and the same 8 GiB pinned Host context budget as `tuned` for
+    # the conversations that leave the card. MEMORY COST: this profile keeps the GDN state in BF16,
+    # so a StateImage is 147 MiB. The device slots take 8 x 147 MiB = 1.15 GiB of VRAM, the engine
+    # default at eight lanes; the Host budget pins 8 GiB of RAM (StateImages, KV pages and pause
+    # snapshots share it). Retention on the card is still bounded by the 16,384-token KV pool.
     c8_lanes=8
-    c8_host_states_per_lane=2
     profile_args=(
       --max-context 8192 --kv-capacity 16384
       --max-concurrency "$c8_lanes" --max-pending-requests 32 --pending-timeout-ms 600000
       --prefill-chunk 512 --kv-dtype int8
       --spec mtp --draft-tokens 3 --lm-head-draft
-      --max-private-continuations "$((c8_lanes * 2))" --device-state-slots "$c8_lanes"
-      --host-state-slots "$((c8_lanes * c8_host_states_per_lane))"
+      --device-state-slots "$c8_lanes" --host-context-mib 8192
     )
     label='up to eight requests  |  8K context  |  INT8 KV  |  MTP3, ReplaySSM' ;;
 
@@ -217,7 +213,7 @@ case "$model_key/$profile" in
     exit 2 ;;
 esac
 
-# Only `tuned` carries the context cache and vision: the reference profiles are deliberately
+# Only `tuned` carries vision and the sampling guard: the reference profiles are deliberately
 # minimal. Vision stays on there -- overlay residency keeps the tower host-pinned and streams each
 # image through a borrowed device window, so it costs about 10 MiB of runtime reservation.
 if [[ "$profile" == 'tuned' ]]; then
@@ -229,19 +225,15 @@ if [[ "$profile" == 'tuned' ]]; then
     *) printf 'NINFER_VISION must be on or off, got %s\n' "$VISION" >&2; exit 2 ;;
   esac
   label="$label  |  $vision_label"
-  # Pinned host memory for the context cache: 74.5 MiB per slot on the 27B. Free on Linux; on Windows
-  # WDDM charges it against the card, so a busy desktop needs fewer (see the README on startup).
-  # --max-private-continuations 8 below is what keeps several rotating conversations cached: the
-  # engine default is two per lane, and four agents on one lane then evict each other on every turn
-  # (12% prompt reuse against 76% with room for all four, measured 2026-09-28). A retained
-  # conversation costs no memory by itself; its KV pages and StateImages come from the pools above.
-  HOST_STATE_SLOTS="${NINFER_HOST_STATE_SLOTS:-32}"
+  # Pinned Host context budget, in MiB: one byte budget that retained StateImages (74.5 MiB each on
+  # the 27B with the FP16 state), KV pages and pause snapshots share once they leave the card. It is
+  # host RAM, not device memory, pinned in full at startup. Lower it if the box is short on RAM; 0
+  # keeps everything on the card.
+  HOST_CONTEXT_MIB="${NINFER_HOST_CONTEXT_MIB:-8192}"
   profile_args+=(
     --max-pending-requests 16 --pending-timeout-ms 600000
     ${vision_args[@]+"${vision_args[@]}"}
-    --max-private-continuations 8 --max-shared-prefixes 8 --host-state-slots "$HOST_STATE_SLOTS"
-    --host-kv-mib 8192
-    --auto-prefix-grid
+    --host-context-mib "$HOST_CONTEXT_MIB"
   )
   # Loop guard for the small quant: a mild min-p trims the noisy token tail, and a mild presence
   # penalty breaks repetition loops in the reasoning and the answer. These are process-level
@@ -274,7 +266,7 @@ fi
 printf '%s  |  %s\n' "$title" "$label"
 [[ -z "${prefill_note:-}" ]] || printf '%s\n' "$prefill_note"
 if [[ "$profile" == 'tuned' ]]; then
-  printf 'Cache: 8 shared / 8 private / %s host states  |  automatic prefix grid on\n' "$HOST_STATE_SLOTS"
+  printf 'Context cache: %s MiB pinned host RAM  (NINFER_HOST_CONTEXT_MIB)\n' "$HOST_CONTEXT_MIB"
   printf 'Sampling guard: min-p %s, presence penalty %s  (NINFER_MIN_P, NINFER_PRESENCE_PENALTY; "default" = registered preset)\n' \
     "$MIN_P" "$PRESENCE_PENALTY"
 fi
@@ -289,15 +281,13 @@ ladder=0
 if [[ "$profile" == 'tuned' && "${NINFER_FALLBACK:-on}" != 'off' ]]; then
   if [[ -n "${NINFER_FALLBACK_RUNG:-}" ]]; then
     ladder=1
-  elif [[ -z "${NINFER_CONTEXT:-}${NINFER_PREFILL_CHUNK:-}${NINFER_HOST_STATE_SLOTS:-}${NINFER_KV_CAPACITY:-}" ]]; then
+  elif [[ -z "${NINFER_CONTEXT:-}${NINFER_PREFILL_CHUNK:-}${NINFER_HOST_CONTEXT_MIB:-}${NINFER_KV_CAPACITY:-}" ]]; then
     ladder=1
   fi
 fi
 
-# --host-kv-mib 8192 is honoured in full here: on Linux this really does pin 8 GiB of host RAM, and
-# it is host RAM, not device memory. run.bat passes the same number and gets far less -- WDDM
-# charges a pinned host allocation against the card, so the runtime clamps to
-# (free VRAM - 1 GiB) / 2. See docs/maintainer/launcher-profiles.md.
+# --host-context-mib 8192 really pins 8 GiB of host RAM, here and in run.bat alike (see
+# docs/maintainer/launcher-profiles.md).
 if (( ! ladder )); then
   exec "$server" "$MODEL" --host "$HOST" --port "$PORT" "${profile_args[@]}"
 fi
@@ -307,7 +297,7 @@ fi
 rung="${NINFER_FALLBACK_RUNG:-0}"
 base_context="${NINFER_FALLBACK_BASE_CONTEXT:-$CONTEXT}"
 base_chunk="${NINFER_FALLBACK_BASE_CHUNK:-$PREFILL_CHUNK}"
-base_slots="${NINFER_FALLBACK_BASE_SLOTS:-$HOST_STATE_SLOTS}"
+base_host_mib="${NINFER_FALLBACK_BASE_HOST_MIB:-$HOST_CONTEXT_MIB}"
 server_log="$(mktemp)"
 trap 'rm -f -- "$server_log"' EXIT
 set +e
@@ -320,16 +310,17 @@ if (( status != 0 && rung < 5 )) &&
   next_context=$(( base_context * (8 - next) / 8 / 1024 * 1024 ))
   # The first step trims context only: an eighth of it frees more than a card that just misses
   # needs, and prefill speed and cached prefixes are worth keeping. Later steps also give up the
-  # wider prefill chunk and halve the host state slots every other step.
+  # wider prefill chunk and halve the Host context budget every other step (floor 0).
   next_chunk=$base_chunk
   (( next < 2 || base_chunk <= 2048 )) || next_chunk=2048
-  next_slots=$(( base_slots >> (next / 2) ))
-  printf '\nNot enough free GPU memory to start at context %s. Retrying at %s (prefill chunk %s, %s host state slots).\n' \
-    "$CONTEXT" "$next_context" "$next_chunk" "$next_slots"
+  next_host_mib=$(( base_host_mib >> (next / 2) ))
+  (( next_host_mib >= 0 )) || next_host_mib=0
+  printf '\nNot enough free memory to start at context %s. Retrying at %s (prefill chunk %s, %s MiB host context).\n' \
+    "$CONTEXT" "$next_context" "$next_chunk" "$next_host_mib"
   printf 'Set NINFER_CONTEXT to choose your own, or NINFER_FALLBACK=off to fail instead.\n\n'
   exec env NINFER_CONTEXT="$next_context" NINFER_PREFILL_CHUNK="$next_chunk" \
-    NINFER_HOST_STATE_SLOTS="$next_slots" NINFER_FALLBACK_RUNG="$next" \
+    NINFER_HOST_CONTEXT_MIB="$next_host_mib" NINFER_FALLBACK_RUNG="$next" \
     NINFER_FALLBACK_BASE_CONTEXT="$base_context" NINFER_FALLBACK_BASE_CHUNK="$base_chunk" \
-    NINFER_FALLBACK_BASE_SLOTS="$base_slots" "$0" "$@"
+    NINFER_FALLBACK_BASE_HOST_MIB="$base_host_mib" "$0" "$@"
 fi
 exit "$status"
