@@ -194,6 +194,13 @@ std::string slot_model_binding(const EngineOptions& options, const LoadSummary& 
     std::string binding = load.architecture + '\n' + load.model_name + '\n';
     for (const std::string& format : load.weight_formats) { binding += format + ','; }
     binding += '\n' + load.prefill_signature + '\n';
+    // What a snapshot's restore checks beyond the artifact: the KV storage and the speculative
+    // configuration its state and KV layout were built for. Part of the binding so an image made
+    // under another setting is filtered out before anything is read or evicted for it.
+    binding += std::to_string(static_cast<unsigned>(options.kv_cache)) + ',' +
+               std::to_string(static_cast<unsigned>(options.speculative.backend)) + ',' +
+               std::to_string(options.speculative.draft_tokens) + ',' +
+               std::to_string(static_cast<unsigned>(options.speculative.proposal_head)) + '\n';
     std::error_code size_error;
     const std::uintmax_t size = std::filesystem::file_size(options.artifact_path, size_error);
     binding += size_error ? std::string("?") : std::to_string(size);
