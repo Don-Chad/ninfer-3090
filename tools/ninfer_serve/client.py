@@ -119,6 +119,7 @@ class PreparedServeExchange:
         *,
         on_sent: Callable[[int], None] | None = None,
         on_body_sent: Callable[[int], None] | None = None,
+        on_headers: Callable[[HttpResponseHead], None] | None = None,
         on_event: Callable[[ProtocolEvent], None] | None = None,
     ) -> ServeExchangeResult:
         adapter = _adapter(self.request.protocol)
@@ -135,6 +136,8 @@ class PreparedServeExchange:
         def headers(value: HttpResponseHead) -> None:
             nonlocal head, protocol_error
             head = value
+            if on_headers is not None:
+                on_headers(value)
             if self.request.stream and 200 <= value.status < 300:
                 media_type = value.headers.get("content-type", "").split(";", 1)[0].strip().lower()
                 if media_type != "text/event-stream":

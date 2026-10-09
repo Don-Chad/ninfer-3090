@@ -566,6 +566,47 @@ int main() {
                               Json::array({17, 151645}) &&
                           observed_done.at("result").at("completion_tokens") == 2,
                       "request diagnostics lost exact generated token IDs or schema version");
+    const ninfer::GenerationSchedulingObservation scheduling{
+        .transition              = ninfer::GenerationSchedulingTransition::ReplayComplete,
+        .route                   = ninfer::GenerationRecoveryRoute::Replay,
+        .engine_request_id       = 19,
+        .steady_ns               = 9007199254740993ULL,
+        .elapsed_ns              = 123456789,
+        .preemption_index        = 2,
+        .global_prefill_tokens   = 4000,
+        .global_decode_tokens    = 190,
+        .global_replayed_tokens  = 2048,
+        .request_prefill_tokens  = 192,
+        .request_decode_tokens   = 17,
+        .request_replayed_tokens = 512,
+    };
+    const Json scheduling_json = Json::parse(
+        format_request_scheduling_json("serve-test", 3002, 8, "http-eight", scheduling));
+    failures += check(
+        scheduling_json.at("event") == "request_scheduling" &&
+            scheduling_json.at("request").at("request_id") == 8 &&
+            scheduling_json.at("request").at("http_request_id") == "http-eight" &&
+            scheduling_json.at("engine_request_id") == 19 &&
+            scheduling_json.at("transition") == "replay_complete" &&
+            scheduling_json.at("route") == "replay" &&
+            scheduling_json.at("steady_ns").get<std::uint64_t>() == scheduling.steady_ns &&
+            scheduling_json.at("elapsed_ns") == scheduling.elapsed_ns &&
+            scheduling_json.at("preemption_index") == 2 &&
+            scheduling_json.at("progress").at("global_decode_tokens") == 190 &&
+            scheduling_json.at("progress").at("request_decode_tokens") == 17 &&
+            scheduling_json.at("progress").at("global_prefill_tokens") == 4000 &&
+            scheduling_json.at("progress").at("request_prefill_tokens") == 192 &&
+            scheduling_json.at("progress").at("global_replayed_tokens") == 2048 &&
+            scheduling_json.at("progress").at("request_replayed_tokens") == 512,
+        "scheduling observation lost request identity, precise clock or paired work counters");
+    auto pausing       = scheduling;
+    pausing.transition = ninfer::GenerationSchedulingTransition::PauseStarted;
+    pausing.route      = ninfer::GenerationRecoveryRoute::None;
+    const Json pausing_json =
+        Json::parse(format_request_scheduling_json("serve-test", 3003, 8, "http-eight", pausing));
+    failures += check(pausing_json.at("transition") == "pause_started" &&
+                          pausing_json.at("route").is_null(),
+                      "pause preparation claimed a completed Snapshot or Replay route");
     failures += check(
         first_json.at("elapsed_seconds") == first.elapsed_seconds &&
             first_json.at("initial_binding_seconds") == first.initial_binding_seconds &&

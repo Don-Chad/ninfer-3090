@@ -5,10 +5,6 @@
 #include <cstdint>
 #include <chrono>
 
-namespace ninfer {
-struct HostKVPageLayout;
-}
-
 namespace ninfer::models::qwen3_5 {
 struct StateImageHostLayout;
 }
@@ -32,7 +28,7 @@ state_transfer_requirement(const StateImageHostLayout& layout,
 
 runtime::ContextTransferRequirement
 kv_transfer_requirement(runtime::ContextResourceClass resource,
-                        runtime::ContextTransferDirection direction, const HostKVPageLayout& layout,
-                        std::uint32_t pages, std::uint32_t contiguous_runs = 1);
+                        runtime::ContextTransferDirection direction, std::uint32_t pages,
+                        TransferWork work);
 
 } // namespace ninfer::models::qwen3_5::detail

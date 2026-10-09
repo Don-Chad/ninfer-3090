@@ -118,12 +118,6 @@
       "prompt_tokens": 127,
       "max_output_tokens": 4096
     },
-    "medium-3000": {
-      "path": "examples/cli/messages/text_smoke_zh.json",
-      "sha256": "c5d5a16e3dd26a47c67a5da30b803739404611dafe1e753a9ccb982befb3ac7a",
-      "prompt_tokens": 30,
-      "max_output_tokens": 3000
-    },
     "context-exact": {
       "path": "bench/fixtures/ttft/text/context_exact.json",
       "sha256": "946a56a8461593299713f24e1eae2b20482431bfcb5f4da3ad83bc0added753f",

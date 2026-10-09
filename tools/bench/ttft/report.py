@@ -255,19 +255,19 @@ COMPARISONS = (
         "shared_tools_second_vs_first",
         "shared prefix",
         "Stable tool-prefix second vs first",
-        "shared-tools-sequential",
-        "second",
-        "shared-tools-sequential",
-        "first",
+        "shared-tools-revisit",
+        "stable",
+        "shared-tools-revisit",
+        "source",
     ),
     _comparison(
         "shared_tools_changed_vs_stable",
         "shared prefix",
         "Changed tool identity vs stable second use",
-        "shared-tools-changed",
-        "second",
-        "shared-tools-sequential",
-        "second",
+        "shared-tools-revisit",
+        "changed",
+        "shared-tools-revisit",
+        "stable",
     ),
     _comparison(
         "shared_prefix_competition_final_vs_first",
@@ -318,7 +318,7 @@ COMPARISONS = (
         "decode_short_vs_cold",
         "scheduling",
         "Short arrival during decode vs cold",
-        "short-during-decode",
+        "decode-with-short-arrival",
         "short",
         "cold-short",
         "request",
@@ -381,19 +381,19 @@ COMPARISONS = (
         "media_warm_second_vs_first",
         "media",
         "Warm media preprocessing vs first use",
-        "media-preprocess-warm",
-        "second",
-        "media-preprocess-warm",
-        "first",
+        "media-preprocess-revisit",
+        "a-warm",
+        "media-preprocess-revisit",
+        "a-cold",
     ),
     _comparison(
         "media_thrash_final_vs_first",
         "media",
         "A after B/C pressure vs first A",
-        "media-cache-thrash",
-        "a-final",
-        "media-cache-thrash",
-        "a-first",
+        "media-preprocess-revisit",
+        "a-revisit",
+        "media-preprocess-revisit",
+        "a-cold",
     ),
     _comparison(
         "many_image_thread1_vs_default",
@@ -1072,6 +1072,114 @@ def _validate_baseline(current: CampaignData, baseline: CampaignData) -> None:
             )
 
 
+def _distribution(values: Sequence[int]) -> dict[str, int | float | None]:
+    ordered = sorted(values)
+    return {
+        "count": len(ordered),
+        "mean_ns": statistics.mean(ordered) if ordered else None,
+        "median_ns": statistics.median(ordered) if ordered else None,
+        "p95_ns": ordered[(95 * len(ordered) + 99) // 100 - 1] if ordered else None,
+        "max_ns": ordered[-1] if ordered else None,
+    }
+
+
+def _lifecycle_metrics(requests: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "requests": len(requests),
+        "request_outcomes": dict(Counter(str(r.get("outcome")) for r in requests)),
+        **{
+            metric: _distribution([r[field] for r in requests if type(r.get(field)) is int])
+            for metric, field in (("ttft", "ttft_ns"), ("terminal", "terminal_latency_ns"))
+        },
+        "output_gap": _distribution([gap for r in requests for gap in r.get("output_gap_ns", [])]),
+    }
+
+
+def _lifecycle_groups(runs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    samples: dict[tuple[str, str, str, str], set[int]] = defaultdict(set)
+    for run in runs:
+        if run.get("constructed") is not True:
+            continue
+        classes = run.get("notes", {}).get("request_classes", {})
+        for request in run.get("requests", []):
+            role = request["role"]
+            kind, label = ("class", classes[role]) if role in classes else ("role", role)
+            key = (run["case"], run["profile_label"], kind, label)
+            groups[key].append(request)
+            samples[key].add(run["_sample"])
+    return [
+        {"case": case, "profile_label": profile, "group_kind": kind, "group_label": label,
+         "samples": len(samples[key]), **_lifecycle_metrics(requests)}
+        for key, requests in sorted(groups.items()) for case, profile, kind, label in [key]
+    ]
+
+
+def _phase_metrics(runs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    for run in runs:
+        by_role = {request["role"]: request for request in run.get("requests", [])}
+        for phase, roles in run.get("notes", {}).get("workload_phases", {}).items():
+            requests = [by_role[role] for role in roles if role in by_role]
+            starts = [r["sent_ns"] for r in requests if type(r.get("sent_ns")) is int]
+            ends = [r["ended_ns"] for r in requests if type(r.get("ended_ns")) is int]
+            complete = bool(roles) and len(requests) == len(roles)
+            timed = complete and len(starts) == len(roles) and len(ends) == len(roles)
+            rows.append({
+                "case": run["case"], "sample": run["_sample"], "phase": phase,
+                "scope": "selected_client_requests", "constructed": run.get("constructed"),
+                "missing_roles": [role for role in roles if role not in by_role],
+                "duration_ns": max(ends) - min(starts) if timed else None,
+                **_lifecycle_metrics(requests),
+            })
+    return rows
+
+
+def _arrival_metrics(notes: dict[str, Any], requests: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Use only scheduled roles and the client's monotonic clock, excluding setup requests."""
+    arrivals = notes.get("arrivals") or []
+    if not arrivals:
+        return {}
+    roles = {arrival["role"] for arrival in arrivals}
+    scheduled = [r for r in requests if r.get("role") in roles]
+    offsets = [a["offset_ns"] for a in arrivals if type(a.get("offset_ns")) is int]
+    starts = [r["sent_ns"] for r in scheduled if type(r.get("sent_ns")) is int]
+    ends = [r["ended_ns"] for r in scheduled if type(r.get("ended_ns")) is int]
+    terminals = [r["terminal_ns"] for r in scheduled if type(r.get("terminal_ns")) is int]
+    success = [r for r in scheduled if r.get("outcome") == "success"]
+    tokens = [r.get("usage", {}).get("output_tokens") for r in success]
+    complete_starts = len(starts) == len(roles)
+    complete_ends = len(ends) == len(roles)
+    late = [a["lateness_ns"] for a in arrivals if type(a.get("lateness_ns")) is int]
+    return {
+        "scheduled_requests": len(roles), "scheduled_successful_requests": len(success),
+        "scheduled_completed_output_tokens": sum(tokens) if all(type(n) is int for n in tokens) else None,
+        "planned_injection_span_ns": max(offsets) - min(offsets) if len(offsets) == len(roles) else None,
+        "actual_injection_span_ns": max(starts) - min(starts) if complete_starts else None,
+        "max_send_lateness_ns": max(late) if len(late) == len(roles) else None,
+        "drain_ns": max(ends) - max(starts) if complete_starts and complete_ends else None,
+        "terminal_drain_ns": max(terminals) - max(starts)
+                             if complete_starts and len(terminals) == len(roles) else None,
+    }
+
+
+def _contract_rejections(current: CampaignData, baseline: CampaignData) -> list[dict[str, Any]]:
+    def contracts(runs: Sequence[dict[str, Any]]) -> dict[tuple[str, str], set[str]]:
+        result: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for run in runs:
+            result[(run["case"], run["profile_label"])].add(
+                str(run.get("notes", {}).get("measurement_contract", "1")))
+        return result
+    current_contracts, baseline_contracts = contracts(current.runs), contracts(baseline.runs)
+    return [
+        {"case": key[0], "profile_label": key[1], "reason": "measurement_contract_mismatch",
+         "current_contracts": sorted(current_contracts[key]),
+         "baseline_contracts": sorted(baseline_contracts[key])}
+        for key in sorted(current_contracts.keys() & baseline_contracts.keys())
+        if len(current_contracts[key]) != 1 or current_contracts[key] != baseline_contracts[key]
+    ]
+
+
 def _stream_observations(runs: Sequence[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Keep failed and unconstructed measurements visible beside successful comparisons."""
     observations: list[dict[str, Any]] = []
@@ -1107,6 +1215,7 @@ def _stream_observations(runs: Sequence[dict[str, Any]]) -> tuple[list[dict[str,
                 "profile_label": run.get("profile_label"),
                 "sample": run.get("_sample"),
                 "request_role": request.get("role"),
+                "request_class": notes.get("request_classes", {}).get(request.get("role")),
                 "constructed": run.get("constructed"),
                 "outcome": request.get("outcome"),
                 "ttft_ns": request.get("ttft_ns"),
@@ -1158,7 +1267,16 @@ def _stream_observations(runs: Sequence[dict[str, Any]]) -> tuple[list[dict[str,
                 mechanism_coverage[name] = state if state in (
                     "observed", "not_observed", "unavailable",
                 ) else "unavailable"
+        mechanism_coverage.update(run.get("scheduling_observations", {}).get("mechanisms", {}))
         by_role = {request.get("role"): request for request in requests}
+        order_groups = notes.get("expected_engine_order_groups")
+        if order_groups:
+            ids = [[by_role.get(role, {}).get("diagnostics", {}).get("engine_request_id")
+                    for role in roles] for roles in order_groups]
+            valid = all(group and all(type(value) is int for value in group) for group in ids)
+            mechanism_coverage["expected_engine_order"] = (
+                "observed" if all(max(left) < min(right) for left, right in zip(ids, ids[1:]))
+                else "not_observed") if valid else "unavailable"
         for name, requirement in notes.get("mechanism_role_requirements", {}).items():
             if name in mechanism_coverage:
                 continue
@@ -1181,12 +1299,16 @@ def _stream_observations(runs: Sequence[dict[str, Any]]) -> tuple[list[dict[str,
             "sample": run.get("_sample"),
             "constructed": run.get("constructed"),
             "arrival_mode": notes.get("arrival_mode", "causal"),
+            "measurement_contract": str(notes.get("measurement_contract", "1")),
+            **_arrival_metrics(notes, requests),
             "throughput_comparable": comparable,
             "input_dependency": input_dependency,
             "matched_input_eligible": matched_input_eligible,
             "throughput_limitation": limitation,
             "mechanism_coverage": mechanism_coverage,
             "mechanism_requirements": required,
+            "replay_progress_intervals": run.get("scheduling_observations", {}).get("replay_intervals", []),
+            "incomplete_scheduling_requests": run.get("scheduling_observations", {}).get("incomplete_requests", []),
             "required_mechanism_status": required_status,
             "observed_workload": notes.get("observed_workload"),
             "arrivals": notes.get("arrivals"),
@@ -1371,6 +1493,8 @@ def summarize_campaign(
         "run_status_counts": dict(sorted(status_counts.items())),
         "ttft_groups": groups,
         "stream_observations": stream_observations,
+        "request_lifecycle_groups": _lifecycle_groups(campaign.runs),
+        "workload_phase_metrics": _phase_metrics(campaign.runs),
         "request_timing_analysis": _request_timing_rows(campaign.runs),
         "workload_metrics": workload_metrics,
         "global_runtime_observations": [
@@ -1403,17 +1527,21 @@ def summarize_campaign(
         }
         result["comparison_qualification"] = {
             "status": "conditions_unverified",
-            "checked": ["model_profile", "kv_dtype"],
+            "checked": ["model_profile", "kv_dtype", "measurement_contract"],
             "reason": "Resource geometry, backend, Graph, observation settings and offered inputs "
                       "must be checked before treating these observed TTFT deltas as performance changes.",
         }
-        result["cross_campaign_comparisons"] = _cross_campaign_rows(
+        rejected = _contract_rejections(campaign, baseline)
+        rejected_keys = {(row["case"], row["profile_label"]) for row in rejected}
+        result["cross_campaign_rejected"] = rejected
+        result["cross_campaign_comparisons"] = [row for row in _cross_campaign_rows(
             groups,
             baseline_summary["ttft_groups"],
             symmetric_rows,
             baseline_summary["symmetric_order_statistics"],
-        )
+        ) if (row["case"], row["profile_label"]) not in rejected_keys]
     else:
+        result["cross_campaign_rejected"] = []
         result["cross_campaign_comparisons"] = []
 
     return result

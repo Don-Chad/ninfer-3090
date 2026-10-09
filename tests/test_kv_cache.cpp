@@ -284,7 +284,8 @@ int exercise_reservation_and_mapping(ninfer::DeviceContext& context) {
 }
 
 int exercise_layout_and_transfer(ninfer::DeviceContext& context, ninfer::KVPageGeometry geometry,
-                                 const std::string& label) {
+                                 const std::string& label,
+                                 const std::array<std::uint32_t, 4>& run_operations) {
     int failures                  = 0;
     PlannedCache source_plan      = plan_cache(10, 8, 2, geometry);
     PlannedCache destination_plan = plan_cache(10, 8, 1, geometry);
@@ -321,11 +322,6 @@ int exercise_layout_and_transfer(ninfer::DeviceContext& context, ninfer::KVPageG
         read_mapping(tables.row(row.handle()), source_handles.size());
     failures += expect(physical_mapping == std::vector<std::int32_t>({0, 1, 2, 6, 7}),
                        label + " execution row differs from logical page order");
-    failures += expect(source.contiguous_run_count(source_handles) == 2,
-                       label + " physical KV run count missed allocator fragmentation");
-    failures +=
-        expect(source.contiguous_run_count(std::span<const ninfer::DeviceKVPageHandle>{}) == 0,
-               label + " empty physical KV range has a copy run");
     const std::uint32_t allocated_before_row_release = source.allocated_pages();
     row.release();
     failures += expect_size(source.allocated_pages(), allocated_before_row_release,
@@ -348,7 +344,20 @@ int exercise_layout_and_transfer(ninfer::DeviceContext& context, ninfer::KVPageG
     failures += expect(host.has_value(), label + " Host allocation failed");
     ninfer::HostKVAllocationView host_view = host_arena.writable_view(*host);
     std::memset(host_view.data(), 0, host_layout.page_stride * host_view.page_count());
-    source.copy_to_host(source_handles, host_view, context.stream);
+    std::uint64_t page_payload = 0;
+    for (const auto& plane : host_layout.planes) { page_payload += plane.page_payload_bytes; }
+    failures += expect(source.host_transfer_run_work(0) == ninfer::TransferWork{},
+                       label + " empty run has transfer work");
+    for (std::uint32_t pages = 1; pages <= run_operations.size(); ++pages) {
+        failures +=
+            expect(source.host_transfer_run_work(pages) ==
+                       ninfer::TransferWork{page_payload * pages, run_operations[pages - 1]},
+                   label + " contiguous-run quote differs from its physical copy work");
+    }
+    const auto export_work = source.copy_to_host(source_handles, host_view, context.stream);
+    failures += expect(export_work == ninfer::TransferWork{5 * page_payload,
+                                                           run_operations[2] + run_operations[1]},
+                       label + " D2H work missed fragmentation or counts Host padding");
     context.synchronize();
 
     const std::vector<std::byte> expected =
@@ -359,7 +368,11 @@ int exercise_layout_and_transfer(ninfer::DeviceContext& context, ninfer::KVPageG
     std::vector<ninfer::DeviceKVPageLease> restored                = materialize(destination, 5);
     const std::vector<ninfer::DeviceKVPageHandle> restored_handles = handles(restored);
     destination.zero_pages(restored_handles, context.stream);
-    destination.copy_from_host(host_arena.view(*host), restored_handles, context.stream);
+    const auto restore_work =
+        destination.copy_from_host(host_arena.view(*host), restored_handles, context.stream);
+    failures +=
+        expect(restore_work == ninfer::TransferWork{5 * page_payload, run_operations.back()},
+               label + " H2D work differs from the submitted contiguous run");
 
     const std::array duplicate_destinations{restored[0].handle(), restored[0].handle()};
     bool duplicate_zero_rejected = false;
@@ -383,7 +396,17 @@ int exercise_layout_and_transfer(ninfer::DeviceContext& context, ninfer::KVPageG
     failures += expect(std::memcmp(roundtrip_view.data(), host_view.data(), expected.size()) == 0,
                        label + " Device -> Host -> Device roundtrip changed bytes");
 
-    destination.copy_page(restored[0].handle(), restored[4].handle(), context.stream);
+    const auto local_work =
+        destination.copy_page(restored[0].handle(), restored[4].handle(), context.stream);
+    const ninfer::TransferWork expected_local{page_payload,
+                                              static_cast<std::uint32_t>(geometry.planes.size())};
+    failures +=
+        expect(local_work == expected_local && destination.device_copy_work(1) == expected_local &&
+                   destination.device_copy_work(0) == ninfer::TransferWork{},
+               label + " D2D work differs from one full page-group copy");
+    failures += expect(destination.copy_page(restored[0].handle(), restored[0].handle(),
+                                             context.stream) == ninfer::TransferWork{},
+                       label + " D2D self-copy must submit no work");
     const ninfer::DeviceKVPageHandle copied[] = {restored[0].handle(), restored[4].handle()};
     std::optional<ninfer::HostKVAllocation> copied_host = host_arena.allocate(host_layout, 2);
     ninfer::HostKVAllocationView copied_view            = host_arena.writable_view(*copied_host);
@@ -422,8 +445,6 @@ int exercise_layout_and_transfer(ninfer::DeviceContext& context, ninfer::KVPageG
         context.synchronize();
         const auto destination_mapping =
             read_mapping(destination_tables.row(destination_row.handle()), scattered.size());
-        failures += expect(destination.contiguous_run_count(scattered) == scattered.size(),
-                           label + " transfer ordering fixture did not scatter destinations");
 
         auto ordered_host = host_arena.allocate(host_layout, 7);
         if (!ordered_host) { throw std::bad_alloc(); }
@@ -436,8 +457,11 @@ int exercise_layout_and_transfer(ninfer::DeviceContext& context, ninfer::KVPageG
         const auto ordered_source = fill_device_pool(source, context.stream, 89);
         auto expected_device      = fill_device_pool(destination, context.stream, 37);
         source.copy_to_host(source_handles, ordered_view, context.stream);
-        destination.copy_from_host(host_arena.view(*ordered_host).subview(1, 5), scattered,
-                                   context.stream);
+        const auto scattered_work = destination.copy_from_host(
+            host_arena.view(*ordered_host).subview(1, 5), scattered, context.stream);
+        failures += expect(scattered_work ==
+                               ninfer::TransferWork{5 * page_payload, 5 * run_operations.front()},
+                           label + " scattered H2D work missed the single-page lowering");
         std::vector<std::vector<unsigned char>> observed_device(destination.plane_count());
         for (std::size_t index = 0; index < destination.plane_count(); ++index) {
             const auto& plane = destination.plane(index);
@@ -545,7 +569,7 @@ int main() {
                         {ninfer::DType::FP16, 1, 2, 256},
                     },
             },
-            "PageMajor");
+            "PageMajor", {2, 2, 2, 2});
         failures += exercise_layout_and_transfer(
             context,
             ninfer::KVPageGeometry{
@@ -556,7 +580,7 @@ int main() {
                         {ninfer::DType::FP16, 2, 3, 256},
                     },
             },
-            "HeadMajor");
+            "HeadMajor", {2, 4, 6, 6});
         failures += exercise_layout_and_transfer(
             context,
             ninfer::KVPageGeometry{
@@ -569,7 +593,33 @@ int main() {
                         {ninfer::DType::U8, 16, 2, 256},
                     },
             },
-            "K8V4 asymmetric PageMajor");
+            "K8V4 asymmetric PageMajor", {4, 4, 4, 4});
+        failures += exercise_layout_and_transfer(
+            context,
+            ninfer::KVPageGeometry{
+                .device_plane_order = ninfer::PagedKVPlaneOrder::PageMajor,
+                .planes =
+                    {
+                        {ninfer::DType::I8, 8, 2, 256},
+                        {ninfer::DType::I8, 8, 2, 256},
+                        {ninfer::DType::FP16, 1, 2, 256},
+                        {ninfer::DType::FP16, 1, 2, 256},
+                    },
+            },
+            "Grouped PageMajor", {2, 4, 4, 4});
+        failures += exercise_layout_and_transfer(
+            context,
+            ninfer::KVPageGeometry{
+                .device_plane_order = ninfer::PagedKVPlaneOrder::PageMajor,
+                .planes =
+                    {
+                        {ninfer::DType::I8, 1, 3, 256},
+                        {ninfer::DType::I8, 1, 3, 256},
+                        {ninfer::DType::I8, 1, 3, 256},
+                        {ninfer::DType::I8, 1, 3, 256},
+                    },
+            },
+            "Grouped padded PageMajor", {1, 2, 3, 4});
         if (failures != 0) {
             std::cerr << failures << " Paged KV physical-container checks failed\n";
             return 1;

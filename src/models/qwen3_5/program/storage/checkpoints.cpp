@@ -163,7 +163,9 @@ PrefixShortlistKey ProgramImpl::checkpoint_key(CheckpointHandle handle,
 runtime::ContextResourceUsage
 ProgramImpl::checkpoint_footprint(std::span<const CheckpointHandle> handles) const {
     runtime::ContextResourceUsage usage;
-    std::unordered_set<std::uint32_t> states, main, backend;
+    std::vector<std::uint8_t> states(state_store->capacity());
+    std::vector<std::uint8_t> main(text_kv_pages->capacity());
+    std::vector<std::uint8_t> backend(backend_kv_pages ? backend_kv_pages->capacity() : 0);
 
     struct Coverage {
         std::uint32_t main    = 0;
@@ -173,10 +175,12 @@ ProgramImpl::checkpoint_footprint(std::span<const CheckpointHandle> handles) con
     std::unordered_map<const KVHistory*, Coverage> histories;
     const auto count = [&](const KVAddressSpaceStore& addresses, const LogicalKVPageStore& pages,
                            KVAddressSpaceHandle address, std::uint32_t frontier,
-                           std::unordered_set<std::uint32_t>& seen, std::uint32_t& device_pages) {
+                           std::vector<std::uint8_t>& seen, std::uint32_t& device_pages) {
         for (std::uint32_t index = 0; index < kv_pages_for_frontier(frontier); ++index) {
             const auto page = addresses.logical_page(address, index);
-            if (!seen.insert(pages.descriptor_index(page)).second) { continue; }
+            auto& visited   = seen[pages.descriptor_index(page)];
+            if (visited) { continue; }
+            visited = 1;
             device_pages += pages.device_resident(page) ? 1U : 0U;
             if (pages.host_resident(page)) {
                 usage.host_bytes += (&pages == text_kv_pages.get() ? text_host_kv_page_stride
@@ -186,7 +190,9 @@ ProgramImpl::checkpoint_footprint(std::span<const CheckpointHandle> handles) con
     };
     for (const auto handle : handles) {
         const auto& record = checkpoint(handle);
-        if (states.insert(state_store->descriptor_index(record.state)).second) {
+        auto& visited      = states[state_store->descriptor_index(record.state)];
+        if (!visited) {
+            visited = 1;
             usage.state_slots += state_store->device_resident(record.state) ? 1U : 0U;
             if (state_store->host_resident(record.state)) {
                 usage.host_bytes += state_images->host_layout().image_bytes;

@@ -3,13 +3,20 @@ from __future__ import annotations
 from collections import deque
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
+from tools.bench.ttft import cases
 from tools.bench.ttft.cases import _BackgroundResponseLoops
-from tools.bench.ttft.execution import CaseContext, CaseExecutionError
-from tools.ninfer_serve.client import ProtocolEvent, ProtocolRequest, ServeExchangeResult
-from tools.streaming_http.client import HttpExchangeResult
+from tools.bench.ttft.execution import CaseContext, CaseExecutionError, RequestHandle
+from tools.ninfer_serve.client import (
+    PreparedServeExchange,
+    ProtocolEvent,
+    ProtocolRequest,
+    ServeExchangeResult,
+)
+from tools.streaming_http.client import HttpExchangeResult, HttpResponseHead
 
 
 class ControlledExchange:
@@ -18,7 +25,7 @@ class ControlledExchange:
     body_bytes = 0
     body = b"{}"
 
-    def __init__(self, *, first_output=True, failure=None):
+    def __init__(self, *, first_output=True, failure=None, complete_on_start=False):
         self.request = ProtocolRequest("openai_responses", "/test", {})
         self.first_output = first_output
         self.failure = failure
@@ -28,6 +35,9 @@ class ControlledExchange:
         self.allow_return = threading.Event()
         self.allow_return.set()
         self.completed_normally = False
+        self.complete_on_start = complete_on_start
+        self.events = []
+        self.on_event = None
 
     def cancel(self):
         self.cancel_ns = time.perf_counter_ns()
@@ -38,15 +48,24 @@ class ControlledExchange:
         self.completed_normally = True
         self.finished.set()
 
-    def execute(self, *, on_sent, on_body_sent, on_event):
+    def emit_output(self):
+        event = ProtocolEvent("model_output", "delta", time.perf_counter_ns(), output="x")
+        self.events.append(event)
+        self.on_event(event)
+        return event.received_ns
+
+    def execute(self, *, on_sent, on_body_sent, on_event, on_headers=None):
         sent_ns = time.perf_counter_ns()
         on_sent(sent_ns)
         on_body_sent(sent_ns)
-        events = []
+        events = self.events
+        self.on_event = on_event
         if self.first_output:
             events.append(ProtocolEvent("model_output", "delta", sent_ns, output="x"))
             on_event(events[-1])
         self.started.set()
+        if self.complete_on_start:
+            self.complete()
         assert self.finished.wait(5), "test did not terminate its stream"
         assert self.allow_return.wait(5), "test did not release its completed stream"
         ended_ns = time.perf_counter_ns()
@@ -208,3 +227,91 @@ def test_cancellation_outside_loop_shutdown_remains_a_failure(monkeypatch):
     assert not thread.is_alive()
     assert len(errors) == 1 and "ended before its replacement" in errors[0]
     assert context.records()[0]["outcome"] == "cancelled"
+
+
+def test_decode_overlap_waits_for_resumed_output_before_cancelling_and_probing(monkeypatch):
+    holder = ControlledExchange()
+    foreground = ControlledExchange(complete_on_start=True)
+    probe = ControlledExchange(complete_on_start=True)
+    context = CaseContext(ControlledClient([holder, foreground, probe]), "test-model", 2)
+    resumed = []
+
+    def resume_when_waiting(_seconds):
+        assert foreground.finished.is_set()
+        assert holder.cancel_ns is None
+        resumed.append(holder.emit_output())
+
+    monkeypatch.setattr(cases, "time", SimpleNamespace(
+        monotonic=time.monotonic, sleep=resume_when_waiting,
+    ))
+    corpus = SimpleNamespace(
+        shape=lambda _name: {"max_output_tokens": 32},
+        shape_messages=lambda name: [{"role": "user", "content": name}],
+    )
+    try:
+        cases.get_case("decode-with-short-arrival").run(context, corpus)
+    finally:
+        context.cancel_live()
+
+    assert not context.failures
+    records = {record["role"]: record for record in context.records()}
+    assert records["holder"]["outcome"] == "cancelled"
+    assert records["short"]["outcome"] == records["cleanup-probe"]["outcome"] == "success"
+    assert records["short"]["completed_ns"] < resumed[0] <= records["holder"]["cancel_ns"]
+    assert records["holder"]["completed_ns"] < records["cleanup-probe"]["sent_ns"]
+
+
+def test_decode_overlap_does_not_hide_holder_finishing_before_resumption():
+    holder = ControlledExchange(complete_on_start=True)
+    foreground = ControlledExchange(complete_on_start=True)
+    context = CaseContext(ControlledClient([holder, foreground]), "test-model", 2)
+    corpus = SimpleNamespace(
+        shape=lambda _name: {"max_output_tokens": 32},
+        shape_messages=lambda name: [{"role": "user", "content": name}],
+    )
+    with pytest.raises(CaseExecutionError, match="ended before producing output"):
+        cases.get_case("decode-with-short-arrival").run(context, corpus)
+    assert holder.cancel_ns is None
+    assert all(record["outcome"] == "success" for record in context.records())
+
+
+def test_response_header_identity_is_available_while_the_stream_is_live():
+    class PendingHttpExchange:
+        cancel_ns = None
+
+        def __init__(self):
+            self.headers_sent = threading.Event()
+            self.finish = threading.Event()
+
+        def cancel(self):
+            self.cancel_ns = time.perf_counter_ns()
+            self.finish.set()
+            return self.cancel_ns
+
+        def execute(self, *, on_sent, on_body_sent, on_headers, on_chunk):
+            sent = time.perf_counter_ns()
+            headers = {"content-type": "text/event-stream", "x-request-id": "req-live"}
+            on_sent(sent)
+            on_body_sent(sent)
+            on_headers(HttpResponseHead(200, "OK", headers, time.perf_counter_ns()))
+            self.headers_sent.set()
+            assert self.finish.wait(2)
+            return HttpExchangeResult(
+                sent_ns=sent, body_sent_ns=sent, ended_ns=time.perf_counter_ns(),
+                status=200, headers=headers, cancel_requested=True, cancel_ns=self.cancel_ns,
+            )
+
+    raw = PendingHttpExchange()
+    request = ProtocolRequest("openai_chat", "/v1/chat/completions", {})
+    handle = RequestHandle("live", 0, PreparedServeExchange(request, b"{}", raw), None)
+    handle.start()
+    try:
+        assert raw.headers_sent.wait(2)
+        assert handle.result is None
+        assert not handle.is_done
+        assert handle.as_record()["wire_request_id"] == "req-live"
+    finally:
+        handle.cancel()
+        handle.wait_done(2)
+    assert handle.outcome() == "cancelled"
+    assert handle.as_record()["wire_request_id"] == "req-live"

@@ -125,28 +125,37 @@ ProgramImpl::inspect_source(const RequestBasePlan& base, std::optional<Checkpoin
                           KVAddressSpaceHandle address, std::uint32_t frontier,
                           runtime::ContextResourceClass resource) {
         const auto count      = kv_pages_for_frontier(frontier);
-        std::uint32_t missing = 0, host_runs = 0;
+        const auto& physical  = pages.physical_pool();
+        std::uint32_t missing = 0, run_pages = 0;
+        TransferWork restore_work;
+        const auto finish_run = [&] {
+            const auto work = physical.host_transfer_run_work(run_pages);
+            restore_work.payload_bytes += work.payload_bytes;
+            restore_work.copy_operations += work.copy_operations;
+            run_pages = 0;
+        };
         std::optional<HostKVPageReplica> previous;
         for (std::uint32_t index = 0; index < count; ++index) {
             const auto page = addresses.logical_page(address, index);
             if (pages.device_resident(page)) { continue; }
             const auto replica = pages.host_replica(page);
-            if (!previous || previous->extent != replica.extent ||
-                previous->page_offset + 1 != replica.page_offset) {
-                ++host_runs;
+            if (previous && (previous->extent != replica.extent ||
+                             previous->page_offset + 1 != replica.page_offset)) {
+                finish_run();
             }
             previous = replica;
+            ++run_pages;
             ++missing;
         }
-        const auto layout = plan_host_kv_page_layout(pages.physical_pool().geometry());
         if (missing) {
-            candidate.transfers.push_back(
-                kv_transfer_requirement(resource, runtime::ContextTransferDirection::HostToDevice,
-                                        layout, missing, host_runs));
+            finish_run();
+            candidate.transfers.push_back(kv_transfer_requirement(
+                resource, runtime::ContextTransferDirection::HostToDevice, missing, restore_work));
         }
         if (!candidate.move_history && frontier % kPagedKVPageSize) {
-            candidate.transfers.push_back(kv_transfer_requirement(
-                resource, runtime::ContextTransferDirection::DeviceToDevice, layout, 1));
+            candidate.transfers.push_back(
+                kv_transfer_requirement(resource, runtime::ContextTransferDirection::DeviceToDevice,
+                                        1, physical.device_copy_work(1)));
         }
     };
     scan(*text_kv_addresses, *text_kv_pages, record.kv->text, record.frontier,

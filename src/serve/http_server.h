@@ -2,11 +2,11 @@
 
 #include "serve/generation_service.h"
 #include "serve/load_report.h"
+#include "serve/metrics.h"
 #include "serve/openai_common.h"
 #include "serve/operational_log.h"
 #include "serve/openai_responses_store.h"
 #include "serve/request_log.h"
-#include "serve/serve_metrics.h"
 #include "serve/serve_options.h"
 
 #include <httplib.h>
@@ -119,6 +119,9 @@ private:
     void handle_model(const httplib::Request& req, httplib::Response& res) const;
 
     void record_request_start(const RequestLogContext& context);
+    [[nodiscard]] ninfer::GenerationSchedulingObserver
+    scheduling_observer(std::uint64_t request_id, std::string http_request_id);
+    [[nodiscard]] ninfer::GenerationFirstTokenObserver first_token_observer();
     void record_request_rejected(const RequestRejectionLogContext& context);
     void record_request_done(const RequestLogContext& context, const GenerationOutcome& outcome);
     void record_request_failure(const RequestLogContext& context, const RequestFailure& failure);
@@ -142,7 +145,7 @@ private:
     OpenAIResponsesStore openai_responses_store_;
     OperationalLog operational_log_;
     JsonlRequestLog request_jsonl_;
-    ServeMetrics metrics_;
+    Metrics metrics_;
     httplib::Server server_;
     std::atomic<std::uint64_t> request_seq_{0};
     std::mutex stats_mutex_;

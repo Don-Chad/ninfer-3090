@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -113,7 +114,8 @@ struct RequestRecord {
     using BasePlan       = typename ModelContract::RequestBasePlan;
     using SequenceHandle = typename ModelContract::SequenceHandle;
     using ResumeState    = typename ModelContract::ResumeState;
-    using StreamEvent    = std::variant<GenerationTimingObservation, OutputDelta>;
+    using StreamEvent = std::variant<GenerationTimingObservation, GenerationFirstTokenObservation,
+                                     OutputDelta, std::unique_ptr<GenerationSchedulingObservation>>;
 
     RequestRecord(std::uint64_t request_identity, std::uint64_t publication_sequence,
                   PreparedPrompt input, OutputSession output_session, PromptSummary summary,
@@ -124,7 +126,7 @@ struct RequestRecord {
           id(request_identity), publication_order(publication_sequence), prompt(std::move(input)),
           output(std::move(output_session)), prompt_summary(std::move(summary)),
           prepare_seconds(frontend_seconds), options(std::move(request_options)),
-          consumer_mode(output_consumer), observation(observation), deadline(limit),
+          consumer_mode(output_consumer), observation(std::move(observation)), deadline(limit),
           submitted(submit_time) {}
 
     RequestRecord(const RequestRecord&)            = delete;
@@ -193,6 +195,8 @@ struct RequestRecord {
     EngineRequestState resume_phase           = EngineRequestState::Prefill;
     std::uint32_t admission_bypasses          = 0;
     bool recovery_pending                     = false;
+    std::uint64_t committed_decode_tokens     = 0;
+    GenerationRecoveryRoute recovery_route    = GenerationRecoveryRoute::None;
     std::uint64_t preemption_count            = 0;
     std::uint64_t replay_restores             = 0;
     std::uint64_t snapshot_restores           = 0;

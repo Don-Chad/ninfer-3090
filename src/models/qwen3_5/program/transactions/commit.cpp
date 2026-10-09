@@ -446,6 +446,10 @@ CommitResult ProgramImpl::commit(PendingBatch&& pending,
                 }
             }
 
+            const auto& stats = decisions[row].cancelled ? out.rows[row].speculative
+                                                         : requests[lanes[row]].speculative_stats;
+            out.rows[row].speculative_counters = {stats.rounds, stats.drafted_tokens,
+                                                  stats.accepted_tokens, stats.fallback_steps};
             if (pending_kinds[row] != PendingKind::Begin || decisions[row].cancelled) { continue; }
             RequestControl& request = requests[lanes[row]];
             if (decisions[row].terminal) {

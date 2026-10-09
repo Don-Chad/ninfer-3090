@@ -77,61 +77,6 @@ HostKVPageLayout plan_host_kv_page_layout(const KVPageGeometry& geometry) {
     return out;
 }
 
-TransferWork plan_host_kv_transfer_work(const HostKVPageLayout& layout, std::uint32_t pages,
-                                        std::uint32_t contiguous_runs) {
-    if (pages == 0) { return {}; }
-    if (contiguous_runs == 0 || contiguous_runs > pages || layout.planes.empty() ||
-        layout.planes.size() != layout.geometry.planes.size()) {
-        throw std::invalid_argument("Host KV transfer geometry is invalid");
-    }
-
-    std::size_t bytes_per_page     = 0;
-    std::size_t operations_per_run = 0;
-    for (std::size_t index = 0; index < layout.planes.size(); ++index) {
-        bytes_per_page = checked_add(bytes_per_page, layout.planes[index].page_payload_bytes,
-                                     "Host KV transfer payload overflow");
-        const KVPlaneGeometry& plane = layout.geometry.planes[index];
-        const std::size_t operations =
-            layout.geometry.device_plane_order == PagedKVPlaneOrder::PageMajor
-                ? 1U
-                : static_cast<std::size_t>(plane.head_extent);
-        operations_per_run = checked_add(operations_per_run, operations,
-                                         "Host KV transfer operation count overflow");
-    }
-
-    const std::size_t payload =
-        checked_mul(bytes_per_page, pages, "Host KV transfer payload overflow");
-    const std::size_t operations = checked_mul(operations_per_run, contiguous_runs,
-                                               "Host KV transfer operation count overflow");
-    if (operations > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::overflow_error("Host KV transfer operation count exceeds uint32");
-    }
-    return TransferWork{.payload_bytes   = static_cast<std::uint64_t>(payload),
-                        .copy_operations = static_cast<std::uint32_t>(operations)};
-}
-
-TransferWork plan_device_kv_copy_work(const HostKVPageLayout& layout, std::uint32_t pages) {
-    if (pages == 0) { return {}; }
-    if (layout.planes.empty() || layout.planes.size() != layout.geometry.planes.size()) {
-        throw std::invalid_argument("Device KV copy geometry is invalid");
-    }
-
-    std::size_t bytes_per_page = 0;
-    for (const HostKVPlaneLayout& plane : layout.planes) {
-        bytes_per_page = checked_add(bytes_per_page, plane.page_payload_bytes,
-                                     "Device KV copy payload overflow");
-    }
-    const std::size_t payload =
-        checked_mul(bytes_per_page, pages, "Device KV copy payload overflow");
-    const std::size_t operations =
-        checked_mul(layout.planes.size(), pages, "Device KV copy operation count overflow");
-    if (operations > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::overflow_error("Device KV copy operation count exceeds uint32");
-    }
-    return TransferWork{.payload_bytes   = static_cast<std::uint64_t>(payload),
-                        .copy_operations = static_cast<std::uint32_t>(operations)};
-}
-
 bool HostKVAllocationView::valid() const noexcept {
     return handle_.owner_ != nullptr && handle_.owner_->valid_handle(handle_);
 }

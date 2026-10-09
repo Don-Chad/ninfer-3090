@@ -140,6 +140,78 @@ int origins_and_requests() {
     return failures;
 }
 
+int trim_semantics() {
+    const JinjaTemplate trims(
+        "[{{ text.strip(chars) }}]|[{{ text.lstrip(chars) }}]|[{{ text.rstrip(chars) }}]",
+        "trim-test");
+    int failures = check(trims.render({{"text", "北🌏x🌏北"}, {"chars", "🌏北"}}).text ==
+                             "[x]|[x🌏北]|[北🌏x]",
+                         "selected Unicode trim changed left/right semantics");
+    failures +=
+        check(trims.render({{"text", "北🌏"}, {"chars", "🌏北"}}).text == "[]|[]|[]" &&
+                  trims.render({{"text", "北🌏"}, {"chars", ""}}).text == "[北🌏]|[北🌏]|[北🌏]" &&
+                  trims.render({{"text", ""}, {"chars", "🌏北"}}).text == "[]|[]|[]",
+              "empty or fully trimmed Unicode input changed");
+    failures +=
+        check(JinjaTemplate("[{{ text.strip() }}]|[{{ text.lstrip() }}]|[{{ text.rstrip() }}]",
+                            "whitespace-trim")
+                      .render({{"text", "\u0085\u001c\u3000\t"}})
+                      .text == "[]|[]|[]",
+              "default Unicode whitespace trim changed");
+
+    const std::vector<ninfer::text::TemplateInputRegion> regions{{"/text", 7}};
+    const auto clipped = JinjaTemplate("{{ ('　' ~ text ~ '　').strip() }}", "trim-origin")
+                             .render({{"text", "　<|image_pad|>　"}}, {.regions = regions});
+    failures +=
+        check(clipped.text == "<|image_pad|>" && clipped.regions.size() == 1 &&
+                  clipped.regions[0].tag == 7 && clipped.regions[0].begin == 0 &&
+                  clipped.regions[0].end == clipped.text.size() &&
+                  clipped.regions[0].source_offset == 3 && clipped.literal_spans.size() == 1 &&
+                  clipped.literal_spans[0].begin == 0 &&
+                  clipped.literal_spans[0].end == clipped.text.size(),
+              "trim across string parts lost literal status or byte origin");
+    failures += check(
+        clipped.boundary_mappings.size() == 2 && clipped.boundary_mappings[0].tag == 7 &&
+            clipped.boundary_mappings[0].source_begin == 0 &&
+            clipped.boundary_mappings[0].source_end == 3 &&
+            clipped.boundary_mappings[0].offset == 0 && clipped.boundary_mappings[1].tag == 7 &&
+            clipped.boundary_mappings[1].source_begin == 16 &&
+            clipped.boundary_mappings[1].source_end == 19 &&
+            clipped.boundary_mappings[1].offset == 13,
+        "trim did not map deleted Unicode source boundaries to the surviving content edges");
+
+    const auto empty = JinjaTemplate("before{{ text|trim }}after", "empty-trim-origin")
+                           .render({{"text", " \t"}}, {.regions = regions});
+    failures += check(
+        empty.text == "beforeafter" && empty.regions.empty() && empty.literal_spans.empty() &&
+            empty.boundary_mappings.size() == 1 && empty.boundary_mappings[0].tag == 7 &&
+            empty.boundary_mappings[0].source_begin == 0 &&
+            empty.boundary_mappings[0].source_end == 2 && empty.boundary_mappings[0].offset == 6,
+        "fully trimmed input lost its boundary or created literal output bytes");
+
+    const auto quoted = JinjaTemplate("{{ text|trim|tojson }}", "trim-json-origin")
+                            .render({{"text", " value\n"}}, {.regions = regions});
+    failures += check(
+        quoted.text == "\"value\"" && quoted.regions.size() == 1 && quoted.regions[0].tag == 7 &&
+            quoted.regions[0].begin == 0 && quoted.regions[0].end == quoted.text.size() &&
+            !quoted.regions[0].source_offset && quoted.boundary_mappings.empty(),
+        "JSON encoding of trimmed input lost its origin or retained exact boundaries");
+
+    const std::string invalid = std::string("left") + '\x80' + "right";
+    for (const char* source : {"{{ text.strip() }}", "{{ text.lstrip() }}", "{{ text.rstrip() }}",
+                               "{{ text.strip('') }}"}) {
+        try {
+            (void)JinjaTemplate(source, "invalid-trim").render({{"text", invalid}});
+            failures += check(false, "trim skipped invalid UTF-8 in the string interior");
+        } catch (const std::invalid_argument&) {}
+    }
+    try {
+        (void)trims.render({{"text", "valid"}, {"chars", invalid}});
+        failures += check(false, "trim accepted an invalid UTF-8 selected character set");
+    } catch (const std::invalid_argument&) {}
+    return failures;
+}
+
 int literal_content() {
     struct Example {
         const char* source;
@@ -250,7 +322,9 @@ int main(int argc, char** argv) {
         return 0;
     }
     try {
-        return language_semantics() + origins_and_requests() + literal_content() == 0 ? 0 : 1;
+        const int failures =
+            language_semantics() + origins_and_requests() + trim_semantics() + literal_content();
+        return failures == 0 ? 0 : 1;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

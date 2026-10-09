@@ -77,9 +77,11 @@ response. Each request has a 16,384-token context ceiling; the measured automati
 
 Steady throughput includes only complete one-second server intervals with zero computed prefill
 tokens, `running=C`, `prefilling=0`, `decode_ready=C`, at least one decode round, and exactly C rows
-in every round. Ramp-up, prefill, and drain are excluded. Wave makespan still spans client release
-through the last complete response. Acceptance is aggregated over the full wave, not just steady
-intervals. Each published point is one wave, not a repeated-sample mean.
+in every round. Intervals must have no preemptions, Snapshot/Replay restores or replayed tokens,
+and no paused or replaying requests at the end. Ramp-up, prefill, recovery, and drain are excluded.
+Wave makespan still spans client release through the last complete response. Acceptance is
+aggregated over the full wave, not just steady intervals. Each published point is one wave,
+not a repeated-sample mean.
 
 ## Metrics and statistics
 

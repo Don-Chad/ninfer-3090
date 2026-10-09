@@ -62,21 +62,33 @@ older cache policy is replaced; the name alone does not prove a particular victi
 `private-only-working-set-shift` uses explicit mode with no shared markers to isolate private
 continuations; use that control when comparing an older profile that disabled shared storage.
 
-The preemption campaign contains:
+The main scheduling workloads are:
 
-| Case | Workload and evidence sought |
+| Family | Workload and evidence |
 |---|---|
-| `preemption-replay` | Two fixed arrivals grow beyond shared Device capacity with Host disabled; require actual preemption and replay. |
-| `preemption-snapshot` | The same arrivals with Host capacity; require snapshot restoration. |
-| `shared-growth-fairness` | Three shared-prefix branches and two short arrivals; measure waiting, pauses and replay alongside other progress. |
-| `snapshot-history-cancel` | Retained history competes with snapshots; cancel a stream during observed pressure, then probe the history. |
-| `vision-growth-replay` | Text and Vision requests grow together; require the Vision request itself to be preempted and replayed. |
+| `preemption-replay`, `preemption-snapshot` | Same two growing arrivals with Host disabled/enabled; the snapshot graph also has MTP and DFlash2 profiles. |
+| `shared-growth-recovery` | Three shared-prefix branches and two initial short arrivals; two further short requests arrive on an actual Replay restore event. Request-level boundaries measure other requests' actual progress during recovery. |
+| `host-history-pressure-cancel` | Two retained histories and three growing requests compete for limited Host capacity. A pause event identifies the request to cancel; subsequent probes measure retained history. |
+| `vision-growth-replay` | Require the Vision request itself to be preempted and replayed. |
+| `resident-{decode,prefill}-first-{roomy,pressure}` | Reverse the Engine ticket groups of long Prefill and two Decode streams, with enough/insufficient KV for their full growth. Measure stream gaps and completion as well as TTFT. |
+| `mixed-arrivals-{sparse,steady,burst}` | The same twelve short, medium/long-input and growing-output requests arrive at fixed intervals, then drain naturally. |
+| `agent-continuation-{replay,snapshot}` | Build a multi-turn conversation with a late developer message, recover a pressured generation, then retry and continue. |
 
-Fixed-arrival graphs prepare bodies first and record planned arrival offsets and actual send
-lateness. Token facts and reached output limits are checked against actual usage. Normal EOS is
-retained, so an output limit is not a promise that the model will generate that many tokens.
-Sampled phase overlap can miss a short replay window; an unobserved sample is not evidence of
-absent interleaving.
+Fixed-arrival graphs record planned offsets, actual sends and lateness. Long traces establish each
+connection at its scheduled arrival, before that request's `t0`, so unused connections do not
+expire at the server. Preparation/connection delays appear as send lateness. Submission never
+waits for earlier requests to finish. Normal EOS remains enabled: output limits are not promises
+of fixed completed work.
+
+`shared-tools-revisit` measures stable and changed tool identities in one graph.
+`media-preprocess-revisit` uses A,A,B,C,A with context reuse disabled, isolating cold, warm and
+post-eviction media preparation. `decode-with-short-arrival` and `media-during-decode` observe
+background output after the foreground completes, then cancel the background and check another
+request. Their whole-run throughput is conditional on that cancellation boundary.
+
+The two-cohort 55K case contains the complete ordinary rotation as its first phase. Phase reports
+separate that first cohort and its warm requests; whole-server counters still belong to the full
+run. Use the standalone ordinary case when an isolated whole-run resource comparison is needed.
 
 ## Run a campaign
 
@@ -91,8 +103,20 @@ python3 tools/bench/run_serve_ttft_campaign.py \
   --samples 3
 ```
 
-`smoke` runs one short cold case, `resource` runs cache-pressure workloads, `preemption` runs the
-five graphs above, and `full` runs all cases. The default is `resource` with one sample. Select
+Campaigns select workloads by purpose:
+
+| Campaign | Selection |
+|---|---|
+| `full` | Composite performance run, including the new load/recovery cases; excludes contract checks, specialist controls and the duplicated standalone 55K rotation. |
+| `resource` | Cache-pressure and Host rotation workloads, including the private-only control. |
+| `preemption` | Recovery, limited Host, Vision and agent graphs, including selected speculative backends. |
+| `load` | Resident phase/ticket competition and finite mixed arrivals. |
+| `contract` | HTTP rejection, context bounds and session publication checks. |
+| `long-context` | The 256K cold case. |
+| `preprocess` | Default versus single-thread heavy-media preparation. |
+| `smoke` | One short cold case. |
+
+The default is `resource` with one sample. Select
 `--serve` and `--artifact` explicitly when using another binary or artifact. Fixture token facts
 still need to match the selected tokenizer/template.
 
@@ -165,7 +189,11 @@ python3 tools/bench/summarize_serve_ttft.py profiles/bench/candidate \
 ```
 
 The report reads runs declared by the manifest and exposes missing, invalid and unconstructed
-samples. TTFT groups retain raw samples, median, range and dispersion. Symmetric simultaneous roles
+samples. TTFT groups retain raw samples, median, range and dispersion. Changed request graphs
+use new names or a new `measurement_contract`; mismatched contracts are excluded from numerical
+baseline comparisons. Request classes and workload phases report TTFT, terminal latency and
+output-event gaps separately. Fixed traces also report injection span, send lateness, actual
+completed output and drain time. Symmetric simultaneous roles
 are compared by ordered observations within each run, rather than treating an arbitrary role's
 changed admission order as a performance regression.
 
@@ -193,6 +221,13 @@ including token, position, media and rewrite semantics. A matching prefix alone 
 that its recurrent state was saved. Distinguish the semantic bound from the deepest complete
 checkpoint retainable under the case's physical budget, then explain the actual selected frontier.
 Replay of the same paused request is additional work, not a cross-request cache hit.
+
+Sparse `request_scheduling` records use Engine timestamps and cumulative global/request work at
+pause and recovery boundaries. Replay coexistence subtracts this request's work from the global
+increment over its restored-to-replay-complete interval. Missing boundaries remain unavailable;
+periodic phase snapshots do not substitute for that evidence. Request identity is available from
+HTTP response headers while the stream is still active, allowing pressure cancellation to target
+the observed request.
 
 Global interval statistics include background cache demotion, which has no request owner, and the
 Engine's mutually exclusive Host work accounting. Device wait and detailed subsets must not be

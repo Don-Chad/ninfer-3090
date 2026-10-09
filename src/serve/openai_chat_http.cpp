@@ -40,15 +40,17 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                                 .output_tokens_explicit = request.output_tokens_explicit};
     PreparedRequest prepared;
     try {
-        const ninfer::GenerationObservationOptions observation{
+        ninfer::GenerationObservationOptions observation{
             .phase_timings   = true,
             .live_timings    = request.stream && request.timings_per_token,
             .prompt_progress = request.stream && request.return_progress,
+            .scheduling      = scheduling_observer(req_id, metadata.http_request_id),
+            .first_token     = first_token_observer(),
         };
-        prepared = service_->prepare(request.generation,
-                                     request.stream ? GenerationConsumerMode::Streaming
-                                                    : GenerationConsumerMode::Aggregate,
-                                     observation, [&req] { return client_disconnected(req); });
+        prepared = service_->prepare(
+            request.generation,
+            request.stream ? GenerationConsumerMode::Streaming : GenerationConsumerMode::Aggregate,
+            std::move(observation), [&req] { return client_disconnected(req); });
     } catch (const ApiException& exception) {
         record_request_rejected(make_request_rejection_log_context(
             req_id, "openai_chat_completions", request.generation, metadata, exception.error()));

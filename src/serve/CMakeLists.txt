@@ -19,11 +19,11 @@ add_library(ninfer_serve STATIC
   request_events.cpp
   operational_log.cpp
   request_log.cpp
+  metrics.cpp
   http_server.cpp
   load_report.cpp
   openai_responses_http.cpp
   serve_options.cpp
-  serve_metrics.cpp
 )
 ninfer_internal_includes(ninfer_serve)
 target_link_libraries(ninfer_serve

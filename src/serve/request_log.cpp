@@ -170,6 +170,41 @@ Json event_base(const std::string& server_instance_id, std::uint64_t timestamp, 
                 {"server_instance_id", server_instance_id}};
 }
 
+const char* scheduling_transition_name(ninfer::GenerationSchedulingTransition transition) {
+    using Transition = ninfer::GenerationSchedulingTransition;
+    switch (transition) {
+    case Transition::PauseStarted:
+        return "pause_started";
+    case Transition::Paused:
+        return "paused";
+    case Transition::RestoreStarted:
+        return "restore_started";
+    case Transition::Restored:
+        return "restored";
+    case Transition::ReplayComplete:
+        return "replay_complete";
+    case Transition::RecoveryComplete:
+        return "recovery_complete";
+    case Transition::SnapshotRevoked:
+        return "snapshot_revoked";
+    case Transition::Terminal:
+        return "terminal";
+    }
+    throw std::logic_error("invalid scheduling transition");
+}
+
+Json recovery_route_json(ninfer::GenerationRecoveryRoute route) {
+    switch (route) {
+    case ninfer::GenerationRecoveryRoute::None:
+        return nullptr;
+    case ninfer::GenerationRecoveryRoute::Snapshot:
+        return "snapshot";
+    case ninfer::GenerationRecoveryRoute::Replay:
+        return "replay";
+    }
+    throw std::logic_error("invalid recovery route");
+}
+
 Json sampler_json(const ninfer::ResolvedSamplingParameters& sampling) {
     return Json{{"temperature", sampling.temperature},
                 {"top_p", sampling.top_p},
@@ -783,6 +818,30 @@ std::string format_server_start_json(
     return record.dump();
 }
 
+std::string
+format_request_scheduling_json(const std::string& server_instance_id,
+                               std::uint64_t timestamp_unix_ms, std::uint64_t request_id,
+                               const std::string& http_request_id,
+                               const ninfer::GenerationSchedulingObservation& observation) {
+    Json record       = event_base(server_instance_id, timestamp_unix_ms, "request_scheduling");
+    record["request"] = Json{{"request_id", request_id}, {"http_request_id", http_request_id}};
+    record["engine_request_id"] = observation.engine_request_id;
+    record["transition"]        = scheduling_transition_name(observation.transition);
+    record["route"]             = recovery_route_json(observation.route);
+    record["steady_ns"]         = observation.steady_ns;
+    record["elapsed_ns"]        = observation.elapsed_ns;
+    record["preemption_index"]  = observation.preemption_index;
+    record["progress"]          = Json{
+                 {"global_prefill_tokens", observation.global_prefill_tokens},
+                 {"global_decode_tokens", observation.global_decode_tokens},
+                 {"global_replayed_tokens", observation.global_replayed_tokens},
+                 {"request_prefill_tokens", observation.request_prefill_tokens},
+                 {"request_decode_tokens", observation.request_decode_tokens},
+                 {"request_replayed_tokens", observation.request_replayed_tokens},
+    };
+    return record.dump();
+}
+
 std::string format_request_start_json(const std::string& server_instance_id,
                                       std::uint64_t timestamp, const RequestLogContext& context) {
     Json record                   = event_base(server_instance_id, timestamp, "request_start");
@@ -1085,6 +1144,14 @@ void JsonlRequestLog::write_server_start(const ServeOptions& options,
 void JsonlRequestLog::write_request_start(const RequestLogContext& context) {
     if (!enabled()) { return; }
     append(format_request_start_json(server_instance_id_, unix_time_ms(), context));
+}
+
+void JsonlRequestLog::write_request_scheduling(
+    std::uint64_t request_id, const std::string& http_request_id,
+    const ninfer::GenerationSchedulingObservation& observation) {
+    if (!enabled()) { return; }
+    append(format_request_scheduling_json(server_instance_id_, unix_time_ms(), request_id,
+                                          http_request_id, observation));
 }
 
 void JsonlRequestLog::write_request_rejected(const RequestRejectionLogContext& context) {

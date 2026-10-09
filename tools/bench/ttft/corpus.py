@@ -93,7 +93,6 @@ class Corpus:
             "long-256k-32": (260096, 32, 260160),
             "interferer-256": (127, 256, 384),
             "holder-4096": (127, 4096, 4224),
-            "medium-3000": (30, 3000, 3072),
             "context-exact": (8129, 64, 8192),
         }
         for name, (prompt, output, expected_kv_tokens) in expected.items():

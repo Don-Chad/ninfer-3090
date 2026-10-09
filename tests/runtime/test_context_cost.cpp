@@ -1,7 +1,5 @@
 #include "runtime/engine/context_cache/context_cost.h"
 
-#include "core/host_kv_arena.h"
-
 #include <nlohmann/json.hpp>
 
 #include <array>
@@ -156,46 +154,6 @@ void test_exact_evaluation() {
            "prefill cost did not saturate");
 }
 
-void test_kv_physical_work() {
-    const ninfer::HostKVPageLayout page_major = ninfer::plan_host_kv_page_layout({
-        .page_tokens        = 3,
-        .device_plane_order = ninfer::PagedKVPlaneOrder::PageMajor,
-        .planes =
-            {
-                {ninfer::DType::BF16, 8, 4, 256},
-                {ninfer::DType::I8, 16, 2, 256},
-            },
-    });
-    const std::uint64_t page_payload =
-        page_major.planes[0].page_payload_bytes + page_major.planes[1].page_payload_bytes;
-    expect(page_payload < page_major.page_stride,
-           "KV work fixture did not contain alignment padding");
-    expect(ninfer::plan_host_kv_transfer_work(page_major, 3, 2) ==
-               ninfer::TransferWork{.payload_bytes = 3 * page_payload, .copy_operations = 4},
-           "PageMajor Host KV work counts padding or the wrong CUDA operations");
-    expect(ninfer::plan_device_kv_copy_work(page_major, 3) ==
-               ninfer::TransferWork{.payload_bytes = 3 * page_payload, .copy_operations = 6},
-           "PageMajor Device KV work does not count one copy per plane and page");
-
-    const ninfer::HostKVPageLayout head_major = ninfer::plan_host_kv_page_layout({
-        .page_tokens        = 3,
-        .device_plane_order = ninfer::PagedKVPlaneOrder::HeadMajor,
-        .planes =
-            {
-                {ninfer::DType::I8, 8, 3, 256},
-                {ninfer::DType::BF16, 4, 5, 256},
-            },
-    });
-    const std::uint64_t head_payload =
-        head_major.planes[0].page_payload_bytes + head_major.planes[1].page_payload_bytes;
-    expect(ninfer::plan_host_kv_transfer_work(head_major, 7, 2) ==
-               ninfer::TransferWork{.payload_bytes = 7 * head_payload, .copy_operations = 16},
-           "HeadMajor Host KV work does not count one copy per head and run");
-    expect(ninfer::plan_device_kv_copy_work(head_major, 7) ==
-               ninfer::TransferWork{.payload_bytes = 7 * head_payload, .copy_operations = 14},
-           "HeadMajor Device KV work should remain one copy per plane and page");
-}
-
 void test_schema_validation() {
     Json entries = Json::array();
     entries.push_back(prefill_entry("config-and-formats", prefill()));
@@ -347,7 +305,6 @@ void test_resolution_and_atomic_upserts() {
 
 int main() {
     test_exact_evaluation();
-    test_kv_physical_work();
     test_schema_validation();
     test_resolution_and_atomic_upserts();
     if (failures == 0) { std::cout << "ok\n"; }

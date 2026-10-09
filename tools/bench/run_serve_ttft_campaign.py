@@ -37,6 +37,7 @@ PORT = 18080
 RESOURCE_CASES = (
     "shared-state-working-set-shift",
     "private-state-working-set-shift",
+    "private-only-working-set-shift",
     "shared-state-hot-prefix",
     "resume-after-interference-device",
     "resume-after-interference-state-host",
@@ -47,17 +48,44 @@ RESOURCE_CASES = (
     "session-rotation-55k-host",
     "session-rotation-55k-two-cohort-stream",
 )
+CONTRACT_CASES = (
+    "session-publication-order",
+    "pending-overflow",
+    "pending-timeout",
+    "context-exact",
+    "context-over",
+    "vision-disabled",
+    "vision-envelope-over",
+)
+LONG_CONTEXT_CASES = ("cold-long-256k",)
+PREPROCESS_CASES = ("many-image-28", "many-image-28-thread-1")
+# The two-cohort case already runs the complete ordinary 55K rotation as its first phase.
+FULL_EXCLUSIONS = {
+    *CONTRACT_CASES,
+    *LONG_CONTEXT_CASES,
+    "many-image-28-thread-1",
+    "session-rotation-55k-host",
+}
 CAMPAIGNS = {
     "smoke": ("cold-short",),
     "resource": RESOURCE_CASES,
     "preemption": (
         "preemption-replay",
         "preemption-snapshot",
-        "shared-growth-fairness",
-        "snapshot-history-cancel",
+        "preemption-snapshot-mtp",
+        "preemption-snapshot-dflash2",
+        "shared-growth-recovery",
+        "host-history-pressure-cancel",
         "vision-growth-replay",
+        "agent-continuation-replay",
+        "agent-continuation-snapshot",
     ),
-    "full": tuple(CASES),
+    "load": tuple(name for name in CASES
+                  if name.startswith(("resident-", "mixed-arrivals-"))),
+    "contract": CONTRACT_CASES,
+    "long-context": LONG_CONTEXT_CASES,
+    "preprocess": PREPROCESS_CASES,
+    "full": tuple(name for name in CASES if name not in FULL_EXCLUSIONS),
 }
 
 
@@ -436,7 +464,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help=(
             "smoke=one baseline, resource=pressure and Host-rotation cases, "
             "preemption=restore, mixed scheduling, cancellation and Vision pressure cases, "
-            "full=all audited cases"
+            "full=composite performance; contract=HTTP boundaries; long-context=long inputs; preprocess=worker control"
         ),
     )
     selection.add_argument(

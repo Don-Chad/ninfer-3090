@@ -105,7 +105,8 @@ def _comparison_markdown(summary: dict[str, Any]) -> list[str]:
 
 def _cross_campaign_markdown(summary: dict[str, Any]) -> list[str]:
     rows = summary.get("cross_campaign_comparisons", [])
-    if not rows:
+    rejected = summary.get("cross_campaign_rejected", [])
+    if not rows and not rejected:
         return []
     baseline = summary["baseline"]
     ranked = sorted(
@@ -149,6 +150,13 @@ def _cross_campaign_markdown(summary: dict[str, Any]) -> list[str]:
             ),
         )
     )
+    if rejected:
+        lines.extend(["", "Comparisons refused because the measurement contract changed:", ""])
+        lines.extend(_table(
+            ("Case", "Profile", "Current contract", "Baseline contract"),
+            ((row["case"], row["profile_label"], ", ".join(row["current_contracts"]),
+              ", ".join(row["baseline_contracts"])) for row in rejected),
+        ))
     lines.append("")
     return lines
 
@@ -366,6 +374,45 @@ def _issues_markdown(summary: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _lifecycle_markdown(summary: dict[str, Any]) -> list[str]:
+    lines = [
+        "## Request latency and streaming progress", "",
+        "Constructed runs are grouped by declared request class, or by role when no class is",
+        "declared. Latencies pool requests across samples; output-gap percentiles pool nonempty",
+        "output-event gaps. Outcomes include later failures and intentional cancellations.", "",
+    ]
+    def metric(row: dict[str, Any], name: str, stat: str) -> str:
+        value = row[name][stat + "_ns"]
+        return _milliseconds(value / 1e6 if value is not None else None)
+    lines.extend(_table(
+        ("Case", "Class/role", "Runs", "Outcomes", "TTFT p50/p95/max ms",
+         "Terminal p50/p95/max ms", "Gap p95/max ms"),
+        ((row["case"], f"{row['group_kind']}: {row['group_label']}", row["samples"],
+          json.dumps(row["request_outcomes"], sort_keys=True),
+          "/".join(metric(row, "ttft", stat) for stat in ("median", "p95", "max")),
+          "/".join(metric(row, "terminal", stat) for stat in ("median", "p95", "max")),
+          "/".join(metric(row, "output_gap", stat) for stat in ("p95", "max")))
+         for row in summary["request_lifecycle_groups"]),
+    ))
+    phases = summary["workload_phase_metrics"]
+    if phases:
+        lines.extend(["", "### Selected workload phases", "",
+                      "Only listed requests contribute to these client measurements. Server-wide work",
+                      "and occupancy belong to the entire run and are not attributed to a phase.", ""])
+        lines.extend(_table(
+            ("Case", "Sample", "Phase", "Requests", "Missing roles", "Span ms",
+             "TTFT mean/p50/p95/max ms", "Gap p95/max ms"),
+            ((row["case"], row["sample"], row["phase"], row["requests"],
+              ", ".join(row["missing_roles"]) or "—",
+              _milliseconds(row["duration_ns"] / 1e6 if row["duration_ns"] is not None else None),
+              "/".join(metric(row, "ttft", stat) for stat in ("mean", "median", "p95", "max")),
+              "/".join(metric(row, "output_gap", stat) for stat in ("p95", "max")))
+             for row in phases),
+        ))
+    lines.append("")
+    return lines
+
+
 def _stream_markdown(summary: dict[str, Any]) -> list[str]:
     lines = [
         "## Complete request observations", "",
@@ -410,6 +457,21 @@ def _stream_markdown(summary: dict[str, Any]) -> list[str]:
             for row in summary["workload_metrics"]
         ),
     ))
+    scheduled = [row for row in summary["workload_metrics"] if "scheduled_requests" in row]
+    if scheduled:
+        lines.extend(["", "### Finite schedule and drain", "",
+                      "Schedule metrics include only scheduled roles, excluding setup and later continuation.",
+                      "Drain runs from the last actual send to the last transport end on the client clock.",
+                      "A complete drain does not imply success; outcomes and completed token usage are separate.", ""])
+        lines.extend(_table(
+            ("Case", "Sample", "Success/scheduled", "Planned send span ms", "Actual send span ms",
+             "Max send lateness ms", "Drain ms", "Completed output tokens"),
+            ((row["case"], row["sample"],
+              f"{row['scheduled_successful_requests']}/{row['scheduled_requests']}",
+              ms(row, "planned_injection_span_ns"), ms(row, "actual_injection_span_ns"),
+              ms(row, "max_send_lateness_ns"), ms(row, "drain_ns"),
+              row["scheduled_completed_output_tokens"]) for row in scheduled),
+        ))
     arrivals = []
     for workload in summary["workload_metrics"]:
         observed = {row["role"]: row for row in workload.get("observed_workload") or []}
@@ -456,6 +518,22 @@ def _stream_markdown(summary: dict[str, Any]) -> list[str]:
                     for name in row["mechanism_requirements"]) or "—")
          for row in summary["workload_metrics"]),
     ))
+    intervals = [(workload, interval) for workload in summary["workload_metrics"]
+                 for interval in workload.get("replay_progress_intervals", [])]
+    if intervals:
+        lines.extend(["", "### Progress during Replay", "",
+                      "Counter differences are captured by Engine at restored and replay_complete.",
+                      "Other new work subtracts this request's own work; log delivery order and",
+                      "one-second scheduler samples do not establish this evidence.", ""])
+        lines.extend(_table(
+            ("Case", "Sample", "Role", "Episode", "Status", "Replay span ms",
+             "Own replay tokens", "Other prefill/decode tokens", "Reason"),
+            ((workload["case"], workload["sample"], row["request_role"], row["preemption_index"],
+              row["status"], ms(row, "duration_ns"),
+              row.get("progress", {}).get("request_replayed_tokens"),
+              f"{row.get('other_prefill_tokens')}/{row.get('other_decode_tokens')}",
+              row.get("reason", "—")) for workload, row in intervals),
+        ))
     lines.append("")
     return lines
 
@@ -609,6 +687,7 @@ def render_markdown(summary: dict[str, Any]) -> str:
     lines.extend(_variability_markdown(summary))
     lines.extend(_rejection_markdown(summary))
     lines.extend(_issues_markdown(summary))
+    lines.extend(_lifecycle_markdown(summary))
     lines.extend(_stream_markdown(summary))
     lines.extend(_request_timing_markdown(summary))
     lines.extend(_runtime_markdown(summary))
@@ -625,6 +704,7 @@ CSV_FIELDS = (
     "case",
     "profile_label",
     "request_role",
+    "request_class",
     "observation_kind",
     "observation_label",
     "label",

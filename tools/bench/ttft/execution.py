@@ -15,6 +15,7 @@ from tools.ninfer_serve.client import (
     ProtocolRequest,
     ServeExchangeResult,
 )
+from tools.streaming_http.client import HttpResponseHead
 
 
 class CaseExecutionError(RuntimeError):
@@ -112,6 +113,7 @@ class RequestHandle:
         self._event_trace: list[dict[str, Any]] = []
         self._output_parts: list[str] = []
         self._usage: dict[str, int] = {}
+        self._wire_request_id: str | None = None
 
         self.sent_ns: int | None = None
         self.body_sent_ns: int | None = None
@@ -180,6 +182,10 @@ class RequestHandle:
             upload_ms=(timestamp - sent_ns) / 1e6 if sent_ns is not None else None,
             body_bytes=self._prepared.body_bytes,
         )
+
+    def _on_headers(self, head: HttpResponseHead) -> None:
+        with self._lock:
+            self._wire_request_id = head.headers.get("x-request-id") or head.headers.get("request-id")
 
     def _on_event(self, event: ProtocolEvent) -> None:
         with self._lock:
@@ -254,6 +260,7 @@ class RequestHandle:
             result = self._prepared.execute(
                 on_sent=self._on_sent,
                 on_body_sent=self._on_body_sent,
+                on_headers=self._on_headers,
                 on_event=self._on_event,
             )
             with self._lock:
@@ -458,6 +465,7 @@ class RequestHandle:
             output_text = "".join(self._output_parts)
             output_bytes = len(output_text.encode("utf-8"))
             usage = dict(self._usage)
+            wire_request_id = self._wire_request_id
         sent = self.sent_ns
         first = self.first_output_ns
         ttft_ns = first - sent if isinstance(sent, int) and isinstance(first, int) else None
@@ -504,10 +512,7 @@ class RequestHandle:
             "http_status": http.status if http is not None else None,
             "http_reason": http.reason if http is not None else None,
             "response_id": self.response_id,
-            "wire_request_id": (
-                http.headers.get("x-request-id") or http.headers.get("request-id")
-                if http is not None else None
-            ),
+            "wire_request_id": wire_request_id,
             "usage": usage,
             "output_bytes": output_bytes,
             "output_text": output_text,

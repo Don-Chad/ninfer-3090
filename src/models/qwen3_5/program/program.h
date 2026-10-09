@@ -299,6 +299,14 @@ struct CommitRowResult {
     runtime::CommitDisposition disposition = runtime::CommitDisposition::Active;
     GenerationTimings timings;
     SpeculativeStats speculative;
+
+    // Fixed-size cumulative observation, including active rows without copying per-position data.
+    struct SpeculativeCounters {
+        std::uint64_t rounds          = 0;
+        std::uint64_t drafted_tokens  = 0;
+        std::uint64_t accepted_tokens = 0;
+        std::uint64_t fallback_steps  = 0;
+    } speculative_counters;
 };
 
 struct CommitResult {

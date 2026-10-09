@@ -2,7 +2,6 @@
 
 #include "core/host_context_arena.h"
 #include "core/paged_kv_cache.h"
-#include "core/transfer_work.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -30,12 +29,6 @@ struct HostKVPageLayout {
 };
 
 [[nodiscard]] HostKVPageLayout plan_host_kv_page_layout(const KVPageGeometry& geometry);
-
-[[nodiscard]] TransferWork plan_host_kv_transfer_work(const HostKVPageLayout& layout,
-                                                      std::uint32_t pages,
-                                                      std::uint32_t contiguous_runs);
-[[nodiscard]] TransferWork plan_device_kv_copy_work(const HostKVPageLayout& layout,
-                                                    std::uint32_t pages);
 
 class HostKVArena;
 

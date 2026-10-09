@@ -292,7 +292,7 @@ PROFILE_ARGS: dict[str, tuple[str, ...]] = {
         "--no-prefix-reuse",
         "--host-context-mib", 512,
     ),
-    "shared-growth-fairness": _args(
+    "shared-growth-recovery": _args(
         "--max-context", 2688,
         "--kv-capacity", 2688,
         "--max-concurrency", 3,
@@ -300,13 +300,13 @@ PROFILE_ARGS: dict[str, tuple[str, ...]] = {
         "--device-state-slots", 2,
         "--host-context-mib", 0,
     ),
-    "snapshot-history-cancel": _args(
+    "host-history-pressure": _args(
         "--max-context", 512,
-        "--kv-capacity", 512,
-        "--max-concurrency", 2,
+        "--kv-capacity", 768,
+        "--max-concurrency", 3,
         "--prefill-chunk", 128,
         "--device-state-slots", 0,
-        "--host-context-mib", 256,
+        "--host-context-mib", 384,
     ),
     "vision-growth-replay": _args(
         "--max-context", 1024,
@@ -321,3 +321,31 @@ PROFILE_ARGS: dict[str, tuple[str, ...]] = {
         "--media-live-mib", 64,
     ),
 }
+
+
+for _capacity, _kv_tokens in (("roomy", 10240), ("pressure", 8192)):
+    PROFILE_ARGS[f"resident-{_capacity}"] = _args(
+        "--max-context", 8192, "--kv-capacity", _kv_tokens,
+        "--max-concurrency", 3, "--prefill-chunk", 1024,
+        "--no-prefix-reuse", "--host-context-mib", 0,
+    )
+
+PROFILE_ARGS["mixed-arrivals"] = _args(
+    "--max-context", 8192, "--kv-capacity", 8192,
+    "--max-concurrency", 4, "--prefill-chunk", 1024,
+    "--max-pending-requests", 16, "--pending-timeout-ms", 120000,
+    "--no-prefix-reuse", "--host-context-mib", 512,
+)
+
+for _route, _host_mib_value in (("replay", 0), ("snapshot", 512)):
+    PROFILE_ARGS[f"agent-{_route}"] = _args(
+        "--max-context", 768, "--kv-capacity", 768,
+        "--max-concurrency", 2, "--prefill-chunk", 128,
+        "--device-state-slots", 2, "--host-context-mib", _host_mib_value,
+    )
+
+for _backend, _draft_tokens in (("mtp", 3), ("dflash2", 7)):
+    PROFILE_ARGS[f"preemption-snapshot-{_backend}"] = (
+        *PROFILE_ARGS["preemption-snapshot"],
+        "--spec", _backend, "--draft-tokens", str(_draft_tokens), "--lm-head-draft",
+    )

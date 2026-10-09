@@ -266,26 +266,42 @@ void HttpServer::record_request_start(const RequestLogContext& context) {
 }
 
 void HttpServer::record_request_rejected(const RequestRejectionLogContext& context) {
+    metrics_.rejected();
     request_jsonl_.write_request_rejected(context);
-    metrics_.record_rejection();
     operational_log_.request_rejected(context);
+}
+
+ninfer::GenerationFirstTokenObserver HttpServer::first_token_observer() {
+    return [this](const ninfer::GenerationFirstTokenObservation& observation) {
+        metrics_.first_token(observation);
+    };
+}
+
+ninfer::GenerationSchedulingObserver HttpServer::scheduling_observer(std::uint64_t request_id,
+                                                                     std::string http_request_id) {
+    if (!request_jsonl_.enabled()) { return {}; }
+    return [this, request_id, http_request_id = std::move(http_request_id)](
+               const ninfer::GenerationSchedulingObservation& observation) {
+        request_jsonl_.write_request_scheduling(request_id, http_request_id, observation);
+    };
 }
 
 void HttpServer::record_request_done(const RequestLogContext& context,
                                      const GenerationOutcome& outcome) {
+    metrics_.done(outcome);
     request_jsonl_.write_request_done(context, outcome);
-    metrics_.record_done(outcome);
     operational_log_.request_done(context, outcome);
 }
 
 void HttpServer::record_request_failure(const RequestLogContext& context,
                                         const RequestFailure& failure) {
+    metrics_.failed(failure.classification == RequestFailureClass::ClientDisconnected);
     request_jsonl_.write_request_error(context, failure.machine_message);
-    metrics_.record_failure();
     operational_log_.request_failure(context, failure);
 }
 
 void HttpServer::record_response_failure(std::uint64_t request_id, const RequestFailure& failure) {
+    metrics_.response_failed();
     operational_log_.response_failure(request_id, failure);
 }
 
@@ -462,13 +478,6 @@ void HttpServer::register_routes() {
                             .dump(),
                         "application/json");
     });
-    server_.Get("/metrics", [this](const httplib::Request&, httplib::Response& res) {
-        // Pre-routing answers 503 until attach(), so service_ is published here.
-        res.set_header("Cache-Control", "no-store");
-        res.set_content(metrics_.render(options_.max_concurrency, service_->runtime_stats(),
-                                        service_->admitted_requests()),
-                        "text/plain; version=0.0.4");
-    });
     server_.Get("/v1/load", [this](const httplib::Request& req, httplib::Response& res) {
         handle_load(req, res);
     });
@@ -477,6 +486,14 @@ void HttpServer::register_routes() {
     });
     server_.Get("/v1/models", [this](const httplib::Request& req, httplib::Response& res) {
         handle_models(req, res);
+    });
+    server_.Get("/metrics", [this](const httplib::Request&, httplib::Response& res) {
+        // Pre-routing answers 503 until attach(), so service_ is published here.
+        const auto stats = service_->runtime_stats();
+        res.set_header("Cache-Control", "no-store");
+        res.set_content(
+            metrics_.render(stats, service_->is_available(), service_->admitted_requests()),
+            "text/plain; version=0.0.4; charset=utf-8");
     });
     server_.Get(R"(/v1/models/(.+))", [this](const httplib::Request& req, httplib::Response& res) {
         handle_model(req, res);
@@ -596,10 +613,13 @@ void HttpServer::attach(GenerationService& service) {
         throw std::logic_error("HTTP generation service is already attached");
     }
     const ninfer::LoadSummary load = service.load_summary();
-    public_model_id_               = resolve_public_model_id(options_, load.model_name);
-    service_                       = &service;
-    // memory_summary() takes the Engine execution lock; read it once here, never per /v1/load poll.
-    const ninfer::MemorySummary memory = service.memory_summary();
+    // memory_summary() waits for the completed worker boundary, including warmup publication, and
+    // takes the Engine execution lock; read it once here, never per /v1/load poll.
+    const ninfer::MemorySummary memory  = service.memory_summary();
+    const ninfer::RuntimeStats baseline = service.runtime_stats();
+    public_model_id_                    = resolve_public_model_id(options_, load.model_name);
+    service_                            = &service;
+    metrics_.configure(public_model_id_, service.engine_options(), memory, baseline);
     request_jsonl_.write_server_start(options_, service.engine_options(),
                                       service.sampling_defaults(), public_model_id_, load, memory);
     load_capacity_ = make_load_capacity(public_model_id_, service.engine_options(), memory);

@@ -36,12 +36,11 @@ void ProgramImpl::copy_local_for_context(ContextTransaction& tx, std::int32_t so
 void ProgramImpl::copy_context_tail(ContextTransaction& tx, LogicalKVPageStore& pages,
                                     DeviceKVPageHandle source, DeviceKVPageHandle destination,
                                     runtime::ContextResourceClass resource) {
-    tx.transfers.push_back(
-        kv_transfer_requirement(resource, runtime::ContextTransferDirection::DeviceToDevice,
-                                plan_host_kv_page_layout(pages.physical_pool().geometry()), 1));
     start_context_transfer_timer(resource);
-    pages.physical_pool().copy_page(source, destination, device.transfer_stream);
+    const auto work = pages.physical_pool().copy_page(source, destination, device.transfer_stream);
     stop_context_transfer_timer(resource);
+    tx.transfers.push_back(kv_transfer_requirement(
+        resource, runtime::ContextTransferDirection::DeviceToDevice, 1, work));
     ++tx.operations.partial_tail_cow_pages;
 }
 
@@ -80,22 +79,16 @@ void ProgramImpl::enqueue_context_transfers(ContextTransaction& tx) {
                             .subview(first.page_offset, static_cast<std::uint32_t>(end - begin));
                     const auto destination = std::span<const DeviceKVPageHandle>(transfer.physical)
                                                  .subspan(begin, end - begin);
-                    const auto part = plan_host_kv_transfer_work(
-                        host.layout(), static_cast<std::uint32_t>(destination.size()),
-                        transfer.pages->physical_pool().contiguous_run_count(destination));
+                    const auto part = transfer.pages->physical_pool().copy_from_host(
+                        host, destination, device.transfer_stream);
                     work.payload_bytes += part.payload_bytes;
                     work.copy_operations += part.copy_operations;
-                    transfer.pages->physical_pool().copy_from_host(host, destination,
-                                                                   device.transfer_stream);
                     begin = end;
                 }
             } else if (transfer.host_destination) {
                 const auto host = host_kv_extents->writable_view(*transfer.host_destination);
-                work            = plan_host_kv_transfer_work(
-                    host.layout(), static_cast<std::uint32_t>(transfer.physical.size()),
-                    transfer.pages->physical_pool().contiguous_run_count(transfer.physical));
-                transfer.pages->physical_pool().copy_to_host(transfer.physical, host,
-                                                             device.transfer_stream);
+                work = transfer.pages->physical_pool().copy_to_host(transfer.physical, host,
+                                                                    device.transfer_stream);
                 if (tx.kind == ContextOperationKind::Pause ||
                     tx.kind == ContextOperationKind::Demote) {
                     tx.operations.pressure_spill_pages += transfer.physical.size();

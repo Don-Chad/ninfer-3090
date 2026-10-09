@@ -48,6 +48,12 @@ std::optional<std::size_t> source_boundary(const text::TemplateOutput& output, s
         if (result && *result != mapped) return std::nullopt;
         result = mapped;
     }
+    for (const auto& mapping : output.boundary_mappings) {
+        if (mapping.tag != tag || offset < mapping.source_begin || offset > mapping.source_end)
+            continue;
+        if (result && *result != mapping.offset) return std::nullopt;
+        result = mapping.offset;
+    }
     return result;
 }
 

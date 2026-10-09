@@ -117,6 +117,11 @@ TemplateOutput JinjaTemplate::render(const nlohmann::ordered_json& input,
         TemplateOutput result;
         for (const auto& part : rendered->val_str.parts) {
             const auto begin = result.text.size();
+            if (part.collapsed_source_end) {
+                result.boundary_mappings.push_back(
+                    {part.origin, *part.source_offset, *part.collapsed_source_end, begin});
+                continue;
+            }
             result.text += part.val;
             if (part.literal && !part.val.empty()) {
                 if (!result.literal_spans.empty() && result.literal_spans.back().end == begin)

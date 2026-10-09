@@ -127,13 +127,9 @@ bool real_user(const ChatMessage& message) {
     if (message.has_media()) return true;
     std::string content;
     for (const auto& part : message.parts) content += part.text;
-    const auto chars  = text::unicode_internal::utf8_codepoints(content, "message content");
-    std::size_t begin = 0, end = chars.size();
-    while (begin < end && text::unicode_internal::is_whitespace(chars[begin].value)) ++begin;
-    while (end > begin && text::unicode_internal::is_whitespace(chars[end - 1].value)) --end;
-    const auto offset = begin < chars.size() ? chars[begin].offset : content.size();
-    const auto limit  = end < chars.size() ? chars[end].offset : content.size();
-    const auto body   = std::string_view(content).substr(offset, limit - offset);
+    const auto bytes = text::unicode_internal::trim_utf8(
+        content, true, true, text::unicode_internal::is_whitespace, "message content");
+    const auto body = std::string_view(content).substr(bytes.begin, bytes.end - bytes.begin);
     return !(body.starts_with("<tool_response>") && body.ends_with("</tool_response>"));
 }
 

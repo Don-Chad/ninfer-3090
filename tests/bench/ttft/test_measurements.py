@@ -13,7 +13,7 @@ from tools.bench.ttft.render import render_csv, render_markdown, render_request_
 from tools.bench.ttft.report import CampaignData, PlannedRun, load_campaign, summarize_campaign
 from tools.ninfer_serve.client import ProtocolEvent, ProtocolRequest, ServeExchangeResult
 from tools.ninfer_serve.openai_chat import ChatStreamAdapter
-from tools.streaming_http.client import HttpExchangeResult
+from tools.streaming_http.client import HttpExchangeResult, HttpResponseHead
 from tools.streaming_http.sse import SseDecoder
 
 
@@ -28,9 +28,11 @@ class PreparedResponse:
         self.error = error
         self.cancelled = cancelled
 
-    def execute(self, *, on_sent, on_body_sent, on_event):
+    def execute(self, *, on_sent, on_body_sent, on_event, on_headers=None):
         on_sent(1_000_000)
         on_body_sent(2_000_000)
+        if on_headers is not None:
+            on_headers(HttpResponseHead(200, "OK", {"x-request-id": "req_wire"}, 2_500_000))
         for event in self.events:
             on_event(event)
         return ServeExchangeResult(
@@ -549,3 +551,136 @@ def test_final_record_retains_sent_body_when_input_object_changes():
     context = CaseContext(None, "test-model", 2)
     context.handles.append(handle)
     assert context.records()[0]["request_payload"]["messages"][0]["content"] == "sent input"
+
+
+def test_lifecycle_class_and_phase_keep_slow_gaps_and_failed_requests(tmp_path):
+    short = record([output(5_000_000), output(6_000_000),
+                    ProtocolEvent("terminal", "done", 7_000_000)])
+    short["role"] = "short"
+    stalled = record([output(8_000_000), output(108_000_000)], error="timeout")
+    stalled["role"] = "stalled"
+    data = campaign(tmp_path, [short, stalled], notes={
+        "request_classes": {"short": "decode", "stalled": "decode"},
+        "workload_phases": {"seed": ["short"], "missing": ["absent"]},
+    })
+    summary = summarize_campaign(data)
+    group = summary["request_lifecycle_groups"][0]
+    assert group["requests"] == 2
+    assert group["request_outcomes"] == {"success": 1, "transport_error": 1}
+    assert group["output_gap"]["p95_ns"] == 100_000_000
+    assert group["terminal"]["count"] == 1
+    seed, missing = summary["workload_phase_metrics"]
+    assert seed["output_gap"]["max_ns"] == 1_000_000
+    assert seed["scope"] == "selected_client_requests"
+    assert missing["missing_roles"] == ["absent"]
+    assert missing["duration_ns"] is None
+    assert "Gap p95/max ms" in render_markdown(summary)
+
+
+def test_finite_schedule_drain_excludes_setup_and_uses_actual_usage(tmp_path):
+    base = record([output(5_000_000), ProtocolEvent("terminal", "done", 15_000_000)])
+    setup = {**base, "role": "setup", "sent_ns": 0, "ended_ns": 900,
+             "usage": {"output_tokens": 1000}}
+    first = {**base, "role": "first", "sent_ns": 100, "ended_ns": 500,
+             "terminal_ns": 490, "usage": {"output_tokens": 3}}
+    second = {**base, "role": "second", "sent_ns": 220, "ended_ns": 400,
+              "terminal_ns": 380, "usage": {"output_tokens": 7}}
+    summary = summarize_campaign(campaign(tmp_path, [setup, first, second], notes={
+        "arrival_mode": "fixed_schedule",
+        "arrivals": [{"role": "first", "offset_ns": 0, "lateness_ns": 0},
+                     {"role": "second", "offset_ns": 100, "lateness_ns": 20}],
+    }))
+    workload = summary["workload_metrics"][0]
+    assert workload["planned_injection_span_ns"] == 100
+    assert workload["actual_injection_span_ns"] == 120
+    assert workload["max_send_lateness_ns"] == 20
+    assert workload["drain_ns"] == 280
+    assert workload["terminal_drain_ns"] == 270
+    assert workload["scheduled_completed_output_tokens"] == 10
+    assert workload["scheduled_successful_requests"] == 2
+
+
+def test_changed_contract_refuses_same_name_cross_campaign_delta(tmp_path):
+    measured = record([output(5_000_000), ProtocolEvent("terminal", "done", 15_000_000)])
+    baseline = campaign(tmp_path, [measured])
+    current = campaign(tmp_path, [measured], notes={"measurement_contract": "2"})
+    summary = summarize_campaign(current, baseline)
+    assert summary["cross_campaign_comparisons"] == []
+    assert summary["cross_campaign_rejected"][0]["reason"] == "measurement_contract_mismatch"
+    assert "Comparisons refused" in render_markdown(summary)
+
+
+@pytest.mark.parametrize("missing_request", [False, True])
+@pytest.mark.parametrize("other_decode", [0, 2])
+def test_replay_progress_uses_engine_interval_and_subtracts_self(tmp_path, other_decode, missing_request):
+    measured = record([output(5_000_000), ProtocolEvent("terminal", "done", 15_000_000)])
+    measured["response_id"] = "response-a"
+    done = done_event(1, "req_wire", "response-a", preemptions=1, replay=1)
+    done["schema_version"] = 25
+    def transition(name, at, replayed, decoded):
+        return {
+            "artifact_type": "ninfer_serve_request_log", "schema_version": 25,
+            "event": "request_scheduling", "server_instance_id": "serve-test",
+            "request": {"request_id": 1, "http_request_id": "req_wire"},
+            "engine_request_id": 11, "preemption_index": 1, "route": "replay",
+            "transition": name, "steady_ns": at,
+            "progress": {"global_prefill_tokens": 500, "global_decode_tokens": decoded,
+                         "global_replayed_tokens": replayed, "request_prefill_tokens": 192,
+                         "request_decode_tokens": 4, "request_replayed_tokens": replayed},
+        }
+    # Deliberately use timestamps unrelated to the client and reverse delivery order.
+    end = transition("replay_complete", 200, 192, 40 + other_decode)
+    start = transition("restored", 100, 0, 40)
+    requests = [measured]
+    if missing_request:
+        requests.append({**measured, "role": "missing-terminal", "wire_request_id": "wire-missing",
+                         "response_id": "response-missing"})
+    expected = "observed" if other_decode else "unavailable" if missing_request else "not_observed"
+    data = logged_campaign(tmp_path, requests, [end, done, start],
+                           required=("replay_with_other_progress",))
+    workload = summarize_campaign(data)["workload_metrics"][0]
+    assert workload["required_mechanism_status"] == expected
+    interval = workload["replay_progress_intervals"][0]
+    assert interval["duration_ns"] == 100
+    assert interval["other_decode_tokens"] == other_decode
+    assert interval["other_replayed_tokens"] == 0
+
+
+def test_engine_ticket_order_uses_exact_identity_not_client_send_order(tmp_path):
+    a = record([output(5_000_000), ProtocolEvent("terminal", "done", 15_000_000)])
+    a.update(role="older", wire_request_id="wire-a", response_id="response-a")
+    b = {**a, "role": "younger", "wire_request_id": "wire-b", "response_id": "response-b"}
+    data = logged_campaign(tmp_path, [a, b], [
+        done_event(2, "wire-a", "response-a"), done_event(1, "wire-b", "response-b"),
+    ], required=("expected_engine_order",))
+    data.runs[0]["notes"]["expected_engine_order_groups"] = [["older"], ["younger"]]
+    workload = summarize_campaign(data)["workload_metrics"][0]
+    assert workload["required_mechanism_status"] == "not_observed"
+
+
+@pytest.mark.parametrize("missing", ["restored", "replay_complete", "both", "terminal"])
+def test_replay_evidence_missing_events_cannot_prove_no_other_progress(tmp_path, missing):
+    measured = record([output(5_000_000), ProtocolEvent("terminal", "done", 15_000_000)])
+    measured["response_id"] = "response-a"
+    done = done_event(1, "req_wire", "response-a", preemptions=1, replay=1)
+    done["schema_version"] = 25
+    event = {
+        "artifact_type": "ninfer_serve_request_log", "schema_version": 25,
+        "event": "request_scheduling", "server_instance_id": "serve-test",
+        "request": {"request_id": 1, "http_request_id": "req_wire"},
+        "engine_request_id": 11, "preemption_index": 1, "route": "replay",
+        "transition": "paused", "steady_ns": 50,
+    }
+    events = [event]
+    if missing != "terminal":
+        events.append(done)
+    if missing not in ("restored", "both"):
+        events.append({**event, "transition": "restored", "steady_ns": 100})
+    if missing not in ("replay_complete", "both"):
+        events.append({**event, "transition": "replay_complete", "steady_ns": 200})
+    data = logged_campaign(tmp_path, [measured], events,
+                           required=("replay_with_other_progress",))
+    workload = summarize_campaign(data)["workload_metrics"][0]
+    assert workload["required_mechanism_status"] == "unavailable"
+    assert data.runs[0]["scheduling_observations"]["status"] == "unavailable"
+    assert data.runs[0]["scheduling_observations"]["incomplete_requests"]

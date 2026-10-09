@@ -1,5 +1,5 @@
 #include "models/qwen3_5/program/context_work.h"
-#include "core/host_kv_arena.h"
+#include "core/paged_kv_cache.h"
 #include "models/qwen3_5/state/state_image.h"
 
 #include <algorithm>
@@ -57,11 +57,8 @@ state_transfer_requirement(const StateImageHostLayout& layout,
 
 runtime::ContextTransferRequirement
 kv_transfer_requirement(runtime::ContextResourceClass resource,
-                        runtime::ContextTransferDirection direction, const HostKVPageLayout& layout,
-                        std::uint32_t pages, std::uint32_t contiguous_runs) {
-    const TransferWork work = direction == runtime::ContextTransferDirection::DeviceToDevice
-                                  ? plan_device_kv_copy_work(layout, pages)
-                                  : plan_host_kv_transfer_work(layout, pages, contiguous_runs);
+                        runtime::ContextTransferDirection direction, std::uint32_t pages,
+                        TransferWork work) {
     return runtime::ContextTransferRequirement{
         .resource   = resource,
         .direction  = direction,

@@ -236,7 +236,7 @@ Run the serving contract manually after starting a resident server in another te
 
 ```bash
 ./build/apps/ninfer-serve out/qwen3_6_27b.ninfer \
-  --host 127.0.0.1 --port 18080
+  --host 127.0.0.1 --port 18080 --vision
 ```
 
 ```bash
@@ -313,7 +313,8 @@ NINFER_TEST_ARTIFACT=out/qwen3_8_27b_nvfp4.ninfer \
   build/tests/ninfer_tests ninfer_qwen3_5_dflash2_real_test 2 0 0 2 int8
 ```
 
-Arguments are K, Graph enabled, optimized head enabled, maximum B, target KV (`bf16` or `int8`),
-Vision enabled, and extra Device StateImage slots. Defaults are `15 1 1 8 bf16 0 3`. Run GPU
-integration tests serially. The individual Op suites remain the numerical/state-transition oracle;
-the fixed Engine fixture does not define bit parity across arbitrary floating-point routes.
+Arguments are K, Graph enabled, optimized head enabled, maximum B, target KV (`bf16`, `int8`,
+`fp8`, `nvfp4`, or `k8v4`), Vision enabled, and extra Device StateImage slots. Defaults are
+`15 1 1 8 bf16 0 3`. Run GPU integration tests serially. The individual Op suites remain the
+numerical/state-transition oracle; the fixed Engine fixture does not define bit parity across
+arbitrary floating-point routes.

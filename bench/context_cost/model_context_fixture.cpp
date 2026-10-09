@@ -218,8 +218,8 @@ std::vector<GeometryCase> transfer_geometries() {
 void measure_geometry(DeviceContext& device, const GeometryCase& fixture,
                       const MeasurementOptions& options, std::vector<TransferMeasurement>& output) {
     const HostKVPageLayout host_layout = plan_host_kv_page_layout(fixture.geometry);
-    const std::size_t page_payload =
-        static_cast<std::size_t>(plan_host_kv_transfer_work(host_layout, 1, 1).payload_bytes);
+    std::size_t page_payload           = 0;
+    for (const auto& plane : host_layout.planes) { page_payload += plane.page_payload_bytes; }
     const std::vector<TransferCase> cases = transfer_cases(page_payload);
     std::uint32_t maximum_pages           = 0;
     for (const TransferCase& test : cases) { maximum_pages = std::max(maximum_pages, test.pages); }
@@ -261,43 +261,47 @@ void measure_geometry(DeviceContext& device, const GeometryCase& fixture,
 
     CudaEventTimer timer(device, device.transfer_stream);
     const auto run = [&](const TransferCase& test) {
+        TransferWork work;
         timer.start();
         if (test.direction == TransferDirection::DeviceToHost) {
             const auto source = select_runs(handles, 0, test.pages, test.runs);
-            pool.copy_to_host(source, host_view.subview(0, test.pages), device.transfer_stream);
+            work =
+                pool.copy_to_host(source, host_view.subview(0, test.pages), device.transfer_stream);
         } else if (test.direction == TransferDirection::HostToDevice) {
             const auto destination = select_runs(handles, region_pages, test.pages, test.runs);
-            pool.copy_from_host(HostKVAllocationConstView(host_view.subview(0, test.pages)),
-                                destination, device.transfer_stream);
+            work = pool.copy_from_host(HostKVAllocationConstView(host_view.subview(0, test.pages)),
+                                       destination, device.transfer_stream);
         } else {
             for (std::uint32_t page = 0; page < test.pages; ++page) {
-                pool.copy_page(handles[page], handles[region_pages + page], device.transfer_stream);
+                const auto part = pool.copy_page(handles[page], handles[region_pages + page],
+                                                 device.transfer_stream);
+                work.payload_bytes += part.payload_bytes;
+                work.copy_operations += part.copy_operations;
             }
         }
-        return elapsed_ns(timer.stop_ms());
+        return std::pair{elapsed_ns(timer.stop_ms()), work};
     };
 
     for (const TransferCase& test : cases) {
         for (int warmup = 0; warmup < options.transfer_warmup; ++warmup) { (void)run(test); }
     }
     std::vector<std::vector<double>> samples(cases.size());
+    std::vector<TransferWork> measured_work(cases.size());
     for (int repetition = 0; repetition < options.transfer_repetitions; ++repetition) {
         for (std::size_t offset = 0; offset < cases.size(); ++offset) {
             const std::size_t index =
                 (offset + static_cast<std::size_t>(repetition)) % cases.size();
-            samples[index].push_back(run(cases[index]));
+            const auto [elapsed, work] = run(cases[index]);
+            samples[index].push_back(elapsed);
+            measured_work[index] = work;
         }
     }
     for (std::size_t index = 0; index < cases.size(); ++index) {
         const TransferCase& test = cases[index];
-        const TransferWork work =
-            test.direction == TransferDirection::DeviceToDevice
-                ? plan_device_kv_copy_work(host_layout, test.pages)
-                : plan_host_kv_transfer_work(host_layout, test.pages, test.runs);
         output.push_back(TransferMeasurement{
             .label           = fixture.label,
             .direction       = test.direction,
-            .work            = work,
+            .work            = measured_work[index],
             .page_count      = test.pages,
             .contiguous_runs = test.runs,
             .validation      = test.validation,

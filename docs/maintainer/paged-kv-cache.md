@@ -380,6 +380,9 @@ Host arena 是有界 variable-size allocator。State 与不同 KV layouts 竞争
 ### 5.4 Replica transfer
 
 D2H/H2D transfer 复制完整 page payload，可以把相邻 physical IDs 合并成更少的 transfer runs。
+Core 按已绑定的 plane geometry 选择 2D copy：短 PageMajor run 可以合并等宽、等间距的 planes，
+HeadMajor 可以选择 page 或 head 作为提交外层。只在减少调用数且 pitch 合法时使用合并路径；
+Host layout 与 payload 不变。Native 从 Core 返回值记录实际搬运字节和调用数。
 一个 replacement replica 的 publication 顺序为：
 
 ```text

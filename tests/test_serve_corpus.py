@@ -17,6 +17,60 @@ from tools.bench import run_serve_corpus as corpus
 from tools.bench import run_serve_concurrency as concurrency
 
 
+@pytest.mark.parametrize(
+    "section,field",
+    [
+        ("scheduling", "preemptions"),
+        ("scheduling", "snapshot_restores"),
+        ("scheduling", "replay_restores"),
+        ("scheduling", "replayed_tokens"),
+        ("scheduler", "paused"),
+        ("scheduler", "replaying"),
+    ],
+)
+def test_steady_throughput_excludes_recovery(section: str, field: str) -> None:
+    steady = {
+        "interval_seconds": 1.0,
+        "tokens": {"computed_prefill": 0, "committed_decode": 400},
+        "decode_batch": {"rounds": 50, "row_rounds": 400},
+        "scheduler": {
+            "running": 8,
+            "prefilling": 0,
+            "decode_ready": 8,
+            "paused": 0,
+            "replaying": 0,
+        },
+        "scheduling": {
+            "preemptions": 0,
+            "snapshot_restores": 0,
+            "replay_restores": 0,
+            "replayed_tokens": 0,
+        },
+    }
+    recovery = {
+        **steady,
+        "interval_seconds": 10.0,
+        section: {**steady[section], field: 1},
+    }
+    resumed = {
+        **steady,
+        "tokens": {"computed_prefill": 0, "committed_decode": 800},
+        "decode_batch": {"rounds": 100, "row_rounds": 800},
+    }
+
+    assert concurrency.steady_metrics([steady, recovery, resumed], 8) == {
+        "intervals": 2,
+        "seconds": 2.0,
+        "committed_decode_tokens": 1200,
+        "decode_rounds": 150,
+        "decode_row_rounds": 1200,
+        "average_decode_batch": 8.0,
+        "decode_tokens_per_second": 600.0,
+    }
+    with pytest.raises(corpus.CampaignError, match="no recovery-free full-batch"):
+        concurrency.steady_metrics([recovery], 8)
+
+
 def test_result_record_parses_request_host_exposure() -> None:
     fixture = Fixture(
         name="fixture",
@@ -41,7 +95,7 @@ def test_result_record_parses_request_host_exposure() -> None:
     response = {"usage": {"prompt_tokens": 10, "completion_tokens": 5}}
     event = {
         "artifact_type": "ninfer_serve_request_log",
-        "schema_version": 22,
+        "schema_version": corpus.SERVER_LOG_SCHEMA_VERSION,
         "event": "request_done",
         "request": {
             "model": spec.model_id,
@@ -158,6 +212,7 @@ def test_selected_kv_reaches_server_and_is_verified(
         "speculative_backend": "none",
         "speculative_draft_window": 0,
         "proposal_head": "full",
+        "context_cache": {"device_state_slots": 0, "host_capacity_bytes": 0},
     }
     event = {
         "artifact_type": corpus.SERVER_LOG_ARTIFACT_TYPE,
@@ -204,7 +259,14 @@ def test_selected_kv_reaches_server_and_is_verified(
         )
         validate = lambda: corpus.validate_server_start(event, spec, args.device)
     assert command[command.index("--kv-dtype") + 1] == kv_dtype
+    assert command[command.index("--device-state-slots") + 1] == "0"
+    assert command[command.index("--host-context-mib") + 1] == "0"
     assert validate() == ("instance", "bindings")
+    for field in ("device_state_slots", "host_capacity_bytes"):
+        engine["context_cache"][field] = 1
+        with pytest.raises(corpus.CampaignError, match="context cache capacity differs"):
+            validate()
+        engine["context_cache"][field] = 0
     engine["kv_cache"] = "bf16"
     with pytest.raises(corpus.CampaignError, match="configuration mismatch"):
         validate()

@@ -810,20 +810,29 @@ public:
         rebuild_checkpoint_protection();
     }
 
+    // This checks the address lifecycle and frontier. Each page still needs its own release
+    // check; callers may cache those facts only within a read-only evaluation.
+    [[nodiscard]] std::optional<std::pair<std::uint32_t, std::uint32_t>>
+    inactive_suffix_range(KVAddressSpaceHandle handle, std::uint32_t frontier) const noexcept {
+        if (!valid(handle)) { return std::nullopt; }
+        const Address& address = addresses_[handle.index_];
+        if (address.active || address.row || address.reservation.valid() ||
+            frontier > address.committed_frontier) {
+            return std::nullopt;
+        }
+        return std::pair{pages_for_tokens(frontier), address.page_count};
+    }
+
     // Inspect the suffix while checking the same per-reference release conditions as truncation.
     // The visitor may collect read-only facts; it must not change references or residency.
     template <typename Visitor>
     [[nodiscard]] bool visit_releasable_inactive_suffix(KVAddressSpaceHandle handle,
                                                         std::uint32_t frontier,
                                                         Visitor&& visitor) const {
-        if (!valid(handle)) { return false; }
+        const auto range = inactive_suffix_range(handle, frontier);
+        if (!range) { return false; }
         const Address& address = addresses_[handle.index_];
-        if (address.active || address.row || address.reservation.valid() ||
-            frontier > address.committed_frontier) {
-            return false;
-        }
-        const std::uint32_t target = pages_for_tokens(frontier);
-        for (std::uint32_t page = target; page < address.page_count; ++page) {
+        for (auto page = range->first; page < range->second; ++page) {
             const auto logical = membership(address, page);
             if (!pages_->can_release_reference(logical, false)) { return false; }
             visitor(logical);
