@@ -297,11 +297,8 @@ it from a retained copy, and `reused_tokens` the prompt tokens those turns reuse
 conversation from cell to cell, and a restored session starts again from zero. A slot with no
 retained session reports `null` for all three.
 
-There is no endpoint to save, restore or erase a slot: sessions survive restarts and evictions
-through the [context store](#context-store), which needs no call from a supervisor. (The
-`POST /slots/{id}?action=save|restore|erase` endpoint and its `--slot-save-path` and
-`--auto-save-evicted` options were removed in its favour: a deployment that still passes those
-options fails to start with an unknown-option error and must drop them.)
+Sessions survive restarts and evictions through the [context store](#context-store), which needs no
+call from a supervisor; there is no endpoint to save, restore or erase a slot.
 
 ### Context store
 
