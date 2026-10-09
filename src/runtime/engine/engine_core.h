@@ -12,6 +12,7 @@
 #include "runtime/engine/scheduler.h"
 #include "runtime/engine/effective_thinking_budget.h"
 #include "runtime/engine/generation_budget.h"
+#include "runtime/engine/worker_fault.h"
 #include "runtime/engine/worker_recovery.h"
 
 #include <algorithm>
@@ -32,6 +33,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -95,6 +97,9 @@ public:
         worker_                   = std::thread([this, startup = std::move(startup)]() mutable {
             try {
                 device_.bind_to_current_thread();
+                // Nothing has been admitted yet: this is what a verified recovery returns to.
+                quiescent_usage_ = instance_.program->physical_usage();
+                publish_runtime_stats();
                 startup.set_value();
             } catch (...) {
                 startup.set_exception(std::current_exception());
@@ -822,6 +827,9 @@ private:
         }
         if (mark_completed(request)) { release_reserved_capacity(); }
         request->cv.notify_one();
+        // Only a published, uncancelled result shows the Engine serving again; a cancellation,
+        // or a completion that threw before publication, leaves the recovery streak standing.
+        if (reason != FinishReason::Cancelled) { recovery_streak_.record_success(); }
     }
 
     void complete_cancelled(const std::shared_ptr<Request>& request) {
@@ -1387,6 +1395,7 @@ private:
         if (!request->first_output_timing) {
             record_execution_work(request->prefill_work, progress.timing);
         }
+        consume_armed_worker_failure();
         resolve_prefill_progress(request, std::move(progress), cancelled_at_unit_start);
         publish_runtime_stats();
     }
@@ -1604,6 +1613,9 @@ private:
 
     bool pause_resident(std::uint32_t lane) {
         if (instance_.program->has_context_transaction()) { return false; }
+        // An admission that pauses a resident has touched another request: a failure from here
+        // on is no longer confined to the request being admitted.
+        admission_subject_.reset();
         auto request       = slots_[lane];
         bool save_snapshot = false;
         if (const auto bytes = instance_.program->pause_host_bytes(*request->sequence)) {
@@ -1706,6 +1718,9 @@ private:
             candidates = scheduler_.fresh_candidates(pending_, max_concurrency_);
         }
         for (const auto& request : candidates) {
+            // Until admission touches a resident lane (pause_resident clears it), a failure from
+            // here on belongs to this request alone; see contain_admission_failure.
+            admission_subject_ = request;
             const ReclaimRights rights{restoring ? ReclaimPurpose::Execution
                                                  : ReclaimPurpose::FreshAdmission,
                                        request->id};
@@ -1714,6 +1729,7 @@ private:
                     scheduler_.admission_candidate_checked(request->id);
                     if (request->admission_generation == admission_generation_) { continue; }
                     request->admission_generation = admission_generation_;
+                    consume_armed_planning_failure();
                 }
                 ensure_base_plan(request);
                 const auto retained = resources_.retained_source(request->id);
@@ -2085,6 +2101,7 @@ private:
         program_call.finish(pending.execution_timing());
         cumulative_stats_.decode_seconds_total +=
             static_cast<double>(pending.execution_timing().elapsed_ns()) * 1e-9;
+        consume_armed_decode_failure();
         commit_pending(std::move(pending), membership.lane_span(), true, cancelled_at_unit_start);
         publish_runtime_stats();
     }
@@ -2189,6 +2206,8 @@ private:
         publish_runtime_stats();
     }
 
+    // The latch: every request fails and the Engine serves nothing more. Taken when recovery is
+    // refused (device fault, failure streak, or a cleanup that cannot be verified) and at shutdown.
     // The worker holds execution_mutex_ across the failing operation and this cleanup, so no
     // Program introspection can observe a partially cleared physical state.
     // With a `fault`, the ids of the queued and paused requests being failed are recorded into
@@ -2238,7 +2257,187 @@ private:
         publish_runtime_stats();
     }
 
-    // Worker-only, before the latch clears them: the requests a failure is delivered to.
+    // On refusal `refusal` names why, for the operator log. Assigning it allocates and the callers
+    // are noexcept: a failed allocation leaves the refusal empty rather than terminating the
+    // process before the latch is published.
+    static void set_refusal(std::string& refusal, std::string_view reason,
+                            std::string_view detail = {}) noexcept {
+        try {
+            refusal.assign(reason);
+            if (!detail.empty()) {
+                refusal += ": ";
+                refusal += detail;
+            }
+        } catch (...) { refusal.clear(); }
+    }
+
+    // Worker-only. Drains the device and reports whether it is usable; on a fault `detail` names
+    // the CUDA error. Both recovery and the latch free physical state that work issued before the
+    // failure may still read, so every failure path runs this first.
+    [[nodiscard]] bool device_healthy(std::string& detail) noexcept {
+        if (consume_armed_device_fault()) {
+            set_refusal(detail, "injected device fault");
+            return false;
+        }
+        const cudaError_t status = device_.synchronize_status();
+        if (status == cudaSuccess) { return true; }
+        set_refusal(detail, cudaGetErrorName(status), cudaGetErrorString(status));
+        return false;
+    }
+
+    // Worker-only. Ends the Program's open context transaction through its own cancellation path
+    // (the one a cancelled owner takes), after the device has been drained. True when none is left.
+    [[nodiscard]] bool abort_context_transaction() {
+        const std::atomic<bool> cancelled{true};
+        for (int poll = 0; poll < 4 && instance_.program->has_context_transaction(); ++poll) {
+            auto progress = instance_.program->poll_context(CancellationFlagView{&cancelled});
+            if (progress.complete) { record_context_work(progress, nullptr); }
+        }
+        return !instance_.program->has_context_transaction();
+    }
+
+    // A throw while admitting one waiting or paused request -- planning it, choosing and
+    // preparing its source, reserving or starting its binding -- before admission touched any
+    // resident lane belongs to that request alone. Fail it, end the binding it may have started,
+    // release what it held in the context cache, and leave every other request running, queued
+    // or paused. Not a recovery: the streak and RuntimeStats::engine_recoveries are untouched.
+    // Returns false, leaving the failure to recover_locked, when the subject is unknown, the
+    // device is not healthy (then `device_fault` is set) or the containment itself fails.
+    [[nodiscard]] bool contain_admission_failure(std::exception_ptr error, bool restoring,
+                                                 std::optional<std::string>& device_fault) noexcept {
+        const std::shared_ptr<Request> request = std::exchange(admission_subject_, nullptr);
+        if (!request) { return false; }
+        std::string detail;
+        if (!device_healthy(detail)) {
+            device_fault = std::move(detail);
+            return false;
+        }
+        try {
+            admission_decision_.reset();
+            const bool materializing = materializing_ && materializing_->request == request;
+            // Admission opens no transaction while another is open, so one now open and owned by
+            // no one (neither materializing nor a pausing/capturing resident) was started by this
+            // admission: its binding, or a demotion its reclaim began. Both end harmlessly.
+            if (materializing ||
+                (instance_.program->has_context_transaction() && !materializing_ &&
+                 !context_owner_)) {
+                if (!abort_context_transaction()) { return false; }
+            }
+            if (materializing) {
+                materializing_.reset();
+                scheduler_.capacity_released();
+            } else if (materializing_) {
+                return false;
+            }
+            if (restoring) {
+                std::erase(paused_, request);
+            } else {
+                std::lock_guard lock(queue_mutex_);
+                std::erase(pending_, request);
+            }
+            complete_error(request, error);
+            request_admission_check();
+            publish_runtime_stats();
+        } catch (...) { return false; }
+        EngineFaultEvent fault;
+        try {
+            fault.message   = exception_text(error);
+            fault.unit      = "admission";
+            fault.contained = true;
+            fault.request_ids.push_back(request->id);
+        } catch (...) {}
+        notify_fault(fault);
+        return true;
+    }
+
+    // A host-side failure in the worker (an invariant or capacity error from the context cache, a
+    // planner, or a unit's host bookkeeping) fails only the requests it could have corrupted --
+    // the running lanes, including one pausing or capturing, and the one materializing -- and
+    // keeps the queue and the paused requests. The Program ends its open context transaction,
+    // pending batch and every lane (fail_all_cleanup, after the caller drained the device); the
+    // failed requests release their sources and continuations. The reusable context cache is
+    // cleared, and each paused request gives up its snapshot and continuation points and will
+    // restore by replay, so nothing optional survives that could hide a leak: the Program's
+    // physical usage must then equal the quiescent baseline taken after startup exactly. Any
+    // cleanup error or difference refuses the recovery, and the caller latches. The caller has
+    // already checked the device and the streak (recovery_refusal).
+    [[nodiscard]] bool recover_locked(std::exception_ptr error, std::string& refusal,
+                                      Clock::time_point failed_at) noexcept {
+        try {
+            std::vector<std::shared_ptr<Request>> affected;
+            for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+                if (slots_[lane] != nullptr) { affected.push_back(slots_[lane]); }
+            }
+            if (materializing_ && materializing_->request != nullptr) {
+                affected.push_back(materializing_->request);
+            }
+            instance_.program->fail_all_cleanup();
+            // Until every affected request is completed, slots_ and materializing_ keep naming
+            // them, so a refusal's latch still delivers the error to each.
+            for (const auto& request : affected) { complete_error(request, error); }
+            materializing_.reset();
+            context_owner_.reset();
+            admission_decision_.reset();
+            admission_subject_.reset();
+            for (auto& decision : capture_decisions_) { decision.reset(); }
+            runnable_units_.fill(false);
+            for (auto& slot : slots_) { slot.reset(); }
+            for (const auto& request : paused_) {
+                if (request->suspended && request->suspended->has_snapshot()) {
+                    if (!instance_.program->revoke_snapshot(*request->suspended)) {
+                        throw std::logic_error("a paused snapshot could not be released");
+                    }
+                    request->recovery_route = GenerationRecoveryRoute::Replay;
+                    observe_scheduling(request, GenerationSchedulingTransition::SnapshotRevoked);
+                }
+                // Released with the whole cache below; the restore adopts a new owner.
+                request->continuation_owner = 0;
+            }
+            // Owners, shared prefixes and the sources queued requests retained.
+            resources_.release_all(*instance_.program);
+            scheduler_.capacity_released();
+        } catch (...) {
+            set_refusal(refusal, "recovery cleanup failed", exception_text(std::current_exception()));
+            return false;
+        }
+        const auto usage = instance_.program->physical_usage();
+        if (instance_.program->has_context_transaction()) {
+            set_refusal(refusal, "recovery left a context transaction open");
+            return false;
+        }
+        if (!quiescent_usage_ || !returned_to_baseline(usage, *quiescent_usage_)) {
+            std::string difference;
+            try {
+                if (quiescent_usage_) {
+                    difference = describe_usage_difference(usage, *quiescent_usage_);
+                }
+            } catch (...) {}
+            set_refusal(refusal,
+                        "physical usage did not return to the startup baseline (now/baseline)",
+                        difference);
+            return false;
+        }
+        // The cache is empty and verified: put back what startup made available to every request.
+        try {
+            restore_external_sources();
+        } catch (...) {
+            set_refusal(refusal, "external sources could not be restored",
+                        exception_text(std::current_exception()));
+            return false;
+        }
+        recovery_streak_.record_recovery(failed_at);
+        ++cumulative_stats_.engine_recoveries;
+        request_admission_check();
+        return true;
+    }
+
+    // Worker-only. Re-registers (or reinstalls) the startup-pinned external checkpoints -- prompt
+    // grafts -- after the context cache was cleared and the Program verified idle. Nothing is
+    // pinned at startup on this branch; the grafts re-port (feat/report-prompt-grafts) supplies
+    // the body. Throws when a source cannot be restored, which refuses the recovery.
+    void restore_external_sources() {}
+
+    // Worker-only, before cleanup clears them: the requests a failure is delivered to.
     void collect_fault_requests(EngineFaultEvent& event) const {
         for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
             if (slots_[lane] != nullptr) {
@@ -2256,6 +2455,19 @@ private:
         try {
             fault_listener_(event);
         } catch (...) {}
+    }
+
+    // One admission attempt; a failure confined to its request is contained, any other rethrown.
+    void admit_or_contain(bool restoring, std::optional<std::string>& device_fault) {
+        admission_subject_.reset();
+        try {
+            (void)try_admit_one(restoring);
+        } catch (...) {
+            if (!contain_admission_failure(std::current_exception(), restoring, device_fault)) {
+                throw;
+            }
+        }
+        admission_subject_.reset();
     }
 
     void worker_loop() noexcept {
@@ -2278,6 +2490,8 @@ private:
             bool executed = false;
             // The execution unit in progress, for the fault event.
             const char* unit = "boundary";
+            // Set when a failed admission containment already found the device faulted.
+            std::optional<std::string> device_fault;
             try {
                 set_host_work_class(HostWorkClass::Control);
                 auto boundary = begin_host_phase();
@@ -2316,7 +2530,7 @@ private:
                     ((admission_decision_ && admission_decision_->restoring) ||
                      scheduler_.should_restore(!paused_.empty(), resident_empty()))) {
                     unit = "admission";
-                    (void)try_admit_one(true);
+                    admit_or_contain(true, device_fault);
                     unit = "boundary";
                     executed |= progress_context_transaction(boundary);
                 }
@@ -2330,7 +2544,7 @@ private:
                     }
                     if (admission_decision_ || scheduler_.admission_scan_pending()) {
                         unit = "admission";
-                        (void)try_admit_one(false);
+                        admit_or_contain(false, device_fault);
                         unit = "boundary";
                     }
                 }
@@ -2439,24 +2653,41 @@ private:
                 }
                 publish_runtime_stats();
             } catch (...) {
-                auto error = std::current_exception();
-                // Worker recovery is not wired to this context cache: a host-side failure latches
-                // the Engine. The fault listener still hears about it, after the latch.
+                const std::exception_ptr error = std::current_exception();
+                const Clock::time_point failed_at = Clock::now();
                 EngineFaultEvent fault;
                 try {
                     fault.message = exception_text(error);
                     fault.unit    = unit;
                     collect_fault_requests(fault);
                 } catch (...) {}
-                fail_all_locked(error, &fault);
+                std::string detail;
+                if (device_fault) {
+                    detail = std::move(*device_fault);
+                }
+                const bool device_ok = !device_fault && device_healthy(detail);
+                std::string refusal;
+                bool recovered = false;
+                if (const char* reason = recovery_refusal(device_ok, recovery_streak_, failed_at)) {
+                    set_refusal(refusal, reason, detail);
+                } else {
+                    recovered = recover_locked(error, refusal, failed_at);
+                }
+                if (!recovered) { fail_all_locked(error, &fault); }
                 try {
-                    fault.latched                      = true;
-                    fault.latch_reason                 = "worker recovery is not available";
-                    fault.consecutive_failures         = 1;
-                    fault.maximum_consecutive_failures = 1;
+                    fault.latched      = !recovered;
+                    fault.latch_reason = refusal;
+                    fault.consecutive_failures =
+                        recovery_streak_.count() + (recovered ? 0U : 1U);
+                    fault.maximum_consecutive_failures = recovery_streak_.maximum();
                 } catch (...) {}
+                try {
+                    publish_runtime_stats();
+                } catch (...) {}
+                // After the latch took effect, so is_available() (and /health) already report it.
                 notify_fault(fault);
-                return;
+                if (!recovered) { return; }
+                continue;
             }
             execution_lock.unlock();
             if (!executed) {
@@ -2492,6 +2723,16 @@ private:
     std::vector<std::shared_ptr<Request>> paused_;
     Scheduling scheduler_;
     std::array<bool, kMaximumConcurrency> runnable_units_{};
+    // Worker-only: the request an admission attempt is deciding for, while a failure would be
+    // confined to it.
+    std::shared_ptr<Request> admission_subject_;
+    // Worker-only: Program physical usage once startup finished, which recovery must restore.
+    std::optional<decltype(std::declval<Instance&>().program->physical_usage())> quiescent_usage_;
+    // Worker-only: recoveries since the last request completed successfully. Failures closer
+    // together than the window count toward the latch; see RecoveryStreak.
+    static constexpr std::uint32_t kMaximumConsecutiveRecoveries = 3;
+    static constexpr std::chrono::seconds kRecoveryHealthyWindow{30};
+    RecoveryStreak recovery_streak_{kMaximumConsecutiveRecoveries, kRecoveryHealthyWindow};
     std::atomic<bool> admission_check_pending_{false};
     std::uint64_t worker_accounted_elapsed_ns_ = 0;
     HostWorkClass current_host_work_class_     = HostWorkClass::Control;

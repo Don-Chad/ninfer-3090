@@ -193,17 +193,24 @@ endpoints:
 A readiness probe should poll `GET /health` (or any endpoint) and expect `503` until the model is
 ready rather than treating an accepted TCP connection as a signal of readiness.
 
-After startup, an internal host-side failure makes the Engine unavailable: the requests that were
-running, paused or waiting fail, `GET /health` turns `503` for good, and the server needs a
-restart. The latch is logged `FATAL`, and `ninfer-serve` exits with status 3 after a five second
-grace period (so in-flight error responses flush and `/health` answers 503 meanwhile) for a
-supervisor to restart. `--no-exit-on-engine-failure` keeps the process alive instead. The exception
-text is operator diagnostics and is never sent to clients; the request log's `request_error` record
-carries it for requests that failed this way.
-
-This fork's worker recovery, which failed only the affected requests, cleared the context cache and
-kept serving, and its containment of a single request's admission-planning failure, are not yet
-wired into the new context engine on this build. Until they are, every such failure latches.
+After startup, an internal host-side failure fails only the requests that were running or being
+admitted, clears the context cache, and keeps serving: queued requests stay queued, and a paused
+request keeps its place but gives up its saved snapshot and resumes by recomputing its prompt and
+output. Each such recovery is counted in `ninfer_engine_recoveries_total` and as a top-level
+`engine_recoveries` counter on the request log's `throughput` event, and `GET /health` stays `200`.
+A failure confined to admitting one request (planning it or starting its binding) fails that
+request alone and is not a recovery. `GET /health` turns `503` for good only when the engine cannot
+prove a clean recovery (cleanup fails, or the GPU memory and host cache in use do not return exactly
+to their state after startup), when the GPU itself reports an error, or after three failures in a
+row (each less than 30 seconds after the previous one, with no request completing between them);
+the server then needs a restart. Every such failure is logged at error severity with the exception
+text, the execution unit (`boundary`, `admission`, `control`, `prefill` or `decode`), the affected
+request ids and lanes, and the streak count; a latch is logged `FATAL`, and `ninfer-serve` exits
+with status 3 after a five second grace period (so in-flight error responses flush and `/health`
+answers 503 meanwhile) for a supervisor to restart. `--no-exit-on-engine-failure` keeps the
+process alive instead, answering `503`. The exception text is operator diagnostics and is never
+sent to clients; the request log's `request_error` record carries it for requests that failed this
+way.
 
 ### Load
 
@@ -1431,8 +1438,8 @@ transfers, tail-page COW and pressure spills as interval deltas; `occupancy` and
 end-of-interval gauges. The separate `scheduling` object reports preemptions, restores and replayed
 tokens. Occupancy includes Host reservations while transfers are in flight.
 The top-level `engine_recoveries` field is the interval delta of the worker-recovery counter. It is
-not part of `context_cache`, because a recovery is an engine-wide event, and it stays zero on this
-build, where worker recovery is not wired (see [Startup readiness](#startup-readiness)).
+not part of `context_cache`, because a recovery is an engine-wide event (see
+[Startup readiness](#startup-readiness)).
 
 The JSONL `throughput.host_work` object is the aggregation authority: the Engine worker counts each
 wall-time segment once, independent of batch size. `elapsed_seconds` contains the same five

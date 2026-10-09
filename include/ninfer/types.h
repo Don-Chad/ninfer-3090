@@ -180,9 +180,9 @@ struct EngineFaultEvent {
     // Requests still queued that the latch fails as well; empty when the Engine recovered, since
     // recovery keeps the queue.
     std::vector<std::uint64_t> queued_request_ids;
-    // True: the failure was confined to the one request being planned for admission, which alone
-    // received it. No other request was affected and the Engine neither recovered nor counted
-    // the failure toward the latch.
+    // True: the failure was confined to the one request being admitted (planned, or its binding
+    // started), which alone received it. No other request was affected and the Engine neither
+    // recovered nor counted the failure toward the latch.
     bool contained = false;
     // False: the Engine recovered and keeps serving. True: it is now permanently unavailable.
     bool latched = false;

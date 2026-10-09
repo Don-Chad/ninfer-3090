@@ -18,8 +18,9 @@ namespace ninfer::runtime {
 //     request, including one cancelled while still queued and never admitted, says nothing
 //     about the Engine's health and must not call this;
 //   * `healthy_window` passes since the last failure with no further failure. Each recovery is
-//     verified (device synchronized, empty physical baseline, grafts reinstalled), so a gap that
-//     long means the failures are not a tight loop, which is what the cap exists to stop. This is
+//     verified (device synchronized without error, physical usage back at the quiescent startup
+//     baseline), so a gap that long means the failures are not a tight loop, which is what the
+//     cap exists to stop. This is
 //     what keeps one client that resends the same failing request, every request of which ends
 //     cancelled by its own timeout, from latching an Engine that recovers cleanly each time.
 class RecoveryStreak {
@@ -53,6 +54,55 @@ private:
     std::uint32_t count_ = 0;
     Clock::time_point last_failure_{};
 };
+
+// Why a host-side worker failure must latch the Engine before any cleanup is attempted, or
+// nullptr when recovery may proceed. A device fault comes first and always latches: a sticky CUDA
+// error leaves the context unusable, so no cleanup on it can be verified. It is not a host-side
+// failure, so it neither consults nor advances the streak. Otherwise the streak decides.
+[[nodiscard]] inline const char* recovery_refusal(bool device_healthy, RecoveryStreak& streak,
+                                                  RecoveryStreak::Clock::time_point now) noexcept {
+    if (!device_healthy) { return "device fault"; }
+    if (!streak.permits_recovery(now)) {
+        return "failures repeated with no request completing between them";
+    }
+    return nullptr;
+}
+
+// Whether the Program's physical usage after recovery cleanup is the quiescent baseline taken
+// once startup finished: every Device State slot and KV page (allocated or reserved), every Host
+// State slot, Host KV byte and Host context byte the failed requests, their transactions and the
+// cleared context cache held has been returned. Capacities are fixed at startup and not compared.
+template <class Usage>
+[[nodiscard]] bool returned_to_baseline(const Usage& now, const Usage& baseline) noexcept {
+    return now.occupied.state_slots == baseline.occupied.state_slots &&
+           now.occupied.main_kv_pages == baseline.occupied.main_kv_pages &&
+           now.occupied.backend_kv_pages == baseline.occupied.backend_kv_pages &&
+           now.occupied.host_bytes == baseline.occupied.host_bytes &&
+           now.host_state_slots == baseline.host_state_slots &&
+           now.host_kv_bytes == baseline.host_kv_bytes;
+}
+
+// "state 3/1 main_kv 40/0 ..." for the latch reason: occupied now / baseline, for each class.
+template <class Usage>
+[[nodiscard]] std::string describe_usage_difference(const Usage& now, const Usage& baseline) {
+    std::string out;
+    const auto add = [&](const char* name, auto value, auto expected) {
+        if (value == expected) { return; }
+        if (!out.empty()) { out += ", "; }
+        out += name;
+        out += ' ';
+        out += std::to_string(value);
+        out += '/';
+        out += std::to_string(expected);
+    };
+    add("device_state_slots", now.occupied.state_slots, baseline.occupied.state_slots);
+    add("main_kv_pages", now.occupied.main_kv_pages, baseline.occupied.main_kv_pages);
+    add("backend_kv_pages", now.occupied.backend_kv_pages, baseline.occupied.backend_kv_pages);
+    add("host_context_bytes", now.occupied.host_bytes, baseline.occupied.host_bytes);
+    add("host_state_slots", now.host_state_slots, baseline.host_state_slots);
+    add("host_kv_bytes", now.host_kv_bytes, baseline.host_kv_bytes);
+    return out;
+}
 
 // The text of an in-flight exception for the operator log. Never throws: building the text
 // allocates, so if that fails the result is an empty string (which never allocates) rather than

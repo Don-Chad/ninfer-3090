@@ -547,9 +547,9 @@ AbortResult ProgramImpl::abort(SequenceHandle handle) noexcept {
 }
 
 void ProgramImpl::fail_all_cleanup() noexcept {
-    try {
-        device.synchronize();
-    } catch (...) {}
+    // Drain issued work without CUDA_CHECK, which aborts the process: this cleanup also runs when
+    // the device has a sticky fault, and its CPU ownership release must still complete then.
+    (void)device.synchronize_status();
     abort_context();
     pending_transaction_.reset();
     for (std::uint32_t lane = 0; lane < max_concurrency; ++lane) {
