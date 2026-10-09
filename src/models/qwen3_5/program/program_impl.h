@@ -719,8 +719,9 @@ public:
     qwen3_5::MtpDecodeIngress* mtp_host_ingress = nullptr;
     qwen3_5::MtpDecodeEgress* mtp_host_egress   = nullptr;
     std::optional<PinnedHostBuffer> dflash_host;
-    qwen3_5::DFlashDecodeIngress* dflash_host_ingress = nullptr;
-    qwen3_5::DFlashDecodeEgress* dflash_host_egress   = nullptr;
+    qwen3_5::DFlashDecodeIngress* dflash_host_ingress          = nullptr;
+    qwen3_5::DFlashDecodeEgress* dflash_host_egress            = nullptr;
+    qwen3_5::DFlashPrefillIngress* dflash_prefill_host_ingress = nullptr;
     // DFlash proposal copied back after the proposal segment, I32 [draft_window, B].
     std::optional<PinnedHostBuffer> dflash_draft_host;
     std::optional<CudaCompletionEvent> dflash_proposal_ready;
@@ -1204,9 +1205,6 @@ private:
     [[nodiscard]] FinishResult retain_prefill_progress(std::uint32_t lane) noexcept;
     void ordered_reset(SequenceState& sequence);
     [[nodiscard]] StateImageSelectors state_selectors(const SequenceState& sequence) const;
-    // Points the one-row DFlash ingress frame at this lane. Decode rounds and other lanes'
-    // prefill rewrite that frame, so every prefill chunk stages it again before it appends.
-    void stage_dflash_prefill_ingress(const SequenceState& sequence);
     [[nodiscard]] detail::PhysicalResources
     sequence_exclusive_state_resources(const SequenceState& sequence) const;
     [[nodiscard]] std::uint32_t owned_checkpoint_references(const SequenceState& sequence,

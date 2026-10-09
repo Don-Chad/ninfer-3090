@@ -11,20 +11,15 @@
 namespace ninfer::ops::detail {
 namespace {
 
-// Past this many blocks the gated epilogue gives up its hoisted loads. Below one block per SM the
-// prefetch is the only source of overlap and those kernels run at 0.83x to 0.96x; above it a
-// second resident block already supplies that overlap and only the register cost is left (35 -> 50
-// on the warp kernel), which measures 1.02x to 1.14x. Swept over grid size on both gated shapes
-// the crossing sits between 176 and 192 blocks; this is the 170 SMs of this part, a literal
-// because nothing in the tree queries the device, so it is not portable. On the 3090 moving it to
-// one block per SM (82) was indistinguishable at the timer's 1 us resolution for gated27 T=8..64,
-// so it was left alone rather than re-tuned blind.
-constexpr std::int64_t kRmsPrefetchBlocks = 170;
+// Above one CTA per SM, another CTA supplies overlap without the gated epilogue's extra
+// prefetch registers. The policy retains the measured crossover on the target device. On the 3090
+// (82 SMs) this crossover was indistinguishable from the former fixed 170-block bound at the
+// timer's 1 us resolution for gated27 T=8..64.
 
 template <RmsEpilogue Epilogue>
 void launch_rmsnorm(const Tensor& x, const Tensor& weight, const Tensor* z, Tensor& out,
                     std::int32_t d, std::int64_t rows, float eps, bool aligned2,
-                    cudaStream_t stream) {
+                    std::int32_t multiprocessor_count, cudaStream_t stream) {
     const auto* x_bf16 = static_cast<const __nv_bfloat16*>(x.data);
     const auto* w_bf16 = static_cast<const __nv_bfloat16*>(weight.data);
     const auto* z_bf16 = z != nullptr ? static_cast<const __nv_bfloat16*>(z->data) : nullptr;
@@ -76,7 +71,7 @@ void launch_rmsnorm(const Tensor& x, const Tensor& weight, const Tensor* z, Tens
         constexpr int kWarpsPerBlock = kBlock / kWarpSize;
         const auto blocks = static_cast<unsigned int>((rows + kWarpsPerBlock - 1) / kWarpsPerBlock);
         if constexpr (kGateOnGrid) {
-            if (blocks > kRmsPrefetchBlocks) {
+            if (blocks > static_cast<unsigned>(multiprocessor_count)) {
                 rmsnorm_warp_bf16x2_kernel<Epilogue, kBlock, false><<<blocks, kBlock, 0, stream>>>(
                     reinterpret_cast<const __nv_bfloat162*>(x_bf16),
                     reinterpret_cast<const __nv_bfloat162*>(w_bf16),
@@ -109,7 +104,7 @@ void launch_rmsnorm(const Tensor& x, const Tensor& weight, const Tensor* z, Tens
                 reinterpret_cast<__nv_bfloat162*>(out_bf16), d, rows, eps);
     } else if (aligned2 && d > 3072 && d <= 8192 && d % 1024 == 0) {
         if constexpr (kGateOnGrid) {
-            if (rows > kRmsPrefetchBlocks) {
+            if (rows > multiprocessor_count) {
                 rmsnorm_cta_bf16x2_kernel<Epilogue, 512, 8, false>
                     <<<static_cast<unsigned int>(rows), 512, 0, stream>>>(
                         reinterpret_cast<const __nv_bfloat162*>(x_bf16),
@@ -134,7 +129,8 @@ void launch_rmsnorm(const Tensor& x, const Tensor& weight, const Tensor* z, Tens
 } // namespace
 
 void rmsnorm_launch(const Tensor& x, const Tensor& weight, float eps, bool unit_offset,
-                    const Tensor* z, Tensor& out, cudaStream_t stream) {
+                    const Tensor* z, Tensor& out, std::int32_t multiprocessor_count,
+                    cudaStream_t stream) {
     const std::int32_t d = x.ne[0];
     if (d <= 0) { throw std::invalid_argument("rmsnorm: ne[0] must be positive"); }
     const std::int64_t rows = out.numel() / d;
@@ -150,12 +146,14 @@ void rmsnorm_launch(const Tensor& x, const Tensor& weight, float eps, bool unit_
         ((x_addr | w_addr | z_addr | o_addr) & (alignof(__nv_bfloat162) - 1)) == 0;
 
     if (z != nullptr) {
-        launch_rmsnorm<RmsEpilogue::Gated>(x, weight, z, out, d, rows, eps, aligned2, stream);
+        launch_rmsnorm<RmsEpilogue::Gated>(x, weight, z, out, d, rows, eps, aligned2,
+                                           multiprocessor_count, stream);
     } else if (unit_offset) {
         launch_rmsnorm<RmsEpilogue::Offset>(x, weight, nullptr, out, d, rows, eps, aligned2,
-                                            stream);
+                                            multiprocessor_count, stream);
     } else {
-        launch_rmsnorm<RmsEpilogue::Plain>(x, weight, nullptr, out, d, rows, eps, aligned2, stream);
+        launch_rmsnorm<RmsEpilogue::Plain>(x, weight, nullptr, out, d, rows, eps, aligned2,
+                                           multiprocessor_count, stream);
     }
     CUDA_CHECK(cudaGetLastError());
 }

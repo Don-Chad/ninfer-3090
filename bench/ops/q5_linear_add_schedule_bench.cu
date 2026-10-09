@@ -33,7 +33,7 @@ void sweep_for_k(std::int32_t hidden, const ninfer::bench::SweepOptions& base) {
     const std::int32_t max_tokens =
         *std::max_element(base.tokens.begin(), base.tokens.end());
     ninfer::bench::PackedQuantizedWeight packed = ninfer::bench::make_row_split_weight(
-        QType::Q5_G64_FP16, kRows, hidden, hidden, {0x31, 0xa5, 0x3c00});
+        QType::Q5_G64_FP16, kRows, hidden, hidden, 0x52U);
     ninfer::DeviceBuffer input(static_cast<std::size_t>(hidden) * max_tokens * 2);
     ninfer::DeviceBuffer residual(static_cast<std::size_t>(kRows) * max_tokens * 2);
 

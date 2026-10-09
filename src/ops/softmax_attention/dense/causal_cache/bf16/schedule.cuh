@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ops/softmax_attention/dense/causal_cache/bf16/geometry.h"
+#include "ops/softmax_attention/common/causal_geometry.h"
 #include <cstdint>
 
 namespace ninfer::ops::detail {

@@ -25,6 +25,11 @@ void cuda_check(cudaError_t err, const char* expr, const char* file, int line);
 struct DeviceExecutionView {
     cudaStream_t stream               = nullptr;
     std::int32_t multiprocessor_count = 0;
+
+    [[nodiscard]] constexpr DeviceExecutionView
+    on_stream(cudaStream_t target_stream) const noexcept {
+        return {target_stream, multiprocessor_count};
+    }
 };
 
 // CUDA function attributes are scoped to a device context. A process-wide `static` result

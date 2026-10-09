@@ -134,11 +134,11 @@ struct Case {
           w(weight.p, DType::BF16, {s.d}), z(gate.p, DType::BF16, {s.d, s.heads, t}),
           y(output.p, DType::BF16, {s.d, s.heads, t}) {}
 
-    void launch(cudaStream_t stream) {
+    void launch(DeviceExecutionView execution) {
         if (shape.gated)
-            ops::gated_rmsnorm(x, w, z, 1.e-6f, y, stream);
+            ops::gated_rmsnorm(x, w, z, 1.e-6f, y, execution);
         else
-            ops::rmsnorm(x, w, 1.e-6f, shape.offset, y, stream);
+            ops::rmsnorm(x, w, 1.e-6f, shape.offset, y, execution.stream);
     }
 };
 } // namespace
@@ -150,7 +150,7 @@ int main(int argc, char** argv) {
         CUDA_CHECK(cudaGetDeviceCount(&devices));
         if (!devices) return 77;
         DeviceContext device;
-        DeviceBuffer flush(std::size_t{256} << 20);
+        bench::L2FlushBuffer flush(std::size_t{256} << 20);
         std::ofstream csv;
         if (!o.csv.empty()) {
             csv.open(o.csv);
@@ -158,27 +158,26 @@ int main(int argc, char** argv) {
             csv << "kind,D,heads,T,execution,cache,graph_nodes,graph_calls,workspace_bytes,logical_"
                    "bytes,median_us,min_us,p95_us\n";
         }
-        cudaDeviceProp prop{};
-        CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
-        std::printf("GPU=%s CUDART=%d\n", prop.name, CUDART_VERSION);
+        std::printf("GPU=%s SMs=%d CUDART=%d\n", device.props.name,
+                    device.multiprocessor_count(), CUDART_VERSION);
         const Shape& shape = find_shape(o.kind);
         for (const int t : o.tokens) {
             Case data(shape, t);
             bench::TimedGraph graph;
             if (o.execution == "graph") {
-                data.launch(device.stream);
+                data.launch(device.execution_view());
                 CUDA_CHECK(cudaStreamSynchronize(device.stream));
                 graph.capture(device.stream, [&](cudaStream_t stream) {
-                    for (int call = 0; call < o.graph_calls; ++call) data.launch(stream);
+                    for (int call = 0; call < o.graph_calls; ++call) data.launch(device.execution_view().on_stream(stream));
                 });
             }
-            const auto launch = [&](cudaStream_t stream) { data.launch(stream); };
+            const auto launch = [&](cudaStream_t stream) { data.launch(device.execution_view().on_stream(stream)); };
             if (o.profile) {
                 for (int i = 0; i < o.warmup; ++i) {
                     if (o.execution == "graph")
                         graph.launch(device.stream);
                     else
-                        data.launch(device.stream);
+                        data.launch(device.execution_view());
                 }
                 if (o.cache == "cold") bench::flush_l2(flush, device.stream);
                 CUDA_CHECK(cudaStreamSynchronize(device.stream));
@@ -186,7 +185,7 @@ int main(int argc, char** argv) {
                 if (o.execution == "graph")
                     graph.launch(device.stream);
                 else
-                    data.launch(device.stream);
+                    data.launch(device.execution_view());
                 CUDA_CHECK(cudaStreamSynchronize(device.stream));
                 CUDA_CHECK(cudaProfilerStop());
                 return 0;

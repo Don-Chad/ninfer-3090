@@ -587,7 +587,7 @@ context on the 27B, so the extra headroom does not pay for the quality.
 
 Published measurements use one NVIDIA GeForce RTX 5090 through NInfer's public HTTP serving route.
 Choose a model below for its detailed results, run conditions, output limitations, and reproduction
-commands. These are recorded historical measurements; a model/backend being supported does not
+commands. These are recorded measurements; a model/backend being supported does not
 mean every workload or concurrency has a published measurement.
 
 Read the [measurement and publication rules](performance/methodology.md) for workload definitions,
@@ -601,13 +601,13 @@ not product support. C is configured request concurrency; K is the number of dra
 | Qwen3.6-27B / `groupwise-int` | [8K–256K](performance/qwen3.6-27b.md#no-speculation-context-profile) | [MTP3](performance/qwen3.6-27b.md#single-request-speculative-decode) | Not published | [C=1, 2, 4, 8](performance/qwen3.6-27b.md#decode-saturation) |
 | Qwen3.6-27B / `nvfp4` | [8K–256K](performance/qwen3.6-27b.md#no-speculation-context-profile) | [MTP3](performance/qwen3.6-27b.md#single-request-speculative-decode) | Not published | [C=1, 2, 4, 8](performance/qwen3.6-27b.md#decode-saturation) |
 | Qwen3.6-35B-A3B / `groupwise-int` | [8K–256K](performance/qwen3.6-35b-a3b.md#no-speculation-context-profile) | [MTP3; DFlash K=7 stochastic/greedy](performance/qwen3.6-35b-a3b.md#single-request-speculative-decode) | [MTP3 C=1, 2, 4, 8; DFlash C=1](performance/qwen3.6-35b-a3b.md#corpus-makespan) | [C=1, 2, 4, 8](performance/qwen3.6-35b-a3b.md#decode-saturation) |
-| Qwen3.8-27B / `groupwise-int` | [8K–256K](performance/qwen3.8-27b.md#no-speculation-context-profile) | [MTP3; DFlash2 K=7](performance/qwen3.8-27b.md#single-request-speculative-decode) | [MTP3 C=1, 2, 4, 8; DFlash2 C=1](performance/qwen3.8-27b.md#corpus-makespan) | Not published |
+| Qwen3.8-27B / `groupwise-int` | [8K–256K](performance/qwen3.8-27b.md#no-speculation-context-profile) | [MTP3; DFlash2 K=7](performance/qwen3.8-27b.md#single-request-speculative-decode) | [MTP3 C=1, 2, 4, 8; DFlash2 C=1](performance/qwen3.8-27b.md#corpus-makespan) | [C=1, 2, 4, 8](performance/qwen3.8-27b.md#decode-saturation) |
 | Qwen3.8-27B / `nvfp4` | [8K–256K](performance/qwen3.8-27b.md#no-speculation-context-profile) | [MTP3; DFlash2 K=7](performance/qwen3.8-27b.md#single-request-speculative-decode) | [MTP3 C=1, 2, 4, 8; DFlash2 C=1](performance/qwen3.8-27b.md#corpus-makespan) | [C=1, 2, 4, 8](performance/qwen3.8-27b.md#decode-saturation) |
 
 Qwen3.8 and Qwen3.6-35B-A3B C=1 corpus points also supply their single-request phase tables.
 The Qwen3.6-27B NVFP4 MTP3 phase table comes from a corpus C=1 point whose full makespan is
-not published here. The Qwen3.8 NVFP4 saturation reports retain configuration and
-values but no tested Git revision; the model page records that provenance limitation.
+not published here. Qwen3.8 measurements use FP8 E4M3 row-256 KV; the Qwen3.6 measurements
+use INT8 group-64 KV. Each model page records its build and run conditions.
 
 ## Reading the results
 
@@ -622,7 +622,7 @@ streaming TTFT has its [own benchmark contract](../tools/bench/ttft/README.md). 
 can generate different token totals even with the same prompts and seeds. Output-limit and
 repetition samples remain labeled in the measured corpus; throughput alone does not establish
 successful task completion. See the [35B termination and anomalies](performance/qwen3.6-35b-a3b.md#termination-and-anomalies)
-and [Qwen3.8 DFlash2 outcomes](performance/qwen3.8-27b.md#dflash2-completion-outcomes).
+and [Qwen3.8 completion outcomes](performance/qwen3.8-27b.md#completion-outcomes).
 
 ## Related references
 

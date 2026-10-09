@@ -137,9 +137,7 @@ void write_csv(const Options& options, const std::vector<Result>& results) {
     }
 }
 
-bool full_for(std::int32_t t, std::int32_t tile_cols, std::int32_t tile_rows = 32) {
-    return (t % tile_cols) == 0 && (kRows % tile_rows) == 0;
-}
+
 
 } // namespace
 
@@ -153,12 +151,15 @@ int main(int argc, char** argv) {
 
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        ninfer::DeviceBuffer flush(kFlushBytes);
+        ninfer::bench::L2FlushBuffer flush(kFlushBytes);
         ninfer::DeviceBuffer input =
-            bench::make_bf16(static_cast<std::size_t>(options.hidden) * max_t);
-        ninfer::DeviceBuffer residual = bench::make_bf16(static_cast<std::size_t>(kRows) * max_t);
+            bench::make_bf16(static_cast<std::size_t>(options.hidden) * max_t, 101U);
+        ninfer::DeviceBuffer residual =
+            bench::make_bf16(static_cast<std::size_t>(kRows) * max_t, 103U);
+        bench::SavedBuffer residual_initial(residual);
+        const auto restore                  = [&](cudaStream_t s) { residual_initial.restore(s); };
         bench::PackedQuantizedWeight packed = bench::make_row_split_weight(
-            QType::Q8_G32_FP16, kRows, options.hidden, options.hidden, {0x31, 0x00, 0x3c00});
+            QType::Q8_G32_FP16, kRows, options.hidden, options.hidden, 501U);
         const std::size_t workspace_capacity = ops::linear_add_workspace_capacity_bytes(
             QType::Q8_G32_FP16, kRows, options.hidden, min_t, max_t);
         WorkspaceArena workspace(std::max<std::size_t>(workspace_capacity, 256));
@@ -180,8 +181,8 @@ int main(int argc, char** argv) {
 
             const auto run = [&](const char* path, auto&& launch) {
                 append(results, path, t, options.hidden,
-                       bench::measure_cold_launch(launch, flush, stream, options.warmup,
-                                                  options.repeat),
+                       bench::measure_cold_launch_prepared(restore, launch, flush, stream,
+                                                           options.warmup, options.repeat),
                        packed.storage.bytes);
             };
             run(ops::detail::q8_linear_add_schedule_name(plan.schedule),
@@ -205,11 +206,11 @@ int main(int argc, char** argv) {
                 });
             }
             run("simt_r8_c4", [&](cudaStream_t candidate_stream) {
-                ops::detail::q8_linear_add_simt_r8_c4_launch(full_for(t, 4), x, packed.weight, out,
+                ops::detail::q8_linear_add_simt_r8_c4_launch(x, packed.weight, out,
                                                              candidate_stream);
             });
             run("simt_r8_c8", [&](cudaStream_t candidate_stream) {
-                ops::detail::q8_linear_add_simt_r8_c8_launch(full_for(t, 8), x, packed.weight, out,
+                ops::detail::q8_linear_add_simt_r8_c8_launch(x, packed.weight, out,
                                                              candidate_stream);
             });
             if (t >= 2 && t <= 48) {
@@ -218,32 +219,31 @@ int main(int argc, char** argv) {
                                                                  candidate_stream);
                 });
             }
-#define RUN_MMA(NAME, TILE_ROWS, TILE_COLS)                                                        \
+#define RUN_MMA(NAME)                                                                              \
     run(#NAME, [&](cudaStream_t candidate_stream) {                                                \
-        ops::detail::q8_linear_add_##NAME##_launch(full_for(t, TILE_COLS, TILE_ROWS), x,           \
-                                                   packed.weight, out, candidate_stream);          \
+        ops::detail::q8_linear_add_##NAME##_launch(x, packed.weight, out, candidate_stream);       \
     })
-            RUN_MMA(mma_r32_c32, 32, 32);
-            RUN_MMA(mma_r32_c48, 32, 48);
-            RUN_MMA(mma_r32_c64, 32, 64);
-            RUN_MMA(mma_r32_c80, 32, 80);
-            RUN_MMA(mma_r32_c96, 32, 96);
-            RUN_MMA(mma_r32_c112, 32, 112);
-            RUN_MMA(mma_r32_c128, 32, 128);
-            RUN_MMA(mma_r48_c64, 48, 64);
-            RUN_MMA(mma_r48_c80, 48, 80);
-            RUN_MMA(mma_r48_c96, 48, 96);
-            RUN_MMA(mma_r48_c112, 48, 112);
-            RUN_MMA(mma_r48_c128, 48, 128);
-            RUN_MMA(mma_r64_c32, 64, 32);
-            RUN_MMA(mma_r64_c48, 64, 48);
-            RUN_MMA(mma_r64_c64, 64, 64);
-            RUN_MMA(mma_r64_c80, 64, 80);
-            RUN_MMA(mma_r64_c96, 64, 96);
-            RUN_MMA(mma_r64_c112, 64, 112);
-            RUN_MMA(mma_r64_c128, 64, 128);
-            RUN_MMA(mma_r128_c64, 128, 64);
-            RUN_MMA(mma_r128_c80, 128, 80);
+            RUN_MMA(mma_r32_c32);
+            RUN_MMA(mma_r32_c48);
+            RUN_MMA(mma_r32_c64);
+            RUN_MMA(mma_r32_c80);
+            RUN_MMA(mma_r32_c96);
+            RUN_MMA(mma_r32_c112);
+            RUN_MMA(mma_r32_c128);
+            RUN_MMA(mma_r48_c64);
+            RUN_MMA(mma_r48_c80);
+            RUN_MMA(mma_r48_c96);
+            RUN_MMA(mma_r48_c112);
+            RUN_MMA(mma_r48_c128);
+            RUN_MMA(mma_r64_c32);
+            RUN_MMA(mma_r64_c48);
+            RUN_MMA(mma_r64_c64);
+            RUN_MMA(mma_r64_c80);
+            RUN_MMA(mma_r64_c96);
+            RUN_MMA(mma_r64_c112);
+            RUN_MMA(mma_r64_c128);
+            RUN_MMA(mma_r128_c64);
+            RUN_MMA(mma_r128_c80);
 #undef RUN_MMA
         }
 

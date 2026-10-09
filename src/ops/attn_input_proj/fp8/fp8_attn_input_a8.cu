@@ -1,90 +1,43 @@
-#include "core/weight.h"
 #include "ops/attn_input_proj/fp8/fp8_attn_input_plan.h"
-
-#include "core/device.h"
 #include "ops/attn_input_proj/fp8/fp8_attn_input_output.cuh"
-#include "ops/linear/fp8/fp8_a8_mma.cuh"
-#include "ops/linear/fp8/fp8_config.h"
-#include "ops/linear/fp8/fp8_output.cuh"
-
-#include <cuda_bf16.h>
-
-#include <cstdint>
+#include "ops/linear/fp8/fp8_template_launch.cuh"
+#include "ops/linear/fp8/fp8_instances.cuh"
 
 namespace ninfer::ops::detail {
 namespace {
+using Tma64x128 = Fp8A8TmaMmaSchedule<64, 128, 128, 2, 4, 2, 1>;
+using Tma64x256 = Fp8A8TmaMmaSchedule<64, 256, 128, 2, 4, 2, 1>;
+using Tma96x256 = Fp8A8TmaMmaSchedule<96, 256, 128, 3, 4, 2, 1>;
+using Bulk      = Fp8A8TmaSplitKSchedule<Fp8A8TmaMmaSchedule<128, 256, 128, 2, 4, 2, 1>, 170, 4, 8>;
 
-using Geometry = Fp8N14336K5120;
-
-template <class Schedule, bool FullTokens>
-void launch_mma(const Weight& weight, Tensor& q, Tensor& gate, Tensor& k, Tensor& v,
-                Fp8A8Workspace workspace, std::int32_t tokens, cudaStream_t stream) {
-    static_assert((kFp8AttnInputQueryRows % Schedule::kBlockRows) == 0);
-    static_assert((kFp8AttnInputKeyRows % Schedule::kBlockRows) == 0);
-    constexpr int kRowTiles = Geometry::kOutputRows / Schedule::kBlockRows;
-    const int token_tiles   = (tokens + Schedule::kBlockTokens - 1) / Schedule::kBlockTokens;
-    const int blocks        = kRowTiles * token_tiles;
-    const Fp8AttentionInputOutput output{
-        static_cast<__nv_bfloat16*>(q.data),
-        static_cast<__nv_bfloat16*>(k.data),
-        static_cast<__nv_bfloat16*>(gate.data),
-        static_cast<__nv_bfloat16*>(v.data),
-    };
-
-    if constexpr (Schedule::kSharedBytes > 48 * 1024) {
-        configure_cuda_device_once([&] {
-            return cudaFuncSetAttribute(
-                fp8_mma_kernel<Geometry, Schedule, FullTokens, Fp8IdentityEpilogue,
-                               Fp8AttentionInputOutput>,
-                cudaFuncAttributeMaxDynamicSharedMemorySize, Schedule::kSharedBytes);
-        });
-    }
-    fp8_mma_kernel<Geometry, Schedule, FullTokens>
-        <<<blocks, Schedule::kThreads, Schedule::kSharedBytes, stream>>>(
-            workspace.codes, workspace.scales, static_cast<const std::uint8_t*>(weight.qdata),
-            static_cast<const __nv_bfloat16*>(weight.scales), tokens, Fp8IdentityEpilogue{},
-            output);
-    CUDA_CHECK(cudaGetLastError());
-}
-
-template <class Schedule>
-void run(const Weight& weight, Tensor& q, Tensor& gate, Tensor& k, Tensor& v,
-         Fp8A8Workspace workspace, int tokens, cudaStream_t stream) {
-    if (tokens % Schedule::kBlockTokens == 0)
-        launch_mma<Schedule, true>(weight, q, gate, k, v, workspace, tokens, stream);
-    else
-        launch_mma<Schedule, false>(weight, q, gate, k, v, workspace, tokens, stream);
-}
 } // namespace
 
+std::size_t fp8_attn_input_partial_capacity_bytes(std::int32_t max_tokens) {
+    return max_tokens > 384 ? Bulk::kPartialBytes : 0;
+}
+
 void fp8_attn_input_a8_launch(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate,
-                              Tensor& k, Tensor& v, Fp8A8Workspace workspace, cudaStream_t stream) {
+                              Tensor& key, Tensor& value, Fp8A8Workspace workspace,
+                              cudaStream_t stream) {
     launch_fp8_a8_quantize(x, weight, workspace, stream);
-    // This Op owns its tile choices; the generic Linear schedules do not describe four-output
-    // projection's short-column cost. All variants share the same activation representation.
-    using Small32   = Fp8MmaSchedule<32, 64, 128, 1, 2, 3, 2, Cache::cg, Cache::cg,
-                                     Fp8MmaFragmentPipeline::PingPong, Fp8MmaRaster::TokenFast>;
-    using Small64   = Fp8MmaSchedule<64, 64, 128, 2, 2, 3, 2, Cache::cg, Cache::cg,
-                                     Fp8MmaFragmentPipeline::PingPong, Fp8MmaRaster::TokenFast>;
-    using ShortTail = Fp8MmaSchedule<32, 128, 128, 2, 4, 2, 2, Cache::cg, Cache::cg,
-                                     Fp8MmaFragmentPipeline::PingPong, Fp8MmaRaster::TokenFast>;
-    using Wide128   = Fp8MmaSchedule<64, 64, 128, 2, 2, 2, 3, Cache::cg, Cache::cg,
-                                     Fp8MmaFragmentPipeline::PingPong, Fp8MmaRaster::TokenFast>;
-    using Tail144   = Fp8MmaSchedule<48, 128, 128, 3, 4, 2, 2, Cache::cg, Cache::cg,
-                                     Fp8MmaFragmentPipeline::PingPong, Fp8MmaRaster::TokenFast>;
-    using Prefill   = Fp8MmaSchedule<64, 128, 128, 2, 4, 2, 2, Cache::cg, Cache::cg,
-                                     Fp8MmaFragmentPipeline::PingPong, Fp8MmaRaster::TokenFast>;
-    if (x.ne[1] <= 32)
-        run<Small32>(weight, q, gate, k, v, workspace, x.ne[1], stream);
-    else if (x.ne[1] <= 64)
-        run<Small64>(weight, q, gate, k, v, workspace, x.ne[1], stream);
-    else if (x.ne[1] <= 96)
-        run<ShortTail>(weight, q, gate, k, v, workspace, x.ne[1], stream);
-    else if (x.ne[1] <= 128)
-        run<Wide128>(weight, q, gate, k, v, workspace, x.ne[1], stream);
-    else if (x.ne[1] <= 144)
-        run<Tail144>(weight, q, gate, k, v, workspace, x.ne[1], stream);
-    else
-        run<Prefill>(weight, q, gate, k, v, workspace, x.ne[1], stream);
+    const Fp8AttentionInputOutput output{
+        static_cast<__nv_bfloat16*>(q.data), static_cast<__nv_bfloat16*>(key.data),
+        static_cast<__nv_bfloat16*>(gate.data), static_cast<__nv_bfloat16*>(value.data)};
+    const auto operands = fp8_a8_operands(weight, workspace, x.ne[1]);
+    const auto launch   = [&]<class Schedule>() {
+        using S = Fp8ScheduleInstance<Schedule, 5120>;
+        if constexpr (S::kTmaSwizzle)
+            launch_fp8_a8_tma_mma<S>(operands, output, LinearIdentityEpilogue{}, stream,
+                                       workspace.partials);
+        else
+            launch_fp8_a8_mma<S>(operands, output, LinearIdentityEpilogue{}, stream);
+    };
+    if (x.ne[1] <= 32) return launch.template operator()<Fp8A8T32R32K128>();
+    if (x.ne[1] <= 96) return launch.template operator()<Fp8A8T32R128K128>();
+    if (x.ne[1] <= 128) return launch.template operator()<Tma64x128>();
+    if (x.ne[1] <= 192) return launch.template operator()<Tma64x256>();
+    // Three 96-token tiles give 168 CTAs: one almost-full wave through T=288.
+    if (x.ne[1] <= 288) return launch.template operator()<Tma96x256>();
+    launch.template operator()<Bulk>();
 }
 } // namespace ninfer::ops::detail

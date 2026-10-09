@@ -953,7 +953,7 @@ public:
         return activation.page_reservation_;
     }
 
-    void commit_activation(KVActivationReservation&& activation, RankStreams stream = {}) {
+    void commit_activation(KVActivationReservation&& activation, RankStreams stream) {
         if (activation.owner_ != this) {
             throw std::logic_error("KV activation reservation belongs to another store");
         }
@@ -1134,7 +1134,7 @@ public:
         pages_->physical_pool().resize_reservation(fork.page_reservation_, growth);
     }
 
-    void commit_prefix_fork(KVPrefixForkReservation&& fork, RankStreams stream = {}) {
+    void commit_prefix_fork(KVPrefixForkReservation&& fork, RankStreams stream) {
         require_prefix_fork(fork);
         Address& source                    = require(fork.source_);
         Address& destination               = require(fork.destination_);
@@ -1331,7 +1331,7 @@ public:
     }
 
     void commit_active_snapshot(KVActiveSnapshotReservation&& snapshot,
-                                RankStreams stream = {}) {
+                                RankStreams stream) {
         require_active_snapshot(snapshot);
         Address& source      = require_active(snapshot.source_);
         Address& destination = require(snapshot.destination_);
@@ -1440,7 +1440,7 @@ public:
     // Coverage is a lower bound. A speculative mapping may already extend beyond this stage's
     // needs; only an explicit truncate releases it, and commit_frontier publishes valid tokens.
     void ensure_mapped_to_tokens(KVAddressSpaceHandle handle, std::uint32_t tokens,
-                                 RankStreams stream = {}) {
+                                 RankStreams stream) {
         Address& address           = require_active(handle);
         const std::uint32_t target = pages_for_tokens(tokens);
         if (target > entitlement(address)) {
@@ -1876,7 +1876,7 @@ private:
         return memberships_[index * page_capacity_ + page];
     }
 
-    void publish_membership(const Address& address, RankStreams stream = {}) {
+    void publish_membership(const Address& address, RankStreams stream) {
         if (!address.row) { throw std::logic_error("KV address space has no execution row"); }
         publish_scratch_.clear();
         for (std::uint32_t page = 0; page < address.page_count; ++page) {

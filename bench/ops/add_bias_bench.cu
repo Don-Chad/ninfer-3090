@@ -54,12 +54,15 @@ __global__ void add_bias_pair_payload_control(const unsigned int* bias, unsigned
 
 void run(int d, int columns, bool control) {
     const std::size_t n = static_cast<std::size_t>(d) * static_cast<std::size_t>(columns);
-    DeviceBuffer x      = make_bf16(n);
-    DeviceBuffer bias   = make_bf16(d);
+    DeviceBuffer x      = make_bf16(n, 101U);
+    DeviceBuffer bias   = make_bf16(d, 103U);
+    SavedBuffer initial(x);
+    const auto restore = [&](cudaStream_t stream) { initial.restore(stream); };
     Tensor tx(x.p, DType::BF16, {d, columns});
     Tensor tb(bias.p, DType::BF16, {d});
 
-    const Result result = bench_loop(
+    const Result result = bench_loop_prepared(
+        restore,
         [&](cudaStream_t stream) {
             if (control) {
                 constexpr int block   = 256;

@@ -1,20 +1,7 @@
 #include "ops/linear/q4/q4_shapes.h"
 #include "ops/linear/q4/q4_ksplit_launch.cuh"
-#include "ops/linear/q4/q4_mma_launch.cuh"
 
 namespace ninfer::ops::detail {
-namespace {
-
-using MmaR16C32 = Q4RowSplitMmaGemmSchedule<16, 32, 64, 16, 8, 2, 2, Q4FragmentPipeline::Serial,
-                                            Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-using MmaR32C32 = Q4RowSplitMmaGemmSchedule<32, 32, 64, 16, 16, 3, 2, Q4FragmentPipeline::Serial,
-                                            Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-// Field-for-field the 64x64 tile n6144_k5120.cu and n7168_k5120.cu already instantiate.
-using MmaR64C64 = Q4RowSplitMmaGemmSchedule<64, 64, 64, 32, 16, 2, 2, Q4FragmentPipeline::Serial,
-                                            Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-
-} // namespace
-
 // Re-measured on sm_86 2026-09-17 with bench/ops/linear_schedule_bench.cu (`q4:1024x5120`), cold,
 // median of 11 then confirmed at median of 31 with min..p95. The table that arrived with the
 // 2026-09-17 catch-up was an RTX 5090 sweep and is wrong here in four places:
@@ -29,15 +16,15 @@ using MmaR64C64 = Q4RowSplitMmaGemmSchedule<64, 64, 64, 32, 16, 2, 2, Q4Fragment
 //   * 321..1344 went to a 32x64 tile. Its wave profile collapses as the extent grows: T=384
 //     r64_c80 122.9 vs 139.3, T=640 r64_c64 153.6 vs 171.0, T=1024 r64_c128 232.4 vs 357.4 (+54%).
 Q4Launch select_q4_n1024_k5120(std::int32_t tokens) {
-    if (tokens == 1) return launch_q4_gemv_r1_q8_direct;
+    if (tokens == 1) return launch_q4_a16_gemv_r1_w8_direct;
     if (tokens <= 8) return launch_q4_ksplit<1024, 5120, 8>;
     if (tokens <= 24) return launch_q4_ksplit<1024, 5120, 24>;
     if (tokens <= 32) return launch_q4_ksplit<1024, 5120, 32>;
-    if (tokens <= 192) return launch_q4_mma<MmaR16C32>;
-    if (tokens <= 320) return launch_q4_mma<MmaR32C32>;
-    if (tokens <= 448) return launch_q4_mma_r64_c80;
-    if (tokens <= 768) return launch_q4_mma<MmaR64C64>;
-    return launch_q4_mma_r64_c128;
+    if (tokens <= 192) return launch_q4_a16_mma_r16_t32_k64_wr16_wt8_s2_a2_b2;
+    if (tokens <= 320) return launch_q4_a16_mma_r32_t32_k64_wr16_wt16_s3_a3_b2;
+    if (tokens <= 448) return launch_q4_a16_mma_r64_t80;
+    if (tokens <= 768) return launch_q4_a16_mma_r64_t64_k64_wr32_wt16_s2_a2_b2;
+    return launch_q4_a16_mma_r64_t128;
 }
 
 } // namespace ninfer::ops::detail

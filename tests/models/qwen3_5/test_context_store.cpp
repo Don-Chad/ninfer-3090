@@ -194,7 +194,7 @@ void test_kv_store(ninfer::DeviceContext& device) {
     store::HostKVExtentStore extents(host_arena, 8);
     store::KVAddressSpaceStore addresses(pages, physical_tables, 4, 4);
 
-    const auto address = addresses.create_active(3, 0, {});
+    const auto address = addresses.create_active(3, 0, device.stream);
     expect(address.has_value(), "active KV address allocation");
     addresses.ensure_mapped_to_tokens(*address, 65, device.stream);
     device.synchronize();
@@ -361,7 +361,7 @@ void test_kv_store(ninfer::DeviceContext& device) {
            "KV release invalidates generations and closes physical ownership");
 
     // Verify crosses a page boundary, but the terminal commit consumes only its first column.
-    const auto terminal = addresses.create_active(3, 0, {});
+    const auto terminal = addresses.create_active(3, 0, device.stream);
     expect(terminal.has_value(), "terminal boundary KV address allocation");
     addresses.ensure_mapped_to_tokens(*terminal, 63, device.stream);
     addresses.commit_frontier(*terminal, 63);
@@ -397,7 +397,7 @@ void test_kv_store(ninfer::DeviceContext& device) {
                physical_pages.reserved_pages() == 0 && physical_pages.available_pages() == 8,
            "terminal settlement releases both mappings and unused growth");
 
-    const auto snapshot_source      = addresses.create_active(3, 0, {});
+    const auto snapshot_source      = addresses.create_active(3, 0, device.stream);
     const auto snapshot_destination = addresses.create_inactive();
     expect(snapshot_source && snapshot_destination, "active KV snapshot endpoints allocate");
     addresses.ensure_mapped_to_tokens(*snapshot_source, 65, device.stream);
@@ -429,7 +429,7 @@ void test_kv_store(ninfer::DeviceContext& device) {
                pages.occupied() == 0,
            "active KV snapshot references close with both address spaces");
 
-    const auto alternating = addresses.create_active(4, 0, {});
+    const auto alternating = addresses.create_active(4, 0, device.stream);
     expect(alternating.has_value(), "alternating Host release address allocation");
     addresses.ensure_mapped_to_tokens(*alternating, 193, device.stream);
     addresses.commit_frontier(*alternating, 193);
@@ -462,7 +462,7 @@ void test_kv_store(ninfer::DeviceContext& device) {
                pages.occupied() == 0,
            "alternating Host extent partitions close without leaked descriptors");
 
-    const auto shared = addresses.create_active(3, 0, {});
+    const auto shared = addresses.create_active(3, 0, device.stream);
     expect(shared.has_value(), "shared-prefix source address allocation");
     addresses.ensure_mapped_to_tokens(*shared, 65, device.stream);
     addresses.commit_frontier(*shared, 65);
@@ -521,7 +521,7 @@ void test_kv_store(ninfer::DeviceContext& device) {
     // tail, and needs no tail copy. After admission maps the pages the prompt and draft window
     // need, the post-prefill trim keeps the frontier and drops only those unused pages. The
     // shared tail is not modified, so that trim must succeed.
-    const auto aligned_source = addresses.create_active(3, 0, {});
+    const auto aligned_source = addresses.create_active(3, 0, device.stream);
     expect(aligned_source.has_value(), "page-aligned fork source allocation");
     addresses.ensure_mapped_to_tokens(*aligned_source, 128, device.stream);
     addresses.commit_frontier(*aligned_source, 128);
@@ -552,7 +552,7 @@ void test_kv_store(ninfer::DeviceContext& device) {
                pages.occupied() == 0 && physical_pages.allocated_pages() == 0,
            "page-aligned fork releases without leaked pages");
 
-    const auto mixed_source = addresses.create_active(4, 0, {});
+    const auto mixed_source = addresses.create_active(4, 0, device.stream);
     expect(mixed_source.has_value(), "mixed snapshot retained-prefix source allocation");
     addresses.ensure_mapped_to_tokens(*mixed_source, 65, device.stream);
     addresses.commit_frontier(*mixed_source, 65);
@@ -643,14 +643,14 @@ void test_kv_store(ninfer::DeviceContext& device) {
                pages.occupied() == 0 && physical_pages.allocated_pages() == 0,
            "repeated mixed snapshot ownership closes without leaked logical or physical pages");
 
-    const auto filler = addresses.create_active(4, 0, {});
+    const auto filler = addresses.create_active(4, 0, device.stream);
     expect(filler.has_value(), "full-capacity staged-fork filler allocation");
     addresses.ensure_mapped_to_tokens(*filler, 193, device.stream);
     addresses.commit_frontier(*filler, 193);
     addresses.set_checkpoint_requirement(*filler, 193);
     addresses.deactivate(*filler);
 
-    const auto retained = addresses.create_active(4, 0, {});
+    const auto retained = addresses.create_active(4, 0, device.stream);
     expect(retained.has_value(), "full-capacity retained source allocation");
     addresses.ensure_mapped_to_tokens(*retained, 65, device.stream);
     addresses.commit_frontier(*retained, 65);

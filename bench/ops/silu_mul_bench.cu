@@ -38,8 +38,8 @@ std::vector<int> parse_tokens(const char* raw) {
 
 void run(int tokens) {
     const int n      = kIntermediate * tokens;
-    DeviceBuffer g   = make_bf16(static_cast<std::size_t>(n));
-    DeviceBuffer u   = make_bf16(static_cast<std::size_t>(n));
+    DeviceBuffer g   = make_bf16(static_cast<std::size_t>(n), 101U);
+    DeviceBuffer u   = make_bf16(static_cast<std::size_t>(n), 103U);
     DeviceBuffer out = make_zeros(static_cast<std::size_t>(n) * 2);
     Tensor tg(g.p, DType::BF16, {kIntermediate, tokens});
     Tensor tu(u.p, DType::BF16, {kIntermediate, tokens});

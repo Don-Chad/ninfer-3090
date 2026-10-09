@@ -19,6 +19,11 @@ enum class Q4Q5GdnInputScheduleId {
     GroupedMixedMmaR64C64,
     GroupedMixedMmaR64C128,
     SmallTMma,
+    // Upstream's column-band tiles. Not routed on sm_86 (kRoutes); reachable through
+    // q4_q5_gdn_input_execute_schedule for the schedule bench.
+    GroupedMixedMmaR32C32S2,
+    GroupedMixedMmaR32C64S4,
+    GroupedMixedMmaR64C128S2,
 };
 
 struct Q4Q5GdnInputProblem {

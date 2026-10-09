@@ -76,7 +76,7 @@ void run_batch(int width, std::int32_t batch_size, const Options& options,
                const Tensor& norm_weight, const Tensor& base_kernel,
                const Weight& projection_weight, DeviceBuffer& residual_storage,
                DeviceBuffer& prepared_storage, DeviceBuffer& finish_storage,
-               WorkspaceArena& workspace, DeviceBuffer& flush, cudaStream_t stream) {
+               WorkspaceArena& workspace, bench::L2FlushBuffer& flush, cudaStream_t stream) {
     const std::int32_t tokens = width * batch_size;
     Tensor residual(residual_storage.p, DType::BF16, {kHidden, width, batch_size});
     Tensor prepared(prepared_storage.p, DType::BF16, {kHidden, width, batch_size});
@@ -111,15 +111,16 @@ int main(int argc, char** argv) {
     }
     try {
         const Options options = parse_args(argc, argv);
-        DeviceBuffer residual = make_bf16(static_cast<std::size_t>(kHidden) * kMaximumWidth * 8);
-        DeviceBuffer norm     = make_bf16(kHidden);
-        DeviceBuffer base     = make_bf16(static_cast<std::size_t>(kHidden) * kTaps * kSides);
+        DeviceBuffer residual =
+            make_bf16(static_cast<std::size_t>(kHidden) * kMaximumWidth * 8, 101U);
+        DeviceBuffer norm = make_bf16(kHidden, 103U, .8F, 1.2F);
+        DeviceBuffer base = make_bf16(static_cast<std::size_t>(kHidden) * kTaps * kSides, 105U);
         DirectBf16Weight projection = make_direct_bf16_weight(kCoefficientRows, kHidden, 0x31U);
         DeviceBuffer prepared = make_zeros(static_cast<std::size_t>(kHidden) * kMaximumWidth * 8 *
                                            sizeof(std::uint16_t));
         DeviceBuffer finish = make_zeros(static_cast<std::size_t>(kGroups) * kTaps * kMaximumWidth *
                                          8 * sizeof(std::uint16_t));
-        DeviceBuffer flush(options.flush_bytes);
+        bench::L2FlushBuffer flush(options.flush_bytes);
         const std::size_t workspace_bytes =
             ops::rmsnorm_dynamic_grouped_conv_prepare_workspace_capacity_bytes(2, 16, 1, 8);
         WorkspaceArena workspace(workspace_bytes);

@@ -518,7 +518,8 @@ public:
         }
     }
 
-    int run(std::int32_t tokens, int first_pattern, bool graph_replay) {
+    int run(DeviceExecutionView execution, std::int32_t tokens, int first_pattern,
+            bool graph_replay) {
         const std::string label = std::string(profile_.name) + " T=" + std::to_string(tokens);
         std::vector<float> input(static_cast<std::size_t>(kHidden) * tokens);
         std::vector<float> residual(static_cast<std::size_t>(kHidden) * tokens);
@@ -555,6 +556,20 @@ public:
             weights.routed_gate_up.qtype, weights.routed_down.qtype, tokens, tokens);
         WorkspaceArena workspace(workspace_bytes);
 
+        if (tokens == 1 && profile_.verify_graph_replay) {
+            for (const std::int32_t sm_count : {0, -1}) {
+                bool rejected = false;
+                try {
+                    ops::sparse_moe(x, weights, ops::SparseMoeEpilogue::AddResidual, destination,
+                                    workspace, {execution.stream, sm_count});
+                } catch (const std::invalid_argument&) { rejected = true; }
+                if (!rejected) {
+                    std::cerr << label << ": accepted a nonpositive physical SM count\n";
+                    return 1;
+                }
+            }
+        }
+
         if (graph_replay) {
             cudaStream_t stream  = nullptr;
             cudaGraph_t graph    = nullptr;
@@ -567,7 +582,7 @@ public:
                                        cudaMemcpyDeviceToDevice, stream),
                        "capture SparseMoe residual seed");
             ops::sparse_moe(x, weights, ops::SparseMoeEpilogue::AddResidual, destination, workspace,
-                            stream);
+                            execution.on_stream(stream));
             cuda_check(cudaStreamEndCapture(stream, &graph), "end SparseMoe graph capture");
             cuda_check(cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0),
                        "instantiate SparseMoe graph");
@@ -579,7 +594,7 @@ public:
             cuda_check(cudaStreamDestroy(stream), "destroy SparseMoe graph stream");
         } else {
             ops::sparse_moe(x, weights, ops::SparseMoeEpilogue::AddResidual, destination, workspace,
-                            nullptr);
+                            execution);
             cuda_synchronize();
         }
 
@@ -632,7 +647,7 @@ private:
     std::vector<std::vector<double>> references_;
 };
 
-int run_profile(const CodecProfile& profile) {
+int run_profile(DeviceExecutionView execution, const CodecProfile& profile) {
     SparseMoeFixture fixture(profile);
     int failures        = 0;
     std::size_t witness = 0;
@@ -643,8 +658,8 @@ int run_profile(const CodecProfile& profile) {
                                   profile.routed_gate_up, profile.routed_down, tokens, tokens));
         // Decode starts with the exact top-8 boundary tie; multi-token cases cycle the tie,
         // high/low expert ids, and a different ordering of the same experts.
-        failures +=
-            fixture.run(tokens, index == 0 ? 1 : 0, profile.verify_graph_replay && index == 1);
+        failures += fixture.run(execution, tokens, index == 0 ? 1 : 0,
+                                profile.verify_graph_replay && index == 1);
     }
     const std::size_t interval = ops::sparse_moe_workspace_capacity_bytes(
         profile.routed_gate_up, profile.routed_down, 1, profile.token_cases.back());
@@ -676,8 +691,11 @@ int main() {
         {"sparse_moe q8+q8 a16", QType::Q8_G32_FP16, QType::Q8_G32_FP16, kQ8Q8Tokens, false},
     }};
 
-    int failures = 0;
-    for (const CodecProfile& profile : profiles) { failures += run_profile(profile); }
+    DeviceContext context;
+    // Fixture copies use the default stream; preserve their ordering with the eager call.
+    const DeviceExecutionView execution = context.execution_view().on_stream(nullptr);
+    int failures                        = 0;
+    for (const CodecProfile& profile : profiles) { failures += run_profile(execution, profile); }
     std::cout << (failures == 0 ? "OK" : "FAIL") << " sparse_moe correctness\n";
     return failures == 0 ? 0 : 1;
 }

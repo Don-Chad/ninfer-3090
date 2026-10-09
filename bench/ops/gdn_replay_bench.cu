@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -264,8 +265,11 @@ double median(std::vector<double> values) {
 }
 
 template <class Launch>
-double measure_host_submission(Launch&& launch, cudaStream_t stream, int warmup, int repeat) {
+double measure_host_submission(
+    Launch&& launch, cudaStream_t stream, int warmup, int repeat,
+    const bench::launch_fn& restore = [](cudaStream_t) {}) {
     for (int index = 0; index < warmup; ++index) {
+        restore(stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
         launch(stream);
     }
@@ -273,6 +277,7 @@ double measure_host_submission(Launch&& launch, cudaStream_t stream, int warmup,
     std::vector<double> samples;
     samples.reserve(static_cast<std::size_t>(repeat));
     for (int index = 0; index < repeat; ++index) {
+        restore(stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
         const auto begin = std::chrono::steady_clock::now();
         launch(stream);
@@ -283,6 +288,13 @@ double measure_host_submission(Launch&& launch, cudaStream_t stream, int warmup,
     return median(std::move(samples));
 }
 
+__global__ void initialize_record_gates(float* gates, std::size_t pairs) {
+    const auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= pairs) return;
+    gates[2 * i]     = bench::fixture::uniform(i, 311U, -1.5F, -.1F);
+    gates[2 * i + 1] = bench::fixture::uniform(i, 313U, .1F, .9F);
+}
+
 class FoldResources {
 public:
     FoldResources(const Profile& profile, std::int32_t width)
@@ -290,9 +302,31 @@ public:
           records_({record_storage_.p, record_storage_.bytes}, record_layout_),
           state_storage_(state_bytes(profile)),
           states_({state_storage_.p, state_storage_.bytes}, state_layout_) {
-        record_storage_.fill(0);
+        record_storage_.fill(0); // alignment gaps only; represented planes are filled below.
         state_storage_.fill(0);
+        CUDA_CHECK(bench::fixture::fill_values(static_cast<__nv_bfloat16*>(records_.conv.data),
+                                               records_.conv.numel(), 301U, -.5F, .5F));
+        CUDA_CHECK(bench::fixture::fill_values(static_cast<__nv_bfloat16*>(records_.key.data),
+                                               records_.key.numel(), 307U, -.5F, .5F));
+        CUDA_CHECK(bench::fixture::fill_values(static_cast<__nv_bfloat16*>(records_.value.data),
+                                               records_.value.numel(), 309U, -.5F, .5F));
+        const auto pairs = records_.gate.numel() / 2;
+        initialize_record_gates<<<(pairs + 255) / 256, 256>>>(
+            static_cast<float*>(records_.gate.data), pairs);
+        CUDA_CHECK(cudaGetLastError());
+        for (int layer = 0; layer < profile.layers; ++layer) {
+            const auto view = states_.layer_view(layer);
+            CUDA_CHECK(bench::fixture::fill_values(static_cast<__nv_bfloat16*>(view.conv.data),
+                                                   view.conv.numel(), 401U + layer, -.5F, .5F));
+            CUDA_CHECK(bench::fixture::fill_values(static_cast<float*>(view.recurrent.data),
+                                                   view.recurrent.numel(), 501U + layer, -.02F,
+                                                   .02F));
+        }
+        CUDA_CHECK(cudaDeviceSynchronize());
+        initial_ = std::make_unique<bench::SavedBuffer>(state_storage_);
     }
+
+    void restore(cudaStream_t stream) const { initial_->restore(stream); }
 
     [[nodiscard]] const ops::GdnReplayFoldPlan& fold_plan() const { return fold_plan_; }
 
@@ -344,6 +378,7 @@ private:
     GdnReplayRecords records_;
     DeviceBuffer state_storage_;
     LinearAttentionStatePool states_;
+    std::unique_ptr<bench::SavedBuffer> initial_;
     ops::GdnReplayFoldPlan fold_plan_{records_, states_.all_layers_view()};
 };
 
@@ -353,28 +388,24 @@ DeviceBuffer make_i32(const std::vector<std::int32_t>& values) {
     return result;
 }
 
-DeviceBuffer make_f32(std::size_t elements, float value) {
-    std::vector<float> values(elements, value);
-    DeviceBuffer result(values.size() * sizeof(float));
-    result.copy_from_host(values.data(), result.bytes);
-    return result;
-}
-
 class RecurrentResources {
 public:
     RecurrentResources(const Profile& profile, std::int32_t width, std::int32_t batch,
                        ValidSelection valid)
         : profile_(profile), width_(width), batch_(batch), valid_policy_(valid),
-          q_(bench::make_bf16(qk_elements())), k_(bench::make_bf16(qk_elements())),
-          v_(bench::make_bf16(value_elements())), g_(make_f32(gate_elements(), -0.7F)),
-          beta_(make_f32(gate_elements(), 0.5F)),
+          q_(bench::make_bf16(qk_elements(), 101U)), k_(bench::make_bf16(qk_elements(), 103U)),
+          v_(bench::make_bf16(value_elements(), 105U)),
+          g_(bench::make_f32(gate_elements(), 211U, -1.5F, -.1F)),
+          beta_(bench::make_f32(gate_elements(), 213U, .1F, .9F)),
           record_states_(record_state_elements() * sizeof(float)),
           record_initial_(make_i32(record_initial_slots())), valid_(make_valid()),
           record_out_(value_elements() * sizeof(std::uint16_t)),
           key_record_(qk_elements() * sizeof(std::uint16_t)),
           value_record_(value_elements() * sizeof(std::uint16_t)),
           gate_record_(gate_elements() * 2 * sizeof(float)) {
-        record_states_.fill(0);
+        CUDA_CHECK(bench::fixture::fill_values(static_cast<float*>(record_states_.p),
+                                               record_state_elements(), 217U, -.02F, .02F));
+        CUDA_CHECK(cudaDeviceSynchronize());
         record_out_.fill(0);
         key_record_.fill(0);
         value_record_.fill(0);
@@ -462,21 +493,24 @@ private:
 };
 
 Measurement measure_fold(const FoldResources& resources,
-                         const std::vector<ops::GdnReplayFoldRow>& rows, DeviceBuffer& flush,
-                         int warmup, int repeat) {
+                         const std::vector<ops::GdnReplayFoldRow>& rows,
+                         bench::L2FlushBuffer& flush, int warmup, int repeat) {
     cudaStream_t stream = nullptr;
     const auto launch   = [&](cudaStream_t launch_stream) {
         resources.fold_plan().execute(rows, launch_stream);
     };
+    const auto restore = [&](cudaStream_t s) { resources.restore(s); };
     Measurement result;
-    result.warm           = bench::measure_launch(launch, stream, warmup, repeat);
-    result.cold           = bench::measure_cold_launch(launch, flush, stream, warmup, repeat);
-    result.host_median_us = measure_host_submission(launch, stream, warmup, repeat);
+    result.warm = bench::measure_launch_prepared(restore, launch, stream, warmup, repeat);
+    result.cold =
+        bench::measure_cold_launch_prepared(restore, launch, flush, stream, warmup, repeat);
+    result.host_median_us = measure_host_submission(launch, stream, warmup, repeat, restore);
     return result;
 }
 
 template <class Launch>
-Measurement measure_component(Launch&& launch, DeviceBuffer& flush, int warmup, int repeat) {
+Measurement measure_component(Launch&& launch, bench::L2FlushBuffer& flush, int warmup,
+                              int repeat) {
     cudaStream_t stream = nullptr;
     Measurement result;
     result.warm           = bench::measure_launch(launch, stream, warmup, repeat);
@@ -495,7 +529,8 @@ void print_recurrent_result(const Profile& profile, std::int32_t width, std::int
 }
 
 void run_recurrent_point(const Profile& profile, std::int32_t width, std::int32_t batch,
-                         ValidSelection valid, DeviceBuffer& flush, const Options& options) {
+                         ValidSelection valid, bench::L2FlushBuffer& flush,
+                         const Options& options) {
     RecurrentResources resources(profile, width, batch, valid);
     const Measurement record =
         measure_component([&](cudaStream_t stream) { resources.launch_record(stream); }, flush,
@@ -528,7 +563,7 @@ void print_result(const Profile& profile, std::int32_t width, std::int32_t batch
 }
 
 int run(const Options& options) {
-    DeviceBuffer flush(options.flush_bytes);
+    bench::L2FlushBuffer flush(options.flush_bytes);
     for (const Profile& profile : selected_profiles(options.profiles)) {
         for (const std::int32_t width : selected_widths(profile, options.exact_width)) {
             const bool run_fold = options.component == ComponentSelection::Fold ||

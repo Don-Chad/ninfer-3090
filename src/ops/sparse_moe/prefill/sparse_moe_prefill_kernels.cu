@@ -288,11 +288,9 @@ constexpr int kExpertStages = 2;
 constexpr int kGateUpNarrowStages = 6;
 constexpr int kExpertWarps        = 8;
 constexpr int kExpertThreads      = 32 * kExpertWarps;
-constexpr int kRtx5090SmCount     = 170;
 // Upper bound on the persistent grid. The routed GEMMs stride their work list by gridDim.x,
-// so any grid is correct; this caps the launch when the work list is long.
-constexpr int kPrefillMaxBlocksPerSm = 32;
-constexpr int kPrefillMaxBlocks      = kPrefillMaxBlocksPerSm * kRtx5090SmCount;
+// so any positive grid is correct. This is a queued CTA budget, not simultaneous residency.
+constexpr int kPrefillQueuedCtasPerSm = 32;
 
 // The narrow routed gate/up ships in both depths and the route picks one. A job is one nonempty
 // column tile of one expert, so more than one job per touched expert means an expert's rows
@@ -1177,10 +1175,14 @@ __global__ void sparse_moe_prefill_reduce_kernel(const __nv_bfloat16* __restrict
 
 void sparse_moe_prefill_launch(const Tensor& x, const SparseMoeWeights& weights,
                                Tensor& destination, const SparseMoePrefillPlan& plan,
-                               const SparseMoePrefillWorkspace& workspace, cudaStream_t stream) {
+                               const SparseMoePrefillWorkspace& workspace,
+                               DeviceExecutionView execution) {
     if (x.ne[1] != plan.tokens || destination.ne[1] != plan.tokens || plan.slice_tokens < 1) {
         throw std::invalid_argument("sparse_moe prefill: launch plan does not match tensors");
     }
+    const cudaStream_t stream = execution.stream;
+    const std::int64_t max_prefill_blocks =
+        static_cast<std::int64_t>(execution.multiprocessor_count) * kPrefillQueuedCtasPerSm;
 
     const auto* router = static_cast<const __nv_bfloat16*>(weights.router_shared_gate.qdata);
     const auto* routed_gate_codes = static_cast<const std::uint8_t*>(weights.routed_gate_up.qdata);
@@ -1246,11 +1248,13 @@ void sparse_moe_prefill_launch(const Tensor& x, const SparseMoeWeights& weights,
         // sizing the grid from that product keeps a persistent block on one work item while
         // there are fewer work items than the cap, instead of a fixed count that has to
         // iterate. The exact job count only exists on the device.
-        const int max_route_jobs     = assignments / route_job_bn + kExperts;
-        const int routed_gate_work   = max_route_jobs * (kIntermediate / (kExpertBM / 2));
-        const int routed_down_work   = max_route_jobs * (kHidden / kExpertBM);
-        const int routed_gate_blocks = std::min(routed_gate_work, kPrefillMaxBlocks);
-        const int routed_down_blocks = std::min(routed_down_work, kPrefillMaxBlocks);
+        const int max_route_jobs   = assignments / route_job_bn + kExperts;
+        const int routed_gate_work = max_route_jobs * (kIntermediate / (kExpertBM / 2));
+        const int routed_down_work = max_route_jobs * (kHidden / kExpertBM);
+        const int routed_gate_blocks =
+            static_cast<int>(std::min<std::int64_t>(routed_gate_work, max_prefill_blocks));
+        const int routed_down_blocks =
+            static_cast<int>(std::min<std::int64_t>(routed_down_work, max_prefill_blocks));
         sparse_moe_prefill_scan_kernel<<<1, kExpertThreads, 0, stream>>>(
             tile_counts, tile_bases, offsets, route_job_experts, route_job_columns, route_job_count,
             route_tiles, route_job_bn, tokens, adaptive);

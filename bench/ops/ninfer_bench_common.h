@@ -11,6 +11,7 @@
 // a same-topology payload control, and only the profiler evidence needed for the
 // concrete kernel question.
 
+#include "../common/fixture_data.cuh"
 #include "core/arena.h"
 #include "core/device.h"
 
@@ -114,47 +115,37 @@ __host__ __device__ inline std::uint16_t f32_to_bf16(float f) {
     return std::uint16_t(u >> 16);
 }
 
-namespace detail {
-
-__host__ __device__ inline std::uint32_t bench_fixture_hash32(std::uint32_t x) {
-    x ^= x >> 16;
-    x *= 0x7feb352du;
-    x ^= x >> 15;
-    x *= 0x846ca68bu;
-    return x ^ (x >> 16);
+// Every operand supplies a stable seed; allocation order does not select the data.
+inline DeviceBuffer make_bf16(std::size_t n, std::uint64_t seed, float low = -0.5F,
+                              float high = 0.5F) {
+    DeviceBuffer result(n * sizeof(__nv_bfloat16));
+    CUDA_CHECK(fixture::fill_values(static_cast<__nv_bfloat16*>(result.p), n, seed, low, high));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    return result;
 }
 
-// A short repeating ramp is L2- and compression-friendly in a way real activations are not, which
-// can make a GEMM/attention schedule look faster on the bench than it is in the Engine. Every
-// element gets its own hash of (index, seed) instead, so no window of the buffer repeats.
-static __global__ void fill_bf16_uniform_kernel(std::uint16_t* values, std::size_t count,
-                                                std::uint32_t seed) {
-    const auto stride = static_cast<std::size_t>(gridDim.x) * blockDim.x;
-    for (auto i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x; i < count;
-         i += stride) {
-        const std::uint32_t bits = bench_fixture_hash32(static_cast<std::uint32_t>(i) ^ seed);
-        const float u = static_cast<float>(bits >> 8) * (1.0f / 16777216.0f) - 0.5f;
-        values[i]     = f32_to_bf16(u);
+inline DeviceBuffer make_f32(std::size_t n, std::uint64_t seed, float low, float high) {
+    DeviceBuffer result(n * sizeof(float));
+    CUDA_CHECK(fixture::fill_values(static_cast<float*>(result.p), n, seed, low, high));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    return result;
+}
+
+// Snapshot only mutable operands. Restore is setup, never part of a timed Op.
+class SavedBuffer {
+public:
+    explicit SavedBuffer(DeviceBuffer& buffer) : destination_(buffer.p), initial_(buffer.bytes) {
+        CUDA_CHECK(cudaMemcpy(initial_.p, buffer.p, buffer.bytes, cudaMemcpyDeviceToDevice));
     }
-}
 
-} // namespace detail
-
-// Device bf16 buffer filled with pseudo-random values in [-0.5, 0.5), varied by element index and
-// `seed` (avoids all-zero special paths; exact values are otherwise irrelevant to bandwidth or
-// timing). Returns an owning DeviceBuffer.
-inline DeviceBuffer make_bf16(std::size_t n, std::uint32_t seed = 0x9e3779b9u) {
-    DeviceBuffer d(n * 2);
-    if (n != 0) {
-        constexpr int block = 256;
-        const int grid = static_cast<int>(std::min<std::size_t>(4096, (n + block - 1) / block));
-        detail::fill_bf16_uniform_kernel<<<grid, block>>>(static_cast<std::uint16_t*>(d.p), n,
-                                                          seed);
-        CUDA_CHECK(cudaGetLastError());
-        CUDA_CHECK(cudaDeviceSynchronize());
+    void restore(cudaStream_t stream) const {
+        CUDA_CHECK(cudaMemcpyAsync(destination_, initial_.p, initial_.bytes,
+                                   cudaMemcpyDeviceToDevice, stream));
     }
-    return d;
-}
+private:
+    void* destination_;
+    DeviceBuffer initial_;
+};
 
 inline DeviceBuffer make_zeros(std::size_t bytes) {
     DeviceBuffer d(bytes);
@@ -287,12 +278,69 @@ inline ColdTiming measure_graph(const TimedGraph& graph, cudaStream_t stream, in
     return summarize_timings(std::move(samples));
 }
 
-inline void flush_l2(DeviceBuffer& flush, cudaStream_t stream) {
-    CUDA_CHECK(cudaMemsetAsync(flush.p, 0xa5, flush.bytes, stream));
+namespace detail {
+inline constexpr int kEvictionBlocks  = 1024;
+inline constexpr int kEvictionThreads = 256;
+
+static __global__ void read_eviction_buffer(const uint4* input, std::size_t vectors,
+                                            uint4* checksums) {
+    uint4 value{};
+    for (auto i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x; i < vectors;
+         i += std::size_t(gridDim.x) * blockDim.x) {
+        const uint4 loaded = input[i];
+        value.x ^= loaded.x;
+        value.y ^= loaded.y;
+        value.z ^= loaded.z;
+        value.w ^= loaded.w;
+    }
+    for (int offset = 16; offset; offset >>= 1) {
+        value.x ^= __shfl_xor_sync(0xffffffffU, value.x, offset);
+        value.y ^= __shfl_xor_sync(0xffffffffU, value.y, offset);
+        value.z ^= __shfl_xor_sync(0xffffffffU, value.z, offset);
+        value.w ^= __shfl_xor_sync(0xffffffffU, value.w, offset);
+    }
+    __shared__ uint4 warps[kEvictionThreads / 32];
+    if (threadIdx.x % 32 == 0) warps[threadIdx.x / 32] = value;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        uint4 total{};
+        for (const auto& partial : warps) {
+            total.x ^= partial.x;
+            total.y ^= partial.y;
+            total.z ^= partial.z;
+            total.w ^= partial.w;
+        }
+        checksums[blockIdx.x] = total;
+    }
 }
+} // namespace detail
+
+// Reading a preinitialized buffer evicts cache lines without leaving an L2-sized dirty
+// working set whose writeback would become part of the next measured Op's traffic.
+class L2FlushBuffer : public DeviceBuffer {
+public:
+    explicit L2FlushBuffer(std::size_t bytes)
+        : DeviceBuffer(bytes), checksums_(detail::kEvictionBlocks * sizeof(uint4)) {
+        CUDA_CHECK(fixture::fill_bytes(p, bytes, 0x4c324576696374ULL));
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+
+    void evict(cudaStream_t stream) {
+        detail::
+            read_eviction_buffer<<<detail::kEvictionBlocks, detail::kEvictionThreads, 0, stream>>>(
+                static_cast<const uint4*>(p), bytes / sizeof(uint4),
+                static_cast<uint4*>(checksums_.p));
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+private:
+    DeviceBuffer checksums_;
+};
+
+inline void flush_l2(L2FlushBuffer& flush, cudaStream_t stream) { flush.evict(stream); }
 
 template <class Launch>
-ColdTiming measure_cold_launch(Launch&& launch, DeviceBuffer& flush, cudaStream_t stream,
+ColdTiming measure_cold_launch(Launch&& launch, L2FlushBuffer& flush, cudaStream_t stream,
                                int warmup, int repeat) {
     if (warmup < 0 || repeat <= 0) {
         throw std::invalid_argument(
@@ -334,7 +382,7 @@ ColdTiming measure_cold_launch(Launch&& launch, DeviceBuffer& flush, cudaStream_
     };
 }
 
-inline ColdTiming measure_cold_graph(const TimedGraph& graph, DeviceBuffer& flush,
+inline ColdTiming measure_cold_graph(const TimedGraph& graph, L2FlushBuffer& flush,
                                      cudaStream_t stream, int warmup, int repeat) {
     if (warmup < 0 || repeat <= 0) {
         throw std::invalid_argument(
@@ -362,11 +410,48 @@ inline ColdTiming measure_cold_graph(const TimedGraph& graph, DeviceBuffer& flus
     return {percentile(0.50), samples.front(), percentile(0.95)};
 }
 
+template <class Prepare, class Launch>
+ColdTiming measure_launch_prepared(Prepare&& prepare, Launch&& launch, cudaStream_t stream,
+                                   int warmup, int repeat) {
+    if (warmup < 0 || repeat <= 0) throw std::invalid_argument("invalid benchmark repetitions");
+    cudaEvent_t start = nullptr, stop = nullptr;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    for (int i = 0; i < warmup; ++i) {
+        prepare(stream);
+        launch(stream);
+    }
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    std::vector<double> samples;
+    samples.reserve(repeat);
+    for (int i = 0; i < repeat; ++i) {
+        prepare(stream);
+        CUDA_CHECK(cudaEventRecord(start, stream));
+        launch(stream);
+        CUDA_CHECK(cudaEventRecord(stop, stream));
+        CUDA_CHECK(cudaEventSynchronize(stop));
+        float ms = 0;
+        CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+        samples.push_back(double(ms) * 1000.0);
+    }
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
+    return summarize_timings(std::move(samples));
+}
+
+template <class Prepare>
+ColdTiming measure_graph_prepared(Prepare&& prepare, const TimedGraph& graph, cudaStream_t stream,
+                                  int warmup, int repeat) {
+    return measure_launch_prepared(
+        std::forward<Prepare>(prepare), [&](cudaStream_t s) { graph.launch(s); }, stream, warmup,
+        repeat);
+}
+
 // Cold measurement for an Op that updates its own input in place. `prepare` restores that input to
 // the same initial value before every warmup launch and every sample, so each timed call sees the
 // same operand; prepare and the L2 flush both run outside the timed interval.
 template <class Prepare, class Launch>
-ColdTiming measure_cold_launch_prepared(Prepare&& prepare, Launch&& launch, DeviceBuffer& flush,
+ColdTiming measure_cold_launch_prepared(Prepare&& prepare, Launch&& launch, L2FlushBuffer& flush,
                                         cudaStream_t stream, int warmup, int repeat) {
     if (warmup < 0 || repeat <= 0) {
         throw std::invalid_argument(
@@ -406,7 +491,7 @@ ColdTiming measure_cold_launch_prepared(Prepare&& prepare, Launch&& launch, Devi
 
 template <class Prepare>
 ColdTiming measure_cold_graph_prepared(Prepare&& prepare, const TimedGraph& graph,
-                                       DeviceBuffer& flush, cudaStream_t stream, int warmup,
+                                       L2FlushBuffer& flush, cudaStream_t stream, int warmup,
                                        int repeat) {
     if (warmup < 0 || repeat <= 0) {
         throw std::invalid_argument(
@@ -501,6 +586,25 @@ inline Result bench_loop(const launch_fn& launch, double bytes_moved, int warmup
     const double sec = r.median_us * 1e-6;
     r.gbs            = (sec > 0.0) ? bytes_moved / sec / 1e9 : 0.0;
     return r;
+}
+
+// Mutating Ops use one captured call per sample, restored outside the graph and events.
+// Repeatedly applying the Op inside an inner loop changes the measured workload.
+inline Result bench_loop_prepared(const launch_fn& prepare, const launch_fn& launch,
+                                  double bytes_moved, int warmup = 20, int repeat = 100) {
+    cudaStream_t stream = nullptr;
+    CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    TimedGraph graph;
+    graph.capture(stream, launch);
+    const auto timing = measure_graph_prepared(prepare, graph, stream, warmup, repeat);
+    CUDA_CHECK(cudaStreamDestroy(stream));
+    Result result;
+    result.n_runs    = repeat;
+    result.median_us = timing.median_us;
+    result.min_us    = timing.min_us;
+    result.p95_us    = timing.p95_us;
+    result.gbs       = bytes_moved / timing.median_us / 1.0e3;
+    return result;
 }
 
 inline void print_result(const char* tag, const Result& r) {

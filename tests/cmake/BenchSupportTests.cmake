@@ -5,6 +5,11 @@ ninfer_add_test(ninfer_bench_support_test
 
 target_include_directories(ninfer_bench_support_test PRIVATE ${PROJECT_SOURCE_DIR}/bench/inference)
 
+ninfer_add_op_test(ninfer_bench_fixtures_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_bench_fixtures.cu"
+  LIBRARIES ninfer_ops)
+target_include_directories(ninfer_bench_fixtures_test PRIVATE ${PROJECT_SOURCE_DIR}/bench/ops)
+
 add_executable(ninfer_context_cost_measure_test
   "${CMAKE_CURRENT_LIST_DIR}/../test_context_cost_measure.cpp"
   ${PROJECT_SOURCE_DIR}/bench/context_cost/context_cost_measure.cpp)

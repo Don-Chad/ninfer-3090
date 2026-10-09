@@ -36,8 +36,8 @@ std::vector<int> parse_tokens(const char* raw) {
     return values;
 }
 
-Result bench_cold_graph(const launch_fn& launch, double bytes, DeviceBuffer& flush, int warmup,
-                        int repeat) {
+Result bench_cold_graph(const launch_fn& launch, double bytes, bench::L2FlushBuffer& flush,
+                        int warmup, int repeat) {
     cudaStream_t stream = nullptr;
     CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     launch(stream);
@@ -55,7 +55,7 @@ Result bench_cold_graph(const launch_fn& launch, double bytes, DeviceBuffer& flu
     CUDA_CHECK(cudaEventCreate(&begin));
     CUDA_CHECK(cudaEventCreate(&end));
     for (int i = 0; i < warmup; ++i) {
-        CUDA_CHECK(cudaMemsetAsync(flush.p, 0xa5, flush.bytes, stream));
+        bench::flush_l2(flush, stream);
         CUDA_CHECK(cudaGraphLaunch(exec, stream));
     }
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -63,7 +63,7 @@ Result bench_cold_graph(const launch_fn& launch, double bytes, DeviceBuffer& flu
     std::vector<double> samples;
     samples.reserve(static_cast<std::size_t>(repeat));
     for (int i = 0; i < repeat; ++i) {
-        CUDA_CHECK(cudaMemsetAsync(flush.p, 0xa5, flush.bytes, stream));
+        bench::flush_l2(flush, stream);
         CUDA_CHECK(cudaEventRecord(begin, stream));
         CUDA_CHECK(cudaGraphLaunch(exec, stream));
         CUDA_CHECK(cudaEventRecord(end, stream));
@@ -89,7 +89,7 @@ Result bench_cold_graph(const launch_fn& launch, double bytes, DeviceBuffer& flu
     return result;
 }
 
-void run(int tokens, int candidate_block, DeviceBuffer* flush, int warmup, int repeat) {
+void run(int tokens, int candidate_block, bench::L2FlushBuffer* flush, int warmup, int repeat) {
     std::vector<std::int32_t> host(static_cast<std::size_t>(tokens));
     for (int i = 0; i < tokens; ++i) { host[static_cast<std::size_t>(i)] = 262144 - tokens + i; }
     DeviceBuffer source(host.size() * sizeof(std::int32_t));
@@ -159,8 +159,8 @@ int main(int argc, char** argv) {
     if (warmup < 0 || repeat <= 0) {
         throw std::invalid_argument("--warmup must be nonnegative and --repeat positive");
     }
-    DeviceBuffer flush(cold_graph ? 256ULL << 20 : 1);
-    DeviceBuffer* flush_ptr = cold_graph ? &flush : nullptr;
+    bench::L2FlushBuffer flush(cold_graph ? 256ULL << 20 : 1);
+    bench::L2FlushBuffer* flush_ptr = cold_graph ? &flush : nullptr;
     for (const int value : tokens) { run(value, candidate_block, flush_ptr, warmup, repeat); }
     return 0;
 }

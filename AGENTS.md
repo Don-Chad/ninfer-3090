@@ -16,9 +16,20 @@ uncertainty, or checks a realistic regression. A necessary redesign is in scope;
 hardening, compatibility, and benchmark campaigns are not. Address incidental findings when they
 block the outcome or are inseparable from the selected implementation.
 
+For implementation tasks, record the user's requirements, promised work, affected implementations
+and routes, and the quality dimensions to be evaluated before judging results. For comparative
+claims, also identify the baseline, workloads, metrics, aggregation method, and acceptance criteria.
+Keep this accounting current as the task develops. Explain justified changes and preserve the
+earlier findings; never narrow the scope or change the criteria after seeing unfavorable results
+to make the task appear successful. This accounting may live in the working conversation or
+existing task artifacts; it does not require a new permanent planning document.
+
 For analysis or design, deliver the explanation or design. For diagnosis, establish the cause and
 supporting evidence; implement a fix when requested. For implementation, complete the selected
 design across its affected implementations, callers, tests, tools, and active documentation.
+
+Requests for analysis or proposals for review do not authorize applying them;
+implementation authorization must cover that same scope.
 
 The current product and architecture govern ordinary work. An explicit task may change them;
 update the affected contracts and implementation together instead of treating the current design

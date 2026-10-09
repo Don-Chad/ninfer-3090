@@ -36,9 +36,9 @@ constexpr std::int32_t kRows = 1024;
 void sweep_for_k(std::int32_t k, const ninfer::bench::SweepOptions& base) {
     const std::int32_t max_tokens = *std::max_element(base.tokens.begin(), base.tokens.end());
     ninfer::bench::PackedQuantizedWeight first =
-        ninfer::bench::make_row_split_weight(QType::Q8_G32_FP16, kRows, k, k, {0x31, 0x00, 0x3c00});
+        ninfer::bench::make_row_split_weight(QType::Q8_G32_FP16, kRows, k, k, 0x51U);
     ninfer::bench::PackedQuantizedWeight second =
-        ninfer::bench::make_row_split_weight(QType::Q8_G32_FP16, kRows, k, k, {0x31, 0x00, 0x3c00});
+        ninfer::bench::make_row_split_weight(QType::Q8_G32_FP16, kRows, k, k, 0x53U);
     ninfer::DeviceBuffer input(static_cast<std::size_t>(k) * max_tokens * 2);
     ninfer::DeviceBuffer first_out(static_cast<std::size_t>(kRows) * max_tokens * 2);
     ninfer::DeviceBuffer second_out(static_cast<std::size_t>(kRows) * max_tokens * 2);
@@ -123,7 +123,7 @@ ninfer::Weight dflash_row_view(const ninfer::bench::PackedQuantizedWeight& paren
 void sweep_k2048(const ninfer::bench::SweepOptions& base) {
     const std::int32_t max_tokens = *std::max_element(base.tokens.begin(), base.tokens.end());
     ninfer::bench::PackedQuantizedWeight parent = ninfer::bench::make_row_split_weight(
-        QType::Q8_G32_FP16, kDFlashParentRows, kDFlashHidden, kDFlashHidden, {0x31, 0x00, 0x3c00});
+        QType::Q8_G32_FP16, kDFlashParentRows, kDFlashHidden, kDFlashHidden, 0x51U);
     const ninfer::Weight first  = dflash_row_view(parent, kDFlashFirstRow);
     const ninfer::Weight second = dflash_row_view(parent, kDFlashSecondRow);
 

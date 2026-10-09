@@ -37,8 +37,8 @@ std::vector<int> parse_tokens(const char* raw) {
 
 void run_pack(int hidden, int tokens) {
     const std::size_t input_elements = static_cast<std::size_t>(hidden) * tokens;
-    DeviceBuffer embedding           = make_bf16(input_elements);
-    DeviceBuffer hidden_norm         = make_bf16(input_elements);
+    DeviceBuffer embedding           = make_bf16(input_elements, 101U);
+    DeviceBuffer hidden_norm         = make_bf16(input_elements, 103U);
     DeviceBuffer output              = make_zeros(2 * input_elements * sizeof(std::uint16_t));
     Tensor embedding_tensor(embedding.p, DType::BF16, {hidden, tokens});
     Tensor hidden_tensor(hidden_norm.p, DType::BF16, {hidden, tokens});
@@ -60,7 +60,7 @@ void run_split(int tokens) {
     constexpr int kQueryRows         = 6144;
     constexpr int kKvRows            = 1024;
     const std::size_t input_elements = static_cast<std::size_t>(kInputRows) * tokens;
-    DeviceBuffer input               = make_bf16(input_elements);
+    DeviceBuffer input               = make_bf16(input_elements, 105U);
     DeviceBuffer query = make_zeros(static_cast<std::size_t>(kQueryRows) * tokens * 2);
     DeviceBuffer key   = make_zeros(static_cast<std::size_t>(kKvRows) * tokens * 2);
     DeviceBuffer gate  = make_zeros(static_cast<std::size_t>(kQueryRows) * tokens * 2);

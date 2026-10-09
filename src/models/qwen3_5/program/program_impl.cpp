@@ -178,7 +178,8 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
                    : std::nullopt),
       dflash_host(is_masked_draft_backend(plan.speculative_backend)
                       ? std::make_optional<PinnedHostBuffer>(sizeof(qwen3_5::DFlashDecodeIngress) +
-                                                             sizeof(qwen3_5::DFlashDecodeEgress))
+                                                             sizeof(qwen3_5::DFlashDecodeEgress) +
+                                                             sizeof(qwen3_5::DFlashPrefillIngress))
                       : std::nullopt),
       dflash_draft_host(is_masked_draft_backend(plan.speculative_backend)
                             ? std::make_optional<PinnedHostBuffer>(
@@ -524,12 +525,12 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
         dflash_host_egress  = reinterpret_cast<qwen3_5::DFlashDecodeEgress*>(
             static_cast<unsigned char*>(dflash_host->data()) +
             sizeof(qwen3_5::DFlashDecodeIngress));
-        *dflash_host_ingress = {};
-        *dflash_host_egress  = {};
-    }
-    if (io.dflash_prefill) {
-        CUDA_CHECK(cudaMemsetAsync(io.dflash_prefill->produced_count.data, 0,
-                                   io.dflash_prefill->produced_count.bytes(), device.stream));
+        *dflash_host_ingress        = {};
+        *dflash_host_egress         = {};
+        dflash_prefill_host_ingress = reinterpret_cast<qwen3_5::DFlashPrefillIngress*>(
+            static_cast<unsigned char*>(dflash_host->data()) +
+            sizeof(qwen3_5::DFlashDecodeIngress) + sizeof(qwen3_5::DFlashDecodeEgress));
+        *dflash_prefill_host_ingress = {};
     }
     CUDA_CHECK(cudaMemsetAsync(io.rope_delta.data, 0, io.rope_delta.bytes(), device.stream));
     if (io.mtp) {
@@ -670,6 +671,7 @@ std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,
                 nullptr,
                 state_slot,
                 state_slot,
+                0,
                 0,
                 nullptr};
             mark_workspace_usage(workspace_plan.text_prefill);

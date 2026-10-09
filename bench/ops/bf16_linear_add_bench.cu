@@ -287,9 +287,12 @@ int main(int argc, char** argv) {
         cudaStream_t stream           = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
-        DeviceBuffer flush(options.flush_bytes);
-        DeviceBuffer input    = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_tokens);
-        DeviceBuffer residual = bench::make_bf16(static_cast<std::size_t>(kRows) * max_tokens);
+        bench::L2FlushBuffer flush(options.flush_bytes);
+        DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_tokens, 101U);
+        DeviceBuffer residual =
+            bench::make_bf16(static_cast<std::size_t>(kRows) * max_tokens, 103U);
+        bench::SavedBuffer residual_initial(residual);
+        const auto restore             = [&](cudaStream_t s) { residual_initial.restore(s); };
         bench::DirectBf16Weight weight = bench::make_direct_bf16_weight(kRows, kHidden, 0x61U);
         WorkspaceArena workspace(1);
 
@@ -301,10 +304,12 @@ int main(int argc, char** argv) {
             Tensor x(input.p, DType::BF16, {kHidden, tokens});
             Tensor out(residual.p, DType::BF16, {kRows, tokens});
             for (int index = 0; index < options.warmup; ++index) {
+                restore(stream);
                 bench::flush_l2(flush, stream);
                 launch_route(options.route, x, weight.weight, out, workspace, stream);
             }
             CUDA_CHECK(cudaStreamSynchronize(stream));
+            restore(stream);
             bench::flush_l2(flush, stream);
             CUDA_CHECK(cudaStreamSynchronize(stream));
             std::printf("PROFILE route=%s T=%d\n", route_name(options.route, tokens).c_str(),
@@ -332,16 +337,13 @@ int main(int argc, char** argv) {
                     if (options.route == Route::All) { return; }
                     throw std::invalid_argument("selected route does not support T");
                 }
-                CUDA_CHECK(cudaMemsetAsync(
-                    out.data, 0, 2ULL * static_cast<std::uint64_t>(kRows) * tokens, stream));
-                CUDA_CHECK(cudaStreamSynchronize(stream));
                 const auto launch = [&](cudaStream_t launch_stream) {
                     launch_route(route, x, weight.weight, out, workspace, launch_stream);
                 };
                 Result result =
                     make_result(route_name(route, tokens), tokens,
-                                bench::measure_cold_launch(launch, flush, stream, options.warmup,
-                                                           options.repeat),
+                                bench::measure_cold_launch_prepared(restore, launch, flush, stream,
+                                                                    options.warmup, options.repeat),
                                 weight.model_weight_bytes());
                 print_result(result);
                 results.push_back(std::move(result));

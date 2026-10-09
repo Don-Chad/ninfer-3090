@@ -1,96 +1,72 @@
 #pragma once
-#include "core/device.h"
 #include "ops/linear/fp8/fp8_launch.h"
-#include "ops/linear/fp8/fp8_gemv.cuh"
-#include "ops/linear/fp8/fp8_simt.cuh"
-#include "ops/linear/fp8/fp8_output.cuh"
-#include "ops/linear/fp8/fp8_a8_schedule.cuh"
-#include "ops/linear/fp8/fp8_a8_plan.h"
+#include "ops/linear/fp8/fp8_template_launch.cuh"
+#include "ops/linear/fp8/fp8_instances.cuh"
 #include <algorithm>
 #include <stdexcept>
 
 namespace ninfer::ops::detail {
 template <class Geometry, class Schedule>
-void launch_fp8_gemv(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream) {
-    const Fp8ContiguousOutput output{static_cast<__nv_bfloat16*>(out.data), Geometry::kOutputRows};
-    fp8_gemv_kernel<Geometry, Schedule>
-        <<<Geometry::kOutputRows / Schedule::kRowsPerCta, Schedule::kThreads, 0, stream>>>(
-            static_cast<const __nv_bfloat16*>(x.data),
-            static_cast<const std::uint8_t*>(weight.qdata),
-            static_cast<const __nv_bfloat16*>(weight.scales), output);
-    CUDA_CHECK(cudaGetLastError());
+void fp8_linear_a16_gemv(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
+    launch_fp8_a16_gemv<Fp8ScheduleInstance<Schedule, Geometry::kInputRows>>(
+        fp8_a16_operands(x, w), LinearBf16Output{static_cast<__nv_bfloat16*>(out.data), w.n},
+        LinearIdentityEpilogue{}, stream);
 }
 
-template <class Geometry, int Capacity, class Schedule, bool FullColumns = false>
-void launch_fp8_simt(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream) {
-    constexpr int blocks = Geometry::kOutputRows / Schedule::kRowsPerCta *
-                           ((Capacity + Schedule::kTokenTile - 1) / Schedule::kTokenTile);
-    const Fp8ContiguousOutput output{static_cast<__nv_bfloat16*>(out.data), Geometry::kOutputRows};
-    fp8_simt_kernel<Geometry, Capacity, Schedule, Fp8ContiguousOutput, Fp8IdentityEpilogue,
-                    Fp8GemvIdentityRows, false, Fp8SimtFinalization::Elementwise, !FullColumns>
-        <<<blocks, Schedule::kThreads, 0, stream>>>(
-            static_cast<const __nv_bfloat16*>(x.data),
-            static_cast<const std::uint8_t*>(weight.qdata),
-            static_cast<const __nv_bfloat16*>(weight.scales), output, {}, {}, x.ne[1]);
-    CUDA_CHECK(cudaGetLastError());
-}
-
-template <int Chunk, Fp8Launch (*Select)(std::int32_t)>
-void launch_fp8_a16_chunks(const Tensor& x, const Weight& weight, Tensor& out,
-                           cudaStream_t stream) {
-    for (std::int32_t offset = 0; offset < x.ne[1]; offset += Chunk) {
-        const int count = std::min(Chunk, x.ne[1] - offset);
-        auto input      = x.slice(1, offset, count);
-        auto output     = out.slice(1, offset, count);
-        Select(count)(input, weight, output, stream);
-    }
-}
-
-template <class Geometry, class Schedule, bool FullTokens>
-void launch_fp8_a8_mma(const Weight& weight, Tensor& out, Fp8A8Workspace workspace,
-                       std::int32_t tokens, cudaStream_t stream) {
-#if defined(NINFER_SM8X_COMPAT)
-    // fp8_mma_kernel emits mma.sync...kind::f8f6f4, a Blackwell-only qualifier, so sm_8x must not
-    // instantiate it. A8 is never admitted there (kFp8TextPolicy is A16Only); see
-    // fp8_sm86_stubs.cpp.
-    (void)weight;
-    (void)out;
-    (void)workspace;
-    (void)tokens;
-    (void)stream;
-    throw std::runtime_error("FP8 A8 execution requires an sm_100a or sm_120a GPU");
-#else
-    static_assert((Geometry::kOutputRows % Schedule::kBlockRows) == 0);
-    static_assert((Geometry::kInputRows % Schedule::kBlockK) == 0);
-    const int row_tiles   = Geometry::kOutputRows / Schedule::kBlockRows;
-    const int token_tiles = (tokens + Schedule::kBlockTokens - 1) / Schedule::kBlockTokens;
-    const int blocks      = row_tiles * token_tiles;
-    const Fp8ContiguousOutput output{static_cast<__nv_bfloat16*>(out.data), Geometry::kOutputRows};
-
-    if constexpr (Schedule::kSharedBytes > 48 * 1024) {
-        configure_cuda_device_once([] {
-            return cudaFuncSetAttribute(
-                fp8_mma_kernel<Geometry, Schedule, FullTokens, Fp8IdentityEpilogue,
-                               Fp8ContiguousOutput>,
-                cudaFuncAttributeMaxDynamicSharedMemorySize, Schedule::kSharedBytes);
-        });
-    }
-    fp8_mma_kernel<Geometry, Schedule, FullTokens>
-        <<<blocks, Schedule::kThreads, Schedule::kSharedBytes, stream>>>(
-            workspace.codes, workspace.scales, static_cast<const std::uint8_t*>(weight.qdata),
-            static_cast<const __nv_bfloat16*>(weight.scales), tokens, Fp8IdentityEpilogue{},
-            output);
-    CUDA_CHECK(cudaGetLastError());
-#endif
+template <class Geometry, int Capacity, class Schedule, bool Exact = false>
+void fp8_linear_a16_simt(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
+    launch_fp8_a16_simt<Fp8ScheduleInstance<Schedule, Geometry::kInputRows, Capacity, Exact>>(
+        fp8_a16_operands(x, w), LinearBf16Output{static_cast<__nv_bfloat16*>(out.data), w.n},
+        LinearIdentityEpilogue{}, stream);
 }
 
 template <class Geometry, class Schedule>
-void launch_fp8_a8(const Tensor& x, const Weight& weight, Tensor& out, Fp8A8Workspace scratch,
-                   cudaStream_t stream) {
-    launch_fp8_a8_quantize(x, weight, scratch, stream);
-    if (x.ne[1] % Schedule::kBlockTokens == 0)
-        launch_fp8_a8_mma<Geometry, Schedule, true>(weight, out, scratch, x.ne[1], stream);
-    else
-        launch_fp8_a8_mma<Geometry, Schedule, false>(weight, out, scratch, x.ne[1], stream);
+void fp8_linear_a16_mma(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
+    launch_fp8_a16_mma<Fp8ScheduleInstance<Schedule, Geometry::kInputRows>>(
+        fp8_a16_operands(x, w), LinearBf16Output{static_cast<__nv_bfloat16*>(out.data), w.n},
+        LinearIdentityEpilogue{}, stream);
 }
+
+template <class Geometry, class Schedule>
+void fp8_linear_a16_sliced_k(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
+    launch_fp8_a16_sliced_k_mma<Fp8ScheduleInstance<Schedule, Geometry::kInputRows>>(
+        fp8_a16_operands(x, w), LinearBf16Output{static_cast<__nv_bfloat16*>(out.data), w.n},
+        LinearIdentityEpilogue{}, stream);
+}
+
+#if defined(NINFER_SM8X_COMPAT)
+// The A8 MMA emits mma.sync...kind::f8f6f4 and the TMA route needs sm_90+, so sm_8x must not
+// instantiate either. Shapes still name their SM120 routes; A8 is never admitted there
+// (kFp8TextPolicy is A16Only) and this turns a mis-selection into a precise error. See
+// fp8_sm86_stubs.cpp.
+template <class Geometry, class Schedule>
+void launch_fp8_a8(const Tensor&, const Weight&, Tensor&, Fp8A8Workspace, cudaStream_t) {
+    throw std::runtime_error("FP8 A8 execution requires an sm_100a or sm_120a GPU");
+}
+
+template <class Geometry, class Schedule>
+void launch_fp8_a8_tma(const Tensor&, const Weight&, Tensor&, Fp8A8Workspace, cudaStream_t) {
+    throw std::runtime_error("FP8 A8 execution requires an sm_100a or sm_120a GPU");
+}
+#else
+template <class Geometry, class Schedule>
+void launch_fp8_a8(const Tensor& x, const Weight& w, Tensor& out, Fp8A8Workspace scratch,
+                   cudaStream_t stream) {
+    launch_fp8_a8_quantize(x, w, scratch, stream);
+    launch_fp8_a8_mma<Fp8ScheduleInstance<Schedule, Geometry::kInputRows>>(
+        fp8_a8_operands(w, scratch, x.ne[1]),
+        LinearBf16Output{static_cast<__nv_bfloat16*>(out.data), w.n}, LinearIdentityEpilogue{},
+        stream);
+}
+
+template <class Geometry, class Schedule>
+void launch_fp8_a8_tma(const Tensor& x, const Weight& w, Tensor& out, Fp8A8Workspace scratch,
+                       cudaStream_t stream) {
+    launch_fp8_a8_quantize(x, w, scratch, stream);
+    launch_fp8_a8_tma_mma<Fp8ScheduleInstance<Schedule, Geometry::kInputRows>>(
+        fp8_a8_operands(w, scratch, x.ne[1]),
+        LinearBf16Output{static_cast<__nv_bfloat16*>(out.data), w.n}, LinearIdentityEpilogue{},
+        stream, scratch.partials);
+}
+#endif
 } // namespace ninfer::ops::detail

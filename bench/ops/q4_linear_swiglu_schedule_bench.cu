@@ -106,10 +106,10 @@ int main(int argc, char** argv) {
 
     const std::int32_t max_tokens = *std::max_element(tokens.begin(), tokens.end());
     ninfer::bench::PackedQuantizedWeight packed = ninfer::bench::make_row_split_weight(
-        QType::Q4_G64_FP16, kGateUpRows, kHidden, kHidden, {0x31, 0xa5, 0x3c00});
+        QType::Q4_G64_FP16, kGateUpRows, kHidden, kHidden, 0x52U);
     ninfer::DeviceBuffer input(static_cast<std::size_t>(kHidden) * max_tokens * 2);
     ninfer::DeviceBuffer output(static_cast<std::size_t>(kOutputRows) * max_tokens * 2);
-    ninfer::DeviceBuffer flush(kFlushBytes);
+    ninfer::bench::L2FlushBuffer flush(kFlushBytes);
     cudaStream_t stream = nullptr;
 
     // Materialized stages the whole gate+up product, so its workspace scales with the widest

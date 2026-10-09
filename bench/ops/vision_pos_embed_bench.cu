@@ -88,11 +88,17 @@ vision_pos_embed_payload_control_cta(const std::uint32_t* table, const std::int3
 
 void run(std::int32_t patches, bool control, bool profile_once) {
     const std::size_t n = static_cast<std::size_t>(kD) * patches;
-    DeviceBuffer table  = make_bf16(static_cast<std::size_t>(kD) * kRows);
-    DeviceBuffer x      = make_bf16(n);
+    DeviceBuffer table  = make_bf16(static_cast<std::size_t>(kD) * kRows, 101U);
+    DeviceBuffer x      = make_bf16(n, 103U);
     std::vector<int> indices(static_cast<std::size_t>(patches) * 4);
-    std::vector<float> weights(static_cast<std::size_t>(patches) * 4, 0.25f);
+    std::vector<float> weights(static_cast<std::size_t>(patches) * 4);
     for (int patch = 0; patch < patches; ++patch) {
+        const float x          = fixture::uniform(patch, 211U, 0.F, 1.F);
+        const float y          = fixture::uniform(patch, 213U, 0.F, 1.F);
+        weights[patch * 4]     = (1.F - x) * (1.F - y);
+        weights[patch * 4 + 1] = x * (1.F - y);
+        weights[patch * 4 + 2] = (1.F - x) * y;
+        weights[patch * 4 + 3] = x * y;
         for (int corner = 0; corner < 4; ++corner) {
             indices[static_cast<std::size_t>(patch) * 4 + corner] =
                 (patch * 17 + corner * 49) % kRows;
@@ -102,6 +108,8 @@ void run(std::int32_t patches, bool control, bool profile_once) {
     DeviceBuffer dw(weights.size() * sizeof(float));
     cudaMemcpy(di.p, indices.data(), di.bytes, cudaMemcpyHostToDevice);
     cudaMemcpy(dw.p, weights.data(), dw.bytes, cudaMemcpyHostToDevice);
+    SavedBuffer initial(x);
+    const auto restore = [&](cudaStream_t stream) { initial.restore(stream); };
     Tensor ttable(table.p, DType::BF16, {kD, kRows});
     Tensor tx(x.p, DType::BF16, {kD, patches});
     Tensor ti(di.p, DType::I32, {4, patches});
@@ -142,7 +150,7 @@ void run(std::int32_t patches, bool control, bool profile_once) {
     // in-place x read/write plus the per-patch indices and weights. Production/control comparison
     // accounts for the required four gathered table rows served by L2.
     const double external_bytes = static_cast<double>(n) * 4.0 + patches * 32.0;
-    const Result result         = bench_loop(launch, external_bytes);
+    const Result result         = bench_loop_prepared(restore, launch, external_bytes);
     char tag[96];
     std::snprintf(tag, sizeof(tag), "vision_pos_embed%s [1152,%d]", control ? " control" : "",
                   patches);

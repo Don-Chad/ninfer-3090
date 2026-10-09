@@ -1,7 +1,7 @@
 #include "core/weight.h"
 #include "ops/gdn_input_proj/fp8/fp8_gdn_input_plan.h"
 
-#include "ops/linear/fp8/fp8_config.h"
+#include "ops/linear/fp8/fp8_geometry.h"
 
 #include <cstdint>
 #include <stdexcept>
@@ -20,7 +20,7 @@ Fp8GdnInputRoute resolve_route(LinearPolicy policy, std::int32_t tokens) {
     if (!allows_a8(policy)) {
         throw std::invalid_argument("fp8 gdn_input_proj: unsupported policy");
     }
-    return tokens >= 8 ? Fp8GdnInputRoute::A8 : Fp8GdnInputRoute::A16;
+    return tokens >= 17 ? Fp8GdnInputRoute::A8 : Fp8GdnInputRoute::A16;
 }
 
 } // namespace
@@ -32,7 +32,8 @@ std::size_t fp8_gdn_input_workspace_capacity_bytes(LinearPolicy policy, std::int
     }
     (void)resolve_route(policy, min_tokens);
     return resolve_route(policy, max_tokens) == Fp8GdnInputRoute::A8
-               ? fp8_a8_workspace_capacity_bytes(max_tokens, Fp8N16384K5120::kInputRows)
+               ? fp8_a8_workspace_capacity_bytes(max_tokens, Fp8N16384K5120::kInputRows,
+                                                 fp8_gdn_input_partial_capacity_bytes(max_tokens))
                : 0;
 }
 
@@ -48,7 +49,8 @@ void fp8_gdn_input_a16_dispatch(const Tensor& x, const Weight& weight, Tensor& q
 void fp8_gdn_input_a8_dispatch(const Tensor& x, const Weight& weight, Tensor& qkv, Tensor& z,
                                WorkspaceArena& workspace, cudaStream_t stream) {
     auto scope                   = workspace.scope();
-    const Fp8A8Workspace scratch = allocate_fp8_a8_workspace(workspace, x.ne[1], weight.k);
+    const Fp8A8Workspace scratch = allocate_fp8_a8_workspace(
+        workspace, x.ne[1], weight.k, fp8_gdn_input_partial_capacity_bytes(x.ne[1]));
     fp8_gdn_input_a8_launch(x, weight, qkv, z, scratch, stream);
 }
 

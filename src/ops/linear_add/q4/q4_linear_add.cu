@@ -19,20 +19,49 @@ struct ResidualEpilogue {
     }
 };
 
-struct GemvResidualEpilogue {
-    template <bool SplitOutput, int SplitRow>
-    __device__ __forceinline__ void operator()(__nv_bfloat16* out, __nv_bfloat16*, int row,
-                                               float value) const {
-        static_assert(!SplitOutput);
-        ResidualEpilogue{}(out + row, value);
-    }
-};
-
 // The two registered weights share the 5120-row residual: the attention and GDN output projections
 // (K=6144) and the MLP down projection (K=17408).
 constexpr std::int32_t kRows      = 5120;
 constexpr std::int32_t kMixerCols = 6144;
 constexpr std::int32_t kDownCols  = 17408;
+
+// K=6144 gives each of the eight warps 12 static groups; K=17408 would give 34, beyond the
+// 16-group warp tile, so it uses the dynamic group loop (StaticGroupsPerRow 0).
+template <std::int32_t Cols>
+using GemvR1W8 =
+    Q4A16GemvSchedule<1, 8, 16, 1, Q4GemvActivationAccess::Direct, Q4GemvLaneMapping::PackedByte2,
+                      Q4GemvDecodeMode::ScalarInteger, Q4GemvCodeTransfer::SyncVector16,
+                      Q4GemvScaleAccess::Scalar16Shuffle, Cache::ca,
+                      (Cols / 64 / 8 <= 16 ? Cols / 64 : 0), 1>;
+using MmaR32C32  = Q4A16MmaSchedule<32, 32, 64, 16, 16, 3, 2, Q4MmaFragmentPipeline::Serial,
+                                    Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
+using MmaR32C64  = Q4A16MmaSchedule<32, 64, 64, 16, 32, 3, 2, Q4MmaFragmentPipeline::Serial,
+                                    Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
+using MmaR64C128 = Q4A16MmaSchedule<64, 128, 64, 64, 32, 2, 1, Q4MmaFragmentPipeline::Serial,
+                                    Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
+// The 64-row tiles the plain `linear` sweep found for this same geometry. Named rather than
+// anonymous so bench/ops/dense_linear_add_schedule_bench.cu can time them against the routed
+// choice without reimplementing the residual epilogue.
+using MmaR64C48  = Q4A16MmaSchedule<64, 48, 64, 16, 16, 2, 2, Q4MmaFragmentPipeline::Serial,
+                                    Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
+using MmaR64C64  = Q4A16MmaSchedule<64, 64, 64, 32, 16, 2, 2, Q4MmaFragmentPipeline::Serial,
+                                    Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
+using MmaR64C80  = Q4A16MmaSchedule<64, 80, 64, 16, 40, 2, 1, Q4MmaFragmentPipeline::Serial,
+                                    Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
+using MmaR64C96  = Q4A16MmaSchedule<64, 96, 64, 32, 16, 2, 1, Q4MmaFragmentPipeline::Serial,
+                                    Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
+using MmaR64C112 = Q4A16MmaSchedule<64, 112, 64, 32, 16, 2, 1, Q4MmaFragmentPipeline::Serial,
+                                    Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
+
+LinearBf16StridedOutput residual_output(Tensor& residual) {
+    return {static_cast<__nv_bfloat16*>(residual.data),
+            static_cast<std::int64_t>(residual.nb[1] / sizeof(__nv_bfloat16)), 0};
+}
+
+LinearResidualAddEpilogue residual_epilogue(Tensor& residual) {
+    return {{static_cast<const __nv_bfloat16*>(residual.data),
+             static_cast<std::int64_t>(residual.nb[1] / sizeof(__nv_bfloat16)), 0}};
+}
 
 struct KSplitResidualEpilogue {
     __nv_bfloat16* residual;
@@ -52,37 +81,10 @@ struct KSplitResidualEpilogue {
     }
 };
 
-// K=6144 gives each of the eight warps 12 static groups; K=17408 would give 34, beyond the
-// 16-group warp tile, so it uses the dynamic group loop (StaticGroupsPerRow 0).
-template <std::int32_t Cols>
-using GemvR1W8 =
-    Q4RowSplitGemvSchedule<1, 8, 16, 1, Q4GemvActivationAccess::Direct,
-                           Q4GemvLaneMapping::PackedByte2, Q4GemvDecodeMode::ScalarInteger,
-                           Q4GemvCodeTransfer::SyncVector16, Q4GemvScaleAccess::Scalar16Shuffle,
-                           Cache::ca, (Cols / 64 / 8 <= 16 ? Cols / 64 : 0), 1>;
-using MmaR32C32  = Q4RowSplitMmaGemmSchedule<32, 32, 64, 16, 16, 3, 2, Q4FragmentPipeline::Serial,
-                                             Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-using MmaR32C64  = Q4RowSplitMmaGemmSchedule<32, 64, 64, 16, 32, 3, 2, Q4FragmentPipeline::Serial,
-                                             Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-using MmaR64C128 = Q4RowSplitMmaGemmSchedule<64, 128, 64, 64, 32, 2, 1, Q4FragmentPipeline::Serial,
-                                             Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-// The 64-row tiles the plain `linear` sweep found for this same geometry. Named rather than
-// anonymous so bench/ops/dense_linear_add_schedule_bench.cu can time them against the routed
-// choice without reimplementing the residual epilogue.
-using MmaR64C48 = Q4RowSplitMmaGemmSchedule<64, 48, 64, 16, 16, 2, 2, Q4FragmentPipeline::Serial,
-                                            Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-using MmaR64C64 = Q4RowSplitMmaGemmSchedule<64, 64, 64, 32, 16, 2, 2, Q4FragmentPipeline::Serial,
-                                            Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-using MmaR64C80 = Q4RowSplitMmaGemmSchedule<64, 80, 64, 16, 40, 2, 1, Q4FragmentPipeline::Serial,
-                                            Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-using MmaR64C96 = Q4RowSplitMmaGemmSchedule<64, 96, 64, 32, 16, 2, 1, Q4FragmentPipeline::Serial,
-                                            Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-using MmaR64C112 = Q4RowSplitMmaGemmSchedule<64, 112, 64, 32, 16, 2, 1,
-                                             Q4FragmentPipeline::Serial, Cache::cg, Cache::cg,
-                                             Q4ScaleLoad::Pair32>;
-
+// The K-split routes stay on this fork's K-split kernel: upstream's sliced-K equivalent took 2.1x
+// as long at T=1 on the RTX 3090 (nsys, tg128: 665 ms against 317 ms over the run).
 template <std::int32_t Cols, int Capacity>
-void launch_ksplit_cols(const Tensor& x, const Weight& w, Tensor& residual, cudaStream_t stream) {
+void launch_sliced_cols(const Tensor& x, const Weight& w, Tensor& residual, cudaStream_t stream) {
     using Geometry = Q4LinearGeometry<kRows, Cols>;
     auto* output   = static_cast<__nv_bfloat16*>(residual.data);
     q4_ksplit_mma_kernel<Geometry, (Capacity + 7) / 8 * 8, Capacity, KSplitResidualEpilogue,
@@ -95,12 +97,24 @@ void launch_ksplit_cols(const Tensor& x, const Weight& w, Tensor& residual, cuda
 }
 
 template <int Capacity>
-void launch_ksplit(const Tensor& x, const Weight& w, Tensor& residual, cudaStream_t stream) {
+void launch_sliced(const Tensor& x, const Weight& w, Tensor& residual, cudaStream_t stream) {
     if (w.k == kDownCols) {
-        launch_ksplit_cols<kDownCols, Capacity>(x, w, residual, stream);
+        launch_sliced_cols<kDownCols, Capacity>(x, w, residual, stream);
     } else {
-        launch_ksplit_cols<kMixerCols, Capacity>(x, w, residual, stream);
+        launch_sliced_cols<kMixerCols, Capacity>(x, w, residual, stream);
     }
+}
+
+template <class Schedule>
+void launch_gemv(const Tensor& x, const Weight& w, Tensor& residual, cudaStream_t stream) {
+    launch_q4_a16_gemv<Schedule>(q4_linear_operands(x, w), residual_output(residual),
+                                 residual_epilogue(residual), stream);
+}
+
+template <class Schedule>
+void launch_mma(const Tensor& x, const Weight& w, Tensor& residual, cudaStream_t stream) {
+    launch_q4_a16_mma<Schedule>(q4_linear_operands(x, w), residual_output(residual),
+                                residual_epilogue(residual), stream);
 }
 
 // Small-T MMA with direct loads: one m16 row tile per CTA, eight warps splitting K one group at a
@@ -230,51 +244,51 @@ void q4_linear_add_small_t_c32_launch(const Tensor& x, const Weight& w, Tensor& 
 
 void q4_linear_add_gemv_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
     if (w.k == kDownCols) {
-        launch_q4_gemv<GemvR1W8<kDownCols>, GemvResidualEpilogue>(x, w, r, s);
+        launch_gemv<GemvR1W8<kDownCols>>(x, w, r, s);
     } else {
-        launch_q4_gemv<GemvR1W8<kMixerCols>, GemvResidualEpilogue>(x, w, r, s);
+        launch_gemv<GemvR1W8<kMixerCols>>(x, w, r, s);
     }
 }
 void q4_linear_add_ksplit4_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
-    launch_ksplit<4>(x, w, r, s);
+    launch_sliced<4>(x, w, r, s);
 }
 void q4_linear_add_ksplit8_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
-    launch_ksplit<8>(x, w, r, s);
+    launch_sliced<8>(x, w, r, s);
 }
 void q4_linear_add_ksplit16_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
-    launch_ksplit<16>(x, w, r, s);
+    launch_sliced<16>(x, w, r, s);
 }
 void q4_linear_add_ksplit24_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
-    launch_ksplit<24>(x, w, r, s);
+    launch_sliced<24>(x, w, r, s);
 }
 void q4_linear_add_ksplit32_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
-    launch_ksplit<32>(x, w, r, s);
+    launch_sliced<32>(x, w, r, s);
 }
 void q4_linear_add_mma_r32_c32_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
-    launch_q4_mma<MmaR32C32, ResidualEpilogue>(x, w, r, s);
+    launch_mma<MmaR32C32>(x, w, r, s);
 }
 void q4_linear_add_mma_r32_c64_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
-    launch_q4_mma<MmaR32C64, ResidualEpilogue>(x, w, r, s);
+    launch_mma<MmaR32C64>(x, w, r, s);
 }
 void q4_linear_add_mma_r64_c48_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
-    launch_q4_mma<MmaR64C48, ResidualEpilogue>(x, w, r, s);
+    launch_mma<MmaR64C48>(x, w, r, s);
 }
 void q4_linear_add_mma_r64_c64_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
-    launch_q4_mma<MmaR64C64, ResidualEpilogue>(x, w, r, s);
+    launch_mma<MmaR64C64>(x, w, r, s);
 }
 void q4_linear_add_mma_r64_c80_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
-    launch_q4_mma<MmaR64C80, ResidualEpilogue>(x, w, r, s);
+    launch_mma<MmaR64C80>(x, w, r, s);
 }
 void q4_linear_add_mma_r64_c96_launch(const Tensor& x, const Weight& w, Tensor& r, cudaStream_t s) {
-    launch_q4_mma<MmaR64C96, ResidualEpilogue>(x, w, r, s);
+    launch_mma<MmaR64C96>(x, w, r, s);
 }
 void q4_linear_add_mma_r64_c112_launch(const Tensor& x, const Weight& w, Tensor& r,
                                        cudaStream_t s) {
-    launch_q4_mma<MmaR64C112, ResidualEpilogue>(x, w, r, s);
+    launch_mma<MmaR64C112>(x, w, r, s);
 }
 void q4_linear_add_mma_r64_c128_launch(const Tensor& x, const Weight& w, Tensor& r,
                                        cudaStream_t s) {
-    launch_q4_mma<MmaR64C128, ResidualEpilogue>(x, w, r, s);
+    launch_mma<MmaR64C128>(x, w, r, s);
 }
 
 Q4LinearAddLaunch select_q4_linear_add(std::int32_t rows, std::int32_t k, std::int32_t tokens) {

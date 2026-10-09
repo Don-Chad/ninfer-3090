@@ -33,7 +33,7 @@ __global__ void l2norm_payload_control(const __nv_bfloat162* x, __nv_bfloat162* 
 void run(int d, int heads, int tokens, bool control) {
     const int rows   = heads * tokens;
     const auto n     = static_cast<std::size_t>(d) * static_cast<std::size_t>(rows);
-    DeviceBuffer x   = make_bf16(n);
+    DeviceBuffer x   = make_bf16(n, 101U);
     DeviceBuffer out = make_zeros(n * 2);
 
     Tensor tx(x.p, DType::BF16, {d, heads, tokens});

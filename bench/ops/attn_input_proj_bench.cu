@@ -208,7 +208,7 @@ const char* policy_name(ops::LinearPolicy policy) {
 }
 
 template <class Launch>
-Measurement measure_public(Launch&& launch, CacheState cache, DeviceBuffer& flush,
+Measurement measure_public(Launch&& launch, CacheState cache, bench::L2FlushBuffer& flush,
                            cudaStream_t stream, int warmup, int repeat, bool graph) {
     if (graph) {
         bench::TimedGraph captured;
@@ -227,7 +227,7 @@ Measurement measure_public(Launch&& launch, CacheState cache, DeviceBuffer& flus
 
 template <class Launch>
 void profile_public(Launch&& launch, const char* format, const char* policy, CacheState cache,
-                    DeviceBuffer& flush, cudaStream_t stream, int warmup, bool graph) {
+                    bench::L2FlushBuffer& flush, cudaStream_t stream, int warmup, bool graph) {
     bench::TimedGraph captured;
     if (graph) captured.capture(stream, launch);
     const auto invoke = [&] {
@@ -290,92 +290,18 @@ std::uint64_t tensor_bytes(std::int32_t rows, std::int32_t tokens) {
     return static_cast<std::uint64_t>(rows) * static_cast<std::uint64_t>(tokens) * 2ULL;
 }
 
-__device__ unsigned mix_bits(unsigned v) {
-    v ^= v >> 16;
-    v *= 0x7feb352dU;
-    v ^= v >> 15;
-    v *= 0x846ca68bU;
-    return v ^ (v >> 16);
-}
-
-__global__ void fill_input(__nv_bfloat16* x, std::size_t n) {
-    const std::size_t i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i < n)
-        x[i] = __float2bfloat16_rn(
-            (float(mix_bits(static_cast<unsigned>(i) + 913U) >> 8) * (2.f / 16777216.f) - 1.f) *
-            .01f);
-}
-
-DeviceBuffer varied_input(std::size_t n) {
-    DeviceBuffer x(n * 2);
-    fill_input<<<(n + 255) / 256, 256>>>(static_cast<__nv_bfloat16*>(x.p), n);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-    return x;
-}
-
-template <bool Five>
-__device__ unsigned group_code(unsigned group, int lane) {
-    constexpr int span = Five ? 31 : 15, limit = Five ? 15 : 7;
-    return static_cast<unsigned>(int(mix_bits(group * 64 + lane + 175U) % span) - limit) &
-           (Five ? 31 : 15);
-}
-
-template <bool Five>
-__global__ void fill_groupwise(std::uint8_t* low, std::uint8_t* high, std::uint16_t* scales,
-                               unsigned groups) {
-    const unsigned group = blockIdx.x * blockDim.x + threadIdx.x;
-    if (group >= groups) return;
-    for (int i = 0; i < 32; ++i)
-        low[group * 32 + i] = (group_code<Five>(group, 2 * i) & 15) |
-                              ((group_code<Five>(group, 2 * i + 1) & 15) << 4);
-    if constexpr (Five)
-        for (int i = 0; i < 8; ++i) {
-            unsigned byte = 0;
-            for (int bit = 0; bit < 8; ++bit)
-                byte |= (group_code<Five>(group, i * 8 + bit) >> 4) << bit;
-            high[group * 8 + i] = byte;
-        }
-    scales[group] = 0x3000U + (mix_bits(group + 1345U) & 1023U);
-}
-
-void vary_groupwise(bench::PackedQuantizedWeight& weight) {
-    auto* bytes       = static_cast<std::uint8_t*>(weight.storage.p);
-    auto* scales      = reinterpret_cast<std::uint16_t*>(bytes + weight.scale_offset);
-    const auto groups = static_cast<unsigned>(weight.scale_bytes / 2);
-    if (weight.weight.qtype == QType::Q4_G64_FP16)
-        fill_groupwise<false><<<(groups + 255) / 256, 256>>>(bytes, nullptr, scales, groups);
-    else
-        fill_groupwise<true>
-            <<<(groups + 255) / 256, 256>>>(bytes, bytes + weight.high_offset, scales, groups);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-}
-
-__global__ void fill_fp8(std::uint8_t* codes, std::uint16_t* scales, std::size_t n, int rows) {
-    const std::size_t i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i < n) {
-        unsigned code = mix_bits(static_cast<unsigned>(i) + 7413U) & 255;
-        if ((code & 127) == 127) --code; // E4M3FN has no infinities; exclude its two NaN words.
-        codes[i] = code;
-    }
-    if (i < rows) scales[i] = 0x3b80U + (mix_bits(static_cast<unsigned>(i) + 873U) & 255U);
-}
-
-void run_q4q5(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
+void run_q4q5(const Options& options, bench::L2FlushBuffer& flush, cudaStream_t stream,
               std::vector<Result>& results) {
     constexpr std::int32_t hidden      = 5120;
     constexpr std::int32_t q_rows      = 6144;
     constexpr std::int32_t kv_rows     = 1024;
     constexpr std::int32_t parent_rows = q_rows + kv_rows;
     const std::int32_t max_tokens = *std::max_element(options.tokens.begin(), options.tokens.end());
-    bench::PackedQuantizedWeight qk = bench::make_row_split_weight(
-        QType::Q4_G64_FP16, parent_rows, hidden, hidden, {0x31, 0x00, 0x3c00});
-    bench::PackedQuantizedWeight gv = bench::make_row_split_weight(
-        QType::Q5_G64_FP16, parent_rows, hidden, hidden, {0x31, 0xa5, 0x3c00});
-    vary_groupwise(qk);
-    vary_groupwise(gv);
-    DeviceBuffer input = varied_input(static_cast<std::size_t>(hidden) * max_tokens);
+    bench::PackedQuantizedWeight qk =
+        bench::make_row_split_weight(QType::Q4_G64_FP16, parent_rows, hidden, hidden, 501U);
+    bench::PackedQuantizedWeight gv =
+        bench::make_row_split_weight(QType::Q5_G64_FP16, parent_rows, hidden, hidden, 503U);
+    DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(hidden) * max_tokens, 199U);
     DeviceBuffer q(static_cast<std::size_t>(q_rows) * max_tokens * 2);
     DeviceBuffer gate(static_cast<std::size_t>(q_rows) * max_tokens * 2);
     DeviceBuffer k(static_cast<std::size_t>(kv_rows) * max_tokens * 2);
@@ -415,16 +341,14 @@ template <class WeightFixture>
 void run_four_output(const Options& options, const char* format, QType qtype,
                      ops::LinearPolicy policy, bool implicit_a16_entry, std::int32_t hidden,
                      std::int32_t q_rows, std::int32_t kv_rows, std::int32_t parent_rows,
-                     WeightFixture& fixture, DeviceBuffer& flush, cudaStream_t stream,
+                     WeightFixture& fixture, bench::L2FlushBuffer& flush, cudaStream_t stream,
                      std::vector<Result>& results) {
     const std::int32_t min_tokens = *std::min_element(options.tokens.begin(), options.tokens.end());
     const std::int32_t max_tokens = *std::max_element(options.tokens.begin(), options.tokens.end());
     const std::size_t workspace_bytes = ops::attn_input_proj_workspace_capacity_bytes(
         qtype, parent_rows, hidden, policy, min_tokens, max_tokens);
     WorkspaceArena workspace(std::max<std::size_t>(workspace_bytes, 1));
-    DeviceBuffer input = qtype == QType::FP8_E4M3FN_ROW_BF16
-                             ? varied_input(static_cast<std::size_t>(hidden) * max_tokens)
-                             : bench::make_bf16(static_cast<std::size_t>(hidden) * max_tokens);
+    DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(hidden) * max_tokens, 101U);
     DeviceBuffer q(static_cast<std::size_t>(q_rows) * max_tokens * 2);
     DeviceBuffer gate(static_cast<std::size_t>(q_rows) * max_tokens * 2);
     DeviceBuffer k(static_cast<std::size_t>(kv_rows) * max_tokens * 2);
@@ -470,15 +394,15 @@ void run_four_output(const Options& options, const char* format, QType qtype,
     }
 }
 
-void run_q8_qkv(const Options& options, const char* label, std::int32_t hidden, DeviceBuffer& flush,
-                cudaStream_t stream, std::vector<Result>& results) {
+void run_q8_qkv(const Options& options, const char* label, std::int32_t hidden,
+                bench::L2FlushBuffer& flush, cudaStream_t stream, std::vector<Result>& results) {
     constexpr std::int32_t q_rows      = 4096;
     constexpr std::int32_t kv_rows     = 1024;
     constexpr std::int32_t parent_rows = 6144;
     const std::int32_t max_tokens = *std::max_element(options.tokens.begin(), options.tokens.end());
-    bench::PackedQuantizedWeight weight = bench::make_row_split_weight(
-        QType::Q8_G32_FP16, parent_rows, hidden, hidden, {0x31, 0x00, 0x3c00});
-    DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(hidden) * max_tokens);
+    bench::PackedQuantizedWeight weight =
+        bench::make_row_split_weight(QType::Q8_G32_FP16, parent_rows, hidden, hidden, 505U);
+    DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(hidden) * max_tokens, 103U);
     DeviceBuffer q(static_cast<std::size_t>(q_rows) * max_tokens * 2);
     DeviceBuffer k(static_cast<std::size_t>(kv_rows) * max_tokens * 2);
     DeviceBuffer v(static_cast<std::size_t>(kv_rows) * max_tokens * 2);
@@ -511,15 +435,10 @@ void run_q8_qkv(const Options& options, const char* label, std::int32_t hidden, 
     }
 }
 
-void run_fp8(const Options& options, DeviceBuffer& flush, cudaStream_t stream,
+void run_fp8(const Options& options, bench::L2FlushBuffer& flush, cudaStream_t stream,
              std::vector<Result>& results) {
     auto weight = bench::make_fp8_weight(14336, 5120);
     auto* data  = static_cast<std::uint8_t*>(weight.storage.p);
-    fill_fp8<<<(weight.low_bytes + 255) / 256, 256>>>(
-        data, reinterpret_cast<std::uint16_t*>(data + weight.scale_offset), weight.low_bytes,
-        14336);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
     run_four_output(options, "fp8", QType::FP8_E4M3FN_ROW_BF16, options.fp8_policy, false, 5120,
                     6144, 1024, 14336, weight, flush, stream, results);
 }
@@ -566,13 +485,12 @@ int main(int argc, char** argv) {
                     CUDART_VERSION);
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(kFlushBytes);
+        bench::L2FlushBuffer flush(kFlushBytes);
         std::vector<Result> results;
 
         if (selected(options.format, Format::Q4Q5)) { run_q4q5(options, flush, stream, results); }
         if (selected(options.format, Format::Q8Qgkv)) {
-            auto weight = bench::make_row_split_weight(QType::Q8_G32_FP16, 9216, 2048, 2048,
-                                                       {0x31, 0x00, 0x3c00});
+            auto weight = bench::make_row_split_weight(QType::Q8_G32_FP16, 9216, 2048, 2048, 507U);
             run_four_output(options, "q8-qgkv", QType::Q8_G32_FP16, ops::LinearPolicy::A16Only,
                             true, 2048, 4096, 512, 9216, weight, flush, stream, results);
         }

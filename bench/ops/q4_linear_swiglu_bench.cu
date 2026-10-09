@@ -98,7 +98,8 @@ Options parse_options(int argc, char** argv) {
             options.profile = true;
         } else if (argument == "--help" || argument == "-h") {
             std::printf(
-                "Usage: %s [--t-sweep 1,2,...] [--warmup N] [--repeat N] [--execution eager|graph]\n"
+                "Usage: %s [--t-sweep 1,2,...] [--warmup N] [--repeat N] [--execution "
+                "eager|graph]\n"
                 "          [--csv-out PATH] [--profile]\n"
                 "  --execution graph captures ONE complete public ops::linear_swiglu call per\n"
                 "  graph; the reported graph_nodes is the captured count, not an assumption.\n"
@@ -124,14 +125,12 @@ Options parse_options(int argc, char** argv) {
 void write_csv(const std::string& path, const std::vector<Result>& results) {
     std::FILE* file = std::fopen(path.c_str(), "wb");
     if (file == nullptr) { throw std::runtime_error("cannot open csv output: " + path); }
-    std::fprintf(file,
-                 "t,execution,graph_nodes,median_us,min_us,p95_us,weight_bytes,logical_bytes,"
-                 "projection_flops,effective_gbs,dram_spec_pct,useful_tflops,"
-                 "workspace_sweep_bytes,workspace_exact_bytes\n");
+    std::fprintf(file, "t,execution,graph_nodes,median_us,min_us,p95_us,weight_bytes,logical_bytes,"
+                       "projection_flops,effective_gbs,dram_spec_pct,useful_tflops,"
+                       "workspace_sweep_bytes,workspace_exact_bytes\n");
     for (const Result& result : results) {
         const double seconds = result.median_us * 1.0e-6;
-        std::fprintf(file,
-                     "%d,%s,%zu,%.3f,%.3f,%.3f,%.0f,%.0f,%.0f,%.4f,%.4f,%.4f,%zu,%zu\n",
+        std::fprintf(file, "%d,%s,%zu,%.3f,%.3f,%.3f,%.0f,%.0f,%.0f,%.4f,%.4f,%.4f,%zu,%zu\n",
                      result.tokens, result.execution, result.graph_nodes, result.median_us,
                      result.min_us, result.p95_us, result.weight_bytes, result.logical_bytes,
                      result.projection_flops, result.logical_bytes / seconds / 1.0e9,
@@ -154,11 +153,11 @@ int main(int argc, char** argv) {
 
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(kFlushBytes);
-        DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_t);
+        bench::L2FlushBuffer flush(kFlushBytes);
+        DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(kHidden) * max_t, 101U);
         DeviceBuffer output(static_cast<std::size_t>(kOutputRows) * max_t * sizeof(std::uint16_t));
-        bench::PackedQuantizedWeight packed = bench::make_row_split_weight(
-            QType::Q4_G64_FP16, kGateUpRows, kHidden, kHidden, {0x31, 0xa5, 0x3c00});
+        bench::PackedQuantizedWeight packed =
+            bench::make_row_split_weight(QType::Q4_G64_FP16, kGateUpRows, kHidden, kHidden, 501U);
         const std::size_t workspace_capacity = ops::linear_swiglu_workspace_capacity_bytes(
             QType::Q4_G64_FP16, kGateUpRows, kHidden, min_t, max_t);
         WorkspaceArena workspace(std::max<std::size_t>(workspace_capacity, 256));
@@ -197,13 +196,13 @@ int main(int argc, char** argv) {
         for (const std::int32_t tokens : options.tokens) {
             bench::TimedGraph graph;
             if (options.graph) {
-                graph.capture(stream, [&](cudaStream_t capture_stream) {
-                    launch(tokens, capture_stream);
-                });
+                graph.capture(stream,
+                              [&](cudaStream_t capture_stream) { launch(tokens, capture_stream); });
             }
             const bench::ColdTiming timing =
                 options.graph
-                    ? bench::measure_cold_graph(graph, flush, stream, options.warmup, options.repeat)
+                    ? bench::measure_cold_graph(graph, flush, stream, options.warmup,
+                                                options.repeat)
                     : bench::measure_cold_launch(
                           [&](cudaStream_t launch_stream) { launch(tokens, launch_stream); }, flush,
                           stream, options.warmup, options.repeat);
@@ -215,22 +214,14 @@ int main(int argc, char** argv) {
                 QType::Q4_G64_FP16, kGateUpRows, kHidden, tokens, tokens);
             std::printf("T=%-4d median=%9.3f us min=%9.3f p95=%9.3f %7.1f GB/s %7.2f TFLOP/s "
                         "workspace_sweep=%zu workspace_exact=%zu nodes=%zu\n",
-                        tokens, timing.median_us, timing.min_us, timing.p95_us, bytes / seconds / 1.0e9,
-                        flops / seconds / 1.0e12, workspace_capacity, workspace_exact,
-                        graph.nodes());
-            results.push_back({tokens,
-                               options.graph ? "graph" : "eager",
-                               graph.nodes(),
-                               timing.median_us,
-                               timing.min_us,
-                               timing.p95_us,
-                               static_cast<double>(packed.model_weight_bytes()),
-                               bytes,
-                               flops,
-                               bytes / seconds / 1.0e9,
-                               flops / seconds / 1.0e12,
-                               workspace_capacity,
-                               workspace_exact});
+                        tokens, timing.median_us, timing.min_us, timing.p95_us,
+                        bytes / seconds / 1.0e9, flops / seconds / 1.0e12, workspace_capacity,
+                        workspace_exact, graph.nodes());
+            results.push_back({tokens, options.graph ? "graph" : "eager", graph.nodes(),
+                               timing.median_us, timing.min_us, timing.p95_us,
+                               static_cast<double>(packed.model_weight_bytes()), bytes, flops,
+                               bytes / seconds / 1.0e9, flops / seconds / 1.0e12,
+                               workspace_capacity, workspace_exact});
         }
 
         if (!options.csv_out.empty()) { write_csv(options.csv_out, results); }

@@ -150,9 +150,11 @@ int main(int argc, char** argv) {
             *std::min_element(options.t_sweep.begin(), options.t_sweep.end());
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(kFlushBytes);
-        DeviceBuffer input    = bench::make_bf16(static_cast<std::size_t>(options.k) * max_t);
-        DeviceBuffer residual = bench::make_bf16(static_cast<std::size_t>(options.n) * max_t);
+        bench::L2FlushBuffer flush(kFlushBytes);
+        DeviceBuffer input    = bench::make_bf16(static_cast<std::size_t>(options.k) * max_t, 101U);
+        DeviceBuffer residual = bench::make_bf16(static_cast<std::size_t>(options.n) * max_t, 103U);
+        bench::SavedBuffer residual_initial(residual);
+        const auto restore                   = [&](cudaStream_t s) { residual_initial.restore(s); };
         bench::PackedQuantizedWeight packed  = bench::make_nvfp4_weight(options.n, options.k);
         const std::size_t workspace_capacity = ops::linear_add_workspace_capacity_bytes(
             QType::NVFP4, options.n, options.k, options.policy, min_t, max_t);
@@ -170,10 +172,12 @@ int main(int argc, char** argv) {
             const std::int32_t tokens = options.t_sweep.front();
             const auto launch         = make_launch(tokens);
             for (int iteration = 0; iteration < options.warmup; ++iteration) {
+                restore(stream);
                 bench::flush_l2(flush, stream);
                 launch(stream);
             }
             CUDA_CHECK(cudaStreamSynchronize(stream));
+            restore(stream);
             bench::flush_l2(flush, stream);
             CUDA_CHECK(cudaStreamSynchronize(stream));
             std::printf("PROFILE linear_add weight_type=NVFP4 policy=%s N=%d K=%d T=%d\n",
@@ -192,9 +196,9 @@ int main(int argc, char** argv) {
         std::printf("%-11s %3s %8s %8s %6s %11s %11s %11s %10s %10s\n", "op", "pol", "N", "K", "T",
                     "median_us", "min_us", "p95_us", "eff_GB/s", "TFLOP/s");
         for (const std::int32_t tokens : options.t_sweep) {
-            const auto launch = make_launch(tokens);
-            const bench::ColdTiming timing =
-                bench::measure_cold_launch(launch, flush, stream, options.warmup, options.repeat);
+            const auto launch              = make_launch(tokens);
+            const bench::ColdTiming timing = bench::measure_cold_launch_prepared(
+                restore, launch, flush, stream, options.warmup, options.repeat);
             const double seconds      = timing.median_us * 1.0e-6;
             const double useful_flops = 2.0 * static_cast<double>(options.n) * options.k * tokens;
             const double model_bytes  = static_cast<double>(packed.model_weight_bytes()) +

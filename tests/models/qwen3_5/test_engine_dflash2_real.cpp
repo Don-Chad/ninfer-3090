@@ -1,6 +1,7 @@
 #include "ninfer/engine.h"
 #include "speculative_graft.h"
 #include "speculative_page_boundary.h"
+#include "kv_cache_storage.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -79,13 +80,11 @@ int main(int argc, char** argv) {
         options.kv_capacity     = ninfer::KvCapacityPolicy::explicit_capacity(2304 * batch);
         options.prefill_chunk   = 2304;
         options.max_concurrency = batch;
-        options.context_cache.device_state_slots     = argc > 7 ? std::stoul(argv[7]) : 3U;
-        options.use_cuda_graph                       = graph;
-        options.enable_vision                        = argc > 6 && std::stoi(argv[6]) != 0;
-        options.kv_cache                             = argc > 5 && std::string(argv[5]) == "int8"
-                                                           ? ninfer::KvCacheStorage::Int8Group64
-                                                           : ninfer::KvCacheStorage::BFloat16;
-        auto penalty                                 = request(24);
+        options.context_cache.device_state_slots = argc > 7 ? std::stoul(argv[7]) : 3U;
+        options.use_cuda_graph                   = graph;
+        options.enable_vision                    = argc > 6 && std::stoi(argv[6]) != 0;
+        options.kv_cache = ninfer::test::parse_kv_cache_storage(argc > 5 ? argv[5] : "bf16");
+        auto penalty     = request(24);
         penalty.execution.sampling.presence_penalty  = 0.5F;
         penalty.execution.sampling.frequency_penalty = 0.25F;
         options.speculative.backend                  = ninfer::SpeculativeBackend::DFlash2;
@@ -94,6 +93,8 @@ int main(int argc, char** argv) {
             optimized ? ninfer::ProposalHead::Optimized : ninfer::ProposalHead::Full;
         ninfer::test::add_test_graft(options);
         ninfer::Engine engine(options);
+        require(engine.memory_summary().kv_cache == options.kv_cache,
+                "Engine did not select the requested KV dtype");
         const auto prompt = engine.tokenize_text("Count from one to twenty: one, two, three,");
         ninfer::test::speculative_page_boundary(engine);
         ninfer::test::speculative_graft(engine, ninfer::SpeculativeBackend::DFlash2,
@@ -105,6 +106,19 @@ int main(int argc, char** argv) {
         const auto penalized = engine.generate(engine.prepare_tokens(prompt), penalty);
         valid(penalized, 24);
 
+        ninfer::PromptInput thinking_prompt;
+        thinking_prompt.options.enable_thinking = true;
+        thinking_prompt.messages.push_back({
+            .role  = ninfer::ChatRole::User,
+            .parts = {{.kind = ninfer::MessagePartKind::Text,
+                       .text = "Explain why there are infinitely many prime numbers."}},
+        });
+        auto thinking_request                      = request(64);
+        thinking_request.execution.thinking.budget = 1;
+        const auto forced = engine.generate(engine.prepare(thinking_prompt), thinking_request);
+        valid(forced, 64);
+        require(forced.thinking.applied && forced.thinking.injected_tokens != 0,
+                "DFlash2 did not commit the forced thinking-control suffix");
 
         // All rows share a known target prefix, while their budgets force P=0, partial and full W.
         std::vector<ninfer::GenerationHandle> handles;

@@ -101,9 +101,9 @@ int main(int argc, char** argv) {
     const std::int32_t max_tokens      = *std::max_element(tokens.begin(), tokens.end());
 
     ninfer::bench::PackedQuantizedWeight qk = ninfer::bench::make_row_split_weight(
-        QType::Q4_G64_FP16, parent_rows, hidden, hidden, {0x31, 0x00, 0x3c00});
+        QType::Q4_G64_FP16, parent_rows, hidden, hidden, 0x51U);
     ninfer::bench::PackedQuantizedWeight gv = ninfer::bench::make_row_split_weight(
-        QType::Q5_G64_FP16, parent_rows, hidden, hidden, {0x31, 0xa5, 0x3c00});
+        QType::Q5_G64_FP16, parent_rows, hidden, hidden, 0x52U);
 
     ninfer::DeviceBuffer input(static_cast<std::size_t>(hidden) * max_tokens * 2);
     ninfer::DeviceBuffer q(static_cast<std::size_t>(q_rows) * max_tokens * 2);
@@ -111,7 +111,7 @@ int main(int argc, char** argv) {
     ninfer::DeviceBuffer k(static_cast<std::size_t>(kv_rows) * max_tokens * 2);
     ninfer::DeviceBuffer v(static_cast<std::size_t>(kv_rows) * max_tokens * 2);
 
-    ninfer::DeviceBuffer flush(kFlushBytes);
+    ninfer::bench::L2FlushBuffer flush(kFlushBytes);
     cudaStream_t stream = nullptr;
 
     const int width = spread ? 30 : 20;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/device.h"
 #include "models/qwen3_5/execution/parameters.h"
 
 namespace ninfer::models::qwen3_5::execution {
@@ -12,8 +13,8 @@ void attention_projection(const Tensor& hidden, const AttentionParameters& param
                           WorkspaceArena& workspace, cudaStream_t stream);
 
 void text_rope(const Tensor& positions, const RopeConfig& config, Tensor& query,
-               cudaStream_t stream);
+               DeviceExecutionView execution);
 void text_rope(const Tensor& positions, const RopeConfig& config, Tensor& query, Tensor& key,
-               cudaStream_t stream);
+               DeviceExecutionView execution);
 
 } // namespace ninfer::models::qwen3_5::execution

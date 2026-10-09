@@ -38,7 +38,9 @@ void run(int tokens) {
     proposals.copy_from_host(host_tokens.data(), proposals.bytes);
     Tensor proposal_tensor(proposals.p, DType::I32, {tokens});
 
-    const Result result = bench_loop(
+    SavedBuffer initial(proposals);
+    const Result result = bench_loop_prepared(
+        [&](cudaStream_t stream) { initial.restore(stream); },
         [&](cudaStream_t stream) {
             ops::proposal_remap_token_ids(proposal_tensor, static_cast<const std::int32_t*>(map.p),
                                           kMapSize, stream);

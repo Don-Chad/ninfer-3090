@@ -585,6 +585,9 @@ std::unique_ptr<Program> create_program(const execution::Parameters& parameters,
     if (plan.impl_->parameters != &parameters) {
         throw std::invalid_argument("sequence plan belongs to another model instance");
     }
+    if (plan.impl_->multiprocessor_count != device.multiprocessor_count()) {
+        throw std::invalid_argument("sequence plan device capacity does not match execution");
+    }
     auto impl =
         std::make_unique<detail::ProgramImpl>(parameters, *plan.impl_, device, startup_observer);
     plan.impl_.reset();

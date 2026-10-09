@@ -192,13 +192,17 @@ std::size_t sparse_moe_workspace_capacity_bytes(QType routed_gate_up, QType rout
 }
 
 void sparse_moe(const Tensor& x, const SparseMoeWeights& weights, SparseMoeEpilogue epilogue,
-                Tensor& destination, WorkspaceArena& workspace, cudaStream_t stream) {
-    sparse_moe(x, weights, epilogue, destination, SparseMoeHints{}, workspace, stream);
+                Tensor& destination, WorkspaceArena& workspace, DeviceExecutionView execution) {
+    sparse_moe(x, weights, epilogue, destination, SparseMoeHints{}, workspace, execution);
 }
 
 void sparse_moe(const Tensor& x, const SparseMoeWeights& weights, SparseMoeEpilogue epilogue,
                 Tensor& destination, const SparseMoeHints& hints, WorkspaceArena& workspace,
-                cudaStream_t stream) {
+                DeviceExecutionView execution) {
+    if (execution.multiprocessor_count <= 0) {
+        throw std::invalid_argument("sparse_moe: physical SM count must be positive");
+    }
+    const cudaStream_t stream = execution.stream;
     if (epilogue != SparseMoeEpilogue::AddResidual) {
         throw std::invalid_argument("sparse_moe: unsupported epilogue");
     }
@@ -247,7 +251,7 @@ void sparse_moe(const Tensor& x, const SparseMoeWeights& weights, SparseMoeEpilo
             tokens, weights.routed_gate_up.qtype, weights.routed_down.qtype);
         const detail::SparseMoePrefillWorkspace views =
             detail::allocate_sparse_moe_prefill_workspace(workspace, plan.slice_tokens);
-        detail::sparse_moe_prefill_launch(x, weights, destination, plan, views, stream);
+        detail::sparse_moe_prefill_launch(x, weights, destination, plan, views, execution);
         return;
     }
     if (use_small_t) {

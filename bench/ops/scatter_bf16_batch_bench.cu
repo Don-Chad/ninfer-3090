@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
         CUDA_CHECK(cudaGetDeviceCount(&devices));
         if (!devices) return 77;
         DeviceContext device;
-        DeviceBuffer flush(std::size_t{256} << 20);
+        bench::L2FlushBuffer flush(std::size_t{256} << 20);
         std::ofstream csv;
         if (!o.csv.empty()) {
             csv.open(o.csv);

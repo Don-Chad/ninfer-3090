@@ -16,8 +16,8 @@ Q6Launch select_q6_n248320_k5120(std::int32_t tokens) {
     if (tokens <= 8) return launch_q6_small_t_c8;
     if (tokens <= 16) return launch_q6_small_t_c16;
     if (tokens <= 32) return launch_q6_small_t_c32;
-    if (tokens <= 48) return launch_q6_mma_r64_c48_k128;
-    return launch_q6_mma_r64_c128;
+    if (tokens <= 48) return launch_q6_a16_mma_r64_t48_k128;
+    return launch_q6_a16_mma_r64_t128;
 }
 
 } // namespace ninfer::ops::detail

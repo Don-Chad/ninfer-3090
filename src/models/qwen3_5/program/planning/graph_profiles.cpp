@@ -1,11 +1,16 @@
 #include "models/qwen3_5/program/planning/graph_profiles.h"
 #include "ninfer/ops/softmax_attention.h"
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <stdexcept>
 
 namespace ninfer::models::qwen3_5::detail {
 namespace {
+// Resource tiers bound inactive attention work. They are not kernel/topology boundaries.
+constexpr std::array<std::uint32_t, 7> kCausalVisibleTiers{128,  512,   2048, 4096,
+                                                           8192, 16384, 32768};
+
 std::vector<GraphExecutionProfile>
 graph_profiles_through(std::uint32_t max_frontier,
                        const std::vector<std::uint32_t>& preferred_ends) {
@@ -20,6 +25,14 @@ graph_profiles_through(std::uint32_t max_frontier,
     }
     if (begin <= max_frontier) { out.push_back({begin, max_frontier}); }
     return out;
+}
+
+std::vector<GraphExecutionProfile> causal_resource_profiles(std::uint32_t capacity,
+                                                            std::uint32_t visible_offset) {
+    std::vector<std::uint32_t> ends;
+    for (const auto visible : kCausalVisibleTiers)
+        if (visible >= visible_offset) ends.push_back(visible - visible_offset);
+    return graph_profiles_through(capacity - 1, ends);
 }
 
 std::vector<GraphExecutionProfile> dflash_base_profiles(std::uint32_t capacity,
@@ -103,9 +116,8 @@ void collect_shape_changes(std::uint32_t lo, std::uint32_t hi, const Shapes& sha
 } // namespace
 
 std::vector<GraphExecutionProfile> ordinary_graph_profiles(std::uint32_t capacity) {
-    // E+1 is the one-token visible window. Early ranges limit empty producer CTAs; later ranges
-    // follow measured split-policy transitions until the producer grid reaches its fixed cap.
-    return graph_profiles_through(capacity - 1, {127, 511, 2047, 4095, 8197, 16389, 32767});
+    // E+1 is the one-token visible window; all tiers share one topology per exact B.
+    return causal_resource_profiles(capacity, 1);
 }
 
 std::vector<GraphExecutionProfile> mtp_graph_profiles(std::uint32_t capacity,
@@ -176,6 +188,8 @@ std::vector<GraphExecutionProfile> dflash_graph_profiles(SpeculativeBackend back
         }
         return profiles;
     }
+    // The sm_86 verify route table keeps a target-dependent chunked small-T route, so the target
+    // still contributes a topology class at its route flip (see verify_uses_chunked_small_t).
     std::vector<GraphExecutionProfile> profiles = dflash_base_profiles(capacity, draft_window);
     for (GraphExecutionProfile& profile : profiles) {
         const std::uint32_t target_max = static_cast<std::uint32_t>(std::min<std::uint64_t>(

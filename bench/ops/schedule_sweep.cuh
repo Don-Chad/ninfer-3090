@@ -99,7 +99,7 @@ inline bool parse_sweep_args(int argc, char** argv, SweepOptions& options) {
 }
 
 inline void run_sweep(const SweepOptions& options, const std::vector<SweepEntry>& schedules) {
-    DeviceBuffer flush(options.flush_bytes);
+    L2FlushBuffer flush(options.flush_bytes);
     cudaStream_t stream = nullptr;
 
     const int width = options.spread ? 30 : 22;

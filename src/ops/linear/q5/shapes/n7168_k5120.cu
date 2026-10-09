@@ -1,5 +1,5 @@
 #include "ops/linear/q5/q5_shapes.h"
-#include "ops/linear/q5/q5_ksplit_launch.cuh"
+#include "ops/linear/q5/q5_instance_launch.cuh"
 
 namespace ninfer::ops::detail {
 
@@ -13,18 +13,18 @@ namespace ninfer::ops::detail {
 // by 4-6%; both are inside this bench's spread on this shape and are left where upstream put them.
 // n6144_k5120.cu takes the 129..160 change because there the same margin is 19-22%.
 Q5Launch select_q5_n7168_k5120(std::int32_t tokens) {
-    if (tokens == 1) return launch_q5_split4_c1_k5120;
-    if (tokens <= 2) return launch_q5_ksplit<5120, 2, 4>;
-    if (tokens <= 3) return launch_q5_ksplit<5120, 3, 4>;
-    if (tokens <= 4) return launch_q5_ksplit<5120, 4, 4>;
-    if (tokens <= 5) return launch_q5_ksplit<5120, 5, 4>;
-    if (tokens <= 6) return launch_q5_ksplit<5120, 6, 4>;
-    if (tokens <= 7) return launch_q5_ksplit<5120, 7, 4>;
-    if (tokens <= 8) return launch_q5_ksplit<5120, 8, 4>;
-    if (tokens <= 11) return launch_q5_simt_r8_c4;
-    if (tokens <= 64) return launch_q5_mma_r64_c32_s3;
-    if (tokens <= 112) return launch_q5_mma_r64_c64;
-    return launch_q5_mma_r64_c128;
+    if (tokens == 1) return launch_q5_a16_direct_r1_t1_w4_k5120;
+    if (tokens <= 2) return launch_q5_a16_direct_exact<5120, 2, 4>;
+    if (tokens <= 3) return launch_q5_a16_direct_exact<5120, 3, 4>;
+    if (tokens <= 4) return launch_q5_a16_direct_exact<5120, 4, 4>;
+    if (tokens <= 5) return launch_q5_a16_direct_exact<5120, 5, 4>;
+    if (tokens <= 6) return launch_q5_a16_direct_exact<5120, 6, 4>;
+    if (tokens <= 7) return launch_q5_a16_direct_exact<5120, 7, 4>;
+    if (tokens <= 8) return launch_q5_a16_direct_exact<5120, 8, 4>;
+    if (tokens <= 11) return launch_q5_a16_simt_r8_t4_w1_g16_s2;
+    if (tokens <= 64) return launch_q5_a16_mma_r64_t32_k64_wr16_wt16_s3_a3_b2;
+    if (tokens <= 112) return launch_q5_a16_mma_r64_t64_k64_wr32_wt32_s2_a2_b3_pingpong;
+    return launch_q5_a16_mma_r64_t128;
 }
 
 } // namespace ninfer::ops::detail

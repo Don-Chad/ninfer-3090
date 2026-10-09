@@ -32,8 +32,8 @@ __global__ void scatter_payload_control_x8(const uint4* source, uint4* destinati
 void run(std::int32_t d, std::int32_t vision_tokens, bool control, bool profile_once) {
     const std::int32_t prompt_tokens = vision_tokens + 2;
     const std::size_t n              = static_cast<std::size_t>(d) * vision_tokens;
-    DeviceBuffer source              = make_bf16(n);
-    DeviceBuffer destination         = make_bf16(static_cast<std::size_t>(d) * prompt_tokens);
+    DeviceBuffer source              = make_bf16(n, 101U);
+    DeviceBuffer destination         = make_bf16(static_cast<std::size_t>(d) * prompt_tokens, 103U);
     std::vector<std::int32_t> indices(static_cast<std::size_t>(vision_tokens));
     std::iota(indices.begin(), indices.end(), 1);
     DeviceBuffer device_indices(indices.size() * sizeof(std::int32_t));

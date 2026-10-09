@@ -414,11 +414,11 @@ public:
 
     // Each copy is written on the stream of the rank that holds it.
     void publish(KVExecutionRowHandle row, std::uint32_t logical_begin,
-                 std::span<const DeviceKVPageHandle> pages, RankStreams streams = {});
+                 std::span<const DeviceKVPageHandle> pages, RankStreams streams);
     void publish(KVExecutionRowHandle row, std::uint32_t logical_begin,
-                 std::span<const DeviceKVPageLease> pages, RankStreams streams = {});
+                 std::span<const DeviceKVPageLease> pages, RankStreams streams);
     void publish_repeated(KVExecutionRowHandle row, DeviceKVPageHandle page, std::uint32_t count,
-                          RankStreams streams = {});
+                          RankStreams streams);
 
     // The row and matrix as rank `rank` sees them. Throws if that rank holds no copy.
     [[nodiscard]] Tensor row(KVExecutionRowHandle handle, std::size_t rank = 0) const;

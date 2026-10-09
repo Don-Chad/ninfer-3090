@@ -9,7 +9,8 @@
 namespace ninfer::ops::detail {
 
 template <class Geometry, bool Writable>
-void validate_bf16_kv_operands(const Bf16KvOperands& p, const Bf16KvCacheView<Writable>& cache) {
+void validate_bf16_kv_operands(const CausalAttentionOperands& p,
+                               const Bf16KvCacheView<Writable>& cache) {
     const auto aligned = [](const void* pointer) {
         return pointer && reinterpret_cast<std::uintptr_t>(pointer) % 16 == 0;
     };
@@ -36,8 +37,8 @@ int bf16_kv_dynamic_shared() {
 }
 
 template <class G, class S, bool MultiBatch, bool Masked, bool Writable, class Input>
-void launch_bf16_kv_grouped_mma(const Bf16KvOperands& p, Bf16KvCacheView<Writable> cache,
-                                Input input, Bf16KvPartition partition, Bf16KvPartialView partials,
+void launch_bf16_kv_grouped_mma(const CausalAttentionOperands& p, Bf16KvCacheView<Writable> cache,
+                                Input input, Bf16KvPartition partition, CausalPartialView partials,
                                 cudaStream_t stream) {
     static_assert(Writable == Input::writes_cache);
     validate_bf16_kv_operands<G>(p, cache);
@@ -66,8 +67,8 @@ void launch_bf16_kv_grouped_mma(const Bf16KvOperands& p, Bf16KvCacheView<Writabl
 }
 
 template <class G, class S, bool MultiBatch, bool Masked, bool Writable>
-void launch_bf16_kv_merge(const Bf16KvOperands& p, Bf16KvCacheView<Writable> cache,
-                          Bf16KvPartition partition, Bf16KvPartialView partials,
+void launch_bf16_kv_merge(const CausalAttentionOperands& p, Bf16KvCacheView<Writable> cache,
+                          Bf16KvPartition partition, CausalPartialView partials,
                           cudaStream_t stream) {
     if (partition.capacity > S::kThreads)
         throw std::invalid_argument("BF16 merge capacity exceeds the reduction block");
@@ -79,7 +80,8 @@ void launch_bf16_kv_merge(const Bf16KvOperands& p, Bf16KvCacheView<Writable> cac
 }
 
 template <class Geometry, class Schedule>
-void launch_bf16_kv_tiled_mma(const Bf16KvOperands& p, Bf16KvReadView cache, cudaStream_t stream) {
+void launch_bf16_kv_tiled_mma(const CausalAttentionOperands& p, Bf16KvReadView cache,
+                              cudaStream_t stream) {
     validate_bf16_kv_operands<Geometry>(p, cache);
     if (p.batch != 1)
         throw std::invalid_argument("BF16 tiled attention requires a complete single-row query");

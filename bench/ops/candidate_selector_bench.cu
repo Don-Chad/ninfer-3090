@@ -95,7 +95,8 @@ struct Fixture {
     std::array<std::int32_t, 8> host_positions{};
     DeviceBuffer candidate_ids{host_candidates.size() * sizeof(std::int32_t)};
     DeviceBuffer unary_scores{host_unary.size() * sizeof(float)};
-    DeviceBuffer projected_hidden = make_bf16(static_cast<std::size_t>(kRank) * kMaxSteps * 8);
+    DeviceBuffer projected_hidden =
+        make_bf16(static_cast<std::size_t>(kRank) * kMaxSteps * 8, 101U);
     DeviceBuffer anchors{host_anchors.size() * sizeof(std::int32_t)};
     DeviceBuffer predecessor_codebook{static_cast<std::size_t>(kRank) * kCodebookRows *
                                       sizeof(std::uint16_t)};
@@ -116,8 +117,7 @@ struct Fixture {
                         (static_cast<std::size_t>(batch) * kSteps + step) * kCandidates + candidate;
                     host_candidates[offset] = static_cast<std::int32_t>(
                         (offset * 7919ULL + 17ULL) % static_cast<std::size_t>(kTokenDomain));
-                    host_unary[offset] =
-                        static_cast<float>((candidate * 13 + step * 7 + batch * 3) % 29) / 32.0F;
+                    host_unary[offset] = fixture::uniform(offset, 205U, -1.F, 1.F);
                 }
             }
         }
@@ -125,8 +125,10 @@ struct Fixture {
         unary_scores.copy_from_host(host_unary.data(), unary_scores.bytes);
         anchors.copy_from_host(host_anchors.data(), anchors.bytes);
         base_positions.copy_from_host(host_positions.data(), base_positions.bytes);
-        CUDA_CHECK(cudaMemset(predecessor_codebook.p, 0x3f, predecessor_codebook.bytes));
-        CUDA_CHECK(cudaMemset(successor_codebook.p, 0x3f, successor_codebook.bytes));
+        CUDA_CHECK(fixture::fill_values(static_cast<__nv_bfloat16*>(predecessor_codebook.p),
+                                        predecessor_codebook.bytes / 2, 201U, -.05F, .05F));
+        CUDA_CHECK(fixture::fill_values(static_cast<__nv_bfloat16*>(successor_codebook.p),
+                                        successor_codebook.bytes / 2, 203U, -.05F, .05F));
     }
 
     void set_mode(Mode mode, std::int32_t batch_size) {
@@ -155,7 +157,7 @@ struct Fixture {
 };
 
 void run(std::int32_t batch_size, Mode mode, const Options& options, Fixture& fixture,
-         DeviceBuffer& flush, cudaStream_t stream) {
+         bench::L2FlushBuffer& flush, cudaStream_t stream) {
     fixture.set_mode(mode, batch_size);
     Tensor ids;
     Tensor unary;
@@ -195,7 +197,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         const Options options = parse_options(argc, argv);
-        DeviceBuffer flush(options.flush_bytes);
+        bench::L2FlushBuffer flush(options.flush_bytes);
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         int device = 0;

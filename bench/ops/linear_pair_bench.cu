@@ -202,12 +202,13 @@ int main(int argc, char** argv) {
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
-        DeviceBuffer flush(options.flush_bytes);
-        DeviceBuffer input = bench::make_bf16(static_cast<std::size_t>(options.k) * maximum_tokens);
+        bench::L2FlushBuffer flush(options.flush_bytes);
+        DeviceBuffer input =
+            bench::make_bf16(static_cast<std::size_t>(options.k) * maximum_tokens, 101U);
         DeviceBuffer first_output(static_cast<std::size_t>(kRows) * maximum_tokens * 2);
         DeviceBuffer second_output(static_cast<std::size_t>(kRows) * maximum_tokens * 2);
         bench::PackedQuantizedWeight parent = bench::make_row_split_weight(
-            QType::Q8_G32_FP16, kParentRows, options.k, options.k, {0x31, 0x00, 0x3c00});
+            QType::Q8_G32_FP16, kParentRows, options.k, options.k, 501U);
         const Weight first_weight  = bench::row_view(parent.weight, kFirstRow, kRows);
         const Weight second_weight = bench::row_view(parent.weight, kSecondRow, kRows);
 

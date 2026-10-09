@@ -43,15 +43,10 @@ namespace detail = ninfer::ops::detail;
 
 constexpr std::int32_t kRows = 5120;
 
-// The Q8 MMA launches take a `full` flag the dispatcher computes from the problem; a bench that
-// guessed it would be timing a different kernel than production picks, so it is computed the same
-// way here: complete row blocks and a column extent that fills the tile.
-using Q8Mma = void (*)(bool, const Tensor&, const Weight&, Tensor&, cudaStream_t);
-
 void sweep_q8(std::int32_t hidden, const ninfer::bench::SweepOptions& base) {
     const std::int32_t max_tokens = *std::max_element(base.tokens.begin(), base.tokens.end());
     ninfer::bench::PackedQuantizedWeight packed = ninfer::bench::make_row_split_weight(
-        QType::Q8_G32_FP16, kRows, hidden, hidden, {0x31, 0x00, 0x3c00});
+        QType::Q8_G32_FP16, kRows, hidden, hidden, 0x51U);
     ninfer::DeviceBuffer input(static_cast<std::size_t>(hidden) * max_tokens * 2);
     ninfer::DeviceBuffer residual(static_cast<std::size_t>(kRows) * max_tokens * 2);
 
@@ -66,50 +61,39 @@ void sweep_q8(std::int32_t hidden, const ninfer::bench::SweepOptions& base) {
             launch(x, packed.weight, out, stream);
         };
     };
-    // `full` is the production contract from q8_linear_add_plan.cpp's use_full(): the kernel may
-    // drop its row and column predicates only when BOTH the row extent and the token count divide
-    // that schedule's own tile. Hard-coding 64 here marked the 48-row kernels full for a 5120-row
-    // matrix (5120 % 48 != 0), which lets the final partial row block run unpredicated -- reading
-    // and writing past the matrix, and reporting a route winner measured on corrupt buffers.
-    const auto tiled = [&](Q8Mma launch, std::int32_t tile_rows, std::int32_t tile_cols) {
-        return [&, launch, tile_rows, tile_cols](std::int32_t tokens, cudaStream_t stream) {
-            const bool full = (kRows % tile_rows) == 0 && (tokens % tile_cols) == 0;
-            Tensor x, out;
-            tensors(tokens, x, out);
-            launch(full, x, packed.weight, out, stream);
-        };
-    };
+    // The MMA launches pick their full-tile (unpredicated) variant themselves from the row extent
+    // and token count, the same way production dispatch does, so every entry launches directly.
 
     std::vector<ninfer::bench::SweepEntry> schedules{
         {"splitk_capacity", direct(&detail::q8_linear_add_splitk_capacity_launch), 64},
         {"grouped_splitk", direct(&detail::q8_linear_add_grouped_launch), 0},
-        {"mma_r32_c64", tiled(&detail::q8_linear_add_mma_r32_c64_launch, 32, 64), 0},
-        {"mma_r32_c96", tiled(&detail::q8_linear_add_mma_r32_c96_launch, 32, 96), 0},
-        {"mma_r32_c128", tiled(&detail::q8_linear_add_mma_r32_c128_launch, 32, 128), 0},
-        {"mma_r48_c64", tiled(&detail::q8_linear_add_mma_r48_c64_launch, 48, 64), 0},
-        {"mma_r48_c96", tiled(&detail::q8_linear_add_mma_r48_c96_launch, 48, 96), 0},
-        {"mma_r64_c64", tiled(&detail::q8_linear_add_mma_r64_c64_launch, 64, 64), 0},
-        {"mma_r64_c96", tiled(&detail::q8_linear_add_mma_r64_c96_launch, 64, 96), 0},
-        {"mma_r64_c112", tiled(&detail::q8_linear_add_mma_r64_c112_launch, 64, 112), 0},
-        {"mma_r64_c128", tiled(&detail::q8_linear_add_mma_r64_c128_launch, 64, 128), 0},
-        {"mma_r128_c64", tiled(&detail::q8_linear_add_mma_r128_c64_launch, 128, 64), 0},
-        {"mma_r128_c80", tiled(&detail::q8_linear_add_mma_r128_c80_launch, 128, 80), 0},
+        {"mma_r32_c64", direct(&detail::q8_linear_add_mma_r32_c64_launch), 0},
+        {"mma_r32_c96", direct(&detail::q8_linear_add_mma_r32_c96_launch), 0},
+        {"mma_r32_c128", direct(&detail::q8_linear_add_mma_r32_c128_launch), 0},
+        {"mma_r48_c64", direct(&detail::q8_linear_add_mma_r48_c64_launch), 0},
+        {"mma_r48_c96", direct(&detail::q8_linear_add_mma_r48_c96_launch), 0},
+        {"mma_r64_c64", direct(&detail::q8_linear_add_mma_r64_c64_launch), 0},
+        {"mma_r64_c96", direct(&detail::q8_linear_add_mma_r64_c96_launch), 0},
+        {"mma_r64_c112", direct(&detail::q8_linear_add_mma_r64_c112_launch), 0},
+        {"mma_r64_c128", direct(&detail::q8_linear_add_mma_r64_c128_launch), 0},
+        {"mma_r128_c64", direct(&detail::q8_linear_add_mma_r128_c64_launch), 0},
+        {"mma_r128_c80", direct(&detail::q8_linear_add_mma_r128_c80_launch), 0},
         // The same tiles with the Q8G32 scale on the FP32 group partial instead of on the BF16
         // weight. They are the only tiled candidates that meet the Op's oracle at k=17408, so at
         // that k the `mma_*` rows above are timing a route the table may not take; compare
         // `mma_exact_*` against the grouped route there, and `mma_*` against `mma_exact_*` to price
         // the accuracy.
-        {"mma_exact_r32_c64", tiled(&detail::q8_linear_add_mma_exact_r32_c64_launch, 32, 64), 0},
-        {"mma_exact_r32_c96", tiled(&detail::q8_linear_add_mma_exact_r32_c96_launch, 32, 96), 0},
-        {"mma_exact_r32_c128", tiled(&detail::q8_linear_add_mma_exact_r32_c128_launch, 32, 128), 0},
-        {"mma_exact_r48_c64", tiled(&detail::q8_linear_add_mma_exact_r48_c64_launch, 48, 64), 0},
-        {"mma_exact_r48_c96", tiled(&detail::q8_linear_add_mma_exact_r48_c96_launch, 48, 96), 0},
-        {"mma_exact_r64_c64", tiled(&detail::q8_linear_add_mma_exact_r64_c64_launch, 64, 64), 0},
-        {"mma_exact_r64_c96", tiled(&detail::q8_linear_add_mma_exact_r64_c96_launch, 64, 96), 0},
-        {"mma_exact_r64_c112", tiled(&detail::q8_linear_add_mma_exact_r64_c112_launch, 64, 112), 0},
-        {"mma_exact_r64_c128", tiled(&detail::q8_linear_add_mma_exact_r64_c128_launch, 64, 128), 0},
-        {"mma_exact_r128_c64", tiled(&detail::q8_linear_add_mma_exact_r128_c64_launch, 128, 64), 0},
-        {"mma_exact_r128_c80", tiled(&detail::q8_linear_add_mma_exact_r128_c80_launch, 128, 80), 0},
+        {"mma_exact_r32_c64", direct(&detail::q8_linear_add_mma_exact_r32_c64_launch), 0},
+        {"mma_exact_r32_c96", direct(&detail::q8_linear_add_mma_exact_r32_c96_launch), 0},
+        {"mma_exact_r32_c128", direct(&detail::q8_linear_add_mma_exact_r32_c128_launch), 0},
+        {"mma_exact_r48_c64", direct(&detail::q8_linear_add_mma_exact_r48_c64_launch), 0},
+        {"mma_exact_r48_c96", direct(&detail::q8_linear_add_mma_exact_r48_c96_launch), 0},
+        {"mma_exact_r64_c64", direct(&detail::q8_linear_add_mma_exact_r64_c64_launch), 0},
+        {"mma_exact_r64_c96", direct(&detail::q8_linear_add_mma_exact_r64_c96_launch), 0},
+        {"mma_exact_r64_c112", direct(&detail::q8_linear_add_mma_exact_r64_c112_launch), 0},
+        {"mma_exact_r64_c128", direct(&detail::q8_linear_add_mma_exact_r64_c128_launch), 0},
+        {"mma_exact_r128_c64", direct(&detail::q8_linear_add_mma_exact_r128_c64_launch), 0},
+        {"mma_exact_r128_c80", direct(&detail::q8_linear_add_mma_exact_r128_c80_launch), 0},
     };
 
     const std::string title = "q8 dense linear_add n=5120 k=" + std::to_string(hidden);
@@ -135,7 +119,7 @@ void sweep_q8(std::int32_t hidden, const ninfer::bench::SweepOptions& base) {
 void sweep_q4(std::int32_t kHidden, const ninfer::bench::SweepOptions& base) {
     const std::int32_t max_tokens = *std::max_element(base.tokens.begin(), base.tokens.end());
     ninfer::bench::PackedQuantizedWeight packed = ninfer::bench::make_row_split_weight(
-        QType::Q4_G64_FP16, kRows, kHidden, kHidden, {0x31, 0xa5, 0x3c00});
+        QType::Q4_G64_FP16, kRows, kHidden, kHidden, 0x52U);
     ninfer::DeviceBuffer input(static_cast<std::size_t>(kHidden) * max_tokens * 2);
     ninfer::DeviceBuffer residual(static_cast<std::size_t>(kRows) * max_tokens * 2);
 

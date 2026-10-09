@@ -21,6 +21,19 @@ enum class Q5LinearAddScheduleId {
     MmaResidualR64C128,
     SmallTMmaResidual,
     MmaResidualR64C128Tail,
+    // Upstream's sliced-K and narrow MMA tiles. Not routed on sm_86 (the tables in
+    // q5_linear_add_plan.cpp); upstream's R64T128 and its narrow-tail composite are the
+    // MmaResidualR64C128 and MmaResidualR64C128Tail ids above.
+    SlicedR16T8W4S2,
+    SlicedR16T16W4S2,
+    SlicedR16T24W4S2,
+    SlicedR32T32W4S2,
+    SlicedR32T24W4S2Pairwise,
+    SlicedR32T32W4S1,
+    SlicedR32T32W2S2,
+    SlicedR32T64W2S1,
+    MmaResidualR32T32K128,
+    MmaResidualR32T128,
 };
 
 struct Q5LinearAddProblem {

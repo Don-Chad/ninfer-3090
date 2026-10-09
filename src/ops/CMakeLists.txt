@@ -44,7 +44,7 @@ if(CMAKE_CUDA_ARCHITECTURES MATCHES "^(80|86|89)$")
   # mma.sync...kind::f8f6f4. Both qualifiers are Blackwell-only, and sm_80/86/89 have no FP8 or FP4
   # tensor-core path to fall back to, so the owning translation units cannot be compiled here.
   # The A16 dequantizing routes for both formats are kept and remain fully functional.
-  list(FILTER ninfer_ops_sources EXCLUDE REGEX "nvfp4/.+_w4a4\\.cu$")
+  list(FILTER ninfer_ops_sources EXCLUDE REGEX "nvfp4/.+_a4\\.cu$")
   list(FILTER ninfer_ops_sources EXCLUDE REGEX "fp8/.+_a8\\.cu$")
   set_property(TARGET ninfer_ops PROPERTY SOURCES ${ninfer_ops_sources})
   target_sources(ninfer_ops PRIVATE

@@ -17,7 +17,7 @@ bf16_kv_load_grouped_tile(__nv_bfloat16* key_tile, __nv_bfloat16* value_tile,
 #pragma unroll 1
     for (int i = tid; i < S::kKeyRows * (D / 8); i += S::kThreads) {
         const int row = i / (D / 8), d = i % (D / 8) * 8, key = begin + row;
-        const auto offset = row * D + bf16_kv_swizzle(row, d);
+        const auto offset = row * D + causal_swizzle(row, d);
         auto* kd          = key_tile + offset;
         auto* vd          = value_tile + offset;
         if (key >= end) {
@@ -26,7 +26,7 @@ bf16_kv_load_grouped_tile(__nv_bfloat16* key_tile, __nv_bfloat16* value_tile,
         } else {
             if constexpr (Input::writes_cache) {
                 if (key >= first_position) {
-                    const auto index = bf16_kv_new_index<G>(head, d, key - first_position);
+                    const auto index = causal_new_index<G>(head, d, key - first_position);
                     cp_async<16>(kd, input.k + index);
                     // V is pure BF16 in the cache (this fork's KV-plane typing), staged raw.
                     store_vec(vd, load_vec<int4>(input.v + index));
@@ -49,7 +49,7 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
                                     typename Bf16KvCacheView<Input::writes_cache>::Value* cache_v,
                                     const int* tables, const int* validity, const int* table_rows,
                                     int table_stride, int runtime_width, float scale,
-                                    Bf16KvPartition partition, Bf16KvPartialView partial) {
+                                    Bf16KvPartition partition, CausalPartialView partial) {
     const int width = S::kFixedWidth ? S::kFixedWidth : runtime_width;
     constexpr int D = G::kHeadDim, M = S::kQueryRows, N = S::kKeyRows;
     constexpr int NK = N / S::kWarpsKV, QKNt = NK / 8, QKKs = D / 16;
@@ -114,7 +114,7 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
             for (int i = tid; i < live * (D / 8); i += S::kThreads) {
                 const int token = i / (D / 8), d = i % (D / 8) * 8, key = positions[token];
                 if (key >= start && key < stop) {
-                    const auto src = bf16_kv_new_index<G>(head, d, token);
+                    const auto src = causal_new_index<G>(head, d, token);
                     const auto dst = bf16_kv_cache_index<G>(table[key >> kPagedKVPageShift], head,
                                                             d, key & kPagedKVPageMask);
                     store_vec(cache_k + dst, load_vec<int4>(input.k + src));
@@ -132,9 +132,9 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
     for (int i = tid; i < M * (D / 8); i += S::kThreads) {
         const int row = i / (D / 8), d = i % (D / 8) * 8, packed = row_begin + row;
         const int token = packed / G::GroupSize, h = head * G::GroupSize + packed % G::GroupSize;
-        auto* dst = k_s + row * D + bf16_kv_swizzle(row, d);
+        auto* dst = k_s + row * D + causal_swizzle(row, d);
         if (token < live)
-            cp_async<16>(dst, q + bf16_kv_q_index<G>(h, d, token));
+            cp_async<16>(dst, q + causal_q_index<G>(h, d, token));
         else
             store_vec(dst, make_int4(0, 0, 0, 0));
     }
@@ -147,12 +147,12 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
     for (int k = 0; k < QKKs; ++k) {
         const int d = k * 16 + (lane >> 4) * 8;
         ldmatrix_x4(q_frag[k][0], q_frag[k][1], q_frag[k][2], q_frag[k][3],
-                    smem_addr(k_s + a_row * D + bf16_kv_swizzle(a_row, d)));
+                    smem_addr(k_s + a_row * D + causal_swizzle(a_row, d)));
     }
     __syncthreads();
     float acc[PVNt][4] = {};
     Bf16KvSoftmaxRow state[2];
-    const float scale_log2 = scale * kBf16KvLog2E;
+    const float scale_log2 = scale * kLog2E;
     const int gid = lane >> 2, lid = lane & 3;
     const int rows[2]   = {row_begin + warp_q * 16 + gid, row_begin + warp_q * 16 + gid + 8};
     const int tokens[2] = {rows[0] / G::GroupSize, rows[1] / G::GroupSize};
@@ -185,7 +185,7 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
                 unsigned bf[2];
                 const int row = warp_kv * NK + n * 8 + (lane & 7);
                 const int d   = k * 16 + ((lane >> 3) & 1) * 8;
-                ldmatrix_x2(bf[0], bf[1], smem_addr(k_s + row * D + bf16_kv_swizzle(row, d)));
+                ldmatrix_x2(bf[0], bf[1], smem_addr(k_s + row * D + causal_swizzle(row, d)));
                 mma_bf16(score[n][0], score[n][1], score[n][2], score[n][3], q_frag[k][0],
                          q_frag[k][1], q_frag[k][2], q_frag[k][3], bf[0], bf[1]);
             }
@@ -233,7 +233,7 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
                 const int row = warp_kv * NK + k * 16 + ((lane >> 3) & 1) * 8 + (lane & 7);
                 const int d   = n * 8 + (lane >> 4) * 8;
                 ldmatrix_x4_t(vf[slot][0], vf[slot][1], vf[slot][2], vf[slot][3],
-                              smem_addr(v_s + row * D + bf16_kv_swizzle(row, d)));
+                              smem_addr(v_s + row * D + causal_swizzle(row, d)));
             };
             load_v(0, 0);
 #pragma unroll
@@ -241,9 +241,9 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
                 const int k = i / (PVNt / 2), n = i % (PVNt / 2) * 2, slot = i & 1;
                 if (i + 1 < PVKs * (PVNt / 2)) load_v(i + 1, slot ^ 1);
                 mma_bf16(acc[n][0], acc[n][1], acc[n][2], acc[n][3], pf[k][0], pf[k][1], pf[k][2],
-                        pf[k][3], vf[slot][0], vf[slot][1]);
+                         pf[k][3], vf[slot][0], vf[slot][1]);
                 mma_bf16(acc[n + 1][0], acc[n + 1][1], acc[n + 1][2], acc[n + 1][3], pf[k][0],
-                        pf[k][1], pf[k][2], pf[k][3], vf[slot][2], vf[slot][3]);
+                         pf[k][1], pf[k][2], pf[k][3], vf[slot][2], vf[slot][3]);
             }
         } else {
             // Limit live V fragments too; the grouped path is bandwidth-bound.
@@ -254,9 +254,9 @@ __launch_bounds__(S::kLaunchBoundThreads, S::kMinBlocks) __global__
                     unsigned vf[2];
                     const int row = warp_kv * NK + k * 16 + ((lane >> 3) & 1) * 8 + (lane & 7);
                     const int d   = n * 8;
-                    ldmatrix_x2_t(vf[0], vf[1], smem_addr(v_s + row * D + bf16_kv_swizzle(row, d)));
+                    ldmatrix_x2_t(vf[0], vf[1], smem_addr(v_s + row * D + causal_swizzle(row, d)));
                     mma_bf16(acc[n][0], acc[n][1], acc[n][2], acc[n][3], pf[k][0], pf[k][1],
-                            pf[k][2], pf[k][3], vf[0], vf[1]);
+                             pf[k][2], pf[k][3], vf[0], vf[1]);
                 }
             }
         }
