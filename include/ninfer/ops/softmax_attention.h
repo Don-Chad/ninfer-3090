@@ -3,6 +3,7 @@
 #include "ninfer/ops/attention_geometry.h"
 
 #include "core/arena.h"
+#include "core/device.h"
 #include "core/paged_kv_cache.h"
 #include "core/tensor.h"
 
@@ -141,24 +142,28 @@ void packed_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
  * through the inert tail; an empty row uses zero positions. Other tail values are safe dummies.
  * Tail columns do not mutate cache and produce exact BF16 zero.
  *
- * The registered prompt route consumes the paged cache directly and requires zero transient
- * workspace. Small-T routes may use the split state returned by the capacity query below.
+ * Attention consumes the paged cache directly. Caller-owned transient storage is bounded by the
+ * capacity query below; implementations that need no partial state return zero capacity.
  *
  * The caller guarantees that the maximum p+1 over live rows lies within envelope. The envelope is
  * a host launch/workspace resource promise over that batch maximum, not a mask and not persistent
  * state. A masked physical width may exceed max_visible_keys when its live prefix is shorter.
  * With fixed tensor views and geometry, BF16 calls with W<=16 remain CUDA Graph update-compatible
  * across valid envelopes. Live row lengths determine the KV work partition within each capture.
+ * On sm_80/86/89 the quantized storages select their route from the envelope, so their graph
+ * compatibility across envelopes is described by causal_softmax_attention_launch_shape below.
  * Inputs, output, every cache plane/table, and live workspace suballocations are pairwise
  * non-overlapping. The Op overwrites every addressed cache row but owns no cache allocation,
- * frontier, request identity, or commit authority.
+ * frontier, request identity, or commit authority. `execution` supplies the stream and positive
+ * physical SM count used for launch and workspace planning; capacity queries must use the same
+ * count as execution.
  */
 void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
                               const Tensor& positions, const Tensor& valid_columns,
                               const Tensor& kv_table_rows, AttentionHeadGeometry geometry,
                               float scale, PagedKVBatchLayerView cache,
                               CausalAttentionExecutionEnvelope envelope, WorkspaceArena& workspace,
-                              Tensor& out, cudaStream_t stream);
+                              Tensor& out, DeviceExecutionView execution);
 
 /**
  * Read-only single-sequence causal attention over an already populated cache.
@@ -172,17 +177,19 @@ void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
                                      AttentionHeadGeometry geometry, float scale,
                                      const PagedKVLayerView& cache,
                                      CausalAttentionExecutionEnvelope envelope,
-                                     WorkspaceArena& workspace, Tensor& out, cudaStream_t stream);
+                                     WorkspaceArena& workspace, Tensor& out,
+                                     DeviceExecutionView execution);
 
 /**
  * Return transient capacity for every W in the inclusive interval at one exact batch size. The
- * head geometry, cache dtype, and execution envelope are fixed implementation-profile inputs.
- * Invalid profiles or intervals throw; an interval containing only prompt routes returns zero.
+ * head geometry, cache dtype, execution envelope and device SM count are fixed
+ * implementation-profile inputs.
+ * Invalid profiles or intervals throw. The returned capacity may be zero.
  */
 [[nodiscard]] std::size_t causal_softmax_attention_workspace_capacity_bytes(
     AttentionHeadGeometry geometry, KvCacheStorage cache_storage,
     CausalAttentionExecutionEnvelope envelope, std::int32_t batch_size, std::int32_t min_tokens,
-    std::int32_t max_tokens);
+    std::int32_t max_tokens, DeviceExecutionView execution);
 
 /**
  * How one causal_softmax_attention call executes at an exact W, B, head geometry, cache dtype and

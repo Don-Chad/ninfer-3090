@@ -115,6 +115,7 @@ resolve_sparse_moe_prefill_plan(std::int32_t tokens, QType routed_gate_up, QType
 
 void sparse_moe_prefill_launch(const Tensor& x, const SparseMoeWeights& weights,
                                Tensor& destination, const SparseMoePrefillPlan& plan,
-                               const SparseMoePrefillWorkspace& workspace, cudaStream_t stream);
+                               const SparseMoePrefillWorkspace& workspace,
+                               DeviceExecutionView execution);
 
 } // namespace ninfer::ops::detail

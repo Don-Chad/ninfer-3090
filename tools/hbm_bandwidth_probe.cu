@@ -3,11 +3,12 @@
 // Build:
 //   nvcc -O3 -std=c++17 -arch=sm_120a tools/hbm_bandwidth_probe.cu -o hbm_bandwidth_probe
 //
-// The "bus GB/s" column counts physical streaming traffic: N bytes for a
+// The "bus GB/s" column counts logical streaming traffic: N bytes for a
 // read or write and 2N bytes for a copy (N read + N written). This is the
-// column to compare with the advertised memory-bus bandwidth.
+// rate to compare with the advertised bandwidth; it is not a measured DRAM counter.
 
 #include <cuda_runtime.h>
+#include "../bench/common/fixture_data.cuh"
 
 #include <algorithm>
 #include <cmath>
@@ -101,7 +102,11 @@ private:
 __global__ void write_u128_kernel(uint4* __restrict__ dst, std::size_t count, uint4 value) {
     const std::size_t tid    = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const std::size_t stride = static_cast<std::size_t>(gridDim.x) * blockDim.x;
-    for (std::size_t i = tid; i < count; i += stride) { dst[i] = value; }
+    for (std::size_t i = tid; i < count; i += stride) {
+        const auto offset = static_cast<std::uint32_t>(i);
+        dst[i] = make_uint4(value.x ^ (offset * 0x9e3779b9U), value.y ^ (offset * 0x85ebca6bU),
+                            value.z ^ (offset * 0xc2b2ae35U), value.w ^ (offset * 0x27d4eb2fU));
+    }
 }
 
 // The block checksum makes every load observable while adding only one tiny
@@ -356,10 +361,7 @@ int main(int argc, char** argv) {
     cudaStream_t stream{};
     CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
-    const uint4 source_value = make_uint4(0x13579bdfu, 0x2468ace0u, 0xdeadbeefu, 0x10203040u);
-    write_u128_kernel<<<write_grid, kThreads, 0, stream>>>(source.get(), vector_count,
-                                                           source_value);
-    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(ninfer::bench::fixture::fill_bytes(source.get(), bytes, 101U, stream));
 
     // Long preconditioning phase: make the first reported method independent
     // of idle P-state ramp-up.

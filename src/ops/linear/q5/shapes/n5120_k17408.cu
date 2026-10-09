@@ -1,5 +1,5 @@
 #include "ops/linear/q5/q5_shapes.h"
-#include "ops/linear/q5/q5_ksplit_launch.cuh"
+#include "ops/linear/q5/q5_instance_launch.cuh"
 
 namespace ninfer::ops::detail {
 
@@ -14,18 +14,18 @@ namespace ninfer::ops::detail {
 //
 // 17..96 and 113..128 keep upstream's routes and are best here.
 Q5Launch select_q5_n5120_k17408(std::int32_t tokens) {
-    if (tokens == 1) return launch_q5_split4_c1_k17408;
-    if (tokens <= 2) return launch_q5_ksplit<17408, 2, 2>;
-    if (tokens <= 3) return launch_q5_ksplit<17408, 3, 2>;
-    if (tokens <= 4) return launch_q5_ksplit<17408, 4, 2>;
-    if (tokens <= 5) return launch_q5_ksplit<17408, 5, 2>;
-    if (tokens <= 6) return launch_q5_ksplit<17408, 6, 2>;
-    if (tokens <= 7) return launch_q5_ksplit<17408, 7, 2>;
-    if (tokens <= 8) return launch_q5_ksplit<17408, 8, 2>;
-    if (tokens <= 16) return launch_q5_mma_r64_c16;
-    if (tokens <= 96) return launch_q5_mma_r64_c32_s3;
-    if (tokens <= 128) return launch_q5_mma_r32_c128;
-    return launch_q5_mma_r64_c128;
+    if (tokens == 1) return launch_q5_a16_direct_r1_t1_w4_k17408;
+    if (tokens <= 2) return launch_q5_a16_direct_exact<17408, 2, 2>;
+    if (tokens <= 3) return launch_q5_a16_direct_exact<17408, 3, 2>;
+    if (tokens <= 4) return launch_q5_a16_direct_exact<17408, 4, 2>;
+    if (tokens <= 5) return launch_q5_a16_direct_exact<17408, 5, 2>;
+    if (tokens <= 6) return launch_q5_a16_direct_exact<17408, 6, 2>;
+    if (tokens <= 7) return launch_q5_a16_direct_exact<17408, 7, 2>;
+    if (tokens <= 8) return launch_q5_a16_direct_exact<17408, 8, 2>;
+    if (tokens <= 16) return launch_q5_a16_mma_r64_t16_k64_wr16_wt8_s2_a2_b3;
+    if (tokens <= 96) return launch_q5_a16_mma_r64_t32_k64_wr16_wt16_s3_a3_b2;
+    if (tokens <= 128) return launch_q5_a16_mma_r32_t128;
+    return launch_q5_a16_mma_r64_t128;
 }
 
 } // namespace ninfer::ops::detail

@@ -23,7 +23,9 @@ std::size_t fp8_linear_workspace_capacity_bytes(std::int32_t n, std::int32_t k, 
         throw std::invalid_argument("fp8 linear workspace: invalid token interval");
     const auto& shape = resolve_shape(n, k, policy);
     return allows_a8(policy) && shape.uses_a8(min_tokens, max_tokens)
-               ? fp8_a8_workspace_capacity_bytes(max_tokens, k)
+               ? fp8_a8_workspace_capacity_bytes(
+                     max_tokens, k,
+                     shape.partial_capacity_bytes ? shape.partial_capacity_bytes(max_tokens) : 0)
                : 0;
 }
 
@@ -37,7 +39,9 @@ void fp8_dispatch(const Tensor& x, const Weight& weight, Tensor& out, LinearPoli
     if (workspace == nullptr)
         throw std::invalid_argument("fp8 A8 linear requires caller workspace");
     auto scope         = workspace->scope();
-    const auto scratch = allocate_fp8_a8_workspace(*workspace, x.ne[1], weight.k);
+    const auto scratch = allocate_fp8_a8_workspace(
+        *workspace, x.ne[1], weight.k,
+        shape.partial_capacity_bytes ? shape.partial_capacity_bytes(x.ne[1]) : 0);
     shape.a8(x, weight, out, scratch, stream);
 }
 } // namespace ninfer::ops::detail

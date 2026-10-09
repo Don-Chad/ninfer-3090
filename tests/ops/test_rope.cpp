@@ -229,8 +229,9 @@ int verify_padding(const std::string& label, const std::vector<std::uint16_t>& s
     return 0;
 }
 
-int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_position,
-                  int q_padding = 0, int k_padding = 0, int lane_width = 0, bool graph = false) {
+int run_pair_case(DeviceExecutionView execution, const Geometry& geometry, int q_heads, int k_heads,
+                  int first_position, int q_padding = 0, int k_padding = 0, int lane_width = 0,
+                  bool graph = false) {
     constexpr std::uint16_t kPadding = 0x3f81U;
     const int q_dense_per_token      = geometry.head_dim * q_heads;
     const int k_dense_per_token      = geometry.head_dim * k_heads;
@@ -251,8 +252,9 @@ int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_
     if (lane_width != 0) {
         for (int axis = 0; axis < geometry.axes; ++axis)
             for (int t = 0; t < geometry.tokens; ++t)
-                positions[axis * geometry.tokens + t] = first_position +
-                    1009 * (t / lane_width) + 97 * axis + (2 * axis + 1) * (t % lane_width);
+                positions[axis * geometry.tokens + t] = first_position + 1009 * (t / lane_width) +
+                                                        97 * axis +
+                                                        (2 * axis + 1) * (t % lane_width);
     }
     const auto q_expected = rope_oracle(q, positions, geometry, q_heads);
     const auto k_expected = rope_oracle(k, positions, geometry, k_heads);
@@ -270,7 +272,7 @@ int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_
     q_tensor.nb[2] = static_cast<std::int64_t>(q_stride) * sizeof(std::uint16_t);
     k_tensor.nb[2] = static_cast<std::int64_t>(k_stride) * sizeof(std::uint16_t);
 
-    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor, nullptr);
+    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor, execution);
     cuda_synchronize();
 
     if (graph) {
@@ -279,14 +281,15 @@ int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_
         cudaGraphExec_t executable;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
-        ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor, stream);
+        ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor,
+                  execution.on_stream(stream));
         CUDA_CHECK(cudaStreamEndCapture(stream, &captured));
         CUDA_CHECK(cudaGraphInstantiate(&executable, captured, nullptr, nullptr, 0));
         for (int replay = 0; replay < 2; ++replay) {
             CUDA_CHECK(cudaMemcpyAsync(q_device.data(), q_storage.data(), q_device.bytes(),
-                cudaMemcpyHostToDevice, stream));
+                                       cudaMemcpyHostToDevice, stream));
             CUDA_CHECK(cudaMemcpyAsync(k_device.data(), k_storage.data(), k_device.bytes(),
-                cudaMemcpyHostToDevice, stream));
+                                       cudaMemcpyHostToDevice, stream));
             CUDA_CHECK(cudaGraphLaunch(executable, stream));
             CUDA_CHECK(cudaStreamSynchronize(stream));
         }
@@ -321,7 +324,8 @@ int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_
     return failures;
 }
 
-int run_single_case(const Geometry& geometry, int heads, int first_position, int padding = 0) {
+int run_single_case(DeviceExecutionView execution, const Geometry& geometry, int heads,
+                    int first_position, int padding = 0) {
     constexpr std::uint16_t kPadding = 0x3f81U;
     const int dense_per_token        = geometry.head_dim * heads;
     const int token_stride           = dense_per_token + padding;
@@ -341,7 +345,7 @@ int run_single_case(const Geometry& geometry, int heads, int first_position, int
     Tensor position_tensor(position_device.data(), DType::I32, {geometry.tokens, geometry.axes});
     Tensor tensor(device.data(), DType::BF16, {geometry.head_dim, heads, geometry.tokens});
     tensor.nb[2] = static_cast<std::int64_t>(token_stride) * sizeof(std::uint16_t);
-    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, tensor, nullptr);
+    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, tensor, execution);
     cuda_synchronize();
 
     const auto got          = from_device<std::uint16_t>(device.data(), storage.size());
@@ -361,7 +365,7 @@ int run_single_case(const Geometry& geometry, int heads, int first_position, int
     return failures;
 }
 
-int run_vision_packed_case() {
+int run_vision_packed_case(DeviceExecutionView execution) {
     constexpr int kHeadDim = 72;
     constexpr int kHeads   = 16;
     constexpr int kTokens  = 11;
@@ -402,7 +406,7 @@ int run_vision_packed_case() {
     Tensor k_tensor(packed_data + kPlane, DType::BF16, {kHeadDim, kHeads, kTokens});
     q_tensor.nb[2] = static_cast<std::int64_t>(kStride) * sizeof(std::uint16_t);
     k_tensor.nb[2] = static_cast<std::int64_t>(kStride) * sizeof(std::uint16_t);
-    ops::rope(position_tensor, kHeadDim, kVisionTheta, q_tensor, k_tensor, nullptr);
+    ops::rope(position_tensor, kHeadDim, kVisionTheta, q_tensor, k_tensor, execution);
     cuda_synchronize();
 
     const auto got = from_device<std::uint16_t>(packed_device.data(), packed.size());
@@ -447,34 +451,53 @@ int main() {
         return 77;
     }
 
-    int failures = 0;
+    DeviceContext device;
+    const auto execution = device.execution_view().on_stream(nullptr);
+    int failures         = 0;
 
     // Text pair form: both registered checkpoint geometries, decode/prefill, and 1-D/MRoPE.
     for (int axes : {1, 3}) {
         for (int width : {2, 7, 16}) {
             for (int batch : {1, 8}) {
-                failures += run_pair_case({"27b dflash2 lanes", 256, 64, axes, width * batch, kTextTheta},
-                    24, 4, 131072, batch == 8 ? 16 : 0, batch == 8 ? 8 : 0,
-                    width, width == 16 && batch == 8);
+                failures += run_pair_case(
+                    execution, {"27b dflash2 lanes", 256, 64, axes, width * batch, kTextTheta}, 24,
+                    4, 131072, batch == 8 ? 16 : 0, batch == 8 ? 8 : 0, width,
+                    width == 16 && batch == 8);
             }
         }
     }
-    failures += run_pair_case({"27b text decode", 256, 64, 1, 1, kTextTheta}, 24, 4, 31);
-    failures += run_pair_case({"27b text mrope prefill", 256, 64, 3, 128, kTextTheta}, 24, 4, 4096);
+    failures += run_pair_case(execution, {"27b text decode", 256, 64, 1, 1, kTextTheta}, 24, 4, 31);
+    failures += run_pair_case(execution, {"27b text mrope prefill", 256, 64, 3, 128, kTextTheta},
+                              24, 4, 4096);
+    failures += run_pair_case(
+        execution, {"35b text native-context tail", 256, 64, 1, 7, kTextTheta}, 16, 2, 262'137);
     failures +=
-        run_pair_case({"35b text native-context tail", 256, 64, 1, 7, kTextTheta}, 16, 2, 262'137);
-    failures += run_pair_case({"35b text mrope", 256, 64, 3, 7, kTextTheta}, 16, 2, 2048, 16, 8);
+        run_pair_case(execution, {"35b text mrope", 256, 64, 3, 7, kTextTheta}, 16, 2, 2048, 16, 8);
+
+    // Exercise both public forms on either side of the large-block residency boundary.
+    const int large_block_capacity = execution.multiprocessor_count * 6;
+    for (int tokens : {large_block_capacity, large_block_capacity + 1}) {
+        failures += run_pair_case(execution,
+                                  {"27b text residency boundary", 256, 64, 1, tokens, kTextTheta},
+                                  24, 4, 8192);
+        failures += run_single_case(
+            execution, {"27b text mrope residency boundary", 256, 64, 3, tokens, kTextTheta}, 24,
+            8192);
+    }
 
     // MTP bulk K append uses the single-tensor form; proposal tail uses the pair form above.
-    failures += run_single_case({"27b mtp k mrope", 256, 64, 3, 128, kTextTheta}, 4, 8192);
-    failures += run_single_case({"35b mtp k text", 256, 64, 1, 5, kTextTheta}, 2, 16384, 8);
+    failures +=
+        run_single_case(execution, {"27b mtp k mrope", 256, 64, 3, 128, kTextTheta}, 4, 8192);
+    failures +=
+        run_single_case(execution, {"35b mtp k text", 256, 64, 1, 5, kTextTheta}, 2, 16384, 8);
 
-    failures += run_vision_packed_case();
+    failures += run_vision_packed_case(execution);
 
     // DFlash proposal consumes 2..16 tokens; context append uses the single-K form.
-    failures += run_pair_case({"35b dflash proposal", 128, 128, 1, 16, kTextTheta}, 32, 8, 262'128);
-    failures +=
-        run_single_case({"35b dflash context k", 128, 128, 1, 128, kTextTheta}, 8, 131'072, 16);
+    failures += run_pair_case(execution, {"35b dflash proposal", 128, 128, 1, 16, kTextTheta}, 32,
+                              8, 262'128);
+    failures += run_single_case(execution, {"35b dflash context k", 128, 128, 1, 128, kTextTheta},
+                                8, 131'072, 16);
 
     std::cout << (failures == 0 ? "OK" : "FAIL") << " rope correctness\n";
     return failures == 0 ? 0 : 1;

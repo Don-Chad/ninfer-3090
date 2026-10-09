@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/device.h"
 #include "models/qwen3_5/execution/parameters.h"
 
 namespace ninfer::models::qwen3_5::execution {
@@ -9,7 +10,7 @@ namespace ninfer::models::qwen3_5::execution {
                                               std::int32_t last, bool mtp = false,
                                               bool verify = false);
 void ffn(const Tensor& hidden, const FfnParameters& parameters, Tensor& residual,
-         const ops::SparseMoeHints& hints, WorkspaceArena& workspace, cudaStream_t stream,
+         const ops::SparseMoeHints& hints, WorkspaceArena& workspace, DeviceExecutionView execution,
          bool mtp = false, bool verify = false);
 
 } // namespace ninfer::models::qwen3_5::execution

@@ -163,12 +163,10 @@ void gdn_input_proj_conv_snapshot(const Tensor& x, const Weight& qk_weight,
  * [12288,2048], NVFP4 BlockScaleK16M128x4 [16384,5120], and FP8_E4M3FN_ROW_BF16 RowScale
  * [16384,5120], all in q/k/value/z row order. All policies permit Q8 A16. NVFP4 uses A16
  * under A16Only/AllowA8; AllowA4 may use A4. FP8 may use A8 under AllowA8/AllowA4. B=1 accepts
- * every positive W for FP8; the batched domain is B=2..8 and W=1..16. For FP8 B=1, A16 is fused at
- * W=1..3 and W=7..10 and materialized otherwise; AllowA8 uses the same winners through W=9 and A8
- * from W=10. Batched AllowA8 uses A8 when B*W>=9. Tensor operands, the complete FP8 parent, and
- * live workspace must be mutually non-overlapping, except that the read-only initial_state_slots
- * and snapshot_base_slots selectors may alias each other; same-row state-slot overlap remains
- * governed by the snapshot state contract.
+ * every positive W for FP8; the batched domain is B=2..8 and W=1..16. Tensor operands, the complete
+ * FP8 parent, and live workspace must be mutually non-overlapping, except that the read-only
+ * initial_state_slots and snapshot_base_slots selectors may alias each other; same-row state-slot
+ * overlap remains governed by the snapshot state contract.
  */
 void gdn_input_proj_conv_snapshot(const Tensor& x, const Weight& query_key_value_z_weight,
                                   const Tensor& conv_weight, Tensor& conv_states,

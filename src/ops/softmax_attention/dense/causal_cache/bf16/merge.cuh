@@ -13,7 +13,7 @@ __device__ __forceinline__ float
 bf16_kv_merge_statistics(const float* partial_m, const float* partial_l, int q_head, int token,
                          int tokens, int splits, float* weights, float* warp_sums, float* scalars) {
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
-    const auto index   = bf16_kv_stat_index<Geometry>(q_head, token, tid, tokens);
+    const auto index   = causal_stat_index<Geometry>(q_head, token, tid, tokens);
     const float m      = tid < splits ? partial_m[index] : -CUDART_INF_F;
     const float warp_m = warp_max(m);
     if (lane == 0) warp_sums[warp] = warp_m;
@@ -71,7 +71,7 @@ __launch_bounds__(Schedule::kThreads) __global__
         const int absolute_column = token;
         if (absolute_column >= live_columns) {
             if (tid < DChunk && d_start + tid < Geometry::kHeadDim)
-                out[bf16_kv_q_index<Geometry>(q_head, d_start + tid, output_column)] =
+                out[causal_q_index<Geometry>(q_head, d_start + tid, output_column)] =
                     __float2bfloat16(0.0f);
             return;
         }
@@ -101,12 +101,12 @@ __launch_bounds__(Schedule::kThreads) __global__
     for (int split = 0; split < active_split_count; ++split) {
         if (weights[split] != 0.0f)
             numerator +=
-                partial_acc[bf16_kv_partial_index<Geometry>(q_head, d, token, split, tokens)] *
+                partial_acc[causal_partial_index<Geometry>(q_head, d, token, split, tokens)] *
                 weights[split];
     }
 
     const float value = (head_l > 0.0f) ? numerator / head_l : 0.0f;
-    out[bf16_kv_q_index<Geometry>(q_head, d, output_column)] = __float2bfloat16(value);
+    out[causal_q_index<Geometry>(q_head, d, output_column)] = __float2bfloat16(value);
 }
 
 

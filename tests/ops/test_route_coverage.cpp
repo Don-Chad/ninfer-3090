@@ -198,7 +198,17 @@ int main() {
              })},
             {"linear_add.q5.mma.r64.c16.cta_collective_residual",
              "linear_add.q5.mma.r64.c24.cta_collective_residual",
-             "linear_add.q5.mma.r64.c32.cta_collective_residual"}));
+             "linear_add.q5.mma.r64.c32.cta_collective_residual",
+             "linear_add.q5.sliced.r16.t8.w4.s2.residual",
+             "linear_add.q5.sliced.r16.t16.w4.s2.residual",
+             "linear_add.q5.sliced.r16.t24.w4.s2.residual",
+             "linear_add.q5.sliced.r32.t32.w4.s2.residual",
+             "linear_add.q5.sliced.r32.t24.w4.s2.pairwise.residual",
+             "linear_add.q5.sliced.r32.t32.w4.s1.residual",
+             "linear_add.q5.sliced.r32.t32.w2.s2.residual",
+             "linear_add.q5.sliced.r32.t64.w2.s1.residual",
+             "linear_add.q5.mma.r32.t32.k128.residual",
+             "linear_add.q5.mma.r32.t128.residual"}));
 
     using Q4Q5Fn = std::function<detail::Q4Q5AttnInputScheduleId(std::int32_t)>;
     reports.push_back(
@@ -212,6 +222,7 @@ int main() {
                        })},
                        {"attn_input_proj.q4_q5.grouped_homogeneous_pair.mma.r32.c32.s4",
                         "attn_input_proj.q4_q5.grouped_homogeneous_pair.mma.r32.c64.s4",
+                        "attn_input_proj.q4_q5.mixed.r32.c32.s2",
                         "attn_input_proj.q4_q5.pair.r32.c64.s3",
                         "attn_input_proj.q4_q5.pair.r32.c64.s4",
                         "attn_input_proj.q4_q5.parent_split_fixed"}));
@@ -261,14 +272,18 @@ int main() {
     //                          when the small-T MMA took 3..32 at up to 2.9x
     //                          (q5_linear_add_plan.cpp). GemvResidual (unrouted since split2 took
     //                          T=1) was deleted upstream in the 2026-09-17 catch-up: 31 -> 30.
-    //   q4_q5_attn_input    4  grouped_r32_c64_s4, pair_r32_c64_s3, pair_r32_c64_s4 -- the family
+    //                          The 2026-10-09 catch-up added upstream's ten sliced/MMA residual
+    //                          tiles (13 here); this fork's measured table keeps split2 and the
+    //                          small-T MMA, so none of them is routed on sm_86: 30 -> 41.
+    //   q4_q5_attn_input    5  grouped_r32_c64_s4, pair_r32_c64_s3, pair_r32_c64_s4 -- the family
     //                          whose dispatch held both switch bugs the catch-up merge shipped --
-    //                          and ParentSplitFixed since 2026-09-11, when the small-T MMA took
-    //                          1..8 from it (q4_q5_attn_input_plan.cpp).
+    //                          ParentSplitFixed since 2026-09-11, when the small-T MMA took
+    //                          1..8 from it (q4_q5_attn_input_plan.cpp), and upstream's
+    //                          MixedR32C32S2 from the 2026-10-09 catch-up, never measured here.
     //
     // All of them are kept on purpose: deleting an upstream schedule costs merge effort at every
     // future catch-up for no measured gain here. The point is that the set is written down.
-    constexpr std::size_t kExpectedUnrouted = 30;
+    constexpr std::size_t kExpectedUnrouted = 41;
     if (total != kExpectedUnrouted) {
         std::cerr << "route coverage changed: " << total << " unrouted schedules, expected "
                   << kExpectedUnrouted

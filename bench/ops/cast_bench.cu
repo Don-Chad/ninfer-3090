@@ -45,7 +45,7 @@ void run(std::int32_t patches, bool control, bool profile_once) {
     const std::int64_t vectors = count / 4;
     DeviceBuffer source(static_cast<std::size_t>(count) * sizeof(float));
     DeviceBuffer destination(static_cast<std::size_t>(count) * sizeof(std::uint16_t));
-    CUDA_CHECK(cudaMemset(source.p, 0x3c, source.bytes));
+    CUDA_CHECK(fixture::fill_values(static_cast<float*>(source.p), count, 101U, -2.F, 2.F));
     CUDA_CHECK(cudaMemset(destination.p, 0, destination.bytes));
     Tensor source_tensor(source.p, DType::FP32, {kD, patches});
     Tensor destination_tensor(destination.p, DType::BF16, {kD, patches});

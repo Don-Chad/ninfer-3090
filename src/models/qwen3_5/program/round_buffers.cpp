@@ -182,8 +182,11 @@ void complete_round_state_layout(LayoutBuilder& builder, RoundStateLayout& layou
                                               "MTP decode autoregressive valid columns");
     }
     if (is_masked_draft_backend(layout.spec.backend)) {
-        layout.dflash_prefill.emplace().produced_count = i32(1, "DFlash prefill produced count");
-        DFlashDecodeStateLayout& decode                = layout.dflash_decode.emplace();
+        DFlashPrefillStateLayout& prefill = layout.dflash_prefill.emplace();
+        prefill.ingress =
+            builder.add(sizeof(DFlashPrefillIngress), kArenaAlign, "DFlash prefill ingress");
+        prefill.local_append_count      = i32(1, "DFlash prefill local append count");
+        DFlashDecodeStateLayout& decode = layout.dflash_decode.emplace();
         decode.ingress =
             builder.add(sizeof(DFlashDecodeIngress), kArenaAlign, "DFlash decode ingress");
         decode.egress =
@@ -229,7 +232,16 @@ MtpPrefillState::MtpPrefillState(DeviceSpan backing, const MtpPrefillStateLayout
       target_positions(layout.target_positions.bind(backing)) {}
 
 DFlashPrefillState::DFlashPrefillState(DeviceSpan backing, const DFlashPrefillStateLayout& layout)
-    : produced_count(layout.produced_count.bind(backing)) {}
+    : ingress(layout.ingress.bind(backing)),
+      local_append_count(layout.local_append_count.bind(backing)) {
+    static_assert(std::is_standard_layout_v<DFlashPrefillIngress>);
+    const auto scalar = [&](std::size_t offset) {
+        return Tensor(static_cast<unsigned char*>(ingress.data) + offset, DType::I32, {1});
+    };
+    append_count           = scalar(offsetof(DFlashPrefillIngress, append_count));
+    state_destination_slot = scalar(offsetof(DFlashPrefillIngress, state_destination_slot));
+    full_kv_table_row      = scalar(offsetof(DFlashPrefillIngress, full_kv_table_row));
+}
 
 MtpDecodeState::MtpDecodeState(DeviceSpan backing, const MtpDecodeStateLayout& layout,
                                std::uint32_t batch_capacity, std::uint32_t draft_window) {

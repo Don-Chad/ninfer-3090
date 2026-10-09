@@ -5,4 +5,8 @@ target_sources(ninfer_ops PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/gated_delta_net/state_convert.cu"
   "${CMAKE_CURRENT_LIST_DIR}/gated_delta_net/chunked/prepare.cu"
   "${CMAKE_CURRENT_LIST_DIR}/gated_delta_net/chunked/recurrence.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/kimi_delta_attention/kimi_delta_attention.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/kimi_delta_attention/recurrent.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/kimi_delta_attention/chunked/prepare.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/kimi_delta_attention/chunked/recurrence.cu"
 )

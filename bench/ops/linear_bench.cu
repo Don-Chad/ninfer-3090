@@ -45,6 +45,9 @@ namespace {
 // for the RTX 5090 before, which made every percentage column here wrong by 1.91x on sm_86.
 inline double dram_spec_gbs() { return bench::device_specs().dram_spec_gbs; }
 inline double sustained_read_gbs() { return bench::device_specs().sustained_read_gbs; }
+// Unit-scale block-scaled FP8 uses the full-rate FP32 accumulation path, the FP8 FP16-accumulate
+// rate (RTX 5090: 838 TFLOP/s); architectures without FP8 tensor cores report NaN.
+inline double mxfp8_f32acc_tflops() { return bench::device_specs().fp8_f16acc_tflops; }
 
 constexpr std::uint64_t kDefaultFlushBytes = 256ULL << 20;
 constexpr int kDefaultWarmup               = 3;
@@ -183,19 +186,6 @@ struct LinearBenchWeight {
     [[nodiscard]] std::uint64_t model_weight_bytes() const noexcept { return model_bytes; }
 };
 
-// A short repeating ramp is L2- and compression-friendly in a way real activations are not; hash
-// each element's index instead so no window of the buffer repeats (see bench::make_bf16).
-__global__ void fill_bf16_kernel(__nv_bfloat16* values, std::uint64_t count, std::uint32_t seed) {
-    const std::uint64_t begin  = blockIdx.x * static_cast<std::uint64_t>(blockDim.x) + threadIdx.x;
-    const std::uint64_t stride = gridDim.x * static_cast<std::uint64_t>(blockDim.x);
-    for (std::uint64_t i = begin; i < count; i += stride) {
-        const std::uint32_t bits =
-            bench::detail::bench_fixture_hash32(static_cast<std::uint32_t>(i) ^ seed);
-        const float value = static_cast<float>(bits >> 8) * (1.0F / 16777216.0F) - 0.5F;
-        values[i]         = __float2bfloat16(value);
-    }
-}
-
 std::uint64_t checked_add(std::uint64_t a, std::uint64_t b, const char* label) {
     if (a > std::numeric_limits<std::uint64_t>::max() - b) {
         throw std::overflow_error(std::string(label) + " overflows uint64");
@@ -214,12 +204,6 @@ std::uint64_t align_up(std::uint64_t value, std::uint64_t alignment) {
     if (alignment == 0) { throw std::invalid_argument("alignment must be positive"); }
     return checked_mul((checked_add(value, alignment - 1, "aligned size") / alignment), alignment,
                        "aligned size");
-}
-
-int launch_grid(std::uint64_t elements) {
-    constexpr int block        = 256;
-    const std::uint64_t blocks = (elements + block - 1) / block;
-    return static_cast<int>(std::max<std::uint64_t>(1, std::min<std::uint64_t>(blocks, 65535)));
 }
 
 std::string lower(std::string_view text) {
@@ -540,16 +524,14 @@ LinearBenchWeight make_weight(QType qtype, std::int32_t n, std::int32_t k) {
         throw std::overflow_error("padded K does not fit int32");
     }
     bench::PackedQuantizedWeight packed =
-        bench::make_row_split_weight(qtype, n, k, static_cast<std::int32_t>(padded_k_u64),
-                                     bench::QuantizedWeightFill{0x31, 0xa5, 0x3c00});
+        bench::make_row_split_weight(qtype, n, k, static_cast<std::int32_t>(padded_k_u64), 501U);
     const std::uint64_t model_bytes = packed.model_weight_bytes();
     return {std::move(packed.storage), packed.weight, model_bytes};
 }
 
 void fill_activation(DeviceBuffer& buffer, std::uint64_t elements, cudaStream_t stream) {
-    fill_bf16_kernel<<<launch_grid(elements), 256, 0, stream>>>(
-        static_cast<__nv_bfloat16*>(buffer.p), elements, 101U);
-    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(bench::fixture::fill_values(static_cast<__nv_bfloat16*>(buffer.p), elements, 101U,
+                                           -0.5F, 0.5F, stream));
 }
 
 std::string join_labels(const std::vector<std::string>& labels) {
@@ -564,19 +546,26 @@ std::string join_labels(const std::vector<std::string>& labels) {
 double registered_tensor_peak_tflops(const BenchPoint& point, const char*& profile) {
     // Report Tensor Core utilization only when the exact registered problem and extent determine
     // that the public route executes the named MMA profile.
+    if (point.qtype == QType::FP8_E4M3FN_ROW_BF16 &&
+        (((point.n == 14336 || point.n == 16384) && point.k == 5120) ||
+         (point.n == 5120 && (point.k == 6144 || point.k == 17408))) &&
+        point.t > 1 && (point.policy == LinearPolicy::A16Only || point.t <= 16)) {
+        profile = "BF16_F32ACC";
+        return bench::device_specs().bf16_f32acc_tflops;
+    }
     const bool fp8_problem =
         (point.n == 14336 && point.k == 5120) || (point.n == 16384 && point.k == 5120) ||
         (point.n == 34816 && point.k == 5120) || (point.n == 5120 && point.k == 6144) ||
         (point.n == 5120 && point.k == 17408);
     const bool fp8_tensor_route =
-        (point.n == 14336 && point.k == 5120 && point.t >= 12) ||
-        (point.n == 16384 && point.k == 5120 && point.t >= 11) ||
-        (point.n == 34816 && point.k == 5120 && (point.t == 1 || point.t >= 5)) ||
-        (point.n == 5120 && (point.k == 6144 || point.k == 17408) && point.t >= 25);
+        (point.n == 14336 && point.k == 5120 && point.t >= 17) ||
+        (point.n == 16384 && point.k == 5120 && point.t >= 17) ||
+        (point.n == 34816 && point.k == 5120 && point.t >= 5) ||
+        (point.n == 5120 && (point.k == 6144 || point.k == 17408) && point.t >= 17);
     if (point.qtype == QType::FP8_E4M3FN_ROW_BF16 && point.policy == LinearPolicy::AllowA8 &&
         fp8_problem && fp8_tensor_route) {
-        profile = "FP8_F32ACC";
-        return bench::device_specs().fp8_f32acc_tflops;
+        profile = "MXFP8_F32ACC";
+        return mxfp8_f32acc_tflops();
     }
     // Groupwise-int weights on an A16 policy bottom out in the dequantizing GEMM, which issues
     // mma_bf16 with f32 accumulate. Reporting that ceiling is what makes it visible how much
@@ -651,8 +640,8 @@ Result make_result(const BenchPoint& point, const LinearBenchWeight& weight,
     return result;
 }
 
-std::vector<Result> run_group(const PointGroup& group, const Options& opt, DeviceBuffer& flush,
-                              cudaStream_t stream) {
+std::vector<Result> run_group(const PointGroup& group, const Options& opt,
+                              bench::L2FlushBuffer& flush, cudaStream_t stream) {
     const std::int32_t max_t =
         std::max_element(group.points.begin(), group.points.end(),
                          [](const BenchPoint& a, const BenchPoint& b) { return a.t < b.t; })
@@ -716,7 +705,7 @@ std::vector<Result> run_group(const PointGroup& group, const Options& opt, Devic
     return results;
 }
 
-void run_profile(const BenchPoint& point, const Options& opt, DeviceBuffer& flush,
+void run_profile(const BenchPoint& point, const Options& opt, bench::L2FlushBuffer& flush,
                  cudaStream_t stream) {
     const std::uint64_t x_elements =
         checked_mul(static_cast<std::uint64_t>(point.k), point.t, "activation allocation");
@@ -781,12 +770,13 @@ void print_header(const Options& opt) {
     CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
     std::printf("# actual_gpu=%s sm=%d%d reference_gpu=%s\n", properties.name, properties.major,
                 properties.minor, bench::device_specs().reference);
-    std::printf("# dram_spec_gbs=%.1f sustained_read_gbs=%.1f cache=cold\n", dram_spec_gbs(),
-                sustained_read_gbs());
-    std::printf("# dense_tensor_peak bf16_f32acc=%.1f int8=%.1f fp8_f16acc=%.1f fp8_f32acc=%.1f\n",
+    std::printf("# dram_spec_gbs=%.1f sustained_read_gbs=%.1f cache=%s\n", dram_spec_gbs(),
+                sustained_read_gbs(), opt.graph_calls == 1 ? "cold" : "cold-before-graph-bundle");
+    std::printf("# dense_tensor_peak bf16_f32acc=%.1f int8=%.1f fp8_f16acc=%.1f fp8_f32acc=%.1f "
+                "mxfp8_f32acc=%.1f\n",
                 bench::device_specs().bf16_f32acc_tflops, bench::device_specs().int8_tops,
-                bench::device_specs().fp8_f16acc_tflops,
-                bench::device_specs().fp8_f32acc_tflops);
+                bench::device_specs().fp8_f16acc_tflops, bench::device_specs().fp8_f32acc_tflops,
+                mxfp8_f32acc_tflops());
 }
 
 void print_results(const std::vector<Result>& results) {
@@ -884,7 +874,7 @@ int main(int argc, char** argv) {
 
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(opt.flush_bytes);
+        bench::L2FlushBuffer flush(opt.flush_bytes);
         const std::vector<BenchPoint> points = expand_points(opt);
 
         print_header(opt);

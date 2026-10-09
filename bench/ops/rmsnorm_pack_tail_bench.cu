@@ -40,8 +40,9 @@ Options parse(int argc, char** argv) {
 }
 
 void run(int width, int batch, const Options& options, cudaStream_t stream) {
-    const int columns  = (width - 1) * batch;
-    DeviceBuffer input = make_bf16(5120ULL * width * batch), weight = make_bf16(5120),
+    const int columns   = (width - 1) * batch;
+    DeviceBuffer input  = make_bf16(5120ULL * width * batch, 101U),
+                 weight = make_bf16(5120, 103U, .8F, 1.2F),
                  output = make_zeros(5120ULL * columns * 2);
     Tensor x(input.p, DType::BF16, {5120, width, batch}), w(weight.p, DType::BF16, {5120}),
         y(output.p, DType::BF16, {5120, columns});

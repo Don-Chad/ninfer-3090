@@ -113,7 +113,7 @@ int main(int argc, char** argv) {
     }
 
     const std::int32_t max_tokens = *std::max_element(tokens.begin(), tokens.end());
-    ninfer::DeviceBuffer flush(kFlushBytes);
+    ninfer::bench::L2FlushBuffer flush(kFlushBytes);
     cudaStream_t stream = nullptr;
     cudaDeviceProp properties{};
     cudaGetDeviceProperties(&properties, 0);
@@ -125,7 +125,7 @@ int main(int argc, char** argv) {
 
     for (const Profile& profile : kProfiles) {
         ninfer::bench::PackedQuantizedWeight packed = ninfer::bench::make_row_split_weight(
-            profile.qtype, profile.rows, profile.cols, profile.cols, {0x31, 0xa5, 0x3c00});
+            profile.qtype, profile.rows, profile.cols, profile.cols, 0x52U);
         ninfer::DeviceBuffer input(static_cast<std::size_t>(profile.cols) * max_tokens * 2);
         ninfer::DeviceBuffer output(static_cast<std::size_t>(profile.out_rows) * max_tokens * 2);
         ninfer::DeviceBuffer reference(static_cast<std::size_t>(profile.out_rows) * max_tokens * 2);

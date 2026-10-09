@@ -576,7 +576,11 @@ live KV 与 State 的 lane；未启用时每个 prefill unit 只多一次 relaxe
   sampling 和 MTP 留在 rank 0，residual 经 `StageLink` 逐 stage 传递并由最后一个 stage 送回。KV 容量取各设备
   可承载页数的最小值。设计与限制见 [pipeline-parallel-plan.md](pipeline-parallel-plan.md)。
 
-容量查询消费与执行同源的逐层参数和 Use。Allocation scope 同时用于布局计算与实际执行；
+Op 拥有其声明执行范围内的 Graph 更新兼容性；Program 捕获完整执行单元，并在启动时验证同类
+定义的更新。长度档位用于限制预留资源，不等同于拓扑类别。Program 不复制 target attention 的
+私有 kernel 分派边界；draft 等其他 Op 的实际拓扑要求仍由完整执行单元分别处理。
+
+容量查询消费与执行同源的逐层参数、Use 和设备容量信息。Allocation scope 同时用于布局计算与实际执行；
 顺序互斥的 scratch 取峰值，跨阶段仍活跃的数据计入完整存活期。Vision handoff 保留至 Text
 及所选 MTP 的最后消费者，speculative pending features 和 verify records 保留至对应提交边界。
 

@@ -225,6 +225,12 @@ const char* q4_q5_gdn_input_schedule_name(Q4Q5GdnInputScheduleId schedule) noexc
         return "gdn_input_proj.q4_q5.grouped_mixed.mma.r64.c128";
     case Q4Q5GdnInputScheduleId::SmallTMma:
         return "gdn_input_proj.q4_q5.small_t.mma";
+    case Q4Q5GdnInputScheduleId::GroupedMixedMmaR32C32S2:
+        return "gdn_input_proj.q4_q5.grouped_mixed.mma.r32.c32.s2";
+    case Q4Q5GdnInputScheduleId::GroupedMixedMmaR32C64S4:
+        return "gdn_input_proj.q4_q5.grouped_mixed.mma.r32.c64.s4";
+    case Q4Q5GdnInputScheduleId::GroupedMixedMmaR64C128S2:
+        return "gdn_input_proj.q4_q5.grouped_mixed.mma.r64.c128.s2";
     }
     return "gdn_input_proj.q4_q5.unknown";
 }
@@ -277,7 +283,11 @@ void q4_q5_gdn_input_execute_schedule(Q4Q5GdnInputScheduleId schedule, const Ten
         q4_q5_gdn_input_grouped_mma_c64_launch(x, qk_weight, value_z_weight, qkv, z, stream);
         return;
     case Q4Q5GdnInputScheduleId::GroupedMixedMmaR64C128:
-        q4_q5_gdn_input_grouped_mma_launch(x, qk_weight, value_z_weight, qkv, z, stream);
+    case Q4Q5GdnInputScheduleId::GroupedMixedMmaR32C32S2:
+    case Q4Q5GdnInputScheduleId::GroupedMixedMmaR32C64S4:
+    case Q4Q5GdnInputScheduleId::GroupedMixedMmaR64C128S2:
+        q4_q5_gdn_input_grouped_mma_launch(x, qk_weight, value_z_weight, qkv, z, schedule,
+                                           stream);
         return;
     case Q4Q5GdnInputScheduleId::SmallTMma: {
         Tensor qk    = qkv.slice(0, 0, problem.qk_rows);

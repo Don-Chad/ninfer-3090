@@ -172,7 +172,8 @@ DeviceBuffer make_logits(int cols) {
     for (int col = 0; col < cols; ++col) {
         const int hot = (17 + col * 7919) % kTokenDomain;
         for (int row = 0; row < kPhysicalRows; ++row) {
-            float value = -8.0f + static_cast<float>((row * 17 + col * 31) % 4096) / 4096.0f;
+            float value = fixture::uniform(static_cast<std::uint64_t>(col) * kPhysicalRows + row,
+                                           101U, -8.F, -7.F);
             if (row == hot) { value = 8.0f; }
             if (row >= kTokenDomain) { value = 20.0f; }
             host[static_cast<std::size_t>(col) * kPhysicalRows + row] = f32_to_bf16(value);
@@ -406,7 +407,7 @@ void run_dflash2(DeviceBuffer& logits, DeviceBuffer& counts, const Options& opti
     graph.capture(stream, [&](cudaStream_t s) {
         for (int i = 0; i < options.graph_calls; ++i) launch(s);
     });
-    DeviceBuffer flush(kFlushBytes);
+    bench::L2FlushBuffer flush(kFlushBytes);
     const ColdTiming timing =
         measure_cold_graph(graph, flush, stream, options.warmup, options.repeat);
     CUDA_CHECK(cudaStreamDestroy(stream));

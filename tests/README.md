@@ -184,6 +184,22 @@ tests serially. `NINFER_PREFIX_REAL_SCENARIO` selects a focused prefix scenario 
 `pressure-resume` or `concurrent`; the default is `all`. These integration checks
 use behavior and state accounting rather than another numerical path's generated tokens as a golden.
 
+The `attention` scenario checks the selected KV type, chunked prefill, concurrent Graph decode
+across a resource tier, prefix continuation, and workspace bounds:
+
+```bash
+NINFER_TEST_ARTIFACT=$PWD/out/qwen3_6_27b.ninfer \
+NINFER_PREFIX_REAL_SCENARIO=attention NINFER_TEST_KV_DTYPE=fp8 \
+NINFER_TEST_SPECULATIVE=mtp NINFER_TEST_BATCH=2 \
+  ./build/tests/ninfer_tests ninfer_qwen3_5_prefix_real_test
+```
+
+KV choices are `bf16`, `int8`, `fp8`, `nvfp4`, and `k8v4`; backend choices are `none`, `mtp`,
+`dflash`, and `dflash2`, requiring an artifact with the selected component. Batch defaults to 2;
+`NINFER_TEST_DRAFT_TOKENS` overrides the default MTP3 or DFlash7 block. The DFlash2-specific
+integration executable also accepts all five KV names as its fifth positional argument and rejects
+unknown names.
+
 The capability-evaluation coordinator has its own environment and unittest entry point:
 
 ```bash
@@ -239,11 +255,24 @@ broad additions without a concrete regression risk do not belong in the permanen
 
 ## DFlash2 Engine integration
 
-The real test uses an artifact containing DFlash2 and checks output budgets, speculative activity,
-penalty-enabled sampling, compact batches with unequal budgets, same-route same-seed replay,
-retained/fresh prefix behavior and absence of a full backend KV pool. A shared DFlash/DFlash2 fixture starts decode at token 63, verifies across the page
-boundary, stops after one target column at token 64, and checks the exact retained frontier and
-subsequent generation with and without reuse.
+The DFlash prefill regression checks actual KV contents after a StateImage fork and a conflicting
+decode binding, including shortened chunks and oversized local/full KV appends. It uses native
+Program storage and the production prefill route; select the draft component stored in the artifact:
+
+```bash
+cmake --build build -j --target ninfer_tests
+NINFER_TEST_ARTIFACT=out/qwen3_8_27b_nvfp4.ninfer \
+  build/tests/ninfer_tests ninfer_qwen3_5_dflash_prefill_real_test dflash2
+NINFER_TEST_ARTIFACT=out/qwen3_6_35b_a3b.ninfer \
+  build/tests/ninfer_tests ninfer_qwen3_5_dflash_prefill_real_test dflash
+```
+
+The Engine test uses an artifact containing DFlash2 and checks output budgets, speculative activity,
+forced thinking-control append, penalty-enabled sampling, compact batches with unequal budgets,
+same-route same-seed replay, retained/fresh prefix behavior and absence of a full backend KV pool.
+A shared DFlash/DFlash2 fixture starts decode at token 63, verifies across the page boundary, stops
+after one target column at token 64, and checks the exact retained frontier and subsequent generation
+with and without reuse.
 The KV Store test checks exact mapping and reservation accounting for the same transition.
 K>=7 also exercises a stop inside a licensed block; K=15 additionally checks oversized prefill,
 local ring wrap, and the logical context-capacity tail. Optional Vision runs image/video capture

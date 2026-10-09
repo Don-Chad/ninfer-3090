@@ -180,7 +180,7 @@ void ProgramImpl::prepare_graphs() {
             controls.push_back(io.mtp->target_input_ids);
             controls.push_back(io.mtp->target_positions);
         }
-        if (io.dflash_prefill) { controls.push_back(io.dflash_prefill->produced_count); }
+        if (io.dflash_prefill) { controls.push_back(io.dflash_prefill->local_append_count); }
         for (const Tensor& tensor : controls) {
             CUDA_CHECK(cudaMemsetAsync(tensor.data, 0, tensor.bytes(), device.stream));
         }

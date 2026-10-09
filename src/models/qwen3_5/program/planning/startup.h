@@ -97,9 +97,10 @@ struct SequencePlanningInputs {
     KvCacheStorage kv_storage               = KvCacheStorage::BFloat16;
     ProposalHead proposal_head              = ProposalHead::Full;
     models::LoadOptions features;
-    bool use_cuda_graph = true;
-    bool causal_scoring = false;
-    int device          = 0;
+    bool use_cuda_graph               = true;
+    bool causal_scoring               = false;
+    int device                        = 0;
+    std::int32_t multiprocessor_count = 0;
     ContextCacheOptions context_cache;
     // Main KV pages that stay allocated for the life of the Engine (injected graft prefixes). The
     // pool grows by this many so requests keep the capacity that was asked for.
@@ -123,9 +124,10 @@ struct SequencePlanImpl {
     KvCacheStorage kv_storage               = KvCacheStorage::BFloat16;
     ProposalHead proposal_head              = ProposalHead::Full;
     models::LoadOptions features;
-    bool use_cuda_graph = true;
-    bool causal_scoring = false;
-    int device          = 0;
+    bool use_cuda_graph               = true;
+    bool causal_scoring               = false;
+    int device                        = 0;
+    std::int32_t multiprocessor_count = 0;
     ContextCacheOptions context_cache;
     PersistentLayout persistent;
     WorkspacePlan workspace;

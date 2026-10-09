@@ -69,6 +69,13 @@ struct MtpDecodeEgress {
     std::array<std::int32_t, kMaximumConcurrency> next_extents{};
 };
 
+// Prefill binds the current chunk independently of the compact decode batch.
+struct DFlashPrefillIngress {
+    std::int32_t append_count           = 0;
+    std::int32_t state_destination_slot = 0;
+    std::int32_t full_kv_table_row      = 0;
+};
+
 // Stable pinned/device transfer formats for one exact-B DFlash transaction. The proposal is
 // produced and verified in the same round, so no draft state crosses the round boundary.
 struct DFlashDecodeIngress {
@@ -112,7 +119,8 @@ struct MtpPrefillStateLayout {
 };
 
 struct DFlashPrefillStateLayout {
-    TensorRegion produced_count;
+    LayoutRegion ingress;
+    TensorRegion local_append_count;
 };
 
 struct MtpDecodeStateLayout {
@@ -207,7 +215,12 @@ struct MtpPrefillState {
 };
 
 struct DFlashPrefillState {
-    Tensor produced_count;
+    DeviceSpan ingress;
+    Tensor append_count;
+    Tensor state_destination_slot;
+    Tensor full_kv_table_row;
+    // Oversized chunks retain only their tail locally; full KV still uses append_count.
+    Tensor local_append_count;
 
     DFlashPrefillState() = default;
     DFlashPrefillState(DeviceSpan backing, const DFlashPrefillStateLayout& layout);

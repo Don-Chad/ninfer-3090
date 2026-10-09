@@ -1,5 +1,5 @@
 #include "ops/linear/q5/q5_shapes.h"
-#include "ops/linear/q5/q5_ksplit_launch.cuh"
+#include "ops/linear/q5/q5_instance_launch.cuh"
 
 namespace ninfer::ops::detail {
 
@@ -22,17 +22,17 @@ namespace ninfer::ops::detail {
 // and would cost another compiled instance), and 65..80 keeps the 16-wide tile, which is 26%
 // ahead of the 32-wide one there.
 Q5Launch select_q5_n1024_k5120(std::int32_t tokens) {
-    if (tokens == 1) return launch_q5_split4_c1_k5120;
-    if (tokens <= 2) return launch_q5_ksplit<5120, 2, 4>;
-    if (tokens <= 3) return launch_q5_ksplit<5120, 3, 4>;
-    if (tokens <= 4) return launch_q5_ksplit<5120, 4, 4>;
-    if (tokens <= 5) return launch_q5_ksplit<5120, 5, 4>;
-    if (tokens <= 6) return launch_q5_ksplit<5120, 6, 4>;
-    if (tokens <= 32) return launch_q5_simt_r8_c4;
-    if (tokens <= 80) return launch_q5_mma_r64_c16;
-    if (tokens <= 448) return launch_q5_mma_r64_c32_s3;
-    if (tokens <= 704) return launch_q5_mma_r32_c128;
-    return launch_q5_mma_r64_c128;
+    if (tokens == 1) return launch_q5_a16_direct_r1_t1_w4_k5120;
+    if (tokens <= 2) return launch_q5_a16_direct_exact<5120, 2, 4>;
+    if (tokens <= 3) return launch_q5_a16_direct_exact<5120, 3, 4>;
+    if (tokens <= 4) return launch_q5_a16_direct_exact<5120, 4, 4>;
+    if (tokens <= 5) return launch_q5_a16_direct_exact<5120, 5, 4>;
+    if (tokens <= 6) return launch_q5_a16_direct_exact<5120, 6, 4>;
+    if (tokens <= 32) return launch_q5_a16_simt_r8_t4_w1_g16_s2;
+    if (tokens <= 80) return launch_q5_a16_mma_r64_t16_k64_wr16_wt8_s2_a2_b3;
+    if (tokens <= 448) return launch_q5_a16_mma_r64_t32_k64_wr16_wt16_s3_a3_b2;
+    if (tokens <= 704) return launch_q5_a16_mma_r32_t128;
+    return launch_q5_a16_mma_r64_t128;
 }
 
 } // namespace ninfer::ops::detail

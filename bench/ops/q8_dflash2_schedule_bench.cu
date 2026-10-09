@@ -45,7 +45,7 @@ constexpr std::int32_t kOutputRows  = 17408;
 void sweep_attn_input(const ninfer::bench::SweepOptions& base) {
     const std::int32_t max_tokens = *std::max_element(base.tokens.begin(), base.tokens.end());
     ninfer::bench::PackedQuantizedWeight packed = ninfer::bench::make_row_split_weight(
-        QType::Q8_G32_FP16, kParentRows, kHidden, kHidden, {0x31, 0x00, 0x3c00});
+        QType::Q8_G32_FP16, kParentRows, kHidden, kHidden, 0x51U);
     ninfer::DeviceBuffer input(static_cast<std::size_t>(kHidden) * max_tokens * 2);
     ninfer::DeviceBuffer query(static_cast<std::size_t>(kQueryRows) * max_tokens * 2);
     ninfer::DeviceBuffer key(static_cast<std::size_t>(kKVRows) * max_tokens * 2);
@@ -95,7 +95,7 @@ void sweep_attn_input(const ninfer::bench::SweepOptions& base) {
 void sweep_linear_swiglu(const ninfer::bench::SweepOptions& base) {
     const std::int32_t max_tokens = *std::max_element(base.tokens.begin(), base.tokens.end());
     ninfer::bench::PackedQuantizedWeight packed = ninfer::bench::make_row_split_weight(
-        QType::Q8_G32_FP16, kGateUpRows, kHidden, kHidden, {0x31, 0x00, 0x3c00});
+        QType::Q8_G32_FP16, kGateUpRows, kHidden, kHidden, 0x51U);
     ninfer::DeviceBuffer input(static_cast<std::size_t>(kHidden) * max_tokens * 2);
     ninfer::DeviceBuffer output(static_cast<std::size_t>(kOutputRows) * max_tokens * 2);
 

@@ -33,14 +33,9 @@ using namespace ninfer;
 
 namespace {
 
-constexpr std::int32_t kHeadDim          = 256;
-constexpr float kScale                   = 0.0625F;
-constexpr std::size_t kFlushBytes        = std::size_t{256} << 20;
-constexpr double kDenseF16Bf16TcTflops   = 209.5;
-const double kDenseFp8TcTflops = bench::device_specs().fp8_f32acc_tflops;
-constexpr double kMixedFp8F16TcTflops    = 279.333;
-const double kRtx5090DramGBs = bench::device_specs().dram_spec_gbs;
-const double kColdPureReadCeilingGBs = bench::device_specs().sustained_read_gbs;
+constexpr std::int32_t kHeadDim   = 256;
+constexpr float kScale            = 0.0625F;
+constexpr std::size_t kFlushBytes = std::size_t{256} << 20;
 
 enum class Entry : std::uint8_t { Append, Cached, Both };
 enum class GeometryChoice : std::uint8_t { H24Kv4, H16Kv2, All };
@@ -389,10 +384,11 @@ PagedKVBatchLayerView make_batch_cache_view(DeviceBuffer& k, DeviceBuffer& v, De
 
 std::size_t workspace_capacity(const Geometry& geometry, KvCacheStorage storage,
                                std::int32_t tokens, std::int32_t batch,
-                               ops::CausalAttentionExecutionEnvelope envelope) {
+                               ops::CausalAttentionExecutionEnvelope envelope,
+                               DeviceExecutionView execution) {
     return ops::causal_softmax_attention_workspace_capacity_bytes(
         {kHeadDim, geometry.query_heads, geometry.kv_heads}, storage, envelope, batch, tokens,
-        tokens);
+        tokens, execution);
 }
 
 std::int32_t profile_visible(std::span<const std::int32_t> contexts,
@@ -411,34 +407,17 @@ ops::CausalAttentionExecutionEnvelope execution_envelope(int visible, int maximu
     return {1, static_cast<unsigned>(maximum)};
 }
 
-__global__ void initialize_values(__nv_bfloat16* data, std::size_t count, unsigned seed,
-                                  float scale) {
-    const std::size_t i = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i >= count) return;
-    unsigned value = static_cast<unsigned>(i) + seed;
-    value ^= value >> 16;
-    value *= 0x7feb352dU;
-    value ^= value >> 15;
-    value *= 0x846ca68bU;
-    value ^= value >> 16;
-    data[i] = __float2bfloat16_rn((float(value >> 8) * (2.f / 16777216.f) - 1.f) * scale);
-}
-
 DeviceBuffer varied_values(std::size_t count, unsigned seed, float scale) {
-    DeviceBuffer result(count * 2);
-    initialize_values<<<(count + 255) / 256, 256>>>(static_cast<__nv_bfloat16*>(result.p), count,
-                                                    seed, scale);
-    CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-    return result;
+    return bench::make_bf16(count, seed, -scale, scale);
 }
 
 class Case {
 public:
     Case(Geometry geometry, KvCacheStorage storage, std::int32_t tokens,
          std::span<const std::int32_t> contexts, std::span<const std::int32_t> valid_columns,
-         std::span<const std::int32_t> table_rows, PageMapping mapping, int envelope_max)
-        : storage_layout_(paged_kv_storage_layout(storage, kHeadDim)),
+         std::span<const std::int32_t> table_rows, PageMapping mapping, int envelope_max,
+         DeviceExecutionView execution)
+        : execution_(execution), storage_layout_(paged_kv_storage_layout(storage, kHeadDim)),
           batch_(static_cast<std::int32_t>(contexts.size())),
           masked_(std::any_of(valid_columns.begin(), valid_columns.end(),
                               [tokens](std::int32_t valid) { return valid != tokens; })),
@@ -473,7 +452,8 @@ public:
           block_table_(static_cast<std::size_t>(logical_pages_) * batch_ * sizeof(std::int32_t)),
           output_(bench::make_zeros(static_cast<std::size_t>(kHeadDim) * geometry.query_heads *
                                     tokens * batch_ * 2)),
-          workspace_bytes_(workspace_capacity(geometry, storage, tokens, batch_, envelope_)),
+          workspace_bytes_(
+              workspace_capacity(geometry, storage, tokens, batch_, envelope_, execution_)),
           workspace_(std::max<std::size_t>(workspace_bytes_, 1)),
           q_tensor_(q_.p, DType::BF16, {kHeadDim, geometry.query_heads, tokens, batch_}),
           k_tensor_(k_.p, DType::BF16, {kHeadDim, geometry.kv_heads, tokens, batch_}),
@@ -545,11 +525,12 @@ public:
             ops::causal_softmax_attention(
                 q_tensor_, k_tensor_, v_tensor_, positions_tensor_, validity, table_rows_tensor_,
                 {kHeadDim, q_tensor_.ne[1], k_tensor_.ne[1]}, kScale, batch_cache_view_, envelope_,
-                workspace_, output_tensor_, stream);
+                workspace_, output_tensor_, execution_.on_stream(stream));
         } else {
             ops::causal_softmax_attention_cached(
                 q_tensor_, positions_tensor_, {kHeadDim, q_tensor_.ne[1], cache_view_.num_kv_heads},
-                kScale, cache_view_, envelope_, workspace_, output_tensor_, stream);
+                kScale, cache_view_, envelope_, workspace_, output_tensor_,
+                execution_.on_stream(stream));
         }
     }
 
@@ -564,6 +545,7 @@ public:
     }
 
 private:
+    DeviceExecutionView execution_;
     PagedKVStorageLayout storage_layout_;
     std::int32_t batch_;
     bool masked_;
@@ -710,8 +692,8 @@ double unique_kv_bytes(const Geometry& geometry, KvCacheStorage storage,
 }
 
 bench::ColdTiming measure(Case& data, Entry entry, Execution execution, CacheState cache,
-                          bench::TimedGraph* graph, DeviceBuffer& flush, cudaStream_t stream,
-                          int warmup, int repeat) {
+                          bench::TimedGraph* graph, bench::L2FlushBuffer& flush,
+                          cudaStream_t stream, int warmup, int repeat) {
     if (execution == Execution::Eager) {
         const auto launch = [&](cudaStream_t launch_stream) { data.launch(entry, launch_stream); };
         return cache == CacheState::Cold
@@ -788,7 +770,7 @@ void write_csv(const Options& options, const std::vector<Result>& results) {
 void profile(Case& data, Entry entry, const Geometry& geometry, KvCacheStorage storage,
              const Options& options, std::int32_t batch, std::int32_t width,
              std::string_view contexts, std::string_view valid_columns, std::string_view table_rows,
-             DeviceBuffer& flush, cudaStream_t stream) {
+             bench::L2FlushBuffer& flush, cudaStream_t stream) {
     const Execution execution = options.execution;
     const CacheState cache = options.cache == CacheMode::Cold ? CacheState::Cold : CacheState::Warm;
     bench::TimedGraph graph;
@@ -894,9 +876,10 @@ int main(int argc, char** argv) {
             return 0;
         }
         const Options options = parse_options(argc, argv);
-        cudaStream_t stream   = nullptr;
-        CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(kFlushBytes);
+        DeviceContext device;
+        const auto execution = device.execution_view();
+        const auto stream    = execution.stream;
+        bench::L2FlushBuffer flush(kFlushBytes);
         const std::vector<Geometry> geometries     = selected_geometries(options.geometry);
         const std::vector<KvCacheStorage> storages = selected_storages(options.kv);
 
@@ -910,13 +893,12 @@ int main(int argc, char** argv) {
                 options.row_contexts.empty() ? options.contexts.front() : 0;
             const RowProfile rows = make_row_profile(options, batch, width, context);
             Case data(geometry, storage, width, rows.contexts, rows.valid_columns, rows.table_rows,
-                      options.mapping, options.envelope_max);
+                      options.mapping, options.envelope_max, execution);
             const std::string context_name = profile_name(rows.contexts);
             const std::string valid_name   = profile_name(rows.valid_columns);
             const std::string table_name   = profile_name(rows.table_rows);
             profile(data, entry, geometry, storage, options, batch, width, context_name, valid_name,
                     table_name, flush, stream);
-            CUDA_CHECK(cudaStreamDestroy(stream));
             return 0;
         }
 
@@ -931,7 +913,8 @@ int main(int argc, char** argv) {
                             const RowProfile rows =
                                 make_row_profile(options, batch, tokens, context);
                             Case data(geometry, storage, tokens, rows.contexts, rows.valid_columns,
-                                      rows.table_rows, options.mapping, options.envelope_max);
+                                      rows.table_rows, options.mapping, options.envelope_max,
+                                      execution);
                             for (const Entry entry : {Entry::Append, Entry::Cached}) {
                                 if ((options.entry == Entry::Append && entry != Entry::Append) ||
                                     (options.entry == Entry::Cached && entry != Entry::Cached) ||
@@ -1016,7 +999,6 @@ int main(int argc, char** argv) {
             }
         }
         write_csv(options, results);
-        CUDA_CHECK(cudaStreamDestroy(stream));
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "ninfer_causal_softmax_attention_bench: %s\n", error.what());

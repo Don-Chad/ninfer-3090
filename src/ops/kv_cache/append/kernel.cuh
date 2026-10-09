@@ -131,6 +131,34 @@ __launch_bounds__(256) __global__
                                            physical_page, position & kPagedKVPageMask, lane);
 }
 
+// Independent request rows share physical planes, but select separate input and table rows.
+template <typename Geometry, bool Masked>
+__launch_bounds__(256) __global__
+    void kv_cache_append_full_fp8_batch_kernel(const __nv_bfloat16* k, const __nv_bfloat16* v,
+                                               const std::int32_t* positions,
+                                               PagedKVBatchMetadata<Masked> metadata,
+                                               std::uint8_t* cache_k, std::uint8_t* cache_v,
+                                               __half* scale_k, __half* scale_v,
+                                               std::int32_t width) {
+    const int batch = blockIdx.z;
+    metadata.table_rows += batch;
+    if constexpr (Masked) metadata.valid_columns += batch;
+    const int tokens = metadata.valid_tokens(width);
+    const int unit   = blockIdx.x * 8 + (threadIdx.x >> 5);
+    if (unit >= tokens * Geometry::KVHeads) return;
+    const int token         = unit / Geometry::KVHeads;
+    const int kv_head       = unit % Geometry::KVHeads;
+    const int lane          = threadIdx.x & 31;
+    const auto input_offset = static_cast<std::int64_t>(batch) * width * 256 * Geometry::KVHeads;
+    const int position      = positions[batch * width] + token;
+    const auto* table       = metadata.block_table();
+    int page                = lane == 0 ? paged_kv_physical_page(table, position) : 0;
+    page                    = __shfl_sync(0xffffffffU, page, 0);
+    kv_cache_append_full_fp8_row<Geometry>(k + input_offset, v + input_offset, cache_k, cache_v,
+                                           scale_k, scale_v, token, kv_head, page,
+                                           position & kPagedKVPageMask, lane);
+}
+
 template <typename Geometry, typename Metadata>
 __launch_bounds__(256) __global__
     void kv_cache_append_full_fp8_page_kernel(const __nv_bfloat16* __restrict__ k,
@@ -164,7 +192,8 @@ __launch_bounds__(256) __global__
                                            physical_page, position & kPagedKVPageMask, lane);
 }
 
-template <typename Geometry, typename Metadata, bool PackedValues = false, bool PackedKeys = false>
+template <typename Geometry, typename Metadata, bool PackedValues = false, bool PackedKeys = false,
+          bool MultiBatch = false>
 __launch_bounds__(256) __global__
     void kv_cache_append_full_i8_kernel(const __nv_bfloat16* __restrict__ k,
                                         const __nv_bfloat16* __restrict__ v,
@@ -173,6 +202,15 @@ __launch_bounds__(256) __global__
                                         std::int8_t* __restrict__ cache_v,
                                         __half* __restrict__ scale_k, __half* __restrict__ scale_v,
                                         std::int32_t width) {
+    if constexpr (MultiBatch) {
+        const int batch = blockIdx.z;
+        metadata.table_rows += batch;
+        if (metadata.valid_columns) metadata.valid_columns += batch;
+        const auto offset = static_cast<std::int64_t>(batch) * width * 256 * Geometry::KVHeads;
+        k += offset;
+        v += offset;
+        positions += batch * width;
+    }
     constexpr int Warps         = 8;
     constexpr unsigned FullMask = 0xffffffffu;
     const int tokens            = metadata.valid_tokens(width);

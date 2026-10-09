@@ -3,7 +3,7 @@
 // The 6-bit routes otherwise start at the 8-row SIMT tiles, which measured 2-5% slower C1 decode
 // than the Q8 head they would replace (docs/maintainer/quality-trade-experiments.md), so a 6-bit
 // vocabulary head read fewer bytes yet decoded no faster. This kernel follows the Q5 GEMV
-// (q5_rowsplit_gemv.cuh): one warp owns one output row and streams its 16-group tiles through a
+// (now q5_a16_gemv.cuh): one warp owns one output row and streams its 16-group tiles through a
 // cp.async ring, each lane decodes eight weights per step and the group scale is applied once per
 // group. Up to two tokens share each decoded weight; from three, q6_small_t_mma.cu is faster.
 //

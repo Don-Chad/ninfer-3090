@@ -80,6 +80,14 @@ set_tests_properties(
   ninfer_qwen3_5_dflash2_real_test
   PROPERTIES SKIP_RETURN_CODE 77)
 
+ninfer_add_test(ninfer_qwen3_5_dflash_prefill_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_dflash_prefill_real.cpp"
+  LIBRARIES ninfer_model_runtime ninfer_model_loading ninfer_core)
+
+set_tests_properties(
+  ninfer_qwen3_5_dflash_prefill_real_test
+  PROPERTIES SKIP_RETURN_CODE 77)
+
 ninfer_add_test(ninfer_qwen3_5_moe_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_moe_real.cpp"
   LIBRARIES ninfer_engine)

@@ -15,23 +15,19 @@
 //   * q4 ksplit_cN is masked to its compile-time capacity: handed more columns it computes N of
 //     them at a constant cost and looks like it wins everywhere. max_cols = N.
 //   * q5 ksplit_cN is an exact-T instantiation, same story.
-//   * q8 K-split capacities above 64 do not fit sm_86's 49,152-byte static shared budget with four
-//     K warps. The 88-column rung compiles and then faults the device on launch rather than
-//     returning an error, so it is not offered here; no shipped table selects above 64 either.
+//   * q8 sliced-K capacities above 64 are not offered; no shipped table selects above 64.
 
 #include "ninfer/ops/linear.h"
 
 #include "ops/linear/q4/q4_dispatch.h"
-#include "ops/linear/q4/q4_gemv_launch.cuh"
+#include "ops/linear/q4/q4_instance_launch.cuh"
 #include "ops/linear/q4/q4_ksplit_launch.cuh"
-#include "ops/linear/q4/q4_mma_launch.cuh"
-#include "ops/linear/q4/q4_simt_launch.cuh"
 #include "ops/linear/q5/q5_dispatch.h"
-#include "ops/linear/q5/q5_ksplit_launch.cuh"
+#include "ops/linear/q5/q5_instance_launch.cuh"
 #include "ops/linear/q6/q6_dispatch.h"
 #include "ops/linear/q6/q6_launch.h"
 #include "ops/linear/q8/q8_dispatch.h"
-#include "ops/linear/q8/q8_ksplit_launch.cuh"
+#include "ops/linear/q8/q8_instance_launch.cuh"
 #include "ops/linear/q8/q8_shapes.h"
 #include "quantized_weight.cuh"
 #include "schedule_sweep.cuh"
@@ -75,65 +71,56 @@ struct Candidate {
 // beyond the ksplit capacities a given shape does not itself register.
 
 using ninfer::ops::Cache;
-using detail::Q4FragmentPipeline;
-using detail::Q4RowSplitMmaGemmSchedule;
-using detail::Q4RowSplitSimtGemmSchedule;
+using detail::Q4A16MmaSchedule;
+using detail::Q4A16SimtSchedule;
+using detail::Q4MmaFragmentPipeline;
 using detail::Q4ScaleLoad;
 
-using Q4SimtR4C4 = Q4RowSplitSimtGemmSchedule<4, 4, 8, 2, Cache::ca, 1>;
-using Q4MmaR16C32 = Q4RowSplitMmaGemmSchedule<16, 32, 64, 16, 8, 2, 2, Q4FragmentPipeline::Serial,
-                                              Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-using Q4MmaR32C32 = Q4RowSplitMmaGemmSchedule<32, 32, 64, 16, 16, 3, 2, Q4FragmentPipeline::Serial,
-                                              Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-using Q4MmaR32C32Wide =
-    Q4RowSplitMmaGemmSchedule<32, 32, 64, 16, 8, 4, 2, Q4FragmentPipeline::Serial, Cache::cg,
-                              Cache::cg, Q4ScaleLoad::Pair32>;
-using Q4MmaR32C64 = Q4RowSplitMmaGemmSchedule<32, 64, 64, 16, 32, 2, 2, Q4FragmentPipeline::Serial,
-                                              Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-using Q4MmaR32C64S3 =
-    Q4RowSplitMmaGemmSchedule<32, 64, 64, 16, 32, 3, 2, Q4FragmentPipeline::Serial, Cache::cg,
-                              Cache::cg, Q4ScaleLoad::Pair32>;
-using Q4MmaR64C64Tile =
-    Q4RowSplitMmaGemmSchedule<64, 64, 64, 32, 16, 2, 2, Q4FragmentPipeline::Serial, Cache::cg,
-                              Cache::cg, Q4ScaleLoad::Pair32>;
+template <int Rows, int Tokens, int WarpRows, int WarpTokens, int Stages>
+using Q4Mma = Q4A16MmaSchedule<Rows, Tokens, 64, WarpRows, WarpTokens, Stages, 2,
+                               Q4MmaFragmentPipeline::Serial, Cache::cg, Cache::cg,
+                               Q4ScaleLoad::Pair32>;
 
 template <int K>
 using Q4GemvR1W8 =
-    detail::Q4RowSplitGemvSchedule<1, 8, 16, 1, detail::Q4GemvActivationAccess::Direct,
-                                   detail::Q4GemvLaneMapping::PackedByte2,
-                                   detail::Q4GemvDecodeMode::ScalarInteger,
-                                   detail::Q4GemvCodeTransfer::SyncVector16,
-                                   detail::Q4GemvScaleAccess::Scalar16Shuffle, Cache::ca, K / 64,
-                                   1>;
+    detail::Q4A16GemvSchedule<1, 8, 16, 1, detail::Q4GemvActivationAccess::Direct,
+                              detail::Q4GemvLaneMapping::PackedByte2,
+                              detail::Q4GemvDecodeMode::ScalarInteger,
+                              detail::Q4GemvCodeTransfer::SyncVector16,
+                              detail::Q4GemvScaleAccess::Scalar16Shuffle, Cache::ca, K / 64, 1>;
 
 template <int N, int K>
 std::vector<Candidate<detail::Q4Launch>> q4_candidates() {
     return {
-        {"gemv_r4_w1", detail::launch_q4_gemv_r4_w1_direct, 1},
-        {"gemv_r1_w8", detail::launch_q4_gemv<Q4GemvR1W8<K>>, 1},
-        {"simt_r4_c4", detail::launch_q4_simt<Q4SimtR4C4, true>, 0},
-        {"simt_r8_c4", detail::launch_q4_simt_r8_c4, 0},
-        {"simt_r8_c8", detail::launch_q4_simt_r8_c8, 0},
+        {"gemv_r4_w1", detail::launch_q4_a16_gemv_r4_w1_direct, 1},
+        {"gemv_r1_w8", detail::launch_q4_a16_gemv_instance<Q4GemvR1W8<K>>, 1},
+        {"simt_r4_c4",
+         detail::launch_q4_a16_simt_instance<Q4A16SimtSchedule<4, 4, 1, 8, 2, Cache::ca, 1, true>>,
+         0},
+        {"simt_r8_c4",
+         detail::launch_q4_a16_simt_instance<Q4A16SimtSchedule<8, 4, 1, 16, 2, Cache::ca, 1>>, 0},
+        {"simt_r8_c8",
+         detail::launch_q4_a16_simt_instance<Q4A16SimtSchedule<8, 8, 1, 16, 2, Cache::ca, 1>>, 0},
         {"ksplit_c4", detail::launch_q4_ksplit<N, K, 4>, 4},
         {"ksplit_c8", detail::launch_q4_ksplit<N, K, 8>, 8},
         {"ksplit_c16", detail::launch_q4_ksplit<N, K, 16>, 16},
         {"ksplit_c24", detail::launch_q4_ksplit<N, K, 24>, 24},
         {"ksplit_c32", detail::launch_q4_ksplit<N, K, 32>, 32},
-        {"mma_r16_c32", detail::launch_q4_mma<Q4MmaR16C32>, 0},
-        {"mma_r32_c32", detail::launch_q4_mma<Q4MmaR32C32>, 0},
-        {"mma_r32_c32w", detail::launch_q4_mma<Q4MmaR32C32Wide>, 0},
-        {"mma_r32_c64", detail::launch_q4_mma<Q4MmaR32C64>, 0},
-        {"mma_r32_c64s3", detail::launch_q4_mma<Q4MmaR32C64S3>, 0},
-        {"mma_r64_c32", detail::launch_q4_mma_r64_c32, 0},
-        {"mma_r64_c48", detail::launch_q4_mma_r64_c48, 0},
-        {"mma_r64_c56", detail::launch_q4_mma_r64_c56, 0},
-        {"mma_r64_c64t", detail::launch_q4_mma<Q4MmaR64C64Tile>, 0},
-        {"mma_r64_c72", detail::launch_q4_mma_r64_c72, 0},
-        {"mma_r64_c80", detail::launch_q4_mma_r64_c80, 0},
-        {"mma_r64_c96", detail::launch_q4_mma_r64_c96, 0},
-        {"mma_r64_c112", detail::launch_q4_mma_r64_c112, 0},
-        {"mma_r64_c120", detail::launch_q4_mma_r64_c120, 0},
-        {"mma_r64_c128", detail::launch_q4_mma_r64_c128, 0},
+        {"mma_r16_c32", detail::launch_q4_a16_mma_r16_t32_k64_wr16_wt8_s2_a2_b2, 0},
+        {"mma_r32_c32", detail::launch_q4_a16_mma_r32_t32_k64_wr16_wt16_s3_a3_b2, 0},
+        {"mma_r32_c32w", detail::launch_q4_a16_mma_r32_t32_k64_wr16_wt8_s4_a4_b2, 0},
+        {"mma_r32_c64", detail::launch_q4_a16_mma_r32_t64_k64_wr16_wt32_s2_a2_b2, 0},
+        {"mma_r32_c64s3", detail::launch_q4_a16_mma_r32_t64_k64_wr16_wt32_s3_a3_b2, 0},
+        {"mma_r64_c32", detail::launch_q4_a16_mma_instance<Q4Mma<64, 32, 16, 8, 2>>, 0},
+        {"mma_r64_c48", detail::launch_q4_a16_mma_r64_t48, 0},
+        {"mma_r64_c56", detail::launch_q4_a16_mma_instance<Q4Mma<64, 56, 32, 8, 2>>, 0},
+        {"mma_r64_c64t", detail::launch_q4_a16_mma_r64_t64_k64_wr32_wt16_s2_a2_b2, 0},
+        {"mma_r64_c72", detail::launch_q4_a16_mma_r64_t72, 0},
+        {"mma_r64_c80", detail::launch_q4_a16_mma_r64_t80, 0},
+        {"mma_r64_c96", detail::launch_q4_a16_mma_r64_t96, 0},
+        {"mma_r64_c112", detail::launch_q4_a16_mma_r64_t112, 0},
+        {"mma_r64_c120", detail::launch_q4_a16_mma_r64_t120, 0},
+        {"mma_r64_c128", detail::launch_q4_a16_mma_r64_t128, 0},
     };
 }
 
@@ -142,24 +129,28 @@ std::vector<Candidate<detail::Q4Launch>> q4_candidates() {
 template <int K, int KWarps>
 std::vector<Candidate<detail::Q5Launch>> q5_candidates() {
     return {
-        {"split4_c1", K == 5120    ? detail::launch_q5_split4_c1_k5120
-                      : K == 6144  ? detail::launch_q5_split4_c1_k6144
-                                   : detail::launch_q5_split4_c1_k17408,
+        {"split4_c1", K == 5120    ? detail::launch_q5_a16_direct_r1_t1_w4_k5120
+                      : K == 6144  ? detail::launch_q5_a16_direct_r1_t1_w4_k6144
+                                   : detail::launch_q5_a16_direct_r1_t1_w4_k17408,
          1},
-        {"ksplit_t2", detail::launch_q5_ksplit<K, 2, KWarps>, 2},
-        {"ksplit_t3", detail::launch_q5_ksplit<K, 3, KWarps>, 3},
-        {"ksplit_t4", detail::launch_q5_ksplit<K, 4, KWarps>, 4},
-        {"ksplit_t5", detail::launch_q5_ksplit<K, 5, KWarps>, 5},
-        {"ksplit_t6", detail::launch_q5_ksplit<K, 6, KWarps>, 6},
-        {"ksplit_t8", detail::launch_q5_ksplit<K, 8, KWarps>, 8},
-        {"ksplit_t12", detail::launch_q5_ksplit<K, 12, KWarps>, 12},
-        {"simt_r8_c4", detail::launch_q5_simt_r8_c4, 0},
-        {"simt_r8_c8", detail::launch_q5_simt_r8_c8, 0},
-        {"mma_r64_c16", detail::launch_q5_mma_r64_c16, 0},
-        {"mma_r64_c32s3", detail::launch_q5_mma_r64_c32_s3, 0},
-        {"mma_r64_c64", detail::launch_q5_mma_r64_c64, 0},
-        {"mma_r32_c128", detail::launch_q5_mma_r32_c128, 0},
-        {"mma_r64_c128", detail::launch_q5_mma_r64_c128, 0},
+        {"ksplit_t2", detail::launch_q5_a16_direct_exact<K, 2, KWarps>, 2},
+        {"ksplit_t3", detail::launch_q5_a16_direct_exact<K, 3, KWarps>, 3},
+        {"ksplit_t4", detail::launch_q5_a16_direct_exact<K, 4, KWarps>, 4},
+        {"ksplit_t5", detail::launch_q5_a16_direct_exact<K, 5, KWarps>, 5},
+        {"ksplit_t6", detail::launch_q5_a16_direct_exact<K, 6, KWarps>, 6},
+        {"ksplit_t7", detail::launch_q5_a16_direct_exact<K, 7, KWarps>, 7},
+        {"ksplit_t8", detail::launch_q5_a16_direct_exact<K, 8, KWarps>, 8},
+        {"ksplit_t12", detail::launch_q5_a16_direct_exact<K, 12, KWarps>, 12},
+        {"simt_r8_c4", detail::launch_q5_a16_simt_r8_t4_w1_g16_s2, 0},
+        {"simt_r8_c8",
+         detail::launch_q5_a16_simt_instance<
+             detail::Q5A16SimtSchedule<8, 8, 1, 16, 2, Cache::ca, 1>>,
+         0},
+        {"mma_r64_c16", detail::launch_q5_a16_mma_r64_t16_k64_wr16_wt8_s2_a2_b3, 0},
+        {"mma_r64_c32s3", detail::launch_q5_a16_mma_r64_t32_k64_wr16_wt16_s3_a3_b2, 0},
+        {"mma_r64_c64", detail::launch_q5_a16_mma_r64_t64_k64_wr32_wt32_s2_a2_b3_pingpong, 0},
+        {"mma_r32_c128", detail::launch_q5_a16_mma_r32_t128, 0},
+        {"mma_r64_c128", detail::launch_q5_a16_mma_r64_t128, 0},
     };
 }
 
@@ -174,50 +165,50 @@ std::vector<Candidate<detail::Q5Launch>> q5_candidates() {
 // sixteen- and eight-warp rungs the 5090 tables ask for do not fit 49,152 bytes of static shared
 // memory, which is why four K warps is the baseline here and eight is swept only to 32 columns.
 
-using detail::Q8KSplitActivationStage;
-using detail::Q8KSplitScaleAccess;
-using detail::Q8KSplitSchedule;
+using detail::Q8ActivationStage;
+using detail::Q8ScaleAccess;
 
-template <int Cap, Cache AC, Q8KSplitActivationStage S = Q8KSplitActivationStage::ActiveOnly,
+template <int Cap, Cache AC, Q8ActivationStage S = Q8ActivationStage::ActiveOnly,
           int KWarps = 4>
-using Q8K = Q8KSplitSchedule<KWarps, Cap, 2, Q8KSplitScaleAccess::Shared, AC, Cache::cg, S>;
+using Q8K =
+    detail::Q8A16SlicedKMmaSchedule<Cap, KWarps, 1, 2, Q8ScaleAccess::Shared, AC, Cache::cg, S>;
 
 template <class Geometry>
 std::vector<Candidate<detail::Q8Launch>> q8_candidates() {
-    constexpr auto kRuntime = Q8KSplitActivationStage::RuntimeActive;
+    constexpr auto kRuntime = Q8ActivationStage::RuntimeActive;
     return {
-        {"simt_r8_c4", detail::launch_q8_simt_r8_c4, 0},
-        {"simt_r8_c8", detail::launch_q8_simt_r8_c8, 0},
-        {"k8_ca", detail::launch_q8_ksplit<Geometry, 8, Q8K<8, Cache::ca>>, 8},
-        {"k8_cg", detail::launch_q8_ksplit<Geometry, 8, Q8K<8, Cache::cg>>, 8},
-        {"k8_ca_rt", detail::launch_q8_ksplit<Geometry, 8, Q8K<8, Cache::ca, kRuntime>>, 8},
-        {"k8_ca_w8", detail::launch_q8_ksplit<Geometry, 8, Q8K<8, Cache::ca, kRuntime, 8>>, 8},
-        {"k16_ca", detail::launch_q8_ksplit<Geometry, 16, Q8K<16, Cache::ca>>, 16},
-        {"k16_cg", detail::launch_q8_ksplit<Geometry, 16, Q8K<16, Cache::cg>>, 16},
-        {"k16_ca_rt", detail::launch_q8_ksplit<Geometry, 16, Q8K<16, Cache::ca, kRuntime>>, 16},
-        {"k16_ca_w8", detail::launch_q8_ksplit<Geometry, 16, Q8K<16, Cache::ca, kRuntime, 8>>, 16},
-        {"k24_ca", detail::launch_q8_ksplit<Geometry, 24, Q8K<24, Cache::ca>>, 24},
-        {"k24_cg", detail::launch_q8_ksplit<Geometry, 24, Q8K<24, Cache::cg>>, 24},
-        {"k32_ca", detail::launch_q8_ksplit<Geometry, 32, Q8K<32, Cache::ca>>, 32},
-        {"k32_cg", detail::launch_q8_ksplit<Geometry, 32, Q8K<32, Cache::cg>>, 32},
-        {"k32_ca_rt", detail::launch_q8_ksplit<Geometry, 32, Q8K<32, Cache::ca, kRuntime>>, 32},
-        {"k40_ca", detail::launch_q8_ksplit<Geometry, 40, Q8K<40, Cache::ca>>, 40},
-        {"k40_cg", detail::launch_q8_ksplit<Geometry, 40, Q8K<40, Cache::cg>>, 40},
-        {"k48_ca", detail::launch_q8_ksplit<Geometry, 48, Q8K<48, Cache::ca>>, 48},
-        {"k48_cg", detail::launch_q8_ksplit<Geometry, 48, Q8K<48, Cache::cg>>, 48},
-        {"k48_ca_rt", detail::launch_q8_ksplit<Geometry, 48, Q8K<48, Cache::ca, kRuntime>>, 48},
-        {"k56_ca", detail::launch_q8_ksplit<Geometry, 56, Q8K<56, Cache::ca>>, 56},
-        {"k64_ca", detail::launch_q8_ksplit<Geometry, 64, Q8K<64, Cache::ca>>, 64},
-        {"k64_cg", detail::launch_q8_ksplit<Geometry, 64, Q8K<64, Cache::cg>>, 64},
-        {"mma_r32_c64", detail::launch_q8_mma_r32_c64, 0},
-        {"mma_r32_c96", detail::launch_q8_mma_r32_c96, 0},
-        {"mma_r32_c128", detail::launch_q8_mma_r32_c128, 0},
-        {"mma_r48_c64", detail::launch_q8_mma_r48_c64, 0},
-        {"mma_r64_c96", detail::launch_q8_mma_r64_c96, 0},
-        {"mma_r64_c128", detail::launch_q8_mma_r64_c128, 0},
-        {"mma_r96_c96", detail::launch_q8_mma_r96_c96, 0},
-        {"mma_r128_c64", detail::launch_q8_mma_r128_c64, 0},
-        {"mma_r128_c80", detail::launch_q8_mma_r128_c80, 0},
+        {"simt_r8_c4", detail::launch_q8_a16_simt_r8_t4, 0},
+        {"simt_r8_c8", detail::launch_q8_a16_simt_r8_t8, 0},
+        {"k8_ca", detail::launch_q8_a16_sliced<Geometry, 8, Q8K<8, Cache::ca>>, 8},
+        {"k8_cg", detail::launch_q8_a16_sliced<Geometry, 8, Q8K<8, Cache::cg>>, 8},
+        {"k8_ca_rt", detail::launch_q8_a16_sliced<Geometry, 8, Q8K<8, Cache::ca, kRuntime>>, 8},
+        {"k8_ca_w8", detail::launch_q8_a16_sliced<Geometry, 8, Q8K<8, Cache::ca, kRuntime, 8>>, 8},
+        {"k16_ca", detail::launch_q8_a16_sliced<Geometry, 16, Q8K<16, Cache::ca>>, 16},
+        {"k16_cg", detail::launch_q8_a16_sliced<Geometry, 16, Q8K<16, Cache::cg>>, 16},
+        {"k16_ca_rt", detail::launch_q8_a16_sliced<Geometry, 16, Q8K<16, Cache::ca, kRuntime>>, 16},
+        {"k16_ca_w8", detail::launch_q8_a16_sliced<Geometry, 16, Q8K<16, Cache::ca, kRuntime, 8>>, 16},
+        {"k24_ca", detail::launch_q8_a16_sliced<Geometry, 24, Q8K<24, Cache::ca>>, 24},
+        {"k24_cg", detail::launch_q8_a16_sliced<Geometry, 24, Q8K<24, Cache::cg>>, 24},
+        {"k32_ca", detail::launch_q8_a16_sliced<Geometry, 32, Q8K<32, Cache::ca>>, 32},
+        {"k32_cg", detail::launch_q8_a16_sliced<Geometry, 32, Q8K<32, Cache::cg>>, 32},
+        {"k32_ca_rt", detail::launch_q8_a16_sliced<Geometry, 32, Q8K<32, Cache::ca, kRuntime>>, 32},
+        {"k40_ca", detail::launch_q8_a16_sliced<Geometry, 40, Q8K<40, Cache::ca>>, 40},
+        {"k40_cg", detail::launch_q8_a16_sliced<Geometry, 40, Q8K<40, Cache::cg>>, 40},
+        {"k48_ca", detail::launch_q8_a16_sliced<Geometry, 48, Q8K<48, Cache::ca>>, 48},
+        {"k48_cg", detail::launch_q8_a16_sliced<Geometry, 48, Q8K<48, Cache::cg>>, 48},
+        {"k48_ca_rt", detail::launch_q8_a16_sliced<Geometry, 48, Q8K<48, Cache::ca, kRuntime>>, 48},
+        {"k56_ca", detail::launch_q8_a16_sliced<Geometry, 56, Q8K<56, Cache::ca>>, 56},
+        {"k64_ca", detail::launch_q8_a16_sliced<Geometry, 64, Q8K<64, Cache::ca>>, 64},
+        {"k64_cg", detail::launch_q8_a16_sliced<Geometry, 64, Q8K<64, Cache::cg>>, 64},
+        {"mma_r32_c64", detail::launch_q8_a16_mma_r32_t64, 0},
+        {"mma_r32_c96", detail::launch_q8_a16_mma_r32_t96, 0},
+        {"mma_r32_c128", detail::launch_q8_a16_mma_r32_t128, 0},
+        {"mma_r48_c64", detail::launch_q8_a16_mma_r48_t64, 0},
+        {"mma_r64_c96", detail::launch_q8_a16_mma_r64_t96, 0},
+        {"mma_r64_c128", detail::launch_q8_a16_mma_r64_t128, 0},
+        {"mma_r96_c96", detail::launch_q8_a16_mma_r96_t96, 0},
+        {"mma_r128_c64", detail::launch_q8_a16_mma_r128_t64, 0},
+        {"mma_r128_c80", detail::launch_q8_a16_mma_r128_t80, 0},
     };
 }
 
@@ -229,7 +220,7 @@ void run(QType qtype, std::int32_t n, std::int32_t k,
          const ninfer::bench::SweepOptions& base) {
     const std::int32_t max_tokens = *std::max_element(base.tokens.begin(), base.tokens.end());
     ninfer::bench::PackedQuantizedWeight packed =
-        ninfer::bench::make_row_split_weight(qtype, n, k, k, {0x31, 0xa5, 0x3c00});
+        ninfer::bench::make_row_split_weight(qtype, n, k, k, 501U);
     ninfer::DeviceBuffer input(static_cast<std::size_t>(k) * max_tokens * 2);
     ninfer::DeviceBuffer output(static_cast<std::size_t>(n) * max_tokens * 2);
 
@@ -311,10 +302,12 @@ std::vector<Candidate<detail::Q6Launch>> q6_candidates() {
         {"small_t_c8", detail::launch_q6_small_t_c8, 8},
         {"small_t_c16", detail::launch_q6_small_t_c16, 16},
         {"small_t_c32", detail::launch_q6_small_t_c32, 32},
-        {"simt_r8_c4", detail::launch_q6_simt_r8_c4, 0},
-        {"mma_r64_c16_k128", detail::launch_q6_mma_r64_c16_k128, 0},
-        {"mma_r64_c32_k128", detail::launch_q6_mma_r64_c32_k128, 0},
-        {"mma_r64_c128", detail::launch_q6_mma_r64_c128, 0},
+        {"simt_r8_c4", detail::launch_q6_a16_simt_r8_t4, 0},
+        {"sliced_r16_t8", detail::launch_q6_a16_sliced_r16_t8_w4_s2, 0},
+        {"sliced_r32_t16", detail::launch_q6_a16_sliced_r32_t16_w4_s2, 0},
+        {"sliced_r32_t32", detail::launch_q6_a16_sliced_r32_t32_w4_s1, 0},
+        {"mma_r64_c48_k128", detail::launch_q6_a16_mma_r64_t48_k128, 0},
+        {"mma_r64_c128", detail::launch_q6_a16_mma_r64_t128, 0},
     };
 }
 

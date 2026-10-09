@@ -44,7 +44,8 @@ struct Options {
 };
 
 // The candidate partition for a channel extent. Which partitions are registered is the entry's
-// business, not the benchmark's: this builds the obvious one and lets the entry accept or reject it.
+// business, not the benchmark's: this builds the obvious one and lets the entry accept or reject
+// it.
 constexpr std::int32_t kSplitKeyDim = 2048;
 
 bool split_partition(std::int32_t channels, std::int32_t& key_dim, std::int32_t& value_dim) {
@@ -53,12 +54,19 @@ bool split_partition(std::int32_t channels, std::int32_t& key_dim, std::int32_t&
     return value_dim > 0;
 }
 
-Result time_stage(const Options& options, const launch_fn& launch, double bytes_moved) {
-    if (!options.cold) { return bench_loop(launch, bytes_moved); }
+Result time_stage(const Options& options, const launch_fn& launch, double bytes_moved,
+                  const launch_fn& restore = {}) {
+    if (!options.cold) {
+        return restore ? bench_loop_prepared(restore, launch, bytes_moved)
+                       : bench_loop(launch, bytes_moved);
+    }
     constexpr int kColdWarmup = 20;
     constexpr int kColdRepeat = 40;
-    DeviceBuffer flush(kFlushBytes);
-    const ColdTiming timing = measure_cold_launch(launch, flush, nullptr, kColdWarmup, kColdRepeat);
+    bench::L2FlushBuffer flush(kFlushBytes);
+    const ColdTiming timing =
+        restore ? measure_cold_launch_prepared(restore, launch, flush, nullptr, kColdWarmup,
+                                               kColdRepeat)
+                : measure_cold_launch(launch, flush, nullptr, kColdWarmup, kColdRepeat);
     Result result;
     result.n_runs        = kColdRepeat;
     result.median_us     = timing.median_us;
@@ -131,6 +139,8 @@ void run_prefill(const Options& options, bool distinct) {
     DeviceBuffer state_out = make_zeros(state_n * 2u);
     DeviceBuffer out       = make_zeros(n * 2u);
 
+    SavedBuffer initial(state_in);
+    const auto restore = [&](cudaStream_t stream) { initial.restore(stream); };
     Tensor tx(x.p, DType::BF16, {options.channels, options.tokens});
     Tensor tw(weight.p, DType::BF16, {options.channels, 4});
     Tensor tin(state_in.p, DType::BF16, {options.channels, 3});
@@ -149,7 +159,7 @@ void run_prefill(const Options& options, bool distinct) {
                 ops::causal_conv1d_silu(tx, tw, tin, tout, s);
             }
         },
-        bytes);
+        bytes, restore);
     const std::string tag = shape_tag(cache_tag(options, distinct ? "distinct" : "prefill").c_str(),
                                       options.channels, options.tokens);
     print_result(tag.c_str(), r);
@@ -254,6 +264,8 @@ void run_decode(const Options& options) {
     DeviceBuffer state  = make_varied_bf16(channels * 3u, 0x31415926U);
     DeviceBuffer out    = make_zeros(channels * 2u);
 
+    SavedBuffer initial(state);
+    const auto restore = [&](cudaStream_t stream) { initial.restore(stream); };
     Tensor tx(x.p, DType::BF16, {options.channels, 1});
     Tensor tw(weight.p, DType::BF16, {options.channels, 4});
     Tensor ts(state.p, DType::BF16, {options.channels, 3});
@@ -261,7 +273,8 @@ void run_decode(const Options& options) {
 
     const double bytes = 24.0 * options.channels;
     const Result r     = time_stage(
-        options, [&](cudaStream_t s) { ops::causal_conv1d_silu(tx, tw, ts, tout, s); }, bytes);
+        options, [&](cudaStream_t s) { ops::causal_conv1d_silu(tx, tw, ts, tout, s); }, bytes,
+        restore);
     const std::string tag = shape_tag(cache_tag(options, "decode").c_str(), options.channels, 1);
     print_result(tag.c_str(), r);
     run_copy_baseline(options, bytes, cache_tag(options, "copy same-byte decode baseline").c_str());
@@ -305,6 +318,8 @@ void run_snapshot(const Options& options) {
                               cudaMemcpyHostToDevice));
     }
 
+    SavedBuffer initial(states);
+    const auto restore = [&](cudaStream_t stream) { initial.restore(stream); };
     Tensor tx(x.p, DType::BF16, {options.channels, options.tokens, options.batch});
     Tensor tw(weight.p, DType::BF16, {options.channels, 4});
     Tensor ts(states.p, DType::BF16, {options.channels, 3, slots});
@@ -320,16 +335,16 @@ void run_snapshot(const Options& options) {
     // and publishes three BF16 state columns.
     const double bytes = 8.0 * options.channels + 6.0 * options.channels * options.batch +
                          10.0 * static_cast<double>(n);
-    const Result r     = time_stage(
+    const Result r = time_stage(
         options,
         [&](cudaStream_t s) {
             ops::causal_conv1d_silu_snapshot(tx, tw, ts, tvalid, tslot, tsnapshot_base, tout, s);
         },
-        bytes);
+        bytes, restore);
     const std::string tag = shape_tag(
         cache_tag(options, options.valid_columns.empty() ? "snapshot dense" : "snapshot masked")
             .c_str(),
-                  options.channels, options.tokens, options.batch);
+        options.channels, options.tokens, options.batch);
     print_result(tag.c_str(), r);
 }
 
@@ -430,8 +445,8 @@ bool parse_options(int argc, char** argv, Options& options) {
         return false;
     }
     for (const std::int32_t tokens : options.token_list.empty()
-                                        ? std::vector<std::int32_t>{options.tokens}
-                                        : options.token_list) {
+                                         ? std::vector<std::int32_t>{options.tokens}
+                                         : options.token_list) {
         if (options.batch > 1 && tokens > 16) { return false; }
         if (options.snapshot && options.batch == 1 && tokens > options.slots) { return false; }
         for (const std::int32_t valid : options.valid_columns) {

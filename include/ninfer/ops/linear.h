@@ -129,11 +129,9 @@ inline constexpr std::int32_t kCublasPrefillMinTokens = 512;
  * `policy` specifies the permitted private activation-compute set. A permission does not require a
  * corresponding low-precision route: the resolved plan may remain A16 when that is the qualified
  * choice. Every policy permits the existing A16 implementations of BF16 and Q4/Q5/Q6/Q8.
- * FP8 accepts all three policies; AllowA8 and AllowA4 permit its A8 routes. Both resolve
- * `[14336,5120]` to A16 through T=11 and A8 from T=12; `[16384,5120]` to A16 through T=10 and A8
- * from T=11; `[34816,5120]` to A8 at T=1, A16 at T=2..4, and A8 from T=5; both `[5120,6144]` and
- * `[5120,17408]` resolve T<25 to A16 and T>=25 to A8. FP8 `[248320,5120]` admits A16Only, AllowA8,
- * and AllowA4; every policy retains A16 compute at every positive T. NVFP4 uses A16 for A16Only and
+ * FP8 accepts all three policies; AllowA8 and AllowA4 permit the private resolver to select a
+ * qualified A16 or A8 route for the registered problem and T. FP8 `[248320,5120]` retains A16
+ * compute under every policy at every positive T. NVFP4 uses A16 for A16Only and
  * AllowA8; AllowA4 permits the private resolver to select either a qualified A16 route or
  * activation quantization to NVFP4 at every positive T. The selected route depends only on the
  * registered problem and T.

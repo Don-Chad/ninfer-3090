@@ -1,6 +1,7 @@
 #include "guarded_main.h"
 #include "speculative_graft.h"
 #include "ninfer/engine.h"
+#include "kv_cache_storage.h"
 #include "runtime/engine/worker_fault.h"
 
 #include <algorithm>
@@ -4603,6 +4604,115 @@ int exercise_artifact(const char* artifact) {
 
 namespace {
 
+int exercise_attention_integration(const char* artifact) {
+    const auto setting = [](const char* name, const char* fallback) {
+        const char* value = std::getenv(name);
+        return std::string_view(value && *value ? value : fallback);
+    };
+    const auto storage =
+        ninfer::test::parse_kv_cache_storage(setting("NINFER_TEST_KV_DTYPE", "bf16"));
+    const auto backend_name = setting("NINFER_TEST_SPECULATIVE", "mtp");
+    ninfer::SpeculativeBackend backend;
+    if (backend_name == "none")
+        backend = ninfer::SpeculativeBackend::None;
+    else if (backend_name == "mtp")
+        backend = ninfer::SpeculativeBackend::Mtp;
+    else if (backend_name == "dflash")
+        backend = ninfer::SpeculativeBackend::DFlash;
+    else if (backend_name == "dflash2")
+        backend = ninfer::SpeculativeBackend::DFlash2;
+    else
+        throw std::invalid_argument("unknown attention integration backend");
+    const auto batch =
+        static_cast<std::uint32_t>(std::stoul(std::string(setting("NINFER_TEST_BATCH", "2"))));
+    const auto drafts = static_cast<std::uint32_t>(std::stoul(std::string(setting(
+        "NINFER_TEST_DRAFT_TOKENS", backend == ninfer::SpeculativeBackend::Mtp ? "3" : "7"))));
+    ninfer::EngineOptions options;
+    options.artifact_path                    = artifact;
+    options.kv_cache                         = storage;
+    options.max_context                      = 65536;
+    options.kv_capacity                      = ninfer::KvCapacityPolicy::explicit_capacity(65536);
+    options.prefill_chunk                    = 1024;
+    options.max_concurrency                  = batch;
+    options.max_pending_requests             = batch;
+    options.context_cache.device_state_slots = batch + 2;
+    options.context_cache.max_private_continuations = batch + 2;
+    options.speculative.backend                     = backend;
+    options.speculative.draft_tokens  = backend == ninfer::SpeculativeBackend::None ? 0 : drafts;
+    options.speculative.proposal_head = ninfer::ProposalHead::Full;
+    ninfer::Engine engine(options);
+    if (engine.memory_summary().kv_cache != storage)
+        throw std::runtime_error("attention integration selected the wrong KV dtype");
+
+    const auto validate = [backend](const ninfer::GenerationResult& result, std::uint32_t count) {
+        if (result.generated_token_ids.size() != count ||
+            result.finish_reason != ninfer::FinishReason::OutputLimit)
+            throw std::runtime_error("attention integration did not finish its output budget");
+        if (count > 1 && backend != ninfer::SpeculativeBackend::None &&
+            result.speculative.rounds == 0)
+            throw std::runtime_error(
+                "attention integration did not exercise speculative verification");
+    };
+    const auto seed =
+        engine.tokenize_text("Explain how a sequence continues from its stored prefix. ");
+    const auto visible_offset = backend == ninfer::SpeculativeBackend::Mtp ? 2 * drafts : 0;
+    std::vector<ninfer::TokenId> prefix(8182 - visible_offset - 3 * (batch - 1));
+    for (std::size_t i = 0; i < prefix.size(); ++i) prefix[i] = seed[i % seed.size()];
+    const auto primed = engine.generate(engine.prepare_tokens(prefix), fixed_output(8));
+    validate(primed, 8);
+    prefix.insert(prefix.end(), primed.generated_token_ids.begin(),
+                  primed.generated_token_ids.end());
+
+    // A private continuation need not be retained for every competing row. Long output budgets
+    // keep rows active together even when another row prefills, across a Graph resource tier.
+    const auto before = engine.runtime_stats();
+    std::vector<ninfer::GenerationHandle> handles;
+    for (std::uint32_t row = 0; row < batch; ++row) {
+        auto prompt = prefix;
+        prompt.insert(prompt.end(), row * 3, seed.back());
+        handles.push_back(
+            engine.submit(engine.prepare_tokens(prompt), fixed_output(128 + row * 5)));
+    }
+    std::vector<ninfer::TokenId> continuation = prefix;
+    std::uint64_t reused_tokens               = 0;
+    for (std::uint32_t row = 0; row < batch; ++row) {
+        const auto result = handles[row].wait();
+        validate(result, 128 + row * 5);
+        reused_tokens += result.reused_prompt_tokens;
+        if (row == 0)
+            continuation.insert(continuation.end(), result.generated_token_ids.begin(),
+                                result.generated_token_ids.end());
+    }
+    if (reused_tokens == 0)
+        throw std::runtime_error("attention integration did not reuse the primed continuation");
+    const auto after = engine.runtime_stats();
+    if (batch > 1 && after.decode_row_rounds - before.decode_row_rounds <=
+                         after.decode_rounds - before.decode_rounds)
+        throw std::runtime_error("attention integration did not execute a multi-row decode round");
+    continuation.insert(continuation.end(), 33, seed.back());
+    const auto reused = engine.generate(engine.prepare_tokens(continuation), fixed_output(8));
+    const auto fresh = engine.generate(engine.prepare_tokens(continuation), fixed_output(8, false));
+    validate(reused, 8);
+    validate(fresh, 8);
+    if (reused.reused_prompt_tokens == 0 || fresh.reused_prompt_tokens != 0)
+        throw std::runtime_error(
+            "attention integration prefix continuation did not follow reuse policy");
+    const auto appended = reused.prompt.prompt_tokens - reused.reused_prompt_tokens;
+    if (appended <= 16 || appended > 256)
+        throw std::runtime_error("attention integration did not exercise small prefix append");
+    const auto memory = engine.memory_summary();
+    if (memory.workspace_logical_peak_bytes == 0 ||
+        memory.workspace_logical_peak_bytes > memory.workspace.capacity_bytes)
+        throw std::runtime_error("attention integration exceeded its planned workspace");
+    std::cout << "attention integration KV=" << setting("NINFER_TEST_KV_DTYPE", "bf16")
+              << " backend=" << backend_name << " B=" << batch
+              << " workspace_peak=" << memory.workspace_logical_peak_bytes
+              << " graph_allowance=" << memory.cuda_graph_allowance_bytes
+              << " appended=" << appended
+              << " append_prefill_ms=" << reused.timings.prefill_seconds * 1000 << '\n';
+    return 0;
+}
+
 int run() {
     const char* artifact = std::getenv("NINFER_TEST_ARTIFACT");
     if (!artifact || !*artifact) {
@@ -4612,7 +4722,14 @@ int run() {
     const char* selected            = std::getenv("NINFER_PREFIX_REAL_SCENARIO");
     const std::string_view scenario = selected ? selected : "all";
     int result                      = 0;
-    if (scenario == "vision") {
+    if (scenario == "attention") {
+        try {
+            result = exercise_attention_integration(artifact);
+        } catch (const std::exception& error) {
+            std::cerr << "attention integration failed: " << error.what() << '\n';
+            return 1;
+        }
+    } else if (scenario == "vision") {
         ninfer::Engine engine(engine_options(artifact));
         result = exercise_vision(engine);
     } else if (scenario == "all") {

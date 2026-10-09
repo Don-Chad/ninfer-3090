@@ -18,8 +18,10 @@ struct Bf16KvCausalPlan {
 };
 
 Bf16KvCausalPlan make_bf16_kv_causal_plan(int query_heads, int width, int batch,
-                                          CausalAttentionExecutionEnvelope envelope);
+                                          CausalAttentionExecutionEnvelope envelope,
+                                          int multiprocessor_count);
 std::size_t bf16_kv_workspace_bytes(int query_heads, int batch, int min_width, int max_width,
-                                    CausalAttentionExecutionEnvelope envelope);
+                                    CausalAttentionExecutionEnvelope envelope,
+                                    int multiprocessor_count);
 
 } // namespace ninfer::ops::detail

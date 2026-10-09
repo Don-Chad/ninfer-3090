@@ -36,6 +36,14 @@ int q5_a16_conformance() {
         ninfer::test::linear_add::run_shape("Q5_A16 LinearAdd", WeightFormat::Q5G64F16S,
                                             ShapeCase{5120, 17408, 409U, kK17408RouteStarts,
                                                       kInteriors, kK17408GraphTokens, false, 512});
+    // Every output column at a few widths, through whatever route each resolves to.
+    constexpr std::array<std::int32_t, 0> no_starts{};
+    constexpr std::array<std::int32_t, 7> full{8, 13, 32, 40, 80, 112, 192};
+    for (const auto k : {6144, 17408}) {
+        failures += ninfer::test::linear_add::run_shape(
+            "Q5_A16 LinearAdd", WeightFormat::Q5G64F16S,
+            ShapeCase{5120, k, 401U, no_starts, full, {}, true, 0});
+    }
     return failures;
 }
 

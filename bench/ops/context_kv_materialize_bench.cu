@@ -127,7 +127,7 @@ struct Fixture {
     std::array<DeviceBuffer, kLayers> cache_k;
     std::array<DeviceBuffer, kLayers> cache_v;
     std::array<ops::ContextKVMaterializeLayerView, kLayers> layers;
-    DeviceBuffer context = bench::make_bf16(static_cast<std::size_t>(kHidden) * 2048);
+    DeviceBuffer context = bench::make_bf16(static_cast<std::size_t>(kHidden) * 2048, 101U);
     DeviceBuffer positions;
     DeviceBuffer counts;
     DeviceBuffer slots;
@@ -143,10 +143,10 @@ struct Fixture {
         const std::size_t cache_bytes = static_cast<std::size_t>(kHeadDim) * kCapacity * kHeads *
                                         kLaneCapacity * sizeof(std::uint16_t);
         for (int layer = 0; layer < kLayers; ++layer) {
-            parents[static_cast<std::size_t>(layer)] =
-                bench::make_row_split_weight(QType::Q8_G32_FP16, kParentRows, kHidden, kHidden,
-                                             {static_cast<std::uint8_t>(0x31 + layer), 0, 0x2800});
-            norms[static_cast<std::size_t>(layer)]   = bench::make_bf16(kHeadDim);
+            parents[static_cast<std::size_t>(layer)] = bench::make_row_split_weight(
+                QType::Q8_G32_FP16, kParentRows, kHidden, kHidden, 501U + layer);
+            norms[static_cast<std::size_t>(layer)] =
+                bench::make_bf16(kHeadDim, 103U + layer, .8F, 1.2F);
             cache_k[static_cast<std::size_t>(layer)] = DeviceBuffer(cache_bytes);
             cache_v[static_cast<std::size_t>(layer)] = DeviceBuffer(cache_bytes);
             layers[static_cast<std::size_t>(layer)]  = {
@@ -199,7 +199,7 @@ struct Fixture {
 };
 
 template <class Launch>
-bench::ColdTiming measure(const Options& options, Launch&& launch, DeviceBuffer& flush,
+bench::ColdTiming measure(const Options& options, Launch&& launch, bench::L2FlushBuffer& flush,
                           cudaStream_t stream, std::size_t* graph_nodes) {
     if (options.execution == Execution::Eager) {
         *graph_nodes = 0;
@@ -228,7 +228,7 @@ int main(int argc, char** argv) {
         cudaDeviceProp properties{};
         CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
         Fixture fixture;
-        DeviceBuffer flush(options.flush_bytes);
+        bench::L2FlushBuffer flush(options.flush_bytes);
         std::printf("# gpu=%s public=context_kv_materialize geometry=L5_K5120_N1024 cache=cold "
                     "flush_mib=%zu execution=%s\n",
                     properties.name, options.flush_bytes >> 20,

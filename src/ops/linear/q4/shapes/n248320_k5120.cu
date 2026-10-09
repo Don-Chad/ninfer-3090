@@ -54,9 +54,9 @@ void launch_q4_small_t_rows(const Tensor& x, const Weight& weight, Tensor& out,
 }
 
 Q4Launch select_q4_n248320_k5120(std::int32_t tokens) {
-    if (tokens == 1) return launch_q4_gemv_r4_w1_direct;
+    if (tokens == 1) return launch_q4_a16_gemv_r4_w1_direct;
     if (tokens <= 32) return launch_q4_small_t_rows;
-    return launch_q4_mma_r64_c128;
+    return launch_q4_a16_mma_r64_t128;
 }
 
 } // namespace ninfer::ops::detail

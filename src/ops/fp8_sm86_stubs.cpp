@@ -34,6 +34,13 @@ namespace {
 
 // --- Linear / projection A8 routes -------------------------------------------------------------
 
+// The plans size an A8 partial-sum region even when the route is A16-only; with no A8 kernel on
+// this architecture that region is empty.
+std::size_t fp8_attn_input_partial_capacity_bytes(std::int32_t) { return 0; }
+std::size_t fp8_gdn_input_partial_capacity_bytes(std::int32_t) { return 0; }
+std::size_t fp8_linear_swiglu_partial_capacity_bytes(std::int32_t) { return 0; }
+std::size_t fp8_linear_add_partial_capacity_bytes(std::int32_t, std::int32_t) { return 0; }
+
 void launch_fp8_a8_quantize(const Tensor&, const Weight&, Fp8A8Workspace, cudaStream_t) {
     reject_fp8_a8();
 }

@@ -232,6 +232,26 @@ const char* q5_linear_add_schedule_name(Q5LinearAddScheduleId schedule) noexcept
         return "linear_add.q5.mma.small_t.residual";
     case Q5LinearAddScheduleId::MmaResidualR64C128Tail:
         return "linear_add.q5.mma.r64.c128.cta_collective_residual.narrow_tail";
+    case Q5LinearAddScheduleId::SlicedR16T8W4S2:
+        return "linear_add.q5.sliced.r16.t8.w4.s2.residual";
+    case Q5LinearAddScheduleId::SlicedR16T16W4S2:
+        return "linear_add.q5.sliced.r16.t16.w4.s2.residual";
+    case Q5LinearAddScheduleId::SlicedR16T24W4S2:
+        return "linear_add.q5.sliced.r16.t24.w4.s2.residual";
+    case Q5LinearAddScheduleId::SlicedR32T32W4S2:
+        return "linear_add.q5.sliced.r32.t32.w4.s2.residual";
+    case Q5LinearAddScheduleId::SlicedR32T24W4S2Pairwise:
+        return "linear_add.q5.sliced.r32.t24.w4.s2.pairwise.residual";
+    case Q5LinearAddScheduleId::SlicedR32T32W4S1:
+        return "linear_add.q5.sliced.r32.t32.w4.s1.residual";
+    case Q5LinearAddScheduleId::SlicedR32T32W2S2:
+        return "linear_add.q5.sliced.r32.t32.w2.s2.residual";
+    case Q5LinearAddScheduleId::SlicedR32T64W2S1:
+        return "linear_add.q5.sliced.r32.t64.w2.s1.residual";
+    case Q5LinearAddScheduleId::MmaResidualR32T32K128:
+        return "linear_add.q5.mma.r32.t32.k128.residual";
+    case Q5LinearAddScheduleId::MmaResidualR32T128:
+        return "linear_add.q5.mma.r32.t128.residual";
     }
     return "linear_add.q5.unknown";
 }
@@ -305,6 +325,36 @@ void q5_linear_add_execute_plan(const Q5LinearAddPlan& plan, const Tensor& x, co
         return;
     case Q5LinearAddScheduleId::MmaResidualR64C128Tail:
         launch_wide_with_narrow_tail(x, w, residual_out, ws, stream);
+        return;
+    case Q5LinearAddScheduleId::SlicedR16T8W4S2:
+        q5_linear_add_sliced_r16_t8_launch(x, w, residual_out, stream);
+        return;
+    case Q5LinearAddScheduleId::SlicedR16T16W4S2:
+        q5_linear_add_sliced_r16_t16_launch(x, w, residual_out, stream);
+        return;
+    case Q5LinearAddScheduleId::SlicedR16T24W4S2:
+        q5_linear_add_sliced_r16_t24_launch(x, w, residual_out, stream);
+        return;
+    case Q5LinearAddScheduleId::SlicedR32T32W4S2:
+        q5_linear_add_sliced_r32_t32_w4_s2_launch(x, w, residual_out, stream);
+        return;
+    case Q5LinearAddScheduleId::SlicedR32T24W4S2Pairwise:
+        q5_linear_add_sliced_r32_t24_pairwise_launch(x, w, residual_out, stream);
+        return;
+    case Q5LinearAddScheduleId::SlicedR32T32W4S1:
+        q5_linear_add_sliced_r32_t32_w4_s1_launch(x, w, residual_out, stream);
+        return;
+    case Q5LinearAddScheduleId::SlicedR32T32W2S2:
+        q5_linear_add_sliced_r32_t32_w2_s2_launch(x, w, residual_out, stream);
+        return;
+    case Q5LinearAddScheduleId::SlicedR32T64W2S1:
+        q5_linear_add_sliced_r32_t64_w2_s1_launch(x, w, residual_out, stream);
+        return;
+    case Q5LinearAddScheduleId::MmaResidualR32T32K128:
+        q5_linear_add_mma_r32_t32_k128_launch(x, w, residual_out, stream);
+        return;
+    case Q5LinearAddScheduleId::MmaResidualR32T128:
+        q5_linear_add_mma_r32_t128_launch(x, w, residual_out, stream);
         return;
     }
     throw std::logic_error("q5 linear_add: unknown schedule");

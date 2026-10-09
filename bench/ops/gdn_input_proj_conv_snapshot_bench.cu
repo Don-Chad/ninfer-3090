@@ -120,6 +120,12 @@ struct Result {
     CacheState cache;
     Stats stats;
     std::size_t workspace_bytes;
+    // Filled from the executed call: the arena high-water the Op itself reported, and, for rows
+    // measured from a capture, the node count of that captured graph as `cudaGraphGetNodes` reports
+    // it. That count is the whole graph, so it includes the two timing event nodes; it is not the
+    // number of production kernels in the Op. Rows measured eagerly report 0.
+    std::size_t workspace_peak_bytes;
+    std::int32_t graph_nodes;
 };
 
 std::uint64_t parse_u64(std::string_view text, const char* label) {
@@ -388,13 +394,12 @@ const char* policy_name(ops::LinearPolicy policy) {
 class Q4Q5Fixture {
 public:
     explicit Q4Q5Fixture(std::size_t flush_bytes)
-        : qk_(bench::make_row_split_weight(QType::Q4_G64_FP16, kQkRows, kHidden, kHidden,
-                                           {0x53, 0x00, 0x3400})),
+        : qk_(bench::make_row_split_weight(QType::Q4_G64_FP16, kQkRows, kHidden, kHidden, 501U)),
           value_z_(bench::make_row_split_weight(QType::Q5_G64_FP16, kValueZRows, kHidden, kHidden,
-                                                {0x53, 0x55, 0x3400})),
-          conv_weight_(bench::make_bf16(static_cast<std::size_t>(kChannels) * 4)),
+                                                503U)),
+          conv_weight_(bench::make_bf16(static_cast<std::size_t>(kChannels) * 4, 101U)),
           flush_(flush_bytes) {
-        CUDA_CHECK(cudaMemset(flush_.p, 0xa5, flush_.bytes));
+        bench::flush_l2(flush_, nullptr);
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
@@ -434,24 +439,22 @@ public:
         }
     }
 
-    void flush(cudaStream_t stream) {
-        CUDA_CHECK(cudaMemsetAsync(flush_.p, 0xa5, flush_.bytes, stream));
-    }
+    void flush(cudaStream_t stream) { bench::flush_l2(flush_, stream); }
 
 private:
     bench::PackedQuantizedWeight qk_;
     bench::PackedQuantizedWeight value_z_;
     DeviceBuffer conv_weight_;
-    DeviceBuffer flush_;
+    bench::L2FlushBuffer flush_;
 };
 
 class Nvfp4Fixture {
 public:
     Nvfp4Fixture(std::size_t flush_bytes, ops::LinearPolicy policy)
         : parent_(bench::make_nvfp4_weight(kChannels + kZRows, kHidden)),
-          conv_weight_(bench::make_bf16(static_cast<std::size_t>(kChannels) * 4)),
+          conv_weight_(bench::make_bf16(static_cast<std::size_t>(kChannels) * 4, 103U)),
           flush_(flush_bytes), policy_(policy) {
-        CUDA_CHECK(cudaMemset(flush_.p, 0xa5, flush_.bytes));
+        bench::flush_l2(flush_, nullptr);
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
@@ -493,14 +496,12 @@ public:
         }
     }
 
-    void flush(cudaStream_t stream) {
-        CUDA_CHECK(cudaMemsetAsync(flush_.p, 0xa5, flush_.bytes, stream));
-    }
+    void flush(cudaStream_t stream) { bench::flush_l2(flush_, stream); }
 
 private:
     bench::PackedQuantizedWeight parent_;
     DeviceBuffer conv_weight_;
-    DeviceBuffer flush_;
+    bench::L2FlushBuffer flush_;
     ops::LinearPolicy policy_;
 };
 
@@ -508,9 +509,9 @@ class Fp8Fixture {
 public:
     Fp8Fixture(std::size_t flush_bytes, ops::LinearPolicy policy)
         : parent_(bench::make_fp8_weight(kChannels + kZRows, kHidden)),
-          conv_weight_(bench::make_bf16(static_cast<std::size_t>(kChannels) * 4)),
+          conv_weight_(bench::make_bf16(static_cast<std::size_t>(kChannels) * 4, 105U)),
           flush_(flush_bytes), policy_(policy) {
-        CUDA_CHECK(cudaMemset(flush_.p, 0xa5, flush_.bytes));
+        bench::flush_l2(flush_, nullptr);
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
@@ -554,24 +555,22 @@ public:
         }
     }
 
-    void flush(cudaStream_t stream) {
-        CUDA_CHECK(cudaMemsetAsync(flush_.p, 0xa5, flush_.bytes, stream));
-    }
+    void flush(cudaStream_t stream) { bench::flush_l2(flush_, stream); }
 
 private:
     bench::PackedQuantizedWeight parent_;
     DeviceBuffer conv_weight_;
-    DeviceBuffer flush_;
+    bench::L2FlushBuffer flush_;
     ops::LinearPolicy policy_;
 };
 
 class Q8Fixture {
 public:
     explicit Q8Fixture(std::size_t flush_bytes)
-        : parent_(bench::make_row_split_weight(QType::Q8_G32_FP16, 12288, 2048, 2048,
-                                               {0x03, 0x00, 0x3c00})),
-          conv_weight_(bench::make_bf16(static_cast<std::size_t>(8192) * 4)), flush_(flush_bytes) {
-        CUDA_CHECK(cudaMemset(flush_.p, 0xa5, flush_.bytes));
+        : parent_(bench::make_row_split_weight(QType::Q8_G32_FP16, 12288, 2048, 2048, 505U)),
+          conv_weight_(bench::make_bf16(static_cast<std::size_t>(8192) * 4, 107U)),
+          flush_(flush_bytes) {
+        bench::flush_l2(flush_, nullptr);
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
@@ -609,14 +608,12 @@ public:
         }
     }
 
-    void flush(cudaStream_t stream) {
-        CUDA_CHECK(cudaMemsetAsync(flush_.p, 0xa5, flush_.bytes, stream));
-    }
+    void flush(cudaStream_t stream) { bench::flush_l2(flush_, stream); }
 
 private:
     bench::PackedQuantizedWeight parent_;
     DeviceBuffer conv_weight_;
-    DeviceBuffer flush_;
+    bench::L2FlushBuffer flush_;
 };
 
 template <class Fixture>
@@ -625,8 +622,10 @@ public:
     BenchmarkState(Fixture& fixture, Form form, std::int32_t tokens, const Options& options)
         : fixture_(fixture), geometry_(fixture.geometry()), form_(form), batch_(options.batch),
           slots_(batch_ == 1 ? tokens + 1 : batch_ * tokens + batch_),
-          input_(bench::make_bf16(static_cast<std::size_t>(geometry_.hidden) * tokens * batch_)),
-          states_(bench::make_bf16(static_cast<std::size_t>(geometry_.channels()) * 3 * slots_)),
+          input_(
+              bench::make_bf16(static_cast<std::size_t>(geometry_.hidden) * tokens * batch_, 109U)),
+          states_(
+              bench::make_bf16(static_cast<std::size_t>(geometry_.channels()) * 3 * slots_, 111U)),
           conv_record_(static_cast<std::size_t>(geometry_.channels()) * tokens * batch_ * 2),
           initial_slot_(static_cast<std::size_t>(batch_) * sizeof(std::int32_t)),
           snapshot_base_slot_(static_cast<std::size_t>(batch_) * sizeof(std::int32_t)),
@@ -670,6 +669,10 @@ public:
     [[nodiscard]] Form form() const noexcept { return form_; }
 
     [[nodiscard]] std::size_t workspace_bytes() const noexcept { return workspace_bytes_; }
+
+    [[nodiscard]] std::size_t workspace_peak_bytes() const noexcept {
+        return workspace_.peak_used();
+    }
 
     void prepare(CacheState cache, cudaStream_t stream) {
         if (cache == CacheState::Cold) { fixture_.flush(stream); }
@@ -741,7 +744,10 @@ public:
         std::size_t nodes = 0;
         CUDA_CHECK(cudaGraphGetNodes(graph_, nullptr, &nodes));
         if (nodes < 3) { throw std::runtime_error("GDN conv capture produced an empty graph"); }
+        nodes_ = static_cast<std::int32_t>(nodes);
     }
+
+    [[nodiscard]] std::int32_t nodes() const noexcept { return nodes_; }
 
     void launch(cudaStream_t stream) const { CUDA_CHECK(cudaGraphLaunch(exec_, stream)); }
 
@@ -760,6 +766,7 @@ private:
     cudaEvent_t body_start_ = nullptr;
     cudaEvent_t body_stop_  = nullptr;
     cudaEvent_t completion_ = nullptr;
+    std::int32_t nodes_     = 0;
 };
 
 Stats summarize(std::vector<double> samples) {
@@ -848,7 +855,8 @@ std::vector<Result> run_point(Fixture& fixture, Form form, std::int32_t tokens,
                     ? measure_graph(state, graph, cache, stream, options.warmup, options.repeat)
                     : measure_eager(state, cache, stream, options.warmup, options.repeat);
             results.push_back({state.profile(), state.form(), tokens, options.batch, execution,
-                               cache, stats, state.workspace_bytes()});
+                               cache, stats, state.workspace_bytes(), state.workspace_peak_bytes(),
+                               execution == Execution::Graph ? graph.nodes() : 0});
         }
     }
     return results;
@@ -856,10 +864,11 @@ std::vector<Result> run_point(Fixture& fixture, Form form, std::int32_t tokens,
 
 void print_result(const Result& result) {
     std::printf("%-10s %-8s T=%-3d B=%-2d %-12s %-4s median=%8.3f us min=%8.3f us "
-                "p95=%8.3f us workspace=%zu\n",
+                "p95=%8.3f us workspace=%zu peak=%zu nodes=%d\n",
                 result.profile, form_name(result.form), result.tokens, result.batch,
                 execution_name(result.execution), cache_name(result.cache), result.stats.median_us,
-                result.stats.min_us, result.stats.p95_us, result.workspace_bytes);
+                result.stats.min_us, result.stats.p95_us, result.workspace_bytes,
+                result.workspace_peak_bytes, result.graph_nodes);
 }
 
 void write_csv(const std::string& path, const std::vector<Result>& results, const Options& options,
@@ -874,14 +883,25 @@ void write_csv(const std::string& path, const std::vector<Result>& results, cons
     int runtime = 0;
     CUDA_CHECK(cudaRuntimeGetVersion(&runtime));
     stream << "profile,form,tokens,batch,execution,timed_scope,cache,median_us,min_us,p95_us,"
-              "workspace_bytes,warmup,repeat,flush_bytes,build_type,gpu,cuda_runtime\n";
+              "workspace_bytes,workspace_peak_bytes,graph_nodes,valid_columns,warmup,repeat,"
+              "flush_bytes,build_type,gpu,cuda_runtime\n";
     for (const Result& result : results) {
         stream << result.profile << ',' << form_name(result.form) << ',' << result.tokens << ','
                << result.batch << ',' << execution_name(result.execution)
                << ",full_gdn_input_proj_conv_device_body," << cache_name(result.cache) << ','
                << result.stats.median_us << ',' << result.stats.min_us << ',' << result.stats.p95_us
-               << ',' << result.workspace_bytes << ',' << options.warmup << ',' << options.repeat
-               << ',' << options.flush_bytes << ','
+               << ',' << result.workspace_bytes << ',' << result.workspace_peak_bytes << ','
+               << result.graph_nodes << ',';
+        if (options.valid_columns.empty()) {
+            stream << "dense";
+        } else {
+            for (std::size_t index = 0; index < options.valid_columns.size(); ++index) {
+                if (index != 0) { stream << '|'; }
+                stream << options.valid_columns[index];
+            }
+        }
+        stream << ',' << options.warmup << ',' << options.repeat << ',' << options.flush_bytes
+               << ','
 #ifdef NDEBUG
                << "Release"
 #else

@@ -17,6 +17,7 @@ namespace ninfer::ops::detail {
 struct Fp8A8Workspace {
     std::uint8_t* codes = nullptr;
     float* scales       = nullptr;
+    float* partials     = nullptr;
 };
 
 inline std::size_t fp8_a8_checked_bytes(std::int32_t tokens, std::size_t bytes_per_token) {
@@ -29,20 +30,23 @@ inline std::size_t fp8_a8_checked_bytes(std::int32_t tokens, std::size_t bytes_p
 }
 
 template <class Arena>
-Fp8A8Workspace allocate_fp8_a8_workspace(Arena& arena, std::int32_t tokens,
-                                         std::int32_t input_rows) {
+Fp8A8Workspace allocate_fp8_a8_workspace(Arena& arena, std::int32_t tokens, std::int32_t input_rows,
+                                         std::size_t partial_bytes = 0) {
     if (input_rows <= 0 || (input_rows % 32) != 0) {
         throw std::invalid_argument("fp8 A8 workspace: invalid K");
     }
     const DeviceSpan codes =
         arena.alloc_bytes(fp8_a8_checked_bytes(tokens, static_cast<std::size_t>(input_rows)), 256);
     const DeviceSpan scales = arena.alloc_bytes(fp8_a8_checked_bytes(tokens, sizeof(float)), 256);
-    return {static_cast<std::uint8_t*>(codes.data), static_cast<float*>(scales.data)};
+    float* partials =
+        partial_bytes ? static_cast<float*>(arena.alloc_bytes(partial_bytes, 256).data) : nullptr;
+    return {static_cast<std::uint8_t*>(codes.data), static_cast<float*>(scales.data), partials};
 }
 
-inline std::size_t fp8_a8_workspace_capacity_bytes(std::int32_t tokens, std::int32_t input_rows) {
+inline std::size_t fp8_a8_workspace_capacity_bytes(std::int32_t tokens, std::int32_t input_rows,
+                                                   std::size_t partial_bytes = 0) {
     WorkspaceLayoutBuilder layout;
-    (void)allocate_fp8_a8_workspace(layout, tokens, input_rows);
+    (void)allocate_fp8_a8_workspace(layout, tokens, input_rows, partial_bytes);
     return layout.peak_bytes(1);
 }
 

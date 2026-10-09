@@ -49,15 +49,15 @@ void attention_projection(const Tensor& hidden, const AttentionParameters& param
 }
 
 void text_rope(const Tensor& positions, const RopeConfig& config, Tensor& query,
-               cudaStream_t stream) {
+               DeviceExecutionView execution) {
     require_rope_axes(positions, config);
-    ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, stream);
+    ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, execution);
 }
 
 void text_rope(const Tensor& positions, const RopeConfig& config, Tensor& query, Tensor& key,
-               cudaStream_t stream) {
+               DeviceExecutionView execution) {
     require_rope_axes(positions, config);
-    ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, key, stream);
+    ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, key, execution);
 }
 
 } // namespace ninfer::models::qwen3_5::execution

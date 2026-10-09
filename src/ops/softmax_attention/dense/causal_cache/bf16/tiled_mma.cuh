@@ -23,7 +23,7 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
     constexpr int QKNt          = Bc / 8;               // 8  QK score n-tiles
     constexpr int QKKs          = D / 16;               // 16 QK contraction steps over head_dim
     constexpr int PVNt          = D / 8;                // 32 PV output n-tiles
-    constexpr int PVKs          = Bc / 16;               // 4  PV contraction steps over keys
+    constexpr int PVKs          = Bc / 16;              // 4  PV contraction steps over keys
     constexpr unsigned FullMask = 0xffffffffu;
 
     static_assert(Br == Schedule::kWarps * 16);
@@ -45,7 +45,7 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
 
     if (q_head >= Geometry::QHeads || q0 >= width) { return; }
     if (q0 >= tokens) {
-        bf16_kv_zero_rows<Geometry>(out, q_head, q0, min(q0 + Br, width), tid, Threads);
+        causal_zero_rows<Geometry>(out, q_head, q0, min(q0 + Br, width), tid, Threads);
         return;
     }
     const int base_pos              = positions[0];
@@ -61,7 +61,7 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
     const int b_koff    = ((lane >> 3) & 1) << 3;
     const int warp_row0 = warp * 16; // this warp owns rows [warp_row0, warp_row0+16)
 
-    // Per-lane precomputed swizzled ldmatrix base addresses (see bf16_kv_swizzle_address).
+    // Per-lane precomputed swizzled ldmatrix base addresses (see causal_swizzle_address).
     const unsigned q_sbase = smem_addr(q_s);
     const unsigned k_sbase = smem_addr(k_s);
     const unsigned v_sbase = smem_addr(v_s);
@@ -87,13 +87,13 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
     {
         constexpr int VecPerRow      = D / 8;
         constexpr int QRowStride     = D * Geometry::QHeads; // global stride between tokens
-        const __nv_bfloat16* q_block = q + bf16_kv_q_index<Geometry>(q_head, 0, q0);
+        const __nv_bfloat16* q_block = q + causal_q_index<Geometry>(q_head, 0, q0);
         if (q0 + Br <= tokens) {
 #pragma unroll
             for (int chunk = tid; chunk < Br * VecPerRow; chunk += Threads) {
                 const int row    = chunk / VecPerRow;
                 const int d      = (chunk % VecPerRow) * 8;
-                __nv_bfloat16* p = &q_s[row * D + bf16_kv_swizzle(row, d)];
+                __nv_bfloat16* p = &q_s[row * D + causal_swizzle(row, d)];
                 cp_async<16, Cache::cg>(p, &q_block[row * QRowStride + d]);
             }
         } else {
@@ -101,7 +101,7 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
             for (int chunk = tid; chunk < Br * VecPerRow; chunk += Threads) {
                 const int row    = chunk / VecPerRow;
                 const int d      = (chunk % VecPerRow) * 8;
-                __nv_bfloat16* p = &q_s[row * D + bf16_kv_swizzle(row, d)];
+                __nv_bfloat16* p = &q_s[row * D + causal_swizzle(row, d)];
                 if (q0 + row < tokens) {
                     cp_async<16, Cache::cg>(p, &q_block[row * QRowStride + d]);
                 } else {
@@ -125,7 +125,7 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
 
     // Fold softmax_scale into the exp2 (FA-style): scores stay raw, so the
     // per-element "* scale" multiply drops out of the QK epilogue entirely.
-    const float scale_l2 = scale * kBf16KvLog2E;
+    const float scale_l2 = scale * kLog2E;
     int physical_page    = block_table[0];
 
     // Prologue: commit Q, then kick off K(0). The loop's wait<0> below drains both.
@@ -163,13 +163,13 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
         unsigned bf[2][QKNt][2];
         {
             ldmatrix_x4(af[0][0], af[0][1], af[0][2], af[0][3],
-                        bf16_kv_swizzle_address(q_lane_base, 0u, q_as, q_r));
+                        causal_swizzle_address(q_lane_base, 0u, q_as, q_r));
 #pragma unroll
             for (int nt2 = 0; nt2 < QKNt; nt2 += 2) {
                 ldmatrix_x4(
                     bf[0][nt2][0], bf[0][nt2][1], bf[0][nt2 + 1][0], bf[0][nt2 + 1][1],
-                    bf16_kv_swizzle_address(k_lane_base + static_cast<unsigned>(nt2 * (8 * D * 2)),
-                                            0u, k_as, k_r));
+                    causal_swizzle_address(k_lane_base + static_cast<unsigned>(nt2 * (8 * D * 2)),
+                                           0u, k_as, k_r));
             }
         }
 #pragma unroll
@@ -179,12 +179,12 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
             if (k + 1 < QKKs) {
                 const unsigned ck = static_cast<unsigned>((k + 1) << 5);
                 ldmatrix_x4(af[nxt][0], af[nxt][1], af[nxt][2], af[nxt][3],
-                            bf16_kv_swizzle_address(q_lane_base, ck, q_as, q_r));
+                            causal_swizzle_address(q_lane_base, ck, q_as, q_r));
 #pragma unroll
                 for (int nt2 = 0; nt2 < QKNt; nt2 += 2) {
                     ldmatrix_x4(
                         bf[nxt][nt2][0], bf[nxt][nt2][1], bf[nxt][nt2 + 1][0], bf[nxt][nt2 + 1][1],
-                        bf16_kv_swizzle_address(
+                        causal_swizzle_address(
                             k_lane_base + static_cast<unsigned>(nt2 * (8 * D * 2)), ck, k_as, k_r));
                 }
             }
@@ -313,7 +313,7 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
         unsigned vf[2][4];
         {
             ldmatrix_x4_t(vf[0][0], vf[0][1], vf[0][2], vf[0][3],
-                          bf16_kv_swizzle_address(v_lane_base, 0u, v_as, v_r));
+                          causal_swizzle_address(v_lane_base, 0u, v_as, v_r));
         }
 #pragma unroll
         for (int li = 0; li < PVLoads; ++li) {
@@ -327,8 +327,8 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
                 const unsigned ckv = static_cast<unsigned>(n2b << 4);
                 ldmatrix_x4_t(
                     vf[nxt][0], vf[nxt][1], vf[nxt][2], vf[nxt][3],
-                    bf16_kv_swizzle_address(v_lane_base + static_cast<unsigned>(k2 * (16 * D * 2)),
-                                            ckv, v_as, v_r));
+                    causal_swizzle_address(v_lane_base + static_cast<unsigned>(k2 * (16 * D * 2)),
+                                           ckv, v_as, v_r));
             }
             mma_bf16(acc[n2][0], acc[n2][1], acc[n2][2], acc[n2][3], p_frag[k][0], p_frag[k][1],
                      p_frag[k][2], p_frag[k][3], vf[cur][0], vf[cur][1]);
@@ -357,7 +357,7 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
                                                 acc[n][3], state1.scaled_maximum, state1.sum);
         }
     }
-    bf16_kv_zero_rows<Geometry>(out, q_head, tokens, min(q0 + Br, width), tid, Threads);
+    causal_zero_rows<Geometry>(out, q_head, tokens, min(q0 + Br, width), tid, Threads);
 }
 
 

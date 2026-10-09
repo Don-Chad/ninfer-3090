@@ -1,25 +1,7 @@
 #pragma once
-
-#include "core/paged_kv_cache.h"
-#include "core/arena.h"
-#include <cuda_bf16.h>
-#include <cuda_fp16.h>
-#include <type_traits>
+#include "ops/softmax_attention/common/causal_operands.h"
 
 namespace ninfer::ops::detail {
-
-struct Bf16KvOperands {
-    const __nv_bfloat16* q;
-    const std::int32_t* positions;
-    __nv_bfloat16* out;
-    float scale;
-    int width;
-    int batch;
-    int visible_capacity;
-    int head_dim;
-    int query_heads;
-};
-
 template <bool Writable>
 struct Bf16KvCacheView {
     using Key   = std::conditional_t<Writable, __nv_bfloat16, const __nv_bfloat16>;
@@ -37,35 +19,6 @@ struct Bf16KvCacheView {
 
 using Bf16KvReadView = Bf16KvCacheView<false>;
 
-struct Bf16KvAppendInput {
-    static constexpr bool writes_cache = true;
-    const __nv_bfloat16* k;
-    const __nv_bfloat16* v;
-};
-
-struct Bf16KvCachedInput {
-    static constexpr bool writes_cache = false;
-};
-
-struct Bf16KvPartialView {
-    float* acc;
-    float* maximum;
-    float* sum;
-};
-
-inline Bf16KvOperands bf16_kv_operands(const Tensor& q, const Tensor& positions, Tensor& out,
-                                       float scale, int capacity) {
-    return {static_cast<const __nv_bfloat16*>(q.data),
-            static_cast<const std::int32_t*>(positions.data),
-            static_cast<__nv_bfloat16*>(out.data),
-            scale,
-            q.ne[2],
-            q.ne[3],
-            capacity,
-            q.ne[0],
-            q.ne[1]};
-}
-
 template <bool Writable>
 Bf16KvCacheView<Writable> bf16_kv_cache_view(const PagedKVBatchLayerView& cache,
                                              const Tensor* valid = nullptr,
@@ -78,23 +31,6 @@ Bf16KvCacheView<Writable> bf16_kv_cache_view(const PagedKVBatchLayerView& cache,
             cache.block_tables.ne[0],
             cache.head_dim,
             cache.num_kv_heads};
-}
-
-struct Bf16KvPartialStorage {
-    Tensor acc, maximum, sum;
-
-    Bf16KvPartialView view() const {
-        return {static_cast<float*>(acc.data), static_cast<float*>(maximum.data),
-                static_cast<float*>(sum.data)};
-    }
-};
-
-template <class Allocator>
-Bf16KvPartialStorage bf16_kv_allocate_partials(Allocator& allocator, int heads, int width,
-                                               int splits, int batch) {
-    return {allocator.alloc(DType::FP32, {256, heads, width, splits * batch}),
-            allocator.alloc(DType::FP32, {heads, width, splits * batch}),
-            allocator.alloc(DType::FP32, {heads, width, splits * batch})};
 }
 
 } // namespace ninfer::ops::detail

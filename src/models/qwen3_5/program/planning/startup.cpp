@@ -336,6 +336,7 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
 }
 
 WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
+    const DeviceExecutionView device_execution{nullptr, plan.multiprocessor_count};
     const auto& parameters = *plan.parameters;
     const auto& config     = parameters.model.config().text;
 
@@ -388,12 +389,12 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                     scratch(layout, execution::attention_projection_workspace_bytes(*attention,
                                                                                     first, last));
                     (void)workspace::text_attention_results(layout, config, last);
-                    scratch(layout,
-                            ops::causal_softmax_attention_workspace_capacity_bytes(
-                                {dimension(config.attention->head_dim),
-                                 dimension(config.attention->num_attention_heads),
-                                 dimension(config.attention->num_key_value_heads)},
-                                plan.kv_storage, envelope, batch_size, min_width, max_width));
+                    scratch(layout, ops::causal_softmax_attention_workspace_capacity_bytes(
+                                        {dimension(config.attention->head_dim),
+                                         dimension(config.attention->num_attention_heads),
+                                         dimension(config.attention->num_key_value_heads)},
+                                        plan.kv_storage, envelope, batch_size, min_width, max_width,
+                                        device_execution));
                     add_scratch(layout, attention->output, first, last);
                 } else {
                     const auto& gdn = std::get<execution::GdnParameters>(block.mixer);
@@ -415,10 +416,10 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                     }
                     (void)workspace::gdn_recurrent_output(layout, config, last);
                     if (path == GdnWorkspacePath::Prefill) {
-                        scratch(layout, ops::gated_delta_net_workspace_capacity_bytes(
-                                            dimension(config.gdn->linear_num_key_heads),
-                                            dimension(config.gdn->linear_num_value_heads),
-                                            first, last));
+                        scratch(layout,
+                                ops::gated_delta_net_workspace_capacity_bytes(
+                                    dimension(config.gdn->linear_num_key_heads),
+                                    dimension(config.gdn->linear_num_value_heads), first, last));
                     }
                     (void)workspace::gdn_normalized_output(layout, config, last);
                     add_scratch(layout, gdn.output, first, last);
@@ -462,7 +463,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                             {dimension(config.attention->head_dim),
                              dimension(config.attention->num_attention_heads),
                              dimension(config.attention->num_key_value_heads)},
-                            plan.kv_storage, envelope, 1, tokens, tokens));
+                            plan.kv_storage, envelope, 1, tokens, tokens, device_execution));
         (void)workspace::mtp_post_attention(layout, config, tokens);
         mtp_post_mixer(layout, tokens, tokens);
     };
@@ -502,7 +503,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                             {dimension(config.attention->head_dim),
                              dimension(config.attention->num_attention_heads),
                              dimension(config.attention->num_key_value_heads)},
-                            plan.kv_storage, text_envelope, 1, 1, 1));
+                            plan.kv_storage, text_envelope, 1, 1, 1, device_execution));
         matrix(layout, DType::BF16, dimension(config.hidden_size), 1);
         matrix(layout, DType::BF16, dimension(config.hidden_size), 1);
         mtp_post_mixer(layout, 1, 1);
@@ -591,11 +592,12 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                 scratch(layout, execution::mtp_projection_workspace_bytes(
                                     parameters.mtp->projection, tokens, tokens));
                 (void)workspace::mtp_attention_results(layout, config, tokens);
-                scratch(layout, ops::causal_softmax_attention_workspace_capacity_bytes(
-                                    {dimension(config.attention->head_dim),
-                                     dimension(config.attention->num_attention_heads),
-                                     dimension(config.attention->num_key_value_heads)},
-                                    plan.kv_storage, text_envelope, batch, width, width));
+                scratch(layout,
+                        ops::causal_softmax_attention_workspace_capacity_bytes(
+                            {dimension(config.attention->head_dim),
+                             dimension(config.attention->num_attention_heads),
+                             dimension(config.attention->num_key_value_heads)},
+                            plan.kv_storage, text_envelope, batch, width, width, device_execution));
                 (void)workspace::mtp_post_attention(layout, config, tokens);
                 mtp_post_mixer(layout, tokens, tokens);
             };
@@ -924,27 +926,28 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     if (main_page_groups == 0) {
         throw std::invalid_argument("Main KV physical page count must be positive");
     }
-    auto impl                 = std::make_unique<SequencePlanImpl>();
-    impl->parameters          = inputs.parameters;
-    impl->capacity            = inputs.capacity;
-    impl->main_page_groups    = main_page_groups;
-    impl->kv_capacity         = static_cast<std::uint32_t>(checked_i32(
+    auto impl                  = std::make_unique<SequencePlanImpl>();
+    impl->parameters           = inputs.parameters;
+    impl->capacity             = inputs.capacity;
+    impl->main_page_groups     = main_page_groups;
+    impl->kv_capacity          = static_cast<std::uint32_t>(checked_i32(
         static_cast<std::uint64_t>(main_page_groups) * static_cast<std::uint32_t>(kPagedKVPageSize),
         "resolved Paged KV capacity exceeds int32"));
-    impl->max_concurrency     = inputs.max_concurrency;
-    impl->prefill_chunk       = inputs.prefill_chunk;
-    impl->draft_window        = inputs.draft_window;
-    impl->lookup_ngram        = inputs.lookup_ngram;
-    impl->speculative_backend = inputs.speculative_backend;
-    impl->proposal_head       = inputs.proposal_head;
-    impl->features            = inputs.features;
-    impl->use_cuda_graph      = inputs.use_cuda_graph;
-    impl->causal_scoring      = inputs.causal_scoring;
-    impl->device              = inputs.device;
-    impl->context_cache       = inputs.context_cache;
-    impl->kv_storage          = inputs.kv_storage;
-    impl->persistent          = persistent_layout(*impl);
-    impl->workspace           = build_workspace_plan(*impl);
+    impl->max_concurrency      = inputs.max_concurrency;
+    impl->prefill_chunk        = inputs.prefill_chunk;
+    impl->draft_window         = inputs.draft_window;
+    impl->lookup_ngram         = inputs.lookup_ngram;
+    impl->speculative_backend  = inputs.speculative_backend;
+    impl->proposal_head        = inputs.proposal_head;
+    impl->features             = inputs.features;
+    impl->use_cuda_graph       = inputs.use_cuda_graph;
+    impl->causal_scoring       = inputs.causal_scoring;
+    impl->device               = inputs.device;
+    impl->multiprocessor_count = inputs.multiprocessor_count;
+    impl->context_cache        = inputs.context_cache;
+    impl->kv_storage           = inputs.kv_storage;
+    impl->persistent           = persistent_layout(*impl);
+    impl->workspace            = build_workspace_plan(*impl);
     if (impl->use_cuda_graph) {
         // Definitions remain per execution profile, but only one executable is instantiated for
         // each reachable node-topology class. These bounds cover the largest profile installed in
@@ -1042,21 +1045,22 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
                            const EngineOptions& options, std::uint32_t resident_main_pages) {
     validate_target_options(parameters, device, options);
     SequencePlanningInputs inputs{
-        .parameters          = &parameters,
-        .capacity            = options.max_context,
-        .max_concurrency     = options.max_concurrency,
-        .prefill_chunk       = std::min(options.prefill_chunk, options.max_context),
-        .draft_window        = options.speculative.draft_tokens,
-        .lookup_ngram        = options.speculative.lookup_ngram,
-        .speculative_backend = options.speculative.backend,
-        .kv_storage          = options.kv_cache,
-        .proposal_head       = options.speculative.proposal_head,
-        .features            = models::load_options(options),
-        .use_cuda_graph      = options.use_cuda_graph,
-        .causal_scoring      = options.purpose == EnginePurpose::CausalScoring,
-        .device              = options.device,
-        .context_cache       = options.context_cache,
-        .resident_main_pages = resident_main_pages,
+        .parameters           = &parameters,
+        .capacity             = options.max_context,
+        .max_concurrency      = options.max_concurrency,
+        .prefill_chunk        = std::min(options.prefill_chunk, options.max_context),
+        .draft_window         = options.speculative.draft_tokens,
+        .lookup_ngram         = options.speculative.lookup_ngram,
+        .speculative_backend  = options.speculative.backend,
+        .kv_storage           = options.kv_cache,
+        .proposal_head        = options.speculative.proposal_head,
+        .features             = models::load_options(options),
+        .use_cuda_graph       = options.use_cuda_graph,
+        .causal_scoring       = options.purpose == EnginePurpose::CausalScoring,
+        .device               = options.device,
+        .multiprocessor_count = device.multiprocessor_count(),
+        .context_cache        = options.context_cache,
+        .resident_main_pages  = resident_main_pages,
     };
     const std::uint32_t logical_pages = page_count(inputs.capacity);
     const std::uint64_t minimum_pages64 =

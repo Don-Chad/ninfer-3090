@@ -23,6 +23,48 @@ __device__ __forceinline__ float decode_nvfp4_e4m3(std::uint8_t storage) {
     return static_cast<float2>(value).x;
 }
 
+__device__ __forceinline__ unsigned nvfp4_scaled_pair_bf16(std::uint8_t code, std::uint8_t scale) {
+// The native widenings are Blackwell-only; sm_86 always takes the exact FP32 expansion.
+#if (__CUDACC_VER_MAJOR__ > 13 || (__CUDACC_VER_MAJOR__ == 13 && __CUDACC_VER_MINOR__ >= 2)) &&   \
+    defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000
+    // PTX 9.2 exposes native pair widening. E2M1 times a finite E4M3 scale needs
+    // at most six significand bits, so the BF16 multiplication is exact.
+    unsigned values, multiplier, result;
+    asm("{\n"
+        ".reg .b8 packed;\n"
+        "mov.b32 {packed, _, _, _}, %1;\n"
+        "cvt.rn.bf16x2.e2m1x2 %0, packed;\n"
+        "}\n"
+        : "=r"(values)
+        : "r"(static_cast<unsigned>(code)));
+    const auto scale_pair = static_cast<std::uint16_t>(scale | (static_cast<unsigned>(scale) << 8));
+    asm("cvt.rn.bf16x2.e4m3x2 %0, %1;" : "=r"(multiplier) : "h"(scale_pair));
+    asm("mul.rn.bf16x2 %0, %1, %2;" : "=r"(result) : "r"(values), "r"(multiplier));
+    return result;
+#else
+    // CUDA 13.1 retains the exact FP32 expansion.
+    const float2 values    = decode_nvfp4_e2m1x2(code);
+    const float multiplier = decode_nvfp4_e4m3(scale);
+
+    union {
+        __nv_bfloat162 pair;
+        unsigned bits;
+    } result;
+
+    result.pair = __floats2bfloat162_rn(values.x * multiplier, values.y * multiplier);
+    return result.bits;
+#endif
+}
+
+__device__ __forceinline__ int nvfp4_a16_shared_col_64(int row, int col) {
+    return col ^ ((row & 7) << 3);
+}
+
+__device__ __forceinline__ std::int64_t nvfp4_scale_byte_offset(int row, int group, int k) {
+    return static_cast<std::int64_t>((row / 128) * (k / 64) + group / 4) * 512 + (row & 31) * 16 +
+           ((row & 127) >> 5) * 4 + (group & 3);
+}
+
 struct alignas(8) Nvfp4QuantizedK16 {
     std::uint32_t codes_lo;
     std::uint32_t codes_hi;

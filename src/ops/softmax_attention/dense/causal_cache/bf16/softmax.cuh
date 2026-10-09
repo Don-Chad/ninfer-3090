@@ -8,7 +8,6 @@
 namespace ninfer::ops::detail {
 
 inline constexpr float kBf16KvNegativeInfinity = -std::numeric_limits<float>::infinity();
-inline constexpr float kBf16KvLog2E            = 1.4426950408889634074f;
 
 // Keep the maximum in raw QK units in the mainloop, allowing scale to fold into
 // the exponent's FMA. Exported partial maxima are always in log2 units.

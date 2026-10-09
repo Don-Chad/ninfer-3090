@@ -45,10 +45,13 @@ __global__ void gelu_pair_payload_control(__nv_bfloat162* x, std::int64_t pairs)
 
 void run(ops::GeluMode mode, int d, int columns, bool control) {
     const std::size_t n = static_cast<std::size_t>(d) * static_cast<std::size_t>(columns);
-    DeviceBuffer x      = make_bf16(n);
+    DeviceBuffer x      = make_bf16(n, 101U);
+    SavedBuffer initial(x);
+    const auto restore = [&](cudaStream_t stream) { initial.restore(stream); };
     Tensor tx(x.p, DType::BF16, {d, columns});
 
-    const Result result = bench_loop(
+    const Result result = bench_loop_prepared(
+        restore,
         [&](cudaStream_t stream) {
             if (control) {
                 constexpr int block   = 256;

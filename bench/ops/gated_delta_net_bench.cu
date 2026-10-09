@@ -236,13 +236,6 @@ float gated_delta_net_scale() {
     return 1.0F / std::sqrt(static_cast<float>(gated_delta_net_detail::kStateDim));
 }
 
-DeviceBuffer make_constant_f32(std::size_t elements, float value) {
-    std::vector<float> host(elements, value);
-    DeviceBuffer device(elements * sizeof(float));
-    device.copy_from_host(host.data(), device.bytes);
-    return device;
-}
-
 DeviceBuffer make_varied_bf16(std::size_t elements, std::uint32_t seed) {
     std::vector<std::uint16_t> host(elements);
     std::uint32_t state = seed;
@@ -305,12 +298,12 @@ struct Operands {
           v(make_varied_bf16(static_cast<std::size_t>(gated_delta_net_detail::kStateDim) *
                                  problem.value_heads * problem.tokens * problem.batch,
                              0x31415926U)),
-          g(make_constant_f32(static_cast<std::size_t>(problem.value_heads) * problem.tokens *
-                                  problem.batch,
-                              -1.0F)),
-          beta(make_constant_f32(static_cast<std::size_t>(problem.value_heads) * problem.tokens *
-                                     problem.batch,
-                                 0.5F)),
+          g(bench::make_f32(static_cast<std::size_t>(problem.value_heads) * problem.tokens *
+                                problem.batch,
+                            201U, -1.5F, -.1F)),
+          beta(bench::make_f32(static_cast<std::size_t>(problem.value_heads) * problem.tokens *
+                                   problem.batch,
+                               203U, .1F, .9F)),
           out(make_zeros(static_cast<std::size_t>(gated_delta_net_detail::kStateDim) *
                          problem.value_heads * problem.tokens * problem.batch *
                          sizeof(std::uint16_t))) {}
@@ -357,8 +350,10 @@ struct Operands {
 };
 
 template <class Launch>
-GraphMeasurement measure_graph(Launch& launch, DeviceBuffer& flush, cudaStream_t stream,
-                               const Options& options) {
+GraphMeasurement measure_graph(
+    Launch& launch, bench::L2FlushBuffer& flush, cudaStream_t stream, const Options& options,
+    const launch_fn& restore = [](cudaStream_t) {}) {
+    restore(stream);
     // Resolve lazy CUDA function attributes and reject an invalid case before capture.
     launch(stream);
     CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -366,7 +361,7 @@ GraphMeasurement measure_graph(Launch& launch, DeviceBuffer& flush, cudaStream_t
     TimedGraph graph;
     graph.capture(stream, launch);
     return {
-        measure_cold_graph(graph, flush, stream, options.warmup, options.repeat),
+        measure_cold_graph_prepared(restore, graph, flush, stream, options.warmup, options.repeat),
         graph.nodes(),
     };
 }
@@ -445,7 +440,7 @@ TrafficBytes batch_update_traffic(const Problem& problem, bool composed) {
     };
 }
 
-BenchRow run_batch_update(const Options& options, std::int32_t tokens, DeviceBuffer& flush,
+BenchRow run_batch_update(const Options& options, std::int32_t tokens, bench::L2FlushBuffer& flush,
                           cudaStream_t stream) {
     const Problem problem{options.qk_heads, options.value_heads, tokens, options.batch};
     Operands operands(problem, false);
@@ -455,7 +450,9 @@ BenchRow run_batch_update(const Options& options, std::int32_t tokens, DeviceBuf
     const std::size_t state_elements = static_cast<std::size_t>(gated_delta_net_detail::kStateDim) *
                                        gated_delta_net_detail::kStateDim * problem.value_heads;
     const std::int32_t slots = problem.batch;
-    DeviceBuffer states      = make_zeros(state_elements * slots * sizeof(float));
+    DeviceBuffer states      = bench::make_f32(state_elements * slots, 211U, -.02F, .02F);
+    SavedBuffer initial_states(states);
+    const auto restore = [&](cudaStream_t s) { initial_states.restore(s); };
     std::vector<std::int32_t> state_slots_host(static_cast<std::size_t>(problem.batch));
     for (std::int32_t row = 0; row < problem.batch; ++row) {
         state_slots_host[static_cast<std::size_t>(row)] = row;
@@ -502,7 +499,7 @@ BenchRow run_batch_update(const Options& options, std::int32_t tokens, DeviceBuf
                                                   !composed, ssm_states, selected_slots, selected_slots,
                                                   out, launch_stream);
     };
-    const GraphMeasurement measurement = measure_graph(launch, flush, stream, options);
+    const GraphMeasurement measurement = measure_graph(launch, flush, stream, options, restore);
     const TrafficBytes traffic         = batch_update_traffic(problem, composed);
 
     return {
@@ -524,8 +521,8 @@ BenchRow run_batch_update(const Options& options, std::int32_t tokens, DeviceBuf
     };
 }
 
-std::vector<BenchRow> run_prefill(const Options& options, std::int32_t tokens, DeviceBuffer& flush,
-                                  DeviceExecutionView execution) {
+std::vector<BenchRow> run_prefill(const Options& options, std::int32_t tokens,
+                                  bench::L2FlushBuffer& flush, DeviceExecutionView execution) {
     constexpr auto state_dim = gated_delta_net_detail::kStateDim;
     const bool normalize     = options.mode != Mode::ChunkedOnly;
     const bool force_chunked =
@@ -536,7 +533,7 @@ std::vector<BenchRow> run_prefill(const Options& options, std::int32_t tokens, D
     const Problem problem{options.qk_heads, options.value_heads, tokens};
     Operands operands(problem, !normalize);
     const std::size_t state_elements = std::size_t(state_dim) * state_dim * problem.value_heads;
-    DeviceBuffer state_in            = make_zeros(state_elements * sizeof(float));
+    DeviceBuffer state_in            = bench::make_f32(state_elements, 211U, -.02F, .02F);
     DeviceBuffer state_out           = make_zeros(state_elements * sizeof(float));
     Tensor q = operands.query(), k = operands.key(), v = operands.value();
     Tensor g = operands.gate(), beta = operands.beta_tensor(), out = operands.output();
@@ -718,7 +715,7 @@ int main(int argc, char** argv) {
         cudaDeviceProp device{};
         CUDA_CHECK(cudaGetDeviceProperties(&device, 0));
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        DeviceBuffer flush(options.flush_bytes);
+        bench::L2FlushBuffer flush(options.flush_bytes);
         print_banner(options, device);
 
         for (const std::int32_t tokens : token_values(options)) {

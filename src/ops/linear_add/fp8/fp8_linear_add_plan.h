@@ -12,7 +12,8 @@
 
 namespace ninfer::ops::detail {
 
-inline constexpr std::int32_t kFp8LinearAddChunkTokens = 24;
+[[nodiscard]] std::size_t fp8_linear_add_partial_capacity_bytes(std::int32_t input_rows,
+                                                                std::int32_t max_tokens);
 
 [[nodiscard]] std::size_t fp8_linear_add_workspace_capacity_bytes(std::int32_t output_rows,
                                                                   std::int32_t input_rows,
@@ -22,8 +23,7 @@ inline constexpr std::int32_t kFp8LinearAddChunkTokens = 24;
 
 void fp8_linear_add_decode_launch(const Tensor& x, const Weight& weight, Tensor& residual,
                                   cudaStream_t stream);
-void fp8_linear_add_small_t_launch(const Tensor& x, const Weight& weight, Tensor& residual,
-                                   cudaStream_t stream);
+void fp8_linear_add_matrix_launch(const Tensor&, const Weight&, Tensor&, cudaStream_t);
 void fp8_linear_add_a8_launch(const Tensor& x, const Weight& weight, Tensor& residual,
                               WorkspaceArena& workspace, cudaStream_t stream);
 

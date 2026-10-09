@@ -32,6 +32,13 @@ SPECULATIVE_MODES = {
 }
 DEFAULT_MODES = ("mtp0", "mtp3")
 SAMPLING_MODES = ("stochastic", "greedy")
+KV_CACHE_NAMES = {
+    "bf16": "bf16",
+    "int8": "int8-group64",
+    "fp8": "fp8-e4m3-row256",
+    "nvfp4": "nvfp4",
+    "k8v4": "k8v4",
+}
 
 SEEDS = (
     7632647173703958409,
@@ -79,7 +86,7 @@ SCENARIO_FIXTURES = {
 
 WARMUP_FIXTURE = "text_smoke_zh"
 RUN_ARTIFACT_TYPE = "ninfer_serve_corpus_result"
-RUN_SCHEMA_VERSION = 7
+RUN_SCHEMA_VERSION = 8
 SERVER_LOG_ARTIFACT_TYPE = "ninfer_serve_request_log"
 SERVER_LOG_SCHEMA_VERSION = 22
 STARTUP_TIMEOUT_SECONDS = 1800.0
@@ -106,6 +113,7 @@ class RunSpec:
     speculative_backend: str
     draft_tokens: int
     sampling_mode: str
+    kv_dtype: str
     fixture: Fixture
     seed: int
 
@@ -310,6 +318,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True, help="campaign output directory")
     parser.add_argument("--port", type=int, default=8080, help="loopback serving port")
     parser.add_argument("--device", type=int, default=0, help="CUDA device index")
+    parser.add_argument("--kv-dtype", choices=tuple(KV_CACHE_NAMES), default="int8")
     return parser.parse_args(argv)
 
 
@@ -394,6 +403,7 @@ def build_specs(
     fixtures: dict[str, Fixture],
     mode_names: Sequence[str],
     sampling_mode: str,
+    kv_dtype: str,
 ) -> list[RunSpec]:
     specs: list[RunSpec] = []
     for target, artifact in artifacts:
@@ -410,6 +420,7 @@ def build_specs(
                             speculative_backend=backend,
                             draft_tokens=draft_tokens,
                             sampling_mode=sampling_mode,
+                            kv_dtype=kv_dtype,
                             fixture=fixtures[fixture_name],
                             seed=seed,
                         )
@@ -500,7 +511,7 @@ def validate_server_start(event: dict[str, Any], spec: RunSpec, device: int) -> 
         "max_context": 262144,
         "kv_capacity": 262144,
         "prefill_chunk": 1024,
-        "kv_cache": "int8-group64",
+        "kv_cache": KV_CACHE_NAMES[spec.kv_dtype],
         "cuda_graph": True,
         "prefix_reuse": False,
         "speculative_backend": spec.speculative_backend,
@@ -678,6 +689,7 @@ def build_result_record(
         "speculative_backend": spec.speculative_backend,
         "draft_tokens": spec.draft_tokens,
         "sampling_mode": spec.sampling_mode,
+        "kv_dtype": spec.kv_dtype,
         "request": payload,
         "response": response,
         "server_event": server_event,
@@ -723,6 +735,10 @@ def load_existing_records(
                 if key in records:
                     raise CampaignError(f"{path}:{line_number}: duplicate result for {key!r}")
                 spec = expected_specs[key]
+                if record.get("kv_dtype") != spec.kv_dtype:
+                    raise CampaignError(
+                        f"{path}:{line_number}: KV dtype differs from the current command"
+                    )
                 if Path(record.get("artifact_path", "")).resolve() != spec.artifact:
                     raise CampaignError(
                         f"{path}:{line_number}: artifact path differs from the current command"
@@ -757,6 +773,8 @@ def server_command(
         spec.model_id,
         "--max-context",
         "262144",
+        "--kv-capacity",
+        "262144",
         "--prefill-chunk",
         "1024",
         "--log-stats-interval-ms",
@@ -766,7 +784,7 @@ def server_command(
         "--request-log-jsonl",
         str(server_log),
         "--kv-dtype",
-        "int8",
+        spec.kv_dtype,
         "--no-prefix-reuse",
     ]
     if spec.speculative_backend != "none":
@@ -819,7 +837,7 @@ def run_block(
     server_log = (
         output_dir
         / "server"
-        / f"{filename_label(first.target)}_{first.speculative_mode}_{first.sampling_mode}.jsonl"
+        / f"{filename_label(first.target)}_{first.kv_dtype}_{first.speculative_mode}_{first.sampling_mode}.jsonl"
     )
     command = server_command(serve, first, server_log, port, device)
     print(
@@ -905,6 +923,7 @@ SUMMARY_FIELDS = (
     "fixture",
     "speculative_mode",
     "sampling_mode",
+    "kv_dtype",
     "samples",
     "prompt_tokens_mean",
     "prompt_tokens_stddev",
@@ -954,6 +973,9 @@ def summary_row(
     prefill_signatures = {str(record.get("prefill_signature", "")) for record in records}
     if len(prefill_signatures) != 1 or not next(iter(prefill_signatures)):
         raise CampaignError("summary group does not have one canonical prefill_signature")
+    kv_dtypes = {record["kv_dtype"] for record in records}
+    if len(kv_dtypes) != 1:
+        raise CampaignError("summary group mixes KV dtypes")
     row: dict[str, Any] = {
         "section": section,
         "target": target,
@@ -962,6 +984,7 @@ def summary_row(
         "fixture": fixture,
         "speculative_mode": speculative_mode,
         "sampling_mode": sampling_mode,
+        "kv_dtype": next(iter(kv_dtypes)),
         "samples": len(records),
     }
     set_stats(row, "prompt_tokens", records, "prompt_tokens")
@@ -1228,7 +1251,8 @@ def write_summaries(rows: Sequence[dict[str, Any]], output_dir: Path) -> None:
     markdown = (
         "# Serving corpus performance summary\n\n"
         "All values are arithmetic mean ± sample standard deviation. "
-        f"Sampling: {rows[0]['sampling_mode'] if rows else 'n/a'}.\n\n"
+        f"Sampling: {rows[0]['sampling_mode'] if rows else 'n/a'}. "
+        f"KV: {rows[0]['kv_dtype'] if rows else 'n/a'}.\n\n"
         + "\n\n".join(sections)
         + "\n"
     )
@@ -1253,7 +1277,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if len(mode_names) != len(set(mode_names)):
         raise CampaignError("duplicate --mode value")
     fixtures = load_fixtures()
-    specs = build_specs(artifacts, fixtures, mode_names, args.sampling)
+    specs = build_specs(artifacts, fixtures, mode_names, args.sampling, args.kv_dtype)
     expected_specs = {spec.key: spec for spec in specs}
     total = len(expected_specs)
 

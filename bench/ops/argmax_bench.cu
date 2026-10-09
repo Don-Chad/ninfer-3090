@@ -82,7 +82,7 @@ Options parse_args(int argc, char** argv) {
 }
 
 void run_shape(std::int32_t physical_rows, std::int32_t valid_rows, int cols, const char* shape) {
-    DeviceBuffer logits = make_bf16(static_cast<std::size_t>(physical_rows) * kLogitSlots);
+    DeviceBuffer logits = make_bf16(static_cast<std::size_t>(physical_rows) * kLogitSlots, 101U);
     DeviceBuffer out    = make_zeros(static_cast<std::size_t>(cols) * sizeof(std::int32_t));
     auto* logits_base   = static_cast<std::uint16_t*>(logits.p);
     Tensor tout(out.p, DType::I32, {cols});

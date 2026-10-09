@@ -101,7 +101,7 @@ struct Case {
     std::size_t live = 0;
 
     Case(int d, int w, int b, const std::string& mode)
-        : source(bench::make_bf16(static_cast<std::size_t>(d) * w * 8)), lanes(b * 4),
+        : source(bench::make_bf16(static_cast<std::size_t>(d) * w * 8, 101U)), lanes(b * 4),
           starts(b * 4), ends(b * 4), output(static_cast<std::size_t>(d) * w * b * 2),
           positions(w * b * 4), counts(b * 4), x(source.p, DType::BF16, {d, w, 8}),
           l(lanes.p, DType::I32, {b}), s(starts.p, DType::I32, {b}), e(ends.p, DType::I32, {b}),
@@ -138,7 +138,7 @@ int main(int argc, char** argv) {
         CUDA_CHECK(cudaGetDeviceCount(&devices));
         if (!devices) return 77;
         DeviceContext device;
-        DeviceBuffer flush(std::size_t{256} << 20);
+        bench::L2FlushBuffer flush(std::size_t{256} << 20);
         std::ofstream csv;
         if (!o.csv.empty()) {
             csv.open(o.csv);

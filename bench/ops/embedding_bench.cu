@@ -302,7 +302,8 @@ void run_profile(Profile profile, const Options& o, std::ofstream& csv) {
         host_ids[i]      = o.pattern == "masked" && i % o.block_width ? mask : normal;
     }
     DeviceBuffer ids(static_cast<std::size_t>(max_t) * 4),
-        output(static_cast<std::size_t>(max_t) * spec.d * 2), flush(kL2FlushBytes);
+        output(static_cast<std::size_t>(max_t) * spec.d * 2);
+    L2FlushBuffer flush(kL2FlushBytes);
     ids.copy_from_host(host_ids.data(), ids.bytes);
     DeviceContext device;
     for (int t : o.tokens) {

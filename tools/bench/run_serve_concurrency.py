@@ -45,7 +45,7 @@ SATURATION_SEEDS = (
 CORPUS_ORDER_SEED = 20260811
 POINT_ARTIFACT_TYPE = "ninfer_serve_concurrency_bench_point"
 SUMMARY_ARTIFACT_TYPE = "ninfer_serve_concurrency_bench_summary"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @dataclasses.dataclass(frozen=True)
@@ -57,13 +57,14 @@ class Point:
     speculative_backend: str
     draft_tokens: int
     sampling_mode: str
+    kv_dtype: str
     suite: str
     concurrency: int
 
     @property
     def key(self) -> str:
         return (
-            f"{corpus.filename_label(self.target)}_{self.speculative_mode}_{self.sampling_mode}_"
+            f"{corpus.filename_label(self.target)}_{self.kv_dtype}_{self.speculative_mode}_{self.sampling_mode}_"
             f"{self.suite.replace('-', '_')}_c{self.concurrency}"
         )
 
@@ -147,6 +148,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="shared Main KV capacity passed to ninfer-serve (default: 262144)",
     )
     parser.add_argument("--prefill-chunk", type=int, default=1024)
+    parser.add_argument("--kv-dtype", choices=tuple(corpus.KV_CACHE_NAMES), default="int8")
     parser.add_argument("--output", type=Path, required=True, help="benchmark output directory")
     parser.add_argument("--port", type=int, default=8080, help="loopback serving port")
     parser.add_argument("--device", type=int, default=0, help="CUDA device index")
@@ -203,6 +205,7 @@ def build_points(
                             speculative_backend=backend,
                             draft_tokens=draft_tokens,
                             sampling_mode=args.sampling,
+                            kv_dtype=args.kv_dtype,
                             suite=suite,
                             concurrency=concurrency,
                         )
@@ -305,7 +308,7 @@ def server_command(
         "--request-log-jsonl",
         str(server_log),
         "--kv-dtype",
-        "int8",
+        point.kv_dtype,
         "--no-prefix-reuse",
     ]
     if point.speculative_backend != "none":
@@ -355,7 +358,7 @@ def validate_server_start(
         "pending_timeout_ms": PENDING_TIMEOUT_MS,
         "prefill_chunk": args.prefill_chunk,
         "log_stats_interval_ms": STATS_INTERVAL_MS,
-        "kv_cache": "int8-group64",
+        "kv_cache": corpus.KV_CACHE_NAMES[point.kv_dtype],
         "cuda_graph": True,
         "prefix_reuse": False,
         "speculative_backend": point.speculative_backend,
@@ -739,6 +742,7 @@ def analyze_point(
         "speculative_backend": point.speculative_backend,
         "draft_tokens": point.draft_tokens,
         "sampling_mode": point.sampling_mode,
+        "kv_dtype": point.kv_dtype,
         "suite": point.suite,
         "workload_order": workload_order(point),
         "concurrency": point.concurrency,
@@ -800,6 +804,7 @@ def run_point(
                         speculative_backend=point.speculative_backend,
                         draft_tokens=point.draft_tokens,
                         sampling_mode=point.sampling_mode,
+                        kv_dtype=point.kv_dtype,
                         fixture=job.fixture,
                         seed=job.seed,
                     )
@@ -866,13 +871,14 @@ def run_point(
 
 
 def add_speedups(reports: Sequence[dict[str, Any]]) -> None:
-    baselines: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    baselines: dict[tuple[str, str, str, str, str, str], dict[str, Any]] = {}
     for report in reports:
         key = (
             str(report["target"]),
             str(report["prefill_signature"]),
             str(report["speculative_mode"]),
             str(report["sampling_mode"]),
+            str(report["kv_dtype"]),
             str(report["suite"]),
         )
         if int(report["concurrency"]) == 1:
@@ -884,6 +890,7 @@ def add_speedups(reports: Sequence[dict[str, Any]]) -> None:
             str(report["prefill_signature"]),
             str(report["speculative_mode"]),
             str(report["sampling_mode"]),
+            str(report["kv_dtype"]),
             str(report["suite"]),
         )
         baseline = baselines.get(key)
@@ -905,6 +912,7 @@ SUMMARY_FIELDS = (
     "prefill_signature",
     "speculative_mode",
     "sampling_mode",
+    "kv_dtype",
     "corpus_order_seed",
     "concurrency",
     "request_count",
@@ -929,6 +937,7 @@ def summary_row(report: dict[str, Any]) -> dict[str, Any]:
         "prefill_signature": report["prefill_signature"],
         "speculative_mode": report["speculative_mode"],
         "sampling_mode": report["sampling_mode"],
+        "kv_dtype": report["kv_dtype"],
         "corpus_order_seed": report.get("workload_order", {}).get("seed"),
         "concurrency": report["concurrency"],
         "request_count": report["request_count"],
@@ -1002,20 +1011,21 @@ def write_summaries(reports: Sequence[dict[str, Any]], output_dir: Path) -> None
             {field: csv_value(row.get(field)) for field in SUMMARY_FIELDS} for row in rows
         )
 
-    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
     for row in rows:
         key = (
             str(row["target"]),
             str(row["prefill_signature"]),
+            str(row["kv_dtype"]),
             str(row["speculative_mode"]),
             str(row["suite"]),
         )
         groups.setdefault(key, []).append(row)
 
     sections: list[str] = []
-    for (target, prefill_signature, mode, suite), group in groups.items():
+    for (target, prefill_signature, kv_dtype, mode, suite), group in groups.items():
         group.sort(key=lambda row: int(row["concurrency"]))
-        title = f"## {target} / {prefill_signature} / {mode} / {suite}"
+        title = f"## {target} / {prefill_signature} / {kv_dtype} / {mode} / {suite}"
         if suite == "decode-saturation":
             table = markdown_table(
                 ("C", "Requests", "Steady s", "Avg batch", "Decode tok/s", "Speedup"),

@@ -1,16 +1,7 @@
 #include "ops/linear/q4/q4_shapes.h"
 #include "ops/linear/q4/q4_ksplit_launch.cuh"
-#include "ops/linear/q4/q4_mma_launch.cuh"
 
 namespace ninfer::ops::detail {
-namespace {
-
-// Field-for-field the 64x64 tile n6144_k5120.cu and n7168_k5120.cu already instantiate.
-using MmaR64C64 = Q4RowSplitMmaGemmSchedule<64, 64, 64, 32, 16, 2, 2, Q4FragmentPipeline::Serial,
-                                            Cache::cg, Cache::cg, Q4ScaleLoad::Pair32>;
-
-} // namespace
-
 // Re-measured on sm_86 2026-09-17 with bench/ops/linear_schedule_bench.cu (`q4:4096x5120`), cold,
 // median of 11 and confirmed at median of 31. Two bands of the RTX 5090 table the catch-up brought
 // in are wrong on this card, both by a lot:
@@ -30,17 +21,17 @@ Q4Launch select_q4_n4096_k5120(std::int32_t tokens) {
     if (tokens <= 8) return launch_q4_ksplit<4096, 5120, 8>;
     if (tokens <= 24) return launch_q4_ksplit<4096, 5120, 24>;
     if (tokens <= 32) return launch_q4_ksplit<4096, 5120, 32>;
-    if (tokens <= 48) return launch_q4_mma_r64_c48;
-    if (tokens <= 64) return launch_q4_mma<MmaR64C64>;
-    if (tokens <= 80) return launch_q4_mma_r64_c80;
-    if (tokens <= 96) return launch_q4_mma_r64_c96;
-    if (tokens <= 128) return launch_q4_mma<MmaR64C64>;
-    if (tokens <= 160) return launch_q4_mma_r64_c80;
-    if (tokens <= 192) return launch_q4_mma_r64_c96;
-    if (tokens <= 224) return launch_q4_mma_r64_c112;
-    if (tokens <= 256) return launch_q4_mma_r64_c128;
-    if (tokens <= 384) return launch_q4_mma<MmaR64C64>;
-    return launch_q4_mma_r64_c128;
+    if (tokens <= 48) return launch_q4_a16_mma_r64_t48;
+    if (tokens <= 64) return launch_q4_a16_mma_r64_t64_k64_wr32_wt16_s2_a2_b2;
+    if (tokens <= 80) return launch_q4_a16_mma_r64_t80;
+    if (tokens <= 96) return launch_q4_a16_mma_r64_t96;
+    if (tokens <= 128) return launch_q4_a16_mma_r64_t64_k64_wr32_wt16_s2_a2_b2;
+    if (tokens <= 160) return launch_q4_a16_mma_r64_t80;
+    if (tokens <= 192) return launch_q4_a16_mma_r64_t96;
+    if (tokens <= 224) return launch_q4_a16_mma_r64_t112;
+    if (tokens <= 256) return launch_q4_a16_mma_r64_t128;
+    if (tokens <= 384) return launch_q4_a16_mma_r64_t64_k64_wr32_wt16_s2_a2_b2;
+    return launch_q4_a16_mma_r64_t128;
 }
 
 } // namespace ninfer::ops::detail

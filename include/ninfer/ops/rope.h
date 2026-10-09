@@ -1,8 +1,7 @@
 #pragma once
 
+#include "core/device.h"
 #include "core/tensor.h"
-
-#include <cuda_runtime.h> // cudaStream_t
 
 namespace ninfer::ops {
 
@@ -31,13 +30,15 @@ namespace ninfer::ops {
  * represented inputs. The updated BF16 values are promoted and compared directly with that result;
  * output storage rounding belongs to the Op's numerical criterion, not the oracle. Unrotated
  * dimensions remain bit-exact. Private kernel arithmetic is implementation-defined. The Op uses no
- * workspace or persistent state.
+ * workspace or persistent state. `execution` supplies the stream and the selected device's
+ * positive physical SM count; the count selects launch geometry, not the transformation.
  */
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
-          cudaStream_t stream);
+          DeviceExecutionView execution);
 
 // Single-tensor form with the same formula and storage contract. The head count comes directly
 // from x; Q versus K role does not change the transformation.
-void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaStream_t stream);
+void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
+          DeviceExecutionView execution);
 
 } // namespace ninfer::ops

@@ -193,7 +193,7 @@ void test_round_layout() {
     q36::complete_round_state_layout(speculative_builder, dflash);
     (void)speculative_builder.finish(256);
     expect(dflash.logits.shape[1] == 1 && dflash.dflash_prefill.has_value() &&
-               dflash.dflash_prefill->produced_count.shape[0] == 1 &&
+               dflash.dflash_prefill->local_append_count.shape[0] == 1 &&
                dflash.dflash_decode.has_value() &&
                dflash.dflash_decode->draft_tokens.shape[0] == 15,
            "K=15 DFlash storage is backend-owned");
