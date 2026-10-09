@@ -623,7 +623,8 @@ std::string format_request_done(const RequestLogContext& context,
             << (metrics.overlay_exclusive_windows == metrics.overlay_windows ? "excl"
                 : metrics.overlay_exclusive_windows == 0                     ? "conc"
                                                                             : "mixed")
-            << " " << std::setprecision(0)
+            << (metrics.overlay_ahead_windows != 0 ? "+ahead" : "") << " "
+            << std::setprecision(0)
             << metrics.overlay_window_seconds * 1000.0 << "ms (evict " << std::setprecision(0)
             << mib(metrics.overlay_evicted_bytes) << "MiB " << std::setprecision(1)
             << metrics.overlay_evict_seconds * 1000.0 << "ms, restore " << std::setprecision(1)
@@ -928,7 +929,8 @@ std::string format_request_done_json(const std::string& server_instance_id, std:
                                     {"evicted_bytes", outcome.metrics.overlay_evicted_bytes},
                                     {"staged_bytes", outcome.metrics.overlay_staged_bytes},
                                     {"exclusive_windows",
-                                     outcome.metrics.overlay_exclusive_windows}};
+                                     outcome.metrics.overlay_exclusive_windows},
+                                    {"ahead_windows", outcome.metrics.overlay_ahead_windows}};
     record["engine_timing"] = request_engine_timing_json(outcome.metrics.engine_timing);
     record["constraint"]    = product::constraint_observation_json(outcome.constraint);
     record["first_output_timing"] =

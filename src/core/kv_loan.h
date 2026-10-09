@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -62,9 +63,12 @@ inline void collect_loan_granules(const EvictableKVPool& arena, const DeviceKVPa
 }
 
 // Draws a loan of at least `bytes` from the highest free pages, growing one run at a time in
-// whole units. Returns an empty plan when the free pages cannot cover the request.
+// whole units. Returns an empty plan when the free pages cannot cover the request. With
+// `cap_available` false the plan ignores reservations, which sizes the pages a loan would need
+// once reclaim has made them available; such a plan must not be lent.
 [[nodiscard]] inline KVLoanPlan plan_kv_loan(const EvictableKVPool& arena,
-                                             const DeviceKVPagePool& pages, std::size_t bytes) {
+                                             const DeviceKVPagePool& pages, std::size_t bytes,
+                                             bool cap_available = true) {
     KVLoanPlan plan;
     const std::size_t granularity = arena.granularity();
     const std::uint32_t unit      = kv_loan_unit_pages(pages, granularity);
@@ -75,7 +79,8 @@ inline void collect_loan_granules(const EvictableKVPool& arena, const DeviceKVPa
     // free_runs() tracks physically-unmapped pages only; it does not know about pages an active
     // request's DeviceKVPageReservation is counting on but has not materialized yet. Cap what this
     // loan may take at available_pages() so it never eats into a live reservation.
-    const std::uint32_t available = pages.available_pages();
+    const std::uint32_t available =
+        cap_available ? pages.available_pages() : std::numeric_limits<std::uint32_t>::max();
     if (available == 0) { return plan; }
 
     const std::span<const KVPageRun> free_runs = pages.free_runs();

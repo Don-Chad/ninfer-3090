@@ -317,6 +317,15 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     }
     out.kv_payload_bytes =
         out.decoder.kv_payload_bytes() + (out.dflash ? out.dflash->kv_payload_bytes() : 0);
+    // Only Main KV pages fund an overlay Vision window, and only on page-major planes, where a page
+    // run is one contiguous block per plane.
+    if (out.decoder.text_kv.pages.spec.geometry.device_plane_order == PagedKVPlaneOrder::PageMajor) {
+        for (const DeviceKVPlaneLayout& plane : out.decoder.text_kv.pages.planes) {
+            if (plane.rank != 0) { continue; }
+            out.lendable_kv_end_bytes = std::max(
+                out.lendable_kv_end_bytes, plane.storage.region.offset + plane.storage.region.bytes);
+        }
+    }
     return out;
 }
 
@@ -788,9 +797,24 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
     out.capacity = out.general_capacity;
     if (plan.features.vision) {
         const std::uint32_t merged = vision_item_token_bound(plan.capacity, plan.features);
-        out.vision = execution::VisionContext::plan_workspace(
-            *parameters.model.config().vision, *parameters.vision, merged, out.general_capacity);
-        out.capacity = std::max(out.capacity, out.vision->capacity_bytes);
+        if (plan.features.overlay_vision()) {
+            // The encode workspace lives inside each borrowed window; this workspace only stages the
+            // one visual column a multimodal MTP bridge composes outside a prefill chunk.
+            out.vision_resident      = false;
+            out.vision               = execution::plan_vision_window_workspace(parameters, merged);
+            out.vision_bridge_offset = checked_add(out.general_capacity, 255, "bridge offset") &
+                                       ~std::size_t{255};
+            out.vision_bridge_bytes =
+                checked_mul(static_cast<std::size_t>(out.vision->output_hidden), 2, "bridge column");
+            out.capacity = std::max(out.capacity, checked_add(out.vision_bridge_offset,
+                                                              out.vision_bridge_bytes,
+                                                              "bridge column extent"));
+        } else {
+            out.vision = execution::VisionContext::plan_workspace(
+                *parameters.model.config().vision, *parameters.vision, merged,
+                out.general_capacity);
+            out.capacity = std::max(out.capacity, out.vision->capacity_bytes);
+        }
     }
     return out;
 }
@@ -824,10 +848,6 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
     if (options.devices.size() > 1 || options.stage_layers.size() > 1 ||
         parameters.text.rank_count != 1 || device.size() != 1) {
         throw std::invalid_argument("multi-GPU pipeline stages are not available on this build yet");
-    }
-    if (options.enable_vision && options.vision_residency == VisionResidency::Overlay) {
-        throw std::invalid_argument(
-            "--vision-residency overlay is not available on this build yet; use resident");
     }
     const std::uint32_t logical_pages = page_count(options.max_context);
     const std::uint32_t minimum_pages = std::max(logical_pages, options.max_concurrency);

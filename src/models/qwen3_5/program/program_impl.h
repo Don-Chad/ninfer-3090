@@ -315,6 +315,13 @@ public:
 
     [[nodiscard]] bool context_blocks(SequenceHandle) const noexcept;
     [[nodiscard]] bool recovery_pending(SequenceHandle) const noexcept;
+    // Overlay Vision residency (no-ops otherwise); see Program.
+    [[nodiscard]] runtime::ResourceReservation reserve_vision_window(SequenceHandle);
+    [[nodiscard]] bool vision_pending(SequenceHandle) const noexcept;
+    bool poll_vision();
+    bool drain_vision_window();
+    [[nodiscard]] std::unique_ptr<execution::VisionPrefillSession>
+    make_vision_session(const PreparedPromptData& prompt, const VisionPrefillPlan& plan);
 
     [[nodiscard]] PrefillProgress advance_prefill(SequenceHandle, runtime::ExecutionTiming*,
                                                   runtime::TokenMaskProvider*);
@@ -355,9 +362,16 @@ public:
     const std::size_t graph_allowance_bytes;
     const WorkspacePlan workspace_plan;
 
+    // Overlay Vision residency only: the persistent arena is VMM-backed so free Main KV granules
+    // can fund an encode window. Declared before `persistent`, which borrows its mapping.
+    std::unique_ptr<EvictableKVPool> kv_arena;
     DeviceArena persistent;
     DeviceArena workspace_storage;
     WorkspaceArena work;
+    // Overlay Vision residency only: the one-window broker and the per-session pinned result
+    // slots. Declared before `requests`, whose Vision sessions reference them.
+    std::optional<execution::VisionResidencyBroker> vision_broker;
+    std::optional<execution::PinnedResultPool> vision_results;
     std::unique_ptr<qwen3_5::DecoderState> decoder;
     std::unique_ptr<HostContextArena> host_context_arena;
     std::unique_ptr<HostKVArena> host_kv_arena;

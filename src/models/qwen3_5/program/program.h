@@ -465,6 +465,20 @@ public:
     [[nodiscard]] bool context_blocks(SequenceHandle sequence) const noexcept;
     // A resumed binding retains its complete recovery capacity until committed new progress.
     [[nodiscard]] bool recovery_pending(SequenceHandle sequence) const noexcept;
+    // Overlay Vision residency; every call is a no-op for a resident or text-only Program.
+    // The optional Vision requirement of a licensed Prefill unit: when its next chunk consumes a
+    // media item that is not encoded yet, opens a window on free Main KV pages and starts the
+    // encode on the Vision stream, so it overlaps other lanes' units. A shortage names the Main KV
+    // pages reclaiming cached content would have to free; a refusal without one leaves the item to
+    // the unit's own synchronous window.
+    [[nodiscard]] runtime::ResourceReservation reserve_vision_window(SequenceHandle sequence);
+    // True while the sequence's submitted item is still encoding: it must not run a prefill unit.
+    [[nodiscard]] bool vision_pending(SequenceHandle sequence) const noexcept;
+    // Returns the pages of every window whose encode has finished. Returns whether one closed.
+    bool poll_vision();
+    // Waits for an open window's encode and returns its pages; the embeddings stay with the
+    // sequence. Called before any shortage is answered by eviction or preemption.
+    bool drain_vision_window();
     [[nodiscard]] PrefillProgress advance_prefill(SequenceHandle sequence,
                                                   runtime::ExecutionTiming* failed_timing = nullptr,
                                                   runtime::TokenMaskProvider* masks = nullptr);
@@ -500,6 +514,12 @@ private:
 
 [[nodiscard]] SequencePlanner make_sequence_planner(const execution::Parameters&, DeviceContext&,
                                                     const EngineOptions&);
+// Overlay Vision residency: sizes one encode window for these options, checks that the evictable
+// weight tail can fund it, and captures the tail's pinned mirror. Returns the window bytes, or zero
+// for any other residency. Call once, after load and before the sequence planner.
+[[nodiscard]] std::size_t prepare_vision_overlay(const execution::Parameters& parameters,
+                                                 DeviceContext& device,
+                                                 const EngineOptions& options);
 [[nodiscard]] std::unique_ptr<Program> create_program(const execution::Parameters&, SequencePlan&&,
                                                       DeviceContext&, const StartupObserver&);
 } // namespace ninfer::models::qwen3_5

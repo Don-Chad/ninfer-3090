@@ -918,6 +918,9 @@ struct GenerationTimings {
     std::size_t overlay_staged_bytes   = 0;
     // Windows that had to borrow the text weights, which stalls every other lane.
     std::uint32_t overlay_exclusive_windows = 0;
+    // KV-funded windows whose encode started ahead of the request's prefill unit, beside other
+    // lanes' work; the rest ran inside the unit.
+    std::uint32_t overlay_ahead_windows = 0;
     double decode_seconds      = 0.0;
     // Prompt wall time begins at the successful initial binding attempt and ends at the first
     // accepted output token. Generation spans the first through last accepted output token and

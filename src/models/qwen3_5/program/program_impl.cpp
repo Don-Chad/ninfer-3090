@@ -25,6 +25,41 @@ namespace ninfer::models::qwen3_5::detail {
 
 static_assert(std::is_nothrow_move_assignable_v<SpeculativeStats>);
 
+namespace {
+
+// Overlay Vision residency backs the persistent arena with virtual memory so free Main KV granules
+// can fund a Vision window. The lendable prefix ends past the last page-major Main KV plane.
+std::unique_ptr<EvictableKVPool> make_kv_arena(DeviceContext& device,
+                                               const execution::Parameters& parameters,
+                                               const SequencePlanImpl& plan) {
+    if (!plan.features.overlay_vision()) { return nullptr; }
+    const EvictableWeightPool* const pool = parameters.model.weight_pool();
+    if (pool == nullptr || !pool->mirror_captured()) {
+        throw std::logic_error("overlay Vision weight pool has no captured window");
+    }
+    const std::size_t window      = pool->window_capacity_bytes();
+    const std::size_t granularity = EvictableKVPool::device_granularity(device);
+    if (window == 0 || granularity == 0 || plan.persistent.lendable_kv_end_bytes == 0) {
+        return nullptr;
+    }
+    // A window for the largest item may exceed the whole KV cache, but smaller items still fit; one
+    // that does not borrows the weight tail instead.
+    const std::size_t lendable = plan.persistent.lendable_kv_end_bytes / granularity * granularity;
+    if (lendable == 0) { return nullptr; }
+    return std::make_unique<EvictableKVPool>(
+        device, EvictableKVPool::Config{
+                    .arena_bytes           = plan.persistent.bytes,
+                    .lendable_prefix_bytes = plan.persistent.lendable_kv_end_bytes,
+                    .window_capacity_bytes = std::min(window, lendable),
+                });
+}
+
+DeviceArena make_persistent(EvictableKVPool* arena, std::size_t bytes) {
+    return arena != nullptr ? DeviceArena(arena->arena()) : DeviceArena(bytes);
+}
+
+} // namespace
+
 ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const SequencePlanImpl& plan,
                          DeviceContext& device_in, const StartupObserver& startup_observer)
     : parameters(parameters_in), device(device_in), capacity(plan.capacity),
@@ -36,7 +71,9 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
       vision_enabled(plan.features.vision), use_cuda_graph(plan.use_cuda_graph),
       causal_scoring(plan.causal_scoring), kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
-      persistent(plan.persistent.bytes), workspace_storage(plan.workspace.capacity),
+      kv_arena(make_kv_arena(device_in, parameters_in, plan)),
+      persistent(make_persistent(kv_arena.get(), plan.persistent.bytes)),
+      workspace_storage(plan.workspace.capacity),
       work(DeviceSpan{workspace_storage.base(), plan.workspace.general_capacity}),
       round_host(plan.causal_scoring
                      ? std::nullopt
@@ -70,9 +107,24 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
         workspace_plan.vision.has_value() != vision_enabled ||
         causal_scoring != plan.persistent.score_hidden.has_value() ||
         causal_scoring != (workspace_plan.causal_score != 0) ||
-        (workspace_plan.vision &&
+        workspace_plan.vision_resident == plan.features.overlay_vision() ||
+        (workspace_plan.vision && workspace_plan.vision_resident &&
          workspace_plan.vision->general_capacity_bytes != workspace_plan.general_capacity)) {
         throw std::invalid_argument("Qwen3.5 workspace plan does not match startup features");
+    }
+    if (plan.features.overlay_vision()) {
+        EvictableWeightPool* const pool = parameters.model.weight_pool();
+        if (pool == nullptr || !parameters.model.vision_overlay() || !workspace_plan.vision ||
+            workspace_plan.vision_bridge_bytes == 0 ||
+            workspace_plan.vision_bridge_offset + workspace_plan.vision_bridge_bytes >
+                workspace_storage.capacity()) {
+            throw std::invalid_argument("overlay Vision assets are incomplete");
+        }
+        vision_broker.emplace(device, *pool);
+        // One slot per lane is pinned up front. A resumed lane briefly holds a replay session, a
+        // prefill session and the session it replaces; those extra slots are pinned on demand.
+        vision_results.emplace(max_concurrency, 3U * max_concurrency,
+                               workspace_plan.vision->handoff_capacity_bytes);
     }
     const DeviceSpan backing = persistent.alloc_bytes(plan.persistent.bytes, 256);
     decoder      = std::make_unique<qwen3_5::DecoderState>(backing, plan.persistent.decoder);
@@ -153,6 +205,12 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     text_kv_addresses = std::make_unique<KVAddressSpaceStore>(
         *text_kv_pages, decoder->text_kv.execution_tables(), address_capacity,
         decoder->text_kv.execution_tables().logical_page_capacity());
+    if (vision_broker && kv_arena) {
+        // A window that outlives its unit must not change capacity under a context transaction,
+        // which plans its page moves across several polls.
+        vision_broker->enable_kv_tier(*kv_arena, decoder->text_kv.page_pool(),
+                                      [this] { return !has_context_transaction(); });
+    }
     if (auto* backend = backend_kv_cache()) {
         backend_kv_pages = std::make_unique<LogicalKVPageStore>(
             backend->page_pool(), logical_pages(backend->page_pool()));
@@ -484,7 +542,15 @@ MemorySummary ProgramImpl::memory_summary() const noexcept {
             .handoff_capacity_bytes = workspace_plan.vision->handoff_capacity_bytes,
             .handoff_active_bytes   = active_handoff_bytes,
             .handoff_peak_bytes     = vision_handoff_peak_bytes,
+            .residency              = workspace_plan.vision_resident ? VisionResidency::Resident
+                                                                     : VisionResidency::Overlay,
         };
+        if (const EvictableWeightPool* const pool = parameters.model.weight_pool();
+            !workspace_plan.vision_resident && pool != nullptr) {
+            out.vision_workspace->window_capacity_bytes = pool->window_capacity_bytes();
+            out.vision_workspace->pinned_weight_bytes   = parameters.model.pinned_weights().size();
+            out.vision_workspace->mirror_bytes          = pool->mirror_bytes();
+        }
     }
     out.workspace_logical_peak_bytes = workspace_logical_peak_bytes;
     out.cuda_graph_allowance_bytes   = graph_allowance_bytes;
@@ -498,6 +564,76 @@ MemorySummary ProgramImpl::memory_summary() const noexcept {
     }
     return out;
 }
+
+std::unique_ptr<execution::VisionPrefillSession>
+ProgramImpl::make_vision_session(const PreparedPromptData& prompt, const VisionPrefillPlan& plan) {
+    if (!workspace_plan.vision) {
+        throw std::logic_error("Vision prefill has no startup workspace plan");
+    }
+    if (vision_broker) {
+        return std::make_unique<execution::VisionPrefillSession>(
+            device, parameters, *workspace_plan.vision, prompt, plan, *vision_broker,
+            vision_results->acquire(),
+            DeviceSpan{static_cast<std::byte*>(workspace_storage.base()) +
+                           workspace_plan.vision_bridge_offset,
+                       workspace_plan.vision_bridge_bytes});
+    }
+    return std::make_unique<execution::VisionPrefillSession>(
+        device, parameters, DeviceSpan{workspace_storage.base(), workspace_storage.capacity()},
+        *workspace_plan.vision, prompt, plan, vision_handoff, vision_handoff_peak_bytes);
+}
+
+runtime::ResourceReservation ProgramImpl::reserve_vision_window(SequenceHandle handle) {
+    if (!vision_broker || !vision_broker->kv_tier() || !valid_sequence(handle)) { return {}; }
+    RequestControl& request = requests[ContractAccess::lane(handle).value];
+    if (request.lifecycle != Lifecycle::Prefilling || !request.prefill ||
+        !request.prefill->vision || !request.permit ||
+        request.permit->kind != ExecutionUnitKind::Prefill || vision_broker->window_open() ||
+        !vision_broker->can_submit()) {
+        return {};
+    }
+    auto& staged             = *request.prefill;
+    const auto window_bytes  = staged.vision->pending_window_bytes(staged.cursor, prefill_chunk);
+    if (!window_bytes) { return {}; }
+    const std::uint32_t available = vision_broker->available_kv_pages();
+    const std::uint32_t needed    = vision_broker->kv_loan_pages(*window_bytes);
+    if (needed != 0 && needed <= available) {
+        return {.reserved = staged.vision->submit_item(staged.cursor, prefill_chunk)};
+    }
+    // The free page runs cannot fund the window now. Report what reclaiming cached content would
+    // have to free; fragmentation alone (enough pages, no long enough runs) is not worth evicting
+    // anything for, and the unit then encodes synchronously.
+    const std::uint32_t minimum =
+        needed != 0 ? needed : vision_broker->kv_loan_minimum_pages(*window_bytes);
+    if (minimum <= available) { return {}; }
+    return {.reserved = false, .shortage = {.main_kv_pages = minimum - available}};
+}
+
+bool ProgramImpl::vision_pending(SequenceHandle handle) const noexcept {
+    if (!vision_broker || !valid_sequence(handle)) { return false; }
+    const RequestControl& request = requests[ContractAccess::lane(handle).value];
+    try {
+        return request.prefill && request.prefill->vision &&
+               request.prefill->vision->vision_pending();
+    } catch (...) {
+        // A failed completion query surfaces when the prefill unit takes the item.
+        return false;
+    }
+}
+
+bool ProgramImpl::poll_vision() {
+    if (!vision_broker) { return false; }
+    bool closed = false;
+    for (std::uint32_t lane = 0; lane < max_concurrency; ++lane) {
+        RequestControl& request = requests[lane];
+        if (request.prefill && request.prefill->vision) {
+            closed = request.prefill->vision->poll() || closed;
+        }
+    }
+    return closed;
+}
+
+bool ProgramImpl::drain_vision_window() { return vision_broker && vision_broker->drain(); }
 
 void ProgramImpl::reset_memory_peaks() noexcept {
     persistent.reset_peak();

@@ -33,6 +33,7 @@ struct GenerationMetrics {
     double prefill_seconds                = 0.0;
     std::uint32_t overlay_windows           = 0;
     std::uint32_t overlay_exclusive_windows = 0;
+    std::uint32_t overlay_ahead_windows     = 0;
     double overlay_window_seconds     = 0.0;
     double overlay_evict_seconds      = 0.0;
     double overlay_restore_seconds    = 0.0;

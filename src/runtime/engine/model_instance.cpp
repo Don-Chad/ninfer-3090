@@ -69,10 +69,6 @@ void reject_unavailable_options(const EngineOptions& options) {
         throw std::invalid_argument(
             "multi-GPU pipeline stages are not available on this build yet; use one device");
     }
-    if (options.enable_vision && options.vision_residency == VisionResidency::Overlay) {
-        throw std::invalid_argument(
-            "overlay vision residency is not available on this build yet; use resident vision");
-    }
     if (!options.grafts.empty()) {
         throw std::invalid_argument("prompt grafts are not available on this build yet");
     }
@@ -172,6 +168,10 @@ ConstructedModel construct_model(EngineOptions& options, DeviceContext& device) 
     auto instance = std::make_unique<ModelInstance>(std::move(model), options);
     frontend.complete();
     StartupPhaseScope planning(options.startup_observer, StartupPhase::TargetFinalize);
+    // Overlay Vision: size the encode window and pin the borrowable weight tail's mirror before
+    // anything measures free device memory, so the KV capacity sees the final picture.
+    const std::size_t overlay_window_bytes =
+        models::qwen3_5::prepare_vision_overlay(instance->parameters, device, options);
     if (options.context_cache.auto_host_cache) {
         // Sized here, after the weights are loaded and pinned, from the host memory still free;
         // planning then treats it exactly like an explicit capacity. Host capacity does not enter
@@ -251,6 +251,8 @@ ConstructedModel construct_model(EngineOptions& options, DeviceContext& device) 
     summary.artifact_bytes_read  = stats.read_bytes;
     summary.host_to_device_bytes = stats.h2d_bytes;
     summary.peak_staging_bytes   = stats.peak_staging_bytes;
+    summary.pinned_weight_bytes  = stats.pinned_bytes;
+    summary.overlay_window_bytes = overlay_window_bytes;
     summary.device_object_count  = stats.device_object_count;
     summary.host_object_count    = stats.host_object_count;
     summary.context_cost         = std::move(context_cost.summary);
