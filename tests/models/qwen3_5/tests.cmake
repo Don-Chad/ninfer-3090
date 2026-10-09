@@ -11,6 +11,10 @@ ninfer_add_test(ninfer_qwen3_5_frontend_test
   NEEDS_SOURCE_DIR
   LIBRARIES ninfer_engine ninfer_core ninfer::json)
 
+ninfer_add_test(ninfer_qwen3_5_graft_loader_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_graft_loader.cpp"
+  LIBRARIES ninfer_engine ninfer_core ninfer::json)
+
 ninfer_add_test(ninfer_qwen3_5_runtime_mechanisms_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_runtime_mechanisms.cpp"
   LIBRARIES ninfer_engine ninfer_core)
@@ -76,6 +80,14 @@ ninfer_add_test(ninfer_qwen3_5_dflash_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_dflash_real.cpp"
   LIBRARIES ninfer_engine)
 
+# Captures the 27B's own KV/state after a real prompt prefix into graft containers, then checks that
+# the installed direct graft reproduces the replayed prefix's greedy output across backends,
+# concurrency and cache pressure. NINFER_TEST_GRAFT_REFERENCE=<phantom-kv prefill_kv container> also
+# compares the captured tensors with an independently produced (HF) graft for layout agreement.
+ninfer_add_test(ninfer_qwen3_5_graft_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_graft_real.cpp"
+  LIBRARIES ninfer_engine ninfer_model_runtime ninfer_model_loading ninfer_core ninfer::json)
+
 ninfer_add_test(ninfer_tool_call_parser_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../../test_tool_call_parser.cpp"
   LIBRARIES ninfer_engine ninfer::json)
@@ -105,7 +117,8 @@ set(ninfer_qwen3_5_real_tests
   ninfer_qwen3_5_dflash2_real_test
   ninfer_qwen3_5_dflash_prefill_real_test
   ninfer_qwen3_5_moe_real_test
-  ninfer_qwen3_5_dflash_real_test)
+  ninfer_qwen3_5_dflash_real_test
+  ninfer_qwen3_5_graft_real_test)
 set_tests_properties(${ninfer_qwen3_5_real_tests} PROPERTIES
   SKIP_RETURN_CODE 77
   RUN_SERIAL TRUE

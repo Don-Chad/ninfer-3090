@@ -240,6 +240,8 @@ struct CheckpointSlot {
     std::uint64_t generation = 1;
     std::uint32_t pins       = 0;
     bool reserved            = false;
+    // Installed external context (a direct graft). Its permanent lease is one of `pins`.
+    bool external = false;
 };
 
 struct ResumeStateImpl {
@@ -258,6 +260,8 @@ public:
     ~ProgramImpl() noexcept;
     [[nodiscard]] RequestBasePlan plan_request(PreparedPromptData&&,
                                                const runtime::ResolvedExecutionOptions&);
+    [[nodiscard]] CheckpointHandle install_external_checkpoint(const PromptGraft&);
+    [[nodiscard]] std::uint32_t prefix_identity_tag() const noexcept;
     [[nodiscard]] std::vector<float> causal_score(PreparedPromptData&&, std::uint32_t first_target);
     [[nodiscard]] std::optional<SourceCandidate>
     inspect_source(const RequestBasePlan&, std::optional<CheckpointHandle>, bool = false,

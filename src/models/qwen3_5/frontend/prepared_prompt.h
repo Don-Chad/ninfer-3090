@@ -148,6 +148,11 @@ struct PreparedPromptData {
     std::vector<VisionItem> vision_items;
     PromptIdentity identity;
     PreparedContextCache context_cache;
+    // Positions [0, external_prefix_tokens) hold placeholder ids for state that was installed
+    // directly (a direct_kv or softprompt_kv graft), not computed from these tokens. Execution must
+    // start from a checkpoint that covers at least this prefix; prefilling the placeholders would
+    // compute a different context.
+    std::uint32_t external_prefix_tokens = 0;
     std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output;
     bool starts_in_reasoning = false;
     std::string continuation_content;

@@ -350,16 +350,23 @@ std::uint32_t graft_context_slots(const PromptGraft& graft) {
 // Places a graft's tokens at positions [0, n) and shifts everything the rendered prompt produced by
 // n. Text-only positions advance by one per token on every M-RoPE axis, so a text prefix moves each
 // later position -- Vision grids included -- by exactly n and leaves rope_delta unchanged.
+//
+// A prefill_kv graft contributes its replay ids, which prefill computes like any prompt text. A
+// direct_kv or softprompt_kv graft contributes its placeholder ids: its state is installed at
+// startup as a pinned checkpoint whose identity is exactly these ids, so a request binds to it
+// as an exact source, and the prompt records that the prefix must never be prefilled.
 void prepend_graft(const PromptGraft& graft, PreparedPromptData& prompt,
                    std::vector<std::optional<std::uint32_t>>& message_boundaries,
                    std::vector<std::optional<std::uint32_t>>& cache_boundaries) {
-    const std::size_t shift = graft.tokens.size();
+    const std::vector<TokenId>& tokens =
+        graft.kind == GraftKind::PrefillKV ? graft.tokens : graft.placeholder_ids;
+    const std::size_t shift = tokens.size();
     const std::size_t count = prompt.token_ids.size();
     const auto shifted      = [shift](std::uint32_t frontier) {
         return static_cast<std::uint32_t>(frontier + shift);
     };
 
-    prompt.token_ids.insert(prompt.token_ids.begin(), graft.tokens.begin(), graft.tokens.end());
+    prompt.token_ids.insert(prompt.token_ids.begin(), tokens.begin(), tokens.end());
     prompt.token_types.insert(prompt.token_types.begin(), shift, 0);
     std::vector<std::int32_t> positions((count + shift) * 3);
     for (std::size_t axis = 0; axis < 3; ++axis) {
@@ -390,6 +397,9 @@ void prepend_graft(const PromptGraft& graft, PreparedPromptData& prompt,
     }
     for (std::optional<std::uint32_t>& boundary : cache_boundaries) {
         if (boundary) { boundary = shifted(*boundary); }
+    }
+    if (graft.kind != GraftKind::PrefillKV) {
+        prompt.external_prefix_tokens = static_cast<std::uint32_t>(shift);
     }
 }
 
@@ -664,20 +674,18 @@ public:
         }
         thinking_control_tokens = std::make_shared<const std::vector<TokenId>>(std::move(encoded));
         for (const PromptGraft& graft : grafts) {
-            // direct_kv and softprompt_kv grafts inject trained KV and recurrent state into a
-            // pinned context entry, which the current context-cache engine does not provide yet.
-            if (graft.kind != GraftKind::PrefillKV) {
-                throw std::invalid_argument(
-                    "graft '" + graft.name +
-                    "': direct_kv and softprompt_kv prompt grafts are not available on this build "
-                    "yet; only prefill_kv grafts are supported");
-            }
             const std::uint32_t slots = graft_context_slots(graft);
             if (slots == 0 || slots >= options.max_context) {
                 throw std::invalid_argument("graft '" + graft.name +
                                             "' leaves no room for a prompt within max_context");
             }
-            for (const TokenId token : graft.tokens) {
+            if (graft.kind != GraftKind::PrefillKV && graft.placeholder_ids.size() != slots) {
+                throw std::invalid_argument("graft '" + graft.name +
+                                            "' has no placeholder id for every injected slot");
+            }
+            const std::vector<TokenId>& tokens =
+                graft.kind == GraftKind::PrefillKV ? graft.tokens : graft.placeholder_ids;
+            for (const TokenId token : tokens) {
                 if (!tokenizer->is_valid_token(token)) {
                     throw std::invalid_argument("graft '" + graft.name +
                                                 "' contains a token outside the vocabulary");
@@ -784,7 +792,7 @@ const ModelSamplingDefaults& Frontend::sampling_defaults() const noexcept {
 }
 
 Frontend make_frontend(const FrontendResources& resources, FrontendOptions options) {
-    return Frontend(std::make_shared<const Frontend::Impl>(resources, options));
+    return Frontend(std::make_shared<const Frontend::Impl>(resources, std::move(options)));
 }
 
 const PreparedPromptData& PreparedPromptAccess::view(const PreparedPrompt& prompt) {
@@ -908,14 +916,14 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
         assign_text_positions(result);
     }
     (void)checked_token_count(result.token_ids.size());
-    // Direct grafts are refused when the Frontend is built, so a selected graft is a replayed
-    // token prefix whose end is published as a shared prefix.
     if (graft) { prepend_graft(*graft, result, message_boundaries, cache_boundaries); }
     result.identity.reusable = true;
-    result.context_cache     = prepare_context_cache(
+    // A replayed graft's end is published as a shared prefix, so the graft is prefilled once. A
+    // direct graft already is a pinned checkpoint at that frontier and publishes nothing there.
+    result.context_cache = prepare_context_cache(
         std::move(cache_hints), message_count, message_boundaries, rendered_markers,
         cache_boundaries, result.vision_items, engine_tool_marker_index, leading_boundary,
-        graft ? graft_context_slots(*graft) : 0U);
+        graft && graft->kind == GraftKind::PrefillKV ? graft_context_slots(*graft) : 0U);
     result.prepare.seconds = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
 }

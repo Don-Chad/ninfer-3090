@@ -315,6 +315,15 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
     const ResolvedSamplingParameters resolved_sampling = resolved_options.execution.sampling;
 
     const PromptSummary prompt_summary = prompt.impl_->summary;
+    if (const auto external = models::qwen3_5::PreparedPromptAccess::view(prompt.impl_->value)
+                                  .external_prefix_tokens;
+        external != 0 && (!resolved_options.execution.allow_prefix_reuse ||
+                          external >= prompt_summary.prompt_tokens)) {
+        // A direct graft exists only as its installed checkpoint, which only reuse can bind.
+        throw std::invalid_argument(
+            "a request selecting a direct prompt graft must allow prefix reuse and add tokens "
+            "after the graft");
+    }
     if (prompt_summary.prompt_tokens > impl_->options.max_context) {
         throw RequestError(
             RequestErrorKind::ContextLengthExceeded,

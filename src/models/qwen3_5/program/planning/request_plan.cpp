@@ -99,6 +99,14 @@ RequestBasePlan ProgramImpl::plan_request(PreparedPromptData&& prompt,
         throw std::invalid_argument("input recovery is outside its typed rewrite prefix");
     }
 
+    if (prompt.external_prefix_tokens != 0 &&
+        (prompt.external_prefix_tokens >= prompt.token_ids.size() || !prompt.identity.reusable ||
+         !options.allow_prefix_reuse || !context_cache.enabled)) {
+        // The placeholders can only be bound to their installed checkpoint, never prefilled.
+        throw std::invalid_argument(
+            "a direct prompt graft needs prefix reuse and at least one token after the graft");
+    }
+
     auto base                             = std::make_shared<RequestBasePlanImpl>();
     base->context_cache                   = prompt.context_cache;
     base->summary.prompt_tokens           = static_cast<std::uint32_t>(prompt.token_ids.size());
@@ -144,9 +152,7 @@ RequestBasePlan ProgramImpl::plan_request(PreparedPromptData&& prompt,
 
 
     base->prefix_digests.assign(prompt);
-    base->prefix_identity_tag = static_cast<std::uint32_t>(speculative_backend) |
-                                (static_cast<std::uint32_t>(proposal_head) << 8U) |
-                                (static_cast<std::uint32_t>(kv_storage) << 16U);
+    base->prefix_identity_tag = prefix_identity_tag();
     std::uint32_t previous = 0;
     for (const auto frontier : prompt.identity.rewrite_execution_frontiers) {
         if (frontier <= previous || frontier > base->summary.prompt_tokens) {

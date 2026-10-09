@@ -2,6 +2,7 @@
 #include "models/qwen3_5/execution/ffn.h"
 #include "models/qwen3_5/execution/gdn.h"
 #include "models/qwen3_5/execution/mtp.h"
+#include "models/qwen3_5/frontend/graft.h"
 #include "models/qwen3_5/program/planning/graph_profiles.h"
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/program/planning/startup.h"
@@ -1028,13 +1029,21 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
         .multiprocessor_count = device.multiprocessor_count(),
         .context_cache        = options.context_cache,
     };
+    // Installed direct grafts keep their Main KV pages for the Engine's life. They are added on
+    // top of the request range, so every request can still use the capacity it was planned for.
+    std::uint64_t pinned_pages64 = 0;
+    for (const std::uint32_t slots : direct_graft_slots(options.grafts)) {
+        pinned_pages64 += page_count(slots);
+    }
     const std::uint32_t logical_pages = page_count(inputs.capacity);
-    const std::uint32_t minimum_pages = std::max(logical_pages, inputs.max_concurrency);
+    const std::uint64_t minimum_pages64 =
+        std::max<std::uint64_t>(logical_pages, inputs.max_concurrency) + pinned_pages64;
     const std::uint64_t maximum_pages64 =
-        static_cast<std::uint64_t>(inputs.max_concurrency) * logical_pages;
+        static_cast<std::uint64_t>(inputs.max_concurrency) * logical_pages + pinned_pages64;
     if (maximum_pages64 > std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("maximum Main KV page count exceeds uint32");
     }
+    const auto minimum_pages = static_cast<std::uint32_t>(minimum_pages64);
     const auto maximum_pages = static_cast<std::uint32_t>(maximum_pages64);
 
     auto planner     = std::make_unique<qwen3_5::detail::SequencePlannerImpl>();
@@ -1044,6 +1053,7 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
           .main_page_tokens                     = static_cast<std::uint32_t>(kPagedKVPageSize),
           .minimum_main_page_groups             = minimum_pages,
           .maximum_main_page_groups             = maximum_pages,
+          .pinned_main_page_groups              = static_cast<std::uint32_t>(pinned_pages64),
           .minimum_device_reservation_bytes     = planner->minimum->device_reservation_bytes,
           .bytes_per_additional_main_page_group = 0,
     };

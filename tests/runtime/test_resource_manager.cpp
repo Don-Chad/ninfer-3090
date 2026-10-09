@@ -1002,6 +1002,42 @@ void test_reclaim_respects_native_lease_and_stops_host_eviction_at_capacity() {
             "reclaim failed to release the available unpinned history");
 }
 
+// Installed external context (a direct prompt graft) is a pinned shared prefix: matchable by every
+// request that carries its identity, never a reclaim or Host victim, never erased, and kept when the
+// cache is cleared. The fake Native here would release it on request, so only the catalog protects it.
+void test_pinned_shared_prefix_survives_reclaim_and_cache_clear() {
+    Fixture f(64);
+    const auto graft = f.program.add({7, 7, 7}, {f.program.host_block(16)});
+    const auto other = f.program.add({1, 2}, {f.program.host_block(16)});
+    f.cache.pin_shared(f.program, graft);
+    f.cache.pin_shared(f.program, graft); // idempotent
+    f.publish(other);
+    require(f.cache.pinned(graft) && !f.cache.pinned(other), "pin state is not per entry");
+    const Base request{.tokens = {7, 7, 7, 4, 5}};
+    const auto bound = f.source(request, graft);
+    require(bound.source.reused_tokens == 3 && !bound.source.consume_source,
+            "a request did not bind the pinned prefix as a shared, unconsumed source");
+    f.use_shared(graft);
+
+    require(f.cache.reclaim(f.program, {.state_slots = 1}) ==
+                    ninfer::runtime::ReclaimProgress::Changed &&
+                f.program.released == std::vector<Handle>{other},
+            "state reclaim did not choose the unpinned history");
+    require(f.cache.reclaim(f.program, {.state_slots = 1}) ==
+                ninfer::runtime::ReclaimProgress::Blocked,
+            "state reclaim selected the pinned prefix");
+    require(!f.cache.host_victims(f.program, 64, std::nullopt),
+            "a Host writeback could spend the pinned prefix");
+    require(!f.cache.erase(f.program, graft) && f.program.valid_checkpoint(graft),
+            "the pinned prefix was erased");
+
+    f.cache.release_all(f.program);
+    require(f.program.valid_checkpoint(graft) && f.cache.pinned(graft),
+            "clearing the cache released the pinned prefix");
+    require(f.source(request, graft).source.reused_tokens == 3,
+            "the pinned prefix is not matchable after the cache was cleared");
+}
+
 void test_explicit_anchor_updates_remain_bounded_across_requests() {
     Fixture f(128);
     const Base base{.tokens = {1, 2, 3, 4, 5, 6, 7}};
@@ -1878,6 +1914,7 @@ void test_consuming_rewind_resets_proven_progress_to_the_adopted_prefix() {
 
 int main() {
     try {
+        test_pinned_shared_prefix_survives_reclaim_and_cache_clear();
         test_demotion_competes_with_its_actual_host_recovery_loss();
         test_adjacent_kv_demotions_share_one_submission();
         test_kv_demotion_batch_stops_at_an_intervening_delete();

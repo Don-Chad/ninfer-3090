@@ -44,6 +44,17 @@ int main() {
                   explicit_capacity.runtime_reservation_bytes == 1128,
               "explicit KV capacity did not use page-aligned token semantics");
 
+    // Pages held for good by installed context are granted on top of an explicit token capacity.
+    ninfer::runtime::SequenceCapacityCurve pinned = curve;
+    pinned.minimum_main_page_groups += 1;
+    pinned.maximum_main_page_groups += 1;
+    pinned.pinned_main_page_groups = 1;
+    const auto pinned_explicit = ninfer::runtime::resolve_kv_capacity(
+        ninfer::KvCapacityPolicy::explicit_capacity(129), pinned, 1200);
+    failures += check(pinned_explicit.main_page_groups == 4 &&
+                          pinned_explicit.runtime_reservation_bytes == 1128,
+                      "explicit KV capacity was not granted on top of pinned pages");
+
     bool insufficient_rejected = false;
     try {
         (void)ninfer::runtime::resolve_kv_capacity(ninfer::KvCapacityPolicy::automatic(50), curve,

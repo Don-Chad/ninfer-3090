@@ -392,6 +392,38 @@ public:
         balance_reused(program);
     }
 
+    // Advertises installed external context (a direct prompt graft) as a pinned shared prefix.
+    // Pinned entries are never victims, never erased and survive release_all: Native holds their
+    // checkpoint with a permanent lease, and this catalog keeps them matchable for the Engine's
+    // life. Idempotent for an already pinned handle.
+    void pin_shared(Program& program, Handle handle) {
+        if (!program.valid_checkpoint(handle)) {
+            throw std::logic_error("pinned shared prefix names no checkpoint");
+        }
+        const auto summary = program.checkpoint_metadata(handle);
+        if (summary.role != CheckpointRole::SharedPrefix) {
+            throw std::logic_error("only a shared prefix can be pinned");
+        }
+        const auto found = std::find_if(shared_.begin(), shared_.end(),
+                                        [&](const auto& entry) { return entry.handle == handle; });
+        if (found != shared_.end()) {
+            found->pinned = true;
+        } else {
+            shared_.push_back({.handle      = handle,
+                               .ordinal     = ++ordinal_,
+                               .priority    = {},
+                               .retained_at = ++clock_,
+                               .pinned      = true});
+        }
+        index_.insert(program, handle, summary.frontier);
+    }
+
+    [[nodiscard]] bool pinned(Handle handle) const {
+        return std::any_of(shared_.begin(), shared_.end(), [&](const auto& entry) {
+            return entry.pinned && entry.handle == handle;
+        });
+    }
+
     void finish(Program& program, OwnerToken token, const Base& base,
                 std::uint64_t publication_order) {
         auto* owner = find_owner(token);
@@ -513,7 +545,7 @@ public:
     }
 
     bool erase(Program& program, Handle handle, ReclaimRights rights = {}) {
-        if (!references(handle)) { return false; }
+        if (!references(handle) || pinned(handle)) { return false; }
         if (!may_revoke({&handle, 1}, rights)) { return false; }
         if (program.valid_checkpoint(handle) && !program.release_checkpoint(handle)) {
             return false;
@@ -691,16 +723,26 @@ public:
         return ReclaimProgress::Blocked;
     }
 
+    // Pinned shared prefixes are kept, with their index entries: they are installed context,
+    // not cache contents, and remain valid Native checkpoints.
     void release_all(Program& program) noexcept {
         const auto handles = victims();
+        std::erase_if(shared_, [](const auto& entry) { return !entry.pinned; });
         index_.clear();
         owners_.clear();
-        shared_.clear();
         waiting_.clear();
         demand_.clear();
         for (const auto handle : handles) {
             if (program.valid_checkpoint(handle)) { (void)program.release_checkpoint(handle); }
         }
+        try {
+            for (const auto& shared : shared_) {
+                if (program.valid_checkpoint(shared.handle)) {
+                    index_.insert(program, shared.handle,
+                                  program.checkpoint_metadata(shared.handle).frontier);
+                }
+            }
+        } catch (...) {}
     }
 
 private:
@@ -830,6 +872,7 @@ private:
         std::uint64_t ordinal;
         CacheRetentionPriority priority;
         std::uint64_t retained_at;
+        bool pinned = false;
     };
 
     static bool contains(std::span<const Handle> handles, Handle handle) {
@@ -987,6 +1030,7 @@ private:
         for (const auto& waiting : waiting_) {
             for (const auto handle : waiting.held) { add(handle, {}, waiting.request); }
         }
+        std::erase_if(ranked, [&](const auto& entry) { return pinned(entry.handle); });
         std::stable_sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) {
             if (a.priority.reused != b.priority.reused) { return !a.priority.reused; }
             return (a.priority.reused ? a.priority.last_demand : a.age) <
@@ -1399,7 +1443,7 @@ private:
                 {&owner.priority, &owner.retained_at, owner.token, std::move(handles)});
         }
         for (auto& shared : shared_) {
-            if (shared.priority.reused) {
+            if (shared.priority.reused && !shared.pinned) {
                 entries.push_back(
                     {&shared.priority, &shared.retained_at, shared.ordinal, {shared.handle}});
             }

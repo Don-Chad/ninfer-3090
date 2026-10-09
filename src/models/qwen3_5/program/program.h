@@ -407,6 +407,13 @@ public:
                                                const runtime::ResolvedExecutionOptions& options);
     [[nodiscard]] std::vector<float> causal_score(PreparedPrompt&& prompt,
                                                   std::uint32_t first_target);
+    // Installs a direct_kv or softprompt_kv graft's attention K/V and Gated DeltaNet state as an
+    // immutable SharedPrefix checkpoint whose identity is the graft's placeholder ids at [0, n).
+    // A request that selects the graft carries those ids and binds this checkpoint as an exact
+    // source. The checkpoint holds a permanent lease: no release, demotion, reclaim plan or
+    // consuming bind can select it. Draft context over the graft (MTP KV, DFlash features) is
+    // zero-filled. Requires an idle Program: no request lane and no context or pending transaction.
+    [[nodiscard]] CheckpointHandle install_external_checkpoint(const PromptGraft& graft);
     [[nodiscard]] std::optional<SourceCandidate>
     inspect_source(const RequestBasePlan& base, std::optional<CheckpointHandle> checkpoint,
                    bool consume_source                              = false,
