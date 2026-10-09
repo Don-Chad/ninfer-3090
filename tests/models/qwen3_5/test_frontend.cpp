@@ -2345,6 +2345,30 @@ int test_constrained_thinking_control(const Frontend& frontend) {
     return failures;
 }
 
+// Without a thinking budget the model's thinking tokens are still counted (upstream
+// Neroued/ninfer#373: model_thinking_tokens stayed 0 unless a budget was set). The count covers
+// the thinking and the close marker token, not the answer, and equals the presentation count.
+int test_thinking_tokens_without_budget(const Frontend& frontend) {
+    auto prompt  = thinking_prompt(frontend);
+    auto session = frontend.make_output_session(prompt, {});
+    const std::vector<ninfer::TokenId> thought = fixture_tokenizer().encode("weighing it up");
+    std::vector<ninfer::TokenId> tokens        = thought;
+    tokens.push_back(248069); // "</think>"
+    const std::vector<ninfer::TokenId> answer = fixture_tokenizer().encode("\n\nanswer");
+    tokens.insert(tokens.end(), answer.begin(), answer.end());
+    (void)session.preview_model(tokens, 64, ninfer::FinishReason::OutputLimit);
+    const auto output                       = session.commit_preview();
+    const ninfer::ThinkingBudgetStats stats = session.thinking_stats();
+    return check(channel_text(output, ninfer::OutputChannel::Reasoning) == "weighing it up" &&
+                     channel_text(output, ninfer::OutputChannel::Content) == "answer" &&
+                     !stats.requested_budget && !stats.effective_budget &&
+                     stats.model_thinking_tokens == thought.size() + 1U &&
+                     stats.model_thinking_tokens < tokens.size() &&
+                     stats.model_thinking_tokens == session.reasoning_tokens() &&
+                     stats.injected_tokens == 0 && !stats.applied,
+                 "thinking tokens were not counted without a thinking budget");
+}
+
 int test_thinking_budget_control(const Frontend& frontend) {
     auto prompt = thinking_prompt(frontend);
     ninfer::StopPolicy stop;
@@ -3012,6 +3036,7 @@ int main() {
     failures += test_tools_and_json_output();
     failures += test_constraint_refuses_caller_stops(frontend);
     failures += test_reasoning_split(frontend);
+    failures += test_thinking_tokens_without_budget(frontend);
     failures += test_thinking_budget_control(frontend);
     failures += test_thinking_budget_branches(frontend);
     failures += test_constrained_thinking_control(frontend);
