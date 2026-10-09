@@ -314,7 +314,7 @@ void test_kv_store(ninfer::DeviceContext& device) {
 
     // A same-frontier trim must not depend on tail-page exclusivity: the tail is not mutated, and
     // it may still carry a Host replica (auto-host-cache restore) while the address is active.
-    addresses.materialize_to_tokens(*address, 65, device.stream);
+    addresses.ensure_mapped_to_tokens(*address, 65, device.stream);
     device.synchronize();
     const std::array host_tail_page{addresses.logical_page(*address, 0)};
     auto host_tail_backup = extents.prepare(pages, host_tail_page);
@@ -511,6 +511,41 @@ void test_kv_store(ninfer::DeviceContext& device) {
                addresses.release(*shared) && pages.occupied() == 0 &&
                physical_pages.allocated_pages() == 0,
            "shared full-page occupancy survives until its final address reference releases");
+
+    // A prefix fork at a page-aligned frontier shares every page with its source, including the
+    // tail, and needs no tail copy. After admission maps the pages the prompt and draft window
+    // need, the post-prefill trim keeps the frontier and drops only those unused pages. The
+    // shared tail is not modified, so that trim must succeed.
+    const auto aligned_source = addresses.create_active(3, 0, {});
+    expect(aligned_source.has_value(), "page-aligned fork source allocation");
+    addresses.ensure_mapped_to_tokens(*aligned_source, 128, device.stream);
+    addresses.commit_frontier(*aligned_source, 128);
+    addresses.set_checkpoint_requirement(*aligned_source, 128);
+    addresses.deactivate(*aligned_source);
+    const auto aligned_tail = addresses.logical_page(*aligned_source, 1);
+
+    const auto aligned_branch = addresses.create_inactive();
+    expect(aligned_branch.has_value(), "page-aligned fork destination allocation");
+    auto aligned_fork = addresses.prepare_prefix_fork(*aligned_source, *aligned_branch, 128, 3, 1);
+    expect(!aligned_fork.needs_tail_copy(), "page-aligned prefix fork needs no tail copy");
+    addresses.commit_prefix_fork(std::move(aligned_fork), device.stream);
+    expect(addresses.logical_page(*aligned_branch, 1) == aligned_tail &&
+               pages.address_references(aligned_tail) == 2 &&
+               addresses.committed_frontier(*aligned_branch) == 128,
+           "page-aligned fork shares its tail page with the source");
+    addresses.ensure_mapped_to_tokens(*aligned_branch, 192, device.stream);
+    device.synchronize();
+    expect(addresses.mapped_pages(*aligned_branch) == 3, "fork maps its draft-window page");
+    addresses.destructive_truncate(*aligned_branch, 128);
+    expect(addresses.mapped_pages(*aligned_branch) == 2 &&
+               addresses.committed_frontier(*aligned_branch) == 128 &&
+               addresses.logical_page(*aligned_branch, 1) == aligned_tail &&
+               pages.address_references(aligned_tail) == 2,
+           "post-prefill trim of a page-aligned fork releases only the unused suffix");
+    addresses.deactivate(*aligned_branch);
+    expect(addresses.release(*aligned_branch) && addresses.release(*aligned_source) &&
+               pages.occupied() == 0 && physical_pages.allocated_pages() == 0,
+           "page-aligned fork releases without leaked pages");
 
     const auto mixed_source = addresses.create_active(4, 0, {});
     expect(mixed_source.has_value(), "mixed snapshot retained-prefix source allocation");
