@@ -439,6 +439,19 @@ public:
         return require(handle).source_pins;
     }
 
+    // One-line page state for diagnostics, so a rejected mutation names the failing condition.
+    [[nodiscard]] std::string describe(LogicalKVPageHandle handle) const {
+        const Page& page = require(handle);
+        return "committed_columns=" + std::to_string(page.committed_columns) +
+               " protected_columns=" + std::to_string(page.protected_columns) +
+               " references=" + std::to_string(page.references) +
+               " writer_references=" + std::to_string(page.writer_references) +
+               " source_pins=" + std::to_string(page.source_pins) +
+               " destination_pinned=" + std::to_string(page.destination_pinned ? 1 : 0) +
+               " host_replica=" + std::to_string(page.host_replica.has_value() ? 1 : 0) +
+               " device_replica=" + std::to_string(page.device_replica.has_value() ? 1 : 0);
+    }
+
     [[nodiscard]] bool can_pin_source(LogicalKVPageHandle handle) const noexcept {
         if (!valid(handle)) { return false; }
         const Page& page = pages_[handle.index_];
@@ -1492,16 +1505,32 @@ public:
         }
         const std::uint32_t target = pages_for_tokens(frontier);
         if (frontier == address.committed_frontier && target == address.page_count) { return; }
+        const auto context = [&] {
+            return " | frontier " + std::to_string(frontier) + " committed " +
+                   std::to_string(address.committed_frontier) + " pages " +
+                   std::to_string(address.page_count) + " target " + std::to_string(target);
+        };
         for (std::uint32_t page = target; page < address.page_count; ++page) {
             if (!pages_->can_dematerialize(membership(address, page))) {
-                throw std::logic_error("KV truncate would partially release a protected page");
+                throw std::logic_error("KV truncate would partially release a protected page" +
+                                       context() + " | page " + std::to_string(page) + " " +
+                                       pages_->describe(membership(address, page)));
             }
         }
+        // A tail already at the target coverage is not mutated, so it needs no exclusivity: it may
+        // be shared, or still carry a Host replica from an auto-host-cache restore.
+        bool tail_changes = false;
+        std::uint32_t tail_columns = 0;
         if (target != 0) {
-            const std::uint32_t columns =
+            tail_columns =
                 frontier - (target - 1U) * static_cast<std::uint32_t>(kPagedKVPageSize);
-            if (!pages_->can_destructive_truncate(membership(address, target - 1U), columns)) {
-                throw std::logic_error("KV truncate would overwrite protected coverage");
+            const LogicalKVPageHandle tail = membership(address, target - 1U);
+            tail_changes                   = tail_columns != pages_->committed_columns(tail);
+            if (tail_changes && !pages_->can_destructive_truncate(tail, tail_columns)) {
+                throw std::logic_error("KV truncate would overwrite protected coverage" +
+                                       context() + " | tail columns " +
+                                       std::to_string(tail_columns) + " " +
+                                       pages_->describe(tail));
             }
         }
         while (address.page_count > target) {
@@ -1511,10 +1540,8 @@ public:
             pages_->release_active_reference(page);
             pages_->dematerialize(page, address.reservation);
         }
-        if (target != 0) {
-            const std::uint32_t columns =
-                frontier - (target - 1U) * static_cast<std::uint32_t>(kPagedKVPageSize);
-            pages_->destructive_truncate(membership(address, target - 1U), columns);
+        if (tail_changes) {
+            pages_->destructive_truncate(membership(address, target - 1U), tail_columns);
         }
         address.committed_frontier = frontier;
     }

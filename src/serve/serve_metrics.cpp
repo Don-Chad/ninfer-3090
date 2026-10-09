@@ -43,6 +43,18 @@ void append_sample(std::string& out, std::string_view name, std::string_view lab
     out.append(name).append("{").append(labels).append("} ").append(text).append("\n");
 }
 
+// Engine-wide host time, from the live RuntimeStats. Host-active work excludes device wait, so a
+// host thread spinning on a slow step shows in ninfer:engine_device_wait_seconds_total instead.
+void append_engine_host_time(std::string& out, const ninfer::RuntimeStats& live) {
+    append_metric(out, "ninfer:engine_host_seconds_total", "counter",
+                  "Engine host-active seconds (device wait excluded). Its rate against token "
+                  "throughput exposes a host-bound engine.",
+                  static_cast<double>(live.host_work.active_ns()) / 1e9);
+    append_metric(out, "ninfer:engine_device_wait_seconds_total", "counter",
+                  "Seconds the engine host thread waited on the device.",
+                  static_cast<double>(live.host_work.device_wait_ns) / 1e9);
+}
+
 // Context-cache series from the Engine's live RuntimeStats. Selections count admissions by the
 // source they started from: `root` is a miss (full prefill from token zero), every other source is
 // a reuse. Pressure events are what the planner did to inactive owners to make room.
@@ -207,6 +219,21 @@ void ServeMetrics::record_done(const GenerationOutcome& outcome) {
     prefix_cache_hit_tokens_total_ += metrics.prefix_cache_hit_tokens;
     speculative_draft_tokens_total_ += metrics.speculative_draft_tokens;
     speculative_accepted_tokens_total_ += metrics.speculative_accepted_tokens;
+    const GenerationPace pace{
+        .completion_tokens =
+            static_cast<std::uint32_t>(std::max(outcome.completion_tokens, 0)),
+        .generation_wall_seconds = metrics.generation_wall_seconds,
+        .decode_host_seconds     = metrics.engine_timing.decode_host_exposed_seconds};
+    if (pace.token_intervals() > 0) {
+        token_intervals_total_ += pace.token_intervals();
+        token_interval_seconds_total_ += pace.generation_wall_seconds;
+        last_pace_ = pace;
+    }
+}
+
+std::optional<GenerationPace> ServeMetrics::last_generation_pace() const {
+    const std::lock_guard lock(mutex_);
+    return last_pace_;
 }
 
 void ServeMetrics::record_failure() {
@@ -239,6 +266,7 @@ std::string ServeMetrics::render(std::uint32_t max_concurrency, const ninfer::Ru
     append_metric(out, "llamacpp:requests_deferred", "gauge", "Number of requests deferred.",
                   admitted - processing);
 
+    append_engine_host_time(out, live);
     append_abandoned_requests(out, live);
     append_output_reservation(out, live);
     append_context_cache(out, live);
@@ -262,6 +290,25 @@ std::string ServeMetrics::render(std::uint32_t max_concurrency, const ninfer::Ru
                   "Speculative draft tokens proposed.", speculative_draft_tokens_total_);
     append_metric(out, "ninfer:draft_accepted_tokens_total", "counter",
                   "Speculative draft tokens accepted.", speculative_accepted_tokens_total_);
+    append_metric(out, "ninfer:token_intervals_total", "counter",
+                  "Gaps between consecutive output tokens across finished requests. Divide the "
+                  "rate of ninfer:token_interval_seconds_total by this one for the mean "
+                  "inter-token time.",
+                  token_intervals_total_);
+    append_metric(out, "ninfer:token_interval_seconds_total", "counter",
+                  "Wall seconds from first to last output token across finished requests.",
+                  token_interval_seconds_total_);
+    if (last_pace_) {
+        append_metric(out, "ninfer:last_request_inter_token_seconds", "gauge",
+                      "Mean seconds between output tokens of the last finished request that "
+                      "produced at least two. A healthy engine stays in milliseconds; a fixed "
+                      "stall after the first token pushes a short answer into seconds.",
+                      last_pace_->inter_token_seconds());
+        append_metric(out, "ninfer:last_request_decode_host_seconds", "gauge",
+                      "Decode-round host time exposed to the last finished request, device wait "
+                      "excluded.",
+                      last_pace_->decode_host_seconds);
+    }
     return out;
 }
 

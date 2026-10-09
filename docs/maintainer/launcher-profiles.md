@@ -94,6 +94,14 @@ overrides for the `tuned` profile only, replacing the registered presets in thin
 `default` omits the flag so the registered preset stays in force. Loopback is the default host: `0.0.0.0` publishes an unauthenticated
 endpoint to every network the machine is on, so it is opt-in per run.
 
+The `tuned` profile also exposes the newer serving flags, each appended only when its variable is set so the
+defaults stay as measured: `NINFER_MAX_PREFILL_LANES`, `NINFER_DECODE_ROUNDS_PER_PREFILL`,
+`NINFER_PROGRESS_ANCHOR_TOKENS`, `NINFER_MAX_OUTPUT_TOKENS`, `NINFER_OUTPUT_RESERVATION_TOKENS`,
+`NINFER_LOOKUP_NGRAM`, `NINFER_MLP_A8_DECODE=on`, `NINFER_CONTEXT_STORE` (+ `NINFER_CONTEXT_STORE_MAX_GIB`) and
+`NINFER_AUTO_HOST_CACHE=on` (+ `NINFER_HOST_CACHE_PERCENT`, `_RESERVE_MIB`, `_MAX_MIB`). `--auto-host-cache` refuses
+the fixed host sizing, so with it on the launcher drops `--host-state-slots`, `--host-kv-mib` and the
+private/shared continuation counts and `NINFER_HOST_STATE_SLOTS` is ignored.
+
 **When the card is busy.** A desktop or another job holding VRAM can leave too little for the default
 context, and on Windows pinned host memory (`--host-state-slots`) is charged against the card too, so
 there are two ways to be refused: the engine's runtime reservation, or pinning host state. The `tuned`
