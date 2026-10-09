@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/device.h"
 #include "core/gdn_replay_records.h"
 #include "core/linear_attention_state.h"
 #include "core/stage_link.h"
@@ -31,9 +32,35 @@ struct StageRuntime {
     std::vector<StageLink> forward;
     std::optional<StageLink> back;
     std::vector<StageLink> control;
+    // features[s-1] carries the hidden states of the DFlash feature layers stage s owns back to rank
+    // 0, where the draft reads them. Present only for a masked-draft Program whose feature layers
+    // reach past stage 0; a stage without such a layer has no link.
+    std::vector<std::optional<StageLink>> features;
+
+    // One fence per rank. A CUDA graph launched on rank 0's stream also runs the other stages'
+    // layers, so before the launch rank 0's stream waits for work already queued on every other
+    // rank's stream (block-table publishes, state copies), and after it every other rank's stream
+    // waits for the graph. Eager execution orders itself through the links and needs neither.
+    std::vector<CudaCompletionEvent> rank_fences;
 
     // Alternates per forward pass so consecutive passes use different slots of every link.
     std::uint32_t next_slot = 0;
+
+    // Rank 0's `entry` stream waits for everything already queued on the other ranks' streams.
+    void join_into(const DeviceContext& device, cudaStream_t entry) {
+        for (std::size_t rank = 1; rank < rank_fences.size(); ++rank) {
+            rank_fences[rank].record(device.rank(rank).stream);
+            rank_fences[rank].wait(entry);
+        }
+    }
+    // Every other rank's stream waits for everything queued on rank 0's `entry` stream so far.
+    void release_from(const DeviceContext& device, cudaStream_t entry) {
+        if (rank_fences.size() < 2) { return; }
+        rank_fences[0].record(entry);
+        for (std::size_t rank = 1; rank < rank_fences.size(); ++rank) {
+            rank_fences[0].wait(device.rank(rank).stream);
+        }
+    }
 };
 
 } // namespace ninfer::models::qwen3_5::execution

@@ -10,6 +10,7 @@
 //              keeps its place, gives up its snapshot and completes by replay.
 //   admission  a planning failure fails only the request being admitted, without a recovery.
 //   device     a device fault latches on the first failure.
+//   stages     the queue scenario with the model split into two pipeline stages on device 0.
 
 #include "guarded_main.h"
 #include "ninfer/engine.h"
@@ -71,10 +72,14 @@ struct FaultLog {
     }
 };
 
+// Pipeline stages for the scenario being run; empty is one device.
+std::vector<int> g_devices;
+
 ninfer::EngineOptions base_options(const std::filesystem::path& artifact,
                                    ninfer::SpeculativeBackend selected) {
     ninfer::EngineOptions options;
     options.artifact_path       = artifact;
+    options.devices             = g_devices;
     options.speculative.backend = selected;
     if (selected != ninfer::SpeculativeBackend::None) {
         options.speculative.draft_tokens  = 3;
@@ -472,8 +477,8 @@ int run() {
     const auto selected = backend(setting("NINFER_TEST_BACKEND", "mtp"));
     const auto scenario = setting("NINFER_RECOVERY_REAL_SCENARIO", "all");
     require(scenario == "all" || scenario == "queue" || scenario == "paused" ||
-                scenario == "admission" || scenario == "device",
-            "NINFER_RECOVERY_REAL_SCENARIO must be all, queue, paused, admission or device");
+                scenario == "admission" || scenario == "device" || scenario == "stages",
+            "NINFER_RECOVERY_REAL_SCENARIO must be all, queue, paused, admission, device or stages");
     try {
         if (scenario == "all" || scenario == "queue") { exercise_queue(artifact, selected); }
         if (scenario == "all" || scenario == "paused") { exercise_paused(artifact, selected); }
@@ -481,6 +486,14 @@ int run() {
             exercise_admission(artifact, selected);
         }
         if (scenario == "all" || scenario == "device") { exercise_device(artifact, selected); }
+        if (scenario == "all" || scenario == "stages") {
+            // The queue scenario with the model split into two stages on one device: recovery drains
+            // and fences every rank, and the startup baseline covers both ranks' pages and state.
+            g_devices = {0, 0};
+            std::cout << "stages: ";
+            exercise_queue(artifact, selected);
+            g_devices.clear();
+        }
     } catch (...) {
         disarm();
         throw;

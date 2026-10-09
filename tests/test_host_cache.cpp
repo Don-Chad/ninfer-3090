@@ -171,24 +171,13 @@ int check_unavailable_options_rejected() {
         return false;
     };
     int failures = 0;
-    failures += check(rejected([](ninfer::EngineOptions& o) { o.devices = {0, 1}; }) &&
-                          rejected([](ninfer::EngineOptions& o) { o.stage_layers = {32}; }),
-                      "a multi-GPU pipeline configuration was accepted");
-    failures += check(rejected([](ninfer::EngineOptions& o) {
-                          o.enable_vision    = true;
-                          o.vision_residency = ninfer::VisionResidency::Overlay;
-                      }),
-                      "overlay vision residency was accepted");
-    failures += check(rejected([](ninfer::EngineOptions& o) {
-                          o.grafts.push_back({.name = "g", .path = "g.safetensors"});
-                      }),
-                      "a prompt graft was accepted");
     failures += check(rejected([](ninfer::EngineOptions& o) {
                           o.context_store.directory = "store";
                       }),
                       "the context store was accepted");
-    failures += check(!rejected([](ninfer::EngineOptions& o) { o.devices = {0}; }),
-                      "a single-entry device list was refused");
+    failures += check(!rejected([](ninfer::EngineOptions& o) { o.devices = {0}; }) &&
+                          !rejected([](ninfer::EngineOptions& o) { o.devices = {0, 0}; }),
+                      "a pipeline device list was refused");
     return failures;
 }
 

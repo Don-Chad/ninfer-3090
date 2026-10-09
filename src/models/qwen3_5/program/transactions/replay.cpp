@@ -199,9 +199,9 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
 
         const StateImageSelectors selectors = state_selectors(sequence);
         execution::PrefillContext context{
-            {device, parameters, work, state_images->linear(),
+            {device, parameters, work, state_images->linear(0),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head},
+             proposal_head, stage_runtime.get()},
             text_kv_view(sequence),
             skip_mtp_alignment ? PagedKVCacheView{} : mtp_kv_view(sequence),
             decoder->text_kv,

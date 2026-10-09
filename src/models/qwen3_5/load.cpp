@@ -204,6 +204,16 @@ std::vector<std::uint32_t> default_stage_layers(const artifact::Reader& reader,
             head_bytes += parameter_bytes(reader, bindings, WeightId{index});
         }
     }
+    // A DFlash draft runs entirely on the primary device; its embedding and head are the target's,
+    // already counted, so only the draft's own parameters are new.
+    if (config.draft) {
+        const std::size_t first = bindings.weights.size();
+        (void)loading::bind_draft(bindings, *config.draft, text, weights,
+                                  std::string(options.speculative_component()));
+        for (std::size_t index = first; index < bindings.weights.size(); ++index) {
+            head_bytes += parameter_bytes(reader, bindings, WeightId{index});
+        }
+    }
 
     std::vector<StageBudget> budgets;
     budgets.reserve(free_bytes.size());

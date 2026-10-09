@@ -54,6 +54,7 @@ DFlashFeatureSink make_dflash_prefill_sink(PrefillContext& state) {
 void configure_text_card(TextContext& card, const ExecutionCore& execution,
                          const ops::SamplingConfig* sampling, std::int32_t state_source_slot,
                          std::int32_t state_destination_slot, std::uint32_t mtp_proposal_extent) {
+    card.set_stage_runtime(execution.stages);
     card.set_sampling(sampling);
     card.set_linear_state_slots(state_source_slot, state_destination_slot);
     card.set_gdn_state_action(GdnStateAction::UpdateInPlace, nullptr);
@@ -341,8 +342,17 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
     const auto tail_started = Clock::now();
     try {
         timing.resume_submit();
-        replay_fold->execute(std::span<const ops::GdnReplayFoldRow>(fold_rows.data(), lanes.size()),
-                             device.stream);
+        const std::span<const ops::GdnReplayFoldRow> fold_span(fold_rows.data(), lanes.size());
+        // Each StateImage shard folds its own layers on the stream of the device that holds it.
+        {
+            const RankBinding bind(device, state_images->shard(0).rank);
+            replay_fold->execute(fold_span, compute_streams[state_images->shard(0).rank]);
+        }
+        for (std::size_t shard = 1; shard < state_images->shard_count(); ++shard) {
+            const std::size_t rank = state_images->shard(shard).rank;
+            const RankBinding bind(device, rank);
+            extra_replay_fold[shard - 1]->execute(fold_span, compute_streams[rank]);
+        }
 
         // Sparse acceptance reads counts. Publish only the prefix licensed by the Frontend.
         if (speculative_backend == SpeculativeBackend::DFlash2) {
@@ -524,9 +534,9 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
             rewrite_capture_hidden_ptr = &rewrite_capture_hidden;
         }
         execution::PrefillContext schedule_state{
-            {device, parameters, work, state_images->linear(),
+            {device, parameters, work, state_images->linear(0),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head},
+             proposal_head, stage_runtime.get()},
             text_kv_view(sequence),
             mtp_kv_view(sequence),
             decoder->text_kv,

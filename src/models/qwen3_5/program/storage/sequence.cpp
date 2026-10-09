@@ -137,9 +137,9 @@ std::uint32_t ProgramImpl::backend_kv_valid(const SequenceState& state) const no
 
 void ProgramImpl::ensure_sequence_kv_mapped(SequenceState& state, std::uint32_t main,
                                             std::uint32_t backend) {
-    text_kv_addresses->ensure_mapped_to_tokens(state.kv->text, main, device.stream);
+    text_kv_addresses->ensure_mapped_to_tokens(state.kv->text, main, compute_streams);
     if (state.kv->backend) {
-        backend_kv_addresses->ensure_mapped_to_tokens(*state.kv->backend, backend, device.stream);
+        backend_kv_addresses->ensure_mapped_to_tokens(*state.kv->backend, backend, compute_streams);
     }
 }
 

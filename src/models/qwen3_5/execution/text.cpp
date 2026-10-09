@@ -1178,12 +1178,64 @@ private:
     std::array<const Tensor**, kControlTensors> slots_;
 };
 
+// The DFlash feature layers one later stage owns. Their hidden states are collected into one
+// stage-local block, column range `i * tokens` for the i-th of them, and sent to rank 0 in one
+// transfer, where the real feature sink reads them.
+struct StageFeatureCollector {
+    static constexpr bool enabled = true;
+
+    std::array<std::uint32_t, 32> layers{};
+    std::size_t count = 0;
+    Tensor block;
+
+    [[nodiscard]] std::size_t index_of(std::uint32_t layer) const noexcept {
+        for (std::size_t i = 0; i < count; ++i) {
+            if (layers[i] == layer) { return i; }
+        }
+        return count;
+    }
+
+    void capture_layer(int layer, const Tensor& value, cudaStream_t stream) const {
+        const std::size_t index = index_of(static_cast<std::uint32_t>(layer));
+        if (index == count) { return; }
+        const auto tokens = value.ne[1];
+        if (!value.is_contiguous() || value.dtype != block.dtype || value.ne[0] != block.ne[0] ||
+            static_cast<std::int64_t>(tokens) * static_cast<std::int64_t>(count) != block.ne[1]) {
+            throw std::logic_error("a pipeline stage feature capture has an invalid shape");
+        }
+        Tensor target = block.slice(1, static_cast<std::int32_t>(index) * tokens, tokens);
+        CUDA_CHECK(cudaMemcpyAsync(target.data, value.data, value.bytes(), cudaMemcpyDeviceToDevice,
+                                   stream));
+    }
+};
+
+// The feature layers `layers` names that stage `stage` owns, in the order `layers` gives them.
+StageFeatureCollector stage_features(const TextParameters& text, std::size_t stage,
+                                     std::span<const std::uint32_t> layers) {
+    StageFeatureCollector out;
+    const std::uint32_t begin = text.stage_begin[stage];
+    const std::uint32_t end   = text.stage_end(stage);
+    for (const std::uint32_t layer : layers) {
+        if (layer < begin || layer >= end) { continue; }
+        if (out.count == out.layers.size()) {
+            throw std::logic_error("too many DFlash feature layers in one pipeline stage");
+        }
+        out.layers[out.count++] = layer;
+    }
+    return out;
+}
+
 } // namespace
 
 // Runs the layers across pipeline stages. Stage 0 is rank 0, where the caller's residual already
 // lives; each later stage receives the residual and the control tensors its layers read, runs, and
 // passes the residual on; the last stage returns it to rank 0 for the head.
-void TextContext::run_staged(Tensor& x, Phase ph) {
+//
+// A DFlash feature tap needs the hidden state after each of its layers in rank 0's buffers. Stage
+// 0's layers capture directly; a later stage collects its feature layers into one block that crosses
+// back to rank 0 after the residual, where the tap reads each layer's columns as if captured there.
+template <class Tap>
+void TextContext::run_staged(Tensor& x, Phase ph, Tap& tap) {
     StageRuntime& runtime    = *stage_runtime_;
     const std::size_t stages = parameters_.text.rank_count;
     if (runtime.forward.size() + 1 != stages || runtime.control.size() + 1 != stages ||
@@ -1192,7 +1244,19 @@ void TextContext::run_staged(Tensor& x, Phase ph) {
     }
     const std::uint32_t slot = runtime.next_slot;
     runtime.next_slot        = (slot + 1U) % static_cast<std::uint32_t>(runtime.forward.front().slots());
-    NullTap tap;
+
+    std::array<StageFeatureCollector, kMaxRanks> features{};
+    std::size_t widest_features = 0;
+    if constexpr (Tap::enabled) {
+        for (std::size_t stage = 1; stage < stages; ++stage) {
+            features[stage] = stage_features(parameters_.text, stage, tap.layers);
+            if (features[stage].count == 0) { continue; }
+            if (runtime.features.size() + 1 != stages || !runtime.features[stage - 1]) {
+                throw std::logic_error("a pipeline stage holding DFlash feature layers has no link");
+            }
+            widest_features = std::max(widest_features, features[stage].count);
+        }
+    }
 
     // Control tensors, packed in this order. Ones that are absent this pass (verify-only columns
     // and slots, say) are skipped.
@@ -1263,7 +1327,17 @@ void TextContext::run_staged(Tensor& x, Phase ph) {
         }
         ScopedControl bound(current, replacement, slots);
 
-        run_stage_layers(stage, stage_x, ph, tap);
+        StageFeatureCollector& collected = features[stage];
+        if (collected.count == 0) {
+            NullTap none;
+            run_stage_layers(stage, stage_x, ph, none);
+        } else {
+            collected.block = work_.alloc(
+                x.dtype, {x.ne[0], x.ne[1] * static_cast<std::int32_t>(collected.count)});
+            run_stage_layers(stage, stage_x, ph, collected);
+            runtime.features[stage - 1]->send(collected.block.data, collected.block.bytes(), slot,
+                                              ctx_.stream);
+        }
         if (stage + 1 < stages) {
             runtime.forward[stage].send(stage_x.data, stage_x.bytes(), slot, ctx_.stream);
         } else {
@@ -1271,6 +1345,25 @@ void TextContext::run_staged(Tensor& x, Phase ph) {
         }
     }
     runtime.back->recv(x.data, x.bytes(), slot, entry_stream);
+
+    if constexpr (Tap::enabled) {
+        if (widest_features == 0) { return; }
+        // One rank-0 block holds each later stage's features in turn; the stream orders every
+        // capture out of it before the next stage's block overwrites it.
+        Tensor relay = work_.alloc(
+            x.dtype, {x.ne[0], x.ne[1] * static_cast<std::int32_t>(widest_features)});
+        for (std::size_t stage = 1; stage < stages; ++stage) {
+            const StageFeatureCollector& collected = features[stage];
+            if (collected.count == 0) { continue; }
+            Tensor block = relay.slice(1, 0, x.ne[1] * static_cast<std::int32_t>(collected.count));
+            runtime.features[stage - 1]->recv(block.data, block.bytes(), slot, entry_stream);
+            for (std::size_t i = 0; i < collected.count; ++i) {
+                tap.capture_layer(static_cast<int>(collected.layers[i]),
+                                  block.slice(1, static_cast<std::int32_t>(i) * x.ne[1], x.ne[1]),
+                                  entry_stream);
+            }
+        }
+    }
 }
 
 template <class Tap>
@@ -1279,16 +1372,8 @@ void TextContext::run_layers(Tensor& x, Phase ph, Tap& tap) {
         run_stage_layers(0, x, ph, tap);
         return;
     }
-    if constexpr (Tap::enabled) {
-        // Feature taps copy a layer's hidden state into rank 0's buffers; from a later stage that is
-        // another device's memory. DFlash under a split is not supported yet.
-        throw std::logic_error("layer feature capture does not cross pipeline stages");
-    } else {
-        if (stage_runtime_ == nullptr) {
-            throw std::logic_error("a split model needs its stage runtime");
-        }
-        run_staged(x, ph);
-    }
+    if (stage_runtime_ == nullptr) { throw std::logic_error("a split model needs its stage runtime"); }
+    run_staged(x, ph, tap);
 }
 
 void TextContext::run_layers(Tensor& x, Phase ph) {

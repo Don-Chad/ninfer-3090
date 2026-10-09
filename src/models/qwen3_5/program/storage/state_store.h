@@ -149,7 +149,7 @@ public:
         return allocate(StateImageRole::ReservedDestination, false);
     }
 
-    [[nodiscard]] std::optional<StateImageHandle> reserve_reset(cudaStream_t stream = nullptr) {
+    [[nodiscard]] std::optional<StateImageHandle> reserve_reset(RankStreams stream = {}) {
         std::optional<StateImageHandle> handle = allocate(StateImageRole::ActiveMutable, true);
         if (!handle) { return std::nullopt; }
         try {
@@ -163,7 +163,7 @@ public:
         return handle;
     }
 
-    void activate_reset(StateImageHandle handle, cudaStream_t stream = nullptr) {
+    void activate_reset(StateImageHandle handle, RankStreams stream = {}) {
         Object& object = require(handle);
         if (object.role != StateImageRole::ReservedDestination || !object.device_slot ||
             object.source_pins != 0 || object.destination_pinned || has_pending_replica(object)) {
@@ -441,7 +441,7 @@ public:
                                   source);
     }
 
-    void enqueue_device_to_host(const StateImageTransfer& transfer, cudaStream_t stream = nullptr) {
+    void enqueue_device_to_host(const StateImageTransfer& transfer, RankStreams stream = {}) {
         validate_transfer(transfer);
         Object& object = require(transfer.source_);
         if (transfer.direction_ != StateTransferDirection::DeviceToHost || host_ == nullptr ||
@@ -453,7 +453,7 @@ public:
     }
 
     [[nodiscard]] std::optional<StateImageTransfer>
-    begin_device_to_host(StateImageHandle source, cudaStream_t stream = nullptr) {
+    begin_device_to_host(StateImageHandle source, RankStreams stream = {}) {
         std::optional<StateImageTransfer> transfer = reserve_device_to_host(source);
         if (!transfer) { return std::nullopt; }
         try {
@@ -466,7 +466,7 @@ public:
     }
 
     [[nodiscard]] std::optional<StateImageTransfer>
-    begin_host_to_device(StateImageHandle source, cudaStream_t stream = nullptr) {
+    begin_host_to_device(StateImageHandle source, RankStreams stream = {}) {
         Object& object = require(source);
         if (host_ == nullptr || object.role != StateImageRole::CheckpointImmutable ||
             !object.host_slot || object.device_slot || has_pending_replica(object) ||
@@ -496,7 +496,7 @@ public:
 
     [[nodiscard]] std::optional<StateImageTransfer> begin_host_fork(StateImageHandle source,
                                                                     StateImageHandle destination,
-                                                                    cudaStream_t stream = nullptr) {
+                                                                    RankStreams stream = {}) {
         Object& source_object      = require(source);
         Object& destination_object = require(destination);
         if (host_ == nullptr || source == destination ||

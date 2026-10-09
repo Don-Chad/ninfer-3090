@@ -202,6 +202,13 @@ void print_generation_summary(const ninfer::GenerationResult& result,
     print_metric("kv cache payload", format_bytes(memory.kv_payload_bytes));
     print_metric("gpu workspace peak", format_arena_peak(memory.workspace));
     print_metric("runtime reservation", format_bytes(memory.runtime_reservation_bytes));
+    for (std::size_t stage = 0; stage < memory.stage_runtime_reservation_bytes.size(); ++stage) {
+        print_metric("stage " + std::to_string(stage + 1) + " reservation",
+                     format_bytes(memory.stage_runtime_reservation_bytes[stage]));
+    }
+    if (!memory.stage_runtime_reservation_bytes.empty()) {
+        print_metric("KV capacity bound by stage", std::to_string(memory.kv_capacity_binding_stage));
+    }
     print_metric("free after weights", format_bytes(memory.available_after_weights_bytes));
     print_metric("free after startup", format_bytes(memory.available_after_startup_bytes));
     print_metric("KV capacity headroom", format_bytes(memory.kv_capacity_headroom_bytes));

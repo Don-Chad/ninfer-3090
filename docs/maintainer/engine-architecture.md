@@ -334,8 +334,12 @@ forward 重叠；两段共享同一个资源预留和提交边界。
 
 本 fork 的多 GPU layer pipeline（`--devices A,B,...`，Linux；每个 stage 整层拥有权重、KV plane、GDN
 state 与 workspace，embedding、head、round state 与 sampling 留在 rank 0，设计见
-[pipeline-parallel-plan.md](pipeline-parallel-plan.md)）尚未移植到本文描述的上下文引擎：源码保留在树中，
-启动时拒绝多于一个设备。
+[pipeline-parallel-plan.md](pipeline-parallel-plan.md)）运行在本文描述的上下文引擎上。一个 page id
+在所有 rank 上指向同一 page group，因此 ResourceManager、Scheduler 与 PrefixIndex 不感知 stage；
+Program 用 `RankStreams` 把 block table 发布、StateImage shard 复制与 context transaction 的每份拷贝放到
+持有该内存的 rank 的 stream 上，并用 `RankFenceSet` 按 rank 设 fence。Prompt graft 的 KV/state 在启动时安装到每个 rank 的
+plane 与 shard；Vision overlay 的 KV loan 只解除 rank 0 plane 的 granule 映射，借出的 page id 在所有 rank
+上同时不可用。
 
 需要注入 KV 的 prompt graft（`direct_kv`、`softprompt_kv`）由 `Program::install_external_checkpoint` 在启动时安装为永久租约的 SharedPrefix checkpoint，其身份是 graft 的占位 token；ResourceManager 将其登记为 pinned shared 条目，victims、reclaim、erase 与 `release_all` 都不会选中它。EngineCore 的 `restore_external_sources()` 在构造和清空缓存后重新登记（必要时重新安装），worker 恢复在重建空闲物理基线后也应调用它。请求的 `external_prefix_tokens` 要求来源至少覆盖 graft，因此占位 token 永远不会被 prefill。
 

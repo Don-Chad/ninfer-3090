@@ -20,6 +20,7 @@
 #include "models/qwen3_5/program/program_impl.h"
 #include "models/qwen3_5/program/context_work.h"
 #include "ninfer/ops/kv_cache_append.h"
+#include "core/arena.h"
 #include "core/device.h"
 
 #include <algorithm>
@@ -212,7 +213,7 @@ CheckpointHandle ProgramImpl::install_external_checkpoint(const PromptGraft& gra
     };
     try {
         // --- StateImage: Gated DeltaNet state; continuation hidden and DFlash local stay zero ---
-        state = state_store->reserve_reset(device.stream);
+        state = state_store->reserve_reset(compute_streams);
         if (!state) {
             throw std::runtime_error("no free StateImage slot for graft '" + graft.name + "'");
         }
@@ -236,7 +237,7 @@ CheckpointHandle ProgramImpl::install_external_checkpoint(const PromptGraft& gra
             }
             state_images->copy_from_host(
                 HostStateImageConstView{.data = image.data(), .layout = &layout},
-                state_store->physical_slot(*state), RankStreams(device.stream));
+                state_store->physical_slot(*state), compute_streams);
             device.synchronize(); // the host image is released at scope exit
         }
         state_store->freeze(*state);
@@ -245,18 +246,23 @@ CheckpointHandle ProgramImpl::install_external_checkpoint(const PromptGraft& gra
 
         // --- Main KV: the ordinary append Op over staged BF16 rows, chunked to the workspace ---
         const std::uint32_t pages = kv_pages_for_frontier(slots);
-        text = text_kv_addresses->create_active(pages, 0, device.stream);
+        text = text_kv_addresses->create_active(pages, 0, compute_streams);
         if (!text) {
             throw std::runtime_error("no Main KV address space or pages for graft '" + graft.name +
                                      "'");
         }
-        text_kv_addresses->ensure_mapped_to_tokens(*text, slots, device.stream);
+        text_kv_addresses->ensure_mapped_to_tokens(*text, slots, compute_streams);
+        // Block-table publishes went out on every rank's stream; the appends below read them.
+        device.synchronize();
         const PagedKVCacheView view =
             decoder->text_kv.execution_view(text_kv_addresses->execution_row(*text));
         const auto heads       = static_cast<std::int32_t>(tensors.n_kv_heads);
         const auto head_dim    = static_cast<std::int32_t>(tensors.head_dim);
         const std::size_t row  = static_cast<std::size_t>(heads) * head_dim * 2;
         const std::size_t span = 3U * 256U; // alignment slack for the three staging tensors
+        // Each layer's planes and block-table copy live on the rank that runs it, so its rows are
+        // staged in that rank's workspace and appended on that rank's stream. Every rank's general
+        // workspace has the same capacity.
         work.reset();
         if (work.capacity() <= span + 2 * row + sizeof(std::int32_t)) {
             throw std::logic_error("Program workspace cannot stage one graft KV row");
@@ -264,29 +270,44 @@ CheckpointHandle ProgramImpl::install_external_checkpoint(const PromptGraft& gra
         const auto chunk = static_cast<std::uint32_t>(std::min<std::size_t>(
             slots, (work.capacity() - span) / (2 * row + sizeof(std::int32_t))));
         std::vector<std::int32_t> positions(chunk);
-        for (std::uint32_t begin = 0; begin < slots; begin += chunk) {
-            const std::uint32_t count = std::min(chunk, slots - begin);
-            work.reset();
-            Tensor position = work.alloc(DType::I32, {static_cast<std::int32_t>(count)});
-            Tensor k = work.alloc(DType::BF16, {head_dim, heads, static_cast<std::int32_t>(count)});
-            Tensor v = work.alloc(DType::BF16, {head_dim, heads, static_cast<std::int32_t>(count)});
-            for (std::uint32_t i = 0; i < count; ++i) {
-                positions[i] = static_cast<std::int32_t>(begin + i);
-            }
-            CUDA_CHECK(cudaMemcpyAsync(position.data, positions.data(), count * sizeof(std::int32_t),
-                                       cudaMemcpyHostToDevice, device.stream));
-            // Each layer's slice is [n_slots, heads, head_dim] row-major: head_dim innermost, then
-            // heads, then slots -- the [head_dim, heads, T] operand the append Op consumes.
-            const std::size_t layer_bytes = static_cast<std::size_t>(slots) * row;
+        const std::size_t layer_bytes = static_cast<std::size_t>(slots) * row;
+        for (std::size_t rank = 0; rank < device.size(); ++rank) {
+            std::vector<std::uint32_t> layers;
             for (std::uint32_t layer = 0; layer < tensors.n_attn_layers; ++layer) {
-                const std::size_t offset = layer * layer_bytes + static_cast<std::size_t>(begin) * row;
-                CUDA_CHECK(cudaMemcpyAsync(k.data, tensors.k_data() + offset, count * row,
-                                           cudaMemcpyHostToDevice, device.stream));
-                CUDA_CHECK(cudaMemcpyAsync(v.data, tensors.v_data() + offset, count * row,
-                                           cudaMemcpyHostToDevice, device.stream));
-                ops::kv_cache_append(k, v, position, view.layer_view(layer), device.stream);
+                if (decoder->text_kv.layer_rank(layer) == rank) { layers.push_back(layer); }
             }
-            device.synchronize(); // the staging rows and positions are reused by the next chunk
+            if (layers.empty()) { continue; }
+            ScopedDeviceRank rank_guard(device, rank);
+            ScopedArenaRank arena_guard(work, rank);
+            for (std::uint32_t begin = 0; begin < slots; begin += chunk) {
+                const std::uint32_t count = std::min(chunk, slots - begin);
+                work.reset();
+                Tensor position = work.alloc(DType::I32, {static_cast<std::int32_t>(count)});
+                Tensor k =
+                    work.alloc(DType::BF16, {head_dim, heads, static_cast<std::int32_t>(count)});
+                Tensor v =
+                    work.alloc(DType::BF16, {head_dim, heads, static_cast<std::int32_t>(count)});
+                for (std::uint32_t i = 0; i < count; ++i) {
+                    positions[i] = static_cast<std::int32_t>(begin + i);
+                }
+                CUDA_CHECK(cudaMemcpyAsync(position.data, positions.data(),
+                                           count * sizeof(std::int32_t), cudaMemcpyHostToDevice,
+                                           device.stream));
+                // Each layer's slice is [n_slots, heads, head_dim] row-major: head_dim innermost,
+                // then heads, then slots -- the [head_dim, heads, T] operand the append Op consumes.
+                for (const std::uint32_t layer : layers) {
+                    const std::size_t offset =
+                        layer * layer_bytes + static_cast<std::size_t>(begin) * row;
+                    CUDA_CHECK(cudaMemcpyAsync(k.data, tensors.k_data() + offset, count * row,
+                                               cudaMemcpyHostToDevice, device.stream));
+                    CUDA_CHECK(cudaMemcpyAsync(v.data, tensors.v_data() + offset, count * row,
+                                               cudaMemcpyHostToDevice, device.stream));
+                    ops::kv_cache_append(k, v, position, view.layer_view(layer), device.stream);
+                }
+                // The staging rows and positions are reused by the next chunk.
+                CUDA_CHECK(cudaStreamSynchronize(device.stream));
+            }
+            work.reset();
         }
         work.reset();
         text_kv_addresses->commit_frontier(*text, slots);
@@ -301,15 +322,15 @@ CheckpointHandle ProgramImpl::install_external_checkpoint(const PromptGraft& gra
             }
             if (backend_frontier != 0) {
                 const std::uint32_t backend_pages = kv_pages_for_frontier(backend_frontier);
-                backend_kv_addresses->activate(*backend, backend_pages, 0, device.stream);
+                backend_kv_addresses->activate(*backend, backend_pages, 0, compute_streams);
                 backend_kv_addresses->ensure_mapped_to_tokens(*backend, backend_frontier,
-                                                              device.stream);
+                                                              compute_streams);
                 std::vector<DeviceKVPageHandle> physical;
                 physical.reserve(backend_pages);
                 for (std::uint32_t page = 0; page < backend_pages; ++page) {
                     physical.push_back(backend_kv_addresses->physical_page(*backend, page));
                 }
-                backend_kv_pages->physical_pool().zero_pages(physical, RankStreams(device.stream));
+                backend_kv_pages->physical_pool().zero_pages(physical, compute_streams);
                 backend_kv_addresses->commit_frontier(*backend, backend_frontier);
                 backend_kv_addresses->deactivate(*backend);
             }

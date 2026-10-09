@@ -624,10 +624,12 @@ ninfer model.ninfer --devices 0,1,2 --stage-layers 20,22,22 --prompt "..."
 - **Linux only for real multi-GPU.** Repeating one id (`--devices 0,0`) puts several stages on one
   card, saves no memory, and exercises the whole stage path; it is how the path is tested without a
   second GPU, and it works on Windows too.
-- **Works with a split:** the context cache and prefix reuse, CUDA graphs, MTP, and vision (resident
-  or `--vision-residency overlay`; the tower and its encode stay on the first device, so the first
-  stage's layer budget carries a resident tower, and an overlay window borrows only from that
-  device). **Not yet:** DFlash/DFlash2, which is refused at startup with a message saying so.
+- **Works with a split:** the context cache and prefix reuse (including pausing and replaying a
+  request under KV pressure), CUDA graphs, MTP, DFlash/DFlash2 (the draft stays on the first device
+  and the target layers it reads cross back to it), every KV format, and resident vision (the tower
+  and its encode stay on the first device, so the first stage's layer budget carries it),
+  `--vision-residency overlay` (its window borrows only the first device's memory), prompt grafts,
+  and worker failure recovery.
 - **Boundary transfers stage through pinned host memory.** Peer access is not needed, and no
   consumer PCIe pair measured so far offers it. Measured with `tools/tp_probe.cu` on rented 2x A4000
   and 2x 3090 PCIe boxes, a staged transfer took about 0.03 ms at a decode-sized payload and several
@@ -643,8 +645,9 @@ and the design are in `docs/maintainer/pipeline-parallel-plan.md`.
 ## Current limits
 
 - One model per process, on one GPU or split into pipeline stages with `--devices` (Linux). No
-  tensor parallelism and no CPU/GPU weight offload. Pipeline stages do not yet support
-  DFlash/DFlash2.
+  tensor parallelism and no CPU/GPU weight offload. The pipeline on the current context engine has
+  been verified only with stages sharing one GPU (`--devices 0,0`); distinct GPUs are unverified on
+  this build.
 - Concurrency is fixed at startup and limited to 1-8; the compact 35B-A3B fits C1-C6 at 4K and
   Qwen3.8-27B fits C8/8K with MTP3 through ReplaySSM.
 - The shared KV pool is fixed at startup and is not divided statically among request lanes.

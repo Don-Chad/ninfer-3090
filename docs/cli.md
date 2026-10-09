@@ -200,8 +200,8 @@ The table lists executable defaults. The examples above select INT8 KV and MTP3.
 | `--prefill-chunk N` | positive text-prefill chunk, in multiples of 128 | `1024` |
 | `--max-new N` | requested output-token limit | `128` |
 | `--device N` | CUDA device index | `0` |
-| `--devices A,B,...` | one pipeline stage per listed CUDA device (2 to 8, Linux; see the [README](../README.md#several-gpus-pipeline-stages---devices-ab)); overrides `--device`. **Temporarily rejected at startup** while the pipeline is ported to the new context engine | none |
-| `--stage-layers A,B,...` | layers per stage, in `--devices` order; omitted means a split chosen from each device's free memory. Temporarily rejected with `--devices` | memory-balanced |
+| `--devices A,B,...` | one pipeline stage per listed CUDA device (2 to 8, Linux; see the [README](../README.md#several-gpus-pipeline-stages---devices-ab)); overrides `--device` | none |
+| `--stage-layers A,B,...` | layers per stage, in `--devices` order; omitted means a split chosen from each device's free memory | memory-balanced |
 | `--kv-dtype bf16\|int8\|fp8\|rk8v4\|rk4v4\|nvfp4\|k8v4` | KV-cache storage; see [Context and memory](#context-and-memory). `rk8v4` is opt-in RotorQuant and `rk4v4` opt-in Lloyd-Max 4-bit keys; all seven are accepted on this fork's sm_86/sm_89 targets | `bf16` |
 | `--spec mtp\|dflash\|dflash2` | speculative backend; see [Speculative decoding](#speculative-decoding) | off |
 | `--draft-tokens N` | `1..15` for MTP, DFlash and DFlash2 | unset |

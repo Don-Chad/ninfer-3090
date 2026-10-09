@@ -13,6 +13,8 @@
 //     are required and the first divergence is reported. The first attention layer, whose inputs
 //     agree, checks that installation's standalone append stores the bytes prefill's fused append
 //     stores;
+//   * the same BF16 phase with the model split into two pipeline stages on one device, where the
+//     graft's K/V and state are installed into each rank's planes and StateImage shards;
 //   * MTP and DFlash2: the draft context over a direct graft is zero-filled, so drafts and verify
 //     widths differ from the replayed graft. The target still verifies every token, so the output
 //     is required to match until a reported divergence, and every request must speculate, start
@@ -596,6 +598,9 @@ struct Phase {
     KvCacheStorage kv          = KvCacheStorage::BFloat16;
     bool exact                 = true;
     bool pressure              = false;
+    // Pipeline stages, all on device 0: the graft's K/V and state are installed into every rank's
+    // planes and shards, and the oracle is unchanged.
+    std::vector<int> devices;
 };
 
 EngineOptions engine_options(const char* artifact, const Phase& phase,
@@ -622,7 +627,8 @@ EngineOptions engine_options(const char* artifact, const Phase& phase,
     if (phase.backend == SpeculativeBackend::DFlash2) {
         options.speculative.proposal_head = ProposalHead::Optimized;
     }
-    options.grafts = {GraftSource{.name = "text", .path = text_graft},
+    options.devices = phase.devices;
+    options.grafts  = {GraftSource{.name = "text", .path = text_graft},
                       GraftSource{.name = "direct", .path = direct_graft}};
     return options;
 }
@@ -790,6 +796,9 @@ int main(int argc, char** argv) {
         int failures = 0;
         const std::vector<Phase> phases{
             {.name = "no draft, BF16 KV, cache pressure", .pressure = true},
+            {.name     = "two stages, no draft, BF16 KV, cache pressure",
+             .pressure = true,
+             .devices  = {0, 0}},
             // The capture is BF16-storage state; prefill in rk4v4 storage reads its own quantized
             // history from the second attention layer on, so the two prefixes are not the same
             // computation and only binding and completion are required.

@@ -193,7 +193,7 @@ public:
     [[nodiscard]] std::uint32_t occupied() const noexcept { return capacity() - free_count_; }
 
     [[nodiscard]] std::optional<KVAddressSpaceHandle>
-    create_active(std::uint32_t growth_pages, std::int32_t execution_row, cudaStream_t stream) {
+    create_active(std::uint32_t growth_pages, std::int32_t execution_row, RankStreams stream) {
         if (growth_pages > page_capacity_) { return std::nullopt; }
         std::optional<KVAddressSpaceHandle> handle = create_inactive();
         if (!handle) { return std::nullopt; }
@@ -225,7 +225,7 @@ public:
     }
 
     void activate(KVAddressSpaceHandle handle, std::uint32_t growth_pages,
-                  std::int32_t execution_row, cudaStream_t stream) {
+                  std::int32_t execution_row, RankStreams stream) {
         auto reservation = prepare_activation(handle, growth_pages, execution_row);
         commit_activation(std::move(reservation), stream);
     }
@@ -268,7 +268,7 @@ public:
         return activation.page_reservation_;
     }
 
-    void commit_activation(KVActivationReservation&& activation, cudaStream_t stream) {
+    void commit_activation(KVActivationReservation&& activation, RankStreams stream) {
         if (activation.owner_ != this) {
             throw std::logic_error("KV activation reservation belongs to another store");
         }
@@ -401,7 +401,7 @@ public:
         return pages_->physical(*fork.tail_destination_);
     }
 
-    void commit_prefix_fork(KVPrefixForkReservation&& fork, cudaStream_t stream) {
+    void commit_prefix_fork(KVPrefixForkReservation&& fork, RankStreams stream) {
         require_prefix_fork(fork);
         Address& source                    = require(fork.source_);
         Address& destination               = require(fork.destination_);
@@ -641,7 +641,7 @@ public:
     // Coverage is a lower bound. A speculative mapping may already extend beyond this stage's
     // needs; only an explicit truncate releases it, and commit_frontier publishes valid tokens.
     void ensure_mapped_to_tokens(KVAddressSpaceHandle handle, std::uint32_t tokens,
-                                 cudaStream_t stream) {
+                                 RankStreams stream) {
         Address& address           = require_active(handle);
         const std::uint32_t target = pages_for_tokens(tokens);
         if (target > address.page_count + address.reservation.pages()) {

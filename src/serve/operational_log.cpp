@@ -463,6 +463,16 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
                   product::format_pretty_count(memory.kv_capacity_max_page_groups),
                   product::format_pretty_bytes(memory.runtime_reservation_bytes),
                   product::format_pretty_bytes(memory.available_after_startup_bytes));
+    if (!memory.stage_runtime_reservation_bytes.empty()) {
+        std::string reservations;
+        for (const std::size_t bytes : memory.stage_runtime_reservation_bytes) {
+            reservations += (reservations.empty() ? "" : ", ") + product::format_pretty_bytes(bytes);
+        }
+        logger_->info("stages | {} devices | runtime on further stages {} | KV capacity bound by "
+                      "stage {}",
+                      memory.stage_runtime_reservation_bytes.size() + 1, reservations,
+                      memory.kv_capacity_binding_stage);
+    }
 
     // Report what was actually pinned, not what was requested: on Windows the Host context budget
     // is clamped against what WDDM can pin at startup, so the memory summary (captured after that
