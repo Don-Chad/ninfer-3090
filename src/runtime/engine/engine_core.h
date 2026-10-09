@@ -482,6 +482,7 @@ public:
         store_sink_             = std::move(sink);
         store_ready_            = std::move(ready);
         store_failures_         = std::move(failures);
+        store_removals_seen_    = store_removal_count();
         store_idle_ms_.store(idle.count(), std::memory_order_release);
     }
 
@@ -494,6 +495,7 @@ public:
         std::scoped_lock lock(execution_mutex_);
         device_.bind_to_current_thread();
         forget_failed_store_writes();
+        forget_removed_store_images();
         std::vector<std::uint32_t> order;
         for (std::uint32_t slot = 0; slot < resources_.catalog_capacity(); ++slot) {
             order.push_back(slot);
@@ -849,6 +851,7 @@ private:
         if (store_sink_) {
             // The durable store takes every session about to be destroyed, bound to a slot file
             // or not, unless it already holds the session in its current state.
+            forget_removed_store_images();
             const auto view = resources_.catalog_slot(slot);
             if (slot < slot_persisted_.size() &&
                 slot_persisted_[slot] != PersistedState{view.id, view.revision}) {
@@ -901,6 +904,25 @@ private:
         return true;
     }
 
+    // Images the store has removed on its own (expiry, size limit, damage). A session marked as
+    // stored whose image is gone would be skipped when it is evicted and lost, so when the count
+    // grows every session is treated as not stored again. The window between this check and the
+    // eviction it guards is the store's own removal running in between.
+    [[nodiscard]] std::uint64_t store_removal_count() const noexcept {
+        if (store_ == nullptr) { return 0; }
+        try {
+            const runtime::ContextStore::Stats stats = store_->stats();
+            return stats.evicted_for_space + stats.expired + stats.corrupt_removed;
+        } catch (...) { return store_removals_seen_; }
+    }
+
+    void forget_removed_store_images() noexcept {
+        const std::uint64_t removed = store_removal_count();
+        if (removed == store_removals_seen_) { return; }
+        store_removals_seen_ = removed;
+        std::fill(slot_persisted_.begin(), slot_persisted_.end(), PersistedState{});
+    }
+
     // Writes at most one idle retained session to the context store. Called by the worker between
     // units; it does nothing while a request is waiting for admission, being admitted or
     // prefilling, so keeping the store current does not delay a request that is already waiting (one
@@ -918,6 +940,7 @@ private:
                 last_persist_scan_ = now + std::chrono::seconds(30);
                 return;
             }
+            forget_removed_store_images();
             if (materializing_ || (store_ready_ && !store_ready_())) { return; }
             {
                 std::lock_guard lock(queue_mutex_);
@@ -3245,6 +3268,7 @@ private:
     std::function<bool()> store_ready_;
     std::function<std::uint64_t()> store_failures_;
     std::uint64_t store_failures_seen_ = 0;
+    std::uint64_t store_removals_seen_ = 0;
     // Read by the worker before it takes the execution mutex, hence atomic.
     std::atomic<std::int64_t> store_idle_ms_{0};
     Clock::time_point last_persist_scan_{};
