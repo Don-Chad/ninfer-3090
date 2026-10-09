@@ -25,9 +25,15 @@ struct GenerationOutcome;
 struct OpenAIResponsesFunctionIdentity {
     std::string name;
     std::optional<std::string> wire_namespace;
+    // A free-form `custom` tool: served to the model as a strict function with one string
+    // parameter, `input`, and returned on the wire as custom_tool_call Items carrying that text.
+    bool custom = false;
 
     bool operator==(const OpenAIResponsesFunctionIdentity&) const = default;
 };
+
+// The Engine-side parameter that carries a custom tool's free-form input.
+inline constexpr const char* kCustomToolInputParameter = "input";
 
 struct OpenAIResponsesPromptRequest {
     std::string model;

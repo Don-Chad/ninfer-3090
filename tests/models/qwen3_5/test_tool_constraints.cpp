@@ -179,10 +179,73 @@ void selected_contracts(ninfer::text::GrammarCompiler& compiled) {
     }
 }
 
+// The serve layer lowers a free-form `custom` tool (Codex's apply_patch) to this strict schema.
+// Its top-level pure-string parameter must come back byte for byte, so a patch keeps its leading
+// spaces, blank lines and markers, and the grammar must make `input` the only, required argument.
+void custom_tool_input(ninfer::text::GrammarCompiler& compiled) {
+    const Json lowered{
+        {"type", "object"},
+        {"properties",
+         {{"input",
+           {{"type", "string"},
+            {"description", "The tool's complete free-form input, passed to it exactly as written "
+                            "(not JSON). It must match this lark grammar:\nstart: begin_patch "
+                            "hunk+ end_patch\nbegin_patch: \"*** Begin Patch\" LF"}}}}},
+        {"required", {"input"}},
+        {"additionalProperties", false}};
+    const auto automatic = contract(lowered, true);
+    ninfer::ToolChoice required;
+    required.mode       = ninfer::ToolChoiceMode::Required;
+    const auto forced   = contract(lowered, true, required);
+    const auto custom_call = [](std::string_view input) {
+        return "<tool_call>\n<function=call>\n<parameter=input>\n" + std::string(input) +
+               "\n</parameter>\n</function>\n</tool_call>";
+    };
+    const std::string patch = "*** Begin Patch\n"
+                              "*** Update File: src/app.py\n"
+                              "@@ def main():\n"
+                              "-    print(\"hi\")\n"
+                              "+    print(\"hello\")\n"
+                              " \n"
+                              "+\n"
+                              "+    return 0\n"
+                              "\n"
+                              "*** Add File: notes/todo.md\n"
+                              "+  - indented item\t(tab)\n"
+                              "*** End Patch";
+    for (const std::string& input : {patch, patch + "\n", "\n  " + patch, std::string("  ")}) {
+        const std::string text = custom_call(input);
+        require(accepts(compiled, *automatic, text) && accepts(compiled, *forced, text),
+                "custom tool grammar rejected a free-form input");
+        for (const std::size_t width : {std::size_t{1}, std::size_t{7}, text.size()}) {
+            frontend::ToolCallOutputDecoder decoder(forced, 64);
+            for (std::size_t at = 0; at < text.size(); at += width)
+                require(decoder.feed(std::string_view(text).substr(at, width)).empty(),
+                        "custom tool bytes leaked as content");
+            const auto result = decoder.finish();
+            require(result.tool_calls.size() == 1 &&
+                        Json::parse(result.tool_calls[0].arguments_json) ==
+                            Json{{"input", input}},
+                    "custom tool input changed in the raw string encoding");
+        }
+    }
+    require(!accepts(compiled, *forced, "<tool_call>\n<function=call>\n</function>\n</tool_call>"),
+            "custom tool call admitted a missing input");
+    require(!accepts(compiled, *forced,
+                     "<tool_call>\n<function=call>\n<parameter=input>\nx\n</parameter>\n"
+                     "<parameter=extra>\ny\n</parameter>\n</function>\n</tool_call>"),
+            "custom tool call admitted a second argument");
+    require(!accepts(compiled, *forced,
+                     "<tool_call>\n<function=call>\n<parameter=patch>\nx\n</parameter>\n"
+                     "</function>\n</tool_call>"),
+            "custom tool call admitted a renamed argument");
+}
+
 void run() {
     auto compiled = compiler();
     basic_contracts(compiled);
     selected_contracts(compiled);
+    custom_tool_input(compiled);
     ninfer::ToolChoice required;
     required.mode = ninfer::ToolChoiceMode::Required;
     auto fixed =

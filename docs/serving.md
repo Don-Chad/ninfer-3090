@@ -903,8 +903,8 @@ wire response contains typed `output` Items.
 | `graft` | NInfer extension: name of a [prompt graft](#prompt-grafts), or `null`; also accepted by input token count |
 | `thinking_budget` | NInfer extension: positive per-request [thinking cap](#openai-chat-completions), or `null`; rejected by input token count, which does not generate |
 | `text.format` | `text` (default), `json_object`, or `json_schema`; see [Output constraints](#output-constraints) |
-| `tools` | direct function definitions or namespace groups containing function definitions; see below |
-| `tool_choice` | `auto`, `none`, `required`, a named function, or function-only `allowed_tools` with mode `auto`/`required`; namespaced selection carries both `namespace` and `name` |
+| `tools` | direct function and free-form `custom` definitions, or namespace groups containing them; see below |
+| `tool_choice` | `auto`, `none`, `required`, a named function or `custom` tool, or `allowed_tools` of function and custom entries with mode `auto`/`required`; namespaced selection carries both `namespace` and `name` |
 | `parallel_tool_calls` | `true` by default; `false` enforces at most one call |
 | `max_tool_calls` | non-negative integer accepted as a hosted-tool no-op; NInfer does not execute hosted tools |
 | `truncation` | omitted or `disabled`; overlong input fails instead of silently dropping Items |
@@ -933,11 +933,14 @@ String `input` is normalized to one user `message` with an `input_text` part. Ar
 | `reasoning` | raw replay Item with `reasoning_text` content; summary/encrypted metadata may accompany raw text but cannot replace it |
 | `function_call` | completed assistant call with optional `id` and namespace, plus required `call_id`, `name`, and JSON-object string `arguments` |
 | `function_call_output` | completed result with required `call_id` and optional matching name/namespace assertion; `output` may be a string or a non-empty array of `input_text`/`input_image` parts |
+| `custom_tool_call` | completed assistant call of a [custom tool](#custom-tools) with optional `id` and namespace, plus required `call_id`, `name`, and string `input` |
+| `custom_tool_call_output` | as `function_call_output`, for a custom tool's call |
 
 Contiguous assistant-owned Items form one assistant history turn in the representable order
-`reasoning` -> assistant message content -> `function_call`. Multiple message Items append their
-content parts, multiple calls retain declaration order, and a reasoning-only turn is retained. A
-user, system, developer, or `function_call_output` Item ends the group; an order that would require
+`reasoning` -> assistant message content -> `function_call`/`custom_tool_call`. Multiple message
+Items append their content parts, multiple calls retain declaration order, and a reasoning-only turn
+is retained. A user, system, developer, `function_call_output`, or `custom_tool_call_output` Item
+ends the group; an order that would require
 rearranging assistant content fails with `invalid_assistant_history`. Results are validated by
 `call_id` and reordered to call declaration order before prompt rendering; unknown, duplicate, or
 unrepresentable partial result sets fail with `invalid_tool_history`. Canonical input Items retain
@@ -1000,8 +1003,44 @@ NInfer renders these definitions in the Qwen prompt and parses model output into
 `call_id` (`call_...`). The client executes the function and sends a `function_call_output` Item in
 a later request. Selection and strict argument enforcement follow the common tool contract above.
 
-Hosted tools, remote MCP tools, custom free-form tools, deferred loading, output schemas, and
-caller restrictions that exclude direct invocation remain unsupported.
+### Custom tools
+
+Free-form `custom` tools take raw text instead of JSON arguments. Codex declares `apply_patch` this
+way:
+
+```json
+{
+  "type": "custom",
+  "name": "apply_patch",
+  "description": "Use the `apply_patch` tool to edit files.",
+  "format": {"type": "grammar", "syntax": "lark", "definition": "start: begin_patch hunk+ end_patch\n..."}
+}
+```
+
+The model sees a strict function under the tool's own name with one required string parameter,
+`input`; the function keeps the tool's description, and the parameter's description says the input
+is passed exactly as written and, for a `grammar` format, includes its `syntax` and `definition`.
+The declared format is **advisory**: it is shown to the model, but neither a lark nor a regex
+grammar is enforced on the generated text. What is enforced is the strict lowering: tool framing is
+constrained, `input` is the call's only and required argument, and its text is returned byte for
+byte (leading spaces, blank lines and all), except that it cannot contain a line break directly
+followed by `</parameter>`, which is the Qwen tool format's value delimiter. Like any strict tool,
+a request declaring a custom tool is constrained even with `tool_constraints:"auto"`, so it cannot
+use custom `stop` strings.
+
+A generated call returns as a `custom_tool_call` Item (`ctc_...`) with a `call_id` (`call_...`),
+`name` (and `namespace` when declared in one) and the raw `input`. Streaming emits
+`response.output_item.added` (with empty `input`), one `response.custom_tool_call_input.delta`
+carrying the input, `response.custom_tool_call_input.done` with the complete input, then
+`response.output_item.done`; as for function calls, these events are sent once generation finishes.
+The client returns its result as a `custom_tool_call_output` Item. Custom tools may be named by
+`tool_choice: {"type":"custom","name":...}` and listed as `custom` entries in `allowed_tools`.
+Referring to a custom tool as a function, or the reverse, fails (`duplicate_tool_name` in `tools`,
+`invalid_tool_choice` in `tool_choice`, `invalid_tool_history` in `input`). Custom tools are
+accepted only on the Responses endpoint; Chat Completions still rejects them.
+
+Hosted tools, remote MCP tools, deferred loading, output schemas, and caller restrictions that
+exclude direct invocation remain unsupported.
 
 ### Response object and usage
 
@@ -1010,7 +1049,7 @@ A terminal wire response has `object: "response"`, one of `completed`, `incomple
 
 - a `reasoning` Item containing raw `reasoning_text` and an empty summary;
 - an assistant `message` containing an `output_text` part;
-- one or more `function_call` Items.
+- one or more `function_call` or [`custom_tool_call`](#custom-tools) Items.
 
 Ordinary model/string stops produce `completed`. Output-token or context-capacity exhaustion
 produces `incomplete` with `incomplete_details.reason: "max_output_tokens"`. Errors accepted after
@@ -1055,7 +1094,8 @@ The normal lifecycle is:
 4. matching `*.done`, `response.content_part.done`, and `response.output_item.done` events;
 5. exactly one `response.completed`, `response.incomplete`, or `response.failed` terminal event.
 
-Function arguments use `response.function_call_arguments.delta` and `.done`. IDs, output indices,
+Function arguments use `response.function_call_arguments.delta` and `.done`; a custom tool's input
+uses `response.custom_tool_call_input.delta` and `.done`. IDs, output indices,
 and content indices remain stable, and concatenated deltas equal the terminal Item. Responses SSE
 does not emit the Chat Completions `[DONE]` sentinel. With tools enabled, ordinary answer text still
 streams immediately; only an ambiguous `<tool_call>` suffix or the structured tool region is held.
@@ -1103,8 +1143,8 @@ stored.
 ### Responses input token count
 
 `POST /v1/responses/input_tokens` uses the same prompt path as Create and does not run generation.
-It accepts `model`, `input`, `instructions`, `previous_response_id`, reasoning, function tools and
-tool choice, supported text/truncation values, and the `preserve_thinking` extension. Parent lookup,
+It accepts `model`, `input`, `instructions`, `previous_response_id`, reasoning, function and custom
+tools and tool choice, supported text/truncation values, and the `preserve_thinking` extension. Parent lookup,
 call-ID normalization, template rendering, and media expansion are therefore identical to the
 corresponding Create request:
 
@@ -1120,7 +1160,7 @@ curl http://127.0.0.1:8080/v1/responses/input_tokens \
 
 Unsupported Create fields include Conversations, prompt templates, context management, hosted
 moderation, non-empty `include`, background execution, compaction,
-files/audio, and OpenAI-hosted/MCP/custom tools. These are compatibility boundaries, not silently
+files/audio, and OpenAI-hosted/MCP tools. These are compatibility boundaries, not silently
 accepted placeholders.
 
 ## Anthropic Messages
