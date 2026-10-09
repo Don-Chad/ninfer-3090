@@ -51,9 +51,6 @@ cgroup_remaining_bytes(const std::filesystem::path& cgroup_root, std::string_vie
 // (`host_cache_reserve_bytes` plus `environment.extra_reserve_bytes`), `host_cache_max_bytes`, and
 // `host_cache_percent` of `environment.total_host_bytes`.
 //
-// Where pinned host memory is charged against the GPU (Windows/WDDM) the Program clamps the
-// capacity again against the device memory left when it pins it; that clamp is not applied here.
-//
 // `requested` must carry `auto_host_cache` and no explicit `host_capacity_bytes`.
 [[nodiscard]] std::size_t resolve_host_capacity_bytes(const ContextCacheOptions& requested,
                                                       std::uint64_t available_host_bytes,

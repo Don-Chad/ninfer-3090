@@ -80,7 +80,7 @@ profiles read more:
 
 | profile | also reads |
 |---|---|
-| `run.bat qwen38-27b` | `NINFER_CONTEXT`, `NINFER_CONCURRENCY`, `NINFER_KV_DTYPE`, `NINFER_SPEC` (`dflash2`, `mtp`, `none`), `NINFER_DRAFT_TOKENS`, `NINFER_PREFILL_CHUNK`, `NINFER_VISION`, `NINFER_VISION_RESIDENCY`, `NINFER_HOST_STATE_SLOTS`, `NINFER_FALLBACK` (`off` turns the automatic step-down off) |
+| `run.bat qwen38-27b` | `NINFER_CONTEXT`, `NINFER_CONCURRENCY`, `NINFER_KV_DTYPE`, `NINFER_SPEC` (`dflash2`, `mtp`, `none`), `NINFER_DRAFT_TOKENS`, `NINFER_PREFILL_CHUNK`, `NINFER_VISION`, `NINFER_VISION_RESIDENCY`, `NINFER_HOST_CONTEXT_MIB` (pinned host RAM for the context cache, default 8192), `NINFER_FALLBACK` (`off` turns the automatic step-down off) |
 | `run.bat qwen36-35b-a3b` | the same, except `NINFER_SPEC` is `mtp` or `none` |
 | `run.bat qwen38-27b int8`, `run.bat qwen38-27b c8` | nothing further; every serving flag is fixed |
 | `download-model.bat <model>` | `NINFER_MODEL_DIR` |
@@ -92,10 +92,10 @@ profiles read more:
 
 **The default profile handles this for you.** If `run.bat` is refused at startup for lack of GPU
 memory, it steps down by itself -- an eighth of the context at a time, up to five times, and from
-the second step with a 2048 prefill chunk and fewer host state slots -- says what it did, and starts. On a desktop that was
+the second step with a 2048 prefill chunk and a smaller Host context budget -- says what it did, and starts. On a desktop that was
 holding 2.8 GiB of the card, `run.bat qwen38-27b` stepped down to 81,920 tokens and
 served a request, at about 12 seconds per refused attempt. It only does this for the defaults: a
-`NINFER_CONTEXT`, `NINFER_PREFILL_CHUNK` or `NINFER_HOST_STATE_SLOTS` you set is honoured as given, and
+`NINFER_CONTEXT`, `NINFER_PREFILL_CHUNK` or `NINFER_HOST_CONTEXT_MIB` you set is honoured as given, and
 `NINFER_FALLBACK=off` turns it off.
 
 The rest of this section is for those cases. The message names the numbers. A 24 GB card running a
@@ -113,6 +113,11 @@ rungs are listed in the `run.bat` header, measured on this card — for
 163840, then 131072, then 98304. Speculation is the next lever (`NINFER_SPEC=none`), worth about
 992 MiB on the 35B-A3B at the cost of decode speed.
 Drop vision last: in overlay residency it costs almost nothing resident.
+
+The default profiles pin 8 GiB of host RAM for the context cache (`--host-context-mib 8192`). That
+is host memory, not GPU memory, and since this release Windows really pins all of it: earlier
+releases clamped it against free VRAM and pinned only about 4.6 GiB. On a machine short of RAM, set
+`NINFER_HOST_CONTEXT_MIB` lower (`0` keeps the whole cache on the card).
 
 To size a profile before running it, open
 [docs/config-calculator.html](https://github.com/ashalliants/ninfer-3090/blob/master/docs/config-calculator.html)

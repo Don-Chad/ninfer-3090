@@ -80,7 +80,7 @@ overriding the artifact's built-in template) work for every profile.
 
 | profile | also reads |
 |---|---|
-| `run.sh <model>` (`tuned`) | `NINFER_CONTEXT`, `NINFER_CONCURRENCY`, `NINFER_KV_CAPACITY`, `NINFER_KV_DTYPE`, `NINFER_SPEC` (27B: `dflash2`, `mtp`, `none`; 35B: `mtp`, `none`), `NINFER_VISION`, `NINFER_VISION_RESIDENCY`, `NINFER_DRAFT_TOKENS`, `NINFER_PREFILL_CHUNK`, `NINFER_HOST_STATE_SLOTS`, `NINFER_FALLBACK` (`off` turns the automatic step-down off) |
+| `run.sh <model>` (`tuned`) | `NINFER_CONTEXT`, `NINFER_CONCURRENCY`, `NINFER_KV_CAPACITY`, `NINFER_KV_DTYPE`, `NINFER_SPEC` (27B: `dflash2`, `mtp`, `none`; 35B: `mtp`, `none`), `NINFER_VISION`, `NINFER_VISION_RESIDENCY`, `NINFER_DRAFT_TOKENS`, `NINFER_PREFILL_CHUNK`, `NINFER_HOST_CONTEXT_MIB` (pinned host RAM for the context cache, default 8192), `NINFER_FALLBACK` (`off` turns the automatic step-down off) |
 | `run.sh qwen38-27b int8`, `run.sh qwen38-27b c8` | nothing further; every serving flag is fixed |
 | `download-model.sh <model>` | `NINFER_MODEL_DIR`, `NINFER_SKIP_SHA256` |
 
@@ -91,9 +91,9 @@ overriding the artifact's built-in template) work for every profile.
 
 **The default profile handles this for you.** If `run.sh` is refused at startup for lack of GPU
 memory (a desktop, or another job, is holding VRAM), it steps down by itself -- an eighth of the
-context at a time, up to five times, and from the second step with a 2048 prefill chunk and fewer host state slots -- says what
+context at a time, up to five times, and from the second step with a 2048 prefill chunk and a smaller Host context budget -- says what
 it did, and starts. It only does this for the defaults: a `NINFER_CONTEXT`, `NINFER_PREFILL_CHUNK`,
-`NINFER_HOST_STATE_SLOTS` or `NINFER_KV_CAPACITY` you set is honoured as given, and
+`NINFER_HOST_CONTEXT_MIB` or `NINFER_KV_CAPACITY` you set is honoured as given, and
 `NINFER_FALLBACK=off` turns it off.
 
 For those cases the message names the numbers. Drop a context rung first —
@@ -103,10 +103,10 @@ takes an eighth off each rung, so begin lower only if it keeps refusing). Specul
 residency it costs almost nothing resident, and an `evictable pool window exceeds the evictable
 tail` message means the reservation is already tight rather than that the context is too large.
 
-The pinned Host context budget (`--host-context-mib`, by default 8 GiB plus eight model state
-images) behaves differently here than on Windows: on Linux it really does pin that much host RAM. On
-Windows/WDDM a pinned host allocation is charged against the card, so the runtime clamps it hard.
-Same flag, different platform behaviour, by design.
+The pinned Host context budget (`--host-context-mib`; the default profiles pass 8192, and without
+the flag the server uses 8 GiB plus eight model state images) is host RAM, pinned in full at startup,
+and holds retained conversation state, KV pages and pause snapshots. Lower it with
+`NINFER_HOST_CONTEXT_MIB` on a machine short of RAM.
 
 On a machine that only serves this process, pass `--auto-host-cache` to ninfer-serve instead of
 `--host-context-mib`: it sizes the budget from the RAM that is free after the model loads (or from

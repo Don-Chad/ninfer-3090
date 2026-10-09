@@ -235,8 +235,7 @@ ConstructedModel construct_model(EngineOptions& options, DeviceContext& device) 
     if (options.context_cache.auto_host_cache) {
         // Sized here, after the weights are loaded and pinned, from the host memory still free;
         // planning then treats it exactly like an explicit capacity. Host capacity does not enter
-        // the device plan. Where pinned host memory is charged against the GPU (Windows/WDDM) the
-        // Program clamps the capacity again when it pins it.
+        // the device plan.
         const std::optional<std::uint64_t> available = available_host_memory_bytes();
         if (!available) {
             throw std::runtime_error(
@@ -294,8 +293,7 @@ ConstructedModel construct_model(EngineOptions& options, DeviceContext& device) 
     instance->install_external_checkpoints();
     device.synchronize();
     program.complete();
-    // What the Program actually pinned, which can be below the planned capacity where pinned host
-    // memory is clamped against the GPU (Windows/WDDM).
+    // What the Program actually pinned.
     options.context_cache.host_capacity_bytes =
         instance->program->physical_usage().capacity.host_bytes;
     instance->kv_capacity_resolution.available_after_startup_bytes = current_free_device_bytes();

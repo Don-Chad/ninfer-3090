@@ -159,10 +159,10 @@ recorded="$(record override NINFER_CONTEXT=65536 NINFER_PREFILL_CHUNK=1024 NINFE
 expect_flags '27B overrides' "$recorded" '--max-context 65536' '--prefill-chunk 1024' '--max-concurrency 2'
 refuse_flag '27B overrides' "$recorded" '--vision'
 
-# The state-slot count is the override a busy Windows desktop needs (pinned host memory is charged
-# against the card there), and its default must not move.
-expect_flags '27B default slots' "$(record slots32 -- qwen38-27b)" '--host-state-slots 32'
-expect_flags '27B slots override' "$(record slots8 NINFER_HOST_STATE_SLOTS=8 -- qwen38-27b)" '--host-state-slots 8'
+# The Host context budget is the pinned-RAM override a box short on memory needs, and its default
+# must not move.
+expect_flags '27B default host context' "$(record host8192 -- qwen38-27b)" '--host-context-mib 8192'
+expect_flags '27B host context override' "$(record host1024 NINFER_HOST_CONTEXT_MIB=1024 -- qwen38-27b)" '--host-context-mib 1024'
 
 # NINFER_CHAT_TEMPLATE forwards straight to --chat-template, and is absent when unset.
 expect_flags '27B chat template override' \
@@ -188,8 +188,8 @@ refuse_flag '27B int8' "$recorded" '--vision'
 recorded="$(record c8 -- qwen38-27b c8)"
 expect_flags '27B c8' "$recorded" '--max-concurrency 8' '--max-context 8192' '--kv-capacity 16384' \
   '--kv-dtype int8' '--spec mtp --draft-tokens 3 --lm-head-draft' \
-  '--max-private-continuations 16' '--device-state-slots 8' '--host-state-slots 16'
-refuse_flag '27B c8' "$recorded" '--auto-prefix-grid'
+  '--device-state-slots 8' '--host-context-mib 8192'
+refuse_flag '27B c8' "$recorded" '--vision'
 
 # Qwen3.6-35B-A3B `tuned`: the cuBLAS prefill route at chunk 4096 (it engages on the 35B's dense
 # projections from chunk 2048), no Q4 embedding, and its own draft head flags.
@@ -197,7 +197,7 @@ recorded="$(record 35b -- qwen36-35b-a3b)"
 expect_flags '35B default' "$recorded" \
   '--spec mtp --draft-tokens 3 --lm-head-draft --mtp-experts-q4' \
   '--kv-dtype rk4v4' '--gdn-state-fp16' '--prefill-cublas --prefill-chunk 4096' \
-  '--vision --vision-residency overlay' '--max-context 262144' '--max-concurrency 3' '--auto-prefix-grid'
+  '--vision --vision-residency overlay' '--max-context 262144' '--max-concurrency 3' '--host-context-mib 8192'
 refuse_flag '35B default' "$recorded" '--embedding-q4'
 recorded="$(record 35bnone NINFER_SPEC=none -- qwen36-35b-a3b)"
 refuse_flag '35B NINFER_SPEC=none' "$recorded" '--spec'
@@ -246,7 +246,7 @@ expect_eq() { # expect_eq <label> <got> <want>
 attempts 100000
 expect_eq 'contexts stepped' "$(field --max-context)" '262144 229376 196608 163840 131072 98304 '
 expect_eq 'chunk drops to 2048' "$(field --prefill-chunk)" '4096 4096 2048 2048 2048 2048 '
-expect_eq 'slots halve' "$(field --host-state-slots)" '32 32 16 16 8 8 '
+expect_eq 'host context halves' "$(field --host-context-mib)" '8192 8192 4096 4096 2048 2048 '
 expect_eq 'it started, so it exits 0' "$ladder_status" '0'
 
 attempts 1000
@@ -256,8 +256,8 @@ expect_eq 'never fits: reports the failure' "$ladder_status" '1'
 # Values the caller chose are theirs, and a switch turns the ladder off: one attempt, loud failure.
 attempts 1000 NINFER_CONTEXT=131072
 expect_eq 'explicit context is not second-guessed' "$(field --max-context)" '131072 '
-attempts 1000 NINFER_HOST_STATE_SLOTS=32
-expect_eq 'explicit slots are not second-guessed' "$(field --max-context)" '262144 '
+attempts 1000 NINFER_HOST_CONTEXT_MIB=8192
+expect_eq 'explicit host context is not second-guessed' "$(field --max-context)" '262144 '
 attempts 1000 NINFER_FALLBACK=off
 expect_eq 'NINFER_FALLBACK=off' "$(field --max-context)" '262144 '
 
