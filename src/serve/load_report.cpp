@@ -67,7 +67,19 @@ std::string make_load_report(const LoadCapacity& capacity, const LoadSample& sam
                           {"reused_prompt_tokens", stats.reused_prompt_tokens},
                           {"decode_rounds", stats.decode_rounds},
                           {"decode_row_rounds", stats.decode_row_rounds}}},
+        // Engine host time and the last request's token pace: a supervisor's "healthy but slow"
+        // signal, since /health stays 200 in that state.
+        {"host", Json{{"active_seconds", static_cast<double>(stats.host_work.active_ns()) / 1e9},
+                      {"device_wait_seconds",
+                       static_cast<double>(stats.host_work.device_wait_ns) / 1e9}}},
+        {"last_request", nullptr},
     };
+    if (const auto& pace = sample.last_generation) {
+        report["last_request"] = Json{{"completion_tokens", pace->completion_tokens},
+                                      {"generation_wall_seconds", pace->generation_wall_seconds},
+                                      {"inter_token_seconds", pace->inter_token_seconds()},
+                                      {"decode_host_seconds", pace->decode_host_seconds}};
+    }
     return report.dump();
 }
 

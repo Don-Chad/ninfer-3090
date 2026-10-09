@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -57,6 +58,9 @@ int main() {
     sample.stats.reused_prompt_tokens          = 5555;
     sample.stats.decode_rounds                 = 42;
     sample.stats.decode_row_rounds             = 160;
+    sample.stats.host_work.program_submit_ns   = 1'000'000'000;
+    sample.stats.host_work.engine_boundary_ns  = 500'000'000;
+    sample.stats.host_work.device_wait_ns      = 250'000'000;
 
     const Json report = Json::parse(make_load_report(capacity, sample));
     failures += check(report.at("object") == "ninfer.load", "object tag");
@@ -102,6 +106,20 @@ int main() {
                   counters.at("reused_prompt_tokens") == 5555 &&
                   counters.at("decode_rounds") == 42 && counters.at("decode_row_rounds") == 160,
               "decode counters");
+
+    failures += check(report.at("host").at("active_seconds") == 1.5 &&
+                          report.at("host").at("device_wait_seconds") == 0.25,
+                      "host time splits active work from device wait");
+    failures += check(report.at("last_request").is_null(),
+                      "last_request is null before any request finished");
+    sample.last_generation = GenerationPace{24, 6.9, 6.3};
+    const Json paced       = Json::parse(make_load_report(capacity, sample));
+    const Json& last       = paced.at("last_request");
+    failures += check(last.at("completion_tokens") == 24 &&
+                          last.at("generation_wall_seconds") == 6.9 &&
+                          std::abs(last.at("inter_token_seconds").get<double>() - 0.3) < 1e-9 &&
+                          last.at("decode_host_seconds") == 6.3,
+                      "last_request reports the token pace");
 
     // A capacity without resolved pages (never expected after attach) must not divide by zero.
     LoadCapacity unresolved      = capacity;

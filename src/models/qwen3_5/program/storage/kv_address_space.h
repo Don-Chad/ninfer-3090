@@ -741,17 +741,29 @@ public:
         }
         const std::uint32_t target = pages_for_tokens(frontier);
         if (frontier == address.committed_frontier && target == address.page_count) { return; }
+        // Rejections name the frontier and the page's state, so the failing condition is visible.
+        const auto context = [&] {
+            return " | frontier " + std::to_string(frontier) + " committed " +
+                   std::to_string(address.committed_frontier) + " pages " +
+                   std::to_string(address.page_count) + " target " + std::to_string(target);
+        };
         for (std::uint32_t page = target; page < address.page_count; ++page) {
             if (!pages_->can_dematerialize(membership(address, page))) {
-                throw std::logic_error("KV truncate would partially release a protected page");
+                throw std::logic_error("KV truncate would partially release a protected page" +
+                                       context() + " | page " + std::to_string(page) + " " +
+                                       pages_->describe(membership(address, page)));
             }
         }
+        // A tail already at the target coverage is not mutated, so it needs no exclusivity: it may
+        // be shared, or still carry a Host replica from a Host-tier restore.
         if (target != 0) {
             const std::uint32_t columns =
                 frontier - (target - 1U) * static_cast<std::uint32_t>(kPagedKVPageSize);
             if (columns != pages_->committed_columns(membership(address, target - 1U)) &&
                 !pages_->can_destructive_truncate(membership(address, target - 1U), columns)) {
-                throw std::logic_error("KV truncate would overwrite protected coverage");
+                throw std::logic_error("KV truncate would overwrite protected coverage" +
+                                       context() + " | tail columns " + std::to_string(columns) +
+                                       " " + pages_->describe(membership(address, target - 1U)));
             }
         }
         while (address.page_count > target) {

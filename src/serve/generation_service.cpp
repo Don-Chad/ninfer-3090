@@ -390,6 +390,7 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
 
 GenerationService::GenerationService(
     ServeOptions options, StartupObserver startup_observer,
+    std::function<void(const ninfer::ContextStoreWriteEvent&)> store_listener,
     std::function<void(const ninfer::EngineFaultEvent&)> fault_listener)
     : options_(std::move(options)) {
     // Inline ECC on GDDR6X GeForce cards reserves ~6.25% of VRAM for checksums and taxes
@@ -413,7 +414,8 @@ GenerationService::GenerationService(
     }
     ninfer::EngineOptions engine_options = make_engine_options(options_);
     engine_options.startup_observer      = std::move(startup_observer);
-    engine_options.fault_listener        = std::move(fault_listener);
+    engine_options.context_store.listener = std::move(store_listener);
+    engine_options.fault_listener         = std::move(fault_listener);
     engine_           = std::make_unique<ninfer::Engine>(std::move(engine_options));
     request_capacity_ = std::make_shared<RequestCapacity>(
         static_cast<std::size_t>(options_.max_concurrency) + options_.max_pending_requests);

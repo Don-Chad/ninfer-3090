@@ -206,6 +206,13 @@ int main() {
     failures += check(dflash.speculative.proposal_head == ninfer::ProposalHead::Optimized,
                       "--lm-head-draft did not select the optimized proposal head");
 
+    for (const char* backend : {"mtp", "dflash", "dflash2"}) {
+        const ServeOptions implied =
+            parse({"ninfer-serve", "model.ninfer", "--spec", backend, "--draft-tokens", "3"});
+        failures += check(implied.speculative.proposal_head == ninfer::ProposalHead::Optimized,
+                          "--spec did not imply the optimized proposal head");
+    }
+
     for (const auto k : {1U, 2U, 7U, 15U}) {
         const auto options = parse({"ninfer-serve", "model.ninfer", "--spec", "dflash2",
                                     "--draft-tokens", std::to_string(k), "--lm-head-draft"});

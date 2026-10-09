@@ -410,6 +410,19 @@ void OperationalLog::write(OperationalRecord record) const {
     }
 }
 
+void OperationalLog::context_store_write(const ninfer::ContextStoreWriteEvent& event) const {
+    std::ostringstream out;
+    out << "context store write | " << event.id << " | " << event.tokens << " tokens";
+    if (!event.error.empty()) {
+        out << " | failed: " << event.error;
+        write({.severity = OperationalSeverity::Warning, .message = out.str()});
+        return;
+    }
+    out << " | " << product::format_pretty_bytes(event.bytes) << " | " << std::fixed
+        << std::setprecision(2) << event.seconds << " s";
+    write({.severity = OperationalSeverity::Info, .message = out.str()});
+}
+
 void OperationalLog::request_start(const RequestLogContext& context) const {
     write(render_request_start(context));
 }

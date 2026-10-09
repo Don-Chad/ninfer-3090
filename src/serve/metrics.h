@@ -1,11 +1,13 @@
 #pragma once
 
+#include "serve/generation_pace.h"
 #include "serve/generation_service.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace ninfer::serve {
@@ -29,6 +31,9 @@ public:
     void rejected();
     void failed(bool cancelled);
     void response_failed();
+    // The most recent finished request with at least two tokens, which is the only kind that has a
+    // token interval to report. Empty until one finishes.
+    [[nodiscard]] std::optional<GenerationPace> last_generation_pace() const;
     // `admitted_requests` counts requests from admission to response release, so a request is
     // visible while it waits for a lane.
     [[nodiscard]] std::string render(const RuntimeStats& runtime, bool ready,
@@ -55,6 +60,10 @@ private:
         double constraint_matcher_seconds     = 0;
         std::uint64_t constraint_positions    = 0;
         std::uint64_t constraint_upload_bytes = 0;
+        // Output-token gaps of finished requests and their first-to-last-token wall time.
+        std::uint64_t token_intervals        = 0;
+        double token_interval_seconds        = 0;
+        std::optional<GenerationPace> last_pace;
         Histogram ttft;
         Histogram duration;
         Histogram queue;

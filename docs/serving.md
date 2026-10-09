@@ -32,8 +32,7 @@ snapshots, including in-flight destinations; `--host-context-mib` sets an explic
 
 Other artifacts use the same command shape with their own path. For 35B-A3B DFlash, replace the MTP
 selection with `--spec dflash --draft-tokens 7 --lm-head-draft`. Qwen3.8-27B
-artifacts with DFlash2 companion weights also support `--spec dflash2 --draft-tokens 7`, with
-`--lm-head-draft` optional. DFlash2 accepts draft counts 1..15 and supports the same sampling,
+artifacts with DFlash2 companion weights also support `--spec dflash2 --draft-tokens 7`. DFlash2 accepts draft counts 1..15 and supports the same sampling,
 concurrency, prefix reuse, and image/video request surfaces. It may remain combined with
 `--vision`.
 
@@ -45,7 +44,7 @@ Vision is disabled by default: its weights and Vision-specific unified-workspace
 allocated, and media requests and token-count requests fail with HTTP 400 `vision_disabled`. Add
 `--vision` when the server must accept image or video input. Speculative residency is likewise
 frozen by `--spec mtp|dflash|dflash2` and `--draft-tokens`; omitting `--spec` loads no speculative backend.
-`--lm-head-draft` additionally loads the optimized proposal head. DFlash on 35B-A3B and DFlash2 on Qwen3.8-27B can be combined
+Any `--spec` also loads the optimized proposal head (`--lm-head-draft` is implied). DFlash on 35B-A3B and DFlash2 on Qwen3.8-27B can be combined
 with `--vision`; each accelerates generated-text decode after multimodal prefill, while Vision encode
 and prefill remain outside speculative acceleration. A later request cannot enable a capability
 omitted at startup. The artifact need only contain the Text backbone and the optional components
@@ -239,7 +238,10 @@ curl http://127.0.0.1:8080/v1/load -H 'Authorization: Bearer local-secret'
                 "host_state_slots": 7, "host_kv_bytes": 2147483648},
   "counters": {"computed_prefill_tokens": 48200113, "committed_decode_tokens": 6120452,
                "reused_prompt_tokens": 30911840, "decode_rounds": 861307,
-               "decode_row_rounds": 2448180}
+               "decode_row_rounds": 2448180},
+  "host": {"active_seconds": 3120.4, "device_wait_seconds": 41872.9},
+  "last_request": {"completion_tokens": 24, "generation_wall_seconds": 0.17,
+                   "inter_token_seconds": 0.0074, "decode_host_seconds": 0.012}
 }
 ```
 
@@ -269,6 +271,14 @@ curl http://127.0.0.1:8080/v1/load -H 'Authorization: Bearer local-secret'
   several tokens per row. `decode_row_rounds` is the sum of decode batch sizes over `decode_rounds`.
 - Gauges and counters come from the snapshot the Engine publishes at execution boundaries, so they
   can trail the instant of the poll by up to one boundary.
+- `host` is cumulative Engine host-active seconds since startup (device wait excluded) and,
+  separately, seconds the host thread waited on the device. Take two polls and divide the host delta
+  by the interval to see how host-bound the Engine is.
+- `last_request` is the pace of the last finished request that produced at least two tokens, or
+  `null` before the first. `inter_token_seconds` is first-to-last token wall time over the token
+  gaps. A healthy Engine stays in milliseconds; an Engine that stalls for seconds right after every
+  first token reports whole seconds even for a short answer while `/health` stays 200, so a
+  supervisor can restart on, say, `inter_token_seconds > 0.25` for several consecutive polls.
 
 ### Context store
 
@@ -428,6 +438,9 @@ server restarts.
 | `ninfer_context_transfer_bytes_total{resource,direction}`, `ninfer_context_transfer_seconds_total` | actual `state`/`main_kv`/`backend_kv` payload transfers, `d2h`, `h2d` or `d2d`, and their time |
 | `ninfer_context_pressure_spill_pages_total` | KV pages moved from Device to Host to relieve pressure |
 | `ninfer_host_work_seconds_total{phase}`, `ninfer_device_wait_seconds_total` | instrumented worker wall time; device wait is not CUDA kernel time |
+| `ninfer_engine_host_seconds_total` | the `host_work` phases summed: Engine host-active seconds, device wait excluded. Its rate against token throughput exposes a host-bound Engine |
+| `ninfer_token_intervals_total`, `ninfer_token_interval_seconds_total` | gaps between output tokens of finished requests and their first-to-last-token wall time; the ratio of their rates is the mean inter-token time |
+| `ninfer_last_request_inter_token_seconds`, `ninfer_last_request_decode_host_seconds` | gauges: mean inter-token time and decode host time of the last finished request with two or more tokens (absent before the first). A healthy Engine stays in milliseconds; one that stalls after every first token reports seconds while `/health` stays 200, which a supervisor can restart on |
 | `ninfer_constraint_requests_total{outcome}`, `ninfer_constraint_cache_total{result}` | settled constrained requests by completion state, and compilation-cache access |
 | `ninfer_constraint_{prepare,mask,matcher}_seconds_total`, `ninfer_constraint_mask_{positions,upload_bytes}_total` | [constraint](#output-constraints) work aggregated at request settlement, including truncated/cancelled results |
 | `ninfer_constraint_draft_wait_seconds_total` | live draft-ready wait counted once per batch; a subset of device wait |
@@ -1314,7 +1327,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--kv-dtype bf16\|int8\|fp8\|rk8v4\|rk4v4\|nvfp4\|k8v4` | KV-cache storage. `rk8v4` is opt-in RotorQuant and `rk4v4` opt-in Lloyd-Max 4-bit keys; all seven are accepted on this fork's sm_86/sm_89 targets | `bf16` |
 | `--spec mtp\|dflash\|dflash2` | speculative backend | off |
 | `--draft-tokens N` | `1..15` for MTP, DFlash and DFlash2 | unset |
-| `--lm-head-draft` | optimized proposal head | off |
+| `--lm-head-draft` | optimized proposal head; implied by `--spec`, accepted for compatibility | on with `--spec` |
 | `--lookup-ngram N` | context-lookup drafting alongside `--spec`: the last `N` tokens are matched against the sequence so far and what followed is proposed; exact, since verification rejects a wrong guess | `0` (off) |
 | `--prefill-cublas` | hand wide prefill GEMMs to cuBLAS: a large prefill speedup for a small perplexity cost, and it wants a larger `--prefill-chunk` to pay (see [performance](performance.md)) | off |
 | `--no-prefill-cublas-projections` | with `--prefill-cublas`, keep the attention and GDN input projections off that route | projections on |
