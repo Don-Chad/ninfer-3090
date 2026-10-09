@@ -751,6 +751,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.decode_rounds_per_prefill > 4096) {
         throw std::invalid_argument("--decode-rounds-per-prefill must be in [0,4096]");
     }
+    product::apply_speculative_defaults(options.speculative);
     product::validate_speculative_cli_options(options.speculative);
     if (options.vision_residency == VisionResidency::Overlay && !options.enable_vision) {
         throw std::invalid_argument("--vision-residency overlay requires --vision");
