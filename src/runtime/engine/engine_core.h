@@ -991,6 +991,7 @@ private:
     struct HydrationAttempt {
         bool restored = false;
         std::uint32_t expected_frontier = 0; // the stored checkpoint the request should resume from
+        std::string stored_id;               // the stored image, touched once the plan uses it
         Clock::time_point started;
     };
 
@@ -1050,7 +1051,8 @@ private:
             bool restored = false;
             // Each refusal for room gives up one more retained session; a bounded few, so a
             // request never empties the cache for one image.
-            for (std::uint32_t tries = 0; tries < 8 && !restored; ++tries) {
+            constexpr std::uint32_t kMaximumRestoreTries = 8;
+            for (std::uint32_t tries = 0; tries < kMaximumRestoreTries && !restored; ++tries) {
                 std::optional<std::uint32_t> slot = first_vacant_slot_locked();
                 if (!slot) {
                     if (!evict_least_recently_used_session()) { break; }
@@ -1067,7 +1069,9 @@ private:
                         std::string_view::npos) {
                         break;
                     }
-                    if (!evict_least_recently_used_session()) { break; }
+                    if (tries + 1 == kMaximumRestoreTries || !evict_least_recently_used_session()) {
+                        break; // the last try cannot retry, so it gives up no further session
+                    }
                 }
             }
             if (!restored) {
@@ -1075,9 +1079,9 @@ private:
                 charge();
                 return attempt;
             }
-            store_->touch(best_id); // it was used: restoring does not count against its age
             attempt.restored          = true;
             attempt.expected_frontier = best_frontier;
+            attempt.stored_id         = std::move(best_id);
             return attempt; // the caller settles the counters once the request is planned again
         } catch (...) {
             store_hydration_failures_.fetch_add(1, std::memory_order_relaxed);
@@ -1099,6 +1103,10 @@ private:
         if (reuse_after >= attempt.expected_frontier && reuse_after > reuse_before) {
             store_hydrations_.fetch_add(1, std::memory_order_relaxed);
             store_hydrated_tokens_.fetch_add(reuse_after - reuse_before, std::memory_order_relaxed);
+            // The image was used: only now does reading it count against its age.
+            try {
+                store_->touch(attempt.stored_id);
+            } catch (...) {}
         } else {
             store_hydration_failures_.fetch_add(1, std::memory_order_relaxed);
         }

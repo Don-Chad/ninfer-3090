@@ -272,7 +272,8 @@ public:
         }
     }
 
-    // The deepest checkpoint anywhere in the cache (any tier, private or shared) whose shortlist
+    // The deepest checkpoint anywhere in the cache (any tier, private or shared, except a private
+    // source an active request holds, which admission cannot reuse) whose shortlist
     // key the request reproduces, whether or not planning would select it. The shortlist only
     // narrows candidates (Program verifies the tokens exactly), so this is an upper bound on what
     // the cache can offer: for a caller deciding whether reading something in from outside the
@@ -283,6 +284,8 @@ public:
         std::uint32_t best = 0;
         for (const PrefixIndexEntry& index : prefix_index_) {
             if (!valid_prefix_index_entry(index)) { continue; }
+            // Admission skips a private source another request is still using.
+            if (!index.shared && private_has_active_edge(index.slot)) { continue; }
             const std::optional<PrefixShortlistKey> incoming =
                 base.prefix_shortlist_key(index.key.frontier);
             if (incoming && *incoming == index.key) { best = std::max(best, index.key.frontier); }

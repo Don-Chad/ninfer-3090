@@ -1775,6 +1775,14 @@ int exercise_store_hydration(const char* artifact) {
     const fs::path directory = fs::temp_directory_path() / "ninfer-store-hydration-test";
     fs::remove_all(directory);
     fs::create_directories(directory);
+    // Declared before the Engine, so it removes the store only after the Engine has shut down.
+    struct DirectoryCleanup {
+        fs::path path;
+        ~DirectoryCleanup() {
+            std::error_code ignored;
+            fs::remove_all(path, ignored);
+        }
+    } const cleanup{directory};
 
     ninfer::RequestOptions request;
     request.execution.requested_output_tokens = 12;
