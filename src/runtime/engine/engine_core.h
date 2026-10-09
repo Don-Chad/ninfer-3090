@@ -851,6 +851,9 @@ private:
         if (store_sink_) {
             // The durable store takes every session about to be destroyed, bound to a slot file
             // or not, unless it already holds the session in its current state.
+            // Both resets first: a write that failed after being accepted, or an image the store
+            // has since removed, must not make this session look stored.
+            (void)forget_failed_store_writes();
             forget_removed_store_images();
             const auto view = resources_.catalog_slot(slot);
             if (slot < slot_persisted_.size() &&
