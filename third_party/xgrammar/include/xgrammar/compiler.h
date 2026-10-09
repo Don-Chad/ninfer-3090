@@ -11,6 +11,7 @@
 #include <xgrammar/tokenizer_info.h>
 
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -20,6 +21,8 @@
 #include "xgrammar/exception.h"
 
 namespace xgrammar {
+
+enum class CompilationCacheAccess { kHit, kBuilt, kWaited };
 
 /*!
  * \brief The compiled grammar of a GrammarMatcher. It contains the preprocessing results of the
@@ -84,6 +87,21 @@ class GrammarCompiler {
 
   /*! \brief Get the compiled grammar for pure JSON. */
   CompiledGrammar CompileBuiltinJSONGrammar();
+
+  // Build and compile on a cache miss; the caller's key describes the complete source and
+  // composition. The factory runs synchronously and is never retained by the cache.
+  CompiledGrammar CompileCachedGrammar(const std::string& key,
+                                       const std::function<Grammar()>& factory,
+                                       CompilationCacheAccess* access = nullptr);
+
+  /*!
+   * \brief Get the compiled grammar for a Lark grammar string.
+   * \param lark_string The Lark grammar. The root rule must be named "start".
+   * \param named_grammars Grammar objects or Lark sources that can be referenced with `@name`.
+   */
+  CompiledGrammar CompileLark(
+      const std::string& lark_string, const std::vector<NamedGrammar>& named_grammars = {}
+  );
 
   /*! \brief Get the compiled grammar for a grammar. */
   CompiledGrammar CompileGrammar(const Grammar& grammar);

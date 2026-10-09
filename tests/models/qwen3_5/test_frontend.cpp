@@ -2042,6 +2042,104 @@ int test_terminal_flush(const Frontend& frontend) {
     return failures;
 }
 
+int test_tools_and_json_output() {
+    const Frontend frontend = make_frontend(resources());
+    ninfer::PromptInput input;
+    input.options.enable_thinking = false;
+    input.messages.push_back({.role  = ninfer::ChatRole::User,
+                              .parts = {{.kind = ninfer::MessagePartKind::Text, .text = "x"}}});
+    input.options.tool_jsons.push_back(
+        R"({"type":"function","function":{"name":"record","strict":true,"parameters":{"type":"object","properties":{"x":{"type":"string","const":"ready"}},"required":["x"],"additionalProperties":false}}})");
+    auto prompt     = frontend.prepare(input);
+    const auto body = ninfer::OutputConstraint::json_schema(
+        R"({"type":"object","properties":{"text":{"const":"<tool_call>"}},"required":["text"],"additionalProperties":false})");
+    const std::string json = R"({"text":"<tool_call>"})";
+    const std::string call = "<tool_call>\n<function=record>\n<parameter=x>\nready\n</"
+                             "parameter>\n</function>\n</tool_call>";
+    ninfer::ToolChoice choice;
+    choice.constraints = ninfer::ToolConstraintMode::Automatic;
+    int failures       = 0;
+    for (const auto& text : {json, call}) {
+        auto session = frontend.make_output_session(prompt, {}, {}, {}, body, choice);
+        // A discarded alternative must not select the publication branch.
+        const auto alternative = fixture_tokenizer().encode(text == json ? call : json);
+        (void)session.preview_model(alternative, alternative.size() + 1,
+                                    ninfer::FinishReason::OutputLimit);
+        session.discard_preview();
+        failures += check(session.constraint_observation()->branch ==
+                              ninfer::ConstraintOutputBranch::Undecided,
+                          "discarded output selected a constraint branch");
+        const auto branch = text == json ? ninfer::ConstraintOutputBranch::Content
+                                         : ninfer::ConstraintOutputBranch::Tools;
+        std::string visible;
+        for (auto token : fixture_tokenizer().encode(text)) {
+            (void)session.preview_model(std::span(&token, 1), 1000,
+                                        ninfer::FinishReason::OutputLimit);
+            visible += channel_text(session.commit_preview(), ninfer::OutputChannel::Content);
+            failures += check(session.constraint_observation()->branch == branch,
+                              "committed incomplete output lost its branch");
+        }
+        auto complete = session.constraint_observation();
+        failures += check(complete && complete->complete && !complete->terminated &&
+                              complete->branch == branch,
+                          "combined output lost complete-before-EOS state");
+        const auto eos = frontend.default_stop_policy().token_ids.front();
+        (void)session.preview_model(std::span(&eos, 1), 1, ninfer::FinishReason::OutputLimit);
+        visible += channel_text(session.commit_preview(), ninfer::OutputChannel::Content);
+        const auto observed = session.constraint_observation();
+        const auto calls    = session.take_tool_calls();
+        failures +=
+            check(observed->terminated &&
+                      observed->branch == (text == json ? ninfer::ConstraintOutputBranch::Content
+                                                        : ninfer::ConstraintOutputBranch::Tools),
+                  "combined output published the discarded branch");
+        failures +=
+            check(text == json ? visible == json && calls.empty()
+                               : visible.empty() && calls.size() == 1 && calls[0].name == "record",
+                  "JSON tool marker was parsed or actual tool framing leaked");
+    }
+    auto thinking_input                    = input;
+    thinking_input.options.enable_thinking = true;
+    auto thinking       = frontend.make_output_session(frontend.prepare(thinking_input), {}, {},
+                                                       {.budget = 1}, body, choice);
+    const auto thought  = frontend.tokenize_text("x");
+    const auto boundary = thinking.preview_model(thought, 1000, ninfer::FinishReason::OutputLimit);
+    failures +=
+        check(boundary.continuation == ninfer::runtime::ContinuationAction::ApplyTargetControl,
+              "combined output lost the thinking budget");
+    (void)thinking.commit_preview();
+    failures += check(thinking.constraint_observation()->branch ==
+                              ninfer::ConstraintOutputBranch::Undecided &&
+                          !thinking.constraint_observation()->complete,
+                      "reasoning selected or completed the JSON/tool branch");
+    const auto control = thinking.pending_control_tokens();
+    (void)thinking.preview_control(control, 1000);
+    thinking.discard_preview();
+    (void)thinking.preview_control(control, 1000);
+    (void)thinking.commit_preview();
+    const auto answer = fixture_tokenizer().encode(json);
+    (void)thinking.preview_model(answer, answer.size(), ninfer::FinishReason::OutputLimit);
+    failures += check(
+        channel_text(thinking.commit_preview(), ninfer::OutputChannel::Content) == json &&
+            thinking.constraint_observation()->complete &&
+            thinking.constraint_observation()->branch == ninfer::ConstraintOutputBranch::Content,
+        "thinking control changed the combined output language");
+    input.options.continuation = ninfer::PromptContinuationMode::ContinueFinalAssistant;
+    input.messages.push_back(
+        {.role  = ninfer::ChatRole::Assistant,
+         .parts = {{.kind = ninfer::MessagePartKind::Text, .text = "{\"text\":\""}}});
+    auto continued    = frontend.prepare(input);
+    auto session      = frontend.make_output_session(continued, {}, {}, {}, body, choice);
+    const auto suffix = fixture_tokenizer().encode("<tool_call>\"}");
+    (void)session.preview_model(suffix, suffix.size(), ninfer::FinishReason::OutputLimit);
+    const auto visible = channel_text(session.commit_preview(), ninfer::OutputChannel::Content);
+    failures += check(visible == "<tool_call>\"}" && session.take_tool_calls().empty() &&
+                          session.constraint_observation()->complete &&
+                          !session.constraint_observation()->terminated,
+                      "combined JSON continuation changed literal marker or length completion");
+    return failures;
+}
+
 int test_structured_tool_output() {
     const Frontend frontend = make_frontend(resources());
 
@@ -2060,7 +2158,7 @@ int test_structured_tool_output() {
 
     const std::string generated =
         "Calling.  \n<tool_call>\n<function=TaskUpdate>\n<parameter=taskId>\n1\n"
-        "</parameter>\n<parameter=enabled>\n</parameter>\n<parameter=count>\nmany\n"
+        "</parameter>\n<parameter=enabled>\n\n</parameter>\n<parameter=count>\nmany\n"
         "</parameter>\n</function>\n</tool_call>";
     const std::vector<ninfer::TokenId> tokens = fixture_tokenizer().encode(generated);
     const auto decision = session.preview_model(tokens, static_cast<std::uint32_t>(tokens.size()),
@@ -2088,301 +2186,6 @@ int test_structured_tool_output() {
                               !arguments.contains("enabled") && arguments.at("count") == "many",
                           "frontend did not preserve normalized tool arguments");
     }
-    return failures;
-}
-
-// Structured output: the constraint's masks follow the committed output and each speculative
-// prefix, reasoning stays unconstrained until it closes, and the session refuses a token the
-// grammar forbids. The fixture tokenizer has one token per byte, so the oracle is the JSON syntax
-// itself.
-int test_structured_output(const Frontend& frontend) {
-    const auto byte = [](char value) { return fixture_byte_token(static_cast<std::uint8_t>(value)); };
-    const std::size_t words = (fixture_tokenizer().vocab_size() + 31U) / 32U;
-    const auto licensed = [&](const std::vector<std::uint32_t>& masks, std::size_t column,
-                              ninfer::TokenId token) {
-        return ((masks[column * words + static_cast<std::size_t>(token) / 32U] >>
-                 (static_cast<unsigned>(token) % 32U)) &
-                1U) != 0U;
-    };
-    const ninfer::OutputOptions schema_output{
-        .format = ninfer::OutputFormat{
-            .kind        = ninfer::OutputFormatKind::JsonSchema,
-            .json_schema = R"({"type":"object","properties":{"a":{"enum":["x","y"]}},)"
-                           R"("required":["a"],"additionalProperties":false})",
-            .strict      = true}};
-    int failures = 0;
-
-    auto prompt  = frontend.prepare_tokens({0});
-    auto session = frontend.make_output_session(prompt, {}, schema_output);
-    ninfer::runtime::TokenMaskSource* constraint = session.token_constraint();
-    failures += check(constraint != nullptr, "structured output session has no constraint");
-    failures += check(frontend.make_output_session(prompt, {}).token_constraint() == nullptr,
-                      "text output session has a constraint");
-    if (constraint == nullptr) { return failures; }
-
-    std::vector<std::uint32_t> masks(3 * words);
-    const std::array<ninfer::TokenId, 2> speculative{byte('{'), byte('Q')};
-    failures += check(constraint->fill_token_masks(speculative, 3, masks, words),
-                      "structured output masks did not restrict the vocabulary");
-    failures += check(licensed(masks, 0, byte('{')) && licensed(masks, 0, byte(' ')) &&
-                          !licensed(masks, 0, byte('Q')) && !licensed(masks, 0, byte('"')) &&
-                          !licensed(masks, 0, 6) && !licensed(masks, 0, 1) &&
-                          !licensed(masks, 0, 248069),
-                      "first column mask is not the JSON-object start set");
-    failures += check(licensed(masks, 1, byte('"')) && !licensed(masks, 1, byte('}')) &&
-                          !licensed(masks, 1, byte('Q')),
-                      "second column mask does not follow the speculative prefix");
-    failures += check(std::all_of(masks.begin() + static_cast<std::ptrdiff_t>(2 * words),
-                                  masks.end(), [](std::uint32_t word) { return word == ~0U; }),
-                      "column after an unlicensed speculative token is not all-licensed");
-    std::vector<std::uint32_t> again(words);
-    (void)constraint->fill_token_masks({}, 1, again, words);
-    failures += check(std::equal(again.begin(), again.end(), masks.begin()),
-                      "mask construction changed the committed grammar state");
-
-    const std::vector<ninfer::TokenId> value = fixture_tokenizer().encode(R"({"a":"y")");
-    (void)session.preview_model(value, 64, ninfer::FinishReason::OutputLimit);
-    (void)session.commit_preview();
-    (void)constraint->fill_token_masks({}, 1, again, words);
-    failures += check(licensed(again, 0, byte('}')) && !licensed(again, 0, byte(',')) &&
-                          !licensed(again, 0, 6),
-                      "committed output did not advance the grammar");
-    bool refused = false;
-    try {
-        (void)session.preview_model(std::array<ninfer::TokenId, 1>{byte(',')}, 64,
-                                    ninfer::FinishReason::OutputLimit);
-    } catch (const std::logic_error&) { refused = true; }
-    failures += check(refused, "output session accepted a token outside the output format");
-
-    auto complete = frontend.make_output_session(prompt, {}, schema_output);
-    const std::vector<ninfer::TokenId> whole = fixture_tokenizer().encode(R"({"a":"x"})");
-    (void)complete.preview_model(whole, 64, ninfer::FinishReason::OutputLimit);
-    (void)complete.commit_preview();
-    (void)complete.token_constraint()->fill_token_masks({}, 1, again, words);
-    std::size_t licensed_count = 0;
-    for (const std::uint32_t word : again) { licensed_count += std::popcount(word); }
-    failures += check(licensed(again, 0, 6) && licensed_count == 1,
-                      "a complete value licenses anything but the stop token");
-    const auto stop = complete.preview_model(std::array<ninfer::TokenId, 1>{6}, 64,
-                                             ninfer::FinishReason::OutputLimit);
-    failures += check(stop.finish_reason == ninfer::FinishReason::StopToken,
-                      "stop token after a complete value was not terminal");
-    (void)complete.commit_preview();
-
-    // With Thinking on, reasoning is unconstrained and the grammar starts after </think>.
-    ninfer::ChatMessage message;
-    message.role = ninfer::ChatRole::User;
-    message.parts.push_back(
-        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
-    ninfer::PromptInput input;
-    input.messages.push_back(std::move(message));
-    input.options.enable_thinking = true;
-    auto thinking_prompt          = frontend.prepare(std::move(input));
-    auto thinking = frontend.make_output_session(thinking_prompt, {}, schema_output);
-    const std::array<ninfer::TokenId, 2> close{byte('Q'), 248069};
-    failures += check(thinking.token_constraint()->fill_token_masks(close, 3, masks, words),
-                      "grammar after a speculative reasoning close did not restrict");
-    failures += check(std::all_of(masks.begin(), masks.begin() + static_cast<std::ptrdiff_t>(2 * words),
-                                  [](std::uint32_t word) { return word == ~0U; }),
-                      "reasoning columns are constrained");
-    failures += check(licensed(masks, 2, byte('{')) && !licensed(masks, 2, byte('Q')),
-                      "column after </think> is not the JSON start set");
-
-    ninfer::OutputOptions invalid = schema_output;
-    invalid.format.json_schema    = R"({"type":"object","properties":{"a":{"type":"nonsense"}}})";
-    bool rejected                 = false;
-    try {
-        (void)frontend.make_output_session(prompt, {}, invalid);
-    } catch (const ninfer::RequestError& error) {
-        rejected = error.kind() == ninfer::RequestErrorKind::InvalidOutputFormat;
-    }
-    failures += check(rejected, "an unrepresentable schema was not rejected as an output format");
-    return failures;
-}
-
-// A caller stop string can land inside the same token that completes the licensed JSON value, so
-// the byte-level cut it applies (mid-token) must be what the grammar is asked to license, not the
-// token's full decoded text (which also carries the stop marker and whatever the model emitted
-// past it -- neither of those is ever published).
-int test_structured_output_same_token_stop(const Frontend& frontend) {
-    const ninfer::OutputOptions schema_output{
-        .format = ninfer::OutputFormat{
-            .kind        = ninfer::OutputFormatKind::JsonSchema,
-            .json_schema = R"({"type":"object","properties":{"a":{"enum":["x","y"]}},)"
-                           R"("required":["a"],"additionalProperties":false})",
-            .strict      = true}};
-    ninfer::StopPolicy stop;
-    stop.strings.push_back(ninfer::StopString{.text = "STOP"});
-
-    auto prompt  = frontend.prepare_tokens({0});
-    auto session = frontend.make_output_session(prompt, stop, schema_output);
-
-    const std::vector<ninfer::TokenId> prefix = fixture_tokenizer().encode(R"({"a":"x")");
-    const auto prefix_decision                = session.preview_model(
-        prefix, static_cast<std::uint32_t>(prefix.size() + 2U), ninfer::FinishReason::OutputLimit);
-    int failures = check(prefix_decision.accepted_tokens == prefix.size() &&
-                             !prefix_decision.finished(),
-                         "structured-output stop setup unexpectedly finished");
-    (void)session.commit_preview();
-
-    // Token 5 decodes to "}STOPgarbage": the closing brace completes the licensed value, "STOP" is
-    // the caller's stop string, and "garbage" is text the model would never have been licensed to
-    // emit as JSON. Only the leading "}" may ever reach the client.
-    const auto decision =
-        session.preview_model(std::array<ninfer::TokenId, 1>{5}, 2, ninfer::FinishReason::OutputLimit);
-    failures += check(decision.accepted_tokens == 1 &&
-                          decision.finish_reason == ninfer::FinishReason::StopString,
-                      "a same-token stop after a completed value was treated as a format violation");
-    const auto output = session.commit_preview();
-    failures += check(channel_text(output, ninfer::OutputChannel::Content) == "}",
-                      "same-token stop under structured output published the wrong prefix");
-    return failures;
-}
-
-// Mask construction must judge a token a caller stop string cuts by the prefix that is published,
-// exactly as preview does once the token is sampled -- not by its full decoded text.
-int test_structured_output_stop_masks(const Frontend& frontend) {
-    const auto byte = [](char value) { return fixture_byte_token(static_cast<std::uint8_t>(value)); };
-    const std::size_t words = (fixture_tokenizer().vocab_size() + 31U) / 32U;
-    const auto licensed = [&](const std::vector<std::uint32_t>& masks, std::size_t column,
-                              ninfer::TokenId token) {
-        return ((masks[column * words + static_cast<std::size_t>(token) / 32U] >>
-                 (static_cast<unsigned>(token) % 32U)) &
-                1U) != 0U;
-    };
-    const auto make_output = [](const char* schema) {
-        return ninfer::OutputOptions{.format = ninfer::OutputFormat{
-                                         .kind        = ninfer::OutputFormatKind::JsonSchema,
-                                         .json_schema = schema,
-                                         .strict      = true}};
-    };
-    const ninfer::OutputOptions value_output = make_output(
-        R"({"type":"object","properties":{"a":{"enum":["x","y"]}},"required":["a"],)"
-        R"("additionalProperties":false})");
-    const ninfer::OutputOptions word_output = make_output(
-        R"({"type":"object","properties":{"a":{"enum":["ST","x"]}},"required":["a"],)"
-        R"("additionalProperties":false})");
-    const auto stop_policy = [](bool include) {
-        ninfer::StopPolicy stop;
-        stop.strings.push_back(ninfer::StopString{.text = "STOP", .include_in_output = include});
-        return stop;
-    };
-    // A session whose committed output is `text`, and the mask row for the next token after
-    // `speculative`.
-    const auto masks_after = [&](const ninfer::StopPolicy& stop, const ninfer::OutputOptions& output,
-                                 const std::string& text,
-                                 std::span<const ninfer::TokenId> speculative) {
-        auto prompt  = frontend.prepare_tokens({0});
-        auto session = frontend.make_output_session(prompt, stop, output);
-        const std::vector<ninfer::TokenId> tokens = fixture_tokenizer().encode(text);
-        if (!tokens.empty()) {
-            (void)session.preview_model(tokens, static_cast<std::uint32_t>(tokens.size() + 4U),
-                                        ninfer::FinishReason::OutputLimit);
-            (void)session.commit_preview();
-        }
-        std::vector<std::uint32_t> masks((speculative.size() + 1U) * words);
-        (void)session.token_constraint()->fill_token_masks(
-            speculative, static_cast<std::uint32_t>(speculative.size() + 1U), masks, words);
-        return masks;
-    };
-    int failures = 0;
-
-    // kStopCutToken is "}STOPjunk": only its leading "}" is published under the stop string "STOP".
-    const std::string complete = R"({"a":"x")";
-    auto plain = masks_after({}, value_output, complete, {});
-    auto cut   = masks_after(stop_policy(false), value_output, complete, {});
-    failures += check(!licensed(plain, 0, kStopCutToken) && licensed(plain, 0, byte('}')),
-                      "a token with an ungrammatical tail was licensed without a stop string");
-    failures += check(licensed(cut, 0, kStopCutToken) && licensed(cut, 0, byte('}')),
-                      "a token cut by a stop string was not licensed for its published prefix");
-    failures += check(!licensed(cut, 0, kStopTailToken),
-                      "a token that no stop string cuts was licensed");
-    plain[static_cast<std::size_t>(kStopCutToken) / 32U] |=
-        1U << (static_cast<unsigned>(kStopCutToken) % 32U);
-    failures += check(plain == cut, "a stop string changed the mask beyond the tokens it cuts");
-    plain[static_cast<std::size_t>(kStopCutToken) / 32U] &=
-        ~(1U << (static_cast<unsigned>(kStopCutToken) % 32U));
-
-    // The published prefix decides: with the stop text published too, the prefix is "}STOP".
-    auto included = masks_after(stop_policy(true), value_output, complete, {});
-    failures += check(!licensed(included, 0, kStopCutToken),
-                      "a published stop string was not judged by the grammar");
-
-    // The stop string can begin in an earlier token: after "ST" only "OP..." completes it, and
-    // nothing of that token is published.
-    auto partial_plain = masks_after({}, word_output, R"({"a":"ST)", {});
-    auto partial_cut   = masks_after(stop_policy(false), word_output, R"({"a":"ST)", {});
-    failures += check(!licensed(partial_plain, 0, kStopTailToken) && licensed(partial_cut, 0, kStopTailToken) &&
-                          licensed(partial_cut, 0, byte('"')),
-                      "a token completing a stop string begun earlier was not licensed");
-    auto fresh_cut = masks_after(stop_policy(false), word_output, R"({"a":")", {});
-    failures += check(!licensed(fresh_cut, 0, kStopTailToken),
-                      "a stop-completing token was licensed without the stop string's first part");
-
-    // Speculative columns follow the same rule, and a token a stop string cuts ends the round.
-    const std::vector<ninfer::TokenId> value = fixture_tokenizer().encode(complete);
-    auto speculative_cut = masks_after(stop_policy(false), value_output, "", value);
-    failures += check(licensed(speculative_cut, value.size(), kStopCutToken),
-                      "speculative column did not license a stop-cut token");
-    std::vector<ninfer::TokenId> through_cut = value;
-    through_cut.push_back(kStopCutToken);
-    auto ended = masks_after(stop_policy(false), value_output, "", through_cut);
-    failures += check(std::all_of(ended.begin() + static_cast<std::ptrdiff_t>((value.size() + 1U) * words),
-                                  ended.end(), [](std::uint32_t word) { return word == ~0U; }),
-                      "column after a stop-cut speculative token is not all-licensed");
-
-    // Every token the mask licenses must be one the session then accepts.
-    std::size_t exercised = 0;
-    for (ninfer::TokenId token = 0; token < static_cast<ninfer::TokenId>(words * 32U); ++token) {
-        if (!licensed(cut, 0, token)) { continue; }
-        auto prompt  = frontend.prepare_tokens({0});
-        auto session = frontend.make_output_session(prompt, stop_policy(false), value_output);
-        const std::vector<ninfer::TokenId> tokens = fixture_tokenizer().encode(complete);
-        (void)session.preview_model(tokens, static_cast<std::uint32_t>(tokens.size() + 4U),
-                                    ninfer::FinishReason::OutputLimit);
-        (void)session.commit_preview();
-        bool accepted = true;
-        try {
-            (void)session.preview_model(std::array<ninfer::TokenId, 1>{token}, 2,
-                                        ninfer::FinishReason::OutputLimit);
-        } catch (const std::logic_error&) { accepted = false; }
-        failures += check(accepted, "a licensed token was rejected by the output session");
-        ++exercised;
-    }
-    failures += check(exercised >= 2, "the licensed-token consistency check exercised nothing");
-
-    // A token that closes the reasoning and then hits a content stop terminates the output, so the
-    // columns after it are all-licensed even though the reasoning gate consumed the token.
-    ninfer::ChatMessage message;
-    message.role = ninfer::ChatRole::User;
-    message.parts.push_back(
-        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
-    ninfer::PromptInput input;
-    input.messages.push_back(std::move(message));
-    input.options.enable_thinking = true;
-    auto thinking_prompt          = frontend.prepare(std::move(input));
-    auto thinking =
-        frontend.make_output_session(thinking_prompt, stop_policy(false), value_output);
-    const std::array<ninfer::TokenId, 1> close_and_stop{kThinkCloseStopToken};
-    std::vector<std::uint32_t> thinking_masks(2U * words);
-    (void)thinking.token_constraint()->fill_token_masks(close_and_stop, 2, thinking_masks, words);
-    failures += check(std::all_of(thinking_masks.begin() + static_cast<std::ptrdiff_t>(words),
-                                  thinking_masks.end(), [](std::uint32_t word) { return word == ~0U; }),
-                      "column after a reasoning-close-and-stop token is constrained");
-
-    // A stop string that applies to the reasoning channel alone still ends the output, so the
-    // reasoning close that follows it in the same round is unreachable.
-    ninfer::StopPolicy reasoning_stop;
-    reasoning_stop.strings.push_back(
-        ninfer::StopString{.text = "STOP", .channel = ninfer::OutputChannel::Reasoning});
-    auto reasoning_only = frontend.make_output_session(thinking_prompt, reasoning_stop, value_output);
-    const std::array<ninfer::TokenId, 2> stop_then_close{kStopCutToken, 248069};
-    std::vector<std::uint32_t> reasoning_masks(3U * words);
-    (void)reasoning_only.token_constraint()->fill_token_masks(stop_then_close, 3, reasoning_masks,
-                                                              words);
-    failures += check(std::all_of(reasoning_masks.begin() + static_cast<std::ptrdiff_t>(2U * words),
-                                  reasoning_masks.end(), [](std::uint32_t word) { return word == ~0U; }),
-                      "column after a reasoning-channel stop is constrained");
     return failures;
 }
 
@@ -2436,6 +2239,59 @@ ninfer::models::qwen3_5::PreparedPrompt thinking_prompt(const Frontend& frontend
     input.options.continuation    = ninfer::PromptContinuationMode::NewAssistantTurn;
     input.options.enable_thinking = true;
     return frontend.prepare(std::move(input));
+}
+
+// A caller stop string could end a constrained output partway through the value, publishing text
+// the schema does not accept (the regression this fork's #143 fixed in its own implementation).
+// The contract now refuses that combination up front, and ignore_eos with it, so a constrained
+// response can only end at the model's own stop token or the output limit.
+int test_constraint_refuses_caller_stops(const Frontend& frontend) {
+    auto prompt       = thinking_prompt(frontend);
+    const auto schema = ninfer::OutputConstraint::json_schema(
+        R"({"type":"object","properties":{"a":{"type":"string"}},"required":["a"]})");
+    const auto refused = [&](const ninfer::StopPolicy& stop) {
+        try {
+            (void)frontend.make_output_session(prompt, stop, {}, {}, schema);
+        } catch (const ninfer::RequestError& error) {
+            return error.kind() == ninfer::RequestErrorKind::InvalidJsonSchema;
+        }
+        return false;
+    };
+    ninfer::StopPolicy content_stop;
+    content_stop.strings.push_back(
+        ninfer::StopString{.text = "\"}", .channel = ninfer::OutputChannel::Content});
+    int failures =
+        check(refused(content_stop), "a content stop string was accepted under a schema");
+    ninfer::StopPolicy no_eos;
+    no_eos.include_model_defaults = false;
+    failures += check(refused(no_eos), "ignore_eos was accepted under a schema");
+    failures += check(!refused({}), "a schema without caller stops was refused");
+    return failures;
+}
+
+int test_constrained_thinking_control(const Frontend& frontend) {
+    auto prompt           = thinking_prompt(frontend);
+    const auto bare_close = frontend.tokenize_text("</think>");
+    auto session          = frontend.make_output_session(
+        prompt, {}, {}, {.budget = static_cast<std::uint32_t>(bare_close.size())},
+        ninfer::OutputConstraint::grammar("root ::= \" yes\""));
+    const auto decision = session.preview_model(bare_close, 512, ninfer::FinishReason::OutputLimit);
+    int failures =
+        check(decision.continuation == ninfer::runtime::ContinuationAction::ApplyTargetControl,
+              "noncanonical close disabled the constrained thinking budget");
+    (void)session.commit_preview();
+    const auto control = session.pending_control_tokens();
+    if (control.empty()) return failures + check(false, "constrained thinking control is missing");
+    (void)session.preview_control(control, 512);
+    auto closed = session.commit_preview();
+    failures += check(channel_text(closed, ninfer::OutputChannel::Content).empty(),
+                      "thinking framing leaked into constrained content");
+    (void)session.preview_model(frontend.tokenize_text(" yes"), 512,
+                                ninfer::FinishReason::OutputLimit);
+    failures +=
+        check(channel_text(session.commit_preview(), ninfer::OutputChannel::Content) == " yes",
+              "constrained content lost its leading space after thinking");
+    return failures;
 }
 
 int test_thinking_budget_control(const Frontend& frontend) {
@@ -3102,12 +2958,12 @@ int main() {
     failures += test_same_token_stop_priority(frontend);
     failures += test_terminal_flush(frontend);
     failures += test_structured_tool_output();
-    failures += test_structured_output(frontend);
-    failures += test_structured_output_same_token_stop(frontend);
-    failures += test_structured_output_stop_masks(frontend);
+    failures += test_tools_and_json_output();
+    failures += test_constraint_refuses_caller_stops(frontend);
     failures += test_reasoning_split(frontend);
     failures += test_thinking_budget_control(frontend);
     failures += test_thinking_budget_branches(frontend);
+    failures += test_constrained_thinking_control(frontend);
     failures += test_utf8_and_hidden_eos(frontend);
     failures += test_media_cache_reuses_immutable_payload();
     failures += test_media_payload_outlives_frontend_cache();

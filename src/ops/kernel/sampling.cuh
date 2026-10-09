@@ -220,7 +220,8 @@ __launch_bounds__(kSamplerGroupBlock) __global__ void sampling_group_finalize_sa
         if (tid == 0) {
             const int picked = sampling_key_index(best);
             // This kernel never sees the logits, so the winner's own ordered value carries the
-            // check. An empty key (0ull) decodes to NaN, which is the same rejection.
+            // check. An empty key (0ull) decodes to NaN, which is the same rejection; a mask with
+            // no licensed token leaves a -inf winner and is rejected the same way.
             if (picked == INT_MAX || !sampling_value_is_finite(sampling_key_float(best))) {
                 out[col] = kSamplerNonFiniteToken;
             } else {

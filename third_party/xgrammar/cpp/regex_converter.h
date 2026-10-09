@@ -16,6 +16,10 @@ namespace xgrammar {
  */
 std::string RegexToEBNF(const std::string& regex, bool with_rule_name = true);
 
+// Shared ECMAScript character/escape semantics. Full matching accepts only the complete
+// string; search matching adds unanchored prefixes/suffixes for JSON Schema patterns.
+std::string NormalizeRegexPattern(const std::string& pattern, bool full_match);
+
 }  // namespace xgrammar
 
 #endif  // XGRAMMAR_REGEX_CONVERTER_H_

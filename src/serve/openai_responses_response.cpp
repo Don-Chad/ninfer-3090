@@ -1,4 +1,5 @@
 #include "serve/openai_responses.h"
+#include "product/constraint_observation.h"
 
 #include "serve/generation_service.h"
 #include "serve/openai_common.h"
@@ -184,6 +185,8 @@ BuiltOpenAIResponse build_response(const std::string& id, std::int64_t created_a
              {"output_tokens_details", Json{{"reasoning_tokens", outcome.reasoning_tokens}}},
              {"total_tokens", outcome.prompt_tokens + outcome.completion_tokens}};
     built.body = std::move(response);
+    if (outcome.constraint)
+        built.body["constraint"] = product::constraint_observation_json(outcome.constraint);
     return built;
 }
 

@@ -89,9 +89,8 @@ struct DFlashBatchContext {
     const qwen3_5::DFlashDecodeIngress& host_ingress;
     qwen3_5::DFlashDecodeEgress& host_egress;
     Tensor& continuation_hidden_store;
-    // Pinned I32 [k, B] copy of the round's proposal, row-major by request row, written at the end
-    // of the proposal segment.
-    std::int32_t* host_drafts = nullptr;
+    std::span<TokenId> host_drafts;
+    CudaCompletionEvent& drafts_ready;
 };
 
 struct DFlashAppendContext {
@@ -140,15 +139,9 @@ struct TargetVerifyFrameView {
 void configure_text_card(TextContext& card, const ExecutionCore& execution,
                          const ops::SamplingConfig* sampling, std::int32_t state_source_slot,
                          std::int32_t state_destination_slot, std::uint32_t mtp_proposal_extent);
-// Target verification splits into the forward pass that produces the verification logits and the
-// acceptance that consumes them; target_verify_accept runs both back to back.
-void target_verify(TextContext& card, TargetVerifyFrameView frame,
-                   ops::CausalAttentionExecutionEnvelope envelope);
-void target_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,
-                   TargetVerifyFrameView frame);
-void target_verify_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,
-                          TextContext& card, TargetVerifyFrameView frame,
-                          ops::CausalAttentionExecutionEnvelope envelope);
+void target_verify_forward(ExecutionCore&, TextContext&, TargetVerifyFrameView,
+                           ops::CausalAttentionExecutionEnvelope);
+void target_accept(ExecutionCore&, Tensor& continuation_hidden_store, TargetVerifyFrameView);
 
 [[nodiscard]] PrefillChunkResult prefill_text_chunk(PrefillContext& state,
                                                     std::span<const TokenId> ids,
@@ -188,11 +181,14 @@ void ordinary_decode_batch(OrdinaryBatchContext& state, std::int32_t batch_size,
 
 // Executes one exact-B MTP verification/alignment/proposal transaction. Each row may carry a
 // different current and next proposal extent while the model traversal remains batched.
+enum class SpeculativePhase { Forward, Finish };
+
 void capture_mtp_decode_batch(MtpBatchContext& state, std::int32_t batch_size, std::uint32_t k,
                               MtpCausalAttentionEnvelopes envelopes,
-                              DecodeGraphDefinition& definition);
+                              DecodeGraphDefinition& definition, SpeculativePhase phase);
 void mtp_decode_batch(MtpBatchContext& state, std::int32_t batch_size, std::uint32_t k,
-                      MtpCausalAttentionEnvelopes envelopes, DecodeGraphExecutable* executable);
+                      MtpCausalAttentionEnvelopes envelopes, DecodeGraphExecutable* executable,
+                      SpeculativePhase phase);
 
 [[nodiscard]] DFlashFeatureSink
 dflash_feature_sink(PrefillContext& state, DFlashFeatureSink::PrefillConsumer consume_prefill = {});
@@ -204,22 +200,13 @@ void dflash_append_context(PrefillContext& state, const Tensor& features, const 
                            const Tensor& commit_counts, const Tensor& lanes,
                            const Tensor& table_rows,
                            ops::KVCacheAppendPrefixExecutionEnvelope envelope);
-// Executes one exact-B DFlash round as three consecutive segments on the compute stream:
-// proposal (context append, draft block, verification inputs, drafts copied to host_drafts),
-// target verification, and acceptance (egress included). Run in this order; the host may read
-// host_drafts once the proposal segment completes and may enqueue work that the acceptance segment
-// consumes, such as verification token masks, between the last two.
-inline constexpr std::size_t kDFlashRoundSegments = 3;
-void capture_dflash_decode_batch(
-    DFlashBatchContext& state, std::int32_t batch_size, std::uint32_t k, DFlashEnvelopes envelopes,
-    ops::CausalAttentionExecutionEnvelope target_envelope,
-    std::span<DecodeGraphDefinition, kDFlashRoundSegments> segments);
-void dflash_decode_propose(DFlashBatchContext& state, std::int32_t batch_size, std::uint32_t k,
-                           DFlashEnvelopes envelopes, DecodeGraphExecutable* executable);
-void dflash_decode_verify(DFlashBatchContext& state, std::int32_t batch_size, std::uint32_t k,
-                          ops::CausalAttentionExecutionEnvelope target_envelope,
-                          DecodeGraphExecutable* executable);
-void dflash_decode_accept(DFlashBatchContext& state, std::int32_t batch_size, std::uint32_t k,
-                          DecodeGraphExecutable* executable);
+void capture_dflash_decode_batch(DFlashBatchContext& state, std::int32_t batch_size,
+                                 std::uint32_t k, DFlashEnvelopes envelopes,
+                                 ops::CausalAttentionExecutionEnvelope target_envelope,
+                                 DecodeGraphDefinition& definition, SpeculativePhase phase);
+void dflash_decode_batch(DFlashBatchContext& state, std::int32_t batch_size, std::uint32_t k,
+                         DFlashEnvelopes envelopes,
+                         ops::CausalAttentionExecutionEnvelope target_envelope,
+                         DecodeGraphExecutable* executable, SpeculativePhase phase);
 
 } // namespace ninfer::models::qwen3_5::execution

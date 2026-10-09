@@ -19,7 +19,6 @@
 #include "models/qwen3_5/execution/text.h"
 #include "models/qwen3_5/execution/vision.h"
 #include "models/qwen3_5/program/vision_prefill.h"
-#include "runtime/contract/token_constraint.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -120,26 +119,39 @@ struct KVHistory {
     ~KVHistory();
 };
 
-// A decode round is captured as one or more consecutive graph segments. Segment boundaries are
-// the points where the host must observe device results before the round can continue (DFlash
-// proposes drafts inside the round; a structured-output request needs them to build its masks).
 struct DecodeGraphProfile {
     std::uint32_t batch_size             = 1;
     std::uint32_t min_execution_frontier = 0;
     std::uint32_t max_execution_frontier = 0;
     std::uint32_t topology_class         = 0;
-    std::vector<DecodeGraphDefinition> segments;
+    DecodeGraphDefinition definition;
 };
 
 struct DecodeGraphTopology {
     std::uint32_t topology_class = 0;
-    std::vector<DecodeGraphExecutable> segments;
+    DecodeGraphExecutable executable;
     std::optional<std::size_t> installed_profile;
 };
 
 struct DecodeGraphFamily {
     std::vector<DecodeGraphProfile> profiles;
     std::vector<DecodeGraphTopology> topologies;
+    DecodeGraphProfile& select(std::uint32_t batch_size, std::uint32_t frontier);
+    DecodeGraphExecutable& install(DecodeGraphProfile& profile);
+};
+
+// A Forward stage publishes these IDs before target execution finishes. Program owns the
+// pinned storage and external event together; both outlive the graphs that reference them.
+struct DFlashDraftHandoff {
+    PinnedHostBuffer ids;
+    CudaCompletionEvent ready;
+
+    DFlashDraftHandoff(const DeviceContext& device, std::size_t count)
+        : ids(count * sizeof(TokenId)), ready(device) {}
+
+    [[nodiscard]] std::span<TokenId> tokens() const noexcept {
+        return {static_cast<TokenId*>(ids.data()), ids.size() / sizeof(TokenId)};
+    }
 };
 
 struct SequenceState {
@@ -249,6 +261,7 @@ public:
     [[nodiscard]] std::vector<float> causal_score(PreparedPromptData&&, std::uint32_t first_target);
     [[nodiscard]] std::optional<SourceCandidate>
     inspect_source(const RequestBasePlan&, std::optional<CheckpointHandle>, bool = false,
+                   std::span<const CheckpointHandle> = {},
                    std::span<const CheckpointHandle> = {}) const;
     [[nodiscard]] PrefixShortlistKey checkpoint_key(CheckpointHandle, std::uint32_t frontier) const;
     [[nodiscard]] runtime::ContextResourceUsage
@@ -261,6 +274,10 @@ public:
                                                              std::uint32_t target) const;
     [[nodiscard]] std::uint64_t checkpoint_recovery_loss(std::span<const CheckpointHandle>,
                                                          std::span<const CheckpointHandle>) const;
+    [[nodiscard]] bool can_release_checkpoint(CheckpointHandle) const noexcept;
+    [[nodiscard]] std::optional<runtime::ContextResourceUsage>
+        checkpoint_release_resources(std::span<const CheckpointHandle>,
+                                     runtime::ContextResourceUsage) const;
     [[nodiscard]] bool release_checkpoint(CheckpointHandle) noexcept;
     void refresh_history_requirements(const std::shared_ptr<KVHistory>&, bool trim_unused = false);
     [[nodiscard]] bool revoke_snapshot(ResumeState&) noexcept;
@@ -275,10 +292,9 @@ public:
     [[nodiscard]] runtime::ResourceReservation reserve_units(std::span<const ExecutionUnit>);
     [[nodiscard]] bool reclaim_capture_reservation(runtime::ContextResourceUsage shortage);
     void release_units(std::span<const SequenceHandle>) noexcept;
-    [[nodiscard]] runtime::ResourceReservation start_binding(const RequestBasePlan&,
-                                                             runtime::LaneId,
-                                                             const SourceCandidate&, ResumeState*,
-                                                             ExecutionUnitKind, std::uint32_t);
+    [[nodiscard]] BindingReservation start_binding(const RequestBasePlan&, runtime::LaneId,
+                                                   const SourceCandidate&, ResumeState*,
+                                                   ExecutionUnitKind, std::uint32_t);
     [[nodiscard]] bool start_capture(SequenceHandle);
     [[nodiscard]] bool capture_is_input(SequenceHandle) const;
     [[nodiscard]] std::optional<CapturePreparation> prepare_capture(SequenceHandle);
@@ -301,12 +317,11 @@ public:
     [[nodiscard]] bool recovery_pending(SequenceHandle) const noexcept;
 
     [[nodiscard]] PrefillProgress advance_prefill(SequenceHandle, runtime::ExecutionTiming*,
-                                                  runtime::TokenMaskSource* constraint = nullptr);
+                                                  runtime::TokenMaskProvider*);
     [[nodiscard]] ReplayProgress advance_replay(SequenceHandle, runtime::ExecutionTiming*);
     [[nodiscard]] PendingBatch decode(std::span<const SequenceHandle>,
                                       std::span<const runtime::RoundBudget>,
-                                      runtime::ExecutionTiming*,
-                                      std::span<runtime::TokenMaskSource* const> constraints);
+                                      runtime::ExecutionTiming*, runtime::TokenMaskProvider*);
     [[nodiscard]] runtime::ExecutionTiming
     append_forced_tokens(std::span<const SequenceHandle>, std::span<const TokenId>, std::uint32_t,
                          std::span<const std::optional<std::uint32_t>>, runtime::ExecutionTiming*);
@@ -363,22 +378,20 @@ public:
     Tensor prefill_hidden;
     std::optional<Tensor> score_hidden;
     Tensor sampling_config;
+    Tensor grammar_masks_device;
+    std::optional<PinnedHostBuffer> grammar_masks_host;
+    std::optional<DFlashDraftHandoff> dflash_draft_handoff;
+    std::array<std::uint32_t, kMaximumConcurrency> grammar_dead_positions{};
+    ops::SamplingMask bind_grammar_mask(runtime::TokenMaskProvider*, std::size_t row);
+    ops::SamplingMask fill_grammar_mask(runtime::TokenMaskProvider*, std::size_t row,
+                                        std::span<const TokenId> drafts);
     Tensor token_counts;
-    // Structured-output token masks: U32 bitsets [token_mask_words, draft_window + 1,
-    // max_concurrency]. Each lane owns one slab whose column c masks decision column c of its
-    // current round (sampling.h token_mask).
-    Tensor token_masks;
-    std::uint32_t token_mask_words = 0;
 
     VisionHandoffState vision_handoff;
     std::array<SequenceState, kMaximumConcurrency> sequences;
     std::array<RequestControl, kMaximumConcurrency> requests;
     std::array<std::uint64_t, kMaximumConcurrency> lane_epochs{};
     std::vector<CheckpointSlot> checkpoints;
-
-    DecodeGraphFamily ordinary_graphs;
-    DecodeGraphFamily mtp_graphs;
-    DecodeGraphFamily dflash_graphs;
 
     std::optional<PinnedHostBuffer> round_host;
     std::optional<PinnedHostBuffer> score_logprobs_host;
@@ -393,11 +406,6 @@ public:
     qwen3_5::DFlashDecodeIngress* dflash_host_ingress          = nullptr;
     qwen3_5::DFlashDecodeEgress* dflash_host_egress            = nullptr;
     qwen3_5::DFlashPrefillIngress* dflash_prefill_host_ingress = nullptr;
-    // DFlash proposal copied back after the proposal segment, I32 [draft_window, B].
-    std::optional<PinnedHostBuffer> dflash_draft_host;
-    std::optional<CudaCompletionEvent> dflash_proposal_ready;
-    // Host staging with the geometry of token_masks.
-    std::optional<PinnedHostBuffer> token_mask_host;
 
     std::size_t workspace_logical_peak_bytes = 0;
     std::size_t vision_handoff_peak_bytes    = 0;
@@ -479,6 +487,15 @@ public:
     std::array<CudaEventTimer, 3> context_transfer_timers_;
     CudaEventTimer prefill_gpu_timer_;
 
+    // Captured transfers and external events reference the buffers and events declared above.
+    // Families are destroyed first, including when startup throws.
+    DecodeGraphFamily ordinary_graphs;
+    DecodeGraphFamily speculative_forward_graphs;
+    DecodeGraphFamily speculative_finish_graphs;
+
+    [[nodiscard]] std::uint32_t initial_mtp_extent(const RequestBasePlanImpl&) const;
+    [[nodiscard]] UnitDemand prefill_unit(std::uint32_t prompt, std::uint32_t cursor,
+                                          std::uint32_t mtp_extent) const;
     [[nodiscard]] UnitDemand next_unit(const SequenceState&, const RequestControl&,
                                        ExecutionUnitKind, std::uint32_t tokens) const;
     void require_unit(std::uint32_t lane, ExecutionUnitKind, std::uint32_t tokens = 0) const;
@@ -547,45 +564,11 @@ public:
                                      std::uint64_t) const;
     [[nodiscard]] runtime::BatchedGeneratedRound decode_raw(std::span<const std::uint32_t>,
                                                             std::span<const runtime::RoundBudget>,
-                                                            runtime::ExecutionTiming*);
+                                                            runtime::ExecutionTiming*,
+                                                            runtime::TokenMaskProvider*);
     void prepare_graphs();
     void install_sampling(SequenceState& sequence, RequestControl& request,
                           const ops::SamplingConfig& config);
-
-    // Borrows the caller's output-language constraints for one decode() or advance_prefill() call.
-    class TokenConstraintBinding {
-    public:
-        TokenConstraintBinding(ProgramImpl& program, std::span<const std::uint32_t> lanes,
-                               std::span<runtime::TokenMaskSource* const> constraints);
-        ~TokenConstraintBinding();
-
-        TokenConstraintBinding(const TokenConstraintBinding&)            = delete;
-        TokenConstraintBinding& operator=(const TokenConstraintBinding&) = delete;
-
-    private:
-        ProgramImpl& program_;
-        std::span<const std::uint32_t> lanes_;
-    };
-
-    // Output-language constraints of the current decode()/advance_prefill() call, by lane.
-    std::array<runtime::TokenMaskSource*, kMaximumConcurrency> lane_constraints_{};
-    // Whether a lane's device mask slab currently licenses every token in every column.
-    std::array<bool, kMaximumConcurrency> token_mask_slab_open_{};
-
-    [[nodiscard]] bool lane_constrained(std::uint32_t lane) const noexcept {
-        return lane_constraints_[lane] != nullptr;
-    }
-    [[nodiscard]] const std::uint32_t* token_mask_slab(std::uint32_t lane) const;
-    // Builds `lane`'s masks for the `columns` decisions that follow `speculative` and enqueues them
-    // on the compute stream. Returns the mask pointer for the lane's sampling config: null when the
-    // lane is unconstrained, or when no column restricts and `keep_slab` is false. With
-    // `keep_slab`, a constrained lane always gets its slab, holding all-licensed masks when nothing
-    // restricts.
-    [[nodiscard]] const std::uint32_t* stage_token_masks(std::uint32_t lane,
-                                                         std::span<const TokenId> speculative,
-                                                         std::uint32_t columns, bool keep_slab);
-    [[nodiscard]] ops::SamplingConfig masked_sampling(const ops::SamplingConfig& base,
-                                                      const std::uint32_t* mask) const noexcept;
     void set_device_i32(Tensor& tensor, std::int32_t value);
     void copy_tail(SequenceState& sequence, const Tensor& source);
     void copy_round_token();
@@ -606,17 +589,16 @@ public:
                                        std::span<const std::uint32_t> counts);
     void validate_licensed_tokens(std::span<const TokenId> tokens) const;
     void mark_workspace_usage(std::size_t phase_bytes) noexcept;
-    [[nodiscard]] runtime::BatchedGeneratedRound
-    decode_ordinary_batch(std::span<const std::uint32_t> lanes,
-                          std::span<const runtime::RoundBudget> budgets,
-                          runtime::ExecutionTiming* failed_timing);
+    [[nodiscard]] runtime::BatchedGeneratedRound decode_ordinary_batch(
+        std::span<const std::uint32_t> lanes, std::span<const runtime::RoundBudget> budgets,
+        runtime::ExecutionTiming* failed_timing, runtime::TokenMaskProvider* masks);
     [[nodiscard]] runtime::BatchedGeneratedRound
     decode_mtp_batch(std::span<const std::uint32_t> lanes,
                      std::span<const runtime::RoundBudget> budgets,
-                     runtime::ExecutionTiming* failed_timing);
+                     runtime::ExecutionTiming* failed_timing, runtime::TokenMaskProvider* masks);
     [[nodiscard]] runtime::BatchedGeneratedRound
     decode_dflash_batch(std::span<const std::uint32_t> lanes,
                         std::span<const runtime::RoundBudget> budgets,
-                        runtime::ExecutionTiming* failed_timing);
+                        runtime::ExecutionTiming* failed_timing, runtime::TokenMaskProvider* masks);
 };
 } // namespace ninfer::models::qwen3_5::detail

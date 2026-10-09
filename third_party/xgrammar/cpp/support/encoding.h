@@ -299,11 +299,9 @@ inline std::optional<CharHandlingError> Latin1ToBytes(
 */
 inline void ByteToLatin1(const std::string& bytes, std::string* result) {
   result->clear();
-  const char* data = bytes.c_str();
+  result->reserve(bytes.size());
 
-  for (int current_idx = 0; *(data + current_idx) != '\0'; current_idx++) {
-    const unsigned char& current_char = static_cast<unsigned char>(*(data + current_idx));
-
+  for (unsigned char current_char : bytes) {
     // Ascii character, directly add to result.
     if (current_char <= 0x7F) {
       result->push_back(static_cast<char>(current_char));
@@ -379,9 +377,16 @@ inline std::string EscapeString(uint8_t raw_char) {
 
 inline std::string EscapeString(std::string raw_str) {
   std::string res;
-  auto codepoints = ParseUTF8(raw_str.c_str(), true);
-  for (auto c : codepoints) {
-    res += EscapeString(c);
+  size_t offset = 0;
+  while (offset < raw_str.size()) {
+    auto [codepoint, length] = ParseNextUTF8(raw_str.c_str() + offset);
+    if (codepoint == CharHandlingError::kInvalidUTF8) {
+      res += EscapeString(static_cast<uint8_t>(raw_str[offset]));
+      ++offset;
+    } else {
+      res += EscapeString(codepoint);
+      offset += static_cast<size_t>(length);
+    }
   }
   return res;
 }

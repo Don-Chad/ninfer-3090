@@ -322,7 +322,8 @@ The server supports:
 - OpenAI Chat Completions;
 - OpenAI Responses Core with streaming and local continuation state;
 - Anthropic Messages;
-- structured output ([docs](docs/serving.md#structured-output));
+- constrained output: JSON mode, JSON Schema, GBNF grammar, choice and regex, plus strict and
+  forced tool calls ([docs](docs/serving.md#output-constraints));
 - compatible-prefix reuse, with automatic long anchors so an edited mid-history turn does not force
   a re-prefill from zero;
 - Prometheus metrics at `GET /metrics` ([docs](docs/serving.md#metrics)) and a read-only `GET /props`;

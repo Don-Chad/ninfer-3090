@@ -109,7 +109,9 @@ observable behavior, mathematical or state semantics, and realistic regressions,
 boundary failures that have not occurred yet. Avoid tests that merely mirror implementation,
 freeze private file/class organization, or increase coverage numbers.
 
-For numerical changes, identify represented public inputs, the independent mathematical oracle,
+Before changing Ops, numerical or state semantics, read
+[Op development](docs/maintainer/op-development.md). For numerical changes, identify represented
+public inputs, the independent mathematical oracle,
 semantic cast/quantization/state boundaries, output criteria, and relevant real model shapes. Each
 floating-point Op uses a naive FP32/FP64 oracle; exact transforms/codecs use an exact oracle. Packed
 inputs are independently decoded with their stored scales. Qualify production routes directly
@@ -342,7 +344,7 @@ causes failures or interferes with the task, and briefly explain why.
 Use the selected Python 3.11 interpreter explicitly. On this machine it is
 `/home/neroued/miniconda3/envs/py311/bin/python`; the default shell's `python3` may be a different
 version. Use `python3` only after selecting the maintainer environment or checking its version.
-Normal resources are `build/`, `out/qwen3_6_27b.ninfer`, its `.conversion.json` report, and
+Normal resources are `build/`, `out/qwen3_8_27b_nvfp4.ninfer`, its `.conversion.json` report, and
 `profiles/ncu/`, `profiles/nsys/`, `profiles/bench/`; the local toolchain is CUDA 13.1.
 Select model artifacts by explicit path, never glob order, modification time, or unqualified
 “latest”. Source checkpoints and large artifacts are prerequisites; download or regenerate them

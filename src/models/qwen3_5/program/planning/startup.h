@@ -46,7 +46,7 @@ struct PersistentLayout {
     std::optional<TensorLayout> score_hidden;
     std::optional<TensorLayout> token_counts;
     std::optional<TensorLayout> sampling_config;
-    std::optional<TensorLayout> token_masks;
+    std::optional<TensorLayout> grammar_masks;
     std::size_t bytes            = 0;
     // Persistent bytes on each further device (device 1 first): the KV planes, block-table copy and
     // recurrent state of the layers that stage owns. Empty on one device.

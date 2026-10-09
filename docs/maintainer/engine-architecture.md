@@ -69,14 +69,10 @@ detokenization 及模型私有结构化输出。它还提供能够由模板历�
 
 Frontend 可以预览一次模型输出的语义效果，Engine 提交后才发布。等待顺序和物理缓存均由下层拥有。
 
-结构化输出（`OutputOptions::format`，JSON object/schema）同样属于 Frontend：它在提交线程上用模型
-tokenizer 编译语法（XGrammar，按语法文本缓存），`OutputSession` 持有随 preview/commit 推进的 matcher，
-并以 `runtime::TokenMaskSource` 的形式暴露给 Program。Engine 在每个 decode/prefill unit 中按行借出这些
-source；Program 在每个采样决策前向其索取 mask（投机轮按每个验证列、以该列之前的 draft 为前缀计算），
-经 `SamplingConfig::token_mask` 交给采样 Op。Program 只读取 mask，不推进 matcher 状态；因此 preview
-永远不会看到语法外的 token，第 5.2 节的 accepted-prefix 规则不变。DFlash/DFlash2 在轮内产生 draft，
-其 round 分为 proposal、target verify、accept 三段 CUDA Graph，受约束的轮在后两段之间读取 draft 并上传
-mask。Replay 重新执行已接受历史时不采样，因此不消费 mask。
+GBNF、JSON、JSON Schema、choice、regex 和工具约束的 compiled grammar 在 Frontend 内按词表共享，matcher 由每请求的 OutputSession 持有。
+Engine 在 submit 调用线程完成编译，再入队；Program 借用当轮的 mask provider，将 mask 送给
+GPU 采样及 spec 验收。Matcher 与输出一起 preview/commit，抢占和 Replay 保留其已提交状态。
+执行时序及语义见[约束解码设计](constrained-decoding.md)。
 
 ### 2.2 EngineCore 与 Scheduler
 
@@ -305,7 +301,9 @@ Growing KV 使用共享 typed paged pools，物理页与逻辑 token frontier �
 COW 和 replica publication 在 GPU 稳定边界完成。消费者只拿 non-owning typed views。
 
 CUDA Graph 按合法 exact-`B` topology 建立，page ID、请求身份、state selectors 是输入而非 graph key。
-Op 拥有声明执行范围内的 Graph 更新兼容性，Program 捕获完整 unit 并在启动时验证同类更新。
+Op 拥有声明执行范围内的 Graph 更新兼容性，Program 在启动时捕获并验证同类更新。
+Speculative unit 使用 Forward、Finish 两段 Graph，CPU 在两段之间准备约束 mask，并可与 target
+forward 重叠；两段共享同一个资源预留和提交边界。
 长度档位限制资源范围；Program 不复制 Attention Op 私有 kernel 的分派边界。
 
 本 fork 的多 GPU layer pipeline（`--devices A,B,...`，Linux；每个 stage 整层拥有权重、KV plane、GDN

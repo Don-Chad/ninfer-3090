@@ -37,7 +37,15 @@ ninfer_add_test(ninfer_qwen3_5_prefix_real_test
 
 ninfer_add_test(ninfer_qwen3_5_preemption_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_preemption_real.cpp"
-  LIBRARIES ninfer_engine)
+  LIBRARIES ninfer_engine ninfer::json)
+
+ninfer_add_test(ninfer_qwen3_5_grammar_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_grammar_real.cpp"
+  LIBRARIES ninfer_engine ninfer::json)
+
+ninfer_add_test(ninfer_qwen3_5_tools_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_tools_real.cpp"
+  LIBRARIES ninfer_engine ninfer::json)
 
 ninfer_add_test(ninfer_qwen3_5_score_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_score_real.cpp"
@@ -90,6 +98,8 @@ set(ninfer_qwen3_5_real_tests
   ninfer_qwen3_5_prefix_real_test
   ninfer_qwen3_5_agent_continuation_real_test
   ninfer_qwen3_5_preemption_real_test
+  ninfer_qwen3_5_grammar_real_test
+  ninfer_qwen3_5_tools_real_test
   ninfer_qwen3_5_score_real_test
   ninfer_qwen3_5_vision_workspace_test
   ninfer_qwen3_5_dflash2_real_test
@@ -118,3 +128,13 @@ ninfer_add_test(ninfer_qwen3_5_mlp_a8_decode_test
 ninfer_add_test(ninfer_qwen3_5_lookup_draft_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_lookup_draft.cpp"
   LIBRARIES ninfer_core)
+# STANDALONE: the Python schema oracle drives this probe by executable path.
+ninfer_add_test(ninfer_qwen3_5_tool_constraints_test
+  STANDALONE
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_tool_constraints.cpp"
+  LIBRARIES ninfer_model_runtime ninfer_grammar ninfer::json)
+
+add_test(NAME ninfer_qwen3_5_tool_schema_oracle_test
+  COMMAND ${CMAKE_COMMAND} -E env
+    "PYTHONUTF8=1" "NINFER_TOOL_PROBE=$<TARGET_FILE:ninfer_qwen3_5_tool_constraints_test>"
+    ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_LIST_DIR}/test_tool_schema.py")

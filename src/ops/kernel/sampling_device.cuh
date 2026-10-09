@@ -243,22 +243,22 @@ __device__ __forceinline__ int sampling_dist_offset(int col, int j) {
     return col * kSamplerCandidateCap + j;
 }
 
-// Whether column `column` of this decision may select token v (sampling.h token_mask).
+// Whether mask position `column` of this decision may select token v (sampling.h SamplingMask).
 __device__ __forceinline__ bool sampling_token_licensed(const SamplingConfig& c, int column, int v) {
-    if (c.token_mask == nullptr) { return true; }
+    if (c.mask.words == nullptr) { return true; }
     const std::uint32_t word =
-        c.token_mask[static_cast<std::int64_t>(column) * c.token_mask_words + (v >> 5)];
+        c.mask.words[static_cast<std::int64_t>(column) * c.mask.stride + (v >> 5)];
     return ((word >> (static_cast<unsigned int>(v) & 31U)) & 1U) != 0U;
 }
 
 // True when the decision's scores are the raw logits: no penalty and no token mask. Only such rows
 // may use the fused raw-argmax or raw-BF16 routes.
 __device__ __forceinline__ bool sampling_uses_raw_logits(const SamplingConfig& c) {
-    return c.presence_penalty == 0.0f && c.frequency_penalty == 0.0f && c.token_mask == nullptr;
+    return c.presence_penalty == 0.0f && c.frequency_penalty == 0.0f && c.mask.words == nullptr;
 }
 
 // Applies the token mask and presence/frequency penalties to a raw logit. `column` is the
-// decision's column: 0 for an ordinary sample, the verification column for speculative
+// decision's mask position: 0 for an ordinary sample, the verification position for speculative
 // acceptance. `overlay` carries a round-local count overlay of `column` tokens: tokens already
 // committed earlier in the current speculative round but not yet flushed to the global
 // `token_counts`. For speculative verify column `col` the overlay is exactly drafts[0..col-1]
@@ -338,35 +338,45 @@ __device__ inline void sampling_normalize_support(const SamplingConfig& cfg, flo
                                                   int n) {
     const int tid = threadIdx.x;
     if (tid == 0) {
-        const float inv_temp = 1.0f / cfg.temperature;
-        const float m        = cand_val[0] * inv_temp;
-        float sum            = 0.0f;
-        for (int j = 0; j < n; ++j) {
-            const float e = __expf(cand_val[j] * inv_temp - m);
-            prob[j]       = e;
-            sum += e;
+        while (n > 0 && !isfinite(cand_val[n - 1])) { --n; }
+        if (n == 0 || !isfinite(cand_val[0])) {
+            // No finite support: a diverged forward pass (NaN/inf logits) or a mask that licenses
+            // nothing. Keep the best candidate as the single support entry with a NaN weight; the
+            // callers' finiteness guards then publish kSamplerNonFiniteToken, which the runtime
+            // rejects as a failed round. Trapping here instead would poison the CUDA context.
+            prob[0]    = CUDART_NAN_F;
+            *n_support = 1;
+        } else {
+            const float inv_temp = 1.0f / cfg.temperature;
+            const float m        = cand_val[0] * inv_temp;
+            float sum            = 0.0f;
+            for (int j = 0; j < n; ++j) {
+                const float e = __expf(cand_val[j] * inv_temp - m);
+                prob[j]       = e;
+                sum += e;
+            }
+            const float e0           = prob[0];
+            const float min_p_thresh = (cfg.min_p > 0.0f) ? cfg.min_p * e0 : -1.0f;
+            const bool top_p_active  = (cfg.top_p < 1.0f);
+            const float top_p_target = cfg.top_p * sum;
+            float cum                = 0.0f;
+            int support              = 0;
+            for (int j = 0; j < n; ++j) {
+                // Candidates are sorted, so a zero weight ends the support: every later candidate
+                // is an underflowed token that must not be reachable by rounding.
+                if (j != 0 && !(prob[j] > 0.0f)) { break; }
+                if (min_p_thresh >= 0.0f && prob[j] < min_p_thresh) { break; }
+                cum += prob[j];
+                support = j + 1;
+                if (top_p_active && cum >= top_p_target) { break; }
+            }
+            if (support < 1) { support = 1; }
+            float ssum = 0.0f;
+            for (int j = 0; j < support; ++j) { ssum += prob[j]; }
+            const float inv = 1.0f / ssum;
+            for (int j = 0; j < support; ++j) { prob[j] *= inv; }
+            *n_support = support;
         }
-        const float e0           = prob[0];
-        const float min_p_thresh = (cfg.min_p > 0.0f) ? cfg.min_p * e0 : -1.0f;
-        const bool top_p_active  = (cfg.top_p < 1.0f);
-        const float top_p_target = cfg.top_p * sum;
-        float cum                = 0.0f;
-        int support              = 0;
-        for (int j = 0; j < n; ++j) {
-            // Candidates are sorted, so a zero weight ends the support: every later candidate is
-            // an unlicensed (-inf) or underflowed token that must not be reachable by rounding.
-            if (j != 0 && !(prob[j] > 0.0f)) { break; }
-            if (min_p_thresh >= 0.0f && prob[j] < min_p_thresh) { break; }
-            cum += prob[j];
-            support = j + 1;
-            if (top_p_active && cum >= top_p_target) { break; }
-        }
-        if (support < 1) { support = 1; }
-        float ssum = 0.0f;
-        for (int j = 0; j < support; ++j) { ssum += prob[j]; }
-        const float inv = 1.0f / ssum;
-        for (int j = 0; j < support; ++j) { prob[j] *= inv; }
-        *n_support = support;
     }
     __syncthreads();
 }

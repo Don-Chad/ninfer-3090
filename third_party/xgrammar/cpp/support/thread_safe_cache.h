@@ -281,8 +281,13 @@ class ThreadSafeLRUCache {
   std::size_t MaxMemorySize() const { return max_size_; }
   std::size_t MemorySize() const { return current_size_; }
 
-  Value Get(const Key& key) {
-    auto future = GetFuture(key);
+  Value Get(const Key& key) { return Get(key, computer_); }
+
+  // The miss factory runs synchronously and is never retained by the cache.
+  template <typename Factory>
+  Value Get(const Key& key, const Factory& factory, bool* waited = nullptr) {
+    auto future = GetFuture(key, factory);
+    if (waited) *waited = future.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
     return future.get().value;
   }
 
@@ -307,8 +312,9 @@ class ThreadSafeLRUCache {
   }
 
  private:
-  std::shared_future<SizedValue> GetFuture(const Key& key) {
-    if (this->max_size_ == kUnlimitedSize) return GetFutureUnlimited(key);
+  template <typename Factory>
+  std::shared_future<SizedValue> GetFuture(const Key& key, const Factory& factory) {
+    if (this->max_size_ == kUnlimitedSize) return GetFutureUnlimited(key, factory);
     auto& map = cache_.GetMap();
 
     {
@@ -323,8 +329,8 @@ class ThreadSafeLRUCache {
       }
     }
 
-    auto task = std::packaged_task<SizedValue()>{[this, &key] {
-      auto value = computer_(key);
+    auto task = std::packaged_task<SizedValue()>{[this, &key, &factory] {
+      auto value = factory(key);
       auto result = SizedValue{value, size_estimator_(value)};
       current_size_ += result.size;
       return result;
@@ -360,7 +366,8 @@ class ThreadSafeLRUCache {
     return future;
   }
 
-  std::shared_future<SizedValue> GetFutureUnlimited(const Key& key) {
+  template <typename Factory>
+  std::shared_future<SizedValue> GetFutureUnlimited(const Key& key, const Factory& factory) {
     auto& map = cache_.GetMap();
 
     {
@@ -369,8 +376,8 @@ class ThreadSafeLRUCache {
       if (it != map.end()) return it->second.value;
     }
 
-    auto task = std::packaged_task<SizedValue()>{[this, &key] {
-      auto value = computer_(key);
+    auto task = std::packaged_task<SizedValue()>{[this, &key, &factory] {
+      auto value = factory(key);
       auto result = SizedValue{value, size_estimator_(value)};
       current_size_ += result.size;
       return result;

@@ -9,13 +9,23 @@
 #include <string>
 #include <string_view>
 
+namespace ninfer::text {
+struct ParsedJsonNumbers;
+}
+
 namespace ninfer::serve {
+void validate_schema_number_input(const text::ParsedJsonNumbers& parsed);
 
 [[noreturn]] void bad_request(std::string message, std::string param = {}, std::string code = {});
 
 std::optional<int> optional_int(const RequestJson& object, const char* key);
 std::optional<double> optional_number(const RequestJson& object, const char* key);
 bool optional_bool(const RequestJson& object, const char* key, bool fallback);
+enum class JsonFormatProtocol { Chat, Responses, Anthropic };
+void parse_json_output_format(const RequestJson& format, GenerationRequest& request,
+                              const std::string& param, JsonFormatProtocol protocol);
+
+void parse_structured_outputs(const RequestJson& body, GenerationRequest& request);
 
 // The NInfer `graft` extension field: a graft name, "" for explicitly none, or absent/null (nullopt)
 // to take the server's default graft. Whether the name is loaded is checked against the server's
@@ -28,15 +38,5 @@ std::optional<std::string> parse_graft_field(const RequestJson& body);
 std::optional<std::uint32_t> parse_thinking_budget_field(const RequestJson& body);
 
 [[nodiscard]] bool valid_tool_name(std::string_view name, std::size_t maximum_length) noexcept;
-
-// Structured output. `schema` must be a JSON Schema object; `param` names the protocol field for
-// errors. The schema is kept serialized in its original member order, which is the order the
-// Engine emits properties in.
-[[nodiscard]] ninfer::OutputFormat json_schema_output_format(const RequestJson& schema, bool strict,
-                                                             const std::string& param);
-// Rejects combinations that a structured-output request cannot honor: active tools (tool calls are
-// not JSON values) and ignore_eos (a completed value can only be followed by a stop token).
-void validate_output_format_compatibility(const GenerationRequest& request,
-                                          const std::string& param);
 
 } // namespace ninfer::serve

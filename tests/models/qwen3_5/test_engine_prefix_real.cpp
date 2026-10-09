@@ -543,6 +543,9 @@ int exercise_explicit_prefix(const char* artifact) {
     request.execution.requested_output_tokens = 3;
     request.execution.sampling.temperature    = 0.0F;
     request.stop.include_model_defaults       = false;
+    // Tools are declared but model EOS is off to fix the output length, so these cache tests
+    // opt out of the default Basic tool constraint, which requires model EOS.
+    request.tool_choice.constraints           = ninfer::ToolConstraintMode::Automatic;
 
     std::string description;
     for (std::uint32_t index = 0; index < 120; ++index) { description += "stable-schema "; }
@@ -638,6 +641,7 @@ int exercise_nested_tool_markers(const char* artifact) {
     request.execution.sampling.temperature    = 0.0F;
     request.execution.allow_prefix_reuse      = true;
     request.stop.include_model_defaults       = false;
+    request.tool_choice.constraints           = ninfer::ToolConstraintMode::Automatic;
 
     // A single source creates both markers. Each probe changes the user suffix so the
     // private response/endpoint cannot satisfy the shared-prefix conformance check.
@@ -1112,6 +1116,7 @@ int exercise_rewrite_checkpoints(ninfer::Engine& engine) {
         result.execution.sampling.temperature    = 0.0F;
         result.execution.allow_prefix_reuse      = reuse;
         result.stop.include_model_defaults       = false;
+        result.tool_choice.constraints           = ninfer::ToolConstraintMode::Automatic;
         return result;
     };
 
@@ -1217,6 +1222,7 @@ int exercise_agent_continuation(const char* artifact) {
     request.execution.sampling.temperature    = 0.0F;
     request.execution.allow_prefix_reuse      = true;
     request.stop.include_model_defaults       = false;
+    request.tool_choice.constraints           = ninfer::ToolConstraintMode::Automatic;
     const auto opener_tokens =
         static_cast<std::uint32_t>(engine.tokenize_text("<|im_start|>assistant\n<think>\n").size());
     const auto closing_tokens =
@@ -1368,6 +1374,7 @@ int exercise_rewrite_branch(const char* artifact) {
         value.execution.sampling.temperature    = 0.0F;
         value.execution.allow_prefix_reuse      = reuse;
         value.stop.include_model_defaults       = false;
+        value.tool_choice.constraints           = ninfer::ToolConstraintMode::Automatic;
         return value;
     };
 
