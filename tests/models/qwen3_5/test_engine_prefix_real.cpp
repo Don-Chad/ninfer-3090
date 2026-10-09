@@ -4203,7 +4203,7 @@ int verify_loaded_product(const ninfer::Engine& engine) {
 int exercise_lazy_output_reservation(const char* artifact) {
     const auto base_options = [&](std::uint32_t context, std::uint32_t reservation,
                                   std::uint32_t lanes) {
-        ninfer::EngineOptions options = slot_engine_options(artifact, false, nullptr, nullptr);
+        ninfer::EngineOptions options = store_engine_options(artifact);
         options.max_context                = context;
         options.kv_capacity                = ninfer::KvCapacityPolicy::explicit_capacity(context);
         options.max_concurrency            = lanes;
@@ -4229,13 +4229,13 @@ int exercise_lazy_output_reservation(const char* artifact) {
     ninfer::GenerationResult full;
     {
         ninfer::Engine engine(base_options(4096, 0, 1));
-        full = engine.generate(engine.prepare(slot_conversation(prompt)), request_for(1200));
+        full = engine.generate(engine.prepare(store_conversation(prompt)), request_for(1200));
     }
     ninfer::GenerationResult lazy;
     ninfer::RuntimeStats lazy_stats;
     {
         ninfer::Engine engine(base_options(4096, 100, 1));
-        lazy       = engine.generate(engine.prepare(slot_conversation(prompt)), request_for(1200));
+        lazy       = engine.generate(engine.prepare(store_conversation(prompt)), request_for(1200));
         lazy_stats = engine.runtime_stats();
     }
     if (full.generated_token_ids.size() != 1200 || lazy.generated_token_ids != full.generated_token_ids ||
@@ -4256,8 +4256,8 @@ int exercise_lazy_output_reservation(const char* artifact) {
     // Two requests whose full budgets cannot both fit a 1024-token pool.
     const auto run_pair = [&](std::uint32_t reservation, ninfer::RuntimeStats& stats) {
         ninfer::Engine engine(base_options(1024, reservation, 2));
-        auto first  = engine.submit(engine.prepare(slot_conversation(prompt)), request_for(900));
-        auto second = engine.submit(engine.prepare(slot_conversation(
+        auto first  = engine.submit(engine.prepare(store_conversation(prompt)), request_for(900));
+        auto second = engine.submit(engine.prepare(store_conversation(
                                         std::vector<std::string>{"Count down from nine hundred."})),
                                     request_for(900));
         std::pair<ninfer::GenerationResult, ninfer::GenerationResult> out{first.wait(), second.wait()};
