@@ -653,6 +653,9 @@ void GenerationService::warmup() {
     turn.content.push_back(std::move(content));
     request.messages.push_back(std::move(turn));
     request.max_tokens = 4;
+    // Warmup runs outside the context cache, and a direct --default-graft exists only as a cached
+    // checkpoint, so it opts out of the default graft.
+    request.graft = std::string();
     PreparedRequest prepared =
         prepare_impl(request, GenerationConsumerMode::Aggregate, {}, {}, {},
                      CacheParticipation::Disabled, DeadlinePolicy::UnboundedStartup);

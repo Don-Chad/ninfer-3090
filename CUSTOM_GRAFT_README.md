@@ -75,8 +75,8 @@ build-ninja\apps\ninfer-serve.exe ^
 ```
 
 `--graft NAME=PATH` is repeatable — load multiple grafts side by side. Each
-direct-KV or softprompt-KV graft is injected into a pinned shared-prefix slot
-at startup. Prefill-KV grafts use token replay instead.
+direct-KV or softprompt-KV graft is installed at startup as a pinned context-cache
+checkpoint. Prefill-KV grafts use token replay instead.
 
 ## 4. Select the graft per request
 
@@ -103,38 +103,42 @@ can still opt out with `"graft": ""` or pick another loaded graft by name.
 
 ## What happens under the hood
 
-### Startup (inject_direct_graft)
+### Startup (`Program::install_external_checkpoint`)
 
-1. K/V tensors are written into the paged KV cache via `kv_cache_append`
-   (16 attention layers, BF16).
-2. GDN conv and recurrent state are transposed and uploaded into a state image
-   (48 linear layers, conv BF16, recurrent FP32).
-3. The shared-prefix slot is set to **Pinned** role (never evicted) and
-   registered in `graft_prefix_slots` by name.
+1. K/V tensors are written into fresh Main KV pages through `kv_cache_append`, the
+   same Op prefill uses, so every `--kv-dtype` receives the representation prefill
+   would have written (16 attention layers on Qwen3.8-27B).
+2. GDN conv and recurrent state are transposed into a StateImage (48 linear layers;
+   conv BF16, recurrent FP32 or FP16 as the server stores it).
+3. One immutable SharedPrefix checkpoint is published whose identity is the graft's
+   placeholder ids at positions `[0, n)`. It holds a permanent lease: no reclaim,
+   demotion or release can choose it. The Engine advertises it as a pinned shared
+   prefix, and re-advertises (or reinstalls) it whenever the context cache is cleared.
+4. A speculative draft's context over the graft (MTP KV, DFlash context features) is
+   zero-filled; the container carries none.
 
-### Request admission (inspect_admission → inspect_lane)
+### Request admission
 
-1. Frontend sets `prompt.graft_name` and `prompt.graft_frontier` from the
-   graft metadata.
-2. Resource manager calls `inspect_admission` with no external source.
-3. Graft bypass activates: looks up the pinned slot, creates a temporary
-   `SharedPrefixHandle`, synthesizes a `SharedStablePrefix` checkpoint.
-4. `inspect_lane` receives `is_graft=true`, skips token-identity matching
-   (grafts have no token sequence), and sets `ReusePath::SharedStablePrefix`
-   with `reuse_base = graft_frontier`.
-5. Generation starts from the graft's frontier position — no prefill needed.
+1. The Frontend puts the graft's placeholder ids in front of the rendered prompt and
+   marks them as an external prefix.
+2. Ordinary prefix matching finds the pinned checkpoint (or a deeper checkpoint that
+   descends from it); a source shallower than the graft is refused, so the
+   placeholders are never prefilled.
+3. The request forks the graft's KV pages and state, and prefill starts at `n`.
 
 ### Key properties
 
 - **No prefill cost.** The graft is not prefilled per request, but its slots
   count toward `--max-context` and the reported prompt tokens.
-- **Pinned lifetime.** The slot is never evicted by cache pressure; it lives
-  for the duration of the server process.
-- **Multiple grafts.** Each occupies its own shared-prefix slot. Requests
-  select one by name or use none.
-- **Hybrid model support.** Works on Qwen3.8-27B's mixed architecture
-  (48 linear-attention + 16 full-attention layers). Both the KV cache and
-  the GDN state (conv + recurrent) are injected.
+- **Pinned lifetime.** The checkpoint is never evicted by cache pressure; it lives
+  for the duration of the server process. Its StateImage is added on top of
+  `--device-state-slots` and its KV pages on top of the planned KV capacity.
+- **Needs the context cache.** A server with prefix reuse disabled refuses direct
+  grafts at startup, and a request that disables prefix reuse cannot select one.
+- **Speculative decoding.** Output is that of the target over the installed state;
+  only the draft acceptance rate over the first suffix tokens can fall.
+- **Multiple grafts.** Each has its own pinned checkpoint. Requests select one by
+  name or use none.
 
 ---
 

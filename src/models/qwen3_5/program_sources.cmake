@@ -21,6 +21,7 @@ target_sources(ninfer_model_runtime PRIVATE
 
   "${CMAKE_CURRENT_LIST_DIR}/program/storage/sequence.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/storage/checkpoints.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/program/storage/graft_checkpoint.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/program/storage/draft_context.cpp"
 
   "${CMAKE_CURRENT_LIST_DIR}/program/transactions/context_transaction.cpp"

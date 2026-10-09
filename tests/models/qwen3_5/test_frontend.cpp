@@ -1325,10 +1325,11 @@ int test_prompt_graft() {
     return failures;
 }
 
-// direct_kv and softprompt_kv grafts need KV/state injection into a pinned context entry, which
-// the context-cache engine does not provide yet; the Frontend refuses them when it is built rather
-// than preparing prompts whose placeholder positions no Program could restore.
-int test_direct_graft_rejected() {
+// direct_kv and softprompt_kv grafts are installed as pinned checkpoints. A request selecting one
+// carries the graft's placeholder ids at [0, n) and marks them as an external prefix, so execution
+// must bind to that checkpoint instead of prefilling the placeholders. Nothing is published at the
+// graft frontier: the pinned checkpoint already is that prefix.
+int test_direct_graft_prepare() {
     using ninfer::models::qwen3_5::GraftKind;
     int failures = 0;
     for (const GraftKind kind : {GraftKind::DirectKV, GraftKind::SoftpromptKV}) {
@@ -1336,7 +1337,57 @@ int test_direct_graft_rejected() {
         graft.name            = "direct";
         graft.kind            = kind;
         graft.n_slots         = 4;
-        graft.placeholder_ids = {101, 102, 103, 104};
+        graft.placeholder_ids = {fixture_byte_token('p'), fixture_byte_token('q'),
+                                 fixture_byte_token('r'), fixture_byte_token('s')};
+        ninfer::models::qwen3_5::FrontendOptions options;
+        options.max_context     = std::numeric_limits<std::uint32_t>::max();
+        options.grafts          = {graft};
+        const Frontend frontend = make_frontend(resources(), options);
+        const auto input        = [](std::string graft_name) {
+            ninfer::ChatMessage message;
+            message.role = ninfer::ChatRole::User;
+            message.parts.push_back(ninfer::MessagePart{
+                       .kind = ninfer::MessagePartKind::Text, .text = "x", .media = {}});
+            ninfer::PromptInput prompt;
+            prompt.messages.push_back(std::move(message));
+            prompt.options.graft = std::move(graft_name);
+            return prompt;
+        };
+        const auto plain_prompt   = frontend.prepare(input(""));
+        const auto grafted_prompt = frontend.prepare(input("direct"));
+        const auto& plain         = FrontendFactory::inspect(plain_prompt);
+        const auto& grafted       = FrontendFactory::inspect(grafted_prompt);
+        std::vector<ninfer::TokenId> expected = graft.placeholder_ids;
+        expected.insert(expected.end(), plain.token_ids.begin(), plain.token_ids.end());
+        failures += check(grafted.token_ids == expected && grafted.external_prefix_tokens == 4 &&
+                              plain.external_prefix_tokens == 0,
+                          "a direct graft did not prefix its placeholders as an external prefix");
+        bool positions = true;
+        for (int axis = 0; axis < 3; ++axis) {
+            const auto shifted = grafted.position_axis(axis);
+            const auto base    = plain.position_axis(axis);
+            for (std::size_t i = 0; i < 4; ++i) { positions &= shifted[i] == static_cast<int>(i); }
+            for (std::size_t i = 0; i < base.size(); ++i) {
+                positions &= shifted[4 + i] == base[i] + 4;
+            }
+        }
+        failures += check(positions, "direct graft positions are not contiguous with the prompt");
+        const auto& opportunities = grafted.context_cache.opportunities;
+        failures += check(std::none_of(opportunities.begin(), opportunities.end(),
+                                       [](const auto& opportunity) {
+                                           return opportunity.frontier <= 4;
+                                       }),
+                          "a direct graft published a capture inside its pinned prefix");
+        failures += check(frontend.count_tokens(input("direct")) ==
+                              frontend.count_tokens(input("")) + 4,
+                          "token counting ignored the direct graft");
+    }
+    {
+        ninfer::models::qwen3_5::PromptGraft graft;
+        graft.name            = "short";
+        graft.kind            = GraftKind::DirectKV;
+        graft.n_slots         = 4;
+        graft.placeholder_ids = {fixture_byte_token('p'), fixture_byte_token('q')};
         ninfer::models::qwen3_5::FrontendOptions options;
         options.max_context = std::numeric_limits<std::uint32_t>::max();
         options.grafts      = {graft};
@@ -1344,7 +1395,7 @@ int test_direct_graft_rejected() {
         try {
             (void)make_frontend(resources(), options);
         } catch (const std::invalid_argument&) { rejected = true; }
-        failures += check(rejected, "a KV-injecting prompt graft was accepted");
+        failures += check(rejected, "a direct graft without a placeholder per slot was accepted");
     }
     return failures;
 }
@@ -2941,7 +2992,7 @@ int main() {
     failures += test_invalid_public_part_enums(frontend);
     failures += test_text_and_image_prepare(frontend);
     failures += test_prompt_graft();
-    failures += test_direct_graft_rejected();
+    failures += test_direct_graft_prepare();
     failures += test_media_token_ids_come_from_tokenizer();
     failures += test_template_media_contract();
     failures += test_image_resize_rejection_policy();

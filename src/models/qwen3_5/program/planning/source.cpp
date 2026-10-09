@@ -30,6 +30,14 @@ ProgramImpl::inspect_source(const RequestBasePlan& base, std::optional<Checkpoin
     SourceCandidate candidate{.checkpoint    = handle,
                               .reused_tokens = handle ? checkpoint(*handle).frontier : 0};
     const auto& prompt       = *base.impl_->prompt;
+    // Installed external context exists only as its checkpoint and that checkpoint's descendants;
+    // a shallower source would prefill placeholder ids.
+    if (candidate.reused_tokens < prompt.external_prefix_tokens) { return std::nullopt; }
+    // An exact hit samples from the source's tail hidden, which installed context does not carry.
+    if (handle && candidate.reused_tokens == base.summary().prompt_tokens &&
+        !checkpoint(*handle).tail_hidden_valid) {
+        return std::nullopt;
+    }
     candidate.remaining_work = runtime::make_prefill_work(
         candidate.reused_tokens, base.summary().prompt_tokens - candidate.reused_tokens, 0, 0,
         prefill_chunk);

@@ -344,8 +344,8 @@ PromptGraft load_prompt_graft(const GraftSource& source, const TextConfig& text)
     return graft;
 }
 
-std::uint32_t count_direct_grafts(const std::vector<GraftSource>& sources) {
-    std::uint32_t direct = 0;
+std::vector<std::uint32_t> direct_graft_slots(const std::vector<GraftSource>& sources) {
+    std::vector<std::uint32_t> direct;
     for (const GraftSource& source : sources) {
         const GraftError error(source);
         std::filesystem::path sidecar_path = source.path;
@@ -359,7 +359,10 @@ std::uint32_t count_direct_grafts(const std::vector<GraftSource>& sources) {
         }
         error.require(meta.is_object(), "sidecar is not a JSON object");
         if (parse_graft_kind(json_string(meta, "kind", error), error) != GraftKind::PrefillKV) {
-            ++direct;
+            const std::uint64_t slots = json_u64(meta, "n_slots", error);
+            error.require(slots > 0 && slots <= std::numeric_limits<std::uint32_t>::max(),
+                          "graft slot count is out of range");
+            direct.push_back(static_cast<std::uint32_t>(slots));
         }
     }
     return direct;

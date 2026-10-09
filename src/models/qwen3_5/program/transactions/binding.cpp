@@ -69,6 +69,9 @@ BindingReservation ProgramImpl::start_binding(const RequestBasePlan& base, runti
                             (resume && checkpoint(*source).frontier > resume->frontier()))))) {
         return {.source_valid = false};
     }
+    if (!own_snapshot && !source && base.impl_->prompt->external_prefix_tokens != 0) {
+        return {.source_valid = false}; // installed context cannot be recomputed from the root
+    }
     ContextTransaction transaction;
     transaction.kind               = ContextOperationKind::Bind;
     transaction.lane               = lane;

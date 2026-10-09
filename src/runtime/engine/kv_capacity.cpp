@@ -45,7 +45,8 @@ std::uint32_t explicit_page_groups(const KvCapacityPolicy& policy,
         throw std::invalid_argument("explicit KV capacity must be positive");
     }
     const std::uint64_t pages =
-        1ULL + (static_cast<std::uint64_t>(policy.explicit_tokens) - 1ULL) / curve.main_page_tokens;
+        1ULL + (static_cast<std::uint64_t>(policy.explicit_tokens) - 1ULL) / curve.main_page_tokens +
+        curve.pinned_main_page_groups;
     if (pages > std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("explicit KV page count exceeds uint32");
     }

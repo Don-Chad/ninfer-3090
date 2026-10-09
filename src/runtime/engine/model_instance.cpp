@@ -2,6 +2,7 @@
 #include "artifact/reader.h"
 #include "artifact/formats.h"
 #include "core/startup.h"
+#include "models/qwen3_5/frontend/graft.h"
 #include "models/qwen3_5/load.h"
 #include "models/qwen3_5/measurement.h"
 #include "runtime/engine/host_cache.h"
@@ -69,9 +70,6 @@ void reject_unavailable_options(const EngineOptions& options) {
         throw std::invalid_argument(
             "multi-GPU pipeline stages are not available on this build yet; use one device");
     }
-    if (!options.grafts.empty()) {
-        throw std::invalid_argument("prompt grafts are not available on this build yet");
-    }
     if (options.context_store.enabled()) {
         throw std::invalid_argument("the context store is not available on this build yet");
     }
@@ -92,6 +90,9 @@ EngineOptions normalize_engine_options(EngineOptions options) {
     case EnginePurpose::Generation:
         break;
     case EnginePurpose::CausalScoring:
+        if (!options.grafts.empty()) {
+            throw std::invalid_argument("a CausalScoring Engine takes no prompt grafts");
+        }
         options.max_concurrency      = 1;
         options.max_pending_requests = 1;
         options.prefill_chunk        = 1024;
@@ -111,6 +112,14 @@ EngineOptions normalize_engine_options(EngineOptions options) {
 
     ContextCacheOptions& cache      = options.context_cache;
     const std::uint32_t concurrency = options.max_concurrency;
+    // Each direct graft is installed as a pinned context-cache checkpoint that holds one StateImage
+    // for the Engine's life, so the Device state pool grows by one per graft.
+    const auto direct_grafts = static_cast<std::uint32_t>(
+        models::qwen3_5::direct_graft_slots(options.grafts).size());
+    if (direct_grafts != 0 && !cache.enabled) {
+        throw std::invalid_argument(
+            "direct prompt grafts are held in the context cache, which is disabled");
+    }
     if (cache.host_cache_percent) {
         if (!cache.auto_host_cache) {
             throw std::invalid_argument("host_cache_percent needs auto_host_cache");
@@ -126,7 +135,7 @@ EngineOptions normalize_engine_options(EngineOptions options) {
         throw std::invalid_argument(
             "auto_host_cache sizes the Host context capacity; leave host_capacity_bytes unset");
     }
-    cache.device_state_slots = cache.device_state_slots.value_or(concurrency);
+    cache.device_state_slots = cache.device_state_slots.value_or(concurrency) + direct_grafts;
     const std::uint64_t total_device_state_slots =
         static_cast<std::uint64_t>(concurrency) + *cache.device_state_slots;
     if (total_device_state_slots > std::numeric_limits<std::uint32_t>::max()) {
@@ -147,10 +156,34 @@ ModelInstance::ModelInstance(std::unique_ptr<models::qwen3_5::Model> source,
                                .media_cache_bytes        = options.media_cache_bytes,
                                .media_live_bytes         = options.media_live_bytes,
                                .media_preprocess_threads = options.media_preprocess_threads,
-                               .vision_max_merged_tokens = options.vision_max_merged_tokens})),
+                               .vision_max_merged_tokens = options.vision_max_merged_tokens,
+                               .grafts                   = models::qwen3_5::load_prompt_grafts(
+                                   options.grafts, model->config().text)})),
       capacity(options.max_context) {}
 
 ModelInstance::~ModelInstance() = default;
+
+void ModelInstance::install_external_checkpoints() {
+    const auto& grafts = frontend.grafts();
+    if (external_checkpoints.empty()) {
+        for (const auto& graft : grafts) {
+            if (graft.kind != models::qwen3_5::GraftKind::PrefillKV) {
+                external_checkpoints.push_back(program->install_external_checkpoint(graft));
+            }
+        }
+        return;
+    }
+    // Reinstallation keeps each graft's position; only a handle the Program no longer holds is
+    // installed again.
+    std::size_t index = 0;
+    for (const auto& graft : grafts) {
+        if (graft.kind == models::qwen3_5::GraftKind::PrefillKV) { continue; }
+        auto& handle = external_checkpoints.at(index++);
+        if (!program->valid_checkpoint(handle)) {
+            handle = program->install_external_checkpoint(graft);
+        }
+    }
+}
 
 ConstructedModel construct_model(EngineOptions& options, DeviceContext& device) {
     validate_options(options);
@@ -227,6 +260,7 @@ ConstructedModel construct_model(EngineOptions& options, DeviceContext& device) 
     StartupPhaseScope program(options.startup_observer, StartupPhase::ProgramInitialize);
     instance->program = models::qwen3_5::create_program(instance->parameters, std::move(sequence),
                                                         device, options.startup_observer);
+    instance->install_external_checkpoints();
     device.synchronize();
     program.complete();
     // What the Program actually pinned, which can be below the planned capacity where pinned host

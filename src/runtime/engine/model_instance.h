@@ -7,6 +7,7 @@
 #include "runtime/engine/kv_capacity.h"
 
 #include <memory>
+#include <vector>
 
 namespace ninfer::runtime {
 
@@ -21,8 +22,13 @@ struct ModelInstance {
     KvCapacityResolution kv_capacity_resolution;
     const std::uint32_t capacity;
     std::unique_ptr<models::qwen3_5::Program> program;
+    // One pinned checkpoint per direct (direct_kv or softprompt_kv) graft, in Frontend graft order.
+    std::vector<models::qwen3_5::CheckpointHandle> external_checkpoints;
 
     ModelInstance(std::unique_ptr<models::qwen3_5::Model> model, const EngineOptions& options);
+    // Installs every direct graft as a pinned checkpoint, or, once installed, reinstalls any the
+    // Program no longer holds. Requires an idle Program.
+    void install_external_checkpoints();
     ~ModelInstance();
     ModelInstance(const ModelInstance&)            = delete;
     ModelInstance& operator=(const ModelInstance&) = delete;

@@ -89,6 +89,7 @@ public:
             options.max_pending_requests == 0 || pending_timeout_.count() <= 0) {
             throw std::invalid_argument("Engine core bounds are invalid");
         }
+        restore_external_sources();
         paused_.reserve(max_outstanding_);
         std::promise<void> startup;
         std::future<void> started = startup.get_future();
@@ -2260,6 +2261,9 @@ private:
         }
         paused_.clear();
         resources_.release_all(*instance_.program);
+        try {
+            restore_external_sources();
+        } catch (...) {}
         for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
             if (slots_[lane] != nullptr) {
                 complete_error(slots_[lane], error);
@@ -2269,6 +2273,18 @@ private:
         if (materializing_request != nullptr) { complete_error(materializing_request, error); }
         for (const auto& request : pending) { complete_error(request, error); }
         publish_runtime_stats();
+    }
+
+    // Installed external context (direct prompt grafts) must stay bound to its pinned checkpoints
+    // whenever requests can be admitted. Reinstalls any graft the Program no longer holds and
+    // re-advertises every one as a pinned shared prefix. Runs at construction, after the context
+    // cache is cleared, and is the hook a worker recovery calls once it has re-established an idle,
+    // empty physical baseline. Requires an idle Program.
+    void restore_external_sources() {
+        instance_.install_external_checkpoints();
+        for (const auto handle : instance_.external_checkpoints) {
+            resources_.pin_shared(*instance_.program, handle);
+        }
     }
 
     // Worker-only, before the latch clears them: the requests a failure is delivered to.

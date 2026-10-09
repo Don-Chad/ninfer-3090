@@ -309,7 +309,9 @@ forward 重叠；两段共享同一个资源预留和提交边界。
 本 fork 的多 GPU layer pipeline（`--devices A,B,...`，Linux；每个 stage 整层拥有权重、KV plane、GDN
 state 与 workspace，embedding、head、round state 与 sampling 留在 rank 0，设计见
 [pipeline-parallel-plan.md](pipeline-parallel-plan.md)）尚未移植到本文描述的上下文引擎：源码保留在树中，
-启动时拒绝多于一个设备。需要注入 KV 的 prompt graft 同样暂时在启动时拒绝。
+启动时拒绝多于一个设备。
+
+需要注入 KV 的 prompt graft（`direct_kv`、`softprompt_kv`）由 `Program::install_external_checkpoint` 在启动时安装为永久租约的 SharedPrefix checkpoint，其身份是 graft 的占位 token；ResourceManager 将其登记为 pinned shared 条目，victims、reclaim、erase 与 `release_all` 都不会选中它。EngineCore 的 `restore_external_sources()` 在构造和清空缓存后重新登记（必要时重新安装），worker 恢复在重建空闲物理基线后也应调用它。请求的 `external_prefix_tokens` 要求来源至少覆盖 graft，因此占位 token 永远不会被 prefill。
 
 本 fork 的 Vision overlay residency（`--vision-residency overlay`）：Vision tower 常驻 pinned host，
 每个媒体项在一个有界 window 中编码，window 从空闲 Main KV page 借用设备内存（VMM granule 重映射，

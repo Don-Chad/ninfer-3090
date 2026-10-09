@@ -1188,22 +1188,20 @@ Startup validates each graft against the loaded model and refuses to start on an
 - the sidecar's payload sha256;
 - the replay ids against the vocabulary.
 
-> **Temporarily unavailable on this build:** grafts whose kind needs KV injection
-> (`softprompt_kv`, `direct_kv`) are rejected at startup while injection is ported to the new
-> context engine. The next paragraph describes how they ran on the previous engine.
-
 Trained `softprompt_kv` and `direct_kv` grafts carry no replayable token ids. Their stored K/V and
-Gated DeltaNet state are instead written at startup into a pinned shared-prefix slot, and grafted
-requests start from it. Because nothing is replayed, these grafts cover the text layers only: the
-graft carries no draft-backend state, so under `--spec` the MTP or DFlash cache over the graft's
-positions is zero-filled and the draft proposes without graft context there. Output is unchanged,
-because the target verifies every proposal against the injected state; only the acceptance rate
-can fall. Each one holds a Device StateImage and a shared-prefix entry for the life of the server;
-startup adds them on top of `--device-state-slots`, and a disabled context cache refuses them. Grafted requests use the context cache like any other: the pinned slot
-is the root, and later turns and shared prefixes are captured after it. In the prompt the graft's
-positions are held by ids derived from the container's sha256, so a cached prefix is only ever
-matched by requests using the same graft. With `--devices`, each layer's K/V and state are written on the device
-of the stage that holds that layer.
+Gated DeltaNet state are instead installed at startup as a pinned context-cache checkpoint, and
+grafted requests start from it. The K/V are written through the same append Op prefill uses, so
+every `--kv-dtype` stores what prefill would store for the same rows. Because nothing is replayed,
+these grafts cover the text layers only: the graft carries no draft-backend state, so under `--spec`
+the MTP or DFlash context over the graft's positions is zero-filled and the draft proposes without
+graft context there. Output is that of the target over the installed state, because the target
+verifies every proposal; only the acceptance rate can fall. Each one holds a Device StateImage and
+its KV pages for the life of the server; startup adds them on top of `--device-state-slots` and the
+planned KV capacity, and a disabled context cache (`--no-prefix-reuse`) refuses them. Grafted
+requests use the context cache like any other: the pinned checkpoint is the root, it is never
+evicted, and later turns and shared prefixes are captured after it. In the prompt the graft's
+positions are held by ids derived from the container's sha256, so the checkpoint is only ever
+matched by requests using the same graft.
 
 ## Authentication and CORS
 

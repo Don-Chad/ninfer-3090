@@ -124,6 +124,9 @@ struct SequenceCapacityCurve {
     std::uint32_t main_page_tokens                   = 0;
     std::uint32_t minimum_main_page_groups           = 0;
     std::uint32_t maximum_main_page_groups           = 0;
+    // Pages held for the Engine's life by installed context (direct grafts). Included in the
+    // minimum and maximum; an explicit token capacity is granted on top of them.
+    std::uint32_t pinned_main_page_groups            = 0;
     std::size_t minimum_device_reservation_bytes     = 0;
     std::size_t bytes_per_additional_main_page_group = 0;
     std::vector<RankCapacityCurve> extra_ranks;

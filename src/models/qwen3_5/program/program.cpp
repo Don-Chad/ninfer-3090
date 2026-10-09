@@ -132,6 +132,10 @@ std::vector<float> Program::causal_score(PreparedPrompt&& prompt, std::uint32_t 
     return impl_->causal_score(PreparedPromptAccess::take(std::move(prompt)), target);
 }
 
+CheckpointHandle Program::install_external_checkpoint(const PromptGraft& graft) {
+    return impl_->install_external_checkpoint(graft);
+}
+
 std::optional<SourceCandidate>
 Program::inspect_source(const RequestBasePlan& base, std::optional<CheckpointHandle> checkpoint,
                         bool consume_source, std::span<const CheckpointHandle> private_points,
