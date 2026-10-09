@@ -287,9 +287,35 @@ Queue timeout、overload、输入超限和 request 无法表示属于请求级�
 不变量损坏会使 Engine 失败。Cleanup 先结束未决上下文和模型事务，再释放 resident/paused 资源与
 缓存，最后完成全部 response。内部状态损坏不能解释成 cache miss。
 
-本 fork 先前在 worker 异常后清空缓存并恢复服务的路径（`runtime/engine/worker_recovery.h`、
-`worker_fault.h`、`EngineOptions::fault_listener`）尚未接入本引擎，源码保留；在接入之前 Engine 失败
-即按上文锁存。
+### Worker 失败恢复（本 fork）
+
+上述 Engine-wide failure（锁存）只在无法证明干净状态时发生。Worker 捕获的 host 侧异常（不变量、
+容量或 unit 的 host 簿记错误；`CUDA_CHECK` 失败直接终止进程，不会到达这里）按以下顺序处理，实现在
+`runtime/engine/engine_core.h`，策略在 `runtime/engine/worker_recovery.h`：
+
+1. **Admission 局部失败**：为某个 Waiting 或 paused 请求做 admission（规划、选源、预留、开始 binding）
+   时抛出、且此次 admission 尚未触及任何 resident lane（`pause_resident` 会清除该归属）时，异常只属于该请求：
+   经 Program 自身的取消路径（`poll_context` + 已置位的 cancellation）中止它可能已开始的 Bind 或无主的
+   Demote，释放它在 ResourceManager 中的 source 与 continuation，只以该异常完成这一个请求。不影响其他
+   请求，不计入恢复次数与连续失败计数，经 `EngineFaultEvent::contained` 报告。
+2. **Device 检查**：先以不终止进程的方式排空 device（`DeviceContext::synchronize_status`）。sticky CUDA
+   错误说明 context 已不可用，任何清理都无法验证，直接锁存（不消耗也不推进连续失败计数）。
+3. **连续失败**：第三次连续失败（其间没有未取消的请求发布成功结果，且相邻两次间隔都小于 30 秒，见
+   `RecoveryStreak`）锁存。间隔不少于 30 秒的失败各自独立恢复。
+4. **恢复**：以该异常完成正在运行的 lane（含 pausing/capturing 的请求）与 materializing 请求；Program
+   `fail_all_cleanup` 结束未决上下文事务、PendingBatch 与所有 lane；失败请求释放各自的 source 与
+   continuation owner。Waiting 队列保留；paused 请求保留位置，但释放 snapshot 与 continuation 点，
+   之后经 replay 恢复。整个 context cache（owner、shared prefix、等待中的 source）清空，于是不再有任何
+   可选状态能掩盖泄漏：Program 的 `physical_usage()`（Device State slot、Main/Backend KV 页（含预留）、
+   Host State slot、Host KV 字节、Host context 字节）必须与 Engine 启动完成时记录的静止基线完全相等，且
+   没有打开的上下文事务；清理出错或不等即锁存。成功后 `RuntimeStats::engine_recoveries` 加一。
+
+每次失败（局部、恢复或锁存）经 `EngineOptions::fault_listener` 以 `EngineFaultEvent`（异常文本、执行单元、
+受影响请求与 lane、连续失败计数、锁存原因）报告；锁存时先使 `is_available()` 为 false 再通知，`ninfer-serve`
+记录 FATAL 并在宽限期后以状态 3 退出（`--no-exit-on-engine-failure` 时保持 503）。
+`runtime/engine/worker_fault.h` 是验证接缝：`arm_worker_failures`（prefill unit 执行后抛出）、
+`arm_decode_failures`（decode 执行后、commit 前抛出）、`arm_planning_failures`（admission 规划抛出）、
+`arm_device_faults`（让 device 检查报告故障）。
 
 ## 7. 物理执行与 CUDA Graph
 

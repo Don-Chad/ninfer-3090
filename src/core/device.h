@@ -171,6 +171,10 @@ struct DeviceContext {
     void activate_rank(std::size_t rank);
     void synchronize_rank(std::size_t rank) const;
     void synchronize() const;
+    // Drains every stream of every rank and reports the first CUDA error instead of aborting, so
+    // a caller can tell a sticky device fault (the context is unusable) from a host-side failure.
+    // Leaves the active rank's device current. cudaSuccess means the devices are usable.
+    [[nodiscard]] cudaError_t synchronize_status() const noexcept;
     int sm() const noexcept;
 
 private:
