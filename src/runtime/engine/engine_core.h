@@ -1034,6 +1034,9 @@ private:
             std::uint32_t best_frontier = resident_reuse + kMinimumHydrationGain - 1U;
             for (const runtime::ContextStore::Info& info : store_->list()) {
                 if (info.binding != eviction_model_binding_) { continue; }
+                // The binding does not include the context length, and an image deeper than this
+                // Engine's can never be restored: reading it would only evict sessions for a miss.
+                if (info.tokens > max_context_) { continue; }
                 for (const runtime::ContextStore::CheckpointKey& key : info.checkpoints) {
                     if (key.frontier <= best_frontier) { continue; }
                     const auto mine = request->base_plan->prefix_shortlist_key(key.frontier);
