@@ -117,6 +117,9 @@ struct SequencePlanImpl {
     WorkspacePlan workspace;
     std::size_t graph_allowance_bytes    = 0;
     std::size_t device_reservation_bytes = 0;
+    // What each further device reserves (device 1 first): its persistent state, the scratch its
+    // stage runs in, and its share of the graph allowance. Empty on one device.
+    std::vector<std::size_t> extra_rank_reservation_bytes;
 };
 
 // The widest forward pass a pipeline stage boundary carries: prefill columns, or every lane's
@@ -126,6 +129,11 @@ struct SequencePlanImpl {
         std::min(plan.prefill_chunk, plan.capacity),
         static_cast<std::uint64_t>(plan.max_concurrency) * (plan.draft_window + 1U));
 }
+
+// How many of the masked draft's feature layers pipeline stage `stage` owns. Zero for stage 0, which
+// captures straight into rank 0's buffers, and for a Program without a masked draft.
+[[nodiscard]] std::size_t stage_feature_layer_count(const SequencePlanImpl& plan,
+                                                    std::size_t stage);
 
 struct SequencePlannerImpl {
     SequencePlanningInputs inputs;

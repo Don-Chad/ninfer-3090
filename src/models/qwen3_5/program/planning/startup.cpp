@@ -776,14 +776,25 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
     if (parameters.text.split_execution()) {
         // Around its layers a stage holds the residual it received and its copy of the control
         // block (rank 0 holds the packed block instead, which is smaller), alive for the whole pass
-        // and so on top of the layers' own peak. Alignment slack for both allocations.
+        // and so on top of the layers' own peak. A masked draft adds the block of feature layers a
+        // stage collects, and rank 0 the block it receives them into, both at most the widest
+        // stage's. Alignment slack for every allocation.
         const std::uint64_t columns = stage_boundary_columns(plan);
         const std::size_t residual =
             static_cast<std::size_t>(columns) * static_cast<std::size_t>(config.hidden_size) * 2U;
         const std::size_t control = (6U * static_cast<std::size_t>(columns) + 16U) * 4U;
-        out.general_capacity =
-            checked_add(out.general_capacity, checked_add(residual, control, "stage boundary") + 1024U,
-                        "stage boundary workspace");
+        std::size_t widest_features = 0;
+        for (std::size_t stage = 1; stage < parameters.text.rank_count; ++stage) {
+            widest_features = std::max(widest_features, stage_feature_layer_count(plan, stage));
+        }
+        const std::size_t features =
+            checked_mul(widest_features, residual, "stage feature block workspace");
+        out.general_capacity = checked_add(
+            out.general_capacity,
+            checked_add(checked_add(residual, control, "stage boundary"), features,
+                        "stage boundary") +
+                2048U,
+            "stage boundary workspace");
     }
     out.capacity = out.general_capacity;
     if (plan.features.vision) {
@@ -819,12 +830,15 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
     if (options.max_concurrency == 0 || options.max_concurrency > kMaximumConcurrency) {
         throw std::invalid_argument("max_concurrency must be in [1,8]");
     }
+    if (parameters.text.rank_count != device.size() ||
+        parameters.text.rank_count != std::max<std::size_t>(options.devices.size(), 1)) {
+        throw std::invalid_argument("the model is split into " +
+                                    std::to_string(parameters.text.rank_count) +
+                                    " pipeline stages but " + std::to_string(device.size()) +
+                                    " devices are attached");
+    }
     // Parked features: their sources stay in the tree, but this Program has no execution route
     // for them yet, so they are refused here rather than silently dropped.
-    if (options.devices.size() > 1 || options.stage_layers.size() > 1 ||
-        parameters.text.rank_count != 1 || device.size() != 1) {
-        throw std::invalid_argument("multi-GPU pipeline stages are not available on this build yet");
-    }
     if (options.enable_vision && options.vision_residency == VisionResidency::Overlay) {
         throw std::invalid_argument(
             "--vision-residency overlay is not available on this build yet; use resident");
@@ -986,14 +1000,40 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->device_reservation_bytes = checked_add(
         checked_add(impl->persistent.bytes, impl->workspace.capacity, "sequence memory plan"),
         impl->graph_allowance_bytes, "sequence graph allowance");
-    if (!impl->persistent.extra_rank_bytes.empty() ||
-        !impl->persistent.extra_replay_records.empty()) {
-        throw std::logic_error("Qwen3.5 single-device sequence plan has further-device state");
+    // A further device runs its stage in a workspace of the same general size and holds its own
+    // persistent state. Its graph allowance is the primary device's scaled by the share of layers
+    // it runs; the primary keeps the whole figure, which only over-reserves it a little.
+    const auto& text = impl->parameters->text;
+    if (impl->persistent.extra_rank_bytes.size() + 1 != text.rank_count) {
+        throw std::logic_error("Qwen3.5 sequence plan does not cover every pipeline stage");
+    }
+    for (std::size_t rank = 1; rank < text.rank_count; ++rank) {
+        const std::uint64_t layers_here = text.stage_end(rank) - text.stage_begin[rank];
+        const std::size_t graph_share   = static_cast<std::size_t>(
+            (static_cast<std::uint64_t>(impl->graph_allowance_bytes) * layers_here) /
+            std::max<std::size_t>(text.layers.size(), 1));
+        impl->extra_rank_reservation_bytes.push_back(checked_add(
+            checked_add(impl->persistent.extra_rank_bytes[rank - 1],
+                        impl->workspace.general_capacity, "further device memory plan"),
+            graph_share, "further device graph allowance"));
     }
     return impl;
 }
 
 } // namespace
+
+std::size_t stage_feature_layer_count(const SequencePlanImpl& plan, std::size_t stage) {
+    if (stage == 0 || !plan.features.masked_draft()) { return 0; }
+    const auto& text = plan.parameters->text;
+    if (stage >= text.rank_count) { throw std::out_of_range("pipeline stage is out of range"); }
+    const auto& draft = plan.parameters->model.config().draft;
+    if (!draft) { throw std::logic_error("masked draft Program has no draft configuration"); }
+    const std::uint32_t begin = text.stage_begin[stage];
+    const std::uint32_t end   = text.stage_end(stage);
+    return static_cast<std::size_t>(
+        std::count_if(draft->target_layer_ids.begin(), draft->target_layer_ids.end(),
+                      [&](std::uint32_t layer) { return layer >= begin && layer < end; }));
+}
 
 std::uint32_t vision_item_token_bound(std::uint32_t capacity, const models::LoadOptions& features) {
     // Zero means "no caller-imposed bound", the same meaning FrontendOptions gives it (its
@@ -1047,6 +1087,9 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
           .minimum_device_reservation_bytes     = planner->minimum->device_reservation_bytes,
           .bytes_per_additional_main_page_group = 0,
     };
+    for (const std::size_t bytes : planner->minimum->extra_rank_reservation_bytes) {
+        planner->curve.extra_ranks.push_back({.minimum_device_reservation_bytes = bytes});
+    }
     if (minimum_pages < maximum_pages) {
         auto adjacent = build_sequence_candidate(inputs, minimum_pages + 1U);
         if (adjacent->device_reservation_bytes <= planner->minimum->device_reservation_bytes) {
@@ -1054,6 +1097,17 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
         }
         planner->curve.bytes_per_additional_main_page_group =
             adjacent->device_reservation_bytes - planner->minimum->device_reservation_bytes;
+        // A further device's stride may legitimately be zero: a stage with no attention layers
+        // holds no KV.
+        for (std::size_t rank = 0; rank < planner->curve.extra_ranks.size(); ++rank) {
+            if (adjacent->extra_rank_reservation_bytes[rank] <
+                planner->minimum->extra_rank_reservation_bytes[rank]) {
+                throw std::logic_error("Qwen3.5 sequence layout shrinks a device as KV grows");
+            }
+            planner->curve.extra_ranks[rank].bytes_per_additional_main_page_group =
+                adjacent->extra_rank_reservation_bytes[rank] -
+                planner->minimum->extra_rank_reservation_bytes[rank];
+        }
     }
     return planner;
 }
@@ -1074,6 +1128,14 @@ finalize_sequence_plan_impl(std::unique_ptr<qwen3_5::detail::SequencePlannerImpl
     if (plan->device_reservation_bytes != expected) {
         throw std::logic_error(
             "Qwen3.5 physical sequence layout is not affine in Main KV page capacity");
+    }
+    for (std::size_t rank = 0; rank < plan->extra_rank_reservation_bytes.size(); ++rank) {
+        if (plan->extra_rank_reservation_bytes[rank] !=
+            planner->curve.extra_rank_reservation_bytes(rank, main_page_groups)) {
+            throw std::logic_error(
+                "Qwen3.5 physical sequence layout is not affine in Main KV page capacity on a "
+                "further device");
+        }
     }
     return plan;
 }

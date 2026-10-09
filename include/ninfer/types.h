@@ -1125,6 +1125,11 @@ struct MemorySummary {
     std::size_t available_after_startup_bytes     = 0;
     std::size_t kv_capacity_headroom_bytes        = 0;
     std::size_t planned_slack_bytes               = 0;
+    // Pipeline stages (`devices`): the runtime reservation of each further stage's device (stage 1
+    // first; the fields above are stage 0's), and the stage whose device bounded the resolved KV
+    // capacity. Empty and 0 on one device.
+    std::vector<std::size_t> stage_runtime_reservation_bytes;
+    std::size_t kv_capacity_binding_stage = 0;
     std::size_t workspace_logical_peak_bytes      = 0;
     std::size_t cuda_graph_allowance_bytes        = 0;
     std::size_t kv_payload_bytes                  = 0;

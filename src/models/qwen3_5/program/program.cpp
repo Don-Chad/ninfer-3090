@@ -33,6 +33,11 @@ std::size_t SequencePlan::device_reservation_bytes() const noexcept {
     return impl_ != nullptr ? impl_->device_reservation_bytes : 0;
 }
 
+std::span<const std::size_t> SequencePlan::extra_rank_reservation_bytes() const noexcept {
+    if (impl_ == nullptr) { return {}; }
+    return {impl_->extra_rank_reservation_bytes.data(), impl_->extra_rank_reservation_bytes.size()};
+}
+
 std::size_t SequencePlan::workspace_capacity_bytes() const noexcept {
     return impl_ != nullptr ? impl_->workspace.capacity : 0;
 }

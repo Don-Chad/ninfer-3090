@@ -393,9 +393,10 @@ what it says about kernels and measurements still holds except where this sectio
       submitting the source stream's copies, so the source stalls whether or not the fence is
       there (measured both ways). The graph assertion replaces it. On Linux the same test could
       also be run as a real race; worth doing if this ever runs there.
-- [ ] **Not built for pipeline stages yet:** DFlash/DFlash2 refuse a split (DFlash needs
-      its feature taps carried across stage boundaries). Vision (resident and overlay) is allowed
-      but has only been exercised with `--devices 0,0`; real distinct-GPU behaviour is unverified.
+- [ ] **Pipeline stages on distinct GPUs are unverified on the current context engine.** The
+      re-port (DFlash/DFlash2 feature layers carried across stage boundaries, per-rank context
+      transactions, pause/replay) has only been exercised with `--devices 0,0`; resident vision
+      likewise. Overlay vision is parked.
       The default split's per-stage
       overheads are constants, not measured (`default_stage_layers`);
       prefill does not overlap stages (micro-chunk wavefront); tensor parallelism is unbuilt.
@@ -777,7 +778,7 @@ Ordered by expected value, not by section.
 | Speculative decoding not bit-identical to greedy | 3 | decide whether it should be; the divergence is a reduction-order effect in k+1-column verification and MTP reproduces it, so it predates DFlash2 | judgement, not measurement |
 | DFlash2 corpus acceptance on real text | 3 | bake a diverse corpus with `make_bench_corpus.py --source-text`, or extend the real-text sweep to report acceptance | a local HF tokenizer, which this box lacks |
 | `27b_load_plan` DFlash2 binding matrix | 3 | **half of it can run now**: both groupwise artifacts are on this disk (the "old" one is `models/qwen3_8_27b.ninfer`, SHA-verified). The two NVFP4 ones were never published and would have to be converted locally | artifacts nobody has |
-| DFlash2 + pipeline stages | 2 | refused today: its feature taps must cross stage boundaries; then needs a second GPU to check | design, then a second GPU |
+| DFlash2 + pipeline stages | 2 | built and identical to one device with `--devices 0,0`; needs a second GPU to check distinct devices | a second GPU |
 
 Two of those fourteen are hard-blocked on things no amount of work here provides (a second GPU, and
 artifacts that no longer exist). One is a judgement call rather than a measurement. The remaining
@@ -1213,9 +1214,9 @@ unreachable — this section has a poor record of being right about that.
 
 ### Needs a second GPU — one item, and it is the only one
 
-- [ ] **DFlash2 + pipeline stages.** DFlash refuses `--devices` with several stages: its feature
-      taps are read across layers, so they have to be carried across stage boundaries first. Once
-      they are, checking it needs a second card (`nvidia-smi` reports exactly one device here).
+- [ ] **DFlash2 + pipeline stages.** Feature layers past the first stage now cross back to rank 0
+      on their own link, and `--devices 0,0` output matches one device. Checking distinct devices
+      needs a second card (`nvidia-smi` reports exactly one device here).
 
 ### Needs an artifact we do not have — nothing is left here
 

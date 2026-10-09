@@ -175,8 +175,10 @@ private:
     // The layers one stage owns, on the device that stage's context is currently bound to.
     template <class Tap>
     void run_stage_layers(std::size_t stage, Tensor& x, Phase phase, Tap& tap);
-    // The whole layer stack across pipeline stages, ending with the residual back on rank 0.
-    void run_staged(Tensor& x, Phase phase);
+    // The whole layer stack across pipeline stages, ending with the residual back on rank 0. A
+    // feature tap receives every layer it names, wherever that layer ran.
+    template <class Tap>
+    void run_staged(Tensor& x, Phase phase, Tap& tap);
     // The Linear Attention state pool holding GDN layer `layer`, and its index within that pool.
     struct GdnStateRef {
         LinearAttentionStatePool* pool;

@@ -356,8 +356,19 @@ public:
     const WorkspacePlan workspace_plan;
 
     DeviceArena persistent;
+    // Pipeline stages only: the persistent state of each further device -- its layers' KV planes,
+    // block-table copy, recurrent state and replay records -- allocated in that device's memory.
+    std::vector<DeviceArena> persistent_by_rank;
     DeviceArena workspace_storage;
+    // Pipeline stages only: scratch for each further device, in that device's memory. `work`
+    // borrows a slice of each and switches between them as the layer loop walks stages, so every
+    // workspace call site keeps using one arena object.
+    std::vector<DeviceArena> workspace_storage_by_rank;
     WorkspaceArena work;
+    // Every rank's compute and transfer stream, rank 0 first. Objects whose memory spans ranks (KV
+    // planes and block tables, StateImage shards) issue each rank's copy on that rank's stream.
+    RankStreams compute_streams;
+    RankStreams transfer_streams;
     std::unique_ptr<qwen3_5::DecoderState> decoder;
     std::unique_ptr<HostContextArena> host_context_arena;
     std::unique_ptr<HostKVArena> host_kv_arena;
@@ -371,8 +382,15 @@ public:
     std::unique_ptr<qwen3_5::StateImageDevicePool> state_images;
     std::unique_ptr<qwen3_5::HostStatePool> host_state_images;
     std::unique_ptr<StateImageStore> state_store;
+    // ReplaySSM records and their fold for the first state shard; the further shards', each on its
+    // own device, are in the `extra_` vectors (shard 1 first).
     std::optional<GdnReplayRecords> replay_records;
     std::optional<ops::GdnReplayFoldPlan> replay_fold;
+    std::vector<std::unique_ptr<GdnReplayRecords>> extra_replay_records;
+    std::vector<std::unique_ptr<ops::GdnReplayFoldPlan>> extra_replay_fold;
+    // Only when the model is split over several devices: the state shards, replay records and
+    // links a forward pass crosses.
+    std::unique_ptr<execution::StageRuntime> stage_runtime;
     std::optional<DFlashPersistentState> dflash;
     qwen3_5::RoundState io;
     Tensor prefill_hidden;
@@ -482,8 +500,10 @@ public:
     };
 
     std::optional<ContextTransaction> context_transaction_;
-    CudaCompletionEvent context_source_ready_;
-    CudaCompletionEvent context_completion_;
+    // One event per rank: a context transaction copies on every rank's transfer stream, after that
+    // rank's compute stream, and is complete only when every rank's copies are.
+    RankFenceSet context_source_ready_;
+    RankFenceSet context_completion_;
     std::array<CudaEventTimer, 3> context_transfer_timers_;
     CudaEventTimer prefill_gpu_timer_;
 
@@ -508,6 +528,8 @@ public:
     [[nodiscard]] std::optional<CheckpointHandle> reserve_checkpoint();
     [[nodiscard]] std::optional<CheckpointHandle> detach_checkpoint(SequenceState&);
     void abort_context() noexcept;
+    // Drains every rank's transfer stream; CUDA failures are ignored, as on any cleanup path.
+    void synchronize_transfer_streams() const noexcept;
     void enqueue_context_transfers(ContextTransaction&);
     void enqueue_state_backup(ContextTransaction&);
     void copy_local_for_context(ContextTransaction&, std::int32_t source, std::int32_t destination);

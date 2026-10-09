@@ -25,6 +25,96 @@ namespace ninfer::models::qwen3_5::detail {
 
 static_assert(std::is_nothrow_move_assignable_v<SpeculativeStats>);
 
+namespace {
+
+// Persistent state for the ranks beyond the first, each allocated while its own device is current
+// so it lands in that card's memory. Empty on one device.
+std::vector<DeviceArena> make_rank_persistent(const DeviceContext& device,
+                                              const std::vector<std::size_t>& bytes_by_rank) {
+    if (bytes_by_rank.size() + 1 != device.size()) {
+        throw std::invalid_argument("the sequence plan does not cover every attached device");
+    }
+    std::vector<DeviceArena> out;
+    out.reserve(bytes_by_rank.size());
+    for (std::size_t index = 0; index < bytes_by_rank.size(); ++index) {
+        RankBinding bind(device, index + 1);
+        out.emplace_back(bytes_by_rank[index]);
+    }
+    return out;
+}
+
+// Scratch for the ranks beyond the first, allocated on each rank's own device. Only the general
+// region is duplicated: a stage runs its layers and nothing else, so it never needs the Vision or
+// causal-score regions the primary card's capacity also covers.
+std::vector<DeviceArena> make_rank_workspaces(const DeviceContext& device,
+                                              std::size_t general_capacity_bytes) {
+    std::vector<DeviceArena> out;
+    out.reserve(device.size() - 1);
+    for (std::size_t rank = 1; rank < device.size(); ++rank) {
+        RankBinding bind(device, rank);
+        out.emplace_back(general_capacity_bytes);
+    }
+    return out;
+}
+
+bool force_staged_links() {
+    const char* value = std::getenv("NINFER_FORCE_STAGED_LINKS");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+// The state shards, boundary links and fences a forward pass across pipeline stages uses, sized for
+// the widest pass the Program will run.
+std::unique_ptr<execution::StageRuntime>
+make_stage_runtime(DeviceContext& device, const execution::Parameters& parameters,
+                   qwen3_5::StateImageDevicePool& state, const SequencePlanImpl& plan) {
+    const auto& text         = parameters.text;
+    const std::size_t stages = text.rank_count;
+    auto runtime             = std::make_unique<execution::StageRuntime>();
+    for (std::size_t shard = 0; shard < state.shard_count(); ++shard) {
+        runtime->state.push_back(&state.linear(shard));
+        runtime->state_first_layer.push_back(state.shard(shard).first_layer);
+    }
+
+    const std::uint64_t columns = stage_boundary_columns(plan);
+    const std::size_t hidden = static_cast<std::size_t>(parameters.model.config().text.hidden_size);
+    const bool force_staged  = force_staged_links();
+    const StageLinkOptions residual{.slot_bytes   = columns * hidden * sizeof(std::uint16_t),
+                                    .slots        = 2,
+                                    .force_staged = force_staged};
+    // Six int32 control tensors, plus alignment. Of the six, only the position pair is ever full
+    // width in prefill (cache `columns`, multimodal rope `3 * columns`), so the sum stays inside
+    // `6 * columns`; `run_staged` checks the packed size against this slot regardless.
+    const StageLinkOptions control{.slot_bytes   = (6 * columns + 16) * sizeof(std::int32_t),
+                                   .slots        = 2,
+                                   .force_staged = force_staged};
+    for (std::size_t stage = 0; stage + 1 < stages; ++stage) {
+        runtime->forward.emplace_back(device, stage, stage + 1, residual);
+    }
+    runtime->back.emplace(device, stages - 1, 0, residual);
+    for (std::size_t stage = 1; stage < stages; ++stage) {
+        runtime->control.emplace_back(device, 0, stage, control);
+    }
+    // DFlash reads the hidden state after each of its feature layers in rank 0's buffers; a later
+    // stage owning some of them sends them back in one block per pass.
+    runtime->features.resize(stages - 1);
+    for (std::size_t stage = 1; stage < stages; ++stage) {
+        const std::size_t layers = stage_feature_layer_count(plan, stage);
+        if (layers == 0) { continue; }
+        runtime->features[stage - 1].emplace(
+            device, stage, 0,
+            StageLinkOptions{.slot_bytes   = layers * columns * hidden * sizeof(std::uint16_t),
+                             .slots        = 2,
+                             .force_staged = force_staged});
+    }
+    runtime->rank_fences.reserve(device.size());
+    for (std::size_t rank = 0; rank < device.size(); ++rank) {
+        runtime->rank_fences.emplace_back(device.rank(rank));
+    }
+    return runtime;
+}
+
+} // namespace
+
 ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const SequencePlanImpl& plan,
                          DeviceContext& device_in, const StartupObserver& startup_observer)
     : parameters(parameters_in), device(device_in), capacity(plan.capacity),
@@ -36,8 +126,13 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
       vision_enabled(plan.features.vision), use_cuda_graph(plan.use_cuda_graph),
       causal_scoring(plan.causal_scoring), kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
-      persistent(plan.persistent.bytes), workspace_storage(plan.workspace.capacity),
+      persistent(plan.persistent.bytes),
+      persistent_by_rank(make_rank_persistent(device_in, plan.persistent.extra_rank_bytes)),
+      workspace_storage(plan.workspace.capacity),
+      workspace_storage_by_rank(make_rank_workspaces(device_in, plan.workspace.general_capacity)),
       work(DeviceSpan{workspace_storage.base(), plan.workspace.general_capacity}),
+      compute_streams(RankStreams::compute(device_in)),
+      transfer_streams(RankStreams::transfer(device_in)),
       round_host(plan.causal_scoring
                      ? std::nullopt
                      : std::make_optional<PinnedHostBuffer>(sizeof(qwen3_5::PrefillRoundHost))),
@@ -74,20 +169,53 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
          workspace_plan.vision->general_capacity_bytes != workspace_plan.general_capacity)) {
         throw std::invalid_argument("Qwen3.5 workspace plan does not match startup features");
     }
+    if (parameters.text.rank_count != device.size()) {
+        throw std::invalid_argument("the model's pipeline stages do not match the attached devices");
+    }
+    // From here one workspace arena serves every rank: the layer loop switches it alongside the
+    // device, and every workspace call site is unchanged.
+    for (DeviceArena& rank_storage : workspace_storage_by_rank) {
+        work.attach_rank_storage(DeviceSpan{rank_storage.base(), workspace_plan.general_capacity});
+    }
     const DeviceSpan backing = persistent.alloc_bytes(plan.persistent.bytes, 256);
-    decoder      = std::make_unique<qwen3_5::DecoderState>(backing, plan.persistent.decoder);
-    state_images = std::make_unique<StateImageDevicePool>(backing, plan.persistent.state_images);
+    // Every rank's persistent memory, in rank order: rank 0's is `backing`.
+    std::vector<DeviceSpan> backings{backing};
+    for (std::size_t index = 0; index < persistent_by_rank.size(); ++index) {
+        backings.push_back(
+            persistent_by_rank[index].alloc_bytes(plan.persistent.extra_rank_bytes[index], 256));
+    }
+    decoder      = std::make_unique<qwen3_5::DecoderState>(backings, plan.persistent.decoder);
+    state_images = std::make_unique<StateImageDevicePool>(backings, plan.persistent.state_images);
+    if (plan.persistent.extra_replay_records.size() + 1 !=
+        (plan.persistent.replay_records ? state_images->shard_count() : 1)) {
+        throw std::logic_error("ReplaySSM records do not cover every StateImage shard");
+    }
     if (plan.persistent.replay_records) {
-        replay_records.emplace(backing, *plan.persistent.replay_records);
-        replay_fold.emplace(*replay_records, state_images->linear().all_layers_view());
+        // Each shard records and folds only its own layers, in its own device's memory.
+        replay_records.emplace(backings[state_images->shard(0).rank],
+                               *plan.persistent.replay_records);
+        replay_fold.emplace(*replay_records, state_images->linear(0).all_layers_view());
+        for (std::size_t shard = 1; shard < state_images->shard_count(); ++shard) {
+            extra_replay_records.push_back(std::make_unique<GdnReplayRecords>(
+                backings[state_images->shard(shard).rank],
+                plan.persistent.extra_replay_records.at(shard - 1)));
+            extra_replay_fold.push_back(std::make_unique<ops::GdnReplayFoldPlan>(
+                *extra_replay_records.back(), state_images->linear(shard).all_layers_view()));
+        }
+    }
+    if (parameters.text.split_execution()) {
+        stage_runtime = make_stage_runtime(device, parameters, *state_images, plan);
+        if (replay_records) {
+            stage_runtime->replay.push_back(&*replay_records);
+            for (const auto& records : extra_replay_records) {
+                stage_runtime->replay.push_back(records.get());
+            }
+        }
     }
     if (plan.persistent.dflash) {
         auto* local = state_images->dflash_local();
         if (!local) { throw std::logic_error("DFlash StateImage has no local state"); }
         dflash.emplace(backing, *plan.persistent.dflash, *local);
-    }
-    if (!plan.persistent.extra_rank_bytes.empty() || !plan.persistent.extra_replay_records.empty()) {
-        throw std::invalid_argument("multi-GPU pipeline stages are not available on this build yet");
     }
     std::size_t host_bytes = plan.context_cache.host_capacity_bytes.value();
     std::vector<HostKVPageLayout> layouts{
@@ -250,9 +378,19 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     workspace_logical_peak_bytes = 0;
 }
 
+void ProgramImpl::synchronize_transfer_streams() const noexcept {
+    for (std::size_t rank = 0; rank < transfer_streams.size(); ++rank) {
+        const cudaStream_t stream = transfer_streams[rank];
+        if (stream != nullptr) { (void)cudaStreamSynchronize(stream); }
+    }
+}
+
 ProgramImpl::~ProgramImpl() noexcept {
-    if (device.transfer_stream != nullptr) { (void)cudaStreamSynchronize(device.transfer_stream); }
-    if (device.stream != nullptr) { (void)cudaStreamSynchronize(device.stream); }
+    synchronize_transfer_streams();
+    for (std::size_t rank = 0; rank < compute_streams.size(); ++rank) {
+        const cudaStream_t stream = compute_streams[rank];
+        if (stream != nullptr) { (void)cudaStreamSynchronize(stream); }
+    }
 }
 
 std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,
@@ -305,14 +443,14 @@ std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,
     std::uint32_t staged_columns = 0;
 
     try {
-        state = state_store->reserve_reset(device.stream);
+        state = state_store->reserve_reset(compute_streams);
         if (!state) { throw std::bad_alloc(); }
-        address = text_kv_addresses->create_active(required_pages, 0, device.stream);
+        address = text_kv_addresses->create_active(required_pages, 0, compute_streams);
         if (!address) { throw std::bad_alloc(); }
         if (text_kv_addresses->bound_row(*address) != 0) {
             throw std::logic_error("causal score did not bind the unique Main KV row");
         }
-        text_kv_addresses->ensure_mapped_to_tokens(*address, predictor_count, device.stream);
+        text_kv_addresses->ensure_mapped_to_tokens(*address, predictor_count, compute_streams);
 
         const std::int32_t state_slot = state_store->physical_slot(*state);
         const auto flush              = [&] {
@@ -348,8 +486,8 @@ std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,
         while (cursor < predictor_count) {
             const std::uint32_t nominal = std::min(prefill_chunk, predictor_count - cursor);
             execution::PrefillContext schedule_state{
-                {device, parameters, work, state_images->linear(), nullptr, io, prefill_hidden,
-                 prefill_chunk, proposal_head},
+                {device, parameters, work, state_images->linear(0), nullptr, io, prefill_hidden,
+                 prefill_chunk, proposal_head, stage_runtime.get()},
                 decoder->text_kv.execution_view(text_kv_addresses->execution_row(*address)),
                 {},
                 decoder->text_kv,

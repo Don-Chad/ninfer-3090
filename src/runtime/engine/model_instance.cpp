@@ -10,8 +10,10 @@
 #include <chrono>
 #include <limits>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace ninfer::runtime {
 namespace {
@@ -65,10 +67,6 @@ void validate_options(const EngineOptions& options) {
 // before the device is initialized or anything loads, so a configuration that asks for one never
 // silently runs without it.
 void reject_unavailable_options(const EngineOptions& options) {
-    if (options.devices.size() > 1 || !options.stage_layers.empty()) {
-        throw std::invalid_argument(
-            "multi-GPU pipeline stages are not available on this build yet; use one device");
-    }
     if (options.enable_vision && options.vision_residency == VisionResidency::Overlay) {
         throw std::invalid_argument(
             "overlay vision residency is not available on this build yet; use resident vision");
@@ -86,6 +84,23 @@ std::size_t current_free_device_bytes() {
     std::size_t total_bytes = 0;
     CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
     return free_bytes;
+}
+
+// Free memory on each rank's device, in rank order. Ranks that share a physical device (the
+// `--devices 0,0` mode that exercises the stage path on one card) split what is free between
+// them, since each one's budget is spent from the same memory.
+std::vector<std::size_t> free_bytes_by_rank(const DeviceContext& device) {
+    std::vector<std::size_t> out;
+    out.reserve(device.size());
+    for (std::size_t rank = 0; rank < device.size(); ++rank) {
+        std::size_t sharing = 0;
+        for (std::size_t other = 0; other < device.size(); ++other) {
+            if (device.same_physical_device(rank, other)) { ++sharing; }
+        }
+        const RankBinding bind(device, rank);
+        out.push_back(current_free_device_bytes() / sharing);
+    }
+    return out;
 }
 
 } // namespace
@@ -162,6 +177,18 @@ ConstructedModel construct_model(EngineOptions& options, DeviceContext& device) 
     StartupPhaseScope inspect(options.startup_observer, StartupPhase::ArtifactInspect);
     artifact::Reader reader(options.artifact_path);
     inspect.complete();
+    // Every later stage of startup checks its options against the ones the model was loaded with,
+    // so the stage split is decided once, here, and carried in the options from then on.
+    if (options.devices.size() > 1 && options.stage_layers.empty()) {
+        const std::vector<std::size_t> free_now = free_bytes_by_rank(device);
+        const std::vector<std::uint64_t> free_bytes(free_now.begin(), free_now.end());
+        const models::qwen3_5::StageSizing sizing{
+            .kv_storage  = options.kv_cache,
+            .state_slots = options.max_concurrency +
+                           options.context_cache.device_state_slots.value_or(0U)};
+        options.stage_layers = models::qwen3_5::default_stage_layers(
+            reader, models::load_options(options), sizing, free_bytes);
+    }
     StartupPhaseScope binding(options.startup_observer, StartupPhase::TargetPlan);
     auto plan = models::qwen3_5::plan_load(reader, models::load_options(options));
     binding.complete();
@@ -213,12 +240,16 @@ ConstructedModel construct_model(EngineOptions& options, DeviceContext& device) 
                 context_cost_hardware_class(device.props.name, device.props.major, device.props.minor),
             .prefill_signature = signature},
         options.context_cost.preset_path);
-    auto planner    = models::qwen3_5::make_sequence_planner(instance->parameters, device, options);
+    auto planner = models::qwen3_5::make_sequence_planner(instance->parameters, device, options);
+    const std::vector<std::size_t> free_by_rank = free_bytes_by_rank(device);
     auto resolution = resolve_kv_capacity(options.kv_capacity, planner.capacity_curve(),
-                                          current_free_device_bytes());
+                                          free_by_rank.front(),
+                                          std::span<const std::size_t>(free_by_rank).subspan(1));
     auto sequence   = std::move(planner).finalize(resolution.main_page_groups);
     if (sequence.device_reservation_bytes() != resolution.runtime_reservation_bytes ||
-        sequence.kv_capacity() != resolution.resolved_tokens) {
+        sequence.kv_capacity() != resolution.resolved_tokens ||
+        !std::ranges::equal(sequence.extra_rank_reservation_bytes(),
+                            resolution.extra_rank_reservation_bytes)) {
         throw std::logic_error("resolved KV capacity does not match the finalized Program plan");
     }
     options.context_cache.host_capacity_bytes = sequence.host_capacity_bytes();

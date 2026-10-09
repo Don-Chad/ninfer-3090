@@ -1155,8 +1155,8 @@ bool ProgramImpl::start_demote(const ContextDemotion& quote) {
 
     context_transaction_.emplace(std::move(transaction));
     try {
-        context_source_ready_.record(device.stream);
-        context_source_ready_.wait(device.transfer_stream);
+        context_source_ready_.record(compute_streams);
+        context_source_ready_.wait(transfer_streams);
         enqueue_state_backup(*context_transaction_);
         enqueue_context_transfers(*context_transaction_);
     } catch (...) {

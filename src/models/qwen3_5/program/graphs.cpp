@@ -124,7 +124,7 @@ void ProgramImpl::prepare_graphs() {
 
     std::array<StateImageHandle, kMaximumConcurrency> capture_states{};
     for (std::uint32_t row = 0; row < max_concurrency; ++row) {
-        std::optional<StateImageHandle> state = state_store->reserve_reset(device.stream);
+        std::optional<StateImageHandle> state = state_store->reserve_reset(compute_streams);
         if (!state) { throw std::bad_alloc(); }
         capture_states[row] = *state;
     }
@@ -148,17 +148,17 @@ void ProgramImpl::prepare_graphs() {
         allocations.reserve(max_concurrency);
         for (std::uint32_t row = 0; row < max_concurrency; ++row) {
             std::optional<KVAddressSpaceHandle> allocation =
-                addresses.create_active(1, static_cast<std::int32_t>(row), device.stream);
+                addresses.create_active(1, static_cast<std::int32_t>(row), compute_streams);
             if (!allocation) { throw std::bad_alloc(); }
             allocations.push_back(*allocation);
-            addresses.ensure_mapped_to_tokens(*allocation, 1, device.stream);
+            addresses.ensure_mapped_to_tokens(*allocation, 1, compute_streams);
 
             // Capture profiles exercise arbitrary context envelopes. Repeating each row's private
             // page across its temporary table keeps every dummy read/write address valid without
             // reserving C full contexts solely for graph construction.
             tables.publish_repeated(addresses.execution_row(*allocation).handle(),
                                     addresses.physical_page(*allocation, 0),
-                                    tables.logical_page_capacity(), device.stream);
+                                    tables.logical_page_capacity(), compute_streams);
         }
     };
     reserve_capture_rows(decoder->text_kv, *text_kv_addresses, text_capture_allocations,
@@ -198,7 +198,7 @@ void ProgramImpl::prepare_graphs() {
             for (std::uint32_t row = 0; row < batch_size; ++row) {
                 pages.push_back(addresses.physical_page(allocations[row], 0));
             }
-            cache.page_pool().zero_pages(pages, device.stream);
+            cache.page_pool().zero_pages(pages, compute_streams);
         };
     const auto prepare_representative = [&](std::uint32_t frontier, std::uint32_t batch_size) {
         if (batch_size == 0 || batch_size > max_concurrency) {
@@ -217,7 +217,7 @@ void ProgramImpl::prepare_graphs() {
                                batch_size);
         }
         for (std::uint32_t row = 0; row < batch_size; ++row) {
-            state_images->zero_slot(capture_state_slot(row), device.stream);
+            state_images->zero_slot(capture_state_slot(row), compute_streams);
             if (dflash) {
                 const Tensor pending =
                     dflash->pending_features.slice(2, static_cast<std::int32_t>(row), 1);
@@ -308,12 +308,13 @@ void ProgramImpl::prepare_graphs() {
         return execution::ExecutionCore{device,
                                         parameters,
                                         work,
-                                        state_images->linear(),
+                                        state_images->linear(0),
                                         replay_records ? &*replay_records : nullptr,
                                         io,
                                         prefill_hidden,
                                         prefill_chunk,
-                                        proposal_head};
+                                        proposal_head,
+                                        stage_runtime.get()};
     };
 
     if (speculative_backend == SpeculativeBackend::None) {
@@ -485,7 +486,7 @@ void ProgramImpl::prepare_graphs() {
     }
 
     clear_stable_controls();
-    state_images->zero_all(device.stream);
+    state_images->zero_all(compute_streams);
     if (dflash) {
         CUDA_CHECK(cudaMemsetAsync(dflash->prefill_features.data, 0,
                                    dflash->prefill_features.bytes(), device.stream));

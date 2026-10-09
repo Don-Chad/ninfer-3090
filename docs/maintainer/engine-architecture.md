@@ -308,8 +308,11 @@ forward 重叠；两段共享同一个资源预留和提交边界。
 
 本 fork 的多 GPU layer pipeline（`--devices A,B,...`，Linux；每个 stage 整层拥有权重、KV plane、GDN
 state 与 workspace，embedding、head、round state 与 sampling 留在 rank 0，设计见
-[pipeline-parallel-plan.md](pipeline-parallel-plan.md)）尚未移植到本文描述的上下文引擎：源码保留在树中，
-启动时拒绝多于一个设备。Vision overlay residency 与需要注入 KV 的 prompt graft 同样暂时在启动时拒绝。
+[pipeline-parallel-plan.md](pipeline-parallel-plan.md)）运行在本文描述的上下文引擎上。一个 page id
+在所有 rank 上指向同一 page group，因此 ResourceManager、Scheduler 与 PrefixIndex 不感知 stage；
+Program 用 `RankStreams` 把 block table 发布、StateImage shard 复制与 context transaction 的每份拷贝放到
+持有该内存的 rank 的 stream 上，并用 `RankFenceSet` 按 rank 设 fence。Vision overlay residency 与需要
+注入 KV 的 prompt graft 暂时在启动时拒绝。
 
 Source 排序使用硬件与实际绑定对应的传输成本、prefill 成本；缺省值用于没有匹配测量的配置。
 实际 reservation 和 stores 决定物理可行性。

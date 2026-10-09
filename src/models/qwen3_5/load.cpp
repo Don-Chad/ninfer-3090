@@ -50,8 +50,7 @@ std::span<const WeightUse> LoadPlan::uses(WeightId id) const {
 
 LoadPlan plan_load(const artifact::Reader& reader, LoadOptions options) {
     // Overlay Vision residency is parked: its load path stays in the tree, but no Program can
-    // execute it yet. A multi-stage split still plans (its validation is exercised by tests) and is
-    // refused when a Program is planned for it.
+    // execute it yet.
     if (options.overlay_vision()) {
         throw std::invalid_argument(
             "--vision-residency overlay is not available on this build yet; use resident");
@@ -207,6 +206,16 @@ std::vector<std::uint32_t> default_stage_layers(const artifact::Reader& reader,
     if (config.vision && options.vision && !options.overlay_vision()) {
         const std::size_t first = bindings.weights.size();
         (void)loading::bind_vision(bindings, *config.vision, text, artifact::Residency::Device);
+        for (std::size_t index = first; index < bindings.weights.size(); ++index) {
+            head_bytes += parameter_bytes(reader, bindings, WeightId{index});
+        }
+    }
+    // A DFlash draft runs entirely on the primary device; its embedding and head are the target's,
+    // already counted, so only the draft's own parameters are new.
+    if (config.draft) {
+        const std::size_t first = bindings.weights.size();
+        (void)loading::bind_draft(bindings, *config.draft, text, weights,
+                                  std::string(options.speculative_component()));
         for (std::size_t index = first; index < bindings.weights.size(); ++index) {
             head_bytes += parameter_bytes(reader, bindings, WeightId{index});
         }

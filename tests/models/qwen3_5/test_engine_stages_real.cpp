@@ -2,36 +2,34 @@
 //
 // The layers run the same kernels on the same data whichever device holds them, so greedy output is
 // an exact oracle: any difference is a wrong-stage weight, a stale control tensor, a KV plane read
-// from the wrong copy of the block table, a boundary transfer that lost or reordered bytes, or a
-// forward pass that raced its own staging. Each configuration below is compared byte for byte with
-// the single-device run.
+// from the wrong copy of the block table, a state shard copied on the wrong stream, a boundary
+// transfer that lost or reordered bytes, or a forward pass that raced its own staging. Each
+// configuration below is compared token for token with the same configuration on one device.
 //
 // By default every stage shares device 0, so a pointer into "another stage's" memory still works and
 // that cannot see a wrong-device access. What it does cover is everything else about the stage path,
 // including the pinned-host protocol (forced, since same-device stages would otherwise take a
-// device-to-device shortcut), CUDA graph capture across stages, and prefill that spans several
-// chunks.
+// device-to-device shortcut), CUDA graph capture across stages, prefill that spans several chunks,
+// the context cache's checkpoints (a continuation and an exact repeat served from them), MTP and
+// DFlash2 speculative decoding (DFlash2's feature layers cross the stage boundary), rk4v4 KV, and two
+// concurrent requests under KV pressure, where one is paused and replayed.
 //
 // On a machine with several GPUs, NINFER_TEST_DEVICE_IDS=0,1 puts stage i on the i-th listed device
 // (wrapping around), which is the check the aliased run cannot make. Two settings adapt it to a
 // pair of cards that cannot hold the model alone:
-//   NINFER_TEST_SPLIT_INVARIANCE=1  compare every row with the first row instead of one device
+//   NINFER_TEST_SPLIT_INVARIANCE=1  compare every row with a two-stage run instead of one device
 //   NINFER_TEST_MAX_STAGES=2        skip rows with more stages than that
 //
-// The vision rows send one image through the same split. Vision runs on rank 0 ahead of the stage
-// loop, so a stage must see an ordinary residual: the image request, and a repeat that reuses its
-// cached prefix, must match the single-device run for both resident and overlay residency. They are
-// skipped when the artifact carries no Vision tower.
-//
-// NINFER_TEST_GRAFT=<container.bin> also loads that prompt graft and compares a grafted chat request
-// across the rows. A direct_kv graft's K/V and Gated DeltaNet state are written at startup onto the
-// rank that owns each layer, so a wrong shard, local layer index or block-table replica shows here.
+// Rows whose feature the artifact lacks (MTP weights, a DFlash2 draft, a Vision tower) are skipped
+// with a message. NINFER_TEST_GRAFT=<container.bin> also compares a grafted chat request.
 
 #include "guarded_main.h"
 #include "ninfer/engine.h"
 
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
+#include <functional>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -47,10 +45,10 @@ struct Configuration {
     std::vector<std::uint32_t> stage_layers;
     bool cuda_graph   = true;
     bool force_staged = false;
-    // Speculative decoding by MTP. Its output is not the same as ordinary decoding's (verification
-    // evaluates several columns at once), so it is compared with MTP on one device, not with the
-    // plain reference.
-    bool mtp = false;
+    // Speculative decoding changes the arithmetic (verification evaluates several columns at once),
+    // so a speculative row is compared with the same backend on one device.
+    ninfer::SpeculativeBackend backend = ninfer::SpeculativeBackend::None;
+    ninfer::KvCacheStorage kv_cache    = ninfer::KvCacheStorage::Int8Group64;
     // Vision tower on rank 0 with this residency; unset leaves vision off.
     std::optional<ninfer::VisionResidency> vision;
 };
@@ -76,24 +74,41 @@ bool flag(const char* name) {
     return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+void set_force_staged(bool enabled) {
+#ifdef _WIN32
+    _putenv_s("NINFER_FORCE_STAGED_LINKS", enabled ? "1" : "0");
+#else
+    setenv("NINFER_FORCE_STAGED_LINKS", enabled ? "1" : "0", 1);
+#endif
+}
+
 ninfer::EngineOptions engine_options(const char* artifact, const Configuration& configuration) {
     ninfer::EngineOptions options;
-    options.artifact_path = artifact;
-    options.max_context   = 2048;
-    options.kv_capacity   = ninfer::KvCapacityPolicy::explicit_capacity(2048);
-    options.prefill_chunk = 512;
-    options.kv_cache      = ninfer::KvCacheStorage::Int8Group64;
+    options.artifact_path  = artifact;
+    options.max_context    = 2048;
+    options.kv_capacity    = ninfer::KvCapacityPolicy::explicit_capacity(2048);
+    options.prefill_chunk  = 512;
+    options.kv_cache       = configuration.kv_cache;
     options.use_cuda_graph = configuration.cuda_graph;
     if (configuration.vision) {
         options.enable_vision    = true;
         options.vision_residency = *configuration.vision;
     }
-    if (configuration.mtp) {
+    switch (configuration.backend) {
+    case ninfer::SpeculativeBackend::Mtp:
         options.speculative.backend      = ninfer::SpeculativeBackend::Mtp;
         options.speculative.draft_tokens = 3;
+        break;
+    case ninfer::SpeculativeBackend::DFlash2:
+        options.speculative.backend       = ninfer::SpeculativeBackend::DFlash2;
+        options.speculative.draft_tokens  = 7;
+        options.speculative.proposal_head = ninfer::ProposalHead::Optimized;
+        break;
+    default:
+        break;
     }
-    options.devices               = stage_devices(configuration.devices);
-    options.stage_layers          = configuration.stage_layers;
+    options.devices      = stage_devices(configuration.devices);
+    options.stage_layers = configuration.stage_layers;
     if (const char* graft = std::getenv("NINFER_TEST_GRAFT"); graft != nullptr && *graft != '\0') {
         options.grafts.push_back(ninfer::GraftSource{.name = "g", .path = graft});
     }
@@ -126,9 +141,12 @@ struct Outputs {
     std::vector<ninfer::TokenId> short_run;
     std::vector<ninfer::TokenId> long_run;
     // A continuation of the long prompt, which the context cache serves in part from the first run:
-    // its state and KV come back from the cache, on whichever devices hold them.
+    // its state and KV come back from a checkpoint, on whichever devices hold them.
     std::vector<ninfer::TokenId> continued_run;
     std::uint32_t reused_tokens = 0;
+    // The long prompt again: an exact hit on the checkpoint its first run left.
+    std::vector<ninfer::TokenId> repeat_run;
+    std::uint32_t repeat_reused_tokens = 0;
     // A chat request selecting NINFER_TEST_GRAFT; empty without it.
     std::vector<ninfer::TokenId> graft_run;
     // A chat request with an image, then the same request again served from the prefix cache; empty
@@ -150,10 +168,10 @@ ninfer::PromptInput image_request() {
         ppm.push_back(static_cast<std::uint8_t>((index * 7) & 0xff));
     }
     ninfer::MessagePart media;
-    media.kind             = ninfer::MessagePartKind::Media;
-    media.media.kind       = ninfer::MediaKind::Image;
-    media.media.bytes      = std::move(ppm);
-    media.media.media_type = "image/x-portable-pixmap";
+    media.kind              = ninfer::MessagePartKind::Media;
+    media.media.kind        = ninfer::MediaKind::Image;
+    media.media.bytes       = std::move(ppm);
+    media.media.media_type  = "image/x-portable-pixmap";
     media.media.source_name = "inline.ppm";
 
     ninfer::ChatMessage user;
@@ -168,24 +186,33 @@ ninfer::PromptInput image_request() {
 }
 
 Outputs generate(const char* artifact, const Configuration& configuration) {
-#ifdef _WIN32
-    _putenv_s("NINFER_FORCE_STAGED_LINKS", configuration.force_staged ? "1" : "0");
-#else
-    setenv("NINFER_FORCE_STAGED_LINKS", configuration.force_staged ? "1" : "0", 1);
-#endif
+    set_force_staged(configuration.force_staged);
     std::cout << "running: " << configuration.label << std::endl;
     ninfer::Engine engine(engine_options(artifact, configuration));
     Outputs out;
-    out.short_run = engine.generate(engine.prepare_tokens(short_prompt()), greedy(24)).generated_token_ids;
-    out.long_run  = engine.generate(engine.prepare_tokens(long_prompt()), greedy(24, true)).generated_token_ids;
+    out.short_run =
+        engine.generate(engine.prepare_tokens(short_prompt()), greedy(24)).generated_token_ids;
+    out.long_run =
+        engine.generate(engine.prepare_tokens(long_prompt()), greedy(24, true)).generated_token_ids;
 
     std::vector<ninfer::TokenId> continuation = long_prompt();
     continuation.insert(continuation.end(), out.long_run.begin(), out.long_run.end());
     continuation.push_back(198);
     const ninfer::GenerationResult continued =
-        engine.generate(engine.prepare_tokens(std::move(continuation)), greedy(8, true));
+        engine.generate(engine.prepare_tokens(continuation), greedy(8, true));
     out.continued_run = continued.generated_token_ids;
     out.reused_tokens = continued.reused_prompt_tokens;
+
+    // The continuation and all but its last generated token: exactly the frontier the continuation's
+    // checkpoint holds, so the whole prompt is served from it.
+    std::vector<ninfer::TokenId> frontier = continuation;
+    if (!out.continued_run.empty()) {
+        frontier.insert(frontier.end(), out.continued_run.begin(), out.continued_run.end() - 1);
+    }
+    const ninfer::GenerationResult repeat =
+        engine.generate(engine.prepare_tokens(std::move(frontier)), greedy(8, true));
+    out.repeat_run           = repeat.generated_token_ids;
+    out.repeat_reused_tokens = repeat.reused_prompt_tokens;
 
     const char* graft = std::getenv("NINFER_TEST_GRAFT");
     if (graft != nullptr && *graft != '\0') {
@@ -201,12 +228,131 @@ Outputs generate(const char* artifact, const Configuration& configuration) {
             engine.generate(engine.prepare(image_request()), greedy(24, true));
         out.image_run       = image.generated_token_ids;
         out.image_had_media = image.prompt.has_media && image.timings.vision_seconds > 0.0;
-        const ninfer::GenerationResult repeat =
+        const ninfer::GenerationResult image_repeat =
             engine.generate(engine.prepare(image_request()), greedy(24, true));
-        out.image_repeat_run    = repeat.generated_token_ids;
-        out.image_reused_tokens = repeat.reused_prompt_tokens;
+        out.image_repeat_run    = image_repeat.generated_token_ids;
+        out.image_reused_tokens = image_repeat.reused_prompt_tokens;
     }
     return out;
+}
+
+std::size_t first_difference(const std::vector<ninfer::TokenId>& want,
+                             const std::vector<ninfer::TokenId>& got) {
+    std::size_t first = 0;
+    while (first < want.size() && first < got.size() && want[first] == got[first]) { ++first; }
+    return first;
+}
+
+// Compares one row with its reference, printing each part's verdict. Returns true when identical.
+bool compare(const std::string& label, const Outputs& expected, const Outputs& outputs,
+             bool vision) {
+    struct Part {
+        const char* name;
+        bool ok;
+        const std::vector<ninfer::TokenId>* want;
+        const std::vector<ninfer::TokenId>* got;
+    };
+    std::vector<Part> parts = {
+        {"short", outputs.short_run == expected.short_run, &expected.short_run, &outputs.short_run},
+        {"long", outputs.long_run == expected.long_run, &expected.long_run, &outputs.long_run},
+        {"continuation", outputs.continued_run == expected.continued_run &&
+                             outputs.reused_tokens == expected.reused_tokens,
+         &expected.continued_run, &outputs.continued_run},
+        {"exact repeat", outputs.repeat_run == expected.repeat_run &&
+                             outputs.repeat_reused_tokens == expected.repeat_reused_tokens,
+         &expected.repeat_run, &outputs.repeat_run},
+    };
+    if (!expected.graft_run.empty()) {
+        parts.push_back({"graft", outputs.graft_run == expected.graft_run, &expected.graft_run,
+                         &outputs.graft_run});
+    }
+    if (vision) {
+        parts.push_back({"image",
+                         outputs.image_run == expected.image_run &&
+                             outputs.image_repeat_run == expected.image_repeat_run &&
+                             outputs.image_reused_tokens == expected.image_reused_tokens &&
+                             outputs.image_had_media == expected.image_had_media,
+                         &expected.image_run, &outputs.image_run});
+    }
+    bool all = true;
+    std::cout << label << ":";
+    for (const Part& part : parts) {
+        std::cout << ' ' << part.name << ' ' << (part.ok ? "identical" : "DIFFERS");
+        all = all && part.ok;
+    }
+    std::cout << " (continuation reused " << outputs.reused_tokens << ", repeat reused "
+              << outputs.repeat_reused_tokens << " tokens)\n";
+    for (const Part& part : parts) {
+        if (!part.ok) {
+            std::cerr << "  " << label << ": " << part.name << " first difference at token "
+                      << first_difference(*part.want, *part.got) << '\n';
+        }
+    }
+    return all;
+}
+
+// Two requests decoding at once on a cache that cannot hold both to completion: the scheduler
+// pauses the younger one, lets the older finish, and replays the paused one from its tokens. A split
+// model must pause, replay and resume to exactly the single-device tokens.
+struct PressureOutputs {
+    std::vector<ninfer::TokenId> first;
+    std::vector<ninfer::TokenId> second;
+    std::uint64_t preemptions     = 0;
+    std::uint64_t replay_restores = 0;
+};
+
+PressureOutputs pressure(const char* artifact, const std::vector<int>& devices,
+                         const std::string& label) {
+    set_force_staged(false);
+    std::cout << "running: " << label << std::endl;
+    constexpr std::uint32_t kCapacity = 512;
+    ninfer::EngineOptions options;
+    options.artifact_path        = artifact;
+    options.max_context          = kCapacity;
+    options.kv_capacity          = ninfer::KvCapacityPolicy::explicit_capacity(kCapacity);
+    options.prefill_chunk        = 128;
+    options.max_concurrency      = 2;
+    options.max_pending_requests = 2;
+    options.kv_cache             = ninfer::KvCacheStorage::Int8Group64;
+    // History is disabled so the paused request recovers by replaying its own tokens.
+    options.context_cache.enabled             = false;
+    options.context_cache.device_state_slots  = 0;
+    options.context_cache.host_capacity_bytes = 0;
+    options.devices                           = stage_devices(devices);
+    ninfer::Engine engine(options);
+
+    // Main KV pages hold 64 tokens. Both 192-token prompts fit together in six of eight pages and
+    // both begin decoding, but their growth to 448 tokens cannot remain resident together.
+    std::vector<ninfer::TokenId> first_prompt(192, 198);
+    std::vector<ninfer::TokenId> second_prompt(192, 198);
+    first_prompt.front()  = 1000;
+    second_prompt.front() = 1001;
+    auto first  = engine.submit(engine.prepare_tokens(std::move(first_prompt)), greedy(256));
+    auto second = engine.submit(engine.prepare_tokens(std::move(second_prompt)), greedy(256));
+    const ninfer::GenerationResult first_result  = first.wait();
+    const ninfer::GenerationResult second_result = second.wait();
+    PressureOutputs out;
+    out.first           = first_result.generated_token_ids;
+    out.second          = second_result.generated_token_ids;
+    out.preemptions     = first_result.scheduling.preemptions + second_result.scheduling.preemptions;
+    out.replay_restores =
+        first_result.scheduling.replay_restores + second_result.scheduling.replay_restores;
+    std::cout << label << ": " << out.first.size() << " + " << out.second.size()
+              << " tokens, preemptions " << out.preemptions << ", replay restores "
+              << out.replay_restores << '\n';
+    return out;
+}
+
+// A reference run that needs a feature the artifact may lack. Returns nullopt, after saying why,
+// when the reference cannot be built.
+std::optional<Outputs> optional_reference(const char* artifact, const Configuration& configuration,
+                                          const char* rows) {
+    try {
+        return generate(artifact, configuration);
+    } catch (const std::exception& error) {
+        std::cout << rows << " rows skipped: " << error.what() << '\n';
+        return std::nullopt;
+    }
 }
 
 int run() {
@@ -220,131 +366,147 @@ int run() {
     const char* max_stages_text = std::getenv("NINFER_TEST_MAX_STAGES");
     const std::size_t max_stages =
         max_stages_text != nullptr ? static_cast<std::size_t>(std::atoi(max_stages_text)) : 64;
-    // One card cannot always hold the model. Then the first row is the reference, and what is
+    // One card cannot always hold the model. Then a two-stage run is the reference, and what is
     // checked is that where the layers are cut does not change the output.
-    const Outputs reference =
-        generate(artifact, split_invariance
-                               ? Configuration{.label = "two stages, graphs", .devices = {0, 0}}
-                               : Configuration{.label = "single device", .devices = {}});
-    if (reference.short_run.size() != 24 || reference.long_run.size() != 24 ||
-        reference.continued_run.size() != 8 || reference.reused_tokens == 0) {
-        std::cerr << "the single-device reference did not generate its tokens or reuse its prefix\n";
+    const std::vector<int> reference_devices =
+        split_invariance ? std::vector<int>{0, 0} : std::vector<int>{};
+    const auto reference_of = [&](Configuration configuration) {
+        configuration.label   = (split_invariance ? "two stages reference, " : "single device, ") +
+                              configuration.label;
+        configuration.devices = reference_devices;
+        configuration.stage_layers.clear();
+        configuration.cuda_graph   = true;
+        configuration.force_staged = false;
+        return configuration;
+    };
+
+    const Outputs plain = generate(artifact, reference_of({.label = "plain"}));
+    if (plain.short_run.size() != 24 || plain.long_run.size() != 24 ||
+        plain.continued_run.size() != 8 || plain.reused_tokens == 0 ||
+        plain.repeat_run.size() != 8 ||
+        plain.repeat_reused_tokens !=
+            long_prompt().size() + plain.long_run.size() + 1 + plain.continued_run.size() - 1) {
+        std::cerr << "the reference did not generate its tokens or reuse its checkpoints: short "
+                  << plain.short_run.size() << ", long " << plain.long_run.size()
+                  << ", continuation " << plain.continued_run.size() << " reusing "
+                  << plain.reused_tokens << ", repeat " << plain.repeat_run.size()
+                  << " reusing " << plain.repeat_reused_tokens << '\n';
         return 1;
     }
     const char* graft = std::getenv("NINFER_TEST_GRAFT");
-    if (graft != nullptr && *graft != '\0' && reference.graft_run.size() != 24) {
+    if (graft != nullptr && *graft != '\0' && plain.graft_run.size() != 24) {
         std::cerr << "the reference did not generate the grafted request's tokens\n";
         return 1;
     }
-    // MTP needs a model that carries MTP weights; when it does not, the MTP rows are skipped.
-    std::optional<Outputs> mtp_reference;
-    bool mtp_available = true;
-    try {
-        mtp_reference = generate(
-            artifact, split_invariance
-                          ? Configuration{.label = "two stages, MTP", .devices = {0, 0}, .mtp = true}
-                          : Configuration{.label = "single device, MTP", .devices = {}, .mtp = true});
-    } catch (const std::exception& error) {
-        std::cout << "MTP rows skipped: " << error.what() << '\n';
-        mtp_available = false;
+    const auto mtp = optional_reference(
+        artifact, reference_of({.label = "MTP", .backend = ninfer::SpeculativeBackend::Mtp}),
+        "MTP");
+    const auto dflash2 = optional_reference(
+        artifact,
+        reference_of({.label = "DFlash2", .backend = ninfer::SpeculativeBackend::DFlash2}),
+        "DFlash2");
+    const auto rk4v4 = optional_reference(
+        artifact,
+        reference_of({.label    = "rk4v4",
+                      .kv_cache = ninfer::KvCacheStorage::RotatedLloyd4KeyInt4Value}),
+        "rk4v4");
+    const auto vision = optional_reference(
+        artifact, reference_of({.label = "vision resident", .vision = ninfer::VisionResidency::Resident}),
+        "vision");
+    if (vision && (vision->image_run.size() != 24 || !vision->image_had_media)) {
+        std::cerr << "the vision reference did not encode its image\n";
+        return 1;
+    }
+    if (vision) {
+        std::cout << "vision reference: the repeated image request reused "
+                  << vision->image_reused_tokens << " tokens\n";
     }
 
-    // Vision needs a model that carries a Vision tower. The reference is resident vision on the same
-    // layout as the plain reference; overlay and every split must reproduce it.
-    std::optional<Outputs> vision_reference;
-    bool vision_available = true;
-    try {
-        vision_reference = generate(
-            artifact, split_invariance
-                          ? Configuration{.label   = "two stages, vision resident",
-                                          .devices = {0, 0},
-                                          .vision  = ninfer::VisionResidency::Resident}
-                          : Configuration{.label  = "single device, vision resident",
-                                          .vision = ninfer::VisionResidency::Resident});
-        if (vision_reference->image_run.size() != 24 || !vision_reference->image_had_media ||
-            vision_reference->image_reused_tokens == 0) {
-            std::cerr << "the vision reference did not encode its image or reuse its prefix\n";
-            return 1;
-        }
-    } catch (const std::exception& error) {
-        std::cout << "vision rows skipped: " << error.what() << '\n';
-        vision_available = false;
-    }
-
-    const std::vector<Configuration> configurations = {
-        {.label = "two stages, graphs", .devices = {0, 0}},
-        {.label = "two stages, eager", .devices = {0, 0}, .cuda_graph = false},
-        {.label = "two stages, staged transport", .devices = {0, 0}, .force_staged = true},
-        {.label = "three stages", .devices = {0, 0, 0}},
+    struct Row {
+        Configuration configuration;
+        const std::optional<Outputs>* reference;
+    };
+    const std::optional<Outputs> plain_reference = plain;
+    const std::vector<Row> rows = {
+        {{.label = "two stages, graphs", .devices = {0, 0}}, &plain_reference},
+        {{.label = "two stages, eager", .devices = {0, 0}, .cuda_graph = false}, &plain_reference},
+        {{.label = "two stages, staged transport", .devices = {0, 0}, .force_staged = true},
+         &plain_reference},
+        {{.label = "three stages", .devices = {0, 0, 0}}, &plain_reference},
         // Uneven counts: the split must not change what the model computes.
-        {.label = "two stages, uneven layers", .devices = {0, 0}, .stage_layers = {20, 44}},
-        {.label = "two stages, MTP", .devices = {0, 0}, .mtp = true},
-        {.label = "three stages, MTP, eager", .devices = {0, 0, 0}, .cuda_graph = false, .mtp = true},
-        {.label = "single device, vision overlay", .vision = ninfer::VisionResidency::Overlay},
-        {.label   = "two stages, vision resident",
-         .devices = {0, 0},
-         .vision  = ninfer::VisionResidency::Resident},
-        {.label   = "two stages, vision overlay",
-         .devices = {0, 0},
-         .vision  = ninfer::VisionResidency::Overlay},
-        {.label        = "three stages, vision overlay, uneven layers",
-         .devices      = {0, 0, 0},
-         .stage_layers = {10, 20, 34},
-         .vision       = ninfer::VisionResidency::Overlay},
+        {{.label = "two stages, uneven layers", .devices = {0, 0}, .stage_layers = {20, 44}},
+         &plain_reference},
+        {{.label   = "two stages, MTP",
+          .devices = {0, 0},
+          .backend = ninfer::SpeculativeBackend::Mtp},
+         &mtp},
+        {{.label      = "three stages, MTP, eager",
+          .devices    = {0, 0, 0},
+          .cuda_graph = false,
+          .backend    = ninfer::SpeculativeBackend::Mtp},
+         &mtp},
+        {{.label   = "two stages, DFlash2",
+          .devices = {0, 0},
+          .backend = ninfer::SpeculativeBackend::DFlash2},
+         &dflash2},
+        {{.label      = "two stages, DFlash2, eager",
+          .devices    = {0, 0},
+          .cuda_graph = false,
+          .backend    = ninfer::SpeculativeBackend::DFlash2},
+         &dflash2},
+        // Most feature layers past the first stage, crossing two boundaries, through the host.
+        {{.label        = "three stages, DFlash2, staged transport, uneven layers",
+          .devices      = {0, 0, 0},
+          .stage_layers = {10, 20, 34},
+          .force_staged = true,
+          .backend      = ninfer::SpeculativeBackend::DFlash2},
+         &dflash2},
+        {{.label    = "two stages, rk4v4",
+          .devices  = {0, 0},
+          .kv_cache = ninfer::KvCacheStorage::RotatedLloyd4KeyInt4Value},
+         &rk4v4},
+        {{.label   = "two stages, vision resident",
+          .devices = {0, 0},
+          .vision  = ninfer::VisionResidency::Resident},
+         &vision},
     };
 
     int failures = 0;
-    for (const Configuration& configuration : configurations) {
-        if (configuration.mtp && !mtp_available) { continue; }
-        if (configuration.vision && !vision_available) { continue; }
-        if (configuration.devices.size() > max_stages) { continue; }
-        const Outputs& expected = configuration.vision ? *vision_reference
-                                  : configuration.mtp  ? *mtp_reference
-                                                       : reference;
-        const Outputs outputs   = generate(artifact, configuration);
-        const bool short_ok     = outputs.short_run == expected.short_run;
-        const bool long_ok      = outputs.long_run == expected.long_run;
-        const bool cache_ok     = outputs.continued_run == expected.continued_run &&
-                              outputs.reused_tokens == expected.reused_tokens;
-        const bool graft_ok     = outputs.graft_run == expected.graft_run;
-        const bool image_ok     = outputs.image_run == expected.image_run &&
-                              outputs.image_repeat_run == expected.image_repeat_run &&
-                              outputs.image_reused_tokens == expected.image_reused_tokens &&
-                              outputs.image_had_media == expected.image_had_media;
-        std::cout << configuration.label << ": short " << (short_ok ? "identical" : "DIFFERS")
-                  << ", long " << (long_ok ? "identical" : "DIFFERS") << ", prefix reuse ("
-                  << outputs.reused_tokens << " tokens) " << (cache_ok ? "identical" : "DIFFERS");
-        if (!expected.graft_run.empty()) {
-            std::cout << ", graft " << (graft_ok ? "identical" : "DIFFERS");
-        }
-        if (configuration.vision) {
-            std::cout << ", image " << (image_ok ? "identical" : "DIFFERS");
-        }
-        std::cout << '\n';
-        if (!image_ok && short_ok && long_ok && cache_ok && graft_ok) {
+    for (const Row& row : rows) {
+        if (!row.reference->has_value()) { continue; }
+        if (row.configuration.devices.size() > max_stages) { continue; }
+        const Outputs outputs = generate(artifact, row.configuration);
+        if (!compare(row.configuration.label, **row.reference, outputs,
+                     row.configuration.vision.has_value())) {
             ++failures;
-            std::size_t first = 0;
-            while (first < expected.image_run.size() && first < outputs.image_run.size() &&
-                   expected.image_run[first] == outputs.image_run[first]) {
-                ++first;
-            }
-            std::cerr << "  image: first difference at token " << first << '\n';
-        } else if (!graft_ok && short_ok && long_ok && cache_ok) {
-            ++failures;
-            std::size_t first = 0;
-            while (first < expected.graft_run.size() && first < outputs.graft_run.size() &&
-                   expected.graft_run[first] == outputs.graft_run[first]) {
-                ++first;
-            }
-            std::cerr << "  graft: first difference at token " << first << '\n';
-        } else if (!short_ok || !long_ok || !cache_ok) {
-            ++failures;
-            const auto& want = short_ok ? expected.long_run : expected.short_run;
-            const auto& got  = short_ok ? outputs.long_run : outputs.short_run;
-            std::size_t first = 0;
-            while (first < want.size() && first < got.size() && want[first] == got[first]) { ++first; }
-            std::cerr << "  first difference at token " << first << '\n';
         }
+    }
+
+    // Pause and replay under KV pressure, two lanes decoding together.
+    const PressureOutputs pressure_reference = pressure(
+        artifact, reference_devices,
+        split_invariance ? "two stages reference, pressure" : "single device, pressure");
+    if (pressure_reference.first.size() != 256 || pressure_reference.second.size() != 256 ||
+        pressure_reference.preemptions == 0 || pressure_reference.replay_restores == 0) {
+        std::cerr << "the pressure reference did not pause and replay a request to completion\n";
+        ++failures;
+    } else if (max_stages >= 2) {
+        const PressureOutputs split = pressure(artifact, {0, 0}, "two stages, pressure");
+        const bool first_ok  = split.first == pressure_reference.first;
+        const bool second_ok = split.second == pressure_reference.second;
+        const bool recovered = split.preemptions != 0 && split.replay_restores != 0;
+        std::cout << "two stages, pressure: first " << (first_ok ? "identical" : "DIFFERS")
+                  << ", second " << (second_ok ? "identical" : "DIFFERS") << ", "
+                  << (recovered ? "paused and replayed" : "NO PAUSE/REPLAY") << '\n';
+        if (!first_ok) {
+            std::cerr << "  pressure first request: first difference at token "
+                      << first_difference(pressure_reference.first, split.first) << '\n';
+        }
+        if (!second_ok) {
+            std::cerr << "  pressure second request: first difference at token "
+                      << first_difference(pressure_reference.second, split.second) << '\n';
+        }
+        if (!first_ok || !second_ok || !recovered) { ++failures; }
     }
     return failures == 0 ? 0 : 1;
 }

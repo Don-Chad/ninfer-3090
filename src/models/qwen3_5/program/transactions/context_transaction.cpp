@@ -20,7 +20,7 @@ void ProgramImpl::enqueue_state_backup(ContextTransaction& tx) {
     tx.transfers.push_back(state_transfer_requirement(
         state_images->host_layout(), runtime::ContextTransferDirection::DeviceToHost));
     start_context_transfer_timer(runtime::ContextResourceClass::State);
-    state_store->enqueue_device_to_host(*tx.state_transfer, device.transfer_stream);
+    state_store->enqueue_device_to_host(*tx.state_transfer, transfer_streams);
     stop_context_transfer_timer(runtime::ContextResourceClass::State);
 }
 
@@ -29,7 +29,7 @@ void ProgramImpl::copy_local_for_context(ContextTransaction& tx, std::int32_t so
     tx.transfers.push_back(state_transfer_requirement(
         state_images->host_layout(), runtime::ContextTransferDirection::DeviceToDevice, true));
     start_context_transfer_timer(runtime::ContextResourceClass::State);
-    state_images->copy_dflash_local(source, destination, device.transfer_stream);
+    state_images->copy_dflash_local(source, destination, transfer_streams);
     stop_context_transfer_timer(runtime::ContextResourceClass::State);
 }
 
@@ -37,7 +37,7 @@ void ProgramImpl::copy_context_tail(ContextTransaction& tx, LogicalKVPageStore& 
                                     DeviceKVPageHandle source, DeviceKVPageHandle destination,
                                     runtime::ContextResourceClass resource) {
     start_context_transfer_timer(resource);
-    const auto work = pages.physical_pool().copy_page(source, destination, device.transfer_stream);
+    const auto work = pages.physical_pool().copy_page(source, destination, transfer_streams);
     stop_context_transfer_timer(resource);
     tx.transfers.push_back(kv_transfer_requirement(
         resource, runtime::ContextTransferDirection::DeviceToDevice, 1, work));
@@ -80,7 +80,7 @@ void ProgramImpl::enqueue_context_transfers(ContextTransaction& tx) {
                     const auto destination = std::span<const DeviceKVPageHandle>(transfer.physical)
                                                  .subspan(begin, end - begin);
                     const auto part = transfer.pages->physical_pool().copy_from_host(
-                        host, destination, device.transfer_stream);
+                        host, destination, transfer_streams);
                     work.payload_bytes += part.payload_bytes;
                     work.copy_operations += part.copy_operations;
                     begin = end;
@@ -88,7 +88,7 @@ void ProgramImpl::enqueue_context_transfers(ContextTransaction& tx) {
             } else if (transfer.host_destination) {
                 const auto host = host_kv_extents->writable_view(*transfer.host_destination);
                 work = transfer.pages->physical_pool().copy_to_host(transfer.physical, host,
-                                                                    device.transfer_stream);
+                                                                    transfer_streams);
                 if (tx.kind == ContextOperationKind::Pause ||
                     tx.kind == ContextOperationKind::Demote) {
                     tx.operations.pressure_spill_pages += transfer.physical.size();
@@ -109,7 +109,7 @@ void ProgramImpl::enqueue_context_transfers(ContextTransaction& tx) {
                                 .work       = total});
     }
     tx.submitted = !tx.transfers.empty();
-    if (tx.submitted) { context_completion_.record(device.transfer_stream); }
+    if (tx.submitted) { context_completion_.record(transfer_streams); }
 }
 
 void ProgramImpl::publish_context_transfers(ContextTransaction& tx) {
@@ -203,7 +203,7 @@ void ProgramImpl::abort_context() noexcept {
         // Enqueue can fail before recording the completion event. Drain the transfer stream
         // itself so every submitted reader has retired before releasing its source/destination.
         // CUDA failure is already fatal to the Engine; it must not prevent CPU ownership cleanup.
-        (void)cudaStreamSynchronize(device.transfer_stream);
+        synchronize_transfer_streams();
         if (tx.state_transfer) {
             state_store->abort_transfer(std::move(*tx.state_transfer));
             tx.state_transfer.reset();

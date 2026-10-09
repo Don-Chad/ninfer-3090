@@ -276,6 +276,8 @@ public:
         out.available_after_startup_bytes      = resolution.available_after_startup_bytes;
         out.kv_capacity_headroom_bytes         = resolution.automatic_headroom_bytes;
         out.planned_slack_bytes                = resolution.planned_slack_bytes;
+        out.stage_runtime_reservation_bytes    = resolution.extra_rank_reservation_bytes;
+        out.kv_capacity_binding_stage          = resolution.binding_rank;
         return out;
     }
 
