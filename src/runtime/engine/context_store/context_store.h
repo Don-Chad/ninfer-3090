@@ -205,6 +205,9 @@ private:
         // Which write of this id this is. A transfer that outlives the entry it started from
         // must not act on the entry that replaced it.
         std::uint64_t generation = 0;
+        // The bucket's modified time of the manifest this entry was imported from (0: written or
+        // loaded here). Compared only with other bucket times, never with the local clock.
+        std::int64_t remote_modified_ms = 0;
     };
     struct ChunkUse {
         std::uint32_t references = 0;
@@ -289,9 +292,14 @@ private:
     // since, so the confirmation is trusted for remote_touch_interval only.
     std::unordered_map<std::string, std::int64_t> uploaded_;
     std::unordered_map<std::string, std::int64_t> remote_touched_; // id -> last touch (ms)
-    // Ids not worth importing again, with when each was given up on: a manifest the bucket lists
-    // as written since is tried again, and the entry expires with the other remote bookkeeping.
-    std::unordered_map<std::string, std::int64_t> remote_failed_;
+    // Ids not worth importing again. `remote_modified_ms` is the bucket's time of the manifest that
+    // failed: one listed as written since is tried again. `failed_ms` is the local time, used only
+    // to expire the entry with the other remote bookkeeping.
+    struct RemoteFailure {
+        std::int64_t remote_modified_ms = 0;
+        std::int64_t failed_ms          = 0;
+    };
+    std::unordered_map<std::string, RemoteFailure> remote_failed_;
     std::int64_t last_prune_ms_ = 0; // remote worker thread only
     std::thread remote_thread_;
 };

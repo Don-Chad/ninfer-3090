@@ -1129,7 +1129,7 @@ void ContextStore::prune_remote_state() {
         it = now - it->second >= horizon ? remote_touched_.erase(it) : std::next(it);
     }
     for (auto it = remote_failed_.begin(); it != remote_failed_.end();) {
-        it = now - it->second >= horizon ? remote_failed_.erase(it) : std::next(it);
+        it = now - it->second.failed_ms >= horizon ? remote_failed_.erase(it) : std::next(it);
     }
 }
 
@@ -1280,9 +1280,13 @@ void ContextStore::settle_failed_fetch(const std::string& id, std::uint64_t gene
     const auto found = entries_.find(id);
     // Replaced while the fetch ran: the failure belongs to an image that is already gone.
     if (found == entries_.end() || found->second.generation != generation) { return; }
+    // An image written or loaded here has no bucket time: it is not retried until the entry expires.
+    const std::int64_t remote_modified = found->second.remote_modified_ms != 0
+                                             ? found->second.remote_modified_ms
+                                             : std::numeric_limits<std::int64_t>::max();
     remove_entry_locked(id, true);
     std::scoped_lock remote_lock(remote_mutex_);
-    remote_failed_[id] = now_ms();
+    remote_failed_[id] = {remote_modified, now_ms()};
 }
 
 std::size_t ContextStore::refresh_remote(std::chrono::steady_clock::time_point deadline) {
@@ -1319,7 +1323,7 @@ std::size_t ContextStore::refresh_remote(std::chrono::steady_clock::time_point d
                 if (failed != remote_failed_.end()) {
                     // Given up on: skipped until the bucket lists the manifest as written since, which
                     // means another engine has replaced the image that failed.
-                    if (object.modified_ms <= failed->second) { continue; }
+                    if (object.modified_ms <= failed->second.remote_modified_ms) { continue; }
                     remote_failed_.erase(failed);
                 }
             }
@@ -1328,7 +1332,7 @@ std::size_t ContextStore::refresh_remote(std::chrono::steady_clock::time_point d
             Entry entry;
             if (!parse_manifest(*data, entry, nullptr) || entry.info.id != id) {
                 std::scoped_lock lock(remote_mutex_);
-                remote_failed_[id] = now_ms();
+                remote_failed_[id] = {object.modified_ms, now_ms()};
                 continue;
             }
             entry.info.last_used_ms = std::max(entry.info.created_ms, object.modified_ms);
@@ -1341,7 +1345,8 @@ std::size_t ContextStore::refresh_remote(std::chrono::steady_clock::time_point d
             // The listing shows the manifest, not its chunks (a lifecycle rule or a person may have
             // removed one): their bucket presence stays unknown, so a write that shares them
             // checks before it skips the upload.
-            entry.generation = ++next_generation_;
+            entry.generation         = ++next_generation_;
+            entry.remote_modified_ms = object.modified_ms;
             entries_.emplace(id, std::move(entry));
             ++added;
         }
