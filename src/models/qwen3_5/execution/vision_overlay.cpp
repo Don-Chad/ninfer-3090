@@ -100,18 +100,55 @@ void VisionWindow::close() noexcept {
 }
 
 void VisionResidencyBroker::enable_kv_tier(EvictableKVPool& arena, DeviceKVPagePool& pages,
-                                           std::function<bool()> can_lend,
-                                           std::function<void()> on_change) {
-    kv_arena_  = &arena;
-    kv_pages_  = &pages;
-    can_lend_  = std::move(can_lend);
-    on_change_ = std::move(on_change);
+                                           std::function<bool()> can_submit) {
+    kv_arena_   = &arena;
+    kv_pages_   = &pages;
+    can_submit_ = std::move(can_submit);
+}
+
+std::uint32_t VisionResidencyBroker::kv_loan_pages(std::size_t bytes) const {
+    if (kv_arena_ == nullptr || kv_pages_ == nullptr || kv_arena_->poisoned()) { return 0; }
+    const KVLoanPlan plan = plan_kv_loan(*kv_arena_, *kv_pages_, bytes, false);
+    std::uint32_t pages   = 0;
+    for (const KVPageRun& run : plan.runs) { pages += run.count; }
+    return pages;
+}
+
+std::uint32_t VisionResidencyBroker::kv_loan_minimum_pages(std::size_t bytes) const {
+    // A window wider than the lendable KV can never be funded there, however much is reclaimed.
+    if (kv_arena_ == nullptr || kv_pages_ == nullptr || bytes == 0 ||
+        bytes > kv_arena_->window_capacity_bytes()) {
+        return 0;
+    }
+    const std::size_t granularity = kv_arena_->granularity();
+    std::size_t page_bytes        = 0;
+    for (std::size_t index = 0; index < kv_pages_->plane_count(); ++index) {
+        const auto stride = static_cast<std::size_t>(kv_pages_->plane(index).nb[3]);
+        if (stride == 0 || granularity % stride != 0 || granularity / stride > kMaxLoanUnitPages) {
+            continue;
+        }
+        page_bytes += stride;
+    }
+    if (page_bytes == 0) { return 0; }
+    const std::size_t granules = (bytes + granularity - 1) / granularity;
+    return static_cast<std::uint32_t>((granules * granularity + page_bytes - 1) / page_bytes);
+}
+
+std::uint32_t VisionResidencyBroker::available_kv_pages() const noexcept {
+    return kv_pages_ != nullptr ? kv_pages_->available_pages() : 0;
+}
+
+bool VisionResidencyBroker::can_submit() const { return !can_submit_ || can_submit_(); }
+
+bool VisionResidencyBroker::drain() {
+    if (submitted_ == nullptr) { return false; }
+    submitted_->finish();
+    return true;
 }
 
 std::optional<VisionWindow> VisionResidencyBroker::try_acquire_kv(std::size_t bytes) {
     require_closed();
-    if (kv_arena_ == nullptr || kv_pages_ == nullptr || kv_arena_->poisoned() ||
-        (can_lend_ && !can_lend_())) {
+    if (kv_arena_ == nullptr || kv_pages_ == nullptr || kv_arena_->poisoned()) {
         return std::nullopt;
     }
     KVLoanPlan plan = plan_kv_loan(*kv_arena_, *kv_pages_, bytes);
@@ -140,10 +177,8 @@ std::optional<VisionWindow> VisionResidencyBroker::try_acquire_kv(std::size_t by
     window.tier_   = VisionWindow::Tier::KvGranules;
     window.runs_   = std::move(plan.runs);
     // From here the window owns the loan: if the lease throws, unwinding destroys `window`, whose
-    // close() returns every run and notifies. Which is why the revision is published only below --
-    // a window that never opened must not leave a capacity change behind it.
+    // close() returns every run.
     window.kv_ = kv_arena_->lease(plan.granules, device_.stream);
-    if (on_change_) { on_change_(); }
     return window;
 }
 
@@ -165,7 +200,10 @@ bool VisionResidencyBroker::window_open() const noexcept {
     return pool_.transaction_open() || (kv_arena_ != nullptr && kv_arena_->lease_open());
 }
 
-void VisionResidencyBroker::require_closed() const {
+void VisionResidencyBroker::require_closed() {
+    // A submitted window belongs to an encode that is already running; finishing it costs at most
+    // its remaining encode time and keeps its embeddings for the lane that submitted it.
+    (void)drain();
     if (window_open()) { throw std::logic_error("a Vision overlay window is already open"); }
 }
 
@@ -177,7 +215,6 @@ void VisionResidencyBroker::return_loan(std::vector<KVPageRun>& runs) noexcept {
         } catch (...) { std::terminate(); }
     }
     runs.clear();
-    if (on_change_) { on_change_(); }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -206,20 +243,25 @@ void PinnedResultPool::Handle::release() noexcept {
     }
 }
 
-PinnedResultPool::PinnedResultPool(std::size_t slots, std::size_t slot_bytes)
-    : slot_bytes_(slot_bytes) {
-    if (slots == 0 || slot_bytes == 0) {
+PinnedResultPool::PinnedResultPool(std::size_t initial, std::size_t maximum,
+                                   std::size_t slot_bytes)
+    : maximum_(maximum), slot_bytes_(slot_bytes) {
+    if (initial == 0 || maximum < initial || slot_bytes == 0) {
         throw std::invalid_argument("pinned Vision result pool needs at least one slot");
     }
-    buffers_.reserve(slots);
-    free_.reserve(slots);
-    for (std::size_t index = 0; index < slots; ++index) {
+    buffers_.reserve(maximum);
+    free_.reserve(maximum);
+    for (std::size_t index = 0; index < initial; ++index) {
         buffers_.push_back(std::make_unique<PinnedHostBuffer>(slot_bytes));
         free_.push_back(index);
     }
 }
 
 PinnedResultPool::Handle PinnedResultPool::acquire() {
+    if (free_.empty() && buffers_.size() < maximum_) {
+        buffers_.push_back(std::make_unique<PinnedHostBuffer>(slot_bytes_));
+        free_.push_back(buffers_.size() - 1);
+    }
     if (free_.empty()) { throw std::logic_error("pinned Vision result pool has no free slot"); }
     const std::size_t index = free_.back();
     free_.pop_back();
@@ -380,7 +422,7 @@ VisionOverlaySession::VisionOverlaySession(DeviceContext& device, VisionResidenc
                                            PinnedResultPool::Handle result)
     : device_(device), broker_(broker), parameters_(parameters),
       layout_(parameters.model.vision_overlay().value()), window_plan_(window_plan),
-      result_(std::move(result)), completion_(device) {
+      result_(std::move(result)), completion_(device), main_fence_(device) {
     if (vision_window_bytes(layout_, window_plan_) > broker_.window_capacity_bytes()) {
         throw std::logic_error("Vision overlay window plan exceeds the pool window capacity");
     }
@@ -389,15 +431,20 @@ VisionOverlaySession::VisionOverlaySession(DeviceContext& device, VisionResidenc
     }
 }
 
-VisionOverlaySession::~VisionOverlaySession() {
-    if (!pending_) { return; }
+VisionOverlaySession::~VisionOverlaySession() { abandon(); }
+
+void VisionOverlaySession::abandon() noexcept {
+    if (broker_.submitted_ == this) { broker_.submitted_ = nullptr; }
+    ahead_ = false;
+    if (!pending_ && !window_.open()) { return; }
     // The encode still owns the borrowed memory and the staging events; wait it out before the
     // weight stream and the window are destroyed. Failures here are not recoverable and must not
-    // escape a destructor.
-    (void)cudaStreamSynchronize(encode_stream_);
+    // escape.
+    if (encode_stream_ != nullptr) { (void)cudaStreamSynchronize(encode_stream_); }
     (void)cudaStreamSynchronize(device_.transfer_stream);
     pending_ = false;
     weights_.reset();
+    window_parameters_.reset();
     window_.close();
 }
 
@@ -416,6 +463,10 @@ VisionOverlaySession::item_plan(const qwen3_5::VisionItemControl& control) const
     return plan;
 }
 
+std::size_t VisionOverlaySession::window_bytes(const qwen3_5::VisionItemControl& control) const {
+    return vision_window_bytes(layout_, item_plan(control));
+}
+
 void VisionOverlaySession::begin(VisionWindow&& window, std::span<const std::uint16_t> patches,
                                  const qwen3_5::VisionItemControl& control,
                                  const VisionWorkspacePlan& item_plan) {
@@ -423,8 +474,17 @@ void VisionOverlaySession::begin(VisionWindow&& window, std::span<const std::uin
     window_                   = std::move(window);
     auto* const base          = static_cast<std::byte*>(window_.memory().data);
     const DeviceSpan backing{base + staging, window_.memory().bytes - staging};
-    encode_stream_ = window_.tier() == VisionWindow::Tier::KvGranules ? device_.vision_stream
-                                                                     : device_.stream;
+    // A KV-funded window leaves the Text weights mapped, so its encode runs on the Vision stream
+    // beside other lanes' work. It starts after everything already submitted on the main stream:
+    // the borrowed granules held free pages, but a page released by work still in flight must not
+    // be overwritten before that work retires.
+    if (window_.tier() == VisionWindow::Tier::KvGranules) {
+        encode_stream_ = device_.vision_stream;
+        main_fence_.record(device_.stream);
+        main_fence_.wait(encode_stream_);
+    } else {
+        encode_stream_ = device_.stream;
+    }
     weights_.emplace(device_, layout_, parameters_.model.pinned_weights(), base);
     window_parameters_.emplace(weights_->window_parameters(parameters_.vision.value()));
     weights_->reset(encode_stream_);
@@ -445,8 +505,8 @@ void VisionOverlaySession::begin(VisionWindow&& window, std::span<const std::uin
 bool VisionOverlaySession::submit_item(std::span<const std::uint16_t> patches,
                                        const qwen3_5::VisionItemControl& control) {
     if (pending_) { throw std::logic_error("a Vision item is already in flight"); }
-    // Early submission is opportunistic: another session's window keeps this item synchronous.
-    if (broker_.window_open()) { return false; }
+    // Early submission is opportunistic: another window keeps this item for its own unit.
+    if (broker_.window_open() || !broker_.can_submit()) { return false; }
     const VisionWorkspacePlan plan = item_plan(control);
     // Only a KV-funded window may stay open across unit boundaries: a weight-tail window unmaps
     // Text weights, which would stop every other lane.
@@ -457,25 +517,29 @@ bool VisionOverlaySession::submit_item(std::span<const std::uint16_t> patches,
     try {
         begin(std::move(*borrowed), patches, control, plan);
     } catch (...) {
-        if (encode_stream_ != nullptr) { (void)cudaStreamSynchronize(encode_stream_); }
-        (void)cudaStreamSynchronize(device_.transfer_stream);
-        pending_ = false;
-        weights_.reset();
-        window_.close();
+        abandon();
         throw;
     }
+    broker_.submitted_ = this;
+    ahead_             = true;
     return true;
 }
 
-std::span<const std::byte> VisionOverlaySession::complete_item() {
-    if (!pending_) { throw std::logic_error("no Vision item is in flight"); }
+void VisionOverlaySession::finish() {
+    if (!pending_) { return; }
+    if (broker_.submitted_ == this) { broker_.submitted_ = nullptr; }
     // Both producers into the borrowed extent are drained before it is handed back: the encode on
     // `encode_stream_`, whose completion event is recorded after the result copy, and the layer
     // uploads on the transfer stream. Nothing below enqueues again -- `weights_.reset()` is
     // std::optional's, so it destroys idle events rather than re-entering the member reset() that
     // issues the first two layer copies.
-    completion_.synchronize();
-    CUDA_CHECK(cudaStreamSynchronize(device_.transfer_stream));
+    try {
+        completion_.synchronize();
+        CUDA_CHECK(cudaStreamSynchronize(device_.transfer_stream));
+    } catch (...) {
+        abandon();
+        throw;
+    }
     stats_.staged_bytes += weights_->uploaded_bytes();
     weights_.reset();
     window_parameters_.reset();
@@ -495,6 +559,12 @@ std::span<const std::byte> VisionOverlaySession::complete_item() {
     stats_.evicted_bytes += borrowed;
     stats_.windows += 1;
     stats_.exclusive_windows += exclusive ? 1U : 0U;
+    stats_.ahead_windows += ahead_ ? 1U : 0U;
+    ahead_ = false;
+}
+
+std::span<const std::byte> VisionOverlaySession::take_submitted() {
+    finish();
     return {result_.bytes().data(), result_bytes_};
 }
 
@@ -508,14 +578,11 @@ VisionOverlaySession::encode_item(std::span<const std::uint16_t> patches,
     try {
         begin(std::move(window), patches, control, plan);
     } catch (...) {
-        if (encode_stream_ != nullptr) { (void)cudaStreamSynchronize(encode_stream_); }
-        (void)cudaStreamSynchronize(device_.transfer_stream);
-        pending_ = false;
-        weights_.reset();
-        window_.close();
+        abandon();
         throw;
     }
-    return complete_item();
+    finish();
+    return {result_.bytes().data(), result_bytes_};
 }
 
 } // namespace ninfer::models::qwen3_5::execution

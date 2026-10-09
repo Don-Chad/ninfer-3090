@@ -1300,6 +1300,9 @@ private:
                     }
                 }
             }
+            if (capture->shortage.main_kv_pages && instance_.program->drain_vision_window()) {
+                continue;
+            }
             const auto progress =
                 resources_.reclaim(*instance_.program, capture->shortage, {}, decision->reclaim);
             if (progress == ReclaimProgress::Transferring) { return false; }
@@ -1558,6 +1561,9 @@ private:
             !shortage.host_bytes) {
             return false;
         }
+        // An overlay Vision window holds Main KV pages only until its encode finishes. Waiting for
+        // it is bounded and loses nothing, so it comes before evicting or pausing anything.
+        if (shortage.main_kv_pages && instance_.program->drain_vision_window()) { return true; }
         if (instance_.program->reclaim_capture_reservation(shortage)) {
             request_admission_check();
             return true;
@@ -1961,9 +1967,33 @@ private:
         }
     }
 
+    // The optional Vision requirement of the licensed prefill unit (overlay residency). It is
+    // reserved after every required unit of the round, so it can only take pages nobody executing
+    // needs, and a shortage is answered by reclaiming cached content alone: never by revoking a
+    // paused snapshot or pausing a resident. When that does not suffice the unit encodes in a
+    // window of its own.
+    void reserve_vision_window(const Request& request) {
+        std::optional<typename ResourceManagement::ReclaimCursor> cursor;
+        for (;;) {
+            const auto result = instance_.program->reserve_vision_window(*request.sequence);
+            if (result || !result.shortage.main_kv_pages ||
+                instance_.program->has_context_transaction()) {
+                return;
+            }
+            if (!cursor) { cursor.emplace(resources_.begin_reclaim(*instance_.program)); }
+            const auto progress =
+                resources_.reclaim(*instance_.program, result.shortage, {}, *cursor);
+            if (progress != ReclaimProgress::Changed) { return; }
+            scheduler_.capacity_released();
+            request_admission_check();
+        }
+    }
+
     enum class ReservationScope { Round, Prefill };
 
     void reserve_resident_units(ReservationScope scope = ReservationScope::Round) {
+        // Finished overlay Vision encodes give their Main KV pages back before anything reserves.
+        (void)instance_.program->poll_vision();
         runnable_units_.fill(false);
         std::optional<std::uint32_t> recovering;
         std::optional<std::uint32_t> oldest;
@@ -2056,6 +2086,9 @@ private:
         }
         if (prefill && runnable_units_[*prefill] && !prepare_semantic_capture(slots_[*prefill])) {
             runnable_units_[*prefill] = false;
+        }
+        if (prefill && runnable_units_[*prefill] && slots_[*prefill]->is_prefilling()) {
+            reserve_vision_window(*slots_[*prefill]);
         }
         // A pause may have selected an already licensed younger row. Its permit belongs
         // to Native cleanup, and it must not enter this cycle's compact execution batch.
@@ -2400,9 +2433,13 @@ private:
                 }
                 auto prefill_slots = slots_;
                 for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+                    // A lane whose media item still encodes in an overlay Vision window keeps its
+                    // permit and yields the prefill turn; the other lanes run meanwhile.
                     if (!runnable_units_[lane] ||
                         (prefill_slots[lane] &&
-                         prefill_slots[lane]->cancelled.load(std::memory_order_acquire))) {
+                         (prefill_slots[lane]->cancelled.load(std::memory_order_acquire) ||
+                          (prefill_slots[lane]->sequence &&
+                           instance_.program->vision_pending(*prefill_slots[lane]->sequence))))) {
                         prefill_slots[lane].reset();
                     }
                 }

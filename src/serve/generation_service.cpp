@@ -609,6 +609,7 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     outcome.metrics.vision_seconds  = result.timings.vision_seconds;
     outcome.metrics.overlay_windows           = result.timings.overlay_windows;
     outcome.metrics.overlay_exclusive_windows = result.timings.overlay_exclusive_windows;
+    outcome.metrics.overlay_ahead_windows     = result.timings.overlay_ahead_windows;
     outcome.metrics.overlay_window_seconds  = result.timings.overlay_window_seconds;
     outcome.metrics.overlay_evict_seconds   = result.timings.overlay_evict_seconds;
     outcome.metrics.overlay_restore_seconds = result.timings.overlay_restore_seconds;

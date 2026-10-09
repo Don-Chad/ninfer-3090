@@ -216,7 +216,7 @@ The table lists executable defaults. The examples above select INT8 KV and MTP3.
 | `--gdn-state-fp16` | FP16 recurrent GDN state, halving each state image | off |
 | `--mlp-a8-decode` | integer-activation MLP at decode | off |
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
-| `--vision-residency resident\|overlay` | `overlay` keeps the Vision tower host-pinned and borrows device memory per image from the evictable text weight tail (no resident Vision cost; needs CUDA VMM). `overlay` is **temporarily rejected at startup** while it is ported to the new context engine | `resident` |
+| `--vision-residency resident\|overlay` | `overlay` keeps the Vision tower host-pinned and borrows device memory per image from free KV pages, or the evictable text weight tail when those fall short (no resident Vision cost; needs CUDA VMM) | `resident` |
 | `--vision-max-merged N` | merged-token budget of one media item; larger media downscales at preprocessing | 16384 |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--chat-template FILE` | use a local Jinja template | artifact template |

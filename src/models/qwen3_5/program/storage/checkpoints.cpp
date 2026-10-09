@@ -135,8 +135,10 @@ PhysicalUsageSnapshot ProgramImpl::physical_usage() const noexcept {
         out.capacity.state_slots = state_store->device_capacity();
     }
     if (text_kv_pages) {
-        const auto& pool           = text_kv_pages->physical_pool();
-        out.occupied.main_kv_pages = pool.allocated_pages() + pool.reserved_pages();
+        const auto& pool = text_kv_pages->physical_pool();
+        // Pages lent to an overlay Vision window are out of circulation until the window closes.
+        out.occupied.main_kv_pages =
+            pool.allocated_pages() + pool.reserved_pages() + pool.lent_pages();
         out.capacity.main_kv_pages = pool.capacity_pages();
     }
     if (backend_kv_pages) {

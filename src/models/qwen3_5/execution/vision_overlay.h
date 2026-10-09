@@ -36,6 +36,8 @@ struct VisionOverlayWindowStats {
     std::uint32_t windows     = 0;
     // Windows that had to borrow the weight tail, which stalls every other lane.
     std::uint32_t exclusive_windows = 0;
+    // Windows submitted ahead of the prefill unit that consumed them.
+    std::uint32_t ahead_windows = 0;
 };
 
 class VisionResidencyBroker;
@@ -89,22 +91,40 @@ private:
     std::vector<KVPageRun> runs_;
 };
 
+class VisionOverlaySession;
+
 // Program-owned arbiter of the single window a device can hold. Tier 1 is offered only while the
-// KV tier is enabled, the Program can afford a capacity change and free pages cover the request.
+// KV tier is enabled and free pages cover the request. A KV-funded window opened ahead of its
+// prefill unit (submit) stays open across units; any other acquisition first finishes it, so a
+// window never blocks another lane's encode or a page reservation for longer than its own encode.
 class VisionResidencyBroker {
 public:
     VisionResidencyBroker(DeviceContext& device, EvictableWeightPool& pool) noexcept
         : device_(device), pool_(pool) {}
 
-    // `can_lend` refuses a loan while a sealed plan depends on the current capacity;
-    // `on_change` advances the Program resource revision when the capacity moves.
+    // `can_submit` refuses a window that would outlive the current unit while the Program has a
+    // context transaction in flight.
     void enable_kv_tier(EvictableKVPool& arena, DeviceKVPagePool& pages,
-                        std::function<bool()> can_lend, std::function<void()> on_change);
+                        std::function<bool()> can_submit);
+
+    [[nodiscard]] bool kv_tier() const noexcept { return kv_arena_ != nullptr; }
+
+    // Free KV pages a loan of `bytes` would remove from circulation if it were drawn now, ignoring
+    // what is currently available; zero when the free page runs cannot fund it at all.
+    [[nodiscard]] std::uint32_t kv_loan_pages(std::size_t bytes) const;
+    // Lower bound on the pages any loan of `bytes` needs, whatever the free page runs look like.
+    [[nodiscard]] std::uint32_t kv_loan_minimum_pages(std::size_t bytes) const;
+    [[nodiscard]] std::uint32_t available_kv_pages() const noexcept;
+    [[nodiscard]] bool can_submit() const;
 
     // Free KV granules only; empty when they cannot fund the window.
     [[nodiscard]] std::optional<VisionWindow> try_acquire_kv(std::size_t bytes);
     // Free KV granules when they cover the window, the evict-ranked weight tail otherwise.
     [[nodiscard]] VisionWindow acquire(std::size_t bytes);
+
+    // Finishes the encode of a window opened ahead of its unit and returns its memory. The
+    // embeddings stay in the owning session's pinned slot. Returns whether a window was closed.
+    bool drain();
 
     [[nodiscard]] bool poisoned() const noexcept;
     [[nodiscard]] bool window_open() const noexcept;
@@ -115,20 +135,23 @@ public:
 
 private:
     friend class VisionWindow;
+    friend class VisionOverlaySession;
 
-    void require_closed() const;
+    void require_closed();
     void return_loan(std::vector<KVPageRun>& runs) noexcept;
 
     DeviceContext& device_;
     EvictableWeightPool& pool_;
-    EvictableKVPool* kv_arena_ = nullptr;
+    EvictableKVPool* kv_arena_  = nullptr;
     DeviceKVPagePool* kv_pages_ = nullptr;
-    std::function<bool()> can_lend_;
-    std::function<void()> on_change_;
+    std::function<bool()> can_submit_;
+    // The session whose submitted window is open, if any.
+    VisionOverlaySession* submitted_ = nullptr;
 };
 
 // Pinned slots receiving one item's merged embeddings each. A Vision prefill session holds one
-// slot for its lifetime, so max_concurrency slots suffice and no window allocates Host memory.
+// slot for its lifetime. `initial` slots are pinned up front so an ordinary window allocates no
+// Host memory; a lane replaying while it also prefills may pin more, up to `maximum`.
 class PinnedResultPool {
 public:
     class Handle {
@@ -156,7 +179,7 @@ public:
         std::span<std::byte> bytes_;
     };
 
-    PinnedResultPool(std::size_t slots, std::size_t slot_bytes);
+    PinnedResultPool(std::size_t initial, std::size_t maximum, std::size_t slot_bytes);
 
     [[nodiscard]] Handle acquire();
 
@@ -169,6 +192,7 @@ public:
 private:
     std::vector<std::unique_ptr<PinnedHostBuffer>> buffers_;
     std::vector<std::size_t> free_;
+    std::size_t maximum_    = 0;
     std::size_t slot_bytes_ = 0;
 };
 
@@ -227,8 +251,8 @@ private:
 // Encodes one media item per window: borrow the extent, stream the tower through it, land the
 // merged embeddings in the session's pinned slot, return the memory. A KV-funded window may stay
 // open across unit boundaries while the encode runs on the Vision stream; a weight-tail window is
-// exclusive and lives inside one prefill unit. Only one lane prefills at a time, so at most one
-// window exists even when a submitted one outlives its unit.
+// exclusive and lives inside one prefill unit. The broker holds at most one window: opening another
+// finishes a submitted one first.
 class VisionOverlaySession {
 public:
     VisionOverlaySession(DeviceContext& device, VisionResidencyBroker& broker,
@@ -239,18 +263,24 @@ public:
     VisionOverlaySession(const VisionOverlaySession&)            = delete;
     VisionOverlaySession& operator=(const VisionOverlaySession&) = delete;
 
+    // Device bytes a window for this item borrows.
+    [[nodiscard]] std::size_t window_bytes(const qwen3_5::VisionItemControl& control) const;
+
     // Opens a KV-funded window and enqueues the item's encode on the Vision stream. Returns false,
-    // leaving nothing open, when free KV cannot fund the window.
+    // leaving nothing open, when another window is open or free KV cannot fund the window.
     [[nodiscard]] bool submit_item(std::span<const std::uint16_t> patches,
                                    const qwen3_5::VisionItemControl& control);
 
+    // A submitted encode whose window is still open.
     [[nodiscard]] bool pending() const noexcept { return pending_; }
 
     [[nodiscard]] bool item_ready() const { return pending_ && completion_.ready(); }
 
-    // Waits for the submitted item, closes its window and returns the pinned BF16
-    // [output_hidden, merged] embeddings; valid until the next item.
-    [[nodiscard]] std::span<const std::byte> complete_item();
+    // Waits for the submitted encode and closes its window; the embeddings stay in the pinned slot
+    // until the next item. A no-op when nothing is pending.
+    void finish();
+    // The submitted item's pinned BF16 [output_hidden, merged] embeddings, finishing it first.
+    [[nodiscard]] std::span<const std::byte> take_submitted();
     // Synchronous form inside the caller's prefill unit; falls back to the weight tail.
     [[nodiscard]] std::span<const std::byte> encode_item(std::span<const std::uint16_t> patches,
                                                          const qwen3_5::VisionItemControl& control);
@@ -262,6 +292,7 @@ private:
 
     void begin(VisionWindow&& window, std::span<const std::uint16_t> patches,
                const qwen3_5::VisionItemControl& control, const VisionWorkspacePlan& item_plan);
+    void abandon() noexcept;
     [[nodiscard]] VisionWorkspacePlan item_plan(const qwen3_5::VisionItemControl& control) const;
 
     DeviceContext& device_;
@@ -275,9 +306,12 @@ private:
     std::optional<VisionWeightStream> weights_;
     std::optional<VisionParameters> window_parameters_;
     CudaCompletionEvent completion_;
+    // Orders a Vision-stream encode after the main-stream work already submitted.
+    CudaCompletionEvent main_fence_;
     cudaStream_t encode_stream_ = nullptr;
     std::size_t result_bytes_   = 0;
     bool pending_               = false;
+    bool ahead_                 = false;
     Clock::time_point window_start_{};
 };
 

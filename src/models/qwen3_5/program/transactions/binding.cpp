@@ -48,13 +48,7 @@ void ProgramImpl::initialize_prefill(std::uint32_t lane, std::uint32_t base) {
             vision.uses.push_back({begin, item.token_end, i, i});
             vision.max_merged_count = std::max(vision.max_merged_count, item.merged_count);
         }
-        if (!vision.uses.empty()) {
-            staged.vision = std::make_unique<execution::VisionPrefillSession>(
-                device, parameters,
-                DeviceSpan{workspace_storage.base(), workspace_storage.capacity()},
-                *workspace_plan.vision, staged.prompt, vision, vision_handoff,
-                vision_handoff_peak_bytes);
-        }
+        if (!vision.uses.empty()) { staged.vision = make_vision_session(staged.prompt, vision); }
     }
 }
 
@@ -398,11 +392,8 @@ void ProgramImpl::install_binding(ContextTransaction& tx) {
         // Reconstruct references into the moved durable prefill object.
         if (request.prefill && request.prefill->vision_plan &&
             !request.prefill->vision_plan->uses.empty()) {
-            request.prefill->vision = std::make_unique<execution::VisionPrefillSession>(
-                device, parameters,
-                DeviceSpan{workspace_storage.base(), workspace_storage.capacity()},
-                *workspace_plan.vision, request.prefill->prompt, *request.prefill->vision_plan,
-                vision_handoff, vision_handoff_peak_bytes);
+            request.prefill->vision =
+                make_vision_session(request.prefill->prompt, *request.prefill->vision_plan);
         }
         install_resume_sampling(state, request);
     } else {

@@ -251,11 +251,7 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
                 plan.max_merged_count = std::max(plan.max_merged_count, item.merged_count);
             }
             replay.vision_plan.emplace(std::move(plan));
-            replay.vision = std::make_unique<execution::VisionPrefillSession>(
-                device, parameters,
-                DeviceSpan{workspace_storage.base(), workspace_storage.capacity()},
-                *workspace_plan.vision, replay.prompt, *replay.vision_plan, vision_handoff,
-                vision_handoff_peak_bytes);
+            replay.vision = make_vision_session(replay.prompt, *replay.vision_plan);
         }
 
         if (bridge_mtp) {

@@ -52,6 +52,9 @@ struct PersistentLayout {
     // recurrent state of the layers that stage owns. Empty on one device.
     std::vector<std::size_t> extra_rank_bytes;
     std::size_t kv_payload_bytes = 0;
+    // Arena offset just past the last page-major Main KV plane. Everything an overlay Vision window
+    // may borrow from free KV pages lies below it; stores interleaved there are never selected.
+    std::size_t lendable_kv_end_bytes = 0;
 };
 
 struct VisionWorkspacePlan {
@@ -73,8 +76,14 @@ struct WorkspacePlan {
     std::size_t dflash_round     = 0;
     std::size_t causal_score     = 0;
     std::size_t general_capacity = 0;
+    // Resident: the encode workspace, folded into capacity after the general region. Overlay: the
+    // per-window encode plan, borrowed per item; only the MTP bridge column lives in this workspace.
     std::optional<VisionWorkspacePlan> vision;
-    std::size_t capacity = 0;
+    bool vision_resident = true;
+    // Overlay only: the staged visual column of a multimodal MTP bridge, past the general region.
+    std::size_t vision_bridge_offset = 0;
+    std::size_t vision_bridge_bytes  = 0;
+    std::size_t capacity             = 0;
 };
 
 struct SequencePlanningInputs {

@@ -222,8 +222,12 @@ void copy_host(const void* src, Tensor& dst, cudaStream_t stream) {
 } // namespace
 
 VisionContext::VisionContext(DeviceContext& ctx, const Parameters& parameters)
-    : ctx_(ctx), config_(parameters.model.config().vision.value()),
-      parameters_(parameters.vision.value()) {}
+    : VisionContext(ctx, parameters.model.config().vision.value(), parameters.vision.value(),
+                    ctx.stream) {}
+
+VisionContext::VisionContext(DeviceContext& ctx, const VisionConfig& config,
+                             const VisionParameters& parameters, cudaStream_t stream)
+    : ctx_(ctx), config_(config), parameters_(parameters), stream_(stream) {}
 
 std::size_t VisionContext::workspace_bytes(const VisionConfig& config,
                                            const VisionParameters& parameters, std::size_t patches,
@@ -281,7 +285,8 @@ Tensor VisionContext::bind_output(DeviceSpan backing, const VisionWorkspacePlan&
 }
 
 void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpan backing,
-                           const VisionWorkspacePlan& plan) const {
+                           const VisionWorkspacePlan& plan,
+                           VisionWeightStream* weight_stream) const {
     if (item.control == nullptr) { throw std::invalid_argument("Vision item control is null"); }
     const qwen3_5::VisionItemControl& control = *item.control;
     const auto patches64                      = control.patch_count;
@@ -308,7 +313,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
     }
     const auto patches  = static_cast<std::int32_t>(patches64);
     const auto tokens   = static_cast<std::int32_t>(tokens64);
-    cudaStream_t stream = ctx_.stream;
+    cudaStream_t stream = stream_;
 
     const auto project = [&](const Tensor& x, const LinearParameters& p, Tensor& out,
                              const LayoutRegion& region) {
@@ -325,6 +330,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
                                       static_cast<std::uint64_t>(patches64));
         copy_host(control.position_ids.data(), position_ids, stream);
         copy_host(item.patches.data(), patch_bf16, stream);
+        if (weight_stream != nullptr) { weight_stream->prelude_ready(stream); }
         project(patch_bf16, parameters_.patch_embedding, x, layout.patch_scratch);
         ops::add_bias(parameters_.patch_embedding_bias, x, stream);
         // The artifact records the source table shape [rows,hidden], while Tensor's
@@ -340,6 +346,9 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
         nvtx::ScopedRange layer_range(nvtx::Name::VisionLayer, nvtx::Category::Vision,
                                       static_cast<std::uint64_t>(layer));
         const auto& block = parameters_.layers[layer];
+        if (weight_stream != nullptr) {
+            weight_stream->arrive(static_cast<std::uint32_t>(layer), stream);
+        }
         {
             nvtx::ScopedRange attention_range(nvtx::Name::VisionAttention,
                                               nvtx::Category::Attention,
@@ -407,6 +416,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
         nvtx::ScopedRange merge_range(nvtx::Name::VisionMerge, nvtx::Category::Vision,
                                       static_cast<std::uint64_t>(tokens64));
         Tensor normalized = layout.normalized.bind(backing);
+        if (weight_stream != nullptr) { weight_stream->merger_ready(stream); }
         ops::layer_norm(x, parameters_.merger_norm.weight, parameters_.merger_norm.bias, 1.0e-6F,
                         normalized, stream);
         Tensor merged = normalized.view({dimension(config_.merger_width()), tokens});
@@ -423,14 +433,39 @@ VisionPrefillSession::VisionPrefillSession(
     DeviceContext& device, const execution::Parameters& parameters, DeviceSpan workspace,
     const VisionWorkspacePlan& workspace_plan, const qwen3_5::PreparedPromptData& prompt,
     const VisionPrefillPlan& plan, VisionHandoffState& handoff, std::size_t& handoff_peak_bytes)
-    : device_(device), workspace_(workspace), workspace_plan_(workspace_plan), prompt_(prompt),
-      plan_(plan), handoff_(handoff), handoff_peak_bytes_(handoff_peak_bytes),
-      context_(device, parameters) {
+    : device_(device), parameters_(parameters), workspace_(workspace),
+      workspace_plan_(workspace_plan), prompt_(prompt), plan_(plan), handoff_(&handoff),
+      handoff_peak_bytes_(&handoff_peak_bytes) {
+    context_.emplace(device, parameters);
+    if (workspace_.data == nullptr || workspace_.bytes < workspace_plan_.capacity_bytes) {
+        throw std::invalid_argument("Vision prefill workspace plan is invalid");
+    }
+    validate_plan();
+    timers_.reserve(plan_.uses.size());
+}
+
+VisionPrefillSession::VisionPrefillSession(
+    DeviceContext& device, const execution::Parameters& parameters,
+    const VisionWorkspacePlan& window_plan, const qwen3_5::PreparedPromptData& prompt,
+    const VisionPrefillPlan& plan, VisionResidencyBroker& broker, PinnedResultPool::Handle result,
+    DeviceSpan bridge_staging)
+    : device_(device), parameters_(parameters), workspace_{}, workspace_plan_(window_plan),
+      prompt_(prompt), plan_(plan), bridge_staging_(bridge_staging) {
+    const std::size_t column_bytes =
+        static_cast<std::size_t>(parameters.vision.value().merger_fc2.weight.n) * 2;
+    if (bridge_staging_.data == nullptr || bridge_staging_.bytes < column_bytes) {
+        throw std::invalid_argument("Vision overlay bridge staging is too small");
+    }
+    validate_plan();
+    overlay_ = std::make_unique<VisionOverlaySession>(device, broker, parameters, window_plan,
+                                                      std::move(result));
+}
+
+void VisionPrefillSession::validate_plan() const {
     if (plan_.control == nullptr || plan_.control->items.empty() || plan_.uses.empty()) {
         throw std::invalid_argument("Vision prefill plan has no suffix item spans");
     }
-    if (workspace_.data == nullptr || workspace_.bytes < workspace_plan_.capacity_bytes ||
-        plan_.max_merged_count == 0 || plan_.max_merged_count > workspace_plan_.max_merged_tokens) {
+    if (plan_.max_merged_count == 0 || plan_.max_merged_count > workspace_plan_.max_merged_tokens) {
         throw std::invalid_argument("Vision prefill workspace plan is invalid");
     }
     std::uint32_t previous_end = 0;
@@ -462,13 +497,17 @@ VisionPrefillSession::VisionPrefillSession(
         if (control.merged_count > plan_.max_merged_count) {
             throw std::invalid_argument("Vision suffix item exceeds its request workspace extent");
         }
-        const Tensor output =
-            VisionContext::bind_output(workspace_, workspace_plan_, control.merged_count);
+        const std::size_t output_bytes =
+            checked_mul(checked_mul(control.merged_count,
+                                    static_cast<std::size_t>(workspace_plan_.output_hidden),
+                                    "item handoff elements"),
+                        2, "item handoff bytes");
         const std::size_t patch_elements = checked_mul(
-            control.patch_count, static_cast<std::size_t>(context_.config().patch_width()),
+            control.patch_count,
+            static_cast<std::size_t>(parameters_.model.config().vision.value().patch_width()),
             "item patch elements");
         const auto& payload = prompt_.media_payloads[use.prepared_item_index];
-        if (output.bytes() > workspace_plan_.handoff_capacity_bytes || !payload ||
+        if (output_bytes > workspace_plan_.handoff_capacity_bytes || !payload ||
             payload->patch_elements != patch_elements) {
             throw std::invalid_argument("Vision suffix item storage has an invalid shape");
         }
@@ -482,10 +521,61 @@ VisionPrefillSession::VisionPrefillSession(
                      })) {
         throw std::invalid_argument("Vision request workspace extent has no matching suffix item");
     }
-    timers_.reserve(plan_.uses.size());
 }
 
 VisionPrefillSession::~VisionPrefillSession() { retire_handoff(); }
+
+const VisionUseSpan* VisionPrefillSession::use_at(std::uint32_t cursor) const {
+    // Replay can revisit an earlier item, including after the last item was consumed.
+    const auto next_use = std::lower_bound(
+        plan_.uses.begin(), plan_.uses.end(), cursor,
+        [](const VisionUseSpan& use, std::uint32_t position) { return use.end <= position; });
+    return next_use == plan_.uses.end() ? nullptr : &*next_use;
+}
+
+std::optional<std::size_t> VisionPrefillSession::pending_window_bytes(std::uint32_t cursor,
+                                                                     std::uint32_t chunk) const {
+    if (overlay_ == nullptr || submitted_item_) { return std::nullopt; }
+    const VisionUseSpan* use = use_at(cursor);
+    // Only an item the next chunk consumes: a later one would hold its window across chunks that
+    // do not need it.
+    if (use == nullptr || static_cast<std::uint64_t>(use->begin) >=
+                              static_cast<std::uint64_t>(cursor) + chunk ||
+        (active_item_ && *active_item_ == use->prepared_item_index)) {
+        return std::nullopt;
+    }
+    return overlay_->window_bytes(plan_.control->items[use->control_index]);
+}
+
+bool VisionPrefillSession::submit_item(std::uint32_t cursor, std::uint32_t chunk) {
+    if (!pending_window_bytes(cursor, chunk)) { return false; }
+    const VisionUseSpan& use = *use_at(cursor);
+    const auto& payload      = prompt_.media_payloads[use.prepared_item_index];
+    if (!payload) { return false; }
+    if (!overlay_->submit_item(payload->span(), plan_.control->items[use.control_index])) {
+        return false;
+    }
+    submitted_item_ = use.prepared_item_index;
+    return true;
+}
+
+bool VisionPrefillSession::vision_pending() const {
+    return overlay_ != nullptr && submitted_item_ && overlay_->pending() &&
+           !overlay_->item_ready();
+}
+
+bool VisionPrefillSession::poll() {
+    if (overlay_ == nullptr || !submitted_item_ || !overlay_->pending() ||
+        !overlay_->item_ready()) {
+        return false;
+    }
+    overlay_->finish();
+    return true;
+}
+
+VisionOverlayWindowStats VisionPrefillSession::overlay_stats() const noexcept {
+    return overlay_ != nullptr ? overlay_->stats() : VisionOverlayWindowStats{};
+}
 
 VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32_t nominal_length) {
     if (nominal_length == 0 || begin >= prompt_.token_ids.size()) {
@@ -496,7 +586,6 @@ VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32
     std::uint32_t end = static_cast<std::uint32_t>(
         std::min<std::uint64_t>(nominal_end64, prompt_.token_ids.size()));
 
-    // Replay can revisit an earlier item, including after the last item was consumed.
     const auto next_use = std::lower_bound(
         plan_.uses.begin(), plan_.uses.end(), begin,
         [](const VisionUseSpan& use, std::uint32_t position) { return use.end <= position; });
@@ -507,43 +596,86 @@ VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32
     }
     if (end <= begin) { throw std::logic_error("Vision chunk cap made no forward progress"); }
     if (active == nullptr) {
-        return VisionChunk{static_cast<std::int32_t>(end - begin), nullptr, {}};
+        return VisionChunk{static_cast<std::int32_t>(end - begin), nullptr, {}, {}};
     }
     const qwen3_5::VisionItemControl& control = plan_.control->items[active->control_index];
+    if (overlay_ != nullptr) {
+        // The pinned slot is this session's own, so an encoded item stays valid until this session
+        // encodes another one; no other request can overwrite it.
+        if (!active_item_ || *active_item_ != active->prepared_item_index) {
+            const auto& payload = prompt_.media_payloads[active->prepared_item_index];
+            if (!payload) {
+                throw std::logic_error("Vision replay lost its prepared media payload");
+            }
+            if (submitted_item_ && *submitted_item_ == active->prepared_item_index) {
+                // Submitted ahead of this unit: the encode already ran beside other lanes.
+                host_result_ = overlay_->take_submitted();
+            } else {
+                // A submitted item this chunk does not consume would be overwritten anyway.
+                overlay_->finish();
+                active_item_.reset();
+                host_result_ = overlay_->encode_item(payload->span(), control);
+            }
+            submitted_item_.reset();
+            active_item_ = active->prepared_item_index;
+        }
+        return VisionChunk{static_cast<std::int32_t>(end - begin), &control, {}, host_result_};
+    }
     Tensor output = VisionContext::bind_output(workspace_, workspace_plan_, control.merged_count);
 
     if (!owns_handoff() || !active_item_ || *active_item_ != active->prepared_item_index) {
         const auto& payload = prompt_.media_payloads[active->prepared_item_index];
         if (!payload) { throw std::logic_error("Vision replay lost its prepared media payload"); }
-        if (handoff_.generation_ == std::numeric_limits<std::uint64_t>::max()) {
+        if (handoff_->generation_ == std::numeric_limits<std::uint64_t>::max()) {
             throw std::overflow_error("Vision handoff generation exhausted");
         }
         timers_.emplace_back(device_);
         timers_.back().start();
         // Encoding scratch can overwrite the prior handoff before the final projection.
         // Revoke that binding before enqueueing any work, including a failed encode.
-        handoff_.owner_ = nullptr;
-        ++handoff_.generation_;
-        context_.encode(VisionItemView{payload->span(), &control}, output, workspace_,
-                        workspace_plan_);
+        handoff_->owner_ = nullptr;
+        ++handoff_->generation_;
+        context_->encode(VisionItemView{payload->span(), &control}, output, workspace_,
+                         workspace_plan_);
         timers_.back().record_stop();
-        handoff_.owner_       = this;
-        active_generation_    = handoff_.generation_;
+        handoff_->owner_      = this;
+        active_generation_    = handoff_->generation_;
         active_item_          = active->prepared_item_index;
         active_handoff_bytes_ = output.bytes();
-        handoff_peak_bytes_   = std::max(handoff_peak_bytes_, active_handoff_bytes_);
+        *handoff_peak_bytes_  = std::max(*handoff_peak_bytes_, active_handoff_bytes_);
     }
-    return VisionChunk{static_cast<std::int32_t>(end - begin), &control, output};
+    return VisionChunk{static_cast<std::int32_t>(end - begin), &control, output, {}};
+}
+
+Tensor VisionPrefillSession::bridge_column(const VisionChunk& chunk, std::int32_t column) {
+    if (chunk.control == nullptr || column < 0 ||
+        static_cast<std::size_t>(column) >= chunk.control->merged_count) {
+        throw std::logic_error("Vision bridge column is outside the encoded item");
+    }
+    if (overlay_ == nullptr) { return chunk.embeddings.slice(1, column, 1); }
+    const std::int32_t hidden      = workspace_plan_.output_hidden;
+    const std::size_t column_bytes = static_cast<std::size_t>(hidden) * 2;
+    const std::size_t offset       = static_cast<std::size_t>(column) * column_bytes;
+    if (offset + column_bytes > chunk.host_embeddings.size()) {
+        throw std::logic_error("Vision bridge column exceeds the item embeddings");
+    }
+    Tensor staged(bridge_staging_.data, DType::BF16, {hidden, 1});
+    CUDA_CHECK(cudaMemcpyAsync(staged.data, chunk.host_embeddings.data() + offset, column_bytes,
+                               cudaMemcpyHostToDevice, device_.stream));
+    return staged;
 }
 
 void VisionPrefillSession::retire_handoff() noexcept {
-    if (owns_handoff()) { handoff_.owner_ = nullptr; }
-    active_item_.reset();
+    if (owns_handoff()) { handoff_->owner_ = nullptr; }
+    // Overlay results live in this session's pinned slot and stay valid for a replay; resident
+    // handoffs share the Program workspace and are revalidated by generation instead.
+    if (overlay_ == nullptr) { active_item_.reset(); }
     active_generation_    = 0;
     active_handoff_bytes_ = 0;
 }
 
 double VisionPrefillSession::elapsed_seconds() const {
+    if (overlay_ != nullptr) { return overlay_->stats().window_seconds; }
     double milliseconds = 0.0;
     for (const CudaEventTimer& timer : timers_) { milliseconds += timer.elapsed_ms(); }
     return milliseconds / 1000.0;

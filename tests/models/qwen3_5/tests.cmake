@@ -55,6 +55,10 @@ ninfer_add_test(ninfer_qwen3_5_vision_workspace_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_vision_workspace.cpp"
   LIBRARIES ninfer_model_runtime ninfer_engine)
 
+ninfer_add_test(ninfer_qwen3_5_vision_overlay_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_vision_overlay_real.cpp"
+  LIBRARIES ninfer_engine)
+
 # k=7 graph=1 optimized=1 batch=2 kv=int8 vision=0 state_slots=1. The argv fallbacks are k=15,
 # batch=8 and 3 state slots, which want about 6.3 GB of runtime reservation and cannot fit beside the
 # 20.4 GB artifact on a 24 GB card. This configuration exercises the same DFlash2 accept/rollback
@@ -102,6 +106,7 @@ set(ninfer_qwen3_5_real_tests
   ninfer_qwen3_5_tools_real_test
   ninfer_qwen3_5_score_real_test
   ninfer_qwen3_5_vision_workspace_test
+  ninfer_qwen3_5_vision_overlay_real_test
   ninfer_qwen3_5_dflash2_real_test
   ninfer_qwen3_5_dflash_prefill_real_test
   ninfer_qwen3_5_moe_real_test

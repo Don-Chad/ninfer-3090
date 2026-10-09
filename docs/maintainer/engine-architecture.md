@@ -309,7 +309,17 @@ forward 重叠；两段共享同一个资源预留和提交边界。
 本 fork 的多 GPU layer pipeline（`--devices A,B,...`，Linux；每个 stage 整层拥有权重、KV plane、GDN
 state 与 workspace，embedding、head、round state 与 sampling 留在 rank 0，设计见
 [pipeline-parallel-plan.md](pipeline-parallel-plan.md)）尚未移植到本文描述的上下文引擎：源码保留在树中，
-启动时拒绝多于一个设备。Vision overlay residency 与需要注入 KV 的 prompt graft 同样暂时在启动时拒绝。
+启动时拒绝多于一个设备。需要注入 KV 的 prompt graft 同样暂时在启动时拒绝。
+
+本 fork 的 Vision overlay residency（`--vision-residency overlay`）：Vision tower 常驻 pinned host，
+每个媒体项在一个有界 window 中编码，window 从空闲 Main KV page 借用设备内存（VMM granule 重映射，
+`core/evictable_kv_pool`、`core/kv_loan.h`），不足时退回 evict-ranked 文本权重尾部（独占）。
+Program 同时只持有一个 window（`execution/vision_overlay`）。Engine 在一轮所有必需 unit permit
+预留之后，为获得 Prefill permit 的 lane 调用 `Program::reserve_vision_window`：若其下一 chunk 需要
+尚未编码的媒体项，便借页并在 Vision stream 上提前开始编码；页不足时只通过 ResourceManager 回收
+可选缓存内容，绝不撤销暂停请求的 snapshot 或暂停其他 lane。编码未完成时 `vision_pending` 使该 lane
+让出 prefill 轮次。任何 Main KV shortage 在回收或抢占之前先调用 `drain_vision_window` 等待编码结束
+并归还页；每轮开始时 `poll_vision` 归还已完成 window 的页。借出的页计入 `physical_usage` 的占用。
 
 Source 排序使用硬件与实际绑定对应的传输成本、prefill 成本；缺省值用于没有匹配测量的配置。
 实际 reservation 和 stores 决定物理可行性。

@@ -144,7 +144,7 @@ void mtp_bridge_multimodal(PrefillContext& state, const PreparedPromptData& prom
             throw std::logic_error("visual MTP bridge does not match Vision scatter metadata");
         }
         visual_embedding =
-            chunk.embeddings.slice(1, static_cast<std::int32_t>(column - scatter.begin()), 1);
+            vision.bridge_column(chunk, static_cast<std::int32_t>(column - scatter.begin()));
         composed_embedding = &visual_embedding;
     }
 
@@ -756,7 +756,18 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
         sequence.tail_hidden_valid = true;
         request.timings.vision_seconds += vision_seconds;
         request.timings.prefill_seconds = std::max(0.0, staged.elapsed_seconds - vision_seconds);
-        if (staged.vision) { staged.vision->retire_handoff(); }
+        if (staged.vision) {
+            const execution::VisionOverlayWindowStats overlay = staged.vision->overlay_stats();
+            request.timings.overlay_windows += overlay.windows;
+            request.timings.overlay_exclusive_windows += overlay.exclusive_windows;
+            request.timings.overlay_ahead_windows += overlay.ahead_windows;
+            request.timings.overlay_window_seconds += overlay.window_seconds;
+            request.timings.overlay_evict_seconds += overlay.evict_seconds;
+            request.timings.overlay_restore_seconds += overlay.restore_seconds;
+            request.timings.overlay_evicted_bytes += overlay.evicted_bytes;
+            request.timings.overlay_staged_bytes += overlay.staged_bytes;
+            staged.vision->retire_handoff();
+        }
 
         const bool prompt_frontier_capture =
             request.next_capture < request.capture_groups.size() &&

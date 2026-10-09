@@ -2,7 +2,11 @@
 #include "models/qwen3_5/frontend/prepared_prompt.h"
 #include "models/qwen3_5/program/planning/startup.h"
 #include "models/qwen3_5/program/program_impl.h"
+#include "core/evictable_weight_pool.h"
+#include "models/load_options.h"
+#include "models/qwen3_5/execution/vision_overlay.h"
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace ninfer::models::qwen3_5 {
@@ -301,6 +305,53 @@ void Program::reset_memory_peaks() noexcept { impl_->reset_memory_peaks(); }
 SequencePlanner make_sequence_planner(const execution::Parameters& parameters,
                                       DeviceContext& device, const EngineOptions& options) {
     return SequencePlanner(detail::make_sequence_planner_impl(parameters, device, options));
+}
+
+runtime::ResourceReservation Program::reserve_vision_window(SequenceHandle sequence) {
+    return impl_->reserve_vision_window(sequence);
+}
+
+bool Program::vision_pending(SequenceHandle sequence) const noexcept {
+    return impl_->vision_pending(sequence);
+}
+
+bool Program::poll_vision() { return impl_->poll_vision(); }
+
+bool Program::drain_vision_window() { return impl_->drain_vision_window(); }
+
+std::size_t prepare_vision_overlay(const execution::Parameters& parameters, DeviceContext& device,
+                                   const EngineOptions& options) {
+    const models::LoadOptions features = models::load_options(options);
+    if (!features.overlay_vision()) { return 0; }
+    if (parameters.model.options() != features) {
+        throw std::invalid_argument("loaded components do not match the requested execution options");
+    }
+    EvictableWeightPool* const pool = parameters.model.weight_pool();
+    const auto& layout              = parameters.model.vision_overlay();
+    if (pool == nullptr || !layout || !parameters.vision) {
+        throw std::logic_error("overlay Vision model has no pinned tower or weight pool");
+    }
+    const detail::VisionWorkspacePlan window_plan = execution::plan_vision_window_workspace(
+        parameters, detail::vision_item_token_bound(options.max_context, features));
+    const std::size_t window    = execution::vision_window_bytes(*layout, window_plan);
+    constexpr std::size_t chunk = EvictableWeightPool::kChunkBytes;
+    const std::size_t aligned   = (window + chunk - 1) / chunk * chunk;
+    if (aligned > pool->evictable_tail_bytes()) {
+        const auto mib = [](std::size_t bytes) {
+            return std::to_string(bytes / (1024ULL * 1024ULL)) + " MiB";
+        };
+        // The exclusive fallback borrows the encode window from the evict-ranked weights, which
+        // the load-time storage trades shrink; name the knobs that trade against each other.
+        throw std::invalid_argument(
+            "--vision-residency overlay needs " + mib(aligned) +
+            " of evict-ranked weights for one encode window, but the loaded output head, "
+            "embedding, proposal head and MTP weights provide " +
+            mib(pool->evictable_tail_bytes()) +
+            "; lower --vision-max-merged, use --vision-residency resident, or drop a flag that "
+            "shrinks those weights (--embedding-q4/q6, --lm-head-q4/q6)");
+    }
+    if (!pool->mirror_captured()) { pool->capture_window_mirror(window, device.transfer_stream); }
+    return pool->window_capacity_bytes();
 }
 
 std::unique_ptr<Program> create_program(const execution::Parameters& parameters,
