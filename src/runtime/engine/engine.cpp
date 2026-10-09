@@ -194,6 +194,14 @@ std::string slot_model_binding(const EngineOptions& options, const LoadSummary& 
     std::string binding = load.architecture + '\n' + load.model_name + '\n';
     for (const std::string& format : load.weight_formats) { binding += format + ','; }
     binding += '\n' + load.prefill_signature + '\n';
+    // What a snapshot's restore checks beyond the artifact: the KV storage and the speculative
+    // configuration its state and KV layout were built for. Part of the binding so an image made
+    // under another setting is filtered out before anything is read or evicted for it.
+    binding += std::to_string(static_cast<unsigned>(options.kv_cache)) + ',' +
+               std::to_string(static_cast<unsigned>(options.speculative.backend)) + ',' +
+               std::to_string(options.speculative.draft_tokens) + ',' +
+               std::to_string(static_cast<unsigned>(options.speculative.proposal_head)) + ',' +
+               (options.enable_vision ? "vision" : "text") + '\n';
     std::error_code size_error;
     const std::uintmax_t size = std::filesystem::file_size(options.artifact_path, size_error);
     binding += size_error ? std::string("?") : std::to_string(size);
@@ -294,7 +302,7 @@ public:
                 }
                 open_context_store();
                 generation->set_context_store(
-                    slot_model_binding(options, load),
+                    slot_model_binding(options, load), store.get(),
                     [this](runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
                         return enqueue_store_write(std::move(snapshot));
                     },
@@ -395,6 +403,14 @@ public:
         out.context_store_restored       = restored_sessions.load(std::memory_order_relaxed);
         out.context_store_restored_bytes = restored_bytes.load(std::memory_order_relaxed);
         out.context_store_restore_seconds = restore_seconds;
+        if (const auto* generation = std::get_if<std::unique_ptr<GenerationCore>>(&core);
+            generation != nullptr && *generation != nullptr) {
+            const auto read = (*generation)->store_read_stats();
+            out.context_store_hydrations         = read.hydrations;
+            out.context_store_hydrated_tokens    = read.hydrated_tokens;
+            out.context_store_hydration_failures = read.failures;
+            out.context_store_hydration_seconds  = read.seconds;
+        }
     }
 
     EngineOptions options;

@@ -272,6 +272,27 @@ public:
         }
     }
 
+    // The deepest checkpoint anywhere in the cache (any tier, private or shared, except a private
+    // source an active request holds, which admission cannot reuse) whose shortlist
+    // key the request reproduces, whether or not planning would select it. The shortlist only
+    // narrows candidates (Program verifies the tokens exactly), so this is an upper bound on what
+    // the cache can offer: for a caller deciding whether reading something in from outside the
+    // cache could beat it.
+    [[nodiscard]] std::uint32_t max_resident_prefix_frontier(const RequestBasePlan& base) {
+        if (!cache_enabled_) { return 0; }
+        rebuild_prefix_index();
+        std::uint32_t best = 0;
+        for (const PrefixIndexEntry& index : prefix_index_) {
+            if (!valid_prefix_index_entry(index)) { continue; }
+            // Admission skips a private source another request is still using.
+            if (!index.shared && private_has_active_edge(index.slot)) { continue; }
+            const std::optional<PrefixShortlistKey> incoming =
+                base.prefix_shortlist_key(index.key.frontier);
+            if (incoming && *incoming == index.key) { best = std::max(best, index.key.frontier); }
+        }
+        return best;
+    }
+
     [[nodiscard]] Inspection inspect(Program& program, const PreparedPrompt& prompt,
                                      const RequestBasePlan& base, std::uint64_t publication_order,
                                      PlanningAllowance allowance = {}) {

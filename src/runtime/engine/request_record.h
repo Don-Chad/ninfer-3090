@@ -182,6 +182,8 @@ struct RequestRecord {
     FinishReason deferred_limit_reason   = FinishReason::None;
     // Growth found no free page, so the request ends at its reserved output unless it stops sooner.
     bool output_reservation_exhausted = false;
+    // The context store has been consulted for this request; it is consulted once.
+    bool store_probed                     = false;
     EngineRequestState post_capture_state = EngineRequestState::Prefill;
     std::optional<FinishReason> terminal_reason;
 

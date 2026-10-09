@@ -1291,6 +1291,12 @@ struct RuntimeStats {
     std::uint64_t context_store_restored       = 0; // sessions restored into the cache at start-up
     std::uint64_t context_store_restored_bytes = 0;
     double context_store_restore_seconds       = 0.0;
+    // Stored sessions brought back into the cache for a request that would otherwise have been
+    // prefilled from further back, and the prompt tokens that bought.
+    std::uint64_t context_store_hydrations         = 0;
+    std::uint64_t context_store_hydrated_tokens    = 0;
+    std::uint64_t context_store_hydration_failures = 0;
+    double context_store_hydration_seconds         = 0.0;
 };
 
 enum class ContextCostPresetSource : std::uint8_t {
