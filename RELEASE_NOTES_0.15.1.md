@@ -62,7 +62,8 @@ Sessions the server retains are written to `DIR` as deduplicated chunks, so a gr
 writes its new tail. Idle sessions (`--context-store-idle-seconds`, default 30) and evicted ones are
 written in the background, anything unsaved is flushed on a clean shutdown, and at start-up the most
 recently used sessions are loaded back (the start-up log says how many). Size and age are bounded by
-`--context-store-size` and `--context-store-ttl` (default 7 days).
+`--context-store-max-gib` (default: half the free space of the volume at start-up) and
+`--context-store-ttl-hours` (default 168, i.e. 7 days).
 
 Measured on an RTX 3090, Qwen3.8-27B, rk4v4, killed without a flush, restarted:
 
@@ -91,8 +92,8 @@ Limits, stated plainly:
 - **Not compatible with DFlash2**: the server refuses that combination at start-up.
 - Not tested with several simultaneous requests or at production context sizes. Timings were taken while
   the machine was also playing video, so only token counts are firm.
-- Not built: a size default from free disk (set `--context-store-size` yourself on small rented disks),
-  a bucket/S3 backend, sharing between servers.
+- A background write is skipped while any request is waiting or prefilling, so a session that stays busy
+  is only saved at shutdown or when it is evicted. Not built: a bucket/S3 backend, sharing between servers.
 
 ## Huge `max_tokens` no longer has to evict other people's caches
 
@@ -157,4 +158,15 @@ Built for `sm_86`, targeted at an RTX 3090. Windows: MSVC 2022, CUDA 12.8. Linux
   fails with "MTP: cancelling the short request did not cancel it" on `master` too (the short request
   finishes in ~0.28 s, before the cancel lands). An older build from 6 October passes it. It was not
   bisected.
-- RELEASE_VERIFICATION_PLACEHOLDER
+- **Smoke test on the real card (Windows archive, RTX 3090, nothing overridden):** `run.bat qwen38-27b`
+  started the default profile (Qwen3.8-27B, context 188,416, rk4v4 KV, DFlash2 with draft head, vision
+  overlay) in 8.5 s of engine start-up, answered a chat completion, and `GET /health` and the
+  `X-NInfer-Version` header reported the version. The Windows binaries report
+  `0.15.1-rtx3090+d630fffb2` because they were built from the release branch before the merge; the Linux
+  build, from a `git archive`, reports `0.15.1-rtx3090`.
+- **Archives:** both checksum files verify and every file matches its inner `SHA256SUMS.txt`. The three
+  Windows executables start with only Windows on `PATH`. The Linux archive unpacks and runs
+  `./ninfer-serve --help` and `./run.sh --help`, and `scripts/check-linux-scripts.sh` passes.
+- **Not run on real hardware:** the Linux binaries were not run against a model, and none of the new flags
+  (`--context-store`, `--output-reservation-tokens`, `--max-output-tokens`) were run on the release
+  archives; their evidence is the per-pull-request measurements above.
