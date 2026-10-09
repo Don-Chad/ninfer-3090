@@ -1656,6 +1656,123 @@ public:
         expect_empty("snapshot fact fixture leaked physical resources");
     }
 
+    void demote_to_host(qwen::CheckpointHandle source) {
+        const std::array<qwen::CheckpointHandle, 1> allowed{source};
+        for (const auto resource :
+             {runtime::ContextResourceClass::State, runtime::ContextResourceClass::MainKV,
+              runtime::ContextResourceClass::BackendKV}) {
+            const auto usage = program_.checkpoint_footprint(allowed);
+            runtime::ContextResourceUsage shortage;
+            switch (resource) {
+            case runtime::ContextResourceClass::State:
+                shortage.state_slots = usage.state_slots;
+                break;
+            case runtime::ContextResourceClass::MainKV:
+                shortage.main_kv_pages = usage.main_kv_pages;
+                break;
+            case runtime::ContextResourceClass::BackendKV:
+                shortage.backend_kv_pages = usage.backend_kv_pages;
+                break;
+            }
+            if (!shortage.state_slots && !shortage.main_kv_pages && !shortage.backend_kv_pages) {
+                continue;
+            }
+            const auto candidates = program_.plan_reclaim(allowed, {}, shortage).demotions;
+            const auto* quote     = demotion_with_sources(candidates, allowed);
+            require(quote && program_.start_demote(*quote),
+                    "image fixture could not demote its checkpoint to Host");
+            require(settle().published, "image fixture demotion did not complete");
+        }
+        const auto left = program_.checkpoint_footprint(allowed);
+        require(!left.state_slots && !left.main_kv_pages && !left.backend_kv_pages,
+                "image fixture checkpoint kept Device replicas after demotion");
+    }
+
+    // A checkpoint image is the exact Host representation of its points: exporting a Device
+    // checkpoint, the same checkpoint after Host demotion, and the checkpoint rebuilt from the image
+    // gives identical bytes, KV pages and StateImages included. The rebuilt point is Host-resident,
+    // findable under the original key, and resumes the request it came from.
+    void checkpoint_image_round_trip() {
+        constexpr std::string_view kBinding = "native-transactions-image";
+        auto base             = request(kPromptTokens, true);
+        const auto original   = checkpoint(base);
+        const std::array originals{original};
+        const auto from_device = program_.export_checkpoints(originals, std::nullopt, kBinding);
+        const auto frontier    = program_.checkpoint_metadata(original).frontier;
+        require(from_device.tokens == frontier && from_device.keys.size() == 1 &&
+                    from_device.keys.front() == program_.checkpoint_key(original, frontier) &&
+                    from_device.prefix_digests.size() == frontier + 1U &&
+                    !from_device.regions.empty(),
+                "exported image does not describe its endpoint");
+        std::size_t payload = 0;
+        for (const auto& region : from_device.regions) { payload += region.length; }
+        require(payload > from_device.bytes.size() / 2, "image regions miss its payload");
+
+        demote_to_host(original);
+        const auto from_host = program_.export_checkpoints(originals, std::nullopt, kBinding);
+        require(from_host.bytes == from_device.bytes,
+                "Device and Host replicas of one checkpoint exported different bytes");
+
+        qwen::PreparedSessionKey session;
+        session.size = 7;
+        std::copy_n("restore", 7, session.bytes.begin());
+        const auto keyed = program_.export_checkpoints(originals, session, kBinding);
+        require(program_.release_checkpoint(original), "image fixture could not release source");
+        expect_empty("released image source leaked typed resources");
+
+        bool rejected = false;
+        try {
+            (void)program_.import_checkpoints(keyed.bytes, "another-model");
+        } catch (const std::invalid_argument&) { rejected = true; }
+        require(rejected, "an image was imported under a different model binding");
+        auto damaged = keyed.bytes;
+        damaged[keyed.regions.front().offset + 17] ^= 0x5a;
+        rejected = false;
+        try {
+            (void)program_.import_checkpoints(damaged, kBinding);
+        } catch (const std::invalid_argument&) { rejected = true; }
+        require(rejected, "a damaged image was imported");
+        expect_empty("rejected imports changed typed resources");
+
+        const auto needed = program_.checkpoint_image_host_bytes(keyed.bytes, kBinding);
+        auto imported     = program_.import_checkpoints(keyed.bytes, kBinding);
+        require(imported && imported->points.size() == 1 && imported->session == session,
+                "image did not import its single point and session key");
+        const auto restored = imported->points.front();
+        const std::array restored_points{restored};
+        const auto footprint = program_.checkpoint_footprint(restored_points);
+        require(program_.checkpoint_metadata(restored).frontier == frontier &&
+                    program_.checkpoint_key(restored, frontier) == from_device.keys.front() &&
+                    footprint.state_slots == 0 && footprint.main_kv_pages == 0 &&
+                    footprint.backend_kv_pages == 0 && footprint.host_bytes != 0 &&
+                    program_.physical_usage().occupied.host_bytes <= needed,
+                "imported checkpoint is not a Host-resident copy of the original");
+        const auto again = program_.export_checkpoints(restored_points, session, kBinding);
+        require(again.bytes == keyed.bytes, "re-exporting an imported checkpoint changed bytes");
+
+        // The restored point resumes a continuation of its prompt where the original stopped.
+        auto next      = request(kPromptTokens + kChunk, true);
+        auto candidate = program_.inspect_source(next, restored);
+        require(candidate && candidate->reused_tokens == frontier,
+                "imported checkpoint is not a recovery source for its continuation");
+        require(static_cast<bool>(program_.start_binding(next, {0}, *candidate)),
+                "imported checkpoint could not bind");
+        const auto bound = settle();
+        require(bound.published && bound.sequence &&
+                    transferred(bound, runtime::ContextTransferDirection::HostToDevice,
+                                runtime::ContextResourceClass::MainKV),
+                "imported checkpoint did not restore from Host");
+        finish_prefill(*bound.sequence, next.summary().prompt_tokens - frontier, true);
+        auto finished = program_.finish(*bound.sequence);
+        require(finished.status == runtime::ConsumeStatus::Consumed,
+                "request resumed from an imported checkpoint did not finish");
+        if (finished.checkpoint) { require(program_.release_checkpoint(*finished.checkpoint), ""); }
+        if (program_.valid_checkpoint(restored)) {
+            require(program_.release_checkpoint(restored), "imported checkpoint stayed leased");
+        }
+        expect_empty("imported checkpoint leaked typed resources");
+    }
+
     void grammar_row_failure() {
         struct Masks final : runtime::TokenMaskProvider {
             void uploaded(std::size_t, std::size_t) noexcept override {}
@@ -2036,6 +2153,7 @@ int main(int argc, char** argv) {
             fixture.batched_physical_demotions();
             fixture.physical_facts();
             fixture.grammar_row_failure();
+            fixture.checkpoint_image_round_trip();
         }
         program.reset();
         options.kv_capacity    = KvCapacityPolicy::explicit_capacity(kCapacity);

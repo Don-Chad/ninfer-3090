@@ -257,6 +257,21 @@ void ResidentPrefixIdentity::restore(std::vector<std::uint8_t> token_types,
     }
     vision_items_                = std::move(vision_items);
     rewrite_execution_frontiers_ = std::move(rewrite_execution_frontiers);
+    // Rederive the regular-run proof from the restored positions, as assign() does.
+    regular_prefix_ = 0;
+    for (std::size_t axis = 0; axis < positions_.size(); ++axis) {
+        position_origins_[axis] = tokens ? positions_[axis].front() : 0;
+    }
+    while (regular_prefix_ < tokens && token_types_[regular_prefix_] == 0) {
+        bool regular = true;
+        for (std::size_t axis = 0; axis < positions_.size(); ++axis) {
+            regular = regular && static_cast<std::int64_t>(positions_[axis][regular_prefix_]) ==
+                                     static_cast<std::int64_t>(position_origins_[axis]) +
+                                         static_cast<std::int64_t>(regular_prefix_);
+        }
+        if (!regular) { break; }
+        ++regular_prefix_;
+    }
 }
 
 void ResidentPrefixIdentity::truncate(std::size_t tokens) {

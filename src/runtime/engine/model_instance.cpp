@@ -76,9 +76,6 @@ void reject_unavailable_options(const EngineOptions& options) {
     if (!options.grafts.empty()) {
         throw std::invalid_argument("prompt grafts are not available on this build yet");
     }
-    if (options.context_store.enabled()) {
-        throw std::invalid_argument("the context store is not available on this build yet");
-    }
 }
 
 std::size_t current_free_device_bytes() {

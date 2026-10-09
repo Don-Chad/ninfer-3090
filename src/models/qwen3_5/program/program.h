@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -387,6 +388,32 @@ struct ContextProgress {
     SpeculativeStats request_speculative;
 };
 
+// The durable byte image of a set of retained checkpoints (one continuation's recovery points): the
+// union of their KV pages once, each point's StateImage, and the exact identity and shortlist keys
+// that make them findable again. Byte order is the host's; an image binds to the Program
+// configuration and the caller's model binding that produced it.
+struct CheckpointImage {
+    struct Region {
+        std::uint64_t offset = 0;
+        std::uint64_t length = 0;
+    };
+
+    std::vector<std::uint8_t> bytes;
+    // The large payload ranges (KV pages, StateImages); everything else is a small header.
+    std::vector<Region> regions;
+    // One key per point, deepest first.
+    std::vector<PrefixShortlistKey> keys;
+    // The deepest point's shortlist digest at every frontier 0..tokens.
+    std::vector<std::array<std::uint64_t, 2>> prefix_digests;
+    std::uint32_t tokens = 0;
+};
+
+struct ImportedCheckpoints {
+    // Host-resident restored points, in the order the image lists them (deepest first).
+    std::vector<CheckpointHandle> points;
+    std::optional<PreparedSessionKey> session;
+};
+
 struct PhysicalUsageSnapshot {
     runtime::ContextResourceUsage occupied;
     runtime::ContextResourceUsage capacity;
@@ -491,6 +518,20 @@ public:
     [[nodiscard]] PhysicalUsageSnapshot physical_usage() const noexcept;
     [[nodiscard]] MemorySummary memory_summary() const noexcept;
     void reset_memory_peaks() noexcept;
+    // Writes the checkpoints' byte image. Device-only contents are copied through the caller's
+    // memory, never by pinning more Host context. Requires no open context transaction.
+    [[nodiscard]] CheckpointImage
+    export_checkpoints(std::span<const CheckpointHandle> points,
+                       const std::optional<PreparedSessionKey>& session,
+                       std::string_view binding) const;
+    // Host bytes importing `image` needs. Throws std::invalid_argument when the image was not
+    // produced for this Program configuration and binding, or is damaged.
+    [[nodiscard]] std::size_t checkpoint_image_host_bytes(std::span<const std::uint8_t> image,
+                                                          std::string_view binding) const;
+    // Builds Host-resident checkpoints from `image`. nullopt, with nothing changed, when the Host
+    // tier or the descriptor pools cannot hold it now; throws as checkpoint_image_host_bytes does.
+    [[nodiscard]] std::optional<ImportedCheckpoints>
+    import_checkpoints(std::span<const std::uint8_t> image, std::string_view binding);
 private:
     explicit Program(std::unique_ptr<detail::ProgramImpl> impl) noexcept;
     std::unique_ptr<detail::ProgramImpl> impl_;

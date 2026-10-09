@@ -28,5 +28,6 @@ struct RuntimeTypes {
     using AbortResult       = qwen3_5::AbortResult;
     using Program           = qwen3_5::Program;
     using CacheSessionKey   = qwen3_5::PreparedSessionKey;
+    using CheckpointImage   = qwen3_5::CheckpointImage;
 };
 } // namespace ninfer::models::qwen3_5

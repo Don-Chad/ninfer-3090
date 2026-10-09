@@ -334,6 +334,13 @@ public:
     [[nodiscard]] PhysicalUsageSnapshot physical_usage() const noexcept;
     [[nodiscard]] MemorySummary memory_summary() const noexcept;
     void reset_memory_peaks() noexcept;
+    [[nodiscard]] CheckpointImage export_checkpoints(std::span<const CheckpointHandle>,
+                                                     const std::optional<PreparedSessionKey>&,
+                                                     std::string_view binding) const;
+    [[nodiscard]] std::size_t checkpoint_image_host_bytes(std::span<const std::uint8_t>,
+                                                          std::string_view binding) const;
+    [[nodiscard]] std::optional<ImportedCheckpoints>
+    import_checkpoints(std::span<const std::uint8_t>, std::string_view binding);
 
     const execution::Parameters& parameters;
     DeviceContext& device;

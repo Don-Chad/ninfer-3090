@@ -202,6 +202,15 @@ struct RequestRecord {
     bool admission_observed                   = false;
     GenerationAdmissionStats admission;
     std::optional<Clock::time_point> source_wait_started;
+    // Context store hydration: the store is consulted once per request. While `hydrating`, a host
+    // worker reads the stored image and the request is not offered for admission.
+    bool store_probed                   = false;
+    bool hydrating                      = false;
+    bool hydrated                       = false;
+    std::uint32_t hydration_frontier    = 0;
+    std::uint32_t hydration_reuse_before = 0;
+    Clock::time_point hydration_started{};
+    Clock::time_point hydration_deadline{};
     bool recovery_pending                  = false;
     std::uint64_t committed_decode_tokens  = 0;
     GenerationRecoveryRoute recovery_route = GenerationRecoveryRoute::None;

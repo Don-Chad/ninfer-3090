@@ -9,6 +9,7 @@
 #include "runtime/contract/resources.h"
 #include "runtime/engine/request_record.h"
 #include "runtime/engine/context_cache/resource_manager.h"
+#include "runtime/engine/context_store/context_store.h"
 #include "runtime/engine/scheduler.h"
 #include "runtime/engine/effective_thinking_budget.h"
 #include "runtime/engine/generation_budget.h"
@@ -33,6 +34,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -117,6 +119,7 @@ public:
         }
         queue_cv_.notify_all();
         if (worker_.joinable()) { worker_.join(); }
+        stop_hydration_reader();
     }
 
     EngineCore(const EngineCore&)            = delete;
@@ -294,6 +297,94 @@ public:
             std::scoped_lock lock(execution_mutex_);
             instance_.program->reset_memory_peaks();
         } catch (...) {}
+    }
+
+    using CheckpointImage = typename ModelContract::CheckpointImage;
+
+    // The durable context store (owned by the Engine, which outlives this core). `sink` queues one
+    // image for the Engine's writer and must not block; it returns whether the image was accepted.
+    // `ready` reports an idle writer; `failures` counts queued writes that later failed, and when it
+    // grows every continuation is treated as not stored, so it is written again.
+    struct ContextStoreHooks {
+        ContextStore* store = nullptr;
+        std::string binding;
+        std::function<bool(CheckpointImage&&)> sink;
+        std::function<bool()> ready;
+        std::function<std::uint64_t()> failures;
+        // A retained continuation unused this long is written in the background; zero disables it.
+        std::chrono::milliseconds idle_persist{0};
+        // The longest a request waits for its stored session to be read back.
+        std::chrono::milliseconds hydration_budget{0};
+    };
+
+    void set_context_store(ContextStoreHooks hooks) {
+        std::scoped_lock lock(execution_mutex_);
+        store_                = std::move(hooks);
+        store_removals_seen_  = store_removal_count();
+        store_failures_seen_  = store_.failures ? store_.failures() : 0;
+        if (store_.store && !hydration_reader_.joinable()) {
+            hydration_reader_ = std::thread([this] { hydration_reader_loop(); });
+        }
+    }
+
+    // Host context bytes free now, for choosing which stored images to restore at start-up.
+    [[nodiscard]] std::size_t free_host_bytes() const {
+        std::scoped_lock lock(execution_mutex_);
+        const auto usage = instance_.program->physical_usage();
+        return usage.capacity.host_bytes - usage.occupied.host_bytes;
+    }
+
+    // Restores one stored image into the empty cache at start-up as a Host-resident continuation.
+    // Never evicts anything. False when it does not fit now or does not belong to this Engine.
+    bool restore_image(std::span<const std::uint8_t> image) {
+        std::scoped_lock lock(execution_mutex_);
+        device_.bind_to_current_thread();
+        auto& program = *instance_.program;
+        if (program.has_context_transaction()) { return false; }
+        try {
+            const auto needed = program.checkpoint_image_host_bytes(image, store_.binding);
+            const auto usage  = program.physical_usage();
+            if (needed > usage.capacity.host_bytes - usage.occupied.host_bytes) { return false; }
+            auto imported = program.import_checkpoints(image, store_.binding);
+            if (!imported) { return false; }
+            const auto token =
+                resources_.adopt_restored(program, imported->points, imported->session);
+            if (!token) { return false; }
+            owner_marks_[token] = {.persisted = fingerprint(imported->points),
+                                   .last_used = Clock::now()};
+        } catch (const std::invalid_argument&) { return false; }
+        publish_runtime_stats();
+        return true;
+    }
+
+    // Hands every inactive retained continuation the store does not hold in its current state to
+    // `write`, most recently used first, until `deadline`. For shutdown: `write` may block.
+    std::uint32_t persist_all(const std::function<bool(CheckpointImage&&)>& write,
+                              Clock::time_point deadline) {
+        std::scoped_lock lock(execution_mutex_);
+        device_.bind_to_current_thread();
+        auto& program = *instance_.program;
+        if (program.has_context_transaction()) { return 0; }
+        forget_failed_store_writes();
+        forget_removed_store_images();
+        auto owners = resources_.retained_owners(program);
+        std::sort(owners.begin(), owners.end(), [&](const auto& a, const auto& b) {
+            return mark(a.token).last_used > mark(b.token).last_used;
+        });
+        std::uint32_t written = 0;
+        for (const auto& owner : owners) {
+            if (Clock::now() >= deadline) { break; }
+            const auto print = fingerprint(owner.points);
+            if (owner.active || mark(owner.token).persisted == print) { continue; }
+            try {
+                if (write(program.export_checkpoints(owner.points, owner.session,
+                                                     store_.binding))) {
+                    mark(owner.token).persisted = print;
+                    ++written;
+                }
+            } catch (...) {}
+        }
+        return written;
     }
 
 private:
@@ -887,6 +978,9 @@ private:
             if (finished.checkpoint) {
                 resources_.publish(*instance_.program, request->continuation_owner,
                                    *finished.checkpoint);
+            }
+            if (request->continuation_owner && store_.store) {
+                mark(request->continuation_owner).last_used = Clock::now();
             }
             resources_.finish(*instance_.program, request->continuation_owner, *request->base_plan,
                               request->publication_order);
@@ -1712,6 +1806,8 @@ private:
             if (!admission_decision_) {
                 if (!restoring) {
                     scheduler_.admission_candidate_checked(request->id);
+                    // Its stored session is being read back; offered again once that settles.
+                    if (request->hydrating) { continue; }
                     if (request->admission_generation == admission_generation_) { continue; }
                     request->admission_generation = admission_generation_;
                 }
@@ -1742,6 +1838,7 @@ private:
                                                         : std::nullopt,
                                                     request->id, request->publication_order);
                 }
+                if (!restoring && start_hydration(request, sources)) { continue; }
                 if (!restoring && !sources.empty()) {
                     const auto preferred = sources.front().source.reused_tokens;
                     if (!request->admission_observed) {
@@ -1886,6 +1983,7 @@ private:
                     MaterializingRequest{request, LaneId{*lane}, begin, restoring, choice});
                 admission_decision_.reset();
                 if (!restoring) {
+                    settle_hydration(request, source.reused_tokens);
                     finish_source_wait(request, binding_started);
                     request->admission.revoked_checkpoints =
                         resources_.source_revocations(request->id);
@@ -2258,13 +2356,354 @@ private:
         } catch (...) {}
     }
 
+    // ---- Durable context store ----------------------------------------------------------------
+
+    struct OwnerMark {
+        std::uint64_t persisted = 0; // fingerprint of the point set last written, 0: never
+        Clock::time_point last_used{};
+    };
+
+    OwnerMark& mark(ContinuationOwnerToken token) {
+        auto [found, inserted] = owner_marks_.try_emplace(token);
+        if (inserted) { found->second.last_used = Clock::now(); }
+        return found->second;
+    }
+
+    // Checkpoint contents never change under a handle, and handles carry a generation, so the
+    // point set identifies what an image of the continuation holds.
+    [[nodiscard]] static std::uint64_t fingerprint(std::span<const Checkpoint> points) {
+        std::vector<std::pair<std::uint32_t, std::uint64_t>> keys;
+        keys.reserve(points.size());
+        for (const auto point : points) { keys.emplace_back(point.index, point.generation); }
+        std::sort(keys.begin(), keys.end());
+        std::uint64_t hash = 0x84222325cbf29ce4ULL;
+        for (const auto& [index, generation] : keys) {
+            hash = (hash ^ index) * 0x100000001b3ULL;
+            hash = (hash ^ generation) * 0x100000001b3ULL;
+        }
+        return hash == 0 ? 1 : hash;
+    }
+
+    // Images the store removed on its own (space, age, damage). A continuation marked as stored
+    // whose image is gone would never be written again, so every mark is cleared when it grows.
+    [[nodiscard]] std::uint64_t store_removal_count() const noexcept {
+        if (store_.store == nullptr) { return 0; }
+        try {
+            const auto stats = store_.store->stats();
+            return stats.evicted_for_space + stats.expired + stats.corrupt_removed;
+        } catch (...) { return store_removals_seen_; }
+    }
+
+    void forget_removed_store_images() noexcept {
+        const auto removed = store_removal_count();
+        if (removed == store_removals_seen_) { return; }
+        store_removals_seen_ = removed;
+        for (auto& [token, entry] : owner_marks_) { entry.persisted = 0; }
+    }
+
+    // A write that was accepted into the queue and then failed left its continuation marked.
+    bool forget_failed_store_writes() noexcept {
+        if (!store_.failures) { return false; }
+        const auto failed = store_.failures();
+        if (failed == store_failures_seen_) { return false; }
+        store_failures_seen_ = failed;
+        for (auto& [token, entry] : owner_marks_) { entry.persisted = 0; }
+        return true;
+    }
+
+    // Writes at most one idle retained continuation to the store. Called by the worker between
+    // units, never while a request waits for admission, binds, prefills or replays, so keeping
+    // the store current does not delay a request already waiting; at least a second apart.
+    void persist_idle_session() noexcept {
+        if (!store_.sink || store_.idle_persist.count() <= 0) { return; }
+        const auto now = Clock::now();
+        if (now < next_persist_scan_) { return; }
+        next_persist_scan_ = now + std::chrono::seconds(1);
+        try {
+            if (forget_failed_store_writes()) {
+                // A failing disk: do not export deep sessions over and over.
+                next_persist_scan_ = now + std::chrono::seconds(30);
+                return;
+            }
+            forget_removed_store_images();
+            auto& program = *instance_.program;
+            if (materializing_ || context_owner_ || program.has_context_transaction() ||
+                (store_.ready && !store_.ready())) {
+                return;
+            }
+            {
+                std::lock_guard lock(queue_mutex_);
+                if (!pending_.empty()) { return; }
+            }
+            for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+                const auto& request = slots_[lane];
+                if (request && (request->is_prefilling() || request->is_replaying() ||
+                                request->is_materializing() || request->capture_pending)) {
+                    return;
+                }
+            }
+            const auto owners = resources_.retained_owners(program);
+            std::erase_if(owner_marks_, [&](const auto& entry) {
+                return std::none_of(owners.begin(), owners.end(),
+                                    [&](const auto& owner) { return owner.token == entry.first; });
+            });
+            const typename ResourceManagement::RetainedOwner* chosen = nullptr;
+            std::uint32_t chosen_depth                                = 0;
+            for (const auto& owner : owners) {
+                if (owner.active) { continue; }
+                auto& entry = mark(owner.token);
+                if (entry.persisted == fingerprint(owner.points) ||
+                    now - entry.last_used < store_.idle_persist) {
+                    continue;
+                }
+                std::uint32_t depth = 0;
+                for (const auto point : owner.points) {
+                    depth = std::max(depth, program.checkpoint_metadata(point).frontier);
+                }
+                // The deepest first: it is the most expensive to lose.
+                if (chosen && depth <= chosen_depth) { continue; }
+                chosen       = &owner;
+                chosen_depth = depth;
+            }
+            if (!chosen) { return; }
+            const auto print = fingerprint(chosen->points);
+            if (store_.sink(
+                    program.export_checkpoints(chosen->points, chosen->session, store_.binding))) {
+                mark(chosen->token).persisted = print;
+            } else {
+                // The write queue is full: try again later, not on every unit.
+                next_persist_scan_ = now + std::chrono::seconds(4);
+            }
+        } catch (...) { next_persist_scan_ = now + std::chrono::seconds(4); }
+    }
+
+    // A stored session must add at least this many prompt tokens beyond what the cache already
+    // offers before reading it back is worth it: a few thousand tokens prefill faster than a deep
+    // image comes off a slow disk.
+    static constexpr std::uint32_t kMinimumHydrationGain = 4096;
+
+    struct HydrationTask {
+        std::shared_ptr<Request> request;
+        std::string id;
+        std::optional<std::vector<std::uint8_t>> bytes;
+    };
+
+    // Before admission: when the store holds a checkpoint of this very prompt deeper than anything
+    // the cache offers, read it back on the host reader while the request waits, instead of
+    // prefilling the difference. True when a read was started; the request is then not offered
+    // for admission until the read settles or its deadline passes.
+    bool start_hydration(const std::shared_ptr<Request>& request,
+                         std::span<const typename ResourceManagement::SourceChoice> sources) {
+        if (store_.store == nullptr || request->store_probed || !request->base_plan ||
+            !request->options.execution.allow_prefix_reuse ||
+            store_.hydration_budget.count() <= 0) {
+            return false;
+        }
+        request->store_probed = true;
+        std::uint32_t resident = 0;
+        for (const auto& choice : sources) {
+            resident = std::max(resident, choice.source.reused_tokens);
+        }
+        std::string best_id;
+        std::uint32_t best_frontier = resident + kMinimumHydrationGain - 1U;
+        try {
+            for (const ContextStore::Info& info : store_.store->list()) {
+                // The binding does not include the context length: an image deeper than this
+                // Engine's context could never be restored, and reading it would only cost time.
+                if (info.binding != store_.binding || info.tokens > max_context_) { continue; }
+                for (const ContextStore::CheckpointKey& key : info.checkpoints) {
+                    if (key.frontier <= best_frontier) { continue; }
+                    const auto mine = request->base_plan->prefix_shortlist_key(key.frontier);
+                    if (mine && mine->digests == key.digests &&
+                        mine->identity_tag == key.identity_tag) {
+                        best_id       = info.id;
+                        best_frontier = key.frontier;
+                    }
+                }
+            }
+        } catch (...) { return false; }
+        if (best_id.empty()) { return false; }
+        const auto now                   = Clock::now();
+        request->hydrating               = true;
+        request->hydration_frontier      = best_frontier;
+        request->hydration_reuse_before  = resident;
+        request->hydration_started       = now;
+        request->hydration_deadline      = std::min(request->deadline, now + store_.hydration_budget);
+        {
+            std::lock_guard lock(hydration_mutex_);
+            hydration_queue_.push_back({request, std::move(best_id), std::nullopt});
+        }
+        hydration_cv_.notify_one();
+        return true;
+    }
+
+    void hydration_reader_loop() noexcept {
+        for (;;) {
+            HydrationTask task;
+            {
+                std::unique_lock lock(hydration_mutex_);
+                hydration_cv_.wait(lock,
+                                   [&] { return hydration_stop_ || !hydration_queue_.empty(); });
+                if (hydration_stop_) { return; }
+                task = std::move(hydration_queue_.front());
+                hydration_queue_.pop_front();
+            }
+            if (Clock::now() < task.request->hydration_deadline) {
+                try {
+                    task.bytes = store_.store->load(task.id, false);
+                } catch (...) { task.bytes.reset(); }
+            }
+            {
+                std::lock_guard lock(hydration_mutex_);
+                hydration_done_.push_back(std::move(task));
+            }
+            queue_cv_.notify_all();
+        }
+    }
+
+    void stop_hydration_reader() noexcept {
+        {
+            std::lock_guard lock(hydration_mutex_);
+            hydration_stop_ = true;
+        }
+        hydration_cv_.notify_all();
+        if (hydration_reader_.joinable()) { hydration_reader_.join(); }
+    }
+
+    void finish_hydration(const std::shared_ptr<Request>& request, bool failed) {
+        request->hydrating = false;
+        cumulative_stats_.context_store_hydration_seconds +=
+            std::chrono::duration<double>(Clock::now() - request->hydration_started).count();
+        if (failed) { ++cumulative_stats_.context_store_hydration_failures; }
+        request->admission_generation = 0;
+        request_admission_check();
+    }
+
+    // Imports a read-back image for a waiting request as Host-resident checkpoints, making room in
+    // the Host tier under optional-write rights (never revoking another request's waiting source),
+    // and protects the restored source for the request until it is admitted.
+    bool import_for_request(const std::shared_ptr<Request>& request,
+                            std::span<const std::uint8_t> image, const std::string& id) {
+        auto& program     = *instance_.program;
+        const auto needed = program.checkpoint_image_host_bytes(image, store_.binding);
+        auto usage        = program.physical_usage();
+        if (needed > usage.capacity.host_bytes) { return false; }
+        if (needed > usage.capacity.host_bytes - usage.occupied.host_bytes) {
+            (void)program.release_redundant_host({});
+            usage = program.physical_usage();
+        }
+        if (needed > usage.capacity.host_bytes - usage.occupied.host_bytes) {
+            auto cursor = resources_.begin_reclaim(
+                program, std::nullopt, ReclaimRights{ReclaimPurpose::OptionalWrite, request->id});
+            const auto victims = resources_.host_victims(program, needed, std::nullopt, {}, {},
+                                                         std::nullopt, &cursor);
+            if (!victims) { return false; }
+            resources_.commit_host_victims(program, *victims, cursor);
+            if (!victims->empty()) { scheduler_.capacity_released(); }
+        }
+        auto imported = program.import_checkpoints(image, store_.binding);
+        if (!imported) { return false; }
+        const auto token = resources_.adopt_restored(program, imported->points, imported->session);
+        if (!token) { return false; }
+        owner_marks_[token] = {.persisted = fingerprint(imported->points),
+                               .last_used = Clock::now()};
+        auto sources = resources_.candidates(program, *request->base_plan, UINT32_MAX, std::nullopt,
+                                             request->id, request->publication_order);
+        const auto restored = std::find_if(sources.begin(), sources.end(), [&](const auto& choice) {
+            return choice.source.checkpoint &&
+                   std::find(imported->points.begin(), imported->points.end(),
+                             *choice.source.checkpoint) != imported->points.end();
+        });
+        if (restored == sources.end()) { return false; }
+        retain_admission_source(request, *restored, false);
+        request->hydrated = true;
+        try {
+            store_.store->touch(id);
+        } catch (...) {}
+        return true;
+    }
+
+    // Settles finished reads and expired waits. Imports wait for a boundary without a context
+    // transaction, since they may give up cached checkpoints.
+    void process_hydrations() {
+        if (store_.store == nullptr) { return; }
+        auto& program = *instance_.program;
+        std::deque<HydrationTask> done;
+        {
+            std::lock_guard lock(hydration_mutex_);
+            if (program.has_context_transaction()) {
+                // Settle only the reads nobody waits for any longer.
+                for (auto it = hydration_done_.begin(); it != hydration_done_.end();) {
+                    if (!it->request->hydrating) {
+                        it = hydration_done_.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            } else {
+                done.swap(hydration_done_);
+            }
+        }
+        for (auto& task : done) {
+            const auto& request = task.request;
+            if (!request->hydrating) { continue; } // gave up at its deadline
+            bool waiting = false;
+            {
+                std::lock_guard lock(queue_mutex_);
+                waiting = std::find(pending_.begin(), pending_.end(), request) != pending_.end();
+            }
+            if (!waiting) {
+                request->hydrating = false;
+                continue;
+            }
+            bool imported = false;
+            if (task.bytes) {
+                try {
+                    imported = import_for_request(request, *task.bytes, task.id);
+                } catch (const std::invalid_argument&) { imported = false; }
+            }
+            finish_hydration(request, !imported);
+        }
+        const auto now = Clock::now();
+        std::vector<std::shared_ptr<Request>> expired;
+        {
+            std::lock_guard lock(queue_mutex_);
+            for (const auto& request : pending_) {
+                if (request->hydrating && now >= request->hydration_deadline) {
+                    expired.push_back(request);
+                }
+            }
+        }
+        for (const auto& request : expired) { finish_hydration(request, true); }
+    }
+
+    // Counts a read-back once its request is admitted: only if the admission resumes from (at
+    // least) the stored checkpoint, with the tokens it actually gained.
+    void settle_hydration(const std::shared_ptr<Request>& request, std::uint32_t reused) noexcept {
+        if (!request->hydrated) { return; }
+        request->hydrated = false;
+        if (reused >= request->hydration_frontier && reused > request->hydration_reuse_before) {
+            ++cumulative_stats_.context_store_hydrations;
+            cumulative_stats_.context_store_hydrated_tokens +=
+                reused - request->hydration_reuse_before;
+        } else {
+            ++cumulative_stats_.context_store_hydration_failures;
+        }
+    }
+
     void worker_loop() noexcept {
         for (;;) {
             {
                 std::unique_lock lock(queue_mutex_);
                 if (!stopping_ && pending_.empty() && resident_empty() && paused_.empty() &&
                     !instance_.program->has_context_transaction()) {
-                    queue_cv_.wait(lock, [&] { return stopping_ || !pending_.empty(); });
+                    if (store_.sink && store_.idle_persist.count() > 0) {
+                        // Wake up now and then to write idle continuations to the store.
+                        queue_cv_.wait_for(lock, std::chrono::seconds(1),
+                                           [&] { return stopping_ || !pending_.empty(); });
+                    } else {
+                        queue_cv_.wait(lock, [&] { return stopping_ || !pending_.empty(); });
+                    }
                 }
                 if (stopping_) {
                     lock.unlock();
@@ -2283,6 +2722,7 @@ private:
                 auto boundary = begin_host_phase();
                 (void)expire_pending_requests();
                 executed = progress_context_transaction(boundary);
+                process_hydrations();
                 if (!instance_.program->has_context_transaction()) {
                     for (const auto& request : slots_) {
                         if (request && request->capture_pending) {
@@ -2437,6 +2877,8 @@ private:
                     update_recovery(request);
                     executed = true;
                 }
+                unit = "boundary";
+                persist_idle_session();
                 publish_runtime_stats();
             } catch (...) {
                 auto error = std::current_exception();
@@ -2501,6 +2943,20 @@ private:
     RuntimeStats published_stats_;
     bool stopping_ = false;
     bool failed_   = false;
+
+    // Durable context store state; the worker owns everything but the hydration queues.
+    ContextStoreHooks store_;
+    std::unordered_map<ContinuationOwnerToken, OwnerMark> owner_marks_;
+    std::uint64_t store_removals_seen_ = 0;
+    std::uint64_t store_failures_seen_ = 0;
+    Clock::time_point next_persist_scan_{};
+    std::mutex hydration_mutex_;
+    std::condition_variable hydration_cv_;
+    std::deque<HydrationTask> hydration_queue_;
+    std::deque<HydrationTask> hydration_done_;
+    bool hydration_stop_ = false;
+    std::thread hydration_reader_;
+
     std::thread worker_;
 };
 

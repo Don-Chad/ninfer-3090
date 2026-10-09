@@ -691,6 +691,58 @@ public:
         return ReclaimProgress::Blocked;
     }
 
+    // A retained continuation as the durable context store sees it.
+    struct RetainedOwner {
+        OwnerToken token = 0;
+        bool active      = false;
+        std::optional<SessionKey> session;
+        std::vector<Handle> points;
+    };
+
+    [[nodiscard]] std::vector<RetainedOwner> retained_owners(Program& program) {
+        prune(program);
+        std::vector<RetainedOwner> out;
+        out.reserve(owners_.size());
+        for (const auto& owner : owners_) {
+            if (owner.points.empty()) { continue; }
+            out.push_back({.token   = owner.token,
+                           .active  = owner.active,
+                           .session = owner.session,
+                           .points  = points(owner.token)});
+        }
+        return out;
+    }
+
+    // Catalogues checkpoints Native rebuilt from a durable image as one inactive continuation. It
+    // carries no demand evidence and the oldest publication order, so any request may take it over
+    // and a live continuation keeps a session key both claim.
+    OwnerToken adopt_restored(Program& program, std::span<const Handle> restored,
+                              std::optional<SessionKey> session) {
+        if (!enabled_ || restored.empty()) {
+            for (const auto handle : restored) { release_unreferenced(program, handle); }
+            return 0;
+        }
+        if (session && std::any_of(owners_.begin(), owners_.end(), [&](const auto& owner) {
+                return owner.session == session;
+            })) {
+            session.reset();
+        }
+        const OwnerToken token = ++ordinal_;
+        owners_.push_back({.token = token, .retained_at = ++clock_, .session = session});
+        auto& owner = owners_.back();
+        for (const auto handle : restored) {
+            if (!program.valid_checkpoint(handle)) { continue; }
+            const auto summary = program.checkpoint_metadata(handle);
+            if (summary.role == CheckpointRole::SharedPrefix) {
+                throw std::logic_error("a restored continuation carried a public point");
+            }
+            owner.points.push_back({handle, summary.role});
+            index_.insert(program, handle, summary.frontier);
+        }
+        prune(program);
+        return token;
+    }
+
     void release_all(Program& program) noexcept {
         const auto handles = victims();
         index_.clear();

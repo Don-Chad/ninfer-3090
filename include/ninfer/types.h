@@ -144,10 +144,11 @@ struct StartupObserver {
 };
 
 // A durable store for retained sessions, so the context cache survives a restart or a crash.
-// Disabled unless a directory is given. A retained session is written there when it is evicted,
-// when it has been idle for `idle_persist`, and (all of them) when the Engine shuts down; at start-up
-// the most recently used sessions are restored into the cache. The store holds only changed pieces
-// of each session (see ContextStore), so keeping a long conversation current is cheap.
+// Disabled unless a directory is given; requires the context cache and a nonzero Host context
+// budget. A retained session is written there when it has been idle for `idle_persist` and (all of
+// them) when the Engine shuts down; at start-up the most recently used sessions are restored into
+// the Host tier, and a request whose session was evicted reads it back. The store holds only changed
+// pieces of each session (see ContextStore), so keeping a long conversation current is cheap.
 struct ContextStoreOptions {
     std::filesystem::path directory;
     // Bytes the store may hold; the least recently used sessions are removed beyond it. 0 chooses
@@ -157,9 +158,10 @@ struct ContextStoreOptions {
     std::chrono::seconds ttl{std::chrono::hours(24 * 7)};
     // A retained session unused for this long, and not yet written in its current state, is written
     // in the background so a crash loses at most this much of a conversation. Zero disables it
-    // (sessions are then written only on eviction and shutdown).
+    // (sessions are then written only at shutdown).
     std::chrono::seconds idle_persist{30};
-    // Upper bound on the time spent restoring sessions into the cache at start-up.
+    // Upper bound on the time spent restoring sessions into the cache at start-up, and on how long
+    // a request waits for its stored session to be read back.
     std::chrono::seconds restore_budget{120};
     // Upper bound on the time spent writing sessions at shutdown.
     std::chrono::seconds flush_budget{60};

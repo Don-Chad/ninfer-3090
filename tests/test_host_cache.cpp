@@ -183,10 +183,10 @@ int check_unavailable_options_rejected() {
                           o.grafts.push_back({.name = "g", .path = "g.safetensors"});
                       }),
                       "a prompt graft was accepted");
-    failures += check(rejected([](ninfer::EngineOptions& o) {
+    failures += check(!rejected([](ninfer::EngineOptions& o) {
                           o.context_store.directory = "store";
                       }),
-                      "the context store was accepted");
+                      "the context store was refused at option normalization");
     failures += check(!rejected([](ninfer::EngineOptions& o) { o.devices = {0}; }),
                       "a single-entry device list was refused");
     return failures;
