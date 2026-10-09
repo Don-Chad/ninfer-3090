@@ -92,7 +92,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|rk8v4|rk4v4|nvfp4|k8v4] "
            "[--spec mtp|dflash|dflash2 --draft-tokens N] "
-           "[--default-max-tokens N] [--max-output-tokens N] [--default-thinking-budget N] "
+           "[--default-max-tokens N] [--max-output-tokens N] [--output-reservation-tokens N] [--default-thinking-budget N] "
            "[--vision] [--vision-residency resident|overlay] [--vision-max-merged N] "
            "[--no-cuda-graph] [--no-prefix-reuse] [--auto-prefix-grid] [--devices N,M,...] [--stage-layers A,B,...] "
            "[--chat-template FILE] "
@@ -112,6 +112,9 @@ std::string serve_usage_text(const char* argv0) {
            "       --max-output-tokens caps the output budget of every request, including ones "
            "that state a larger limit: a request reserves KV for its whole budget, which evicts "
            "cached contexts it never fills\n"
+           "       --output-reservation-tokens reserves KV for that many output tokens of a request "
+           "at admission and the rest while it decodes, so a large max_tokens does not evict cached "
+           "contexts it never fills; a request that needs more than is free stops there\n"
            "       --max-request-mib defaults to 384 and is enforced before JSON parsing\n"
            "       --media-cache-mib defaults to 1024; 0 disables retained media reuse\n"
            "       --media-live-mib defaults to 2048 and bounds all live BF16 patch payloads\n"
@@ -480,6 +483,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--max-output-tokens") {
             options.max_output_tokens =
                 parse_nonnegative_int(require_value("--max-output-tokens"), "max-output-tokens");
+        } else if (arg == "--output-reservation-tokens") {
+            options.output_reservation_tokens = static_cast<std::uint32_t>(parse_nonnegative_int(
+                require_value("--output-reservation-tokens"), "output-reservation-tokens"));
         } else if (arg == "--default-max-tokens") {
             options.default_max_tokens =
                 parse_nonnegative_int(require_value("--default-max-tokens"), "default-max-tokens");

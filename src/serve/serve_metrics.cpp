@@ -69,6 +69,15 @@ void append_abandoned_requests(std::string& out, const ninfer::RuntimeStats& liv
                   live.cancelled_prefill_retained_tokens);
 }
 
+void append_output_reservation(std::string& out, const ninfer::RuntimeStats& live) {
+    append_metric(out, "ninfer:output_reservation_growths_total", "counter",
+                  "Times a request's KV reservation was extended while it decoded.",
+                  live.output_reservation_growths);
+    append_metric(out, "ninfer:output_reservation_exhaustions_total", "counter",
+                  "Requests that stopped at their reserved output because no KV page was free.",
+                  live.output_reservation_exhaustions);
+}
+
 void append_context_cache(std::string& out, const ninfer::RuntimeStats& live) {
     append_family_header(out, "ninfer:context_selections_total", "counter",
                          "Admissions by the context-cache source they started from; root is a "
@@ -220,6 +229,7 @@ std::string ServeMetrics::render(std::uint32_t max_concurrency, const ninfer::Ru
                   admitted - processing);
 
     append_abandoned_requests(out, live);
+    append_output_reservation(out, live);
     append_context_cache(out, live);
     append_context_store(out, live);
 

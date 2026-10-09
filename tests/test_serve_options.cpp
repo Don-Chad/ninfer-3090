@@ -108,6 +108,11 @@ int main() {
         (void)parse({"ninfer-serve", "model.ninfer", "--max-output-tokens", "0"});
     } catch (const std::invalid_argument&) { zero_output_bound_rejected = true; }
     failures += check(zero_output_bound_rejected, "--max-output-tokens 0 was accepted");
+    failures += check(parse({"ninfer-serve", "model.ninfer"}).output_reservation_tokens == 0 &&
+                          parse({"ninfer-serve", "model.ninfer", "--output-reservation-tokens",
+                                 "4096"})
+                                  .output_reservation_tokens == 4096,
+                      "--output-reservation-tokens did not reach serving options");
 
     failures += check(!defaults.default_reasoning_effort,
                       "a reasoning effort is unexpectedly configured by default");

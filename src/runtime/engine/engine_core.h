@@ -1323,6 +1323,11 @@ private:
         result.timings.total_seconds =
             request->prepare_seconds +
             std::chrono::duration<double>(Clock::now() - request->submitted).count();
+        // An exhaustion counts only if the request really ended at its reserved output; one that
+        // stopped naturally in the tokens it still had was not cut short.
+        if (request->output_reservation_exhausted && reason == FinishReason::OutputLimit) {
+            ++cumulative_stats_.output_reservation_exhaustions;
+        }
         request->sequence.reset();
         request->lane.reset();
         request->budget.reset();
@@ -2094,6 +2099,11 @@ private:
                     resources_.adopt(*instance_.program, std::move(activation));
                     request->sequence.emplace(sequence);
                     request->budget.emplace(std::move(control.budget));
+                    request->granted_output_tokens = control.summary.reserved_output_tokens;
+                    request->deferred_output_tokens =
+                        control.summary.effective_output_tokens -
+                        control.summary.reserved_output_tokens;
+                    request->deferred_limit_reason = control.summary.effective_limit_reason;
                     request->lane.emplace(control.destination);
                     request->remaining_service_work      = control.summary.service_work_quanta;
                     request->backfill_epoch              = control.protection_epoch;
@@ -2163,8 +2173,11 @@ private:
             !scheduler_.validate_grant(grant)) {
             throw std::logic_error("admission choice lost its Scheduler grant");
         }
-        GenerationBudget prepared_budget(summary.effective_output_tokens,
-                                         summary.effective_limit_reason);
+        // Until the rest of the output is reserved, running out of the reserved part is a length stop.
+        GenerationBudget prepared_budget(summary.reserved_output_tokens,
+                                         summary.reserved_output_tokens < summary.effective_output_tokens
+                                             ? FinishReason::OutputLimit
+                                             : summary.effective_limit_reason);
         try {
             request->generated.reserve(summary.effective_output_tokens);
         } catch (...) {
@@ -2705,6 +2718,7 @@ private:
                 // not reinterpret an already-issued unit with a later atomic read.
                 const auto cancelled_at_unit_start = snapshot_cancellations();
                 cancel_active_requests(cancelled_at_unit_start, boundary);
+                extend_output_reservations();
                 const ControlMembership control_membership =
                     scheduler_.build_control_membership(slots_, max_concurrency_);
                 if (!control_membership.empty()) {
@@ -2875,6 +2889,54 @@ private:
             context.source_usage = slot_usage_[*usage_source];
         }
         return context;
+    }
+
+    // Output tokens left in a request's budget at which the next chunk of its output is reserved,
+    // and the size of that chunk. The headroom covers the widest round (draft window included).
+    static constexpr std::uint32_t kReservationHeadroom = 128;
+    static constexpr std::uint32_t kReservationChunk    = 1024;
+
+    // A request admitted with only part of its output reserved (output_reservation_tokens) gets the
+    // next chunk reserved before its budget runs out, from pages nothing else holds. If none is
+    // free it keeps what it has and stops, with the length finish reason, when that is spent.
+    void extend_output_reservations() noexcept {
+        // Growth takes free pages and advances the resource revision, which an open context
+        // transaction's sealed plan is bound to; the next boundary without one retries.
+        if (instance_.program->has_context_transaction() ||
+            resources_.context_transaction_kind().has_value()) {
+            return;
+        }
+        for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+            const auto& request = slots_[lane];
+            if (request == nullptr || request->deferred_output_tokens == 0 || !request->budget ||
+                !request->sequence || request->capture_pending ||
+                !(request->is_decode_ready() || request->is_control_ready()) ||
+                request->budget->remaining() > kReservationHeadroom) {
+                continue;
+            }
+            // The whole chunk if it is free, else the largest half of it that is.
+            std::uint32_t grown = 0;
+            for (std::uint32_t chunk = std::min(request->deferred_output_tokens, kReservationChunk);
+                 chunk != 0; chunk /= 2U) {
+                if (instance_.program->grow_output_reservation(
+                        *request->sequence, request->granted_output_tokens + chunk)) {
+                    grown = chunk;
+                    break;
+                }
+            }
+            if (grown != 0) {
+                request->granted_output_tokens += grown;
+                request->deferred_output_tokens -= grown;
+                request->budget->extend(grown);
+                if (request->deferred_output_tokens == 0) {
+                    request->budget->set_limit_reason(request->deferred_limit_reason);
+                }
+                ++cumulative_stats_.output_reservation_growths;
+            } else {
+                request->deferred_output_tokens       = 0;
+                request->output_reservation_exhausted = true;
+            }
+        }
     }
 
     // Binds the retained slot's session file, usage record and digest once `finish` has catalogued

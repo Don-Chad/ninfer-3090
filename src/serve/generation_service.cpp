@@ -260,6 +260,7 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
     engine_options.pending_timeout_ms       = options.pending_timeout_ms;
     engine_options.prefill_chunk            = options.prefill_chunk;
     engine_options.max_prefill_lanes        = options.max_prefill_lanes;
+    engine_options.output_reservation_tokens = options.output_reservation_tokens;
     engine_options.prefill_max_skip         = options.prefill_max_skip;
     engine_options.decode_rounds_per_prefill = options.decode_rounds_per_prefill;
     engine_options.kv_cache                 = options.kv_cache;

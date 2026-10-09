@@ -919,6 +919,11 @@ public:
     // True while the sequence's next media item is still encoding in a concurrent overlay Vision
     // window; the Engine gives that lane no prefill unit until it completes.
     [[nodiscard]] bool vision_pending(SequenceHandle sequence) const noexcept;
+    // Extends the KV reservation of an active sequence so it covers `total_output_tokens` of output
+    // in all (not the increment), from pages nothing else holds. False, with nothing changed, when
+    // the pool cannot cover it or the sequence is not decoding.
+    [[nodiscard]] bool grow_output_reservation(SequenceHandle sequence,
+                                               std::uint32_t total_output_tokens) noexcept;
     // `constraint` (borrowed for this call) restricts the token sampled at prompt completion.
     [[nodiscard]] PrefillProgress
     advance_prefill(SequenceHandle sequence, runtime::TokenMaskSource* constraint = nullptr,

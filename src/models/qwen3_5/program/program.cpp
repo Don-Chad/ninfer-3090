@@ -369,6 +369,11 @@ bool Program::vision_pending(SequenceHandle sequence) const noexcept {
     return impl_->vision_pending(sequence);
 }
 
+bool Program::grow_output_reservation(SequenceHandle sequence,
+                                      std::uint32_t total_output_tokens) noexcept {
+    return impl_->grow_output_reservation(sequence, total_output_tokens);
+}
+
 PrefillProgress Program::advance_prefill(SequenceHandle sequence,
                                          runtime::TokenMaskSource* constraint,
                                          runtime::ExecutionTiming* failed_timing) {

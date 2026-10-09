@@ -1438,6 +1438,48 @@ void ProgramImpl::unbind_sequence_kv(SequenceState& sequence) noexcept {
     } catch (...) {}
 }
 
+bool ProgramImpl::grow_output_reservation(SequenceHandle handle,
+                                          std::uint32_t total_output_tokens) noexcept {
+    try {
+        if (!valid_sequence(handle)) { return false; }
+        const std::uint32_t lane = ContractAccess::lane(handle).value;
+        RequestControl& request  = requests[lane];
+        if (request.lifecycle != Lifecycle::Active || request.reserved_prompt_tokens == 0 ||
+            total_output_tokens <= request.reserved_output_tokens) {
+            return false;
+        }
+        SequenceState& sequence = active_sequence(lane);
+        if (!sequence.kv) { return false; }
+        const detail::KVPageEntitlement before = detail::kv_page_entitlement(
+            kv_entitlement_shape(), request.reserved_prompt_tokens, request.reserved_output_tokens);
+        const detail::KVPageEntitlement after = detail::kv_page_entitlement(
+            kv_entitlement_shape(), request.reserved_prompt_tokens, total_output_tokens);
+        if (sequence.kv->backend.has_value() != (after.backend_pages != 0)) { return false; }
+        // The text and backend pools are separate: grow the text reservation, then the backend's,
+        // and give the text growth back if the backend cannot follow.
+        text_kv_addresses->resize_entitlement(sequence.kv->text, after.main_pages);
+        if (sequence.kv->backend) {
+            try {
+                backend_kv_addresses->resize_entitlement(*sequence.kv->backend,
+                                                         after.backend_pages);
+            } catch (...) {
+                text_kv_addresses->resize_entitlement(sequence.kv->text, before.main_pages);
+                return false;
+            }
+        }
+        request.active_resources.device.main_kv_pages += after.main_pages - before.main_pages;
+        request.active_resources.device.backend_kv_pages +=
+            after.backend_pages - before.backend_pages;
+        request.reserved_output_tokens = total_output_tokens;
+        // Pages taken from the free pool change global capacity, so plans sealed before this
+        // growth are stale. A growth that stays within the already-entitled pages changes nothing.
+        if (after.main_pages != before.main_pages || after.backend_pages != before.backend_pages) {
+            advance_resource_revision();
+        }
+        return true;
+    } catch (...) { return false; }
+}
+
 void ProgramImpl::ensure_sequence_kv_mapped(SequenceState& sequence, std::uint32_t main_tokens,
                                             std::uint32_t backend_tokens) {
     if (!sequence.kv || main_tokens > capacity || backend_tokens > capacity) {
