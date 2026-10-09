@@ -992,6 +992,9 @@ private:
         bool restored = false;
         std::uint32_t expected_frontier = 0; // the stored checkpoint the request should resume from
         std::string stored_id;               // the stored image, touched once the plan uses it
+        std::uint32_t slot = 0;              // where it was restored, and the entry it became
+        std::uint64_t restored_id       = 0;
+        std::uint64_t restored_revision = 0;
         Clock::time_point started;
     };
 
@@ -1060,9 +1063,15 @@ private:
                     if (!slot) { break; }
                 }
                 try {
+                    // Not marked durable yet: the stored image may be gone by the time the plan
+                    // uses this entry, and an entry wrongly marked would never be written again.
                     (void)restore_slot_locked(
                         *slot, std::span<const std::uint8_t>(bytes->data(), bytes->size()),
-                        eviction_model_binding_, std::string_view(), [] {}, true);
+                        eviction_model_binding_, std::string_view(), [] {});
+                    const auto restored_view = resources_.catalog_slot(*slot);
+                    attempt.slot             = *slot;
+                    attempt.restored_id       = restored_view.id;
+                    attempt.restored_revision = restored_view.revision;
                     restored = true;
                 } catch (const std::invalid_argument& error) {
                     if (std::string_view(error.what()).find("evict other sessions first") ==
@@ -1103,9 +1112,17 @@ private:
         if (reuse_after >= attempt.expected_frontier && reuse_after > reuse_before) {
             store_hydrations_.fetch_add(1, std::memory_order_relaxed);
             store_hydrated_tokens_.fetch_add(reuse_after - reuse_before, std::memory_order_relaxed);
-            // The image was used: only now does reading it count against its age.
+            // The image was used: only now does reading it count against its age, and only if it
+            // is still stored is the restored entry durable (otherwise its eviction must write it).
             try {
-                store_->touch(attempt.stored_id);
+                if (store_->find(attempt.stored_id)) {
+                    store_->touch(attempt.stored_id);
+                    const auto view = resources_.catalog_slot(attempt.slot);
+                    if (attempt.slot < slot_persisted_.size() &&
+                        view.id == attempt.restored_id && view.revision == attempt.restored_revision) {
+                        slot_persisted_[attempt.slot] = {view.id, view.revision};
+                    }
+                }
             } catch (...) {}
         } else {
             store_hydration_failures_.fetch_add(1, std::memory_order_relaxed);
@@ -2583,7 +2600,18 @@ private:
                 }
                 // A backfill candidate resumes from a stored session too. What it reads back is
                 // ordinary cache, which planning for the blocked head may evict again, so the
-                // persistent-backfill proof below still decides whether it may run.
+                // persistent-backfill proof below still decides whether it may run. The proof is
+                // checked first too, so a candidate that cannot backfill never pays for a read or
+                // evicts anything; hydration changes the cache, so the proof is repeated after it.
+                if (candidate_inspected->choice &&
+                    (candidate_inspected->readiness == Readiness::Ready ||
+                     candidate_inspected->readiness == Readiness::NeedsTransfer) &&
+                    !resources_.prove_persistent_backfill(
+                        *instance_.program, *head->base_plan, *candidate_inspected->choice,
+                        std::span<const SequenceHandle>(persistent_borrowers.data(),
+                                                        persistent_borrower_count))) {
+                    continue;
+                }
                 if (!hydrate_and_replan(candidate, candidate_inspected, allowance)) {
                     control_progress = true;
                     continue;
