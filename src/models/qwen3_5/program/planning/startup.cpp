@@ -853,6 +853,13 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
                                     " pipeline stages but " + std::to_string(device.size()) +
                                     " devices are attached");
     }
+    for (std::size_t rank = 1; rank < device.size(); ++rank) {
+        // Workspace and launch capacities are derived from one SM count, taken from rank 0.
+        if (device.rank(rank).multiprocessor_count() != device.rank(0).multiprocessor_count()) {
+            throw std::invalid_argument(
+                "pipeline stages must run on devices with the same streaming-multiprocessor count");
+        }
+    }
     if (parameters.text.split_execution()) {
         // The stage loop carries a plain forward pass and decode round. DFlash reads or writes state
         // on the primary device only, and is refused until it is taught the stages. Vision runs

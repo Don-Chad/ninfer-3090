@@ -843,7 +843,11 @@ AbortResult ProgramImpl::abort(SequenceHandle sequence) noexcept {
     SequenceState& state = active_sequence(lane);
     // Cancellation can arrive after activation and before the first prefill unit has waited
     // for its uploads and initialization. Settle that work before releasing reusable resources.
-    device.synchronize();
+    // abort is noexcept: if the device cannot be settled, keep the lane's resources held (queued
+    // work may still use them) and report the abort as not consumed.
+    try {
+        device.synchronize();
+    } catch (...) { return out; }
     if (!clear_lane_strict(state, request)) { return out; }
     out.timings     = request.timings;
     out.speculative = std::move(request.speculative_stats);
