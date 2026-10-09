@@ -15,6 +15,11 @@ ninfer_add_test(ninfer_qwen3_5_graft_loader_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_graft_loader.cpp"
   LIBRARIES ninfer_engine ninfer_core ninfer::json)
 
+# The reasoning-loop guard's repeated-passage measure (CPU only).
+ninfer_add_test(ninfer_qwen3_5_reasoning_loop_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_reasoning_loop.cpp"
+  LIBRARIES ninfer_model_runtime)
+
 ninfer_add_test(ninfer_qwen3_5_runtime_mechanisms_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_runtime_mechanisms.cpp"
   LIBRARIES ninfer_engine ninfer_core)

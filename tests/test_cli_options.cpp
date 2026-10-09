@@ -87,6 +87,27 @@ int main() {
                "--reasoning-effort", "medium"});
     failures += check(with_effort.thinking_budget == 8 && with_effort.reasoning_effort,
                       "thinking budget did not coexist with reasoning effort");
+    failures += check(configured.reasoning_loop == ninfer::ReasoningLoopAction::Off &&
+                          parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                 "--reasoning-loop", "conclude"})
+                                  .reasoning_loop == ninfer::ReasoningLoopAction::Conclude &&
+                          parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                 "--reasoning-loop", "stop"})
+                                  .reasoning_loop == ninfer::ReasoningLoopAction::Stop,
+                      "--reasoning-loop did not select its action (or was not off by default)");
+    failures +=
+        check(ninfer::cli::usage_text("ninfer-cli").find("--reasoning-loop") != std::string::npos,
+              "CLI help omits --reasoning-loop");
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                       "--reasoning-loop", "on"});
+                      }),
+                      "--reasoning-loop on was accepted");
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                       "--reasoning-loop", "stop", "--no-thinking"});
+                      }),
+                      "--reasoning-loop was accepted with --no-thinking");
     const ninfer::cli::Options dflash_vision =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--vision", "--spec", "dflash",
                "--draft-tokens", "7"});

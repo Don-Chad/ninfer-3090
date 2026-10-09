@@ -138,6 +138,19 @@ int test_request_envelope_and_sampling() {
     failures += check(derived_omitted.generation.derive_output_budget &&
                           translated_derived.execution.thinking.budget == 256,
                       "derived output budget request retained thinking budget in translation");
+    // The reasoning-loop guard reaches every thinking request, constrained ones included, and no
+    // request with thinking disabled.
+    server.reasoning_loop = ninfer::ReasoningLoopAction::Conclude;
+    GenerationRequest constrained_req = derived_omitted.generation;
+    constrained_req.constraint        = ninfer::OutputConstraint::json_object();
+    failures += check(to_request_options(constrained_req, server, semantics(constrained_req), true)
+                              .execution.thinking.loop == ninfer::ReasoningLoopAction::Conclude,
+                      "a thinking request did not receive the reasoning-loop guard");
+    ResolvedPromptSemantics no_thinking = semantics(constrained_req);
+    no_thinking.enable_thinking         = false;
+    failures += check(to_request_options(constrained_req, server, no_thinking, true)
+                              .execution.thinking.loop == ninfer::ReasoningLoopAction::Off,
+                      "a non-thinking request received the reasoning-loop guard");
 
     Json malformed              = base_request();
     malformed["stream_options"] = true;

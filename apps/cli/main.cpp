@@ -180,6 +180,14 @@ void print_generation_summary(const ninfer::GenerationResult& result,
         print_metric("thinking control tokens", std::to_string(result.thinking.injected_tokens));
         print_metric("thinking control", result.thinking.applied ? "applied" : "not applied");
     }
+    if (result.thinking.loop_detected) {
+        print_metric("reasoning loop",
+                     "after " + std::to_string(result.thinking.loop_thinking_tokens) +
+                         " thinking tokens (" +
+                         std::to_string(static_cast<int>(result.thinking.loop_coverage * 100.0F +
+                                                         0.5F)) +
+                         "% repeated), " + (result.thinking.applied ? "concluded" : "stopped"));
+    }
     print_metric("model elapsed", format_seconds(model_seconds));
     print_metric("prefill speed", format_rate(static_cast<double>(result.prompt.prompt_tokens),
                                               result.timings.prefill_seconds));
@@ -301,6 +309,7 @@ int main(int argc, char** argv) {
         request.execution.sampling                = cli.sampling;
         request.execution.requested_output_tokens = cli.max_new;
         request.execution.thinking.budget         = cli.thinking_budget;
+        request.execution.thinking.loop           = cli.reasoning_loop;
         request.stop.token_ids                    = cli.stop_token_ids;
         request.stop.strings                      = cli.stop_strings;
         request.output.raw                        = cli.raw_output;

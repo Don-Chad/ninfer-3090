@@ -95,6 +95,9 @@ struct ServeOptions {
     // Empty means no default; otherwise it names an entry of `grafts`.
     std::string default_graft;
     std::optional<std::uint32_t> default_thinking_budget;
+    // --reasoning-loop off|stop|conclude: the reasoning-loop guard for every thinking request,
+    // constrained ones included (off by default).
+    ninfer::ReasoningLoopAction reasoning_loop = ninfer::ReasoningLoopAction::Off;
     // Output limit for a request that omits one. Unset means the request's remaining context: see
     // request_limits().
     std::optional<int> default_max_tokens;
