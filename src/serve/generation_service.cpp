@@ -1,6 +1,7 @@
 #include "serve/generation_service.h"
 
 #include "product/media_acquire/acquire.h"
+#include "product/object_store/s3_object_store.h"
 #include "serve/console_log.h"
 #include "serve/translate.h"
 
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <iterator>
 #include <mutex>
 #include <stdexcept>
@@ -281,7 +283,6 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
     engine_options.prefill_cublas_projections = options.prefill_cublas_projections;
     engine_options.speculative              = options.speculative;
     engine_options.context_cache            = options.context_cache;
-    engine_options.slot_auto_save.enabled   = options.auto_save_evicted;
     engine_options.context_store.directory  = options.context_store_path;
     engine_options.context_store.max_bytes =
         options.context_store_max_gib ? *options.context_store_max_gib << 30U : 0U;
@@ -292,6 +293,31 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
         std::chrono::seconds(options.context_store_restore_seconds);
     engine_options.context_store.flush_budget =
         std::chrono::seconds(options.context_store_flush_seconds);
+    if (!options.context_store_s3_endpoint.empty()) {
+        const auto environment = [](const char* primary, const char* fallback) {
+            for (const char* name : {primary, fallback}) {
+                if (const char* value = std::getenv(name); value != nullptr && *value != '\0') {
+                    return std::string(value);
+                }
+            }
+            return std::string();
+        };
+        product::S3Config s3;
+        s3.endpoint      = options.context_store_s3_endpoint;
+        s3.bucket        = options.context_store_s3_bucket;
+        s3.region        = options.context_store_s3_region;
+        s3.access_key    = environment("NINFER_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID");
+        s3.secret_key    = environment("NINFER_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY");
+        s3.session_token = environment("NINFER_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN");
+        if (s3.access_key.empty() || s3.secret_key.empty()) {
+            throw std::invalid_argument(
+                "--context-store-s3-endpoint needs NINFER_S3_ACCESS_KEY_ID and "
+                "NINFER_S3_SECRET_ACCESS_KEY (or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) in "
+                "the environment");
+        }
+        engine_options.context_store.remote        = product::make_s3_object_store(std::move(s3));
+        engine_options.context_store.remote_prefix = options.context_store_s3_prefix;
+    }
     engine_options.devices                  = options.devices;
     engine_options.stage_layers             = options.stage_layers;
     engine_options.context_cost.preset_path = options.context_cost_presets;
@@ -303,7 +329,7 @@ ninfer::EngineOptions make_engine_options(const ServeOptions& options) {
 
 GenerationService::GenerationService(
     ServeOptions options, StartupObserver startup_observer,
-    std::function<void(const ninfer::SlotAutoSaveEvent&)> auto_save_listener,
+    std::function<void(const ninfer::ContextStoreWriteEvent&)> store_listener,
     std::function<void(const ninfer::EngineFaultEvent&)> fault_listener)
     : options_(std::move(options)) {
     // Inline ECC on GDDR6X GeForce cards reserves ~6.25% of VRAM for checksums and taxes
@@ -327,8 +353,8 @@ GenerationService::GenerationService(
     }
     ninfer::EngineOptions engine_options = make_engine_options(options_);
     engine_options.startup_observer      = std::move(startup_observer);
-    engine_options.slot_auto_save.listener = std::move(auto_save_listener);
-    engine_options.fault_listener          = std::move(fault_listener);
+    engine_options.context_store.listener = std::move(store_listener);
+    engine_options.fault_listener         = std::move(fault_listener);
     engine_           = std::make_unique<ninfer::Engine>(std::move(engine_options));
     automatic_private_anchors_ =
         resolve_automatic_private_anchors(options_, engine_->options().context_cache);

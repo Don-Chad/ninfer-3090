@@ -26,10 +26,7 @@ std::string make_slots_report(const std::vector<ninfer::SlotState>& states,
                       {"n_prompt_tokens", state.prompt_tokens},
                       {"n_prompt_tokens_cache", state.cached_tokens},
                       {"speculative", speculative}};
-        // Usage and the bound file describe a retained session only.
-        entry["snapshot_file"] = state.retained && !state.snapshot_file.empty()
-                                     ? Json(state.snapshot_file)
-                                     : Json(nullptr);
+        // Usage describes a retained session only.
         entry["last_used_unix_ms"] = state.retained ? Json(state.last_used_unix_ms) : Json(nullptr);
         entry["reuse_count"]       = state.retained ? Json(state.reuse_count) : Json(nullptr);
         entry["reused_tokens"]     = state.retained ? Json(state.reused_tokens) : Json(nullptr);

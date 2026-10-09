@@ -122,8 +122,8 @@ class GenerationService {
 public:
     explicit GenerationService(
         ServeOptions options, StartupObserver startup_observer = {},
-        std::function<void(const ninfer::SlotAutoSaveEvent&)> auto_save_listener = {},
-        std::function<void(const ninfer::EngineFaultEvent&)> fault_listener     = {});
+        std::function<void(const ninfer::ContextStoreWriteEvent&)> store_listener = {},
+        std::function<void(const ninfer::EngineFaultEvent&)> fault_listener      = {});
 
     [[nodiscard]] const ServeOptions& options() const noexcept { return options_; }
 
@@ -150,20 +150,9 @@ public:
 
     [[nodiscard]] bool is_available() const { return engine_->is_available(); }
 
-    // Session persistence over the private context-cache catalog; see ninfer::Engine.
+    // Occupancy of the private context-cache catalog; see ninfer::Engine.
     [[nodiscard]] std::vector<ninfer::SlotState> slot_states() const {
         return engine_->slot_states();
-    }
-    [[nodiscard]] ninfer::SlotSaveResult slot_save(std::uint32_t slot, const std::string& path,
-                                                   const std::string& expected_digest) {
-        return engine_->save_slot(slot, path, expected_digest);
-    }
-    [[nodiscard]] ninfer::SlotRestoreResult slot_restore(std::uint32_t slot,
-                                                         const std::string& path) {
-        return engine_->restore_slot(slot, path);
-    }
-    std::uint32_t slot_erase(std::uint32_t slot, const std::string& expected_digest) {
-        return engine_->erase_slot(slot, expected_digest);
     }
 
     // Requests currently holding ingress capacity (max_concurrency + max_pending_requests).

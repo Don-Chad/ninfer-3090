@@ -1,5 +1,4 @@
 #include "serve/http_server.h"
-#include "serve/slot_files.h"
 
 #include "product/version/version.h"
 #include "serve/anthropic_messages.h"
@@ -136,7 +135,7 @@ const char* endpoint_name(std::string_view path) noexcept {
     if (path == "/v1/messages") { return "anthropic_messages"; }
     if (path == "/v1/messages/count_tokens") { return "anthropic_count_tokens"; }
     if (path == "/v1/load") { return "load"; }
-    if (path == "/slots" || path.starts_with("/slots/")) { return "slots"; }
+    if (path == "/slots") { return "slots"; }
     return "http_route";
 }
 
@@ -480,9 +479,6 @@ void HttpServer::register_routes() {
     server_.Get("/slots", [this](const httplib::Request& req, httplib::Response& res) {
         handle_slots(req, res);
     });
-    server_.Post(R"(/slots/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
-        handle_slot_action(req, res);
-    });
     server_.Get("/metrics", [this](const httplib::Request&, httplib::Response& res) {
         // Pre-routing answers 503 until attach(), so service_ is published here.
         res.set_header("Cache-Control", "no-store");
@@ -544,117 +540,13 @@ void HttpServer::register_routes() {
 
 // llama.cpp-shaped slot listing: one entry per private context-cache catalog cell. A cell an
 // active request will publish into reports that request's prompt and reused tokens; a retained
-// cell reports the session depth as both, with its session digest and restorable checkpoints,
-// the slot file it is bound to, and how it has been used (see make_slots_report).
+// cell reports the session depth as both, with its session digest and restorable checkpoints, and
+// how it has been used (see make_slots_report).
 void HttpServer::handle_slots(const httplib::Request&, httplib::Response& res) const {
     const bool speculative = options_.speculative.backend != ninfer::SpeculativeBackend::None;
     res.set_header("Cache-Control", "no-store");
     res.set_content(make_slots_report(service_->slot_states(), options_.max_context, speculative),
                     "application/json");
-}
-
-// llama.cpp-shaped session persistence: POST /slots/{id}?action=save|restore|erase with
-// {"filename": NAME} for save and restore and an optional {"if_digest": DIGEST} precondition on
-// save and erase. Enabled only by --slot-save-path; names are confined to that directory.
-void HttpServer::handle_slot_action(const httplib::Request& req, httplib::Response& res) {
-    const auto fail = [&res](int status, std::string code, std::string message) {
-        ApiError error;
-        error.status  = status;
-        error.type    = status >= 500 ? "server_error" : "invalid_request_error";
-        error.code    = std::move(code);
-        error.message = std::move(message);
-        write_openai_error(res, error);
-    };
-    if (options_.slot_save_path.empty()) {
-        fail(501, "slot_persistence_disabled",
-             "this server was started without --slot-save-path; slot save/restore is disabled");
-        return;
-    }
-    const std::string id_text = req.matches.size() > 1 ? req.matches[1].str() : std::string();
-    unsigned long long parsed = 0;
-    try {
-        parsed = std::stoull(id_text);
-    } catch (const std::exception&) {
-        fail(400, "invalid_slot", "slot id is not a number");
-        return;
-    }
-    // Range-checked before narrowing, so an id past 2^32 is refused rather than wrapped.
-    const std::size_t slot_count = service_->slot_states().size();
-    if (parsed >= slot_count) {
-        fail(400, "invalid_slot",
-             "slot " + id_text + " is outside this server's " + std::to_string(slot_count) +
-                 " slots");
-        return;
-    }
-    const auto slot = static_cast<std::uint32_t>(parsed);
-    const std::string action = req.get_param_value("action");
-
-    std::string filename;
-    std::string if_digest;
-    try {
-        const nlohmann::json body =
-            req.body.empty() ? nlohmann::json::object() : nlohmann::json::parse(req.body);
-        if (!body.is_object()) { throw std::invalid_argument("body is not an object"); }
-        filename  = body.value("filename", std::string());
-        if_digest = body.value("if_digest", std::string());
-    } catch (const std::exception&) {
-        fail(400, "invalid_request",
-             "request body must be a JSON object with string filename and if_digest");
-        return;
-    }
-
-    try {
-        if (action == "erase") {
-            const std::uint32_t erased = service_->slot_erase(slot, if_digest);
-            operational_log_.slot_erased(slot, erased);
-            res.set_content(nlohmann::json{{"id_slot", slot}, {"n_erased", erased}}.dump(),
-                            "application/json");
-            return;
-        }
-        if (action != "save" && action != "restore") {
-            fail(400, "invalid_action", "action must be save, restore, or erase");
-            return;
-        }
-        const std::optional<std::string> sanitized = sanitize_slot_filename(filename);
-        if (!sanitized) {
-            fail(400, "invalid_filename",
-                 "filename must be 1-" + std::to_string(kSlotFilenameMaxBytes) +
-                     " characters of [A-Za-z0-9._-], must not start or end with a dot, and "
-                     "must not name a device");
-            return;
-        }
-        const std::string path = (options_.slot_save_path / *sanitized).string();
-        if (action == "save") {
-            const ninfer::SlotSaveResult saved = service_->slot_save(slot, path, if_digest);
-            operational_log_.slot_saved(slot, *sanitized, saved);
-            res.set_content(nlohmann::json{{"id_slot", slot},
-                                           {"filename", *sanitized},
-                                           {"n_saved", saved.tokens},
-                                           {"n_written", saved.bytes},
-                                           {"session_digest", saved.session_digest},
-                                           {"timings", {{"save_ms", saved.seconds * 1000.0}}}}
-                                .dump(),
-                            "application/json");
-        } else {
-            const ninfer::SlotRestoreResult restored = service_->slot_restore(slot, path);
-            operational_log_.slot_restored(slot, *sanitized, restored);
-            res.set_content(
-                nlohmann::json{{"id_slot", slot},
-                               {"filename", *sanitized},
-                               {"n_restored", restored.tokens},
-                               {"n_read", restored.bytes},
-                               {"session_digest", restored.session_digest},
-                               {"timings", {{"restore_ms", restored.seconds * 1000.0}}}}
-                    .dump(),
-                "application/json");
-        }
-    } catch (const ninfer::RequestError& busy) {
-        fail(409, "slot_busy", busy.what());
-    } catch (const ninfer::SlotSessionMismatch& mismatch) {
-        fail(409, "slot_session_mismatch", mismatch.what());
-    } catch (const std::invalid_argument& rejected) {
-        fail(400, "slot_" + action + "_failed", rejected.what());
-    }
 }
 
 void HttpServer::handle_load(const httplib::Request&, httplib::Response& res) const {

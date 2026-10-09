@@ -52,7 +52,7 @@ requests are not guaranteed.
 
 **New in v0.14.2:** long prompts no longer have to block short ones. `--max-prefill-lanes N` reads
 several prompts in at once (default 2 with three or more `--max-concurrency` lanes; a short request behind a 3,000-token prompt: 2.5 s to 1.5 s to first word),
-`GET /slots` reports each saved conversation's file and reuse, and `--host-cache-max-mib` caps the
+`GET /slots` reports each retained conversation's reuse, and `--host-cache-max-mib` caps the
 RAM cache on shared machines. The rest are opt-in. See the [v0.14.2 release notes](RELEASE_NOTES_0.14.2.md).
 
 **v0.14.1:** a stability fix for `ninfer-serve`. A large or unplannable request no longer fails
@@ -326,7 +326,7 @@ The server supports:
 - compatible-prefix reuse, with automatic long anchors so an edited mid-history turn does not force
   a re-prefill from zero;
 - Prometheus metrics at `GET /metrics` ([docs](docs/serving.md#metrics)) and a read-only `GET /props`;
-- session persistence to disk through `GET`/`POST /slots` ([docs](docs/serving.md#slots));
+- retained conversations survive a restart in a local context store, with a read-only `GET /slots` for what is held ([docs](docs/serving.md#context-store));
 - prompt-rendered function tools and parsed tool calls (returned to the client, not executed);
 - bounded pending-request admission and JSONL request logs.
 

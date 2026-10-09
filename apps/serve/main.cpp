@@ -114,19 +114,10 @@ int main(int argc, char** argv) {
         // during the ten seconds of weight loading gets a documented "still loading" or a hang.
         server.start_serving_during_startup();
 
-        if (!options.slot_save_path.empty()) {
-            std::error_code directory_error;
-            std::filesystem::create_directories(options.slot_save_path, directory_error);
-            if (!std::filesystem::is_directory(options.slot_save_path)) {
-                operational_log.server_failure(
-                    false, "--slot-save-path is not a usable directory: " +
-                               options.slot_save_path.string());
-                return 1;
-            }
-        }
         ninfer::serve::GenerationService service(
-            options, startup_log.observer(), [&operational_log](const ninfer::SlotAutoSaveEvent& e) {
-                operational_log.slot_auto_save(e);
+            options, startup_log.observer(),
+            [&operational_log](const ninfer::ContextStoreWriteEvent& e) {
+                operational_log.context_store_write(e);
             },
             [operational_log, logger, exit_on_failure = options.exit_on_engine_failure](
                 const ninfer::EngineFaultEvent& event) {

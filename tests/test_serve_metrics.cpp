@@ -115,6 +115,8 @@ int main() {
     live.context_store_bytes_written = 1000;
     live.context_store_bytes_reused  = 4000;
     live.context_store_restored      = 3;
+    live.context_store_remote_uploads  = 7;
+    live.context_store_remote_images   = 1;
     live.context_store_hydrations      = 2;
     live.context_store_hydrated_tokens = 70000;
     const std::string store          = metrics.render(2, live, 0);
@@ -123,6 +125,8 @@ int main() {
                           has_sample(store, "ninfer:context_store_writes_total 9") &&
                           has_sample(store, "ninfer:context_store_bytes_reused_total 4000") &&
                           has_sample(store, "ninfer:context_store_restored_sessions 3") &&
+                          has_sample(store, "ninfer:context_store_remote_uploads_total 7") &&
+                          has_sample(store, "ninfer:context_store_remote_images 1") &&
                           has_sample(store, "ninfer:context_store_hydrations_total 2") &&
                           has_sample(store, "ninfer:context_store_hydrated_tokens_total 70000"),
                       "context store series are not reported");

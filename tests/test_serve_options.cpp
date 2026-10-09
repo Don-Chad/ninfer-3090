@@ -113,6 +113,37 @@ int main() {
                                  "4096"})
                                   .output_reservation_tokens == 4096,
                       "--output-reservation-tokens did not reach serving options");
+    // The S3 copy of the context store is off unless both the endpoint and the bucket are given,
+    // needs the store, and normalises its key prefix.
+    const ServeOptions s3 = parse({"ninfer-serve", "model.ninfer", "--context-store", "dir",
+                                   "--context-store-s3-endpoint", "https://s3.example.com",
+                                   "--context-store-s3-bucket", "cache", "--context-store-s3-prefix",
+                                   "prod"});
+    failures += check(s3.context_store_s3_endpoint == "https://s3.example.com" &&
+                          s3.context_store_s3_bucket == "cache" &&
+                          s3.context_store_s3_prefix == "prod/" &&
+                          s3.context_store_s3_region == "us-east-1" &&
+                          parse({"ninfer-serve", "model.ninfer", "--context-store", "dir"})
+                              .context_store_s3_endpoint.empty(),
+                      "S3 context store options were not parsed or are not off by default");
+    const auto s3_rejected = [&](std::vector<std::string> arguments) {
+        try {
+            (void)parse(arguments);
+        } catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    failures += check(
+        s3_rejected({"ninfer-serve", "model.ninfer", "--context-store", "dir",
+                  "--context-store-s3-endpoint", "https://s3.example.com"}) &&
+            s3_rejected({"ninfer-serve", "model.ninfer", "--context-store-s3-endpoint",
+                      "https://s3.example.com", "--context-store-s3-bucket", "cache"}) &&
+            s3_rejected({"ninfer-serve", "model.ninfer", "--context-store", "dir",
+                      "--context-store-s3-endpoint", "ftp://s3.example.com",
+                      "--context-store-s3-bucket", "cache"}) &&
+            s3_rejected({"ninfer-serve", "model.ninfer", "--context-store", "dir",
+                      "--context-store-s3-endpoint", "https://s3.example.com",
+                      "--context-store-s3-bucket", "cache", "--context-store-s3-prefix", "a b"}),
+        "an invalid S3 context store configuration was accepted");
 
     failures += check(!defaults.default_reasoning_effort,
                       "a reasoning effort is unexpectedly configured by default");
@@ -409,12 +440,6 @@ int main() {
                       "--auto-host-cache was accepted with the context cache disabled");
 
     const ServeOptions no_slots = parse({"ninfer-serve", "model.ninfer"});
-    failures += check(no_slots.slot_save_path.empty() && !no_slots.auto_save_evicted,
-                      "slot persistence was on by default");
-    const ServeOptions slots = parse(
-        {"ninfer-serve", "model.ninfer", "--slot-save-path", "sessions", "--auto-save-evicted"});
-    failures += check(slots.slot_save_path == "sessions" && slots.auto_save_evicted,
-                      "slot persistence options did not reach serving options");
     failures += check(no_slots.exit_on_engine_failure &&
                           !parse({"ninfer-serve", "model.ninfer", "--no-exit-on-engine-failure"})
                                .exit_on_engine_failure,
@@ -425,16 +450,12 @@ int main() {
         } catch (const std::invalid_argument&) { return true; }
         return false;
     };
-    failures += check(rejected({"ninfer-serve", "model.ninfer", "--auto-save-evicted"}),
-                      "--auto-save-evicted was accepted without --slot-save-path");
-    failures += check(rejected({"ninfer-serve", "model.ninfer", "--slot-save-path", ""}),
-                      "an empty --slot-save-path was accepted");
-    failures += check(rejected({"ninfer-serve", "model.ninfer", "--no-prefix-reuse",
-                                "--slot-save-path", "sessions"}),
-                      "--slot-save-path was accepted with prefix reuse disabled");
-    failures += check(serve_usage_text("ninfer-serve").find("--slot-save-path") !=
-                          std::string::npos,
-                      "serve help omits --slot-save-path");
+    // The slot save/restore options were replaced by the context store and are no longer accepted.
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--slot-save-path", "sessions"}) &&
+                          rejected({"ninfer-serve", "model.ninfer", "--auto-save-evicted"}) &&
+                          serve_usage_text("ninfer-serve").find("--slot-save-path") ==
+                              std::string::npos,
+                      "a removed slot persistence option is still accepted or documented");
 
     // The context store is off unless a directory is named; its tuning flags need the directory.
     const ServeOptions no_store = parse({"ninfer-serve", "model.ninfer"});
@@ -464,9 +485,6 @@ int main() {
     failures += check(rejected({"ninfer-serve", "model.ninfer", "--context-store", "cache",
                                 "--context-store-max-gib", "0"}),
                       "a zero --context-store-max-gib was accepted");
-    failures += check(rejected({"ninfer-serve", "model.ninfer", "--context-store", "cache",
-                                "--slot-save-path", "sessions", "--auto-save-evicted"}),
-                      "--context-store was accepted together with --auto-save-evicted");
     failures += check(rejected({"ninfer-serve", "model.ninfer", "--no-prefix-reuse",
                                 "--context-store", "cache"}),
                       "--context-store was accepted with prefix reuse disabled");

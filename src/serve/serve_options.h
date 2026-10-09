@@ -84,13 +84,8 @@ struct ServeOptions {
     // prompt, so a long prefill cancelled part way keeps its progress for the client's retry. Unset
     // resolves to kDefaultProgressAnchorTokens; 0 disables. See resolve_progress_anchor_stride.
     std::optional<std::uint32_t> progress_anchor_tokens;
-    // Directory for /slots session files; empty disables slot save/restore.
-    std::filesystem::path slot_save_path;
-    // Spill an involuntarily evicted session back to the slot file it was last saved to or
-    // restored from. Requires slot_save_path.
-    bool auto_save_evicted = false;
     // --context-store DIR: keep retained sessions on disk so a restart or crash does not lose the
-    // context cache. Empty disables it. The store replaces slot persistence for the same purpose.
+    // context cache. Empty disables it.
     std::filesystem::path context_store_path;
     // --context-store-max-gib N: unset lets the Engine take half the volume's free space.
     std::optional<std::uint64_t> context_store_max_gib;
@@ -98,6 +93,12 @@ struct ServeOptions {
     std::uint32_t context_store_idle_seconds   = 30;
     std::uint32_t context_store_restore_seconds = 120;
     std::uint32_t context_store_flush_seconds   = 60;
+    // --context-store-s3-endpoint URL / --context-store-s3-bucket NAME: keep a copy of the store in
+    // an S3-compatible bucket (credentials come from the environment, never the command line).
+    std::string context_store_s3_endpoint;
+    std::string context_store_s3_bucket;
+    std::string context_store_s3_prefix; // "" or ending in '/'
+    std::string context_store_s3_region = "us-east-1";
     // Exit non-zero shortly after the Engine latches unavailable after a worker failure, so a
     // supervisor restarts the process instead of leaving it holding VRAM and answering 503.
     bool exit_on_engine_failure = true;

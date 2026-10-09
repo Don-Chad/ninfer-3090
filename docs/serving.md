@@ -85,7 +85,6 @@ staged <MiB>)` and the JSON record carries `vision_overlay`, including `exclusiv
 | `GET /health` | process health and build version (see [Server version](#server-version)) |
 | `GET /v1/load` | serving capacity, current load, and monotonic token counters (see [Load](#load)) |
 | `GET /slots` | per-slot occupancy of the private context cache (see [Slots](#slots)) |
-| `POST /slots/{id}?action=save\|restore\|erase` | save a retained session to a file, restore one, or evict one (see [Slots](#slots)) |
 | `GET /metrics` | Prometheus text counters, llama.cpp-compatible names (see [Metrics](#metrics)) |
 | `GET /v1/models` | configured OpenAI model alias, effective context limit (`max_model_len`/`context_window`/`context_length`) and input modalities (see [Model discovery](#model-discovery)) |
 | `GET /v1/models/{id}` | lookup of the same model object by its alias |
@@ -279,8 +278,7 @@ like llama.cpp's endpoint and reads only published state, so it never waits on t
   "checkpoints": [{"frontier": 1812, "session_digest": "51d0..."},
                   {"frontier": 2409, "session_digest": "e27a90c4d15b3f68"}],
   "n_ctx": 131072, "n_prompt_tokens": 2410, "n_prompt_tokens_cache": 2410, "speculative": true,
-  "snapshot_file": "chat-7.snap", "last_used_unix_ms": 1791292927534, "reuse_count": 3,
-  "reused_tokens": 7120}]
+  "last_used_unix_ms": 1791292927534, "reuse_count": 3, "reused_tokens": 7120}]
 ```
 
 A retained slot reports the session depth as both token counts, its session digest (FNV-1a 64 of
@@ -293,51 +291,14 @@ tokens. Chat Completions responses carry the slot and digest a finished session 
 as top-level `id_slot` and `session_digest`, on the aggregate response and on the final streamed
 chunk that carries timings.
 
-A retained slot also reports what a client needs to decide which sessions are worth saving.
-`snapshot_file` is the name of the slot file the session is bound to (the file a save or restore
-last named, which an involuntary eviction writes back to), or `null`. A conversation can move to a
-different cell from one turn to the next, and its binding moves with it, so `snapshot_file`, not
-`id`, says which file holds a conversation: save a continued conversation under the name it
-already carries and each conversation keeps one file. `last_used_unix_ms` is the wall-clock time
-the session was last published or restored, `reuse_count` the number of turns that continued it
-from a retained copy, and `reused_tokens` the prompt tokens those turns reused. These follow a
+A retained slot also reports how the session has been used. `last_used_unix_ms` is the wall-clock
+time the session was last published or restored, `reuse_count` the number of turns that continued
+it from a retained copy, and `reused_tokens` the prompt tokens those turns reused. These follow a
 conversation from cell to cell, and a restored session starts again from zero. A slot with no
-retained session reports `null` for all four.
+retained session reports `null` for all three.
 
-With `--slot-save-path DIR`, `POST /slots/{id}?action=...` persists sessions across restarts and
-evictions. Without it the route answers `501 slot_persistence_disabled`.
-
-| Action | Body | Response |
-|---|---|---|
-| `save` | `{"filename": NAME, "if_digest": DIGEST?}` | `id_slot`, `filename`, `n_saved` tokens, `n_written` bytes, `session_digest`, `timings.save_ms` |
-| `restore` | `{"filename": NAME}` | `id_slot`, `filename`, `n_restored` tokens, `n_read` bytes, `session_digest`, `timings.restore_ms` |
-| `erase` | `{"if_digest": DIGEST?}` | `id_slot`, `n_erased` tokens (0 for an empty slot) |
-
-`NAME` is 1-128 characters of `[A-Za-z0-9._-]`, may not start or end with a dot, and may not be a
-Windows device name; files live directly in `DIR`. Names are case-insensitive: the server stores and
-reports them lowercase, so one file never has two names. `if_digest` makes save or erase conditional on the slot
-still holding that session, checked atomically with the operation. Restore replaces whatever the
-slot held and makes the restored session an ordinary cache entry that any request with a matching
-prefix reuses, including from its checkpoints. A snapshot restores only on a server with the same
-model artifact, weight formats, KV dtype, speculative backend, draft tokens and draft head; DFlash
-servers do not support persistence. Files are written to a temporary name and renamed, and end
-with a checksum that restore verifies before it allocates anything.
-
-Errors: `409 slot_busy` while the slot or any context-cache transaction is in use (retry),
-`409 slot_session_mismatch` for a failed `if_digest`, `400 invalid_slot`, `invalid_action`,
-`invalid_filename`, and `400 slot_save_failed`/`slot_restore_failed` for a missing, corrupt or
-incompatible file or a slot with nothing to save. A failed restore leaves the slot empty.
-
-With `--auto-save-evicted`, a session last saved to or restored from a file is written back to that
-file, on a background thread, before an involuntary eviction destroys it. Continuing the
-conversation keeps the binding, so the file tracks its newest turn. An explicit erase never writes.
-A spill never replaces a file with a shallower copy of the session than the last save or restore
-recorded, and at most two spills wait for the writer. An explicit save, restore or erase of a file
-supersedes every spill of it still waiting (a restore first writes the waiting spills of the file it
-reads, so it reads the newest state). The operational log reports each spill, skip or failure. Snapshots are uncompressed. Besides its KV pages, a session stores one recurrent-state
-image per checkpoint it retains (endpoint, rewrite checkpoint, long anchors), about 150 MB each on
-the 27B, so even a short session is a few hundred MB: a 39-token Qwen3.8-27B session saved as
-295 MiB, with save and restore at about 0.3 s each on an RTX 3090.
+Sessions survive restarts and evictions through the [context store](#context-store), which needs no
+call from a supervisor; there is no endpoint to save, restore or erase a slot.
 
 ### Context store
 
@@ -352,8 +313,7 @@ With it, a retained session is written to `DIR`
 On start-up the most recently used sessions are restored into the cache, most recent first, until
 the cache is full or `--context-store-restore-seconds` (120 s) is spent, before the server accepts
 requests. A request then reuses a restored conversation exactly as it would have before the restart.
-There is nothing for a supervisor or gateway to call: the explicit `/slots` save and restore are
-not needed to survive a restart.
+There is nothing for a supervisor or gateway to call to survive a restart or an engine upgrade.
 
 The store is also read while the server runs. When a request is about to be admitted (the
 request at the head of the queue, or a backfill candidate) and the store holds a checkpoint of that
@@ -397,6 +357,46 @@ retried or, if it was being evicted, lost to the store and re-prefilled on its n
   first token reports whole seconds even for a short answer while `/health` stays 200, so a
   supervisor can restart on, say, `inter_token_seconds > 0.25` for several consecutive polls.
 
+#### Keeping a copy in a bucket
+
+`--context-store-s3-endpoint URL --context-store-s3-bucket NAME` (off by default, and only with
+`--context-store`) keep a copy of the store in an S3-compatible bucket: AWS S3, MinIO, Cloudflare
+R2, Backblaze B2 or any server that speaks the S3 API with path-style addressing and Signature V4.
+The local directory becomes a cache of the bucket.
+
+- Every session written to the directory is also uploaded in the background, chunks first and its
+  manifest last, so another engine never sees a session whose chunks are missing. A chunk the bucket
+  already holds is not sent again, so a conversation that grows uploads only what changed. Shutdown
+  waits up to two minutes for the uploads still queued.
+- At start-up, and every minute after, the engine lists the bucket and registers sessions it does
+  not have. They appear in the store as not local; start-up restores the most recently used ones,
+  fetching their chunks (every chunk is verified, a damaged one makes the session a miss and it is
+  not offered again). A new engine, a replacement box or a second engine therefore starts warm from
+  what the others wrote, without sharing a disk.
+- A request that would resume from a session only the bucket holds does not wait for the download
+  on the Engine worker (a deep session is gigabytes): it is prefilled as usual, and the fetch runs in
+  the background so the next request that continues the conversation finds it local.
+- A session evicted from the directory for space stays in the bucket and comes back the same way.
+- Credentials come from the environment, never the command line: `NINFER_S3_ACCESS_KEY_ID` and
+  `NINFER_S3_SECRET_ACCESS_KEY` (or `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; an
+  `AWS_SESSION_TOKEN` is honoured). `--context-store-s3-region` (default `us-east-1`) names the
+  signing region and `--context-store-s3-prefix` namespaces the keys when a bucket is shared. Use
+  an `https://` endpoint outside a trusted network: payloads are not part of the request signature.
+- The bucket is the long-term tier, so its expiry is the bucket's: add a lifecycle rule that expires
+  objects under the prefix after 7 days (the engine assumes at least a day). `--context-store-ttl-hours`
+  governs only the files in this directory; a session only the bucket holds ages there, and drops out
+  of the index at the next listing once the bucket no longer lists it. A session that is used has the
+  age of its objects restarted (a server-side copy onto itself, no data transferred, at most once a day
+  per session), and an object the bucket has lost in the meantime is uploaded again from the directory,
+  so something in use does not expire under it. A write is uploaded from a snapshot taken when it was
+  written, with its chunk files kept on disk until the upload ends (at most 16 uploads wait, each
+  newer write of a session replacing its queued upload); a chunk that is not intact on disk stops the
+  upload instead of publishing a session whose data is damaged. A chunk found damaged on disk when a
+  session is loaded is fetched again from the bucket.
+- An unreachable bucket costs the uploads and the fetches, counted in `ninfer:context_store_remote_*`;
+  the directory keeps working. Shutdown waits for queued uploads up to the remote flush budget (two
+  minutes) and then interrupts the transfer in progress, so it never waits out a stalled connection.
+
 ### Metrics
 
 `GET /metrics` serves Prometheus text format. Like `/v1/load` it requires the API key when one is
@@ -437,6 +437,9 @@ Engine's per-unit totals and advance during a request rather than at its complet
 | `ninfer:context_store_evicted_total`, `_corrupt_total` | counter | sessions removed for space, age or supersession, and because they could not be read back intact |
 | `ninfer:context_store_restored_sessions`, `_restored_bytes`, `_restore_seconds` | gauge | what start-up restored into the cache, and how long it took |
 | `ninfer:context_store_hydrations_total`, `_hydrated_tokens_total`, `_hydration_failures_total`, `_hydration_seconds_total` | counter | stored sessions read back for a request, the prompt tokens that saved, failures (the request was prefilled, or the plan did not use what was read) and worker time spent, failed attempts included |
+| `ninfer:context_store_remote_images` | gauge | with a bucket: sessions it holds that the directory does not hold in full |
+| `ninfer:context_store_remote_uploads_total`, `_remote_upload_bytes_total`, `_remote_upload_failures_total` | counter | objects and bytes uploaded to the bucket, and uploads that failed |
+| `ninfer:context_store_remote_downloads_total`, `_remote_download_bytes_total`, `_remote_download_failures_total` | counter | chunks and bytes fetched from the bucket, and listings or fetches that failed or returned damaged data |
 
 ## OpenAI Chat Completions
 
@@ -1209,14 +1212,14 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--auto-long-anchors N` | propose a private long anchor at each of the last `N` interior message boundaries of every prompt, so a rewrite of recent history restores at the anchor below the edit instead of re-prefilling from token zero; clamped to the anchor limit, `0` disables | the anchor limit |
 | `--progress-anchor-tokens N` | propose a private long anchor at every multiple of `N` tokens of a prompt, and keep the anchors a cancelled prefill already holds, so a client that times out or disconnects part way through a very long prompt and retries resumes from the last anchor instead of prefilling from token zero; see the request-lifecycle section on cancelled requests. Shares the long-anchor limit with `--auto-long-anchors`; `0` disables, otherwise at least `256` | `16384` |
 | `--max-cache-markers-per-request N` | caller marker input-complexity bound | `4` |
-| `--slot-save-path DIR` | enable `POST /slots/{id}` save/restore/erase with files in `DIR` (created at startup) | disabled |
-| `--auto-save-evicted` | write an evicted session back to its bound slot file; requires `--slot-save-path` | off |
-| `--context-store DIR` | keep retained sessions on disk so a restart or crash does not lose the context cache; see [Context store](#context-store). Replaces `--auto-save-evicted` | off |
+| `--context-store DIR` | keep retained sessions on disk so a restart or crash does not lose the context cache; see [Context store](#context-store). | off |
 | `--context-store-max-gib N` | bound the store; the least recently used sessions are removed beyond it. Requires `--context-store` | half the volume's free space |
 | `--context-store-ttl-hours N` | remove sessions unused this long; `0` keeps them until space is needed | `168` |
 | `--context-store-idle-seconds N` | write a session unused this long, and changed since it was last written, in the background; `0` writes only on eviction and shutdown | `30` |
 | `--context-store-restore-seconds N` | time budget for restoring sessions at start-up | `120` |
 | `--context-store-flush-seconds N` | time budget for writing sessions that are not yet stored at shutdown | `60` |
+| `--context-store-s3-endpoint URL`, `--context-store-s3-bucket NAME` | keep a copy of the store in an S3-compatible bucket (both required together; credentials from `NINFER_S3_ACCESS_KEY_ID` / `NINFER_S3_SECRET_ACCESS_KEY` or the `AWS_` equivalents); see [Keeping a copy in a bucket](#keeping-a-copy-in-a-bucket). Requires `--context-store` | off |
+| `--context-store-s3-prefix P`, `--context-store-s3-region R` | key prefix inside the bucket, and the signing region | none, `us-east-1` |
 | `--no-exit-on-engine-failure` | stay alive (answering 503) when the engine latches unavailable, instead of logging FATAL and exiting with status 3 after 5 s | exit |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
