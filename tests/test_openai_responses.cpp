@@ -804,10 +804,28 @@ int test_namespace_tools() {
     Json nested_custom                 = body;
     nested_custom["tool_choice"]       = "auto";
     nested_custom["tools"][0]["tools"] = Json::array({Json{{"type", "custom"}, {"name", "raw"}}});
-    failures += check(api_code([&] {
-                          (void)parse_openai_responses_create_request(nested_custom, limits());
-                      }) == "tool_type_not_supported",
-                      "namespace custom tools remain explicitly unsupported");
+    const OpenAIResponsesCreateRequest nested =
+        parse_openai_responses_create_request(nested_custom, limits());
+    failures += check(nested.tool_identities.at("mcp__clock__raw").custom &&
+                          nested.tool_identities.at("mcp__clock__raw").wire_namespace ==
+                              "mcp__clock" &&
+                          nested.tools[0].at("tools")[0].at("type") == "custom" &&
+                          nested.prompt.generation.tools[0].strict &&
+                          nested.prompt.generation.tools[0].description == "Clock service",
+                      "a namespace custom tool is a strict custom Engine identity in its namespace");
+    GenerationOutcome nested_outcome;
+    nested_outcome.finish_reason = ninfer::FinishReason::StopToken;
+    nested_outcome.tool_calls.push_back(
+        ninfer::GeneratedToolCall{.name = "mcp__clock__raw", .arguments_json = R"({"input":"x"})"});
+    const Json nested_item =
+        make_openai_response_object("resp_nested_custom", 1, nested, {}, nested_outcome)
+            .body.at("output")
+            .at(0);
+    failures += check(nested_item.at("type") == "custom_tool_call" &&
+                          nested_item.at("name") == "raw" &&
+                          nested_item.at("namespace") == "mcp__clock" &&
+                          nested_item.at("input") == "x",
+                      "a namespaced custom call restores its wire identity");
 
     // Hosted tools are dropped rather than rejected on this endpoint too.
     Json hosted           = body;
@@ -839,6 +857,309 @@ int test_namespace_tools() {
                           (void)parse_openai_responses_create_request(oversized, limits());
                       }) == "invalid_tool_name",
                       "flattened identities must fit the Engine tool-name contract");
+    return failures;
+}
+
+// Codex's free-form tools (ported from Infernix c040d2b9, with strict lowering). A custom tool
+// reaches the Engine as a strict function whose only, required parameter is the raw string
+// `input` (its grammar described, not enforced); a call returns as a custom_tool_call carrying that
+// text exactly, in the aggregate response and in SSE; custom_tool_call / custom_tool_call_output
+// history replays as the same Engine call and result.
+int test_custom_tools() {
+    const std::string grammar =
+        "start: begin_patch hunk+ end_patch\nbegin_patch: \"*** Begin Patch\" LF";
+    const Json apply_patch = {
+        {"type", "custom"},
+        {"name", "apply_patch"},
+        {"description", "Edit files with a patch."},
+        {"format", Json{{"type", "grammar"}, {"syntax", "lark"}, {"definition", grammar}}}};
+    const Json body = {
+        {"model", "m"},
+        {"input", "fix the bug"},
+        {"tools", Json::array({apply_patch, Json{{"type", "function"}, {"name", "shell"}}})},
+        {"tool_choice", Json{{"type", "custom"}, {"name", "apply_patch"}}}};
+    const OpenAIResponsesCreateRequest request =
+        parse_openai_responses_create_request(body, limits());
+
+    int failures       = 0;
+    const auto& tool   = request.prompt.generation.tools.at(0);
+    const Json schema  = Json::parse(tool.input_schema_json);
+    const Json expected = {
+        {"type", "object"},
+        {"properties",
+         Json{{"input",
+               Json{{"type", "string"},
+                    {"description",
+                     "The tool's complete free-form input, passed to it exactly as written (not "
+                     "JSON). It must match this lark grammar:\n" +
+                         grammar}}}}},
+        {"required", Json::array({"input"})},
+        {"additionalProperties", false}};
+    failures += check(tool.name == "apply_patch" && tool.description == "Edit files with a patch." &&
+                          tool.strict && schema == expected &&
+                          request.tool_identities.at("apply_patch").custom &&
+                          !request.tool_identities.at("shell").custom &&
+                          !request.prompt.generation.tools.at(1).strict,
+                      "a custom tool is a strict function with one required string input");
+    OpenAIResponsesCreateRequest automatic = request;
+    automatic.prompt.generation.tool_choice = ToolChoice{};
+    automatic.prompt.generation.tool_choice.constraints = ninfer::ToolConstraintMode::Automatic;
+    const ninfer::PromptInput rendered =
+        to_prompt_input(request.prompt.generation, ResolvedPromptSemantics{}, {});
+    const Json rendered_tool = Json::parse(rendered.options.tool_jsons.at(0));
+    failures += check(automatic.prompt.generation.constrains_tools() &&
+                          rendered_tool.at("type") == "function" &&
+                          rendered_tool.at("function").at("strict") == true &&
+                          rendered_tool.at("function").at("parameters") == expected,
+                      "custom tools render as strict functions and stay constrained under auto");
+    failures += check(request.tools[0] == Json{{"type", "custom"},
+                                               {"name", "apply_patch"},
+                                               {"format", apply_patch.at("format")},
+                                               {"description", "Edit files with a patch."}} &&
+                          request.prompt.generation.tool_choice.mode == ToolChoiceMode::Required &&
+                          request.prompt.generation.tool_choice.allowed_names ==
+                              std::vector<std::string>{"apply_patch"},
+                      "the custom tool echoes as declared and a named custom tool_choice forces it");
+
+    // A Codex-style patch: leading spaces, blank lines and the *** markers survive unchanged.
+    const std::string patch = "*** Begin Patch\n*** Update File: a.py\n@@ def f():\n"
+                              "-    x = \"1\"\n+    x = \"2\"\n \n+\n     return x\n*** End Patch";
+    GenerationOutcome outcome;
+    outcome.finish_reason = ninfer::FinishReason::StopToken;
+    outcome.tool_calls.push_back(ninfer::GeneratedToolCall{
+        .name = "apply_patch", .arguments_json = Json{{"input", patch}}.dump()});
+    outcome.tool_calls.push_back(
+        ninfer::GeneratedToolCall{.name = "shell", .arguments_json = R"({"cmd":"ls"})"});
+    const BuiltOpenAIResponse built =
+        make_openai_response_object("resp_custom", 1, request, {}, outcome);
+    const Json& custom_item = built.body.at("output").at(0);
+    failures += check(
+        custom_item.at("type") == "custom_tool_call" && custom_item.at("name") == "apply_patch" &&
+            custom_item.at("input") == patch && custom_item.at("status") == "completed" &&
+            !custom_item.contains("arguments") && !custom_item.contains("namespace") &&
+            custom_item.at("id").get<std::string>().starts_with("ctc_") &&
+            custom_item.at("call_id").get<std::string>().starts_with("call_") &&
+            built.body.at("output").at(1).at("type") == "function_call" &&
+            built.body.at("output").at(1).at("arguments") == R"({"cmd":"ls"})" &&
+            built.output_history[0].tool_calls[0].arguments_json == Json{{"input", patch}}.dump(),
+        "a custom call returns its raw input; stored history keeps the Engine call");
+
+    OpenAIResponsesCreateRequest stream_request = request;
+    stream_request.stream                       = true;
+    OpenAIResponsesEventStream stream("resp_custom_stream", 1, stream_request, {});
+    (void)stream.start();
+    std::string delta;
+    std::string item_id;
+    std::vector<std::string> custom_events;
+    bool saw_added = false, saw_input_done = false, saw_item_done = false;
+    bool saw_function_event = false, ids_agree = true;
+    const OpenAIResponsesStreamFinish streamed = stream.finish(outcome);
+    for (const std::string& wire : streamed.events_before_terminal) {
+        const Json event       = parse_event(wire);
+        const std::string type = event.at("type").get<std::string>();
+        const bool custom_item_event =
+            event.contains("item") && event.at("item").at("type") == "custom_tool_call";
+        if (type.starts_with("response.custom_tool_call_input") || custom_item_event) {
+            custom_events.push_back(type);
+        }
+        if (type == "response.output_item.added" && custom_item_event) {
+            item_id   = event.at("item").at("id").get<std::string>();
+            saw_added = event.at("item").at("input") == "" &&
+                        event.at("item").at("status") == "in_progress" &&
+                        event.at("item").at("name") == "apply_patch";
+        } else if (type == "response.custom_tool_call_input.delta") {
+            delta += event.at("delta").get<std::string>();
+            ids_agree = ids_agree && event.at("item_id") == item_id && event.at("output_index") == 0;
+        } else if (type == "response.custom_tool_call_input.done") {
+            saw_input_done = event.at("input") == patch;
+            ids_agree      = ids_agree && event.at("item_id") == item_id;
+        } else if (type == "response.output_item.done" && custom_item_event) {
+            saw_item_done = event.at("item").at("input") == patch &&
+                            event.at("item").at("status") == "completed";
+            ids_agree     = ids_agree && event.at("item").at("id") == item_id;
+        } else if (type == "response.function_call_arguments.done") {
+            saw_function_event = event.at("name") == "shell";
+        }
+    }
+    const Json terminal = streamed.response.body.at("output").at(0);
+    failures += check(
+        saw_added && delta == patch && saw_input_done && saw_item_done && saw_function_event &&
+            ids_agree && terminal.at("id") == item_id && terminal.at("input") == patch &&
+            custom_events == std::vector<std::string>{"response.output_item.added",
+                                                      "response.custom_tool_call_input.delta",
+                                                      "response.custom_tool_call_input.done",
+                                                      "response.output_item.done"},
+        "SSE streams a custom call's input through the custom_tool_call_input events");
+
+    const Json history = {
+        {"model", "m"},
+        {"tools", Json::array({apply_patch})},
+        {"input",
+         Json::array({Json{{"type", "message"}, {"role", "user"}, {"content", "fix the bug"}},
+                      Json{{"type", "custom_tool_call"},
+                           {"call_id", "call_patch"},
+                           {"name", "apply_patch"},
+                           {"input", patch}},
+                      Json{{"type", "custom_tool_call_output"},
+                           {"call_id", "call_patch"},
+                           {"name", "apply_patch"},
+                           {"output", "Done!"}}})}};
+    const OpenAIResponsesCreateRequest replay =
+        parse_openai_responses_create_request(history, limits());
+    OpenAIResponsesStore store(8, 1ULL << 20);
+    const OpenAIResponsesResolvedPrompt resolved =
+        resolve_openai_responses_prompt(replay.prompt, store, "resp_custom_replay", true);
+    failures += check(resolved.generation.messages[1].tool_calls[0].name == "apply_patch" &&
+                          resolved.generation.messages[1].tool_calls[0].arguments_json ==
+                              Json{{"input", patch}}.dump() &&
+                          resolved.generation.messages[2].tool_call_id == "call_patch" &&
+                          resolved.generation.messages[2].tool_result_name == "apply_patch" &&
+                          replay.prompt.input_items[1].at("type") == "custom_tool_call" &&
+                          replay.prompt.input_items[1].at("input") == patch &&
+                          replay.prompt.input_items[1].at("id").get<std::string>().starts_with(
+                              "ctc_") &&
+                          replay.prompt.input_items[2].at("type") == "custom_tool_call_output" &&
+                          replay.prompt.input_items[2].at("id").get<std::string>().starts_with(
+                              "ctco_"),
+                      "custom call history replays as the Engine call and its result");
+
+    // previous_response_id: the stored Engine call accepts a custom_tool_call_output.
+    StoredOpenAIResponse parent;
+    parent.id          = "resp_custom_parent";
+    parent.session_key = "custom-session";
+    parent.response    = built.body;
+    parent.context     = append_openai_response_context(
+        {}, {text_turn(ninfer::ChatRole::User, "fix the bug"), built.output_history[0]});
+    store.put(std::move(parent));
+    const std::string call_id = custom_item.at("call_id").get<std::string>();
+    const OpenAIResponsesCreateRequest child = parse_openai_responses_create_request(
+        Json{{"model", "m"},
+             {"previous_response_id", "resp_custom_parent"},
+             {"tools", Json::array({apply_patch})},
+             {"input", Json::array({Json{{"type", "custom_tool_call_output"},
+                                         {"call_id", call_id},
+                                         {"output", "Done!"}},
+                                    Json{{"type", "function_call_output"},
+                                         {"call_id", built.body.at("output")
+                                                         .at(1)
+                                                         .at("call_id")
+                                                         .get<std::string>()},
+                                         {"output", "a.py"}}})}},
+        limits());
+    const OpenAIResponsesResolvedPrompt child_resolved =
+        resolve_openai_responses_prompt(child.prompt, store, "resp_custom_child", true);
+    failures += check(child_resolved.generation.messages.size() == 4 &&
+                          child_resolved.generation.messages[1].tool_calls[0].arguments_json ==
+                              Json{{"input", patch}}.dump() &&
+                          child_resolved.generation.messages[2].tool_call_id == call_id,
+                      "custom_tool_call_output continues a stored custom call");
+
+    // The wire kind of a result must match its call even when the result omits `name`.
+    const auto kind_mismatch = [&](const Json& input) {
+        return api_code([&] {
+            const OpenAIResponsesCreateRequest request = parse_openai_responses_create_request(
+                Json{{"model", "m"},
+                     {"previous_response_id", "resp_custom_parent"},
+                     {"tools", Json::array({apply_patch})},
+                     {"input", input}},
+                limits());
+            (void)resolve_openai_responses_prompt(request.prompt, store, "resp_kind_mismatch",
+                                                  true);
+        });
+    };
+    failures += check(
+        kind_mismatch(Json::array({Json{{"type", "function_call_output"},
+                                        {"call_id", call_id},
+                                        {"output", "Done!"}}})) == "invalid_tool_history",
+        "a function_call_output cannot answer a stored custom call");
+
+    Json allowed           = body;
+    allowed["tool_choice"] = Json{
+        {"type", "allowed_tools"},
+        {"mode", "auto"},
+        {"tools", Json::array({Json{{"type", "custom"}, {"name", "apply_patch"}}})}};
+    failures += check(parse_openai_responses_create_request(allowed, limits())
+                              .prompt.generation.tool_choice.allowed_names ==
+                          std::vector<std::string>{"apply_patch"},
+                      "allowed_tools accepts custom entries");
+
+    const auto code = [](const Json& value) {
+        return api_code([&] { (void)parse_openai_responses_create_request(value, limits()); });
+    };
+    Json clash = body;
+    clash["tools"].push_back(Json{{"type", "function"}, {"name", "apply_patch"}});
+    failures += check(code(clash) == "duplicate_tool_name",
+                      "a custom and a function tool cannot share a name");
+    Json as_function           = body;
+    as_function["tool_choice"] = Json{{"type", "function"}, {"name", "apply_patch"}};
+    failures += check(code(as_function) == "invalid_tool_choice",
+                      "a custom tool cannot be chosen as a function");
+    Json history_as_function = history;
+    history_as_function["input"][1] = Json{{"type", "function_call"},
+                                           {"call_id", "call_patch"},
+                                           {"name", "apply_patch"},
+                                           {"arguments", "{}"}};
+    history_as_function["input"][2]["type"] = "function_call_output";
+    failures += check(code(history_as_function) == "duplicate_tool_name",
+                      "a custom tool's history cannot be replayed as a function call");
+
+    const auto rejected = [&](const std::function<void(Json&)>& edit, const std::string& expect,
+                              const std::string& message) {
+        Json value = body;
+        edit(value);
+        const ApiError error =
+            api_error([&] { (void)parse_openai_responses_create_request(value, limits()); });
+        return check(error.status == 400 && (expect.empty() || error.code == expect), message);
+    };
+    failures += rejected([](Json& v) { v["tools"][0]["format"]["syntax"] = "ebnf"; }, "",
+                         "an unknown grammar syntax is rejected");
+    failures += rejected([](Json& v) { v["tools"][0]["format"].erase("definition"); }, "",
+                         "a grammar without a definition is rejected");
+    failures += rejected([](Json& v) { v["tools"][0]["format"] = Json{{"type", "json"}}; }, "",
+                         "an unknown format type is rejected");
+    failures += rejected([](Json& v) { v["tools"][0]["defer_loading"] = true; },
+                         "deferred_tools_not_supported", "deferred custom tools are rejected");
+    failures += rejected(
+        [](Json& v) { v["tools"][0]["allowed_callers"] = Json::array({"programmatic"}); },
+        "tool_caller_not_supported", "custom tools must permit direct invocation");
+    failures += rejected([](Json& v) { v["tools"][0]["parameters"] = Json::object(); },
+                         "parameter_not_supported", "custom tools take no parameters schema");
+    const auto history_rejected = [&](const std::function<void(Json&)>& edit,
+                                      const std::string& expect, const std::string& message) {
+        Json value = history;
+        edit(value);
+        return check(code(value) == expect, message);
+    };
+    failures += history_rejected([](Json& v) { v["input"][1]["status"] = "in_progress"; },
+                                 "partial_tool_call_not_supported",
+                                 "partial custom_tool_call Items are rejected");
+    failures += history_rejected([](Json& v) { v["input"][2]["status"] = "incomplete"; },
+                                 "partial_tool_result_not_supported",
+                                 "partial custom_tool_call_output Items are rejected");
+    failures += history_rejected(
+        [](Json& v) { v["input"][1]["caller"] = Json{{"type", "direct"}}; },
+        "tool_relationship_not_supported", "custom_tool_call.caller is rejected");
+    failures += check(api_error([&] {
+                          Json value              = history;
+                          value["input"][1]["input"] = Json{{"a", 1}};
+                          (void)parse_openai_responses_create_request(value, limits());
+                      }).param == "input",
+                      "custom_tool_call input must be a string");
+
+    // Strict lowering guarantees one string `input`; any other shape is an internal fault, never
+    // a JSON text forwarded as the tool's input.
+    for (const char* arguments : {R"({})", R"({"input":"x","extra":"y"})", R"({"input":1})"}) {
+        GenerationOutcome malformed;
+        malformed.finish_reason = ninfer::FinishReason::StopToken;
+        malformed.tool_calls.push_back(
+            ninfer::GeneratedToolCall{.name = "apply_patch", .arguments_json = arguments});
+        bool threw = false;
+        try {
+            (void)make_openai_response_object("resp_malformed", 1, request, {}, malformed);
+        } catch (const std::logic_error&) { threw = true; }
+        failures += check(threw, std::string("malformed custom arguments are a hard error: ") +
+                                     arguments);
+    }
     return failures;
 }
 
@@ -1380,6 +1701,7 @@ int main() {
     failures += test_assistant_item_boundaries_and_errors();
     failures += test_tools_and_effective_subset();
     failures += test_namespace_tools();
+    failures += test_custom_tools();
     failures += test_explicit_rejections();
     failures += test_previous_response_call_graph();
     failures += test_prompt_cache_key_retention();

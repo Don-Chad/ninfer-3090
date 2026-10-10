@@ -99,6 +99,14 @@ std::vector<ChatTurn> normalize_call_graph(std::vector<ChatTurn> turns) {
                 invalid_tool_history("function_call_output identity does not match call_id '" +
                                      result.tool_call_id + "'");
             }
+            if (result.tool_result_custom && *result.tool_result_custom != call.custom) {
+                invalid_tool_history(std::string("function_call_output call_id '") +
+                                     result.tool_call_id + "' answers a " +
+                                     (call.custom ? "custom_tool_call" : "function_call") +
+                                     " with a " +
+                                     (*result.tool_result_custom ? "custom_tool_call_output"
+                                                                 : "function_call_output"));
+            }
             if (results[position->second]) {
                 invalid_tool_history("duplicate function_call_output for call_id '" +
                                      result.tool_call_id + "'");

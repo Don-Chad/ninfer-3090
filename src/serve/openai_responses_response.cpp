@@ -50,6 +50,46 @@ void add_wire_function_identity(Json& object, const OpenAIResponsesCreateRequest
     if (position->second.wire_namespace) { object["namespace"] = *position->second.wire_namespace; }
 }
 
+bool is_custom_tool(const OpenAIResponsesCreateRequest& request, std::string_view engine_name) {
+    const auto position = request.tool_identities.find(std::string(engine_name));
+    return position != request.tool_identities.end() && position->second.custom;
+}
+
+// A custom tool's free-form input from its Engine-side call. Custom tools are lowered as strict
+// functions whose only, required parameter is the raw string `input`, so the constrained decoder
+// cannot produce any other argument shape; anything else is an internal contract violation, not
+// model output to pass through.
+std::string custom_tool_input(const ninfer::GeneratedToolCall& call) {
+    const Json arguments = Json::parse(call.arguments_json, nullptr, false);
+    if (arguments.is_object() && arguments.size() == 1) {
+        if (const auto input = arguments.find(kCustomToolInputParameter);
+            input != arguments.end() && input->is_string()) {
+            return input->get<std::string>();
+        }
+    }
+    throw std::logic_error("custom tool '" + call.name +
+                           "' call does not carry exactly one string input argument");
+}
+
+// The output Item of one generated call: a function_call, or a custom_tool_call with its raw input.
+Json tool_call_item(const OpenAIResponsesCreateRequest& request,
+                    const ninfer::GeneratedToolCall& call, const std::string& id,
+                    const std::string& call_id, const char* status, bool empty) {
+    Json item = is_custom_tool(request, call.name)
+                    ? Json{{"id", id},
+                           {"type", "custom_tool_call"},
+                           {"status", status},
+                           {"call_id", call_id},
+                           {"input", empty ? std::string() : custom_tool_input(call)}}
+                    : Json{{"id", id},
+                           {"type", "function_call"},
+                           {"status", status},
+                           {"call_id", call_id},
+                           {"arguments", empty ? std::string() : call.arguments_json}};
+    add_wire_function_identity(item, request, call.name);
+    return item;
+}
+
 Json response_common(const std::string& id, std::int64_t created_at,
                      const OpenAIResponsesCreateRequest& request,
                      const OpenAIResponsesRuntimeValues& runtime) {
@@ -130,20 +170,16 @@ BuiltOpenAIResponse build_response(const std::string& id, std::int64_t created_a
     ids.function_calls.resize(outcome.tool_calls.size());
     ids.call_ids.resize(outcome.tool_calls.size());
     for (std::size_t index = 0; index < outcome.tool_calls.size(); ++index) {
+        const ninfer::GeneratedToolCall& call = outcome.tool_calls[index];
         if (ids.function_calls[index].empty()) {
-            ids.function_calls[index] = new_openai_response_item_id("fc");
+            ids.function_calls[index] =
+                new_openai_response_item_id(is_custom_tool(request, call.name) ? "ctc" : "fc");
         }
         if (ids.call_ids[index].empty()) {
             ids.call_ids[index] = new_openai_response_item_id("call");
         }
-        const ninfer::GeneratedToolCall& call = outcome.tool_calls[index];
-        Json item                             = {{"id", ids.function_calls[index]},
-                                                 {"type", "function_call"},
-                                                 {"status", "completed"},
-                                                 {"call_id", ids.call_ids[index]},
-                                                 {"arguments", call.arguments_json}};
-        add_wire_function_identity(item, request, call.name);
-        built.output_items.push_back(std::move(item));
+        built.output_items.push_back(tool_call_item(request, call, ids.function_calls[index],
+                                                    ids.call_ids[index], "completed", false));
     }
 
     if (!outcome.reasoning.empty() || !outcome.text.empty() || !outcome.tool_calls.empty() ||
@@ -154,9 +190,11 @@ BuiltOpenAIResponse build_response(const std::string& id, std::int64_t created_a
         history.tool_calls.reserve(outcome.tool_calls.size());
         for (std::size_t index = 0; index < outcome.tool_calls.size(); ++index) {
             const ninfer::GeneratedToolCall& call = outcome.tool_calls[index];
-            history.tool_calls.push_back(ToolCall{.id             = ids.call_ids[index],
-                                                  .name           = call.name,
-                                                  .arguments_json = call.arguments_json});
+            history.tool_calls.push_back(
+                ToolCall{.id             = ids.call_ids[index],
+                         .name           = call.name,
+                         .arguments_json = call.arguments_json,
+                         .custom         = is_custom_tool(request, call.name)});
         }
         if (!outcome.text.empty()) {
             ContentPart part;
@@ -446,20 +484,36 @@ OpenAIResponsesStreamFinish OpenAIResponsesEventStream::finish(const GenerationO
     impl_->ids.function_calls.reserve(outcome.tool_calls.size());
     impl_->ids.call_ids.reserve(outcome.tool_calls.size());
     for (const ninfer::GeneratedToolCall& call : outcome.tool_calls) {
-        const std::string item_id = new_openai_response_item_id("fc");
+        const bool custom         = is_custom_tool(impl_->request, call.name);
+        const std::string item_id = new_openai_response_item_id(custom ? "ctc" : "fc");
         const std::string call_id = new_openai_response_item_id("call");
         impl_->ids.function_calls.push_back(item_id);
         impl_->ids.call_ids.push_back(call_id);
         const int output_index = impl_->next_output_index++;
-        Json added_item        = {{"id", item_id},
-                                  {"type", "function_call"},
-                                  {"status", "in_progress"},
-                                  {"call_id", call_id},
-                                  {"arguments", ""}};
-        add_wire_function_identity(added_item, impl_->request, call.name);
-        finished.events_before_terminal.push_back(
-            sse(impl_->event("response.output_item.added",
-                             Json{{"output_index", output_index}, {"item", added_item}})));
+        finished.events_before_terminal.push_back(sse(impl_->event(
+            "response.output_item.added",
+            Json{{"output_index", output_index},
+                 {"item",
+                  tool_call_item(impl_->request, call, item_id, call_id, "in_progress", true)}})));
+        if (custom) {
+            // A custom tool's input streams through the custom_tool_call_input events, which
+            // carry the raw text rather than JSON arguments.
+            const std::string input = custom_tool_input(call);
+            if (!input.empty()) {
+                finished.events_before_terminal.push_back(sse(impl_->event(
+                    "response.custom_tool_call_input.delta",
+                    Json{{"item_id", item_id}, {"output_index", output_index}, {"delta", input}})));
+            }
+            finished.events_before_terminal.push_back(sse(impl_->event(
+                "response.custom_tool_call_input.done",
+                Json{{"item_id", item_id}, {"output_index", output_index}, {"input", input}})));
+            finished.events_before_terminal.push_back(sse(impl_->event(
+                "response.output_item.done",
+                Json{{"output_index", output_index},
+                     {"item",
+                      tool_call_item(impl_->request, call, item_id, call_id, "completed", false)}})));
+            continue;
+        }
         if (!call.arguments_json.empty()) {
             finished.events_before_terminal.push_back(sse(impl_->event(
                 "response.function_call_arguments.delta", Json{{"item_id", item_id},

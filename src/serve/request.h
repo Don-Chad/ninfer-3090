@@ -94,6 +94,10 @@ struct ToolCall {
     std::string id;
     std::string name;
     std::string arguments_json;
+    // Serve-only wire kind (Responses `custom_tool_call` vs `function_call`); the Engine ignores it.
+    // Kept so call-graph validation can reject a result of the other kind, including across
+    // previous_response_id replay.
+    bool custom = false;
 };
 
 using ToolChoiceMode = ninfer::ToolChoiceMode;
@@ -107,6 +111,10 @@ struct ChatTurn {
     // Optional protocol assertion for a tool result. Call-graph normalization verifies it against
     // the function identified by tool_call_id before the Engine sees the history.
     std::optional<std::string> tool_result_name;
+    // Optional wire-kind assertion (true: custom_tool_call_output, false: function_call_output),
+    // verified against ToolCall::custom of the call identified by tool_call_id. Unset when the
+    // protocol has no such distinction.
+    std::optional<bool> tool_result_custom;
     bool tool_result_is_error = false;
     std::string reasoning_content; // assistant thinking carried across turns (round-tripped to the
                                    // template)
