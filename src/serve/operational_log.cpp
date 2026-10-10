@@ -294,6 +294,13 @@ OperationalRecord render_request_done(const RequestLogContext& context,
             out << ", control " << product::format_pretty_count(outcome.thinking.injected_tokens);
         }
     }
+    if (outcome.thinking.loop_detected) {
+        out << " | reasoning loop after "
+            << product::format_pretty_count(outcome.thinking.loop_thinking_tokens)
+            << " thinking tokens ("
+            << static_cast<int>(outcome.thinking.loop_coverage * 100.0F + 0.5F) << "% repeated), "
+            << (outcome.thinking.applied ? "concluded" : "stopped");
+    }
     return {.severity = OperationalSeverity::Info, .message = out.str()};
 }
 

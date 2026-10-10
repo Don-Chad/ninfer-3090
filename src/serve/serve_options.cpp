@@ -1,6 +1,7 @@
 #include "serve/serve_options.h"
 
 #include <algorithm>
+#include "product/reasoning_loop_options.h"
 #include "product/speculative_options.h"
 
 #include <cerrno>
@@ -146,6 +147,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--kv-dtype bf16|int8|fp8|rk8v4|rk4v4|nvfp4|k8v4] "
            "[--spec mtp|dflash|dflash2 --draft-tokens N] "
            "[--default-max-tokens N] [--max-output-tokens N] [--default-thinking-budget N] "
+           "[--reasoning-loop off|stop|conclude] "
            "[--vision] [--vision-residency resident|overlay] [--vision-max-merged N] "
            "[--no-cuda-graph] [--no-prefix-reuse] [--devices N,M,...] [--stage-layers A,B,...] "
            "[--chat-template FILE] "
@@ -226,6 +228,10 @@ std::string serve_usage_text(const char* argv0) {
            "--media-cache-mib and --media-live-mib\n"
            "       --default-thinking-budget caps model-origin thinking for enabled requests; "
            "control tokens count toward the request output limit\n"
+           "       --reasoning-loop off (default), stop or conclude: every 512 thinking tokens, "
+           "check whether 25% of the last 2,000 words repeat 12-word passages seen 3 times; stop "
+           "ends the reply as length, conclude closes the thinking with the early-close guidance "
+           "and lets the model answer\n"
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
            "       --graft NAME=PATH loads a phantom-kv prefill graft (a safetensors container with a "
            ".json sidecar beside it); a request selecting it with \"graft\": \"NAME\" runs as if the "
@@ -464,6 +470,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 throw std::invalid_argument("--default-thinking-budget is out of range");
             }
             options.default_thinking_budget = static_cast<std::uint32_t>(budget);
+        } else if (arg == "--reasoning-loop") {
+            options.reasoning_loop =
+                product::parse_reasoning_loop_action(require_value("--reasoning-loop"));
         } else if (arg == "--vision") {
             options.enable_vision = true;
         } else if (arg == "--vision-residency") {

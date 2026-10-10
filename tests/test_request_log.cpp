@@ -62,6 +62,7 @@ int main() {
     options.allow_prefix_reuse             = true;
     options.preserve_thinking              = true;
     options.default_thinking_budget        = 512;
+    options.reasoning_loop                 = ninfer::ReasoningLoopAction::Conclude;
     options.sampling_overrides.temperature = 0.6F;
     options.startup_argv = {"ninfer-serve", options.artifact_path, "--api-key", "<redacted>"};
 
@@ -180,6 +181,8 @@ int main() {
                       "request log path missing");
     failures += check(server.at("server").at("default_thinking_budget") == 512,
                       "server thinking budget missing");
+    failures += check(server.at("server").at("reasoning_loop") == "conclude",
+                      "server reasoning-loop guard missing");
     failures += check(server.at("engine").at("kv_cache") == "fp8-e4m3-row256", "KV type missing");
     options.kv_cache        = ninfer::KvCacheStorage::Nvfp4Group16;
     engine_options.kv_cache = options.kv_cache;
@@ -501,6 +504,37 @@ int main() {
                           done.at("result").at("thinking_control_tokens") == 19 &&
                           done.at("result").at("thinking_control_applied") == true,
                       "thinking-control result accounting missing");
+    failures += check(done.at("result").at("reasoning_loop_detected") == false &&
+                          done.at("result").at("reasoning_loop_thinking_tokens") == 0 &&
+                          render_request_done(context, outcome).message.find("reasoning loop") ==
+                              std::string::npos,
+                      "an unfired reasoning-loop guard was reported");
+    {
+        // No budget: the guard concluded after 2,048 thinking tokens at 40 % coverage.
+        auto looped     = outcome;
+        looped.thinking = ninfer::ThinkingBudgetStats{.model_thinking_tokens = 2048,
+                                                      .injected_tokens       = 19,
+                                                      .applied               = true,
+                                                      .loop_detected         = true,
+                                                      .loop_thinking_tokens  = 2048,
+                                                      .loop_coverage         = 0.4F};
+        const Json looped_done =
+            Json::parse(format_request_done_json("serve-test", 3001, context, looped));
+        failures += check(looped_done.at("result").at("thinking_budget").is_null() &&
+                              looped_done.at("result").at("model_thinking_tokens") == 2048 &&
+                              looped_done.at("result").at("reasoning_loop_detected") == true &&
+                              looped_done.at("result").at("reasoning_loop_thinking_tokens") ==
+                                  2048 &&
+                              std::abs(looped_done.at("result")
+                                           .at("reasoning_loop_coverage")
+                                           .get<double>() -
+                                       0.4) < 1.0e-6,
+                          "done JSON log did not record the reasoning-loop firing");
+        failures += check(render_request_done(context, looped)
+                                  .message.find("reasoning loop after 2,048 thinking tokens (40% "
+                                                "repeated), concluded") != std::string::npos,
+                          "operational done log did not show the reasoning-loop firing");
+    }
     failures +=
         check(done.at("result").at("tool_call_parse").at("marker_seen") == false &&
                   done.at("result").at("tool_call_parse").at("structured_call_count") == 0 &&

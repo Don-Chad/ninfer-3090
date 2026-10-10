@@ -451,7 +451,7 @@ def first_output_event():
 def test_first_output_partition_preserves_terminal_and_overlapping_work(tmp_path):
     measured = record([output(101_000_000), ProtocolEvent("terminal", "done", 102_000_000)])
     done = first_output_event()
-    done["schema_version"] = 26
+    done["schema_version"] = 27
     done["generation"]["admission"] = {
         "preferred_reused_tokens": 19057, "source_wait_seconds": 0.003,
         "revoked_checkpoints": 1, "fallback_reason": "source_revoked",
@@ -626,10 +626,10 @@ def test_replay_progress_uses_engine_interval_and_subtracts_self(tmp_path, other
     measured = record([output(5_000_000), ProtocolEvent("terminal", "done", 15_000_000)])
     measured["response_id"] = "response-a"
     done = done_event(1, "req_wire", "response-a", preemptions=1, replay=1)
-    done["schema_version"] = 26
+    done["schema_version"] = 27
     def transition(name, at, replayed, decoded):
         return {
-            "artifact_type": "ninfer_serve_request_log", "schema_version": 26,
+            "artifact_type": "ninfer_serve_request_log", "schema_version": 27,
             "event": "request_scheduling", "server_instance_id": "serve-test",
             "request": {"request_id": 1, "http_request_id": "req_wire"},
             "engine_request_id": 11, "preemption_index": 1, "route": "replay",
@@ -673,9 +673,9 @@ def test_replay_evidence_missing_events_cannot_prove_no_other_progress(tmp_path,
     measured = record([output(5_000_000), ProtocolEvent("terminal", "done", 15_000_000)])
     measured["response_id"] = "response-a"
     done = done_event(1, "req_wire", "response-a", preemptions=1, replay=1)
-    done["schema_version"] = 26
+    done["schema_version"] = 27
     event = {
-        "artifact_type": "ninfer_serve_request_log", "schema_version": 26,
+        "artifact_type": "ninfer_serve_request_log", "schema_version": 27,
         "event": "request_scheduling", "server_instance_id": "serve-test",
         "request": {"request_id": 1, "http_request_id": "req_wire"},
         "engine_request_id": 11, "preemption_index": 1, "route": "replay",

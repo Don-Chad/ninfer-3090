@@ -191,6 +191,22 @@ int main() {
     } catch (const std::invalid_argument&) { zero_thinking_budget_rejected = true; }
     failures += check(zero_thinking_budget_rejected, "zero --default-thinking-budget was accepted");
 
+    failures += check(parse({"ninfer-serve", "model.ninfer"}).reasoning_loop ==
+                          ninfer::ReasoningLoopAction::Off,
+                      "the reasoning-loop guard is not off by default");
+    failures += check(parse({"ninfer-serve", "model.ninfer", "--reasoning-loop", "stop"})
+                                  .reasoning_loop == ninfer::ReasoningLoopAction::Stop &&
+                          parse({"ninfer-serve", "model.ninfer", "--reasoning-loop", "conclude"})
+                                  .reasoning_loop == ninfer::ReasoningLoopAction::Conclude &&
+                          parse({"ninfer-serve", "model.ninfer", "--reasoning-loop", "off"})
+                                  .reasoning_loop == ninfer::ReasoningLoopAction::Off,
+                      "--reasoning-loop did not select its action");
+    bool bad_reasoning_loop_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--reasoning-loop", "on"});
+    } catch (const std::invalid_argument&) { bad_reasoning_loop_rejected = true; }
+    failures += check(bad_reasoning_loop_rejected, "--reasoning-loop on was accepted");
+
     bool empty_model_id_rejected = false;
     try {
         (void)parse({"ninfer-serve", "model.ninfer", "--model-id", ""});

@@ -1,6 +1,7 @@
 #include "serve/request_log.h"
 #include "product/constraint_observation.h"
 #include "product/logging/pretty_format.h"
+#include "product/reasoning_loop_options.h"
 #include "product/speculative_options.h"
 #include "product/version/version.h"
 
@@ -649,6 +650,11 @@ std::string format_request_done(const RequestLogContext& context,
             << " control_tokens=" << outcome.thinking.injected_tokens
             << " control=" << (outcome.thinking.applied ? "applied" : "unused");
     }
+    if (outcome.thinking.loop_detected) {
+        out << " reasoning_loop=" << (outcome.thinking.applied ? "concluded" : "stopped")
+            << " loop_thinking=" << outcome.thinking.loop_thinking_tokens
+            << " loop_coverage=" << outcome.thinking.loop_coverage;
+    }
     return out.str();
 }
 
@@ -743,6 +749,7 @@ std::string format_server_start_json(
              {"default_thinking",
               options.enable_thinking ? Json(*options.enable_thinking) : Json(nullptr)},
              {"default_thinking_budget", std::move(default_thinking_budget)},
+             {"reasoning_loop", product::reasoning_loop_name(options.reasoning_loop)},
              {"default_reasoning_effort",
               options.default_reasoning_effort
                   ? Json(requested_reasoning_effort_name(*options.default_reasoning_effort))
@@ -913,6 +920,9 @@ std::string format_request_done_json(const std::string& server_instance_id, std:
              {"model_thinking_tokens", outcome.thinking.model_thinking_tokens},
              {"thinking_control_tokens", outcome.thinking.injected_tokens},
              {"thinking_control_applied", outcome.thinking.applied},
+             {"reasoning_loop_detected", outcome.thinking.loop_detected},
+             {"reasoning_loop_thinking_tokens", outcome.thinking.loop_thinking_tokens},
+             {"reasoning_loop_coverage", outcome.thinking.loop_coverage},
              {"tool_call_count", outcome.tool_calls.size()},
              {"tool_call_parse", tool_call_parse_json(outcome.tool_call_parse)}};
     record["timings_seconds"] = Json{

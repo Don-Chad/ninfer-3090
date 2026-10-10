@@ -1,4 +1,5 @@
 #include "options.h"
+#include "product/reasoning_loop_options.h"
 #include "product/speculative_options.h"
 
 #include <cerrno>
@@ -150,6 +151,7 @@ std::string usage_text(const char* argv0) {
            "       [--grammar-file FILE | --json-object | --json-schema-file FILE |\n"
            "        --regex PATTERN | --choice TEXT ...]\n"
            "       [--raw-output] [--print-token-ids] [--no-thinking] [--thinking-budget N]\n"
+           "       [--reasoning-loop off|stop|conclude]\n"
            "       [--reasoning-effort none|minimal|low|medium|high|xhigh|max] [--vision]\n"
            "       [--vision-residency resident|overlay] [--vision-max-merged N]\n"
            "       [--no-cuda-graph]\n"
@@ -163,6 +165,9 @@ std::string usage_text(const char* argv0) {
            "memory per image; --vision-max-merged bounds one item's merged tokens (default 16384).\n"
            "--thinking-budget caps model-origin thinking tokens; inserted control tokens count "
            "toward --max-new.\n"
+           "--reasoning-loop off (default) | stop | conclude: when the open thinking keeps repeating "
+           "whole passages (checked every 512 thinking tokens), end the reply (stop) or close the "
+           "thinking and let the model answer (conclude).\n"
            "--devices N,M,... splits the model's layers into one pipeline stage per GPU, each owning "
            "its layers' weights, KV cache and state; the first GPU also holds the embedding, head "
            "and round state. --stage-layers A,B,... sets the layers per stage (default: chosen "
@@ -278,6 +283,8 @@ Options parse_options(int argc, char** argv) {
             options.enable_thinking = false;
         } else if (arg == "--thinking-budget") {
             options.thinking_budget = parse_u32(value(arg), "thinking-budget");
+        } else if (arg == "--reasoning-loop") {
+            options.reasoning_loop = ninfer::product::parse_reasoning_loop_action(value(arg));
         } else if (arg == "--reasoning-effort") {
             options.reasoning_effort = parse_reasoning_effort(value(arg));
         } else if (arg == "--vision") {
@@ -380,6 +387,10 @@ Options parse_options(int argc, char** argv) {
     if (options.reasoning_effort == ReasoningEffort::None) options.enable_thinking = false;
     if (options.enable_thinking == false && options.thinking_budget) {
         throw std::invalid_argument("--thinking-budget cannot be combined with --no-thinking");
+    }
+    if (options.enable_thinking == false &&
+        options.reasoning_loop != ninfer::ReasoningLoopAction::Off) {
+        throw std::invalid_argument("--reasoning-loop cannot be combined with --no-thinking");
     }
     if (options.greedy) { options.sampling.temperature = 0.0F; }
     return options;
