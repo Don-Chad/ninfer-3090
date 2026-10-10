@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .methods import cast_direct, fp8_row_maxabs, grouped_absmax, import_encoded
+from .qwen4_exp import encoded_format
 
 Q4 = "q4_g64_fp16"
 Q5 = "q5_g64_fp16"
@@ -207,10 +208,34 @@ def qwen3_8_27b_nvfp4(model, recipe, sources):
         )
 
 
+def qwen4_exp_gguf(model, recipe, sources):
+    """Qwen3.8-Flash-Next from its GGUF, with every tensor stored exactly as in the GGUF.
+
+    Block tensors keep their GGML blocks through ``import_encoded`` (no requantization), the
+    PLE table is paged into 4 KiB pages, and direct tensors keep their words (F16 widens to
+    FP32). GGML-format projections permit A8 activations (ggml's Q8_1 activation path).
+    """
+
+    if model.config.get("model_type") != "qwen4_exp_text":
+        raise ValueError("this official recipe requires the qwen4exp GGUF model")
+    for name, parameter in model.parameters.items():
+        format = encoded_format(parameter)
+        if format is None:
+            continue
+        recipe.assign(
+            name,
+            format=format,
+            layout="ggml_rows_page4k_v1" if name == "text/ple/table" else None,
+            method=import_encoded,
+            activation_policy="AllowA8" if parameter.projection else None,
+        )
+
+
 RECIPES = {
     "qwen3_6_27b": qwen3_6_27b,
     "qwen3_6_27b_nvfp4": qwen3_6_27b_nvfp4,
     "qwen3_8_27b": qwen3_8_27b,
     "qwen3_8_27b_nvfp4": qwen3_8_27b_nvfp4,
     "qwen3_6_35b_a3b": qwen3_6_35b_a3b,
+    "qwen4_exp_gguf": qwen4_exp_gguf,
 }

@@ -15,8 +15,10 @@ from typing import Sequence
 
 
 from .formats import (
+    GGML_BLOCK_FORMATS,
     DirectFormat,
     Fp8RowFormat,
+    GgmlBlockFormat,
     Nvfp4Format,
     NumericFormat,
     QuantFormat,
@@ -25,6 +27,7 @@ from .formats import (
 
 PLANE_ALIGNMENT = 256
 K_ALIGNMENT = 128
+ROW_PAGE_BYTES = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +80,32 @@ class RowScaleGeometry:
     payload_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class GgmlBlocksGeometry:
+    rows: int
+    k: int
+    blocks_per_row: int
+    row_bytes: int
+    payload_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class GgmlRowPageGeometry:
+    rows: int
+    k: int
+    row_bytes: int
+    rows_per_page: int
+    pages: int
+    payload_bytes: int
+
+    def row_offset(self, row: int) -> int:
+        """Payload offset of logical row *row*; no row crosses a page."""
+        if not 0 <= row < self.rows:
+            raise ValueError(f"row {row} is outside [0,{self.rows})")
+        page, slot = divmod(row, self.rows_per_page)
+        return page * ROW_PAGE_BYTES + slot * self.row_bytes
+
+
 CONTIGUOUS_LE_V1 = Layout("contiguous_le_v1", 256, frozenset(("bf16", "fp32", "int32")))
 ROW_SPLIT_K128_V1 = Layout(
     "row_split_k128_v1",
@@ -93,6 +122,10 @@ ROW_SCALE_V1 = Layout(
     256,
     frozenset(("fp8_e4m3fn_row_bf16",)),
 )
+GGML_BLOCKS_V1 = Layout("ggml_blocks_v1", 256, frozenset(GGML_BLOCK_FORMATS))
+GGML_ROWS_PAGE4K_V1 = Layout(
+    "ggml_rows_page4k_v1", ROW_PAGE_BYTES, frozenset(GGML_BLOCK_FORMATS)
+)
 
 LAYOUTS = MappingProxyType(
     {
@@ -102,6 +135,8 @@ LAYOUTS = MappingProxyType(
             ROW_SPLIT_K128_V1,
             BLOCK_SCALE_K16_M128X4_V1,
             ROW_SCALE_V1,
+            GGML_BLOCKS_V1,
+            GGML_ROWS_PAGE4K_V1,
         )
     }
 )
@@ -246,6 +281,51 @@ def row_scale_geometry(
     )
 
 
+def _ggml_rows(
+    format: str | GgmlBlockFormat, shape: Sequence[int], *, rank: int | None = None
+) -> tuple[GgmlBlockFormat, int, int]:
+    spec = _format(format)
+    if not isinstance(spec, GgmlBlockFormat):
+        raise ValueError("GGML block layouts require a GGML block format")
+    dims = _shape(shape, rank=rank)
+    if not dims or len(dims) > 16:
+        raise ValueError("GGML block layouts support rank 1 through 16")
+    k = dims[-1]
+    if k % spec.block_elems:
+        raise ValueError(
+            f"{spec.name} requires K divisible by {spec.block_elems}, got K={k}"
+        )
+    return spec, prod(dims[:-1]), k
+
+
+def ggml_blocks_geometry(
+    format: str | GgmlBlockFormat, shape: Sequence[int]
+) -> GgmlBlocksGeometry:
+    """Rows of K/block_elems consecutive blocks; rows and leading axes are row-major."""
+    spec, rows, k = _ggml_rows(format, shape)
+    blocks_per_row = k // spec.block_elems
+    row_bytes = blocks_per_row * spec.block_bytes
+    return GgmlBlocksGeometry(rows, k, blocks_per_row, row_bytes, rows * row_bytes)
+
+
+def ggml_row_page_geometry(
+    format: str | GgmlBlockFormat, shape: Sequence[int]
+) -> GgmlRowPageGeometry:
+    """Whole rows packed into 4096-byte pages; the unused page tail is zero."""
+    spec, rows, k = _ggml_rows(format, shape, rank=2)
+    row_bytes = k // spec.block_elems * spec.block_bytes
+    if row_bytes > ROW_PAGE_BYTES:
+        raise ValueError(
+            f"ggml_rows_page4k_v1 requires rows of at most {ROW_PAGE_BYTES} bytes, "
+            f"got {row_bytes}"
+        )
+    rows_per_page = ROW_PAGE_BYTES // row_bytes
+    pages = -(-rows // rows_per_page)
+    return GgmlRowPageGeometry(
+        rows, k, row_bytes, rows_per_page, pages, pages * ROW_PAGE_BYTES
+    )
+
+
 def encoded_size(
     layout: str | Layout,
     format: str | NumericFormat,
@@ -276,4 +356,8 @@ def encoded_size(
         if not isinstance(numeric_spec, Fp8RowFormat):
             raise ValueError("row_scale_v1 requires a row-scaled FP8 format")
         return row_scale_geometry(numeric_spec, shape).payload_bytes
+    if layout_spec is GGML_BLOCKS_V1:
+        return ggml_blocks_geometry(numeric_spec, shape).payload_bytes
+    if layout_spec is GGML_ROWS_PAGE4K_V1:
+        return ggml_row_page_geometry(numeric_spec, shape).payload_bytes
     raise ValueError(f"unsupported tensor layout: {layout_spec.name!r}")

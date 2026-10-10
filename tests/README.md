@@ -164,6 +164,18 @@ The Python suites exercise conversion, encoded output and measurement tools with
 The maintained environment uses Python 3.11 with the dependencies for those suites. C++ binding and Engine tests
 cover consumption of their resulting representation.
 
+The GGML block decoders are checked against committed golden fixtures from ggml's reference
+`dequantize_row_*`. Optional environment variables extend the GGML and GGUF checks:
+
+| Variable | Adds |
+|---|---|
+| `NINFER_GGML_BASE_DLL` | the live oracle: ggml-base (`.dll` or `.so`) of llama.cpp b11316 decodes 100,000 random blocks per format, and 1,000 real blocks per format with `NINFER_TEST_GGUF` |
+| `NINFER_TEST_GGUF` | the real Qwen3.8-Flash-Next GGUF (first split file): tensor inventory, whole-model name map, export conventions, and a `--subset dev` conversion compared byte for byte (~2.9 GB in the test's temporary directory) |
+| `NINFER_TEST_QWEN4EXP_SUBSET` | verify that existing `--subset dev` artifact instead of converting one |
+| `NINFER_TEST_QWEN38_ARTIFACT` | a Qwen3.8 `.ninfer` whose tokenizer the GGUF vocabulary must equal |
+
+`python -m tools.artifact.gen_ggml_fixtures --dll PATH` regenerates the fixtures.
+
 The real loading test accepts an explicit artifact path and optional component selection:
 
 ```bash

@@ -43,7 +43,23 @@ class Fp8RowFormat:
     name: str
 
 
-NumericFormat: TypeAlias = DirectFormat | QuantFormat | Nvfp4Format | Fp8RowFormat
+@dataclass(frozen=True, slots=True)
+class GgmlBlockFormat:
+    """One ggml block type stored exactly: ``block_bytes`` per ``block_elems`` consecutive K values.
+
+    The block struct and its reference ``dequantize_row_*`` in ggml define the words and their
+    reconstruction; ``ggml_type`` is the ``enum ggml_type`` value used by GGUF files.
+    """
+
+    name: str
+    ggml_type: int
+    block_elems: int
+    block_bytes: int
+
+
+NumericFormat: TypeAlias = (
+    DirectFormat | QuantFormat | Nvfp4Format | Fp8RowFormat | GgmlBlockFormat
+)
 
 
 BF16 = DirectFormat("bf16", 2)
@@ -57,6 +73,16 @@ Q8_G32_FP16 = QuantFormat("q8_g32_fp16", 8, 32, -127, 127)
 NVFP4 = Nvfp4Format("nvfp4", 16)
 FP8_E4M3FN_ROW_BF16 = Fp8RowFormat("fp8_e4m3fn_row_bf16")
 
+GGML_Q8_0 = GgmlBlockFormat("ggml_q8_0", 8, 32, 34)
+GGML_Q6_K = GgmlBlockFormat("ggml_q6_k", 14, 256, 210)
+GGML_IQ2_XXS = GgmlBlockFormat("ggml_iq2_xxs", 16, 256, 66)
+GGML_IQ4_NL = GgmlBlockFormat("ggml_iq4_nl", 20, 32, 18)
+GGML_IQ3_S = GgmlBlockFormat("ggml_iq3_s", 21, 256, 110)
+GGML_IQ2_S = GgmlBlockFormat("ggml_iq2_s", 22, 256, 82)
+GGML_IQ4_XS = GgmlBlockFormat("ggml_iq4_xs", 23, 256, 136)
+GGML_IQ1_M = GgmlBlockFormat("ggml_iq1_m", 29, 256, 56)
+GGML_Q2_0 = GgmlBlockFormat("ggml_q2_0", 42, 64, 18)
+
 
 DIRECT_FORMATS = MappingProxyType({item.name: item for item in (BF16, FP32, INT32)})
 QUANT_FORMATS = MappingProxyType(
@@ -64,8 +90,30 @@ QUANT_FORMATS = MappingProxyType(
 )
 NVFP4_FORMATS = MappingProxyType({NVFP4.name: NVFP4})
 FP8_ROW_FORMATS = MappingProxyType({FP8_E4M3FN_ROW_BF16.name: FP8_E4M3FN_ROW_BF16})
+GGML_BLOCK_FORMATS = MappingProxyType(
+    {
+        item.name: item
+        for item in (
+            GGML_Q8_0,
+            GGML_Q6_K,
+            GGML_IQ2_XXS,
+            GGML_IQ4_NL,
+            GGML_IQ3_S,
+            GGML_IQ2_S,
+            GGML_IQ4_XS,
+            GGML_IQ1_M,
+            GGML_Q2_0,
+        )
+    }
+)
 NUMERIC_FORMATS = MappingProxyType(
-    {**DIRECT_FORMATS, **QUANT_FORMATS, **NVFP4_FORMATS, **FP8_ROW_FORMATS}
+    {
+        **DIRECT_FORMATS,
+        **QUANT_FORMATS,
+        **NVFP4_FORMATS,
+        **FP8_ROW_FORMATS,
+        **GGML_BLOCK_FORMATS,
+    }
 )
 
 
@@ -147,15 +195,26 @@ __all__ = [
     "Q8_G32_FP16",
     "NVFP4",
     "FP8_E4M3FN_ROW_BF16",
+    "GGML_Q8_0",
+    "GGML_Q6_K",
+    "GGML_IQ2_XXS",
+    "GGML_IQ4_NL",
+    "GGML_IQ3_S",
+    "GGML_IQ2_S",
+    "GGML_IQ4_XS",
+    "GGML_IQ1_M",
+    "GGML_Q2_0",
     "DIRECT_FORMATS",
     "QUANT_FORMATS",
     "NVFP4_FORMATS",
     "FP8_ROW_FORMATS",
+    "GGML_BLOCK_FORMATS",
     "NUMERIC_FORMATS",
     "DirectFormat",
     "QuantFormat",
     "Nvfp4Format",
     "Fp8RowFormat",
+    "GgmlBlockFormat",
     "NumericFormat",
     "get_format",
     "decode_e2m1_word",

@@ -163,6 +163,7 @@ The converter currently writes these formats:
 | `q4_g64_fp16`, `q5_g64_fp16`, `q6_g64_fp16`, `q8_g32_fp16` | `grouped_absmax`, `grouped_search` | Supply a custom method/source if needed |
 | `fp8_e4m3fn_row_bf16` | `fp8_row_maxabs` | `import_encoded` |
 | `nvfp4` | Supply a custom quantizer | `import_encoded` |
+| `ggml_q8_0`, `ggml_q6_k`, `ggml_iq2_xxs`, `ggml_iq4_nl`, `ggml_iq3_s`, `ggml_iq2_s`, `ggml_iq4_xs`, `ggml_iq1_m`, `ggml_q2_0` | None | `import_encoded` from a GGUF (tooling-only until the C++ loader accepts them) |
 
 `grouped_absmax` stores one FP16 scale per group and signed integer codes. `grouped_search` stores
 the same words but chooses each group's scale by minimizing rounding error weighted by an activation
@@ -301,6 +302,34 @@ unfamiliar quantized source, its reader performs the corresponding decoding befo
 values. To preserve existing compatible encoded words, also provide `read_encoded` returning
 `EncodedRows`, and the format's required divisor accessors. Their definitions are in
 [`sources/logical.py`](../tools/convert/sources/logical.py).
+
+## Convert a GGUF
+
+A `--model` path ending in `.gguf` selects the GGUF route. It supports Qwen3.8-Flash-Next
+(GGUF architecture `qwen4exp`) with the `qwen4_exp_gguf` recipe, which stores every tensor exactly
+as the GGUF holds it: block tensors keep their GGML blocks, BF16 and FP32 keep their words, and the
+one F16 tensor widens exactly to FP32. Name the first file of a split GGUF; the reader finds the
+others by their `-0000N-of-0000M` names and checks the split metadata.
+
+```bash
+python -m tools.convert \
+  --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf \
+  --recipe qwen4_exp_gguf --device cpu --out out/qwen4exp.ninfer
+```
+
+The NInfer runtime cannot load the result yet: the C++ side does not accept the GGML block formats
+or the `qwen4exp` architecture. `--subset dev` writes a 2.9 GB development subset instead: one real
+tensor of each GGML type, the direct tensors of layers 0, 1 and 3, three expert banks and the first
+4,500 n-gram embedding rows. The reader ([`sources/gguf.py`](../tools/convert/sources/gguf.py))
+admits only F32, F16, BF16 and the registered GGML block types, and reads with bounded positional
+reads; the measured peak working set stayed under 0.7 GiB for the subset and for a full pass over
+the 28.8 GB n-gram table.
+
+The tokenizer resources are synthesized from the GGUF vocabulary and merges. A GGUF cannot record
+that a `<|...|>` added token is not special (llama.cpp's converter marks those as control tokens), so
+the synthesized `tokenizer.json` marks the FIM and repository tokens special. To keep the
+Hugging Face flags, pass the original file with `--resource tokenizer.json=PATH`; the converter
+accepts it only if its vocabulary, merges and added tokens equal the GGUF's.
 
 ## Write a conversion method
 
