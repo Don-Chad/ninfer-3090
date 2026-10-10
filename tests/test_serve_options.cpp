@@ -139,23 +139,28 @@ int main() {
     // Every one of these parses without error whether or not the service carries it to the Engine,
     // so the mapping from parsed options to Engine options is what has to be checked.
     const ninfer::EngineOptions default_engine = make_engine_options(defaults);
-    failures += check(!default_engine.prefill_cublas && default_engine.prefill_cublas_projections &&
-                          default_engine.speculative.lookup_ngram == 0,
-                      "the cuBLAS prefill route or context lookup is on by default in serving");
+    failures += check(!default_engine.prefill_cublas && default_engine.prefill_cublas_projections,
+                      "the cuBLAS prefill route is on by default in serving");
     const ServeOptions route =
         parse({"ninfer-serve", "model.ninfer", "--spec", "mtp", "--draft-tokens", "3",
-               "--lookup-ngram", "5", "--prefill-cublas", "--no-prefill-cublas-projections"});
+               "--prefill-cublas", "--no-prefill-cublas-projections"});
     const ninfer::EngineOptions route_engine = make_engine_options(route);
-    failures += check(route_engine.speculative.lookup_ngram == 5 &&
-                          route_engine.speculative.backend == ninfer::SpeculativeBackend::Mtp &&
+    failures += check(route_engine.speculative.backend == ninfer::SpeculativeBackend::Mtp &&
                           route_engine.speculative.draft_tokens == 3,
-                      "--lookup-ngram did not reach the Engine options next to --spec");
+                      "--spec and --draft-tokens did not reach the Engine options");
     failures += check(route_engine.prefill_cublas && !route_engine.prefill_cublas_projections,
                       "the cuBLAS prefill controls did not reach the Engine options");
-    for (const char* flag : {"--prefill-cublas", "--no-prefill-cublas-projections", "--lookup-ngram"}) {
+    for (const char* flag : {"--prefill-cublas", "--no-prefill-cublas-projections"}) {
         failures += check(kv_help.find(flag) != std::string::npos,
-                          "serve help omits an accepted prefill or drafting control");
+                          "serve help omits an accepted prefill control");
     }
+    // The MTP-only context lookup was removed with no alias; n-gram copy drafting replaces it.
+    bool lookup_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--lookup-ngram", "5"});
+    } catch (const std::invalid_argument&) { lookup_rejected = true; }
+    failures += check(lookup_rejected && kv_help.find("--lookup-ngram") == std::string::npos,
+                      "serve still accepts or advertises the removed --lookup-ngram");
 
     // rk8v4 still parses to its storage value; the engine rejects it in
     // target_kv_cache_profile so the failure names the unported feature rather than an

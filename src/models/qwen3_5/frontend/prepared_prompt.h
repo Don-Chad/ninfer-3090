@@ -1,6 +1,7 @@
 #pragma once
 
 #include "models/qwen3_5/frontend/frontend.h"
+#include "models/qwen3_5/program/speculative/ngram_proposer.h"
 
 #include <array>
 #include <cstddef>
@@ -138,7 +139,31 @@ struct PrepareStats {
     std::size_t reused_patch_bytes       = 0;
 };
 
+// The one-shot n-gram copy index of a prepared prompt. Planning moves it out before the prompt is
+// shared or copied, so a copy (staged prefill, replay) carries no index instead of sharing a
+// mutable one.
+struct PreparedNgramIndex {
+    std::unique_ptr<detail::NgramRequestIndex> index;
+
+    PreparedNgramIndex() noexcept                                = default;
+    PreparedNgramIndex(PreparedNgramIndex&&) noexcept            = default;
+    PreparedNgramIndex& operator=(PreparedNgramIndex&&) noexcept = default;
+    PreparedNgramIndex(const PreparedNgramIndex&) noexcept {}
+    PreparedNgramIndex& operator=(const PreparedNgramIndex&) noexcept {
+        index.reset();
+        return *this;
+    }
+    ~PreparedNgramIndex() = default;
+};
+
 struct PreparedPromptData {
+    // Proposal-only n-gram sources: the de-numbered runs of tool-result text. Never part of the
+    // target tokens, positions, prefix identity or context-store identity. Empty unless the
+    // Frontend builds n-gram indexes.
+    std::vector<std::vector<TokenId>> ngram_sources;
+    // The request's n-gram copy index over token_ids and ngram_sources, built on the preparing
+    // thread whenever the Frontend builds n-gram indexes.
+    PreparedNgramIndex ngram_index;
     std::vector<TokenId> token_ids;
     std::vector<std::uint8_t> token_types;
     std::vector<std::int32_t> positions;

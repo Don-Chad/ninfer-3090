@@ -32,6 +32,9 @@ struct FrontendOptions {
     std::uint32_t vision_max_merged_tokens = 16384;
     // Hidden prompt prefixes a request may select through PromptOptions::graft.
     std::vector<PromptGraft> grafts;
+    // Build each prepared prompt's n-gram copy index, sized from max_context, over its tokens and
+    // the de-numbered runs of its tool results, on the preparing thread.
+    bool ngram_index = false;
 };
 
 struct FrontendResources;

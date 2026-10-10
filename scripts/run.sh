@@ -70,7 +70,6 @@
 #     NINFER_HOST_CACHE_RESERVE_MIB     --host-cache-reserve-mib N     RAM to always leave free
 #     NINFER_HOST_CACHE_MAX_MIB         --host-cache-max-mib N         hard cap on pinned RAM
 #   NINFER_MAX_OUTPUT_TOKENS            --max-output-tokens N          cap every request's output budget
-#   NINFER_LOOKUP_NGRAM                 --lookup-ngram N               context-lookup drafting beside --spec
 #   NINFER_MLP_A8_DECODE=on             --mlp-a8-decode                INT8-activation MLP decode
 #   NINFER_CONTEXT_STORE                --context-store DIR            keep the context cache across restarts
 #     NINFER_CONTEXT_STORE_MAX_GIB      --context-store-max-gib N      disk budget for the store
@@ -270,7 +269,6 @@ if [[ "$profile" == 'tuned' ]]; then
   esac
   # Opt-in serving knobs: each is appended only when set, so the defaults above are untouched.
   [[ -z "${NINFER_MAX_OUTPUT_TOKENS:-}" ]] || profile_args+=(--max-output-tokens "$NINFER_MAX_OUTPUT_TOKENS")
-  [[ -z "${NINFER_LOOKUP_NGRAM:-}" ]] || profile_args+=(--lookup-ngram "$NINFER_LOOKUP_NGRAM")
   case "${NINFER_MLP_A8_DECODE:-off}" in
     on) profile_args+=(--mlp-a8-decode) ;;
     off) ;;
