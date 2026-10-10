@@ -1675,6 +1675,13 @@ int test_constrained_decoding() {
     failures += check(combined.constraint && combined.uses_tools() &&
                           combined.tools[0].schema_param == "tools/0/parameters",
                       "Responses JSON/tool composition or diagnostic origin lost");
+    body["tools"] = Json::array({Json{{"type", "web_search"}},
+                                 Json{{"type", "function"}, {"name", "lookup"}}});
+    const auto after_hosted =
+        parse_openai_responses_create_request(body, limits()).prompt.generation;
+    failures += check(after_hosted.tools.size() == 1 &&
+                          after_hosted.tools[0].schema_param == "tools/1/parameters",
+                      "Responses tool schema path ignored a preceding hosted declaration");
     return failures;
 }
 
