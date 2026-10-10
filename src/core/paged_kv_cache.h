@@ -323,6 +323,10 @@ private:
     void release_reservation(std::uint32_t pages) noexcept;
 
     void initialize_host_transfer_plan();
+    // True when `host` is exactly the layout the transfer plan was built from: the plan copies to
+    // its own cached offsets, so a same-geometry layout with different plane offsets must be
+    // refused rather than silently written to the canonical ones.
+    [[nodiscard]] bool host_layout_is_canonical(const HostKVPageLayout& host) const noexcept;
     template <bool ToHost>
     TransferWork copy_host_pages(std::span<const DeviceKVPageHandle> pages,
                                  std::conditional_t<ToHost, std::byte*, const std::byte*> host,
