@@ -111,6 +111,8 @@ std::string tool_choice_name(const ToolChoice& choice) {
         return "auto";
     case ToolChoiceMode::None:
         return "none";
+    case ToolChoiceMode::Required:
+        return "required";
     }
     return "unknown";
 }

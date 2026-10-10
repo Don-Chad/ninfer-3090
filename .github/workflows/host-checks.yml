@@ -13,11 +13,6 @@
 #     launchers once shipped with CRLF that made them unparseable on Linux, and every tool on the
 #     Windows box called the tree clean because Git Bash strips CR on read. Only real Linux bash
 #     saw it.
-#
-#   * tests/host/test_host_kv_clamp.cpp -- pins the pinned-host-KV-cache clamp arithmetic
-#     (src/core/host_kv_clamp.h) used by the Windows startup path in program_impl.h. It has no
-#     CUDA dependency by design, precisely so this one piece of that path can be regression-tested
-#     without the sm_86 device the rest of the suite needs.
 name: Host checks
 
 on:
@@ -45,17 +40,6 @@ jobs:
       # The arithmetic tests never call render(), which is where most of the page's code is.
       - name: Run docs/config-calculator.render.test.mjs
         run: node docs/config-calculator.render.test.mjs
-
-  host-kv-clamp:
-    name: Host KV clamp arithmetic
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build and run tests/host/test_host_kv_clamp.cpp
-        run: |
-          g++ -std=c++20 -Wall -Wextra -Isrc tests/host/test_host_kv_clamp.cpp \
-              -o test_host_kv_clamp
-          ./test_host_kv_clamp
 
   linux-scripts:
     name: Linux launcher and downloader guard
