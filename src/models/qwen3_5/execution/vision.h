@@ -24,6 +24,7 @@ namespace ninfer::models::qwen3_5::execution {
 using detail::VisionWorkspacePlan;
 using detail::VisionPrefillPlan;
 using detail::VisionUseSpan;
+using detail::VisionHandoffState;
 
 struct VisionItemView {
     std::span<const std::uint16_t> patches;
@@ -67,7 +68,8 @@ struct VisionChunk {
     const qwen3_5::VisionItemControl* control = nullptr;
     // Resident residency: the item's device handoff [output_hidden, merged].
     Tensor embeddings;
-    // Overlay residency: the item's pinned BF16 embeddings; prefill stages the columns it uses.
+    // Overlay residency: the item's pinned BF16 embeddings, from which a prefill chunk stages the
+    // columns it uses.
     std::span<const std::byte> host_embeddings;
 };
 
@@ -75,59 +77,74 @@ class VisionPrefillSession {
 public:
     VisionPrefillSession(DeviceContext& device, const execution::Parameters& parameters,
                          DeviceSpan workspace, const VisionWorkspacePlan& workspace_plan,
-                         qwen3_5::PreparedPromptData& prompt, const VisionPrefillPlan& plan,
-                         std::size_t& handoff_peak_bytes);
-    // Overlay residency: items are encoded inside windows brokered by the Program. The bridge
-    // staging holds the one visual column an MTP bridge composes outside a prefill chunk.
+                         const qwen3_5::PreparedPromptData& prompt, const VisionPrefillPlan& plan,
+                         VisionHandoffState& handoff, std::size_t& handoff_peak_bytes);
+    // Overlay residency: items are encoded inside windows brokered by the Program, into this
+    // session's pinned result slot. The bridge staging holds the one visual column an MTP bridge
+    // composes outside a prefill chunk.
     VisionPrefillSession(DeviceContext& device, const execution::Parameters& parameters,
                          const VisionWorkspacePlan& window_plan,
-                         qwen3_5::PreparedPromptData& prompt, const VisionPrefillPlan& plan,
-                         std::size_t& handoff_peak_bytes, VisionResidencyBroker& broker,
-                         PinnedResultPool::Handle result, DeviceSpan bridge_staging);
+                         const qwen3_5::PreparedPromptData& prompt, const VisionPrefillPlan& plan,
+                         VisionResidencyBroker& broker, PinnedResultPool::Handle result,
+                         DeviceSpan bridge_staging);
     ~VisionPrefillSession();
+
+    VisionPrefillSession(const VisionPrefillSession&)            = delete;
+    VisionPrefillSession& operator=(const VisionPrefillSession&) = delete;
 
     [[nodiscard]] VisionChunk prepare_chunk(std::uint32_t begin, std::uint32_t nominal_length);
     // One visual column of an encoded chunk on the device, for an MTP bridge.
     [[nodiscard]] Tensor bridge_column(const VisionChunk& chunk, std::int32_t column);
-    // Overlay residency: starts the encode of the next item ahead of its prefill unit so its window
-    // overlaps other lanes' decode. A no-op when a window is open, the item is already active, free
-    // KV cannot fund the window or the residency is resident; the synchronous path then stands.
-    void submit_next_item();
+
+    // Overlay residency: device bytes the window of the item a chunk of `chunk` tokens starting at
+    // `cursor` consumes, or nothing when that chunk needs no new encode (no item, already encoded
+    // or submitted).
+    [[nodiscard]] std::optional<std::size_t> pending_window_bytes(std::uint32_t cursor,
+                                                                  std::uint32_t chunk) const;
+    // Overlay residency: opens a KV-funded window for that item and starts its encode on the Vision
+    // stream, so it runs beside other lanes' units. False, leaving nothing open, when the window
+    // cannot be funded from free KV now; the prefill unit then encodes synchronously.
+    [[nodiscard]] bool submit_item(std::uint32_t cursor, std::uint32_t chunk);
     // True while a submitted item is still encoding: the lane must not be given a prefill unit.
     [[nodiscard]] bool vision_pending() const;
-    // True from the submit of an item until its window is closed by completion, including the span
-    // where the encode has finished but the item is not yet consumed. Only one window can be open,
-    // so another lane must not start its own encode while this holds.
-    [[nodiscard]] bool overlay_window_open() const;
+    // Closes the window of a submitted item whose encode has finished. Returns whether it did.
+    bool poll();
     [[nodiscard]] VisionOverlayWindowStats overlay_stats() const noexcept;
-    void release_encoded_media_payloads() noexcept;
+
     void retire_handoff() noexcept;
     [[nodiscard]] double elapsed_seconds() const;
 
     [[nodiscard]] std::size_t active_handoff_bytes() const noexcept {
-        return active_handoff_bytes_;
+        return owns_handoff() ? active_handoff_bytes_ : 0;
     }
 
 private:
     void validate_plan() const;
+    [[nodiscard]] const VisionUseSpan* use_at(std::uint32_t cursor) const;
+
+    [[nodiscard]] bool owns_handoff() const noexcept {
+        return handoff_ != nullptr && handoff_->owner_ == this &&
+               handoff_->generation_ == active_generation_;
+    }
 
     DeviceContext& device_;
     const execution::Parameters& parameters_;
     DeviceSpan workspace_;
     const VisionWorkspacePlan& workspace_plan_;
-    qwen3_5::PreparedPromptData& prompt_;
+    const qwen3_5::PreparedPromptData& prompt_;
     const VisionPrefillPlan& plan_;
-    std::size_t& handoff_peak_bytes_;
+    VisionHandoffState* handoff_      = nullptr;
+    std::size_t* handoff_peak_bytes_  = nullptr;
     std::optional<VisionContext> context_;
+    std::optional<std::uint32_t> active_item_;
+    std::uint64_t active_generation_  = 0;
+    std::size_t active_handoff_bytes_ = 0;
+    std::vector<CudaEventTimer> timers_;
+    // Overlay residency.
     std::unique_ptr<VisionOverlaySession> overlay_;
     DeviceSpan bridge_staging_;
     std::span<const std::byte> host_result_;
-    std::size_t next_use_ = 0;
-    std::optional<std::uint32_t> active_item_;
     std::optional<std::uint32_t> submitted_item_;
-    std::size_t active_handoff_bytes_ = 0;
-    std::vector<std::uint32_t> encoded_payloads_pending_release_;
-    std::vector<CudaEventTimer> timers_;
 };
 
 } // namespace ninfer::models::qwen3_5::execution

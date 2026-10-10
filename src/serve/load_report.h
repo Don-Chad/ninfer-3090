@@ -23,8 +23,8 @@ struct LoadCapacity {
     std::uint32_t kv_capacity_tokens   = 0; // Resolved page-aligned Main KV capacity.
     std::uint32_t kv_capacity_pages    = 0; // Main KV page groups backing kv_capacity_tokens.
     std::uint32_t device_state_slots   = 0;
-    std::uint32_t host_state_slots     = 0;
-    std::size_t host_kv_capacity_bytes = 0;
+    // The one shared Host context budget (state images, KV, pause snapshots), as actually pinned.
+    std::size_t host_context_capacity_bytes = 0;
 };
 
 // One poll: ingress occupancy plus the Engine's published runtime snapshot.

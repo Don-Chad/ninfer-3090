@@ -6,7 +6,6 @@
 #include "runtime/contract/sampling.h"
 #include "runtime/contract/request.h"
 #include "runtime/engine/causal_score_core.h"
-#include "runtime/engine/context_store/context_store.h"
 #include "runtime/engine/engine_core.h"
 #include "runtime/engine/model_instance.h"
 
@@ -14,17 +13,17 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <deque>
 #include <filesystem>
-#include <fstream>
-#include <mutex>
-#include <sstream>
-#include <thread>
 #include <limits>
+#include <mutex>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -68,12 +67,74 @@ runtime::ResolvedRequestOptions resolve_request_options(const ModelSamplingDefau
     resolved.execution.thinking                = options.execution.thinking;
     resolved.stop                              = std::move(options.stop);
     resolved.output                            = options.output;
+    resolved.constraint                        = options.constraint;
+    resolved.tool_choice                       = std::move(options.tool_choice);
     return resolved;
 }
 
 std::string context_capacity_error(std::size_t prompt_tokens, std::uint32_t max_context) {
     return "prepared prompt has " + std::to_string(prompt_tokens) +
            " tokens, exceeding Engine max_context " + std::to_string(max_context);
+}
+
+// What a stored checkpoint image binds to: the model, its weight formats and quantization, the
+// artifact file, the KV and speculative settings its layout was built for, and the image format.
+// Images under any other binding are never read, so they age out of the store as misses.
+std::string context_store_binding(const EngineOptions& options, const LoadSummary& load) {
+    std::string binding = load.architecture + '\n' + load.model_name + '\n';
+    for (const std::string& format : load.weight_formats) { binding += format + ','; }
+    binding += '\n' + load.prefill_signature + '\n';
+    binding += std::to_string(static_cast<unsigned>(options.kv_cache)) + ',' +
+               std::to_string(static_cast<unsigned>(options.speculative.backend)) + ',' +
+               std::to_string(options.speculative.draft_tokens) + ',' +
+               std::to_string(static_cast<unsigned>(options.speculative.proposal_head)) + ',' +
+               (options.enable_vision ? "vision" : "text") + '\n';
+    std::error_code size_error;
+    const std::uintmax_t size = std::filesystem::file_size(options.artifact_path, size_error);
+    binding += size_error ? std::string("?") : std::to_string(size);
+    // A re-converted artifact can have the same size; its modification time tells it apart.
+    std::error_code time_error;
+    const auto written = std::filesystem::last_write_time(options.artifact_path, time_error);
+    binding += '\n';
+    binding += time_error ? std::string("?") : std::to_string(written.time_since_epoch().count());
+    // Prompt grafts: a stored session that starts from a graft holds that graft's installed K/V and
+    // state under its placeholder ids, so a changed graft file must not match it. Any change to
+    // the configured grafts makes the store's images misses.
+    for (const GraftSource& graft : options.grafts) {
+        std::error_code graft_size_error;
+        std::error_code graft_time_error;
+        const std::uintmax_t graft_size = std::filesystem::file_size(graft.path, graft_size_error);
+        const auto graft_written = std::filesystem::last_write_time(graft.path, graft_time_error);
+        binding += "\ngraft " + graft.name + ' ' +
+                   (graft_size_error ? std::string("?") : std::to_string(graft_size)) + ' ' +
+                   (graft_time_error ? std::string("?")
+                                     : std::to_string(graft_written.time_since_epoch().count()));
+    }
+    // The checkpoint image format; stores written by an older engine become misses.
+    binding += "\ncheckpoint-image-1";
+    return binding;
+}
+
+// Images queued for the writer thread. Each holds a whole continuation, several GB for a deep one;
+// beyond the bound an idle continuation is simply written later.
+constexpr std::size_t kMaximumPendingStoreWrites = 2;
+
+// The store keeps up to this share of the volume's free space when no limit is configured.
+constexpr std::uint64_t kAutomaticStoreShareDivisor = 2;
+constexpr std::uint64_t kFallbackStoreBytes         = std::uint64_t{64} << 30U;
+
+std::uint64_t directory_bytes(const std::filesystem::path& directory) noexcept {
+    std::uint64_t total = 0;
+    std::error_code error;
+    for (std::filesystem::recursive_directory_iterator it(directory, error), end;
+         !error && it != end; it.increment(error)) {
+        std::error_code size_error;
+        if (it->is_regular_file(size_error)) {
+            const auto size = it->file_size(size_error);
+            if (!size_error) { total += size; }
+        }
+    }
+    return total;
 }
 
 } // namespace
@@ -185,59 +246,6 @@ GenerationResult GenerationHandle::wait(OutputSink* sink, const CancellationView
     return impl->wait(sink, cancellation);
 }
 
-namespace {
-
-// What a session snapshot binds to: the model, its weight formats and quantization, and the
-// artifact size, since the prefill signature describes weight geometry but not weight values.
-std::string slot_model_binding(const EngineOptions& options, const LoadSummary& load) {
-    std::string binding = load.architecture + '\n' + load.model_name + '\n';
-    for (const std::string& format : load.weight_formats) { binding += format + ','; }
-    binding += '\n' + load.prefill_signature + '\n';
-    // What a snapshot's restore checks beyond the artifact: the KV storage and the speculative
-    // configuration its state and KV layout were built for. Part of the binding so an image made
-    // under another setting is filtered out before anything is read or evicted for it.
-    binding += std::to_string(static_cast<unsigned>(options.kv_cache)) + ',' +
-               std::to_string(static_cast<unsigned>(options.speculative.backend)) + ',' +
-               std::to_string(options.speculative.draft_tokens) + ',' +
-               std::to_string(static_cast<unsigned>(options.speculative.proposal_head)) + ',' +
-               (options.enable_vision ? "vision" : "text") + '\n';
-    std::error_code size_error;
-    const std::uintmax_t size = std::filesystem::file_size(options.artifact_path, size_error);
-    binding += size_error ? std::string("?") : std::to_string(size);
-    // A re-converted artifact can have the same size; its modification time tells it apart.
-    std::error_code time_error;
-    const auto written = std::filesystem::last_write_time(options.artifact_path, time_error);
-    binding += '\n';
-    binding += time_error ? std::string("?")
-                          : std::to_string(written.time_since_epoch().count());
-    return binding;
-}
-
-// The writer thread queues at most this many sessions. Each holds a whole session, several GB for a
-// deep one; beyond the bound a write is dropped and counted rather than growing host memory.
-constexpr std::size_t kMaximumPendingStoreWrites = 2;
-constexpr std::chrono::minutes kStoreMaintenanceInterval{10};
-
-// The store keeps up to this share of the volume's free space when no limit is configured.
-constexpr std::uint64_t kAutomaticStoreShareDivisor = 2;
-constexpr std::uint64_t kFallbackStoreBytes         = std::uint64_t{64} << 30U;
-
-std::uint64_t directory_bytes(const std::filesystem::path& directory) noexcept {
-    std::uint64_t total = 0;
-    std::error_code error;
-    for (std::filesystem::recursive_directory_iterator it(directory, error), end;
-         !error && it != end; it.increment(error)) {
-        std::error_code size_error;
-        if (it->is_regular_file(size_error)) {
-            const auto size = it->file_size(size_error);
-            if (!size_error) { total += size; }
-        }
-    }
-    return total;
-}
-
-} // namespace
-
 class Engine::Impl {
 public:
     using GenerationCore = runtime::EngineCore<runtime::ModelInstance>;
@@ -249,11 +257,11 @@ public:
         : options(runtime::normalize_engine_options(std::move(engine_options))),
           device(initialize_device(options)) {
         nvtx::ScopedRange load_range(nvtx::Name::EngineLoad, nvtx::Category::Runtime);
-        auto constructed  = runtime::construct_model(options, device);
-        active            = std::move(constructed.instance);
-        load              = std::move(constructed.load);
-        options.context_cache = std::move(constructed.context_cache);
-        sampling_defaults = active->frontend.sampling_defaults();
+        auto constructed    = runtime::construct_model(options, device);
+        active              = std::move(constructed.instance);
+        load                = std::move(constructed.load);
+        load.cuda_sync_mode = device.sync_mode();
+        sampling_defaults   = active->frontend.sampling_defaults();
         StartupPhaseScope finalize_phase(options.startup_observer, StartupPhase::EngineFinalize);
         if (options.purpose == EnginePurpose::CausalScoring) {
             core = std::make_unique<ScoringCore>(*active, device);
@@ -265,22 +273,34 @@ public:
                     throw std::invalid_argument(
                         "the context store requires the context cache to be enabled");
                 }
-                if (options.speculative.backend == SpeculativeBackend::DFlash) {
-                    // Session snapshots do not capture this backend's lane-local state.
+                if (options.speculative.backend == SpeculativeBackend::DFlash ||
+                    options.speculative.backend == SpeculativeBackend::DFlash2) {
+                    // Their draft-side state round trip through a stored image is unverified.
                     throw std::invalid_argument(
-                        "the context store does not support the DFlash speculative backend");
+                        "the context store does not support the DFlash speculative backends");
+                }
+                if (active->program->physical_usage().capacity.host_bytes == 0) {
+                    throw std::invalid_argument(
+                        "the context store restores sessions into the Host context cache; give it "
+                        "a nonzero Host budget (--host-context-mib or --auto-host-cache)");
                 }
                 open_context_store();
-                generation->set_context_store(
-                    slot_model_binding(options, load), store.get(),
-                    [this](runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
-                        return enqueue_store_write(std::move(snapshot));
+                using Hooks = GenerationCore::ContextStoreHooks;
+                generation->set_context_store(Hooks{
+                    .store   = store.get(),
+                    .binding = store_binding,
+                    .sink    = [this](CheckpointImage&& image) {
+                        return enqueue_store_write(std::move(image));
                     },
-                    [this] { return store_queue_idle(); },
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                    .ready    = [this] { return store_queue_idle(); },
+                    .failures = [this] {
+                        return store_write_failures.load(std::memory_order_relaxed);
+                    },
+                    .idle_persist = std::chrono::duration_cast<std::chrono::milliseconds>(
                         options.context_store.idle_persist),
-                    [this] { return store_write_failures.load(std::memory_order_relaxed); });
-                start_writer();
+                    .hydration_budget = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        options.context_store.restore_budget),
+                });
             }
             core = std::move(generation);
             if (store) { restore_from_store(); }
@@ -290,20 +310,15 @@ public:
 
     ~Impl() noexcept {
         device.bind_to_current_thread_noexcept();
-        // Queued store writes are older than what the final flush writes: drain them first, so
-        // none lands after it and replaces a newer image.
-        std::chrono::steady_clock::time_point flush_deadline{};
+        // Queued writes are older than what the final flush writes: drain them first, so none
+        // lands after it and replaces a newer image.
         if (store) {
-            flush_deadline = std::chrono::steady_clock::now() + options.context_store.flush_budget;
-            {
-                std::scoped_lock lock(writer_mutex);
-                drain_deadline = flush_deadline;
-            }
-            stop_writer();
+            const auto deadline =
+                std::chrono::steady_clock::now() + options.context_store.flush_budget;
+            stop_writer(deadline);
+            flush_context_store(deadline);
         }
-        flush_context_store(flush_deadline);
         core.emplace<std::monostate>();
-        stop_writer();
         // Everything written is queued for upload by now; give the uploads their budget.
         if (store) {
             (void)store->flush_remote(std::chrono::steady_clock::now() +
@@ -315,71 +330,57 @@ public:
         } catch (...) {}
     }
 
-    [[nodiscard]] GenerationCore& generation_core() {
-        auto* generation = std::get_if<std::unique_ptr<GenerationCore>>(&core);
-        if (generation == nullptr || *generation == nullptr) {
-            throw std::logic_error("session persistence requires a generation Engine");
-        }
-        return **generation;
-    }
-
-    [[nodiscard]] const GenerationCore& generation_core() const {
-        const auto* generation = std::get_if<std::unique_ptr<GenerationCore>>(&core);
-        if (generation == nullptr || *generation == nullptr) {
-            throw std::logic_error("session persistence requires a generation Engine");
-        }
-        return **generation;
-    }
-
-    // Adds the context store's counters to a RuntimeStats snapshot (all zero when it is disabled).
+    // Adds the context store's counters to a RuntimeStats snapshot (zero when it is off).
     void add_store_stats(RuntimeStats& out) const {
         if (!store) { return; }
         const runtime::ContextStore::Stats s = store->stats();
-        out.context_store_images         = s.images;
-        out.context_store_used_bytes     = s.used_bytes;
-        out.context_store_writes         = s.puts;
-        out.context_store_write_failures = s.put_failures;
-        out.context_store_dropped        = store_dropped.load(std::memory_order_relaxed);
-        out.context_store_bytes_written  = s.bytes_written;
-        out.context_store_bytes_reused   = s.bytes_reused;
-        out.context_store_evicted        = s.evicted_for_space + s.expired + s.superseded;
-        out.context_store_corrupt        = s.corrupt_removed;
-        out.context_store_restored       = restored_sessions.load(std::memory_order_relaxed);
-        out.context_store_restored_bytes = restored_bytes.load(std::memory_order_relaxed);
+        out.context_store_images          = s.images;
+        out.context_store_used_bytes      = s.used_bytes;
+        out.context_store_writes          = s.puts;
+        out.context_store_write_failures  = s.put_failures;
+        out.context_store_dropped         = store_dropped.load(std::memory_order_relaxed);
+        out.context_store_bytes_written   = s.bytes_written;
+        out.context_store_bytes_reused    = s.bytes_reused;
+        out.context_store_evicted         = s.evicted_for_space + s.expired + s.superseded;
+        out.context_store_corrupt         = s.corrupt_removed;
+        out.context_store_restored        = restored_sessions;
+        out.context_store_restored_bytes  = restored_bytes;
         out.context_store_restore_seconds = restore_seconds;
-        out.context_store_remote_images           = s.remote_images;
-        out.context_store_remote_uploads          = s.remote_uploads;
-        out.context_store_remote_upload_bytes     = s.remote_upload_bytes;
-        out.context_store_remote_upload_failures  = s.remote_upload_failures;
-        out.context_store_remote_downloads        = s.remote_downloads;
-        out.context_store_remote_download_bytes   = s.remote_download_bytes;
+        out.context_store_remote_images            = s.remote_images;
+        out.context_store_remote_uploads           = s.remote_uploads;
+        out.context_store_remote_upload_bytes      = s.remote_upload_bytes;
+        out.context_store_remote_upload_failures   = s.remote_upload_failures;
+        out.context_store_remote_downloads         = s.remote_downloads;
+        out.context_store_remote_download_bytes    = s.remote_download_bytes;
         out.context_store_remote_download_failures = s.remote_download_failures;
-        if (const auto* generation = std::get_if<std::unique_ptr<GenerationCore>>(&core);
-            generation != nullptr && *generation != nullptr) {
-            const auto read = (*generation)->store_read_stats();
-            out.context_store_hydrations         = read.hydrations;
-            out.context_store_hydrated_tokens    = read.hydrated_tokens;
-            out.context_store_hydration_failures = read.failures;
-            out.context_store_hydration_seconds  = read.seconds;
-        }
     }
+
+    using CheckpointImage = runtime::ModelInstance::ModelContract::CheckpointImage;
 
     EngineOptions options;
     DeviceContext device;
     std::unique_ptr<runtime::ModelInstance> active;
     LoadSummary load;
     ModelSamplingDefaults sampling_defaults;
-    // Declared before `core`: the worker holds sinks that reach the store, so the store must
-    // outlive it.
+    // Declared before `core`: the worker holds hooks that reach the store and the writer queue,
+    // so they must outlive it.
     std::unique_ptr<runtime::ContextStore> store;
     std::string store_binding;
+    std::uint64_t restored_sessions = 0;
+    std::uint64_t restored_bytes    = 0;
+    double restore_seconds          = 0.0;
+    std::atomic<std::uint64_t> store_dropped{0};
+    std::atomic<std::uint64_t> store_write_failures{0};
+    std::mutex writer_mutex;
+    std::condition_variable writer_cv;
+    std::deque<CheckpointImage> pending_writes;
+    bool writer_active = false;
+    bool writer_stop   = false;
+    std::optional<std::chrono::steady_clock::time_point> drain_deadline;
+    std::thread writer;
     Core core;
 
 private:
-    struct PendingWrite {
-        runtime::ModelInstance::ModelContract::SessionSnapshot snapshot;
-    };
-
     void open_context_store() {
         const ContextStoreOptions& config = options.context_store;
         std::error_code error;
@@ -390,7 +391,8 @@ private:
         }
         std::uint64_t max_bytes = config.max_bytes;
         if (max_bytes == 0) {
-            const std::filesystem::space_info space = std::filesystem::space(config.directory, error);
+            const std::filesystem::space_info space =
+                std::filesystem::space(config.directory, error);
             // If the volume cannot be queried, fall back to a bounded default rather than no limit.
             max_bytes = error ? kFallbackStoreBytes
                               : (space.available + directory_bytes(config.directory)) /
@@ -402,61 +404,70 @@ private:
         store_options.ttl       = config.ttl;
         store_options.remote        = config.remote;
         store_options.remote_prefix = config.remote_prefix;
-        store                   = std::make_unique<runtime::ContextStore>(std::move(store_options));
-        store_binding           = slot_model_binding(options, load);
-        // Register what other engines left in the bucket before start-up restores sessions; an
-        // unreachable bucket costs the connection timeouts, then the store runs on its directory.
+        store         = std::make_unique<runtime::ContextStore>(std::move(store_options));
         if (config.remote) {
+            // Images other engines left in the bucket become restorable before start-up restores.
             (void)store->refresh_remote(std::chrono::steady_clock::now() + config.restore_budget);
         }
+        store_binding = context_store_binding(options, load);
     }
 
-    // Writes one session to the context store. Called on the writer thread, or at shutdown.
-    void store_put(const runtime::ModelInstance::ModelContract::SessionSnapshot& snapshot) {
+    // Lowercase hex of the image's endpoint key: an image of the same endpoint replaces it.
+    static std::string image_id(const CheckpointImage& image) {
+        const auto& key = image.keys.front();
+        char text[41];
+        std::snprintf(text, sizeof(text), "%016llx%016llx%08x",
+                      static_cast<unsigned long long>(key.digests[0]),
+                      static_cast<unsigned long long>(key.digests[1]),
+                      static_cast<unsigned>(key.frontier));
+        return text;
+    }
+
+    // Writes one image to the store. On the writer thread, or at shutdown.
+    void store_put(const CheckpointImage& image) {
         runtime::ContextStore::Description description;
-        description.id      = snapshot.session_digest;
+        description.id      = image_id(image);
         description.binding = store_binding;
-        description.tokens  = snapshot.tokens;
-        description.checkpoints.reserve(snapshot.checkpoints.size());
-        for (const auto& key : snapshot.checkpoints) {
+        description.tokens  = image.tokens;
+        description.checkpoints.reserve(image.keys.size());
+        for (const auto& key : image.keys) {
             description.checkpoints.push_back(runtime::ContextStore::CheckpointKey{
                 .frontier = key.frontier, .digests = key.digests, .identity_tag = key.identity_tag});
         }
-        description.prefix_digests = snapshot.prefix_digests;
+        description.prefix_digests = image.prefix_digests;
         std::vector<runtime::ContextStore::Region> regions;
-        regions.reserve(snapshot.regions.size());
-        for (const auto& region : snapshot.regions) {
-            regions.push_back(
-                runtime::ContextStore::Region{.offset = region.offset, .length = region.length});
+        regions.reserve(image.regions.size());
+        for (const auto& region : image.regions) {
+            regions.push_back({.offset = region.offset, .length = region.length});
         }
-        (void)store->put(description, snapshot.bytes, regions);
+        (void)store->put(description, image.bytes, regions);
     }
 
     // Restores the most recently used stored sessions into the empty cache, within the configured
-    // time and capacity. Anything that cannot be restored is left in the store.
+    // time and the free Host capacity. Anything that cannot be restored stays in the store.
     void restore_from_store() noexcept {
         const auto started = std::chrono::steady_clock::now();
         try {
+            auto& generation    = *std::get<std::unique_ptr<GenerationCore>>(core);
             const auto deadline = started + options.context_store.restore_budget;
-            for (const runtime::ContextStore::Info& info : store->list()) {
+            auto images         = store->list();
+            std::sort(images.begin(), images.end(), [](const auto& a, const auto& b) {
+                return a.last_used_ms > b.last_used_ms;
+            });
+            for (const runtime::ContextStore::Info& info : images) {
                 if (std::chrono::steady_clock::now() >= deadline) { break; }
-                if (info.binding != store_binding) { continue; }
-                const std::optional<std::uint32_t> slot = generation_core().first_vacant_slot();
-                if (!slot) { break; }
+                if (info.binding != store_binding || info.tokens > options.max_context) {
+                    continue;
+                }
+                // The payload is nearly all of an image: one larger than the free Host space
+                // cannot fit, and reading it would only spend the budget.
+                if (info.image_bytes > generation.free_host_bytes()) { continue; }
                 std::optional<std::vector<std::uint8_t>> bytes = store->load(info.id, false);
                 if (!bytes) { continue; }
-                try {
-                    generation_core().restore_session(
-                        *slot, std::span<const std::uint8_t>(bytes->data(), bytes->size()),
-                        store_binding);
+                if (generation.restore_image(*bytes)) {
                     store->touch(info.id);
-                    restored_sessions.fetch_add(1, std::memory_order_relaxed);
-                    restored_bytes.fetch_add(bytes->size(), std::memory_order_relaxed);
-                } catch (const RequestError&) {
-                    // No idle lane or an open transaction: nothing more can be restored now.
-                    break;
-                } catch (const std::invalid_argument&) {
-                    // This session does not fit the free capacity; a smaller, older one still may.
+                    ++restored_sessions;
+                    restored_bytes += bytes->size();
                 }
             }
         } catch (...) {}
@@ -464,17 +475,16 @@ private:
             std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     }
 
-    // At shutdown, before the worker stops: everything the store does not hold in its current
-    // state, most recently used first, within the flush budget.
+    // At shutdown: everything the store does not hold in its current state, most recently used
+    // first, within the flush budget.
     void flush_context_store(std::chrono::steady_clock::time_point deadline) noexcept {
-        if (!store) { return; }
         try {
             auto* generation = std::get_if<std::unique_ptr<GenerationCore>>(&core);
             if (generation == nullptr || *generation == nullptr) { return; }
             (void)(*generation)->persist_all(
-                [this](runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
+                [this](CheckpointImage&& image) {
                     try {
-                        store_put(snapshot);
+                        store_put(image);
                         return true;
                     } catch (...) { return false; }
                 },
@@ -487,9 +497,9 @@ private:
         return pending_writes.empty() && !writer_active;
     }
 
-    // Queues a session for the writer thread. Never blocks: when the queue is full the session is
-    // not written now (an evicted one is lost to the store, an idle one is tried again later).
-    bool enqueue_store_write(runtime::ModelInstance::ModelContract::SessionSnapshot&& snapshot) {
+    // Queues an image for the writer thread. Never blocks: when the queue is full the image is
+    // not written now, and its continuation is tried again later.
+    bool enqueue_store_write(CheckpointImage&& image) {
         std::unique_lock lock(writer_mutex);
         if (writer_stop) { return false; } // shutting down: the final flush writes it instead
         if (pending_writes.size() >= kMaximumPendingStoreWrites) {
@@ -497,12 +507,52 @@ private:
             return false;
         }
         if (!writer.joinable()) { writer = std::thread([this] { writer_loop(); }); }
-        pending_writes.push_back(PendingWrite{std::move(snapshot)});
+        pending_writes.push_back(std::move(image));
         lock.unlock();
         writer_cv.notify_one();
         return true;
     }
 
+    void writer_loop() noexcept {
+        for (;;) {
+            CheckpointImage image;
+            {
+                std::unique_lock lock(writer_mutex);
+                writer_cv.wait(lock, [&] { return writer_stop || !pending_writes.empty(); });
+                if (pending_writes.empty() ||
+                    (writer_stop && drain_deadline &&
+                     std::chrono::steady_clock::now() >= *drain_deadline)) {
+                    return;
+                }
+                image = std::move(pending_writes.front());
+                pending_writes.pop_front();
+                writer_active = true;
+            }
+            ContextStoreWriteEvent event;
+            event.id           = image_id(image);
+            event.tokens       = image.tokens;
+            event.bytes        = image.bytes.size();
+            const auto started = std::chrono::steady_clock::now();
+            try {
+                store_put(image);
+            } catch (const std::exception& error) {
+                event.error = error.what();
+            } catch (...) { event.error = "unknown context store write failure"; }
+            if (!event.error.empty()) {
+                // The continuation was counted as stored when it was queued; have it written again.
+                store_write_failures.fetch_add(1, std::memory_order_relaxed);
+            }
+            event.seconds =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+            notify(event);
+            {
+                std::scoped_lock lock(writer_mutex);
+                writer_active = false;
+            }
+        }
+    }
+
+    // Reports one background write to the configured listener; its exceptions are ignored.
     void notify(const ContextStoreWriteEvent& event) const noexcept {
         if (!options.context_store.listener) { return; }
         try {
@@ -510,101 +560,18 @@ private:
         } catch (...) {}
     }
 
-    void write_pending(PendingWrite& item) {
-        ContextStoreWriteEvent event;
-        event.id           = item.snapshot.session_digest;
-        event.tokens       = item.snapshot.tokens;
-        event.bytes        = item.snapshot.bytes.size();
-        const auto started = std::chrono::steady_clock::now();
-        try {
-            try {
-                store_put(item.snapshot);
-            } catch (...) {
-                // The session was counted as stored when it was queued; have it queued again.
-                store_write_failures.fetch_add(1, std::memory_order_relaxed);
-                throw;
-            }
-        } catch (const std::exception& error) {
-            event.error = error.what();
-        } catch (...) { event.error = "unknown context store write failure"; }
-        event.seconds =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-        notify(event);
-    }
-
-    void start_writer() {
-        std::scoped_lock lock(writer_mutex);
-        if (!writer.joinable()) { writer = std::thread([this] { writer_loop(); }); }
-    }
-
-    void writer_loop() {
-        for (;;) {
-            {
-                std::unique_lock lock(writer_mutex);
-                const auto ready = [this] { return writer_stop || !pending_writes.empty(); };
-                if (store) {
-                    // A quiet server still ages sessions out: the store only trims after a write.
-                    if (!writer_cv.wait_for(lock, kStoreMaintenanceInterval, ready)) {
-                        lock.unlock();
-                        try {
-                            store->maintain();
-                        } catch (...) {}
-                        continue;
-                    }
-                } else {
-                    writer_cv.wait(lock, ready);
-                }
-                if (pending_writes.empty()) { return; }
-            }
-            std::optional<PendingWrite> item;
-            {
-                std::scoped_lock lock(writer_mutex);
-                if (pending_writes.empty()) { continue; }
-                item.emplace(std::move(pending_writes.front()));
-                pending_writes.pop_front();
-                if (drain_deadline &&
-                    std::chrono::steady_clock::now() >= *drain_deadline) {
-                    // Shutdown budget spent: the write is abandoned, like one that failed.
-                    store_dropped.fetch_add(1, std::memory_order_relaxed);
-                    store_write_failures.fetch_add(1, std::memory_order_relaxed);
-                    continue;
-                }
-                writer_active = true;
-            }
-            write_pending(*item);
-            std::scoped_lock lock(writer_mutex);
-            writer_active = false;
-        }
-    }
-
-    // Pending writes are flushed before the thread exits.
-    void stop_writer() noexcept {
+    // Lets the writer finish the queued images until `deadline`, then stops it.
+    void stop_writer(std::chrono::steady_clock::time_point deadline) noexcept {
         {
             std::scoped_lock lock(writer_mutex);
-            writer_stop = true;
+            writer_stop    = true;
+            drain_deadline = deadline;
         }
         writer_cv.notify_all();
-        if (writer.joinable()) {
-            try {
-                writer.join();
-            } catch (...) {}
-        }
+        if (writer.joinable()) { writer.join(); }
+        std::scoped_lock lock(writer_mutex);
+        pending_writes.clear();
     }
-
-    std::mutex writer_mutex;
-    std::condition_variable writer_cv;
-    std::deque<PendingWrite> pending_writes;
-    bool writer_stop   = false;
-    // Set at shutdown: queued store writes still pending after it are abandoned. A write already
-    // under way is not interrupted, so the budget can be exceeded by one write.
-    std::optional<std::chrono::steady_clock::time_point> drain_deadline;
-    bool writer_active = false;
-    std::thread writer;
-    std::atomic<std::uint64_t> store_dropped{0};
-    std::atomic<std::uint64_t> store_write_failures{0};
-    std::atomic<std::uint64_t> restored_sessions{0};
-    std::atomic<std::uint64_t> restored_bytes{0};
-    double restore_seconds = 0.0;
 };
 
 Engine::Engine(EngineOptions options) {
@@ -716,10 +683,18 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
 
     runtime::ResolvedRequestOptions resolved_options = resolve_request_options(
         impl_->sampling_defaults, prompt.impl_->sampling_mode, std::move(options));
-    resolved_options.execution.output_reservation_tokens = impl_->options.output_reservation_tokens;
     const ResolvedSamplingParameters resolved_sampling = resolved_options.execution.sampling;
 
     const PromptSummary prompt_summary = prompt.impl_->summary;
+    if (const auto external = models::qwen3_5::PreparedPromptAccess::view(prompt.impl_->value)
+                                  .external_prefix_tokens;
+        external != 0 && (!resolved_options.execution.allow_prefix_reuse ||
+                          external >= prompt_summary.prompt_tokens)) {
+        // A direct graft exists only as its installed checkpoint, which only reuse can bind.
+        throw std::invalid_argument(
+            "a request selecting a direct prompt graft must allow prefix reuse and add tokens "
+            "after the graft");
+    }
     if (prompt_summary.prompt_tokens > impl_->options.max_context) {
         throw RequestError(
             RequestErrorKind::ContextLengthExceeded,
@@ -751,8 +726,8 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
         immediate.result.thinking.requested_budget = resolved_options.execution.thinking.budget;
         // No output is licensed, so the cap never binds: effective equals requested.
         immediate.result.thinking.effective_budget = resolved_options.execution.thinking.budget;
-        immediate.result.timings.prepare_seconds = prepare_seconds;
-        immediate.result.timings.total_seconds   = prepare_seconds;
+        immediate.result.timings.prepare_seconds   = prepare_seconds;
+        immediate.result.timings.total_seconds     = prepare_seconds;
         prompt.impl_.reset();
         return GenerationHandle(std::make_unique<GenerationHandle::Impl>(
             impl_, std::move(immediate), resolved_sampling));
@@ -766,9 +741,10 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
             } else if constexpr (std::is_same_v<CoreState, std::unique_ptr<Impl::ScoringCore>>) {
                 throw std::logic_error("Engine generation core is unavailable");
             } else {
-                auto submission = core->submit(std::move(prompt.impl_->value), prompt_summary,
-                                               prepare_seconds, std::move(resolved_options),
-                                               consumer_mode, observation, pending_deadline);
+                auto submission =
+                    core->submit(std::move(prompt.impl_->value), prompt_summary, prepare_seconds,
+                                 std::move(resolved_options), consumer_mode, std::move(observation),
+                                 pending_deadline);
                 return GenerationHandle(std::make_unique<GenerationHandle::Impl>(
                     impl_, std::move(submission), resolved_sampling));
             }
@@ -794,15 +770,6 @@ LoadSummary Engine::load_summary() const {
     return impl_->load;
 }
 
-std::uint32_t Engine::concurrent_output_budget(const PreparedPrompt& prompt) const {
-    if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
-    if (impl_->options.purpose != EnginePurpose::Generation) {
-        throw std::logic_error("concurrent_output_budget requires a Generation Engine");
-    }
-    if (prompt.impl_ == nullptr) { throw std::invalid_argument("PreparedPrompt is empty"); }
-    return impl_->active->program->concurrent_output_budget(prompt.impl_->summary.prompt_tokens);
-}
-
 MemorySummary Engine::memory_summary() const {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
     return std::visit(
@@ -815,11 +782,6 @@ MemorySummary Engine::memory_summary() const {
             }
         },
         impl_->core);
-}
-
-std::vector<SlotState> Engine::slot_states() const {
-    if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
-    return impl_->generation_core().slot_states();
 }
 
 MediaCacheSummary Engine::media_cache_summary() const {

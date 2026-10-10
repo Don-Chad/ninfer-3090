@@ -108,10 +108,14 @@ struct ChatRenderOptions {
 struct RewriteCheckpointByteSpec {
     RewriteCheckpointKind kind = RewriteCheckpointKind::TurnClosure;
     std::size_t offset         = 0;
+    // A proven earlier content boundary may share the input recovery state with Shared.
+    // offset remains the typed rewrite boundary in the serialized conversation.
+    std::size_t recovery_offset = 0;
 };
 
 struct RenderedChat {
     std::string text;
+    std::string continuation_content;
     std::vector<text::ByteSpan> literal_spans;
     bool starts_in_reasoning = false;
     std::vector<MediaPlaceholderByteSpec> media_placeholders;

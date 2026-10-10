@@ -310,6 +310,10 @@ def server_command(
         "--kv-dtype",
         point.kv_dtype,
         "--no-prefix-reuse",
+        "--device-state-slots",
+        "0",
+        "--host-context-mib",
+        "0",
     ]
     if point.speculative_backend != "none":
         command.extend(
@@ -368,6 +372,12 @@ def validate_server_start(
     actual = {name: engine.get(name) for name in expected}
     if actual != expected:
         raise corpus.CampaignError(f"server_start Engine configuration mismatch: {actual!r}")
+    context_cache = engine.get("context_cache", {})
+    if (
+        context_cache.get("device_state_slots") != 0
+        or context_cache.get("host_capacity_bytes") != 0
+    ):
+        raise corpus.CampaignError("server_start context cache capacity differs from the point")
     if event.get("sampling_defaults", {}).get("greedy") != (
         point.sampling_mode == "greedy"
     ):
@@ -608,6 +618,7 @@ def is_steady_interval(event: dict[str, Any], concurrency: int) -> bool:
         tokens = event["tokens"]
         batch = event["decode_batch"]
         scheduler = event["scheduler"]
+        scheduling = event["scheduling"]
         rounds = int(batch["rounds"])
         return (
             int(tokens["computed_prefill"]) == 0
@@ -616,6 +627,12 @@ def is_steady_interval(event: dict[str, Any], concurrency: int) -> bool:
             and int(scheduler["running"]) == concurrency
             and int(scheduler["prefilling"]) == 0
             and int(scheduler["decode_ready"]) == concurrency
+            and int(scheduler["paused"]) == 0
+            and int(scheduler["replaying"]) == 0
+            and int(scheduling["preemptions"]) == 0
+            and int(scheduling["snapshot_restores"]) == 0
+            and int(scheduling["replay_restores"]) == 0
+            and int(scheduling["replayed_tokens"]) == 0
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise corpus.CampaignError(
@@ -629,8 +646,8 @@ def steady_metrics(
     selected = [event for event in events if is_steady_interval(event, concurrency)]
     if not selected:
         raise corpus.CampaignError(
-            f"concurrency {concurrency} produced no complete full-batch decode interval; "
-            "increase --decode-tokens"
+            f"concurrency {concurrency} produced no recovery-free full-batch decode interval; "
+            "increase --decode-tokens or --kv-capacity, or reduce concurrency"
         )
     duration = sum(float(event["interval_seconds"]) for event in selected)
     tokens = sum(int(event["tokens"]["committed_decode"]) for event in selected)

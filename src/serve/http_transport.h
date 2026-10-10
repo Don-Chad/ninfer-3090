@@ -17,11 +17,6 @@
 
 namespace ninfer::serve {
 
-class ClientDisconnected final : public std::exception {
-public:
-    [[nodiscard]] const char* what() const noexcept override { return "client disconnected"; }
-};
-
 class ResponseRenderFailure final : public std::runtime_error {
 public:
     explicit ResponseRenderFailure(const std::string& message) : std::runtime_error(message) {}

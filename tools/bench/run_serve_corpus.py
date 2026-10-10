@@ -88,7 +88,7 @@ WARMUP_FIXTURE = "text_smoke_zh"
 RUN_ARTIFACT_TYPE = "ninfer_serve_corpus_result"
 RUN_SCHEMA_VERSION = 8
 SERVER_LOG_ARTIFACT_TYPE = "ninfer_serve_request_log"
-SERVER_LOG_SCHEMA_VERSION = 22
+SERVER_LOG_SCHEMA_VERSION = 26
 STARTUP_TIMEOUT_SECONDS = 1800.0
 REQUEST_TIMEOUT_SECONDS = 24.0 * 60.0 * 60.0
 LOG_EVENT_TIMEOUT_SECONDS = 10.0
@@ -520,6 +520,12 @@ def validate_server_start(event: dict[str, Any], spec: RunSpec, device: int) -> 
     }
     if actual != expected:
         raise CampaignError(f"server_start Engine configuration mismatch: {actual!r}")
+    context_cache = engine.get("context_cache", {})
+    if (
+        context_cache.get("device_state_slots") != 0
+        or context_cache.get("host_capacity_bytes") != 0
+    ):
+        raise CampaignError("server_start context cache capacity differs from the campaign")
     if event.get("sampling_defaults", {}).get("greedy") != (
         spec.sampling_mode == "greedy"
     ):
@@ -786,6 +792,10 @@ def server_command(
         "--kv-dtype",
         spec.kv_dtype,
         "--no-prefix-reuse",
+        "--device-state-slots",
+        "0",
+        "--host-context-mib",
+        "0",
     ]
     if spec.speculative_backend != "none":
         command.extend(

@@ -67,10 +67,8 @@ PhasePresentation phase_presentation(StartupPhase phase) noexcept {
     case StartupPhase::ProgramInitialize:
         return {"initializing runtime", "runtime initialized", PhaseVisibility::Debug, false,
                 false};
-    case StartupPhase::HostStatePin:
-        return {"pinning host state", "host state pinned", PhaseVisibility::Info, true, false};
-    case StartupPhase::HostKvPin:
-        return {"pinning host KV", "host KV pinned", PhaseVisibility::Info, true, false};
+    case StartupPhase::HostContextPin:
+        return {"pinning host context", "host context pinned", PhaseVisibility::Info, true, false};
     case StartupPhase::CudaGraphPrepare:
         return {"preparing CUDA graphs", "CUDA graphs ready", PhaseVisibility::Info, false, false};
     case StartupPhase::EngineFinalize:

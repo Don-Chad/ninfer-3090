@@ -44,10 +44,6 @@ ninfer_add_test(ninfer_serve_options_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_serve_options.cpp"
   LIBRARIES ninfer_serve)
 
-ninfer_add_test(ninfer_serve_metrics_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_serve_metrics.cpp"
-  LIBRARIES ninfer_serve)
-
 ninfer_add_test(ninfer_request_log_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_request_log.cpp"
   LIBRARIES ninfer_serve ninfer_product_version)
@@ -56,8 +52,8 @@ ninfer_add_test(ninfer_load_report_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_load_report.cpp"
   LIBRARIES ninfer_serve)
 
-ninfer_add_test(ninfer_slots_report_test
-  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_slots_report.cpp"
+ninfer_add_test(ninfer_metrics_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_metrics.cpp"
   LIBRARIES ninfer_serve)
 
 ninfer_add_test(ninfer_http_error_handler_test

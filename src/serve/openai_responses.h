@@ -4,6 +4,7 @@
 // HTTP transport live in separate translation units; only wire-independent GenerationRequest is
 // passed to GenerationService.
 
+#include "serve/openai_common.h"
 #include "serve/openai_responses_store.h"
 #include "serve/request.h"
 #include "serve/request_json.h"
@@ -31,6 +32,7 @@ struct OpenAIResponsesFunctionIdentity {
 struct OpenAIResponsesPromptRequest {
     std::string model;
     GenerationRequest generation;
+    OpenAIPromptCachePolicy cache_policy;
     std::vector<ChatTurn> input_turns;
     std::vector<nlohmann::json> input_items;
     std::optional<std::string> instructions;
@@ -43,11 +45,10 @@ struct OpenAIResponsesPromptRequest {
 
 struct OpenAIResponsesCreateRequest {
     OpenAIResponsesPromptRequest prompt;
+    nlohmann::json text_format = {{"type", "text"}};
     nlohmann::json metadata    = nlohmann::json::object();
     nlohmann::json tools       = nlohmann::json::array();
     nlohmann::json tool_choice = "auto";
-    // Echo of the accepted text.format, normalized.
-    nlohmann::json text_format = nlohmann::json{{"type", "text"}};
     // Responses beta namespace tools are flattened for the Engine and restored only at the wire
     // boundary. Never infer a namespace by splitting an Engine function name.
     std::unordered_map<std::string, OpenAIResponsesFunctionIdentity> tool_identities;

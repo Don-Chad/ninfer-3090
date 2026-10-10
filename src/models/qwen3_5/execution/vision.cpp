@@ -18,7 +18,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <exception>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -432,40 +431,35 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
 
 VisionPrefillSession::VisionPrefillSession(
     DeviceContext& device, const execution::Parameters& parameters, DeviceSpan workspace,
-    const VisionWorkspacePlan& workspace_plan, qwen3_5::PreparedPromptData& prompt,
-    const VisionPrefillPlan& plan, std::size_t& handoff_peak_bytes)
+    const VisionWorkspacePlan& workspace_plan, const qwen3_5::PreparedPromptData& prompt,
+    const VisionPrefillPlan& plan, VisionHandoffState& handoff, std::size_t& handoff_peak_bytes)
     : device_(device), parameters_(parameters), workspace_(workspace),
-      workspace_plan_(workspace_plan), prompt_(prompt), plan_(plan),
-      handoff_peak_bytes_(handoff_peak_bytes) {
+      workspace_plan_(workspace_plan), prompt_(prompt), plan_(plan), handoff_(&handoff),
+      handoff_peak_bytes_(&handoff_peak_bytes) {
     context_.emplace(device, parameters);
     if (workspace_.data == nullptr || workspace_.bytes < workspace_plan_.capacity_bytes) {
         throw std::invalid_argument("Vision prefill workspace plan is invalid");
     }
     validate_plan();
-    encoded_payloads_pending_release_.reserve(plan_.uses.size());
     timers_.reserve(plan_.uses.size());
 }
 
 VisionPrefillSession::VisionPrefillSession(
     DeviceContext& device, const execution::Parameters& parameters,
-    const VisionWorkspacePlan& window_plan, qwen3_5::PreparedPromptData& prompt,
-    const VisionPrefillPlan& plan, std::size_t& handoff_peak_bytes, VisionResidencyBroker& broker,
-    PinnedResultPool::Handle result, DeviceSpan bridge_staging)
+    const VisionWorkspacePlan& window_plan, const qwen3_5::PreparedPromptData& prompt,
+    const VisionPrefillPlan& plan, VisionResidencyBroker& broker, PinnedResultPool::Handle result,
+    DeviceSpan bridge_staging)
     : device_(device), parameters_(parameters), workspace_{}, workspace_plan_(window_plan),
-      prompt_(prompt), plan_(plan), handoff_peak_bytes_(handoff_peak_bytes),
-      bridge_staging_(bridge_staging) {
-    overlay_ = std::make_unique<VisionOverlaySession>(device, broker, parameters, window_plan,
-                                                      std::move(result));
+      prompt_(prompt), plan_(plan), bridge_staging_(bridge_staging) {
     const std::size_t column_bytes =
         static_cast<std::size_t>(parameters.vision.value().merger_fc2.weight.n) * 2;
     if (bridge_staging_.data == nullptr || bridge_staging_.bytes < column_bytes) {
         throw std::invalid_argument("Vision overlay bridge staging is too small");
     }
     validate_plan();
-    encoded_payloads_pending_release_.reserve(plan_.uses.size());
+    overlay_ = std::make_unique<VisionOverlaySession>(device, broker, parameters, window_plan,
+                                                      std::move(result));
 }
-
-VisionPrefillSession::~VisionPrefillSession() = default;
 
 void VisionPrefillSession::validate_plan() const {
     if (plan_.control == nullptr || plan_.control->items.empty() || plan_.uses.empty()) {
@@ -529,6 +523,60 @@ void VisionPrefillSession::validate_plan() const {
     }
 }
 
+VisionPrefillSession::~VisionPrefillSession() { retire_handoff(); }
+
+const VisionUseSpan* VisionPrefillSession::use_at(std::uint32_t cursor) const {
+    // Replay can revisit an earlier item, including after the last item was consumed.
+    const auto next_use = std::lower_bound(
+        plan_.uses.begin(), plan_.uses.end(), cursor,
+        [](const VisionUseSpan& use, std::uint32_t position) { return use.end <= position; });
+    return next_use == plan_.uses.end() ? nullptr : &*next_use;
+}
+
+std::optional<std::size_t> VisionPrefillSession::pending_window_bytes(std::uint32_t cursor,
+                                                                     std::uint32_t chunk) const {
+    if (overlay_ == nullptr || submitted_item_) { return std::nullopt; }
+    const VisionUseSpan* use = use_at(cursor);
+    // Only an item the next chunk consumes: a later one would hold its window across chunks that
+    // do not need it.
+    if (use == nullptr || static_cast<std::uint64_t>(use->begin) >=
+                              static_cast<std::uint64_t>(cursor) + chunk ||
+        (active_item_ && *active_item_ == use->prepared_item_index)) {
+        return std::nullopt;
+    }
+    return overlay_->window_bytes(plan_.control->items[use->control_index]);
+}
+
+bool VisionPrefillSession::submit_item(std::uint32_t cursor, std::uint32_t chunk) {
+    if (!pending_window_bytes(cursor, chunk)) { return false; }
+    const VisionUseSpan& use = *use_at(cursor);
+    const auto& payload      = prompt_.media_payloads[use.prepared_item_index];
+    if (!payload) { return false; }
+    if (!overlay_->submit_item(payload->span(), plan_.control->items[use.control_index])) {
+        return false;
+    }
+    submitted_item_ = use.prepared_item_index;
+    return true;
+}
+
+bool VisionPrefillSession::vision_pending() const {
+    return overlay_ != nullptr && submitted_item_ && overlay_->pending() &&
+           !overlay_->item_ready();
+}
+
+bool VisionPrefillSession::poll() {
+    if (overlay_ == nullptr || !submitted_item_ || !overlay_->pending() ||
+        !overlay_->item_ready()) {
+        return false;
+    }
+    overlay_->finish();
+    return true;
+}
+
+VisionOverlayWindowStats VisionPrefillSession::overlay_stats() const noexcept {
+    return overlay_ != nullptr ? overlay_->stats() : VisionOverlayWindowStats{};
+}
+
 VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32_t nominal_length) {
     if (nominal_length == 0 || begin >= prompt_.token_ids.size()) {
         throw std::invalid_argument("Vision chunk range is empty or outside the prompt");
@@ -538,47 +586,63 @@ VisionChunk VisionPrefillSession::prepare_chunk(std::uint32_t begin, std::uint32
     std::uint32_t end = static_cast<std::uint32_t>(
         std::min<std::uint64_t>(nominal_end64, prompt_.token_ids.size()));
 
-    while (next_use_ < plan_.uses.size() && plan_.uses[next_use_].end <= begin) { ++next_use_; }
+    const auto next_use = std::lower_bound(
+        plan_.uses.begin(), plan_.uses.end(), begin,
+        [](const VisionUseSpan& use, std::uint32_t position) { return use.end <= position; });
     const VisionUseSpan* active = nullptr;
-    if (next_use_ < plan_.uses.size() && plan_.uses[next_use_].begin < end) {
-        active = &plan_.uses[next_use_];
-        if (next_use_ + 1U < plan_.uses.size()) {
-            end = std::min(end, plan_.uses[next_use_ + 1U].begin);
-        }
+    if (next_use != plan_.uses.end() && next_use->begin < end) {
+        active = &*next_use;
+        if (next_use + 1 != plan_.uses.end()) { end = std::min(end, (next_use + 1)->begin); }
     }
     if (end <= begin) { throw std::logic_error("Vision chunk cap made no forward progress"); }
     if (active == nullptr) {
-        return VisionChunk{static_cast<std::int32_t>(end - begin), nullptr, {}};
+        return VisionChunk{static_cast<std::int32_t>(end - begin), nullptr, {}, {}};
     }
     const qwen3_5::VisionItemControl& control = plan_.control->items[active->control_index];
     if (overlay_ != nullptr) {
+        // The pinned slot is this session's own, so an encoded item stays valid until this session
+        // encodes another one; no other request can overwrite it.
         if (!active_item_ || *active_item_ != active->prepared_item_index) {
+            const auto& payload = prompt_.media_payloads[active->prepared_item_index];
+            if (!payload) {
+                throw std::logic_error("Vision replay lost its prepared media payload");
+            }
             if (submitted_item_ && *submitted_item_ == active->prepared_item_index) {
                 // Submitted ahead of this unit: the encode already ran beside other lanes.
-                host_result_ = overlay_->complete_item();
-                submitted_item_.reset();
+                host_result_ = overlay_->take_submitted();
             } else {
-                const auto& payload = prompt_.media_payloads[active->prepared_item_index];
-                host_result_        = overlay_->encode_item(payload->span(), control);
+                // A submitted item this chunk does not consume would be overwritten anyway.
+                overlay_->finish();
+                active_item_.reset();
+                host_result_ = overlay_->encode_item(payload->span(), control);
             }
+            submitted_item_.reset();
             active_item_ = active->prepared_item_index;
-            encoded_payloads_pending_release_.push_back(active->prepared_item_index);
         }
         return VisionChunk{static_cast<std::int32_t>(end - begin), &control, {}, host_result_};
     }
     Tensor output = VisionContext::bind_output(workspace_, workspace_plan_, control.merged_count);
 
-    if (!active_item_ || *active_item_ != active->prepared_item_index) {
+    if (!owns_handoff() || !active_item_ || *active_item_ != active->prepared_item_index) {
         const auto& payload = prompt_.media_payloads[active->prepared_item_index];
+        if (!payload) { throw std::logic_error("Vision replay lost its prepared media payload"); }
+        if (handoff_->generation_ == std::numeric_limits<std::uint64_t>::max()) {
+            throw std::overflow_error("Vision handoff generation exhausted");
+        }
         timers_.emplace_back(device_);
         timers_.back().start();
+        // Encoding scratch can overwrite the prior handoff before the final projection.
+        // Revoke that binding before enqueueing any work, including a failed encode.
+        handoff_->owner_ = nullptr;
+        ++handoff_->generation_;
         context_->encode(VisionItemView{payload->span(), &control}, output, workspace_,
                          workspace_plan_);
         timers_.back().record_stop();
+        handoff_->owner_      = this;
+        active_generation_    = handoff_->generation_;
         active_item_          = active->prepared_item_index;
         active_handoff_bytes_ = output.bytes();
-        handoff_peak_bytes_   = std::max(handoff_peak_bytes_, active_handoff_bytes_);
-        encoded_payloads_pending_release_.push_back(active->prepared_item_index);
+        *handoff_peak_bytes_  = std::max(*handoff_peak_bytes_, active_handoff_bytes_);
     }
     return VisionChunk{static_cast<std::int32_t>(end - begin), &control, output, {}};
 }
@@ -601,45 +665,13 @@ Tensor VisionPrefillSession::bridge_column(const VisionChunk& chunk, std::int32_
     return staged;
 }
 
-void VisionPrefillSession::submit_next_item() {
-    // One pinned result slot per session: an item may be submitted only while no other item's
-    // embeddings are still being consumed by the prefill.
-    if (overlay_ == nullptr || overlay_->pending() || active_item_ ||
-        next_use_ >= plan_.uses.size()) {
-        return;
-    }
-    const VisionUseSpan& use = plan_.uses[next_use_];
-    const auto& payload      = prompt_.media_payloads[use.prepared_item_index];
-    if (!payload) { return; }
-    if (overlay_->submit_item(payload->span(), plan_.control->items[use.control_index])) {
-        submitted_item_ = use.prepared_item_index;
-    }
-}
-
-bool VisionPrefillSession::vision_pending() const {
-    return overlay_ != nullptr && overlay_->pending() && !overlay_->item_ready();
-}
-
-bool VisionPrefillSession::overlay_window_open() const {
-    return overlay_ != nullptr && overlay_->pending();
-}
-
-VisionOverlayWindowStats VisionPrefillSession::overlay_stats() const noexcept {
-    return overlay_ != nullptr ? overlay_->stats() : VisionOverlayWindowStats{};
-}
-
-void VisionPrefillSession::release_encoded_media_payloads() noexcept {
-    for (const std::uint32_t item_index : encoded_payloads_pending_release_) {
-        if (item_index >= prompt_.media_payloads.size()) { std::terminate(); }
-        prompt_.media_payloads[item_index].reset();
-    }
-    encoded_payloads_pending_release_.clear();
-}
-
 void VisionPrefillSession::retire_handoff() noexcept {
-    active_item_.reset();
+    if (owns_handoff()) { handoff_->owner_ = nullptr; }
+    // Overlay results live in this session's pinned slot and stay valid for a replay; resident
+    // handoffs share the Program workspace and are revalidated by generation instead.
+    if (overlay_ == nullptr) { active_item_.reset(); }
+    active_generation_    = 0;
     active_handoff_bytes_ = 0;
-    host_result_          = {};
 }
 
 double VisionPrefillSession::elapsed_seconds() const {

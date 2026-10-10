@@ -157,7 +157,9 @@ void apply_openai_prompt_cache_policy(GenerationRequest& request, OpenAIPromptCa
     }
 
     const bool automatic_enabled =
-        policy.automatic != OpenAIPromptCacheAutomatic::Disabled && automatic_target != nullptr;
+        policy.automatic != OpenAIPromptCacheAutomatic::Disabled && automatic_target != nullptr &&
+        (automatic_target->has_value() ||
+         explicit_boundaries.size() < kMaximumExplicitPromptCacheMarkers);
     const bool automatic_merges_explicit   = automatic_enabled && automatic_target->has_value();
     const std::size_t explicit_write_slots = !automatic_enabled || automatic_merges_explicit
                                                  ? kMaximumExplicitPromptCacheMarkers
@@ -187,12 +189,15 @@ void apply_openai_prompt_cache_policy(GenerationRequest& request, OpenAIPromptCa
             *automatic_target = CacheBoundary{.evidence = evidence};
         }
     }
-    // OpenAI's policy governs one boundary: the automatic marker this function just placed at the
-    // end of the prompt. It says nothing about where a prompt's structure already exposes a
-    // reusable prefix, so the Engine's structural boundaries stay enabled. Disabling them left a
-    // request whose only shared candidate sat at the end of its own prompt, which no differing
-    // request can ever match: ten identical-preamble requests each recomputed their whole prompt.
-    request.allow_engine_automatic_shared_prefixes = true;
+    // In default and implicit mode OpenAI's policy governs one boundary: the automatic marker this
+    // function just placed at the end of the prompt. It says nothing about where a prompt's
+    // structure already exposes a reusable prefix, so the Engine's structural boundaries stay
+    // enabled. Disabling them left a request whose only shared candidate sat at the end of its own
+    // prompt, which no differing request can ever match: ten identical-preamble requests each
+    // recomputed their whole prompt. Explicit mode is the client taking every write decision, so
+    // there the Engine adds none of its own.
+    request.allow_engine_automatic_shared_prefixes =
+        policy.automatic != OpenAIPromptCacheAutomatic::Disabled;
 }
 
 namespace {

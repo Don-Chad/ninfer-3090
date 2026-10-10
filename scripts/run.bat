@@ -10,7 +10,7 @@ rem   qwen38-27b        tuned (default), int8, c8   <- recommended
 rem   qwen36-35b-a3b    tuned (default)
 rem
 rem `tuned` is the recommended profile: rk4v4 KV, speculation plus the draft head, the memory
-rem flags, vision in overlay residency, and the tuned context cache with automatic prefix grid.
+rem flags, vision in overlay residency, and an 8 GiB pinned Host context budget for the cache.
 rem `int8` and `c8` are the older reference profiles for the 27B -- one user at 64K of INT8 KV
 rem (the quality default), and eight lanes at 8K -- with every serving flag fixed.
 rem
@@ -55,24 +55,17 @@ rem apply the loaded graft to every request that names none), NINFER_CHAT_TEMPLA
 rem Jinja file, passed straight to --chat-template; overrides the artifact's built-in template).
 rem `tuned` also: NINFER_CONTEXT,
 rem NINFER_CONCURRENCY, NINFER_KV_DTYPE, NINFER_SPEC, NINFER_DRAFT_TOKENS, NINFER_PREFILL_CHUNK,
-rem NINFER_VISION (on^|off), NINFER_VISION_RESIDENCY, NINFER_HOST_STATE_SLOTS, NINFER_MIN_P (0.03) and
+rem NINFER_VISION (on^|off), NINFER_VISION_RESIDENCY, NINFER_HOST_CONTEXT_MIB (8192), NINFER_MIN_P (0.03) and
 rem NINFER_PRESENCE_PENALTY (0.5), the loop guard ("default" keeps the registered preset).
 rem
 rem SERVING KNOBS, `tuned` only. Each is passed to ninfer-serve only when set, so leaving them all
 rem unset keeps the profile exactly as measured; `ninfer-serve --help` says what each one does.
-rem   NINFER_MAX_PREFILL_LANES            --max-prefill-lanes N          prefill several prompts at once, so a
-rem                                                                      short request is not stuck behind a long one
-rem   NINFER_DECODE_ROUNDS_PER_PREFILL    --decode-rounds-per-prefill N  decode rounds between prefill units
-rem   NINFER_PROGRESS_ANCHOR_TOKENS       --progress-anchor-tokens N     checkpoint a long prefill every N tokens
-rem   NINFER_AUTO_HOST_CACHE=on           --auto-host-cache              size the host context cache from free RAM.
-rem                                                                      Replaces the fixed 8 private / 8 shared /
-rem                                                                      host-state-slots / 8 GiB host KV sizing, so
-rem                                                                      NINFER_HOST_STATE_SLOTS is then ignored
+rem   NINFER_AUTO_HOST_CACHE=on           --auto-host-cache              size the Host context budget from free
+rem                                                                      RAM instead of NINFER_HOST_CONTEXT_MIB
 rem     NINFER_HOST_CACHE_PERCENT         --host-cache-percent N         share of free RAM to use (1-100)
 rem     NINFER_HOST_CACHE_RESERVE_MIB     --host-cache-reserve-mib N     RAM to always leave free
 rem     NINFER_HOST_CACHE_MAX_MIB         --host-cache-max-mib N         hard cap on pinned RAM
 rem   NINFER_MAX_OUTPUT_TOKENS            --max-output-tokens N          cap every request's output budget
-rem   NINFER_OUTPUT_RESERVATION_TOKENS    --output-reservation-tokens N  reserve output KV as a request decodes
 rem   NINFER_LOOKUP_NGRAM                 --lookup-ngram N               context-lookup drafting beside --spec
 rem   NINFER_MLP_A8_DECODE=on             --mlp-a8-decode                INT8-activation MLP decode
 rem   NINFER_CONTEXT_STORE                --context-store DIR            keep the context cache across restarts
@@ -86,11 +79,10 @@ rem
 rem IF THE CARD IS BUSY. A desktop (or another job) holding VRAM can leave too little for the default
 rem context. When the `tuned` profile is refused at startup for lack of GPU memory, this launcher
 rem steps down on its own -- an eighth of the context at a time, up to five times, and from the
-rem second step also a 2048 prefill chunk and fewer host state slots -- and says what it did, so the
-rem first run starts instead
-rem of ending in an error. It only does that for the defaults: an explicit NINFER_CONTEXT, NINFER_PREFILL_CHUNK or
-rem NINFER_HOST_STATE_SLOTS is honoured as given and fails loudly, and NINFER_FALLBACK=off turns the
-rem step-down off.
+rem second step also a 2048 prefill chunk and a smaller Host context budget -- and says what it did,
+rem so the first run starts instead of ending in an error. It only does that for the defaults: an
+rem explicit NINFER_CONTEXT, NINFER_PREFILL_CHUNK or NINFER_HOST_CONTEXT_MIB is honoured as given and
+rem fails loudly, and NINFER_FALLBACK=off turns the step-down off.
 rem
 rem Loopback by default. 0.0.0.0 publishes an unauthenticated OpenAI-compatible endpoint to every
 rem network this machine is on, so it is opt-in per run rather than the shipped default:
@@ -105,7 +97,7 @@ rem may be second-guessed. A step-down pass sets the overrides itself and jumps 
 if not defined RUNG (
   set "RUNG=0"
   set "LADDER=0"
-  if "%NINFER_CONTEXT%%NINFER_PREFILL_CHUNK%%NINFER_HOST_STATE_SLOTS%"=="" if /i not "%NINFER_FALLBACK%"=="off" set "LADDER=1"
+  if "%NINFER_CONTEXT%%NINFER_PREFILL_CHUNK%%NINFER_HOST_CONTEXT_MIB%"=="" if /i not "%NINFER_FALLBACK%"=="off" set "LADDER=1"
 )
 if "%PROFILE%"=="" set "PROFILE=tuned"
 if "%MODEL_KEY%"=="" goto :choose_model
@@ -293,26 +285,20 @@ goto :launch
 
 :profile_27b_c8
 rem Context cache sized per lane, so several agents rotating through the lanes find their own
-rem conversation still cached instead of re-prefilling it: two retained conversations per lane,
-rem one checkpoint StateImage per lane on the card beyond the active ones, and two per lane in
-rem pinned host memory. Measured at one lane on the default of two retained conversations, four
-rem rotating agents reused 12%% of their prompts (TTFT 14 s); with room for all of them, 76%% (2.9 s).
-rem MEMORY COST: this profile keeps the GDN state in BF16, so a StateImage is 147 MiB. The device
-rem slots take 8 x 147 MiB = 1.15 GiB of VRAM, the engine default at eight lanes, so that is
-rem unchanged; the host slots pin 16 x 147 MiB = 2.3 GiB of RAM, which WDDM also charges against the
-rem card. Lower C8_HOST_STATES_PER_LANE first if startup runs short. Retention is still bounded by
-rem the 16,384-token KV pool below.
+rem conversation still cached instead of re-prefilling it: one checkpoint StateImage per lane on
+rem the card beyond the active ones, and the same 8 GiB pinned Host context budget as `tuned` for
+rem the conversations that leave the card. MEMORY COST: this profile keeps the GDN state in BF16, so
+rem a StateImage is 147 MiB. The device slots take 8 x 147 MiB = 1.15 GiB of VRAM, the engine default
+rem at eight lanes; the Host budget pins 8 GiB of RAM (StateImages, KV pages and pause snapshots
+rem share it). Retention on the card is still bounded by the 16,384-token KV pool below.
 set "C8_LANES=8"
-set /a C8_PRIVATE=C8_LANES*2
 set /a C8_DEVICE_STATES=C8_LANES
-set "C8_HOST_STATES_PER_LANE=2"
-set /a C8_HOST_STATES=C8_LANES*C8_HOST_STATES_PER_LANE
-set "PROFILE_ARGS=--max-context 8192 --kv-capacity 16384 --max-concurrency %C8_LANES% --max-pending-requests 32 --pending-timeout-ms 600000 --prefill-chunk 512 --kv-dtype int8 --spec mtp --draft-tokens 3 --lm-head-draft --max-private-continuations %C8_PRIVATE% --device-state-slots %C8_DEVICE_STATES% --host-state-slots %C8_HOST_STATES%"
+set "PROFILE_ARGS=--max-context 8192 --kv-capacity 16384 --max-concurrency %C8_LANES% --max-pending-requests 32 --pending-timeout-ms 600000 --prefill-chunk 512 --kv-dtype int8 --spec mtp --draft-tokens 3 --lm-head-draft --device-state-slots %C8_DEVICE_STATES% --host-context-mib 8192"
 set "LABEL=up to eight requests  ^|  8K context  ^|  INT8 KV  ^|  MTP3, ReplaySSM"
 goto :launch
 
 :profile_tuned_common
-rem Only `tuned` carries the context cache and vision: the reference profiles are deliberately
+rem Only `tuned` carries vision and the sampling guard: the reference profiles are deliberately
 rem minimal. Vision stays on -- overlay residency keeps the tower host-pinned and streams each
 rem image through a borrowed device window, so it costs about 10 MiB of runtime reservation.
 set "VISION=on"
@@ -320,14 +306,13 @@ if not "%NINFER_VISION%"=="" set "VISION=%NINFER_VISION%"
 set "VISION_RESIDENCY=overlay"
 if not "%NINFER_VISION_RESIDENCY%"=="" set "VISION_RESIDENCY=%NINFER_VISION_RESIDENCY%"
 set "VISION_ARGS="
-rem Pinned host memory for the context cache: 74.5 MiB per slot on the 27B. WDDM charges it against
-rem the card, so a busy desktop needs fewer (see the README on startup).
-rem --max-private-continuations 8 below is what keeps several rotating conversations cached: the
-rem engine default is two per lane, and four agents on one lane then evict each other on every turn
-rem (12%% prompt reuse against 76%% with room for all four, measured 2026-09-28). A retained
-rem conversation costs no memory by itself; its KV pages and StateImages come from the pools above.
-set "HOST_STATE_SLOTS=32"
-if not "%NINFER_HOST_STATE_SLOTS%"=="" set "HOST_STATE_SLOTS=%NINFER_HOST_STATE_SLOTS%"
+rem Pinned Host context budget, in MiB: one byte budget that retained StateImages (74.5 MiB each on
+rem the 27B with the FP16 state), KV pages and pause snapshots share once they leave the card. It is
+rem host RAM, pinned in full at startup on Windows as on Linux -- current drivers no longer charge
+rem pinned memory against free VRAM, so it costs no context. Lower it if the box is short on RAM;
+rem 0 keeps everything on the card.
+set "HOST_CONTEXT_MIB=8192"
+if not "%NINFER_HOST_CONTEXT_MIB%"=="" set "HOST_CONTEXT_MIB=%NINFER_HOST_CONTEXT_MIB%"
 if /i "%VISION%"=="on" (
   set "VISION_ARGS=--vision --vision-residency %VISION_RESIDENCY%"
   set "LABEL=%LABEL%  ^|  vision (%VISION_RESIDENCY%)"
@@ -354,8 +339,9 @@ if not "%NINFER_PRESENCE_PENALTY%"=="" set "PRESENCE=%NINFER_PRESENCE_PENALTY%"
 set "SAMPLING_ARGS="
 if /i not "%MIN_P%"=="default" set "SAMPLING_ARGS=--min-p %MIN_P%"
 if /i not "%PRESENCE%"=="default" set "SAMPLING_ARGS=%SAMPLING_ARGS% --presence-penalty %PRESENCE%"
-rem --auto-host-cache sizes the host cache itself and refuses the fixed sizing, so it is either/or.
-rem The step-down ladder still sets NINFER_HOST_STATE_SLOTS; it is simply unused when auto.
+rem --auto-host-cache sizes that budget from the RAM still free once the model has loaded, and
+rem refuses --host-context-mib, so it is either/or: with it on, NINFER_HOST_CONTEXT_MIB (and the
+rem step-down ladder's smaller budget) is ignored.
 set "AUTO_HOST_CACHE=off"
 if not "%NINFER_AUTO_HOST_CACHE%"=="" set "AUTO_HOST_CACHE=%NINFER_AUTO_HOST_CACHE%"
 set "CACHE_ARGS="
@@ -368,23 +354,19 @@ set "CACHE_ARGS=--auto-host-cache"
 if not "%NINFER_HOST_CACHE_PERCENT%"=="" set "CACHE_ARGS=%CACHE_ARGS% --host-cache-percent %NINFER_HOST_CACHE_PERCENT%"
 if not "%NINFER_HOST_CACHE_RESERVE_MIB%"=="" set "CACHE_ARGS=%CACHE_ARGS% --host-cache-reserve-mib %NINFER_HOST_CACHE_RESERVE_MIB%"
 if not "%NINFER_HOST_CACHE_MAX_MIB%"=="" set "CACHE_ARGS=%CACHE_ARGS% --host-cache-max-mib %NINFER_HOST_CACHE_MAX_MIB%"
-set "CACHE_NOTE=host cache sized automatically from free RAM"
+set "CACHE_NOTE=Context cache: sized automatically from free host RAM  (NINFER_AUTO_HOST_CACHE)"
 goto :cache_done
 :cache_fixed
 if not "%NINFER_HOST_CACHE_PERCENT%%NINFER_HOST_CACHE_RESERVE_MIB%%NINFER_HOST_CACHE_MAX_MIB%"=="" (
   echo NINFER_HOST_CACHE_* needs NINFER_AUTO_HOST_CACHE=on 1>&2
   exit /b 2
 )
-set "CACHE_ARGS=--max-private-continuations 8 --max-shared-prefixes 8 --host-state-slots %HOST_STATE_SLOTS% --host-kv-mib 8192"
-set "CACHE_NOTE=8 shared ^| 8 private ^| %HOST_STATE_SLOTS% host states"
+set "CACHE_ARGS=--host-context-mib %HOST_CONTEXT_MIB%"
+set "CACHE_NOTE=Context cache: %HOST_CONTEXT_MIB% MiB pinned host RAM  (NINFER_HOST_CONTEXT_MIB)"
 :cache_done
 rem Opt-in serving knobs: each is appended only when set, so the defaults above are untouched.
 set "KNOB_ARGS="
-if not "%NINFER_MAX_PREFILL_LANES%"=="" set "KNOB_ARGS=%KNOB_ARGS% --max-prefill-lanes %NINFER_MAX_PREFILL_LANES%"
-if not "%NINFER_DECODE_ROUNDS_PER_PREFILL%"=="" set "KNOB_ARGS=%KNOB_ARGS% --decode-rounds-per-prefill %NINFER_DECODE_ROUNDS_PER_PREFILL%"
-if not "%NINFER_PROGRESS_ANCHOR_TOKENS%"=="" set "KNOB_ARGS=%KNOB_ARGS% --progress-anchor-tokens %NINFER_PROGRESS_ANCHOR_TOKENS%"
 if not "%NINFER_MAX_OUTPUT_TOKENS%"=="" set "KNOB_ARGS=%KNOB_ARGS% --max-output-tokens %NINFER_MAX_OUTPUT_TOKENS%"
-if not "%NINFER_OUTPUT_RESERVATION_TOKENS%"=="" set "KNOB_ARGS=%KNOB_ARGS% --output-reservation-tokens %NINFER_OUTPUT_RESERVATION_TOKENS%"
 if not "%NINFER_LOOKUP_NGRAM%"=="" set "KNOB_ARGS=%KNOB_ARGS% --lookup-ngram %NINFER_LOOKUP_NGRAM%"
 if /i "%NINFER_MLP_A8_DECODE%"=="on" set "KNOB_ARGS=%KNOB_ARGS% --mlp-a8-decode"
 if not "%NINFER_MLP_A8_DECODE%"=="" if /i not "%NINFER_MLP_A8_DECODE%"=="on" if /i not "%NINFER_MLP_A8_DECODE%"=="off" (
@@ -400,7 +382,7 @@ if "%NINFER_CONTEXT_STORE%"=="" if not "%NINFER_CONTEXT_STORE_MAX_GIB%"=="" (
   echo NINFER_CONTEXT_STORE_MAX_GIB needs NINFER_CONTEXT_STORE 1>&2
   exit /b 2
 )
-set "PROFILE_ARGS=%PROFILE_ARGS% --max-pending-requests 16 --pending-timeout-ms 600000 %VISION_ARGS% --auto-prefix-grid %CACHE_ARGS%%KNOB_ARGS% %SAMPLING_ARGS%"
+set "PROFILE_ARGS=%PROFILE_ARGS% --max-pending-requests 16 --pending-timeout-ms 600000 %VISION_ARGS% %CACHE_ARGS%%KNOB_ARGS% %SAMPLING_ARGS%"
 
 :launch
 set "GRAFT_ARGS="
@@ -440,7 +422,7 @@ if not exist "%MODEL%" (
 
 echo %TITLE%  ^|  %LABEL%
 if not "%PREFILL_NOTE%"=="" echo %PREFILL_NOTE%
-if /i "%PROFILE%"=="tuned" echo Cache: %CACHE_NOTE%  ^|  automatic prefix grid on
+if /i "%PROFILE%"=="tuned" echo %CACHE_NOTE%
 if /i "%PROFILE%"=="tuned" echo Sampling guard: min-p %MIN_P%, presence penalty %PRESENCE%  (NINFER_MIN_P, NINFER_PRESENCE_PENALTY; "default" = registered preset)
 rem GRAFT_ARGS carries literal embedded quotes (--graft "godmode=<path>"), so re-quoting it for a
 rem string comparison here garbles the quoting and breaks the if statement. `defined` sidesteps
@@ -451,13 +433,9 @@ if not "%HINT%"=="" echo %HINT%
 echo API: http://%HOST%:%PORT%/v1
 echo.
 
-rem WHAT --host-kv-mib 8192 ACTUALLY GETS ON WINDOWS, which is not 8 GiB. WDDM maps a pinned host
-rem allocation into the GPU's address space and charges it against the card, so the runtime clamps
-rem the request to (free VRAM - 1 GiB) / 2 before the first cudaMallocHost. The flag is kept
-rem rather than corrected because it is right on Linux, where the full 8 GiB of host RAM is pinned,
-rem and because it is harmless here: the clamp takes what is actually free after the KV cache is
-rem allocated, so it costs no context, and prefix reuse falls back to device pages when the pin is
-rem zero. Do not read "8192" as a description of this machine. See
+rem --host-context-mib 8192 really pins 8 GiB of host RAM here. Earlier builds clamped it on Windows
+rem to (free VRAM - 1 GiB) / 2, which left ~4.6 GiB or less; that clamp was removed after measuring
+rem that pinning no longer tracks free VRAM on current drivers. See
 rem docs\maintainer\launcher-profiles.md.
 rem Not a parenthesised block: NINFER_CHAT_TEMPLATE (like NINFER_GRAFT_DIR) is an arbitrary local
 rem path and may contain ")" (e.g. "C:\templates\customer (v2)\chat.jinja"). Expanded inside a
@@ -477,7 +455,7 @@ rem is written as ASCII on purpose: Tee-Object writes UTF-16, which findstr cann
 if "%RUNG%"=="0" (
   set "BASE_CONTEXT=%CONTEXT%"
   set "BASE_CHUNK=%PREFILL_CHUNK%"
-  set "BASE_SLOTS=%HOST_STATE_SLOTS%"
+  set "BASE_HOST_MIB=%HOST_CONTEXT_MIB%"
 )
 set "SERVER_LOG=%TEMP%\ninfer-run-%RANDOM%%RANDOM%.log"
 "%SERVER%" "%MODEL%" --host %HOST% --port %PORT% %PROFILE_ARGS% %STORE_ARGS% %GRAFT_ARGS% %CHAT_TEMPLATE_ARGS% 2>&1 | powershell -NoProfile -Command "$input | ForEach-Object { $_; Add-Content -LiteralPath '%SERVER_LOG%' -Value $_ -Encoding Ascii }"
@@ -488,18 +466,19 @@ set /a NEXT=RUNG+1
 set /a NEXT_CONTEXT=BASE_CONTEXT*(8-NEXT)/8/1024*1024
 rem The first step trims context only: an eighth of it frees more than a card that just misses
 rem needs, and prefill speed and cached prefixes are worth keeping. Later steps also give up the
-rem wider prefill chunk and halve the host state slots every other step.
+rem wider prefill chunk and halve the Host context budget every other step (floor 0).
 set "NEXT_CHUNK=%BASE_CHUNK%"
 if %NEXT% GEQ 2 if %BASE_CHUNK% GTR 2048 set "NEXT_CHUNK=2048"
-set /a "NEXT_SLOTS=BASE_SLOTS>>(NEXT/2)"
+set /a "NEXT_HOST_MIB=BASE_HOST_MIB>>(NEXT/2)"
+if %NEXT_HOST_MIB% LSS 0 set "NEXT_HOST_MIB=0"
 echo.
-echo Not enough free GPU memory to start at context %CONTEXT%. Retrying at %NEXT_CONTEXT% (prefill chunk %NEXT_CHUNK%, %NEXT_SLOTS% host state slots).
+echo Not enough free memory to start at context %CONTEXT%. Retrying at %NEXT_CONTEXT% (prefill chunk %NEXT_CHUNK%, %NEXT_HOST_MIB% MiB host context).
 echo Set NINFER_CONTEXT to choose your own, or NINFER_FALLBACK=off to fail instead.
 echo.
 del "%SERVER_LOG%" >nul 2>&1
 set "NINFER_CONTEXT=%NEXT_CONTEXT%"
 set "NINFER_PREFILL_CHUNK=%NEXT_CHUNK%"
-set "NINFER_HOST_STATE_SLOTS=%NEXT_SLOTS%"
+set "NINFER_HOST_CONTEXT_MIB=%NEXT_HOST_MIB%"
 set "RUNG=%NEXT%"
 goto :model_known
 

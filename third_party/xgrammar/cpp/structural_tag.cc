@@ -20,6 +20,7 @@
 #include "grammar_functor.h"
 #include "grammar_impl.h"
 #include "json_schema_converter.h"
+#include "support/json_parse.h"
 #include "support/logging.h"
 #include "support/recursion_guard.h"
 #include "support/utils.h"
@@ -94,13 +95,16 @@ picojson::value JSONSchemaFormat::ToJSON() const {
   picojson::object obj;
   obj["type"] = picojson::value(type);
   picojson::value schema_val;
-  if (picojson::parse(schema_val, json_schema).empty()) {
+  if (ParseJSON(schema_val, json_schema).empty()) {
     obj["json_schema"] = schema_val;
   } else {
     obj["json_schema"] = picojson::value(json_schema);
   }
   obj["style"] = picojson::value(style);
   obj["any_order"] = picojson::value(any_order);
+  if (!excludes.empty()) {
+    obj["excludes"] = StringVectorToJSONArray(excludes);
+  }
   if (max_whitespace_cnt.has_value()) {
     obj["max_whitespace_cnt"] = picojson::value(static_cast<int64_t>(*max_whitespace_cnt));
   } else {
@@ -128,6 +132,12 @@ picojson::value AnyTextFormat::ToJSON() const {
   obj["type"] = picojson::value(type);
   obj["excludes"] = StringVectorToJSONArray(excludes);
   obj["detected_end_strs"] = StringVectorToJSONArray(detected_end_strs_);
+  if (max_tokens >= 0) {
+    obj["max_tokens"] = picojson::value(static_cast<int64_t>(max_tokens));
+  }
+  if (max_chars >= 0) {
+    obj["max_chars"] = picojson::value(static_cast<int64_t>(max_chars));
+  }
   return picojson::value(std::move(obj));
 }
 
@@ -199,6 +209,9 @@ picojson::value AnyTokensFormat::ToJSON() const {
   picojson::object obj;
   obj["type"] = picojson::value(type);
   obj["exclude_tokens"] = IntOrStringVectorToJSONArray(exclude_tokens);
+  if (max_tokens >= 0) {
+    obj["max_tokens"] = picojson::value(static_cast<int64_t>(max_tokens));
+  }
   return picojson::value(std::move(obj));
 }
 
@@ -362,7 +375,7 @@ class StructuralTagParser {
 
 Result<StructuralTag, StructuralTagError> StructuralTagParser::FromJSON(const std::string& json) {
   picojson::value value;
-  std::string err = picojson::parse(value, json);
+  std::string err = ParseJSON(value, json);
   if (!err.empty()) {
     return ResultErr<InvalidJSONError>("Failed to parse JSON: " + err);
   }
@@ -396,6 +409,15 @@ Result<StructuralTag, ISTError> StructuralTagParser::ParseStructuralTag(const pi
 
 Result<Format, ISTError> StructuralTagParser::ParseFormat(const picojson::value& value) {
   RecursionGuard guard(&parse_format_recursion_depth_);
+  // The global recursion limit is far deeper than the native stack allows for the recursive passes
+  // over the format tree (a few KB per level, and Windows has a 1 MB main-thread stack), so cap
+  // the nesting of formats explicitly.
+  static constexpr int kMaxFormatDepth = 100;
+  if (parse_format_recursion_depth_ > kMaxFormatDepth) {
+    return ResultErr<ISTError>(
+        "Formats are nested deeper than " + std::to_string(kMaxFormatDepth) + " levels"
+    );
+  }
   if (!value.is<picojson::object>()) {
     return ResultErr<ISTError>("Format must be an object");
   }
@@ -543,10 +565,13 @@ Result<JSONSchemaFormat, ISTError> StructuralTagParser::ParseJSONSchemaFormat(
     if (it != obj.end() && it->second.is<std::string>()) {
       style = it->second.get<std::string>();
       if (style != "json" && style != "qwen_xml" && style != "minimax_xml" &&
-          style != "deepseek_xml" && style != "glm_xml") {
+          style != "minimax_m3_xml" && style != "deepseek_xml" && style != "glm_xml" &&
+          style != "cohere_xml" && style != "kimi_k3_xml" && style != "deepseek_v4_1_xml" &&
+          style != "gemma") {
         return ResultErr<ISTError>(
-            "style must be \"json\", \"qwen_xml\", \"minimax_xml\", \"deepseek_xml\", or "
-            "\"glm_xml\""
+            "style must be \"json\", \"qwen_xml\", \"minimax_xml\", \"minimax_m3_xml\", "
+            "\"deepseek_xml\", \"glm_xml\", \"cohere_xml\", \"kimi_k3_xml\", "
+            "\"deepseek_v4_1_xml\", or \"gemma\""
         );
       }
     }
@@ -567,20 +592,74 @@ Result<JSONSchemaFormat, ISTError> StructuralTagParser::ParseJSONSchemaFormat(
     }
     max_whitespace_cnt = static_cast<int>(max_whitespace_cnt_it->second.get<int64_t>());
   }
+  std::vector<std::string> excludes;
+  if (auto it = obj.find("excludes"); it != obj.end()) {
+    if (!it->second.is<picojson::array>()) {
+      return ResultErr<ISTError>(
+          "JSONSchema format's excludes must be an array of non-empty strings"
+      );
+    }
+    for (const auto& value : it->second.get<picojson::array>()) {
+      if (!value.is<std::string>() || value.get<std::string>().empty()) {
+        return ResultErr<ISTError>(
+            "JSONSchema format's excludes must be an array of non-empty strings"
+        );
+      }
+      excludes.push_back(value.get<std::string>());
+    }
+    std::sort(excludes.begin(), excludes.end());
+    excludes.erase(std::unique(excludes.begin(), excludes.end()), excludes.end());
+  }
   // here introduces a serialization/deserialization overhead; try to avoid it in the future.
   return ResultOk<JSONSchemaFormat>(
-      json_schema_it->second.serialize(false), style, any_order, max_whitespace_cnt
+      json_schema_it->second.serialize(false),
+      style,
+      any_order,
+      max_whitespace_cnt,
+      std::move(excludes)
   );
+}
+
+Result<int32_t, ISTError> ParseOptionalBudget(
+    const picojson::object& obj, const std::string& field_name, const std::string& format_name
+) {
+  auto it = obj.find(field_name);
+  if (it == obj.end() || it->second.is<picojson::null>()) {
+    return ResultOk<int32_t>(-1);
+  }
+  if (!it->second.is<double>()) {
+    return ResultErr<ISTError>(
+        field_name + " in " + format_name + " must be a non-negative 32-bit integer or null"
+    );
+  }
+  double value = it->second.get<double>();
+  if (value < 0 || value > std::numeric_limits<int32_t>::max() || value != std::floor(value)) {
+    return ResultErr<ISTError>(
+        field_name + " in " + format_name + " must be a non-negative 32-bit integer or null"
+    );
+  }
+  return ResultOk<int32_t>(static_cast<int32_t>(value));
 }
 
 Result<AnyTextFormat, ISTError> StructuralTagParser::ParseAnyTextFormat(const picojson::object& obj
 ) {
+  auto max_tokens_result = ParseOptionalBudget(obj, "max_tokens", "any_text");
+  if (max_tokens_result.IsErr()) {
+    return ResultErr<ISTError>(std::move(max_tokens_result).UnwrapErr());
+  }
+  auto max_chars_result = ParseOptionalBudget(obj, "max_chars", "any_text");
+  if (max_chars_result.IsErr()) {
+    return ResultErr<ISTError>(std::move(max_chars_result).UnwrapErr());
+  }
+  int32_t max_tokens = std::move(max_tokens_result).Unwrap();
+  int32_t max_chars = std::move(max_chars_result).Unwrap();
+
   auto excluded_strs_it = obj.find("excludes");
   if (excluded_strs_it == obj.end()) {
     if ((obj.find("type") == obj.end())) {
       return ResultErr<ISTError>("Any text format should not have any fields other than type");
     }
-    return ResultOk<AnyTextFormat>(std::vector<std::string>{});
+    return ResultOk<AnyTextFormat>(std::vector<std::string>{}, max_tokens, max_chars);
   }
   if (!excluded_strs_it->second.is<picojson::array>()) {
     return ResultErr<ISTError>("AnyText format's excluded_strs field must be an array");
@@ -594,7 +673,7 @@ Result<AnyTextFormat, ISTError> StructuralTagParser::ParseAnyTextFormat(const pi
     }
     excluded_strs.push_back(excluded_str.get<std::string>());
   }
-  return ResultOk<AnyTextFormat>(std::move(excluded_strs));
+  return ResultOk<AnyTextFormat>(std::move(excluded_strs), max_tokens, max_chars);
 }
 
 Result<GrammarFormat, ISTError> StructuralTagParser::ParseGrammarFormat(const picojson::object& obj
@@ -953,7 +1032,7 @@ Result<std::vector<std::variant<int32_t, std::string>>, ISTError> ParseIntOrStri
             field_name + " elements must be non-negative integers or strings"
         );
       }
-      result.push_back(id);
+      result.emplace_back(std::in_place_type<int32_t>, id);
     } else if (v.is<std::string>()) {
       auto s = v.get<std::string>();
       if (s.empty()) {
@@ -994,7 +1073,13 @@ Result<AnyTokensFormat, ISTError> StructuralTagParser::ParseAnyTokensFormat(
     }
     exclude_tokens = std::move(parsed).Unwrap();
   }
-  return ResultOk<AnyTokensFormat>(std::move(exclude_tokens));
+  auto max_tokens_result = ParseOptionalBudget(obj, "max_tokens", "any_tokens");
+  if (max_tokens_result.IsErr()) {
+    return ResultErr<ISTError>(std::move(max_tokens_result).UnwrapErr());
+  }
+  return ResultOk<AnyTokensFormat>(
+      std::move(exclude_tokens), std::move(max_tokens_result).Unwrap()
+  );
 }
 
 Result<TokenTriggeredTagsFormat, ISTError> StructuralTagParser::ParseTokenTriggeredTagsFormat(
@@ -1780,6 +1865,9 @@ class StructuralTagGrammarConverter {
   Result<int, ISTError> VisitSub(const DispatchFormat& format);
   Result<int, ISTError> VisitSub(const TokenDispatchFormat& format);
   Grammar AddRootRuleAndGetGrammar(int ref_rule_id);
+  void SetRuleBodyAndBudgets(
+      int32_t rule_id, int body_expr_id, int32_t max_tokens, int32_t max_chars = -1
+  );
 
   bool IsPrefix(const std::string& prefix, const std::string& full_str);
   int BuildBeginExpr(const TagFormat& tag);
@@ -1821,6 +1909,23 @@ Grammar StructuralTagGrammarConverter::AddRootRuleAndGetGrammar(int ref_rule_id)
   return grammar_builder_.Get(root_rule_id);
 }
 
+void StructuralTagGrammarConverter::SetRuleBodyAndBudgets(
+    int32_t rule_id, int body_expr_id, int32_t max_tokens, int32_t max_chars
+) {
+  // A zero-token region is empty by definition. Materialize that in the grammar because -1 is
+  // also the parser's pre-first-token deadline sentinel.
+  if (max_tokens == 0) {
+    body_expr_id = grammar_builder_.AddChoices({grammar_builder_.AddEmptyStr()});
+  }
+  grammar_builder_.UpdateRuleBody(rule_id, body_expr_id);
+  if (max_tokens >= 0) {
+    grammar_builder_.UpdateMaxTokens(rule_id, max_tokens);
+  }
+  if (max_chars >= 0) {
+    grammar_builder_.UpdateMaxChars(rule_id, max_chars);
+  }
+}
+
 Result<int, ISTError> StructuralTagGrammarConverter::Visit(const Format& format) {
   std::string fingerprint = FormatToJSONValue(format).serialize();
 
@@ -1855,17 +1960,17 @@ Result<int, ISTError> StructuralTagGrammarConverter::VisitSub(const JSONSchemaFo
     return ResultErr<ISTError>("Unsupported parsing type: " + format.style);
   }
   // The whitespace cap comes from the JSONSchemaFormat node (per-tag).
-  std::string ebnf = JSONSchemaToEBNF(
+  auto sub_grammar = GrammarNormalizer::Apply(JSONSchemaToGrammar(
       format.json_schema,
       /*any_whitespace=*/true,
       /*indent=*/std::nullopt,
       /*separators=*/std::nullopt,
       /*strict_mode=*/true,
       /*max_whitespace_cnt=*/format.max_whitespace_cnt,
+      /*any_order=*/format.any_order,
       /*json_format=*/*json_format,
-      format.any_order
-  );
-  auto sub_grammar = Grammar::FromEBNF(ebnf);
+      /*excludes=*/format.excludes
+  ));
   auto added_root_rule_id = SubGrammarAdder().Apply(&grammar_builder_, sub_grammar);
   return ResultOk(added_root_rule_id);
 }
@@ -1889,16 +1994,18 @@ Result<int, ISTError> StructuralTagGrammarConverter::VisitSub(const AnyTextForma
       all_excludes.push_back(s);
     }
   }
+  int body_expr_id;
   if (!all_excludes.empty()) {
-    auto tag_dispatch_expr =
+    body_expr_id =
         grammar_builder_.AddTagDispatch(Grammar::Impl::TagDispatch{{}, false, all_excludes});
-    return ResultOk(grammar_builder_.AddRuleWithHint("any_text", tag_dispatch_expr));
   } else {
     auto any_text_expr = grammar_builder_.AddCharacterClassStar({{0, 0x10FFFF}}, false);
     auto sequence_expr = grammar_builder_.AddSequence({any_text_expr});
-    auto choices_expr = grammar_builder_.AddChoices({sequence_expr});
-    return ResultOk(grammar_builder_.AddRuleWithHint("any_text", choices_expr));
+    body_expr_id = grammar_builder_.AddChoices({sequence_expr});
   }
+  int rule_id = grammar_builder_.AddEmptyRuleWithHint("any_text");
+  SetRuleBodyAndBudgets(rule_id, body_expr_id, format.max_tokens, format.max_chars);
+  return ResultOk(rule_id);
 }
 
 Result<int, ISTError> StructuralTagGrammarConverter::VisitSub(const SequenceFormat& format) {
@@ -2257,7 +2364,7 @@ Result<int, ISTError> StructuralTagGrammarConverter::VisitSub(const AnyTokensFor
   auto star_body = grammar_builder_.AddChoices(
       {grammar_builder_.AddEmptyStr(), grammar_builder_.AddSequence({inner_ref, star_ref})}
   );
-  grammar_builder_.UpdateRuleBody(star_rule_id, star_body);
+  SetRuleBodyAndBudgets(star_rule_id, star_body, format.max_tokens);
   return ResultOk(star_rule_id);
 }
 

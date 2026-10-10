@@ -19,8 +19,9 @@
 // and lets the shared-prefix cache hold the replayed state so each graft is prefilled once.
 //
 // direct_kv and softprompt_kv grafts carry trained cache tensors with no replayable token ids.
-// Their K/V and GDN state are injected directly into a synthesized shared-prefix entry at
-// startup. MTP KV is zero-filled (no HF MTP implementation exists to produce it).
+// Their K/V and GDN state are installed at startup as a pinned shared checkpoint keyed by the
+// graft's placeholder ids (Program::install_external_checkpoint). A speculative draft's context
+// over the graft (MTP KV, DFlash context features) is zero-filled: no tensor carries it.
 //
 // Loading validates the whole container against the resident model -- every tensor shape,
 // the hybrid layer layout, and the payload digest -- so a graft built for another model or
@@ -83,10 +84,10 @@ struct PromptGraft {
 // the first inconsistency found.
 [[nodiscard]] PromptGraft load_prompt_graft(const GraftSource& source, const TextConfig& text);
 
-// How many of `sources` are direct_kv or softprompt_kv, from their sidecars alone. Each one
-// permanently holds a StateImage and a shared-prefix slot once injected, so option normalization
-// sizes those pools before the containers themselves are loaded.
-[[nodiscard]] std::uint32_t count_direct_grafts(const std::vector<GraftSource>& sources);
+// The slot count of each of `sources` that is direct_kv or softprompt_kv, in order, from their
+// sidecars alone. Each one permanently holds a StateImage and its Main KV pages once installed, so
+// option normalization and KV planning size those pools before the containers are loaded.
+[[nodiscard]] std::vector<std::uint32_t> direct_graft_slots(const std::vector<GraftSource>& sources);
 
 [[nodiscard]] std::vector<PromptGraft> load_prompt_grafts(const std::vector<GraftSource>& sources,
                                                          const TextConfig& text);

@@ -46,6 +46,20 @@ struct DeserializeFormatError : XGrammarError {
 /*!
  * \brief Exception thrown when the JSON schema is invalid or not satisfiable.
  */
+enum class SchemaErrorType : int {
+  kInvalidSchema = 0,
+  kUnsatisfiableSchema = 1,
+  kUnsupportedSchema = 2,
+};
+
+struct JSONSchemaCompileError : XGrammarError {
+  SchemaErrorType kind;
+  std::string pointer;
+  JSONSchemaCompileError(SchemaErrorType kind, const std::string& message, std::string pointer = {})
+      : XGrammarError(message), kind(kind), pointer(std::move(pointer)) {}
+  std::string GetType() const override { return "JSONSchemaCompileError"; }
+};
+
 struct InvalidJSONSchemaError : XGrammarError {
   InvalidJSONSchemaError(const std::string& message)
       : XGrammarError(std::string("Invalid JSON schema error: ") + message) {}

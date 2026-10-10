@@ -3,15 +3,15 @@
 #include "core/nvtx.h"
 #include "ninfer/types.h"
 #include "runtime/contract/execution.h"
-#include "runtime/contract/resources.h"
-#include "runtime/engine/admission_policy.h"
 #include "runtime/engine/generation_budget.h"
+#include "runtime/engine/context_cache/types.h"
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -35,6 +35,7 @@ struct RequestHostTiming {
     std::uint64_t engine_commit_output_exposed_ns = 0;
     std::uint64_t engine_maintenance_exposed_ns   = 0;
     std::uint64_t device_wait_exposed_ns          = 0;
+    std::uint64_t constraint_draft_wait_exposed_ns = 0;
     std::uint64_t decode_host_exposed_ns          = 0;
     std::uint64_t decode_device_wait_exposed_ns   = 0;
     std::uint64_t prefill_units                   = 0;
@@ -61,6 +62,7 @@ struct RequestHostTiming {
         program_submit_exposed_ns += timing.submit_host_ns;
         program_post_exposed_ns += timing.post_host_ns;
         device_wait_exposed_ns += timing.device_wait_ns;
+        constraint_draft_wait_exposed_ns += timing.constraint_draft_wait_ns;
         if (decode_member) {
             decode_host_exposed_ns += timing.host_ns();
             decode_device_wait_exposed_ns += timing.device_wait_ns;
@@ -83,6 +85,8 @@ struct RequestHostTiming {
                 static_cast<double>(engine_maintenance_exposed_ns) * kNanosecondsToSeconds,
             .device_wait_exposed_seconds =
                 static_cast<double>(device_wait_exposed_ns) * kNanosecondsToSeconds,
+            .constraint_draft_wait_exposed_seconds =
+                static_cast<double>(constraint_draft_wait_exposed_ns) * kNanosecondsToSeconds,
             .decode_host_exposed_seconds =
                 static_cast<double>(decode_host_exposed_ns) * kNanosecondsToSeconds,
             .decode_device_wait_exposed_seconds =
@@ -98,6 +102,9 @@ enum class EngineRequestState : std::uint8_t {
     Waiting,
     Materializing,
     Prefill,
+    Replay,
+    Pausing,
+    Paused,
     DecodeReady,
     ControlReady,
     ModelFinished,
@@ -110,7 +117,9 @@ struct RequestRecord {
     using OutputSession  = typename ModelContract::OutputSession;
     using BasePlan       = typename ModelContract::RequestBasePlan;
     using SequenceHandle = typename ModelContract::SequenceHandle;
-    using StreamEvent    = std::variant<GenerationTimingObservation, OutputDelta>;
+    using ResumeState    = typename ModelContract::ResumeState;
+    using StreamEvent = std::variant<GenerationTimingObservation, GenerationFirstTokenObservation,
+                                     OutputDelta, std::unique_ptr<GenerationSchedulingObservation>>;
 
     RequestRecord(std::uint64_t request_identity, std::uint64_t publication_sequence,
                   PreparedPrompt input, OutputSession output_session, PromptSummary summary,
@@ -121,7 +130,7 @@ struct RequestRecord {
           id(request_identity), publication_order(publication_sequence), prompt(std::move(input)),
           output(std::move(output_session)), prompt_summary(std::move(summary)),
           prepare_seconds(frontend_seconds), options(std::move(request_options)),
-          consumer_mode(output_consumer), observation(observation), deadline(limit),
+          consumer_mode(output_consumer), observation(std::move(observation)), deadline(limit),
           submitted(submit_time) {}
 
     RequestRecord(const RequestRecord&)            = delete;
@@ -129,6 +138,10 @@ struct RequestRecord {
 
     [[nodiscard]] bool is_prefilling() const noexcept {
         return model_state == EngineRequestState::Prefill;
+    }
+
+    [[nodiscard]] bool is_replaying() const noexcept {
+        return model_state == EngineRequestState::Replay;
     }
 
     [[nodiscard]] bool is_materializing() const noexcept {
@@ -175,30 +188,47 @@ struct RequestRecord {
     std::atomic<bool> cancelled{false};
     EngineRequestState model_state        = EngineRequestState::Waiting;
     bool capture_pending                  = false;
-    // EngineOptions::output_reservation_tokens: output tokens whose KV is reserved so far, the
-    // tokens still to reserve, and the finish reason that applies once they all are.
-    std::uint32_t granted_output_tokens  = 0;
-    std::uint32_t deferred_output_tokens = 0;
-    FinishReason deferred_limit_reason   = FinishReason::None;
-    // Growth found no free page, so the request ends at its reserved output unless it stops sooner.
-    bool output_reservation_exhausted = false;
-    // The context store has been consulted for this request; it is consulted once.
-    bool store_probed                     = false;
     EngineRequestState post_capture_state = EngineRequestState::Prefill;
     std::optional<FinishReason> terminal_reason;
 
     std::optional<BasePlan> base_plan;
-    std::uint64_t remaining_service_work = 0;
-    std::uint64_t backfill_epoch         = 0;
-    BackfillClass backfill_class         = BackfillClass::None;
+    std::optional<ResumeState> suspended;
+    ContinuationOwnerToken continuation_owner = 0;
+    std::uint64_t device_to_host_bytes        = 0;
+    std::uint64_t host_to_device_bytes        = 0;
+    EngineRequestState resume_phase           = EngineRequestState::Prefill;
+    std::uint32_t admission_bypasses          = 0;
+    std::uint64_t admission_generation        = 0;
+    bool admission_observed                   = false;
+    GenerationAdmissionStats admission;
+    std::optional<Clock::time_point> source_wait_started;
+    // Context store hydration: the store is consulted once per request. While `hydrating`, a host
+    // worker reads the stored image and the request is not offered for admission.
+    bool store_probed                   = false;
+    bool hydrating                      = false;
+    bool hydrated                       = false;
+    std::uint32_t hydration_frontier    = 0;
+    std::uint32_t hydration_reuse_before = 0;
+    Clock::time_point hydration_started{};
+    Clock::time_point hydration_deadline{};
+    bool recovery_pending                  = false;
+    std::uint64_t committed_decode_tokens  = 0;
+    GenerationRecoveryRoute recovery_route = GenerationRecoveryRoute::None;
+    std::uint64_t preemption_count         = 0;
+    std::uint64_t replay_restores          = 0;
+    std::uint64_t snapshot_restores        = 0;
+    std::uint64_t replayed_tokens          = 0;
+    std::uint64_t paused_ns                = 0;
+    std::optional<Clock::time_point> paused_at;
     std::uint32_t computed_prompt_tokens = 0;
     GenerationTimings generation_timings;
     RequestHostTiming host_timing;
+    std::uint64_t initial_binding_ns = 0;
+    GenerationWorkTiming prefill_work;
+    GenerationWorkTiming replay_work;
+    std::array<std::array<GenerationTransferTiming, 3>, 3> context_transfers{};
+    std::optional<GenerationFirstOutputTiming> first_output_timing;
     SpeculativeStats speculative_stats;
-    MaterializationDiagnostics materialization_diagnostics;
-    // The catalog cell and session digest the finished session was retained under, if any.
-    std::int32_t retained_slot = -1;
-    std::string retained_session_digest;
 
     std::mutex mutex;
     std::condition_variable cv;

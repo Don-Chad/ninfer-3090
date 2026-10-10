@@ -1,11 +1,12 @@
 #pragma once
 
 #include "core/host_kv_arena.h"
-#include "models/qwen3_5/program/storage/kv_store.h"
+#include "models/qwen3_5/program/storage/logical_kv_store.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <optional>
@@ -66,7 +67,6 @@ public:
         affected_extents_.reserve(descriptor_capacity);
         extent_scan_scratch_.reserve(descriptor_capacity);
         partition_runs_.reserve(descriptor_capacity);
-        suballocation_scratch_.reserve(descriptor_capacity);
     }
 
     HostKVExtentStore(const HostKVExtentStore&)            = delete;
@@ -185,6 +185,7 @@ public:
             node = entry.next;
         }
         if (node != kInvalidIndex) { std::terminate(); }
+        extent.allocation->publish();
         extent.state = ExtentState::Published;
         const HostKVExtentCapability capability(this, reservation.descriptor_, extent.generation);
         node = extent.head;
@@ -203,6 +204,80 @@ public:
         }
         consume(reservation);
         return capability;
+    }
+
+    struct ImportedExtent {
+        HostKVExtentCapability capability;
+        std::vector<LogicalKVPageHandle> pages;
+    };
+
+    // Publishes `columns.size()` new host-only logical pages whose packed contents are `payload`
+    // (one page stride each, in order) as one extent. The pages carry no reference yet: the caller
+    // adopts them into an address space before anything releases unreferenced Host pages. nullopt
+    // when the descriptors or one contiguous Host allocation are not available now.
+    [[nodiscard]] std::optional<ImportedExtent>
+    import_pages(LogicalKVPageStore& pages, std::span<const std::uint32_t> columns,
+                 std::span<const std::byte> payload) {
+        const HostKVPageLayout& layout = page_layout(pages);
+        if (columns.empty() || payload.size() != columns.size() * layout.page_stride) {
+            throw std::invalid_argument("Host KV import payload does not match its page count");
+        }
+        if (free_count_ == 0 || columns.size() > free_membership_count_) { return std::nullopt; }
+        std::optional<HostKVAllocation> allocation =
+            arena_->allocate(layout, static_cast<std::uint32_t>(columns.size()));
+        if (!allocation) { return std::nullopt; }
+        HostKVAllocationView view = arena_->writable_view(*allocation);
+        std::memcpy(view.data(), payload.data(), payload.size());
+
+        ImportedExtent imported;
+        imported.pages.reserve(columns.size());
+        for (const std::uint32_t coverage : columns) {
+            const std::optional<LogicalKVPageHandle> page = pages.materialize_host_only(coverage);
+            if (!page) {
+                for (const LogicalKVPageHandle created : imported.pages) {
+                    pages.abandon_host_only(created);
+                }
+                return std::nullopt;
+            }
+            imported.pages.push_back(*page);
+        }
+
+        const std::uint32_t descriptor = free_[--free_count_];
+        Extent& extent                 = extents_[descriptor];
+        if (extent.state != ExtentState::Free) { std::terminate(); }
+        extent.state      = ExtentState::Published;
+        extent.page_store = &pages;
+        extent.allocation = std::move(allocation);
+        extent.allocation->publish();
+        const HostKVExtentCapability capability(this, descriptor, extent.generation);
+        for (const LogicalKVPageHandle page : imported.pages) {
+            const std::uint32_t node = take_membership();
+            if (node == kInvalidIndex) { std::terminate(); }
+            Membership& entry = memberships_[node];
+            entry.page        = page;
+            entry.epoch       = pages.content_epoch(page);
+            entry.coverage    = pages.committed_columns(page);
+            entry.extent      = descriptor;
+            entry.offset      = extent.page_count;
+            entry.next        = kInvalidIndex;
+            if (extent.tail == kInvalidIndex) {
+                extent.head = node;
+            } else {
+                memberships_[extent.tail].next = node;
+            }
+            extent.tail = node;
+            try {
+                pages.attach_host_replica(page,
+                                          HostKVPageReplica{.extent            = capability,
+                                                            .page_offset       = extent.page_count,
+                                                            .membership_node   = node,
+                                                            .content_epoch     = entry.epoch,
+                                                            .committed_columns = entry.coverage});
+            } catch (...) { std::terminate(); }
+            ++extent.page_count;
+        }
+        imported.capability = capability;
+        return imported;
     }
 
     void abort(HostKVExtentReservation& reservation) noexcept {
@@ -294,7 +369,7 @@ public:
     can_release_page_replicas(std::span<const HostKVPageReplicaRelease> releases) const noexcept {
         begin_release_marks();
         for (const HostKVPageReplicaRelease& release : releases) {
-            if (release.pages == nullptr || !mark_release(*release.pages, release.page, false)) {
+            if (release.pages == nullptr || !mark_release(*release.pages, release.page)) {
                 return false;
             }
         }
@@ -306,51 +381,9 @@ public:
                               std::span<const LogicalKVPageHandle> releases) const noexcept {
         begin_release_marks();
         for (const LogicalKVPageHandle release : releases) {
-            if (!mark_release(pages, release, false)) { return false; }
+            if (!mark_release(pages, release)) { return false; }
         }
         return true;
-    }
-
-    [[nodiscard]] bool
-    can_allocate_after_page_releases(std::span<const HostKVPageReplicaRelease> releases,
-                                     std::span<const HostKVAllocationRequest> allocations) const {
-        return can_allocate_after_page_releases(releases, {}, allocations);
-    }
-
-    // Simulates both immediately droppable Host duplicates and Host replicas that become
-    // unreferenced when a transaction removes their last address-space membership.
-    [[nodiscard]] bool can_allocate_after_page_releases(
-        std::span<const HostKVPageReplicaRelease> releases,
-        std::span<const HostKVPageReplicaRelease> last_reference_releases,
-        std::span<const HostKVAllocationRequest> allocations) const {
-        begin_release_marks();
-        suballocation_scratch_.clear();
-        const auto append = [&](const HostKVPageReplicaRelease& release) {
-            if (release.pages == nullptr) { return false; }
-            const HostKVPageReplica replica = release.pages->host_replica(release.page);
-            const Extent& extent            = require(replica.extent);
-            if (!extent.allocation) { return false; }
-            suballocation_scratch_.push_back(HostKVSuballocationRelease{
-                .allocation = extent.allocation->handle(),
-                .begin_page = replica.page_offset,
-                .page_count = 1,
-            });
-            return true;
-        };
-        for (const HostKVPageReplicaRelease& release : releases) {
-            if (release.pages == nullptr || !mark_release(*release.pages, release.page, false) ||
-                !append(release)) {
-                return false;
-            }
-        }
-        for (const HostKVPageReplicaRelease& release : last_reference_releases) {
-            if (release.pages == nullptr || !mark_release(*release.pages, release.page, true) ||
-                !append(release)) {
-                return false;
-            }
-        }
-        return arena_->can_allocate_after_suballocation_releases(suballocation_scratch_,
-                                                                 allocations);
     }
 
     [[nodiscard]] bool release_page_replicas(std::span<const HostKVPageReplicaRelease> releases) {
@@ -478,16 +511,9 @@ private:
         }
     }
 
-    [[nodiscard]] bool mark_release(LogicalKVPageStore& pages, LogicalKVPageHandle page,
-                                    bool last_reference) const noexcept {
-        if (last_reference) {
-            if (!pages.valid(page) || !pages.host_resident(page) || pages.source_pins(page) != 0 ||
-                pages.address_references(page) != 1) {
-                return false;
-            }
-        } else if (!can_release_page_replica(pages, page)) {
-            return false;
-        }
+    [[nodiscard]] bool mark_release(LogicalKVPageStore& pages,
+                                    LogicalKVPageHandle page) const noexcept {
+        if (!can_release_page_replica(pages, page)) { return false; }
         const HostKVPageReplica replica = pages.host_replica(page);
         if (!valid(replica.extent) || replica.membership_node >= memberships_.size()) {
             return false;
@@ -698,7 +724,6 @@ private:
     mutable std::vector<std::uint32_t> release_marks_;
     mutable std::vector<std::uint32_t> extent_marks_;
     mutable std::vector<std::uint32_t> affected_extents_;
-    mutable std::vector<HostKVSuballocationRelease> suballocation_scratch_;
     mutable std::uint32_t release_stamp_ = 0;
     std::vector<std::uint32_t> extent_scan_scratch_;
     std::vector<PartitionRun> partition_runs_;

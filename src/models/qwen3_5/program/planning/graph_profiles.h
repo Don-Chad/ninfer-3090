@@ -2,6 +2,11 @@
 #include "models/qwen3_5/program/program.h"
 #include "ninfer/ops/attention_geometry.h"
 
+namespace ninfer::models::qwen3_5::execution {
+struct MtpCausalAttentionEnvelopes;
+struct DFlashEnvelopes;
+} // namespace ninfer::models::qwen3_5::execution
+
 namespace ninfer::models::qwen3_5::detail {
 
 [[nodiscard]] std::vector<GraphExecutionProfile> ordinary_graph_profiles(std::uint32_t capacity);
@@ -18,5 +23,10 @@ struct MtpGraphAttention {
                                                                        std::uint32_t capacity,
                                                                        std::uint32_t draft_window,
                                                                        std::uint32_t batch_size);
+
+[[nodiscard]] execution::MtpCausalAttentionEnvelopes
+mtp_causal_attention_envelopes(std::uint32_t max_frontier, std::uint32_t k, std::uint32_t capacity);
+[[nodiscard]] execution::DFlashEnvelopes dflash_envelopes(std::uint32_t max_frontier,
+                                                          std::uint32_t k);
 
 } // namespace ninfer::models::qwen3_5::detail

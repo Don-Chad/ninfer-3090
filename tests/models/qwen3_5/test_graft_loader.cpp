@@ -250,23 +250,24 @@ int main() {
                           "a direct_kv graft's placeholder ids are not stable public token ids");
     }
     {
-        // Only the injected kinds hold a StateImage and a shared-prefix slot for the server's life.
+        // Only the installed kinds hold a StateImage and Main KV pages for the server's life.
         Container direct = valid_container();
         direct.tensors.erase("replay_ids");
         direct.meta["kind"] = "direct_kv";
         direct.meta.erase("replay");
         const std::filesystem::path replayed = write(dir, "count_replay", valid_container());
         const std::filesystem::path injected = write(dir, "count_direct", direct);
-        failures += check(q::count_direct_grafts({}) == 0 &&
-                              q::count_direct_grafts({{.name = "a", .path = replayed}}) == 0 &&
-                              q::count_direct_grafts({{.name = "a", .path = replayed},
-                                                      {.name = "b", .path = injected},
-                                                      {.name = "c", .path = injected}}) == 2,
-                          "direct grafts were not counted apart from replayed ones");
+        failures += check(q::direct_graft_slots({}).empty() &&
+                              q::direct_graft_slots({{.name = "a", .path = replayed}}).empty() &&
+                              q::direct_graft_slots({{.name = "a", .path = replayed},
+                                                     {.name = "b", .path = injected},
+                                                     {.name = "c", .path = injected}}) ==
+                                  std::vector<std::uint32_t>{3, 3},
+                          "direct grafts were not sized apart from replayed ones");
     }
     {
-        // Engine sizing: a direct graft is one more resident StateImage and shared prefix; a
-        // scoring Engine and a disabled context cache cannot hold one.
+        // Engine sizing: a direct graft is one more resident StateImage; a scoring Engine and a
+        // disabled context cache cannot hold one.
         Container direct = valid_container();
         direct.tensors.erase("replay_ids");
         direct.meta["kind"] = "direct_kv";
@@ -280,10 +281,8 @@ int main() {
         with_graft.grafts.push_back(source);
         const auto grown = ninfer::runtime::normalize_engine_options(with_graft);
         failures += check(*grown.context_cache.device_state_slots ==
-                                  *base.context_cache.device_state_slots + 1 &&
-                              *grown.context_cache.max_shared_prefixes ==
-                                  *base.context_cache.max_shared_prefixes + 1,
-                          "a direct graft was not counted in the state and shared-prefix pools");
+                              *base.context_cache.device_state_slots + 1,
+                          "a direct graft was not counted in the Device state pool");
 
         const auto rejected = [](ninfer::EngineOptions options) {
             try {

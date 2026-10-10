@@ -439,6 +439,22 @@ void DeviceContext::synchronize() const {
     CUDA_CHECK(cudaSetDevice(endpoints_[active_rank_].device));
 }
 
+cudaError_t DeviceContext::synchronize_status() const noexcept {
+    cudaError_t first = cudaSuccess;
+    const auto keep   = [&](cudaError_t error) {
+        if (first == cudaSuccess && error != cudaSuccess) { first = error; }
+    };
+    for (const RankContext& endpoint : endpoints_) {
+        keep(cudaSetDevice(endpoint.device));
+        // The whole device, not only the compute stream: transfer streams and events too. A sticky
+        // error is returned by every later synchronization; the last-error slot is deliberately
+        // not consulted, since it also holds stale, already-handled non-sticky errors.
+        keep(cudaDeviceSynchronize());
+    }
+    if (!endpoints_.empty()) { keep(cudaSetDevice(endpoints_[active_rank_].device)); }
+    return first;
+}
+
 ScopedDeviceRank::ScopedDeviceRank(DeviceContext& context, std::size_t rank)
     : context_(context), previous_rank_(context.active_rank()) {
     context_.activate_rank(rank);
@@ -555,6 +571,13 @@ void CudaCompletionEvent::wait(cudaStream_t stream) const {
         throw std::logic_error("CUDA completion event is not waitable");
     }
     CUDA_CHECK(cudaStreamWaitEvent(stream, event_, 0));
+}
+
+void CudaCompletionEvent::record_external(cudaStream_t stream) {
+    if (event_ == nullptr || stream == nullptr) {
+        throw std::logic_error("CUDA completion event is not recordable");
+    }
+    CUDA_CHECK(cudaEventRecordWithFlags(event_, stream, cudaEventRecordExternal));
 }
 
 bool CudaCompletionEvent::ready() const {

@@ -4,13 +4,14 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
 namespace {
 
 using ninfer::ContextCacheOptions;
-using ninfer::runtime::resolve_host_cache;
+using ninfer::runtime::resolve_host_capacity_bytes;
 
 constexpr std::uint64_t kMiB = 1ULL << 20;
 constexpr std::uint64_t kGiB = 1ULL << 30;
@@ -21,11 +22,9 @@ int check(bool condition, const char* message) {
     return 1;
 }
 
-ContextCacheOptions requested(std::uint32_t device_state_slots) {
+ContextCacheOptions requested() {
     ContextCacheOptions options;
-    options.auto_host_cache  = true;
-    options.device_state_slots = device_state_slots;
-    options.max_long_anchors_per_continuation = 2;
+    options.auto_host_cache = true;
     return options;
 }
 
@@ -116,8 +115,8 @@ int check_cgroup_probe() {
     return failures;
 }
 
-// The Engine normalizes its options once before sizing. Automatic mode must accept the options as a
-// caller writes them (catalogs unset), refuse explicit catalogs, and refuse a disabled cache.
+// The Engine normalizes its options once before sizing. Automatic mode sizes the one Host context
+// capacity, so it refuses an explicit capacity beside it, and the percent and cap only qualify it.
 int check_automatic_normalization() {
     using ninfer::runtime::normalize_engine_options;
     int failures = 0;
@@ -131,9 +130,8 @@ int check_automatic_normalization() {
         normalized = normalize_engine_options(options);
     } catch (const std::exception&) { accepted = false; }
     failures += check(accepted && normalized.context_cache.auto_host_cache &&
-                          normalized.context_cache.max_private_continuations == 8 &&
-                          normalized.context_cache.max_shared_prefixes == 4,
-                      "automatic mode rejected, or did not default, options with unset catalogs");
+                          !normalized.context_cache.host_capacity_bytes,
+                      "automatic mode rejected, or resolved early, options with no capacity");
 
     const auto rejected = [&](auto&& edit) {
         ninfer::EngineOptions bad = options;
@@ -143,46 +141,49 @@ int check_automatic_normalization() {
         } catch (const std::invalid_argument&) { return true; }
         return false;
     };
-    failures += check(rejected([](ContextCacheOptions& cache) { cache.max_private_continuations = 9; }),
-                      "automatic mode accepted an explicit private-continuation capacity");
-    failures += check(rejected([](ContextCacheOptions& cache) { cache.max_shared_prefixes = 9; }),
-                      "automatic mode accepted an explicit shared-prefix capacity");
-    failures += check(rejected([](ContextCacheOptions& cache) { cache.enabled = false; }),
-                      "automatic mode was accepted with the context cache disabled");
+    failures += check(rejected([](ContextCacheOptions& cache) { cache.host_capacity_bytes = kGiB; }),
+                      "automatic mode accepted an explicit Host context capacity");
+    failures += check(rejected([](ContextCacheOptions& cache) {
+                          cache.auto_host_cache    = false;
+                          cache.host_cache_percent = 50;
+                      }),
+                      "a host cache percent was accepted without automatic mode");
+    failures += check(rejected([](ContextCacheOptions& cache) {
+                          cache.auto_host_cache      = false;
+                          cache.host_cache_max_bytes = kGiB;
+                      }),
+                      "a host cache cap was accepted without automatic mode");
+    failures += check(rejected([](ContextCacheOptions& cache) { cache.host_cache_percent = 0; }) &&
+                          rejected([](ContextCacheOptions& cache) { cache.host_cache_percent = 101; }),
+                      "an out-of-range host cache percent was accepted");
     return failures;
 }
 
-// A scoring Engine ignores the generation-only prefill scheduling options, so values it never uses
-// are normalized away instead of failing construction.
-int check_scoring_normalization() {
+// Fork features that were once parked are accepted by option normalization again.
+int check_fork_options_accepted() {
     using ninfer::runtime::normalize_engine_options;
-    ninfer::EngineOptions options;
-    options.purpose           = ninfer::EnginePurpose::CausalScoring;
-    options.max_prefill_lanes = 4;
-    options.prefill_max_skip  = 0;
-    bool accepted             = true;
-    ninfer::EngineOptions normalized;
-    try {
-        normalized = normalize_engine_options(options);
-    } catch (const std::exception&) { accepted = false; }
-    return check(accepted && normalized.max_prefill_lanes == 1 &&
-                     normalized.prefill_max_skip == ninfer::EngineOptions{}.prefill_max_skip,
-                 "a CausalScoring Engine rejected or kept its generation-only prefill options");
-}
-
-// Zero decode rounds per prefill unit resolves from the chunk (chunk / 64, at least one); an
-// explicit count is kept.
-int check_decode_rounds_normalization() {
-    using ninfer::runtime::normalize_engine_options;
-    const auto resolve = [](std::uint32_t chunk, std::uint32_t rounds) {
+    const auto rejected = [](auto&& edit) {
         ninfer::EngineOptions options;
-        options.prefill_chunk             = chunk;
-        options.decode_rounds_per_prefill = rounds;
-        return normalize_engine_options(options).decode_rounds_per_prefill;
+        edit(options);
+        try {
+            (void)normalize_engine_options(options);
+        } catch (const std::invalid_argument&) { return true; }
+        return false;
     };
-    return check(resolve(1024, 0) == 16 && resolve(4096, 0) == 64 && resolve(128, 0) == 2 &&
-                     resolve(32, 0) == 1 && resolve(1024, 1) == 1 && resolve(1024, 7) == 7,
-                 "decode rounds per prefill unit did not resolve from the prefill chunk");
+    int failures = 0;
+    failures += check(!rejected([](ninfer::EngineOptions& o) { o.devices = {0}; }) &&
+                          !rejected([](ninfer::EngineOptions& o) { o.devices = {0, 0}; }),
+                      "a pipeline device list was refused at option normalization");
+    failures += check(!rejected([](ninfer::EngineOptions& o) {
+                          o.enable_vision    = true;
+                          o.vision_residency = ninfer::VisionResidency::Overlay;
+                      }),
+                      "overlay vision residency was refused at option normalization");
+    failures += check(!rejected([](ninfer::EngineOptions& o) {
+                          o.context_store.directory = "store";
+                      }),
+                      "the context store was refused at option normalization");
+    return failures;
 }
 
 } // namespace
@@ -190,171 +191,101 @@ int check_decode_rounds_normalization() {
 int main() {
     int failures = 0;
     failures += check_automatic_normalization();
-    failures += check_scoring_normalization();
-    failures += check_decode_rounds_normalization();
+    failures += check_fork_options_accepted();
 
-    // 64 GiB free less the 3 GiB default reserve is a 61 GiB (62,464 MiB) budget; an eighth,
-    // 7,808 MiB, buys 78 of the 100 MiB states.
-    const ContextCacheOptions large = resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0);
-    failures += check(!large.auto_host_cache && large.host_state_slots == 78 &&
-                          large.host_kv_capacity_bytes == (62464 - 7800) * kMiB,
-                      "64 GiB host did not split 61 GiB into 78 states and the remaining KV");
-    failures += check(large.max_private_continuations == 94 && large.max_shared_prefixes == 23,
-                      "catalogs did not follow the resident state count");
+    // Everything free but the 3 GiB default reserve is pinned.
+    failures += check(resolve_host_capacity_bytes(requested(), 64 * kGiB) == 61 * kGiB,
+                      "64 GiB free did not leave the 3 GiB default reserve");
 
-    // The reserve is a setting: 512 MiB leaves a 65,024 MiB budget and 81 states.
-    ContextCacheOptions slim_reserve   = requested(8);
+    // The reserve is a setting.
+    ContextCacheOptions slim_reserve      = requested();
     slim_reserve.host_cache_reserve_bytes = 512 * kMiB;
-    const ContextCacheOptions slim = resolve_host_cache(slim_reserve, 64 * kGiB, 100 * kMiB, 8, 0);
-    failures += check(slim.host_state_slots == 81 &&
-                          slim.host_kv_capacity_bytes == (65024 - 8100) * kMiB,
-                      "the configured reserve did not set the budget");
-    failures += check(large.device_state_slots == 8 && large.max_long_anchors_per_continuation == 2,
-                      "device-side fields were not carried over");
+    failures += check(resolve_host_capacity_bytes(slim_reserve, 64 * kGiB) ==
+                          64 * kGiB - 512 * kMiB,
+                      "the configured reserve did not set the capacity");
 
-    // A cap bounds what is pinned however much is free, after the reserve: 10 GiB (10,240 MiB) of
-    // the 61 GiB budget buys an eighth, 1,280 MiB, so 12 of the 100 MiB states and the rest KV.
-    ContextCacheOptions capped_request   = requested(8);
+    // A cap bounds what is pinned however much is free, after the reserve.
+    ContextCacheOptions capped_request  = requested();
     capped_request.host_cache_max_bytes = 10 * kGiB;
-    const ContextCacheOptions capped = resolve_host_cache(capped_request, 64 * kGiB, 100 * kMiB, 8, 0);
-    failures += check(capped.host_state_slots == 12 &&
-                          capped.host_kv_capacity_bytes == (10240 - 1200) * kMiB,
-                      "the cap did not bound the pinned budget");
-    failures += check(capped.host_cache_max_bytes == 10 * kGiB, "the cap was not carried over");
-    // A cap above the budget changes nothing, and so does leaving it unset.
-    ContextCacheOptions loose_request   = requested(8);
+    failures += check(resolve_host_capacity_bytes(capped_request, 64 * kGiB) == 10 * kGiB,
+                      "the cap did not bound the pinned capacity");
+    // A cap above the budget changes nothing.
+    ContextCacheOptions loose_request  = requested();
     loose_request.host_cache_max_bytes = 100 * kGiB;
-    const ContextCacheOptions loose = resolve_host_cache(loose_request, 64 * kGiB, 100 * kMiB, 8, 0);
-    failures += check(loose.host_state_slots == large.host_state_slots &&
-                          loose.host_kv_capacity_bytes == large.host_kv_capacity_bytes,
+    failures += check(resolve_host_capacity_bytes(loose_request, 64 * kGiB) == 61 * kGiB,
                       "a cap above the available budget changed the sizing");
     // The reserve still applies first: a small machine is not pushed up to the cap.
-    const ContextCacheOptions small_machine =
-        resolve_host_cache(capped_request, 8 * kGiB, 100 * kMiB, 8, 0);
-    failures += check(small_machine.host_kv_capacity_bytes + small_machine.host_state_slots * 100 * kMiB ==
-                          5 * kGiB,
+    failures += check(resolve_host_capacity_bytes(capped_request, 8 * kGiB) == 5 * kGiB,
                       "an 8 GiB machine did not keep its 3 GiB reserve under the cap");
     // A cap of zero turns the host tier off.
-    ContextCacheOptions zero_request   = requested(8);
+    ContextCacheOptions zero_request  = requested();
     zero_request.host_cache_max_bytes = 0;
-    const ContextCacheOptions none = resolve_host_cache(zero_request, 64 * kGiB, 100 * kMiB, 8, 0);
-    failures += check(none.host_state_slots == 0 && none.host_kv_capacity_bytes == 0,
+    failures += check(resolve_host_capacity_bytes(zero_request, 64 * kGiB) == 0,
                       "a zero cap did not leave no host cache");
+    // At or under the reserve nothing is pinned.
+    failures += check(resolve_host_capacity_bytes(requested(), 3 * kGiB) == 0 &&
+                          resolve_host_capacity_bytes(requested(), 1 * kGiB) == 0,
+                      "a host under the reserve still pinned memory");
 
-    // Injected grafts hold shared-prefix slots of their own, on top of the sized catalog.
-    const ContextCacheOptions grafted = resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 2);
-    failures += check(grafted.max_shared_prefixes == 25 && grafted.max_private_continuations == 94,
-                      "pinned graft prefixes were not added to the shared catalog");
-
-    // At or under the reserve nothing is pinned and the catalogs fall back to their floors.
-    const ContextCacheOptions starved = resolve_host_cache(requested(8), 3 * kGiB, 100 * kMiB, 8, 0);
-    failures += check(starved.host_state_slots == 0 && starved.host_kv_capacity_bytes == 0 &&
-                          starved.max_private_continuations == 16 &&
-                          starved.max_shared_prefixes == 8,
-                      "a host under the reserve still pinned memory or shrank the catalogs");
-
-    // A very large host is bounded by the state-slot cap, and KV takes the rest of the budget.
-    const ContextCacheOptions huge = resolve_host_cache(requested(8), 1024 * kGiB, 10 * kMiB, 8, 0);
-    failures += check(huge.host_state_slots == 128 &&
-                          huge.host_kv_capacity_bytes == (1045504 - 1280) * kMiB &&
-                          huge.max_private_continuations == 144 && huge.max_shared_prefixes == 32,
-                      "state-slot cap or the KV remainder is wrong on a very large host");
-
-    // A state larger than an eighth of the budget is not pinned, and KV gets the whole budget:
-    // 8 GiB free less the 3 GiB reserve is 5 GiB, whose eighth is under one 3 GiB state.
-    const ContextCacheOptions oversized = resolve_host_cache(requested(8), 8 * kGiB, 3 * kGiB, 1, 0);
-    failures += check(oversized.host_state_slots == 0 &&
-                          oversized.host_kv_capacity_bytes == 5 * kGiB,
-                      "a state slot larger than its share was still pinned");
-
-    // Where pinned memory is charged to the GPU, the device headroom bounds the whole budget before
-    // the split. 30 GiB free: (30 - 1) / 2 = 14.5 GiB = 14,848 MiB, so 18 states (1,800 MiB) and the
-    // rest KV, instead of 48 GiB of budget.
-    const ContextCacheOptions wddm =
-        resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0, {.device_free_after_startup = 30 * kGiB});
-    failures += check(wddm.host_state_slots == 18 &&
-                          wddm.host_kv_capacity_bytes == (14848 - 1800) * kMiB &&
-                          wddm.max_private_continuations == 34 && wddm.max_shared_prefixes == 8,
-                      "device headroom did not bound the whole host budget before the split");
-    // A full card: 1.5 GiB free leaves a 256 MiB budget, too small for one 100 MiB state's share.
-    const ContextCacheOptions full_card =
-        resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0, {.device_free_after_startup = 1536 * kMiB});
-    failures += check(full_card.host_state_slots == 0 && full_card.host_kv_capacity_bytes == 256 * kMiB,
-                      "a nearly full card still pinned state slots it could not afford");
-    // At or under the 1 GiB device floor nothing is pinned at all.
-    const ContextCacheOptions no_headroom =
-        resolve_host_cache(requested(8), 64 * kGiB, 100 * kMiB, 8, 0, {.device_free_after_startup = 1 * kGiB});
-    failures += check(no_headroom.host_state_slots == 0 && no_headroom.host_kv_capacity_bytes == 0,
-                      "a card with no headroom still pinned host memory");
-
-    // A share of the machine's memory bounds the budget however much is free. 50% of a 64 GiB host
-    // is 32 GiB (32,768 MiB): an eighth, 4,096 MiB, buys 40 of the 100 MiB states.
-    ContextCacheOptions half_request   = requested(8);
-    half_request.host_cache_percent = 50;
-    const ContextCacheOptions half =
-        resolve_host_cache(half_request, 64 * kGiB, 100 * kMiB, 8, 0, {.total_host_bytes = 64 * kGiB});
-    failures += check(half.host_state_slots == 40 &&
-                          half.host_kv_capacity_bytes == (32768 - 4000) * kMiB &&
-                          half.host_cache_percent == 50,
+    // A share of the machine's memory bounds the capacity however much is free: 50% of 64 GiB.
+    ContextCacheOptions half_request = requested();
+    half_request.host_cache_percent  = 50;
+    failures += check(resolve_host_capacity_bytes(half_request, 64 * kGiB,
+                                                  {.total_host_bytes = 64 * kGiB}) == 32 * kGiB,
                       "50% of a 64 GiB host did not pin 32 GiB");
-    // It only lowers the budget: when little is free the reserve still wins, and 100% of a host
-    // whose memory is mostly taken is the free memory less the reserve, not the whole host.
-    ContextCacheOptions all_request   = requested(8);
-    all_request.host_cache_percent = 100;
-    const ContextCacheOptions all_of_busy =
-        resolve_host_cache(all_request, 20 * kGiB, 100 * kMiB, 8, 0, {.total_host_bytes = 64 * kGiB});
-    const ContextCacheOptions busy = resolve_host_cache(requested(8), 20 * kGiB, 100 * kMiB, 8, 0);
-    failures += check(all_of_busy.host_state_slots == busy.host_state_slots &&
-                          all_of_busy.host_kv_capacity_bytes == busy.host_kv_capacity_bytes &&
-                          busy.host_kv_capacity_bytes + busy.host_state_slots * 100 * kMiB == 17 * kGiB,
+    // It only lowers the budget: 100% of a busy host is the free memory less the reserve.
+    ContextCacheOptions all_request = requested();
+    all_request.host_cache_percent  = 100;
+    failures += check(resolve_host_capacity_bytes(all_request, 20 * kGiB,
+                                                  {.total_host_bytes = 64 * kGiB}) == 17 * kGiB,
                       "a share larger than what is free pinned past the reserve");
     // The percent, the cap and the free memory combine by taking the smallest.
-    ContextCacheOptions both_request   = half_request;
+    ContextCacheOptions both_request  = half_request;
     both_request.host_cache_max_bytes = 10 * kGiB;
-    const ContextCacheOptions both =
-        resolve_host_cache(both_request, 64 * kGiB, 100 * kMiB, 8, 0, {.total_host_bytes = 64 * kGiB});
-    failures += check(both.host_kv_capacity_bytes + both.host_state_slots * 100 * kMiB == 10 * kGiB,
+    failures += check(resolve_host_capacity_bytes(both_request, 64 * kGiB,
+                                                  {.total_host_bytes = 64 * kGiB}) == 10 * kGiB,
                       "the cap did not apply beneath the percent");
     bool percent_needs_total = false;
     try {
-        (void)resolve_host_cache(half_request, 64 * kGiB, 100 * kMiB, 8, 0);
+        (void)resolve_host_capacity_bytes(half_request, 64 * kGiB);
     } catch (const std::invalid_argument&) { percent_needs_total = true; }
     failures += check(percent_needs_total, "a percent was applied without the machine's total memory");
     for (const std::uint32_t bad : {0U, 101U}) {
-        ContextCacheOptions out_of_range   = requested(8);
-        out_of_range.host_cache_percent = bad;
-        bool refused = false;
+        ContextCacheOptions out_of_range = requested();
+        out_of_range.host_cache_percent  = bad;
+        bool refused                     = false;
         try {
-            (void)resolve_host_cache(out_of_range, 64 * kGiB, 100 * kMiB, 8, 0,
-                                     {.total_host_bytes = 64 * kGiB});
+            (void)resolve_host_capacity_bytes(out_of_range, 64 * kGiB,
+                                              {.total_host_bytes = 64 * kGiB});
         } catch (const std::invalid_argument&) { refused = true; }
         failures += check(refused, "an out-of-range host cache percent was accepted");
     }
 
-    // Memory that grows after sizing and is bounded by options (the media caches) is reserved on top
-    // of the base reserve: 3 + 3 GiB of 64 GiB leaves 58 GiB pinned, never more than free less both.
-    const ContextCacheOptions with_media = resolve_host_cache(
-        requested(8), 64 * kGiB, 100 * kMiB, 8, 0, {.extra_reserve_bytes = 3 * kGiB});
-    failures += check(with_media.host_kv_capacity_bytes + with_media.host_state_slots * 100 * kMiB ==
-                          58 * kGiB,
-                      "the extra reserve did not come out of the pinned budget");
-    // Whatever the settings, the pinned total never exceeds the memory free less the reserves.
-    for (const std::uint64_t free_gib : {4ULL, 9ULL, 64ULL, 300ULL}) {
-        const ContextCacheOptions r = resolve_host_cache(
-            requested(8), free_gib * kGiB, 75 * kMiB, 8, 0, {.extra_reserve_bytes = 3 * kGiB});
-        const std::uint64_t pinned = r.host_kv_capacity_bytes + r.host_state_slots * 75 * kMiB;
-        failures += check(pinned + 6 * kGiB <= std::max(free_gib * kGiB, 6 * kGiB) &&
-                              (free_gib * kGiB > 6 * kGiB || pinned == 0),
-                          "the pinned tier left less than the reserves free");
-    }
+    // Memory that grows after sizing and is bounded by options (the media caches) is reserved on
+    // top of the base reserve: 3 + 3 GiB of 64 GiB leaves 58 GiB pinned.
+    failures += check(resolve_host_capacity_bytes(requested(), 64 * kGiB,
+                                                  {.extra_reserve_bytes = 3 * kGiB}) == 58 * kGiB,
+                      "the extra reserve did not come out of the pinned capacity");
+    // A huge extra reserve saturates instead of wrapping into a large budget.
+    failures += check(resolve_host_capacity_bytes(
+                          requested(), 64 * kGiB,
+                          {.extra_reserve_bytes = std::numeric_limits<std::uint64_t>::max()}) == 0,
+                      "an overflowing reserve wrapped into a nonzero capacity");
 
     bool unflagged_rejected = false;
     try {
-        ContextCacheOptions plain = requested(8);
+        ContextCacheOptions plain = requested();
         plain.auto_host_cache     = false;
-        (void)resolve_host_cache(plain, 64 * kGiB, 100 * kMiB, 8, 0);
+        (void)resolve_host_capacity_bytes(plain, 64 * kGiB);
     } catch (const std::logic_error&) { unflagged_rejected = true; }
     failures += check(unflagged_rejected, "sizing ran without auto_host_cache");
+    bool explicit_rejected = false;
+    try {
+        ContextCacheOptions both_set    = requested();
+        both_set.host_capacity_bytes    = kGiB;
+        (void)resolve_host_capacity_bytes(both_set, 64 * kGiB);
+    } catch (const std::invalid_argument&) { explicit_rejected = true; }
+    failures += check(explicit_rejected, "sizing ran beside an explicit Host context capacity");
 
     failures += check_cgroup_probe();
 

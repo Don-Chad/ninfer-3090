@@ -2,6 +2,7 @@
 
 #include "ninfer/types.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -24,9 +25,6 @@ cgroup_limit_bytes(const std::filesystem::path& cgroup_root, std::string_view pr
 
 // What the machine says about itself when the host tier is sized, beyond the memory still free.
 struct HostCacheEnvironment {
-    // Free device memory left once the Program's reservation is taken; set only where pinned host
-    // memory is charged against the GPU (Windows).
-    std::optional<std::uint64_t> device_free_after_startup;
     // Total memory as `total_host_memory_bytes` reports it; required for `host_cache_percent`.
     std::optional<std::uint64_t> total_host_bytes;
     // Host memory that grows after sizing beyond `host_cache_reserve_bytes` and that the caller can
@@ -43,31 +41,19 @@ struct HostCacheEnvironment {
 [[nodiscard]] std::optional<std::uint64_t>
 cgroup_remaining_bytes(const std::filesystem::path& cgroup_root, std::string_view proc_self_cgroup);
 
-// Sizes the pinned host tier of the context cache from `available_host_bytes`, the host memory still
-// free once the model and every other startup allocation are in place.
+// Sizes the pinned Host context capacity (ContextCacheOptions::host_capacity_bytes, the one quota
+// shared by Host StateImages, Host KV, pause snapshots and in-flight destinations) from
+// `available_host_bytes`, the host memory still free once the model is loaded.
 //
-// The machine is assumed to serve only this process, so all but `requested.host_cache_reserve_bytes`
-// is spent; the reserve covers what still grows afterwards (request buffers, the response store,
-// graph instantiation). Of what is spent, an eighth goes to StateImage
-// slots (each a whole Gated DeltaNet snapshot, `state_image_bytes`) and the rest to KV pages. The
-// private and shared catalogs are sized to the number of states that can be resident, since a
-// retained continuation is only worth keeping while it has a state to resume from.
-// `pinned_shared_prefixes` (injected grafts) are held outside that sizing and added to the shared
-// catalog on top.
+// The machine is assumed to serve only this process, so all but the reserve is spent; the reserve
+// covers what still grows afterwards (request buffers, the response store, graph instantiation).
+// The capacity is the smallest of: available memory less the reserve
+// (`host_cache_reserve_bytes` plus `environment.extra_reserve_bytes`), `host_cache_max_bytes`, and
+// `host_cache_percent` of `environment.total_host_bytes`.
 //
-// The budget is the smallest of: available memory less the reserve (`host_cache_reserve_bytes` plus
-// `environment.extra_reserve_bytes`), `host_cache_max_bytes`, and `host_cache_percent` of
-// `environment.total_host_bytes`. Pinned state slots and KV together never exceed it.
-//
-// `environment.device_free_after_startup` is set where pinned host memory is charged against the GPU
-// (Windows). The whole budget is clamped against it as the Program clamps its KV buffer, before the
-// split, so the sizes reported here are the ones that get pinned.
-//
-// `requested` must carry `auto_host_cache`; the returned options have it cleared and every
-// other field (including the device-side ones) carried over.
-[[nodiscard]] ContextCacheOptions
-resolve_host_cache(const ContextCacheOptions& requested, std::uint64_t available_host_bytes,
-                   std::uint64_t state_image_bytes, std::uint32_t max_concurrency,
-                   std::uint32_t pinned_shared_prefixes, const HostCacheEnvironment& environment = {});
+// `requested` must carry `auto_host_cache` and no explicit `host_capacity_bytes`.
+[[nodiscard]] std::size_t resolve_host_capacity_bytes(const ContextCacheOptions& requested,
+                                                      std::uint64_t available_host_bytes,
+                                                      const HostCacheEnvironment& environment = {});
 
 } // namespace ninfer::runtime

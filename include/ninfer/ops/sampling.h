@@ -29,26 +29,28 @@ enum SamplePurpose : std::int32_t {
     kSamplePurposeDFlash2Proposal       = 5,
 };
 
-// Device-resident sampling parameters. token_counts is an optional device I32
+// Borrowed round operand. Positions are contiguous packed vocabulary masks; null disables it.
+// Each consumed position must have at least one legal token. The caller carries dead-end status
+// separately and supplies a safe filler for dead/unreachable speculative positions.
+struct SamplingMask {
+    const std::uint32_t* words = nullptr;
+    std::int32_t stride        = 0;
+};
+
+// Device-resident sampling parameters and operands. token_counts is an optional device I32
 // [token_domain] committed generated-token occurrence-count array used by both penalties.
-//
-// token_mask optionally restricts each decision to licensed tokens. It is a device U32 bitset
-// matrix [token_mask_words, columns]: decision column c may select token v only when bit (v & 31)
-// of word token_mask[c * token_mask_words + (v >> 5)] is set. token_mask_words >=
-// ceil(token_domain / 32). sample() decides column 0; speculative acceptance decides verification
-// column i with mask column i. Every consumed column must license at least one token in
-// [0, token_domain).
+// mask position p may select token v only when bit (v & 31) of mask.words[p * mask.stride +
+// (v >> 5)] is set.
 struct SamplingConfig {
-    float temperature               = 0.0f; // <= 0 => greedy argmax (bit-identical to argmax())
-    std::int32_t top_k              = 20;   // runtime contract is [1,20]; Op defensively caps
-    float top_p                     = 1.0f; // >= 1 => disabled
-    float min_p                     = 0.0f; // <= 0 => disabled
-    float presence_penalty          = 0.0f;
-    float frequency_penalty         = 0.0f;
-    unsigned long long seed         = 0;
-    std::int32_t* token_counts      = nullptr; // device [token_domain] i32, or null
-    const std::uint32_t* token_mask = nullptr; // device [token_mask_words, columns] u32, or null
-    std::int32_t token_mask_words   = 0;
+    float temperature          = 0.0f; // <= 0 => greedy argmax over allowed tokens
+    std::int32_t top_k         = 20;   // runtime contract is [1,20]; Op defensively caps otherwise
+    float top_p                = 1.0f; // >= 1 => disabled
+    float min_p                = 0.0f; // <= 0 => disabled
+    float presence_penalty     = 0.0f;
+    float frequency_penalty    = 0.0f;
+    unsigned long long seed    = 0;
+    std::int32_t* token_counts = nullptr; // device [token_domain] i32, or null
+    SamplingMask mask;
 };
 
 // Caller-owned transient capacity for every parallel sampling-lane count in the inclusive
@@ -64,6 +66,8 @@ struct SamplingConfig {
  * [physical_rows,B], `out` and `logical_positions` are contiguous I32 [B], and only vocabulary
  * rows v in [0,token_domain) participate. `configs` is a device-resident contiguous
  * SamplingConfig[B] array. Greedy and stochastic rows may coexist in one invocation.
+ * A non-null config.mask excludes vocabulary rows before argmax/top-k and normalization. sample()
+ * consumes mask position zero; speculative acceptance consumes its corresponding verify position.
  *
  * With either greedy or positive-temperature sampling, let
  * c_v=configs[b].token_counts[v] (or zero when the pointer is null):
@@ -73,7 +77,7 @@ struct SamplingConfig {
  *                - configs[b].frequency_penalty * c_v      when v is licensed,
  *   adjusted_v = -inf                                      otherwise,
  *
- * where v is licensed when configs[b].token_mask is null or its column-0 bit for v is set.
+ * where v is licensed when configs[b].mask.words is null or its position-0 bit for v is set.
  *
  * A greedy row selects min argmax_v adjusted_v and skips filters and RNG. Candidates for a
  * positive-temperature row are sorted by adjusted_v descending with lower token id breaking
@@ -82,9 +86,9 @@ struct SamplingConfig {
  * Candidate weights are exp(adjusted_v/temperature-max). min_p removes the suffix below
  * min_p*max_weight; top_p keeps the shortest remaining prefix whose cumulative weight reaches
  * top_p times the pre-truncation candidate weight. At least the best candidate remains, the
- * support is renormalized, and one id is drawn for that row. A candidate with zero weight
- * (an unlicensed token) is never part of the support, so a row with a token mask only ever
- * produces a licensed token.
+ * support is renormalized, and one id is drawn for that row. An unlicensed token is never part
+ * of the support. A row whose selected logit is not finite, or whose mask licenses no token,
+ * writes kSamplerNonFiniteToken instead of an id.
  *
  * Row b uses counter-based RNG key
  * (configs[b].seed,logical_positions[b],purpose), without mutable RNG state or dependence on the

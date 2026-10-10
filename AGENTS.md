@@ -49,15 +49,17 @@ route table this fork inherited and re-measured on sm_86 turned out to be wrong 
 upstream tuning constant as a hypothesis until measured on this card. The build environment and the
 compatibility constraints are in "Windows build environment (RTX 3090 fork host)" below.
 
-Generation uses one resident model on one GPU, or split into pipeline stages over up to eight
-(`--devices`, Linux only; each stage owns whole layers with their KV and state, and the head,
-round state and sampling stay on the first device; design in
-`docs/maintainer/pipeline-parallel-plan.md`). It runs startup-fixed concurrency of one to eight
-requests, bounded FIFO ingress, no active-request preemption, and one compact decode batch per
-round. Tensor parallelism is not built.
+Generation uses one resident model on one GPU, one to eight resident execution lanes fixed at
+startup, bounded FIFO ingress with finite bypass, resource-pressure preemption with
+Snapshot/Replay recovery, and one compact decode batch per round. The layer pipeline over up to
+eight GPUs (`--devices`, Linux only; each stage owns whole layers with their KV and state, and the
+head, round state and sampling stay on the first device; design in
+`docs/maintainer/pipeline-parallel-plan.md`) is parked while it is ported to the replaced context
+engine: its sources stay in the tree, and startup rejects more than one device. Tensor
+parallelism is not built.
 Generation and offline CausalScoring use the same public `.ninfer` Engine route. Delivered
 capabilities and commands are documented in `README.md`, the product guides, and executable
-`--help`. New mathematical architectures, execution platforms, large-scale/preemptive continuous
+`--help`. New mathematical architectures, execution platforms, large-scale continuous
 batching, and priority/QoS require an explicit product change. Another training instance or mixture
 of existing representations does not require a checkpoint-specific execution registration.
 
@@ -107,7 +109,9 @@ observable behavior, mathematical or state semantics, and realistic regressions,
 boundary failures that have not occurred yet. Avoid tests that merely mirror implementation,
 freeze private file/class organization, or increase coverage numbers.
 
-For numerical changes, identify represented public inputs, the independent mathematical oracle,
+Before changing Ops, numerical or state semantics, read
+[Op development](docs/maintainer/op-development.md). For numerical changes, identify represented
+public inputs, the independent mathematical oracle,
 semantic cast/quantization/state boundaries, output criteria, and relevant real model shapes. Each
 floating-point Op uses a naive FP32/FP64 oracle; exact transforms/codecs use an exact oracle. Packed
 inputs are independently decoded with their stored scales. Qualify production routes directly
@@ -340,7 +344,7 @@ causes failures or interferes with the task, and briefly explain why.
 Use the selected Python 3.11 interpreter explicitly. On this machine it is
 `/home/neroued/miniconda3/envs/py311/bin/python`; the default shell's `python3` may be a different
 version. Use `python3` only after selecting the maintainer environment or checking its version.
-Normal resources are `build/`, `out/qwen3_6_27b.ninfer`, its `.conversion.json` report, and
+Normal resources are `build/`, `out/qwen3_8_27b_nvfp4.ninfer`, its `.conversion.json` report, and
 `profiles/ncu/`, `profiles/nsys/`, `profiles/bench/`; the local toolchain is CUDA 13.1.
 Select model artifacts by explicit path, never glob order, modification time, or unqualified
 “latest”. Source checkpoints and large artifacts are prerequisites; download or regenerate them

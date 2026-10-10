@@ -143,6 +143,8 @@ void ResidentPrefixIdentity::clear() noexcept {
     for (auto& axis : positions_) { axis.clear(); }
     vision_items_.clear();
     rewrite_execution_frontiers_.clear();
+    regular_prefix_ = 0;
+    position_origins_.fill(0);
 }
 
 void ResidentPrefixIdentity::assign(const PreparedPromptData& prompt) {
@@ -150,6 +152,8 @@ void ResidentPrefixIdentity::assign(const PreparedPromptData& prompt) {
     if (prompt.token_types.size() != tokens || prompt.positions.size() != 3 * tokens) {
         throw std::invalid_argument("prepared prompt identity metadata has an invalid shape");
     }
+    regular_prefix_ = 0;
+    position_origins_.fill(0);
     token_types_ = prompt.token_types;
     for (std::size_t axis = 0; axis < positions_.size(); ++axis) {
         const auto begin = prompt.positions.begin() + static_cast<std::ptrdiff_t>(axis * tokens);
@@ -157,6 +161,19 @@ void ResidentPrefixIdentity::assign(const PreparedPromptData& prompt) {
     }
     vision_items_                = prompt.vision_items;
     rewrite_execution_frontiers_ = prompt.identity.rewrite_execution_frontiers;
+    for (std::size_t axis = 0; axis < positions_.size(); ++axis) {
+        position_origins_[axis] = tokens ? positions_[axis].front() : 0;
+    }
+    while (regular_prefix_ < tokens && token_types_[regular_prefix_] == 0) {
+        bool regular = true;
+        for (std::size_t axis = 0; axis < positions_.size(); ++axis) {
+            regular = regular && static_cast<std::int64_t>(positions_[axis][regular_prefix_]) ==
+                                     static_cast<std::int64_t>(position_origins_[axis]) +
+                                         static_cast<std::int64_t>(regular_prefix_);
+        }
+        if (!regular) { break; }
+        ++regular_prefix_;
+    }
 }
 
 void ResidentPrefixIdentity::swap(ResidentPrefixIdentity& other) noexcept {
@@ -164,6 +181,8 @@ void ResidentPrefixIdentity::swap(ResidentPrefixIdentity& other) noexcept {
     positions_.swap(other.positions_);
     vision_items_.swap(other.vision_items_);
     rewrite_execution_frontiers_.swap(other.rewrite_execution_frontiers_);
+    std::swap(regular_prefix_, other.regular_prefix_);
+    position_origins_.swap(other.position_origins_);
 }
 
 void ResidentPrefixIdentity::append_generated(std::size_t count, std::int32_t rope_delta,
@@ -196,6 +215,15 @@ void ResidentPrefixIdentity::append_generated(std::size_t count, std::int32_t ro
         }
         token_types_.push_back(0);
         for (auto& axis : positions_) { axis.push_back(static_cast<std::int32_t>(position)); }
+        if (index == 0) {
+            regular_prefix_ = 0;
+            position_origins_.fill(rope_delta);
+        }
+        if (regular_prefix_ == index &&
+            std::all_of(position_origins_.begin(), position_origins_.end(),
+                        [&](auto origin) { return origin == rope_delta; })) {
+            ++regular_prefix_;
+        }
     }
     if (execution_frontier) { rewrite_execution_frontiers_.push_back(*execution_frontier); }
 }
@@ -229,6 +257,21 @@ void ResidentPrefixIdentity::restore(std::vector<std::uint8_t> token_types,
     }
     vision_items_                = std::move(vision_items);
     rewrite_execution_frontiers_ = std::move(rewrite_execution_frontiers);
+    // Rederive the regular-run proof from the restored positions, as assign() does.
+    regular_prefix_ = 0;
+    for (std::size_t axis = 0; axis < positions_.size(); ++axis) {
+        position_origins_[axis] = tokens ? positions_[axis].front() : 0;
+    }
+    while (regular_prefix_ < tokens && token_types_[regular_prefix_] == 0) {
+        bool regular = true;
+        for (std::size_t axis = 0; axis < positions_.size(); ++axis) {
+            regular = regular && static_cast<std::int64_t>(positions_[axis][regular_prefix_]) ==
+                                     static_cast<std::int64_t>(position_origins_[axis]) +
+                                         static_cast<std::int64_t>(regular_prefix_);
+        }
+        if (!regular) { break; }
+        ++regular_prefix_;
+    }
 }
 
 void ResidentPrefixIdentity::truncate(std::size_t tokens) {
@@ -240,6 +283,8 @@ void ResidentPrefixIdentity::truncate(std::size_t tokens) {
         throw std::logic_error("resident prefix truncation divides a Vision item");
     }
     token_types_.resize(tokens);
+    regular_prefix_ = std::min(regular_prefix_, tokens);
+    if (!tokens) { position_origins_.fill(0); }
     for (auto& axis : positions_) { axis.resize(tokens); }
     vision_items_.resize(retained_items);
     rewrite_execution_frontiers_.erase(std::upper_bound(rewrite_execution_frontiers_.begin(),
@@ -294,16 +339,21 @@ bool ResidentPrefixIdentity::equals(const ResidentPrefixIdentity& other) const {
 
 bool ResidentPrefixIdentity::prefix_equals(const ResidentPrefixIdentity& other,
                                            std::size_t count) const {
-    if (count > size() || count > other.size() ||
-        !std::equal(token_types_.begin(), token_types_.begin() + static_cast<std::ptrdiff_t>(count),
-                    other.token_types_.begin())) {
-        return false;
-    }
-    for (std::size_t axis = 0; axis < positions_.size(); ++axis) {
-        if (!std::equal(positions_[axis].begin(),
-                        positions_[axis].begin() + static_cast<std::ptrdiff_t>(count),
-                        other.positions_[axis].begin())) {
+    if (count > size() || count > other.size()) { return false; }
+    const bool regular = count <= regular_prefix_ && count <= other.regular_prefix_ &&
+                         (!count || position_origins_ == other.position_origins_);
+    if (!regular) {
+        if (!std::equal(token_types_.begin(),
+                        token_types_.begin() + static_cast<std::ptrdiff_t>(count),
+                        other.token_types_.begin())) {
             return false;
+        }
+        for (std::size_t axis = 0; axis < positions_.size(); ++axis) {
+            if (!std::equal(positions_[axis].begin(),
+                            positions_[axis].begin() + static_cast<std::ptrdiff_t>(count),
+                            other.positions_[axis].begin())) {
+                return false;
+            }
         }
     }
     std::size_t left_items  = 0;

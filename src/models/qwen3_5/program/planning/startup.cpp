@@ -2,6 +2,7 @@
 #include "models/qwen3_5/execution/ffn.h"
 #include "models/qwen3_5/execution/gdn.h"
 #include "models/qwen3_5/execution/mtp.h"
+#include "models/qwen3_5/frontend/graft.h"
 #include "models/qwen3_5/program/planning/graph_profiles.h"
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/program/planning/startup.h"
@@ -294,6 +295,12 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     }
     qwen3_5::complete_round_state_layout(builder, out.round);
     if (!plan.causal_scoring) {
+        out.grammar_masks =
+            add_tensor(builder, DType::I32,
+                       {dimension((parameters.model.resources().public_token_count + 31) / 32),
+                        static_cast<std::int32_t>(plan.draft_window + 1),
+                        static_cast<std::int32_t>(plan.max_concurrency)},
+                       "grammar token masks");
         out.token_counts        = add_tensor(builder, DType::I32,
                                              {dimension(parameters.model.resources().public_token_count),
                                               static_cast<std::int32_t>(plan.max_concurrency)},
@@ -303,12 +310,6 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
         out.sampling_config = add_tensor(
             builder, DType::I32, {config_words, static_cast<std::int32_t>(plan.max_concurrency)},
             "sampling config");
-        out.token_masks = add_tensor(
-            builder, DType::I32,
-            {(dimension(parameters.model.resources().public_token_count) + 31) / 32,
-             static_cast<std::int32_t>(plan.draft_window + 1U),
-             static_cast<std::int32_t>(plan.max_concurrency)},
-            "structured-output token masks");
     }
     out.bytes = builder.finish(kArenaAlign, "persistent layout");
     for (std::size_t rank = 1; rank < ranks; ++rank) {
@@ -317,21 +318,15 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     }
     out.kv_payload_bytes =
         out.decoder.kv_payload_bytes() + (out.dflash ? out.dflash->kv_payload_bytes() : 0);
-    const auto plane_end = [](const qwen3_5::PagedKVCacheLayout& cache) {
-        std::size_t end = 0;
-        if (cache.pages.spec.geometry.device_plane_order != PagedKVPlaneOrder::PageMajor) {
-            return end;
-        }
-        for (const DeviceKVPlaneLayout& plane : cache.pages.planes) {
-            // Lending is a single-device mechanism: only rank 0's planes are candidates.
+    // Only Main KV pages fund an overlay Vision window, and only on page-major planes, where a page
+    // run is one contiguous block per plane.
+    if (out.decoder.text_kv.pages.spec.geometry.device_plane_order == PagedKVPlaneOrder::PageMajor) {
+        for (const DeviceKVPlaneLayout& plane : out.decoder.text_kv.pages.planes) {
             if (plane.rank != 0) { continue; }
-            end = std::max(end, plane.storage.region.offset + plane.storage.region.bytes);
+            out.lendable_kv_end_bytes = std::max(
+                out.lendable_kv_end_bytes, plane.storage.region.offset + plane.storage.region.bytes);
         }
-        return end;
-    };
-    out.lendable_kv_end_bytes =
-        std::max(plane_end(out.decoder.text_kv),
-                 out.decoder.mtp_kv ? plane_end(*out.decoder.mtp_kv) : std::size_t{0});
+    }
     return out;
 }
 
@@ -791,19 +786,32 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
     if (parameters.text.split_execution()) {
         // Around its layers a stage holds the residual it received and its copy of the control
         // block (rank 0 holds the packed block instead, which is smaller), alive for the whole pass
-        // and so on top of the layers' own peak. Alignment slack for both allocations.
+        // and so on top of the layers' own peak. A masked draft adds the block of feature layers a
+        // stage collects, and rank 0 the block it receives them into, both at most the widest
+        // stage's. Alignment slack for every allocation.
         const std::uint64_t columns = stage_boundary_columns(plan);
         const std::size_t residual =
             static_cast<std::size_t>(columns) * static_cast<std::size_t>(config.hidden_size) * 2U;
         const std::size_t control = (6U * static_cast<std::size_t>(columns) + 16U) * 4U;
-        out.general_capacity =
-            checked_add(out.general_capacity, checked_add(residual, control, "stage boundary") + 1024U,
-                        "stage boundary workspace");
+        std::size_t widest_features = 0;
+        for (std::size_t stage = 1; stage < parameters.text.rank_count; ++stage) {
+            widest_features = std::max(widest_features, stage_feature_layer_count(plan, stage));
+        }
+        const std::size_t features =
+            checked_mul(widest_features, residual, "stage feature block workspace");
+        out.general_capacity = checked_add(
+            out.general_capacity,
+            checked_add(checked_add(residual, control, "stage boundary"), features,
+                        "stage boundary") +
+                2048U,
+            "stage boundary workspace");
     }
     out.capacity = out.general_capacity;
     if (plan.features.vision) {
         const std::uint32_t merged = vision_item_token_bound(plan.capacity, plan.features);
         if (plan.features.overlay_vision()) {
+            // The encode workspace lives inside each borrowed window; this workspace only stages the
+            // one visual column a multimodal MTP bridge composes outside a prefill chunk.
             out.vision_resident      = false;
             out.vision               = execution::plan_vision_window_workspace(parameters, merged);
             out.vision_bridge_offset = checked_add(out.general_capacity, 255, "bridge offset") &
@@ -847,7 +855,8 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
     if (options.max_concurrency == 0 || options.max_concurrency > kMaximumConcurrency) {
         throw std::invalid_argument("max_concurrency must be in [1,8]");
     }
-    if (parameters.text.rank_count != device.size()) {
+    if (parameters.text.rank_count != device.size() ||
+        parameters.text.rank_count != std::max<std::size_t>(options.devices.size(), 1)) {
         throw std::invalid_argument("the model is split into " +
                                     std::to_string(parameters.text.rank_count) +
                                     " pipeline stages but " + std::to_string(device.size()) +
@@ -858,17 +867,6 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         if (device.rank(rank).multiprocessor_count() != device.rank(0).multiprocessor_count()) {
             throw std::invalid_argument(
                 "pipeline stages must run on devices with the same streaming-multiprocessor count");
-        }
-    }
-    if (parameters.text.split_execution()) {
-        // The stage loop carries a plain forward pass and decode round. DFlash reads or writes state
-        // on the primary device only, and is refused until it is taught the stages. Vision runs
-        // entirely on the primary device ahead of the stage loop, so it needs no refusal.
-        if (options.speculative.backend == SpeculativeBackend::DFlash ||
-            options.speculative.backend == SpeculativeBackend::DFlash2) {
-            throw std::invalid_argument(
-                "DFlash speculative decoding is not yet supported with a multi-device --devices "
-                "split");
         }
     }
     const std::uint32_t logical_pages = page_count(options.max_context);
@@ -954,7 +952,15 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->context_cache        = inputs.context_cache;
     impl->kv_storage           = inputs.kv_storage;
     impl->persistent           = persistent_layout(*impl);
-    impl->workspace            = build_workspace_plan(*impl);
+    if (!impl->context_cache.host_capacity_bytes) {
+        // Default Host capacity covers 8 GiB of KV bytes plus eight complete StateImages.
+        impl->context_cache.host_capacity_bytes =
+            checked_add(8ULL * 1024 * 1024 * 1024,
+                        checked_mul(8, impl->persistent.state_images.host.image_bytes,
+                                    "Host context state default overflow"),
+                        "Host context default overflow");
+    }
+    impl->workspace = build_workspace_plan(*impl);
     if (impl->use_cuda_graph) {
         // Definitions remain per execution profile, but only one executable is instantiated for
         // each reachable node-topology class. These bounds cover the largest profile installed in
@@ -1001,14 +1007,18 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                         const std::uint64_t final_visible = std::min<std::uint64_t>(
                             impl->capacity,
                             static_cast<std::uint64_t>(profile.max) + impl->draft_window + 1ULL);
-                        return (final_visible <= 4096 ? 64ULL : 96ULL) * kMiB;
+                        // Long profiles also materialize driver execution storage; that shared
+                        // cost does not shrink with the number of graph executables.
+                        return (final_visible <= 4096 ? 64ULL : 192ULL) * kMiB;
                     },
                     "DFlash graph allowance");
             };
+            // Forward retains the draft's topology classes; finish has one small executable
+            // per exact B, independently of context length.
             for (std::uint32_t batch_size = 1; batch_size <= impl->max_concurrency; ++batch_size) {
-                impl->graph_allowance_bytes =
-                    checked_add(impl->graph_allowance_bytes, class_allowance(batch_size),
-                                "DFlash exact-b graph allowance");
+                impl->graph_allowance_bytes = checked_add(
+                    impl->graph_allowance_bytes, class_allowance(batch_size) + 8ULL * kMiB,
+                    "DFlash exact-b graph allowance");
             }
         }
     }
@@ -1020,6 +1030,9 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     // persistent state. Its graph allowance is the primary device's scaled by the share of layers
     // it runs; the primary keeps the whole figure, which only over-reserves it a little.
     const auto& text = impl->parameters->text;
+    if (impl->persistent.extra_rank_bytes.size() + 1 != text.rank_count) {
+        throw std::logic_error("Qwen3.5 sequence plan does not cover every pipeline stage");
+    }
     for (std::size_t rank = 1; rank < text.rank_count; ++rank) {
         const std::uint64_t layers_here = text.stage_end(rank) - text.stage_begin[rank];
         const std::size_t graph_share   = static_cast<std::size_t>(
@@ -1035,6 +1048,19 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
 
 } // namespace
 
+std::size_t stage_feature_layer_count(const SequencePlanImpl& plan, std::size_t stage) {
+    if (stage == 0 || !plan.features.masked_draft()) { return 0; }
+    const auto& text = plan.parameters->text;
+    if (stage >= text.rank_count) { throw std::out_of_range("pipeline stage is out of range"); }
+    const auto& draft = plan.parameters->model.config().draft;
+    if (!draft) { throw std::logic_error("masked draft Program has no draft configuration"); }
+    const std::uint32_t begin = text.stage_begin[stage];
+    const std::uint32_t end   = text.stage_end(stage);
+    return static_cast<std::size_t>(
+        std::count_if(draft->target_layer_ids.begin(), draft->target_layer_ids.end(),
+                      [&](std::uint32_t layer) { return layer >= begin && layer < end; }));
+}
+
 std::uint32_t vision_item_token_bound(std::uint32_t capacity, const models::LoadOptions& features) {
     // Zero means "no caller-imposed bound", the same meaning FrontendOptions gives it (its
     // bound_merged_tokens helper returns without clamping). Treating it as one token instead sized
@@ -1049,7 +1075,7 @@ std::uint32_t vision_item_token_bound(std::uint32_t capacity, const models::Load
 
 std::unique_ptr<qwen3_5::detail::SequencePlannerImpl>
 make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContext& device,
-                           const EngineOptions& options, std::uint32_t resident_main_pages) {
+                           const EngineOptions& options) {
     validate_target_options(parameters, device, options);
     SequencePlanningInputs inputs{
         .parameters           = &parameters,
@@ -1067,14 +1093,18 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
         .device               = options.device,
         .multiprocessor_count = device.multiprocessor_count(),
         .context_cache        = options.context_cache,
-        .resident_main_pages  = resident_main_pages,
     };
+    // Installed direct grafts keep their Main KV pages for the Engine's life. They are added on
+    // top of the request range, so every request can still use the capacity it was planned for.
+    std::uint64_t pinned_pages64 = 0;
+    for (const std::uint32_t slots : direct_graft_slots(options.grafts)) {
+        pinned_pages64 += page_count(slots);
+    }
     const std::uint32_t logical_pages = page_count(inputs.capacity);
     const std::uint64_t minimum_pages64 =
-        static_cast<std::uint64_t>(std::max(logical_pages, inputs.max_concurrency)) +
-        resident_main_pages;
+        std::max<std::uint64_t>(logical_pages, inputs.max_concurrency) + pinned_pages64;
     const std::uint64_t maximum_pages64 =
-        static_cast<std::uint64_t>(inputs.max_concurrency) * logical_pages + resident_main_pages;
+        static_cast<std::uint64_t>(inputs.max_concurrency) * logical_pages + pinned_pages64;
     if (maximum_pages64 > std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("maximum Main KV page count exceeds uint32");
     }
@@ -1088,9 +1118,9 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
           .main_page_tokens                     = static_cast<std::uint32_t>(kPagedKVPageSize),
           .minimum_main_page_groups             = minimum_pages,
           .maximum_main_page_groups             = maximum_pages,
+          .pinned_main_page_groups              = static_cast<std::uint32_t>(pinned_pages64),
           .minimum_device_reservation_bytes     = planner->minimum->device_reservation_bytes,
           .bytes_per_additional_main_page_group = 0,
-          .resident_main_pages                  = resident_main_pages,
     };
     for (const std::size_t bytes : planner->minimum->extra_rank_reservation_bytes) {
         planner->curve.extra_ranks.push_back({.minimum_device_reservation_bytes = bytes});
@@ -1102,9 +1132,13 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
         }
         planner->curve.bytes_per_additional_main_page_group =
             adjacent->device_reservation_bytes - planner->minimum->device_reservation_bytes;
-        // A further device's stride may legitimately be zero: a stage with no attention layers holds
-        // no KV.
+        // A further device's stride may legitimately be zero: a stage with no attention layers
+        // holds no KV.
         for (std::size_t rank = 0; rank < planner->curve.extra_ranks.size(); ++rank) {
+            if (adjacent->extra_rank_reservation_bytes[rank] <
+                planner->minimum->extra_rank_reservation_bytes[rank]) {
+                throw std::logic_error("Qwen3.5 sequence layout shrinks a device as KV grows");
+            }
             planner->curve.extra_ranks[rank].bytes_per_additional_main_page_group =
                 adjacent->extra_rank_reservation_bytes[rank] -
                 planner->minimum->extra_rank_reservation_bytes[rank];

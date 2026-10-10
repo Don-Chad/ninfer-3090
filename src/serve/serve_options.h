@@ -36,9 +36,6 @@ struct ServeOptions {
     // callers before they were ever admitted.
     std::uint32_t pending_timeout_ms   = 600000;
     std::uint32_t prefill_chunk        = 1024;
-    std::uint32_t max_prefill_lanes    = 1; // 2 from three lanes up unless --max-prefill-lanes is given
-    std::uint32_t prefill_max_skip     = 8;
-    std::uint32_t decode_rounds_per_prefill = 0; // 0 = prefill_chunk / 64
     std::filesystem::path context_cost_presets;
     std::uint32_t log_stats_interval_ms    = 5000; // 0 disables periodic Engine throughput logs
     std::size_t max_request_bytes          = kDefaultMaxRequestBytes;
@@ -72,18 +69,6 @@ struct ServeOptions {
     bool prefill_cublas     = false;
     bool prefill_cublas_projections = true;
     bool allow_prefix_reuse = true;
-    // Offer shared-prefix candidates on a content-independent token grid so unrelated callers whose
-    // prompts merely start alike converge on the same frontier. Off by default: it adds host-side
-    // candidate work to every request and only pays for itself on a multi-tenant preamble.
-    bool auto_prefix_grid = false;
-    // --auto-long-anchors N: propose a private long anchor at each of the last N message
-    // boundaries of every prompt. Unset resolves to the retained-anchor cap once the Engine has
-    // normalized it; 0 disables. See resolve_automatic_private_anchors.
-    std::optional<std::uint32_t> auto_long_anchors;
-    // --progress-anchor-tokens N: propose a private long anchor at every multiple of N tokens of a
-    // prompt, so a long prefill cancelled part way keeps its progress for the client's retry. Unset
-    // resolves to kDefaultProgressAnchorTokens; 0 disables. See resolve_progress_anchor_stride.
-    std::optional<std::uint32_t> progress_anchor_tokens;
     // --context-store DIR: keep retained sessions on disk so a restart or crash does not lose the
     // context cache. Empty disables it.
     std::filesystem::path context_store_path;
@@ -110,16 +95,11 @@ struct ServeOptions {
     // Empty means no default; otherwise it names an entry of `grafts`.
     std::string default_graft;
     std::optional<std::uint32_t> default_thinking_budget;
-    // Output limit for a request that omits one. Unset means the Engine's concurrent lane budget:
-    // see request_limits().
+    // Output limit for a request that omits one. Unset means the request's remaining context: see
+    // request_limits().
     std::optional<int> default_max_tokens;
-    // Upper bound on the output budget of every request, stated or derived. A request reserves KV
-    // for its whole budget up front, so a large one evicts retained contexts for pages it never
-    // writes; see docs/serving.md.
+    // Upper bound on the output budget of every request, stated or derived; see docs/serving.md.
     std::optional<int> max_output_tokens;
-    // --output-reservation-tokens N: reserve KV for this many output tokens of a request when it is
-    // admitted and the rest as it decodes. 0 reserves the whole budget up front.
-    std::uint32_t output_reservation_tokens = 0;
     // Reasoning effort for a thinking-enabled request that states none. Never None: disabling
     // thinking by default is --no-thinking.
     std::optional<RequestedReasoningEffort> default_reasoning_effort;
@@ -136,9 +116,10 @@ struct ServeOptions {
 };
 
 // Parse-time limits. A request that omits max_tokens / max_completion_tokens / max_output_tokens
-// gets --default-max-tokens when set; otherwise GenerationService asks the Engine for the largest
-// budget that still lets every configured lane be admitted at once (the remaining context with one
-// lane).
+// gets --default-max-tokens when set; otherwise GenerationService gives it the remaining context
+// once its prompt is prepared. The Engine reserves KV per execution unit and pauses a younger
+// request when concurrent growth exhausts the pool, so a large derived budget no longer holds pages
+// it never writes.
 [[nodiscard]] inline RequestLimits request_limits(const ServeOptions& options) noexcept {
     return RequestLimits{.default_max_tokens = options.default_max_tokens,
                          .max_context        = static_cast<int>(options.max_context)};
@@ -153,19 +134,6 @@ bounded_output_budget(std::uint32_t requested, const std::optional<int>& max_out
 }
 
 ServeOptions parse_serve_options(int argc, char** argv);
-// The per-request ContextCacheHints::automatic_private_anchors for this server: the explicit
-// --auto-long-anchors when given, else the resolved anchor cap, never more than that cap. Zero
-// when the context cache is disabled. `resolved` must be the Engine's normalized options, whose
-// optional capacities are filled in.
-std::uint32_t resolve_automatic_private_anchors(const ServeOptions& options,
-                                                const ContextCacheOptions& resolved);
-// Token spacing of the progress anchors a long prefill leaves behind if it is cancelled. Zero when
-// the context cache is disabled or retains no long anchors. `resolved` must be the Engine's
-// normalized options.
-inline constexpr std::uint32_t kDefaultProgressAnchorTokens = 16384;
-inline constexpr std::uint32_t kMinimumProgressAnchorTokens = kMinimumProgressAnchorStride;
-std::uint32_t resolve_progress_anchor_stride(const ServeOptions& options,
-                                             const ContextCacheOptions& resolved);
 std::string resolve_public_model_id(const ServeOptions& options,
                                     std::string_view artifact_model_name);
 std::string serve_usage_text(const char* argv0);

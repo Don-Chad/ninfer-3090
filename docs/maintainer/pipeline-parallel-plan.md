@@ -64,27 +64,53 @@ second GPU. Distinct ids are refused on Windows.
   front, runs stage 0, and for each later stage rebinds the context's device, stream and workspace
   (`ScopedDeviceRank`, `ScopedArenaRank`), receives the residual and control block, runs the stage's
   layers and passes the residual on.
+- **DFlash feature layers cross back to rank 0.** DFlash/DFlash2 read the hidden state after several
+  target layers (`target_layer_ids`) into rank 0 buffers. Stage 0's feature layers capture straight
+  into them; a later stage collects the feature layers it owns into one stage-local block and sends
+  it to rank 0 on its own `StageLink` (`StageRuntime::features`, sized for that stage's feature
+  layers) after its layers, and rank 0 hands each layer's columns to the feature sink as if captured
+  there. The draft itself, its caches and the proposal head stay on rank 0.
+- **The Program fans every multi-rank object out over `RankStreams`.** `ProgramImpl` keeps every
+  rank's compute and transfer stream (`compute_streams`, `transfer_streams`). Block-table publishes
+  (`KVAddressSpaceStore` activation, prefix fork, mapping growth), StateImage zeroing and slot copies,
+  and every context-transaction copy (KV pages to and from the Host arena, partial-tail copy-on-write,
+  StateImage shards to and from the host image) go on the stream of the rank that holds the memory.
+  Context transactions fence with `RankFenceSet`: each rank's transfer stream waits for that rank's
+  compute stream, and a transaction completes only when every rank's copies have. ReplaySSM records
+  and their fold are per state shard, each on its shard's device. The Host context arena is one
+  portable pinned allocation, so every device can copy to and from it.
+- **CUDA graphs across stages.** A decode graph is captured on rank 0's stream and contains every
+  stage's layers, but only rank 0's stream orders its launch. `StageRuntime::rank_fences` makes rank
+  0's stream wait for the other ranks' streams before a launch (their block-table publishes and state
+  copies) and the other ranks' streams wait for rank 0's after it (their next eager work, such as a
+  replay fold).
+- **One page id spans every rank**, so the ResourceManager, scheduler and prefix index are unchanged by
+  a split: they count page groups, and a page group costs each device its own layers' planes.
 
 ## What is not covered yet
 
-- **DFlash/DFlash2** are refused when the model spans more than one device. DFlash reads
-  layer outputs from several depths (its feature taps) into rank 0 buffers, which from a later stage
-  are another device's memory; they need to cross the stage boundaries first.
-- **Vision works, entirely on rank 0.** The tower, its encode workspace and the handoff live on the
-  first device, and the visual columns are scattered into the residual before the stage loop, so a
-  stage sees an ordinary residual; the multimodal `[3,T]` rope positions ride the control block.
-  A resident tower is added to rank 0's share in `default_stage_layers`. `--vision-residency overlay`
-  keeps its single-device meaning: the window is borrowed from rank 0's evictable tail (embedding,
-  head, MTP) or rank 0's free KV granules (`lendable_kv_end_bytes` counts rank 0 planes only; a
-  lent granule removes those page ids from admission on every rank). Only exercised with ranks
-  sharing one device so far; distinct GPUs are unverified.
+- **Vision works, entirely on rank 0, with resident residency.** The tower, its encode workspace and
+  the handoff live on the first device, and the visual columns are scattered into the residual before
+  the stage loop, so a stage sees an ordinary residual; the multimodal `[3,T]` rope positions ride
+  the control block. A resident tower is added to rank 0's share in `default_stage_layers`. The tower
+  does not get a device of its own. `--vision-residency overlay` works with a split: its window is
+  borrowed from rank 0's evictable weight tail (embedding, output head, MTP, proposal head, all on
+  rank 0) or from rank 0's free Main KV granules only (`kv_loan_plane`); a lent page id is
+  unusable on every rank while lent, and later ranks' planes for it stay mapped.
+- **Prompt grafts work with a split.** A `direct_kv`/`softprompt_kv` graft's K/V is appended on the
+  rank that owns each attention layer (staged in that rank's workspace, read through that rank's
+  block-table copy) and its Gated DeltaNet state is uploaded into every StateImage shard.
 - **Prefill does not overlap stages.** A prefill chunk runs through the stages in turn and the
   engine synchronizes after each chunk, so at any moment one stage is busy. Overlapping stages needs
   micro-chunks inside a chunk (later stages start on micro-chunk 0 while stage 0 runs micro-chunk 1);
   that changes the chunk shapes the kernels see, and its benefit can only be measured on real cards.
-- **MTP works** across stages: the replay records and their fold are per state shard, on the shard's
-  own device, and the draft layer and head stay on rank 0. **The context cache works**: its
-  transactions copy each rank's planes and state shards on that rank's streams.
+- **Same-device links use device memory the plan does not count.** With ranks sharing a physical
+  device a link slot is a `cudaMalloc` on that device (two slots per link; a DFlash feature link
+  carries every feature layer of its stage at full prefill-chunk width), outside the sequence plan.
+  Distinct devices use pinned host slots instead. This only affects the single-card test mode.
+- **Per-rank memory reporting** is limited to the startup capacity: the memory summary carries each
+  further stage's runtime reservation and the stage whose device bounded the KV capacity, but arena
+  peaks and the workspace figures are rank 0's.
 
 ## Verification
 
@@ -97,14 +123,26 @@ second GPU. Distinct ids are refused on Windows.
 - `ninfer_kv_capacity_test`: the per-device curve, including a device without KV and errors that
   name the device.
 - `ninfer_qwen3_5_stages_real_test` (set `NINFER_TEST_ARTIFACT`): greedy output with `--devices 0,0`
-  and `0,0,0` equals `--device 0` byte for byte, since the layers run the same kernels on the same
-  data. Rows: graphs and eager, forced pinned-host transport, an uneven split, MTP, and a
-  continuation that reuses the context cache. The 27B on the RTX 3090 passes every row.
+  and `0,0,0` equals the same configuration on one device token for token, since the layers run the
+  same kernels on the same data. Every row runs a short prompt, a three-chunk prompt, a
+  continuation served from the first run's checkpoint and an exact-frontier repeat served wholly
+  from the continuation's; rows: graphs and eager, forced pinned-host transport, three stages, an
+  uneven split, MTP (two stages; three stages eager), DFlash2 (graphs, eager, and three stages with
+  forced pinned-host transport and a `10,20,34` split, so feature layers cross two boundaries),
+  rk4v4 KV, resident vision with a repeated image, and two concurrent requests under KV pressure
+  where one is paused and replayed. On the context engine (2026-10-09, RTX 3090, Qwen3.8-27B
+  `qwen3_8_27b.ninfer`, whose DFlash2 draft reads layers 5, 19, 33, 47 and 61) every row is
+  identical to one device, with identical reuse counts (1,324 and 1,333 tokens) and one
+  preemption and one replay restore in the pressure case on both layouts; the whole test takes
+  229 s.
 - `ninfer_qwen3_5_loading_real_test`: the default split covers the model, gives the head stage
   fewer layers, and gives a device with twice the memory more.
 
 Ranks sharing a device cannot show a wrong-device pointer: a stale pointer into "another rank's"
-memory still works there. That class of bug needs a real second card.
+memory still works there, and their streams race less than distinct cards' would. That class of bug
+needs a real second card. The 2026-09-21 measurements below were made on the implementation before
+the context-engine merge; the re-port has not run on distinct GPUs (`scripts/multi-gpu-testing/`
+with `NINFER_TEST_DEVICE_IDS=0,1` is the check).
 
 ## Measured on two real GPUs (2026-09-21)
 

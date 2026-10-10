@@ -55,7 +55,7 @@ head.
 
 The GDN recurrent state is 48 layers x 48 heads x 128 x 128 FP32 = **147 MiB per slot**, read and
 written every round. At C8 that is ~3.6 GB of a 58 ms round; it is also the size of the host state
-image that `--host-state-slots` pins.
+image each retained checkpoint takes from the pinned Host context budget (`--host-context-mib`).
 
 The recurrence still computes in FP32 — FP16 only rounds what is *stored* between steps.
 `LinearAttentionStatePoolSpec::recurrent_dtype` carries the choice; the four recurrent kernels

@@ -26,16 +26,6 @@ public:
         remaining_ -= tokens;
     }
 
-    // Grants more tokens: the part of the request's budget whose KV was reserved later.
-    void extend(std::uint32_t tokens) noexcept { remaining_ += tokens; }
-
-    void set_limit_reason(FinishReason reason) noexcept {
-        if (reason != FinishReason::OutputLimit && reason != FinishReason::ContextCapacity) {
-            std::abort();
-        }
-        limit_reason_ = reason;
-    }
-
 private:
     std::uint32_t remaining_   = 0;
     FinishReason limit_reason_ = FinishReason::None;

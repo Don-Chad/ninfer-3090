@@ -13,6 +13,7 @@
 
 using ninfer::product::S3Config;
 
+namespace {
 int failures = 0;
 void check(bool ok, const char* what) {
     if (!ok) {
@@ -20,6 +21,7 @@ void check(bool ok, const char* what) {
         std::cerr << "FAIL " << what << '\n';
     }
 }
+} // namespace
 
 int main(int, char**) {
     check(ninfer::product::parse_s3_timestamp_ms("2026-10-08T19:01:45.000Z") == 1791486105000LL,

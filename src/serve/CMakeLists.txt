@@ -19,14 +19,14 @@ add_library(ninfer_serve STATIC
   request_events.cpp
   operational_log.cpp
   request_log.cpp
+  metrics.cpp
   http_server.cpp
   load_report.cpp
-  slots_report.cpp
   openai_responses_http.cpp
   serve_options.cpp
-  serve_metrics.cpp
 )
 ninfer_internal_includes(ninfer_serve)
 target_link_libraries(ninfer_serve
   PUBLIC ninfer_engine Threads::Threads ninfer::json ninfer::httplib
-  PRIVATE ninfer_media_acquire ninfer_s3_object_store ninfer_product_logging ninfer_product_version ${NINFER_CUDART_TARGET})
+  PRIVATE ninfer_media_acquire ninfer_s3_object_store ninfer_product_logging ninfer_product_version ninfer_grammar
+          ${NINFER_CUDART_TARGET})

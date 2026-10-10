@@ -11,6 +11,7 @@
 // by Engine; media sources remain unresolved until the product service acquires
 // owning bytes.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -45,7 +46,7 @@ private:
 // Server-side context needed while parsing/validating a request.
 struct RequestLimits {
     // --default-max-tokens: the fixed budget of a request that omits its limit. Unset, such a
-    // request receives the Engine's concurrent lane budget once its prompt is prepared.
+    // request receives its remaining context once its prompt is prepared.
     std::optional<int> default_max_tokens;
     int max_context = 8192; // --max-context, the upper bound of any derived budget
 };
@@ -83,6 +84,8 @@ struct ToolDefinition {
     std::string name;
     std::string description;
     std::string input_schema_json;
+    std::string schema_param; // Original protocol path; never included in the model prompt.
+    bool strict = false;
     std::optional<std::string> input_examples_json;
     std::optional<CacheBoundary> cache_boundary_after;
 };
@@ -93,14 +96,8 @@ struct ToolCall {
     std::string arguments_json;
 };
 
-enum class ToolChoiceMode {
-    Auto,
-    None,
-};
-
-struct ToolChoice {
-    ToolChoiceMode mode = ToolChoiceMode::Auto;
-};
+using ToolChoiceMode = ninfer::ToolChoiceMode;
+using ToolChoice     = ninfer::ToolChoice;
 
 struct ChatTurn {
     ChatRole role = ChatRole::User;
@@ -174,6 +171,8 @@ requested_reasoning_effort_name(RequestedReasoningEffort effort) noexcept {
 }
 
 struct GenerationRequest {
+    std::optional<OutputConstraint> constraint;
+    std::string constraint_param;
     std::vector<ChatTurn> messages;
     std::vector<ToolDefinition> tools;
     std::size_t tool_name_max_length = 64;
@@ -186,7 +185,7 @@ struct GenerationRequest {
     bool ignore_eos = false;
     int max_tokens                       = 0; // resolved budget; zero means immediate output limit
     // The request omitted its limit and the server has no fixed default: GenerationService replaces
-    // max_tokens (then the --max-context upper bound) with Engine::concurrent_output_budget().
+    // max_tokens (then the --max-context upper bound) with the prompt's remaining context.
     bool derive_output_budget = false;
     std::optional<bool> enable_thinking;      // unset => use the server default
     std::optional<std::uint32_t> thinking_budget;
@@ -199,17 +198,21 @@ struct GenerationRequest {
     ninfer::PromptContinuationMode continuation = ninfer::PromptContinuationMode::NewAssistantTurn;
     bool private_cache_boundary_at_prompt_end   = false;
     bool allow_engine_automatic_shared_prefixes = true;
-    // False asks for at most one tool call per assistant turn. Decoding is not constrained; the
-    // serving layer keeps the first call and drops the rest, which is the part of the contract a
-    // client can actually observe.
-    bool parallel_tool_calls = true;
     SamplingParams sampling;
-    // Protocol-normalized structured-output contract (OpenAI response_format, Responses
-    // text.format, Anthropic output_config.format).
-    ninfer::OutputFormat output_format;
 
     [[nodiscard]] bool uses_tools() const noexcept {
-        return !tools.empty() && tool_choice.mode != ToolChoiceMode::None;
+        return !tools.empty() && tool_choice.mode != ToolChoiceMode::None &&
+               (!tool_choice.allowed_names || !tool_choice.allowed_names->empty());
+    }
+
+    [[nodiscard]] bool constrains_tools() const noexcept {
+        if (tools.empty() || constraint) return false;
+        if (!uses_tools()) return true;
+        if (tool_choice.mode == ToolChoiceMode::Required || !tool_choice.parallel ||
+            tool_choice.allowed_names || tool_choice.constraints == ToolConstraintMode::Basic)
+            return true;
+        return std::any_of(tools.begin(), tools.end(),
+                           [](const auto& tool) { return tool.strict; });
     }
 
     [[nodiscard]] std::size_t media_item_count() const noexcept {

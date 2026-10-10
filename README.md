@@ -50,10 +50,9 @@ requests are not guaranteed.
 > your desktop's GPU? Plans start with a day pass, and every verified account gets a few free
 > requests a day. Thank you to NeverMetered for supporting this project.
 
-**New in v0.14.2:** long prompts no longer have to block short ones. `--max-prefill-lanes N` reads
-several prompts in at once (default 2 with three or more `--max-concurrency` lanes; a short request behind a 3,000-token prompt: 2.5 s to 1.5 s to first word),
-`GET /slots` reports each retained conversation's reuse, and `--host-cache-max-mib` caps the
-RAM cache on shared machines. The rest are opt-in. See the [v0.14.2 release notes](RELEASE_NOTES_0.14.2.md).
+**v0.14.2:** `--host-cache-max-mib` caps the RAM cache on shared machines. This release also
+added `--max-prefill-lanes` and `GET /slots`, which the current engine no longer provides
+(see [docs/serving.md](docs/serving.md)). See the [v0.14.2 release notes](RELEASE_NOTES_0.14.2.md).
 
 **v0.14.1:** a stability fix for `ninfer-serve`. A large or unplannable request no longer fails
 every running request (`internal error generation`) or clears the context cache; only that request
@@ -137,15 +136,16 @@ The platform guides cover GPU checks, Docker, native builds and model mounts:
 | `run qwen38-27b c8` | Reference profile: eight lanes at 8K, highest aggregate throughput |
 
 Every default profile serves images (vision in overlay residency, which costs about 10 MiB of
-device reservation), uses `rk4v4` KV and the tuned context cache (8 shared prefixes, 32 host state
-slots, automatic prefix grid) that takes prefix reuse from 8.4% to 98.3% on a multi-preamble
-workload.
+device reservation), uses `rk4v4` KV, and backs the context cache with 8 GiB of pinned host RAM
+(`--host-context-mib 8192`): one budget that retained conversation state, KV pages and the snapshots
+of paused requests share once they leave the card. It is host memory, not GPU memory, and Windows
+now pins all of it too (earlier releases clamped it there to about 4.6 GiB).
 
 **Overrides**, from the environment: `NINFER_HOST`, `NINFER_PORT`, `NINFER_MODEL`, `NINFER_SERVER`,
 `NINFER_CHAT_TEMPLATE` for every profile, plus `NINFER_CONTEXT`, `NINFER_CONCURRENCY`,
 `NINFER_KV_CAPACITY`, `NINFER_KV_DTYPE`, `NINFER_SPEC`, `NINFER_DRAFT_TOKENS`, `NINFER_PREFILL_CHUNK`,
-`NINFER_VISION`, `NINFER_HOST_STATE_SLOTS`, `NINFER_MIN_P` (0.03) and `NINFER_PRESENCE_PENALTY` (0.5) for the
-default ones; the last two are the loop guard, and `default` leaves the registered sampling preset in force. The newer serving flags are opt-in overrides too: `NINFER_MAX_PREFILL_LANES`, `NINFER_DECODE_ROUNDS_PER_PREFILL`, `NINFER_PROGRESS_ANCHOR_TOKENS`, `NINFER_AUTO_HOST_CACHE=on`, `NINFER_MAX_OUTPUT_TOKENS`, `NINFER_LOOKUP_NGRAM`, `NINFER_CONTEXT_STORE` and more (listed at the top of `run.sh` / `run.bat`). The launchers bind `127.0.0.1`;
+`NINFER_VISION`, `NINFER_HOST_CONTEXT_MIB` (8192), `NINFER_MIN_P` (0.03) and `NINFER_PRESENCE_PENALTY` (0.5) for the
+default ones; the last two are the loop guard, and `default` leaves the registered sampling preset in force. Other serving flags are opt-in overrides too: `NINFER_AUTO_HOST_CACHE=on`, `NINFER_MAX_OUTPUT_TOKENS`, `NINFER_LOOKUP_NGRAM`, `NINFER_MLP_A8_DECODE=on` and `NINFER_CONTEXT_STORE` (listed with their caps at the top of `run.sh` / `run.bat`). The launchers bind `127.0.0.1`;
 `NINFER_HOST=0.0.0.0` exposes the server to the LAN, **unauthenticated**. On Windows,
 `set NINFER_SPEC=mtp && run.bat qwen38-27b`; on Linux, `NINFER_SPEC=mtp ./run.sh qwen38-27b`.
 
@@ -174,11 +174,14 @@ models — generally work unmodified. Changes to the file take effect on the nex
 **Lanes share one KV pool.** `--kv-capacity` is the pool and `--max-context` the per-request cap,
 and the launchers set both to the profile's context. Any one request can use the full context, but
 the lanes' requests together hold at most that many tokens at a time, so two users can't each keep a
-200K conversation resident. A lane adds only its fixed state, not a second pool.
+200K conversation resident. Requests take KV pages as they advance rather than reserving them up
+front; when the pool runs short the server first drops retained cache entries, then pauses the
+younger request (saving a snapshot to host memory, or replaying its tokens later) and resumes it
+once there is room. A lane adds only its fixed state, not a second pool.
 
 **If startup refuses** for lack of GPU memory, the default profiles step down on their own — an
 eighth of the context at a time, up to five times — and say what they did. An explicit
-`NINFER_CONTEXT`, `NINFER_PREFILL_CHUNK`, `NINFER_HOST_STATE_SLOTS` or `NINFER_KV_CAPACITY` is
+`NINFER_CONTEXT`, `NINFER_PREFILL_CHUNK`, `NINFER_HOST_CONTEXT_MIB` or `NINFER_KV_CAPACITY` is
 honoured as given and fails loudly; `NINFER_FALLBACK=off` turns the step-down off. By hand, drop a
 lane or a context rung first, then speculation (worth 992 MiB on the 35B-A3B), and vision last.
 
@@ -250,8 +253,10 @@ The default Qwen3.8-27B artifact stores its token embedding as Q4 and its head a
 `--embedding-q4` and `--lm-head-q6` load-time transcodes the upstream file needed are not passed.
 `--gdn-state-fp16` (FP16 recurrent state, -72 MiB per device state slot) is measured free on
 quality. The 27B's StateImage is
-74.5 MiB with the FP16 state, so `--host-state-slots 32` pins **2.34 GiB of host RAM** — host, not
-device, and the price of 98.3% prefix reuse. Lower it if the box is short on RAM.
+74.5 MiB with the FP16 state; retained ones beyond the card's slots, KV pages and paused requests'
+snapshots share the **8 GiB of pinned host RAM** that `--host-context-mib 8192` sets aside — host,
+not device. Lower it with `NINFER_HOST_CONTEXT_MIB` if the box is short on RAM (`0` keeps the cache
+on the card).
 
 ### Qwen3.6-35B-A3B
 
@@ -306,8 +311,8 @@ On Bazzite and other distributions the Dockerfile is the shortest path:
 - Seven KV-cache formats, from `bf16` to the 4-bit-key `rk4v4` that reaches the native 262K context.
 - Image understanding on Qwen3.8-27B and Qwen3.6-35B-A3B, with overlay residency that keeps the
   vision tower off the device between images.
-- Prefix reuse and a host-tier context cache for repeated or shared prompts, which `--auto-host-cache`
-  sizes from the machine's free RAM.
+- Prefix reuse and a host-tier context cache for repeated or shared prompts, backed by one pinned
+  Host budget (`--host-context-mib`) that `--auto-host-cache` can size from the machine's free RAM.
 - `none`, `low`, `medium`, and `xhigh` reasoning effort on Qwen3.8.
 - Concurrent cohorts of one to eight requests.
 - Layer-pipeline execution across several GPUs on Linux, verified on real 2x RTX 3090 and 2x RTX
@@ -322,11 +327,15 @@ The server supports:
 - OpenAI Chat Completions;
 - OpenAI Responses Core with streaming and local continuation state;
 - Anthropic Messages;
-- structured output ([docs](docs/serving.md#structured-output));
-- compatible-prefix reuse, with automatic long anchors so an edited mid-history turn does not force
-  a re-prefill from zero;
+- constrained output: JSON mode, JSON Schema, GBNF grammar, choice and regex, plus strict and
+  forced tool calls ([docs](docs/serving.md#output-constraints));
+- compatible-prefix reuse of retained conversations, with a checkpoint at the stable boundary before
+  each response, so a client that resends the last reply rewritten (its reasoning dropped, say)
+  recomputes only from there; editing an earlier message may fall back to an earlier checkpoint or
+  a full prefill;
+- retained conversations survive a restart in a local context store (`--context-store`),
+  optionally copied to an S3-compatible bucket ([docs](docs/serving.md#context-store));
 - Prometheus metrics at `GET /metrics` ([docs](docs/serving.md#metrics)) and a read-only `GET /props`;
-- retained conversations survive a restart in a local context store, with a read-only `GET /slots` for what is held ([docs](docs/serving.md#context-store));
 - prompt-rendered function tools and parsed tool calls (returned to the client, not executed);
 - bounded pending-request admission and JSONL request logs.
 
@@ -623,10 +632,12 @@ ninfer model.ninfer --devices 0,1,2 --stage-layers 20,22,22 --prompt "..."
 - **Linux only for real multi-GPU.** Repeating one id (`--devices 0,0`) puts several stages on one
   card, saves no memory, and exercises the whole stage path; it is how the path is tested without a
   second GPU, and it works on Windows too.
-- **Works with a split:** the context cache and prefix reuse, CUDA graphs, MTP, and vision (resident
-  or `--vision-residency overlay`; the tower and its encode stay on the first device, so the first
-  stage's layer budget carries a resident tower, and an overlay window borrows only from that
-  device). **Not yet:** DFlash/DFlash2, which is refused at startup with a message saying so.
+- **Works with a split:** the context cache and prefix reuse (including pausing and replaying a
+  request under KV pressure), CUDA graphs, MTP, DFlash/DFlash2 (the draft stays on the first device
+  and the target layers it reads cross back to it), every KV format, and resident vision (the tower
+  and its encode stay on the first device, so the first stage's layer budget carries it),
+  `--vision-residency overlay` (its window borrows only the first device's memory), prompt grafts,
+  and worker failure recovery.
 - **Boundary transfers stage through pinned host memory.** Peer access is not needed, and no
   consumer PCIe pair measured so far offers it. Measured with `tools/tp_probe.cu` on rented 2x A4000
   and 2x 3090 PCIe boxes, a staged transfer took about 0.03 ms at a decode-sized payload and several
@@ -642,8 +653,9 @@ and the design are in `docs/maintainer/pipeline-parallel-plan.md`.
 ## Current limits
 
 - One model per process, on one GPU or split into pipeline stages with `--devices` (Linux). No
-  tensor parallelism and no CPU/GPU weight offload. Pipeline stages do not yet support
-  DFlash/DFlash2.
+  tensor parallelism and no CPU/GPU weight offload. The pipeline on the current context engine has
+  been verified only with stages sharing one GPU (`--devices 0,0`); distinct GPUs are unverified on
+  this build.
 - Concurrency is fixed at startup and limited to 1-8; the compact 35B-A3B fits C1-C6 at 4K and
   Qwen3.8-27B fits C8/8K with MTP3 through ReplaySSM.
 - The shared KV pool is fixed at startup and is not divided statically among request lanes.

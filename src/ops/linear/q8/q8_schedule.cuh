@@ -58,12 +58,13 @@ enum class Q8MmaFragmentPipeline { Serial, PingPong };
 
 // Quant codes are prefetched while MMA consumes the decoded BF16 weight tile.
 // Eight G32 scales are cached per row. Activations may use one or two buffers.
+// Padding-free problems can fix K and specialize the outer-loop unroll factor.
 template <int BlockRows, int BlockTokens, int BlockK, int WarpRows, int WarpTokens,
           int ActivationStages, int MinBlocksPerSm,
           Q8MmaFragmentPipeline FragmentPipeline = Q8MmaFragmentPipeline::PingPong,
           Cache WeightCache = Cache::cg, Cache ActivationCache = Cache::cg,
-          Cache PredicatedCache = Cache::ca, bool Predicated = false,
-          bool ExactGroupScale = false>
+          Cache PredicatedCache = Cache::ca, bool Predicated = false, int StaticK = 0,
+          int KLoopUnroll = 4, bool ExactGroupScale = false>
 struct Q8A16MmaSchedule {
     // ExactGroupScale picks how the Q8G32 scale enters the product; it is an accuracy choice, not a
     // speed one. The default folds it into the dequantized weight, so the BF16 operand carries
@@ -80,7 +81,7 @@ struct Q8A16MmaSchedule {
     using with_exact_group_scale =
         Q8A16MmaSchedule<BlockRows, BlockTokens, BlockK, WarpRows, WarpTokens, ActivationStages,
                          MinBlocksPerSm, FragmentPipeline, WeightCache, ActivationCache,
-                         PredicatedCache, Predicated, true>;
+                         PredicatedCache, Predicated, StaticK, KLoopUnroll, true>;
     // MinBlocksPerSm hands ptxas its register budget; the exact-group-scale body needs more live
     // state (the FP32 group partial and the tile's row scales) and, left alone, ptxas spends it on
     // registers and loses a block.
@@ -88,7 +89,7 @@ struct Q8A16MmaSchedule {
     using with_min_blocks =
         Q8A16MmaSchedule<BlockRows, BlockTokens, BlockK, WarpRows, WarpTokens, ActivationStages,
                          Blocks, FragmentPipeline, WeightCache, ActivationCache, PredicatedCache,
-                         Predicated, ExactGroupScale>;
+                         Predicated, StaticK, KLoopUnroll, ExactGroupScale>;
 
     static constexpr int kBlockRows         = BlockRows;
     static constexpr int kBlockTokens       = BlockTokens;
@@ -103,6 +104,8 @@ struct Q8A16MmaSchedule {
     static constexpr auto kActivationCache  = ActivationCache;
     static constexpr auto kPredicatedCache  = PredicatedCache;
     static constexpr bool kPredicated       = Predicated;
+    static constexpr int kStaticK           = StaticK;
+    static constexpr int kKLoopUnroll       = KLoopUnroll;
     static constexpr int kWarpGridRows      = BlockRows / WarpRows;
     static constexpr int kWarpGridTokens    = BlockTokens / WarpTokens;
     static constexpr int kWarps             = kWarpGridRows * kWarpGridTokens;
@@ -120,6 +123,8 @@ struct Q8A16MmaSchedule {
     static_assert(BlockK == 64 || BlockK == 128);
     static_assert(!ExactGroupScale || (kMmaKSteps % 2) == 0,
                   "an exact group scale folds two m16n8k16 steps, one Q8G32 group, at a time");
+    static_assert(StaticK == 0 || (StaticK > 0 && StaticK % BlockK == 0));
+    static_assert(KLoopUnroll > 0);
     static_assert(ActivationStages == 1 || ActivationStages == 2);
     static_assert(kThreads <= 1024 && MinBlocksPerSm > 0);
     static_assert(kSharedBytes <= 99 * 1024);

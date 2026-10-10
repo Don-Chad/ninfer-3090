@@ -46,7 +46,6 @@ struct StreamingResponse {
 ApiError responses_error(ApiError error) {
     if (error.param == "messages") { error.param = "input"; }
     if (error.param == "reasoning_effort") { error.param = "reasoning.effort"; }
-    if (error.param == "response_format") { error.param = "text.format"; }
     return error;
 }
 
@@ -262,6 +261,8 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
 
     const std::uint64_t req_id = ++request_seq_;
     const RequestLogMetadata metadata{
+        .http_request_id                   = res.get_header_value("x-request-id"),
+        .response_id                       = id,
         .model                             = request.prompt.model,
         .stream                            = request.stream,
         .output_tokens_explicit            = request.requested_max_output_tokens.has_value(),
@@ -272,7 +273,10 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
         prepared = service_->prepare(
             resolved.generation,
             request.stream ? GenerationConsumerMode::Streaming : GenerationConsumerMode::Aggregate,
-            {}, [&req] { return client_disconnected(req); }, std::move(resolved.cache_hints));
+            {.phase_timings = true,
+             .scheduling    = scheduling_observer(req_id, metadata.http_request_id),
+             .first_token   = first_token_observer()},
+            [&req] { return client_disconnected(req); }, std::move(resolved.cache_hints));
     } catch (const ApiException& exception) {
         const ApiError error = responses_error(exception.error());
         record_request_rejected(make_request_rejection_log_context(
@@ -443,6 +447,12 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
                 }
 
                 lifecycle->done(outcome);
+                if (outcome.finish_reason == ninfer::FinishReason::Cancelled ||
+                    stream->cancelled.load(std::memory_order_acquire)) {
+                    lifecycle->response_failure(
+                        make_client_disconnected_failure(RequestFailurePhase::Transport));
+                    return false;
+                }
                 std::optional<OpenAIResponsesStreamFinish> finished;
                 try {
                     finished.emplace(stream->encoder->finish(outcome));

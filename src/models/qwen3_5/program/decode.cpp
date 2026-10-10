@@ -1,7 +1,8 @@
 #include "models/qwen3_5/program/program_impl.h"
 #include "models/qwen3_5/program/context_work.h"
-#include "models/qwen3_5/program/context.h"
+#include "models/qwen3_5/program/execution_context.h"
 #include "models/qwen3_5/program/graph_execution.h"
+#include "models/qwen3_5/program/planning/graph_profiles.h"
 #include "core/nvtx.h"
 #include "core/device.h"
 #include "ninfer/ops/prepare_ragged_prefix.h"
@@ -83,61 +84,7 @@ void ordinary_decode_batch(OrdinaryBatchContext& state, std::int32_t batch_size,
 
 namespace ninfer::models::qwen3_5::detail {
 
-namespace {
-
-DecodeGraphProfile& select_graph_profile(DecodeGraphFamily& family, std::uint32_t batch_size,
-                                         std::uint32_t frontier, const char* label);
-
-DecodeGraphTopology& select_graph_topology(DecodeGraphFamily& family, std::uint32_t topology_class,
-                                           const char* label);
-
-std::span<DecodeGraphExecutable> install_graph_profile(DecodeGraphFamily& family,
-                                                       DecodeGraphProfile& profile,
-                                                       const char* label);
-
-DecodeGraphProfile& select_graph_profile(DecodeGraphFamily& family, std::uint32_t batch_size,
-                                         std::uint32_t frontier, const char* label) {
-    const auto it = std::find_if(
-        family.profiles.begin(), family.profiles.end(), [&](const DecodeGraphProfile& profile) {
-            return profile.batch_size == batch_size && profile.min_execution_frontier <= frontier &&
-                   frontier <= profile.max_execution_frontier;
-        });
-    if (it == family.profiles.end()) {
-        throw std::logic_error(std::string(label) + " CUDA Graph coverage is incomplete");
-    }
-    return *it;
-}
-
-DecodeGraphTopology& select_graph_topology(DecodeGraphFamily& family, std::uint32_t topology_class,
-                                           const char* label) {
-    const auto it = std::find_if(family.topologies.begin(), family.topologies.end(),
-                                 [topology_class](const DecodeGraphTopology& topology) {
-                                     return topology.topology_class == topology_class;
-                                 });
-    if (it == family.topologies.end()) {
-        throw std::logic_error(std::string(label) + " CUDA Graph topology is unavailable");
-    }
-    return *it;
-}
-
-std::span<DecodeGraphExecutable> install_graph_profile(DecodeGraphFamily& family,
-                                                       DecodeGraphProfile& profile,
-                                                       const char* label) {
-    DecodeGraphTopology& topology   = select_graph_topology(family, profile.topology_class, label);
-    const std::size_t profile_index = static_cast<std::size_t>(&profile - family.profiles.data());
-    if (topology.segments.size() != profile.segments.size()) {
-        throw std::logic_error(std::string(label) + " CUDA Graph segments are inconsistent");
-    }
-    if (topology.installed_profile != profile_index) {
-        for (std::size_t segment = 0; segment < topology.segments.size(); ++segment) {
-            topology.segments[segment].update(profile.segments[segment]);
-        }
-        topology.installed_profile = profile_index;
-    }
-    return topology.segments;
-}
-
-} // namespace
+namespace {} // namespace
 
 void ProgramImpl::install_sampling(SequenceState& sequence, RequestControl& request,
                                    const ops::SamplingConfig& config) {
@@ -159,70 +106,6 @@ void ProgramImpl::install_sampling(SequenceState& sequence, RequestControl& requ
     CUDA_CHECK(cudaMemcpyAsync(config_lane.data, &request.sampling_host,
                                sizeof(request.sampling_host), cudaMemcpyHostToDevice,
                                device.stream));
-}
-
-ProgramImpl::TokenConstraintBinding::TokenConstraintBinding(
-    ProgramImpl& program, std::span<const std::uint32_t> lanes,
-    std::span<runtime::TokenMaskSource* const> constraints)
-    : program_(program), lanes_(lanes) {
-    if (!constraints.empty() && constraints.size() != lanes.size()) {
-        throw std::invalid_argument("token constraints are not row-aligned");
-    }
-    for (std::size_t row = 0; row < lanes.size(); ++row) {
-        program_.lane_constraints_.at(lanes[row]) = constraints.empty() ? nullptr : constraints[row];
-    }
-}
-
-ProgramImpl::TokenConstraintBinding::~TokenConstraintBinding() {
-    for (const std::uint32_t lane : lanes_) { program_.lane_constraints_[lane] = nullptr; }
-}
-
-const std::uint32_t* ProgramImpl::token_mask_slab(std::uint32_t lane) const {
-    if (token_masks.data == nullptr || lane >= max_concurrency) {
-        throw std::logic_error("token-mask slab is unavailable");
-    }
-    return static_cast<const std::uint32_t*>(
-        token_masks.slice(2, static_cast<std::int32_t>(lane), 1).data);
-}
-
-ops::SamplingConfig ProgramImpl::masked_sampling(const ops::SamplingConfig& base,
-                                                 const std::uint32_t* mask) const noexcept {
-    ops::SamplingConfig config = base;
-    config.token_mask          = mask;
-    config.token_mask_words    = mask != nullptr ? static_cast<std::int32_t>(token_mask_words) : 0;
-    return config;
-}
-
-const std::uint32_t* ProgramImpl::stage_token_masks(std::uint32_t lane,
-                                                    std::span<const TokenId> speculative,
-                                                    std::uint32_t columns, bool keep_slab) {
-    runtime::TokenMaskSource* const constraint = lane_constraints_.at(lane);
-    if (constraint == nullptr) { return nullptr; }
-    const std::uint32_t width = static_cast<std::uint32_t>(token_masks.ne[1]);
-    if (!token_mask_host || columns == 0 || columns > width || speculative.size() + 1U < columns) {
-        throw std::logic_error("structured-output mask request is outside the round geometry");
-    }
-    const std::size_t slab_words = static_cast<std::size_t>(width) * token_mask_words;
-    const std::span<std::uint32_t> host(
-        static_cast<std::uint32_t*>(token_mask_host->data()) + lane * slab_words, slab_words);
-    auto* const slab = const_cast<std::uint32_t*>(token_mask_slab(lane));
-    const std::size_t column_words = static_cast<std::size_t>(columns) * token_mask_words;
-    // The previous round synchronized the device, so no copy still reads this staging slab.
-    if (constraint->fill_token_masks(speculative, columns, host.first(column_words),
-                                     token_mask_words)) {
-        CUDA_CHECK(cudaMemcpyAsync(slab, host.data(), column_words * sizeof(std::uint32_t),
-                                   cudaMemcpyHostToDevice, device.stream));
-        token_mask_slab_open_[lane] = false;
-        return slab;
-    }
-    if (!keep_slab) { return nullptr; }
-    if (!token_mask_slab_open_[lane]) {
-        std::fill(host.begin(), host.end(), ~0U);
-        CUDA_CHECK(cudaMemcpyAsync(slab, host.data(), slab_words * sizeof(std::uint32_t),
-                                   cudaMemcpyHostToDevice, device.stream));
-        token_mask_slab_open_[lane] = true;
-    }
-    return slab;
 }
 
 void ProgramImpl::copy_tail(SequenceState& sequence, const Tensor& source) {
@@ -333,10 +216,9 @@ void ProgramImpl::validate_licensed_tokens(std::span<const TokenId> tokens) cons
     }
 }
 
-runtime::BatchedGeneratedRound
-ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
-                                   std::span<const runtime::RoundBudget> budgets,
-                                   runtime::ExecutionTiming* failed_timing) {
+runtime::BatchedGeneratedRound ProgramImpl::decode_ordinary_batch(
+    std::span<const std::uint32_t> lanes, std::span<const runtime::RoundBudget> budgets,
+    runtime::ExecutionTiming* failed_timing, runtime::TokenMaskProvider* masks) {
     nvtx::ScopedRange round_range(nvtx::Name::DecodeOrdinaryRound, nvtx::Category::Decode,
                                   static_cast<std::uint64_t>(lanes.size()));
     runtime::ExecutionTimingRecorder timing(runtime::ExecutionTimingPhase::Submit, failed_timing);
@@ -379,9 +261,8 @@ ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
         ops::CausalAttentionExecutionEnvelope envelope{maximum_frontier + 1, maximum_frontier + 1};
         if (use_cuda_graph) {
             DecodeGraphProfile& profile =
-                select_graph_profile(ordinary_graphs, static_cast<std::uint32_t>(lanes.size()),
-                                     maximum_frontier, "ordinary batch");
-            executable = &install_graph_profile(ordinary_graphs, profile, "ordinary batch")[0];
+                ordinary_graphs.select(static_cast<std::uint32_t>(lanes.size()), maximum_frontier);
+            executable = &ordinary_graphs.install(profile);
             envelope   = {profile.min_execution_frontier + 1, profile.max_execution_frontier + 1};
         }
 
@@ -399,8 +280,8 @@ ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
             const StateImageSelectors selectors                 = state_selectors(sequence);
             ordinary_host_ingress->state_source_slots[row]      = selectors.source;
             ordinary_host_ingress->state_destination_slots[row] = selectors.destination;
-            ordinary_host_ingress->sampling[row]                = masked_sampling(
-                request.sampling_host, stage_token_masks(lanes[row], {}, 1, false));
+            ordinary_host_ingress->sampling[row]                = request.sampling_host;
+            ordinary_host_ingress->sampling[row].mask           = fill_grammar_mask(masks, row, {});
             ensure_sequence_kv_mapped(sequence, frontier + 1, 0);
         }
 
@@ -467,10 +348,9 @@ ProgramImpl::decode_ordinary_batch(std::span<const std::uint32_t> lanes,
     }
 }
 
-runtime::BatchedGeneratedRound
-ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
-                              std::span<const runtime::RoundBudget> budgets,
-                              runtime::ExecutionTiming* failed_timing) {
+runtime::BatchedGeneratedRound ProgramImpl::decode_mtp_batch(
+    std::span<const std::uint32_t> lanes, std::span<const runtime::RoundBudget> budgets,
+    runtime::ExecutionTiming* failed_timing, runtime::TokenMaskProvider* masks) {
     nvtx::ScopedRange round_range(nvtx::Name::DecodeMtpRound, nvtx::Category::Mtp,
                                   static_cast<std::uint64_t>(lanes.size()));
     runtime::ExecutionTimingRecorder timing(runtime::ExecutionTimingPhase::Submit, failed_timing);
@@ -514,14 +394,16 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
         std::optional<nvtx::ScopedRange> submit_range;
         submit_range.emplace(nvtx::Name::DecodeMtpSubmit, nvtx::Category::Mtp,
                              static_cast<std::uint64_t>(lanes.size()));
-        DecodeGraphExecutable* executable = nullptr;
+        DecodeGraphExecutable* forward = nullptr;
+        DecodeGraphExecutable* finish  = nullptr;
         execution::MtpCausalAttentionEnvelopes envelopes =
             mtp_causal_attention_envelopes(maximum_frontier, draft_window, capacity);
         if (use_cuda_graph) {
-            DecodeGraphProfile& profile =
-                select_graph_profile(mtp_graphs, static_cast<std::uint32_t>(lanes.size()),
-                                     maximum_frontier, "MTP batch");
-            executable = &install_graph_profile(mtp_graphs, profile, "MTP batch")[0];
+            const auto batch = static_cast<std::uint32_t>(lanes.size());
+            auto& profile    = speculative_forward_graphs.select(batch, maximum_frontier);
+            forward          = &speculative_forward_graphs.install(profile);
+            finish           = &speculative_finish_graphs.install(
+                speculative_finish_graphs.select(batch, maximum_frontier));
             envelopes = mtp_causal_attention_envelopes(profile.max_execution_frontier, draft_window,
                                                        capacity);
         }
@@ -559,13 +441,8 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
             mtp_host_ingress->state_source_slots[row]      = selectors.source;
             mtp_host_ingress->state_destination_slots[row] = selectors.destination;
             mtp_host_ingress->rope_deltas[row]             = sequence.rope_delta;
-            // MTP and context-lookup drafts are already on the host, so every verification
-            // column's mask is known before the round starts.
-            mtp_host_ingress->sampling[row] = masked_sampling(
-                request.sampling_host,
-                stage_token_masks(lanes[row],
-                                  std::span<const TokenId>(sequence.mtp_drafts.data(), extent),
-                                  extent + 1U, false));
+            mtp_host_ingress->sampling[row]                = request.sampling_host;
+            mtp_host_ingress->sampling[row].mask           = bind_grammar_mask(masks, row);
             ensure_sequence_kv_mapped(sequence, frontier + extent + 1,
                                       std::min(capacity, frontier + extent + draft_window));
         }
@@ -581,8 +458,16 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
                                                   state_images->continuation_hidden_store()};
 
         mark_workspace_usage(workspace_plan.mtp_round);
-        execution::mtp_decode_batch(schedule_state, static_cast<std::int32_t>(lanes.size()),
-                                    draft_window, envelopes, executable);
+        const auto batch = static_cast<std::int32_t>(lanes.size());
+        execution::mtp_decode_batch(schedule_state, batch, draft_window, envelopes, forward,
+                                    execution::SpeculativePhase::Forward);
+        for (std::size_t row = 0; row < lanes.size(); ++row) {
+            const auto extent = static_cast<std::size_t>(mtp_host_ingress->current_extents[row]);
+            (void)fill_grammar_mask(masks, row,
+                                    {active_sequence(lanes[row]).mtp_drafts.data(), extent});
+        }
+        execution::mtp_decode_batch(schedule_state, batch, draft_window, envelopes, finish,
+                                    execution::SpeculativePhase::Finish);
         submit_range.reset();
         timing.begin_wait();
         {
@@ -657,10 +542,9 @@ ProgramImpl::decode_mtp_batch(std::span<const std::uint32_t> lanes,
     }
 }
 
-runtime::BatchedGeneratedRound
-ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
-                                 std::span<const runtime::RoundBudget> budgets,
-                                 runtime::ExecutionTiming* failed_timing) {
+runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
+    std::span<const std::uint32_t> lanes, std::span<const runtime::RoundBudget> budgets,
+    runtime::ExecutionTiming* failed_timing, runtime::TokenMaskProvider* masks) {
     nvtx::ScopedRange round_range(nvtx::Name::DecodeDFlashRound, nvtx::Category::DFlash,
                                   static_cast<std::uint64_t>(lanes.size()));
     runtime::ExecutionTimingRecorder timing(runtime::ExecutionTimingPhase::Submit, failed_timing);
@@ -713,14 +597,21 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
         std::optional<nvtx::ScopedRange> submit_range;
         submit_range.emplace(nvtx::Name::DecodeDFlashSubmit, nvtx::Category::DFlash,
                              static_cast<std::uint64_t>(lanes.size()));
-        std::span<DecodeGraphExecutable> segments;
+        bool constrained = false;
+        for (std::size_t row = 0; row < lanes.size(); ++row) {
+            grammar_dead_positions[row] = 0;
+            constrained |= masks && masks->constrained(row);
+        }
+        DecodeGraphExecutable* forward       = nullptr;
+        DecodeGraphExecutable* finish        = nullptr;
         execution::DFlashEnvelopes envelopes = dflash_envelopes(maximum_frontier, draft_window);
         ops::CausalAttentionExecutionEnvelope target_envelope{1, maximum_target_tokens};
         if (use_cuda_graph) {
-            DecodeGraphProfile& profile =
-                select_graph_profile(dflash_graphs, static_cast<std::uint32_t>(lanes.size()),
-                                     maximum_frontier, "DFlash batch");
-            segments        = install_graph_profile(dflash_graphs, profile, "DFlash batch");
+            const auto batch = static_cast<std::uint32_t>(lanes.size());
+            auto& profile    = speculative_forward_graphs.select(batch, maximum_frontier);
+            forward          = &speculative_forward_graphs.install(profile);
+            finish           = &speculative_finish_graphs.install(
+                speculative_finish_graphs.select(batch, maximum_frontier));
             envelopes       = dflash_envelopes(profile.max_execution_frontier, draft_window);
             target_envelope = {
                 1, static_cast<std::uint32_t>(std::min<std::uint64_t>(
@@ -758,11 +649,8 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
             const StateImageSelectors selectors          = state_selectors(sequence);
             dflash_host_ingress->state_source_slots[row] = selectors.source;
             dflash_host_ingress->state_destination_slots[row] = selectors.destination;
-            // The drafts arrive inside the round; a constrained row points at its slab now and the
-            // slab is filled between target verification and acceptance.
-            dflash_host_ingress->sampling[row] = masked_sampling(
-                request.sampling_host,
-                lane_constrained(lanes[row]) ? token_mask_slab(lanes[row]) : nullptr);
+            dflash_host_ingress->sampling[row]                = request.sampling_host;
+            dflash_host_ingress->sampling[row].mask           = bind_grammar_mask(masks, row);
             ensure_sequence_kv_mapped(sequence, frontier + extent + 1U,
                                       backend_kv_cache() ? frontier : 0U);
         }
@@ -777,36 +665,30 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
             *dflash_host_ingress,
             *dflash_host_egress,
             state_images->continuation_hidden_store(),
-            static_cast<std::int32_t*>(dflash_draft_host->data())};
+            dflash_draft_handoff->tokens(),
+            dflash_draft_handoff->ready};
 
         mark_workspace_usage(workspace_plan.dflash_round);
         const auto batch = static_cast<std::int32_t>(lanes.size());
-        const bool constrained =
-            std::any_of(lanes.begin(), lanes.end(),
-                        [this](std::uint32_t lane) { return lane_constrained(lane); });
-        execution::dflash_decode_propose(schedule_state, batch, draft_window, envelopes,
-                                         segments.empty() ? nullptr : &segments[0]);
-        if (constrained) { dflash_proposal_ready->record(device.stream); }
-        execution::dflash_decode_verify(schedule_state, batch, draft_window, target_envelope,
-                                        segments.empty() ? nullptr : &segments[1]);
+        execution::dflash_decode_batch(schedule_state, batch, draft_window, envelopes,
+                                       target_envelope, forward,
+                                       execution::SpeculativePhase::Forward);
         if (constrained) {
-            // Build the verification masks from the proposal while the target runs.
-            timing.begin_wait();
-            dflash_proposal_ready->synchronize();
-            timing.end_wait();
+            // The forward graph signals draft readiness before running the target model.
+            timing.begin_constraint_wait();
+            dflash_draft_handoff->ready.synchronize();
+            timing.end_constraint_wait();
             timing.resume_submit();
-            const auto* drafts = static_cast<const TokenId*>(dflash_draft_host->data());
             for (std::size_t row = 0; row < lanes.size(); ++row) {
-                if (!lane_constrained(lanes[row])) { continue; }
                 const auto extent =
-                    static_cast<std::uint32_t>(dflash_host_ingress->proposal_extents[row]);
-                (void)stage_token_masks(
-                    lanes[row], std::span<const TokenId>(drafts + row * draft_window, extent),
-                    extent + 1U, true);
+                    static_cast<std::size_t>(dflash_host_ingress->proposal_extents[row]);
+                (void)fill_grammar_mask(
+                    masks, row, schedule_state.host_drafts.subspan(row * draft_window, extent));
             }
         }
-        execution::dflash_decode_accept(schedule_state, batch, draft_window,
-                                        segments.empty() ? nullptr : &segments[2]);
+        execution::dflash_decode_batch(schedule_state, batch, draft_window, envelopes,
+                                       target_envelope, finish,
+                                       execution::SpeculativePhase::Finish);
         submit_range.reset();
         timing.begin_wait();
         {
@@ -880,17 +762,16 @@ ProgramImpl::decode_dflash_batch(std::span<const std::uint32_t> lanes,
     }
 }
 
-runtime::BatchedGeneratedRound
-ProgramImpl::decode_raw(std::span<const std::uint32_t> lanes,
-                        std::span<const runtime::RoundBudget> budgets,
-                        runtime::ExecutionTiming* failed_timing) {
+runtime::BatchedGeneratedRound ProgramImpl::decode_raw(
+    std::span<const std::uint32_t> lanes, std::span<const runtime::RoundBudget> budgets,
+    runtime::ExecutionTiming* failed_timing, runtime::TokenMaskProvider* masks) {
     if (speculative_backend == SpeculativeBackend::None) {
-        return decode_ordinary_batch(lanes, budgets, failed_timing);
+        return decode_ordinary_batch(lanes, budgets, failed_timing, masks);
     }
     if (speculative_backend == SpeculativeBackend::Mtp) {
-        return decode_mtp_batch(lanes, budgets, failed_timing);
+        return decode_mtp_batch(lanes, budgets, failed_timing, masks);
     }
-    return decode_dflash_batch(lanes, budgets, failed_timing);
+    return decode_dflash_batch(lanes, budgets, failed_timing, masks);
 }
 
 runtime::ExecutionTiming ProgramImpl::resolve_non_speculative_pending(
@@ -921,8 +802,6 @@ runtime::ExecutionTiming ProgramImpl::resolve_non_speculative_pending(
         sequence.ledger_frontier    = request.pending.prompt_tokens + 1;
         break;
     case PendingKind::Ordinary:
-        advance_rebuild_work(sequence, request.pending.base_E + request.pending.produced,
-                             prefill_chunk);
         sequence.execution_frontier = request.pending.base_E + request.pending.produced;
         sequence.ledger_frontier    = request.pending.base_S + request.pending.produced;
         break;

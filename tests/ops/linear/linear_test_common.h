@@ -58,6 +58,11 @@ enum class ActivationSigns : std::uint8_t {
     Biased,
 };
 
+// A structured activation that replaces the random one. `KTail` is zero except the final sixteen
+// columns, so only a K-tail tile contributes; `Cancellation` alternates +-0.25 so a dropped or
+// duplicated K element shows up against a near-zero exact result.
+enum class ActivationPattern : std::uint8_t { Dense, KTail, Cancellation };
+
 struct ShapeCase {
     std::int32_t n;
     std::int32_t k;
@@ -65,11 +70,15 @@ struct ShapeCase {
     Comparison comparison;
     bool verify_input_preservation;
     std::span<const Invocation> invocations;
+    ActivationPattern activation_pattern = ActivationPattern::Dense;
+    // Applies to the Dense pattern only; a structured pattern fixes every element.
     ActivationSigns activation_signs = ActivationSigns::Centered;
 };
 
 using WeightGenerator = quantized_weight::PackedWeight (*)(std::int32_t, std::int32_t,
                                                            std::uint32_t);
+
+quantized_weight::PackedWeight make_bf16_weight(std::int32_t n, std::int32_t k, std::uint32_t seed);
 
 quantized_weight::PackedWeight make_q4_g64_fp16_weight(std::int32_t n, std::int32_t k,
                                                        std::uint32_t seed);

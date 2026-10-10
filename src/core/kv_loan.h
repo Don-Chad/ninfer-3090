@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -20,6 +21,13 @@ struct KVLoanPlan {
     std::size_t bytes = 0;
 };
 
+// Only rank 0's planes are lendable: the arena is rank 0's persistent memory, and a Vision window
+// runs on the primary device. Pages lent there are unusable on every rank, since one page id names
+// the same group everywhere, but a later rank's planes stay mapped.
+[[nodiscard]] inline bool kv_loan_plane(const DeviceKVPagePool& pages, std::size_t index) {
+    return pages.plane_rank(index) == 0;
+}
+
 // Pages one granule spans in a plane, for planes whose stride divides the granularity evenly.
 // A plane that needs more than kMaxLoanUnitPages pages per granule (the tiny scale planes) is
 // never lent: its pages stay mapped and cost the loan nothing but a few per cent of yield.
@@ -29,6 +37,7 @@ inline constexpr std::uint32_t kMaxLoanUnitPages = 256;
                                                       std::size_t granularity) {
     std::uint32_t unit = 0;
     for (std::size_t index = 0; index < pages.plane_count(); ++index) {
+        if (!kv_loan_plane(pages, index)) { continue; }
         const auto stride = static_cast<std::size_t>(pages.plane(index).nb[3]);
         if (stride == 0 || granularity % stride != 0) { continue; }
         const std::size_t per_granule = granularity / stride;
@@ -45,6 +54,7 @@ inline void collect_loan_granules(const EvictableKVPool& arena, const DeviceKVPa
     const std::size_t granularity = arena.granularity();
     const auto* const base        = static_cast<const std::byte*>(arena.arena().data);
     for (std::size_t index = 0; index < pages.plane_count(); ++index) {
+        if (!kv_loan_plane(pages, index)) { continue; }
         const auto stride = static_cast<std::size_t>(pages.plane(index).nb[3]);
         if (stride == 0 || granularity % stride != 0 ||
             granularity / stride > kMaxLoanUnitPages) {
@@ -62,9 +72,12 @@ inline void collect_loan_granules(const EvictableKVPool& arena, const DeviceKVPa
 }
 
 // Draws a loan of at least `bytes` from the highest free pages, growing one run at a time in
-// whole units. Returns an empty plan when the free pages cannot cover the request.
+// whole units. Returns an empty plan when the free pages cannot cover the request. With
+// `cap_available` false the plan ignores reservations, which sizes the pages a loan would need
+// once reclaim has made them available; such a plan must not be lent.
 [[nodiscard]] inline KVLoanPlan plan_kv_loan(const EvictableKVPool& arena,
-                                             const DeviceKVPagePool& pages, std::size_t bytes) {
+                                             const DeviceKVPagePool& pages, std::size_t bytes,
+                                             bool cap_available = true) {
     KVLoanPlan plan;
     const std::size_t granularity = arena.granularity();
     const std::uint32_t unit      = kv_loan_unit_pages(pages, granularity);
@@ -75,7 +88,8 @@ inline void collect_loan_granules(const EvictableKVPool& arena, const DeviceKVPa
     // free_runs() tracks physically-unmapped pages only; it does not know about pages an active
     // request's DeviceKVPageReservation is counting on but has not materialized yet. Cap what this
     // loan may take at available_pages() so it never eats into a live reservation.
-    const std::uint32_t available = pages.available_pages();
+    const std::uint32_t available =
+        cap_available ? pages.available_pages() : std::numeric_limits<std::uint32_t>::max();
     if (available == 0) { return plan; }
 
     const std::span<const KVPageRun> free_runs = pages.free_runs();

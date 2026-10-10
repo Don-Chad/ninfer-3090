@@ -17,11 +17,10 @@ lanes' requests together hold at most that many tokens at a time.
 
 `tuned` is the recommended profile. `int8` (one user, 64K of INT8 KV, the quality default) and `c8`
 (eight lanes at 8K) are the older reference profiles, with every serving flag fixed. `c8` sizes its
-context cache per lane -- two retained conversations and two host StateImages per lane, one extra
-device StateImage per lane -- so rotating agents keep their conversations cached; at 147 MiB per
-BF16 StateImage the host slots pin 2.3 GiB, and on Windows it still starts with about 2 GiB of the
-card free (2026-09-29). With engine defaults, a single lane keeps only two conversations, and four
-rotating agents reused 12% of their prompts against 76% with room for all four. The former
+context cache per lane -- one extra device StateImage per lane (`--device-state-slots 8`, 147 MiB
+each in BF16) and the same 8 GiB pinned Host context budget as `tuned` -- so rotating agents keep
+their conversations cached. Every `tuned` profile and `c8` pass `--host-context-mib 8192`; `int8`
+passes no cache flag and gets the engine default (8 GiB plus eight StateImages). The former
 vision-only launchers are gone: `tuned` serves vision in overlay residency, which costs about
 10 MiB, and `NINFER_VISION=off` turns it off.
 
@@ -88,31 +87,31 @@ Overrides, from the environment, so a launcher never needs editing: `NINFER_MODE
 `NINFER_MODEL_DIR`, `NINFER_SERVER`, `NINFER_HOST`, `NINFER_PORT` for every profile; `tuned` also
 reads `NINFER_CONTEXT`, `NINFER_CONCURRENCY`, `NINFER_KV_CAPACITY` (Linux), `NINFER_KV_DTYPE`,
 `NINFER_SPEC`, `NINFER_DRAFT_TOKENS`, `NINFER_PREFILL_CHUNK`, `NINFER_VISION`,
-`NINFER_VISION_RESIDENCY`, `NINFER_HOST_STATE_SLOTS`, `NINFER_FALLBACK`, `NINFER_MIN_P` (default 0.03) and
+`NINFER_VISION_RESIDENCY`, `NINFER_HOST_CONTEXT_MIB` (default 8192), `NINFER_FALLBACK`, `NINFER_MIN_P` (default 0.03) and
 `NINFER_PRESENCE_PENALTY` (default 0.5). The last two are the loop guard: they are process-level sampling
 overrides for the `tuned` profile only, replacing the registered presets in thinking and non-thinking mode, and
 `default` omits the flag so the registered preset stays in force. Loopback is the default host: `0.0.0.0` publishes an unauthenticated
 endpoint to every network the machine is on, so it is opt-in per run.
 
-The `tuned` profile also exposes the newer serving flags, each appended only when its variable is set so the
-defaults stay as measured: `NINFER_MAX_PREFILL_LANES`, `NINFER_DECODE_ROUNDS_PER_PREFILL`,
-`NINFER_PROGRESS_ANCHOR_TOKENS`, `NINFER_MAX_OUTPUT_TOKENS`, `NINFER_OUTPUT_RESERVATION_TOKENS`,
-`NINFER_LOOKUP_NGRAM`, `NINFER_MLP_A8_DECODE=on`, `NINFER_CONTEXT_STORE` (+ `NINFER_CONTEXT_STORE_MAX_GIB`) and
-`NINFER_AUTO_HOST_CACHE=on` (+ `NINFER_HOST_CACHE_PERCENT`, `_RESERVE_MIB`, `_MAX_MIB`). `--auto-host-cache` refuses
-the fixed host sizing, so with it on the launcher drops `--host-state-slots`, `--host-kv-mib` and the
-private/shared continuation counts and `NINFER_HOST_STATE_SLOTS` is ignored.
+The `tuned` profile also exposes further serving flags, each appended only when its variable is set so the
+defaults stay as measured: `NINFER_MAX_OUTPUT_TOKENS`, `NINFER_LOOKUP_NGRAM`, `NINFER_MLP_A8_DECODE=on`,
+`NINFER_CONTEXT_STORE` (+ `NINFER_CONTEXT_STORE_MAX_GIB`) and `NINFER_AUTO_HOST_CACHE=on` (+
+`NINFER_HOST_CACHE_PERCENT`, `_RESERVE_MIB`, `_MAX_MIB`). `--auto-host-cache` sizes the Host context budget
+itself and refuses `--host-context-mib`, so with it on the launcher drops that flag and
+`NINFER_HOST_CONTEXT_MIB` (and the step-down's halving of it) is ignored.
 
 **When the card is busy.** A desktop or another job holding VRAM can leave too little for the default
-context, and on Windows pinned host memory (`--host-state-slots`) is charged against the card too, so
-there are two ways to be refused: the engine's runtime reservation, or pinning host state. The `tuned`
-profile therefore steps down when startup is refused for either reason (the launcher looks for the
-engine's own `runtime reservation requires` and `cudaMallocHost failed` messages): an eighth of the
-context at a time, at most five times, with the prefill chunk capped at 2048 and the host state slots
-halved every second step. `--kv-capacity auto` was tried first and does not help, because the engine
-still has to reserve room for one full `--max-context` sequence. Measured on this fork's 3090 with a
-Windows desktop holding 2.8 GiB: `run.bat qwen38-27b` was refused at 131,072, 114,688 and 98,304 and
-started at 81,920 (chunk 2048, 8 host state slots), and the same launcher on Linux under WSL sees the
-same card. Values the caller sets (`NINFER_CONTEXT`, `NINFER_PREFILL_CHUNK`, `NINFER_HOST_STATE_SLOTS`,
+context, and a machine short of RAM can fail to pin the Host context budget, so there are two ways
+to be refused: the engine's runtime reservation, or pinning host memory. The `tuned` profile
+therefore steps down when startup is refused for either reason (the launcher looks for the engine's
+own `runtime reservation requires` and `cudaMallocHost failed` messages): an eighth of the context at
+a time, at most five times, with the prefill chunk capped at 2048 from the second step and
+`--host-context-mib` halved every second step (8192, 8192, 4096, 4096, 2048, 2048; floor 0).
+`--kv-capacity auto` was tried first and does not help, because the engine still has to reserve room
+for one full `--max-context` sequence. Measured on this fork's 3090 with a Windows desktop holding
+2.8 GiB, on the earlier engine: `run.bat qwen38-27b` was refused at 131,072, 114,688 and 98,304 and
+started at 81,920 (chunk 2048), and the same launcher on Linux under WSL sees the same card. Values
+the caller sets (`NINFER_CONTEXT`, `NINFER_PREFILL_CHUNK`, `NINFER_HOST_CONTEXT_MIB`,
 `NINFER_KV_CAPACITY`) are never second-guessed, `NINFER_FALLBACK=off` disables the step-down, and the
 `int8` and `c8` profiles never step down.
 
@@ -136,9 +135,12 @@ context for +0.082% perplexity. It is opt-in precisely because INT8 is the quali
 
 CONTEXT CACHE. A checkpoint is a KV prefix plus a StateImage, and on this model the StateImage
 is 147 MiB flat regardless of prefix length - 48 GDN layers of 128x128x48 FP32 recurrent state
-plus conv - or 74.5 MiB with --gdn-state-fp16, which this profile uses, so --host-state-slots 32
-pins 2.34 GiB of host memory rather than 4.59 GiB. It is host memory, not device, and it is
-what takes prefix reuse from 8.4% to 98.3% on a multi-preamble workload.
+plus conv - or 74.5 MiB with --gdn-state-fp16, which this profile uses, so the 8 GiB Host context
+budget (--host-context-mib 8192) holds about twice as many retained StateImages as it would in FP32.
+That budget is host memory, not device, and is shared by retained StateImages, KV pages and pause
+snapshots. (The earlier engine's catalog, sized with --max-shared-prefixes 8 and 32 host state
+slots, took prefix reuse from 8.4% to 98.3% on a multi-preamble workload; that figure has not been
+re-measured on the current engine, which has no catalog to size.)
 
 MEMORY FLAGS, both free on quality (docs/maintainer/quality-trade-experiments.md):
 ```
@@ -152,10 +154,6 @@ They add about 0.91 GiB to the two-lane headroom estimated below, taking the 212
 (see Windows measurements below). --lm-head-q6 frees another 341 MiB for +0.01% perplexity but costs 2-5% of
 single-lane decode until a Q6 small-T kernel exists, so only the mtp profile -- the one that is
 buying context -- passes it, and DFlash/DFlash2 refuse it.
-
---auto-prefix-grid lets two callers whose prompts merely start alike share a cached prefix with
-no client hint. A grid point is only materialised once two independent callers have both asked
-for it, so it cannot waste a slot speculatively.
 
 MEASURED, with a Windows desktop running (a headless box has roughly 1.5 GiB more to spend), and
 BEFORE the two memory flags this profile now passes -- the earlier profile's figures:
@@ -355,8 +353,12 @@ acceptance rather than costing any. Note the spread in absolute terms: 320 tok/s
 against 188 on mixed prose, because code is far more predictable. Any single decode figure for
 this model is really a statement about the text being generated.
 
-CONTEXT CACHE: the catalog defaults are too small and it does not show up as an error, only as
-prefill you keep paying. A checkpoint is a KV prefix plus a StateImage, and on this model the
+CONTEXT CACHE, measured on the earlier engine. The flags below (--max-shared-prefixes,
+--host-state-slots, --auto-prefix-grid, --max-private-continuations) no longer exist: the current
+engine retains conversation endpoints and stable input boundaries inside one Device KV pool plus one
+pinned Host context budget (--host-context-mib), with nothing else to size. The measurements are kept
+as history and have not been repeated on the current engine. Then: the catalog defaults were too
+small and it did not show up as an error, only as prefill you keep paying. A checkpoint is a KV prefix plus a StateImage, and on this model the
 StateImage is 61.4 MiB *flat* regardless of prefix length -- 30 GDN layers of 128x128x32 FP32
 recurrent state plus conv. Unlike KV pages, which several checkpoints of one conversation share,
 it cannot be shared between two frontiers at all: the recurrent state at token N is a function
@@ -408,15 +410,16 @@ from whatever VRAM is free after the weights land, and under WSL the Windows des
 holding part of the card. The default below is sized with margin. If it fails to start, drop one
 rung: 114688 / 98304 / 90112 / 81920.
 
-## Pinned host KV on Windows
+## Pinned Host context on Windows
 
-`--host-kv-mib 8192` is not 8 GiB on Windows. WDDM maps a pinned host allocation into the GPU's address space and charges it against the card, so the runtime clamps the request to (free VRAM - 1 GiB) / 2 before the first `cudaMallocHost` -- it cannot ask and back off, because one failure poisons every later attempt in the process. At the `tuned` 27B profile's measured residency that resolves to:
-
-```
-profile                              free after startup   pinned host KV
------------------------------------------------------------------------------
-qwen38-27b tuned (MTP profile)              1.59 GiB           302 MiB
-qwen36-35b-a3b tuned                     184-344 MiB           0 -- none at all
-```
-
-The flag is kept rather than corrected because it is right on Linux, where the full 8 GiB of host RAM is pinned, and because it is harmless on Windows: the clamp takes what is actually free after the KV cache is allocated, so it costs no context, and prefix reuse falls back to device pages when the pin is zero. Do not read "8192" as a description of a Windows machine.
+`--host-context-mib 8192` pins the full 8 GiB of host RAM on Windows, as on Linux. Earlier builds of
+this fork clamped the pinned host allocation on Windows to (free VRAM - 1 GiB) / 2, after a
+measurement where the largest single `cudaMallocHost` tracked free VRAM (WDDM charging pinned memory
+to the card). At the `tuned` profiles' residency that left the old `--host-kv-mib 8192` at about
+4.6 GiB or less (302 MiB for the 27B MTP profile and none at all for the 35B-A3B on one measured
+boot). That coupling is gone on current drivers: on the RTX 3090 with driver 616.64, 22,528 MiB
+resident and 804 MiB free, `cudaHostAlloc` pinned 16 GiB in one allocation and 32 GiB in 1 GiB
+chunks, reported free VRAM fell by a fixed ~0.5 GiB, and a further 512 MiB `cudaMalloc` still
+succeeded. The clamp was removed, so a Windows machine running the launchers now really holds 8 GiB
+of RAM pinned for the context cache. Lower `NINFER_HOST_CONTEXT_MIB` on a box short of RAM; `0`
+keeps the cache on the card.

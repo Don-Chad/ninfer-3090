@@ -5,14 +5,14 @@
 #include "models/qwen3_5/program/vision_control.h"
 
 #include "models/qwen3_5/program/prefix_identity.h"
-#include "models/qwen3_5/program/planning/output_budget.h"
-#include "models/qwen3_5/program/planning/rebuild_work.h"
+#include "runtime/contract/timing.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <iostream>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -25,6 +25,22 @@ void expect(bool condition, std::string_view message) {
     if (condition) { return; }
     ++failures;
     std::cerr << "FAIL: " << message << '\n';
+}
+
+void test_execution_timing_domains() {
+    using namespace ninfer::runtime;
+    ExecutionTimingRecorder recorder(ExecutionTimingPhase::Paused);
+    recorder.include(
+        {.submit_host_ns = 10, .device_wait_ns = 20, .post_host_ns = 30, .gpu_elapsed_ns = 100});
+    recorder.include(
+        {.submit_host_ns = 4, .device_wait_ns = 5, .post_host_ns = 6, .gpu_elapsed_ns = 80});
+    const auto timing = recorder.finish();
+    expect(timing.gpu_elapsed_ns == 180 && timing.host_ns() == 50 && timing.elapsed_ns() == 75,
+           "overlapping GPU intervals must accumulate separately from Host and wall phases");
+    const auto repeated = recorder.finish();
+    expect(repeated.gpu_elapsed_ns == timing.gpu_elapsed_ns &&
+               repeated.elapsed_ns() == timing.elapsed_ns(),
+           "reading a completed execution timing must not accumulate its work again");
 }
 
 q36::DecoderStateSpec decoder_spec(ninfer::KvCacheStorage storage, bool mtp) {
@@ -166,8 +182,7 @@ void test_round_layout() {
                                      .output_rows  = 128,
                                      .draft_window = 5,
                                      .backend      = ninfer::SpeculativeBackend::Mtp});
-    const ninfer::TensorRegion exact_prefill =
-        builder.add_tensor(ninfer::DType::BF16, {32, 16}, 256, "exact prefill hidden");
+    (void)builder.add_tensor(ninfer::DType::BF16, {32, 16}, 256, "exact prefill hidden");
     q36::complete_round_state_layout(builder, round);
     (void)builder.finish(256);
     expect(round.complete, "round layout completes");
@@ -175,9 +190,6 @@ void test_round_layout() {
     expect(round.mtp.has_value() && round.mtp->draft_tokens.shape[0] == 5 &&
                round.mtp->target_input_ids.shape[0] == 6,
            "MTP prefill scratch shapes");
-    expect(round.logits.region.offset < exact_prefill.region.offset &&
-               exact_prefill.region.offset < round.mtp->draft_tokens.region.offset,
-           "exact prefill extension retains established round-region order");
     expect(round.mtp.has_value() && round.mtp->position.shape[0] == 1,
            "MTP prefill scratch is explicit");
     expect(round.mtp_decode.has_value() && round.mtp_decode->alignment_ids.shape[0] == 6 &&
@@ -420,114 +432,95 @@ void test_prefix_identity() {
            "truncated multimodal continuation identity");
 }
 
-void test_rebuild_work_prompt_frontier_boundary() {
-    constexpr std::uint32_t prompt_tokens = 100;
-    constexpr std::uint32_t prefill_chunk = 2048;
-    std::uint32_t tail_begin              = 0;
-    q36::runtime_support::include_rebuild_boundary(tail_begin, prompt_tokens, prompt_tokens);
-    expect(tail_begin == prompt_tokens,
-           "prompt-frontier rebuild boundary was not retained for continuation growth");
-
-    ninfer::runtime::PrefillWork work =
-        ninfer::runtime::make_prefill_work(0, prompt_tokens, 0, 0, prefill_chunk);
-    q36::runtime_support::advance_segmented_rebuild_work(work, tail_begin, prompt_tokens,
-                                                         prompt_tokens + 1, prefill_chunk);
-    const ninfer::runtime::PrefillWork exact =
-        ninfer::runtime::make_prefill_work(0, prompt_tokens + 1, 0, 0, prefill_chunk);
-    expect(work.chunks == 2 && work.tokens == exact.tokens &&
-               work.attention_pairs == exact.attention_pairs,
-           "continuation growth did not preserve the prompt-frontier rebuild split");
-}
-
-// Independent oracle: the largest output in [1, remaining] whose reserved tokens -- prompt plus
-// output minus the unwritten last token, plus MTP's draft window up to the context -- fit a lane's
-// share of each pool in whole 64-token pages, found by a linear scan.
-std::uint32_t scanned_budget(std::uint32_t capacity, std::uint32_t draft_window,
-                             ninfer::SpeculativeBackend backend, std::uint32_t main_share,
-                             std::uint32_t backend_share, std::uint32_t prompt) {
-    const auto pages = [](std::uint64_t tokens) { return (tokens + 63U) / 64U; };
-    const std::uint32_t remaining = capacity - prompt + 1U;
-    std::uint32_t best            = 0;
-    for (std::uint32_t output = 1; output <= remaining; ++output) {
-        const std::uint64_t reserved = std::uint64_t{prompt} + output - 1U;
-        std::uint64_t backend_tokens = 0;
-        if (backend == ninfer::SpeculativeBackend::Mtp) {
-            backend_tokens = std::min<std::uint64_t>(capacity, reserved + draft_window - 1U);
-        } else if (backend == ninfer::SpeculativeBackend::DFlash) {
-            backend_tokens = reserved;
-        }
-        if (pages(reserved) <= main_share && pages(backend_tokens) <= backend_share) {
-            best = output;
-        }
-    }
-    return best == 0 ? remaining : best;
-}
-
-void test_concurrent_output_budget() {
-    using ninfer::SpeculativeBackend;
-    using q36::detail::KVEntitlementShape;
-    struct Case {
-        KVEntitlementShape shape;
-        std::uint32_t main_share;
-        std::uint32_t backend_share;
-        std::uint32_t prompt;
-        std::uint32_t expected;
-        const char* what;
-    };
-    const KVEntitlementShape plain{.capacity = 2048, .backend = SpeculativeBackend::None};
-    const KVEntitlementShape mtp{
-        .capacity = 2048, .draft_window = 4, .backend = SpeculativeBackend::Mtp};
-    const KVEntitlementShape dflash{
-        .capacity = 2048, .draft_window = 8, .backend = SpeculativeBackend::DFlash};
-    const std::array cases{
-        // One lane owning a 2048-token pool: exactly the remaining context.
-        Case{plain, 32, 0, 17, 2032, "one lane did not receive the remaining context"},
-        // Two lanes share it: reserved prompt+output-1 must fit 16 pages (1024 tokens).
-        Case{plain, 16, 0, 17, 1008, "two lanes did not split the Main pool"},
-        Case{plain, 16, 0, 1024, 1, "a prompt filling its share left no single token"},
-        // MTP's draft window reserves three tokens beyond the Main frontier.
-        Case{mtp, 16, 16, 17, 1005, "MTP draft reservation was not charged"},
-        // A smaller DFlash backend pool binds before the Main share.
-        Case{dflash, 16, 8, 17, 496, "the DFlash backend share did not bind"},
-        // A prompt beyond one lane's share keeps the remaining context.
-        Case{plain, 16, 0, 1100, 949, "an over-share prompt did not keep the remaining context"},
-    };
-    for (const Case& value : cases) {
-        const std::uint32_t budget = q36::detail::concurrent_output_budget(
-            value.shape, value.main_share, value.backend_share, value.prompt);
-        expect(budget == value.expected, value.what);
-        expect(budget == scanned_budget(value.shape.capacity, value.shape.draft_window,
-                                        value.shape.backend, value.main_share,
-                                        value.backend_share, value.prompt),
-               value.what);
-    }
-    expect(q36::detail::concurrent_output_budget(plain, 32, 0, 2049) == 0 &&
-               q36::detail::concurrent_output_budget(plain, 32, 0, 0) == 0,
-           "an empty or over-context prompt received a budget");
-    // Agreement with the scan across prompts and odd shares.
-    for (const KVEntitlementShape& shape : {plain, mtp, dflash}) {
-        for (std::uint32_t prompt = 1; prompt <= 2048; prompt += 37) {
-            const std::uint32_t budget =
-                q36::detail::concurrent_output_budget(shape, 11, 7, prompt);
-            if (budget != scanned_budget(shape.capacity, shape.draft_window, shape.backend, 11, 7,
-                                         prompt)) {
-                expect(false, "concurrent output budget disagreed with the linear scan");
-                return;
+void test_regular_prefix_identity() {
+    const auto prompt = [](std::size_t count, std::int32_t origin = 0) {
+        q36::PreparedPromptData value;
+        value.token_ids.assign(count, 12);
+        value.token_types.assign(count, 0);
+        value.positions.resize(3 * count);
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            for (std::size_t i = 0; i < count; ++i) {
+                value.positions[axis * count + i] = origin + static_cast<std::int32_t>(i);
             }
         }
+        return value;
+    };
+    auto original = prompt(128, 7);
+    q36::detail::ResidentPrefixIdentity left, right;
+    left.assign(original);
+    right.assign(original);
+    expect(left.equals(right), "independently prepared regular position identities differ");
+    const auto check_against_input = [&](const auto& value, const auto& identity) {
+        // matches reads the stored arrays against the public input, without the prefix shortcut.
+        for (std::size_t count = 0; count <= value.token_ids.size(); ++count) {
+            expect(left.prefix_equals(identity, count) == left.matches(value, count),
+                   "resident identity comparison disagrees with the prepared input");
+        }
+    };
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        auto changed = original;
+        changed.positions[axis * 128 + 64] += 1;
+        right.assign(changed);
+        check_against_input(changed, right);
     }
+    auto changed            = original;
+    changed.token_types[64] = 1;
+    right.assign(changed);
+    check_against_input(changed, right);
+    changed = prompt(128, 8);
+    right.assign(changed);
+    check_against_input(changed, right);
+    changed                                      = original;
+    changed.identity.rewrite_execution_frontiers = {64};
+    right.assign(changed);
+    check_against_input(changed, right);
+
+    left.append_generated(2, 7);
+    right.assign(prompt(130, 7));
+    expect(left.equals(right), "regular generated positions differ from a full rebuild");
+    left.append_generated(1, 8);
+    right.assign(prompt(131, 7));
+    expect(left.prefix_equals(right, 130) && !left.equals(right),
+           "a changed generated position was ignored");
+    left.truncate(128);
+    left.append_generated(3, 7);
+    expect(left.equals(right), "truncation retained discarded position differences");
+
+    left.truncate(0);
+    left.append_generated(3, -4);
+    right.assign(prompt(3, -4));
+    expect(left.equals(right), "empty truncated identity retained an old position origin");
+    q36::detail::ResidentPrefixIdentity saved = left;
+    right.assign(prompt(3, 11));
+    left.swap(right);
+    expect(right.equals(saved) && !left.equals(saved), "swap lost the exact position identity");
+    left.clear();
+    left.append_generated(3, -4);
+    expect(left.equals(saved), "cleared identity retained its prior position metadata");
+    auto moved = std::move(left);
+    left.append_generated(1, 0);
+    left.append_generated(1, 1);
+    right.assign(prompt(2));
+    expect(moved.equals(saved) && left.prefix_equals(right, 1) && !left.equals(right),
+           "reusing a moved-from identity ignored a new position difference");
+
+    auto vision       = identity_prompt();
+    auto other_vision = identity_prompt(2);
+    left.assign(vision);
+    right.assign(other_vision);
+    check_against_input(other_vision, right);
 }
 
 } // namespace
 
 int main() {
-    test_concurrent_output_budget();
+    test_execution_timing_domains();
     test_decoder_layout();
     test_round_layout();
     test_mtp_alignment();
     test_vision_control();
     test_prefix_identity();
-    test_rebuild_work_prompt_frontier_boundary();
+    test_regular_prefix_identity();
     if (failures != 0) {
         std::cerr << failures << " Qwen3.6 runtime mechanism checks failed\n";
         return 1;

@@ -11,8 +11,8 @@ namespace ninfer::ops {
 
 struct SpeculativeAcceptExecutionEnvelope {
     // Execution promise: every row has temperature<=0, both penalties disabled and no token mask.
-    // When false, the general route remains valid for any supported mixture of greedy,
-    // stochastic, penalized and masked rows.
+    // When false, the general route remains valid for any supported mixture of greedy and
+    // stochastic rows.
     bool all_rows_greedy_without_penalties = false;
 };
 
@@ -80,10 +80,6 @@ void speculative_prepare_verify_ids(const Tensor& anchors, const Tensor& drafts,
  *
  * Numeric:
  *   Sampling filtering, penalties, normalization, and RNG semantics are those of sampling.h.
- *   Verification column i applies token-mask column i of configs[b] (sampling.h), both to the
- *   argmax/distribution and therefore to acceptance: a draft outside column i's licensed set has
- *   target probability zero and is always rejected there. Columns past the first rejected draft
- *   are never consumed, so their masks need not be meaningful beyond licensing some token.
  *
  * Effects:
  *   For each row, let A be the accepted draft count and L=A+1. licensed_tokens[0:A,b] receives
@@ -137,9 +133,8 @@ void speculative_accept_greedy_drafts(const Tensor& target_tokens, const Tensor&
  * Numeric:
  *   proposal_q is consumed directly; it is not reconstructed from selector scores or expanded to
  *   a dense vocabulary distribution. Target logits are interpreted through sampling.h. Column i's
- *   penalty overlay is drafts[0..i-1] and its token mask is mask column i, because the column is
- *   consumed only after that prefix was accepted. A draft outside column i's licensed set has
- *   p=0 there and is always rejected. RNG purposes are the existing speculative accept/correction/bonus domains and use
+ *   penalty overlay is drafts[0..i-1], because the column is consumed only after that prefix was
+ *   accepted. RNG purposes are the existing speculative accept/correction/bonus domains and use
  *   logical positions derived from the old round length.
  *
  * Effects:

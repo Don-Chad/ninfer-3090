@@ -47,6 +47,60 @@ std::uint64_t parse_u64(const char* text, const char* label) {
     return static_cast<std::uint64_t>(value);
 }
 
+std::size_t parse_host_context_mib(const char* text) {
+    constexpr std::size_t bytes_per_mib = 1ULL << 20;
+    constexpr std::size_t maximum       = std::numeric_limits<std::size_t>::max();
+    const std::string_view value(text);
+    const std::size_t point      = value.find('.');
+    const std::string_view whole = value.substr(0, point);
+    std::string_view fraction =
+        point == std::string_view::npos ? std::string_view{} : value.substr(point + 1);
+    if (whole.empty() || whole.find_first_not_of("0123456789") != std::string_view::npos ||
+        (point != std::string_view::npos &&
+         (fraction.empty() ||
+          fraction.find_first_not_of("0123456789") != std::string_view::npos))) {
+        throw std::invalid_argument("--host-context-mib requires a nonnegative decimal MiB value");
+    }
+
+    std::size_t whole_mib = 0;
+    for (const char character : whole) {
+        const std::size_t digit = static_cast<std::size_t>(character - '0');
+        if (whole_mib > (maximum / bytes_per_mib - digit) / 10) {
+            throw std::invalid_argument("--host-context-mib is out of range");
+        }
+        whole_mib = whole_mib * 10 + digit;
+    }
+
+    // A whole-byte MiB value has at most 20 fractional decimal digits (1 MiB = 2^20 bytes).
+    // Use exact integer arithmetic so decimal parsing cannot round the requested budget upward:
+    // F / 10^k MiB is F * 2^(20-k) / 5^k bytes, a whole number exactly when 5^k divides F. Long
+    // division of the digit string by 5^k keeps every intermediate below 10 * 5^20 (portable to
+    // MSVC, which has no 128-bit integer), and the quotient F / 5^k is below 2^k <= 2^20.
+    while (!fraction.empty() && fraction.back() == '0') { fraction.remove_suffix(1); }
+    if (fraction.size() > 20) {
+        throw std::invalid_argument("--host-context-mib must resolve to a whole number of bytes");
+    }
+    std::uint64_t divisor = 1;
+    for (std::size_t digit = 0; digit < fraction.size(); ++digit) { divisor *= 5; }
+    std::uint64_t quotient  = 0;
+    std::uint64_t remainder = 0;
+    for (const char character : fraction) {
+        const std::uint64_t partial = remainder * 10 + static_cast<std::uint64_t>(character - '0');
+        quotient                    = quotient * 10 + partial / divisor;
+        remainder                   = partial % divisor;
+    }
+    if (remainder != 0) {
+        throw std::invalid_argument("--host-context-mib must resolve to a whole number of bytes");
+    }
+    const std::size_t fractional_bytes =
+        static_cast<std::size_t>(quotient << (20U - static_cast<unsigned>(fraction.size())));
+    const std::size_t whole_bytes      = whole_mib * bytes_per_mib;
+    if (fractional_bytes > maximum - whole_bytes) {
+        throw std::invalid_argument("--host-context-mib is out of range");
+    }
+    return whole_bytes + fractional_bytes;
+}
+
 KvCacheStorage parse_kv_dtype(const char* text) {
     const std::string value(text);
     if (value == "bf16") { return KvCacheStorage::BFloat16; }
@@ -75,16 +129,12 @@ std::string serve_usage_text(const char* argv0) {
            " <model.ninfer> [--host H] [--port N] [--api-key KEY] "
            "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--max-concurrency N] "
            "[--max-pending-requests N] [--pending-timeout-ms N] "
-           "[--prefill-chunk N] [--max-prefill-lanes N] [--prefill-max-skip N] "
-           "[--decode-rounds-per-prefill N] [--log-stats-interval-ms N] [--device N] "
+           "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
            "[--context-cost-presets FILE] "
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
            "[--media-preprocess-threads N] "
-           "[--device-state-slots N] [--host-state-slots N] [--host-kv-mib N] "
-           "[--max-private-continuations N] [--max-shared-prefixes N] [--auto-host-cache [--host-cache-reserve-mib N] [--host-cache-max-mib N] [--host-cache-percent N]] "
-           "[--max-long-anchors-per-continuation N] [--auto-long-anchors N] "
-           "[--progress-anchor-tokens N] "
-           "[--max-cache-markers-per-request N] "
+           "[--device-state-slots N] [--host-context-mib N | --auto-host-cache "
+           "[--host-cache-reserve-mib N] [--host-cache-max-mib N] [--host-cache-percent N]] "
            "[--request-log-jsonl FILE] "
            "[--context-store DIR [--context-store-max-gib N] [--context-store-ttl-hours N] "
            "[--context-store-idle-seconds N] [--context-store-restore-seconds N] "
@@ -95,9 +145,9 @@ std::string serve_usage_text(const char* argv0) {
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|rk8v4|rk4v4|nvfp4|k8v4] "
            "[--spec mtp|dflash|dflash2 --draft-tokens N] "
-           "[--default-max-tokens N] [--max-output-tokens N] [--output-reservation-tokens N] [--default-thinking-budget N] "
+           "[--default-max-tokens N] [--max-output-tokens N] [--default-thinking-budget N] "
            "[--vision] [--vision-residency resident|overlay] [--vision-max-merged N] "
-           "[--no-cuda-graph] [--no-prefix-reuse] [--auto-prefix-grid] [--devices N,M,...] [--stage-layers A,B,...] "
+           "[--no-cuda-graph] [--no-prefix-reuse] [--devices N,M,...] [--stage-layers A,B,...] "
            "[--chat-template FILE] "
            "[--lm-head-draft] [--lm-head-q4|--lm-head-q6] [--embedding-q4|--embedding-q6] [--mtp-experts-q4] "
            "[--gdn-state-fp16] "
@@ -110,14 +160,9 @@ std::string serve_usage_text(const char* argv0) {
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
            "       serves OpenAI Responses/Chat Completions and Anthropic Messages endpoints\n"
            "       --default-max-tokens fixes the output budget of requests that omit a limit; "
-           "unset, such a request gets the largest budget that still lets every lane be admitted "
-           "at once (the remaining context with one lane)\n"
+           "unset, such a request may run to the end of its context\n"
            "       --max-output-tokens caps the output budget of every request, including ones "
-           "that state a larger limit: a request reserves KV for its whole budget, which evicts "
-           "cached contexts it never fills\n"
-           "       --output-reservation-tokens reserves KV for that many output tokens of a request "
-           "at admission and the rest while it decodes, so a large max_tokens does not evict cached "
-           "contexts it never fills; a request that needs more than is free stops there\n"
+           "that state a larger limit\n"
            "       --max-request-mib defaults to 384 and is enforced before JSON parsing\n"
            "       --media-cache-mib defaults to 1024; 0 disables retained media reuse\n"
            "       --media-live-mib defaults to 2048 and bounds all live BF16 patch payloads\n"
@@ -135,16 +180,6 @@ std::string serve_usage_text(const char* argv0) {
            "       --kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom\n"
-           "       --max-prefill-lanes N (default 2 when --max-concurrency is at least 3, else 1; at most --max-concurrency) lets that many requests "
-           "prefill at once: each prefill unit goes to the lane with the shortest remaining prompt "
-           "suffix, so a short or prefix-cached prompt is not stuck behind a very long one; the KV "
-           "capacity must hold the long prompt and the short ones together. A lane passed over "
-           "--prefill-max-skip units (default 8) is served before any shorter one\n"
-           "       --decode-rounds-per-prefill N runs that many decode rounds after each prefill unit "
-           "while other requests are generating (default 0 = --prefill-chunk / 64, so 16 at the "
-           "default chunk of 1024); 1 alternates strictly, which leaves a decoding stream a few "
-           "tokens per second while a long prompt prefills; a larger N keeps streams responsive and "
-           "makes the prefill finish later\n"
            "       --prefill-cublas hands wide prefill GEMMs to cuBLAS: a large prefill speedup for a "
            "small perplexity cost (docs/performance.md), off by default, and it wants a larger "
            "--prefill-chunk to pay; --no-prefill-cublas-projections keeps the attention and GDN "
@@ -152,29 +187,16 @@ std::string serve_usage_text(const char* argv0) {
            "       --lookup-ngram N adds context-lookup drafting alongside --spec: the last N tokens "
            "are matched against the sequence so far and what followed is proposed; it is exact, and "
            "0 (the default) disables it\n"
-           "       --no-prefix-reuse disables compatible-prefix caching (enabled by default)\n"
-           "       --auto-prefix-grid offers shared candidates on a token grid so unrelated "
-           "callers whose prompts start alike share a cached prefix without any client hint; a grid "
-           "frontier is only published once two callers have both asked for it\n"
-           "       --auto-long-anchors N proposes a private long anchor at each of the last N "
-           "message boundaries of every prompt, so a client that rewrites recent history "
-           "restores at the anchor below the edit instead of re-prefilling from zero; it "
-           "defaults to and is clamped to --max-long-anchors-per-continuation (raise that and "
-           "--host-state-slots for deeper edits); 0 disables\n"
-           "       --progress-anchor-tokens N proposes a private long anchor at every multiple of N "
-           "tokens of a prompt (default 16384, minimum 256) and keeps the anchors a cancelled prefill already "
-           "holds, so a client that times out on a very long prompt and retries resumes from the "
-           "last anchor instead of prefilling from zero; it shares the "
-           "--max-long-anchors-per-continuation budget with --auto-long-anchors; 0 disables\n"
+           "       --no-prefix-reuse disables cross-request history; request pause/replay "
+           "resources remain available\n"
            "       --context-store DIR keeps retained sessions on disk so a restart or crash does "
-           "not lose the context cache: a session is written when evicted, when idle, and at "
-           "shutdown, and the most recently used ones are restored at start-up. Only changed "
-           "pieces of a session are written. Off by default\n"
-           "       --context-store-max-gib N bounds the store (default: half the volume's free "
+           "not lose the context cache; it needs a nonzero Host context budget. "
+           "--context-store-max-gib N bounds the store (default: half the volume's free "
            "space); --context-store-ttl-hours N removes sessions unused that long (default 168, "
            "0 keeps them until space is needed); --context-store-idle-seconds N writes a session "
-           "unused that long in the background (default 30, 0 writes only on eviction and "
-           "shutdown); --context-store-restore-seconds N bounds start-up restoring (default 120); "
+           "unused that long in the background (default 30, 0 writes only at shutdown); "
+           "--context-store-restore-seconds N bounds start-up restoring and a request's wait for "
+           "its stored session (default 120); "
            "--context-store-flush-seconds N bounds the write at shutdown (default 60)\n"
            "       --context-store-s3-endpoint URL and --context-store-s3-bucket NAME keep a copy of "
            "the store in an S3-compatible bucket (off by default): sessions are uploaded in the "
@@ -188,14 +210,14 @@ std::string serve_usage_text(const char* argv0) {
            "       --no-exit-on-engine-failure keeps the process alive when the Engine latches "
            "unavailable after repeated worker failures; by default it logs FATAL and exits with "
            "status 3 after a short grace period so a supervisor can restart it\n"
-           "       context cache defaults: device-state=max-concurrency, private=2x concurrency, "
-           "shared=max(max-concurrency,4), anchors=2; Host state=8 slots, Host KV=8192 MiB\n"
-           "       --device-state-slots is extra checkpoint capacity beyond active lanes; "
-           "--host-kv-mib uses MiB\n"
-           "       --auto-host-cache sizes Host state slots, Host KV and both catalogs from the "
-           "host memory free after the model loads (all but --host-cache-reserve-mib, default 3072, "
-           "an eighth of it for state slots); it replaces the four explicit Host capacity "
-           "options\n"
+           "       context defaults: device-state=max-concurrency; Host budget is resolved from "
+           "8192 MiB plus eight native StateImages\n"
+           "       --device-state-slots is extra capacity beyond active lanes; "
+           "--host-context-mib bounds shared Host State/KV and in-flight storage in MiB\n"
+           "       --host-context-mib accepts decimal MiB values that resolve to whole bytes\n"
+           "       --auto-host-cache sizes the Host context budget from the host memory free after "
+           "the model loads (all but --host-cache-reserve-mib, default 3072); it replaces "
+           "--host-context-mib\n"
            "       --host-cache-max-mib N caps what --auto-host-cache pins, for machines whose "
            "memory other tenants share (default: no cap)\n"
            "       --host-cache-percent N caps it at N% (1-100) of the machine's total memory (or "
@@ -280,15 +302,12 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         options.startup_argv.emplace_back(argv[i] == nullptr ? "" : argv[i]);
         redact_next = options.startup_argv.back() == "--api-key";
     }
-    bool prefill_lanes_explicit      = false;
-    bool kv_capacity_explicit        = false;
-    bool device_explicit             = false;
-    bool context_capacity_explicit   = false;
-    bool host_sizing_explicit        = false;
-    bool context_store_tuning        = false;
-    bool host_reserve_explicit       = false;
-    bool host_max_explicit           = false;
-    bool host_percent_explicit       = false;
+    bool kv_capacity_explicit  = false;
+    bool device_explicit       = false;
+    bool context_store_tuning  = false;
+    bool host_reserve_explicit = false;
+    bool host_max_explicit     = false;
+    bool host_percent_explicit = false;
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
         options.help_requested = true;
         return options;
@@ -330,16 +349,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--prefill-chunk") {
             options.prefill_chunk = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--prefill-chunk"), "prefill-chunk"));
-        } else if (arg == "--max-prefill-lanes") {
-            prefill_lanes_explicit = true;
-            options.max_prefill_lanes = static_cast<std::uint32_t>(parse_nonnegative_int(
-                require_value("--max-prefill-lanes"), "max-prefill-lanes"));
-        } else if (arg == "--prefill-max-skip") {
-            options.prefill_max_skip = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--prefill-max-skip"), "prefill-max-skip"));
-        } else if (arg == "--decode-rounds-per-prefill") {
-            options.decode_rounds_per_prefill = static_cast<std::uint32_t>(parse_nonnegative_int(
-                require_value("--decode-rounds-per-prefill"), "decode-rounds-per-prefill"));
         } else if (arg == "--context-cost-presets") {
             options.context_cost_presets = require_value("--context-cost-presets");
             if (options.context_cost_presets.empty()) {
@@ -379,35 +388,11 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--device-state-slots") {
             options.context_cache.device_state_slots = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--device-state-slots"), "device-state-slots"));
-            context_capacity_explicit = true;
-        } else if (arg == "--host-state-slots") {
-            options.context_cache.host_state_slots = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--host-state-slots"), "host-state-slots"));
-            context_capacity_explicit = true;
-            host_sizing_explicit      = true;
-        } else if (arg == "--host-kv-mib") {
-            const std::uint64_t mib = parse_u64(require_value("--host-kv-mib"), "host-kv-mib");
-            if (mib > std::numeric_limits<std::size_t>::max() / (1ULL << 20)) {
-                throw std::invalid_argument("--host-kv-mib is out of range");
-            }
-            options.context_cache.host_kv_capacity_bytes = static_cast<std::size_t>(mib << 20);
-            context_capacity_explicit                    = true;
-            host_sizing_explicit                         = true;
-        } else if (arg == "--max-private-continuations") {
-            options.context_cache.max_private_continuations =
-                static_cast<std::uint32_t>(parse_nonnegative_int(
-                    require_value("--max-private-continuations"), "max-private-continuations"));
-            context_capacity_explicit = true;
-            host_sizing_explicit      = true;
-        } else if (arg == "--max-shared-prefixes") {
-            options.context_cache.max_shared_prefixes =
-                static_cast<std::uint32_t>(parse_nonnegative_int(
-                    require_value("--max-shared-prefixes"), "max-shared-prefixes"));
-            context_capacity_explicit = true;
-            host_sizing_explicit      = true;
+        } else if (arg == "--host-context-mib") {
+            options.context_cache.host_capacity_bytes =
+                parse_host_context_mib(require_value("--host-context-mib"));
         } else if (arg == "--auto-host-cache") {
             options.context_cache.auto_host_cache = true;
-            context_capacity_explicit             = true;
         } else if (arg == "--host-cache-reserve-mib") {
             const std::uint64_t mib =
                 parse_u64(require_value("--host-cache-reserve-mib"), "host-cache-reserve-mib");
@@ -432,27 +417,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             }
             options.context_cache.host_cache_percent = static_cast<std::uint32_t>(percent);
             host_percent_explicit                    = true;
-        } else if (arg == "--max-long-anchors-per-continuation") {
-            options.context_cache.max_long_anchors_per_continuation = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--max-long-anchors-per-continuation"),
-                                      "max-long-anchors-per-continuation"));
-            context_capacity_explicit = true;
-        } else if (arg == "--auto-long-anchors") {
-            options.auto_long_anchors = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--auto-long-anchors"), "auto-long-anchors"));
-        } else if (arg == "--progress-anchor-tokens") {
-            options.progress_anchor_tokens = static_cast<std::uint32_t>(parse_nonnegative_int(
-                require_value("--progress-anchor-tokens"), "progress-anchor-tokens"));
-            if (*options.progress_anchor_tokens != 0 &&
-                *options.progress_anchor_tokens < kMinimumProgressAnchorTokens) {
-                throw std::invalid_argument("--progress-anchor-tokens must be 0 or at least " +
-                                            std::to_string(kMinimumProgressAnchorTokens));
-            }
-        } else if (arg == "--max-cache-markers-per-request") {
-            options.context_cache.max_cache_markers_per_request = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--max-cache-markers-per-request"),
-                                      "max-cache-markers-per-request"));
-            context_capacity_explicit = true;
         } else if (arg == "--request-log-jsonl") {
             options.request_log_jsonl = require_value("--request-log-jsonl");
             if (options.request_log_jsonl.empty()) {
@@ -490,9 +454,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--max-output-tokens") {
             options.max_output_tokens =
                 parse_nonnegative_int(require_value("--max-output-tokens"), "max-output-tokens");
-        } else if (arg == "--output-reservation-tokens") {
-            options.output_reservation_tokens = static_cast<std::uint32_t>(parse_nonnegative_int(
-                require_value("--output-reservation-tokens"), "output-reservation-tokens"));
         } else if (arg == "--default-max-tokens") {
             options.default_max_tokens =
                 parse_nonnegative_int(require_value("--default-max-tokens"), "default-max-tokens");
@@ -545,6 +506,15 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.context_store_idle_seconds = static_cast<std::uint32_t>(parse_nonnegative_int(
                 require_value("--context-store-idle-seconds"), "context-store-idle-seconds"));
             context_store_tuning = true;
+        } else if (arg == "--context-store-restore-seconds") {
+            options.context_store_restore_seconds = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--context-store-restore-seconds"),
+                                      "context-store-restore-seconds"));
+            context_store_tuning = true;
+        } else if (arg == "--context-store-flush-seconds") {
+            options.context_store_flush_seconds = static_cast<std::uint32_t>(parse_nonnegative_int(
+                require_value("--context-store-flush-seconds"), "context-store-flush-seconds"));
+            context_store_tuning = true;
         } else if (arg == "--context-store-s3-endpoint") {
             options.context_store_s3_endpoint = require_value("--context-store-s3-endpoint");
             context_store_tuning              = true;
@@ -557,19 +527,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         } else if (arg == "--context-store-s3-region") {
             options.context_store_s3_region = require_value("--context-store-s3-region");
             context_store_tuning            = true;
-        } else if (arg == "--context-store-restore-seconds") {
-            options.context_store_restore_seconds = static_cast<std::uint32_t>(
-                parse_nonnegative_int(require_value("--context-store-restore-seconds"),
-                                      "context-store-restore-seconds"));
-            context_store_tuning = true;
-        } else if (arg == "--context-store-flush-seconds") {
-            options.context_store_flush_seconds = static_cast<std::uint32_t>(parse_nonnegative_int(
-                require_value("--context-store-flush-seconds"), "context-store-flush-seconds"));
-            context_store_tuning = true;
         } else if (arg == "--no-exit-on-engine-failure") {
             options.exit_on_engine_failure = false;
-        } else if (arg == "--auto-prefix-grid") {
-            options.auto_prefix_grid = true;
         } else if (arg == "--lm-head-draft") {
             options.speculative.proposal_head = ProposalHead::Optimized;
         } else if (arg == "--lm-head-q4") {
@@ -674,32 +633,14 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (host_percent_explicit && !options.context_cache.auto_host_cache) {
         throw std::invalid_argument("--host-cache-percent requires --auto-host-cache");
     }
-    if (options.context_cache.auto_host_cache && host_sizing_explicit) {
+    if (options.context_cache.auto_host_cache &&
+        options.context_cache.host_capacity_bytes.has_value()) {
         throw std::invalid_argument(
-            "--auto-host-cache sizes --host-state-slots, --host-kv-mib, "
-            "--max-private-continuations and --max-shared-prefixes; do not set them as well");
+            "--auto-host-cache sizes --host-context-mib; do not set it as well");
     }
-    if (!options.allow_prefix_reuse) {
-        if (context_capacity_explicit) {
-            throw std::invalid_argument(
-                "--no-prefix-reuse cannot be combined with context-cache capacity options");
-        }
-        if (options.auto_prefix_grid) {
-            throw std::invalid_argument(
-                "--no-prefix-reuse cannot be combined with --auto-prefix-grid");
-        }
-        if (options.auto_long_anchors) {
-            throw std::invalid_argument(
-                "--no-prefix-reuse cannot be combined with --auto-long-anchors");
-        }
-        if (options.progress_anchor_tokens) {
-            throw std::invalid_argument(
-                "--no-prefix-reuse cannot be combined with --progress-anchor-tokens");
-        }
-        options.context_cache.enabled                = false;
-        options.context_cache.host_state_slots       = 0;
-        options.context_cache.host_kv_capacity_bytes = 0;
-    }
+    // History reads and writes follow --no-prefix-reuse; request pause/replay keeps the Host and
+    // Device capacities, so they stay configurable either way.
+    options.context_cache.enabled = options.allow_prefix_reuse;
     if (!options.devices.empty() && device_explicit) {
         throw std::invalid_argument("--device and --devices are mutually exclusive");
     }
@@ -710,6 +651,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         (context_store_tuning || options.context_store_max_gib)) {
         throw std::invalid_argument("--context-store-* options require --context-store");
     }
+    if (!options.context_store_path.empty() && !options.allow_prefix_reuse) {
+        throw std::invalid_argument("--no-prefix-reuse cannot be combined with --context-store");
+    }
     if (options.context_store_s3_endpoint.empty() != options.context_store_s3_bucket.empty()) {
         throw std::invalid_argument(
             "--context-store-s3-endpoint and --context-store-s3-bucket go together");
@@ -717,30 +661,27 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.context_store_s3_endpoint.empty() &&
         (!options.context_store_s3_prefix.empty() ||
          options.context_store_s3_region != "us-east-1")) {
-        throw std::invalid_argument(
-            "--context-store-s3-prefix and --context-store-s3-region require "
-            "--context-store-s3-endpoint");
+        throw std::invalid_argument("--context-store-s3-prefix and --context-store-s3-region "
+                                    "require --context-store-s3-endpoint");
     }
     if (!options.context_store_s3_endpoint.empty()) {
         const std::string& endpoint = options.context_store_s3_endpoint;
         if (endpoint.rfind("http://", 0) != 0 && endpoint.rfind("https://", 0) != 0) {
-            throw std::invalid_argument("--context-store-s3-endpoint must start with http:// or https://");
+            throw std::invalid_argument(
+                "--context-store-s3-endpoint must start with http:// or https://");
         }
         for (const unsigned char c : options.context_store_s3_prefix) {
             const bool plain = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                               (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' || c == '/';
+                               (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' ||
+                               c == '/';
             if (!plain) {
                 throw std::invalid_argument(
                     "--context-store-s3-prefix may contain only letters, digits and . _ - /");
             }
         }
-        if (!options.context_store_s3_prefix.empty() && options.context_store_s3_prefix.back() != '/') {
+        if (!options.context_store_s3_prefix.empty() &&
+            options.context_store_s3_prefix.back() != '/') {
             options.context_store_s3_prefix.push_back('/');
-        }
-    }
-    if (!options.context_store_path.empty()) {
-        if (!options.allow_prefix_reuse) {
-            throw std::invalid_argument("--no-prefix-reuse cannot be combined with --context-store");
         }
     }
     if (options.port <= 0 || options.port > 65535) {
@@ -766,20 +707,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.prefill_chunk == 0 || options.prefill_chunk % 128 != 0) {
         throw std::invalid_argument("--prefill-chunk must be a positive multiple of 128");
     }
-    // One request owning the staged prefill makes every other request wait for a long prompt's
-    // whole prefill, even a prefix-cached one that needs a single unit. From three lanes on, a
-    // second prefill lane keeps short requests moving at the cost of finishing the long prompt a
-    // little later.
-    if (!prefill_lanes_explicit && options.max_concurrency >= 3) { options.max_prefill_lanes = 2; }
-    if (options.max_prefill_lanes == 0 || options.max_prefill_lanes > options.max_concurrency) {
-        throw std::invalid_argument("--max-prefill-lanes must be in [1,--max-concurrency]");
-    }
-    if (options.prefill_max_skip == 0) {
-        throw std::invalid_argument("--prefill-max-skip must be positive");
-    }
-    if (options.decode_rounds_per_prefill > 4096) {
-        throw std::invalid_argument("--decode-rounds-per-prefill must be in [0,4096]");
-    }
     product::apply_speculative_defaults(options.speculative);
     product::validate_speculative_cli_options(options.speculative);
     if (options.vision_residency == VisionResidency::Overlay && !options.enable_vision) {
@@ -801,22 +728,6 @@ std::string resolve_public_model_id(const ServeOptions& options,
         throw std::logic_error("loaded artifact model name must not be empty");
     }
     return std::string(artifact_model_name);
-}
-
-std::uint32_t resolve_automatic_private_anchors(const ServeOptions& options,
-                                                const ContextCacheOptions& resolved) {
-    if (!resolved.enabled || !options.allow_prefix_reuse) { return 0; }
-    const std::uint32_t cap = resolved.max_long_anchors_per_continuation.value_or(0U);
-    return std::min(options.auto_long_anchors.value_or(cap), cap);
-}
-
-std::uint32_t resolve_progress_anchor_stride(const ServeOptions& options,
-                                             const ContextCacheOptions& resolved) {
-    if (!resolved.enabled || !options.allow_prefix_reuse ||
-        resolved.max_long_anchors_per_continuation.value_or(0U) == 0) {
-        return 0;
-    }
-    return options.progress_anchor_tokens.value_or(kDefaultProgressAnchorTokens);
 }
 
 } // namespace ninfer::serve

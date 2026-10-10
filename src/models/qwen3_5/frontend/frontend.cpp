@@ -6,11 +6,13 @@
 #include "models/qwen3_5/frontend/chat_template.h"
 #include "models/qwen3_5/frontend/media_cache.h"
 #include "models/qwen3_5/frontend/processor.h"
-#include "models/qwen3_5/frontend/structured_output.h"
 #include "models/qwen3_5/frontend/test_access.h"
 #include "models/qwen3_5/frontend/tokenizer.h"
-#include "models/qwen3_5/frontend/tool_call_parser.h"
+#include "models/qwen3_5/frontend/tool_contract.h"
+#include "models/qwen3_5/frontend/tool_grammar.h"
 #include "text/unicode.h"
+#include "text/grammar.h"
+#include <mutex>
 
 #include <nlohmann/json.hpp>
 
@@ -348,16 +350,23 @@ std::uint32_t graft_context_slots(const PromptGraft& graft) {
 // Places a graft's tokens at positions [0, n) and shifts everything the rendered prompt produced by
 // n. Text-only positions advance by one per token on every M-RoPE axis, so a text prefix moves each
 // later position -- Vision grids included -- by exactly n and leaves rope_delta unchanged.
+//
+// A prefill_kv graft contributes its replay ids, which prefill computes like any prompt text. A
+// direct_kv or softprompt_kv graft contributes its placeholder ids: its state is installed at
+// startup as a pinned checkpoint whose identity is exactly these ids, so a request binds to it
+// as an exact source, and the prompt records that the prefix must never be prefilled.
 void prepend_graft(const PromptGraft& graft, PreparedPromptData& prompt,
                    std::vector<std::optional<std::uint32_t>>& message_boundaries,
                    std::vector<std::optional<std::uint32_t>>& cache_boundaries) {
-    const std::size_t shift = graft.tokens.size();
+    const std::vector<TokenId>& tokens =
+        graft.kind == GraftKind::PrefillKV ? graft.tokens : graft.placeholder_ids;
+    const std::size_t shift = tokens.size();
     const std::size_t count = prompt.token_ids.size();
     const auto shifted      = [shift](std::uint32_t frontier) {
         return static_cast<std::uint32_t>(frontier + shift);
     };
 
-    prompt.token_ids.insert(prompt.token_ids.begin(), graft.tokens.begin(), graft.tokens.end());
+    prompt.token_ids.insert(prompt.token_ids.begin(), tokens.begin(), tokens.end());
     prompt.token_types.insert(prompt.token_types.begin(), shift, 0);
     std::vector<std::int32_t> positions((count + shift) * 3);
     for (std::size_t axis = 0; axis < 3; ++axis) {
@@ -377,6 +386,8 @@ void prepend_graft(const PromptGraft& graft, PreparedPromptData& prompt,
     if (prompt.identity.rewrite_checkpoint) {
         prompt.identity.rewrite_checkpoint->frontier =
             shifted(prompt.identity.rewrite_checkpoint->frontier);
+        prompt.identity.rewrite_checkpoint->recovery_frontier =
+            shifted(prompt.identity.rewrite_checkpoint->recovery_frontier);
     }
     for (std::uint32_t& frontier : prompt.identity.rewrite_execution_frontiers) {
         frontier = shifted(frontier);
@@ -387,60 +398,9 @@ void prepend_graft(const PromptGraft& graft, PreparedPromptData& prompt,
     for (std::optional<std::uint32_t>& boundary : cache_boundaries) {
         if (boundary) { boundary = shifted(*boundary); }
     }
-}
-
-// For direct_kv/softprompt_kv grafts: prepend n_slots placeholder tokens so that token_ids.size()
-// includes the graft's pre-populated positions. The placeholders are never prefilled — they're
-// covered by the SharedStablePrefix reuse path — but their presence keeps downstream index
-// arithmetic consistent (reuse_base <= prompt_tokens). Positions are extended to form a
-// contiguous sequence [0, 1, ..., n_slots + original_count - 1].
-void apply_direct_graft(const PromptGraft& graft, PreparedPromptData& prompt,
-                        std::vector<std::optional<std::uint32_t>>& message_boundaries,
-                        std::vector<std::optional<std::uint32_t>>& cache_boundaries) {
-    if (graft.placeholder_ids.size() != graft.n_slots) {
-        throw std::logic_error("graft '" + graft.name + "' has no placeholder ids");
+    if (graft.kind != GraftKind::PrefillKV) {
+        prompt.external_prefix_tokens = static_cast<std::uint32_t>(shift);
     }
-    const auto n_slots   = static_cast<std::size_t>(graft.n_slots);
-    const auto count     = prompt.token_ids.size();
-    const auto new_count = n_slots + count;
-    const auto shifted   = [n_slots](std::uint32_t frontier) {
-        return static_cast<std::uint32_t>(frontier + n_slots);
-    };
-
-    prompt.token_ids.insert(prompt.token_ids.begin(), graft.placeholder_ids.begin(),
-                            graft.placeholder_ids.end());
-    prompt.token_types.insert(prompt.token_types.begin(), n_slots, std::uint8_t{0});
-
-    std::vector<std::int32_t> new_positions(3 * new_count);
-    for (std::size_t axis = 0; axis < 3; ++axis) {
-        for (std::size_t i = 0; i < n_slots; ++i) {
-            new_positions[axis * new_count + i] = static_cast<std::int32_t>(i);
-        }
-        for (std::size_t i = 0; i < count; ++i) {
-            new_positions[axis * new_count + n_slots + i] =
-                prompt.positions[axis * count + i] + static_cast<std::int32_t>(n_slots);
-        }
-    }
-    prompt.positions = std::move(new_positions);
-
-    for (VisionItem& item : prompt.vision_items) {
-        for (TokenSpan& span : item.token_spans) { span.begin += n_slots; }
-    }
-    if (prompt.identity.rewrite_checkpoint) {
-        prompt.identity.rewrite_checkpoint->frontier =
-            shifted(prompt.identity.rewrite_checkpoint->frontier);
-    }
-    for (std::uint32_t& frontier : prompt.identity.rewrite_execution_frontiers) {
-        frontier = shifted(frontier);
-    }
-    for (std::optional<std::uint32_t>& boundary : message_boundaries) {
-        if (boundary) { boundary = shifted(*boundary); }
-    }
-    for (std::optional<std::uint32_t>& boundary : cache_boundaries) {
-        if (boundary) { boundary = shifted(*boundary); }
-    }
-    prompt.graft_name     = graft.name;
-    prompt.graft_frontier = static_cast<std::uint32_t>(n_slots);
 }
 
 VisionItem convert_vision_item(fi::VisionItem item) {
@@ -512,14 +472,14 @@ bool exact_vision_frontier(std::uint32_t frontier, std::span<const VisionItem> i
     return true;
 }
 
-PreparedContextCache prepare_context_cache(
-    ContextCacheHints hints, std::size_t message_count,
-    std::span<const std::optional<std::uint32_t>> message_boundaries,
-    std::span<const PromptCacheMarker> rendered_markers,
-    std::span<const std::optional<std::uint32_t>> cache_boundaries,
-    std::span<const VisionItem> vision_items, std::optional<std::size_t> engine_tool_marker_index,
-    std::optional<std::uint32_t> leading_boundary, std::uint32_t full_prompt_frontier,
-    std::uint32_t graft_frontier, std::uint32_t direct_graft_slots) {
+PreparedContextCache
+prepare_context_cache(ContextCacheHints hints, std::size_t message_count,
+                      std::span<const std::optional<std::uint32_t>> message_boundaries,
+                      std::span<const PromptCacheMarker> rendered_markers,
+                      std::span<const std::optional<std::uint32_t>> cache_boundaries,
+                      std::span<const VisionItem> vision_items,
+                      std::optional<std::size_t> engine_tool_marker_index,
+                      std::optional<std::uint32_t> leading_boundary, std::uint32_t graft_frontier) {
     if (hints.markers.size() > kMaximumExplicitPromptCacheMarkers) {
         throw std::invalid_argument("PromptInput supports at most four explicit cache markers");
     }
@@ -536,23 +496,6 @@ PreparedContextCache prepare_context_cache(
         key.size = static_cast<std::uint16_t>(hints.session_key->size());
         std::copy(hints.session_key->begin(), hints.session_key->end(), key.bytes.begin());
         out.session_key = key;
-    }
-    switch (hints.retention) {
-    case CacheRetentionHint::Default:
-        out.retention = out.session_key ? runtime::RetentionClass::LiveSession
-                                        : runtime::RetentionClass::RecentPrivate;
-        break;
-    case CacheRetentionHint::LiveSession:
-        if (!out.session_key) {
-            throw std::invalid_argument("LiveSession retention requires a session_key");
-        }
-        out.retention = runtime::RetentionClass::LiveSession;
-        break;
-    case CacheRetentionHint::Disposable:
-        out.retention = runtime::RetentionClass::Disposable;
-        break;
-    default:
-        throw std::invalid_argument("context cache retention hint is invalid");
     }
     out.update_session_index = hints.update_session_index;
 
@@ -600,15 +543,10 @@ PreparedContextCache prepare_context_cache(
         }
     }
 
-    out.opportunities.reserve(8U + hints.automatic_private_anchors +
-                              (hints.allow_engine_prefix_grid ? kPrefixGridCandidates : 0U));
+    out.opportunities.reserve(8U);
     const auto add_opportunity = [&](PromptCacheMarkerKind kind, SharedCandidateEvidence evidence,
                                      std::uint32_t frontier, std::uint32_t input_order) {
-        // A direct graft's positions are restored whole from its pinned slot, so nothing at or
-        // below its end is worth capturing: the slot already is that prefix.
-        if (frontier <= direct_graft_slots || !exact_vision_frontier(frontier, vision_items)) {
-            return;
-        }
+        if (frontier == 0 || !exact_vision_frontier(frontier, vision_items)) { return; }
         const auto duplicate = std::find_if(
             out.opportunities.begin(), out.opportunities.end(), [&](const auto& existing) {
                 return existing.kind == kind && existing.frontier == frontier;
@@ -625,14 +563,7 @@ PreparedContextCache prepare_context_cache(
 
     for (std::size_t index = 0; index < hints.markers.size(); ++index) {
         const PromptCacheMarker marker = hints.markers[index];
-        std::optional<std::uint32_t> resolved;
-        if (marker.location == PromptCacheMarkerLocation::MessageBoundary) {
-            if (marker.after_message_count < message_boundaries.size()) {
-                resolved = message_boundaries[marker.after_message_count];
-            }
-        } else {
-            if (index < cache_boundaries.size()) { resolved = cache_boundaries[index]; }
-        }
+        const auto resolved            = cache_boundaries[index];
         if (!resolved) { continue; }
         add_opportunity(marker.kind, marker.evidence, *resolved, static_cast<std::uint32_t>(index));
     }
@@ -644,39 +575,6 @@ PreparedContextCache prepare_context_cache(
     if (graft_frontier != 0) {
         add_opportunity(PromptCacheMarkerKind::SharedStablePrefix,
                         SharedCandidateEvidence::EngineStructural, graft_frontier, engine_order++);
-    }
-    // Automatic private long anchors sit at the boundaries after the last N messages, newest
-    // first. The boundary after the final message is skipped (the endpoint and rewrite
-    // checkpoints cover the tail), as is the empty boundary before the first message. An
-    // unresolved boundary still consumes one of the N positions: N counts boundaries, not anchors.
-    if (hints.automatic_private_anchors != 0 && message_count > 1) {
-        std::uint32_t remaining = hints.automatic_private_anchors;
-        for (std::size_t after = message_count - 1U; after != 0 && remaining != 0;
-             --after, --remaining) {
-            if (after >= message_boundaries.size() || !message_boundaries[after] ||
-                *message_boundaries[after] >= full_prompt_frontier) {
-                continue;
-            }
-            add_opportunity(PromptCacheMarkerKind::PrivateLongAnchor, SharedCandidateEvidence::None,
-                            *message_boundaries[after], engine_order++);
-        }
-    }
-    // Progress anchors sit at absolute multiples of the stride, independent of the prompt's shape,
-    // so a prompt with no message boundary (one very long user message) still leaves a restore
-    // point behind when its prefill is cancelled. The prompt's own end is covered by the endpoint.
-    if (hints.progress_anchor_stride != 0) {
-        if (hints.progress_anchor_stride < kMinimumProgressAnchorStride) {
-            throw std::invalid_argument("progress_anchor_stride must be 0 or at least " +
-                                        std::to_string(kMinimumProgressAnchorStride));
-        }
-        for (std::uint32_t frontier = hints.progress_anchor_stride; frontier < full_prompt_frontier;
-             frontier += hints.progress_anchor_stride) {
-            add_opportunity(PromptCacheMarkerKind::PrivateLongAnchor, SharedCandidateEvidence::None,
-                            frontier, engine_order++);
-            if (frontier > std::numeric_limits<std::uint32_t>::max() - hints.progress_anchor_stride) {
-                break;
-            }
-        }
     }
     if (hints.allow_engine_automatic_shared_prefixes) {
         if (engine_tool_marker_index && *engine_tool_marker_index < cache_boundaries.size() &&
@@ -690,34 +588,6 @@ PreparedContextCache prepare_context_cache(
             add_opportunity(PromptCacheMarkerKind::SharedStablePrefix,
                             SharedCandidateEvidence::EngineStructural,
                             *message_boundaries[*leading_boundary], engine_order++);
-        }
-        add_opportunity(PromptCacheMarkerKind::SharedStablePrefix,
-                        SharedCandidateEvidence::EngineObserved, full_prompt_frontier,
-                        engine_order++);
-    }
-    if (hints.allow_engine_prefix_grid) {
-        // Structural boundaries only expose a prefix where the prompt's own shape happens to put
-        // one. Two requests that merely start with the same long span - the same pasted document,
-        // the same few-shot preamble inside a single user message - share no boundary at all, so
-        // neither ever proposes a frontier the other could match.
-        //
-        // The grid supplies that missing agreement. Frontiers are placed at absolute multiples of a
-        // page-sized stride rather than at positions measured from the end of the prompt, so two
-        // prompts of unrelated lengths still name the same frontier wherever they still agree. The
-        // stride doubles until the grid fits in kPrefixGridCandidates points, which keeps the count
-        // bounded and keeps a coarser grid a subset of a finer one - prompts that pick different
-        // strides still meet on the multiples of the larger.
-        //
-        // Every grid point carries EngineObserved and nothing else. That evidence is neither
-        // "declared" nor "surplus", so the resource manager will not spend a vacant shared slot on
-        // one speculatively; a grid frontier is only ever materialized once two distinct reuse
-        // domains have independently proposed it, which is exactly the signal that two callers
-        // share that prefix.
-        std::uint32_t stride = kPrefixGridPageTokens;
-        while (full_prompt_frontier / stride > kPrefixGridCandidates) { stride *= 2U; }
-        for (std::uint32_t frontier = stride; frontier <= full_prompt_frontier; frontier += stride) {
-            add_opportunity(PromptCacheMarkerKind::SharedStablePrefix,
-                            SharedCandidateEvidence::EngineObserved, frontier, engine_order++);
         }
     }
     return out;
@@ -773,7 +643,8 @@ public:
             throw std::invalid_argument(
                 "Frontend requires the parsed model tokenizer and public token domain");
         }
-        sampling = default_sampling(options.architecture);
+        sampling            = default_sampling(options.architecture);
+        grammar_cache_bytes = options.grammar_cache_bytes;
         for (const int token : tokenizer->default_stop_token_ids()) {
             if (!tokenizer->is_valid_token(token)) {
                 throw std::invalid_argument(
@@ -808,14 +679,19 @@ public:
                 throw std::invalid_argument("graft '" + graft.name +
                                             "' leaves no room for a prompt within max_context");
             }
-            for (const TokenId token : graft.tokens) {
+            if (graft.kind != GraftKind::PrefillKV && graft.placeholder_ids.size() != slots) {
+                throw std::invalid_argument("graft '" + graft.name +
+                                            "' has no placeholder id for every injected slot");
+            }
+            const std::vector<TokenId>& tokens =
+                graft.kind == GraftKind::PrefillKV ? graft.tokens : graft.placeholder_ids;
+            for (const TokenId token : tokens) {
                 if (!tokenizer->is_valid_token(token)) {
                     throw std::invalid_argument("graft '" + graft.name +
                                                 "' contains a token outside the vocabulary");
                 }
             }
         }
-        structured_output       = std::make_shared<const fi::StructuredOutputCompiler>(tokenizer);
     }
 
     // The graft a request names, or null for none.
@@ -834,10 +710,26 @@ public:
     StopPolicy defaults;
     ModelSamplingDefaults sampling;
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens;
-    std::shared_ptr<const fi::StructuredOutputCompiler> structured_output;
-    bool vision_enabled       = true;
-    std::uint32_t max_context = 0;
+    bool vision_enabled             = true;
+    std::uint32_t max_context       = 0;
+    std::size_t grammar_cache_bytes = 0;
     std::vector<PromptGraft> grafts;
+    mutable std::once_flag grammar_once;
+    mutable std::unique_ptr<text::GrammarCompiler> grammar_compiler;
+
+    text::GrammarCompiler& grammars() const {
+        std::call_once(grammar_once, [&] {
+            std::vector<std::string> vocab(tokenizer->vocab_size());
+            for (std::size_t id = 0; id < vocab.size(); ++id) {
+                if (!tokenizer->is_valid_token(static_cast<TokenId>(id))) { continue; }
+                const auto decoded = tokenizer->decoded_token(static_cast<TokenId>(id));
+                if (!decoded.special) { vocab[id] = decoded.bytes; }
+            }
+            grammar_compiler = std::make_unique<text::GrammarCompiler>(
+                std::move(vocab), defaults.token_ids, grammar_cache_bytes);
+        });
+        return *grammar_compiler;
+    }
 };
 
 std::span<const std::int32_t> PreparedPromptData::position_axis(int axis) const {
@@ -900,7 +792,7 @@ const ModelSamplingDefaults& Frontend::sampling_defaults() const noexcept {
 }
 
 Frontend make_frontend(const FrontendResources& resources, FrontendOptions options) {
-    return Frontend(std::make_shared<const Frontend::Impl>(resources, options));
+    return Frontend(std::make_shared<const Frontend::Impl>(resources, std::move(options)));
 }
 
 const PreparedPromptData& PreparedPromptAccess::view(const PreparedPrompt& prompt) {
@@ -933,8 +825,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
     std::vector<ChatRole> message_roles;
     message_roles.reserve(input.messages.size());
     for (const ChatMessage& message : input.messages) { message_roles.push_back(message.role); }
-    const auto tool_call_output =
-        fi::build_tool_call_output_contract(options.tool_jsons, !options.tool_jsons.empty());
+    const auto tool_call_output = fi::build_tool_call_output_contract(options.tool_jsons);
     const std::optional<std::uint32_t> leading_boundary =
         leading_instruction_boundary(message_roles);
     std::vector<PromptCacheMarker> rendered_markers = cache_hints.markers;
@@ -972,11 +863,12 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
                                   control, prompt_context);
         } catch (const fi::ProcessorError& error) { throw_processor_error(error); }
         result.token_ids.assign(processed.input_ids.begin(), processed.input_ids.end());
-        result.starts_in_reasoning = processed.starts_in_reasoning;
-        result.token_types         = std::move(processed.token_types);
-        result.positions           = std::move(processed.positions);
-        result.rope_delta          = processed.rope_delta;
-        result.media_payloads      = std::move(processed.media_payloads);
+        result.starts_in_reasoning  = processed.starts_in_reasoning;
+        result.continuation_content = std::move(processed.continuation_content);
+        result.token_types          = std::move(processed.token_types);
+        result.positions            = std::move(processed.positions);
+        result.rope_delta           = processed.rope_delta;
+        result.media_payloads       = std::move(processed.media_payloads);
         result.vision_items.reserve(processed.vision_items.size());
         for (fi::VisionItem& item : processed.vision_items) {
             result.vision_items.push_back(convert_vision_item(std::move(item)));
@@ -1005,6 +897,7 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
         const fi::RenderedChat rendered = impl_->chat_template.render(
             messages, render_options(options, rendered_markers), control);
         result.starts_in_reasoning  = rendered.starts_in_reasoning;
+        result.continuation_content = rendered.continuation_content;
         const auto tokenize_started = Clock::now();
         fi::EncodedChat encoded     = fi::encode_rendered_chat(
             *impl_->tokenizer, rendered, static_cast<std::size_t>(prompt_context) + 1U);
@@ -1023,23 +916,14 @@ PreparedPrompt Frontend::prepare(PromptInput input, const PreparationControl& co
         assign_text_positions(result);
     }
     (void)checked_token_count(result.token_ids.size());
-    if (graft) {
-        if (graft->kind == GraftKind::PrefillKV) {
-            prepend_graft(*graft, result, message_boundaries, cache_boundaries);
-        } else {
-            apply_direct_graft(*graft, result, message_boundaries, cache_boundaries);
-        }
-    }
-    // A direct graft is restored whole from its pinned slot and is the root every capture of the
-    // request builds on, so it publishes no prefix of its own; a prefill graft is replayed, and its
-    // end is published as a shared prefix.
-    const bool is_direct_graft = graft && graft->kind != GraftKind::PrefillKV;
-    result.context_cache       = prepare_context_cache(
+    if (graft) { prepend_graft(*graft, result, message_boundaries, cache_boundaries); }
+    result.identity.reusable = true;
+    // A replayed graft's end is published as a shared prefix, so the graft is prefilled once. A
+    // direct graft already is a pinned checkpoint at that frontier and publishes nothing there.
+    result.context_cache = prepare_context_cache(
         std::move(cache_hints), message_count, message_boundaries, rendered_markers,
         cache_boundaries, result.vision_items, engine_tool_marker_index, leading_boundary,
-        checked_token_count(result.token_ids.size()),
-        (graft && !is_direct_graft) ? graft_context_slots(*graft) : 0U,
-        is_direct_graft ? graft_context_slots(*graft) : 0U);
+        graft && graft->kind == GraftKind::PrefillKV ? graft_context_slots(*graft) : 0U);
     result.prepare.seconds = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
 }
@@ -1113,7 +997,6 @@ PreparedPrompt Frontend::prepare_tokens(std::vector<TokenId> token_ids,
     result.token_ids           = std::move(token_ids);
     assign_text_positions(result);
     result.identity.reusable                  = allow_prefix_identity;
-    result.context_cache.retention            = runtime::RetentionClass::RecentPrivate;
     result.context_cache.update_session_index = false;
     result.prepare.seconds = std::chrono::duration<double>(Clock::now() - start).count();
     return PreparedPrompt(std::move(prepared));
@@ -1127,28 +1010,71 @@ std::vector<TokenId> Frontend::tokenize_text(std::string_view text) const {
 OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
                                             const StopPolicy& caller_stop,
                                             const OutputOptions& output,
-                                            const ThinkingControlOptions& thinking) const {
+                                            const ThinkingControlOptions& thinking,
+                                            const std::optional<OutputConstraint>& constraint,
+                                            const ToolChoice& tool_choice) const {
     if (prompt.data_ == nullptr) { throw std::invalid_argument("prepared prompt is empty"); }
     StopPolicy policy = merge_stop_policy(*impl_->tokenizer, caller_stop);
     if (output.raw) { policy.publish_stop_token = true; }
-    std::unique_ptr<fi::StructuredOutputConstraint> structured;
-    if (output.format.kind != OutputFormatKind::Text) {
-        // Compilation runs on the submitting thread, before the request reaches the Engine worker.
-        // The grammar constrains the content channel only, so only its stop strings can cut a
-        // token the grammar has to judge.
-        std::vector<std::string> content_stops;
-        for (const StopString& stop : policy.strings) {
-            if (stop.channel == OutputChannel::Content) { content_stops.push_back(stop.text); }
+    auto tool_contract = fi::select_tool_call_contract(prompt.data_->tool_call_output, tool_choice);
+    if (constraint && tool_contract && tool_contract->tools.empty()) tool_contract.reset();
+    const bool combined = constraint && tool_contract && !tool_contract->tools.empty();
+    if (combined) {
+        if (constraint->kind != OutputConstraintKind::JsonObject &&
+            constraint->kind != OutputConstraintKind::JsonSchema)
+            throw RequestError(text::constraint_error_kind(constraint->kind),
+                               "active tools can be combined with JSON output constraints");
+        if (!tool_contract->constrained) {
+            auto structured         = std::make_shared<fi::ToolCallOutputContract>(*tool_contract);
+            structured->constrained = true;
+            tool_contract           = std::move(structured);
         }
-        structured = std::make_unique<fi::StructuredOutputConstraint>(
-            impl_->tokenizer, impl_->structured_output->compile(output.format), policy.token_ids,
-            prompt.data_->starts_in_reasoning, content_stops, !policy.strings.empty());
+    }
+    const bool tool_constraint = tool_contract && tool_contract->constrained;
+    std::unique_ptr<text::GrammarSession> matcher;
+    if (constraint || tool_constraint) {
+        if (impl_->defaults.token_ids.empty() || !caller_stop.token_ids.empty() ||
+            !caller_stop.strings.empty() || !caller_stop.include_model_defaults ||
+            caller_stop.publish_stop_token || output.raw || output.preserve_special_tokens) {
+            throw RequestError(tool_constraint ? RequestErrorKind::InvalidToolConstraint
+                                               : text::constraint_error_kind(constraint->kind),
+                               "constraints require default EOS, text output, no custom stops, and "
+                               "one output language");
+        }
+        try {
+            const auto close = prompt.data_->starts_in_reasoning
+                                   ? fi::kCanonicalReasoningCloseSerialization
+                                   : std::string_view{};
+            if (tool_constraint) {
+                for (const auto& tool : tool_contract->tools) {
+                    if (tool.name.size() > output.tool_name_max_length ||
+                        !std::all_of(tool.name.begin(), tool.name.end(), [](unsigned char c) {
+                            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                   (c >= '0' && c <= '9') || c == '_' || c == '-';
+                        }))
+                        throw RequestError(RequestErrorKind::InvalidToolConstraint,
+                                           "tool name is outside the output contract: " +
+                                               tool.name);
+                }
+                matcher = fi::compile_tool_grammar(impl_->grammars(), *tool_contract, close,
+                                                   prompt.data_->continuation_content, constraint);
+            } else {
+                matcher = impl_->grammars().compile(*constraint, close,
+                                                    prompt.data_->continuation_content);
+            }
+        } catch (const RequestError&) { throw; } catch (const std::invalid_argument& error) {
+            throw RequestError(tool_constraint ? RequestErrorKind::InvalidToolConstraint
+                                               : text::constraint_error_kind(constraint->kind),
+                               error.what());
+        }
     }
     return OutputSession(impl_->tokenizer, std::move(policy), output,
                          prompt.data_->starts_in_reasoning, thinking,
-                         impl_->thinking_control_tokens, prompt.data_->tool_call_output,
-                         std::move(structured));
+                         impl_->thinking_control_tokens, std::move(tool_contract),
+                         std::move(matcher), prompt.data_->continuation_content, combined);
 }
+
+const StopPolicy& Frontend::default_stop_policy() const noexcept { return impl_->defaults; }
 
 const std::vector<PromptGraft>& Frontend::grafts() const noexcept { return impl_->grafts; }
 

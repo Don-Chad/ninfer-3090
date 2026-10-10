@@ -2,6 +2,7 @@
 
 #include "ninfer/object_store.h"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -22,16 +23,10 @@ using TokenId = std::int32_t;
 inline constexpr std::uint32_t kMaximumConcurrency               = 8;
 inline constexpr std::size_t kMaximumContextCacheSessionKeyBytes = 256;
 inline constexpr std::size_t kMaximumExplicitPromptCacheMarkers  = 4;
-// ContextCacheHints::allow_engine_prefix_grid proposes at most this many shared candidates, at
-// multiples of a stride that starts at one grid page and doubles until the count fits.
-inline constexpr std::uint32_t kPrefixGridCandidates = 8;
-inline constexpr std::uint32_t kPrefixGridPageTokens = 256;
 // Aggregate encoded image/video payload retained by one prompt, independent of item count.
-inline constexpr std::size_t kMaximumPromptMediaBytes    = 256ULL << 20;
-inline constexpr std::size_t kDefaultMediaCacheBytes     = 1ULL << 30;
-inline constexpr std::size_t kDefaultMediaLiveBytes      = 2ULL << 30;
-inline constexpr std::uint32_t kDefaultHostStateSlots    = 8;
-inline constexpr std::size_t kDefaultHostKvCapacityBytes = 8ULL << 30;
+inline constexpr std::size_t kMaximumPromptMediaBytes = 256ULL << 20;
+inline constexpr std::size_t kDefaultMediaCacheBytes  = 1ULL << 30;
+inline constexpr std::size_t kDefaultMediaLiveBytes   = 2ULL << 30;
 // Host memory `auto_host_cache` leaves unpinned for everything that runs after it is sized. The
 // 27B server measured ~2 GiB of non-pinned growth after sizing (CUDA/cuBLAS host state, tokenizer,
 // HTTP and Program setup; two requests added ~30 MB); this keeps a margin over that.
@@ -118,8 +113,7 @@ enum class StartupPhase : std::uint8_t {
     TargetFinalize,
     FrontendInitialize,
     ProgramInitialize,
-    HostStatePin,
-    HostKvPin,
+    HostContextPin,
     CudaGraphPrepare,
     EngineFinalize,
 };
@@ -162,10 +156,11 @@ struct ContextStoreWriteEvent {
 };
 
 // A durable store for retained sessions, so the context cache survives a restart or a crash.
-// Disabled unless a directory is given. A retained session is written there when it is evicted,
-// when it has been idle for `idle_persist`, and (all of them) when the Engine shuts down; at start-up
-// the most recently used sessions are restored into the cache. The store holds only changed pieces
-// of each session (see ContextStore), so keeping a long conversation current is cheap.
+// Disabled unless a directory is given; requires the context cache and a nonzero Host context
+// budget. A retained session is written there when it has been idle for `idle_persist` and (all of
+// them) when the Engine shuts down; at start-up the most recently used sessions are restored into
+// the Host tier, and a request whose session was evicted reads it back. The store holds only changed
+// pieces of each session (see ContextStore), so keeping a long conversation current is cheap.
 struct ContextStoreOptions {
     std::filesystem::path directory;
     // Bytes the store may hold; the least recently used sessions are removed beyond it. 0 chooses
@@ -175,9 +170,10 @@ struct ContextStoreOptions {
     std::chrono::seconds ttl{std::chrono::hours(24 * 7)};
     // A retained session unused for this long, and not yet written in its current state, is written
     // in the background so a crash loses at most this much of a conversation. Zero disables it
-    // (sessions are then written only on eviction and shutdown).
+    // (sessions are then written only at shutdown).
     std::chrono::seconds idle_persist{30};
-    // Upper bound on the time spent restoring sessions into the cache at start-up.
+    // Upper bound on the time spent restoring sessions into the cache at start-up, and on how long
+    // a request waits for its stored session to be read back.
     std::chrono::seconds restore_budget{120};
     // Upper bound on the time spent writing sessions at shutdown.
     std::chrono::seconds flush_budget{60};
@@ -208,9 +204,9 @@ struct EngineFaultEvent {
     // Requests still queued that the latch fails as well; empty when the Engine recovered, since
     // recovery keeps the queue.
     std::vector<std::uint64_t> queued_request_ids;
-    // True: the failure was confined to the one request being planned for admission, which alone
-    // received it. No other request was affected and the Engine neither recovered nor counted
-    // the failure toward the latch.
+    // True: the failure was confined to the one request being admitted (planned, or its binding
+    // started), which alone received it. No other request was affected and the Engine neither
+    // recovered nor counted the failure toward the latch.
     bool contained = false;
     // False: the Engine recovered and keeps serving. True: it is now permanently unavailable.
     bool latched = false;
@@ -222,38 +218,32 @@ struct EngineFaultEvent {
 };
 
 struct ContextCacheOptions {
-    // Engine resolves every optional once at construction. With C=max_concurrency, the enabled
-    // defaults are H=C, R=8, Host KV=8 GiB, P=2C, S=max(C,4) and L=2;
-    // Engine::options() returns those effective values.
+    // Controls cross-request history reads and writes. Request pause/replay resources remain
+    // available when history is disabled.
     bool enabled = true;
-    // Extra Device checkpoint StateImage slots H. Total Device StateImage capacity is C + H.
+    // Extra Device StateImage slots beyond max_concurrency. Defaults to max_concurrency.
     std::optional<std::uint32_t> device_state_slots;
-    // Host StateImages and Host KV bytes are independently configured pinned-memory capacities.
-    std::uint32_t host_state_slots     = kDefaultHostStateSlots;
-    std::size_t host_kv_capacity_bytes = kDefaultHostKvCapacityBytes;
-    // Sizes host_state_slots, host_kv_capacity_bytes, max_private_continuations and
-    // max_shared_prefixes together from the host memory available once the model is loaded, and
-    // refuses explicit values for any of the four. Engine::options() returns the resolved values
+    // Shared Host quota for StateImages, KV, pause snapshots and in-flight destinations. Native
+    // startup defaults to 8 GiB plus eight Host StateImages using the model's actual layout.
+    // This does not bound total process RAM.
+    // Engine::options() returns both resolved capacities after construction.
+    std::optional<std::size_t> host_capacity_bytes;
+    // Sizes host_capacity_bytes from the host memory available once the model is loaded, and
+    // refuses an explicit host_capacity_bytes. Engine::options() returns the resolved capacity
     // with this flag cleared.
     bool auto_host_cache = false;
     // Memory left unpinned beneath whatever is available when auto_host_cache sizes the tier.
     std::size_t host_cache_reserve_bytes = kDefaultHostCacheReserveBytes;
-    // An upper bound on what auto_host_cache pins (state slots and KV together), applied after the
-    // reserve. Empty: no bound, so a machine with a lot of free memory pins nearly all of it. Set it
-    // where memory is shared with other tenants (a rented GPU box): the reserve only protects the
-    // memory still to be used, not what a neighbour may want of the host's.
+    // An upper bound on what auto_host_cache pins, applied after the reserve. Empty: no bound, so a
+    // machine with a lot of free memory pins nearly all of it. Set it where memory is shared with
+    // other tenants (a rented GPU box): the reserve only protects the memory still to be used, not
+    // what a neighbour may want of the host's.
     std::optional<std::size_t> host_cache_max_bytes;
     // An upper bound on what auto_host_cache pins as a share (1-100) of the machine's total memory
     // (the smaller of physical memory and the container's cgroup limit). Unlike the reserve and the
     // cap it does not depend on what happens to be free at startup, so it is the predictable way to
     // share a box. It only lowers the budget: the reserve and the available memory still apply.
     std::optional<std::uint32_t> host_cache_percent;
-    // Bounded private/shared logical catalogs and per-continuation long-anchor count.
-    std::optional<std::uint32_t> max_private_continuations;
-    std::optional<std::uint32_t> max_shared_prefixes;
-    std::optional<std::uint32_t> max_long_anchors_per_continuation;
-    // Input-complexity bound; this does not reserve checkpoint storage.
-    std::optional<std::uint32_t> max_cache_markers_per_request;
 };
 
 struct ContextCostOptions {
@@ -281,6 +271,7 @@ struct GraftSource {
 struct EngineOptions {
     std::filesystem::path artifact_path;
     std::filesystem::path chat_template_path;
+    std::size_t grammar_cache_bytes    = 256ULL * 1024 * 1024;
     EnginePurpose purpose              = EnginePurpose::Generation;
     int device                         = 0;
     // Empty or one entry keeps the single-device route and `device` selects it. Several entries
@@ -298,18 +289,7 @@ struct EngineOptions {
     std::uint32_t max_pending_requests = 16;
     std::uint32_t pending_timeout_ms   = 30000;
     std::uint32_t prefill_chunk        = 1024;
-    // Requests that may hold staged prefill at once (at most max_concurrency). With more than one,
-    // each prefill unit goes to the lane with the shortest remaining prompt suffix, so a short or
-    // prefix-cached prompt is not stuck behind a long one. 1 serves one prompt at a time.
-    std::uint32_t max_prefill_lanes    = 1;
-    // A prefill lane passed over this many units is served before any shorter one.
-    std::uint32_t prefill_max_skip     = 8;
-    // Decode rounds run after each prefill unit while other requests decode. A decode round takes
-    // tens of milliseconds and a prefill chunk hundreds, so 1 (strict alternation) leaves decode
-    // streams a few percent of the GPU during a prefill. 0 selects prefill_chunk / 64, which keeps
-    // decode's share of GPU time roughly constant across chunk sizes.
-    std::uint32_t decode_rounds_per_prefill = 0;
-    KvCacheStorage kv_cache           = KvCacheStorage::BFloat16;
+    KvCacheStorage kv_cache            = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
     std::size_t media_cache_bytes = kDefaultMediaCacheBytes;
     std::size_t media_live_bytes  = kDefaultMediaLiveBytes;
@@ -317,11 +297,6 @@ struct EngineOptions {
     std::uint32_t media_preprocess_threads = 0;
     bool enable_vision                     = false;
     VisionResidency vision_residency       = VisionResidency::Resident;
-    // Output tokens of a request whose KV is reserved when it is admitted; the rest of its output
-    // budget is reserved as it decodes, from pages nothing else holds. Zero reserves the whole
-    // budget up front. A request that needs more than this and finds no free page ends with the
-    // length finish reason at the point the reservation ran out.
-    std::uint32_t output_reservation_tokens = 0;
     // Speed-for-quality trades, opt-in and off by default. Measured in
     // docs/maintainer/quality-trade-experiments.md: lm_head_q4 costs +0.69% perplexity for a
     // C8 decode gain (~3%, real chat prompts); gdn_state_fp16 is free within measurement noise
@@ -461,38 +436,62 @@ struct ExecutionOptions {
     ThinkingControlOptions thinking;
 };
 
-enum class OutputFormatKind : std::uint8_t {
-    Text,       // unconstrained
-    JsonObject, // any JSON object
-    JsonSchema, // a JSON value conforming to json_schema
-};
-
-// Language of the final model output, enforced token by token during sampling. When the prompt
-// opens a reasoning (thinking) section, the reasoning stays unconstrained and the format applies
-// to the output after the section closes; otherwise it applies from the first generated token.
-// Up to two leading whitespace characters are admitted before the JSON value, after which only
-// the model's stop tokens may follow it. An output limit or caller stop string can still end the
-// output before the value is complete.
-struct OutputFormat {
-    OutputFormatKind kind = OutputFormatKind::Text;
-    // Serialized JSON Schema object; JsonSchema only.
-    std::string json_schema;
-    // JsonSchema only. When true, object schemas without additionalProperties (or
-    // unevaluatedProperties) admit only their declared properties, following the OpenAI/Anthropic
-    // strict structured-output convention. When false, standard JSON Schema defaults apply.
-    bool strict = false;
-};
-
 struct OutputOptions {
     bool raw                     = false;
     bool preserve_special_tokens = false;
     // Presentation constraint supplied by the protocol adapter. It bounds only Qwen's emitted
     // function-name grammar; it does not require the name to match a currently declared tool.
     std::uint32_t tool_name_max_length = 128;
-    OutputFormat format;
+};
+
+enum class OutputConstraintKind : std::uint8_t { Grammar, JsonObject, JsonSchema, Choice, Regex };
+
+// Constrains generated content; Chat reasoning retains the model's framing. Source is owning
+// GBNF, JSON Schema or regex text. Choice owns literal alternatives; JsonObject has no payload.
+struct OutputConstraint {
+    OutputConstraintKind kind = OutputConstraintKind::Grammar;
+    std::string source;
+    std::vector<std::string> choices;
+
+    [[nodiscard]] static OutputConstraint grammar(std::string source) {
+        return {OutputConstraintKind::Grammar, std::move(source), {}};
+    }
+
+    [[nodiscard]] static OutputConstraint json_object() {
+        return {OutputConstraintKind::JsonObject, {}, {}};
+    }
+
+    [[nodiscard]] static OutputConstraint json_schema(std::string source) {
+        return {OutputConstraintKind::JsonSchema, std::move(source), {}};
+    }
+
+    [[nodiscard]] static OutputConstraint choice(std::vector<std::string> values) {
+        return {OutputConstraintKind::Choice, {}, std::move(values)};
+    }
+
+    [[nodiscard]] static OutputConstraint regex(std::string pattern) {
+        return {OutputConstraintKind::Regex, std::move(pattern), {}};
+    }
+
+    bool operator==(const OutputConstraint&) const = default;
+};
+
+enum class ToolChoiceMode : std::uint8_t { Auto, None, Required };
+// Basic protects every tool call. Automatic applies constraints only for strict tools or an
+// explicit selection/count policy.
+enum class ToolConstraintMode : std::uint8_t { Automatic, Basic };
+
+// Declarations belong to PromptOptions. Selection and cardinality affect this generation only.
+struct ToolChoice {
+    ToolChoiceMode mode = ToolChoiceMode::Auto;
+    std::optional<std::vector<std::string>> allowed_names;
+    bool parallel                  = true;
+    ToolConstraintMode constraints = ToolConstraintMode::Basic;
 };
 
 struct RequestOptions {
+    std::optional<OutputConstraint> constraint;
+    ToolChoice tool_choice;
     ExecutionOptions execution;
     StopPolicy stop;
     OutputOptions output;
@@ -528,9 +527,9 @@ struct GeneratedToolCall {
     std::string arguments_json;
 };
 
-// Terminal interpretation of model-origin tool-call markup. Parameter schemas guide JSON
-// normalization but do not validate the call; only a structure/identity failure can return a
-// complete marker region to ordinary content.
+// Diagnostics for model-origin tool-call markup. Free generation uses schema-guided value
+// normalization and can return malformed markup as text. Constrained calls use the model's
+// parameter encoding contract and publish only complete calls.
 enum class ToolCallParseFallbackReason : std::uint8_t {
     None,
     MalformedStructure,
@@ -648,12 +647,6 @@ struct PromptOptions {
     std::string graft;
 };
 
-enum class CacheRetentionHint : std::uint8_t {
-    Default,
-    LiveSession,
-    Disposable,
-};
-
 enum class PromptCacheMarkerKind : std::uint8_t {
     SharedStablePrefix,
     PrivateLongAnchor,
@@ -665,7 +658,6 @@ enum class SharedCandidateEvidence : std::uint8_t {
     RequestedAutomatic = 1U << 1U,
     DefaultAutomatic   = 1U << 2U,
     EngineStructural   = 1U << 3U,
-    EngineObserved     = 1U << 4U,
 };
 
 [[nodiscard]] constexpr SharedCandidateEvidence operator|(SharedCandidateEvidence left,
@@ -708,46 +700,15 @@ struct PromptCacheMarker {
                                                    PromptCacheMarker) noexcept = default;
 };
 
-// Smallest non-zero ContextCacheHints::progress_anchor_stride. The Frontend proposes one candidate
-// per multiple, so a finer stride would make a long prompt's candidate list, and the duplicate
-// scan over it, grow without bound.
-inline constexpr std::uint32_t kMinimumProgressAnchorStride = 256;
-
 struct ContextCacheHints {
     std::optional<std::string> session_key;
-    CacheRetentionHint retention = CacheRetentionHint::Default;
     std::vector<PromptCacheMarker> markers;
-    // Structural shared candidates the Engine derives from the prompt's own shape: after the
-    // leading System/Developer block, after the tool definitions, and at the full prompt frontier.
-    // A protocol that carries its own write policy still wants these, because its policy only
-    // governs where *its* marker goes; turning them off leaves a request whose only candidate sits
-    // at the end of its own prompt, which no differing request can ever match.
+    // Protocols with their own automatic/explicit write policy disable the Engine's structural
+    // candidates. Exact reads from already-published shared prefixes remain enabled.
     bool allow_engine_automatic_shared_prefixes = true;
-    // Propose additional shared candidates on a content-independent token grid so two prompts that
-    // merely start alike converge on the same frontier. Grid candidates carry EngineObserved
-    // evidence only, so they are never speculatively materialized: a grid frontier is published
-    // solely once two distinct reuse domains have both asked for it.
-    bool allow_engine_prefix_grid = false;
     // Advance the named session lineage when session_key is present. This does not require an
     // anonymous content-matched source to be retained.
     bool update_session_index = true;
-    // Engine-automatic private long anchors: propose a PrivateLongAnchor capture at each of the
-    // last N message boundaries strictly inside the prompt. The boundary after the final message
-    // is left to the endpoint and rewrite checkpoints. Chat Completions and Anthropic requests
-    // cannot express an explicit PrivateLongAnchor marker, so without these a rewrite below the
-    // rewrite checkpoint has no reuse candidate and re-prefills from token zero. Retention stays
-    // bounded by ContextCacheOptions::max_long_anchors_per_continuation; a full set replaces its
-    // shallowest anchor. These are opportunities, not markers: they do not count against the
-    // explicit marker limit and merge with an explicit anchor at the same frontier. 0 disables.
-    std::uint32_t automatic_private_anchors = 0;
-    // Engine-automatic progress anchors: propose a PrivateLongAnchor capture at every multiple of
-    // this many tokens strictly inside the prompt, so a long prefill that is cancelled part way
-    // (a client timeout or disconnect) keeps its progress and the retry resumes from the deepest
-    // anchor instead of token zero. The Engine publishes the anchors a cancelled prefill holds
-    // rather than discarding them. Retention and replacement follow
-    // ContextCacheOptions::max_long_anchors_per_continuation, like any other long anchor. 0
-    // disables; a nonzero value below kMinimumProgressAnchorStride is rejected.
-    std::uint32_t progress_anchor_stride = 0;
 };
 
 struct PromptInput {
@@ -757,25 +718,42 @@ struct PromptInput {
 };
 
 enum class RequestErrorKind : std::uint8_t {
+    InvalidToolConstraint,
+    InvalidGrammar,
+    InvalidChoice,
+    InvalidRegex,
+    InvalidJsonSchema,
+    UnsupportedJsonSchema,
+    UnsatisfiableJsonSchema,
+    ConstraintDeadEnd,
     ContextLengthExceeded,
     MediaBudgetExceeded,
     InvalidMedia,
-    InvalidOutputFormat,
     Overloaded,
     QueueTimeout,
     Cancelled,
     Unavailable,
 };
 
+enum class RequestErrorSource : std::uint8_t { OutputConstraint, Tools };
+
 class RequestError final : public std::invalid_argument {
 public:
-    RequestError(RequestErrorKind kind, std::string message)
-        : std::invalid_argument(std::move(message)), kind_(kind) {}
+    RequestError(RequestErrorKind kind, std::string message, std::string pointer = {},
+                 RequestErrorSource source = RequestErrorSource::OutputConstraint)
+        : std::invalid_argument(std::move(message)), kind_(kind), pointer_(std::move(pointer)),
+          source_(source) {}
 
     [[nodiscard]] RequestErrorKind kind() const noexcept { return kind_; }
 
+    [[nodiscard]] RequestErrorSource source() const noexcept { return source_; }
+
+    [[nodiscard]] const std::string& pointer() const noexcept { return pointer_; }
+
 private:
     RequestErrorKind kind_;
+    std::string pointer_;
+    RequestErrorSource source_;
 };
 
 struct PromptSummary {
@@ -873,13 +851,59 @@ enum class OutputConsumerMode : std::uint8_t {
     Streaming,
 };
 
+enum class GenerationSchedulingTransition : std::uint8_t {
+    PauseStarted,
+    Paused,
+    RestoreStarted,
+    Restored,
+    ReplayComplete,
+    RecoveryComplete,
+    SnapshotRevoked,
+    Terminal,
+};
+
+enum class GenerationRecoveryRoute : std::uint8_t { None, Snapshot, Replay };
+
+// Sparse lifecycle observations captured by the Engine worker and delivered by wait() on the
+// consumer thread. Counter deltas between boundaries, less the request's own deltas, measure
+// other requests' completed work during recovery. Decode includes forced control tokens.
+struct GenerationSchedulingObservation {
+    GenerationSchedulingTransition transition = GenerationSchedulingTransition::PauseStarted;
+    GenerationRecoveryRoute route             = GenerationRecoveryRoute::None;
+    std::uint64_t engine_request_id           = 0;
+    std::uint64_t steady_ns                   = 0;
+    std::uint64_t elapsed_ns                  = 0;
+    std::uint64_t preemption_index            = 0;
+    std::uint64_t global_prefill_tokens       = 0;
+    std::uint64_t global_decode_tokens        = 0;
+    std::uint64_t global_replayed_tokens      = 0;
+    std::uint64_t request_prefill_tokens      = 0;
+    std::uint64_t request_decode_tokens       = 0;
+    std::uint64_t request_replayed_tokens     = 0;
+};
+
+using GenerationSchedulingObserver = std::function<void(const GenerationSchedulingObservation&)>;
+
+// Emitted once on the first accepted model/control token, delivered by wait() in either consumer
+// mode. Submission elapsed includes queueing and binding; preparation is reported separately.
+struct GenerationFirstTokenObservation {
+    double prepare_seconds              = 0.0;
+    double elapsed_since_submit_seconds = 0.0;
+    double queue_wait_seconds           = 0.0;
+};
+
+using GenerationFirstTokenObserver = std::function<void(const GenerationFirstTokenObservation&)>;
+
 // Observation affects only request publication. It never changes model execution, output
-// semantics, scheduling, or cache selection. Live observations require a Streaming consumer;
-// phase timings may also be retained for an Aggregate terminal response.
+// semantics, scheduling, or cache selection. Live output timings and prompt progress require a
+// Streaming consumer; phase timings and scheduling observations also support Aggregate consumers.
 struct GenerationObservationOptions {
     bool phase_timings   = false;
     bool live_timings    = false;
     bool prompt_progress = false;
+    // Optional for either consumer mode. No scheduling events are retained when unset.
+    GenerationSchedulingObserver scheduling;
+    GenerationFirstTokenObserver first_token;
 };
 
 class CancellationView {
@@ -918,10 +942,13 @@ struct GenerationTimings {
     std::size_t overlay_staged_bytes   = 0;
     // Windows that had to borrow the text weights, which stalls every other lane.
     std::uint32_t overlay_exclusive_windows = 0;
+    // KV-funded windows whose encode started ahead of the request's prefill unit, beside other
+    // lanes' work; the rest ran inside the unit.
+    std::uint32_t overlay_ahead_windows = 0;
     double decode_seconds      = 0.0;
-    // Request wall phases at committed model-state boundaries. Prompt begins when admission and
-    // its exact reuse choice are published and ends at the first accepted output token. Generation
-    // spans the first through last accepted output token and therefore has N-1 token intervals.
+    // Prompt wall time begins at the successful initial binding attempt and ends at the first
+    // accepted output token. Generation spans the first through last accepted output token and
+    // therefore has N-1 token intervals.
     double prompt_wall_seconds     = 0.0;
     double generation_wall_seconds = 0.0;
     double total_seconds           = 0.0;
@@ -932,18 +959,66 @@ struct GenerationTimings {
 // elapsed time, so values from concurrent requests must not be summed. Device wait is reported
 // separately from Host-active work.
 struct GenerationEngineTiming {
-    double queue_wait_seconds                   = 0.0;
-    double engine_boundary_exposed_seconds      = 0.0;
-    double program_submit_exposed_seconds       = 0.0;
-    double program_post_exposed_seconds         = 0.0;
-    double engine_commit_output_exposed_seconds = 0.0;
-    double engine_maintenance_exposed_seconds   = 0.0;
-    double device_wait_exposed_seconds          = 0.0;
-    double decode_host_exposed_seconds          = 0.0;
-    double decode_device_wait_exposed_seconds   = 0.0;
-    std::uint64_t prefill_units                 = 0;
-    std::uint64_t decode_rounds                 = 0;
-    std::uint64_t control_units                 = 0;
+    double queue_wait_seconds                    = 0.0;
+    double engine_boundary_exposed_seconds       = 0.0;
+    double program_submit_exposed_seconds        = 0.0;
+    double program_post_exposed_seconds          = 0.0;
+    double engine_commit_output_exposed_seconds  = 0.0;
+    double engine_maintenance_exposed_seconds    = 0.0;
+    double device_wait_exposed_seconds           = 0.0;
+    double constraint_draft_wait_exposed_seconds = 0.0;
+    double decode_host_exposed_seconds           = 0.0;
+    double decode_device_wait_exposed_seconds    = 0.0;
+    std::uint64_t prefill_units                  = 0;
+    std::uint64_t decode_rounds                  = 0;
+    std::uint64_t control_units                  = 0;
+};
+
+// Request-owned scheduling observations. Restore counters count completed restorations;
+// replayed_tokens counts tokens actually recomputed, including previously generated output;
+// these tokens are separate from initial prompt prefill and delivered output. paused_ns covers
+// pause preparation, waiting and binding restoration, excluding replay computation.
+// Transfer bytes count request-owned payload submitted for binding, capture,
+// pause and restore; background cache maintenance remains in the Engine-wide counters.
+struct GenerationSchedulingStats {
+    std::uint64_t preemptions          = 0;
+    std::uint64_t snapshot_restores    = 0;
+    std::uint64_t replay_restores      = 0;
+    std::uint64_t replayed_tokens      = 0;
+    std::uint64_t paused_ns            = 0;
+    std::uint64_t device_to_host_bytes = 0;
+    std::uint64_t host_to_device_bytes = 0;
+};
+
+// Request-owned execution work. GPU stream intervals overlap Host submission and completion
+// waits; they are evidence about Device work, not an additional wall-time component.
+struct GenerationWorkTiming {
+    double submit_seconds = 0.0;
+    double wait_seconds   = 0.0;
+    double post_seconds   = 0.0;
+    double gpu_seconds    = 0.0;
+};
+
+struct GenerationTransferTiming {
+    std::uint64_t bytes = 0;
+    double seconds      = 0.0;
+};
+
+// Frozen immediately before the first nonempty public output delta is published. This boundary
+// differs from the first accepted model token and from the client's first HTTP output. Elapsed
+// starts at Engine submission, excluding Frontend preparation. Initial queue, initial binding,
+// paused time and the remaining resident interval partition this Engine wall time.
+struct GenerationFirstOutputTiming {
+    double elapsed_seconds         = 0.0;
+    double initial_binding_seconds = 0.0;
+    GenerationEngineTiming engine;
+    GenerationWorkTiming prefill;
+    GenerationWorkTiming replay;
+    GenerationSchedulingStats scheduling;
+    std::uint32_t computed_prefill_tokens = 0;
+    // Resources: State, Main KV, Backend KV. Directions: D2H, H2D, D2D.
+    // Completed request-owned transfers only; background reclamation remains Engine-wide.
+    std::array<std::array<GenerationTransferTiming, 3>, 3> context_transfers{};
 };
 
 struct SpeculativeStats {
@@ -967,109 +1042,51 @@ struct ThinkingBudgetStats {
     bool applied                  = false;
 };
 
+enum class ConstraintCacheAccess : std::uint8_t { Hit, Built, Waited };
+enum class ConstraintOutputBranch : std::uint8_t { Undecided, Content, Tools };
+
+// State describes the committed output language, including an assistant continuation prefix.
+// Work includes speculative lookahead that was subsequently rolled back. Times are subintervals
+// of existing request timings, not extra latency to add to them.
+struct ConstraintObservation {
+    ConstraintOutputBranch branch   = ConstraintOutputBranch::Undecided;
+    bool complete                   = false;
+    bool terminated                 = false;
+    ConstraintCacheAccess cache     = ConstraintCacheAccess::Hit;
+    bool timings_collected          = false;
+    double prepare_seconds          = 0.0;
+    double mask_seconds             = 0.0;
+    double matcher_seconds          = 0.0;
+    std::uint64_t mask_positions    = 0;
+    std::uint64_t mask_upload_bytes = 0;
+};
+
 enum class PrefixReusePath : std::uint8_t {
     Root,
-    PrivateEndpoint,
-    PrivateTurnClosure,
-    PrivateResponseReplay,
-    PrivateLongAnchor,
-    SharedStablePrefix,
+    Checkpoint,
 };
 
-// Why bounded pressure planning stopped for the materialization decision committed to one request.
-enum class MaterializationStopReason : std::uint8_t {
-    NoPressure,
-    QueueExhausted,
-    TargetBudget,
-    ExpansionCapacity,
-    TimeBudget,
-    InsufficientExpectedGain,
-    WorkBudget,
-};
-
-[[nodiscard]] inline constexpr const char*
-materialization_stop_reason_name(MaterializationStopReason reason) noexcept {
-    switch (reason) {
-    case MaterializationStopReason::NoPressure:
-        return "no_pressure";
-    case MaterializationStopReason::QueueExhausted:
-        return "queue_exhausted";
-    case MaterializationStopReason::TargetBudget:
-        return "target_budget";
-    case MaterializationStopReason::ExpansionCapacity:
-        return "expansion_capacity";
-    case MaterializationStopReason::TimeBudget:
-        return "time_budget";
-    case MaterializationStopReason::InsufficientExpectedGain:
-        return "insufficient_expected_gain";
-    case MaterializationStopReason::WorkBudget:
-        return "work_budget";
-    }
-    return "no_pressure";
-}
-
-enum class MaterializationSearchPhase : std::uint8_t {
+enum class AdmissionFallbackReason : std::uint8_t {
     None,
-    Setup,
-    Construction,
-    Assessment,
-    Expansion,
-    Refinement,
+    SourceInvalid,
+    SourceRevoked,
+    CostChanged,
+    CapacityLimit,
+    IsolatedCapacity,
 };
 
-[[nodiscard]] inline constexpr const char*
-materialization_search_phase_name(MaterializationSearchPhase phase) noexcept {
-    switch (phase) {
-    case MaterializationSearchPhase::None:
-        return "none";
-    case MaterializationSearchPhase::Setup:
-        return "setup";
-    case MaterializationSearchPhase::Construction:
-        return "construction";
-    case MaterializationSearchPhase::Assessment:
-        return "assessment";
-    case MaterializationSearchPhase::Expansion:
-        return "expansion";
-    case MaterializationSearchPhase::Refinement:
-        return "refinement";
-    }
-    return "none";
-}
-
-struct MaterializationDiagnostics {
-    std::uint64_t predicted_now_ns           = 0;
-    std::uint64_t predicted_future_loss_ns   = 0;
-    std::uint64_t predicted_total_ns         = 0;
-    std::uint32_t targets_evaluated          = 0;
-    std::uint64_t projection_work            = 0;
-    std::uint64_t planning_elapsed_ns        = 0;
-    std::uint64_t search_elapsed_ns          = 0;
-    MaterializationStopReason stop_reason    = MaterializationStopReason::NoPressure;
-    bool budget_exhausted                    = false;
-    std::uint32_t selected_degradation_units = 0;
-    bool selected_maximal_fallback           = false;
-
-    std::uint64_t initial_predicted_total_ns = 0;
-    std::optional<std::uint64_t> first_improvement_ns;
-    std::uint32_t incumbent_improvements         = 0;
-    std::uint64_t search_work                    = 0;
-    std::uint64_t search_granted_ns              = 0;
-    std::uint32_t search_renewals                = 0;
-    bool search_discovery_used                   = false;
-    std::uint64_t search_overshoot_ns            = 0;
-    MaterializationSearchPhase search_stop_phase = MaterializationSearchPhase::None;
-    bool search_boundary_limited                 = false;
-    // The most prompt reuse any admission candidate offered, independent of the plan that won.
-    // Beside a root plan, 0 points at prefix matching (nothing was on the table); a large value
-    // points at the planner's pricing.
-    std::uint32_t best_reuse_prompt_tokens = 0;
-
-    [[nodiscard]] friend constexpr bool
-    operator==(const MaterializationDiagnostics&,
-               const MaterializationDiagnostics&) noexcept = default;
+struct GenerationAdmissionStats {
+    std::uint32_t preferred_reused_tokens = 0;
+    // Subset of initial queue wait, not additional TTFT. Includes waiting for a lane
+    // after a useful source has been selected.
+    double source_wait_seconds              = 0.0;
+    std::uint32_t revoked_checkpoints       = 0;
+    AdmissionFallbackReason fallback_reason = AdmissionFallbackReason::None;
 };
 
 struct GenerationResult {
+    // Unique within this Engine instance; diagnostic correlation only.
+    std::uint64_t engine_request_id = 0;
     PromptSummary prompt;
     std::vector<TokenId> generated_token_ids;
     std::string content;
@@ -1080,16 +1097,17 @@ struct GenerationResult {
     FinishReason finish_reason     = FinishReason::None;
     std::optional<std::string> matched_stop_string;
     std::uint32_t reused_prompt_tokens = 0;
-    PrefixReusePath prefix_reuse_path  = PrefixReusePath::Root;
-    MaterializationDiagnostics materialization;
-    // The private catalog cell the finished session was retained in and its session digest, or
-    // -1 and empty when the session was not retained.
-    std::int32_t slot = -1;
-    std::string session_digest;
+    // Completed initial prefill, excluding cached tokens and separately counted replay work.
+    std::uint32_t computed_prefill_tokens = 0;
+    PrefixReusePath prefix_reuse_path     = PrefixReusePath::Root;
     GenerationTimings timings;
     GenerationEngineTiming engine_timing;
+    GenerationSchedulingStats scheduling;
+    GenerationAdmissionStats admission;
+    std::optional<GenerationFirstOutputTiming> first_output_timing;
     SpeculativeStats speculative;
     ThinkingBudgetStats thinking;
+    std::optional<ConstraintObservation> constraint;
 };
 
 struct ArenaMemorySummary {
@@ -1134,25 +1152,34 @@ struct MemorySummary {
     std::size_t available_after_startup_bytes     = 0;
     std::size_t kv_capacity_headroom_bytes        = 0;
     std::size_t planned_slack_bytes               = 0;
+    // Pipeline stages (`devices`): the runtime reservation of each further stage's device (stage 1
+    // first; the fields above are stage 0's), and the stage whose device bounded the resolved KV
+    // capacity. Empty and 0 on one device.
+    std::vector<std::size_t> stage_runtime_reservation_bytes;
+    std::size_t kv_capacity_binding_stage = 0;
     std::size_t workspace_logical_peak_bytes      = 0;
     std::size_t cuda_graph_allowance_bytes        = 0;
     std::size_t kv_payload_bytes                  = 0;
-    std::uint32_t host_state_capacity_slots       = 0;
-    std::uint32_t host_state_occupied_slots       = 0;
-    std::size_t host_kv_capacity_bytes            = 0;
-    std::size_t host_kv_occupied_bytes            = 0;
+    // One shared physical Host context backing. Reserved bytes are included in occupied bytes;
+    // State/KV occupancy below is a breakdown and must not be added to this ledger again.
+    std::size_t host_context_capacity_bytes = 0;
+    std::size_t host_context_occupied_bytes = 0;
+    std::size_t host_context_reserved_bytes = 0;
+    std::uint32_t host_state_occupied_slots = 0;
+    std::size_t host_kv_occupied_bytes      = 0;
 };
 
 // Worker-owned monotonic nanosecond counters. Top-level Host phases are mutually exclusive;
 // device_wait_ns is blocked wall time and is intentionally excluded from their sum. Detail values
 // are subsets of a top-level phase and must not be added to Host-active time again.
 struct RuntimeHostWorkStats {
-    std::uint64_t engine_boundary_ns      = 0;
-    std::uint64_t program_submit_ns       = 0;
-    std::uint64_t program_post_ns         = 0;
-    std::uint64_t engine_commit_output_ns = 0;
-    std::uint64_t engine_maintenance_ns   = 0;
-    std::uint64_t device_wait_ns          = 0;
+    std::uint64_t engine_boundary_ns       = 0;
+    std::uint64_t program_submit_ns        = 0;
+    std::uint64_t program_post_ns          = 0;
+    std::uint64_t engine_commit_output_ns  = 0;
+    std::uint64_t engine_maintenance_ns    = 0;
+    std::uint64_t device_wait_ns           = 0;
+    std::uint64_t constraint_draft_wait_ns = 0;
 
     std::uint64_t decode_host_ns         = 0;
     std::uint64_t decode_device_wait_ns  = 0;
@@ -1163,11 +1190,7 @@ struct RuntimeHostWorkStats {
     std::uint64_t prefill_units          = 0;
     std::uint64_t control_units          = 0;
 
-    std::uint64_t admission_policy_ns           = 0;
-    std::uint64_t context_progress_ns           = 0;
     std::uint64_t stats_publication_ns          = 0;
-    std::uint64_t admission_policy_invocations  = 0;
-    std::uint64_t context_progress_invocations  = 0;
     std::uint64_t stats_publication_invocations = 0;
 
     // Host-active time: every engine and program phase, device wait excluded.
@@ -1181,7 +1204,17 @@ struct RuntimeHostWorkStats {
 // decision observations. Consumers derive interval counters by subtracting two snapshots.
 struct RuntimeStats {
     RuntimeHostWorkStats host_work;
-    // Actual prompt tokens evaluated by prefill; reused checkpoint-prefix tokens are excluded.
+    // Full prompt counted once when initial binding succeeds; includes reused tokens.
+    std::uint64_t prompt_tokens = 0;
+    // All committed output tokens, including the first token and Engine-injected control tokens.
+    std::uint64_t generated_tokens = 0;
+    // Native verification work, using the same acceptance semantics as SpeculativeStats.
+    std::uint64_t speculative_rounds          = 0;
+    std::uint64_t speculative_draft_tokens    = 0;
+    std::uint64_t speculative_accepted_tokens = 0;
+    std::uint64_t speculative_fallback_steps  = 0;
+    // Initial prompt tokens evaluated by prefill. Reused checkpoint-prefix tokens and replay
+    // recomputation are excluded; replayed_tokens separately counts that additional model work.
     std::uint64_t computed_prefill_tokens = 0;
     // Tokens committed by decode rounds; the first token emitted by prefill is excluded.
     std::uint64_t committed_decode_tokens = 0;
@@ -1193,52 +1226,48 @@ struct RuntimeStats {
     std::uint64_t decode_rounds             = 0;
     std::uint64_t decode_row_rounds         = 0;
     std::uint32_t running_requests          = 0;
-    std::uint32_t prefilling_requests       = 0; // at most EngineOptions::max_prefill_lanes
+    std::uint32_t prefilling_requests       = 0;
     std::uint32_t decode_ready_requests     = 0;
     std::uint32_t waiting_requests          = 0;
+    std::uint32_t paused_requests           = 0;
+    std::uint32_t replaying_requests        = 0;
     std::uint32_t materializing_requests    = 0;
     std::uint32_t capture_pending_requests  = 0;
     std::uint32_t terminal_pending_requests = 0;
     std::uint64_t active_captures_completed = 0;
     std::uint64_t active_captures_aborted   = 0;
+    std::uint64_t preemptions               = 0;
+    std::uint64_t snapshot_restores         = 0;
+    std::uint64_t replay_restores           = 0;
+    std::uint64_t replayed_tokens           = 0;
 
     // Requests that left the queue without being admitted, and the time they had waited: the
     // client gave up (cancelled) or the pending timeout fired (expired).
     std::uint64_t waiting_cancelled_requests = 0;
     std::uint64_t waiting_expired_requests   = 0;
     double waiting_abandoned_seconds         = 0.0;
-    // Requests cancelled while their prompt was prefilling, the prompt tokens they had computed,
-    // and how many kept a checkpoint (so a retry resumes from it) and how deep it was.
-    std::uint64_t cancelled_prefills                 = 0;
-    std::uint64_t cancelled_prefill_computed_tokens  = 0;
-    std::uint64_t cancelled_prefills_retained        = 0;
-    std::uint64_t cancelled_prefill_retained_tokens  = 0;
-    // EngineOptions::output_reservation_tokens: reservations extended while decoding, and
-    // requests that stopped at their reservation because no page was free.
-    std::uint64_t output_reservation_growths    = 0;
-    std::uint64_t output_reservation_exhaustions = 0;
+    // Requests cancelled while their prompt was prefilling and the prompt tokens they had computed.
+    std::uint64_t cancelled_prefills                = 0;
+    std::uint64_t cancelled_prefill_computed_tokens = 0;
 
-    std::uint64_t root_selections                    = 0;
-    std::uint64_t private_endpoint_selections        = 0;
-    std::uint64_t private_turn_closure_selections    = 0;
-    std::uint64_t private_response_replay_selections = 0;
-    std::uint64_t private_long_anchor_selections     = 0;
-    std::uint64_t shared_stable_prefix_selections    = 0;
-    std::uint64_t reused_prompt_tokens               = 0;
-    std::uint32_t last_selected_frontier_tokens      = 0;
+    std::uint64_t root_selections               = 0;
+    std::uint64_t checkpoint_selections         = 0;
+    std::uint64_t reused_prompt_tokens          = 0;
+    std::uint32_t last_selected_frontier_tokens = 0;
 
-    std::uint64_t state_moves     = 0;
-    std::uint64_t state_forks     = 0;
-    std::uint64_t state_restores  = 0;
-    std::uint64_t state_d2h_count = 0;
-    std::uint64_t state_h2d_count = 0;
-    std::uint64_t state_d2d_count = 0;
-    std::uint64_t state_d2h_bytes = 0;
-    std::uint64_t state_h2d_bytes = 0;
-    std::uint64_t state_d2d_bytes = 0;
-    double state_d2h_seconds      = 0.0;
-    double state_h2d_seconds      = 0.0;
-    double state_d2d_seconds      = 0.0;
+    std::uint64_t state_moves                 = 0;
+    std::uint64_t state_forks                 = 0;
+    std::uint64_t materialization_state_forks = 0;
+    std::uint64_t state_restores              = 0;
+    std::uint64_t state_d2h_count             = 0;
+    std::uint64_t state_h2d_count             = 0;
+    std::uint64_t state_d2d_count             = 0;
+    std::uint64_t state_d2h_bytes             = 0;
+    std::uint64_t state_h2d_bytes             = 0;
+    std::uint64_t state_d2d_bytes             = 0;
+    double state_d2h_seconds                  = 0.0;
+    double state_h2d_seconds                  = 0.0;
+    double state_d2d_seconds                  = 0.0;
 
     std::uint64_t main_kv_d2h_pages    = 0;
     std::uint64_t main_kv_h2d_pages    = 0;
@@ -1259,24 +1288,19 @@ struct RuntimeStats {
     double backend_kv_h2d_seconds      = 0.0;
     double backend_kv_d2d_seconds      = 0.0;
 
-    std::uint64_t pressure_spill_pages                 = 0;
-    std::uint64_t partial_tail_cow_pages               = 0;
-    std::uint32_t device_state_occupied_slots          = 0;
-    std::uint32_t host_state_occupied_slots            = 0;
-    std::uint32_t device_main_kv_occupied_pages        = 0;
-    std::uint32_t device_backend_kv_occupied_pages     = 0;
-    std::size_t host_kv_occupied_bytes                 = 0;
-    std::uint64_t pressure_private_owners_degraded     = 0;
-    std::uint64_t pressure_private_owners_evicted      = 0;
-    std::uint64_t pressure_shared_owners_degraded      = 0;
-    std::uint64_t pressure_shared_owners_evicted       = 0;
-    std::uint64_t pressure_checkpoints_dropped         = 0;
-    std::uint64_t pressure_searches                    = 0;
-    std::uint64_t pressure_search_budget_exhaustions   = 0;
-    std::uint64_t pressure_maximal_fallback_selections = 0;
-    std::uint32_t shared_active_references             = 0;
-    std::uint64_t historical_fork_hits                 = 0;
-    double actual_context_transfer_seconds             = 0.0;
+    std::uint64_t pressure_spill_pages             = 0;
+    std::uint64_t partial_tail_cow_pages           = 0;
+    std::uint32_t device_state_occupied_slots      = 0;
+    std::uint32_t host_state_occupied_slots        = 0;
+    std::uint32_t device_main_kv_occupied_pages    = 0;
+    std::uint32_t device_backend_kv_occupied_pages = 0;
+    std::size_t host_kv_occupied_bytes             = 0;
+    // Unified physical Host context occupancy. Reserved destinations are included in occupied.
+    std::size_t host_context_occupied_bytes = 0;
+    std::size_t host_context_reserved_bytes = 0;
+    // Allocator lifetime high-water mark, including reserved transfer destinations.
+    std::size_t host_context_peak_occupied_bytes = 0;
+    double actual_context_transfer_seconds       = 0.0;
     // Host-side failures the worker survived by failing the in-flight requests and clearing the
     // context cache instead of latching the Engine unavailable.
     std::uint64_t engine_recoveries = 0;
@@ -1294,20 +1318,20 @@ struct RuntimeStats {
     std::uint64_t context_store_restored       = 0; // sessions restored into the cache at start-up
     std::uint64_t context_store_restored_bytes = 0;
     double context_store_restore_seconds       = 0.0;
-    // With a remote: images only the remote holds, objects and bytes moved, and failures.
-    std::uint64_t context_store_remote_images           = 0;
-    std::uint64_t context_store_remote_uploads          = 0;
-    std::uint64_t context_store_remote_upload_bytes     = 0;
-    std::uint64_t context_store_remote_upload_failures  = 0;
-    std::uint64_t context_store_remote_downloads        = 0;
-    std::uint64_t context_store_remote_download_bytes   = 0;
-    std::uint64_t context_store_remote_download_failures = 0;
     // Stored sessions brought back into the cache for a request that would otherwise have been
     // prefilled from further back, and the prompt tokens that bought.
     std::uint64_t context_store_hydrations         = 0;
     std::uint64_t context_store_hydrated_tokens    = 0;
     std::uint64_t context_store_hydration_failures = 0;
     double context_store_hydration_seconds         = 0.0;
+    // With a remote: images only the remote holds, objects and bytes moved, and failures.
+    std::uint64_t context_store_remote_images            = 0;
+    std::uint64_t context_store_remote_uploads           = 0;
+    std::uint64_t context_store_remote_upload_bytes      = 0;
+    std::uint64_t context_store_remote_upload_failures   = 0;
+    std::uint64_t context_store_remote_downloads         = 0;
+    std::uint64_t context_store_remote_download_bytes    = 0;
+    std::uint64_t context_store_remote_download_failures = 0;
 };
 
 enum class ContextCostPresetSource : std::uint8_t {
@@ -1335,35 +1359,6 @@ struct ContextCostSummary {
     std::string hardware_class;
     std::string prefill_signature;
     std::filesystem::path preset_path;
-};
-
-// Occupancy of the context cache. A slot is one private context-cache catalog cell. Session digests
-// are FNV-1a 64 over the token ledger as 16 lowercase hex characters.
-struct SlotCheckpoint {
-    std::uint32_t frontier = 0;
-    std::string session_digest;
-};
-
-struct SlotState {
-    // An active request will publish into this cell.
-    bool processing = false;
-    // The cell holds a retained session.
-    bool retained = false;
-    // Retained: the session depth. Processing: the request's prompt tokens.
-    std::uint32_t prompt_tokens = 0;
-    // Retained: the session depth. Processing: the prompt tokens reused from the cache.
-    std::uint32_t cached_tokens = 0;
-    std::string session_digest;
-    // Restorable checkpoints of a retained session, ascending by frontier.
-    std::vector<SlotCheckpoint> checkpoints;
-    // Retained: how the session has been used, for readers deciding which are worth keeping.
-    // It travels with a conversation from cell to cell. Wall-clock milliseconds since the Unix
-    // epoch of the last turn published (or restore), the number of turns that continued the
-    // session from a retained copy, and the prompt tokens those turns reused. A restored
-    // session starts again from zero; 0 means never.
-    std::uint64_t last_used_unix_ms = 0;
-    std::uint32_t reuse_count       = 0;
-    std::uint64_t reused_tokens     = 0;
 };
 
 struct LoadSummary {

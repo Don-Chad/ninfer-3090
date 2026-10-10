@@ -90,16 +90,8 @@ const char* prefix_reuse_path_name(ninfer::PrefixReusePath path) noexcept {
     switch (path) {
     case ninfer::PrefixReusePath::Root:
         return "root";
-    case ninfer::PrefixReusePath::PrivateEndpoint:
-        return "private endpoint";
-    case ninfer::PrefixReusePath::PrivateTurnClosure:
-        return "turn closure";
-    case ninfer::PrefixReusePath::PrivateResponseReplay:
-        return "response replay";
-    case ninfer::PrefixReusePath::PrivateLongAnchor:
-        return "long anchor";
-    case ninfer::PrefixReusePath::SharedStablePrefix:
-        return "shared prefix";
+    case ninfer::PrefixReusePath::Checkpoint:
+        return "checkpoint";
     }
     return "unknown";
 }
@@ -240,8 +232,7 @@ OperationalRecord render_request_rejected(const RequestRejectionLogContext& cont
 OperationalRecord render_request_done(const RequestLogContext& context,
                                       const GenerationOutcome& outcome) {
     const GenerationMetrics& metrics     = outcome.metrics;
-    const double computed_prefill_tokens = static_cast<double>(
-        std::max(0, outcome.prompt_tokens - static_cast<int>(metrics.prefix_cache_hit_tokens)));
+    const double computed_prefill_tokens = static_cast<double>(metrics.computed_prefill_tokens);
     const double decode_tokens =
         outcome.completion_tokens > 0 ? static_cast<double>(outcome.completion_tokens - 1) : 0.0;
     std::ostringstream out;
@@ -374,6 +365,12 @@ OperationalRecord render_throughput(const ThroughputReport& report) {
     if (report.current.waiting_requests != 0) {
         out << " | waiting " << report.current.waiting_requests;
     }
+    if (report.current.paused_requests != 0) {
+        out << " | paused " << report.current.paused_requests;
+    }
+    if (report.current.replaying_requests != 0) {
+        out << " | replaying " << report.current.replaying_requests;
+    }
     if (report.current.materializing_requests != 0) {
         out << " | materializing " << report.current.materializing_requests;
     }
@@ -479,25 +476,21 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
                   product::format_pretty_count(memory.kv_capacity_max_page_groups),
                   product::format_pretty_bytes(memory.runtime_reservation_bytes),
                   product::format_pretty_bytes(memory.available_after_startup_bytes));
-
-    if (cache.enabled) {
-        // Report what was actually pinned, not what was requested: on Windows the host KV cache
-        // is clamped against free VRAM at startup (program_impl.h), and can land at zero while
-        // `cache.host_kv_capacity_bytes` still holds the pre-clamp --host-kv-mib target. The
-        // memory summary is captured after that clamp runs, so it carries the true figure.
-        const std::uint32_t progress_stride = service.progress_anchor_stride();
-        logger_->info(
-            "context cache | {} active + {} cached device states | host {} states, {} KV | "
-            "private {} | shared {} | anchors {} ({} automatic, progress {})",
-            engine.max_concurrency, *cache.device_state_slots, cache.host_state_slots,
-            product::format_pretty_bytes(memory.host_kv_capacity_bytes),
-            *cache.max_private_continuations, *cache.max_shared_prefixes,
-            *cache.max_long_anchors_per_continuation, service.automatic_private_anchors(),
-            progress_stride == 0 ? std::string("off")
-                                 : "every " + std::to_string(progress_stride) + " tokens");
-    } else {
-        logger_->info("context cache | root only");
+    if (!memory.stage_runtime_reservation_bytes.empty()) {
+        std::string reservations;
+        for (const std::size_t bytes : memory.stage_runtime_reservation_bytes) {
+            reservations += (reservations.empty() ? "" : ", ") + product::format_pretty_bytes(bytes);
+        }
+        logger_->info("stages | {} devices | runtime on further stages {} | KV capacity bound by "
+                      "stage {}",
+                      memory.stage_runtime_reservation_bytes.size() + 1, reservations,
+                      memory.kv_capacity_binding_stage);
     }
+
+    // Report what the Program actually pinned (the memory summary is captured after pinning).
+    logger_->info("context | history {} | {} active + {} extra device states | host {}",
+                  cache.enabled ? "on" : "off", engine.max_concurrency, *cache.device_state_slots,
+                  product::format_pretty_bytes(memory.host_context_capacity_bytes));
 
     if (engine.context_store.enabled()) {
         const ninfer::RuntimeStats stats = service.runtime_stats();

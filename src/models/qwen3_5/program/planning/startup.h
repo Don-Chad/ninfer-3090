@@ -46,14 +46,14 @@ struct PersistentLayout {
     std::optional<TensorLayout> score_hidden;
     std::optional<TensorLayout> token_counts;
     std::optional<TensorLayout> sampling_config;
-    std::optional<TensorLayout> token_masks;
+    std::optional<TensorLayout> grammar_masks;
     std::size_t bytes            = 0;
     // Persistent bytes on each further device (device 1 first): the KV planes, block-table copy and
     // recurrent state of the layers that stage owns. Empty on one device.
     std::vector<std::size_t> extra_rank_bytes;
     std::size_t kv_payload_bytes = 0;
-    // Arena offset just past the last page-major KV plane. Everything an overlay Vision window may
-    // borrow from free KV lies below it; stores interleaved there are simply never selected.
+    // Arena offset just past the last page-major Main KV plane. Everything an overlay Vision window
+    // may borrow from free KV pages lies below it; stores interleaved there are never selected.
     std::size_t lendable_kv_end_bytes = 0;
 };
 
@@ -76,8 +76,8 @@ struct WorkspacePlan {
     std::size_t dflash_round     = 0;
     std::size_t causal_score     = 0;
     std::size_t general_capacity = 0;
-    // Resident: folded into capacity after the general region. Overlay: the per-window encode
-    // plan, borrowed per item, and nothing but the MTP bridge column lives in this workspace.
+    // Resident: the encode workspace, folded into capacity after the general region. Overlay: the
+    // per-window encode plan, borrowed per item; only the MTP bridge column lives in this workspace.
     std::optional<VisionWorkspacePlan> vision;
     bool vision_resident = true;
     // Overlay only: the staged visual column of a multimodal MTP bridge, past the general region.
@@ -92,7 +92,7 @@ struct SequencePlanningInputs {
     std::uint32_t max_concurrency           = 1;
     std::uint32_t prefill_chunk             = 0;
     std::uint32_t draft_window              = 0;
-    std::uint32_t lookup_ngram             = 0;
+    std::uint32_t lookup_ngram              = 0;
     SpeculativeBackend speculative_backend  = SpeculativeBackend::None;
     KvCacheStorage kv_storage               = KvCacheStorage::BFloat16;
     ProposalHead proposal_head              = ProposalHead::Full;
@@ -102,14 +102,7 @@ struct SequencePlanningInputs {
     int device                        = 0;
     std::int32_t multiprocessor_count = 0;
     ContextCacheOptions context_cache;
-    // Main KV pages that stay allocated for the life of the Engine (injected graft prefixes). The
-    // pool grows by this many so requests keep the capacity that was asked for.
-    std::uint32_t resident_main_pages = 0;
 };
-
-} // namespace ninfer::models::qwen3_5::detail
-
-namespace ninfer::models::qwen3_5::detail {
 
 struct SequencePlanImpl {
     const execution::Parameters* parameters = nullptr;
@@ -119,7 +112,7 @@ struct SequencePlanImpl {
     std::uint32_t max_concurrency           = 1;
     std::uint32_t prefill_chunk             = 0;
     std::uint32_t draft_window              = 0;
-    std::uint32_t lookup_ngram             = 0;
+    std::uint32_t lookup_ngram              = 0;
     SpeculativeBackend speculative_backend  = SpeculativeBackend::None;
     KvCacheStorage kv_storage               = KvCacheStorage::BFloat16;
     ProposalHead proposal_head              = ProposalHead::Full;
@@ -134,7 +127,7 @@ struct SequencePlanImpl {
     std::size_t graph_allowance_bytes    = 0;
     std::size_t device_reservation_bytes = 0;
     // What each further device reserves (device 1 first): its persistent state, the scratch its
-    // stage runs in, and its share of the graph allowance.
+    // stage runs in, and its share of the graph allowance. Empty on one device.
     std::vector<std::size_t> extra_rank_reservation_bytes;
 };
 
@@ -146,16 +139,16 @@ struct SequencePlanImpl {
         static_cast<std::uint64_t>(plan.max_concurrency) * (plan.draft_window + 1U));
 }
 
+// How many of the masked draft's feature layers pipeline stage `stage` owns. Zero for stage 0, which
+// captures straight into rank 0's buffers, and for a Program without a masked draft.
+[[nodiscard]] std::size_t stage_feature_layer_count(const SequencePlanImpl& plan,
+                                                    std::size_t stage);
+
 struct SequencePlannerImpl {
     SequencePlanningInputs inputs;
     runtime::SequenceCapacityCurve curve;
     std::unique_ptr<SequencePlanImpl> minimum;
 };
-
-} // namespace ninfer::models::qwen3_5::detail
-
-namespace ninfer::models::qwen3_5::detail {
-
 
 // Largest merged-token count one media item may occupy under these startup options.
 [[nodiscard]] std::uint32_t vision_item_token_bound(std::uint32_t capacity,
@@ -163,7 +156,7 @@ namespace ninfer::models::qwen3_5::detail {
 
 [[nodiscard]] std::unique_ptr<qwen3_5::detail::SequencePlannerImpl>
 make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContext& device,
-                           const EngineOptions& options, std::uint32_t resident_main_pages);
+                           const EngineOptions& options);
 [[nodiscard]] std::unique_ptr<SequencePlanImpl>
 finalize_sequence_plan_impl(std::unique_ptr<qwen3_5::detail::SequencePlannerImpl> planner,
                             std::uint32_t main_page_groups);

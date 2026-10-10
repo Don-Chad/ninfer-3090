@@ -12,7 +12,6 @@
 #include <csignal>
 #include <cstdlib>
 #include <exception>
-#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <stdexcept>

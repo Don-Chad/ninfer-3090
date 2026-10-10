@@ -1,12 +1,12 @@
 #include "models/qwen3_5/program/internal.h"
-#include "models/qwen3_5/program/context.h"
+#include "models/qwen3_5/program/execution_context.h"
 #include "ninfer/ops/scatter.h"
 #include "ninfer/ops/speculative_round.h"
 
 namespace ninfer::models::qwen3_5::execution {
 
-void target_verify(TextContext& card, TargetVerifyFrameView frame,
-                   ops::CausalAttentionExecutionEnvelope envelope) {
+void target_verify_forward(ExecutionCore& execution, TextContext& card, TargetVerifyFrameView frame,
+                           ops::CausalAttentionExecutionEnvelope envelope) {
     if (frame.replay_records == nullptr) {
         throw std::logic_error("speculative target verify has no ReplaySSM record storage");
     }
@@ -47,11 +47,5 @@ void target_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,
                  execution.device.stream);
 }
 
-void target_verify_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,
-                          TextContext& card, TargetVerifyFrameView frame,
-                          ops::CausalAttentionExecutionEnvelope envelope) {
-    target_verify(card, frame, envelope);
-    target_accept(execution, continuation_hidden_store, frame);
-}
 
 } // namespace ninfer::models::qwen3_5::execution

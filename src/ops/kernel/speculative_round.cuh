@@ -115,11 +115,16 @@ speculative_store_accept_result(const std::int32_t* row_drafts, std::int32_t k, 
 template <typename ColumnToken>
 __device__ __forceinline__ bool
 speculative_commit_span_is_finite(const __nv_bfloat16* row_logits, std::int32_t accepted_count,
-                                  std::int32_t physical_rows, ColumnToken column_token) {
+                                  std::int32_t physical_rows, ColumnToken column_token,
+                                  const SamplingConfig* mask_config = nullptr) {
     for (int column = 0; column <= accepted_count; ++column) {
+        const std::int32_t token = column_token(column);
         if (!sampling_selected_logit_is_finite(
-                row_logits, static_cast<std::int64_t>(column) * physical_rows,
-                column_token(column))) {
+                row_logits, static_cast<std::int64_t>(column) * physical_rows, token)) {
+            return false;
+        }
+        // A token mask that licensed nothing at this position leaves an unlicensed winner.
+        if (mask_config != nullptr && !sampling_token_licensed(*mask_config, column, token)) {
             return false;
         }
     }
@@ -271,10 +276,14 @@ __device__ __forceinline__ void speculative_sparse_warp_accept(
         // speculative_commit_span_is_finite: a matched column whose logits are all NaN matched by
         // accident. The tokens come from dist_idx here rather than from target ids, because that
         // is what this route's acceptance comparison above reads.
+        // A token mask that licensed nothing leaves an unlicensed winner; it is refused the same
+        // way.
+        const int lane_token = lane <= a ? workspace.dist_idx[sampling_dist_offset(lane, 0)] : 0;
         const bool lane_is_non_finite =
-            lane <= a && !sampling_selected_logit_is_finite(
-                             row_logits, static_cast<std::int64_t>(lane) * physical_rows,
-                             workspace.dist_idx[sampling_dist_offset(lane, 0)]);
+            lane <= a && (!sampling_selected_logit_is_finite(
+                              row_logits, static_cast<std::int64_t>(lane) * physical_rows,
+                              lane_token) ||
+                          !sampling_token_licensed(cfg, lane, lane_token));
         terminal_is_finite = __ballot_sync(0xffffffffU, lane_is_non_finite) == 0u;
     } else {
         const int n  = workspace.dist_support[a];
@@ -427,7 +436,8 @@ __launch_bounds__(kSamplerBlock) __global__ void speculative_accept_greedy_draft
                 // are accepted, and the one that does not becomes the terminal. A NaN column's
                 // argmax is arbitrary, so a match against it is meaningless -- record it here
                 // rather than testing only the terminal after the loop.
-                if (!sampling_selected_logit_is_finite(row_logits, base, selected)) {
+                if (!sampling_selected_logit_is_finite(row_logits, base, selected) ||
+                    !sampling_token_licensed(cfg, i, selected)) {
                     span_non_finite_sh = 1;
                 }
                 if (i < extent && selected == row_drafts[i]) {
@@ -540,6 +550,7 @@ __launch_bounds__(kSamplerBlock) __global__ void speculative_sampling_partial_to
         for (int item = 0; item < kSamplerItemsPerThread; ++item) {
             const int tile_index = item * blockDim.x + threadIdx.x;
             const int v          = tile_start + tile_index;
+            // raw_scores: no token mask and no penalty, so the BF16 logits are the scores.
             keys[item] =
                 v < token_domain ? sampling_bf16_tile_sort_key(logits[base + v], tile_index) : 0u;
         }
@@ -774,9 +785,11 @@ __launch_bounds__(kSamplerGroupBlock) __global__ void speculative_sampling_group
                         row_drafts, k, row, a, tstar, lengths, anchors, row_tokens, licensed_counts,
                         accepted, &cfg,
                         speculative_commit_span_is_finite(
-                            row_logits, a, physical_rows, [&](std::int32_t column) {
+                            row_logits, a, physical_rows,
+                            [&](std::int32_t column) {
                                 return workspace.dist_idx[sampling_dist_offset(column, 0)];
-                            }));
+                            },
+                            &cfg));
                     *workspace.speculative_finalize_count = 0;
                 }
             }

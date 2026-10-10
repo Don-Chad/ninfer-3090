@@ -1,9 +1,7 @@
 #include "models/qwen3_5/program/program_impl.h"
 #include "models/qwen3_5/program/context_work.h"
-#include "models/qwen3_5/program/context.h"
+#include "models/qwen3_5/program/execution_context.h"
 #include "models/qwen3_5/execution/linear.h"
-#include "core/evictable_kv_pool.h"
-#include "core/host_kv_clamp.h"
 #include "core/startup.h"
 #include "core/device.h"
 #include <cuda_runtime.h>
@@ -13,12 +11,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
-#include <string>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -29,17 +27,8 @@ static_assert(std::is_nothrow_move_assignable_v<SpeculativeStats>);
 
 namespace {
 
-std::uint32_t normalized_private_capacity(const ContextCacheOptions& options);
-
-std::uint32_t normalized_private_capacity(const ContextCacheOptions& options) {
-    if (!options.max_private_continuations || *options.max_private_continuations == 0) {
-        throw std::logic_error("Qwen3.5 context cache private capacity is not normalized");
-    }
-    return *options.max_private_continuations;
-}
-
-// Overlay Vision residency backs the persistent arena with virtual memory so free KV granules can
-// fund a Vision window. The lendable prefix ends past the last page-major KV plane.
+// Overlay Vision residency backs the persistent arena with virtual memory so free Main KV granules
+// can fund a Vision window. The lendable prefix ends past the last page-major Main KV plane.
 std::unique_ptr<EvictableKVPool> make_kv_arena(DeviceContext& device,
                                                const execution::Parameters& parameters,
                                                const SequencePlanImpl& plan) {
@@ -53,22 +42,29 @@ std::unique_ptr<EvictableKVPool> make_kv_arena(DeviceContext& device,
     if (window == 0 || granularity == 0 || plan.persistent.lendable_kv_end_bytes == 0) {
         return nullptr;
     }
-    // A KV cache smaller than one window can never fund a concurrent encode. The Engine still runs:
-    // every window then borrows the weight tail.
+    // A window for the largest item may exceed the whole KV cache, but smaller items still fit; one
+    // that does not borrows the weight tail instead.
     const std::size_t lendable = plan.persistent.lendable_kv_end_bytes / granularity * granularity;
-    if (window > lendable) { return nullptr; }
+    if (lendable == 0) { return nullptr; }
     return std::make_unique<EvictableKVPool>(
         device, EvictableKVPool::Config{
                     .arena_bytes           = plan.persistent.bytes,
                     .lendable_prefix_bytes = plan.persistent.lendable_kv_end_bytes,
-                    .window_capacity_bytes = window,
+                    .window_capacity_bytes = std::min(window, lendable),
                 });
 }
 
+DeviceArena make_persistent(EvictableKVPool* arena, std::size_t bytes) {
+    return arena != nullptr ? DeviceArena(arena->arena()) : DeviceArena(bytes);
+}
+
 // Persistent state for the ranks beyond the first, each allocated while its own device is current
-// so it lands in that card's memory. Empty on one device, which leaves that path unchanged.
-std::vector<DeviceArena> make_rank_persistent(DeviceContext& device,
+// so it lands in that card's memory. Empty on one device.
+std::vector<DeviceArena> make_rank_persistent(const DeviceContext& device,
                                               const std::vector<std::size_t>& bytes_by_rank) {
+    if (bytes_by_rank.size() + 1 != device.size()) {
+        throw std::invalid_argument("the sequence plan does not cover every attached device");
+    }
     std::vector<DeviceArena> out;
     out.reserve(bytes_by_rank.size());
     for (std::size_t index = 0; index < bytes_by_rank.size(); ++index) {
@@ -78,8 +74,27 @@ std::vector<DeviceArena> make_rank_persistent(DeviceContext& device,
     return out;
 }
 
-// The state shards and boundary links a forward pass across pipeline stages uses, sized for the
-// widest pass the Program will run.
+// Scratch for the ranks beyond the first, allocated on each rank's own device. Only the general
+// region is duplicated: a stage runs its layers and nothing else, so it never needs the Vision or
+// causal-score regions the primary card's capacity also covers.
+std::vector<DeviceArena> make_rank_workspaces(const DeviceContext& device,
+                                              std::size_t general_capacity_bytes) {
+    std::vector<DeviceArena> out;
+    out.reserve(device.size() - 1);
+    for (std::size_t rank = 1; rank < device.size(); ++rank) {
+        RankBinding bind(device, rank);
+        out.emplace_back(general_capacity_bytes);
+    }
+    return out;
+}
+
+bool force_staged_links() {
+    const char* value = std::getenv("NINFER_FORCE_STAGED_LINKS");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+// The state shards, boundary links and fences a forward pass across pipeline stages uses, sized for
+// the widest pass the Program will run.
 std::unique_ptr<execution::StageRuntime>
 make_stage_runtime(DeviceContext& device, const execution::Parameters& parameters,
                    qwen3_5::StateImageDevicePool& state, const SequencePlanImpl& plan) {
@@ -93,10 +108,7 @@ make_stage_runtime(DeviceContext& device, const execution::Parameters& parameter
 
     const std::uint64_t columns = stage_boundary_columns(plan);
     const std::size_t hidden = static_cast<std::size_t>(parameters.model.config().text.hidden_size);
-    const bool force_staged  = [] {
-        const char* value = std::getenv("NINFER_FORCE_STAGED_LINKS");
-        return value != nullptr && value[0] != '\0' && value[0] != '0';
-    }();
+    const bool force_staged  = force_staged_links();
     const StageLinkOptions residual{.slot_bytes   = columns * hidden * sizeof(std::uint16_t),
                                     .slots        = 2,
                                     .force_staged = force_staged};
@@ -113,29 +125,23 @@ make_stage_runtime(DeviceContext& device, const execution::Parameters& parameter
     for (std::size_t stage = 1; stage < stages; ++stage) {
         runtime->control.emplace_back(device, 0, stage, control);
     }
+    // DFlash reads the hidden state after each of its feature layers in rank 0's buffers; a later
+    // stage owning some of them sends them back in one block per pass.
+    runtime->features.resize(stages - 1);
+    for (std::size_t stage = 1; stage < stages; ++stage) {
+        const std::size_t layers = stage_feature_layer_count(plan, stage);
+        if (layers == 0) { continue; }
+        runtime->features[stage - 1].emplace(
+            device, stage, 0,
+            StageLinkOptions{.slot_bytes   = layers * columns * hidden * sizeof(std::uint16_t),
+                             .slots        = 2,
+                             .force_staged = force_staged});
+    }
+    runtime->rank_fences.reserve(device.size());
+    for (std::size_t rank = 0; rank < device.size(); ++rank) {
+        runtime->rank_fences.emplace_back(device.rank(rank));
+    }
     return runtime;
-}
-
-// Scratch for the ranks beyond the first. Each is allocated while its own device is current, so the
-// arena lands in that card's memory; `work` then borrows a slice of each and switches between them
-// as the layer loop walks stages. Empty without a split, which leaves the single-GPU path unchanged.
-//
-// Only the general region is duplicated: a stage runs its layers and nothing else, so it never needs
-// the Vision, causal-score or bridge regions the primary card's capacity also covers.
-std::vector<DeviceArena> make_rank_workspaces(DeviceContext& device,
-                                              const execution::TextParameters& text,
-                                              std::size_t general_capacity_bytes) {
-    std::vector<DeviceArena> out;
-    if (!text.split_execution()) { return out; }
-    if (text.rank_count > device.size()) {
-        throw std::invalid_argument("Qwen3.5 pipeline split needs more devices than are attached");
-    }
-    out.reserve(text.rank_count - 1);
-    for (std::size_t rank = 1; rank < text.rank_count; ++rank) {
-        ScopedDeviceRank guard(device, rank);
-        out.emplace_back(general_capacity_bytes);
-    }
-    return out;
 }
 
 } // namespace
@@ -144,26 +150,24 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
                          DeviceContext& device_in, const StartupObserver& startup_observer)
     : parameters(parameters_in), device(device_in), capacity(plan.capacity),
       kv_capacity(plan.kv_capacity), max_concurrency(plan.max_concurrency),
-      context_cache(plan.context_cache),
-      continuation_capacity(normalized_private_capacity(plan.context_cache)),
-      shared_prefix_capacity(plan.context_cache.max_shared_prefixes.value_or(0)),
-      prefill_chunk(plan.prefill_chunk), draft_window(plan.draft_window), lookup_ngram(plan.lookup_ngram),
-      speculative_backend(plan.speculative_backend), kv_storage(plan.kv_storage),
-      proposal_head(plan.proposal_head), vision_enabled(plan.features.vision),
-      use_cuda_graph(plan.use_cuda_graph), causal_scoring(plan.causal_scoring),
-      kv_payload_bytes(plan.persistent.kv_payload_bytes),
+      context_cache(plan.context_cache), prefill_chunk(plan.prefill_chunk),
+      draft_window(plan.draft_window), lookup_ngram(plan.lookup_ngram),
+      speculative_backend(plan.speculative_backend),
+      kv_storage(plan.kv_storage), proposal_head(plan.proposal_head),
+      vision_enabled(plan.features.vision), use_cuda_graph(plan.use_cuda_graph),
+      causal_scoring(plan.causal_scoring), kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
       kv_arena(make_kv_arena(device_in, parameters_in, plan)),
-      persistent(kv_arena ? DeviceArena(kv_arena->arena()) : DeviceArena(plan.persistent.bytes)),
+      persistent(make_persistent(kv_arena.get(), plan.persistent.bytes)),
       persistent_by_rank(make_rank_persistent(device_in, plan.persistent.extra_rank_bytes)),
       workspace_storage(plan.workspace.capacity),
-      workspace_storage_by_rank(
-          make_rank_workspaces(device_in, parameters_in.text, plan.workspace.general_capacity)),
+      workspace_storage_by_rank(make_rank_workspaces(device_in, plan.workspace.general_capacity)),
       work(DeviceSpan{workspace_storage.base(), plan.workspace.general_capacity}),
-      continuation_states(continuation_capacity), continuation_slots(continuation_capacity),
-      shared_prefix_states(shared_prefix_capacity), shared_prefix_slots(shared_prefix_capacity),
-      round_host(plan.causal_scoring ? std::nullopt
-                                     : std::make_optional<PinnedHostBuffer>(sizeof(TokenId))),
+      compute_streams(RankStreams::compute(device_in)),
+      transfer_streams(RankStreams::transfer(device_in)),
+      round_host(plan.causal_scoring
+                     ? std::nullopt
+                     : std::make_optional<PinnedHostBuffer>(sizeof(qwen3_5::PrefillRoundHost))),
       score_logprobs_host(plan.causal_scoring ? std::make_optional<PinnedHostBuffer>(
                                                     kCausalScoreTile * sizeof(float))
                                               : std::nullopt),
@@ -181,32 +185,13 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
                                                              sizeof(qwen3_5::DFlashDecodeEgress) +
                                                              sizeof(qwen3_5::DFlashPrefillIngress))
                       : std::nullopt),
-      dflash_draft_host(is_masked_draft_backend(plan.speculative_backend)
-                            ? std::make_optional<PinnedHostBuffer>(
-                                  sizeof(TokenId) * qwen3_5::kDFlashDecodeMaximumDrafts *
-                                  kMaximumConcurrency)
-                            : std::nullopt),
-      dflash_proposal_ready(is_masked_draft_backend(plan.speculative_backend)
-                                ? std::make_optional<CudaCompletionEvent>(device_in)
-                                : std::nullopt),
-      token_mask_host(plan.persistent.token_masks
-                          ? std::make_optional<PinnedHostBuffer>(
-                                plan.persistent.token_masks->region.bytes)
-                          : std::nullopt),
-      compute_streams(RankStreams::compute(device_in)),
-      transfer_streams(RankStreams::transfer(device_in)), context_source_ready_(device_in),
-      context_completion_(device_in),
+      context_source_ready_(device_in), context_completion_(device_in),
       context_transfer_timers_{CudaEventTimer(device_in, device_in.transfer_stream),
                                CudaEventTimer(device_in, device_in.transfer_stream),
-                               CudaEventTimer(device_in, device_in.transfer_stream)} {
+                               CudaEventTimer(device_in, device_in.transfer_stream)},
+      prefill_gpu_timer_(device_in) {
     if (&parameters != plan.parameters || parameters.model.options() != plan.features) {
         throw std::invalid_argument("Program parameters do not match the frozen sequence plan");
-    }
-    // Hand `work` the extra ranks' storage. From here one arena serves every device: the layer loop
-    // switches ranks alongside ScopedDeviceRank and every workspace call site is unchanged.
-    for (DeviceArena& rank_storage : workspace_storage_by_rank) {
-        work.attach_rank_storage(
-            DeviceSpan{rank_storage.base(), workspace_plan.general_capacity});
     }
     if (workspace_plan.general_capacity == 0 ||
         workspace_plan.vision.has_value() != vision_enabled ||
@@ -226,100 +211,34 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
             throw std::invalid_argument("overlay Vision assets are incomplete");
         }
         vision_broker.emplace(device, *pool);
-        vision_results.emplace(max_concurrency, workspace_plan.vision->handoff_capacity_bytes);
+        // One slot per lane is pinned up front. A resumed lane briefly holds a replay session, a
+        // prefill session and the session it replaces; those extra slots are pinned on demand.
+        vision_results.emplace(max_concurrency, 3U * max_concurrency,
+                               workspace_plan.vision->handoff_capacity_bytes);
+    }
+    if (parameters.text.rank_count != device.size()) {
+        throw std::invalid_argument("the model's pipeline stages do not match the attached devices");
+    }
+    // From here one workspace arena serves every rank: the layer loop switches it alongside the
+    // device, and every workspace call site is unchanged.
+    for (DeviceArena& rank_storage : workspace_storage_by_rank) {
+        work.attach_rank_storage(DeviceSpan{rank_storage.base(), workspace_plan.general_capacity});
     }
     const DeviceSpan backing = persistent.alloc_bytes(plan.persistent.bytes, 256);
     // Every rank's persistent memory, in rank order: rank 0's is `backing`.
     std::vector<DeviceSpan> backings{backing};
     for (std::size_t index = 0; index < persistent_by_rank.size(); ++index) {
-        backings.push_back(persistent_by_rank[index].alloc_bytes(
-            plan.persistent.extra_rank_bytes[index], 256));
+        backings.push_back(
+            persistent_by_rank[index].alloc_bytes(plan.persistent.extra_rank_bytes[index], 256));
     }
-    if (!plan.context_cache.max_private_continuations || !plan.context_cache.max_shared_prefixes) {
-        throw std::logic_error("Qwen3.5 context cache options are not normalized");
+    decoder      = std::make_unique<qwen3_5::DecoderState>(backings, plan.persistent.decoder);
+    state_images = std::make_unique<StateImageDevicePool>(backings, plan.persistent.state_images);
+    if (plan.persistent.extra_replay_records.size() + 1 !=
+        (plan.persistent.replay_records ? state_images->shard_count() : 1)) {
+        throw std::logic_error("ReplaySSM records do not cover every StateImage shard");
     }
-    const std::uint64_t address_capacity64 =
-        static_cast<std::uint64_t>(*plan.context_cache.max_private_continuations) +
-        *plan.context_cache.max_shared_prefixes;
-    if (address_capacity64 == 0 || address_capacity64 > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::overflow_error("Qwen3.5 KV address-space capacity exceeds uint32");
-    }
-    // One unpublished descriptor is reserved for the single in-flight active-capture snapshot.
-    // Published private/shared address spaces remain bounded by P + S; the transaction slot lets a
-    // full shared catalog replace one entry without releasing the old checkpoint before the new
-    // snapshot has been prepared.
-    if (address_capacity64 == std::numeric_limits<std::uint32_t>::max()) {
-        throw std::overflow_error("Qwen3.5 KV transaction address capacity exceeds uint32");
-    }
-    const auto address_capacity      = static_cast<std::uint32_t>(address_capacity64 + 1U);
-    const auto logical_page_capacity = [&](const DeviceKVPagePool& pool) {
-        const HostKVPageLayout host_layout = plan_host_kv_page_layout(pool.geometry());
-        const std::uint64_t host_pages =
-            plan.context_cache.host_kv_capacity_bytes / host_layout.page_stride;
-        const std::uint64_t total = static_cast<std::uint64_t>(pool.capacity_pages()) + host_pages;
-        if (total > std::numeric_limits<std::uint32_t>::max()) {
-            throw std::overflow_error("Qwen3.5 logical KV page capacity exceeds uint32");
-        }
-        return static_cast<std::uint32_t>(total);
-    };
-
-    decoder = std::make_unique<qwen3_5::DecoderState>(backings, plan.persistent.decoder);
-    text_host_kv_page_stride =
-        plan_host_kv_page_layout(decoder->text_kv.page_pool().geometry()).page_stride;
-    text_kv_pages = std::make_unique<LogicalKVPageStore>(
-        decoder->text_kv.page_pool(), logical_page_capacity(decoder->text_kv.page_pool()));
-    text_kv_addresses = std::make_unique<KVAddressSpaceStore>(
-        *text_kv_pages, decoder->text_kv.execution_tables(), address_capacity,
-        decoder->text_kv.execution_tables().logical_page_capacity());
-    if (vision_broker && kv_arena) {
-        // A loan changes the admission capacity, so it may not race a sealed plan: refuse one while
-        // a context transaction or a pressure-planning session is in flight, or while any lane has
-        // been provisionally admitted (prefill staged) but hasn't yet bound its own KV entitlement
-        // (lifecycle still Empty) -- that lane's future KV demand is real but not yet reflected in
-        // the arena's free-page accounting.
-        vision_broker->enable_kv_tier(
-            *kv_arena, decoder->text_kv.page_pool(),
-            [this] {
-                if (has_context_transaction() || pressure_planning_active_) { return false; }
-                for (std::uint32_t lane = 0; lane < max_concurrency; ++lane) {
-                    if (requests[lane].prefill && requests[lane].lifecycle == Lifecycle::Empty) {
-                        return false;
-                    }
-                }
-                return true;
-            },
-            [this] { advance_resource_revision(); });
-    }
-    state_images = std::make_unique<qwen3_5::StateImageDevicePool>(backings,
-                                                                    plan.persistent.state_images);
-    if (plan.context_cache.host_state_slots != 0) {
-        const std::uint64_t host_state_bytes =
-            static_cast<std::uint64_t>(state_images->host_layout().image_bytes) *
-            plan.context_cache.host_state_slots;
-        StartupPhaseScope host_state_phase(startup_observer, StartupPhase::HostStatePin,
-                                           StartupProgressUnit::Bytes, host_state_bytes);
-        host_state_images = std::make_unique<qwen3_5::HostStatePool>(
-            state_images->host_layout(), plan.context_cache.host_state_slots);
-        host_state_phase.complete(host_state_bytes, host_state_bytes);
-    }
-    const std::uint64_t logical_state_capacity =
-        static_cast<std::uint64_t>(state_images->slot_count()) +
-        plan.context_cache.host_state_slots;
-    if (logical_state_capacity > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::overflow_error("Qwen3.5 logical StateImage capacity exceeds uint32");
-    }
-    state_store = std::make_unique<StateImageStore>(
-        *state_images, host_state_images.get(), static_cast<std::uint32_t>(logical_state_capacity));
-    pressure_private_owner_scratch_.resize(continuation_capacity);
-    pressure_shared_owner_scratch_.resize(shared_prefix_capacity);
-    pressure_private_drop_scratch_.resize(continuation_capacity);
-    const std::size_t pressure_checkpoint_capacity =
-        2U + context_cache.max_long_anchors_per_continuation.value_or(0U);
-    for (auto& dropped : pressure_private_drop_scratch_) {
-        dropped.reserve(pressure_checkpoint_capacity);
-    }
-    pressure_state_scratch_.reserve(static_cast<std::size_t>(logical_state_capacity));
     if (plan.persistent.replay_records) {
+        // Each shard records and folds only its own layers, in its own device's memory.
         replay_records.emplace(backings[state_images->shard(0).rank],
                                *plan.persistent.replay_records);
         replay_fold.emplace(*replay_records, state_images->linear(0).all_layers_view());
@@ -331,10 +250,6 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
                 *extra_replay_records.back(), state_images->linear(shard).all_layers_view()));
         }
     }
-    if (replay_records.has_value() != (speculative_backend != SpeculativeBackend::None) ||
-        replay_fold.has_value() != replay_records.has_value()) {
-        throw std::logic_error("ReplaySSM records do not match the sequence plan");
-    }
     if (parameters.text.split_execution()) {
         stage_runtime = make_stage_runtime(device, parameters, *state_images, plan);
         if (replay_records) {
@@ -345,113 +260,86 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
         }
     }
     if (plan.persistent.dflash) {
-        CyclicKVCache* local = state_images->dflash_local();
-        if (local == nullptr) {
-            throw std::logic_error("DFlash StateImage has no local fixed state");
-        }
+        auto* local = state_images->dflash_local();
+        if (!local) { throw std::logic_error("DFlash StateImage has no local state"); }
         dflash.emplace(backing, *plan.persistent.dflash, *local);
     }
-    if (dflash.has_value() != plan.features.masked_draft()) {
-        throw std::logic_error("DFlash state does not match the frozen sequence plan");
+    std::size_t host_bytes = plan.context_cache.host_capacity_bytes.value();
+    std::vector<HostKVPageLayout> layouts{
+        plan_host_kv_page_layout(decoder->text_kv.page_pool().geometry())};
+    text_host_kv_page_stride = layouts.front().page_stride;
+    if (const auto* backend = backend_kv_cache()) {
+        auto layout                 = plan_host_kv_page_layout(backend->page_pool().geometry());
+        backend_host_kv_page_stride = layout.page_stride;
+        if (layout != layouts.front()) { layouts.push_back(std::move(layout)); }
     }
-    if (qwen3_5::PagedKVCache* backend = backend_kv_cache()) {
-        backend_host_kv_page_stride =
-            plan_host_kv_page_layout(backend->page_pool().geometry()).page_stride;
+    std::size_t minimum_stride    = state_images->host_layout().image_bytes;
+    std::size_t minimum_kv_stride = layouts.front().page_stride;
+    for (const auto& layout : layouts) {
+        minimum_stride    = std::min(minimum_stride, layout.page_stride);
+        minimum_kv_stride = std::min(minimum_kv_stride, layout.page_stride);
+    }
+    // The Host context arena is pinned at its full size on every platform. This fork used to clamp
+    // it on Windows to (free VRAM - 1 GiB) / 2, after a measurement where the largest single
+    // cudaMallocHost tracked free VRAM (WDDM charging pinned memory to the card). That coupling
+    // is gone on current drivers: on an RTX 3090 with driver 616.64, 22,528 MiB resident on the
+    // device and 804 MiB free, cudaHostAlloc pinned 16 GiB in one allocation and 32 GiB in 1 GiB
+    // chunks, reported free VRAM fell by a fixed ~0.5 GiB, and a further 512 MiB cudaMalloc still
+    // succeeded. The clamp had shrunk the 27B profiles' host tier to a few hundred MiB for nothing.
+    const auto checked_count = [](std::uint64_t value) {
+        if (value > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::overflow_error("context resource descriptor capacity exceeds uint32");
+        }
+        return static_cast<std::uint32_t>(value);
+    };
+    const auto logical_states = checked_count(state_images->slot_count() +
+                                              host_bytes / state_images->host_layout().image_bytes);
+    // One immutable image can serve private replay, an explicit anchor, a public view and an
+    // exact-hit endpoint. Alias descriptors are bounded separately from physical state slots.
+    checkpoints.resize(checked_count(4ULL * logical_states + 2ULL * max_concurrency));
+    const auto address_capacity = checked_count(checkpoints.size() + max_concurrency + 2U);
+    if (host_bytes) {
+        StartupPhaseScope phase(startup_observer, StartupPhase::HostContextPin,
+                                StartupProgressUnit::Bytes, host_bytes);
+        try {
+            host_context_arena = std::make_unique<HostContextArena>(host_bytes, minimum_stride);
+        } catch (const std::exception& error) {
+            throw std::runtime_error(
+                std::string("failed to pin the Host context cache: ") + error.what() +
+                "\nLower the Host context capacity (--host-context-mib) or free system RAM.");
+        }
+        host_state_images =
+            std::make_unique<HostStatePool>(*host_context_arena, state_images->host_layout());
+        host_kv_arena      = std::make_unique<HostKVArena>(*host_context_arena, layouts);
+        const auto extents = checked_count(host_bytes / minimum_kv_stride);
+        if (extents) {
+            host_kv_extents = std::make_unique<HostKVExtentStore>(*host_kv_arena, extents);
+        }
+        phase.complete(host_bytes, host_bytes);
+    }
+    state_store =
+        std::make_unique<StateImageStore>(*state_images, host_state_images.get(), logical_states);
+    const auto logical_pages = [&](const DeviceKVPagePool& pool) {
+        const auto stride = plan_host_kv_page_layout(pool.geometry()).page_stride;
+        return checked_count(pool.capacity_pages() + host_bytes / stride);
+    };
+    text_kv_pages = std::make_unique<LogicalKVPageStore>(
+        decoder->text_kv.page_pool(), logical_pages(decoder->text_kv.page_pool()));
+    text_kv_addresses = std::make_unique<KVAddressSpaceStore>(
+        *text_kv_pages, decoder->text_kv.execution_tables(), address_capacity,
+        decoder->text_kv.execution_tables().logical_page_capacity());
+    if (vision_broker && kv_arena) {
+        // A window that outlives its unit must not change capacity under a context transaction,
+        // which plans its page moves across several polls.
+        vision_broker->enable_kv_tier(*kv_arena, decoder->text_kv.page_pool(),
+                                      [this] { return !has_context_transaction(); });
+    }
+    if (auto* backend = backend_kv_cache()) {
         backend_kv_pages = std::make_unique<LogicalKVPageStore>(
-            backend->page_pool(), logical_page_capacity(backend->page_pool()));
+            backend->page_pool(), logical_pages(backend->page_pool()));
         backend_kv_addresses = std::make_unique<KVAddressSpaceStore>(
             *backend_kv_pages, backend->execution_tables(), address_capacity,
             backend->execution_tables().logical_page_capacity());
-    }
-    pressure_text_page_scratch_.resize(text_kv_pages->capacity());
-    pressure_text_selected_pages_.reserve(text_kv_pages->capacity());
-    if (backend_kv_pages) {
-        pressure_backend_page_scratch_.resize(backend_kv_pages->capacity());
-        pressure_backend_selected_pages_.reserve(backend_kv_pages->capacity());
-    }
-    if (plan.context_cache.host_kv_capacity_bytes != 0) {
-        std::vector<HostKVPageLayout> layouts;
-        layouts.push_back(plan_host_kv_page_layout(decoder->text_kv.page_pool().geometry()));
-        if (const qwen3_5::PagedKVCache* backend = backend_kv_cache()) {
-            HostKVPageLayout backend_layout =
-                plan_host_kv_page_layout(backend->page_pool().geometry());
-            if (backend_layout != layouts.front()) { layouts.push_back(std::move(backend_layout)); }
-        }
-        std::size_t minimum_stride = layouts.front().page_stride;
-        for (const HostKVPageLayout& layout : layouts) {
-            minimum_stride = std::min(minimum_stride, layout.page_stride);
-        }
-
-        // The pinned host KV buffer competes with the model for *device* memory, and on Windows
-        // that is what actually stops it.
-        //
-        // Measured on an RTX 3090 (24,576 MiB), one process, allocating N MiB on the device and
-        // then finding the largest cudaMallocHost that succeeds:
-        //
-        //     device resident   VRAM free   largest pin
-        //         15,360 MiB     7,972 MiB     8,192 MiB
-        //         17,408 MiB     5,924 MiB     6,656 MiB
-        //         19,456 MiB     3,876 MiB     3,840 MiB
-        //         21,504 MiB     1,828 MiB     2,816 MiB
-        //         22,528 MiB       804 MiB     1,536 MiB
-        //
-        // Resident-device plus pinned-host lands within a few hundred MiB of the card's capacity
-        // every time: WDDM maps pinned host memory into the GPU's address space and charges it
-        // against the same budget. The default 8 GiB therefore cannot be reserved beside any model
-        // this project ships, and the server refused to start.
-        //
-        // **Asking and backing off does not work.** One failed cudaMallocHost poisons every later
-        // one in the process (`cudaErrorAlreadyMapped` persists and `cudaGetLastError` does not
-        // clear it), so the size has to be chosen before the first attempt.
-        //
-        // Windows only: the coupling is a WDDM property and has not been measured on Linux, where
-        // shrinking the buffer would cost prefix reuse for no reason. Clamping to zero is a
-        // supported outcome -- prefix reuse then works from device pages alone.
-        std::size_t reserved_bytes = plan.context_cache.host_kv_capacity_bytes;
-#if defined(_WIN32)
-        // The 1 GiB floor inside the clamp is memory the run still needs after this point and that
-        // no plan accounts for (module loads, graph instantiation, launch-local backing); halving
-        // what remains is the conservative split, so the cache never takes more than it leaves.
-        std::size_t free_device = 0, total_device = 0;
-        if (cudaMemGetInfo(&free_device, &total_device) == cudaSuccess) {
-            reserved_bytes =
-                clamp_host_kv_reservation_bytes(reserved_bytes, free_device, minimum_stride);
-        }
-#endif
-        StartupPhaseScope host_kv_phase(
-            startup_observer, StartupPhase::HostKvPin, StartupProgressUnit::Bytes,
-            static_cast<std::uint64_t>(plan.context_cache.host_kv_capacity_bytes));
-        if (reserved_bytes >= minimum_stride) {
-            try {
-                host_kv_arena = std::make_unique<HostKVArena>(
-                    reserved_bytes,
-                    std::span<const HostKVPageLayout>(layouts.data(), layouts.size()));
-            } catch (const std::exception& error) {
-                throw std::runtime_error(
-                    std::string("failed to reserve the host KV cache: ") + error.what() +
-                    "\nThis is the context cache's pinned host buffer, sized by --host-kv-mib "
-                    "(default 8192) and clamped at startup to the device memory still free. On "
-                    "Windows the allocation is mapped into the GPU's address space and competes "
-                    "with the model for VRAM, so this is a full card rather than short system RAM: "
-                    "free VRAM, lower --max-context, or pass --no-prefix-reuse to disable the "
-                    "context cache entirely.");
-            }
-        } else {
-            // Nothing was pinned. Prefix reuse still works from device pages; only the host-side
-            // spill is gone. `host_kv_arena` stays null, which every user of it already handles.
-            reserved_bytes = 0;
-        }
-        host_kv_phase.complete(
-            static_cast<std::uint64_t>(reserved_bytes),
-            static_cast<std::uint64_t>(plan.context_cache.host_kv_capacity_bytes));
-        const std::size_t extent_capacity = reserved_bytes == 0 ? 0 : reserved_bytes / minimum_stride;
-        if (extent_capacity > std::numeric_limits<std::uint32_t>::max()) {
-            throw std::overflow_error("Qwen3.5 Host KV extent capacity exceeds uint32");
-        }
-        if (extent_capacity != 0) {
-            host_kv_extents = std::make_unique<HostKVExtentStore>(
-                *host_kv_arena, static_cast<std::uint32_t>(extent_capacity));
-        }
     }
 
     io = qwen3_5::RoundState(backing, plan.persistent.round);
@@ -481,30 +369,20 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     if (plan.persistent.sampling_config) {
         sampling_config = plan.persistent.sampling_config->bind(backing);
     }
-    if (plan.persistent.token_masks) {
-        token_masks      = plan.persistent.token_masks->bind(backing);
-        token_mask_words = static_cast<std::uint32_t>(token_masks.ne[0]);
+    if (plan.persistent.grammar_masks) {
+        grammar_masks_device = plan.persistent.grammar_masks->bind(backing);
+        grammar_masks_host.emplace(grammar_masks_device.bytes());
     }
-    active_continuations.fill(continuation_capacity);
-    for (std::uint32_t lane = 0; lane < max_concurrency; ++lane) { lane_epochs[lane] = 1; }
-    for (std::uint32_t index = 0; index < continuation_capacity; ++index) {
-        SequenceState& sequence = continuation_states[index];
-        sequence.ledger.reserve(static_cast<std::size_t>(capacity) + 1ULL);
-        sequence.prefix_identity.reserve(static_cast<std::size_t>(capacity) + 1ULL);
-        sequence.prefix_digests.reserve(static_cast<std::size_t>(capacity) + 1ULL);
-        sequence.long_anchors.reserve(context_cache.max_long_anchors_per_continuation.value_or(0));
-        // One retained shared resume source can coexist with every fixed per-request candidate
-        // and, when a request asks for it, every prefix-grid candidate.
-        sequence.shared_prefix_references.reserve(8U + kPrefixGridCandidates);
+    if (is_masked_draft_backend(speculative_backend)) {
+        dflash_draft_handoff.emplace(device, draft_window * max_concurrency);
     }
-    materialization_ledger_.reserve(static_cast<std::size_t>(capacity) + 1ULL);
-    materialization_identity_.reserve(static_cast<std::size_t>(capacity) + 1ULL);
-    materialization_prefix_digests_.reserve(static_cast<std::size_t>(capacity) + 1ULL);
-
-    set_device_i32(io.text_kv_table_row, 0);
-    if (!causal_scoring) { set_device_i32(io.backend_kv_table_row, 0); }
-
-    host_tokens = round_host ? static_cast<TokenId*>(round_host->data()) : nullptr;
+    for (std::uint32_t lane = 0; lane < max_concurrency; ++lane) {
+        lane_epochs[lane]    = 1;
+        sequences[lane].lane = lane;
+    }
+    host_tokens = round_host
+                      ? &static_cast<qwen3_5::PrefillRoundHost*>(round_host->data())->sampled_token
+                      : nullptr;
     if (ordinary_host) {
         ordinary_host_ingress = static_cast<qwen3_5::OrdinaryDecodeIngress*>(ordinary_host->data());
         ordinary_host_egress  = reinterpret_cast<qwen3_5::OrdinaryDecodeEgress*>(
@@ -553,16 +431,18 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     workspace_logical_peak_bytes = 0;
 }
 
-void ProgramImpl::synchronize_transfer_streams() const {
+void ProgramImpl::synchronize_transfer_streams() const noexcept {
     for (std::size_t rank = 0; rank < transfer_streams.size(); ++rank) {
-        (void)cudaStreamSynchronize(transfer_streams[rank]);
+        const cudaStream_t stream = transfer_streams[rank];
+        if (stream != nullptr) { (void)cudaStreamSynchronize(stream); }
     }
 }
 
 ProgramImpl::~ProgramImpl() noexcept {
-    for (std::size_t rank = 0; rank < transfer_streams.size(); ++rank) {
-        (void)cudaStreamSynchronize(transfer_streams[rank]);
-        (void)cudaStreamSynchronize(compute_streams[rank]);
+    synchronize_transfer_streams();
+    for (std::size_t rank = 0; rank < compute_streams.size(); ++rank) {
+        const cudaStream_t stream = compute_streams[rank];
+        if (stream != nullptr) { (void)cudaStreamSynchronize(stream); }
     }
 }
 
@@ -590,8 +470,8 @@ std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,
     const auto token_count                     = static_cast<std::uint32_t>(token_count_size);
     const std::uint32_t predictor_count        = token_count - 1U;
     const std::uint32_t scored_predictor_begin = first_target - 1U;
-    const std::uint32_t entitlement            = kv_pages_for_frontier(predictor_count);
-    if (entitlement == 0) { throw std::logic_error("causal score has no KV entitlement"); }
+    const std::uint32_t required_pages         = kv_pages_for_frontier(predictor_count);
+    if (required_pages == 0) { throw std::logic_error("causal score requires KV pages"); }
 
     std::optional<StateImageHandle> state;
     std::optional<KVAddressSpaceHandle> address;
@@ -618,7 +498,7 @@ std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,
     try {
         state = state_store->reserve_reset(compute_streams);
         if (!state) { throw std::bad_alloc(); }
-        address = text_kv_addresses->create_active(entitlement, 0, compute_streams);
+        address = text_kv_addresses->create_active(required_pages, 0, compute_streams);
         if (!address) { throw std::bad_alloc(); }
         if (text_kv_addresses->bound_row(*address) != 0) {
             throw std::logic_error("causal score did not bind the unique Main KV row");
@@ -771,6 +651,10 @@ MemorySummary ProgramImpl::memory_summary() const noexcept {
             active_handoff_bytes =
                 std::max(active_handoff_bytes, request.prefill->vision->active_handoff_bytes());
         }
+        if (request.replay && request.replay->vision) {
+            active_handoff_bytes =
+                std::max(active_handoff_bytes, request.replay->vision->active_handoff_bytes());
+        }
     }
     std::size_t active_workspace_bytes = work.used();
     if (workspace_plan.vision && active_handoff_bytes != 0) {
@@ -804,16 +688,85 @@ MemorySummary ProgramImpl::memory_summary() const noexcept {
     out.workspace_logical_peak_bytes = workspace_logical_peak_bytes;
     out.cuda_graph_allowance_bytes   = graph_allowance_bytes;
     out.kv_payload_bytes             = kv_payload_bytes;
-    if (host_state_images) {
-        out.host_state_capacity_slots = host_state_images->capacity();
-        out.host_state_occupied_slots = host_state_images->occupied();
-    }
-    if (host_kv_arena) {
-        out.host_kv_capacity_bytes = host_kv_arena->capacity_bytes();
-        out.host_kv_occupied_bytes = host_kv_arena->occupied_bytes();
+    if (host_state_images) { out.host_state_occupied_slots = host_state_images->occupied(); }
+    if (host_kv_arena) { out.host_kv_occupied_bytes = host_kv_arena->occupied_bytes(); }
+    if (host_context_arena) {
+        out.host_context_capacity_bytes = host_context_arena->capacity_bytes();
+        out.host_context_occupied_bytes = host_context_arena->occupied_bytes();
+        out.host_context_reserved_bytes = host_context_arena->reserved_bytes();
     }
     return out;
 }
+
+std::unique_ptr<execution::VisionPrefillSession>
+ProgramImpl::make_vision_session(const PreparedPromptData& prompt, const VisionPrefillPlan& plan) {
+    if (!workspace_plan.vision) {
+        throw std::logic_error("Vision prefill has no startup workspace plan");
+    }
+    if (vision_broker) {
+        return std::make_unique<execution::VisionPrefillSession>(
+            device, parameters, *workspace_plan.vision, prompt, plan, *vision_broker,
+            vision_results->acquire(),
+            DeviceSpan{static_cast<std::byte*>(workspace_storage.base()) +
+                           workspace_plan.vision_bridge_offset,
+                       workspace_plan.vision_bridge_bytes});
+    }
+    return std::make_unique<execution::VisionPrefillSession>(
+        device, parameters, DeviceSpan{workspace_storage.base(), workspace_storage.capacity()},
+        *workspace_plan.vision, prompt, plan, vision_handoff, vision_handoff_peak_bytes);
+}
+
+runtime::ResourceReservation ProgramImpl::reserve_vision_window(SequenceHandle handle) {
+    if (!vision_broker || !vision_broker->kv_tier() || !valid_sequence(handle)) { return {}; }
+    RequestControl& request = requests[ContractAccess::lane(handle).value];
+    if (request.lifecycle != Lifecycle::Prefilling || !request.prefill ||
+        !request.prefill->vision || !request.permit ||
+        request.permit->kind != ExecutionUnitKind::Prefill || vision_broker->window_open() ||
+        !vision_broker->can_submit()) {
+        return {};
+    }
+    auto& staged             = *request.prefill;
+    const auto window_bytes  = staged.vision->pending_window_bytes(staged.cursor, prefill_chunk);
+    if (!window_bytes) { return {}; }
+    const std::uint32_t available = vision_broker->available_kv_pages();
+    const std::uint32_t needed    = vision_broker->kv_loan_pages(*window_bytes);
+    if (needed != 0 && needed <= available) {
+        return {.reserved = staged.vision->submit_item(staged.cursor, prefill_chunk)};
+    }
+    // The free page runs cannot fund the window now. Report what reclaiming cached content would
+    // have to free; fragmentation alone (enough pages, no long enough runs) is not worth evicting
+    // anything for, and the unit then encodes synchronously.
+    const std::uint32_t minimum =
+        needed != 0 ? needed : vision_broker->kv_loan_minimum_pages(*window_bytes);
+    if (minimum <= available) { return {}; }
+    return {.reserved = false, .shortage = {.main_kv_pages = minimum - available}};
+}
+
+bool ProgramImpl::vision_pending(SequenceHandle handle) const noexcept {
+    if (!vision_broker || !valid_sequence(handle)) { return false; }
+    const RequestControl& request = requests[ContractAccess::lane(handle).value];
+    try {
+        return request.prefill && request.prefill->vision &&
+               request.prefill->vision->vision_pending();
+    } catch (...) {
+        // A failed completion query surfaces when the prefill unit takes the item.
+        return false;
+    }
+}
+
+bool ProgramImpl::poll_vision() {
+    if (!vision_broker) { return false; }
+    bool closed = false;
+    for (std::uint32_t lane = 0; lane < max_concurrency; ++lane) {
+        RequestControl& request = requests[lane];
+        if (request.prefill && request.prefill->vision) {
+            closed = request.prefill->vision->poll() || closed;
+        }
+    }
+    return closed;
+}
+
+bool ProgramImpl::drain_vision_window() { return vision_broker && vision_broker->drain(); }
 
 void ProgramImpl::reset_memory_peaks() noexcept {
     persistent.reset_peak();
@@ -823,6 +776,10 @@ void ProgramImpl::reset_memory_peaks() noexcept {
         if (request.prefill && request.prefill->vision) {
             active_handoff_bytes =
                 std::max(active_handoff_bytes, request.prefill->vision->active_handoff_bytes());
+        }
+        if (request.replay && request.replay->vision) {
+            active_handoff_bytes =
+                std::max(active_handoff_bytes, request.replay->vision->active_handoff_bytes());
         }
     }
     vision_handoff_peak_bytes    = active_handoff_bytes;

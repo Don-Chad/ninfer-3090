@@ -3,7 +3,6 @@
 #include "serve/request_validation.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -132,6 +131,7 @@ void validate_standard_output_controls(const Json& body) {
         }
     }
 
+
     if (body.contains("modalities") && !body.at("modalities").is_null()) {
         const Json& modalities = body.at("modalities");
         if (!modalities.is_array() || modalities.empty()) {
@@ -186,26 +186,6 @@ void validate_standard_output_controls(const Json& body) {
                 "provide",
                 "store", "store_not_supported");
         }
-    }
-}
-
-void validate_constrained_decoding_extensions(const Json& body) {
-    // llama.cpp exposes grammar; vLLM uses structured_outputs and previously exposed the
-    // guided_* spellings. Each promises constrained generation rather than an advisory hint.
-    static constexpr const char* fields[] = {
-        "grammar",      "structured_outputs", "guided_json",
-        "guided_regex", "guided_choice",      "guided_grammar",
-    };
-    for (const char* field : fields) {
-        if (!body.contains(field) || body.at(field).is_null()) { continue; }
-        const Json& value = body.at(field);
-        if (std::string_view(field) == "grammar" && value.is_string() &&
-            value.get_ref<const std::string&>().empty()) {
-            continue;
-        }
-        bad_request(std::string(field) +
-                        " requests constrained decoding, which NInfer does not provide",
-                    field, "constrained_decoding_not_supported");
     }
 }
 
@@ -579,7 +559,10 @@ void parse_tools(const Json& body, GenerationRequest& output) {
     const Json& tools = body.at("tools");
     if (!tools.is_array()) { bad_request("tools must be an array", "tools"); }
     output.tools.reserve(tools.size());
+    std::size_t next_wire_index = 0;
     for (const Json& item : tools) {
+        // The path names the tool's position in the request, which hosted declarations still occupy.
+        const std::size_t wire_index = next_wire_index++;
         if (!item.is_object() || !item.contains("type") || !item.at("type").is_string()) {
             bad_request("tools entries must contain a string type", "tools");
         }
@@ -600,6 +583,7 @@ void parse_tools(const Json& body, GenerationRequest& output) {
         }
         const Json& function = item.at("function");
         ToolDefinition tool;
+        tool.schema_param = "tools/" + std::to_string(wire_index) + "/function/parameters";
         tool.name = require_function_name(function, "tools");
         if (function.contains("description") && !function.at("description").is_null()) {
             if (!function.at("description").is_string()) {
@@ -619,12 +603,7 @@ void parse_tools(const Json& body, GenerationRequest& output) {
             if (!function.at("strict").is_boolean()) {
                 bad_request("function strict must be a boolean", "tools");
             }
-            if (function.at("strict").get<bool>()) {
-                bad_request(
-                    "strict=true requires generated function arguments to satisfy the declared "
-                    "JSON Schema, which NInfer cannot guarantee",
-                    "tools", "strict_tools_not_supported");
-            }
+            tool.strict = function.at("strict").get<bool>();
         }
         output.tools.push_back(std::move(tool));
     }
@@ -669,18 +648,8 @@ void apply_allowed_tools(const Json& config, GenerationRequest& output) {
         }
     }
 
-    if (mode == "required") {
-        bad_request(
-            "tool_choice.allowed_tools mode='required' requires at least one tool call, which "
-            "NInfer cannot guarantee",
-            "tool_choice", "tool_choice_not_supported");
-    }
-
-    std::erase_if(output.tools, [&](const ToolDefinition& tool) {
-        return std::find(allowed_names.begin(), allowed_names.end(), tool.name) ==
-               allowed_names.end();
-    });
-    output.tool_choice.mode = ToolChoiceMode::Auto;
+    output.tool_choice.allowed_names = std::move(allowed_names);
+    output.tool_choice.mode = mode == "required" ? ToolChoiceMode::Required : ToolChoiceMode::Auto;
 }
 
 void parse_tool_choice(const Json& body, GenerationRequest& output) {
@@ -693,10 +662,7 @@ void parse_tool_choice(const Json& body, GenerationRequest& output) {
         } else if (value == "none") {
             output.tool_choice.mode = ToolChoiceMode::None;
         } else if (value == "required") {
-            bad_request(
-                "tool_choice='required' requires at least one tool call, which NInfer cannot "
-                "guarantee",
-                "tool_choice", "tool_choice_not_supported");
+            output.tool_choice.mode = ToolChoiceMode::Required;
         } else {
             bad_request("tool_choice must be 'auto', 'none', 'required', or a function choice",
                         "tool_choice");
@@ -713,11 +679,10 @@ void parse_tool_choice(const Json& body, GenerationRequest& output) {
             if (!choice.contains("function") || !choice.at("function").is_object()) {
                 bad_request("function tool_choice must contain a function object", "tool_choice");
             }
-            const std::string name = require_function_name(choice.at("function"), "tool_choice");
-            bad_request(
-                "tool_choice for function '" + name +
-                    "' requires that exact function to be called, which NInfer cannot guarantee",
-                "tool_choice", "tool_choice_not_supported");
+            const std::string name  = require_function_name(choice.at("function"), "tool_choice");
+            output.tool_choice.mode = ToolChoiceMode::Required;
+            output.tool_choice.allowed_names = std::vector<std::string>{name};
+            output.tool_choice.parallel      = false;
         } else if (type == "custom") {
             bad_request(
                 "custom tool_choice requires custom tool output, which NInfer does not provide",
@@ -737,64 +702,7 @@ void parse_parallel_tool_calls(const Json& body, GenerationRequest& output) {
     if (!body.at("parallel_tool_calls").is_boolean()) {
         bad_request("parallel_tool_calls must be a boolean", "parallel_tool_calls");
     }
-    // Honoured by keeping the first tool call and dropping the rest, rather than refused. The
-    // guarantee a client depends on is what the response contains, and that much is enforceable
-    // even though decoding itself is not constrained. Refusing instead broke agent harnesses that
-    // send parallel_tool_calls=false whenever any tool is available.
-    output.parallel_tool_calls = body.at("parallel_tool_calls").get<bool>();
-}
-
-// OpenAI response_format: text, json_object, or json_schema {name, description?, schema?,
-// strict?}. An omitted schema admits any JSON value.
-void parse_response_format(const Json& body, GenerationRequest& output) {
-    if (!body.contains("response_format") || body.at("response_format").is_null()) { return; }
-    const Json& format = body.at("response_format");
-    if (!format.is_object() || !format.contains("type") || !format.at("type").is_string()) {
-        bad_request("response_format must contain a string type", "response_format");
-    }
-    const std::string type = format.at("type").get<std::string>();
-    if (type == "text") { return; }
-    if (type == "json_object") {
-        output.output_format.kind = ninfer::OutputFormatKind::JsonObject;
-    } else if (type == "json_schema") {
-        if (!format.contains("json_schema") || !format.at("json_schema").is_object()) {
-            bad_request("response_format.json_schema must be an object",
-                        "response_format.json_schema");
-        }
-        const Json& definition = format.at("json_schema");
-        if (!definition.contains("name") || !definition.at("name").is_string() ||
-            definition.at("name").get_ref<const std::string&>().empty() ||
-            definition.at("name").get_ref<const std::string&>().size() > 64 ||
-            !std::all_of(definition.at("name").get_ref<const std::string&>().begin(),
-                         definition.at("name").get_ref<const std::string&>().end(),
-                         [](unsigned char c) { return std::isalnum(c) != 0 || c == '_' || c == '-'; })) {
-            bad_request("response_format.json_schema.name must be 1-64 characters of a-z, A-Z, "
-                        "0-9, underscores and dashes",
-                        "response_format.json_schema.name");
-        }
-        if (definition.contains("description") && !definition.at("description").is_null() &&
-            !definition.at("description").is_string()) {
-            bad_request("response_format.json_schema.description must be a string",
-                        "response_format.json_schema.description");
-        }
-        bool strict = false;
-        if (definition.contains("strict") && !definition.at("strict").is_null()) {
-            if (!definition.at("strict").is_boolean()) {
-                bad_request("response_format.json_schema.strict must be a boolean",
-                            "response_format.json_schema.strict");
-            }
-            strict = definition.at("strict").get<bool>();
-        }
-        const Json schema = definition.contains("schema") && !definition.at("schema").is_null()
-                                ? definition.at("schema")
-                                : Json::object();
-        output.output_format =
-            json_schema_output_format(schema, strict, "response_format.json_schema.schema");
-    } else {
-        bad_request("response_format.type must be 'text', 'json_object' or 'json_schema'",
-                    "response_format.type");
-    }
-    validate_output_format_compatibility(output, "response_format");
+    output.tool_choice.parallel &= body.at("parallel_tool_calls").get<bool>();
 }
 
 void parse_stop(const Json& body, GenerationRequest& output) {
@@ -928,7 +836,6 @@ void parse_output_limit(const Json& body, const RequestLimits& limits, OpenAICha
 OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestLimits& limits) {
     require_object(body, "request body must be a JSON object");
     validate_standard_output_controls(body);
-    validate_constrained_decoding_extensions(body);
     validate_compatibility_hints(body);
 
     OpenAIChatRequest output;
@@ -945,7 +852,6 @@ OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestL
     parse_parallel_tool_calls(body, output.generation);
     parse_messages(body, output.generation);
     parse_stop(body, output.generation);
-    parse_response_format(body, output.generation);
     parse_sampling(body, output.generation);
     parse_stream_options(body, output);
     parse_response_observations(body, output);
@@ -957,6 +863,10 @@ OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestL
     output.generation.chat_template_kwargs_json = template_options.kwargs_json;
     output.generation.graft                     = parse_graft_field(body);
     output.generation.thinking_budget           = parse_thinking_budget_field(body);
+    if (body.contains("response_format") && !body["response_format"].is_null())
+        parse_json_output_format(body["response_format"], output.generation, "response_format",
+                                 JsonFormatProtocol::Chat);
+    parse_structured_outputs(body, output.generation);
     apply_openai_prompt_cache_policy(output.generation, cache_policy);
     return output;
 }

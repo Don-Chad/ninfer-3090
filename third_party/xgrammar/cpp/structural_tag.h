@@ -83,22 +83,28 @@ struct ConstStringFormat {
 struct JSONSchemaFormat {
   static constexpr const char* type = "json_schema";
   std::string json_schema;
-  std::string style = "json";  // "json","qwen_xml","minimax_xml","deepseek_xml","glm_xml"
+  // "json", "qwen_xml", "minimax_xml", "minimax_m3_xml", "deepseek_xml", "glm_xml",
+  // "cohere_xml", "kimi_k3_xml", "deepseek_v4_1_xml", "gemma"
+  std::string style = "json";
   // Whether to allow object properties to appear in any order. See
   // Grammar::FromJSONSchema / JSONSchemaToEBNF for the semantics.
   bool any_order = false;
   // Per-tag cap on consecutive whitespace characters in the JSON-schema content.
   std::optional<int> max_whitespace_cnt = std::nullopt;
+  // Substrings forbidden within string values and property names.
+  std::vector<std::string> excludes;
   JSONSchemaFormat(
       std::string json_schema,
       std::string style = "json",
       bool any_order = false,
-      std::optional<int> max_whitespace_cnt = std::nullopt
+      std::optional<int> max_whitespace_cnt = std::nullopt,
+      std::vector<std::string> excludes = {}
   )
       : json_schema(std::move(json_schema)),
         style(std::move(style)),
         any_order(any_order),
-        max_whitespace_cnt(max_whitespace_cnt) {}
+        max_whitespace_cnt(max_whitespace_cnt),
+        excludes(std::move(excludes)) {}
   picojson::value ToJSON() const;
 };
 
@@ -119,7 +125,12 @@ struct RegexFormat {
 struct AnyTextFormat {
   static constexpr const char* type = "any_text";
   std::vector<std::string> excludes;
-  AnyTextFormat(std::vector<std::string> excluded_strs) : excludes(std::move(excluded_strs)) {}
+  int32_t max_tokens = -1;
+  int32_t max_chars = -1;
+  AnyTextFormat(
+      std::vector<std::string> excluded_strs, int32_t max_tokens = -1, int32_t max_chars = -1
+  )
+      : excludes(std::move(excluded_strs)), max_tokens(max_tokens), max_chars(max_chars) {}
   picojson::value ToJSON() const;
 
  private:
@@ -163,8 +174,11 @@ struct ExcludeTokenFormat {
 struct AnyTokensFormat {
   static constexpr const char* type = "any_tokens";
   std::vector<std::variant<int32_t, std::string>> exclude_tokens;
-  AnyTokensFormat(std::vector<std::variant<int32_t, std::string>> exclude_tokens)
-      : exclude_tokens(std::move(exclude_tokens)) {}
+  int32_t max_tokens = -1;
+  AnyTokensFormat(
+      std::vector<std::variant<int32_t, std::string>> exclude_tokens, int32_t max_tokens = -1
+  )
+      : exclude_tokens(std::move(exclude_tokens)), max_tokens(max_tokens) {}
   picojson::value ToJSON() const;
 
  private:

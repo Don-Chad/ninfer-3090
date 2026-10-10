@@ -6,6 +6,8 @@
 
 #include <iostream>
 #include <string>
+#include <string_view>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -24,6 +26,14 @@ class RegexConverter {
  public:
   explicit RegexConverter(const std::string& regex) : regex_(regex) {
     if (!regex.empty()) {
+      // ParseUTF8 takes a C string and stops at the first NUL, so a regex
+      // containing one would either yield an empty codepoint vector (leading
+      // NUL -- an out-of-bounds read below) or be silently truncated to the
+      // prefix. Product normalization represents literal NUL as an escape before this parser.
+      if (regex.find('\0') != std::string::npos) {
+        XGRAMMAR_LOG(FATAL) << "The regex must not contain null characters.";
+        XGRAMMAR_UNREACHABLE();
+      }
       regex_codepoints_ = ParseUTF8(regex_.c_str(), false);
       if (regex_codepoints_[0] == kInvalidUTF8) {
         XGRAMMAR_LOG(FATAL) << "The regex is not a valid UTF-8 string.";
@@ -153,6 +163,14 @@ std::string RegexConverter::HandleCharEscape() {
       (current_[1] == 'x' && end_ - current_ < 4) || (current_[1] == 'c' && end_ - current_ < 3)) {
     RaiseError("Escape sequence is not finished.");
   }
+  // Regex hex escapes have exactly two digits; the generic C/GBNF reader consumes all
+  // following hex digits (e.g. it would read \\x41B as one character instead of "AB").
+  if (current_[1] == 'x') {
+    const int high = HexCharToInt(current_[2]), low = HexCharToInt(current_[3]);
+    if (high < 0 || low < 0) RaiseError("Invalid hexadecimal escape sequence.");
+    current_ += 4;
+    return EscapeString(high * 16 + low);
+  }
   auto [codepoint, len] = ParseNextEscaped(current_, CUSTOM_ESCAPE_MAP);
   if (codepoint != CharHandlingError::kInvalidEscape) {
     current_ += len;
@@ -211,7 +229,7 @@ std::string RegexConverter::HandleEscapeInCharClass() {
     return R"(\x00-\x08\x0E-\x1F\x21-\x9F\xA1-\U0010FFFF)";
   } else {
     auto res = HandleCharEscape();
-    if (res == "]" || res == "-") {
+    if (res == "]" || res == "-" || res == "^" || res == "[") {
       return "\\" + res;
     } else {
       return res;
@@ -391,6 +409,136 @@ std::string RegexConverter::Convert() {
     AddEBNFSegment("\"\"");
   }
   return result_ebnf_;
+}
+
+namespace {
+// Normalize ECMAScript character classes for product regex and JSON Schema patterns.
+// Reject escapes that the lower-level converter would only warn about.
+std::string normalize_characters(const std::string& pattern) {
+  const std::string space =
+      R"(\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028-\u2029\u202f\u205f\u3000\ufeff)";
+  const std::string nonspace =
+      R"(\u0000-\u0008\u000e-\u001f\u0021-\u009f\u00a1-\u167f\u1681-\u1fff\u200b-\u2027\u202a-\u202e\u2030-\u205e\u2060-\u2fff\u3001-\ufefe\uff00-\u{10ffff})";
+  std::string result;
+  bool in_class = false;
+  for (size_t i = 0; i < pattern.size(); ++i) {
+    char c = pattern[i];
+    if (c == '\\') {
+      if (++i == pattern.size()) throw std::invalid_argument("unfinished pattern escape");
+      c = pattern[i];
+      if (c == 's' || c == 'S') {
+        result += (in_class ? "" : "[") + (c == 's' ? space : nonspace) + (in_class ? "" : "]");
+      } else if (in_class && (c == '^' || c == '[' || c == '-' || c == 'b')) {
+        result += c == '^' ? R"(\x5e)" : c == '[' ? R"(\x5b)" : c == '-' ? R"(\x2d)" : R"(\x08)";
+      } else {
+        if (std::string_view("dDwWfnrtvuxc^$.*+?\\()[]{}|/-").find(c) == std::string_view::npos)
+          throw std::invalid_argument("unsupported pattern escape: \\" + std::string(1, c));
+        if (c == 'x' || c == 'u') {
+          const size_t digits = c == 'x' ? 2 : 4;
+          if (i + digits >= pattern.size())
+            throw std::invalid_argument("unfinished pattern escape");
+          for (size_t j = 1; j <= digits; ++j)
+            if (HexCharToInt(pattern[i + j]) < 0)
+              throw std::invalid_argument("invalid hexadecimal pattern escape");
+        }
+        if (c == 'c' &&
+            (i + 1 == pattern.size() || !((pattern[i + 1] >= 'A' && pattern[i + 1] <= 'Z') ||
+                                          (pattern[i + 1] >= 'a' && pattern[i + 1] <= 'z'))))
+          throw std::invalid_argument("invalid control character pattern escape");
+        if (c == 'u' && i + 4 < pattern.size() &&
+            (pattern[i + 1] == 'd' || pattern[i + 1] == 'D') && HexCharToInt(pattern[i + 2]) >= 8)
+          throw std::invalid_argument(
+              "surrogate escapes in patterns are not supported; use the Unicode character");
+        result += '\\';
+        result += c;
+      }
+    } else if (c == '\0') {
+      result += R"(\x00)";
+    } else if (c == '.' && !in_class) {
+      result += R"([^\n\r\u2028\u2029])";
+    } else {
+      result += c;
+      if (c == '[')
+        in_class = true;
+      else if (c == ']')
+        in_class = false;
+    }
+  }
+  return result;
+}
+
+// Anchors are supported at the ends of each top-level alternative. Other zero-width assertions
+// require a different regex execution model and are rejected rather than erased by conversion.
+std::string normalize_anchors(const std::string& pattern, bool full_match) {
+  std::vector<std::string> branches;
+  bool escaped = false, in_class = false;
+  int depth = 0;
+  std::size_t begin = 0;
+  for (std::size_t i = 0; i <= pattern.size(); ++i) {
+    if (i == pattern.size() || (!escaped && !in_class && depth == 0 && pattern[i] == '|')) {
+      branches.push_back(pattern.substr(begin, i - begin));
+      begin = i + 1;
+      continue;
+    }
+    const char c = pattern[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (c == '\\') {
+      escaped = true;
+      continue;
+    }
+    if (c == '[' && !in_class)
+      in_class = true;
+    else if (c == ']' && in_class)
+      in_class = false;
+    else if (!in_class && c == '(')
+      ++depth;
+    else if (!in_class && c == ')')
+      --depth;
+  }
+  std::string result;
+  bool first = true;
+  for (auto branch : branches) {
+    bool start = !branch.empty() && branch.front() == '^';
+    if (start) branch.erase(0, 1);
+    std::size_t slashes = 0;
+    if (branch.size() > 1)
+      for (std::size_t i = branch.size() - 1; i > 0 && branch[i - 1] == '\\'; --i) ++slashes;
+    bool end = !branch.empty() && branch.back() == '$' && slashes % 2 == 0;
+    if (end) branch.pop_back();
+    escaped = false;
+    in_class = false;
+    for (char c : branch) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (c == '\\') {
+        escaped = true;
+        continue;
+      }
+      if (c == '[' && !in_class)
+        in_class = true;
+      else if (c == ']' && in_class)
+        in_class = false;
+      else if (!in_class && (c == '^' || c == '$'))
+        throw std::invalid_argument("pattern anchors must bound a top-level alternative");
+    }
+    if (!first) result += "|";
+    first = false;
+    const std::string any = R"([^\uD800-\uDFFF]*)";
+    result += full_match
+                  ? branch
+                  : (start ? "" : any) + std::string("(?:") + branch + ")" + (end ? "" : any);
+  }
+  return result;
+}
+}  // namespace
+
+std::string NormalizeRegexPattern(const std::string& pattern, bool full_match) {
+  return normalize_anchors(normalize_characters(pattern), full_match);
 }
 
 std::string RegexToEBNF(const std::string& regex, bool with_rule_name) {

@@ -1,7 +1,5 @@
 #pragma once
 
-#include "runtime/contract/resources.h"
-
 #include "models/qwen3_5/frontend/frontend.h"
 
 #include <array>
@@ -10,7 +8,6 @@
 #include <optional>
 #include <memory>
 #include <span>
-#include <string>
 #include <string_view>
 #include <vector>
 
@@ -81,6 +78,8 @@ enum class RewriteCheckpointKind : std::uint8_t {
 struct RewriteCheckpointSpec {
     RewriteCheckpointKind kind = RewriteCheckpointKind::TurnClosure;
     std::uint32_t frontier     = 0;
+    // The actual state to retain; restoring it recomputes any closing structure before frontier.
+    std::uint32_t recovery_frontier = 0;
 };
 
 struct PromptIdentity {
@@ -116,7 +115,6 @@ struct PreparedCacheOpportunity {
 
 struct PreparedContextCache {
     std::optional<PreparedSessionKey> session_key;
-    runtime::RetentionClass retention = runtime::RetentionClass::RecentPrivate;
     std::vector<PreparedCacheOpportunity> opportunities;
     // Controls replacement of a named SessionIndex entry, not anonymous source ownership.
     bool update_session_index = true;
@@ -150,11 +148,15 @@ struct PreparedPromptData {
     std::vector<VisionItem> vision_items;
     PromptIdentity identity;
     PreparedContextCache context_cache;
+    // Positions [0, external_prefix_tokens) hold placeholder ids for state that was installed
+    // directly (a direct_kv or softprompt_kv graft), not computed from these tokens. Execution must
+    // start from a checkpoint that covers at least this prefix; prefilling the placeholders would
+    // compute a different context.
+    std::uint32_t external_prefix_tokens = 0;
     std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output;
     bool starts_in_reasoning = false;
+    std::string continuation_content;
     PrepareStats prepare;
-    std::string graft_name;
-    std::uint32_t graft_frontier = 0;
 
     [[nodiscard]] std::span<const std::int32_t> position_axis(int axis) const;
 

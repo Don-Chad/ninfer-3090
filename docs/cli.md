@@ -43,6 +43,50 @@ Changes to the file take effect after restarting NInfer:
   --chat-template tools/chat_templates/qwen3_8.jinja --prompt "Hello"
 ```
 
+## Constrained output
+
+`--grammar-file FILE` constrains the answer with a GBNF grammar whose entry rule is `root`:
+
+```bash
+printf 'root ::= "yes" | "no"\n' > answer.gbnf
+./build/apps/ninfer models/qwen3_8_27b.ninfer \
+  --prompt "Is 17 prime?" --no-thinking --grammar-file answer.gbnf --max-new 64
+```
+
+`--choice TEXT` selects a literal candidate; repeat the flag to supply the candidate set.
+`--regex PATTERN` constrains the complete answer to a regular expression:
+
+```bash
+./build/apps/ninfer models/qwen3_8_27b.ninfer \
+  --prompt "Classify this review: the service was excellent." --no-thinking \
+  --choice positive --choice neutral --choice negative
+
+./build/apps/ninfer models/qwen3_8_27b.ninfer \
+  --prompt "Return ticket TASK-0042." --no-thinking --regex '(BUG|TASK)-[0-9]{4}'
+```
+
+Candidates preserve exact text; `--choice ''` explicitly permits empty content. `--regex ''`
+permits only empty content. See the [language contract](maintainer/constrained-decoding.md#41-gbnf--regex--choice)
+for supported regex syntax.
+
+`--json-object` constrains the answer to a JSON object. `--json-schema-file FILE` applies a JSON
+Schema. All output constraint options are mutually exclusive:
+
+```bash
+printf '%s\n' '{"type":"object","properties":{"answer":{"type":"integer"}},"required":["answer"],"additionalProperties":false}' > answer.schema.json
+./build/apps/ninfer models/qwen3_8_27b.ninfer \
+  --prompt "Return the answer to 6 times 7 as JSON." --no-thinking \
+  --json-schema-file answer.schema.json --max-new 64
+```
+
+GBNF supports recursive rules, Unicode character classes and repetition. All constraint modes work with
+ordinary decoding, MTP, DFlash and DFlash2. Thinking may precede the constrained answer; an output
+limit or cancellation can leave it incomplete. JSON modes can accompany tools supplied in messages:
+the answer is either JSON or a tool-call sequence. GBNF, choice and regex require no active tools.
+Constraints reject custom stops and `--raw-output`. JSON uses compact separators and declared
+property order. Describe the desired content in the prompt; the schema is not added to it automatically. See the
+[supported schema subset](maintainer/constrained-decoding.md#42-json-与-schema-的执行合同).
+
 ## Thinking and reasoning
 
 Omitted thinking and effort options use the selected template's defaults. `--no-thinking` or
@@ -172,7 +216,7 @@ The table lists executable defaults. The examples above select INT8 KV and MTP3.
 | `--gdn-state-fp16` | FP16 recurrent GDN state, halving each state image | off |
 | `--mlp-a8-decode` | integer-activation MLP at decode | off |
 | `--vision` | enable image/video input and load Vision GPU allocations | off |
-| `--vision-residency resident\|overlay` | `overlay` keeps the Vision tower host-pinned and borrows device memory per image from the evictable text weight tail (no resident Vision cost; needs CUDA VMM) | `resident` |
+| `--vision-residency resident\|overlay` | `overlay` keeps the Vision tower host-pinned and borrows device memory per image from free KV pages, or the evictable text weight tail when those fall short (no resident Vision cost; needs CUDA VMM) | `resident` |
 | `--vision-max-merged N` | merged-token budget of one media item; larger media downscales at preprocessing | 16384 |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--chat-template FILE` | use a local Jinja template | artifact template |
@@ -188,6 +232,7 @@ The table lists executable defaults. The examples above select INT8 KV and MTP3.
 | `--frequency-penalty F` | frequency-penalty override | registered model/mode default (`0`) |
 | `--seed N` | sampling seed | `0` |
 | `--stop-token-id N`, `--stop TEXT`, `--reasoning-stop TEXT` | add a stop token ID, a stop string matched in the answer content, or a stop string matched in the reasoning; each may be repeated | none |
+| `--grammar-file FILE`, `--json-object`, `--json-schema-file FILE`, `--choice TEXT`, `--regex PATTERN` | constrain the answer; mutually exclusive, see [Constrained output](#constrained-output) | none |
 | `--raw-output` | expose the frontend's raw output stream | off |
 | `--print-token-ids` | include generated token IDs in diagnostics | off |
 | `--log-level trace\|debug\|info\|warning\|error\|critical\|off` | diagnostic verbosity on stderr | `info` |
@@ -337,8 +382,8 @@ GPU residency is frozen when the Engine starts:
 - Vision is disabled by default, omitting its weights and Vision-specific unified-workspace extent;
 - `--vision` loads the weights, expands the one Program workspace for Vision encode/handoff, and
   enables image/video input;
-- the one-request CLI uses root-only context mode, so it does not reserve an extra Device
-  checkpoint StateImage or capture a continuation that no later request could consume.
+- the one-request CLI disables cross-request history and Host context backing, so it does not
+  reserve an extra Device checkpoint StateImage or retain continuations.
 
 The complete `.ninfer` inventory is still validated. These choices are not lazy loading: an Engine
 started without Vision rejects media and cannot enable Vision later. DFlash/DFlash2 and Vision may
@@ -359,19 +404,3 @@ from this one-request interface; the persistent Engine and server routes own cro
 optional Host backing.
 
 All weight, sequence, workspace, and graph allocations are released when the Engine is destroyed.
-
-## CUDA synchronization
-
-`NINFER_CUDA_SYNC` selects the CUDA device synchronization schedule at startup for both the CLI
-and HTTP server. When unset, it defaults to `spin`, prioritizing low synchronization latency at
-the cost of CPU usage while waiting for the GPU. Use `blocking` to let the waiting thread sleep;
-the decode performance cost depends on the host. `yield` yields the CPU while waiting, and `auto`
-uses CUDA's scheduling heuristic, not an automatic performance benchmark.
-
-```bash
-NINFER_CUDA_SYNC=blocking ./build/apps/ninfer models/qwen3_8_27b.ninfer --prompt "Hello"
-```
-
-The engine-ready log reports the selected mode. Empty or unrecognized values, or failure to apply
-the schedule, fail startup. This controls device scheduling (including stream synchronization);
-it does not override individual CUDA event creation flags.

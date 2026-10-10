@@ -1,9 +1,9 @@
 # Tests
 
 The retained tests protect current `.ninfer`, numerical operator, model, runtime-transaction,
-benchmark-report, and external protocol behavior. Repository verification principles are defined in
-[`../AGENTS.md`](../AGENTS.md); Op contract and CUDA implementation guidance is in
-[`../docs/maintainer/op-development.md`](../docs/maintainer/op-development.md).
+benchmark-report, and external protocol behavior. Op qualification and CUDA implementation rules
+are defined in [Op development](../docs/maintainer/op-development.md); product execution and
+ownership contracts are defined in [Engine architecture](../docs/maintainer/engine-architecture.md).
 
 ## Organization
 
@@ -15,8 +15,10 @@ benchmark-report, and external protocol behavior. Repository verification princi
   opt-in real Engine integration;
 - `ops/` — semantic Op qualification with independent mathematical or state-transition oracles;
   Linear and fused Linear suites are separated by their supported weight/activation paths;
-- root C++ tests — core storage, runtime admission/resource policy, public API, serving protocols,
-  logging, benchmark reports and causal-scoring evaluation;
+- `runtime/` — scheduler fairness, cache resource policy, capacity and context-cost calculations;
+- `bench/ttft/` — HTTP measurements, campaign orchestration and workload construction;
+- root C++ tests — core storage, public API, serving protocols, logging, benchmark reports and
+  causal-scoring evaluation;
 - `test_serve_corpus.py` — agreement between the serving request-log schema and its measurement
   consumer.
 
@@ -120,6 +122,16 @@ cmake --build build --parallel --target ninfer_tests
 ctest --test-dir build -R '^ninfer_linear_(q4|q5|q6|q8)_a16_test$' --output-on-failure
 ```
 
+For a change confined to one Q8 geometry, use the same public conformance cases with
+`./build/tests/ninfer_linear_q8_a16_test --shape N K`. The default CTest invocation still covers
+all registered Q8 geometries.
+
+For a change confined to a newly supported BF16 geometry, use
+`./build/tests/ninfer_linear_bf16_a16_test --shape N K`. These cases use the common full-K FP64
+oracle with exact BF16 weights, complete output checks for small N, route boundaries, changed-input
+Graph replay, both public overloads, workspace domains, and preservation/guard checks. The small
+control projections also cover terminal-K pulses and paired cancellation.
+
 All Linear files use `ops/linear/linear_test_common.{h,cpp}` and the same
 `ops/quantized_weight.h` fixture as the fused projection tests. The fixture produces the complete
 packed GPU payload and exact-decodes the logical float rows used by the one
@@ -130,6 +142,12 @@ whole suite; private kernel, schedule, launcher, and T selection do not change i
 files call public `linear()` and contain no private selector, launcher, schedule, or kernel
 assertions.
 
+The Q8 suite includes `[2560,6144]`, `[6144,2560]`, `[10240,2560]`, `[12288,2560]`, and
+`[16384,2560]`: full-output FP64 comparisons at T=1/4/8,
+sampled-output checks at larger extents including 512/1024 and 129/1025, production boundaries,
+changed-input Graph replay, both public overloads, permissive policies, input/weight preservation,
+output guards, and valid/invalid workspace intervals.
+
 The Linear, LinearAdd and LinearSwiGLU common `.cpp` implementations each compile once into a
 test support library. Both those libraries and the Op test executables receive the oracle's
 `-fno-fast-math` and `-ffp-contract=off` options on GNU/Clang C++ compilers.
@@ -138,11 +156,11 @@ Run the native Python suites with the project Python environment:
 
 ```bash
 python3 -m pytest \
-  tests/artifact tests/convert \
+  tests/artifact tests/convert tests/bench/ttft \
   tests/test_serve_corpus.py
 ```
 
-The Python suites exercise conversion and encoded output, without running model inference.
+The Python suites exercise conversion, encoded output and measurement tools without model inference.
 The maintained environment uses Python 3.11 with the dependencies for those suites. C++ binding and Engine tests
 cover consumption of their resulting representation.
 
@@ -179,9 +197,10 @@ NINFER_TEST_ARTIFACT=$PWD/out/qwen3_6_35b_a3b.ninfer \
   ctest --test-dir build -R ninfer_qwen3_5_moe_real_test --output-on-failure
 ```
 
-Without `NINFER_TEST_ARTIFACT`, CTest marks these real Engine tests as skipped. Run GPU integration
-tests serially. `NINFER_PREFIX_REAL_SCENARIO` selects a focused prefix scenario such as `vision`,
-`pressure-resume` or `concurrent`; the default is `all`. These integration checks
+Without `NINFER_TEST_ARTIFACT`, CTest marks these real Engine tests as skipped. Real-artifact targets
+carry the `real` label and `RUN_SERIAL` so CTest runs them alone. Run directly invoked GPU
+integration tests serially. `NINFER_PREFIX_REAL_SCENARIO` selects a focused prefix scenario such as
+`vision`, `late-instructions` or `concurrent`; the default is `all`. These integration checks
 use behavior and state accounting rather than another numerical path's generated tokens as a golden.
 
 The `attention` scenario checks the selected KV type, chunked prefill, concurrent Graph decode
@@ -200,6 +219,54 @@ KV choices are `bf16`, `int8`, `fp8`, `nvfp4`, and `k8v4`; backend choices are `
 integration executable also accepts all five KV names as its fifth positional argument and rejects
 unknown names.
 
+Continuation and pressure recovery have dedicated entries:
+
+```bash
+NINFER_TEST_ARTIFACT=$PWD/out/qwen3_8_27b_nvfp4.ninfer \
+  ctest --test-dir build -R ninfer_qwen3_5_agent_continuation_real_test --output-on-failure
+
+NINFER_TEST_ARTIFACT=$PWD/out/qwen3_8_27b_nvfp4.ninfer \
+NINFER_TEST_BACKEND=dflash2 \
+  ctest --test-dir build -R ninfer_qwen3_5_preemption_real_test --output-on-failure
+
+NINFER_TEST_ARTIFACT=$PWD/out/qwen3_8_27b_nvfp4.ninfer \
+  ./build/tests/ninfer_qwen3_5_native_transactions_test dflash2
+```
+
+The agent entry checks multi-turn continuation and branching. The preemption entry exercises
+Snapshot/Replay recovery and cancellation while paused or replaying; `NINFER_PREEMPTION_REAL_SCENARIO`
+selects `all`, `snapshot`, `replay`, `cancel-paused` or `cancel-replay`. Native transaction tests cover
+physical state/KV ownership, binding, capture, reclamation and abort; their positional backend is
+`none`, `mtp`, `dflash` or `dflash2`. Each backend requires an artifact containing that component.
+Public-HTTP latency and output gaps are measured separately by the
+[TTFT campaign](../tools/bench/ttft/README.md).
+
+`ninfer_qwen3_5_tools_real_test [none|mtp|dflash|dflash2] [graph|eager|basic|snapshot|replay|cancel] [concurrency]`
+uses `NINFER_TEST_ARTIFACT` for strict tools, thinking, raw continuation, mixed batches, and
+call/result prefix reuse, and required-tool → JSON continuation with committed constraint observations.
+`basic` checks default constraints with open/complex schemas, continuation,
+streaming and mixed strict/basic/free rows. Snapshot/Replay modes force resource pressure and
+validate the completed argument value after recovery; `cancel` interrupts the paused request.
+`NINFER_TEST_TOOL_REPORT` appends schema/output/timing JSONL.
+`python3 tests/models/qwen3_5/test_tool_schema.py` checks the native Qwen grammar and decoder against
+`jsonschema` (dependencies in `tests/text/requirements.txt`), including string pattern/Unicode-length
+intersections. The JSON Schema oracle also covers finite-value filtering, reference/union siblings,
+closed-object and positional-array intersections, draft-07 tuples, recursive conjunctions,
+numeric endpoints and JSON publication rounding. HTTP parsing tests check schema-number precision
+before protocol adapters serialize the schema.
+
+`ninfer_qwen3_5_grammar_real_test [none|mtp|dflash|dflash2] [graph|eager] [concurrency] [vision]` uses
+`NINFER_TEST_DRAFT_TOKENS` to override the default draft count of three and
+`NINFER_TEST_ARTIFACT` to check GBNF/JSON/schema/choice/regex content, sampling, thinking, continuation, prefix reuse
+and mixed batches. `ninfer_regex_choice_test` checks literal-set prefix masks and regex edge cases;
+`python3 tests/text/test_regex_choice.py` compares regex membership with independent fullmatch semantics.
+Set `NINFER_TEST_CONSTRAINT=grammar` or `json_schema` on the preemption test to
+check matcher continuity through Snapshot/Replay and cancellation. `ninfer_grammar_test` and
+`ninfer_json_schema_test` cover CPU language semantics. `ninfer_json_schema_oracle_test` compares
+supported schemas with the independent Python `jsonschema` validator; install its dependency with
+`python3 -m pip install -r tests/text/requirements.txt` in the selected test environment.
+The sampling and speculative Op tests qualify masks against independent mathematical oracles.
+
 The capability-evaluation coordinator has its own environment and unittest entry point:
 
 ```bash
@@ -211,7 +278,7 @@ Run the serving contract manually after starting a resident server in another te
 
 ```bash
 ./build/apps/ninfer-serve out/qwen3_6_27b.ninfer \
-  --host 127.0.0.1 --port 18080
+  --host 127.0.0.1 --port 18080 --vision
 ```
 
 ```bash
@@ -288,7 +355,8 @@ NINFER_TEST_ARTIFACT=out/qwen3_8_27b_nvfp4.ninfer \
   build/tests/ninfer_tests ninfer_qwen3_5_dflash2_real_test 2 0 0 2 int8
 ```
 
-Arguments are K, Graph enabled, optimized head enabled, maximum B, target KV (`bf16` or `int8`),
-Vision enabled, and extra Device StateImage slots. Defaults are `15 1 1 8 bf16 0 3`. Run GPU
-integration tests serially. The individual Op suites remain the numerical/state-transition oracle;
-the fixed Engine fixture does not define bit parity across arbitrary floating-point routes.
+Arguments are K, Graph enabled, optimized head enabled, maximum B, target KV (`bf16`, `int8`,
+`fp8`, `nvfp4`, or `k8v4`), Vision enabled, and extra Device StateImage slots. Defaults are
+`15 1 1 8 bf16 0 3`. Run GPU integration tests serially. The individual Op suites remain the
+numerical/state-transition oracle; the fixed Engine fixture does not define bit parity across
+arbitrary floating-point routes.
