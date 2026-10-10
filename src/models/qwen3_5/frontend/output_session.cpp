@@ -360,10 +360,12 @@ public:
                                                ? thinking.effective_budget
                                                : thinking.budget;
         semantic.exact_reasoning_framing = grammar != nullptr;
-        // The presentation decoder already tracks normal reasoning output. Keep the independent
-        // semantic tracker dormant unless a cap needs it, so the default unlimited path does not
-        // decode every model token twice.
-        semantic.in_reasoning = starts_in_reasoning && semantic.budget.has_value();
+        // The semantic tracker counts the model's own thinking tokens for every response that
+        // starts in thinking: the request log reports that count (model_thinking_tokens), so it
+        // must run without a budget too (upstream Neroued/ninfer#373; it stayed 0 unless a budget
+        // was set). The budget only caps it. Cost: one close-marker scan per generated thinking
+        // token.
+        semantic.in_reasoning = starts_in_reasoning;
         if (!continuation.empty()) {
             saw_content = true;
             if (combined)
