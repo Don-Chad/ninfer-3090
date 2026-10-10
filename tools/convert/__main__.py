@@ -13,7 +13,9 @@ from .official_recipes import RECIPES
 from .pipeline import convert
 from .proposal import DEFAULT_RANKING, add_official_proposal
 from .qwen3_5 import build_model
+from . import qwen4_exp
 from .recipe import Recipe
+from .sources.gguf import GgufModel
 from .sources.safetensors import SafetensorsSource
 
 
@@ -88,7 +90,12 @@ def main(argv=None):
         "--model",
         type=Path,
         required=True,
-        help="primary checkpoint/config and default resources",
+        help="primary checkpoint/config and default resources, or the first file of a GGUF",
+    )
+    parser.add_argument(
+        "--subset",
+        choices=sorted(qwen4_exp.SUBSETS),
+        help="convert only a development subset of a GGUF model (not loadable as a model)",
     )
     parser.add_argument(
         "--recipe",
@@ -138,18 +145,32 @@ def main(argv=None):
     if "base" in paths:
         raise ValueError("select the base source with --model")
     overrides = _pairs(args.resource, "resource")
+    gguf = args.model.suffix.lower() == ".gguf"
+    if args.subset and not gguf:
+        raise ValueError("--subset applies to a GGUF model")
+    if gguf and (components != ("text",) or paths or args.proposal):
+        raise ValueError("a GGUF model supplies only the text component and takes no --source")
     with ExitStack() as stack:
-        base = stack.enter_context(SafetensorsSource(args.model))
-        sources = SourceInputs(base, paths, stack)
-        companions = {
-            key: sources[key] for key in ("dflash", "dflash2") if key in components
-        }
-        model = build_model(
-            base,
-            components=components,
-            companions=companions,
-            resource_overrides=overrides,
-        )
+        if gguf:
+            base = stack.enter_context(GgufModel(args.model))
+            sources = {"base": base}
+            model = qwen4_exp.build_model(
+                base,
+                subset=qwen4_exp.SUBSETS[args.subset] if args.subset else None,
+                resource_overrides=overrides,
+            )
+        else:
+            base = stack.enter_context(SafetensorsSource(args.model))
+            sources = SourceInputs(base, paths, stack)
+            companions = {
+                key: sources[key] for key in ("dflash", "dflash2") if key in components
+            }
+            model = build_model(
+                base,
+                components=components,
+                companions=companions,
+                resource_overrides=overrides,
+            )
         recipe = Recipe(model)
         _function(args.recipe)(model, recipe, sources)
         if args.proposal:
@@ -169,8 +190,14 @@ def main(argv=None):
         provenance = {
             "converter": "ninfer-v3",
             "recipe": args.recipe,
-            "sources": sources.provenance(),
+            "sources": (
+                {"base": {"paths": [str(file.path) for file in base.files]}}
+                if gguf
+                else sources.provenance()
+            ),
         }
+        if args.subset:
+            provenance["subset"] = args.subset
         if args.override:
             provenance["override"] = args.override
         if args.proposal:

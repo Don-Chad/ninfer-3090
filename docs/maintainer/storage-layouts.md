@@ -15,10 +15,13 @@ The storage registry contains exactly these identities:
 | `row_split_k128_v1` | tensor layout | `q4_g64_fp16`, `q5_g64_fp16`, `q6_g64_fp16`, `q8_g32_fp16` | rank 2 `[N,K]` | 256 bytes |
 | `block_scale_k16_m128x4_v1` | tensor layout | `nvfp4` | rank 2 `[N,K]`, `N % 128 == 0`, `K % 64 == 0` | 256 bytes |
 | `row_scale_v1` | tensor layout | `fp8_e4m3fn_row_bf16` | rank 2 `[N,K]` | 256 bytes |
+| `ggml_blocks_v1` | tensor layout | the nine `ggml_*` block formats | rank `1..16`, `K % values_per_block == 0` | 256 bytes |
+| `ggml_rows_page4k_v1` | tensor layout | the nine `ggml_*` block formats | rank 2 `[N,K]`, `K % values_per_block == 0`, row ≤ 4096 bytes | 4096 bytes |
 | `raw_bytes_v1` | resource encoding | not applicable | nonempty byte string | 1 byte |
 
 These format/layout pairs define the current codec support. Native consumer requirements are
-covered separately in Section 8.
+covered separately in Section 10. The two GGML layouts are tooling-only for now, like their
+formats: the C++ layout registry does not accept them yet.
 
 Object alignment applies to the object's payload-relative `offset` in the `.ninfer` JSON. Internal
 plane offsets and padding belong to the selected layout. Inter-object padding belongs to the
@@ -321,7 +324,52 @@ encoded by concatenating the selected code rows, recomputing the scale-plane ali
 row count, and appending the selected scale words in the same row order. It does not decode or
 requantize either plane.
 
-## 6. `raw_bytes_v1`
+## 6. `ggml_blocks_v1`
+
+`ggml_blocks_v1` stores a GGML block format of shape `[..., K]` (rank 1 through 16) with no
+padding. Let `B` and `S` be the format's values and bytes per block, and `rows` the product of the
+leading dimensions (1 for rank 1):
+
+```text
+row_bytes     = (K / B) * S
+payload_bytes = rows * row_bytes
+```
+
+A row is its `K / B` blocks in increasing K order, each block's bytes unchanged, and rows follow in
+C order of the leading coordinates. Logical element `[r, k]` of the `[rows, K]` view lives in block
+`k / B` of row `r`, at payload offset `r * row_bytes + (k / B) * S`.
+
+A GGUF tensor with dimensions `(ne0 = K, ne1, ne2, ...)` therefore has the logical shape
+`[..., ne2, ne1, K]` and identical bytes. Consecutive complete rows form one contiguous byte range,
+so a row slice, an expert of an expert bank, or a group of parameters packed by concatenating
+complete rows needs no repacking. A converter that interleaves parameters (for example each
+expert's gate rows followed by its up rows) does so by the order of the rows it writes; the layout
+itself is unchanged.
+
+## 7. `ggml_rows_page4k_v1`
+
+`ggml_rows_page4k_v1` stores a rank-two GGML block matrix `[N,K]` whose rows are read one at a time
+by direct 4 KiB I/O, such as Qwen3.8-Flash-Next's n-gram embedding table. With `row_bytes` as in
+Section 6, which must be at most 4096:
+
+```text
+rows_per_page = floor(4096 / row_bytes)
+pages         = ceil(N / rows_per_page)
+payload_bytes = pages * 4096
+offset(row n) = (n / rows_per_page) * 4096 + (n % rows_per_page) * row_bytes
+```
+
+Page `p` holds rows `p * rows_per_page` onward, each row's bytes unchanged and in order. The bytes
+from `rows_per_page * row_bytes` to the end of every page, and the slots of the missing rows in the
+last page, are zero; a reader rejects other contents. No row crosses a page boundary. The object
+alignment of 4096 bytes, with the container's 4096-byte payload alignment, puts every page on a
+4096-byte boundary of its file.
+
+For the 90-byte IQ4_NL rows of a 160-wide table, 45 rows fill 4050 bytes of each page and 46 bytes
+are zero; 320,001,536 rows take 7,111,146 pages (29,127,254,016 bytes, 1.1% more than the unpaged
+rows).
+
+## 8. `raw_bytes_v1`
 
 `raw_bytes_v1` is a resource encoding, not a tensor layout. Its enclosing object payload is
 the resource byte string itself:
@@ -336,7 +384,7 @@ trailing padding. The resource object's JSON `bytes` is its exact nonzero length
 returns the complete span unchanged. A model contract assigns a resource name and interprets those
 bytes; the common encoding does not infer that meaning from the name.
 
-## 7. Decode boundary
+## 9. Decode boundary
 
 Layout decoding yields only persistent logical words:
 
@@ -347,13 +395,14 @@ Layout decoding yields only persistent logical words:
   matrix-level FP32 weight divisor;
 - `row_scale_v1` yields the natural row-major E4M3FN code words and one BF16 multiplier per logical
   row;
+- `ggml_blocks_v1` and `ggml_rows_page4k_v1` yield each row's GGML blocks unchanged;
 - `raw_bytes_v1` yields the enclosing resource bytes.
 
 Dequantized values follow the reconstruction rule in `tensor-formats.md`. This document does
 not select a quantization encoder, output dtype, accumulation dtype, kernel, runtime device layout,
 or model consumer.
 
-## 8. Logical views and native operands
+## 10. Logical views and native operands
 
 Bindings address C-order logical element ranges of a parent object. The parent retains its full
 geometry and backing allocation, so a view can locate code and scale planes using the original
