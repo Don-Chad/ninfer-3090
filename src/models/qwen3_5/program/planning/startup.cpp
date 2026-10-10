@@ -974,7 +974,8 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                 {.geometry = {dimension(attention.head_dim),
                               dimension(attention.num_attention_heads),
                               dimension(attention.num_key_value_heads)},
-                 .storage  = impl->kv_storage});
+                 .storage              = impl->kv_storage,
+                 .multiprocessor_count = impl->multiprocessor_count});
             const std::size_t per_batch_allowance = graph_topology_allowance(
                 profiles,
                 [&](GraphExecutionProfile profile) {

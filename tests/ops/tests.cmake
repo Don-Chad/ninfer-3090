@@ -59,11 +59,16 @@ add_test(NAME ninfer_softmax_attention_k8v4_test
 # under a third of it.
 add_test(NAME ninfer_softmax_attention_dflash2_test
   COMMAND ninfer_tests ninfer_softmax_attention_test --dflash2-only)
+# INT8-G64 FA2 prompt route: full prefill chunks and key splits over 4K-40K histories against the
+# FP64 oracle at sampled query rows.
+add_test(NAME ninfer_softmax_attention_int8_prompt_test
+  COMMAND ninfer_tests ninfer_softmax_attention_test --int8-prompt-only)
 
 set_tests_properties(
   ninfer_softmax_attention_nvfp4_test
   ninfer_softmax_attention_k8v4_test
   ninfer_softmax_attention_dflash2_test
+  ninfer_softmax_attention_int8_prompt_test
   PROPERTIES SKIP_RETURN_CODE 77)
 
 ninfer_add_op_test(ninfer_sliding_window_attention_test

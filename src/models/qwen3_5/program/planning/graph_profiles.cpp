@@ -88,12 +88,12 @@ std::vector<ops::CausalAttentionLaunchShape> mtp_attention_shapes(
     shapes.push_back(ops::causal_softmax_attention_launch_shape(
         attention.geometry, attention.storage,
         {1U, visible(static_cast<std::uint64_t>(frontier) + draft_window + 1ULL)}, 1,
-        static_cast<std::int32_t>(draft_window) + 1));
+        static_cast<std::int32_t>(draft_window) + 1, {nullptr, attention.multiprocessor_count}));
     for (std::uint32_t step = 0; step + 1 < draft_window; ++step) {
         shapes.push_back(ops::causal_softmax_attention_launch_shape(
             attention.geometry, attention.storage,
             {1U, visible(static_cast<std::uint64_t>(frontier) + draft_window + step + 2ULL)}, 1,
-            1));
+            1, {nullptr, attention.multiprocessor_count}));
     }
     return shapes;
 }

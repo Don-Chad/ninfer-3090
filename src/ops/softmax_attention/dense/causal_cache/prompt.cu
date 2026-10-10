@@ -6,6 +6,7 @@
 #include "ops/kv_cache/append/launch.h"
 #include "ops/kv_cache/d256_profile.h"
 #include "ops/softmax_attention/dense/causal_cache/prompt_i8.cuh"
+#include "ops/softmax_attention/dense/causal_cache/prompt_i8_fa2_plan.h"
 #include "core/device.h" // CUDA_CHECK
 
 #include <cstdint>
@@ -22,7 +23,8 @@ void causal_attention_prompt_attention_launch_for(const Tensor& q, const Tensor&
     const Tensor& cache_v = cache.v_pages;
     // BFloat16 storage never reaches this function: both causal_softmax_attention and
     // causal_softmax_attention_cached early-return to bf16_kv_{append,cached}_attention
-    // before route resolution, so only the int8 family (int8-g64, rk8v4, rk4v4) lands here.
+    // before route resolution. rk8v4 and rk4v4 always land here; INT8-G64 only over at most
+    // kCausalPromptFa2MinVisibleKeys keys and takes the FA2-style kernel (prompt_i8_fa2.cu) above.
     configure_cuda_device_once([&] {
         return cudaFuncSetAttribute(causal_attention_prompt_i8_kernel<Geometry, Metadata, false>,
                                  cudaFuncAttributeMaxDynamicSharedMemorySize, kCausalPromptI8SmemBytes);
@@ -88,8 +90,18 @@ void causal_attention_prompt_attention_launch_for(const Tensor& q, const Tensor&
 } // namespace
 
 void causal_attention_prompt_attention_launch(const Tensor& q, const Tensor& positions, float scale,
-                                              const PagedKVLayerView& cache, Tensor& out,
+                                              const PagedKVLayerView& cache,
+                                              CausalAttentionExecutionEnvelope envelope,
+                                              WorkspaceArena& workspace,
+                                              std::int32_t multiprocessor_count, Tensor& out,
                                               cudaStream_t stream) {
+    if (cache.storage == KvCacheStorage::Int8Group64 &&
+        envelope.max_visible_keys > kCausalPromptFa2MinVisibleKeys) {
+        causal_attention_prompt_i8_fa2_attention_launch(q, positions, scale, cache, envelope,
+                                                        workspace, multiprocessor_count, out,
+                                                        stream);
+        return;
+    }
     if (cache.storage == KvCacheStorage::Fp8KeyNvfp4Value) {
         causal_attention_prompt_k8v4_attention_launch(q, positions, scale, cache, out, stream);
         return;
@@ -115,7 +127,10 @@ void causal_attention_prompt_attention_launch(const Tensor& q, const Tensor& pos
 void causal_attention_prompt_launch(const Tensor& q, const Tensor& k, const Tensor& v,
                                     const Tensor& positions, const Tensor& valid_columns,
                                     const Tensor& table_rows, float scale,
-                                    PagedKVBatchLayerView cache, Tensor& out, cudaStream_t stream) {
+                                    PagedKVBatchLayerView cache,
+                                    CausalAttentionExecutionEnvelope envelope,
+                                    WorkspaceArena& workspace, std::int32_t multiprocessor_count,
+                                    Tensor& out, cudaStream_t stream) {
     if (cache.storage == KvCacheStorage::Fp8KeyNvfp4Value) {
         causal_attention_prompt_k8v4_launch(q, k, v, positions, valid_columns, table_rows, scale,
                                             cache, out, stream);
@@ -132,6 +147,14 @@ void causal_attention_prompt_launch(const Tensor& q, const Tensor& k, const Tens
         return;
     }
     kv_cache_append_batch_launch(k, v, positions, valid_columns, table_rows, cache, stream);
+    if (cache.storage == KvCacheStorage::Int8Group64 &&
+        envelope.max_visible_keys > kCausalPromptFa2MinVisibleKeys) {
+        causal_attention_prompt_i8_fa2_batch_attention_launch(q, positions, valid_columns,
+                                                              table_rows, scale, cache, envelope,
+                                                              workspace, multiprocessor_count, out,
+                                                              stream);
+        return;
+    }
     const auto launch = [&]<bool Masked>() {
         const PagedKVBatchMetadata<Masked> metadata{
             .tables = static_cast<const std::int32_t*>(cache.block_tables.data),

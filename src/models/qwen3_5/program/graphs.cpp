@@ -373,7 +373,9 @@ void ProgramImpl::prepare_graphs() {
                                          {.geometry = {dimension(attention.head_dim),
                                                        dimension(attention.num_attention_heads),
                                                        dimension(attention.num_key_value_heads)},
-                                          .storage  = kv_storage})
+                                          .storage  = kv_storage,
+                                          .multiprocessor_count =
+                                              device.multiprocessor_count()})
                     : dflash_graph_profiles(speculative_backend, capacity, draft_window, batch);
             validate_graph_profiles(profiles, capacity - 1, "speculative forward");
             return profiles;
