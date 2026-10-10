@@ -42,6 +42,7 @@ def test_config_comes_from_metadata(gguf_path):
         ({"general.architecture": (8, "qwen35")}, "general.architecture"),
         ({"qwen4exp.attention.compress_ratios": (9, (5, [0, 0, 4, 0]))}, "compress_ratios"),
         ({"qwen4exp.ple.head_offsets": (9, (11, [0, 5, 13, 23]))}, "running sum"),
+        ({"qwen4exp.ple.head_offsets": (9, (11, [4, 9, 16, 27]))}, "from zero"),
         ({"qwen4exp.rope.dimension_count": (4, 10)}, "rope sections"),
         ({"qwen4exp.expert_used_count": (4, 5)}, "expert_used_count"),
     ],
@@ -80,6 +81,9 @@ def test_name_map_covers_every_tensor_once(gguf_path):
         ((), (("blk.2.ple_key.weight", 30, (64, 128)),), "unexpected GGUF tensor"),
         ((), (("rope_freqs.weight", 0, (4,)),), "unknown GGUF tensor"),
         (("blk.0.ssm_out.weight",), (("blk.0.ssm_out.weight", 8, (32, 64)),), "ssm_out.weight: shape"),
+        (("blk.1.hc_ffn_norm.weight",), (("blk.1.hc_ffn_norm.weight", 0, (fixture.H,)),), "hc_ffn_norm.weight: shape"),
+        (("blk.2.ffn_up_exps.weight",), (("blk.2.ffn_up_exps.weight", 8, (fixture.H, fixture.F + 8, fixture.E)),), "ffn_up_exps.weight: shape"),
+        (("blk.3.attn_k.weight",), (("blk.3.attn_k.weight", 8, (fixture.H, 64)),), "attn_k.weight: shape"),
     ],
 )
 def test_name_map_rejects_missing_misplaced_and_unknown_tensors(tmp_path, drop, extra, message):
@@ -219,4 +223,18 @@ def test_synthesized_tokenizer_and_override_check(gguf_path, tmp_path):
 def test_unsupported_tokenizer_is_rejected(tmp_path):
     path = fixture.write(tmp_path / "t.gguf", metadata_changes={"tokenizer.ggml.pre": (8, "llama3")})
     with GgufModel(path) as gguf, pytest.raises(GgufError, match="qwen35"):
+        qwen4_exp.build_model(gguf)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"qwen4exp.ple.eos_token_id": (4, 14)},  # an unused [PAD] token
+        {"qwen4exp.ple.eos_token_id": (4, 99)},  # outside the vocabulary
+        {"tokenizer.ggml.bos_token_id": (4, 15)},
+    ],
+)
+def test_generated_stop_ids_must_name_used_tokens(tmp_path, changes):
+    path = fixture.write(tmp_path / "t.gguf", metadata_changes=changes)
+    with GgufModel(path) as gguf, pytest.raises(GgufError, match="does not name a used token"):
         qwen4_exp.build_model(gguf)

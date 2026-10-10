@@ -96,11 +96,12 @@ def test_tensor_source_selects_rows_without_moving_bytes(tmp_path):
             tensor_source(model, "experts", rows=(4, 8), shape=(8, 32))
 
 
-def _shards(tmp_path, *, count_field=2, tensors_count=2, second_no=1):
+def _shards(tmp_path, *, count_field=2, tensors_count=2, second_no=1, second_tensors_count=None):
     stem = tmp_path / "m"
     first = [("split.no", 2, 0), ("split.count", 2, count_field), ("split.tensors.count", 5, tensors_count),
              ("general.architecture", 8, "test")]
-    second = [("split.no", 2, second_no), ("split.count", 2, count_field), ("split.tensors.count", 5, tensors_count)]
+    second = [("split.no", 2, second_no), ("split.count", 2, count_field),
+              ("split.tensors.count", 5, second_tensors_count or tensors_count)]
     a = ("a", 8, (32, 2), tensor_bytes(8, (32, 2)))
     b = ("b", 20, (32, 3), tensor_bytes(20, (32, 3), seed=1))
     write_gguf(stem.with_name("m-00001-of-00002.gguf"), first, [a])
@@ -124,6 +125,7 @@ def test_split_files_join_by_name_and_metadata(tmp_path):
     [
         ({"count_field": 3}, "split.count"),
         ({"tensors_count": 3}, "split.tensors.count"),
+        ({"second_tensors_count": 3}, "split.tensors.count"),
         ({"second_no": 0}, "split.no"),
     ],
 )

@@ -306,10 +306,11 @@ class GgufModel:
                 if name in self.tensors:
                     raise GgufError(f"{file.path}: tensor {name!r} is in two split files")
                 self.tensors[name] = tensor
-        expected = self.files[0].metadata.get("split.tensors.count")
-        if expected is not None and expected != len(self.tensors):
+        advertised = {file.metadata.get("split.tensors.count") for file in self.files}
+        if advertised != {None} and advertised != {len(self.tensors)}:
             raise GgufError(
-                f"split.tensors.count is {expected} but the files hold {len(self.tensors)}"
+                f"split.tensors.count {sorted(map(str, advertised))} but the files hold "
+                f"{len(self.tensors)}"
             )
         self._fds: dict[Path, int] = {}
         self.bytes_read = 0

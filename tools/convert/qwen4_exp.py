@@ -109,8 +109,13 @@ def text_config(metadata: Mapping) -> dict:
     heads_per_ngram = _int(m, _KEY + "ple.heads_per_ngram")
     if len(offsets) != (ngram - 1) * heads_per_ngram:
         raise GgufError("PLE head tables do not match ngram_size and heads_per_ngram")
-    if any(offsets[i] + sizes[i] != offsets[i + 1] for i in range(len(offsets) - 1)):
-        raise GgufError("PLE head offsets are not the running sum of the head sizes")
+    running = 0
+    for offset, size in zip(offsets, sizes):
+        if size <= 0 or offset != running:
+            raise GgufError(
+                "PLE head offsets are not the running sum of the head sizes from zero"
+            )
+        running += size
     if any(not 0 <= layer < layers for layer in ple_layers):
         raise GgufError(f"PLE layers {ple_layers} are outside the model")
     experts, used = _int(m, _KEY + "expert_count"), _int(m, _KEY + "expert_used_count")
@@ -365,8 +370,15 @@ def _check_shapes(gguf: GgufModel, config: dict) -> None:
     h, vocab = config["hidden_size"], gguf.tensor("token_embd.weight").shape[0]
     qkv = 2 * config["linear_num_key_heads"] * config["linear_key_head_dim"]
     vg = config["linear_num_value_heads"] * config["linear_value_head_dim"]
+    hc, low = config["hc_count"], config["hc_low_rank"]
+    experts, moe = config["num_experts"], config["moe_intermediate_size"]
+    shared = config["shared_expert_intermediate_size"]
+    value_heads = config["linear_num_value_heads"]
     checks = {
         "token_embd.weight": (vocab, h),
+        "output_hc_down.weight": (low, hc * h),
+        "output_hc_up.weight": (hc * h, low),
+        "output_hc_norm.weight": (hc * h,),
         "output.weight": (vocab, h),
         PLE_TABLE: (
             gguf.tensor(PLE_TABLE).shape[0],
@@ -375,18 +387,38 @@ def _check_shapes(gguf: GgufModel, config: dict) -> None:
     }
     for layer, kind in enumerate(config["layer_types"]):
         p = f"blk.{layer}."
-        checks[p + "ffn_gate_exps.weight"] = (
-            config["num_experts"], config["moe_intermediate_size"], h
-        )
-        checks[p + "ffn_down_exps.weight"] = (
-            config["num_experts"], h, config["moe_intermediate_size"]
-        )
+        for part in ("attn", "ffn"):
+            checks[p + f"hc_{part}_down.weight"] = (low, hc * h)
+            checks[p + f"hc_{part}_up.weight"] = (hc * h, low)
+            checks[p + f"hc_{part}_inject.weight"] = (hc, hc * h)
+            checks[p + f"hc_{part}_norm.weight"] = (hc * h,)
+        checks[p + "ffn_gate_inp.weight"] = (experts, h)
+        checks[p + "ffn_gate_inp_shexp.weight"] = (h,)
+        checks[p + "ffn_gate_shexp.weight"] = (shared, h)
+        checks[p + "ffn_up_shexp.weight"] = (shared, h)
+        checks[p + "ffn_down_shexp.weight"] = (h, shared)
+        checks[p + "ffn_gate_exps.weight"] = (experts, moe, h)
+        checks[p + "ffn_up_exps.weight"] = (experts, moe, h)
+        checks[p + "ffn_down_exps.weight"] = (experts, h, moe)
         if kind == "linear_attention":
             checks[p + "attn_qkv.weight"] = (qkv + vg, h)
+            checks[p + "attn_gate.weight"] = (vg, h)
+            checks[p + "ssm_alpha.weight"] = (value_heads, h)
+            checks[p + "ssm_beta.weight"] = (value_heads, h)
+            checks[p + "ssm_a"] = (value_heads,)
+            checks[p + "ssm_dt.bias"] = (value_heads,)
+            checks[p + "ssm_conv1d.weight"] = (
+                qkv + vg, config["linear_conv_kernel_dim"]
+            )
             checks[p + "ssm_out.weight"] = (h, vg)
         else:
             heads, d = config["num_attention_heads"], config["head_dim"]
             checks[p + "attn_q.weight"] = (2 * heads * d, h)
+            kv = config["num_key_value_heads"] * d
+            checks[p + "attn_k.weight"] = (kv, h)
+            checks[p + "attn_v.weight"] = (kv, h)
+            checks[p + "attn_q_norm.weight"] = (d,)
+            checks[p + "attn_k_norm.weight"] = (d,)
             checks[p + "attn_output.weight"] = (h, heads * d)
     for name, shape in checks.items():
         if gguf.tensor(name).shape != tuple(shape):
@@ -480,8 +512,8 @@ def tokenizer_resources(metadata: Mapping, config: dict) -> dict[str, bytes]:
         },
     }
 
-    def token(key: str) -> str:
-        index = metadata.get(key)
+    def token(key: str, index=None) -> str:
+        index = metadata.get(key) if index is None else index
         if type(index) is not int or not 0 <= index < len(tokens) or types[index] == _UNUSED:
             raise GgufError(f"{key} does not name a used token")
         return tokens[index]
@@ -502,6 +534,9 @@ def tokenizer_resources(metadata: Mapping, config: dict) -> dict[str, bytes]:
         "tokenizer_class": "Qwen2Tokenizer",
         "unk_token": None,
     }
+    token(_KEY + "ple.eos_token_id", config["ple_eos_token_id"])
+    if metadata.get("tokenizer.ggml.bos_token_id") is not None:
+        token("tokenizer.ggml.bos_token_id")
     eos = [metadata["tokenizer.ggml.eos_token_id"], config["ple_eos_token_id"]]
     generation = {
         "bos_token_id": metadata.get("tokenizer.ggml.bos_token_id"),
