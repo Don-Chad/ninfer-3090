@@ -787,7 +787,10 @@ void parse_tools(const Json& body, ParsedPromptFields& out) {
         return std::move(parsed.canonical);
     };
 
+    std::size_t next_wire_index = 0;
     for (const Json& item : body.at("tools")) {
+        // The path names the tool's position in the request, which hosted declarations still occupy.
+        const std::size_t wire_index = next_wire_index++;
         if (!item.is_object() || !item.contains("type") || !item.at("type").is_string()) {
             bad_request("tools entries must be objects with a string type", "tools");
         }
@@ -795,7 +798,7 @@ void parse_tools(const Json& body, ParsedPromptFields& out) {
         if (type == "function") {
             out.wire_tools.push_back(append_function(parse_function_tool(
                 item, std::nullopt, {}, out.tool_identities,
-                "tools/" + std::to_string(out.wire_tools.size()) + "/parameters")));
+                "tools/" + std::to_string(wire_index) + "/parameters")));
             continue;
         }
         if (type != "namespace") {
@@ -841,7 +844,7 @@ void parse_tools(const Json& body, ParsedPromptFields& out) {
             }
             canonical["tools"].push_back(append_function(parse_function_tool(
                 nested, namespace_name, namespace_description, out.tool_identities,
-                "tools/" + std::to_string(out.wire_tools.size()) + "/tools/" +
+                "tools/" + std::to_string(wire_index) + "/tools/" +
                     std::to_string(canonical["tools"].size()) + "/parameters")));
         }
         out.wire_tools.push_back(std::move(canonical));
