@@ -17,7 +17,9 @@ the server behaves as it did in v0.14.1. 3 merged pull requests (#175, #176, #17
   production server was killed by the host when RAM ran short.
 - **You save conversations to disk and bring them back after a restart.** `GET /slots` now tells you
   which file each live conversation is saved in, when it was last used, and how often it was reused,
-  so you can choose what to keep without guessing.
+  so you can choose what to keep without guessing. *(Superseded: later releases retired the slot
+  save/restore API and `snapshot_file`; use `--context-store DIR`, see
+  [docs/serving.md](docs/serving.md#context-store).)*
 - **You do none of the above.** Nothing changes. No default moved.
 
 ## Several long prompts at once: `--max-prefill-lanes`
@@ -52,6 +54,11 @@ Things to know before you turn it on:
   prompts still left a short request waiting 3-5 seconds.
 
 ## `/slots` says which file a conversation is saved in
+
+> **Superseded.** The slot save/restore API, `--slot-save-path`, `--auto-save-evicted` and the
+> `snapshot_file` field were retired after this release. Conversations now persist through
+> `--context-store DIR` ([docs/serving.md](docs/serving.md#context-store)); `GET /slots` stays, read-only,
+> without `snapshot_file`. The text below describes what this release shipped.
 
 Each live conversation in `GET /slots` now also reports `snapshot_file`, `last_used_unix_ms`,
 `reuse_count` and `reused_tokens` (all `null` for an empty slot). The reason is practical: the server

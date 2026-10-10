@@ -171,6 +171,39 @@ int main() {
           "context transfer and selection series must be reported");
     check(series.find("ninfer:") == std::string::npos,
           "the colon-named series were renamed; recording-rule names must not be emitted");
+
+    // Host time and token pace: a supervisor's signal for an Engine that stalls after every first
+    // token while /health stays 200 (#208).
+    RuntimeStats host                     = baseline;
+    host.host_work.program_submit_ns      = 1'500'000'000;
+    host.host_work.engine_maintenance_ns  = 500'000'000;
+    const auto timed                      = metrics.render(host, true, 0);
+    check(has_line(timed, "ninfer_engine_host_seconds_total 2"),
+          "Engine host-active time must sum its phases, device wait excluded");
+    check(!metrics.last_generation_pace() &&
+              timed.find("ninfer_last_request_inter_token_seconds") == std::string::npos &&
+              has_line(timed, "ninfer_token_intervals_total 0"),
+          "no pace before a request with two or more tokens finished");
+    GenerationOutcome slow;
+    slow.finish_reason                                     = FinishReason::OutputLimit;
+    slow.completion_tokens                                 = 24;
+    slow.metrics.generation_wall_seconds                   = 5.75;
+    slow.metrics.engine_timing.decode_host_exposed_seconds = 6.25;
+    metrics.done(slow);
+    GenerationOutcome single;
+    single.finish_reason     = FinishReason::OutputLimit;
+    single.completion_tokens = 1;
+    metrics.done(single);
+    const auto pace = metrics.last_generation_pace();
+    check(pace && pace->completion_tokens == 24 && pace->inter_token_seconds() == 0.25,
+          "a one-token answer must not replace the last multi-token pace");
+    const auto paced = metrics.render(host, true, 0);
+    check(has_line(paced, "ninfer_token_intervals_total 23") &&
+              has_line(paced, "ninfer_token_interval_seconds_total 5.75") &&
+              has_line(paced, "ninfer_last_request_inter_token_seconds 0.25") &&
+              has_line(paced, "ninfer_last_request_decode_host_seconds 6.25"),
+          "token pace series must be reported");
+
     outcome.constraint = ConstraintObservation{.complete          = true,
                                                .terminated        = false,
                                                .cache             = ConstraintCacheAccess::Built,

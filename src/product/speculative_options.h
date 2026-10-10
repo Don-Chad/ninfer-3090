@@ -29,6 +29,14 @@ namespace ninfer::product {
     return "unknown";
 }
 
+// The optimized proposal head is what MTP and DFlash are built and tuned around, so selecting any
+// speculative backend implies it. `--lm-head-draft` remains accepted for compatibility.
+inline void apply_speculative_defaults(SpeculativeOptions& options) noexcept {
+    if (options.backend != SpeculativeBackend::None) {
+        options.proposal_head = ProposalHead::Optimized;
+    }
+}
+
 inline void validate_speculative_cli_options(const SpeculativeOptions& options) {
     switch (options.backend) {
     case SpeculativeBackend::None:

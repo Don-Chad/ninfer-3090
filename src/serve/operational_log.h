@@ -52,6 +52,7 @@ public:
     void http_failure(std::string_view endpoint, const RequestFailure& failure,
                       std::string_view request_id = {}) const;
     void engine_capacity(const GenerationService& service) const;
+    void context_store_write(const ninfer::ContextStoreWriteEvent& event) const;
     void warmup_started() const;
     void warmup_complete(double seconds) const;
     void warmup_failure(double seconds, std::string_view detail) const;

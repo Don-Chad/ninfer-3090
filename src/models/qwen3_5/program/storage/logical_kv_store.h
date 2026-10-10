@@ -10,6 +10,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -300,6 +301,20 @@ public:
 
     [[nodiscard]] std::uint32_t source_pins(LogicalKVPageHandle handle) const {
         return require(handle).source_pins;
+    }
+
+    // One-line page state for diagnostics, so a rejected mutation names the failing condition.
+    [[nodiscard]] std::string describe(LogicalKVPageHandle handle) const {
+        const Page& page = require(handle);
+        return "committed_columns=" + std::to_string(page.committed_columns) +
+               " protected_columns=" + std::to_string(page.protected_columns) +
+               " references=" + std::to_string(page.references) +
+               " active_references=" + std::to_string(page.active_references) +
+               " writer_references=" + std::to_string(page.writer_references) +
+               " source_pins=" + std::to_string(page.source_pins) +
+               " destination_pinned=" + std::to_string(page.destination_pinned ? 1 : 0) +
+               " host_replica=" + std::to_string(page.host_replica.has_value() ? 1 : 0) +
+               " device_replica=" + std::to_string(page.device_replica.has_value() ? 1 : 0);
     }
 
     [[nodiscard]] bool can_pin_source(LogicalKVPageHandle handle) const noexcept {
