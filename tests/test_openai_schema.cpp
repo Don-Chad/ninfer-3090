@@ -408,6 +408,15 @@ int test_constrained_decoding_extensions() {
         combined.constraint_param, schema_paths);
     failures += check(tool_error.param == "tools/0/function/parameters/properties/x/format",
                       "combined request attributed tool error to body schema");
+    // A hosted declaration is dropped but still occupies a wire index, so the callable tool that
+    // follows it must be reported at tools/1, not tools/0.
+    body["tools"] = Json::array(
+        {Json{{"type", "web_search"}},
+         Json{{"type", "function"},
+              {"function", {{"name", "lookup"}, {"parameters", {{"type", "object"}}}}}}});
+    failures += check(parse(body).generation.tools.size() == 1 &&
+                          parse(body).generation.tools[0].schema_param == "tools/1/function/parameters",
+                      "tool schema path ignored a preceding hosted declaration");
     body["structured_outputs"] = Json{{"grammar", "root ::= \"x\""}};
     failures +=
         check(api_error([&] { (void)parse(body); }).status == 400, "conflicting formats accepted");

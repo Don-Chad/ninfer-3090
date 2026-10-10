@@ -559,7 +559,10 @@ void parse_tools(const Json& body, GenerationRequest& output) {
     const Json& tools = body.at("tools");
     if (!tools.is_array()) { bad_request("tools must be an array", "tools"); }
     output.tools.reserve(tools.size());
+    std::size_t next_wire_index = 0;
     for (const Json& item : tools) {
+        // The path names the tool's position in the request, which hosted declarations still occupy.
+        const std::size_t wire_index = next_wire_index++;
         if (!item.is_object() || !item.contains("type") || !item.at("type").is_string()) {
             bad_request("tools entries must contain a string type", "tools");
         }
@@ -580,7 +583,7 @@ void parse_tools(const Json& body, GenerationRequest& output) {
         }
         const Json& function = item.at("function");
         ToolDefinition tool;
-        tool.schema_param = "tools/" + std::to_string(output.tools.size()) + "/function/parameters";
+        tool.schema_param = "tools/" + std::to_string(wire_index) + "/function/parameters";
         tool.name = require_function_name(function, "tools");
         if (function.contains("description") && !function.at("description").is_null()) {
             if (!function.at("description").is_string()) {
